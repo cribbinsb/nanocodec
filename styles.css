@@ -5,3 +5,4 @@
 .rate-options{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap}.rate-options .compact-control{flex:1 1 90px;min-width:0}.rate-options input{width:100%;min-width:0;border:1px solid #ccd2c8;border-radius:7px;background:#fff;padding:9px;font:inherit}.rate-status{padding:0 22px;margin:0 0 12px;font-size:12px;color:#58665c}.options{flex-wrap:wrap}.quality-option{min-width:180px}
 
 #keyframe{padding:11px 14px;border:1px solid #ccd2c8;border-radius:7px;background:#f7f9f4;color:#304d3e;font-size:12px;cursor:pointer}#keyframe:disabled{opacity:.45;cursor:default}
+.clip-choice{display:flex;flex-direction:column;gap:3px;min-width:0}.clip-choice select{border:1px solid #e4e7df;border-radius:5px;padding:7px;max-width:100%}.clip-credit{font-size:10px;color:var(--muted);text-decoration:underline;text-underline-offset:2px}.clip-credit[hidden]{display:none}

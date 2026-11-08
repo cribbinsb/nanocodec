@@ -1,12 +1,13 @@
 import { Panel } from './panel.js';
 import { drawScene } from './scene.js';
+import { CLIPS, DEFAULT_CLIP, clipById } from './clips.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause');
 const startButton = $('#start'), video = $('#input-video'), notice = $('#notice');
 const surface = document.createElement('canvas'), capture = surface.getContext('2d', { willReadFrequently: true });
 const preview = $('#source-preview').getContext('2d');
-let kind = 'scene', file = null, fileUrl = null, loadedFile = null, camera = null;
+let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, workers = [], timer = 0, restartTimer = 0;
 let frameId = 0, results = [null, null], original = null, showOriginal = false, delivered = 0, started = 0;
 let pendingRateChange = false;
@@ -92,20 +93,32 @@ async function prepareSource(token) {
     if (!camera) {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       if (token !== generation) { stream.getTracks().forEach(t => t.stop()); return; }
-      camera = stream; video.srcObject = stream;
+      camera = stream; loadedSource = null; video.srcObject = stream;
       for (const track of stream.getTracks()) track.addEventListener('ended', () => { if (camera === stream) fail('The webcam disconnected or camera access was stopped.'); });
     }
+  } else if (kind === 'clip') {
+    loadVideo(clip, clip.url);
   } else {
     if (!file) throw new Error('Choose a video file first.');
-    if (loadedFile !== file) {
+    if (loadedSource !== file) {
       if (fileUrl) URL.revokeObjectURL(fileUrl);
-      fileUrl = URL.createObjectURL(file); loadedFile = file; video.srcObject = null; video.src = fileUrl; video.load();
+      fileUrl = URL.createObjectURL(file);
     }
+    loadVideo(file, fileUrl);
     if (video.ended) video.currentTime = 0;
   }
   await metadata();
   if (token !== generation) return;
-  await video.play();
+  try { await video.play(); } catch (error) {
+    // Muted inline video may autoplay, but a browser can still refuse until the user interacts.
+    if (error.name === 'NotAllowedError') throw new Error('The browser blocked automatic playback. Press Start comparison to play the clip.');
+    throw error;
+  }
+}
+// Sample clips loop so the comparison keeps running; local files stop at their end.
+function loadVideo(source, url) {
+  if (loadedSource === source) return;
+  loadedSource = source; video.srcObject = null; video.loop = kind === 'clip'; video.src = url; video.load();
 }
 function initWorker(panel, index, token) {
   const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' }); workers.push(worker);
@@ -202,10 +215,15 @@ function sourceChanged(next) {
   preview.clearRect(0, 0, 160, 90);
   if (kind === "scene") drawScene(preview, 160, 90, 0);
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
-  $('#source-name').textContent = kind === 'scene' ? 'Moving shapes, fine texture and a smooth gradient' : kind === 'camera' ? 'Webcam · camera access requested when you start' : file?.name || 'Choose a local video file';
+  const names = { clip: `${clip.film} · ${clip.title}`, scene: 'Moving shapes, fine texture and a smooth gradient', camera: 'Webcam · camera access requested when you start', file: file?.name || 'Choose a local video file' };
+  $('#source-name').textContent = names[kind];
+  clipCredit.hidden = kind !== 'clip'; clipCredit.textContent = clip.credit;
   $('#session-stats').textContent = 'Ready when you are';
 }
 for (const button of document.querySelectorAll('[data-source]')) button.addEventListener('click', () => { sourceChanged(button.dataset.source); if (kind === 'file') $('#file').click(); });
+const clipPicker = $('#clip'), clipCredit = $('#clip-credit');
+for (const { id, title } of CLIPS) clipPicker.add(new Option(title, id, false, id === clip.id));
+clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); start(); });
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
 for (const control of [$('#resolution'), $('#fps')]) control.addEventListener('change', settingsChanged);
 $('#keyframe').addEventListener('click', () => { if (running) for (const worker of workers) worker.postMessage({ type: 'keyframe' }); });
@@ -224,5 +242,10 @@ originalButton.addEventListener('keyup', () => toggleOriginal(false));
 video.addEventListener('error', () => { if (running) fail('The input video could not be read.'); });
 window.addEventListener('pagehide', () => { stop(); if (fileUrl) URL.revokeObjectURL(fileUrl); });
 document.addEventListener('visibilitychange', () => { if (document.hidden && (running || preparing)) { stop(); message('Comparison paused while this tab is hidden. Start again to resume.'); } });
-// Show the actual test source before starting; decoded views remain empty.
-drawScene(preview, 160, 90, 0);
+// Open on a playing sample clip. A page loaded in a background tab starts once it is shown.
+function autostart() {
+  if (document.hidden) document.addEventListener('visibilitychange', autostart, { once: true });
+  else start();
+}
+sourceChanged('clip');
+autostart();

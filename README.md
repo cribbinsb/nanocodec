@@ -21,12 +21,21 @@ are needed: each worker has its own ordinary WASM memory.
 
 ## Controls and behavior
 
-- **Test scene / Webcam / Video file:** the file must be playable by the browser.
-  The input is fitted into the selected resolution with letterboxing.
+- **Sample clip / Test scene / Webcam / Video file:** the page opens comparing the
+  default sample clip at the default settings, with no click needed (the hidden
+  input video is muted and inline, which browsers allow to autoplay; if one still
+  refuses, the notice asks for Start). Picking another clip starts it at once.
+  Sample clips loop; local files stop at their end and must be playable by the
+  browser. The input is fitted into the selected resolution with letterboxing.
+- **Sample clips** are 12–14 s openly licensed excerpts (Tears of Steel, Big Buck
+  Bunny; CC BY 3.0) in `web/clips/`, loaded by relative URL, listed in
+  `clips.js` and credited next to the picker. Sources, segment times and changes
+  are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add clips whose
+  licence allows redistribution (never the evaluation sets in `/mldata`).
 - **Two versions:** choose H.264, HEVC, AV1 or experimental VP9 independently. Both workers get
   byte-identical RGBA source frames. Their displays advance together only after
   both decoders finish; there is never an unbounded frame queue.
-- **Target bitrate (default):** both versions start at 500 kbps, with a 1000 kbps
+- **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps
   peak rate and a one-second buffer. Compare equal targets after startup has
   settled; measured bitrate remains visible. The shared Rust controller chooses
   each frame's actual quantizer, including keyframes, from current-frame analysis
