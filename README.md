@@ -63,6 +63,12 @@ are needed: each worker has its own ordinary WASM memory.
   playback position; the test scene restarts its deterministic animation.
 - **Hold to view original:** pointer or Space/Enter reveals the shared source
   in both views. Release returns to independently decoded pixels.
+- **Magnifier:** switch it on below the views, then hover, or drag on touch, over
+  either view. The same region (mapped by normalized coordinates) is shown from A,
+  B and the original frame side by side at 2×/4×/8× (buttons or scroll wheel),
+  nearest-neighbour so blocking and ringing stay visible. Click or tap a view to
+  pin the region; Pause holds the frame. It only copies from the displayed
+  canvases on pointer moves and new frames, and does nothing while off.
 - **Stop:** ends both workers and releases camera tracks. Switching away from
   the tab also stops capture; press Start to resume.
 - **Download:** AV1 and VP9 are IVF with captured media timestamps; H.264/HEVC are Annex-B

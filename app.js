@@ -1,4 +1,5 @@
 import { Panel } from './panel.js';
+import { Loupe } from './loupe.js';
 import { drawScene } from './scene.js';
 import { CLIPS, DEFAULT_CLIP, clipById } from './clips.js';
 
@@ -15,6 +16,7 @@ let paused = false, pausedAt = 0, inFlight = false;
 let settings, nextDeadline = 0, firstDeliveredAt = 0;
 const workerTimeouts = new Set();
 const panels = [new Panel('A', 'h264', $('#versions'), settingsChanged), new Panel('B', 'av1', $('#versions'), settingsChanged)];
+const loupe = new Loupe($('#loupe'), panels);
 
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function stop(keepSource = false) {
@@ -71,7 +73,7 @@ function settingsChanged(change) {
 function resetViews() {
   const [width, height] = $("#resolution").value.split("x").map(Number), fps = +$("#fps").value;
   for (const panel of panels) panel.reset(panel.config(width, height, fps));
-  original = null;
+  original = null; loupe.frameShown(null);
 }
 async function metadata() {
   if (video.readyState >= 1) return;
@@ -151,6 +153,7 @@ async function start() {
   const [width, height] = $('#resolution').value.split('x').map(Number), fps = +$('#fps').value;
   settings = { width, height, fps }; surface.width = width; surface.height = height;
   for (const panel of panels) panel.reset(panel.config(width, height, fps));
+  loupe.frameShown(null);
   try {
     await prepareSource(token);
     if (token !== generation) return;
@@ -203,6 +206,7 @@ function finishFrame(token) {
   inFlight = false;
   try { panels.forEach((panel, i) => panel.frame(results[i], showOriginal, original)); }
   catch (error) { fail(error); return; }
+  loupe.frameShown(original);
   ++delivered;
   const now = paused ? pausedAt : performance.now();
   if (delivered === 1) firstDeliveredAt = now;
@@ -234,6 +238,7 @@ function toggleOriginal(value) {
   showOriginal = value; originalButton.setAttribute('aria-pressed', String(value));
   if (!original) return;
   for (const panel of panels) if (panel.latest) { panel.context.putImageData(value ? original : panel.latest, 0, 0); panel.badge.textContent = value ? 'ORIGINAL SOURCE' : 'WASM DECODED'; }
+  loupe.frameShown(original);
 }
 originalButton.addEventListener('pointerdown', e => { originalButton.setPointerCapture(e.pointerId); toggleOriginal(true); });
 for (const event of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) originalButton.addEventListener(event, () => toggleOriginal(false));
