@@ -1,6 +1,8 @@
 import { download, streamBlob, MAX_RECORDING_BYTES } from './streams.js';
+import { createRenderer } from './renderer.js';
 export class Panel {
-  constructor(letter, codec, container, changed) {
+  /** `display`: the preferred renderer ('auto', 'webgl2', 'webgl' or 'cpu'; renderer.js). */
+  constructor(letter, codec, container, changed, display) {
     this.letter = letter; this.frames = []; this.history = []; this.bytes = 0; this.full = false;
     this.element = document.createElement('article'); this.element.className = 'version';
     this.element.innerHTML = `
@@ -15,7 +17,7 @@ export class Panel {
     this.codec = this.element.querySelector('.codec-picker'); this.codec.value = codec;
     this.qp = this.element.querySelector('input[type=range]'); this.preset = this.element.querySelector('.preset');
     this.gop = this.element.querySelector('.gop'); this.canvas = this.element.querySelector('.viewport canvas');
-    this.context = this.canvas.getContext('2d'); this.badge = this.element.querySelector('.frame-badge');
+    this.viewport = this.element.querySelector('.viewport'); this.useRenderer(display); this.badge = this.element.querySelector('.frame-badge');
     this.chart = this.element.querySelector('.history canvas'); this.downloadButton = this.element.querySelector('.download');
     this.rateMode = this.element.querySelector('.rate-mode');
     this.targetRate = this.element.querySelector('.target-rate');
@@ -35,6 +37,23 @@ export class Panel {
     for (const control of [this.qp, this.preset, this.gop]) control.addEventListener('change', changed);
     this.downloadButton.addEventListener('click', () => this.save());
   }
+  /** Draw with `preferred` (renderer.js), falling back to the CPU path if GL set-up fails. */
+  useRenderer(preferred) {
+    try {
+      this.renderer = createRenderer(this.canvas, { preferred, onLost: () => this.fallBack() });
+      this.viewport.dataset.display = this.renderer.kind;
+    } catch (error) {
+      console.warn(`Version ${this.letter}: no WebGL display, using the CPU path`, error);
+      this.fallBack();
+    }
+  }
+  /** The CPU path on a fresh canvas (one that had a GL context cannot draw 2D); size, label and class are cloned. */
+  fallBack() {
+    const fresh = this.canvas.cloneNode();
+    this.canvas.replaceWith(fresh); this.canvas = fresh;
+    this.renderer = createRenderer(fresh, { preferred: 'cpu' });
+    this.viewport.dataset.display = this.renderer.kind;
+  }
   updateCodec() {
     this.preset.disabled = ['vp9', 'av2'].includes(this.codec.value);
     if (this.preset.disabled) this.preset.value = 'default';
@@ -47,7 +66,7 @@ export class Panel {
   reset(config) {
     this.current = config; this.frames = []; this.history = []; this.bytes = 0; this.full = false; this.count = 0;
     this.element.querySelector('.rate-status').textContent = config.rateMode === 'cbr' ? `Target ${config.targetKbps} kbps · waiting for frames` : 'Fixed quantizer';
-    this.latest = null; this.element.classList.remove('error'); this.downloadButton.disabled = true;
+    this.shown = false; this.element.classList.remove('error'); this.downloadButton.disabled = true;
     this.canvas.width = config.width; this.canvas.height = config.height;
     this.element.querySelector('.empty-overlay').hidden = false;
     this.badge.textContent = 'WASM DECODER · STARTING';
@@ -55,18 +74,16 @@ export class Panel {
     this.element.querySelector('.frame-count').textContent = 'No frames encoded';
     this.chart.getContext('2d').clearRect(0, 0, this.chart.width, this.chart.height);
   }
+  /** Show a decoded frame; returns a pixel buffer the worker may reuse. */
   frame(result, showOriginal, original) {
     if (result.width !== this.current.width || result.height !== this.current.height) throw new Error('Decoder output dimensions differ from the input');
-    this.latest = new ImageData(new Uint8ClampedArray(result.rgba.buffer), result.width, result.height);
-    this.context.putImageData(showOriginal ? original : this.latest, 0, 0);
+    const free = this.renderer.show(result);
+    this.shown = true;
+    if (showOriginal) this.renderer.showOriginal(original);
     this.element.querySelector('.empty-overlay').hidden = true;
-    this.badge.textContent = `${showOriginal ? 'ORIGINAL SOURCE' : 'WASM DECODED'} · ${result.key ? 'KEY' : 'INTER'} · #${++this.count}`;
-    this.history.push({ bytes: result.packet.byteLength, encode: result.encodeMs, decode: result.decodeMs, psnr: result.psnr, key: result.key });
-    if (this.history.length > 90) this.history.shift();
-    if (!this.full && this.bytes + result.packet.byteLength <= MAX_RECORDING_BYTES) {
-      this.frames.push({ data: result.packet, timestamp: result.timestamp }); this.bytes += result.packet.byteLength;
-      this.downloadButton.disabled = false;
-    } else this.full = true;
+    // `previous`: frame 0, coded together with frame 1 after the start-up lookahead.
+    for (const coded of [result.previous, result]) if (coded) this.record(coded);
+    this.badge.textContent = `${showOriginal ? 'ORIGINAL SOURCE' : 'WASM DECODED'} · ${result.key ? 'KEY' : 'INTER'} · #${this.count}`;
     const average = key => this.history.reduce((s, f) => s + f[key], 0) / this.history.length;
     for (const [key, value] of Object.entries({ bitrate: average('bytes') * 8 * this.current.fps / 1000, encode: average('encode'), decode: average('decode'), psnr: average('psnr') })) {
       this.element.querySelector(`[data-metric="${key}"]`).textContent = value.toFixed(key === 'bitrate' ? 0 : 1);
@@ -76,6 +93,17 @@ export class Panel {
       ? `Target ${this.current.targetKbps} kbps · ${['av1', 'vp9', 'av2'].includes(this.current.codec) ? 'qindex' : 'QP'} ${result.quantizer} · buffer ${(result.bufferFullness * 100).toFixed(0)}%${result.bufferOverflows ? ` · ${result.bufferOverflows} buffer overruns` : ''}`
       : `Fixed ${['av1', 'vp9', 'av2'].includes(this.current.codec) ? 'qindex' : 'QP'} ${this.current.qp}`;
     this.drawHistory();
+    return free;
+  }
+  /** Count, chart and save one coded frame. */
+  record(coded) {
+    ++this.count;
+    this.history.push({ bytes: coded.packet.byteLength, encode: coded.encodeMs, decode: coded.decodeMs, psnr: coded.psnr, key: coded.key });
+    if (this.history.length > 90) this.history.shift();
+    if (!this.full && this.bytes + coded.packet.byteLength <= MAX_RECORDING_BYTES) {
+      this.frames.push({ data: coded.packet, timestamp: coded.timestamp }); this.bytes += coded.packet.byteLength;
+      this.downloadButton.disabled = false;
+    } else this.full = true;
   }
   drawHistory() {
     const ctx = this.chart.getContext('2d'), { width, height } = this.chart;

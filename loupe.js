@@ -22,8 +22,9 @@ export class Loupe {
     this.pinButton = element.querySelector('.loupe-pin');
     this.zoomButtons = [...element.querySelectorAll('[data-zoom]')];
     this.sourceCanvas = document.createElement('canvas');
-    this.panes = [...panels.map(panel => ({ from: panel.canvas, label: () => `${panel.letter} · ${panel.codec.selectedOptions[0].text}` })),
-      { from: this.sourceCanvas, label: () => 'Original' }];
+    // Views are read through `panel.canvas` each time: a view falling back from WebGL gets a new canvas.
+    this.panes = [...panels.map(panel => ({ from: () => panel.canvas, label: () => `${panel.letter} · ${panel.codec.selectedOptions[0].text}` })),
+      { from: () => this.sourceCanvas, label: () => 'Original' }];
     const grid = element.querySelector('.loupe-panes');
     for (const pane of this.panes) {
       const figure = document.createElement('figure');
@@ -34,33 +35,35 @@ export class Loupe {
     }
     this.markers = panels.map(panel => {
       const marker = document.createElement('div'); marker.className = 'loupe-marker'; marker.hidden = true;
-      panel.canvas.after(marker); return marker;
+      panel.viewport.append(marker); return marker;
     });
     this.toggle.addEventListener('click', () => this.setEnabled(!this.enabled));
     this.pinButton.addEventListener('click', () => this.setPinned(!this.pinned));
     for (const button of this.zoomButtons) button.addEventListener('click', () => this.setZoom(+button.dataset.zoom));
-    for (const panel of panels) this.listen(panel.canvas);
+    for (const panel of panels) this.listen(panel);
     this.setZoom(this.zoom);
   }
-  listen(canvas) {
-    canvas.addEventListener('pointermove', event => {
+  // Pointer events come from the view's viewport, which outlives its canvas.
+  listen(panel) {
+    const area = panel.viewport;
+    area.addEventListener('pointermove', event => {
       if (!this.enabled || this.pinned) return;
-      this.moveTo(canvas, event);
+      this.moveTo(panel.canvas, event);
     });
-    canvas.addEventListener('pointerdown', event => {
+    area.addEventListener('pointerdown', event => {
       if (!this.enabled) return;
       this.tapStart = { x: event.clientX, y: event.clientY };
-      if (!this.pinned) this.moveTo(canvas, event);
+      if (!this.pinned) this.moveTo(panel.canvas, event);
     });
-    canvas.addEventListener('pointerup', event => {
+    area.addEventListener('pointerup', event => {
       if (!this.enabled || !this.tapStart) return;
       const moved = Math.hypot(event.clientX - this.tapStart.x, event.clientY - this.tapStart.y);
       this.tapStart = null;
       if (moved >= TAP_SLOP_PX) return;
-      this.moveTo(canvas, event, true);
+      this.moveTo(panel.canvas, event, true);
       this.setPinned(!this.pinned);
     });
-    canvas.addEventListener('wheel', event => {
+    area.addEventListener('wheel', event => {
       if (!this.enabled) return;
       event.preventDefault();
       if (event.timeStamp - this.lastWheel < WHEEL_STEP_INTERVAL_MS) return;
@@ -75,7 +78,7 @@ export class Loupe {
     this.toggle.textContent = value ? 'Magnifier on' : 'Magnifier off';
     this.element.classList.toggle('active', value);
     // Touch drags over the views pan the magnifier only while it is on; otherwise they scroll the page.
-    for (const panel of this.panels) panel.canvas.style.touchAction = value ? 'none' : '';
+    for (const panel of this.panels) panel.viewport.style.touchAction = value ? 'none' : '';
     if (!value) this.setPinned(false);
     this.requestDraw();
   }
@@ -122,7 +125,7 @@ export class Loupe {
     this.updateSource();
     const region = this.region();
     for (const pane of this.panes) {
-      const { context, from } = pane, label = pane.label();
+      const { context } = pane, from = pane.from(), label = pane.label();
       if (pane.caption.textContent !== label) pane.caption.textContent = label;
       context.clearRect(0, 0, PANE_WIDTH, PANE_HEIGHT);
       if (!from.width || !from.height) continue;

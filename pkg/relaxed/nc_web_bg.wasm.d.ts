@@ -1,0 +1,30 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_browserdecoder_free: (a: number, b: number) => void;
+export const __wbg_browserencoder_free: (a: number, b: number) => void;
+export const browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
+export const browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
+export const browserdecoder_height: (a: number) => number;
+export const browserdecoder_i420_frame: (a: number) => [number, number, number];
+export const browserdecoder_new: (a: number, b: number) => [number, number, number];
+export const browserdecoder_rgba_frame: (a: number) => [number, number, number];
+export const browserdecoder_width: (a: number) => number;
+export const browserencoder_buffer_fullness: (a: number) => number;
+export const browserencoder_buffer_overflows: (a: number) => number;
+export const browserencoder_disable_rate_control: (a: number) => void;
+export const browserencoder_encode: (a: number, b: number, c: number) => [number, number, number, number];
+export const browserencoder_key: (a: number) => number;
+export const browserencoder_look_ahead: (a: number, b: number, c: number) => [number, number];
+export const browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+export const browserencoder_quality: (a: number, b: number) => [number, number, number];
+export const browserencoder_quantizer: (a: number) => number;
+export const browserencoder_request_keyframe: (a: number) => void;
+export const browserencoder_set_rate_control: (a: number, b: number, c: number, d: number) => [number, number];
+export const browserencoder_wants_look_ahead: (a: number) => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_start: () => void;

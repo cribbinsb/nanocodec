@@ -10,12 +10,14 @@ const surface = document.createElement('canvas'), capture = surface.getContext('
 const preview = $('#source-preview').getContext('2d');
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, workers = [], timer = 0, restartTimer = 0;
-let frameId = 0, results = [null, null], original = null, showOriginal = false, delivered = 0, started = 0;
+let frameId = 0, results = [null, null], sourceBuffers = [null, null], original = null, showOriginal = false, delivered = 0, started = 0;
 let pendingRateChange = false;
 let paused = false, pausedAt = 0, inFlight = false;
 let settings, nextDeadline = 0, firstDeliveredAt = 0;
 const workerTimeouts = new Set();
-const panels = [new Panel('A', 'h264', $('#versions'), settingsChanged), new Panel('B', 'av1', $('#versions'), settingsChanged)];
+// `?display=cpu|webgl|webgl2` overrides the frame renderer's automatic choice (renderer.js), e.g. to compare the paths.
+const display = new URLSearchParams(location.search).get('display') || 'auto';
+const panels = [new Panel('A', 'h264', $('#versions'), settingsChanged, display), new Panel('B', 'av1', $('#versions'), settingsChanged, display)];
 const loupe = new Loupe($('#loupe'), panels);
 
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
@@ -26,7 +28,7 @@ function stop(keepSource = false) {
   running = false; preparing = false; paused = false; inFlight = false;
   pauseButton.disabled = true; pauseButton.textContent = 'Pause';
   pauseButton.setAttribute('aria-pressed', 'false');
-  results = [null, null];
+  results = [null, null]; sourceBuffers = [null, null];
   $("#keyframe").disabled = true;
   document.body.classList.remove('running'); startButton.innerHTML = 'Start comparison <span aria-hidden="true">↗</span>';
   $('#runtime-label').textContent = 'WASM encode + decode';
@@ -197,14 +199,27 @@ function captureFrame(token) {
     pendingRateChange = false;
   }
   results = [null, null]; ++frameId; inFlight = true;
-  for (const worker of workers) {
-    const rgba = original.data.slice().buffer;
-    worker.postMessage({ type: 'frame', id: frameId, timestamp, rgba }, [rgba]);
-  }
+  workers.forEach((worker, i) => {
+    // Reuse the buffer this worker returned with its last result.
+    let rgba = sourceBuffers[i];
+    sourceBuffers[i] = null;
+    if (!rgba || rgba.byteLength !== original.data.length) rgba = new ArrayBuffer(original.data.length);
+    new Uint8ClampedArray(rgba).set(original.data);
+    // Each frame names the format the view's renderer draws, which changes if a GL context is lost.
+    worker.postMessage({ type: 'frame', id: frameId, timestamp, rgba, display: panels[i].renderer.format }, [rgba]);
+  });
 }
 function finishFrame(token) {
   inFlight = false;
-  try { panels.forEach((panel, i) => panel.frame(results[i], showOriginal, original)); }
+  try {
+    panels.forEach((panel, i) => {
+      sourceBuffers[i] = results[i].source;
+      // A held frame 0 (start-up lookahead) is shown with the next result.
+      if (results[i].held) return;
+      const replaced = panel.frame(results[i], showOriginal, original);
+      if (replaced) workers[i].postMessage({ type: 'recycle', buffer: replaced }, [replaced]);
+    });
+  }
   catch (error) { fail(error); return; }
   loupe.frameShown(original);
   ++delivered;
@@ -237,7 +252,10 @@ const originalButton = $('#original');
 function toggleOriginal(value) {
   showOriginal = value; originalButton.setAttribute('aria-pressed', String(value));
   if (!original) return;
-  for (const panel of panels) if (panel.latest) { panel.context.putImageData(value ? original : panel.latest, 0, 0); panel.badge.textContent = value ? 'ORIGINAL SOURCE' : 'WASM DECODED'; }
+  for (const panel of panels) if (panel.shown) {
+    if (value) panel.renderer.showOriginal(original); else panel.renderer.showLatest();
+    panel.badge.textContent = value ? 'ORIGINAL SOURCE' : 'WASM DECODED';
+  }
   loupe.frameShown(original);
 }
 originalButton.addEventListener('pointerdown', e => { originalButton.setPointerCapture(e.pointerId); toggleOriginal(true); });

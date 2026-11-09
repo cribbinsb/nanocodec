@@ -128,6 +128,41 @@ export class BrowserDecoder {
         wasm.__wbg_browserdecoder_free(ptr, 0);
     }
     /**
+     * Pack the latest frame's visible samples as I420 (Y, then Cb, then Cr,
+     * rows without padding: `packed_frame_len` bytes) into the reused display
+     * buffer and return its byte offset in WASM memory, read as for
+     * `rgba_frame`. A WebGL display uploads the three planes and converts
+     * them in a shader, moving 1.5 instead of 4 bytes per pixel.
+     * # Errors
+     * Rejects calls made before a frame has been decoded.
+     * @returns {number}
+     */
+    i420_frame() {
+        const ret = wasm.browserdecoder_i420_frame(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Convert the latest frame to RGBA (`width * height * 4` bytes) in a
+     * buffer this decoder reuses, and return its byte offset in the module's
+     * WASM memory. JS reads it through a view of `memory.buffer`, which is
+     * valid until the next call into the module (memory may grow); copying
+     * from it into a reused canvas buffer avoids a per-frame allocation.
+     * This is the CPU display path; `i420_frame` feeds a GPU conversion.
+     * # Errors
+     * Rejects calls made before a frame has been decoded.
+     * @returns {number}
+     */
+    rgba_frame() {
+        const ret = wasm.browserdecoder_rgba_frame(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * The latest decoded I420 samples, suitable for independent conformance checks.
      * # Errors
      * Rejects calls made before a frame has been decoded.
@@ -168,22 +203,18 @@ export class BrowserDecoder {
         return ret >>> 0;
     }
     /**
-     * Decode compressed bytes and return RGBA pixels for a browser canvas.
+     * Decode one packet; the picture becomes the latest decoded frame.
      * # Errors
      * Rejects oversized packets and malformed or unsupported codec syntax.
      * @param {Uint8Array} packet
-     * @returns {Uint8Array}
      */
     decode(packet) {
         const ptr0 = passArray8ToWasm0(packet, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.browserdecoder_decode(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
         }
-        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v2;
     }
     /**
      * Visible height of the latest decoded frame, or zero before the first frame.
@@ -231,6 +262,21 @@ export class BrowserEncoder {
         return ret[0];
     }
     /**
+     * Hand over the second RGBA frame before encoding the first; both are
+     * still encoded in order afterwards.
+     * # Errors
+     * Rejects input whose byte count differs from the configured dimensions.
+     * @param {Uint8Array} rgba
+     */
+    look_ahead(rgba) {
+        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserencoder_look_ahead(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Fraction of the configured bitrate buffer currently occupied.
      * @returns {number}
      */
@@ -265,6 +311,17 @@ export class BrowserEncoder {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Whether the encoder wants the second frame before the first
+     * (`look_ahead`): only before the first frame, under rate control, for
+     * codecs whose rate model sizes the first key from start-up camera
+     * motion. The caller then holds frame 0 back one frame.
+     * @returns {boolean}
+     */
+    get wants_look_ahead() {
+        const ret = wasm.browserencoder_wants_look_ahead(this.__wbg_ptr);
+        return ret !== 0;
     }
     /**
      * Return to the fixed quantizer supplied at construction.

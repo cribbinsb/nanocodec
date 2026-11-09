@@ -16,6 +16,12 @@ The build requires Rust's `wasm32-unknown-unknown` target and wasm-bindgen CLI
 existing executable; `CARGO_TARGET_DIR` selects the build cache, and `BUILD_JOBS`
 defaults to2. The build reserves8MiB of WASM stack for codec transform kernels.
 Generated assets are placed in `web/pkg/` and can be hosted by any static server.
+The build makes two modules: `web/pkg/` (SIMD128) and `web/pkg/relaxed/` (SIMD128
+plus relaxed SIMD). Each worker loads the relaxed one when
+`WebAssembly.validate` accepts a relaxed-SIMD probe; both decode bit-identically,
+because nc-dsp only uses relaxed operations whose results are fully specified for
+its inputs. Speed numbers and the benchmark (`tools/web/bench.py`) are in
+`docs/handoff/wasm-perf.md`.
 Use HTTPS for a remotely hosted camera demo. No cross-origin isolation headers
 are needed: each worker has its own ordinary WASM memory.
 
@@ -90,14 +96,31 @@ at maximum quality. Native callers can set QP limits and smoothing through
 
 Numbers summarize the last90 compared frames (or all available frames).
 Bitrate is mean compressed bytes/frame × target fps, not network throughput.
-Encode time includes RGBA→limited-range BT.601 I420 conversion; decode time
-includes I420→RGBA conversion. Both are worker wall timings, not single-core
+Encode time includes RGBA→limited-range BT.601 I420 conversion; decode time is
+the decoder alone (the display hand-off is not included). Both are worker wall timings, not single-core
 native CPU benchmarks. PSNR uses the same6:1:1 average of per-plane PSNR as the
 harness, capped at100dB, against the converted encoder input. VMAF and MS-SSIM
 are deliberately not fabricated or estimated in the live page.
 
 The worker calls `BrowserEncoder.encode`, passes the resulting compressed
 bytes to a separate `BrowserDecoder`, and displays only that decoder's pixels.
+Source and display buffers circulate between page and workers, so no
+frame-sized buffer is allocated per frame.
+
+**Display (`renderer.js`).** With a hardware GPU each view draws with WebGL2
+(else WebGL1): `BrowserDecoder.i420_frame` packs the decoded planes without row
+padding into a reused WASM buffer, the worker copies them out (1.5 bytes per
+pixel), and the page uploads them as three one-channel textures that a fragment
+shader converts with the same limited-range BT.601 integer arithmetic as the
+CPU path; the output is identical (checked by `tools/web/display-bench.py`).
+Otherwise (no WebGL, or only software GL such as SwiftShader, which
+`failIfMajorPerformanceCaveat` refuses because it is slower than the CPU path)
+`BrowserDecoder.rgba_frame` converts to RGBA in WASM (SIMD128) and the page
+draws it with `putImageData`. A GL context lost for more than 3 s, or a failed GL
+set-up, switches that view to the CPU path on a fresh canvas. `?display=webgl2`,
+`webgl` or `cpu` overrides the automatic choice (the chosen renderer is in each
+viewport's `data-display`). The GL canvas keeps its drawing buffer, so the
+magnifier and "hold to view original" (an RGBA texture) work on either path.
 `BrowserDecoder.decoded_i420` exposes raw decoded samples for conformance tests.
 No WebCodecs implementation or reference decoder is used in this path.
 
