@@ -1,7 +1,7 @@
 import { Panel } from './panel.js';
 import { Loupe } from './loupe.js';
 import { drawScene } from './scene.js';
-import { CLIPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
+import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause');
@@ -238,12 +238,16 @@ function sourceChanged(next) {
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
   const names = { clip: `${clip.film} · ${clip.title}`, scene: 'Moving shapes, fine texture and a smooth gradient', camera: 'Webcam · camera access requested when you start', file: file?.name || 'Choose a local video file' };
   $('#source-name').textContent = names[kind];
-  clipCredit.hidden = kind !== 'clip'; clipCredit.textContent = clip.credit;
+  clipCredit.hidden = kind !== 'clip'; clipCredit.textContent = clip.credit; clipCredit.title = clip.notice ?? '';
   $('#session-stats').textContent = 'Ready when you are';
 }
 for (const button of document.querySelectorAll('[data-source]')) button.addEventListener('click', () => { sourceChanged(button.dataset.source); if (kind === 'file') $('#file').click(); });
 const clipPicker = $('#clip'), clipCredit = $('#clip-credit');
-for (const { id, title } of CLIPS) clipPicker.add(new Option(title, id, false, id === clip.id));
+for (const group of CLIP_GROUPS) {
+  const optgroup = document.createElement('optgroup'); optgroup.label = group;
+  for (const { id, title } of CLIPS.filter(c => c.group === group)) optgroup.append(new Option(title, id, false, id === clip.id));
+  clipPicker.append(optgroup);
+}
 clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); start(); });
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
 for (const control of [$('#resolution'), $('#fps')]) control.addEventListener('change', settingsChanged);
