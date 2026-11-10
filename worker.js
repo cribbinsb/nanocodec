@@ -7,14 +7,10 @@
 // frame (renderer.js): packed I420 for a WebGL view, which converts on the GPU,
 // or RGBA converted here in WASM for the CPU path.
 //
-// The module is the relaxed-SIMD build where the engine supports relaxed SIMD
-// (bit-identical output, faster lane selects), else the plain SIMD128 build.
-// The probe is a function returning `i8x16.relaxed_swizzle` of two splats.
-const RELAXED_SIMD_PROBE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123,
-  3, 2, 1, 0, 10, 15, 1, 13, 0, 65, 1, 253, 15, 65, 2, 253, 15, 253, 128, 2, 11]);
-const RELAXED_SIMD = WebAssembly.validate(RELAXED_SIMD_PROBE);
+// The module build (relaxed SIMD or plain SIMD128) is chosen in wasm.js.
+import { MODULE_URL, RELAXED_SIMD } from './wasm.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
-const codecModule = import(RELAXED_SIMD ? './pkg/relaxed/nc_web.js' : './pkg/nc_web.js');
+const codecModule = import(MODULE_URL);
 let BrowserEncoder, BrowserDecoder, encoder, decoder, wasm;
 const sparePixels = [];
 // Frame 0, held back one frame while the encoder looks ahead to frame 1
@@ -54,7 +50,7 @@ self.onmessage = async ({ data: message }) => {
       ({ BrowserEncoder, BrowserDecoder } = module);
       wasm = await module.default();
       const c = message.config;
-      encoder = new BrowserEncoder(c.codec, c.width, c.height, c.qp, c.fps, c.keyInterval, c.fast);
+      encoder = new BrowserEncoder(c.codec, c.width, c.height, c.qp, c.fps, c.keyInterval, c.preset, c.overrides, c.filmGrain);
       decoder = new BrowserDecoder(c.codec);
       configureRate(c);
       self.postMessage({ type: 'ready', relaxedSimd: RELAXED_SIMD });

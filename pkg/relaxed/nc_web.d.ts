@@ -1,6 +1,27 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * `codec`'s registered parameters, as a JSON array of `{name, default,
+ * min, max, doc}` (defaults are the codec's own).
+ * # Errors
+ * Rejects unknown codec names.
+ */
+export function parameter_registry(codec: string): string;
+/**
+ * What the page may offer for `codec`, as JSON `{filmGrain, blockQp,
+ * temporalLayers, secondReference}`.
+ * # Errors
+ * Rejects unknown codec names.
+ */
+export function codec_options(codec: string): string;
+/**
+ * The bad lines of a `name=value` override list for `codec`, as a JSON
+ * array of `{line, message}` (empty when every line is valid).
+ * # Errors
+ * Rejects unknown codec names.
+ */
+export function check_parameters(codec: string, text: string): string;
+/**
  * An independent subset decoder; no encoder instance or reconstruction is needed.
  */
 export class BrowserDecoder {
@@ -90,10 +111,16 @@ export class BrowserEncoder {
   disable_rate_control(): void;
   /**
    * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
+   * `preset_name` is "default", "fast" or (H.264 only) "faster";
+   * `overrides` (optional) holds `name=value` lines applied over the
+   * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
+   * turns on film grain synthesis, which the decoder applies to its
+   * output.
    * # Errors
-   * Rejects invalid codecs, configurations, or dimensions above1080p.
+   * Rejects invalid codecs, presets, overrides, configurations, film
+   * grain outside AV1, or dimensions above1080p.
    */
-  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, fast: boolean);
+  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean);
   /**
    * Convert one RGBA frame and encode an independent access unit / AV1 temporal unit.
    * # Errors
@@ -144,17 +171,20 @@ export interface InitOutput {
   readonly browserencoder_encode: (a: number, b: number, c: number) => [number, number, number, number];
   readonly browserencoder_key: (a: number) => number;
   readonly browserencoder_look_ahead: (a: number, b: number, c: number) => [number, number];
-  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
   readonly browserencoder_quality: (a: number, b: number) => [number, number, number];
   readonly browserencoder_quantizer: (a: number) => number;
   readonly browserencoder_request_keyframe: (a: number) => void;
   readonly browserencoder_set_rate_control: (a: number, b: number, c: number, d: number) => [number, number];
   readonly browserencoder_wants_look_ahead: (a: number) => number;
+  readonly check_parameters: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+  readonly codec_options: (a: number, b: number) => [number, number, number, number];
+  readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
   readonly __wbindgen_externrefs: WebAssembly.Table;
-  readonly __externref_table_dealloc: (a: number) => void;
-  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __externref_table_dealloc: (a: number) => void;
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_start: () => void;
 }
 

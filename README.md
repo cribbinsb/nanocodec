@@ -67,10 +67,37 @@ are needed: each worker has its own ordinary WASM memory.
 - **Fixed quantizer:** native fixed QP (0–51 for H.264/HEVC, 0–63 for VVC, 1–255 AV1
   qindex; 0–255 VP9/AV2 qindex, where 0 is lossless). Lower values usually preserve more detail at a larger bitrate.
   QP numbers are not comparable between codecs. Lower QP generally means more data.
-- **Fast:** uses the checked-in `h264-fast`, `hevc-fast`, `av1-fast` or
-  `vvc-fast` preset (the same files as the CLI's `--preset`). These are
-  explicit speed/quality tradeoffs. The page offers no Fast for VP9 and AV2.
-- **Other live changes:** codec, quantizer, preset, GOP, resolution and fps changes
+- **Fast / Faster:** uses the checked-in `h264-fast`, `hevc-fast`, `av1-fast` or
+  `vvc-fast` preset, and for H.264 also `h264-faster` (the same files as the
+  CLI's `--preset`). These are explicit speed/quality tradeoffs. The page offers
+  no Fast for VP9 and AV2.
+- **Advanced** (per version, collapsed by default): settings over the chosen
+  preset. Its toggles appear only where the codec supports them (the codec module
+  says which, `codec_options`):
+  - **Film grain** (AV1): the encoder's experimental film grain synthesis at its
+    default strength (the CLI's `--film-grain`); the WASM decoder lays the grain over
+    its output. The decoder's grain synthesis is still scalar code, so decode time
+    rises (roughly doubling on textured clips; the tooltip says so), and PSNR,
+    measured on the grained output, drops by construction. See
+    [AV1 film grain](../docs/handoff/av1-grain.md).
+  - **Persistence AQ** (codecs with block QP): `persist.strength=2`,
+    `persist.still_boost=3` ([block AQ](../docs/handoff/block-aq.md)).
+  - **Temporal layers** 1–3 (`layers.count`) and **Second reference**
+    (`refs.second=1`, H.264; not with layers).
+  - **Parameter overrides:** free-form `name=value` lines (the CLI's parameter-file
+    format), applied after the toggles. The search box autocompletes the codec's
+    registered parameters and shows each one's description, default and range;
+    every line is checked against the engine's registry (`check_parameters`, the same
+    check as encoder construction), and a bad name or value shows an inline error
+    and is not applied. The registry comes from the module (`parameter_registry`), so
+    the page never keeps its own copy. Opening Advanced the first time loads the
+    codec module on the page as well (the same file the workers use, from the cache).
+- **Settings · CLI command** (below each download): the effective preset and
+  overrides, and the equivalent `nanocodec encode …` line (same codec, size, frame
+  rate, key interval, quantizer seed, rate settings, preset and overrides), to run on
+  an I420 file of the source; the page itself codes its limited-range BT.601
+  conversion of the RGBA frames.
+- **Other live changes:** codec, quantizer, preset, Advanced settings, GOP, resolution and fps changes
   restart both pipelines on a keyframe and
   clears statistics/download buffers. Video files continue from their current
   playback position; the test scene restarts its deterministic animation.

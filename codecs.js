@@ -1,9 +1,10 @@
 // What the page needs to know about each codec, in picker order: its label,
 // its native quantizer scale (the encoder's fixed-quantizer argument), whether
-// the UI offers its Fast preset, and how a recording is stored (IVF with a
-// FourCC, or a raw Annex-B elementary stream with a file extension).
+// the UI offers its Fast (and Faster) preset, and how a recording is stored (IVF with a
+// FourCC, or a raw Annex-B elementary stream with a file extension). What each codec
+// supports beyond that (film grain, block QP, ...) comes from the codec module (options.js).
 export const CODECS = {
-  h264: { label: 'H.264', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, fast: true, annexB: '264' },
+  h264: { label: 'H.264', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, fast: true, faster: true, annexB: '264' },
   hevc: { label: 'HEVC', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, fast: true, annexB: 'hevc' },
   av1: { label: 'AV1', quantizer: { name: 'qindex', min: 1, max: 255, initial: 180 }, fast: true, ivf: 'AV01' },
   vvc: { label: 'VVC · experimental', quantizer: { name: 'QP', min: 0, max: 63, initial: 32 }, fast: true, annexB: 'vvc' },

@@ -30,17 +30,6 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr, len);
 }
 
-function takeFromExternrefTable0(idx) {
-    const value = wasm.__wbindgen_externrefs.get(idx);
-    wasm.__externref_table_dealloc(idx);
-    return value;
-}
-
-function getArrayU8FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
-}
-
 let WASM_VECTOR_LEN = 0;
 
 const cachedTextEncoder = new TextEncoder();
@@ -95,6 +84,106 @@ function passStringToWasm0(arg, malloc, realloc) {
     return ptr;
 }
 
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
+}
+/**
+ * `codec`'s registered parameters, as a JSON array of `{name, default,
+ * min, max, doc}` (defaults are the codec's own).
+ * # Errors
+ * Rejects unknown codec names.
+ * @param {string} codec
+ * @returns {string}
+ */
+export function parameter_registry(codec) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.parameter_registry(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * What the page may offer for `codec`, as JSON `{filmGrain, blockQp,
+ * temporalLayers, secondReference}`.
+ * # Errors
+ * Rejects unknown codec names.
+ * @param {string} codec
+ * @returns {string}
+ */
+export function codec_options(codec) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.codec_options(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * The bad lines of a `name=value` override list for `codec`, as a JSON
+ * array of `{line, message}` (empty when every line is valid).
+ * # Errors
+ * Rejects unknown codec names.
+ * @param {string} codec
+ * @param {string} text
+ * @returns {string}
+ */
+export function check_parameters(codec, text) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.check_parameters(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
@@ -106,6 +195,10 @@ function _assertClass(instance, klass) {
     if (!(instance instanceof klass)) {
         throw new Error(`expected instance of ${klass.name}`);
     }
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 const BrowserDecoderFinalization = (typeof FinalizationRegistry === 'undefined')
@@ -340,20 +433,32 @@ export class BrowserEncoder {
     }
     /**
      * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
+     * `preset_name` is "default", "fast" or (H.264 only) "faster";
+     * `overrides` (optional) holds `name=value` lines applied over the
+     * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
+     * turns on film grain synthesis, which the decoder applies to its
+     * output.
      * # Errors
-     * Rejects invalid codecs, configurations, or dimensions above1080p.
+     * Rejects invalid codecs, presets, overrides, configurations, film
+     * grain outside AV1, or dimensions above1080p.
      * @param {string} codec
      * @param {number} width
      * @param {number} height
      * @param {number} qp
      * @param {number} fps
      * @param {number} key_interval
-     * @param {boolean} fast
+     * @param {string} preset_name
+     * @param {string | null | undefined} overrides
+     * @param {boolean} film_grain
      */
-    constructor(codec, width, height, qp, fps, key_interval, fast) {
+    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain) {
         const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, fast);
+        const ptr1 = passStringToWasm0(preset_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(overrides) ? 0 : passStringToWasm0(overrides, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
