@@ -33,9 +33,12 @@ are needed: each worker has its own ordinary WASM memory.
   refuses, the notice asks for Start). Picking another clip starts it at once.
   Sample clips loop; local files stop at their end and must be playable by the
   browser. The input is fitted into the selected resolution with letterboxing.
-- **Sample clips** are 12–14 s openly licensed excerpts (Tears of Steel, Big Buck
-  Bunny; CC BY 3.0) in `web/clips/`, loaded by relative URL, listed in
-  `clips.js` and credited next to the picker. Sources, segment times and changes
+- **Sample clips** are openly licensed excerpts in `web/clips/`: 12–14 s of Tears
+  of Steel and Big Buck Bunny (CC BY 3.0) and 5 s of SVT's 2022 Natural Complexity
+  suite (waterfall, midnight sun, smoke sauna; CC BY 4.0). They are loaded by
+  relative URL, listed in `clips.js` and credited next to the picker. Each clip
+  has a 360p file (used at 384×216 and 640×360) and a 720p file (1280×720);
+  changing resolution reloads the matching one. Sources, segment times and changes
   are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add clips whose
   licence allows redistribution (never the evaluation sets in `/mldata`).
 - **Two versions:** choose H.264, HEVC, AV1 or experimental VVC, VP9 or AV2 independently. Both workers get

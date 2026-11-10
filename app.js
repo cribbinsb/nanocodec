@@ -1,7 +1,7 @@
 import { Panel } from './panel.js';
 import { Loupe } from './loupe.js';
 import { drawScene } from './scene.js';
-import { CLIPS, DEFAULT_CLIP, clipById } from './clips.js';
+import { CLIPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause');
@@ -101,7 +101,9 @@ async function prepareSource(token) {
       for (const track of stream.getTracks()) track.addEventListener('ended', () => { if (camera === stream) fail('The webcam disconnected or camera access was stopped.'); });
     }
   } else if (kind === 'clip') {
-    loadVideo(clip, clip.url);
+    // The URL is the source identity: a resolution change that picks another variant reloads.
+    const url = clipUrl(clip, settings.height);
+    loadVideo(url, url);
   } else {
     if (!file) throw new Error('Choose a video file first.');
     if (loadedSource !== file) {
