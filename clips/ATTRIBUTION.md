@@ -47,9 +47,9 @@ frame dropped (50 → 25 fps), 4:4:4 12-bit converted to 4:2:0 8-bit.
 
 | Files | Sequence | Master file | Segment | CRF 360p / 720p |
 |---|---|---|---|---|
-| `svt-waterfall-*.mp4` | waterfall (SDR) | `waterfall_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:15.0 (5 s) | 25 / 28 |
-| `svt-midnight-sun-*.mp4` | midnight_sun (SDR) | `midnight_sun_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:15.0 (5 s) | 25 / 28 |
-| `svt-smoke-sauna-*.mp4` | smoke_sauna (SDR) | `smoke_sauna_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:15.0 (5 s) | 25 / 28 |
+| `svt-waterfall-*.mp4` | waterfall (SDR) | `waterfall_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 25 / 28 |
+| `svt-midnight-sun-*.mp4` | midnight_sun (SDR) | `midnight_sun_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 25 / 28 |
+| `svt-smoke-sauna-*.mp4` | smoke_sauna (SDR) | `smoke_sauna_JPEG2000_SDR_3840x2160p50_YUV444_12bit_Lossless.mov` | 0:10.0–0:20.0 (10 s) | 25 / 28 |
 
 ## Xiph.org derf collection: JCT-VC / Vidyo conferencing sequences (public domain)
 
@@ -65,12 +65,12 @@ not rescaled.
 
 | Files | Sequence | Source file | Segment | CRF 360p / 720p |
 |---|---|---|---|---|
-| `xiph-johnny-*.mp4` | Johnny | `Johnny_1280x720_60.y4m` | 0:02.0–0:08.0 (6 s) | 22 / 24 |
-| `xiph-kristen-sara-*.mp4` | KristenAndSara | `KristenAndSara_1280x720_60.y4m` | 0:02.0–0:08.0 (6 s) | 22 / 24 |
-| `xiph-four-people-*.mp4` | FourPeople | `FourPeople_1280x720_60.y4m` | 0:02.0–0:08.0 (6 s) | 22 / 24 |
-| `xiph-vidyo1-*.mp4` | vidyo1 | `vidyo1_720p_60fps.y4m` | 0:02.0–0:08.0 (6 s) | 22 / 24 |
-| `xiph-vidyo3-*.mp4` | vidyo3 | `vidyo3_720p_60fps.y4m` | 0:02.0–0:08.0 (6 s) | 22 / 24 |
-| `xiph-vidyo4-*.mp4` | vidyo4 | `vidyo4_720p_60fps.y4m` | 0:02.0–0:08.0 (6 s) | 22 / 24 |
+| `xiph-johnny-*.mp4` | Johnny | `Johnny_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `xiph-kristen-sara-*.mp4` | KristenAndSara | `KristenAndSara_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `xiph-four-people-*.mp4` | FourPeople | `FourPeople_1280x720_60.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `xiph-vidyo1-*.mp4` | vidyo1 | `vidyo1_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `xiph-vidyo3-*.mp4` | vidyo3 | `vidyo3_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `xiph-vidyo4-*.mp4` | vidyo4 | `vidyo4_720p_60fps.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
 
 ## SVT High Definition Multi Format Test Set (2006)
 
@@ -109,11 +109,11 @@ are SVT's own 720p versions and are not rescaled at 720p).
 
 | Files | Sequence | Source file | Segment | CRF 360p / 720p |
 |---|---|---|---|---|
-| `svt-old-town-cross-*.mp4` | OldTownCross | `old_town_cross_420_720p50.y4m` | 0:02.0–0:07.0 (5 s) | 22 / 24 |
-| `svt-in-to-tree-*.mp4` | IntoTree | `in_to_tree_420_720p50.y4m` | 0:02.0–0:07.0 (5 s) | 22 / 24 |
-| `svt-crowd-run-*.mp4` | CrowdRun | `crowd_run_1080p50.y4m` | 0:02.0–0:07.0 (5 s) | 25 / 28 |
-| `svt-park-joy-*.mp4` | ParkJoy | `park_joy_420_720p50.y4m` | 0:02.0–0:07.0 (5 s) | 25 / 28 |
-| `svt-ducks-take-off-*.mp4` | DucksTakeOff | `ducks_take_off_420_720p50.y4m` | 0:02.0–0:07.0 (5 s) | 25 / 28 |
+| `svt-old-town-cross-*.mp4` | OldTownCross | `old_town_cross_420_720p50.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `svt-in-to-tree-*.mp4` | IntoTree | `in_to_tree_420_720p50.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 22 / 24 |
+| `svt-crowd-run-*.mp4` | CrowdRun | `crowd_run_1080p50.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 25 / 28 |
+| `svt-park-joy-*.mp4` | ParkJoy | `park_joy_420_720p50.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 25 / 28 |
+| `svt-ducks-take-off-*.mp4` | DucksTakeOff | `ducks_take_off_420_720p50.y4m` | 0:00.0–0:10.0 (10 s, the whole sequence) | 25 / 28 |
 
 ## Netflix Open Content: El Fuente and Chimera (CC BY-NC-ND 4.0)
 
@@ -121,9 +121,9 @@ Licence: Creative Commons Attribution-NonCommercial-NoDerivatives 4.0
 International, <https://creativecommons.org/licenses/by-nc-nd/4.0/>. The demo is
 non-commercial and no fee is charged.
 
-Each file is a format conversion of an unmodified, contiguous 3 s excerpt (180
-consecutive frames, every frame kept, original 59.94 fps timing, full picture with
-no cropping): 10-bit converted to 8-bit, downscaled with a Lanczos filter from
+Each file is a format conversion of an unmodified, contiguous excerpt (10 s, 600
+consecutive frames, or the whole sequence where it is shorter; every frame kept at
+the source's frame timing, full picture with no cropping): 10-bit converted to 8-bit, downscaled with a Lanczos filter from
 4096×2160 to 1280×676 (`-720p.mp4`) and 640×338 (`-360p.mp4`) so the 1.9:1 frame
 is kept whole (the demo letterboxes it), and encoded to H.264 as described above
 (keyframe every 120 frames). Nothing else is changed. Source files: the Xiph.org
@@ -132,15 +132,15 @@ only the needed frames were fetched.
 
 | Files | Sequence | Source folder | Source frames | CRF 360p / 720p |
 |---|---|---|---|---|
-| `netflix-narrator-*.mp4` | Narrator (*El Fuente*) | `ElFuente/` | 60–239 | 22 / 24 |
-| `netflix-dinner-scene-*.mp4` | DinnerScene (*Chimera*) | `Chimera/` | 60–239 | 22 / 24 |
-| `netflix-bar-scene-*.mp4` | BarScene (*Chimera*) | `Chimera/` | 60–239 | 22 / 24 |
-| `netflix-crosswalk-*.mp4` | Crosswalk (*El Fuente*) | `ElFuente/` | 60–239 | 25 / 28 |
-| `netflix-food-market-*.mp4` | FoodMarket (*El Fuente*) | `ElFuente/` | 60–239 | 25 / 28 |
-| `netflix-tango-*.mp4` | Tango (*El Fuente*) | `ElFuente/` | 60–239 | 22 / 24 |
-| `netflix-boxing-practice-*.mp4` | BoxingPractice (*El Fuente*) | `ElFuente/` | 30–209 | 22 / 24 |
-| `netflix-dancers-*.mp4` | Dancers (*Chimera*) | `Chimera/` | 60–239 | 22 / 24 |
-| `netflix-toddler-fountain-*.mp4` | ToddlerFountain (*Chimera*) | `Chimera/` | 60–239 | 25 / 28 |
+| `netflix-narrator-*.mp4` | Narrator (*El Fuente*) | `ElFuente/` | 0–299 (all 300, 5.0 s) | 22 / 24 |
+| `netflix-dinner-scene-*.mp4` | DinnerScene (*Chimera*) | `Chimera/` | 60–659 (10 s) | 22 / 24 |
+| `netflix-bar-scene-*.mp4` | BarScene (*Chimera*) | `Chimera/` | 60–659 (10 s) | 22 / 24 |
+| `netflix-crosswalk-*.mp4` | Crosswalk (*El Fuente*) | `ElFuente/` | 0–299 (all 300, 5.0 s) | 25 / 28 |
+| `netflix-food-market-*.mp4` | FoodMarket (*El Fuente*) | `ElFuente/` | 0–599 (all 600, 10 s) | 25 / 28 |
+| `netflix-tango-*.mp4` | Tango (*El Fuente*) | `ElFuente/` | 0–293 (all 294, 4.9 s) | 22 / 24 |
+| `netflix-boxing-practice-*.mp4` | BoxingPractice (*El Fuente*) | `ElFuente/` | 0–253 (all 254, 4.2 s) | 22 / 24 |
+| `netflix-dancers-*.mp4` | Dancers (*Chimera*) | `Chimera/` | 60–659 (10 s) | 22 / 24 |
+| `netflix-toddler-fountain-*.mp4` | ToddlerFountain (*Chimera*) | `Chimera/` | 60–659 (10 s) | 25 / 28 |
 
 Copyright notices, verbatim from each sequence's `Netflix_<Name>_Copyright.txt` on the derf page:
 

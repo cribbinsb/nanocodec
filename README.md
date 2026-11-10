@@ -33,7 +33,8 @@ are needed: each worker has its own ordinary WASM memory.
   refuses, the notice asks for Start). Picking another clip starts it at once.
   Sample clips loop; local files stop at their end and must be playable by the
   browser. The input is fitted into the selected resolution with letterboxing.
-- **Sample clips** are short excerpts in `web/clips/`, grouped in the picker as
+- **Sample clips** are excerpts of at least 10 s (or the whole source where it is
+  shorter) in `web/clips/`, grouped in the picker as
   People / Motion / Hard texture / Animation: the public-domain JCT-VC/Vidyo
   conferencing sequences (Johnny, the default, KristenAndSara, FourPeople,
   vidyo1/3/4), Netflix El Fuente and Chimera scenes (CC BY-NC-ND 4.0), SVT's 2006
