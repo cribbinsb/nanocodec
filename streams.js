@@ -1,11 +1,14 @@
-// Container writing is separate from the codec: AV1/VP9 downloads use IVF timestamps.
+// Container writing is separate from the codec: AV1/VP9/AV2 downloads use IVF
+// timestamps; H.264/HEVC/VVC are Annex-B elementary streams (codecs.js).
+import { CODECS } from './codecs.js';
 export const MAX_RECORDING_BYTES = 16 * 1024 * 1024;
 export function streamBlob(codec, width, height, frames) {
-  if (!['av1', 'vp9', 'av2'].includes(codec)) return new Blob(frames.map(f => f.data), { type: 'application/octet-stream' });
+  const fourcc = CODECS[codec].ivf;
+  if (!fourcc) return new Blob(frames.map(f => f.data), { type: 'application/octet-stream' });
   const header = new ArrayBuffer(32), view = new DataView(header);
   new Uint8Array(header).set([68, 75, 73, 70], 0); // DKIF
   view.setUint16(6, 32, true);
-  new Uint8Array(header).set(codec === 'vp9' ? [86, 80, 57, 48] : [65, 86, 48, codec === 'av2' ? 50 : 49], 8); // VP90 / AV01 / AV02
+  new TextEncoder().encodeInto(fourcc, new Uint8Array(header, 8, 4));
   view.setUint16(12, width, true); view.setUint16(14, height, true);
   view.setUint32(16, 1_000_000, true); view.setUint32(20, 1, true);
   view.setUint32(24, frames.length, true);

@@ -1,4 +1,5 @@
 import { download, streamBlob, MAX_RECORDING_BYTES } from './streams.js';
+import { CODECS, streamExtension } from './codecs.js';
 import { createRenderer } from './renderer.js';
 export class Panel {
   /** `display`: the preferred renderer ('auto', 'webgl2', 'webgl' or 'cpu'; renderer.js). */
@@ -6,7 +7,7 @@ export class Panel {
     this.letter = letter; this.frames = []; this.history = []; this.bytes = 0; this.full = false;
     this.element = document.createElement('article'); this.element.className = 'version';
     this.element.innerHTML = `
-      <div class="version-top"><span class="version-letter">${letter}</span><h2>Version ${letter}</h2><select class="codec-picker" aria-label="Version ${letter} codec"><option value="h264">H.264</option><option value="hevc">HEVC</option><option value="av1">AV1</option><option value="vp9">VP9 · experimental</option><option value="av2">AV2 · experimental</option></select></div>
+      <div class="version-top"><span class="version-letter">${letter}</span><h2>Version ${letter}</h2><select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></div>
       <div class="viewport"><canvas aria-label="Version ${letter} decoded output"></canvas><div class="empty-overlay"><div class="empty-symbol">◉</div><strong>Your decoded video appears here</strong><span>Choose a source and start comparing</span></div><span class="frame-badge">WASM DECODER · READY</span></div>
       <div class="options"><label class="compact-control">Rate mode<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="rate-options"><label class="compact-control">Target (kbps)<input class="target-rate" type="number" required min="10" max="100000" step="10" value="300"></label><label class="compact-control">Peak (kbps)<input class="peak-rate" type="number" required min="10" max="100000" step="10" value="600"></label><label class="compact-control">Buffer<select class="buffer-ms"><option value="250">250 ms</option><option value="500">500 ms</option><option value="1000" selected>1 second</option><option value="2000">2 seconds</option></select></label></div><div class="quality-option" hidden><label class="quality-label" for="qp-${letter}">Compression / quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div><label class="compact-control">Encoder preset<select class="preset"><option value="default">Default</option><option value="fast">Fast · quality tradeoff</option></select></label><label class="compact-control">Keyframe interval<select class="gop"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="30" selected>30 seconds</option></select></label></div>
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
@@ -55,13 +56,13 @@ export class Panel {
     this.viewport.dataset.display = this.renderer.kind;
   }
   updateCodec() {
-    this.preset.disabled = ['vp9', 'av2'].includes(this.codec.value);
+    const { fast, quantizer } = CODECS[this.codec.value];
+    this.preset.disabled = !fast;
     if (this.preset.disabled) this.preset.value = 'default';
-    this.qp.min = this.codec.value === 'av1' ? '1' : '0';
-    this.qp.max = ['av1', 'vp9', 'av2'].includes(this.codec.value) ? '255' : '51';
-    this.qp.value = ['av1', 'vp9', 'av2'].includes(this.codec.value) ? '180' : '32'; this.updateLabel();
+    this.qp.min = String(quantizer.min); this.qp.max = String(quantizer.max);
+    this.qp.value = String(quantizer.initial); this.updateLabel();
   }
-  updateLabel() { this.element.querySelector('output').textContent = `${['av1', 'vp9', 'av2'].includes(this.codec.value) ? 'qindex' : 'QP'} ${this.qp.value}`; }
+  updateLabel() { this.element.querySelector('output').textContent = `${CODECS[this.codec.value].quantizer.name} ${this.qp.value}`; }
   config(width, height, fps) { return { codec: this.codec.value, width, height, fps, qp: +this.qp.value, fast: this.preset.value === 'fast', keyInterval: +this.gop.value * fps, rateMode: this.rateMode.value, targetKbps: +this.targetRate.value, peakKbps: +this.peakRate.value, bufferMs: +this.bufferMs.value }; }
   reset(config) {
     this.current = config; this.frames = []; this.history = []; this.bytes = 0; this.full = false; this.count = 0;
@@ -90,8 +91,8 @@ export class Panel {
     }
     this.element.querySelector('.frame-count').textContent = `${this.count} frames · ${(this.bytes / 1024).toFixed(0)} KiB saved${this.full ? ' · buffer full' : ''}`;
     this.element.querySelector('.rate-status').textContent = this.current.rateMode === 'cbr'
-      ? `Target ${this.current.targetKbps} kbps · ${['av1', 'vp9', 'av2'].includes(this.current.codec) ? 'qindex' : 'QP'} ${result.quantizer} · buffer ${(result.bufferFullness * 100).toFixed(0)}%${result.bufferOverflows ? ` · ${result.bufferOverflows} buffer overruns` : ''}`
-      : `Fixed ${['av1', 'vp9', 'av2'].includes(this.current.codec) ? 'qindex' : 'QP'} ${this.current.qp}`;
+      ? `Target ${this.current.targetKbps} kbps · ${CODECS[this.current.codec].quantizer.name} ${result.quantizer} · buffer ${(result.bufferFullness * 100).toFixed(0)}%${result.bufferOverflows ? ` · ${result.bufferOverflows} buffer overruns` : ''}`
+      : `Fixed ${CODECS[this.current.codec].quantizer.name} ${this.current.qp}`;
     this.drawHistory();
     return free;
   }
@@ -116,6 +117,6 @@ export class Panel {
   save() {
     if (!this.frames.length) return;
     const { codec, width, height } = this.current;
-    download(streamBlob(codec, width, height, this.frames), `nanocodec-${this.letter.toLowerCase()}-${codec}.${['av1', 'vp9', 'av2'].includes(codec) ? 'ivf' : codec === 'h264' ? '264' : 'hevc'}`);
+    download(streamBlob(codec, width, height, this.frames), `nanocodec-${this.letter.toLowerCase()}-${codec}.${streamExtension(codec)}`);
   }
 }

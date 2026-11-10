@@ -38,7 +38,7 @@ are needed: each worker has its own ordinary WASM memory.
   `clips.js` and credited next to the picker. Sources, segment times and changes
   are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add clips whose
   licence allows redistribution (never the evaluation sets in `/mldata`).
-- **Two versions:** choose H.264, HEVC, AV1 or experimental VP9 independently. Both workers get
+- **Two versions:** choose H.264, HEVC, AV1 or experimental VVC, VP9 or AV2 independently. Both workers get
   byte-identical RGBA source frames. Their displays advance together only after
   both decoders finish; there is never an unbounded frame queue.
 - **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps
@@ -57,12 +57,12 @@ are needed: each worker has its own ordinary WASM memory.
   (converted to frames using the target frame rate).
 - **Request keyframes:** refreshes both versions on their next input frame while
   retaining rate-control history.
-- **Fixed quantizer:** native fixed QP (0–51 for H.264/HEVC,1–255 AV1
-  qindex; 0–255 VP9 qindex, where 0 is lossless). Lower values usually preserve more detail at a larger bitrate.
+- **Fixed quantizer:** native fixed QP (0–51 for H.264/HEVC, 0–63 for VVC, 1–255 AV1
+  qindex; 0–255 VP9/AV2 qindex, where 0 is lossless). Lower values usually preserve more detail at a larger bitrate.
   QP numbers are not comparable between codecs. Lower QP generally means more data.
-- **Fast:** uses the checked-in `candidates/h264-joint-fast`, `hevc-fast`, or
-  `av1-fast` preset. These are explicit speed/quality tradeoffs. VP9 currently
-  has one scalar preset, so its preset control is disabled.
+- **Fast:** uses the checked-in `h264-fast`, `hevc-fast`, `av1-fast` or
+  `vvc-fast` preset (the same files as the CLI's `--preset`). These are
+  explicit speed/quality tradeoffs. The page offers no Fast for VP9 and AV2.
 - **Other live changes:** codec, quantizer, preset, GOP, resolution and fps changes
   restart both pipelines on a keyframe and
   clears statistics/download buffers. Video files continue from their current
@@ -77,7 +77,7 @@ are needed: each worker has its own ordinary WASM memory.
   canvases on pointer moves and new frames, and does nothing while off.
 - **Stop:** ends both workers and releases camera tracks. Switching away from
   the tab also stops capture; press Start to resume.
-- **Download:** AV1 and VP9 are IVF with captured media timestamps; H.264/HEVC are Annex-B
+- **Download:** AV1, VP9 and AV2 are IVF with captured media timestamps; H.264/HEVC/VVC are Annex-B
   elementary streams. Each view retains at most16MiB of complete packets from
   the beginning of the current run. When full, playback continues and the saved
   prefix remains downloadable. Elementary streams do not carry the capture
@@ -149,11 +149,22 @@ and residual skipping. Geometry must be divisible by eight, and one temporal
 layer is supported. These are experimental implementations with measured
 compression/CPU gaps; see the [handoff](../docs/handoff/vp9-av2.md).
 
+## Experimental VVC
+
+The same H.266 encoder and own-stream decoder as the CLI (`--codec vvc`, Default
+or `--preset vvc-fast`, 32x32 leaves, CTU 64): WASM packets are byte-identical to
+native ones for the same input and settings, and the WASM decoder's output equals
+the native reconstruction, which VVdeC and FFmpeg reproduce. Any even size is
+coded (padded to 8, cropped by the conformance window). Downloads are Annex-B
+(`.vvc`). The decoder accepts our own streams only; see the
+[handoff](../docs/handoff/vvc.md).
+
 After rebuilding the actual WASM module:
 
 ```sh
 node web/tests/vp9-wasm-smoke.mjs
 node web/tests/av2-wasm-smoke.mjs
+node web/tests/vvc-wasm-smoke.mjs
 node web/tests/sustained-wasm.mjs
 python3 web/tests/browser-product-smoke.py
 ```

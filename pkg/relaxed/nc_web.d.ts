@@ -34,9 +34,10 @@ export class BrowserDecoder {
    */
   decoded_i420(): Uint8Array;
   /**
-   * Create a decoder for per-frame Annex-B or raw AV1 OBU packets.
+   * Create a decoder for per-frame Annex-B (H.264, HEVC, VVC), raw OBU
+   * (AV1, AV2) or VP9 frame packets.
    * # Errors
-   * Rejects codec names other than h264, hevc, av1, vp9 and av2.
+   * Rejects codec names other than h264, hevc, av1, vp9, av2 and vvc.
    */
   constructor(codec: string);
   /**
