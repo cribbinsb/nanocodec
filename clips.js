@@ -23,8 +23,10 @@ const NETFLIX_CREDIT = 'Copyright (C) NETFLIX INC. 2015 · CC BY-NC-ND 4.0';
 // Picker groups, in display order.
 export const CLIP_GROUPS = ['People', 'Motion', 'Hard texture', 'Animation'];
 
-// Every clip ships at these heights as `clips/<id>-<height>p.mp4`: the demo's
-// smaller resolutions read the light 360p file and only 720p fetches the large one.
+// Every clip ships at these heights as `clips/<id>-<height>p.mp4`: 384x216 and
+// 640x360 read the light 360p file; 854x480 and 1280x720 read the 720p one, as a
+// 720p downscale to 480p is sharper than a 360p upscale and the file is small
+// (1.3 MB for the default clip).
 const VARIANT_HEIGHTS = [360, 720];
 
 const xiph = (id, title) => ({ id, title, group: 'People', film: CONFERENCING_SET, credit: XIPH_CREDIT });
@@ -61,8 +63,8 @@ export const CLIPS = [
   { id: 'bbb-tree', title: 'Tree · fine texture', group: 'Animation', film: 'Big Buck Bunny', credit: BLENDER_CREDIT },
 ];
 
-// The demo is about live camera streaming, so it opens on a person talking.
-export const DEFAULT_CLIP = CLIPS[0];
+// The demo is about live camera streaming, so it opens on people in a real scene.
+export const DEFAULT_CLIP = CLIPS.find(clip => clip.id === 'netflix-bar-scene');
 
 export function clipById(id) {
   return CLIPS.find(clip => clip.id === id) ?? DEFAULT_CLIP;

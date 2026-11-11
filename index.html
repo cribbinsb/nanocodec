@@ -9,12 +9,12 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="masthead"><a class="brand" href="./"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><span class="edition">THE COMPRESSION LAB</span><span class="local-badge"><i></i> Runs locally in your browser</span></header>
+<header class="masthead"><a class="brand" href="./"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><span class="local-badge"><i></i> Runs locally in your browser</span><a class="project-link" href="https://github.com/cribbinsb/nanocodec" target="_blank" rel="noopener"><span class="project-prefix">Project on </span>GitHub <span aria-hidden="true">↗</span></a></header>
 <main>
   <section class="intro"><div><p class="eyebrow">LIVE CODEC COMPARISON</p><h1>Compression, side by side.</h1><p class="lede">One source, two versions. See the detail, measure the difference.</p></div><div class="runtime"><span class="runtime-dot"></span><span id="runtime-label">WASM encode + decode</span></div></section>
   <section class="source-bar" aria-label="Source and playback controls">
     <div class="source-choice"><span class="control-label">SOURCE</span><div class="segmented" role="group" aria-label="Video source"><button data-source="clip" class="selected" aria-pressed="true">Sample clip</button><button data-source="scene" aria-pressed="false">Test scene</button><button data-source="camera" aria-pressed="false">Webcam</button><button data-source="file" aria-pressed="false">Video file</button></div><input id="file" type="file" accept="video/*" hidden><div class="clip-choice"><select id="clip" aria-label="Sample clip"></select><a id="clip-credit" class="clip-credit" href="clips/ATTRIBUTION.md" target="_blank" rel="noopener"></a></div></div>
-    <label class="compact-control">Resolution<select id="resolution"><option value="384x216">384 × 216</option><option value="640x360" selected>640 × 360</option><option value="1280x720">1280 × 720</option></select></label>
+    <label class="compact-control">Resolution<select id="resolution"><option value="384x216">384 × 216</option><option value="640x360">640 × 360</option><option value="854x480" selected>854 × 480</option><option value="1280x720">1280 × 720</option></select></label>
     <label class="compact-control">Target frame rate<select id="fps"><option value="10">10 fps</option><option value="15" selected>15 fps</option><option value="30">30 fps</option></select></label>
     <button id="pause" aria-pressed="false" disabled>Pause</button><button id="keyframe" disabled>Request keyframes</button><button id="start" class="primary">Start comparison <span aria-hidden="true">↗</span></button>
   </section>

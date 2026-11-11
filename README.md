@@ -42,7 +42,8 @@ are needed: each worker has its own ordinary WASM memory.
   Complexity suite (CC BY 4.0) and Tears of Steel / Big Buck Bunny (CC BY 3.0).
   They are loaded by relative URL, listed in `clips.js` and credited next to the
   picker; a clip's file is fetched only when it is selected. Each clip has a 360p
-  file (used at 384×216 and 640×360) and a 720p file (1280×720); changing
+  file (used at 384×216 and 640×360) and a 720p file (854×480, the default, and
+  1280×720); changing
   resolution reloads the matching one. Sources, segment times, changes and
   verbatim notices are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
