@@ -47,7 +47,7 @@ are needed: each worker has its own ordinary WASM memory.
   resolution reloads the matching one. Sources, segment times, changes and
   verbatim notices are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
-- **Two versions:** choose H.264, HEVC, AV1 or experimental VVC, VP9 or AV2 independently. Both
+- **Two versions:** choose H.264, HEVC, AV1, VVC, VP9 or AV2 independently. Both
   versions get byte-identical RGBA source frames. Their displays advance together, on the
   same source frame, once both decoders have finished it. At most three frames are in
   flight; when the pipeline is full the page skips capture instead of queueing
@@ -203,10 +203,9 @@ Both use native Rust encoders and independent emitted-subset decoders, with
 shared GOP planning and realtime bitrate controls. VP9 uses 8×8/16×16 inter
 blocks and TX8; AV2 uses 8×8 prediction blocks, TX8 luma, adaptive probabilities
 and residual skipping. Geometry must be divisible by eight, and one temporal
-layer is supported. These are experimental implementations with measured
-compression/CPU gaps; see the [handoff](../docs/handoff/vp9-av2.md).
+layer is supported. See the [handoff](../docs/handoff/vp9-av2.md).
 
-## Experimental VVC
+## VVC
 
 The same H.266 encoder and own-stream decoder as the CLI (`--codec vvc`, Default
 or `--preset vvc-fast`, 32x32 leaves, CTU 64): WASM packets are byte-identical to
