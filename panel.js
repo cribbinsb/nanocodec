@@ -94,8 +94,7 @@ export class Panel {
     // `previous`: frame 0, coded together with frame 1 after the start-up lookahead.
     for (const coded of [result.previous, result]) if (coded) this.record(coded);
     this.badge.textContent = `${showOriginal ? 'ORIGINAL SOURCE' : 'WASM DECODED'} · ${result.key ? 'KEY' : 'INTER'} · #${this.count}`;
-    const average = key => this.history.reduce((s, f) => s + f[key], 0) / this.history.length;
-    for (const [key, value] of Object.entries({ bitrate: average('bytes') * 8 * this.current.fps / 1000, encode: average('encode'), decode: average('decode'), psnr: average('psnr') })) {
+    for (const [key, value] of Object.entries({ bitrate: this.average('bytes') * 8 * this.current.fps / 1000, encode: this.average('encode'), decode: this.average('decode'), psnr: this.average('psnr') })) {
       this.element.querySelector(`[data-metric="${key}"]`).textContent = value.toFixed(key === 'bitrate' ? 0 : 1);
     }
     this.element.querySelector('.frame-count').textContent = `${this.count} frames · ${(this.bytes / 1024).toFixed(0)} KiB saved${this.full ? ' · buffer full' : ''}`;
@@ -106,10 +105,14 @@ export class Panel {
     this.describeSettings();
     return free;
   }
+  /** Mean of one recorded field over the recent frames. */
+  average(key) { return this.history.reduce((s, f) => s + f[key], 0) / this.history.length; }
+  /** Mean ms per frame each of this view's workers is busy: encoding, and decoding with PSNR and display hand-off. */
+  stageTimes() { return { encode: this.average('encode'), decode: this.average('decodeStage') }; }
   /** Count, chart and save one coded frame. */
   record(coded) {
     ++this.count;
-    this.history.push({ bytes: coded.packet.byteLength, encode: coded.encodeMs, decode: coded.decodeMs, psnr: coded.psnr, key: coded.key });
+    this.history.push({ bytes: coded.packet.byteLength, encode: coded.encodeMs, decode: coded.decodeMs, decodeStage: coded.decodeStageMs, psnr: coded.psnr, key: coded.key });
     if (this.history.length > 90) this.history.shift();
     if (!this.full && this.bytes + coded.packet.byteLength <= MAX_RECORDING_BYTES) {
       this.frames.push({ data: coded.packet, timestamp: coded.timestamp }); this.bytes += coded.packet.byteLength;

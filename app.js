@@ -1,4 +1,5 @@
 import { Panel } from './panel.js';
+import { Comparison } from './pipeline.js';
 import { Loupe } from './loupe.js';
 import { drawScene } from './scene.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
@@ -9,12 +10,12 @@ const startButton = $('#start'), video = $('#input-video'), notice = $('#notice'
 const surface = document.createElement('canvas'), capture = surface.getContext('2d', { willReadFrequently: true });
 const preview = $('#source-preview').getContext('2d');
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
-let running = false, preparing = false, generation = 0, workers = [], timer = 0, restartTimer = 0;
-let frameId = 0, results = [null, null], sourceBuffers = [null, null], original = null, showOriginal = false, delivered = 0, started = 0;
+let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
+// `original`: the source of the frame on screen (frames still in flight have their own).
+let original = null, showOriginal = false, delivered = 0, started = 0;
 let pendingRateChange = false;
-let paused = false, pausedAt = 0, inFlight = false;
+let paused = false, pausedAt = 0;
 let settings, nextDeadline = 0, firstDeliveredAt = 0;
-const workerTimeouts = new Set();
 // `?display=cpu|webgl|webgl2` overrides the frame renderer's automatic choice (renderer.js), e.g. to compare the paths.
 const display = new URLSearchParams(location.search).get('display') || 'auto';
 const panels = [new Panel('A', 'h264', $('#versions'), settingsChanged, display), new Panel('B', 'av1', $('#versions'), settingsChanged, display)];
@@ -23,12 +24,10 @@ const loupe = new Loupe($('#loupe'), panels);
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function stop(keepSource = false) {
   ++generation; clearTimeout(timer); clearTimeout(restartTimer);
-  for (const timeout of workerTimeouts) clearTimeout(timeout); workerTimeouts.clear();
-  for (const worker of workers) worker.terminate(); workers = [];
-  running = false; preparing = false; paused = false; inFlight = false;
+  comparison?.terminate(); comparison = null;
+  running = false; preparing = false; paused = false;
   pauseButton.disabled = true; pauseButton.textContent = 'Pause';
   pauseButton.setAttribute('aria-pressed', 'false');
-  results = [null, null]; sourceBuffers = [null, null];
   $("#keyframe").disabled = true;
   document.body.classList.remove('running'); startButton.innerHTML = 'Start comparison <span aria-hidden="true">↗</span>';
   $('#runtime-label').textContent = 'WASM encode + decode';
@@ -58,7 +57,7 @@ async function resume() {
     pauseButton.disabled = false; pauseButton.textContent = 'Pause';
     pauseButton.setAttribute('aria-pressed', 'false');
     $('#runtime-label').textContent = 'Encoding + decoding live';
-    if (!inFlight) scheduleFrame(token);
+    scheduleFrame(token);
   } catch (error) { if (token === generation) fail(error); }
 }
 function fail(error) {
@@ -126,31 +125,6 @@ function loadVideo(source, url) {
   if (loadedSource === source) return;
   loadedSource = source; video.srcObject = null; video.loop = kind === 'clip'; video.src = url; video.load();
 }
-function initWorker(panel, index, token) {
-  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' }); workers.push(worker);
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('The WASM worker did not start. Check the build and browser console.')), 30000);
-    workerTimeouts.add(timeout);
-    worker.onerror = event => {
-      clearTimeout(timeout);
-      const error = new Error(event.message || 'Could not load the WASM codec. Build the demo with tools/web/build.sh, then serve the web directory over HTTP.');
-      if (preparing) reject(error); else if (token === generation) fail(error);
-    };
-    worker.onmessage = ({ data }) => {
-      if (token !== generation) return;
-      if (data.type === 'ready') { clearTimeout(timeout); workerTimeouts.delete(timeout); resolve(); }
-      else if (data.type === 'error') {
-        clearTimeout(timeout); panel.element.classList.add('error');
-        const error = new Error(`Version ${panel.letter}: ${data.message}`);
-        if (preparing) reject(error); else fail(error);
-      } else if (data.type === 'frame' && data.id === frameId && running) {
-        results[index] = data;
-        if (results.every(Boolean)) finishFrame(token);
-      }
-    };
-    worker.postMessage({ type: 'init', config: panel.current });
-  });
-}
 async function start() {
   stop(true); const token = generation;
   preparing = true; message(); startButton.textContent = 'Cancel'; $('#session-stats').textContent = 'Loading codec workers…';
@@ -161,17 +135,25 @@ async function start() {
   try {
     await prepareSource(token);
     if (token !== generation) return;
-    await Promise.all(panels.map((p, i) => initWorker(p, i, token)));
+    comparison = new Comparison(panels, {
+      onFrame: (results, frameOriginal) => finishFrame(token, results, frameOriginal),
+      onError: error => { if (token === generation) fail(error); },
+    });
+    await comparison.start();
     if (token !== generation) return;
     pendingRateChange = false;
     $("#keyframe").disabled = false; pauseButton.disabled = false;
-    running = true; preparing = false; delivered = 0; firstDeliveredAt = 0; frameId = 0; started = performance.now(); nextDeadline = started;
+    running = true; preparing = false; delivered = 0; firstDeliveredAt = 0; started = performance.now(); nextDeadline = started;
     document.body.classList.add('running'); startButton.textContent = 'Stop comparison'; $('#runtime-label').textContent = 'Encoding + decoding live';
     scheduleFrame(token);
   } catch (error) { if (token === generation) fail(error); }
 }
+// Captures follow the target frame rate. While the pipeline is full none is
+// scheduled: the next frame completing calls this again, so a slow pipeline
+// skips capture ticks rather than queueing frames (pipeline.js).
 function scheduleFrame(token) {
-  if (token !== generation || !running || paused) return;
+  clearTimeout(timer);
+  if (token !== generation || !running || paused || comparison.full) return;
   timer = setTimeout(() => sendFrame(token), Math.max(0, nextDeadline - performance.now()));
 }
 function sendFrame(token) {
@@ -190,36 +172,28 @@ function captureFrame(token) {
     const w = video.videoWidth * scale, h = video.videoHeight * scale;
     capture.drawImage(video, (width - w) / 2, (height - h) / 2, w, h);
   }
-  original = capture.getImageData(0, 0, width, height);
+  const frame = capture.getImageData(0, 0, width, height);
   preview.drawImage(surface, 0, 0, 160, 90);
   const timestamp = kind === 'file' ? video.currentTime * 1000 : now - started;
   if (pendingRateChange) {
     panels.forEach((panel, i) => {
       panel.current = panel.config(width, height, fps); panel.history = [];
-      workers[i].postMessage({ type: 'rate', config: panel.current });
+      comparison.updateRate(i);
     });
     pendingRateChange = false;
   }
-  results = [null, null]; ++frameId; inFlight = true;
-  workers.forEach((worker, i) => {
-    // Reuse the buffer this worker returned with its last result.
-    let rgba = sourceBuffers[i];
-    sourceBuffers[i] = null;
-    if (!rgba || rgba.byteLength !== original.data.length) rgba = new ArrayBuffer(original.data.length);
-    new Uint8ClampedArray(rgba).set(original.data);
-    // Each frame names the format the view's renderer draws, which changes if a GL context is lost.
-    worker.postMessage({ type: 'frame', id: frameId, timestamp, rgba, display: panels[i].renderer.format }, [rgba]);
-  });
+  comparison.send(frame, timestamp);
+  scheduleFrame(token);
 }
-function finishFrame(token) {
-  inFlight = false;
+/** Both views decoded one frame: show it and update the session line. */
+function finishFrame(token, results, frameOriginal) {
+  original = frameOriginal;
   try {
     panels.forEach((panel, i) => {
-      sourceBuffers[i] = results[i].source;
       // A held frame 0 (start-up lookahead) is shown with the next result.
       if (results[i].held) return;
       const replaced = panel.frame(results[i], showOriginal, original);
-      if (replaced) workers[i].postMessage({ type: 'recycle', buffer: replaced }, [replaced]);
+      if (replaced) comparison.recycle(i, replaced);
     });
   }
   catch (error) { fail(error); return; }
@@ -228,8 +202,24 @@ function finishFrame(token) {
   const now = paused ? pausedAt : performance.now();
   if (delivered === 1) firstDeliveredAt = now;
   const deliveryRate = delivered > 1 ? (delivered - 1) * 1000 / Math.max(now - firstDeliveredAt, 1) : 0;
-  $('#session-stats').textContent = `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps delivered · bitrate @ ${settings.fps} fps`;
+  $('#session-stats').textContent = `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps delivered${limit(deliveryRate)} · bitrate @ ${settings.fps} fps`;
   scheduleFrame(token);
+}
+// Delivery within this fraction of the target frame rate counts as keeping up.
+const KEEPING_UP = 0.95;
+/**
+ * The busiest of the four workers (encode and decode per view), which sets the
+ * delivered rate once it falls below the target.
+ */
+function limit(deliveryRate) {
+  if (!deliveryRate) return '';
+  const stages = panels.flatMap(panel => {
+    const { encode, decode } = panel.stageTimes();
+    return [{ name: `encode ${panel.letter}`, ms: encode }, { name: `decode ${panel.letter}`, ms: decode }];
+  });
+  const slowest = stages.reduce((a, b) => (b.ms > a.ms ? b : a));
+  const stage = `${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
+  return deliveryRate >= KEEPING_UP * settings.fps ? ` · keeping up, slowest ${stage}` : ` · limited by ${stage}`;
 }
 function sourceChanged(next) {
   stop(); kind = next; message(); resetViews();
@@ -251,7 +241,7 @@ for (const group of CLIP_GROUPS) {
 clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); start(); });
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
 for (const control of [$('#resolution'), $('#fps')]) control.addEventListener('change', settingsChanged);
-$('#keyframe').addEventListener('click', () => { if (running) for (const worker of workers) worker.postMessage({ type: 'keyframe' }); });
+$('#keyframe').addEventListener('click', () => { if (running) comparison.requestKeyframes(); });
 pauseButton.addEventListener('click', () => { if (paused) resume(); else pause(); });
 startButton.addEventListener('click', () => { if (running || preparing) stop(); else start(); });
 const originalButton = $('#original');

@@ -46,9 +46,11 @@ are needed: each worker has its own ordinary WASM memory.
   resolution reloads the matching one. Sources, segment times, changes and
   verbatim notices are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
-- **Two versions:** choose H.264, HEVC, AV1 or experimental VVC, VP9 or AV2 independently. Both workers get
-  byte-identical RGBA source frames. Their displays advance together only after
-  both decoders finish; there is never an unbounded frame queue.
+- **Two versions:** choose H.264, HEVC, AV1 or experimental VVC, VP9 or AV2 independently. Both
+  versions get byte-identical RGBA source frames. Their displays advance together, on the
+  same source frame, once both decoders have finished it. At most three frames are in
+  flight; when the pipeline is full the page skips capture instead of queueing
+  (see "Pipeline" below).
 - **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps
   peak rate and a one-second buffer. Compare equal targets after startup has
   settled; measured bitrate remains visible. The shared Rust controller chooses
@@ -59,7 +61,7 @@ are needed: each worker has its own ordinary WASM memory.
   measurement window restarts so it reflects the new setting.
 - **Pause / Resume:** stops submitting frames and pauses file playback or the test
   animation while preserving codec references, rate-control history and downloads.
-  An already submitted frame finishes before the views settle. Webcam capture
+  The frames already submitted (at most three) finish before the views settle. Webcam capture
   resumes from the live feed. Stop releases camera access.
 - **Keyframe interval:** choose 1, 2, 5, 10 or 30 seconds independently per version
   (converted to frames using the target frame rate).
@@ -81,8 +83,9 @@ are needed: each worker has its own ordinary WASM memory.
     rises (roughly doubling on textured clips; the tooltip says so), and PSNR,
     measured on the grained output, drops by construction. See
     [AV1 film grain](../docs/handoff/av1-grain.md).
-  - **Persistence AQ** (codecs with block QP): `persist.strength=2`,
-    `persist.still_boost=3` ([block AQ](../docs/handoff/block-aq.md)).
+  - **Persistence AQ** (codecs with block QP): `persist.strength=2`
+    ([block AQ](../docs/handoff/block-aq.md)); the reuse term
+    (`persist.reuse`) is on by default.
   - **Temporal layers** 1–3 (`layers.count`) and **Second reference**
     (`refs.second=1`, H.264; not with layers).
   - **Parameter overrides:** free-form `name=value` lines (the CLI's parameter-file
@@ -129,18 +132,36 @@ at maximum quality. Native callers can set QP limits and smoothing through
 `RateControlConfig`; the CLI exposes these controls too.
 
 
-Numbers summarize the last90 compared frames (or all available frames).
+Numbers summarize the last 90 compared frames (or all available frames).
 Bitrate is mean compressed bytes/frame × target fps, not network throughput.
 Encode time includes RGBA→limited-range BT.601 I420 conversion; decode time is
 the decoder alone (the display hand-off is not included). Both are worker wall timings, not single-core
-native CPU benchmarks. PSNR uses the same6:1:1 average of per-plane PSNR as the
-harness, capped at100dB, against the converted encoder input. VMAF and MS-SSIM
-are deliberately not fabricated or estimated in the live page.
+native CPU benchmarks. PSNR uses the same 6:1:1 average of per-plane PSNR as the
+harness, capped at 100 dB, against the encoder input: the decode worker converts the
+RGBA source frame exactly as the encoder does and sums squared errors with a SIMD128
+kernel (`BrowserDecoder.psnr`, every frame: about 2 ms per 720p frame in the decode
+worker, mostly the RGBA copy and conversion; the squared-error sum itself takes 0.13 ms,
+was 1.8 ms scalar). VMAF and
+MS-SSIM are deliberately not fabricated or estimated in the live page.
 
-The worker calls `BrowserEncoder.encode`, passes the resulting compressed
-bytes to a separate `BrowserDecoder`, and displays only that decoder's pixels.
-Source and display buffers circulate between page and workers, so no
-frame-sized buffer is allocated per frame.
+The session line shows the delivered frame rate and the busiest of the four workers:
+"limited by encode B (38 ms)" when delivery falls below the target rate (more than
+5 % short), else "keeping up, slowest …". A worker's time per frame is its encode, or its decode
+plus PSNR plus display hand-off.
+
+**Pipeline (`pipeline.js`).** Each version has two workers: `encode-worker.js` runs
+`BrowserEncoder.encode` and posts the packet, with the source frame, straight to its
+version's `decode-worker.js` over a `MessageChannel` (not through the page). The decode
+worker runs a separate `BrowserDecoder`, measures PSNR, and posts the frame to display,
+the packet and all timings to the page; only that decoder's pixels are shown. So the
+encoder codes frame N+1 while the decoder decodes frame N, and the page captures the next
+frame while earlier ones are still in flight. Up to three frames (`MAX_FRAMES_IN_FLIGHT`)
+are in flight; results are matched by frame id and released in capture order only when
+both versions have decoded a frame. While the queue is full no frame is captured, so a
+slow pipeline lowers the delivered rate instead of adding latency. Delivered fps is
+therefore set by the slowest single worker, not by the sum of encode, decode and PSNR.
+Source and display buffers circulate between page and workers, so no frame-sized
+buffer is allocated per frame in steady state.
 
 **Display (`renderer.js`).** With a hardware GPU each view draws with WebGL2
 (else WebGL1): `BrowserDecoder.i420_frame` packs the decoded planes without row

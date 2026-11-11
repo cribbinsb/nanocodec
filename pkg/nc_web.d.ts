@@ -62,6 +62,16 @@ export class BrowserDecoder {
    */
   constructor(codec: string);
   /**
+   * PSNR-YUV of the latest decoded frame against the RGBA source frame it
+   * was coded from, which is converted here exactly as the encoder
+   * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). The
+   * demo computes it in the decode worker, off the encoder's path.
+   * # Errors
+   * Rejects calls made before a frame has been decoded, and a source
+   * whose byte count differs from the decoded frame's.
+   */
+  psnr(rgba: Uint8Array): number;
+  /**
    * Decode one packet; the picture becomes the latest decoded frame.
    * # Errors
    * Rejects oversized packets and malformed or unsupported codec syntax.
@@ -163,6 +173,7 @@ export interface InitOutput {
   readonly browserdecoder_height: (a: number) => number;
   readonly browserdecoder_i420_frame: (a: number) => [number, number, number];
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];
+  readonly browserdecoder_psnr: (a: number, b: number, c: number) => [number, number, number];
   readonly browserdecoder_rgba_frame: (a: number) => [number, number, number];
   readonly browserdecoder_width: (a: number) => number;
   readonly browserencoder_buffer_fullness: (a: number) => number;

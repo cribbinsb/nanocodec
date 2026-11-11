@@ -289,6 +289,26 @@ export class BrowserDecoder {
         return this;
     }
     /**
+     * PSNR-YUV of the latest decoded frame against the RGBA source frame it
+     * was coded from, which is converted here exactly as the encoder
+     * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). The
+     * demo computes it in the decode worker, off the encoder's path.
+     * # Errors
+     * Rejects calls made before a frame has been decoded, and a source
+     * whose byte count differs from the decoded frame's.
+     * @param {Uint8Array} rgba
+     * @returns {number}
+     */
+    psnr(rgba) {
+        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserdecoder_psnr(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
      * Visible width of the latest decoded frame, or zero before the first frame.
      * @returns {number}
      */

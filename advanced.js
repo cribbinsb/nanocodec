@@ -6,7 +6,7 @@ import { loadOptions, PERSISTENCE_AQ, SECOND_REFERENCE, layerCount, settingLines
 
 const TIPS = {
   filmGrain: 'Experimental AV1 film grain synthesis: the encoder measures the texture that coding smoothed away and signals grain parameters; the decoder re-synthesizes the grain on its output. The WASM decoder\'s grain synthesis is still slow scalar code (no SIMD yet), so decode time rises, roughly doubling on textured clips. PSNR is measured on the grained output and drops by construction. Clean content is gated off and gets no grain.',
-  blockQp: 'Persistence AQ (persist.strength=2, persist.still_boost=3): finer block quantizers where past frames predict a block well (static background, foliage), coarser where nothing does. Off by default: it restores static texture but lost on BD-rate overall.',
+  blockQp: 'Persistence AQ (persist.strength=2): finer block quantizers where past frames predict a block well, coarser where nothing does. Off by default: it lost on BD-rate overall. Still blocks are refined to the quality their reuse warrants by default (persist.reuse).',
   temporalLayers: 'Temporal layers (layers.count): a hierarchical-P structure whose upper layers a receiver may drop. Costs some compression; not with the second reference.',
   secondReference: 'Second reference (refs.second=1): inter blocks may also predict from the last high-quality frame, at a second mode decision per block. Not with temporal layers.',
 };

@@ -33,7 +33,7 @@ export function loadOptions() {
 
 // What the curated toggles stand for, as parameter settings.
 // Persistence AQ: the probed setting of docs/handoff/block-aq.md (persist 2 + still 3).
-export const PERSISTENCE_AQ = ['persist.strength=2', 'persist.still_boost=3'];
+export const PERSISTENCE_AQ = ['persist.strength=2'];
 export const SECOND_REFERENCE = ['refs.second=1'];
 export const layerCount = count => (count > 1 ? [`layers.count=${count}`] : []);
 

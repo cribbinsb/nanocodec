@@ -8,6 +8,7 @@ export const browserdecoder_decoded_i420: (a: number) => [number, number, number
 export const browserdecoder_height: (a: number) => number;
 export const browserdecoder_i420_frame: (a: number) => [number, number, number];
 export const browserdecoder_new: (a: number, b: number) => [number, number, number];
+export const browserdecoder_psnr: (a: number, b: number, c: number) => [number, number, number];
 export const browserdecoder_rgba_frame: (a: number) => [number, number, number];
 export const browserdecoder_width: (a: number) => number;
 export const browserencoder_buffer_fullness: (a: number) => number;
