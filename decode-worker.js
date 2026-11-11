@@ -34,10 +34,11 @@ function decodedPixels(format) {
 /**
  * Decode one coded frame and score it against its source. `decodeMs` is the
  * decoder alone; `decodeStageMs` is all the time the frame held this worker.
+ * A repeat (frame hold: nothing coded) shows the last decoded frame again.
  */
 function decodeFrame({ rgba, packet, ...coded }) {
   const start = performance.now();
-  decoder.decode(packet);
+  if (!coded.repeat) decoder.decode(packet);
   const decoded = performance.now();
   const psnr = decoder.psnr(new Uint8Array(rgba));
   return { ...coded, packet, source: rgba, psnr, decodeMs: decoded - start, decodeStageMs: performance.now() - start };

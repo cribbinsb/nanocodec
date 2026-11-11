@@ -14,11 +14,16 @@ let encoder, decoderPort;
 // (encoder.wants_look_ahead: rate control sizes the first key from start-up
 // camera motion).
 let held = null;
-/** Encode one source frame; the fields the decode worker passes on to the page. */
+/**
+ * Encode one source frame; the fields the decode worker passes on to the page.
+ * `repeat`: the input repeated the picture (frame hold) and nothing was coded:
+ * the packet is empty and the decoder shows its last frame again.
+ */
 function encodeFrame({ rgba, timestamp }) {
   const start = performance.now();
   const packet = encoder.encode(new Uint8Array(rgba));
-  return { timestamp, rgba, packet, key: encoder.key, quantizer: encoder.quantizer, encodeMs: performance.now() - start };
+  return { timestamp, rgba, packet, repeat: encoder.repeat, key: encoder.key, quantizer: encoder.quantizer,
+    encodeMs: performance.now() - start };
 }
 function configureRate(c) {
   if (c.rateMode === 'cbr') encoder.set_rate_control(c.targetKbps, c.peakKbps, c.bufferMs);

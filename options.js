@@ -40,7 +40,7 @@ export const layerCount = count => (count > 1 ? [`layers.count=${count}`] : []);
 /** The CLI's `--preset` for the page's preset choice, or null for Default (nc-web `preset`). */
 export function cliPreset(codec, preset) {
   if (preset === 'fast') return `${codec}-fast`;
-  if (preset === 'faster') return 'h264-faster';
+  if (preset === 'faster') return `${codec}-faster`;
   return null;
 }
 

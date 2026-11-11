@@ -20,6 +20,7 @@ export const browserencoder_look_ahead: (a: number, b: number, c: number) => [nu
 export const browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
 export const browserencoder_quality: (a: number, b: number) => [number, number, number];
 export const browserencoder_quantizer: (a: number) => number;
+export const browserencoder_repeat: (a: number) => number;
 export const browserencoder_request_keyframe: (a: number) => void;
 export const browserencoder_set_rate_control: (a: number, b: number, c: number, d: number) => [number, number];
 export const browserencoder_wants_look_ahead: (a: number) => number;

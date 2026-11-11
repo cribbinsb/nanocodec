@@ -121,7 +121,7 @@ export class BrowserEncoder {
   disable_rate_control(): void;
   /**
    * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
-   * `preset_name` is "default", "fast" or (H.264 only) "faster";
+   * `preset_name` is "default", "fast" or (H.264 and AV1) "faster";
    * `overrides` (optional) holds `name=value` lines applied over the
    * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
    * turns on film grain synthesis, which the decoder applies to its
@@ -132,7 +132,8 @@ export class BrowserEncoder {
    */
   constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean);
   /**
-   * Convert one RGBA frame and encode an independent access unit / AV1 temporal unit.
+   * Convert one RGBA frame and encode an access unit / AV1 temporal unit:
+   * empty when the input repeated the picture ([`BrowserEncoder::repeat`]).
    * # Errors
    * Rejects input whose byte count differs from the configured dimensions.
    */
@@ -156,6 +157,13 @@ export class BrowserEncoder {
    * Whether the last encoded packet is a key frame.
    */
   readonly key: boolean;
+  /**
+   * Whether the last input coded nothing (its packet is empty): it
+   * repeated the picture (frame hold) or rate control dropped it. Send
+   * nothing; the decoder keeps showing its last frame, which is the
+   * picture for this input.
+   */
+  readonly repeat: boolean;
   /**
    * Quantizer reported for the latest frame, in the codec's native scale.
    */
@@ -185,6 +193,7 @@ export interface InitOutput {
   readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
   readonly browserencoder_quality: (a: number, b: number) => [number, number, number];
   readonly browserencoder_quantizer: (a: number) => number;
+  readonly browserencoder_repeat: (a: number) => number;
   readonly browserencoder_request_keyframe: (a: number) => void;
   readonly browserencoder_set_rate_control: (a: number, b: number, c: number, d: number) => [number, number];
   readonly browserencoder_wants_look_ahead: (a: number) => number;

@@ -6,7 +6,7 @@
 export const CODECS = {
   h264: { label: 'H.264', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, fast: true, faster: true, annexB: '264' },
   hevc: { label: 'HEVC', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, fast: true, annexB: 'hevc' },
-  av1: { label: 'AV1', quantizer: { name: 'qindex', min: 1, max: 255, initial: 180 }, fast: true, ivf: 'AV01' },
+  av1: { label: 'AV1', quantizer: { name: 'qindex', min: 1, max: 255, initial: 180 }, fast: true, faster: true, ivf: 'AV01' },
   vvc: { label: 'VVC · experimental', quantizer: { name: 'QP', min: 0, max: 63, initial: 32 }, fast: true, annexB: 'vvc' },
   vp9: { label: 'VP9 · experimental', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, fast: false, ivf: 'VP90' },
   av2: { label: 'AV2 · experimental', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, fast: false, ivf: 'AV02' },
