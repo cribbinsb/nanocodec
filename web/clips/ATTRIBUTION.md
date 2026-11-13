@@ -366,10 +366,22 @@ Blender (CC BY 3.0), SVT 2022 (CC BY 4.0) and MOTChallenge (CC BY-NC-SA 3.0; the
 too are CC BY-NC-SA 3.0, and each carries that notice in the manifest and the demo's
 panel) excerpts above, under the same terms and credits: each is the hosted excerpt re-encoded by a third-party encoder (x264,
 openh264, x265, SVT-AV1, libaom, libvpx or NVENC; every command line is in
-`web/streams-ref/manifest.json` and `docs/results/reference-streams.md`), after
-conversion to 8-bit BT.601 4:2:0, and for some streams scaling (854×480, 384×216),
-letterboxing and frame-rate sampling (every 2nd or 3rd frame: 15, 10 fps). No Netflix sequence is re-encoded
-(CC BY-NC-ND allows no derivatives) and no SVT Multi Format sequence is used.
+`web/streams-ref/manifest.json` and `docs/results/reference-streams.md`), coded from the decoded frames of the hosted file, with for some streams scaling (854×480, 384×216),
+letterboxing and frame-rate sampling (every 2nd or 3rd frame: 15, 10 fps). No SVT Multi Format
+sequence is used.
+
+**Netflix FoodMarket (the only Netflix sequence with pre-encoded streams; the project owner's
+decision).** Copyright (C) NETFLIX INC. 2015, *El Fuente*, "Food Market", Creative Commons
+Attribution-NonCommercial-NoDerivatives 4.0 International,
+<https://creativecommons.org/licenses/by-nc-nd/4.0/>. The `web/streams-ref/netflix-food-market-*.ivf`
+streams are encodes of the hosted excerpt (`netflix-food-market-720p.mp4`: 1280×676 letterboxed to
+1280×720, every second frame, 30 fps, 300 frames), made for non-commercial codec comparison; the picture
+is otherwise unchanged. Six of them (encoder "BWC SOC") were supplied by the project owner: the hardware
+encoder of a body-worn-camera SoC, fed an earlier RGB-converted copy of those frames; the others are
+x264, x265 and openh264 encodes made by `tools/web/make-reference-streams.py`. Each stream's manifest
+entry and the demo's panel carry this credit and licence. Rights holders: see
+[docs/LEGAL.md](https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md) for contact. No other
+Netflix sequence is re-encoded.
 
 Only material whose terms allow redistribution is shipped here; the project's
 main evaluation sets (`/mldata`) do not. Johnny and FourPeople are also in the

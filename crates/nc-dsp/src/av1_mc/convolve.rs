@@ -264,6 +264,17 @@ type SimdCase = (SimdKernels, BlockSize, (usize, usize));
 /// block. The narrow edge is kept: four samples select the 4-tap filters.
 const KERNEL_EDGE: usize = 64;
 
+/// Blocks with a 2-sample edge (the pieces of sub-8x8 chroma, §7.11.3.1)
+/// run the 4-sample kernels on a padded copy of their window: their own
+/// outputs read only samples inside it. Kept for blocks whose padded edges
+/// are at most this.
+const NARROW_PADDED_MAX: usize = 16;
+/// The smallest kernel edge.
+const KERNEL_MIN_EDGE: usize = 4;
+/// Samples of a padded narrow block's window and of its prediction.
+const NARROW_WINDOW: usize = (NARROW_PADDED_MAX + AV1_FILTER_TAPS - 1).pow(2);
+const NARROW_BLOCK: usize = NARROW_PADDED_MAX * NARROW_PADDED_MAX;
+
 impl Dsp {
     /// The SIMD kernels for this case, if any: unscaled, each direction one
     /// of the three 8-tap families (both the same, or different where the
@@ -306,6 +317,62 @@ impl Dsp {
         }
         let case = self.simd_case(filters, (w.min(KERNEL_EDGE), h.min(KERNEL_EDGE)), axes)?;
         (w.is_multiple_of(case.1.width()) && h.is_multiple_of(case.1.height())).then_some(case)
+    }
+
+    /// [`Self::simd_case`] for blocks with a 2-sample edge, at the 4-sample
+    /// kernel size ([`NARROW_PADDED_MAX`]); SIMD ISAs only, as
+    /// [`Self::wide_simd_case`].
+    fn narrow_simd_case(
+        &self,
+        filters: Av1Filters,
+        (w, h): (usize, usize),
+        axes: (Av1McAxis, Av1McAxis),
+    ) -> Option<SimdCase> {
+        let padded = (w.max(KERNEL_MIN_EDGE), h.max(KERNEL_MIN_EDGE));
+        if self.isa() == Isa::Scalar
+            || w.min(h) >= KERNEL_MIN_EDGE
+            || padded.0.max(padded.1) > NARROW_PADDED_MAX
+        {
+            return None;
+        }
+        self.simd_case(filters, padded, axes)
+    }
+
+    /// Run the padded `case` of a `w`x`h` block (one edge 2 samples): its
+    /// window copied into a padded one (the extra samples, zero, reach only
+    /// outputs that are dropped), the prediction made there, and the block's
+    /// own `w`x`h` part copied out.
+    fn put_narrow(
+        &self,
+        case: SimdCase,
+        window: &PlaneView<'_>,
+        (w, h): (usize, usize),
+        dst: &mut PlaneViewMut<'_>,
+    ) {
+        let size = case.1;
+        let (span_w, span_h) = (
+            size.width() + AV1_FILTER_TAPS - 1,
+            size.height() + AV1_FILTER_TAPS - 1,
+        );
+        let mut samples = [0u8; NARROW_WINDOW];
+        for (r, row) in samples
+            .chunks_exact_mut(span_w)
+            .take(h + AV1_FILTER_TAPS - 1)
+            .enumerate()
+        {
+            let source = window.row(r);
+            row[..w + AV1_FILTER_TAPS - 1].copy_from_slice(&source[..w + AV1_FILTER_TAPS - 1]);
+        }
+        let padded = PlaneView::new(&samples, span_w, span_w, span_h)
+            .expect("the padded window fits its buffer");
+        let mut block = [0u8; NARROW_BLOCK];
+        let mut prediction =
+            PlaneViewMut::new(&mut block, size.width(), size.width(), size.height())
+                .expect("the padded block fits its buffer");
+        self.put_case(case, &padded, &mut prediction);
+        for r in 0..h {
+            dst.row_mut(r)[..w].copy_from_slice(&prediction.row_mut(r)[..w]);
+        }
     }
 
     /// Run `case` on `window` into `dst` at final 8-bit precision.
@@ -523,6 +590,13 @@ impl Dsp {
                     .expect("checked output covers every tile");
                 self.put_case(case, &source, &mut target);
             }
+        } else if let Some(case) = self.narrow_simd_case(filters, (w, h), (x, y)) {
+            check_prediction(window, (w, h), (x, y));
+            assert!(
+                dst.width() >= w && dst.height() >= h,
+                "AV1 prediction destination too small"
+            );
+            self.put_narrow(case, window, (w, h), dst);
         } else if let Some((filter, size)) = half_step_case(filters, (w, h), (x, y)) {
             self.predict_half_step(filter, size, window, (x, y), dst);
         } else {

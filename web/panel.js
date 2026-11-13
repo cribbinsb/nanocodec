@@ -131,15 +131,22 @@ export class Panel {
     this.reference = entry;
     this.streamPicker.value = entry.id;
     if (this.codec.value !== entry.codec) { this.codec.value = entry.codec; this.updateCodec(); }
+    const configuration = entry.supplied ? 'supplied file, not made by any tool in this repository'
+      : entry.chartConfiguration ? 'the chart configuration' : 'not a chart configuration';
     const facts = {
-      Encoder: `${entry.label}${entry.chartConfiguration ? ' · the chart configuration' : ' · not a chart configuration'}`,
+      Encoder: `${entry.label} · ${configuration}`,
+      ...(entry.provenance ? { Provenance: entry.provenance } : {}),
       Clip: this.clipTitle(entry.clip), Size: `${entry.width} × ${entry.height}`, 'Frame rate': `${entry.fps} fps`,
       Bitrate: `target ${entry.targetKbps} kbps · actual ${entry.actualKbps} kbps`,
-      'Key interval': `${entry.keyInterval} frames`, Source: entry.sourceFile,
+      ...(entry.rateControl ? { 'Rate control': entry.rateControl } : {}),
+      'Key frames': entry.keyFrames === 1 ? `one, for the whole ${entry.frames}-frame clip` : `every ${entry.keyInterval} frames`,
+      Source: entry.sourceFile, ...(entry.sourceNote ? { 'Source note': entry.sourceNote } : {}),
       ...(entry.notice ? { Licence: entry.notice } : {}),
     };
     const $ = selector => this.element.querySelector(selector);
-    $('.reference-label').textContent = 'Encoded offline by this third-party encoder at the real-time settings our charts use (one thread, low delay, CBR); its other settings may give better results. Decoded here by nanocodec’s WASM decoder.';
+    $('.reference-label').textContent = entry.supplied
+      ? 'Supplied stream from a hardware encoder: not encoded by this project or in your browser. Decoded here by nanocodec’s WASM decoder.'
+      : 'Encoded offline by this third-party encoder at the real-time settings our charts use (one thread, low delay); its other settings may give better results. Decoded here by nanocodec’s WASM decoder.';
     $('.reference-facts').innerHTML = Object.entries(facts).map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join('');
     const { version, source, gpu } = entry.version;
     $('.reference-version').textContent = `Version: ${version}${source?.commit ? ` · source ${source.ref} ${source.commit.slice(0, 12)}` : ''}${gpu ? ` · GPU ${gpu}` : ''}`;
@@ -357,8 +364,10 @@ export class Panel {
   describeSettings() {
     if (!this.reproduce.open || !this.current) return;
     if (this.current.source === SOURCES.reference) {
-      this.reproduce.querySelector('.effective').textContent = `${this.current.entry.label}, ${this.current.entry.version.version}, run offline on`
-        + ` ${this.current.entry.sourceFile} as I420 (tools/web/make-reference-streams.py):`;
+      const { entry } = this.current;
+      this.reproduce.querySelector('.effective').textContent = entry.supplied
+        ? `${entry.label}: ${entry.version.version}. Supplied file; the command line is`
+        : `${entry.label}, ${entry.version.version}, run offline on ${entry.sourceFile} as I420 (tools/web/make-reference-streams.py):`;
       this.reproduce.querySelector('.cli').textContent = this.current.entry.command;
       return;
     }

@@ -40,8 +40,9 @@ const SCALED_SIZES: [(usize, usize); 22] = [
 ];
 
 /// Unscaled block sizes: every kernel width and height class, the 128-sample
-/// edges and a shape no kernel covers.
-const UNSCALED_SIZES: [(usize, usize); 16] = [
+/// edges, the 2-sample edges of sub-8x8 chroma (padded to the 4-sample
+/// kernels) and a shape no kernel covers.
+const UNSCALED_SIZES: [(usize, usize); 20] = [
     (4, 4),
     (4, 8),
     (8, 4),
@@ -58,6 +59,10 @@ const UNSCALED_SIZES: [(usize, usize); 16] = [
     (64, 128),
     (128, 128),
     (2, 2),
+    (2, 4),
+    (4, 2),
+    (2, 8),
+    (8, 2),
 ];
 
 /// Fixed steps covering 2x upscale (`512`), 1.5x upscale (`683`, 480p->720p),

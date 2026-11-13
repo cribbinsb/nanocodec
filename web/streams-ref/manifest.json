@@ -35,7 +35,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-johnny-openh264-1280x720-30fps-300k",
@@ -70,7 +72,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-johnny-svtav1-m12-1280x720-30fps-300k",
@@ -105,7 +109,9 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-johnny-vpx-rt7-1280x720-30fps-300k",
@@ -140,7 +146,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-johnny-openh264-640x360-15fps-150k",
@@ -175,7 +183,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-four-people-x264-medium-854x480-30fps-400k",
@@ -210,7 +220,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-four-people-x265-medium-854x480-30fps-400k",
@@ -245,7 +257,9 @@
     "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-four-people-vpx-rt7-854x480-30fps-400k",
@@ -280,7 +294,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-four-people-svtav1-m12-854x480-30fps-400k",
@@ -315,7 +331,9 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-kristen-sara-nvenc-h264-1280x720-30fps-600k",
@@ -347,7 +365,9 @@
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR, peak at the target, 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-kristen-sara-x264-veryfast-1280x720-30fps-600k",
@@ -382,7 +402,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-kristen-sara-vpx-rt9-1280x720-30fps-600k",
@@ -417,7 +439,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-kristen-sara-openh264-640x360-30fps-100k",
@@ -452,7 +476,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo4-x264-veryfast-640x360-30fps-100k",
@@ -487,7 +513,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo4-openh264-640x360-30fps-100k",
@@ -522,7 +550,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo4-vpx-rt7-640x360-30fps-100k",
@@ -557,7 +587,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo3-vpx-rt9-1280x720-15fps-250k",
@@ -592,7 +624,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo3-x264-medium-1280x720-15fps-250k",
@@ -627,7 +661,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo3-openh264-1280x720-15fps-250k",
@@ -662,7 +698,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "xiph-vidyo3-aom-rt8-1280x720-15fps-250k",
@@ -697,7 +735,9 @@
     "version": "AOMedia Project AV1 Encoder 3.15.3 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "tos-canal-svtav1-m8-1280x720-30fps-1200k",
@@ -732,7 +772,9 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "tos-canal-x265-superfast-1280x720-30fps-1200k",
@@ -767,7 +809,9 @@
     "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "tos-canal-vpx-good4-1280x720-30fps-1200k",
@@ -802,7 +846,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "tos-canal-aom-rt8-640x360-10fps-150k",
@@ -837,7 +883,9 @@
     "version": "AOMedia Project AV1 Encoder 3.15.3 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "tos-canal-openh264-640x360-10fps-150k",
@@ -872,7 +920,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "svt-waterfall-x264-medium-1280x720-30fps-2000k",
@@ -907,7 +957,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "svt-waterfall-nvenc-av1-1280x720-30fps-2000k",
@@ -939,7 +991,9 @@
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR, peak at the target, 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-waterfall-vpx-rt7-1280x720-30fps-2000k",
@@ -974,7 +1028,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-smoke-sauna-vpx-good4-854x480-30fps-600k",
@@ -1009,7 +1065,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-smoke-sauna-x264-medium-854x480-30fps-600k",
@@ -1044,7 +1102,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "svt-smoke-sauna-svtav1-m12-854x480-30fps-600k",
@@ -1079,7 +1139,9 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-smoke-sauna-vpx-rt9-640x360-15fps-200k",
@@ -1114,7 +1176,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-midnight-sun-nvenc-hevc-640x360-30fps-400k",
@@ -1146,7 +1210,9 @@
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR, peak at the target, 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-midnight-sun-x265-medium-640x360-30fps-400k",
@@ -1181,7 +1247,9 @@
     "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "svt-midnight-sun-vpx-rt7-640x360-30fps-400k",
@@ -1216,7 +1284,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "svt-midnight-sun-openh264-384x216-15fps-100k",
@@ -1251,7 +1321,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "bbb-tree-svtav1-m12-384x216-15fps-100k",
@@ -1286,7 +1358,9 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 2
   },
   {
    "id": "bbb-tree-openh264-854x480-30fps-500k",
@@ -1321,7 +1395,9 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 2
   },
   {
    "id": "bbb-tree-x264-veryfast-854x480-30fps-500k",
@@ -1356,7 +1432,9 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 2
   },
   {
    "id": "bbb-tree-vpx-good4-854x480-30fps-500k",
@@ -1391,7 +1469,9 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 2
   },
   {
    "id": "mot20-dense-crowd-svtav1-m12-1280x720-30fps-1500k",
@@ -1427,7 +1507,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "mot20-dense-crowd-x264-medium-1280x720-30fps-1500k",
@@ -1463,7 +1545,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "mot20-dense-crowd-vpx-rt7-1280x720-30fps-1500k",
@@ -1499,7 +1583,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "mot20-dense-crowd-openh264-1280x720-30fps-1500k",
@@ -1535,7 +1621,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "mot20-dense-crowd-x264-medium-640x360-30fps-150k",
@@ -1571,7 +1659,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "mot17-mall-walk-svtav1-m12-1280x720-30fps-1000k",
@@ -1607,7 +1697,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "mot17-mall-walk-x264-medium-1280x720-30fps-1000k",
@@ -1643,7 +1735,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "mot17-mall-walk-vpx-rt7-1280x720-30fps-1000k",
@@ -1679,7 +1773,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "mot17-mall-walk-openh264-854x480-15fps-400k",
@@ -1715,7 +1811,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "mot17-night-crowd-svtav1-m12-1280x720-30fps-800k",
@@ -1751,7 +1849,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "CBR (--rc 2), 1 s buffer",
+   "keyFrames": 1
   },
   {
    "id": "mot17-night-crowd-x264-medium-1280x720-30fps-800k",
@@ -1787,7 +1887,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
   },
   {
    "id": "mot17-night-crowd-openh264-1280x720-30fps-800k",
@@ -1823,7 +1925,9 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
   },
   {
    "id": "mot17-night-crowd-vpx-rt9-640x360-15fps-250k",
@@ -1859,7 +1963,567 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0",
-   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence."
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "rateControl": "CBR (--end-usage=cbr), 1 s buffer",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-x264-medium-1280x720-30fps-1000k",
+   "file": "netflix-food-market-x264-medium-1280x720-30fps-1000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 1011.1,
+   "bufferMs": 1000,
+   "bytes": 1267482,
+   "sha256": "1a2e2f4e94844d0c0a68a059d933332131dc80039f26dfab7f9877fc39b82124",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-x264-medium-1280x720-30fps-1500k",
+   "file": "netflix-food-market-x264-medium-1280x720-30fps-1500k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1511.4,
+   "bufferMs": 1000,
+   "bytes": 1892879,
+   "sha256": "4eb8f6ca32327fc4befd09d357520722519998ad34226eb8fab767438d1d20da",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-x264-medium-1280x720-30fps-2000k",
+   "file": "netflix-food-market-x264-medium-1280x720-30fps-2000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 2000,
+   "actualKbps": 2013.8,
+   "bufferMs": 1000,
+   "bytes": 2520941,
+   "sha256": "9734e4e4cb6734de8caade471a6115946d5c9f39465dcbea3be8236545cceff8",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-openh264-1280x720-30fps-1000k",
+   "file": "netflix-food-market-openh264-1280x720-30fps-1000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 1000.7,
+   "bufferMs": 1000,
+   "bytes": 1254552,
+   "sha256": "f40e93d211ec812bf8d67410ddba6f2d9d0d8ddcef00e2e74873c5595a9672fb",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1000 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-openh264-1280x720-30fps-1500k",
+   "file": "netflix-food-market-openh264-1280x720-30fps-1500k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1500.5,
+   "bufferMs": 1000,
+   "bytes": 1879259,
+   "sha256": "a572cdc2c1aee50ffe502eda5a350d892b70cf72f1502bf07673832c68a51519",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1500 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-openh264-1280x720-30fps-2000k",
+   "file": "netflix-food-market-openh264-1280x720-30fps-2000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 2000,
+   "actualKbps": 2001.4,
+   "bufferMs": 1000,
+   "bytes": 2505377,
+   "sha256": "1cf82b53cd9e9379ea9d47e10886684146f9586a0f0189c036f7d307658c4770",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 2000 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "openh264 real-time bitrate control at the target (the chart's)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-x265-medium-1280x720-30fps-1000k",
+   "file": "netflix-food-market-x265-medium-1280x720-30fps-1000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "hevc",
+   "encoder": "x265-medium",
+   "label": "x265 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 1006.0,
+   "bufferMs": 1000,
+   "bytes": 1261191,
+   "sha256": "adfa1a2997d5390b1ac8f9b012213a0cf951024b3bd0c15af3301ff5646e0104",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x265",
+    "source": {
+     "url": "https://bitbucket.org/multicoreware/x265_git.git",
+     "ref": "4.2",
+     "commit": "e444744c03978c1fb4e037168967020cf2648427"
+    },
+    "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-x265-medium-1280x720-30fps-1500k",
+   "file": "netflix-food-market-x265-medium-1280x720-30fps-1500k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "hevc",
+   "encoder": "x265-medium",
+   "label": "x265 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1504.1,
+   "bufferMs": 1000,
+   "bytes": 1883750,
+   "sha256": "3128785cf7ccdb22c8396ce53f6f26b70559d1b1f3d80d8b4c27a01fa69a2d85",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x265",
+    "source": {
+     "url": "https://bitbucket.org/multicoreware/x265_git.git",
+     "ref": "4.2",
+     "commit": "e444744c03978c1fb4e037168967020cf2648427"
+    },
+    "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-x265-medium-1280x720-30fps-2000k",
+   "file": "netflix-food-market-x265-medium-1280x720-30fps-2000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "hevc",
+   "encoder": "x265-medium",
+   "label": "x265 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 2000,
+   "actualKbps": 2001.8,
+   "bufferMs": 1000,
+   "bytes": 2505857,
+   "sha256": "d004a1b88a9bc1a1770988679a461e82f213f70b363ce392f741077968b60edf",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x265",
+    "source": {
+     "url": "https://bitbucket.org/multicoreware/x265_git.git",
+     "ref": "4.2",
+     "commit": "e444744c03978c1fb4e037168967020cf2648427"
+    },
+    "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged.",
+   "rateControl": "ABR with a 1 s VBV at the target (the chart's CBR)",
+   "keyFrames": 1
+  },
+  {
+   "id": "netflix-food-market-bwc-soc-h264-1280x720-30fps-1000k",
+   "file": "netflix-food-market-bwc-soc-h264-1280x720-30fps-1000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "bwc-soc",
+   "label": "BWC SOC",
+   "chartConfiguration": false,
+   "supplied": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyFrames": 1,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 999.8,
+   "bufferMs": 1000,
+   "bytes": 1253326,
+   "sha256": "fc95b04cb0164b6bba2c0d8dd1a0deaae11b8bf628fc1de87bf1763cc0dcc142",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
+   "sourceNote": "Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); its PSNR against the frames the demo shows now is about 0.3 dB lower than against its own input.",
+   "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by any tool in this repository; vendor and model are not named.",
+   "rateControl": "the camera's EVBR recording rate control (not CBR)",
+   "command": "not available (hardware encoder)",
+   "version": {
+    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
+    "source": {}
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged."
+  },
+  {
+   "id": "netflix-food-market-bwc-soc-h264-1280x720-30fps-1500k",
+   "file": "netflix-food-market-bwc-soc-h264-1280x720-30fps-1500k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "bwc-soc",
+   "label": "BWC SOC",
+   "chartConfiguration": false,
+   "supplied": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyFrames": 1,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1495.9,
+   "bufferMs": 1000,
+   "bytes": 1873558,
+   "sha256": "ed46beee28e5f4231a01db937ae11564c8e2fd0f8d7dbe694d677a0098eaf4b0",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
+   "sourceNote": "Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); its PSNR against the frames the demo shows now is about 0.5 dB lower than against its own input.",
+   "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by any tool in this repository; vendor and model are not named.",
+   "rateControl": "the camera's EVBR recording rate control (not CBR)",
+   "command": "not available (hardware encoder)",
+   "version": {
+    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
+    "source": {}
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged."
+  },
+  {
+   "id": "netflix-food-market-bwc-soc-h264-1280x720-30fps-2000k",
+   "file": "netflix-food-market-bwc-soc-h264-1280x720-30fps-2000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "h264",
+   "encoder": "bwc-soc",
+   "label": "BWC SOC",
+   "chartConfiguration": false,
+   "supplied": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyFrames": 1,
+   "keyInterval": 300,
+   "targetKbps": 2000,
+   "actualKbps": 1975.1,
+   "bufferMs": 1000,
+   "bytes": 2472566,
+   "sha256": "3c28057273bba7efdadbee04dc37358122c2497c2f985f0b8f71601a94e85088",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
+   "sourceNote": "Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); its PSNR against the frames the demo shows now is about 0.6 dB lower than against its own input.",
+   "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by any tool in this repository; vendor and model are not named.",
+   "rateControl": "the camera's EVBR recording rate control (not CBR)",
+   "command": "not available (hardware encoder)",
+   "version": {
+    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
+    "source": {}
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged."
+  },
+  {
+   "id": "netflix-food-market-bwc-soc-hevc-1280x720-30fps-1000k",
+   "file": "netflix-food-market-bwc-soc-hevc-1280x720-30fps-1000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "hevc",
+   "encoder": "bwc-soc",
+   "label": "BWC SOC",
+   "chartConfiguration": false,
+   "supplied": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyFrames": 1,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 1000.2,
+   "bufferMs": 1000,
+   "bytes": 1253849,
+   "sha256": "cfad9531973646ab79d768867d5fef701ce78216a5c24b3fcda6bca1d6b2daa5",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
+   "sourceNote": "Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); its PSNR against the frames the demo shows now is about 0.3 dB lower than against its own input.",
+   "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by any tool in this repository; vendor and model are not named.",
+   "rateControl": "the camera's EVBR recording rate control (not CBR)",
+   "command": "not available (hardware encoder)",
+   "version": {
+    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
+    "source": {}
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged."
+  },
+  {
+   "id": "netflix-food-market-bwc-soc-hevc-1280x720-30fps-1500k",
+   "file": "netflix-food-market-bwc-soc-hevc-1280x720-30fps-1500k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "hevc",
+   "encoder": "bwc-soc",
+   "label": "BWC SOC",
+   "chartConfiguration": false,
+   "supplied": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyFrames": 1,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1499.8,
+   "bufferMs": 1000,
+   "bytes": 1878351,
+   "sha256": "e4da0d56f481328b84124df4d064b9f138dfaf6a040152c11e7019c728f5a830",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
+   "sourceNote": "Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); its PSNR against the frames the demo shows now is about 0.5 dB lower than against its own input.",
+   "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by any tool in this repository; vendor and model are not named.",
+   "rateControl": "the camera's EVBR recording rate control (not CBR)",
+   "command": "not available (hardware encoder)",
+   "version": {
+    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
+    "source": {}
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged."
+  },
+  {
+   "id": "netflix-food-market-bwc-soc-hevc-1280x720-30fps-2000k",
+   "file": "netflix-food-market-bwc-soc-hevc-1280x720-30fps-2000k.ivf",
+   "clip": "netflix-food-market",
+   "codec": "hevc",
+   "encoder": "bwc-soc",
+   "label": "BWC SOC",
+   "chartConfiguration": false,
+   "supplied": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyFrames": 1,
+   "keyInterval": 300,
+   "targetKbps": 2000,
+   "actualKbps": 1994.4,
+   "bufferMs": 1000,
+   "bytes": 2496606,
+   "sha256": "fb17c690e1a1db44da87daaf9182c32a5c7c05c8fb3d8b2a6eac5d631d1de589",
+   "sourceFile": "clips/netflix-food-market-720p.mp4",
+   "sourceSha256": "6ee54713da4a4896fb120a23ecf6a5df30803f16c67a744ab8eb15aa7b57b967",
+   "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
+   "sourceNote": "Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); its PSNR against the frames the demo shows now is about 0.6 dB lower than against its own input.",
+   "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by any tool in this repository; vendor and model are not named.",
+   "rateControl": "the camera's EVBR recording rate control (not CBR)",
+   "command": "not available (hardware encoder)",
+   "version": {
+    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
+    "source": {}
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "Copyright (C) NETFLIX INC. 2015 \u00b7 Netflix El Fuente \"Food Market\" \u00b7 CC BY-NC-ND 4.0, https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, made for non-commercial codec comparison; the picture is otherwise unchanged."
   }
  ]
 }

@@ -14,7 +14,7 @@ const manifest = JSON.parse(readFileSync(new URL('manifest.json', directory)));
 // Clips whose terms allow shipping re-encodes (web/clips/ATTRIBUTION.md): no
 // Netflix (CC BY-NC-ND: no derivatives) and no SVT Multi Format. MOTChallenge
 // (CC BY-NC-SA) streams must carry their licence notice.
-const SHIPPABLE = /^(xiph-|tos-|bbb-|mot(17|20)-|svt-(waterfall|midnight-sun|smoke-sauna)$)/;
+const SHIPPABLE = /^(xiph-|tos-|bbb-|mot(17|20)-|svt-(waterfall|midnight-sun|smoke-sauna)$|netflix-food-market$)/;
 // GitHub Pages refuses files over 100 MB; the whole set stays far below it.
 const MAX_SET_BYTES = 100 * 1024 * 1024;
 
@@ -25,6 +25,8 @@ test('every manifest stream exists, is described and can be matched live', () =>
     assert.deepEqual(matchProblems(entry, CLIPS.map(c => c.id)), [], entry.id);
     assert.match(entry.clip, SHIPPABLE, entry.id);
     if (entry.clip.startsWith('mot')) assert.match(entry.notice, /CC BY-NC-SA 3\.0.*motchallenge\.net.*same CC BY-NC-SA 3\.0/, entry.id);
+    // Netflix FoodMarket only (owner's decision): the full credit and licence, and what the stream is.
+    if (entry.clip.startsWith('netflix')) assert.match(entry.notice, /NETFLIX INC\. 2015.*CC BY-NC-ND 4\.0.*non-commercial codec comparison/, entry.id);
     assert.equal(statSync(new URL(entry.file, directory)).size, entry.bytes, entry.id);
     for (const field of ['command', 'label']) assert.ok(entry[field], `${entry.id}: ${field}`);
     assert.ok(entry.version.version, `${entry.id}: version`);
@@ -57,6 +59,27 @@ test('every clip offers at least three streams, some at one matched size and rat
   assert.ok([...matched.values()].filter(codecs => codecs.size >= 3).length >= 3);
   // The picker lists each clip once, entries of an encoder together.
   assert.equal(groups.length, new Set(manifest.streams.map(e => e.clip)).size);
+});
+
+test('supplied streams say what they are and match a live view with one key frame per loop', () => {
+  const supplied = manifest.streams.filter(e => e.supplied);
+  assert.equal(supplied.length, 6);
+  for (const entry of supplied) {
+    assert.equal(entry.label, 'BWC SOC');
+    assert.equal(entry.command, 'not available (hardware encoder)');
+    assert.match(entry.provenance, /Not made by any tool in this repository/);
+    assert.match(entry.rateControl, /EVBR/);
+    assert.match(entry.sourceNote, /dB lower/);
+    assert.equal(entry.keyFrames, 1);
+    // One key frame in the 10 s loop: the live view's key interval becomes 10 s.
+    assert.equal(matchingSettings(entry).gopSeconds * entry.fps, entry.frames);
+  }
+  // Software encodes of the same clip, size, rate and bitrates, one key frame each.
+  for (const encoder of ['x264-medium', 'openh264', 'x265-medium']) {
+    const runs = manifest.streams.filter(e => e.clip === 'netflix-food-market' && e.encoder === encoder);
+    assert.deepEqual(runs.map(e => e.targetKbps).sort(), [1000, 1500, 2000], encoder);
+    for (const e of runs) assert.ok(e.keyFrames === 1 && e.width === 1280 && e.fps === 30 && e.rateControl, e.id);
+  }
 });
 
 test('matching sets the stream\'s size, rate, buffer and key interval', () => {

@@ -5,6 +5,7 @@
 // the manifest in streams-ref/ (encoder, version, exact command line, clip,
 // size, frame rate, target and actual bitrate); the page keeps no list of its
 // own. A stream's file is fetched only when a view selects it.
+import { CODECS } from './codecs.js';
 import { ivfPackets } from './streams.js';
 import { tickStep } from './timeline.js';
 
@@ -23,18 +24,18 @@ export function loadManifest(fetcher = fetch) {
 
 /**
  * The streams grouped for the picker: by clip, in manifest order, and within a
- * clip by encoder, then size, frame rate and bitrate. Returns [[clip, entries]].
+ * clip by encoder and codec, then size, frame rate and bitrate. Returns [[clip, entries]].
  */
 export function streamGroups(streams) {
   const groups = new Map();
   for (const entry of streams) groups.set(entry.clip, [...(groups.get(entry.clip) ?? []), entry]);
-  const order = (a, b) => a.label.localeCompare(b.label) || b.height - a.height || b.fps - a.fps || a.targetKbps - b.targetKbps;
+  const order = (a, b) => a.label.localeCompare(b.label) || a.codec.localeCompare(b.codec) || b.height - a.height || b.fps - a.fps || a.targetKbps - b.targetKbps;
   return [...groups].map(([clip, entries]) => [clip, entries.sort(order)]);
 }
 
-/** One line naming a stream in a picker. */
+/** One line naming a stream in a picker: encoder, codec (one encoder name may cover several), size, rate, bitrate. */
 export function streamTitle(entry) {
-  return `${entry.label} · ${entry.width}×${entry.height} · ${entry.fps} fps · ${entry.targetKbps} kbps`;
+  return `${entry.label} · ${CODECS[entry.codec].label} · ${entry.width}×${entry.height} · ${entry.fps} fps · ${entry.targetKbps} kbps`;
 }
 
 /**
