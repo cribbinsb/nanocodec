@@ -12,22 +12,7 @@
 // every frame and stops as soon as `stop()` reports real data, so a packet that
 // arrives mid-warm-up waits for at most one tiny frame (whose compilation the
 // real frame would have paid for anyway).
-
-const IVF_HEADER_BYTES = 32;
-const IVF_FRAME_HEADER_BYTES = 12;
-
-/** The packets of an IVF file. */
-function ivfPackets(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const packets = [];
-  for (let at = IVF_HEADER_BYTES; at + IVF_FRAME_HEADER_BYTES <= bytes.length;) {
-    const size = view.getUint32(at, true);
-    at += IVF_FRAME_HEADER_BYTES;
-    packets.push(bytes.subarray(at, at + size));
-    at += size;
-  }
-  return packets;
-}
+import { ivfPackets } from './streams.js';
 
 /** Let queued messages (a real packet) run first. */
 const yieldToEvents = () => new Promise(resolve => setTimeout(resolve, 0));

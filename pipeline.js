@@ -1,15 +1,24 @@
 // The page side of the comparison pipeline: a capture worker that converts
-// each captured picture for every view (capture-worker.js), per view an encode
-// worker and a decode worker joined by a MessageChannel (encode-worker.js,
-// decode-worker.js), and a short queue of frames in flight. The page never
-// reads pixels back: it hands the capture worker a VideoFrame.
+// each captured picture for every view at that view's own size
+// (capture-worker.js), and per view either a live encode worker and a decode
+// worker joined by a MessageChannel (encode-worker.js, decode-worker.js), or,
+// for a pre-encoded reference stream, the decode worker alone, to which the
+// page passes the stream's packets with each converted source frame. The page
+// never reads pixels back: it hands the capture worker a picture (capture.js).
 //
-// Several frames may be in flight at once (MAX_FRAMES_IN_FLIGHT), so each
-// stage works on its own frame: encoders on frame N+1 while decoders finish
-// frame N. Every frame goes to both views; results are matched by frame id and
-// released in capture order only once both views have decoded that frame, so
-// the two views always show the same source frame. The page captures no new
-// frame while the queue is full (`full`), which bounds the added latency.
+// Frames are captured on the shared source timeline (timeline.js). Each view
+// codes only the ticks of its own frame rate and holds its last picture in
+// between; a pre-encoded view shows the stream's frame for that tick, first
+// decoding any frames of the stream the capture skipped (each predicts from
+// the one before). Several captures may be in flight at once
+// (MAX_FRAMES_IN_FLIGHT), so each stage works on its own frame: encoders on
+// frame N+1 while decoders finish frame N. Results are matched by capture id
+// and released in capture order once every view that codes that tick has
+// decoded it, so each view shows the newest tick it has, and views at the same
+// rate show the same tick. The page captures nothing while the queue is full
+// (`full`), which bounds the added latency.
+import { codesTick, tickAt, tickMs } from './timeline.js';
+import { framesToDecode, streamFrameAtTick } from './reference.js';
 
 /**
  * Frames captured but not yet decoded by both views: one per stage (capture
@@ -20,53 +29,95 @@
  */
 export const MAX_FRAMES_IN_FLIGHT = 4;
 const START_TIMEOUT_MS = 30000;
+const LOAD_FAILED = 'Could not load the WASM codec. Build the demo with tools/web/build.sh, then serve the web directory over HTTP.';
 
-/**
- * A transferable picture of `source` (video element or canvas) for the capture
- * worker: a VideoFrame (WebCodecs), else a promised ImageBitmap.
- */
-export function snapshot(source) {
-  return typeof VideoFrame === 'function' ? new VideoFrame(source, { timestamp: 0 }) : createImageBitmap(source);
+const startWorker = script => new Worker(new URL(script, import.meta.url), { type: 'module' });
+
+/** What every view has: its workers (the decode worker last) and the panel it shows on. */
+class View {
+  constructor(panel, workers, onMessage, onFailure) {
+    this.panel = panel;
+    this.workers = workers;
+    this.decoder = workers.at(-1);
+    const failed = event => onFailure(new Error(event.message || LOAD_FAILED));
+    this.ready = Promise.all(workers.map(worker => new Promise(resolve => {
+      worker.onmessage = ({ data }) => { if (data.type === 'ready') resolve(); else onMessage(this, data); };
+      worker.onerror = failed;
+    })));
+  }
+  /** Start the decode worker on `port`, where packets will arrive. */
+  initDecoder(port) {
+    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port,
+      operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
+  }
+  /** Ask for a key frame (only a live encoder can). */
+  requestKeyframe() {}
+  /** Apply the panel's current rate settings (only a live encoder has any). */
+  updateRate() {}
+  terminate() { for (const worker of this.workers) worker.terminate(); }
 }
 
-/** One view's pair of workers. */
-class ViewWorkers {
+/** A live nanocodec encode: the encoder takes frames from the capture worker and posts packets straight to the decoder. */
+class LiveView extends View {
   constructor(panel, onMessage, onFailure) {
-    this.panel = panel;
-    this.encoder = new Worker(new URL('./encode-worker.js', import.meta.url), { type: 'module' });
-    this.decoder = new Worker(new URL('./decode-worker.js', import.meta.url), { type: 'module' });
-    const failed = event => onFailure(new Error(event.message || 'Could not load the WASM codec. Build the demo with tools/web/build.sh, then serve the web directory over HTTP.'));
+    super(panel, [startWorker('./encode-worker.js'), startWorker('./decode-worker.js')], onMessage, onFailure);
+    this.encoder = this.workers[0];
     // The shown SVC layer changes on the fly: only the decode worker hears of it.
     panel.operatingPoint?.addEventListener('change', () => {
       this.decoder.postMessage({ type: 'operating-point', operatingPoint: +panel.operatingPoint.value });
       if (+panel.operatingPoint.value === 0) this.encoder.postMessage({ type: 'keyframe' });
     });
-    this.ready = Promise.all([this.encoder, this.decoder].map(worker => new Promise(resolve => {
-      worker.onmessage = ({ data }) => { if (data.type === 'ready') resolve(); else onMessage(this, data); };
-      worker.onerror = failed;
-    })));
   }
-  /**
-   * Start both workers, joined by a MessageChannel; the encoder takes its frames
-   * from `capturePort`. Resolves once both are ready.
-   */
+  /** Start both workers; the encoder takes its frames from `capturePort`. Resolves once both are ready. */
   init(capturePort) {
     const channel = new MessageChannel();
-    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port: channel.port1,
-      operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [channel.port1]);
+    this.initDecoder(channel.port1);
     this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort }, [channel.port2, capturePort]);
     return this.ready;
   }
-  terminate() {
-    this.encoder.terminate();
-    this.decoder.terminate();
+  codes(tick) { return codesTick(this.panel.current.step, tick); }
+  requestKeyframe() { this.encoder.postMessage({ type: 'keyframe' }); }
+  updateRate() { this.encoder.postMessage({ type: 'rate', config: this.panel.current }); }
+}
+
+/** A pre-encoded reference stream (reference.js), decoded in the browser. */
+class ReferenceView extends View {
+  constructor(panel, onMessage, onFailure) {
+    super(panel, [startWorker('./decode-worker.js')], onMessage, onFailure);
+    this.stream = panel.stream;
+    // The last stream frame sent to the decoder (null before the first).
+    this.last = null;
   }
+  /** Start the decoder; source frames arrive on `capturePort` and go on with the stream's packets. */
+  init(capturePort) {
+    const channel = new MessageChannel();
+    this.initDecoder(channel.port1);
+    this.port = channel.port2;
+    this.capturePort = capturePort;
+    capturePort.onmessage = ({ data }) => this.submit(data);
+    return this.ready;
+  }
+  codes(tick) { return streamFrameAtTick(this.stream, tick) !== null; }
+  /** Send the decoder every stream frame up to the one of this capture's tick, with the source of that one. */
+  submit({ id, timestamp, rgba, display }) {
+    const tick = tickAt(timestamp), target = streamFrameAtTick(this.stream, tick), { packets, step, entry } = this.stream;
+    const frames = framesToDecode(this.last, target);
+    this.last = target;
+    // Packets are views into the fetched file: each frame gets its own copy to transfer.
+    const coded = frames.map(frame => ({
+      timestamp: tickMs(tick - (target - frame) * step), packet: packets[frame].slice(), key: frame % entry.keyInterval === 0,
+      repeat: false, quantizer: null, encodeMs: null, rgba: frame === target ? rgba : null,
+    }));
+    this.port.postMessage({ id, display, coded, bufferFullness: null, bufferOverflows: 0 }, [rgba, ...coded.map(c => c.packet.buffer)]);
+  }
+  terminate() { this.port?.close(); this.capturePort?.close(); super.terminate(); }
 }
 
 export class Comparison {
   /**
-   * `onFrame(results, original)`: both views decoded one frame (`results[i]`
-   * is view i's decode-worker result; `original` the captured ImageData).
+   * `onFrame(results, originals, tick)`: every view that codes `tick` decoded it
+   * (`results[i]` is view i's decode-worker result, or null for a view that holds
+   * its picture; `originals[i]` view i's source pixels as ImageData, or null).
    * `onError(error)`: a worker failed after start-up.
    */
   constructor(panels, { onFrame, onError }) {
@@ -76,10 +127,13 @@ export class Comparison {
     // Rejects start() while the workers are starting.
     this.startFailed = null;
     this.nextId = 0;
-    // Frame id -> { results }, in capture order (Map keeps insertion order).
+    // Capture id -> { tick, coding, results }, in capture order (Map keeps insertion order).
     this.inFlight = new Map();
-    this.views = panels.map(panel => new ViewWorkers(panel, (view, data) => this.receive(view, data), error => this.fail(error)));
-    this.capture = new Worker(new URL('./capture-worker.js', import.meta.url), { type: 'module' });
+    this.views = panels.map(panel => {
+      const ViewKind = panel.current.source === 'reference' ? ReferenceView : LiveView;
+      return new ViewKind(panel, (view, data) => this.receive(view, data), error => this.fail(error));
+    });
+    this.capture = startWorker('./capture-worker.js');
     this.capture.onmessage = ({ data }) => { if (!this.closed) this.fail(new Error(`Capture: ${data.message}`)); };
     this.capture.onerror = event => this.fail(new Error(event.message || 'The capture worker failed.'));
   }
@@ -89,8 +143,8 @@ export class Comparison {
       const timeout = setTimeout(() => reject(new Error('The WASM worker did not start. Check the build and browser console.')), START_TIMEOUT_MS);
       this.startFailed = error => { clearTimeout(timeout); reject(error); };
       const ports = this.views.map(() => new MessageChannel());
-      const sizes = this.views.map(({ panel }) => ({ width: panel.current.width, height: panel.current.height }));
-      this.capture.postMessage({ type: 'init', views: sizes.map((size, i) => ({ ...size, port: ports[i].port1 })) }, ports.map(p => p.port1));
+      const views = this.views.map(({ panel }, i) => ({ width: panel.current.width, height: panel.current.height, port: ports[i].port1 }));
+      this.capture.postMessage({ type: 'init', views }, ports.map(p => p.port1));
       Promise.all(this.views.map((view, i) => view.init(ports[i].port2))).then(() => {
         clearTimeout(timeout);
         this.startFailed = null;
@@ -100,26 +154,26 @@ export class Comparison {
   }
   /** Whether the queue is full: the page should not capture until a frame completes. */
   get full() { return this.inFlight.size >= MAX_FRAMES_IN_FLIGHT; }
+  /** Which views code `tick`. */
+  coding(tick) { return this.views.map(view => view.codes(tick)); }
   /**
-   * Send one captured picture (`snapshot`) of a `sourceWidth` x `sourceHeight`
-   * source to both views; the capture worker takes it over and closes it.
+   * Send the picture (capture.js `snapshot`, of a `sourceWidth` x `sourceHeight`
+   * source) captured at `tick` to the views that code it (`coding`); the capture
+   * worker takes it over and closes it.
    */
-  send(picture, sourceWidth, sourceHeight, timestamp) {
+  send(tick, picture, sourceWidth, sourceHeight, coding) {
     const id = ++this.nextId;
-    this.inFlight.set(id, { results: this.views.map(() => null) });
+    this.inFlight.set(id, { tick, coding, results: this.views.map(() => null) });
     // Each frame names the format the view's renderer draws, which changes if a GL context is lost.
     const displays = this.views.map(({ panel }) => panel.renderer.format);
     Promise.resolve(picture).then(frame => {
       if (this.closed) { frame.close(); return; }
-      this.capture.postMessage({ type: 'frame', id, timestamp, picture: frame, sourceWidth, sourceHeight, displays }, [frame]);
+      this.capture.postMessage({ type: 'frame', id, timestamp: tickMs(tick), picture: frame, sourceWidth, sourceHeight, displays, coding }, [frame]);
     }).catch(error => this.fail(error));
   }
-  requestKeyframes() { for (const view of this.views) view.encoder.postMessage({ type: 'keyframe' }); }
+  requestKeyframes() { for (const view of this.views) view.requestKeyframe(); }
   /** Apply view `index`'s current rate settings from its next frame on. */
-  updateRate(index) {
-    const view = this.views[index];
-    view.encoder.postMessage({ type: 'rate', config: view.panel.current });
-  }
+  updateRate(index) { this.views[index].updateRate(); }
   /** Give view `index`'s decode worker back a displayed pixel buffer. */
   recycle(index, buffer) { this.views[index].decoder.postMessage({ type: 'recycle', buffer }, [buffer]); }
   terminate() {
@@ -140,16 +194,19 @@ export class Comparison {
     }
   }
   /**
-   * Hand every leading frame both views have decoded to `onFrame`, in capture
-   * order, with the first view's source pixels (which the decode worker
-   * returns) as the original; none for frame 0 held at start-up.
+   * Hand every leading capture all its coding views have decoded to `onFrame`, in
+   * capture order, with each view's source pixels (which its decode worker returns)
+   * as its original; none for frame 0 held at start-up.
    */
   release() {
     for (const [id, frame] of this.inFlight) {
-      if (!frame.results.every(Boolean)) return;
+      if (frame.coding.some((coding, i) => coding && !frame.results[i])) return;
       this.inFlight.delete(id);
-      const { source } = frame.results[0], { width, height } = this.views[0].panel.current;
-      this.onFrame(frame.results, source ? new ImageData(new Uint8ClampedArray(source), width, height) : null);
+      const originals = frame.results.map((result, i) => {
+        const { width, height } = this.views[i].panel.current;
+        return result?.source ? new ImageData(new Uint8ClampedArray(result.source), width, height) : null;
+      });
+      this.onFrame(frame.results, originals, frame.tick);
       if (this.closed) return;
     }
   }

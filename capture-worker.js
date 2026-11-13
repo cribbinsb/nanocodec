@@ -16,6 +16,7 @@
 //
 // Each view gets the picture letterboxed into its own size (aspect kept, black
 // bars), as the page did before; views of one size share a single conversion.
+// Only the views that code the frame's tick get it (`coding`, timeline.js).
 
 let views = [];
 // One reused 2D canvas per frame size.
@@ -54,17 +55,18 @@ async function convert(picture, sourceWidth, sourceHeight, width, height) {
   return drawn(picture, sourceWidth, sourceHeight, width, height);
 }
 /** Convert one picture for every view and post each its frame. */
-async function capture({ id, timestamp, picture, sourceWidth, sourceHeight, displays }) {
+async function capture({ id, timestamp, picture, sourceWidth, sourceHeight, displays, coding }) {
   try {
     const bySize = new Map();
     const frames = [];
-    for (const { width, height } of views) {
+    for (const [i, { width, height }] of views.entries()) {
+      if (!coding[i]) { frames.push(null); continue; }
       const key = `${width}x${height}`;
       // A second view of the same size takes a copy: each buffer is transferred.
       if (!bySize.has(key)) bySize.set(key, await convert(picture, sourceWidth, sourceHeight, width, height));
       frames.push(frames.some(f => f === bySize.get(key)) ? bySize.get(key).slice(0) : bySize.get(key));
     }
-    views.forEach(({ port }, i) => port.postMessage({ type: 'frame', id, timestamp, rgba: frames[i], display: displays[i] }, [frames[i]]));
+    views.forEach(({ port }, i) => { if (frames[i]) port.postMessage({ type: 'frame', id, timestamp, rgba: frames[i], display: displays[i] }, [frames[i]]); });
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   } finally {

@@ -1,7 +1,24 @@
-// Container writing is separate from the codec: AV1/VP9/AV2 downloads use IVF
-// timestamps; H.264/HEVC/VVC are Annex-B elementary streams (codecs.js).
+// Containers, kept separate from the codecs: AV1/VP9/AV2 downloads use IVF
+// timestamps; H.264/HEVC/VVC are Annex-B elementary streams (codecs.js). IVF is
+// also read: the decoder warm-up streams and the pre-encoded reference streams.
 import { CODECS } from './codecs.js';
 export const MAX_RECORDING_BYTES = 16 * 1024 * 1024;
+const IVF_HEADER_BYTES = 32;
+const IVF_FRAME_HEADER_BYTES = 12;
+
+/** The packets of an IVF file, as views into `bytes`; throws if a frame runs past the end. */
+export function ivfPackets(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const packets = [];
+  for (let at = IVF_HEADER_BYTES; at + IVF_FRAME_HEADER_BYTES <= bytes.length;) {
+    const size = view.getUint32(at, true);
+    at += IVF_FRAME_HEADER_BYTES;
+    if (at + size > bytes.length) throw new Error('Truncated IVF stream');
+    packets.push(bytes.subarray(at, at + size));
+    at += size;
+  }
+  return packets;
+}
 export function streamBlob(codec, width, height, frames) {
   const fourcc = CODECS[codec].ivf;
   if (!fourcc) return new Blob(frames.map(f => f.data), { type: 'application/octet-stream' });

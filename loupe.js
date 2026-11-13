@@ -23,7 +23,7 @@ export class Loupe {
     this.zoomButtons = [...element.querySelectorAll('[data-zoom]')];
     this.sourceCanvas = document.createElement('canvas');
     // Views are read through `panel.canvas` each time: a view falling back from WebGL gets a new canvas.
-    this.panes = [...panels.map(panel => ({ from: () => panel.canvas, label: () => `${panel.letter} · ${panel.codec.selectedOptions[0].text}` })),
+    this.panes = [...panels.map(panel => ({ from: () => panel.canvas, label: () => `${panel.letter} · ${panel.title}` })),
       { from: () => this.sourceCanvas, label: () => 'Original' }];
     const grid = element.querySelector('.loupe-panes');
     for (const pane of this.panes) {

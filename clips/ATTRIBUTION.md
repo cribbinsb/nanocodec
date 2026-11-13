@@ -333,6 +333,17 @@ License. To view a copy of this license, visit
 http://creativecommons.org/licenses/by-nc-nd/4.0/
 ```
 
+## Pre-encoded reference streams (`web/streams-ref/`)
+
+The demo's pre-encoded streams are further adaptations of the Xiph (public domain),
+Blender (CC BY 3.0) and SVT 2022 (CC BY 4.0) excerpts above, under the same terms and
+credits: each is the hosted excerpt re-encoded by a third-party encoder (x264,
+openh264, x265, SVT-AV1, libaom, libvpx or NVENC; every command line is in
+`web/streams-ref/manifest.json` and `docs/results/reference-streams.md`), after
+conversion to 8-bit BT.601 4:2:0, and for some streams scaling (854×480, 384×216) and
+frame-rate sampling (30 Hz ticks; 15, 10 fps). No Netflix sequence is re-encoded
+(CC BY-NC-ND allows no derivatives) and no SVT Multi Format sequence is used.
+
 Only material whose terms allow redistribution is shipped here; the project's
 main evaluation sets (`/mldata`) do not. Johnny and FourPeople are also in the
 small `adv12` screening set (AOM CTC copies); being public domain, they may be

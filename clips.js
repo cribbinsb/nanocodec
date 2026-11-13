@@ -29,10 +29,15 @@ export const CLIP_GROUPS = ['People', 'Motion', 'Hard texture', 'Animation'];
 // (1.3 MB for the default clip).
 const VARIANT_HEIGHTS = [360, 720];
 
-const xiph = (id, title) => ({ id, title, group: 'People', film: CONFERENCING_SET, credit: XIPH_CREDIT });
-const netflix = (id, title, group, film) => ({ id, title, group, film: `Netflix ${film}`, credit: NETFLIX_CREDIT });
+// Each file's own frame rate (`fps`), which maps its frames onto the page's
+// 30 Hz source timeline (timeline.js).
+const XIPH_FPS = 30, NETFLIX_FPS = 60, SVT_FPS = 25, BLENDER_FPS = 24;
+const xiph = (id, title) => ({ id, title, group: 'People', film: CONFERENCING_SET, credit: XIPH_CREDIT, fps: XIPH_FPS });
+const netflix = (id, title, group, film) => ({ id, title, group, film: `Netflix ${film}`, credit: NETFLIX_CREDIT, fps: NETFLIX_FPS });
 const svtMultiFormat = (id, title, group) =>
-  ({ id, title, group, film: SVT_MULTIFORMAT_SUITE, credit: SVT_MULTIFORMAT_CREDIT, notice: SVT_MULTIFORMAT_NOTICE });
+  ({ id, title, group, film: SVT_MULTIFORMAT_SUITE, credit: SVT_MULTIFORMAT_CREDIT, notice: SVT_MULTIFORMAT_NOTICE, fps: SVT_FPS });
+const svt = (id, title) => ({ id, title, group: 'Hard texture', film: SVT_SUITE, credit: SVT_CREDIT, fps: SVT_FPS });
+const blender = (id, title, group, film) => ({ id, title, group, film, credit: BLENDER_CREDIT, fps: BLENDER_FPS });
 
 export const CLIPS = [
   xiph('xiph-johnny', 'Talking head'),
@@ -44,8 +49,8 @@ export const CLIPS = [
   netflix('netflix-narrator', 'Narrator · walking and talking', 'People', 'El Fuente'),
   netflix('netflix-dinner-scene', 'Dinner table · low light', 'People', 'Chimera'),
   netflix('netflix-bar-scene', 'Bar · shuffleboard', 'People', 'Chimera'),
-  { id: 'tos-bridge', title: 'Bridge talk · static', group: 'People', film: 'Tears of Steel', credit: BLENDER_CREDIT },
-  { id: 'tos-canal', title: 'Canal walk · motion', group: 'Motion', film: 'Tears of Steel', credit: BLENDER_CREDIT },
+  blender('tos-bridge', 'Bridge talk · static', 'People', 'Tears of Steel'),
+  blender('tos-canal', 'Canal walk · motion', 'Motion', 'Tears of Steel'),
   netflix('netflix-crosswalk', 'Crosswalk · street crowd', 'Motion', 'El Fuente'),
   netflix('netflix-food-market', 'Food market · handheld', 'Motion', 'El Fuente'),
   netflix('netflix-tango', 'Tango · dance hall crowd', 'Motion', 'El Fuente'),
@@ -54,13 +59,13 @@ export const CLIPS = [
   netflix('netflix-toddler-fountain', 'Toddler at a fountain · water', 'Motion', 'Chimera'),
   svtMultiFormat('svt-old-town-cross', 'Old town · slow pan', 'Motion'),
   svtMultiFormat('svt-in-to-tree', 'Into the tree · zoom', 'Motion'),
-  { id: 'svt-waterfall', title: 'Waterfall · fast detail', group: 'Hard texture', film: SVT_SUITE, credit: SVT_CREDIT },
-  { id: 'svt-midnight-sun', title: 'Midnight sun · wind and glitter', group: 'Hard texture', film: SVT_SUITE, credit: SVT_CREDIT },
-  { id: 'svt-smoke-sauna', title: 'Smoke sauna · smoke and fire', group: 'Hard texture', film: SVT_SUITE, credit: SVT_CREDIT },
+  svt('svt-waterfall', 'Waterfall · fast detail'),
+  svt('svt-midnight-sun', 'Midnight sun · wind and glitter'),
+  svt('svt-smoke-sauna', 'Smoke sauna · smoke and fire'),
   svtMultiFormat('svt-crowd-run', 'Crowd run · many runners', 'Hard texture'),
   svtMultiFormat('svt-park-joy', 'Park joy · pan past trees', 'Hard texture'),
   svtMultiFormat('svt-ducks-take-off', 'Ducks take off · splashing water', 'Hard texture'),
-  { id: 'bbb-tree', title: 'Tree · fine texture', group: 'Animation', film: 'Big Buck Bunny', credit: BLENDER_CREDIT },
+  blender('bbb-tree', 'Tree · fine texture', 'Animation', 'Big Buck Bunny'),
 ];
 
 // The demo is about live camera streaming, so it opens on people in a real scene.

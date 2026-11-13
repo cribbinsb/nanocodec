@@ -8,6 +8,7 @@
 //
 // The module build (relaxed SIMD or plain SIMD128) is chosen in wasm.js.
 import { MODULE_URL } from './wasm.js';
+import { warmUpEncoder } from './encode-warmup.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
 let encoder, decoderPort;
@@ -15,6 +16,8 @@ let encoder, decoderPort;
 // (encoder.wants_look_ahead: rate control sizes the first key from start-up
 // camera motion).
 let held = null;
+// Set when the first real frame is coded: start-up warm-up (encode-warmup.js) stops then.
+let coding = false;
 /**
  * Encode one source frame; the fields the decode worker passes on to the page.
  * `repeat`: the input repeated the picture (frame hold) and nothing was coded:
@@ -42,6 +45,12 @@ async function receive({ data: message }) {
       configureRate(c);
       message.capturePort.onmessage = receive;
       self.postMessage({ type: 'ready' });
+      // Not awaited: real frames are handled as they come and stop it.
+      if (message.warmUp !== false) {
+        warmUpEncoder(module, c, () => coding)
+          .then(report => self.postMessage({ type: 'warmed', ...report }))
+          .catch(error => console.warn('encoder warm-up failed:', error));
+      }
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
     } else if (message.type === 'rate') {
@@ -53,6 +62,7 @@ async function receive({ data: message }) {
         decoderPort.postMessage({ id: message.id, held: true });
         return;
       }
+      coding = true;
       const coded = [];
       if (held) {
         encoder.look_ahead(new Uint8Array(message.rgba));

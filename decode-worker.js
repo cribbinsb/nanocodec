@@ -2,7 +2,10 @@
 // Packets arrive from the view's encode worker over a MessageChannel port
 // with the RGBA source frame each was coded from. This worker decodes them,
 // measures PSNR against that source (in WASM, off the encoder's path) and
-// posts the frame to show, with every timing, to the page.
+// posts the frame to show, with every timing, to the page. A view playing a
+// pre-encoded stream has no encode worker: the page posts the stream's packets
+// on the same port (pipeline.js), and frames decoded only to keep the
+// references (no source attached) are not scored.
 //
 // Buffers circulate instead of being allocated per frame: the source buffer
 // goes back to the page with the result, and the page gives back each
@@ -59,7 +62,7 @@ function decodeFrame({ rgba, packet, ...coded }) {
   }
   if (!coded.repeat) decoder.decode(packet);
   const decoded = performance.now();
-  const psnr = decoder.psnr(new Uint8Array(rgba));
+  const psnr = rgba ? decoder.psnr(new Uint8Array(rgba)) : null;
   return { ...coded, packet, source: rgba, psnr, width: decoder.width, height: decoder.height,
     streamWidth: decoder.stream_width, streamHeight: decoder.stream_height, spatialId: decoder.spatial_id,
     decodeMs: decoded - start, decodeStageMs: performance.now() - start };
@@ -72,15 +75,16 @@ function receivePacket({ data: message }) {
       self.postMessage({ type: 'frame', id: message.id, held: true });
       return;
     }
-    // Two coded frames after the start-up lookahead: frame 0 is `previous`.
+    // Several coded frames: frame 0 after the start-up lookahead, or the frames
+    // a pre-encoded stream skipped; the last is shown, the `earlier` ones counted.
     const decoded = message.coded.map(decodeFrame);
-    const result = decoded.at(-1), previous = decoded.length > 1 ? decoded[0] : null;
+    const result = decoded.at(-1), earlier = decoded.slice(0, -1);
     const displayStart = performance.now();
     const format = message.display === 'i420' ? 'i420' : 'rgba';
     const pixels = decodedPixels(format);
     result.decodeStageMs += performance.now() - displayStart;
-    const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source])];
-    self.postMessage({ type: 'frame', id: message.id, ...result, previous, format, pixels, width: decoder.width,
+    const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean)];
+    self.postMessage({ type: 'frame', id: message.id, ...result, earlier, format, pixels, width: decoder.width,
       height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
       spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows }, transfer);
   } catch (error) {

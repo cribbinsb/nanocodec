@@ -32,7 +32,7 @@ are needed: each worker has its own ordinary WASM memory.
   input video is muted and inline, which browsers allow to autoplay; if one still
   refuses, the notice asks for Start). Picking another clip starts it at once.
   Sample clips loop; local files stop at their end and must be playable by the
-  browser. The input is fitted into the selected resolution with letterboxing.
+  browser. The input is fitted into each version's resolution with letterboxing.
 - **Sample clips** are excerpts of at least 10 s (or the whole source where it is
   shorter) in `web/clips/`, grouped in the picker as
   People / Motion / Hard texture / Animation: the public-domain JCT-VC/Vidyo
@@ -43,15 +43,42 @@ are needed: each worker has its own ordinary WASM memory.
   They are loaded by relative URL, listed in `clips.js` and credited next to the
   picker; a clip's file is fetched only when it is selected. Each clip has a 360p
   file (used at 384×216 and 640×360) and a 720p file (854×480, the default, and
-  1280×720); changing
-  resolution reloads the matching one. Sources, segment times, changes and
+  1280×720); the page reads the file for the larger of the two versions' sizes, and a
+  resolution change that needs the other file reloads it. Sources, segment times, changes and
   verbatim notices are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
-- **Two versions:** choose H.264, HEVC, AV1, VVC, VP9 or AV2 independently. Both
-  versions get byte-identical RGBA source frames. Their displays advance together, on the
-  same source frame, once both decoders have finished it. At most four frames are in
+- **Two versions:** choose H.264, HEVC, AV1, VVC, VP9 or AV2 independently, or a
+  pre-encoded stream (below). Each version has its own **resolution** (384×216 to
+  1280×720) and **frame rate** (30, 15, 10, 6 or 5 fps); both are shown at the same
+  on-screen size, so split views and the magnifier line up.
+- **One source timeline (`timeline.js`, `capture.js`):** every source is sampled on
+  30 Hz ticks. A version at 30/N fps codes every Nth tick and holds its picture in
+  between. A sample clip's frames map onto the ticks as a 30 Hz sampler sees them
+  (a 25 fps clip repeats a frame every sixth tick); the page knows which frame it
+  captured from `requestVideoFrameCallback`. Each version shows the newest tick it
+  has coded; versions at the same rate show the same tick, and the badge gives
+  each version's frame number and source time. At most four captures are in
   flight; when the pipeline is full the page skips capture instead of queueing
   (see "Pipeline" below).
+- **PSNR when the versions differ:** each version's PSNR is against the source at
+  its own resolution, so with different sizes the two are not directly comparable
+  (the page says so under the session line); bitrate, timings and PSNR are each
+  per version at its own frame rate.
+- **Pre-encoded streams (`reference.js`, `streams-ref/`):** a version's source can be
+  "Pre-encoded · other encoders": a clip coded offline by x264, openh264, x265,
+  SVT-AV1, libaom, libvpx or NVENC in the chart configurations
+  (`docs/results/bd-vs-speed.md`), fetched with progress when chosen and decoded here
+  by our WASM decoder (no encode worker). The panel labels it "pre-encoded offline"
+  and shows the encoder, its version and source commit, the exact command (Copy),
+  clip, size, frame rate, target and actual bitrate; Encode shows "n/a". Choosing a
+  stream switches to its clip; it loops with the clip on the shared timeline, and its
+  PSNR is against the same captured source frames as a live version's. **Match this in
+  the other version** sets the other version live to the stream's size, frame rate,
+  target (peak 2×), 1 s buffer and key interval, starting with the same codec (the
+  preset is yours). The 17 streams (14 MB, Xiph, Blender and SVT 2022 clips only;
+  no Netflix: NoDerivatives) and their commands are listed in
+  [`docs/results/reference-streams.md`](../docs/results/reference-streams.md);
+  `tools/web/make-reference-streams.py` regenerates them all and that table.
 - **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps
   peak rate and a one-second buffer. Compare equal targets after startup has
   settled; measured bitrate remains visible. The shared Rust controller chooses
@@ -60,12 +87,16 @@ are needed: each worker has its own ordinary WASM memory.
 - **Live rate changes:** target, peak, buffer and rate-mode changes apply at the
   next frame without restarting references or clearing the download. The rolling
   measurement window restarts so it reflects the new setting.
-- **Pause / Resume:** stops submitting frames and pauses file playback or the test
-  animation while preserving codec references, rate-control history and downloads.
-  The frames already submitted (at most four) finish before the views settle. Webcam capture
-  resumes from the live feed. Stop releases camera access.
+- **Pause / Resume / Step:** Pause keeps capturing until the next tick both versions
+  code (for 30 against 15 fps, the next 15 fps instant), then stops submitting frames
+  and pauses playback while preserving codec references, rate-control history and
+  downloads; the frames already submitted (at most four) finish, so both versions
+  show the same instant. **Step** (while paused) moves both to the next common
+  instant: a video seeks to that frame (the server must answer HTTP range
+  requests, as static hosts do), the scene draws it; the webcam cannot step.
+  Webcam capture resumes from the live feed. Stop releases camera access.
 - **Keyframe interval:** choose 1, 2, 5, 10 or 30 seconds independently per version
-  (converted to frames using the target frame rate).
+  (converted to frames using that version's frame rate).
 - **Request keyframes:** refreshes both versions on their next input frame while
   retaining rate-control history.
 - **Fixed quantizer:** native fixed QP (0–51 for H.264/HEVC, 0–63 for VVC, 1–255 AV1
@@ -100,12 +131,12 @@ are needed: each worker has its own ordinary WASM memory.
   rate, key interval, quantizer seed, rate settings, preset and overrides), to run on
   an I420 file of the source; the page itself codes its limited-range BT.601
   conversion of the RGBA frames.
-- **Other live changes:** codec, quantizer, preset, Advanced settings, GOP, resolution and fps changes
+- **Other live changes:** codec, quantizer, preset, Advanced settings, GOP, resolution, frame rate and source changes
   restart both pipelines on a keyframe and
   clears statistics/download buffers. Video files continue from their current
   playback position; the test scene restarts its deterministic animation.
-- **Hold to view original:** pointer or Space/Enter reveals the shared source
-  in both views. Release returns to independently decoded pixels.
+- **Hold to view original:** pointer or Space/Enter reveals the source in both
+  views, each at its own resolution. Release returns to independently decoded pixels.
 - **Magnifier:** switch it on below the views, then hover, or drag on touch, over
   either view. The same region (mapped by normalized coordinates) is shown from A,
   B and the original frame side by side at 2×/4×/8× (buttons or scroll wheel),
@@ -132,7 +163,7 @@ at maximum quality. Native callers can set QP limits and smoothing through
 
 
 Numbers summarize the last 90 compared frames (or all available frames).
-Bitrate is mean compressed bytes/frame × target fps, not network throughput.
+Bitrate is mean compressed bytes/frame × the version's frame rate, not network throughput.
 Encode time includes RGBA→limited-range BT.601 I420 conversion; decode time is
 the decoder alone (the display hand-off is not included). Both are worker wall timings, not single-core
 native CPU benchmarks. PSNR uses the same 6:1:1 average of per-plane PSNR as the
@@ -202,6 +233,15 @@ before the encoder's first packet. Headless Chromium, pinned, 720p, cold → war
 - **First 30 frames:** 8–17 % faster.
 - **Later frames:** unchanged.
 
+The encode worker does the same (`encode-warmup.js`): after `ready`, while it has no
+frame to code yet (the first captures, and frame 0 held for the start-up lookahead), a
+throwaway encoder of the view's codec, preset and rate mode codes eight synthetic
+256x144 frames (one key, seven inter with motion), yielding before each and stopping
+once the first real frame is coded. Headless Chromium, default page, fresh profile per
+load, 4 interleaved loads each (without → with): the first 10 encodes of H.264 take
+509 → 234 ms in total, of AV1 903 → 509 ms; first frame on screen 1158 → 1241 ms
+(within the loads' spread, 906–2162 ms).
+
 ## Receiving over a lossy network
 
 The demo is loss-free and uses `BrowserDecoder.decode`. A receiver that can
@@ -222,6 +262,7 @@ reference; 23-65 bits per inter frame, off by default); VP9 and AV2 cannot
 cargo test -p nc-web
 cargo clippy -p nc-web --all-targets -- -D warnings
 node --test web/tests/*.test.js
+node web/tests/reference-streams-wasm.mjs   # after tools/web/build.sh
 ```
 
 Codec decoder tests cover key/inter reference chains, relevant transforms and
