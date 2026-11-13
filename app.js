@@ -28,12 +28,14 @@ let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSourc
 let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
 let showOriginal = false, delivered = 0;
 let pendingRateChange = false;
+// The last comparison ended in a failure (not a Stop): a settings change starts a new one.
+let stoppedByFailure = false;
 // `pausing`: Pause was pressed; the views stop at the next tick they all code.
 let paused = false, pausing = false, pausedAt = 0, stepping = false;
 let nextDeadline = 0, firstDeliveredAt = 0, lastTick = -1;
 // The original frame (largest view size) of the instant on screen, for the magnifier.
 let original = null;
-const frames = new FrameSource(video);
+const frames = new FrameSource(video, error => { if (running || preparing) fail(error); });
 // `?display=cpu|webgl|webgl2` overrides the frame renderer's automatic choice (renderer.js), e.g. to compare the paths.
 const display = new URLSearchParams(location.search).get('display') || 'auto';
 const clipTitle = id => clipById(id).title;
@@ -50,7 +52,7 @@ const loupe = new Loupe($('#loupe'), panels);
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
 function stop(keepSource = false) {
-  ++generation; clearTimeout(timer); clearTimeout(restartTimer);
+  ++generation; clearTimeout(timer); clearTimeout(restartTimer); stoppedByFailure = false;
   comparison?.terminate(); comparison = null;
   running = false; preparing = false; paused = false; pausing = false;
   pauseButton.disabled = true; setPauseButton('Pause', false); stepButton.disabled = true;
@@ -104,7 +106,7 @@ async function step() {
   if (token === generation && paused) stepButton.disabled = false;
 }
 function fail(error) {
-  stop();
+  stop(); stoppedByFailure = true;
   const detail = error instanceof Error ? error.message : String(error);
   message(detail); $('#session-stats').textContent = 'Comparison stopped';
 }
@@ -116,7 +118,9 @@ function settingsChanged(change, panel) {
     sourceChanged('clip'); start(); return;
   }
   describeViews();
-  if (!running && !preparing) { resetViews(); $("#session-stats").textContent = "Settings changed · start a new comparison"; return; }
+  // A comparison the visitor stopped waits for Start; one running, starting or
+  // stopped by a failure restarts with the new settings (start() reads them all).
+  if (!running && !preparing && !stoppedByFailure) { resetViews(); $("#session-stats").textContent = "Settings changed · start a new comparison"; return; }
   clearTimeout(restartTimer);
   restartTimer = setTimeout(() => { stop(true); start(); }, 200);
 }
@@ -255,11 +259,14 @@ function captureNext(token) {
 }
 /** Capture `tick` for every view that codes it; the capture worker converts it for each view's size. */
 function capture(tick) {
-  lastTick = tick;
   const coding = comparison.coding(tick);
-  if (!coding.some(Boolean)) return;
+  if (!coding.some(Boolean)) { lastTick = tick; return; }
   const largest = panels.map(p => p.current).reduce((a, b) => (b.width > a.width ? b : a));
-  const { picture, element, width, height } = frames.capture(tick, largest.width, largest.height);
+  const shot = frames.capture(tick, largest.width, largest.height);
+  // No frame yet (a source or webcam just starting): try again on the next tick.
+  if (!shot) return;
+  lastTick = tick;
+  const { picture, element, width, height } = shot;
   const scale = Math.min(PREVIEW_WIDTH / width, PREVIEW_HEIGHT / height);
   preview.fillStyle = '#000'; preview.fillRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
   preview.drawImage(element, (PREVIEW_WIDTH - width * scale) / 2, (PREVIEW_HEIGHT - height * scale) / 2, width * scale, height * scale);

@@ -38,6 +38,8 @@ export class Panel {
     // The selected pre-encoded stream's manifest record, and its loaded packets.
     this.reference = null; this.stream = null; this.streams = [];
     this.loaded = new Map();
+    // Stream fetches by stream id, started once each (prepare).
+    this.fetches = new Map();
     this.element = document.createElement('article'); this.element.className = 'version';
     this.element.innerHTML = `
       <div class="version-top"><span class="version-letter">${letter}</span><h2>Version ${letter}</h2><select class="source-picker" aria-label="Version ${letter} source"><option value="${SOURCES.live}">Live · nanocodec</option><option value="${SOURCES.reference}">Pre-encoded · other encoders</option></select><select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></div>
@@ -162,13 +164,19 @@ export class Panel {
   async prepare() {
     if (!this.preEncoded || this.stream) return;
     const entry = this.reference;
-    this.status(`Fetching ${entry.file}…`);
+    // A restart while the file is still arriving (the visitor changed another
+    // setting) waits for that same fetch instead of starting another.
+    if (!this.fetches.has(entry.id)) {
+      this.status(`Fetching ${entry.file}…`);
+      this.fetches.set(entry.id, fetchStream(entry, fraction => this.status(`Fetching ${entry.file} · ${(fraction * 100).toFixed(0)}%`))
+        .then(bytes => referenceStream(entry, bytes)));
+    }
     try {
-      const bytes = await fetchStream(entry, fraction => this.status(`Fetching ${entry.file} · ${(fraction * 100).toFixed(0)}%`));
-      this.stream = referenceStream(entry, bytes);
-      this.loaded.set(entry.id, this.stream);
-      this.status('');
+      const stream = await this.fetches.get(entry.id);
+      this.loaded.set(entry.id, stream);
+      if (this.reference === entry) { this.stream = stream; this.status(''); }
     } catch (error) {
+      this.fetches.delete(entry.id);
       this.status(error.message, true);
       throw new Error(`Version ${this.letter}: ${error.message}`);
     }

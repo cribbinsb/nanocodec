@@ -34,9 +34,26 @@ export function snapshot(source) {
   return typeof VideoFrame === 'function' ? new VideoFrame(source, { timestamp: 0 }) : createImageBitmap(source);
 }
 
+/**
+ * `snapshot` of a video element, or null while it has no frame to give: just
+ * after a source switch, a webcam start, a seek or a loop wrap the element can
+ * briefly hold none (VideoFrame then throws InvalidStateError). The caller skips
+ * that tick; any other error is a real failure and is thrown.
+ */
+export function videoSnapshot(video) {
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) return null;
+  try {
+    return snapshot(video);
+  } catch (error) {
+    if (error.name === 'InvalidStateError') return null;
+    throw error;
+  }
+}
+
 export class FrameSource {
-  constructor(video) {
-    this.video = video;
+  /** `onError(error)`: staging a presented frame failed for a reason other than a missing frame. */
+  constructor(video, onError) {
+    this.video = video; this.onError = onError;
     // The test scene is drawn here, at the largest view size (a software canvas,
     // so its pixels do not depend on the GPU).
     this.surface = document.createElement('canvas');
@@ -73,9 +90,14 @@ export class FrameSource {
     this.watching = true;
     const onFrame = (_, metadata) => {
       if (this.staging && this.video.videoWidth) {
-        this.staged?.close();
-        this.staged = snapshot(this.video);
-        this.stage(metadata.mediaTime * 1000);
+        try {
+          const frame = videoSnapshot(this.video);
+          if (frame) {
+            this.staged?.close();
+            this.staged = frame;
+            this.stage(metadata.mediaTime * 1000);
+          }
+        } catch (error) { this.onError(error); }
       }
       this.video.requestVideoFrameCallback(onFrame);
     };
@@ -103,7 +125,8 @@ export class FrameSource {
    * The source at `tick`: `{ picture, element, width, height }`, the picture for
    * the capture worker (`snapshot`), the element it shows (for the preview) and
    * its size. The scene is drawn for `tick` at `width` x `height`, the largest
-   * view size; a video is taken at its own size.
+   * view size; a video is taken at its own size. Null while the video has no
+   * frame to give (`videoSnapshot`): the caller skips the tick.
    */
   capture(tick, width, height) {
     if (this.kind === 'scene') {
@@ -112,7 +135,8 @@ export class FrameSource {
       return { picture: snapshot(this.surface), element: this.surface, width, height };
     }
     const { video } = this;
-    const picture = this.staging ? this.staged.clone() : snapshot(video);
+    const picture = this.staging ? this.staged?.clone() : videoSnapshot(video);
+    if (!picture) return null;
     return { picture, element: video, width: video.videoWidth, height: video.videoHeight };
   }
   /**
