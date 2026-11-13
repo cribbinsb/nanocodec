@@ -18,7 +18,10 @@ The default stream set is ours at 720p / 1080p and SVC L2T1 / L2T3, libvpx
 real-time 720p and good-quality 1080p, and the official scaled-reference
 vector `vp90-2-21-resize_inter_1920x1080_7_1-2`
 (`~/nanocodec-data/work/vp9-dec-parity/streams`, see docs/handoff/vp9.md).
-Jetson: time the same streams with `tools/dev/jperf.py` (cycles).
+Jetson: use `--mode perf --core 3` under jetson-timed.sh. This uses
+`jperf.py` hardware counters, serial decodes and five alternating rounds;
+all streams must pass identity before any timing begins. --stages/--keep
+are available only in callgrind mode.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import hashlib
 import json
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -140,9 +144,41 @@ def stream_hash(stream: Path) -> str:
     return hashlib.sha256(stream.read_bytes()).hexdigest()[:16]
 
 
-def measure(stream: Path, args: argparse.Namespace, work: Path) -> dict:
+def identity(stream: Path, args: argparse.Namespace) -> tuple[str, str]:
     expected = md5_of([str(args.vpxdec), "--threads=1", "--i420", "-o", "-", str(stream)])
     got = md5_of(ours_cmd(args.bin, stream, "/dev/stdout"))
+    if got != expected:
+        raise RuntimeError(f"I420 mismatch: {stream.name}: ours {got}, vpx {expected}")
+    return expected, got
+
+
+def measure_perf(stream: Path, args: argparse.Namespace, hashes: tuple[str, str]) -> dict:
+    # Keep this serial: overlapping decodes contaminate shared memory/cache costs.
+    from jperf import count
+
+    commands = {"ours": ours_cmd(args.bin, stream, None),
+                "vpx": vpx_cmd(args.vpxdec, stream)}
+    rounds = []
+    for index in range(5):
+        order = ["ours", "vpx"] if index % 2 == 0 else ["vpx", "ours"]
+        sample = {"order": order}
+        for name in order:
+            instructions, cycles = count(commands[name], args.core)
+            sample[name] = {"instructions": instructions, "cycles": cycles}
+        rounds.append(sample)
+    row = {"stream": stream.name, "identical": True, "mode": "perf",
+           "stream_sha256": hashlib.sha256(stream.read_bytes()).hexdigest(),
+           "vpx_md5": hashes[0], "ours_md5": hashes[1], "core": args.core,
+           "commands": commands, "rounds": rounds}
+    for name in commands:
+        values = [sample[name]["cycles"] for sample in rounds]
+        row[name] = min(values)
+        row[name + "_median"] = statistics.median(values)
+    return row
+
+
+def measure(stream: Path, args: argparse.Namespace, work: Path) -> dict:
+    expected, got = identity(stream, args)
     ours_cg = work / f"ours.{stream.stem}.cg"
     ours = callgrind(ours_cmd(args.bin, stream, None), ours_cg)
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -177,17 +213,36 @@ def main() -> int:
     parser.add_argument("--vpxdec", type=Path, default=DEFAULT_VPXDEC)
     parser.add_argument("--filter", default="", help="only streams whose name contains this")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--mode", choices=("callgrind", "perf"), default="callgrind")
+    parser.add_argument("--core", type=int, default=3, help="perf timing core")
     parser.add_argument("--stages", action="store_true", help="per-stage table per stream")
     parser.add_argument("--keep", type=Path, help="keep our callgrind profiles here")
     parser.add_argument("--json", type=Path, help="write the rows here")
     args = parser.parse_args()
+    args.bin = args.bin.resolve()
+    args.vpxdec = args.vpxdec.resolve()
+    if args.mode == "perf":
+        args.jobs = 1
+        if args.stages or args.keep:
+            parser.error("--stages and --keep require --mode callgrind")
     streams = sorted(p for p in args.streams.glob("*.ivf") if args.filter in p.name)
     if not streams:
         print(f"no streams in {args.streams}", file=sys.stderr)
         return 2
-    with tempfile.TemporaryDirectory(prefix="vp9yard-") as tmp, \
-            concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        rows = list(pool.map(lambda s: measure(s, args, Path(tmp)), streams))
+    if args.mode == "perf":
+        # Identity is a gate for the entire set, not just each timed stream.
+        hashes = [identity(stream, args) for stream in streams]
+        provenance = {name: {"path": str(binary),
+                            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+                      for name, binary in (("ours", args.bin), ("vpx", args.vpxdec))}
+        rows = [measure_perf(stream, args, digest) for stream, digest in zip(streams, hashes)]
+        for row in rows:
+            row["binaries"] = provenance
+    else:
+        with tempfile.TemporaryDirectory(prefix="vp9yard-") as tmp, \
+                concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+            rows = list(pool.map(lambda s: measure(s, args, Path(tmp)), streams))
+    print("Cycles (minimum of five alternating rounds)" if args.mode == "perf" else "Callgrind instructions")
     print(f"{'stream':40} {'same':>5} {'ours G':>8} {'vpx G':>8} {'ours/vpx':>9}")
     for row in rows:
         print(f"{row['stream']:40} {'yes' if row['identical'] else 'NO':>5} "

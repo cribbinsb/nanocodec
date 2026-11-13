@@ -14,7 +14,7 @@
 // widths divided by the scale so outlines stay one screen pixel at any zoom.
 
 /** Codecs whose decoders fill the records (others show a notice). */
-export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1', 'vp9']);
+export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1', 'vp9', 'vvc']);
 /** Values per record and their order (nc-common `pack_records`). */
 export const HALFWORDS = 24;
 export const FIELD = {
@@ -29,12 +29,13 @@ const SHAPE_NAMES = ['2Nx2N', '2NxN', 'Nx2N', 'NxN', '2NxnU', '2NxnD', 'nLx2N', 
 const INTRA_CLASS = { planar: 0, dc: 1, angular: 2 };
 const FLAG = { codedY: 1, codedCb: 2, codedCr: 4, transformSkip: 8, qpDeltaCoded: 16, bi: 32 };
 /** Each codec's record conventions: motion vector units per luma sample, and
- * the QP heat map's scale (H.264 / HEVC QP; AV1 / VP9 qindex, 0..255). */
+ * the QP heat map's scale (H.264 / HEVC / VVC QP; AV1 / VP9 qindex, 0..255). */
 const CODEC_UNITS = {
   h264: { mv: 4, qp: { low: 15, high: 51 } },
   hevc: { mv: 4, qp: { low: 15, high: 51 } },
   av1: { mv: 8, qp: { low: 40, high: 255 } },
   vp9: { mv: 8, qp: { low: 40, high: 255 } },
+  vvc: { mv: 16, qp: { low: 15, high: 63 } },
 };
 const units = codec => CODEC_UNITS[codec] ?? CODEC_UNITS.hevc;
 /** The overlay layers a viewer can switch on. */
@@ -55,6 +56,10 @@ const MIN_INTRA_MARK_PX = 6;
 // HEVC intraPredAngle by mode (H.265 Table 8-5), modes 2..34.
 const HEVC_ANGLE = [32, 26, 21, 17, 13, 9, 5, 2, 0, -2, -5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9, -5, -2, 0, 2, 5, 9, 13, 17, 21, 26, 32];
 const HEVC_FIRST_ANGULAR = 2, HEVC_FIRST_VERTICAL = 18;
+// VVC intraPredAngle by mode (H.266 Table 8-8), modes 2..66 (wide angles are not coded as modes).
+const VVC_ANGLE = [32, 29, 26, 23, 20, 18, 16, 14, 12, 10, 8, 6, 4, 3, 2, 1, 0, -1, -2, -3, -4, -6, -8, -10, -12, -14, -16, -18, -20, -23, -26, -29,
+  -32, -29, -26, -23, -20, -18, -16, -14, -12, -10, -8, -6, -4, -3, -2, -1, 0, 1, 2, 3, 4, 6, 8, 10, 12, 14, 16, 18, 20, 23, 26, 29, 32];
+const VVC_FIRST_VERTICAL = 34;
 // H.264 Intra 4x4 / 8x8 prediction directions (H.264 Table 8-2), as lines through the block (x, y):
 // 0 vertical, 1 horizontal, 2 DC, 3 diagonal down-left, 4 diagonal down-right, 5 vertical-right,
 // 6 horizontal-down, 7 vertical-left, 8 horizontal-up.
@@ -78,6 +83,11 @@ export function intraDirection(codec, mode, size) {
     // AV1 angles: 90 is vertical (predicted from above), 180 horizontal.
     const radians = degrees * Math.PI / 180;
     return [Math.cos(radians), -Math.sin(radians)];
+  }
+  if (codec === 'vvc') {
+    if (mode < HEVC_FIRST_ANGULAR) return null;
+    const angle = VVC_ANGLE[mode - HEVC_FIRST_ANGULAR];
+    return mode < VVC_FIRST_VERTICAL ? [32, -angle] : [-angle, 32];
   }
   if (codec === 'hevc') {
     if (mode < HEVC_FIRST_ANGULAR) return null;

@@ -72,12 +72,39 @@ pub struct Decoder {
     general_sequence: Option<Box<crate::decoder_headers::Sequence>>,
     general_picture: Option<Box<crate::decoder_headers::PictureParameters>>,
     general_references: Option<Box<crate::decoder_dpb::References>>,
+    /// Coding-tool analysis, collected only when enabled.
+    #[cfg(feature = "analysis")]
+    stats: Option<nc_common::stream_stats::StreamStats>,
 }
 impl Decoder {
     /// An empty decoder, awaiting SPS and PPS.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Start collecting coding-tool analysis into `stats` (block records,
+    /// and per-picture tallies unless `records_only`) from the next picture
+    /// on. Decoding is unchanged.
+    #[cfg(feature = "analysis")]
+    pub fn collect_stats(&mut self, stats: nc_common::stream_stats::StreamStats) {
+        self.stats = Some(stats);
+    }
+
+    /// The analysis collected so far, if enabled: the block records of the
+    /// last decoded picture and the tallies of every completed one.
+    #[cfg(feature = "analysis")]
+    #[must_use]
+    pub fn stats(&self) -> Option<&nc_common::stream_stats::StreamStats> {
+        self.stats.as_ref()
+    }
+
+    /// Complete the analysis and hand it over; collection stops.
+    #[cfg(feature = "analysis")]
+    pub fn take_stats(&mut self) -> Option<nc_common::stream_stats::StreamStats> {
+        let mut stats = self.stats.take()?;
+        stats.finish();
+        Some(stats)
     }
 
     /// Feed one NAL without its Annex-B start code. Metadata emits no picture.
@@ -360,6 +387,10 @@ impl Decoder {
                 &self.dsp,
             );
         }
+        #[cfg(feature = "analysis")]
+        if let Some(s) = &mut self.stats {
+            crate::decoder_blocks::record_analysis(s, &units, &header, rbsp.len());
+        }
         references.record_motion(crate::decoder_blocks::MotionField::new(
             &units,
             parameters.dimensions.map(|v| v as usize),
@@ -403,6 +434,10 @@ impl Decoder {
 
     /// Decode one of our own streams' pictures (`predicted`: a P picture)
     /// on the canonical path; returns it and its POC.
+    #[allow(
+        clippy::let_and_return,
+        reason = "the analysis build calls `decode_slice` with its records"
+    )]
     fn decode_own(&mut self, rbsp: &[u8], predicted: bool) -> Result<(Picture, u8)> {
         let geometry = self
             .geometry
@@ -424,7 +459,9 @@ impl Decoder {
                 self.tools.merge_candidates,
             )
         });
-        decode_slice(
+        // The analysis build passes its records along (one more argument).
+        #[cfg(feature = "analysis")]
+        let decoded = decode_slice(
             rbsp,
             &geometry,
             &chroma_qp,
@@ -435,7 +472,26 @@ impl Decoder {
             self.next_poc,
             &self.dsp,
             &mut self.pictures,
-        )
+            self.stats.as_mut(),
+        );
+        #[cfg(feature = "analysis")]
+        if let Some(s) = &mut self.stats {
+            s.finish();
+        }
+        #[cfg(not(feature = "analysis"))]
+        let decoded = decode_slice(
+            rbsp,
+            &geometry,
+            &chroma_qp,
+            (self.tools, self.pps_block_qp == Some(true)),
+            predicted,
+            (self.reference.as_ref(), motion),
+            &self.alf_banks,
+            self.next_poc,
+            &self.dsp,
+            &mut self.pictures,
+        );
+        decoded
     }
 
     fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<()> {
@@ -697,8 +753,13 @@ fn decode_slice(
     next_poc: Option<u8>,
     dsp: &Dsp,
     pictures: &mut PictureRecycler,
+    #[cfg(feature = "analysis")] mut stats: Option<&mut nc_common::stream_stats::StreamStats>,
 ) -> Result<(Picture, u8)> {
     let (header, data) = parse_slice_header(bytes, (tools, block_qp), inter_frame, alf_banks)?;
+    #[cfg(feature = "analysis")]
+    if let Some(s) = stats.as_deref_mut() {
+        crate::analysis::picture_facts(s, inter_frame, header.qp, data.len());
+    }
     let OwnSliceHeader {
         poc,
         qp,
@@ -742,6 +803,8 @@ fn decode_slice(
         }),
         slice_qp: qp,
         chroma_qp,
+        #[cfg(feature = "analysis")]
+        stats,
     };
     let columns = cw.div_ceil(ctu);
     for y in (0..ch).step_by(ctu) {
@@ -882,6 +945,9 @@ struct SliceDecoder<'a, 'b> {
     block_qp: Option<(QuantGroup, QpMap)>,
     slice_qp: u32,
     chroma_qp: &'a ChromaQpTable,
+    /// Where analysis records go, when they are collected.
+    #[cfg(feature = "analysis")]
+    stats: Option<&'a mut nc_common::stream_stats::StreamStats>,
 }
 impl SliceDecoder<'_, '_> {
     /// §7.3.11.4 `coding_tree` of `node`: nodes crossing the picture's
@@ -977,6 +1043,10 @@ impl SliceDecoder<'_, '_> {
             &coding.levels,
             self.tools.max_tb_log2(),
         );
+        #[cfg(feature = "analysis")]
+        if let Some(s) = self.stats.as_deref_mut() {
+            crate::analysis::coding_unit(s, &block, &coding, self.qp[0], &units);
+        }
         let motion = coding.inter.map(|inter| inter.motion);
         self.motion.record(
             &block,

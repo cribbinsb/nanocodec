@@ -569,7 +569,7 @@ impl BrowserDecoder {
     #[cfg(feature = "analysis")]
     /// Switch coding-tool analysis on (from the next decoded picture) or
     /// off; returns whether this codec's decoder supports it (H.264, HEVC,
-    /// AV1 and VP9 so far). Only in the analysis build of the module; every
+    /// AV1, VP9 and VVC so far). Only in the analysis build of the module; every
     /// picture's block records are then kept for `analysis_frame`.
     pub fn set_analysis(&mut self, on: bool) -> bool {
         let stats = || on.then(StreamStats::records_only);
@@ -590,7 +590,11 @@ impl BrowserDecoder {
                 Some(s) => d.collect_stats(s),
                 None => drop(d.take_stats()),
             },
-            _ => return false,
+            DecoderKind::Vvc(d) => match stats() {
+                Some(s) => d.collect_stats(s),
+                None => drop(d.take_stats()),
+            },
+            DecoderKind::Av2(_) => return false,
         }
         if !on {
             self.analysis = Vec::new();
@@ -610,7 +614,8 @@ impl BrowserDecoder {
             DecoderKind::Hevc(d) => d.stats(),
             DecoderKind::Av1(d) => d.stats(),
             DecoderKind::Vp9(d) => d.stats(),
-            _ => None,
+            DecoderKind::Vvc(d) => d.stats(),
+            DecoderKind::Av2(_) => None,
         };
         match stats {
             Some(s) => stream_stats::pack_records(s.records(), &mut self.analysis),

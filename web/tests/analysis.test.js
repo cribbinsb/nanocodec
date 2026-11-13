@@ -57,6 +57,8 @@ test('intra directions follow each standard', () => {
   assert.equal(intraDirection('h264', 2, 4), null);
   assert.equal(intraDirection('h264', 3, 16), null);
   assert.equal(intraDirection('av1', 0, 8), null);
+  assert.deepEqual(intraDirection('vvc', 18, 8), [32, -0]);
+  assert.deepEqual(intraDirection('vvc', 50, 8), [-0, 32]);
   const vertical = intraDirection('av1', 1, 8);
   assert.ok(Math.abs(vertical[0]) < 1e-9 && vertical[1] === -1);
 });

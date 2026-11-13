@@ -136,14 +136,29 @@ Method and per-change detail: `docs/handoff/vp9.md` "Decoder speed against vpxde
 
 **Like for like at 270b535e.** Neither decoder writes output: ours runs `--discard 1`, vpxdec `--noblit`.
 
-| Stream | x86 instructions | Jetson cycles |
-|---|---:|---:|
-| ours 720p / 1080p | 1.123 / 1.185 | 1.188 / 1.149 |
-| ours SVC L2T1 / L2T3 720p | 1.079 / 1.081 | 1.152 / 1.144 |
-| vpxenc rt 720p / good 1080p | 1.198 / 1.229 | 1.242 / 1.122 |
-| resize_inter 1080p | 1.405 | 1.255 |
+| Stream | x86 instructions, 270b535e | Jetson cycles, 270b535e | Jetson cycles, f15d9cd5 development rerun |
+|---|---:|---:|---:|
+| ours 720p / 1080p | 1.123 / 1.185 | 1.188 / 1.149 | 1.093 / 1.080 |
+| ours SVC L2T1 / L2T3 720p | 1.079 / 1.081 | 1.152 / 1.144 | 1.073 / 1.065 |
+| vpxenc rt 720p / good 1080p | 1.198 / 1.229 | 1.242 / 1.122 | 1.144 / 1.077 |
+| resize_inter 1080p | 1.405 | 1.255 | 1.153 |
 
-The remaining Jetson gap is in the loop-filter and MC NEON kernels (`docs/handoff/vp9.md`, round 2).
+**Jetson development rerun (2026-11-13).** The new column uses
+`tools/dev/vp9_dec_yardstick.py --mode perf`, frozen CLI `h3` stamped
+`f15d9cd5` (profiling profile per retained build.sh; no full source manifest),
+and vpxdec 1.16.0. All seven I420 MD5 checks pass before timing. Five serial
+alternating rounds run under the exclusive Jetson lock on core 3; ratios use
+each decoder's minimum cycles, with per-binary spread at most 0.67%.
+This is a **development measurement, not a verified whole-commit binary or
+production/chart publication**. VP9 decoder and filter sources match verified
+`bd8d2b18`; the full binary commit is not covered by that verified-head marker.
+CLI/common changes were audited, with unchanged VP9 parsing and decode flags;
+startup and whole-binary layout differences remain possible. X86 figures
+remain historical. The old values in each table are preserved as recorded,
+including their small SVC/good/resize discrepancies between documents.
+See [the rerun report](../handoff/astra-vp9-jetson-yardstick.md) for medians, counters and provenance.
+
+The landed paired loop filter is included; rejected MC trials are not. The historical difference is not attributed solely to the loop filter. The remaining MC performance gap is unresolved; the measured trials remain closed.
 
 WASM decode at the close-out, ms per frame. Relaxed module, core 14, start (adb57e6e) -> 270b535e:
 - ours 720p: 2.40 -> 2.28;

@@ -4,10 +4,13 @@
 //! residuals, deblocking and SAO.
 #![forbid(unsafe_code)]
 mod affine;
+// The decoders' analysis records (feature `analysis`).
 mod affine_candidates;
 mod affine_search;
 mod alf;
 mod alf_aps;
+#[cfg(feature = "analysis")]
+mod analysis;
 mod backend;
 mod cabac;
 mod chroma;

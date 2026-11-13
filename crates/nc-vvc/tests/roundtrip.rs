@@ -437,3 +437,41 @@ fn temporal_layers_decode_every_extracted_substream() {
         }
     }
 }
+
+#[cfg(feature = "analysis")]
+#[test]
+fn analysis_leaves_decoding_unchanged_and_tiles_each_picture() {
+    use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};
+    let (width, height) = (64, 32);
+    let mut cfg = config(width, height, 32);
+    cfg.intra_period = 30;
+    let mut encoder = Encoder::<VvcBackend>::new(cfg).unwrap();
+    let mut decoder = Decoder::new();
+    decoder.collect_stats(StreamStats::default());
+    for frame in 0..4 {
+        let packet = encoder.encode(&source(width, height, frame + 2));
+        let decoded = decoder.decode(&packet.data).unwrap();
+        assert_eq!(
+            bytes(&decoded),
+            bytes(encoder.reconstruction()),
+            "frame {frame}"
+        );
+        let records = decoder.stats().unwrap().records();
+        assert!(records.iter().any(|r| r.kind == RecordKind::Prediction));
+    }
+    let stats = decoder.take_stats().unwrap();
+    assert_eq!(stats.frames.len(), 4);
+    for (index, frame) in stats.frames.iter().enumerate() {
+        let covered: u64 = frame.tallies[keys::CB_SIZE]
+            .values()
+            .map(|t| t.weight)
+            .sum();
+        assert_eq!(
+            covered,
+            (width * height) as u64,
+            "frame {index}: CUs tile the picture"
+        );
+        let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
+        assert_eq!(intra == covered, index == 0, "frame {index}");
+    }
+}

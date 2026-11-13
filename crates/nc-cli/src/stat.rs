@@ -1,9 +1,9 @@
 //! `nanocodec stat` (analysis builds: `--features analysis`): decode an
-//! H.264, HEVC, AV1 or VP9 stream with coding-tool
+//! H.264, HEVC, AV1, VP9 or VVC stream with coding-tool
 //! statistics enabled ([`nc_common::stream_stats`]) and write them as JSON,
 //! to show which block sizes, modes, motion, transforms, QPs and filters an
 //! encoder actually used. The input is Annex-B or an IVF file of Annex-B
-//! access units (H.264, HEVC), or IVF (AV1, VP9); `eval/nceval/streamstats.py` summarises the output.
+//! access units (H.264, HEVC), Annex-B (VVC) or IVF (AV1, VP9); `eval/nceval/streamstats.py` summarises the output.
 
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
@@ -31,7 +31,8 @@ fn parse(args: &[String]) -> Result<StatArgs, String> {
         Some("hevc") => Codec::Hevc,
         Some("av1") => Codec::Av1,
         Some("vp9") => Codec::Vp9,
-        _ => return Err("stat needs --codec h264|hevc|av1|vp9".into()),
+        Some("vvc") => Codec::Vvc,
+        _ => return Err("stat needs --codec h264|hevc|av1|vp9|vvc".into()),
     };
     let input = get("--input").ok_or("missing --input")?.into();
     Ok(StatArgs {
@@ -50,7 +51,8 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
         Codec::H264 => h264(&data)?,
         Codec::Av1 => av1(&data)?,
         Codec::Vp9 => vp9(&data)?,
-        _ => unreachable!("parse accepts H.264 and HEVC only"),
+        Codec::Vvc => vvc(&data)?,
+        Codec::Av2 => unreachable!("parse accepts the codecs with analysis only"),
     };
     let json = stats.to_json();
     match &args.json {
@@ -110,6 +112,21 @@ fn vp9(data: &[u8]) -> Result<StreamStats, String> {
             .map(|_| ())
             .map_err(|e| e.to_string())
     })?;
+    Ok(decoder.take_stats().unwrap_or_default())
+}
+
+/// VVC: Annex-B NAL units.
+fn vvc(data: &[u8]) -> Result<StreamStats, String> {
+    let mut decoder = nc_vvc::Decoder::new();
+    decoder.collect_stats(StreamStats::default());
+    for_each_packet(data, |packet| {
+        for nal in nc_common::decode::annex_b_units(packet).map_err(|e| e.to_string())? {
+            decoder.push_nal(nal).map_err(|e| e.to_string())?;
+            while decoder.next_output().is_some() {}
+        }
+        Ok(())
+    })?;
+    decoder.flush().map_err(|e| e.to_string())?;
     Ok(decoder.take_stats().unwrap_or_default())
 }
 

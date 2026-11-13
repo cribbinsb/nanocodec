@@ -1,5 +1,9 @@
 //! H.266 intra and predicted coding trees, using the shared CABAC and intra-mode syntax.
 //! General-tree syntax follows BSD-Clear `VVdeC`; see `THIRD_PARTY.md`.
+#[cfg(feature = "analysis")]
+mod analysis;
+#[cfg(feature = "analysis")]
+pub(crate) use analysis::record as record_analysis;
 mod cclm;
 mod chroma_alf;
 mod ciip;
