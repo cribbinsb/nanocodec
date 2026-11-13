@@ -3,7 +3,7 @@
 // engine's parameter registry: what each codec supports, its parameters
 // (name, range, default, description) and the check of free-form overrides.
 // The module loads on the page only once an Advanced section is first opened.
-import { MODULE_URL } from './wasm.js';
+import { MODULE_URL, compiledModule } from './wasm.js';
 import { streamExtension } from './codecs.js';
 
 let loading = null;
@@ -17,7 +17,7 @@ let loading = null;
  */
 export function loadOptions() {
   loading ??= import(MODULE_URL).then(async module => {
-    await module.default();
+    await module.default({ module_or_path: await compiledModule() });
     const registries = new Map();
     return {
       codecOptions: codec => JSON.parse(module.codec_options(codec)),
