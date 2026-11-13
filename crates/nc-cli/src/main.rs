@@ -51,6 +51,7 @@ mod rate_control;
 mod session;
 mod spatial_stats;
 mod sse_log;
+mod stat;
 mod stdio;
 mod timestamps;
 
@@ -173,6 +174,7 @@ const USAGE: &str = concat!(
     "       nanocodec extract --codec av1|av2|h264|hevc|vvc --temporal-layers N --max-layer M\n",
     "                 --input stream (--output substream | --list)\n",
     "       nanocodec params [--codec av1|h264|hevc|vvc|vp9|av2]\n",
+    "       nanocodec stat --codec h264|hevc --input stream [--json stats.json]\n",
     "       nanocodec session <encode options, no --output> --display shown.yuv\n",
     "                 [--receiver transport|bitstream]   (commands on stdin, session.rs)"
 );
@@ -211,6 +213,15 @@ fn main() -> ExitCode {
     }
     if args.first().map(String::as_str) == Some("decode") {
         return match decode::run(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("nanocodec: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().map(String::as_str) == Some("stat") {
+        return match stat::run(&args[1..]) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 eprintln!("nanocodec: {message}");

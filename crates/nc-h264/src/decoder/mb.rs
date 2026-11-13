@@ -51,6 +51,9 @@ pub(super) struct SliceParams<'a> {
 pub(super) struct MbExtra {
     pub pcm: [u8; PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES],
     pub levels: Coeffs,
+    /// `sub_mb_type` of each 8x8 block of the last `P_8x8` macroblock
+    /// (read by analysis only for `P_8x8` macroblocks).
+    pub sub_partitions: [SubPartition; 4],
 }
 
 impl MbExtra {
@@ -58,6 +61,7 @@ impl MbExtra {
         Self {
             pcm: [0; PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES],
             levels: Coeffs::new(),
+            sub_partitions: [SubPartition::P8x8; 4],
         }
     }
 }
@@ -100,7 +104,7 @@ pub(super) fn decode<S: MbSyntax>(
         }
     }
     if let Some(p_type) = inter {
-        let p8x8 = inter_prediction(syntax, params, nb, cur, p_type)?;
+        let p8x8 = inter_prediction(syntax, params, nb, cur, p_type, &mut extra.sub_partitions)?;
         return coded_residual(
             syntax,
             params,
@@ -330,13 +334,15 @@ fn reference_id(params: &SliceParams<'_>, ref_idx: usize) -> Result<u32> {
 
 /// The prediction part of a P macroblock (`mb_pred` / `sub_mb_pred`, §7.3.5.1,
 /// §7.3.5.2) and its motion vectors; returns whether it is a `P_8x8`
-/// macroblock with a sub-partition smaller than 8x8.
+/// macroblock with a sub-partition smaller than 8x8. A `P_8x8`
+/// macroblock's `sub_mb_type`s go to `sub_partitions`.
 fn inter_prediction<S: MbSyntax>(
     syntax: &mut S,
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     cur: &mut MbState,
     p_type: u32,
+    sub_partitions: &mut [SubPartition; 4],
 ) -> Result<bool> {
     let partition = match p_type {
         0 => Partition::P16x16,
@@ -400,6 +406,7 @@ fn inter_prediction<S: MbSyntax>(
         }
     }
     cur.single_motion = has_single_motion(cur);
+    *sub_partitions = subs;
     Ok(subs.iter().any(|&s| s != SubPartition::P8x8))
 }
 

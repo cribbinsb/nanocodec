@@ -62,6 +62,11 @@ impl<'a> Cabac<'a> {
         self.reader.bypass()
     }
 
+    /// Bits consumed since the engine (re)started, for analysis.
+    pub fn bits_consumed(&self) -> usize {
+        self.reader.bits_consumed()
+    }
+
     /// `DecodeTerminate` (§9.3.3.2.4): `end_of_slice_flag` and the `I_PCM`
     /// bin of `mb_type`.
     pub fn terminate(&mut self) -> bool {

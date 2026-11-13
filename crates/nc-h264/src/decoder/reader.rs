@@ -41,6 +41,11 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Bits read so far.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
     /// The next 32 bits, zero-filled past the end of the data.
     #[inline]
     pub fn peek32(&self) -> u32 {

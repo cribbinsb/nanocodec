@@ -59,6 +59,9 @@ pub(super) enum Block4x4 {
 
 /// The macroblock-layer syntax of one entropy coder.
 pub(super) trait MbSyntax {
+    /// Bits consumed so far (analysis: differences give a macroblock's
+    /// cost; restarts after `I_PCM` under CABAC).
+    fn bits_consumed(&self) -> usize;
     /// `mb_type`: Table 7-11 numbering in I slices; in P slices Table 7-13
     /// numbering, with intra types as 5 + their Table 7-11 number.
     fn mb_type(&mut self, slice: SliceType, nb: &Neighbours<'_>) -> Result<u32>;

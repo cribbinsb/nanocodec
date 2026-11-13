@@ -12,6 +12,7 @@
 //! - `mvpred`, `mc`: motion vector prediction and inter prediction;
 //! - `deblock`, `sao`: the in-loop filters;
 //! - `picture`: per-picture block state, CTB layout and stored motion;
+//! - `stats`: the opt-in coding-tool analysis ([`Decoder::collect_stats`]);
 //! - this module: NAL units, POC (§8.3.1), reference picture sets (§8.3.2,
 //!   §8.3.3), reference picture lists (§8.3.4) and the DPB (C.5.2).
 
@@ -27,6 +28,7 @@ mod picture;
 mod residual;
 mod sao;
 mod slice;
+mod stats;
 #[cfg(test)]
 mod tests;
 
@@ -37,6 +39,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use nc_common::PlaneIndex;
 use nc_common::decode::{DecodeError, annex_b_units, unescape_rbsp};
+use nc_common::stream_stats::StreamStats;
 use nc_common::{ColourInfo, Picture, PictureRecycler, ShownPicture};
 use nc_dsp::Dsp;
 
@@ -223,6 +226,8 @@ pub struct Decoder {
     colour: Option<ColourInfo>,
     dsp: Dsp,
     scans: Scans,
+    /// Coding-tool statistics, collected only when enabled.
+    stats: Option<StreamStats>,
 }
 
 impl std::fmt::Debug for Decoder {
@@ -266,7 +271,30 @@ impl Decoder {
             colour: None,
             dsp: Dsp::new(),
             scans: Scans::new(),
+            stats: None,
         }
+    }
+
+    /// Start collecting coding-tool analysis into `stats` (block records,
+    /// and per-picture tallies unless [`StreamStats::records_only`]) from
+    /// the next picture on. Decoding is unchanged.
+    pub fn collect_stats(&mut self, stats: StreamStats) {
+        self.stats = Some(stats);
+    }
+
+    /// The analysis collected so far, if enabled: the block records of
+    /// the last completed picture and the tallies of every completed one.
+    #[must_use]
+    pub fn stats(&self) -> Option<&StreamStats> {
+        self.stats.as_ref()
+    }
+
+    /// Complete the analysis of the last picture and hand it over (after
+    /// [`Decoder::flush`]); collection stops.
+    pub fn take_stats(&mut self) -> Option<StreamStats> {
+        let mut stats = self.stats.take()?;
+        stats.finish();
+        Some(stats)
     }
 
     /// Colour signalling of the last activated SPS (`None` before the first).
@@ -486,6 +514,9 @@ impl Decoder {
                 "dependent slice segment without a slice",
             ))?,
         };
+        if let Some(s) = &mut self.stats {
+            stats::segment(s, first.then_some(&*current), &segment, rbsp.len());
+        }
         let slice_index = current.state.slices.len();
         let lists = reference_lists(&current.set, &header)?;
         let refs = lists
@@ -526,6 +557,7 @@ impl Decoder {
             &mut self.filter,
             rbsp,
             &segment,
+            self.stats.as_mut(),
         )
     }
 
@@ -775,6 +807,10 @@ impl Decoder {
         let Some(current) = self.current.take() else {
             return Ok(());
         };
+        if let Some(s) = &mut self.stats {
+            // Its records become the completed picture's.
+            s.finish();
+        }
         let Current {
             sps,
             pps,

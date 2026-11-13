@@ -233,6 +233,10 @@ fn cbf_cond(n: Option<&MbState>, intra: bool, coded: impl Fn(&MbState) -> bool) 
 }
 
 impl MbSyntax for CabacSyntax<'_> {
+    fn bits_consumed(&self) -> usize {
+        self.engine.bits_consumed()
+    }
+
     fn mb_type(&mut self, slice: SliceType, nb: &Neighbours<'_>) -> Result<u32> {
         match slice {
             SliceType::I => {

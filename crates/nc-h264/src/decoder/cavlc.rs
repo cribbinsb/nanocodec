@@ -305,6 +305,10 @@ fn luma_nc(nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize) -> i32 {
 }
 
 impl MbSyntax for CavlcSyntax<'_, '_> {
+    fn bits_consumed(&self) -> usize {
+        self.reader.position()
+    }
+
     fn mb_type(&mut self, slice: SliceType, _nb: &Neighbours<'_>) -> Result<u32> {
         let max = match slice {
             SliceType::I => MAX_MB_TYPE_I,

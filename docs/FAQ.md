@@ -191,10 +191,15 @@ its output under the GPL; we distribute only the output streams, not the program
 
 The decoders are written in safe Rust (no `unsafe` outside the SIMD kernels and the C ABI), so memory-safety bugs
 are unlikely outside those kernels, but a malformed stream can still make a decoder panic (abort) or misbehave.
-Each codec has a `cargo fuzz` target (`fuzz/`). Fuzzing so far has been short: about 30 minutes per decoder, with
-no crashes found, and the VVC decoder has not been fuzzed yet. No corpus is published. Do not expose these decoders
-to untrusted input in production. The C ABI catches panics at the boundary. The browser demo decodes only streams
-it encoded itself and the project's hosted streams.
+Each decoder has a `cargo fuzz` target (`fuzz/`) that drives the browser, C API and command-line decode paths,
+seeded from our streams and the official conformance vectors. On 2026-11-13 every decoder, VVC included, had 0.8 to
+2.6 worker-hours of fuzzing (about 725,000 executions in all). Fuzzing and a review of the size limits found and
+fixed four issues: in HEVC a slice naming an out-of-range parameter set crashed the decoder; in AV1 invalid film
+grain points crashed it, frames whose size is not a multiple of 8 overflowed in deblocking, and the picture size was
+not capped at the level 6.3 limit. Nothing was found in H.264, VP9, VVC or AV2. That is a bounded search, not a
+proof: see [results/fuzzing.md](results/fuzzing.md) for the numbers and what was not tested. No corpus is published.
+Do not expose these decoders to untrusted input in production. The C ABI catches panics at the boundary. The browser
+demo decodes only streams it encoded itself and the project's hosted streams.
 
 ## Why build this at all?
 

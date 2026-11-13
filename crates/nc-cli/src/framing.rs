@@ -56,10 +56,37 @@ impl IvfHeader {
     }
 }
 
+/// The `FourCC`s of the IVF files the decoders read directly.
+const DECODER_FOURCCS: [&[u8; 4]; 3] = [b"AV01", b"VP90", b"AV02"];
+/// Also accepted by [`read_ivf_annex_b`]: H.264 and HEVC access units in
+/// IVF, as `web/streams-ref` stores them.
+const ANNEX_B_FOURCCS: [&[u8; 4]; 2] = [b"H264", b"HEVC"];
+
 /// Read an AV1, VP9 or AV2 IVF file, calling `visit` with the header and every
 /// frame; returns the number of frames.
 pub(crate) fn read_ivf<R: BufRead>(
     input: &mut R,
+    visit: impl FnMut(&IvfHeader, IvfFrame<'_>) -> Result<(), String>,
+) -> Result<u64, String> {
+    read_ivf_of(input, &DECODER_FOURCCS, visit)
+}
+
+/// Read an IVF file of H.264 or HEVC Annex-B access units (one per frame).
+pub(crate) fn read_ivf_annex_b<R: BufRead>(
+    input: &mut R,
+    visit: impl FnMut(&IvfHeader, IvfFrame<'_>) -> Result<(), String>,
+) -> Result<u64, String> {
+    read_ivf_of(input, &ANNEX_B_FOURCCS, visit)
+}
+
+/// Whether `data` starts like an IVF file.
+pub(crate) fn is_ivf(data: &[u8]) -> bool {
+    data.starts_with(IVF_SIGNATURE)
+}
+
+fn read_ivf_of<R: BufRead>(
+    input: &mut R,
+    fourccs: &[&[u8; 4]],
     mut visit: impl FnMut(&IvfHeader, IvfFrame<'_>) -> Result<(), String>,
 ) -> Result<u64, String> {
     let mut header = [0; IVF_HEADER_BYTES];
@@ -69,9 +96,9 @@ pub(crate) fn read_ivf<R: BufRead>(
     if &header[..4] != IVF_SIGNATURE
         || u16::from_le_bytes([header[4], header[5]]) != IVF_VERSION
         || u16::from_le_bytes([header[6], header[7]]) as usize != IVF_HEADER_BYTES
-        || !matches!(&header[IVF_FOURCC], b"AV01" | b"VP90" | b"AV02")
+        || !fourccs.iter().any(|f| header[IVF_FOURCC] == f[..])
     {
-        return Err("unsupported IVF header (expected version 0 AV01, AV02 or VP90)".into());
+        return Err("unsupported IVF header (version or codec FourCC)".into());
     }
     // The header's picture size is informational: frames carry their own,
     // and libvpx writes 0 for spatial-layer streams (vp90-2-22-svc_*.ivf).

@@ -38,6 +38,11 @@ impl<'a> Engine<'a> {
         self.0.next_byte()
     }
 
+    /// Bits consumed so far, for counting what syntax costs.
+    pub fn bits_consumed(&self) -> usize {
+        self.0.bits_consumed()
+    }
+
     /// Whether decoding has read well past the end of its data.
     pub fn overrun(&self) -> bool {
         self.0.overrun()

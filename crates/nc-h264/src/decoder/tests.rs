@@ -77,6 +77,43 @@ fn roundtrip_default_flat_and_textured_frames() {
     }
 }
 #[test]
+fn analysis_leaves_decoding_unchanged_and_tiles_each_picture() {
+    use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};
+    let (width, height) = (48, 32);
+    let mut enc =
+        Encoder::<crate::H264Backend>::new(config(width, height, 28, ParamOverrides::default()))
+            .unwrap();
+    let mut dec = Decoder::new();
+    dec.collect_stats(StreamStats::default());
+    for index in 0..5 {
+        let frame = enc.encode(&panning(width, height, index));
+        equal(&dec.decode(&frame.data).unwrap(), enc.reconstruction());
+    }
+    let stats = dec.take_stats().unwrap();
+    assert_eq!(stats.frames.len(), 5);
+    let area = (width * height) as u64;
+    for (index, frame) in stats.frames.iter().enumerate() {
+        let covered: u64 = frame.tallies[keys::CB_SIZE]
+            .values()
+            .map(|t| t.weight)
+            .sum();
+        assert_eq!(covered, area, "frame {index}: macroblocks tile the picture");
+        let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
+        assert_eq!(intra == area, index % 4 == 0, "frame {index}");
+        let bits: u64 = frame.tallies[keys::CB_BITS]
+            .values()
+            .map(|t| t.weight)
+            .sum();
+        assert!(bits > 0, "frame {index}");
+    }
+    assert!(
+        stats
+            .records()
+            .iter()
+            .any(|r| r.kind == RecordKind::Prediction)
+    );
+}
+#[test]
 fn roundtrip_chroma_qp_offsets() {
     for offset in [-12.0, -3.0, 5.0] {
         let mut params = ParamOverrides::default();

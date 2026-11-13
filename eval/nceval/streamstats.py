@@ -22,11 +22,13 @@ Coefficient bits cannot be split by plane: the decoder's accounting labels
 symbols by syntax element, not plane.
 
 AV1 is read with libaom's inspection decoder (`aom-inspect`, built by
-`tools/anchors/build_anchors.sh aominspect`). H.264 and HEVC can be added later
-behind the same schema.
+`tools/anchors/build_anchors.sh aominspect`). H.264 and HEVC are read with our
+own decoders' analysis (`nanocodec stat`) and summarised by `toolstats.py`
+(a key / P coding-tool summary rather than this per-frame schema).
 
     python3 -m nceval.streamstats STREAM.ivf [--source SRC.yuv --width W
         --height H] [--json OUT.json]
+    python3 -m nceval.streamstats --codec hevc|h264 STREAM [--json OUT.json]
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ from typing import Iterator
 
 import numpy as np
 
+from . import toolstats
 from .config import find_tool, load_paths
 
 # Inspection output flags: block size, tx size, mode, skip, MVs, delta-q,
@@ -289,11 +292,19 @@ def summarise_clip(frames: list[dict], kind: str = "P") -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("stream", type=Path)
+    parser.add_argument("--codec", choices=("av1", "hevc", "h264"), default="av1")
     parser.add_argument("--source", type=Path)
     parser.add_argument("--width", type=int, default=0)
     parser.add_argument("--height", type=int, default=0)
     parser.add_argument("--json", type=Path, help="write per-frame stats here")
     args = parser.parse_args(argv)
+    if args.codec != "av1":
+        with tempfile.TemporaryDirectory() as scratch:
+            tallies = toolstats.run_stat(args.stream, args.codec, Path(scratch) / "stat.json")
+        if args.json:
+            args.json.write_text(json.dumps(tallies))
+        print(json.dumps(toolstats.analyse(tallies), indent=1))
+        return 0
     frames = analyse(args.stream, args.source, args.width, args.height)
     if args.json:
         args.json.write_text(json.dumps(frames))

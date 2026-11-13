@@ -57,6 +57,64 @@ mod round_trips {
     }
 
     #[test]
+    fn analysis_leaves_decoding_unchanged_and_tiles_each_picture() {
+        use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};
+        let (width, height) = (72, 40);
+        let config = EncoderConfig {
+            codec: Codec::Hevc,
+            width,
+            height,
+            frame_rate: FrameRate { num: 30, den: 1 },
+            quantizer: 30,
+            intra_period: 3,
+            block_log2: 6,
+            key_qp_offset: None,
+            temporal_layers: 1,
+            signal: nc_encoder::StreamSignal::default(),
+            params: ParamOverrides::default(),
+        };
+        let mut encoder = Encoder::<HevcBackend>::new(config).unwrap();
+        let mut decoder = Decoder::new();
+        decoder.collect_stats(StreamStats::default());
+        for frame in 0..4 {
+            let packet = encoder.encode(&moving(width, height, frame));
+            let decoded = decoder.decode(&packet.data).unwrap();
+            compare(&decoded, encoder.reconstruction());
+            // The decoded picture's records are available at once.
+            let coded: u64 = decoder
+                .stats()
+                .unwrap()
+                .records()
+                .iter()
+                .filter(|r| r.kind == RecordKind::Coding)
+                .map(nc_common::stream_stats::BlockRecord::area)
+                .sum();
+            assert_eq!(coded, (width * height) as u64, "frame {frame}");
+        }
+        let stats = decoder.take_stats().unwrap();
+        assert_eq!(stats.frames.len(), 4);
+        let area = (width * height) as u64;
+        for (index, frame) in stats.frames.iter().enumerate() {
+            let covered: u64 = frame.tallies[keys::CB_SIZE]
+                .values()
+                .map(|t| t.weight)
+                .sum();
+            assert_eq!(
+                covered, area,
+                "frame {index}: coding blocks tile the picture"
+            );
+            let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
+            assert_eq!(intra == area, index % 3 == 0, "frame {index}");
+        }
+        let last = stats.records();
+        assert!(last.iter().any(|r| r.kind == RecordKind::Prediction));
+        assert!(
+            last.iter()
+                .all(|r| usize::from(r.x) < width && usize::from(r.y) < height)
+        );
+    }
+
+    #[test]
     fn block_qp_streams_reconstruct_exactly_and_differ() {
         // Six CTBs, a flat left half and a busy right half: variance AQ
         // gives the CTBs different QPs (cu_qp_delta of both signs, up to

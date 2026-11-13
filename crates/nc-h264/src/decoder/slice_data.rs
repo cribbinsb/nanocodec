@@ -9,9 +9,11 @@ use super::mb::{self, MbExtra, SliceParams};
 use super::mbstate::{MbState, Neighbours};
 use super::recon::{self, ReconContext};
 use super::slice::SliceType;
+use super::stats::{self, MbContext};
 use super::syntax::MbSyntax;
 use super::transform::Residual;
 use super::{DecodeError, Planes, Result};
+use nc_common::stream_stats::StreamStats;
 
 /// The state one slice's macroblocks are decoded into.
 pub(super) struct SliceDecoder<'a> {
@@ -36,6 +38,10 @@ pub(super) struct SliceDecoder<'a> {
     pub qp: i32,
     /// Macroblocks decoded so far.
     pub decoded: usize,
+    /// Where block records go when analysis is enabled.
+    pub stats: Option<&'a mut StreamStats>,
+    /// Whether the slice is CABAC-coded (analysis only).
+    pub cabac: bool,
 }
 
 impl SliceDecoder<'_> {
@@ -59,6 +65,7 @@ impl SliceDecoder<'_> {
         *cur = MbState::EMPTY;
         cur.slice = self.slice_no;
         let nb = Neighbours::of(before, self.width_mbs, addr, self.slice_no);
+        let (qp_pred, start) = (self.qp, self.stats.as_ref().map(|_| syntax.bits_consumed()));
         if skipped(syntax, &nb) {
             mb::skip(&self.params, &nb, cur, self.qp)?;
             syntax.no_qp_delta();
@@ -74,6 +81,16 @@ impl SliceDecoder<'_> {
             )?;
         }
         let position = (addr % self.width_mbs, addr / self.width_mbs);
+        if let (Some(s), Some(start)) = (self.stats.as_deref_mut(), start) {
+            let mb = MbContext {
+                position,
+                qp_pred,
+                bits: syntax.bits_consumed().saturating_sub(start),
+                cabac: self.cabac,
+                sub_partitions: self.extra.sub_partitions,
+            };
+            stats::macroblock(s, cur, &mb);
+        }
         recon::reconstruct(
             &self.recon,
             &mut self.planes,

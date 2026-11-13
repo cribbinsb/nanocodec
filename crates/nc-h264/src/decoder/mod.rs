@@ -15,7 +15,8 @@
 //!   `syntax` (the entropy interface) with `cavlc` / `vlc` and
 //!   `cabac_syntax` / `cabac`, `mbstate` (neighbour state), `mvpred`;
 //! - reconstruction: `recon`, `intra`, `inter`, `transform`, `deblock`;
-//! - `reader`: the RBSP bit reader.
+//! - `reader`: the RBSP bit reader;
+//! - `stats`: the opt-in coding-tool analysis ([`Decoder::collect_stats`]).
 //!
 //! [`Decoder::decode_nal`] takes NAL units one at a time and returns each
 //! picture when its last macroblock is decoded; [`OutputQueue`] puts them
@@ -44,6 +45,7 @@ mod scaling;
 mod slice;
 mod slice_data;
 mod sps;
+mod stats;
 mod syntax;
 #[cfg(test)]
 mod tests;
@@ -54,6 +56,7 @@ use std::sync::Arc;
 
 pub use nc_common::decode::DecodeError;
 use nc_common::decode::{annex_b_units, unescape_rbsp};
+use nc_common::stream_stats::StreamStats;
 use nc_common::{ColourInfo, Picture, PlaneIndex, PlaneViewMut, ShownPicture};
 use nc_dsp::Dsp;
 
@@ -194,6 +197,8 @@ pub struct Decoder {
     /// The picture of the last successful [`Decoder::decode_shown`]; its
     /// buffer goes back to `pool` once the next call drops this.
     shown: Option<Visible>,
+    /// Coding-tool analysis, collected only when enabled.
+    stats: Option<StreamStats>,
 }
 
 impl Default for Decoder {
@@ -226,7 +231,30 @@ impl Decoder {
             cavlc: CavlcTables::new(),
             next_id: 1,
             shown: None,
+            stats: None,
         }
+    }
+
+    /// Start collecting coding-tool analysis into `stats` (block records,
+    /// and per-picture tallies unless [`StreamStats::records_only`]) from
+    /// the next picture on. Decoding is unchanged.
+    pub fn collect_stats(&mut self, stats: StreamStats) {
+        self.stats = Some(stats);
+    }
+
+    /// The analysis collected so far, if enabled: the block records of
+    /// the last completed picture and the tallies of every completed one.
+    #[must_use]
+    pub fn stats(&self) -> Option<&StreamStats> {
+        self.stats.as_ref()
+    }
+
+    /// Complete the analysis of the last picture and hand it over;
+    /// collection stops.
+    pub fn take_stats(&mut self) -> Option<StreamStats> {
+        let mut stats = self.stats.take()?;
+        stats.finish();
+        Some(stats)
     }
 
     /// Test hook: overwrite every reference picture with `value`, as a
@@ -380,7 +408,13 @@ impl Decoder {
             if self.current.take().is_some() {
                 return Err(DecodeError::Malformed("picture with missing slices"));
             }
+            if let Some(s) = &mut self.stats {
+                stats::picture(s, &sps, &pps);
+            }
             self.start_picture(&sps, &header)?;
+        }
+        if let Some(s) = &mut self.stats {
+            stats::slice(s, &header, rbsp.len());
         }
         let current = self.current.as_mut().ok_or(DecodeError::Malformed(
             "slice of a picture without its first slice",
@@ -531,6 +565,8 @@ impl Decoder {
             extra: &mut self.extra,
             qp: header.qp,
             decoded: 0,
+            stats: self.stats.as_mut(),
+            cabac: pps.cabac,
         };
         if pps.cabac {
             let engine = Cabac::new(
@@ -560,6 +596,10 @@ impl Decoder {
             mut deblocker,
             ..
         } = self.current.take().expect("picture in progress");
+        if let Some(s) = &mut self.stats {
+            // Its records become the completed picture's.
+            s.finish();
+        }
         let ctx = DeblockContext {
             dsp: &self.dsp,
             mbs: &self.mbs,

@@ -175,6 +175,13 @@ impl<'a> CabacReader<'a> {
         (self.next * 8 - self.lookahead as usize).div_ceil(8)
     }
 
+    /// Bits consumed since the start of `data` (the offset's 9 bits
+    /// included): differences measure what a stretch of syntax cost.
+    #[must_use]
+    pub fn bits_consumed(&self) -> usize {
+        self.next * 8 - self.lookahead as usize
+    }
+
     /// Whether decoding has consumed well past the end of the data.
     #[must_use]
     pub fn overrun(&self) -> bool {
