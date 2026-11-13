@@ -23,11 +23,12 @@ const BUTTON_ZOOM = 2;
 const TAP_SLOP_PX = 6;
 // The statistics text is rewritten at most this often (as panel.js metrics).
 const STATS_INTERVAL_MS = 250;
+const PRECISIONS = ['integer', 'half', 'quarter', 'eighth'];
 const LAYOUTS = { side: 'Side by side', stacked: 'Stacked', 'expand-A': 'A large', 'expand-B': 'B large' };
 const DEFAULT_LAYERS = ['blocks', 'vectors'];
 // Phone widths stack the views when analysis is on (styles.css uses the same width).
 const NARROW_QUERY = '(max-width: 700px)';
-const UNSUPPORTED = 'Analysis is not available for this codec yet (H.264 and HEVC only).';
+const UNSUPPORTED = 'Analysis is not available for this codec yet (H.264, HEVC and AV1 so far).';
 
 const percent = value => `${(100 * value).toFixed(value < 0.1 ? 1 : 0)}%`;
 const shareText = (map, order) => Object.entries(map ?? {})
@@ -158,7 +159,7 @@ class AnalysisView {
     this.state = result.analysisState ?? (ANALYSIS_CODECS.has(this.panel.current?.codec) ? 'waiting' : 'unsupported');
     if (result.analysis) {
       this.records = new Int16Array(result.analysis);
-      this.summary = summarise(this.records);
+      this.summary = summarise(this.records, this.panel.current?.codec);
       this.running.add(this.summary);
     } else if (!result.repeat) {
       this.records = null;
@@ -296,7 +297,7 @@ class AnalysisView {
     this.requestDraw();
   }
   showTip(found) {
-    const lines = describeBlock(this.records, found);
+    const lines = describeBlock(this.records, found, this.panel.current?.codec);
     if (!lines.length) { this.hideTip(); return; }
     this.tip.textContent = lines.join('\n');
     this.tip.hidden = false;
@@ -329,7 +330,7 @@ class AnalysisView {
       row('Partition', shareText(now.shape), shareText(mean.shape)),
       row('Transform', shareText(now.tbSize), shareText(mean.tbSize)),
       row('Coded residual', percent(now.coded), percent(mean.coded ?? 0)),
-      row('MV precision', shareText(now.mvPrecision, ['integer', 'half', 'quarter']), shareText(mean.mvPrecision, ['integer', 'half', 'quarter'])),
+      row('MV precision', shareText(now.mvPrecision, PRECISIONS), shareText(mean.mvPrecision, PRECISIONS)),
       row('Zero MV', now.zeroMv == null ? '—' : percent(now.zeroMv), mean.zeroMv == null ? '—' : percent(mean.zeroMv)),
       row('Intra modes', shareText(now.intraClass, ['planar', 'DC', 'angular']), shareText(mean.intraClass, ['planar', 'DC', 'angular'])),
       row('QP', qp(now), mean.qp == null ? '—' : mean.qp.toFixed(1)),

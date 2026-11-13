@@ -345,10 +345,9 @@ export class BrowserDecoder {
     }
     /**
      * Switch coding-tool analysis on (from the next decoded picture) or
-     * off; returns whether this codec's decoder supports it (H.264 and
-     * HEVC so far). Off, decoding pays nothing but a branch per parse
-     * point; on, every picture's block records are kept for
-     * `analysis_frame`.
+     * off; returns whether this codec's decoder supports it (H.264, HEVC
+     * and AV1 so far). Only in the analysis build of the module; every
+     * picture's block records are then kept for `analysis_frame`.
      * @param {boolean} on
      * @returns {boolean}
      */

@@ -14,7 +14,7 @@
 // widths divided by the scale so outlines stay one screen pixel at any zoom.
 
 /** Codecs whose decoders fill the records (others show a notice). */
-export const ANALYSIS_CODECS = new Set(['h264', 'hevc']);
+export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1']);
 /** Values per record and their order (nc-common `pack_records`). */
 export const HALFWORDS = 24;
 export const FIELD = {
@@ -28,14 +28,19 @@ const PRED_NAMES = ['intra', 'inter', 'skip', 'merge'];
 const SHAPE_NAMES = ['2Nx2N', '2NxN', 'Nx2N', 'NxN', '2NxnU', '2NxnD', 'nLx2N', 'nRx2N', '4x4 (16)', 'PCM'];
 const INTRA_CLASS = { planar: 0, dc: 1, angular: 2 };
 const FLAG = { codedY: 1, codedCb: 2, codedCr: 4, transformSkip: 8, qpDeltaCoded: 16, bi: 32 };
-/** Motion vector units per luma sample (quarter sample, H.264 and HEVC). */
-const MV_UNITS = 4;
+/** Each codec's record conventions: motion vector units per luma sample, and
+ * the QP heat map's scale (H.264 / HEVC QP; AV1 qindex, 0..255). */
+const CODEC_UNITS = {
+  h264: { mv: 4, qp: { low: 15, high: 51 } },
+  hevc: { mv: 4, qp: { low: 15, high: 51 } },
+  av1: { mv: 8, qp: { low: 40, high: 255 } },
+};
+const units = codec => CODEC_UNITS[codec] ?? CODEC_UNITS.hevc;
 /** The overlay layers a viewer can switch on. */
 export const LAYERS = ['blocks', 'transforms', 'vectors', 'intra', 'qp', 'bits'];
 export const LAYER_LABELS = { blocks: 'Blocks', transforms: 'Transforms', vectors: 'Motion vectors', intra: 'Intra modes', qp: 'QP map', bits: 'Bits map' };
 export const PRED_COLOURS = ['#ff5a36', '#3b8bff', '#a8b3ad', '#27c27a'];
 // Heat maps use fixed scales so two views compare directly.
-const QP_SCALE = { low: 15, high: 51 };
 const BITS_PER_PIXEL_SCALE = { low: Math.log2(1 / 64), high: Math.log2(4) };
 const HEAT_ALPHA = 0.5;
 // Fill of a coding block in the block layer; outlines are opaque.
@@ -56,12 +61,21 @@ const H264_NXN_DIRECTION = [[0, 1], [1, 0], null, [1, -1], [1, 1], [0.5, 1], [1,
 // Intra_16x16 modes (Table 8-4): 0 vertical, 1 horizontal, 2 DC, 3 plane.
 const H264_16X16_DIRECTION = [[0, 1], [1, 0], null, null];
 const H264_MB = 16;
+// AV1 directional y modes (V_PRED .. D67_PRED, symbols 1..8) by nominal angle in degrees (AV1 §7.11.2).
+const AV1_DIRECTIONS = { 1: 90, 2: 180, 3: 45, 4: 135, 5: 113, 6: 157, 7: 203, 8: 67 };
 
 /** The number of records in `records` (an Int16Array of packed records). */
 export function recordCount(records) { return records ? Math.floor(records.length / HALFWORDS) : 0; }
 
 /** The direction of an intra mode as a line `[dx, dy]` in picture coordinates, or null (planar, DC). */
 export function intraDirection(codec, mode, size) {
+  if (codec === 'av1') {
+    const degrees = AV1_DIRECTIONS[mode];
+    if (degrees === undefined) return null;
+    // AV1 angles: 90 is vertical (predicted from above), 180 horizontal.
+    const radians = degrees * Math.PI / 180;
+    return [Math.cos(radians), -Math.sin(radians)];
+  }
   if (codec === 'hevc') {
     if (mode < HEVC_FIRST_ANGULAR) return null;
     const angle = HEVC_ANGLE[mode - HEVC_FIRST_ANGULAR];
@@ -83,7 +97,8 @@ function heat(t) {
  * prediction, partition shapes, motion vector precision, transform sizes,
  * coded residual, mean QP, bits per pixel. `null` for no records.
  */
-export function summarise(records) {
+export function summarise(records, codec = 'hevc') {
+  const mvUnits = units(codec).mv;
   const n = recordCount(records);
   if (!n) return null;
   const s = { area: 0, cbSize: {}, pred: {}, shape: {}, mvPrecision: {}, tbSize: {}, tbArea: 0, codedArea: 0,
@@ -108,7 +123,7 @@ export function summarise(records) {
       const x = records[r + FIELD.mv0x], y = records[r + FIELD.mv0y];
       s.inter += area;
       if (!x && !y) s.zeroMv += area;
-      add(s.mvPrecision, ['integer', 'half', 'quarter'][Math.max(precision(x), precision(y))], area);
+      add(s.mvPrecision, PRECISION_NAMES[Math.max(precision(x, mvUnits), precision(y, mvUnits))], area);
     } else if (kind === KIND.transform) {
       s.tbArea += area;
       add(s.tbSize, sizeName(records[r + FIELD.w], records[r + FIELD.h]), area);
@@ -124,9 +139,14 @@ export function summarise(records) {
 }
 
 /** 0 integer, 1 half, 2 quarter sample. */
-function precision(v) {
-  const fraction = ((v % MV_UNITS) + MV_UNITS) % MV_UNITS;
-  return fraction === 0 ? 0 : fraction === 2 ? 1 : 2;
+const PRECISION_NAMES = ['integer', 'half', 'quarter', 'eighth'];
+/** 0 integer, 1 half, 2 quarter, 3 eighth sample, for vectors of `per` units per sample. */
+function precision(v, per) {
+  const fraction = ((v % per) + per) % per;
+  if (fraction === 0) return 0;
+  let step = per / 2, level = 1;
+  while (fraction % step !== 0) { step /= 2; level++; }
+  return level;
 }
 
 function sizeName(w, h) { return w === h ? String(w) : `${w}x${h}`; }
@@ -174,7 +194,7 @@ export class RunningSummary {
 export function drawOverlay(context, records, { codec, layers, scale, clip }) {
   const n = recordCount(records);
   if (!n || !layers.size) return;
-  const px = 1 / scale;
+  const px = 1 / scale, qpScale = units(codec).qp, mvUnits = units(codec).mv;
   const visible = r => records[r + FIELD.x] < clip.x + clip.width && records[r + FIELD.y] < clip.y + clip.height
     && records[r + FIELD.x] + records[r + FIELD.w] > clip.x && records[r + FIELD.y] + records[r + FIELD.h] > clip.y;
   context.save();
@@ -186,7 +206,7 @@ export function drawOverlay(context, records, { codec, layers, scale, clip }) {
       if (records[r + FIELD.kind] !== KIND.coding || !visible(r)) continue;
       const w = records[r + FIELD.w], h = records[r + FIELD.h];
       const t = layers.has('qp')
-        ? (records[r + FIELD.qp] - QP_SCALE.low) / (QP_SCALE.high - QP_SCALE.low)
+        ? (records[r + FIELD.qp] - qpScale.low) / (qpScale.high - qpScale.low)
         : (Math.log2(Math.max(records[r + FIELD.bits], 1) / (w * h)) - BITS_PER_PIXEL_SCALE.low)
           / (BITS_PER_PIXEL_SCALE.high - BITS_PER_PIXEL_SCALE.low);
       context.fillStyle = heat(t);
@@ -220,12 +240,12 @@ export function drawOverlay(context, records, { codec, layers, scale, clip }) {
       context.strokeRect(records[r + FIELD.x] + px, records[r + FIELD.y] + px, records[r + FIELD.w] - 2 * px, records[r + FIELD.h] - 2 * px);
     }
   }
-  if (layers.has('vectors')) drawVectors(context, records, n, px, visible);
+  if (layers.has('vectors')) drawVectors(context, records, n, px, visible, mvUnits);
   if (layers.has('intra')) drawIntra(context, records, n, px, codec, scale, visible);
   context.restore();
 }
 
-function drawVectors(context, records, n, px, visible) {
+function drawVectors(context, records, n, px, visible, mvUnits) {
   context.strokeStyle = '#ffe14d'; context.fillStyle = '#ffe14d';
   context.beginPath();
   for (let i = 0; i < n; i++) {
@@ -233,7 +253,7 @@ function drawVectors(context, records, n, px, visible) {
     if (records[r + FIELD.kind] !== KIND.prediction || records[r + FIELD.pred] === PRED.intra || !visible(r)) continue;
     const cx = records[r + FIELD.x] + records[r + FIELD.w] / 2, cy = records[r + FIELD.y] + records[r + FIELD.h] / 2;
     // The vector points to where the block was predicted from.
-    const dx = records[r + FIELD.mv0x] / MV_UNITS, dy = records[r + FIELD.mv0y] / MV_UNITS;
+    const dx = records[r + FIELD.mv0x] / mvUnits, dy = records[r + FIELD.mv0y] / mvUnits;
     const length = Math.hypot(dx, dy);
     if (length < MIN_VECTOR_PX * px) { context.rect(cx - px, cy - px, 2 * px, 2 * px); continue; }
     const ex = cx + dx, ey = cy + dy, head = ARROW_PX * px, ux = dx / length, uy = dy / length;
@@ -280,7 +300,8 @@ export function recordsAt(records, x, y) {
 }
 
 /** A block's record as text lines (hover / tap). */
-export function describeBlock(records, { coding, prediction, transform }) {
+export function describeBlock(records, { coding, prediction, transform }, codec = 'hevc') {
+  const mvUnits = units(codec).mv;
   const lines = [];
   const v = (r, field) => records[r + FIELD[field]];
   if (coding >= 0) {
@@ -294,8 +315,8 @@ export function describeBlock(records, { coding, prediction, transform }) {
     if (v(prediction, 'pred') === PRED.intra) {
       lines.push(`intra mode ${v(prediction, 'mode')} (${['planar', 'DC', 'angular', 'other'][v(prediction, 'cls')]}), chroma ${v(prediction, 'mode2')} · PB ${v(prediction, 'w')}×${v(prediction, 'h')}`);
     } else {
-      const mv = [v(prediction, 'mv0x') / MV_UNITS, v(prediction, 'mv0y') / MV_UNITS];
-      const how = v(prediction, 'pred') === PRED.inter ? `MVD (${v(prediction, 'mvd0x') / MV_UNITS}, ${v(prediction, 'mvd0y') / MV_UNITS})` : `merge ${v(prediction, 'mode')}`;
+      const mv = [v(prediction, 'mv0x') / mvUnits, v(prediction, 'mv0y') / mvUnits];
+      const how = v(prediction, 'pred') === PRED.inter ? `MVD (${v(prediction, 'mvd0x') / mvUnits}, ${v(prediction, 'mvd0y') / mvUnits})` : `mode ${v(prediction, 'mode')}`;
       lines.push(`PB ${v(prediction, 'w')}×${v(prediction, 'h')} · MV (${mv[0]}, ${mv[1]}) px · ref ${v(prediction, 'ref0')} · ${how}`);
     }
   }
