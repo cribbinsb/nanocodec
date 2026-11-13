@@ -12,6 +12,12 @@ import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, RATE_L
 
 // Statistics cover this many recent coded frames.
 const HISTORY_FRAMES = 90;
+// The metrics, rate line, frame-size chart and settings text are redrawn at most
+// this often (and once more after the last frame), not on every frame: they
+// write and lay out DOM text, read a computed style and repaint a 90-bar chart.
+// Headless Chromium, default page, 3 interleaved loads: Panel.frame 0.72 ->
+// 0.56 ms mean (median 0.6 -> 0.4 ms) per view per frame on the page thread.
+const METRICS_INTERVAL_MS = 250;
 const DEFAULT_GOP_SECONDS = 30, DEFAULT_BUFFER_MS = 1000;
 const DEFAULT_TARGET_KBPS = 300, DEFAULT_PEAK_KBPS = 600;
 const SOURCES = { live: 'live', reference: 'reference' };
@@ -235,6 +241,7 @@ export class Panel {
     for (const e of this.element.querySelectorAll('[data-metric]')) e.textContent = '—';
     this.element.querySelector('.frame-count').textContent = 'No frames encoded';
     this.chart.getContext('2d').clearRect(0, 0, this.chart.width, this.chart.height);
+    clearTimeout(this.metricsTimer); this.metricsTimer = 0; this.metricsShownAt = -Infinity;
     this.element.querySelector('.reproduce summary').textContent = config.source === SOURCES.reference ? 'Settings · encoder command' : 'Settings · CLI command';
     this.describeSettings();
   }
@@ -252,6 +259,21 @@ export class Panel {
     for (const coded of [...(result.earlier ?? []), result]) this.record(coded);
     this.badge.dataset.tick = String(tick);
     this.label(showOriginal, result);
+    this.scheduleMetrics(result);
+    return free;
+  }
+  /** Show `result`'s metrics now if METRICS_INTERVAL_MS has passed, else once that interval ends. */
+  scheduleMetrics(result) {
+    this.metricsResult = result;
+    if (this.metricsTimer) return;
+    const wait = this.metricsShownAt + METRICS_INTERVAL_MS - performance.now();
+    if (wait <= 0) this.showMetrics();
+    else this.metricsTimer = setTimeout(() => { this.metricsTimer = 0; this.showMetrics(); }, wait);
+  }
+  /** The running averages, frame count, rate line, frame-size chart and settings for the latest result. */
+  showMetrics() {
+    const result = this.metricsResult;
+    this.metricsShownAt = performance.now();
     const encode = this.current.entry ? null : this.average('encode');
     for (const [key, value] of Object.entries({ bitrate: this.average('bytes') * 8 * this.current.fps / 1000, encode, decode: this.average('decode'), psnr: this.average('psnr') })) {
       this.element.querySelector(`[data-metric="${key}"]`).textContent = value === null ? 'n/a' : value.toFixed(key === 'bitrate' ? 0 : 1);
@@ -262,7 +284,6 @@ export class Panel {
     this.element.querySelector('.rate-status').textContent = this.rateStatus(result);
     this.drawHistory();
     this.describeSettings();
-    return free;
   }
   /** The badge: what is shown, the frame type, its number in this view and its source time. */
   label(showOriginal, result = this.lastResult) {
