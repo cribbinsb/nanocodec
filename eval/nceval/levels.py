@@ -37,6 +37,7 @@ preset bundle, and daily.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fcntl
 import filecmp
 import json
@@ -73,8 +74,9 @@ FINAL_POOLED = (pool.ADOPT, pool.FINAL)
 #: 150 to 600 frames), so changes to rate, keys, cadence or key-frame quality,
 #: and the final check of a preset bundle, decide on LONG_FRAMES with a key
 #: every LONG_KEY_SECONDS (`final_frames`); L1, L2 and study trials stay at 150
-#: frames as cheap rankers. A clip shorter than the window runs whole. Such an
-#: L3 is not pooled with L2 (a different window).
+#: frames as cheap rankers. Only the L3 clips with LONG_FRAMES frames take part
+#: (`long_clips`: about a third of the pool), from frame 0. Such an L3 is not
+#: pooled with L2 (a different window).
 LONG_FRAMES = 600
 LONG_KEY_SECONDS = 10.0
 
@@ -110,7 +112,12 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
         long_window = level == pool.FINAL and getattr(args, "final_frames", None)
         level_frames = args.final_frames if long_window else frames
         key_seconds = LONG_KEY_SECONDS if long_window else None
-        result = measure_level(runner, families, draw.levels[level], level_frames, level,
+        clips = long_clips(draw.levels[level], level_frames) if long_window \
+            else draw.levels[level]
+        if long_window:
+            print(f"{level}: long window on the {len(clips)} of {len(draw.levels[level])} "
+                  f"clips with {level_frames} frames, from frame 0", flush=True)
+        result = measure_level(runner, families, clips, level_frames, level,
                                estimator_of(level, args), args, key_seconds)
         result["frames"] = level_frames
         rows = result["per_clip"]
@@ -119,7 +126,7 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
                       for name, row in s["per_clip"].items()}
             rows = {**pooled, **rows}
         if level == pool.FINAL:
-            pulse = one_per_class(draw.levels[level])
+            pulse = one_per_class(clips)
             add_periodic_pulse(runner, *families, pulse, frames, result["per_clip"], level)
         if level == pool.FINAL or result["estimator"] == SINGLE:
             result["summary"] = jreal.summarise(result["per_clip"])
@@ -148,6 +155,16 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
     print(f"levels -> {decision.upper()}", flush=True)
     return {"clips": "adopt", "staged": True, "decision": decision, "levels": per_level,
             "draw": draw.record(), "stages": stages}
+
+
+def long_clips(clips: list[Clip], frames: int) -> list[Clip]:
+    """The level's clips long enough for the long window, measured from frame 0.
+
+    A rotated start or a shorter source would end the clip early (the encoder
+    then refuses the point, which silently shrank the first long L3s to the
+    clips that happened to fit); only about a third of the pool has 600 frames.
+    """
+    return [dataclasses.replace(c, start_frame=0) for c in clips if c.frames >= frames]
 
 
 def estimator_of(level: str, args: argparse.Namespace) -> str:

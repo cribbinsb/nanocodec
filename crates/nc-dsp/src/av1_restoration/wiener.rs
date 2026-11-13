@@ -102,6 +102,15 @@ pub(super) fn wiener(
     let (horizontal, vertical) = kernel_taps(coefficients);
     let row_len = w + AV1_LR_OVERREAD;
     let ring = super::grow(ring, TAPS * row_len);
+    if kernels.wiener_stripe(
+        (horizontal, vertical),
+        (window, stride),
+        (w, h),
+        ring,
+        (&mut *dst, x, y),
+    ) {
+        return;
+    }
     let source_len = w + 2 * AV1_LR_BORDER + AV1_LR_OVERREAD;
     for t in 0..h + 2 * AV1_LR_BORDER {
         let slot = t % TAPS;

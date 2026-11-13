@@ -32,6 +32,7 @@ use super::wiener::{ROUND1, SATURATION_BIAS, SATURATION_OFFSET, WienerTaps};
 
 /// This ISA's table.
 pub(super) const KERNELS: Kernels = Kernels {
+    wiener_stripe: None,
     wiener_h,
     wiener_v,
     box_sums3,

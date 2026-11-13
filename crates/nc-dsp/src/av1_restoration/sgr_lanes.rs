@@ -3,11 +3,13 @@
 //! instantiates inside its `#[target_feature]` functions
 //! ([`sgr_kernels`]). The arithmetic is the scalar references' in
 //! [`super::self_guided`], term for term; the only change of form is the
-//! `A` lookup (`av1_x_by_xplus1`), computed as the spec's quotient
+//! `A` lookup (`av1_x_by_xplus1`), by default computed as the spec's quotient
 //! `((z << 8) + z / 2) / (z + 1)` in single precision: both operands are
 //! exact integers below 2^17 and a fractional part is at least
 //! `1 / (z + 1) ≥ 2^-8`, far above the quotient's rounding error
 //! (`2^-16`), so truncating the float quotient is the integer division.
+//! AVX2 overrides this with dav1d's rounded reciprocal form, exact over
+//! the complete 256-value domain (see its adapter proof and test).
 //!
 //! The functions are `unsafe` only because `V`'s instructions need its ISA
 //! (see the [`super::kernels`] contract); every access indexes a slice.
@@ -61,6 +63,16 @@ pub(super) trait SgrLanes: Copy {
     /// `floor(self / den)` for `0 <= self < 2^24` and `0 < den < 2^24`,
     /// through single precision.
     fn div_floor(self, den: Self) -> Self;
+    /// Exact AV1 `x_by_xplus1` factor for `0 <= self <= Z_MAX`.
+    #[inline(always)]
+    fn sgr_factor(self) -> Self {
+        let one = Self::splat(1);
+        self.shl::<{ SGR_BITS as i32 }>()
+            .add(self.shr::<1>())
+            .div_floor(self.add(one))
+            .max(one)
+            .sub(self.eq(Self::splat(Z_MAX)))
+    }
 }
 
 /// `5 · (x + y) + x`: the radius-2 weights 6 (`x`) and 5 (`y`) without a
@@ -165,7 +177,7 @@ pub(super) unsafe fn box_ab<V: SgrLanes, const N: usize>(
     let count = (N * N) as u32;
     let (count_v, recip) = (V::splat(count as i32), V::splat(one_by_x(count) as i32));
     let scale = V::splat(scale as i32);
-    let (zero, one, z_max) = (V::splat(0), V::splat(1), V::splat(Z_MAX));
+    let (zero, z_max) = (V::splat(0), V::splat(Z_MAX));
     let unit = V::splat(1 << SGR_BITS);
     for j in (0..n).step_by(LANES) {
         let mut sum = V::load(&sums[0][j..]);
@@ -183,12 +195,7 @@ pub(super) unsafe fn box_ab<V: SgrLanes, const N: usize>(
             .shr::<{ MTABLE_BITS as i32 }>()
             .min(z_max);
         // x_by_xplus1: the quotient, 0 -> 1, and 255 -> 256.
-        let factor = z
-            .shl::<{ SGR_BITS as i32 }>()
-            .add(z.shr::<1>())
-            .div_floor(z.add(one))
-            .max(one)
-            .sub(z.eq(z_max));
+        let factor = z.sgr_factor();
         let mean = unit
             .sub(factor)
             .mul(sum)
@@ -252,9 +259,37 @@ pub(super) unsafe fn filter_around<V: SgrLanes>(
     out: &mut [i32],
     n: usize,
 ) {
-    for j in (0..n).step_by(LANES) {
-        filtered::<V, { TWO_ROW_SHIFT as i32 }>(weigh_around(a, j), weigh_around(b, j), src, j)
-            .store(&mut out[j..]);
+    if n == 0 {
+        return;
+    }
+    let padded = n.checked_add(LANES - 1).expect("SGR row extent") / LANES * LANES;
+    let neighbors = padded.checked_add(2).expect("SGR neighbor extent");
+    assert!(a.iter().chain(&b).all(|row| row.len() >= neighbors));
+    assert!(src.len() >= padded && out.len() >= padded);
+    // All eight-lane loads, including the two horizontal neighbors, fit
+    // after these row checks. Fixed-size views keep bounds checks outside
+    // the pixel loop instead of repeating them for every neighbor load.
+    for j in (0..padded).step_by(LANES) {
+        // SAFETY: j <= padded - LANES; the six input rows have at least
+        // padded + 2 words. These immutable windows may overlap.
+        let a = core::array::from_fn(|row| unsafe {
+            core::slice::from_raw_parts(a[row].as_ptr().add(j), LANES + 2)
+        });
+        // SAFETY: the same six-row extent check covers the B rows.
+        let b = core::array::from_fn(|row| unsafe {
+            core::slice::from_raw_parts(b[row].as_ptr().add(j), LANES + 2)
+        });
+        // SAFETY: the source and destination hold padded samples. Output
+        // windows are disjoint across iterations and retain the exclusive
+        // borrow of out; the source remains immutable.
+        let (src, out) = unsafe {
+            (
+                core::slice::from_raw_parts(src.as_ptr().add(j), LANES),
+                core::slice::from_raw_parts_mut(out.as_mut_ptr().add(j), LANES),
+            )
+        };
+        filtered::<V, { TWO_ROW_SHIFT as i32 }>(weigh_around(a, 0), weigh_around(b, 0), src, 0)
+            .store(out);
     }
 }
 
@@ -358,3 +393,89 @@ macro_rules! sgr_kernels {
 }
 
 pub(super) use sgr_kernels;
+
+#[cfg(test)]
+mod tests {
+    use super::LANES;
+    use crate::Isa;
+    use crate::av1_restoration::{kernels, self_guided};
+
+    #[test]
+    fn around_exact_extents_match_scalar_and_preserve_canaries() {
+        for isa in Isa::ALL
+            .into_iter()
+            .filter(|&isa| isa != Isa::Scalar && isa.is_supported())
+        {
+            let kernel = kernels::kernels(isa).around;
+            for n in [1_usize, 7, 8, 9, 15, 16, 17, 31, 32, 33] {
+                let padded = n.div_ceil(LANES) * LANES;
+                let neighbors = padded + 2;
+                let a: [Vec<i32>; 3] = core::array::from_fn(|row| {
+                    (0..neighbors + 2)
+                        .map(|j| ((j * 37 + row * 71) % 257) as i32)
+                        .collect()
+                });
+                let b: [Vec<i32>; 3] = core::array::from_fn(|row| {
+                    (0..neighbors + 2)
+                        .map(|j| ((j * 2749 + row * 113) % 65090) as i32)
+                        .collect()
+                });
+                let a = a.each_ref().map(|row| &row[1..=neighbors]);
+                let b = b.each_ref().map(|row| &row[1..=neighbors]);
+                let src: Vec<u8> = (0..padded).map(|j| (j * 37) as u8).collect();
+                let mut expected = vec![0; padded];
+                self_guided::filter_around(a, b, &src, &mut expected, padded);
+                let mut guarded = vec![i32::MIN; padded + 2];
+                // SAFETY: the ISA is available; each input has the exact
+                // asserted padded extent and the output is exclusively borrowed.
+                unsafe {
+                    kernel(a, b, &src, &mut guarded[1..=padded], n);
+                }
+                assert_eq!(&guarded[1..=padded], expected, "{isa:?}, n={n}");
+                assert_eq!(guarded[0], i32::MIN);
+                assert_eq!(guarded[padded + 1], i32::MIN);
+            }
+            // SAFETY: this ISA is available and zero output must not touch buffers.
+            unsafe {
+                kernel([&[]; 3], [&[]; 3], &[], &mut [], 0);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn around_rejects_short_extents_before_writing() {
+        for isa in Isa::ALL
+            .into_iter()
+            .filter(|&isa| isa != Isa::Scalar && isa.is_supported())
+        {
+            let kernel = kernels::kernels(isa).around;
+            for short in 0..8 {
+                let rows = [[1; LANES + 2]; 6];
+                let mut refs = rows.each_ref().map(<[i32; LANES + 2]>::as_slice);
+                if short < 6 {
+                    refs[short] = &refs[short][..=LANES];
+                }
+                let src = [17; LANES];
+                let mut out = [i32::MIN; LANES];
+                let src_len = if short == 6 { LANES - 1 } else { LANES };
+                let out_len = if short == 7 { LANES - 1 } else { LANES };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // SAFETY: ISA is available. The kernel's checked-slice
+                    // contract must reject these deliberately short buffers.
+                    unsafe {
+                        kernel(
+                            [refs[0], refs[1], refs[2]],
+                            [refs[3], refs[4], refs[5]],
+                            &src[..src_len],
+                            &mut out[..out_len],
+                            1,
+                        );
+                    }
+                }));
+                assert!(result.is_err(), "{isa:?}, short buffer {short}");
+                assert_eq!(out, [i32::MIN; LANES]);
+            }
+        }
+    }
+}

@@ -17,11 +17,22 @@
 #![allow(unsafe_code)]
 
 use crate::Isa;
+use nc_common::PlaneViewMut;
 
 use super::AV1_LR_OVERREAD;
 use super::self_guided::{blend, box_ab, box_sums, filter_around, filter_between, filter_on};
 use super::wiener::{WienerTaps, h_row, v_row};
 
+/// Complete stripe kernel with the padded-window and exact-output contract.
+/// The kernel validates all extents before raw SIMD access.
+pub(crate) type WienerStripeFn = unsafe fn(
+    horizontal: WienerTaps,
+    vertical: WienerTaps,
+    window: (&[u8], usize),
+    size: (usize, usize),
+    ring: &mut [i16],
+    dst: (&mut PlaneViewMut<'_>, usize, usize),
+);
 /// Wiener rows the vertical filter reads.
 pub(crate) const WIENER_ROWS: usize = 7;
 
@@ -55,6 +66,7 @@ pub(crate) type BlendFn =
 /// One ISA's loop restoration kernels.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
+    pub(crate) wiener_stripe: Option<WienerStripeFn>,
     pub(crate) wiener_h: WienerHFn,
     pub(crate) wiener_v: WienerVFn,
     pub(crate) box_sums3: BoxSumsFn,
@@ -69,6 +81,7 @@ pub(crate) struct Kernels {
 
 /// The scalar references.
 pub(crate) const SCALAR: Kernels = Kernels {
+    wiener_stripe: None,
     wiener_h: h_row,
     wiener_v: v_row,
     box_sums3: box_sums::<1>,
@@ -100,6 +113,24 @@ fn rows_cover(rows: &[&[i32]], n: usize) -> bool {
 }
 
 impl Kernels {
+    /// Dispatch a complete stripe when this ISA has a prepared kernel.
+    pub(super) fn wiener_stripe(
+        &self,
+        taps: (WienerTaps, WienerTaps),
+        window: (&[u8], usize),
+        size: (usize, usize),
+        ring: &mut [i16],
+        dst: (&mut PlaneViewMut<'_>, usize, usize),
+    ) -> bool {
+        let Some(kernel) = self.wiener_stripe else {
+            return false;
+        };
+        // SAFETY: the table is selected for a supported ISA. The complete
+        // stripe kernel checks window, ring and destination extents.
+        unsafe { kernel(taps.0, taps.1, window, size, ring, dst) };
+        true
+    }
+
     /// The Wiener horizontal row: `out[..n]` from `src[..n + 6]`.
     pub(crate) fn wiener_h(&self, src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
         assert!(src.len() >= n + 6 + AV1_LR_OVERREAD && out.len() >= n + AV1_LR_OVERREAD);

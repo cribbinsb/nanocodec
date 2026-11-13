@@ -4,8 +4,11 @@
 //! and multiplies them by the taps with `pmaddubsw` in 16-bit lanes, adds
 //! `128 · centre` with a saturating add whose bounds are exactly the
 //! intermediate clamp, and the vertical pass multiplies pair sums of rows
-//! with `pmaddwd`. The self-guided rows are [`super::sgr_lanes`] on eight
-//! 32-bit lanes.
+//! with `pmaddwd`. A complete-stripe entry prepares taps once and rotates
+//! the seven row pointers, following the reference stripe schedule. The
+//! horizontal and vertical arithmetic is unchanged. The self-guided rows
+//! are [`super::sgr_lanes`] on eight 32-bit lanes; their factor uses
+//! dav1d's reciprocal form with exact rounding.
 //!
 //! Why the 16-bit horizontal sum is exact: with the centre tap less 128,
 //! the sum is `Σ c_k · (p_k + p_{6-k} − 2 · p_3)` over the three outer
@@ -35,12 +38,14 @@ use core::arch::x86_64::{
 };
 
 use super::kernels::{Kernels, WIENER_ROWS};
+use super::self_guided::{SGR_BITS, Z_MAX};
 use super::sgr_lanes::{SgrLanes, sgr_kernels};
 use super::wiener::{ROUND1, SATURATION_BIAS, SATURATION_OFFSET, WienerTaps};
 use crate::simd::packed_pair;
 
 /// This ISA's table.
 pub(super) const KERNELS: Kernels = Kernels {
+    wiener_stripe: Some(wiener_stripe),
     wiener_h,
     wiener_v,
     box_sums3,
@@ -85,47 +90,74 @@ fn byte_pair(first: i16, second: i16) -> __m256i {
     unsafe { _mm256_set1_epi16(pair) }
 }
 
+/// Tap and shuffle setup shared by every row in one stripe.
+#[derive(Clone, Copy)]
+struct Horizontal {
+    outer: __m256i,
+    left: __m256i,
+    right: __m256i,
+    centre: __m256i,
+    outer_taps: __m256i,
+    inner_taps: __m256i,
+    centre_tap: __m256i,
+    offset: __m256i,
+    bias: __m256i,
+}
+impl Horizontal {
+    #[inline(always)]
+    unsafe fn new([c0, c1, c2, c3]: WienerTaps) -> Self {
+        // SAFETY: callers enable AVX2.
+        unsafe {
+            Self {
+                outer: pattern(&OUTER),
+                left: pattern(&INNER_LEFT),
+                right: pattern(&INNER_RIGHT),
+                centre: pattern(&CENTRE),
+                outer_taps: byte_pair(c0, c0),
+                inner_taps: byte_pair(c1, c2),
+                centre_tap: _mm256_set1_epi16(c3),
+                offset: _mm256_set1_epi16(SATURATION_OFFSET),
+                bias: _mm256_set1_epi16(SATURATION_BIAS),
+            }
+        }
+    }
+    /// Write sixteen samples per block with the original arithmetic.
+    #[inline(always)]
+    unsafe fn row(self, src: *const u8, out: *mut i16, blocks: usize) {
+        // SAFETY: caller enables AVX2 and checks blocks*16+8 readable bytes
+        // and blocks*16 writable i16 values before calling.
+        unsafe {
+            for block in 0..blocks {
+                let j = block * STEP;
+                let at = src.add(j);
+                let x = _mm256_loadu2_m128i(at.add(8).cast(), at.cast());
+                let p3 = _mm256_shuffle_epi8(x, self.centre);
+                let sum = _mm256_add_epi16(
+                    _mm256_add_epi16(
+                        _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.outer), self.outer_taps),
+                        _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.left), self.inner_taps),
+                    ),
+                    _mm256_add_epi16(
+                        _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.right), self.inner_taps),
+                        _mm256_mullo_epi16(p3, self.centre_tap),
+                    ),
+                );
+                let saturated = _mm256_adds_epi16(
+                    sum,
+                    _mm256_add_epi16(_mm256_slli_epi16::<7>(p3), self.offset),
+                );
+                let result = _mm256_add_epi16(_mm256_srai_epi16::<3>(saturated), self.bias);
+                _mm256_storeu_si256(out.add(j).cast(), result);
+            }
+        }
+    }
+}
 #[target_feature(enable = "avx2")]
 unsafe fn wiener_h(src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
     let blocks = n.div_ceil(STEP);
-    // Every load and store below stays within these bounds.
     assert!(src.len() >= blocks * STEP + STEP_SOURCE - STEP && out.len() >= blocks * STEP);
-    let (outer, left, right, centre) = (
-        pattern(&OUTER),
-        pattern(&INNER_LEFT),
-        pattern(&INNER_RIGHT),
-        pattern(&CENTRE),
-    );
-    let [c0, c1, c2, c3] = taps;
-    let (outer_taps, inner_taps) = (byte_pair(c0, c0), byte_pair(c1, c2));
-    let centre_tap = _mm256_set1_epi16(c3);
-    let offset = _mm256_set1_epi16(SATURATION_OFFSET);
-    let bias = _mm256_set1_epi16(SATURATION_BIAS);
-    for block in 0..blocks {
-        let j = block * STEP;
-        // SAFETY: AVX2 is enabled; bytes j .. j + 24 lie in `src` (checked
-        // above).
-        let x = unsafe {
-            let at = src.as_ptr().add(j);
-            _mm256_loadu2_m128i(at.add(8).cast(), at.cast())
-        };
-        let p3 = _mm256_shuffle_epi8(x, centre);
-        let sum = _mm256_add_epi16(
-            _mm256_add_epi16(
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, outer), outer_taps),
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, left), inner_taps),
-            ),
-            _mm256_add_epi16(
-                _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, right), inner_taps),
-                _mm256_mullo_epi16(p3, centre_tap),
-            ),
-        );
-        let saturated =
-            _mm256_adds_epi16(sum, _mm256_add_epi16(_mm256_slli_epi16::<7>(p3), offset));
-        let result = _mm256_add_epi16(_mm256_srai_epi16::<3>(saturated), bias);
-        // SAFETY: AVX2 is enabled; values j .. j + 16 lie in `out`.
-        unsafe { _mm256_storeu_si256(out.as_mut_ptr().add(j).cast(), result) };
-    }
+    // SAFETY: AVX2 enabled and both row extents checked above.
+    unsafe { Horizontal::new(taps).row(src.as_ptr(), out.as_mut_ptr(), blocks) };
 }
 
 /// Outputs per vertical Wiener step: two 16-lane halves.
@@ -166,39 +198,110 @@ unsafe fn vertical16(
     }
 }
 
+#[inline(always)]
+unsafe fn vertical_taps([c0, c1, c2, c3]: WienerTaps) -> (__m256i, __m256i) {
+    // SAFETY: callers enable AVX2.
+    unsafe {
+        (
+            _mm256_set1_epi32(packed_pair(c0, c1)),
+            _mm256_set1_epi32(packed_pair(c2, c3)),
+        )
+    }
+}
+/// Original vertical arithmetic after whole-stripe extent validation.
+#[inline(always)]
+unsafe fn vertical_row(
+    rows: &[*const i16; WIENER_ROWS],
+    taps: (__m256i, __m256i),
+    dst: *mut u8,
+    n: usize,
+) {
+    // SAFETY: caller enables AVX2, each row holds ceil(n/32)*32 readable i16s,
+    // and dst holds n writable bytes. Partial output uses an exact copy.
+    unsafe {
+        for block in 0..n.div_ceil(V_STEP) {
+            let j = block * V_STEP;
+            let first = vertical16(rows, j, taps);
+            let second = vertical16(rows, j + STEP, taps);
+            let bytes = _mm256_permute4x64_epi64::<0b1101_1000>(_mm256_packus_epi16(first, second));
+            if j + V_STEP <= n {
+                _mm256_storeu_si256(dst.add(j).cast(), bytes);
+            } else {
+                let mut tail = [0u8; V_STEP];
+                _mm256_storeu_si256(tail.as_mut_ptr().cast(), bytes);
+                core::ptr::copy_nonoverlapping(tail.as_ptr(), dst.add(j), n - j);
+            }
+        }
+    }
+}
 #[target_feature(enable = "avx2")]
 unsafe fn wiener_v(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8]) {
-    let n = dst.len();
-    let blocks = n.div_ceil(V_STEP);
-    // Every load below stays within these bounds.
+    let blocks = dst.len().div_ceil(V_STEP);
     assert!(rows.iter().all(|row| row.len() >= blocks * V_STEP));
     let pointers = rows.map(<[i16]>::as_ptr);
-    let [c0, c1, c2, c3] = taps;
-    let taps = (
-        _mm256_set1_epi32(packed_pair(c0, c1)),
-        _mm256_set1_epi32(packed_pair(c2, c3)),
+    // SAFETY: AVX2 enabled, input extents checked, dst is its exact slice.
+    unsafe { vertical_row(&pointers, vertical_taps(taps), dst.as_mut_ptr(), dst.len()) };
+}
+/// Prepare once and rotate pointers as dav1d's Wiener stripe does. The
+/// original arithmetic remains; per-row indirect calls and modulo go away.
+#[target_feature(enable = "avx2")]
+unsafe fn wiener_stripe(
+    horizontal: WienerTaps,
+    vertical: WienerTaps,
+    (window, stride): (&[u8], usize),
+    (w, h): (usize, usize),
+    ring: &mut [i16],
+    (dst, x, y): (&mut nc_common::PlaneViewMut<'_>, usize, usize),
+) {
+    use super::{AV1_LR_BORDER, AV1_LR_OVERREAD};
+    assert!(x <= dst.width() && w <= dst.width() - x);
+    assert!(y <= dst.height() && h <= dst.height() - y);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let row_len = w.checked_add(AV1_LR_OVERREAD).expect("Wiener row extent");
+    let source_len = row_len
+        .checked_add(2 * AV1_LR_BORDER)
+        .expect("Wiener source row");
+    let source_rows = h
+        .checked_add(2 * AV1_LR_BORDER)
+        .expect("Wiener source rows");
+    let source_end = (source_rows - 1)
+        .checked_mul(stride)
+        .and_then(|offset| offset.checked_add(source_len))
+        .expect("Wiener source extent");
+    assert!(window.len() >= source_end);
+    assert!(
+        ring.len()
+            >= WIENER_ROWS
+                .checked_mul(row_len)
+                .expect("Wiener ring extent")
     );
-    for block in 0..blocks {
-        let j = block * V_STEP;
-        // SAFETY: AVX2 is enabled; values j .. j + 32 of every row lie in
-        // it (checked above).
-        let (first, second) = unsafe {
-            (
-                vertical16(&pointers, j, taps),
-                vertical16(&pointers, j + STEP, taps),
-            )
-        };
-        // packus interleaves the halves by 128-bit lane; the permute puts
-        // the 32 bytes back in order.
-        let bytes = _mm256_permute4x64_epi64::<0b1101_1000>(_mm256_packus_epi16(first, second));
-        if j + V_STEP <= n {
-            // SAFETY: AVX2 is enabled; bytes j .. j + 32 lie in `dst`.
-            unsafe { _mm256_storeu_si256(dst.as_mut_ptr().add(j).cast(), bytes) };
-        } else {
-            let mut tail = [0u8; V_STEP];
-            // SAFETY: AVX2 is enabled; the store covers `tail`.
-            unsafe { _mm256_storeu_si256(tail.as_mut_ptr().cast(), bytes) };
-            dst[j..].copy_from_slice(&tail[..n - j]);
+    let dst_stride = dst.stride();
+    // SAFETY: checked spans cover every window/ring row and output rectangle.
+    // Horizontal writes ceil(w/16)*16 and vertical reads ceil(w/32)*32,
+    // both within the overread. The seven scratch rows are distinct and
+    // horizontal completes before vertical reads; pointers rotate among them.
+    unsafe {
+        let horizontal = Horizontal::new(horizontal);
+        let vertical = vertical_taps(vertical);
+        let blocks = w.div_ceil(STEP);
+        let start = ring.as_mut_ptr();
+        let mut rows: [*const i16; WIENER_ROWS] =
+            core::array::from_fn(|k| start.add(k * row_len).cast_const());
+        for (k, &row) in rows[..WIENER_ROWS - 1].iter().enumerate() {
+            horizontal.row(window.as_ptr().add(k * stride), row.cast_mut(), blocks);
+        }
+        let output = dst.data_mut().as_mut_ptr().add(y * dst_stride + x);
+        for r in 0..h {
+            horizontal.row(
+                window.as_ptr().add((r + WIENER_ROWS - 1) * stride),
+                rows[WIENER_ROWS - 1].cast_mut(),
+                blocks,
+            );
+            vertical_row(&rows, vertical, output.add(r * dst_stride), w);
+            let [a, b, c, d, e, f, g] = rows;
+            rows = [b, c, d, e, f, g, a];
         }
     }
 }
@@ -290,6 +393,37 @@ impl SgrLanes for Lanes {
         // SAFETY: see the impl comment.
         Self(unsafe { _mm256_cmpeq_epi32(self.0, other.0) })
     }
+    /// For n=z+1 in 2..=255, 256/n is at least 1/(2n) away from a
+    /// half integer: 512 cannot equal an odd multiple of n in that range.
+    /// Intel's RCPPS relative-error bound (1.5 * 2^-12) gives absolute error
+    /// at most (3/32)/n, well below that distance. Multiplication by 256 is
+    /// exact; adding 0.5 has error at most 2^-15, still below the margin.
+    /// Truncation therefore rounds to the exact integer independently of
+    /// MXCSR's conversion rounding mode. The endpoints are explicit.
+    #[inline(always)]
+    fn sgr_factor(self) -> Self {
+        use core::arch::x86_64::{
+            _mm256_add_ps, _mm256_andnot_si256, _mm256_mul_ps, _mm256_rcp_ps, _mm256_set1_ps,
+        };
+        // SAFETY: see the impl comment; z is clipped to 0..=255 by box_ab.
+        unsafe {
+            let unit = _mm256_set1_epi32(1 << SGR_BITS);
+            let den = _mm256_cvtepi32_ps(_mm256_add_epi32(self.0, _mm256_set1_epi32(1)));
+            let rounded = _mm256_cvttps_epi32(_mm256_add_ps(
+                _mm256_mul_ps(
+                    _mm256_rcp_ps(den),
+                    _mm256_set1_ps(f32::from(1_u16 << SGR_BITS)),
+                ),
+                _mm256_set1_ps(0.5),
+            ));
+            let max = _mm256_set1_epi32(Z_MAX);
+            let complement = _mm256_andnot_si256(
+                _mm256_cmpeq_epi32(self.0, max),
+                _mm256_min_epi32(rounded, max),
+            );
+            Self(_mm256_sub_epi32(unit, complement))
+        }
+    }
     #[inline(always)]
     fn div_floor(self, den: Self) -> Self {
         // SAFETY: see the impl comment.
@@ -303,3 +437,32 @@ impl SgrLanes for Lanes {
 }
 
 sgr_kernels!(#[target_feature(enable = "avx2")]; Lanes);
+
+#[cfg(test)]
+mod tests {
+    use super::{Lanes, SgrLanes, Z_MAX};
+    use crate::av1_restoration::self_guided::x_by_xplus1;
+
+    #[test]
+    fn reciprocal_factor_matches_entire_legal_domain() {
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+        // SAFETY: AVX2 was detected above.
+        unsafe {
+            check_reciprocal_factors();
+        }
+    }
+
+    #[target_feature(enable = "avx2")]
+    unsafe fn check_reciprocal_factors() {
+        for first in (0..=Z_MAX).step_by(8) {
+            let z: [i32; 8] = core::array::from_fn(|i| first + i as i32);
+            let mut got = [0; 8];
+            Lanes::load(&z).sgr_factor().store(&mut got);
+            for (&z, &factor) in z.iter().zip(&got) {
+                assert_eq!(factor as u32, x_by_xplus1(z as u32), "z={z}");
+            }
+        }
+    }
+}

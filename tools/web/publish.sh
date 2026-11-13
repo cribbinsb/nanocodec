@@ -29,6 +29,11 @@ for arg in "$@"; do
   esac
 done
 
+# One publish at a time: two share the build worktree, and a second one
+# checking out its branch mid-build made the first publish the wrong page.
+exec 9>"$data/run/publish.lock"
+flock 9
+
 if [[ ! -e $tree/.git ]]; then
   git -C "$repo" worktree add --detach "$tree" "$branch"
 fi

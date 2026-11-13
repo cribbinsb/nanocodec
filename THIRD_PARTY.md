@@ -317,11 +317,14 @@ AV1 loop restoration (`crates/nc-dsp/src/av1_restoration/`: `mod.rs`,
 `simd128.rs`) ports dav1d 1.5.4 `src/lr_apply_tmpl.c`,
 `src/looprestoration_tmpl.c`, `src/x86/looprestoration_avx2.asm` and
 `src/arm/64/looprestoration.S`: in-place restoration by stripe, the Wiener
-ring of 16-bit horizontal rows, the 8-bit Wiener arithmetic (byte-pair
+ring of 16-bit horizontal rows, the AVX2 stripe-wide tap setup and
+rotating row-pointer schedule, the 8-bit Wiener arithmetic (byte-pair
 `pmaddubsw` / 16-bit `mla`, the clamp as a saturating add with dav1d's
 offsets, vertical pair sums with `pmaddwd`) and the self-guided row
 schedule (horizontal box sums, box statistics, filtered rows), reimplemented
-in Rust over our lane types.
+in Rust over our lane types. The AVX2 self-guided factor uses dav1d's
+rounded reciprocal form, with exact integer outputs over the full legal
+256-value factor domain.
 The AV1 decoder's motion field projection
 (`crates/nc-av1/src/decoder/motion_field.rs`: the field built one
 superblock row at a time into a one-row buffer, per-reference span tables,
