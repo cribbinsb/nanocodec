@@ -38,16 +38,19 @@ export class BrowserDecoder {
    */
   i420_frame(): number;
   /**
-   * Convert the latest frame to RGBA (`width * height * 4` bytes) in a
-   * buffer this decoder reuses, and return its byte offset in the module's
-   * WASM memory. JS reads it through a view of `memory.buffer`, which is
-   * valid until the next call into the module (memory may grow); copying
-   * from it into a reused canvas buffer avoids a per-frame allocation.
-   * This is the CPU display path; `i420_frame` feeds a GPU conversion.
+   * Convert the latest frame to RGBA (`width * height * 4` bytes) with
+   * `colour` (the matrix and range of the samples, `SourceFrame` names)
+   * in a buffer this decoder reuses, and return its byte offset in the
+   * module's WASM memory. JS reads it through a view of `memory.buffer`,
+   * which is valid until the next call into the module (memory may grow);
+   * copying from it into a reused canvas buffer avoids a per-frame
+   * allocation. This is the CPU display path; `i420_frame` feeds a GPU
+   * conversion.
    * # Errors
-   * Rejects calls made before a frame has been decoded.
+   * Rejects unknown colours, and calls made before a frame has been
+   * decoded.
    */
-  rgba_frame(): number;
+  rgba_frame(colour: string): number;
   /**
    * Decode coded frame `index` and report its outcome, never throwing
    * for stream problems. `references` is the transport's dependency
@@ -82,17 +85,16 @@ export class BrowserDecoder {
    */
   constructor(codec: string);
   /**
-   * PSNR-YUV of the latest decoded frame against the RGBA source frame it
-   * was coded from, which is converted here exactly as the encoder
-   * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). When
-   * the decoded frame is a smaller spatial layer or adaptive-resolution
-   * picture of the same stream, it is upscaled to the stream dimensions
-   * (`nc_dsp::display`) before scoring.
+   * PSNR-YUV of the latest decoded frame against the source frame it was
+   * coded from, packed I420 (`SourceFrame::packed`; 6:1:1 weighting).
+   * When the decoded frame is a smaller spatial layer or
+   * adaptive-resolution picture of the same stream, it is upscaled to the
+   * stream dimensions (`nc_dsp::display`) before scoring.
    * # Errors
    * Rejects calls made before a frame has been decoded, and a source
    * whose byte count matches neither the decoded frame nor the stream.
    */
-  psnr(rgba: Uint8Array): number;
+  psnr(i420: Uint8Array): number;
   /**
    * Decode one packet; the picture becomes the latest decoded frame.
    * # Errors
@@ -132,21 +134,12 @@ export class BrowserEncoder {
   free(): void;
   [Symbol.dispose](): void;
   /**
-   * Per-frame PSNR-YUV against the actual decoder output, using6:1:1 weighting.
-   * Smaller spatial/scaled frames of the same stream are upscaled to the
-   * source dimensions (`nc_dsp::display`) before scoring.
+   * Hand over the second source frame before encoding the first; both
+   * are still encoded in order afterwards.
    * # Errors
-   * Requires a decoded frame belonging to a stream with the encoder's
-   * visible dimensions.
+   * Rejects a frame of another size or colour than the configuration's.
    */
-  quality(decoder: BrowserDecoder): number;
-  /**
-   * Hand over the second RGBA frame before encoding the first; both are
-   * still encoded in order afterwards.
-   * # Errors
-   * Rejects input whose byte count differs from the configured dimensions.
-   */
-  look_ahead(rgba: Uint8Array): void;
+  look_ahead(source: SourceFrame): void;
   /**
    * Request a keyframe on the next input, preserving rate-control history.
    */
@@ -168,19 +161,21 @@ export class BrowserEncoder {
    * `overrides` (optional) holds `name=value` lines applied over the
    * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
    * turns on film grain synthesis, which the decoder applies to its
-   * output.
+   * output. `colour` (optional, [`SourceFrame`] names, default `bt601`)
+   * is the matrix and range of the input, which the stream signals
+   * (AV2, whose subset has no colour syntax, signals nothing).
    * # Errors
    * Rejects invalid codecs, presets, overrides, configurations, film
-   * grain outside AV1, or dimensions above1080p.
+   * grain outside AV1, unknown colours, or dimensions above1080p.
    */
-  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean);
+  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean, colour?: string | null);
   /**
-   * Convert one RGBA frame and encode an access unit / AV1 temporal unit:
+   * Encode one source frame as an access unit / AV1 temporal unit:
    * empty when the input repeated the picture ([`BrowserEncoder::repeat`]).
    * # Errors
-   * Rejects input whose byte count differs from the configured dimensions.
+   * Rejects a frame of another size or colour than the configuration's.
    */
-  encode(rgba: Uint8Array): Uint8Array;
+  encode(source: SourceFrame): Uint8Array;
   /**
    * Fraction of the configured bitrate buffer currently occupied.
    */
@@ -200,6 +195,10 @@ export class BrowserEncoder {
    * Whether the last encoded packet is a key frame.
    */
   readonly key: boolean;
+  /**
+   * The colour (`SourceFrame` names) the encoder expects and signals.
+   */
+  readonly colour: string;
   /**
    * Whether the last input coded nothing (its packet is empty): it
    * repeated the picture (frame hold) or rate control dropped it. Send
@@ -238,6 +237,53 @@ export class DecodeOutcome {
    */
   readonly decoded: boolean;
 }
+/**
+ * A source frame converted for one view: the encoder's input picture
+ * (`BrowserEncoder::encode`) and, packed, the reference the decode worker
+ * scores and the page shows as the original.
+ */
+export class SourceFrame {
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Fill the frame from a `width` x `height` YUV picture in `data`, laid
+   * out as `WebCodecs` `VideoFrame.copyTo` reports it: `layout` holds each
+   * plane's byte offset and stride (`[offset, stride, ...]`); `format` is
+   * its `VideoPixelFormat` (`I420`, `I420A` or `NV12`) and `colour` its
+   * matrix and range (`bt601`, `bt709`, `bt601-full`, `bt709-full`).
+   * # Errors
+   * Rejects other formats or colours, and layouts that do not fit `data`.
+   */
+  from_planes(data: Uint8Array, format: string, colour: string, width: number, height: number, layout: Uint32Array): void;
+  /**
+   * An empty (black, BT.601) frame of the view size.
+   * # Errors
+   * Rejects sizes the encoders refuse (`BrowserEncoder::new`).
+   */
+  constructor(width: number, height: number);
+  /**
+   * Pack the frame as I420 (Y, then Cb, then Cr, rows without padding) in
+   * a buffer this frame reuses and return its byte offset in the module's
+   * WASM memory, read as for `BrowserDecoder::rgba_frame`
+   * (`packed_length` bytes).
+   */
+  packed(): number;
+  /**
+   * Fill the frame from packed RGBA of the view size (already letterboxed
+   * by the page's canvas), as limited-range BT.601.
+   * # Errors
+   * Rejects input whose byte count differs from the view size.
+   */
+  from_rgba(rgba: Uint8Array): void;
+  /**
+   * Byte count of `packed`.
+   */
+  readonly packed_length: number;
+  /**
+   * The colour (`from_planes` names) of the samples.
+   */
+  readonly colour: string;
+}
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -246,6 +292,7 @@ export interface InitOutput {
   readonly __wbg_browserdecoder_free: (a: number, b: number) => void;
   readonly __wbg_browserencoder_free: (a: number, b: number) => void;
   readonly __wbg_decodeoutcome_free: (a: number, b: number) => void;
+  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
   readonly browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
   readonly browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
@@ -253,7 +300,7 @@ export interface InitOutput {
   readonly browserdecoder_i420_frame: (a: number) => [number, number, number];
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];
   readonly browserdecoder_psnr: (a: number, b: number, c: number) => [number, number, number];
-  readonly browserdecoder_rgba_frame: (a: number) => [number, number, number];
+  readonly browserdecoder_rgba_frame: (a: number, b: number, c: number) => [number, number, number];
   readonly browserdecoder_set_operating_point: (a: number, b: number) => [number, number];
   readonly browserdecoder_spatial_id: (a: number) => number;
   readonly browserdecoder_stream_height: (a: number) => number;
@@ -261,12 +308,12 @@ export interface InitOutput {
   readonly browserdecoder_width: (a: number) => number;
   readonly browserencoder_buffer_fullness: (a: number) => number;
   readonly browserencoder_buffer_overflows: (a: number) => number;
+  readonly browserencoder_colour: (a: number) => [number, number];
   readonly browserencoder_disable_rate_control: (a: number) => void;
-  readonly browserencoder_encode: (a: number, b: number, c: number) => [number, number, number, number];
+  readonly browserencoder_encode: (a: number, b: number) => [number, number, number, number];
   readonly browserencoder_key: (a: number) => number;
-  readonly browserencoder_look_ahead: (a: number, b: number, c: number) => [number, number];
-  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
-  readonly browserencoder_quality: (a: number, b: number) => [number, number, number];
+  readonly browserencoder_look_ahead: (a: number, b: number) => [number, number];
+  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
   readonly browserencoder_quantizer: (a: number) => number;
   readonly browserencoder_repeat: (a: number) => number;
   readonly browserencoder_request_keyframe: (a: number) => void;
@@ -278,6 +325,12 @@ export interface InitOutput {
   readonly decodeoutcome_reason: (a: number) => [number, number];
   readonly decodeoutcome_report_index: (a: number) => number;
   readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
+  readonly sourceframe_colour: (a: number) => [number, number];
+  readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+  readonly sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
+  readonly sourceframe_new: (a: number, b: number) => [number, number, number];
+  readonly sourceframe_packed: (a: number) => number;
+  readonly sourceframe_packed_length: (a: number) => number;
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -362,7 +362,7 @@ const originalButton = $('#original');
 function toggleOriginal(value) {
   showOriginal = value; originalButton.setAttribute('aria-pressed', String(value));
   for (const panel of panels) if (panel.shown) {
-    if (value) panel.renderer.showOriginal(panel.original); else panel.renderer.showLatest();
+    if (value) panel.renderer.showOriginal(panel.original?.image ?? null); else panel.renderer.showLatest();
     panel.label(value);
   }
   loupe.frameShown(original);

@@ -135,8 +135,9 @@ are needed: each worker has its own ordinary WASM memory.
 - **Settings · CLI command** (below each download): the effective preset and
   overrides, and the equivalent `nanocodec encode …` line (same codec, size, frame
   rate, key interval, quantizer seed, rate settings, preset and overrides), to run on
-  an I420 file of the source; the page itself codes its limited-range BT.601
-  conversion of the RGBA frames.
+  an I420 file of the source (for a sample clip, `ffmpeg`'s decode of it, scaled
+  as the pipeline below describes when the size differs; add `--colour bt709` to
+  signal its colour as the page does).
 - **Other live changes:** codec, quantizer, preset, Advanced settings, GOP, resolution, frame rate and source changes
   restart both pipelines on a keyframe and
   clears statistics/download buffers. Video files continue from their current
@@ -170,14 +171,19 @@ at maximum quality. Native callers can set QP limits and smoothing through
 
 Numbers summarize the last 90 compared frames (or all available frames).
 Bitrate is mean compressed bytes/frame × the version's frame rate, not network throughput.
-Encode time includes RGBA→limited-range BT.601 I420 conversion; decode time is
+Encode time includes the input conversion (placing the video's planes in the view,
+or RGBA→BT.601 I420 for RGBA input); decode time is
 the decoder alone (the display hand-off is not included). Both are worker wall timings, not single-core
 native CPU benchmarks. PSNR uses the same 6:1:1 average of per-plane PSNR as the
-harness, capped at 100 dB, against the encoder input: the decode worker converts the
-RGBA source frame exactly as the encoder does and sums squared errors with a SIMD128
-kernel (`BrowserDecoder.psnr`, every frame: about 2 ms per 720p frame in the decode
-worker, mostly the RGBA copy and conversion; the squared-error sum itself takes 0.13 ms,
-was 1.8 ms scalar). VMAF and
+harness, capped at 100 dB, against the encoder input itself: the YUV planes the
+encoder coded (for a video or camera source, the decoded frame's own planes, at a
+size other than the file's scaled as described under the pipeline), which the
+encode worker passes on with the packet; squared errors come from a SIMD128 kernel
+(`BrowserDecoder.psnr`, every frame). It is therefore the same number the offline
+evaluation computes on YUV, with no colour conversion in between (before
+2026-11-13 the page measured against a BT.709 → RGB → BT.601 round trip of the
+video, which lowered PSNR by up to about 1.5 dB and made live and pre-encoded
+views differ). VMAF and
 MS-SSIM are deliberately not fabricated or estimated in the live page.
 
 The session line shows the delivered frame rate and the busiest of the four workers:
@@ -186,11 +192,23 @@ The session line shows the delivered frame rate and the busiest of the four work
 plus PSNR plus display hand-off.
 
 **Pipeline (`pipeline.js`).** The page captures each frame as a `VideoFrame` (an
-`ImageBitmap` without WebCodecs) and hands it to `capture-worker.js`, which letterboxes
-and converts it to RGBA at each version's size (`VideoFrame.copyTo` at the source's own
-size, else an `OffscreenCanvas`; both give exactly the pixels the page's own
-`drawImage` + `getImageData` gave, `web/tests/capture-identity.py`) and posts it to each
-version's encoder over a `MessageChannel`. Reading video back as RGBA was the page's
+`ImageBitmap` without WebCodecs) and hands it to `capture-worker.js`. A video or camera
+frame in I420 or NV12 (what browsers decode H.264 to) goes to each version's encoder
+over a `MessageChannel` as its own decoded YUV planes (`VideoFrame.copyTo` in its own
+format, once for both versions: no YUV → RGB → YUV round trip, 1.5 bytes per pixel,
+and a read-back 4-30x cheaper than RGBA when frames live on the GPU). The encode worker
+places them in the version's size in WASM (`SourceFrame`): unchanged at the file's own
+size, else scaled with the player-model bilinear filter (`nc_dsp::display`, each plane on
+its own grid) into the largest centred rectangle of the source's shape, black bars
+around. The stream signals the frame's colour (BT.709 limited range for the sample
+clips; a webcam's own BT.601/BT.709 and range; AV2, whose subset has no colour syntax,
+signals nothing), and both display paths convert with it. The sample clips are coded
+exactly as `ffmpeg` decodes the files (`web/tests/capture-identity.py`), which is also
+what the pre-encoded reference streams code, so a live and a pre-encoded view of a
+clip see identical source frames. Other pictures (the test scene, other formats or
+colour matrices, engines without `VideoFrame`) take the RGBA path: letterboxed and read
+back as RGBA (`VideoFrame.copyTo` at the source's own size, else an `OffscreenCanvas`)
+and converted to limited-range BT.601. Reading video back was the page's
 largest cost (15-90 ms per 720p frame in headless Chromium under load), and while it ran
 the page could not receive or draw results. Each version has two workers: `encode-worker.js` runs
 `BrowserEncoder.encode` and posts the packet, with the source frame, straight to its
@@ -211,8 +229,10 @@ original").
 (else WebGL1): `BrowserDecoder.i420_frame` packs the decoded planes without row
 padding into a reused WASM buffer, the worker copies them out (1.5 bytes per
 pixel), and the page uploads them as three one-channel textures that a fragment
-shader converts with the same limited-range BT.601 integer arithmetic as the
-CPU path; the output is identical (checked by `tools/web/display-bench.py`).
+shader converts with the same integer arithmetic as the CPU path, in the source's
+colour matrix and range (`colour.js`; BT.601 or BT.709, limited or full); the output
+is identical (checked by `tools/web/display-bench.py`; the page's JS conversion of the
+original frame against WASM's by `web/tests/colour-wasm.mjs`).
 Otherwise (no WebGL, or only software GL such as SwiftShader, which
 `failIfMajorPerformanceCaveat` refuses because it is slower than the CPU path)
 `BrowserDecoder.rgba_frame` converts to RGBA in WASM (SIMD128) and the page

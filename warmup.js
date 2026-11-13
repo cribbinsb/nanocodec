@@ -48,9 +48,9 @@ export async function warmUp(module, codec, stop) {
       if (stop()) return result(frames, longestFrameMs, true);
       const frameStart = performance.now();
       decoder.decode(packet);
-      decoder.rgba_frame();
+      decoder.rgba_frame('bt709');
       decoder.i420_frame();
-      source ??= new Uint8Array(decoder.width * decoder.height * 4);
+      source ??= new Uint8Array(decoder.width * decoder.height + 2 * Math.ceil(decoder.width / 2) * Math.ceil(decoder.height / 2));
       decoder.psnr(source);
       longestFrameMs = Math.max(longestFrameMs, performance.now() - frameStart);
       frames++;

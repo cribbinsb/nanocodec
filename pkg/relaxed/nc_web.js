@@ -217,6 +217,22 @@ function isLikeNone(x) {
     return x === undefined || x === null;
 }
 
+let cachedUint32ArrayMemory0 = null;
+
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 const BrowserDecoderFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserdecoder_free(ptr >>> 0, 1));
@@ -254,18 +270,24 @@ export class BrowserDecoder {
         return ret[0] >>> 0;
     }
     /**
-     * Convert the latest frame to RGBA (`width * height * 4` bytes) in a
-     * buffer this decoder reuses, and return its byte offset in the module's
-     * WASM memory. JS reads it through a view of `memory.buffer`, which is
-     * valid until the next call into the module (memory may grow); copying
-     * from it into a reused canvas buffer avoids a per-frame allocation.
-     * This is the CPU display path; `i420_frame` feeds a GPU conversion.
+     * Convert the latest frame to RGBA (`width * height * 4` bytes) with
+     * `colour` (the matrix and range of the samples, `SourceFrame` names)
+     * in a buffer this decoder reuses, and return its byte offset in the
+     * module's WASM memory. JS reads it through a view of `memory.buffer`,
+     * which is valid until the next call into the module (memory may grow);
+     * copying from it into a reused canvas buffer avoids a per-frame
+     * allocation. This is the CPU display path; `i420_frame` feeds a GPU
+     * conversion.
      * # Errors
-     * Rejects calls made before a frame has been decoded.
+     * Rejects unknown colours, and calls made before a frame has been
+     * decoded.
+     * @param {string} colour
      * @returns {number}
      */
-    rgba_frame() {
-        const ret = wasm.browserdecoder_rgba_frame(this.__wbg_ptr);
+    rgba_frame(colour) {
+        const ptr0 = passStringToWasm0(colour, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browserdecoder_rgba_frame(this.__wbg_ptr, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -372,20 +394,19 @@ export class BrowserDecoder {
         return this;
     }
     /**
-     * PSNR-YUV of the latest decoded frame against the RGBA source frame it
-     * was coded from, which is converted here exactly as the encoder
-     * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). When
-     * the decoded frame is a smaller spatial layer or adaptive-resolution
-     * picture of the same stream, it is upscaled to the stream dimensions
-     * (`nc_dsp::display`) before scoring.
+     * PSNR-YUV of the latest decoded frame against the source frame it was
+     * coded from, packed I420 (`SourceFrame::packed`; 6:1:1 weighting).
+     * When the decoded frame is a smaller spatial layer or
+     * adaptive-resolution picture of the same stream, it is upscaled to the
+     * stream dimensions (`nc_dsp::display`) before scoring.
      * # Errors
      * Rejects calls made before a frame has been decoded, and a source
      * whose byte count matches neither the decoded frame nor the stream.
-     * @param {Uint8Array} rgba
+     * @param {Uint8Array} i420
      * @returns {number}
      */
-    psnr(rgba) {
-        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+    psnr(i420) {
+        const ptr0 = passArray8ToWasm0(i420, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.browserdecoder_psnr(this.__wbg_ptr, ptr0, len0);
         if (ret[2]) {
@@ -448,34 +469,15 @@ export class BrowserEncoder {
         wasm.__wbg_browserencoder_free(ptr, 0);
     }
     /**
-     * Per-frame PSNR-YUV against the actual decoder output, using6:1:1 weighting.
-     * Smaller spatial/scaled frames of the same stream are upscaled to the
-     * source dimensions (`nc_dsp::display`) before scoring.
+     * Hand over the second source frame before encoding the first; both
+     * are still encoded in order afterwards.
      * # Errors
-     * Requires a decoded frame belonging to a stream with the encoder's
-     * visible dimensions.
-     * @param {BrowserDecoder} decoder
-     * @returns {number}
+     * Rejects a frame of another size or colour than the configuration's.
+     * @param {SourceFrame} source
      */
-    quality(decoder) {
-        _assertClass(decoder, BrowserDecoder);
-        const ret = wasm.browserencoder_quality(this.__wbg_ptr, decoder.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Hand over the second RGBA frame before encoding the first; both are
-     * still encoded in order afterwards.
-     * # Errors
-     * Rejects input whose byte count differs from the configured dimensions.
-     * @param {Uint8Array} rgba
-     */
-    look_ahead(rgba) {
-        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserencoder_look_ahead(this.__wbg_ptr, ptr0, len0);
+    look_ahead(source) {
+        _assertClass(source, SourceFrame);
+        const ret = wasm.browserencoder_look_ahead(this.__wbg_ptr, source.__wbg_ptr);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -548,10 +550,12 @@ export class BrowserEncoder {
      * `overrides` (optional) holds `name=value` lines applied over the
      * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
      * turns on film grain synthesis, which the decoder applies to its
-     * output.
+     * output. `colour` (optional, [`SourceFrame`] names, default `bt601`)
+     * is the matrix and range of the input, which the stream signals
+     * (AV2, whose subset has no colour syntax, signals nothing).
      * # Errors
      * Rejects invalid codecs, presets, overrides, configurations, film
-     * grain outside AV1, or dimensions above1080p.
+     * grain outside AV1, unknown colours, or dimensions above1080p.
      * @param {string} codec
      * @param {number} width
      * @param {number} height
@@ -561,15 +565,18 @@ export class BrowserEncoder {
      * @param {string} preset_name
      * @param {string | null | undefined} overrides
      * @param {boolean} film_grain
+     * @param {string | null} [colour]
      */
-    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain) {
+    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain, colour) {
         const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(preset_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         var ptr2 = isLikeNone(overrides) ? 0 : passStringToWasm0(overrides, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         var len2 = WASM_VECTOR_LEN;
-        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain);
+        var ptr3 = isLikeNone(colour) ? 0 : passStringToWasm0(colour, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain, ptr3, len3);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -578,23 +585,38 @@ export class BrowserEncoder {
         return this;
     }
     /**
-     * Convert one RGBA frame and encode an access unit / AV1 temporal unit:
+     * The colour (`SourceFrame` names) the encoder expects and signals.
+     * @returns {string}
+     */
+    get colour() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.browserencoder_colour(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Encode one source frame as an access unit / AV1 temporal unit:
      * empty when the input repeated the picture ([`BrowserEncoder::repeat`]).
      * # Errors
-     * Rejects input whose byte count differs from the configured dimensions.
-     * @param {Uint8Array} rgba
+     * Rejects a frame of another size or colour than the configuration's.
+     * @param {SourceFrame} source
      * @returns {Uint8Array}
      */
-    encode(rgba) {
-        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browserencoder_encode(this.__wbg_ptr, ptr0, len0);
+    encode(source) {
+        _assertClass(source, SourceFrame);
+        const ret = wasm.browserencoder_encode(this.__wbg_ptr, source.__wbg_ptr);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
-        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v2;
+        return v1;
     }
     /**
      * Whether the last input coded nothing (its packet is empty): it
@@ -686,6 +708,125 @@ export class DecodeOutcome {
 }
 if (Symbol.dispose) DecodeOutcome.prototype[Symbol.dispose] = DecodeOutcome.prototype.free;
 
+const SourceFrameFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_sourceframe_free(ptr >>> 0, 1));
+/**
+ * A source frame converted for one view: the encoder's input picture
+ * (`BrowserEncoder::encode`) and, packed, the reference the decode worker
+ * scores and the page shows as the original.
+ */
+export class SourceFrame {
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SourceFrameFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_sourceframe_free(ptr, 0);
+    }
+    /**
+     * Fill the frame from a `width` x `height` YUV picture in `data`, laid
+     * out as `WebCodecs` `VideoFrame.copyTo` reports it: `layout` holds each
+     * plane's byte offset and stride (`[offset, stride, ...]`); `format` is
+     * its `VideoPixelFormat` (`I420`, `I420A` or `NV12`) and `colour` its
+     * matrix and range (`bt601`, `bt709`, `bt601-full`, `bt709-full`).
+     * # Errors
+     * Rejects other formats or colours, and layouts that do not fit `data`.
+     * @param {Uint8Array} data
+     * @param {string} format
+     * @param {string} colour
+     * @param {number} width
+     * @param {number} height
+     * @param {Uint32Array} layout
+     */
+    from_planes(data, format, colour, width, height, layout) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(colour, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArray32ToWasm0(layout, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.sourceframe_from_planes(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, width, height, ptr3, len3);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Byte count of `packed`.
+     * @returns {number}
+     */
+    get packed_length() {
+        const ret = wasm.sourceframe_packed_length(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * An empty (black, BT.601) frame of the view size.
+     * # Errors
+     * Rejects sizes the encoders refuse (`BrowserEncoder::new`).
+     * @param {number} width
+     * @param {number} height
+     */
+    constructor(width, height) {
+        const ret = wasm.sourceframe_new(width, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0] >>> 0;
+        SourceFrameFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The colour (`from_planes` names) of the samples.
+     * @returns {string}
+     */
+    get colour() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.sourceframe_colour(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Pack the frame as I420 (Y, then Cb, then Cr, rows without padding) in
+     * a buffer this frame reuses and return its byte offset in the module's
+     * WASM memory, read as for `BrowserDecoder::rgba_frame`
+     * (`packed_length` bytes).
+     * @returns {number}
+     */
+    packed() {
+        const ret = wasm.sourceframe_packed(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Fill the frame from packed RGBA of the view size (already letterboxed
+     * by the page's canvas), as limited-range BT.601.
+     * # Errors
+     * Rejects input whose byte count differs from the view size.
+     * @param {Uint8Array} rgba
+     */
+    from_rgba(rgba) {
+        const ptr0 = passArray8ToWasm0(rgba, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.sourceframe_from_rgba(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+}
+if (Symbol.dispose) SourceFrame.prototype[Symbol.dispose] = SourceFrame.prototype.free;
+
 const EXPECTED_RESPONSE_TYPES = new Set(['basic', 'cors', 'default']);
 
 async function __wbg_load(module, imports) {
@@ -750,6 +891,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     __wbg_init.__wbindgen_wasm_module = module;
     cachedFloat64ArrayMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
 
 

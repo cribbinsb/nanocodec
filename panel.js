@@ -275,7 +275,7 @@ export class Panel {
     }
     const free = this.renderer.show(result);
     this.shown = true; this.original = original;
-    if (showOriginal) this.renderer.showOriginal(original);
+    if (showOriginal) this.renderer.showOriginal(original?.image ?? null);
     this.element.querySelector('.empty-overlay').hidden = true;
     // `earlier`: frames coded with this one (start-up lookahead, or stream frames a capture skipped).
     for (const coded of [...(result.earlier ?? []), result]) this.record(coded);

@@ -50,8 +50,10 @@ export async function warmUpEncoder(module, config, stop) {
   if (stop()) return result(0, 0, true);
   const created = performance.now();
   const c = config;
+  // The RGBA path's colour: the frames below are RGBA.
   const encoder = new module.BrowserEncoder(c.codec, WARM_UP_WIDTH, WARM_UP_HEIGHT, c.qp, c.fps,
-    c.keyInterval, c.preset, c.overrides, c.filmGrain);
+    c.keyInterval, c.preset, c.overrides, c.filmGrain, 'bt601');
+  const source = new module.SourceFrame(WARM_UP_WIDTH, WARM_UP_HEIGHT);
   if (c.rateMode === 'cbr') encoder.set_rate_control(c.targetKbps, c.peakKbps, c.bufferMs);
   let frames = 0, longestFrameMs = performance.now() - created;
   try {
@@ -61,12 +63,14 @@ export async function warmUpEncoder(module, config, stop) {
       if (stop()) return result(frames, longestFrameMs, true);
       syntheticFrame(rgba, index);
       const frameStart = performance.now();
-      encoder.encode(rgba);
+      source.from_rgba(rgba);
+      encoder.encode(source);
       longestFrameMs = Math.max(longestFrameMs, performance.now() - frameStart);
       frames++;
     }
   } finally {
     encoder.free();
+    source.free();
   }
   return result(frames, longestFrameMs, false);
 }

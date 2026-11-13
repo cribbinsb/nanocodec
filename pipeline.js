@@ -3,8 +3,8 @@
 // (capture-worker.js), and per view either a live encode worker and a decode
 // worker joined by a MessageChannel (encode-worker.js, decode-worker.js), or,
 // for a pre-encoded reference stream, the decode worker alone, to which the
-// page passes the stream's packets with each converted source frame. The page
-// never reads pixels back: it hands the capture worker a picture (capture.js).
+// page passes the stream's packets with each captured frame. The page never
+// reads pixels back: it hands the capture worker a picture (capture.js).
 //
 // Frames are captured on the shared source timeline (timeline.js). Each view
 // codes only the ticks of its own frame rate and holds its last picture in
@@ -19,6 +19,7 @@
 // (`full`), which bounds the added latency.
 import { codesTick, tickAt, tickMs } from './timeline.js';
 import { framesToDecode, streamFrameAtTick } from './reference.js';
+import { SourcePicture } from './colour.js';
 
 /**
  * Frames captured but not yet decoded by both views: one per stage (capture
@@ -99,17 +100,18 @@ class ReferenceView extends View {
     return this.ready;
   }
   codes(tick) { return streamFrameAtTick(this.stream, tick) !== null; }
-  /** Send the decoder every stream frame up to the one of this capture's tick, with the source of that one. */
-  submit({ id, timestamp, rgba, display }) {
+  /** Send the decoder every stream frame up to the one of this capture's tick, with the captured frame of that one. */
+  submit({ id, timestamp, frame: captured, display }) {
     const tick = tickAt(timestamp), target = streamFrameAtTick(this.stream, tick), { packets, step, entry } = this.stream;
     const frames = framesToDecode(this.last, target);
     this.last = target;
     // Packets are views into the fetched file: each frame gets its own copy to transfer.
     const coded = frames.map(frame => ({
       timestamp: tickMs(tick - (target - frame) * step), packet: packets[frame].slice(), key: frame % entry.keyInterval === 0,
-      repeat: false, quantizer: null, encodeMs: null, rgba: frame === target ? rgba : null,
+      repeat: false, quantizer: null, encodeMs: null,
+      capture: frame === target ? { frame: captured, width: this.panel.current.width, height: this.panel.current.height } : null,
     }));
-    this.port.postMessage({ id, display, coded, bufferFullness: null, bufferOverflows: 0 }, [rgba, ...coded.map(c => c.packet.buffer)]);
+    this.port.postMessage({ id, display, coded, bufferFullness: null, bufferOverflows: 0 }, [captured.data, ...coded.map(c => c.packet.buffer)]);
   }
   terminate() { this.port?.close(); this.capturePort?.close(); super.terminate(); }
 }
@@ -118,7 +120,7 @@ export class Comparison {
   /**
    * `onFrame(results, originals, tick)`: every view that codes `tick` decoded it
    * (`results[i]` is view i's decode-worker result, or null for a view that holds
-   * its picture; `originals[i]` view i's source pixels as ImageData, or null).
+   * its picture; `originals[i]` view i's source frame, a colour.js SourcePicture, or null).
    * `onError(error)`: a worker failed after start-up.
    */
   constructor(panels, { onFrame, onError }) {
@@ -205,7 +207,7 @@ export class Comparison {
       this.inFlight.delete(id);
       const originals = frame.results.map((result, i) => {
         const { width, height } = this.views[i].panel.current;
-        return result?.source ? new ImageData(new Uint8ClampedArray(result.source), width, height) : null;
+        return result?.source ? new SourcePicture(new Uint8Array(result.source), width, height, result.colour) : null;
       });
       this.onFrame(frame.results, originals, frame.tick);
       if (this.closed) return;
