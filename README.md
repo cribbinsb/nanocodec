@@ -136,11 +136,13 @@ the scale above), on 8 of the chart's clips; speed is one core, timed in pairs w
 | libaom v3.15.3 `svc_encoder_rtc` L2T1, speed 10 | −8.7% | +42.6% | 30.6 | 68.6 |
 | libvpx v1.16.0 `vp9_spatial_svc_encoder` L2T1, speed 9 | +27.4% | +108.2% | 37.6 | 72.4 |
 | libvpx v1.16.0 `vp9_spatial_svc_encoder` L2T1, speed 7 | +30.3% | +114.8% | 22.9 | 53.3 |
-| libaom v3.15.3 `svc_encoder_rtc` L2T3, speed 10 | +48.9% | +101.9% | 32.8 | 77.1 |
+| libaom v3.15.3 `svc_encoder_rtc` L2T3, speed 10 † | +48.9% | +101.9% | 32.8 | 77.1 |
 
 The libaom and libvpx rows use those projects' example SVC encoders at the settings listed in
-[svc-chart.md](docs/results/svc-chart.md); the examples are demonstrations of the API rather than tuned products,
-and the large L2T3 vs L2T1 gap for libaom suggests their settings, not the library, are the limit. Single-layer
+[svc-chart.md](docs/results/svc-chart.md); the examples are demonstrations of the API rather than tuned products.
+† Configuration under review: our libaom L2T3 settings split the rate across temporal layers as WebRTC does
+(40/60/100%), which on a one-clip probe cost libaom 0.7–1.1 dB against the 50/70/100 or 60/80/100 splits its own
+tests use; the row understates libaom and is not used for comparison until re-measured. Single-layer
 AV1 / VP9 Default on the same clips: −53.0% / −50.1%. The three-layer streams' 180p operating point is +4.9%
 (L3T1) against AV1 Default coded alone at 180p.
 

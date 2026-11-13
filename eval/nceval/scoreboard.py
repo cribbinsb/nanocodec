@@ -17,7 +17,7 @@ and BD <= 0 against those rows). For each row:
     line: {"date", "codec", "preset", "anchor", "ratio", "binary_sha256"?});
   - the worst clip (highest mean of the two BD-rates).
 
-Context comparisons (Mark, 2026-11-08; GPL tools run as external binaries
+Context comparisons (owner decision, 2026-11-08; GPL tools run as external binaries
 only): every row is also compared with x264 ultrafast/veryfast and x265
 ultrafast/superfast (single-threaded, zerolatency, no B-frames, fixed QP;
 encoders/anchors.py), and every anchor's callgrind instructions per frame on

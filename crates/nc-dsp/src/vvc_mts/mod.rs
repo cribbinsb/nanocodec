@@ -1,4 +1,4 @@
-//! H.266 primary transforms of any kind pair (§8.7.4.2 DCT-II, DST-VII and
+//! H.266 primary transforms of any kind pair (§8.7.4.1, §8.7.4.4: DCT-II, DST-VII and
 //! DCT-VIII, multiple transform selection) for 4- to 32-point sides: the
 //! normative inverse after scaling, and the encoder's forward.
 //!
@@ -169,7 +169,7 @@ fn sample_pairs(kind: VvcTransformKind, n: usize) -> &'static PairTable {
     &SAMPLE_PAIRS[kind][log2]
 }
 
-/// §8.7.4.2: the first inverse stage rounds by 7 bits and clips to 16.
+/// §8.7.4.1: the first inverse stage rounds by 7 bits and clips to 16.
 const INVERSE_FIRST_SHIFT: u32 = 7;
 /// §8.7.4.1 `bdShift` at 8-bit: 20 − `BitDepth`.
 const INVERSE_SECOND_SHIFT: u32 = 12;
@@ -347,7 +347,7 @@ fn supported((width, height): (usize, usize), kinds: [VvcTransformKind; 2]) -> b
 impl Dsp {
     /// The inverse primary transform of dequantised `coefficients` (within
     /// 16 bits) of a `width` x `height` block (row-major; `kinds`
-    /// horizontal then vertical) into the residual `out`, as §8.7.4.2.
+    /// horizontal then vertical) into the residual `out`, as §8.7.4.1.
     /// # Panics
     /// If a side is not 4 to 32, a kind does not apply to its side, or a
     /// slice is shorter than the block.

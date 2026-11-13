@@ -125,10 +125,10 @@ impl Context {
 /// writers are generic over it, so a trial prices exactly the bins the
 /// coder would code.
 pub trait BinSink {
-    /// One context-coded bin (`EncodeDecision`, HEVC §9.3.4.3.2); the
+    /// One context-coded bin (`EncodeDecision`, HEVC §9.3.5.3); the
     /// context adapts.
     fn encode_bin(&mut self, ctx: &mut Context, bin: bool);
-    /// Equiprobable bins (`EncodeBypass`, HEVC §9.3.4.3.4): the `count` low
+    /// Equiprobable bins (`EncodeBypass`, HEVC §9.3.5.5): the `count` low
     /// bits of `value`, most significant first.
     fn encode_bypass(&mut self, value: u32, count: u32);
 }
@@ -147,7 +147,7 @@ impl BinSink for CabacWriter {
 const INITIAL_BITS_LEFT: i32 = 23;
 /// Output a byte once fewer than this many free bits remain.
 const BITS_LEFT_REFILL: i32 = 12;
-/// Initial `ivlCurrRange` (HEVC §9.3.2.5).
+/// Initial `ivlCurrRange` (HEVC §9.3.5.2).
 const INITIAL_RANGE: u32 = 510;
 /// Renormalisation is needed while the range is below this.
 const RANGE_RENORM: u32 = 256;
@@ -175,7 +175,7 @@ impl Default for CabacWriter {
 }
 
 impl CabacWriter {
-    /// A fresh encoder (HEVC §9.3.2.5, encoder side).
+    /// A fresh encoder (HEVC §9.3.5.2).
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -188,7 +188,7 @@ impl CabacWriter {
         }
     }
 
-    /// Encode one context-coded bin (`EncodeDecision`, HEVC §9.3.4.3.2).
+    /// Encode one context-coded bin (`EncodeDecision`, HEVC §9.3.5.3).
     pub fn encode_bin(&mut self, ctx: &mut Context, bin: bool) {
         let lps = u32::from(RANGE_TAB_LPS[ctx.state()][((self.range >> 6) & 3) as usize]);
         self.range -= lps;
@@ -210,7 +210,7 @@ impl CabacWriter {
         self.flush_if_needed();
     }
 
-    /// Encode equiprobable bins (`EncodeBypass`, HEVC §9.3.4.3.4): the
+    /// Encode equiprobable bins (`EncodeBypass`, HEVC §9.3.5.5): the
     /// `count` low bits of `value`, most significant first.
     pub fn encode_bypass(&mut self, value: u32, count: u32) {
         let mut remaining = count;
@@ -224,7 +224,7 @@ impl CabacWriter {
         }
     }
 
-    /// Encode a terminating bin (`EncodeTerminate`, HEVC §9.3.4.3.5), e.g.
+    /// Encode a terminating bin (`EncodeTerminate`, HEVC §9.3.5.6), e.g.
     /// `end_of_slice_segment_flag`.
     pub fn encode_terminate(&mut self, bin: bool) {
         self.range -= 2;
@@ -244,7 +244,7 @@ impl CabacWriter {
     }
 
     /// Flush the encoder after the terminating bin of the slice segment
-    /// (`EncodeFlush`, HEVC §9.3.4.3.5) and return the bits written. The
+    /// (`EncodeFlush`, HEVC §9.3.5.6) and return the bits written. The
     /// caller appends `rbsp_slice_segment_trailing_bits()`.
     #[must_use]
     pub fn finish(mut self) -> BitWriter {

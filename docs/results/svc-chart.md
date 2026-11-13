@@ -29,10 +29,17 @@ Two-layer AV1 and VP9 streams (360p base, operating point 1; 720p, operating poi
 | x264 medium (720p) | +0.0% | +0.0% | +0.0% | +0.0 … +0.0 |  |  | 26.7 | 67.6 | 1.00× | 8/8 |
 | libvpx SVC L2T1 rt 9 | +27.4% | +29.6% | +17.8% | +13.1 … +36.0 | +108.2% | 30% | 37.6 | 72.4 | 1.07× | 8/8 |
 | libvpx SVC L2T1 rt 7 | +30.3% | +31.3% | +20.6% | +18.2 … +46.9 | +114.8% | 31% | 22.9 | 53.3 | 0.79× | 8/8 |
-| libaom SVC L2T3 rt 8 | +47.5% | +47.1% | +42.3% | +19.8 … +83.4 | +104.7% | 30% | 26.0 | 59.4 | 0.88× | 8/8 |
-| libaom SVC L2T3 rt 10 | +48.9% | +47.4% | +42.3% | +21.3 … +80.5 | +101.9% | 30% | 32.8 | 77.1 | 1.14× | 8/8 |
-| libaom SVC L3T3 rt 8 | +53.5% | +51.5% | +49.6% | +23.0 … +98.4 | +173.4% | 32% | 24.1 | 53.3 | 0.79× | 8/8 |
-| libaom SVC L3T3 rt 10 | +56.3% | +53.1% | +51.2% | +26.3 … +96.3 | +169.4% | 32% | 30.2 | 65.9 | 0.97× | 8/8 |
+| libaom SVC L2T3 rt 8 † | +47.5% | +47.1% | +42.3% | +19.8 … +83.4 | +104.7% | 30% | 26.0 | 59.4 | 0.88× | 8/8 |
+| libaom SVC L2T3 rt 10 † | +48.9% | +47.4% | +42.3% | +21.3 … +80.5 | +101.9% | 30% | 32.8 | 77.1 | 1.14× | 8/8 |
+| libaom SVC L3T3 rt 8 † | +53.5% | +51.5% | +49.6% | +23.0 … +98.4 | +173.4% | 32% | 24.1 | 53.3 | 0.79× | 8/8 |
+| libaom SVC L3T3 rt 10 † | +56.3% | +53.1% | +51.2% | +26.3 … +96.3 | +169.4% | 32% | 30.2 | 65.9 | 0.97× | 8/8 |
+
+† **Configuration under review (2026-11-13).** The libaom three-temporal-layer rows (L2T3, L3T3) give each
+temporal layer WebRTC's cumulative 40% / 60% / 100% share of its spatial layer's rate. libaom's own SVC tests use
+50 / 70 / 100 or 60 / 80 / 100, and a one-clip probe (crowd_mot20_06, 150 frames, speed 10, 1400 kbps total) put
+libaom L2T3's 720p PSNR-Y at 28.9 dB with 40/60/100, 29.6 dB with 50/70/100 and 30.0 dB with 60/80/100, against
+30.9 dB for L2T1. These rows therefore understate libaom and are not used in any comparison until re-measured
+with libaom's own split.
 
 Speed: x264 medium's timed fps (the main chart's) over the point's median per-round time ratio to x264 medium, timed in pairs on one reserved core (`time-host`, the 600 kbps rung, lowlight_city_night, crowd_mot17_09, bodycam_bc1; the Jetson's with the same pairing on its core 3).
 
@@ -54,10 +61,10 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 | libaom SVC L2T1 rt 8 | +47.4% | +53.3% | +56.0% | 31% | 32.47 dB | 63.6 | 8/8 |
 | libaom SVC L3T1 rt 10 | +80.3% | +82.9% | +98.5% | 33% | 31.98 dB | 58.5 | 8/8 |
 | libaom SVC L3T1 rt 8 | +87.5% | +92.0% | +105.1% | 32% | 31.99 dB | 59.1 | 8/8 |
-| libaom SVC L2T3 rt 10 | +101.9% | +106.4% | +116.7% | 30% | 31.46 dB | 57.9 | 8/8 |
-| libaom SVC L2T3 rt 8 | +104.7% | +113.1% | +114.5% | 30% | 31.40 dB | 58.0 | 8/8 |
-| libaom SVC L3T3 rt 10 | +169.4% | +175.7% | +179.9% | 32% | 30.74 dB | 52.8 | 6/8 |
-| libaom SVC L3T3 rt 8 | +173.4% | +177.7% | +185.6% | 32% | 30.70 dB | 53.0 | 7/8 |
+| libaom SVC L2T3 rt 10 † | +101.9% | +106.4% | +116.7% | 30% | 31.46 dB | 57.9 | 8/8 |
+| libaom SVC L2T3 rt 8 † | +104.7% | +113.1% | +114.5% | 30% | 31.40 dB | 58.0 | 8/8 |
+| libaom SVC L3T3 rt 10 † | +169.4% | +175.7% | +179.9% | 32% | 30.74 dB | 52.8 | 6/8 |
+| libaom SVC L3T3 rt 8 † | +173.4% | +177.7% | +185.6% | 32% | 30.70 dB | 53.0 | 7/8 |
 | AV1 Default, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.30 dB | 63.2 | |
 | VP9 SVC L2T3 | -3.1% | -3.2% | -1.4% | 21% | 31.57 dB | 53.3 | 8/8 |
 | VP9 SVC L2T1 | -0.7% | -1.1% | +0.8% | 21% | 31.36 dB | 52.9 | 8/8 |
@@ -77,8 +84,8 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 | AV1 SVC Fast L3T1 | +12.4% | +17.2% | +11.1% | 7% | 28.23 dB | 37.6 | 8/8 |
 | libaom SVC L3T1 rt 8 | +38.1% | +57.8% | +30.4% | 8% | 29.23 dB | 51.9 | 8/8 |
 | libaom SVC L3T1 rt 10 | +42.2% | +64.1% | +34.1% | 8% | 29.07 dB | 51.4 | 8/8 |
-| libaom SVC L3T3 rt 8 | +63.4% | +85.9% | +51.8% | 8% | 28.73 dB | 48.2 | 8/8 |
-| libaom SVC L3T3 rt 10 | +71.0% | +99.1% | +55.8% | 8% | 28.58 dB | 47.7 | 8/8 |
+| libaom SVC L3T3 rt 8 † | +63.4% | +85.9% | +51.8% | 8% | 28.73 dB | 48.2 | 8/8 |
+| libaom SVC L3T3 rt 10 † | +71.0% | +99.1% | +55.8% | 8% | 28.58 dB | 47.7 | 8/8 |
 | AV1 Default, 180p alone | +0.0% | +0.0% | +0.0% | 9% | 30.05 dB | 46.6 | |
 
 ## Method

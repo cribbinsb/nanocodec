@@ -498,7 +498,8 @@ impl Dsp {
 
     /// [`Self::vp9_inverse_transform`] added to the prediction in the
     /// block at the start of `dst` (rows `dst_stride` apart), clipped to 8
-    /// bits; the free `vp9_inverse_add` is the scalar oracle. `nonzero`
+    /// bits; `log2` 2..=5 (4x4 to 32x32). The free `vp9_inverse_add` is the
+    /// scalar oracle of 8x8 and larger. `nonzero`
     /// is `(rows, columns)`: every coefficient at or past row `rows` or
     /// column `columns` must be zero (the decoder knows where its tokens
     /// went). The kernels pick their zero-region variant from it: DC only,
@@ -517,7 +518,7 @@ impl Dsp {
         nonzero: (usize, usize),
         (dst, dst_stride): (&mut [u8], usize),
     ) {
-        assert!((3..=5).contains(&log2), "VP9 transform size outside 8..=32");
+        assert!((2..=5).contains(&log2), "VP9 transform size outside 4..=32");
         assert!(
             log2 != 5 || (columns == crate::Vp9Pass::Dct && rows == crate::Vp9Pass::Dct),
             "VP9 32-point ADST is unsupported"
@@ -531,6 +532,12 @@ impl Dsp {
                 .all(|(i, &c)| c == 0 || (i / side < nonzero.0 && i % side < nonzero.1))
         );
         assert!(dst_stride >= side && dst.len() > (side - 1) * dst_stride + side - 1);
+        if log2 == 2 {
+            // 4x4 blocks are scalar on every ISA: fused, with libvpx's DC-only
+            // and zero-row shortcuts, they cost a few dozen operations.
+            crate::vp9_txfm::vp9_inverse4_add(columns, rows, input, nonzero, dst, dst_stride);
+            return;
+        }
         // SAFETY: the table matches the checked CPU ISA; the slices cover the
         // validated transform and destination block.
         unsafe {
@@ -5222,7 +5229,7 @@ impl Dsp {
         self.hevc_weighted_prediction(weights, a, b, dst);
     }
 
-    /// HEVC planar intra prediction (§8.4.4.2.5) of an `n`x`n` block into
+    /// HEVC planar intra prediction (§8.4.4.2.4) of an `n`x`n` block into
     /// `out` (row stride `n`).
     ///
     /// # Panics

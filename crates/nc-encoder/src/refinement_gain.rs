@@ -1,7 +1,7 @@
 //! Online measure of whether finer inter frames still buy quality, for the
 //! quality ceiling of rate control (`quality_cap.rs`).
 //!
-//! The target bitrate is a ceiling (Mark, 2026-11-08: "we don't want to
+//! The target bitrate is a ceiling (owner decision, 2026-11-08: "we don't want to
 //! waste bits encoding noise"). Whether bits still buy quality is measured,
 //! not guessed from a noise proxy: the recent inter frames' luma PSNR is
 //! regressed on their quantizer (in QP units of log2 step). The QP cadence

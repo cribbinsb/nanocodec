@@ -1,4 +1,4 @@
-//! Scalar HEVC intra kernels: the oracle, transcribed from §8.4.4.2.5
+//! Scalar HEVC intra kernels: the oracle, transcribed from §8.4.4.2.4
 //! (planar, eq. 8-48) and §8.4.4.2.6 (angular, eq. 8-60/8-61).
 
 use super::{ANGLE_FRACTION_BITS, AngularFn, HevcIntraFns, PlanarEdges, PlanarFn};

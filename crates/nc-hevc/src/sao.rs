@@ -118,7 +118,7 @@ impl ClassStats {
                 continue;
             }
             let mean = (self.sum[cat] as f64 / n as f64).round() as i32;
-            // Categories 1, 2 only brighten; 3, 4 only darken (§7.4.9.3.2).
+            // Categories 1, 2 only brighten; 3, 4 only darken (§7.4.9.3).
             let o = if cat < 2 {
                 mean.clamp(0, MAX_OFFSET)
             } else {

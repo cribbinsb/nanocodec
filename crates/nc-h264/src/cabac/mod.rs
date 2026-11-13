@@ -283,7 +283,7 @@ impl CabacEncoder {
             let (m, n) = mn[kind.init_column(cabac_init_idc)];
             *ctx = Context::init(m, n, slice_qp);
         }
-        // §9.3.1.2: initialisation of the arithmetic encoding engine.
+        // §9.3.4.1: initialisation of the arithmetic encoding engine.
         Self {
             contexts,
             registers: Registers {

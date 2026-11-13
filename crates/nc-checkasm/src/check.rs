@@ -103,6 +103,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_av1_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_filters::check_filters(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_mc::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_vp9_scaled::check(&candidate, &mut rng.clone(), &mut report);
     crate::check_transpose::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av2_typed::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vp9_quant::check(&candidate, &reference, &mut rng, &mut report);

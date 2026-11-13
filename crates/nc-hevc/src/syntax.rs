@@ -33,7 +33,7 @@ const QP_DELTA_EG_ORDER: u32 = 0;
 const REM_INTRA_MODE_BITS: u32 = 5;
 /// Bits of `intra_chroma_pred_mode` 0..=3 after its first bin (bypass).
 const CHROMA_PRED_MODE_BITS: u32 = 2;
-/// Exp-Golomb order of `abs_mvd_minus2` (§9.3.3.x, EG1).
+/// Exp-Golomb order of `abs_mvd_minus2` (§9.3.3.3, EG1).
 pub const MVD_EG_ORDER: u32 = 1;
 
 /// One plane's quantised residual for a transform block.
@@ -715,7 +715,7 @@ fn write_cu_qp_delta(w: &mut CabacWriter, ctx: &mut Contexts, delta: i32) {
     }
 }
 
-/// `merge_idx` (§9.3.3.x): truncated rice with cMax `MaxNumMergeCand − 1`,
+/// `merge_idx` (§9.3.3.2 TR): truncated rice with cMax `MaxNumMergeCand − 1`,
 /// first bin context coded, the rest bypass.
 fn write_merge_idx(w: &mut CabacWriter, ctx: &mut Contexts, idx: usize) {
     if MAX_MERGE_CANDIDATES < 2 {

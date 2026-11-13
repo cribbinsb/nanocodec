@@ -88,7 +88,7 @@ VMAF_V1_MODEL = Path("share/vmaf/model/vmaf_v1.0.16/vmaf_v1.0.16_3d0h.json")
 VMAF_V1_PREPROCESS_REVISION = 1
 
 # Which program scores native VMAF v1 and MS-SSIM (NC_METRICS_BACKEND).
-# Default: VMAFx on CUDA (Mark, 2026-11-11). VMAFx (github.com/VMAFx/vmafx,
+# Default: VMAFx on CUDA (owner decision, 2026-11-11). VMAFx (github.com/VMAFx/vmafx,
 # a libvmaf fork; EUPL-1.2, so it is only ever run as an external program
 # built outside this repository, never copied in; build recipe in
 # docs/handoff/eval-throughput.md "GPU VMAF") has CUDA versions of the
@@ -633,7 +633,7 @@ class MsSsimMetric:
 # every 4th frame until 2026-11-11 (libvmaf's MS-SSIM cost ~5x a VMAF v1
 # pass); that biased J_real against anything that shifts the QP cadence
 # (docs/handoff/realuse.md "Measurement trap"). On the GPU every frame is
-# cheap, so the owner moved it to every frame (Mark, 2026-11-11).
+# cheap, so the owner moved it to every frame (2026-11-11).
 #: Part of every real-use point's cache key (nceval.cbr). Not bumped for the
 #: earlier scorer moves (dropping VMAF v0.6.1 NEG, libvmaf -> nceval.msssim,
 #: -> VMAFx CUDA): stored PSNR and VMAF v1 were unchanged at their stored
@@ -643,7 +643,7 @@ REAL_METRICS_REVISION = 1
 #: The MS-SSIM protocol of a real-use result, stored IN the result (not its
 #: key) so that cached PSNR/VMAF v1 entries stay valid: a cached result with
 #: another value is re-measured when it is next used (nceval.cbr), never in
-#: bulk (Mark, 2026-11-11). 1 (absent): every 4th frame; 2: every frame.
+#: bulk (owner decision, 2026-11-11). 1 (absent): every 4th frame; 2: every frame.
 REAL_MS_SSIM_REVISION = 2
 
 

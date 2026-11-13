@@ -66,6 +66,7 @@ mod vp9_inverse;
 #[allow(unsafe_code)]
 mod vp9_loop_filter;
 mod vp9_mc;
+mod vp9_mc_scaled;
 #[allow(unsafe_code)]
 mod vp9_mc_simd;
 #[allow(unsafe_code)]
@@ -85,6 +86,7 @@ pub use vp9_intra::{Vp9IntraEdges, Vp9IntraMode};
 pub use vp9_mc::{
     VP9_MAX_SCALED_STEP, VP9_TAPS, VP9_TAPS_BEFORE, Vp9Filter, vp9_convolve, vp9_convolve_scaled,
 };
+pub use vp9_mc_scaled::Vp9ScaledScratch;
 pub use vp9_quant::Vp9QuantStep;
 pub use vp9_txfm::{
     Vp9Pass, vp9_forward_dct8, vp9_forward_transform, vp9_inverse_add, vp9_inverse_dct8,

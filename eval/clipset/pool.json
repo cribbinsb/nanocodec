@@ -326,7 +326,7 @@
    "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/ToddlerFountain.mkv",
    "content_class": "texture",
    "pristine": true,
-   "family": "/home/mark/nanocodec-data/clips/pristine/toddlerfountain_1080p.y4m",
+   "family": "~/nanocodec-data/clips/pristine/toddlerfountain_1080p.y4m",
    "seconds": 5.8,
    "cut_note": "camera cut at 6.0 s (scdet)"
   },

@@ -1,4 +1,4 @@
-//! HEVC intra prediction kernels (HEVC §8.4.4.2.5, §8.4.4.2.6): planar, and
+//! HEVC intra prediction kernels (HEVC §8.4.4.2.4, §8.4.4.2.6): planar, and
 //! the line projection of the angular modes.
 //!
 //! The codec gathers and filters the references and builds the angular
@@ -46,7 +46,7 @@ pub(crate) type AngularFn = unsafe fn(refs: &[u8], n: usize, angle: i32, out: &m
 /// to the left, and the top-right and bottom-left samples.
 pub(crate) type PlanarFn = unsafe fn(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]);
 
-/// The references planar prediction reads (§8.4.4.2.5).
+/// The references planar prediction reads (§8.4.4.2.4).
 #[derive(Debug, Clone, Copy)]
 pub struct PlanarEdges<'a> {
     /// `p[x][−1]` for `x` in `0..n`.

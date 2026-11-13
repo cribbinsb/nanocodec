@@ -1,7 +1,7 @@
 //! Every CABAC context variable of Main-profile slice data, with the
 //! initial values of all three `initType`s (H.265 §9.3.2.2, Tables 9-5 to
 //! 9-37), kept in one flat array so that WPP and dependent slice segments
-//! can save and restore the whole state (§9.3.2.3, §9.3.2.4).
+//! can save and restore the whole state (§9.3.2.4, §9.3.2.5).
 
 use crate::cabac::Context;
 

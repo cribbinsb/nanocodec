@@ -313,7 +313,7 @@
    "content_class": "bodycam",
    "split": "train",
    "allow_global_change": true,
-   "global_change_note": "auto-exposure jump at ~2.2 s on a single bodycam (checked by eye, Mark 2026-11-06); not a cut"
+   "global_change_note": "auto-exposure jump at ~2.2 s on a single bodycam (checked by eye by the owner, 2026-11-06); not a cut"
   },
   {
    "name": "handheld_mot17_10",

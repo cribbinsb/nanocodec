@@ -137,7 +137,7 @@ pub struct CabacReader<'a> {
 
 impl<'a> CabacReader<'a> {
     /// Initialise at byte `start` of `data` (H.264 §9.3.1.2, H.265
-    /// §9.3.2.5): the range is 510 and the offset the next 9 bits.
+    /// §9.3.2.6): the range is 510 and the offset the next 9 bits.
     ///
     /// # Errors
     /// `Truncated` when `start` is past the data, `Malformed` when the
@@ -290,7 +290,7 @@ impl<'a> CabacReader<'a> {
         ones
     }
 
-    /// `DecodeTerminate` (H.264 §9.3.3.2.2.3, H.265 §9.3.4.3.5).
+    /// `DecodeTerminate` (H.264 §9.3.3.2.4, H.265 §9.3.4.3.5).
     pub fn terminate(&mut self) -> bool {
         self.range -= 2;
         if self.window >= u64::from(self.range) << OFFSET_SHIFT {

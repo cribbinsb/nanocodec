@@ -1,4 +1,4 @@
-//! VP9 sub-sample motion-compensation kernel (VP9 §8.5.2.3; libvpx
+//! VP9 sub-sample motion-compensation kernel (VP9 §8.5.2.4; libvpx
 //! `vpx_convolve8_c` with the `vp9_filter.c` kernels, BSD-3-Clause, see
 //! `THIRD_PARTY.md`): 8-tap filters at 1/16-sample positions, a horizontal
 //! pass rounded and clipped to 8 bits, then a vertical pass likewise.
@@ -116,7 +116,7 @@ impl Vp9Filter {
     }
 }
 
-fn filter(samples: &[u8], taps: &[i16; VP9_TAPS], step: usize) -> u8 {
+pub(crate) fn filter(samples: &[u8], taps: &[i16; VP9_TAPS], step: usize) -> u8 {
     let sum: i32 = taps
         .iter()
         .enumerate()

@@ -28,9 +28,13 @@ x264's energy formula). Code learned from permissively licensed projects (SVT-AV
 openh264, kvazaar, VVenC/VVdeC, AVM, libyuv, Thor, libvmaf, JM/HM/VTM) is credited module by module in
 [THIRD_PARTY.md](../THIRD_PARTY.md). If you find something we missed, please open an issue.
 
-**Are the spec citations real?** The code carries over 2,000 `§` references to the standards. A sample of 30
-found about 25 that match the cited section and 5 that are wrong or doubtful (usually an adjacent
-subsection); those are listed for correction. Treat a citation as a pointer, not a proof.
+**Are the spec citations real?** The code carries over 2,000 `§` references to the standards. Two samples (30 and
+then 33, across H.264, HEVC, AV1, VP9 and VVC), checked against the published texts we could read (the AV1 spec,
+ITU-T H.264 2003–2007 editions, H.265 2013 edition and 2023 contents, H.266 2023, the VP9 v0.6 draft), found
+most correct and a few pointing at a neighbouring clause, usually from a different edition's numbering (for
+example HEVC planar/DC prediction, the H.264 CABAC encoder initialisation, VVC transform-type derivation); those
+and the same errors elsewhere were corrected (26 files). AV2 citations (draft specification) and HEVC equation
+numbers were not checked. Treat a citation as a pointer, not a proof.
 
 **Were the numbers made up by a model?** Every number on the results pages is written by the evaluation harness
 (`eval/nceval`) from measured runs, with the builds and command lines on the page. The harness itself is also

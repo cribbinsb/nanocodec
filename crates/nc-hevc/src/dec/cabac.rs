@@ -6,7 +6,7 @@
 //! places the slice data leaves arithmetic coding: after `pcm_flag` and
 //! after `end_of_subset_one_bit` the following data starts at the next byte
 //! boundary (the bits consumed so far end with a 1 and alignment zeros,
-//! §9.3.2.5). Reads past the end of the substream return zero bits, as a
+//! §9.3.2.6). Reads past the end of the substream return zero bits, as a
 //! conforming stream never depends on them; [`Engine::overrun`] reports how
 //! far a malformed one went so the caller can reject it.
 
@@ -22,7 +22,7 @@ const MAX_EG_PREFIX: u32 = 32;
 pub(super) struct Engine<'a>(CabacReader<'a>);
 
 impl<'a> Engine<'a> {
-    /// Initialise at byte `start` of `data` (§9.3.2.5).
+    /// Initialise at byte `start` of `data` (§9.3.2.6).
     pub fn new(data: &'a [u8], start: usize) -> Result<Self, DecodeError> {
         CabacReader::new(data, start).map(Self)
     }

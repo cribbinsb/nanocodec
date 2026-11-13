@@ -8,7 +8,7 @@
 //! multiple of 8; the planes cover whole 8x8 units). Interpolation uses the
 //! frame's or block's filter, either unscaled (`vp9_convolve`) when the
 //! reference matches the frame size or scaled (`vp9_convolve_scaled`,
-//! `VP9 §8.5.2.1`–`§8.5.2.2`) when predicting across spatial layers.
+//! `VP9 §8.5.2.3`–`§8.5.2.4`) when predicting across spatial layers.
 
 use nc_common::{Picture, PlaneIndex, PlaneView};
 
@@ -28,7 +28,7 @@ const INTERP_EXTEND: i32 = 4;
 /// Sub-sample bits of the 1/16-sample plane positions (`SUBPEL_BITS`).
 const SUBPEL_BITS: u32 = 4;
 const SUBPEL_MASK: i32 = (1 << SUBPEL_BITS) - 1;
-/// `REF_SCALE_SHIFT`: fixed-point bits of a reference scale factor (`VP9 §8.5.2.1`).
+/// `REF_SCALE_SHIFT`: fixed-point bits of a reference scale factor (`VP9 §8.5.2.3`).
 const REF_SCALE_SHIFT: u32 = 14;
 const REF_NO_SCALE: i64 = 1 << REF_SCALE_SHIFT;
 
@@ -135,7 +135,7 @@ pub(crate) fn predict(
 
 /// Predict `plane` of the block at `position` from `reference` of visible
 /// size `ref_size` (`(ref_width, ref_height)`) into `out` (row stride = plane
-/// block side), using `VP9 §8.5.2.1`–`§8.5.2.2` reference scaling when
+/// block side), using `VP9 §8.5.2.3`–`§8.5.2.4` reference scaling when
 /// `ref_size != (position.width, position.height)`.
 #[allow(clippy::too_many_arguments)]
 #[inline]

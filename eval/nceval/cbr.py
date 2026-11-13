@@ -645,7 +645,7 @@ def reachable(point: dict) -> bool:
 def overshoot(point: dict) -> float:
     """How far a CBR point went over its target (0 when under).
 
-    The target bitrate is a ceiling, not a rate to hit (Mark, 2026-11-08):
+    The target bitrate is a ceiling, not a rate to hit (owner decision, 2026-11-08):
     the encoder may underspend when bits stop buying quality, so only
     overshoot is an error. Our points exclude the by-design key loan.
     """

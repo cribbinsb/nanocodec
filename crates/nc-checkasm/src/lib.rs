@@ -56,6 +56,7 @@ mod check_vp9_inverse;
 mod check_vp9_line;
 mod check_vp9_mc;
 mod check_vp9_quant;
+mod check_vp9_scaled;
 mod check_vvc;
 mod check_vvc_alf;
 mod check_vvc_angular;

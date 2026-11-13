@@ -43,12 +43,14 @@ OURS_STAGES = [
     ("loop filter kernels", r":nc_dsp::vp9_loop_filter|:nc_dsp::lpf"),
     ("loop filter driver", r"Deblocker|loopfilter\.rs|Units|lf_mask"),
     ("MC kernels", r":nc_dsp::vp9_mc|convolve|emulate_edges"),
-    ("inverse + add", r":nc_dsp::vp9_inverse|:nc_dsp::vp9_txfm|add_coefficients|transform::inverse|add_block"),
+    ("inverse + add", r":nc_dsp::vp9_inverse|:nc_dsp::vp9_txfm|add_coefficients|transform::inverse|add_block|vp9_inverse_add"),
     ("intra", r":nc_dsp::vp9_intra|predict_intra|intra_pred"),
     ("inter setup", r"predict_inter|predict_from"),
     ("tokens", r"coeff\.rs|tokens\.rs|bool_coder\.rs.*(reconstruct|residual)|reconstruct_inter_plane|residual"),
-    ("mode info / mv", r"modes\.rs|mvref\.rs|tree\.rs|tree::read|motion::|read_mode_info|decoder/block\.rs|bool_coder\.rs"),
-    ("probability adaptation / headers", r"probs\.rs|header\.rs|subexp|adapt"),
+    ("mode info / mv", r"modes\.rs|mvref\.rs|tree\.rs|tree::read|motion::|read_mode_info|decoder/block\.rs|"
+                       r"::search|find_mv_refs|assign_mv|read_skip|read_tx_size|read_segment_id|"
+                       r"decoder/header\.rs|bool_coder\.rs"),
+    ("probability adaptation / headers", r"probs\.rs:|subexp|FrameContext>::adapt|decoder::header::"),
     ("copies / borders / memset", r"memset|memcpy|memmove|extend|picture|recycl"),
     ("rest of block decode", r"decode_block|decode_partition|frame\.rs"),
 ]
@@ -57,11 +59,11 @@ VPX_STAGES = [
     ("loop filter driver", r"filter_selectively|build_mask|filter_block_plane|loop_filter|setup_mask|adjust_mask"),
     ("MC kernels", r"convolve|scaled_2d|scaled_horiz|scaled_vert|build_mc_border"),
     ("inverse + add", r"idct|iadst|iwht|iht|inverse_transform|transpose_16bit"),
-    ("intra", r"intra|_predictor"),
     ("inter setup", r"dec_build_inter|inter_predictor|setup_pre_planes"),
     ("tokens", r"decode_coefs|decode_block_tokens|vpx_reader|reader_fill"),
     ("mode info / mv", r"read_mode_info|read_inter|read_intra|mv_ref|find_mv|read_mv|inc_mv|mv_class|"
                        r"read_selected_tx|read_.*mode|dec_find|copy_ref_frame|vp9_read|pred_context|left_block_mode|above_block_mode"),
+    ("intra", r"intra|_predictor"),
     ("probability adaptation / headers", r"adapt|read_coef_probs|diff_update|tree_merge|read_frame_header|read_compressed|setup_past"),
     ("copies / borders / memset", r"memset|memcpy|memmove|extend|border|yv12"),
     ("rest of block decode", r"decode_partition|read_partition|set_offsets|decode_block|set_skip|dec_reset|"
@@ -121,6 +123,9 @@ def self_costs(profile: Path) -> list[tuple[int, str]]:
 def stages(profile: Path, rules: list[tuple[str, str]]) -> dict[str, int]:
     totals = {name: 0 for name, _ in rules} | {"other": 0}
     for cost, name in self_costs(profile):
+        # Inlined standard-library code counts by the function it is in.
+        if name.startswith("/rustc/"):
+            name = ":" + name.split(":", 1)[1]
         stage = next((s for s, pattern in rules if re.search(pattern, name)), "other")
         totals[stage] += cost
     return totals

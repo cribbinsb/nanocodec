@@ -1,6 +1,6 @@
 //! HEVC intra sample prediction (§8.4.4.2): reference sample gathering and
 //! substitution (§8.4.4.2.2), reference filtering (§8.4.4.2.3), and the
-//! planar (§8.4.4.2.5), DC (§8.4.4.2.6) and angular (§8.4.4.2.6) modes.
+//! planar (§8.4.4.2.4), DC (§8.4.4.2.5) and angular (§8.4.4.2.6) modes.
 //!
 //! References are kept in one linear array `p` of `4n + 1` samples: the left
 //! column from the bottom (`p[-1][2n-1]`) up to the corner (`p[-1][-1]`),
@@ -390,7 +390,7 @@ fn transpose_in_place(block: &mut [u8], n: usize) {
     }
 }
 
-/// §8.4.4.2.5, by the planar kernel.
+/// §8.4.4.2.4, by the planar kernel.
 fn planar(dsp: &Dsp, p: &Refs, n: usize, out: &mut [u8]) {
     let mut above = [0u8; MAX_SIZE];
     let mut left = [0u8; MAX_SIZE];
@@ -407,7 +407,7 @@ fn planar(dsp: &Dsp, p: &Refs, n: usize, out: &mut [u8]) {
     dsp.hevc_intra_planar(&edges, n, out);
 }
 
-/// §8.4.4.2.6 (DC), with the luma edge filter for blocks below 32x32.
+/// §8.4.4.2.5 (DC), with the luma edge filter for blocks below 32x32.
 fn dc(p: &Refs, n: usize, luma: bool, out: &mut [u8]) {
     let sum: i32 = (0..n as isize).map(|i| p.top(i) + p.left(i)).sum();
     let log2 = n.trailing_zeros();

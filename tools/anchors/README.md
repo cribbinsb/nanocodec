@@ -90,7 +90,7 @@ The plan requires every anchor to run on one thread, pinned with
 | ldecod, TAppDecoder | single-threaded already; HM may link OpenMP, so set `OMP_NUM_THREADS=1` |
 | vmaf | `--threads 1` |
 
-### x264 / x265 context anchors (Mark, 2026-11-08)
+### x264 / x265 context anchors (owner decision, 2026-11-08)
 
 One-time context comparisons on VAL-150 and in the scoreboard; GPL tools run
 as external binaries only (no code is copied). Pinned standalone builds from

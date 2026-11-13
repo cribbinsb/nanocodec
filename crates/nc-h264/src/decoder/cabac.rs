@@ -62,7 +62,7 @@ impl<'a> Cabac<'a> {
         self.reader.bypass()
     }
 
-    /// `DecodeTerminate` (§9.3.3.2.2.3): `end_of_slice_flag` and the `I_PCM`
+    /// `DecodeTerminate` (§9.3.3.2.4): `end_of_slice_flag` and the `I_PCM`
     /// bin of `mb_type`.
     pub fn terminate(&mut self) -> bool {
         self.reader.terminate()

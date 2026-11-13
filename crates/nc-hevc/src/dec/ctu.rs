@@ -118,9 +118,9 @@ impl SliceContext<'_> {
 /// CABAC and QP state that crosses slice segment boundaries.
 #[derive(Debug, Default)]
 pub(super) struct Carry {
-    /// Contexts after the second CTB of the previous row (WPP, §9.3.2.3).
+    /// Contexts after the second CTB of the previous row (WPP, §9.3.2.4).
     wpp: Option<Contexts>,
-    /// Contexts at the end of the previous slice segment (§9.3.2.3).
+    /// Contexts at the end of the previous slice segment (§9.3.2.4).
     dependent: Option<Contexts>,
     /// `QpY` of the last coding unit (`qPY_PREV`, §8.6.1).
     last_qp: i32,
@@ -627,7 +627,7 @@ impl SegmentDecoder<'_, '_> {
     }
 
     /// `pcm_sample()` (§7.3.8.7): raw samples, then the arithmetic decoder
-    /// restarts after them (§9.3.2.5).
+    /// restarts after them (§9.3.2.6).
     fn pcm<'d>(&mut self, e: &Engine<'d>, cu: &Cu) -> Result<Engine<'d>, DecodeError> {
         let pcm = self.cx.sps.pcm.ok_or(DecodeError::Malformed("pcm_flag"))?;
         let data = e.data();

@@ -17,9 +17,9 @@ use super::block::BlockInfo;
 use super::frame::{BlockPosition, FrameDecoder, Tile};
 use super::header::valid_reference_size;
 use crate::bool_coder::BoolReader;
-use crate::coeff::{self, Coder, Dequantizer, Model, PlaneType};
-use crate::recon::{TxBlock, tx_type};
-use crate::transform::{Steps, TxSize};
+use crate::coeff::{self, Coder, Dequantizer, Extent, Model, PlaneType};
+use crate::recon::{ResidualBuffers, TxBlock, tx_type};
+use crate::transform::{Steps, TxSize, TxType};
 use crate::types::{IntraMode, MI_SIZE, Mv};
 
 /// `REF_SCALE_SHIFT`: fixed-point bits of a reference scale factor.
@@ -72,36 +72,64 @@ impl Scale {
 /// A reference picture as one frame sees it.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Reference<'a> {
-    picture: &'a Picture,
-    /// Each plane's whole padded area, resolved once per frame: windows
-    /// inside it are read in place (one range check per prediction instead
-    /// of building a view).
-    padded: [PlaneView<'a>; 3],
-    /// Visible size of the reference (`y_crop_width`, `y_crop_height`).
-    width: usize,
-    height: usize,
+    /// Each plane, resolved once per frame.
+    planes: [ReferencePlane<'a>; 3],
     scale: Scaling,
 }
 
-impl Reference<'_> {
-    /// The `span` window at `corner` (visible coordinates) of `plane`, as
-    /// samples `stride` apart, if it lies inside the padded area.
+/// One plane of a reference, resolved once per frame: windows inside its
+/// padded area are read in place (one range check per prediction).
+#[derive(Debug, Clone, Copy)]
+struct ReferencePlane<'a> {
+    /// The whole padded area.
+    padded: PlaneView<'a>,
+    /// The visible area, for windows that leave the padded one.
+    visible: PlaneView<'a>,
+    /// Padding columns and rows before the visible area.
+    border: (usize, usize),
+    /// Visible size of the reference plane (`y_crop_width`,
+    /// `y_crop_height`, halved and rounded up for chroma).
+    crop: (usize, usize),
+}
+
+impl ReferencePlane<'_> {
+    /// The `span` window at `corner` (visible coordinates), as samples
+    /// `stride` apart, if it lies inside the padded area.
     fn padded_window(
         &self,
-        plane: PlaneIndex,
         (left, top): (i32, i32),
         (w, h): (usize, usize),
     ) -> Option<(&[u8], usize)> {
-        let padded = &self.padded[plane as usize];
-        let border = self.picture.plane(plane);
-        let col = usize::try_from(left as isize + border.border_x() as isize).ok()?;
-        let row = usize::try_from(top as isize + border.border_y() as isize).ok()?;
+        let col = usize::try_from(left as isize + self.border.0 as isize).ok()?;
+        let row = usize::try_from(top as isize + self.border.1 as isize).ok()?;
+        let padded = &self.padded;
         (col + w <= padded.width() && row + h <= padded.height()).then(|| {
             (
                 &padded.data()[row * padded.stride() + col..],
                 padded.stride(),
             )
         })
+    }
+
+    /// The `span` window at `corner`: in place inside the padded area, else
+    /// rebuilt in `window` with clamped edges (rows `span.0` apart).
+    fn window<'w>(
+        &'w self,
+        corner: (i32, i32),
+        span: (usize, usize),
+        window: &'w mut [u8],
+    ) -> (&'w [u8], usize) {
+        if let Some(padded) = self.padded_window(corner, span) {
+            return padded;
+        }
+        nc_dsp::emulate_edges(
+            (self.visible.data(), self.visible.stride()),
+            self.crop,
+            (corner.0 as isize, corner.1 as isize),
+            span,
+            (window, span.0),
+        );
+        (window, span.0)
     }
 }
 
@@ -129,13 +157,17 @@ impl<'a> Reference<'a> {
         } else {
             Scaling::Invalid
         };
-        Self {
-            picture,
-            padded: PlaneIndex::ALL.map(|plane| picture.plane(plane).padded_view()),
-            width,
-            height,
-            scale,
-        }
+        let planes = PlaneIndex::ALL.map(|index| {
+            let plane = picture.plane(index);
+            let ss = usize::from(index != PlaneIndex::Y);
+            ReferencePlane {
+                padded: plane.padded_view(),
+                visible: plane.view(),
+                border: (plane.border_x(), plane.border_y()),
+                crop: ((width + ss) >> ss, (height + ss) >> ss),
+            }
+        });
+        Self { planes, scale }
     }
 }
 
@@ -154,15 +186,15 @@ enum Scaling {
 pub(super) struct InterScratch {
     /// A reference window rebuilt with clamped edges.
     window: Vec<u8>,
-    /// A prediction from a scaled reference.
-    scaled: Vec<u8>,
+    /// The scaled prediction's working memory.
+    scaled: nc_dsp::Vp9ScaledScratch,
 }
 
 impl InterScratch {
     pub(super) fn new() -> Self {
         Self {
-            window: vec![0; MAX_WINDOW * MAX_WINDOW],
-            scaled: vec![0; MAX_SIDE * MAX_SIDE],
+            window: vec![0; MAX_WINDOW * (MAX_WINDOW + VP9_TAPS - 1)],
+            scaled: nc_dsp::Vp9ScaledScratch::default(),
         }
     }
 }
@@ -177,14 +209,6 @@ struct PredictionBlock {
     size: (usize, usize),
     block_size: (i32, i32),
     mv: Mv,
-}
-
-/// What one prediction reads: a reference, the block's filter and its
-/// position (for scaled references).
-struct Source<'a> {
-    reference: &'a Reference<'a>,
-    filter: u8,
-    position: &'a BlockPosition,
 }
 
 /// Where a prediction goes: picture samples `stride` apart, written or
@@ -227,106 +251,70 @@ impl Target<'_> {
             );
         }
     }
-
-    /// Write or average `w`-wide packed rows into the target.
-    fn put(self, w: usize, rows: &[u8]) {
-        for (row, prediction) in self.block.chunks_mut(self.stride).zip(rows.chunks_exact(w)) {
-            if self.average {
-                for (sample, &p) in row.iter_mut().zip(prediction) {
-                    *sample = ((u16::from(*sample) + u16::from(p) + 1) >> 1) as u8;
-                }
-            } else {
-                row[..w].copy_from_slice(prediction);
-            }
-        }
-    }
 }
 
-/// `dec_build_inter_predictors` of one sub-block from one reference into
-/// `target`. Out of line: inlined into the per-plane loop, its invariants
-/// were hoisted into ~250 instructions of setup per plane and block even
-/// though almost every plane makes one prediction.
-#[inline(never)]
-fn predict_from(
+/// `dec_build_inter_predictors` from a reference of the frame's size: the
+/// `size` block at 1/16-sample position `(x16, y16)` of `plane` into
+/// `target`. References are extended ([`extend_reference`]), so a window
+/// inside the padded plane reads as the clamped visible one.
+#[allow(
+    clippy::inline_always,
+    reason = "one call per prediction; keeps the block loop's invariants in registers"
+)]
+#[inline(always)]
+fn predict_unscaled(
     dsp: &nc_dsp::Dsp,
-    source: &Source<'_>,
+    plane: &ReferencePlane<'_>,
+    kind: Vp9Filter,
+    (x16, y16): (i32, i32),
+    (w, h): (usize, usize),
+    window: &mut [u8],
+    target: Target<'_>,
+) {
+    let span = (w + VP9_TAPS - 1, h + VP9_TAPS - 1);
+    let before = VP9_TAPS_BEFORE as i32;
+    let corner = ((x16 >> SUBPEL_BITS) - before, (y16 >> SUBPEL_BITS) - before);
+    let phase = ((x16 & SUBPEL_MASK) as usize, (y16 & SUBPEL_MASK) as usize);
+    target.convolve(dsp, kind, plane.window(corner, span, window), phase, (w, h));
+}
+
+/// `dec_build_inter_predictors` from a reference of another size into
+/// `target`. Out of line: only spatial layers and size changes use it.
+#[inline(never)]
+fn predict_scaled(
+    dsp: &nc_dsp::Dsp,
+    (scale, plane, kind): (&Scale, &ReferencePlane<'_>, Vp9Filter),
+    position: &BlockPosition,
     request: &PredictionBlock,
     scratch: &mut InterScratch,
-    target: Target<'_>,
-) -> Result<()> {
-    let reference = source.reference;
-    let ss = u32::from(request.plane != PlaneIndex::Y);
-    let visible = |size: usize| ((size + ss as usize) >> ss) as i32;
-    let crop = (visible(reference.width), visible(reference.height));
-    let (w, h) = request.size;
-    let window = &mut scratch.window;
-    let kind = kernel(source.filter);
-    match reference.scale {
-        Scaling::None => {
-            // Unscaled: positions in 1/16 plane samples; the reference
-            // reads as its visible picture with replicated edges.
-            let x16 = (request.origin.0 + request.offset.0) * 16 + request.mv.col * (1 << (1 - ss));
-            let y16 = (request.origin.1 + request.offset.1) * 16 + request.mv.row * (1 << (1 - ss));
-            let span = (w + VP9_TAPS - 1, h + VP9_TAPS - 1);
-            let before = VP9_TAPS_BEFORE as i32;
-            let corner = ((x16 >> SUBPEL_BITS) - before, (y16 >> SUBPEL_BITS) - before);
-            let phase = ((x16 & SUBPEL_MASK) as usize, (y16 & SUBPEL_MASK) as usize);
-            // References are extended ([`extend_reference`]): any window
-            // inside the padded plane reads as the clamped visible one.
-            if let Some(padded) = reference.padded_window(request.plane, corner, span) {
-                target.convolve(dsp, kind, padded, phase, (w, h));
-            } else {
-                let view = reference.picture.plane(request.plane).view();
-                emulate_window(&view, crop, corner, span, window);
-                target.convolve(dsp, kind, (window, span.0), phase, (w, h));
-            }
-        }
-        Scaling::Invalid => {
-            return Err(DecodeError::Malformed("VP9 reference of invalid size"));
-        }
-        Scaling::Scaled(scale) => {
-            let (x, y) = scaled_position(&scale, source.position, request, ss);
-            let (x_phase, y_phase) = ((x & SUBPEL_MASK) as usize, (y & SUBPEL_MASK) as usize);
-            let (xs, ys) = (scale.x_step as usize, scale.y_step as usize);
-            let span = (
-                ((x_phase + (w - 1) * xs) >> SUBPEL_BITS) + VP9_TAPS,
-                ((y_phase + (h - 1) * ys) >> SUBPEL_BITS) + VP9_TAPS,
-            );
-            let before = VP9_TAPS_BEFORE as i32;
-            let corner = ((x >> SUBPEL_BITS) - before, (y >> SUBPEL_BITS) - before);
-            let view = reference.picture.plane(request.plane).view();
-            emulate_window(&view, crop, corner, span, window);
-            let out = &mut scratch.scaled[..w * h];
-            nc_dsp::vp9_convolve_scaled(
-                kind,
-                window,
-                span.0,
-                (x_phase, xs),
-                (y_phase, ys),
-                (w, h),
-                out,
-            );
-            target.put(w, out);
-        }
-    }
-    Ok(())
-}
-
-/// Rebuild the `span` window at `corner` of a reference plane with
-/// visible size `crop` in `window` (rows `span.0` apart).
-fn emulate_window(
-    view: &PlaneView<'_>,
-    (crop_w, crop_h): (i32, i32),
-    (left, top): (i32, i32),
-    span: (usize, usize),
-    window: &mut [u8],
+    Target {
+        block,
+        stride,
+        average,
+    }: Target<'_>,
 ) {
-    nc_dsp::emulate_edges(
-        (view.data(), view.stride()),
-        (crop_w as usize, crop_h as usize),
-        (left as isize, top as isize),
-        span,
-        (window, span.0),
+    let ss = u32::from(request.plane != PlaneIndex::Y);
+    let (w, h) = request.size;
+    let (x, y) = scaled_position(scale, position, request, ss);
+    let (x_phase, y_phase) = ((x & SUBPEL_MASK) as usize, (y & SUBPEL_MASK) as usize);
+    let (xs, ys) = (scale.x_step as usize, scale.y_step as usize);
+    // The footprint plus the rows above and below that the scaled
+    // driver's horizontal pass reads (see `vp9_convolve_scaled_into`).
+    let span = (
+        ((x_phase + (w - 1) * xs) >> SUBPEL_BITS) + VP9_TAPS,
+        ((y_phase + (h - 1) * ys) >> SUBPEL_BITS) + 2 * VP9_TAPS - 1,
+    );
+    let before = VP9_TAPS_BEFORE as i32;
+    let corner = ((x >> SUBPEL_BITS) - before, (y >> SUBPEL_BITS) - 2 * before);
+    dsp.vp9_convolve_scaled_into(
+        kind,
+        plane.window(corner, span, &mut scratch.window),
+        (x_phase, xs),
+        (y_phase, ys),
+        (w, h),
+        (block, stride),
+        average,
+        &mut scratch.scaled,
     );
 }
 
@@ -341,7 +329,7 @@ pub(super) const REFERENCE_BORDER: usize = 32;
 /// Make a decoded `picture` of visible size `(width, height)` readable as
 /// a reference: every sample beyond the visible area, in the block-aligned
 /// area and in the border, becomes a copy of the nearest visible sample,
-/// as the reference reads clamped coordinates (VP9 §8.5.2.3).
+/// as the reference reads clamped coordinates (VP9 §8.5.2.4).
 pub(super) fn extend_reference(picture: &mut Picture, (width, height): (usize, usize)) {
     for (index, plane) in picture.planes_mut().iter_mut().enumerate() {
         let ss = usize::from(index > 0);
@@ -364,77 +352,103 @@ pub(super) fn extend_reference(picture: &mut Picture, (width, height): (usize, u
 
 impl FrameDecoder<'_> {
     /// `dec_build_inter_predictors_sb`: every plane of an inter block.
+    /// References, the filter and each plane's destination are resolved
+    /// once per block; a block of 8x8 or more makes one prediction per
+    /// plane and reference.
     pub(super) fn predict_inter_block(
         &mut self,
         info: &BlockInfo,
         position: &BlockPosition,
     ) -> Result<()> {
         let refs = 1 + usize::from(info.is_compound());
-        for plane in PlaneIndex::ALL {
+        let mut references = [None; 2];
+        for (slot, &frame) in references.iter_mut().zip(&info.ref_frame).take(refs) {
+            let reference = self.inputs.references[(frame - 1) as usize]
+                .as_ref()
+                .ok_or(DecodeError::Malformed("VP9 missing reference"))?;
+            if matches!(reference.scale, Scaling::Invalid) {
+                return Err(DecodeError::Malformed("VP9 reference of invalid size"));
+            }
+            *slot = Some(reference);
+        }
+        let kind = kernel(info.filter);
+        let sub8x8 = info.size.is_sub8x8();
+        let dsp = self.inputs.dsp;
+        let scratch = &mut self.scratch.inter;
+        for (plane, picture_plane) in PlaneIndex::ALL.into_iter().zip(self.recon.planes_mut()) {
             let ss = usize::from(plane != PlaneIndex::Y);
             let (n4w, n4h) = position.plane_size_4x4(ss);
             let origin = (
                 ((position.mi_col * MI_SIZE) >> ss) as i32,
                 ((position.mi_row * MI_SIZE) >> ss) as i32,
             );
-            let block_size = ((n4w * 4) as i32, (n4h * 4) as i32);
             // Sub-8x8 blocks predict each 4x4 block with its own vector
             // (chroma: one 4x4 block with their mean).
-            let sub8x8 = info.size.is_sub8x8();
-            let (count, size) = if sub8x8 {
-                (n4w * n4h, (4, 4))
+            let (grid, size) = if sub8x8 {
+                ((n4w, n4h), (4, 4))
             } else {
-                (1, (n4w * 4, n4h * 4))
+                ((1, 1), (n4w * 4, n4h * 4))
             };
-            let mut view = self.recon.plane_mut(plane).view_mut();
+            let mut view = picture_plane.view_mut();
             let stride = view.stride();
             let samples = view.data_mut();
-            for index in 0..count {
-                let offset = ((4 * (index % n4w)) as i32, (4 * (index / n4w)) as i32);
-                for reference in 0..refs {
-                    let mv = if !sub8x8 {
-                        info.mv[reference]
-                    } else if ss == 0 {
-                        info.sub_mvs[index][reference]
-                    } else {
-                        average_sub_mvs(info, reference)
-                    };
-                    let request = PredictionBlock {
-                        plane,
-                        origin,
-                        offset,
-                        size,
-                        block_size,
-                        mv,
-                    };
-                    let frame = self.inputs.references[(info.ref_frame[reference] - 1) as usize]
-                        .as_ref()
-                        .ok_or(DecodeError::Malformed("VP9 missing reference"))?;
-                    let (x, y) = (
-                        (origin.0 + offset.0) as usize,
-                        (origin.1 + offset.1) as usize,
-                    );
-                    let block = &mut samples[y * stride + x..];
-                    let source = Source {
-                        reference: frame,
-                        filter: info.filter,
-                        position,
-                    };
-                    // The first prediction goes straight into the picture; a
-                    // compound block's second averages into it
-                    // (`(first + second + 1) >> 1`, `convolve_avg`).
-                    let target = Target {
-                        block,
-                        stride,
-                        average: reference == 1,
-                    };
-                    predict_from(
-                        self.inputs.dsp,
-                        &source,
-                        &request,
-                        &mut self.scratch.inter,
-                        target,
-                    )?;
+            for (r, reference) in references.iter().flatten().enumerate() {
+                let plane_ref = &reference.planes[plane as usize];
+                for row in 0..grid.1 {
+                    for col in 0..grid.0 {
+                        let offset = ((4 * col) as i32, (4 * row) as i32);
+                        let mv = if !sub8x8 {
+                            info.mv[r]
+                        } else if ss == 0 {
+                            info.sub_mvs[row * grid.0 + col][r]
+                        } else {
+                            average_sub_mvs(info, r)
+                        };
+                        let (x, y) = (origin.0 + offset.0, origin.1 + offset.1);
+                        // The first prediction goes straight into the
+                        // picture; a compound block's second averages into
+                        // it (`(first + second + 1) >> 1`, `convolve_avg`).
+                        let target = Target {
+                            block: &mut samples[y as usize * stride + x as usize..],
+                            stride,
+                            average: r == 1,
+                        };
+                        match &reference.scale {
+                            Scaling::None => {
+                                // Positions in 1/16 plane samples.
+                                let unit = 1 << (1 - ss);
+                                let at = (x * 16 + mv.col * unit, y * 16 + mv.row * unit);
+                                predict_unscaled(
+                                    dsp,
+                                    plane_ref,
+                                    kind,
+                                    at,
+                                    size,
+                                    &mut scratch.window,
+                                    target,
+                                );
+                            }
+                            Scaling::Scaled(scale) => {
+                                let request = PredictionBlock {
+                                    plane,
+                                    origin,
+                                    offset,
+                                    size,
+                                    block_size: ((n4w * 4) as i32, (n4h * 4) as i32),
+                                    mv,
+                                };
+                                predict_scaled(
+                                    dsp,
+                                    (scale, plane_ref, kind),
+                                    position,
+                                    &request,
+                                    scratch,
+                                    target,
+                                );
+                            }
+                            Scaling::Invalid => unreachable!("checked above"),
+                        }
+                    }
                 }
             }
         }
@@ -575,7 +589,9 @@ impl FrameDecoder<'_> {
                         offset_y: 0,
                         block_side: 0,
                     };
-                    scratch.buffers.add_coefficients(
+                    add_residual(
+                        self.inputs.dsp,
+                        &mut scratch.buffers,
                         &mut self.recon,
                         &block,
                         (ty, lossless),
@@ -604,7 +620,7 @@ impl FrameDecoder<'_> {
         position: &BlockPosition,
         (plane, col, row): (usize, usize, usize),
         tx: TxSize,
-        ty: crate::transform::TxType,
+        ty: TxType,
     ) -> bool {
         let steps = self.steps(info.segment_id, plane);
         let dequantizer = Dequantizer {
@@ -655,7 +671,9 @@ impl FrameDecoder<'_> {
                 block_side: 0,
             };
             let lossless = self.inputs.header.quantizer.lossless();
-            self.scratch.buffers.add_coefficients(
+            add_residual(
+                self.inputs.dsp,
+                &mut self.scratch.buffers,
                 &mut self.recon,
                 &block,
                 (ty, lossless),
@@ -780,6 +798,35 @@ fn store_rows<const S: usize>(packed: &[u8], block: &mut [u8], stride: usize) {
 
 const PLANES: [PlaneIndex; 3] = PlaneIndex::ALL;
 
+/// Inverse-transform `coefficients` (dequantized, raster) into the picture
+/// under `block`. 4x4 blocks take the fused kernel with libvpx's DC-only and
+/// zero-row shortcuts (`vpx_idct4x4_1_add`, `vp9_iht4x4_16_add`); the shared
+/// residual path's 4x4 inverse wrote a residual block and added it in a
+/// second loop. Lossless (WHT) blocks keep the shared path.
+fn add_residual(
+    dsp: &nc_dsp::Dsp,
+    buffers: &mut ResidualBuffers,
+    recon: &mut Picture,
+    block: &TxBlock,
+    (ty, lossless): (TxType, bool),
+    coefficients: &[i32],
+    extent: Extent,
+) {
+    if block.tx != TxSize::Tx4 || lossless {
+        buffers.add_coefficients(recon, block, (ty, lossless), coefficients, extent);
+        return;
+    }
+    let mut view = recon.plane_mut(block.plane).view_mut();
+    let stride = view.stride();
+    dsp.vp9_inverse_add(
+        TxSize::Tx4.log2(),
+        crate::transform::passes(ty),
+        &coefficients[..TxSize::Tx4.area()],
+        (extent.rows, extent.columns),
+        (&mut view.data_mut()[block.y * stride + block.x..], stride),
+    );
+}
+
 /// `get_entropy_context`: whether any of a transform block's 1, 2, 4 or 8
 /// coefficient contexts is set, read as one word as libvpx does.
 fn any_set(contexts: &[u8]) -> bool {
@@ -873,4 +920,67 @@ fn scaled_position(
         ((x0 + (col >> SUBPEL_BITS)) << SUBPEL_BITS) + (col & SUBPEL_MASK),
         ((y0 + (row >> SUBPEL_BITS)) << SUBPEL_BITS) + (row & SUBPEL_MASK),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fused 4x4 kernel against the shared residual path (inverse, then
+    /// add) for every type, DC-only and zero-row extents and extreme values.
+    #[test]
+    fn fused_4x4_matches_the_residual_path() {
+        let dsp = nc_dsp::Dsp::new();
+        let mut state = 0x2545_f491_u32;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        for case in 0..4000 {
+            let ty = [
+                TxType::DctDct,
+                TxType::AdstDct,
+                TxType::DctAdst,
+                TxType::AdstAdst,
+            ][case % 4];
+            let rows = 1 + (next() as usize % 4);
+            let columns = if case % 7 == 0 {
+                1
+            } else {
+                1 + (next() as usize % 4)
+            };
+            let mut coefficients = [0i32; 16];
+            for (i, c) in coefficients.iter_mut().enumerate() {
+                if i / 4 < rows && i % 4 < columns {
+                    *c = match next() % 5 {
+                        0 => 0,
+                        1 => i32::from(next() as i16),
+                        2 => [i32::MAX, i32::MIN, 32767, -32768][next() as usize % 4],
+                        _ => (next() % 2001) as i32 - 1000,
+                    };
+                }
+            }
+            let prediction: Vec<u8> = (0..4 * 6).map(|_| next() as u8).collect();
+            let mut residual = [0i32; 16];
+            crate::transform::inverse(&dsp, TxSize::Tx4, ty, false, &coefficients, &mut residual);
+            let mut want = prediction.clone();
+            for (y, row) in residual.as_chunks::<4>().0.iter().enumerate() {
+                for (x, &r) in row.iter().enumerate() {
+                    let sample = &mut want[y * 6 + x];
+                    *sample = (i32::from(*sample) + r).clamp(0, 255) as u8;
+                }
+            }
+            let mut got = prediction;
+            dsp.vp9_inverse_add(
+                2,
+                crate::transform::passes(ty),
+                &coefficients,
+                (rows, columns),
+                (&mut got, 6),
+            );
+            assert_eq!(got, want, "case {case} {ty:?} extent {rows}x{columns}");
+        }
+    }
 }

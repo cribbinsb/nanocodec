@@ -1958,7 +1958,7 @@ impl VvcBackend {
     }
 
     /// The luma quantiser of intra sub-partitions: implicit MTS whenever
-    /// the SPS enables MTS (§8.7.4.2).
+    /// the SPS enables MTS (§8.7.4.1).
     fn isp_quant(&self, quantizers: &recon::Quantizers) -> recon::Quant {
         recon::Quant {
             transform: crate::mts::luma(self.tools.mts, true, true, 0),

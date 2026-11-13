@@ -4,7 +4,7 @@ Packetization: a frame travels in RTP packets of at most MAX_PAYLOAD_BYTES
 of payload; each packet also carries PACKET_OVERHEAD_BYTES of headers
 (RTP 12, a dependency-descriptor header extension 8, UDP 8, IPv4 20), which
 count in the bitrate on the wire. A frame is whole or lost: one lost packet
-loses it (Mark, 2026-11-11: at our rates most inter frames are one packet,
+loses it (owner, 2026-11-11: at our rates most inter frames are one packet,
 so no partial-frame concealment is modelled).
 
 Loss models, each a per-packet draw from its own seeded generator:

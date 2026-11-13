@@ -13,7 +13,7 @@ use nc_common::{Picture, PictureRecycler};
 
 use super::block::{BlockInfo, BlockSize, MvRef, Partition, REFS_PER_FRAME};
 use super::header::{CompressedHeader, FrameHeader};
-use super::loopfilter::{BlockEdges, Deblocker, Levels, Units};
+use super::loopfilter::{Deblocker, Levels, Masks};
 use super::recon::{InterScratch, REFERENCE_BORDER, Reference};
 use crate::bool_coder::BoolReader;
 use crate::coeff::TokenCache;
@@ -75,9 +75,9 @@ pub(super) struct FrameDecoder<'a> {
     /// Quantizer steps per segment, luma and chroma (libvpx `seg_dequant`):
     /// resolved once per frame instead of per transform block.
     pub steps: [[Steps; 2]; MAX_SEGMENTS],
-    /// Loop-filter levels of the frame and what each 8x8 unit filters.
+    /// Loop-filter levels of the frame and each superblock's edge masks.
     pub filter_levels: Levels,
-    pub filter_units: Units,
+    pub filter_masks: Masks,
 }
 
 /// Working memory kept by the decoder across frames: allocating and
@@ -92,7 +92,7 @@ pub(super) struct BlockScratch {
     pub blocks: Vec<BlockInfo>,
     pub grid: Vec<u32>,
     pub mvs: Vec<MvRef>,
-    pub filter_units: Units,
+    pub filter_masks: Masks,
     /// Dequantized coefficients of one transform block, zero between
     /// blocks (and so between frames).
     pub coefficients: [i32; 32 * 32],
@@ -116,7 +116,7 @@ impl BlockScratch {
             blocks: Vec::new(),
             grid: Vec::new(),
             mvs: Vec::new(),
-            filter_units: Units::default(),
+            filter_masks: Masks::default(),
             coefficients: [0; 32 * 32],
             token_cache: TokenCache::new(),
             buffers: ResidualBuffers::new(dsp),
@@ -177,7 +177,7 @@ impl<'a> FrameDecoder<'a> {
         blocks.clear();
         let mut grid = std::mem::take(&mut scratch.grid);
         grid.resize(mi_cols * mi_rows, NO_BLOCK);
-        let filter_units = std::mem::take(&mut scratch.filter_units).reuse(mi_cols, mi_rows);
+        let filter_masks = std::mem::take(&mut scratch.filter_masks).reuse(mi_cols, mi_rows);
         let mut mvs = std::mem::take(&mut scratch.mvs);
         mvs.resize(mi_cols * mi_rows, MvRef::default());
         if header.is_intra() {
@@ -202,7 +202,7 @@ impl<'a> FrameDecoder<'a> {
             scratch,
             steps: segment_steps(header),
             filter_levels: Levels::new(&header.loop_filter, &header.segmentation),
-            filter_units,
+            filter_masks,
         })
     }
 
@@ -211,7 +211,7 @@ impl<'a> FrameDecoder<'a> {
     pub(super) fn finish(self) -> (FrameOutput, Box<BlockScratch>) {
         let mut scratch = self.scratch;
         (scratch.blocks, scratch.grid) = (self.blocks, self.grid);
-        scratch.filter_units = self.filter_units;
+        scratch.filter_masks = self.filter_masks;
         let output = FrameOutput {
             recon: self.recon,
             mvs: self.mvs,
@@ -270,7 +270,7 @@ impl<'a> FrameDecoder<'a> {
                     deblocker.filter_row(
                         self.inputs.dsp,
                         &mut self.recon,
-                        &self.filter_units,
+                        &self.filter_masks,
                         above,
                     );
                 }
@@ -283,7 +283,7 @@ impl<'a> FrameDecoder<'a> {
         deblocker.filter_row(
             self.inputs.dsp,
             &mut self.recon,
-            &self.filter_units,
+            &self.filter_masks,
             last_row,
         );
         Ok(())
@@ -432,10 +432,10 @@ impl<'a> FrameDecoder<'a> {
     fn store_block(&mut self, info: BlockInfo, position: &BlockPosition) {
         let index = self.blocks.len() as u32;
         self.blocks.push(info);
-        self.filter_units.record(
-            position.mi_row..position.mi_row + position.y_mis,
-            position.mi_col..position.mi_col + position.x_mis,
-            &BlockEdges::of(&info, &self.filter_levels),
+        self.filter_masks.record(
+            (position.mi_row, position.mi_col),
+            &info,
+            &self.filter_levels,
         );
         let mv = MvRef {
             ref_frame: info.ref_frame,

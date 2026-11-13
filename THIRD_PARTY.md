@@ -438,9 +438,10 @@ candidate vectors), `vp9_detokenize.c`, `vp9_decoder.c` / `vp9_dx_iface.c`
 (reference slots, superframes), `vp9/common/vp9_pred_common.[ch]`,
 `vp9_mvref_common.h`, `vp9_entropymode.c` (past independence, adaptation),
 `vp9_reconintra.c` (frame-edge rules), `vp9_scale.c` and
-`vp9_loopfilter.c` (`vp9_loop_filter_frame_init`,
-`vp9_filter_block_plane_non420`); `nc-dsp`'s `vp9_convolve_scaled`
-reimplements `vpx_dsp/vpx_convolve.c` `convolve`. `nc-dsp`'s VP9 inverse
+`vp9_loopfilter.c` (`vp9_loop_filter_frame_init`, the per-superblock bit
+masks of `vp9_build_mask` / `vp9_adjust_mask` and their tables); `nc-dsp`'s
+`vp9_convolve_scaled` reimplements `vpx_dsp/vpx_convolve.c` `convolve`, and
+`vp9_mc_scaled.rs` follows `vpx_scaled_2d`'s two-pass structure. `nc-dsp`'s VP9 inverse
 transform + add (`vp9_inverse/`) follows the eob-class structure of
 `vpx_dsp/inv_txfm.c` and its SIMD versions (`vpx_idct*_1_add`, `_12`/`_10`/
 `_38`/`_34`/`_135` partial transforms, doubled-cosine `mulhrs` rotations);

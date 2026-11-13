@@ -58,7 +58,7 @@ the per-class allowance (a speed point may accept more than the default 3%).
 launching trials so each run stays inside the 30-minute budget (the study
 resumes on the next run).
 
-Held-out discipline (Mark, 2026-11-06), strictly:
+Held-out discipline (owner decision, 2026-11-06), strictly:
 
   - The search objective uses TRAIN clips of `clips/main.json` only: a
     class-balanced proxy of `PROXY_CLIPS` (3 per class, distinct sources,

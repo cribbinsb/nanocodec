@@ -28,7 +28,7 @@ pub(crate) const RICE_PREFIX_LIMIT: u32 = 3;
 /// `ctxIdxMap` of HEVC §9.3.4.2.5, for 4x4 transform blocks.
 const SIG_CTX_4X4: [usize; 16] = [0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8];
 
-/// Prefix group of a last-position coordinate (HEVC §9.3.3.x binarisation
+/// Prefix group of a last-position coordinate (HEVC §9.3.3.2 TR binarisation
 /// of `last_sig_coeff_*_prefix`), for coordinates 0..31.
 pub(crate) const GROUP_IDX: [u32; 32] = [
     0, 1, 2, 3, 4, 4, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9,

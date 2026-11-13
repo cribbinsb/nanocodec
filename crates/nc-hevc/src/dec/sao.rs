@@ -109,7 +109,7 @@ pub(super) fn parse(
                 component.kind = Kind::Band(e.bypass_bits(BAND_POSITION_BITS) as u8);
             }
             Kind::Edge(class) => {
-                // Categories 1 and 2 add, 3 and 4 subtract (§7.4.9.3.2).
+                // Categories 1 and 2 add, 3 and 4 subtract (§7.4.9.3).
                 component.offsets[2] = -component.offsets[2];
                 component.offsets[3] = -component.offsets[3];
                 let class = if c == 0 || c == 1 {

@@ -5,7 +5,7 @@
 //!
 //! - **Inverse** (normative, exact): dequantised low-frequency coefficients
 //!   to the 64x64 residual, columns rounded by 7 bits and clipped to 16,
-//!   then rows rounded by 12 and clipped (§8.7.4.2, with §8.7.4.5's
+//!   then rows rounded by 12 and clipped (§8.7.4.1, with §8.7.4.5's
 //!   `transMatrix`, `codec_txfm::vvc_primary::tables::DCT64`). Bit-exact
 //!   with the general `vvc_primary::inverse` (tests); plain sums over the
 //!   nonzero coefficient rows, written so that the compiler vectorises them.
@@ -46,7 +46,7 @@ const CODED_AREA: usize = CODED_SIDE * CODED_SIDE;
 const BLOCK_AREA: usize = BLOCK_SIDE * BLOCK_SIDE;
 /// The 2x2 mean of four residual samples: `(sum + 2) >> 2`.
 const HALVE_SHIFT: u32 = 2;
-/// §8.7.4.2: the first inverse stage rounds by 7 bits and clips to 16.
+/// §8.7.4.1: the first inverse stage rounds by 7 bits and clips to 16.
 const INVERSE_FIRST_SHIFT: u32 = 7;
 /// §8.7.4.1 `bdShift` at 8-bit: 20 − `BitDepth`.
 const INVERSE_SECOND_SHIFT: u32 = 12;
@@ -281,7 +281,7 @@ impl Dsp {
     /// The normative dequantisation and inverse of a 64x64 DCT-II block
     /// at `qp` from the levels (or, under dependent quantisation, the
     /// reconstruction indices) of its 32x32 coded region (row-major) into
-    /// the 64x64 residual `out` (16 bits, clipped as §8.7.4.2 clips).
+    /// the 64x64 residual `out` (16 bits, clipped as §8.7.4.1 clips).
     ///
     /// # Panics
     ///

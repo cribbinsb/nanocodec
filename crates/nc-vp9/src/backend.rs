@@ -354,6 +354,9 @@ struct Scratch {
     best_coded: Vec<CodedTx>,
     /// Chroma transform blocks kept while a trial recodes only luma.
     kept_chroma: Vec<CodedTx>,
+    /// One inter plane block's 4x4 SADs against its prediction, raster
+    /// order ([`plane_quad_sads`]).
+    quad_sads: Vec<u32>,
 }
 
 impl Scratch {
@@ -426,7 +429,7 @@ impl LayerGrids {
 }
 
 /// Normative reference picture and size (`RefFrameWidth`, `RefFrameHeight`,
-/// VP9 §8.5.2.1) held for base-layer (`S0`) slots so `S1` predicts from `S0`
+/// VP9 §8.5.2.3) held for base-layer (`S0`) slots so `S1` predicts from `S0`
 /// via scaled convolution (`vp9_convolve_scaled`) while the engine's `S1`
 /// pool holds an upscaled full-size proxy for motion estimation.
 #[derive(Debug, Clone)]
@@ -954,6 +957,7 @@ impl CodecBackend for Vp9Backend {
                 best_levels: vec![0; MAX_TX_BLOCKS * 16],
                 best_coded: Vec::with_capacity(MAX_TX_BLOCKS),
                 kept_chroma: Vec::with_capacity(MAX_TX_BLOCKS),
+                quad_sads: vec![0; QUAD_SADS],
             },
             random: None,
             trellis: Vp9Trellis::from_params(&QuantParams::from_overrides(&config.params)),
@@ -2921,12 +2925,25 @@ impl Vp9Backend {
         let (plane_quantization, shave_gap) = self.quantization_controls(intra.is_some());
         let shortcuts = self.residual_shortcuts(intra.is_some());
         self.scratch.start_trial(planes);
+        // Exact shortcut ([`Self::quad_sads`]): only for inter blocks coded
+        // once, not where a transform-size search recodes the block, nor
+        // where the real-time skip test (`vp9.nonrd_skip_scale`) measures
+        // each transform block first (there it cost +0.2..0.4%).
+        let quad_planes = intra.is_none()
+            && !self.lossless
+            && self.params.inter_tx_depth < 0.5
+            && shortcuts.nonrd_scale <= 0.0;
         let mut offset = 0;
         for plane in PlaneIndex::ALL.into_iter().filter(|&p| planes.includes(p)) {
             let trellis_lambda = self.trellis_lambda(plane);
             let plane_tx = self.plane_tx(block, tx, plane);
             let skip_plane = dropped.includes(plane)
                 || self.plane_skip(block, (plane, plane_tx), &shortcuts, (source, recon));
+            let quads = if quad_planes && !skip_plane {
+                self.quad_sads(block, (plane, plane_tx), (source, recon))
+            } else {
+                None
+            };
             for tx_block in recon::tx_blocks(plane, block.x, block.y, block.size(), plane_tx) {
                 let mode = intra.map(|(y, uv)| if plane == PlaneIndex::Y { y } else { uv });
                 if let Some(mode) = mode {
@@ -2951,6 +2968,24 @@ impl Vp9Backend {
                     continue;
                 }
                 let side = plane_tx.side();
+                if let Some(quads) = quads {
+                    let sad = quads.tx_sad(&self.scratch.quad_sads, &tx_block, side);
+                    if ty == transform::TxType::DctDct
+                        && transform::dct_levels_are_zero(
+                            plane_tx,
+                            sad,
+                            steps,
+                            (rounding, min_level),
+                            shortcuts.zero_scale,
+                        )
+                    {
+                        self.scratch
+                            .coded
+                            .push(CodedTx::new(&tx_block, ty, false, offset));
+                        offset += area;
+                        continue;
+                    }
+                }
                 let residual = &mut self.scratch.residual[..area];
                 let (bx, by) = (tx_block.x as isize, tx_block.y as isize);
                 let src = source
@@ -3053,6 +3088,37 @@ impl Vp9Backend {
             zero_scale,
             nonrd_scale,
         }
+    }
+
+    /// Exact shortcut: an inter plane block's 4x4 and 8x8 transform blocks
+    /// take their SADs from one pass over the block (into
+    /// `scratch.quad_sads`), so those the zero proof drops (most of them at
+    /// real-time rates) build no views or residual. Only small transforms,
+    /// several to the plane block, pay for the pass. vp9-fastest (8x8
+    /// inter transforms, no size search): -2.4% x86 instructions.
+    fn quad_sads(
+        &mut self,
+        block: &Block,
+        (plane, tx): (PlaneIndex, TxSize),
+        pictures: (&Picture, &Picture),
+    ) -> Option<QuadSads> {
+        let ss = usize::from(plane != PlaneIndex::Y);
+        let (x, y, n) = (block.x >> ss, block.y >> ss, block.size() >> ss);
+        if tx.side() > QUAD_STRIP || n <= tx.side() {
+            return None;
+        }
+        plane_quad_sads(
+            &self.dsp,
+            pictures,
+            plane,
+            (x, y, n),
+            &mut self.scratch.quad_sads,
+        );
+        Some(QuadSads {
+            x,
+            y,
+            columns: n / QUAD_SIDE,
+        })
     }
 
     /// The transform size of `plane` for luma transform size `tx`.
@@ -3498,6 +3564,70 @@ fn copy_block_in(block: &Block, packed: &[u8], picture: &mut Picture, planes: Tr
             .expect("block inside the picture");
         copy_square(&mut dst, &packed[offset..offset + n * n], n);
         offset += n * n;
+    }
+}
+
+/// Side of the cells of [`plane_quad_sads`] (the 4x4 quadrants of
+/// `Dsp::sad_quads_8x8_row`) and the strip height of one kernel call.
+const QUAD_SIDE: usize = 4;
+const QUAD_STRIP: usize = 8;
+/// Cells of the largest plane block (64x64 luma).
+const QUAD_SADS: usize = (64 / QUAD_SIDE) * (64 / QUAD_SIDE);
+
+/// The 4x4 SADs of the `n`x`n` plane block at (`x`, `y`) of `source`
+/// against `recon` (the block's prediction), raster order, into `out`.
+fn plane_quad_sads(
+    dsp: &nc_dsp::Dsp,
+    (source, recon): (&Picture, &Picture),
+    plane: PlaneIndex,
+    (x, y, n): (usize, usize, usize),
+    out: &mut [u32],
+) {
+    let columns = n / QUAD_SIDE;
+    let blocks = n / QUAD_STRIP;
+    let mut strip = [[0u32; 4]; 64 / QUAD_STRIP];
+    for row in (0..n).step_by(QUAD_STRIP) {
+        let (xi, yi) = (x as isize, (y + row) as isize);
+        let src = source.plane(plane).region(xi, yi, n, QUAD_STRIP);
+        let rec = recon.plane(plane).region(xi, yi, n, QUAD_STRIP);
+        let (src, rec) = (
+            src.expect("block inside the source"),
+            rec.expect("block inside the picture"),
+        );
+        dsp.sad_quads_8x8_row(&src, &rec, &mut strip[..blocks]);
+        let top = (row / QUAD_SIDE) * columns;
+        for (i, [tl, tr, bl, br]) in strip[..blocks].iter().copied().enumerate() {
+            out[top + 2 * i] = tl;
+            out[top + 2 * i + 1] = tr;
+            out[top + columns + 2 * i] = bl;
+            out[top + columns + 2 * i + 1] = br;
+        }
+    }
+}
+
+/// Where [`plane_quad_sads`] measured a plane block: its origin and the
+/// width of its rows of cells.
+#[derive(Debug, Clone, Copy)]
+struct QuadSads {
+    x: usize,
+    y: usize,
+    columns: usize,
+}
+
+impl QuadSads {
+    /// The SAD of the `side`x`side` transform block `tx_block`.
+    fn tx_sad(self, quads: &[u32], tx_block: &TxBlock, side: usize) -> u32 {
+        let (cx, cy) = (
+            (tx_block.x - self.x) / QUAD_SIDE,
+            (tx_block.y - self.y) / QUAD_SIDE,
+        );
+        let cells = side / QUAD_SIDE;
+        (cy..cy + cells)
+            .map(|row| {
+                let start = row * self.columns + cx;
+                quads[start..start + cells].iter().sum::<u32>()
+            })
+            .sum()
     }
 }
 

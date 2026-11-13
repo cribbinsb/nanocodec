@@ -115,7 +115,7 @@ import numpy as np
 
 from .bdrate import BdResult, bd_rate
 
-#: The metrics J_real averages, in equal thirds (Mark, 2026-11-11). VMAF v1
+#: The metrics J_real averages, in equal thirds (owner decision, 2026-11-11). VMAF v1
 #: (3d0h) needs no NEG variant: its ADM already caps the enhancement gain
 #: (adm_enhn_gain_limit 1.0) and it has no VIF.
 HEADLINE_METRICS = ("psnr_yuv", "vmaf_v1", "ms_ssim")
@@ -123,7 +123,7 @@ WORST_METRICS = ("worst_psnr_y", "worst_vmaf_v1")
 #: The per-frame worst-1% metrics, reported only.
 WORST_FRAME_METRICS = ("worst_frame_psnr_y", "worst_frame_vmaf_v1")
 WORST_FRACTION = 0.01
-#: Quality per 1% CPU, as in the fixed-QP rule (Mark, 2026-11-08).
+#: Quality per 1% CPU, as in the fixed-QP rule (owner decision, 2026-11-08).
 K_CPU = 0.6
 CLASS_GUARD_PCT = 3.0
 WORST_GUARD_PCT = 2.0

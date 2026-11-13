@@ -128,7 +128,7 @@ impl RandomSyntax {
             SaoKind::Band([0, 1].map(|_| self.rng.below(u64::from(BANDS)) as u8))
         } else {
             for plane in &mut offsets[..planes] {
-                // Categories 1 and 2 add, 3 and 4 subtract (§7.4.9.3.2).
+                // Categories 1 and 2 add, 3 and 4 subtract (§7.4.9.3).
                 for (cat, offset) in plane.iter_mut().enumerate() {
                     let magnitude = self.rng.below(MAX_OFFSET as u64 + 1) as i8;
                     *offset = if cat < 2 { magnitude } else { -magnitude };

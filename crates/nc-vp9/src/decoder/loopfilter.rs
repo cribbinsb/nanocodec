@@ -1,20 +1,22 @@
 //! In-loop deblocking of a decoded frame with every Profile 0 feature:
 //! per-segment levels, reference/mode deltas, rectangular and sub-8x8
-//! blocks (VP9 §8.8; libvpx `vp9_loopfilter.c` `vp9_loop_filter_frame_init`
-//! and `vp9_filter_block_plane_non420`, BSD-3-Clause, see
-//! `THIRD_PARTY.md`).
+//! blocks (VP9 §8.8). The edges are libvpx's per-superblock bit masks
+//! (`vp9_loopfilter.c` `vp9_build_mask`, `vp9_adjust_mask`,
+//! `vp9_filter_block_plane_ss00` / `_ss11`; BSD-3-Clause, see
+//! `THIRD_PARTY.md`): each block ORs its edges into its superblock's masks
+//! as it is stored, and the filter walks only the set bits.
 //!
 //! Superblocks run in raster order; in each, every plane filters all its
 //! vertical edges, then all horizontal ones. Each 8x8 unit's edges come
 //! from its block's transform size: 16-wide on 16x16/32x32 transform
 //! edges, 8-wide on 8x8 edges and every 32-sample boundary, 4-wide
 //! otherwise, plus the internal edge of 4x4 transforms. Skipped inter
-//! blocks filter only their outer edges; a unit of level 0 filters none.
+//! blocks filter only their outer edges; a block of level 0 filters none.
 
-use nc_common::{Picture, PlaneIndex, PlaneViewMut};
+use nc_common::{Picture, PlaneViewMut};
 use nc_dsp::{Vp9FilterLimits as Limits, Vp9FilterWidth as Width};
 
-use super::block::{BlockInfo, INTRA_FRAME, PredMode};
+use super::block::{BlockInfo, BlockSize, INTRA_FRAME, PredMode};
 use super::frame::SB_MI;
 use super::header::{LoopFilter, MAX_LOOP_FILTER, SegFeature, Segmentation};
 use crate::segmentation::MAX_SEGMENTS;
@@ -69,196 +71,379 @@ impl Levels {
     }
 }
 
-/// The edges of one 8x8 unit along one direction in one plane type,
-/// packed in a byte: the filter at its left/top edge (none, 4, 8 or 16
-/// wide) and whether a 4-wide edge runs 4 samples in (4x4 transforms).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct EdgeCode(u8);
+const BLOCK_SIZES: usize = BlockSize::ALL.len();
+const TX_SIZES: usize = 4;
 
-impl EdgeCode {
-    const WIDTH_MASK: u8 = 0b11;
-    const INTERNAL: u8 = 0b100;
+// Luma masks: bit `row * 8 + col` is the 8x8 unit at (row, col) of a
+// superblock. Chroma (4:2:0) masks: bit `row * 4 + col` of its 4x4 units.
 
-    fn new(edge: Option<Width>, internal: bool) -> Self {
-        let width = match edge {
-            None => 0,
-            Some(Width::Four) => 1,
-            Some(Width::Eight) => 2,
-            Some(Width::Sixteen) => 3,
-        };
-        Self(width | if internal { Self::INTERNAL } else { 0 })
-    }
+/// `left_64x64_txform_mask` / `above_64x64_txform_mask`: the units of a
+/// 64x64 block whose left / top edge is a transform edge.
+const LEFT_TX: [u64; TX_SIZES] = [
+    u64::MAX,
+    u64::MAX,
+    0x5555_5555_5555_5555,
+    0x1111_1111_1111_1111,
+];
+const ABOVE_TX: [u64; TX_SIZES] = [
+    u64::MAX,
+    u64::MAX,
+    0x00ff_00ff_00ff_00ff,
+    0x0000_00ff_0000_00ff,
+];
+/// `left_prediction_mask` / `above_prediction_mask`: a block's own left /
+/// top units, at the superblock's origin.
+const LEFT_BLOCK: [u64; BLOCK_SIZES] = [
+    0x01,
+    0x01,
+    0x01,
+    0x01,
+    0x0101,
+    0x01,
+    0x0101,
+    0x0101_0101,
+    0x0101,
+    0x0101_0101,
+    0x0101_0101_0101_0101,
+    0x0101_0101,
+    0x0101_0101_0101_0101,
+];
+const ABOVE_BLOCK: [u64; BLOCK_SIZES] = [
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x03, 0x03, 0x03, 0x0f, 0x0f, 0x0f, 0xff, 0xff,
+];
+/// `size_mask`: every unit of a block, at the superblock's origin.
+const BLOCK_UNITS: [u64; BLOCK_SIZES] = [
+    0x01,
+    0x01,
+    0x01,
+    0x01,
+    0x0101,
+    0x03,
+    0x0303,
+    0x0303_0303,
+    0x0f0f,
+    0x0f0f_0f0f,
+    0x0f0f_0f0f_0f0f_0f0f,
+    0xffff_ffff,
+    u64::MAX,
+];
+/// Units on a 32-sample boundary (`left_border`, `above_border`): 4-wide
+/// edges there filter 8 wide.
+const LEFT_BORDER: u64 = 0x1111_1111_1111_1111;
+const ABOVE_BORDER: u64 = 0x0000_00ff_0000_00ff;
 
-    fn edge(self) -> Option<Width> {
-        match self.0 & Self::WIDTH_MASK {
-            0 => None,
-            1 => Some(Width::Four),
-            2 => Some(Width::Eight),
-            _ => Some(Width::Sixteen),
-        }
-    }
+/// The chroma counterparts (`*_uv`).
+const LEFT_TX_UV: [u16; TX_SIZES] = [0xffff, 0xffff, 0x5555, 0x1111];
+const ABOVE_TX_UV: [u16; TX_SIZES] = [0xffff, 0xffff, 0x0f0f, 0x000f];
+const LEFT_BLOCK_UV: [u16; BLOCK_SIZES] = [
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x11, 0x01, 0x11, 0x1111, 0x11, 0x1111,
+];
+const ABOVE_BLOCK_UV: [u16; BLOCK_SIZES] = [
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x03, 0x03, 0x03, 0x0f, 0x0f,
+];
+const BLOCK_UNITS_UV: [u16; BLOCK_SIZES] = [
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x11, 0x03, 0x33, 0x3333, 0xff, 0xffff,
+];
+const LEFT_BORDER_UV: u16 = 0x1111;
+const ABOVE_BORDER_UV: u16 = 0x000f;
+/// Luma units of the frame's first column / row, which have no left / top edge.
+const FIRST_COLUMN: u64 = 0x0101_0101_0101_0101;
+const FIRST_COLUMN_UV: u16 = 0x1111;
 
-    fn internal(self) -> bool {
-        self.0 & Self::INTERNAL != 0
-    }
+/// `LOOP_FILTER_MASK`: the edges of one superblock, per transform size
+/// (32x32 is folded into 16x16 by [`SuperblockMask::adjusted`]), and the
+/// level of each luma unit.
+#[derive(Debug, Clone, Copy)]
+struct SuperblockMask {
+    left_y: [u64; TX_SIZES],
+    above_y: [u64; TX_SIZES],
+    int_4x4_y: u64,
+    left_uv: [u16; TX_SIZES],
+    above_uv: [u16; TX_SIZES],
+    int_4x4_uv: u16,
+    levels: [u8; SB_MI * SB_MI],
 }
 
-/// The field of a unit's edge codes: luma vertical, luma horizontal,
-/// chroma vertical, chroma horizontal.
-fn code_index(chroma: bool, vertical: bool) -> usize {
-    2 * usize::from(chroma) + usize::from(!vertical)
-}
-
-/// What the filter needs of each 8x8 unit, recorded as blocks decode: the
-/// filter level and the unit's edges, decided once per block
-/// (`vp9_filter_block_plane_non420` mask building). Packed in one word,
-/// the level in the low byte and each [`EdgeCode`] in a nibble above it
-/// (indexed by [`code_index`]), so a block writes each unit with a single
-/// store. Chroma codes exist at even units only (one per 4:2:0 chroma unit).
-#[derive(Debug, Clone, Copy, Default)]
-struct Unit(u32);
-
-impl Unit {
-    const LEVEL_BITS: u32 = 8;
-    const CODE_BITS: u32 = 4;
-
-    /// `code` in the field of edge codes `index`.
-    fn code_bits(index: usize, code: EdgeCode) -> u32 {
-        u32::from(code.0) << (Self::LEVEL_BITS + Self::CODE_BITS * index as u32)
-    }
-
-    fn level(self) -> u8 {
-        self.0 as u8
-    }
-
-    fn code(self, index: usize) -> EdgeCode {
-        let shift = Self::LEVEL_BITS + Self::CODE_BITS * index as u32;
-        EdgeCode((self.0 >> shift) as u8 & ((1 << Self::CODE_BITS) - 1))
-    }
-}
-
-/// What a block contributes to its units' filtering.
-pub(super) struct BlockEdges {
-    level: u8,
-    tx: TxSize,
-    uv_tx: TxSize,
-    /// Skipped inter block: only its outer edges are filtered.
-    skip_inter: bool,
-    /// Sub-8x8 blocks start a block at every unit.
-    sub8x8: bool,
-}
-
-impl BlockEdges {
-    pub(super) fn of(info: &BlockInfo, levels: &Levels) -> Self {
+impl Default for SuperblockMask {
+    fn default() -> Self {
         Self {
-            level: levels.of(info),
-            tx: info.tx_size,
-            uv_tx: info.size.uv_tx(info.tx_size),
-            skip_inter: info.skip && info.is_inter(),
-            sub8x8: info.size.is_sub8x8(),
+            left_y: [0; TX_SIZES],
+            above_y: [0; TX_SIZES],
+            int_4x4_y: 0,
+            left_uv: [0; TX_SIZES],
+            above_uv: [0; TX_SIZES],
+            int_4x4_uv: 0,
+            levels: [0; SB_MI * SB_MI],
         }
     }
 }
 
-/// [`Unit`]s of every 8x8 unit of the frame.
-#[derive(Default)]
-pub(super) struct Units {
-    cols: usize,
-    rows: usize,
-    cells: Vec<Unit>,
+/// `vp9_build_mask`: whether a block at (row, col) in its superblock
+/// writes the chroma masks (`first_block_in_16x16`: 4:2:0 chroma units
+/// take the block at their top-left luma unit).
+fn builds_chroma(row: usize, col: usize) -> bool {
+    row.is_multiple_of(2) && col.is_multiple_of(2)
 }
 
-impl Units {
-    /// These units resized for a frame of `cols` x `rows` 8x8 units. Every
-    /// unit inside the frame is recorded by the block covering it before the
-    /// filter reads it, so recycled cells need no clearing.
-    pub(super) fn reuse(mut self, cols: usize, rows: usize) -> Self {
-        self.cells.resize(cols * rows, Unit::default());
-        (self.cols, self.rows) = (cols, rows);
+/// The masks of one direction of one plane, ready to filter: per unit the
+/// edge width (16, 8 or 4 wide), the internal 4x4 edge, and the level.
+/// `N` units per side, bit `index * N + position` where `index` is the
+/// line of edges (a column for vertical edges, a row for horizontal ones).
+struct EdgeMasks {
+    sixteen: u64,
+    eight: u64,
+    four: u64,
+    internal: u64,
+}
+
+impl EdgeMasks {
+    fn any(&self) -> u64 {
+        self.sixteen | self.eight | self.four | self.internal
+    }
+
+    /// The comparable key of the unit at `bit`: its width (0 for none) and
+    /// whether it has an internal edge.
+    fn key(&self, bit: u64) -> u8 {
+        let width = if self.sixteen & bit != 0 {
+            3
+        } else if self.eight & bit != 0 {
+            2
+        } else {
+            u8::from(self.four & bit != 0)
+        };
+        width | (u8::from(self.internal & bit != 0) << 2)
+    }
+}
+
+/// The width of a key's outer edge.
+fn key_width(key: u8) -> Option<Width> {
+    match key & 3 {
+        0 => None,
+        1 => Some(Width::Four),
+        2 => Some(Width::Eight),
+        _ => Some(Width::Sixteen),
+    }
+}
+
+/// Transpose an 8x8 bit matrix (bit `row * 8 + col` to `col * 8 + row`;
+/// Hacker's Delight 7-3).
+fn transpose8(mut x: u64) -> u64 {
+    let t = (x ^ (x >> 7)) & 0x00aa_00aa_00aa_00aa;
+    x ^= t ^ (t << 7);
+    let t = (x ^ (x >> 14)) & 0x0000_cccc_0000_cccc;
+    x ^= t ^ (t << 14);
+    let t = (x ^ (x >> 28)) & 0x0000_0000_f0f0_f0f0;
+    x ^ t ^ (t << 28)
+}
+
+/// Transpose a 4x4 bit matrix (bit `row * 4 + col` to `col * 4 + row`).
+fn transpose4(x: u16) -> u16 {
+    let mut x = u32::from(x);
+    let t = (x ^ (x >> 3)) & 0x0a0a;
+    x ^= t ^ (t << 3);
+    let t = (x ^ (x >> 6)) & 0x00cc;
+    x ^= t ^ (t << 6);
+    x as u16
+}
+
+impl SuperblockMask {
+    /// `vp9_build_mask` of a block at unit (row, col) of this superblock.
+    fn add_block(&mut self, (row, col): (usize, usize), block: &BlockInfo, level: u8) {
+        if level == 0 {
+            return;
+        }
+        let size = block.size as usize;
+        let (w, h) = (block.size.width_mi(), block.size.height_mi());
+        for r in row..(row + h).min(SB_MI) {
+            let start = r * SB_MI + col;
+            self.levels[start..start + w.min(SB_MI - col)].fill(level);
+        }
+        let tx = block.tx_size as usize;
+        let uv_tx = block.size.uv_tx(block.tx_size) as usize;
+        let shift = row * SB_MI + col;
+        let shift_uv = (row >> 1) * (SB_MI / 2) + (col >> 1);
+        let chroma = builds_chroma(row, col);
+        self.above_y[tx] |= ABOVE_BLOCK[size] << shift;
+        self.left_y[tx] |= LEFT_BLOCK[size] << shift;
+        if chroma {
+            self.above_uv[uv_tx] |= ABOVE_BLOCK_UV[size] << shift_uv;
+            self.left_uv[uv_tx] |= LEFT_BLOCK_UV[size] << shift_uv;
+        }
+        // Skipped inter blocks filter only their outer edges.
+        if block.skip && block.is_inter() {
+            return;
+        }
+        self.above_y[tx] |= (BLOCK_UNITS[size] & ABOVE_TX[tx]) << shift;
+        self.left_y[tx] |= (BLOCK_UNITS[size] & LEFT_TX[tx]) << shift;
+        if chroma {
+            self.above_uv[uv_tx] |= (BLOCK_UNITS_UV[size] & ABOVE_TX_UV[uv_tx]) << shift_uv;
+            self.left_uv[uv_tx] |= (BLOCK_UNITS_UV[size] & LEFT_TX_UV[uv_tx]) << shift_uv;
+        }
+        if tx == TxSize::Tx4 as usize {
+            self.int_4x4_y |= BLOCK_UNITS[size] << shift;
+        }
+        if chroma && uv_tx == TxSize::Tx4 as usize {
+            self.int_4x4_uv |= BLOCK_UNITS_UV[size] << shift_uv;
+        }
+    }
+
+    /// `vp9_adjust_mask` for the superblock at unit (`mi_row`, `mi_col`)
+    /// of a frame of `mi_rows` x `mi_cols` units: 32x32 edges filter as
+    /// 16x16, 4-wide edges on 32-sample boundaries filter 8 wide, units
+    /// outside the frame filter nothing, and so on.
+    fn adjusted(
+        mut self,
+        (mi_row, mi_col): (usize, usize),
+        (mi_rows, mi_cols): (usize, usize),
+    ) -> Self {
+        let (t4, t8, t16, t32) = (0, 1, 2, 3);
+        self.left_y[t16] |= self.left_y[t32];
+        self.above_y[t16] |= self.above_y[t32];
+        self.left_uv[t16] |= self.left_uv[t32];
+        self.above_uv[t16] |= self.above_uv[t32];
+        self.left_y[t8] |= self.left_y[t4] & LEFT_BORDER;
+        self.left_y[t4] &= !LEFT_BORDER;
+        self.above_y[t8] |= self.above_y[t4] & ABOVE_BORDER;
+        self.above_y[t4] &= !ABOVE_BORDER;
+        self.left_uv[t8] |= self.left_uv[t4] & LEFT_BORDER_UV;
+        self.left_uv[t4] &= !LEFT_BORDER_UV;
+        self.above_uv[t8] |= self.above_uv[t4] & ABOVE_BORDER_UV;
+        self.above_uv[t4] &= !ABOVE_BORDER_UV;
+        if mi_row + SB_MI > mi_rows {
+            let rows = mi_rows - mi_row;
+            let mask_y = (1u64 << (rows << 3)) - 1;
+            let mask_uv = ((1u32 << (((rows + 1) >> 1) << 2)) - 1) as u16;
+            for i in [t4, t8, t16] {
+                self.left_y[i] &= mask_y;
+                self.above_y[i] &= mask_y;
+                self.left_uv[i] &= mask_uv;
+                self.above_uv[i] &= mask_uv;
+            }
+            self.int_4x4_y &= mask_y;
+            self.int_4x4_uv &= mask_uv;
+            // No wide filter on the last chroma row.
+            if rows == 1 {
+                self.above_uv[t8] |= self.above_uv[t16];
+                self.above_uv[t16] = 0;
+            }
+            if rows == 5 {
+                self.above_uv[t8] |= self.above_uv[t16] & 0xff00;
+                self.above_uv[t16] &= !0xff00;
+            }
+        }
+        if mi_col + SB_MI > mi_cols {
+            let columns = mi_cols - mi_col;
+            let mask_y = ((1u64 << columns) - 1) * FIRST_COLUMN;
+            let mask_uv = ((1u16 << ((columns + 1) >> 1)) - 1) * FIRST_COLUMN_UV;
+            // Internal edges do not apply on the frame's last chroma column.
+            let mask_uv_int = ((1u16 << (columns >> 1)) - 1) * FIRST_COLUMN_UV;
+            for i in [t4, t8, t16] {
+                self.left_y[i] &= mask_y;
+                self.above_y[i] &= mask_y;
+                self.left_uv[i] &= mask_uv;
+                self.above_uv[i] &= mask_uv;
+            }
+            self.int_4x4_y &= mask_y;
+            self.int_4x4_uv &= mask_uv_int;
+            // No wide filter on the last chroma column.
+            if columns == 1 {
+                self.left_uv[t8] |= self.left_uv[t16];
+                self.left_uv[t16] = 0;
+            }
+            if columns == 5 {
+                self.left_uv[t8] |= self.left_uv[t16] & 0xcccc;
+                self.left_uv[t16] &= !0xcccc;
+            }
+        }
+        // No filter on the frame's left column.
+        if mi_col == 0 {
+            for i in [t4, t8, t16] {
+                self.left_y[i] &= !FIRST_COLUMN;
+                self.left_uv[i] &= !FIRST_COLUMN_UV;
+            }
+        }
         self
     }
 
-    /// Record a block covering the 8x8 units of rows `rows` and columns
-    /// `cols`.
+    /// The luma vertical (`vertical`) or horizontal edges, indexed by line
+    /// of edges: columns for vertical ones (transposed), rows otherwise.
+    /// `top_row`: the superblock starts the frame (no top edges in row 0).
+    fn luma(&self, vertical: bool, top_row: bool) -> EdgeMasks {
+        if vertical {
+            EdgeMasks {
+                sixteen: transpose8(self.left_y[2]),
+                eight: transpose8(self.left_y[1]),
+                four: transpose8(self.left_y[0]),
+                internal: transpose8(self.int_4x4_y),
+            }
+        } else {
+            let keep = if top_row { !0xff } else { u64::MAX };
+            EdgeMasks {
+                sixteen: self.above_y[2] & keep,
+                eight: self.above_y[1] & keep,
+                four: self.above_y[0] & keep,
+                internal: self.int_4x4_y,
+            }
+        }
+    }
+
+    /// The chroma counterpart of [`Self::luma`]; `last_row`: the chroma row
+    /// (0..4) holding the frame's last unit row when it is odd, whose
+    /// internal horizontal edges are not filtered.
+    fn chroma(&self, vertical: bool, top_row: bool, last_row: Option<usize>) -> EdgeMasks {
+        if vertical {
+            EdgeMasks {
+                sixteen: u64::from(transpose4(self.left_uv[2])),
+                eight: u64::from(transpose4(self.left_uv[1])),
+                four: u64::from(transpose4(self.left_uv[0])),
+                internal: u64::from(transpose4(self.int_4x4_uv)),
+            }
+        } else {
+            let keep: u16 = if top_row { !0xf } else { u16::MAX };
+            let internal =
+                last_row.map_or(self.int_4x4_uv, |row| self.int_4x4_uv & !(0xf << (row * 4)));
+            EdgeMasks {
+                sixteen: u64::from(self.above_uv[2] & keep),
+                eight: u64::from(self.above_uv[1] & keep),
+                four: u64::from(self.above_uv[0] & keep),
+                internal: u64::from(internal),
+            }
+        }
+    }
+}
+
+/// The edge masks of every superblock of the frame, built as blocks are
+/// stored.
+#[derive(Default)]
+pub(super) struct Masks {
+    mi_cols: usize,
+    mi_rows: usize,
+    sb_cols: usize,
+    cells: Vec<SuperblockMask>,
+}
+
+impl Masks {
+    /// These masks cleared for a frame of `mi_cols` x `mi_rows` units
+    /// (`vp9_reset_lfm`).
+    pub(super) fn reuse(mut self, mi_cols: usize, mi_rows: usize) -> Self {
+        let sb_cols = mi_cols.div_ceil(SB_MI);
+        let sb_rows = mi_rows.div_ceil(SB_MI);
+        self.cells.clear();
+        self.cells
+            .resize(sb_cols * sb_rows, SuperblockMask::default());
+        (self.mi_cols, self.mi_rows, self.sb_cols) = (mi_cols, mi_rows, sb_cols);
+        self
+    }
+
+    /// Add the edges of a block at unit (`mi_row`, `mi_col`).
     pub(super) fn record(
         &mut self,
-        rows: std::ops::Range<usize>,
-        cols: std::ops::Range<usize>,
-        block: &BlockEdges,
+        (mi_row, mi_col): (usize, usize),
+        block: &BlockInfo,
+        levels: &Levels,
     ) {
-        if block.level == 0 {
-            // Units start unfiltered; a level of 0 filters no edge.
-            for row in rows {
-                let start = row * self.cols;
-                self.cells[start + cols.start..start + cols.end].fill(Unit::default());
-            }
-            return;
-        }
-        // Vertical edges vary only along the block's columns and
-        // horizontal ones only along its rows: decide each line once.
-        let mut vertical = [[EdgeCode::default(); 2]; SB_MI];
-        for (code, col) in vertical.iter_mut().zip(cols.clone()) {
-            let block_left = block.sub8x8 || col == cols.start;
-            *code = Self::line_codes(block, col, col == self.cols - 1, block_left);
-        }
-        let mut horizontal = [[EdgeCode::default(); 2]; SB_MI];
-        for (code, row) in horizontal.iter_mut().zip(rows.clone()) {
-            let block_top = block.sub8x8 || row == rows.start;
-            *code = Self::line_codes(block, row, row == self.rows - 1, block_top);
-        }
-        let vertical_bits = vertical.map(|[luma, chroma]| {
-            Unit::code_bits(code_index(false, true), luma)
-                | Unit::code_bits(code_index(true, true), chroma)
-        });
-        let last_col = self.cols - 1;
-        for (row, [luma, chroma]) in rows.zip(horizontal) {
-            let row_bits = u32::from(block.level)
-                | Unit::code_bits(code_index(false, false), luma)
-                | Unit::code_bits(code_index(true, false), chroma);
-            // `mask_4x4_int` follows the column border; the horizontal
-            // pass also drops it on the last chroma row.
-            let border_bits =
-                row_bits & !Unit::code_bits(code_index(true, false), EdgeCode(EdgeCode::INTERNAL));
-            let start = row * self.cols;
-            for ((cell, col), vertical) in self.cells[start + cols.start..start + cols.end]
-                .iter_mut()
-                .zip(cols.clone())
-                .zip(vertical_bits)
-            {
-                let row_bits = if col == last_col {
-                    border_bits
-                } else {
-                    row_bits
-                };
-                *cell = Unit(row_bits | vertical);
-            }
-        }
-    }
-
-    /// The luma and chroma codes of a block's edges at unit `index` (a
-    /// column for vertical edges, a row for horizontal ones): `last` if
-    /// it is the frame's last unit, `block_edge` if it starts the block.
-    /// The chroma code applies at even units (4:2:0 chroma reads only
-    /// those).
-    fn line_codes(block: &BlockEdges, index: usize, last: bool, block_edge: bool) -> [EdgeCode; 2] {
-        [false, true].map(|chroma| {
-            let ss = usize::from(chroma);
-            let tx = if chroma { block.uv_tx } else { block.tx };
-            let border = chroma && last;
-            // Position in plane 8x8 units within the superblock.
-            let (edge, internal) = unit_edges(
-                block.skip_inter,
-                tx,
-                (index % SB_MI) >> ss,
-                block_edge,
-                border,
-            );
-            EdgeCode::new(edge, internal && !border)
-        })
-    }
-
-    fn at(&self, row: usize, col: usize) -> &Unit {
-        &self.cells[row * self.cols + col]
+        let sb = (mi_row / SB_MI) * self.sb_cols + mi_col / SB_MI;
+        self.cells[sb].add_block((mi_row % SB_MI, mi_col % SB_MI), block, levels.of(block));
     }
 }
 
@@ -287,187 +472,182 @@ impl Deblocker {
         Self { limits }
     }
 
-    /// Deblock the superblock row starting at 8x8 unit row `sb_row` in
+    /// Deblock the superblock row starting at 8x8 unit row `mi_row` in
     /// place; its blocks must all be decoded.
     pub(super) fn filter_row(
         &self,
         dsp: &nc_dsp::Dsp,
         recon: &mut Picture,
-        units: &Units,
-        sb_row: usize,
+        masks: &Masks,
+        mi_row: usize,
     ) {
         if self.limits.is_empty() {
             return;
         }
-        // Planes are independent: one view per plane and row, not per edge.
-        for plane in PlaneIndex::ALL {
-            let mut view = recon.plane_mut(plane).view_mut();
-            for sb_col in (0..units.cols).step_by(SB_MI) {
-                filter_superblock(
-                    dsp,
-                    &mut view,
-                    plane != PlaneIndex::Y,
-                    units,
-                    (sb_row, sb_col),
-                    &self.limits,
+        let frame = (masks.mi_rows, masks.mi_cols);
+        let sb_row = mi_row / SB_MI;
+        let row_masks = &masks.cells[sb_row * masks.sb_cols..][..masks.sb_cols];
+        let [y, u, v] = recon.planes_mut();
+        let (mut y, mut u, mut v) = (y.view_mut(), u.view_mut(), v.view_mut());
+        // `mi_row + r == mi_rows - 1` for an even r: the chroma row of an odd
+        // last unit row.
+        let last_chroma_row = (mi_row + SB_MI >= masks.mi_rows
+            && (masks.mi_rows - mi_row) % 2 == 1)
+            .then(|| (masks.mi_rows - 1 - mi_row) / 2);
+        for (sb_col, mask) in row_masks.iter().enumerate() {
+            let mi_col = sb_col * SB_MI;
+            let mask = mask.adjusted((mi_row, mi_col), frame);
+            let origin = (mi_col * MI_SIZE, mi_row * MI_SIZE);
+            let top = mi_row == 0;
+            let level = |index: usize, position: usize, vertical: bool, ss: usize| {
+                let (row, col) = if vertical {
+                    (position, index)
+                } else {
+                    (index, position)
+                };
+                mask.levels[(row << ss) * SB_MI + (col << ss)]
+            };
+            let ctx = FilterContext {
+                dsp,
+                limits: &self.limits,
+                origin,
+            };
+            ctx.plane(&mut y, &mask.luma(true, top), true, 0, &level);
+            ctx.plane(&mut y, &mask.luma(false, top), false, 0, &level);
+            for plane in [&mut u, &mut v] {
+                ctx.plane(
+                    plane,
+                    &mask.chroma(true, top, last_chroma_row),
+                    true,
+                    1,
+                    &level,
+                );
+                ctx.plane(
+                    plane,
+                    &mask.chroma(false, top, last_chroma_row),
+                    false,
+                    1,
+                    &level,
                 );
             }
         }
     }
 }
 
-/// The edges of a unit along one direction (`vp9_filter_block_plane_non420`
-/// mask building): the filter at its left/top edge and whether it has an
-/// internal 4x4 edge. `index` is the unit's position along the direction in
-/// plane 8x8 units, `block_edge` whether the unit starts its block,
-/// `border` whether a chroma unit is the frame's last mode-info unit.
-fn unit_edges(
-    skip_inter: bool,
-    tx: TxSize,
-    index: usize,
-    block_edge: bool,
-    border: bool,
-) -> (Option<Width>, bool) {
-    let edge = if skip_inter && !block_edge {
-        None
-    } else {
-        match tx {
-            TxSize::Tx32 if index.is_multiple_of(4) => {
-                Some(if border { Width::Eight } else { Width::Sixteen })
+/// What filtering one superblock needs besides its masks.
+struct FilterContext<'a> {
+    dsp: &'a nc_dsp::Dsp,
+    limits: &'a [Limits],
+    /// The superblock's luma top-left sample.
+    origin: (usize, usize),
+}
+
+impl FilterContext<'_> {
+    /// Filter one direction of one plane of the superblock: lines of edges
+    /// in order (columns left to right, or rows top to bottom), each as
+    /// runs of units with the same edges and level (one kernel call per
+    /// run; lines across an edge are independent, so a run filters in the
+    /// same order as libvpx's per-row passes).
+    fn plane(
+        &self,
+        view: &mut PlaneViewMut<'_>,
+        edges: &EdgeMasks,
+        vertical: bool,
+        ss: usize,
+        level: &impl Fn(usize, usize, bool, usize) -> u8,
+    ) {
+        let side = SB_MI >> ss;
+        let line_mask = (1u64 << side) - 1;
+        let any = edges.any();
+        let (x0, y0) = (self.origin.0 >> ss, self.origin.1 >> ss);
+        for index in 0..side {
+            let mut bits = (any >> (index * side)) & line_mask;
+            while bits != 0 {
+                let start = bits.trailing_zeros() as usize;
+                let first = 1u64 << (index * side + start);
+                let (key, unit_level) = (edges.key(first), level(index, start, vertical, ss));
+                let mut end = start + 1;
+                while end < side
+                    && edges.key(1 << (index * side + end)) == key
+                    && level(index, end, vertical, ss) == unit_level
+                {
+                    end += 1;
+                }
+                bits &= !(((1u64 << end) - 1) ^ ((1u64 << start) - 1));
+                let along = (start * MI_SIZE, (end - start) * MI_SIZE);
+                let across = index * MI_SIZE;
+                let (x, y) = if vertical {
+                    (x0 + across, y0 + along.0)
+                } else {
+                    (x0 + along.0, y0 + across)
+                };
+                self.run(view, (x, y), (vertical, along.1), key, unit_level);
             }
-            TxSize::Tx16 if index.is_multiple_of(2) => {
-                Some(if border { Width::Eight } else { Width::Sixteen })
+        }
+    }
+
+    /// Filter `lines` lines of the edge at plane sample `(x, y)` with edge
+    /// key `key`: the outer edge, then the internal 4x4 edge.
+    fn run(
+        &self,
+        view: &mut PlaneViewMut<'_>,
+        (x, y): (usize, usize),
+        (vertical, lines): (bool, usize),
+        key: u8,
+        level: u8,
+    ) {
+        let limits = self.limits[usize::from(level)];
+        let stride = view.stride();
+        let (step, along) = if vertical { (1, stride) } else { (stride, 1) };
+        if let Some(width) = key_width(key) {
+            self.dsp.vp9_filter_edge(
+                view.data_mut(),
+                y * stride + x,
+                step,
+                along,
+                lines,
+                width,
+                limits,
+            );
+        }
+        if key & 4 != 0 {
+            let inner = if vertical { (x + 4, y) } else { (x, y + 4) };
+            self.dsp.vp9_filter_edge(
+                view.data_mut(),
+                inner.1 * stride + inner.0,
+                step,
+                along,
+                lines,
+                Width::Four,
+                limits,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transposes_match_the_definition() {
+        for seed in 0..64u64 {
+            let x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (seed << 17);
+            let mut expected = 0u64;
+            for bit in 0..64 {
+                if x >> bit & 1 != 0 {
+                    expected |= 1 << ((bit % 8) * 8 + bit / 8);
+                }
             }
-            TxSize::Tx32 | TxSize::Tx16 => None,
-            // 8-wide filtering on every 32-sample boundary.
-            TxSize::Tx8 => Some(Width::Eight),
-            TxSize::Tx4 => Some(if index.is_multiple_of(4) {
-                Width::Eight
-            } else {
-                Width::Four
-            }),
+            assert_eq!(transpose8(x), expected);
+            let small = x as u16;
+            let mut expected = 0u16;
+            for bit in 0..16 {
+                if small >> bit & 1 != 0 {
+                    expected |= 1 << ((bit % 4) * 4 + bit / 4);
+                }
+            }
+            assert_eq!(transpose4(small), expected);
         }
-    };
-    (edge, !skip_inter && tx == TxSize::Tx4)
-}
-
-/// The plane's unit offsets (every `step`-th 8x8 unit) of a superblock at
-/// `start` that lie before `limit`, and their count.
-fn units_inside(start: usize, limit: usize, step: usize) -> ([usize; SB_MI], usize) {
-    let mut units = [0; SB_MI];
-    let mut count = 0;
-    for unit in (0..SB_MI).step_by(step).take_while(|&u| start + u < limit) {
-        units[count] = unit;
-        count += 1;
-    }
-    (units, count)
-}
-
-/// Filter the `units` x 8 lines across the edge at plane sample `(x, y)`;
-/// lines beyond the plane are skipped.
-fn filter_edge(
-    dsp: &nc_dsp::Dsp,
-    view: &mut PlaneViewMut<'_>,
-    (x, y): (usize, usize),
-    (vertical, units): (bool, usize),
-    width: Width,
-    limits: Limits,
-) {
-    let (plane_w, plane_h) = (view.width(), view.height());
-    let stride = view.stride();
-    let span = units * MI_SIZE;
-    let (step, along, lines) = if vertical {
-        (1, stride, span.min(plane_h - y))
-    } else {
-        (stride, 1, span.min(plane_w - x))
-    };
-    dsp.vp9_filter_edge(
-        view.data_mut(),
-        y * stride + x,
-        step,
-        along,
-        lines,
-        width,
-        limits,
-    );
-}
-
-/// Deblock one plane of the superblock at 8x8 unit `(sb_row, sb_col)`:
-/// every vertical edge, then every horizontal one. Runs of units with the
-/// same edges and level along an edge are one kernel call (the same
-/// per-line order: an 8-line stripe is touched only by its own edges).
-fn filter_superblock(
-    dsp: &nc_dsp::Dsp,
-    plane: &mut PlaneViewMut<'_>,
-    chroma: bool,
-    frame: &Units,
-    (sb_row, sb_col): (usize, usize),
-    limits: &[Limits],
-) {
-    let ss = usize::from(chroma);
-    let step = 1 << ss;
-    let (row_units, row_count) = units_inside(sb_row, frame.rows, step);
-    let (col_units, col_count) = units_inside(sb_col, frame.cols, step);
-    let (rows, cols) = (&row_units[..row_count], &col_units[..col_count]);
-    // Each unit's edges and level as one comparable key.
-    let key = |unit: &Unit, vertical: bool| {
-        u16::from(unit.level()) << 8 | u16::from(unit.code(code_index(chroma, vertical)).0)
-    };
-    let mut vertical = [[0u16; SB_MI]; SB_MI];
-    let mut horizontal = [[0u16; SB_MI]; SB_MI];
-    for (i, &r) in rows.iter().enumerate() {
-        for (j, &c) in cols.iter().enumerate() {
-            let unit = frame.at(sb_row + r, sb_col + c);
-            vertical[j][i] = key(unit, true);
-            horizontal[i][j] = key(unit, false);
-        }
-    }
-    let to_plane = |units: usize| (units * MI_SIZE) >> ss;
-    for (j, &c) in cols.iter().enumerate() {
-        let x = to_plane(sb_col + c);
-        let mut i = 0;
-        for run in vertical[j][..rows.len()].chunk_by(|a, b| a == b) {
-            let y = to_plane(sb_row + rows[i]);
-            filter_run(dsp, plane, (x, y), (true, run.len()), run[0], limits);
-            i += run.len();
-        }
-    }
-    for (i, &r) in rows.iter().enumerate() {
-        let y = to_plane(sb_row + r);
-        let mut j = 0;
-        for run in horizontal[i][..cols.len()].chunk_by(|a, b| a == b) {
-            let x = to_plane(sb_col + cols[j]);
-            filter_run(dsp, plane, (x, y), (false, run.len()), run[0], limits);
-            j += run.len();
-        }
-    }
-}
-
-/// Filter a run of `units` units with edge key `key` starting at plane
-/// sample `(x, y)`: the outer edge (none at the frame's left or top) and
-/// the internal 4x4 edge.
-fn filter_run(
-    dsp: &nc_dsp::Dsp,
-    plane: &mut PlaneViewMut<'_>,
-    (x, y): (usize, usize),
-    (vertical, units): (bool, usize),
-    key: u16,
-    limits: &[Limits],
-) {
-    let level = key >> 8;
-    if level == 0 {
-        return;
-    }
-    let code = EdgeCode(key as u8);
-    let limits = limits[usize::from(level)];
-    let at_frame_edge = if vertical { x == 0 } else { y == 0 };
-    if let Some(width) = code.edge()
-        && !at_frame_edge
-    {
-        filter_edge(dsp, plane, (x, y), (vertical, units), width, limits);
-    }
-    if code.internal() {
-        let inner = if vertical { (x + 4, y) } else { (x, y + 4) };
-        filter_edge(dsp, plane, inner, (vertical, units), Width::Four, limits);
     }
 }

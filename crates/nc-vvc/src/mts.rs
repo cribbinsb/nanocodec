@@ -1,5 +1,5 @@
 //! H.266 multiple transform selection (MTS): the luma primary transform of
-//! a coding unit (§8.7.4.2 `trTypeHor` / `trTypeVer`), its `mts_idx` syntax
+//! a coding unit (§8.7.4.1 `trTypeHor` / `trTypeVer`), its `mts_idx` syntax
 //! (§7.3.11.5, §9.3.4.2) and the encoder's choice of it.
 //!
 //! With `sps_mts_enabled_flag` a luma transform block uses DST-VII or
@@ -42,7 +42,7 @@ const MAX_SIDE: usize = 32;
 /// §7.3.11.11 `MtsZeroOutSigCoeffFlag`: luma coefficients beyond this
 /// many columns or rows rule out `mts_idx`.
 const ZERO_OUT_SIDE: usize = 16;
-/// Implicit MTS uses DST-VII on sides from 4 to 16 (§8.7.4.2).
+/// Implicit MTS uses DST-VII on sides from 4 to 16 (§8.7.4.1).
 const IMPLICIT_SIDES: std::ops::RangeInclusive<usize> = 4..=16;
 
 /// A luma transform block's primary transform rule.
@@ -62,7 +62,7 @@ pub(crate) enum Selection {
 
 impl Selection {
     /// The (horizontal, vertical) kinds for a `width` x `height` block
-    /// (§8.7.4.2, Table 39).
+    /// (§8.7.4.1, Table 39).
     pub(crate) fn kinds(self, (width, height): (usize, usize)) -> [VvcTransformKind; 2] {
         match self {
             Self::Dct2 => [Dct2; 2],
@@ -91,7 +91,7 @@ impl Selection {
     }
 }
 
-/// The luma rule of a CU (§8.7.4.2 `implicitMtsEnabled`): `intra`, with
+/// The luma rule of a CU (§8.7.4.1 `implicitMtsEnabled`): `intra`, with
 /// intra sub-partitions `isp`, coded `index` (its `mts_idx`, 0 if absent).
 pub(crate) fn luma(tool: Option<Mts>, intra: bool, isp: bool, index: u8) -> Selection {
     let Some(mts) = tool else {

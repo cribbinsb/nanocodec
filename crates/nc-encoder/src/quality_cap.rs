@@ -1,7 +1,7 @@
 //! Quality ceiling of rate control: the finest quantizer step any frame
 //! may use, and the temporal-noise diagnostic of the rate log.
 //!
-//! The target bitrate is a ceiling, not a rate to hit (Mark, 2026-11-08:
+//! The target bitrate is a ceiling, not a rate to hit (owner decision, 2026-11-08:
 //! "a max quality is appropriate, we don't want to waste bits encoding
 //! noise"). Two mechanisms stop spending: this absolute floor,
 //! `rate.max_quality_qp` (the H.264 QP of the same pixel-domain step, so one

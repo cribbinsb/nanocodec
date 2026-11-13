@@ -267,6 +267,108 @@ pub fn vp9_inverse_add(
     }
 }
 
+/// `cospi_8_64`, `cospi_16_64`, `cospi_24_64` and `sinpi_k_9` (14 bits).
+const COS8: i64 = 15137;
+const COS16: i64 = 11585;
+const COS24: i64 = 6270;
+const SIN1: i64 = 5283;
+const SIN2: i64 = 9929;
+const SIN3: i64 = 13377;
+const SIN4: i64 = 15212;
+/// The 4x4 inverse's final rounding shift.
+const SHIFT4: u32 = 4;
+
+/// `dct_const_round_shift`.
+fn round14(value: i64) -> i32 {
+    ((value + (1 << 13)) >> 14) as i32
+}
+
+/// `WRAPLOW`: VP9 keeps 16 bits between stages.
+fn wrap(value: i32) -> i32 {
+    i32::from(value as i16)
+}
+
+/// `idct4_c`.
+fn idct4([a, b, c, d]: [i32; 4]) -> [i32; 4] {
+    let [a, b, c, d] = [a, b, c, d].map(i64::from);
+    let even0 = wrap(round14((a + c) * COS16));
+    let even1 = wrap(round14((a - c) * COS16));
+    let odd0 = wrap(round14(b * COS24 - d * COS8));
+    let odd1 = wrap(round14(b * COS8 + d * COS24));
+    [
+        wrap(even0 + odd1),
+        wrap(even1 + odd0),
+        wrap(even1 - odd0),
+        wrap(even0 - odd1),
+    ]
+}
+
+/// `iadst4_c`.
+fn iadst4([a, b, c, d]: [i32; 4]) -> [i32; 4] {
+    let difference = i64::from(wrap(a.wrapping_sub(c).wrapping_add(d)));
+    let [a, b, c, d] = [a, b, c, d].map(i64::from);
+    let first = SIN1 * a + SIN4 * c + SIN2 * d;
+    let second = SIN2 * a - SIN1 * c - SIN4 * d;
+    let middle = SIN3 * b;
+    [
+        wrap(round14(first + middle)),
+        wrap(round14(second + middle)),
+        wrap(round14(SIN3 * difference)),
+        wrap(round14(first + second - middle)),
+    ]
+}
+
+fn line4(pass: Vp9Pass, line: [i32; 4]) -> [i32; 4] {
+    match pass {
+        Vp9Pass::Dct => idct4(line),
+        Vp9Pass::Adst => iadst4(line),
+    }
+}
+
+/// The 4x4 inverse transform of raster `input` added to the 4x4 block at
+/// the start of `dst` (rows `dst_stride` apart), clipped to 8 bits
+/// (`vp9_iht4x4_16_add_c`, `vpx_idct4x4_16_add_c`). Rows from
+/// `nonzero_rows` on must be zero; a DCT block whose only coefficient is
+/// the DC adds one constant (`vpx_idct4x4_1_add_c`).
+pub(crate) fn vp9_inverse4_add(
+    columns: Vp9Pass,
+    rows: Vp9Pass,
+    input: &[i32],
+    (nonzero_rows, nonzero_columns): (usize, usize),
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    const SIDE: usize = 4;
+    let round = |value: i32| (value + (1 << (SHIFT4 - 1))) >> SHIFT4;
+    if (nonzero_rows, nonzero_columns) == (1, 1) && (columns, rows) == (Vp9Pass::Dct, Vp9Pass::Dct)
+    {
+        let row = wrap(round14(i64::from(input[0]) * COS16));
+        let value = round(wrap(round14(i64::from(row) * COS16)));
+        for line in dst.chunks_mut(dst_stride).take(SIDE) {
+            for sample in &mut line[..SIDE] {
+                *sample = (i32::from(*sample) + value).clamp(0, 255) as u8;
+            }
+        }
+        return;
+    }
+    let mut temp = [[0i32; SIDE]; SIDE];
+    for (y, row) in temp.iter_mut().enumerate().take(nonzero_rows.min(SIDE)) {
+        *row = line4(rows, std::array::from_fn(|x| input[y * SIDE + x]));
+    }
+    let mut out = [[0i32; SIDE]; SIDE];
+    for x in 0..SIDE {
+        let column = line4(columns, std::array::from_fn(|y| temp[y][x]));
+        for (y, value) in column.into_iter().enumerate() {
+            out[y][x] = round(value);
+        }
+    }
+    for (line, values) in dst.chunks_mut(dst_stride).zip(out) {
+        for (sample, value) in line[..SIDE].iter_mut().zip(values) {
+            *sample = (i32::from(*sample) + value).clamp(0, 255) as u8;
+        }
+    }
+}
+
 /// VP9 8×8 forward DCT (see [`vp9_forward_transform`]).
 #[must_use]
 pub fn vp9_forward_dct8(input: &[i16; 64]) -> [i32; 64] {

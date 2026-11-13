@@ -362,7 +362,7 @@ fn quantize_into(
 /// approximation: it steers the levels, the reconstruction is exact) of the
 /// 64x64 block into `scratch.coefficients` (its 32x32 coded region); false
 /// when every coefficient provably quantises to zero. Only the DCT-II has
-/// 64 points (§8.7.4.2: implicit MTS keeps it from 32; `mts_idx` needs
+/// 64 points (§8.7.4.1: implicit MTS keeps it from 32; `mts_idx` needs
 /// sides up to 32).
 fn forward_large(
     dsp: &nc_dsp::Dsp,

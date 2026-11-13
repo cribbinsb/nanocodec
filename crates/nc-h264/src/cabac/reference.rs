@@ -32,7 +32,7 @@ impl SpecEncoder {
             let (m, n) = mn[kind.init_column(0)];
             *ctx = Context::init(m, n, slice_qp);
         }
-        // §9.3.1.2: initialisation of the arithmetic encoding engine.
+        // §9.3.4.1: initialisation of the arithmetic encoding engine.
         Self {
             contexts,
             low: 0,
