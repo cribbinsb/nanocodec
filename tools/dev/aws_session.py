@@ -382,6 +382,28 @@ class Session:
         if ssh.wait() != 0:
             raise RuntimeError(f"download of {remote_dir} failed")
 
+    def download_new(self, remote_dir: str, local_dir: Path, marker: str) -> int:
+        """The files under `remote_dir` changed since the last call with `marker` (all of
+        them on the first) into `local_dir`: a checkpoint that a spot reclaim cannot
+        take back. Returns the bytes moved (billed as egress)."""
+        local_dir.mkdir(parents=True, exist_ok=True)
+        newer = f"-newer {marker}"
+        command = (f"cd {remote_dir} && touch {marker}.next && "
+                   f"{{ if [ -f {marker} ]; then find . -type f {newer}; else find . -type f; fi; }}"
+                   f" | tar -cf - -T - && mv {marker}.next {marker}")
+        ssh = subprocess.Popen([*self.ssh_base(), command], stdout=subprocess.PIPE)
+        untar = subprocess.Popen(["tar", "-C", str(local_dir), "-xf", "-"],
+                                 stdin=subprocess.PIPE)
+        moved = 0
+        while chunk := ssh.stdout.read(1 << 20):
+            moved += len(chunk)
+            untar.stdin.write(chunk)
+        untar.stdin.close()
+        if ssh.wait() != 0 or untar.wait() != 0:
+            raise RuntimeError(f"checkpoint download of {remote_dir} failed")
+        self.egress_bytes += moved
+        return moved
+
     def run_detached(self, command: str, log: str, timeout_minutes: float,
                      stall_minutes: float = STALL_MINUTES, max_errors: int = 0) -> None:
         """Run `command` on the instance under nohup and wait for it, failing fast.

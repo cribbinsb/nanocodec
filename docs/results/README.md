@@ -328,6 +328,22 @@ J full / J low (class-balanced BD-rate against the bar anchor above), same board
 | VVC Default | −12.7% / −14.6% | −11.1% / −12.1% | −4.4% / −5.9% | −13.7% / −14.5% | −15.2% / −15.5% |
 | VVC Fast | −4.2% / −5.2% | −5.7% / −6.7% | −6.3% / −4.7% | −4.5% / −6.7% | −6.3% / −7.1% |
 
+## Independent test, settings audit and reproduction (2026-11-13)
+
+- [independent-2026-11-13.md](independent-2026-11-13.md): every chart family at the current code, compared with
+  x264 medium, per metric and as BD-J with 95% bootstrap intervals. 209 clips the chart never used: 138
+  never-used sources and 71 screening-pool clips (the pool clips are not independent of tuning since 2026-11-11).
+  On these clips our BD-J vs x264 medium is 1.4–6.6 points less favourable than on the chart for every preset
+  except H.264; the reference encoders' gaps shrink more.
+- [rate-control-audit-2026-11-13.md](rate-control-audit-2026-11-13.md): how much of each gap depends on how it
+  is measured. Rate counting, buffer, frame holds, decode vs reconstruction, window length, rate ladder, and
+  reference settings. With x264 at `--tune psnr` our gaps are 6–10 points smaller; strict buffer settings cost
+  us 2–4 points; a 20 s window costs 4–9 points on 5 clips.
+- [reproducibility.md](reproducibility.md): how to reproduce one chart number, the independent test, and a run on
+  openly licensed clips in this repository that anyone can run end to end.
+
+The 2026-11-12 check ([heldout-chart-2026-11-12.md](heldout-chart-2026-11-12.md)) is kept as it was.
+
 ## Content we never tuned on
 
 12 pristine AOM test sequences that nobody tunes or screens on (CrowdRun, ParkJoy, Riverbed, RushFieldCuts, MountainBike, TreesAndGrass, MeridianTalk, DinnerScene, Johnny, DrivingPOV, TouchdownPass, FourPeople; 270p to 1080p, 130 frames), same real-use CBR method and full conformance gate, all six codecs at Default, the charts' builds (board of 2026-11-11 07:58).

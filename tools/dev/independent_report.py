@@ -41,8 +41,9 @@ sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "eval"))
 import aws_heldout_chart as heldout  # noqa: E402
 from nceval import independent as ind  # noqa: E402
 from nceval.cbr import Family  # noqa: E402
+from nceval import jreal  # noqa: E402
 from nceval.chart import (ANCHOR, OURS, REFERENCES, chart_clips, chart_curves,  # noqa: E402
-                          chart_families, low_ladder, low_rung_clips, quality_points)
+                          chart_families, low_ladder, per_clip_j, quality_points)
 from nceval.config import load_paths  # noqa: E402
 from nceval.gatepolicy import EVALUATION_GATE  # noqa: E402
 from nceval.realuse import DEFAULT_FRAMES, LADDER_KBPS, Runner  # noqa: E402
@@ -65,16 +66,16 @@ class Points:
     tagged with its rung set ("ladder", "low", "high")."""
 
     def __init__(self, runner: Runner, families: list[Family], clips: list, extra_clips: list,
-                 variants: list[Family]):
+                 variants: list[Family], frames: int = DEFAULT_FRAMES):
         self.curves: dict[tuple[str, str], list[dict]] = {}
         self.missing: Counter = Counter()
         self.gate_levels: Counter = Counter()
         ladders = {"ladder": lambda c: clip_targets(c, LADDER_KBPS), "low": low_ladder,
                    "high": heldout.high_ladder}
         for rung, ladder in ladders.items():
-            self.add(runner.points(families, clips, DEFAULT_FRAMES, None, ladder=ladder), rung)
+            self.add(runner.points(families, clips, frames, None, ladder=ladder), rung)
             if extra_clips:
-                self.add(runner.points(variants, extra_clips, DEFAULT_FRAMES, None,
+                self.add(runner.points(variants, extra_clips, frames, None,
                                        ladder=ladder), rung)
 
     def add(self, jobs: list, rung: str) -> None:
@@ -95,16 +96,19 @@ class Points:
 
 
 def main_rungs(points: Points, families: list[Family], clips: list) -> dict[str, set[str]]:
-    """The chart's rule: the ladder, and the low rungs on the clips where some family
-    has no direct overlap with the anchor on the ladder (chart.low_rung_clips)."""
+    """The chart's rule (chart.low_rung_clips): the ladder, and the low rungs on the
+    clips where some family has no direct overlap with the anchor on the ladder. A
+    family counts only on the clips it was run on (the extras run on a subset)."""
     ladder = points.select({c.name: {"ladder"} for c in clips})
-    # a family with no ladder points at all (not run) does not decide the low rungs
-    present = [f for f in families if any(ladder.get((f.name, c.name)) for c in clips)]
-    for family in present:
-        for clip in clips:
-            ladder.setdefault((family.name, clip.name), [])
-    low = {c.name for c in low_rung_clips(ladder, present, clips)}
-    return {c.name: {"ladder", "low"} if c.name in low else {"ladder"} for c in clips}
+    anchor = families[0].name
+    rungs = {}
+    for clip in clips:
+        present = [f for f in families[1:] if ladder.get((f.name, clip.name))]
+        needs_low = any(per_clip_j(jreal.compare_clip(ladder.get((anchor, clip.name), []),
+                                                       ladder[(f.name, clip.name)])) is None
+                        for f in present)
+        rungs[clip.name] = {"ladder", "low"} if needs_low else {"ladder"}
+    return rungs
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
@@ -279,6 +283,7 @@ def audit_tables(points: Points, families: list[Family], clips: list, out: Path)
     write_csv(out / "frames.csv", frame_rows)
     write_csv(out / "tails.csv", tail_rows)
     matched_tail_table(points, families, clips, out)
+    rung_rule_table(points, families, clips, out)
     strict_table(points, families, clips, out)
     decode_table(points, out)
 
@@ -301,6 +306,28 @@ def matched_tail_table(points: Points, families: list[Family], clips: list, out:
                         f"{term}_hi": num(est.high), f"{term}_clips": est.clips})
         rows.append(row)
     write_csv(out / "tails_matched.csv", rows)
+
+
+def rung_rule_table(points: Points, families: list[Family], clips: list, out: Path) -> None:
+    """BD-J under the chart's rung rule (ladder + low rungs where needed) vs the ladder
+    alone, on all clips, and on the clips where the rule added low rungs."""
+    classes = {c.name: c.content_class for c in clips}
+    rule = main_rungs(points, families, clips)
+    low_clips = [n for n, r in rule.items() if "low" in r]
+    names = [c.name for c in clips]
+    rows = []
+    for family in families[1:]:
+        row = {"family": family.name, "low_rung_clips": len(low_clips)}
+        for title, chosen, subset in (("rule_all", rule, names),
+                                      ("ladder_all", {n: {"ladder"} for n in names}, names),
+                                      ("rule_low_clips", rule, low_clips),
+                                      ("ladder_low_clips", {n: {"ladder"} for n in names},
+                                       low_clips)):
+            est = ind.summarise(ind.family_bd(points.select(chosen), ANCHOR, family.name,
+                                              subset), classes)[ind.J]
+            row.update({title: num(est.value), f"{title}_clips": est.clips})
+        rows.append(row)
+    write_csv(out / "rung_rule.csv", rows)
 
 
 def strict_table(points: Points, families: list[Family], clips: list, out: Path) -> None:
@@ -382,6 +409,24 @@ def upper_floor(anchor_points: list[dict]) -> float:
     """The second-highest ladder target of a clip (the upper range's lowest rung)."""
     targets = sorted({p["target_kbps"] for p in anchor_points if p["rung"] == "ladder"})
     return targets[-2] if len(targets) >= 2 else 0.0
+
+
+def clip_table(clipset: Path, out: Path) -> None:
+    """The run's clips with their sources and the stored files' SHA-256 (clips.csv)."""
+    rows = []
+    for entry in json.loads(Path(clipset).read_text())["clips"]:
+        group = next((g for g, prefix in CLIP_GROUPS.items()
+                      if entry["name"].startswith(prefix)), "")
+        rows.append({"clip": entry["name"], "group": group, "class": entry["content_class"],
+                     "dataset": entry.get("dataset", ""),
+                     # the data root by name, not this machine's home directory
+                     "source": (entry.get("source") or entry.get("family", "")).replace(
+                         str(heldout.DATA), "$NC_DATA_ROOT"),
+                     "start_s": entry.get("start", ""), "size": f"{entry['width']}x"
+                     f"{entry['height']}", "fps": entry["fps"],
+                     "source_kbps": entry["source_kbps"], "grade": entry.get("grade", ""),
+                     "stored_sha256": entry.get("sha256", "")})
+    write_csv(out / "clips.csv", rows)
 
 
 # --- the run's points ---------------------------------------------------------------------
@@ -545,6 +590,10 @@ def main(argv: list[str]) -> None:
                         help="with --chart: our Defaults on --build, strict, --references")
     parser.add_argument("--measure", action="store_true",
                         help="with --chart-extras or --local: score the points first")
+    parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES,
+                        help="with --local: frames per point (a longer window)")
+    parser.add_argument("--variants", help="with --extras: only the variants ending so "
+                        "(comma-separated, e.g. +nohold)")
     parser.add_argument("--local", action="store_true",
                         help="encode and score here (no --streams; e.g. the open subset)")
     args = parser.parse_args(argv)
@@ -552,6 +601,9 @@ def main(argv: list[str]) -> None:
     tables = set(args.tables.split(","))
     if "decode-check" in tables:
         decode_check(args)
+        return
+    if "clips" in tables:
+        clip_table(args.clipset, args.out)
         return
     if "gpu-check" in tables:
         gpu_check(args)
@@ -572,11 +624,14 @@ def main(argv: list[str]) -> None:
         run = heldout.setup(args, args.workers)
         runner, families, clips = run.runner, run.families, run.clips
         extra_clips, variants = run.extra_clips, run.variants
+        if args.variants:  # only these extras (e.g. "+nohold")
+            variants = [v for v in variants if v.name.endswith(tuple(args.variants.split(",")))]
         if args.local:  # encoded and scored here (the open subset), not from --streams
             runner = Runner(load_paths(), EVALUATION_GATE, args.workers, over_budget=True)
             if args.measure:
-                chart_curves(runner, families, clips, DEFAULT_FRAMES, "local run")
-    points = Points(runner, families, clips, [] if args.chart else extra_clips, variants)
+                chart_curves(runner, families + variants, clips, args.frames, "local run")
+    points = Points(runner, families, clips, [] if args.chart else extra_clips, variants,
+                    args.frames)
     print(f"{sum(len(v) for v in points.curves.values())} points; missing: "
           f"{dict(points.missing) or 'none'}", flush=True)
     if "bd" in tables:

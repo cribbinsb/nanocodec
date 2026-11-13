@@ -6,6 +6,40 @@
 #![allow(unsafe_code)]
 use crate::Isa;
 mod generic;
+
+/// A plane's scaling function for one frame (AV1 §7.18.3.4): the lookup
+/// (0..=255 per sample value) and `ScalingShift` (8..=11), with the same
+/// lookup pre-scaled to the SIMD kernels' Q15 multiply, `scaling << (15 -
+/// shift)` (at most `255 << 7`, so it fits `i16`), built once per frame
+/// rather than shifted per sample.
+#[derive(Debug, Clone)]
+pub struct Av1GrainScaling {
+    lut: [i32; 256],
+    q15: [i16; 256],
+    shift: u8,
+}
+
+/// The largest scaling value and the Q15 multiply's precision.
+const MAX_SCALING: i32 = 255;
+const Q15: u8 = 15;
+
+impl Av1GrainScaling {
+    /// The scaling of lookup `lut` with `ScalingShift` `shift`.
+    ///
+    /// # Panics
+    ///
+    /// If `shift` is not 8..=11 or a lookup value is outside 0..=255.
+    #[must_use]
+    pub fn new(lut: &[i32; 256], shift: u8) -> Self {
+        assert!((8..=11).contains(&shift), "grain scaling shift {shift}");
+        assert!(lut.iter().all(|v| (0..=MAX_SCALING).contains(v)));
+        Self {
+            lut: *lut,
+            q15: lut.map(|v| (v << (Q15 - shift)) as i16),
+            shift,
+        }
+    }
+}
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -13,8 +47,8 @@ mod wasm;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
-type LumaFn = unsafe fn(&[u8], &[i16], &[i32; 256], u8, [u8; 2], &mut [u8]);
-type ChromaFn = unsafe fn(&[u8], &[u8], &[i16], &[i32; 256], u8, [u8; 2], [i16; 3], &mut [u8]);
+type LumaFn = unsafe fn(&[u8], &[i16], &Av1GrainScaling, [u8; 2], &mut [u8]);
+type ChromaFn = unsafe fn(&[u8], &[u8], &[i16], &Av1GrainScaling, [u8; 2], [i16; 3], &mut [u8]);
 type BlendFn = unsafe fn(&[i16], &mut [i16], [i16; 2]);
 
 #[derive(Debug, Clone, Copy)]
@@ -48,8 +82,7 @@ fn apply(original: u8, grain: i16, scale: i32, shift: u8, bounds: [u8; 2]) -> u8
 pub(super) fn luma(
     source: &[u8],
     grain: &[i16],
-    scaling: &[i32; 256],
-    shift: u8,
+    scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     out: &mut [u8],
 ) {
@@ -57,20 +90,18 @@ pub(super) fn luma(
         *dst = apply(
             original,
             noise,
-            scaling[usize::from(original)],
-            shift,
+            scaling.lut[usize::from(original)],
+            scaling.shift,
             bounds,
         );
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn chroma(
     source: &[u8],
     luma: &[u8],
     grain: &[i16],
-    scaling: &[i32; 256],
-    shift: u8,
+    scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     coefficients: [i16; 3],
     out: &mut [u8],
@@ -81,7 +112,7 @@ pub(super) fn chroma(
             (i32::from(luma[2 * x]) + i32::from(luma[(2 * x + 1).min(luma.len() - 1)]) + 1) >> 1;
         let index = (((average * luma_mult + mult * i32::from(original)) >> 6) + offset)
             .clamp(0, 255) as usize;
-        *dst = apply(original, noise, scaling[index], shift, bounds);
+        *dst = apply(original, noise, scaling.lut[index], scaling.shift, bounds);
     }
 }
 

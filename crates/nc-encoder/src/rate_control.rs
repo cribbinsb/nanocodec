@@ -1,5 +1,15 @@
 //! Low-delay frame-level rate control: actual packet feedback and a virtual VBV.
 //!
+//! The target is a long-term ceiling (`rate.debit`, the default): the debt
+//! (bits spent over the target line) beyond a key's scheduled loan is repaid,
+//! and keys' loans are repaid within `rate.key_repay_seconds`, so the
+//! average over windows longer than that horizon lands at or under the
+//! target. Single frames and seconds may exceed it (keys, static refinement
+//! bursts) within the strict-CBR buffer's re-code ceiling
+//! (`rate.recode_overflow`); `rate.window_seconds` bounds short windows too.
+//! The guarantee and its measurements: `docs/handoff/rate-control.md`,
+//! "Target as a long-term ceiling".
+//!
 //! No padding, lookahead or re-encoding is performed. Bounds and scene cuts can
 //! make a requested rate unattainable; counters expose that fact. With
 //! [`RateControlConfig::frame_drop`] the encoder skips inter frames that would
@@ -11,6 +21,7 @@ use crate::qp_cadence::{
     step_ratio,
 };
 use crate::quality_cap::max_quality_step;
+use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
 use crate::{Codec, FrameRate};
 use std::fmt;
@@ -371,6 +382,12 @@ pub(crate) const RECODE_FIRST_EXPONENT: f64 = 3.;
 const RECODE_EXPONENT_RANGE: (f64, f64) = (1., 4.);
 /// Share of the buffer room a re-code aims at, a margin for the slope's error.
 const RECODE_FILL: f64 = 0.9;
+/// Largest debit term, in buffers: the bias it can cancel (frames coming in
+/// a third over their budgets leave the proportional correction a quarter
+/// buffer of excess). Unbounded, the excess of a key's start-up seconds
+/// wound it up and static scenes then ran 6% under the target for the next
+/// 15 s (`long_static_chirla_s024c2` AV1 400 kbps, 5 s horizon).
+const DEBIT_MAX_BUFFERS: f64 = 0.25;
 /// Model slot of key frames; inter roles follow at `INTER_MODEL + role`.
 const KEY_MODEL: usize = 0;
 const INTER_MODEL: usize = 1;
@@ -534,6 +551,19 @@ pub(crate) struct RateController {
     last_peak: f64,
     last_key: bool,
     last_predicted: f64,
+    /// The debit term (`rate.debit`): bits of excess (debt beyond the
+    /// scheduled key loan) not yet repaid, accumulated over the repay
+    /// horizon and never negative; `None` when off ([`Self::debit`]).
+    debit: Option<f64>,
+    /// `rate.debit_credit` times the buffer: most undershoot the debt keeps.
+    debit_credit: f64,
+    /// `rate.debit_margin` with the debit term, else 0 (`uniform_budget`).
+    debit_margin: f64,
+    /// The short-window bound (`rate.window_seconds`; `None`: off), its
+    /// tolerance and whether keys are bounded by it.
+    window: Option<WindowLedger>,
+    window_tolerance: f64,
+    window_keys: bool,
     /// The current frame's share of a combined buffer ([`Self::select`]):
     /// its budget scale and room apply to the frame plan only, its
     /// reallocated bits also to the frame's drain ([`Self::feedback`]).
@@ -612,6 +642,17 @@ impl RateController {
             last_peak: 1.,
             last_key: false,
             last_predicted: 1.,
+            debit: (params.debit >= 0.5).then_some(0.),
+            debit_credit: f64::from(params.debit_credit) * s.capacity,
+            debit_margin: if params.debit >= 0.5 {
+                f64::from(params.debit_margin)
+            } else {
+                0.
+            },
+            window: (params.window_seconds > 0.)
+                .then(|| WindowLedger::new(f64::from(params.window_seconds))),
+            window_tolerance: f64::from(params.window_tolerance),
+            window_keys: params.window_keys >= 0.5,
             share: LayerShare::WHOLE,
             stats: RateControlStats {
                 current_quantizer: q,
@@ -656,6 +697,7 @@ impl RateController {
         let scale = config.target_bps as f64 / self.settings.config.target_bps as f64;
         self.fullness = s.capacity / 2. + debt * scale;
         self.scheduled_key_debt *= scale;
+        self.debit = self.debit.map(|integral| integral * scale);
         if self.occupancy > s.capacity {
             self.stats.buffer_overflows += 1;
         }
@@ -693,7 +735,15 @@ impl RateController {
     fn quantizer_for(&self, step: f64) -> u32 {
         quantizer_for_step(&self.steps, (self.settings.min, self.settings.max), step)
     }
+    /// The frame budget the stream aims at on average: the target's bits
+    /// per frame, less `rate.debit_margin` with the debit term. Budgets,
+    /// key loans and the debt all read it, so the stream converges to it.
     fn uniform_budget(&self) -> f64 {
+        self.channel_drain() * (1. - self.debit_margin)
+    }
+    /// The target's bits per frame interval: what a strict-CBR channel
+    /// drains from a receiver's buffer.
+    fn channel_drain(&self) -> f64 {
         self.settings.config.target_bps as f64 / self.frame_fps
     }
     /// Frames over which a key's loan is repaid: the key period,
@@ -775,7 +825,7 @@ impl RateController {
         if !key && self.share.reallocated_bits > 0. {
             scheduled += self.share.reallocated_bits;
         }
-        let excess = self.fullness - s.capacity / 2. - self.scheduled_key_debt;
+        let excess = self.excess() + self.debit.unwrap_or(0.);
         let correction =
             (1. - excess / s.capacity).clamp(MIN_BUDGET_CORRECTION, MAX_BUDGET_CORRECTION);
         let external_cap = if key {
@@ -791,11 +841,52 @@ impl RateController {
             .min(external_cap)
             .max(1.)
     }
+    /// Debt beyond the scheduled key loan: what the correction repays.
+    fn excess(&self) -> f64 {
+        self.fullness - self.settings.capacity / 2. - self.scheduled_key_debt
+    }
+    /// The debit term, after a frame interval: the debt correction alone
+    /// is proportional, and on content whose bits come in one-sided bursts
+    /// (static refinement: 0.5-1.1 buffers every 1-3 s, each repaid over
+    /// about 1 s) its excess settles at a positive mean, so the stream runs
+    /// above the target line (`long_static_chirla_s024c2` AV1 400 kbps:
+    /// +0.4 buffer on average over 30 s). The term integrates the excess
+    /// over the repay horizon and adds it to the correction (never below
+    /// 0: undershoot is not credit; at most [`DEBIT_MAX_BUFFERS`]), so a
+    /// lasting excess is repaid; and the debt keeps at most
+    /// `rate.debit_credit` buffers of undershoot, so cheap stretches do not
+    /// fund unbounded later bursts. With the 1% `rate.debit_margin` and a
+    /// 5 s horizon, 600-frame long-clip runs (keys every 10 s) land at a
+    /// median 0.99-1.00 of the target instead of 1.009-1.013, at AV1 J
+    /// +0.12% (static -0.05%).
+    fn debit(&mut self) {
+        let Some(integral) = self.debit else {
+            return;
+        };
+        let floor = self.settings.capacity / 2. + self.scheduled_key_debt - self.debit_credit;
+        self.fullness = self.fullness.max(floor);
+        let horizon = (self.key_repay_seconds * self.frame_fps).max(1.);
+        let most = DEBIT_MAX_BUFFERS * self.settings.capacity;
+        self.debit = Some((integral + self.excess() / horizon).clamp(0., most));
+    }
+    /// Count `bits` of the frame interval just passed in the short window.
+    /// A key outside the window bound counts as one uniform frame: its
+    /// excess is the loan its repayment phase repays.
+    fn record_window(&mut self, bits: f64, key: bool) {
+        let uniform = self.uniform_budget();
+        let seconds = 1. / self.frame_fps;
+        let exempt = key && !self.window_keys;
+        if let Some(window) = &mut self.window {
+            window.record(seconds, if exempt { uniform.min(bits) } else { bits });
+        }
+    }
     /// Bits the next frame may take, with `rate.recode_overflow`, before the
     /// buffer drained at the target rate (what a strict-CBR receiver holds)
-    /// would pass the frame's ceiling (`recode_ceiling`) times its capacity;
-    /// unbounded otherwise. The frame budget stays within it too, so a
-    /// planned frame never aims past the room that a re-code would enforce.
+    /// would pass the frame's ceiling (`recode_ceiling`) times its capacity,
+    /// and with `rate.window_seconds` before the short window would pass the
+    /// target plus its tolerance; unbounded otherwise. The frame budget
+    /// stays within it too, so a planned frame never aims past the room that
+    /// a re-code would enforce.
     ///
     /// An inter frame may always take the drain of its interval: one that
     /// small does not raise the bucket, so a buffer a planned key left above
@@ -804,14 +895,29 @@ impl RateController {
     /// 1.18 buffers, inter ceiling 1.1: worst-1% PSNR-Y BD +22%).
     fn strict_room(&self, key: bool) -> f64 {
         let ceiling = self.recode_ceiling(key);
-        if ceiling <= 0. {
-            return f64::INFINITY;
-        }
-        let room = ceiling * self.settings.capacity - self.strict_occupancy;
-        if key {
-            room
+        let buffer = if ceiling <= 0. {
+            f64::INFINITY
         } else {
-            room.max(self.uniform_budget())
+            let room = ceiling * self.settings.capacity - self.strict_occupancy;
+            if key {
+                room
+            } else {
+                room.max(self.channel_drain())
+            }
+        };
+        buffer.min(self.window_room(key))
+    }
+    /// The short window's room for the next frame (unbounded when off, and
+    /// for a key the window exempts).
+    fn window_room(&self, key: bool) -> f64 {
+        match &self.window {
+            Some(window) if !key || self.window_keys => {
+                let allowed = self.settings.config.target_bps as f64
+                    * window.seconds()
+                    * (1. + self.window_tolerance);
+                window.room(allowed, 1. / self.frame_fps)
+            }
+            _ => f64::INFINITY,
         }
     }
     /// The re-code ceiling of a key or inter frame (0 = off). Keys are
@@ -1066,6 +1172,9 @@ impl RateController {
         self.target_occupancy =
             (self.target_occupancy + unspent_bits).clamp(0.0, self.settings.capacity);
         self.strict_occupancy = (self.strict_occupancy + unspent_bits).max(0.0);
+        if let Some(window) = &mut self.window {
+            window.adjust_latest(unspent_bits);
+        }
     }
 
     /// Sync `last_inter_quantizer` to `current` after an inter-frame recode so
@@ -1266,8 +1375,7 @@ impl RateController {
     pub fn recode_quantizer(&mut self, bits: u64) -> Option<u32> {
         let room = self.strict_room(self.last_key);
         let size = bits as f64;
-        if self.recode_ceiling(self.last_key) <= 0.
-            || size <= room
+        if size <= room
             || self.current >= self.settings.max
             || self.recodes_this_frame >= MAX_RECODES
         {
@@ -1418,24 +1526,28 @@ impl RateController {
         self.held_pending += budget;
         self.fullness -= self.uniform_budget() - budget;
         self.drain_interval();
+        self.debit();
     }
 
     /// The current frame's interval passes with no bits coded.
     fn pass_interval(&mut self) {
         self.fullness -= self.uniform_budget();
         self.drain_interval();
+        self.debit();
     }
 
     /// The current frame's interval drains the buffers and the key's loan
     /// schedule (`pass_interval` without the debt credit).
     fn drain_interval(&mut self) {
         let uniform = self.uniform_budget();
+        let drain = self.channel_drain();
         self.scheduled_key_debt =
             (self.scheduled_key_debt - (uniform - self.inter_budget())).max(0.);
         self.frames_since_key = self.frames_since_key.saturating_add(1);
         self.occupancy = (self.occupancy - self.settings.peak / self.frame_fps).max(0.);
-        self.target_occupancy = (self.target_occupancy - uniform).max(0.);
-        self.strict_occupancy = (self.strict_occupancy - uniform).max(0.);
+        self.target_occupancy = (self.target_occupancy - drain).max(0.);
+        self.strict_occupancy = (self.strict_occupancy - drain).max(0.);
+        self.record_window(0., false);
         self.elapsed += 1. / self.frame_fps;
         self.stats.key_loan_bits = self.scheduled_key_debt;
         self.stats.buffer_fullness = (self.occupancy / self.settings.capacity).clamp(0., 1.);
@@ -1515,13 +1627,16 @@ impl RateController {
             self.stats.target_unreachable_frames += 1;
         }
         self.occupancy = self.occupancy.clamp(0., self.settings.capacity);
+        let drain = self.channel_drain();
         self.target_occupancy =
-            (self.target_occupancy + bits as f64 - uniform).clamp(0., self.settings.capacity);
-        self.strict_occupancy = (self.strict_occupancy + bits as f64 - uniform).max(0.);
+            (self.target_occupancy + bits as f64 - drain).clamp(0., self.settings.capacity);
+        self.strict_occupancy = (self.strict_occupancy + bits as f64 - drain).max(0.);
         if bonus > 0.0 {
             self.target_occupancy = (self.target_occupancy - bonus).max(0.);
             self.strict_occupancy = (self.strict_occupancy - bonus).max(0.);
         }
+        self.record_window(bits as f64 - bonus.max(0.), self.last_key);
+        self.debit();
         // Keep actual target debt even when it exceeds the physical buffer.
         // Clipping it independently of a large scheduled key loan invents
         // negative excess (and undeserved extra P budget). Response is already
@@ -1554,7 +1669,9 @@ mod tests {
     /// A controller whose first key gets the normal key budget, so the
     /// key-loan tests see one boost (`rate.first_key_boost_scale` 1), and
     /// whose budgets are not bounded by the strict-buffer ceiling
-    /// (`rate.recode_overflow` 0), so they test the loan and debt alone.
+    /// (`rate.recode_overflow` 0) or steered by the debit term
+    /// (`rate.debit` 0), so they test the loan and the proportional
+    /// debt correction alone.
     fn controller(target: u64) -> RateController {
         controller_with(target, &[])
     }
@@ -1563,6 +1680,7 @@ mod tests {
         let mut params = crate::ParamOverrides::default();
         params.set("rate.first_key_boost_scale", 1.);
         params.set("rate.recode_overflow", 0.);
+        params.set("rate.debit", 0.);
         for &(name, value) in overrides {
             params.set(name, value);
         }
@@ -1886,7 +2004,7 @@ mod tests {
         let mut r = controller(500_000);
         r.period = u32::MAX;
         let horizon = r.repay_frames();
-        assert_eq!(horizon, 300); // rate.key_repay_seconds 10 at 30 fps
+        assert_eq!(horizon, 150); // rate.key_repay_seconds 5 at 30 fps
         let key = r.loan_inter_budget() * 8.;
         r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
         r.feedback(key.round() as u64);
@@ -2131,5 +2249,68 @@ mod tests {
             assert!(r.select(false, i, HINT, LayerPosition::FLAT, &LayerShare::WHOLE) >= 24);
             r.feedback(100);
         }
+    }
+
+    #[test]
+    fn debit_term_repays_a_lasting_overshoot() {
+        // Every inter frame comes in 10% over its budget: the proportional
+        // correction alone settles at a positive debt (the stream stays
+        // above the target line); with the debit term the excess returns
+        // to about zero.
+        let run = |debit: f32| {
+            let mut r = controller_with(300_000, &[("rate.debit", debit)]);
+            r.period = 300;
+            r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback((r.loan_inter_budget() * r.loan_boost).round() as u64);
+            for i in 1..900 {
+                r.select(false, i, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+                r.feedback((r.last_budget * 1.1).round() as u64);
+            }
+            r.excess() / r.settings.capacity
+        };
+        let proportional = run(0.);
+        let debit = run(1.);
+        assert!(proportional > 0.05, "{proportional}");
+        assert!(debit.abs() < 0.01, "{debit}");
+    }
+
+    #[test]
+    fn debit_term_banks_little_undershoot() {
+        let mut r = controller_with(300_000, &[("rate.debit", 1.), ("rate.debit_credit", 0.25)]);
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(20_000);
+        for i in 1..300 {
+            r.select(false, i, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(50);
+        }
+        assert!(r.excess() >= -0.25 * r.settings.capacity - 1e-6);
+        assert!(r.budget(false) <= r.inter_budget() * 1.25 + 1e-6);
+    }
+
+    #[test]
+    fn short_window_bounds_inter_frames_and_exempts_keys() {
+        let mut r = controller_with(
+            300_000,
+            &[("rate.window_seconds", 1.), ("rate.window_tolerance", 0.1)],
+        );
+        r.period = 300;
+        let drain = r.uniform_budget();
+        // A key of most of a buffer leaves the frames after it their whole
+        // window: its excess is a loan, not window spend.
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert!(r.recode_quantizer(250_000).is_none());
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(250_000);
+        let room = r.strict_room(false);
+        assert!((room - (330_000. - drain)).abs() < 1., "{room}");
+        // An inter frame of half a buffer then leaves the next ones the
+        // rest of the window's allowance.
+        r.select(false, 1, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert!(r.budget(false) <= room);
+        assert!(r.current == r.settings.max || r.recode_quantizer(340_000).is_some());
+        r.select(false, 1, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(150_000);
+        let room = r.strict_room(false);
+        assert!((room - (330_000. - drain - 150_000.)).abs() < 1., "{room}");
     }
 }

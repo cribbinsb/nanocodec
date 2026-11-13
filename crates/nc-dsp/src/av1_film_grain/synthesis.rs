@@ -1,7 +1,8 @@
 //! Film-grain stripe scheduling over shared row kernels, without full-frame noise buffers.
 use super::{
-    AR_PADDING, Av1FilmGrainParams, BLOCK, OVERLAP, RESTRICTED_MAX_CHROMA, RESTRICTED_MAX_LUMA,
-    RESTRICTED_MIN, Random, Template, blend_overlap, scaling_lut, stripe_seed, templates,
+    AR_PADDING, Av1FilmGrainParams, Av1GrainScaling, BLOCK, OVERLAP, RESTRICTED_MAX_CHROMA,
+    RESTRICTED_MAX_LUMA, RESTRICTED_MIN, Random, Template, blend_overlap, scaling_lut, stripe_seed,
+    templates,
 };
 use crate::Dsp;
 use nc_common::{PlaneView, PlaneViewMut};
@@ -19,13 +20,15 @@ impl Dsp {
         output: [&mut PlaneViewMut<'_>; 3],
     ) {
         let templates = templates(params);
-        let luma = scaling_lut(&params.y_points);
+        let shift = params.grain_scaling_minus_8 + 8;
+        let luma_lut = scaling_lut(&params.y_points);
+        let luma = Av1GrainScaling::new(&luma_lut, shift);
         let chroma = if params.chroma_scaling_from_luma {
-            [luma, luma]
+            [luma.clone(), luma.clone()]
         } else {
             [
-                scaling_lut(&params.cb_points),
-                scaling_lut(&params.cr_points),
+                Av1GrainScaling::new(&scaling_lut(&params.cb_points), shift),
+                Av1GrainScaling::new(&scaling_lut(&params.cr_points), shift),
             ]
         };
         for (plane, destination) in output.into_iter().enumerate() {
@@ -53,7 +56,7 @@ fn synthesize_plane(
     template: &Template,
     plane: usize,
     (input, output): ([&PlaneView<'_>; 3], &mut PlaneViewMut<'_>),
-    scaling: &[i32; 256],
+    scaling: &Av1GrainScaling,
     (width, height): (usize, usize),
 ) {
     let sub = usize::from(plane != 0);
@@ -76,7 +79,6 @@ fn synthesize_plane(
     let stride = plane_w.div_ceil(block) * block + reach;
     let mut current = vec![0i16; (block + reach) * stride];
     let mut previous = vec![0i16; current.len()];
-    let shift = params.grain_scaling_minus_8 + 8;
     let bounds = if params.clip_to_restricted_range {
         [
             RESTRICTED_MIN as u8,
@@ -114,7 +116,7 @@ fn synthesize_plane(
             let source = &input[plane].row(first_row + y)[..plane_w];
             let destination = &mut output.row_mut(first_row + y)[..plane_w];
             if plane == 0 {
-                dsp.av1_grain_luma_row(source, noise, scaling, shift, bounds, destination);
+                dsp.av1_grain_luma_row(source, noise, scaling, bounds, destination);
             } else {
                 let luma = &input[0].row((first_row + y) * 2)[..width];
                 dsp.av1_grain_chroma_row(
@@ -122,7 +124,6 @@ fn synthesize_plane(
                     luma,
                     noise,
                     scaling,
-                    shift,
                     bounds,
                     coefficients,
                     destination,

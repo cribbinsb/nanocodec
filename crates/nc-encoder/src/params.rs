@@ -731,8 +731,29 @@ param_group! {
         // rate.recode_overflow the static short-GOP keys are already smaller.
         key_cap_gop: 0.0, [0.0, 1.0],
             "rate control: most bits a key may take, as a share of its repayment phase's bits (the key period, at most the repay horizon; 0 = none): lower keeps short GOPs of static content on target, where the key level floor would otherwise spend the whole GOP on the key",
-        key_repay_seconds: 10.0, [0.1, 60.0],
-            "rate control: longest time over which a key's extra bits are repaid by the following P frames (the key period if shorter): lower recovers sooner after a key in long or single-key streams",
+        key_repay_seconds: 5.0, [0.1, 60.0],
+            "rate control: longest time over which a key's extra bits are repaid by the following P frames (the key period if shorter), and the debit term's horizon (`rate.debit`): lower recovers sooner after a key in long or single-key streams",
+        // The horizon 10 -> 5 s with the debit term: 600-frame long clips
+        // (keys every 10 s) AV1 J +0.12% at 5 s, +0.15% at 10 s against
+        // the proportional controller; at 150 frames 5 s leaves 3-12 of
+        // 50 VAL ladder points over the target, 10 s 40-46.
+        debit: 1.0, [0.0, 1.0],
+            "rate control: 1 adds the long-term debit term, which repays any spend above the target line (beyond the scheduled key loan) over `rate.key_repay_seconds` and banks at most `rate.debit_credit` of undershoot, so the long-run rate stays at or under the target; 0 corrects the debt proportionally only, as before",
+        // 0.25 broke the H.264 layered static_recovery check: a starved
+        // key's static half recovers on the undershoot it banks.
+        debit_credit: 1.0, [0.0, 2.0],
+            "rate control, with `rate.debit`: most buffers of undershoot the debt keeps as credit for later frames: lower holds the rate further under the target after cheap stretches",
+        // 600-frame long clips, AV1: 0.01 J +0.12% (static -0.05%),
+        // 0.02 J +1.54% (static +4.5%); H.264/HEVC/AV1 points over the
+        // target 15-18 -> 3-9 of 20 at 0.01 (worst +1.4%).
+        debit_margin: 0.01, [0.0, 0.1],
+            "rate control, with `rate.debit`: share of the target the debt line aims under it: higher lands long runs further under the target, at fewer bits",
+        window_seconds: 0.0, [0.0, 10.0],
+            "rate control: length of the short window no stretch of inter frames may exceed the target over by more than `rate.window_tolerance` (re-coded to fit; 0 = off)",
+        window_tolerance: 0.03, [0.0, 2.0],
+            "rate control, with `rate.window_seconds`: share of the target a window may exceed it by: lower holds short stretches more accurately, at smaller static refinement bursts",
+        window_keys: 0.0, [0.0, 1.0],
+            "rate control, with `rate.window_seconds`: 1 also bounds key frames by the window (they then borrow nothing beyond it); 0 exempts a key's window, its excess being a loan repaid on schedule",
         // x264's rate control does the same: its QP may reach 69 for
         // analysis while the coded QP stops at 51, which is how it reaches
         // targets our H.264 overshoots by 70% with every P frame at QP 51.

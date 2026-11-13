@@ -1,0 +1,5 @@
+family,label,ours,group,clips,bd_j_chart_pct,psnr_y_pct,psnr_y_lo,psnr_y_hi,psnr_y_clips,psnr_yuv_pct,psnr_yuv_lo,psnr_yuv_hi,psnr_yuv_clips,vmaf_v1_pct,vmaf_v1_lo,vmaf_v1_hi,vmaf_v1_clips,ms_ssim_pct,ms_ssim_lo,ms_ssim_hi,ms_ssim_clips,j_pct,j_lo,j_hi,j_clips
+x264-medium~psnr,x264-medium~psnr,0,all,5,,-15.24,-15.63,-14.85,5,-12.14,-12.84,-11.43,5,-19.69,-20.87,-18.51,5,-3.82,-4.16,-3.47,5,-11.88,-12.62,-11.14,5
+nanocodec-h264,H.264,1,all,5,-23.04,-20.69,-20.88,-20.50,5,-23.44,-24.03,-22.84,5,-19.85,-20.07,-19.62,5,-4.40,-5.20,-3.60,5,-15.89,-16.28,-15.50,5
+nanocodec-hevc,HEVC,1,all,5,-49.26,-47.57,-47.64,-47.51,5,-49.17,-49.20,-49.13,5,-50.78,-51.59,-49.97,5,-40.10,-40.30,-39.91,5,-46.68,-47.03,-46.34,5
+nanocodec-av1,AV1,1,all,5,-50.87,-50.38,-50.45,-50.32,5,-54.71,-54.79,-54.62,5,-53.53,-54.23,-52.82,5,-43.55,-43.78,-43.32,5,-50.59,-50.93,-50.25,5

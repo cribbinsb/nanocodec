@@ -64,6 +64,7 @@ mod qp_cadence;
 mod quality_cap;
 mod random_decisions;
 mod rate_control;
+mod rate_window;
 mod references;
 mod refinement_gain;
 mod refresh;

@@ -78,6 +78,13 @@ def find_tool(name: str, paths: Paths | None = None) -> Path:
     )
 
 
+#: The build_anchors.sh tool that installs an anchor binary, where the names differ.
+ANCHOR_BUILD_TOOLS = {"ffmpeg-decode": "ffmpeg", "TAppDecoder": "hm", "ldecod": "jm",
+                      "vvdecapp": "vvdec", "aomdec": "libaom", "aomenc": "libaom",
+                      "vpxdec": "libvpx", "vpxenc": "libvpx", "avmdec": "avm",
+                      "SvtAv1EncApp": "svtav1", "openh264-harness": "harness"}
+
+
 def find_anchor_tool(name: str, paths: Paths | None = None) -> Path:
     """Locate a pinned anchor binary in the anchors prefix only, never $PATH.
 
@@ -90,5 +97,5 @@ def find_anchor_tool(name: str, paths: Paths | None = None) -> Path:
         return candidate
     raise FileNotFoundError(
         f"anchor tool '{name}' not found in {paths.anchors / 'bin'} "
-        f"(run tools/anchors/build_anchors.sh {name}?)"
+        f"(run tools/anchors/build_anchors.sh {ANCHOR_BUILD_TOOLS.get(name, name)}?)"
     )

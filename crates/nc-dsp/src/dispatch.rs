@@ -5874,65 +5874,56 @@ impl Dsp {
         &self.av1_lr
     }
 
-    /// Apply AV1 grain to a luma row. Grain is in -128..=127 and scaling in
-    /// 0..=255; `shift` is 8..=11. Writes exactly `source.len()` pixels.
+    /// Apply AV1 grain to a luma row. Grain is in -128..=127; `scaling` is
+    /// the plane's scaling function. Writes exactly `source.len()` pixels.
     ///
     /// # Panics
-    /// Panics for short buffers, invalid shift, or reversed clipping bounds.
+    /// Panics for short buffers or reversed clipping bounds.
     pub fn av1_grain_luma_row(
         &self,
         source: &[u8],
         grain: &[i16],
-        scaling: &[i32; 256],
-        shift: u8,
+        scaling: &crate::av1_film_grain::Av1GrainScaling,
         bounds: [u8; 2],
         out: &mut [u8],
     ) {
         assert!(grain.len() >= source.len() && out.len() >= source.len());
-        assert!((8..=11).contains(&shift) && bounds[0] <= bounds[1]);
-        // SAFETY: table is selected for this CPU; buffers and shift checked.
+        assert!(bounds[0] <= bounds[1]);
+        // SAFETY: table is selected for this CPU; buffers checked, and the
+        // scaling's shift and range by its constructor.
         unsafe {
-            (self.av1_grain.luma)(
-                source,
-                grain,
-                scaling,
-                shift,
-                bounds,
-                &mut out[..source.len()],
-            );
+            (self.av1_grain.luma)(source, grain, scaling, bounds, &mut out[..source.len()]);
         }
     }
 
     /// Apply AV1 grain to a 4:2:0 chroma row, using pairs of colocated luma
     /// samples (an odd final luma sample is duplicated). Coefficients are
     /// centered `[mult, luma_mult, offset]`; `[0, 64, 0]` scales from luma.
-    /// Grain/scaling and shift obey the luma-row contract.
+    /// Grain and scaling obey the luma-row contract.
     ///
     /// # Panics
-    /// Panics for short buffers, invalid shift, or reversed clipping bounds.
+    /// Panics for short buffers or reversed clipping bounds.
     #[allow(clippy::too_many_arguments)]
     pub fn av1_grain_chroma_row(
         &self,
         source: &[u8],
         luma: &[u8],
         grain: &[i16],
-        scaling: &[i32; 256],
-        shift: u8,
+        scaling: &crate::av1_film_grain::Av1GrainScaling,
         bounds: [u8; 2],
         coefficients: [i16; 3],
         out: &mut [u8],
     ) {
         assert!(grain.len() >= source.len() && out.len() >= source.len());
         assert!(luma.len() >= source.len().saturating_mul(2).saturating_sub(1));
-        assert!((8..=11).contains(&shift) && bounds[0] <= bounds[1]);
-        // SAFETY: table is selected for this CPU; buffers and shift checked.
+        assert!(bounds[0] <= bounds[1]);
+        // SAFETY: as for `av1_grain_luma_row`.
         unsafe {
             (self.av1_grain.chroma)(
                 source,
                 luma,
                 grain,
                 scaling,
-                shift,
                 bounds,
                 coefficients,
                 &mut out[..source.len()],

@@ -57,6 +57,7 @@ import argparse
 import csv
 import hashlib
 import io
+import itertools
 import json
 import os
 import shlex
@@ -81,7 +82,8 @@ from nceval.gatepolicy import EVALUATION_GATE  # noqa: E402
 from nceval.pool import POOL_SETS, SEALED_SETS, clean_source, family_key, load_pool  # noqa: E402
 from nceval.realuse import (DEFAULT_FRAMES, LADDER_KBPS, Runner,  # noqa: E402
                             clipset_clips)
-from nceval.cbr import PROFILE_SEPARATOR, clip_targets, preset_anchor  # noqa: E402
+from nceval.cbr import (ANCHOR_PRESET_PREFIXES, PROFILE_SEPARATOR, clip_targets,  # noqa: E402
+                        preset_anchor)
 
 REPO = Path(__file__).resolve().parents[2]
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
@@ -101,7 +103,7 @@ SELECT_SEED = "heldout-chart"
 MIN_RUNGS = 3
 #: Instance choices: (region, cores used for encodes = vCPUs minus two).
 INSTANCES = {"c7a.metal-48xl": ("eu-north-1", 190), "c7a.48xlarge": ("eu-north-1", 190),
-             "c7a.4xlarge": ("eu-north-1", 14)}
+             "c7a.24xlarge": ("eu-north-1", 94), "c7a.4xlarge": ("eu-north-1", 14)}
 REMOTE_DIR = "heldout"
 #: The decoded sources live in a tmpfs of their own (the instance's RAM, never its disk):
 #: not /dev/shm, whose files logind removes when the user's last SSH session ends.
@@ -121,6 +123,10 @@ SCORE_BATCH_PER_WORKER = 1
 #: on a saturated machine (2026-11-12: batches of 4 per worker stayed silent for 5 min,
 #: a false stall).
 SCORE_STALL_MINUTES = 10
+#: Cloud scoring runs in rounds of this length, each round's results brought back
+#: before the next, and the marker file (in the results directory) that tracks them.
+CHECKPOINT_MINUTES = 10
+CHECKPOINT_MARKER = ".checkpoint"
 #: Cloud scoring: the CPU metrics backend, one shard (a `score` of one clip) per
 #: clip with this many workers, the machine's cores as the CPU slots; the
 #: pipe-cleaner's workers; where streams and results live under the data root.
@@ -270,8 +276,10 @@ def extra_families(families: list[Family]) -> list[Family]:
                 for variant, params in EXTRA_VARIANTS.items()]
     for name, profile in ANCHOR_VARIANTS:
         full = f"{name}{PROFILE_SEPARATOR}{profile}"
-        variants.append(replace(by_name[name], name=full, profile=profile)
-                        if name in by_name else preset_anchor(full, paths))
+        if name in by_name:
+            variants.append(replace(by_name[name], name=full, profile=profile))
+        elif name.startswith(tuple(ANCHOR_PRESET_PREFIXES.values())):  # a preset not run
+            variants.append(preset_anchor(full, paths))
     return variants
 
 
@@ -314,9 +322,10 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
     all_clips = clipset_clips(args.clipset, load_paths())
     clips = all_clips[:args.clips]
     extra_clips = extras_subset(clips, args.extras) if args.extras else []
-    if getattr(args, "session", None):  # one of several scoring sessions: its clips
-        index, count = (int(x) for x in args.session.split("/"))
-        clips = clips[index - 1::count]
+    if getattr(args, "session", None):  # scoring sessions' clips (I/N, comma-separated)
+        parts = [tuple(int(x) for x in part.split("/")) for part in args.session.split(",")]
+        chosen = {c.name for index, count in parts for c in clips[index - 1::count]}
+        clips = [c for c in clips if c.name in chosen]
         extra_clips = [c for c in extra_clips if c in clips]
     if getattr(args, "shard", None):
         index, count = (int(x) for x in args.shard.split("/"))
@@ -565,8 +574,10 @@ def score_cloud(args: argparse.Namespace) -> None:
                      f"--clipset {remote_clipset} --streams ~/nanocodec-data/{STREAMS_REL}"
                      + remote_options(args))
     shards = min(len(run.clips), MAX_SHARDS)
+    # rounds of CHECKPOINT_MINUTES, each brought back before the next (a spot reclaim
+    # loses at most one round: 2026-11-13, two sessions lost 50 min of points)
     shard = (f"set -o pipefail; {score_command} --shard $1/{shards} --workers "
-             f"{SHARD_WORKERS} --minutes {args.minutes} 2>&1 | sed -u \"s/^/[$1] /\" "
+             f"{SHARD_WORKERS} --minutes {CHECKPOINT_MINUTES} 2>&1 | sed -u \"s/^/[$1] /\" "
              f"|| echo \"FAILED shard $1\"")
     stages = [
         ("prepare", " && ".join([
@@ -588,11 +599,13 @@ def score_cloud(args: argparse.Namespace) -> None:
         # scoring path, before the shards
         ("pipe-cleaner", f"{score_command} --clips 1 --rungs 0 --phases ladder "
          f"--workers {PIPE_WORKERS}", PIPE_MINUTES),
-        ("score", f"seq 1 {shards} | xargs -P {shards} -I{{}} bash -c "
-         f"{shlex.quote(shard)} _ {{}}", args.minutes + PIPE_MINUTES)]
+    ]
+    score_round = (f"seq 1 {shards} | xargs -P {shards} -I{{}} bash -c "
+                   f"{shlex.quote(shard)} _ {{}}")
     if args.dry_run:
         for name, command, minutes in stages:
             print(f"{name} ({minutes} min): {command}")
+        print(f"score rounds ({CHECKPOINT_MINUTES} min each, to {args.minutes} min): {score_round}")
         unstage_score(stage_dir)
         return
     spec = SessionSpec(region=region, instance_type=args.instance_type, arch="amd64",
@@ -613,15 +626,34 @@ def score_cloud(args: argparse.Namespace) -> None:
                     session.run_detached(command, f"~/{name}.log", minutes,
                                          stall_minutes=SCORE_STALL_MINUTES)
                     timings[name] = time.monotonic() - started
+                score_rounds(session, score_round, args.minutes, results)
             finally:
                 started = time.monotonic()
-                session.download(f"{REMOTE_WORK}/{RESULTS_REL}", results)
+                session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER)
                 timings["download"] = time.monotonic() - started
                 say("stage minutes: " + ", ".join(f"{k} {v / 60:.1f}" for k, v in
                                                   timings.items()))
     finally:
         unstage_score(stage_dir)
     merge_results(results, load_paths().work / RESULTS_REL)
+
+
+def score_rounds(session, command: str, minutes: float, results: Path) -> None:
+    """Score in rounds until no shard has points left or `minutes` have passed, each
+    round's new results brought back and merged here (a checkpoint)."""
+    started = time.monotonic()
+    for round_index in itertools.count(1):
+        log = f"~/score-{round_index}.log"
+        say(f"remote: score round {round_index}")
+        session.run_detached(command, log, CHECKPOINT_MINUTES + PIPE_MINUTES,
+                             stall_minutes=SCORE_STALL_MINUTES)
+        moved = session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER)
+        merge_results(results, load_paths().work / RESULTS_REL)
+        left = session.ssh(f"grep -c 'run score again' {log} || true", quiet=True,
+                           check=False).stdout.strip()
+        say(f"round {round_index}: {moved / 1e6:.0f} MB back, {left or 0} shard phases unfinished")
+        if left in ("", "0") or time.monotonic() - started > minutes * 60:
+            return
 
 
 def remote_options(args: argparse.Namespace) -> str:
@@ -859,8 +891,8 @@ def main(argv: list[str]) -> None:
     c.add_argument("--lifetime", type=int, default=90, help="hard instance lifetime, min")
     c.add_argument("--dry-run", action="store_true")
     c.add_argument("--purpose", help="the session's Purpose tag (default heldout-score)")
-    c.add_argument("--session", help="I/N: this session scores every Nth clip from the Ith "
-                   "(sessions run side by side)")
+    c.add_argument("--session", help="I/N[,J/N]: this session scores every Nth clip from the "
+                   "Ith (and Jth) (sessions run side by side)")
     c.add_argument("--minutes", type=float, default=RUN_MINUTES,
                    help="each shard starts no point after this long (resumable)")
     sub.choices["page"].add_argument("--out", required=True,

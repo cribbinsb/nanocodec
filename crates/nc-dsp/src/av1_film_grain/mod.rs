@@ -14,6 +14,8 @@ mod gaussian;
 pub(crate) mod kernels;
 mod synthesis;
 
+pub use kernels::Av1GrainScaling;
+
 use nc_common::{PlaneView, PlaneViewMut};
 
 use gaussian::GAUSSIAN_SEQUENCE;
@@ -170,24 +172,56 @@ fn ar_positions(lag: usize) -> impl Iterator<Item = (isize, isize)> {
         .take_while(|&(dr, dc)| !(dr == 0 && dc == 0))
 }
 
-/// Resolve the AR neighbourhood once per template. Zero coefficients contribute
-/// nothing; removing them preserves the recurrence and its rounding exactly.
-fn ar_taps(lag: usize, columns: usize, coefficients: &[u8]) -> Vec<(isize, i32)> {
-    ar_positions(lag)
-        .zip(coefficients)
-        .filter_map(|((row, column), &value)| {
-            let coefficient = i32::from(value) - 128;
-            (coefficient != 0).then_some((row * columns as isize + column, coefficient))
-        })
-        .collect()
-}
-
-fn ar_sum(template: &Template, index: usize, taps: &[(isize, i32)]) -> i32 {
-    taps.iter()
-        .map(|&(offset, coefficient)| {
-            coefficient * i32::from(template.values[(index as isize + offset) as usize])
-        })
-        .sum()
+/// The auto-regressive filter (AV1 §7.18.3.3) over rows `AR_PADDING..` of
+/// `template` with `coefficients` (lag `lag`, shift `shift`), plus `extra(y,
+/// sums)`'s term per sample (chroma's co-located luma grain). Row by row:
+/// the rows above contribute to every sample of a row at once (one pass
+/// over the row per tap, which vectorises; the integer sum's order does
+/// not matter), then the taps to the left, which depend on the samples just
+/// filtered, run along the row in order. Zero coefficients are skipped.
+fn auto_regress(
+    template: &mut Template,
+    lag: usize,
+    coefficients: &[u8],
+    shift: u32,
+    extra: impl Fn(usize, &mut [i32]),
+) {
+    let columns = template.columns;
+    let rows = template.values.len() / columns;
+    let mut above = Vec::new();
+    let mut left = Vec::new();
+    for ((row, column), &value) in ar_positions(lag).zip(coefficients) {
+        let coefficient = i32::from(value) - 128;
+        if coefficient == 0 {
+            continue;
+        }
+        if row < 0 {
+            above.push((row, column, coefficient));
+        } else {
+            left.push((column, coefficient));
+        }
+    }
+    let (first, last) = (AR_PADDING, columns - AR_PADDING);
+    let mut sums = vec![0i32; last - first];
+    for y in AR_PADDING..rows {
+        sums.fill(0);
+        for &(row, column, coefficient) in &above {
+            let start = (y as isize + row) as usize * columns + (first as isize + column) as usize;
+            let source = &template.values[start..start + sums.len()];
+            for (sum, &value) in sums.iter_mut().zip(source) {
+                *sum += coefficient * i32::from(value);
+            }
+        }
+        extra(y, &mut sums);
+        let row = &mut template.values[y * columns..(y + 1) * columns];
+        for (x, &partial) in (first..last).zip(&sums) {
+            let mut sum = partial;
+            for &(column, coefficient) in &left {
+                sum += coefficient * i32::from(row[(x as isize + column) as usize]);
+            }
+            row[x] = (i32::from(row[x]) + round2(sum, shift)).clamp(GRAIN_MIN, GRAIN_MAX) as i16;
+        }
+    }
 }
 
 /// The grain templates of the three planes (AV1 §7.18.3.3).
@@ -202,15 +236,7 @@ fn templates(p: &Av1FilmGrainParams) -> [Template; 3] {
         p.y_points.count > 0,
     );
     if p.y_points.count > 0 {
-        let taps = ar_taps(lag, luma.columns, &p.ar_coeffs_y_plus_128);
-        for y in AR_PADDING..LUMA_TEMPLATE.0 {
-            for x in AR_PADDING..LUMA_TEMPLATE.1 - AR_PADDING {
-                let index = y * luma.columns + x;
-                let sum = ar_sum(&luma, index, &taps);
-                luma.values[index] = (i32::from(luma.values[index]) + round2(sum, ar_shift))
-                    .clamp(GRAIN_MIN, GRAIN_MAX) as i16;
-            }
-        }
+        auto_regress(&mut luma, lag, &p.ar_coeffs_y_plus_128, ar_shift, |_, _| {});
     }
     let chroma = |seed_xor: u16, enabled: bool, coefficients: &[u8; 25]| {
         let mut grain = white_noise(
@@ -222,28 +248,23 @@ fn templates(p: &Av1FilmGrainParams) -> [Template; 3] {
         if !enabled {
             return grain;
         }
-        let luma_coefficient = coefficients[ar_positions(lag).count()];
-        let taps = ar_taps(lag, grain.columns, coefficients);
-        for y in AR_PADDING..CHROMA_TEMPLATE.0 {
-            for x in AR_PADDING..CHROMA_TEMPLATE.1 - AR_PADDING {
-                let index = y * grain.columns + x;
-                let mut sum = ar_sum(&grain, index, &taps);
-                if p.y_points.count > 0 {
-                    // The co-located 2x2 luma grain, averaged.
-                    let (ly, lx) = (
-                        ((y - AR_PADDING) << 1) + AR_PADDING,
-                        ((x - AR_PADDING) << 1) + AR_PADDING,
-                    );
-                    let luma_sum = luma.at(ly, lx)
-                        + luma.at(ly, lx + 1)
-                        + luma.at(ly + 1, lx)
-                        + luma.at(ly + 1, lx + 1);
-                    sum += (i32::from(luma_coefficient) - 128) * round2(luma_sum, 2);
-                }
-                grain.values[index] = (i32::from(grain.values[index]) + round2(sum, ar_shift))
-                    .clamp(GRAIN_MIN, GRAIN_MAX) as i16;
+        let luma_coefficient = i32::from(coefficients[ar_positions(lag).count()]) - 128;
+        let with_luma = p.y_points.count > 0;
+        auto_regress(&mut grain, lag, coefficients, ar_shift, |y, sums| {
+            if !with_luma {
+                return;
             }
-        }
+            // The co-located 2x2 luma grain, averaged.
+            let ly = ((y - AR_PADDING) << 1) + AR_PADDING;
+            for (i, sum) in sums.iter_mut().enumerate() {
+                let lx = (i << 1) + AR_PADDING;
+                let luma_sum = luma.at(ly, lx)
+                    + luma.at(ly, lx + 1)
+                    + luma.at(ly + 1, lx)
+                    + luma.at(ly + 1, lx + 1);
+                *sum += luma_coefficient * round2(luma_sum, 2);
+            }
+        });
         grain
     };
     let cb_enabled = p.cb_points.count > 0 || p.chroma_scaling_from_luma;

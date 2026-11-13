@@ -49,10 +49,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", type=Path, required=True, help="the SVG to write")
     parser.add_argument("--subtitle", default="")
     parser.add_argument("--stamp", default="", help="the small bottom-right line")
+    parser.add_argument("--note", default=NOTE, help="the footnote under the chart")
+    parser.add_argument("--heading", default=HEADING)
     args = parser.parse_args(argv)
-    points = heldout_points(args.heldout, args.x86)
+    # families without an x86 time (not on the main chart) have no place on the speed axis
+    points = [p for p in heldout_points(args.heldout, args.x86) if p.fps is not None]
     args.out.write_text(svg_chart(points, pareto(points), args.subtitle, X86, args.stamp,
-                                  heading=HEADING, note=NOTE))
+                                  heading=args.heading, note=args.note))
     print(f"wrote {args.out}")
 
 

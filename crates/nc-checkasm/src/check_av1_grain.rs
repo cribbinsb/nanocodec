@@ -1,6 +1,7 @@
 //! AV1 grain row exactness: clipped extremes, signed rounding, tails and guards.
 use crate::{check::CheckReport, rng::Rng};
 use nc_dsp::Dsp;
+use nc_dsp::av1_film_grain::Av1GrainScaling;
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     for len in [0usize, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 65] {
@@ -35,6 +36,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                 _ => i32::from(rng.byte()),
             });
             for shift in 8..=11 {
+                let scaling = Av1GrainScaling::new(&scaling, shift);
                 for bounds in [[0, 255], [16, 235], [16, 240]] {
                     let mut expected = vec![0xa5; len + 4];
                     let mut actual = expected.clone();
@@ -42,7 +44,6 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                         &source[1..],
                         &grain[1..],
                         &scaling,
-                        shift,
                         bounds,
                         &mut expected[1..=len],
                     );
@@ -50,7 +51,6 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                         &source[1..],
                         &grain[1..],
                         &scaling,
-                        shift,
                         bounds,
                         &mut actual[1..=len],
                     );
@@ -70,7 +70,6 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                                 &luma[1..=count],
                                 &grain[1..],
                                 &scaling,
-                                shift,
                                 bounds,
                                 coefficients,
                                 &mut expected[1..=len],
@@ -80,7 +79,6 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                                 &luma[1..=count],
                                 &grain[1..],
                                 &scaling,
-                                shift,
                                 bounds,
                                 coefficients,
                                 &mut actual[1..=len],
