@@ -214,6 +214,13 @@ impl<'a> BoolReader<'a> {
         (0..bits).fold(0, |value, _| (value << 1) | u32::from(self.read(128)))
     }
 
+    /// Bits consumed so far (analysis: differences give what a block cost).
+    #[cfg(feature = "analysis")]
+    #[must_use]
+    pub fn bits_consumed(&self) -> usize {
+        (self.position * 8).saturating_sub(self.buffered.max(0) as usize)
+    }
+
     /// Whether any read needed a bit beyond the partition.
     #[must_use]
     pub fn overran(&self) -> bool {

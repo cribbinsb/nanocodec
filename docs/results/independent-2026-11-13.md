@@ -83,6 +83,75 @@ length; read it with this page. Previous check: [heldout-chart-2026-11-12.md](he
      rates (AV1 −24.8% vs −47.2% on the same 30-clip subset).
 
 
+## Update (2026-11-13, later): the new rate control, and a 20 s window
+
+**What was re-measured.** Our encoders at the verified head 8b492382, which carries the rate-control change
+62788659 + 71cad753 (long-run rate at or under target; a key's loan is repaid in 5 s). They ran on the same 209
+clips, scored as above. Reference points were reused, since their tools did not change. The tables above are the
+earlier build, cba4292f. The held-out chart pages at this build are
+[bd-vs-speed-independent_fresh_2026-11-13.md](bd-vs-speed-independent_fresh_2026-11-13.md) (the 138 fresh
+clips) and [bd-vs-speed-independent_2026-11-13.md](bd-vs-speed-independent_2026-11-13.md) (all 209). CSVs:
+`independent-2026-11-13/heldout-8b492382-*.csv`.
+
+**150 frames, one key.** BD-J vs x264 medium on all 209 clips, at 8b492382 (and at cba4292f):
+
+| | all 209 | fresh 138 | vs x264 medium `--tune psnr` (209) |
+|---|---:|---:|---:|
+| VVC | −49.2 [−50.8, −47.6] (−49.6) | −51.3 [−53.6, −48.9] | −42.4 [−44.2, −40.8] (−42.9) |
+| AV2 | −47.2 [−49.0, −45.5] (−47.1) | −49.5 [−51.9, −47.1] | −40.3 [−42.1, −38.5] (−40.2) |
+| AV1 | −44.5 [−46.7, −42.7] (−44.8) | −45.6 [−47.6, −43.5] | −37.1 [−39.5, −35.0] (−37.5) |
+| HEVC | −44.3 [−45.9, −42.6] (−44.2) | −47.1 [−49.3, −44.9] | −37.0 [−38.6, −35.5] (−36.9) |
+| VP9 | −44.0 [−45.6, −42.3] (−44.1) | −45.6 [−48.0, −43.2] | −36.5 [−38.3, −34.8] (−36.8) |
+| H.264 | −25.0 [−27.8, −22.2] (−25.1) | −28.7 [−31.0, −26.4] | −15.5 [−18.3, −12.7] (−15.6) |
+| H.264 Faster | −9.3 [−13.7, −4.7] (−10.4) | −14.6 [−17.9, −11.4] | +1.9 [−2.6, +6.7] (+0.7) |
+| H.264 Fastest | −1.6 [−6.1, +2.9] (−1.4) | −7.4 [−11.1, −3.7] | +10.6 [+5.9, +15.4] (+10.7) |
+
+The change moves every preset by at most 1.1 points, inside the intervals.
+
+Rate, our Defaults:
+
+- Our median achieved rate is now 0.98–0.99 of target (it was 1.04–1.05). x264 medium's is 0.92.
+- Points peaking above the strict 1 s buffer: 176–253 of 778 per Default (23–33%), still against ≤ 2% for x264,
+  x265 and SVT-AV1.
+- The highest peak is still 1.34–1.41 buffers.
+
+**600 frames, a key every 10 s** (`--frames 600 --key-seconds 10`). The 71 fresh sources long enough for it,
+re-cut as 21 s excerpts (`eval/clipset/independent_long.json`): crowd 19, pan 17, static 16, body-cam 13, low
+light 6. Our 6 Defaults and the main references, beside the same 71 sources at 150 frames with one key. BD-J vs
+x264 medium:
+
+| | 150 frames | 600 frames | vs x264 `--tune psnr`, 150 → 600 | achieved ÷ target at 600 (median) |
+|---|---:|---:|---:|---:|
+| VVC | −52.8 [−55.2, −50.0] | −45.3 [−47.8, −42.7] | −45.3 → −36.6 | 0.988 |
+| AV2 | −51.1 [−53.8, −48.1] | −43.7 [−46.3, −41.0] | −43.5 → −34.8 | 0.989 |
+| HEVC | −48.3 [−50.7, −45.6] | −40.9 [−43.3, −38.5] | −40.4 → −31.7 | 0.988 |
+| AV1 | −47.1 [−49.3, −44.6] | −40.8 [−43.1, −38.4] | −39.1 → −31.6 | 0.989 |
+| VP9 | −47.4 [−49.9, −44.5] | −40.1 [−42.5, −37.6] | −39.3 → −30.6 | 0.989 |
+| H.264 | −29.8 [−32.7, −26.8] | −19.8 [−22.0, −17.7] | −19.6 → −8.2 | 0.988 |
+| SVT-AV1 M8 | −43.8 [−45.9, −41.5] | −41.1 [−43.2, −39.0] | −34.7 → −31.4 | 1.004 |
+| SVT-AV1 M12 | −31.6 [−34.8, −27.9] | −27.1 [−30.2, −23.9] | −21.0 → −15.6 | 1.004 |
+| x265 medium `--tune psnr` | −34.1 [−36.5, −31.4] | −36.3 [−38.7, −33.7] | −24.4 → −26.7 | 0.986 |
+| x265 medium | −30.4 [−32.6, −28.1] | −32.2 [−34.5, −29.6] | −19.7 → −21.3 | 0.989 |
+| libaom rt 8 | −29.4 [−31.3, −27.5] | −21.2 [−23.3, −18.8] | −18.1 → −9.2 | 1.009 |
+| libvpx VP9 rt 9 | −4.6 [−6.6, −2.4] | +2.4 [−0.0, +5.0] | +10.1 → +17.6 | 1.005 |
+| x264 medium `--tune psnr` | −10.9 [−12.3, −9.6] | −11.4 [−12.8, −9.9] | | 0.963 |
+| x264 medium | 0 | 0 | | 0.962 |
+
+**Unfavourable, first.**
+
+- Over 20 s our gaps against x264 medium are 6–10 points smaller than over 5 s: AV1 −47.1 → −40.8,
+  H.264 −29.8 → −19.8.
+- The references move less (SVT-AV1 M8 2.7 points), or gain (x265 medium 1.8). Against x264 `--tune psnr`, our
+  Defaults are −31 to −37 at 600 frames (H.264 −8.2).
+- The ordering among the AV1/HEVC/VP9-class encoders changes: at 600 frames SVT-AV1 M8 (−41.1) is level with our
+  AV1, HEVC and VP9 Defaults (−40.1 to −40.9). Its speed is 0.62× x264 medium on x86, ours 1.4–1.8×.
+- 74–94 of our 252 points per Default still peak above the strict 1 s buffer at 600 frames (keys every 10 s),
+  against 10 for x264 and 20–27 for SVT-AV1.
+
+**What this cannot show.** It covers 71 sources from 5 classes. The key period differs between the two columns:
+one key at 150 frames, one every 10 s at 600. Presets were tuned on 150-frame windows. The 600-frame points'
+low rungs ran on 9 clips only.
+
 ## Results
 
 All numbers are BD vs x264 medium in %, negative = fewer bits for the same quality, with [95% bootstrap over

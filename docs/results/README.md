@@ -80,17 +80,13 @@ Faster is not ahead and H.264 Fastest needs more bits.
 Every BD number here comes from 150-frame windows with one key frame (5 s at 30 fps); our presets were tuned on
 such windows. In 5 s our first key frame takes 8–10% of the bits and our streams end 5–6% over target (the key
 frame's loan, repaid over 10 s at the builds measured, is still outstanding), so a short single-key window favours our first-key
-investment. An independent check on the 5 clips of our `long` set (3 TRAIN, 2 VAL: not independent, and too few
-for intervals), same builds, 150 frames vs 600 frames with key frames at 0 and 300:
-
-| Encoder | BD-J vs x264 `medium`, 150 frames | 600 frames | vs x264 `medium --tune psnr`, 600 frames |
-|---|---:|---:|---:|
-| nanocodec AV1 Default | −54.7% | −50.6% | −42.0% |
-| nanocodec HEVC Default | −52.2% | −46.7% | −37.6% |
-| nanocodec H.264 Default | −24.5% | −15.9% | −4.1% |
-
-At 600 frames our rate is on target (median 1.00×) and the first frame is 2–3% of the bits. The direction is the
-same for all three codecs. A chart on longer windows is planned.
+investment. Over 600 frames (20 s, a key every 10 s) on 71 fresh held-out sources at commit 8b492382, our
+savings against x264 `medium` are 6–10 points smaller (AV1 −47.1% → −40.8%, H.264 −29.8% → −19.8%), the
+references move less or gain (SVT-AV1 M8 −43.8% → −41.1%, x265 `medium` −30.4% → −32.2%), and SVT-AV1 M8 becomes
+level with our AV1, HEVC and VP9 Defaults at well under half their speed. Our rate is on target there (median
+0.988–0.989); 74–94 of 252 points per Default still peak above a strict 1 s buffer (x264 `medium` 10, SVT-AV1
+20–27). Full table: [README](../../README.md#window-length) and the
+[independent report](independent-2026-11-13.md#update-2026-11-13-later-the-new-rate-control-and-a-20-s-window).
 
 ### Bitrate range
 
@@ -356,7 +352,7 @@ J full / J low (class-balanced BD-rate against the bar anchor above), same board
 - [rate-control-audit-2026-11-13.md](rate-control-audit-2026-11-13.md): how much of each gap depends on how it
   is measured. Rate counting, buffer, frame holds, decode vs reconstruction, window length, rate ladder, and
   reference settings. With x264 at `--tune psnr` our gaps are 6–10 points smaller; strict buffer settings cost
-  us 2–4 points; a 20 s window costs 4–9 points on 5 clips.
+  us 2–4 points; a 20 s window costs 6–10 points (71 fresh sources, update section of the independent report).
 - [reproducibility.md](reproducibility.md): how to reproduce one chart number, the independent test, and a run on
   openly licensed clips in this repository that anyone can run end to end.
 

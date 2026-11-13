@@ -28,7 +28,7 @@ const LAYOUTS = { side: 'Side by side', stacked: 'Stacked', 'expand-A': 'A large
 const DEFAULT_LAYERS = ['blocks', 'vectors'];
 // Phone widths stack the views when analysis is on (styles.css uses the same width).
 const NARROW_QUERY = '(max-width: 700px)';
-const UNSUPPORTED = 'Analysis is not available for this codec yet (H.264, HEVC and AV1 so far).';
+const UNSUPPORTED = 'Analysis is not available for this codec yet (H.264, HEVC, AV1 and VP9 so far).';
 
 const percent = value => `${(100 * value).toFixed(value < 0.1 ? 1 : 0)}%`;
 const shareText = (map, order) => Object.entries(map ?? {})

@@ -10,6 +10,12 @@
 //! The default CDFs are libaom's `default_nmv_context`, written out here in
 //! the inverse convention used by [`crate::range_coder`] (32768 − cdf). Both
 //! components start from the same defaults and then adapt separately.
+//!
+//! Mode decision prices far more vectors than are coded, and the CDFs change
+//! only when one is coded, so each component keeps its symbols' bit costs
+//! ([`ComponentBits`]) from the first price after a write.
+
+use std::cell::OnceCell;
 
 use crate::cdf::{Cdf, FromDefaults, ResetCounters};
 use crate::modeinfo::Av1Mv;
@@ -60,6 +66,36 @@ struct ComponentCdfs {
     bits: [Cdf<2>; 10],
     class0_fr: [Cdf<MV_FR_SYMBOLS>; 2],
     fr: Cdf<MV_FR_SYMBOLS>,
+    /// Every symbol's [`Cdf::bits`] under the CDFs as they stand, computed
+    /// on the first price after a write.
+    costs: OnceCell<ComponentBits>,
+}
+
+/// [`Cdf::bits`] of every symbol of a [`ComponentCdfs`], CDF by CDF.
+#[derive(Debug, Clone)]
+struct ComponentBits {
+    sign: [f32; 2],
+    class: [f32; MV_CLASSES],
+    class0: [f32; 2],
+    bits: [[f32; 2]; 10],
+    class0_fr: [[f32; MV_FR_SYMBOLS]; 2],
+    fr: [f32; MV_FR_SYMBOLS],
+}
+
+impl ComponentBits {
+    fn of(cdfs: &ComponentCdfs) -> Self {
+        fn all<const N: usize>(cdf: &Cdf<N>) -> [f32; N] {
+            std::array::from_fn(|s| cdf.bits(s))
+        }
+        Self {
+            sign: all(&cdfs.sign),
+            class: all(&cdfs.class),
+            class0: all(&cdfs.class0),
+            bits: cdfs.bits.each_ref().map(all),
+            class0_fr: cdfs.class0_fr.each_ref().map(all),
+            fr: all(&cdfs.fr),
+        }
+    }
 }
 
 impl Default for ComponentCdfs {
@@ -71,6 +107,7 @@ impl Default for ComponentCdfs {
             bits: BITS_CDF.cdfs(),
             class0_fr: CLASS0_FR_CDF.cdfs(),
             fr: FR_CDF.cdfs(),
+            costs: OnceCell::new(),
         }
     }
 }
@@ -195,6 +232,7 @@ fn difference(mv: Av1Mv, pred: Av1Mv) -> [i32; 2] {
 impl ComponentCdfs {
     /// `read_mv_component` (AV1 §5.11.33) for a non-zero component.
     fn write(&mut self, w: &mut SymbolWriter, comp: i32) {
+        self.costs.take();
         let s = ComponentSymbols::of(comp);
         w.write_bool(s.sign, &mut self.sign);
         w.write_symbol(s.class as usize, &mut self.class, MV_CLASSES);
@@ -214,16 +252,17 @@ impl ComponentCdfs {
     }
 
     fn bits(&self, comp: i32) -> f32 {
+        let costs = self.costs.get_or_init(|| ComponentBits::of(self));
         let s = ComponentSymbols::of(comp);
-        let mut bits = self.sign.bits(usize::from(s.sign)) + self.class.bits(s.class as usize);
+        let mut bits = costs.sign[usize::from(s.sign)] + costs.class[s.class as usize];
         if s.class == 0 {
-            bits += self.class0.bits(s.int_part as usize);
-            bits += self.class0_fr[s.int_part as usize].bits(s.fr);
+            bits += costs.class0[s.int_part as usize];
+            bits += costs.class0_fr[s.int_part as usize][s.fr];
         } else {
-            for (i, cdf) in self.bits[..s.class as usize].iter().enumerate() {
-                bits += cdf.bits(((s.int_part >> i) & 1) as usize);
+            for (i, cdf_bits) in costs.bits[..s.class as usize].iter().enumerate() {
+                bits += cdf_bits[((s.int_part >> i) & 1) as usize];
             }
-            bits += self.fr.bits(s.fr);
+            bits += costs.fr[s.fr];
         }
         bits
     }
@@ -253,6 +292,29 @@ mod tests {
         // 64 samples: z = 511 -> class 5 (base 256), offset 255.
         let s = ComponentSymbols::of(512);
         assert_eq!((s.class, s.int_part, s.fr), (5, 31, 3));
+    }
+
+    /// A write drops the cached costs: prices after it equal those of
+    /// twin CDFs that never priced before the write.
+    #[test]
+    fn cached_costs_follow_writes() {
+        let vectors = [(0, 8), (-24, 16), (512, -4), (3, 0), (-1024, 2040)];
+        let mut priced = MvCdfs::default();
+        let mut fresh = MvCdfs::default();
+        for &(row, col) in &vectors {
+            let mv = Av1Mv { row, col };
+            let _ = priced.bits(mv, Av1Mv::ZERO);
+            let mut writer = SymbolWriter::new();
+            priced.write(&mut writer, mv, Av1Mv::ZERO);
+            fresh.write(&mut writer, mv, Av1Mv::ZERO);
+            for &(r, c) in &vectors {
+                let probe = Av1Mv { row: r, col: c };
+                assert_eq!(
+                    priced.bits(probe, Av1Mv::ZERO).to_bits(),
+                    fresh.clone().bits(probe, Av1Mv::ZERO).to_bits()
+                );
+            }
+        }
     }
 
     #[test]

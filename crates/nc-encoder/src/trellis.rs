@@ -147,6 +147,14 @@ pub trait CoeffRateModel {
 /// Marks a node that started at its own position (no earlier decision).
 const NO_PARENT: u32 = u32::MAX;
 
+/// Keep `candidate` (cost, level, whether it starts at the tail) in `best`
+/// if it is strictly cheaper: the first of equal costs stays.
+fn consider(best: &mut Option<(f64, u32, bool)>, candidate: (f64, u32, bool)) {
+    if best.is_none_or(|(c, _, _)| candidate.0 < c) {
+        *best = Some(candidate);
+    }
+}
+
 /// One decided level and the decision it extends.
 #[derive(Debug, Clone, Copy)]
 struct Step {
@@ -328,45 +336,27 @@ impl<S: Clone + PartialEq> Trellis<S> {
                 levels[pos] = 0;
                 continue;
             }
-            // The tail's extensions are priced first and the survivor's
-            // last, so a model's per-position cache holds the survivor's
-            // (`advance` mostly follows it); they are compared in the
-            // beam's order (survivor first), which breaks ties alike.
-            let nonzero = cands.levels[..cands.count].partition_point(|&l| l > 0);
-            let mut tail_rates = [0.0; MAX_CANDIDATES];
-            let initial = (tail.is_some() && nonzero > 0).then(|| {
-                let state = model.initial_state();
-                let eob = model.eob_rate(pos);
-                model.level_rates(&state, pos, &cands.levels[..nonzero], &mut tail_rates);
-                tail_rates[..nonzero].iter_mut().for_each(|r| *r += eob);
-                state
-            });
+            // The survivor's extensions are compared first, then the
+            // tail's, as in the beam's order (which breaks ties alike).
             // (cost, level, from the tail)
             let mut best: Option<(f64, u32, bool)> = None;
-            let mut consider = |cost: f64, level: u32, from_tail: bool| {
-                if best.is_none_or(|(c, _, _)| cost < c) {
-                    best = Some((cost, level, from_tail));
-                }
-            };
             if let Some((state, cost, _)) = survivor.as_ref() {
                 model.level_rates(state, pos, &cands.levels[..cands.count], &mut rates);
                 for ((level, distortion), &rate) in cands.iter().zip(&rates) {
-                    consider(
-                        cost + f64::from(distortion) + lambda * f64::from(rate),
-                        level,
-                        false,
-                    );
+                    let extended = cost + f64::from(distortion) + lambda * f64::from(rate);
+                    consider(&mut best, (extended, level, false));
                 }
             }
-            if let (Some(tail_cost), Some(_)) = (tail, initial.as_ref()) {
+            let nonzero = cands.levels[..cands.count].partition_point(|&l| l > 0);
+            let initial = tail.filter(|_| nonzero > 0).and_then(|tail_cost| {
+                let (state, tail_rates) =
+                    Self::price_tail(model, cands, nonzero, pos, (tail_cost, lambda), best)?;
                 for ((level, distortion), &rate) in cands.iter().zip(&tail_rates).take(nonzero) {
-                    consider(
-                        tail_cost + f64::from(distortion) + lambda * f64::from(rate),
-                        level,
-                        true,
-                    );
+                    let extended = tail_cost + f64::from(distortion) + lambda * f64::from(rate);
+                    consider(&mut best, (extended, level, true));
                 }
-            }
+                Some(state)
+            });
             tail = tail.zip(cands.zero()).map(|(t, d)| t + f64::from(d));
             let (cost, level, from_tail) = best.expect("a position with a choice extends a path");
             if from_tail {
@@ -394,6 +384,43 @@ impl<S: Clone + PartialEq> Trellis<S> {
         // replaced: they are zero.
         levels[start + 1..n].fill(0);
         start + 1
+    }
+
+    /// The initial state and rates (end of block included) of ending the
+    /// block at `pos` with each of its `nonzero` nonzero candidates, after
+    /// `tail_cost` (the distortion of zeroing every later position), or
+    /// `None` where no such extension can beat `best` (the survivor's
+    /// cheapest, which wins ties). Rates are non-negative, so an extension
+    /// costs at least `tail_cost` plus its distortion plus λ times the
+    /// end-of-block rate (each rounding step is monotone): when even the
+    /// smallest of those bounds is not below `best`, the extensions are not
+    /// priced. Exact: the skipped extensions could not have been chosen.
+    fn price_tail<M: CoeffRateModel<State = S>>(
+        model: &mut M,
+        cands: &Candidates,
+        nonzero: usize,
+        pos: usize,
+        (tail_cost, lambda): (f64, f64),
+        best: Option<(f64, u32, bool)>,
+    ) -> Option<(S, [f32; MAX_CANDIDATES])> {
+        let beats_best = |bound: f64| best.is_none_or(|(c, _, _)| bound < c);
+        let least_distortion = cands.distortion[..nonzero]
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        let unpriced = tail_cost + f64::from(least_distortion);
+        if !beats_best(unpriced) {
+            return None;
+        }
+        let eob = model.eob_rate(pos);
+        if !beats_best(unpriced + lambda * f64::from(eob)) {
+            return None;
+        }
+        let state = model.initial_state();
+        let mut rates = [0.0; MAX_CANDIDATES];
+        model.level_rates(&state, pos, &cands.levels[..nonzero], &mut rates);
+        rates[..nonzero].iter_mut().for_each(|r| *r += eob);
+        Some((state, rates))
     }
 
     /// A position whose only candidate is zero (most of a large block's high

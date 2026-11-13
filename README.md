@@ -139,23 +139,47 @@ Per-metric numbers, per-clip spread and known weaknesses: **[docs/results/](docs
 
 #### Window length
 
-Every BD number on this page comes from 150-frame windows with one key frame (5 s at 30 fps),
-and our presets were tuned on such windows. That favours our encoders: in a 5 s window our first key frame takes
-8–10% of the bits and our streams end 5–6% over target (the key frame's loan is not yet repaid), which shows up as
-quality. On 5 clips (3 of them used for tuning, 2 from the development set, so neither independent nor enough for
-intervals), an earlier build over 600 frames (20 s, key frames at 0 and 300) gave a smaller saving for all three
-codecs tested, with the rate on target and the first frame at 2–3% of the bits:
+The headline numbers come from 150-frame windows with one key frame (5 s at 30 fps), and our presets were tuned
+on such windows. A 5 s window favours an encoder that invests in its first key frame, as ours does. The same
+commit (8b492382) was therefore also measured over 600 frames (20 s) with a key frame every 10 s, on the 71 fresh
+held-out sources long enough for it (crowd 19, pan 17, static 16, body-cam 13, low light 6), beside the same
+sources at 150 frames. BD-J vs x264 `medium`, 95% bootstrap intervals:
 
-| Encoder | BD-J vs x264 `medium`, 150 frames | BD-J vs x264 `medium`, 600 frames | vs x264 `medium --tune psnr`, 600 frames |
-|---|---:|---:|---:|
-| nanocodec AV1 Default | −54.7% | −50.6% | −42.0% |
-| nanocodec HEVC Default | −52.2% | −46.7% | −37.6% |
-| nanocodec H.264 Default | −24.5% | −15.9% | −4.1% |
+| Encoder (71 fresh sources) | BD-J, 150 frames, one key | BD-J, 600 frames, key every 10 s | vs x264 `--tune psnr`, 150 → 600 | achieved ÷ target at 600 (median) |
+|---|---:|---:|---:|---:|
+| nanocodec VVC Default | −52.8 [−55.2, −50.0] | −45.3 [−47.8, −42.7] | −45.3 → −36.6 | 0.988 |
+| nanocodec AV2 Default | −51.1 [−53.8, −48.1] | −43.7 [−46.3, −41.0] | −43.5 → −34.8 | 0.989 |
+| nanocodec HEVC Default | −48.3 [−50.7, −45.6] | −40.9 [−43.3, −38.5] | −40.4 → −31.7 | 0.988 |
+| nanocodec AV1 Default | −47.1 [−49.3, −44.6] | −40.8 [−43.1, −38.4] | −39.1 → −31.6 | 0.989 |
+| nanocodec VP9 Default | −47.4 [−49.9, −44.5] | −40.1 [−42.5, −37.6] | −39.3 → −30.6 | 0.989 |
+| nanocodec H.264 Default | −29.8 [−32.7, −26.8] | −19.8 [−22.0, −17.7] | −19.6 → −8.2 | 0.988 |
+| SVT-AV1 M8 | −43.8 [−45.9, −41.5] | −41.1 [−43.2, −39.0] | −34.7 → −31.4 | 1.004 |
+| SVT-AV1 M12 | −31.6 [−34.8, −27.9] | −27.1 [−30.2, −23.9] | −21.0 → −15.6 | 1.004 |
+| x265 medium `--tune psnr` | −34.1 [−36.5, −31.4] | −36.3 [−38.7, −33.7] | −24.4 → −26.7 | 0.986 |
+| x265 medium | −30.4 [−32.6, −28.1] | −32.2 [−34.5, −29.6] | −19.7 → −21.3 | 0.989 |
+| libaom rt 8 | −29.4 [−31.3, −27.5] | −21.2 [−23.3, −18.8] | −18.1 → −9.2 | 1.009 |
+| libvpx VP9 rt 9 | −4.6 [−6.6, −2.4] | +2.4 [−0.0, +5.0] | +10.1 → +17.6 | 1.005 |
+| x264 medium `--tune psnr` | −10.9 [−12.3, −9.6] | −11.4 [−12.8, −9.9] | | 0.963 |
+| x264 medium | 0 | 0 | | 0.962 |
 
-> **Long-window table: pending.** A 600-frame held-out table at the current build is being measured and will
-> replace this paragraph. Until then the only long-window evidence is the 5-clip table above (an earlier build,
-> before the 2026-11-13 rate-control change): read the 150-frame numbers as favourable to us by several points,
-> most for H.264.
+What it shows:
+
+- **Over 20 s our savings against x264 `medium` are 6–10 points smaller** than over 5 s (AV1 −47.1% → −40.8%,
+  H.264 −29.8% → −19.8%); against x264 `medium --tune psnr` our Defaults are −31% to −37% at 600 frames, H.264
+  −8.2%.
+- **The references move less or gain:** SVT-AV1 M8 2.7 points smaller, SVT-AV1 M12 4.5, while x265 `medium`
+  gains 1.8 points.
+- **At 600 frames SVT-AV1 M8 (−41.1%) is level with our AV1, HEVC and VP9 Defaults (−40.1% to −40.9%),** at a
+  much lower speed: 14.3 fps on the Jetson core and 45.2 on the PC core, against 34.4–51.0 and 94–121 for those
+  presets of ours (main chart timing).
+- **Our rate is on target over 20 s** (median 0.988–0.989 of target); x264 `medium` lands at 0.962.
+- **Buffer:** 74–94 of 252 points per Default of ours still peak above a strict 1 s buffer at 600 frames (at key
+  frames, which our controller does not cap), against 10 for x264 `medium`, 18 for x265 `medium` and 20–27 for
+  SVT-AV1 M12 / M8.
+
+Limits: 71 sources from 5 classes; the key period differs between the columns (one key at 150 frames, one every
+10 s at 600); the 600-frame low rungs ran on 9 clips only. Source and CSVs:
+[independent report, update section](docs/results/independent-2026-11-13.md#update-2026-11-13-later-the-new-rate-control-and-a-20-s-window).
 
 #### Bitrate range
 

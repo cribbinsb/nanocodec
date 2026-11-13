@@ -498,3 +498,35 @@ fn verify_external_vp9_decoders(
         assert_eq!(out.stdout, expected_i420, "ffmpeg-decode output mismatch");
     }
 }
+
+#[cfg(feature = "analysis")]
+#[test]
+fn analysis_leaves_decoding_unchanged_and_tiles_each_frame() {
+    use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};
+    let (width, height) = (72, 40);
+    let mut encoder = Encoder::<Vp9Backend>::new(config(width, height, 120)).unwrap();
+    let mut decoder = Decoder::new();
+    decoder.collect_stats(StreamStats::default());
+    for frame in 0..4 {
+        let kind = assert_round_trip(&mut encoder, &mut decoder, &moving(width, height, frame));
+        assert_eq!(kind == FrameType::Key, frame == 0);
+        let records = decoder.stats().unwrap().records();
+        assert!(records.iter().any(|r| r.kind == RecordKind::Prediction));
+    }
+    let stats = decoder.take_stats().unwrap();
+    assert_eq!(stats.frames.len(), 4);
+    for (index, frame) in stats.frames.iter().enumerate() {
+        // Blocks cover whole 8x8 units: 72x40.
+        let covered: u64 = frame.tallies[keys::CB_SIZE]
+            .values()
+            .map(|t| t.weight)
+            .sum();
+        assert_eq!(
+            covered,
+            (width * height) as u64,
+            "frame {index}: blocks tile the frame"
+        );
+        let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
+        assert_eq!(intra == covered, index == 0, "frame {index}");
+    }
+}

@@ -103,6 +103,12 @@ pub(super) struct BlockScratch {
     /// One transform block's intra prediction (zeroing a fresh one per
     /// block cost 0.3 % of decoding).
     pub intra: [u8; 32 * 32],
+    /// Where the frame's analysis records go, when they are collected.
+    #[cfg(feature = "analysis")]
+    pub stats: Option<nc_common::stream_stats::StreamStats>,
+    /// What the current block's analysis records collect.
+    #[cfg(feature = "analysis")]
+    pub analysis: super::analysis::BlockScratch,
 }
 
 impl std::fmt::Debug for BlockScratch {
@@ -123,6 +129,10 @@ impl BlockScratch {
             buffers: ResidualBuffers::new(dsp),
             inter: InterScratch::new(),
             intra: [0; 32 * 32],
+            #[cfg(feature = "analysis")]
+            stats: None,
+            #[cfg(feature = "analysis")]
+            analysis: super::analysis::BlockScratch::default(),
         })
     }
 }
@@ -316,6 +326,10 @@ impl<'a> FrameDecoder<'a> {
             log2_8x8,
         );
         let subsize = bsize.subsize(partition);
+        #[cfg(feature = "analysis")]
+        {
+            self.scratch.analysis.shape = super::analysis::shape(partition);
+        }
         if half == 0 {
             self.decode_block(reader, tile, mi_row, mi_col, subsize)?;
         } else {
@@ -408,6 +422,8 @@ impl<'a> FrameDecoder<'a> {
         bsize: BlockSize,
     ) -> Result<()> {
         let position = BlockPosition::new(self, tile, mi_row, mi_col, bsize);
+        #[cfg(feature = "analysis")]
+        let start = reader.bits_consumed();
         let mut info = self.read_mode_info(reader, &position)?;
         if info.skip {
             self.reset_skip_context(tile, &position);
@@ -425,6 +441,11 @@ impl<'a> FrameDecoder<'a> {
             info.skip = true;
         }
         self.store_block(info, &position);
+        #[cfg(feature = "analysis")]
+        if self.scratch.stats.is_some() {
+            let bits = (reader.bits_consumed() - start) as u32;
+            self.block_records(&info, &position, bits, coded);
+        }
         Ok(())
     }
 

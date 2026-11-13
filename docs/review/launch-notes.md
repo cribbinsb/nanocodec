@@ -31,7 +31,8 @@ against `docs/results/` on the day; if the independent re-run's held-out table h
 > from sources we had never used (5-second windows, one key frame), our AV1 Default needs about 45% fewer bits
 > than x264 `medium` at those settings, and about 38% fewer than x264 `medium --tune psnr`; our fastest H.264
 > preset needs more bits than the latter. On the 11 clips we tune beside the AV1 figure is about 51%, and over
-> 20-second windows (5 clips, an earlier build) about 4 points less. It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
+> 20-second windows (71 held-out sources) about 6 points less (−40.8%), level with SVT-AV1 M8, which is about
+> 3x slower. It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
 >
 > The FAQ answers the questions I expected (benchmarks, rate control, overfitting, licences, what's missing):
 > https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md. We also had an agent red-team our own claims

@@ -1446,10 +1446,10 @@ impl CodecBackend for Av1Backend {
     }
 
     fn mode_bits(&self, block: &Block, mode: &PredictionMode) -> f32 {
-        let (above, left) = self.neighbours(block);
-        let intra_inter = intra_inter_context(above, left);
         match *mode {
             PredictionMode::IntraDc => {
+                let (above, left) = self.neighbours(block);
+                let intra_inter = intra_inter_context(above, left);
                 let cdfs = &self.cdfs;
                 let filter_flag = if self.codes_filter_intra(block, IntraMode::Dc) {
                     cdfs.filter_intra[filter_intra_size_context(block.log2_size())].bits(0)
@@ -1463,21 +1463,19 @@ impl CodecBackend for Av1Backend {
             }
             PredictionMode::Inter(mv) => {
                 let secondary_ref = self.is_secondary();
-                let (stack, base_bits) = self
-                    .current
-                    .filter(|c| {
-                        (c.x, c.y) == (block.x, block.y) && c.secondary_ref == secondary_ref
-                    })
-                    .map_or_else(
-                        || {
-                            (
-                                self.single_ref_stack(block, secondary_ref),
-                                self.cdfs.intra_inter[intra_inter].bits(1)
-                                    + self.single_ref_bits(above, left, secondary_ref),
-                            )
-                        },
-                        |c| (c.stack, c.inter_base_bits),
-                    );
+                // Mode decision prices every candidate vector of the block
+                // [`Self::stack_for`] cached: read the cache in place (a
+                // copy of it cost more than the pricing).
+                if let Some(c) = self.current.as_ref().filter(|c| {
+                    (c.x, c.y) == (block.x, block.y) && c.secondary_ref == secondary_ref
+                }) {
+                    return c.inter_base_bits
+                        + inter_mode_bits(&self.cdfs, &c.stack, to_av1_mv(mv));
+                }
+                let (above, left) = self.neighbours(block);
+                let base_bits = self.cdfs.intra_inter[intra_inter_context(above, left)].bits(1)
+                    + self.single_ref_bits(above, left, secondary_ref);
+                let stack = self.single_ref_stack(block, secondary_ref);
                 base_bits + inter_mode_bits(&self.cdfs, &stack, to_av1_mv(mv))
             }
         }

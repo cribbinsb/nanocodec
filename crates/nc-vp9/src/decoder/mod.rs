@@ -13,6 +13,10 @@
 //! and partitions), `modes` and `mvref` (mode info and candidate vectors),
 //! `recon` (prediction and residuals), `loopfilter`.
 
+// The analysis records (feature `analysis`); every hook is compiled out
+// without it.
+#[cfg(feature = "analysis")]
+mod analysis;
 mod block;
 mod fill;
 mod frame;
@@ -25,6 +29,8 @@ mod recon;
 use std::sync::Arc;
 
 use nc_common::decode::{DecodeError, Result};
+#[cfg(feature = "analysis")]
+use nc_common::stream_stats::StreamStats;
 use nc_common::{Picture, PictureRecycler, PlaneIndex, ShownPicture};
 
 use self::block::{MvRef, REFS_PER_FRAME};
@@ -114,6 +120,9 @@ pub struct Decoder {
     /// enhancement frames stripped when [`Self::base_only`] is active).
     max_size: Option<(usize, usize)>,
     dsp: nc_dsp::Dsp,
+    /// Coding-tool analysis, collected only when enabled.
+    #[cfg(feature = "analysis")]
+    stats: Option<StreamStats>,
 }
 
 impl Default for Decoder {
@@ -134,6 +143,8 @@ impl Default for Decoder {
             last_spatial_id: None,
             max_size: None,
             dsp: nc_dsp::Dsp::new(),
+            #[cfg(feature = "analysis")]
+            stats: None,
         }
     }
 }
@@ -482,6 +493,55 @@ impl Decoder {
         stored
     }
 
+    /// Start collecting coding-tool analysis into `stats` (block records,
+    /// and per-frame tallies unless [`StreamStats::records_only`]) from the
+    /// next frame on. Decoding is unchanged.
+    #[cfg(feature = "analysis")]
+    pub fn collect_stats(&mut self, stats: StreamStats) {
+        self.stats = Some(stats);
+    }
+
+    /// The analysis collected so far, if enabled: the block records of the
+    /// last decoded frame and the tallies of every completed one.
+    #[cfg(feature = "analysis")]
+    #[must_use]
+    pub fn stats(&self) -> Option<&StreamStats> {
+        self.stats.as_ref()
+    }
+
+    /// Complete the analysis and hand it over; collection stops.
+    #[cfg(feature = "analysis")]
+    pub fn take_stats(&mut self) -> Option<StreamStats> {
+        let mut stats = self.stats.take()?;
+        stats.finish();
+        Some(stats)
+    }
+
+    /// The frame's scratch with the analysis moved in and the frame's facts
+    /// recorded, when analysis is on.
+    #[cfg(feature = "analysis")]
+    fn with_stats(
+        &mut self,
+        mut scratch: Box<BlockScratch>,
+        header: &FrameHeader,
+        bytes: usize,
+    ) -> Box<BlockScratch> {
+        if let Some(mut stats) = self.stats.take() {
+            analysis::frame_facts(&mut stats, header, bytes);
+            scratch.stats = Some(stats);
+        }
+        scratch
+    }
+
+    /// Complete the frame's analysis and keep it here.
+    #[cfg(feature = "analysis")]
+    fn finish_stats(&mut self) {
+        if let Some(mut stats) = self.scratch.as_mut().and_then(|s| s.stats.take()) {
+            stats.finish();
+            self.stats = Some(stats);
+        }
+    }
+
     /// The block working memory of the last frame, or a new one.
     fn take_scratch(&mut self) -> Box<BlockScratch> {
         self.scratch
@@ -522,6 +582,8 @@ impl Decoder {
             .last
             .is_none_or(|l| (l.width, l.height) != (width, height));
         let scratch = self.take_scratch();
+        #[cfg(feature = "analysis")]
+        let scratch = self.with_stats(scratch, &header, data.len());
         // The last segment map clears with past independence and on a
         // size change (`vp9_init_context_buffers`).
         let cleared_map;
@@ -559,6 +621,8 @@ impl Decoder {
             scratch,
         ) = frame.finish();
         self.scratch = Some(scratch);
+        #[cfg(feature = "analysis")]
+        self.finish_stats();
         if header.refresh != 0 {
             extend_reference(&mut recon, (width, height));
         }
