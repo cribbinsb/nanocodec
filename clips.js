@@ -18,7 +18,11 @@ const SVT_MULTIFORMAT_NOTICE = 'Individuals and organizations extracting sequenc
   + 'standards. SVT makes no warranties with respect to the materials and expressly disclaim any warranties '
   + 'regarding their fitness for any purpose.';
 const SVT_MULTIFORMAT_SUITE = 'SVT HD Multi Format (2006)';
-const NETFLIX_CREDIT = 'Copyright (C) NETFLIX INC. 2015 · CC BY-NC-ND 4.0';
+const NETFLIX_CREDIT = 'Copyright (C) NETFLIX INC. 2015 · CC BY-NC-ND 4.0 · excerpt, format-converted';
+const NETFLIX_NOTICE = 'Copyright (C) NETFLIX INC. 2015, licensed under CC BY-NC-ND 4.0, '
+  + 'https://creativecommons.org/licenses/by-nc-nd/4.0/. An unmodified, contiguous excerpt, format-converted '
+  + 'for browser playback only: 10-bit to 8-bit, downscaled with the whole frame kept, encoded as H.264; '
+  + 'nothing else is changed, and no comparison streams are made from it.';
 // MOTChallenge sequences are CC BY-NC-SA 3.0: the excerpts (and the pre-encoded
 // streams made from them) are offered under the same licence, non-commercially.
 const MOT_SET = 'MOTChallenge';
@@ -42,7 +46,7 @@ const VARIANT_HEIGHTS = [360, 720];
 // so they play faster than real time: `speed` says by how much.
 const XIPH_FPS = 30, NETFLIX_FPS = 60, RETIMED_FPS = 30, SVT_SPEED = 30 / 25, BLENDER_SPEED = 30 / 24;
 const xiph = (id, title) => ({ id, title, group: 'People', film: CONFERENCING_SET, credit: XIPH_CREDIT, fps: XIPH_FPS });
-const netflix = (id, title, group, film) => ({ id, title, group, film: `Netflix ${film}`, credit: NETFLIX_CREDIT, fps: NETFLIX_FPS });
+const netflix = (id, title, group, film) => ({ id, title, group, film: `Netflix ${film}`, credit: NETFLIX_CREDIT, notice: NETFLIX_NOTICE, fps: NETFLIX_FPS });
 const svtMultiFormat = (id, title, group) =>
   ({ id, title, group, film: SVT_MULTIFORMAT_SUITE, credit: SVT_MULTIFORMAT_CREDIT, notice: SVT_MULTIFORMAT_NOTICE, fps: RETIMED_FPS, speed: SVT_SPEED });
 const svt = (id, title) => ({ id, title, group: 'Hard texture', film: SVT_SUITE, credit: SVT_CREDIT, fps: RETIMED_FPS, speed: SVT_SPEED });
