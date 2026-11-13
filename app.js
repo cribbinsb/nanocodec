@@ -1,5 +1,5 @@
 import { Panel } from './panel.js';
-import { Comparison } from './pipeline.js';
+import { Comparison, snapshot } from './pipeline.js';
 import { Loupe } from './loupe.js';
 import { drawScene } from './scene.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
@@ -7,7 +7,10 @@ import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js'
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause');
 const startButton = $('#start'), video = $('#input-video'), notice = $('#notice');
+// The test scene is drawn here (a software canvas, so its pixels do not depend
+// on the GPU); video and camera frames are captured straight from the video element.
 const surface = document.createElement('canvas'), capture = surface.getContext('2d', { willReadFrequently: true });
+const PREVIEW_WIDTH = 160, PREVIEW_HEIGHT = 90;
 const preview = $('#source-preview').getContext('2d');
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
@@ -166,14 +169,12 @@ function captureFrame(token) {
   const now = performance.now(), { width, height, fps } = settings;
   nextDeadline = Math.max(nextDeadline + 1000 / fps, now);
   if (kind === 'scene') drawScene(capture, width, height, (now - started) / 1000);
-  else {
-    capture.fillStyle = '#000'; capture.fillRect(0, 0, width, height);
-    const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
-    const w = video.videoWidth * scale, h = video.videoHeight * scale;
-    capture.drawImage(video, (width - w) / 2, (height - h) / 2, w, h);
-  }
-  const frame = capture.getImageData(0, 0, width, height);
-  preview.drawImage(surface, 0, 0, 160, 90);
+  // The capture worker letterboxes and converts the picture for each view (pipeline.js).
+  const source = kind === 'scene' ? surface : video;
+  const [sourceWidth, sourceHeight] = kind === 'scene' ? [width, height] : [video.videoWidth, video.videoHeight];
+  const scale = Math.min(PREVIEW_WIDTH / sourceWidth, PREVIEW_HEIGHT / sourceHeight);
+  preview.fillStyle = '#000'; preview.fillRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
+  preview.drawImage(source, (PREVIEW_WIDTH - sourceWidth * scale) / 2, (PREVIEW_HEIGHT - sourceHeight * scale) / 2, sourceWidth * scale, sourceHeight * scale);
   const timestamp = kind === 'file' ? video.currentTime * 1000 : now - started;
   if (pendingRateChange) {
     panels.forEach((panel, i) => {
@@ -182,7 +183,7 @@ function captureFrame(token) {
     });
     pendingRateChange = false;
   }
-  comparison.send(frame, timestamp);
+  comparison.send(snapshot(source), sourceWidth, sourceHeight, timestamp);
   scheduleFrame(token);
 }
 /** Both views decoded one frame: show it and update the session line. */

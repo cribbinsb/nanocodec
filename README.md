@@ -49,7 +49,7 @@ are needed: each worker has its own ordinary WASM memory.
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
 - **Two versions:** choose H.264, HEVC, AV1, VVC, VP9 or AV2 independently. Both
   versions get byte-identical RGBA source frames. Their displays advance together, on the
-  same source frame, once both decoders have finished it. At most three frames are in
+  same source frame, once both decoders have finished it. At most four frames are in
   flight; when the pipeline is full the page skips capture instead of queueing
   (see "Pipeline" below).
 - **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps
@@ -62,7 +62,7 @@ are needed: each worker has its own ordinary WASM memory.
   measurement window restarts so it reflects the new setting.
 - **Pause / Resume:** stops submitting frames and pauses file playback or the test
   animation while preserving codec references, rate-control history and downloads.
-  The frames already submitted (at most three) finish before the views settle. Webcam capture
+  The frames already submitted (at most four) finish before the views settle. Webcam capture
   resumes from the live feed. Stop releases camera access.
 - **Keyframe interval:** choose 1, 2, 5, 10 or 30 seconds independently per version
   (converted to frames using the target frame rate).
@@ -148,19 +148,27 @@ The session line shows the delivered frame rate and the busiest of the four work
 5 % short), else "keeping up, slowest …". A worker's time per frame is its encode, or its decode
 plus PSNR plus display hand-off.
 
-**Pipeline (`pipeline.js`).** Each version has two workers: `encode-worker.js` runs
+**Pipeline (`pipeline.js`).** The page captures each frame as a `VideoFrame` (an
+`ImageBitmap` without WebCodecs) and hands it to `capture-worker.js`, which letterboxes
+and converts it to RGBA at each version's size (`VideoFrame.copyTo` at the source's own
+size, else an `OffscreenCanvas`; both give exactly the pixels the page's own
+`drawImage` + `getImageData` gave, `web/tests/capture-identity.py`) and posts it to each
+version's encoder over a `MessageChannel`. Reading video back as RGBA was the page's
+largest cost (15-90 ms per 720p frame in headless Chromium under load), and while it ran
+the page could not receive or draw results. Each version has two workers: `encode-worker.js` runs
 `BrowserEncoder.encode` and posts the packet, with the source frame, straight to its
 version's `decode-worker.js` over a `MessageChannel` (not through the page). The decode
 worker runs a separate `BrowserDecoder`, measures PSNR, and posts the frame to display,
 the packet and all timings to the page; only that decoder's pixels are shown. So the
 encoder codes frame N+1 while the decoder decodes frame N, and the page captures the next
-frame while earlier ones are still in flight. Up to three frames (`MAX_FRAMES_IN_FLIGHT`)
+frame while earlier ones are still in flight. Up to four frames (`MAX_FRAMES_IN_FLIGHT`, one per stage)
 are in flight; results are matched by frame id and released in capture order only when
 both versions have decoded a frame. While the queue is full no frame is captured, so a
 slow pipeline lowers the delivered rate instead of adding latency. Delivered fps is
 therefore set by the slowest single worker, not by the sum of encode, decode and PSNR.
-Source and display buffers circulate between page and workers, so no frame-sized
-buffer is allocated per frame in steady state.
+Display buffers circulate between page and decode workers; the source frame the
+decode worker returns becomes the page's copy of the original (magnifier, "hold
+original").
 
 **Display (`renderer.js`).** With a hardware GPU each view draws with WebGL2
 (else WebGL1): `BrowserDecoder.i420_frame` packs the decoded planes without row

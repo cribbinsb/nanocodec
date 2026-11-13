@@ -31,8 +31,8 @@ let pendingOperatingPoint = null;
 // Set by the first real packet: start-up warm-up (warmup.js) stops then.
 let realData = false;
 // Returned display buffers kept for reuse: one per frame the page can hold in
-// flight or on screen (pipeline.js), so none is allocated in steady state.
-const MAX_SPARE_PIXELS = 4;
+// flight (MAX_FRAMES_IN_FLIGHT, pipeline.js) or on screen, so none is allocated in steady state.
+const MAX_SPARE_PIXELS = 5;
 const sparePixels = [];
 /** Copy the decoder's latest frame, in `format`, out of WASM memory into a reused buffer. */
 function decodedPixels(format) {

@@ -1,5 +1,6 @@
 // Encoder half of one comparison view; decode-worker.js is the other half.
-// The page sends each RGBA source frame here. The packet goes straight to the
+// The capture worker (capture-worker.js) sends each RGBA source frame here
+// over a MessageChannel port; the page sends only control messages. The packet goes straight to the
 // view's decode worker over a MessageChannel port, never through the page, so
 // this worker encodes frame N+1 while the decode worker still decodes frame N.
 // The source buffer travels on with the packet: the decode worker measures
@@ -29,7 +30,8 @@ function configureRate(c) {
   if (c.rateMode === 'cbr') encoder.set_rate_control(c.targetKbps, c.peakKbps, c.bufferMs);
   else encoder.disable_rate_control();
 }
-self.onmessage = async ({ data: message }) => {
+/** Handle a page or capture message; any failure is reported to the page. */
+async function receive({ data: message }) {
   try {
     if (message.type === 'init') {
       const module = await codecModule;
@@ -38,6 +40,7 @@ self.onmessage = async ({ data: message }) => {
       encoder = new module.BrowserEncoder(c.codec, c.width, c.height, c.qp, c.fps, c.keyInterval, c.preset, c.overrides, c.filmGrain);
       decoderPort = message.port;
       configureRate(c);
+      message.capturePort.onmessage = receive;
       self.postMessage({ type: 'ready' });
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
@@ -63,4 +66,5 @@ self.onmessage = async ({ data: message }) => {
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
-};
+}
+self.onmessage = receive;
