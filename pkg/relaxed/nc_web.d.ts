@@ -67,11 +67,11 @@ export class BrowserDecoder {
    */
   decoded_i420(): Uint8Array;
   /**
-   * Select the AV1 operating point (`0..=31`, default `0`) before or
-   * between packets (`AV1 §6.4.1`, `§7.18`).
+   * Select the operating point (`0..=31` on AV1, `0..=1` on VP9 where `> 0`
+   * selects base-only `S0` decoding; default `0`) before or between packets.
    * # Errors
-   * Rejects non-zero operating points on codecs other than AV1 and values
-   * above 31.
+   * Rejects non-zero operating points on codecs other than AV1 and VP9, and
+   * values above 31.
    */
   set_operating_point(op: number): void;
   /**
@@ -102,8 +102,8 @@ export class BrowserDecoder {
    */
   decode(packet: Uint8Array): void;
   /**
-   * The `spatial_id` (`0..=3`) of the latest shown AV1 frame (`0` on
-   * single-layer streams and non-AV1 codecs).
+   * The `spatial_id` (`0..=3`) of the latest shown AV1 or VP9 frame (`0` on
+   * single-layer streams and other codecs).
    */
   readonly spatial_id: number;
   /**

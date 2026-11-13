@@ -12,9 +12,11 @@
 // frame (renderer.js): packed I420 for a WebGL view, which converts on the GPU,
 // or RGBA converted here in WASM for the CPU path.
 //
-// Spatial SVC (the AV1 `svc` preset): the decoder keeps only the operating
-// point the viewer picked (BrowserDecoder.set_operating_point: OBUs of other
-// layers are dropped, AV1 section 7.18). Dropping to the base takes effect at
+// Spatial SVC (the AV1 and VP9 `svc` presets): the decoder keeps only the
+// operating point the viewer picked (BrowserDecoder.set_operating_point: AV1
+// drops the OBUs of other layers, AV1 section 7.18; VP9, which has no layer
+// ids, decodes only the base frame of each [S0, S1] superframe, VP9 Annex B,
+// and shows it). Dropping to the base takes effect at
 // once; the full-size layer predicts from its own earlier pictures, which were
 // not decoded meanwhile, so going back up waits for the key frame the page
 // asks the encoder for (pipeline.js) and switches just before decoding it.

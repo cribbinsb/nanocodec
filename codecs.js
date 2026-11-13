@@ -8,7 +8,7 @@ export const CODECS = {
   hevc: { label: 'HEVC', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, fast: true, faster: true, annexB: 'hevc' },
   av1: { label: 'AV1', quantizer: { name: 'qindex', min: 1, max: 255, initial: 180 }, fast: true, faster: true, svc: true, ivf: 'AV01' },
   vvc: { label: 'VVC', quantizer: { name: 'QP', min: 0, max: 63, initial: 32 }, fast: true, annexB: 'vvc' },
-  vp9: { label: 'VP9', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, fast: true, faster: true, fastest: true, ivf: 'VP90' },
+  vp9: { label: 'VP9', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, fast: true, faster: true, fastest: true, svc: true, ivf: 'VP90' },
   av2: { label: 'AV2', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, fast: false, ivf: 'AV02' },
 };
 
