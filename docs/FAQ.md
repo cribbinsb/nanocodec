@@ -74,8 +74,10 @@ by our reimplementation of libvmaf's float MS-SSIM (agreeing to about 1e-6).
 encoder's reconstruction; the references' on their standard-decoded output. That is valid only if the
 reconstruction equals what a standard decoder outputs. We check that before a build's numbers are published, on
 short streams of every shipped preset of every codec, decoded by two standard decoders per codec and by ours,
-compared frame by frame. The longer chart streams are not each decoded; a spot check that decodes a sample of them
-is under way.
+compared frame by frame. An independent check also re-encoded 144 chart points (every codec's Default, all 11
+clips) and passed them through both standard decoders and ours: all bit-exact with the scored reconstruction. On
+the 209 held-out clips every point of ours was scored from a standard decoder's output, checked equal to the
+reconstruction frame by frame.
 
 **Only 150 frames with one key frame?** Yes (5 s at 30 fps), and our presets were tuned on such windows. It
 favours us: in 5 s our first key frame takes 8–10% of the bits and our streams end 5–6% over target (the key
@@ -87,7 +89,10 @@ read the 150-frame numbers as favourable to us by several points.
 
 **Why these bitrates?** Our use case is low-bitrate streaming. Each clip's ladder is scaled to its pixel rate and
 capped at half its source's bitrate, because many sources are already compressed and coding above that measures
-the source's artefacts. Whether the results hold at higher rates is not measured here.
+the source's artefacts. Our savings are largest at these low rates: on the 10–11 held-out clips with room for
+2,400 and 4,000 kbps (720p30), BD-J over 600 kbps–4 Mbps was about half the chart-rate figure (AV1 −24.8% vs
+−47.2%, H.264 −9.3% vs −29.0%), and the references' gaps shrank too. Read every headline number as "at
+150–1200 kbps, 720p30".
 
 **Which clips?** The chart uses 11 natural camera clips (bodycam, crowd, low light, pan, static), our VAL set. They
 were also used to confirm which candidate changes were kept, so they are not independent of the tuning. Many
@@ -117,9 +122,19 @@ would not buy visible quality (a static scene, say); it should not spend more. B
 encoder actually achieved, so spending less is not an advantage in the numbers: it moves the point left on its
 own curve.
 
-**Do you overshoot?** Slightly, by design, at the start of a stream. The first key frame may borrow up to about
-1.4 buffers and repays it over the next 10 s (default); the references run with a strict 1 s VBV. An independent
-audit of the chart's points (42 per encoder, 150 frames) found:
+**Do you overshoot?** Over short windows, yes; over the long run, no. Since 2026-11-13 (62788659, 71cad753) our controller works like this: from about 5 s into a stream, the stream
+so far is at or under the target on average and stays there (it aims 1% under); the first key frame may borrow
+bits (it is not capped at one buffer: up to about 1.4 buffers) and repays them within 5 s; any other spend above
+the target line is repaid too. Measured limits on long single-key clips: single seconds holding a key frame, or a
+refinement burst on a static scene, can reach about 2× the target; 5–10 s windows on static scenes +8% to +20%;
+windows of 30 s at most about 1% over, and whole streams at or under the target. Motion content stays within a few percent
+over any 5 s window. Strict buffer settings (`rate.recode_overflow=1 rate.key_cap_buffer=1`) keep every frame,
+keys included, inside a one-buffer receiver, at a quality cost on static scenes. The references run
+with a strict 1 s VBV.
+
+An independent audit of the chart's points (42 per encoder, 150 frames), **at the builds the charts were measured
+on, before that change** (the key loan was then repaid over 10 s and the long-run rate was not held under the
+target), found:
 
 - our streams end a median 3–5% above target (about on target once the unrepaid loan is excluded); x264 and x265
   end 3–10% below target, SVT-AV1 on target;

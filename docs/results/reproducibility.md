@@ -72,6 +72,11 @@ cd .. && python3 tools/dev/independent_report.py --chart --build build --tables 
 `NC_METRICS_BACKEND=libvmaf-cpu` scores with stock libvmaf on the CPU. Our own runs use a GPU build of the same
 metrics (VMAFx). [The cross-check](rate-control-audit-2026-11-13.md#metrics-gpu-vs-cpu) gives the differences.
 
+Note: which clips get the 40/75 kbps low rungs depends on every chart family's curves, so measuring only
+`x264-medium,nanocodec-av1` can choose a different low-rung set than the chart did. To reproduce −50.87 exactly,
+measure every chart family (or apply the chart's recorded low-rung clips: bodycam_airport, static_cam29,
+static_otw_homes390, static_london_bus).
+
 What is missing for an outsider: `bodycam_airport` is a YouTube upload, and `static_cam29` and `static_london_bus`
 come from internal test collections. These three sources are not public, so (a) on the exact 11 clips is
 reproducible only inside the project.
@@ -135,7 +140,9 @@ Vidyo/JCT-VC conferencing sequences (public domain). Attribution is in
 [web/clips/ATTRIBUTION.md](../../web/clips/ATTRIBUTION.md). `tools/dev/open_subset.py` lists them.
 
 These clips are H.264 CRF 22-28 encodes, so the 50%-of-source rule leaves most of them only the 150 and 300 kbps
-rungs (plus the low rungs). This run checks the pipeline. Its numbers are not comparable with the chart's.
+rungs (plus the low rungs). This run checks the pipeline. Its numbers are not a proxy for the chart's: different
+content (film, conferencing), a lower rate range, and BD for HEVC and AV1 on only 5 of 10 clips (H.264 −37.9%
+here vs −23.0% on the chart).
 
 ```sh
 git clone https://github.com/cribbinsb/nanocodec && cd nanocodec

@@ -5,6 +5,7 @@
 
 #![allow(unsafe_code)]
 use crate::Isa;
+use crate::simd::LOOKUP_TABLE;
 mod generic;
 
 /// A plane's scaling function for one frame (AV1 §7.18.3.4): the lookup
@@ -15,7 +16,14 @@ mod generic;
 #[derive(Debug, Clone)]
 pub struct Av1GrainScaling {
     lut: [i32; 256],
-    q15: [i16; 256],
+    #[cfg_attr(
+        target_arch = "aarch64",
+        allow(dead_code, reason = "NEON reads `bytes`")
+    )]
+    q15: [i16; LOOKUP_TABLE],
+    /// The lookup as bytes, for table-lookup instructions (NEON `tbl`).
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code, reason = "NEON only"))]
+    bytes: [u8; 256],
     shift: u8,
 }
 
@@ -35,7 +43,8 @@ impl Av1GrainScaling {
         assert!(lut.iter().all(|v| (0..=MAX_SCALING).contains(v)));
         Self {
             lut: *lut,
-            q15: lut.map(|v| (v << (Q15 - shift)) as i16),
+            q15: core::array::from_fn(|i| lut.get(i).map_or(0, |v| (v << (Q15 - shift)) as i16)),
+            bytes: lut.map(|v| v as u8),
             shift,
         }
     }

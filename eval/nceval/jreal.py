@@ -105,14 +105,18 @@ SVC_BASE_GUARD_PCT, more non-compliant points than the anchor (the
 buffer guard), or a CBR rate over its target (the ceiling guard, below).
 
 The CBR target is a ceiling (owner rule; coordinator, 2026-11-13: the
-150-frame window otherwise rewards an unrepaid first-key loan). A point is
+150-frame window otherwise rewarded an unrepaid first-key loan). A point is
 over target when its achieved rate exceeds the target by more than
-CEILING_TOLERANCE; `over_target_pct` is that excess in percent. Until the rate
-controller keeps every point under its target (rate-ceiling work,
-docs/handoff/rate-control.md), every Default curve fails the absolute rule, so
-CEILING_MODE "relative" compares the arms: the test's mean excess over its
-points may not exceed the anchor's by more than CEILING_MARGIN_PCT. Mode
-"absolute" (once the ceiling lands) fails any test point over target.
+CEILING_TOLERANCE; `over_target_pct` is that excess in percent. With the
+rate controller's debit term (`rate.debit`, 62788659) our Defaults meet it on
+long windows (600 frames: median 1.000, worst 1.003-1.022 of target), so on
+points whose window is at least CEILING_ABSOLUTE_SECONDS the guard is absolute:
+any test point over target fails (CEILING_MODE "absolute"). A 150-frame
+window still ends inside the controller's last-second burst (3-12 of 50
+Default points per codec over target, worst 1.13-1.14), so on shorter windows
+the arms are compared: the test's mean excess may not exceed the anchor's by
+more than CEILING_MARGIN_PCT. Mode "relative" applies that comparison to
+every window (the setting before the debit term).
 """
 
 from __future__ import annotations
@@ -149,12 +153,16 @@ PULSE_GUARD_DB = 0.25
 #: Spatial SVC's base-layer guard (BD-rate, percent): as the worst-1% guard,
 #: the most a change may cost a secondary output it does not optimise.
 SVC_BASE_GUARD_PCT = 2.0
-#: The ceiling guard (module docstring): achieved / target - 1 allowed per point,
-#: its mode, and the relative mode's allowance over the anchor (percent: rate
-#: noise between two near-identical settings is about +-0.2%).
-CEILING_TOLERANCE = 0.01
+#: The ceiling guard (module docstring): achieved / target - 1 allowed per point
+#: (the debit term's worst 600-frame point, 1.022, passes), its mode, the
+#: shortest window judged absolutely (600 frames at 30 fps, less a margin for
+#: 29.97 / 25 fps clips cut short), and the comparison's allowance over the
+#: anchor on shorter windows (percent: rate noise between two near-identical
+#: settings is about +-0.2%).
+CEILING_TOLERANCE = 0.025
 CEILING_RELATIVE, CEILING_ABSOLUTE = "relative", "absolute"
-CEILING_MODE = CEILING_RELATIVE
+CEILING_MODE = CEILING_ABSOLUTE
+CEILING_ABSOLUTE_SECONDS = 19.0
 CEILING_MARGIN_PCT = 0.25
 #: Rate-controlled curves have 4 ladder points; a staged proxy keeps 3.
 BD_MIN_POINTS = 3
@@ -423,25 +431,33 @@ def over_target_pct(point: dict) -> float:
 
 
 def ceiling_terms(side: str, points: list[dict]) -> dict[str, float]:
-    """One arm's over-target sum, points over target and points scored, for `compliance`."""
+    """One arm's ceiling totals for `compliance`: points over target on long windows
+    (judged absolutely), and the over-target sum and count of the rest."""
     rated = [p for p in points if p.get("target_kbps")]
-    excess = [over_target_pct(p) for p in rated]
-    return {f"{side}_over_target_sum": sum(excess),
-            f"{side}_over_target_points": sum(1 for e in excess if e > 0),
-            f"{side}_rated_points": len(rated)}
+    long = lambda p: (CEILING_MODE == CEILING_ABSOLUTE  # noqa: E731
+                      and p.get("window_seconds", 0.0) >= CEILING_ABSOLUTE_SECONDS)
+    short = [over_target_pct(p) for p in rated if not long(p)]
+    return {f"{side}_long_over_points": sum(1 for p in rated
+                                            if long(p) and over_target_pct(p) > 0),
+            f"{side}_long_rated_points": sum(1 for p in rated if long(p)),
+            f"{side}_over_target_sum": sum(short),
+            f"{side}_over_target_points": sum(1 for e in short if e > 0),
+            f"{side}_rated_points": len(short)}
 
 
 def ceiling_excess(buffer: dict) -> float | None:
     """The ceiling guard's value (> 0 fails) from `compliance` totals; None when unrated.
 
-    Relative mode: the test's mean excess minus the anchor's, minus
-    CEILING_MARGIN_PCT. Absolute mode: the test's points over target."""
-    if not buffer.get("test_rated_points") or not buffer.get("anchor_rated_points"):
-        return None
-    if CEILING_MODE == CEILING_ABSOLUTE:
-        return float(buffer["test_over_target_points"])
-    mean = lambda side: buffer[f"{side}_over_target_sum"] / buffer[f"{side}_rated_points"]  # noqa
-    return mean("test") - mean("anchor") - CEILING_MARGIN_PCT
+    The test's long-window points over target (absolute), or else the test's mean
+    excess on shorter windows minus the anchor's minus CEILING_MARGIN_PCT."""
+    values = []
+    if buffer.get("test_long_rated_points"):
+        values.append(float(buffer["test_long_over_points"]))
+    if buffer.get("test_rated_points") and buffer.get("anchor_rated_points"):
+        mean = lambda side: (buffer[f"{side}_over_target_sum"]  # noqa: E731
+                             / buffer[f"{side}_rated_points"])
+        values.append(mean("test") - mean("anchor") - CEILING_MARGIN_PCT)
+    return max(values) if values else None
 
 
 def ceiling_guard(buffer: dict) -> str | None:
@@ -449,9 +465,9 @@ def ceiling_guard(buffer: dict) -> str | None:
     excess = ceiling_excess(buffer)
     if excess is None or excess <= 0:
         return None
-    if CEILING_MODE == CEILING_ABSOLUTE:
-        return (f"ceiling: {buffer['test_over_target_points']} points over target by "
-                f"> {100 * CEILING_TOLERANCE:g}%")
+    if buffer.get("test_long_over_points"):
+        return (f"ceiling: {buffer['test_long_over_points']} long-window points over "
+                f"target by > {100 * CEILING_TOLERANCE:g}%")
     mean = lambda side: buffer[f"{side}_over_target_sum"] / buffer[f"{side}_rated_points"]  # noqa
     return (f"ceiling: {mean('test'):.2f}% mean over target > anchor's {mean('anchor'):.2f}% "
             f"+ {CEILING_MARGIN_PCT:g}")
@@ -479,7 +495,8 @@ def compliance(per_clip: dict[str, dict]) -> dict:
             "test_noncompliant": total("test_noncompliant"),
             "anchor_noncompliant": total("anchor_noncompliant"),
             **{f"{side}_{key}": total(f"{side}_{key}") for side in ("test", "anchor")
-               for key in ("over_target_sum", "over_target_points", "rated_points")},
+               for key in ("over_target_sum", "over_target_points", "rated_points",
+                           "long_over_points", "long_rated_points")},
             "anchor_noncompliant_clips": sorted(c for c, row in per_clip.items()
                                                 if row.get("anchor_noncompliant"))}
 

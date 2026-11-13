@@ -3,7 +3,7 @@
 
 use nc_common::decode::{BitReader, DecodeError};
 
-use super::params::{MAX_DPB, Pps, ShortTermSet, Sps, deblock_offsets, short_term_set};
+use super::params::{MAX_DPB, MAX_PPS, Pps, ShortTermSet, Sps, deblock_offsets, short_term_set};
 
 /// NAL unit types (Table 7-1).
 pub(super) mod nal {
@@ -129,7 +129,12 @@ pub(super) fn first_and_pps(rbsp: &[u8], nal_type: u8) -> Result<(bool, usize), 
     if (nal::BLA_W_LP..=nal::RSV_IRAP_23).contains(&nal_type) {
         r.read_bit()?;
     }
-    Ok((first, r.read_ue()? as usize))
+    let pps_id = r.read_ue()? as usize;
+    // §7.4.7.1: slice_pic_parameter_set_id is in 0..=63.
+    if pps_id >= MAX_PPS {
+        return Err(DecodeError::Malformed("slice PPS id out of range"));
+    }
+    Ok((first, pps_id))
 }
 
 /// Parse a slice segment header (§7.3.6.1).

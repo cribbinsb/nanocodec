@@ -57,13 +57,15 @@ length; read it with this page. Previous check: [heldout-chart-2026-11-12.md](he
    more.
 4. **H.264 Fastest's MS-SSIM is worse than x264 medium's.** +10.1% [+4.8, +15.3] on these clips. Its BD-J is
    −1.4 [−5.9, +2.9], which is not different from zero.
-5. **Our rate overshoots and our first key frame exceeds a strict 1 s buffer on many points.**
+5. **Our rate overshoots and our first key frame exceeds a strict 1 s buffer on many points** (at the build
+   measured; see the note at the end of this item).
    - On these clips 24–43% of each preset's ladder points peak above one buffer (max 1.44), against ≤ 2% for
      x264, x265 and SVT-AV1.
    - Our strict buffer settings cost 6.8–9.1% bits and move BD-J by 3–4 points (30-clip subset).
    - Over 150 frames our streams land a median 4–5% above target; x264 lands 8% below.
    - BD uses the achieved bytes for every encoder, so the overshoot is counted on the rate axis. Details in the
      audit.
+   - These buffer and rate figures are at the build measured (cba4292f). Since then (62788659, 71cad753) the long-run rate is held at or under the target and the key loan is repaid within 5 s instead of 10 s; key frames are still not capped at one buffer, so key-second peaks of up to about 1.4 buffers remain.
 6. **Other reference settings change some reference gaps by large amounts** (30-clip subset; the audit has the
    details):
    - **Better:** x264/x265 with lookahead and B-frames (not low delay) need 30% / 27% fewer bits.
@@ -76,8 +78,9 @@ length; read it with this page. Previous check: [heldout-chart-2026-11-12.md](he
 7. **The 5 s window and the low rates favour our numbers** (audit sections 3 and 5).
    - **Longer window.** Over 600 frames on 5 longer clips (not independent: 3 are TRAIN clips), our BD-J vs x264
      medium is 4–9 points less favourable than over 150 frames.
-   - **Higher rates.** On 10–11 clips with room above the ladder, our gaps at the upper rates are about half
-     those at the chart's rates.
+   - **Higher rates.** On 10–11 clips with room above the ladder, our gaps over the upper range (the top two
+     ladder rungs, 600 and 1200 kbps, plus 2,400 and 4,000 kbps at 720p30) are about half those at the chart's
+     rates (AV1 −24.8% vs −47.2% on the same 30-clip subset).
 
 
 ## Results

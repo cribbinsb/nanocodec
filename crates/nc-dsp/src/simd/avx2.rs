@@ -16,19 +16,20 @@ use core::arch::x86_64::{
     _mm_min_epu16, _mm_movemask_ps, _mm_mulhrs_epi16, _mm_mullo_epi16, _mm_mullo_epi32,
     _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32,
     _mm_setzero_si128, _mm_shuffle_epi8, _mm_sign_epi16, _mm_sign_epi32, _mm_sll_epi32,
-    _mm_sra_epi16, _mm_sra_epi32, _mm_srl_epi32, _mm_storel_epi64, _mm_storeu_si128, _mm_sub_epi16,
-    _mm_sub_epi32, _mm_subs_epu16, _mm_unpackhi_epi8, _mm_unpackhi_epi16, _mm_unpackhi_epi32,
-    _mm_unpackhi_epi64, _mm_unpacklo_epi8, _mm_unpacklo_epi16, _mm_unpacklo_epi32,
-    _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_abs_epi32, _mm256_add_epi16, _mm256_add_epi32,
-    _mm256_and_si256, _mm256_blend_epi16, _mm256_blendv_epi8, _mm256_castsi256_ps,
-    _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cmpeq_epi32, _mm256_cmpgt_epi16,
-    _mm256_cmpgt_epi32, _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16, _mm256_extracti128_si256,
-    _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_max_epi16,
-    _mm256_max_epi32, _mm256_min_epi16, _mm256_min_epi32, _mm256_min_epu16, _mm256_movemask_ps,
-    _mm256_mulhrs_epi16, _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_or_si256,
-    _mm256_packs_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set_m128i,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setzero_si256, _mm256_sign_epi16,
-    _mm256_sign_epi32, _mm256_sll_epi32, _mm256_slli_epi32, _mm256_sra_epi16, _mm256_sra_epi32,
+    _mm_sra_epi16, _mm_sra_epi32, _mm_srl_epi32, _mm_srli_si128, _mm_storel_epi64,
+    _mm_storeu_si128, _mm_sub_epi16, _mm_sub_epi32, _mm_subs_epu16, _mm_unpackhi_epi8,
+    _mm_unpackhi_epi16, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi8,
+    _mm_unpacklo_epi16, _mm_unpacklo_epi32, _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_abs_epi32,
+    _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_blend_epi16, _mm256_blendv_epi8,
+    _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cmpeq_epi32,
+    _mm256_cmpgt_epi16, _mm256_cmpgt_epi32, _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16,
+    _mm256_cvtepu8_epi32, _mm256_extracti128_si256, _mm256_i32gather_epi32, _mm256_loadu_si256,
+    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_max_epi16, _mm256_max_epi32, _mm256_min_epi16,
+    _mm256_min_epi32, _mm256_min_epu16, _mm256_movemask_ps, _mm256_mulhrs_epi16,
+    _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32,
+    _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set_m128i, _mm256_set1_epi16,
+    _mm256_set1_epi32, _mm256_setzero_si256, _mm256_sign_epi16, _mm256_sign_epi32,
+    _mm256_sll_epi32, _mm256_slli_epi32, _mm256_sra_epi16, _mm256_sra_epi32, _mm256_srai_epi32,
     _mm256_srl_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16,
     _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16,
     _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
@@ -36,7 +37,9 @@ use core::arch::x86_64::{
 
 use core::mem::MaybeUninit;
 
-use super::{I16FilterLanes, I16Lanes, I16Pairs, I16x8Shuffles, I32Lanes, packed_pair};
+use super::{
+    I16FilterLanes, I16Lanes, I16Pairs, I16x8Shuffles, I32Lanes, LOOKUP_TABLE, packed_pair,
+};
 
 /// Eight `i32` lanes (AVX2).
 #[derive(Debug, Clone, Copy)]
@@ -643,6 +646,32 @@ impl I16Lanes for I16x16 {
         unsafe {
             let src = &src[..16];
             Self(_mm256_loadu_si256(src.as_ptr().cast()))
+        }
+    }
+
+    #[inline(always)]
+    fn lookup(table: &[i16; LOOKUP_TABLE], indices: &[u8]) -> Self {
+        let indices: &[u8; 16] = indices[..16].try_into().expect("sixteen indices");
+        // Two 32-bit gathers at `table + 2 * index` (the padding entry keeps
+        // the last one inside), the low halves sign-extended and packed.
+        // SAFETY: AVX2 kernels only; every 4-byte read starts at an entry
+        // below 256 of the 257-entry table.
+        unsafe {
+            let bytes = _mm_loadu_si128(indices.as_ptr().cast());
+            // The gather reads unaligned 32-bit words; it needs no alignment.
+            #[allow(
+                clippy::cast_ptr_alignment,
+                reason = "vpgatherdd has no alignment requirement"
+            )]
+            let base = table.as_ptr().cast::<i32>();
+            let low = _mm256_i32gather_epi32::<2>(base, _mm256_cvtepu8_epi32(bytes));
+            let high =
+                _mm256_i32gather_epi32::<2>(base, _mm256_cvtepu8_epi32(_mm_srli_si128::<8>(bytes)));
+            let extend = |v: __m256i| _mm256_srai_epi32::<16>(_mm256_slli_epi32::<16>(v));
+            // packs interleaves the 128-bit halves; the permute restores order.
+            Self(_mm256_permute4x64_epi64::<0b11_01_10_00>(
+                _mm256_packs_epi32(extend(low), extend(high)),
+            ))
         }
     }
 

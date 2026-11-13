@@ -155,6 +155,9 @@ pub(crate) trait I32Lanes: Copy {
 
 /// A vector of `LANES` signed 16-bit lanes (prediction and residual
 /// arithmetic), with a matching 32-bit accumulator.
+/// Entries of an [`I16Lanes::lookup`] table: 256 and one of padding.
+pub(crate) const LOOKUP_TABLE: usize = 257;
+
 pub(crate) trait I16Lanes: Copy {
     /// Lanes per vector.
     const LANES: usize;
@@ -202,6 +205,23 @@ pub(crate) trait I16Lanes: Copy {
         // SAFETY: the caller guarantees `LANES` readable bytes; the slice's
         // own bounds check then folds away.
         Self::load_u8(unsafe { core::slice::from_raw_parts(src, Self::LANES) })
+    }
+    /// Lane `i` is `table[indices[i]]` (a 256-entry lookup by byte, padded
+    /// by one entry so that a 32-bit gather of the last stays inside), for
+    /// the first `LANES` indices. The default builds the vector in memory;
+    /// ISAs override it with lane inserts or gathers.
+    #[inline(always)]
+    #[allow(clippy::inline_always, reason = "per vector in the grain kernels")]
+    #[cfg_attr(
+        target_arch = "aarch64",
+        allow(dead_code, reason = "NEON grain uses `tbl`")
+    )]
+    fn lookup(table: &[i16; LOOKUP_TABLE], indices: &[u8]) -> Self {
+        let mut lanes = [0i16; 32];
+        for (lane, &index) in lanes.iter_mut().zip(&indices[..Self::LANES]) {
+            *lane = table[usize::from(index)];
+        }
+        Self::load(&lanes)
     }
     /// [`Self::store_u8_sat`] to a pointer (see [`Self::load_u8_at`]).
     ///

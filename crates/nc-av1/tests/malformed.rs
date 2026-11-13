@@ -16,3 +16,13 @@ fn deblocking_skips_areas_beyond_the_frame() {
     let mut decoder = Decoder::new();
     let _ = decoder.decode_shown(packet);
 }
+
+/// A key frame whose film grain scaling points do not increase
+/// (§6.8.20): building the scaling lookup divided by their difference,
+/// which was negative or zero.
+#[test]
+fn film_grain_points_must_increase() {
+    let packet = include_bytes!("malformed/film_grain_points_not_increasing.obu");
+    let mut decoder = Decoder::new();
+    let _ = decoder.decode_shown(packet);
+}

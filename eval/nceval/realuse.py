@@ -318,6 +318,7 @@ def point_terms(result: dict, window_seconds: float) -> dict:
     terms = {key: result[key] for key in ("kbps", "psnr_yuv", "vmaf_v1", "ms_ssim",
                                           "overruns", "max_fullness", "target_kbps")}
     terms["rate_valid"] = rate_valid(result, window_seconds)
+    terms["window_seconds"] = window_seconds  # the ceiling guard judges long windows absolutely
     terms.update(jreal.temporal_stats(result["frame_psnr_y"], result["frame_vmaf_v1"],
                                       result["frame_key"]))
     if "base" in result:  # a two-layer stream's base layer at its own rate (nceval.svcbase)

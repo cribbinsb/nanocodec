@@ -1,0 +1,545 @@
+{
+ "name": "independent_long",
+ "_comment": "The long-window form (600 frames) of independent.json's sources long enough: eval/clipset/select_independent.py --long-from.",
+ "clips": [
+  {
+   "name": "indl_answer_suite_sounds_mot20_04_esc50",
+   "source": "/mldata/video/answer_suite/sounds_mot20-04_esc50.mp4",
+   "start": 2.0,
+   "seconds": 24.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_base_clip1",
+   "source": "/mldata/video/base/clip1.mp4",
+   "start": 2.0,
+   "seconds": 41.0,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_base_clip2",
+   "source": "/mldata/video/base/clip2.mp4",
+   "start": 2.0,
+   "seconds": 41.0,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00c17a92_d4803287",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c17a92-d4803287.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00c29c52_f9524f1e",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c29c52-f9524f1e.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00c41a61_4ba25ad4",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c41a61-4ba25ad4.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00c4c672_26d36ad8",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c4c672-26d36ad8.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00c50078_6298b9c1",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c50078-6298b9c1.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00c87627_b7f6f46c",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c87627-b7f6f46c.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00ca8821_db8033d5",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00ca8821-db8033d5.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00ccf2e8_ac055be6",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00ccf2e8-ac055be6.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00ce6f6d_50bbee62",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00ce6f6d-50bbee62.mp4",
+   "start": 2.0,
+   "seconds": 20.7,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00cea101_06f21d5e",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00cea101-06f21d5e.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "lowlight",
+   "height": 360
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00cef86b_d8d105b9",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00cef86b-d8d105b9.mp4",
+   "start": 2.0,
+   "seconds": 20.7,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d1bafa_1b47b41c",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d1bafa-1b47b41c.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d4b6b7_7d0a60bf",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d4b6b7-7d0a60bf.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d5edb9_f0077df3",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d5edb9-f0077df3.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d77344_9fe25620",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d77344-9fe25620.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d84b1d_21e6fe01",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d84b1d-21e6fe01.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "lowlight",
+   "height": 360
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d8944b_e157478b",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d8944b-e157478b.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d9e313_038310a2",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d9e313-038310a2.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "pan"
+  },
+  {
+   "name": "indl_bdd100k_mot_bdd_00d9e313_7d75bb18",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d9e313-7d75bb18.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "pan",
+   "height": 360
+  },
+  {
+   "name": "indl_bwc_videotext_video190",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video190.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video219",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video219.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video28",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video28.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "lowlight",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video283",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video283.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video289",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video289.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video295",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video295.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video317",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video317.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video321",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video321.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "bodycam",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video33",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video33.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video345",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video345.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "lowlight",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video347",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video347.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "lowlight",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video354",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video354.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "lowlight",
+   "height": 240
+  },
+  {
+   "name": "indl_bwc_videotext_video47",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video47.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video58",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video58.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video61",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video61.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 270
+  },
+  {
+   "name": "indl_bwc_videotext_video88",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video88.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "bodycam",
+   "height": 270
+  },
+  {
+   "name": "indl_cctv_uid_vid_00047",
+   "source": "/mldata/video/cctv/uid_vid_00047.mp4",
+   "start": 2.0,
+   "seconds": 25.7,
+   "content_class": "static",
+   "height": 540
+  },
+  {
+   "name": "indl_cctv_uid_vid_00054",
+   "source": "/mldata/video/cctv/uid_vid_00054.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_cctv_ukof_hd_indoor_light_ohcam_002_under100mb",
+   "source": "/mldata/video/cctv/UKof_HD_Indoor_Light_OHcam_002_under100MB.mp4",
+   "start": 2.0,
+   "seconds": 41.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "indl_cevo_april25_inof_ld_in_light_ffcam_002",
+   "source": "/mldata/tracking_original/cevo_april25/video/INof_LD_IN_Light_FFcam_002.mp4",
+   "start": 2.0,
+   "seconds": 61.5,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_cevo_april25_inof_ld_outld_light_ffcam_001",
+   "source": "/mldata/tracking_original/cevo_april25/video/INof_LD_OutLD_Light_FFcam_001.mp4",
+   "start": 2.0,
+   "seconds": 41.0,
+   "content_class": "static",
+   "height": 540
+  },
+  {
+   "name": "indl_cevo_april25_inof_md_out_light_ffcam_003",
+   "source": "/mldata/tracking_original/cevo_april25/video/INof_MD_Out_Light_FFcam_003.mp4",
+   "start": 2.0,
+   "seconds": 30.8,
+   "content_class": "static",
+   "height": 540
+  },
+  {
+   "name": "indl_cevo_ukof_hd_indoor_light_ohcam_001",
+   "source": "/mldata/tracking_original/cevo/video/UKof_HD_Indoor_Light_OHcam_001.mp4",
+   "start": 2.0,
+   "seconds": 41.0,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_chirla_chirla_seq_020_camera_2_2023_07_26_13_21_40",
+   "source": "/mldata/tracking_original/chirla/video/chirla_seq_020_camera_2_2023-07-26-13-21-40.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_chirla_chirla_seq_026_camera_3_2023_12_05_12_12_13",
+   "source": "/mldata/tracking_original/chirla/video/chirla_seq_026_camera_3_2023-12-05-12-12-13.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
+   "source": "/mldata/tracking_original/meva/video/2018-03-07.17-00-00.17-05-00.bus.G508.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static",
+   "height": 536
+  },
+  {
+   "name": "indl_meva_2018_03_07_17_05_00_17_10_00_bus_g508",
+   "source": "/mldata/tracking_original/meva/video/2018-03-07.17-05-00.17-10-00.bus.G508.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static",
+   "height": 536
+  },
+  {
+   "name": "indl_meva_2018_03_13_16_10_00_16_15_00_bus_g505",
+   "source": "/mldata/tracking_original/meva/video/2018-03-13.16-10-00.16-15-00.bus.G505.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static",
+   "height": 536
+  },
+  {
+   "name": "indl_mot_mot17_05",
+   "source": "/mldata/tracking_original/mot/video/MOT17-05.mp4",
+   "start": 2.0,
+   "seconds": 44.0,
+   "content_class": "bodycam"
+  },
+  {
+   "name": "indl_mp4_pedestrians2",
+   "source": "/mldata/video/mp4/pedestrians2.mp4",
+   "start": 2.0,
+   "seconds": 24.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_otw_homes_00120",
+   "source": "/mldata/tracking_original/otw/video/homes_00120.mp4",
+   "start": 2.0,
+   "seconds": 40.7,
+   "content_class": "crowd",
+   "height": 640
+  },
+  {
+   "name": "indl_otw_homes_00310",
+   "source": "/mldata/tracking_original/otw/video/homes_00310.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_otw_homes_00394",
+   "source": "/mldata/tracking_original/otw/video/homes_00394.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static"
+  },
+  {
+   "name": "indl_otw_homes_00401",
+   "source": "/mldata/tracking_original/otw/video/homes_00401.mp4",
+   "start": 2.0,
+   "seconds": 20.7,
+   "content_class": "crowd",
+   "height": 640
+  },
+  {
+   "name": "indl_otw_homes_00558",
+   "source": "/mldata/tracking_original/otw/video/homes_00558.mp4",
+   "start": 2.0,
+   "seconds": 20.5,
+   "content_class": "static",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00008",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00008.mp4",
+   "start": 2.0,
+   "seconds": 25.7,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00038",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00038.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00057",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00057.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00076",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00076.mp4",
+   "start": 2.0,
+   "seconds": 25.7,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00092",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00092.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00106",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00106.mp4",
+   "start": 2.0,
+   "seconds": 41.0,
+   "content_class": "crowd",
+   "height": 536
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00156",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00156.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd"
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00161",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00161.mp4",
+   "start": 2.0,
+   "seconds": 24.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00177",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00177.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00190",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00190.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "static",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00200",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00200.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00212",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00212.mp4",
+   "start": 2.0,
+   "seconds": 24.6,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00214",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00214.mp4",
+   "start": 2.0,
+   "seconds": 25.7,
+   "content_class": "crowd"
+  },
+  {
+   "name": "indl_personpath22_uid_vid_00231",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00231.mp4",
+   "start": 2.0,
+   "seconds": 20.6,
+   "content_class": "crowd"
+  }
+ ]
+}

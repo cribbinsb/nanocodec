@@ -641,6 +641,13 @@ fn read_points(
     for i in 0..count {
         values[i] = r.read_bits(8)? as u8;
         scaling[i] = r.read_bits(8)? as u8;
+        // §6.8.20: each point's value is greater than the previous one;
+        // the scaling lookup divides by their difference.
+        if i > 0 && values[i] <= values[i - 1] {
+            return Err(DecodeError::Malformed(
+                "AV1 film grain points not increasing",
+            ));
+        }
     }
     Ok(count)
 }

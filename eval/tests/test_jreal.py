@@ -219,19 +219,25 @@ def test_ceiling_guard_relative_rejects_more_overshoot_than_the_anchor(monkeypat
     assert fails["decision"] == "worse" and any("ceiling" in g for g in fails["guards"])
 
 
-def test_ceiling_guard_absolute_rejects_any_point_over_target(monkeypatch):
+def test_ceiling_guard_absolute_on_long_windows_compares_short_ones(monkeypatch):
     monkeypatch.setattr(jreal, "CEILING_MODE", jreal.CEILING_ABSOLUTE)
-    anchor = with_target(with_buffer(curve(), 0.9, 0), 0.0)
-    within = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.005)  # inside 1%
-    over = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.02)
-    terms = jreal.compare_clip(anchor, over)
-    assert terms["test_over_target_points"] == 4
-    assert terms["test_over_target_sum"] == pytest.approx(4 * 1.0)
+    long = lambda points: [dict(p, window_seconds=20.0) for p in points]  # noqa: E731
+    anchor = long(with_target(with_buffer(curve(), 0.9, 0), 0.0))
+    within = long(with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.02))  # inside 2.5%
+    over = long(with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.04))
     ok = jreal.objective(jreal.summarise({"p": {"class": "pan",
                                                 **jreal.compare_clip(anchor, within)}}))
     assert not any("ceiling" in g for g in ok["guards"])
+    terms = jreal.compare_clip(anchor, over)
+    assert terms["test_long_over_points"] == 4 and terms["test_rated_points"] == 0
     bad = jreal.objective(jreal.summarise({"p": {"class": "pan", **terms}}))
-    assert any(g.startswith("ceiling: 4 points") for g in bad["guards"])
+    assert any(g.startswith("ceiling: 4 long-window points") for g in bad["guards"])
+    # 150-frame windows (5 s) still end in a burst: compared with the anchor's excess
+    short_anchor = with_target(with_buffer(curve(), 0.9, 0), 0.06)
+    short_test = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.06)
+    same = jreal.objective(jreal.summarise({"p": {"class": "pan", **jreal.compare_clip(
+        short_anchor, short_test)}}))
+    assert not any("ceiling" in g for g in same["guards"])
 
 
 def test_flicker_guard_allows_headroom_below_the_reference():

@@ -57,6 +57,16 @@ commit's `presets/`) and on the Jetson (`nanocodec`, release), each with a
                whose x86 speed contradicts its callgrind instruction count. Warnings,
                not failures: re-time a flagged point (`--from time-x86 --x86-rounds 21`).
 
+With `--clipset FILE` (the held-out chart, e.g. ~/nanocodec-data/clips/
+independent_fresh_2026-11-13.json) the same steps refresh a chart on that clip set,
+whose families and builds are recorded apart (docs/results/bd-vs-speed-<set>-builds.json;
+`--seed` starts the record with every family on COMMIT's build). Its points are too many
+for this PC: measure encodes and scores them on rented machines (tools/dev/
+aws_heldout_chart.py `run`, then `score-cloud`, checkpointed; `--cloud-budget`), and
+render reads them from those streams. The speed axis stays the main chart's: timed on
+its timing clips, said so under the chart. A build that any record still uses is never
+removed.
+
 Independent steps overlap, so the wall time is the measure (or the Jetson's
 lock wait), not the sum:
 
@@ -136,6 +146,13 @@ JETSON_SRC = f"{JETSON_WORK}/src"
 JETSON_BUILD_JOBS = 6
 RESULTS = "docs/results"
 BUILDS_FILE = f"{RESULTS}/bd-vs-speed-builds.json"
+#: A chart on another clip set (--clipset) keeps its own build record beside the main one.
+CLIPSET_BUILDS = RESULTS + "/bd-vs-speed-{stem}-builds.json"
+#: The held-out chart's rented sessions: streams (bitstreams, logs) under the data root,
+#: scoring sessions side by side and each one's limit (aws_heldout_chart.py).
+CLIPSET_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
+CLOUD_SESSIONS = 2
+CLOUD_SCORE_MINUTES = 120
 PLAN_FILE = f"{RESULTS}/bd-vs-speed-plan.json"
 TIMING_FILE = f"{RESULTS}/bd-vs-speed-timing.json"
 TIMING_X86_FILE = f"{RESULTS}/bd-vs-speed-timing-x86.json"
@@ -170,7 +187,13 @@ class Refresh:
         self.args = args
         self.commit = git("rev-parse", "--short=8", f"{args.commit}^{{commit}}")
         self.families = args.families.split(",") if args.families else []
-        self.record = json.loads((REPO / BUILDS_FILE).read_text())
+        self.builds_file = REPO / builds_file(args.clipset)
+        if self.builds_file.exists():
+            self.record = json.loads(self.builds_file.read_text())
+        elif args.seed:  # written with the first step that saves the record
+            self.record = seed_record(self.commit)
+        else:
+            raise SystemExit(f"no build record {self.builds_file}: start one with --seed")
         unknown = [f for f in self.families if f not in self.record["families"]]
         if unknown:
             raise SystemExit(f"not chart families: {', '.join(unknown)}")
@@ -239,7 +262,7 @@ class Refresh:
 
     def save_record(self) -> None:
         if not self.args.dry_run:
-            (REPO / BUILDS_FILE).write_text(json.dumps(self.record, indent=1) + "\n")
+            self.builds_file.write_text(json.dumps(self.record, indent=1) + "\n")
 
     # --- steps -----------------------------------------------------------------------
 
@@ -386,7 +409,7 @@ class Refresh:
         from nceval.realuse import DEFAULT_FRAMES, Runner, own_family
 
         runner = Runner(load_paths(), EVALUATION_GATE, 1, over_budget=True)
-        clips = chart_clips(None)
+        clips = chart_clips(self.args.clipset)
         for family in self.stale:
             old = self.build_dir(self.record["families"][family])
             if not (old / SCORING_BINARY).is_file():
@@ -434,7 +457,8 @@ class Refresh:
         for family in self.targets:  # measured and timed on one build again
             self.record.get("timed_on", {}).pop(family, None)
         used = (set(self.record["families"].values()) | {self.record["base"]}
-                | set(self.record.get("timed_on", {}).values()))
+                | set(self.record.get("timed_on", {}).values()) | other_records_builds(
+                    self.builds_file))
         for build in sorted(set(self.record["builds"]) - used):
             print(f"  build {build} is no longer used: removed on both machines")
             del self.record["builds"][build]
@@ -458,6 +482,9 @@ class Refresh:
     def measure(self) -> None:
         if not (self.targets or self.args.rescore):
             return
+        if self.args.clipset:
+            self.cloud_measure()
+            return
         # Sized to the budget (measure_parts), and at least --part-jobs parts so that many
         # run side by side (each measure process holds at most its own slot share).
         parts = max(self.args.part_jobs,
@@ -478,6 +505,33 @@ class Refresh:
         with ThreadPoolExecutor(self.args.part_jobs) as pool:
             for job in [pool.submit(measure_part, i) for i in range(1, parts + 1)]:
                 job.result()
+
+    def cloud_measure(self) -> None:
+        """The refreshed families on --clipset: encoded on one rented machine, scored on
+        CLOUD_SESSIONS more side by side (aws_heldout_chart.py), every point's result
+        brought back into this PC's point cache."""
+        if self.args.rescore:
+            raise SystemExit("--rescore on --clipset: give the families instead")
+        build = self.build_dir(self.commit)
+        common = ["--clipset", str(Path(self.args.clipset).resolve()), "--streams",
+                  str(self.streams()), "--build", str(build),
+                  "--families", ",".join(self.targets)]
+        budget = self.args.cloud_budget / (CLOUD_SESSIONS + 1)
+        self.run(["python3", "tools/dev/aws_heldout_chart.py", "run", *common,
+                  "--budget", f"{budget:.2f}", "--purpose", "chart-refresh-encode"],
+                 "cloud-encode.log")
+        sessions = [f"{index}/{CLOUD_SESSIONS}" for index in range(1, CLOUD_SESSIONS + 1)]
+        with ThreadPoolExecutor(CLOUD_SESSIONS) as pool:
+            jobs = [pool.submit(self.run, [
+                "python3", "tools/dev/aws_heldout_chart.py", "score-cloud", *common,
+                "--session", session, "--minutes", str(CLOUD_SCORE_MINUTES),
+                "--budget", f"{budget:.2f}", "--purpose", "chart-refresh-score"],
+                f"cloud-score-{session.replace('/', '-')}.log") for session in sessions]
+            for job in jobs:
+                job.result()
+
+    def streams(self) -> Path:
+        return Path(str(CLIPSET_STREAMS).format(stem=Path(self.args.clipset).stem))
 
     def measure_parts(self) -> int:
         """How many class-balanced clip parts keep each measure under the budget.
@@ -562,7 +616,9 @@ class Refresh:
         meta = WORK / "meta.json"
         if not self.args.dry_run:
             meta.write_text(json.dumps(self.meta(), indent=1) + "\n")
-        self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(),
+        clipset = (["--clipset", str(Path(self.args.clipset).resolve()),
+                    "--prebuilt", str(self.streams())] if self.args.clipset else [])
+        self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset,
                   "--timing", str(REPO / TIMING_FILE), "--timing-x86", str(REPO / TIMING_X86_FILE),
                   "--timing-hardware", str(REPO / TIMING_HARDWARE_FILE), "--meta", str(meta), "--out", str(REPO / RESULTS),
                   "--workers", str(self.args.workers)], "render.log", REPO / "eval", scope=True)
@@ -651,6 +707,33 @@ class Refresh:
                         for build, names in sorted(timed.items()))
         return {**self.record["tools"], "commit": line, "build": line,
                 "x86_timing_note": self.record.get("x86_timing_note", "")}
+
+
+def builds_file(clipset: str | None) -> str:
+    """The build record of the chart on `clipset` (the main chart's without one)."""
+    return CLIPSET_BUILDS.format(stem=Path(clipset).stem) if clipset else BUILDS_FILE
+
+
+def other_records_builds(own: Path) -> set[str]:
+    """The builds every other chart's record uses: never removed by this one."""
+    used: set[str] = set()
+    for path in (REPO / RESULTS).glob("bd-vs-speed*builds.json"):
+        if path.resolve() != own.resolve():
+            record = json.loads(path.read_text())
+            used |= {record["base"], *record["families"].values(),
+                     *record.get("timed_on", {}).values()}
+    return used
+
+
+def seed_record(commit: str) -> dict:
+    """A new chart's build record: every family of ours on `commit`'s build, the
+    reference tools' versions as the main chart records them."""
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.chart import OURS
+
+    main = json.loads((REPO / BUILDS_FILE).read_text())
+    return {"base": commit, "families": {name: commit for name, _ in OURS},
+            "builds": {commit: commit}, "tools": main["tools"]}
 
 
 def place(source: Path, destination: Path) -> None:
@@ -767,6 +850,12 @@ def main() -> None:
     p.add_argument("--x86-rounds", type=int, default=HOST_ROUNDS,
                    help=f"interleaved x86 timing rounds per clip (default {HOST_ROUNDS}; "
                         "more on a loaded PC)")
+    p.add_argument("--clipset", help="refresh the chart on this clip set (the held-out chart) "
+                   "instead of the main one; its points are measured on rented machines")
+    p.add_argument("--seed", action="store_true",
+                   help="with --clipset: start its build record (every family on COMMIT)")
+    p.add_argument("--cloud-budget", type=float, default=8.0,
+                   help="with --clipset: USD cap over all rented sessions")
     p.add_argument("--dry-run", action="store_true", help="print the steps' commands only")
     args = p.parse_args()
     if not (args.families or args.rescore or args.retime):
@@ -774,7 +863,8 @@ def main() -> None:
     began = time.monotonic()
     Refresh(args).execute(args.start)
     minutes, seconds = divmod(round(time.monotonic() - began), 60)
-    print(f"done in {minutes}:{seconds:02d}: commit {RESULTS} and {BUILDS_FILE}", flush=True)
+    print(f"done in {minutes}:{seconds:02d}: commit {RESULTS} and "
+          f"{builds_file(args.clipset)}", flush=True)
 
 
 if __name__ == "__main__":

@@ -45,9 +45,11 @@ from .config import Paths
 #: Clip sets the pool takes its clips from (hires: 1080p/5MP copies of TRAIN
 #: sources; quick/smoke: duplicates).
 POOL_SETS = ("main", "broad_independent_v1", "layergate_fit", "layergate_fit2", "long", "pool")
-#: Sealed for milestones: neither these clips nor their source families
-#: enter the pool.
-SEALED_SETS = ("adv12",)
+#: Sealed: neither these clips nor their source families enter the pool, so no
+#: screen or tuning study draws them. adv12 is kept for milestones; `independent`
+#: (eval/clipset/select_independent.py: 150 never-used sources, 2026-11-13) is the
+#: independent test's fresh set and the candidate main chart.
+SEALED_SETS = ("adv12", "independent")
 SEALED_SPLIT = "test"
 #: Source quality (owner, 2026-11-11): our encoder sees clean camera frames,
 #: so a clip of a poorly compressed source mostly tests transcoding. Each

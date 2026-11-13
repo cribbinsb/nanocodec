@@ -187,7 +187,7 @@ def select(args: argparse.Namespace) -> None:
                                                 .read_text())["clips"]}
     excluded = set()
     for name in (*RAW_SETS, *SEALED_SETS):
-        if (paths.clips / f"{name}.json").exists():
+        if name != source and (paths.clips / f"{name}.json").exists():
             excluded |= {family_key(c.family) for c in
                          load_clipset(paths.clips / f"{name}.json", paths.data_root).clips}
     usable = lambda clip: len(clip_targets(clip, LADDER_KBPS)) >= MIN_RUNGS  # noqa: E731
@@ -292,25 +292,31 @@ class Setup:
     runner: Runner
     extra_clips: list[Clip]
     variants: list[Family]
+    #: The window: frames per point and the key period (None: one key, the chart's).
+    frames: int = DEFAULT_FRAMES
+    key_seconds: float | None = None
+
+    def points(self, families: list[Family], clips: list[Clip], rungs=None,
+               ladder=None) -> list:
+        return self.runner.points(families, clips, self.frames, rungs, self.key_seconds,
+                                  ladder=ladder)
 
     def extras(self) -> list:
         """The variants' ladder and low rungs, and every family's high rungs, on the
         extras' clips (the main families' ladder and low rungs are `ladder`/`low_rungs`)."""
         if not self.extra_clips:
             return []
-        return (self.runner.points(self.variants, self.extra_clips, DEFAULT_FRAMES, None)
-                + self.runner.points(self.variants, self.extra_clips, DEFAULT_FRAMES, None,
-                                     ladder=low_ladder)
-                + self.runner.points(self.families + self.variants, self.extra_clips,
-                                     DEFAULT_FRAMES, None, ladder=high_ladder))
+        return (self.points(self.variants, self.extra_clips)
+                + self.points(self.variants, self.extra_clips, ladder=low_ladder)
+                + self.points(self.families + self.variants, self.extra_clips,
+                              ladder=high_ladder))
 
     def ladder(self, rungs: tuple[int, ...] | None, clips: list[Clip] | None = None) -> list:
-        return self.runner.points(self.families, self.clips if clips is None else clips,
-                                  DEFAULT_FRAMES, rungs)
+        return self.points(self.families, self.clips if clips is None else clips, rungs)
 
     def low_rungs(self, clips: list[Clip] | None = None) -> list:
-        return self.runner.points(self.families, self.clips if clips is None else clips,
-                                  DEFAULT_FRAMES, None, ladder=low_ladder)
+        return self.points(self.families, self.clips if clips is None else clips,
+                           ladder=low_ladder)
 
 
 def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
@@ -335,7 +341,9 @@ def setup(args: argparse.Namespace, workers: int = 1) -> Setup:
         raise SystemExit("held-out clips are measured from frame 0")
     return Setup(families, clips, Runner(load_paths(), EVALUATION_GATE, workers,
                                          over_budget=True, prebuilt=Path(args.streams)),
-                 extra_clips, extra_families(families) if args.extras else [])
+                 extra_clips, extra_families(families) if args.extras else [],
+                 getattr(args, "frames", None) or DEFAULT_FRAMES,
+                 getattr(args, "key_seconds", None))
 
 
 def remote_job(bench: Bench, point: Point) -> dict:
@@ -367,7 +375,8 @@ def slowest_first(jobs: list) -> list:
 
 # --- run (remote encodes) ----------------------------------------------------------------
 
-def stage(stage_dir: Path, jobs: list, clips: list[Clip], tools: dict[str, Path]) -> None:
+def stage(stage_dir: Path, jobs: list, clips: list[Clip], tools: dict[str, Path],
+          frames: int) -> None:
     (stage_dir / "bin").mkdir(parents=True)
     (stage_dir / "clips").mkdir()
     (stage_dir / "out").mkdir()
@@ -382,7 +391,7 @@ def stage(stage_dir: Path, jobs: list, clips: list[Clip], tools: dict[str, Path]
         first_clip.setdefault(point.family.name, remote_job(bench, point))
     (stage_dir / "jobs.json").write_text(json.dumps(ordered) + "\n")
     (stage_dir / "pipe.json").write_text(json.dumps(list(first_clip.values())) + "\n")
-    decodes = [(c.name, c.yuv.name, min(DEFAULT_FRAMES, c.frames), c.frame_bytes) for c in clips]
+    decodes = [(c.name, c.yuv.name, min(frames, c.frames), c.frame_bytes) for c in clips]
     (stage_dir / "decode.txt").write_text("".join(f"{n} {f} {k} {b}\n" for n, f, k, b in decodes))
 
 
@@ -397,7 +406,7 @@ def unstage(stage_dir: Path) -> None:
     stage_dir.rmdir()
 
 
-def prepare_command(version: str, tools: list[str], clips: list[Clip]) -> str:
+def prepare_command(version: str, tools: list[str], clips: list[Clip], frames: int) -> str:
     """Readiness: ffmpeg and xxhash installed, every tool runs (our version stamp
     matches), every clip decodes (in parallel, to RAM) to exactly its size."""
     decode = (f"ffmpeg -nostdin -v error -i clips/$2 -frames:v $3 -f rawvideo -pix_fmt yuv420p "
@@ -413,7 +422,7 @@ def prepare_command(version: str, tools: list[str], clips: list[Clip]) -> str:
         *[f"bin/{t} --version > /dev/null" for t in tools if t in ("x264", "x265",
                                                                      "SvtAv1EncApp")],
         f"sudo mkdir -p {REMOTE_CLIPS}",
-        f"sudo mount -t tmpfs -o size={tmpfs_mb(clips)}m,mode=1777 tmpfs {REMOTE_CLIPS}",
+        f"sudo mount -t tmpfs -o size={tmpfs_mb(clips, frames)}m,mode=1777 tmpfs {REMOTE_CLIPS}",
         f"xargs -P $(nproc) -L 1 bash -c {shlex.quote(decode)} _ < decode.txt "
         "> out/decoded.sha256",
         "echo decoded $(wc -l < out/decoded.sha256) of $(wc -l < decode.txt) clips",
@@ -421,17 +430,17 @@ def prepare_command(version: str, tools: list[str], clips: list[Clip]) -> str:
     ])
 
 
-def tmpfs_mb(clips: list[Clip]) -> int:
-    total = sum(min(DEFAULT_FRAMES, c.frames) * c.frame_bytes for c in clips)
+def tmpfs_mb(clips: list[Clip], frames: int) -> int:
+    total = sum(min(frames, c.frames) * c.frame_bytes for c in clips)
     return round(total * TMPFS_MARGIN / 1e6) + 64
 
 
-def check_decodes(streams: Path, clips: list[Clip]) -> None:
+def check_decodes(streams: Path, clips: list[Clip], frames: int) -> None:
     """The remote decodes of the first DECODE_CHECKS clips equal local decodes."""
     remote = {Path(line.split()[1]).stem: line.split()[0]
               for line in (streams / "decoded.sha256").read_text().splitlines()}
     for clip in clips[:DECODE_CHECKS]:
-        command = decode_command(clip, min(DEFAULT_FRAMES, clip.frames))
+        command = decode_command(clip, min(frames, clip.frames))
         local = hashlib.sha256(subprocess.run(command, capture_output=True, check=True)
                                .stdout).hexdigest()
         if local != remote.get(clip.name):
@@ -457,13 +466,13 @@ def run(args: argparse.Namespace) -> None:
     version = subprocess.run([str(tools["nanocodec"]), "--version"], capture_output=True,
                              text=True, check=True).stdout.strip() if "nanocodec" in tools else ""
     stage_dir = streams.parent / f"stage-{time.strftime('%Y%m%d-%H%M%S')}"
-    stage(stage_dir, jobs, clips, tools)
+    stage(stage_dir, jobs, clips, tools, run_setup.frames)
     try:
         upload_mb = sum(p.resolve().stat().st_size for p in stage_dir.rglob("*")
                         if p.is_symlink() or p.is_file()) / 1e6
         say(f"{len(jobs)} encodes, {len(clips)} clips, {len(tools)} tools, "
             f"upload {upload_mb:.0f} MB")
-        stages = [("prepare", prepare_command(version, list(tools), clips), PREPARE_MINUTES, 0),
+        stages = [("prepare", prepare_command(version, list(tools), clips, run_setup.frames), PREPARE_MINUTES, 0),
                   ("pipe-cleaner", f"cd ~/{REMOTE_DIR} && python3 remote_jobs.py --jobs "
                    f"pipe.json --workers {workers}", PIPE_MINUTES, 0),
                   ("encode", f"cd ~/{REMOTE_DIR} && python3 remote_jobs.py --jobs jobs.json "
@@ -496,7 +505,7 @@ def run(args: argparse.Namespace) -> None:
                                                   for k, v in timings.items()))
     finally:
         unstage(stage_dir)
-    check_decodes(streams, clips)
+    check_decodes(streams, clips, run_setup.frames)
     failed = sorted(streams.rglob("*.failed"))
     say(f"{len(failed)} failed encodes" + "".join(f"\n  {p.relative_to(streams)}"
                                                   for p in failed[:20]))
@@ -520,7 +529,7 @@ def score(args: argparse.Namespace) -> None:
             break  # which clips need low rungs is judged on the whole ladder
         else:
             curves = run.runner.measure("held-out ladder", run.families, run.clips,
-                                        DEFAULT_FRAMES, args.rungs, budgeted=False)
+                                        run.frames, args.rungs, run.key_seconds, budgeted=False)
             low = low_rung_clips(curves, run.families, run.clips)
             say(f"low rungs on {len(low)} of {len(run.clips)} clips")
             todo = uncached(run.low_rungs(low))
@@ -671,6 +680,10 @@ def remote_options(args: argparse.Namespace) -> str:
         options += f" --extras {args.extras}"
     if args.session:
         options += f" --session {args.session}"
+    if args.frames != DEFAULT_FRAMES:
+        options += f" --frames {args.frames}"
+    if args.key_seconds:
+        options += f" --key-seconds {args.key_seconds:g}"
     return options
 
 
@@ -869,6 +882,10 @@ def main(argv: list[str]) -> None:
         p.add_argument("--references", help="more reference families by name (preset anchors)")
         p.add_argument("--extras", type=int, default=0,
                        help="the audit's extras on this many clips (0: none)")
+        p.add_argument("--frames", type=int, default=DEFAULT_FRAMES,
+                       help="frames per point (a longer window than the chart's 150)")
+        p.add_argument("--key-seconds", type=float,
+                       help="a key every this many seconds (default: one key, the chart's)")
     r = sub.choices["run"]
     r.add_argument("--instance-type", default="c7a.metal-48xl", choices=sorted(INSTANCES))
     r.add_argument("--budget", type=float, default=15.0)

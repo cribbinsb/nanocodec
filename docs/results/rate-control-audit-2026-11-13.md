@@ -27,8 +27,8 @@ below. Held-out tables: [independent-2026-11-13/](independent-2026-11-13/) (`hel
 ## 1. Reference settings: x264 and x265 lose bits to their psycho-visual defaults (unfavourable)
 
 The chart's anchor is x264 `medium` with `--tune zerolatency` and x264's psycho-visual defaults: psy-rd and AQ.
-Those defaults trade metric scores for perceived detail. Our encoders have no psycho-visual mode; their parameters
-are tuned to J's three metrics. The like-for-like comparison is therefore against metric-tuned references.
+Those defaults trade metric scores for perceived detail. Our presets' parameters (including the psychovisual
+term some of our codecs use) are tuned to J's three metrics. The like-for-like comparison is therefore against metric-tuned references.
 
 Method: every reference's own metric-oriented settings at the pinned versions, checked against its `--help` and
 log, with every other chart setting unchanged. Chart clips, ladder plus the chart's low rungs. BD of the
@@ -56,10 +56,10 @@ With `--tune psnr` our numbers against the anchor shrink:
 | AV2 | −53.7 | −46.8 [−52.4, −41.3] |
 | VP9 | −48.1 | −40.2 [−46.0, −34.4] |
 | H.264 | −23.0 [−30.5, −15.3] | −13.3 [−20.7, −5.4] |
-| H.264 Fast / Faster / Fastest | −16.2 / −8.7 / −1.0 | −5.8 [−13.5, +2.1] / +2.5 [−5.0, +9.8] / +10.7 [+3.8, +17.6] |
+| H.264 Fast / Faster / Fastest | −16.2 / −8.5 / −0.8 | −5.8 [−13.5, +2.1] / +2.5 [−5.0, +9.8] / +10.7 [+3.8, +17.6] |
 
 **Verdict:** our BD-J against the chart's anchor is about 7–10 points more favourable than against x264 tuned for
-PSNR. H.264 Faster does not beat a PSNR-tuned x264 medium on these clips, and H.264 Fastest needs more bits
+PSNR. H.264 Faster does not need fewer bits than a PSNR-tuned x264 medium on these clips, and H.264 Fastest needs more bits
 (+10.7%). **Disclose and fix:** the chart should show x264 and x265 at their best metric tune. SVT-AV1, libaom,
 libvpx, openh264 and NVENC already run at their metric-oriented setting, or an alternative made no material
 difference (libvpx cpu 9: 1%).
@@ -96,6 +96,8 @@ log differs from "zerolatency + psy-rd 0 + psy-rdoq 0 + aq-strength 0" only in b
 B-frames. The decoded pictures and stream sizes are identical; the bytes differ only in x265's options SEI.
 
 ## 2. Buffer: our first key frame borrows up to 1.4 buffers, and our points rely on the rate-valid allowance (unfavourable)
+
+These buffer and rate figures are at the build measured (cba4292f). Since then (62788659, 71cad753) the long-run rate is held at or under the target and the key loan is repaid within 5 s instead of 10 s; key frames are still not capped at one buffer, so key-second peaks of up to about 1.4 buffers remain. The tables below have not been re-measured after that change.
 
 Replay of every stream through the same leaky bucket: 1 s at the target rate, starting empty, drained every frame
 (`cbr_stats.replay_buffer`). Chart clips, 42 ladder points per family:
@@ -236,8 +238,8 @@ Held-out clips (778 ladder points per family) give the same picture:
 | libaom rt 8 / 10 | 1.021 / 1.023 | 1.12 / 1.14 | 3.52 / 3.49 | | 93 / 103 | 0 |
 | openh264 | 1.002 | 1.70 | 6.07 | | 175 | 16 |
 
-Our controller lends the first key frame extra bits and repays them over `rate.key_repay_seconds`, 10 s by
-default. A 5 s clip ends with part of the loan unpaid, so our streams land 3–5% over target. x264 and x265 land
+Our controller lends the first key frame extra bits and repays them over `rate.key_repay_seconds` (10 s at the
+build measured; 5 s since 62788659). A 5 s clip ends with part of the loan unpaid, so our streams land 3–5% over target. x264 and x265 land
 3–10% under it.
 
 **Every BD uses the achieved bytes**, for every encoder alike, so the overshoot moves our points right on the
@@ -289,8 +291,9 @@ the source rate; only 10–11 clips have room for them):
 | libaom rt 8 | −27.1 | −26.7 | −25.5 | −12.4 |
 | x264 medium `--tune psnr` | −10.0 | −11.2 | −11.1 | −8.7 |
 
-**Verdict:** our gaps are largest at the low rates the chart targets. Above ~1 Mbps at 720p30 they roughly halve,
-and the references' gaps shrink too. The upper-range column covers only 10–11 clips. **Disclose:** "at low
+**Verdict:** our gaps are largest at the low rates the chart targets. Over the upper range (the top two ladder
+rungs, 600 and 1200 kbps, plus 2,400 and 4,000 kbps at 720p30) they are about half, and the references' gaps
+shrink too. The upper-range column covers only 10–11 clips. **Disclose:** "at low
 rates" belongs in every headline sentence.
 
 ## 6. Speed is timed at fixed QP; CBR costs about 2% more CPU (small, unfavourable)
@@ -341,8 +344,8 @@ encoder's reconstruction digests. All 18,318 of our held-out points were decoded
 for H.264/HEVC/VP9/VVC, dav1d (through ffmpeg) for AV1, avmdec for AV2. Every frame equalled the encoder's
 reconstruction digest; the second standard decoder was not run on the held-out set.
 
-**Verdict:** "every stream we report decodes bit-exactly in the standard decoders" holds on this sample and on
-the whole held-out run. The README should add that chart scores come from the reconstruction, proven equal by
+**Verdict:** on all 144 sampled chart points both standard decoders' output equalled the scored reconstruction, and
+on the whole held-out run the first standard decoder's did. The README should add that chart scores come from the reconstruction, proven equal by
 sampling and by the landing conformance check.
 
 ### Metrics: GPU vs CPU

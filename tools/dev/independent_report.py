@@ -66,16 +66,18 @@ class Points:
     tagged with its rung set ("ladder", "low", "high")."""
 
     def __init__(self, runner: Runner, families: list[Family], clips: list, extra_clips: list,
-                 variants: list[Family], frames: int = DEFAULT_FRAMES):
+                 variants: list[Family], frames: int = DEFAULT_FRAMES,
+                 key_seconds: float | None = None):
         self.curves: dict[tuple[str, str], list[dict]] = {}
         self.missing: Counter = Counter()
         self.gate_levels: Counter = Counter()
         ladders = {"ladder": lambda c: clip_targets(c, LADDER_KBPS), "low": low_ladder,
                    "high": heldout.high_ladder}
         for rung, ladder in ladders.items():
-            self.add(runner.points(families, clips, frames, None, ladder=ladder), rung)
+            self.add(runner.points(families, clips, frames, None, key_seconds, ladder=ladder),
+                     rung)
             if extra_clips:
-                self.add(runner.points(variants, extra_clips, frames, None,
+                self.add(runner.points(variants, extra_clips, frames, None, key_seconds,
                                        ladder=ladder), rung)
 
     def add(self, jobs: list, rung: str) -> None:
@@ -591,7 +593,9 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--measure", action="store_true",
                         help="with --chart-extras or --local: score the points first")
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES,
-                        help="with --local: frames per point (a longer window)")
+                        help="frames per point (a longer window)")
+    parser.add_argument("--key-seconds", type=float,
+                        help="a key every this many seconds (default: one key)")
     parser.add_argument("--variants", help="with --extras: only the variants ending so "
                         "(comma-separated, e.g. +nohold)")
     parser.add_argument("--local", action="store_true",
@@ -631,7 +635,7 @@ def main(argv: list[str]) -> None:
             if args.measure:
                 chart_curves(runner, families + variants, clips, args.frames, "local run")
     points = Points(runner, families, clips, [] if args.chart else extra_clips, variants,
-                    args.frames)
+                    args.frames, None if args.chart else args.key_seconds)
     print(f"{sum(len(v) for v in points.curves.values())} points; missing: "
           f"{dict(points.missing) or 'none'}", flush=True)
     if "bd" in tables:

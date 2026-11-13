@@ -4,17 +4,21 @@ use super::Av1GrainScaling;
 use crate::simd::I16Lanes;
 
 /// Add the scaled grain `noise` (lanes of `grain`) to `source` and clip.
+#[cfg_attr(
+    target_arch = "aarch64",
+    allow(dead_code, reason = "NEON has table-lookup rows")
+)]
 #[inline(always)]
 unsafe fn add_noise<V: I16Lanes>(
     source: &[u8],
     grain: &[i16],
-    scales: &[i16; 16],
+    scales: V,
     bounds: [u8; 2],
     out: &mut [u8],
 ) {
     // The Q15 scale reproduces AV1's signed round-shift exactly
     // (`Av1GrainScaling`) without overflowing a signed 16-bit product.
-    let noise = V::load(grain).mul_q15_round(V::load(scales));
+    let noise = V::load(grain).mul_q15_round(scales);
     V::load_u8(source)
         .add(noise)
         .max(V::splat(i16::from(bounds[0])))
@@ -22,6 +26,10 @@ unsafe fn add_noise<V: I16Lanes>(
         .store_u8_sat(out);
 }
 
+#[cfg_attr(
+    target_arch = "aarch64",
+    allow(dead_code, reason = "NEON has table-lookup rows")
+)]
 #[inline(always)]
 pub(super) unsafe fn luma<V: I16Lanes>(
     source: &[u8],
@@ -33,12 +41,9 @@ pub(super) unsafe fn luma<V: I16Lanes>(
     let q15 = &scaling.q15;
     let end = source.len() / V::LANES * V::LANES;
     for x in (0..end).step_by(V::LANES) {
-        let mut scales = [0i16; 16];
-        for (dst, &original) in scales.iter_mut().zip(&source[x..x + V::LANES]) {
-            *dst = q15[usize::from(original)];
-        }
+        let scales = V::lookup(q15, &source[x..]);
         // SAFETY: forwarded ISA contract; the lanes lie in the rows.
-        unsafe { add_noise::<V>(&source[x..], &grain[x..], &scales, bounds, &mut out[x..]) };
+        unsafe { add_noise::<V>(&source[x..], &grain[x..], scales, bounds, &mut out[x..]) };
     }
     super::luma(
         &source[end..],
@@ -49,6 +54,10 @@ pub(super) unsafe fn luma<V: I16Lanes>(
     );
 }
 
+#[cfg_attr(
+    target_arch = "aarch64",
+    allow(dead_code, reason = "NEON has table-lookup rows")
+)]
 #[inline(always)]
 pub(super) unsafe fn chroma<V: I16Lanes>(
     source: &[u8],
@@ -67,19 +76,21 @@ pub(super) unsafe fn chroma<V: I16Lanes>(
     // final luma sample) take the reference.
     let end = source.len().min(luma.len() / 2) / V::LANES * V::LANES;
     for x in (0..end).step_by(V::LANES) {
-        let mut scales = [0i16; 16];
+        let mut indices = [0u8; 16];
         let (pairs, _) = luma[2 * x..2 * (x + V::LANES)].as_chunks::<2>();
-        for ((dst, &original), pair) in scales.iter_mut().zip(&source[x..x + V::LANES]).zip(pairs) {
+        for ((dst, &original), pair) in indices.iter_mut().zip(&source[x..x + V::LANES]).zip(pairs)
+        {
             let average = (i32::from(pair[0]) + i32::from(pair[1]) + 1) >> 1;
             let index = if from_luma {
                 average
             } else {
                 (((average * luma_mult + mult * i32::from(original)) >> 6) + offset).clamp(0, 255)
             };
-            *dst = q15[(index as usize) & 0xff];
+            *dst = index as u8;
         }
+        let scales = V::lookup(q15, &indices);
         // SAFETY: forwarded ISA contract; the lanes lie in the rows.
-        unsafe { add_noise::<V>(&source[x..], &grain[x..], &scales, bounds, &mut out[x..]) };
+        unsafe { add_noise::<V>(&source[x..], &grain[x..], scales, bounds, &mut out[x..]) };
     }
     if end < source.len() {
         super::chroma(

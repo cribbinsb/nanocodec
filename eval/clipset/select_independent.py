@@ -28,6 +28,14 @@ Rules, all fixed here so the draw is reproducible and nobody picks clips:
     path seeded with SEED.
 
 The excerpt is long enough for MEASURED_FRAMES frames at the stored rate.
+
+    python3 clipset/select_independent.py --long-from clipset/independent.json \
+        --keep $NC_DATA_ROOT/clips/independent_2026-11-13.json --frames 600 \
+        --out clipset/independent_long.json
+
+writes the long-window form instead: the same sources (only those the kept clip
+set uses), `indl_` names, excerpts of --frames frames, for every source long
+enough (the long-window test; sealed with its family keys like the fresh set).
 """
 
 from __future__ import annotations
@@ -64,12 +72,17 @@ C_MAX_BPP = 0.03
 _MLDATA = re.compile(r"/mldata/[^\"']+")
 
 
-def used_sources(own_name: str) -> tuple[set[str], set[str]]:
-    """Every source path and family key any clip set or selection file names
-    (but this selection's own, `own_name`, so a rerun reproduces it)."""
+#: This test's own selections and clip sets (independent, independent_long,
+#: independent_2026-11-13, ...): never counted as "used", so a rerun reproduces the draw.
+OWN_STEM = "independent"
+
+
+def used_sources() -> tuple[set[str], set[str]]:
+    """Every source path and family key any clip set or selection file names, but
+    this test's own (OWN_STEM)."""
     paths: set[str] = set()
     files = [*(DATA_ROOT / "clips").glob("*.json"), *EVAL.rglob("*.json")]
-    for path in (f for f in files if f.stem != own_name):
+    for path in (f for f in files if not f.stem.startswith(OWN_STEM)):
         text = path.read_text(errors="replace")
         paths |= set(_MLDATA.findall(text))
         try:
@@ -98,9 +111,27 @@ def stored_height(record: dict) -> int | None:
     return None
 
 
-def excerpt_seconds(fps: float) -> float:
+def excerpt_seconds(fps: float, frames: int = MEASURED_FRAMES) -> float:
     stored_fps = fps / 2 if fps > MAX_FPS else fps
-    return math.ceil((MEASURED_FRAMES + SPARE_FRAMES) / stored_fps * 10) / 10
+    return math.ceil((frames + SPARE_FRAMES) / stored_fps * 10) / 10
+
+
+LONG_PREFIX = ("ind_", "indl_")
+
+
+def long_selection(base: Path, keep: Path, frames: int, inventory: Path) -> list[dict]:
+    """`base`'s entries whose clip `keep` uses, as `frames`-frame excerpts, for every
+    source long enough."""
+    kept = {c["name"] for c in json.loads(keep.read_text())["clips"]}
+    records = {r["path"]: r for r in json.loads(inventory.read_text())["clips"]}
+    entries = []
+    for entry in json.loads(base.read_text())["clips"]:
+        record = records[entry["source"]]
+        seconds = excerpt_seconds(record["fps"], frames)
+        if entry["name"] in kept and (record.get("duration_s") or 0) >= START_S + seconds:
+            entries.append({**entry, "name": entry["name"].replace(*LONG_PREFIX, 1),
+                            "seconds": seconds})
+    return entries
 
 
 def candidate(record: dict, used_paths: set[str], used_families: set[str]) -> dict | None:
@@ -163,8 +194,20 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=120)
     parser.add_argument("--inventory", type=Path,
                         default=DATA_ROOT / "inventory" / "inventory.json")
+    parser.add_argument("--long-from", type=Path, help="a selection to lengthen (see above)")
+    parser.add_argument("--keep", type=Path, help="with --long-from: the clip set kept")
+    parser.add_argument("--frames", type=int, default=MEASURED_FRAMES)
     args = parser.parse_args()
-    used_paths, used_families = used_sources(args.out.stem)
+    if args.long_from:
+        entries = long_selection(args.long_from, args.keep, args.frames, args.inventory)
+        args.out.write_text(json.dumps({
+            "name": args.out.stem,
+            "_comment": f"The long-window form ({args.frames} frames) of {args.long_from.name}'s "
+                        "sources long enough: eval/clipset/select_independent.py --long-from.",
+            "clips": entries}, indent=1) + "\n")
+        print(f"{len(entries)} long excerpts -> {args.out}")
+        return
+    used_paths, used_families = used_sources()
     records = json.loads(args.inventory.read_text())["clips"]
     candidates = [c for r in records if (c := candidate(r, used_paths, used_families))]
     chosen = spread(candidates, args.count)

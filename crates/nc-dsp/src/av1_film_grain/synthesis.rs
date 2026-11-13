@@ -144,7 +144,30 @@ fn weights(sub: usize, index: usize) -> [i16; 2] {
     }
 }
 
+/// Lay stripe `index`'s grain blocks (each `block + reach` square, from a
+/// random offset into the template) side by side in `stripe`, blending each
+/// block's first `reach` columns over the previous block's overhang.
 fn fill_stripe(
+    params: &Av1FilmGrainParams,
+    template: &Template,
+    sub: usize,
+    index: usize,
+    stride: usize,
+    stripe: &mut [i16],
+) {
+    // The block side is a constant per plane type, so each row's copy is a
+    // fixed-size move rather than a `memcpy` call.
+    const LUMA: usize = BLOCK + OVERLAP;
+    const CHROMA: usize = (BLOCK >> 1) + (OVERLAP >> 1);
+    if sub == 0 {
+        fill_stripe_blocks::<LUMA>(params, template, sub, index, stride, stripe);
+    } else {
+        fill_stripe_blocks::<CHROMA>(params, template, sub, index, stride, stripe);
+    }
+}
+
+/// [`fill_stripe`] for blocks of side `SIDE` (`block + reach`).
+fn fill_stripe_blocks<const SIDE: usize>(
     params: &Av1FilmGrainParams,
     template: &Template,
     sub: usize,
@@ -154,21 +177,29 @@ fn fill_stripe(
 ) {
     let block = BLOCK >> sub;
     let reach = OVERLAP >> sub;
+    debug_assert_eq!(block + reach, SIDE);
     let mut random = Random(stripe_seed(params.grain_seed, index));
     for x in (0..stride - reach).step_by(block) {
         let offset = random.next(8);
         let base_x = AR_PADDING + (AR_PADDING << (1 - sub)) + ((offset >> 4) << (1 - sub));
         let base_y = AR_PADDING + (AR_PADDING << (1 - sub)) + ((offset & 15) << (1 - sub));
-        for y in 0..block + reach {
-            let source =
-                &template.values[(base_y + y) * template.columns + base_x..][..block + reach];
-            let destination = &mut stripe[y * stride + x..][..block + reach];
-            let overlap = if params.overlap && x != 0 { reach } else { 0 };
-            for j in 0..overlap {
+        let overlap = if params.overlap && x != 0 { reach } else { 0 };
+        for y in 0..SIDE {
+            let start = (base_y + y) * template.columns + base_x;
+            let source: &[i16; SIDE] = template.values[start..start + SIDE]
+                .try_into()
+                .expect("a template row holds a block");
+            let destination: &mut [i16; SIDE] = (&mut stripe[y * stride + x..][..SIDE])
+                .try_into()
+                .expect("a stripe row holds a block");
+            // The previous block's overhang, then the whole row at once (a
+            // fixed-size move), then the overhang blended back in.
+            let old = [destination[0], destination[1]];
+            *destination = *source;
+            for (j, &previous) in old.iter().enumerate().take(overlap) {
                 destination[j] =
-                    blend_overlap(i32::from(destination[j]), i32::from(source[j]), j, sub) as i16;
+                    blend_overlap(i32::from(previous), i32::from(source[j]), j, sub) as i16;
             }
-            destination[overlap..].copy_from_slice(&source[overlap..]);
         }
     }
 }

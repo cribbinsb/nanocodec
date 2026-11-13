@@ -1,37 +1,28 @@
 {
  "base": "730e4e16",
  "families": {
-  "nanocodec-h264": "399e5c44",
-  "nanocodec-h264@h264-fast": "7eb909e8",
-  "nanocodec-h264@h264-faster": "e122b42b",
-  "nanocodec-hevc": "e122b42b",
-  "nanocodec-hevc@hevc-fast": "e122b42b",
-  "nanocodec-av1": "e122b42b",
-  "nanocodec-av1@av1-fast": "de63c65f",
-  "nanocodec-vp9": "7eb909e8",
-  "nanocodec-vp9@vp9-fast": "7eb909e8",
-  "nanocodec-av2": "ee584d1c",
-  "nanocodec-av2@av2-fast": "a566db89",
-  "nanocodec-vvc": "cba4292f",
-  "nanocodec-vvc@vvc-fast": "cba4292f",
-  "nanocodec-av1@av1-faster": "e122b42b",
-  "nanocodec-hevc@hevc-faster": "e122b42b",
-  "nanocodec-h264@h264-fastest": "e122b42b",
-  "nanocodec-vp9@vp9-faster": "7abbc815",
-  "nanocodec-vp9@vp9-fastest": "7abbc815"
+  "nanocodec-h264": "0cdb619d",
+  "nanocodec-h264@h264-fast": "0cdb619d",
+  "nanocodec-h264@h264-faster": "0cdb619d",
+  "nanocodec-hevc": "0cdb619d",
+  "nanocodec-hevc@hevc-fast": "0cdb619d",
+  "nanocodec-av1": "0cdb619d",
+  "nanocodec-av1@av1-fast": "0cdb619d",
+  "nanocodec-vp9": "0cdb619d",
+  "nanocodec-vp9@vp9-fast": "0cdb619d",
+  "nanocodec-av2": "0cdb619d",
+  "nanocodec-av2@av2-fast": "0cdb619d",
+  "nanocodec-vvc": "0cdb619d",
+  "nanocodec-vvc@vvc-fast": "0cdb619d",
+  "nanocodec-av1@av1-faster": "0cdb619d",
+  "nanocodec-hevc@hevc-faster": "0cdb619d",
+  "nanocodec-h264@h264-fastest": "0cdb619d",
+  "nanocodec-vp9@vp9-faster": "0cdb619d",
+  "nanocodec-vp9@vp9-fastest": "0cdb619d"
  },
  "builds": {
   "730e4e16": "730e4e16",
-  "e122b42b": "e122b42b",
-  "ee584d1c": "ee584d1c",
-  "7eb909e8": "7eb909e8",
-  "5a825a5b": "5a825a5b",
-  "3a3d48f5": "3a3d48f5",
-  "399e5c44": "399e5c44",
-  "de63c65f": "de63c65f",
-  "a566db89": "a566db89",
-  "7abbc815": "7abbc815",
-  "cba4292f": "cba4292f"
+  "0cdb619d": "0cdb619d"
  },
  "tools": {
   "x264": "0.165",
@@ -41,17 +32,5 @@
   "libaom": "v3.15.3"
  },
  "x86_timing_note": "\n  Refresh of 2026-11-11: only our points were re-timed (the reference encoders' timings\n  are from the earlier session). The PC ran about 9% faster that night (paired x264 medium\n  73 vs 67.6 fps), so each of our per-clip times is scaled by the reference session's x264\n  medium time over its paired x264 medium time; speed ratios are unchanged and the raw\n  times are kept in `bd-vs-speed-timing-x86.json` (`raw_ms_per_frame`).",
- "timed_on": {
-  "nanocodec-h264@h264-faster": "5a825a5b",
-  "nanocodec-h264@h264-fastest": "5a825a5b",
-  "nanocodec-hevc": "5a825a5b",
-  "nanocodec-hevc@hevc-fast": "5a825a5b",
-  "nanocodec-hevc@hevc-faster": "5a825a5b",
-  "nanocodec-av1": "5a825a5b",
-  "nanocodec-av1@av1-faster": "5a825a5b",
-  "nanocodec-h264@h264-fast": "5a825a5b",
-  "nanocodec-vp9": "5a825a5b",
-  "nanocodec-vp9@vp9-fast": "5a825a5b",
-  "nanocodec-av2": "3a3d48f5"
- }
+ "timed_on": {}
 }

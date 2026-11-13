@@ -38,12 +38,13 @@ nanocodec covers a deliberately narrow subset of each standard, for one use case
 - **Low delay:** forward prediction only (no B-frames, no lookahead), one slice / tile per frame, 8-bit 4:2:0
   only, single-threaded.
 - **Real-time CBR** with a 1 s buffer, plus loss resilience (temporal layers, long-term references, intra refresh,
-  key frame on request). The controller treats the target as a ceiling and may spend less. The first key frame
-  may borrow up to about 1.4 buffers and repays it over the next seconds (10 s by default), so the strict 1 s
-  leaky bucket is exceeded at the start of a stream, and over the chart's 150-frame clips our streams end a median
-  3–5% above target. Strict settings (`rate.recode_overflow=1`, `rate.recode_overflow_inter=1`,
-  `rate.key_cap_buffer=1`, `rate.key_repay_seconds=1`) keep every chart point inside the bucket and cost 4.7–6.9%
-  more bits at equal quality (see [rate control](docs/FAQ.md#rate-control)).
+  key frame on request). The target is a long-run ceiling: from about 5 s on, the stream so far is at or under
+  it, and undershoot is allowed. Single seconds can exceed it (a key-frame second or a static-scene refinement
+  burst, up to about 2×), and the first key frame may borrow up to about 1.4 buffers, so a strict 1 s receiver
+  buffer is exceeded at key frames. At the builds the charts were measured on (before this behaviour landed on
+  2026-11-13) the key loan was repaid over 10 s, so over the chart's 150-frame clips our streams end a median 3–5%
+  above target, and strict buffer settings cost our Defaults 4.7–6.9% more bits (about 2 points of BD-J; 3–4 on
+  held-out clips). Details: [rate control](docs/FAQ.md#rate-control).
 - **Input frames that would not change the picture are not coded** (a "hold": exact or near-exact repeats, as in
   recompressed or frame-doubled sources); the reference encoders code every frame. No frame was held on any of the
   chart's points.
@@ -64,14 +65,15 @@ The charts compare every encoder in its own real-time rate control at the same b
 ![Bitrate saving vs encode speed, one Ryzen 9 5950X core](docs/results/bd-vs-speed-x86.svg)
 
 <sub>**What is measured.** 720p (one 1884×720) at 24–30 fps, 150 frames per clip with one key frame (5 s at 30 fps; see
-[window length](#window-length): longer windows give smaller savings); CBR targets
+[window length](#window-length): longer windows give smaller savings; and [bitrate range](#bitrate-range): higher
+rates give smaller savings); CBR targets
 of 150–1200 kbps (scaled to each clip's pixel rate and capped at half the source's bitrate), 1 s buffer. Quality
 axis: BD-rate on the achieved bitrates against x264 0.165 `--preset medium --tune zerolatency --bframes 0
 --rc-lookahead 0 --threads 1` (ABR with a 1 s VBV). "BD-J" is our composite: the mean of the BD-rates on
 PSNR-YUV, VMAF (model v1.0.16) and MS-SSIM, averaged over content classes and over the full and lower-rate
 halves of the curves; plain per-metric numbers are in the [full table](docs/results/bd-vs-speed.md). Speed axis:
 single-thread encode CPU time at a fixed quantizer near 600 kbps (not in CBR mode; our encoders take a median
-about 2% more CPU in CBR, 0–7% by preset; the references' CBR cost was not measured). Jetson: one Cortex-A78AE core
+about 2% more CPU in CBR, up to 7% for HEVC Default; the references' CBR cost was not measured). Jetson: one Cortex-A78AE core
 locked at 1.728 GHz. PC: one Ryzen 9 5950X core on a shared, loaded machine (load ~40–60), each run normalised
 by x264 `medium` runs in the same round, so read PC differences of a few percent as noise. Our points are scored
 on the encoder's reconstruction; the reference encoders' on their decoded streams. Builds, dates and every
@@ -174,6 +176,15 @@ codecs tested, with the rate on target and the first frame at 2–3% of the bits
 
 A chart on longer windows is planned. Until then, read the 150-frame numbers as favourable to us by several
 points, most for H.264.
+
+#### Bitrate range
+
+The headline numbers cover 150–1200 kbps at 720p30 (scaled to each clip's pixel rate, capped at half the source's
+bitrate, plus 40/75 kbps on four clips): the low rates we target. Our savings are largest there. On the 10–11
+held-out clips with room for 2,400 and 4,000 kbps, BD-J over the upper range (600 kbps to 4 Mbps at 720p30) was
+about half the chart-rate figure (independent audit, 30-clip subset): AV1 −24.8% vs −47.2%, HEVC −26.9% vs
+−48.1%, VVC −30.4% vs −53.4%, H.264 −9.3% vs −29.0%; the references' gaps shrink too (x265 `medium` −22.6% vs
+−30.8%, SVT-AV1 M12 −4.2% vs −28.2%). With 10–11 clips these upper-range figures are indicative only.
 
 ### Spatial scalability (SVC)
 
@@ -281,7 +292,10 @@ every shipped preset of every codec (temporal layers, holds, intra refresh, the 
 by two standard decoders per codec (H.264: JM and FFmpeg; HEVC: HM and FFmpeg; AV1: aomdec and dav1d; VP9:
 vpxdec and FFmpeg; AV2: avmdec and dav2d; VVC: VVdeC and FFmpeg) and by ours, and must match the encoder's
 reconstruction frame by frame (hashes); a randomized syntax-stress test forces random legal coding decisions.
-The longer chart streams themselves are scored on the encoder's reconstruction and are not each decoded.
+The chart streams themselves are scored on the encoder's reconstruction; an independent check re-encoded 144
+chart points (every codec's Default, 11 clips) and decoded them with both standard decoders and ours: all were
+bit-exact with the reconstruction. On the 209 held-out clips every point of ours was scored from a standard
+decoder's output, which equalled the reconstruction frame by frame.
 
 ## Quick start
 

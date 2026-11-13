@@ -1598,6 +1598,40 @@ METHODOLOGY = """\
 """
 
 
+#: Under a chart on another clip set (render --clipset): where its speed axis comes from.
+CLIPSET_SPEED_NOTE = ("Quality on the {clips} clips of `{clipset}`. Speed is the main chart's: "
+                      "timed on its three timing clips (lowlight_city_night, crowd_mot17_09, "
+                      "bodycam_bc1; tools/dev/anchor_chart_timing.py), not on these clips.\n")
+
+
+def weighting_table(quality: Quality, families: list[Family], labels: dict[str, str]) -> str:
+    """BD-J of every point two ways on the same clips (quality.used): class-weighted
+    (the chart's: each content class counts equally) and clip-weighted (each clip
+    counts equally), with the clip count of each class. A clip set whose classes
+    differ much in size (the held-out set: drone and texture 3 clips each) can read
+    differently under the two."""
+    anchor = families[0].name
+    classes: dict[str, int] = {}
+    for clip in quality.used:
+        classes[clip.content_class] = classes.get(clip.content_class, 0) + 1
+    lines = ["## Class-weighted and clip-weighted BD-J\n",
+             "The chart's BD-J weights every content class equally (" + ", ".join(
+                 f"{name} {count}" for name, count in sorted(classes.items()))
+             + " clips); clip-weighted counts every clip equally. Same clips and rungs; the "
+             "clip-weighted mean is over the directly compared clips (no chained rows).\n",
+             "| Point | BD-J class-weighted | BD-J clip-weighted |", "|---|---:|---:|"]
+    by_family = {p.family: p for p in quality.points}
+    for family in families[1:]:
+        rows = per_clip_rows(quality.curves, anchor, family.name, quality.used)
+        full = jreal.aggregate(rows, "quality")["mean"]
+        low = jreal.aggregate(rows, "quality_low")["mean"]
+        clip_weighted = None if full is None or low is None else (full + low) / 2
+        lines.append(f"| {labels.get(family.name, family.name)} | "
+                     f"{fmt(by_family[family.name].bd_j) if family.name in by_family else 'n/a'}"
+                     f" | {fmt(clip_weighted)} |")
+    return "\n".join(lines) + "\n"
+
+
 def render(args: argparse.Namespace) -> None:
     families = chart_families(Path(args.binary).resolve(), Path(args.presets_dir),
                               binaries=binary_overrides(args.binary_for),
@@ -1651,10 +1685,16 @@ def render(args: argparse.Namespace) -> None:
         stem.with_name(stem.name + "-hardware.csv").write_text(hardware_csv(hardware, speeds))
     meta = json.loads(Path(args.meta).read_text()) if args.meta else {}
     stamp = updated_line(meta, args.date or datetime.date.today().isoformat())
-    page = [f"# {args.title}\n", f"<sub>{stamp}</sub>\n", f"![bitrate vs speed]({stem.name}.svg)\n",
+    subtitle = args.subtitle or (f"quality: {len(clips)} clips of {Path(args.clipset).stem}; "
+                                 "speed: the main chart's timing clips" if args.clipset else "")
+    speed_note = ([CLIPSET_SPEED_NOTE.format(clips=len(clips), clipset=Path(args.clipset).stem)]
+                  if args.clipset else [])
+    page = [f"# {args.title}\n", f"<sub>{stamp}</sub>\n", *speed_note,
+            f"![bitrate vs speed]({stem.name}.svg)\n",
             *([f"The same on x86 (one Ryzen 9 5950X core):\n\n"
                f"![bitrate vs x86 speed]({stem.name}{X86.suffix}.svg)\n"] if x86 else []),
             markdown_table(points, front, x86), coverage_note(quality),
+            weighting_table(quality, families, dict(OURS + REFERENCES)),
             *([tuned_table(tuned, quality.points, twins, gains),
                second_anchor_table(alt_rows, alt.label)] if alt else []),
             *([hardware_table(hardware, speeds, hardware_timing.get("platform", ""))]
@@ -1677,12 +1717,12 @@ def render(args: argparse.Namespace) -> None:
             **meta))
     stem.with_suffix(".md").write_text("\n".join(page))
     if any(p.fps for p in points):
-        stem.with_suffix(".svg").write_text(svg_chart(points, front, args.subtitle, stamp=stamp))
+        stem.with_suffix(".svg").write_text(svg_chart(points, front, subtitle, stamp=stamp))
     if x86:
         x86_stem = stem.with_name(stem.name + X86.suffix)
         x86_front = pareto(x86)
         x86_stem.with_suffix(".csv").write_text(csv_text(x86, x86_front, X86))
-        x86_stem.with_suffix(".svg").write_text(svg_chart(x86, x86_front, args.subtitle, X86,
+        x86_stem.with_suffix(".svg").write_text(svg_chart(x86, x86_front, subtitle, X86,
                                                           stamp, hardware=hardware,
                                                           hardware_footnote=hardware_note(speeds)))
         print(f"wrote {x86_stem}.{{csv,svg}}")

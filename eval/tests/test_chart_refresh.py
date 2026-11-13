@@ -68,7 +68,8 @@ def test_build_note_names_the_families_on_other_builds(tmp_path):
               "tools": {"x264": "0.165"}, "x86_timing_note": ""}
     (tmp_path / "builds.json").write_text(json.dumps(record))
     args = argparse.Namespace(commit="HEAD", families="nanocodec-h264", retime="", workers=1,
-                              dry_run=True, cpus="9")
+                              dry_run=True, cpus="9", clipset=None, seed=False,
+                              cloud_budget=None)
     with patch.object(chart_refresh, "BUILDS_FILE", str(tmp_path / "builds.json")), \
          patch.object(chart_refresh, "WORK", tmp_path / "work"), \
          patch.object(chart_refresh, "sources_equal", return_value=False):

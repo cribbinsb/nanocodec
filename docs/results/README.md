@@ -72,7 +72,7 @@ Faster is not ahead and H.264 Fastest needs more bits.
 
 Every BD number here comes from 150-frame windows with one key frame (5 s at 30 fps); our presets were tuned on
 such windows. In 5 s our first key frame takes 8–10% of the bits and our streams end 5–6% over target (the key
-frame's loan, repaid over 10 s, is still outstanding), so a short single-key window favours our first-key
+frame's loan, repaid over 10 s at the builds measured, is still outstanding), so a short single-key window favours our first-key
 investment. An independent check on the 5 clips of our `long` set (3 TRAIN, 2 VAL: not independent, and too few
 for intervals), same builds, 150 frames vs 600 frames with key frames at 0 and 300:
 
@@ -84,6 +84,17 @@ for intervals), same builds, 150 frames vs 600 frames with key frames at 0 and 3
 
 At 600 frames our rate is on target (median 1.00×) and the first frame is 2–3% of the bits. The direction is the
 same for all three codecs. A chart on longer windows is planned.
+
+### Bitrate range
+
+The charts cover 150–1200 kbps at 720p30 (pixel-rate scaled, capped at half the source's bitrate, plus 40/75 kbps
+where curves need them). On the 30-clip held-out subset of the independent audit, 10–11 clips had room for 2,400
+and 4,000 kbps rungs; over the upper range (the top two ladder rungs plus those, 600 kbps–4 Mbps at 720p30) BD-J vs
+x264 `medium` was AV1 −24.8% [−27.9, −21.8], HEVC −26.9%, VP9 −22.5%, AV2 −26.9%, VVC −30.4%, H.264 −9.3%
+[−13.5, −5.4], against −47.2%, −48.1%, −47.8%, −50.5%, −53.4% and −29.0% by the chart's rule on the same 30 clips;
+x265 `medium` −22.6% (−30.8%), SVT-AV1 M12 −4.2% (−28.2%). Our savings are largest at the low rates the charts
+target, and so are the references'. Details:
+[rate-control audit §5](rate-control-audit-2026-11-13.md#5-rate-ladder-the-low-rungs-favour-everyone-against-x264-higher-rates-shrink-every-gap).
 
 ### The anchor's settings
 
@@ -410,8 +421,18 @@ than +2%; flicker worse than +0.05 dB; periodic-key pulse worse than +0.25 dB; m
 the anchor. Worst-1% is the lowest 1% of P-frame PSNR-Y and VMAF v1; the periodic-key pulse comes from an extra pass
 with 2 s key periods.
 
-**Rate and buffer behaviour (independent audit, 2026-11-13, the chart's 42 ladder points per encoder).** Our
-streams end a median 3–5% above target over 150 frames (the first key frame's loan, repaid over 10 s by default;
+**Rate behaviour now.** Since 2026-11-13 (62788659, 71cad753) our controller works like this: from about 5 s into a stream, the stream
+so far is at or under the target on average and stays there (it aims 1% under); the first key frame may borrow
+bits (it is not capped at one buffer: up to about 1.4 buffers) and repays them within 5 s; any other spend above
+the target line is repaid too. Measured limits on long single-key clips: single seconds holding a key frame, or a
+refinement burst on a static scene, can reach about 2× the target; 5–10 s windows on static scenes +8% to +20%;
+windows of 30 s at most about 1% over, and whole streams at or under the target. Motion content stays within a few percent
+over any 5 s window. Strict buffer settings (`rate.recode_overflow=1 rate.key_cap_buffer=1`) keep every frame,
+keys included, inside a one-buffer receiver, at a quality cost on static scenes.
+
+**Rate and buffer behaviour as measured (independent audit, 2026-11-13, the chart's 42 ladder points per encoder,
+at the chart's builds, before the change above).** Our streams end a median 3–5% above target over 150 frames
+(the first key frame's loan, then repaid over 10 s;
 about 1.00× once the outstanding loan is excluded); x264 and x265 end 3–10% below target; SVT-AV1 at target. In a
 strict 1 s leaky bucket, 5–12 of 42 points per preset of ours peak above the buffer (at most 1.40 buffers, at the
 first key frame); x264 `medium` 2 points (at most 2.11 buffers), SVT-AV1 1–2 (at most 2.35), x265 none;
