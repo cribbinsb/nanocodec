@@ -94,13 +94,15 @@ were also used to confirm which candidate changes were kept, so they are not ind
 sources are not redistributable, so the clips themselves cannot be published; the clip lists are in
 `eval/clipset/`.
 
-**Did you overfit?** Our presets were found by automated search, so we checked on 71 clips from 21 other datasets
-([held-out check](results/heldout-chart-2026-11-12.md)). Every encoder's saving against x264 `medium` is smaller
-there, by a median of 7.6 points, ours and the references alike (our AV1 Default: −50.9% on the chart's clips,
-−42.5% held out; SVT-AV1 M12 `--rtc`: −34.9% and −20.4%). Relative to the other encoders our presets kept their
-ranks within about one place. So the ranking held; the size of a saving against x264 depends on the clips. Those 71
-clips were chosen to share no source with our fixed tuning sets; since 2026-11-11 the same pool has also fed our
-rotating adoption screens, so they are held out from most, not all, tuning.
+**Did you overfit?** Our presets were found by automated search on clips that include the chart's, so an
+independent re-run measured every encoder (same builds and settings, 150 frames, one key frame) on 138 fresh clips
+from sources no clip set of ours had ever used, plus the 71 clips of an earlier held-out check. BD-J vs x264
+`medium` with 95% intervals: our AV1 Default −45.6% [−47.8, −43.5] on the fresh clips (−50.9% on the chart's),
+HEVC −46.9% (−49.3%), VVC −51.1% (−54.0%), H.264 −28.5% (−23.0%); the references moved more (SVT-AV1 M12
+`--rtc` −29.7% vs −34.9%, x265 `medium` −30.6% vs −40.7%). So the size of a saving depends on the clips, our
+position among the encoders tested held, and our H.264 did better than on the chart's clips. Against a PSNR-tuned
+x264 `medium` on all 209 clips: AV1 −37.5%, H.264 −15.6%, H.264 Faster +0.7% (not ahead), H.264 Fastest +10.7%
+(behind). The full table is in the [README](../README.md#quality-and-speed).
 
 **Speed: how measured?** Encode CPU time per frame, one thread, at a fixed quantizer that lands each encoder near
 600 kbps on three clips; not timed in CBR mode. In CBR our encoders take a median about 2% more CPU (0–7% by

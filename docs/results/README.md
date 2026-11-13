@@ -32,56 +32,41 @@ development; see the held-out check below); quality is the mean of PSNR-YUV, VMA
 
 ### Held-out check
 
-![Held-out clips: bitrate saving vs encode speed, one Ryzen 9 5950X core](heldout-chart-2026-11-12.svg)
-
 **Why:** the chart's 11 clips (VAL) were used to rank candidate changes, so the chart is not independent of the
-tuning. **Method:** all 31 chart families re-measured on 71 clips from 21 other datasets with the same ladders and
-rules (BD-J vs x264 `medium`, builds of 2026-11-12); encoded on a rented cloud machine, scored with VMAF v1,
-MS-SSIM and PSNR on every frame. Speed as in the x86 chart above. The clips were chosen to share no source with
-TRAIN, VAL or the other fixed sets; since 2026-11-11 the same clip pool has also fed our rotating adoption
-screens, so they are held out from most, not all, tuning.
+tuning. **Method (independent re-run, 2026-11-13):** every chart family at the chart's builds and settings
+(150 frames, one key frame, the same ladder and low-rung rule), encoded on rented cloud machines and scored with
+VMAF v1, MS-SSIM and PSNR on every frame, on 209 clips: 138 **fresh** clips from sources no clip set of ours had
+ever used (`eval/clipset/select_independent.py`: a fixed, seeded draw, one source per family, excluding every
+source and family in any clip set or selection file; checked against all 18 clip-set files) and the 71 **pool**
+clips of the 2026-11-12 check (held out from the fixed tuning sets, but in the rotating adoption screens since
+2026-11-11). The fresh set is not part of any screening pool. BD-J vs x264 `medium`, 95% bootstrap intervals:
 
-**Result:** on these clips every family's saving against x264 `medium` is smaller, by a median of 7.6 points,
-ours and the reference encoders alike (for example our AV1 Default −50.9% on the chart's clips, −42.5% here;
-SVT-AV1 M12 `--rtc` −34.9% and −20.4%). Relative to that common shift, our presets other than H.264 moved within
-about ±2 points (median of ours −0.4) and kept their ranks within one place; SVT-AV1 M12/M13 and x265 moved 5–7
-points more than the common shift. The H.264 encoders (ours 3–5 points, openh264 12) moved less than the shift;
-a likely cause, not proven, is that many held-out sources were themselves H.264-encoded. So the ranking among
-encoders held, while the size of any saving against x264 depends on the clips. Details:
-[heldout-chart-2026-11-12.md](heldout-chart-2026-11-12.md).
+| Encoder | Chart (11) | Fresh (138) | Pool (71) | All (209) | All (209) vs x264 `medium --tune psnr` |
+|---|---:|---:|---:|---:|---:|
+| VVC | −54.0% | −51.1% [−53.5, −48.7] | −47.6% [−50.0, −45.4] | −49.6% [−51.6, −47.7] | −42.9% [−45.2, −40.9] |
+| AV2 | −53.7% | −49.2% [−51.6, −46.5] | −45.4% [−47.6, −43.2] | −47.1% [−48.8, −45.2] | −40.2% [−42.1, −38.4] |
+| AV1 | −50.9% | −45.6% [−47.8, −43.5] | −43.4% [−46.0, −41.2] | −44.8% [−46.9, −42.9] | −37.5% [−39.8, −35.5] |
+| HEVC | −49.3% | −46.9% [−49.2, −44.6] | −41.9% [−43.9, −40.0] | −44.2% [−45.7, −42.6] | −36.9% [−38.5, −35.5] |
+| VP9 | −48.1% | −45.4% [−47.8, −42.9] | −42.4% [−44.5, −40.4] | −44.1% [−45.9, −42.5] | −36.8% [−38.7, −35.0] |
+| H.264 | −23.0% | −28.5% [−30.9, −26.3] | −19.8% [−23.8, −16.3] | −25.1% [−27.9, −22.3] | −15.6% [−18.4, −12.8] |
+| H.264 Faster | −8.5% | −14.3% [−17.6, −11.1] | −3.0% [−7.8, +1.7] | −10.4% [−13.9, −7.0] | +0.7% [−2.7, +4.2] |
+| H.264 Fastest | −0.8% | −6.8% [−10.6, −3.2] | +7.2% [+1.3, +13.0] | −1.4% [−5.8, +2.9] | +10.7% [+6.1, +15.3] |
+| SVT-AV1 M8 | −45.5% | −42.7% [−45.0, −40.5] | −35.5% [−37.7, −33.1] | −36.9% [−38.8, −34.8] | −27.9% [−30.9, −24.9] |
+| x265 `medium` | −40.7% | −30.6% [−32.4, −28.7] | −29.2% [−32.2, −26.3] | −29.2% [−32.0, −26.6] | −19.8% [−23.0, −16.3] |
+| x265 `medium --tune psnr` | −44.1% | −33.9% [−35.8, −31.8] | −32.6% [−35.5, −29.6] | −32.3% [−35.0, −29.7] | −23.7% [−26.8, −20.5] |
+| SVT-AV1 M12 `--rtc` | −34.9% | −29.7% [−32.8, −26.6] | −22.0% [−25.9, −18.4] | −24.0% [−27.5, −20.9] | −13.8% [−17.9, −9.9] |
+| x264 `medium --tune psnr` | −9.8% | −10.2% [−11.1, −9.2] | −9.6% [−10.9, −8.2] | −9.8% [−10.8, −8.7] | 0 |
 
-| Codec | Preset | Bits vs x264 medium (chart's clips) | Jetson fps | PC fps | Head to head (same points) |
-|---|---|---:|---:|---:|---|
-| H.264 | Default | −23.0% | 74 | 176 | −33.6% vs openh264; −29.2% vs x264 `veryfast` |
-| H.264 | Fast | −16.2% | 114 | 230 | −23.0% vs x264 `veryfast`; −25.6% vs openh264; +10.3% vs our H.264 |
-| H.264 | Faster | −8.5% | 134 | 266 | −39.7% vs x264 `ultrafast`; +10.7% vs our H.264 Fast |
-| H.264 | Fastest | −0.8% | 155 | 314 | −33.7% vs x264 `ultrafast`; +10.5% vs our H.264 Faster |
-| HEVC | Default | −49.3% | 51 | 121 | −17.1% vs x265 `medium`; −25.4% vs SVT-AV1 M12 `--rtc` |
-| HEVC | Fast | −43.4% | 79 | 176 | −9.7% vs x265 `superfast`; +14.9% vs our HEVC |
-| HEVC | Faster | −36.0% | 98 | 206 | −4.4% vs SVT-AV1 M13 `--rtc`; +17.1% vs our HEVC Fast |
-| AV1 | Default | −50.9% | 41 | 103 | −28.9% vs SVT-AV1 M12 `--rtc`; −9.2% vs SVT-AV1 M8 |
-| AV1 | Fast | −44.9% | 65 | 166 | −18.1% vs SVT-AV1 M12 `--rtc`; +15.3% vs our AV1 |
-| AV1 | Faster | −38.7% | 81 | 175 | −7.4% vs SVT-AV1 M12 `--rtc`; +14.9% vs our AV1 Fast |
-| VP9 | Default | −48.1% | 34 | 94 | −44.9% vs libvpx realtime (cpu-used 7) |
-| VP9 | Fast | −42.4% | 47 | 117 | −38.5% vs libvpx realtime (cpu-used 9); +14.3% vs our VP9 |
-| VP9 | Faster | −37.1% | 78 | 181 | −32.2% vs libvpx realtime (cpu-used 9); +11.3% vs our VP9 Fast |
-| VP9 | Fastest | −27.8% | 88 | 192 | −18.8% vs libvpx realtime (cpu-used 9); +24.4% vs our VP9 Faster |
-| AV2 | Default | −53.7% | 32 | 86 | −16.1% vs SVT-AV1 M8; −7.0% vs our AV1 |
-| AV2 | Fast | −46.2% | 44 | 125 | +24.4% vs our AV2 |
-| VVC | Default | −54.0% | 28 | 68 | −26.4% vs x265 `medium`; −11.6% vs our HEVC |
-| VVC | Fast | −46.4% | 47 | 108 | +21.3% vs our VVC |
+The full table (every family, per metric, per class): the independent re-run's report. Notes: "All" is
+class-balanced over 7 classes, so drone and texture (3 clips each, all in the pool group) weigh as much as crowd
+(57 clips); the fresh set has 5 classes and is concentrated in a few datasets (PersonPath22 35, JAAD 26,
+BDD100K 24). Our encoders held 0.2% of input frames on these clips (0 on the chart's). The earlier 71-clip check
+is kept at [heldout-chart-2026-11-12.md](heldout-chart-2026-11-12.md).
 
-<sub>Synced 2026-11-13 with [bd-vs-speed.md](bd-vs-speed.md), which has the builds of each row.</sub>
-
-For reference (Jetson / PC fps): SVT-AV1 M13 `--rtc` −33.2% at 79 / 193, x264 `ultrafast` +38.9% at 191 / 547, SVT-AV1 M12 `--rtc` −34.9% at 71 / 182, SVT-AV1 M8 −45.5% at 14 / 45, x265
-`medium` −40.7% at 8 / 26, x264 `medium` 0% at 27 / 68, openh264 +24.6% at 111 / 260. Negative means fewer bits than
-the comparison for the same quality. Every encoder is scored directly on all 11 clips: on the four clips where some
-curve did not overlap x264's (the three static clips and bodycam_airport), every encoder also ran 40 and 75 kbps
-rungs (see [Caveats](#caveats)). HEVC Faster against SVT-AV1 M13 `--rtc`: BD-J −4.4% (BD-PSNR-YUV +1.0%), Jetson 98 vs 79 fps; on the PC it took
-0.89x M13's time in the same rounds. On the PC AV1 Faster took 1.08x M13's time (SVT-AV1 M12 took 1.05x in the
-e122b42b session). VVC Default (−54.0%) and AV2 Default (−53.7%) are within the per-clip spread of each other;
-VVC runs at 0.87x / 0.79x AV2's speed (Jetson / PC). Where the references are ahead: SVT-AV1 M12 and M13,
-x264 `veryfast` and `ultrafast` and openh264 encode faster than our Default presets of every codec but H.264.
+**Result:** the saving against x264 `medium` depends on the clip set. On the fresh clips our Defaults are 2–5
+points less ahead than on the chart's clips and our H.264 presets 5–6 points further ahead; the references moved
+more (SVT-AV1 M12 5 points, x265 `medium` 10). Against the PSNR-tuned x264 `medium` on all 209 clips our H.264
+Faster is not ahead and H.264 Fastest needs more bits.
 
 ### Window length
 

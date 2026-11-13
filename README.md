@@ -78,42 +78,51 @@ on the encoder's reconstruction; the reference encoders' on their decoded stream
 command line: [bd-vs-speed.md](docs/results/bd-vs-speed.md).</sub>
 
 **The chart's clips and held-out clips.** The chart uses 11 natural camera clips (our VAL set). These clips were
-also used to rank candidate changes during development, so the chart is not independent of the tuning. We
-therefore re-measured every encoder on 71 clips from 21 other datasets
-([held-out check](docs/results/heldout-chart-2026-11-12.md), same builds as the chart of 2026-11-12):
+also used to rank candidate changes during development, so the chart is not independent of the tuning. An
+independent re-run (2026-11-13, the chart's builds and settings, 150 frames, one key frame) measured every encoder
+on 209 other clips: 138 **fresh** clips from sources that no clip set of ours had ever used (drawn by a fixed,
+seeded rule, `eval/clipset/select_independent.py`), and the 71 **pool** clips of the earlier held-out check
+(held out from the fixed tuning sets, but drawn by rotating adoption screens since 2026-11-11). Brackets are 95%
+bootstrap intervals (clips resampled within content class):
 
-| Encoder (settings as above; 150 frames, one key frame) | BD-J, chart's 11 clips | BD-J, 71 held-out clips | fps, Jetson core | fps, PC core |
-|---|---:|---:|---:|---:|
-| nanocodec VVC Default | −53.4% | −46.3% | 27.5 | 67.5 |
-| nanocodec AV2 Default | −53.6% | −44.5% | 31.5 | 85.5 |
-| nanocodec AV1 Default | −50.9% | −42.5% | 41.1 | 102.6 |
-| nanocodec HEVC Default | −49.3% | −41.7% | 51.0 | 121.0 |
-| nanocodec VP9 Default | −47.9% | −41.2% | 34.4 | 94.2 |
-| nanocodec AV1 Fast | −45.2% | −35.9% | 65.2 | 165.8 |
-| SVT-AV1 v4.3.0 M8 (one thread) | −45.6% | −35.5% | 14.3 | 45.2 |
-| x265 4.2 `medium` (zero latency, no B-frames, one thread) | −40.7% | −28.0% | 8.0 | 25.6 |
-| SVT-AV1 v4.3.0 M12 `--rtc` (one thread) | −34.9% | −20.4% | 70.9 | 182.1 |
-| libaom v3.15.3 realtime `--cpu-used=8` (one thread) | −28.7% | −23.0% | 17.4 | 42.1 |
-| nanocodec H.264 Default | −20.4% (−23.0% at the current build) | −17.9% | 74.4 | 175.9 |
-| libvpx v1.16.0 VP9 realtime `--cpu-used=9` (one thread) | −5.7% | −0.1% | 47.8 | 113.0 |
-| x264 0.165 `medium` (the anchor above) | 0 | 0 | 26.7 | 67.6 |
-| x264 0.165 `veryfast` (same settings) | +2.3% | +8.1% | 85.4 | 206.4 |
-| openh264 v2.7.0 realtime, medium complexity | +24.6% | +19.7% | 111.5 | 260.3 |
+| Encoder (150 frames, one key frame) | Chart's 11 clips | 138 fresh clips | 71 pool clips | All 209 | All 209, vs x264 `medium --tune psnr` | fps, Jetson | fps, PC |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| nanocodec VVC Default | −54.0% | −51.1% [−53.5, −48.7] | −47.6% [−50.0, −45.4] | −49.6% [−51.6, −47.7] | −42.9% [−45.2, −40.9] | 27.9 | 71.8 |
+| nanocodec AV2 Default | −53.7% | −49.2% [−51.6, −46.5] | −45.4% [−47.6, −43.2] | −47.1% [−48.8, −45.2] | −40.2% [−42.1, −38.4] | 31.5 | 85.5 |
+| nanocodec AV1 Default | −50.9% | −45.6% [−47.8, −43.5] | −43.4% [−46.0, −41.2] | −44.8% [−46.9, −42.9] | −37.5% [−39.8, −35.5] | 41.1 | 102.6 |
+| nanocodec HEVC Default | −49.3% | −46.9% [−49.2, −44.6] | −41.9% [−43.9, −40.0] | −44.2% [−45.7, −42.6] | −36.9% [−38.5, −35.5] | 51.0 | 121.0 |
+| nanocodec VP9 Default | −48.1% | −45.4% [−47.8, −42.9] | −42.4% [−44.5, −40.4] | −44.1% [−45.9, −42.5] | −36.8% [−38.7, −35.0] | 34.4 | 94.2 |
+| nanocodec AV1 Fast | −44.9% | −40.4% [−43.5, −37.4] | −36.8% [−39.9, −34.1] | −38.8% [−41.4, −36.5] | −30.6% [−33.4, −28.0] | 65.2 | 165.8 |
+| SVT-AV1 v4.3.0 M8 | −45.5% | −42.7% [−45.0, −40.5] | −35.5% [−37.7, −33.1] | −36.9% [−38.8, −34.8] | −27.9% [−30.9, −24.9] | 14.3 | 45.2 |
+| x265 4.2 `medium --tune psnr` | −44.1% | −33.9% [−35.8, −31.8] | −32.6% [−35.5, −29.6] | −32.3% [−35.0, −29.7] | −23.7% [−26.8, −20.5] | 8.0* | 25.6* |
+| x265 4.2 `medium` | −40.7% | −30.6% [−32.4, −28.7] | −29.2% [−32.2, −26.3] | −29.2% [−32.0, −26.6] | −19.8% [−23.0, −16.3] | 8.0 | 25.6 |
+| nanocodec H.264 Default | −23.0% | −28.5% [−30.9, −26.3] | −19.8% [−23.8, −16.3] | −25.1% [−27.9, −22.3] | −15.6% [−18.4, −12.8] | 74.4 | 175.9 |
+| SVT-AV1 v4.3.0 M12 `--rtc` | −34.9% | −29.7% [−32.8, −26.6] | −22.0% [−25.9, −18.4] | −24.0% [−27.5, −20.9] | −13.8% [−17.9, −9.9] | 70.9 | 182.1 |
+| libaom v3.15.3 realtime `--cpu-used=8` | −28.7% | −27.7% [−29.4, −26.0] | −22.5% [−24.6, −20.3] | −23.8% [−25.5, −22.2] | −13.6% [−15.8, −11.7] | 17.4 | 42.1 |
+| nanocodec H.264 Fast | −16.2% | −21.1% [−23.9, −18.4] | −11.2% [−15.9, −6.8] | −17.2% [−20.6, −13.6] | −6.9% [−10.4, −3.2] | 113.5 | 230.2 |
+| nanocodec H.264 Faster | −8.5% | −14.3% [−17.6, −11.1] | −3.0% [−7.8, +1.7] | −10.4% [−13.9, −7.0] | +0.7% [−2.7, +4.2] | 133.7 | 265.7 |
+| x264 0.165 `medium --tune psnr` | −9.8% | −10.2% [−11.1, −9.2] | −9.6% [−10.9, −8.2] | −9.8% [−10.8, −8.7] | 0 | 26.7* | 67.6* |
+| nanocodec H.264 Fastest | −0.8% | −6.8% [−10.6, −3.2] | +7.2% [+1.3, +13.0] | −1.4% [−5.8, +2.9] | +10.7% [+6.1, +15.3] | 155.4 | 313.7 |
+| libvpx v1.16.0 VP9 realtime `--cpu-used=9` | −5.7% | −2.4% [−4.1, −0.6] | −0.1% [−2.0, +1.8] | −0.4% [−1.7, +0.8] | +12.6% [+10.9, +14.2] | 47.8 | 113.0 |
+| x264 0.165 `medium` (the chart's anchor) | 0 | 0 | 0 | 0 | +12.8% [+11.5, +14.1] | 26.7 | 67.6 |
+| x264 0.165 `veryfast` | +2.3% | −0.8% [−2.9, +1.6] | +8.2% [+6.1, +10.2] | +3.5% [+2.0, +5.0] | +17.1% [+15.0, +19.2] | 85.4 | 206.4 |
+| openh264 v2.7.0 | +24.6% | +14.3% [+9.4, +19.7] | +23.4% [+14.4, +32.2] | +17.2% [+10.2, +24.9] | +32.7% [+25.6, +40.4] | 111.5 | 260.3 |
 
-<sub>Negative: fewer bits than x264 `medium` for the same quality. BD-J columns from the held-out check
-(2026-11-12 builds); fps from the [current chart](docs/results/bd-vs-speed.md) (2026-11-13; H.264 Default has
-since moved to −23.0% on the chart's clips). The held-out clips are stored high-quality encodes of graded
-sources, not raw captures; since 2026-11-11 the same clip pool has also fed our rotating adoption screens, so
-they are held out from most, not all, tuning.</sub>
+<sub>Negative: fewer bits than x264 `medium` (default tuning) for the same quality. fps from the
+[current chart](docs/results/bd-vs-speed.md); * the default-tuned run's fps (not yet timed with the tune).
+"All 209" is class-balanced over 7 content classes, so the drone and texture classes (3 clips each, all in the
+pool group) weigh as much as crowd (57); the fresh set has 5 classes. Our encoders held 0.2% of input frames on
+these clips (exact or near-exact repeats; none on the chart's clips).</sub>
 
-How to read this: on the held-out clips every encoder's saving against x264 `medium` is smaller, by a median of
-7.6 points, ours and the references alike: x264 does relatively better there (likely in part because many
-held-out sources were themselves H.264-encoded; we have not proven the cause). Relative to the other encoders,
-our presets keep their ranks within about one place; the size of any saving against x264 depends on the clips.
-Where the references are ahead: SVT-AV1 M12 and M13 `--rtc`, x264 `veryfast` / `ultrafast` and openh264 encode
-faster than our AV1, HEVC and VVC Defaults; our VVC Default is below 30 fps at 720p on the Jetson core; x264
-`medium` is closer to us on the held-out set. Per-metric numbers, per-clip spread and known weaknesses:
-**[docs/results/](docs/results/README.md)**.
+How to read this: the saving against x264 `medium` depends on the clip set. On the fresh clips our Default presets
+are 2–5 points less ahead of x264 `medium` than on the chart's clips (AV1 −45.6% vs −50.9%), while our H.264
+presets do better there than on the chart (H.264 Default −28.5% vs −23.0%). The references moved more than ours:
+SVT-AV1 M12 `--rtc` −29.7% (chart −34.9%), x265 `medium` −30.6% (−40.7%), SVT-AV1 M8 −42.7% (−45.5%). Against a
+PSNR-tuned x264 `medium` on all 209 clips, our H.264 Faster (+0.7% [−2.7, +4.2]) is not ahead and H.264 Fastest
+(+10.7%) needs more bits; every other preset of ours shown saves bits. Where the references are ahead: SVT-AV1
+M12 and M13 `--rtc`, x264 `veryfast` / `ultrafast` and openh264 encode faster than our AV1, HEVC and VVC
+Defaults; our VVC Default is below 30 fps at 720p on the Jetson core. Per-metric numbers, per-clip spread and
+known weaknesses: **[docs/results/](docs/results/README.md)**.
 
 **The anchor's settings matter.** x264's and x265's defaults are tuned for how the picture looks (psychovisual
 optimisations), which PSNR, VMAF and MS-SSIM cannot judge, and no subjective test was run here; our presets were
