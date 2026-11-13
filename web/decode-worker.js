@@ -27,7 +27,13 @@
 // not decoded meanwhile, so going back up waits for the key frame the page
 // asks the encoder for (pipeline.js) and switches just before decoding it.
 // A smaller base picture is shown scaled to the stream size (nc-web).
-import { MODULE_URL } from './wasm.js';
+//
+// Analysis (analysis-view.js): a view with analysis on gets the analysis build
+// of the module (wasm.js), whose decoder keeps each picture's block records
+// (BrowserDecoder.set_analysis), and every shown frame carries them as one
+// packed Int16Array buffer (`analysis`), with `analysisState` 'on', or
+// 'unsupported' for codecs whose decoder has none yet.
+import { ANALYSIS_MODULE_URL, MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
@@ -36,6 +42,8 @@ let module, decoder, wasm;
 let source = null, sourceSize = '';
 // The operating point to switch up to at the next key frame (null: none pending).
 let pendingOperatingPoint = null;
+// Analysis: 'off', 'on' or 'unsupported' (this codec's decoder records nothing).
+let analysisState = 'off';
 // The colour frames are shown in: the latest source's (colour.js).
 let displayColour = 'bt709';
 // Set by the first real packet: start-up warm-up (warmup.js) stops then.
@@ -55,6 +63,16 @@ function decodedPixels(format, colour) {
   const pixels = match >= 0 ? sparePixels.splice(match, 1)[0] : new Uint8Array(length);
   pixels.set(view);
   return pixels;
+}
+/** Switch on the analysis build's recording (the normal build has none). */
+function startAnalysis() {
+  analysisState = decoder.set_analysis(true) ? 'on' : 'unsupported';
+}
+/** The shown picture's packed block records, copied out of WASM memory (null without analysis). */
+function analysisRecords() {
+  if (analysisState !== 'on') return null;
+  const offset = decoder.analysis_frame();
+  return new Int16Array(wasm.memory.buffer, offset, decoder.analysis_length).slice().buffer;
 }
 /**
  * Decode one coded frame and score it against its source. `decodeMs` is the
@@ -107,11 +125,14 @@ function receivePacket({ data: message }) {
     // The last colour seen (frames decoded only for their references carry none).
     if (result.colour) displayColour = result.colour;
     const pixels = decodedPixels(format, displayColour);
+    // After the pixels: packing may grow WASM memory too, and is copied at once.
+    const analysis = analysisRecords();
     result.decodeStageMs += performance.now() - displayStart;
-    const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean)];
+    const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean), ...(analysis ? [analysis] : [])];
     self.postMessage({ type: 'frame', id: message.id, ...result, colour: displayColour, earlier, format, pixels, width: decoder.width,
       height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
-      spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows }, transfer);
+      spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows,
+      analysis, analysisState }, transfer);
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
@@ -119,11 +140,12 @@ function receivePacket({ data: message }) {
 self.onmessage = async ({ data: message }) => {
   try {
     if (message.type === 'init') {
-      module = await codecModule;
+      module = message.analysis ? await import(ANALYSIS_MODULE_URL) : await codecModule;
       // The page posts the module it compiled once (wasm.js compiledModule).
       wasm = await module.default({ module_or_path: message.wasmModule });
       decoder = new module.BrowserDecoder(message.codec);
       if (message.operatingPoint) decoder.set_operating_point(message.operatingPoint);
+      if (message.analysis) startAnalysis();
       message.port.onmessage = receivePacket;
       self.postMessage({ type: 'ready' });
       // Not awaited: real packets are handled as they come and stop it.

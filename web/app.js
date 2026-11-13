@@ -9,6 +9,7 @@
 import { Panel } from './panel.js';
 import { Comparison } from './pipeline.js';
 import { Loupe } from './loupe.js';
+import { AnalysisController } from './analysis-view.js';
 import { drawScene } from './scene.js';
 import { FrameSource } from './capture.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
@@ -51,6 +52,12 @@ const panels = ['A', 'B'].map((letter, i) => {
   return panel;
 });
 const loupe = new Loupe($('#loupe'), panels);
+// Coding-tool overlays and statistics (analysis-view.js); off until switched on.
+const analysis = new AnalysisController($('#analysis'), $('#versions'), panels, {
+  // The analysis build of the decoders is loaded at the next start: restart.
+  onEnabled: () => settingsChanged('analysis'),
+  loupeActive: () => loupe.enabled,
+});
 
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
@@ -141,7 +148,7 @@ function matchOther(panel, entry) {
   settingsChanged('match', other);
 }
 function resetViews() {
-  for (const panel of panels) panel.reset(panel.config());
+  for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
   original = null; loupe.frameShown(null);
 }
 /** Say when the views' numbers are not directly comparable. */
@@ -221,7 +228,7 @@ async function start() {
   trace('start', token, panels.map(p => `${p.letter}:${p.reference?.id ?? p.config().codec}`).join(' '));
   preparing = true; message(); startButton.textContent = 'Cancel'; $('#session-stats').textContent = 'Loading codec workers…';
   checkReferences();
-  for (const panel of panels) panel.reset(panel.config());
+  for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
   describeViews();
   original = null; loupe.frameShown(null);
   try {

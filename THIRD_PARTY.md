@@ -67,6 +67,9 @@ Used in `crates/nc-dsp`:
 - `src/mc/mod.rs`: the regular `EIGHTTAP` interpolation filters
   (`av1/common/filter.h`); `src/diff/mod.rs`: the bilinear sub-pixel
   variance definition (`aom_dsp/variance.c`).
+- `src/diff/neon_dotprod.rs`: exact two-row packing for eight-wide ordinary
+  variance and vector combination before horizontal reduction, following
+  `aom_dsp/arm/variance_neon_dotprod.c` (libaom v3.15.3).
 - `src/av1_mc/`: AV1 inter prediction: the `BILINEAR` and 4-tap filter
   selection (`av1/common/filter.h`), the wedge master masks, codebooks,
   smooth inter-intra weights and OBMC masks (`av1/common/reconinter.c`,

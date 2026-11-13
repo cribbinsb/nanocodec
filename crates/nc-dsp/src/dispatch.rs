@@ -2853,7 +2853,10 @@ impl Dsp {
     ) -> Variance {
         let (w, h) = (size.width(), size.height());
         assert!(
-            x + w < reference.width() && y + h < reference.height(),
+            w < reference.width()
+                && x < reference.width() - w
+                && h < reference.height()
+                && y < reference.height() - h,
             "prediction window at ({x}, {y}) leaves the {}x{} reference",
             reference.width(),
             reference.height()
@@ -2865,8 +2868,10 @@ impl Dsp {
         check_covers(size, src, "source");
         let stride = reference.stride();
         let window = &reference.data()[y * stride + x..];
-        // SAFETY: as for `residual`; the window holds (h + 1) rows of
-        // (w + 1) samples, which the kernels check again (once per call).
+        // SAFETY: the subtraction-based checks cannot wrap. Together with
+        // PlaneView's validated backing extent, they prove that this offset
+        // and the full (h + 1) by (w + 1) window fit. The source is checked
+        // above, and the dispatch table selects a supported ISA.
         unsafe {
             if x_offset == 0 && y_offset == 0 {
                 (self.diff.variance[size.width_class()])(
@@ -4748,6 +4753,29 @@ mod tests {
                 best.satd(size, &s, &r),
                 scalar.satd(size, &s, &r),
                 "satd {size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prediction_variance_rejects_invalid_coordinates() {
+        let reference_data = [0; 17 * 17];
+        let source_data = [0; 8 * 8];
+        let reference = PlaneView::new(&reference_data, 17, 17, 17).unwrap();
+        let source = PlaneView::new(&source_data, 8, 8, 8).unwrap();
+        let block = BlockSize::new(8, 8).unwrap();
+        let dsp = Dsp::new();
+        assert_eq!(
+            dsp.prediction_variance(block, &reference, 8, 8, 0, 0, &source),
+            crate::Variance::default()
+        );
+        for (x, y) in [(9, 0), (0, 9), (usize::MAX, 0), (0, usize::MAX)] {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    dsp.prediction_variance(block, &reference, x, y, 0, 0, &source)
+                })
+                .is_err(),
+                "accepted invalid prediction coordinates ({x}, {y})"
             );
         }
     }

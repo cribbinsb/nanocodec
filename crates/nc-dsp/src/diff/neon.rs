@@ -67,6 +67,7 @@ pub(crate) fn diff_fns() -> DiffFns {
         sse_8x8_row,
     };
     if std::arch::is_aarch64_feature_detected!("dotprod") {
+        functions.variance[1] = super::neon_dotprod::variance_w8;
         functions.variance[2..].copy_from_slice(&[
             super::neon_dotprod::variance::<16>,
             super::neon_dotprod::variance::<32>,

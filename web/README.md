@@ -154,6 +154,20 @@ are needed: each worker has its own ordinary WASM memory.
   nearest-neighbour so blocking and ringing stay visible. Click or tap a view to
   pin the region; Pause holds the frame. It only copies from the displayed
   canvases on pointer moves and new frames, and does nothing while off.
+- **Analysis** (`analysis.js`, `analysis-view.js`; off by default, and the page is
+  unchanged while off): shows which coding tools each version's encoder used, from
+  the decoder's own block records (nc-common `stream_stats`; H.264 and HEVC so far,
+  other codecs show a notice). Overlay toggles: blocks coloured by prediction
+  (intra, inter, skip, merge, with partitions), transform blocks (coded ones
+  brighter), motion vectors, intra directions (P = planar, DC), and a QP or
+  bits-per-pixel heat map on fixed scales so the two views compare. Each view gets
+  a statistics table (this frame and the mean since analysis started, by area).
+  Layouts: side by side, stacked, or one view large; ⛶ puts a view fullscreen.
+  Zoom (scroll, pinch, the +/− buttons) and pan (drag) apply to both views; past 1:1
+  the pixels are unsmoothed and the overlay stays sharp. Hovering a block (or tapping
+  it) shows its record. The magnifier draws the overlay too. With analysis on, the
+  decode worker copies the records out of WASM memory each frame: see
+  `docs/handoff/stream-analysis.md` for the decode cost.
 - **Stop:** ends both workers and releases camera tracks. Switching away from
   the tab also stops capture; press Start to resume.
 - **Download:** AV1, VP9 and AV2 are IVF with captured media timestamps; H.264/HEVC/VVC are Annex-B

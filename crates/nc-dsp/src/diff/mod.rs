@@ -32,9 +32,10 @@
 //! Every kernel is an `unsafe fn`, called only from [`crate::Dsp`], which
 //! guarantees the CPU supports the kernel's ISA and that every slice covers
 //! its block at its stride: `h` rows of `w` samples (`w` fixed by the
-//! kernel), and for the sub-pixel reference `h + 1` rows of `w + 1`. Loads
-//! and stores index their slices, so a broken contract panics rather than
-//! reads out of bounds.
+//! kernel), and for the sub-pixel reference `h + 1` rows of `w + 1`.
+//! These are caller obligations even where a kernel repeats the checks.
+//! Ordinary dot-product variance uses debug assertions for those already
+//! validated extents; its raw SIMD loads rely on the dispatch boundary.
 
 #[allow(unsafe_code)]
 pub(crate) mod generic;

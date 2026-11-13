@@ -5,7 +5,8 @@
 # (web/tests/browser-product-smoke.py: the demo page end to end, workers,
 # pipelining, display), the decode worker's warm-up interrupt test
 # (web/tests/warmup-interrupt.py), source switches and webcam starts under CPU
-# throttling (web/tests/source-switch.py), what a live view codes against the
+# throttling (web/tests/source-switch.py), the analysis mode
+# (web/tests/analysis-smoke.py), what a live view codes against the
 # clip file's decoded planes on three clips (web/tests/capture-identity.py; run
 # it without --clips for every clip) and spatial SVC's operating points against
 # the native decoder (web/tests/svc-operating-points.py). nc-web embeds the encoder and every codec crate, so
@@ -42,6 +43,8 @@ elif python3 -c 'import playwright' 2>/dev/null; then
     python3 web/tests/browser-product-smoke.py
     python3 web/tests/warmup-interrupt.py
     python3 web/tests/source-switch.py
+    # Analysis mode: the lazily loaded analysis module, overlay, statistics, zoom.
+    python3 web/tests/analysis-smoke.py
     python3 web/tests/capture-identity.py --clips 3
     # The SVC test compares against our native decoder: built here with the
     # same profile as the browser module (NC_NANOCODEC_BIN overrides it).

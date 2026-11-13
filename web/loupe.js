@@ -23,7 +23,9 @@ export class Loupe {
     this.zoomButtons = [...element.querySelectorAll('[data-zoom]')];
     this.sourceCanvas = document.createElement('canvas');
     // Views are read through `panel.canvas` each time: a view falling back from WebGL gets a new canvas.
-    this.panes = [...panels.map(panel => ({ from: () => panel.canvas, label: () => `${panel.letter} · ${panel.title}` })),
+    // `overlay`: the view's analysis layer for the region (analysis-view.js), when on.
+    this.panes = [...panels.map(panel => ({ from: () => panel.canvas, label: () => `${panel.letter} · ${panel.title}`,
+      overlay: (context, region) => panel.analysis?.drawInto(context, region, PANE_WIDTH, PANE_HEIGHT) })),
       { from: () => this.sourceCanvas, label: () => 'Original' }];
     const grid = element.querySelector('.loupe-panes');
     for (const pane of this.panes) {
@@ -131,6 +133,7 @@ export class Loupe {
       if (!from.width || !from.height) continue;
       context.imageSmoothingEnabled = false;
       context.drawImage(from, region.x * from.width, region.y * from.height, region.width * from.width, region.height * from.height, 0, 0, PANE_WIDTH, PANE_HEIGHT);
+      pane.overlay?.(context, region);
     }
     this.panels.forEach((panel, i) => placeMarker(this.markers[i], panel.canvas, region));
   }

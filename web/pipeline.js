@@ -20,7 +20,7 @@
 import { codesTick, tickAt, tickMs } from './timeline.js';
 import { framesToDecode, streamFrameAtTick } from './reference.js';
 import { SourcePicture } from './colour.js';
-import { compiledModule } from './wasm.js';
+import { compiledAnalysisModule, compiledModule } from './wasm.js';
 
 /**
  * Frames captured but not yet decoded by both views: one per stage (capture
@@ -47,10 +47,15 @@ class View {
       worker.onerror = failed;
     })));
   }
-  /** Start the decode worker on `port`, where packets will arrive, with the compiled codec module. */
-  initDecoder(port, wasmModule) {
-    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, wasmModule,
-      operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
+  /**
+   * Start the decode worker on `port`, where packets will arrive, with the
+   * compiled codec module: the analysis build when the view's analysis is on
+   * (analysis-view.js; switching it restarts the comparison).
+   */
+  initDecoder(port, { wasmModule, analysisModule }) {
+    const analysis = Boolean(this.panel.analysis?.enabled);
+    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, analysis,
+      wasmModule: analysis ? analysisModule : wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
   }
   /** Ask for a key frame (only a live encoder can). */
   requestKeyframe() {}
@@ -71,10 +76,10 @@ class LiveView extends View {
     });
   }
   /** Start both workers; the encoder takes its frames from `capturePort`. Resolves once both are ready. */
-  init(capturePort, wasmModule) {
+  init(capturePort, modules) {
     const channel = new MessageChannel();
-    this.initDecoder(channel.port1, wasmModule);
-    this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort, wasmModule },
+    this.initDecoder(channel.port1, modules);
+    this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort, wasmModule: modules.wasmModule },
       [channel.port2, capturePort]);
     return this.ready;
   }
@@ -93,9 +98,9 @@ class ReferenceView extends View {
     this.last = null;
   }
   /** Start the decoder; source frames arrive on `capturePort` and go on with the stream's packets. */
-  init(capturePort, wasmModule) {
+  init(capturePort, modules) {
     const channel = new MessageChannel();
-    this.initDecoder(channel.port1, wasmModule);
+    this.initDecoder(channel.port1, modules);
     this.port = channel.port2;
     this.capturePort = capturePort;
     capturePort.onmessage = ({ data }) => this.submit(data);
@@ -150,8 +155,9 @@ export class Comparison {
       const ports = this.views.map(() => new MessageChannel());
       const views = this.views.map(({ panel }, i) => ({ width: panel.current.width, height: panel.current.height, port: ports[i].port1 }));
       this.capture.postMessage({ type: 'init', views }, ports.map(p => p.port1));
-      compiledModule()
-        .then(wasmModule => Promise.all(this.views.map((view, i) => view.init(ports[i].port2, wasmModule))))
+      const analysis = this.views.some(({ panel }) => panel.analysis?.enabled);
+      Promise.all([compiledModule(), analysis ? compiledAnalysisModule() : null])
+        .then(([wasmModule, analysisModule]) => Promise.all(this.views.map((view, i) => view.init(ports[i].port2, { wasmModule, analysisModule }))))
         .then(() => {
           clearTimeout(timeout);
           this.startFailed = null;

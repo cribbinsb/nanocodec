@@ -3,12 +3,15 @@
 //! retain both normative rounding stages. Installed only with dotprod support.
 //! Five paired Orin runs: HEVC CPU -5.91%/-5.66%, AV1 -7.02%/-6.28%
 //! on bodycam/crowd, with identical streams and independent decoder gates.
+//! Ordinary variance row packing and vector reductions follow libaom 3.15.3
+//! `aom_dsp/arm/variance_neon_dotprod.c` (BSD-2-Clause; `THIRD_PARTY.md`).
 
 use super::{Variance, VarianceEnergy};
 use crate::simd::neon_dot::udot as dot;
 use core::arch::aarch64::{
-    uint8x16_t, vabdq_u8, vaddvq_u32, vcombine_u8, vdup_n_u8, vdupq_n_u8, vdupq_n_u32,
-    vget_high_u8, vget_low_u8, vhaddq_u8, vld1q_u8, vmlal_u8, vmull_u8, vrhaddq_u8, vrshrn_n_u16,
+    uint8x16_t, vabdq_u8, vaddvq_s32, vaddvq_u32, vcombine_u8, vdup_n_u8, vdupq_n_u8, vdupq_n_u32,
+    vget_high_u8, vget_low_u8, vhaddq_u8, vld1_u8, vld1q_u8, vmlal_u8, vmull_u8,
+    vreinterpretq_s32_u32, vrhaddq_u8, vrshrn_n_u16, vsubq_u32,
 };
 
 #[inline]
@@ -36,7 +39,13 @@ unsafe fn blend(a: uint8x16_t, b: uint8x16_t, offset: usize) -> uint8x16_t {
 
 /// Whole-pel variance with exact W-byte rows: unlike subpel, neither input
 /// needs a filter border or an extra bottom row. Only16/32/64 widths use this
-/// table entry; narrower widths and CPUs without dotprod retain generic NEON.
+/// table entry; width8 has a paired-row entry, while width4 and CPUs without
+/// dotprod retain generic NEON.
+///
+/// # Safety
+/// Both slices must cover `h` rows of `W` bytes at their strides, with
+/// `h <= 64`, and the CPU must support dotprod. Dsp checks the views before
+/// dispatch; repeating their extent arithmetic here wastes every call.
 #[target_feature(enable = "neon,dotprod")]
 pub(super) unsafe fn variance<const W: usize>(
     src: &[u8],
@@ -46,8 +55,8 @@ pub(super) unsafe fn variance<const W: usize>(
     h: usize,
 ) -> Variance {
     assert!(matches!(W, 16 | 32 | 64));
-    assert!(super::generic::covers(src.len(), src_stride, h, W));
-    assert!(super::generic::covers(pred.len(), pred_stride, h, W));
+    debug_assert!(super::generic::covers(src.len(), src_stride, h, W));
+    debug_assert!(super::generic::covers(pred.len(), pred_stride, h, W));
     // Keep independent sums for the 16-byte columns and walk rows once.
     // W is constant, so the inner loop unrolls without a candidate-order
     // change (only exact integer sums are reassociated).
@@ -55,7 +64,7 @@ pub(super) unsafe fn variance<const W: usize>(
     let mut source_sum = squares;
     let mut pred_sum = squares;
     let ones = vdupq_n_u8(1);
-    // SAFETY: the checked windows cover every exact-width row; all partial
+    // SAFETY: the caller-validated windows cover every exact-width row; all partial
     // sums are bounded by the full 64x64 sum, below 2^32.
     unsafe {
         for r in 0..h {
@@ -75,6 +84,62 @@ pub(super) unsafe fn variance<const W: usize>(
     Variance {
         sse: total(squares),
         sum: total(source_sum) as i32 - total(pred_sum) as i32,
+    }
+}
+
+/// Pack two exact eight-byte rows per dot-product vector. Unlike the
+/// reference's fixed-height entries, retain arbitrary odd and zero heights.
+///
+/// # Safety
+/// As for `variance`, with eight-byte rows.
+#[target_feature(enable = "neon,dotprod")]
+pub(super) unsafe fn variance_w8(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    h: usize,
+) -> Variance {
+    const WIDTH: usize = 8;
+    const ROWS: usize = 2;
+    debug_assert!(super::generic::covers(src.len(), src_stride, h, WIDTH));
+    debug_assert!(super::generic::covers(pred.len(), pred_stride, h, WIDTH));
+    let mut squares = vdupq_n_u32(0);
+    let mut source_sum = squares;
+    let mut pred_sum = squares;
+    let ones = vdupq_n_u8(1);
+    // SAFETY: each load reads exactly eight bytes from a caller-validated row. The
+    // zero-filled tail contributes nothing; supported block sums fit u32,
+    // and the signed difference is bounded by 64*64*255, fitting i32.
+    unsafe {
+        let mut r = 0;
+        while r + 1 < h {
+            let source = vcombine_u8(
+                vld1_u8(src.as_ptr().add(r * src_stride)),
+                vld1_u8(src.as_ptr().add((r + 1) * src_stride)),
+            );
+            let prediction = vcombine_u8(
+                vld1_u8(pred.as_ptr().add(r * pred_stride)),
+                vld1_u8(pred.as_ptr().add((r + 1) * pred_stride)),
+            );
+            let difference = vabdq_u8(source, prediction);
+            squares = dot(squares, difference, difference);
+            source_sum = dot(source_sum, source, ones);
+            pred_sum = dot(pred_sum, prediction, ones);
+            r += ROWS;
+        }
+        if r < h {
+            let source = vcombine_u8(vld1_u8(src.as_ptr().add(r * src_stride)), vdup_n_u8(0));
+            let prediction = vcombine_u8(vld1_u8(pred.as_ptr().add(r * pred_stride)), vdup_n_u8(0));
+            let difference = vabdq_u8(source, prediction);
+            squares = dot(squares, difference, difference);
+            source_sum = dot(source_sum, source, ones);
+            pred_sum = dot(pred_sum, prediction, ones);
+        }
+    }
+    Variance {
+        sse: vaddvq_u32(squares),
+        sum: vaddvq_s32(vreinterpretq_s32_u32(vsubq_u32(source_sum, pred_sum))),
     }
 }
 
@@ -248,7 +313,7 @@ mod tests {
             return;
         }
         let scalar = crate::diff::scalar::diff_fns();
-        for (index, w) in [(2, 16), (3, 32), (4, 64)] {
+        for (index, w) in [(1, 8), (2, 16), (3, 32), (4, 64)] {
             for h in [0, 1, 2, 7, 15, 16, 31, 32, 63, 64] {
                 for extra in [0, 5] {
                     let ss = w + extra;
@@ -280,6 +345,7 @@ mod tests {
                         // with no extra filtering border even on the last row.
                         let (actual, expected) = unsafe {
                             let actual = match w {
+                                8 => super::variance_w8(src, ss, pred, ps, h),
                                 16 => super::variance::<16>(src, ss, pred, ps, h),
                                 32 => super::variance::<32>(src, ss, pred, ps, h),
                                 _ => super::variance::<64>(src, ss, pred, ps, h),

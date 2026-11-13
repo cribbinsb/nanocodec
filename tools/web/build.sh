@@ -30,13 +30,17 @@ pkg_dir=${PKG_DIR:-web/pkg}
 # WEB_PROFILE=gate (tools/ci/browser_smoke.sh) builds without whole-program
 # LTO: the same behaviour, a much faster rebuild, a larger module.
 profile=${WEB_PROFILE:-release}
-build() { # build TARGET_DIR FEATURES OUT_DIR
+build() { # build TARGET_DIR FEATURES OUT_DIR [CARGO_FEATURES]
   RUSTFLAGS="$base_flags -C target-feature=$2" CARGO_TARGET_DIR=$1 \
-    cargo build --locked --profile "$profile" -p nc-web --target wasm32-unknown-unknown -j "${BUILD_JOBS:-2}"
+    cargo build --locked --profile "$profile" -p nc-web --target wasm32-unknown-unknown -j "${BUILD_JOBS:-2}" \
+    ${4:+--features "$4"}
   mkdir -p "$3"
   "$bindgen" "$1/wasm32-unknown-unknown/$profile/nc_web.wasm" --target web --out-dir "$3" --out-name nc_web
 }
 build "$target_root" +simd128 "$pkg_dir"
 build "$target_root/relaxed-simd" +simd128,+relaxed-simd "$pkg_dir/relaxed"
-printf 'Built %s and %s/relaxed.' "$pkg_dir" "$pkg_dir"
+# The analysis module (decoders that record every block, web/analysis-view.js):
+# loaded only when a viewer switches analysis on, so one SIMD128 build.
+build "$target_root/analysis" +simd128 "$pkg_dir/analysis" analysis
+printf 'Built %s, %s/relaxed and %s/analysis.' "$pkg_dir" "$pkg_dir" "$pkg_dir"
 printf ' Serve with: python3 -m http.server 8765 --bind 127.0.0.1 --directory web\n'
