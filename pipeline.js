@@ -23,6 +23,11 @@ class ViewWorkers {
     this.encoder = new Worker(new URL('./encode-worker.js', import.meta.url), { type: 'module' });
     this.decoder = new Worker(new URL('./decode-worker.js', import.meta.url), { type: 'module' });
     const failed = event => onFailure(new Error(event.message || 'Could not load the WASM codec. Build the demo with tools/web/build.sh, then serve the web directory over HTTP.'));
+    // The shown SVC layer changes on the fly: only the decode worker hears of it.
+    panel.operatingPoint?.addEventListener('change', () => {
+      this.decoder.postMessage({ type: 'operating-point', operatingPoint: +panel.operatingPoint.value });
+      if (+panel.operatingPoint.value === 0) this.encoder.postMessage({ type: 'keyframe' });
+    });
     this.ready = Promise.all([this.encoder, this.decoder].map(worker => new Promise(resolve => {
       worker.onmessage = ({ data }) => { if (data.type === 'ready') resolve(); else onMessage(this, data); };
       worker.onerror = failed;
@@ -31,7 +36,8 @@ class ViewWorkers {
   /** Start both workers, joined by a MessageChannel; resolves once both are ready. */
   init() {
     const channel = new MessageChannel();
-    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port: channel.port1 }, [channel.port1]);
+    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port: channel.port1,
+      operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [channel.port1]);
     this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2 }, [channel.port2]);
     return this.ready;
   }

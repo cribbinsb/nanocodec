@@ -82,10 +82,8 @@ are needed: each worker has its own ordinary WASM memory.
     default strength (the CLI's `--film-grain`); the WASM decoder lays the grain over
     its output. The decoder's grain synthesis is still scalar code, so decode time
     rises (roughly doubling on textured clips; the tooltip says so), and PSNR,
-    measured on the grained output, drops by construction. See
-    [AV1 film grain](../docs/handoff/av1-grain.md).
-  - **Persistence AQ** (codecs with block QP): `persist.strength=2`
-    ([block AQ](../docs/handoff/block-aq.md)); the reuse term
+    measured on the grained output, drops by construction.
+  - **Persistence AQ** (codecs with block QP): `persist.strength=2`; the reuse term
     (`persist.reuse`) is on by default.
   - **Temporal layers** 1–3 (`layers.count`) and **Second reference**
     (`refs.second=1`, H.264; not with layers).
@@ -181,6 +179,35 @@ magnifier and "hold to view original" (an RGBA texture) work on either path.
 `BrowserDecoder.decoded_i420` exposes raw decoded samples for conformance tests.
 No WebCodecs implementation or reference decoder is used in this path.
 
+**Start-up warm-up (`warmup.js`).** V8 compiles each WASM function on its first call, so
+a fresh decode worker's first frames are slow. Right after `ready`, the decode worker
+decodes a tiny built-in stream of its codec (`warmup/<codec>.ivf`: eight 256x144 frames
+of the Big Buck Bunny clip, one key frame and seven inter frames, made by
+`tools/web/make-warmup.sh`). It converts each frame for both display paths and scores it,
+then discards everything. It yields before every frame and stops at the first real
+packet, so a real frame waits for at most one tiny frame, with unchanged output
+(`tests/warmup-interrupt.py`, in the landing smoke). It finishes in 30–70 ms, well
+before the encoder's first packet. Headless Chromium, pinned, 720p, cold → warm
+(`tools/web/warmup-bench.py`):
+- **Frame 0 decode:** H.264 28 → 12–18 ms, HEVC 37 → 19–31, AV1 42 → 28–30, VP9 30 → 15,
+  AV2 78 → 37–44, VVC 77 → 36–38.
+- **First 30 frames:** 8–17 % faster.
+- **Later frames:** unchanged.
+
+## Receiving over a lossy network
+
+The demo is loss-free and uses `BrowserDecoder.decode`. A receiver that can
+lose frames uses `BrowserDecoder.decode_frame(packet, index, references)`,
+which reports each frame as decoded or frozen (missing reference, missing key,
+corrupt) with the frame to name in a loss report. Over RTP, pass the frames the
+packet depends on from the **AV1 dependency descriptor** RTP header extension
+(WebRTC's practice for AV1 and VP9; any codec here) as `references`: the
+transport then decides, for every codec, and costs the stream nothing.
+Detecting losses from the stream alone works for H.264 and HEVC, and for AV1
+only when the encoder codes frame ids (`av1.frame_ids`, on with a long-term
+reference; 23-65 bits per inter frame, off by default); VP9 and AV2 cannot
+(`docs/handoff/loss-resilience.md`).
+
 ## Checks
 
 ```sh
@@ -203,7 +230,7 @@ Both use native Rust encoders and independent emitted-subset decoders, with
 shared GOP planning and realtime bitrate controls. VP9 uses 8×8/16×16 inter
 blocks and TX8; AV2 uses 8×8 prediction blocks, TX8 luma, adaptive probabilities
 and residual skipping. Geometry must be divisible by eight, and one temporal
-layer is supported. See the [handoff](../docs/handoff/vp9-av2.md).
+layer is supported.
 
 ## VVC
 
@@ -212,8 +239,7 @@ or `--preset vvc-fast`, 32x32 leaves, CTU 64): WASM packets are byte-identical t
 native ones for the same input and settings, and the WASM decoder's output equals
 the native reconstruction, which VVdeC and FFmpeg reproduce. Any even size is
 coded (padded to 8, cropped by the conformance window). Downloads are Annex-B
-(`.vvc`). The decoder accepts our own streams only; see the
-[handoff](../docs/handoff/vvc.md).
+(`.vvc`). The decoder accepts our own streams only.
 
 After rebuilding the actual WASM module:
 

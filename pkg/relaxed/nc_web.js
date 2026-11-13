@@ -179,16 +179,32 @@ export function check_parameters(codec, text) {
     }
 }
 
-function getArrayU8FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
-}
-
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
+}
+
+let cachedFloat64ArrayMemory0 = null;
+
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+    }
+    return cachedFloat64ArrayMemory0;
+}
+
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
 function _assertClass(instance, klass) {
@@ -256,6 +272,41 @@ export class BrowserDecoder {
         return ret[0] >>> 0;
     }
     /**
+     * The `spatial_id` (`0..=3`) of the latest shown AV1 frame (`0` on
+     * single-layer streams and non-AV1 codecs).
+     * @returns {number}
+     */
+    get spatial_id() {
+        const ret = wasm.browserdecoder_spatial_id(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Decode coded frame `index` and report its outcome, never throwing
+     * for stream problems. `references` is the transport's dependency
+     * signal (the frames it predicts from; over RTP, the AV1 dependency
+     * descriptor), which RTP receivers should pass; else empty: H.264 and
+     * HEVC streams, and AV1 streams with frame ids (`av1.frame_ids`, or a
+     * long-term reference), then reveal a missing reference themselves; VP9
+     * and AV2 streams cannot (`docs/handoff/loss-resilience.md`).
+     * # Errors
+     * Rejects indices that are not non-negative integers.
+     * @param {Uint8Array} packet
+     * @param {number} index
+     * @param {Float64Array} references
+     * @returns {DecodeOutcome}
+     */
+    decode_frame(packet, index, references) {
+        const ptr0 = passArray8ToWasm0(packet, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(references, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browserdecoder_decode_frame(this.__wbg_ptr, ptr0, len0, index, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return DecodeOutcome.__wrap(ret[0]);
+    }
+    /**
      * The latest decoded I420 samples, suitable for independent conformance checks.
      * # Errors
      * Rejects calls made before a frame has been decoded.
@@ -269,6 +320,38 @@ export class BrowserDecoder {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * Maximum visible width of the stream (`max_frame_width` on AV1, or the
+     * current frame width on other codecs).
+     * @returns {number}
+     */
+    get stream_width() {
+        const ret = wasm.browserdecoder_stream_width(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Maximum visible height of the stream (`max_frame_height` on AV1, or the
+     * current frame height on other codecs).
+     * @returns {number}
+     */
+    get stream_height() {
+        const ret = wasm.browserdecoder_stream_height(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Select the AV1 operating point (`0..=31`, default `0`) before or
+     * between packets (`AV1 §6.4.1`, `§7.18`).
+     * # Errors
+     * Rejects non-zero operating points on codecs other than AV1 and values
+     * above 31.
+     * @param {number} op
+     */
+    set_operating_point(op) {
+        const ret = wasm.browserdecoder_set_operating_point(this.__wbg_ptr, op);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Create a decoder for per-frame Annex-B (H.264, HEVC, VVC), raw OBU
@@ -291,11 +374,13 @@ export class BrowserDecoder {
     /**
      * PSNR-YUV of the latest decoded frame against the RGBA source frame it
      * was coded from, which is converted here exactly as the encoder
-     * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). The
-     * demo computes it in the decode worker, off the encoder's path.
+     * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). When
+     * the decoded frame is a smaller spatial layer or adaptive-resolution
+     * picture of the same stream, it is upscaled to the stream dimensions
+     * (`nc_dsp::display`) before scoring.
      * # Errors
      * Rejects calls made before a frame has been decoded, and a source
-     * whose byte count differs from the decoded frame's.
+     * whose byte count matches neither the decoded frame nor the stream.
      * @param {Uint8Array} rgba
      * @returns {number}
      */
@@ -319,7 +404,9 @@ export class BrowserDecoder {
     /**
      * Decode one packet; the picture becomes the latest decoded frame.
      * # Errors
-     * Rejects oversized packets and malformed or unsupported codec syntax.
+     * Every packet that does not decode, with its freeze reason
+     * (`missing-reference: ...`, `missing-key: ...`, `corrupt: ...`); a
+     * player uses `decode_frame` instead.
      * @param {Uint8Array} packet
      */
     decode(packet) {
@@ -362,8 +449,11 @@ export class BrowserEncoder {
     }
     /**
      * Per-frame PSNR-YUV against the actual decoder output, using6:1:1 weighting.
+     * Smaller spatial/scaled frames of the same stream are upscaled to the
+     * source dimensions (`nc_dsp::display`) before scoring.
      * # Errors
-     * Requires a decoded frame with the encoder's visible dimensions.
+     * Requires a decoded frame belonging to a stream with the encoder's
+     * visible dimensions.
      * @param {BrowserDecoder} decoder
      * @returns {number}
      */
@@ -453,7 +543,8 @@ export class BrowserEncoder {
     }
     /**
      * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
-     * `preset_name` is "default", "fast" or (H.264 and AV1) "faster";
+     * `preset_name` is "default", "fast", (H.264, HEVC, AV1 and VP9) "faster" or
+     * (H.264 and VP9) "fastest";
      * `overrides` (optional) holds `name=value` lines applied over the
      * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
      * turns on film grain synthesis, which the decoder applies to its
@@ -527,6 +618,74 @@ export class BrowserEncoder {
 }
 if (Symbol.dispose) BrowserEncoder.prototype[Symbol.dispose] = BrowserEncoder.prototype.free;
 
+const DecodeOutcomeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_decodeoutcome_free(ptr >>> 0, 1));
+/**
+ * One packet's outcome (`nc_common::outcome::FrameOutcome`): decoded, or
+ * frozen. On a frozen packet the page keeps showing the picture it shows
+ * (the decoder may no longer hold it) and sends a loss report naming
+ * `report_index`.
+ */
+export class DecodeOutcome {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(DecodeOutcome.prototype);
+        obj.__wbg_ptr = ptr;
+        DecodeOutcomeFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        DecodeOutcomeFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_decodeoutcome_free(ptr, 0);
+    }
+    /**
+     * The coded-frame index to report lost (the missing reference when
+     * the dependency list named it, else this frame), or -1 when decoded.
+     * @returns {number}
+     */
+    get report_index() {
+        const ret = wasm.decodeoutcome_report_index(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Why the picture froze: `missing-reference` (an earlier frame was
+     * lost or refused), `missing-key` (no key frame yet) or `corrupt`
+     * (malformed or truncated packet); empty when decoded.
+     * @returns {string}
+     */
+    get reason() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.decodeoutcome_reason(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Whether a new picture was decoded.
+     * @returns {boolean}
+     */
+    get decoded() {
+        const ret = wasm.decodeoutcome_decoded(this.__wbg_ptr);
+        return ret !== 0;
+    }
+}
+if (Symbol.dispose) DecodeOutcome.prototype[Symbol.dispose] = DecodeOutcome.prototype.free;
+
 const EXPECTED_RESPONSE_TYPES = new Set(['basic', 'cors', 'default']);
 
 async function __wbg_load(module, imports) {
@@ -590,6 +749,7 @@ function __wbg_get_imports() {
 function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     __wbg_init.__wbindgen_wasm_module = module;
+    cachedFloat64ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
 
 

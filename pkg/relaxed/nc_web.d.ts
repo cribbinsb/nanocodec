@@ -49,11 +49,31 @@ export class BrowserDecoder {
    */
   rgba_frame(): number;
   /**
+   * Decode coded frame `index` and report its outcome, never throwing
+   * for stream problems. `references` is the transport's dependency
+   * signal (the frames it predicts from; over RTP, the AV1 dependency
+   * descriptor), which RTP receivers should pass; else empty: H.264 and
+   * HEVC streams, and AV1 streams with frame ids (`av1.frame_ids`, or a
+   * long-term reference), then reveal a missing reference themselves; VP9
+   * and AV2 streams cannot (`docs/handoff/loss-resilience.md`).
+   * # Errors
+   * Rejects indices that are not non-negative integers.
+   */
+  decode_frame(packet: Uint8Array, index: number, references: Float64Array): DecodeOutcome;
+  /**
    * The latest decoded I420 samples, suitable for independent conformance checks.
    * # Errors
    * Rejects calls made before a frame has been decoded.
    */
   decoded_i420(): Uint8Array;
+  /**
+   * Select the AV1 operating point (`0..=31`, default `0`) before or
+   * between packets (`AV1 §6.4.1`, `§7.18`).
+   * # Errors
+   * Rejects non-zero operating points on codecs other than AV1 and values
+   * above 31.
+   */
+  set_operating_point(op: number): void;
   /**
    * Create a decoder for per-frame Annex-B (H.264, HEVC, VVC), raw OBU
    * (AV1, AV2) or VP9 frame packets.
@@ -64,19 +84,38 @@ export class BrowserDecoder {
   /**
    * PSNR-YUV of the latest decoded frame against the RGBA source frame it
    * was coded from, which is converted here exactly as the encoder
-   * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). The
-   * demo computes it in the decode worker, off the encoder's path.
+   * converts its input (6:1:1 weighting, `BrowserEncoder::quality`). When
+   * the decoded frame is a smaller spatial layer or adaptive-resolution
+   * picture of the same stream, it is upscaled to the stream dimensions
+   * (`nc_dsp::display`) before scoring.
    * # Errors
    * Rejects calls made before a frame has been decoded, and a source
-   * whose byte count differs from the decoded frame's.
+   * whose byte count matches neither the decoded frame nor the stream.
    */
   psnr(rgba: Uint8Array): number;
   /**
    * Decode one packet; the picture becomes the latest decoded frame.
    * # Errors
-   * Rejects oversized packets and malformed or unsupported codec syntax.
+   * Every packet that does not decode, with its freeze reason
+   * (`missing-reference: ...`, `missing-key: ...`, `corrupt: ...`); a
+   * player uses `decode_frame` instead.
    */
   decode(packet: Uint8Array): void;
+  /**
+   * The `spatial_id` (`0..=3`) of the latest shown AV1 frame (`0` on
+   * single-layer streams and non-AV1 codecs).
+   */
+  readonly spatial_id: number;
+  /**
+   * Maximum visible width of the stream (`max_frame_width` on AV1, or the
+   * current frame width on other codecs).
+   */
+  readonly stream_width: number;
+  /**
+   * Maximum visible height of the stream (`max_frame_height` on AV1, or the
+   * current frame height on other codecs).
+   */
+  readonly stream_height: number;
   /**
    * Visible width of the latest decoded frame, or zero before the first frame.
    */
@@ -94,8 +133,11 @@ export class BrowserEncoder {
   [Symbol.dispose](): void;
   /**
    * Per-frame PSNR-YUV against the actual decoder output, using6:1:1 weighting.
+   * Smaller spatial/scaled frames of the same stream are upscaled to the
+   * source dimensions (`nc_dsp::display`) before scoring.
    * # Errors
-   * Requires a decoded frame with the encoder's visible dimensions.
+   * Requires a decoded frame belonging to a stream with the encoder's
+   * visible dimensions.
    */
   quality(decoder: BrowserDecoder): number;
   /**
@@ -121,7 +163,8 @@ export class BrowserEncoder {
   disable_rate_control(): void;
   /**
    * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
-   * `preset_name` is "default", "fast" or (H.264 and AV1) "faster";
+   * `preset_name` is "default", "fast", (H.264, HEVC, AV1 and VP9) "faster" or
+   * (H.264 and VP9) "fastest";
    * `overrides` (optional) holds `name=value` lines applied over the
    * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
    * turns on film grain synthesis, which the decoder applies to its
@@ -169,6 +212,32 @@ export class BrowserEncoder {
    */
   readonly quantizer: number;
 }
+/**
+ * One packet's outcome (`nc_common::outcome::FrameOutcome`): decoded, or
+ * frozen. On a frozen packet the page keeps showing the picture it shows
+ * (the decoder may no longer hold it) and sends a loss report naming
+ * `report_index`.
+ */
+export class DecodeOutcome {
+  private constructor();
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * The coded-frame index to report lost (the missing reference when
+   * the dependency list named it, else this frame), or -1 when decoded.
+   */
+  readonly report_index: number;
+  /**
+   * Why the picture froze: `missing-reference` (an earlier frame was
+   * lost or refused), `missing-key` (no key frame yet) or `corrupt`
+   * (malformed or truncated packet); empty when decoded.
+   */
+  readonly reason: string;
+  /**
+   * Whether a new picture was decoded.
+   */
+  readonly decoded: boolean;
+}
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -176,13 +245,19 @@ export interface InitOutput {
   readonly memory: WebAssembly.Memory;
   readonly __wbg_browserdecoder_free: (a: number, b: number) => void;
   readonly __wbg_browserencoder_free: (a: number, b: number) => void;
+  readonly __wbg_decodeoutcome_free: (a: number, b: number) => void;
   readonly browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
+  readonly browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
   readonly browserdecoder_height: (a: number) => number;
   readonly browserdecoder_i420_frame: (a: number) => [number, number, number];
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];
   readonly browserdecoder_psnr: (a: number, b: number, c: number) => [number, number, number];
   readonly browserdecoder_rgba_frame: (a: number) => [number, number, number];
+  readonly browserdecoder_set_operating_point: (a: number, b: number) => [number, number];
+  readonly browserdecoder_spatial_id: (a: number) => number;
+  readonly browserdecoder_stream_height: (a: number) => number;
+  readonly browserdecoder_stream_width: (a: number) => number;
   readonly browserdecoder_width: (a: number) => number;
   readonly browserencoder_buffer_fullness: (a: number) => number;
   readonly browserencoder_buffer_overflows: (a: number) => number;
@@ -199,6 +274,9 @@ export interface InitOutput {
   readonly browserencoder_wants_look_ahead: (a: number) => number;
   readonly check_parameters: (a: number, b: number, c: number, d: number) => [number, number, number, number];
   readonly codec_options: (a: number, b: number) => [number, number, number, number];
+  readonly decodeoutcome_decoded: (a: number) => number;
+  readonly decodeoutcome_reason: (a: number) => [number, number];
+  readonly decodeoutcome_report_index: (a: number) => number;
   readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;

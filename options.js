@@ -41,6 +41,9 @@ export const layerCount = count => (count > 1 ? [`layers.count=${count}`] : []);
 export function cliPreset(codec, preset) {
   if (preset === 'fast') return `${codec}-fast`;
   if (preset === 'faster') return `${codec}-faster`;
+  if (preset === 'fastest') return `${codec}-fastest`;
+  if (preset === 'svc') return `${codec}-svc`;
+  if (preset === 'svc-fast') return `${codec}-svc-fast`;
   return null;
 }
 

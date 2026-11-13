@@ -11,7 +11,7 @@ export class Panel {
     this.element.innerHTML = `
       <div class="version-top"><span class="version-letter">${letter}</span><h2>Version ${letter}</h2><select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></div>
       <div class="viewport"><canvas aria-label="Version ${letter} decoded output"></canvas><div class="empty-overlay"><div class="empty-symbol">◉</div><strong>Your decoded video appears here</strong><span>Choose a source and start comparing</span></div><span class="frame-badge">WASM DECODER · READY</span></div>
-      <div class="options"><label class="compact-control">Rate mode<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="rate-options"><label class="compact-control">Target (kbps)<input class="target-rate" type="number" required min="10" max="100000" step="10" value="300"></label><label class="compact-control">Peak (kbps)<input class="peak-rate" type="number" required min="10" max="100000" step="10" value="600"></label><label class="compact-control">Buffer<select class="buffer-ms"><option value="250">250 ms</option><option value="500">500 ms</option><option value="1000" selected>1 second</option><option value="2000">2 seconds</option></select></label></div><div class="quality-option" hidden><label class="quality-label" for="qp-${letter}">Compression / quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div><label class="compact-control">Encoder preset<select class="preset"><option value="default">Default</option><option value="fast">Fast · quality tradeoff</option><option value="faster">Faster · H.264 and AV1</option></select></label><label class="compact-control">Keyframe interval<select class="gop"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="30" selected>30 seconds</option></select></label></div>
+      <div class="options"><label class="compact-control">Rate mode<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="rate-options"><label class="compact-control">Target (kbps)<input class="target-rate" type="number" required min="10" max="100000" step="10" value="300"></label><label class="compact-control">Peak (kbps)<input class="peak-rate" type="number" required min="10" max="100000" step="10" value="600"></label><label class="compact-control">Buffer<select class="buffer-ms"><option value="250">250 ms</option><option value="500">500 ms</option><option value="1000" selected>1 second</option><option value="2000">2 seconds</option></select></label></div><div class="quality-option" hidden><label class="quality-label" for="qp-${letter}">Compression / quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div><label class="compact-control">Encoder preset<select class="preset"><option value="default">Default</option><option value="fast">Fast · quality tradeoff</option><option value="faster">Faster · H.264, HEVC, AV1 and VP9</option><option value="fastest">Fastest · H.264 and VP9</option><option value="svc">SVC · full + half-size layers (AV1)</option><option value="svc-fast">SVC Fast · full + half-size layers (AV1)</option></select></label><label class="compact-control layer-control" hidden>Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Base, half size (operating point 1)</option></select></label><label class="compact-control">Keyframe interval<select class="gop"><option value="1">1 second</option><option value="2">2 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="30" selected>30 seconds</option></select></label></div>
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
       <p class="rate-status" aria-live="off">Target 300 kbps · waiting for frames</p><div class="history"><div class="history-label"><span>FRAME SIZE · LAST 90 FRAMES</span><span class="history-max">—</span></div><canvas width="540" height="42" aria-label="Recent compressed frame sizes"></canvas></div>
       <div class="version-bottom"><span class="frame-count">No frames encoded</span><button class="download" disabled>Download stream ↓</button></div>
@@ -21,6 +21,10 @@ export class Panel {
     this.codec = this.element.querySelector('.codec-picker'); this.codec.value = codec;
     this.qp = this.element.querySelector('input[type=range]'); this.preset = this.element.querySelector('.preset');
     this.gop = this.element.querySelector('.gop');
+    // Which SVC operating point this view decodes: switched while running, without
+    // restarting the encoder (pipeline.js passes it to the decode worker).
+    this.operatingPoint = this.element.querySelector('.operating-point');
+    this.preset.addEventListener('change', () => this.updateLayers());
     this.advanced = new Advanced(letter, codec, changed); this.element.querySelector('.options').append(this.advanced.element);
     this.reproduce = this.element.querySelector('.reproduce');
     this.reproduce.addEventListener('toggle', () => this.describeSettings()); this.canvas = this.element.querySelector('.viewport canvas');
@@ -62,13 +66,24 @@ export class Panel {
     this.viewport.dataset.display = this.renderer.kind;
   }
   updateCodec() {
-    const { fast, faster, quantizer } = CODECS[this.codec.value];
+    const { fast, faster, fastest, svc, quantizer } = CODECS[this.codec.value];
     this.advanced.setCodec(this.codec.value);
     this.preset.disabled = !fast;
     this.preset.querySelector('option[value="faster"]').disabled = !faster;
-    if (this.preset.disabled || (!faster && this.preset.value === 'faster')) this.preset.value = 'default';
+    this.preset.querySelector('option[value="fastest"]').disabled = !fastest;
+    for (const value of ['svc', 'svc-fast']) this.preset.querySelector(`option[value="${value}"]`).disabled = !svc;
+    const unavailable = (!faster && this.preset.value === 'faster') || (!fastest && this.preset.value === 'fastest')
+      || (!svc && this.preset.value.startsWith('svc'));
+    if (this.preset.disabled || unavailable) this.preset.value = 'default';
+    this.updateLayers();
     this.qp.min = String(quantizer.min); this.qp.max = String(quantizer.max);
     this.qp.value = String(quantizer.initial); this.updateLabel();
+  }
+  /** The layer picker shows with the SVC preset only; other streams have one operating point. */
+  updateLayers() {
+    const layered = this.preset.value.startsWith('svc');
+    this.element.querySelector('.layer-control').hidden = !layered;
+    if (!layered) this.operatingPoint.value = '0';
   }
   updateLabel() { this.element.querySelector('output').textContent = `${CODECS[this.codec.value].quantizer.name} ${this.qp.value}`; }
   config(width, height, fps) { return { codec: this.codec.value, width, height, fps, qp: +this.qp.value, preset: this.preset.value, ...this.advanced.settings(), keyInterval: +this.gop.value * fps, rateMode: this.rateMode.value, targetKbps: +this.targetRate.value, peakKbps: +this.peakRate.value, bufferMs: +this.bufferMs.value }; }
@@ -86,14 +101,18 @@ export class Panel {
   }
   /** Show a decoded frame; returns a pixel buffer the worker may reuse. */
   frame(result, showOriginal, original) {
-    if (result.width !== this.current.width || result.height !== this.current.height) throw new Error('Decoder output dimensions differ from the input');
+    const sw = result.streamWidth ?? result.width, sh = result.streamHeight ?? result.height;
+    if (sw !== this.current.width || sh !== this.current.height || !result.width || !result.height || result.width > sw || result.height > sh) {
+      throw new Error('Decoder output dimensions differ from the input');
+    }
     const free = this.renderer.show(result);
     this.shown = true;
     if (showOriginal) this.renderer.showOriginal(original);
     this.element.querySelector('.empty-overlay').hidden = true;
     // `previous`: frame 0, coded together with frame 1 after the start-up lookahead.
     for (const coded of [result.previous, result]) if (coded) this.record(coded);
-    this.badge.textContent = `${showOriginal ? 'ORIGINAL SOURCE' : 'WASM DECODED'} · ${result.repeat ? 'REPEAT' : result.key ? 'KEY' : 'INTER'} · #${this.count}`;
+    const scaled = result.width !== sw || result.height !== sh ? ` · ${result.width}×${result.height}` : '';
+    this.badge.textContent = `${showOriginal ? 'ORIGINAL SOURCE' : 'WASM DECODED'} · ${result.repeat ? 'REPEAT' : result.key ? 'KEY' : 'INTER'}${scaled} · #${this.count}`;
     for (const [key, value] of Object.entries({ bitrate: this.average('bytes') * 8 * this.current.fps / 1000, encode: this.average('encode'), decode: this.average('decode'), psnr: this.average('psnr') })) {
       this.element.querySelector(`[data-metric="${key}"]`).textContent = value.toFixed(key === 'bitrate' ? 0 : 1);
     }

@@ -11,10 +11,23 @@
 // Decoded frames go out in the format the page's renderer asks for with each
 // frame (renderer.js): packed I420 for a WebGL view, which converts on the GPU,
 // or RGBA converted here in WASM for the CPU path.
+//
+// Spatial SVC (the AV1 `svc` preset): the decoder keeps only the operating
+// point the viewer picked (BrowserDecoder.set_operating_point: OBUs of other
+// layers are dropped, AV1 section 7.18). Dropping to the base takes effect at
+// once; the full-size layer predicts from its own earlier pictures, which were
+// not decoded meanwhile, so going back up waits for the key frame the page
+// asks the encoder for (pipeline.js) and switches just before decoding it.
+// A smaller base picture is shown scaled to the stream size (nc-web).
 import { MODULE_URL } from './wasm.js';
+import { warmUp } from './warmup.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
 let decoder, wasm;
+// The operating point to switch up to at the next key frame (null: none pending).
+let pendingOperatingPoint = null;
+// Set by the first real packet: start-up warm-up (warmup.js) stops then.
+let realData = false;
 // Returned display buffers kept for reuse: one per frame the page can hold in
 // flight or on screen (pipeline.js), so none is allocated in steady state.
 const MAX_SPARE_PIXELS = 4;
@@ -26,8 +39,8 @@ function decodedPixels(format) {
   // Convert first: it may grow WASM memory, which detaches older buffers.
   const offset = format === 'i420' ? decoder.i420_frame() : decoder.rgba_frame();
   const view = new Uint8Array(wasm.memory.buffer, offset, length);
-  let pixels = sparePixels.pop();
-  if (!pixels || pixels.length !== length) pixels = new Uint8Array(length);
+  const match = sparePixels.findIndex(p => p.length === length);
+  const pixels = match >= 0 ? sparePixels.splice(match, 1)[0] : new Uint8Array(length);
   pixels.set(view);
   return pixels;
 }
@@ -38,13 +51,20 @@ function decodedPixels(format) {
  */
 function decodeFrame({ rgba, packet, ...coded }) {
   const start = performance.now();
+  if (coded.key && pendingOperatingPoint !== null) {
+    decoder.set_operating_point(pendingOperatingPoint);
+    pendingOperatingPoint = null;
+  }
   if (!coded.repeat) decoder.decode(packet);
   const decoded = performance.now();
   const psnr = decoder.psnr(new Uint8Array(rgba));
-  return { ...coded, packet, source: rgba, psnr, decodeMs: decoded - start, decodeStageMs: performance.now() - start };
+  return { ...coded, packet, source: rgba, psnr, width: decoder.width, height: decoder.height,
+    streamWidth: decoder.stream_width, streamHeight: decoder.stream_height, spatialId: decoder.spatial_id,
+    decodeMs: decoded - start, decodeStageMs: performance.now() - start };
 }
 /** One frame from the encode worker: decode it and post it to the page. */
 function receivePacket({ data: message }) {
+  realData = true;
   try {
     if (message.held) {
       self.postMessage({ type: 'frame', id: message.id, held: true });
@@ -59,7 +79,8 @@ function receivePacket({ data: message }) {
     result.decodeStageMs += performance.now() - displayStart;
     const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source])];
     self.postMessage({ type: 'frame', id: message.id, ...result, previous, format, pixels, width: decoder.width,
-      height: decoder.height, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows }, transfer);
+      height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
+      spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows }, transfer);
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
@@ -70,8 +91,23 @@ self.onmessage = async ({ data: message }) => {
       const module = await codecModule;
       wasm = await module.default();
       decoder = new module.BrowserDecoder(message.codec);
+      if (message.operatingPoint) decoder.set_operating_point(message.operatingPoint);
       message.port.onmessage = receivePacket;
       self.postMessage({ type: 'ready' });
+      // Not awaited: real packets are handled as they come and stop it.
+      if (message.warmUp !== false) {
+        warmUp(module, message.codec, () => realData)
+          .then(report => self.postMessage({ type: 'warmed', ...report }))
+          .catch(error => console.warn('decoder warm-up failed:', error));
+      }
+    } else if (message.type === 'operating-point') {
+      // Down to the base at once; up to the full size at the next key frame.
+      if (message.operatingPoint > 0) {
+        pendingOperatingPoint = null;
+        decoder.set_operating_point(message.operatingPoint);
+      } else {
+        pendingOperatingPoint = message.operatingPoint;
+      }
     } else if (message.type === 'recycle') {
       if (sparePixels.length < MAX_SPARE_PIXELS) sparePixels.push(new Uint8Array(message.buffer));
     }

@@ -7,7 +7,10 @@
 // The shader repeats nc-dsp's display conversion (`convert` module: limited-range
 // BT.601 in 8.8 fixed point, each chroma sample covering a 2x2 luma block, no
 // chroma interpolation) in exact integer-valued float arithmetic, so both paths
-// show the same pixels. `preserveDrawingBuffer` keeps the last frame readable,
+// show the same pixels. A frame coded smaller than the stream (AV1 adaptive
+// resolution: render size = stream size = canvas size) is scaled to the canvas
+// as players do, bilinearly with pixel centres aligned (nc-dsp `display`), each
+// plane on its own grid; both paths then show close but not identical pixels. `preserveDrawingBuffer` keeps the last frame readable,
 // so the magnifier can copy from the canvas whenever it draws.
 //
 // Fallbacks: no hardware WebGL2 -> WebGL1 -> CPU; GL set-up failure or a
@@ -23,20 +26,36 @@ export const FORMATS = { i420: 'i420', rgba: 'rgba' };
 const FRAGMENT_SHADER = `
 precision highp float;
 uniform sampler2D u_y, u_cb, u_cr, u_rgba;
-uniform vec2 u_size, u_chroma_size;
-uniform bool u_show_rgba;
+uniform vec2 u_size, u_chroma_size, u_canvas;
+uniform bool u_show_rgba, u_scaled;
 float sample8(sampler2D plane, vec2 texel, vec2 size) {
   return floor(texture2D(plane, (texel + 0.5) / size).r * 255.0 + 0.5);
+}
+// The plane's sample under a canvas pixel, scaled bilinearly, centres aligned.
+float scaled8(sampler2D plane, vec2 pixel, vec2 size) {
+  vec2 at = clamp((pixel + 0.5) * size / u_canvas - 0.5, vec2(0.0), size - 1.0);
+  vec2 first = floor(at), next = min(first + 1.0, size - 1.0), w = at - first;
+  float top = mix(sample8(plane, first, size), sample8(plane, vec2(next.x, first.y), size), w.x);
+  float bottom = mix(sample8(plane, vec2(first.x, next.y), size), sample8(plane, next, size), w.x);
+  return floor(mix(top, bottom, w.y) + 0.5);
 }
 float channel(float fixed8) { return clamp(floor(fixed8 / 256.0), 0.0, 255.0) / 255.0; }
 void main() {
   // Pixel indices with row 0 at the top, as in the decoded picture.
-  vec2 pixel = floor(vec2(gl_FragCoord.x, u_size.y - gl_FragCoord.y));
+  vec2 pixel = floor(vec2(gl_FragCoord.x, u_canvas.y - gl_FragCoord.y));
   if (u_show_rgba) { gl_FragColor = texture2D(u_rgba, (pixel + 0.5) / u_size); return; }
-  vec2 chroma = floor(pixel / 2.0);
-  float y = 298.0 * (sample8(u_y, pixel, u_size) - 16.0) + 128.0;
-  float u = sample8(u_cb, chroma, u_chroma_size) - 128.0;
-  float v = sample8(u_cr, chroma, u_chroma_size) - 128.0;
+  float luma, u, v;
+  if (u_scaled) {
+    luma = scaled8(u_y, pixel, u_size);
+    u = scaled8(u_cb, pixel, u_chroma_size) - 128.0;
+    v = scaled8(u_cr, pixel, u_chroma_size) - 128.0;
+  } else {
+    vec2 chroma = floor(pixel / 2.0);
+    luma = sample8(u_y, pixel, u_size);
+    u = sample8(u_cb, chroma, u_chroma_size) - 128.0;
+    v = sample8(u_cr, chroma, u_chroma_size) - 128.0;
+  }
+  float y = 298.0 * (luma - 16.0) + 128.0;
   gl_FragColor = vec4(channel(y + 409.0 * v), channel(y - 100.0 * u - 208.0 * v), channel(y + 516.0 * u), 1.0);
 }`;
 // One triangle covering the viewport; the fragment shader works in pixels.
@@ -83,12 +102,25 @@ class CpuRenderer {
     if (format !== this.format) return pixels.buffer;
     const replaced = this.latest;
     this.latest = new ImageData(new Uint8ClampedArray(pixels.buffer), width, height);
-    this.context.putImageData(this.latest, 0, 0);
+    this.showLatest();
     // The latest frame stays referenced for showLatest; the replaced one is free.
     return replaced && replaced.data.buffer;
   }
   showOriginal(image) { this.context.putImageData(image, 0, 0); }
-  showLatest() { if (this.latest) this.context.putImageData(this.latest, 0, 0); }
+  showLatest() {
+    const image = this.latest, canvas = this.context.canvas;
+    if (!image) return;
+    if (image.width === canvas.width && image.height === canvas.height) {
+      this.context.putImageData(image, 0, 0);
+      return;
+    }
+    // A frame coded smaller than the stream: scaled to the canvas (bilinear).
+    this.scratch ??= document.createElement('canvas');
+    this.scratch.width = image.width; this.scratch.height = image.height;
+    this.scratch.getContext('2d').putImageData(image, 0, 0);
+    this.context.imageSmoothingEnabled = true;
+    this.context.drawImage(this.scratch, 0, 0, canvas.width, canvas.height);
+  }
 }
 
 /** Packed I420 from the worker, converted by the fragment shader. */
@@ -115,7 +147,7 @@ class GlRenderer {
     const gl = this.gl;
     const program = linkProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     gl.useProgram(program);
-    this.uniforms = Object.fromEntries(['u_size', 'u_chroma_size', 'u_show_rgba'].map(name => [name, gl.getUniformLocation(program, name)]));
+    this.uniforms = Object.fromEntries(['u_size', 'u_chroma_size', 'u_canvas', 'u_show_rgba', 'u_scaled'].map(name => [name, gl.getUniformLocation(program, name)]));
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, COVER_TRIANGLE, gl.STATIC_DRAW);
     const position = gl.getAttribLocation(program, 'a_position');
@@ -173,8 +205,11 @@ class GlRenderer {
     } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, format, gl.UNSIGNED_BYTE, samples);
   }
   draw(showRgba) {
-    const gl = this.gl;
+    const gl = this.gl, luma = this.textures[showRgba ? RGBA_UNIT : 0];
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.uniform2f(this.uniforms.u_canvas, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    const scaled = luma.width !== gl.drawingBufferWidth || luma.height !== gl.drawingBufferHeight;
+    gl.uniform1i(this.uniforms.u_scaled, scaled && !showRgba ? 1 : 0);
     gl.uniform1i(this.uniforms.u_show_rgba, showRgba ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
