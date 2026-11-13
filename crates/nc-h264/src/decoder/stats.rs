@@ -139,7 +139,7 @@ pub(super) fn macroblock(s: &mut StreamStats, cur: &MbState, mb: &MbContext) {
             } else {
                 0
             },
-        qp: cur.qp as i8,
+        qp: i16::from(cur.qp),
         qp_delta: if delta_coded { qp_delta as i8 } else { 0 },
         bits: bits as u32,
         ..BlockRecord::default()
@@ -280,7 +280,7 @@ fn transforms(s: &mut StreamStats, cur: &MbState, (x0, y0): (u16, u16), pred: Pr
         w: size,
         h: size,
         flags: if coded { flags::CODED_Y } else { 0 },
-        qp: cur.qp as i8,
+        qp: i16::from(cur.qp),
         nonzero,
         ..BlockRecord::default()
     };

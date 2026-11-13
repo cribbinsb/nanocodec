@@ -280,6 +280,37 @@ fn resolution_changes_decode_exactly() {
         }
     }
 }
+#[cfg(feature = "analysis")]
+#[test]
+fn analysis_leaves_decoding_unchanged_and_tiles_each_frame() {
+    use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};
+    let (width, height) = (72, 40);
+    let mut encoder = Encoder::<Av1Backend>::new(config(width, height, 120, 6)).unwrap();
+    let mut decoder = Decoder::new();
+    decoder.collect_stats(StreamStats::default());
+    for index in 0..4 {
+        let packet = encoder.encode(&source(width, height, index));
+        assert_picture(
+            &decoder.decode(&packet.data).unwrap(),
+            encoder.reconstruction(),
+        );
+        let records = decoder.stats().unwrap().records();
+        assert!(records.iter().any(|r| r.kind == RecordKind::Prediction));
+    }
+    let stats = decoder.take_stats().unwrap();
+    assert_eq!(stats.frames.len(), 4);
+    // Blocks cover whole 8x8 units beyond the frame (§7.21): 72x40.
+    let area = (width * height) as u64;
+    for (index, frame) in stats.frames.iter().enumerate() {
+        let covered: u64 = frame.tallies[keys::CB_SIZE]
+            .values()
+            .map(|t| t.weight)
+            .sum();
+        assert_eq!(covered, area, "frame {index}: blocks tile the frame");
+        let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
+        assert_eq!(intra == area, index % 3 == 0, "frame {index}");
+    }
+}
 #[test]
 fn long_term_reference_recovers_a_lost_frame() {
     long_term_recovery(1, &[9], 16);

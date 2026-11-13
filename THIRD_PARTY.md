@@ -318,7 +318,8 @@ AV1 loop restoration (`crates/nc-dsp/src/av1_restoration/`: `mod.rs`,
 `src/looprestoration_tmpl.c`, `src/x86/looprestoration_avx2.asm` and
 `src/arm/64/looprestoration.S`: in-place restoration by stripe, the Wiener
 ring of 16-bit horizontal rows, the AVX2 stripe-wide tap setup and
-rotating row-pointer schedule, the 8-bit Wiener arithmetic (byte-pair
+rotating row-pointer schedule, independent horizontal/vertical five-tap
+specialization when the outer coefficient is zero, the 8-bit Wiener arithmetic (byte-pair
 `pmaddubsw` / 16-bit `mla`, the clamp as a saturating add with dav1d's
 offsets, vertical pair sums with `pmaddwd`) and the self-guided row
 schedule (horizontal box sums, box statistics, filtered rows), reimplemented

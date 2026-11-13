@@ -121,6 +121,9 @@ pub(crate) struct SymbolReader<'a> {
     padding_refills: u32,
     /// Whether decoded symbols adapt their CDFs (`disable_cdf_update = 0`).
     adapt: bool,
+    /// The tile's size in bytes (analysis: bits consumed).
+    #[cfg(feature = "analysis")]
+    length: usize,
 }
 
 impl<'a> SymbolReader<'a> {
@@ -133,10 +136,19 @@ impl<'a> SymbolReader<'a> {
             bits: -INIT_BITS,
             padding_refills: 0,
             adapt: true,
+            #[cfg(feature = "analysis")]
+            length: data.len(),
         };
         reader.refill();
         reader
     }
+    /// Bits consumed since the tile started (analysis: differences give
+    /// what a block cost; the window's lookahead counts as unread).
+    #[cfg(feature = "analysis")]
+    pub(crate) fn bits_consumed(&self) -> usize {
+        ((self.length - self.data.len()) * 8).saturating_sub(self.bits.max(0) as usize)
+    }
+
     /// This reader with symbols adapting their CDFs (`adapt`) or not (a
     /// frame with `disable_cdf_update = 1`, AV1 §5.9.2).
     pub(crate) fn adapting(self, adapt: bool) -> Self {

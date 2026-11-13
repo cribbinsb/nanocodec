@@ -55,10 +55,11 @@ lookahead or B-frames, where they will do better. x264's and x265's defaults are
 presets were tuned on exactly the PSNR / VMAF / MS-SSIM mix we report. So the chart also shows x264 and x265 at
 the metric-oriented tuning their own documentation provides (`--tune psnr` or `--tune ssim`, whichever scores
 better for each), beside their default-tuned points. The AV1 and VP9 references (SVT-AV1 `--rtc`, libaom,
-libvpx realtime) already run their PSNR tunes, and openh264 and NVENC run with adaptive quantisation off. That matters: on the chart's clips x264 `medium --tune psnr` (otherwise the same settings)
-needs 9.8% fewer bits than the default-tuned anchor on BD-J, and against it our savings are 7–12 points smaller:
-AV1 Default −43.6% instead of −50.9%, HEVC −41.7%, VVC −47.1%, H.264 Default −13.3% instead of −23.0%, H.264 Fast
-−5.8% (interval spans zero), and our H.264 Faster (+2.5%) and Fastest (+10.7%) save no bits at all
+libvpx realtime) already run their PSNR tunes, and openh264 and NVENC run with adaptive quantisation off. That matters: on the 137 fresh held-out clips of the headline chart (commit 8b492382), x264
+`medium --tune psnr` (otherwise the same settings) needs 10.3% fewer bits than the default-tuned anchor on BD-J,
+and against it our savings are about 7–10 points smaller: AV1 Default −37.9% instead of −45.3%, HEVC −39.8% (−47.0%),
+VVC −44.3% (−51.1%), H.264 Default −19.1% (−28.7%), H.264 Fast −11.2%, H.264 Faster −3.3% (−0.0% on all 209
+clips: not ahead), and our H.264 Fastest needs more bits (+4.5%; +9.1% on all 209)
 ([table](../README.md#quality-and-speed)). We would welcome better settings for any reference within the same
 constraints.
 
@@ -94,20 +95,22 @@ the source's artefacts. Our savings are largest at these low rates: on the 10–
 −47.2%, H.264 −9.3% vs −29.0%), and the references' gaps shrank too. Read every headline number as "at
 150–1200 kbps, 720p30".
 
-**Which clips?** The chart uses 11 natural camera clips (bodycam, crowd, low light, pan, static), our VAL set. They
-were also used to confirm which candidate changes were kept, so they are not independent of the tuning. Many
+**Which clips?** The headline chart uses 138 held-out clips from camera sources no clip set of ours had ever used
+(137 scored), with the 209-clip set (the fresh clips plus 71 clips of an earlier check) beside it. The
+[development chart](results/development-chart.md) uses the 11 natural camera clips we tune beside (our VAL
+set); they were used to confirm which candidate changes were kept, so they are not independent of the tuning, and
+they give most of our presets more favourable numbers. Many
 sources are not redistributable, so the clips themselves cannot be published; the clip lists are in
 `eval/clipset/`.
 
-**Did you overfit?** Our presets were found by automated search on clips that include the chart's, so an
-independent re-run measured every encoder (same builds and settings, 150 frames, one key frame) on 138 fresh clips
-from sources no clip set of ours had ever used, plus the 71 clips of an earlier held-out check. BD-J vs x264
-`medium` with 95% intervals: our AV1 Default −45.6% [−47.8, −43.5] on the fresh clips (−50.9% on the chart's),
-HEVC −46.9% (−49.3%), VVC −51.1% (−54.0%), H.264 −28.5% (−23.0%); the references moved more (SVT-AV1 M12
-`--rtc` −29.7% vs −34.9%, x265 `medium` −30.6% vs −40.7%). So the size of a saving depends on the clips, our
-position among the encoders tested held, and our H.264 did better than on the chart's clips. Against a PSNR-tuned
-x264 `medium` on all 209 clips: AV1 −37.5%, H.264 −15.6%, H.264 Faster +0.7% (not ahead), H.264 Fastest +10.7%
-(behind). The full table is in the [README](../README.md#quality-and-speed).
+**Did you overfit?** Our presets were found by automated search on clips that include the development chart's,
+so the headline chart is now measured on 138 clips from sources no clip set of ours had ever used (150 frames, one
+key frame, commit 8b492382). BD-J vs x264 `medium`, held-out (137 fresh) vs development (11 clips): our AV1
+Default −45.3% vs −50.7%, HEVC −47.0% vs −49.6%, VVC −51.1% vs −54.4%, H.264 −28.7% vs −24.0%; the references
+moved more (SVT-AV1 M12 `--rtc` −29.1% vs −34.9%, x265 `medium` −30.3% vs −40.7%). So the size of a saving depends
+on the clips, our position among the encoders tested held, and our H.264 does better on the held-out clips. The
+independent report (an earlier build) gives 95% bootstrap intervals, about ±2 points for these figures. The full
+table is in the [README](../README.md#quality-and-speed).
 
 **Speed: how measured?** Encode CPU time per frame, one thread, at a fixed quantizer that lands each encoder near
 600 kbps on three clips; not timed in CBR mode. In CBR our encoders take a median about 2% more CPU (0–7% by

@@ -19,7 +19,9 @@
 //! - `tile`: partitions, block syntax and reconstruction;
 //! - `deblock`, `cdef`: the loop filters from the decoder's block state;
 //! - `restoration`: superres upscaling and loop restoration (§7.16–17);
-//! - `film_grain`: film grain synthesis of shown frames (§7.18.3).
+//! - `film_grain`: film grain synthesis of shown frames (§7.18.3);
+//! - analysis (feature `analysis`): block records of each decoded frame
+//!   (`Decoder::collect_stats`, `tile::analysis`).
 //!
 //! Reference slots (§7.20) carry each frame's picture, CDFs and the header
 //! state later headers inherit, so layered (hierarchical-P and spatial SVC)
@@ -39,6 +41,8 @@ use cdf::Cdfs;
 use frame_header::{FrameHeader, NUM_REF_FRAMES, PRIMARY_REF_NONE, SlotHeader};
 use motion_field::{MotionField, ProjectionSource, SavedMotion, TemporalField};
 use nc_common::decode::{BitReader, DecodeError};
+#[cfg(feature = "analysis")]
+use nc_common::stream_stats::StreamStats;
 use nc_common::{PictureRecycler, ShownPicture};
 use nc_dsp::av1_restoration::Av1LrScratch;
 use sequence::Sequence;
@@ -202,6 +206,30 @@ impl Decoder {
             operating_point: 0,
             last_spatial_id: None,
         }
+    }
+
+    /// Start collecting coding-tool analysis into `stats` (block records,
+    /// and per-frame tallies unless [`StreamStats::records_only`]) from the
+    /// next frame on. Decoding is unchanged.
+    #[cfg(feature = "analysis")]
+    pub fn collect_stats(&mut self, stats: StreamStats) {
+        self.maps.stats = Some(stats);
+    }
+
+    /// The analysis collected so far, if enabled: the block records of the
+    /// last decoded frame and the tallies of every completed one.
+    #[cfg(feature = "analysis")]
+    #[must_use]
+    pub fn stats(&self) -> Option<&StreamStats> {
+        self.maps.stats.as_ref()
+    }
+
+    /// Complete the analysis and hand it over; collection stops.
+    #[cfg(feature = "analysis")]
+    pub fn take_stats(&mut self) -> Option<StreamStats> {
+        let mut stats = self.maps.stats.take()?;
+        stats.finish();
+        Some(stats)
     }
     /// Show frames with (`true`, the default) or without the film grain
     /// their parameters signal; references are grain-free either way.

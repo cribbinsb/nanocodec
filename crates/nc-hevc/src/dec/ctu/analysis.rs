@@ -211,7 +211,7 @@ impl SegmentDecoder<'_, '_> {
             w: coord(size),
             h: coord(size),
             flags: a.cu_flags | qp_flag,
-            qp: self.qp as i8,
+            qp: self.qp as i16,
             qp_delta: a.qp_delta.unwrap_or(0),
             bits: bits_since(e, a.cu_start),
             ..BlockRecord::default()
@@ -269,7 +269,7 @@ impl SegmentDecoder<'_, '_> {
             w: size,
             h: size,
             flags: coded | skip,
-            qp: self.qp as i8,
+            qp: self.qp as i16,
             nonzero: residual.nonzero,
             bits: bits_since(e, residual.start),
             ..BlockRecord::default()

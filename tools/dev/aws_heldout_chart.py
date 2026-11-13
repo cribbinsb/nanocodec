@@ -127,6 +127,9 @@ SCORE_STALL_MINUTES = 10
 #: before the next, and the marker file (in the results directory) that tracks them.
 CHECKPOINT_MINUTES = 10
 CHECKPOINT_MARKER = ".checkpoint"
+#: A round's allowance past CHECKPOINT_MINUTES for the points its shards started, per
+#: 150 frames (2026-11-13: 150-frame rounds took up to 14 min, 600-frame ones over 15).
+ROUND_GRACE_MINUTES = 10
 #: Cloud scoring: the CPU metrics backend, one shard (a `score` of one clip) per
 #: clip with this many workers, the machine's cores as the CPU slots; the
 #: pipe-cleaner's workers; where streams and results live under the data root.
@@ -458,9 +461,11 @@ def run(args: argparse.Namespace) -> None:
     jobs = run_setup.ladder(args.rungs) + run_setup.low_rungs() + run_setup.extras()
     streams = Path(args.streams)
     # a rerun encodes only what an earlier, stopped session did not bring back
-    todo = [j for j in jobs if not Path(f"{streams / j[0].prebuilt_key(j[1])}.done").exists()]
+    # neither a point already scored here nor one whose encode came back is encoded again
+    todo = [j for j in jobs if not j[0].cached(j[1])
+            and not Path(f"{streams / j[0].prebuilt_key(j[1])}.done").exists()]
     if len(todo) < len(jobs):
-        say(f"{len(jobs) - len(todo)} of {len(jobs)} encodes already here: skipped")
+        say(f"{len(jobs) - len(todo)} of {len(jobs)} encodes scored or already here: skipped")
         jobs = todo
     tools = {p.family.tool.name: p.family.tool for _, p in jobs}
     version = subprocess.run([str(tools["nanocodec"]), "--version"], capture_output=True,
@@ -635,7 +640,7 @@ def score_cloud(args: argparse.Namespace) -> None:
                     session.run_detached(command, f"~/{name}.log", minutes,
                                          stall_minutes=SCORE_STALL_MINUTES)
                     timings[name] = time.monotonic() - started
-                score_rounds(session, score_round, args.minutes, results)
+                score_rounds(session, score_round, args.minutes, results, run.frames)
             finally:
                 started = time.monotonic()
                 session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER)
@@ -647,15 +652,17 @@ def score_cloud(args: argparse.Namespace) -> None:
     merge_results(results, load_paths().work / RESULTS_REL)
 
 
-def score_rounds(session, command: str, minutes: float, results: Path) -> None:
+def score_rounds(session, command: str, minutes: float, results: Path, frames: int) -> None:
     """Score in rounds until no shard has points left or `minutes` have passed, each
-    round's new results brought back and merged here (a checkpoint)."""
+    round's new results brought back and merged here (a checkpoint). A round ends when
+    its shards finish the points they started, so its limit allows for the longest
+    point (ROUND_GRACE_MINUTES per 150 frames)."""
     started = time.monotonic()
+    limit = CHECKPOINT_MINUTES + ROUND_GRACE_MINUTES * max(1.0, frames / DEFAULT_FRAMES)
     for round_index in itertools.count(1):
         log = f"~/score-{round_index}.log"
         say(f"remote: score round {round_index}")
-        session.run_detached(command, log, CHECKPOINT_MINUTES + PIPE_MINUTES,
-                             stall_minutes=SCORE_STALL_MINUTES)
+        session.run_detached(command, log, limit, stall_minutes=SCORE_STALL_MINUTES)
         moved = session.download_new(f"{REMOTE_WORK}/{RESULTS_REL}", results, CHECKPOINT_MARKER)
         merge_results(results, load_paths().work / RESULTS_REL)
         left = session.ssh(f"grep -c 'run score again' {log} || true", quiet=True,

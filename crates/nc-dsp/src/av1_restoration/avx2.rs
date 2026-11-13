@@ -1,5 +1,5 @@
 //! AVX2 loop restoration kernels. The Wiener rows port dav1d 1.5.4
-//! `src/x86/looprestoration_avx2.asm` (`wiener_filter7_8bpc`, BSD-2-Clause,
+//! `src/x86/looprestoration_avx2.asm` (`wiener_filter7_8bpc` and `wiener_filter5_8bpc`, BSD-2-Clause,
 //! see `THIRD_PARTY.md`): the horizontal pass pairs bytes with `pshufb`
 //! and multiplies them by the taps with `pmaddubsw` in 16-bit lanes, adds
 //! `128 · centre` with a saturating add whose bounds are exactly the
@@ -123,7 +123,7 @@ impl Horizontal {
     }
     /// Write sixteen samples per block with the original arithmetic.
     #[inline(always)]
-    unsafe fn row(self, src: *const u8, out: *mut i16, blocks: usize) {
+    unsafe fn row<const FIVE: bool>(self, src: *const u8, out: *mut i16, blocks: usize) {
         // SAFETY: caller enables AVX2 and checks blocks*16+8 readable bytes
         // and blocks*16 writable i16 values before calling.
         unsafe {
@@ -132,11 +132,17 @@ impl Horizontal {
                 let at = src.add(j);
                 let x = _mm256_loadu2_m128i(at.add(8).cast(), at.cast());
                 let p3 = _mm256_shuffle_epi8(x, self.centre);
-                let sum = _mm256_add_epi16(
+                let left = _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.left), self.inner_taps);
+                let left = if FIVE {
+                    left
+                } else {
                     _mm256_add_epi16(
                         _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.outer), self.outer_taps),
-                        _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.left), self.inner_taps),
-                    ),
+                        left,
+                    )
+                };
+                let sum = _mm256_add_epi16(
+                    left,
                     _mm256_add_epi16(
                         _mm256_maddubs_epi16(_mm256_shuffle_epi8(x, self.right), self.inner_taps),
                         _mm256_mullo_epi16(p3, self.centre_tap),
@@ -157,7 +163,7 @@ unsafe fn wiener_h(src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
     let blocks = n.div_ceil(STEP);
     assert!(src.len() >= blocks * STEP + STEP_SOURCE - STEP && out.len() >= blocks * STEP);
     // SAFETY: AVX2 enabled and both row extents checked above.
-    unsafe { Horizontal::new(taps).row(src.as_ptr(), out.as_mut_ptr(), blocks) };
+    unsafe { Horizontal::new(taps).row::<false>(src.as_ptr(), out.as_mut_ptr(), blocks) };
 }
 
 /// Outputs per vertical Wiener step: two 16-lane halves.
@@ -171,7 +177,7 @@ const V_STEP: usize = 2 * STEP;
 /// AVX2 must be available and every `rows[k]` readable for 16 values at
 /// `j`.
 #[inline(always)]
-unsafe fn vertical16(
+unsafe fn vertical16<const FIVE: bool>(
     rows: &[*const i16; WIENER_ROWS],
     j: usize,
     (outer, inner): (__m256i, __m256i),
@@ -179,8 +185,14 @@ unsafe fn vertical16(
     // SAFETY: the caller's contract.
     unsafe {
         let row = |k: usize| _mm256_loadu_si256(rows[k].add(j).cast());
-        let a = _mm256_add_epi16(row(0), row(6));
         let b = _mm256_add_epi16(row(1), row(5));
+        // With outer tap zero, duplicating b supplies the same c1*b product
+        // without loading the two unused outer rows (dav1d's five-tap path).
+        let a = if FIVE {
+            b
+        } else {
+            _mm256_add_epi16(row(0), row(6))
+        };
         let c = _mm256_add_epi16(row(2), row(4));
         let d = row(3);
         let low = _mm256_add_epi32(
@@ -210,7 +222,7 @@ unsafe fn vertical_taps([c0, c1, c2, c3]: WienerTaps) -> (__m256i, __m256i) {
 }
 /// Original vertical arithmetic after whole-stripe extent validation.
 #[inline(always)]
-unsafe fn vertical_row(
+unsafe fn vertical_row<const FIVE: bool>(
     rows: &[*const i16; WIENER_ROWS],
     taps: (__m256i, __m256i),
     dst: *mut u8,
@@ -221,8 +233,8 @@ unsafe fn vertical_row(
     unsafe {
         for block in 0..n.div_ceil(V_STEP) {
             let j = block * V_STEP;
-            let first = vertical16(rows, j, taps);
-            let second = vertical16(rows, j + STEP, taps);
+            let first = vertical16::<FIVE>(rows, j, taps);
+            let second = vertical16::<FIVE>(rows, j + STEP, taps);
             let bytes = _mm256_permute4x64_epi64::<0b1101_1000>(_mm256_packus_epi16(first, second));
             if j + V_STEP <= n {
                 _mm256_storeu_si256(dst.add(j).cast(), bytes);
@@ -240,12 +252,46 @@ unsafe fn wiener_v(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8
     assert!(rows.iter().all(|row| row.len() >= blocks * V_STEP));
     let pointers = rows.map(<[i16]>::as_ptr);
     // SAFETY: AVX2 enabled, input extents checked, dst is its exact slice.
-    unsafe { vertical_row(&pointers, vertical_taps(taps), dst.as_mut_ptr(), dst.len()) };
+    unsafe { vertical_row::<false>(&pointers, vertical_taps(taps), dst.as_mut_ptr(), dst.len()) };
 }
+/// Select each axis independently once per stripe: luma may have only one
+/// zero outer tap. The const choices remove unused arithmetic and row loads
+/// from the inner loops, following dav1d's five-tap specialization.
+#[target_feature(enable = "avx2")]
+unsafe fn wiener_stripe(
+    horizontal: WienerTaps,
+    vertical: WienerTaps,
+    source: (&[u8], usize),
+    size: (usize, usize),
+    ring: &mut [i16],
+    output: (&mut nc_common::PlaneViewMut<'_>, usize, usize),
+) {
+    // SAFETY: AVX2 enabled; each implementation checks all spans. FIVE is
+    // selected only when that axis's outer coefficient is exactly zero.
+    unsafe {
+        match (horizontal[0] == 0, vertical[0] == 0) {
+            (false, false) => {
+                wiener_stripe_impl::<false, false>(
+                    horizontal, vertical, source, size, ring, output,
+                );
+            }
+            (true, false) => {
+                wiener_stripe_impl::<true, false>(horizontal, vertical, source, size, ring, output);
+            }
+            (false, true) => {
+                wiener_stripe_impl::<false, true>(horizontal, vertical, source, size, ring, output);
+            }
+            (true, true) => {
+                wiener_stripe_impl::<true, true>(horizontal, vertical, source, size, ring, output);
+            }
+        }
+    }
+}
+
 /// Prepare once and rotate pointers as dav1d's Wiener stripe does. The
 /// original arithmetic remains; per-row indirect calls and modulo go away.
 #[target_feature(enable = "avx2")]
-unsafe fn wiener_stripe(
+unsafe fn wiener_stripe_impl<const H5: bool, const V5: bool>(
     horizontal: WienerTaps,
     vertical: WienerTaps,
     (window, stride): (&[u8], usize),
@@ -290,16 +336,16 @@ unsafe fn wiener_stripe(
         let mut rows: [*const i16; WIENER_ROWS] =
             core::array::from_fn(|k| start.add(k * row_len).cast_const());
         for (k, &row) in rows[..WIENER_ROWS - 1].iter().enumerate() {
-            horizontal.row(window.as_ptr().add(k * stride), row.cast_mut(), blocks);
+            horizontal.row::<H5>(window.as_ptr().add(k * stride), row.cast_mut(), blocks);
         }
         let output = dst.data_mut().as_mut_ptr().add(y * dst_stride + x);
         for r in 0..h {
-            horizontal.row(
+            horizontal.row::<H5>(
                 window.as_ptr().add((r + WIENER_ROWS - 1) * stride),
                 rows[WIENER_ROWS - 1].cast_mut(),
                 blocks,
             );
-            vertical_row(&rows, vertical, output.add(r * dst_stride), w);
+            vertical_row::<V5>(&rows, vertical, output.add(r * dst_stride), w);
             let [a, b, c, d, e, f, g] = rows;
             rows = [b, c, d, e, f, g, a];
         }

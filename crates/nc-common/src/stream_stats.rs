@@ -137,8 +137,8 @@ pub struct BlockRecord {
     pub class: u8,
     /// [`flags`].
     pub flags: u8,
-    /// Luma QP.
-    pub qp: i8,
+    /// Luma QP in the codec's scale (H.264 / HEVC QP, AV1 / VP9 qindex).
+    pub qp: i16,
     /// The QP delta coded in the block ([`flags::QP_DELTA_CODED`]).
     pub qp_delta: i8,
     /// Reference index per list (-1: unused).
@@ -192,7 +192,7 @@ pub fn pack_records(records: &[BlockRecord], out: &mut Vec<i16>) {
             i16::from(r.mode2),
             i16::from(r.class),
             i16::from(r.flags),
-            i16::from(r.qp),
+            r.qp,
             i16::from(r.qp_delta),
             i16::from(r.ref_idx[0]),
             i16::from(r.ref_idx[1]),

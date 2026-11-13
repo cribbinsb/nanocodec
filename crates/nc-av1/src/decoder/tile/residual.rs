@@ -342,6 +342,10 @@ impl FrameDecoder<'_> {
             )?
         };
         self.set_contexts(plane, (x4, y4), (w4, h4), coded.context);
+        #[cfg(feature = "analysis")]
+        if plane == PlaneIndex::Y && self.maps.stats.is_some() {
+            self.transform_record((x, y), tx, coded.eob);
+        }
         if coded.eob > 0 {
             let mut dst = self
                 .recon

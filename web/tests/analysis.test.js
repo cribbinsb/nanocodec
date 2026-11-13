@@ -56,6 +56,16 @@ test('intra directions follow each standard', () => {
   assert.deepEqual(intraDirection('h264', 0, 4), [0, 1]);
   assert.equal(intraDirection('h264', 2, 4), null);
   assert.equal(intraDirection('h264', 3, 16), null);
+  assert.equal(intraDirection('av1', 0, 8), null);
+  const vertical = intraDirection('av1', 1, 8);
+  assert.ok(Math.abs(vertical[0]) < 1e-9 && vertical[1] === -1);
+});
+
+test('AV1 vectors are in eighth samples', () => {
+  const av1 = pack([{ kind: KIND.coding, pred: PRED.inter, w: 8, h: 8 },
+    { kind: KIND.prediction, pred: PRED.inter, w: 8, h: 8, mv0x: 1, mv0y: 8, ref1: -1 }]);
+  assert.deepEqual(summarise(av1, 'av1').mvPrecision, { eighth: 1 });
+  assert.deepEqual(summarise(av1, 'hevc').mvPrecision, { quarter: 1 });
 });
 
 test('the block under a point and its description', () => {
@@ -65,6 +75,6 @@ test('the block under a point and its description', () => {
   assert.equal(found.transform, -1);
   const lines = describeBlock(RECORDS, found);
   assert.match(lines[0], /^skip 16×16 at \(16, 0\)/);
-  assert.match(lines.at(-1), /MV \(0.5, -1\) px · ref 0 · merge 0/);
+  assert.match(lines.at(-1), /MV \(0.5, -1\) px · ref 0 · mode 0/);
   assert.deepEqual(recordsAt(RECORDS, 40, 5), { coding: -1, prediction: -1, transform: -1 });
 });

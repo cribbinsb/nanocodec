@@ -23,6 +23,10 @@ use crate::tables::Partition;
 use crate::tables::{AC_QLOOKUP, DC_QLOOKUP};
 use nc_common::decode::DecodeError;
 
+// The analysis records (feature `analysis`); every hook below is compiled
+// out without it.
+#[cfg(feature = "analysis")]
+mod analysis;
 mod inter;
 mod inter_pred;
 mod inter_residual;
@@ -66,6 +70,12 @@ pub(super) struct FrameMaps {
     tx_leaves: Vec<inter_residual::TxLeaf>,
     /// Inter prediction scratch.
     prediction: inter_pred::PredictionScratch,
+    /// Where analysis records go, when they are being collected.
+    #[cfg(feature = "analysis")]
+    pub(super) stats: Option<nc_common::stream_stats::StreamStats>,
+    /// What the current block's analysis records collect.
+    #[cfg(feature = "analysis")]
+    analysis: analysis::BlockScratch,
 }
 
 impl FrameMaps {
@@ -79,6 +89,10 @@ impl FrameMaps {
             cdef_scratch: cdef::CdefScratch::default(),
             tx_leaves: Vec::new(),
             prediction: inter_pred::PredictionScratch::default(),
+            #[cfg(feature = "analysis")]
+            stats: None,
+            #[cfg(feature = "analysis")]
+            analysis: analysis::BlockScratch::default(),
         }
     }
 }
@@ -383,6 +397,10 @@ impl<'a> FrameDecoder<'a> {
         data: &[&[u8]],
         adapting: bool,
     ) -> Result<(), DecodeError> {
+        #[cfg(feature = "analysis")]
+        if let Some(s) = &mut self.maps.stats {
+            analysis::frame_facts(s, &self.header, data);
+        }
         // One tile (our own streams) adapts the frame's set in place.
         let start = (data.len() > 1).then(|| self.cdfs.clone());
         let mut kept = None;
@@ -404,6 +422,10 @@ impl<'a> FrameDecoder<'a> {
         }
         if let Some(kept) = kept {
             self.cdfs = kept;
+        }
+        #[cfg(feature = "analysis")]
+        if let Some(s) = &mut self.maps.stats {
+            s.finish();
         }
         Ok(())
     }
@@ -510,6 +532,10 @@ impl<'a> FrameDecoder<'a> {
             ],
             Partition::Split => unreachable!("handled above"),
         };
+        #[cfg(feature = "analysis")]
+        {
+            self.maps.analysis.shape = analysis::shape(partition);
+        }
         for &(dy, dx, block) in blocks {
             // Blocks starting outside the frame are not coded: the second
             // half of a HORZ/VERT at the frame edge (`hasRows`/`hasCols`)
@@ -602,6 +628,10 @@ impl<'a> FrameDecoder<'a> {
             || inter_frame && r.boolean(&mut self.cdfs.intra_inter[near.intra_inter_context()]);
         let intrabc =
             !inter_frame && self.header.allow_intrabc && r.boolean(&mut self.cdfs.intrabc);
+        #[cfg(feature = "analysis")]
+        if self.maps.stats.is_some() {
+            self.start_block_record(r, inter || intrabc);
+        }
         if inter || intrabc {
             self.inter_block(r, block, near, skip, skip_mode)
         } else {
@@ -699,6 +729,10 @@ impl<'a> FrameDecoder<'a> {
             block.mi_row,
             BlockInfo::intra(block.size, skip, y_mode),
         );
+        #[cfg(feature = "analysis")]
+        if self.maps.stats.is_some() {
+            self.intra_records(r, block, &modes, skip);
+        }
         if self.intra_edge_filter && block.has_chroma() {
             // The chroma covers whole 8x8 luma areas.
             let origin = (block.mi_col & !1, block.mi_row & !1);
@@ -773,6 +807,10 @@ impl<'a> FrameDecoder<'a> {
                 BlockInfo::inter(block.size, skip, modes.refs, modes.flags)
             },
         );
+        #[cfg(feature = "analysis")]
+        if self.maps.stats.is_some() {
+            self.inter_records(r, block, &modes, (skip, skip_mode));
+        }
         let units = block.units();
         self.decoded.mark(at, units);
         if self.intra_edge_filter && block.has_chroma() {

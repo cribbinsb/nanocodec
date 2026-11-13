@@ -1,9 +1,9 @@
 //! `nanocodec stat` (analysis builds: `--features analysis`): decode an
-//! H.264 or HEVC stream with coding-tool
+//! H.264, HEVC or AV1 stream with coding-tool
 //! statistics enabled ([`nc_common::stream_stats`]) and write them as JSON,
 //! to show which block sizes, modes, motion, transforms, QPs and filters an
 //! encoder actually used. The input is Annex-B or an IVF file of Annex-B
-//! access units; `eval/nceval/streamstats.py` summarises the output.
+//! access units (H.264, HEVC), or IVF (AV1); `eval/nceval/streamstats.py` summarises the output.
 
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use nc_common::stream_stats::StreamStats;
 use nc_encoder::Codec;
 
-use crate::framing::{is_ivf, read_ivf_annex_b};
+use crate::framing::{is_ivf, read_ivf, read_ivf_annex_b};
 use crate::stdio;
 
 #[derive(Debug)]
@@ -29,7 +29,8 @@ fn parse(args: &[String]) -> Result<StatArgs, String> {
     let codec = match get("--codec").as_deref() {
         Some("h264") => Codec::H264,
         Some("hevc") => Codec::Hevc,
-        _ => return Err("stat needs --codec h264|hevc".into()),
+        Some("av1") => Codec::Av1,
+        _ => return Err("stat needs --codec h264|hevc|av1".into()),
     };
     let input = get("--input").ok_or("missing --input")?.into();
     Ok(StatArgs {
@@ -46,6 +47,7 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     let stats = match args.codec {
         Codec::Hevc => hevc(&data)?,
         Codec::H264 => h264(&data)?,
+        Codec::Av1 => av1(&data)?,
         _ => unreachable!("parse accepts H.264 and HEVC only"),
     };
     let json = stats.to_json();
@@ -80,6 +82,19 @@ fn hevc(data: &[u8]) -> Result<StreamStats, String> {
         Ok(())
     })?;
     decoder.flush().map_err(|e| e.to_string())?;
+    Ok(decoder.take_stats().unwrap_or_default())
+}
+
+/// AV1 in IVF: every temporal unit, shown or not.
+fn av1(data: &[u8]) -> Result<StreamStats, String> {
+    let mut decoder = nc_av1::Decoder::new();
+    decoder.collect_stats(StreamStats::default());
+    read_ivf(&mut Cursor::new(data), |_, frame| {
+        decoder
+            .decode_with_layer(frame.packet)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })?;
     Ok(decoder.take_stats().unwrap_or_default())
 }
 

@@ -1,0 +1,33 @@
+{
+ "base": "8b492382",
+ "families": {
+  "nanocodec-h264": "8b492382",
+  "nanocodec-h264@h264-fast": "8b492382",
+  "nanocodec-h264@h264-faster": "8b492382",
+  "nanocodec-h264@h264-fastest": "8b492382",
+  "nanocodec-hevc": "8b492382",
+  "nanocodec-hevc@hevc-fast": "8b492382",
+  "nanocodec-hevc@hevc-faster": "8b492382",
+  "nanocodec-av1": "8b492382",
+  "nanocodec-av1@av1-fast": "8b492382",
+  "nanocodec-av1@av1-faster": "8b492382",
+  "nanocodec-vp9": "8b492382",
+  "nanocodec-vp9@vp9-fast": "8b492382",
+  "nanocodec-vp9@vp9-faster": "8b492382",
+  "nanocodec-vp9@vp9-fastest": "8b492382",
+  "nanocodec-av2": "8b492382",
+  "nanocodec-av2@av2-fast": "8b492382",
+  "nanocodec-vvc": "8b492382",
+  "nanocodec-vvc@vvc-fast": "8b492382"
+ },
+ "builds": {
+  "8b492382": "8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753)"
+ },
+ "tools": {
+  "x264": "0.165",
+  "x265": "4.2",
+  "svt": "v4.3.0",
+  "libvpx": "v1.16.0",
+  "libaom": "v3.15.3"
+ }
+}

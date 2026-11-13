@@ -27,12 +27,11 @@ against `docs/results/` on the day; if the independent re-run's held-out table h
 > It is a narrow subset: 8-bit 4:2:0, forward prediction only, no lookahead, one thread, CBR. The comparisons in
 > the README are against other encoders' real-time settings on one thread (x264 zerolatency without B-frames,
 > SVT-AV1 `--rtc`, libvpx/libaom realtime); those are mature, general-purpose encoders that do better in other
-> modes. At low rates (150–1200 kbps at 720p; savings are about half at higher rates), on our 11 chart clips
-> (5-second windows, one key frame) our AV1 Default needs about 51% fewer bits than
-> x264 `medium` at those settings (on 5 clips over 20 s, about 4 points less);
-> on 138 fresh clips nobody had used it is about 46% [44, 48] (the references' figures shrink more); against
-> x264 `--tune psnr` instead of its default psy tuning, on all 209 held-out clips, about 38% (our fastest H.264
-> presets then save nothing). It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
+> modes. At low rates (150–1200 kbps at 720p; savings are about half at higher rates), on 137 held-out clips
+> from sources we had never used (5-second windows, one key frame), our AV1 Default needs about 45% fewer bits
+> than x264 `medium` at those settings, and about 38% fewer than x264 `medium --tune psnr`; our fastest H.264
+> preset needs more bits than the latter. On the 11 clips we tune beside the AV1 figure is about 51%, and over
+> 20-second windows (5 clips, an earlier build) about 4 points less. It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
 >
 > The FAQ answers the questions I expected (benchmarks, rate control, overfitting, licences, what's missing):
 > https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md. We also had an agent red-team our own claims
@@ -66,10 +65,10 @@ experiment.)
    you know better low-delay one-thread settings for any of them, we'll re-run with them and publish the result.
 
 2. **"Did you just overfit to your test clips?"** The presets were found by automated search, and the chart's
-   clips were used to rank changes, so an independent re-run measured every encoder on 138 fresh clips from
-   sources we had never used (plus 71 earlier held-out ones). Our savings against x264 are 2–5 points smaller
-   there for the newer codecs (AV1 −45.6% vs −50.9%), the references' shrink more, and our H.264 does better.
-   The absolute numbers depend on the clips; all of them, with intervals, are in the README.
+   clips were used to rank changes, so the headline chart is on 137 clips from sources we had never used (plus
+   a 209-clip set beside it). Our savings against x264 are 2.6–5.4 points smaller there for the newer codecs (AV1
+   −45.3% vs −50.7%), the references' shrink more, and our H.264 does better. The tuning-adjacent chart is on a
+   separate development page.
 
 3. **"Who reviewed AI-written decoder code that parses untrusted input?"** Nobody line by line. The decoders are
    safe Rust outside the SIMD kernels, but they can still panic on malformed input, fuzzing so far has been

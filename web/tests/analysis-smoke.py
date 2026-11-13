@@ -2,8 +2,8 @@
 """Headless Chromium smoke of the analysis mode (analysis-view.js), after
 tools/web/build.sh: the default page has no analysis elements; switching
 analysis on restarts the comparison with the analysis module (pkg/analysis/),
-draws the overlay and fills the statistics of the H.264 view, says the AV1
-view is not supported yet, zooms both views together and shows a block's
+draws the overlay and fills the statistics of the H.264 and AV1 views, says
+an AV2 view is not supported yet, zooms both views together and shows a block's
 record on hover; switching it off restores the page."""
 import functools
 import http.server
@@ -34,9 +34,8 @@ try:
         assert page.evaluate("document.querySelectorAll('.analysis-layer, .analysis-stats').length") == 0
         assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.querySelectorAll('canvas').length)") == [1, 1]
         page.locator('.analysis-toggle').click()
-        # The restart loads the analysis module; A's statistics fill, B says it is not supported.
-        page.wait_for_function("document.querySelectorAll('.analysis-stats')[0]?.querySelector('table')", timeout=60000)
-        assert 'not available' in page.locator('.analysis-stats').nth(1).text_content()
+        # The restart loads the analysis module; both views' statistics fill (H.264, AV1).
+        page.wait_for_function("[...document.querySelectorAll('.analysis-stats')].every(s => s.querySelector('table'))", timeout=60000)
         assert any('/pkg/analysis/' in n for n in page.evaluate("performance.getEntriesByType('resource').map(e => e.name)"))
         page.wait_for_timeout(500)
         drawn = """(() => { const c = document.querySelector('.analysis-layer');
@@ -52,6 +51,9 @@ try:
         page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
         page.wait_for_function("!document.querySelector('.analysis-tip').hidden", timeout=5000)
         assert 'QP' in page.locator('.analysis-tip').first.text_content()
+        # A codec without records yet (AV2) says so.
+        page.locator('.codec-picker').nth(1).select_option('av2')
+        page.wait_for_function("document.querySelectorAll('.analysis-stats')[1].textContent.includes('not available')", timeout=60000)
         # Off: the overlay hides and the pictures are unzoomed.
         page.locator('.analysis-toggle').click()
         page.wait_for_timeout(200)

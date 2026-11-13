@@ -66,6 +66,7 @@ fn random_filter(rng: &mut Rng) -> Av1LrFilter {
 }
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    check_wiener_axes(candidate, reference, rng, report);
     // Reused across cases, as decoders reuse them: stale contents from a
     // larger plane must not leak into a result.
     let mut scratch = [Av1LrScratch::default(), Av1LrScratch::default()];
@@ -107,6 +108,52 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                         "AV1 loop restoration mismatch: {width}x{height}, pattern {pattern}, \
                          sub_y {sub_y}, units of {unit_size}, filters {filters:?}"
                     ));
+                }
+            }
+        }
+    }
+}
+
+/// Exercise every zero-outer dispatch choice deterministically, including
+/// extreme inner coefficients, exact vector tails, and a stripe boundary.
+fn check_wiener_axes(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    for (width, height) in [(1, 1), (33, 70)] {
+        for (h0, v0) in [(0, 0), (0, -5), (10, 0), (10, -5)] {
+            for [_, c1, c2] in EXTREME_TAPS {
+                for pattern in 0..4 {
+                    let source: Vec<u8> = (0..width * height)
+                        .map(|i| sample(pattern, i % width, i / width, rng))
+                        .collect();
+                    let view = PlaneView::new(&source, width, width, height).unwrap();
+                    let boundaries = Av1StripeBoundaries::save(&view, false, None);
+                    let filters = [Av1LrFilter::Wiener(Av1Wiener {
+                        horizontal: [h0, c1, c2],
+                        vertical: [v0, c1, c2],
+                    })];
+                    let restoration = Av1LoopRestoration {
+                        unit_size: 128,
+                        columns: 1,
+                        rows: 1,
+                        filters: &filters,
+                    };
+                    let restore = |dsp: &Dsp| {
+                        let mut data = source.clone();
+                        let mut dst = PlaneViewMut::new(&mut data, width, width, height).unwrap();
+                        restoration.apply(
+                            dsp,
+                            &mut dst,
+                            &boundaries,
+                            false,
+                            &mut Av1LrScratch::default(),
+                        );
+                        data
+                    };
+                    report.cases += 1;
+                    if restore(candidate) != restore(reference) {
+                        report.failures.push(format!(
+                            "AV1 Wiener axis mismatch: {width}x{height}, pattern {pattern}, {filters:?}"
+                        ));
+                    }
                 }
             }
         }
