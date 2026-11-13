@@ -114,11 +114,14 @@ impl ChromaQpTable {
     /// Parse the syntax [`write`](Self::write) emits (any valid points) and
     /// derive the table (§7.4.3.4, equations 57-60).
     pub(crate) fn parse(r: &mut BitReader<'_>) -> Result<Self> {
-        let start = START_BIAS + r.read_se()?;
-        if !(0..MAX_QP as i32).contains(&start) {
+        // qp_table_start_minus26 is range-checked before the bias is added,
+        // so a value near i32::MAX cannot overflow (§7.4.3.4).
+        let start_minus26 = r.read_se()?;
+        if !(-START_BIAS..MAX_QP as i32 - START_BIAS).contains(&start_minus26) {
             return Err(DecodeError::Malformed("VVC chroma QP table start"));
         }
-        let points = r.read_ue()? as usize + 1;
+        let start = START_BIAS + start_minus26;
+        let points = r.read_ue_max(MAX_QP, "VVC chroma QP table points")? as usize + 1;
         if points > (MAX_QP as i32 - start) as usize {
             return Err(DecodeError::Malformed("VVC chroma QP table points"));
         }
@@ -237,5 +240,19 @@ mod tests {
         assert_eq!(table.map(43), 40);
         // Between points: 17 + (6 * m + 2) / 5.
         assert_eq!(table.map(18), 17 + (6 + 2) / 5);
+    }
+
+    /// A start offset near `i32::MAX` used to overflow when biased.
+    #[test]
+    fn start_is_range_checked_before_the_bias() {
+        let mut w = BitWriter::new();
+        w.put_se(i32::MAX);
+        w.put_ue(0);
+        w.trailing_bits();
+        let bytes = w.into_bytes();
+        assert_eq!(
+            ChromaQpTable::parse(&mut BitReader::new(&bytes)).err(),
+            Some(DecodeError::Malformed("VVC chroma QP table start"))
+        );
     }
 }

@@ -169,6 +169,21 @@ muxer. The other columns copy each frame out to /dev/null. Handoff:
 | libaom good 720p 1M | 1.642 | 1.558 | 1.553 | 1.361 | 1.323 | 1.313 |
 | libaom film grain 720p 1M | 2.268 | 2.219 | 2.214 | 1.467 | 1.436 | 1.424 |
 
+**Second round, head 070de669** (like for like, `--discard`; landed film grain, symbol search and the earlier rows):
+
+| Stream | x86 instructions | Jetson cycles |
+|---|---:|---:|
+| ours 720p 600k | 1.178 | 1.048 |
+| ours 1080p 3M | 1.229 | 1.118 |
+| SVT-AV1 M10 1080p 3M | 1.297 | 1.195 |
+| SVT-AV1 p8 720p 1M | 1.351 | 1.266 |
+| SVT-AV1 M12 `--rtc` 720p 1M | 1.293 | 1.203 |
+| libaom good 720p 1M | 1.555 | 1.306 |
+| libaom film grain 720p 1M | 1.618 | 1.149 |
+
+The scalar symbol search for small alphabets raises x86 instructions by 0.3–2.3%: it is a Jetson cycle win, and
+x86 wall time in interleaved A/B runs is within noise.
+
 x86 wall time, on core 14 under `host-timed.sh` with best of 7 rounds, is indicative only: the host load was
 about 33. Our 720p went from 1.15 to 1.11, our 1080p from 1.28 to 1.25, SVT M10 from 1.57 to 1.51, SVT p8 from
 1.47 to 1.39, SVT rtc from 1.41 to 1.35, and libaom stayed at 1.52.

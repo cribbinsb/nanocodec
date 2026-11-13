@@ -954,6 +954,14 @@ impl CodecBackend for Av1Backend {
     /// 8.7x → 13.3x airport (the Default's key/P guard is ~15x, Fast's
     /// ~10x). Fast keeps all three off.
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
+        // A coarser inter rounding offset (48 -> 41, AV1 Fast's value): a CPU
+        // cut at equal quality (study av1-default-md-2026-11-13 trial #1,
+        // mode-decision levers only). Head 0cdb619d (rate.debit), pool
+        // levels of rotation 2026-11-13: L1 -0.14%, L2 (ladder) -0.09%,
+        // disjoint L3 (79 clips, single-point) J +0.16% [-0.17, +0.50], no
+        // guard; x86 instructions -4.2%, Jetson cycles -3.1%. av1-svc and
+        // av1-svc3 pin 48.
+        ("av1.inter_rounding_q7", 41.0),
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,
