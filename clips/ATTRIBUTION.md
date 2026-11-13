@@ -19,6 +19,8 @@ plays AV1 only on devices with an AV1 hardware decoder.
 Licence: Creative Commons Attribution 3.0,
 <https://creativecommons.org/licenses/by/3.0/>. The Tears of Steel excerpts
 were also centre-cropped from 2.4:1 (1920×800) to 16:9 (1422×800) before scaling.
+All three were **retimed to 30 fps (1.25x)**: every 24 fps frame plays once at 30 fps,
+timestamps only, no re-encoding (`tools/web/retime-clips.py`).
 
 | Files | Work | Author | Source | Segment | CRF 360p / 720p |
 |---|---|---|---|---|---|
@@ -43,7 +45,8 @@ Attribution 4.0 International, <https://creativecommons.org/licenses/by/4.0/>.
   (SDR Rec. 709 mezzanines, 3840×2160p50, JPEG 2000 lossless, YUV 4:4:4 12-bit)
 
 Additional changes: 3840×2160 downscaled to 1280×720 and 640×360, every second
-frame dropped (50 → 25 fps), 4:4:4 12-bit converted to 4:2:0 8-bit.
+frame dropped (50 → 25 fps), 4:4:4 12-bit converted to 4:2:0 8-bit, then **retimed to
+30 fps (1.2x)**: every frame plays once at 30 fps (timestamps only, `tools/web/retime-clips.py`).
 
 | Files | Sequence | Master file | Segment | CRF 360p / 720p |
 |---|---|---|---|---|
@@ -104,8 +107,9 @@ Terms, verbatim from that document (§1 and §2):
 Source files: the Xiph.org derf collection's y4m conversions,
 `https://media.xiph.org/video/derf/y4m/<file>` (originally
 `ftp://vqeg.its.bldrdoc.gov/HDTV/SVT_MultiFormat/`). Additional changes: every
-second frame dropped (50 → 25 fps); crowd_run downscaled from 1080p (the others
-are SVT's own 720p versions and are not rescaled at 720p).
+second frame dropped (50 → 25 fps), then **retimed to 30 fps (1.2x)** (timestamps only,
+`tools/web/retime-clips.py`); crowd_run downscaled from 1080p (the others are SVT's own
+720p versions and are not rescaled at 720p).
 
 | Files | Sequence | Source file | Segment | CRF 360p / 720p |
 |---|---|---|---|---|
@@ -333,15 +337,38 @@ License. To view a copy of this license, visit
 http://creativecommons.org/licenses/by-nc-nd/4.0/
 ```
 
+## MOTChallenge MOT17 / MOT20 (CC BY-NC-SA 3.0)
+
+MOTChallenge MOT17 (Milan et al.) / MOT20 (Dendorfer et al.), Creative Commons
+Attribution-NonCommercial-ShareAlike 3.0, <https://motchallenge.net>,
+<https://creativecommons.org/licenses/by-nc-sa/3.0/>. Source: the original JPEG frames
+of the training sequences. Changes: a 10 s excerpt (300 frames), scaled with Lanczos
+(full picture kept: MOT20-05's 1654×1080 becomes 1102×720 and 552×360 and is letterboxed
+by the demo), full-range BT.601 converted to limited-range BT.709, encoded as described
+above (`tools/web/make-mot-clips.py`), every frame played once at 30 fps (MOT20-05, a
+25 fps sequence, is **retimed to 30 fps (1.2x)**). **These excerpts, and the pre-encoded
+streams made from them, are offered under the same CC BY-NC-SA 3.0 licence
+(ShareAlike), for non-commercial use only.**
+
+| Files | Sequence | Source frames | CRF 360p / 720p |
+|---|---|---|---|
+| `mot17-mall-walk-*.mp4` | MOT17-11 (moving camera, shopping mall, 1920×1080, 30 fps) | 601–900 (20.0–30.0 s) | 25 / 28 |
+| `mot17-night-crowd-*.mp4` | MOT17-04 (static elevated camera, night street, 1920×1080, 30 fps) | 211–510 (7.0–17.0 s) | 25 / 28 |
+| `mot20-dense-crowd-*.mp4` | MOT20-05 (~200 people, night, 1654×1080, 25 fps) | 2301–2600 (92.0–104.0 s) | 25 / 28 |
+
+The excerpts are the windows with the most frame-to-frame change times spatial detail
+(`make-mot-clips.py --pick`).
+
 ## Pre-encoded reference streams (`web/streams-ref/`)
 
 The demo's pre-encoded streams are further adaptations of the Xiph (public domain),
-Blender (CC BY 3.0) and SVT 2022 (CC BY 4.0) excerpts above, under the same terms and
-credits: each is the hosted excerpt re-encoded by a third-party encoder (x264,
+Blender (CC BY 3.0), SVT 2022 (CC BY 4.0) and MOTChallenge (CC BY-NC-SA 3.0; the streams
+too are CC BY-NC-SA 3.0, and each carries that notice in the manifest and the demo's
+panel) excerpts above, under the same terms and credits: each is the hosted excerpt re-encoded by a third-party encoder (x264,
 openh264, x265, SVT-AV1, libaom, libvpx or NVENC; every command line is in
 `web/streams-ref/manifest.json` and `docs/results/reference-streams.md`), after
-conversion to 8-bit BT.601 4:2:0, and for some streams scaling (854×480, 384×216) and
-frame-rate sampling (30 Hz ticks; 15, 10 fps). No Netflix sequence is re-encoded
+conversion to 8-bit BT.601 4:2:0, and for some streams scaling (854×480, 384×216),
+letterboxing and frame-rate sampling (every 2nd or 3rd frame: 15, 10 fps). No Netflix sequence is re-encoded
 (CC BY-NC-ND allows no derivatives) and no SVT Multi Format sequence is used.
 
 Only material whose terms allow redistribution is shipped here; the project's

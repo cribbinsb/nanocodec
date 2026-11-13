@@ -33,7 +33,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "e3bcd1be7ffff291174e9ddb93e4cf300ad51aa85c7cf906d8172574bdfa6d34"
   },
   {
    "id": "xiph-johnny-openh264-1280x720-30fps-300k",
@@ -66,7 +67,8 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "e3bcd1be7ffff291174e9ddb93e4cf300ad51aa85c7cf906d8172574bdfa6d34"
   },
   {
    "id": "xiph-johnny-svtav1-m12-1280x720-30fps-300k",
@@ -99,7 +101,8 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "e3bcd1be7ffff291174e9ddb93e4cf300ad51aa85c7cf906d8172574bdfa6d34"
   },
   {
    "id": "xiph-johnny-vpx-rt7-1280x720-30fps-300k",
@@ -132,7 +135,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "e3bcd1be7ffff291174e9ddb93e4cf300ad51aa85c7cf906d8172574bdfa6d34"
   },
   {
    "id": "xiph-johnny-openh264-640x360-15fps-150k",
@@ -165,7 +169,8 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "b10b4da79462b53cae353855f01e92db06d81e6d03518d71eda1a127bca47592"
   },
   {
    "id": "xiph-four-people-x264-medium-854x480-30fps-400k",
@@ -198,7 +203,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "c4936b217ff51a4e500695be69f755104d7be528daf00c7a8863240d4b1a9982"
   },
   {
    "id": "xiph-four-people-x265-medium-854x480-30fps-400k",
@@ -231,7 +237,8 @@
     "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "c4936b217ff51a4e500695be69f755104d7be528daf00c7a8863240d4b1a9982"
   },
   {
    "id": "xiph-four-people-vpx-rt7-854x480-30fps-400k",
@@ -264,7 +271,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "c4936b217ff51a4e500695be69f755104d7be528daf00c7a8863240d4b1a9982"
   },
   {
    "id": "xiph-four-people-svtav1-m12-854x480-30fps-400k",
@@ -297,7 +305,8 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "c4936b217ff51a4e500695be69f755104d7be528daf00c7a8863240d4b1a9982"
   },
   {
    "id": "xiph-kristen-sara-nvenc-h264-1280x720-30fps-600k",
@@ -327,7 +336,8 @@
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "459545f70aadda345afb4ecda1c417c046d29e3681ba47cec47c3c2f163ee5a1"
   },
   {
    "id": "xiph-kristen-sara-x264-veryfast-1280x720-30fps-600k",
@@ -360,7 +370,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "459545f70aadda345afb4ecda1c417c046d29e3681ba47cec47c3c2f163ee5a1"
   },
   {
    "id": "xiph-kristen-sara-vpx-rt9-1280x720-30fps-600k",
@@ -393,7 +404,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "459545f70aadda345afb4ecda1c417c046d29e3681ba47cec47c3c2f163ee5a1"
   },
   {
    "id": "xiph-kristen-sara-openh264-640x360-30fps-100k",
@@ -426,7 +438,8 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "6a66076f2a9575832c031b8ad6d572f00d0bcc88ee7015c9fa67fabcc6431bee"
   },
   {
    "id": "xiph-vidyo4-x264-veryfast-640x360-30fps-100k",
@@ -459,7 +472,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "58495fb41553335ed8404cb4af5799740d50423a663867b68a676cf4a8d6dce2"
   },
   {
    "id": "xiph-vidyo4-openh264-640x360-30fps-100k",
@@ -492,7 +506,8 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "58495fb41553335ed8404cb4af5799740d50423a663867b68a676cf4a8d6dce2"
   },
   {
    "id": "xiph-vidyo4-vpx-rt7-640x360-30fps-100k",
@@ -525,7 +540,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "58495fb41553335ed8404cb4af5799740d50423a663867b68a676cf4a8d6dce2"
   },
   {
    "id": "xiph-vidyo3-vpx-rt9-1280x720-15fps-250k",
@@ -558,7 +574,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "7508ed752bdbb9753d7c0cd3fa0b1367b70ea4f2fe2bc087359c05881bd7af7a"
   },
   {
    "id": "xiph-vidyo3-x264-medium-1280x720-15fps-250k",
@@ -591,7 +608,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "7508ed752bdbb9753d7c0cd3fa0b1367b70ea4f2fe2bc087359c05881bd7af7a"
   },
   {
    "id": "xiph-vidyo3-openh264-1280x720-15fps-250k",
@@ -624,7 +642,8 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "7508ed752bdbb9753d7c0cd3fa0b1367b70ea4f2fe2bc087359c05881bd7af7a"
   },
   {
    "id": "xiph-vidyo3-aom-rt8-1280x720-15fps-250k",
@@ -657,7 +676,8 @@
     "version": "AOMedia Project AV1 Encoder 3.15.3 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "7508ed752bdbb9753d7c0cd3fa0b1367b70ea4f2fe2bc087359c05881bd7af7a"
   },
   {
    "id": "tos-canal-svtav1-m8-1280x720-30fps-1200k",
@@ -670,16 +690,16 @@
    "width": 1280,
    "height": 720,
    "fps": 30,
-   "frames": 360,
-   "loopTicks": 360,
+   "frames": 288,
+   "loopTicks": 288,
    "keyInterval": 300,
    "targetKbps": 1200,
-   "actualKbps": 1144.6,
+   "actualKbps": 1203.2,
    "bufferMs": 1000,
-   "bytes": 1721189,
-   "sha256": "0147107674dd8bd95551ad8e53f5cd2acc9912ce32037a192ac6ab78a8674f55",
+   "bytes": 1447344,
+   "sha256": "73d420c5b8cd0bf29fbe51093f61bfde5cdb6065a9ee2a1773310d90761bf34e",
    "sourceFile": "clips/tos-canal-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 8 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 1200 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 1280 -h 720 -n 360 -i source.yuv -b stream.out",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 8 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 1200 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 1280 -h 720 -n 288 -i source.yuv -b stream.out",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
     "source": {
@@ -690,7 +710,8 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "b2bdb9a3028a1fa4a2b86be903f5694b03a3ea63fe8b6ca44abdca3ec882df9d"
   },
   {
    "id": "tos-canal-x265-superfast-1280x720-30fps-1200k",
@@ -703,16 +724,16 @@
    "width": 1280,
    "height": 720,
    "fps": 30,
-   "frames": 360,
-   "loopTicks": 360,
+   "frames": 288,
+   "loopTicks": 288,
    "keyInterval": 300,
    "targetKbps": 1200,
-   "actualKbps": 1219.9,
+   "actualKbps": 1203.3,
    "bufferMs": 1000,
-   "bytes": 1834168,
-   "sha256": "ebe9b0966b9d5a22c3eca54ada6c389cda6abddde6ebbf81796a642c4eef83a8",
+   "bytes": 1447439,
+   "sha256": "d76f1f90b7fb2758ca2d2e17aad79d8626e1b156f8527d8a65a58d0d07781b31",
    "sourceFile": "clips/tos-canal-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset superfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1200 --vbv-maxrate 1200 --vbv-bufsize 1200 --input-res 1280x720 --fps 30/1 --frames 360 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset superfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1200 --vbv-maxrate 1200 --vbv-bufsize 1200 --input-res 1280x720 --fps 30/1 --frames 288 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/x265",
     "source": {
@@ -723,7 +744,8 @@
     "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "b2bdb9a3028a1fa4a2b86be903f5694b03a3ea63fe8b6ca44abdca3ec882df9d"
   },
   {
    "id": "tos-canal-vpx-good4-1280x720-30fps-1200k",
@@ -736,16 +758,16 @@
    "width": 1280,
    "height": 720,
    "fps": 30,
-   "frames": 360,
-   "loopTicks": 360,
+   "frames": 288,
+   "loopTicks": 288,
    "keyInterval": 300,
    "targetKbps": 1200,
-   "actualKbps": 1210.5,
+   "actualKbps": 1207.4,
    "bufferMs": 1000,
-   "bytes": 1820143,
-   "sha256": "a9d58a6765eaa8f6db65075ae525f5e7f3fb93d7e4962f07efd39332dfdef07c",
+   "bytes": 1452313,
+   "sha256": "f1290e132011d12d6841449f3f6fd9c1ce49a1f5ec74777a3ee7b0006a3f9243",
    "sourceFile": "clips/tos-canal-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=1200 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=360 --ivf -o stream.out source.yuv",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=1200 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=288 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -756,7 +778,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "b2bdb9a3028a1fa4a2b86be903f5694b03a3ea63fe8b6ca44abdca3ec882df9d"
   },
   {
    "id": "tos-canal-aom-rt8-640x360-10fps-150k",
@@ -769,16 +792,16 @@
    "width": 640,
    "height": 360,
    "fps": 10,
-   "frames": 120,
-   "loopTicks": 360,
+   "frames": 96,
+   "loopTicks": 288,
    "keyInterval": 100,
    "targetKbps": 150,
    "actualKbps": 151.8,
    "bufferMs": 1000,
-   "bytes": 229235,
-   "sha256": "c89afeb4f6b329cdbbdfe410c041125023739bd7ca7a5471547e50ce7766fe26",
+   "bytes": 183317,
+   "sha256": "1ac3621b4f7451f98e66862f34cfc973166b057b9163f0b61eee12e91ac25df6",
    "sourceFile": "clips/tos-canal-360p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/aomenc --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=8 --end-usage=cbr --target-bitrate=150 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=100 --kf-max-dist=100 --i420 --width=640 --height=360 --fps=10/1 --limit=120 --ivf -o stream.out source.yuv",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/aomenc --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=8 --end-usage=cbr --target-bitrate=150 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=100 --kf-max-dist=100 --i420 --width=640 --height=360 --fps=10/1 --limit=96 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/aomenc",
     "source": {
@@ -789,7 +812,8 @@
     "version": "AOMedia Project AV1 Encoder 3.15.3 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "d26964c322bc6ca8a24b6fce6c44db0f912d26bc90245a9c6bcbd6effb2ed992"
   },
   {
    "id": "tos-canal-openh264-640x360-10fps-150k",
@@ -802,16 +826,16 @@
    "width": 640,
    "height": 360,
    "fps": 10,
-   "frames": 120,
-   "loopTicks": 360,
+   "frames": 96,
+   "loopTicks": 288,
    "keyInterval": 100,
    "targetKbps": 150,
-   "actualKbps": 150.1,
+   "actualKbps": 150.0,
    "bufferMs": 1000,
-   "bytes": 226601,
-   "sha256": "e702a9d35db43ecf2118a7374774e16e72b3e7be934c997e9bddf756376344b3",
+   "bytes": 181218,
+   "sha256": "d8f4ccb7883a8e83489d551f6e956bb657cbc96e0f63cc830344f4bbb33a15ff",
    "sourceFile": "clips/tos-canal-360p.mp4",
-   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 640 --height 360 --fps 10 --frames 120 --usage camera-realtime --complexity medium --cabac 0 --bitrate 150 --intra-period 100 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 640 --height 360 --fps 10 --frames 96 --usage camera-realtime --complexity medium --cabac 0 --bitrate 150 --intra-period 100 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
    "version": {
     "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
     "source": {
@@ -822,7 +846,8 @@
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "d26964c322bc6ca8a24b6fce6c44db0f912d26bc90245a9c6bcbd6effb2ed992"
   },
   {
    "id": "svt-waterfall-x264-medium-1280x720-30fps-2000k",
@@ -835,16 +860,16 @@
    "width": 1280,
    "height": 720,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 2000,
-   "actualKbps": 2022.6,
+   "actualKbps": 2021.5,
    "bufferMs": 1000,
-   "bytes": 2531934,
-   "sha256": "37b337e0bd1197064e1470f18be7c9b8665d683d2ec586d670ef7d12e7598c8b",
+   "bytes": 2108810,
+   "sha256": "d9dba056731ade6bfd00587d323f17f8a3cc02e84416a75661ebb951a5523590",
    "sourceFile": "clips/svt-waterfall-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 250 --threads 1 --output stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
     "source": {
@@ -855,7 +880,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "4aeb8779a1fed33cac0ff0c40dcf4ba6eeff62a25cd71cba6c54b8577c0e36e4"
   },
   {
    "id": "svt-waterfall-nvenc-av1-1280x720-30fps-2000k",
@@ -868,16 +894,16 @@
    "width": 1280,
    "height": 720,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 2000,
-   "actualKbps": 2062.4,
+   "actualKbps": 2024.5,
    "bufferMs": 1000,
-   "bytes": 2581653,
-   "sha256": "4ec8f7f3f26ad435b7c61bd3c122bad7a79cfc580624a7283281359dff391e23",
+   "bytes": 2111936,
+   "sha256": "a406a9c7dccc60cbe9444c8bd08dfa8871ac940b13c13970c5ad24586d04dd9f",
    "sourceFile": "clips/svt-waterfall-720p.mp4",
-   "command": "~/anaconda3/envs/dataset-processor2/bin/ffmpeg -hide_banner -nostdin -loglevel error -f rawvideo -pix_fmt yuv420p -s 1280x720 -framerate 30/1 -i source.yuv -frames:v 300 -c:v av1_nvenc -preset p4 -tune ll -rc cbr -b:v 2000k -maxrate 2000k -bufsize 2000k -bf 0 -rc-lookahead 0 -no-scenecut 1 -g 300 -zerolatency 1 -delay 0 -f ivf -y stream.out",
+   "command": "~/anaconda3/envs/dataset-processor2/bin/ffmpeg -hide_banner -nostdin -loglevel error -f rawvideo -pix_fmt yuv420p -s 1280x720 -framerate 30/1 -i source.yuv -frames:v 250 -c:v av1_nvenc -preset p4 -tune ll -rc cbr -b:v 2000k -maxrate 2000k -bufsize 2000k -bf 0 -rc-lookahead 0 -no-scenecut 1 -g 300 -zerolatency 1 -delay 0 -f ivf -y stream.out",
    "version": {
     "binary": "~/anaconda3/envs/dataset-processor2/bin/ffmpeg",
     "source": {},
@@ -885,7 +911,8 @@
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "4aeb8779a1fed33cac0ff0c40dcf4ba6eeff62a25cd71cba6c54b8577c0e36e4"
   },
   {
    "id": "svt-waterfall-vpx-rt7-1280x720-30fps-2000k",
@@ -898,16 +925,16 @@
    "width": 1280,
    "height": 720,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 2000,
-   "actualKbps": 2132.6,
+   "actualKbps": 2007.9,
    "bufferMs": 1000,
-   "bytes": 2669415,
-   "sha256": "3f92e75bb3a41bdfcfae970375351b51ca9941981c42fc6c57dc9c6aaa87832c",
+   "bytes": 2094549,
+   "sha256": "d1d8109354459b0283e1de2228193d7f5a4133d029bf760ade39516cffd54394",
    "sourceFile": "clips/svt-waterfall-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=2000 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=2000 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=250 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -918,7 +945,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "4aeb8779a1fed33cac0ff0c40dcf4ba6eeff62a25cd71cba6c54b8577c0e36e4"
   },
   {
    "id": "svt-smoke-sauna-vpx-good4-854x480-30fps-600k",
@@ -931,16 +959,16 @@
    "width": 854,
    "height": 480,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 600,
-   "actualKbps": 604.3,
+   "actualKbps": 601.8,
    "bufferMs": 1000,
-   "bytes": 758965,
-   "sha256": "814c126e60bacf18196248d0ead5778ff239b381cd61887965d918bc11d5aa30",
+   "bytes": 629879,
+   "sha256": "5e20c460c3cbe99741047f670d8e01f2b6401064bc9aacd030a9a1e42ebd9c9a",
    "sourceFile": "clips/svt-smoke-sauna-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=600 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=854 --height=480 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=600 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=854 --height=480 --fps=30/1 --limit=250 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -951,7 +979,8 @@
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "ce8a5c246b04b45592cf0b05261a244bea4430a987d6b66c4f57c6ac91afa2dc"
   },
   {
    "id": "svt-smoke-sauna-x264-medium-854x480-30fps-600k",
@@ -964,16 +993,16 @@
    "width": 854,
    "height": 480,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 600,
-   "actualKbps": 592.7,
+   "actualKbps": 573.7,
    "bufferMs": 1000,
-   "bytes": 744448,
-   "sha256": "bf999aea7b61051302a41a80ee0359e10843240fa0c5367d7f4f405350181c08",
+   "bytes": 600614,
+   "sha256": "b8e13a1e779cb5918c3133c6ed51ea6a657e8c70333ec252e888b10d77cd95c7",
    "sourceFile": "clips/svt-smoke-sauna-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 854x480 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 854x480 --fps 30/1 --frames 250 --threads 1 --output stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
     "source": {
@@ -984,7 +1013,8 @@
     "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "ce8a5c246b04b45592cf0b05261a244bea4430a987d6b66c4f57c6ac91afa2dc"
   },
   {
    "id": "svt-smoke-sauna-svtav1-m12-854x480-30fps-600k",
@@ -997,16 +1027,16 @@
    "width": 854,
    "height": 480,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 600,
-   "actualKbps": 533.2,
+   "actualKbps": 594.6,
    "bufferMs": 1000,
-   "bytes": 670188,
-   "sha256": "d7d968ebc6c0c7df7c29a8ff194ad45f61b4581aa5c1cf1a4981152e25e76b71",
+   "bytes": 622372,
+   "sha256": "32c4d9dd987f421fe5c0e454c693f9cd4b93449ab5a018dac7db0d2482b8dfa5",
    "sourceFile": "clips/svt-smoke-sauna-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 600 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 854 -h 480 -n 300 -i source.yuv -b stream.out",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 600 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 854 -h 480 -n 250 -i source.yuv -b stream.out",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
     "source": {
@@ -1017,7 +1047,8 @@
     "version": "SVT-AV1 v4.3.0 (release)"
    },
    "bitDepth": 8,
-   "chroma": "4:2:0"
+   "chroma": "4:2:0",
+   "sourceSha256": "ce8a5c246b04b45592cf0b05261a244bea4430a987d6b66c4f57c6ac91afa2dc"
   },
   {
    "id": "svt-smoke-sauna-vpx-rt9-640x360-15fps-200k",
@@ -1030,16 +1061,17 @@
    "width": 640,
    "height": 360,
    "fps": 15,
-   "frames": 150,
-   "loopTicks": 300,
+   "frames": 125,
+   "loopTicks": 250,
    "keyInterval": 150,
    "targetKbps": 200,
    "actualKbps": 200.4,
    "bufferMs": 1000,
-   "bytes": 252292,
-   "sha256": "590f5fe889c80c075701fab28feae299aff50ad342b034f13e3cd8b2bbe99a43",
+   "bytes": 210251,
+   "sha256": "f84a734c330d9969556ba8c9fff14a95aedfdcf9093f8e4db486169db67b1b5d",
    "sourceFile": "clips/svt-smoke-sauna-360p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=9 --end-usage=cbr --target-bitrate=200 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=150 --kf-max-dist=150 --i420 --width=640 --height=360 --fps=15/1 --limit=150 --ivf -o stream.out source.yuv",
+   "sourceSha256": "6b70e8492ec1ddc9c2489abcf8b8f340be1a361add4e73036adac657f94d392e",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=9 --end-usage=cbr --target-bitrate=200 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=150 --kf-max-dist=150 --i420 --width=640 --height=360 --fps=15/1 --limit=125 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -1063,16 +1095,17 @@
    "width": 640,
    "height": 360,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 400,
-   "actualKbps": 392.4,
+   "actualKbps": 406.7,
    "bufferMs": 1000,
-   "bytes": 494104,
-   "sha256": "0d924399ba5959bd5c50f8e2bd5a0a69f3a7a2434c55ec86d90456317c21c73a",
+   "bytes": 426674,
+   "sha256": "33ed355881253c9fa21a7974eec0e4d7ba856970f1252bf10ebb5c63d6ee5862",
    "sourceFile": "clips/svt-midnight-sun-360p.mp4",
-   "command": "~/anaconda3/envs/dataset-processor2/bin/ffmpeg -hide_banner -nostdin -loglevel error -f rawvideo -pix_fmt yuv420p -s 640x360 -framerate 30/1 -i source.yuv -frames:v 300 -c:v hevc_nvenc -preset p4 -tune ll -profile:v main -rc cbr -b:v 400k -maxrate 400k -bufsize 400k -bf 0 -rc-lookahead 0 -no-scenecut 1 -g 300 -zerolatency 1 -delay 0 -f hevc -y stream.out",
+   "sourceSha256": "af9bea9ad114443f0a9357e03d7d86f7a0869eee4798e6a8083b30b03faa01fa",
+   "command": "~/anaconda3/envs/dataset-processor2/bin/ffmpeg -hide_banner -nostdin -loglevel error -f rawvideo -pix_fmt yuv420p -s 640x360 -framerate 30/1 -i source.yuv -frames:v 250 -c:v hevc_nvenc -preset p4 -tune ll -profile:v main -rc cbr -b:v 400k -maxrate 400k -bufsize 400k -bf 0 -rc-lookahead 0 -no-scenecut 1 -g 300 -zerolatency 1 -delay 0 -f hevc -y stream.out",
    "version": {
     "binary": "~/anaconda3/envs/dataset-processor2/bin/ffmpeg",
     "source": {},
@@ -1093,16 +1126,17 @@
    "width": 640,
    "height": 360,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 400,
-   "actualKbps": 406.5,
+   "actualKbps": 406.6,
    "bufferMs": 1000,
-   "bytes": 511705,
-   "sha256": "8b6094321b60c2db187d4b09731b9a05d8fe014a74c1f71c7b33d0effcb05ecb",
+   "bytes": 426563,
+   "sha256": "6d32a0604a0fced7a1c149a3a3daea50469bf26272646440701f86424bb7d6d3",
    "sourceFile": "clips/svt-midnight-sun-360p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 400 --vbv-maxrate 400 --vbv-bufsize 400 --input-res 640x360 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
+   "sourceSha256": "af9bea9ad114443f0a9357e03d7d86f7a0869eee4798e6a8083b30b03faa01fa",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 400 --vbv-maxrate 400 --vbv-bufsize 400 --input-res 640x360 --fps 30/1 --frames 250 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/x265",
     "source": {
@@ -1126,16 +1160,17 @@
    "width": 640,
    "height": 360,
    "fps": 30,
-   "frames": 300,
-   "loopTicks": 300,
+   "frames": 250,
+   "loopTicks": 250,
    "keyInterval": 300,
    "targetKbps": 400,
-   "actualKbps": 419.9,
+   "actualKbps": 402.0,
    "bufferMs": 1000,
-   "bytes": 528534,
-   "sha256": "ca3f2db66496f895ecb36259206206f938904f5eafb684ac4f5eda6f4aad3aad",
+   "bytes": 421750,
+   "sha256": "998492161dc0534ed59d0817a118c52f8b0bbdddcdb0a45aacd4bdffe2daaa05",
    "sourceFile": "clips/svt-midnight-sun-360p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=400 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=640 --height=360 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "sourceSha256": "af9bea9ad114443f0a9357e03d7d86f7a0869eee4798e6a8083b30b03faa01fa",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=400 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=640 --height=360 --fps=30/1 --limit=250 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -1159,16 +1194,17 @@
    "width": 384,
    "height": 216,
    "fps": 15,
-   "frames": 150,
-   "loopTicks": 300,
+   "frames": 125,
+   "loopTicks": 250,
    "keyInterval": 150,
    "targetKbps": 100,
-   "actualKbps": 100.4,
+   "actualKbps": 100.5,
    "bufferMs": 1000,
-   "bytes": 127271,
-   "sha256": "d98b9f4189bec62c693b578c5028000a59d75976998baad6f0d8a5fbb2078fc1",
+   "bytes": 106245,
+   "sha256": "10915a8520fd50e0d37f3f1a1982d0bfd42bb1aed47f87019f8dd8fe8758f7a4",
    "sourceFile": "clips/svt-midnight-sun-360p.mp4",
-   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 384 --height 216 --fps 15 --frames 150 --usage camera-realtime --complexity medium --cabac 0 --bitrate 100 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "sourceSha256": "af9bea9ad114443f0a9357e03d7d86f7a0869eee4798e6a8083b30b03faa01fa",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 384 --height 216 --fps 15 --frames 125 --usage camera-realtime --complexity medium --cabac 0 --bitrate 100 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
    "version": {
     "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
     "source": {
@@ -1192,16 +1228,17 @@
    "width": 384,
    "height": 216,
    "fps": 15,
-   "frames": 210,
-   "loopTicks": 420,
+   "frames": 168,
+   "loopTicks": 336,
    "keyInterval": 150,
    "targetKbps": 100,
-   "actualKbps": 98.4,
+   "actualKbps": 101.1,
    "bufferMs": 1000,
-   "bytes": 174747,
-   "sha256": "3048f8805d0dc65cb2a8a15ba954a83293445ed380dfd8ba2b411a64bc35dbf5",
+   "bytes": 143527,
+   "sha256": "9a1a637f1a6d882fe65318d97c92a3213a505a3aa24f6a8df0d68692edc821f4",
    "sourceFile": "clips/bbb-tree-360p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 100 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 150 --scd 0 --lp 1 --fps-num 15 --fps-denom 1 -w 384 -h 216 -n 210 -i source.yuv -b stream.out",
+   "sourceSha256": "9eb907ee37d4cd8b4c983ffbff9164656762c61783ad67c8869d7b295707b030",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 100 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 150 --scd 0 --lp 1 --fps-num 15 --fps-denom 1 -w 384 -h 216 -n 168 -i source.yuv -b stream.out",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
     "source": {
@@ -1225,16 +1262,17 @@
    "width": 854,
    "height": 480,
    "fps": 30,
-   "frames": 420,
-   "loopTicks": 420,
+   "frames": 336,
+   "loopTicks": 336,
    "keyInterval": 300,
    "targetKbps": 500,
-   "actualKbps": 485.2,
+   "actualKbps": 497.8,
    "bufferMs": 1000,
-   "bytes": 854193,
-   "sha256": "437c2a5f3afacfe33c8e7431befbcdd6d18353d73073bd816ad0eadfe27c1044",
+   "bytes": 700918,
+   "sha256": "90ba0715db9670082081eafccd7511f9fd0a3959ffebd73b2f84b47e20fd2494",
    "sourceFile": "clips/bbb-tree-720p.mp4",
-   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 854 --height 480 --fps 30 --frames 420 --usage camera-realtime --complexity medium --cabac 0 --bitrate 500 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "sourceSha256": "e8b826354a3432f11b19eda6f94f3977edfb47e279ca4c33b0aac1626166818b",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 854 --height 480 --fps 30 --frames 336 --usage camera-realtime --complexity medium --cabac 0 --bitrate 500 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
    "version": {
     "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
     "source": {
@@ -1258,16 +1296,17 @@
    "width": 854,
    "height": 480,
    "fps": 30,
-   "frames": 420,
-   "loopTicks": 420,
+   "frames": 336,
+   "loopTicks": 336,
    "keyInterval": 300,
    "targetKbps": 500,
-   "actualKbps": 496.0,
+   "actualKbps": 481.1,
    "bufferMs": 1000,
-   "bytes": 873009,
-   "sha256": "4a61879107f17d1e3ef93e27c700c56c082a3d6685d944017d704c22e6e29794",
+   "bytes": 677591,
+   "sha256": "bf8e8142183fa6838e52e0647cf66bd189d77df88aaa4a199abee1e46bb68843",
    "sourceFile": "clips/bbb-tree-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset veryfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 500 --vbv-maxrate 500 --vbv-bufsize 500 --input-res 854x480 --fps 30/1 --frames 420 --threads 1 --output stream.out source.yuv",
+   "sourceSha256": "e8b826354a3432f11b19eda6f94f3977edfb47e279ca4c33b0aac1626166818b",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset veryfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 500 --vbv-maxrate 500 --vbv-bufsize 500 --input-res 854x480 --fps 30/1 --frames 336 --threads 1 --output stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
     "source": {
@@ -1291,16 +1330,17 @@
    "width": 854,
    "height": 480,
    "fps": 30,
-   "frames": 420,
-   "loopTicks": 420,
+   "frames": 336,
+   "loopTicks": 336,
    "keyInterval": 300,
    "targetKbps": 500,
-   "actualKbps": 524.7,
+   "actualKbps": 506.3,
    "bufferMs": 1000,
-   "bytes": 923249,
-   "sha256": "7cb10e9b88cd7c61a5c0214b52fd7fd011dc792ff436cad41170639428e21635",
+   "bytes": 712916,
+   "sha256": "ebd03c673bfccea346ffb44e809dc641bc861f3c5de6c8e54c4c6c32a7bd2bf2",
    "sourceFile": "clips/bbb-tree-720p.mp4",
-   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=500 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=854 --height=480 --fps=30/1 --limit=420 --ivf -o stream.out source.yuv",
+   "sourceSha256": "e8b826354a3432f11b19eda6f94f3977edfb47e279ca4c33b0aac1626166818b",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=500 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=854 --height=480 --fps=30/1 --limit=336 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -1312,6 +1352,461 @@
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
+  },
+  {
+   "id": "mot20-dense-crowd-svtav1-m12-1280x720-30fps-1500k",
+   "file": "mot20-dense-crowd-svtav1-m12-1280x720-30fps-1500k.ivf",
+   "clip": "mot20-dense-crowd",
+   "codec": "av1",
+   "encoder": "svtav1-m12",
+   "label": "SVT-AV1 M12 --rtc",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1489.7,
+   "bufferMs": 1000,
+   "bytes": 1865735,
+   "sha256": "61a93a6fc82a620843a8d9dc6e92d7b9a8ee6b5c6083752200ab64cc16919264",
+   "sourceFile": "clips/mot20-dense-crowd-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 1500 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 1280 -h 720 -n 300 -i source.yuv -b stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
+    "source": {
+     "url": "https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+     "ref": "v4.3.0",
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe"
+    },
+    "version": "SVT-AV1 v4.3.0 (release)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "75698ec348239833bf269d2d5058d659d0124ab2262fd225f226a5e2cff4b373"
+  },
+  {
+   "id": "mot20-dense-crowd-x264-medium-1280x720-30fps-1500k",
+   "file": "mot20-dense-crowd-x264-medium-1280x720-30fps-1500k.ivf",
+   "clip": "mot20-dense-crowd",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1442.1,
+   "bufferMs": 1000,
+   "bytes": 1806309,
+   "sha256": "165720e770c0b8d6cbe6a33b5dff1038c51b41b04a8d206e12ed20de57409f44",
+   "sourceFile": "clips/mot20-dense-crowd-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "75698ec348239833bf269d2d5058d659d0124ab2262fd225f226a5e2cff4b373"
+  },
+  {
+   "id": "mot20-dense-crowd-vpx-rt7-1280x720-30fps-1500k",
+   "file": "mot20-dense-crowd-vpx-rt7-1280x720-30fps-1500k.ivf",
+   "clip": "mot20-dense-crowd",
+   "codec": "vp9",
+   "encoder": "vpx-rt7",
+   "label": "libvpx VP9 realtime cpu-used 7",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1505.4,
+   "bufferMs": 1000,
+   "bytes": 1885425,
+   "sha256": "227046c35cda8b3d1c7574aca968afbc1063175ceb45a3498d0594fc99a39ba2",
+   "sourceFile": "clips/mot20-dense-crowd-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=1500 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "75698ec348239833bf269d2d5058d659d0124ab2262fd225f226a5e2cff4b373"
+  },
+  {
+   "id": "mot20-dense-crowd-openh264-1280x720-30fps-1500k",
+   "file": "mot20-dense-crowd-openh264-1280x720-30fps-1500k.ivf",
+   "clip": "mot20-dense-crowd",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1500,
+   "actualKbps": 1499.2,
+   "bufferMs": 1000,
+   "bytes": 1877670,
+   "sha256": "b9446745d7b12dc73a32694e6444c3d7b6d786d386955154f1d33e5ce8996cb6",
+   "sourceFile": "clips/mot20-dense-crowd-720p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1500 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "75698ec348239833bf269d2d5058d659d0124ab2262fd225f226a5e2cff4b373"
+  },
+  {
+   "id": "mot20-dense-crowd-x264-medium-640x360-30fps-150k",
+   "file": "mot20-dense-crowd-x264-medium-640x360-30fps-150k.ivf",
+   "clip": "mot20-dense-crowd",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 150,
+   "actualKbps": 144.9,
+   "bufferMs": 1000,
+   "bytes": 184812,
+   "sha256": "58577791fefcb78dcf590ba5cdd07f11c4a58731e4d74d7ebc76faf54684fbf7",
+   "sourceFile": "clips/mot20-dense-crowd-360p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 150 --vbv-maxrate 150 --vbv-bufsize 150 --input-res 640x360 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT20 (Dendorfer et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "ca90f46435366c370d9abe77b627e1b4467ac8d39ad938bafd6aa3ca90e2198a"
+  },
+  {
+   "id": "mot17-mall-walk-svtav1-m12-1280x720-30fps-1000k",
+   "file": "mot17-mall-walk-svtav1-m12-1280x720-30fps-1000k.ivf",
+   "clip": "mot17-mall-walk",
+   "codec": "av1",
+   "encoder": "svtav1-m12",
+   "label": "SVT-AV1 M12 --rtc",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 999.9,
+   "bufferMs": 1000,
+   "bytes": 1253568,
+   "sha256": "88047ee9cd24c37aa22359061f2de2c6ebc31d4020884a5f5f668e3d8b090eda",
+   "sourceFile": "clips/mot17-mall-walk-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 1000 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 1280 -h 720 -n 300 -i source.yuv -b stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
+    "source": {
+     "url": "https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+     "ref": "v4.3.0",
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe"
+    },
+    "version": "SVT-AV1 v4.3.0 (release)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "bff7e87c5ee7d614b88821f94f9e725d68d23a40681aa2b50764bbe513c4b89f"
+  },
+  {
+   "id": "mot17-mall-walk-x264-medium-1280x720-30fps-1000k",
+   "file": "mot17-mall-walk-x264-medium-1280x720-30fps-1000k.ivf",
+   "clip": "mot17-mall-walk",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 1035.6,
+   "bufferMs": 1000,
+   "bytes": 1298089,
+   "sha256": "b2e7056d5d68113edaf356c6ba722f2aa9a6e6c52ce3cfef2862203e19264f2c",
+   "sourceFile": "clips/mot17-mall-walk-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "bff7e87c5ee7d614b88821f94f9e725d68d23a40681aa2b50764bbe513c4b89f"
+  },
+  {
+   "id": "mot17-mall-walk-vpx-rt7-1280x720-30fps-1000k",
+   "file": "mot17-mall-walk-vpx-rt7-1280x720-30fps-1000k.ivf",
+   "clip": "mot17-mall-walk",
+   "codec": "vp9",
+   "encoder": "vpx-rt7",
+   "label": "libvpx VP9 realtime cpu-used 7",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 1000,
+   "actualKbps": 1001.2,
+   "bufferMs": 1000,
+   "bytes": 1255108,
+   "sha256": "8a3a7a48d8940970f3c9aaf90d486bc533958835bff20f73c4b0071f186fcc63",
+   "sourceFile": "clips/mot17-mall-walk-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=1000 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "bff7e87c5ee7d614b88821f94f9e725d68d23a40681aa2b50764bbe513c4b89f"
+  },
+  {
+   "id": "mot17-mall-walk-openh264-854x480-15fps-400k",
+   "file": "mot17-mall-walk-openh264-854x480-15fps-400k.ivf",
+   "clip": "mot17-mall-walk",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 854,
+   "height": 480,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 400,
+   "actualKbps": 399.7,
+   "bufferMs": 1000,
+   "bytes": 501495,
+   "sha256": "03206165801f3cb06fc5ef323d26f407b422fd669bcc0dded32098a9c334961c",
+   "sourceFile": "clips/mot17-mall-walk-720p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 854 --height 480 --fps 15 --frames 150 --usage camera-realtime --complexity medium --cabac 0 --bitrate 400 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "bff7e87c5ee7d614b88821f94f9e725d68d23a40681aa2b50764bbe513c4b89f"
+  },
+  {
+   "id": "mot17-night-crowd-svtav1-m12-1280x720-30fps-800k",
+   "file": "mot17-night-crowd-svtav1-m12-1280x720-30fps-800k.ivf",
+   "clip": "mot17-night-crowd",
+   "codec": "av1",
+   "encoder": "svtav1-m12",
+   "label": "SVT-AV1 M12 --rtc",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 800,
+   "actualKbps": 798.3,
+   "bufferMs": 1000,
+   "bytes": 1001473,
+   "sha256": "463896fd33cde93ac62609c9bf1faa6a9558bd29d496445e0c6a03b5ba1902a4",
+   "sourceFile": "clips/mot17-night-crowd-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 800 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 1280 -h 720 -n 300 -i source.yuv -b stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
+    "source": {
+     "url": "https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+     "ref": "v4.3.0",
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe"
+    },
+    "version": "SVT-AV1 v4.3.0 (release)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "7331e09e87d2082df59f5d1adcc194b8b42936e3441a4598a54a5cc0d1188475"
+  },
+  {
+   "id": "mot17-night-crowd-x264-medium-1280x720-30fps-800k",
+   "file": "mot17-night-crowd-x264-medium-1280x720-30fps-800k.ivf",
+   "clip": "mot17-night-crowd",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 800,
+   "actualKbps": 732.6,
+   "bufferMs": 1000,
+   "bytes": 919352,
+   "sha256": "001baba8688b2a315c9f0dc9bce9b78e5e3cbe77d866e5b0d65c4816bb41253d",
+   "sourceFile": "clips/mot17-night-crowd-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 800 --vbv-maxrate 800 --vbv-bufsize 800 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "7331e09e87d2082df59f5d1adcc194b8b42936e3441a4598a54a5cc0d1188475"
+  },
+  {
+   "id": "mot17-night-crowd-openh264-1280x720-30fps-800k",
+   "file": "mot17-night-crowd-openh264-1280x720-30fps-800k.ivf",
+   "clip": "mot17-night-crowd",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 800,
+   "actualKbps": 799.7,
+   "bufferMs": 1000,
+   "bytes": 1003276,
+   "sha256": "d7ce873fb4e86b7110b7b4eeec48da3d88ead4ac0b104de52cb2f5d53192ab62",
+   "sourceFile": "clips/mot17-night-crowd-720p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 800 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "7331e09e87d2082df59f5d1adcc194b8b42936e3441a4598a54a5cc0d1188475"
+  },
+  {
+   "id": "mot17-night-crowd-vpx-rt9-640x360-15fps-250k",
+   "file": "mot17-night-crowd-vpx-rt9-640x360-15fps-250k.ivf",
+   "clip": "mot17-night-crowd",
+   "codec": "vp9",
+   "encoder": "vpx-rt9",
+   "label": "libvpx VP9 realtime cpu-used 9",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 250,
+   "actualKbps": 250.5,
+   "bufferMs": 1000,
+   "bytes": 314913,
+   "sha256": "d60a4e9303afb3a798af102162f85d71a6881b1f2e3f188774df018cbdb55d86",
+   "sourceFile": "clips/mot17-night-crowd-360p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=9 --end-usage=cbr --target-bitrate=250 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=150 --kf-max-dist=150 --i420 --width=640 --height=360 --fps=15/1 --limit=150 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0",
+   "notice": "MOTChallenge MOT17 (Milan et al.), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec comparison, and is offered under the same CC BY-NC-SA 3.0 licence.",
+   "sourceSha256": "97df980a3f8812bd58e9cabb1a8c7289abf6a088241c4666b46414873beb3e45"
   }
  ]
 }

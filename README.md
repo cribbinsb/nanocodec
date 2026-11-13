@@ -39,8 +39,13 @@ are needed: each worker has its own ordinary WASM memory.
   conferencing sequences (Johnny, the default, KristenAndSara, FourPeople,
   vidyo1/3/4), Netflix El Fuente and Chimera scenes (CC BY-NC-ND 4.0), SVT's 2006
   Multi Format set (its own terms; its PDF ships alongside), SVT's 2022 Natural
-  Complexity suite (CC BY 4.0) and Tears of Steel / Big Buck Bunny (CC BY 3.0).
-  They are loaded by relative URL, listed in `clips.js` and credited next to the
+  Complexity suite (CC BY 4.0), Tears of Steel / Big Buck Bunny (CC BY 3.0) and
+  MOTChallenge MOT17-11, MOT17-04 and MOT20-05 (crowds; CC BY-NC-SA 3.0, made from the
+  original JPEGs by `tools/web/make-mot-clips.py`). Every clip plays each source frame
+  once on the page's 30 Hz timeline: 24 and 25 fps sources are **retimed to 30 fps**
+  (1.25x / 1.2x real time, timestamps only, `tools/web/retime-clips.py`; the source line
+  says so), since repeated frames would judder and be nearly free to code
+  (`tests/clip-cadence.py` checks one distinct frame per tick). They are loaded by relative URL, listed in `clips.js` and credited next to the
   picker; a clip's file is fetched only when it is selected. Each clip has a 360p
   file (used at 384×216 and 640×360) and a 720p file (854×480, the default, and
   1280×720); the page reads the file for the larger of the two versions' sizes, and a
@@ -75,8 +80,9 @@ are needed: each worker has its own ordinary WASM memory.
   PSNR is against the same captured source frames as a live version's. **Match this in
   the other version** sets the other version live to the stream's size, frame rate,
   target (peak 2×), 1 s buffer and key interval, starting with the same codec (the
-  preset is yours). The 40 streams (27 MiB; every clip has 3 to 5, several at one size and rate across encoders; Xiph, Blender and SVT 2022 clips only;
-  no Netflix: NoDerivatives) and their commands are listed in
+  preset is yours). The 53 streams (every clip has 3 to 5, several at one size and rate
+  across encoders; Xiph, Blender, SVT 2022 and MOTChallenge clips, the MOT streams under
+  CC BY-NC-SA 3.0 with that notice in their panel; no Netflix: NoDerivatives) and their commands are listed in
   [`docs/results/reference-streams.md`](../docs/results/reference-streams.md);
   `tools/web/make-reference-streams.py` regenerates them all and that table.
 - **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps

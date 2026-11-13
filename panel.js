@@ -134,6 +134,7 @@ export class Panel {
       Clip: this.clipTitle(entry.clip), Size: `${entry.width} × ${entry.height}`, 'Frame rate': `${entry.fps} fps`,
       Bitrate: `target ${entry.targetKbps} kbps · actual ${entry.actualKbps} kbps`,
       'Key interval': `${entry.keyInterval} frames`, Source: entry.sourceFile,
+      ...(entry.notice ? { Licence: entry.notice } : {}),
     };
     const $ = selector => this.element.querySelector(selector);
     $('.reference-label').textContent = 'Pre-encoded offline, decoded here by nanocodec’s WASM decoder';

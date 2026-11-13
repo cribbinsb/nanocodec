@@ -24,6 +24,9 @@ const FRAME_MIDPOINT = 0.5;
 // A step whose frame is not presented within this time failed (ms): the server
 // cannot seek (it ignores HTTP range requests) or the video stalled.
 const SEEK_TIMEOUT_MS = 5000;
+// After 'seeked', how long a frame callback may take before the page reads the
+// element's picture itself (ms).
+const SEEKED_GRACE_MS = 100;
 const SEEK_FAILED = 'Could not step: the video did not show the next frame (the server may not support seeking).';
 
 /**
@@ -155,9 +158,22 @@ export class FrameSource {
       const timeout = setTimeout(() => { this.waiting = null; reject(new Error(SEEK_FAILED)); }, SEEK_TIMEOUT_MS);
       this.waiting = { target, resolve: () => { clearTimeout(timeout); resolve(); } };
     });
+    // A seek to the frame the paused video already shows (it may have run on past the
+    // pause instant) presents no new frame, so no frame callback comes: once the seek
+    // is done and none came, the element's picture is the target frame.
+    this.video.addEventListener('seeked', () => setTimeout(() => this.stageSeeked(target), SEEKED_GRACE_MS), { once: true });
     this.video.currentTime = (target.frame + FRAME_MIDPOINT) / this.fps;
     await reached;
     return ticksOfFrame(this.presented.frame, this.fps)[0] + this.loopStart(this.presented.loop);
+  }
+  /** Stage the seeked-to frame if a step still waits for it (see advanceTo). */
+  stageSeeked(target) {
+    if (this.waiting?.target !== target) return;
+    const frame = videoSnapshot(this.video);
+    if (!frame) return;
+    this.staged?.close();
+    this.staged = frame;
+    this.stage(target.frame * 1000 / this.fps);
   }
   /** The first tick of loop `loop` of the clip. */
   loopStart(loop) { return Number.isFinite(this.loopLength) ? loop * this.loopLength : 0; }
