@@ -8,6 +8,7 @@ import { Advanced } from './advanced.js';
 import { cliCommand, cliPreset } from './options.js';
 import { FRAME_RATES, tickMs, tickStep } from './timeline.js';
 import { fetchStream, loadManifest, referenceStream, streamGroups, streamTitle } from './reference.js';
+import { trace } from './trace.js';
 import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, RATE_LIMITS_KBPS, RESOLUTIONS } from './view-settings.js';
 
 // Statistics cover this many recent coded frames.
@@ -36,7 +37,7 @@ export class Panel {
     this.letter = letter; this.frames = []; this.history = []; this.bytes = 0; this.full = false;
     this.changed = changed; this.clipTitle = clipTitle;
     // The selected pre-encoded stream's manifest record, and its loaded packets.
-    this.reference = null; this.stream = null; this.streams = [];
+    this.reference = null; this.streams = [];
     this.loaded = new Map();
     // Stream fetches by stream id, started once each (prepare).
     this.fetches = new Map();
@@ -126,7 +127,8 @@ export class Panel {
   }
   /** Select a stream (manifest record); its file loads when the comparison starts. */
   choose(entry) {
-    this.reference = entry; this.stream = this.loaded.get(entry.id) ?? null;
+    trace('choose', this.letter, entry.id);
+    this.reference = entry;
     this.streamPicker.value = entry.id;
     if (this.codec.value !== entry.codec) { this.codec.value = entry.codec; this.updateCodec(); }
     const facts = {
@@ -151,7 +153,7 @@ export class Panel {
     this.element.querySelector('.options').hidden = preEncoded;
     this.codec.disabled = preEncoded;
     this.element.classList.toggle('pre-encoded', preEncoded);
-    if (!preEncoded) { this.reference = null; this.stream = null; }
+    if (!preEncoded) this.reference = null;
   }
   /** Pick the first stream of `clip` if the selected one is of another clip; false if there is none. */
   followClip(clip) {
@@ -163,26 +165,33 @@ export class Panel {
   /** Leave pre-encoded mode (its stream cannot play on the current source); the caller restarts. */
   goLive() { this.source.value = SOURCES.live; this.showSource(); }
   /** Load the selected stream's file (once per stream), with progress in the panel. */
+  /**
+   * Load the stream of the settings this view was last reset with (`current`), once
+   * per stream, with progress in the panel. A start uses the stream of its own
+   * settings even if the visitor picks another meanwhile: that choice restarts.
+   */
   async prepare() {
-    if (!this.preEncoded || this.stream) return;
-    const entry = this.reference;
-    // A restart while the file is still arriving (the visitor changed another
-    // setting) waits for that same fetch instead of starting another.
+    const entry = this.current.entry;
+    if (!entry || this.loaded.has(entry.id)) return;
+    // A restart while the file is still arriving waits for that same fetch.
     if (!this.fetches.has(entry.id)) {
       this.status(`Fetching ${entry.file}…`);
       this.fetches.set(entry.id, fetchStream(entry, fraction => this.status(`Fetching ${entry.file} · ${(fraction * 100).toFixed(0)}%`))
         .then(bytes => referenceStream(entry, bytes)));
     }
     try {
-      const stream = await this.fetches.get(entry.id);
-      this.loaded.set(entry.id, stream);
-      if (this.reference === entry) { this.stream = stream; this.status(''); }
+      this.loaded.set(entry.id, await this.fetches.get(entry.id));
+      this.status('');
+      trace('fetched', this.letter, entry.id);
     } catch (error) {
       this.fetches.delete(entry.id);
       this.status(error.message, true);
       throw new Error(`Version ${this.letter}: ${error.message}`);
     }
   }
+  /** The loaded stream of this view's current settings (after prepare), or null for a live view. */
+  get stream() { return this.current?.entry ? this.loaded.get(this.current.entry.id) ?? null : null; }
+
   status(text, failed = false) {
     const line = this.element.querySelector('.reference-status');
     line.textContent = text; line.classList.toggle('failed', failed);
@@ -359,8 +368,7 @@ export class Panel {
   }
   save() {
     if (this.current.entry) {
-      const stream = this.loaded.get(this.current.entry.id);
-      if (stream) download(new Blob([stream.bytes]), this.current.entry.file);
+      if (this.stream) download(new Blob([this.stream.bytes]), this.current.entry.file);
       return;
     }
     if (!this.frames.length) return;

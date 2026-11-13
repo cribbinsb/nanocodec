@@ -84,6 +84,7 @@ class LiveView extends View {
 class ReferenceView extends View {
   constructor(panel, onMessage, onFailure) {
     super(panel, [startWorker('./decode-worker.js')], onMessage, onFailure);
+    // The stream of the settings the view started with (panel.js `prepare`).
     this.stream = panel.stream;
     // The last stream frame sent to the decoder (null before the first).
     this.last = null;

@@ -14,6 +14,7 @@ import { FrameSource } from './capture.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 import { SOURCE_FPS, nextCommonTick, tickMs } from './timeline.js';
 import { matchingSettings } from './view-settings.js';
+import { trace } from './trace.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause'), stepButton = $('#step');
@@ -30,6 +31,8 @@ let showOriginal = false, delivered = 0;
 let pendingRateChange = false;
 // The last comparison ended in a failure (not a Stop): a settings change starts a new one.
 let stoppedByFailure = false;
+// A settings change has scheduled a restart that has not begun yet (restartTimer).
+let restartPending = false;
 // `pausing`: Pause was pressed; the views stop at the next tick they all code.
 let paused = false, pausing = false, pausedAt = 0, stepping = false;
 let nextDeadline = 0, firstDeliveredAt = 0, lastTick = -1;
@@ -52,7 +55,7 @@ const loupe = new Loupe($('#loupe'), panels);
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
 function stop(keepSource = false) {
-  ++generation; clearTimeout(timer); clearTimeout(restartTimer); stoppedByFailure = false;
+  ++generation; clearTimeout(timer); clearTimeout(restartTimer); stoppedByFailure = false; restartPending = false;
   comparison?.terminate(); comparison = null;
   running = false; preparing = false; paused = false; pausing = false;
   pauseButton.disabled = true; setPauseButton('Pause', false); stepButton.disabled = true;
@@ -67,9 +70,10 @@ function stop(keepSource = false) {
 /** Stop capturing once the views have reached a common instant. */
 function pause() {
   if (!running || paused || pausing) return;
-  pausing = true; setPauseButton('Pausing…', true);
+  pausing = true; setPauseButton('Pausing…', true); trace('pause requested', lastTick);
 }
 function enterPause() {
+  trace('paused', lastTick);
   pausing = false; paused = true; pausedAt = performance.now(); clearTimeout(timer);
   if (kind !== 'scene') video.pause();
   setPauseButton('Resume', true);
@@ -106,12 +110,17 @@ async function step() {
   if (token === generation && paused) stepButton.disabled = false;
 }
 function fail(error) {
-  stop(); stoppedByFailure = true;
   const detail = error instanceof Error ? error.message : String(error);
+  trace('fail', detail, restartPending ? '(restart pending)' : '');
+  // Settings changed after the failing comparison started: their restart is still
+  // due (stop() cancels the timer), and it runs with the new settings.
+  if (restartPending) { start(); return; }
+  stop(); stoppedByFailure = true;
   message(detail); $('#session-stats').textContent = 'Comparison stopped';
 }
 /** A panel's setting changed: rate changes apply live, a new stream may switch the clip, others restart. */
 function settingsChanged(change, panel) {
+  trace('settings', change ?? 'restart', panel?.letter, running ? 'running' : preparing ? 'starting' : stoppedByFailure ? 'failed' : 'stopped');
   if (change === 'rate' && running) { pendingRateChange = true; return; }
   if (change === 'reference' && panel.reference && (kind !== 'clip' || panel.reference.clip !== clip.id)) {
     clip = clipById(panel.reference.clip); clipPicker.value = clip.id;
@@ -122,7 +131,8 @@ function settingsChanged(change, panel) {
   // stopped by a failure restarts with the new settings (start() reads them all).
   if (!running && !preparing && !stoppedByFailure) { resetViews(); $("#session-stats").textContent = "Settings changed · start a new comparison"; return; }
   clearTimeout(restartTimer);
-  restartTimer = setTimeout(() => { stop(true); start(); }, 200);
+  restartPending = true;
+  restartTimer = setTimeout(() => { trace('restart'); stop(true); start(); }, 200);
 }
 /** "Match this in the other view": the other view becomes a live encode at the stream's settings. */
 function matchOther(panel, entry) {
@@ -185,7 +195,7 @@ async function prepareSource(token) {
   await metadata();
   if (token !== generation) return;
   // A pre-encoded stream starts at the clip's first frame, like the stream itself.
-  if (panels.some(p => p.preEncoded)) video.currentTime = 0;
+  if (panels.some(p => p.current.entry)) video.currentTime = 0;
   try { await video.play(); } catch (error) {
     // Muted inline video may autoplay, but a browser can still refuse until the user interacts.
     if (error.name === 'NotAllowedError') throw new Error('The browser blocked automatic playback. Press Start comparison to play the clip.');
@@ -208,6 +218,7 @@ function checkReferences() {
 }
 async function start() {
   stop(true); const token = generation;
+  trace('start', token, panels.map(p => `${p.letter}:${p.reference?.id ?? p.config().codec}`).join(' '));
   preparing = true; message(); startButton.textContent = 'Cancel'; $('#session-stats').textContent = 'Loading codec workers…';
   checkReferences();
   for (const panel of panels) panel.reset(panel.config());
@@ -220,7 +231,7 @@ async function start() {
     if (token !== generation) return;
     frames.reset(kind, kind === 'clip' ? clip.fps : SOURCE_FPS);
     for (const panel of panels) {
-      if (panel.preEncoded && panel.stream.loopTicks !== frames.loopLength) {
+      if (panel.current.entry && panel.stream.loopTicks !== frames.loopLength) {
         throw new Error(`Version ${panel.letter}: the stream was made for a ${panel.stream.loopTicks}-tick loop, the clip has ${frames.loopLength}`);
       }
     }
