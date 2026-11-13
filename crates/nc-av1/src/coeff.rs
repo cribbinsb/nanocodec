@@ -349,7 +349,13 @@ impl CoeffCdfs {
     }
 
     /// Bits [`Self::write`] would spend on this transform block with the CDFs
-    /// as they stand (nothing is coded or adapted).
+    /// as they stand (nothing is coded or adapted). The same symbols as
+    /// `write` priced in one reverse pass: each nonzero level's sign and
+    /// Exp-Golomb remainder are counted where its magnitude is, not in a
+    /// second forward pass (integer 1/512-bit costs, so the order of the sum
+    /// does not matter). Rate estimation prices far more blocks than are
+    /// coded (transform trials, intra RD, key-frame planning). Tested equal
+    /// to `write` into a [`BitCounter`].
     #[allow(clippy::too_many_arguments)]
     pub fn cost(
         &mut self,
@@ -362,16 +368,68 @@ impl CoeffCdfs {
         eob: usize,
     ) -> f32 {
         let mut counter = BitCounter::default();
-        self.write(
-            &mut counter,
-            tx,
-            plane,
-            is_inter,
-            intra_mode,
-            ctx,
-            levels,
-            eob,
+        let txs = tx.index();
+        let pt = plane as usize;
+        counter.add_q9(self.txb_skip[txs][ctx.skip].cost_q9(usize::from(eob == 0)));
+        if eob == 0 {
+            return counter.bits();
+        }
+        if plane == PlaneType::Luma {
+            if is_inter {
+                self.write_inter_tx_type_dct(&mut counter, tx);
+            } else {
+                self.write_intra_tx_type_dct(&mut counter, tx, intra_mode);
+            }
+        }
+        self.write_eob(&mut counter, tx, pt, eob);
+
+        let scan = scan(tx);
+        let n = tx.coded_size();
+        let bhl = u32::from(tx.coded_log2());
+        let nz_offsets = nz_map_ctx_offset(tx);
+        let base_cdfs = &mut self.base[txs][pt];
+        let range_cdfs = &mut self.br[txs.min(3)][pt];
+        let mut map = LevelMap::new();
+        // A nonzero level's sign: `dc_sign` for the DC, else one bypass bit;
+        // its remainder past the coded range in bypass bits (`write_golomb`).
+        let mut sign_and_remainder = |counter: &mut BitCounter, c: usize, v: i32| {
+            if c == 0 {
+                counter.add_q9(self.dc_sign[pt][ctx.dc_sign].cost_q9(usize::from(v < 0)));
+            } else {
+                counter.add_bypass(1);
+            }
+            if v.abs() > COEFF_BASE_RANGE + NUM_BASE_LEVELS {
+                counter.add_bypass(golomb_bits((v.abs() - MAX_BASE_BR_RANGE) as u32));
+            }
+        };
+        let last = eob - 1;
+        let pos = usize::from(scan[last]);
+        let v = levels[pos];
+        let level = v.abs();
+        counter.add_q9(
+            self.base_eob[txs][pt][base_eob_context(last, n)].cost_q9((level.min(3) - 1) as usize),
         );
+        map.code_level(
+            &mut counter,
+            range_cdfs,
+            pos,
+            LevelMap::index(pos, bhl),
+            level,
+        );
+        sign_and_remainder(&mut counter, last, v);
+        for c in (0..last).rev() {
+            let pos = usize::from(scan[c]);
+            let at = LevelMap::index(pos, bhl);
+            let v = levels[pos];
+            let level = v.abs();
+            let ctx = LevelMap::base_context(pos, map.base_sum(at), nz_offsets[pos]);
+            counter.add_q9(base_cdfs[ctx].cost_q9(level.min(3) as usize));
+            // A zero level leaves the map as it was (zero).
+            if level != 0 {
+                map.code_level(&mut counter, range_cdfs, pos, at, level);
+                sign_and_remainder(&mut counter, c, v);
+            }
+        }
         counter.bits()
     }
 
@@ -633,12 +691,72 @@ fn write_golomb<W: SymbolSink>(w: &mut W, value: u32) {
     w.write_literal(x, length);
 }
 
+/// Bypass bits [`write_golomb`] spends on `value`.
+fn golomb_bits(value: u32) -> u32 {
+    let length = 32 - (value + 1).leading_zeros();
+    2 * length - 1
+}
+
 #[path = "coeff_trellis.rs"]
 pub(crate) mod trellis;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cost` prices exactly what `write` codes: random blocks of every size
+    /// and plane, dense and sparse, levels past the Exp-Golomb threshold,
+    /// both signs of the DC, after the CDFs adapted to earlier blocks.
+    #[test]
+    fn cost_equals_the_written_symbols() {
+        let mut seed = 11_u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            seed >> 16
+        };
+        let mut cdfs = CoeffCdfs::new(2);
+        let mut writer = crate::range_coder::SymbolWriter::new();
+        for round in 0..200 {
+            let tx = [
+                TxSize::Tx4x4,
+                TxSize::Tx8x8,
+                TxSize::Tx16x16,
+                TxSize::Tx32x32,
+                TxSize::Tx64x64,
+            ][round % 5];
+            let plane = if round % 3 == 0 {
+                PlaneType::Chroma
+            } else {
+                PlaneType::Luma
+            };
+            let area = tx.coded_size() * tx.coded_size();
+            let reach = [1, 4, 40, area][(next() % 4) as usize].min(area);
+            let mut levels = vec![0_i32; area];
+            for &p in &scan(tx)[..reach] {
+                let v = match next() % 10 {
+                    0..=4 => 0,
+                    5 | 6 => 1,
+                    7 => 2,
+                    8 => 3 + (next() % 12) as i32,
+                    _ => 15 + (next() % 300) as i32,
+                };
+                levels[usize::from(p)] = if next() % 2 == 0 { v } else { -v };
+            }
+            let eob = end_of_block(tx, &levels);
+            let ctx = TxbContext::derive(plane, true, &[(next() % 64) as u8], &[0x3]);
+            let (is_inter, mode) = (round % 2 == 0, (next() % 13) as usize);
+            let mut counter = BitCounter::default();
+            cdfs.clone()
+                .write(&mut counter, tx, plane, is_inter, mode, ctx, &levels, eob);
+            let cost = cdfs.cost(tx, plane, is_inter, mode, ctx, &levels, eob);
+            assert_eq!(
+                cost.to_bits(),
+                counter.bits().to_bits(),
+                "{tx:?} round {round}"
+            );
+            cdfs.write(&mut writer, tx, plane, is_inter, mode, ctx, &levels, eob);
+        }
+    }
 
     #[test]
     fn eob_is_one_past_last_nonzero_in_scan_order() {

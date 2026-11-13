@@ -116,6 +116,7 @@ rerun the same `search` command to resume). Points are streamed and cached
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -189,6 +190,9 @@ RATE_STRUCTURE_WORDS = ("cadence", "key", "ltr", "long_term", "intra_period")
 LONG_GUARD_CLIPSET = "long.json"
 LONG_GUARD_CLIPS = ("long_static_chirla_s024c2", "long_crowd_mot20_02", "long_pan_bdd_00c12bd0")
 LONG_GUARD_FRAMES = 720
+#: A long-window study's guard: the 150-frame (one key) J of its stage-1 clips may
+#: lose at most this much (coordinator, 2026-11-13): a session's start still counts.
+SHORT_WINDOW_GUARD_PCT = 1.5
 #: Terms of the long-horizon guard: J first, then worst-1 % and the key pulse.
 LONG_TERMS = ("quality", "bd_worst_psnr_y", "bd_worst_vmaf_v1", "d_periodic_pulse_psnr_y")
 #: Null distribution (mean, sd) of each term per long clip and codec: the preset
@@ -362,6 +366,26 @@ def draw_sets(key: str, half: str) -> tuple[list[Clip], list[Clip]]:
     return mine[:TRIAL_CLIPS], other
 
 
+def long_window_sets(key: str, frames: int) -> tuple[list[Clip], list[Clip]]:
+    """(trial clips, re-check clips) of a long-window study: the pool clips with
+    `frames` frames, measured from frame 0, outside the families of draw `key`'s L3
+    (so its L3 stays disjoint), strata interleaved (window-fitting work,
+    coordinator 2026-11-13: 150-frame trials reward front-loaded bits)."""
+    paths = load_paths()
+    clips = pool.load_pool(paths, levels.usable)
+    final = {c.family for c in pool.draw(clips, key, FRAMES).levels[pool.FINAL]}
+    queues: dict[str, list[Clip]] = {s: [] for s in pool.STRATA}
+    for clip in sorted(clips, key=lambda c: c.name):
+        if clip.frames >= frames and clip.family not in final:
+            queues[pool.stratum(clip)].append(dataclasses.replace(clip, start_frame=0))
+    ordered: list[Clip] = []
+    while any(queues.values()):
+        for queue in queues.values():
+            if queue:
+                ordered.append(queue.pop(0))
+    return ordered[:TRIAL_CLIPS], ordered[TRIAL_CLIPS:]
+
+
 def clip_record(clips: list[Clip]) -> list[dict]:
     return [{"clip": c.name, "start_frame": c.start_frame, "class": c.content_class}
             for c in clips]
@@ -425,6 +449,13 @@ class Study:
         self.clips = clips_from_record(attrs["clips"])
         self.recheck_clips = clips_from_record(attrs["recheck_clips"])
         self.rungs: dict[str, int] = attrs["rungs"]
+        #: The trial window: FRAMES with one key, or a long-window study's frames
+        #: with a key every `key_seconds` (long_window_sets).
+        self.frames: int = attrs.get("frames", FRAMES)
+        self.key_seconds: float | None = attrs.get("key_seconds")
+        #: A long-window study's guard on the start: the stage-1 clips' 150-frame J
+        #: (one key) may lose at most this much (percent; None: no guard).
+        self.short_guard_pct: float | None = attrs.get("short_guard_pct")
         self.anchor_cost: float = attrs["anchor_cost"]
         self.k: float = attrs["k"]
         self.workers: int = attrs["workers"]
@@ -461,7 +492,8 @@ class Study:
         stage_1, stage_2 = self.clips[:STAGE_1_CLIPS], self.clips[STAGE_1_CLIPS:]
         with ThreadPoolExecutor(1) as background:
             cost = background.submit(cpu_cost, self.binary, self.codec, values)
-            rows = single_points(runner, self.anchor, test, stage_1, self.rungs)
+            rows = single_points(runner, self.anchor, test, stage_1, self.rungs, self.frames,
+                                 key_seconds=self.key_seconds)
             cpu = cost.result() / self.anchor_cost
         stats = interval.interval(rows, None, 0.0)
         trial.set_user_attr("stage_1", {"j": stats["mean"], "lo": stats["lo"],
@@ -475,11 +507,16 @@ class Study:
         loses = stats["lo"] is not None and stats["lo"] + credit > interval.STOP_LOWER_PCT
         fidelity = STOPPED if (loses or over_cap or self.dominated(stats, cpu)) else FULL
         if fidelity == FULL:
-            rows |= single_points(runner, self.anchor, test, stage_2, self.rungs)
+            rows |= single_points(runner, self.anchor, test, stage_2, self.rungs, self.frames,
+                                  key_seconds=self.key_seconds)
         j = balanced_j(rows)
         if j is None:
             raise ValueError("no J_real quality on any clip")
         constraint = class_constraints(rows) + base_constraint(rows) + ceiling_constraint(rows)
+        if self.short_guard_pct is not None:
+            short = balanced_j(single_points(runner, self.anchor, test, stage_1, self.rungs))
+            trial.set_user_attr("short_j", short)
+            constraint.append((short or 0.0) - self.short_guard_pct)
         cap = [] if self.cpu_max is None else [cpu - self.cpu_max]
         change, t_value = rung_trend(rows)
         trial.set_user_attr("rung_trend", [change, t_value])
@@ -502,8 +539,8 @@ class Study:
     def ladder_j(self, runner: realuse.Runner, test: Family) -> tuple[float, list[float]]:
         """Full-ladder J_real and guards on the first LADDER_CLIPS trial clips."""
         clips = self.clips[:LADDER_CLIPS]
-        curves = runner.measure(f"tune ladder {test.name}", [self.anchor, test], clips, FRAMES,
-                                None, budgeted=False)
+        curves = runner.measure(f"tune ladder {test.name}", [self.anchor, test], clips,
+                                self.frames, None, self.key_seconds, budgeted=False)
         summary = jreal.summarise(realuse.compare(curves, self.anchor.name, test.name, clips,
                                                   paired=True))
         full, low = summary["quality"]["balanced"], summary["quality_low"]["balanced"]
@@ -535,7 +572,8 @@ class Study:
             test = family(self.codec, self.binary, values,
                           f"nanocodec-{self.codec.value}@{settings_label(values)}")
             try:
-                j = balanced_j(single_points(runner, self.anchor, test, fresh, rungs))
+                j = balanced_j(single_points(runner, self.anchor, test, fresh, rungs,
+                                             self.frames, key_seconds=self.key_seconds))
             except (ValueError, RuntimeError) as error:  # a failed re-check never ends a study
                 print(f"re-check #{trial.number} failed: {error}", flush=True)
                 continue
@@ -616,7 +654,10 @@ def create(args: argparse.Namespace) -> optuna.Study:
     space = Path(args.space).read_text() if args.space else "\n".join(args.params.split(","))
     domains = read_space(space, specs, preset)
     key = pool.rotation_key(args.rotation)
-    clips, recheck = draw_sets(key, args.half)
+    window = getattr(args, "window_frames", None)
+    clips, recheck = long_window_sets(key, window) if window else draw_sets(key, args.half)
+    frames = window or FRAMES
+    key_seconds = levels.LONG_KEY_SECONDS if window else None
     workers = min(args.workers, MAX_WORKERS)
     print(f"study {args.study}: {codec.value} {args.preset}, {len(domains)} parameters, "
           f"rotation {key}, {len(clips)} trial clips, {len(recheck)} re-check clips",
@@ -624,7 +665,8 @@ def create(args: argparse.Namespace) -> optuna.Study:
     anchor = family(codec, binary, preset, f"nanocodec-{codec.value}")
     runner = realuse.Runner(load_paths(), EVALUATION_GATE, workers, over_budget=False)
     # The re-check clips' anchor curves are measured at the first re-check.
-    runner.measure("tune anchor curves", [anchor], clips, FRAMES, None, budgeted=False)
+    runner.measure("tune anchor curves", [anchor], clips, frames, None, key_seconds,
+                   budgeted=False)
     anchor_cost = cpu_cost(binary, codec, preset)
     study = optuna.create_study(study_name=args.study, storage=study_storage(args.study),
                                 directions=["minimize"] if args.cpu_max else ["minimize", "minimize"],
@@ -634,7 +676,8 @@ def create(args: argparse.Namespace) -> optuna.Study:
              "binary_sha256": file_sha256(binary), "commit": commit or args.commit or "",
              "domains": domains, "rotation": key, "half": args.half,
              "clips": clip_record(clips), "recheck_clips": clip_record(recheck),
-             "rungs": assign_rungs(clips), "frames": FRAMES, "k": args.k,
+             "rungs": assign_rungs(clips), "frames": frames, "key_seconds": key_seconds,
+             "short_guard_pct": SHORT_WINDOW_GUARD_PCT if window else None, "k": args.k,
              "workers": workers, "measurement": measurement_fingerprint(),
              "cpu_max": args.cpu_max, "j_max": args.j_max,
              "anchor_cost": anchor_cost}
@@ -908,7 +951,8 @@ def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None
         else:
             result = l3_check(setting, values[number], f"t{number}", trial_cpu(trial),
                               jetson_cpu.get(number), workers,
-                              long_window=any(rate_or_structure(n) for n in moved))
+                              long_window=setting.key_seconds is not None
+                              or any(rate_or_structure(n) for n in moved))
             results[number] = {"j": trial_j(trial), **result,
                                **({"long_horizon": long_guard} if long_guard else {})}
         study.set_user_attr("finalists", results)
@@ -1191,6 +1235,11 @@ def add_commands(sub) -> None:
     s.add_argument("--cpu-max", type=float,
                    help="maximise J subject to x86 CPU <= this ratio to the preset (e.g. "
                         "1.01 equal speed, 0.90 a faster point) instead of the (J, CPU) front")
+    s.add_argument("--window-frames", type=int, nargs="?", const=levels.LONG_FRAMES,
+                   help="a long-window study: trials on the pool clips with this many frames "
+                        f"(default {levels.LONG_FRAMES}), from frame 0, a key every "
+                        f"{levels.LONG_KEY_SECONDS:g} s, outside the rotation's L3 families "
+                        "(long_window_sets); for rate, key and cadence parameters")
     s.add_argument("--j-max", type=float,
                    help="finalists lose at most this much J (percent; a speed study's "
                         "accepted quality cost)")

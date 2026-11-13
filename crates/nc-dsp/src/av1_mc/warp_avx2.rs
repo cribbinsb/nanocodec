@@ -16,6 +16,10 @@
 
 #![allow(unsafe_code, clippy::inline_always)]
 
+#[path = "warp_avx2/fused.rs"]
+mod fused;
+pub(super) use fused::warp8x8;
+
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm256_add_epi32,
     _mm256_blend_epi32, _mm256_broadcastsi128_si256, _mm256_castsi128_si256,
@@ -175,9 +179,11 @@ fn tap_pairs(rows: &[usize; WARP_BLOCK]) -> [__m256i; 4] {
     ]
 }
 
-/// The AVX2 kernel ([`super::warp_kernels::WarpFn`]).
+/// Clamped fallback for phases outside the fused kernel's whole-block bound.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn warp8x8(
+#[cold]
+#[inline(never)]
+unsafe fn clamped(
     (window, stride): (&[u8], usize),
     phases: &WarpPhases,
     round1: u32,

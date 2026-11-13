@@ -281,6 +281,12 @@ The SIMD implementation uses our shared lane framework.
 
 Copyright (c) 2018, VideoLAN and dav1d authors. All rights reserved.
 Source: https://code.videolan.org/videolan/dav1d
+The AV1 AVX2 fused warp module (`crates/nc-dsp/src/av1_mc/warp_avx2/fused.rs`)
+ports the packed-byte vertical transpose, alternating row pairs, scalar phase
+addressing and register schedule of `src/x86/mc_avx2.asm`
+(`warp_affine_8x8_8bpc`). Its Rust wrapper preserves full signed intermediate
+outputs, validates table/window bounds and falls back to the clamped kernel.
+
 Full notice: [COPYING](docs/licenses/dav1d/COPYING).
 
 The AV1 decoder's coefficient level pass
