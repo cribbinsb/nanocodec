@@ -15,7 +15,19 @@ export const RELAXED_SIMD = WebAssembly.validate(RELAXED_SIMD_PROBE);
 export const MODULE_URL = new URL(RELAXED_SIMD ? './pkg/relaxed/nc_web.js' : './pkg/nc_web.js', import.meta.url).href;
 const WASM_URL = new URL(RELAXED_SIMD ? './pkg/relaxed/nc_web_bg.wasm' : './pkg/nc_web_bg.wasm', import.meta.url).href;
 
-let compiled = null;
+// The analysis build (nc-web `--features analysis`: decoders that record
+// every block, analysis-view.js), fetched and compiled only when the viewer
+// switches analysis on; normal decoding never loads it. One SIMD128 build.
+export const ANALYSIS_MODULE_URL = new URL('./pkg/analysis/nc_web.js', import.meta.url).href;
+const ANALYSIS_WASM_URL = new URL('./pkg/analysis/nc_web_bg.wasm', import.meta.url).href;
+
+let compiled = null, compiledAnalysis = null;
+/** The analysis build's WebAssembly.Module, compiled once on first use. */
+export function compiledAnalysisModule() {
+  compiledAnalysis ??= WebAssembly.compileStreaming(fetch(ANALYSIS_WASM_URL))
+    .catch(async () => WebAssembly.compile(await (await fetch(ANALYSIS_WASM_URL)).arrayBuffer()));
+  return compiledAnalysis;
+}
 /**
  * The codec module's WebAssembly.Module, compiled once per page while it
  * downloads (a server that does not send `application/wasm` gets a plain
