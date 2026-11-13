@@ -1,0 +1,11 @@
+[package]
+name = "nc-common"
+description = "nanocodec common types: picture buffers, views, raw YUV I/O, errors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

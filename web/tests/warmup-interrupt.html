@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>decode worker warm-up interrupt test</title>
+<!-- Page side of warmup-interrupt.py: drives the demo's decode worker. -->
+<body>
+<script type="module">
+// The packets of an IVF file (the warm-up streams double as the real data).
+function ivfPackets(bytes) {
+  const view = new DataView(bytes.buffer);
+  const packets = [];
+  for (let at = 32; at + 12 <= bytes.length;) {
+    const size = view.getUint32(at, true);
+    packets.push(bytes.slice(at + 12, at + 12 + size));
+    at += 12 + size;
+  }
+  return packets;
+}
+
+async function sha256(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// One fresh decode worker: init (warm-up on or off), send the first real
+// packet `delayMs` after `ready`, then the rest in turn. Each frame's hash, and
+// for the first one the time it waited before the worker took it up: its round
+// trip less the worker's own time on it.
+window.runPass = async ({ codec, warmUp, delayMs }) => {
+  const packets = ivfPackets(new Uint8Array(await (await fetch(`../warmup/${codec}.ivf`)).arrayBuffer()));
+  const worker = new Worker('../decode-worker.js', { type: 'module' });
+  const channel = new MessageChannel();
+  let onFrame = null, warmed = null;
+  const warmedReport = new Promise(resolve => { warmed = resolve; });
+  const ready = new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }) => {
+      if (data.type === 'ready') resolve();
+      else if (data.type === 'warmed') warmed(data);
+      else if (data.type === 'frame') onFrame(data);
+      else if (data.type === 'error') reject(new Error(data.message));
+    };
+  });
+  worker.postMessage({ type: 'init', codec, port: channel.port1, warmUp }, [channel.port1]);
+  await ready;
+  if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+  const hashes = [];
+  let firstWaitMs = null;
+  for (const [id, packet] of packets.entries()) {
+    const sent = performance.now();
+    const frame = await new Promise(resolve => {
+      onFrame = resolve;
+      // 256x144 RGBA source: PSNR only needs the right size.
+      channel.port2.postMessage({ id, coded: [{ packet, rgba: new ArrayBuffer(256 * 144 * 4) }], display: 'rgba' });
+    });
+    if (id === 0) firstWaitMs = performance.now() - sent - frame.decodeStageMs;
+    hashes.push(await sha256(frame.pixels));
+  }
+  const report = warmUp ? await warmedReport : null;
+  worker.terminate();
+  return { hashes, firstWaitMs, report };
+};
+window.ready = true;
+</script>

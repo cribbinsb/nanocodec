@@ -1,0 +1,21 @@
+# TRAIN-selected joint study trial11; experimental, pending VAL.
+# Natural PSNR-YUV BD -4.198%, VMAF-NEG BD -7.250%; GOP300 instructions -17.400%.
+# Every natural class improves both metrics. Noise coverage failure remains FAIL:
+# static low-noise needs coarser samples; pan high-noise QP51 exceeds fixed200 target.
+# Measured worst noise best PSNR +0.163dB / VMAF +1.639; fixed PSNR -0.077dB.
+# No strict no-loss or full-noise-coverage claim. Values selected from TRAIN only.
+decision.intra_gate_variance = 50.41242292263979
+decision.lambda_scale = 0.75
+decision.skip_no_refine_lambdas = 0.20995096499239646
+decision.subpel_move_bias = 1.2012432940300346
+decision.subpel_move_bias_nonzero = 1.0667260229125557
+h264.eliminate_chroma_ac = 3.915538018698998
+h264.eliminate_luma_8x8 = 2.3031690856917577
+h264.eliminate_luma_mb = 6.0
+h264.inter_rounding_divisor = 5.602792317536565
+h264.inter_zero_chroma_scale = 1.5
+h264.inter_zero_luma_scale = 1.5
+h264.intra4x4_gate_satd = 24.314305316120183
+h264.keyframe_qp_offset = 10.969134731669111
+h264.split_gate_satd = 33.347726631353126
+h264.subpel_skip_variance = 24.0

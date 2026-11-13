@@ -1,0 +1,16 @@
+[package]
+name = "nc-encoder"
+description = "nanocodec shared encoder engine: configuration, frame loop, block partition walk, mode decision, the CodecBackend trait"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nc-common.workspace = true
+nc-dsp.workspace = true
+nc-analysis.workspace = true
+
+[lints]
+workspace = true

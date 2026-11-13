@@ -1,0 +1,3870 @@
+{
+ "profile": "Constrained High (H.264 A.2.4.2), 8-bit",
+ "suites": {
+  "itu": "https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/ (AVCv1 and FRExt, without Hi422)",
+  "supplementary": "tools/dev/h264_conformance_supplement.sh"
+ },
+ "selected": [
+  {
+   "suite": "itu",
+   "name": "AUD_MW_E",
+   "stream": "AUD_MW_E/AUD_MW_E.264",
+   "yuv": "AUD_MW_E/AUD_MW_E_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    10
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8,
+    9
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 4 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "BA1_FT_C",
+   "stream": "BA1_FT_C/BA1_FT_C.264",
+   "yuv": "BA1_FT_C/BA1_FT_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "BA1_Sony_D",
+   "stream": "BA1_Sony_D/BA1_Sony_D.jsv",
+   "yuv": "BA1_Sony_D/BA1_Sony_D.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    12
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I"
+  },
+  {
+   "suite": "itu",
+   "name": "BA2_Sony_F",
+   "stream": "BA2_Sony_F/BA2_Sony_F.jsv",
+   "yuv": "BA2_Sony_F/BA2_Sony_F.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "BA_MW_D",
+   "stream": "BA_MW_D/BA_MW_D.264",
+   "yuv": "BA_MW_D/BA_MW_D_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    10
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 4 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "BAMQ1_JVC_C",
+   "stream": "BAMQ1_JVC_C/BAMQ1_JVC_C.264",
+   "yuv": "BAMQ1_JVC_C/BAMQ1_JVC_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I; 2 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "BAMQ2_JVC_C",
+   "stream": "BAMQ2_JVC_C/BAMQ2_JVC_C.264",
+   "yuv": "BAMQ2_JVC_C/BAMQ2_JVC_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 2 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "BANM_MW_D",
+   "stream": "BANM_MW_D/BANM_MW_D.264",
+   "yuv": "BANM_MW_D/BANM_MW_D_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    10
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP"
+  },
+  {
+   "suite": "itu",
+   "name": "BASQP1_Sony_C",
+   "stream": "BASQP1_Sony_C/BASQP1_Sony_C.jsv",
+   "yuv": "BASQP1_Sony_C/BASQP1_Sony_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I; multiple slices"
+  },
+  {
+   "suite": "itu",
+   "name": "CABA1_Sony_D",
+   "stream": "CABA1_Sony_D/CABA1_Sony_D.jsv",
+   "yuv": "CABA1_Sony_D/CABA1_Sony_D.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I"
+  },
+  {
+   "suite": "itu",
+   "name": "CABA1_SVA_B",
+   "stream": "CABA1_SVA_B/CABA1_SVA_B.264",
+   "yuv": "CABA1_SVA_B/CABA1_SVA_B_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CABA2_Sony_E",
+   "stream": "CABA2_Sony_E/CABA2_Sony_E.jsv",
+   "yuv": "CABA2_Sony_E/CABA2_Sony_E.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices IP; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CABA2_SVA_B",
+   "stream": "CABA2_SVA_B/CABA2_SVA_B.264",
+   "yuv": "CABA2_SVA_B/CABA2_SVA_B_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices IP; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CABA3_TOSHIBA_E",
+   "stream": "CABA3_TOSHIBA_E/CABA3_TOSHIBA_E.264",
+   "yuv": "CABA3_TOSHIBA_E/CABA3_TOSHIBA_E_dec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    12
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices IP; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CANL1_Sony_E",
+   "stream": "CANL1_Sony_E/CANL1_Sony_E.jsv",
+   "yuv": "CANL1_Sony_E/CANL1_Sony_E.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I"
+  },
+  {
+   "suite": "itu",
+   "name": "CANL1_SVA_B",
+   "stream": "CANL1_SVA_B/CANL1_SVA_B.264",
+   "yuv": "CANL1_SVA_B/CANL1_SVA_B_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CANL1_TOSHIBA_G",
+   "stream": "CANL1_TOSHIBA_G/CANL1_TOSHIBA_G.264",
+   "yuv": "CANL1_TOSHIBA_G/CANL1_TOSHIBA_G_dec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    12
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CANL2_Sony_E",
+   "stream": "CANL2_Sony_E/CANL2_Sony_E.jsv",
+   "yuv": "CANL2_Sony_E/CANL2_Sony_E.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices IP; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CANL2_SVA_B",
+   "stream": "CANL2_SVA_B/CANL2_SVA_B.264",
+   "yuv": "CANL2_SVA_B/CANL2_SVA_B_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CANL3_SVA_B",
+   "stream": "CANL3_SVA_B/CANL3_SVA_B.264",
+   "yuv": "CANL3_SVA_B/CANL3_SVA_B_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices IP; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CAPCM1_Sand_E",
+   "stream": "CAPCM1_Sand_E/CAPCM1_Sand_E.264",
+   "yuv": "CAPCM1_Sand_E/CAPCM1_Sand_E.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    40
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8,
+    10
+   ],
+   "reason": "profile [77]; CABAC; slices I; 2 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CAPCMNL1_Sand_E",
+   "stream": "CAPCMNL1_Sand_E/CAPCMNL1_Sand_E.264",
+   "yuv": "CAPCMNL1_Sand_E/CAPCMNL1_Sand_E.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    40
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8,
+    10
+   ],
+   "reason": "profile [77]; CABAC; slices I; 2 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CAQP1_Sony_B",
+   "stream": "CAQP1_Sony_B/CAQP1_Sony_B.jsv",
+   "yuv": "CAQP1_Sony_B/CAQP1_Sony_B.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    12
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices I"
+  },
+  {
+   "suite": "itu",
+   "name": "CAWP1_TOSHIBA_E",
+   "stream": "CAWP1_TOSHIBA_E/CAWP1_TOSHIBA_E.264",
+   "yuv": "CAWP1_TOSHIBA_E/CAWP1_TOSHIBA_E_dec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CABAC; slices IP; weighted prediction; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CAWP5_TOSHIBA_E",
+   "stream": "CAWP5_TOSHIBA_E/CAWP5_TOSHIBA_E.264",
+   "yuv": "CAWP5_TOSHIBA_E/CAWP5_TOSHIBA_E_dec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8,
+    9,
+    11
+   ],
+   "reason": "profile [77]; CABAC; slices IP; weighted prediction; list modification; ref count override; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CI1_FT_B",
+   "stream": "CI1_FT_B/CI1_FT_B.264",
+   "yuv": "CI1_FT_B/CI1_FT_B.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": true,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; constrained intra; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CI_MW_D",
+   "stream": "CI_MW_D/CI_MW_D.264",
+   "yuv": "CI_MW_D/CI_MW_D_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    10
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": true,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; constrained intra; ref count override; 4 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CVFC1_Sony_C",
+   "stream": "CVFC1_Sony_C/CVFC1_Sony_C.jsv",
+   "yuv": "CVFC1_Sony_C/CVFC1_Sony_C_nogray.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; cropping; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CVPCMNL1_SVA_C",
+   "stream": "CVPCMNL1_SVA_C/CVPCMNL1_SVA_C.264",
+   "yuv": "CVPCMNL1_SVA_C/CVPCMNL1_SVA_C_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    40
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CAVLC; slices I; 2 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CVPCMNL2_SVA_C",
+   "stream": "CVPCMNL2_SVA_C/CVPCMNL2_SVA_C.264",
+   "yuv": "CVPCMNL2_SVA_C/CVPCMNL2_SVA_C_rec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    40
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CAVLC; slices I; 2 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CVSE2_Sony_B",
+   "stream": "CVSE2_Sony_B/CVSE2_Sony_B.jsv",
+   "yuv": "CVSE2_Sony_B/CVSE2_Sony_B-norpt.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 2 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "CVWP1_TOSHIBA_E",
+   "stream": "CVWP1_TOSHIBA_E/CVWP1_TOSHIBA_E.264",
+   "yuv": "CVWP1_TOSHIBA_E/CVWP1_TOSHIBA_E_dec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [77]; CAVLC; slices IP; weighted prediction; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "CVWP5_TOSHIBA_E",
+   "stream": "CVWP5_TOSHIBA_E/CVWP5_TOSHIBA_E.264",
+   "yuv": "CVWP5_TOSHIBA_E/CVWP5_TOSHIBA_E_dec.yuv",
+   "profile_idc": [
+    77
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8,
+    9,
+    11
+   ],
+   "reason": "profile [77]; CAVLC; slices IP; weighted prediction; list modification; ref count override; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "HCBP1_HHI_A",
+   "stream": "HCBP1_HHI_A/HCBP1_HHI_A.264",
+   "yuv": "HCBP1_HHI_A/HCBP1_HHI_A.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 15,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": true,
+   "list_modification": true,
+   "mmco": [
+    1
+   ],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; frame_num gaps; list modification; ref count override; MMCO 1; 15 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "HCBP2_HHI_A",
+   "stream": "HCBP2_HHI_A/HCBP2_HHI_A.264",
+   "yuv": "HCBP2_HHI_A/HCBP2_HHI_A.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 15,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": true,
+   "list_modification": true,
+   "mmco": [
+    1
+   ],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; frame_num gaps; list modification; ref count override; MMCO 1; 15 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "LS_SVA_D",
+   "stream": "LS_SVA_D/LS_SVA_D.264",
+   "yuv": "LS_SVA_D/LS_SVA_D_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    13
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 15,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 15 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "MIDR_MW_D",
+   "stream": "MIDR_MW_D/MIDR_MW_D.264",
+   "yuv": "MIDR_MW_D/MIDR_MW_D_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    10
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 4 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "MPS_MW_A",
+   "stream": "MPS_MW_A/MPS_MW_A.264",
+   "yuv": "MPS_MW_A/MPS_MW_A_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    11
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; 3 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "MR1_BT_A",
+   "stream": "MR1_BT_A/MR1_BT_A.h264",
+   "yuv": "MR1_BT_A/MR1_BT_A.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    11
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 7,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [
+    1,
+    3,
+    4
+   ],
+   "long_term": true,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; list modification; long-term refs; ref count override; MMCO 1,3,4; 7 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "MR1_MW_A",
+   "stream": "MR1_MW_A/MR1_MW_A.264",
+   "yuv": "MR1_MW_A/MR1_MW_A_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    11
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; list modification; ref count override; 3 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "MR2_MW_A",
+   "stream": "MR2_MW_A/MR2_MW_A.264",
+   "yuv": "MR2_MW_A/MR2_MW_A_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    11
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "long_term": true,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; long-term refs; ref count override; MMCO 1,2,3,4; 3 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "MR2_TANDBERG_E",
+   "stream": "MR2_TANDBERG_E/MR2_TANDBERG_E.264",
+   "yuv": "MR2_TANDBERG_E/MR2_TANDBERG_E.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 15,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "long_term": true,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; list modification; long-term refs; ref count override; MMCO 1,2,3,4,5,6; 15 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "MR3_TANDBERG_B",
+   "stream": "MR3_TANDBERG_B/MR3_TANDBERG_B.264",
+   "yuv": "MR3_TANDBERG_B/MR3_TANDBERG_B.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 15,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": true,
+   "list_modification": true,
+   "mmco": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "long_term": true,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; frame_num gaps; list modification; long-term refs; ref count override; MMCO 1,2,3,4,5; 15 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "MR4_TANDBERG_C",
+   "stream": "MR4_TANDBERG_C/MR4_TANDBERG_C.264",
+   "yuv": "MR4_TANDBERG_C/MR4_TANDBERG_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": true,
+   "list_modification": true,
+   "mmco": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "long_term": true,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; frame_num gaps; list modification; long-term refs; ref count override; MMCO 1,2,3,4,5; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "MR5_TANDBERG_C",
+   "stream": "MR5_TANDBERG_C/MR5_TANDBERG_C.264",
+   "yuv": "MR5_TANDBERG_C/MR5_TANDBERG_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": true,
+   "list_modification": true,
+   "mmco": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "long_term": true,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; frame_num gaps; list modification; long-term refs; ref count override; MMCO 1,2,3,4,5; 5 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "NL1_Sony_D",
+   "stream": "NL1_Sony_D/NL1_Sony_D.jsv",
+   "yuv": "NL1_Sony_D/NL1_Sony_D.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    12
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I"
+  },
+  {
+   "suite": "itu",
+   "name": "NL2_Sony_H",
+   "stream": "NL2_Sony_H/NL2_Sony_H.jsv",
+   "yuv": "NL2_Sony_H/NL2_Sony_H.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    31
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 1,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override"
+  },
+  {
+   "suite": "itu",
+   "name": "NLMQ1_JVC_C",
+   "stream": "NLMQ1_JVC_C/NLMQ1_JVC_C.264",
+   "yuv": "NLMQ1_JVC_C/NLMQ1_JVC_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I; 2 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "NLMQ2_JVC_C",
+   "stream": "NLMQ2_JVC_C/NLMQ2_JVC_C.264",
+   "yuv": "NLMQ2_JVC_C/NLMQ2_JVC_C.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    20
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    1
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 2 refs; POC type 1"
+  },
+  {
+   "suite": "itu",
+   "name": "NRF_MW_E",
+   "stream": "NRF_MW_E/NRF_MW_E.264",
+   "yuv": "NRF_MW_E/NRF_MW_E_rec.qcif",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    10
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 3 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_BA1_B",
+   "stream": "SVA_BA1_B/SVA_BA1_B.264",
+   "yuv": "SVA_BA1_B/SVA_BA1_B_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_BA2_D",
+   "stream": "SVA_BA2_D/SVA_BA2_D.264",
+   "yuv": "SVA_BA2_D/SVA_BA2_D_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_Base_B",
+   "stream": "SVA_Base_B/SVA_Base_B.264",
+   "yuv": "SVA_Base_B/SVA_Base_B_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    2
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; ref count override; 5 refs; POC type 2"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_CL1_E",
+   "stream": "SVA_CL1_E/SVA_CL1_E.264",
+   "yuv": "SVA_CL1_E/SVA_CL1_E_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_FM1_E",
+   "stream": "SVA_FM1_E/SVA_FM1_E.264",
+   "yuv": "SVA_FM1_E/SVA_FM1_E_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; multiple slices; ref count override; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_NL1_B",
+   "stream": "SVA_NL1_B/SVA_NL1_B.264",
+   "yuv": "SVA_NL1_B/SVA_NL1_B_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": false,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices I; 5 refs"
+  },
+  {
+   "suite": "itu",
+   "name": "SVA_NL2_E",
+   "stream": "SVA_NL2_E/SVA_NL2_E.264",
+   "yuv": "SVA_NL2_E/SVA_NL2_E_rec.yuv",
+   "profile_idc": [
+    66
+   ],
+   "level_idc": [
+    21
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": false,
+   "scaling_matrices": false,
+   "weighted_pred": false,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 5,
+   "poc_types": [
+    0
+   ],
+   "cropping": false,
+   "gaps_in_frame_num": false,
+   "list_modification": false,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    7,
+    8
+   ],
+   "reason": "profile [66]; CAVLC; slices IP; ref count override; 5 refs"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cabac_8x8_jvtcqm_wp",
+   "stream": "x264_cabac_8x8_jvtcqm_wp/x264_cabac_8x8_jvtcqm_wp.264",
+   "yuv": "x264_cabac_8x8_jvtcqm_wp/x264_cabac_8x8_jvtcqm_wp.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    30
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": true,
+   "scaling_matrices": true,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CABAC; slices IP; multiple slices; 8x8 transform; scaling matrices; weighted prediction; cropping; list modification; ref count override; 4 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cabac_constrained_intra",
+   "stream": "x264_cabac_constrained_intra/x264_cabac_constrained_intra.264",
+   "yuv": "x264_cabac_constrained_intra/x264_cabac_constrained_intra.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    30
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": true,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": true,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CABAC; slices IP; multiple slices; 8x8 transform; weighted prediction; constrained intra; cropping; list modification; ref count override; 2 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cabac_crop_l41_vui",
+   "stream": "x264_cabac_crop_l41_vui/x264_cabac_crop_l41_vui.264",
+   "yuv": "x264_cabac_crop_l41_vui/x264_cabac_crop_l41_vui.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    41
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": true,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CABAC; slices IP; 8x8 transform; weighted prediction; cropping; list modification; ref count override; 4 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cabac_mono",
+   "stream": "x264_cabac_mono/x264_cabac_mono.264",
+   "yuv": "x264_cabac_mono/x264_cabac_mono.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    30
+   ],
+   "chroma_format_idc": [
+    0
+   ],
+   "entropy": [
+    "CABAC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": false,
+   "transform_8x8": true,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 2,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CABAC; slices IP; 4:0:0; 8x8 transform; weighted prediction; cropping; list modification; ref count override; 2 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cavlc_8x8_customcqm",
+   "stream": "x264_cavlc_8x8_customcqm/x264_cavlc_8x8_customcqm.264",
+   "yuv": "x264_cavlc_8x8_customcqm/x264_cavlc_8x8_customcqm.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    30
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": true,
+   "scaling_matrices": true,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CAVLC; slices IP; multiple slices; 8x8 transform; scaling matrices; weighted prediction; cropping; list modification; ref count override; 3 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cavlc_constrained_intra",
+   "stream": "x264_cavlc_constrained_intra/x264_cavlc_constrained_intra.264",
+   "yuv": "x264_cavlc_constrained_intra/x264_cavlc_constrained_intra.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    30
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": true,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": true,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CAVLC; slices IP; multiple slices; 8x8 transform; weighted prediction; constrained intra; cropping; list modification; ref count override; 3 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cavlc_crop_l41",
+   "stream": "x264_cavlc_crop_l41/x264_cavlc_crop_l41.264",
+   "yuv": "x264_cavlc_crop_l41/x264_cavlc_crop_l41.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    41
+   ],
+   "chroma_format_idc": [
+    1
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": true,
+   "scaling_matrices": false,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 4,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CAVLC; slices IP; multiple slices; 8x8 transform; weighted prediction; cropping; list modification; ref count override; 4 refs; POC type 2"
+  },
+  {
+   "suite": "supplementary",
+   "name": "x264_cavlc_mono_customcqm",
+   "stream": "x264_cavlc_mono_customcqm/x264_cavlc_mono_customcqm.264",
+   "yuv": "x264_cavlc_mono_customcqm/x264_cavlc_mono_customcqm.yuv",
+   "profile_idc": [
+    100
+   ],
+   "level_idc": [
+    30
+   ],
+   "chroma_format_idc": [
+    0
+   ],
+   "entropy": [
+    "CAVLC"
+   ],
+   "slice_types": [
+    "I",
+    "P"
+   ],
+   "multi_slice": true,
+   "transform_8x8": true,
+   "scaling_matrices": true,
+   "weighted_pred": true,
+   "constrained_intra_pred": false,
+   "max_num_ref_frames": 3,
+   "poc_types": [
+    2
+   ],
+   "cropping": true,
+   "gaps_in_frame_num": false,
+   "list_modification": true,
+   "mmco": [],
+   "long_term": false,
+   "num_ref_idx_override": true,
+   "nal_types": [
+    1,
+    5,
+    6,
+    7,
+    8
+   ],
+   "reason": "profile [100]; CAVLC; slices IP; 4:0:0; multiple slices; 8x8 transform; scaling matrices; weighted prediction; cropping; list modification; ref count override; 3 refs; POC type 2"
+  }
+ ],
+ "excluded": [
+  {
+   "suite": "itu",
+   "name": "alphaconformanceG",
+   "excluded": [
+    "no single stream + reference YUV"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "BA3_SVA_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh10",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh11",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh3",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh4",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh5",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh6",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh8",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "brcm_freh9",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CABA3_Sony_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CABA3_SVA_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cabac_mot_fld0_full",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cabac_mot_frm0_full",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cabac_mot_mbaff0_full",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cabac_mot_picaff0_full",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CABACI3_Sony_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CABAST3_Sony_E",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CABASTBR3_Sony_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CABREF3_Sand_D",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CACQP3_Sony_D",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAFI1_SVA_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMA1_Sony_C",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMA1_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cama1_vtc_c",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cama2_vtc_b",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMA3_Sand_E",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cama3_vtc_b",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMACI3_Sony_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMANL1_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMANL2_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMANL3_Sand_E",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMASL3_Sony_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMP_MOT_MBAFF_L30",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAMP_MOT_MBAFF_L31",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CANL3_Sony_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CANL4_SVA_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CANLMA2_Sony_C",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CANLMA3_Sony_C",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAPA1_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAPAMA3_Sand_F",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CAPM3_Sony_D",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cavlc_mot_fld0_full_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cavlc_mot_frm0_full_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cavlc_mot_mbaff0_full_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "cavlc_mot_picaff0_full_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVBS3_Sony_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVCANLMA2_Sony_C",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVFI1_Sony_D",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVFI1_SVA_C",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVFI2_Sony_H",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVFI2_SVA_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMA1_Sony_D",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMA1_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMANL1_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMANL2_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMAPAQP3_Sony_E",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMAQP2_Sony_G",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMAQP3_Sony_D",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMP_MOT_FLD_L30_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVMP_MOT_FRM_L31_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVNLFI1_Sony_C",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVNLFI2_Sony_H",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVPA1_TOSHIBA_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVSE3_Sony_H",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVSEFDFT3_Sony_E",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVWP2_TOSHIBA_E",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "CVWP3_TOSHIBA_E",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FI1_Sony_E",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FM1_BT_B",
+   "excluded": [
+    "FMO (slice groups)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FM1_FT_E",
+   "excluded": [
+    "FMO (slice groups)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FM2_SVA_C",
+   "excluded": [
+    "ffmpeg cannot parse it (FMO)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREH10-1",
+   "excluded": [
+    "no single stream + reference YUV"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREH10-2",
+   "excluded": [
+    "no single stream + reference YUV"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "freh12_b",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "freh1_b",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "freh2_b",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "freh7_b",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREXT01_JVC_D",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREXT02_JVC_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FRExt1_Panasonic_D",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREXT1_TANDBERG_A",
+   "excluded": [
+    "chroma format above 4:2:0"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FRExt2_Panasonic_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREXT2_TANDBERG_A",
+   "excluded": [
+    "chroma format above 4:2:0"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FRExt3_Panasonic_E",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FREXT3_TANDBERG_A",
+   "excluded": [
+    "B slices",
+    "chroma format above 4:2:0"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FRExt4_Panasonic_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "FRExt_MMCO4_Sony_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCAFF1_HHI_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCAFR1_HHI_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCAFR2_HHI_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCAFR3_HHI_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCAFR4_HHI_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCAMFF1_HHI_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCHP1_HHI_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCHP2_HHI_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCHP3_HHI_A",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HCMP1_HHI_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCA_BRCM_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCADQ_BRCM_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCAFL_BRCM_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCAFLNL_BRCM_C",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCALQ_BRCM_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCAMAPALQ_BRCM_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCAMOLQ_BRCM_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCANL_BRCM_C",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCAQ2LQ_BRCM_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCV_BRCM_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCVFL_BRCM_A",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCVFLNL_BRCM_A",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCVMOLQ_BRCM_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HPCVNL_BRCM_A",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HVLCFI0_Sony_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HVLCMFF0_Sony_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "HVLCPFF0_Sony_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "MR6_BT_B",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "MR7_BT_B",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "MR8_BT_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "MR9_BT_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "MV1_BRCM_D",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "NL3_SVA_E",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "Sharp_MP_Field_1_B",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "Sharp_MP_Field_2_B",
+   "excluded": [
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "Sharp_MP_Field_3_B",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "Sharp_MP_PAFF_1r2",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "Sharp_MP_PAFF_2r",
+   "excluded": [
+    "B slices",
+    "interlace (field/MBAFF)"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "SL1_SVA_B",
+   "excluded": [
+    "B slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "SP1_BT_A",
+   "excluded": [
+    "SP/SI slices"
+   ]
+  },
+  {
+   "suite": "itu",
+   "name": "sp2_bt_b",
+   "excluded": [
+    "SP/SI slices"
+   ]
+  }
+ ]
+}

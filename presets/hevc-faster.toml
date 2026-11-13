@@ -1,0 +1,71 @@
+# HEVC Faster: the speed point below HEVC Fast, against SVT-AV1 M13 (--rtc)
+# (hevc-faster agent, 2026-11-11; docs/handoff/hevc-faster.md).
+# hevc-fast plus the levers with the least quality lost per CPU saved
+# (single-lever J_real at k 0 against Jetson time, then cumulative bundles).
+# The profile is flat (no stage over ~15%), so the speed comes from many
+# small cuts; past about -10% time each further 1% costs about 1% in bits.
+# Jetson, CBR 600 kbps rung, chart clips: see the handoff for fps and BD.
+#
+# Everything in hevc-fast, listed so the streams do not move with it.
+hevc.inter_tu_split = 0
+hevc.inter_intra_dc_only = 1
+hevc.tu16_chroma_concentration = 0.5
+hevc.sao_stats_row_step = 4
+hevc.fast_forward16 = 1
+hevc.fast_forward32 = 1
+decision.refine_cheap_vector = 0
+decision.codec_fullpel_probe = 0
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+planner.depth_removal_min_quantizer = 0
+hevc.early_merge_lambdas = 0.03
+hevc.chroma_qp_offset = -3
+hevc.intra_leaf_cost = 0
+hevc.intra_nxn = 0
+hevc.intra_tu_depth = 0
+hevc.sao_skip_unchanged = 1
+quant.trellis = 0
+rate.cadence_startup_base_boost = 5
+decision.intra_directional = 0
+#
+# The Faster levers. Single-lever J_real (k 0, proxy-6 + lowlight_bdd_00c497ae,
+# 150 f, CBR ladder, vs hevc-fast) / Jetson time (CBR 600, chart clips):
+# Chroma SAO off (0.0 / -1.0%).
+hevc.sao_chroma = 0
+# Two cheap (merge) vectors ranked per block (+0.3 / -0.9%).
+decision.max_cheap_vectors = 2
+# 32x32 inter residuals keep only their low 16x16 frequencies (+0.1 /
+# -0.2%; x86 instructions -3.2%, lowlight -8.9%).
+hevc.partial_forward = 1
+# Key frames use the coarse intra mode search (+0.7 / -0.4%; x86 -0.9%).
+hevc.key_intra_coarse = 1
+# Exact-filter candidates ranked against a tighter margin (Fast 1.1;
+# +1.2 / -1.2%).
+decision.exact_rank_margin = 0.9
+# Depth removal twice as eager (+1.2 / -1.0%).
+planner.depth_removal_qp_scale = 4
+# Inter residuals skipped before the transform below 3x the zero bound
+# (Fast 2; +2.2 / -2.3%).
+hevc.pre_transform_zero_scale = 3
+# Sub-pel refinement skipped below 0.3 lambda of seed residual (Fast 0.05;
+# +4.7 / -6.5%).
+decision.codec_subpel_seed_lambdas = 0.3
+# The quarter-sample stage only after a half-sample move (+0.4 / -2.5%).
+decision.subpel_quarter_needs_half_move = 1
+# Inter rounding offset 85/512 (HM's; Fast 128): -0.5 alone, -1.7 in the
+# bundle, at no measurable time.
+hevc.inter_rounding = 85
+# Round 2 (hevc-faster2 agent, 2026-11-11), against round 1 on the pool's
+# L1 draw (24 clips) / Jetson CPU (CBR 600, chart clips) / x86 instructions:
+# Luma transforms at most 16x16 (+3.9 / -4.8%, both levers together
+# -7.0%).
+hevc.max_transform_log2 = 4
+# Non-base frames of the QP cadence skip inter residuals below 4x the zero
+# bound (-0.3 / -1.9%: free).
+nonbase.hevc.pre_transform_zero_scale = 4
+# The Default's jointly tuned rounding, planner and TU16 chroma values
+# (2026-11-12) are not screened for this preset: it keeps the previous values.
+hevc.intra_rounding = 171
+planner.lambda_scale = 2
+planner.split_rate_factor = 2

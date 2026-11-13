@@ -1,0 +1,17 @@
+# Experimental H.264 candidate: h264-overnight-20261107-v2, trial 95.
+# TRAIN: PSNR BD -9.478%, VMAF-NEG BD -7.228%, P instructions x1.00857.
+# Full VAL natural clips: PSNR BD -11.955%, VMAF-NEG BD -10.991%.
+# Noise guard FAILED: worst best-measured deltas PSNR -0.0397 dB, VMAF-NEG -0.7794.
+# Not promoted: inspect docs/handoff/overnight.md and full noise comparisons before use.
+decision.intra_gate_variance = 63.56538324850877
+decision.skip_no_refine_lambdas = 0.048038064451149706
+decision.subpel_move_bias = 1.0701466445315946
+decision.subpel_move_bias_nonzero = 1.0957181041913118
+h264.eliminate_chroma_ac = 7.65762924041611
+h264.eliminate_luma_8x8 = 2.1759287693045426
+h264.eliminate_luma_mb = 5.131177101257614
+h264.inter_rounding_divisor = 5.990176626853627
+h264.intra4x4_gate_satd = 26.959885190550878
+h264.keyframe_qp_offset = 8.550764546038277
+h264.split_gate_satd = 21.18622058156507
+h264.subpel_skip_variance = 3.4051939254614787

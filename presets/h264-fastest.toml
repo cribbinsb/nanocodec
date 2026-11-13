@@ -1,0 +1,65 @@
+# H.264 Fastest: the speed point below Faster (h264-fastest agent, 2026-11-11;
+# docs/handoff/h264-fastest.md). h264-faster plus the four levers that buy
+# Jetson time at the least compression; the cuts measured beyond them
+# (CAVLC, deblocking off in P frames, DC-only intra test, narrower search,
+# SAD-threshold static gates) cost far more bits than their speed is worth,
+# decay over long GOPs, or buy no time.
+# h264-faster's settings, pinned so this preset does not move with it.
+quant.trellis = 0
+decision.subpel_quarter_needs_half_move = 1
+decision.codec_fullpel_probe = 0
+decision.refine_cheap_vector = 0
+decision.subpel_walk = 0
+decision.intra_gate_variance = 50.412422
+h264.intra4x4_all_modes = 0
+analysis.mixed_motion = 0
+quant.trellis_lambda_scale = 1
+h264.split_gate_lambda = 0
+h264.split_gate_satd = 96
+h264.split_refine_steps = 1
+h264.intra4x4_gate_satd = 64
+analysis.hme_range_x = 8
+analysis.hme_level1 = 0
+analysis.skip_hme_sad_per_pixel = 8
+analysis.window_half_width = 2
+analysis.window_half_height = 0
+decision.static_zero_vector = 1
+h264.exact_ranking = 0
+h264.intra8x8 = 0
+layers.count = 3
+layers.adaptive = 1
+layers.adaptive_max_camera_motion = 16
+layers.adaptive_max_compensable = 1
+layers.adaptive_max_repeat_share = 0.25
+layers.adaptive_max_static = 0.68
+layers.adaptive_max_camera_jitter = 2
+decision.nonbase_disposable_only = 1
+nonbase.h264.deblock_inter = 0
+nonbase.decision.subpel_half_only = 1
+nonbase.analysis.window_half_width = 1
+nonbase.decision.intra_gate_variance = 1024
+nonbase.h264.inter_zero_luma_scale = 3
+nonbase.analysis.hme_from_seed = 1
+rate.cadence_scale = 1
+# The Fastest levers; Jetson time each on top of the others (jfps, chart
+# timing clips, 600 kbps rung), J_real alone vs h264-faster (k 0, proxy-4,
+# 60 f: ranking only).
+# 16x16 macroblocks only, no split search: time -2.4%, J +0.0%.
+h264.partition_search = 0
+# DC-only Intra_16x16 / chroma trials in P frames: time -4.9%, J +0.9%.
+h264.inter_intra_dc_only = 1
+# Reuse term off: time -2.5%, J -0.2% (static_recovery still passes).
+persist.reuse = 0
+# Wider inter zero-residual bound: time -1.6%, J +0.5%.
+h264.inter_zero_luma_scale = 3
+# Zero-vector SADs from pre-analysis (lean-preanalysis, 2026-11-11):
+# Jetson -1.5% cycles, x86 +0.1% instructions; pool levels J_real -0.36%
+# [-0.61, -0.09] (L2+L3, quality +0.2%), no guards; 900-frame single-key
+# static run within 0.1 dB per third.
+analysis.zero_sads_from_pre = 1
+# The Default's jointly tuned lambda and Intra_8x8 gate (2026-11-12) are not
+# screened for this preset: it keeps the previous values.
+decision.lambda_scale = 1
+# Intra modes by coded cost (Default since 2026-11-13, study
+# h264-default-arms-2026-11-13) stay off here: pinned, byte-identical.
+h264.intra_rd = 0

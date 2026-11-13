@@ -1,0 +1,3 @@
+# H.264 speed candidate (screen only): fewer partition searches, narrower full-pel window.
+h264.split_gate_satd = 48
+analysis.window_half_width = 3

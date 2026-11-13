@@ -1,0 +1,134 @@
+# CDEF local search every frame (search period 4 -> the default 1): staged
+# TRAIN15 60f vs previous Fast PSNR-YUV/V1 BD -1.86%/-1.28%, every clip
+# better on PSNR; lowlight VAL (pp22_049, bdd_00ce95b0, 150f) -3.99%/-1.90%.
+# Callgrind +1.2% (lowlight) / +1.6% (crowd) instructions; J = dBD +
+# 0.6 dCPU ~ -0.7. The noise gate meant to protect such clips
+# (cdef_local_noise_full_search_sigma 1) never fires on them (sigma < 1).
+# Strong-CDEF gate 300 -> 0 (as the Default since 7204ded): on TRAIN the
+# streams are byte-identical except lowlight_bdd_00c497ae (PSNR/V1 BD
+# -0.08%/-0.10%); follow-up VAL on the only clips that change: bodycam_airport
+# -17.93%/-7.70%, lowlight_pp22_049 -6.18%/-2.15% (gate 0 vs 300, same
+# metrics revision). Evidence: work/av1-heldout/land/{screen,val}-fg{300,0}.
+# Modeled strong-luma CDEF cap (scale 3) on top of seed .1 / gated probes:
+# per-superblock CDEF with a strong luma primary capped at 3x the modeled
+# primary. Frozen TRAIN (21 clips) vs previous Fast: natural PSNR/V1 BD
+# -0.711%/-0.454%; vs SVT M12 +0.057%/-2.039% (previous Fast +0.658%/-1.710%).
+# Follow-up VAL (disclosed: prior strong/joint VAL informed this direction):
+# +0.165% PSNR/-1.000% V1; vs SVT +12.849%/-1.683% (previous +12.600%/-0.690%).
+# Worst: OTW390 PSNR +7.49% (V1 -9.71%); lowlight_bdd_00ce95b0 +2.78%/+3.22%.
+# Noise: every best/200k/400k delta improves on both metrics (VAL); TRAIN
+# pan noise loses up to 0.05 dB/0.6 V1 points, statics gain. Body/pan packets
+# equal fixed strong15, which saved 5.6%/4.0% native CPU. Speed elsewhere not
+# re-measured. Evidence: work/av1-post-demo-speed/cdef-model-cap3-seed010-
+# {train21,val12}/{summary,coordinator-audit,root-verification}.json.
+# Seed gate .1 versus .05: native CPU -2.688% body/-3.911% crowd (4 rounds).
+# Incremental TRAIN PSNR/V1 BD +0.975%/+1.279%; held-out +1.018%/+1.109%.
+# Worst held-out V1 clip: crowd +4.035%; fixed noise loss .0282 V1 points.
+# Current Fast vs Default VAL: +4.384% PSNR/+3.451% V1; versus SVT
+# +12.600% PSNR/-.690% V1. This remains a speed/quality tradeoff.
+# Evidence: work/av1-post-demo-speed/seed010-val12/verification.json.
+# Earlier probe-stage measurements below precede the seed .1 update.
+# AV1 speed/quality tradeoff: residual rejection, adaptive chroma, gated probes.
+# Gated probes add TRAIN PSNR/V1 BD -1.700%/-1.948%, VAL -1.989%/-1.077%
+# versus the previous Fast below. VAL airport V1 regresses +6.470%.
+# Updated Fast versus adaptive Default: VAL +3.280% PSNR/+2.296% V1.
+# Incremental native CPU: body -0.767%, crowd -1.362%, static +2.170%.
+# Worst incremental VAL noise: -0.0211 dB/-0.2834 V1 at fixed rates.
+# Evidence: work/av1-post-demo-speed/recon-integer-fast-val/verification.json.
+# Historical pre-probe Fast results follow:
+# Frozen 21-clip TRAIN, 15 natural clips versus historical fast0: PSNR/VMAF-v1 BD
+# -8.232%/-5.979%; versus olddefault0: -3.617%/-6.645%.
+# Supported 12-clip held-out VAL 10 natural clips versus CURRENT adaptive default:
+# PSNR/VMAF-v1 BD +5.310%/+3.447%. Airport/homes390 VMAF costs
+# +11.824%/+14.893%; crowd improves 2.305%. All 10 comparisons reliable.
+# Inherited fast noise: worst fixed VAL loss 0.154 dB PSNR/0.365 V1 points;
+# best high-noise V1 loses 0.594 points. No BD-rate is used on noise.
+# This is not superior to current default; use it when its CPU saving matters.
+# Native 720p fixed-QP three paired 150f runs: CPU -13.42% bodycam/-16.67%
+# crowd versus current adaptive default, rates -0.77%/-0.58%; not matched-quality.
+# Evidence: external cdef-agent/fast-adaptive-{train21,val12}/summary.json
+# and fast-adaptive-val12/report-final.json. Historical candidates stay0/0.
+# The quality-first Default (2026-11-08) adds sub-pel margins 1 and the
+# cheap-vector refinement; Fast keeps the engine values (its probe stays
+# gated below).
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+decision.refine_cheap_vector = 0
+av1.inter_tx_split = 0
+av1.pre_tx_luma_dominant = 1
+av1.pre_tx_skip = 1
+# SVT's fixed coded-cost guess in the RD signal (Default uses the
+# zero-residual test since 2026-11-08; not screened on Fast).
+av1.pre_tx_skip_model = 0
+av1.pre_tx_skip_energy = 30
+av1.pre_tx_skip_rd = 100
+av1.pre_tx_skip_score = 70
+av1.residual_rd_max_mv = 8
+av1.transform_rd_gain_scale = 1.25
+av1.transform_rd_skip = 2
+av1.transform_rd_skip_chroma = 1
+av1.transform_rd_uv_max_noise_sigma = 1
+decision.codec_subpel_seed_lambdas = 0.1
+decision.subpel_walk = 2
+decision.subpel_walk_max_noise_sigma = 1
+av1.chroma_delta_q = -24
+# Fast keeps its own chroma offset, not the engine chroma policy (which the
+# AV1 Default also left 2026-11-11): policy (offset -1) vs this Fast, staged TRAIN J_real k 0.6:
+# +0.3% (dCPU 0; x86 instructions +0.43% more), WORSE
+# (docs/handoff/chroma-policy.md).
+chroma.policy = 0
+av1.chroma_noise_scale = 2
+decision.codec_fullpel_probe = 1
+decision.codec_fullpel_probe_min_lambdas = 0.0094
+av1.cdef_per_superblock = 1
+av1.cdef_local_strong_luma = 1
+av1.cdef_local_strong_primary = 15
+av1.cdef_local_strong_variance_min = 0
+av1.cdef_local_noise_full_search_sigma = 1
+av1.cdef_local_strong_model_scale = 3
+# Deblocking stays off in Fast when the Default adopted it (J_real TRAIN
+# quality -5.1%, but +9.0% Fast instructions: J_real about 0 at k 0.6).
+av1.loop_filter = 0
+# Default's depth removal threshold (+5-10% instructions) stays off.
+planner.depth_removal_min_quantizer = 0
+# Trellis quantisation is a Default quality arm (+15% P-frame instructions
+# for J_real quality -2.2% at k 0.1); Fast keeps the plain quantiser.
+quant.trellis = 0
+# The Default's fuller key-frame intra set (J_real TRAIN -0.3 at k 0.1, key
+# frames +60-75% instructions: key/P up to 21x on x86) stays off: Fast keeps
+# the ~10x key/P guard.
+av1.keyframe_directional = 0
+av1.keyframe_angle_deltas = 0
+av1.keyframe_filter_intra = 0
+# Fast keeps Default's start-up QP cadence (base boost 4) and cadence motion
+# gate: proxy-6 J_real (k 0.6) vs both off BETTER -1.3% (crowd -3.5%, static
+# -2.1%), no guard, pulse -0.01 dB; CPU-neutral (docs/handoff/vvc.md, qp-cascade).
+# The Default's directional P-frame intra estimate and inter-frame intra
+# search stay off: proxy-6 J_real (k 0.6) +0.6%, quality -0.5% / -0.5% at
+# +1.9% x86 CPU (Jetson instructions +5.9% / +2.6%), stopped.
+decision.intra_directional = 0
+av1.inter_intra_search = 0
+# Low-frequency forward for 32x32 and 64x64 residuals in coding too (as
+# HEVC Fast's fast_forward16/32; av1-faster agent, 2026-11-11, owner
+# decision). Proxy-6 150 f vs the previous Fast, k 0: J_real -1.0% (PSNR-YUV
+# +1.1, VMAF v1 -1.7, MS-SSIM -2.8), Jetson -2.3% time. Worst-1% PSNR-Y
+# +2.2% sits just over the 2.0 guard: it comes from the first frames after the
+# key on pan_jaad_0117 (-0.5 dB on frame 1 at 600 kbps, worst 4-frame window
+# itself unchanged or better), and the frame shows no artefact (softer fine
+# texture only); the other metrics improve.
+av1.partial_forward = 2
+# P-frame rounding offset 41/128 (code default 48): a wider encoder-side
+# deadzone drops more small P-frame coefficients. Sensitivity sweep
+# (16 clips) J -2.20 % at x0.981 x86 CPU; parameter-only L3 final-check on
+# the disjoint 2026-11-11 pool draw (79 clips, single-point) J -2.22 %
+# [-2.65, -1.72] BETTER, no guards (44: sweep -1.94 %, L3 -1.70 %).
+av1.inter_rounding_q7 = 41
+# Key frames DC-only, as SVT M12 (intra DC_PRED only from M11 up) and
+# av1-faster (av1-fast-speed, 2026-11-13). Key frame 633/909/746 -> 355/483/
+# 419 M x86 instructions (bodycam_bc1/lowlight_city_night/crowd_mot17_09):
+# 150 f -3.8% x86 instructions, Jetson -2.0% (jbins, CBR 600, 3 rounds).
+# Pool levels 2026-11-13 (k 0.6, dCPU -2.6): L1 -1.36%, L2 quality +0.9%
+# (static_london_bus +10.6%, the one large loss), L3 quality +0.25%; L2+L3
+# pooled J -1.01% [-1.43, -0.48] BETTER, no guards.
+av1.keyframe_intra_modes = 0

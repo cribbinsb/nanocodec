@@ -1,0 +1,32 @@
+# AV1 sensitivity candidates (nceval.tune_pool sensitivity; every AV1 preset): the 15 levers
+# of av1-fast.txt and 15 more that today's screens or the preset touch.
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+decision.subpel_move_bias
+decision.refine_cheap_min_lambdas
+decision.lambda_scale
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+planner.depth_removal_th_32_16
+planner.depth_removal_th_16_8
+planner.bias_base
+planner.bias_q_slope
+analysis.skip_hme_sad_per_pixel
+analysis.one_position_sad_per_pixel
+av1.pre_tx_skip_energy
+av1.pre_tx_skip_rd
+av1.pre_tx_skip_score
+av1.transform_rd_gain_scale
+av1.transform_rd_rate_scale
+av1.lambda_per_step_squared
+rate.cadence_scale
+av1.skip_bias_pct
+av1.skip_bias_energy
+av1.chroma_skip_sad_num int
+av1.chroma_delta_q int
+av1.chroma_noise_scale
+av1.cdef_local_search_period 1 4 int
+av1.cdef_search_row_step int
+av1.inter_rounding_q7 int
+av1.near_count int

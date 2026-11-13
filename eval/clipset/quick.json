@@ -1,0 +1,55 @@
+{
+ "name": "quick",
+ "clips": [
+  {
+   "name": "static_chirla_s000c3",
+   "source": "/mldata/tracking_original/chirla/video/chirla_seq_000_camera_3_2023-06-02-11-14-26.mp4",
+   "start": 89.18,
+   "frames": 300,
+   "width": 1080,
+   "height": 720,
+   "content_class": "static",
+   "split": "train"
+  },
+  {
+   "name": "crowd_mot17_09",
+   "source": "/mldata/tracking_original/mot/video/MOT17-09.mp4",
+   "start": 5.24,
+   "frames": 300,
+   "width": 1280,
+   "height": 720,
+   "content_class": "crowd",
+   "split": "train"
+  },
+  {
+   "name": "pan_jaad_0117",
+   "source": "/mldata/tracking_original/jaad/video/video_0117.mp4",
+   "start": 6.0,
+   "frames": 300,
+   "width": 1280,
+   "height": 720,
+   "content_class": "pan",
+   "split": "train"
+  },
+  {
+   "name": "bodycam_airport",
+   "source": "/mldata/video/youtube/airport_arrest.mp4",
+   "start": 291.41,
+   "frames": 300,
+   "width": 1280,
+   "height": 720,
+   "content_class": "bodycam",
+   "split": "val"
+  },
+  {
+   "name": "lowlight_pp22_004",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00004.mp4",
+   "start": 4.65,
+   "frames": 240,
+   "width": 1280,
+   "height": 720,
+   "content_class": "lowlight",
+   "split": "train"
+  }
+ ]
+}

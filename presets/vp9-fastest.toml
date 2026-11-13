@@ -1,0 +1,111 @@
+# VP9 Fastest: the speed point below VP9 Faster (vp9-faster agent,
+# 2026-11-12; docs/handoff/vp9-faster.md). Against libvpx VP9 rt 9 (chart
+# 2026-11-12: BD-J -5.7%, 47.8 / 113 fps). vp9-faster plus the cheapest
+# remaining cuts; bundle vs vp9-fast: J_real quality +30% (L1 draw of
+# 2026-11-12, 24 clips; bodycam and lowlight lose most), Jetson -41.6% (CBR
+# 600, chart clips), x86 instructions -41.7%. Long GOP (900 f, one key,
+# 600 kbps): a constant loss, no drift (handoff).
+#
+# vp9-faster's round-1 levers (its libvpx real-time pair costs more than it
+# saves here: +4.1% for -3.0% on top of this), then vp9-fast:
+# vp9-fast, listed so these streams do not move with it. VP9 Fast: the
+# speed point (docs/PROCEDURES.md "Preset roles"). Bars
+# (coordinator, 2026-11-09): CPU <= ~1.4x our HEVC Fast on the Jetson, and
+# J_real vs our HEVC Fast with no class guard failing; judged at Fast's k 0.6.
+#
+# Smaller inter transforms only for locally concentrated residual (HEVC's
+# inter_tu_split_spread): crowd 720p q230, Jetson -7.2% / x86 -3.9% CPU;
+# J_real TRAIN quality vs Default +1.6% full / +1.2% low (proxy-6).
+vp9.inter_tx_split_spread = 1.5
+# HEVC Fast's sub-pel gates (seed variance 0.05 lambdas, move biases 1.1)
+# and the quarter-sample stage only after a half-sample move: with the
+# spread gate off, Jetson about -6%, x86 -7.3% CPU; quality vs Default
+# (proxy-4) +3.4% full / +2.5% low, pan worst.
+decision.codec_subpel_seed_lambdas = 0.05
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+decision.subpel_quarter_needs_half_move = 1
+# 32x32 transforms code only their low 16x16 frequencies (encoder-side
+# forward approximation; NEON computes only those): crowd 720p q230 Jetson
+# -3.9%, x86 +1.6% (full forward then zeroed there), weighted -2.1%; J_real
+# TRAIN quality vs Default +0.2% full / +0.3% low (proxy-6, no guards),
+# J at Fast's k 0.6 about -1.0%.
+vp9.partial_forward = 1
+# Inter blocks whose largest transform codes at most 4 levels skip the
+# smaller transform sizes: Jetson -9.4%, x86 -7.4% (weighted -8.7%); J_real
+# full TRAIN at k 0.6 BETTER, -4.9% (quality +0.6% full / +0.1% low, no
+# guards); long GOP (one key, 300 frames, crowd and pan at 400 kbps) holds
+# its trend.
+vp9.tx_search_min_levels = 4
+# Trellis quantisation is a Default quality arm (J_real quality -1.3% for
+# +6.4% host / +11.2% Jetson P-frame CPU); Fast keeps the plain quantiser.
+quant.trellis = 0
+# Fast keeps Default's start-up QP cadence (base boost 4) and cadence motion
+# gate: proxy-6 J_real (k 0.6) vs both off BETTER -1.3%, no guard, pulse
+# -0.02 dB; CPU-neutral (docs/handoff/vvc.md, qp-cascade).
+# Default's key-frame trellis, unshaved levels, ungated P-frame intra and
+# fine-quantizer small blocks are quality arms; Fast keeps the cheaper
+# engine values.
+quant.trellis_key = 0
+vp9.shave_gap = 8
+planner.depth_removal_min_quantizer = 0
+vp9.intra_mode_estimate = 0
+# QP cadence 1.4x the engine's (the Default takes 1.2; 2026-11-11): J_real
+# (k 0.6) vs 1, TRAIN -1.9%, VAL -1.7%, no guard.
+rate.cadence_scale = 1.4
+# The Default's jointly tuned planner lambda (2026-11-12) is not screened for
+# this preset: it keeps the previous value.
+planner.lambda_scale = 2
+# The Default's error-gap chroma offset (2026-11-12) is not screened for this
+# preset.
+vp9.chroma_delta_gap_slope = 0
+#
+# The Faster levers (quality / Jetson time, each alone vs vp9-fast):
+# Intra blocks of inter frames take DC without a mode search (-0.6 / -2.3%).
+vp9.inter_intra_dc_only = 1
+# No reuse-term refinement of still blocks (-0.2 / -1.2%; static_recovery
+# still passes).
+persist.reuse = 0
+# Round 4 (2026-11-13): libvpx real-time intra masks (luma DC/V/H, chroma
+# DC; vp9_speed_features.c): pool L1-L3 (n 127) quality +0.07%, J -0.75% [-1.08, -0.45], BETTER at k 0.6;
+# Jetson -1.1%, x86 -6.2% on 31 f (its key frame).
+vp9.intra_mode_search = 2
+# Inter residual within 3x the zero proof's bound is dropped before the
+# transform (+0.6 / -2.2%).
+vp9.pre_transform_zero_scale = 3
+# Inter blocks code their largest transform only (+4.8 / -6.2%; with the
+# 16x16 cap together -12.9%).
+vp9.inter_tx_depth = 0
+# Non-base frames of the QP cadence (3 of 4) skip the loop filter
+# (+3.4 / -4.4%; long GOP in the handoff).
+nonbase.vp9.filter_level_scale = 0
+#
+# The Fastest levers (quality / Jetson time, alone vs vp9-fast where
+# measured):
+# Luma energy pre-transform skip (AV1's light-PD1 test) at 15 (+3.1 / -3.4%).
+vp9.pre_tx_skip_energy = 15
+# Inter transforms at most 8x8 (vp9-faster: 16x16).
+vp9.inter_max_tx_log2 = 3
+# Intra blocks code their largest transform only.
+vp9.intra_tx_depth = 0
+# P-frame intra tried only on blocks of variance >= 256 (Fast: 64;
+# +1.7 / -1.6%).
+decision.intra_gate_variance = 256
+# Key frames planned by source variance (+1.3 / -1.0%).
+planner.intra_plan = 1
+# Pre-analysis on even rows of a decimated half level (h264-faster's).
+analysis.preanalysis_rows = 1
+analysis.pyramid_downsample = 2
+# HME: range 8, no level 1, skipped below SAD 8 per pixel (the HME trio).
+analysis.hme_range_x = 8
+analysis.hme_level1 = 0
+analysis.skip_hme_sad_per_pixel = 8
+# Half-sample vectors only.
+decision.subpel_half_only = 1
+# Non-base frames search a full-pel window of half width 1.
+nonbase.analysis.window_half_width = 1
+# Only the regular and smooth filters tried on switchable-filter blocks
+# (libvpx real-time, vp9.filter_search_rt; 2026-11-13): pool L1-L3 (n 127)
+# quality +0.18%, BETTER at k 0.6; Jetson -1.0%, x86 instructions about -2%.
+vp9.filter_search_rt = 1

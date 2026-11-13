@@ -1,0 +1,117 @@
+# AV1 Faster: the speed point below AV1 Fast, at SVT-AV1 M12 (--rtc) speed or better
+# (av1-faster agent, 2026-11-11; docs/handoff/av1-faster.md).
+# av1-fast plus the levers with the least quality lost per CPU saved
+# (single-lever J_real at k 0 against Jetson time, then cumulative
+# bundles). The profile is flat (no stage over ~20%), so the speed comes
+# from many small cuts; past about -10% time each further 1% costs 1.5-2%
+# in bits.
+# Jetson, CBR 600 kbps rung, chart clips: see the handoff for fps and BD.
+#
+# Everything in av1-fast, listed so the streams do not move with it.
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+decision.refine_cheap_vector = 0
+av1.inter_tx_split = 0
+av1.pre_tx_luma_dominant = 1
+av1.pre_tx_skip = 1
+av1.pre_tx_skip_model = 0
+av1.pre_tx_skip_rd = 100
+av1.pre_tx_skip_score = 70
+av1.residual_rd_max_mv = 8
+av1.transform_rd_gain_scale = 1.25
+av1.transform_rd_skip = 2
+av1.transform_rd_skip_chroma = 1
+av1.transform_rd_uv_max_noise_sigma = 1
+decision.subpel_walk = 2
+decision.subpel_walk_max_noise_sigma = 1
+av1.chroma_delta_q = -24
+chroma.policy = 0
+av1.chroma_noise_scale = 2
+decision.codec_fullpel_probe = 1
+decision.codec_fullpel_probe_min_lambdas = 0.0094
+av1.cdef_per_superblock = 1
+av1.cdef_local_strong_luma = 1
+av1.cdef_local_strong_primary = 15
+av1.cdef_local_strong_variance_min = 0
+av1.cdef_local_noise_full_search_sigma = 0
+av1.cdef_local_strong_model_scale = 3
+av1.loop_filter = 0
+planner.depth_removal_min_quantizer = 0
+quant.trellis = 0
+av1.keyframe_directional = 0
+av1.keyframe_angle_deltas = 0
+av1.keyframe_filter_intra = 0
+# Key frames predict with DC only (SVT M11+ is DC-only on every frame): the
+# transform-costed key mode search was 2.6-3.3x SVT M13's whole key frame.
+# J_real +0.6% VAL / +1.2% proxy-6 / +0.4% held-out (14 clips of
+# broad_independent_v1, every class); Jetson -3.0% time, x86 -4.5%
+# instructions (150 f, the chart clips). (2026-11-11)
+av1.keyframe_intra_modes = 0
+decision.intra_directional = 0
+av1.inter_intra_search = 0
+#
+# The Faster levers. Single-lever J_real (k 0, R6 clips, 60 f) / Jetson
+# time, in the order of quality lost per time saved:
+# 32x32 and 64x64 residuals keep their low frequencies in coding too
+# (quality -0.4% / time -2.3%).
+av1.partial_forward = 2
+# Exact-filter candidates ranked against a tighter margin (+0.5 / -1.3%).
+decision.exact_rank_margin = 0.9
+# More blocks skip luma before the transform (+2.3 / -4.3%).
+av1.pre_tx_skip_energy = 100
+# The full-pel window stops at its centre below 2 SAD/pixel (+0.9 / -1.5%).
+analysis.window_exit_sad_per_pixel = 2
+# Sub-pel refinement skipped below 0.5 lambda of seed residual
+# (Fast 0.1; 0.3 alone: +2.2 / -3.3%).
+decision.codec_subpel_seed_lambdas = 0.5
+# CDEF distortion sampled on every 8th row (+0.5 / -0.7%).
+av1.cdef_search_row_step = 8
+# Chroma transforms skipped below a sampled-SAD threshold of 7/8 (Fast
+# 5/8). 10/8 cost av1-faster J_real 6.3% on VAL (PSNR-YUV 11.6, VMAF v1
+# 14.5: both include chroma) for 3.2% Jetson time; 7/8 keeps most of the
+# time (see the rebuild below).
+av1.chroma_skip_sad_num = 7
+# One NEARMV candidate (+1.2 / -1.6%).
+av1.near_count = 1
+# The per-superblock CDEF choice searched on every 4th frame (+2.0 / -2.0%).
+av1.cdef_local_search_period = 4
+# A 4x1 full-pel window (+3.6 / -3.3%).
+analysis.window_half_width = 2
+analysis.window_half_height = 0
+# SVT's linear end-of-block rate in the residual-drop check (+0.7 / -0.7%).
+av1.coeff_rate_linear = 1
+# Depth removal twice as eager (+2.4 / -1.4%).
+planner.depth_removal_qp_scale = 4
+#
+# Rebuild (2026-11-11, J_real vs the first av1-faster, k 0, 150 f; VAL-proxy-5
+# + lowlight_bdd_00ce95b0 / proxy-6): chroma skip 10 -> 7, seed gate 0.3 ->
+# 0.5, plus the four below: -7.5% / -7.1% (PSNR-YUV -7.4 / -8.4, VMAF v1
+# -9.8 / -7.0, MS-SSIM -2.0 / -6.2); Jetson -1.9% time, x86 instructions
+# -0.4% (geomean of the chart clips). Worst-1% PSNR-Y +4.0% on the VAL set
+# is one clip, bodycam_airport, where luma is at 46-51 dB and gives ~0.4 dB
+# to chroma (worst 4-frame window 46.6 vs 46.7 dB at 600 kbps): judged
+# invisible; proxy-6 +1.1%. Long GOP (900 f, one key, PSNR-YUV per third)
+# +0.22..+0.30 dB crowd, +0.09..+0.23 pan, +0.34..+0.42 static: no drift.
+# Gated L1T3 (h264-faster's gate; layers crowd and pan, keeps static,
+# shaking and repeated sources flat).
+layers.count = 3
+layers.adaptive = 1
+layers.adaptive_max_camera_motion = 16
+layers.adaptive_max_compensable = 1
+layers.adaptive_max_repeat_share = 0.25
+layers.adaptive_max_static = 0.68
+layers.adaptive_max_camera_jitter = 2
+# P-frame rounding offset 32/128 (Fast 48): fewer small coefficients.
+av1.inter_rounding_q7 = 32
+# The local CDEF search keeps its period on noisy sources too (Fast searches
+# every frame above noise sigma 1): `av1.cdef_local_noise_full_search_sigma`
+# is 0 in the av1-fast block above.
+# Biased residual skip on blocks below 0.25 lambda per sample (default 0.0625).
+av1.skip_bias_energy = 0.25
+#
+# Not used (measured in the handoff): temporal layers (gated: no chart
+# speed, worst-1% guard; fixed L1T3: bodycam guard), frame-level CDEF
+# (+8.1% for -3.0%), the HME trio, 32x32 minimum inter blocks, integer
+# probes off, `persist.reuse` 0 (-3.0% time for 0 quality, but it is the
+# static-recovery fix: tests/static_recovery.rs).

@@ -1,0 +1,30 @@
+# Frozen combined AV1 candidate; not a validated default.
+# Measured combined build330307e versus v7: native CPU -23.48%/-16.74%
+# (bodycam/crowd, five paired300-frame runs with decoder/reconstruction gates).
+# Full21 TRAIN: natural PSNR BD +5.117%, full-frame VMAF v1 BD -0.751%.
+# Worst fixed-rate TRAIN noise loss: 0.151 dB PSNR / 1.053 V1 points.
+# Supported12 held-out VAL: natural PSNR BD +5.199%, VMAF v1 BD +2.229%
+# versus default. Direct SVT gap: +20.910% PSNR / +10.660% VMAF v1.
+# Worst fixed VAL noise: -0.1536 dB PSNR / -0.3649 V1 points.
+# This remains an explicit speed tradeoff, not a quality-preserving default.
+# Integrated exact prediction reuse additionally saves4.51%/0.83% native CPU
+# versus this same preset without caching; cache-build times13.600/18.193 ms/frame, before CDEF specialization.
+# Evidence: external work/overnight/joint-rd-seed-pretx-manifest.json and
+# native-av1-joint-rd-seed-pretx-timing.json. Extra integrated SSE reuse is exact.
+av1.pre_tx_luma_dominant = 1
+av1.pre_tx_skip = 1
+av1.pre_tx_skip_energy = 30
+av1.pre_tx_skip_rd = 100
+av1.pre_tx_skip_score = 70
+av1.residual_rd_max_mv = 8
+av1.transform_rd_gain_scale = 1.25
+av1.transform_rd_skip = 2
+av1.transform_rd_skip_chroma = 1
+av1.transform_rd_uv_max_noise_sigma = 1
+decision.codec_subpel_seed_lambdas = 0.05
+decision.subpel_walk = 2
+decision.subpel_walk_max_noise_sigma = 1
+
+# Preserve the measured chroma allocation if encoder defaults evolve.
+av1.chroma_delta_q = 0
+av1.chroma_noise_scale = 0

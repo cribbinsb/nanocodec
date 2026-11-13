@@ -1,0 +1,35 @@
+# H.264 balanced: TRAIN-selected h264-overnight-20261107-v2 trial51.
+# Since this set became the H.264 DEFAULT (H264Params defaults plus the
+# backend's DEFAULT_PARAMS), this preset is kept for scripts. It is no
+# longer an alias: the Default's later changes (key QP offset 6, the
+# 2026-11-10 quality set's intra gate 25) are not in it.
+# It inherits the Default's gated temporal layers (2026-11-11).
+# Full VAL natural clips: PSNR-YUV BD -14.506%, VMAF-NEG BD -12.556%.
+# Current x86 GOP300 instruction cost -11.66% versus the earlier defaults.
+# Explicit tradeoff: strict noise no-loss guard FAILED on one best-measured
+# PSNR point (-0.0356dB at different bitrates); both noise clips improve
+# PSNR and VMAF at fixed200/400kbps. Not a claim of noise nonregression.
+# H.264 only: shared decision parameters are unvalidated on other codecs.
+# Evidence: docs/handoff/overnight.md, docs/handoff/h264.md.
+decision.intra_gate_variance = 50.41242292263979
+decision.skip_no_refine_lambdas = 0.20995096499239646
+decision.subpel_move_bias = 1.2012432940300346
+decision.subpel_move_bias_nonzero = 1.0667260229125557
+h264.eliminate_chroma_ac = 3.915538018698998
+h264.eliminate_luma_8x8 = 2.3031690856917577
+h264.eliminate_luma_mb = 6.0
+h264.inter_rounding_divisor = 5.602792317536565
+h264.intra4x4_gate_satd = 24.314305316120183
+h264.keyframe_qp_offset = 10.969134731669111
+h264.split_gate_satd = 33.347726631353126
+h264.subpel_skip_variance = 24.0
+# Takes the Default's start-up QP cadence and motion gate (qp-cascade,
+# boost 4): J_real (k 0.1) TRAIN (18 clips) BETTER -1.7% (lowlight -5.4%,
+# static -2.6%, crowd -2.0%), worst-1% Y -0.4%, pulse -0.08 dB.
+# The Default's jointly tuned lambda and Intra_8x8 gate (2026-11-12) are not
+# screened for this preset: it keeps the previous values.
+decision.lambda_scale = 1
+h264.intra8x8_gate_satd = 0
+# Intra modes by coded cost (Default since 2026-11-13, study
+# h264-default-arms-2026-11-13) stay off here: pinned, byte-identical.
+h264.intra_rd = 0

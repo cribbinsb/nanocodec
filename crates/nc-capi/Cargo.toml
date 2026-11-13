@@ -1,0 +1,23 @@
+[package]
+name = "nc-capi"
+description = "C ABI for embedding the nanocodec encoder (staticlib/cdylib + include/nanocodec.h)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "nanocodec"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+nc-common.workspace = true
+nc-encoder.workspace = true
+nc-h264.workspace = true
+nc-hevc.workspace = true
+nc-av1.workspace = true
+nc-vp9.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,4 @@
+# H.264 speed candidate B: A plus no mixed-motion candidates.
+h264.split_gate_satd = 48
+analysis.window_half_width = 3
+analysis.mixed_motion = 0

@@ -1,0 +1,5 @@
+# SVT applies its move margin only when refining away from the zero vector.
+# Candidate: AV1/HEVC official averages improve on both metrics;
+# worst class regression is about 0.4% (within the 3% tuning guard).
+# H.264 regresses VMAF-NEG; do not use this setting there by default.
+decision.subpel_move_bias_nonzero = 1.0

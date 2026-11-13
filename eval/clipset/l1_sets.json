@@ -1,0 +1,4 @@
+{
+ "_comment": "L1's chosen clip sets (nceval.pool.chosen_quick), written by `nceval.clipselect select --l1-out` from the pool response matrix (tools/dev/clipselect_overnight.sh). Empty: L1 is drawn like the other levels.",
+ "sets": []
+}

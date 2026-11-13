@@ -1,0 +1,3 @@
+# The hand-tuned defaults: no overrides.
+# Tuned presets (written by eval/nceval/tune.py) list only the parameters
+# they change, one `name = value` per line; see docs/PROCEDURES.md.

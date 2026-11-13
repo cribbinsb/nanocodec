@@ -1,0 +1,15 @@
+[package]
+name = "nc-analysis"
+description = "nanocodec source analysis: pyramid, pre-analysis, motion estimation, global motion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nc-common.workspace = true
+nc-dsp.workspace = true
+
+[lints]
+workspace = true

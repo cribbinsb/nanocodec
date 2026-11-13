@@ -1,0 +1,5 @@
+# Formatting is enforced by tools/ci/check.sh (`cargo fmt --check`).
+# Stable options only, so any stable toolchain formats identically.
+edition = "2024"
+max_width = 100
+use_field_init_shorthand = true

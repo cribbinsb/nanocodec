@@ -1,0 +1,13 @@
+# Optional fast HEVC operating point, frozen from TRAIN at selector0.5.
+# Five paired300-frame Jetson runs: CPU -12.36% bodycam / -8.07% crowd.
+# Same-QP comparison; rates +1.59% / +0.33%, all streams decoder/recon gated.
+# Full21 TRAIN,150frames, full-frame VMAFv1.0.16_3d0h:
+# PSNR-YUV BD-rate +0.1042%; VMAFv1 BD-rate -1.1990%.
+# Bodycam class +3.4238% PSNR / +1.8643% V1: original3% PSNR guard FAILED.
+# All6 noise best scores improve; worst fixed deltas -0.0941dB / -0.2411 V1.
+# Supported12 VAL: PSNR BD -0.966%, VMAF v1 BD -1.797%.
+# Noise best/all fixed PSNR improve; high-noise400kbps V1 loses0.257points.
+# Pin full SAO statistics to reproduce this selector-only operating point.
+# Measurement source80976c3; evidence work/overnight/hevc-select-tu-agent/.
+hevc.tu16_chroma_concentration = 0.5
+hevc.sao_stats_row_step = 1

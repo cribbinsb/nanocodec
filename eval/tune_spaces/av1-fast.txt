@@ -1,0 +1,18 @@
+# AV1 Fast: the levers today's screens moved most (docs/handoff/av1.md),
+# each in the trust region around the av1-fast value unless bounded here.
+# Format (nceval.tune_pool): name [low high] [int|log]
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+av1.pre_tx_skip_energy
+av1.pre_tx_skip_rd
+av1.pre_tx_skip_score
+av1.transform_rd_gain_scale
+av1.skip_bias_pct
+av1.chroma_skip_sad_num int
+av1.chroma_delta_q int
+av1.chroma_noise_scale
+av1.cdef_local_search_period 1 4 int
+av1.near_count int

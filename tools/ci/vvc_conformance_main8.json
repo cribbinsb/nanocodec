@@ -1,0 +1,110 @@
+[
+  {
+    "name": "8b400_A_2",
+    "bitstream": "8b400_A_2/8b400_A_2.bit",
+    "profile": "Main 10",
+    "width": 832,
+    "height": 480,
+    "pix_fmt": "gray",
+    "md5": "87e14541c2b6568a109a5505c73950db",
+    "sha256": "268c753c0ec123c6f11b19b5c56fdb5fc3f545cc60cca60f6eaeb0b179c53e78",
+    "archive_sha256": "b51fb5a14b44a744a5e997a274d95766011c3c50ee0f396215b8978633c661d4",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/8b400_A_2.zip"
+  },
+  {
+    "name": "8b400_B_2",
+    "bitstream": "8b400_B_2/8b400_B_2.bit",
+    "profile": "Main 10",
+    "width": 1920,
+    "height": 1080,
+    "pix_fmt": "gray",
+    "md5": "7fc9d86c78d08a8cdcaf097367ad2754",
+    "sha256": "9715782032a1f020e7ab5d2465f714d7492a6248c0f3838d7417e4de84dbb158",
+    "archive_sha256": "39d4e480e7219ab9bd8e874a9b5a89e21de2558eed8f69e7a33be66909fb5952",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/8b400_B_2.zip"
+  },
+  {
+    "name": "8b420_A_2",
+    "bitstream": "8b420_A_2/8b420_A_2.bit",
+    "profile": "Main 10",
+    "width": 832,
+    "height": 480,
+    "pix_fmt": "yuv420p",
+    "md5": "da63784a3f1adb4eb171a0207e7c8d0f",
+    "sha256": "d81c0734cebceea281f59db765d14648f285cdc4beaa8356c223189d35eeca1b",
+    "archive_sha256": "447ed65a101acf809742a5d7220eca6f4380178bd50e0f8893f5b38f41ecec19",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/8b420_A_2.zip"
+  },
+  {
+    "name": "8b420_B_2",
+    "bitstream": "8b420_B_2/8b420_B_2.bit",
+    "profile": "Main 10",
+    "width": 1920,
+    "height": 1080,
+    "pix_fmt": "yuv420p",
+    "md5": "8bf6496f8768b68d8aa1106a89d3e38a",
+    "sha256": "b060808509c3427f5f78a594a66481b55028902e568ef3fbb51c046d888deacc",
+    "archive_sha256": "78baea410f284d17674fed52ab072439584a72662afaba461e67186124f47691",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/8b420_B_2.zip"
+  },
+  {
+    "name": "CodingToolsSets_A_2",
+    "bitstream": "CodingToolsSets_A_2/CodingToolsSets_A_2.bit",
+    "profile": "Main 10",
+    "width": 416,
+    "height": 240,
+    "pix_fmt": "yuv420p",
+    "md5": "fda2476f1f0ca046c0b3428689db314c",
+    "sha256": "f6ed0be5621fb45ff0fc0c55548757c690858507f45e0479839d118d4d24bfd7",
+    "archive_sha256": "e5cf08b5726120415457e13110993843dc1382da6d81eb176302bf91b14c78e5",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/CodingToolsSets_A_2.zip"
+  },
+  {
+    "name": "CodingToolsSets_B_2",
+    "bitstream": "CodingToolsSets_B_2/CodingToolsSets_B_2.bit",
+    "profile": "Main 10",
+    "width": 416,
+    "height": 240,
+    "pix_fmt": "yuv420p",
+    "md5": "ef5596c9a128c97b9511c215a12dbc35",
+    "sha256": "1b17cdc09bf8870657de8814276b1fbf5ccaad7ccad82e43d8123220fbdea84c",
+    "archive_sha256": "78dc0493c2b941401c81a2e04452ba43df2672e4e61e9873a433714e348ec4bf",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/CodingToolsSets_B_2.zip"
+  },
+  {
+    "name": "LOSSLESS_A_3",
+    "bitstream": "LOSSLESS_A_3/LOSSLESS_A_3.bit",
+    "profile": "Main 10",
+    "width": 416,
+    "height": 240,
+    "pix_fmt": "yuv420p",
+    "md5": "b2b6a0a09e171c00b9df9c620cf47b7d",
+    "sha256": "cc41b6a964443087e4f286e1a5701379cd7d927000875dc1c7d006c7ffeba0b5",
+    "archive_sha256": "107696ae19eca5f54df6430f63013b3b4660bf75a1783150297282385018d4e6",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/LOSSLESS_A_3.zip"
+  },
+  {
+    "name": "QUANT_C_2",
+    "bitstream": "QUANT_C_2/QUANT_C_2.bit",
+    "profile": "Main 10",
+    "width": 1280,
+    "height": 720,
+    "pix_fmt": "yuv420p",
+    "md5": "1451088ca92ef66af7cb03f13d7e11ad",
+    "sha256": "291eed37150d8d2267e22ede0871096ff38a901e166b7064d08a83e4b33384a9",
+    "archive_sha256": "b437961b3309afa470fa83b9cc2c089d3ba5ab448b0ada1a02d7fb361403fa0a",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/QUANT_C_2.zip"
+  },
+  {
+    "name": "QUANT_D_4",
+    "bitstream": "QUANT_D_4/QUANT_D_4.bit",
+    "profile": "Main 10",
+    "width": 832,
+    "height": 480,
+    "pix_fmt": "yuv420p",
+    "md5": "08dc6d75369d466436b179ba13de71b3",
+    "sha256": "6826f5b4548fb8ed68331ce1a666bd8c155c50b93d0d3a26847b0d946698f588",
+    "archive_sha256": "5fc29f7c5609fae97bac0d814b1dbfce6369bfa01701b20d0063778b92ab3193",
+    "url": "https://www.itu.int/wftp3/av-arch/jvet-site/bitstream_exchange/VVC/FDIS_r1/QUANT_D_4.zip"
+  }
+]

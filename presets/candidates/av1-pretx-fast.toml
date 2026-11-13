@@ -1,0 +1,16 @@
+# Fixed AV1 pre-transform candidate; default settings are not changed.
+# Native Jetson CPU: -11.07% bodycam / -9.28% crowd (five paired 300f runs).
+# Full-frame VMAF v1, 15 natural TRAIN clips: -0.194% BD-rate; PSNR +2.659%.
+# Every VMAF class is within +0.54%; bodycam/lowlight PSNR regressions remain.
+# All six TRAIN noise curves measured: worst VMAF loss 0.270 points, PSNR 0.066 dB.
+# Held-out VAL is running; not a validated default.
+# Evidence: external work/overnight/motion-agent/pretx-v1*/ (frozen score70).
+av1.pre_tx_luma_dominant = 1
+av1.pre_tx_skip = 1
+av1.pre_tx_skip_energy = 30
+av1.pre_tx_skip_rd = 100
+av1.pre_tx_skip_score = 70
+
+# Preserve the measured chroma allocation if encoder defaults evolve.
+av1.chroma_delta_q = 0
+av1.chroma_noise_scale = 0

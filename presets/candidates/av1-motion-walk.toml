@@ -1,0 +1,9 @@
+# Source-guided AV1 subpixel walk; optional quality/speed trade-off.
+# Full TRAIN: -0.559% PSNR-YUV / -1.453% VMAF-NEG BD; six noise clips unchanged.
+# Supported held-out VAL: -1.620% / -1.305%; all classes improve, noise unchanged.
+# Host GOP300 instruction cost +4.39% before exact previous-winner cache
+# (that cache saves another0.22%). Native operating-point timing pending.
+# Host/ARM/WASM streams match, including optional CfL; decoder gates pass.
+# Evidence: external work/overnight/motion-agent/val-summary.json.
+decision.subpel_walk = 2
+decision.subpel_walk_max_noise_sigma = 1.0

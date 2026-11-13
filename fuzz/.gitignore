@@ -1,0 +1,5 @@
+# Generated fuzzing state is kept outside git.
+/target/
+/corpus/
+/artifacts/
+/coverage/

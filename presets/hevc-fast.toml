@@ -1,0 +1,100 @@
+# Chroma QP offset -6 (-9 was tried and reverted: full TRAIN J only -0.26,
+# lowlight/bodycam losses, and bodycam_airport spends +29% bits at matched
+# QP so its curve leaves the legal rate range). -3 vs 0: TRAIN proxy-6 (150f) PSNR-YUV / VMAF v1 BD
+# -4.84% / -4.71% (VAL-150 -4.50% / -5.03%, long-GOP -1.25% / -3.30%;
+# bodycam_airport PSNR +5.05% disclosed). -6 vs -3: -2.82% / -2.00%
+# (antare +0.69% / +1.46%); each step costs ~+0.3% instructions, J < 0.
+# Found on lowlight_bdd_00ce95b0 (U -0.4dB vs SVT).
+# Evidence: work/hevc-outliers/screens/cqp{3,6}*.json.
+# Cached integer early merge .03: native CPU -1.19% body / -5.76% crowd /
+# -1.52% lowlight / -3.09% pan / -3.83% MEVA, three paired150f rounds each.
+# Incremental full21 TRAIN PSNR/V1 BD +1.525%/+1.161%; held-out12
+# +0.771%/+0.011%. All70 held-out points legal and conformant; noise no loss.
+# TRAIN crowd027 costs7.976% V1 BD, crowd-low noise loses2.476V1 at200kbps.
+# Evidence: work/overnight/hevc-early-merge-pilot/{fulltrain21,val12,native*}.
+# Faster HEVC: packed transforms, sampled SAO, pre-transform and subpel gates.
+# Subpel seed .05 adds native CPU savings of 6.94% bodycam / 8.73% crowd
+# versus the previous Fast below (three paired150f runs, same QP).
+# Incremental full21 TRAIN PSNR/V1 BD +0.836%/+1.011%; supported12 VAL
+# +0.877%/+0.723%. Worst VAL V1 clip +1.470%; all10 natural curves reliable.
+# TRAIN noise worst fixed-rate V1 -1.181points; VAL -0.00856points.
+# Evidence: cdef-agent/hevc-fast-seed005-{train21,val12}, hevc-fast-controls-native.
+# Historical pre-subpel-gate Fast results follow:
+# Three paired 300-frame Jetson runs: CPU -12.71% bodycam / -8.97% crowd
+# versus the default TU0.5/SAOrow2 policy; same QP, not matched-quality timing.
+# Supported12 VAL (10 natural, full-frame VMAF v1): PSNR BD +1.850%,
+# VMAF BD +1.575% versus default; -5.216%/-11.245% versus SVT M12 RTC.
+# Static class costs +4.673% PSNR/+3.846% VMAF; worst clip +9.838%/+9.214%.
+# Noise: worst best PSNR -0.1532dB; worst fixed-rate VMAF -0.2713 points.
+# This is a disclosed speed/quality tradeoff, not a no-loss or parity claim.
+# Evidence: work/overnight/hevc-packed-prezero-agent/control-val/summary.json
+# and native/three-pairs.json. Continuous TRAIN tuning continues; not an optimum.
+# The quality-point Default codes inter transform trees by RD; Fast keeps
+# one transform per CU.
+hevc.inter_tu_split = 0
+# P-frame intra CUs coded DC-only, no coarse mode search, and exact-rank
+# pruning 1.1 (2026-11-09; toolset survey, docs/handoff/preset-toolsets.md):
+# P instructions -3.4% (QP 36) / -4.8% (QP 42) vs the previous Fast;
+# Default/Fast 1.43x -> 1.48x / 1.37x -> 1.44x. Fast bar vs SVT M12 (CBR
+# J_real): train6 60f every class J -8.8% to -35%; bodycam class at 150f
+# (bc1, antare, handheld_mot17_11) J-full -2.6%, J-low -0.1%, worst-1% Y/NEG
+# -1.4/-2.8% (previous Fast -5.8/-5.5%, within the +5-point allowance).
+# Long GOP (300f, one key, DC-only vs previous Fast): PSNR-YUV / VMAF v1
+# +0.65% / +1.59% (bodycam_bc1 +1.85 / +2.58). hevc.sao_chroma 0 was tested
+# on top and rejected: bodycam J-low +0.6% vs SVT (fails the bar).
+# Evidence: work/presets2/fc150.hevc-fast-{dc,dcm,dcs}.log.
+hevc.inter_intra_dc_only = 1
+decision.exact_rank_margin = 1.1
+hevc.tu16_chroma_concentration = 0.5
+hevc.sao_stats_row_step = 4
+hevc.fast_forward16 = 1
+hevc.fast_forward32 = 1
+hevc.pre_transform_zero_scale = 2.0
+decision.codec_subpel_seed_lambdas = 0.05
+# Default's cheap-vector refinement and integer probe (+11% instructions)
+# stay off on the speed point.
+decision.refine_cheap_vector = 0
+decision.codec_fullpel_probe = 0
+# The legacy sub-pel move margins, pinned here since the engine default
+# moved to 1.0 (HEVC's own defaults still carry 1.1 as well).
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+# Default's depth removal threshold (+3.1% instructions) stays off.
+planner.depth_removal_min_quantizer = 0
+hevc.early_merge_lambdas = 0.03
+hevc.chroma_qp_offset = -3
+# Default's intra bundle (planned key CUs, PART_NxN, intra transform splits;
+# key frames 2.2x instructions) stays off on the speed point.
+hevc.intra_leaf_cost = 0
+hevc.intra_nxn = 0
+hevc.intra_tu_depth = 0
+# SAO off without statistics in all-skipped P-frame CTBs. Jetson Fast CPU
+# -2.4% lowlight_city_night / -1.9% crowd09 / 0.0% bodycam_bc1 (x86 P
+# instructions -8.4% / -2.8% / -2.5%). Fast bar vs SVT M12 (CBR train6,
+# 150f): passes, quality-neutral vs the previous Fast (balanced J-full -9.4
+# vs -9.1). Long GOP (300f, one key; lowlight, crowd09, homes390): Q -0.1% /
+# +0.1%, no guard. hevc.key_intra_coarse (key-frame coarse intra) also passes
+# the SVT bar but fails the long-GOP check (lowlight Q_low +3.8%), so it stays
+# off. Evidence: work/hevc-cpu/screens/{saoskip,saoskip-long,fastlevers-long}.log.
+hevc.sao_skip_unchanged = 1
+# Trellis quantisation is a Default quality arm (J_real quality -2.2% for
+# about +16% host / +23% Jetson CPU); Fast keeps the plain quantiser.
+quant.trellis = 0
+# Fast keeps Default's start-up QP cadence and motion gate with a gentler
+# start-up base boost (5 QP; Default 6). Proxy-6 J_real (k 0.6) vs both off:
+# boost 6 J -3.2% but worst-1% Y +2.85% (guard); boost 5 BETTER -1.5% (crowd
+# -3.5%, pan -1.9%, static -1.6%, bodycam +0.3%), worst-1% Y +0.0%, pulse
+# -0.18 dB; boost 4 BETTER -0.7%. CPU-neutral.
+rate.cadence_startup_base_boost = 5
+# The Default's directional P-frame intra estimate stays off: Fast codes
+# small P-frame intra CUs DC only (hevc.inter_intra_dc_only), where the
+# estimate's direction cannot be used: proxy-4 J_real (k 0.6) +0.4%,
+# quality 0.0% at +0.7% x86 CPU (Jetson instructions +1.3% / +2.7%).
+decision.intra_directional = 0
+# The Default's jointly tuned rounding, planner and TU16 chroma values
+# (2026-11-12) are not screened for this preset: it keeps the previous values.
+hevc.inter_rounding = 128
+hevc.intra_rounding = 171
+planner.lambda_scale = 2
+planner.split_rate_factor = 2

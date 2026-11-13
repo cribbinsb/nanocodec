@@ -1,0 +1,51 @@
+{
+ "name": "long",
+ "clips": [
+  {
+   "name": "long_static_chirla_s024c2",
+   "source": "/mldata/tracking_original/chirla/video/chirla_seq_024_camera_2_2023-12-01-11-05-52.mp4",
+   "start": 200.0,
+   "frames": 1800,
+   "width": 1080,
+   "height": 720,
+   "content_class": "static",
+   "split": "train"
+  },
+  {
+   "name": "long_crowd_mot20_02",
+   "source": "/mldata/tracking_original/mot/video/MOT20-02.mp4",
+   "start": 30.0,
+   "frames": 1500,
+   "width": 1280,
+   "height": 720,
+   "content_class": "crowd",
+   "split": "train"
+  },
+  {
+   "name": "long_pan_bdd_00c12bd0",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c12bd0-bb46e479.mp4",
+   "start": 0.0,
+   "frames": 1206,
+   "width": 1280,
+   "height": 720,
+   "content_class": "pan",
+   "split": "train"
+  },
+  {
+   "name": "long_bodycam_airport",
+   "source": "/mldata/video/youtube/airport_arrest.mp4",
+   "start": 500.0,
+   "frames": 1798,
+   "width": 1280,
+   "height": 720,
+   "content_class": "bodycam",
+   "split": "val",
+   "cuts": [
+    8.7,
+    35.9
+   ],
+   "min_segment_seconds": 20,
+   "cuts_note": "YouTube compilation: camera switches at 8.7 s and 35.9 s (ffmpeg scdet + checked by eye, Mark 2026-11-06)"
+  }
+ ]
+}

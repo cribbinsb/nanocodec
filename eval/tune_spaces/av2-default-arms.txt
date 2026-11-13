@@ -1,0 +1,42 @@
+# AV2 Default quality arms (Default/Fast CPU separation, coordinator 2026-11-13): the
+# sensitivity candidates plus tools Default leaves off, for a (J, CPU) front study at k 0.1.
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+decision.subpel_move_bias
+decision.intra_gate_variance
+decision.lambda_scale
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+analysis.skip_hme_sad_per_pixel
+rate.cadence_scale
+av2.lambda_per_step_squared
+av2.inter_rounding_q7 int
+av2.inter_chroma_rounding_delta_q7 int
+av2.coeff_trim_rate_scale
+av2.coeff_trim_chroma_rate_scale
+av2.chroma_delta_q int
+av2.chroma_delta_q_coarse int
+av2.chroma_noise_scale
+av2.chroma_distortion_weight
+av2.chroma_weight_adapt
+av2.interp_search_max_gain
+av2.inter_split_min_nonzero int
+av2.inter_tx_min_nonzero int
+av2.pre_tx_skip_energy
+av2.pre_tx_skip_score
+av2.zero_test_texture_scale
+av2.skip_estimate
+av2.cdef_max_sets int
+av2.key_dc_delta_q int
+av2.drl_ranked_entries int
+av2.tcq 0 2 int
+av2.ccso 0 1 int
+av2.inter_tx_types 0 2 int
+av2.interp_switchable 0 3 int
+av2.skip_mode 0 1 int
+av2.parity_hiding 0 1 int
+av2.ref_mv_bank 0 1 int
+av2.p_intra_modes 0 3 int
+av2.trial_distortion 0 2 int
+av2.intra_rd_candidates 2 4 int

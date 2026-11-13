@@ -1,0 +1,31 @@
+[package]
+name = "nc-cli"
+description = "nanocodec command-line encoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[[bin]]
+name = "nanocodec"
+path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[dependencies]
+nc-av2.workspace = true
+nc-common.workspace = true
+nc-dsp.workspace = true
+nc-vp9.workspace = true
+nc-encoder.workspace = true
+nc-av1.workspace = true
+nc-h264.workspace = true
+nc-hevc.workspace = true
+nc-vvc.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nanocodec decoder warm-up benchmark</title>
+<!-- Page side of warmup-bench.py: drives the demo's own decode worker. -->
+<body>
+<script type="module">
+import { streamPackets } from './packets.mjs';
+
+// One pass in a fresh worker: init (warm-up on or off), wait `delayMs` or for
+// the warm-up to finish (`waitWarm`), then feed every packet of `url` in turn,
+// as the encode worker does, and collect each frame's decode time.
+window.runPass = async ({ url, codec, warmUp, waitWarm, delayMs, width, height }) => {
+  const packets = streamPackets(new Uint8Array(await (await fetch(url)).arrayBuffer()), codec);
+  const worker = new Worker('../../web/decode-worker.js', { type: 'module' });
+  const channel = new MessageChannel();
+  let onFrame = null, warmedMs = null;
+  const ready = new Promise((resolve, reject) => {
+    let markWarmed = null;
+    worker.onmessage = ({ data }) => {
+      if (data.type === 'ready') resolve({ warmed: new Promise(r => { markWarmed = r; }) });
+      else if (data.type === 'warmed') { warmedMs = data.ms; markWarmed?.(); }
+      else if (data.type === 'frame') onFrame(data);
+      else if (data.type === 'error') reject(new Error(data.message));
+    };
+  });
+  const initStart = performance.now();
+  worker.postMessage({ type: 'init', codec, port: channel.port1, warmUp }, [channel.port1]);
+  const { warmed } = await ready;
+  const readyMs = performance.now() - initStart;
+  if (waitWarm) await warmed;
+  else await new Promise(r => setTimeout(r, delayMs));
+  const decodeMs = [], latencyMs = [];
+  for (const [id, packet] of packets.entries()) {
+    const rgba = new ArrayBuffer(width * height * 4);
+    const sent = performance.now();
+    const frame = await new Promise(resolve => {
+      onFrame = resolve;
+      channel.port2.postMessage({ id, coded: [{ packet: packet.slice(), rgba }], display: 'rgba' });
+    });
+    latencyMs.push(performance.now() - sent);
+    decodeMs.push(frame.decodeMs);
+  }
+  worker.terminate();
+  return { readyMs, warmedMs, decodeMs, latencyMs };
+};
+window.ready = true;
+</script>

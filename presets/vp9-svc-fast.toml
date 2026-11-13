@@ -1,0 +1,40 @@
+# VP9 SVC Fast: vp9-svc's two spatial layers (L2T1, 720p30 over a 360p30
+# base) at VP9 Fast's coding levers (presets/vp9-fast.toml, copied below),
+# plus the SVC-only speed levers of av1-svc-fast: the base layer's source by
+# the 2x2 mean (`spatial.base_box_downscale`) and a bilinear search proxy of
+# the upscaled base (`spatial.proxy_bilinear`). VP9 Fast's partial forward
+# transform is kept: the VP9 backend transforms an enhancement picture coded
+# from the upscaled base only (a key or repair unit's S1: its residual is
+# all the detail the base lacks) exactly, as av1-svc-fast's does
+# (static_recovery.rs `vp9_svc_presets_recover`).
+decision.codec_subpel_seed_lambdas = 0.05
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+decision.subpel_quarter_needs_half_move = 1
+vp9.partial_forward = 1
+quant.trellis = 0
+quant.trellis_key = 0
+vp9.shave_gap = 8
+planner.depth_removal_min_quantizer = 0
+vp9.intra_mode_estimate = 0
+vp9.inter_tx_split_spread = 1.531264569929075
+vp9.inter_rounding_divisor = 4.501006167285609
+rate.aq_strength = 0.000301923024994135
+vp9.tx_search_min_levels = 5
+vp9.lambda_per_step_squared = 0.09828267012310973
+planner.lambda_scale = 1.972212232891943
+planner.depth_removal_qp_scale = 1.089173167562608
+rate.cadence_scale = 1.3021137320565115
+planner.depth_removal_th_32_16 = 44.603320351213426
+vp9.keyframe_step_permille = 277.3997809563062
+vp9.chroma_delta_q = -6
+decision.intra_gate_variance = 49.0420171397338
+vp9.chroma_delta_gap_slope = 0
+spatial.layers = 2
+spatial.base_scale = 0.5
+spatial.base_rate_share = 0.35
+spatial.inter_layer = 1
+spatial.enhancement_interval = 1
+spatial.proxy_bilinear = 1
+spatial.base_box_downscale = 1

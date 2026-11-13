@@ -1,0 +1,17 @@
+{
+  "name": "smoke",
+  "clips": [
+    {"name": "meva_hospital_static",
+     "source": "/mldata/tracking_original/meva/video/2018-03-13.17-30-03.17-35-03.hospital.G436.mp4",
+     "start": 60.0, "frames": 60, "width": 1280, "height": 720,
+     "content_class": "static", "split": "train"},
+    {"name": "mot20_02_crowd",
+     "source": "/mldata/tracking_original/mot/video/MOT20-02.mp4",
+     "start": 20.0, "frames": 60, "width": 1280, "height": 720,
+     "content_class": "crowd", "split": "train"},
+    {"name": "bdd_00cef86b_drive",
+     "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00cef86b-204ea619.mp4",
+     "start": 10.0, "frames": 60, "width": 1280, "height": 720,
+     "content_class": "pan", "split": "train"}
+  ]
+}

@@ -1,0 +1,23 @@
+# VP9 SVC: two spatial layers in one stream, L2T1 (720p30 enhancement over a
+# 360p30 base at 2:1, the layers packed as VP9 superframes [S0, S1]; VP9 has
+# no layer ids in the bitstream, so a receiver strips S1 with the layer
+# sidecar or the superframe index). The VP9 Default's parameters plus the
+# spatial scalability defaults (docs/handoff/spatial-svc.md, sections 1.1 and
+# 7), written out so the tuner can move them. Its own optimisation target:
+# measured on the SVC chart (eval/nceval/svc_chart.py,
+# docs/results/svc-chart.md) by BD-J of operating point 0 at the total rate,
+# with the base layer as a guard (`nceval.tune_svc`).
+# `--temporal-layers 3` (or `--scalability L2T3`) gives L2T3.
+spatial.layers = 2
+spatial.base_scale = 0.5
+# The base layer's nominal share of the total rate: 0.30 for VP9 (AV1 keeps
+# 0.35). With per-layer probability contexts the base costs less, so a lower
+# cap helps the full-size output on moving content (the adaptive split already
+# floors static scenes): pool levels L3 J -0.58% [-0.92, -0.14] (n 127), base
+# guard +0.56%; 0.25 / 0.20 at L1: -1.7% / -1.7% with base +1.9% / +2.9%.
+# The gain is on moving content; static scenes lose a few percent through the
+# key unit's base (chart clips: static +5-6%, others -1 to -4%; long-horizon
+# check 720 frames: chirla static +4.7%, crowd / pan -0.8%, no guard).
+spatial.base_rate_share = 0.3
+spatial.inter_layer = 1
+spatial.enhancement_interval = 1

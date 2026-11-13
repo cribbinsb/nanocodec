@@ -1,0 +1,15 @@
+# hevc preset from tuning study pilot-hevc, trial 55.
+# Train proxy vs default parameters: BD -9.46%, CPU x1.086. Validate on VAL before use (nceval.tune validate).
+decision.intra_gate_variance = 21.8623
+decision.subpel_move_bias = 1.02987
+planner.bias_base = 1132.25
+planner.bias_q_slope = 226.085
+planner.depth_removal_th_32_16 = 3.77087
+planner.distortion_cap_per_lambda = 0.523951
+planner.high_8x8_cost_variance = 6328.49
+planner.lambda_scale = 2.54239
+planner.split_rate_factor = 0.579328
+
+# Preserve the transform/filter policy used for this historical measurement.
+hevc.tu16_chroma_concentration = 0
+hevc.sao_stats_row_step = 1

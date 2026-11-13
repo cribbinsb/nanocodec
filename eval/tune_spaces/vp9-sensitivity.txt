@@ -1,0 +1,29 @@
+# VP9 sensitivity candidates (nceval.tune_pool sensitivity; every VP9 preset).
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+decision.subpel_move_bias
+decision.intra_gate_variance
+decision.lambda_scale
+decision.refine_cheap_min_lambdas
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+planner.depth_removal_th_32_16
+planner.depth_removal_th_16_8
+analysis.skip_hme_sad_per_pixel
+analysis.one_position_sad_per_pixel
+rate.cadence_scale
+rate.aq_strength
+vp9.lambda_per_step_squared
+vp9.keyframe_step_permille
+vp9.chroma_delta_q int
+vp9.filter_level_scale
+vp9.filter_sharpness int
+vp9.inter_rounding_divisor
+vp9.chroma_rounding int
+vp9.inter_tx_split_spread
+vp9.shave_gap int
+vp9.chroma_sse_weight
+vp9.tx_search_min_levels int
+quant.trellis_lambda_scale
+quant.trellis_chroma

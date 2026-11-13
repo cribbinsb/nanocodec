@@ -1,0 +1,96 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nanocodec display benchmark</title>
+<!-- Page side of display-bench.py: draws each decoded frame with web/renderer.js. -->
+<style>canvas { width: 640px; height: 360px; }</style>
+<body>
+<script type="module">
+import { createRenderer } from '../../web/renderer.js';
+
+const worker = new Worker('./display-bench-worker.js', { type: 'module' });
+let reply = null;
+worker.onmessage = ({ data }) => { const resolve = reply; reply = null; resolve(data); };
+const call = message => new Promise(resolve => { reply = resolve; worker.postMessage(message); });
+
+// One canvas per renderer kind, reused across passes (browsers cap live GL contexts).
+const renderers = {};
+async function renderer(kind) {
+  if (!renderers[kind]) {
+    const canvas = document.body.appendChild(document.createElement('canvas'));
+    renderers[kind] = createRenderer(canvas, { preferred: kind });
+    if (renderers[kind].kind !== kind) throw new Error(`${kind} unavailable`);
+    // Headless SwiftShader loses a new context once, ~0.1 s after creation, and restores it about 1 s later.
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  for (let wait = 0; renderers[kind].lost; wait++) {
+    if (wait > 50) throw new Error(`${kind} context stays lost`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return renderers[kind];
+}
+function resize(r, width, height) {
+  const canvas = (r.gl || r.context).canvas;
+  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+}
+function rendererName(r) {
+  if (!r.gl) return 'canvas 2d';
+  const info = r.gl.getExtension('WEBGL_debug_renderer_info');
+  return r.gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : r.gl.RENDERER);
+}
+
+/** Read one pixel back: waits until the frame has really been drawn. */
+function sync(r) {
+  if (r.gl) r.gl.readPixels(0, 0, 1, 1, r.gl.RGBA, r.gl.UNSIGNED_BYTE, new Uint8Array(4));
+  else r.context.getImageData(0, 0, 1, 1);
+}
+
+/** Largest per-channel difference between a GL canvas and the CPU RGBA of the same frame. */
+function compare(r, reference, width, height) {
+  const gl = r.gl, rows = new Uint8Array(width * height * 4);
+  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rows);
+  let max = 0, differing = 0;
+  for (let y = 0; y < height; y++) {
+    const glRow = (height - 1 - y) * width * 4, cpuRow = y * width * 4; // GL rows run bottom-up
+    for (let i = 0; i < width * 4; i++) {
+      const d = Math.abs(rows[glRow + i] - reference[cpuRow + i]);
+      if (d) { differing++; if (d > max) max = d; }
+    }
+  }
+  return { max, differing };
+}
+
+/**
+ * Decode and draw every frame of one stream with renderer `kind`, frame after
+ * frame. Per frame: decode, hand-off (conversion or packing + copy out of WASM),
+ * transfer, draw, and (`synced`) a one-pixel read-back that waits for the draw.
+ */
+window.runPass = async ({ url, codec, kind, synced, check }) => {
+  const r = await renderer(kind);
+  const { frames } = await call({ type: 'open', url, codec });
+  const format = kind === 'cpu' ? 'rgba' : 'i420';
+  const totals = { endToEnd: 0, decode: 0, handoff: 0, draw: 0 };
+  const diff = { max: 0, differing: 0, frames: 0 };
+  let width = 0, height = 0;
+  for (let index = 0; index < frames; index++) {
+    const start = performance.now();
+    const frame = await call({ type: 'frame', index, format, check });
+    const received = performance.now();
+    ({ width, height } = frame);
+    resize(r, width, height);
+    const free = r.show(frame);
+    if (synced) sync(r);
+    const end = performance.now();
+    if (free) worker.postMessage({ type: 'recycle', buffer: free }, [free]);
+    totals.endToEnd += end - start; totals.decode += frame.decodeMs; totals.handoff += frame.handoffMs; totals.draw += end - received;
+    if (check && r.gl) {
+      const { max, differing } = compare(r, frame.reference, width, height);
+      diff.max = Math.max(diff.max, max); diff.differing += differing; diff.frames++;
+    }
+  }
+  const perFrame = Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, v / frames]));
+  return { frames, width, height, perFrame, diff: check ? diff : null,
+    renderer: rendererName(r) };
+};
+window.ready = true;
+</script>
+</body>

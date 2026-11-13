@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+/build/
+/target/
+
+/web/pkg/
+/web/node_modules/
+
+# A path argument of "-" is stdin/stdout (nc-cli src/stdio.rs); never a file.
+-

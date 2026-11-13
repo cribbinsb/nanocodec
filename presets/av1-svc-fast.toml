@@ -1,0 +1,59 @@
+# AV1 SVC Fast: av1-svc's two spatial layers (L2T1, 720p30 over a 360p30 base)
+# at AV1 Fast's coding levers, plus two SVC-only speed levers: the base
+# layer's source by the 2x2 mean (`spatial.base_box_downscale`) and a bilinear
+# search proxy of the upscaled base (`spatial.proxy_bilinear`). Target: at or
+# above libaom svc_encoder_rtc rt 10's speed, far ahead of it on BD-J
+# (docs/results/svc-chart.md). Screened on 5 chart clips (one per class, 150
+# frames, the SVC chart's rungs), BD-J of operating point 0 vs x264 medium:
+# av1-svc -38.5%; Fast levers -31.6%; + bilinear proxy -31.5%; + box
+# downscale -31.4% (both levers free in quality). Callgrind, crowd_mot17_09,
+# 60 frames, 600 kbps: 174 -> 126 -> 122 -> 106 M instructions per frame.
+# AV1 Faster's levers cost far more here than single-layer (-22.0%).
+decision.subpel_move_bias = 1.1
+decision.subpel_move_bias_nonzero = 1.1
+decision.subpel_fractional_bias = 1.1
+decision.refine_cheap_vector = 0
+av1.inter_tx_split = 0
+av1.pre_tx_luma_dominant = 1
+av1.pre_tx_skip = 1
+av1.pre_tx_skip_model = 0
+av1.pre_tx_skip_energy = 30
+av1.pre_tx_skip_rd = 100
+av1.pre_tx_skip_score = 70
+av1.residual_rd_max_mv = 8
+av1.transform_rd_gain_scale = 1.25
+av1.transform_rd_skip = 2
+av1.transform_rd_skip_chroma = 1
+av1.transform_rd_uv_max_noise_sigma = 1
+decision.codec_subpel_seed_lambdas = 0.1
+decision.subpel_walk = 2
+decision.subpel_walk_max_noise_sigma = 1
+av1.chroma_delta_q = -24
+chroma.policy = 0
+av1.chroma_noise_scale = 2
+decision.codec_fullpel_probe = 1
+decision.codec_fullpel_probe_min_lambdas = 0.0094
+av1.cdef_per_superblock = 1
+av1.cdef_local_strong_luma = 1
+av1.cdef_local_strong_primary = 15
+av1.cdef_local_strong_variance_min = 0
+av1.cdef_local_noise_full_search_sigma = 1
+av1.cdef_local_strong_model_scale = 3
+av1.loop_filter = 0
+planner.depth_removal_min_quantizer = 0
+quant.trellis = 0
+av1.keyframe_directional = 0
+av1.keyframe_angle_deltas = 0
+av1.keyframe_filter_intra = 0
+decision.intra_directional = 0
+av1.inter_intra_search = 0
+av1.partial_forward = 2
+av1.inter_rounding_q7 = 41
+spatial.layers = 2
+spatial.base_scale = 0.5
+spatial.base_rate_share = 0.35
+spatial.inter_layer = 1
+spatial.enhancement_interval = 1
+av1.compound = 1
+spatial.proxy_bilinear = 1
+spatial.base_box_downscale = 1

@@ -1,0 +1,31 @@
+# VVC sensitivity candidates (nceval.tune_pool sensitivity; every VVC preset).
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+decision.subpel_move_bias
+decision.intra_gate_variance
+decision.lambda_scale
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+planner.depth_removal_th_32_16
+analysis.skip_hme_sad_per_pixel
+rate.cadence_scale
+vvc.intra_rounding int
+vvc.inter_rounding int
+vvc.chroma_inter_rounding int
+vvc.chroma_qp_offset int
+vvc.key_qp_offset_delta int
+vvc.rd_candidates int
+vvc.coarse_rd_candidates int
+vvc.angular_candidates int
+vvc.rd_proxy_margin
+vvc.pre_transform_zero_scale
+vvc.shave_gap int
+vvc.sao_luma_lambda_scale
+vvc.alf_lambda_scale
+vvc.alf_detail_weight
+vvc.trellis_key_lambda_scale
+vvc.affine_amvp_gate
+vvc.affine_merge_gate
+vvc.coarse_intra_dense_share
+vvc.mts_lambda_scale

@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><title>Capture identity</title>
+<video id="video" muted playsinline></video>
+<script type="module">
+// The capture worker (capture-worker.js) against the page's former capture:
+// letterboxed drawImage of the video element on a software 2D canvas, then
+// getImageData. Run by capture-identity.py.
+import { snapshot } from '../capture.js';
+const video = document.getElementById('video');
+const worker = new Worker('../capture-worker.js', { type: 'module' });
+/** Configure the worker for one view of width x height (a fresh port each time). */
+function viewOf(width, height) {
+  const channel = new MessageChannel();
+  worker.postMessage({ type: 'init', views: [{ port: channel.port1, width, height }] }, [channel.port1]);
+  return channel.port2;
+}
+function former(width, height) {
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height);
+  const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
+  const w = video.videoWidth * scale, h = video.videoHeight * scale;
+  ctx.drawImage(video, (width - w) / 2, (height - h) / 2, w, h);
+  return ctx.getImageData(0, 0, width, height).data;
+}
+/** Largest per-byte difference and differing byte count over `times` (s) of `url` at each size. */
+window.compare = async ({ url, sizes, times }) => {
+  video.src = url;
+  await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error(url)); });
+  const results = [];
+  for (const [width, height] of sizes) {
+    const port = viewOf(width, height);
+    for (const time of times) {
+      video.currentTime = time;
+      await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
+      const expected = former(width, height);
+      const received = new Promise(resolve => { port.onmessage = ({ data }) => resolve(new Uint8Array(data.rgba)); });
+      const picture = snapshot(video);
+      worker.postMessage({ type: 'frame', id: 1, timestamp: 0, picture: await picture, sourceWidth: video.videoWidth,
+        sourceHeight: video.videoHeight, displays: ['i420'], coding: [true] }, [await picture]);
+      const actual = await received;
+      let max = 0, count = 0;
+      for (let i = 0; i < expected.length; i++) {
+        const d = Math.abs(expected[i] - actual[i]);
+        if (d) { count++; max = Math.max(max, d); }
+      }
+      results.push({ width, height, time, max, count, length: actual.length === expected.length });
+    }
+    port.close();
+  }
+  return results;
+};
+window.ready = true;
+</script>

@@ -1,0 +1,31 @@
+# H.264 sensitivity candidates (every H.264 preset) (nceval.tune_pool sensitivity).
+decision.intra_gate_variance
+decision.subpel_move_bias
+decision.exact_rank_margin
+decision.refine_cheap_min_lambdas
+decision.lambda_scale
+decision.skip_no_refine_lambdas
+planner.lambda_scale
+planner.split_rate_factor
+analysis.skip_hme_sad_per_pixel
+analysis.one_position_sad_per_pixel
+h264.keyframe_qp_offset int
+h264.intra4x4_gate_satd
+h264.split_gate_satd
+h264.split_gate_lambda
+h264.subpel_skip_variance
+h264.inter_zero_luma_scale
+h264.inter_zero_chroma_scale
+h264.chroma_qp_offset int
+h264.inter_rounding_divisor
+h264.eliminate_luma_8x8
+h264.eliminate_luma_mb
+h264.eliminate_chroma_ac
+h264.static_skip_luma_scale
+h264.static_skip_chroma_scale
+h264.residual_rd_lambda
+h264.intra8x8_gate_satd
+quant.trellis_lambda_scale
+quant.trellis_chroma
+rate.cadence_scale
+rate.aq_strength

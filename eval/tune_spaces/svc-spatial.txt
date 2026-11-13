@@ -1,0 +1,9 @@
+# Spatial SVC levers (nceval.tune_pool, any of av1-svc, av1-svc-fast, vp9-svc,
+# vp9-svc-fast): the two-layer settings' own parameters, to add to the codec's
+# sensitivity candidates (<codec>-sensitivity.txt). The objective is J of
+# operating point 0 at the total rate; the base layer (operating point 1, at
+# its own rate) is a constraint (jreal.SVC_BASE_GUARD_PCT), which is what
+# keeps spatial.base_rate_share from starving the base.
+spatial.base_rate_share
+spatial.base_box_downscale int
+spatial.proxy_bilinear int

@@ -1,0 +1,66 @@
+# H.264 Fast: the Default without trellis quantisation, plus the two speed
+# levers that pass the J_real screen and the long-GOP trend (2026-11-09;
+# docs/handoff/h264-fast.md). Against the Default without trellis, CBR
+# ladder, full TRAIN 150 f: J_real -1.5% at k 0.6 (quality +1.4% full /
+# +0.7% low, no guard); Jetson -6.1% crowd09 / -3.4% bodycam_bc1 at
+# openh264-rate-matched QPs; single-key 300 f trend flat.
+# The wider chroma zero bound (h264.inter_zero_chroma_scale) passed 150 f
+# but decays chroma over long GOPs, so it stays at 1.
+quant.trellis = 0
+h264.inter_zero_luma_scale = 1.25
+decision.subpel_quarter_needs_half_move = 1
+# The Default's speed levers before its quality set (2026-11-10), pinned so
+# this preset's streams do not move with the Default.
+decision.codec_fullpel_probe = 0
+decision.refine_cheap_vector = 0
+decision.subpel_walk = 0
+decision.intra_gate_variance = 50.412422
+h264.intra4x4_all_modes = 0
+analysis.window_half_width = 3
+analysis.mixed_motion = 0
+quant.trellis_lambda_scale = 1
+h264.split_gate_lambda = 0
+# Intra_8x8 (the Default's since 2026-11-10) costs +2.7% P-frame instructions
+# for -0.5% quality: J +1.1 at k 0.6.
+h264.intra8x8 = 0
+# Fast keeps Default's start-up QP cadence (base boost 4) and cadence motion
+# gate: proxy-6 J_real (k 0.6) vs both off BETTER -0.4% (crowd -2.4%), no
+# guard, pulse -0.04 dB; CPU-neutral (docs/handoff/vvc.md, qp-cascade).
+# Gated temporal layers (layer-gate agent, 2026-11-11; docs/handoff/
+# hierarchical-p.md "Layer gate"): L1T3 wherever the adaptive gate allows,
+# with the cheap settings below on the frames nothing references. The CBR
+# layer step ratios stay at the engine's (T0 0.35, T1 0.7 of the top
+# layer's step): h264-faster's milder 0.5 / 0.75 drifted down over 900-frame
+# single-key runs (crowd -0.26 dB, pan -0.16 by the last third), these do
+# not (crowd +0.07 / -0.03 / 0.00, pan -0.08 / -0.16 / -0.08 PSNR-YUV). J_real
+# vs flat h264-fast (k 0.6, dCPU -0.4% x86, full gate): TRAIN 18 clips -8.8%,
+# VAL 11 clips -8.3%, no guard, pulse +0.03 / 0.00 dB.
+layers.count = 3
+layers.adaptive = 1
+layers.adaptive_max_camera_motion = 16
+layers.adaptive_max_compensable = 1
+layers.adaptive_max_repeat_share = 0.25
+layers.adaptive_max_static = 0.68
+layers.adaptive_max_camera_jitter = 2
+decision.nonbase_disposable_only = 1
+nonbase.decision.subpel_half_only = 1
+nonbase.analysis.window_half_width = 1
+nonbase.decision.intra_gate_variance = 1024
+nonbase.analysis.hme_from_seed = 1
+nonbase.h264.deblock_inter = 0
+nonbase.h264.inter_zero_luma_scale = 3
+# The Default's QP cadence scale 1.4 (2026-11-11) lost here on worst-1%
+# windows (held-out / VAL); Fast keeps the engine's.
+rate.cadence_scale = 1
+# Mode-decision lambda 0.775x (eval/nceval/tune_pool.py, study
+# h264-h264-fast-eq2-2026-11-11, trial #1; equal x86 CPU). Study clips J
+# -1.77%, study L3 -1.51% [-1.81, -1.20]; re-checked at head 483355bf on the
+# study's rotation: disjoint L3 (79 clips, single-point) J -1.84% [-2.14,
+# -1.53], L2 (ladder, 48 clips) -1.88% [-2.33, -1.43], no guard; long-horizon
+# (720 f, keys every 10 s, full ladder): static -4.74%, pan -3.72%, crowd
+# -1.63%, worst-1% better on all three, no guard. CPU x86 +0.6%, Jetson +0.5%.
+# (The study's cadence 1.3 alongside it failed the long static clip: c142e2f7.)
+decision.lambda_scale = 0.775
+# Intra modes by coded cost (Default since 2026-11-13, study
+# h264-default-arms-2026-11-13) stay off here: pinned, byte-identical.
+h264.intra_rd = 0

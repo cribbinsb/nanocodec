@@ -1,0 +1,16 @@
+[package]
+name = "nc-hevc"
+description = "nanocodec HEVC backend: parameter sets, CABAC, transforms, residual coding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nc-common.workspace = true
+nc-encoder.workspace = true
+nc-dsp.workspace = true
+
+[lints]
+workspace = true

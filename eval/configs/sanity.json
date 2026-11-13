@@ -1,0 +1,207 @@
+{
+  "description": "Sanity report (docs/PROCEDURES.md 'Sanity report'): python3 -m nceval sanity. Sets are measured with the ordinary sweep (only missing curves are encoded); checks read the results database and kept bitstreams.",
+  "sets": [
+    {
+      "name": "flagged-val",
+      "clipset": "clips/main.json",
+      "clips": [
+        "bodycam_airport",
+        "static_meva_hospital",
+        "lowlight_pp22_004",
+        "lowlight_pp22_049",
+        "lowlight_bdd_00c497ae",
+        "lowlight_bdd_00ce95b0",
+        "bodycam_antare_0815",
+        "static_otw_homes390",
+        "static_cam29",
+        "static_london_bus",
+        "pan_bdd_00cef86b",
+        "pan_jaad_0101",
+        "crowd_pp22_051",
+        "crowd_mot20_06",
+        "handheld_mot17_10"
+      ],
+      "max_frames": 150,
+      "structure": {
+        "intra_period_seconds": 10,
+        "temporal_layers": 1
+      },
+      "encoders": [
+        "nanocodec-av1",
+        "nanocodec-hevc",
+        "nanocodec-h264",
+        "svtav1-m12",
+        "openh264-baseline"
+      ],
+      "checks": [
+        "ordering",
+        "outliers",
+        "tools",
+        "decay",
+        "harness"
+      ],
+      "points_per_curve": 4,
+      "include_xpsnr": false
+    },
+    {
+      "name": "short",
+      "clipset": "clips/main.json",
+      "clips": [
+        "bodycam_bc1",
+        "bodycam_antare_0815",
+        "handheld_mot17_11",
+        "crowd_pp22_027",
+        "crowd_mot17_09",
+        "crowd_mot20_02",
+        "lowlight_pp22_004",
+        "lowlight_bdd_00c497ae",
+        "lowlight_city_night",
+        "pan_bdd_00c12bd0",
+        "pan_jaad_0117",
+        "pan_jaad_0223",
+        "static_meva_hospital",
+        "static_otw_homes432",
+        "static_cam22",
+        "static_otw_homes390",
+        "static_cam29",
+        "static_london_bus",
+        "pan_bdd_00cef86b",
+        "pan_jaad_0101",
+        "crowd_pp22_051",
+        "crowd_mot20_06",
+        "bodycam_airport",
+        "handheld_mot17_10",
+        "lowlight_pp22_049",
+        "lowlight_bdd_00ce95b0"
+      ],
+      "max_frames": 150,
+      "structure": {
+        "intra_period_seconds": 10,
+        "temporal_layers": 1
+      },
+      "encoders": [
+        "nanocodec-av1",
+        "nanocodec-hevc",
+        "nanocodec-h264",
+        "svtav1-m12",
+        "openh264-baseline",
+        "nanocodec-av1@av1-fast",
+        "nanocodec-hevc@hevc-fast"
+      ],
+      "checks": [
+        "ordering",
+        "outliers",
+        "tools",
+        "decay",
+        "harness"
+      ],
+      "points_per_curve": 5,
+      "include_xpsnr": false
+    },
+    {
+      "name": "long-gop",
+      "clipset": "clips/long.json",
+      "clips": [
+        "long_bodycam_airport_seg2"
+      ],
+      "max_frames": null,
+      "structure": {
+        "single_keyframe": true,
+        "temporal_layers": 1
+      },
+      "encoders": [
+        "nanocodec-av1",
+        "svtav1-m12",
+        "nanocodec-hevc",
+        "nanocodec-h264",
+        "openh264-baseline"
+      ],
+      "checks": [
+        "ordering",
+        "outliers",
+        "decay",
+        "harness"
+      ],
+      "points_per_curve": 4,
+      "include_xpsnr": false
+    }
+  ],
+  "ordering": {
+    "tolerance": 0.05,
+    "metrics": [
+      "psnr_yuv",
+      "vmaf_v1"
+    ],
+    "chains": [
+      [
+        "nanocodec-av1",
+        "nanocodec-hevc",
+        "nanocodec-h264"
+      ],
+      [
+        "nanocodec-av1@av1-fast",
+        "nanocodec-hevc@hevc-fast",
+        "nanocodec-h264"
+      ]
+    ]
+  },
+  "outliers": {
+    "limit_percent": 15.0,
+    "metrics": [
+      "psnr_yuv",
+      "vmaf_v1"
+    ],
+    "references": {
+      "nanocodec-av1": "svtav1-m12",
+      "nanocodec-av1@av1-fast": "svtav1-m12",
+      "nanocodec-hevc": "svtav1-m12",
+      "nanocodec-hevc@hevc-fast": "svtav1-m12",
+      "nanocodec-h264": "openh264-baseline"
+    }
+  },
+  "decay": {
+    "slope_limit_db_per_frame": -0.02,
+    "margin_vs_reference_db_per_frame": 0.01
+  },
+  "tools": {
+    "skip_share_ratio": 2.0,
+    "share_gap": 0.25,
+    "never_active_share": 0.01,
+    "keyframe_size_ratio": 2.0
+  },
+  "harness": {
+    "cbr_miss_fraction": 0.15,
+    "cbr_results": "work/ratecontrol",
+    "documented_commands": {
+      "svtav1-m12": {
+        "source": "docs/reference/svt-av1-m12-rtc.md ('The six things', 1) and PROCEDURES 'Headline anchors'",
+        "flags": {
+          "--rtc": "1",
+          "--preset": "12",
+          "--pred-struct": "1",
+          "--hierarchical-levels": "0",
+          "--rc": "0",
+          "--aq-mode": "0",
+          "--scd": "0",
+          "--lp": "1"
+        }
+      },
+      "openh264-baseline": {
+        "source": "eval/nceval/encoders/openh264.py docstring and PROCEDURES 'Measure speed'",
+        "flags": {
+          "--usage": "camera-realtime",
+          "--complexity": "medium",
+          "--cabac": "0",
+          "--background-detection": "1",
+          "--adaptive-quant": "0",
+          "--scene-change": "0",
+          "--denoise": "0",
+          "--ltr": "0",
+          "--frame-skip": "0",
+          "--threads": "1",
+          "--temporal-layers": "1"
+        }
+      }
+    }
+  }
+}

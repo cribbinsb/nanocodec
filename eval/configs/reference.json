@@ -1,0 +1,197 @@
+{
+  "description": "Reference (anchor) evaluation: eval/README.md, Methodology. Run with: python3 -m nceval reference",
+  "suites": [
+    {
+      "name": "quick",
+      "selection": "eval/clipset/quick.json",
+      "noise_sources": [
+        "static_chirla_s000c3"
+      ],
+      "noise_gains": [
+        "high"
+      ],
+      "anchors": [
+        "openh264-baseline",
+        "openh264-high",
+        "x264-superfast",
+        "x264-veryfast",
+        "x265-ultrafast",
+        "kvazaar-ultrafast",
+        "kvazaar-superfast",
+        "svtav1-m10",
+        "svtav1-m11",
+        "svtav1-m12",
+        "svtav1-m13",
+        "aom-rt-s8",
+        "aom-rt-s10",
+        "aom-rt-s11"
+      ],
+      "structures": [
+        {
+          "intra_period_seconds": 10,
+          "temporal_layers": 1
+        },
+        {
+          "intra_period_seconds": 2,
+          "temporal_layers": 1
+        },
+        {
+          "intra_period_seconds": 10,
+          "temporal_layers": 3
+        }
+      ],
+      "report_splits": [
+        "all"
+      ],
+      "per_clip": true
+    },
+    {
+      "name": "main",
+      "selection": "eval/clipset/main.json",
+      "noise_sources": [
+        "static_chirla_s000c3",
+        "pan_jaad_0147",
+        "crowd_pp22_027",
+        "static_london_bus"
+      ],
+      "anchors": [
+        "openh264-baseline",
+        "openh264-high",
+        "x264-superfast",
+        "x264-veryfast",
+        "x265-ultrafast",
+        "kvazaar-ultrafast",
+        "kvazaar-superfast",
+        "svtav1-m10",
+        "svtav1-m11",
+        "svtav1-m12",
+        "svtav1-m13",
+        "aom-rt-s8",
+        "aom-rt-s10",
+        "aom-rt-s11"
+      ],
+      "structures": [
+        {
+          "intra_period_seconds": 10,
+          "temporal_layers": 1
+        },
+        {
+          "intra_period_seconds": 2,
+          "temporal_layers": 1
+        },
+        {
+          "intra_period_seconds": 10,
+          "temporal_layers": 3
+        }
+      ],
+      "report_splits": [
+        "all",
+        "train",
+        "val",
+        "test"
+      ],
+      "per_clip": false
+    },
+    {
+      "name": "long",
+      "selection": "eval/clipset/long.json",
+      "noise_sources": [],
+      "anchors": [
+        "openh264-baseline",
+        "openh264-high",
+        "x264-superfast",
+        "svtav1-m10",
+        "svtav1-m12",
+        "svtav1-m13",
+        "aom-rt-s10"
+      ],
+      "structures": [
+        {
+          "intra_period_seconds": 10,
+          "temporal_layers": 1
+        },
+        {
+          "intra_period_seconds": 10,
+          "temporal_layers": 3
+        },
+        {
+          "single_keyframe": true,
+          "temporal_layers": 1
+        }
+      ],
+      "report_splits": [
+        "all"
+      ],
+      "per_clip": true
+    }
+  ],
+  "metrics": [
+    "psnr_yuv",
+    "vmaf_v1"
+  ],
+  "report_anchors": [
+    "openh264-baseline",
+    "openh264-high"
+  ],
+  "headline": {
+    "suite": "quick",
+    "structure": {
+      "intra_period_seconds": 10,
+      "temporal_layers": 1
+    }
+  },
+  "sweep_workers": 14,
+  "speed": {
+    "anchor": "openh264-baseline",
+    "target_kbps_720p30": 400,
+    "runs": 5,
+    "core": 6,
+    "sets": [
+      {
+        "suite": "quick",
+        "structure": {
+          "intra_period_seconds": 10,
+          "temporal_layers": 1
+        },
+        "clips": [
+          "crowd_mot17_09"
+        ]
+      },
+      {
+        "suite": "main",
+        "structure": {
+          "intra_period_seconds": 10,
+          "temporal_layers": 1
+        },
+        "clips": [
+          "static_meva_hospital",
+          "pan_jaad_0117",
+          "crowd_mot17_09",
+          "bodycam_airport"
+        ]
+      },
+      {
+        "suite": "long",
+        "structure": {
+          "intra_period_seconds": 10,
+          "temporal_layers": 1
+        },
+        "clips": [
+          "long_static_chirla_s024c2",
+          "long_crowd_mot20_02",
+          "long_pan_bdd_00c12bd0",
+          "long_bodycam_airport_seg2"
+        ]
+      }
+    ]
+  },
+  "remotes": {
+    "jetson": {
+      "host": "$NC_JETSON",
+      "workdir": "nanocodec-tools/eval-remote",
+      "data_root": "nanocodec-data",
+      "core": 3,
+      "min_free_ram_mb": 1500
+    }
+  }
+}

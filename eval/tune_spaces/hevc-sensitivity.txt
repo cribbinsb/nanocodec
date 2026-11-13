@@ -1,0 +1,31 @@
+# HEVC sensitivity candidates (every HEVC preset) (nceval.tune_pool sensitivity).
+decision.codec_subpel_seed_lambdas
+decision.exact_rank_margin
+decision.subpel_move_bias
+decision.intra_gate_variance
+decision.lambda_scale
+decision.max_cheap_vectors int
+planner.lambda_scale
+planner.split_rate_factor
+planner.depth_removal_qp_scale
+planner.depth_removal_th_32_16
+planner.depth_removal_th_16_8
+analysis.skip_hme_sad_per_pixel
+analysis.one_position_sad_per_pixel
+hevc.chroma_qp_offset int
+hevc.intra_rounding int
+hevc.inter_rounding int
+hevc.chroma_inter_rounding int
+hevc.lambda_scale
+hevc.sao_luma_lambda_scale
+hevc.deblock_beta_offset int
+hevc.deblock_tc_offset int
+hevc.key_qp_offset_delta int
+hevc.early_merge_lambdas
+hevc.pre_transform_zero_scale
+hevc.tu16_chroma_concentration
+hevc.intra_nxn_min_cost
+hevc.inter_tu_split_min_cost
+hevc.column_zero_scale
+hevc.shave_gap int
+rate.cadence_scale

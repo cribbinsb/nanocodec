@@ -1,0 +1,12 @@
+# Pinned copy of the validated HEVC default, retained for existing callers.
+# Validated HEVC default: selective TU16 plus sampled SAO statistics.
+# Five paired300-frame native runs: CPU -17.53% bodycam / -12.82% crowd
+# versus the prior TU32/full-SAO default, same QP, not matched-quality timing.
+# Supported12 VAL (10 natural): PSNR BD -0.562%, VMAF v1 BD -1.648%.
+# Bodycam class +1.286% PSNR/+2.341% V1. Both noise best scores and all
+# fixed PSNR points improve; high-noise400kbps loses0.246 V1 points.
+# Direct SVT M12 gap: -6.421% PSNR/-12.253% V1 overall; CPU parity unmet.
+# Evidence: work/overnight/hevc-selector-sao-val/interim-joint/ and
+# hevc-selector-sao-joint/timing-row2.json. TEST remains sealed.
+hevc.tu16_chroma_concentration = 0.5
+hevc.sao_stats_row_step = 2

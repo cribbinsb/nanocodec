@@ -1,0 +1,32 @@
+# AV1 SVC: two spatial layers in one stream, L2T1 (720p30 enhancement over a
+# 360p30 base at 2:1). The AV1 Default's parameters plus the spatial
+# scalability defaults (docs/handoff/spatial-svc.md, section 1.1), written out
+# so the tuner can move them. Its own optimisation target: measured on the SVC
+# chart (eval/nceval/svc_chart.py, docs/results/svc-chart.md) by BD-J of
+# operating point 0 at the total rate, with the base layer as a guard.
+# `--temporal-layers 3` (or `--scalability L2T3`) gives L2T3.
+spatial.layers = 2
+spatial.base_scale = 0.5
+spatial.base_rate_share = 0.3213
+spatial.inter_layer = 1
+spatial.enhancement_interval = 1
+av1.compound = 1
+# Jointly tuned (equal-CPU study av1-av1-svc-eq2-2026-11-13, trial #29; the
+# objective is J of operating point 0 at the total rate with the base layer as a
+# guard): base share 0.35 -> 0.3213 above, a lower planner lambda and planner
+# bias, more chroma (delta q, noise scale), and the decision / skip values
+# below. Head 0f2a708b, pool levels of the study's rotation: disjoint L3 (79
+# clips, full ladder) J -0.62% [-1.06, -0.15], L2 -0.48%, no guard;
+# long-horizon check (720 f, keys every 10 s, 3 long clips) J -1.30%, no guard.
+decision.exact_rank_margin = 1.188
+decision.lambda_scale = 1.006
+decision.codec_subpel_seed_lambdas = 0.04865
+decision.refine_cheap_min_lambdas = 0.06122
+planner.lambda_scale = 2.418
+planner.bias_base = 1129
+planner.bias_q_slope = 155.2
+av1.lambda_per_step_squared = 0.1265
+av1.chroma_delta_q = -34
+av1.chroma_noise_scale = 4.676
+av1.pre_tx_skip_score = 68.79
+av1.pre_tx_skip_energy = 15.18

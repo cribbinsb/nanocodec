@@ -1,0 +1,21 @@
+[package]
+name = "nc-vp9"
+description = "nanocodec VP9 intra encoder, subset decoder and bitstream primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[dependencies]
+nc-common.workspace = true
+nc-dsp.workspace = true
+nc-encoder.workspace = true
+
+[lints]
+workspace = true

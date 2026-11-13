@@ -1,0 +1,5 @@
+# H.264 speed candidate C: narrower search, no mixed-motion candidates, no
+# refinement of split quadrants that keep the 16x16 vector.
+analysis.window_half_width = 3
+analysis.mixed_motion = 0
+h264.split_refine_mv16 = 0

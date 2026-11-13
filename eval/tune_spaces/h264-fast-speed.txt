@@ -1,0 +1,43 @@
+# H.264 Fast speed moves (Default/Fast CPU separation, coordinator 2026-11-13): the
+# sensitivity candidates, gates widened to Faster's values, plus Faster's levers, for a
+# CPU-capped study.
+decision.intra_gate_variance
+decision.subpel_move_bias
+decision.exact_rank_margin
+decision.refine_cheap_min_lambdas
+decision.lambda_scale
+decision.skip_no_refine_lambdas
+planner.lambda_scale
+planner.split_rate_factor
+analysis.skip_hme_sad_per_pixel
+analysis.one_position_sad_per_pixel
+h264.keyframe_qp_offset int
+h264.split_gate_lambda
+h264.subpel_skip_variance
+h264.inter_zero_chroma_scale
+h264.chroma_qp_offset int
+h264.inter_rounding_divisor
+h264.eliminate_luma_8x8
+h264.eliminate_luma_mb
+h264.eliminate_chroma_ac
+h264.static_skip_luma_scale
+h264.static_skip_chroma_scale
+h264.residual_rd_lambda
+h264.intra8x8_gate_satd
+quant.trellis_lambda_scale
+quant.trellis_chroma
+rate.cadence_scale
+rate.aq_strength
+h264.split_gate_satd 20 96
+h264.intra4x4_gate_satd 15 64
+h264.inter_zero_luma_scale 1 2
+h264.split_refine_steps 1 2 int
+analysis.window_half_width 2 3 int
+analysis.window_half_height 0 1 int
+analysis.hme_range_x 8 16 int
+analysis.hme_level1 0 1 int
+decision.static_zero_vector 0 1 int
+h264.exact_ranking 0 1 int
+analysis.preanalysis_rows 0 1 int
+analysis.pyramid_downsample 0 2 int
+h264.partition_search 0 1 int

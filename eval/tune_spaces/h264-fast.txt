@@ -1,0 +1,18 @@
+# H.264 Fast: the levers today's screens moved most (docs/handoff/h264.md),
+# each in the trust region around the h264-fast value unless bounded here.
+# Format (nceval.tune_pool): name [low high] [int|log]
+h264.inter_zero_luma_scale
+h264.split_gate_satd
+h264.intra4x4_gate_satd
+h264.subpel_skip_variance
+h264.eliminate_luma_mb int
+h264.static_skip_luma_scale
+h264.static_skip_chroma_scale
+h264.keyframe_qp_offset int
+decision.intra_gate_variance
+decision.subpel_move_bias
+planner.lambda_scale
+planner.split_rate_factor
+rate.cadence_scale
+layers.adaptive_max_static
+nonbase.h264.inter_zero_luma_scale

@@ -1,0 +1,10 @@
+# AV1 local CDEF + mode weighting; explicit quality/speed trade-off candidate.
+# Supported VAL: -3.3026% PSNR-YUV / -1.9303% VMAF-NEG BD vs defaults;
+# all natural class limits and both clean-reference noise clips pass.
+# TRAIN: -1.139% / -0.903%; one noise best-PSNR delta -0.009898 dB.
+# This does NOT pass the original all-noise TRAIN guard; defaults unchanged.
+# Native Jetson CPU: +3.66% bodycam / +3.25% crowd, five paired 300f runs.
+# Evidence: work/overnight/cdef-agent/val-summary.json and
+# work/overnight/native-cdef-5154b1c-timing.json under the external data root.
+av1.cdef_per_superblock = 1
+decision.lambda_scale = 0.5925925925925926

@@ -1,0 +1,93 @@
+# VVC Fast: the speed point (docs/PROCEDURES.md "Preset roles"). Bars
+# (coordinator, 2026-11-10): CPU <= ~1.3x our HEVC Fast (Jetson:x86 2:1),
+# J_real vs our HEVC Fast (board row); each lever judged at Fast's k 0.6 with
+# every guard. Staged J_real vs Default (k 0.6, dCPU -27%): TRAIN BETTER,
+# -15.4% (quality full +0.8% / low +0.9%), no guard; VAL BETTER, -14.5%
+# (+1.0% / +1.3%); long GOP no drift. CPU (CBR 300, 150 f, crowd / bodycam):
+# Jetson 1.80x / 1.60x HEVC Fast (Default 2.47x / 2.14x), x86 2.05x / 1.91x;
+# with the refinement off and SAO class reuse (below) 1.71x / 1.51x and
+# 1.87x / 1.68x.
+# Evidence: docs/handoff/vvc.md "vvc-fast", logs in
+# ~/nanocodec-data/work/vvc-fast/logs (lev-*.log: each lever alone vs Default,
+# proxy-4 clips, 60 f).
+#
+# P-frame intra CUs DC-only outside intra-dense pictures (HEVC Fast's
+# hevc.inter_intra_dc_only; intra-dense pictures keep the ranked search):
+# Jetson -13% / -17% user time vs Default (crowd_mot17_09 / bodycam_bc1).
+vvc.inter_intra_dc_only = 1
+# SAO off without statistics in all-skip P CTUs (HEVC Fast's).
+vvc.sao_skip_unchanged = 1
+# HEVC Default's staged 16/32 forward; SAD zero bound 3 (third round below).
+vvc.fast_forward = 1
+vvc.pre_transform_zero_scale = 3
+# Key frames: full RD for the 2 cheapest directions by the proxy (third
+# round below); chroma derived from luma (no chroma direction RD).
+vvc.rd_candidates = 2
+# The Default's key-picture chroma search (vvc.chroma_search 1, inter 0)
+# stays off: staged J_real (k 0.6) TRAIN WORSE, +0.1% (quality -0.3% /
+# -0.4%; x86 +0.8%, key +17%; Jetson instructions +1.9% / +1.0%).
+vvc.chroma_search = 0
+# HEVC Fast's sub-pel seed gate. Its move biases (1.1) fail the pan class
+# guard (with the refinement off: proxy-6 pan_jaad_0223 +5.8%) and stay at
+# Default's.
+decision.codec_subpel_seed_lambdas = 0.05
+# Default's cheap-vector refinement off, and SAO classes searched every 4th
+# P picture (HEVC's interval; 8 since the third round below), each staged TRAIN BETTER on top of the
+# above (k 0.6: J_real -1.5% / -2.0%, quality +0.6% / +0.2%); together VAL
+# BETTER, -4.3% (quality +1.0% / +0.5%), long GOP no drift; Jetson -7.7% /
+# -9.7%, x86 -9.0% / -12.2% (crowd_mot17_09 / bodycam_bc1, CBR 300, 150 f).
+decision.refine_cheap_vector = 0
+vvc.sao_search_interval = 8
+# Trellis quantisation is a Default quality arm (87ae906c); Fast keeps the
+# plain quantiser, as HEVC and VP9 Fast (and as screened above).
+quant.trellis = 0
+# Intra sub-partitions (8x8 to 32x32) are a Default quality arm: on Fast's
+# cheaper key search they double key-picture instructions (x86 tune cost
+# +5.1%; Jetson +3.7% / +2.9%) for J_real quality -1.0% (proxy-6, k 0.6:
+# J +2.1%, stopped).
+vvc.isp = 0
+# The adaptive loop filter is a Default quality arm (APS filters, +16.5%
+# weighted CPU); not screened for Fast.
+vvc.alf = 0
+# Temporal MVP and six merge candidates are a Default quality arm (+6.9%
+# weighted CPU); not screened for Fast.
+vvc.temporal_mvp = 0
+vvc.merge_candidates = 2
+# Third round (vvc-cpu5, after VVC Default took the SAO, intra, zero-bound
+# and seed levers above): the SAD zero bound 2 -> 3, key RD directions
+# 4 -> 2, SAO search interval 4 -> 8, and below a single key angular
+# candidate from a step-8 sweep and the exact inter ranking without a margin
+# (HEVC Fast keeps 1.1). Jetson cycles (CBR 600, 150 f, crowd_mot17_09 /
+# bodycam_bc1 / static_cam22): each -2.6 / -1.1 / -0.6 / -0.9 / -1.6% alone,
+# together -7.4 / -5.7 / -5.8% (x86 tune cost -5.3%). Staged J_real vs the previous Fast (k 0.6,
+# dCPU -6%): proxy-4 AMBIGUOUS (worst-1% NEG +2.6, 60 f), proxy-6 BETTER,
+# J_real -2.9% (quality full +0.6% / low +0.7%; pan_jaad_0223 +2.0%,
+# static_cam22 +1.5%), no guard; VAL proxy-5 BETTER, -3.5% (+0.1% / +0.1%),
+# no guard. Long GOP (one key, full gate, Y by thirds): pan_bdd -0.06 /
+# -0.05 / -0.05, chirla -0.13 / +0.18 / -0.06, antare -0.05 / -0.19 / -0.08
+# dB: no drift. docs/handoff/vvc.md "vvc-cpu5".
+vvc.angular_candidates = 1
+vvc.angular_step = 8
+decision.exact_rank_margin = 1.0
+# Fast keeps Default's start-up QP cadence and cadence motion gate: proxy-6
+# J_real (k 0.6) vs both off BETTER -3.4% (crowd -5.1%, static -5.8%, pan
+# -2.8%, bodycam -0.5%), no guard, pulse -0.13 dB; CPU-neutral (coarser leaves).
+# The Default's directional P-frame intra estimate stays off: Fast codes
+# P-picture intra CUs DC only, so the fallback takes inter (proxy-4 J_real
+# quality 0.0% at +0.1% CPU; docs/handoff/vvc.md).
+decision.intra_directional = 0
+# 64-point transform units (the Default's vvc.tx64 1) stay off: staged
+# J_real (k 0.6, dCPU -3.0%: x86 tune cost -3.0%; Jetson instructions -5.4%
+# / -7.9% crowd / bodycam, CBR 300) TRAIN BETTER, -2.4% (full -0.4%, low
+# -0.8%), but VAL proxy-5 (full gate) WORSE, +1.7%: bodycam_airport +18.3% /
+# +19.3% (class guard). The Default loses the same clip (+15.3% / +13.8%).
+vvc.tx64 = 0
+# Pinned at the values before VVC Default's joint re-tune (2026-11-13,
+# study vvc-default-eq2-2026-11-11 trial #3), so Fast stays byte-identical;
+# Fast has its own study.
+vvc.sao_luma_lambda_scale = 1.4
+vvc.chroma_qp_offset = 0
+# Pinned at the values before VVC Default's 2026-11-13 CPU cut (study
+# vvc-default-speed-2026-11-13 trial #2), so Fast stays byte-identical.
+decision.lambda_scale = 0.8
+vvc.inter_rounding = 133

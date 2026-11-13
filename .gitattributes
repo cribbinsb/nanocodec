@@ -1,0 +1,6 @@
+# Docs written by many agents at once: a conflict keeps both sides (owner, 2026-11-12).
+docs/handoff/*.md merge=union
+docs/results/*.md merge=union
+# Append-style lists every port or result adds to (attributions; status entries).
+THIRD_PARTY.md merge=union
+docs/STATUS.md merge=union

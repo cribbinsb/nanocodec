@@ -1,0 +1,19 @@
+# AV1 SVC, three spatial layers: L3T1 (720p30 over 360p30 over 180p30, 2:1
+# steps), the standard WebRTC ladder, so one stream serves thumbnail, mobile
+# and full-size viewers. The AV1 Default's parameters plus the three-layer
+# spatial defaults (docs/handoff/spatial-svc.md, section 12), written out so
+# the tuner can move them. Its own optimisation target: measured on the SVC
+# chart (eval/nceval/svc_chart.py, docs/results/svc-chart.md) by BD-J of
+# operating point 0 at the total rate, with the 360p and 180p operating
+# points as guards. `--temporal-layers 3` (or `--scalability L3T3`) gives L3T3.
+spatial.layers = 3
+spatial.s0_scale = 0.25
+spatial.s1_scale = 0.5
+# Nominal caps of the 180p and 360p layers (720p takes the rest plus their
+# unspent bits): Gemini's recommendation from 10 pool clips (achieved shares
+# 5 / 20 / 75%).
+spatial.s0_rate_share = 0.08
+spatial.s1_rate_share = 0.26
+spatial.inter_layer = 1
+spatial.enhancement_interval = 1
+av1.compound = 1

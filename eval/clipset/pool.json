@@ -1,0 +1,978 @@
+{
+ "name": "pool",
+ "_comment": "Selection for eval/clipset/build_pool.py (the rotating clip pool, nceval.pool). Camera entries: a 'seconds'-long cut from 'start' of a /mldata source, stored once at <=720p as a camera-like H.264. Pristine entries (lossless excerpts; adv12 sequences excluded: CrowdRun, ParkJoy, FourPeople, Johnny, DinnerScene): stored as camera-like 720p and 360p and near-lossless 720p. Dataset entries (2026-11-11): a few sources per /mldata/downloaded_datasets/other dataset; 'height' stores a mediocre (grade B) source downscaled 2-3x.",
+ "clips": [
+  {
+   "name": "pool_lowlight_bdd100_bdd_00db9030_5102ed41",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00db9030-5102ed41.mp4",
+   "start": 2.0,
+   "seconds": 37.7,
+   "content_class": "lowlight",
+   "height": 360
+  },
+  {
+   "name": "pool_lowlight_bwcvi_video351",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video351.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "lowlight"
+  },
+  {
+   "name": "pool_lowlight_cevo_inof_md_indoor_night_ohcam_0",
+   "source": "/mldata/tracking_original/cevo/video/INof_MD_Indoor_Night_OHcam_002.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "lowlight"
+  },
+  {
+   "name": "pool_crowd_person_uid_vid_00224",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00224.mp4",
+   "start": 0.0,
+   "seconds": 14.7,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "pool_lowlight_bdd100_bdd_00cee0e0_5e25daa7",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00cee0e0-5e25daa7.mp4",
+   "start": 2.0,
+   "seconds": 37.5,
+   "content_class": "lowlight",
+   "height": 360
+  },
+  {
+   "name": "pool_lowlight_bwcvi_video44",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video44.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "lowlight"
+  },
+  {
+   "name": "pool_crowd_person_uid_vid_00222",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00222.mp4",
+   "start": 0.0,
+   "seconds": 13.5,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "pool_pan_bdd100_bdd_00ce8219_d0b5582e",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00ce8219-d0b5582e.mp4",
+   "start": 2.0,
+   "seconds": 37.6,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_pan_jaad_video_0194",
+   "source": "/mldata/tracking_original/jaad/video/video_0194.mp4",
+   "start": 0.0,
+   "seconds": 17.5,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_lowlight_bdd100_bdd_00d8d95a_47d98291",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d8d95a-47d98291.mp4",
+   "start": 2.0,
+   "seconds": 37.8,
+   "content_class": "lowlight",
+   "height": 360
+  },
+  {
+   "name": "pool_pan_jaad_video_0199",
+   "source": "/mldata/tracking_original/jaad/video/video_0199.mp4",
+   "start": 2.0,
+   "seconds": 28.5,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_pan_bdd100_bdd_00d7268f_fd4487be",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d7268f-fd4487be.mp4",
+   "start": 2.0,
+   "seconds": 37.8,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_pan_jaad_video_0128",
+   "source": "/mldata/tracking_original/jaad/video/video_0128.mp4",
+   "start": 0.0,
+   "seconds": 11.5,
+   "content_class": "pan",
+   "height": 540
+  },
+  {
+   "name": "pool_crowd_cevo_ukof_hd_indoor_light_ohcam_0",
+   "source": "/mldata/tracking_original/cevo/video/UKof_HD_Indoor_Light_OHcam_002.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "pool_crowd_mot_mot17_04",
+   "source": "/mldata/tracking_original/mot/video/MOT17-04.mp4",
+   "start": 2.0,
+   "seconds": 32.5,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "pool_static_otw_homes_00323",
+   "source": "/mldata/tracking_original/otw/video/homes_00323.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540
+  },
+  {
+   "name": "pool_crowd_person_uid_vid_00210",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00210.mp4",
+   "start": 0.0,
+   "seconds": 19.2,
+   "content_class": "crowd",
+   "height": 540
+  },
+  {
+   "name": "pool_crowd_MOT20_mot20_08",
+   "source": "/mldata/video/MOT20-08.mp4",
+   "start": 2.0,
+   "seconds": 29.7,
+   "content_class": "crowd",
+   "height": 366
+  },
+  {
+   "name": "pool_static_antare_cart_shouting_fixed_10",
+   "source": "/mldata/tracking_original/antare_bwc/video/cart-shouting-fixed-10.mp4",
+   "start": 2.0,
+   "seconds": 32.8,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_static_bdd100_bdd_00dc5030_237e7f71",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00dc5030-237e7f71.mp4",
+   "start": 2.0,
+   "seconds": 17.9,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_static_cevo_ukof_ld_indoor_light_ohcam_0",
+   "source": "/mldata/tracking_original/cevo/video/UKof_LD_Indoor_Light_OHcam_002.mp4",
+   "start": 2.0,
+   "seconds": 20.7,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_static_chirla_chirla_seq_024_camera_7_2023",
+   "source": "/mldata/tracking_original/chirla/video/chirla_seq_024_camera_7_2023-12-01-11-05-52.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360
+  },
+  {
+   "name": "pool_bodycam_antare_pub_garden",
+   "source": "/mldata/tracking_original/antare_bwc/video/pub-garden.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "bodycam"
+  },
+  {
+   "name": "pool_bodycam_bwcvi_video81",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video81.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "bodycam"
+  },
+  {
+   "name": "pool_bodycam_antare_antare_test",
+   "source": "/mldata/video/antare/antare_test.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 360
+  },
+  {
+   "name": "pool_bodycam_antare_refused_entry_bwc_02",
+   "source": "/mldata/tracking_original/antare_bwc/video/refused-entry-bwc-02.mp4",
+   "start": 2.0,
+   "seconds": 31.8,
+   "content_class": "bodycam"
+  },
+  {
+   "name": "pool_drone_rounda_roundabouthd_c004",
+   "source": "/mldata/tracking_original/roundabouthd/video/roundabouthd_c004.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "drone"
+  },
+  {
+   "name": "pool_drone_rounda_roundabouthd_c002",
+   "source": "/mldata/tracking_original/roundabouthd/video/roundabouthd_c002.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "drone"
+  },
+  {
+   "name": "pool_drone_rounda_roundabouthd_c001",
+   "source": "/mldata/tracking_original/roundabouthd/video/roundabouthd_c001.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "drone"
+  },
+  {
+   "name": "pool_ducks_take_off",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/ducks-take-off.mkv",
+   "content_class": "texture",
+   "pristine": true
+  },
+  {
+   "name": "pool_in_to_tree",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/in-to-tree.mkv",
+   "content_class": "pan",
+   "pristine": true
+  },
+  {
+   "name": "pool_old_town_cross",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/old-town-cross.mkv",
+   "content_class": "pan",
+   "pristine": true
+  },
+  {
+   "name": "pool_kristen_sara",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/kristen-sara.mkv",
+   "content_class": "static",
+   "pristine": true
+  },
+  {
+   "name": "pool_vidyo1",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/vidyo1.mkv",
+   "content_class": "static",
+   "pristine": true
+  },
+  {
+   "name": "pool_vidyo3",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/vidyo3.mkv",
+   "content_class": "static",
+   "pristine": true
+  },
+  {
+   "name": "pool_vidyo4",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/vidyo4.mkv",
+   "content_class": "static",
+   "pristine": true
+  },
+  {
+   "name": "pool_midnight_sun",
+   "source": "~/nanocodec-data/clips/svt/excerpts/midnight_sun.mkv",
+   "content_class": "texture",
+   "pristine": true
+  },
+  {
+   "name": "pool_smoke_sauna",
+   "source": "~/nanocodec-data/clips/svt/excerpts/smoke_sauna.mkv",
+   "content_class": "lowlight",
+   "pristine": true
+  },
+  {
+   "name": "pool_waterfall",
+   "source": "~/nanocodec-data/clips/svt/excerpts/waterfall.mkv",
+   "content_class": "texture",
+   "pristine": true
+  },
+  {
+   "name": "pool_barscene",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/BarScene.mkv",
+   "content_class": "lowlight",
+   "pristine": true,
+   "seconds": 4.8,
+   "cut_note": "camera cut at 5.0 s (scdet)"
+  },
+  {
+   "name": "pool_boxingpractice",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/BoxingPractice.mkv",
+   "content_class": "crowd",
+   "pristine": true
+  },
+  {
+   "name": "pool_crosswalk",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/Crosswalk.mkv",
+   "content_class": "crowd",
+   "pristine": true
+  },
+  {
+   "name": "pool_dancers",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/Dancers.mkv",
+   "content_class": "lowlight",
+   "pristine": true
+  },
+  {
+   "name": "pool_foodmarket",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/FoodMarket.mkv",
+   "content_class": "crowd",
+   "pristine": true
+  },
+  {
+   "name": "pool_narrator",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/Narrator.mkv",
+   "content_class": "pan",
+   "pristine": true
+  },
+  {
+   "name": "pool_tango",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/Tango.mkv",
+   "content_class": "crowd",
+   "pristine": true
+  },
+  {
+   "name": "pool_toddlerfountain",
+   "source": "~/nanocodec-data/clips/xiph/excerpts/netflix/ToddlerFountain.mkv",
+   "content_class": "texture",
+   "pristine": true,
+   "family": "/home/mark/nanocodec-data/clips/pristine/toddlerfountain_1080p.y4m",
+   "seconds": 5.8,
+   "cut_note": "camera cut at 6.0 s (scdet)"
+  },
+  {
+   "name": "pool_meva_admin_g326",
+   "source": "/mldata/downloaded_datasets/other/MEVA/videos/2018-03-05.13-20-00.13-25-00.admin.G326.r13.avi",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360
+  },
+  {
+   "name": "pool_meva_bus_g506",
+   "source": "/mldata/downloaded_datasets/other/MEVA/videos/2018-03-07.17-00-00.17-05-00.bus.G506.r13.avi",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360
+  },
+  {
+   "name": "pool_meva_hospital_g301",
+   "source": "/mldata/downloaded_datasets/other/MEVA/videos/2018-03-11.11-40-08.11-45-08.hospital.G301.r13.avi",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360
+  },
+  {
+   "name": "pool_meva_school_g336",
+   "source": "/mldata/downloaded_datasets/other/MEVA/videos/2018-03-13.17-25-03.17-30-03.school.G336.r13.avi",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 360
+  },
+  {
+   "name": "pool_otw_homes_00004",
+   "source": "/mldata/downloaded_datasets/other/otw/otw/homes/video/00004.mp4",
+   "start": 30.0,
+   "seconds": 40.0,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_otw_homes_00015",
+   "source": "/mldata/downloaded_datasets/other/otw/otw/homes/video/00015.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_otw_homes_00168",
+   "source": "/mldata/downloaded_datasets/other/otw/otw/homes/video/00168.mp4",
+   "start": 20.0,
+   "seconds": 40.0,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_otw_lots_064",
+   "source": "/mldata/downloaded_datasets/other/otw/otw/lots/video/064.mp4",
+   "start": 10.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360
+  },
+  {
+   "name": "pool_wildtrack_cam1",
+   "source": "/mldata/downloaded_datasets/other/WILDTRACK/videos/wt-cam-01.mp4",
+   "start": 20.0,
+   "seconds": 40.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "pool_wildtrack_cam3",
+   "source": "/mldata/downloaded_datasets/other/WILDTRACK/videos/wt-cam-03.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "pool_towncentre",
+   "source": "/mldata/downloaded_datasets/other/towncentre/TownCentreXVID.mp4",
+   "start": 60.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 360
+  },
+  {
+   "name": "pool_chad_1_093",
+   "source": "/mldata/downloaded_datasets/other/CHAD/CHAD_Videos/1_093_1.mp4",
+   "start": 30.0,
+   "seconds": 40.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "pool_chad_3_086",
+   "source": "/mldata/downloaded_datasets/other/CHAD/CHAD_Videos/3_086_1.mp4",
+   "start": 20.0,
+   "seconds": 40.0,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_chad_4_109",
+   "source": "/mldata/downloaded_datasets/other/CHAD/CHAD_Videos/4_109_1.mp4",
+   "start": 20.0,
+   "seconds": 40.0,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_caucafall_walk_s9",
+   "source": "/mldata/downloaded_datasets/other/CAUCAFall/data/Dataset CAUCAFall/CAUCAFall/Subject.9/Walk/WalkS9.avi",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 480
+  },
+  {
+   "name": "pool_aboda_video6",
+   "source": "/mldata/downloaded_datasets/other/ABODA/video6.avi",
+   "start": 10.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 480
+  },
+  {
+   "name": "pool_aboda_video8",
+   "source": "/mldata/downloaded_datasets/other/ABODA/video8.avi",
+   "start": 10.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 480
+  },
+  {
+   "name": "pool_aboda_video11",
+   "source": "/mldata/downloaded_datasets/other/ABODA/video11.avi",
+   "start": 10.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 480
+  },
+  {
+   "name": "pool_firesense_neg9",
+   "source": "/mldata/downloaded_datasets/other/FIRESENSE/data/neg/negsVideo9.866.avi",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "texture",
+   "height": 480
+  },
+  {
+   "name": "pool_gmdcsa24_s1_adl05",
+   "source": "/mldata/downloaded_datasets/other/GMDCSA24/data/ekramalam-GMDCSA24-A-Dataset-for-Human-Fall-Detection-in-Videos-d3edb5d/Subject 1/ADL/05.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "static"
+  },
+  {
+   "name": "pool_jaad_0081",
+   "source": "/mldata/downloaded_datasets/other/JAAD/JAAD_clips/video_0081.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_jaad_0340",
+   "source": "/mldata/downloaded_datasets/other/JAAD/JAAD_clips/video_0340.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_jaad_0110",
+   "source": "/mldata/downloaded_datasets/other/JAAD/JAAD_clips/video_0110.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "pan"
+  },
+  {
+   "name": "pool_pp22_uid_00001",
+   "source": "/mldata/downloaded_datasets/other/personpath22/dataset/personpath22/raw_data/uid_vid_00001.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "pool_pp22_uid_00070",
+   "source": "/mldata/downloaded_datasets/other/personpath22/dataset/personpath22/raw_data/uid_vid_00070.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "crowd"
+  },
+  {
+   "name": "pool_bodycam_knife_drawn_04",
+   "source": "/mldata/tracking_original/antare_bwc/video/knife-drawn-bwc-04.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam"
+  },
+  {
+   "name": "pool_bodycam_knife_drawn_05",
+   "source": "/mldata/tracking_original/antare_bwc/video/knife-drawn-bwc-05.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540
+  },
+  {
+   "name": "pool_bodycam_queue_scuffle_06",
+   "source": "/mldata/tracking_original/antare_bwc/video/queue-scuffle-bwc-06.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540
+  },
+  {
+   "name": "pool_bodycam_shoplifting_10",
+   "source": "/mldata/tracking_original/antare_bwc/video/shoplifting-bwc-10.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540
+  },
+  {
+   "name": "pool_bodycam_cart_shouting_12",
+   "source": "/mldata/tracking_original/antare_bwc/video/cart-shouting-bwc-12.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540
+  },
+  {
+   "name": "pool_bodycam_oxford_street",
+   "source": "/mldata/tracking_original/antare_bwc/video/oxford-street.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam"
+  },
+  {
+   "name": "pool_bodycam_antare_jul14",
+   "source": "/mldata/video/antare/antare_Jul14.mp4",
+   "start": 5.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 480
+  },
+  {
+   "name": "pool_bodycam_bwc_video118",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video118.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 360
+  },
+  {
+   "name": "pool_static_chirla_s024c2_360p",
+   "source": "/mldata/tracking_original/chirla/video/chirla_seq_024_camera_2_2023-12-01-11-05-52.mp4",
+   "start": 169.97,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360,
+   "family": "/mldata/tracking_original/chirla/video/chirla_seq_024_camera_2_2023-12-01-11-05-52.mp4"
+  },
+  {
+   "name": "pool_static_cam29_360p",
+   "source": "/mldata/video/answer_suite/sounds_cam29_esc50.mp4",
+   "start": 20.03,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360,
+   "family": "/mldata/video/answer_suite/sounds_cam29_esc50.mp4"
+  },
+  {
+   "name": "pool_static_cam22_360p",
+   "source": "/mldata/video/cam22.h264",
+   "start": 21.94,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360,
+   "family": "/mldata/video/cam22.h264"
+  },
+  {
+   "name": "pool_static_london_bus_540p",
+   "source": "/mldata/video/base/london_bus.mp4",
+   "start": 8.92,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540,
+   "family": "/mldata/video/base/london_bus.mp4"
+  },
+  {
+   "name": "pool_pan_jaad_0147_540p",
+   "source": "/mldata/tracking_original/jaad/video/video_0147.mp4",
+   "start": 1.5,
+   "seconds": 40.0,
+   "content_class": "pan",
+   "height": 540,
+   "family": "/mldata/tracking_original/jaad/video/video_0147.mp4"
+  },
+  {
+   "name": "pool_pan_jaad_0101_540p",
+   "source": "/mldata/tracking_original/jaad/video/video_0101.mp4",
+   "start": 1.5,
+   "seconds": 40.0,
+   "content_class": "pan",
+   "height": 540,
+   "family": "/mldata/tracking_original/jaad/video/video_0101.mp4"
+  },
+  {
+   "name": "pool_pan_jaad_0223_540p",
+   "source": "/mldata/tracking_original/jaad/video/video_0223.mp4",
+   "start": 3.5,
+   "seconds": 40.0,
+   "content_class": "pan",
+   "height": 540,
+   "family": "/mldata/tracking_original/jaad/video/video_0223.mp4"
+  },
+  {
+   "name": "pool_crowd_pp22_027_540p",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00027.mp4",
+   "start": 10.8,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/tracking_original/personpath22/video/uid_vid_00027.mp4"
+  },
+  {
+   "name": "pool_crowd_mot20_04_540p",
+   "source": "/mldata/video/MOT20-04.mp4",
+   "start": 24.96,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/video/MOT20-04.mp4"
+  },
+  {
+   "name": "pool_crowd_mot17_09_540p",
+   "source": "/mldata/tracking_original/mot/video/MOT17-09.mp4",
+   "start": 5.24,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/tracking_original/mot/video/MOT17-09.mp4"
+  },
+  {
+   "name": "pool_crowd_mot20_02_540p",
+   "source": "/mldata/tracking_original/mot/video/MOT20-02.mp4",
+   "start": 33.37,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/tracking_original/mot/video/MOT20-02.mp4"
+  },
+  {
+   "name": "pool_bodycam_bc1_540p",
+   "source": "/mldata/video/bc1.mp4",
+   "start": 169.21,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/video/bc1.mp4"
+  },
+  {
+   "name": "pool_bodycam_airport_540p",
+   "source": "/mldata/video/youtube/airport_arrest.mp4",
+   "start": 291.41,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/video/youtube/airport_arrest.mp4"
+  },
+  {
+   "name": "pool_handheld_mot17_10_540p",
+   "source": "/mldata/tracking_original/mot/video/MOT17-10.mp4",
+   "start": 6.53,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/tracking_original/mot/video/MOT17-10.mp4"
+  },
+  {
+   "name": "pool_handheld_mot17_11_540p",
+   "source": "/mldata/tracking_original/mot/video/MOT17-11.mp4",
+   "start": 8.99,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/tracking_original/mot/video/MOT17-11.mp4"
+  },
+  {
+   "name": "pool_lowlight_pp22_049_540p",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00049.mp4",
+   "start": 5.9,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 540,
+   "family": "/mldata/tracking_original/personpath22/video/uid_vid_00049.mp4"
+  },
+  {
+   "name": "pool_lowlight_bdd_00c497ae_360p",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c497ae-595d361b.mp4",
+   "start": 12.04,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 360,
+   "family": "/mldata/tracking_original/bdd100k_mot/video/bdd_00c497ae-595d361b.mp4"
+  },
+  {
+   "name": "pool_lowlight_jaad_0026_540p",
+   "source": "/mldata/tracking_original/jaad/video/video_0026.mp4",
+   "start": 5.11,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 540,
+   "family": "/mldata/tracking_original/jaad/video/video_0026.mp4"
+  },
+  {
+   "name": "pool_external_antare_intruder_bwc_720p_540p",
+   "source": "/mldata/tracking_original/antare_bwc/video/intruder-removed-bwc-13.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/tracking_original/antare_bwc/video/intruder-removed-bwc-13.mp4"
+  },
+  {
+   "name": "pool_external_cevo_outdoor_crowd_720p_540p",
+   "source": "/mldata/tracking_original/cevo_april25/video/INof_MD_Out_Light_FFcam_001.mp4",
+   "start": 6.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/tracking_original/cevo_april25/video/INof_MD_Out_Light_FFcam_001.mp4"
+  },
+  {
+   "name": "pool_external_studio_longshot_720p_360p",
+   "source": "/mldata/tracking_original/raw_movies/video/The_Studio.mp4",
+   "start": 14.61,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 360,
+   "family": "/mldata/tracking_original/raw_movies/video/The_Studio.mp4"
+  },
+  {
+   "name": "pool_external_fightclub_longtake_720p_400p",
+   "source": "/mldata/video/youtube/fight_club_long_take.mp4",
+   "start": 4.51,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 400,
+   "family": "/mldata/video/youtube/fight_club_long_take.mp4"
+  },
+  {
+   "name": "pool_external_bdd_night_new_720p_360p",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d15d58-9197cde5.mp4",
+   "start": 4.01,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 360,
+   "family": "/mldata/tracking_original/bdd100k_mot/video/bdd_00d15d58-9197cde5.mp4"
+  },
+  {
+   "name": "pool_external_pp22_dark_720p_540p",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00037.mp4",
+   "start": 0.0,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 540,
+   "family": "/mldata/tracking_original/personpath22/video/uid_vid_00037.mp4"
+  },
+  {
+   "name": "pool_external_otw_natural_noise_720p_540p",
+   "source": "/mldata/tracking_original/otw/video/homes_00405.mp4",
+   "start": 11.02,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540,
+   "family": "/mldata/tracking_original/otw/video/homes_00405.mp4"
+  },
+  {
+   "name": "pool_external_otw_portrait_static_720p_540p",
+   "source": "/mldata/tracking_original/otw/video/homes_00299.mp4",
+   "start": 9.82,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540,
+   "family": "/mldata/tracking_original/otw/video/homes_00299.mp4"
+  },
+  {
+   "name": "pool_external_meva_bus_detail_720p_540p",
+   "source": "/mldata/tracking_original/meva/video/2018-03-07.11-05-06.11-10-06.bus.G340.mp4",
+   "start": 30.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540,
+   "family": "/mldata/tracking_original/meva/video/2018-03-07.11-05-06.11-10-06.bus.G340.mp4"
+  },
+  {
+   "name": "pool_external_meva_admin_720p_536p",
+   "source": "/mldata/tracking_original/meva/video/2018-03-07.11-05-01.11-10-01.admin.G329.mp4",
+   "start": 30.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 536,
+   "family": "/mldata/tracking_original/meva/video/2018-03-07.11-05-01.11-10-01.admin.G329.mp4"
+  },
+  {
+   "name": "pool_external_pedestrians_720p_540p",
+   "source": "/mldata/video/base/pedestrians.mp4",
+   "start": 3.06,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/video/base/pedestrians.mp4"
+  },
+  {
+   "name": "pool_fit_bodycam_bc2_a_540p",
+   "source": "/mldata/video/bc2.mp4",
+   "start": 30.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/video/bc2.mp4"
+  },
+  {
+   "name": "pool_fit_bodycam_arrest_a_540p",
+   "source": "/mldata/video/youtube/high_school_drama_arrest.mp4",
+   "start": 300.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 540,
+   "family": "/mldata/video/youtube/high_school_drama_arrest.mp4"
+  },
+  {
+   "name": "pool_fit_bodycam_foodvan_a_360p",
+   "source": "/mldata/video/youtube/Food_van.mp4",
+   "start": 100.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 360,
+   "family": "/mldata/video/youtube/Food_van.mp4"
+  },
+  {
+   "name": "pool_fit_bodycam_bwc116_360p",
+   "source": "/mldata/tracking_original/bwc-videotext/video/video116.mp4",
+   "start": 20.0,
+   "seconds": 40.0,
+   "content_class": "bodycam",
+   "height": 360,
+   "family": "/mldata/tracking_original/bwc-videotext/video/video116.mp4"
+  },
+  {
+   "name": "pool_fit_lowlight_bdd_drive_360p",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00ccf2e8-59a6bfc9.mp4",
+   "start": 10.0,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 360,
+   "family": "/mldata/tracking_original/bdd100k_mot/video/bdd_00ccf2e8-59a6bfc9.mp4"
+  },
+  {
+   "name": "pool_fit_lowlight_bdd_still_360p",
+   "source": "/mldata/tracking_original/bdd100k_mot/video/bdd_00cf8e3d-a7b4978c.mp4",
+   "start": 10.0,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 360,
+   "family": "/mldata/tracking_original/bdd100k_mot/video/bdd_00cf8e3d-a7b4978c.mp4"
+  },
+  {
+   "name": "pool_fit_lowlight_pp22_093_540p",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00093.mp4",
+   "start": 5.0,
+   "seconds": 40.0,
+   "content_class": "lowlight",
+   "height": 540,
+   "family": "/mldata/tracking_original/personpath22/video/uid_vid_00093.mp4"
+  },
+  {
+   "name": "pool_fit_pan_jaad_0202_540p",
+   "source": "/mldata/tracking_original/jaad/video/video_0202.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "pan",
+   "height": 540,
+   "family": "/mldata/tracking_original/jaad/video/video_0202.mp4"
+  },
+  {
+   "name": "pool_fit_static_meva_school330_540p",
+   "source": "/mldata/tracking_original/meva/video/2018-03-11.14-10-00.14-15-00.school.G330.mp4",
+   "start": 100.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540,
+   "family": "/mldata/tracking_original/meva/video/2018-03-11.14-10-00.14-15-00.school.G330.mp4"
+  },
+  {
+   "name": "pool_fit_static_meva_bus506_536p",
+   "source": "/mldata/tracking_original/meva/video/2018-03-07.17-30-00.17-35-00.bus.G506.mp4",
+   "start": 100.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 536,
+   "family": "/mldata/tracking_original/meva/video/2018-03-07.17-30-00.17-35-00.bus.G506.mp4"
+  },
+  {
+   "name": "pool_fit_static_jaad_0269_540p",
+   "source": "/mldata/tracking_original/jaad/video/video_0269.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "static",
+   "height": 540,
+   "family": "/mldata/tracking_original/jaad/video/video_0269.mp4"
+  },
+  {
+   "name": "pool_fit_crowd_mot17_02_540p",
+   "source": "/mldata/tracking_original/mot/video/MOT17-02.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/tracking_original/mot/video/MOT17-02.mp4"
+  },
+  {
+   "name": "pool_fit_crowd_mot20_03_440p",
+   "source": "/mldata/tracking_original/mot/video/MOT20-03.mp4",
+   "start": 30.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 440,
+   "family": "/mldata/tracking_original/mot/video/MOT20-03.mp4"
+  },
+  {
+   "name": "pool_fit_crowd_pp22_048_540p",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00048.mp4",
+   "start": 5.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 540,
+   "family": "/mldata/tracking_original/personpath22/video/uid_vid_00048.mp4"
+  },
+  {
+   "name": "pool_fit_crowd_pp22_124_360p",
+   "source": "/mldata/tracking_original/personpath22/video/uid_vid_00124.mp4",
+   "start": 2.0,
+   "seconds": 40.0,
+   "content_class": "crowd",
+   "height": 360,
+   "family": "/mldata/tracking_original/personpath22/video/uid_vid_00124.mp4"
+  }
+ ]
+}

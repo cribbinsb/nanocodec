@@ -1,0 +1,98 @@
+# nanocodec Cargo workspace. Layout and rules: CLAUDE.md, docs/ARCHITECTURE.md.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/nc-common",
+    "crates/nc-dsp",
+    "crates/nc-analysis",
+    "crates/nc-checkasm",
+    "crates/nc-encoder",
+    "crates/nc-av1",
+    "crates/nc-vp9",
+    "crates/nc-av2",
+    "crates/nc-h264",
+    "crates/nc-hevc",
+    "crates/nc-vvc",
+    "crates/nc-capi",
+    "crates/nc-cli",
+    "crates/nc-web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "BSD-3-Clause"
+publish = false
+
+[workspace.dependencies]
+nc-common = { path = "crates/nc-common" }
+nc-dsp = { path = "crates/nc-dsp" }
+nc-analysis = { path = "crates/nc-analysis" }
+nc-encoder = { path = "crates/nc-encoder" }
+nc-av1 = { path = "crates/nc-av1" }
+nc-av2 = { path = "crates/nc-av2" }
+nc-vp9 = { path = "crates/nc-vp9" }
+nc-h264 = { path = "crates/nc-h264" }
+nc-hevc = { path = "crates/nc-hevc" }
+nc-vvc = { path = "crates/nc-vvc" }
+
+[workspace.lints.rust]
+# `deny`, not `forbid`, so that nc-dsp can allow it on its kernel modules
+# only. Every other crate additionally has `#![forbid(unsafe_code)]`.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+# Pixel code converts between integer widths constantly, always with known
+# ranges; these lints would bury real findings.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# Kernel argument lists mirror their mathematical definition.
+too_many_arguments = "allow"
+similar_names = "allow"
+module_name_repetitions = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+# The landing gate's release builds (host checkasm, the browser module smoke
+# test): release code generation without whole-program LTO, split into
+# codegen units and incremental, so a rebuild after a one-crate change takes
+# seconds instead of a full fat-LTO link. LTO and unit splitting change no
+# results, only speed; measured releases still use `release`.
+[profile.gate]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+# Benchmarks and checkasm want release code generation with debug info for
+# profiling.
+[profile.profiling]
+inherits = "release"
+debug = true
+
+# Unoptimised DSP kernels keep every temporary of the inlined transform
+# graphs in its own stack slot (forward 64x64: ~470 KiB per call), which put
+# debug test threads near their 2 MiB stack. Basic optimisation coalesces
+# them; debug assertions and overflow checks stay on.
+[profile.dev.package.nc-dsp]
+opt-level = 1
+
+# Tests run encodes and decodes of whole pictures; unoptimised they took 75 s
+# of the workspace test run, at opt-level 1 they take 17 s, for 19 s more
+# cold build (2026-11-10, -j8, see docs/PROCEDURES.md "Landing"). Debug
+# assertions and overflow checks stay on.
+[profile.test]
+opt-level = 1

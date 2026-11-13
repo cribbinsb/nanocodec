@@ -1,0 +1,63 @@
+# Decoder fuzzing is an independent workspace so root manifests stay untouched.
+[package]
+name = "nc-decoder-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nc-h264 = { path = "../crates/nc-h264" }
+nc-hevc = { path = "../crates/nc-hevc" }
+nc-vvc = { path = "../crates/nc-vvc" }
+nc-av1 = { path = "../crates/nc-av1" }
+nc-vp9 = { path = "../crates/nc-vp9" }
+nc-av2 = { path = "../crates/nc-av2" }
+
+[[bin]]
+name = "decode_h264"
+path = "fuzz_targets/decode_h264.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_hevc"
+path = "fuzz_targets/decode_hevc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_av1"
+path = "fuzz_targets/decode_av1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_vp9"
+path = "fuzz_targets/decode_vp9.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_av2"
+path = "fuzz_targets/decode_av2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_vvc"
+path = "fuzz_targets/decode_vvc.rs"
+test = false
+doc = false
+bench = false
