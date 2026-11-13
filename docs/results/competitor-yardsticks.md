@@ -134,6 +134,17 @@ At adb57e6e the same streams were:
 
 Method and per-change detail: `docs/handoff/vp9.md` "Decoder speed against vpxdec".
 
+**Like for like at 270b535e.** Neither decoder writes output: ours runs `--discard 1`, vpxdec `--noblit`.
+
+| Stream | x86 instructions | Jetson cycles |
+|---|---:|---:|
+| ours 720p / 1080p | 1.123 / 1.185 | 1.188 / 1.149 |
+| ours SVC L2T1 / L2T3 720p | 1.079 / 1.081 | 1.152 / 1.144 |
+| vpxenc rt 720p / good 1080p | 1.198 / 1.229 | 1.242 / 1.122 |
+| resize_inter 1080p | 1.405 | 1.255 |
+
+The remaining Jetson gap is in the loop-filter and MC NEON kernels (`docs/handoff/vp9.md`, round 2).
+
 **HEVC against Antare's `hevc.wasm`** (their numbers scaled by our own base-to-head ratio, as in
 [wasm-speed.md](wasm-speed.md#final-re-time-2026-11-13-dec-winddown)): we are now faster on all five rows:
 - Novatek −20 %;

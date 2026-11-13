@@ -67,7 +67,7 @@ BD-PSNR-YUV and BD-VMAF numbers ([full table](results/bd-vs-speed.md), [per metr
 BD-J is the mean of the BD-rates on PSNR-YUV (Y:U:V weighted 6:1:1), VMAF and MS-SSIM, averaged over content classes
 and over the full and lower-rate halves of each curve (`eval/nceval/jreal.py`). VMAF is Netflix's model
 `vmaf_v1.0.16` (the "v1" model of libvmaf 3), computed by libvmaf 3.2.1 or by VMAFx, a GPU implementation with
-our patches, which agree to libvmaf's printed precision on the points we checked. MS-SSIM is scored on every frame
+our patches. Does the GPU fork change the scores? An independent cross-check of 200 held-out points (stock libvmaf 3.2.1 on CPU with `vmaf_v1.0.16_3d0h.json`, plus our MS-SSIM, against the GPU path on the same streams) found PSNR-YUV within 7e-15 dB, VMAF identical, MS-SSIM within 3.9e-6 and identical packet sizes. One caveat: the GPU scorer was not run-to-run reproducible on 8 of 144 chart points (sequence VMAF moved by up to 0.037, single frames by up to 5.5, on bit-identical pictures), so scores are reproducible to about 0.04 VMAF at sequence level; this is a known, open scorer issue. MS-SSIM is scored on every frame
 by our reimplementation of libvmaf's float MS-SSIM (agreeing to about 1e-6).
 
 **Are your streams actually decoded, or do you score your own reconstruction?** Our points are scored on our

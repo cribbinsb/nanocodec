@@ -54,20 +54,37 @@ const BWDREF_FRAME: usize = 5;
 const ALTREF2_FRAME: usize = 6;
 
 /// One 8x8 unit's kept vector: its reference (`MfRefFrames`, or
-/// `INTRA_FRAME` for none) and vector, aligned to 8 bytes so a block's
-/// units are filled with one 64-bit store each.
+/// `INTRA_FRAME` for none) and vector, packed in one word: a block's units
+/// are filled with one 64-bit store each, and the projection finds runs of
+/// equal units with one comparison each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(C, align(8))]
-pub(crate) struct SavedMv {
-    reference: i8,
-    mv: Av1Mv,
-}
+pub(crate) struct SavedMv(u64);
+
+/// Bit offsets of [`SavedMv`]'s fields.
+const SAVED_COL_SHIFT: u32 = 16;
+const SAVED_REFERENCE_SHIFT: u32 = 32;
 
 impl SavedMv {
-    const NONE: Self = Self {
-        reference: INTRA_FRAME,
-        mv: Av1Mv::ZERO,
-    };
+    const NONE: Self = Self::new(INTRA_FRAME, Av1Mv::ZERO);
+
+    const fn new(reference: i8, mv: Av1Mv) -> Self {
+        Self(
+            (mv.row as u16 as u64)
+                | (mv.col as u16 as u64) << SAVED_COL_SHIFT
+                | (reference as u8 as u64) << SAVED_REFERENCE_SHIFT,
+        )
+    }
+
+    fn reference(self) -> i8 {
+        (self.0 >> SAVED_REFERENCE_SHIFT) as u8 as i8
+    }
+
+    fn mv(self) -> Av1Mv {
+        Av1Mv {
+            row: self.0 as u16 as i16,
+            col: (self.0 >> SAVED_COL_SHIFT) as u16 as i16,
+        }
+    }
 }
 
 /// The vectors a frame keeps (§7.19), one per 8x8 unit.
@@ -107,7 +124,7 @@ impl SavedMotion {
             let small =
                 i32::from(mv.row).abs() <= REFMVS_LIMIT && i32::from(mv.col).abs() <= REFMVS_LIMIT;
             if reference > INTRA_FRAME && !side[reference as usize] && small {
-                kept = SavedMv { reference, mv };
+                kept = SavedMv::new(reference, mv);
             }
         }
         let (x8, y8) = (mi_col >> 1, mi_row >> 1);
@@ -340,25 +357,32 @@ impl<'a> Projection<'a> {
                 .iter()
                 .position(|&next| next != unit)
                 .map_or(sources.end, |n| x8 + 1 + n);
-            let span = self.spans[unit.reference as usize];
+            let span = self.spans[unit.reference() as usize];
             if span != 0 {
-                let offset = project_mv(unit.mv, self.to_current, span);
+                let offset = project_mv(unit.mv(), self.to_current, span);
                 let target_y = y8.checked_add_signed(self.units(offset.row));
                 if let Some(target_y) = target_y.filter(|y| targets.contains(y)) {
                     let row = (target_y % FIELD_ROWS) * field.columns;
                     let shift = self.units(offset.col);
-                    for x in x8..run_end {
+                    let projected = ProjectedMv {
+                        mv: unit.mv(),
+                        offset: span,
+                    };
+                    // The run's units of one band of columns land on one
+                    // span of targets, clipped to that band's reach: one
+                    // fill per band rather than a test per unit.
+                    let mut x = x8;
+                    while x < run_end {
                         let band = x & !(BAND_UNITS - 1);
+                        let band_end = (band + BAND_UNITS).min(run_end);
                         let reach = band.saturating_sub(MAX_OFFSET_COLUMNS).max(columns.start)
                             ..(band + BAND_UNITS + MAX_OFFSET_COLUMNS).min(columns.end);
-                        if let Some(target_x) =
-                            x.checked_add_signed(shift).filter(|x| reach.contains(x))
-                        {
-                            field.units[row + target_x] = ProjectedMv {
-                                mv: unit.mv,
-                                offset: span,
-                            };
+                        let first = (x as isize + shift).max(reach.start as isize);
+                        let end = (band_end as isize + shift).min(reach.end as isize);
+                        if first < end {
+                            field.units[row + first as usize..row + end as usize].fill(projected);
                         }
+                        x = band_end;
                     }
                 }
             }

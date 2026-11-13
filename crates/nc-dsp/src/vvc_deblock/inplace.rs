@@ -8,6 +8,9 @@
 //! A horizontal edge's lines are contiguous columns: one 8-sample load per
 //! position across the edge. A vertical edge's lines are rows: each row's
 //! p7..p0 and q0..q7 are loaded as two vectors and transposed (twice 8x8).
+//! Short-only edges instead keep p3..q3 in the shared HEVC/VVC sample layout,
+//! following the separate short/long arithmetic in VVenC/VVdeC `LoopFilterX86`
+//! (BSD-3-Clause-Clear; see `THIRD_PARTY.md`).
 #![allow(unsafe_code, clippy::inline_always)]
 
 use super::{EDGE_LINES, LUMA_REACH, LumaFilter, VvcLumaEdge};
@@ -263,6 +266,10 @@ pub(super) unsafe fn luma<
     plane: &mut [u8],
     e: &VvcLumaEdge,
 ) {
+    if LINES == LANES && e.lengths == [STRONG_REACH; 2] {
+        short_edge::<V>(plane, e);
+        return;
+    }
     let values = if LINES == LANES {
         load_full::<V>(plane, e, checked_origin(plane, e))
     } else {
@@ -284,6 +291,74 @@ pub(super) unsafe fn luma<
     } else {
         store(plane, e, &out);
     }
+}
+
+/// Short-only edges never need the far samples or long decision terms.
+/// Keep both segments in eight lanes, using the same sample access as HEVC.
+#[inline(always)]
+fn short_edge<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e: &VvcLumaEdge) {
+    let edge = samples::Edge {
+        base: e.base,
+        across: e.across,
+        along: e.along,
+        lines: LANES,
+    };
+    let values = samples::load::<V>(plane, &edge);
+    let [p3, p2, p1, p0, q0, q1, q2, q3] = values;
+    let (p, q) = ([p0, p1, p2, p3], [q0, q1, q2, q3]);
+    let mut dp = [0i16; LANES];
+    let mut dq = [0i16; LANES];
+    let mut step = [0i16; LANES];
+    let mut spread = [0i16; LANES];
+    derivative(p0, p1, p2).store(&mut dp);
+    derivative(q0, q1, q2).store(&mut dq);
+    p0.sub(q0).abs().store(&mut step);
+    p3.sub(p0).abs().add(q3.sub(q0).abs()).store(&mut spread);
+    // A fixed loop keeps the paired decisions beside their live sample vectors.
+    let mut filters = [LumaFilter::None; 2];
+    for (segment, filter) in filters.iter_mut().enumerate() {
+        let line = |offset: usize| {
+            let lane = segment * SEGMENT + offset;
+            super::LineTerms {
+                dp: dp[lane].into(),
+                dq: dq[lane].into(),
+                step: step[lane].into(),
+                spread: spread[lane].into(),
+                // These terms are unused at the compile-time short reach.
+                long_activity: 0,
+                long_spread: 0,
+            }
+        };
+        *filter = super::decide(
+            &[line(0), line(SEGMENT - 1)],
+            e.beta,
+            e.tc,
+            [STRONG_REACH; 2],
+        );
+    }
+    if filters.iter().all(|f| matches!(f, LumaFilter::None)) {
+        return;
+    }
+    let out = if filters[0] == filters[1] {
+        match filters[0] {
+            LumaFilter::Short { strong: true, .. } => strong(&p, &q, &values, e.tc),
+            LumaFilter::Short {
+                strong: false,
+                second,
+            } => weak(
+                &p,
+                &q,
+                &values,
+                e.tc,
+                second.map(|s| V::splat(-i16::from(s))),
+            ),
+            // Long cannot be selected at [3,3], and both-off returned above.
+            _ => values,
+        }
+    } else {
+        short_filters(&p, &q, &values, e, &filters)
+    };
+    samples::store(plane, &edge, out, (1, samples::POSITIONS - 1));
 }
 
 /// Every line's filter is `filter`: its output as is, without lane masks
@@ -331,6 +406,24 @@ fn mixed<V: I16x8Shuffles + I16FilterLanes, const EXTENDED: bool>(
             LUMA_REACH,
         );
     }
+    short_filters(p, q, &out, e, filters)
+}
+
+/// The short filters share their arithmetic across compact and long footprints.
+#[inline(always)]
+fn short_filters<V: I16x8Shuffles + I16FilterLanes, const SIDE: usize, const N: usize>(
+    p: &[V; SIDE],
+    q: &[V; SIDE],
+    values: &[V; N],
+    e: &VvcLumaEdge,
+    filters: &[LumaFilter; 2],
+) -> [V; N] {
+    let mut out = *values;
+    let mut apply = |filtered: [V; N], taken: V, reach: usize| {
+        for k in N / 2 - reach..N / 2 + reach {
+            out[k] = taken.blend(filtered[k], out[k]);
+        }
+    };
     if filters
         .iter()
         .any(|f| matches!(f, LumaFilter::Short { strong: true, .. }))
@@ -438,12 +531,12 @@ fn long<V: I16FilterLanes, const EXTENDED: bool>(
 
 /// §8.8.3.6.6, strong: three samples per side.
 #[inline(always)]
-fn strong<V: I16FilterLanes>(
-    p: &[V; 8],
-    q: &[V; 8],
-    values: &[V; POSITIONS],
+fn strong<V: I16FilterLanes, const SIDE: usize, const N: usize>(
+    p: &[V; SIDE],
+    q: &[V; SIDE],
+    values: &[V; N],
     tc: i32,
-) -> [V; POSITIONS] {
+) -> [V; N] {
     let mut out = *values;
     for (which, (near, far)) in [(p, q), (q, p)].into_iter().enumerate() {
         let filtered = [
@@ -464,7 +557,7 @@ fn strong<V: I16FilterLanes>(
             ),
         ];
         for i in 0..3 {
-            out[if which == 0 { 7 - i } else { 8 + i }] =
+            out[if which == 0 { N / 2 - 1 - i } else { N / 2 + i }] =
                 clip(filtered[i], near[i], (3 - i as i32) * tc);
         }
     }
@@ -474,19 +567,19 @@ fn strong<V: I16FilterLanes>(
 /// §8.8.3.6.6, normal: p0/q0 per line where `|Δ| < 10 tC`, and p1 / q1
 /// in the lanes of `second` (per-segment masks).
 #[inline(always)]
-fn weak<V: I16FilterLanes>(
-    p: &[V; 8],
-    q: &[V; 8],
-    values: &[V; POSITIONS],
+fn weak<V: I16FilterLanes, const SIDE: usize, const N: usize>(
+    p: &[V; SIDE],
+    q: &[V; SIDE],
+    values: &[V; N],
     tc: i32,
     second: [V; 2],
-) -> [V; POSITIONS] {
+) -> [V; N] {
     let mut out = *values;
     let delta = round(times(q[0].sub(p[0]), 9).sub(times(q[1].sub(p[1]), 3)), 4);
     let enabled = V::splat((10 * tc) as i16).gt_mask(delta.abs());
     let delta = delta.max(V::splat(-tc as i16)).min(V::splat(tc as i16));
-    out[7] = enabled.blend(clip(p[0].add(delta), p[0], tc), p[0]);
-    out[8] = enabled.blend(clip(q[0].sub(delta), q[0], tc), q[0]);
+    out[N / 2 - 1] = enabled.blend(clip(p[0].add(delta), p[0], tc), p[0]);
+    out[N / 2] = enabled.blend(clip(q[0].sub(delta), q[0], tc), q[0]);
     let half = (tc >> 1) as i16;
     for (which, side) in [p, q].into_iter().enumerate() {
         let signed = if which == 0 {
@@ -501,7 +594,8 @@ fn weak<V: I16FilterLanes>(
             .max(V::splat(-half))
             .min(V::splat(half));
         let filtered = clip(side[1].add(correction), side[1], tc >> 1);
-        out[if which == 0 { 6 } else { 9 }] = enabled.and(second[which]).blend(filtered, side[1]);
+        out[if which == 0 { N / 2 - 2 } else { N / 2 + 1 }] =
+            enabled.and(second[which]).blend(filtered, side[1]);
     }
     out
 }

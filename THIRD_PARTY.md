@@ -578,7 +578,8 @@ probability estimator), `syntax.rs`, `coeff.rs` and `coeff_contexts.rs` (CU and
 full residual binarization/context tables), `motion.rs` (UnitTools spatial/history
 merge and AMVP derivation), `intra.rs` (reference substitution, planar/DC/axis
 prediction and PDPC), `recon.rs` (quantization), `filter.rs` and
-`nc-dsp/src/vvc_deblock/` (LoopFilter thresholds and short/long deblocking),
+`nc-dsp/src/vvc_deblock/` (LoopFilter thresholds and short/long deblocking,
+including the compact p3..q3 short-edge layout from `LoopFilterX86.h`),
 `nc-dsp/src/vvc_intra/` (planar/DC/all square angular prediction, PDPC,
 angle/inverse-angle tables and InterpolationFilter cubic coefficients, scalar/SIMD;
 `angular_generic.rs` uses the Q15 PDPC blend from
@@ -632,6 +633,8 @@ Source: https://github.com/fraunhoferhhi/vvdec, commit `d2614690cf13ceee1631dd6d
 with bounded Rust readers, using `HLSyntaxReader` as a syntax reference.
 `crates/nc-dsp/src/mc/generic.rs` (`hevc_bi`, HEVC default bi-prediction) averages the two
 predictions as a paired 32-bit sum, the layout of VVdeC's `addAvg_SSE` (`BufferX86.h`).
+`crates/nc-dsp/src/vvc_deblock/inplace.rs` also follows the separate short/long
+filter layout in `LoopFilterX86.h`, while sharing our scalar decision and filter arithmetic.
 VVdeC is not linked or called by our decoder; its executable remains an
 independent conformance oracle.
 

@@ -485,6 +485,12 @@ impl<'a, const VERTICAL: bool> PlanePass<'a, VERTICAL> {
                 (area.size.1, area.size.0, area.tx.1, area.block.1)
             };
             let start = along << UNIT_LOG2;
+            // MiCols/MiRows round the frame up to 8 samples (§5.9.5), so an
+            // area can start beyond the last sample along the edge: none
+            // of its edge lines are on screen (§7.14.2 `onScreen`).
+            if start >= along_limit {
+                continue;
+            }
             let end = (start + (1 << size_along)).min(along_limit);
             let first = across << UNIT_LOG2;
             let last = (first + (1 << size_across)).min(across_limit);

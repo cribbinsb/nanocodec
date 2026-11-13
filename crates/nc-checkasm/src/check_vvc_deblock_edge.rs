@@ -30,6 +30,7 @@ fn sample(rng: &mut Rng, shape: usize, pos: usize, line: usize) -> u8 {
 }
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    short_thresholds(candidate, reference, report);
     for beta in [0, 16, 32, 64, 88] {
         for tc in [0, 1, 4, 16, 50, 100] {
             for shape in 0..SHAPES {
@@ -84,6 +85,69 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                                 candidate.isa()
                             ));
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Short-only dispatch: strict equality at activity/spread/step thresholds,
+/// both segment orders, and rough middle lines under smooth endpoint decisions.
+fn short_thresholds(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
+    for beta in [0, 4, 5, 16, 32, 88] {
+        for tc in [0, 1, 3, 15, 100] {
+            let step = ((5 * tc + 1) >> 1).min(100) as u8;
+            let patterns = [
+                [100; 8],
+                [
+                    100,
+                    100,
+                    100,
+                    100,
+                    100 + step,
+                    100 + step,
+                    100 + step,
+                    100 + step,
+                ],
+                [100, 100, 101, 100, 100, 100, 100, 100],
+                [104, 100, 100, 100, 100, 100, 100, 100],
+                [0, 255, 0, 255, 0, 255, 0, 255],
+            ];
+            for (first, a) in patterns.iter().enumerate() {
+                for (second, b) in patterns.iter().enumerate() {
+                    for vertical in [false, true] {
+                        let mut plane = [71u8; STRIDE * HEIGHT];
+                        for line in 0..LINES {
+                            let smooth = if line < 4 { a } else { b };
+                            // Endpoints decide per segment; the middle lines must
+                            // still obey their own normal-filter delta rejection.
+                            let rough = [0, 0, 255, 0, 255, 0, 255, 255];
+                            let row = if line % 4 == 1 { &rough } else { smooth };
+                            for (pos, &value) in row.iter().enumerate() {
+                                let (x, y) = if vertical {
+                                    (EDGE - 4 + pos, 4 + line)
+                                } else {
+                                    (4 + line, EDGE - 4 + pos)
+                                };
+                                plane[y * STRIDE + x] = value;
+                            }
+                        }
+                        let at = if vertical { (EDGE, 4) } else { (4, EDGE) };
+                        let run = |dsp: &Dsp| {
+                            let mut out = plane;
+                            let mut view = PlaneViewMut::new(&mut out, STRIDE, WIDTH, HEIGHT)
+                                .expect("check plane");
+                            dsp.vvc_deblock_luma_edge(&mut view, at, vertical, beta, tc, [3; 2]);
+                            out
+                        };
+                        report.cases += 1;
+                        if run(candidate) != run(reference) {
+                            report.failures.push(format!(
+                                "{} vvc short thresholds beta={beta} tc={tc} patterns={first}/{second} vertical={vertical}",
+                                candidate.isa()
+                            ));
                         }
                     }
                 }
