@@ -48,7 +48,7 @@ export class Panel {
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
       <div class="picture-options"><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label></div>
       <div class="reference-options" hidden><label class="compact-control">Pre-encoded stream<select class="stream-picker"></select></label><p class="reference-status" role="status"></p><div class="reference-info"><p class="reference-label"></p><dl class="reference-facts"></dl><p class="reference-version"></p><div class="reference-command"><code class="reference-cli"></code><button type="button" class="copy-command">Copy</button></div><button type="button" class="match">Match this in the other version</button></div></div>
-      <div class="options"><label class="compact-control">Rate mode<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="rate-options"><label class="compact-control">Target (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><label class="compact-control">Peak (kbps)${rateInput('peak-rate', DEFAULT_PEAK_KBPS)}</label><label class="compact-control">Buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><div class="quality-option" hidden><label class="quality-label" for="qp-${letter}">Compression / quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div><label class="compact-control">Encoder preset<select class="preset"><option value="default">Default</option><option value="fast">Fast · quality tradeoff</option><option value="faster">Faster · H.264, HEVC, AV1 and VP9</option><option value="fastest">Fastest · H.264 and VP9</option><option value="svc">SVC · full + half-size layers (AV1, VP9)</option><option value="svc-fast">SVC Fast · full + half-size layers (AV1, VP9)</option></select></label><label class="compact-control layer-control" hidden>Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Base, half size (operating point 1)</option></select></label><label class="compact-control">Keyframe interval<select class="gop">${options(GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`]), DEFAULT_GOP_SECONDS)}</select></label></div>
+      <div class="options"><label class="compact-control">Rate mode<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="rate-options"><label class="compact-control">Target (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><label class="compact-control">Peak (kbps)${rateInput('peak-rate', DEFAULT_PEAK_KBPS)}</label><label class="compact-control">Buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><div class="quality-option" hidden><label class="quality-label" for="qp-${letter}">Compression / quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div><label class="compact-control">Encoder preset<select class="preset"><option value="default">Default</option><option value="fast">Fast · quality tradeoff</option><option value="faster">Faster · H.264, HEVC, AV1 and VP9</option><option value="fastest">Fastest · H.264 and VP9</option><option value="svc">SVC · full + half-size layers (AV1, VP9)</option><option value="svc-fast">SVC Fast · full + half-size layers (AV1, VP9)</option><option value="svc3">SVC 3 layers · full, half and quarter size (AV1)</option><option value="svc3-fast">SVC 3 layers Fast · full, half and quarter size (AV1)</option></select></label><label class="compact-control layer-control" hidden>Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Half size (operating point 1)</option><option value="2">Quarter size (operating point 2)</option></select></label><label class="compact-control">Keyframe interval<select class="gop">${options(GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`]), DEFAULT_GOP_SECONDS)}</select></label></div>
       <p class="rate-status" aria-live="off">Target 300 kbps · waiting for frames</p><div class="history"><div class="history-label"><span>FRAME SIZE · LAST ${HISTORY_FRAMES} FRAMES</span><span class="history-max">—</span></div><canvas width="540" height="42" aria-label="Recent compressed frame sizes"></canvas></div>
       <div class="version-bottom"><span class="frame-count">No frames encoded</span><button class="download" disabled>Download stream ↓</button></div>
       <details class="reproduce"><summary>Settings · CLI command</summary><p class="effective"></p><code class="cli"></code></details>`;
@@ -210,24 +210,27 @@ export class Panel {
     this.element.querySelector('.quality-option').hidden = this.rateMode.value === 'cbr';
   }
   updateCodec() {
-    const { fast, faster, fastest, svc, quantizer } = CODECS[this.codec.value];
+    const { fast, faster, fastest, svc, svc3, quantizer } = CODECS[this.codec.value];
     this.advanced.setCodec(this.codec.value);
     this.preset.disabled = !fast;
     this.preset.querySelector('option[value="faster"]').disabled = !faster;
     this.preset.querySelector('option[value="fastest"]').disabled = !fastest;
     for (const value of ['svc', 'svc-fast']) this.preset.querySelector(`option[value="${value}"]`).disabled = !svc;
+    for (const value of ['svc3', 'svc3-fast']) this.preset.querySelector(`option[value="${value}"]`).disabled = !svc3;
     const unavailable = (!faster && this.preset.value === 'faster') || (!fastest && this.preset.value === 'fastest')
-      || (!svc && this.preset.value.startsWith('svc'));
+      || (!svc && this.preset.value.startsWith('svc')) || (!svc3 && this.preset.value.startsWith('svc3'));
     if (this.preset.disabled || unavailable) this.preset.value = 'default';
     this.updateLayers();
     this.qp.min = String(quantizer.min); this.qp.max = String(quantizer.max);
     this.qp.value = String(quantizer.initial); this.updateLabel();
   }
-  /** The layer picker shows with the SVC preset only; other streams have one operating point. */
+  /** The layer picker shows with the SVC presets only (other streams have one operating point);
+   * the quarter-size operating point exists in three-layer streams only. */
   updateLayers() {
-    const layered = this.preset.value.startsWith('svc');
+    const layered = this.preset.value.startsWith('svc'), threeLayers = this.preset.value.startsWith('svc3');
     this.element.querySelector('.layer-control').hidden = !layered;
-    if (!layered) this.operatingPoint.value = '0';
+    this.operatingPoint.querySelector('option[value="2"]').disabled = !threeLayers;
+    if (!layered || (!threeLayers && this.operatingPoint.value === '2')) this.operatingPoint.value = '0';
   }
   updateLabel() { this.element.querySelector('output').textContent = `${CODECS[this.codec.value].quantizer.name} ${this.qp.value}`; }
   /**

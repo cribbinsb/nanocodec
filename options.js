@@ -44,6 +44,8 @@ export function cliPreset(codec, preset) {
   if (preset === 'fastest') return `${codec}-fastest`;
   if (preset === 'svc') return `${codec}-svc`;
   if (preset === 'svc-fast') return `${codec}-svc-fast`;
+  if (preset === 'svc3') return `${codec}-svc3`;
+  if (preset === 'svc3-fast') return `${codec}-svc3-fast`;
   return null;
 }
 
