@@ -113,9 +113,14 @@ from .svcbase import (BASE_RATE_SHARE, THREE_LAYER_RATE_SHARES, Md5Sink, ScaledF
 from .sweep import IVF_FILE_HEADER_BYTES
 from .yuv import YuvFormat
 
-#: libaom L2T3 temporal split: cumulative share of a spatial layer's rate by
-#: temporal layer 0, 1, 2 (WebRTC's three-layer allocation, 40/20/40).
-TEMPORAL_SHARES_L2T3 = (0.4, 0.6, 1.0)
+#: libaom three-temporal-layer split (L2T3, L3T3): cumulative share of a spatial
+#: layer's rate by temporal layer 0, 1, 2. libaom's own allocation, as its tests
+#: set it (test/svc_datarate_test.cc: 60/80/100 when switching to three layers;
+#: 50/70/100 for one spatial layer). WebRTC's 40/60/100, used before
+#: 2026-11-13, understated libaom: on crowd_mot20_06 (150 frames, speed 10,
+#: 1400 kbps total) its L2T3 720p PSNR-Y was 28.9 dB at 40/60/100, 29.6 dB at
+#: 50/70/100 and 30.0 dB at 60/80/100, against 30.9 dB for L2T1.
+TEMPORAL_SHARES_L2T3 = (0.6, 0.8, 1.0)
 #: svc_encoder_rtc layering modes by (spatial, temporal) layers
 #: (examples/svc_encoder_rtc.cc set_layer_pattern: 5 L2T1, 7 L2T3, 6 L3T1, 9 L3T3).
 AOM_LAYERING_MODES = {(2, 1): 5, (2, 3): 7, (3, 1): 6, (3, 3): 9}
@@ -300,6 +305,8 @@ class SvcBench:
                  BASE_RATE_SHARE, self.measurement, REAL_METRICS_REVISION]
         if point.layers == 3:  # two-layer identities (and their caches) stay as they were
             parts += [point.layers, THREE_LAYER_RATE_SHARES]
+        if point.kind == "aom" and point.temporal_layers == 3:
+            parts += [list(TEMPORAL_SHARES_L2T3)]
         return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
 
     def result_path(self, point: SvcPoint, clip: Clip, kbps: int) -> Path:
@@ -1248,18 +1255,24 @@ def markdown(points: list[ChartPoint], x86: list[ChartPoint], bases: list[ChartP
               "plus `spatial.layers = 2`), `--temporal-layers 1` (L2T1) or `3` (L2T3, with "
               "`layers.adaptive=0`), and `presets/av1-svc-fast.toml` / "
               "`presets/vp9-svc-fast.toml` (the codec's Fast levers, a 2x2-mean base downscale "
-              "and a bilinear search proxy) in L2T1; CBR, 1 s buffer. Operating point 0 "
+              "and a bilinear search proxy) in L2T1; CBR, 1 s buffer. Our temporal layers "
+              "have no fixed rate split: the rate controller sets each temporal "
+              "layer's quantizer step relative to the base from a tuned ladder (`layers.cbr_base_step_ratio`, "
+              "`layers.cbr_middle_step_ratio`). Operating point 0 "
               "is scored from the encoder's reconstruction; the base layer is decoded at "
               "operating point 1 (AV1: dav1d; VP9: vpxdec on `nanocodec extract --base-only`'s "
               "stream) and must equal the encoder's base reconstruction.",
               "- libaom: `examples/svc_encoder_rtc` of the pinned libaom "
               "(tools/anchors `aomsvc`), layering mode 5 (L2T1) or 7 (L2T3), CBR with its "
               "1 s buffer (600 ms start/optimal), no lag, cyclic-refresh AQ (`-aq 1`, as "
-              "WebRTC), no frame drops, one thread, its own 2:1 downscale; L2T3 temporal "
-              "split 40/20/40. Decoded by dav1d (scored) and aomdec (equal hashes) at each "
+              "WebRTC), no frame drops, one thread, its own 2:1 downscale; L2T3 and L3T3 "
+              "temporal split "
+              f"{'/'.join(f'{s * 100:.0f}' for s in TEMPORAL_SHARES_L2T3)} (cumulative, "
+              "libaom's own test allocation). Decoded by dav1d (scored) and aomdec (equal hashes) at each "
               "operating point.",
               "- libvpx: `examples/vp9_spatial_svc_encoder` of the pinned libvpx v1.16.0 "
-              f"(tools/anchors `vpxsvc`), L2T1 (`-sl 2 -r {VPX_SCALE_FACTORS}`), one-pass CBR "
+              f"(tools/anchors `vpxsvc`), L2T1 only (`-sl 2 -r {VPX_SCALE_FACTORS}`; no temporal "
+              "split), one-pass CBR "
               f"(`--rc-end-usage=1`), no lag, cyclic-refresh AQ (`-aq {VPX_AQ_MODE}`, as "
               "WebRTC's VP9), no frame drops, inter-layer prediction on, one thread, "
               f"quantizer {VPX_MIN_Q}-{VPX_MAX_Q}. Its layers are all shown frames, so the "

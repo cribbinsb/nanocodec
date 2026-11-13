@@ -20,6 +20,7 @@
 
 use super::{
     AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, TAP_CENTRE, TAPS, TapPair,
+    slide,
 };
 use core::arch::wasm32::{
     i8x16_shuffle, i16x8_add, i16x8_mul, i16x8_narrow_i32x4, i16x8_q15mulr_sat, i16x8_shl,
@@ -472,7 +473,7 @@ unsafe fn put_taps<const W: usize, const N: usize, const P: usize, const T: usiz
                             sum = i16x8_add(sum, i16x8_mul(*row, i16x8_splat(tap)));
                         }
                         out.store::<N>(r, c0, round(sum, v_round));
-                        rows.copy_within(1..T, 0);
+                        slide(&mut rows, 1, T - 1);
                     }
                 }
             }
@@ -511,8 +512,8 @@ unsafe fn put_taps<const W: usize, const N: usize, const P: usize, const T: usiz
                         previous = b;
                         out.store::<N>(r, c0, vertical(&even, &v_taps, last));
                         out.store::<N>(r + 1, c0, vertical(&odd, &v_taps, last));
-                        even.copy_within(1..P, 0);
-                        odd.copy_within(1..P, 0);
+                        slide(&mut even, 1, P - 1);
+                        slide(&mut odd, 1, P - 1);
                     }
                 }
             }

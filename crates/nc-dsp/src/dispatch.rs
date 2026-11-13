@@ -24,7 +24,7 @@ use crate::codec_txfm::{
     HevcTransform, LEVEL_SCALE_4X4, LEVEL_SCALE_8X8, MAX_MASK_LEVELS, QUANT_MF_4X4_POS,
     QUANT_MF_8X8_POS,
 };
-use crate::convert::{self, ConvertFns};
+use crate::convert::{self, ConvertFns, DisplayMatrix};
 use crate::cpu::Isa;
 use crate::deblock::av1::{AV1_EDGE_LINES, Av1EdgeFilter};
 use crate::deblock::av2::{
@@ -4996,7 +4996,7 @@ impl Dsp {
 impl Dsp {
     /// Convert a decoded 4:2:0 picture (`luma` and its half-size `cb`, `cr`
     /// planes) into packed, opaque RGBA rows of `4 * luma.width()` bytes
-    /// (limited-range BT.601, `convert` module docs).
+    /// with `matrix` (`convert` module docs).
     ///
     /// # Panics
     ///
@@ -5005,6 +5005,7 @@ impl Dsp {
     /// `4 * luma.width() * luma.height()` bytes.
     pub fn i420_to_rgba(
         &self,
+        matrix: DisplayMatrix,
         luma: &PlaneView<'_>,
         cb: &PlaneView<'_>,
         cr: &PlaneView<'_>,
@@ -5032,6 +5033,7 @@ impl Dsp {
             // (checked above) and the table matches a supported ISA.
             unsafe {
                 (self.convert.i420_to_rgba_rows)(
+                    matrix,
                     [luma.row(2 * pair), bottom_luma],
                     &cb.row(pair)[..cw],
                     &cr.row(pair)[..cw],

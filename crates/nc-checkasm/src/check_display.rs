@@ -4,7 +4,7 @@
 use crate::check::{CheckReport, MAX_EXTRA_STRIDE};
 use crate::rng::Rng;
 use nc_common::{PlaneView, PlaneViewMut};
-use nc_dsp::Dsp;
+use nc_dsp::{DisplayMatrix, Dsp};
 
 pub(crate) fn check(
     candidate: &Dsp,
@@ -59,22 +59,23 @@ fn check_i420_to_rgba(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &
         view(&cb, chroma_stride, cw, ch),
         view(&cr, chroma_stride, cw, ch),
     );
+    let matrix = DisplayMatrix::ALL[rng.below(DisplayMatrix::ALL.len())];
     let run = |dsp: &Dsp| {
         let mut rgba = vec![0xA5u8; 4 * w * h];
-        dsp.i420_to_rgba(&luma, &cb, &cr, &mut rgba);
+        dsp.i420_to_rgba(matrix, &luma, &cb, &cr, &mut rgba);
         rgba
     };
     report.cases += 1;
     if run(candidate) != run(reference) {
         report.failures.push(format!(
-            "{} i420_to_rgba {w}x{h} stride={stride} chroma_stride={chroma_stride}: outputs differ",
+            "{} i420_to_rgba {matrix:?} {w}x{h} stride={stride} chroma_stride={chroma_stride}: outputs differ",
             candidate.isa()
         ));
     }
 }
 
-/// Every (Y, Cb, Cr) through the row-pair kernels: one 512x256 picture per
-/// Cr value, whose chroma columns hold every Cb and whose luma gives each
+/// Every (Y, Cb, Cr) of every matrix through the row-pair kernels: one
+/// 512x256 picture per matrix and Cr value, whose chroma columns hold every Cb and whose luma gives each
 /// 2x2 group's four pixels, over the picture's rows, every Y.
 fn check_i420_to_rgba_every_sample(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
     const SAMPLES: usize = 256;
@@ -90,17 +91,19 @@ fn check_i420_to_rgba_every_sample(candidate: &Dsp, reference: &Dsp, report: &mu
     let luma = view(&luma, w, h);
     let cb = view(&cb, cw, ch);
     let (mut expected, mut actual) = (vec![0u8; 4 * w * h], vec![0u8; 4 * w * h]);
-    for cr_value in 0..=u8::MAX {
-        let cr = vec![cr_value; cw * ch];
-        let cr = PlaneView::new(&cr, cw, cw, ch).expect("buffer fits");
-        reference.i420_to_rgba(&luma, &cb, &cr, &mut expected);
-        candidate.i420_to_rgba(&luma, &cb, &cr, &mut actual);
-        report.cases += 1;
-        if expected != actual {
-            report.failures.push(format!(
-                "{} i420_to_rgba every sample, Cr={cr_value}: outputs differ",
-                candidate.isa()
-            ));
+    for matrix in DisplayMatrix::ALL {
+        for cr_value in 0..=u8::MAX {
+            let cr = vec![cr_value; cw * ch];
+            let cr = PlaneView::new(&cr, cw, cw, ch).expect("buffer fits");
+            reference.i420_to_rgba(matrix, &luma, &cb, &cr, &mut expected);
+            candidate.i420_to_rgba(matrix, &luma, &cb, &cr, &mut actual);
+            report.cases += 1;
+            if expected != actual {
+                report.failures.push(format!(
+                    "{} i420_to_rgba {matrix:?} every sample, Cr={cr_value}: outputs differ",
+                    candidate.isa()
+                ));
+            }
         }
     }
 }

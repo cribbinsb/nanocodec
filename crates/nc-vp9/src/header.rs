@@ -22,8 +22,53 @@ use crate::tables::BandProbs;
 
 const FRAME_MARKER: u32 = 2;
 const SYNC_CODE: u32 = 0x49_83_42;
-/// `BT_601` colour space, the Profile 0 default.
-const COLOR_SPACE_BT601: u32 = 1;
+/// `color_space` codes (VP9 §7.2, Table 7-1) of the colour matrices the
+/// encoder signals.
+mod color_space {
+    /// `CS_BT_601` (BT.470 B/G; matrix code point 5), the default.
+    pub(super) const BT_601: u32 = 1;
+    /// `CS_BT_709`.
+    pub(super) const BT_709: u32 = 2;
+    /// `CS_SMPTE_170` (BT.601 525-line; matrix code point 6).
+    pub(super) const SMPTE_170: u32 = 3;
+}
+
+/// A key frame's `color_space` and `color_range` (VP9 §6.2, profile 0):
+/// signalling only, the decoding process ignores them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ColourSpace {
+    space: u32,
+    full_range: bool,
+}
+
+impl Default for ColourSpace {
+    /// BT.601, studio range: what streams without a colour description say.
+    fn default() -> Self {
+        Self {
+            space: color_space::BT_601,
+            full_range: false,
+        }
+    }
+}
+
+impl ColourSpace {
+    /// The VP9 form of `colour`, or `None` for a matrix VP9 cannot name in
+    /// this subset (anything but BT.601 and BT.709). Primaries and transfer
+    /// have no syntax of their own: `color_space` implies them.
+    pub(crate) fn of(colour: nc_common::ColourInfo) -> Option<Self> {
+        use nc_common::colour::matrix;
+        let space = match colour.description.map(|d| d.matrix) {
+            None | Some(matrix::BT601) => color_space::BT_601,
+            Some(matrix::BT709) => color_space::BT_709,
+            Some(matrix::BT601_525) => color_space::SMPTE_170,
+            Some(_) => return None,
+        };
+        Some(Self {
+            space,
+            full_range: colour.full_range,
+        })
+    }
+}
 /// Logical references of an inter frame (LAST, GOLDEN, ALTREF).
 const REFS_PER_FRAME: usize = 3;
 /// `literal_to_filter`: the frame filter's 2-bit code.
@@ -101,6 +146,8 @@ pub(crate) struct FrameHeader {
     pub segmentation: Segmentation,
     /// `delta_q_uv_dc` and `delta_q_uv_ac` (equal in this subset; -15..=15).
     pub chroma_delta_q: i8,
+    /// Written on key frames.
+    pub colour: ColourSpace,
 }
 
 impl FrameHeader {
@@ -141,8 +188,8 @@ impl FrameHeader {
         bits.put_bit(self.error_resilient);
         if self.key {
             bits.put_bits(SYNC_CODE, 24);
-            bits.put_bits(COLOR_SPACE_BT601, 3);
-            bits.put_bit(false); // studio range
+            bits.put_bits(self.colour.space, 3);
+            bits.put_bit(self.colour.full_range); // color_range
             write_size(&mut bits, self.width, self.height);
         } else {
             if !self.show_frame {
@@ -346,4 +393,63 @@ fn write_size(bits: &mut BitWriter, width: usize, height: usize) {
 /// a zero bit keeps one.
 fn has_tile_column_bit(width: usize) -> bool {
     width.div_ceil(64) >= 8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::segmentation::{SegmentFeatures, Segmentation};
+    use nc_common::{ColourDescription, ColourInfo};
+
+    /// Byte 4 of a key frame's uncompressed header: after the frame marker,
+    /// profile, flags and sync code, `color_space` (3 bits) then
+    /// `color_range`.
+    fn colour_byte(colour: ColourSpace) -> u8 {
+        let header = FrameHeader {
+            key: true,
+            show_frame: true,
+            error_resilient: false,
+            context_index: 0,
+            refresh_context: true,
+            width: 64,
+            height: 64,
+            ref_slots: [0; 3],
+            size_from_ref: None,
+            refresh: ALL_SLOTS,
+            filter_level: 0,
+            sharpness: 0,
+            interp_filter: None,
+            allow_hp: false,
+            base_q_idx: 60,
+            segmentation: Segmentation::disabled(SegmentFeatures::default()),
+            chroma_delta_q: 0,
+            colour,
+        };
+        header.write(1)[4]
+    }
+
+    #[test]
+    fn key_frames_signal_the_colour_matrix_and_range() {
+        let unsignalled = ColourSpace::of(ColourInfo::default()).unwrap();
+        assert_eq!(unsignalled, ColourSpace::default());
+        assert_eq!(colour_byte(unsignalled) >> 4, 0b0010); // BT.601, studio
+        let hd_full = ColourInfo {
+            description: Some(ColourDescription::BT709),
+            full_range: true,
+        };
+        assert_eq!(colour_byte(ColourSpace::of(hd_full).unwrap()) >> 4, 0b0101);
+        let sd = ColourInfo {
+            description: Some(ColourDescription::BT601_525),
+            full_range: false,
+        };
+        assert_eq!(colour_byte(ColourSpace::of(sd).unwrap()) >> 4, 0b0110);
+        let identity = ColourInfo {
+            description: Some(ColourDescription {
+                matrix: nc_common::colour::matrix::IDENTITY,
+                ..ColourDescription::BT709
+            }),
+            full_range: false,
+        };
+        assert_eq!(ColourSpace::of(identity), None);
+    }
 }

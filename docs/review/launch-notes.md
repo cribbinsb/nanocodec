@@ -28,8 +28,9 @@ against `docs/results/` on the day; if the independent re-run's held-out table h
 > the README are against other encoders' real-time settings on one thread (x264 zerolatency without B-frames,
 > SVT-AV1 `--rtc`, libvpx/libaom realtime); those are mature, general-purpose encoders that do better in other
 > modes. On our 11 chart clips our AV1 Default needs about 51% fewer bits than x264 `medium` at those settings;
-> on 71 held-out clips it is about 42% (every encoder's figure shrinks there, the references' by more). It is
-> slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
+> on 71 held-out clips it is about 42% (every encoder's figure shrinks there, the references' by more); and
+> against x264 `--tune psnr` instead of its default psy tuning, about 44% (our fastest H.264 presets then save
+> nothing). It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
 >
 > The FAQ answers the questions I expected (benchmarks, rate control, overfitting, licences, what's missing):
 > https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md. We also had an agent red-team our own claims

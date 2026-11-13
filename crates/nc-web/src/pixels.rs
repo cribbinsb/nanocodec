@@ -3,7 +3,7 @@
 //! same BT.601 matrix in its shader, `web/renderer.js`).
 
 use nc_common::{Picture, PlaneIndex, ShownPicture};
-use nc_dsp::Dsp;
+use nc_dsp::{DisplayMatrix, Dsp};
 
 /// Fill the visible samples of `picture` from packed RGBA (limited-range
 /// BT.601, chroma from each 2x2 group's mean) with this instance's SIMD
@@ -23,6 +23,7 @@ pub(crate) fn from_rgba(dsp: &Dsp, rgba: &[u8], picture: &mut Picture) {
 /// `4 * width * height` bytes), with this instance's SIMD kernels.
 pub(crate) fn to_rgba(dsp: &Dsp, picture: ShownPicture<'_>, rgba: &mut [u8]) {
     dsp.i420_to_rgba(
+        DisplayMatrix::Bt601Limited,
         &picture.plane(PlaneIndex::Y),
         &picture.plane(PlaneIndex::U),
         &picture.plane(PlaneIndex::V),

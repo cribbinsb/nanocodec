@@ -1,7 +1,7 @@
 //! AVX2 I420 to RGBA (x86-64).
 //!
-//! The same exact 16-bit split form of the BT.601 inverse as the SIMD128
-//! kernel ([`bt601_split`]), 32 pixels of each row per iteration as two
+//! The same exact 16-bit split form of the display matrix as the SIMD128
+//! kernel ([`RgbSplit`]), 32 pixels of each row per iteration as two
 //! 16-lane halves. The 16 chroma samples of a row pair are widened once and
 //! reordered by one 64-bit permute, so that the in-lane `vpunpck{l,h}wd`
 //! that repeat each term for its pixel pair yield pixels 0-15 and 16-31 in
@@ -20,11 +20,11 @@
 use core::arch::x86_64::{
     __m256i, _mm_loadu_si128, _mm256_add_epi16, _mm256_cvtepu8_epi16, _mm256_mullo_epi16,
     _mm256_packus_epi16, _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set1_epi16,
-    _mm256_slli_epi16, _mm256_srai_epi16, _mm256_storeu_si256, _mm256_sub_epi16,
-    _mm256_unpackhi_epi8, _mm256_unpackhi_epi16, _mm256_unpacklo_epi8, _mm256_unpacklo_epi16,
+    _mm256_srai_epi16, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8,
+    _mm256_unpackhi_epi16, _mm256_unpacklo_epi8, _mm256_unpacklo_epi16,
 };
 
-use super::{ALPHA_OPAQUE, bt601, bt601_split, scalar};
+use super::{ALPHA_OPAQUE, CHROMA_OFFSET, DisplayMatrix, RgbSplit, SHIFT, scalar};
 
 /// Pixels of each row converted per iteration.
 const STEP: usize = 32;
@@ -32,8 +32,8 @@ const STEP: usize = 32;
 /// Chroma terms for 32 pixels of a row (16 chroma samples, each repeated
 /// for its pixel pair), as pixels 0-15 and 16-31.
 struct ChromaTerms {
-    /// Remainders of R, G and B without the luma term, `BIAS` included
-    /// (`bt601_split`).
+    /// Remainders of R, G and B without the luma term, `bias` included
+    /// ([`RgbSplit`]).
     remainder: [[__m256i; 2]; 3],
     /// `Cr'` (added to R, subtracted from G).
     cr: [__m256i; 2],
@@ -46,6 +46,7 @@ struct ChromaTerms {
 /// Kernel contract (`convert` module docs); the CPU must support AVX2.
 #[target_feature(enable = "avx2")]
 pub(crate) unsafe fn i420_to_rgba_rows(
+    matrix: DisplayMatrix,
     luma: [&[u8]; 2],
     cb: &[u8],
     cr: &[u8],
@@ -55,9 +56,9 @@ pub(crate) unsafe fn i420_to_rgba_rows(
     // SAFETY: forwarded kernel contract; a lone row has an empty partner.
     unsafe {
         if luma[1].is_empty() {
-            rows([luma[0]], cb, cr, [top]);
+            rows(matrix, [luma[0]], cb, cr, [top]);
         } else {
-            rows(luma, cb, cr, [top, bottom]);
+            rows(matrix, luma, cb, cr, [top, bottom]);
         }
     }
 }
@@ -69,7 +70,14 @@ pub(crate) unsafe fn i420_to_rgba_rows(
 /// Kernel contract (`convert` module docs); the CPU must support AVX2.
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba: [&mut [u8]; N]) {
+unsafe fn rows<const N: usize>(
+    matrix: DisplayMatrix,
+    luma: [&[u8]; N],
+    cb: &[u8],
+    cr: &[u8],
+    mut rgba: [&mut [u8]; N],
+) {
+    let split = matrix.split();
     let w = luma[0].len();
     let simd_width = w - w % STEP;
     for x in (0..simd_width).step_by(STEP) {
@@ -78,6 +86,7 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
         // RGBA bytes 4x .. 4x + 128 inside each 4w-byte row (kernel contract).
         unsafe {
             let terms = chroma_terms(
+                &split,
                 _mm_loadu_si128(cb.as_ptr().add(x / 2).cast()),
                 _mm_loadu_si128(cr.as_ptr().add(x / 2).cast()),
             );
@@ -88,7 +97,7 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
                     ));
                     store_rgba(
                         out.as_mut_ptr().add(4 * (x + 16 * half)),
-                        rgb16(samples, &terms, half),
+                        rgb16(&split, samples, &terms, half),
                     );
                 }
             }
@@ -97,6 +106,7 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
     let chroma = simd_width / 2;
     for (row, out) in luma.into_iter().zip(rgba) {
         scalar::i420_to_rgba_row(
+            matrix,
             &row[simd_width..],
             &cb[chroma..],
             &cr[chroma..],
@@ -105,12 +115,16 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
     }
 }
 
-/// The chroma terms of 16 Cb and Cr samples for their 32 pixels. `BIAS` is
+/// The chroma terms of 16 Cb and Cr samples for their 32 pixels. `bias` is
 /// folded into the remainders here, once per 2x2 group.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn chroma_terms(cb: core::arch::x86_64::__m128i, cr: core::arch::x86_64::__m128i) -> ChromaTerms {
-    let offset = _mm256_set1_epi16(bt601::CHROMA_OFFSET as i16);
+fn chroma_terms(
+    split: &RgbSplit,
+    cb: core::arch::x86_64::__m128i,
+    cr: core::arch::x86_64::__m128i,
+) -> ChromaTerms {
+    let offset = _mm256_set1_epi16(CHROMA_OFFSET as i16);
     // Quadwords [c0-3, c8-11, c4-7, c12-15]: the in-lane pair-ups below then
     // give c0-7 (pixels 0-15) and c8-15 (pixels 16-31).
     let widen = |c| {
@@ -120,22 +134,16 @@ fn chroma_terms(cb: core::arch::x86_64::__m128i, cr: core::arch::x86_64::__m128i
         )
     };
     let (u, v) = (widen(cb), widen(cr));
-    let bias = _mm256_set1_epi16(bt601_split::BIAS);
-    let red = _mm256_add_epi16(
-        _mm256_mullo_epi16(v, _mm256_set1_epi16(bt601_split::R_CR)),
-        bias,
-    );
+    let bias = _mm256_set1_epi16(split.bias);
+    let red = _mm256_add_epi16(_mm256_mullo_epi16(v, _mm256_set1_epi16(split.r_cr)), bias);
     let green = _mm256_add_epi16(
         _mm256_add_epi16(
-            _mm256_mullo_epi16(u, _mm256_set1_epi16(bt601_split::G_CB)),
-            _mm256_mullo_epi16(v, _mm256_set1_epi16(bt601_split::G_CR)),
+            _mm256_mullo_epi16(u, _mm256_set1_epi16(split.g_cb)),
+            _mm256_mullo_epi16(v, _mm256_set1_epi16(split.g_cr)),
         ),
         bias,
     );
-    let blue = _mm256_add_epi16(
-        _mm256_slli_epi16::<{ bt601_split::B_CB_SHIFT as i32 }>(u),
-        bias,
-    );
+    let blue = _mm256_add_epi16(_mm256_mullo_epi16(u, _mm256_set1_epi16(split.b_cb)), bias);
     let cb2 = _mm256_add_epi16(u, u);
     ChromaTerms {
         remainder: [pair_up(red), pair_up(green), pair_up(blue)],
@@ -156,8 +164,8 @@ fn pair_up(c: __m256i) -> [__m256i; 2] {
 /// half `half` (0: pixels 0-15, 1: 16-31) of the chroma terms.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn rgb16(luma: __m256i, terms: &ChromaTerms, half: usize) -> [__m256i; 3] {
-    let scaled = _mm256_mullo_epi16(luma, _mm256_set1_epi16(bt601_split::Y));
+fn rgb16(split: &RgbSplit, luma: __m256i, terms: &ChromaTerms, half: usize) -> [__m256i; 3] {
+    let scaled = _mm256_mullo_epi16(luma, _mm256_set1_epi16(split.y));
     let linear = [
         _mm256_add_epi16(luma, terms.cr[half]),
         _mm256_sub_epi16(luma, terms.cr[half]),
@@ -165,10 +173,7 @@ fn rgb16(luma: __m256i, terms: &ChromaTerms, half: usize) -> [__m256i; 3] {
     ];
     [0, 1, 2].map(|c| {
         let remainder = _mm256_add_epi16(scaled, terms.remainder[c][half]);
-        _mm256_add_epi16(
-            linear[c],
-            _mm256_srai_epi16::<{ bt601::SHIFT as i32 }>(remainder),
-        )
+        _mm256_add_epi16(linear[c], _mm256_srai_epi16::<{ SHIFT as i32 }>(remainder))
     })
 }
 

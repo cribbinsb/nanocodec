@@ -6,11 +6,12 @@
 //!   byte pairs into separate Cb and Cr planes. Planar layouts (I420, YV12)
 //!   need only row copies, which `copy_from_slice` already does at memory
 //!   speed, so they have no kernel here.
-//! - **I420 to RGBA:** limited-range BT.601 in 8.8 fixed point (the browser
-//!   demo's display conversion, `nc-web`), a row pair sharing one chroma
-//!   row per call, alpha opaque. Every result is clamped to 0..=255, so SIMD
-//!   versions may narrow with saturation; they compute in 16-bit lanes with
-//!   the exact rewrite in [`bt601_split`].
+//! - **I420 to RGBA:** a [`DisplayMatrix`] (BT.601 or BT.709, limited or
+//!   full range) in 8.8 fixed point (the browser demo's display conversion,
+//!   `nc-web`), a row pair sharing one chroma row per call, alpha opaque.
+//!   Every result is clamped to 0..=255, so SIMD versions may narrow with
+//!   saturation; they compute in 16-bit lanes with the exact rewrite in
+//!   [`RgbSplit`].
 //! - **RGBA to I420:** the inverse (the browser demo's encoder input):
 //!   limited-range BT.601 luma per pixel, chroma from the rounded mean of
 //!   each whole 2x2 group (a trailing odd row or column gets no chroma).
@@ -79,7 +80,7 @@ pub(crate) type DeinterleaveUvFn = unsafe fn(
 /// row (each `cb`/`cr` sample covers a 2x2 group) into opaque RGBA. Two rows
 /// per call let SIMD kernels compute each chroma term once for four pixels.
 pub(crate) type I420ToRgbaRowsFn =
-    unsafe fn(luma: [&[u8]; 2], cb: &[u8], cr: &[u8], rgba: [&mut [u8]; 2]);
+    unsafe fn(matrix: DisplayMatrix, luma: [&[u8]; 2], cb: &[u8], cr: &[u8], rgba: [&mut [u8]; 2]);
 
 /// Convert `h` packed RGBA rows of `w` pixels into I420 planes.
 pub(crate) type RgbaToI420Fn = unsafe fn(
@@ -120,68 +121,153 @@ pub(crate) mod bt601_forward {
     pub(crate) const CHROMA_OFFSET: i32 = 128;
 }
 
-/// Limited-range BT.601 YCbCr to RGB in 8.8 fixed point:
-/// `R = (Y' * 298 + Cr' * 409 + 128) >> 8` and so on, with `Y' = Y - 16`,
-/// `Cb' = Cb - 128`, `Cr' = Cr - 128` (Rec. ITU-R BT.601 matrix scaled by
-/// 255/219 and 255/224).
-pub(crate) mod bt601 {
-    /// Luma black level.
-    pub(crate) const LUMA_OFFSET: i32 = 16;
-    /// Chroma zero level.
-    pub(crate) const CHROMA_OFFSET: i32 = 128;
-    /// Luma weight, shared by all three outputs.
-    pub(crate) const Y: i32 = 298;
-    /// Cr weight in R.
-    pub(crate) const R_CR: i32 = 409;
-    /// Cb weight in G (subtracted).
-    pub(crate) const G_CB: i32 = 100;
-    /// Cr weight in G (subtracted).
-    pub(crate) const G_CR: i32 = 208;
-    /// Cb weight in B.
-    pub(crate) const B_CB: i32 = 516;
-    /// Rounding of the final shift.
-    pub(crate) const ROUND: i32 = 128;
-    /// Fraction bits of the weights.
-    pub(crate) const SHIFT: u32 = 8;
+/// The YCbCr to RGB conversion a display applies: the colour matrix the
+/// samples were made with and their range (`nc_common::ColourInfo`; the
+/// browser demo's display, `nc-web`). Every form is 8.8 fixed point,
+/// `R = (Yw (Y - Yo) + Rv Cr' + 128) >> 8`,
+/// `G = (Yw (Y - Yo) - Gu Cb' - Gv Cr' + 128) >> 8`,
+/// `B = (Yw (Y - Yo) + Bu Cb' + 128) >> 8`, clamped to 0..=255, with
+/// `Cb' = Cb - 128` and `Cr' = Cr - 128`; limited range scales luma by
+/// 255/219 (`Yw = 298`, `Yo = 16`) and the chroma weights by 255/224, full
+/// range has `Yw = 256`, `Yo = 0`. The weights are the matrix's
+/// (Rec. ITU-R BT.601 / BT.709 Kr, Kb) inverse rounded to 1/256.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisplayMatrix {
+    /// Limited-range BT.601 (SMPTE 170M, BT.470 B/G): standard-definition
+    /// video, and what the demo's RGBA input conversion produces.
+    Bt601Limited,
+    /// Limited-range BT.709: HD video, as the sample clips' decoded planes.
+    Bt709Limited,
+    /// Full-range BT.601 (JPEG, many webcams).
+    Bt601Full,
+    /// Full-range BT.709.
+    Bt709Full,
 }
 
-/// The [`bt601`] inverse rewritten so that every intermediate fits `i16`,
-/// which lets SIMD kernels work on 16-bit lanes (twice the pixels of the
-/// 32-bit products) and still match the scalar `i32` results exactly.
-///
-/// Each 8.8 weight splits into a multiple of 256 and a remainder:
-/// `298 = 256 + 42`, `409 = 256 + 153`, `-208 = -256 + 48`, `516 = 512 + 4`.
-/// With `Cb' = Cb - 128`, `Cr' = Cr - 128`, and since
-/// `(256 a + b) >> 8 == a + (b >> 8)` for an arithmetic shift,
-///
-/// - `R = Y + Cr'     + ((42 Y + 153 Cr'           + BIAS) >> 8)`,
-/// - `G = Y - Cr'     + ((42 Y - 100 Cb' + 48 Cr'  + BIAS) >> 8)`,
-/// - `B = Y + 2 Cb'   + ((42 Y + 4 Cb'             + BIAS) >> 8)`,
-///
-/// where `BIAS = 128 - 298 * 16` folds the rounding and the whole luma
-/// offset (its 256 part included) into one constant, so no per-pixel
-/// offset is needed. The shifted sums lie in -24224..=25501 (R),
-/// -23484..=24966 (G) and -5152..=6578 (B), and the final values in
-/// -223..=481, all inside `i16`; a saturating narrow to `u8` is the scalar
-/// clamp. The exhaustive test below checks every (Y, Cb, Cr).
-pub(crate) mod bt601_split {
-    use super::bt601;
+impl DisplayMatrix {
+    /// Every matrix (checks and tests).
+    pub const ALL: [Self; 4] = [
+        Self::Bt601Limited,
+        Self::Bt709Limited,
+        Self::Bt601Full,
+        Self::Bt709Full,
+    ];
 
-    /// Luma weight after removing 256.
-    pub(crate) const Y: i16 = (bt601::Y - 256) as i16;
+    /// This conversion's 8.8 weights.
+    pub(crate) const fn weights(self) -> YuvToRgb {
+        match self {
+            Self::Bt601Limited => YuvToRgb::limited(409, 100, 208, 516),
+            Self::Bt709Limited => YuvToRgb::limited(459, 55, 136, 541),
+            Self::Bt601Full => YuvToRgb::full(359, 88, 183, 454),
+            Self::Bt709Full => YuvToRgb::full(403, 48, 120, 475),
+        }
+    }
+
+    /// This conversion in the 16-bit split form the SIMD kernels use.
+    pub(crate) const fn split(self) -> RgbSplit {
+        RgbSplit::of(self.weights())
+    }
+}
+
+/// The 8.8 weights of one [`DisplayMatrix`] (formula in its docs).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct YuvToRgb {
+    /// Luma weight `Yw`.
+    pub y: i32,
+    /// Luma black level `Yo`.
+    pub luma_offset: i32,
+    /// Cr weight in R.
+    pub r_cr: i32,
+    /// Cb weight in G (subtracted).
+    pub g_cb: i32,
+    /// Cr weight in G (subtracted).
+    pub g_cr: i32,
+    /// Cb weight in B.
+    pub b_cb: i32,
+}
+
+impl YuvToRgb {
+    /// Limited-range luma: weight 298 (255/219 in 8.8), black at 16.
+    const fn limited(r_cr: i32, g_cb: i32, g_cr: i32, b_cb: i32) -> Self {
+        Self {
+            y: 298,
+            luma_offset: 16,
+            r_cr,
+            g_cb,
+            g_cr,
+            b_cb,
+        }
+    }
+
+    /// Full-range luma: weight 256 (one), black at 0.
+    const fn full(r_cr: i32, g_cb: i32, g_cr: i32, b_cb: i32) -> Self {
+        Self {
+            y: 256,
+            luma_offset: 0,
+            r_cr,
+            g_cb,
+            g_cr,
+            b_cb,
+        }
+    }
+}
+
+/// Chroma zero level.
+pub(crate) const CHROMA_OFFSET: i32 = 128;
+/// Rounding of the final shift.
+pub(crate) const ROUND: i32 = 128;
+/// Fraction bits of the weights.
+pub(crate) const SHIFT: u32 = 8;
+
+/// A [`YuvToRgb`] rewritten so that every intermediate fits `i16`, which
+/// lets SIMD kernels work on 16-bit lanes (twice the pixels of the 32-bit
+/// products) and still match the scalar `i32` results exactly.
+///
+/// Each 8.8 weight splits into a multiple of 256 and a remainder; R takes
+/// `256 Cr'`, G `-256 Cr'` and B `512 Cb'` whole. With `Cb' = Cb - 128`,
+/// `Cr' = Cr - 128`, and since `(256 a + b) >> 8 == a + (b >> 8)` for an
+/// arithmetic shift,
+///
+/// - `R = Y + Cr'   + ((y Y + r Cr'        + bias) >> 8)`,
+/// - `G = Y - Cr'   + ((y Y + gu Cb' + gv Cr' + bias) >> 8)`,
+/// - `B = Y + 2 Cb' + ((y Y + b Cb'        + bias) >> 8)`,
+///
+/// where `y = Yw - 256` and `bias = 128 - Yw Yo` folds the rounding and the
+/// whole luma offset (its 256 part included) into one constant, so no
+/// per-pixel offset is needed. For BT.601 limited range the shifted sums
+/// lie in -24224..=25501 (R), -23484..=24966 (G) and -5152..=6578 (B); for
+/// BT.709 limited range, the widest, R reaches -30624..=31851. The final
+/// values stay inside `i16`, and a saturating narrow to `u8` is the scalar
+/// clamp. The exhaustive test below checks every (Y, Cb, Cr) of every
+/// matrix.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RgbSplit {
+    /// Luma weight after removing 256 (0 for full range, which NEON's
+    /// unsigned widening multiply requires to be non-negative).
+    pub y: i16,
     /// Cr weight in R after removing 256.
-    pub(crate) const R_CR: i16 = (bt601::R_CR - 256) as i16;
-    /// Cb weight in G (already below 256).
-    pub(crate) const G_CB: i16 = -(bt601::G_CB as i16);
+    pub r_cr: i16,
+    /// Cb weight in G (whole: no part is taken out).
+    pub g_cb: i16,
     /// Cr weight in G after adding back 256.
-    pub(crate) const G_CR: i16 = (256 - bt601::G_CR) as i16;
+    pub g_cr: i16,
     /// Cb weight in B after removing 512.
-    pub(crate) const B_CB: i16 = (bt601::B_CB - 512) as i16;
-    /// `B_CB` as a left shift (it is a power of two).
-    pub(crate) const B_CB_SHIFT: u32 = B_CB.trailing_zeros();
-    const _: () = assert!(1 << B_CB_SHIFT == B_CB);
-    /// Rounding plus the whole luma offset (`-298 * 16`).
-    pub(crate) const BIAS: i16 = (bt601::ROUND - bt601::Y * bt601::LUMA_OFFSET) as i16;
+    pub b_cb: i16,
+    /// Rounding plus the whole luma offset (`-Yw Yo`).
+    pub bias: i16,
+}
+
+impl RgbSplit {
+    const fn of(w: YuvToRgb) -> Self {
+        Self {
+            y: (w.y - 256) as i16,
+            r_cr: (w.r_cr - 256) as i16,
+            g_cb: -w.g_cb as i16,
+            g_cr: (256 - w.g_cr) as i16,
+            b_cb: (w.b_cb - 512) as i16,
+            bias: (ROUND - w.y * w.luma_offset) as i16,
+        }
+    }
 }
 
 /// Opaque alpha.
@@ -214,40 +300,67 @@ mod to_rgba_simd128;
 
 #[cfg(test)]
 mod tests {
-    use super::{bt601, bt601_split, scalar};
+    use super::{CHROMA_OFFSET, DisplayMatrix, SHIFT, scalar};
 
     /// The split form, evaluated in checked `i16` arithmetic (any overflow
     /// panics), for one pixel.
-    fn split_rgb(y: u8, cb: u8, cr: u8) -> [u8; 3] {
+    fn split_rgb(matrix: DisplayMatrix, y: u8, cb: u8, cr: u8) -> [u8; 3] {
+        let split = matrix.split();
         let (y, u, v) = (
             i16::from(y),
-            i16::from(cb) - bt601::CHROMA_OFFSET as i16,
-            i16::from(cr) - bt601::CHROMA_OFFSET as i16,
+            i16::from(cb) - CHROMA_OFFSET as i16,
+            i16::from(cr) - CHROMA_OFFSET as i16,
         );
-        let m = y * bt601_split::Y + bt601_split::BIAS;
+        let scaled = y
+            .checked_mul(split.y)
+            .unwrap()
+            .checked_add(split.bias)
+            .unwrap();
         let channel = |linear: i16, remainder: i16| {
             let value = linear
-                .checked_add((m.checked_add(remainder).unwrap()) >> 8)
+                .checked_add((scaled.checked_add(remainder).unwrap()) >> SHIFT)
                 .unwrap();
             value.clamp(0, 255) as u8
         };
         [
-            channel(y + v, bt601_split::R_CR * v),
-            channel(y - v, bt601_split::G_CB * u + bt601_split::G_CR * v),
-            channel(y + 2 * u, bt601_split::B_CB * u),
+            channel(y + v, split.r_cr * v),
+            channel(y - v, split.g_cb * u + split.g_cr * v),
+            channel(y + 2 * u, split.b_cb * u),
         ]
     }
 
     #[test]
     fn split_form_matches_scalar_for_every_sample() {
         let mut rgba = [0u8; 4];
-        for y in 0..=255u8 {
-            for cb in 0..=255u8 {
-                for cr in 0..=255u8 {
-                    scalar::i420_to_rgba_row(&[y], &[cb], &[cr], &mut rgba);
-                    assert_eq!(split_rgb(y, cb, cr), rgba[..3], "Y={y} Cb={cb} Cr={cr}");
+        for matrix in DisplayMatrix::ALL {
+            for y in 0..=255u8 {
+                for cb in 0..=255u8 {
+                    for cr in 0..=255u8 {
+                        scalar::i420_to_rgba_row(matrix, &[y], &[cb], &[cr], &mut rgba);
+                        assert_eq!(
+                            split_rgb(matrix, y, cb, cr),
+                            rgba[..3],
+                            "{matrix:?} Y={y} Cb={cb} Cr={cr}"
+                        );
+                    }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn matrices_map_black_white_and_grey() {
+        let mut rgba = [0u8; 4];
+        for (matrix, black, white) in [
+            (DisplayMatrix::Bt601Limited, 16, 235),
+            (DisplayMatrix::Bt709Limited, 16, 235),
+            (DisplayMatrix::Bt601Full, 0, 255),
+            (DisplayMatrix::Bt709Full, 0, 255),
+        ] {
+            scalar::i420_to_rgba_row(matrix, &[black], &[128], &[128], &mut rgba);
+            assert_eq!(rgba, [0, 0, 0, 255], "{matrix:?}");
+            scalar::i420_to_rgba_row(matrix, &[white], &[128], &[128], &mut rgba);
+            assert_eq!(rgba, [255; 4], "{matrix:?}");
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Scalar reference implementations of the conversion kernels.
 
-use super::{ALPHA_OPAQUE, ConvertFns, bt601, bt601_forward};
+use super::{ALPHA_OPAQUE, CHROMA_OFFSET, ConvertFns, DisplayMatrix, ROUND, SHIFT, bt601_forward};
 
 /// The scalar kernel table.
 pub(crate) fn convert_fns() -> ConvertFns {
@@ -51,25 +51,38 @@ pub(crate) fn deinterleave_uv_row(src: &[u8], cb_row: &mut [u8], cr_row: &mut [u
 }
 
 /// One or two display rows (kernel contract in the `convert` module docs).
-fn i420_to_rgba_rows(luma: [&[u8]; 2], cb: &[u8], cr: &[u8], rgba: [&mut [u8]; 2]) {
+fn i420_to_rgba_rows(
+    matrix: DisplayMatrix,
+    luma: [&[u8]; 2],
+    cb: &[u8],
+    cr: &[u8],
+    rgba: [&mut [u8]; 2],
+) {
     for (luma, rgba) in luma.into_iter().zip(rgba) {
-        i420_to_rgba_row(luma, cb, cr, rgba);
+        i420_to_rgba_row(matrix, luma, cb, cr, rgba);
     }
 }
 
 /// One display row (`convert` module docs). SIMD versions use it for the
 /// tail columns that do not fill a register.
-pub(crate) fn i420_to_rgba_row(luma: &[u8], cb: &[u8], cr: &[u8], rgba: &mut [u8]) {
+pub(crate) fn i420_to_rgba_row(
+    matrix: DisplayMatrix,
+    luma: &[u8],
+    cb: &[u8],
+    cr: &[u8],
+    rgba: &mut [u8],
+) {
+    let w = matrix.weights();
     let pixels = rgba.as_chunks_mut::<4>().0;
     for (x, (out, &l)) in pixels.iter_mut().zip(luma).enumerate() {
-        let y = bt601::Y * (i32::from(l) - bt601::LUMA_OFFSET) + bt601::ROUND;
-        let u = i32::from(cb[x / 2]) - bt601::CHROMA_OFFSET;
-        let v = i32::from(cr[x / 2]) - bt601::CHROMA_OFFSET;
-        let channel = |value: i32| (value >> bt601::SHIFT).clamp(0, 255) as u8;
+        let y = w.y * (i32::from(l) - w.luma_offset) + ROUND;
+        let u = i32::from(cb[x / 2]) - CHROMA_OFFSET;
+        let v = i32::from(cr[x / 2]) - CHROMA_OFFSET;
+        let channel = |value: i32| (value >> SHIFT).clamp(0, 255) as u8;
         *out = [
-            channel(y + bt601::R_CR * v),
-            channel(y - bt601::G_CB * u - bt601::G_CR * v),
-            channel(y + bt601::B_CB * u),
+            channel(y + w.r_cr * v),
+            channel(y - w.g_cb * u - w.g_cr * v),
+            channel(y + w.b_cb * u),
             ALPHA_OPAQUE,
         ];
     }

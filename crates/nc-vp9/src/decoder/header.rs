@@ -749,6 +749,7 @@ mod tests {
                     base_q_idx: 99,
                     segmentation: WrittenSegmentation::disabled(SegmentFeatures::default()),
                     chroma_delta_q: if key { -7 } else { 3 },
+                    colour: crate::header::ColourSpace::default(),
                 };
                 let coef = crate::tables::COEFFICIENTS;
                 let compressed = written.write_compressed(

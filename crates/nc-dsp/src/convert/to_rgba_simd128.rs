@@ -1,9 +1,10 @@
 //! WebAssembly SIMD128 I420 to RGBA: the browser demo's CPU display path.
 //!
-//! Works in 16-bit lanes with the exact split form of the BT.601 inverse
-//! ([`bt601_split`]): per pixel a widening load and one multiply (`42 Y`),
+//! Works in 16-bit lanes with the exact split form of the display matrix
+//! ([`RgbSplit`]): per pixel a widening load and one multiply (`42 Y` in
+//! limited range),
 //! and per channel an add, an arithmetic shift and two adds. The chroma
-//! terms of a 2x2 group (with `BIAS` folded in) are computed once, at chroma
+//! terms of a 2x2 group (with `bias` folded in) are computed once, at chroma
 //! resolution, for both rows of a row pair, and widened to pixel pairs by
 //! lane shuffles. A saturating
 //! narrow to `u8` is the scalar clamp; byte and 16-bit interleaves (each a
@@ -19,11 +20,11 @@
 //! Kernel contract: see the `convert` module docs.
 
 use core::arch::wasm32::{
-    i8x16_shuffle, i16x8_add, i16x8_mul, i16x8_shl, i16x8_shr, i16x8_shuffle, i16x8_splat,
-    i16x8_sub, u8x16_narrow_i16x8, u8x16_splat, u16x8_load_extend_u8x8, v128, v128_store,
+    i8x16_shuffle, i16x8_add, i16x8_mul, i16x8_shr, i16x8_shuffle, i16x8_splat, i16x8_sub,
+    u8x16_narrow_i16x8, u8x16_splat, u16x8_load_extend_u8x8, v128, v128_store,
 };
 
-use super::{ALPHA_OPAQUE, bt601, bt601_split, scalar};
+use super::{ALPHA_OPAQUE, CHROMA_OFFSET, DisplayMatrix, RgbSplit, SHIFT, scalar};
 
 /// Pixels of each row converted per iteration.
 const STEP: usize = 16;
@@ -31,8 +32,8 @@ const STEP: usize = 16;
 /// Chroma terms for 16 pixels of a row (8 chroma samples, each repeated for
 /// its pixel pair), as the low and high 8 pixels.
 struct ChromaTerms {
-    /// Remainders of R, G and B without the luma term, `BIAS` included
-    /// (`bt601_split`).
+    /// Remainders of R, G and B without the luma term, `bias` included
+    /// ([`RgbSplit`]).
     remainder: [[v128; 2]; 3],
     /// `Cr'` (added to R, subtracted from G).
     cr: [v128; 2],
@@ -45,6 +46,7 @@ struct ChromaTerms {
 /// Kernel contract (`convert` module docs).
 #[target_feature(enable = "simd128")]
 pub(crate) unsafe fn i420_to_rgba_rows(
+    matrix: DisplayMatrix,
     luma: [&[u8]; 2],
     cb: &[u8],
     cr: &[u8],
@@ -54,9 +56,9 @@ pub(crate) unsafe fn i420_to_rgba_rows(
     // SAFETY: forwarded kernel contract; a lone row has an empty partner.
     unsafe {
         if luma[1].is_empty() {
-            rows([luma[0]], cb, cr, [top]);
+            rows(matrix, [luma[0]], cb, cr, [top]);
         } else {
-            rows(luma, cb, cr, [top, bottom]);
+            rows(matrix, luma, cb, cr, [top, bottom]);
         }
     }
 }
@@ -68,7 +70,14 @@ pub(crate) unsafe fn i420_to_rgba_rows(
 /// Kernel contract (`convert` module docs).
 #[inline]
 #[target_feature(enable = "simd128")]
-unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba: [&mut [u8]; N]) {
+unsafe fn rows<const N: usize>(
+    matrix: DisplayMatrix,
+    luma: [&[u8]; N],
+    cb: &[u8],
+    cr: &[u8],
+    mut rgba: [&mut [u8]; N],
+) {
+    let split = matrix.split();
     let w = luma[0].len();
     let simd_width = w - w % STEP;
     for x in (0..simd_width).step_by(STEP) {
@@ -77,13 +86,14 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
         // RGBA bytes 4x .. 4x + 64 inside each 4w-byte row (kernel contract).
         unsafe {
             let terms = chroma_terms(
+                &split,
                 u16x8_load_extend_u8x8(cb.as_ptr().add(x / 2)),
                 u16x8_load_extend_u8x8(cr.as_ptr().add(x / 2)),
             );
             for (row, out) in luma.iter().zip(rgba.iter_mut()) {
                 let samples = row.as_ptr().add(x);
-                let low = rgb8(u16x8_load_extend_u8x8(samples), &terms, 0);
-                let high = rgb8(u16x8_load_extend_u8x8(samples.add(8)), &terms, 1);
+                let low = rgb8(&split, u16x8_load_extend_u8x8(samples), &terms, 0);
+                let high = rgb8(&split, u16x8_load_extend_u8x8(samples.add(8)), &terms, 1);
                 store_rgba(out.as_mut_ptr().add(4 * x), low, high);
             }
         }
@@ -91,6 +101,7 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
     let chroma = simd_width / 2;
     for (row, out) in luma.into_iter().zip(rgba) {
         scalar::i420_to_rgba_row(
+            matrix,
             &row[simd_width..],
             &cb[chroma..],
             &cr[chroma..],
@@ -100,23 +111,23 @@ unsafe fn rows<const N: usize>(luma: [&[u8]; N], cb: &[u8], cr: &[u8], mut rgba:
 }
 
 /// The chroma terms of 8 Cb and Cr samples (16-bit lanes) for their 16
-/// pixels. `BIAS` is folded into the remainders here, once per 2x2 group.
+/// pixels. `bias` is folded into the remainders here, once per 2x2 group.
 #[inline]
 #[target_feature(enable = "simd128")]
-fn chroma_terms(cb: v128, cr: v128) -> ChromaTerms {
-    let offset = i16x8_splat(bt601::CHROMA_OFFSET as i16);
-    let bias = i16x8_splat(bt601_split::BIAS);
+fn chroma_terms(split: &RgbSplit, cb: v128, cr: v128) -> ChromaTerms {
+    let offset = i16x8_splat(CHROMA_OFFSET as i16);
+    let bias = i16x8_splat(split.bias);
     let u = i16x8_sub(cb, offset);
     let v = i16x8_sub(cr, offset);
-    let red = i16x8_add(i16x8_mul(v, i16x8_splat(bt601_split::R_CR)), bias);
+    let red = i16x8_add(i16x8_mul(v, i16x8_splat(split.r_cr)), bias);
     let green = i16x8_add(
         i16x8_add(
-            i16x8_mul(u, i16x8_splat(bt601_split::G_CB)),
-            i16x8_mul(v, i16x8_splat(bt601_split::G_CR)),
+            i16x8_mul(u, i16x8_splat(split.g_cb)),
+            i16x8_mul(v, i16x8_splat(split.g_cr)),
         ),
         bias,
     );
-    let blue = i16x8_add(i16x8_shl(u, bt601_split::B_CB_SHIFT), bias);
+    let blue = i16x8_add(i16x8_mul(u, i16x8_splat(split.b_cb)), bias);
     let cb2 = i16x8_add(u, u);
     ChromaTerms {
         remainder: [pair_up(red), pair_up(green), pair_up(blue)],
@@ -139,8 +150,8 @@ fn pair_up(c: v128) -> [v128; 2] {
 /// half `half` (0: low 8 pixels, 1: high) of the chroma terms.
 #[inline]
 #[target_feature(enable = "simd128")]
-fn rgb8(luma: v128, terms: &ChromaTerms, half: usize) -> [v128; 3] {
-    let scaled = i16x8_mul(luma, i16x8_splat(bt601_split::Y));
+fn rgb8(split: &RgbSplit, luma: v128, terms: &ChromaTerms, half: usize) -> [v128; 3] {
+    let scaled = i16x8_mul(luma, i16x8_splat(split.y));
     let linear = [
         i16x8_add(luma, terms.cr[half]),
         i16x8_sub(luma, terms.cr[half]),
@@ -148,7 +159,7 @@ fn rgb8(luma: v128, terms: &ChromaTerms, half: usize) -> [v128; 3] {
     ];
     [0, 1, 2].map(|c| {
         let remainder = i16x8_add(scaled, terms.remainder[c][half]);
-        i16x8_add(linear[c], i16x8_shr(remainder, bt601::SHIFT))
+        i16x8_add(linear[c], i16x8_shr(remainder, SHIFT))
     })
 }
 

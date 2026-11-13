@@ -27,7 +27,7 @@
 use super::neon_dotprod::DotFilter;
 use super::{
     AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, TAP_CENTRE, TAPS, TapPair,
-    halved,
+    halved, slide,
 };
 use core::arch::aarch64::{
     int16x8_t, int32x4_t, vcombine_s16, vdup_n_u32, vdupq_n_s16, vdupq_n_s32, vget_high_s16,
@@ -379,7 +379,7 @@ unsafe fn vertical<const W: usize, const N: usize, O: Output>(
             }
             // SAFETY: output row r, columns c..c + 8.
             unsafe { out.vertical(r, c, sum) };
-            rows.copy_within(1.., 0);
+            slide(&mut rows, 1, N - 1);
         }
     }
 }
@@ -415,7 +415,7 @@ unsafe fn both<const W: usize, const N: usize, O: Output>(
             }
             // SAFETY: output row r, columns c..c + 8.
             unsafe { out.both(r, c, low, high) };
-            rows.copy_within(1.., 0);
+            slide(&mut rows, 1, N - 1);
         }
     }
 }

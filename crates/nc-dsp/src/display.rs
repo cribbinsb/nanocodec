@@ -8,8 +8,12 @@
 //! its own grid. This is that filter in exact integer arithmetic, so the
 //! encoder's reconstruction output (`nanocodec encode --recon`) and the
 //! evaluation harness (`eval/nceval/display.py`, its bit-exact twin) score
-//! what a viewer sees. Not normative and never in a decoding path: scalar
-//! is enough.
+//! what a viewer sees. Not normative and never in a decoding path.
+//!
+//! The browser demo also scales each captured camera or video frame to a
+//! view's size with it (`nc-web`, every frame): [`DisplayScaler`] keeps the
+//! taps and its intermediate row between frames, so a frame allocates
+//! nothing.
 
 use nc_common::{PlaneView, PlaneViewMut};
 
@@ -49,28 +53,51 @@ fn taps(input: usize, output: usize) -> Vec<Tap> {
 
 /// Scale all of `src` into all of `dst` as the player model does.
 pub fn display_scale_plane(src: &PlaneView<'_>, dst: &mut PlaneViewMut<'_>) {
-    let (in_w, in_h) = (src.width(), src.height());
-    let (out_w, out_h) = (dst.width(), dst.height());
-    let columns = taps(in_w, out_w);
-    // Horizontal pass, unrounded (16-bit products) for exactness.
-    let rows: Vec<Vec<u32>> = (0..in_h)
-        .map(|y| {
-            let row = src.row(y);
-            columns
-                .iter()
-                .map(|t| {
-                    u32::from(row[t.first]) * (WEIGHT_ONE - t.weight)
-                        + u32::from(row[t.second]) * t.weight
-                })
-                .collect()
-        })
-        .collect();
-    let round = 1u32 << (2 * WEIGHT_BITS - 1);
-    for (y, t) in taps(in_h, out_h).iter().enumerate() {
-        let (top, bottom) = (&rows[t.first], &rows[t.second]);
-        for ((out, &a), &b) in dst.row_mut(y)[..out_w].iter_mut().zip(top).zip(bottom) {
-            *out =
-                ((a * (WEIGHT_ONE - t.weight) + b * t.weight + round) >> (2 * WEIGHT_BITS)) as u8;
+    DisplayScaler::default().scale(src, dst);
+}
+
+/// [`display_scale_plane`] with the taps of the last sizes and an
+/// intermediate row kept for the next call (exactly the same output).
+///
+/// Both passes are exact integer sums and only the final value is rounded,
+/// so the vertical pass may run first: it is a contiguous blend of two input
+/// rows (which vectorises), leaving the gathers of the horizontal pass to
+/// the output size only.
+#[derive(Debug, Clone, Default)]
+pub struct DisplayScaler {
+    /// Input and output size the taps were made for.
+    sizes: [usize; 4],
+    columns: Vec<Tap>,
+    rows: Vec<Tap>,
+    /// One output row's vertical pass at the input width, unrounded: each
+    /// value is at most `255 * 256`, so it fits 16 bits.
+    blended: Vec<u16>,
+}
+
+impl DisplayScaler {
+    /// Scale all of `src` into all of `dst`.
+    pub fn scale(&mut self, src: &PlaneView<'_>, dst: &mut PlaneViewMut<'_>) {
+        let (in_w, in_h) = (src.width(), src.height());
+        let (out_w, out_h) = (dst.width(), dst.height());
+        if self.sizes != [in_w, in_h, out_w, out_h] {
+            self.sizes = [in_w, in_h, out_w, out_h];
+            self.columns = taps(in_w, out_w);
+            self.rows = taps(in_h, out_h);
+        }
+        self.blended.resize(in_w, 0);
+        let round = 1u32 << (2 * WEIGHT_BITS - 1);
+        for (y, t) in self.rows.iter().enumerate() {
+            let (top, bottom) = (&src.row(t.first)[..in_w], &src.row(t.second)[..in_w]);
+            let (upper, lower) = (WEIGHT_ONE - t.weight, t.weight);
+            for ((o, &a), &b) in self.blended.iter_mut().zip(top).zip(bottom) {
+                // At most 255 * 256 (the weights sum to 256).
+                *o = (u32::from(a) * upper + u32::from(b) * lower) as u16;
+            }
+            for (out, c) in dst.row_mut(y)[..out_w].iter_mut().zip(&self.columns) {
+                let sum = u32::from(self.blended[c.first]) * (WEIGHT_ONE - c.weight)
+                    + u32::from(self.blended[c.second]) * c.weight;
+                *out = ((sum + round) >> (2 * WEIGHT_BITS)) as u8;
+            }
         }
     }
 }
@@ -95,6 +122,59 @@ mod tests {
         let mut dst = Plane::new(width, height, 0).unwrap();
         display_scale_plane(&src.view(), &mut dst.view_mut());
         dst.view().rows().map(<[u8]>::to_vec).collect()
+    }
+
+    /// The two-pass definition (horizontal first, as the Python twin
+    /// computes it): the vertical-first scaler must equal it exactly.
+    fn horizontal_first(src: &Plane, width: usize, height: usize) -> Vec<Vec<u8>> {
+        let view = src.view();
+        let columns = taps(view.width(), width);
+        let rows: Vec<Vec<u32>> = view
+            .rows()
+            .map(|row| {
+                columns
+                    .iter()
+                    .map(|t| {
+                        u32::from(row[t.first]) * (WEIGHT_ONE - t.weight)
+                            + u32::from(row[t.second]) * t.weight
+                    })
+                    .collect()
+            })
+            .collect();
+        taps(view.height(), height)
+            .iter()
+            .map(|t| {
+                rows[t.first]
+                    .iter()
+                    .zip(&rows[t.second])
+                    .map(|(&a, &b)| {
+                        ((a * (WEIGHT_ONE - t.weight) + b * t.weight + (1 << 15)) >> 16) as u8
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vertical_first_equals_horizontal_first() {
+        let src = plane(53, 41, |x, y| ((x * 97 + y * 31) ^ (x * y)) as u8);
+        for (w, h) in [(35, 27), (106, 82), (53, 20), (20, 41), (1, 1), (200, 3)] {
+            assert_eq!(scaled(&src, w, h), horizontal_first(&src, w, h), "{w}x{h}");
+        }
+    }
+
+    /// A reused scaler gives each call's own result, whatever the sizes
+    /// of the call before.
+    #[test]
+    fn reused_scaler_matches_fresh_calls() {
+        let mut scaler = DisplayScaler::default();
+        let src = plane(37, 23, |x, y| (x * 7 + y * 29) as u8);
+        for (w, h) in [(19, 11), (74, 46), (19, 11), (37, 23)] {
+            let mut dst = Plane::new(w, h, 0).unwrap();
+            scaler.scale(&src.view(), &mut dst.view_mut());
+            let rows: Vec<Vec<u8>> = dst.view().rows().map(<[u8]>::to_vec).collect();
+            assert_eq!(rows, scaled(&src, w, h), "{w}x{h}");
+        }
     }
 
     /// The fixture `eval/tests/test_display.py` checks the Python twin

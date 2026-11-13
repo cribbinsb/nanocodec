@@ -39,10 +39,14 @@ nanocodec covers a deliberately narrow subset of each standard, for one use case
   only, single-threaded.
 - **Real-time CBR** with a 1 s buffer, plus loss resilience (temporal layers, long-term references, intra refresh,
   key frame on request). The controller treats the target as a ceiling and may spend less. The first key frame
-  may borrow up to about 1.4 buffers and repays it over the next seconds, so the strict 1 s leaky bucket is
-  exceeded at the start of a stream (`rate.key_repay_seconds` and `rate.recode_overflow` make it stricter).
+  may borrow up to about 1.4 buffers and repays it over the next seconds (10 s by default), so the strict 1 s
+  leaky bucket is exceeded at the start of a stream, and over the chart's 150-frame clips our streams end a median
+  3–5% above target. Strict settings (`rate.recode_overflow=1`, `rate.recode_overflow_inter=1`,
+  `rate.key_cap_buffer=1`, `rate.key_repay_seconds=1`) keep every chart point inside the bucket and cost 4.7–6.9%
+  more bits at equal quality (see [rate control](docs/FAQ.md#rate-control)).
 - **Input frames that would not change the picture are not coded** (a "hold": exact or near-exact repeats, as in
-  recompressed or frame-doubled sources); the reference encoders in our charts code every frame.
+  recompressed or frame-doubled sources); the reference encoders code every frame. No frame was held on any of the
+  chart's points.
 - **Its own decoders** decode the profiles listed under [Decoders](#decoders); the encoders emit only the subset
   of tools they use.
 
@@ -65,7 +69,8 @@ axis: BD-rate on the achieved bitrates against x264 0.165 `--preset medium --tun
 --rc-lookahead 0 --threads 1` (ABR with a 1 s VBV). "BD-J" is our composite: the mean of the BD-rates on
 PSNR-YUV, VMAF (model v1.0.16) and MS-SSIM, averaged over content classes and over the full and lower-rate
 halves of the curves; plain per-metric numbers are in the [full table](docs/results/bd-vs-speed.md). Speed axis:
-single-thread encode CPU time at a fixed quantizer near 600 kbps (not in CBR mode). Jetson: one Cortex-A78AE core
+single-thread encode CPU time at a fixed quantizer near 600 kbps (not in CBR mode; our encoders take a median
+about 2% more CPU in CBR, 0–7% by preset; the references' CBR cost was not measured). Jetson: one Cortex-A78AE core
 locked at 1.728 GHz. PC: one Ryzen 9 5950X core on a shared, loaded machine (load ~40–60), each run normalised
 by x264 `medium` runs in the same round, so read PC differences of a few percent as noise. Our points are scored
 on the encoder's reconstruction; the reference encoders' on their decoded streams. Builds, dates and every
@@ -88,7 +93,7 @@ therefore re-measured every encoder on 71 clips from 21 other datasets
 | x265 4.2 `medium` (zero latency, no B-frames, one thread) | −40.7% | −28.0% | 8.0 | 25.6 |
 | SVT-AV1 v4.3.0 M12 `--rtc` (one thread) | −34.9% | −20.4% | 70.9 | 182.1 |
 | libaom v3.15.3 realtime `--cpu-used=8` (one thread) | −28.7% | −23.0% | 17.4 | 42.1 |
-| nanocodec H.264 Default | −20.4% | −17.9% | 74.4 | 175.9 |
+| nanocodec H.264 Default | −20.4% (−23.0% at the current build) | −17.9% | 74.4 | 175.9 |
 | libvpx v1.16.0 VP9 realtime `--cpu-used=9` (one thread) | −5.7% | −0.1% | 47.8 | 113.0 |
 | x264 0.165 `medium` (the anchor above) | 0 | 0 | 26.7 | 67.6 |
 | x264 0.165 `veryfast` (same settings) | +2.3% | +8.1% | 85.4 | 206.4 |
@@ -108,6 +113,33 @@ Where the references are ahead: SVT-AV1 M12 and M13 `--rtc`, x264 `veryfast` / `
 faster than our AV1, HEVC and VVC Defaults; our VVC Default is below 30 fps at 720p on the Jetson core; x264
 `medium` is closer to us on the held-out set. Per-metric numbers, per-clip spread and known weaknesses:
 **[docs/results/](docs/results/README.md)**.
+
+**The anchor's settings matter.** x264 runs here with its default psychovisual settings, which are tuned for how
+the picture looks rather than for PSNR, VMAF or MS-SSIM, while our presets were tuned on exactly that mix. An
+independent re-run on the chart's clips (2026-11-13; same streams, x264 also run with `--tune zerolatency,psnr`)
+found x264 `medium --tune psnr` needs 9.8% fewer bits than the chart's anchor on BD-J (PSNR-YUV −8.3%, VMAF v1
+−19.4%, MS-SSIM −1.8%). Against it, every saving is smaller, and our H.264 Faster and Fastest presets save no
+bits:
+
+| Encoder | BD-J vs x264 `medium` (default psy settings, the chart's anchor) | BD-J vs x264 `medium --tune psnr` |
+|---|---:|---:|
+| nanocodec VVC Default | −54.0% | −47.1% |
+| nanocodec AV2 Default | −53.7% | −46.8% |
+| nanocodec AV1 Default | −50.9% | −43.6% |
+| nanocodec HEVC Default | −49.3% | −41.7% |
+| nanocodec VP9 Default | −48.1% | −40.2% |
+| nanocodec AV1 Fast | −44.9% | −36.7% |
+| x265 4.2 `medium` | −40.7% | −31.6% |
+| SVT-AV1 v4.3.0 M12 `--rtc` | −34.9% | −25.1% |
+| nanocodec H.264 Default | −23.0% | −13.3% (95% interval −20.7 to −5.4) |
+| nanocodec H.264 Fast | −16.2% | −5.8% (−13.5 to +2.1) |
+| nanocodec H.264 Faster | −8.5% | +2.5% (−5.0 to +9.8) |
+| nanocodec H.264 Fastest | −0.8% | +10.7% (+3.8 to +17.6) |
+| x264 0.165 `medium --tune psnr` itself | −9.8% | 0 |
+| openh264 v2.7.0 | +24.6% | +42.8% |
+
+<sub>Chart's 11 clips; intervals are 95% bootstrap intervals over clips within content class (11 clips, so read
+them as approximate). `--tune ssim` changes the anchor by −1.4%.</sub>
 
 ### Spatial scalability (SVC)
 
@@ -134,15 +166,16 @@ the scale above), on 8 of the chart's clips; speed is one core, timed in pairs w
 | nanocodec AV1 simulcast 720p + 360p + 180p (three streams) | −33.7% | | | 72.7 |
 | libaom v3.15.3 `svc_encoder_rtc` L3T1, speed 10 | −6.7% | +80.3% | 27.6 | 64.5 |
 | libaom v3.15.3 `svc_encoder_rtc` L2T1, speed 10 | −8.7% | +42.6% | 30.6 | 68.6 |
+| libaom v3.15.3 `svc_encoder_rtc` L2T3, speed 10 | +18.1% | +59.7% | 32.8 | 77.1 |
 | libvpx v1.16.0 `vp9_spatial_svc_encoder` L2T1, speed 9 | +27.4% | +108.2% | 37.6 | 72.4 |
 | libvpx v1.16.0 `vp9_spatial_svc_encoder` L2T1, speed 7 | +30.3% | +114.8% | 22.9 | 53.3 |
-| libaom v3.15.3 `svc_encoder_rtc` L2T3, speed 10 † | +48.9% | +101.9% | 32.8 | 77.1 |
 
-The libaom and libvpx rows use those projects' example SVC encoders at the settings listed in
-[svc-chart.md](docs/results/svc-chart.md); the examples are demonstrations of the API rather than tuned products.
-† Configuration under review: our libaom L2T3 settings split the rate across temporal layers as WebRTC does
-(40/60/100%), which on a one-clip probe cost libaom 0.7–1.1 dB against the 50/70/100 or 60/80/100 splits its own
-tests use; the row understates libaom and is not used for comparison until re-measured. Single-layer
+The libaom and libvpx rows use those projects' example SVC encoders (one thread, CBR, no frame drops) at the
+settings listed in [svc-chart.md](docs/results/svc-chart.md); the examples demonstrate the API and are not tuned
+products, and other settings may do better. libaom's three-temporal-layer rows split each spatial layer's rate
+60/20/20% across temporal layers, as libaom's own tests do (re-measured 2026-11-13; with WebRTC's 40/20/40 they
+had read +48.9%). On these clips and settings, libaom L2T1 at speed 10 is −8.7% and our AV1 SVC L2T1 −44.9%;
+libaom L2T3 is +18.1% and ours −46.6%. Single-layer
 AV1 / VP9 Default on the same clips: −53.0% / −50.1%. The three-layer streams' 180p operating point is +4.9%
 (L3T1) against AV1 Default coded alone at 180p.
 
@@ -178,7 +211,8 @@ points: `h264-faster`, `h264-fastest`, `hevc-faster`, `av1-faster`, `vp9-faster`
 chart's 11 clips and one Jetson core (fps), against the reference encoders at the settings above:
 
 - H.264 Fast: 114 fps vs openh264 (realtime, medium complexity) 111 fps; BD-J −25.6% against openh264.
-- H.264 Faster: 134 fps; BD-J −8.5% vs x264 `medium` and −39.7% vs x264 `ultrafast` (191 fps).
+- H.264 Faster: 134 fps; BD-J −8.5% vs x264 `medium` (+2.5% vs x264 `medium --tune psnr`, i.e. no saving) and
+  −39.7% vs x264 `ultrafast` (191 fps).
 - AV1 Faster: 81 fps vs SVT-AV1 M12 `--rtc` 71 fps; BD-J −7.4% against M12 (per-clip range −19.1% to +5.4%).
 - HEVC Faster: 98 fps vs SVT-AV1 M13 `--rtc` 79 fps (PC: 0.89x M13's time in the same rounds); BD-J −4.4%
   against M13 (BD-PSNR-YUV +1.0%, i.e. no saving on PSNR alone).

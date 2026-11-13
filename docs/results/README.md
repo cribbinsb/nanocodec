@@ -83,6 +83,36 @@ e122b42b session). VVC Default (−54.0%) and AV2 Default (−53.7%) are within 
 VVC runs at 0.87x / 0.79x AV2's speed (Jetson / PC). Where the references are ahead: SVT-AV1 M12 and M13,
 x264 `veryfast` and `ultrafast` and openh264 encode faster than our Default presets of every codec but H.264.
 
+### The anchor's settings
+
+The chart's anchor is x264 `medium` with its default psychovisual settings (psy-rd, AQ), which favour how the
+picture looks over PSNR, VMAF and MS-SSIM; our presets were tuned on that metric mix. An independent re-run on the
+chart's clips and streams (2026-11-13) added x264 `medium --tune zerolatency,psnr` and `--tune zerolatency,ssim`
+with otherwise identical settings. `--tune psnr` needs 9.8% [7.6, 12.0] fewer bits than the default anchor on
+BD-J (PSNR-Y −13.8%, PSNR-YUV −8.3%, VMAF v1 −19.4%, MS-SSIM −1.8%); `--tune ssim` −1.4%. BD-J against the
+PSNR-tuned x264:
+
+| Encoder | BD-J vs x264 `medium` (default psy settings, the chart's anchor) | BD-J vs x264 `medium --tune psnr` |
+|---|---:|---:|
+| nanocodec VVC Default | −54.0% | −47.1% |
+| nanocodec AV2 Default | −53.7% | −46.8% |
+| nanocodec AV1 Default | −50.9% | −43.6% |
+| nanocodec HEVC Default | −49.3% | −41.7% |
+| nanocodec VP9 Default | −48.1% | −40.2% |
+| nanocodec AV1 Fast | −44.9% | −36.7% |
+| x265 4.2 `medium` | −40.7% | −31.6% |
+| SVT-AV1 v4.3.0 M12 `--rtc` | −34.9% | −25.1% |
+| nanocodec H.264 Default | −23.0% | −13.3% (95% interval −20.7 to −5.4) |
+| nanocodec H.264 Fast | −16.2% | −5.8% (−13.5 to +2.1) |
+| nanocodec H.264 Faster | −8.5% | +2.5% (−5.0 to +9.8) |
+| nanocodec H.264 Fastest | −0.8% | +10.7% (+3.8 to +17.6) |
+| x264 0.165 `medium --tune psnr` itself | −9.8% | 0 |
+| openh264 v2.7.0 | +24.6% | +42.8% |
+
+Brackets: 95% bootstrap intervals, clips resampled within content class (2–3 clips per class, so approximate).
+Against the PSNR-tuned anchor every saving is 7–12 points smaller (ours and the references alike), our H.264 Default
+still saves 13%, H.264 Fast 6% (interval spans zero), and H.264 Faster and Fastest save nothing.
+
 ### Hardware encoders (NVENC on an RTX 5090 GPU)
 
 NVIDIA NVENC on the PC's RTX 5090 GPU (ffmpeg `h264_nvenc` / `hevc_nvenc` / `av1_nvenc`, driver 610.57.04), in the
@@ -97,7 +127,7 @@ frame) was bound by that pipeline, 2–4x below the encoder.
 
 | Encoder (RTX 5090 GPU) | Bits vs x264 medium | Aggregate fps (8 streams) | 1-stream encode fps | 1-stream fps via ffmpeg pipeline | Ours, same codec (Default / fastest preset) |
 |---|---:|---:|---:|---:|---|
-| NVENC H.264 P4 `ll` | −18.7% | 3358 | 949 | 352 | H.264 −20.4% / Fastest −0.8% |
+| NVENC H.264 P4 `ll` | −18.7% | 3358 | 949 | 352 | H.264 −23.0% / Fastest −0.8% |
 | NVENC H.264 P7 `hq` | −19.1% | 2038 | 548 | 319 | |
 | NVENC HEVC P4 `ll` | −43.0% | 2815 | 798 | 328 | HEVC −49.3% / Faster −36.0% |
 | NVENC HEVC P7 `hq` | −42.9% | 1160 | 336 | 224 | |
@@ -355,6 +385,17 @@ than +2%; flicker worse than +0.05 dB; periodic-key pulse worse than +0.25 dB; m
 the anchor. Worst-1% is the lowest 1% of P-frame PSNR-Y and VMAF v1; the periodic-key pulse comes from an extra pass
 with 2 s key periods.
 
+**Rate and buffer behaviour (independent audit, 2026-11-13, the chart's 42 ladder points per encoder).** Our
+streams end a median 3–5% above target over 150 frames (the first key frame's loan, repaid over 10 s by default;
+about 1.00× once the outstanding loan is excluded); x264 and x265 end 3–10% below target; SVT-AV1 at target. In a
+strict 1 s leaky bucket, 5–12 of 42 points per preset of ours peak above the buffer (at most 1.40 buffers, at the
+first key frame); x264 `medium` 2 points (at most 2.11 buffers), SVT-AV1 1–2 (at most 2.35), x265 none;
+libaom, libvpx and openh264 6–17 points, at most 9.6, 13.6 and 22.5 buffers. With strict settings
+(`rate.recode_overflow=1`, `rate.recode_overflow_inter=1`, `rate.key_cap_buffer=1`, `rate.key_repay_seconds=1`)
+no point of ours exceeds the bucket (peak ≤ 1.00) and our Defaults need 4.7–6.9% more bits at equal quality, which
+moves BD-J against x264 by about 2 points (AV1 −50.9% → −49.0%, HEVC −49.3% → −47.6%, H.264 −23.0% → −20.7%,
+VVC −54.0% → −52.3%). BD uses every encoder's actual bytes. No frame was held on any chart point.
+
 **Rate validity and buffer.** Every point is replayed through a strict 1 s leaky bucket (drain = target). A point is
 rate-invalid when its bucket peaks above 1.5× the buffer, or its average overshoots the target by more than 10% plus
 the buffer's share of the window (+30% at 150 frames, 30 fps). Against external anchors a rate-invalid point stays on
@@ -409,7 +450,8 @@ Exact settings are in [bd-vs-speed.md](bd-vs-speed.md).
   5–33% faster against x264 `medium` and 3–27% faster against M13 than the e122b42b session (load ~14), more
   than its exact speed-ups explain. Compare PC rows within one session; across sessions only at similar load.
 - Speed is timed at a fixed quantizer, which switches x264/x265 adaptive quantisation off and is a few percent cheaper
-  than their CBR mode.
+  than their CBR mode. Our encoders take a median about 2% more CPU in CBR (0–7% by preset, three clips at
+  600 kbps, x86); the references' CBR cost was not measured.
 - The reference encoders' real-time modes are tuned for latency, not for these metrics. x264 and x265 run with
   their default psychovisual settings (no `--tune psnr` / `ssim`), which trade some PSNR and MS-SSIM for
   perceived detail; our encoders were tuned for exactly this composite of PSNR-YUV, VMAF v1 and MS-SSIM.
@@ -417,8 +459,8 @@ Exact settings are in [bd-vs-speed.md](bd-vs-speed.md).
   repay it over the following seconds; the references run with a strict 1 s VBV. The rates on the BD axis include
   every bit (the loan too); the "rate-invalid" rule (bucket peak above 1.5× the buffer, or an average more than
   10% plus the buffer's share of the window over the target) is looser than a strict 1 s VBV, and is applied to
-  every encoder alike. A strict-rule compliance table for every encoder is being prepared.
+  every encoder alike. Strict-bucket results for every encoder are under Method ("Rate and buffer behaviour").
 - **Holds.** Our encoders do not code input frames that would not change the picture (exact or near-exact
   repeats); held frames cost no bits and no encode time and are scored as the repeated picture. The references
-  code every frame. How many frames are held per clip is being measured.
+  code every frame. On the chart's points no frame was held (independent audit, 2026-11-13).
 - Our points are scored on the encoder's reconstruction, the references' on their standard-decoded output.

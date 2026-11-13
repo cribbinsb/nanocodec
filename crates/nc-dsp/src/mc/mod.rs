@@ -297,6 +297,29 @@ impl Av1Family for Sharp {
     }
 }
 
+/// Move a vertical filter's row window down `step` rows: `window[j] =
+/// window[j + step]` for `j < keep`, as separate statements. An array
+/// `copy_within`, or a loop of these moves (which LLVM turns back into a
+/// `memmove`), keeps the window in memory: vector stores and reloads every
+/// output row (on the Jetson -1.2% decode instructions and -1.6% cycles at
+/// 1080p when the NEON kernels stopped).
+#[allow(clippy::inline_always, reason = "per output row of every MC kernel")]
+#[inline(always)]
+pub(crate) fn slide<T: Copy, const N: usize>(window: &mut [T; N], step: usize, keep: usize) {
+    macro_rules! moves {
+        ($step:literal; $($j:literal)*) => {{ $( window[$j] = window[$j + $step]; )* }};
+    }
+    match (step, keep) {
+        (1, 2) => moves!(1; 0 1),
+        (1, 3) => moves!(1; 0 1 2),
+        (1, 5) => moves!(1; 0 1 2 3 4),
+        (1, 7) => moves!(1; 0 1 2 3 4 5 6),
+        (2, 5) => moves!(2; 0 1 2 3 4),
+        (2, 7) => moves!(2; 0 1 2 3 4 5 6),
+        _ => window.copy_within(step..step + keep, 0),
+    }
+}
+
 /// `filter` with every tap halved (all regular taps are even).
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn halved(filter: &[i16; TAPS]) -> [i16; TAPS] {

@@ -622,6 +622,7 @@ mod tests {
             base_q_idx: 80,
             segmentation: Segmentation::disabled(SegmentFeatures::default()),
             chroma_delta_q: 0,
+            colour: crate::header::ColourSpace::default(),
         };
         let updates = CoefUpdates {
             sent: [false; 4],

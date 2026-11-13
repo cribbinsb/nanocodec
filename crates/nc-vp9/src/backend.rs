@@ -26,7 +26,7 @@ use crate::block_qp::SegmentQuantizers;
 use crate::bool_coder::BitSink;
 use crate::coeff::{self, Model, PlaneType};
 use crate::contexts::{self, EntropyContexts};
-use crate::header::{ALL_SLOTS, FrameHeader, MAX_DIMENSION};
+use crate::header::{ALL_SLOTS, ColourSpace, FrameHeader, MAX_DIMENSION};
 use crate::inter_pred::{self, BlockPosition};
 use crate::mvref::{self, MvRefs};
 use crate::probs::{CoefUpdates, Counts, FrameContext, SWITCHABLE_CONTEXTS, SWITCHABLE_FILTERS};
@@ -656,6 +656,8 @@ pub struct Vp9Backend {
     coding_q_idx: u8,
     quantizer_mode: QuantizerMode,
     header: FrameHeader,
+    /// What every key frame signals (`config.signal.colour`).
+    colour: ColourSpace,
     /// The segment features in force before the current frame's header.
     segment_state: SegmentFeatures,
     lossless: bool,
@@ -875,11 +877,9 @@ impl CodecBackend for Vp9Backend {
         if config.codec != Codec::Vp9 {
             return Err(ConfigError::Unsupported("VP9 backend requires VP9 codec"));
         }
-        if config.signal.colour != nc_common::ColourInfo::default() {
-            return Err(ConfigError::Unsupported(
-                "VP9 colour metadata overrides are not yet supported",
-            ));
-        }
+        let colour = ColourSpace::of(config.signal.colour).ok_or(ConfigError::Unsupported(
+            "VP9 signals only the BT.601 and BT.709 colour matrices",
+        ))?;
         if config.width == 0
             || config.height == 0
             || config.width > MAX_DIMENSION
@@ -937,7 +937,9 @@ impl CodecBackend for Vp9Backend {
                 base_q_idx: qindex,
                 segmentation: Segmentation::disabled(SegmentFeatures::default()),
                 chroma_delta_q: 0,
+                colour,
             },
+            colour,
             lossless: qindex == 0,
             chroma_policy: nc_encoder::chroma_policy::ChromaPolicy::from_params(&config.params),
             context: FrameContext::default(),
@@ -2866,6 +2868,7 @@ impl Vp9Backend {
                 (false, Some(policy)) => policy_chroma_delta(policy, qindex),
                 (false, None) => self.own_chroma_delta(qindex),
             },
+            colour: self.colour,
         }
     }
 

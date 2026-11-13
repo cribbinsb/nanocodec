@@ -41,6 +41,7 @@
 
 use super::{
     AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, TAP_CENTRE, TAPS, TapPair,
+    slide,
 };
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadl_epi64, _mm_loadu_si128,
@@ -753,7 +754,7 @@ unsafe fn vertical_narrow<const W: usize, const P: usize, S: Sink>(
         let words = round(sum, if S::PREP { ROUND_2 } else { ROUND_6 });
         // SAFETY: output rows r and r + 1 (see `put`).
         unsafe { out.two::<W>(r, words) };
-        rows.copy_within(2..=2 * P, 0);
+        slide(&mut rows, 2, 2 * P - 1);
     }
 }
 
@@ -792,7 +793,7 @@ unsafe fn vertical_wide<const W: usize, const P: usize, S: Sink>(
             let words = round(sum, if S::PREP { ROUND_2 } else { ROUND_6 });
             // SAFETY: output row r, columns c0..c0 + 16 (see `put`).
             unsafe { out.wide(r, c0, words) };
-            rows.copy_within(1..2 * P, 0);
+            slide(&mut rows, 1, 2 * P - 1);
         }
     }
 }

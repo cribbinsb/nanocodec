@@ -52,7 +52,12 @@ and [tools/anchors/README.md](../tools/anchors/README.md).
 thread, CBR with a 1 s buffer). Those projects are general-purpose and are usually run with more threads,
 lookahead or B-frames, where they will do better; x264 and x265 keep their default psychovisual settings, which
 trade some PSNR and MS-SSIM for perceived detail, while our presets were tuned on exactly the PSNR / VMAF /
-MS-SSIM mix we report. We would welcome better settings for any reference within the same constraints.
+MS-SSIM mix we report. That matters: on the chart's clips x264 `medium --tune psnr` (otherwise the same settings)
+needs 9.8% fewer bits than the default-tuned anchor on BD-J, and against it our savings are 7–12 points smaller:
+AV1 Default −43.6% instead of −50.9%, HEVC −41.7%, VVC −47.1%, H.264 Default −13.3% instead of −23.0%, H.264 Fast
+−5.8% (interval spans zero), and our H.264 Faster (+2.5%) and Fastest (+10.7%) save no bits at all
+([table](../README.md#quality-and-speed)). We would welcome better settings for any reference within the same
+constraints.
 
 **Why a composite metric ("BD-J")?** We tune on it, so we report it, but every table also gives the plain
 BD-PSNR-YUV and BD-VMAF numbers ([full table](results/bd-vs-speed.md), [per metric](results/README.md#per-metric)).
@@ -91,7 +96,8 @@ clips were chosen to share no source with our fixed tuning sets; since 2026-11-1
 rotating adoption screens, so they are held out from most, not all, tuning.
 
 **Speed: how measured?** Encode CPU time per frame, one thread, at a fixed quantizer that lands each encoder near
-600 kbps on three clips; not timed in CBR mode (a CBR timing comparison is being measured). Jetson Orin Nano: one
+600 kbps on three clips; not timed in CBR mode. In CBR our encoders take a median about 2% more CPU (0–7% by
+preset, three clips at 600 kbps, x86); the references' CBR cost was not measured. Jetson Orin Nano: one
 Cortex-A78AE core, clock locked. PC: one Ryzen 9 5950X core on a shared, loaded machine, each run normalised by
 x264 `medium` runs in the same round; read PC differences of a few percent as noise.
 
@@ -102,18 +108,28 @@ would not buy visible quality (a static scene, say); it should not spend more. B
 encoder actually achieved, so spending less is not an advantage in the numbers: it moves the point left on its
 own curve.
 
-**Do you overshoot?** The first key frame may borrow up to about 1.4 buffers and repay it over the next seconds;
-the references run with a strict 1 s VBV. The bits of the loan are counted in the rate on the BD axis. Our "rate
-valid" rule (bucket peak at most 1.5× the buffer; average at most 10% plus the buffer's share of the window over
-target) is looser than a strict 1 s VBV and is applied to every encoder alike. A table of every encoder's
-compliance under a strict rule is being prepared. `rate.key_repay_seconds` and `rate.recode_overflow` make our
-controller stricter.
+**Do you overshoot?** Slightly, by design, at the start of a stream. The first key frame may borrow up to about
+1.4 buffers and repays it over the next 10 s (default); the references run with a strict 1 s VBV. An independent
+audit of the chart's points (42 per encoder, 150 frames) found:
+
+- our streams end a median 3–5% above target (about on target once the unrepaid loan is excluded); x264 and x265
+  end 3–10% below target, SVT-AV1 on target;
+- in a strict 1 s leaky bucket, 5–12 of 42 points per preset of ours peak above the buffer, at most 1.40 buffers
+  (the first key frame); x264 `medium` 2 points (at most 2.11), SVT-AV1 1–2 (at most 2.35), x265 none; libaom,
+  libvpx and openh264 6–17 points, at most 9.6, 13.6 and 22.5 buffers;
+- with strict settings (`rate.recode_overflow=1`, `rate.recode_overflow_inter=1`, `rate.key_cap_buffer=1`,
+  `rate.key_repay_seconds=1`) no point of ours exceeds the bucket, and our Defaults need 4.7–6.9% more bits at
+  equal quality: BD-J against x264 moves about 2 points (AV1 −50.9% → −49.0%, H.264 −23.0% → −20.7%).
+
+Every encoder's actual bytes, the loan included, are what the BD axis uses. Our looser "rate valid" flag in the
+tables (bucket peak at most 1.5× the buffer; average at most 10% plus the buffer's share of the window over target)
+is applied to every encoder alike.
 
 **Do you skip frames?** Our encoder does not code an input frame that would not change the picture (exact or
 near-exact repeats, typical of recompressed or frame-doubled sources). Such "held" frames cost no bits and no
 encode time and are scored as the repeated picture, which is what a viewer sees. The references code every frame
-(cheaply, as skip frames). We are measuring how many frames are held per clip. No encoder in the charts drops
-frames.
+(cheaply, as skip frames). On the chart's points no frame was held (independent audit), so holds do not affect
+the published numbers. No encoder in the charts drops frames.
 
 ## Patents and licences
 
