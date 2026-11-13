@@ -14,7 +14,7 @@
 // widths divided by the scale so outlines stay one screen pixel at any zoom.
 
 /** Codecs whose decoders fill the records (others show a notice). */
-export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1', 'vp9', 'vvc']);
+export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1', 'vp9', 'vvc', 'av2']);
 /** Values per record and their order (nc-common `pack_records`). */
 export const HALFWORDS = 24;
 export const FIELD = {
@@ -29,13 +29,15 @@ const SHAPE_NAMES = ['2Nx2N', '2NxN', 'Nx2N', 'NxN', '2NxnU', '2NxnD', 'nLx2N', 
 const INTRA_CLASS = { planar: 0, dc: 1, angular: 2 };
 const FLAG = { codedY: 1, codedCb: 2, codedCr: 4, transformSkip: 8, qpDeltaCoded: 16, bi: 32 };
 /** Each codec's record conventions: motion vector units per luma sample, and
- * the QP heat map's scale (H.264 / HEVC / VVC QP; AV1 / VP9 qindex, 0..255). */
+ * the QP heat map's range and scale (H.264 / HEVC / VVC QP; AV1 / VP9 / AV2
+ * qindex, 0..255). */
 const CODEC_UNITS = {
-  h264: { mv: 4, qp: { low: 15, high: 51 } },
-  hevc: { mv: 4, qp: { low: 15, high: 51 } },
-  av1: { mv: 8, qp: { low: 40, high: 255 } },
-  vp9: { mv: 8, qp: { low: 40, high: 255 } },
-  vvc: { mv: 16, qp: { low: 15, high: 63 } },
+  h264: { mv: 4, qp: { low: 15, high: 51, scale: 'qp' } },
+  hevc: { mv: 4, qp: { low: 15, high: 51, scale: 'qp' } },
+  av1: { mv: 8, qp: { low: 40, high: 255, scale: 'qindex' } },
+  vp9: { mv: 8, qp: { low: 40, high: 255, scale: 'qindex' } },
+  vvc: { mv: 16, qp: { low: 15, high: 63, scale: 'qp' } },
+  av2: { mv: 8, qp: { low: 40, high: 255, scale: 'qindex' } },
 };
 const units = codec => CODEC_UNITS[codec] ?? CODEC_UNITS.hevc;
 /** The overlay layers a viewer can switch on. */
@@ -77,8 +79,9 @@ export function recordCount(records) { return records ? Math.floor(records.lengt
 
 /** The direction of an intra mode as a line `[dx, dy]` in picture coordinates, or null (planar, DC). */
 export function intraDirection(codec, mode, size) {
-  if (codec === 'av1' || codec === 'vp9') {
-    const degrees = (codec === 'av1' ? AV1_DIRECTIONS : VP9_DIRECTIONS)[mode];
+  if (codec === 'av1' || codec === 'av2' || codec === 'vp9') {
+    // AV2 records use AV1's y-mode numbering (nc-av2 tile_analysis).
+    const degrees = (codec === 'vp9' ? VP9_DIRECTIONS : AV1_DIRECTIONS)[mode];
     if (degrees === undefined) return null;
     // AV1 angles: 90 is vertical (predicted from above), 180 horizontal.
     const radians = degrees * Math.PI / 180;
@@ -167,6 +170,29 @@ function sizeName(w, h) { return w === h ? String(w) : `${w}x${h}`; }
 function shares(map) {
   const total = Object.values(map).reduce((a, b) => a + b, 0);
   return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, total ? v / total : 0]));
+}
+
+/** Coding blocks at least this wide count as large in the difference summary. */
+const LARGE_BLOCK = 32;
+
+/**
+ * One line comparing two views' mean summaries (RunningSummary.mean):
+ * skip, intra and large-block shares by area, and mean QP (flagged when the
+ * two codecs' QP scales differ). `labels` names the views.
+ */
+export function differenceSummary(a, b, [codecA, codecB], labels = ['A', 'B']) {
+  const pct = value => `${Math.round(100 * (value ?? 0))}%`;
+  const large = summary => Object.entries(summary.cbSize ?? {})
+    .filter(([size]) => parseInt(size) >= LARGE_BLOCK).reduce((sum, [, share]) => sum + share, 0);
+  const pair = (name, f) => `${name} ${f(a)} vs ${f(b)}`;
+  const sameScale = units(codecA).qp.scale === units(codecB).qp.scale;
+  const qp = summary => summary.qp == null ? '—' : summary.qp.toFixed(1);
+  return `${labels[0]} vs ${labels[1]}, mean by area: ${[
+    pair('skip', s => pct(s.pred?.skip)),
+    pair('intra', s => pct(s.pred?.intra)),
+    pair(`blocks ≥${LARGE_BLOCK}`, s => pct(large(s))),
+    pair(sameScale ? 'QP' : 'QP (different scales)', qp),
+  ].join(' · ')}`;
 }
 
 /** Averages of `summarise` results over the frames seen since `reset`. */
