@@ -57,12 +57,12 @@ import json
 import math
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import buildinfo, jreal
 from .budget import MAX_MINUTES, estimate_minutes
-from .cbr import Family, anchor_families, clip_targets
+from .cbr import METRIC_TUNES, PROFILE_SEPARATOR, Family, anchor_families, clip_targets
 from .clips import Clip
 from .codecs import Codec
 from .config import load_paths
@@ -96,6 +96,38 @@ REFERENCES = (("openh264-baseline", "openh264"),
               ("svtav1-m12", "SVT-AV1 M12"), ("svtav1-m13", "SVT-AV1 M13"),
               ("libvpx-vp9-cpu7", "libvpx VP9 rt 7"), ("libvpx-vp9-cpu9", "libvpx VP9 rt 9"),
               ("libaom-av1-cpu8", "libaom rt 8"), ("libaom-av1-cpu10", "libaom rt 10"))
+#: Metric-tuned twins of the x264 and x265 references: each at the metric-oriented
+#: --tune its own documentation provides, every other chart setting unchanged
+#: (cbr.ANCHOR_PROFILES; x264 0.165 --tune psnr = --aq-mode 0 --no-psy, ssim =
+#: --aq-mode 2 --no-psy; x265 4.2 --tune psnr = --aq-strength 0 --psy-rd 0
+#: --psy-rdoq 0, ssim = --aq-mode 2 --psy-rd 0 --psy-rdoq 0). Their defaults favour
+#: how the picture looks, which PSNR, VMAF and MS-SSIM cannot judge; our encoders
+#: are tuned to the composite these charts report. Like the hardware encoders they
+#: never change the chart's clip set or low rungs (side_points). The chart plots,
+#: per reference, the tune that scores best for it on BD-J (best_tunes); the table
+#: lists both.
+#: The other references already run a metric-oriented setting (SVT-AV1 --rtc its PSNR
+#: tune, libaom / libvpx --tune psnr with AQ off, openh264 AQ off); their documented
+#: alternative (--tune ssim; openh264 adaptive quantisation on) is measured the same
+#: way and plotted only where it scores better for the encoder than its charted setting.
+METRIC_TUNED_BASES = ("x264-ultrafast", "x264-veryfast", "x264-medium", "x265-ultrafast",
+                      "x265-superfast", "x265-medium")
+ALTERNATIVE_TUNES = {"libvpx-vp9-cpu7": ("ssim",), "libvpx-vp9-cpu9": ("ssim",),
+                     "libaom-av1-cpu8": ("ssim",), "libaom-av1-cpu10": ("ssim",),
+                     "openh264-baseline": ("aq",)}
+#: A tuned twin is plotted only when it beats its charted setting by more than this
+#: (BD-J points): an alternative that changes nothing (openh264's harness codes the
+#: same bytes with adaptive quantisation on; x264 ultrafast already runs without psy
+#: and AQ) must not appear as a better point through rounding.
+TUNE_MIN_GAIN = 0.1
+#: How a tuned twin is labelled, by profile.
+TUNE_LABELS = {"psnr": "metric-tuned (--tune psnr)", "ssim": "metric-tuned (--tune ssim)",
+               "aq": "adaptive quantisation on"}
+TUNED = tuple((f"{base}{PROFILE_SEPARATOR}{tune}", f"{label}, {TUNE_LABELS[tune]}")
+              for base, label in REFERENCES
+              for tune in (METRIC_TUNES if base in METRIC_TUNED_BASES
+                           else ALTERNATIVE_TUNES.get(base, ())))
+TUNED_FAMILIES = frozenset(name for name, _ in TUNED)
 #: Hardware encoders (cbr.NVENC_FAMILIES): (family, chart label). On the quality axis
 #: only: they are scored on the chart's own clip set and rungs, but never change
 #: which clips or low rungs the other points use, and their fps (the GPU's wall
@@ -193,6 +225,10 @@ class ChartPoint:
     chained: tuple[ChainedClip, ...] = ()
     #: BD-J over the directly compared clips only (equal to bd_j without chained clips).
     direct_bd_j: float | None = None
+    #: BD-rate on MS-SSIM alone, the same (full + low) / 2 as bd_j.
+    bd_msssim: float | None = None
+    #: The fps is its default-tuned twin's (a metric-tuned point not yet timed itself).
+    fps_borrowed: bool = False
 
     @property
     def flagged(self) -> bool:
@@ -220,9 +256,15 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
     # any other requested reference is a preset anchor by name (cbr.preset_anchor),
     # e.g. the independent test's x264-faster
     own_names = {n for n, _ in OURS}
+    built_in_profile = {n for n in wanted if tuned_base(n) in BUILT_IN_ANCHORS and n != tuned_base(n)}
     extra = list(dict.fromkeys(n for n in [*(n for n, _ in REFERENCES + HARDWARE), *wanted]
-                               if n not in BUILT_IN_ANCHORS and n not in own_names))
+                               if n not in BUILT_IN_ANCHORS and n not in own_names
+                               and n not in built_in_profile))
     anchors = {f.name: f for f in anchor_families(paths, OPENH264_HARNESS, extra=extra)}
+    # a profile of a built-in anchor (openh264-baseline~aq) is that anchor in the profile
+    for name in built_in_profile:
+        base, _, profile = name.partition(PROFILE_SEPARATOR)
+        anchors[name] = replace(anchors[base], name=name, profile=profile)
     binaries, presets_for = binaries or {}, presets_for or {}
     ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets))
             for name, _ in OURS}
@@ -463,6 +505,7 @@ def chart_point(test: Family, label: str, per_clip: dict[str, dict], clips: list
         bd_j=balanced_pair(rows, "quality", "quality_low"),
         bd_psnr=balanced_pair(rows, "bd_psnr_yuv", "low_psnr_yuv"),
         bd_vmaf=balanced_pair(rows, "bd_vmaf_v1", "low_vmaf_v1"),
+        bd_msssim=balanced_pair(rows, "bd_ms_ssim", "low_ms_ssim"),
         iqr=interquartile(scored), scored=len(scored), clips=len(clips),
         missing_classes=tuple(sorted({c.content_class for c in clips} - scored_classes)),
         rate_invalid=len(runner.unreachable.get(test.name, ())),
@@ -567,25 +610,25 @@ def quality_points(runner: Runner, families: list[Family], clips: list[Clip],
                    [c for c in clips if c.name not in left_out])
 
 
-def hardware_points(runner: Runner, quality: Quality, families: list[Family],
-                    hardware: list[Family], clips: list[Clip], frames: int,
-                    rungs: tuple[int, ...] | None = None) -> list[ChartPoint]:
-    """BD of each hardware family vs the anchor (families[0]) on exactly the chart's
-    clip set and rungs (`quality`: its low rungs where the chart has them). A clip
-    where it has no direct overlap is chained through the chart's own families,
-    as for a rescued clip (chain_clip); they never change the chart's clip set."""
+def side_points(runner: Runner, quality: Quality, families: list[Family],
+                side: list[Family], clips: list[Clip], frames: int, labels: dict[str, str],
+                rungs: tuple[int, ...] | None = None) -> tuple[list[ChartPoint], dict]:
+    """BD of each `side` family (hardware encoders, metric-tuned references) vs the
+    anchor (families[0]) on exactly the chart's clip set and rungs (`quality`: its low
+    rungs where the chart has them). A clip where it has no direct overlap is chained
+    through the chart's own families, as for a rescued clip (chain_clip); they never
+    change the chart's clip set. Returns the points and every curve (chart's and side's)."""
     anchor = families[0].name
-    curves = {**quality.curves, **runner.measure("chart hardware", hardware, clips, frames,
+    curves = {**quality.curves, **runner.measure("chart side points", side, clips, frames,
                                                  rungs)}
     if quality.low_rungs:
-        extra = runner.measure("chart hardware low rungs", hardware, quality.low_rungs, frames,
-                               ladder=low_ladder)
+        extra = runner.measure("chart side points low rungs", side, quality.low_rungs,
+                               frames, ladder=low_ladder)
         for key, points in extra.items():
             curves[key] = curves[key] + points
     direct = {f.name: per_clip_rows(curves, anchor, f.name, clips) for f in families}
-    labels = dict(HARDWARE)
     points = []
-    for family in hardware:
+    for family in side:
         rows = per_clip_rows(curves, anchor, family.name, quality.used)
         chained = {}
         for clip in quality.used:
@@ -595,7 +638,60 @@ def hardware_points(runner: Runner, quality: Quality, families: list[Family],
                     chained[clip.name] = link
         points.append(chart_point(family, labels[family.name], rows, quality.used, runner,
                                   chained))
-    return points
+    return points, curves
+
+
+def hardware_points(runner: Runner, quality: Quality, families: list[Family],
+                    hardware: list[Family], clips: list[Clip], frames: int,
+                    rungs: tuple[int, ...] | None = None) -> list[ChartPoint]:
+    """The hardware encoders as side points (on the PC's chart only)."""
+    return side_points(runner, quality, families, hardware, clips, frames, dict(HARDWARE),
+                       rungs)[0]
+
+
+def tuned_base(family: str) -> str:
+    """The default-tuned reference a metric-tuned family is the twin of."""
+    return family.partition(PROFILE_SEPARATOR)[0]
+
+
+def best_tunes(tuned: list[ChartPoint], defaults: list[ChartPoint]) -> list[ChartPoint]:
+    """Per reference, its tuned twin with the best (lowest) BD-J, kept only where that
+    beats the reference's charted (default) setting: the twins the chart plots."""
+    charted = {p.family: p.bd_j for p in defaults}
+    best: dict[str, ChartPoint] = {}
+    for p in tuned:
+        base = tuned_base(p.family)
+        if p.bd_j is None or charted.get(base) is None or \
+                p.bd_j > charted[base] - TUNE_MIN_GAIN:
+            continue
+        if base not in best or p.bd_j < best[base].bd_j:
+            best[base] = p
+    return [best[base] for base, _ in REFERENCES if base in best]
+
+
+def with_twin_speed(tuned: list[ChartPoint], timed: list[ChartPoint]) -> list[ChartPoint]:
+    """Metric-tuned points without their own timing take their default-tuned twin's fps
+    and speed, marked fps_borrowed (metric tuning changes their speed a little)."""
+    twins = {p.family: p for p in timed}
+    result = []
+    for p in tuned:
+        twin = twins.get(tuned_base(p.family))
+        if p.fps is None and twin is not None and twin.fps is not None:
+            p = ChartPoint(**{**p.__dict__, "fps": twin.fps, "speed": twin.speed,
+                              "fps_borrowed": True})
+        result.append(p)
+    return result
+
+
+def second_anchor_points(runner: Runner, quality: Quality, curves: dict,
+                         families: list[Family], anchor: str,
+                         labels: dict[str, str]) -> list[ChartPoint]:
+    """Every family's BD vs another anchor (the metric-tuned x264 medium), directly, on
+    the chart's clip set and rungs; a clip without a direct overlap is left out of
+    that point (its clip count says so)."""
+    return [chart_point(f, labels[f.name], per_clip_rows(curves, anchor, f.name, quality.used),
+                        quality.used, runner)
+            for f in families if f.name != anchor]
 
 
 def pairs_table(pairs: list[tuple[str, ChartPoint]]) -> str:
@@ -689,8 +785,9 @@ def with_hardware_fps(points: list[ChartPoint], speeds: dict[str, HardwareSpeed]
 
 
 def pareto(points: list[ChartPoint]) -> list[ChartPoint]:
-    """Unflagged timed points no other point beats on both speed and BD-J."""
-    usable = [p for p in points if not p.flagged and p.fps is not None]
+    """Unflagged timed points no other point beats on both speed and BD-J (a point
+    showing its twin's fps, not its own timing, cannot join the front)."""
+    usable = [p for p in points if not p.flagged and p.fps is not None and not p.fps_borrowed]
     front, best = [], math.inf
     for point in sorted(usable, key=lambda p: (-p.fps, p.bd_j)):
         if point.bd_j < best:
@@ -776,6 +873,8 @@ def markdown_table(points: list[ChartPoint], front: list[ChartPoint],
             notes.append(f"{p.rate_invalid} rate-invalid pts")
         if p.refused:
             notes.append(f"{p.refused} pts refused")
+        if p.fps_borrowed:
+            notes.append("fps of the default-tuned run; re-timing pending")
         direct = (fmt(p.direct_bd_j) if p.chained else "") + " | " if chains else ""
         lines.append(f"| {name} | {fmt(p.bd_j)}{CHAIN_MARK if p.chained else ''} | {direct}"
                      f"{fmt(p.bd_psnr)} | {fmt(p.bd_vmaf)} | {iqr} | "
@@ -843,6 +942,50 @@ def chained_table(points: list[ChartPoint]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def tuned_table(tuned: list[ChartPoint], defaults: list[ChartPoint],
+                plotted: list[ChartPoint]) -> str:
+    """Each x264 / x265 reference at its default tuning and at both metric tunes, per
+    metric, vs the chart's anchor; the plotted tune is marked."""
+    by_family = {p.family: p for p in defaults}
+    shown = {p.family for p in plotted}
+    lines = ["## Metric-tuned references\n",
+             "Each reference at its charted setting and at each alternative its documentation "
+             "provides (x264 / x265: `--tune psnr`, `--tune ssim`; libaom / libvpx: `--tune "
+             "ssim`; openh264: adaptive quantisation on), every other setting unchanged; "
+             "BD-rate vs the chart's anchor (x264 medium, default tuning) on the chart's clips "
+             "and rungs. The chart also plots, per reference, the alternative with the best "
+             "BD-J where it beats the charted setting (●). Equal rows: the setting changes "
+             "nothing there (x264 ultrafast already runs without psy and AQ; x265 ultrafast "
+             "and superfast give identical results at both tunes; openh264's harness codes "
+             "the same bytes with adaptive quantisation on).\n",
+             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |",
+             "|---|---:|---:|---:|---:|---:|"]
+    for base in dict.fromkeys(tuned_base(p.family) for p in tuned):
+        rows = [by_family.get(base)] + [p for p in tuned if tuned_base(p.family) == base]
+        for p in rows:
+            if p is None:
+                continue
+            mark = " ●" if p.family in shown else ""
+            lines.append(f"| {p.label}{mark} | {fmt(p.bd_j)} | {fmt(p.bd_psnr)} | "
+                         f"{fmt(p.bd_vmaf)} | {fmt(p.bd_msssim)} | {p.scored}/{p.clips} |")
+    return "\n".join(lines) + "\n"
+
+
+def second_anchor_table(points: list[ChartPoint], anchor_label: str) -> str:
+    """Every point's BD-rate vs the metric-tuned x264 medium."""
+    lines = [f"## Against {anchor_label}\n",
+             f"The same points with {anchor_label} as the zero line instead of the chart's "
+             "default-tuned x264 medium: direct BD-rate on the chart's clips and rungs (a clip "
+             "without a direct overlap is left out of that row).\n",
+             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |",
+             "|---|---:|---:|---:|---:|---:|"]
+    for p in sorted(points, key=lambda p: (p.bd_j is None, p.bd_j or 0)):
+        name = f"**{p.label}**" if p.ours else p.label
+        lines.append(f"| {name} | {fmt(p.bd_j)} | {fmt(p.bd_psnr)} | {fmt(p.bd_vmaf)} | "
+                     f"{fmt(p.bd_msssim)} | {p.scored}/{p.clips} |")
+    return "\n".join(lines) + "\n"
+
+
 def coverage_note(quality: Quality) -> str:
     """Which clips got the low rungs, and how many are left out or chained."""
     low = ", ".join(c.name for c in quality.low_rungs) or "none"
@@ -903,10 +1046,16 @@ MARKER_RADIUS = 6
 #: Hardware encoders: their marker colour, the gutter (px) right of the plot that holds
 #: their off-scale markers and labels, and the least vertical gap between two labels.
 HARDWARE_COLOUR = "#2e8540"
+#: A metric-tuned reference's fill (its default-tuned twin's colour, lightened), and the
+#: dashes of the line joining the two.
+TUNED_FILL, TUNED_DASH = "#f7c4a8", "3 3"
 HARDWARE_GUTTER = 200
 HARDWARE_LABEL_GAP = 14
-#: Height (px) of one more footnote line.
+#: Height (px) of one more footnote line, and of a second legend row.
 NOTE_LINE = 16
+LEGEND_ROW = 20
+#: Right margin (px) of a chart without hardware encoders that shows tuned twins.
+TUNED_RIGHT_MARGIN = 160
 #: Plot-window padding around the data: log-fps factor and BD percentage points.
 FPS_PAD, BD_PAD = 1.4, 6.0
 
@@ -918,7 +1067,7 @@ def is_hardware(p: ChartPoint) -> bool:
 def marker(p: ChartPoint, cx: float, cy: float) -> str:
     """Circle for ours; square x264, diamond x265, triangle SVT, inverted triangle
     openh264, X libvpx, + libaom, green hexagon a hardware encoder. Flagged points
-    are hollow."""
+    are hollow; a metric-tuned reference has its twin's shape, lightly filled."""
     r = MARKER_RADIUS
     if is_hardware(p):
         pts = " ".join(f"{cx + (r + 1) * math.cos(math.pi / 3 * k):.1f},"
@@ -928,7 +1077,8 @@ def marker(p: ChartPoint, cx: float, cy: float) -> str:
 
     colour = OURS_COLOUR if p.ours else REFERENCE_COLOUR
     width = 1 if p.family.startswith(("libvpx", "libaom")) else 2
-    style = f'fill="{SURFACE if p.flagged else colour}" stroke="{colour}" stroke-width="{width}"'
+    fill = SURFACE if p.flagged else TUNED_FILL if p.family in TUNED_FAMILIES else colour
+    style = f'fill="{fill}" stroke="{colour}" stroke-width="{width}"'
     if p.ours:
         return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r}" {style}/>'
     if p.family.startswith("x264"):
@@ -970,10 +1120,18 @@ CHAR_WIDTH = {False: 6.6, True: 7.3}  # px per character at 12 px, regular / bol
 LABEL_CLEARANCE = 4.0
 
 
+#: A tuned twin's short label on the chart (the table keeps its full label).
+CHART_TUNE_LABELS = {"psnr": "--tune psnr", "ssim": "--tune ssim", "aq": "AQ on"}
+
+
 def chart_label(p: ChartPoint) -> str:
     """A point's label on the chart, with its flagged / partial mark. Chained clips
     are marked in the table only: most points have one, and the marks crowd the plot."""
-    return p.label + (" (flagged)" if p.flagged else PARTIAL_MARK if p.partial else "")
+    label = p.label
+    if p.family in TUNED_FAMILIES:
+        base, _, tune = p.family.partition(PROFILE_SEPARATOR)
+        label = f"{dict(REFERENCES)[base]}, {CHART_TUNE_LABELS[tune]}"
+    return label + (" (flagged)" if p.flagged else PARTIAL_MARK if p.partial else "")
 
 
 def box_distance(box: tuple[float, float, float, float], x: float, y: float) -> float:
@@ -1153,8 +1311,12 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
                   min(bds) - BD_PAD, max(bds) + BD_PAD)
     off_scale = [p for p in hardware if p.fps > frame.fps_hi]
     on_axis = [p for p in hardware if p not in off_scale and p.fps >= frame.fps_lo]
-    W = frame.left + frame.width + (HARDWARE_GUTTER if off_scale else 30)
-    H = frame.top + frame.height + 110 + (NOTE_LINE if hardware else 0)
+    tuned_shown = any(p.family in TUNED_FAMILIES for p in timed)
+    # a tuned twin's longer label beside the fastest point needs room on the right
+    W = frame.left + frame.width + (HARDWARE_GUTTER if off_scale else
+                                    TUNED_RIGHT_MARGIN if tuned_shown else 30)
+    H = frame.top + frame.height + 110 + (NOTE_LINE if hardware else 0) + \
+        (LEGEND_ROW if tuned_shown else 0)
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
            f'height="{H}" font-family="system-ui, -apple-system, Segoe UI, sans-serif" '
            f'font-size="12">',
@@ -1186,6 +1348,14 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
     out.append(f'<polyline points="{path}" fill="none" stroke="{FRONT_COLOUR}" '
                f'stroke-width="1.5" stroke-dasharray="5 4"/>')
     items = [(p, frame.x(p.fps), frame.y(p.bd_j)) for p in timed + on_axis]
+    twins = {p.family: p for p in timed}
+    for p in timed:  # each metric-tuned reference joined to its default-tuned twin
+        twin = twins.get(tuned_base(p.family)) if p.family in TUNED_FAMILIES else None
+        if twin is not None:
+            out.append(f'<line x1="{frame.x(twin.fps):.1f}" y1="{frame.y(twin.bd_j):.1f}" '
+                       f'x2="{frame.x(p.fps):.1f}" y2="{frame.y(p.bd_j):.1f}" '
+                       f'stroke="{REFERENCE_COLOUR}" stroke-width="1.2" '
+                       f'stroke-dasharray="{TUNED_DASH}"/>')
     for p, cx, _ in items:
         if p.iqr and not is_hardware(p):
             colour = OURS_COLOUR if p.ours else REFERENCE_COLOUR
@@ -1197,7 +1367,8 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
     bars = [(cx - 1, frame.y(p.iqr[1]), cx + 1, frame.y(p.iqr[0]))
             for p, cx, _ in items if p.iqr and not is_hardware(p)] + [
         (frame.left, zero - 1, frame.left + frame.width, zero + 1)] + polyline_boxes(
-        [(frame.x(p.fps), frame.y(p.bd_j)) for p in front])
+        [(frame.x(p.fps), frame.y(p.bd_j)) for p in front]) + [
+        (-1e4, -1e4, 2, 1e4), (W - 2, -1e4, 1e4, 1e4)]  # labels stay inside the picture
     labels = place_labels(items, bars)
     for p, cx, cy in items:
         speed = (" (GPU aggregate throughput, frames in GPU memory)" if is_hardware(p) else
@@ -1233,6 +1404,16 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
                f'stroke="{FRONT_COLOUR}" stroke-width="1.5" stroke-dasharray="5 4"/>')
     out.append(f'<text x="{x + 32}" y="{legend_y}" fill="{INK}">Pareto front</text>')
     x += 32 + 7 * len("Pareto front") + 12
+    if tuned_shown:  # the tuned key and anything after it on a second legend row
+        x, legend_y = frame.left, legend_y + LEGEND_ROW
+        key = ChartPoint(TUNED[0][0], "", False, 0, 0, 0, None, 0, 0, (), 0, 0)
+        out.append(f'<line x1="{x - 4}" x2="{x + 6}" y1="{legend_y - 4}" y2="{legend_y - 4}" '
+                   f'stroke="{REFERENCE_COLOUR}" stroke-width="1.2" '
+                   f'stroke-dasharray="{TUNED_DASH}"/>')
+        out.append(marker(key, x + 6, legend_y - 4))
+        text = "reference at its metric-oriented tuning (dashed: to its default)"
+        out.append(f'<text x="{x + 18}" y="{legend_y}" fill="{INK}">{text}</text>')
+        x += 30 + 7 * len(text)
     if on_axis:
         key = ChartPoint(HARDWARE[0][0], "", False, 0, 0, 0, None, 0, 0, (), 0, 0)
         out.append(marker(key, x + 6, legend_y - 4))
@@ -1326,8 +1507,34 @@ METHODOLOGY = """\
   so differences of a few percent are within the per-clip spread, and these VAL clips
   were also used to rank our candidate changes (see heldout-chart-*.md for 71 other
   clips); the reference encoders' real-time modes are tuned for latency, not for these
-  metrics, x264 / x265 keep their default psychovisual settings (no `--tune psnr` /
-  `ssim`), and their other modes (threads, lookahead, B-frames) may do better.
+  metrics, and their other modes (threads, lookahead, B-frames) may do better.
+- **Metric-tuned references:** x264 and x265 default to psychovisual optimisations
+  (psy-rd, psy-rdoq, adaptive quantisation) tuned for how the picture looks, which
+  PSNR, VMAF and MS-SSIM cannot judge, and no subjective test was run here. So each of
+  them is also shown at the metric-oriented tuning its own documentation provides,
+  choosing the one that scores best for it on our composite; our encoders are tuned
+  to that composite. x264 {x264} `--tune zerolatency,psnr` (`--aq-mode 0 --no-psy`) and
+  `--tune zerolatency,ssim` (`--aq-mode 2 --no-psy`); x265 {x265} `--tune psnr`
+  (`--aq-strength 0 --psy-rd 0 --psy-rdoq 0`) and `--tune ssim` (`--aq-mode 2
+  --psy-rd 0 --psy-rdoq 0`), with `--bframes 0 --rc-lookahead 0 --no-scenecut
+  --no-cutree --frame-threads 1` restoring x265's zero-latency settings (it applies
+  one `--tune`; checked: the same encoder settings as zerolatency with those psy and AQ
+  values set by hand, decoded pictures identical); every other setting as above. Only
+  x264 and x265 run at visually tuned defaults on this chart: SVT-AV1 `--rtc` already
+  runs its PSNR tune (it offers no other in low delay), libaom and libvpx default to
+  `--tune psnr` with AQ off, and openh264 and NVENC run with adaptive quantisation off. They are scored on the chart's clip set and rungs and never change
+  it. The libaom and libvpx `--tune ssim` and openh264 adaptive-quantisation variants
+  are measured the same way. A variant is plotted where it scores better for its
+  encoder than the charted setting by more than {tune_gain} BD-J points (for x264 and
+  x265, the better of their two tunes). On these clips that is `--tune ssim` for x264
+  ultrafast and veryfast, `--tune psnr` for x264 medium and every x265 preset, and
+  `--tune ssim` for libaom rt 8 / rt 10 and libvpx rt 9; libvpx rt 7 scores worse with
+  it, and openh264's adaptive quantisation produced byte-identical streams in our
+  harness (no effect), so neither is plotted. Each plotted variant is
+  drawn in its default twin's shape, lightly filled, joined to it by a dashed line;
+  every variant is in the "Metric-tuned references" table, and every point against
+  the better-scoring x264 medium tune is in the table after it. Until they are
+  timed themselves they take their default twin's fps (noted in the table).
 """
 
 
@@ -1341,6 +1548,17 @@ def render(args: argparse.Namespace) -> None:
                     prebuilt=args.prebuilt)
     quality = quality_points(runner, families, clips, args.frames, args.rungs)
     points, pairs, excluded = quality.points, quality.pairs, quality.excluded
+    tuned_families = chart_families(
+        Path(args.binary).resolve(), Path(args.presets_dir),
+        args.tuned.split(",") if args.tuned else [name for name, _ in TUNED],
+        binary_overrides(args.binary_for), binary_overrides(args.presets_for))[1:]
+    tuned, side_curves = side_points(runner, quality, families, tuned_families, clips,
+                                     args.frames, dict(TUNED), args.rungs)
+    twins = best_tunes(tuned, quality.points)
+    alt = next((p for p in twins if tuned_base(p.family) == ANCHOR), None)
+    alt_rows = second_anchor_points(
+        runner, quality, side_curves, families + tuned_families, alt.family,
+        {**dict(OURS + REFERENCES + TUNED)}) if alt else []
     hardware, hardware_timing, speeds = [], {}, {}
     if args.timing_hardware:  # the hardware encoders run only on the PC's own GPU
         hardware_timing = json.loads(Path(args.timing_hardware).read_text())
@@ -1354,8 +1572,15 @@ def render(args: argparse.Namespace) -> None:
     untimed = points
     if args.timing:
         points = with_speed(points, json.loads(Path(args.timing).read_text()))
-    x86 = (with_speed(untimed, json.loads(Path(args.timing_x86).read_text()))
-           if args.timing_x86 else None)
+        points += with_twin_speed(with_speed(twins, json.loads(Path(args.timing).read_text())),
+                                  points)
+    else:
+        points += twins
+    x86 = None
+    if args.timing_x86:
+        x86_timing = json.loads(Path(args.timing_x86).read_text())
+        x86 = with_speed(untimed, x86_timing)
+        x86 += with_twin_speed(with_speed(twins, x86_timing), x86)
     front = pareto(points)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -1369,6 +1594,8 @@ def render(args: argparse.Namespace) -> None:
             *([f"The same on x86 (one Ryzen 9 5950X core):\n\n"
                f"![bitrate vs x86 speed]({stem.name}{X86.suffix}.svg)\n"] if x86 else []),
             markdown_table(points, front, x86), coverage_note(quality),
+            *([tuned_table(tuned, quality.points, twins),
+               second_anchor_table(alt_rows, alt.label)] if alt else []),
             *([hardware_table(hardware, speeds, hardware_timing.get("platform", ""))]
               if hardware else []),
             *([chained_table(points)] if any(p.chained for p in points) else []),
@@ -1381,7 +1608,7 @@ def render(args: argparse.Namespace) -> None:
         page.append(METHODOLOGY.format(
             clips=len(clips), classes=len({c.content_class for c in clips}),
             frames=args.frames, min_scored=MIN_SCORED_FRACTION,
-            low=" / ".join(map(str, LOW_LADDER_KBPS)),
+            low=" / ".join(map(str, LOW_LADDER_KBPS)), tune_gain=TUNE_MIN_GAIN,
             platform=timing.get("platform", "n/a"), rung=timing.get("rung_kbps", "n/a"),
             x86_note=(X86_NOTE.format(stem=stem.name, rounds=X86_ROUNDS)
                       + meta.get("x86_timing_note", "")) if x86 else "",
@@ -1438,6 +1665,8 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--timing-hardware", help="the hardware encoders' timing JSON "
                    "(tools/dev/nvenc_timing.py): adds them (measured on this PC's GPU), "
                    "with their fps, in a table of their own and past the chart's edge")
+    r.add_argument("--tuned", help="comma-separated tuned reference families to show "
+                   "(default: every one in TUNED)")
     r.add_argument("--out", default="../docs/results")
     r.add_argument("--subtitle", default="")
     r.add_argument("--title", default="Bitrate vs encode speed")

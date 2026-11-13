@@ -36,6 +36,15 @@ pub(super) use crate::scaled_reference::scale_sizes;
 pub(super) use inter::InterTools;
 pub(super) use lr_units::LrUnitReader;
 
+/// Luma rows of superblocks deblocked together while a frame decodes (two
+/// 64x64 superblock rows, one of 128x128). Jetson cycles against deblocking
+/// the whole frame at its end (min of 5): 64 lines per group -1.97% /
+/// -0.09% (1080p / 720p, our streams), 128 lines -1.84 to -2.70% / -0.61
+/// to -0.76% (SVT 1080p -0.43%), 256 lines -0.25% / -0.62%. Shorter groups
+/// cut the long vertical-edge runs into more filter calls (+1% instructions
+/// at 64 lines on 720p).
+const DEBLOCK_GROUP_LINES: usize = 128;
+
 /// The decoder's per-frame block state, reused by every frame.
 #[derive(Debug)]
 pub(super) struct FrameMaps {
@@ -334,18 +343,24 @@ impl<'a> FrameDecoder<'a> {
             coefficients: CoefficientBuffer::new(),
         }
     }
-    /// Deblocking (§7.14) of the `width` x `height` frame.
+    /// Deblocking (§7.14) of the frame's blocks not deblocked yet.
+    pub(super) fn deblock(&mut self) {
+        self.deblock_until(None);
+    }
+    /// Deblocking of the blocks decoded before `until` (all when `None`)
+    /// not deblocked yet.
     // Out of line: inlined into the frame decode, its edge kernel dispatch
     // stopped inlining (+10M instructions on static 720p).
     #[inline(never)]
-    pub(super) fn deblock(&mut self, (width, height): (usize, usize)) {
+    fn deblock_until(&mut self, until: Option<deblock::AreaMark>) {
         deblock::apply(
             self.dsp,
             &mut self.recon,
-            &self.maps.edges,
+            &mut self.maps.edges,
             &self.header.loop_filter,
-            (width, height),
+            (self.header.size.width, self.header.size.height),
             &mut self.maps.edge_runs,
+            until,
         );
     }
     /// CDEF (§7.15) of the deblocked frame.
@@ -407,7 +422,18 @@ impl<'a> FrameDecoder<'a> {
         }
         self.set_q_index(self.header.base_q_idx);
         let side = self.superblock.width_mi();
+        // A tile as wide as the frame deblocks its superblock rows in groups
+        // (`DEBLOCK_GROUP_LINES`), each once the group below it is decoded,
+        // while its samples are still in cache (dav1d filters by superblock
+        // row too). Not sooner: the next row's intra prediction reads the
+        // unfiltered bottom samples.
+        let by_rows = tile.col_start == 0 && tile.col_end >= self.header.width / MI_SIZE;
+        let group = (DEBLOCK_GROUP_LINES / (side * MI_SIZE)).max(1);
+        let mut group_above = self.maps.edges.mark();
         for mi_row in (tile.row_start..tile.row_end).step_by(side) {
+            if (mi_row / side).is_multiple_of(group) {
+                group_above = self.maps.edges.mark();
+            }
             for left in &mut self.left {
                 left.fill(0);
             }
@@ -425,6 +451,9 @@ impl<'a> FrameDecoder<'a> {
                     lr.read_superblock(r, &mut self.cdfs, (mi_col, mi_row), side)?;
                 }
                 self.partition(r, mi_col, mi_row, self.superblock)?;
+            }
+            if by_rows && (mi_row / side) % group == group - 1 {
+                self.deblock_until(Some(group_above));
             }
         }
         Ok(())

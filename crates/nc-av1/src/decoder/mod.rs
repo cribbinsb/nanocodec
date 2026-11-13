@@ -721,7 +721,7 @@ impl Decoder {
         state.tiles(&header.tiles, tiles, !header.disable_cdf_update)?;
         // The post-decode filters (§7.14–7.17): deblocking, CDEF,
         // superres, loop restoration, which also reads deblocked rows.
-        state.deblock((params.width, params.height));
+        state.deblock();
         let boundaries = state
             .restoration
             .as_ref()

@@ -50,9 +50,12 @@ and [tools/anchors/README.md](../tools/anchors/README.md).
 
 **Is that fair to them?** It is one configuration: the one our use case needs (no B-frames, no lookahead, one
 thread, CBR with a 1 s buffer). Those projects are general-purpose and are usually run with more threads,
-lookahead or B-frames, where they will do better; x264 and x265 keep their default psychovisual settings, which
-trade some PSNR and MS-SSIM for perceived detail, while our presets were tuned on exactly the PSNR / VMAF /
-MS-SSIM mix we report. That matters: on the chart's clips x264 `medium --tune psnr` (otherwise the same settings)
+lookahead or B-frames, where they will do better. x264's and x265's defaults are tuned for how the picture looks
+(psychovisual optimisations), which PSNR, VMAF and MS-SSIM cannot judge, and we ran no subjective test; our
+presets were tuned on exactly the PSNR / VMAF / MS-SSIM mix we report. So the chart also shows x264 and x265 at
+the metric-oriented tuning their own documentation provides (`--tune psnr` or `--tune ssim`, whichever scores
+better for each), beside their default-tuned points. The AV1 and VP9 references (SVT-AV1 `--rtc`, libaom,
+libvpx realtime) already run their PSNR tunes, and openh264 and NVENC run with adaptive quantisation off. That matters: on the chart's clips x264 `medium --tune psnr` (otherwise the same settings)
 needs 9.8% fewer bits than the default-tuned anchor on BD-J, and against it our savings are 7–12 points smaller:
 AV1 Default −43.6% instead of −50.9%, HEVC −41.7%, VVC −47.1%, H.264 Default −13.3% instead of −23.0%, H.264 Fast
 −5.8% (interval spans zero), and our H.264 Faster (+2.5%) and Fastest (+10.7%) save no bits at all

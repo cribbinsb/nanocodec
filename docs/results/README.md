@@ -89,8 +89,13 @@ The chart's anchor is x264 `medium` with its default psychovisual settings (psy-
 picture looks over PSNR, VMAF and MS-SSIM; our presets were tuned on that metric mix. An independent re-run on the
 chart's clips and streams (2026-11-13) added x264 `medium --tune zerolatency,psnr` and `--tune zerolatency,ssim`
 with otherwise identical settings. `--tune psnr` needs 9.8% [7.6, 12.0] fewer bits than the default anchor on
-BD-J (PSNR-Y −13.8%, PSNR-YUV −8.3%, VMAF v1 −19.4%, MS-SSIM −1.8%); `--tune ssim` −1.4%. BD-J against the
-PSNR-tuned x264:
+BD-J (PSNR-Y −13.8%, PSNR-YUV −8.3%, VMAF v1 −19.4%, MS-SSIM −1.8%); `--tune ssim` −1.4%. The charts now also
+plot every x264 and x265 point at its better-scoring metric tune (x264 ultrafast and veryfast: `--tune ssim`;
+x264 medium and every x265 preset: `--tune psnr`), and the libaom, libvpx and openh264 alternatives where they
+score better than their charted setting; both tunes per metric, and every point against the PSNR-tuned x264
+medium, are in [bd-vs-speed.md](bd-vs-speed.md#metric-tuned-references). x264 and x265 defaults are tuned for how
+the picture looks, which these metrics cannot judge, and no subjective test was run. BD-J against the PSNR-tuned
+x264:
 
 | Encoder | BD-J vs x264 `medium` (default psy settings, the chart's anchor) | BD-J vs x264 `medium --tune psnr` |
 |---|---:|---:|

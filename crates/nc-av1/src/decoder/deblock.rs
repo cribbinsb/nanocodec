@@ -116,6 +116,8 @@ struct Area {
 struct PlaneSides {
     /// Every area, in decoding order.
     areas: Vec<Area>,
+    /// Areas already filtered (a prefix of `areas`).
+    filtered: usize,
     /// Units per row and per column.
     columns: usize,
     rows: usize,
@@ -129,6 +131,7 @@ impl PlaneSides {
     fn start_frame(&mut self, columns: usize, rows: usize) {
         (self.columns, self.rows) = (columns, rows);
         self.areas.clear();
+        self.filtered = 0;
         self.right.resize(columns * rows, Side::default());
         self.bottom.resize(columns * rows, Side::default());
     }
@@ -160,6 +163,11 @@ impl PlaneSides {
     }
 }
 
+/// A count of luma and of chroma areas: where the map stood at some point
+/// of the frame's decoding.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AreaMark([usize; 2]);
+
 /// The edge state of a frame, reused across frames.
 #[derive(Debug, Default)]
 pub(super) struct EdgeMap {
@@ -187,6 +195,10 @@ impl EdgeMap {
         self.recording = deblocked(lf);
         self.luma.start_frame(mi_cols, mi_rows);
         self.chroma.start_frame(mi_cols / 2, mi_rows / 2);
+    }
+    /// The areas recorded so far, as a bound for [`apply`].
+    pub(super) fn mark(&self) -> AreaMark {
+        AreaMark([self.luma.areas.len(), self.chroma.areas.len()])
     }
     /// Record a block at luma unit (`mi_col`, `mi_row`), whose luma is one
     /// area of `luma_tx` transforms (`None` when its transform tree's
@@ -331,19 +343,31 @@ fn deblocked(lf: &LoopFilter) -> bool {
     lf.level[0] != 0 || lf.level[1] != 0
 }
 
-/// Deblock `recon` (§7.14) with the frame's `lf` parameters. `width` x
-/// `height` is the frame size: edges at or beyond it are not filtered.
+/// Deblock `recon` (§7.14) with the frame's `lf` parameters: the areas
+/// recorded before `until` (every area when `None`) not filtered yet.
+/// `width` x `height` is the frame size: edges at or beyond it are not
+/// filtered.
+///
+/// Filtering a frame in parts, in decoding order, gives the frame-wide
+/// result: within a plane and direction edges do not interact (see
+/// [`PlanePass`]), and across a part's boundary a vertical edge reads and
+/// writes only its own lines, while the horizontal edges inside a part
+/// reach no sample of the next (each filter stays within the transforms on
+/// its sides).
 pub(super) fn apply(
     dsp: &Dsp,
     recon: &mut Picture,
-    map: &EdgeMap,
+    map: &mut EdgeMap,
     lf: &LoopFilter,
     (width, height): (usize, usize),
     runs: &mut Vec<EdgeRun<Av1EdgeFilter>>,
+    until: Option<AreaMark>,
 ) {
     if !deblocked(lf) {
         return;
     }
+    let ends = until.map_or([map.luma.areas.len(), map.chroma.areas.len()], |m| m.0);
+    let parts = [map.luma.filtered..ends[0], map.chroma.filtered..ends[1]];
     let limits = limits(lf.sharpness);
     for plane in PlaneIndex::ALL {
         let index = plane as usize;
@@ -351,13 +375,20 @@ pub(super) fn apply(
             continue;
         }
         let ss = usize::from(plane != PlaneIndex::Y);
+        let areas = parts[ss].clone();
         let mut view = recon.plane_mut(plane).view_mut();
         let size = ((width + ss) >> ss, (height + ss) >> ss);
         runs.clear();
-        PlanePass::<true>::new(map, plane, &limits, size, runs).filter(dsp, &mut view);
+        PlanePass::<true>::new(map, plane, &limits, size, runs).filter(
+            dsp,
+            &mut view,
+            areas.clone(),
+        );
         runs.clear();
-        PlanePass::<false>::new(map, plane, &limits, size, runs).filter(dsp, &mut view);
+        PlanePass::<false>::new(map, plane, &limits, size, runs).filter(dsp, &mut view, areas);
     }
+    map.luma.filtered = ends[0];
+    map.chroma.filtered = ends[1];
 }
 
 /// Lines of one edge waiting to be filtered: `start..end` along it, with
@@ -435,10 +466,11 @@ impl<'a, const VERTICAL: bool> PlanePass<'a, VERTICAL> {
         }
     }
 
-    fn filter(mut self, dsp: &Dsp, view: &mut PlaneViewMut<'_>) {
+    /// Filter the edges of `areas` (indices into the plane's areas).
+    fn filter(mut self, dsp: &Dsp, view: &mut PlaneViewMut<'_>, areas: core::ops::Range<usize>) {
         let (plane_width, plane_height) = self.size;
         let which = self.level_index();
-        for area in &self.sides().areas {
+        for area in &self.sides().areas[areas] {
             let (x4, y4) = (usize::from(area.origin.0), usize::from(area.origin.1));
             let level = area.levels[which];
             // Coordinates across (x for a vertical edge) and along the edge.

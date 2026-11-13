@@ -19,32 +19,132 @@ The same on x86 (one Ryzen 9 5950X core):
 | **AV2 Fast** | -46.2% | -48.4% | -51.8% | -51.8 … -38.0 | 44.1 | 1.65× | 125.4 | 1.86× | 11/11 | Pareto x86 |
 | SVT-AV1 M8 | -45.5% | -49.4% | -44.5% | -48.3 … -40.1 | 14.3 | 0.53× | 45.2 | 0.62× | 11/11 | 2 rate-invalid pts |
 | **AV1 Fast** | -44.9% | -46.2% | -51.1% | -48.8 … -36.3 | 65.2 | 2.44× | 165.8 | 2.45× | 11/11 | Pareto; Pareto x86 |
+| x265 medium, metric-tuned (--tune psnr) | -44.1% | -45.5% | -48.2% | -48.1 … -36.0 | 8.0 | 0.30× | 25.6 | 0.37× | 11/11 | fps of the default-tuned run; re-timing pending |
 | **HEVC Fast** | -43.4% | -43.7% | -50.4% | -49.2 … -36.4 | 78.5 | 2.94× | 175.8 | 2.60× | 11/11 | Pareto; Pareto x86 |
 | **VP9 Fast** | -42.4% | -45.1% | -47.3% | -47.1 … -34.7 | 47.2 | 1.77× | 117.0 | 1.73× | 11/11 |  |
 | SVT-AV1 M10 | -41.3% | -43.9% | -43.0% | -42.9 … -34.1 | 39.3 | 1.47× | 106.6 | 1.58× | 11/11 | 2 rate-invalid pts |
 | x265 medium | -40.7% | -40.2% | -43.2% | -43.3 … -33.2 | 8.0 | 0.30× | 25.6 | 0.37× | 11/11 |  |
+| x265 superfast, metric-tuned (--tune psnr) | -40.1% | -40.6% | -44.4% | -46.8 … -30.5 | 12.1 | 0.45× | 38.8 | 0.54× | 11/11 | fps of the default-tuned run; re-timing pending |
 | x265 superfast | -38.8% | -38.1% | -43.8% | -45.0 … -29.5 | 12.1 | 0.45× | 38.8 | 0.54× | 11/11 |  |
 | **AV1 Faster** | -38.7% | -38.9% | -45.3% | -47.0 … -30.1 | 80.5 | 3.02× | 174.9 | 2.59× | 11/11 | Pareto |
 | **VP9 Faster** | -37.1% | -36.5% | -44.1% | -45.2 … -27.4 | 78.4 | 2.94× | 180.9 | 2.68× | 11/11 | Pareto x86 |
+| x265 ultrafast, metric-tuned (--tune psnr) | -36.2% | -35.9% | -40.8% | -43.9 … -24.8 | 17.1 | 0.64× | 53.5 | 0.78× | 11/11 | fps of the default-tuned run; re-timing pending |
 | **HEVC Faster** | -36.0% | -34.2% | -41.8% | -44.2 … -28.7 | 98.0 | 3.67× | 206.4 | 3.05× | 11/11 | Pareto; Pareto x86 |
 | x265 ultrafast | -35.6% | -33.8% | -41.2% | -42.6 … -25.0 | 17.1 | 0.64× | 53.5 | 0.78× | 11/11 |  |
 | SVT-AV1 M12 | -34.9% | -35.7% | -39.8% | -42.5 … -24.7 | 70.9 | 2.67× | 182.1 | 2.69× | 11/11 | 2 rate-invalid pts |
 | SVT-AV1 M13 | -33.2% | -33.7% | -38.8% | -41.8 … -23.2 | 79.2 | 2.96× | 193.1 | 2.86× | 11/11 | 1 rate-invalid pts |
+| libaom rt 10, metric-tuned (--tune ssim) | -30.1% | -28.9% | -29.1% | -32.0 … -23.3 | 22.3 | 0.83× | 49.2 | 0.74× | 11/11 | 6 rate-invalid pts; fps of the default-tuned run; re-timing pending |
 | libaom rt 10 | -29.8% | -29.9% | -32.3% | -31.3 … -23.1 | 22.3 | 0.83× | 49.2 | 0.74× | 11/11 | 8 rate-invalid pts |
+| libaom rt 8, metric-tuned (--tune ssim) | -29.3% | -26.1% | -28.7% | -31.3 … -24.5 | 17.4 | 0.65× | 42.1 | 0.61× | 11/11 | 4 rate-invalid pts; fps of the default-tuned run; re-timing pending |
 | libaom rt 8 | -28.7% | -26.8% | -32.1% | -31.6 … -23.5 | 17.4 | 0.65× | 42.1 | 0.61× | 11/11 | 6 rate-invalid pts |
 | **VP9 Fastest** | -27.8% | -25.0% | -39.0% | -44.6 … -16.7 | 88.0 | 3.30× | 192.4 | 2.85× | 11/11 |  |
 | **H.264** | -23.0% | -24.8% | -31.1% | -42.3 … -12.2 | 74.4 | 2.79× | 175.9 | 2.60× | 11/11 |  |
 | **H.264 Fast** | -16.2% | -17.7% | -26.9% | -39.4 … -2.9 | 113.5 | 4.25× | 230.2 | 3.41× | 11/11 | Pareto; Pareto x86 |
+| x264 medium, metric-tuned (--tune psnr) | -9.8% | -8.3% | -19.4% | -10.3 … -6.7 | 26.7 | 1.00× | 67.6 | 1.00× | 11/11 | 5 rate-invalid pts; fps of the default-tuned run; re-timing pending |
 | **H.264 Faster** | -8.5% | -11.1% | -18.5% | -38.3 … +7.6 | 133.7 | 5.01× | 265.7 | 3.93× | 11/11 | Pareto; Pareto x86 |
+| libvpx VP9 rt 9, metric-tuned (--tune ssim) | -6.5% | -1.4% | -12.1% | -10.8 … -0.6 | 47.8 | 1.78× | 113.0 | 1.53× | 11/11 | 17 rate-invalid pts; fps of the default-tuned run; re-timing pending |
 | libvpx VP9 rt 9 | -5.7% | -1.2% | -11.9% | -10.3 … -0.8 | 47.8 | 1.78× | 113.0 | 1.53× | 11/11 | 16 rate-invalid pts |
 | libvpx VP9 rt 7 | -1.5% | +1.6% | -7.7% | -9.0 … +8.0 | 30.0 | 1.12× | 68.1 | 1.06× | 11/11 | 15 rate-invalid pts |
 | **H.264 Fastest** | -0.8% | -3.1% | -12.4% | -34.2 … +17.2 | 155.4 | 5.83× | 313.7 | 4.64× | 11/11 | Pareto; Pareto x86 |
 | x264 medium | +0.0% | +0.0% | +0.0% | +0.0 … +0.0 | 26.7 | 1.00× | 67.6 | 1.00× | 11/11 | 4 rate-invalid pts |
+| x264 veryfast, metric-tuned (--tune ssim) | +1.1% | +1.5% | -3.6% | -17.1 … +14.4 | 85.4 | 3.18× | 206.4 | 3.05× | 11/11 | fps of the default-tuned run; re-timing pending |
 | x264 veryfast | +2.3% | +1.8% | -2.2% | -19.2 … +14.7 | 85.4 | 3.18× | 206.4 | 3.05× | 11/11 |  |
 | openh264 | +24.6% | +22.2% | +21.8% | -27.9 … +62.5 | 111.5 | 4.17× | 260.3 | 3.85× | 11/11 | 22 rate-invalid pts |
+| x264 ultrafast, metric-tuned (--tune ssim) | +32.1% | +44.5% | +18.4% | +6.5 … +48.5 | 190.5 | 7.11× | 547.1 | 8.09× | 11/11 | fps of the default-tuned run; re-timing pending |
 | x264 ultrafast | +38.9% | +53.4% | +8.5% | -1.5 … +63.1 | 190.5 | 7.11× | 547.1 | 8.09× | 11/11 | Pareto; Pareto x86 |
 
 Low rungs (40 / 75 kbps, every encoder) on: static_otw_homes390, static_cam29, static_london_bus, bodycam_airport. Clips left out for every encoder: 0; chained (point, clip) pairs: 0.
+
+## Metric-tuned references
+
+Each reference at its charted setting and at each alternative its documentation provides (x264 / x265: `--tune psnr`, `--tune ssim`; libaom / libvpx: `--tune ssim`; openh264: adaptive quantisation on), every other setting unchanged; BD-rate vs the chart's anchor (x264 medium, default tuning) on the chart's clips and rungs. The chart also plots, per reference, the alternative with the best BD-J where it beats the charted setting (●). Equal rows: the setting changes nothing there (x264 ultrafast already runs without psy and AQ; x265 ultrafast and superfast give identical results at both tunes; openh264's harness codes the same bytes with adaptive quantisation on).
+
+| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |
+|---|---:|---:|---:|---:|---:|
+| openh264 | +24.6% | +22.2% | +21.8% | +29.9% | 11/11 |
+| openh264, adaptive quantisation on | +24.6% | +22.2% | +21.8% | +29.9% | 11/11 |
+| x264 ultrafast | +38.9% | +53.4% | +8.5% | +54.8% | 11/11 |
+| x264 ultrafast, metric-tuned (--tune psnr) | +38.9% | +53.5% | +8.5% | +54.8% | 11/11 |
+| x264 ultrafast, metric-tuned (--tune ssim) ● | +32.1% | +44.5% | +18.4% | +33.5% | 11/11 |
+| x264 veryfast | +2.3% | +1.8% | -2.2% | +7.3% | 11/11 |
+| x264 veryfast, metric-tuned (--tune psnr) | +1.5% | +3.1% | -15.4% | +16.6% | 11/11 |
+| x264 veryfast, metric-tuned (--tune ssim) ● | +1.1% | +1.5% | -3.6% | +5.4% | 11/11 |
+| x264 medium | +0.0% | +0.0% | +0.0% | +0.0% | 11/11 |
+| x264 medium, metric-tuned (--tune psnr) ● | -9.8% | -8.3% | -19.4% | -1.8% | 11/11 |
+| x264 medium, metric-tuned (--tune ssim) | -1.4% | -1.3% | -0.2% | -2.8% | 11/11 |
+| x265 ultrafast | -35.6% | -33.8% | -41.2% | -31.7% | 11/11 |
+| x265 ultrafast, metric-tuned (--tune psnr) ● | -36.2% | -35.9% | -40.8% | -31.8% | 11/11 |
+| x265 ultrafast, metric-tuned (--tune ssim) | -36.2% | -35.9% | -40.8% | -31.8% | 11/11 |
+| x265 superfast | -38.8% | -38.1% | -43.8% | -34.6% | 11/11 |
+| x265 superfast, metric-tuned (--tune psnr) ● | -40.1% | -40.6% | -44.4% | -35.3% | 11/11 |
+| x265 superfast, metric-tuned (--tune ssim) | -40.1% | -40.6% | -44.4% | -35.3% | 11/11 |
+| x265 medium | -40.7% | -40.2% | -43.2% | -38.7% | 11/11 |
+| x265 medium, metric-tuned (--tune psnr) ● | -44.1% | -45.5% | -48.2% | -38.4% | 11/11 |
+| x265 medium, metric-tuned (--tune ssim) | -41.8% | -42.4% | -43.7% | -39.3% | 11/11 |
+| libvpx VP9 rt 7 | -1.5% | +1.6% | -7.7% | +1.5% | 11/11 |
+| libvpx VP9 rt 7, metric-tuned (--tune ssim) | -1.2% | +3.0% | -2.1% | -4.4% | 11/11 |
+| libvpx VP9 rt 9 | -5.7% | -1.2% | -11.9% | -4.0% | 11/11 |
+| libvpx VP9 rt 9, metric-tuned (--tune ssim) ● | -6.5% | -1.4% | -12.1% | -6.1% | 11/11 |
+| libaom rt 8 | -28.7% | -26.8% | -32.1% | -27.2% | 11/11 |
+| libaom rt 8, metric-tuned (--tune ssim) ● | -29.3% | -26.1% | -28.7% | -33.1% | 11/11 |
+| libaom rt 10 | -29.8% | -29.9% | -32.3% | -27.2% | 11/11 |
+| libaom rt 10, metric-tuned (--tune ssim) ● | -30.1% | -28.9% | -29.1% | -32.4% | 11/11 |
+
+## Against x264 medium, metric-tuned (--tune psnr)
+
+The same points with x264 medium, metric-tuned (--tune psnr) as the zero line instead of the chart's default-tuned x264 medium: direct BD-rate on the chart's clips and rungs (a clip without a direct overlap is left out of that row).
+
+| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |
+|---|---:|---:|---:|---:|---:|
+| **VVC** | -47.1% | -46.1% | -47.9% | -47.3% | 11/11 |
+| **AV2** | -46.8% | -49.1% | -47.6% | -43.9% | 11/11 |
+| **AV1** | -43.6% | -46.2% | -41.4% | -43.1% | 11/11 |
+| **HEVC** | -41.7% | -40.6% | -42.1% | -42.3% | 11/11 |
+| **VP9** | -40.2% | -42.9% | -35.9% | -41.9% | 11/11 |
+| **VVC Fast** | -38.4% | -35.6% | -38.9% | -40.6% | 11/11 |
+| **AV2 Fast** | -38.1% | -38.6% | -37.3% | -38.3% | 11/11 |
+| SVT-AV1 M8 | -37.1% | -40.1% | -28.0% | -43.0% | 11/11 |
+| **AV1 Fast** | -36.7% | -36.2% | -36.7% | -37.2% | 11/11 |
+| x265 medium, metric-tuned (--tune psnr) | -35.8% | -36.4% | -32.7% | -38.3% | 11/11 |
+| **HEVC Fast** | -34.9% | -33.4% | -35.3% | -36.1% | 11/11 |
+| **VP9 Fast** | -33.6% | -34.9% | -31.3% | -34.4% | 11/11 |
+| x265 medium, metric-tuned (--tune ssim) | -32.9% | -32.8% | -26.6% | -39.2% | 11/11 |
+| SVT-AV1 M10 | -32.1% | -33.6% | -25.9% | -36.9% | 11/11 |
+| x265 medium | -31.6% | -30.1% | -26.0% | -38.6% | 11/11 |
+| x265 superfast, metric-tuned (--tune psnr) | -30.8% | -30.3% | -27.1% | -34.9% | 11/11 |
+| x265 superfast, metric-tuned (--tune ssim) | -30.8% | -30.3% | -27.1% | -34.9% | 11/11 |
+| **AV1 Faster** | -29.8% | -28.8% | -28.9% | -31.6% | 11/11 |
+| x265 superfast | -29.2% | -27.3% | -26.2% | -34.2% | 11/11 |
+| **VP9 Faster** | -28.0% | -26.4% | -27.6% | -30.2% | 11/11 |
+| **HEVC Faster** | -26.6% | -23.7% | -24.5% | -31.6% | 11/11 |
+| x265 ultrafast, metric-tuned (--tune psnr) | -26.3% | -25.4% | -22.4% | -31.1% | 11/11 |
+| x265 ultrafast, metric-tuned (--tune ssim) | -26.3% | -25.4% | -22.4% | -31.1% | 11/11 |
+| x265 ultrafast | -25.6% | -23.0% | -22.7% | -31.0% | 11/11 |
+| SVT-AV1 M12 | -25.1% | -24.9% | -21.9% | -28.5% | 11/11 |
+| SVT-AV1 M13 | -23.3% | -23.1% | -20.7% | -26.2% | 11/11 |
+| libaom rt 10, metric-tuned (--tune ssim) | -19.5% | -18.4% | -8.1% | -32.0% | 11/11 |
+| libaom rt 10 | -19.1% | -19.3% | -11.3% | -26.9% | 11/11 |
+| libaom rt 8, metric-tuned (--tune ssim) | -18.4% | -15.7% | -7.0% | -32.6% | 11/11 |
+| **VP9 Fastest** | -18.1% | -14.4% | -21.3% | -18.6% | 11/11 |
+| libaom rt 8 | -18.0% | -16.5% | -10.7% | -26.8% | 11/11 |
+| **H.264** | -13.3% | -14.3% | -13.6% | -11.9% | 11/11 |
+| **H.264 Fast** | -5.8% | -6.9% | -8.6% | -2.0% | 11/11 |
+| **H.264 Faster** | +2.5% | -0.4% | +1.4% | +6.4% | 11/11 |
+| libvpx VP9 rt 9, metric-tuned (--tune ssim) | +7.6% | +12.3% | +15.9% | -5.3% | 11/11 |
+| libvpx VP9 rt 9 | +8.5% | +12.7% | +16.1% | -3.2% | 11/11 |
+| **H.264 Fastest** | +10.7% | +7.6% | +8.4% | +16.0% | 11/11 |
+| x264 medium, metric-tuned (--tune ssim) | +11.1% | +8.7% | +25.3% | -0.7% | 11/11 |
+| x264 veryfast, metric-tuned (--tune psnr) | +12.5% | +12.5% | +5.8% | +19.1% | 11/11 |
+| libvpx VP9 rt 7 | +12.7% | +14.9% | +20.5% | +2.7% | 11/11 |
+| libvpx VP9 rt 7, metric-tuned (--tune ssim) | +12.7% | +15.4% | +25.6% | -3.0% | 11/11 |
+| x264 veryfast, metric-tuned (--tune ssim) | +12.9% | +10.6% | +20.7% | +7.4% | 11/11 |
+| x264 medium | +13.0% | +9.8% | +27.1% | +2.0% | 11/11 |
+| x264 veryfast | +14.6% | +11.1% | +23.4% | +9.4% | 11/11 |
+| openh264, adaptive quantisation on | +42.8% | +39.8% | +56.7% | +31.9% | 11/11 |
+| openh264 | +42.8% | +39.8% | +56.8% | +31.9% | 11/11 |
+| x264 ultrafast, metric-tuned (--tune ssim) | +45.8% | +53.0% | +47.4% | +37.0% | 11/11 |
+| x264 ultrafast, metric-tuned (--tune psnr) | +52.3% | +62.2% | +35.5% | +59.3% | 11/11 |
+| x264 ultrafast | +52.4% | +62.1% | +35.7% | +59.3% | 11/11 |
 
 ## Hardware encoders
 
@@ -177,5 +277,31 @@ Direct BD-rate of our encoders against the reference encoders and against each o
   so differences of a few percent are within the per-clip spread, and these VAL clips
   were also used to rank our candidate changes (see heldout-chart-*.md for 71 other
   clips); the reference encoders' real-time modes are tuned for latency, not for these
-  metrics, x264 / x265 keep their default psychovisual settings (no `--tune psnr` /
-  `ssim`), and their other modes (threads, lookahead, B-frames) may do better.
+  metrics, and their other modes (threads, lookahead, B-frames) may do better.
+- **Metric-tuned references:** x264 and x265 default to psychovisual optimisations
+  (psy-rd, psy-rdoq, adaptive quantisation) tuned for how the picture looks, which
+  PSNR, VMAF and MS-SSIM cannot judge, and no subjective test was run here. So each of
+  them is also shown at the metric-oriented tuning its own documentation provides,
+  choosing the one that scores best for it on our composite; our encoders are tuned
+  to that composite. x264 0.165 `--tune zerolatency,psnr` (`--aq-mode 0 --no-psy`) and
+  `--tune zerolatency,ssim` (`--aq-mode 2 --no-psy`); x265 4.2 `--tune psnr`
+  (`--aq-strength 0 --psy-rd 0 --psy-rdoq 0`) and `--tune ssim` (`--aq-mode 2
+  --psy-rd 0 --psy-rdoq 0`), with `--bframes 0 --rc-lookahead 0 --no-scenecut
+  --no-cutree --frame-threads 1` restoring x265's zero-latency settings (it applies
+  one `--tune`; checked: the same encoder settings as zerolatency with those psy and AQ
+  values set by hand, decoded pictures identical); every other setting as above. Only
+  x264 and x265 run at visually tuned defaults on this chart: SVT-AV1 `--rtc` already
+  runs its PSNR tune (it offers no other in low delay), libaom and libvpx default to
+  `--tune psnr` with AQ off, and openh264 and NVENC run with adaptive quantisation off. They are scored on the chart's clip set and rungs and never change
+  it. The libaom and libvpx `--tune ssim` and openh264 adaptive-quantisation variants
+  are measured the same way. A variant is plotted where it scores better for its
+  encoder than the charted setting by more than 0.1 BD-J points (for x264 and
+  x265, the better of their two tunes). On these clips that is `--tune ssim` for x264
+  ultrafast and veryfast, `--tune psnr` for x264 medium and every x265 preset, and
+  `--tune ssim` for libaom rt 8 / rt 10 and libvpx rt 9; libvpx rt 7 scores worse with
+  it, and openh264's adaptive quantisation produced byte-identical streams in our
+  harness (no effect), so neither is plotted. Each plotted variant is
+  drawn in its default twin's shape, lightly filled, joined to it by a dashed line;
+  every variant is in the "Metric-tuned references" table, and every point against
+  the better-scoring x264 medium tune is in the table after it. Until they are
+  timed themselves they take their default twin's fps (noted in the table).

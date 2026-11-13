@@ -114,11 +114,14 @@ faster than our AV1, HEVC and VVC Defaults; our VVC Default is below 30 fps at 7
 `medium` is closer to us on the held-out set. Per-metric numbers, per-clip spread and known weaknesses:
 **[docs/results/](docs/results/README.md)**.
 
-**The anchor's settings matter.** x264 runs here with its default psychovisual settings, which are tuned for how
-the picture looks rather than for PSNR, VMAF or MS-SSIM, while our presets were tuned on exactly that mix. An
-independent re-run on the chart's clips (2026-11-13; same streams, x264 also run with `--tune zerolatency,psnr`)
-found x264 `medium --tune psnr` needs 9.8% fewer bits than the chart's anchor on BD-J (PSNR-YUV −8.3%, VMAF v1
-−19.4%, MS-SSIM −1.8%). Against it, every saving is smaller, and our H.264 Faster and Fastest presets save no
+**The anchor's settings matter.** x264's and x265's defaults are tuned for how the picture looks (psychovisual
+optimisations), which PSNR, VMAF and MS-SSIM cannot judge, and no subjective test was run here; our presets were
+tuned on exactly that metric mix. So the charts also show each x264 and x265 point at the metric-oriented tuning
+its own documentation provides (`--tune psnr` or `--tune ssim`, whichever scores better for it; lightly filled,
+joined to its default point by a dashed line; their fps is the default run's until re-timed). The AV1 and VP9
+references already run their PSNR tunes. x264 `medium --tune psnr` needs 9.8% fewer bits than the chart's anchor on
+BD-J (PSNR-YUV −8.3%, VMAF v1 −19.4%, MS-SSIM −1.8%); x265 `medium --tune psnr` moves from −40.7% to −44.1%.
+Against the PSNR-tuned x264 `medium`, every saving is smaller, and our H.264 Faster and Fastest presets save no
 bits:
 
 | Encoder | BD-J vs x264 `medium` (default psy settings, the chart's anchor) | BD-J vs x264 `medium --tune psnr` |
