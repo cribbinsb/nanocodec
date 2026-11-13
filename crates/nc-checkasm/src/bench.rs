@@ -57,6 +57,18 @@ pub struct BenchResult {
     pub ns_per_call: f64,
 }
 
+/// Time only the VP9 interpolation kernels, as the full suite does.
+#[must_use]
+pub fn bench_vp9_mc(isas: &[Isa]) -> Vec<BenchResult> {
+    let mut results = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::bench_vp9_mc::bench(&dsp, &mut results);
+        }
+    }
+    results
+}
+
 /// Time only AV1 edge/run filters, using the same cases and timing procedure
 /// as the full suite. This keeps iterative filter tuning bounded.
 #[must_use]

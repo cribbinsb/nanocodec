@@ -21,7 +21,11 @@ pub(super) mod layout {
 
     /// Whether tap `k` is negative (or zero) in tables with this layout.
     /// The AVX2 kernel multiplies by signed taps and needs only BILINEAR.
-    #[cfg(any(test, not(target_arch = "x86_64")))]
+    #[cfg(any(
+        test,
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", not(target_feature = "relaxed-simd"))
+    ))]
     #[inline(always)]
     pub(crate) const fn negative(layout: u8, k: usize) -> bool {
         layout >> k & 1 == 1
@@ -47,8 +51,9 @@ pub(super) trait RowKernel {
     /// Whether the pass schedule should filter two rows per step (the
     /// `_pair` methods); kernels whose vectors hold two narrow rows set it.
     const PAIR_ROWS: bool = false;
-    /// `taps` is a nonidentity phase: every magnitude is at most 127.
-    unsafe fn prepare(taps: &[i16; VP9_TAPS]) -> Self::Filters;
+    /// `taps` is a nonidentity phase of a table with this [`layout`]: every
+    /// magnitude is at most 127.
+    unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; VP9_TAPS]) -> Self::Filters;
     /// Exactly N bytes from `src`.
     unsafe fn load<const N: usize>(src: *const u8) -> Self::Row;
     /// Exactly N bytes to `dst`, optionally averaged with its existing pixels.
@@ -327,7 +332,7 @@ unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bo
                 }
             }
         } else if fy == 0 {
-            let filters = K::prepare(&taps[fx]);
+            let filters = K::prepare::<LAYOUT>(&taps[fx]);
             let line = src.add(VP9_TAPS_BEFORE * stride);
             horizontal_rows::<K, N, LAYOUT, AVG>(
                 (line, stride),
@@ -336,7 +341,7 @@ unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bo
                 &filters,
             );
         } else if fx == 0 {
-            let filters = K::prepare(&taps[fy]);
+            let filters = K::prepare::<LAYOUT>(&taps[fy]);
             for x in strided(w, N) {
                 let top = src.add(x + VP9_TAPS_BEFORE);
                 K::column::<N, LAYOUT, AVG>(top, stride, (dst.add(x), dst_stride), h, &filters);
@@ -345,8 +350,8 @@ unsafe fn convolve<K: RowKernel, const N: usize, const LAYOUT: u8, const AVG: bo
             // Every byte read below is first written by the horizontal pass.
             let mut temp = [core::mem::MaybeUninit::<u8>::uninit(); MAX_SIDE * MAX_ROWS];
             let temp = temp.as_mut_ptr().cast::<u8>();
-            let horizontal = K::prepare(&taps[fx]);
-            let vertical = K::prepare(&taps[fy]);
+            let horizontal = K::prepare::<LAYOUT>(&taps[fx]);
+            let vertical = K::prepare::<LAYOUT>(&taps[fy]);
             horizontal_rows::<K, N, LAYOUT, false>(
                 (src, stride),
                 (temp, w),

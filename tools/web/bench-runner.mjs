@@ -4,7 +4,7 @@
 //
 //   node bench-runner.mjs decode --pkg DIR --codec C --stream FILE [--repeat N] [--hash]
 //   node bench-runner.mjs encode --pkg DIR --codec C --yuv FILE --width W --height H
-//        --frames N --fps F --kbps R --peak-kbps P --buffer-ms B --key-seconds K [--fast] [--repeat N]
+//        --frames N --fps F --kbps R --peak-kbps P --buffer-ms B --key-seconds K [--fast] [--rgba-input] [--repeat N]
 //
 // decode: splits IVF (AV1/VP9/AV2) or Annex-B (H.264/HEVC) into the per-frame
 // packets the demo worker passes to BrowserDecoder.decode, and times each frame
@@ -18,7 +18,8 @@
 // encode: times BrowserEncoder.encode per frame as the demo pays it: from the
 // clip's I420 planes through a SourceFrame (the demo's video capture path,
 // modules with SourceFrame), or, for older modules, from RGBA converted from
-// the clip once (untimed) through the encoder's own RGBA->I420;
+// the clip once (untimed) through the encoder's own RGBA->I420 (also with
+// --rgba-input: the demo's RGBA path, for the test scene);
 // --fast selects the Fast preset (the demo's "Encoder preset"). The encoder's
 // quantizer argument (under rate control, the seed of the first key frame) is
 // the demo's initial one per codec (web/codecs.js), as the native CLI seeds it:
@@ -37,7 +38,7 @@ function parseArgs(argv) {
   const args = { mode, repeat: 3, hash: false, fast: false };
   for (let i = 0; i < rest.length; i++) {
     const key = rest[i].replace(/^--/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-    if (key === 'hash' || key === 'fast') args[key] = true;
+    if (key === 'hash' || key === 'fast' || key === 'rgbaInput') args[key] = true;
     else args[key] = rest[++i];
   }
   return args;
@@ -135,7 +136,7 @@ async function encode(args) {
   const width = +args.width, height = +args.height, count = +args.frames, fps = +args.fps;
   const frameBytes = width * height * 3 / 2;
   const yuv = await readFile(args.yuv);
-  const planes = 'SourceFrame' in module;
+  const planes = 'SourceFrame' in module && !args.rgbaInput;
   const frames = [];
   for (let i = 0; i < count; i++) {
     const frame = yuv.subarray(i * frameBytes, (i + 1) * frameBytes);
@@ -146,15 +147,16 @@ async function encode(args) {
   let bytes = 0;
   for (let pass = 0; pass < +args.repeat; pass++) {
     const encoder = new module.BrowserEncoder(args.codec, width, height, CODECS[args.codec].quantizer.initial, fps, +args.keySeconds * fps,
-      args.fast ? 'fast' : 'default', undefined, false, 'bt709');
+      args.fast ? 'fast' : 'default', undefined, false, planes ? 'bt709' : 'bt601');
     encoder.set_rate_control(+args.kbps, +args.peakKbps, +args.bufferMs);
-    const source = planes ? new module.SourceFrame(width, height) : null;
+    const source = 'SourceFrame' in module ? new module.SourceFrame(width, height) : null;
     const times = [];
     bytes = 0;
     for (const frame of frames) {
       const start = performance.now();
       if (planes) source.from_planes(frame, 'I420', 'bt709', width, height, layout);
-      const packet = encoder.encode(planes ? source : frame);
+      else source?.from_rgba(frame);
+      const packet = encoder.encode(source ?? frame);
       times.push(performance.now() - start);
       bytes += packet.length;
     }

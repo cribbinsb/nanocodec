@@ -63,7 +63,8 @@ The charts compare every encoder in its own real-time rate control at the same b
 
 ![Bitrate saving vs encode speed, one Ryzen 9 5950X core](docs/results/bd-vs-speed-x86.svg)
 
-<sub>**What is measured.** 720p (one 1884×720) at 24–30 fps, 150 frames per clip with one key frame; CBR targets
+<sub>**What is measured.** 720p (one 1884×720) at 24–30 fps, 150 frames per clip with one key frame (5 s at 30 fps; see
+[window length](#window-length): longer windows give smaller savings); CBR targets
 of 150–1200 kbps (scaled to each clip's pixel rate and capped at half the source's bitrate), 1 s buffer. Quality
 axis: BD-rate on the achieved bitrates against x264 0.165 `--preset medium --tune zerolatency --bframes 0
 --rc-lookahead 0 --threads 1` (ABR with a 1 s VBV). "BD-J" is our composite: the mean of the BD-rates on
@@ -81,7 +82,7 @@ also used to rank candidate changes during development, so the chart is not inde
 therefore re-measured every encoder on 71 clips from 21 other datasets
 ([held-out check](docs/results/heldout-chart-2026-11-12.md), same builds as the chart of 2026-11-12):
 
-| Encoder (settings as above) | BD-J, chart's 11 clips | BD-J, 71 held-out clips | fps, Jetson core | fps, PC core |
+| Encoder (settings as above; 150 frames, one key frame) | BD-J, chart's 11 clips | BD-J, 71 held-out clips | fps, Jetson core | fps, PC core |
 |---|---:|---:|---:|---:|
 | nanocodec VVC Default | −53.4% | −46.3% | 27.5 | 67.5 |
 | nanocodec AV2 Default | −53.6% | −44.5% | 31.5 | 85.5 |
@@ -144,8 +145,26 @@ bits:
 | x264 0.165 `medium --tune psnr` itself | −9.8% | 0 |
 | openh264 v2.7.0 | +24.6% | +42.8% |
 
-<sub>Chart's 11 clips; intervals are 95% bootstrap intervals over clips within content class (11 clips, so read
-them as approximate). `--tune ssim` changes the anchor by −1.4%.</sub>
+<sub>Chart's 11 clips, 150 frames, one key frame; intervals are 95% bootstrap intervals over clips within content
+class (11 clips, so read them as approximate). `--tune ssim` changes the anchor by −1.4%.</sub>
+
+#### Window length
+
+Every BD number on this page comes from 150-frame windows with one key frame (5 s at 30 fps),
+and our presets were tuned on such windows. That favours our encoders: in a 5 s window our first key frame takes
+8–10% of the bits and our streams end 5–6% over target (the key frame's loan is not yet repaid), which shows up as
+quality. On 5 clips (3 of them used for tuning, 2 from the chart set, so neither independent nor enough for
+intervals), the same builds over 600 frames (20 s, key frames at 0 and 300) gave a smaller saving for all three
+codecs tested, with the rate on target and the first frame at 2–3% of the bits:
+
+| Encoder | BD-J vs x264 `medium`, 150 frames | BD-J vs x264 `medium`, 600 frames | vs x264 `medium --tune psnr`, 600 frames |
+|---|---:|---:|---:|
+| nanocodec AV1 Default | −54.7% | −50.6% | −42.0% |
+| nanocodec HEVC Default | −52.2% | −46.7% | −37.6% |
+| nanocodec H.264 Default | −24.5% | −15.9% | −4.1% |
+
+A chart on longer windows is planned. Until then, read the 150-frame numbers as favourable to us by several
+points, most for H.264.
 
 ### Spatial scalability (SVC)
 
@@ -214,7 +233,8 @@ published with the `hevc.wasm` decoder, our HEVC WASM decoder took less time. Me
 Each codec has a **Default** (quality point) and a **Fast** preset (speed point):
 `--preset h264-fast | hevc-fast | av1-fast | vp9-fast | av2-fast | vvc-fast`. Some codecs have further speed
 points: `h264-faster`, `h264-fastest`, `hevc-faster`, `av1-faster`, `vp9-faster`, `vp9-fastest`. Measured on the
-chart's 11 clips and one Jetson core (fps), against the reference encoders at the settings above:
+chart's 11 clips (150 frames, one key frame) and one Jetson core (fps), against the reference encoders at the
+settings above:
 
 - H.264 Fast: 114 fps vs openh264 (realtime, medium complexity) 111 fps; BD-J −25.6% against openh264.
 - H.264 Faster: 134 fps; BD-J −8.5% vs x264 `medium` (+2.5% vs x264 `medium --tune psnr`, i.e. no saving) and

@@ -48,6 +48,8 @@ mod check_h264_intra;
 mod check_hevc_intra;
 mod check_hevc_put32;
 mod check_hevc_weight;
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+mod check_relaxed_dot;
 mod check_sub_blocks;
 mod check_transpose;
 mod check_vp9_filter;
@@ -68,7 +70,7 @@ mod check_vvc_refinement;
 mod check_vvc_tx64;
 pub mod rng;
 
-pub use bench::{BenchResult, bench, bench_av1_runs};
+pub use bench::{BenchResult, bench, bench_av1_runs, bench_vp9_mc};
 pub use check::{CheckReport, check};
 
 mod bench_memory;

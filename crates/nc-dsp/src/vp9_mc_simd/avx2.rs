@@ -268,7 +268,7 @@ impl RowKernel for Avx2 {
     /// libvpx's AVX2 convolution pairs rows (BSD-3-Clause).
     const PAIR_ROWS: bool = true;
     #[inline(always)]
-    unsafe fn prepare(taps: &[i16; 8]) -> Self::Filters {
+    unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; 8]) -> Self::Filters {
         // SAFETY: called only with AVX2 enabled and a nonidentity phase.
         unsafe {
             [

@@ -20,6 +20,7 @@
 import { codesTick, tickAt, tickMs } from './timeline.js';
 import { framesToDecode, streamFrameAtTick } from './reference.js';
 import { SourcePicture } from './colour.js';
+import { compiledModule } from './wasm.js';
 
 /**
  * Frames captured but not yet decoded by both views: one per stage (capture
@@ -46,9 +47,9 @@ class View {
       worker.onerror = failed;
     })));
   }
-  /** Start the decode worker on `port`, where packets will arrive. */
-  initDecoder(port) {
-    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port,
+  /** Start the decode worker on `port`, where packets will arrive, with the compiled codec module. */
+  initDecoder(port, wasmModule) {
+    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, wasmModule,
       operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
   }
   /** Ask for a key frame (only a live encoder can). */
@@ -70,10 +71,11 @@ class LiveView extends View {
     });
   }
   /** Start both workers; the encoder takes its frames from `capturePort`. Resolves once both are ready. */
-  init(capturePort) {
+  init(capturePort, wasmModule) {
     const channel = new MessageChannel();
-    this.initDecoder(channel.port1);
-    this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort }, [channel.port2, capturePort]);
+    this.initDecoder(channel.port1, wasmModule);
+    this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort, wasmModule },
+      [channel.port2, capturePort]);
     return this.ready;
   }
   codes(tick) { return codesTick(this.panel.current.step, tick); }
@@ -91,9 +93,9 @@ class ReferenceView extends View {
     this.last = null;
   }
   /** Start the decoder; source frames arrive on `capturePort` and go on with the stream's packets. */
-  init(capturePort) {
+  init(capturePort, wasmModule) {
     const channel = new MessageChannel();
-    this.initDecoder(channel.port1);
+    this.initDecoder(channel.port1, wasmModule);
     this.port = channel.port2;
     this.capturePort = capturePort;
     capturePort.onmessage = ({ data }) => this.submit(data);
@@ -148,11 +150,13 @@ export class Comparison {
       const ports = this.views.map(() => new MessageChannel());
       const views = this.views.map(({ panel }, i) => ({ width: panel.current.width, height: panel.current.height, port: ports[i].port1 }));
       this.capture.postMessage({ type: 'init', views }, ports.map(p => p.port1));
-      Promise.all(this.views.map((view, i) => view.init(ports[i].port2))).then(() => {
-        clearTimeout(timeout);
-        this.startFailed = null;
-        resolve();
-      });
+      compiledModule()
+        .then(wasmModule => Promise.all(this.views.map((view, i) => view.init(ports[i].port2, wasmModule))))
+        .then(() => {
+          clearTimeout(timeout);
+          this.startFailed = null;
+          resolve();
+        }, error => this.fail(error));
     });
   }
   /** Whether the queue is full: the page should not capture until a frame completes. */

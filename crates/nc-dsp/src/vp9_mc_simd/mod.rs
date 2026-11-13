@@ -16,6 +16,8 @@ mod avx2;
 mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod simd128;
+#[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
+mod simd128_dot;
 
 pub(crate) const MAX_SIDE: usize = 64;
 

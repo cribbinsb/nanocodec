@@ -73,7 +73,8 @@ async function receive({ data: message }) {
   try {
     if (message.type === 'init') {
       module = await codecModule;
-      wasm = await module.default();
+      // The page posts the module it compiled once (wasm.js compiledModule).
+      wasm = await module.default({ module_or_path: message.wasmModule });
       config = message.config;
       createEncoder(DEFAULT_COLOUR);
       source = new module.SourceFrame(config.width, config.height);

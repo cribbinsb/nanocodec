@@ -83,6 +83,23 @@ e122b42b session). VVC Default (−54.0%) and AV2 Default (−53.7%) are within 
 VVC runs at 0.87x / 0.79x AV2's speed (Jetson / PC). Where the references are ahead: SVT-AV1 M12 and M13,
 x264 `veryfast` and `ultrafast` and openh264 encode faster than our Default presets of every codec but H.264.
 
+### Window length
+
+Every BD number here comes from 150-frame windows with one key frame (5 s at 30 fps); our presets were tuned on
+such windows. In 5 s our first key frame takes 8–10% of the bits and our streams end 5–6% over target (the key
+frame's loan, repaid over 10 s, is still outstanding), so a short single-key window favours our first-key
+investment. An independent check on the 5 clips of our `long` set (3 TRAIN, 2 VAL: not independent, and too few
+for intervals), same builds, 150 frames vs 600 frames with key frames at 0 and 300:
+
+| Encoder | BD-J vs x264 `medium`, 150 frames | 600 frames | vs x264 `medium --tune psnr`, 600 frames |
+|---|---:|---:|---:|
+| nanocodec AV1 Default | −54.7% | −50.6% | −42.0% |
+| nanocodec HEVC Default | −52.2% | −46.7% | −37.6% |
+| nanocodec H.264 Default | −24.5% | −15.9% | −4.1% |
+
+At 600 frames our rate is on target (median 1.00×) and the first frame is 2–3% of the bits. The direction is the
+same for all three codecs. A chart on longer windows is planned.
+
 ### The anchor's settings
 
 The chart's anchor is x264 `medium` with its default psychovisual settings (psy-rd, AQ), which favour how the
@@ -435,7 +452,8 @@ Exact settings are in [bd-vs-speed.md](bd-vs-speed.md).
 
 ## Caveats
 
-- 11 short clips (150 frames): differences of a few percent are within the per-clip spread.
+- 11 short clips (150 frames, one key frame): differences of a few percent are within the per-clip spread, and
+  longer windows give smaller savings (see [Window length](#window-length)).
 - The charts (2026-11-11 refresh, new score) and the tables marked "previous score" (earlier builds, VMAF NEG)
   use different builds and scores; compare within one table, not across them.
 - Where some encoder's curve had no reliable rate overlap with x264 `medium` on the real-use ladder (the three

@@ -44,7 +44,7 @@ impl RowKernel for Neon {
     type Row = uint8x8_t;
     const LANES: usize = 8;
     #[inline(always)]
-    unsafe fn prepare(taps: &[i16; 8]) -> Self::Filters {
+    unsafe fn prepare<const LAYOUT: u8>(taps: &[i16; 8]) -> Self::Filters {
         // SAFETY: NEON is enabled by the entry point; magnitudes are <=127.
         unsafe { taps.map(|tap| vdup_n_u8(tap.unsigned_abs() as u8)) }
     }

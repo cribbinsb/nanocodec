@@ -77,9 +77,13 @@ short streams of every shipped preset of every codec, decoded by two standard de
 compared frame by frame. The longer chart streams are not each decoded; a spot check that decodes a sample of them
 is under way.
 
-**Only 150 frames with one key frame?** Yes, so the first key frame weighs more than it would in a long stream.
-Separate long single-key runs and a 2 s key-period pass are used internally for rate control and key-frame
-pulse, but the published BD numbers are from the 150-frame clips.
+**Only 150 frames with one key frame?** Yes (5 s at 30 fps), and our presets were tuned on such windows. It
+favours us: in 5 s our first key frame takes 8–10% of the bits and our streams end 5–6% over target (the key
+frame's loan is not yet repaid). On 5 clips (not independent: 3 used for tuning, 2 from the chart set; too few
+for intervals) over 600 frames with key frames at 0 and 300, our savings against x264 `medium` were smaller for
+all three codecs tested: AV1 −54.7% → −50.6%, HEVC −52.2% → −46.7%, H.264 −24.5% → −15.9%; against x264 `medium
+--tune psnr` over 600 frames, AV1 −42.0%, HEVC −37.6%, H.264 −4.1%. A longer-window chart is planned; until then
+read the 150-frame numbers as favourable to us by several points.
 
 **Why these bitrates?** Our use case is low-bitrate streaming. Each clip's ladder is scaled to its pixel rate and
 capped at half its source's bitrate, because many sources are already compressed and coding above that measures

@@ -106,6 +106,8 @@ dependencies = [
  "libfuzzer-sys",
  "nc-av1",
  "nc-av2",
+ "nc-common",
+ "nc-encoder",
  "nc-h264",
  "nc-hevc",
  "nc-vp9",
