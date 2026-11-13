@@ -48,6 +48,16 @@ pub(crate) trait Bytes: Copy {
     /// Store only the low four bytes to writable memory. ISA must be enabled.
     unsafe fn store4(self, p: *mut u8);
     fn max(self, b: Self) -> Self;
+    /// Unsigned absolute byte difference; NEON has a single UABD instruction.
+    #[inline(always)]
+    fn difference(self, b: Self) -> Self {
+        self.sub_sat(b).max(b.sub_sat(self))
+    }
+    /// All-one lanes where the unsigned sample does not exceed `limit`.
+    #[inline(always)]
+    fn within(self, limit: u8) -> Self {
+        self.sub_sat(Self::splat(limit)).eq(Self::splat(0))
+    }
     fn sub_sat(self, b: Self) -> Self;
     fn add_sat(self, b: Self) -> Self;
     fn signed_add(self, b: Self) -> Self;
@@ -177,7 +187,7 @@ pub(crate) trait QuadBytes: Bytes<W: MaskWords> {
 
 #[inline(always)]
 pub(crate) fn difference<B: Bytes>(a: B, b: B) -> B {
-    a.sub_sat(b).max(b.sub_sat(a))
+    a.difference(b)
 }
 #[inline(always)]
 pub(crate) fn select<B: Bytes>(old: B, new: B, mask: B) -> B {
@@ -185,7 +195,7 @@ pub(crate) fn select<B: Bytes>(old: B, new: B, mask: B) -> B {
 }
 #[inline(always)]
 pub(crate) fn within<B: Bytes>(v: B, limit: u8) -> B {
-    v.sub_sat(B::splat(limit)).eq(B::splat(0))
+    v.within(limit)
 }
 
 #[inline(always)]

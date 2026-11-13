@@ -145,6 +145,34 @@ Method and per-change detail: `docs/handoff/vp9.md` "Decoder speed against vpxde
 
 The remaining Jetson gap is in the loop-filter and MC NEON kernels (`docs/handoff/vp9.md`, round 2).
 
+WASM decode at the close-out, ms per frame. Relaxed module, core 14, start (adb57e6e) -> 270b535e:
+- ours 720p: 2.40 -> 2.28;
+- vpxenc rt 720p: 3.40 -> 3.25;
+- SVC L2T1: 4.51 -> 3.40;
+- vpxenc good 1080p: 14.07 -> 12.89.
+
+The plain SIMD128 module fell 4–25 % on the same streams. Full table: `docs/handoff/vp9.md`, close-out.
+**AV1 after av1-dec-parity (2026-11-13).** These are ours ÷ dav1d 1.5.4 (`--threads 1 --framedelay 1`)
+from `tools/dev/av1_dec_yardstick.py`. x86 is callgrind instructions; the Jetson is cycles on core 3, min of
+3, under `jetson-timed.sh`. Every stream's output is identical to dav1d's. "Before" is adb57e6e on x86 and
+c47e12ee on the Jetson. "Like for like" means ours runs `--discard 1`, with no output copy, matching dav1d's null
+muxer. The other columns copy each frame out to /dev/null. Handoff:
+[av1-decoder.md "Parity with dav1d"](../handoff/av1-decoder.md#parity-with-dav1d-av1-dec-parity-2026-11-13).
+
+| Stream | x86 before | x86 head | x86 like for like | Jetson before | Jetson head | Jetson like for like |
+|---|---:|---:|---:|---:|---:|---:|
+| ours 720p 600k | 1.184 | 1.182 | 1.175 | 1.093 | 1.071 | 1.056 |
+| ours 1080p 3M | 1.228 | 1.221 | 1.219 | 1.191 | 1.144 | 1.132 |
+| SVT-AV1 M10 1080p 3M | 1.297 | 1.273 | 1.268 | 1.292 | 1.230 | 1.227 |
+| SVT-AV1 p8 720p 1M | 1.416 | 1.348 | 1.341 | 1.332 | 1.296 | 1.293 |
+| SVT-AV1 M12 `--rtc` 720p 1M | 1.333 | 1.294 | 1.284 | 1.266 | 1.231 | 1.210 |
+| libaom good 720p 1M | 1.642 | 1.558 | 1.553 | 1.361 | 1.323 | 1.313 |
+| libaom film grain 720p 1M | 2.268 | 2.219 | 2.214 | 1.467 | 1.436 | 1.424 |
+
+x86 wall time, on core 14 under `host-timed.sh` with best of 7 rounds, is indicative only: the host load was
+about 33. Our 720p went from 1.15 to 1.11, our 1080p from 1.28 to 1.25, SVT M10 from 1.57 to 1.51, SVT p8 from
+1.47 to 1.39, SVT rtc from 1.41 to 1.35, and libaom stayed at 1.52.
+
 **HEVC against Antare's `hevc.wasm`** (their numbers scaled by our own base-to-head ratio, as in
 [wasm-speed.md](wasm-speed.md#final-re-time-2026-11-13-dec-winddown)): we are now faster on all five rows:
 - Novatek −20 %;

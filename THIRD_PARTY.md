@@ -419,6 +419,9 @@ partition/mode probabilities, scan/context tables, Pareto token models and
 `vpx_dsp/fwd_txfm.c` and `vpx_dsp/inv_txfm.c`. `intra.rs` implements
 partition/intra syntax and context evolution checked against
 `vp9/encoder/vp9_bitstream.c` and the decoder.
+`nc-dsp/src/vp9_loop_filter/packed/neon.rs` follows the sixteen-line dual
+layout of `vpx_dsp/arm/loopfilter_neon.c` (`vpx_lpf_*_dual_neon`), using
+shared byte-mask arithmetic and paired eight-word smoothing.
 `tools/codegen/gen_vp9_bool_vector.py` compiles original upstream C routines
 as a temporary external oracle; the resulting test vector is retained.
 `motion.rs` reimplements default-context motion-vector difference coding from

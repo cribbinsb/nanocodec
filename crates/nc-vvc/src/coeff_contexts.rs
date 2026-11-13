@@ -1,6 +1,7 @@
 //! H.266 coefficient CABAC initialization tables (I/P slices only).
 //! Tables from `VVenC` Contexts.cpp, BSD-3-Clause-Clear; see `THIRD_PARTY.md`.
 use crate::contexts::Context;
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[derive(Debug, Clone)]
 pub(crate) struct CoeffContexts {
     pub group: [[Context; GROUP_CONTEXTS]; 2],

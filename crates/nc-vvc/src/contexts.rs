@@ -51,6 +51,7 @@ const BITS: [f32; PROBABILITY_STATES] = [
 /// A context's two probability estimates (15-bit, below 0x8000) and their
 /// window shifts (at most 11), stored narrow: whole context sets are copied
 /// for every rate-distortion candidate, so their size is copy time.
+#[cfg_attr(test, derive(PartialEq, Eq))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Context {
     state: [u16; 2],

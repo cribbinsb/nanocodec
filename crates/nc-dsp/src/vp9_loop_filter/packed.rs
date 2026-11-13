@@ -1,9 +1,8 @@
-//! Eight-line VP9 edge-filter schedule over the shared packed-byte lanes
+//! VP9 edge-filter schedule over shared packed-byte groups
 //! (`crate::lpf_bytes`): masks, flat decisions and the 8/16 smoothing.
 #![allow(clippy::inline_always)]
-use crate::lpf_bytes::{
-    Bytes, INNER, LANES, Words, difference, load, narrow, select, store, within,
-};
+use crate::deblock::av1_packed::{BasicTile, Tile};
+use crate::lpf_bytes::{Bytes, INNER, LANES, Words, difference, narrow, select, within};
 use crate::{Vp9FilterLimits, Vp9FilterWidth};
 #[cfg(target_arch = "x86_64")]
 pub(super) mod avx2;
@@ -53,15 +52,15 @@ fn wide<B: Bytes, const N: usize, const SHIFT: i32>(input: &[B; N], output: &mut
 }
 
 #[inline(always)]
-unsafe fn group<B: Bytes, const WIDTH: usize>(
+unsafe fn group<B: Bytes, T: Tile<B>, const LINES: usize, const WIDTH: usize>(
     data: &mut [u8],
     edge: usize,
     step: usize,
     along: usize,
     limits: Vp9FilterLimits,
 ) {
-    // SAFETY: the checked caller provides all eight lines and filter taps.
-    let inner = unsafe { load::<B>(data.as_ptr(), edge, step, along, INNER) };
+    // SAFETY: the checked caller provides all LINES lines and filter taps.
+    let inner = unsafe { T::load::<LINES>(data.as_ptr(), edge, step, along, INNER) };
     let mut p = [B::splat(0); LANES];
     let mut q = p;
     for i in 0..INNER {
@@ -89,8 +88,8 @@ unsafe fn group<B: Bytes, const WIDTH: usize>(
             // SAFETY: full-width footprint was checked; outer data is needed only now.
             let (left, right) = unsafe {
                 (
-                    load::<B>(data.as_ptr(), edge, step, along, LANES),
-                    load::<B>(data.as_ptr(), edge, step, along, 0),
+                    T::load::<LINES>(data.as_ptr(), edge, step, along, LANES),
+                    T::load::<LINES>(data.as_ptr(), edge, step, along, 0),
                 )
             };
             let mut outer_flat = B::splat(0);
@@ -108,7 +107,7 @@ unsafe fn group<B: Bytes, const WIDTH: usize>(
                 wide::<B, 16, 4>(&all, &mut out, flat2);
                 // SAFETY: same validated full-width tiles as the loads above.
                 unsafe {
-                    store::<B>(
+                    T::store::<LINES>(
                         data.as_mut_ptr(),
                         edge,
                         step,
@@ -117,7 +116,7 @@ unsafe fn group<B: Bytes, const WIDTH: usize>(
                         out[..LANES].try_into().expect("tile"),
                         1..LANES,
                     );
-                    store::<B>(
+                    T::store::<LINES>(
                         data.as_mut_ptr(),
                         edge,
                         step,
@@ -133,7 +132,7 @@ unsafe fn group<B: Bytes, const WIDTH: usize>(
     }
     // SAFETY: same validated inner tile as the initial load.
     unsafe {
-        store::<B>(
+        T::store::<LINES>(
             data.as_mut_ptr(),
             edge,
             step,
@@ -175,7 +174,7 @@ unsafe fn run<B: Bytes, const WIDTH: usize>(
     for first in (0..full).step_by(LANES) {
         // SAFETY: dispatch validated every group and the ISA entry point enables B.
         unsafe {
-            group::<B, WIDTH>(data, edge + first * along, step, along, limits);
+            group::<B, BasicTile, LANES, WIDTH>(data, edge + first * along, step, along, limits);
         }
     }
     if full != lines {
@@ -188,5 +187,58 @@ unsafe fn run<B: Bytes, const WIDTH: usize>(
             width,
             limits,
         );
+    }
+}
+
+/// Match libvpx's NEON dual layout: sixteen independent lines share the byte
+/// masks, with two sets of eight widened lanes for flat smoothing. Tails keep
+/// the existing eight-line entry and oracle behavior.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+#[target_feature(enable = "neon")]
+unsafe fn run_paired<const WIDTH: usize>(
+    data: &mut [u8],
+    edge: usize,
+    step: usize,
+    along: usize,
+    lines: usize,
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+) {
+    use crate::deblock::av1_tile::PairedTile;
+    use crate::lpf_bytes::{neon::B, neon_wide::B as Wide};
+    const PAIRED_LINES: usize = 2 * LANES;
+    let reach = if WIDTH == 16 { LANES } else { INNER };
+    let independent = (along == 1 && step >= lines) || (step == 1 && along >= 2 * reach);
+    if limits.boundary >= 255 || !independent {
+        crate::vp9_deblock::vp9_filter_edge(data, edge, step, along, lines, width, limits);
+        return;
+    }
+    let full = lines / PAIRED_LINES * PAIRED_LINES;
+    for first in (0..full).step_by(PAIRED_LINES) {
+        // SAFETY: caller validates both complete eight-line tiles; NEON is enabled.
+        unsafe {
+            group::<Wide, PairedTile<Wide>, PAIRED_LINES, WIDTH>(
+                data,
+                edge + first * along,
+                step,
+                along,
+                limits,
+            );
+        }
+    }
+    if full != lines {
+        // SAFETY: remaining complete groups and partial tail stay in the checked footprint.
+        unsafe {
+            run::<B, WIDTH>(
+                data,
+                edge + full * along,
+                step,
+                along,
+                lines - full,
+                width,
+                limits,
+            );
+        }
     }
 }

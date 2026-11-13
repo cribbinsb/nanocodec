@@ -12,13 +12,14 @@
 #![allow(clippy::inline_always)]
 use super::{Bytes, LANES, PairedBytes, Words};
 use core::arch::aarch64::{
-    int16x8_t, uint8x16_t, vaddq_s16, vandq_u8, vceqq_u8, vcombine_u8, vcreate_u8, vdupq_n_s16,
-    vdupq_n_u8, veorq_u8, vget_high_u8, vget_low_u8, vgetq_lane_u16, vgetq_lane_u32, vld1_u8,
-    vmaxq_u8, vmaxvq_u8, vmovl_high_u8, vmovl_u8, vqaddq_s8, vqaddq_u8, vqmovun_high_s16,
-    vqmovun_s16, vqsubq_s8, vqsubq_u8, vreinterpretq_s8_u8, vreinterpretq_s16_u16,
-    vreinterpretq_u8_s8, vreinterpretq_u8_u32, vreinterpretq_u16_u8, vreinterpretq_u32_u8,
-    vreinterpretq_u32_u16, vshrq_n_s8, vshrq_n_s16, vshrq_n_u8, vst1_u8, vsubq_s16, vtrn1q_u8,
-    vtrn1q_u16, vtrn1q_u32, vtrn2q_u8, vtrn2q_u16, vtrn2q_u32, vzip1_u8, vzip2_u8,
+    int16x8_t, uint8x16_t, vabdq_u8, vaddq_s16, vandq_u8, vceqq_u8, vcleq_u8, vcombine_u8,
+    vcreate_u8, vdupq_n_s16, vdupq_n_u8, veorq_u8, vget_high_u8, vget_low_u8, vgetq_lane_u16,
+    vgetq_lane_u32, vld1_u8, vmaxq_u8, vmaxvq_u8, vmovl_high_u8, vmovl_u8, vqaddq_s8, vqaddq_u8,
+    vqmovun_high_s16, vqmovun_s16, vqsubq_s8, vqsubq_u8, vreinterpretq_s8_u8,
+    vreinterpretq_s16_u16, vreinterpretq_u8_s8, vreinterpretq_u8_u32, vreinterpretq_u16_u8,
+    vreinterpretq_u32_u8, vreinterpretq_u32_u16, vshrq_n_s8, vshrq_n_s16, vshrq_n_u8, vst1_u8,
+    vsubq_s16, vtrn1q_u8, vtrn1q_u16, vtrn1q_u32, vtrn2q_u8, vtrn2q_u16, vtrn2q_u32, vzip1_u8,
+    vzip2_u8,
 };
 #[derive(Clone, Copy)]
 pub(crate) struct B(uint8x16_t);
@@ -66,6 +67,16 @@ impl Bytes for B {
             p.cast::<u16>()
                 .write_unaligned(vgetq_lane_u16::<0>(vreinterpretq_u16_u8(self.0)));
         }
+    }
+    #[inline(always)]
+    fn difference(self, b: Self) -> Self {
+        // SAFETY: the ISA entry point enables NEON.
+        unsafe { Self(vabdq_u8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn within(self, limit: u8) -> Self {
+        // SAFETY: the ISA entry point enables NEON.
+        unsafe { Self(vcleq_u8(self.0, vdupq_n_u8(limit))) }
     }
     #[inline(always)]
     fn max(self, b: Self) -> Self {

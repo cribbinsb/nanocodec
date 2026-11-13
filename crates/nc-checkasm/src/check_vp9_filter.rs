@@ -50,7 +50,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
             Vp9FilterWidth::Sixteen,
         ] {
             for (step, along) in [(STRIDE, 1), (1, STRIDE), (1, 1), (2, 3)] {
-                for lines in [0, 1, 4, 7, 8, 9, 16, 24] {
+                for lines in [0, 1, 4, 7, 8, 9, 15, 16, 17, 24, 31, 32] {
                     for (level, sharpness) in [0, 1, 15, 16, 31, 32, 47, 63, 83, 84, 255]
                         .into_iter()
                         .flat_map(|level| [0, 3, 7].map(move |sharpness| (level, sharpness)))
@@ -100,17 +100,38 @@ fn exact_footprints(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) 
             4
         };
         for (step, along) in [(31, 1), (1, 31)] {
-            let edge = reach * step;
-            let last = edge + 7 * along + (reach - 1) * step;
-            let input: Vec<u8> = (0..last + 2).map(|i| 120 + (i % 2) as u8).collect();
-            let mut expected = input.clone();
-            let mut actual = input;
-            let limits = Vp9FilterLimits::new(63);
-            reference.vp9_filter_edge(&mut expected[1..], edge, step, along, 8, width, limits);
-            candidate.vp9_filter_edge(&mut actual[1..], edge, step, along, 8, width, limits);
-            record(report, candidate.isa(), expected == actual, || {
-                format!("VP9 exact footprint {width:?} step={step}")
-            });
+            for lines in [8, 16, 24, 32] {
+                if step != 1 && lines > step {
+                    continue;
+                }
+                let edge = reach * step;
+                let last = edge + (lines - 1) * along + (reach - 1) * step;
+                let input: Vec<u8> = (0..last + 2).map(|i| 120 + (i % 2) as u8).collect();
+                let mut expected = input.clone();
+                let mut actual = input;
+                let limits = Vp9FilterLimits::new(63);
+                reference.vp9_filter_edge(
+                    &mut expected[1..],
+                    edge,
+                    step,
+                    along,
+                    lines,
+                    width,
+                    limits,
+                );
+                candidate.vp9_filter_edge(
+                    &mut actual[1..],
+                    edge,
+                    step,
+                    along,
+                    lines,
+                    width,
+                    limits,
+                );
+                record(report, candidate.isa(), expected == actual, || {
+                    format!("VP9 exact footprint {width:?} step={step} lines={lines}")
+                });
+            }
         }
     }
 }

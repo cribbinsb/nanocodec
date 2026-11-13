@@ -2,9 +2,9 @@
 
 use super::{Bytes, LANES, MaskWords, QuadBytes, WordTable, Words};
 use core::arch::aarch64::{
-    int16x8_t, uint8x8_t, vaddq_s16, vand_u8, vceq_u8, vdup_n_u8, vdupq_n_s16, veor_u8, vld1_u8,
-    vmax_u8, vmaxv_u8, vmovl_u8, vqadd_s8, vqadd_u8, vqmovun_s16, vqsub_s8, vqsub_u8,
-    vreinterpret_s8_u8, vreinterpret_u8_s8, vreinterpretq_s16_u16, vshr_n_s8, vshr_n_u8,
+    int16x8_t, uint8x8_t, vabd_u8, vaddq_s16, vand_u8, vceq_u8, vcle_u8, vdup_n_u8, vdupq_n_s16,
+    veor_u8, vld1_u8, vmax_u8, vmaxv_u8, vmovl_u8, vqadd_s8, vqadd_u8, vqmovun_s16, vqsub_s8,
+    vqsub_u8, vreinterpret_s8_u8, vreinterpret_u8_s8, vreinterpretq_s16_u16, vshr_n_s8, vshr_n_u8,
     vshrq_n_s16, vst1_u8, vsubq_s16, vzip1_u8, vzip2_u8,
 };
 use core::arch::aarch64::{
@@ -59,6 +59,16 @@ impl Bytes for B {
                     core::arch::aarch64::vreinterpret_u32_u8(self.0),
                 ));
         }
+    }
+    #[inline(always)]
+    fn difference(self, b: Self) -> Self {
+        // SAFETY: the ISA entry point enables NEON.
+        unsafe { Self(vabd_u8(self.0, b.0)) }
+    }
+    #[inline(always)]
+    fn within(self, limit: u8) -> Self {
+        // SAFETY: the ISA entry point enables NEON.
+        unsafe { Self(vcle_u8(self.0, vdup_n_u8(limit))) }
     }
     #[inline(always)]
     fn max(self, b: Self) -> Self {

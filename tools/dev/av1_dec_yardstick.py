@@ -12,14 +12,16 @@ same output (MD5 of the whole I420 output, streamed; no YUV is written).
   code counts where it was inlined (our symbol decode mostly lands in the
   syntax functions that call it, dav1d's msac is out of line), so read the
   syntax stages together.
+* `--discard`: our decoder writes nothing, as dav1d with its null muxer
+  (like for like); by default it copies every frame out to /dev/null.
 * `--mode perf` (the Jetson, paranoid 2): user-space instructions and cycles
   from the hardware counters (`jperf.count`), minimum over `--rounds`,
   interleaved. No stages: use `tools/dev/pcsample.py` there.
 
     python3 tools/dev/av1_dec_yardstick.py --ours $CARGO_TARGET_DIR/release/nanocodec \\
-        [--dav1d PATH] [--mode callgrind|perf] [--workers 4] [--stages] STREAM.ivf...
+        [--dav1d PATH] [--mode callgrind|perf] [--workers 4] [--stages] [--discard] STREAM.ivf...
 
-Streams are IVF; `--frames N` per stream is read from the IVF header.
+Streams are IVF; the frame count per stream is read from the IVF header.
 """
 
 from __future__ import annotations
@@ -82,8 +84,11 @@ def ivf_frames(path: Path) -> int:
         return struct.unpack("<I", f.read(32)[IVF_HEADER_FRAMES])[0]
 
 
-def ours_cmd(ours: Path, stream: Path, out: str) -> list[str]:
-    return [str(ours), "decode", "--codec", "av1", "--input", str(stream), "--output", out]
+def ours_cmd(ours: Path, stream: Path, out: str | None) -> list[str]:
+    """Our decode of `stream` into `out`, or writing nothing (`--discard 1`,
+    as dav1d's null muxer) when `out` is None."""
+    sink = ["--output", out] if out else ["--discard", "1"]
+    return [str(ours), "decode", "--codec", "av1", "--input", str(stream), *sink]
 
 
 def dav1d_cmd(dav1d: Path, stream: Path, out: str) -> list[str]:
@@ -164,7 +169,7 @@ def by_stage(functions: dict[str, int], symbols: tuple[list[int], list[str]] | N
 
 def measure_callgrind(opts, stream: Path, scratch: Path) -> dict:
     result = {}
-    for who, argv, binary in (("ours", ours_cmd(opts.ours, stream, "/dev/null"), opts.ours),
+    for who, argv, binary in (("ours", ours_cmd(opts.ours, stream, opts.sink), opts.ours),
                               ("dav1d", dav1d_cmd(opts.dav1d, stream, "/dev/null"), opts.dav1d)):
         out_file = scratch / f"{who}.{stream.stem}.cg"
         total, functions = callgrind_self(argv, out_file, opts.reuse)
@@ -182,7 +187,7 @@ def measure_perf(opts, stream: Path) -> dict:
 
     runs = {"ours": [], "dav1d": []}
     for _ in range(opts.rounds):
-        runs["ours"].append(count(ours_cmd(opts.ours, stream, "/dev/null"), opts.core))
+        runs["ours"].append(count(ours_cmd(opts.ours, stream, opts.sink), opts.core))
         runs["dav1d"].append(count(dav1d_cmd(opts.dav1d, stream, "/dev/null"), opts.core))
     return {who: {"total": min(i for i, _ in r), "cycles": min(c for _, c in r)} for who, r in runs.items()}
 
@@ -224,12 +229,16 @@ def main() -> None:
     parser.add_argument("--core", type=int, default=3, help="perf mode: core to pin to")
     parser.add_argument("--stages", action="store_true", help="callgrind mode: per-stage table")
     parser.add_argument("--no-hash", action="store_true", help="skip the output identity check")
+    parser.add_argument("--discard", action="store_true",
+                        help="ours writes nothing (`--discard 1`), like dav1d's null muxer; "
+                             "otherwise it copies each frame out to /dev/null")
     parser.add_argument("--keep", type=Path, help="callgrind mode: keep the profiles in this directory")
     parser.add_argument("--reuse", action="store_true",
                         help="with --keep: re-read profiles already there instead of measuring again")
     parser.add_argument("streams", nargs="+", type=Path)
     opts = parser.parse_args()
     opts.ours = opts.ours.resolve()
+    opts.sink = None if opts.discard else "/dev/null"
     if opts.mode == "callgrind" and not shutil.which("valgrind"):
         sys.exit("callgrind mode needs valgrind; use --mode perf")
 

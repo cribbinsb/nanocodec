@@ -55,7 +55,7 @@ pub(crate) trait Tile<B: Bytes> {
     );
 }
 
-struct BasicTile;
+pub(crate) struct BasicTile;
 impl<B: Bytes> Tile<B> for BasicTile {
     #[inline(always)]
     unsafe fn load<const LINES: usize>(
