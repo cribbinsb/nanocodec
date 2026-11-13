@@ -6,7 +6,7 @@
 //!                  [--recon recon.yuv] [--display-recon shown.yuv]
 //!                  [--block 8|16|32|64] [--intra-period N] [--key-qp-offset D] [--preset NAME] [--params FILE]
 //!                  [--param name=value]... [--film-grain [STRENGTH]]
-//! nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv]
+//! nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]
 //!                  [--frame-md5 frames.md5] [--film-grain 0|1]   (AV1: 0 shows frames grain-free)
 //! nanocodec params      # list tunable parameters, defaults, ranges
 //! nanocodec --version   # version and the commit it was built from (-dirty: local changes)
@@ -168,7 +168,7 @@ const USAGE: &str = concat!(
     "       [--buffer-ms ms] [--peak-bitrate kbps] [--min-qp Q] [--max-qp Q]\n",
     "       [--max-qp-step N] [--rate-log frames.csv] [--frame-drop]\n",
     "       [--rate-change FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]]... [--resize FRAME:WxH]...\n",
-    "       nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv]\n",
+    "       nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]\n",
     "                 [--frame-md5 frames.md5] [--film-grain 0|1] [--operating-point N]   (AV1)\n",
     "       nanocodec extract --codec av1|av2|h264|hevc|vvc --temporal-layers N --max-layer M\n",
     "                 --input stream (--output substream | --list)\n",

@@ -8,12 +8,12 @@
 //! `THIRD_PARTY.md`).
 
 use nc_common::decode::{DecodeError, Result};
-use nc_common::{Picture, PlaneIndex, PlaneView};
+use nc_common::{Picture, Plane, PlaneIndex, PlaneView};
 use nc_dsp::{
     VP9_MAX_SCALED_STEP, VP9_TAPS, VP9_TAPS_BEFORE, Vp9Filter, Vp9IntraEdges, Vp9IntraMode,
 };
 
-use super::block::BlockInfo;
+use super::block::{BlockInfo, REFS_PER_FRAME};
 use super::frame::{BlockPosition, FrameDecoder, Tile};
 use super::header::valid_reference_size;
 use crate::bool_coder::BoolReader;
@@ -278,6 +278,69 @@ fn predict_unscaled(
     target.convolve(dsp, kind, plane.window(corner, span, window), phase, (w, h));
 }
 
+/// The prediction of a block of 8x8 or more from references of the frame's
+/// size (almost all blocks): one prediction per plane and reference, without
+/// the sub-block grid or the scaled path's state in the loop.
+#[allow(
+    clippy::inline_always,
+    reason = "one call per block; out of line, the plane loop measured slower (x86 +0.9 %)"
+)]
+#[inline(always)]
+fn predict_whole_block(
+    dsp: &nc_dsp::Dsp,
+    planes: &mut [Plane; 3],
+    (references, kind): (&[Option<&Reference<'_>>; 2], Vp9Filter),
+    (info, position): (&BlockInfo, &BlockPosition),
+    window: &mut [u8],
+) {
+    for (plane, picture_plane) in PlaneIndex::ALL.into_iter().zip(planes) {
+        let ss = usize::from(plane != PlaneIndex::Y);
+        let (n4w, n4h) = position.plane_size_4x4(ss);
+        let size = (n4w * 4, n4h * 4);
+        let (x, y) = (
+            ((position.mi_col * MI_SIZE) >> ss) as i32,
+            ((position.mi_row * MI_SIZE) >> ss) as i32,
+        );
+        let stride = picture_plane.stride();
+        let unit = 1 << (1 - ss);
+        for (r, reference) in references.iter().flatten().enumerate() {
+            let mv = info.mv[r];
+            let block = picture_plane
+                .samples_at_mut(x as isize, y as isize, size.0, size.1)
+                .expect("prediction blocks lie inside the plane");
+            let target = Target {
+                block,
+                stride,
+                average: r == 1,
+            };
+            // Positions in 1/16 plane samples.
+            let at = (x * 16 + mv.col * unit, y * 16 + mv.row * unit);
+            let plane_ref = &reference.planes[plane as usize];
+            predict_unscaled(dsp, plane_ref, kind, at, size, window, target);
+        }
+    }
+}
+
+/// A block's references (the second for compound blocks), each checked once
+/// per block to be present and of a valid size.
+fn block_references<'r>(
+    frame_references: &'r [Option<Reference<'r>>; REFS_PER_FRAME],
+    info: &BlockInfo,
+) -> Result<[Option<&'r Reference<'r>>; 2]> {
+    let refs = 1 + usize::from(info.is_compound());
+    let mut references = [None; 2];
+    for (slot, &frame) in references.iter_mut().zip(&info.ref_frame).take(refs) {
+        let reference = frame_references[(frame - 1) as usize]
+            .as_ref()
+            .ok_or(DecodeError::Malformed("VP9 missing reference"))?;
+        if matches!(reference.scale, Scaling::Invalid) {
+            return Err(DecodeError::Malformed("VP9 reference of invalid size"));
+        }
+        *slot = Some(reference);
+    }
+    Ok(references)
+}
+
 /// `dec_build_inter_predictors` from a reference of another size into
 /// `target`. Out of line: only spatial layers and size changes use it.
 #[inline(never)]
@@ -360,21 +423,25 @@ impl FrameDecoder<'_> {
         info: &BlockInfo,
         position: &BlockPosition,
     ) -> Result<()> {
-        let refs = 1 + usize::from(info.is_compound());
-        let mut references = [None; 2];
-        for (slot, &frame) in references.iter_mut().zip(&info.ref_frame).take(refs) {
-            let reference = self.inputs.references[(frame - 1) as usize]
-                .as_ref()
-                .ok_or(DecodeError::Malformed("VP9 missing reference"))?;
-            if matches!(reference.scale, Scaling::Invalid) {
-                return Err(DecodeError::Malformed("VP9 reference of invalid size"));
-            }
-            *slot = Some(reference);
-        }
+        let references = block_references(&self.inputs.references, info)?;
         let kind = kernel(info.filter);
         let sub8x8 = info.size.is_sub8x8();
         let dsp = self.inputs.dsp;
         let scratch = &mut self.scratch.inter;
+        let unscaled = references
+            .iter()
+            .flatten()
+            .all(|reference| matches!(reference.scale, Scaling::None));
+        if !sub8x8 && unscaled {
+            predict_whole_block(
+                dsp,
+                self.recon.planes_mut(),
+                (&references, kind),
+                (info, position),
+                &mut scratch.window,
+            );
+            return Ok(());
+        }
         for (plane, picture_plane) in PlaneIndex::ALL.into_iter().zip(self.recon.planes_mut()) {
             let ss = usize::from(plane != PlaneIndex::Y);
             let (n4w, n4h) = position.plane_size_4x4(ss);

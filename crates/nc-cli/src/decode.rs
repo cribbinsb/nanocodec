@@ -1,7 +1,10 @@
 //! Native streaming decode of IVF (AV1, VP9, AV2) and Annex-B output (any
 //! HEVC Main-profile or H.264 Constrained High stream, pictures in output
 //! order), to raw I420 (`--output`) and/or one MD5 line per shown frame
-//! (`--frame-md5`, the form of the libvpx test vectors' `.md5`).
+//! (`--frame-md5`, the form of the libvpx test vectors' `.md5`), or neither
+//! (`--discard 1`: decode every frame and write nothing, to time the decoder
+//! alone as reference decoders do with `vpxdec --noblit` or `dav1d --muxer
+//! null`).
 //!
 //! Container framing (`framing.rs`) is bounded independently of the codec
 //! parsers.
@@ -61,6 +64,7 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
     let mut film_grain = None;
     let mut operating_point = None;
     let mut all_layers = None;
+    let mut discard = None;
     let (pairs, remainder) = args.as_chunks::<2>();
     for pair in pairs {
         let value = pair[1].clone();
@@ -96,6 +100,13 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
                     _ => return Err(format!("--all-layers takes 0 or 1, not '{value}'")),
                 });
             }
+            "--discard" if discard.is_none() => {
+                discard = Some(match value.as_str() {
+                    "1" => true,
+                    "0" => false,
+                    _ => return Err(format!("--discard takes 0 or 1, not '{value}'")),
+                });
+            }
             flag => return Err(format!("unknown or repeated decode option '{flag}'")),
         }
     }
@@ -115,8 +126,8 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
     Ok(DecodeArgs {
         codec,
         input: input.ok_or("missing --input")?,
-        output: if output.is_none() && frame_md5.is_none() {
-            return Err("missing --output or --frame-md5".into());
+        output: if output.is_none() && frame_md5.is_none() && discard != Some(true) {
+            return Err("missing --output, --frame-md5 or --discard 1".into());
         } else {
             output
         },

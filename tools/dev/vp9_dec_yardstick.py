@@ -4,7 +4,8 @@
 For every `*.ivf` stream in a directory it checks that our decoded output is
 MD5-identical to vpxdec's (piped, nothing written to disk) and counts the
 instructions of both decodes under callgrind (single thread; vpxdec runs
-`--threads=1 --noblit`). vpxdec's counts are cached by stream hash, since the
+`--threads=1 --noblit` and ours `--discard 1`, so neither writes output).
+vpxdec's counts are cached by stream hash, since the
 anchor does not change. With `--stages` it also groups each decoder's self
 cost into decode stages (inlined code counts in the function it is inlined
 into, or in its source file for our block decoder) and prints ours, libvpx's
@@ -27,6 +28,7 @@ import concurrent.futures
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,8 +85,11 @@ def md5_of(cmd: list[str]) -> str:
     return digest.hexdigest()
 
 
-def ours_cmd(binary: Path, stream: Path, output: str) -> list[str]:
-    return [str(binary), "decode", "--codec", "vp9", "--input", str(stream), "--output", output]
+def ours_cmd(binary: Path, stream: Path, output: str | None) -> list[str]:
+    """Our decode writing raw I420 to `output`, or (None) discarding every
+    frame, like the timed `vpxdec --noblit`."""
+    sink = ["--output", output] if output else ["--discard", "1"]
+    return [str(binary), "decode", "--codec", "vp9", "--input", str(stream), *sink]
 
 
 def vpx_cmd(vpxdec: Path, stream: Path) -> list[str]:
@@ -139,7 +144,7 @@ def measure(stream: Path, args: argparse.Namespace, work: Path) -> dict:
     expected = md5_of([str(args.vpxdec), "--threads=1", "--i420", "-o", "-", str(stream)])
     got = md5_of(ours_cmd(args.bin, stream, "/dev/stdout"))
     ours_cg = work / f"ours.{stream.stem}.cg"
-    ours = callgrind(ours_cmd(args.bin, stream, "/dev/null"), ours_cg)
+    ours = callgrind(ours_cmd(args.bin, stream, None), ours_cg)
     CACHE.mkdir(parents=True, exist_ok=True)
     vpx_cg = CACHE / f"vpx.{stream_hash(stream)}.cg"
     if vpx_cg.exists():
@@ -153,7 +158,7 @@ def measure(stream: Path, args: argparse.Namespace, work: Path) -> dict:
     if args.keep:
         row["profile"] = str(args.keep / ours_cg.name)
         args.keep.mkdir(parents=True, exist_ok=True)
-        ours_cg.replace(args.keep / ours_cg.name)
+        shutil.move(ours_cg, args.keep / ours_cg.name)
     return row
 
 
