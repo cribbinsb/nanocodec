@@ -71,8 +71,8 @@ export class BrowserDecoder {
   decoded_i420(): Uint8Array;
   /**
    * Switch coding-tool analysis on (from the next decoded picture) or
-   * off; returns whether this codec's decoder supports it (H.264, HEVC
-   * and AV1 so far). Only in the analysis build of the module; every
+   * off; returns whether this codec's decoder supports it (H.264, HEVC,
+   * AV1 and VP9 so far). Only in the analysis build of the module; every
    * picture's block records are then kept for `analysis_frame`.
    */
   set_analysis(on: boolean): boolean;

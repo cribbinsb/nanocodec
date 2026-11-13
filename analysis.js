@@ -14,7 +14,7 @@
 // widths divided by the scale so outlines stay one screen pixel at any zoom.
 
 /** Codecs whose decoders fill the records (others show a notice). */
-export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1']);
+export const ANALYSIS_CODECS = new Set(['h264', 'hevc', 'av1', 'vp9']);
 /** Values per record and their order (nc-common `pack_records`). */
 export const HALFWORDS = 24;
 export const FIELD = {
@@ -29,11 +29,12 @@ const SHAPE_NAMES = ['2Nx2N', '2NxN', 'Nx2N', 'NxN', '2NxnU', '2NxnD', 'nLx2N', 
 const INTRA_CLASS = { planar: 0, dc: 1, angular: 2 };
 const FLAG = { codedY: 1, codedCb: 2, codedCr: 4, transformSkip: 8, qpDeltaCoded: 16, bi: 32 };
 /** Each codec's record conventions: motion vector units per luma sample, and
- * the QP heat map's scale (H.264 / HEVC QP; AV1 qindex, 0..255). */
+ * the QP heat map's scale (H.264 / HEVC QP; AV1 / VP9 qindex, 0..255). */
 const CODEC_UNITS = {
   h264: { mv: 4, qp: { low: 15, high: 51 } },
   hevc: { mv: 4, qp: { low: 15, high: 51 } },
   av1: { mv: 8, qp: { low: 40, high: 255 } },
+  vp9: { mv: 8, qp: { low: 40, high: 255 } },
 };
 const units = codec => CODEC_UNITS[codec] ?? CODEC_UNITS.hevc;
 /** The overlay layers a viewer can switch on. */
@@ -63,14 +64,16 @@ const H264_16X16_DIRECTION = [[0, 1], [1, 0], null, null];
 const H264_MB = 16;
 // AV1 directional y modes (V_PRED .. D67_PRED, symbols 1..8) by nominal angle in degrees (AV1 §7.11.2).
 const AV1_DIRECTIONS = { 1: 90, 2: 180, 3: 45, 4: 135, 5: 113, 6: 157, 7: 203, 8: 67 };
+// VP9 directional modes (V_PRED .. D63_PRED, 1..8) by angle (VP9 §8.5.1); DC 0 and TM 9 have none.
+const VP9_DIRECTIONS = { 1: 90, 2: 180, 3: 45, 4: 135, 5: 117, 6: 153, 7: 207, 8: 63 };
 
 /** The number of records in `records` (an Int16Array of packed records). */
 export function recordCount(records) { return records ? Math.floor(records.length / HALFWORDS) : 0; }
 
 /** The direction of an intra mode as a line `[dx, dy]` in picture coordinates, or null (planar, DC). */
 export function intraDirection(codec, mode, size) {
-  if (codec === 'av1') {
-    const degrees = AV1_DIRECTIONS[mode];
+  if (codec === 'av1' || codec === 'vp9') {
+    const degrees = (codec === 'av1' ? AV1_DIRECTIONS : VP9_DIRECTIONS)[mode];
     if (degrees === undefined) return null;
     // AV1 angles: 90 is vertical (predicted from above), 180 horizontal.
     const radians = degrees * Math.PI / 180;
