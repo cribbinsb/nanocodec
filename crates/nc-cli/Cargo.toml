@@ -27,5 +27,10 @@ nc-h264.workspace = true
 nc-hevc.workspace = true
 nc-vvc.workspace = true
 
+[features]
+# `nanocodec stat` (decoder analysis): an analysis build of the CLI
+# (docs/PROCEDURES.md "Inspect a stream").
+analysis = ["nc-hevc/analysis", "nc-h264/analysis"]
+
 [lints]
 workspace = true

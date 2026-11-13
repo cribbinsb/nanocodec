@@ -76,6 +76,7 @@ fn roundtrip_default_flat_and_textured_frames() {
         }
     }
 }
+#[cfg(feature = "analysis")]
 #[test]
 fn analysis_leaves_decoding_unchanged_and_tiles_each_picture() {
     use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};

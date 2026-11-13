@@ -62,7 +62,8 @@ impl<'a> Cabac<'a> {
         self.reader.bypass()
     }
 
-    /// Bits consumed since the engine (re)started, for analysis.
+    /// Bits consumed since the engine (re)started (analysis).
+    #[cfg(feature = "analysis")]
     pub fn bits_consumed(&self) -> usize {
         self.reader.bits_consumed()
     }

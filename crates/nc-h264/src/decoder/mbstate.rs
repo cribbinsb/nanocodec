@@ -119,6 +119,9 @@ pub(super) struct MbState {
     /// An inter macroblock whose 4x4 blocks all share one vector and
     /// reference (one prediction block; set by the macroblock layer).
     pub single_motion: bool,
+    /// `sub_mb_type` of each 8x8 block of a `P_8x8` macroblock (analysis).
+    #[cfg(feature = "analysis")]
+    pub sub_partitions: [SubPartition; 4],
 }
 
 impl MbState {
@@ -140,6 +143,8 @@ impl MbState {
         ref_pic: [0; 4],
         abs_mvd: [[0; 2]; 16],
         single_motion: false,
+        #[cfg(feature = "analysis")]
+        sub_partitions: [SubPartition::P8x8; 4],
     };
 
     pub fn is_intra(&self) -> bool {

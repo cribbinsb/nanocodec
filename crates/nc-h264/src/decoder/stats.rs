@@ -16,7 +16,7 @@ use nc_common::stream_stats::{
     BlockRecord, IntraClass, Pred, RecordKind, Shape, StreamStats, facts, flags,
 };
 
-use super::mbstate::{DC_PRED_MODE, MbKind, MbState, Partition, SubPartition};
+use super::mbstate::{DC_PRED_MODE, MbKind, MbState, Partition};
 use super::pps::Pps;
 use super::slice::{SliceHeader, SliceType};
 use super::sps::Sps;
@@ -95,8 +95,6 @@ pub(super) struct MbContext {
     pub qp_pred: i32,
     pub bits: usize,
     pub cabac: bool,
-    /// `sub_mb_type`s, for a `P_8x8` macroblock.
-    pub sub_partitions: [SubPartition; 4],
 }
 
 /// The records of one decoded macroblock. Cold and out of line: the
@@ -148,7 +146,7 @@ pub(super) fn macroblock(s: &mut StreamStats, cur: &MbState, mb: &MbContext) {
     });
     match cur.kind {
         MbKind::IntraNxN | MbKind::Intra16x16(_) => intra(s, cur, (x0, y0)),
-        MbKind::Inter(_) | MbKind::PSkip => inter(s, cur, mb, (x0, y0), pred),
+        MbKind::Inter(_) | MbKind::PSkip => inter(s, cur, (x0, y0), pred),
         MbKind::IPcm => {}
     }
     if !matches!(cur.kind, MbKind::IPcm | MbKind::PSkip) {
@@ -215,7 +213,7 @@ fn intra(s: &mut StreamStats, cur: &MbState, (x0, y0): (u16, u16)) {
 
 /// Inter prediction blocks: the partitions, or sub-partitions of `P_8x8`,
 /// with their vectors (§7.3.5.1, §7.3.5.2).
-fn inter(stats: &mut StreamStats, cur: &MbState, mb: &MbContext, (x0, y0): (u16, u16), pred: Pred) {
+fn inter(stats: &mut StreamStats, cur: &MbState, (x0, y0): (u16, u16), pred: Pred) {
     // Partitions as (x4, y4, w4, h4).
     let mut parts = [(0usize, 0usize, 0usize, 0usize); 16];
     let count = match cur.kind {
@@ -229,7 +227,7 @@ fn inter(stats: &mut StreamStats, cur: &MbState, mb: &MbContext, (x0, y0): (u16,
         }
         MbKind::Inter(Partition::P8x8) => {
             let mut filled = 0;
-            for (b8, sub) in mb.sub_partitions.iter().enumerate() {
+            for (b8, sub) in cur.sub_partitions.iter().enumerate() {
                 let (w, h) = sub.size4();
                 for index in 0..sub.count() {
                     let x = (b8 % 2) * 2 + (index * w) % 2;

@@ -17,7 +17,8 @@
 //! - [`cabac`]: the CABAC arithmetic decoding engine (H.264/HEVC, and H.266
 //!   with its own probability model).
 //! - [`ColourInfo`]: colour signalling (CICP code points, range).
-//! - [`stream_stats`]: opt-in coding-tool statistics recorded by decoders.
+//! - `stream_stats` (feature `analysis`): coding-tool records decoders
+//!   can fill.
 //! - [`Error`]: the error type for everything above.
 
 #![forbid(unsafe_code)]
@@ -35,6 +36,7 @@ mod plane;
 mod raw_frame;
 mod recycle;
 mod shown;
+#[cfg(feature = "analysis")]
 pub mod stream_stats;
 mod view;
 pub mod yuv;

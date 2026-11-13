@@ -1,4 +1,5 @@
-//! `nanocodec stat`: decode an H.264 or HEVC stream with coding-tool
+//! `nanocodec stat` (analysis builds: `--features analysis`): decode an
+//! H.264 or HEVC stream with coding-tool
 //! statistics enabled ([`nc_common::stream_stats`]) and write them as JSON,
 //! to show which block sizes, modes, motion, transforms, QPs and filters an
 //! encoder actually used. The input is Annex-B or an IVF file of Annex-B

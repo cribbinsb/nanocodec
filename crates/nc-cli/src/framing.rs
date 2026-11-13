@@ -60,6 +60,7 @@ impl IvfHeader {
 const DECODER_FOURCCS: [&[u8; 4]; 3] = [b"AV01", b"VP90", b"AV02"];
 /// Also accepted by [`read_ivf_annex_b`]: H.264 and HEVC access units in
 /// IVF, as `web/streams-ref` stores them.
+#[cfg(feature = "analysis")]
 const ANNEX_B_FOURCCS: [&[u8; 4]; 2] = [b"H264", b"HEVC"];
 
 /// Read an AV1, VP9 or AV2 IVF file, calling `visit` with the header and every
@@ -72,6 +73,7 @@ pub(crate) fn read_ivf<R: BufRead>(
 }
 
 /// Read an IVF file of H.264 or HEVC Annex-B access units (one per frame).
+#[cfg(feature = "analysis")]
 pub(crate) fn read_ivf_annex_b<R: BufRead>(
     input: &mut R,
     visit: impl FnMut(&IvfHeader, IvfFrame<'_>) -> Result<(), String>,
@@ -80,6 +82,7 @@ pub(crate) fn read_ivf_annex_b<R: BufRead>(
 }
 
 /// Whether `data` starts like an IVF file.
+#[cfg(feature = "analysis")]
 pub(crate) fn is_ivf(data: &[u8]) -> bool {
     data.starts_with(IVF_SIGNATURE)
 }

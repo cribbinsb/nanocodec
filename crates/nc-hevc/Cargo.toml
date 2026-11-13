@@ -12,5 +12,10 @@ nc-common.workspace = true
 nc-encoder.workspace = true
 nc-dsp.workspace = true
 
+[features]
+# Decoder analysis hooks (`dec::stats`): off in normal builds, so the
+# decoder contains no analysis code (docs/handoff/stream-analysis.md).
+analysis = ["nc-common/analysis"]
+
 [lints]
 workspace = true

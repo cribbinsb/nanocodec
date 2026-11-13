@@ -7,5 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Coding-tool analysis records (`stream_stats`): off in normal builds.
+analysis = []
+
 [lints]
 workspace = true

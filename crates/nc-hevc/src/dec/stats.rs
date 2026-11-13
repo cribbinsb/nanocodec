@@ -45,15 +45,6 @@ const SLICE_CB_QP_OFFSET: &str = "slice_cb_qp_offset";
 /// Weight: the slice segment's RBSP bytes.
 const SLICE_BYTES: &str = "slice_bytes";
 
-/// How the SAO parameters of a CTB were signalled
-/// ([`nc_common::stream_stats::BlockRecord::class`] of its filter record).
-#[derive(Debug, Clone, Copy)]
-pub(super) enum SaoSyntax {
-    MergeLeft = 0,
-    MergeUp = 1,
-    Explicit = 2,
-}
-
 /// Record a slice segment: the parameter sets' facts when it starts a
 /// picture (`picture_start`), its slice header (not for a dependent segment) and its size.
 pub(super) fn segment(

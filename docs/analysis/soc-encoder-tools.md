@@ -206,6 +206,10 @@ adaptive QP (activity, motion or an ROI), any lookahead, and hardware cost.
 
 ## Reproduce
 
+`stat` exists only in an analysis build of the CLI (docs/PROCEDURES.md "Inspect a
+stream"): `CARGO_TARGET_DIR=~/nanocodec-data/targets/analysis cargo build --release
+-p nc-cli --features analysis`.
+
 ```
 nanocodec stat --codec hevc --input stream.ivf --json stats.json
 cd eval && python3 -m nceval.streamstats --codec hevc stream.ivf

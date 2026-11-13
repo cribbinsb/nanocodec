@@ -305,6 +305,7 @@ fn luma_nc(nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize) -> i32 {
 }
 
 impl MbSyntax for CavlcSyntax<'_, '_> {
+    #[cfg(feature = "analysis")]
     fn bits_consumed(&self) -> usize {
         self.reader.position()
     }

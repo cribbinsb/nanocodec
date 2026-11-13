@@ -107,6 +107,13 @@ if ! $quick; then
         cargo build --release --quiet -p nc-checkasm --target wasm32-wasip1
     node --no-warnings tools/ci/wasi-run.mjs "$target_dir"/relaxed-simd/wasm32-wasip1/release/nc-checkasm.wasm
 
+    # The decoder analysis builds (`nanocodec stat`, the demo's analysis
+    # module): off in every normal build, so only the full run keeps them
+    # compiling and tested (docs/handoff/stream-analysis.md).
+    step "analysis feature (clippy + tests)"
+    cargo clippy -p nc-cli -p nc-web --features analysis --all-targets -- -D warnings
+    cargo test -p nc-common -p nc-hevc -p nc-h264 -p nc-cli --features analysis --quiet
+
     step "clippy (aarch64 cross-check)"
     cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 

@@ -16,7 +16,8 @@
 //!   `cabac_syntax` / `cabac`, `mbstate` (neighbour state), `mvpred`;
 //! - reconstruction: `recon`, `intra`, `inter`, `transform`, `deblock`;
 //! - `reader`: the RBSP bit reader;
-//! - `stats`: the opt-in coding-tool analysis ([`Decoder::collect_stats`]).
+//! - `stats`: coding-tool analysis (feature `analysis`;
+//!   `Decoder::collect_stats`).
 //!
 //! [`Decoder::decode_nal`] takes NAL units one at a time and returns each
 //! picture when its last macroblock is decoded; [`OutputQueue`] puts them
@@ -45,6 +46,7 @@ mod scaling;
 mod slice;
 mod slice_data;
 mod sps;
+#[cfg(feature = "analysis")]
 mod stats;
 mod syntax;
 #[cfg(test)]
@@ -56,6 +58,7 @@ use std::sync::Arc;
 
 pub use nc_common::decode::DecodeError;
 use nc_common::decode::{annex_b_units, unescape_rbsp};
+#[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
 use nc_common::{ColourInfo, Picture, PlaneIndex, PlaneViewMut, ShownPicture};
 use nc_dsp::Dsp;
@@ -198,6 +201,7 @@ pub struct Decoder {
     /// buffer goes back to `pool` once the next call drops this.
     shown: Option<Visible>,
     /// Coding-tool analysis, collected only when enabled.
+    #[cfg(feature = "analysis")]
     stats: Option<StreamStats>,
 }
 
@@ -231,6 +235,7 @@ impl Decoder {
             cavlc: CavlcTables::new(),
             next_id: 1,
             shown: None,
+            #[cfg(feature = "analysis")]
             stats: None,
         }
     }
@@ -238,12 +243,14 @@ impl Decoder {
     /// Start collecting coding-tool analysis into `stats` (block records,
     /// and per-picture tallies unless [`StreamStats::records_only`]) from
     /// the next picture on. Decoding is unchanged.
+    #[cfg(feature = "analysis")]
     pub fn collect_stats(&mut self, stats: StreamStats) {
         self.stats = Some(stats);
     }
 
     /// The analysis collected so far, if enabled: the block records of
     /// the last completed picture and the tallies of every completed one.
+    #[cfg(feature = "analysis")]
     #[must_use]
     pub fn stats(&self) -> Option<&StreamStats> {
         self.stats.as_ref()
@@ -251,6 +258,7 @@ impl Decoder {
 
     /// Complete the analysis of the last picture and hand it over;
     /// collection stops.
+    #[cfg(feature = "analysis")]
     pub fn take_stats(&mut self) -> Option<StreamStats> {
         let mut stats = self.stats.take()?;
         stats.finish();
@@ -408,11 +416,13 @@ impl Decoder {
             if self.current.take().is_some() {
                 return Err(DecodeError::Malformed("picture with missing slices"));
             }
+            #[cfg(feature = "analysis")]
             if let Some(s) = &mut self.stats {
                 stats::picture(s, &sps, &pps);
             }
             self.start_picture(&sps, &header)?;
         }
+        #[cfg(feature = "analysis")]
         if let Some(s) = &mut self.stats {
             stats::slice(s, &header, rbsp.len());
         }
@@ -565,7 +575,9 @@ impl Decoder {
             extra: &mut self.extra,
             qp: header.qp,
             decoded: 0,
+            #[cfg(feature = "analysis")]
             stats: self.stats.as_mut(),
+            #[cfg(feature = "analysis")]
             cabac: pps.cabac,
         };
         if pps.cabac {
@@ -596,6 +608,7 @@ impl Decoder {
             mut deblocker,
             ..
         } = self.current.take().expect("picture in progress");
+        #[cfg(feature = "analysis")]
         if let Some(s) = &mut self.stats {
             // Its records become the completed picture's.
             s.finish();

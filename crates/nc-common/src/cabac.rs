@@ -177,6 +177,7 @@ impl<'a> CabacReader<'a> {
 
     /// Bits consumed since the start of `data` (the offset's 9 bits
     /// included): differences measure what a stretch of syntax cost.
+    #[cfg(feature = "analysis")]
     #[must_use]
     pub fn bits_consumed(&self) -> usize {
         self.next * 8 - self.lookahead as usize

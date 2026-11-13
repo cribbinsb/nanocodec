@@ -10,9 +10,8 @@
 )]
 
 use nc_common::decode::{BitReader, DecodeError};
-use nc_common::stream_stats::{
-    BlockRecord, IntraClass, Pred, RecordKind, Shape, StreamStats, flags,
-};
+#[cfg(feature = "analysis")]
+use nc_common::stream_stats::StreamStats;
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::Dsp;
 use nc_encoder::Mv;
@@ -26,8 +25,11 @@ use super::params::{FLAT_SCALE, Pps, ScalingLists, Sps};
 use super::picture::{BlockInfo, Edges, GRID_LOG2, PictureState, PuMotion, flag};
 use super::sao;
 use super::slice::{SliceHeader, SliceSegment, SliceType};
-use super::stats::SaoSyntax;
 
+// The analysis records (feature `analysis`); every hook below is compiled
+// out without it.
+#[cfg(feature = "analysis")]
+mod analysis;
 use crate::predict::{self, Refs, Sides};
 use crate::quant::chroma_qp;
 use crate::scan::{ScanKind, Scans};
@@ -193,6 +195,9 @@ pub(super) struct Scratch {
     /// Intra reference samples, refilled per block.
     refs: Refs,
     buffers: mc::Buffers,
+    /// Where analysis records go, when they are being collected.
+    #[cfg(feature = "analysis")]
+    pub stats: Option<StreamStats>,
 }
 
 impl Default for Scratch {
@@ -204,6 +209,8 @@ impl Default for Scratch {
             pred: vec![0; MAX_COEFFS],
             refs: Refs::default(),
             buffers: mc::Buffers::default(),
+            #[cfg(feature = "analysis")]
+            stats: None,
         }
     }
 }
@@ -217,7 +224,6 @@ pub(super) fn decode_segment(
     filter: &mut LoopFilter,
     data: &[u8],
     segment: &SliceSegment,
-    stats: Option<&mut StreamStats>,
 ) -> Result<(), DecodeError> {
     let mut d = SegmentDecoder {
         cx,
@@ -228,8 +234,8 @@ pub(super) fn decode_segment(
         last_qp: cx.header.qp,
         qp: cx.header.qp,
         s: scratch,
-        stats,
-        analysis: Analysis::default(),
+        #[cfg(feature = "analysis")]
+        analysis: analysis::Analysis::default(),
     };
     d.run(carry, data, segment)
 }
@@ -245,94 +251,12 @@ struct SegmentDecoder<'c, 'a> {
     /// `QpY` of the current coding unit.
     qp: i32,
     s: &'c mut Scratch,
-    /// Where block records go when analysis is enabled.
-    stats: Option<&'c mut StreamStats>,
-    /// What the current coding and transform unit's records collect.
-    analysis: Analysis,
-}
-
-/// What the record of the current coding unit collects while it is parsed
-/// (analysis only).
-#[derive(Debug, Clone, Copy, Default)]
-struct Analysis {
-    /// Bits consumed when the coding unit started.
-    cu_start: usize,
-    /// Coded planes of the coding unit ([`flags`]).
-    cu_flags: u8,
-    /// `CuQpDeltaVal` when coded in this coding unit.
-    qp_delta: Option<i8>,
-    /// The current transform unit.
-    tu: CodedBlock,
-}
-
-/// What a transform unit's residual held (analysis): the bits consumed
-/// when it started, non-zero levels and transform skip over its blocks.
-#[derive(Debug, Clone, Copy, Default)]
-struct CodedBlock {
-    start: usize,
-    nonzero: u16,
-    transform_skip: bool,
-}
-
-impl Part {
-    /// The codec-neutral partition shape.
-    fn shape(self) -> Shape {
-        match self {
-            Part::P2Nx2N => Shape::Whole,
-            Part::P2NxN => Shape::HalfHorizontal,
-            Part::PNx2N => Shape::HalfVertical,
-            Part::PNxN => Shape::Quarter,
-            Part::P2NxnU => Shape::QuarterTop,
-            Part::P2NxnD => Shape::QuarterBottom,
-            Part::PnLx2N => Shape::QuarterLeft,
-            Part::PnRx2N => Shape::QuarterRight,
-        }
-    }
-}
-
-/// The class of an `IntraPredModeY` (§8.4.2): 0 planar, 1 DC, angular.
-fn intra_class(mode: u8) -> IntraClass {
-    match mode {
-        predict::PLANAR => IntraClass::Planar,
-        predict::DC => IntraClass::Dc,
-        _ => IntraClass::Angular,
-    }
-}
-
-/// A block position or size as a record field (pictures are below 64K).
-fn coord(v: usize) -> u16 {
-    v as u16
+    /// What the current units' analysis records collect.
+    #[cfg(feature = "analysis")]
+    analysis: analysis::Analysis,
 }
 
 impl SegmentDecoder<'_, '_> {
-    /// Push a block record when analysis is enabled.
-    #[inline]
-    fn record(&mut self, record: BlockRecord) {
-        if let Some(s) = self.stats.as_deref_mut() {
-            s.push(record);
-        }
-    }
-
-    /// The bits consumed so far, when analysis needs them (else 0).
-    #[inline]
-    fn bits_mark(&self, e: &Engine<'_>) -> usize {
-        if self.stats.is_some() {
-            e.bits_consumed()
-        } else {
-            0
-        }
-    }
-
-    /// The bits consumed since `start`, a [`Self::bits_mark`].
-    #[inline]
-    fn bits_since(&self, e: &Engine<'_>, start: usize) -> u32 {
-        if self.stats.is_some() {
-            (e.bits_consumed() - start) as u32
-        } else {
-            0
-        }
-    }
-
     fn run(
         &mut self,
         carry: &mut Carry,
@@ -452,8 +376,13 @@ impl SegmentDecoder<'_, '_> {
             let left =
                 (!rs.is_multiple_of(w) && rs > slice_address && same_tile(rs - 1)).then(|| rs - 1);
             let up = (rs >= w && rs - w >= slice_address && same_tile(rs - w)).then(|| rs - w);
-            let start = self.bits_mark(e);
-            let syntax = sao::parse(
+            #[cfg(feature = "analysis")]
+            let start = e.bits_consumed();
+            #[cfg_attr(
+                not(feature = "analysis"),
+                allow(unused_variables, clippy::let_unit_value)
+            )]
+            let signalled = sao::parse(
                 e,
                 &mut self.ctx,
                 self.pic,
@@ -464,8 +393,9 @@ impl SegmentDecoder<'_, '_> {
                     enabled: header.sao,
                 },
             );
-            if self.stats.is_some() {
-                self.sao_record(e, rs, (x0, y0), syntax, start);
+            #[cfg(feature = "analysis")]
+            if self.s.stats.is_some() {
+                self.sao_record(e, rs, (x0, y0), signalled, start);
             }
         }
         self.quadtree(e, (x0, y0), self.pic.layout.log2_ctb, 0)
@@ -586,11 +516,9 @@ impl SegmentDecoder<'_, '_> {
         let sps = cx.sps;
         let size = 1usize << log2;
         let slice = cx.slice;
-        if self.stats.is_some() {
-            self.analysis = Analysis {
-                cu_start: e.bits_consumed(),
-                ..Analysis::default()
-            };
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
+            self.start_cu(e);
         }
         let bypass = cx.pps.transquant_bypass && e.bin(self.ctx.at(ctx::TRANSQUANT_BYPASS, 0));
         let inter_slice = cx.header.slice_type != SliceType::I;
@@ -675,134 +603,11 @@ impl SegmentDecoder<'_, '_> {
             self.pic.fill((x, y), (size, size), |b| b.qp = qp);
         }
         self.last_qp = self.qp;
-        if self.stats.is_some() {
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
             self.cu_record(e, &cu, skip, depth);
         }
         Ok(())
-    }
-
-    /// Push a CTB's SAO record (`start`: the bits consumed before it).
-    #[cold]
-    #[inline(never)]
-    fn sao_record(
-        &mut self,
-        e: &Engine<'_>,
-        rs: usize,
-        (x0, y0): (usize, usize),
-        syntax: SaoSyntax,
-        start: usize,
-    ) {
-        let sps = self.cx.sps;
-        let size = 1usize << self.pic.layout.log2_ctb;
-        let ctb = self.pic.sao[rs];
-        self.record(BlockRecord {
-            kind: RecordKind::Filter,
-            x: coord(x0),
-            y: coord(y0),
-            w: coord(size.min(sps.width - x0)),
-            h: coord(size.min(sps.height - y0)),
-            mode: sao::kind_index(ctb[0].kind),
-            mode2: sao::kind_index(ctb[1].kind),
-            class: syntax as u8,
-            bits: self.bits_since(e, start),
-            ..BlockRecord::default()
-        });
-    }
-
-    /// Push the intra prediction blocks' records of a coding unit.
-    #[cold]
-    #[inline(never)]
-    fn intra_records(&mut self, cu: &Cu, parts: usize, pb: usize) {
-        for (i, &mode) in cu.luma_modes[..parts].iter().enumerate() {
-            self.record(BlockRecord {
-                kind: RecordKind::Prediction,
-                pred: Pred::Intra,
-                x: coord(cu.x + (i & 1) * pb),
-                y: coord(cu.y + (i >> 1) * pb),
-                w: coord(pb),
-                h: coord(pb),
-                mode,
-                mode2: cu.chroma_mode,
-                class: intra_class(mode) as u8,
-                ref_idx: [-1; 2],
-                ..BlockRecord::default()
-            });
-        }
-    }
-
-    /// Push a prediction unit's record: how its motion was signalled
-    /// (skip, merge, and the merge or predictor index) and its vectors.
-    #[cold]
-    #[inline(never)]
-    fn pu_record(
-        &mut self,
-        (x, y, w, h): (usize, usize, usize, usize),
-        (skip, merge, index): (bool, bool, usize),
-        motion: &PuMotion,
-        mvd: [Mv; 2],
-        mvd_bits: u32,
-    ) {
-        let pred = match (skip, merge) {
-            (true, _) => Pred::Skip,
-            (false, true) => Pred::Merge,
-            (false, false) => Pred::Inter,
-        };
-        let bi = motion.uses(0) && motion.uses(1);
-        let vector = |mv: Mv| [mv.x, mv.y];
-        self.record(BlockRecord {
-            kind: RecordKind::Prediction,
-            pred,
-            x: coord(x),
-            y: coord(y),
-            w: coord(w),
-            h: coord(h),
-            mode: index as u8,
-            flags: if bi { flags::BI } else { 0 },
-            ref_idx: [0, 1].map(|l| {
-                if motion.uses(l) {
-                    motion.ref_idx[l]
-                } else {
-                    -1
-                }
-            }),
-            mv: motion.mv.map(vector),
-            mvd: mvd.map(vector),
-            bits: mvd_bits,
-            ..BlockRecord::default()
-        });
-    }
-
-    /// Push a coding unit's record.
-    #[cold]
-    #[inline(never)]
-    fn cu_record(&mut self, e: &Engine<'_>, cu: &Cu, skip: bool, depth: u8) {
-        let size = 1usize << cu.log2;
-        let pred = match (cu.intra, skip) {
-            (true, _) => Pred::Intra,
-            (false, true) => Pred::Skip,
-            (false, false) => Pred::Inter,
-        };
-        let a = self.analysis;
-        let qp_flag = if a.qp_delta.is_some() {
-            flags::QP_DELTA_CODED
-        } else {
-            0
-        };
-        self.record(BlockRecord {
-            kind: RecordKind::Coding,
-            pred,
-            shape: cu.part.shape(),
-            depth,
-            x: coord(cu.x),
-            y: coord(cu.y),
-            w: coord(size),
-            h: coord(size),
-            flags: a.cu_flags | qp_flag,
-            qp: self.qp as i8,
-            qp_delta: a.qp_delta.unwrap_or(0),
-            bits: self.bits_since(e, a.cu_start),
-            ..BlockRecord::default()
-        });
     }
 
     /// `part_mode` (§9.3.3.7, Table 9-43).
@@ -943,7 +748,8 @@ impl SegmentDecoder<'_, '_> {
             predict::CHROMA_DM
         };
         cu.chroma_mode = predict::chroma_mode(chroma, cu.luma_modes[0]);
-        if self.stats.is_some() {
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
             self.intra_records(cu, parts, pb);
         }
     }
@@ -974,12 +780,12 @@ impl SegmentDecoder<'_, '_> {
             vertical_split: cu.part.vertical_split(),
             horizontal_split: cu.part.horizontal_split(),
         };
-        // The merge index, or the list-0 predictor index (analysis).
-        let index;
-        let mut mvd = [Mv::default(); 2];
-        let mut mvd_bits = 0;
         let motion = if merge {
-            index = self.merge_idx(e);
+            let index = self.merge_idx(e);
+            #[cfg(feature = "analysis")]
+            {
+                self.analysis.pu.index = index;
+            }
             self.predictor().merge(&pu, index)
         } else {
             let b = header.slice_type == SliceType::B;
@@ -992,6 +798,7 @@ impl SegmentDecoder<'_, '_> {
                 usize::from(e.bin(self.ctx.at(ctx::INTER_PRED_IDC, ctx::INTER_PRED_IDC_LAST)))
             };
             let mut motion = PuMotion::NONE;
+            let mut mvd = [Mv::default(); 2];
             let mut mvp_flag = [0; 2];
             for list in 0..2 {
                 if idc != 2 && idc != list {
@@ -1000,13 +807,21 @@ impl SegmentDecoder<'_, '_> {
                 let ref_idx = self.ref_idx(e, header.num_ref_idx[list]);
                 motion.ref_idx[list] = ref_idx as i8;
                 if !(list == 1 && header.mvd_l1_zero && idc == 2) {
-                    let start = self.bits_mark(e);
+                    #[cfg(feature = "analysis")]
+                    let start = e.bits_consumed();
                     mvd[list] = self.mvd(e)?;
-                    mvd_bits += self.bits_since(e, start);
+                    #[cfg(feature = "analysis")]
+                    {
+                        self.analysis.pu.mvd_bits += (e.bits_consumed() - start) as u32;
+                    }
                 }
                 mvp_flag[list] = usize::from(e.bin(self.ctx.at(ctx::MVP_FLAG, 0)));
             }
-            index = mvp_flag[0];
+            #[cfg(feature = "analysis")]
+            {
+                self.analysis.pu.index = mvp_flag[0];
+                self.analysis.pu.mvd = mvd;
+            }
             for list in 0..2 {
                 if motion.uses(list) {
                     let predictor = self.predictor();
@@ -1021,8 +836,9 @@ impl SegmentDecoder<'_, '_> {
             motion
         };
         self.pic.set_motion((x, y), (w, h), motion);
-        if self.stats.is_some() {
-            self.pu_record((x, y, w, h), (skip, merge, index), &motion, mvd, mvd_bits);
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
+            self.pu_record((x, y, w, h), (skip, merge), &motion);
         }
         if cu.part != Part::P2Nx2N {
             // A 2Nx2N block's edges are its coding block's, already marked.
@@ -1271,8 +1087,8 @@ impl SegmentDecoder<'_, '_> {
         let luma_mode = cu
             .intra
             .then(|| cu.luma_modes[if cu.part == Part::PNxN { quadrant } else { 0 }]);
-        if self.stats.is_some() {
-            // Nothing stays live across the blocks when analysis is off.
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
             self.start_tu(e);
         }
         self.block(e, cu, (node.x, node.y), node.log2, 0, luma_mode, luma_cbf)?;
@@ -1302,68 +1118,11 @@ impl SegmentDecoder<'_, '_> {
                 )?;
             }
         }
-        if self.stats.is_some() {
-            let bits = self.bits_since(e, self.analysis.tu.start);
-            self.tu_record(cu, node, (luma_cbf, cbf), bits);
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
+            self.tu_record(e, cu, node, (luma_cbf, cbf));
         }
         Ok(())
-    }
-
-    /// Start collecting a transform unit's residual (analysis).
-    #[cold]
-    #[inline(never)]
-    fn start_tu(&mut self, e: &Engine<'_>) {
-        self.analysis.tu = CodedBlock {
-            start: e.bits_consumed(),
-            ..CodedBlock::default()
-        };
-    }
-
-    /// Add a coded block's residual to its transform unit's (analysis).
-    #[cold]
-    #[inline(never)]
-    fn note_block(&mut self, transform_skip: bool) {
-        let tu = &mut self.analysis.tu;
-        tu.nonzero = tu.nonzero.saturating_add(self.s.positions.len() as u16);
-        tu.transform_skip |= transform_skip;
-    }
-
-    /// Push a transform unit's record. A 4x4 luma block's chroma is coded
-    /// with the fourth of its quadrant (§7.3.8.10), so only that one
-    /// carries the chroma flags.
-    #[cold]
-    #[inline(never)]
-    fn tu_record(&mut self, cu: &Cu, node: TuNode, (luma_cbf, cbf): (bool, [bool; 2]), bits: u32) {
-        let residual = self.analysis.tu;
-        let chroma = node.log2 > 2 || node.blk_idx == 3;
-        let mut coded = if luma_cbf { flags::CODED_Y } else { 0 };
-        if chroma && cbf[0] {
-            coded |= flags::CODED_CB;
-        }
-        if chroma && cbf[1] {
-            coded |= flags::CODED_CR;
-        }
-        self.analysis.cu_flags |= coded;
-        let size = coord(1 << node.log2);
-        self.record(BlockRecord {
-            kind: RecordKind::Transform,
-            pred: if cu.intra { Pred::Intra } else { Pred::Inter },
-            depth: node.depth,
-            x: coord(node.x),
-            y: coord(node.y),
-            w: size,
-            h: size,
-            flags: coded
-                | if residual.transform_skip {
-                    flags::TRANSFORM_SKIP
-                } else {
-                    0
-                },
-            qp: self.qp as i8,
-            nonzero: residual.nonzero,
-            bits,
-            ..BlockRecord::default()
-        });
     }
 
     /// `cu_qp_delta_abs` and `cu_qp_delta_sign_flag` (§7.3.8.14).
@@ -1387,7 +1146,10 @@ impl SegmentDecoder<'_, '_> {
         }
         self.qg.delta = delta;
         self.qg.coded = true;
-        self.analysis.qp_delta = Some(delta as i8);
+        #[cfg(feature = "analysis")]
+        {
+            self.analysis.qp_delta = Some(delta as i8);
+        }
         self.update_qp();
         Ok(())
     }
@@ -1438,7 +1200,8 @@ impl SegmentDecoder<'_, '_> {
             }
             return skip.map(|_| ());
         };
-        if self.stats.is_some() {
+        #[cfg(feature = "analysis")]
+        if self.s.stats.is_some() {
             self.note_block(skip);
         }
         self.reconstruct(cu, (x, y), log2, c, skip, intra_mode.is_some());

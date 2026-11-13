@@ -13,11 +13,10 @@ hevc|h264` drives it; docs/analysis/soc-encoder-tools.md is an example.
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import subprocess
 from pathlib import Path
-
-from .config import find_tool
 
 # Value names of the record enums (nc_common::stream_stats).
 PRED = ("intra", "inter", "skip", "merge")
@@ -37,9 +36,18 @@ PERCENT = 100
 QP_REVERSAL_STEP = 0.5
 
 
+# The analysis build of the CLI (`--features analysis`, docs/PROCEDURES.md
+# "Inspect a stream"): normal builds have no `stat` command.
+ANALYSIS_BIN = Path(os.environ.get("NC_ANALYSIS_BIN",
+                                   Path.home() / "nanocodec-data" / "targets" / "analysis" / "release"))
+
+
 def run_stat(stream: Path, codec: str, out: Path) -> list[dict]:
     """Decode `stream` with `nanocodec stat` and return its per-frame tallies."""
-    subprocess.run([str(find_tool("nanocodec")), "stat", "--codec", codec, "--input", str(stream),
+    binary = ANALYSIS_BIN / "nanocodec"
+    if not binary.is_file():
+        raise FileNotFoundError(f"{binary}: build the CLI with --features analysis (docs/PROCEDURES.md)")
+    subprocess.run([str(binary), "stat", "--codec", codec, "--input", str(stream),
                     "--json", str(out)], check=True)
     return json.loads(out.read_text())["frames"]
 

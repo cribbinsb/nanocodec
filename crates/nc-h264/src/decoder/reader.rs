@@ -41,7 +41,8 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Bits read so far.
+    /// Bits read so far (analysis).
+    #[cfg(feature = "analysis")]
     pub fn position(&self) -> usize {
         self.pos
     }

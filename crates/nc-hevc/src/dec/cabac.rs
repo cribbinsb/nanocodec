@@ -38,7 +38,8 @@ impl<'a> Engine<'a> {
         self.0.next_byte()
     }
 
-    /// Bits consumed so far, for counting what syntax costs.
+    /// Bits consumed so far, for counting what syntax costs (analysis).
+    #[cfg(feature = "analysis")]
     pub fn bits_consumed(&self) -> usize {
         self.0.bits_consumed()
     }

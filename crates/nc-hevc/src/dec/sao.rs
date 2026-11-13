@@ -8,7 +8,6 @@ use nc_dsp::{Dsp, SAO_EO_NEIGHBOURS};
 use super::cabac::Engine;
 use super::ctx::{self, Contexts};
 use super::picture::{Blocks, GRID_LOG2, PictureState, flag};
-use super::stats::SaoSyntax;
 
 /// `sao_offset_abs` maximum for 8-bit video: `(1 << (Min(bitDepth, 10) − 5)) − 1`.
 const MAX_OFFSET: u32 = 7;
@@ -50,8 +49,36 @@ pub(super) struct Neighbours {
     pub enabled: [bool; 2],
 }
 
+/// How a CTB's SAO parameters were signalled (analysis records).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum SaoSyntax {
+    MergeLeft = 0,
+    MergeUp = 1,
+    Explicit = 2,
+}
+
+/// What [`parse`] reports: the signalling in analysis builds, nothing
+/// otherwise (the normal decoder is unchanged).
+#[cfg(feature = "analysis")]
+pub(super) type Signalled = SaoSyntax;
+#[cfg(not(feature = "analysis"))]
+pub(super) type Signalled = ();
+
+#[inline]
+fn signalled(syntax: SaoSyntax) -> Signalled {
+    #[cfg(feature = "analysis")]
+    {
+        syntax
+    }
+    #[cfg(not(feature = "analysis"))]
+    {
+        let _ = syntax;
+    }
+}
+
 /// The index of a SAO type for analysis records: 0 off, 1 band, 2 edge
 /// (`SaoTypeIdx`, §7.4.9.3).
+#[cfg(feature = "analysis")]
 pub(super) fn kind_index(kind: Kind) -> u8 {
     match kind {
         Kind::Off => 0,
@@ -60,26 +87,29 @@ pub(super) fn kind_index(kind: Kind) -> u8 {
     }
 }
 
-/// `sao(rx, ry)` (§7.3.8.3) for the CTB at raster address `ctb`. Returns
-/// whether the parameters were merged or coded.
+/// `sao(rx, ry)` (§7.3.8.3) for the CTB at raster address `ctb`.
+#[cfg_attr(
+    not(feature = "analysis"),
+    allow(clippy::semicolon_if_nothing_returned)
+)]
 pub(super) fn parse(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
     pic: &mut PictureState,
     ctb: usize,
     n: Neighbours,
-) -> SaoSyntax {
+) -> Signalled {
     if let Some(left) = n.left
         && e.bin(ctx.at(ctx::SAO_MERGE, 0))
     {
         pic.sao[ctb] = pic.sao[left];
-        return SaoSyntax::MergeLeft;
+        return signalled(SaoSyntax::MergeLeft);
     }
     if let Some(up) = n.up
         && e.bin(ctx.at(ctx::SAO_MERGE, 0))
     {
         pic.sao[ctb] = pic.sao[up];
-        return SaoSyntax::MergeUp;
+        return signalled(SaoSyntax::MergeUp);
     }
     let mut sao = CtbSao::default();
     for c in 0..3 {
@@ -136,7 +166,7 @@ pub(super) fn parse(
         sao[c] = component;
     }
     pic.sao[ctb] = sao;
-    SaoSyntax::Explicit
+    signalled(SaoSyntax::Explicit)
 }
 
 /// Working memory of SAO, kept between bands: the deblocked samples the

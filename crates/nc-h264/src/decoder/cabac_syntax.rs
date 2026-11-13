@@ -233,6 +233,7 @@ fn cbf_cond(n: Option<&MbState>, intra: bool, coded: impl Fn(&MbState) -> bool) 
 }
 
 impl MbSyntax for CabacSyntax<'_> {
+    #[cfg(feature = "analysis")]
     fn bits_consumed(&self) -> usize {
         self.engine.bits_consumed()
     }

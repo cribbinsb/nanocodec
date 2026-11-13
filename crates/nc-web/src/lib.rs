@@ -13,6 +13,8 @@ pub use source::SourceFrame;
 
 use nc_common::decode::DecodeError;
 use nc_common::outcome::{FrameOutcome, ReceivedFrames};
+#[cfg(feature = "analysis")]
+use nc_common::stream_stats::{self, StreamStats};
 use nc_common::{ColourDescription, ColourInfo, Picture, PlaneIndex, RawFrame, ShownPicture};
 use nc_dsp::DisplayMatrix;
 use nc_dsp::display::display_scale_plane;
@@ -470,6 +472,10 @@ pub struct BrowserDecoder {
     scaled_decoded: Option<Picture>,
     /// Frames decoded, for the transport's dependency signal (`decode_frame`).
     frames: ReceivedFrames,
+    /// The latest picture's analysis records, packed for the page
+    /// (`analysis_frame`), reused across frames.
+    #[cfg(feature = "analysis")]
+    analysis: Vec<i16>,
 }
 
 /// One packet's outcome (`nc_common::outcome::FrameOutcome`): decoded, or
@@ -555,7 +561,69 @@ impl BrowserDecoder {
             reference: None,
             scaled_decoded: None,
             frames: ReceivedFrames::default(),
+            #[cfg(feature = "analysis")]
+            analysis: Vec::new(),
         })
+    }
+
+    #[cfg(feature = "analysis")]
+    /// Switch coding-tool analysis on (from the next decoded picture) or
+    /// off; returns whether this codec's decoder supports it (H.264 and
+    /// HEVC so far). Off, decoding pays nothing but a branch per parse
+    /// point; on, every picture's block records are kept for
+    /// `analysis_frame`.
+    pub fn set_analysis(&mut self, on: bool) -> bool {
+        let stats = || on.then(StreamStats::records_only);
+        match &mut self.inner {
+            DecoderKind::H264(d) => match stats() {
+                Some(s) => d.collect_stats(s),
+                None => drop(d.take_stats()),
+            },
+            DecoderKind::Hevc(d) => match stats() {
+                Some(s) => d.collect_stats(s),
+                None => drop(d.take_stats()),
+            },
+            _ => return false,
+        }
+        if !on {
+            self.analysis = Vec::new();
+        }
+        true
+    }
+
+    #[cfg(feature = "analysis")]
+    /// Pack the latest decoded picture's analysis records
+    /// (`nc_common::stream_stats::pack_records`: `analysis_halfwords` `i16`
+    /// values per record) into a reused buffer and return its byte offset
+    /// in WASM memory, read as for `rgba_frame`; `analysis_length` is the
+    /// number of `i16` values. Without analysis the buffer is empty.
+    pub fn analysis_frame(&mut self) -> usize {
+        let stats = match &self.inner {
+            DecoderKind::H264(d) => d.stats(),
+            DecoderKind::Hevc(d) => d.stats(),
+            _ => None,
+        };
+        match stats {
+            Some(s) => stream_stats::pack_records(s.records(), &mut self.analysis),
+            None => self.analysis.clear(),
+        }
+        self.analysis.as_ptr() as usize
+    }
+
+    #[cfg(feature = "analysis")]
+    /// The number of `i16` values `analysis_frame` packed.
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn analysis_length(&self) -> usize {
+        self.analysis.len()
+    }
+
+    #[cfg(feature = "analysis")]
+    /// `i16` values per packed analysis record.
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn analysis_halfwords(&self) -> usize {
+        stream_stats::PACKED_HALFWORDS
     }
 
     /// Select the operating point (`0..=31` on AV1, `0..=1` on VP9 where `> 0`

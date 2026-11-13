@@ -22,5 +22,10 @@ nc-av1.workspace = true
 nc-vvc.workspace = true
 wasm-bindgen = "=0.2.105"
 
+[features]
+# The analysis module of the demo (`set_analysis`, `analysis_frame`):
+# built as its own WASM module, pkg/analysis/ (tools/web/build.sh).
+analysis = ["nc-hevc/analysis", "nc-h264/analysis"]
+
 [lints]
 workspace = true
