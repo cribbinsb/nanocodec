@@ -110,6 +110,40 @@ DEFAULT_ANCHOR_PRESETS = {"svt": "12", "x264": "veryfast", "x265": "superfast"}
 #: libvpx / libaom presets are their realtime --cpu-used speeds (libvpx-vp9-cpu7).
 ANCHOR_PRESET_PREFIXES = {"svt": "svtav1-m", "x264": "x264-", "x265": "x265-",
                           "vpx": "libvpx-vp9-cpu", "aom": "libaom-av1-cpu"}
+#: Other settings of the anchors than the chart's (Family.profile), to measure how
+#: much of a gap depends on the chart's choices (docs/results/rate-control-audit-*):
+#:   lookahead  x264 / x265 without --tune zerolatency: their default B-frames,
+#:              lookahead and mb-tree / cu-tree (not low delay; an upper bound)
+#:   psnr, ssim x264 with --tune zerolatency,psnr / zerolatency,ssim (psy
+#:              optimisations off / SSIM-tuned AQ) instead of its psy defaults;
+#:              x265 with --tune psnr / ssim in place of zerolatency (x265 applies
+#:              one --tune; explicit --no-cutree --bframes 0 --rc-lookahead 0
+#:              --no-scenecut --frame-threads 1 restore the rest of zerolatency).
+#:              Checked 2026-11-13 (x265 4.2, 30 frames 640x360): the same decoded
+#:              pictures and stream size as zerolatency with psy-rd 0, psy-rdoq 0
+#:              and aq-strength 0 (psnr) / aq-mode 2 (ssim); the bytes differ only
+#:              in x265's options SEI (b-adapt)
+#:   threads4   x264 with 4 (sliced) threads, x265 with a 4-thread pool and WPP:
+#:              the multi-threaded low-delay setups real-time use runs
+#:   hier       SVT-AV1 --rtc with its default low-delay hierarchy (temporal
+#:              layers) instead of flat P
+#:   webrtc     libvpx / libaom with WebRTC's rate-control settings: cyclic
+#:              refresh AQ (3), max-q 52, min-q 2, 50% under/overshoot
+#:   good       libvpx VP9 --good (one pass, no lag) instead of --rt
+#:   ssim       libvpx / libaom --tune=ssim instead of their default --tune=psnr
+#:   aq         openh264 with its adaptive quantisation on (its default); NVENC
+#:              with spatial AQ on (-spatial-aq 1; off by default)
+ANCHOR_PROFILES = {"x264": ("lookahead", "threads4", "psnr", "ssim"),
+                   "x265": ("lookahead", "threads4", "psnr", "ssim"),
+                   "svt": ("hier",), "vpx": ("webrtc", "good", "ssim"),
+                   "aom": ("webrtc", "ssim"), "openh264": ("aq",), "nvenc": ("aq",)}
+WEBRTC_VPX_AOM = ("--aq-mode=3", "--max-q=52", "--min-q=2", "--undershoot-pct=50",
+                  "--overshoot-pct=50")
+PROFILE_THREADS = "4"
+#: Metric tunes (Family.profile) that replace x264's / x265's psycho-visual defaults.
+METRIC_TUNES = ("psnr", "ssim")
+#: A profiled anchor family's name: `<family>~<profile>` (x264-medium~psnr).
+PROFILE_SEPARATOR = "~"
 ANCHOR_TOOLS = {"svt": "SvtAv1EncApp", "x264": "x264", "x265": "x265", "vpx": "vpxenc",
                 "aom": "aomenc"}
 ANCHOR_CODECS = {"svt": Codec.AV1, "x264": Codec.H264, "x265": Codec.HEVC, "vpx": Codec.VP9,
@@ -161,6 +195,9 @@ class Family:
     compares: tuple[Codec, ...] = ()
     #: Anchors: the program's preset ("" = DEFAULT_ANCHOR_PRESETS[kind]).
     preset: str = ""
+    #: Anchors: one of the program's ANCHOR_PROFILES instead of the chart's
+    #: real-time settings ("" = the chart's): the independent test's fairness check.
+    profile: str = ""
 
     @property
     def hardware(self) -> bool:
@@ -198,9 +235,10 @@ class Family:
                     "--buf-initial-sz", str(SVT_BUFFER_LEVEL_MS),
                     "--buf-optimal-sz", str(SVT_BUFFER_LEVEL_MS)] if kbps else \
                 ["--rc", "0", "--aq-mode", "0", "--qp", str(qp)]
+            hierarchy = [] if self.profile == "hier" else ["--hierarchical-levels",
+                                                           str(layers - 1)]
             return [str(self.tool), "--rtc", "1", "--preset", self.anchor_preset,
-                    "--pred-struct", "1",
-                    "--hierarchical-levels", str(layers - 1), *mode, "--keyint", str(intra),
+                    "--pred-struct", "1", *hierarchy, *mode, "--keyint", str(intra),
                     "--scd", "0",
                     "--lp", "1", "--fps-num", str(num), "--fps-denom", str(den),
                     "-w", common["w"], "-h", common["h"], "-n", common["n"],
@@ -212,7 +250,8 @@ class Family:
                 "--width", common["w"], "--height", common["h"], "--fps", f"{clip.fps:g}",
                 "--frames", common["n"], "--usage", "camera-realtime", "--complexity", "medium",
                 "--cabac", "0", *mode, "--intra-period", str(intra), "--temporal-layers", str(layers),
-                "--adaptive-quant", "0", "--scene-change", "0", "--background-detection", "1",
+                "--adaptive-quant", "1" if self.profile == "aq" else "0",
+                "--scene-change", "0", "--background-detection", "1",
                 "--denoise", "0", "--ltr", "0", "--frame-skip", "0", "--threads", "1"]
 
     def _x26x_command(self, clip: Clip, frames: int, intra: int, out: Path,
@@ -229,15 +268,25 @@ class Family:
         mode = (["--bitrate", str(kbps), "--vbv-maxrate", str(kbps),
                  "--vbv-bufsize", str(round(kbps * BUFFER_MS / 1000))] if kbps
                 else ["--qp", str(qp)])
-        common = ["--tune", "zerolatency", "--bframes", "0", "--rc-lookahead", "0",
-                  "--no-scenecut", "--keyint", str(intra), "--min-keyint", str(intra),
+        tune, restore = "zerolatency", []
+        if self.profile in METRIC_TUNES:  # x264 combines tunes; x265 takes one
+            tune = f"{tune},{self.profile}" if self.kind == "x264" else self.profile
+            # the rest of x265's zerolatency (b-adapt is inert without B-frames);
+            # 2026-11-13: with or without it the streams are byte-identical
+            restore = ["--no-cutree"] if self.kind == "x265" else []
+        low_delay = [] if self.profile == "lookahead" else \
+            ["--tune", tune, *restore, "--bframes", "0", "--rc-lookahead", "0"]
+        common = [*low_delay, "--no-scenecut", "--keyint", str(intra), "--min-keyint", str(intra),
                   *mode, "--input-res", f"{clip.width}x{clip.height}",
                   "--fps", f"{num}/{den}", "--frames", str(frames)]
         if self.kind == "x264":
-            return [str(self.tool), "--preset", self.anchor_preset, *common, "--threads", "1",
+            threads = PROFILE_THREADS if self.profile == "threads4" else "1"
+            return [str(self.tool), "--preset", self.anchor_preset, *common, "--threads", threads,
                     "--output", str(out), str(clip.yuv)]
+        threads = ["--pools", PROFILE_THREADS, "--wpp"] if self.profile == "threads4" else \
+            ["--pools", "none", "--no-wpp"]
         return [str(self.tool), "--preset", self.anchor_preset, *common, "--frame-threads", "1",
-                "--pools", "none", "--no-wpp", "--input-depth", "8",
+                *threads, "--input-depth", "8",
                 "--input", str(clip.yuv), "--output", str(out)]
 
     def _libvpx_aom_command(self, clip: Clip, frames: int, intra: int, out: Path,
@@ -256,9 +305,13 @@ class Family:
                  f"--buf-optimal-sz={SVT_BUFFER_LEVEL_MS}"] if kbps
                 else ["--end-usage=q", f"--cq-level={qp}", f"--min-q={qp}", f"--max-q={qp}",
                       "--disable-warning-prompt"])  # min = max q is a warning, not an error
-        codec = ["--codec=vp9", "--rt"] if self.kind == "vpx" else ["--rt"]
+        deadline = "--good" if self.profile == "good" else "--rt"
+        codec = ["--codec=vp9", deadline] if self.kind == "vpx" else [deadline]
+        profile = WEBRTC_VPX_AOM if self.profile == "webrtc" and kbps else ()
+        profile += ("--tune=ssim",) if self.profile == "ssim" else ()
         return [str(self.tool), *codec, "--passes=1", "--lag-in-frames=0",
                 "--error-resilient=0", "--threads=1", f"--cpu-used={self.preset}", *mode,
+                *profile,
                 f"--kf-min-dist={intra}", f"--kf-max-dist={intra}", "--i420",
                 f"--width={clip.width}", f"--height={clip.height}", f"--fps={num}/{den}",
                 f"--limit={frames}", "--ivf", "-o", str(out), str(clip.yuv)]
@@ -282,6 +335,7 @@ class Family:
                 *self.extra, *NVENC_PROFILES[self.codec],
                 "-rc", "cbr", "-b:v", rate, "-maxrate", rate,
                 "-bufsize", f"{round(kbps * BUFFER_MS / 1000)}k",
+                *(("-spatial-aq", "1") if self.profile == "aq" else ()),
                 "-bf", "0", "-rc-lookahead", "0", "-no-scenecut", "1", "-g", str(intra),
                 "-zerolatency", "1", "-delay", "0",
                 "-f", NVENC_MUXERS[self.codec], "-y", str(out)]
@@ -358,6 +412,12 @@ class Bench:
             parts.append(f"layers={self.layers}")
         if family.preset and family.preset != DEFAULT_ANCHOR_PRESETS.get(family.kind):
             parts.append(f"preset={family.preset}")  # default presets keep their identity
+        if family.profile:
+            parts.append(f"profile={family.profile}")
+            if family.kind == "x265" and family.profile in METRIC_TUNES:
+                # x265's real --tune since 2026-11-13 (the first form set the tune's
+                # options beside zerolatency): never the first form's cached points
+                parts.append("x265-tune")
         if self.spatial(family):  # their results carry the base layer too
             parts.append("svc-base")
         if scored:
@@ -756,6 +816,12 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False) -> Family:
     NVENC family (NVENC_FAMILIES, CBR only)."""
     if name in NVENC_FAMILIES:
         return nvenc_family(name, paths)
+    base, sep, profile = name.partition(PROFILE_SEPARATOR)
+    if sep:  # `<family>~<profile>`: the family in one of its ANCHOR_PROFILES
+        family = preset_anchor(base, paths, cqp)
+        if profile not in ANCHOR_PROFILES.get(family.kind, ()):
+            raise ValueError(f"{name}: {family.kind} has no profile {profile!r}")
+        return replace(family, name=name, profile=profile)
     for kind, prefix in ANCHOR_PRESET_PREFIXES.items():
         if name.startswith(prefix) and len(name) > len(prefix):
             codec = ANCHOR_CODECS[kind]

@@ -15,8 +15,10 @@
 // hand-off cannot be separated.
 // --hash adds a separate untimed pass hashing every decoded I420 frame, for the
 // bit-exactness check against the native decoder.
-// encode: converts the I420 clip to RGBA once (untimed), then times
-// BrowserEncoder.encode per frame (RGBA->I420 + encode), as the demo does;
+// encode: times BrowserEncoder.encode per frame as the demo pays it: from the
+// clip's I420 planes through a SourceFrame (the demo's video capture path,
+// modules with SourceFrame), or, for older modules, from RGBA converted from
+// the clip once (untimed) through the encoder's own RGBA->I420;
 // --fast selects the Fast preset (the demo's "Encoder preset"). The encoder's
 // quantizer argument (under rate control, the seed of the first key frame) is
 // the demo's initial one per codec (web/codecs.js), as the native CLI seeds it:
@@ -86,7 +88,8 @@ async function decode(args) {
       const decoded = performance.now();
       if (handoff) {
         const length = decoder.width * decoder.height * 4;
-        const offset = decoder.rgba_frame(); // may grow (and detach) WASM memory
+        // The colour argument (newer modules) is ignored by older ones.
+        const offset = decoder.rgba_frame('bt601'); // may grow (and detach) WASM memory
         const view = new Uint8Array(module.wasmMemory().buffer, offset, length);
         if (!canvas || canvas.length !== length) canvas = new Uint8Array(length);
         canvas.set(view);
@@ -132,22 +135,31 @@ async function encode(args) {
   const width = +args.width, height = +args.height, count = +args.frames, fps = +args.fps;
   const frameBytes = width * height * 3 / 2;
   const yuv = await readFile(args.yuv);
+  const planes = 'SourceFrame' in module;
   const frames = [];
-  for (let i = 0; i < count; i++) frames.push(i420ToRgba(yuv.subarray(i * frameBytes, (i + 1) * frameBytes), width, height));
+  for (let i = 0; i < count; i++) {
+    const frame = yuv.subarray(i * frameBytes, (i + 1) * frameBytes);
+    frames.push(planes ? frame : i420ToRgba(frame, width, height));
+  }
+  const layout = Uint32Array.from([0, width, width * height, width / 2, width * height * 5 / 4, width / 2]);
   const passes = [];
   let bytes = 0;
   for (let pass = 0; pass < +args.repeat; pass++) {
-    const encoder = new module.BrowserEncoder(args.codec, width, height, CODECS[args.codec].quantizer.initial, fps, +args.keySeconds * fps, args.fast ? 'fast' : 'default');
+    const encoder = new module.BrowserEncoder(args.codec, width, height, CODECS[args.codec].quantizer.initial, fps, +args.keySeconds * fps,
+      args.fast ? 'fast' : 'default', undefined, false, 'bt709');
     encoder.set_rate_control(+args.kbps, +args.peakKbps, +args.bufferMs);
+    const source = planes ? new module.SourceFrame(width, height) : null;
     const times = [];
     bytes = 0;
-    for (const rgba of frames) {
+    for (const frame of frames) {
       const start = performance.now();
-      const packet = encoder.encode(rgba);
+      if (planes) source.from_planes(frame, 'I420', 'bt709', width, height, layout);
+      const packet = encoder.encode(planes ? source : frame);
       times.push(performance.now() - start);
       bytes += packet.length;
     }
     encoder.free();
+    source?.free();
     passes.push(times);
   }
   return { mode: 'encode', codec: args.codec, yuv: args.yuv, wasm_sha256: wasmSha256,

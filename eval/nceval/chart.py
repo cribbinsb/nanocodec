@@ -217,7 +217,11 @@ def chart_families(binary: Path, presets: Path, names: list[str] | None = None,
     every family on its own build)."""
     paths = load_paths()
     wanted = names or [name for name, _ in OURS + REFERENCES]
-    extra = [n for n, _ in REFERENCES + HARDWARE if n not in BUILT_IN_ANCHORS]
+    # any other requested reference is a preset anchor by name (cbr.preset_anchor),
+    # e.g. the independent test's x264-faster
+    own_names = {n for n, _ in OURS}
+    extra = list(dict.fromkeys(n for n in [*(n for n, _ in REFERENCES + HARDWARE), *wanted]
+                               if n not in BUILT_IN_ANCHORS and n not in own_names))
     anchors = {f.name: f for f in anchor_families(paths, OPENH264_HARNESS, extra=extra)}
     binaries, presets_for = binaries or {}, presets_for or {}
     ours = {name: own_family(name, binaries.get(name, binary), presets_for.get(name, presets))
@@ -551,7 +555,8 @@ def quality_points(runner: Runner, families: list[Family], clips: list[Clip],
     """BD of every family vs the anchor (families[0]) and of SELECTED_PAIRS, from
     cached points (`rungs`: those indices of the real-use ladder only)."""
     curves, low = chart_curves(runner, families, clips, frames, "chart render", rungs)
-    labels = dict(OURS + REFERENCES)
+    # a family off the chart's lists (the independent test's extra references) by name
+    labels = {**{f.name: f.name for f in families}, **dict(OURS + REFERENCES)}
     by_name = {f.name: f for f in families}
     points, excluded = anchor_points(curves, families, clips, runner, labels)
     pairs = [(labels[ref], versus(curves, ref, by_name[ours], clips, runner, labels[ours],

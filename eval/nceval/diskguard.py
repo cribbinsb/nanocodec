@@ -7,7 +7,9 @@ while staying far below the disk's free space. Two limits are enforced before ev
 filling the disk) when either is crossed:
 
   - the work directory may not exceed WORK_BUDGET_BYTES;
-  - the filesystem must keep at least MIN_FREE_BYTES free.
+  - the filesystem must keep at least MIN_FREE_BYTES free (NC_MIN_FREE_GIB sets
+    another floor: a machine with a smaller disk, e.g. an outside reproduction
+    of the open subset, docs/results/reproducibility.md).
 
 The work directory holds ~200k files, and walking it costs seconds of CPU
 (mostly stat syscalls): measured 2026-11-11 as ~8 CPU-s per chart point,
@@ -35,6 +37,7 @@ from pathlib import Path
 GIB = 1 << 30
 WORK_BUDGET_BYTES = 100 * GIB
 MIN_FREE_BYTES = 200 * GIB
+MIN_FREE_ENV = "NC_MIN_FREE_GIB"
 #: How long a measured work-directory size stands (see the module docstring).
 USAGE_TTL_SECONDS = 60
 USAGE_CACHE = ".disk-usage.json"
@@ -62,9 +65,10 @@ def check_disk(work: Path) -> None:
     # directory still counts against the main budget.
     work = _outermost_work_dir(work)
     free = shutil.disk_usage(work).free
-    if free < MIN_FREE_BYTES:
+    min_free = float(os.environ.get(MIN_FREE_ENV, MIN_FREE_BYTES / GIB)) * GIB
+    if free < min_free:
         raise DiskBudgetExceeded(f"only {free / GIB:.0f} GiB free on {work} "
-                                 f"(minimum {MIN_FREE_BYTES / GIB:.0f} GiB)")
+                                 f"(minimum {min_free / GIB:.0f} GiB, {MIN_FREE_ENV})")
     used = shared_work_bytes(work)
     if used > WORK_BUDGET_BYTES:
         raise DiskBudgetExceeded(f"{work} holds {used / GIB:.0f} GiB "

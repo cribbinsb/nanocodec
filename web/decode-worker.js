@@ -1,11 +1,13 @@
 // Decoder half of one comparison view; encode-worker.js is the other half.
 // Packets arrive from the view's encode worker over a MessageChannel port
-// with the RGBA source frame each was coded from. This worker decodes them,
-// measures PSNR against that source (in WASM, off the encoder's path) and
-// posts the frame to show, with every timing, to the page. A view playing a
-// pre-encoded stream has no encode worker: the page posts the stream's packets
-// on the same port (pipeline.js), and frames decoded only to keep the
-// references (no source attached) are not scored.
+// with the source frame each was coded from (packed I420 of the view size,
+// and its colour). This worker decodes them, measures PSNR against that
+// source plane by plane (in WASM, off the encoder's path) and posts the frame
+// to show, with every timing, to the page. A view playing a pre-encoded stream
+// has no encode worker: the page posts the stream's packets on the same port
+// with the captured frame (pipeline.js), which this worker converts to the
+// view's size itself as the encode worker would; frames decoded only to keep
+// the references (no capture attached) are not scored.
 //
 // Buffers circulate instead of being allocated per frame: the source buffer
 // goes back to the page with the result, and the page gives back each
@@ -13,7 +15,8 @@
 //
 // Decoded frames go out in the format the page's renderer asks for with each
 // frame (renderer.js): packed I420 for a WebGL view, which converts on the GPU,
-// or RGBA converted here in WASM for the CPU path.
+// or RGBA converted here in WASM for the CPU path, both with the source's
+// colour matrix and range (colour.js).
 //
 // Spatial SVC (the AV1 and VP9 `svc` presets): the decoder keeps only the
 // operating point the viewer picked (BrowserDecoder.set_operating_point: AV1
@@ -28,21 +31,25 @@ import { MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
-let decoder, wasm;
+let module, decoder, wasm;
+// A pre-encoded view's converted source frame and its size (made on its first capture).
+let source = null, sourceSize = '';
 // The operating point to switch up to at the next key frame (null: none pending).
 let pendingOperatingPoint = null;
+// The colour frames are shown in: the latest source's (colour.js).
+let displayColour = 'bt709';
 // Set by the first real packet: start-up warm-up (warmup.js) stops then.
 let realData = false;
 // Returned display buffers kept for reuse: one per frame the page can hold in
 // flight (MAX_FRAMES_IN_FLIGHT, pipeline.js) or on screen, so none is allocated in steady state.
 const MAX_SPARE_PIXELS = 5;
 const sparePixels = [];
-/** Copy the decoder's latest frame, in `format`, out of WASM memory into a reused buffer. */
-function decodedPixels(format) {
+/** Copy the decoder's latest frame, in `format` (RGBA in `colour`), out of WASM memory into a reused buffer. */
+function decodedPixels(format, colour) {
   const { width, height } = decoder;
   const length = format === 'i420' ? width * height + 2 * Math.ceil(width / 2) * Math.ceil(height / 2) : width * height * 4;
   // Convert first: it may grow WASM memory, which detaches older buffers.
-  const offset = format === 'i420' ? decoder.i420_frame() : decoder.rgba_frame();
+  const offset = format === 'i420' ? decoder.i420_frame() : decoder.rgba_frame(colour);
   const view = new Uint8Array(wasm.memory.buffer, offset, length);
   const match = sparePixels.findIndex(p => p.length === length);
   const pixels = match >= 0 ? sparePixels.splice(match, 1)[0] : new Uint8Array(length);
@@ -54,7 +61,7 @@ function decodedPixels(format) {
  * decoder alone; `decodeStageMs` is all the time the frame held this worker.
  * A repeat (frame hold: nothing coded) shows the last decoded frame again.
  */
-function decodeFrame({ rgba, packet, ...coded }) {
+function decodeFrame({ capture, packet, ...coded }) {
   const start = performance.now();
   if (coded.key && pendingOperatingPoint !== null) {
     decoder.set_operating_point(pendingOperatingPoint);
@@ -62,10 +69,26 @@ function decodeFrame({ rgba, packet, ...coded }) {
   }
   if (!coded.repeat) decoder.decode(packet);
   const decoded = performance.now();
-  const psnr = rgba ? decoder.psnr(new Uint8Array(rgba)) : null;
-  return { ...coded, packet, source: rgba, psnr, width: decoder.width, height: decoder.height,
+  if (capture) Object.assign(coded, convertCapture(capture));
+  const psnr = coded.source ? decoder.psnr(new Uint8Array(coded.source)) : null;
+  return { ...coded, packet, psnr, width: decoder.width, height: decoder.height,
     streamWidth: decoder.stream_width, streamHeight: decoder.stream_height, spatialId: decoder.spatial_id,
     decodeMs: decoded - start, decodeStageMs: performance.now() - start };
+}
+/** A pre-encoded view's captured frame at the view's size: `{ source, colour }` as the encode worker sends them. */
+function convertCapture({ frame, width, height }) {
+  if (sourceSize !== `${width}x${height}`) {
+    source?.free();
+    source = new module.SourceFrame(width, height);
+    sourceSize = `${width}x${height}`;
+  }
+  if (frame.kind === 'planes') {
+    source.from_planes(new Uint8Array(frame.data), frame.format, frame.colour, frame.width, frame.height, Uint32Array.from(frame.layout));
+  } else {
+    source.from_rgba(new Uint8Array(frame.data));
+  }
+  const offset = source.packed();
+  return { source: new Uint8Array(wasm.memory.buffer, offset, source.packed_length).slice().buffer, colour: source.colour };
 }
 /** One frame from the encode worker: decode it and post it to the page. */
 function receivePacket({ data: message }) {
@@ -81,10 +104,12 @@ function receivePacket({ data: message }) {
     const result = decoded.at(-1), earlier = decoded.slice(0, -1);
     const displayStart = performance.now();
     const format = message.display === 'i420' ? 'i420' : 'rgba';
-    const pixels = decodedPixels(format);
+    // The last colour seen (frames decoded only for their references carry none).
+    if (result.colour) displayColour = result.colour;
+    const pixels = decodedPixels(format, displayColour);
     result.decodeStageMs += performance.now() - displayStart;
     const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean)];
-    self.postMessage({ type: 'frame', id: message.id, ...result, earlier, format, pixels, width: decoder.width,
+    self.postMessage({ type: 'frame', id: message.id, ...result, colour: displayColour, earlier, format, pixels, width: decoder.width,
       height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
       spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows }, transfer);
   } catch (error) {
@@ -94,7 +119,7 @@ function receivePacket({ data: message }) {
 self.onmessage = async ({ data: message }) => {
   try {
     if (message.type === 'init') {
-      const module = await codecModule;
+      module = await codecModule;
       wasm = await module.default();
       decoder = new module.BrowserDecoder(message.codec);
       if (message.operatingPoint) decoder.set_operating_point(message.operatingPoint);

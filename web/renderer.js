@@ -4,10 +4,10 @@
 // and skips its RGBA conversion. Without WebGL the worker converts to RGBA in
 // WASM and the frame is copied with putImageData (the CPU path).
 //
-// The shader repeats nc-dsp's display conversion (`convert` module: limited-range
-// BT.601 in 8.8 fixed point, each chroma sample covering a 2x2 luma block, no
-// chroma interpolation) in exact integer-valued float arithmetic, so both paths
-// show the same pixels. A frame coded smaller than the stream (AV1 adaptive
+// The shader repeats nc-dsp's display conversion (`convert` module: the
+// frame's colour matrix and range, colour.js, in 8.8 fixed point, each chroma
+// sample covering a 2x2 luma block, no chroma interpolation) in exact
+// integer-valued float arithmetic, so both paths show the same pixels. A frame coded smaller than the stream (AV1 adaptive
 // resolution: render size = stream size = canvas size) is scaled to the canvas
 // as players do, bilinearly with pixel centres aligned (nc-dsp `display`), each
 // plane on its own grid; both paths then show close but not identical pixels. `preserveDrawingBuffer` keeps the last frame readable,
@@ -17,16 +17,21 @@
 // context lost for longer than RESTORE_TIMEOUT_MS -> the owner's CPU fallback
 // (panel.js).
 
+import { DISPLAY_WEIGHTS } from './colour.js';
+
 /** What a renderer asks its worker for: `'i420'` (packed Y, Cb, Cr) or `'rgba'`. */
 export const FORMATS = { i420: 'i420', rgba: 'rgba' };
 
-// nc-dsp `convert::bt601`: R = (298 (Y-16) + 409 (Cr-128) + 128) >> 8, and so on.
-// Sums reach ~1.4e5, exact only in highp floats: a GPU without highp fragment
-// precision fails to compile this, and its view takes the CPU path.
+// nc-dsp `DisplayMatrix` (colour.js DISPLAY_WEIGHTS): R = (y (Y - offset) +
+// rCr (Cr-128) + 128) >> 8, and so on; u_luma is (y, offset), u_weights
+// (rCr, gCb, gCr, bCb). Sums reach ~1.4e5, exact only in highp floats: a GPU
+// without highp fragment precision fails to compile this, and its view takes
+// the CPU path.
 const FRAGMENT_SHADER = `
 precision highp float;
 uniform sampler2D u_y, u_cb, u_cr, u_rgba;
-uniform vec2 u_size, u_chroma_size, u_canvas;
+uniform vec2 u_size, u_chroma_size, u_canvas, u_luma;
+uniform vec4 u_weights;
 uniform bool u_show_rgba, u_scaled;
 float sample8(sampler2D plane, vec2 texel, vec2 size) {
   return floor(texture2D(plane, (texel + 0.5) / size).r * 255.0 + 0.5);
@@ -55,8 +60,9 @@ void main() {
     u = sample8(u_cb, chroma, u_chroma_size) - 128.0;
     v = sample8(u_cr, chroma, u_chroma_size) - 128.0;
   }
-  float y = 298.0 * (luma - 16.0) + 128.0;
-  gl_FragColor = vec4(channel(y + 409.0 * v), channel(y - 100.0 * u - 208.0 * v), channel(y + 516.0 * u), 1.0);
+  float y = u_luma.x * (luma - u_luma.y) + 128.0;
+  gl_FragColor = vec4(channel(y + u_weights.x * v), channel(y - u_weights.y * u - u_weights.z * v),
+    channel(y + u_weights.w * u), 1.0);
 }`;
 // One triangle covering the viewport; the fragment shader works in pixels.
 const VERTEX_SHADER = `
@@ -147,7 +153,8 @@ class GlRenderer {
     const gl = this.gl;
     const program = linkProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     gl.useProgram(program);
-    this.uniforms = Object.fromEntries(['u_size', 'u_chroma_size', 'u_canvas', 'u_show_rgba', 'u_scaled'].map(name => [name, gl.getUniformLocation(program, name)]));
+    this.uniforms = Object.fromEntries(['u_size', 'u_chroma_size', 'u_canvas', 'u_luma', 'u_weights', 'u_show_rgba', 'u_scaled']
+      .map(name => [name, gl.getUniformLocation(program, name)]));
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, COVER_TRIANGLE, gl.STATIC_DRAW);
     const position = gl.getAttribLocation(program, 'a_position');
@@ -165,9 +172,12 @@ class GlRenderer {
     });
     this.hasFrame = false;
   }
-  show({ format, pixels, width, height }) {
+  show({ format, pixels, width, height, colour }) {
     if (format !== this.format || this.lost) return pixels.buffer;
     const gl = this.gl, chromaWidth = Math.ceil(width / 2), chromaHeight = Math.ceil(height / 2);
+    const w = DISPLAY_WEIGHTS[colour];
+    gl.uniform2f(this.uniforms.u_luma, w.y, w.offset);
+    gl.uniform4f(this.uniforms.u_weights, w.rCr, w.gCb, w.gCr, w.bCb);
     const lumaSize = width * height, chromaSize = chromaWidth * chromaHeight;
     this.upload(0, width, height, pixels.subarray(0, lumaSize));
     this.upload(1, chromaWidth, chromaHeight, pixels.subarray(lumaSize, lumaSize + chromaSize));

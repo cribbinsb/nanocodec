@@ -2,9 +2,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import init, { BrowserEncoder, BrowserDecoder } from '../pkg/nc_web.js';
+import init, { BrowserEncoder, BrowserDecoder, SourceFrame } from '../pkg/nc_web.js';
+import { rgbaEncoder } from './rgba-source.mjs';
 const binary = await readFile(new URL('../pkg/nc_web_bg.wasm', import.meta.url));
 const wasm = await init({ module_or_path: binary });
+const encodeRgba = rgbaEncoder(SourceFrame, wasm.memory);
 const count = 1200;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function open(codec, id, width = 72) {
@@ -22,12 +24,12 @@ function step(s, frame) {
     const n = 4 * (y * s.width + x), shift = Math.floor(frame / 4);
     input.set([(x * 3 + shift + s.id * 41) & 255, (y * 3 + s.id * 29) & 255, (x + y + shift) & 255, 255], n);
   }
-  const packet = s.encoder.encode(input);
+  const { packet, packed } = encodeRgba(s.encoder, s.width, 64, input);
   assert.equal(s.encoder.key, [0, 30, 900, 1000].includes(frame), `${s.codec} key at ${frame}`);
   s.decoder.decode(packet);
   assert.equal(s.decoder.width, s.width);
   assert.equal(s.decoder.height, 64);
-  assert.ok(Number.isFinite(s.encoder.quality(s.decoder)));
+  assert.ok(Number.isFinite(s.decoder.psnr(packed)));
   return [hash(packet), hash(s.decoder.decoded_i420()), s.encoder.quantizer];
 }
 const streams = ['vp9', 'av2'].flatMap(codec => [open(codec, 0), open(codec, 1)]);

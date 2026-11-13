@@ -101,7 +101,28 @@ def chart_points() -> list[str]:
     return [*from_builds, *DEFAULT_REFERENCES]
 
 
-def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool) -> dict:
+#: Each timed point again in CBR at the plan's rung (`--cbr-variants`), as `<point>@cbr`:
+#: the chart times fixed QP; this measures what real-use CBR (rate control, re-codes)
+#: costs on top. Our points take the harness's CBR arguments, x264 its ABR + VBV.
+CBR_VARIANT_SUFFIX = "@cbr"
+CBR_BUFFER_MS = 1000
+
+
+def cbr_argv(argv: list[str], kbps: int) -> list[str]:
+    """`argv` with its `--qp N` replaced by the harness's CBR arguments at `kbps`."""
+    at = argv.index("--qp")
+    if "{BIN}/nanocodec" in argv[0]:
+        rate = ["--bitrate", str(kbps), "--buffer-ms", str(CBR_BUFFER_MS)]
+    elif argv[0].endswith("/x264"):
+        rate = ["--bitrate", str(kbps), "--vbv-maxrate", str(kbps), "--vbv-bufsize",
+                str(round(kbps * CBR_BUFFER_MS / 1000))]
+    else:
+        raise ValueError(f"no CBR form for {argv[0]}")
+    return [*argv[:at], *rate, *argv[at + 2:]]
+
+
+def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool,
+               cbr_variants: bool = False) -> dict:
     """The plan's entries for `points` (and both anchors), plus the AVX2-only M13 and,
     with `isa_variants`, each of our points again on our AVX2 tier (ISA_VARIANT)."""
     plan = json.loads(plan_file.read_text())
@@ -115,6 +136,13 @@ def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool
         for name in [n for n in entries if n.startswith("nanocodec")]:
             entries[f"{name}{ISA_VARIANT_SUFFIX}"] = {
                 clip: {**entry, "env": ISA_VARIANT_ENV, "pair_with": name}
+                for clip, entry in entries[name].items()}
+    if cbr_variants:
+        for name in [n for n in entries if n.startswith("nanocodec") or n == plan["anchor"]]:
+            entries[f"{name}{CBR_VARIANT_SUFFIX}"] = {
+                clip: {**entry, "argv": cbr_argv(entry["argv"], round(
+                    entry["target_bytes"] * 8 * entry["fps"] / plan["frames"] / 1000)),
+                       "pair_with": name}
                 for clip, entry in entries[name].items()}
     return {"anchor": plan["anchor"], "rung_kbps": plan["rung_kbps"], "frames": plan["frames"],
             "points": entries}
@@ -326,6 +354,8 @@ def main(argv: list[str]) -> None:
                         help=f"also time each of our points with {ISA_VARIANT_ENV}")
     parser.add_argument("--checkasm", type=Path,
                         help="an nc-checkasm build: run its benchmarks per x86 tier")
+    parser.add_argument("--cbr-variants", action="store_true",
+                        help="each of our points (and the anchor) again in CBR at the rung")
     parser.add_argument("--perf", help="comma-separated plan points to profile with perf")
     parser.add_argument("--purpose", default="x86-timing", help="the session's Purpose tag")
     parser.add_argument("--budget", type=float, default=5.0, help="session budget, USD")
@@ -341,11 +371,14 @@ def main(argv: list[str]) -> None:
         raise SystemExit("an arm64 instance needs aarch64 builds: --binary, --tools-dir and "
                          "--expect-version (the binary's `--version` line)")
     points = args.points.split(",") if args.points else chart_points()
-    plan = cloud_plan(points, arch, args.plan, args.isa_variants)
+    plan = cloud_plan(points, arch, args.plan, args.isa_variants, args.cbr_variants)
     if arch == "amd64":
         points = [*points, AVX2_VARIANT]
     if args.isa_variants:
         points += [f"{p}{ISA_VARIANT_SUFFIX}" for p in points if p.startswith("nanocodec")]
+    if args.cbr_variants:
+        points += [f"{p}{CBR_VARIANT_SUFFIX}" for p in points
+                   if p.startswith("nanocodec") or p == plan["anchor"]]
     points = slowest_first(points)
     missing = [p for p in points if p not in plan["points"]]
     if missing:

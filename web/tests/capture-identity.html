@@ -1,51 +1,69 @@
 <!doctype html><meta charset="utf-8"><title>Capture identity</title>
 <video id="video" muted playsinline></video>
 <script type="module">
-// The capture worker (capture-worker.js) against the page's former capture:
-// letterboxed drawImage of the video element on a software 2D canvas, then
-// getImageData. Run by capture-identity.py.
-import { snapshot } from '../capture.js';
+// What a live view codes from a sample clip: the capture worker's frame
+// (capture-worker.js) converted to each view size by nc-web SourceFrame, as the
+// encode worker does. Run by capture-identity.py, which compares the hashes
+// with the clip's ffmpeg-decoded planes placed by tools/web/source_frames.py.
+import { MODULE_URL } from '../wasm.js';
+const module = await import(MODULE_URL);
+const wasm = await module.default();
 const video = document.getElementById('video');
 const worker = new Worker('../capture-worker.js', { type: 'module' });
-/** Configure the worker for one view of width x height (a fresh port each time). */
-function viewOf(width, height) {
+const hex = async bytes => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
+/** The capture worker's frame for `picture` (a VideoFrame), as it posts it to one view. */
+async function capture(picture) {
   const channel = new MessageChannel();
-  worker.postMessage({ type: 'init', views: [{ port: channel.port1, width, height }] }, [channel.port1]);
-  return channel.port2;
+  worker.postMessage({ type: 'init', views: [{ port: channel.port1, width: video.videoWidth, height: video.videoHeight }] }, [channel.port1]);
+  const received = new Promise(resolve => { channel.port2.onmessage = ({ data }) => resolve(data.frame); });
+  worker.postMessage({ type: 'frame', id: 1, timestamp: 0, picture, sourceWidth: video.videoWidth,
+    sourceHeight: video.videoHeight, displays: ['i420'], coding: [true] }, [picture]);
+  const frame = await received;
+  channel.port2.close();
+  return frame;
 }
-function former(width, height) {
-  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, width, height);
-  const scale = Math.min(width / video.videoWidth, height / video.videoHeight);
-  const w = video.videoWidth * scale, h = video.videoHeight * scale;
-  ctx.drawImage(video, (width - w) / 2, (height - h) / 2, w, h);
-  return ctx.getImageData(0, 0, width, height).data;
-}
-/** Largest per-byte difference and differing byte count over `times` (s) of `url` at each size. */
+/**
+ * Play `url` and convert a frame presented at or after each of `times` (s),
+ * taken in its frame callback as capture.js stages frames. For each: the media
+ * time of the frame the VideoFrame holds, the capture path and the SHA-256 of
+ * each view's packed I420.
+ */
 window.compare = async ({ url, sizes, times }) => {
   video.src = url;
   await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error(url)); });
-  const results = [];
-  for (const [width, height] of sizes) {
-    const port = viewOf(width, height);
-    for (const time of times) {
-      video.currentTime = time;
-      await new Promise(resolve => video.addEventListener('seeked', resolve, { once: true }));
-      const expected = former(width, height);
-      const received = new Promise(resolve => { port.onmessage = ({ data }) => resolve(new Uint8Array(data.rgba)); });
-      const picture = snapshot(video);
-      worker.postMessage({ type: 'frame', id: 1, timestamp: 0, picture: await picture, sourceWidth: video.videoWidth,
-        sourceHeight: video.videoHeight, displays: ['i420'], coding: [true] }, [await picture]);
-      const actual = await received;
-      let max = 0, count = 0;
-      for (let i = 0; i < expected.length; i++) {
-        const d = Math.abs(expected[i] - actual[i]);
-        if (d) { count++; max = Math.max(max, d); }
+  const staged = [];
+  await new Promise(resolve => {
+    const onFrame = (_, metadata) => {
+      const next = times[staged.length];
+      if (metadata.mediaTime >= next) {
+        // The frame's own timestamp names the frame it holds (under load the element
+        // may already show a later frame than the callback's).
+        const picture = new VideoFrame(video);
+        staged.push({ time: next, mediaTime: picture.timestamp / 1e6, picture });
       }
-      results.push({ width, height, time, max, count, length: actual.length === expected.length });
+      if (staged.length < times.length) video.requestVideoFrameCallback(onFrame); else resolve();
+    };
+    video.requestVideoFrameCallback(onFrame);
+    video.play();
+  });
+  video.pause();
+  const results = [];
+  for (const { time, mediaTime, picture } of staged) {
+    const frame = await capture(picture);
+    const hashes = [];
+    for (const [width, height] of sizes) {
+      const source = new module.SourceFrame(width, height);
+      if (frame.kind === 'planes') {
+        source.from_planes(new Uint8Array(frame.data), frame.format, frame.colour, frame.width, frame.height, Uint32Array.from(frame.layout));
+      } else {
+        source.from_rgba(new Uint8Array(frame.data));
+      }
+      // packed() may grow WASM memory: take its offset before the buffer.
+      const offset = source.packed();
+      hashes.push(await hex(new Uint8Array(wasm.memory.buffer, offset, source.packed_length).slice()));
+      source.free();
     }
-    port.close();
+    results.push({ time, mediaTime, kind: frame.kind, format: frame.format, colour: frame.colour, hashes });
   }
   return results;
 };

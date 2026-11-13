@@ -9,16 +9,17 @@ deliberately varied set: content, encoder and preset, resolution, frame rate and
 bitrate all vary, and every entry is one the other view can be set to live
 (a resolution, frame rate and target the page offers; web/tests/reference.test.js).
 
-Source frames are made as the page makes them (web/capture.js): the hosted mp4
-the page would read at that height (clips.js `clipUrl`) is decoded, converted
-BT.709 limited range -> full-range RGB and scaled bilinearly by ffmpeg, then
-converted to limited-range BT.601 I420 with nc-dsp's own fixed-point formula
-(`rgba_to_i420` below). The clip is sampled on the page's 30 Hz tick grid
+Source frames are the page's own (web/capture-worker.js): the hosted mp4 the
+page would read at that height (clips.js `clipUrl`) is decoded by ffmpeg to its
+yuv420p planes (limited-range BT.709, as the browser's decoder gives them: H.264
+decoding is exact), passed through at the file's size, or scaled and
+letterboxed into other sizes exactly as nc-web `SourceFrame` does
+(source_frames.py). The clip is sampled on the page's 30 Hz tick grid
 (web/timeline.js): tick c shows source frame floor(c * F / 30) of an F fps clip
 (the hosted clips are 30 fps, tools/web/retime-clips.py, or 60 fps, every second
 frame), exactly as the live view sees them; a stream at 30/N fps codes every Nth
-tick. Non-16:9 clips are letterboxed into the view as the page does. What differs from a browser capture is the browser's own
-H.264 decode-to-RGB rounding and scaler (docs/handoff/browser-demo.md).
+tick. A live view and a pre-encoded one therefore code the same pixels
+(web/tests/capture-identity.py checks the browser's against this).
 
 Every stream is decoded by the codec's reference decoder (ffmpeg n8.0.1, dav1d,
 vpxdec) and by our native decoder; the run fails unless both agree on every
@@ -50,14 +51,15 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "eval"))
 from nceval.cbr import BUFFER_MS, Family, preset_anchor  # noqa: E402
 from nceval.clips import Clip  # noqa: E402
 from nceval.codecs import Codec  # noqa: E402
 from nceval.config import load_paths  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_frames import split_i420, view_frame  # noqa: E402
 
 WEB = REPO / "web"
 OUT = WEB / "streams-ref"
@@ -81,9 +83,8 @@ IVF_FOURCC = {Codec.H264: b"H264", Codec.HEVC: b"HEVC", Codec.AV1: b"AV01", Code
 PIXEL_FORMATS = {"yuv420p": {"bitDepth": 8, "chroma": "4:2:0"}}
 PAGE_CODEC = {Codec.H264: "h264", Codec.HEVC: "hevc", Codec.AV1: "av1", Codec.VP9: "vp9"}
 
-# nc-dsp convert::bt601_forward (crates/nc-dsp/src/convert/mod.rs).
-BT601_Y, BT601_CB, BT601_CR = (66, 129, 25), (-38, -74, 112), (112, -94, -18)
-BT601_ROUND, BT601_SHIFT, LUMA_OFFSET, CHROMA_OFFSET = 128, 8, 16, 128
+# How source frames are made (`write_source`): a record made otherwise is out of date.
+SOURCE_PIXELS = "decoded planes, nc-web SourceFrame placement (tools/web/source_frames.py)"
 
 
 @dataclass(frozen=True)
@@ -235,37 +236,6 @@ def probe(path: Path) -> tuple[int, int, float, int]:
     return s["width"], s["height"], num / den, int(s["nb_read_frames"])
 
 
-def rgba_to_i420(rgb: np.ndarray) -> bytes:
-    """nc-dsp's encoder input conversion (convert/scalar.rs `rgba_to_i420`) of an
-    H x W x 3 RGB frame: limited-range BT.601, chroma from each 2x2 group's mean."""
-    px = rgb.astype(np.int32)
-
-    def forward(weights, offset, r, g, b):
-        total = weights[0] * r + weights[1] * g + weights[2] * b
-        return np.clip(offset + ((total + BT601_ROUND) >> BT601_SHIFT), 0, 255).astype(np.uint8)
-
-    luma = forward(BT601_Y, LUMA_OFFSET, px[..., 0], px[..., 1], px[..., 2])
-    h, w = rgb.shape[0] // 2 * 2, rgb.shape[1] // 2 * 2
-    groups = px[:h, :w].reshape(h // 2, 2, w // 2, 2, 3).sum(axis=(1, 3))
-    mean = (groups + 2) // 4
-    cb = forward(BT601_CB, CHROMA_OFFSET, mean[..., 0], mean[..., 1], mean[..., 2])
-    cr = forward(BT601_CR, CHROMA_OFFSET, mean[..., 0], mean[..., 1], mean[..., 2])
-    return luma.tobytes() + cb.tobytes() + cr.tobytes()
-
-
-def letterbox(source_width: int, source_height: int, width: int, height: int) -> str:
-    """The ffmpeg filter that fits the source into width x height as the page does
-    (capture-worker.js: aspect kept, black bars), converting BT.709 limited range to
-    full-range RGB. A fit within a pixel of the frame (16:9 into 854x480) fills it."""
-    convert = "flags=bilinear+accurate_rnd+full_chroma_int:in_color_matrix=bt709:in_range=tv:out_range=pc"
-    fit = min(width / source_width, height / source_height)
-    fitted_width, fitted_height = round(source_width * fit), round(source_height * fit)
-    if abs(fitted_width - width) <= 1 and abs(fitted_height - height) <= 1:
-        return f"scale={width}:{height}:{convert}"
-    return (f"scale={fitted_width}:{fitted_height}:{convert},format=rgb24,"
-            f"pad={width}:{height}:{(width - fitted_width) // 2}:{(height - fitted_height) // 2}:black")
-
-
 def write_source(entry: Entry, path: Path) -> tuple[int, int]:
     """Write the entry's I420 frames to `path`; returns (frames, loop ticks)."""
     source = clip_file(entry.clip, entry.height)
@@ -275,10 +245,10 @@ def write_source(entry: Entry, path: Path) -> tuple[int, int]:
     if SOURCE_FPS % entry.fps or loop_ticks % step:
         raise ValueError(f"{entry.name}: {entry.fps} fps does not divide the {loop_ticks}-tick loop")
     wanted = [int(c * clip_fps / SOURCE_FPS + 1e-9) for c in range(0, loop_ticks, step)]
-    scale = letterbox(source_width, source_height, entry.width, entry.height)
-    decoder = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(source), "-frames:v", str(wanted[-1] + 1), "-vf", scale,
-                                "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
-    size = entry.width * entry.height * 3
+    decoder = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(source), "-frames:v", str(wanted[-1] + 1),
+                                "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+    size = source_width * source_height + 2 * ((source_width + 1) // 2) * ((source_height + 1) // 2)
+    view = (entry.width, entry.height)
     with open(path, "wb") as out:
         frame, index = None, -1
         for wanted_index in wanted:
@@ -287,7 +257,8 @@ def write_source(entry: Entry, path: Path) -> tuple[int, int]:
                 if len(data) != size:
                     raise RuntimeError(f"{source}: ended at frame {index}")
                 frame, index = data, index + 1
-            out.write(rgba_to_i420(np.frombuffer(frame, np.uint8).reshape(entry.height, entry.width, 3)))
+            same_size = (source_width, source_height) == view
+            out.write(frame if same_size else view_frame(split_i420(frame, source_width, source_height), view))
     decoder.stdout.close()
     decoder.wait()
     return len(wanted), loop_ticks
@@ -448,6 +419,7 @@ def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]
         "bytes": target.stat().st_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         "sourceFile": f"clips/{clip_file(entry.clip, entry.height).name}",
         "sourceSha256": sha256(clip_file(entry.clip, entry.height)),
+        "sourcePixels": SOURCE_PIXELS,
         "command": " ".join(display_arg(arg, yuv, raw) for arg in cmd),
         "version": version(encoder, cmd[0]),
         **PIXEL_FORMATS[pixel_format],
@@ -487,10 +459,12 @@ def sha256(path: Path) -> str:
 
 
 def up_to_date(entry: Entry, record: dict, scratch: Path) -> bool:
-    """Whether a manifest record still stands: same source file, same command, and
-    its stream file unchanged. Such streams are neither re-encoded nor re-verified."""
+    """Whether a manifest record still stands: same source file, source frames made
+    the same way, same command, and its stream file unchanged. Such streams are neither re-encoded nor re-verified."""
     stream = OUT / record["file"]
     if record.get("sourceSha256") != sha256(clip_file(entry.clip, entry.height)) or not stream.exists():
+        return False
+    if record.get("sourcePixels") != SOURCE_PIXELS:
         return False
     yuv, raw = scratch / "source.yuv", scratch / f"{entry.name}.raw"
     cmd = command(ENCODERS[entry.encoder], entry, record["frames"], yuv, raw)

@@ -435,8 +435,10 @@ def time_cloud(args: argparse.Namespace) -> None:
     plan = json.loads(pathlib.Path(args.plan).read_text())
     names = args.points.split(",")
     bin_dir = pathlib.Path(args.bin_dir).resolve()
+    # a point's pairing partner (pair_with) runs in its rounds, timed or not itself
+    partners = [plan["points"][n][CLIPS[0]].get("pair_with") for n in names]
     tools = {n: str(bin_dir / plan["points"][n][CLIPS[0]]["argv"][0].removeprefix("{BIN}/"))
-             for n in [*names, plan["anchor"], SECOND_ANCHOR]}
+             for n in [*names, *filter(None, partners), plan["anchor"], SECOND_ANCHOR]}
     clips_dir = pathlib.Path(args.clips_dir).resolve()
     cpus = (physical_cpus(args.skip_cores) if args.cpus == "physical"
             else [int(c) for c in args.cpus.split(",")])

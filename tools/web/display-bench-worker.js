@@ -11,7 +11,7 @@ const spare = [];
 function copyOut(format) {
   const { width, height } = decoder;
   const length = format === 'i420' ? width * height + 2 * Math.ceil(width / 2) * Math.ceil(height / 2) : width * height * 4;
-  const offset = format === 'i420' ? decoder.i420_frame() : decoder.rgba_frame();
+  const offset = format === 'i420' ? decoder.i420_frame() : decoder.rgba_frame('bt601');
   let pixels = spare.pop();
   if (!pixels || pixels.length !== length) pixels = new Uint8Array(length);
   pixels.set(new Uint8Array(wasm.memory.buffer, offset, length));

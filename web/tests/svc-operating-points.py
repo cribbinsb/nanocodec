@@ -60,7 +60,10 @@ PAGE_SCRIPT = '''async ([codec, preset, lowest, width, height, frames, downAt, k
         ((x ^ y) + frame * 7) & 255, 255], i);
     }
     if (frame === keyAt) encoder.request_keyframe();
-    const packet = encoder.encode(rgba);
+    const source = new module.SourceFrame(width, height);
+    source.from_rgba(rgba);
+    const packet = encoder.encode(source);
+    source.free();
     out.packets.push(Array.from(packet)); out.keys.push(encoder.key);
     full.decode(packet); out.full.push(picture(full));
     base.decode(packet); out.base.push(picture(base));

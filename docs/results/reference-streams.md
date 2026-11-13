@@ -6,59 +6,59 @@ decoder, our native decoder and both WASM builds (`web/tests/reference-streams-w
 
 | Clip | Encoder | Size | fps | Target kbps | Actual kbps | KiB |
 |---|---|---|---:|---:|---:|---:|
-| xiph-johnny | x264 medium | 1280x720 | 30 | 300 | 241.1 | 298 |
-| xiph-johnny | openh264 (real-time, medium complexity) | 1280x720 | 30 | 300 | 300.1 | 370 |
-| xiph-johnny | SVT-AV1 M12 --rtc | 1280x720 | 30 | 300 | 301.4 | 371 |
-| xiph-johnny | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 300 | 301.5 | 372 |
-| xiph-johnny | openh264 (real-time, medium complexity) | 640x360 | 15 | 150 | 150.4 | 185 |
-| xiph-four-people | x264 medium | 854x480 | 30 | 400 | 354.0 | 436 |
-| xiph-four-people | x265 medium | 854x480 | 30 | 400 | 373.7 | 460 |
-| xiph-four-people | libvpx VP9 realtime cpu-used 7 | 854x480 | 30 | 400 | 402.1 | 494 |
-| xiph-four-people | SVT-AV1 M12 --rtc | 854x480 | 30 | 400 | 400.3 | 492 |
-| xiph-kristen-sara | NVENC H.264 p4 low latency (RTX 5090) | 1280x720 | 30 | 600 | 616.3 | 756 |
-| xiph-kristen-sara | x264 veryfast | 1280x720 | 30 | 600 | 553.9 | 680 |
-| xiph-kristen-sara | libvpx VP9 realtime cpu-used 9 | 1280x720 | 30 | 600 | 603.7 | 740 |
-| xiph-kristen-sara | openh264 (real-time, medium complexity) | 640x360 | 30 | 100 | 100.3 | 126 |
-| xiph-vidyo4 | x264 veryfast | 640x360 | 30 | 100 | 89.7 | 113 |
+| xiph-johnny | x264 medium | 1280x720 | 30 | 300 | 239.9 | 296 |
+| xiph-johnny | openh264 (real-time, medium complexity) | 1280x720 | 30 | 300 | 300.0 | 370 |
+| xiph-johnny | SVT-AV1 M12 --rtc | 1280x720 | 30 | 300 | 301.3 | 371 |
+| xiph-johnny | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 300 | 301.4 | 371 |
+| xiph-johnny | openh264 (real-time, medium complexity) | 640x360 | 15 | 150 | 150.1 | 185 |
+| xiph-four-people | x264 medium | 854x480 | 30 | 400 | 355.6 | 438 |
+| xiph-four-people | x265 medium | 854x480 | 30 | 400 | 375.6 | 462 |
+| xiph-four-people | libvpx VP9 realtime cpu-used 7 | 854x480 | 30 | 400 | 401.9 | 494 |
+| xiph-four-people | SVT-AV1 M12 --rtc | 854x480 | 30 | 400 | 401.0 | 493 |
+| xiph-kristen-sara | NVENC H.264 p4 low latency (RTX 5090) | 1280x720 | 30 | 600 | 614.0 | 753 |
+| xiph-kristen-sara | x264 veryfast | 1280x720 | 30 | 600 | 554.2 | 680 |
+| xiph-kristen-sara | libvpx VP9 realtime cpu-used 9 | 1280x720 | 30 | 600 | 603.6 | 740 |
+| xiph-kristen-sara | openh264 (real-time, medium complexity) | 640x360 | 30 | 100 | 100.2 | 126 |
+| xiph-vidyo4 | x264 veryfast | 640x360 | 30 | 100 | 89.6 | 113 |
 | xiph-vidyo4 | openh264 (real-time, medium complexity) | 640x360 | 30 | 100 | 100.1 | 126 |
 | xiph-vidyo4 | libvpx VP9 realtime cpu-used 7 | 640x360 | 30 | 100 | 100.5 | 126 |
-| xiph-vidyo3 | libvpx VP9 realtime cpu-used 9 | 1280x720 | 15 | 250 | 249.6 | 307 |
-| xiph-vidyo3 | x264 medium | 1280x720 | 15 | 250 | 230.4 | 283 |
-| xiph-vidyo3 | openh264 (real-time, medium complexity) | 1280x720 | 15 | 250 | 250.4 | 308 |
-| xiph-vidyo3 | libaom AV1 realtime cpu-used 8 | 1280x720 | 15 | 250 | 251.6 | 309 |
-| tos-canal | SVT-AV1 M8 --rtc | 1280x720 | 30 | 1200 | 1203.2 | 1413 |
-| tos-canal | x265 superfast | 1280x720 | 30 | 1200 | 1203.3 | 1414 |
-| tos-canal | libvpx VP9 good cpu-used 4 (one pass, no lag) (not a chart configuration) | 1280x720 | 30 | 1200 | 1207.4 | 1418 |
-| tos-canal | libaom AV1 realtime cpu-used 8 | 640x360 | 10 | 150 | 151.8 | 179 |
+| xiph-vidyo3 | libvpx VP9 realtime cpu-used 9 | 1280x720 | 15 | 250 | 251.0 | 308 |
+| xiph-vidyo3 | x264 medium | 1280x720 | 15 | 250 | 230.8 | 284 |
+| xiph-vidyo3 | openh264 (real-time, medium complexity) | 1280x720 | 15 | 250 | 250.3 | 307 |
+| xiph-vidyo3 | libaom AV1 realtime cpu-used 8 | 1280x720 | 15 | 250 | 251.2 | 308 |
+| tos-canal | SVT-AV1 M8 --rtc | 1280x720 | 30 | 1200 | 1203.3 | 1414 |
+| tos-canal | x265 superfast | 1280x720 | 30 | 1200 | 1206.2 | 1417 |
+| tos-canal | libvpx VP9 good cpu-used 4 (one pass, no lag) (not a chart configuration) | 1280x720 | 30 | 1200 | 1207.3 | 1418 |
+| tos-canal | libaom AV1 realtime cpu-used 8 | 640x360 | 10 | 150 | 151.7 | 179 |
 | tos-canal | openh264 (real-time, medium complexity) | 640x360 | 10 | 150 | 150.0 | 177 |
-| svt-waterfall | x264 medium | 1280x720 | 30 | 2000 | 2021.5 | 2059 |
-| svt-waterfall | NVENC AV1 p4 low latency (RTX 5090) | 1280x720 | 30 | 2000 | 2024.5 | 2062 |
-| svt-waterfall | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 2000 | 2007.9 | 2045 |
+| svt-waterfall | x264 medium | 1280x720 | 30 | 2000 | 2021.0 | 2059 |
+| svt-waterfall | NVENC AV1 p4 low latency (RTX 5090) | 1280x720 | 30 | 2000 | 2024.3 | 2062 |
+| svt-waterfall | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 2000 | 2007.5 | 2045 |
 | svt-smoke-sauna | libvpx VP9 good cpu-used 4 (one pass, no lag) (not a chart configuration) | 854x480 | 30 | 600 | 601.8 | 615 |
-| svt-smoke-sauna | x264 medium | 854x480 | 30 | 600 | 573.7 | 587 |
-| svt-smoke-sauna | SVT-AV1 M12 --rtc | 854x480 | 30 | 600 | 594.6 | 608 |
-| svt-smoke-sauna | libvpx VP9 realtime cpu-used 9 | 640x360 | 15 | 200 | 200.4 | 205 |
-| svt-midnight-sun | NVENC HEVC p4 low latency (RTX 5090) | 640x360 | 30 | 400 | 406.7 | 417 |
-| svt-midnight-sun | x265 medium | 640x360 | 30 | 400 | 406.6 | 417 |
-| svt-midnight-sun | libvpx VP9 realtime cpu-used 7 | 640x360 | 30 | 400 | 402.0 | 412 |
-| svt-midnight-sun | openh264 (real-time, medium complexity) | 384x216 | 15 | 100 | 100.5 | 104 |
-| bbb-tree | SVT-AV1 M12 --rtc | 384x216 | 15 | 100 | 101.1 | 140 |
-| bbb-tree | openh264 (real-time, medium complexity) | 854x480 | 30 | 500 | 497.8 | 684 |
-| bbb-tree | x264 veryfast | 854x480 | 30 | 500 | 481.1 | 662 |
-| bbb-tree | libvpx VP9 good cpu-used 4 (one pass, no lag) (not a chart configuration) | 854x480 | 30 | 500 | 506.3 | 696 |
-| mot20-dense-crowd | SVT-AV1 M12 --rtc | 1280x720 | 30 | 1500 | 1489.7 | 1822 |
-| mot20-dense-crowd | x264 medium | 1280x720 | 30 | 1500 | 1442.1 | 1764 |
-| mot20-dense-crowd | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 1500 | 1505.4 | 1841 |
-| mot20-dense-crowd | openh264 (real-time, medium complexity) | 1280x720 | 30 | 1500 | 1499.2 | 1834 |
-| mot20-dense-crowd | x264 medium | 640x360 | 30 | 150 | 144.9 | 180 |
-| mot17-mall-walk | SVT-AV1 M12 --rtc | 1280x720 | 30 | 1000 | 999.9 | 1224 |
-| mot17-mall-walk | x264 medium | 1280x720 | 30 | 1000 | 1035.6 | 1268 |
-| mot17-mall-walk | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 1000 | 1001.2 | 1226 |
-| mot17-mall-walk | openh264 (real-time, medium complexity) | 854x480 | 15 | 400 | 399.7 | 490 |
-| mot17-night-crowd | SVT-AV1 M12 --rtc | 1280x720 | 30 | 800 | 798.3 | 978 |
-| mot17-night-crowd | x264 medium | 1280x720 | 30 | 800 | 732.6 | 898 |
-| mot17-night-crowd | openh264 (real-time, medium complexity) | 1280x720 | 30 | 800 | 799.7 | 980 |
-| mot17-night-crowd | libvpx VP9 realtime cpu-used 9 | 640x360 | 15 | 250 | 250.5 | 308 |
+| svt-smoke-sauna | x264 medium | 854x480 | 30 | 600 | 574.5 | 587 |
+| svt-smoke-sauna | SVT-AV1 M12 --rtc | 854x480 | 30 | 600 | 597.5 | 611 |
+| svt-smoke-sauna | libvpx VP9 realtime cpu-used 9 | 640x360 | 15 | 200 | 200.2 | 205 |
+| svt-midnight-sun | NVENC HEVC p4 low latency (RTX 5090) | 640x360 | 30 | 400 | 407.0 | 417 |
+| svt-midnight-sun | x265 medium | 640x360 | 30 | 400 | 406.5 | 416 |
+| svt-midnight-sun | libvpx VP9 realtime cpu-used 7 | 640x360 | 30 | 400 | 401.8 | 412 |
+| svt-midnight-sun | openh264 (real-time, medium complexity) | 384x216 | 15 | 100 | 100.3 | 104 |
+| bbb-tree | SVT-AV1 M12 --rtc | 384x216 | 15 | 100 | 102.3 | 142 |
+| bbb-tree | openh264 (real-time, medium complexity) | 854x480 | 30 | 500 | 497.8 | 685 |
+| bbb-tree | x264 veryfast | 854x480 | 30 | 500 | 483.0 | 664 |
+| bbb-tree | libvpx VP9 good cpu-used 4 (one pass, no lag) (not a chart configuration) | 854x480 | 30 | 500 | 508.4 | 699 |
+| mot20-dense-crowd | SVT-AV1 M12 --rtc | 1280x720 | 30 | 1500 | 1490.5 | 1823 |
+| mot20-dense-crowd | x264 medium | 1280x720 | 30 | 1500 | 1442.6 | 1765 |
+| mot20-dense-crowd | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 1500 | 1505.1 | 1841 |
+| mot20-dense-crowd | openh264 (real-time, medium complexity) | 1280x720 | 30 | 1500 | 1500.0 | 1835 |
+| mot20-dense-crowd | x264 medium | 640x360 | 30 | 150 | 144.7 | 180 |
+| mot17-mall-walk | SVT-AV1 M12 --rtc | 1280x720 | 30 | 1000 | 1000.4 | 1225 |
+| mot17-mall-walk | x264 medium | 1280x720 | 30 | 1000 | 1034.5 | 1266 |
+| mot17-mall-walk | libvpx VP9 realtime cpu-used 7 | 1280x720 | 30 | 1000 | 1001.3 | 1226 |
+| mot17-mall-walk | openh264 (real-time, medium complexity) | 854x480 | 15 | 400 | 399.9 | 490 |
+| mot17-night-crowd | SVT-AV1 M12 --rtc | 1280x720 | 30 | 800 | 798.2 | 978 |
+| mot17-night-crowd | x264 medium | 1280x720 | 30 | 800 | 731.7 | 897 |
+| mot17-night-crowd | openh264 (real-time, medium complexity) | 1280x720 | 30 | 800 | 799.9 | 980 |
+| mot17-night-crowd | libvpx VP9 realtime cpu-used 9 | 640x360 | 15 | 250 | 250.7 | 308 |
 
 ## Versions and commands
 

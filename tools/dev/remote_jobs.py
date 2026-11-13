@@ -29,9 +29,8 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import xxhash  # python3-xxhash (the scoring side's yuv.FRAME_HASH)
@@ -85,6 +84,15 @@ def run_job(job: dict, out: Path) -> None:
     Path(f"{base}.done").touch()
 
 
+def run_one(job: dict, out: Path) -> str:
+    """One job in a worker process: "ok", or why it failed (recorded; the run goes on)."""
+    try:
+        run_job(job, out)
+        return "ok"
+    except Exception as error:
+        return f"FAILED ({error})"
+
+
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--jobs", required=True)
@@ -95,25 +103,19 @@ def main(argv: list[str]) -> None:
     out = OUT
     todo = [j for j in jobs if not (out / f"{j['id']}.done").exists()]
     print(f"{len(todo)} of {len(jobs)} jobs to run on {args.workers} workers", flush=True)
-    lock, started, done, failed = threading.Lock(), time.monotonic(), [0], [0]
-
-    def one(job: dict) -> None:
-        try:
-            run_job(job, out)
-            outcome = "ok"
-        except Exception as error:  # recorded; the run goes on
-            outcome = f"FAILED ({error})"
-            with lock:
-                failed[0] += 1
-        with lock:
-            done[0] += 1
+    started, done, failed = time.monotonic(), 0, 0
+    # processes, not threads: hashing a 720p reconstruction in Python holds the GIL,
+    # and 190 threads in one process ran our encodes at ~200 a minute (2026-11-13)
+    with ProcessPoolExecutor(args.workers) as pool:
+        futures = {pool.submit(run_one, job, out): job for job in todo}
+        for future in as_completed(futures):
+            outcome = future.result()
+            failed += outcome != "ok"
+            done += 1
             minutes = (time.monotonic() - started) / 60
-            print(f"job {done[0]}/{len(todo)} {outcome} {job['id']}: {minutes:.1f} min, "
-                  f"ETA {minutes / done[0] * (len(todo) - done[0]):.1f} min", flush=True)
-
-    with ThreadPoolExecutor(args.workers) as pool:
-        list(pool.map(one, todo))
-    print(f"finished: {done[0] - failed[0]} ok, {failed[0]} failed", flush=True)
+            print(f"job {done}/{len(todo)} {outcome} {futures[future]['id']}: {minutes:.1f} min, "
+                  f"ETA {minutes / done * (len(todo) - done):.1f} min", flush=True)
+    print(f"finished: {done - failed} ok, {failed} failed", flush=True)
 
 
 if __name__ == "__main__":

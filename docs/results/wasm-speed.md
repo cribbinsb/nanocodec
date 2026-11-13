@@ -48,6 +48,71 @@ taskset -c 15 python3 tools/web/display-bench.py --streams <stream dir> --codecs
   --kbps 720p=600,360p=300 --renderers cpu --rounds 3
 ```
 
+## Native YUV capture: capture, encode and decode (2026-11-13, wasm-perf4)
+
+**Decode, WASM ÷ native** (720p crowd 600 kbps, 150 frames, adb57e6e; ms per frame, three interleaved rounds
+on timing core 14, `work/wasm-perf4/xdec-base.json`):
+
+| Codec | native | WASM SIMD128 | WASM relaxed | relaxed ÷ native | reference decoder |
+|---|---|---|---|---:|---|
+| H.264 | 0.98-1.06 | 1.73-1.92 | 1.78-1.85 | 1.82 | FFmpeg 1.11-1.22 |
+| HEVC | 1.32-1.41 | 2.22-2.28 | 2.15-2.25 | 1.63 | FFmpeg 1.73-1.79 |
+| AV1 | 1.85-1.91 | 3.57-3.68 | 3.61-3.64 | 1.95 | dav1d 1.63-1.65 |
+| VP9 | 1.40-1.44 | 2.50-2.61 | 2.52-2.60 | 1.80 | vpxdec 1.05-1.06, FFmpeg 1.36-1.38 |
+| AV2 | 2.50-2.52 | 4.30-4.44 | 4.21-4.36 | 1.69 | avmdec 6.97-7.24 |
+| VVC | 2.78-2.84 | 4.55-4.84 | 4.49-4.89 | 1.62 | VVdeC 8.15-10.06 |
+
+Per-stage split and the reasons: `docs/handoff/wasm-perf.md` "Native YUV capture and the per-stage decode gap".
+
+**Capture worker cost per frame** (`work/wasm-perf4/capture/wbench.py`: a worker given 30 `VideoFrame`s of
+the playing 720p or 360p mot17-mall-walk file; min and median ms, three rounds; headless Chromium 148 on a
+loaded PC, load ~30):
+
+| Frames | Old, scaled view (canvas draw + read back: 854x480 from 720p, 384x216 from 360p) | Old, view at the file's size (`copyTo` RGBA) | New, any size (`copyTo` own format) |
+|---|---|---|---|
+| 720p, software decode (I420) | 7.5 / 12.9, 10.0 / 17.9, 15.4 / 27.6 | 2.1 / 4.4, 3.3 / 6.3, 3.8 / 9.9 | 0.2 / 0.6, 0.4 / 1.0, 0.5 / 1.2 |
+| 720p, GPU (Vulkan, NV12) | 27.0 / 47.5, 22.9 / 41.5, 30.6 / 51.2 | 18.6 / 40.4, 20.4 / 47.6, 20.4 / 43.5 | 3.8 / 12.7, 3.2 / 13.3, 4.2 / 9.7 |
+| 360p, software (I420) | 1.6 / 6.1, 1.7 / 6.7, 1.8 / 8.0 | 0.9 / 1.3, 0.9 / 1.3, 0.8 / 1.5 | 0.0 / 0.2, 0.1 / 0.2, 0.0 / 0.2 |
+| 360p, GPU (Vulkan, NV12) | 3.1 / 9.6, 4.8 / 12.7, 6.3 / 10.8 | 3.5 / 8.4, 4.3 / 12.3, 7.2 / 13.3 | 1.7 / 5.4, 2.1 / 6.7, 2.8 / 7.5 |
+
+What moved into the encode worker in exchange (node 22, relaxed module, timing core 15, median of 60): placing
+720p planes in an 854x480 view 0.93 ms (scaled; first version 1.52 ms, then vertical pass first), in a 640x360
+view 0.55 ms, at 1280x720 0.09 ms; the old RGBA conversion took 0.18, 0.10 and 0.48 ms, plus the copy of 4 instead of
+1.5 bytes per pixel into WASM. At the default size the capture worker saves 12-40 ms per frame (median)
+and the encoder pays ~0.7 ms more.
+
+**Encode, WASM ÷ native** (720p crowd, the demo's settings: 15 fps, CBR 600 kbps, 2x peak, 1 s buffer, 90
+frames; relaxed module; best of 2 interleaved rounds on timing core 14; `work/wasm-perf4/encab.json`). Old
+= RGBA input (the clip converted to RGBA once, untimed; the encoder converts back to BT.601), new = the clip's
+own planes through `SourceFrame`, as the page now codes video. The inputs differ (BT.601 round trip against
+the original planes), so rate control's choices differ slightly too:
+
+| Codec | Preset | WASM old ms/f | WASM new ms/f | change | native ms/f | old ÷ native | new ÷ native |
+|---|---|---:|---:|---:|---:|---:|---:|
+| H.264 | Default | 18.7 | 17.0 | -9.2 % | 9.2 | 2.03 | 1.85 |
+| H.264 | Fast | 10.1 | 10.7 | +6.4 % | 4.8 | 2.12 | 2.26 |
+| HEVC | Default | 22.2 | 21.5 | -3.0 % | 11.0 | 2.02 | 1.96 |
+| HEVC | Fast | 17.6 | 14.5 | -17.7 % | 7.9 | 2.22 | 1.83 |
+| AV1 | Default | 28.2 | 26.2 | -7.2 % | 14.4 | 1.95 | 1.81 |
+| AV1 | Fast | 19.9 | 16.6 | -16.5 % | 9.1 | 2.19 | 1.83 |
+| VP9 | Default | 31.9 | 28.9 | -9.3 % | 16.3 | 1.95 | 1.77 |
+| AV2 | Default | 32.7 | 31.7 | -3.2 % | 17.4 | 1.88 | 1.82 |
+| VVC | Default | 38.1 | 35.5 | -6.9 % | 21.8 | 1.75 | 1.63 |
+| VVC | Fast | 24.6 | 20.5 | -16.8 % | 13.0 | 1.89 | 1.57 |
+
+**Demo end to end** (`work/wasm-perf4/e2e2.py`: headless Chromium 148, ANGLE/Vulkan on the RTX 5090, a fresh
+browser context per load; 4 interleaved rounds of old (adb57e6e) and new pages, each case measured 8 s after
+3 s of warm-up; delivered fps per round, target in brackets). The PC ran at load 30-45 throughout, so the old
+page delivered about half of what demo-wasm-speed measured in the morning; read the medians, not single
+rounds. Indicative only:
+
+| Case | old fps | new fps | old median | new median |
+|---|---|---|---:|---:|
+| default (854x480 from the 720p file, H.264 vs AV1 Default) [15] | 9.5, 6.3, 7.4, 5.8 | 6.2, 8.5, 8.0, 7.6 | 6.9 | 7.8 |
+| 1280x720, H.264 vs AV1 Default [30] | 7.1, 5.6, 3.0, 11.6 | 5.4, 13.9, 12.4, 14.2 | 6.4 | 13.2 |
+| 1280x720, VP9 Default vs HEVC Fast [30] | 9.2, 5.8, 19.7, 5.9 | 5.7, 11.4, 15.0, 14.7 | 7.6 | 13.1 |
+| time to first frame, ms (default page, no code cache) | 4340, 4013, 3081, 861 | 2079, 2230, 764, 1037 | 3547 | 1558 |
+
 ## Encode against native, and the demo end to end (2026-11-13, demo-wasm-speed)
 
 Analysis and the per-stage breakdown: our internal notes (not published) "Demo end-to-end".

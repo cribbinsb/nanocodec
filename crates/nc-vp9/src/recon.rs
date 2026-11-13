@@ -268,10 +268,14 @@ impl ResidualBuffers {
         steps: Steps,
     ) -> &[i32] {
         let area = tx.area();
-        for (index, (&level, value)) in levels[..area].iter().zip(&mut self.dequantized).enumerate()
-        {
-            *value = transform::dequantize_level(tx, index, level, steps);
+        // Every AC level shares one step: one branch-free pass the compiler
+        // vectorizes, then the DC (`transform::dequantize_level`'s rule).
+        let shift = tx.dequant_shift();
+        for (value, &level) in self.dequantized[..area].iter_mut().zip(&levels[..area]) {
+            let magnitude = (level.unsigned_abs() as i32 * steps.ac) >> shift;
+            *value = if level < 0 { -magnitude } else { magnitude };
         }
+        self.dequantized[0] = transform::dequantize_level(tx, 0, levels[0], steps);
         transform::inverse(
             &self.dsp,
             tx,

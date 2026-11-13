@@ -1,6 +1,7 @@
-//! Explicit limited-range BT.601 conversion between browser RGBA and I420,
-//! and the packed I420 layout handed to a WebGL display (which applies the
-//! same BT.601 matrix in its shader, `web/renderer.js`).
+//! Conversions between browser RGBA and I420 (limited-range BT.601 input,
+//! display in the samples' own matrix, `nc_dsp::DisplayMatrix`), and the
+//! packed I420 layout handed to a WebGL display (which applies the same
+//! matrix in its shader, `web/renderer.js`) and between workers.
 
 use nc_common::{Picture, PlaneIndex, ShownPicture};
 use nc_dsp::{DisplayMatrix, Dsp};
@@ -21,9 +22,14 @@ pub(crate) fn from_rgba(dsp: &Dsp, rgba: &[u8], picture: &mut Picture) {
 
 /// Display conversion of the visible picture into `rgba` (exactly
 /// `4 * width * height` bytes), with this instance's SIMD kernels.
-pub(crate) fn to_rgba(dsp: &Dsp, picture: ShownPicture<'_>, rgba: &mut [u8]) {
+pub(crate) fn to_rgba(
+    dsp: &Dsp,
+    matrix: DisplayMatrix,
+    picture: ShownPicture<'_>,
+    rgba: &mut [u8],
+) {
     dsp.i420_to_rgba(
-        DisplayMatrix::Bt601Limited,
+        matrix,
         &picture.plane(PlaneIndex::Y),
         &picture.plane(PlaneIndex::U),
         &picture.plane(PlaneIndex::V),
@@ -41,6 +47,21 @@ pub(crate) fn pack_i420(picture: ShownPicture<'_>, bytes: &mut Vec<u8>) {
             .plane(plane)
             .rows()
             .for_each(|row| bytes.extend_from_slice(row));
+    }
+}
+
+/// Fill `picture` from packed I420 (`pack_i420`'s layout; exactly
+/// `packed_frame_len` bytes, which the caller checks).
+pub(crate) fn unpack_i420(bytes: &[u8], picture: &mut Picture) {
+    let mut rest = bytes;
+    for plane in picture.planes_mut() {
+        let mut view = plane.view_mut();
+        let width = view.width();
+        for y in 0..view.height() {
+            let (row, tail) = rest.split_at(width);
+            view.row_mut(y).copy_from_slice(row);
+            rest = tail;
+        }
     }
 }
 
@@ -81,11 +102,12 @@ mod tests {
         assert_eq!(p.plane(PlaneIndex::Y).view().row(0), [16; 4]);
         assert_eq!(p.plane(PlaneIndex::U).view().row(0), [128; 2]);
         let mut rgba = [0; 64];
-        to_rgba(&Dsp::new(), ShownPicture::whole(&p), &mut rgba);
+        let bt601 = DisplayMatrix::Bt601Limited;
+        to_rgba(&Dsp::new(), bt601, ShownPicture::whole(&p), &mut rgba);
         assert!(rgba.as_chunks::<4>().0.iter().all(|c| *c == [0, 0, 0, 255]));
         from_rgba(&Dsp::new(), &[255; 64], &mut p);
         assert_eq!(p.plane(PlaneIndex::Y).view().row(0), [235; 4]);
-        to_rgba(&Dsp::new(), ShownPicture::whole(&p), &mut rgba);
+        to_rgba(&Dsp::new(), bt601, ShownPicture::whole(&p), &mut rgba);
         assert!(rgba.as_chunks::<4>().0.iter().all(|c| *c == [255; 4]));
         assert_eq!(psnr(&Dsp::new(), &p, ShownPicture::whole(&p)), 100.0);
     }
@@ -122,5 +144,10 @@ mod tests {
         assert_eq!(bytes.len(), 6 * 4 + 2 * 3 * 2);
         assert!(bytes[..24].iter().all(|&y| y == 235));
         assert!(bytes[24..].iter().all(|&c| c == 128));
+        let mut unpacked = Picture::new(6, 4, 3).unwrap();
+        unpack_i420(&bytes, &mut unpacked);
+        let mut again = Vec::new();
+        pack_i420(ShownPicture::whole(&unpacked), &mut again);
+        assert_eq!(again, bytes);
     }
 }

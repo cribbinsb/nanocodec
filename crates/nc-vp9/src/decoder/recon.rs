@@ -389,9 +389,7 @@ impl FrameDecoder<'_> {
             } else {
                 ((1, 1), (n4w * 4, n4h * 4))
             };
-            let mut view = picture_plane.view_mut();
-            let stride = view.stride();
-            let samples = view.data_mut();
+            let stride = picture_plane.stride();
             for (r, reference) in references.iter().flatten().enumerate() {
                 let plane_ref = &reference.planes[plane as usize];
                 for row in 0..grid.1 {
@@ -408,8 +406,11 @@ impl FrameDecoder<'_> {
                         // The first prediction goes straight into the
                         // picture; a compound block's second averages into
                         // it (`(first + second + 1) >> 1`, `convolve_avg`).
+                        let block = picture_plane
+                            .samples_at_mut(x as isize, y as isize, size.0, size.1)
+                            .expect("prediction blocks lie inside the plane");
                         let target = Target {
-                            block: &mut samples[y as usize * stride + x as usize..],
+                            block,
                             stride,
                             average: r == 1,
                         };
@@ -703,7 +704,16 @@ impl FrameDecoder<'_> {
         let side = tx.side();
         let frame_w = (self.mi_cols * MI_SIZE) >> ss;
         let frame_h = (self.mi_rows * MI_SIZE) >> ss;
-        let view = self.recon.plane(PLANES[plane]).view();
+        // The block with its above row and left column (one offset check
+        // instead of a view per transform block); `base` is sample (x, y).
+        let picture_plane = self.recon.plane(PLANES[plane]);
+        let stride = picture_plane.stride();
+        // Only 4x4 blocks read above-right samples from the row.
+        let above_width = if side == 4 { 2 * side } else { side };
+        let region = picture_plane
+            .samples_at(x as isize - 1, y as isize - 1, above_width + 1, side + 1)
+            .expect("intra blocks lie inside the plane");
+        let base = stride + 1;
         let mut edges = Vp9IntraEdges {
             above: [BASE_ABOVE; 2 * MAX_TX_SIDE + 1],
             left: [BASE_LEFT; MAX_TX_SIDE],
@@ -711,7 +721,7 @@ impl FrameDecoder<'_> {
             has_left: available.left,
         };
         if available.top {
-            let above = view.row(y - 1);
+            let above = &region[1..];
             // Above-right samples come from the row only for 4x4 blocks
             // with `have_right`; otherwise they repeat the last above one.
             let count = if side == 4 && available.right {
@@ -725,28 +735,24 @@ impl FrameDecoder<'_> {
             if inside == count {
                 // Inside the frame (almost always): fixed-size copies.
                 match side {
-                    4 => above_edge::<4>(&mut edges.above, &above[x..], count),
-                    8 => above_edge::<8>(&mut edges.above, &above[x..], count),
-                    16 => above_edge::<16>(&mut edges.above, &above[x..], count),
-                    _ => above_edge::<32>(&mut edges.above, &above[x..], count),
+                    4 => above_edge::<4>(&mut edges.above, above, count),
+                    8 => above_edge::<8>(&mut edges.above, above, count),
+                    16 => above_edge::<16>(&mut edges.above, above, count),
+                    _ => above_edge::<32>(&mut edges.above, above, count),
                 }
             } else {
-                edges.above[1..=inside].copy_from_slice(&above[x..end]);
-                edges.above[1 + inside..=count].fill(above[end - 1]);
+                edges.above[1..=inside].copy_from_slice(&above[..inside]);
+                edges.above[1 + inside..=count].fill(above[inside - 1]);
                 let last_above = edges.above[side];
                 edges.above[1 + count..=2 * side].fill(last_above);
             }
-            edges.above[0] = if available.left {
-                above[x - 1]
-            } else {
-                BASE_LEFT
-            };
+            edges.above[0] = if available.left { region[0] } else { BASE_LEFT };
         }
         if available.left {
-            let (data, stride) = (view.data(), view.stride());
-            let last = frame_h - 1;
+            // Rows past the aligned frame height repeat its last one.
+            let last = frame_h - 1 - y;
             for (i, sample) in edges.left[..side].iter_mut().enumerate() {
-                *sample = data[(y + i).min(last) * stride + x - 1];
+                *sample = region[base - 1 + i.min(last) * stride];
             }
         }
         let prediction = &mut self.scratch.intra[..side * side];
@@ -756,9 +762,7 @@ impl FrameDecoder<'_> {
             &edges,
             prediction,
         );
-        let mut view = self.recon.plane_mut(PLANES[plane]).view_mut();
-        let stride = view.stride();
-        let block = &mut view.data_mut()[y * stride + x..];
+        let (block, stride) = block_samples(&mut self.recon, PLANES[plane], (x, y), (side, side));
         match side {
             4 => store_rows::<4>(prediction, block, stride),
             8 => store_rows::<8>(prediction, block, stride),
@@ -799,10 +803,10 @@ fn store_rows<const S: usize>(packed: &[u8], block: &mut [u8], stride: usize) {
 const PLANES: [PlaneIndex; 3] = PlaneIndex::ALL;
 
 /// Inverse-transform `coefficients` (dequantized, raster) into the picture
-/// under `block`. 4x4 blocks take the fused kernel with libvpx's DC-only and
-/// zero-row shortcuts (`vpx_idct4x4_1_add`, `vp9_iht4x4_16_add`); the shared
-/// residual path's 4x4 inverse wrote a residual block and added it in a
-/// second loop. Lossless (WHT) blocks keep the shared path.
+/// under `block` with the fused kernels (4x4: libvpx's DC-only and zero-row
+/// shortcuts, `vpx_idct4x4_1_add`, `vp9_iht4x4_16_add`; the shared residual
+/// path's 4x4 inverse wrote a residual block and added it in a second loop).
+/// Lossless (WHT) blocks keep the shared path.
 fn add_residual(
     dsp: &nc_dsp::Dsp,
     buffers: &mut ResidualBuffers,
@@ -812,19 +816,34 @@ fn add_residual(
     coefficients: &[i32],
     extent: Extent,
 ) {
-    if block.tx != TxSize::Tx4 || lossless {
+    if lossless {
         buffers.add_coefficients(recon, block, (ty, lossless), coefficients, extent);
         return;
     }
-    let mut view = recon.plane_mut(block.plane).view_mut();
-    let stride = view.stride();
+    let side = block.tx.side();
     dsp.vp9_inverse_add(
-        TxSize::Tx4.log2(),
+        block.tx.log2(),
         crate::transform::passes(ty),
-        &coefficients[..TxSize::Tx4.area()],
+        &coefficients[..block.tx.area()],
         (extent.rows, extent.columns),
-        (&mut view.data_mut()[block.y * stride + block.x..], stride),
+        block_samples(recon, block.plane, (block.x, block.y), (side, side)),
     );
+}
+
+/// The samples of `plane` from `(x, y)` on, rows `stride` apart, for a
+/// `w` x `h` block: one offset check per block instead of a plane view.
+fn block_samples(
+    picture: &mut Picture,
+    plane: PlaneIndex,
+    (x, y): (usize, usize),
+    (w, h): (usize, usize),
+) -> (&mut [u8], usize) {
+    let plane = picture.plane_mut(plane);
+    let stride = plane.stride();
+    let samples = plane
+        .samples_at_mut(x as isize, y as isize, w, h)
+        .expect("blocks lie inside the plane");
+    (samples, stride)
 }
 
 /// `get_entropy_context`: whether any of a transform block's 1, 2, 4 or 8

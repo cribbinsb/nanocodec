@@ -134,13 +134,13 @@ export class Loupe {
     }
     this.panels.forEach((panel, i) => placeMarker(this.markers[i], panel.canvas, region));
   }
-  // The original frame is ImageData; copy it into a canvas once per new frame so it can be scaled like the views.
+  // The original frame (a colour.js SourcePicture) is drawn into a canvas once per new frame so it can be scaled like the views.
   updateSource() {
     if (this.sourceDrawn === this.source) return;
     this.sourceDrawn = this.source;
     if (!this.source) { this.sourceCanvas.width = 0; return; }
     this.sourceCanvas.width = this.source.width; this.sourceCanvas.height = this.source.height;
-    this.sourceCanvas.getContext('2d').putImageData(this.source, 0, 0);
+    this.sourceCanvas.getContext('2d').putImageData(this.source.image, 0, 0);
   }
 }
 

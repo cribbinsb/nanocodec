@@ -1,15 +1,20 @@
 //! Browser bindings for independent nanocodec encoders and subset decoders.
-//! The UI transfers RGBA frames to workers; compressed bytes alone cross the
+//! The UI transfers captured frames (YUV planes, or RGBA) to workers, which
+//! convert them per view (`source`); compressed bytes alone cross the
 //! encoder/decoder boundary. No reconstruction-buffer shortcut is used.
 
 #![forbid(unsafe_code)]
 
 mod options;
 mod pixels;
+mod source;
+
+pub use source::SourceFrame;
 
 use nc_common::decode::DecodeError;
 use nc_common::outcome::{FrameOutcome, ReceivedFrames};
-use nc_common::{Picture, PlaneIndex, RawFrame, ShownPicture};
+use nc_common::{ColourDescription, ColourInfo, Picture, PlaneIndex, RawFrame, ShownPicture};
+use nc_dsp::DisplayMatrix;
 use nc_dsp::display::display_scale_plane;
 use nc_encoder::{
     Codec, EncodedFrame, Encoder, EncoderConfig, FrameRate, FrameType, ParamOverrides,
@@ -132,9 +137,11 @@ impl EncoderKind {
 #[derive(Debug)]
 pub struct BrowserEncoder {
     inner: EncoderKind,
-    source: Picture,
-    /// Input conversion kernels.
-    dsp: nc_dsp::Dsp,
+    /// Visible size of every input.
+    width: usize,
+    height: usize,
+    /// The colour the stream signals, which every input must have.
+    matrix: DisplayMatrix,
     key: bool,
     quantizer: u32,
     /// The last input repeated the picture (`hold.rs`) or was dropped:
@@ -220,11 +227,14 @@ impl BrowserEncoder {
     /// `overrides` (optional) holds `name=value` lines applied over the
     /// preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
     /// turns on film grain synthesis, which the decoder applies to its
-    /// output.
+    /// output. `colour` (optional, [`SourceFrame`] names, default `bt601`)
+    /// is the matrix and range of the input, which the stream signals
+    /// (AV2, whose subset has no colour syntax, signals nothing).
     /// # Errors
     /// Rejects invalid codecs, presets, overrides, configurations, film
-    /// grain outside AV1, or dimensions above1080p.
+    /// grain outside AV1, unknown colours, or dimensions above1080p.
     #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments, reason = "one JS constructor call")]
     pub fn new(
         codec: &str,
         width: usize,
@@ -235,6 +245,7 @@ impl BrowserEncoder {
         preset_name: &str,
         overrides: Option<String>,
         film_grain: bool,
+        colour: Option<String>,
     ) -> Result<Self, JsValue> {
         if width > 1920 || height > 1080 || width < 64 || height < 64 {
             return Err(js_error("Use dimensions between64x64 and1920x1080"));
@@ -243,6 +254,8 @@ impl BrowserEncoder {
             return Err(js_error("Invalid frame rate or keyframe interval"));
         }
         let codec = options::parse_codec(codec).ok_or_else(|| js_error("Unknown codec"))?;
+        let colour = colour.unwrap_or_else(|| "bt601".to_owned());
+        let matrix = source::parse_matrix(&colour).ok_or_else(|| js_error("Unsupported colour"))?;
         let overrides = overrides.unwrap_or_default();
         let config = EncoderConfig {
             codec,
@@ -254,7 +267,10 @@ impl BrowserEncoder {
             block_log2: block_log2(codec),
             key_qp_offset: None,
             temporal_layers: 1,
-            signal: nc_encoder::StreamSignal::default(),
+            signal: nc_encoder::StreamSignal {
+                colour: signalled_colour(codec, matrix),
+                ..Default::default()
+            },
             params: encoder_params(codec, preset_name, &overrides, film_grain).map_err(js_error)?,
         };
         let inner = match codec {
@@ -267,26 +283,22 @@ impl BrowserEncoder {
         };
         Ok(Self {
             inner,
-            source: Picture::new(width, height, 0).map_err(js_error)?,
-            dsp: nc_dsp::Dsp::new(),
+            width,
+            height,
+            matrix,
             key: false,
             quantizer: qp,
             repeat: false,
         })
     }
 
-    /// Convert one RGBA frame and encode an access unit / AV1 temporal unit:
+    /// Encode one source frame as an access unit / AV1 temporal unit:
     /// empty when the input repeated the picture ([`BrowserEncoder::repeat`]).
     /// # Errors
-    /// Rejects input whose byte count differs from the configured dimensions.
-    pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, JsValue> {
-        if rgba.len() != self.source.width() * self.source.height() * 4 {
-            return Err(js_error(
-                "RGBA frame length does not match the configuration",
-            ));
-        }
-        pixels::from_rgba(&self.dsp, rgba, &mut self.source);
-        let frame = self.inner.encode(&self.source);
+    /// Rejects a frame of another size or colour than the configuration's.
+    pub fn encode(&mut self, source: &SourceFrame) -> Result<Vec<u8>, JsValue> {
+        let picture = self.input(source)?;
+        let frame = self.inner.encode(picture);
         self.repeat = frame.metadata.held || frame.metadata.dropped;
         self.key = frame.metadata.frame_type == FrameType::Key && !self.repeat;
         if !self.repeat {
@@ -305,18 +317,20 @@ impl BrowserEncoder {
         self.inner.wants_look_ahead()
     }
 
-    /// Hand over the second RGBA frame before encoding the first; both are
-    /// still encoded in order afterwards.
+    /// Hand over the second source frame before encoding the first; both
+    /// are still encoded in order afterwards.
     /// # Errors
-    /// Rejects input whose byte count differs from the configured dimensions.
-    pub fn look_ahead(&mut self, rgba: &[u8]) -> Result<(), JsValue> {
-        if rgba.len() != self.source.width() * self.source.height() * 4 {
-            return Err(js_error(
-                "RGBA frame length does not match the configuration",
-            ));
-        }
-        pixels::from_rgba(&self.dsp, rgba, &mut self.source);
-        self.inner.look_ahead(&self.source).map_err(js_error)
+    /// Rejects a frame of another size or colour than the configuration's.
+    pub fn look_ahead(&mut self, source: &SourceFrame) -> Result<(), JsValue> {
+        let picture = self.input(source)?;
+        self.inner.look_ahead(picture).map_err(js_error)
+    }
+
+    /// The colour (`SourceFrame` names) the encoder expects and signals.
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn colour(&self) -> String {
+        source::matrix_name(self.matrix).to_owned()
     }
 
     /// Enable or update realtime bitrate control without restarting references.
@@ -384,6 +398,43 @@ impl BrowserEncoder {
     #[wasm_bindgen(getter)]
     pub fn key(&self) -> bool {
         self.key
+    }
+}
+
+impl BrowserEncoder {
+    /// `source`'s picture, if it matches the configuration.
+    fn input<'a>(&self, source: &'a SourceFrame) -> Result<&'a Picture, JsValue> {
+        let picture = source.picture();
+        if (picture.width(), picture.height()) != (self.width, self.height) {
+            return Err(js_error(
+                "Source frame size does not match the configuration",
+            ));
+        }
+        if source.matrix() != self.matrix {
+            return Err(js_error(
+                "Source frame colour does not match the configuration",
+            ));
+        }
+        Ok(picture)
+    }
+}
+
+/// What a stream of `codec` signals for input of `matrix`: its matrix
+/// (with the matching primaries and transfer) and range. AV2's subset has
+/// no colour syntax and signals nothing.
+fn signalled_colour(codec: Codec, matrix: DisplayMatrix) -> ColourInfo {
+    if codec == Codec::Av2 {
+        return ColourInfo::default();
+    }
+    let (description, full_range) = match matrix {
+        DisplayMatrix::Bt601Limited => (ColourDescription::BT601_525, false),
+        DisplayMatrix::Bt709Limited => (ColourDescription::BT709, false),
+        DisplayMatrix::Bt601Full => (ColourDescription::BT601_525, true),
+        DisplayMatrix::Bt709Full => (ColourDescription::BT709, true),
+    };
+    ColourInfo {
+        description: Some(description),
+        full_range,
     }
 }
 
@@ -463,6 +514,11 @@ impl DecodeOutcome {
             _ => -1.0,
         }
     }
+}
+
+/// Bytes of a packed `width` x `height` I420 frame.
+fn packed_i420_len(width: usize, height: usize) -> usize {
+    width * height + 2 * width.div_ceil(2) * height.div_ceil(2)
 }
 
 /// A frame index from JS (a non-negative integer below 2^53).
@@ -638,20 +694,24 @@ impl BrowserDecoder {
         }
     }
 
-    /// Convert the latest frame to RGBA (`width * height * 4` bytes) in a
-    /// buffer this decoder reuses, and return its byte offset in the module's
-    /// WASM memory. JS reads it through a view of `memory.buffer`, which is
-    /// valid until the next call into the module (memory may grow); copying
-    /// from it into a reused canvas buffer avoids a per-frame allocation.
-    /// This is the CPU display path; `i420_frame` feeds a GPU conversion.
+    /// Convert the latest frame to RGBA (`width * height * 4` bytes) with
+    /// `colour` (the matrix and range of the samples, `SourceFrame` names)
+    /// in a buffer this decoder reuses, and return its byte offset in the
+    /// module's WASM memory. JS reads it through a view of `memory.buffer`,
+    /// which is valid until the next call into the module (memory may grow);
+    /// copying from it into a reused canvas buffer avoids a per-frame
+    /// allocation. This is the CPU display path; `i420_frame` feeds a GPU
+    /// conversion.
     /// # Errors
-    /// Rejects calls made before a frame has been decoded.
-    pub fn rgba_frame(&mut self) -> Result<usize, JsValue> {
+    /// Rejects unknown colours, and calls made before a frame has been
+    /// decoded.
+    pub fn rgba_frame(&mut self, colour: &str) -> Result<usize, JsValue> {
+        let matrix = source::parse_matrix(colour).ok_or_else(|| js_error("Unsupported colour"))?;
         // Taken out so the frame can be borrowed while it is filled.
         let mut rgba = std::mem::take(&mut self.display);
         let picture = self.shown().ok_or_else(|| js_error("No decoded frame"))?;
         rgba.resize(picture.width() * picture.height() * 4, 0);
-        pixels::to_rgba(&self.dsp, picture, &mut rgba);
+        pixels::to_rgba(&self.dsp, matrix, picture, &mut rgba);
         self.display = rgba;
         Ok(self.display.as_ptr() as usize)
     }
@@ -671,24 +731,23 @@ impl BrowserDecoder {
         Ok(self.display.as_ptr() as usize)
     }
 
-    /// PSNR-YUV of the latest decoded frame against the RGBA source frame it
-    /// was coded from, which is converted here exactly as the encoder
-    /// converts its input (6:1:1 weighting, `BrowserEncoder::quality`). When
-    /// the decoded frame is a smaller spatial layer or adaptive-resolution
-    /// picture of the same stream, it is upscaled to the stream dimensions
-    /// (`nc_dsp::display`) before scoring.
+    /// PSNR-YUV of the latest decoded frame against the source frame it was
+    /// coded from, packed I420 (`SourceFrame::packed`; 6:1:1 weighting).
+    /// When the decoded frame is a smaller spatial layer or
+    /// adaptive-resolution picture of the same stream, it is upscaled to the
+    /// stream dimensions (`nc_dsp::display`) before scoring.
     /// # Errors
     /// Rejects calls made before a frame has been decoded, and a source
     /// whose byte count matches neither the decoded frame nor the stream.
-    pub fn psnr(&mut self, rgba: &[u8]) -> Result<f64, JsValue> {
+    pub fn psnr(&mut self, i420: &[u8]) -> Result<f64, JsValue> {
         let (width, height) = (self.width(), self.height());
         if width == 0 {
             return Err(js_error("No decoded frame"));
         }
         let (stream_w, stream_h) = self.stream_dimensions();
-        let (ref_w, ref_h) = if rgba.len() == width * height * 4 {
+        let (ref_w, ref_h) = if i420.len() == packed_i420_len(width, height) {
             (width, height)
-        } else if stream_w > 0 && rgba.len() == stream_w * stream_h * 4 {
+        } else if stream_w > 0 && i420.len() == packed_i420_len(stream_w, stream_h) {
             (stream_w, stream_h)
         } else {
             return Err(js_error(
@@ -699,7 +758,7 @@ impl BrowserDecoder {
             Some(p) if (p.width(), p.height()) == (ref_w, ref_h) => p,
             _ => Picture::new(ref_w, ref_h, 0).map_err(js_error)?,
         };
-        pixels::from_rgba(&self.dsp, rgba, &mut reference);
+        pixels::unpack_i420(i420, &mut reference);
         let score = if (width, height) == (ref_w, ref_h) {
             let decoded = self.shown().ok_or_else(|| js_error("No decoded frame"))?;
             pixels::psnr(&self.dsp, &reference, decoded)
@@ -747,40 +806,6 @@ impl BrowserDecoder {
         let mut bytes = Vec::new();
         pixels::pack_i420(picture, &mut bytes);
         Ok(bytes)
-    }
-}
-
-#[wasm_bindgen]
-impl BrowserEncoder {
-    /// Per-frame PSNR-YUV against the actual decoder output, using6:1:1 weighting.
-    /// Smaller spatial/scaled frames of the same stream are upscaled to the
-    /// source dimensions (`nc_dsp::display`) before scoring.
-    /// # Errors
-    /// Requires a decoded frame belonging to a stream with the encoder's
-    /// visible dimensions.
-    pub fn quality(&self, decoder: &BrowserDecoder) -> Result<f64, JsValue> {
-        let decoded = decoder
-            .shown()
-            .ok_or_else(|| js_error("No decoded frame"))?;
-        let (src_w, src_h) = (self.source.width(), self.source.height());
-        if (decoded.width(), decoded.height()) == (src_w, src_h) {
-            return Ok(pixels::psnr(&self.dsp, &self.source, decoded));
-        }
-        if decoder.stream_dimensions() != (src_w, src_h) {
-            return Err(js_error("Decoded frame dimensions differ from the source"));
-        }
-        let mut scaled = Picture::new(src_w, src_h, 0).map_err(js_error)?;
-        for plane in PlaneIndex::ALL {
-            display_scale_plane(
-                &decoded.plane(plane),
-                &mut scaled.plane_mut(plane).view_mut(),
-            );
-        }
-        Ok(pixels::psnr(
-            &self.dsp,
-            &self.source,
-            ShownPicture::whole(&scaled),
-        ))
     }
 }
 
@@ -917,6 +942,15 @@ mod preset_tests {
 mod input_tests {
     use super::*;
 
+    /// `rgba` as a source frame (BT.601, the RGBA path) and its packed I420.
+    fn source_of(width: usize, height: usize, rgba: &[u8]) -> (SourceFrame, Vec<u8>) {
+        let mut source = SourceFrame::new(width, height).unwrap();
+        source.from_rgba(rgba).unwrap();
+        let mut packed = Vec::new();
+        pixels::pack_i420(ShownPicture::whole(source.picture()), &mut packed);
+        (source, packed)
+    }
+
     #[test]
     fn visible_input_matches_extended_borders_for_every_codec() {
         let (width, height) = (128, 72);
@@ -929,7 +963,8 @@ mod input_tests {
             ("av2", 140),
         ] {
             let make = || {
-                BrowserEncoder::new(codec, width, height, qp, 30, 300, "fast", None, false).unwrap()
+                BrowserEncoder::new(codec, width, height, qp, 30, 300, "fast", None, false, None)
+                    .unwrap()
             };
             let (mut visible, mut extended) = (make(), make());
             let mut padded = Picture::new(width, height, 64).unwrap();
@@ -937,10 +972,11 @@ mod input_tests {
                 let rgba: Vec<u8> = (0..4 * width * height)
                     .map(|i| (i * 17 + i / 37 + frame * 53) as u8)
                     .collect();
-                pixels::from_rgba(&extended.dsp, &rgba, &mut padded);
+                let (source, _) = source_of(width, height, &rgba);
+                pixels::from_rgba(&nc_dsp::Dsp::new(), &rgba, &mut padded);
                 padded.extend_borders();
                 assert_eq!(
-                    visible.encode(&rgba).unwrap(),
+                    visible.encode(&source).unwrap(),
                     extended.inner.encode(&padded).data,
                     "{codec} frame {frame}"
                 );
@@ -964,6 +1000,7 @@ mod input_tests {
                 "fast",
                 Some(overrides.to_owned()),
                 false,
+                None,
             )
             .unwrap();
             let mut full_decoder = BrowserDecoder::new(codec).unwrap();
@@ -974,7 +1011,8 @@ mod input_tests {
                 let rgba: Vec<u8> = (0..4 * width * height)
                     .map(|i| (i * 13 + i / 29 + frame * 31) as u8)
                     .collect();
-                let packet = encoder.encode(&rgba).unwrap();
+                let (source, packed) = source_of(width, height, &rgba);
+                let packet = encoder.encode(&source).unwrap();
                 full_decoder.decode(&packet).unwrap();
                 base_decoder.decode(&packet).unwrap();
 
@@ -1001,14 +1039,12 @@ mod input_tests {
                 );
                 assert_eq!(base_decoder.spatial_id(), 0, "{codec} frame {frame}");
 
-                let worker_psnr = full_decoder.psnr(&rgba).unwrap();
-                let encoder_psnr = encoder.quality(&full_decoder).unwrap();
-                assert!((worker_psnr - encoder_psnr).abs() < 1e-9);
+                let worker_psnr = full_decoder.psnr(&packed).unwrap();
                 assert!(
                     worker_psnr > 18.0,
                     "{codec} frame {frame} psnr {worker_psnr}"
                 );
-                assert!(base_decoder.psnr(&rgba).unwrap() > 18.0);
+                assert!(base_decoder.psnr(&packed).unwrap() > 18.0);
             }
         }
     }
@@ -1026,6 +1062,7 @@ mod input_tests {
             "fast",
             Some("spatial.layers=3\nhold.enable=0".to_owned()),
             false,
+            None,
         )
         .unwrap();
         let mut l3t1_decoders: Vec<BrowserDecoder> = (0..3u8)
@@ -1039,7 +1076,8 @@ mod input_tests {
             let rgba: Vec<u8> = (0..4 * width * height)
                 .map(|i| (i * 11 + i / 23 + frame * 29) as u8)
                 .collect();
-            let packet = web_encoder.encode(&rgba).unwrap();
+            let (source, packed) = source_of(width, height, &rgba);
+            let packet = web_encoder.encode(&source).unwrap();
             for (op, dec) in l3t1_decoders.iter_mut().enumerate() {
                 dec.decode(&packet).unwrap();
                 let expected_sid = 2 - op as u8;
@@ -1055,7 +1093,7 @@ mod input_tests {
                     "l3t1 op {op} frame {frame}"
                 );
                 assert_eq!((dec.stream_width(), dec.stream_height()), (width, height));
-                assert!(dec.psnr(&rgba).unwrap() > 16.0);
+                assert!(dec.psnr(&packed).unwrap() > 16.0);
             }
         }
 

@@ -5,9 +5,9 @@
 # (web/tests/browser-product-smoke.py: the demo page end to end, workers,
 # pipelining, display), the decode worker's warm-up interrupt test
 # (web/tests/warmup-interrupt.py), source switches and webcam starts under CPU
-# throttling (web/tests/source-switch.py), the capture worker's pixels against the
-# page's former capture on three clips (web/tests/capture-identity.py; run it
-# without --clips for every clip) and spatial SVC's operating points against
+# throttling (web/tests/source-switch.py), what a live view codes against the
+# clip file's decoded planes on three clips (web/tests/capture-identity.py; run
+# it without --clips for every clip) and spatial SVC's operating points against
 # the native decoder (web/tests/svc-operating-points.py). nc-web embeds the encoder and every codec crate, so
 # a change there can break the page (frame hold once stopped it: the
 # workers expected a packet per input). Called by check.sh (every run, --quick included, so
@@ -26,6 +26,8 @@ WEB_PROFILE=${WEB_PROFILE:-gate} BUILD_JOBS=${BUILD_JOBS:-8} tools/web/build.sh
 node --no-warnings web/tests/vp9-wasm-smoke.mjs
 node --no-warnings web/tests/av2-wasm-smoke.mjs
 node --no-warnings web/tests/vvc-wasm-smoke.mjs
+# Display colours: the JS conversion equals nc-dsp's for every matrix.
+node --no-warnings web/tests/colour-wasm.mjs
 # The page's own modules (timeline, pre-encoded stream manifest and loader, containers).
 node --test web/tests/*.test.js
 # Every pre-encoded reference stream decodes bit-exactly in both WASM builds.

@@ -200,29 +200,6 @@ impl EdgeMasks {
     fn any(&self) -> u64 {
         self.sixteen | self.eight | self.four | self.internal
     }
-
-    /// The comparable key of the unit at `bit`: its width (0 for none) and
-    /// whether it has an internal edge.
-    fn key(&self, bit: u64) -> u8 {
-        let width = if self.sixteen & bit != 0 {
-            3
-        } else if self.eight & bit != 0 {
-            2
-        } else {
-            u8::from(self.four & bit != 0)
-        };
-        width | (u8::from(self.internal & bit != 0) << 2)
-    }
-}
-
-/// The width of a key's outer edge.
-fn key_width(key: u8) -> Option<Width> {
-    match key & 3 {
-        0 => None,
-        1 => Some(Width::Four),
-        2 => Some(Width::Eight),
-        _ => Some(Width::Sixteen),
-    }
 }
 
 /// Transpose an 8x8 bit matrix (bit `row * 8 + col` to `col * 8 + row`;
@@ -544,10 +521,11 @@ struct FilterContext<'a> {
 
 impl FilterContext<'_> {
     /// Filter one direction of one plane of the superblock: lines of edges
-    /// in order (columns left to right, or rows top to bottom), each as
-    /// runs of units with the same edges and level (one kernel call per
-    /// run; lines across an edge are independent, so a run filters in the
-    /// same order as libvpx's per-row passes).
+    /// in order (columns left to right, or rows top to bottom). Within a
+    /// line, units cover different lines across the edge, so each edge
+    /// class can run as a whole: runs of units of one width and level are
+    /// one kernel call each, and the internal 4x4 edges follow their units'
+    /// outer edges, as in libvpx's per-row passes.
     fn plane(
         &self,
         view: &mut PlaneViewMut<'_>,
@@ -558,72 +536,71 @@ impl FilterContext<'_> {
     ) {
         let side = SB_MI >> ss;
         let line_mask = (1u64 << side) - 1;
-        let any = edges.any();
         let (x0, y0) = (self.origin.0 >> ss, self.origin.1 >> ss);
+        let classes = [
+            (edges.sixteen, Width::Sixteen, 0),
+            (edges.eight, Width::Eight, 0),
+            (edges.four, Width::Four, 0),
+            (edges.internal, Width::Four, INTERNAL_OFFSET),
+        ];
         for index in 0..side {
-            let mut bits = (any >> (index * side)) & line_mask;
-            while bits != 0 {
-                let start = bits.trailing_zeros() as usize;
-                let first = 1u64 << (index * side + start);
-                let (key, unit_level) = (edges.key(first), level(index, start, vertical, ss));
-                let mut end = start + 1;
-                while end < side
-                    && edges.key(1 << (index * side + end)) == key
-                    && level(index, end, vertical, ss) == unit_level
-                {
-                    end += 1;
+            let shift = index * side;
+            if (edges.any() >> shift) & line_mask == 0 {
+                continue;
+            }
+            for (mask, width, inset) in classes {
+                let mut bits = (mask >> shift) & line_mask;
+                while bits != 0 {
+                    let start = bits.trailing_zeros() as usize;
+                    let unit_level = level(index, start, vertical, ss);
+                    let mut end = start + 1;
+                    while end < side
+                        && (bits >> end) & 1 != 0
+                        && level(index, end, vertical, ss) == unit_level
+                    {
+                        end += 1;
+                    }
+                    bits &= !((1u64 << end) - (1u64 << start));
+                    let along = start * MI_SIZE;
+                    let across = index * MI_SIZE + inset;
+                    let (x, y) = if vertical {
+                        (x0 + across, y0 + along)
+                    } else {
+                        (x0 + along, y0 + across)
+                    };
+                    let lines = (end - start) * MI_SIZE;
+                    self.edge(view, (x, y), (vertical, lines), width, unit_level);
                 }
-                bits &= !(((1u64 << end) - 1) ^ ((1u64 << start) - 1));
-                let along = (start * MI_SIZE, (end - start) * MI_SIZE);
-                let across = index * MI_SIZE;
-                let (x, y) = if vertical {
-                    (x0 + across, y0 + along.0)
-                } else {
-                    (x0 + along.0, y0 + across)
-                };
-                self.run(view, (x, y), (vertical, along.1), key, unit_level);
             }
         }
     }
 
-    /// Filter `lines` lines of the edge at plane sample `(x, y)` with edge
-    /// key `key`: the outer edge, then the internal 4x4 edge.
-    fn run(
+    /// Filter `lines` lines of the edge at plane sample `(x, y)`.
+    fn edge(
         &self,
         view: &mut PlaneViewMut<'_>,
         (x, y): (usize, usize),
         (vertical, lines): (bool, usize),
-        key: u8,
+        width: Width,
         level: u8,
     ) {
         let limits = self.limits[usize::from(level)];
         let stride = view.stride();
         let (step, along) = if vertical { (1, stride) } else { (stride, 1) };
-        if let Some(width) = key_width(key) {
-            self.dsp.vp9_filter_edge(
-                view.data_mut(),
-                y * stride + x,
-                step,
-                along,
-                lines,
-                width,
-                limits,
-            );
-        }
-        if key & 4 != 0 {
-            let inner = if vertical { (x + 4, y) } else { (x, y + 4) };
-            self.dsp.vp9_filter_edge(
-                view.data_mut(),
-                inner.1 * stride + inner.0,
-                step,
-                along,
-                lines,
-                Width::Four,
-                limits,
-            );
-        }
+        self.dsp.vp9_filter_edge(
+            view.data_mut(),
+            y * stride + x,
+            step,
+            along,
+            lines,
+            width,
+            limits,
+        );
     }
 }
+
+/// Internal 4x4 edges lie 4 samples into their unit.
+const INTERNAL_OFFSET: usize = 4;
 
 #[cfg(test)]
 mod tests {

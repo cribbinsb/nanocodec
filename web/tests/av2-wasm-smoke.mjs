@@ -1,9 +1,11 @@
 // Run after tools/web/build.sh: exercise the actual browser WASM module in Node.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import init, { BrowserEncoder, BrowserDecoder } from '../pkg/nc_web.js';
+import init, { BrowserEncoder, BrowserDecoder, SourceFrame } from '../pkg/nc_web.js';
+import { rgbaEncoder } from './rgba-source.mjs';
 
 const wasm = await init({ module_or_path: await readFile(new URL('../pkg/nc_web_bg.wasm', import.meta.url)) });
+const encodeRgba = rgbaEncoder(SourceFrame, wasm.memory);
 
 function obuTypes(packet) {
   const types = [];
@@ -40,11 +42,12 @@ for (const [width, height] of [[320, 180], [66, 64], [64, 66]]) {
   const evenDecoder = new BrowserDecoder('av2');
   try {
     const rgba = pixels(width, height, 0);
-    evenDecoder.decode(evenEncoder.encode(rgba));
-    assert.ok(evenDecoder.rgba_frame() + rgba.length <= wasm.memory.buffer.byteLength, `${width}x${height} RGBA frame`);
+    const { packet, packed } = encodeRgba(evenEncoder, width, height, rgba);
+    evenDecoder.decode(packet);
+    assert.ok(evenDecoder.rgba_frame('bt601') + rgba.length <= wasm.memory.buffer.byteLength, `${width}x${height} RGBA frame`);
     assert.equal(evenDecoder.width, width);
     assert.equal(evenDecoder.height, height);
-    assert.equal(evenEncoder.quality(evenDecoder), 100, `${width}x${height} lossless round trip`);
+    assert.equal(evenDecoder.psnr(packed), 100, `${width}x${height} lossless round trip`);
   } finally { evenEncoder.free(); evenDecoder.free(); }
 }
 for (const [width, height] of [[65, 64], [64, 65]]) {
@@ -55,30 +58,33 @@ assert.throws(() => new BrowserEncoder('av2', 64, 64, 256, 30, 900, 'default'), 
 const encoder = new BrowserEncoder('av2', 64, 64, 0, 30, 900, 'default');
 const decoder = new BrowserDecoder('av2');
 try {
-  assert.throws(() => encoder.encode(new Uint8Array(3)), /RGBA frame length/);
+  {
+    const small = new SourceFrame(72, 64);
+    try { assert.throws(() => encoder.encode(small), /size does not match/); } finally { small.free(); }
+  }
   for (let frame = 0; frame < 7; frame++) {
     if (frame === 3) { encoder.set_rate_control(100, 200, 1000); encoder.request_keyframe(); }
     if (frame === 5) encoder.disable_rate_control();
     if (frame === 6) encoder.request_keyframe();
     if (frame === 2) assert.throws(() => decoder.decode(new Uint8Array([0])));
     const rgba = pixels(64, 64, frame);
-    const packet = encoder.encode(rgba);
+    const { packet, packed } = encodeRgba(encoder, 64, 64, rgba);
     const key = frame === 0 || frame === 3 || frame === 6;
     assert.equal(encoder.key, key);
     assert.ok(obuTypes(packet).includes(key ? 4 : 7), 'actual key/forward OBU type');
     decoder.decode(packet);
-    assert.ok(decoder.rgba_frame() + rgba.length <= wasm.memory.buffer.byteLength, 'RGBA frame in WASM memory');
+    assert.ok(decoder.rgba_frame('bt601') + rgba.length <= wasm.memory.buffer.byteLength, 'RGBA frame in WASM memory');
     assert.equal(decoder.width, 64);
     assert.equal(decoder.height, 64);
     assert.equal(decoder.decoded_i420().length, 64 * 64 * 3 / 2);
-    assert.ok(Number.isFinite(encoder.quality(decoder)));
+    assert.ok(Number.isFinite(decoder.psnr(packed)));
     if (frame === 3 || frame === 4) {
       assert.ok(encoder.quantizer >= 1 && encoder.quantizer <= 255);
       assert.ok(Number.isFinite(encoder.buffer_fullness) && encoder.buffer_fullness >= 0);
       assert.ok(Number.isInteger(encoder.buffer_overflows) && encoder.buffer_overflows >= 0);
     } else {
       assert.equal(encoder.quantizer, 0, 'rate-control disable restores fixed quantizer');
-      assert.equal(encoder.quality(decoder), 100, 'lossless reconstructed I420 equals source');
+      assert.equal(decoder.psnr(packed), 100, 'lossless reconstructed I420 equals source');
     }
     if (key) {
       const fresh = new BrowserDecoder('av2');
@@ -95,11 +101,12 @@ const partialEncoder = new BrowserEncoder('av2', 72, 64, 0, 30, 900, 'default');
 const partialDecoder = new BrowserDecoder('av2');
 try {
   for (let frame = 0; frame < 2; frame++) {
-    partialDecoder.decode(partialEncoder.encode(pixels(72, 64, frame)));
+    const { packet, packed } = encodeRgba(partialEncoder, 72, 64, pixels(72, 64, frame));
+    partialDecoder.decode(packet);
     assert.equal(partialEncoder.key, frame === 0);
     assert.equal(partialDecoder.width, 72);
     assert.equal(partialDecoder.height, 64);
-    assert.equal(partialEncoder.quality(partialDecoder), 100);
+    assert.equal(partialDecoder.psnr(packed), 100);
   }
 } finally { partialEncoder.free(); partialDecoder.free(); }
 

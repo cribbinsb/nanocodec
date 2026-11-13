@@ -118,6 +118,22 @@ Ratio = ours ÷ reference in time, same streams, single thread.
 | VVC | VVdeC | 0.39–0.47 | – | 0.63–0.70 | – | 1.69–1.70 |
 | AV2 | avmdec | 0.33–0.39 | – | 0.31–0.32 | – | 1.69–1.88 |
 
+**VP9 against vpxdec after vp9-dec-parity (2026-11-13).** Ours ÷ vpxdec in instructions (x86 callgrind) and cycles
+(Jetson core 3, jperf). These are counts, not wall time. Build 80a0111a (Jetson: the same decoder at 159804aa).
+
+| Stream | x86 instructions | Jetson cycles |
+|---|---:|---:|
+| ours 720p / 1080p | 1.163 / 1.224 | 1.218 / 1.170 |
+| ours SVC L2T1 / L2T3 720p | 1.117 / 1.116 | 1.192 / 1.177 |
+| vpxenc rt 720p / good 1080p | 1.248 / 1.271 | 1.277 / 1.137 |
+| resize_inter 1080p (scaled references) | 1.430 | 1.290 |
+
+At adb57e6e the same streams were:
+- x86: 1.25–1.35, with SVC 1.98–2.08;
+- Jetson: 1.14–1.27, with SVC 1.48–1.49.
+
+Method and per-change detail: `docs/handoff/vp9.md` "Decoder speed against vpxdec".
+
 **HEVC against Antare's `hevc.wasm`** (their numbers scaled by our own base-to-head ratio, as in
 [wasm-speed.md](wasm-speed.md#final-re-time-2026-11-13-dec-winddown)): we are now faster on all five rows:
 - Novatek −20 %;

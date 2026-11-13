@@ -1,8 +1,18 @@
 // Capture stage of the comparison pipeline (pipeline.js), off the page's main
 // thread: turns each captured picture (a VideoFrame, or an ImageBitmap where
 // WebCodecs is missing, of the playing video, the camera or the test scene)
-// into the RGBA frame each view's encoder takes, and posts it straight to that
+// into the frame each view's encoder takes, and posts it straight to that
 // encode worker over a MessageChannel port.
+//
+// A video or camera VideoFrame in a YUV layout the codecs read (I420, NV12)
+// goes as its own decoded planes (`VideoFrame.copyTo` in its own format, once
+// for all views): no YUV -> RGB -> YUV round trip, 1.5 instead of 4 bytes per
+// pixel, and a copy 4-30x cheaper than RGBA when frames live on the GPU
+// (docs/handoff/wasm-perf.md, "Native YUV capture"). Each view's worker
+// scales and letterboxes the planes to its size in WASM (nc-web
+// `SourceFrame`) and codes them in their own colour (colour.js), which the
+// stream signals. Everything else (the test scene, other formats or
+// colours, engines without VideoFrame) takes the RGBA path below.
 //
 // Reading a video frame back as RGBA is the costliest step outside the codecs:
 // the page's drawImage + getImageData took 15-90 ms per 720p frame in headless
@@ -14,15 +24,23 @@
 // former pixels exactly (Chromium 148, every sample clip; the test
 // web/tests/capture-identity.py).
 //
-// Each view gets the picture letterboxed into its own size (aspect kept, black
-// bars), as the page did before; views of one size share a single conversion.
-// Only the views that code the frame's tick get it (`coding`, timeline.js).
+// On the RGBA path each view gets the picture letterboxed into its own size
+// (aspect kept, black bars), as the page did before; views of one size share a
+// single conversion. Only the views that code the frame's tick get it
+// (`coding`, timeline.js).
+import { RGBA_COLOUR, colourOf } from './colour.js';
+
+/** VideoFrame formats whose planes nc-web `SourceFrame.from_planes` reads. */
+const PLANE_FORMATS = new Set(['I420', 'I420A', 'NV12']);
 
 let views = [];
 // One reused 2D canvas per frame size.
 const contexts = new Map();
 // Whether VideoFrame.copyTo converts to RGBA here (older engines reject the format).
 let copyToRgba = true;
+// Whether VideoFrame.copyTo gives the planes (cleared if it ever fails, e.g. a
+// GPU frame that cannot be read back): the session then stays on RGBA.
+let copyPlanes = true;
 // Frames are converted one after another, so they reach the encoders in order.
 let previous = Promise.resolve();
 
@@ -54,19 +72,56 @@ async function convert(picture, sourceWidth, sourceHeight, width, height) {
   }
   return drawn(picture, sourceWidth, sourceHeight, width, height);
 }
+/**
+ * The picture's own YUV planes, `{ kind: 'planes', data, format, colour,
+ * width, height, layout }` (`layout`: each plane's offset and stride), or null
+ * when it must take the RGBA path.
+ */
+async function planes(picture) {
+  if (!copyPlanes || typeof VideoFrame !== 'function' || !(picture instanceof VideoFrame) || !PLANE_FORMATS.has(picture.format)) return null;
+  const colour = colourOf(picture);
+  if (!colour) return null;
+  try {
+    const data = new ArrayBuffer(picture.allocationSize());
+    const layout = await picture.copyTo(data);
+    const { width, height } = picture.visibleRect;
+    return { kind: 'planes', data, format: picture.format, colour, width, height, layout: layout.flatMap(p => [p.offset, p.stride]) };
+  } catch {
+    copyPlanes = false;
+    return null;
+  }
+}
+/** The frame for each coding view (null for the others); a frame shared by views is copied, as each is transferred. */
+async function frames(picture, sourceWidth, sourceHeight, coding) {
+  const yuv = await planes(picture);
+  if (yuv) {
+    let first = true;
+    return coding.map(c => {
+      if (!c) return null;
+      const frame = first ? yuv : { ...yuv, data: yuv.data.slice(0) };
+      first = false;
+      return frame;
+    });
+  }
+  const bySize = new Map();
+  const result = [];
+  for (const [i, { width, height }] of views.entries()) {
+    if (!coding[i]) { result.push(null); continue; }
+    const key = `${width}x${height}`;
+    if (!bySize.has(key)) bySize.set(key, await convert(picture, sourceWidth, sourceHeight, width, height));
+    const data = result.some(f => f?.data === bySize.get(key)) ? bySize.get(key).slice(0) : bySize.get(key);
+    result.push({ kind: 'rgba', data, colour: RGBA_COLOUR, width, height });
+  }
+  return result;
+}
 /** Convert one picture for every view and post each its frame. */
 async function capture({ id, timestamp, picture, sourceWidth, sourceHeight, displays, coding }) {
   try {
-    const bySize = new Map();
-    const frames = [];
-    for (const [i, { width, height }] of views.entries()) {
-      if (!coding[i]) { frames.push(null); continue; }
-      const key = `${width}x${height}`;
-      // A second view of the same size takes a copy: each buffer is transferred.
-      if (!bySize.has(key)) bySize.set(key, await convert(picture, sourceWidth, sourceHeight, width, height));
-      frames.push(frames.some(f => f === bySize.get(key)) ? bySize.get(key).slice(0) : bySize.get(key));
-    }
-    views.forEach(({ port }, i) => { if (frames[i]) port.postMessage({ type: 'frame', id, timestamp, rgba: frames[i], display: displays[i] }, [frames[i]]); });
+    const converted = await frames(picture, sourceWidth, sourceHeight, coding);
+    views.forEach(({ port }, i) => {
+      const frame = converted[i];
+      if (frame) port.postMessage({ type: 'frame', id, timestamp, frame, display: displays[i] }, [frame.data]);
+    });
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   } finally {
