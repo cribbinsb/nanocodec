@@ -86,6 +86,12 @@ pub enum IntraKind {
     },
 }
 
+/// Smallest side of a square directional block with the edge filter that
+/// takes the square kernels: below it, preparing the edges a second time in
+/// the square layout costs more than the per-sample zones (x86 callgrind,
+/// SVT p8 720p: from side 4 +0.09%, from side 16 -0.03%; libaom 720p -1.1%
+/// and -1.3%).
+const PREPARED_SQUARE_MIN: usize = 16;
 /// Largest coded side of an intra transform block.
 const MAX_SIDE: usize = MAX_INTRA_SIZE;
 /// Longest edge that is upsampled (§7.11.2.10 allows `w + h <= 16`).
@@ -163,9 +169,11 @@ impl BlockEdges {
                 width
             };
             let limit = (x + reach - 1).min(max_x);
-            for (i, sample) in square.above[..span].iter_mut().enumerate() {
-                *sample = row[(x + i).min(limit)];
-            }
+            // Samples x..=limit, then the last of them repeated (§7.11.2:
+            // reads clamp to `limit`); copied whole rather than per sample.
+            let inside = (limit + 1 - x).min(span);
+            square.above[..inside].copy_from_slice(&row[x..x + inside]);
+            square.above[inside..span].fill(row[limit]);
         } else if avail.have_left {
             square.above[..span].fill(view.row(y)[x - 1]);
         }
@@ -176,9 +184,16 @@ impl BlockEdges {
                 height
             };
             let limit = (y + reach - 1).min(max_y);
-            for (i, sample) in square.left[..span].iter_mut().enumerate() {
-                *sample = view.row((y + i).min(limit))[x - 1];
+            // Rows y..=limit of column x - 1, then the last repeated; the
+            // column is walked by stride, not row by row.
+            let inside = (limit + 1 - y).min(span);
+            let column = view.data()[y * view.stride() + x - 1..]
+                .iter()
+                .step_by(view.stride());
+            for (sample, &value) in square.left[..inside].iter_mut().zip(column) {
+                *sample = value;
             }
+            square.left[inside..span].fill(view.row(limit)[x - 1]);
         } else if avail.have_above {
             square.left[..span].fill(view.row(y - 1)[x]);
         }
@@ -239,6 +254,18 @@ impl BlockEdges {
                     angle,
                     edge_filter: None,
                 } => return square(&self.square, Square::Angle(angle), dst),
+                // Filtered edges at full resolution suit the square kernels
+                // too (their SIMD runs, not the per-sample zones below),
+                // from the side where the runs pay for preparing the edges
+                // twice.
+                IntraKind::Directional {
+                    angle,
+                    edge_filter: Some(ctx),
+                } if w >= PREPARED_SQUARE_MIN => {
+                    if let Some(prepared) = directional::prepared_square(self, angle, ctx) {
+                        return square(&prepared, Square::Angle(angle), dst);
+                    }
+                }
                 IntraKind::Directional { .. } => {}
                 _ => return square(&self.square, Square::Mode(square_mode(kind)), dst),
             }

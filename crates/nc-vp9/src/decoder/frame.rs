@@ -12,6 +12,7 @@ use nc_common::decode::{DecodeError, Result};
 use nc_common::{Picture, PictureRecycler};
 
 use super::block::{BlockInfo, BlockSize, MvRef, Partition, REFS_PER_FRAME};
+use super::fill::fill_run;
 use super::header::{CompressedHeader, FrameHeader};
 use super::loopfilter::{Deblocker, Levels, Masks};
 use super::recon::{InterScratch, REFERENCE_BORDER, Reference};
@@ -350,9 +351,9 @@ impl<'a> FrameDecoder<'a> {
         if half == 0 || partition != Partition::Split {
             let (above, left) = subsize.partition_context();
             let end = (mi_col + side).min(self.above_partition.len());
-            self.above_partition[mi_col..end].fill(above);
+            fill_run(&mut self.above_partition[mi_col..end], above);
             let row = mi_row & (SB_MI - 1);
-            tile.left_partition[row..(row + side).min(SB_MI)].fill(left);
+            fill_run(&mut tile.left_partition[row..(row + side).min(SB_MI)], left);
         }
         Ok(())
     }
@@ -443,9 +444,9 @@ impl<'a> FrameDecoder<'a> {
         };
         for row in position.mi_row..position.mi_row + position.y_mis {
             let start = row * self.mi_cols + position.mi_col;
-            self.grid[start..start + position.x_mis].fill(index);
+            fill_run(&mut self.grid[start..start + position.x_mis], index);
             if !self.inputs.header.is_intra() {
-                self.mvs[start..start + position.x_mis].fill(mv);
+                fill_run(&mut self.mvs[start..start + position.x_mis], mv);
             }
         }
     }
@@ -457,9 +458,9 @@ impl<'a> FrameDecoder<'a> {
             let ss = usize::from(plane > 0);
             let (x, y) = position.plane_4x4(ss);
             let (w, h) = position.plane_size_4x4(ss);
-            self.above_nonzero[plane][x..x + w].fill(0);
+            fill_run(&mut self.above_nonzero[plane][x..x + w], 0);
             let y = y & ((SB_4X4 >> ss) - 1);
-            tile.left_nonzero[plane][y..y + h].fill(0);
+            fill_run(&mut tile.left_nonzero[plane][y..y + h], 0);
         }
     }
 }

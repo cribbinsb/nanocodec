@@ -17,6 +17,7 @@ use nc_common::{Picture, PlaneViewMut};
 use nc_dsp::{Vp9FilterLimits as Limits, Vp9FilterWidth as Width};
 
 use super::block::{BlockInfo, BlockSize, INTRA_FRAME, PredMode};
+use super::fill::fill_run;
 use super::frame::SB_MI;
 use super::header::{LoopFilter, MAX_LOOP_FILTER, SegFeature, Segmentation};
 use crate::segmentation::MAX_SEGMENTS;
@@ -233,7 +234,7 @@ impl SuperblockMask {
         let (w, h) = (block.size.width_mi(), block.size.height_mi());
         for r in row..(row + h).min(SB_MI) {
             let start = r * SB_MI + col;
-            self.levels[start..start + w.min(SB_MI - col)].fill(level);
+            fill_run(&mut self.levels[start..start + w.min(SB_MI - col)], level);
         }
         let tx = block.tx_size as usize;
         let uv_tx = block.size.uv_tx(block.tx_size) as usize;

@@ -101,8 +101,18 @@ CLASS_GUARD_PCT on quality or quality_low, a worst-1% BD worse than
 WORST_GUARD_PCT, flicker up more than FLICKER_GUARD_DB, |periodic-key pulse|
 up more than PULSE_GUARD_DB (all class-balanced; the first-key pulse is
 reported, never guarded), a two-layer stream's base layer worse than
-SVC_BASE_GUARD_PCT, or more non-compliant points than the anchor (the
-buffer guard).
+SVC_BASE_GUARD_PCT, more non-compliant points than the anchor (the
+buffer guard), or a CBR rate over its target (the ceiling guard, below).
+
+The CBR target is a ceiling (owner rule; coordinator, 2026-11-13: the
+150-frame window otherwise rewards an unrepaid first-key loan). A point is
+over target when its achieved rate exceeds the target by more than
+CEILING_TOLERANCE; `over_target_pct` is that excess in percent. Until the rate
+controller keeps every point under its target (rate-ceiling work,
+docs/handoff/rate-control.md), every Default curve fails the absolute rule, so
+CEILING_MODE "relative" compares the arms: the test's mean excess over its
+points may not exceed the anchor's by more than CEILING_MARGIN_PCT. Mode
+"absolute" (once the ceiling lands) fails any test point over target.
 """
 
 from __future__ import annotations
@@ -139,6 +149,13 @@ PULSE_GUARD_DB = 0.25
 #: Spatial SVC's base-layer guard (BD-rate, percent): as the worst-1% guard,
 #: the most a change may cost a secondary output it does not optimise.
 SVC_BASE_GUARD_PCT = 2.0
+#: The ceiling guard (module docstring): achieved / target - 1 allowed per point,
+#: its mode, and the relative mode's allowance over the anchor (percent: rate
+#: noise between two near-identical settings is about +-0.2%).
+CEILING_TOLERANCE = 0.01
+CEILING_RELATIVE, CEILING_ABSOLUTE = "relative", "absolute"
+CEILING_MODE = CEILING_RELATIVE
+CEILING_MARGIN_PCT = 0.25
 #: Rate-controlled curves have 4 ladder points; a staged proxy keeps 3.
 BD_MIN_POINTS = 3
 #: A point whose leaky bucket peaks above this multiple of the buffer
@@ -361,6 +378,7 @@ def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_
     for side, points in (("test", test), ("anchor", anchor)):
         terms[f"{side}_overruns"] = sum(p.get("overruns", 0) for p in points)
         terms[f"{side}_noncompliant"] = sum(1 for p in points if noncompliant(p))
+        terms.update(ceiling_terms(side, points))
     return terms
 
 
@@ -397,6 +415,48 @@ def noncompliant(point: dict) -> bool:
     return point.get("max_fullness", 0.0) > NONCOMPLIANT_FULLNESS
 
 
+def over_target_pct(point: dict) -> float:
+    """How far (percent) a CBR point's achieved rate exceeds its target beyond
+    CEILING_TOLERANCE; 0 within it."""
+    excess = point["kbps"] / point["target_kbps"] - 1 - CEILING_TOLERANCE
+    return 100 * max(0.0, excess)
+
+
+def ceiling_terms(side: str, points: list[dict]) -> dict[str, float]:
+    """One arm's over-target sum, points over target and points scored, for `compliance`."""
+    rated = [p for p in points if p.get("target_kbps")]
+    excess = [over_target_pct(p) for p in rated]
+    return {f"{side}_over_target_sum": sum(excess),
+            f"{side}_over_target_points": sum(1 for e in excess if e > 0),
+            f"{side}_rated_points": len(rated)}
+
+
+def ceiling_excess(buffer: dict) -> float | None:
+    """The ceiling guard's value (> 0 fails) from `compliance` totals; None when unrated.
+
+    Relative mode: the test's mean excess minus the anchor's, minus
+    CEILING_MARGIN_PCT. Absolute mode: the test's points over target."""
+    if not buffer.get("test_rated_points") or not buffer.get("anchor_rated_points"):
+        return None
+    if CEILING_MODE == CEILING_ABSOLUTE:
+        return float(buffer["test_over_target_points"])
+    mean = lambda side: buffer[f"{side}_over_target_sum"] / buffer[f"{side}_rated_points"]  # noqa
+    return mean("test") - mean("anchor") - CEILING_MARGIN_PCT
+
+
+def ceiling_guard(buffer: dict) -> str | None:
+    """The ceiling guard's message when it fails."""
+    excess = ceiling_excess(buffer)
+    if excess is None or excess <= 0:
+        return None
+    if CEILING_MODE == CEILING_ABSOLUTE:
+        return (f"ceiling: {buffer['test_over_target_points']} points over target by "
+                f"> {100 * CEILING_TOLERANCE:g}%")
+    mean = lambda side: buffer[f"{side}_over_target_sum"] / buffer[f"{side}_rated_points"]  # noqa
+    return (f"ceiling: {mean('test'):.2f}% mean over target > anchor's {mean('anchor'):.2f}% "
+            f"+ {CEILING_MARGIN_PCT:g}")
+
+
 def pair_rungs(anchor: list[dict], test: list[dict]) -> tuple[list[dict], list[dict], int, int]:
     """Both curves without the rungs either arm overshot, plus (wins, losses).
 
@@ -418,6 +478,8 @@ def compliance(per_clip: dict[str, dict]) -> dict:
             "test_overruns": total("test_overruns"), "anchor_overruns": total("anchor_overruns"),
             "test_noncompliant": total("test_noncompliant"),
             "anchor_noncompliant": total("anchor_noncompliant"),
+            **{f"{side}_{key}": total(f"{side}_{key}") for side in ("test", "anchor")
+               for key in ("over_target_sum", "over_target_points", "rated_points")},
             "anchor_noncompliant_clips": sorted(c for c, row in per_clip.items()
                                                 if row.get("anchor_noncompliant"))}
 
@@ -505,6 +567,10 @@ def objective(summary: dict[str, dict], dcpu_pct: float | None = None,
         guards.append(f"buffer: {buffer['test_noncompliant']} non-compliant points > "
                       f"anchor's {buffer['anchor_noncompliant']}")
         hard.append("buffer")  # a count, not an estimate: no stage margin
+    ceiling = ceiling_guard(buffer) if buffer else None
+    if ceiling:
+        guards.append(ceiling)
+        hard.append("ceiling")  # measured rates, not an estimate: no stage margin
     if j is None:
         decision = "ambiguous"
     elif hard or j - margin > 0:

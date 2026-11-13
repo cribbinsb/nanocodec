@@ -113,6 +113,25 @@ rounds. Indicative only:
 | 1280x720, VP9 Default vs HEVC Fast [30] | 9.2, 5.8, 19.7, 5.9 | 5.7, 11.4, 15.0, 14.7 | 7.6 | 13.1 |
 | time to first frame, ms (default page, no code cache) | 4340, 4013, 3081, 861 | 2079, 2230, 764, 1037 | 3547 | 1558 |
 
+### Relaxed-SIMD VP9 interpolation and shared module (2026-11-13, wasm-perf4)
+
+VP9 WASM decode, relaxed module, before (head with the plain kernel) and after e0fbb57a; ms per frame, 3
+interleaved rounds on timing core 14 (`work/wasm-perf4/xdec-vp9dot2.json`):
+
+| Stream | before | after | change (best) | native |
+|---|---|---|---:|---:|
+| ours crowd 720p 600k | 2.45, 2.46, 2.47 | 2.42, 2.38, 2.44 | -2.8 % | 1.43 |
+| ours pan 720p 600k | 3.08, 3.02, 2.99 | 2.85, 2.89, 2.89 | -4.8 % | 1.66 |
+| ours static 720p 600k | 1.60, 1.66, 1.66 | 1.64, 1.57, 1.65 | -1.8 % | 1.04 |
+| vpxenc 1080p 3M | 13.98, 10.96, 12.19 | 13.30, 12.96, 11.66 | noise (+6.5 %) | ~6.4 |
+
+VP9 WASM ÷ native on crowd 720p: 1.71 → 1.66. Other codecs unchanged (the AV1/HEVC/VVC port was measured
+and not landed: `docs/handoff/wasm-perf.md`).
+
+Start-up (headless Chromium, ANGLE/Vulkan, fresh context per load, six interleaved loads): time to the first
+delivered frame of the default demo 909, 1353, 1356, 1410, 1628, 2005 ms (compiled per worker) against 604,
+803, 908, 947, 960, 1149 ms (compiled once on the page, 477eeaec): median 1383 -> 928 ms.
+
 ## Encode against native, and the demo end to end (2026-11-13, demo-wasm-speed)
 
 Analysis and the per-stage breakdown: our internal notes (not published) "Demo end-to-end".

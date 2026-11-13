@@ -82,7 +82,9 @@ constraint (singlepoint.base_constraint, jreal.SVC_BASE_GUARD_PCT), so a
 trial cannot buy the full layer's quality with the base's. The CPU objective
 is the two-layer encode's (both layers).
 
-J_real's class guard and the buffer guard are Optuna constraints; worst-1 %,
+J_real's class guard, the buffer guard and the CBR ceiling guard
+(jreal.ceiling_excess: no more over target than the preset) are Optuna
+constraints; worst-1 %,
 flicker and pulse guards are full-curve terms left to L3.
 
 Finalists: the top FINALISTS of the front by J + k * dCPU (k: --k, J_real's
@@ -130,7 +132,7 @@ import optuna
 
 from . import interval, jetson, jreal, levels, pool, realuse, slots
 from .singlepoint import (RESHAPE_PCT, RESHAPE_T, assign_rungs, balanced_j, base_constraint,
-                          rung_trend, single_points)
+                          ceiling_constraint, rung_trend, single_points)
 from .cbr import DEFAULT_INTRA_PERIOD, Family
 from .clips import Clip, load_clipset
 from .codecs import Codec
@@ -477,7 +479,7 @@ class Study:
         j = balanced_j(rows)
         if j is None:
             raise ValueError("no J_real quality on any clip")
-        constraint = class_constraints(rows) + base_constraint(rows)
+        constraint = class_constraints(rows) + base_constraint(rows) + ceiling_constraint(rows)
         cap = [] if self.cpu_max is None else [cpu - self.cpu_max]
         change, t_value = rung_trend(rows)
         trial.set_user_attr("rung_trend", [change, t_value])
@@ -513,7 +515,9 @@ class Study:
         excess = float(buffer["test_noncompliant"] - buffer["anchor_noncompliant"])
         base = summary["base_quality"]["balanced"]
         svc = [] if base is None else [base - jreal.SVC_BASE_GUARD_PCT]
-        return (full + low) / 2, [worst - jreal.CLASS_GUARD_PCT, excess, *svc]
+        ceiling = jreal.ceiling_excess(buffer)
+        return (full + low) / 2, [worst - jreal.CLASS_GUARD_PCT, excess, *svc,
+                                  *([] if ceiling is None else [ceiling])]
 
     def recheck(self, checkpoint: int) -> None:
         """Re-measure unchecked front points on fresh clips; drop shrunk gains; widen
@@ -850,16 +854,19 @@ def jetson_ratios(commit: str, codec: Codec, preset: dict[str, float],
 
 
 def l3_check(setting: Study, values: dict[str, float], label: str, x86_ratio: float,
-             jetson_ratio: float | None, workers: int) -> dict:
+             jetson_ratio: float | None, workers: int, long_window: bool = False) -> dict:
     """L3 of the study's draw for one candidate: single-point (a parameter-only change;
-    the full ladder if it reshapes the curve), J with the combined dCPU."""
+    the full ladder if it reshapes the curve), J with the combined dCPU. `long_window`
+    (a rate, key, cadence or structure move: rate_or_structure) decides on the
+    long-window L3 (levels.LONG_FRAMES, keys every levels.LONG_KEY_SECONDS)."""
     x86 = 100 * (x86_ratio - 1)
     jet = None if jetson_ratio is None else 100 * (jetson_ratio - 1)
     dcpu = x86 if jet is None else (JETSON_WEIGHT * jet + x86) / (JETSON_WEIGHT + 1)
     test = family(setting.codec, setting.binary, values, f"nanocodec-{setting.codec.value}@{label}")
     check_args = argparse.Namespace(frames=FRAMES, rotation=setting.study.user_attrs["rotation"],
                                     max_level=len(pool.LEVELS), dcpu=dcpu, k=setting.k,
-                                    all_stages=False, final_estimator=levels.SINGLE)
+                                    all_stages=False, final_estimator=levels.SINGLE,
+                                    final_frames=levels.LONG_FRAMES if long_window else None)
     print(f"== {label}: dCPU x86 {x86:+.1f}%" + (f", Jetson {jet:+.1f}%" if jet is not None
                                                   else "") + "; L3", flush=True)
     level = levels.run(setting.runner(workers), (setting.anchor, test), load_paths(),
@@ -900,7 +907,8 @@ def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None
                                "long_horizon": long_guard}
         else:
             result = l3_check(setting, values[number], f"t{number}", trial_cpu(trial),
-                              jetson_cpu.get(number), workers)
+                              jetson_cpu.get(number), workers,
+                              long_window=any(rate_or_structure(n) for n in moved))
             results[number] = {"j": trial_j(trial), **result,
                                **({"long_horizon": long_guard} if long_guard else {})}
         study.set_user_attr("finalists", results)
@@ -1018,7 +1026,8 @@ def agree(args: argparse.Namespace) -> None:
         jet = jetson_ratios(studies[0].user_attrs["commit"], first.codec, first.preset,
                             {"agreed": values}).get("agreed")
         report |= {"values": values, "x86_ratio": x86,
-                   **l3_check(first, values, "agreed", x86, jet, args.workers)}
+                   **l3_check(first, values, "agreed", x86, jet, args.workers,
+                              long_window=any(rate_or_structure(n) for n in moves))}
     path = TUNING_DIR / f"agree-{'-'.join(s.study_name for s in studies)}.json"
     path.write_text(json.dumps(report, indent=1, default=str) + "\n")
     print(f"wrote {path}" + (f"; L3 {report['l3'] and report['l3']['decision']}"

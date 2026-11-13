@@ -56,7 +56,8 @@ from .config import Paths, load_paths
 from .encoders.nanocodec import read_preset
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .realuse import (DEFAULT_FRAMES, DEFAULT_WORKERS, LADDER_KBPS, Runner, Track,
-                      add_periodic_pulse, format_stage, one_per_class, param_args, run_step)
+                      add_periodic_pulse, compare, format_stage, one_per_class, param_args,
+                      run_step)
 from .stages import ALL_FOUR, OUTER_THREE, Stage
 
 RUNGS = {pool.QUICK: OUTER_THREE, pool.ADOPT: ALL_FOUR, pool.FINAL: ALL_FOUR}
@@ -67,6 +68,15 @@ FINAL_GPU_SLOTS = 16
 GPU_SLOTS_ENV = "NC_GPU_SLOTS"
 #: Levels whose clips L3's adoption interval pools (same full ladder).
 FINAL_POOLED = (pool.ADOPT, pool.FINAL)
+#: The long-window L3 (coordinator, 2026-11-13): 150 frames with one key reward
+#: an unrepaid first-key loan (the audit's long clips lose 4-9 BD-J points from
+#: 150 to 600 frames), so changes to rate, keys, cadence or key-frame quality,
+#: and the final check of a preset bundle, decide on LONG_FRAMES with a key
+#: every LONG_KEY_SECONDS (`final_frames`); L1, L2 and study trials stay at 150
+#: frames as cheap rankers. A clip shorter than the window runs whole. Such an
+#: L3 is not pooled with L2 (a different window).
+LONG_FRAMES = 600
+LONG_KEY_SECONDS = 10.0
 
 
 def usable(clip: Clip) -> bool:
@@ -81,6 +91,8 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
     L1 is single-point; L3 is single-point when `args.final_estimator` says so
     (small changes), else the full ladder. A single-point level whose deltas
     trend with the rung is re-measured on the full ladder (singlepoint.reshaping).
+    `args.final_frames` (LONG_FRAMES) runs L3 on the long window, keys every
+    LONG_KEY_SECONDS, unpooled.
     """
     levels = levels or pool.LEVELS[:args.max_level]
     frames = int(args.frames)
@@ -95,13 +107,18 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
             print(f"{level}: no pool families left for this level", flush=True)
             continue
         started = time.monotonic()
-        result = measure_level(runner, families, draw.levels[level], frames, level,
-                               estimator_of(level, args), args)
+        long_window = level == pool.FINAL and getattr(args, "final_frames", None)
+        level_frames = args.final_frames if long_window else frames
+        key_seconds = LONG_KEY_SECONDS if long_window else None
+        result = measure_level(runner, families, draw.levels[level], level_frames, level,
+                               estimator_of(level, args), args, key_seconds)
+        result["frames"] = level_frames
         rows = result["per_clip"]
-        if level == pool.FINAL:
+        if level == pool.FINAL and not long_window:
             pooled = {name: row for s in stages if s["stage"] in FINAL_POOLED
                       for name, row in s["per_clip"].items()}
             rows = {**pooled, **rows}
+        if level == pool.FINAL:
             pulse = one_per_class(draw.levels[level])
             add_periodic_pulse(runner, *families, pulse, frames, result["per_clip"], level)
         if level == pool.FINAL or result["estimator"] == SINGLE:
@@ -118,7 +135,8 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
         if result["estimator"] == LADDER:
             print(format_stage(result), flush=True)
         print(f"{level} ({result['estimator']}): {interval.describe(stats)}"
-              + (" (L2+L3 pooled)" if level == pool.FINAL else "")
+              + (f" ({level_frames} f, keys every {LONG_KEY_SECONDS:g} s)" if long_window
+                 else " (L2+L3 pooled)" if level == pool.FINAL else "")
               + f" -> {result['decision'].upper()} ({wall / 60:.1f} min)"
               + (f"; guards (judge): {'; '.join(result['verdict']['guards'])}"
                  if result["verdict"]["guards"] else ""), flush=True)
@@ -142,12 +160,14 @@ def estimator_of(level: str, args: argparse.Namespace) -> str:
 
 
 def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[Clip],
-                  frames: int, level: str, estimator: str, args: argparse.Namespace) -> dict:
-    """One level's per-clip rows ({"stage", "estimator", "per_clip", ...})."""
+                  frames: int, level: str, estimator: str, args: argparse.Namespace,
+                  key_seconds: float | None = None) -> dict:
+    """One level's per-clip rows ({"stage", "estimator", "per_clip", ...}); `key_seconds`
+    sets a key period (the long-window L3), else one key."""
     if estimator == SINGLE:
         rows = singlepoint.single_points(runner, *families, clips,
                                          singlepoint.assign_rungs(clips), frames,
-                                         budgeted=True)
+                                         budgeted=True, key_seconds=key_seconds)
         change, t_value = singlepoint.rung_trend(rows)
         if not singlepoint.reshaping(rows):
             return {"stage": level, "estimator": SINGLE, "per_clip": rows,
@@ -155,6 +175,13 @@ def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[C
         print(f"{level}: single-point deltas trend with the rung ({change:+.2f}% over the "
               f"ladder, t {t_value:+.1f}): the change reshapes the curve, full ladder",
               flush=True)
+    if key_seconds:
+        curves = runner.measure(f"{level} long window", list(families), clips, frames,
+                                key_seconds=key_seconds)
+        rows = compare(curves, families[0].name, families[1].name, clips, paired=True)
+        summary = jreal.summarise(rows)
+        return {"stage": level, "estimator": LADDER, "per_clip": rows, "summary": summary,
+                "verdict": jreal.objective(summary, args.dcpu, 0.0, args.k)}
     track = Track(level, clips, None, [])
     run_step(runner, families, [(track, Stage(level, None, RUNGS[level], 0.0))], frames, True,
              args, early_stop=False, announce=False)
@@ -301,7 +328,8 @@ def final_check(args: argparse.Namespace) -> dict:
         screen_args = argparse.Namespace(frames=args.frames, rotation=args.rotation,
                                          max_level=len(pool.LEVELS), dcpu=None,
                                          k=jreal.K_CPU, all_stages=False,
-                                         final_estimator=estimator)
+                                         final_estimator=estimator,
+                                         final_frames=args.final_frames or None)
         print(f"== {codec.value}: {args.old} -> {args.new}", flush=True)
         report["codecs"][codec.value] = run(runner, (anchor, test), paths, screen_args,
                                             (pool.FINAL,))
@@ -319,6 +347,9 @@ def main(argv: list[str] | None = None) -> None:
     f.add_argument("--preset", help="preset name (each build's own presets/), e.g. h264-fast")
     f.add_argument("--rotation", help="rotation key to reproduce (default: today, UTC)")
     f.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
+    f.add_argument("--final-frames", type=int, default=LONG_FRAMES,
+                   help="the bundle's L3 window, keys every LONG_KEY_SECONDS (0: --frames, "
+                        "one key)")
     f.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     f.add_argument("--over-budget", action="store_true")
     f.add_argument("--estimator", choices=(AUTO, SINGLE, LADDER), default=AUTO,

@@ -14,6 +14,7 @@
 //! `recon` (prediction and residuals), `loopfilter`.
 
 mod block;
+mod fill;
 mod frame;
 mod header;
 mod loopfilter;

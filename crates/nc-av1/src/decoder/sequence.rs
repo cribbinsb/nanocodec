@@ -12,9 +12,13 @@ const LEVEL_WITH_TIER: u32 = 7;
 /// `SELECT_SCREEN_CONTENT_TOOLS` / `SELECT_INTEGER_MV` (AV1 §6.4.1): the
 /// frame header chooses.
 pub(crate) const SELECT_PER_FRAME: u8 = 2;
-/// Largest picture side accepted: the level 6.3 limits (AV1 Annex A.3)
-/// bound memory for untrusted input.
-const MAX_DIMENSION: usize = 16384;
+/// Largest picture accepted: the level 6.3 limits (AV1 Annex A.3,
+/// `MaxHSize`, `MaxVSize`, `MaxPicSize`) bound memory and decoding time for
+/// untrusted input. The side limits alone would admit a 16384x16384 picture
+/// (about 400 MB per frame buffer).
+const MAX_WIDTH: usize = 16384;
+const MAX_HEIGHT: usize = 8704;
+const MAX_PICTURE_SIZE: usize = 35_651_584;
 
 /// `OperatingPointIdc` bit of spatial layer 0 (AV1 §6.4.1).
 const SPATIAL_LAYER_SHIFT: u32 = 8;
@@ -130,7 +134,10 @@ pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
     let frame_height_bits = r.read_bits(4)? + 1;
     let max_frame_width = r.read_bits(frame_width_bits)? as usize + 1;
     let max_frame_height = r.read_bits(frame_height_bits)? as usize + 1;
-    if max_frame_width > MAX_DIMENSION || max_frame_height > MAX_DIMENSION {
+    if max_frame_width > MAX_WIDTH
+        || max_frame_height > MAX_HEIGHT
+        || max_frame_width * max_frame_height > MAX_PICTURE_SIZE
+    {
         return Err(DecodeError::Unsupported("AV1 frame size limit"));
     }
     let frame_ids = if !reduced_still_picture_header && r.read_bit()? {
@@ -366,4 +373,49 @@ fn color_config(r: &mut BitReader<'_>) -> Result<ColourConfig, DecodeError> {
         mono_chrome,
         separate_uv_delta_q,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nc_common::BitWriter;
+
+    /// A sequence header prefix (§5.5.1) of one operating point at level
+    /// 31 (no limit signalled) up to `max_frame_width/height_minus_1`.
+    fn header_up_to_size(width: u32, height: u32) -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.put_bits(MAIN_PROFILE, 3);
+        w.put_bits(0, 2); // still_picture, reduced_still_picture_header
+        w.put_bits(0, 2); // timing_info_present, initial_display_delay_present
+        w.put_bits(0, 5); // operating_points_cnt_minus_1
+        w.put_bits(0, 12); // operating_point_idc[0]
+        w.put_bits(31, 5); // seq_level_idx[0]
+        w.put_bit(false); // seq_tier[0]
+        let bits = 16;
+        w.put_bits(bits - 1, 4);
+        w.put_bits(bits - 1, 4);
+        w.put_bits(width - 1, bits);
+        w.put_bits(height - 1, bits);
+        w.put_bits(0, 32); // the rest of the header, never reached
+        while !w.is_byte_aligned() {
+            w.put_bit(false);
+        }
+        w.into_bytes()
+    }
+
+    #[test]
+    fn rejects_pictures_beyond_level_6_3() {
+        for (width, height) in [(16384, 16384), (16384, 2304), (4096, 8705), (16385, 16)] {
+            assert_eq!(
+                parse(&header_up_to_size(width, height)),
+                Err(DecodeError::Unsupported("AV1 frame size limit")),
+                "{width}x{height}"
+            );
+        }
+        let largest = parse(&header_up_to_size(8192, 4352));
+        assert_ne!(
+            largest,
+            Err(DecodeError::Unsupported("AV1 frame size limit"))
+        );
+    }
 }

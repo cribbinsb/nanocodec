@@ -4,12 +4,12 @@
 //! on random and extreme edges; and of directional prediction through
 //! `Dsp::av1_intra_predict_angle` (the ISA's runs and tile transposes) at
 //! every reachable angle and square side, with and without the edge
-//! extensions; and of every square mode through `Dsp::av1_intra_predict`
+//! extensions and the edge filter; and of every square mode through `Dsp::av1_intra_predict`
 //! (the ISA's smooth and Paeth kernels).
 
 use nc_common::Plane;
 use nc_dsp::Dsp;
-use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail};
+use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 use nc_dsp::intra_prediction::filter::{FILTER_INTRA_MAX_SIZE, FilterIntraMode};
 use nc_dsp::intra_prediction::{EdgeExtension, IntraEdges, IntraMode};
 
@@ -169,6 +169,45 @@ pub(crate) fn check_av1_directional(
                             "av1_directional angle={angle} side={side} {extension:?} extreme={extreme}"
                         )
                     });
+                    // With the edge filter: the prepared square edges go to
+                    // the same kernels (or the scalar zones when upsampled).
+                    let avail = EdgeAvail {
+                        have_above: true,
+                        have_left: true,
+                        have_above_right: extension.above_right,
+                        have_below_left: extension.below_left,
+                    };
+                    let block = BlockEdges::read(
+                        &plane,
+                        DIRECTIONAL_MAX,
+                        DIRECTIONAL_MAX,
+                        side,
+                        side,
+                        avail,
+                    );
+                    for smooth in [false, true] {
+                        let kind = IntraKind::Directional {
+                            angle,
+                            edge_filter: Some(EdgeFilterCtx {
+                                smooth_above: smooth,
+                                smooth_left: false,
+                            }),
+                        };
+                        let predict = |dsp: &Dsp| {
+                            let mut out = Plane::new(side, side, 0).unwrap();
+                            dsp.av1_intra_predict_block(&block, kind, &mut out.view_mut());
+                            (0..side)
+                                .flat_map(|y| out.view().row(y)[..side].to_vec())
+                                .collect::<Vec<u8>>()
+                        };
+                        let same = predict(candidate) == predict(reference);
+                        record(report, candidate.isa(), same, || {
+                            format!(
+                                "av1_directional filtered angle={angle} side={side} smooth={smooth} \
+                                 {extension:?} extreme={extreme}"
+                            )
+                        });
+                    }
                 }
             }
         }

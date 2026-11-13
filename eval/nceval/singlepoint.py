@@ -47,18 +47,20 @@ def assign_rungs(clips: list[Clip], offset: int = 0) -> dict[str, int]:
 
 def single_points(runner: realuse.Runner, anchor: Family, test: Family, clips: list[Clip],
                   rungs: dict[str, int], frames: int = FRAMES,
-                  budgeted: bool = False) -> dict[str, dict]:
+                  budgeted: bool = False, key_seconds: float | None = None) -> dict[str, dict]:
     """Per clip {"class", "rung", "quality" (= "quality_low", the clip's J for
     nceval.interval), "noncompliant", "base_quality" (two-layer settings; else
     None)}: the test's one rung against the anchor's
-    full (cached) curve. A clip without a measured point (other than one our
+    full (cached) curve, plus both arms' ceiling terms at that rung
+(jreal.ceiling_terms). A clip without a measured point (other than one our
     encoder refused) raises: the set is incomplete, so no estimate is made.
-    `budgeted` splits a long run into parts (Runner.measure)."""
+    `budgeted` splits a long run into parts (Runner.measure); `key_seconds` sets a
+    key period (default one key)."""
     curves = runner.measure(f"{anchor.name} curves", [anchor], clips, frames, None,
-                            budgeted=budgeted)
+                            key_seconds, budgeted=budgeted)
     target = lambda c: [clip_targets(c, realuse.LADDER_KBPS)[rungs[c.name]]]
     tests = runner.measure(f"{test.name} single points", [test], clips, frames, None,
-                           budgeted=budgeted, ladder=target)
+                           key_seconds, budgeted=budgeted, ladder=target)
     refused = {entry.split("@")[0] for entry in runner.refused.get(test.name, ())}
     rows, missing = {}, []
     for clip in clips:
@@ -71,10 +73,13 @@ def single_points(runner: realuse.Runner, anchor: Family, test: Family, clips: l
             missing.append(clip.name)
             continue
         anchor_curve = curves[(anchor.name, clip.name)]
+        same_rung = [p for p in anchor_curve if p["target_kbps"] == points[0]["target_kbps"]]
         rows[clip.name] = {"class": clip.content_class, "rung": rungs[clip.name],
                            "quality": quality, "quality_low": quality,
                            "noncompliant": int(jreal.noncompliant(points[0])),
-                           "base_quality": jreal.point_base_quality(anchor_curve, points[0])}
+                           "base_quality": jreal.point_base_quality(anchor_curve, points[0]),
+                           **jreal.ceiling_terms("test", points[:1]),
+                           **jreal.ceiling_terms("anchor", same_rung)}
     if missing:
         # A point that silently failed (e.g. the GPU out of memory) is never data.
         raise ValueError(f"{test.name}: no point on {', '.join(missing)}")
@@ -88,6 +93,12 @@ def balanced_j(rows: dict[str, dict], term: str = "quality") -> float | None:
         if row.get(term) is not None:
             classes.setdefault(row["class"], []).append(row[term])
     return sum(sum(v) / len(v) for v in classes.values()) / len(classes) if classes else None
+
+
+def ceiling_constraint(rows: dict[str, dict]) -> list[float]:
+    """The CBR ceiling guard (<= 0 when met; jreal.ceiling_excess) of single-point rows."""
+    excess = jreal.ceiling_excess(jreal.compliance(rows))
+    return [] if excess is None else [excess]
 
 
 def base_constraint(rows: dict[str, dict]) -> list[float]:

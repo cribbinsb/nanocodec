@@ -9,6 +9,7 @@ use super::block::{
     ALTREF_FRAME, BlockInfo, BlockSize, GOLDEN_FRAME, INTRA_FRAME, LAST_FRAME, NO_REF,
     NO_SWITCHABLE_FILTER, PredMode, RefFrame,
 };
+use super::fill::fill_run;
 use super::frame::{BlockPosition, FrameDecoder};
 use super::header::{ReferenceMode, SegFeature, TxMode};
 use crate::bool_coder::BoolReader;
@@ -74,7 +75,7 @@ impl FrameDecoder<'_> {
             let start = (position.mi_row + r) * self.mi_cols + position.mi_col;
             let range = start..start + position.x_mis;
             if let Some(id) = id {
-                self.segment_map[range].fill(id);
+                fill_run(&mut self.segment_map[range], id);
             } else {
                 // `copy_segment_id`: the map carries over.
                 let last = &self.inputs.last_segment_map[range.clone()];

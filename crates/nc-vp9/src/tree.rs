@@ -114,7 +114,13 @@ pub(crate) fn write(writer: &mut impl BitSink, tree: &Tree, probs: &[u8], value:
     }
 }
 
-/// Read a symbol.
+/// Read a symbol. Inlined into each call site, which knows its tree: the
+/// walk then runs over constant entries (x86 -0.2 to -0.3 % of a decode).
+#[allow(
+    clippy::inline_always,
+    reason = "a call per symbol; the plain hint was not taken"
+)]
+#[inline(always)]
 pub(crate) fn read(reader: &mut BoolReader<'_>, tree: &Tree, probs: &[u8]) -> usize {
     let mut index = 0;
     loop {

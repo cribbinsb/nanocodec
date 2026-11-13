@@ -40,9 +40,11 @@ decision.max_cheap_vectors = 2
 hevc.partial_forward = 1
 # Key frames use the coarse intra mode search (+0.7 / -0.4%; x86 -0.9%).
 hevc.key_intra_coarse = 1
-# Exact-filter candidates ranked against a tighter margin (Fast 1.1;
-# +1.2 / -1.2%).
-decision.exact_rank_margin = 0.9
+# Exact-filter candidates ranked against a margin of 1.5 and a planner lambda
+# of 3.163 (below), jointly tuned 2026-11-13 (equal-CPU study
+# hevc-hevc-faster-eq2-2026-11-13, trial #2; was 0.9 and 2): disjoint L3 J
+# -1.08% [-1.53, -0.64], no guard. Evidence in the commit.
+decision.exact_rank_margin = 1.5
 # Depth removal twice as eager (+1.2 / -1.0%).
 planner.depth_removal_qp_scale = 4
 # Inter residuals skipped before the transform below 3x the zero bound
@@ -67,5 +69,6 @@ nonbase.hevc.pre_transform_zero_scale = 4
 # The Default's jointly tuned rounding, planner and TU16 chroma values
 # (2026-11-12) are not screened for this preset: it keeps the previous values.
 hevc.intra_rounding = 171
-planner.lambda_scale = 2
+# Except the planner lambda: 3.163 since 2026-11-13 (with the rank margin above).
+planner.lambda_scale = 3.163
 planner.split_rate_factor = 2

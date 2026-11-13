@@ -201,6 +201,39 @@ def test_a_candidate_that_breaks_the_buffer_is_rejected():
     assert verdict["decision"] == "worse" and any("buffer" in g for g in verdict["guards"])
 
 
+def with_target(points, over):
+    """`points` with targets their achieved rate lies `over` (fraction) above."""
+    return [dict(p, target_kbps=p["kbps"] / (1 + over)) for p in points]
+
+
+def test_ceiling_guard_relative_rejects_more_overshoot_than_the_anchor(monkeypatch):
+    monkeypatch.setattr(jreal, "CEILING_MODE", jreal.CEILING_RELATIVE)
+    anchor = with_target(with_buffer(curve(), 0.9, 0), 0.04)  # today's Default: 4% over
+    same = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.04)
+    more = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.06)
+    passes = jreal.objective(jreal.summarise({"p": {"class": "pan",
+                                                    **jreal.compare_clip(anchor, same)}}))
+    fails = jreal.objective(jreal.summarise({"p": {"class": "pan",
+                                                   **jreal.compare_clip(anchor, more)}}))
+    assert not any("ceiling" in g for g in passes["guards"])
+    assert fails["decision"] == "worse" and any("ceiling" in g for g in fails["guards"])
+
+
+def test_ceiling_guard_absolute_rejects_any_point_over_target(monkeypatch):
+    monkeypatch.setattr(jreal, "CEILING_MODE", jreal.CEILING_ABSOLUTE)
+    anchor = with_target(with_buffer(curve(), 0.9, 0), 0.0)
+    within = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.005)  # inside 1%
+    over = with_target(with_buffer(curve(scale=0.98), 0.9, 0), 0.02)
+    terms = jreal.compare_clip(anchor, over)
+    assert terms["test_over_target_points"] == 4
+    assert terms["test_over_target_sum"] == pytest.approx(4 * 1.0)
+    ok = jreal.objective(jreal.summarise({"p": {"class": "pan",
+                                                **jreal.compare_clip(anchor, within)}}))
+    assert not any("ceiling" in g for g in ok["guards"])
+    bad = jreal.objective(jreal.summarise({"p": {"class": "pan", **terms}}))
+    assert any(g.startswith("ceiling: 4 points") for g in bad["guards"])
+
+
 def test_flicker_guard_allows_headroom_below_the_reference():
     anchor = [{"flicker_psnr_y": 0.1}, {"flicker_psnr_y": 0.2}]
     # the anchor (0.15) lies 0.25 dB below a 0.40 reference: a +0.2 delta is inside it
