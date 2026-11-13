@@ -258,6 +258,7 @@ The pinned source LICENSE.md states:
 
 Copyright (c) 2015, Cisco Systems. All rights reserved.
 Source: https://github.com/cisco/thor.
+Full notice: [LICENSE](docs/licenses/thor/LICENSE).
 
 Ideas only, reimplemented (no code copied):
 - `crates/nc-encoder/src/zero_residual.rs`: the early-skip principle of
@@ -277,6 +278,12 @@ The SIMD implementation uses our shared lane framework.
 
 Copyright (c) 2018, VideoLAN and dav1d authors. All rights reserved.
 Source: https://code.videolan.org/videolan/dav1d
+Full notice: [COPYING](docs/licenses/dav1d/COPYING).
+
+The AV1 decoder's coefficient level pass
+(`crates/nc-av1/src/decoder/coefficients/levels.rs`) is a port, in Rust, of
+the level loop of dav1d 1.5.4 `src/recon_tmpl.c` (`decode_coefs`,
+`get_lo_ctx`): the level-buffer layout and fixed-offset context neighbours.
 
 The AV1 symbol decoder (`crates/nc-av1/src/decoder_range.rs`: a 64-bit
 window, renormalisation by one shift, refills of whole bytes) and its
@@ -371,6 +378,7 @@ paths of dav1d 1.5.4's `src/x86/itx_avx2.asm` do.
 
 Copyright 2011 The LibYuv Project Authors. All rights reserved.
 Source: https://chromium.googlesource.com/libyuv/libyuv
+Full notice: [LICENSE](docs/licenses/libyuv/LICENSE).
 
 Used in `crates/nc-dsp`:
 - `src/convert/to_rgba_avx2.rs`, `to_rgba_neon.rs`, `to_rgba_simd128.rs`:
@@ -534,6 +542,14 @@ Additional native AV2 modules reference the same pinned release:
   `av2_cdef_filter_fb`) and the `setup_cdef` header syntax, on nc-dsp's
   AV1-derived CDEF kernels (bit-exact for 8-bit video), checked against
   avmdec and dav2d on encoded streams.
+
+- `crates/nc-av2/src/coeff/levels.rs`: the default scans of
+  `av2/common/scan.c` and the level-context helpers of `txb_common.h`
+  (`get_lower_levels_ctx_*`, `get_br_ctx_*`, `get_lp2tx_ctx` and their
+  chroma variants), reimplemented in Rust.
+- `crates/nc-av2/src/tx_partition.rs`: the square-block transform layout of
+  `TX_PARTITION_SPLIT`, `av2_get_tx_size`, `get_lossless_tx_size` and the
+  coding order of `decode_token_recon_block`.
 
 Full notices: [LICENSE](docs/licenses/avm/LICENSE) and
 [separate patent license](docs/licenses/avm/PATENTS). The Clear BSD software
@@ -745,7 +761,7 @@ Independent Rust implementations; the BSD-Clear VVdeC attribution above applies.
 Source: https://github.com/VMAFx/vmafx (a libvmaf fork with CUDA feature
 extractors). The eval harness runs its `vmaf` command-line tool as a separate
 program (`eval/nceval/metrics.py`, `NC_VMAFX`), built outside this
-repository (`docs/handoff/eval-throughput.md` "GPU VMAF"). No VMAFx code is
+repository (our internal notes (not published) "GPU VMAF"). No VMAFx code is
 copied, linked or reimplemented here, and it is not part of any shipped
 artifact.
 
@@ -754,12 +770,27 @@ artifact.
 Copyright 2016-2020 Netflix, Inc.
 Source: https://github.com/Netflix/vmaf (pinned v3.2.1, see
 `tools/anchors/versions.env`).
+Full notice: [LICENSE](docs/licenses/libvmaf/LICENSE).
 
 Used in `eval/nceval`:
 - `msssim.py`: the float MS-SSIM of `libvmaf/src/feature/ms_ssim.c` and its
   iqa helpers (`iqa/ssim_tools.c`, `convolve.c`, `decimate.c`): the 11-tap
   Gaussian window, the 9x9 9/7 low-pass decimation table and the per-scale
   exponents, reimplemented on OpenCV filters.
+
+## Standard reference software — JM, HM, VTM (ideas and non-normative constants)
+
+The ITU-T / ISO/IEC reference encoders are the source of several standard
+encoder practices used here, reimplemented in Rust, not copied: the
+λ = 0.85 · 2^((QP − 12) / 3) mode-decision multiplier (JM, HM), HM's
+dead-zone quantiser rounding offsets (171/512 intra, 85/512 inter, in
+`crates/nc-dsp/src/codec_txfm/mod.rs`), HM's sign-data-hiding decision
+(`crates/nc-vvc/src/recon.rs`), and VTM's default chroma QP mapping table.
+HM and VTM are distributed under the BSD-3-Clause licence (copyright the
+ITU-T/ISO/IEC and their contributors); JM under the copyright notice in its own
+distribution. Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,
+https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM,
+https://vcgit.hhi.fraunhofer.de/jvet/JM.
 
 ## AVX-512 motion-cost layouts — SVT-AV1 and libaom
 

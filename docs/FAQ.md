@@ -1,0 +1,160 @@
+# Questions a sceptic would ask
+
+Short, plain answers. Where something is not done or not known, we say so. Numbers link to the result pages that
+hold them; if a number here and a results page disagree, the results page is right and this page is stale.
+
+## AI authorship
+
+**Who wrote this?** AI coding agents, mostly Anthropic's Claude, with some work by OpenAI's Codex, under the
+direction of one person, who set the goals, priorities and rules and made the judgement calls. Commits carry
+`Co-Authored-By` trailers naming the model. The commit author name is the project's.
+
+**Has a human reviewed the code?** Not line by line. The safeguards are mechanical:
+
+- the Rust compiler and `#![forbid(unsafe_code)]` in every crate except `nc-dsp` (pixel kernels) and `nc-capi`
+  (the C ABI); every `unsafe` block there carries a `// SAFETY:` comment, and every SIMD kernel has a scalar
+  reference and a bit-exactness test (`nc-checkasm`);
+- `cargo clippy -D warnings`, `cargo fmt`, unit and round-trip tests;
+- conformance checks against independent decoders (below) before numbers are published;
+- an adversarial review of the public claims ([review notes](review/adversarial-review-2026-11-13.md)).
+
+None of this proves the code is correct or well designed; it catches crashes, mismatches with the standards'
+decoders and regressions in what is measured.
+
+**Is any of it copied from GPL code?** We have found none. x264, x265, FFmpeg and libde265 are run only as
+external programs. A spot check of distinctive x264/FFmpeg functions, tables and names (cost tables, AQ, psy-rd,
+SATD, rate control) found only credited ideas reimplemented differently (for example our AQ uses log-variance, not
+x264's energy formula). Code learned from permissively licensed projects (SVT-AV1, libaom, dav1d, libvpx,
+openh264, kvazaar, VVenC/VVdeC, AVM, libyuv, Thor, libvmaf, JM/HM/VTM) is credited module by module in
+[THIRD_PARTY.md](../THIRD_PARTY.md). If you find something we missed, please open an issue.
+
+**Are the spec citations real?** The code carries over 2,000 `§` references to the standards. A sample of 30
+found about 25 that match the cited section and 5 that are wrong or doubtful (usually an adjacent
+subsection); those are listed for correction. Treat a citation as a pointer, not a proof.
+
+**Were the numbers made up by a model?** Every number on the results pages is written by the evaluation harness
+(`eval/nceval`) from measured runs, with the builds and command lines on the page. The harness itself is also
+AI-written; see "What do the benchmarks show" below for what it does and does not check.
+
+## What the benchmarks show, and what they do not
+
+**What is compared?** Each encoder in its own real-time, low-delay rate control at the same bitrate targets on one
+CPU thread: 720p, 150 frames per clip with one key frame, 150–1200 kbps (plus 40 and 75 kbps on four clips, for
+every encoder), 1 s buffer. Reference encoders and versions: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3,
+libvpx v1.16.0, openh264 v2.7.0, NVENC (RTX 5090). Command lines: [bd-vs-speed.md](results/bd-vs-speed.md#method)
+and [tools/anchors/README.md](../tools/anchors/README.md).
+
+**Is that fair to them?** It is one configuration: the one our use case needs (no B-frames, no lookahead, one
+thread, CBR with a 1 s buffer). Those projects are general-purpose and are usually run with more threads,
+lookahead or B-frames, where they will do better; x264 and x265 keep their default psychovisual settings, which
+trade some PSNR and MS-SSIM for perceived detail, while our presets were tuned on exactly the PSNR / VMAF /
+MS-SSIM mix we report. We would welcome better settings for any reference within the same constraints.
+
+**Why a composite metric ("BD-J")?** We tune on it, so we report it, but every table also gives the plain
+BD-PSNR-YUV and BD-VMAF numbers ([full table](results/bd-vs-speed.md), [per metric](results/README.md#per-metric)).
+BD-J is the mean of the BD-rates on PSNR-YUV (Y:U:V weighted 6:1:1), VMAF and MS-SSIM, averaged over content classes
+and over the full and lower-rate halves of each curve (`eval/nceval/jreal.py`). VMAF is Netflix's model
+`vmaf_v1.0.16` (the "v1" model of libvmaf 3), computed by libvmaf 3.2.1 or by VMAFx, a GPU implementation with
+our patches, which agree to libvmaf's printed precision on the points we checked. MS-SSIM is scored on every frame
+by our reimplementation of libvmaf's float MS-SSIM (agreeing to about 1e-6).
+
+**Are your streams actually decoded, or do you score your own reconstruction?** Our points are scored on our
+encoder's reconstruction; the references' on their standard-decoded output. That is valid only if the
+reconstruction equals what a standard decoder outputs. We check that before a build's numbers are published, on
+short streams of every shipped preset of every codec, decoded by two standard decoders per codec and by ours,
+compared frame by frame. The longer chart streams are not each decoded; a spot check that decodes a sample of them
+is under way.
+
+**Only 150 frames with one key frame?** Yes, so the first key frame weighs more than it would in a long stream.
+Separate long single-key runs and a 2 s key-period pass are used internally for rate control and key-frame
+pulse, but the published BD numbers are from the 150-frame clips.
+
+**Why these bitrates?** Our use case is low-bitrate streaming. Each clip's ladder is scaled to its pixel rate and
+capped at half its source's bitrate, because many sources are already compressed and coding above that measures
+the source's artefacts. Whether the results hold at higher rates is not measured here.
+
+**Which clips?** The chart uses 11 natural camera clips (bodycam, crowd, low light, pan, static), our VAL set. They
+were also used to confirm which candidate changes were kept, so they are not independent of the tuning. Many
+sources are not redistributable, so the clips themselves cannot be published; the clip lists are in
+`eval/clipset/`.
+
+**Did you overfit?** Our presets were found by automated search, so we checked on 71 clips from 21 other datasets
+([held-out check](results/heldout-chart-2026-11-12.md)). Every encoder's saving against x264 `medium` is smaller
+there, by a median of 7.6 points, ours and the references alike (our AV1 Default: −50.9% on the chart's clips,
+−42.5% held out; SVT-AV1 M12 `--rtc`: −34.9% and −20.4%). Relative to the other encoders our presets kept their
+ranks within about one place. So the ranking held; the size of a saving against x264 depends on the clips. Those 71
+clips were chosen to share no source with our fixed tuning sets; since 2026-11-11 the same pool has also fed our
+rotating adoption screens, so they are held out from most, not all, tuning.
+
+**Speed: how measured?** Encode CPU time per frame, one thread, at a fixed quantizer that lands each encoder near
+600 kbps on three clips; not timed in CBR mode (a CBR timing comparison is being measured). Jetson Orin Nano: one
+Cortex-A78AE core, clock locked. PC: one Ryzen 9 5950X core on a shared, loaded machine, each run normalised by
+x264 `medium` runs in the same round; read PC differences of a few percent as noise.
+
+## Rate control
+
+**What does "the CBR target is a ceiling" mean?** Our controller may spend less than the target when more bits
+would not buy visible quality (a static scene, say); it should not spend more. BD-rate uses the bitrate each
+encoder actually achieved, so spending less is not an advantage in the numbers: it moves the point left on its
+own curve.
+
+**Do you overshoot?** The first key frame may borrow up to about 1.4 buffers and repay it over the next seconds;
+the references run with a strict 1 s VBV. The bits of the loan are counted in the rate on the BD axis. Our "rate
+valid" rule (bucket peak at most 1.5× the buffer; average at most 10% plus the buffer's share of the window over
+target) is looser than a strict 1 s VBV and is applied to every encoder alike. A table of every encoder's
+compliance under a strict rule is being prepared. `rate.key_repay_seconds` and `rate.recode_overflow` make our
+controller stricter.
+
+**Do you skip frames?** Our encoder does not code an input frame that would not change the picture (exact or
+near-exact repeats, typical of recompressed or frame-doubled sources). Such "held" frames cost no bits and no
+encode time and are scored as the repeated picture, which is what a viewer sees. The references code every frame
+(cheaply, as skip frames). We are measuring how many frames are held per clip. No encoder in the charts drops
+frames.
+
+## Patents and licences
+
+**Can I use this commercially?** The code is BSD 3-Clause, a copyright licence only. It gives you no patent
+licence: H.264, HEVC and VVC are covered by patent pools and other holders, and AV1, VP9 and AV2, though designed
+to be royalty-free, also have third-party patent claims. See [LEGAL.md](LEGAL.md). It is experimental and not
+production-ready.
+
+**What about the demo clips?** They keep their own licences ([clip attribution](../web/clips/ATTRIBUTION.md));
+some are non-commercial (Netflix CC BY-NC-ND, MOTChallenge CC BY-NC-SA). The Netflix excerpts are format
+conversions only and are not re-encoded into comparison streams. Ask and we will remove any clip.
+
+**The demo's pre-encoded streams were made with x264 and x265, which are GPL.** Running a GPL program does not put
+its output under the GPL; we distribute only the output streams, not the programs.
+
+## What is not done
+
+- **Single-threaded** encode and decode; no slices or tiles beyond one per frame.
+- **8-bit 4:2:0 only.** No 10-bit, no 4:4:4, no HDR.
+- **Subset encoders:** forward prediction only (no B-frames), no lookahead, CBR and fixed-QP only, one tile/slice;
+  several tools of the newer standards are unused (for example compound prediction and loop restoration in
+  AV1/AV2).
+- **Decoders:** H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit 4:2:0) and VP9 (profile 0) pass the
+  conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams tested so far and is not
+  a full Main-profile decoder; the AV2 decoder decodes our own streams only. Details in the
+  [README](../README.md#decoders).
+- **Speed gaps:** our AV1 and VP9 decoders are slower than dav1d and vpxdec single-threaded; SVT-AV1 M12/M13 and
+  x264's fast presets encode faster than our Default presets; VVC Default runs below 30 fps at 720p on one Jetson
+  core.
+- **Known quality weak points:** fine pristine texture (water, foliage), where x264 and x265 need fewer bits;
+  H.264 flicker; VP9 trails our HEVC; SVC costs 6–14 points of BD-J against single-layer streams; AV2 and VVC are
+  young (rate control and quality work ongoing). See [known weaknesses](results/README.md#known-weaknesses).
+
+## Security and fuzzing
+
+The decoders are written in safe Rust (no `unsafe` outside the SIMD kernels and the C ABI), so memory-safety bugs
+are unlikely outside those kernels, but a malformed stream can still make a decoder panic (abort) or misbehave.
+Each codec has a `cargo fuzz` target (`fuzz/`). Fuzzing so far has been short: about 30 minutes per decoder, with
+no crashes found, and the VVC decoder has not been fuzzed yet. No corpus is published. Do not expose these decoders
+to untrusted input in production. The C ABI catches panics at the boundary. The browser demo decodes only streams
+it encoded itself and the project's hosted streams.
+
+## Why build this at all?
+
+To see how far one shared, low-delay engine can go across six formats on a small CPU, and to have our own
+browser decoders for our own streams. The coding tools are the standards'; the ideas are largely those of the
+projects we credit. What is new here is the combination, the shared engine, and an account of building it with AI
+agents ([RETROSPECTIVE.md](RETROSPECTIVE.md)).

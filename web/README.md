@@ -21,7 +21,7 @@ plus relaxed SIMD). Each worker loads the relaxed one when
 `WebAssembly.validate` accepts a relaxed-SIMD probe; both decode bit-identically,
 because nc-dsp only uses relaxed operations whose results are fully specified for
 its inputs. Speed numbers and the benchmark (`tools/web/bench.py`) are in
-`docs/handoff/wasm-perf.md`.
+our internal notes (not published).
 Use HTTPS for a remotely hosted camera demo. No cross-origin isolation headers
 are needed: each worker has its own ordinary WASM memory.
 
@@ -260,7 +260,7 @@ transport then decides, for every codec, and costs the stream nothing.
 Detecting losses from the stream alone works for H.264 and HEVC, and for AV1
 only when the encoder codes frame ids (`av1.frame_ids`, on with a long-term
 reference; 23-65 bits per inter frame, off by default); VP9 and AV2 cannot
-(`docs/handoff/loss-resilience.md`).
+(our internal notes (not published)).
 
 ## Checks
 

@@ -6,12 +6,25 @@ ARM board to a browser. It codes H.264, HEVC, AV1, VP9, AV2 and VVC from one
 shared engine, and ships its own decoders, which also run in the browser as
 WebAssembly. This is the story of how it got there: what we set out to do,
 what surprised us, what we tried, and which ideas paid off. Every number here
-comes from a measurement recorded in `docs/results/` or `docs/handoff/`.
+comes from a measurement recorded at the time, in `docs/results/` or in our
+internal working notes (not published).
+
+> **Dated.** Written 2026-11-10 to 2026-11-11 and only lightly updated since.
+> Its numbers are from the builds and scores of that time (some sections use
+> the earlier VMAF NEG composite) and differ from the current
+> [results](results/README.md). They were measured on the 11 VAL clips, which
+> were also used to confirm which changes were kept; on 71 held-out clips
+> every encoder's saving against x264 `medium` is smaller (see the
+> [held-out check](results/heldout-chart-2026-11-12.md)). The code was written
+> by AI coding agents under one person's direction; "we" below means that
+> team.
 How the code is organised is in [ARCHITECTURE.md](ARCHITECTURE.md). The
 current results are in [results/README.md](results/README.md).
 
-The short version: at real-time settings our AV1 needs about half the bits of
-x264 `medium` for the same quality (−49.8%), and our H.264 needs 13.6% fewer.
+The short version: at real-time settings, on our 11 VAL clips, our AV1 needed
+about half the bits of x264 `medium` for the same quality (−49.8% at the time;
+−42.5% on 71 held-out clips with the 2026-11-12 builds), and our H.264 13.6%
+fewer.
 About three quarters of the AV1 gain comes from AV1's coding tools. The other
 quarter comes from how the encoder is built.
 
@@ -31,16 +44,17 @@ The brief was narrow on purpose:
 - **Strictly standard bitstreams.** Every stream must decode bit-exactly in
   two independent standard decoders (for example ffmpeg and JM for H.264, or
   dav1d and aomdec for AV1), and also in our own decoder.
-- **Beat the baselines.** First openh264, the H.264 encoder this replaces.
-  Soon after that, SVT-AV1's fastest real-time mode (M12 `--rtc`), which is
-  far stronger.
+- **Targets set by the baselines.** First openh264, the H.264 encoder this
+  replaces. Soon after that, SVT-AV1's fast real-time mode (M12 `--rtc`), a
+  much stronger encoder.
 
 Early on we measured SVT-AV1 M12 at −48.6% BD-rate against openh264 for
 1.24–1.48× its CPU. *BD-rate* is the average change in bitrate at equal
-quality between two rate–quality curves; negative means fewer bits. Mark's
-verdict was "SVT-AV1 is truly excellent … use that as your primary guide.
-There is no reason to be worse." So SVT-AV1's real-time pipeline became the
-reference architecture, and it remains the bar for our HEVC and AV1.
+quality between two rate–quality curves; negative means fewer bits. The
+owner's verdict was "SVT-AV1 is truly excellent … use that as your primary
+guide." So SVT-AV1's real-time pipeline became the reference architecture,
+and its `--rtc` presets remain the reference we measure our HEVC and AV1
+against.
 
 ## 2. The shape of a real-time encoder
 
@@ -95,7 +109,9 @@ ladder (150–1200 kbps at 720p30, 1 s buffer), and replays every point through
 a strict 1 s leaky bucket. Several references break the bucket at low rates.
 openh264 has 22 rate-invalid points; on static clips its first key frame
 alone takes 1.4–2.6 s of the target rate. libvpx has 15–16 and libaom 6–8.
-Ours have none on the chart. Real-time modes are tuned for latency, so a
+Ours have none on the chart under that rule, which judges our points without
+the first key frame's outstanding loan (our controller may borrow up to about
+1.4 buffers for it and repay it later), so it is not a strict 1 s VBV. Real-time modes are tuned for latency, so a
 reference that looks strong at fixed QP can be weaker when it has to hold a
 buffer.
 
@@ -252,9 +268,10 @@ run time.
 
 ## 5. How we do well against the others
 
-On the real-use board (11 natural VAL clips never used for tuning, CBR
-ladder, every stream through both standard decoders), head to head on the
-same points:
+On the real-use board of that time (11 natural VAL clips, which were used to
+confirm changes, CBR ladder, every stream through both standard decoders),
+head to head on the same points, with the references at their real-time
+settings on one thread:
 
 | Ours | vs | BD (J metric set) | Jetson fps, ours / theirs |
 |---|---|---:|---|
@@ -269,18 +286,21 @@ same points:
 
 These are the design choices behind the margin, as far as we can trace them:
 
-- **Rate-control discipline in the 1 s buffer.** Our encoders hold the bucket
-  at every rung. The worst 1% of frames are where this shows: against SVT-AV1
+- **Rate-control discipline in the 1 s buffer.** After the first key frame's
+  loan is repaid, our encoders hold the bucket at every rung (the loan itself
+  is up to about 1.4 buffers). The worst 1% of frames are where this shows: against SVT-AV1
   our worst frames are 33–39% better, and our key frames pulse 1.8–2.8 dB
   less. A key frame that blows the buffer, as openh264's does on static
   clips, buys a sharp first frame with seconds of starved ones after it.
 - **The statistics-driven planner.** Partitioning from motion-search
-  statistics instead of trial encodes is what lets HEVC run 6× faster than
-  x265 `medium` and still code 8.6% fewer bits.
+  statistics instead of trial encodes is what let our HEVC run 6× faster than
+  x265 `medium` (zero latency, no B-frames, one thread) on the Jetson and
+  still code 8.6% fewer bits at the time.
 - **One engine, six codecs.** The trellis, the still detector, keycad and
   the planner were each written once and adopted per codec after their own
-  screen. Our VP9 beats libvpx's real-time mode by 39.8% mostly because it
-  inherits an engine built for HEVC and AV1.
+  screen. Our VP9 needed 39.8% fewer bits than libvpx's real-time mode
+  (cpu-used 7, one thread) mostly because it inherits an engine built for
+  HEVC and AV1.
 - **Joint tuning into Pareto presets.** Every heuristic threshold is a
   registered parameter. Presets come from a multi-objective search (quality
   vs CPU) over those parameters, not from hand-picked flags. Default and Fast
@@ -293,12 +313,12 @@ These are the design choices behind the margin, as far as we can trace them:
   view would have kept (MTT, TCQ, dependent quantisation), and kept the
   encoders inside real time.
 
-Honest gaps remain. On fine pristine texture (water, foliage, grass), x264
-and x265 beat us. Our H.264 flickers more than openh264 and x264 (+0.2 dB
+Gaps remain. On fine pristine texture (water, foliage, grass), x264 and x265
+need fewer bits than ours. Our H.264 flickers more than openh264 and x264 (+0.2 dB
 mean frame-to-frame PSNR change). Our VP9 still trails our HEVC on crowd and
 pan. Our AV1 Default is slower than SVT-AV1 M12 (40 vs 71 fps on the Jetson).
-It beats M12 by buying quality with that time, and its Fast preset (61 fps)
-is the like-for-like comparison.
+It needs fewer bits than M12 by spending that time on search, and its Fast
+preset (61 fps) is the closer comparison.
 
 ## 6. Modern design vs the coding standard
 
@@ -331,7 +351,7 @@ one):
 | HEVC → VVC | −5.5% | −6.7% (J_real −4.6%) |
 | HEVC → VP9 | −2.5% | J_real +1.6% (level) |
 
-The H.264 → HEVC step dominates, and it matches the reference world: x265
+The H.264 → HEVC step is the largest, and it matches the reference encoders: x265
 `medium` is −41.3% against x264 `medium`. The newer standards add single
 digits each on our engine so far. Part of that is our subset: none of our
 backends uses more than one active reference, compound prediction or loop

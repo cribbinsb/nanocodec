@@ -50,7 +50,7 @@ taskset -c 15 python3 tools/web/display-bench.py --streams <stream dir> --codecs
 
 ## Encode against native, and the demo end to end (2026-11-13, demo-wasm-speed)
 
-Analysis and the per-stage breakdown: `docs/handoff/wasm-perf.md` "Demo end-to-end".
+Analysis and the per-stage breakdown: our internal notes (not published) "Demo end-to-end".
 
 **Encode, WASM against native, 720p.** Build b8f93e74 (WASM relaxed module sha256 `28bf26171657`; native
 release CLI from the same commit). `tools/dev/host-timed.sh python3 tools/web/bench.py --bin <release> --pkg
@@ -86,8 +86,7 @@ The two capture-worker columns at 720p come from two separate A/B sessions (each
 
 ## Decoder close-out (2026-11-13, dec-winddown)
 
-The final decoder table before decoder speed work was closed (handoff: `docs/handoff/wasm-perf.md`
-"Decoder speed: close-out"). One build of every decoder: variance-integration **d007869b** (native release; WASM
+The final decoder table before decoder speed work was closed (internal notes, not published). One build of every decoder: variance-integration **d007869b** (native release; WASM
 relaxed-SIMD module from the same commit). Ours / ref < 1 means we are faster than the single-threaded reference.
 
 **Method.**
@@ -461,7 +460,7 @@ Deterministic counts (callgrind) back the wall-time ratios:
 - WASM instructions (callgrind on node, TurboFan only): crowd720 -9.4%, static720 -3.5%.
 
 The changes and the remaining gap (deblocking, MC wrappers, CDEF, coefficients) are in
-[docs/handoff/av1-decoder.md](../handoff/av1-decoder.md), session 2026-11-12.
+the AV1 decoder notes (internal, not published), session 2026-11-12.
 
 ## H.264 decoder vs ffmpeg and other WASM H.264 decoders (2026-11-12, h264-dec-speed)
 
@@ -507,7 +506,7 @@ The changes and the remaining gap (deblocking, MC wrappers, CDEF, coefficients) 
 | openh264 CABAC 1080p 3M | 7.60 | **6.58** | 8.40 | – |
 | openh264 CAVLC 1080p 3M | 6.62 | **5.57** | 7.49 | 6.28 |
 
-**What remains vs ffmpeg 8** (callgrind, symbolized from Ubuntu debuginfod; per stream in `docs/handoff/wasm-perf.md` "H.264 decoder"):
+**What remains vs ffmpeg 8** (callgrind, symbolized from Ubuntu debuginfod; per stream in our internal notes (not published) "H.264 decoder"):
 - Deblocking: +370–390M instructions on the x264/openh264 streams. The control side is ours; the run kernel is Astra's (`work/runtraces/h264/`).
 - Branch mispredicts: about 32M vs 13M on openh264 CAVLC; 7.5M are in residual parsing, now a separate agent's.
 - Per-macroblock bookkeeping: +130–190M.
@@ -533,7 +532,7 @@ rounds x 3 passes, core 14. All outputs identical before and after (frame MD5s),
 | crowd 1080p 3M (vpxenc) | 8.53 | 7.02 | 4.50 | 5.84 | 1.20x | 1.56x | 14.6 | 10.7 | 1.52x |
 
 Instructions (callgrind, crowd 720p / vpxenc 1080p): 3.80G / 10.94G before, 2.74G / 8.65G after;
-libvpx 1.84G / 5.70G. Per-stage gaps and what was tried are in `docs/handoff/wasm-perf.md`
+libvpx 1.84G / 5.70G. Per-stage gaps and what was tried are in our internal notes (not published)
 ("VP9 decoder speed", "VP9 MC kernels"). The WASM / native ratio rose on the 1080p rows because
 the native AVX2 gains (MC row pairs, fused inverse) have no SIMD128 counterpart at V8's register
 limit.
@@ -568,4 +567,4 @@ Instructions (callgrind, crowd 720p): 2.72G -> 2.41G (libvpx 1.84G); inverse + a
 MC 409M -> 327M. WASM decode-only (relaxed module, node, core 14, ms/frame, previous agent's
 module -> this one): crowd 720p 2.45 -> 2.24, pan 2.87 -> 2.94, static 0.63 -> 0.63, crowd 1080p
 9.39 -> 9.98, vpxenc 1080p 13.4 -> 12.6 (within the loaded host's noise except crowd 720p): the
-gains are AVX2-side; SIMD128 MC is unchanged (see `docs/handoff/wasm-perf.md`, "VP9 MC kernels").
+gains are AVX2-side; SIMD128 MC is unchanged (see our internal notes (not published), "VP9 MC kernels").

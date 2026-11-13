@@ -21,7 +21,13 @@ and other permissive licences. We are grateful to their authors. In particular:
   Netflix). Its real-time pipeline is the main guide for nanocodec's shared engine, and its `--rtc` presets
   are the bar we measure ourselves against. It is an excellent encoder.
 - **libaom**, **dav1d** and **libvpx** (AV1 and VP9), **openh264** (H.264), **kvazaar** (HEVC), **VVenC** and
-  **VVdeC** (VVC), **AVM** (AV2), **Thor**, **libyuv** and **libvmaf**.
+  **VVdeC** (VVC), **AVM** (AV2), **Thor**, **libyuv** and **libvmaf**, and the **JM**, **HM** and **VTM**
+  reference software.
+- The experts of **ITU-T VCEG, ISO/IEC MPEG and their joint teams (JVT, JCT-VC, JVET)** and of the **Alliance
+  for Open Media**, who designed the formats: every coding tool nanocodec uses is theirs.
+- **Netflix** for VMAF; Wang, Simoncelli and Bovik for **MS-SSIM**; Bjøntegaard for the **BD-rate** method.
+- The providers of test material: **Xiph.org** (derf's collection), the **Blender Foundation**, **SVT (Sveriges
+  Television)**, **Netflix** and **MOTChallenge**, and the other datasets used in our evaluation.
 
 The full list, with each project's licence, copyright notice and the nanocodec modules that draw on it, is in
 [THIRD_PARTY.md](../THIRD_PARTY.md). Modules that reimplement another project's algorithm also name their
@@ -94,6 +100,13 @@ forbid commercial use or modification; see the
 [clip attribution](https://cribbinsb.github.io/nanocodec/clips/ATTRIBUTION.md). Some sample clips (and the
 pre-encoded streams made from them) carry NonCommercial or ShareAlike terms (MOTChallenge: CC BY-NC-SA 3.0);
 those terms apply to those video files only, not to nanocodec's code.
+
+Two points we want to be open about. The Netflix sequences are licensed CC BY-NC-ND 4.0 (no derivatives); we host
+unmodified, contiguous excerpts converted to 8-bit H.264 at a smaller size so that browsers can play them, which
+we believe is a format change the licence permits, and we do not re-encode them into pre-encoded comparison
+streams; if the rights holder disagrees we will remove them. The MOTChallenge street and mall scenes show members
+of the public; they are published by MOTChallenge for research, and we use them unchanged in content. Anyone who
+wants a clip removed can write to the contact below.
 
 ## No warranty
 

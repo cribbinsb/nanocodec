@@ -1,8 +1,9 @@
 # nanocodec architecture
 
 What nanocodec is for, how it is built, and why it is built that way.
-`CLAUDE.md` holds the binding rules; `docs/PROCEDURES.md` holds the how-to
-(build, measure, land); `docs/STATUS.md` says where things stand. The story of
+The project's working rules, procedures and status notes are internal and are
+not part of the public copy; the measured results are in
+[results/README.md](results/README.md). The story of
 what was tried and what paid off is [RETROSPECTIVE.md](RETROSPECTIVE.md).
 
 ## 1. Goals and constraints
@@ -23,8 +24,9 @@ on small edge devices and decodes it anywhere, especially in a web page.
   not at all", so there are no slices: one slice or tile per frame.
   Resilience comes from temporal layers, a long-term reference with receiver
   feedback, intra refresh and keyframe on request.
-- **Standards-strict.** Every stream is plain, conformant H.264, HEVC, AV1,
-  VP9, AV2 or VVC. No custom syntax, ever: it would lose the reference
+- **Standard syntax only.** Every stream is meant to be plain H.264, HEVC,
+  AV1, VP9, AV2 or VVC, within the subset each encoder uses, and is checked
+  as described in §9. No custom syntax: it would lose the reference
   decoders we test against and hardware decode on receivers. Speed comes
   from the encoder's choices within the standard.
 - **WASM decode is the primary browser path.** Our own decoders compile to
@@ -32,15 +34,17 @@ on small edge devices and decodes it anywhere, especially in a web page.
   the browser's codecs. WebCodecs is an optional extra. 8-bit 4:2:0 only.
 - **Noise is removed, not reproduced.** Sensor noise is unwanted at these
   rates: a clean picture is the better result. Film-grain synthesis is an
-  experiment only (AV1 `grain.enable`, off; `docs/handoff/av1-grain.md`); the
+  experiment only (AV1 `grain.enable`, off); the
   encoder drops isolated small coefficients, biases static blocks to skip and
   keeps AQ from reading noise as texture. Noise robustness is measured on
   clean clips with synthetic sensor noise, scored against the clean original.
 
-The bars: H.264 must beat openh264 (realtime, medium complexity) at about its
-CPU; AV1 must match or beat **SVT-AV1 M12 `--rtc`** on BD-rate and CPU, on
-every content class, on both platforms; HEVC should land near it minus the
-format gap; VP9 near our HEVC; AV2 at or below our AV1.
+Targets we set ourselves (goals, not results; the measured position is in
+[results](results/README.md)): H.264 to need fewer bits than openh264
+(realtime, medium complexity) at about its CPU; AV1 to match **SVT-AV1 M12
+`--rtc`** (one thread) on BD-rate and CPU, on every content class, on both
+platforms; HEVC near it minus the format gap; VP9 near our HEVC; AV2 at or
+below our AV1.
 
 ## 2. Design principles
 
@@ -221,8 +225,8 @@ real cost check only where it matters.
   `pre_tx_skip`) with a quality guard: an unguarded background skip costs
   far more bits than it saves.
 - `psy` adds a psychovisual term; `random_decisions` drives the syntax-
-  coverage stress test (every legal decision exercised, PROCEDURES
-  "Syntax-coverage stress test").
+  coverage stress test (every legal decision exercised;
+  `tools/ci/syntax_stress.py`).
 
 ### 6.4 Quantisation and RD
 
@@ -238,7 +242,7 @@ real cost check only where it matters.
   content but would spend bits on noise), used by AV1/AV2 without the policy
   below.
 - **Chroma allocation is one engine policy** (`chroma_policy`; design
-  decision, Mark 2026-11-10). How finely chroma is quantised relative to
+  decision, owner, 2026-11-10). How finely chroma is quantised relative to
   luma, and how chroma error is weighed against bits, is decided once for
   every codec, in a codec-independent unit (the H.26x QP of a sample-domain
   step, 6 per doubling), and each backend maps it to its own syntax:
@@ -271,7 +275,7 @@ real cost check only where it matters.
     moving to the policy trades PSNR-YUV (3-6 % worse) for VMAF NEG and
     MS-SSIM (about 2 % better): neutral for H.264, VP9 and VVC (TRAIN within
     +-0.2 %, H.264 tripping the static guard by 0.05), worse for HEVC and AV2
-    (pan guard). Evidence and next steps: `docs/handoff/chroma-policy.md`.
+    (pan guard). Evidence and next steps: our internal notes (not published).
 - `symbol_cost`: table-driven bit estimates, so ranking never trial-encodes.
 
 ### 6.5 Loop-filter decisions
@@ -307,14 +311,14 @@ layers, long-term references, intra-leaf costs).
 |---|---|---|
 | H.264 (`nc-h264`) | High, CABAC; 16x16 to 8x8 inter partitions, intra 4x4/16x16, 8x8 transform; quarter-sample MC; trellis; deblocking | 8-bit High conformance suite |
 | HEVC (`nc-hevc`) | Main; CTU 64, 2Nx2N CUs 8–64 (NxN intra at 8x8), angular intra, merge/AMVP/TMVP, transform trees to 4x4 with DST; deblocking + SAO edge offset | full Main / Main Still Picture, MD5-exact on the JCT-VC Main set |
-| AV1 (`nc-av1`) | Main 8-bit 4:2:0; SB64 with square and rectangular partitions; directional intra with angle deltas, filter intra, CfL; single-reference inter plus LTR slot; adaptive CDFs; trellis on P frames; deblocking + CDEF | toward full Main conformance (libaom vectors, see `docs/handoff/av1-decoder.md`) |
+| AV1 (`nc-av1`) | Main 8-bit 4:2:0; SB64 with square and rectangular partitions; directional intra with angle deltas, filter intra, CfL; single-reference inter plus LTR slot; adaptive CDFs; trellis on P frames; deblocking + CDEF | toward full Main conformance (libaom vectors, see our internal notes (not published)) |
 | VP9 (`nc-vp9`) | Profile 0; 64x64 to 8x8 partitions, DC intra, single-reference inter, transforms to 32x32, deblocking | any conforming Profile 0 stream |
 | AV2 (`nc-av2`) | 8-bit 4:2:0 I/P; intra modes except CfL, skip, quarter-pel motion | our emitted subset |
 | VVC (`nc-vvc`) | 8-bit 4:2:0 quadtree, 67 intra modes, skip/merge/AMVP, DCT-II, deblocking + SAO | our emitted subset |
 
 Each backend keeps its own reconstructed references, since reconstruction
 differs per codec. Per-codec detail and supported subsets live in each
-crate's module docs and `docs/handoff/<codec>.md`.
+crate's module docs and our internal notes (not published).
 
 ## 8. Kernels and dispatch (`nc-dsp`)
 
@@ -378,15 +382,19 @@ node (SIMD128), since CI here only cross-checks aarch64.
   `nc-dsp` kernels with the encoder's reconstruction path, so a decoder is
   essentially entropy decoding plus code the encoder already has.
 - The goal is standard profile compliance (8-bit only) without slowing the
-  decode of our own streams: H.264, HEVC and VP9 pass their conformance
-  suites; AV1 is close; AV2 and VVC decode our emitted subset. A decoder that
-  meets syntax it does not support rejects the stream rather than guessing.
-- Every stream we report decodes bit-exactly in two standard decoders per
+  decode of our own streams. Status: the profiles and conformance streams
+  tested so far are listed in the README's Decoders table (H.264 Constrained
+  High, HEVC Main, AV1 Main 8-bit 4:2:0, VP9 profile 0; VVC 9 official 8-bit
+  streams; AV2 our own streams only). A decoder that meets syntax it does not
+  support is meant to reject the stream rather than guess.
+- Before a build's numbers are published, short streams of every shipped
+  preset of every codec must decode bit-exactly in two standard decoders per
   codec and in our own decoder, compared by per-frame hashes against the
-  encoder's reconstruction.
+  encoder's reconstruction. Longer evaluation streams are scored on the
+  reconstruction and are not each decoded.
 - `nc-web` builds encoder and decoder to WebAssembly with SIMD128; the
-  browser demo (`web/`) compares two codecs side by side. WASM decode runs at
-  roughly 1.2–1.8× the native time (README "In the browser").
+  browser demo (`web/`) compares two codecs side by side. WASM decode took
+  1.2–2.1× the native time on 2026-11-13 (README "In the browser").
 
 ## 10. Presets and parameter tuning
 

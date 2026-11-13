@@ -139,7 +139,7 @@ export class Panel {
       ...(entry.notice ? { Licence: entry.notice } : {}),
     };
     const $ = selector => this.element.querySelector(selector);
-    $('.reference-label').textContent = 'Pre-encoded offline, decoded here by nanocodec’s WASM decoder';
+    $('.reference-label').textContent = 'Encoded offline by this third-party encoder at the real-time settings our charts use (one thread, low delay, CBR); its other settings may give better results. Decoded here by nanocodec’s WASM decoder.';
     $('.reference-facts').innerHTML = Object.entries(facts).map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`).join('');
     const { version, source, gpu } = entry.version;
     $('.reference-version').textContent = `Version: ${version}${source?.commit ? ` · source ${source.ref} ${source.commit.slice(0, 12)}` : ''}${gpu ? ` · GPU ${gpu}` : ''}`;

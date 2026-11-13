@@ -26,7 +26,7 @@ Data lives outside the repo, under `$NC_DATA_ROOT` (default
 ## Methodology
 
 The rules every measurement follows. The real-use objective (CBR ladder,
-J_real, guards) is in `docs/PROCEDURES.md` "Adoption rule: J_real"; the
+J_real, guards) is in our internal procedures, "Adoption rule: J_real" (not published); the
 published board's method is `docs/results/README.md` "Method".
 
 ### Clips
@@ -89,7 +89,7 @@ the anchor supports them. Each configuration is pinned explicitly in
 timed rounds and medians, plus `perf stat` instructions and cycles where
 available. Each encoder is timed near the same bitrate, and the result is
 the ratio to the anchor on the same machine and clip. Instruction counts
-and the Jetson procedure: `docs/PROCEDURES.md` "Measure speed".
+and the Jetson procedure: our internal procedures, "Measure speed" (not published).
 
 ### Diagnostics: the standard stats map
 
@@ -98,7 +98,7 @@ bitstreams and per-frame data (bytes, type, layer, QP, per-frame quality) are
 kept for every point. `nceval/streamstats.py` extracts a codec-neutral stats
 map (bits by category, area by block size and mode, MV and transform
 statistics) **decoder-side**, so it works the same for our streams and the
-anchors'; usage in `docs/PROCEDURES.md` "Inspect a stream".
+anchors'; usage in our internal procedures, "Inspect a stream" (not published).
 
 ## The reference evaluation (maintained entry point)
 
@@ -194,13 +194,13 @@ report and speed. `--single-keyframe` codes one key frame for the whole clip
 (`ip1key-tl1`, the long-GOP set that exposes errors accumulating over long
 P-frame chains).
 
-7. **Sanity report** (before adoption decisions; docs/PROCEDURES.md):
+7. **Sanity report** (before adoption decisions):
    `python3 -m nceval sanity [--only measure|checks]`, configured by
    `eval/configs/sanity.json`.
 8. **Quality under packet loss**: `python3 -m nceval.losssim run|matrix|ltr|startup|checks|table`
    drives `nanocodec session` (encoder + our decoder) through a lossy RTP
    network with receiver feedback and scores what the viewer saw
-   (docs/handoff/loss-resilience.md).
+   (internal notes, not published).
 
 ## Rules the harness enforces
 

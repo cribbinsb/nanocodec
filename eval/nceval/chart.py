@@ -1269,17 +1269,25 @@ METHODOLOGY = """\
   x264 / x265 {x265} as the anchor (zero latency, no B-frames, one thread / no pools),
   libvpx {libvpx} VP9 and libaom {libaom} AV1 in realtime CBR (`--rt --end-usage=cbr
   --lag-in-frames=0 --threads=1`, `--cpu-used` as named, 1 s buffer, frame dropping off).
-  Points that miss their target (a rate floor: no encoder here drops frames) or break the
-  1 s buffer are counted as rate-invalid in the table but stay on their curve.
+  A point is counted as rate-invalid (it stays on its curve) when its 1 s leaky bucket,
+  drained at the target, peaks above 1.5x the buffer, or its average rate exceeds the
+  target by more than 10% plus the buffer's share of the window (+30% at 150 frames);
+  ours are judged without the first key frame's outstanding loan (up to about 1.4
+  buffers, repaid over the following seconds), the references with a strict 1 s VBV.
+  The BD axis uses every bit. No encoder here drops frames; ours do not code input
+  frames that would not change the picture (holds: no bits, scored as the repeated
+  picture), the references code every frame.
 - **Ladder and clips:** 150 / 300 / 600 / 1200 kbps at 720p30, scaled by pixel rate and
   capped at half the source bitrate; {clips} natural VAL clips in {classes} content
   classes, {frames} frames, one key frame. Metrics are scored on our encoder's
-  reconstruction; the build passed the landing conformance check (standard decoders
-  and ours bit-exact with the reconstruction on every shipped preset).
+  reconstruction (the references' on their standard-decoded output); the build passed
+  the landing conformance check (short streams of every shipped preset decoded by two
+  standard decoders and ours, bit-exact with the reconstruction); the chart streams
+  themselves are not each decoded.
 - **Quality axis:** BD-rate on the achieved-rate curves (PCHIP, reliable-overlap rule).
   BD-J = (CB(Q_full) + CB(Q_low)) / 2, Q = mean BD-rate over PSNR-YUV, VMAF v1 and MS-SSIM,
   CB = mean over content classes of the class means, Q_low = the lower-rate half of
-  the overlap (the J_real quality composite, docs/PROCEDURES.md). BD-PSNR-YUV and BD-VMAF v1 are the
+  the overlap (the J_real quality composite, eval/nceval/jreal.py). BD-PSNR-YUV and BD-VMAF v1 are the
   same with PSNR-YUV or VMAF v1 alone. The bars are the interquartile
   range of the per-clip BD-J. **Low rungs:** x264 medium undershoots its targets and has
   lower quality than most points at a given rate, so on some clips (static,
@@ -1310,8 +1318,11 @@ METHODOLOGY = """\
   ongoing); the main speed axis is single-core on one ARM core (x86 ratios differ,
   mostly in SIMD coverage); fixed-QP timing switches x264/x265 adaptive quantisation off
   (cheaper than their CBR mode by a few percent); the quality axis is 11 short clips,
-  so differences of a few percent are within the per-clip spread; the reference
-  encoders' real-time modes are tuned for latency, not for these metrics.
+  so differences of a few percent are within the per-clip spread, and these VAL clips
+  were also used to rank our candidate changes (see heldout-chart-*.md for 71 other
+  clips); the reference encoders' real-time modes are tuned for latency, not for these
+  metrics, x264 / x265 keep their default psychovisual settings (no `--tune psnr` /
+  `ssim`), and their other modes (threads, lookahead, B-frames) may do better.
 """
 
 

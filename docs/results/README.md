@@ -25,57 +25,63 @@ comparison encoder for the same quality.
 lower is better; bars are the per-clip interquartile range), right is faster (single-thread encode frames per
 second at 720p). Top: one Arm Cortex-A78AE core (NVIDIA Jetson Orin Nano); bottom: one x86-64 core (AMD Ryzen 9
 5950X). Every encoder, ours and the references, runs its own real-time CBR on the same ladder (150–1200 kbps at
-720p30, 11 natural validation clips that are never used for tuning); quality is the mean of PSNR-YUV, VMAF v1 and
-MS-SSIM.
+720p30, the 11 natural camera clips of our VAL set, which were also used to rank candidate changes during
+development; see the held-out check below); quality is the mean of PSNR-YUV, VMAF v1 and MS-SSIM.
 
 <sub>Updated 2026-11-13: quality of VVC Default at build 5a825a5b, of H.264 Fast, VP9, VP9 Fast and AV2 Fast at 7eb909e8 (the presets whose streams changed since the last refresh, found by hash), of the other 13 presets at their earlier builds (streams byte-identical at 5a825a5b, checked by hash); every nanocodec row timed at 5a825a5b on both machines, after the CLI input-buffer fix (0c2ad202: a 1 MiB input buffer had made every x86 encode 12–22 % slower); MS-SSIM on every frame; reference encoders keep their stored results; PC fps from the profile-guided build, every run divided by the x264 `medium` and SVT-AV1 M13 runs of its own round (11 rounds), at load ~40–60: see Caveats</sub>
 
-<details><summary>Independent check for overfitting</summary>
+### Held-out check
 
 ![Held-out clips: bitrate saving vs encode speed, one Ryzen 9 5950X core](heldout-chart-2026-11-12.svg)
 
-**Method:** all 31 chart families re-measured on 71 clips from 21 datasets that no tuning, screen or chart decision
-has used, with the same ladders and rules (BD-J vs x264 `medium`); encoded on AWS, scored with VMAF v1, MS-SSIM and
-PSNR on every frame. Speed as in the x86 chart above.
+**Why:** the chart's 11 clips (VAL) were used to rank candidate changes, so the chart is not independent of the
+tuning. **Method:** all 31 chart families re-measured on 71 clips from 21 other datasets with the same ladders and
+rules (BD-J vs x264 `medium`, builds of 2026-11-12); encoded on a rented cloud machine, scored with VMAF v1,
+MS-SSIM and PSNR on every frame. Speed as in the x86 chart above. The clips were chosen to share no source with
+TRAIN, VAL or the other fixed sets; since 2026-11-11 the same clip pool has also fed our rotating adoption
+screens, so they are held out from most, not all, tuning.
 
-**Result:** every family's BD-J shifted by a common +7.6 points, because x264 `medium` does relatively better on
-these clips. Our presets other than H.264 stay within about ±2 points of that shift (median of all ours −0.4)
-and hold their ranks within one place or improve them; SVT-AV1 M12/M13 and x265 lose 5–7 points more. The H.264 encoders (ours 3–5 points, openh264
-12) gain more than the shift, partly because many held-out sources were themselves H.264-encoded, which favours
-H.264. Details: [heldout-chart-2026-11-12.md](heldout-chart-2026-11-12.md).
+**Result:** on these clips every family's saving against x264 `medium` is smaller, by a median of 7.6 points,
+ours and the reference encoders alike (for example our AV1 Default −50.9% on the chart's clips, −42.5% here;
+SVT-AV1 M12 `--rtc` −34.9% and −20.4%). Relative to that common shift, our presets other than H.264 moved within
+about ±2 points (median of ours −0.4) and kept their ranks within one place; SVT-AV1 M12/M13 and x265 moved 5–7
+points more than the common shift. The H.264 encoders (ours 3–5 points, openh264 12) moved less than the shift;
+a likely cause, not proven, is that many held-out sources were themselves H.264-encoded. So the ranking among
+encoders held, while the size of any saving against x264 depends on the clips. Details:
+[heldout-chart-2026-11-12.md](heldout-chart-2026-11-12.md).
 
-</details>
-
-| Codec | Preset | Bits vs x264 medium | Jetson fps | PC fps | Head to head (same points) |
+| Codec | Preset | Bits vs x264 medium (chart's clips) | Jetson fps | PC fps | Head to head (same points) |
 |---|---|---:|---:|---:|---|
-| H.264 | Default | −20.4% | 83 | 177 | −31.3% vs openh264; −26.8% vs x264 `veryfast` |
-| H.264 | Fast | −16.2% | 113 | 230 | −23.0% vs x264 `veryfast`; −25.6% vs openh264; +6.5% vs our H.264 |
+| H.264 | Default | −23.0% | 74 | 176 | −33.6% vs openh264; −29.2% vs x264 `veryfast` |
+| H.264 | Fast | −16.2% | 114 | 230 | −23.0% vs x264 `veryfast`; −25.6% vs openh264; +10.3% vs our H.264 |
 | H.264 | Faster | −8.5% | 134 | 266 | −39.7% vs x264 `ultrafast`; +10.7% vs our H.264 Fast |
 | H.264 | Fastest | −0.8% | 155 | 314 | −33.7% vs x264 `ultrafast`; +10.5% vs our H.264 Faster |
 | HEVC | Default | −49.3% | 51 | 121 | −17.1% vs x265 `medium`; −25.4% vs SVT-AV1 M12 `--rtc` |
 | HEVC | Fast | −43.4% | 79 | 176 | −9.7% vs x265 `superfast`; +14.9% vs our HEVC |
 | HEVC | Faster | −36.0% | 98 | 206 | −4.4% vs SVT-AV1 M13 `--rtc`; +17.1% vs our HEVC Fast |
 | AV1 | Default | −50.9% | 41 | 103 | −28.9% vs SVT-AV1 M12 `--rtc`; −9.2% vs SVT-AV1 M8 |
-| AV1 | Fast | −45.2% | 64 | 151 | −18.9% vs SVT-AV1 M12 `--rtc`; +14.7% vs our AV1 |
-| AV1 | Faster | −38.8% | 81 | 175 | −7.4% vs SVT-AV1 M12 `--rtc`; +15.5% vs our AV1 Fast |
+| AV1 | Fast | −44.9% | 65 | 166 | −18.1% vs SVT-AV1 M12 `--rtc`; +15.3% vs our AV1 |
+| AV1 | Faster | −38.7% | 81 | 175 | −7.4% vs SVT-AV1 M12 `--rtc`; +14.9% vs our AV1 Fast |
 | VP9 | Default | −48.1% | 34 | 94 | −44.9% vs libvpx realtime (cpu-used 7) |
 | VP9 | Fast | −42.4% | 47 | 117 | −38.5% vs libvpx realtime (cpu-used 9); +14.3% vs our VP9 |
-| VP9 | Faster | −36.5% | 70 | 169 | −31.3% vs libvpx realtime (cpu-used 9); +13.0% vs our VP9 Fast |
-| VP9 | Fastest | −28.4% | 83 | 198 | −19.3% vs libvpx realtime (cpu-used 9); +20.7% vs our VP9 Faster |
-| AV2 | Default | −53.7% | 31 | 88 | −16.1% vs SVT-AV1 M8; −7.0% vs our AV1 |
-| AV2 | Fast | −46.5% | 41 | 112 | +23.6% vs our AV2 |
-| VVC | Default | −53.8% | 26 | 65 | −26.2% vs x265 `medium`; −11.2% vs our HEVC |
-| VVC | Fast | −46.5% | 47 | 107 | +20.9% vs our VVC |
+| VP9 | Faster | −37.1% | 78 | 181 | −32.2% vs libvpx realtime (cpu-used 9); +11.3% vs our VP9 Fast |
+| VP9 | Fastest | −27.8% | 88 | 192 | −18.8% vs libvpx realtime (cpu-used 9); +24.4% vs our VP9 Faster |
+| AV2 | Default | −53.7% | 32 | 86 | −16.1% vs SVT-AV1 M8; −7.0% vs our AV1 |
+| AV2 | Fast | −46.2% | 44 | 125 | +24.4% vs our AV2 |
+| VVC | Default | −54.0% | 28 | 68 | −26.4% vs x265 `medium`; −11.6% vs our HEVC |
+| VVC | Fast | −46.4% | 47 | 108 | +21.3% vs our VVC |
+
+<sub>Synced 2026-11-13 with [bd-vs-speed.md](bd-vs-speed.md), which has the builds of each row.</sub>
 
 For reference (Jetson / PC fps): SVT-AV1 M13 `--rtc` −33.2% at 79 / 193, x264 `ultrafast` +38.9% at 191 / 547, SVT-AV1 M12 `--rtc` −34.9% at 71 / 182, SVT-AV1 M8 −45.5% at 14 / 45, x265
 `medium` −40.7% at 8 / 26, x264 `medium` 0% at 27 / 68, openh264 +24.6% at 111 / 260. Negative means fewer bits than
 the comparison for the same quality. Every encoder is scored directly on all 11 clips: on the four clips where some
 curve did not overlap x264's (the three static clips and bodycam_airport), every encoder also ran 40 and 75 kbps
-rungs (see [Caveats](#caveats)). On this score H.264 Default is behind the Pareto front only because HEVC Faster is faster with fewer bits.
-HEVC Faster beats SVT-AV1 M13 on both machines with −4.4% bits: Jetson 98 vs 79 fps; on the PC it takes 0.89x
-M13's time in the same rounds, so M13 is off both fronts. On the PC AV1 Faster takes 1.08x M13's time
-(SVT-AV1 M12 took 1.05x in the e122b42b session). VVC Default (−53.8%, newly tuned) is on both fronts, just ahead of
-AV2 Default (−53.7%) at 0.83x / 0.73x its speed (Jetson / PC).
+rungs (see [Caveats](#caveats)). HEVC Faster against SVT-AV1 M13 `--rtc`: BD-J −4.4% (BD-PSNR-YUV +1.0%), Jetson 98 vs 79 fps; on the PC it took
+0.89x M13's time in the same rounds. On the PC AV1 Faster took 1.08x M13's time (SVT-AV1 M12 took 1.05x in the
+e122b42b session). VVC Default (−54.0%) and AV2 Default (−53.7%) are within the per-clip spread of each other;
+VVC runs at 0.87x / 0.79x AV2's speed (Jetson / PC). Where the references are ahead: SVT-AV1 M12 and M13,
+x264 `veryfast` and `ultrafast` and openh264 encode faster than our Default presets of every codec but H.264.
 
 ### Hardware encoders (NVENC on an RTX 5090 GPU)
 
@@ -232,7 +238,7 @@ The class columns are J_real per class (mean of the full and low-rate halves).
 
 ## Real-use scoreboard (J_real)
 
-The scoreboard each encoder change is judged against (it adds the low-rate half, flicker and key-frame pulse terms, and the Fast presets). Each of our encoders is compared with its bar: openh264 for H.264, SVT-AV1 M12 `--rtc` for HEVC and AV1, and our own encoders for VP9 (vs our HEVC), AV2 (vs our AV1) and VVC (vs our HEVC, same preset class). x264 `veryfast` and x265 `superfast` rows are context.
+The scoreboard each encoder change is judged against (it adds the low-rate half, flicker and key-frame pulse terms, and the Fast presets). Each of our encoders is compared with a reference: openh264 for H.264, SVT-AV1 M12 `--rtc` for HEVC and AV1, and our own encoders for VP9 (vs our HEVC), AV2 (vs our AV1) and VVC (vs our HEVC, same preset class). x264 `veryfast` and x265 `superfast` rows are context.
 
 Board of 2026-11-11 08:05: 11 natural VAL clips, 150 frames, CBR ladder, full conformance gate, the charts' builds. Class-balanced BD-rate:
 
@@ -300,10 +306,10 @@ J full / J low (class-balanced BD-rate against the bar anchor above), same board
 | AV2 | our AV1 | **−8.8%** | −0.4% | −7.1% | −15.8% | −13.3% |
 | VVC | our HEVC | **−21.1%** | −17.4% | −21.6% | −22.1% | −22.3% |
 
-On the never-tuned set every codec compared with SVT-AV1 M12 still beats it (HEVC −23.1%, AV1 −22.7%), and the
-ranking among our codecs matches VAL: VVC well ahead of our HEVC (−21.1%), AV2 ahead of our AV1 (−8.8%, mostly
-MS-SSIM), VP9 behind our HEVC (+10.5%, VMAF v1 +29.7%). Per-clip detail: the board pages under
-`~/nanocodec-data/reports/` (`realboard-2026-11-11-0805.md`, `realboard-adv12-2026-11-11-0758.md`).
+On this set our HEVC and AV1 Defaults need fewer bits than SVT-AV1 M12 `--rtc` at the settings above (HEVC −23.1%,
+AV1 −22.7%; smaller than on VAL), and the ranking among our codecs matches VAL: VVC well ahead of our HEVC (−21.1%), AV2 ahead of our AV1 (−8.8%, mostly
+MS-SSIM), VP9 behind our HEVC (+10.5%, VMAF v1 +29.7%). The per-clip board pages are internal working files
+and are not published.
 
 ## Known weaknesses
 
@@ -332,8 +338,10 @@ libaom AV1 in realtime CBR (`--rt --end-usage=cbr --lag-in-frames=0 --threads=1`
 v2.7.0, x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libvpx v1.16.0, libaom v3.15.3; command lines in
 [tools/anchors/README.md](../../tools/anchors/README.md).
 
-**Metrics.** Per frame PSNR (per plane) and VMAF v1 (the `vmaf_v1.0.16` 3d0h model, at native geometry), MS-SSIM every 4th
-frame. Since 2026-11-11 (owner decision) the score uses VMAF v1 in place of the legacy VMAF v0.6.1 NEG: v1's ADM
+**Metrics.** Per frame PSNR (per plane; PSNR-YUV weights Y:U:V 6:1:1 as is usual in codec evaluation) and VMAF v1
+(the `vmaf_v1.0.16` 3d0h model, at native geometry), MS-SSIM on every frame (every 4th frame before 2026-11-11).
+VMAF and MS-SSIM are computed either by libvmaf v3.2.1 on the CPU or by VMAFx, a GPU implementation, with our
+patches; the two agree to the printed precision on the points checked. Since 2026-11-11 (owner decision) the score uses VMAF v1 in place of the legacy VMAF v0.6.1 NEG: v1's ADM
 already caps the enhancement gain (`adm_enhn_gain_limit` 1.0). NEG is no longer measured or reported.
 
 **BD-rate** on the rates actually achieved (PCHIP, reliable-overlap rule, at least three points; never extrapolated).
@@ -353,12 +361,15 @@ the buffer's share of the window (+30% at 150 frames, 30 fps). Against external 
 its curve (it is a real rate/quality point, usually a rate floor) and is counted in the table; between two of our own
 builds, the rung is dropped from both curves.
 
-**TRAIN, VAL and held-out.** Changes are tuned and screened on TRAIN clips (15 camera clips plus a pristine texture
-class), confirmed on 11 natural VAL clips that screens never see, and every number on this page comes from VAL or
-the held-out pristine set above, which is never used for tuning or screening.
+**TRAIN, VAL and held-out.** Changes were tuned and screened on TRAIN clips (15 camera clips plus a pristine texture
+class) and confirmed on the 11 natural VAL clips, so VAL (the charts' clips) has influenced which changes were
+kept. Since 2026-11-11 adoption screens use rotating draws from a ~190-clip pool. The pristine set above and the
+[held-out check](#held-out-check) are the less tuning-exposed numbers.
 
 **Conformance.** Every stream on the board passed the full gate: both standard decoders, bit-exact with our
-encoder's reconstruction and our own decoder (per-frame hashes).
+encoder's reconstruction and our own decoder (per-frame hashes). The chart's streams are scored on the encoder's
+reconstruction; their builds passed the landing conformance check (short streams of every preset, two standard
+decoders each), but the chart streams themselves were not each decoded.
 
 **Speed.** Single-thread encode CPU time per frame (rusage), 150 frames of 720p, on the same streams as the quality
 axis: each encoder runs at a fixed quantizer chosen to land it at about 600 kbps on three clips
@@ -399,4 +410,15 @@ Exact settings are in [bd-vs-speed.md](bd-vs-speed.md).
   than its exact speed-ups explain. Compare PC rows within one session; across sessions only at similar load.
 - Speed is timed at a fixed quantizer, which switches x264/x265 adaptive quantisation off and is a few percent cheaper
   than their CBR mode.
-- The reference encoders' real-time modes are tuned for latency, not for these metrics.
+- The reference encoders' real-time modes are tuned for latency, not for these metrics. x264 and x265 run with
+  their default psychovisual settings (no `--tune psnr` / `ssim`), which trade some PSNR and MS-SSIM for
+  perceived detail; our encoders were tuned for exactly this composite of PSNR-YUV, VMAF v1 and MS-SSIM.
+- **Rate control is not identical.** Our controller may let the first key frame borrow up to about 1.4 buffers and
+  repay it over the following seconds; the references run with a strict 1 s VBV. The rates on the BD axis include
+  every bit (the loan too); the "rate-invalid" rule (bucket peak above 1.5× the buffer, or an average more than
+  10% plus the buffer's share of the window over the target) is looser than a strict 1 s VBV, and is applied to
+  every encoder alike. A strict-rule compliance table for every encoder is being prepared.
+- **Holds.** Our encoders do not code input frames that would not change the picture (exact or near-exact
+  repeats); held frames cost no bits and no encode time and are scored as the repeated picture. The references
+  code every frame. How many frames are held per clip is being measured.
+- Our points are scored on the encoder's reconstruction, the references' on their standard-decoded output.

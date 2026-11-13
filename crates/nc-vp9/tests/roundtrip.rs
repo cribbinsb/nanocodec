@@ -396,13 +396,22 @@ fn spatial_backend_superframe_and_stripped_base_round_trip() {
     }
 }
 
+/// An external decoder named by environment variable `name` (e.g. `NC_VPXDEC`,
+/// `NC_FFMPEG`, as in the VVC conformance test), when set and present.
+fn external_decoder(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os(name)
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_file())
+}
+
+/// Checks the stream against vpxdec and `FFmpeg` when `NC_VPXDEC` / `NC_FFMPEG`
+/// point at them; each check is skipped when its variable is unset.
 fn verify_external_vp9_decoders(
     packets: &[Vec<u8>],
     (width, height): (usize, usize),
     expected_i420: &[u8],
 ) {
     use std::io::Write;
-    use std::path::Path;
     use std::process::{Command, Stdio};
 
     let mut ivf = Vec::new();
@@ -422,8 +431,7 @@ fn verify_external_vp9_decoders(
         ivf.extend_from_slice(pkt);
     }
 
-    let vpxdec = Path::new("/home/mark/nanocodec-data/anchors/x86_64/bin/vpxdec");
-    if vpxdec.is_file() {
+    if let Some(vpxdec) = external_decoder("NC_VPXDEC") {
         let mut child = Command::new(vpxdec)
             .args([
                 "--codec=vp9",
@@ -449,8 +457,7 @@ fn verify_external_vp9_decoders(
         assert_eq!(out.stdout, expected_i420, "vpxdec output mismatch");
     }
 
-    let ffmpeg = Path::new("/home/mark/nanocodec-data/anchors/x86_64/bin/ffmpeg-decode");
-    if ffmpeg.is_file() {
+    if let Some(ffmpeg) = external_decoder("NC_FFMPEG") {
         let mut child = Command::new(ffmpeg)
             .args([
                 "-nostdin",
