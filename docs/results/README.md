@@ -90,10 +90,12 @@ picture looks over PSNR, VMAF and MS-SSIM; our presets were tuned on that metric
 chart's clips and streams (2026-11-13) added x264 `medium --tune zerolatency,psnr` and `--tune zerolatency,ssim`
 with otherwise identical settings. `--tune psnr` needs 9.8% [7.6, 12.0] fewer bits than the default anchor on
 BD-J (PSNR-Y −13.8%, PSNR-YUV −8.3%, VMAF v1 −19.4%, MS-SSIM −1.8%); `--tune ssim` −1.4%. The charts now also
-plot every x264 and x265 point at its better-scoring metric tune (x264 ultrafast and veryfast: `--tune ssim`;
-x264 medium and every x265 preset: `--tune psnr`), and the libaom, libvpx and openh264 alternatives where they
-score better than their charted setting; both tunes per metric, and every point against the PSNR-tuned x264
-medium, are in [bd-vs-speed.md](bd-vs-speed.md#metric-tuned-references). x264 and x265 defaults are tuned for how
+plot each reference's metric-oriented tuning where it is distinguishably better for that encoder than its charted
+setting (direct paired BD-J, 95% bootstrap interval excluding zero): x264 medium, x265 medium and x265 superfast
+with `--tune psnr`, libvpx rt 9 with `--tune ssim`. x264 ultrafast / veryfast, x265 ultrafast, libaom, libvpx rt 7
+and openh264 alternatives were within the noise of their charted settings. Every variant per metric with its
+interval, and every point against the PSNR-tuned x264 medium, are in
+[bd-vs-speed.md](bd-vs-speed.md#metric-tuned-references). x264 and x265 defaults are tuned for how
 the picture looks, which these metrics cannot judge, and no subjective test was run. BD-J against the PSNR-tuned
 x264:
 

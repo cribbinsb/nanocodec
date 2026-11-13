@@ -68,6 +68,7 @@ from .codecs import Codec
 from .config import load_paths
 from .encoders.nanocodec import PRESETS_DIR
 from .gatepolicy import EVALUATION_GATE
+from .independent import Estimate, bootstrap
 from .realuse import (DEFAULT_FRAMES, DEFAULT_WORKERS, LADDER_KBPS, OPENH264_HARNESS, Runner,
                       clipset_clips, compare, natural_val, own_family)
 from .stages import balanced_parts
@@ -115,11 +116,11 @@ METRIC_TUNED_BASES = ("x264-ultrafast", "x264-veryfast", "x264-medium", "x265-ul
 ALTERNATIVE_TUNES = {"libvpx-vp9-cpu7": ("ssim",), "libvpx-vp9-cpu9": ("ssim",),
                      "libaom-av1-cpu8": ("ssim",), "libaom-av1-cpu10": ("ssim",),
                      "openh264-baseline": ("aq",)}
-#: A tuned twin is plotted only when it beats its charted setting by more than this
-#: (BD-J points): an alternative that changes nothing (openh264's harness codes the
-#: same bytes with adaptive quantisation on; x264 ultrafast already runs without psy
-#: and AQ) must not appear as a better point through rounding.
-TUNE_MIN_GAIN = 0.1
+#: A tuned twin is plotted only where it is distinguishably better than its charted
+#: setting: its direct paired BD-J against that setting (the same clips and rungs)
+#: is negative and the 95% bootstrap interval (independent.bootstrap: clips resampled
+#: within class) excludes zero. A plotted twin claims a real improvement; a gain
+#: within the noise stays in the table only.
 #: How a tuned twin is labelled, by profile.
 TUNE_LABELS = {"psnr": "metric-tuned (--tune psnr)", "ssim": "metric-tuned (--tune ssim)",
                "aq": "adaptive quantisation on"}
@@ -654,19 +655,43 @@ def tuned_base(family: str) -> str:
     return family.partition(PROFILE_SEPARATOR)[0]
 
 
-def best_tunes(tuned: list[ChartPoint], defaults: list[ChartPoint]) -> list[ChartPoint]:
-    """Per reference, its tuned twin with the best (lowest) BD-J, kept only where that
-    beats the reference's charted (default) setting: the twins the chart plots."""
-    charted = {p.family: p.bd_j for p in defaults}
+def tune_gains(curves: dict, tuned: list[ChartPoint], quality: Quality) -> dict[str, Estimate]:
+    """Each tuned twin's direct paired BD-J against its charted setting, per clip on the
+    chart's clip set and rungs, as a class-balanced mean with its bootstrap interval."""
+    classes = {c.name: c.content_class for c in quality.used}
+    gains = {}
+    for p in tuned:
+        rows = per_clip_rows(curves, tuned_base(p.family), p.family, quality.used)
+        gains[p.family] = bootstrap({c: r["j"] for c, r in rows.items() if r["j"] is not None},
+                                    classes)
+    return gains
+
+
+def distinguishably_better(gain: Estimate | None) -> bool:
+    return gain is not None and gain.high is not None and gain.high < 0
+
+
+def best_tunes(tuned: list[ChartPoint], gains: dict[str, Estimate]) -> list[ChartPoint]:
+    """Per reference, of its tuned twins that are distinguishably better than its
+    charted setting, the one with the largest direct gain: the twins the chart plots."""
     best: dict[str, ChartPoint] = {}
     for p in tuned:
-        base = tuned_base(p.family)
-        if p.bd_j is None or charted.get(base) is None or \
-                p.bd_j > charted[base] - TUNE_MIN_GAIN:
+        base, gain = tuned_base(p.family), gains.get(p.family)
+        if not distinguishably_better(gain):
             continue
-        if base not in best or p.bd_j < best[base].bd_j:
+        if base not in best or gain.value < gains[best[base].family].value:
             best[base] = p
     return [best[base] for base, _ in REFERENCES if base in best]
+
+
+def tuned_summary(plotted: list[ChartPoint], gains: dict[str, Estimate]) -> str:
+    """One sentence naming each plotted twin's tune and its direct gain."""
+    if not plotted:
+        return "No variant is distinguishably better than its charted setting."
+    parts = [f"{dict(REFERENCES)[tuned_base(p.family)]} {CHART_TUNE_LABELS[p.family.partition(PROFILE_SEPARATOR)[2]]} "
+             f"({gains[p.family].text()}%)" for p in plotted]
+    return "Plotted on these clips (direct BD-J vs the charted setting, 95% interval): " + \
+        "; ".join(parts) + "."
 
 
 def with_twin_speed(tuned: list[ChartPoint], timed: list[ChartPoint]) -> list[ChartPoint]:
@@ -943,7 +968,7 @@ def chained_table(points: list[ChartPoint]) -> str:
 
 
 def tuned_table(tuned: list[ChartPoint], defaults: list[ChartPoint],
-                plotted: list[ChartPoint]) -> str:
+                plotted: list[ChartPoint], gains: dict[str, Estimate]) -> str:
     """Each x264 / x265 reference at its default tuning and at both metric tunes, per
     metric, vs the chart's anchor; the plotted tune is marked."""
     by_family = {p.family: p for p in defaults}
@@ -953,21 +978,33 @@ def tuned_table(tuned: list[ChartPoint], defaults: list[ChartPoint],
              "provides (x264 / x265: `--tune psnr`, `--tune ssim`; libaom / libvpx: `--tune "
              "ssim`; openh264: adaptive quantisation on), every other setting unchanged; "
              "BD-rate vs the chart's anchor (x264 medium, default tuning) on the chart's clips "
-             "and rungs. The chart also plots, per reference, the alternative with the best "
-             "BD-J where it beats the charted setting (●). Equal rows: the setting changes "
+             "and rungs, and each alternative's direct paired BD-J against the charted setting "
+             "with its 95% bootstrap interval. The chart also plots, per reference, the "
+             "alternative with the largest direct gain whose interval excludes zero (●); "
+             "the other rows are not distinguishable from the charted setting, or worse. "
+             "The two calculations can differ by a few tenths: the left columns compare each "
+             "row with the x264 anchor, the last column the two settings directly on the "
+             "same points. Equal rows: the setting changes "
              "nothing there (x264 ultrafast already runs without psy and AQ; x265 ultrafast "
              "and superfast give identical results at both tunes; openh264's harness codes "
              "the same bytes with adaptive quantisation on).\n",
-             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |",
-             "|---|---:|---:|---:|---:|---:|"]
+             "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips "
+             "| BD-J vs its charted setting (direct, 95% interval) |",
+             "|---|---:|---:|---:|---:|---:|---|"]
     for base in dict.fromkeys(tuned_base(p.family) for p in tuned):
         rows = [by_family.get(base)] + [p for p in tuned if tuned_base(p.family) == base]
         for p in rows:
             if p is None:
                 continue
             mark = " ●" if p.family in shown else ""
+            gain = gains.get(p.family)
+            verdict = "" if gain is None else f"{gain.text()}" + (
+                "" if gain.value is None else " better" if distinguishably_better(gain)
+                else " worse" if gain.low is not None and gain.low > 0
+                else " not distinguishable")
             lines.append(f"| {p.label}{mark} | {fmt(p.bd_j)} | {fmt(p.bd_psnr)} | "
-                         f"{fmt(p.bd_vmaf)} | {fmt(p.bd_msssim)} | {p.scored}/{p.clips} |")
+                         f"{fmt(p.bd_vmaf)} | {fmt(p.bd_msssim)} | {p.scored}/{p.clips} | "
+                         f"{verdict} |")
     return "\n".join(lines) + "\n"
 
 
@@ -1252,6 +1289,25 @@ BARS_NOTE = ("Bars: interquartile range of per-clip BD. Every point is averaged 
              "clips (see the table for excluded clips). Hollow: flagged.")
 
 
+#: The build stamp's line height and its width per character (px, at 10 px).
+STAMP_LINE, STAMP_CHAR = 12, 5.2
+
+
+def wrap_stamp(stamp: str, width: float) -> list[str]:
+    """The stamp in lines that fit the picture, broken after "; " or ", "."""
+    if not stamp:
+        return []
+    room = int((width - 20) / STAMP_CHAR)
+    lines, line = [], ""
+    for piece in stamp.replace("; ", ";\0").replace(", ", ",\0").split("\0"):
+        candidate = f"{line} {piece}" if line else piece
+        if line and len(candidate) > room:
+            lines.append(line)
+            candidate = piece
+        line = candidate
+    return lines + [line]
+
+
 def hardware_chevron(cx: float, cy: float) -> str:
     """A right-pointing chevron: a point whose speed is off the axis's right end."""
     r = MARKER_RADIUS
@@ -1315,8 +1371,9 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
     # a tuned twin's longer label beside the fastest point needs room on the right
     W = frame.left + frame.width + (HARDWARE_GUTTER if off_scale else
                                     TUNED_RIGHT_MARGIN if tuned_shown else 30)
+    stamp_lines = wrap_stamp(stamp, W)
     H = frame.top + frame.height + 110 + (NOTE_LINE if hardware else 0) + \
-        (LEGEND_ROW if tuned_shown else 0)
+        (LEGEND_ROW if tuned_shown else 0) + STAMP_LINE * (len(stamp_lines) - 1)
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
            f'height="{H}" font-family="system-ui, -apple-system, Segoe UI, sans-serif" '
            f'font-size="12">',
@@ -1428,9 +1485,10 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
     if hardware:
         out.append(f'<text x="{frame.left}" y="{legend_y + 22 + NOTE_LINE}" fill="{MUTED}">'
                    f'{hardware_footnote}</text>')
-    if stamp:  # small and unobtrusive, bottom right
-        out.append(f'<text x="{W - 10}" y="{H - 8}" font-size="10" text-anchor="end" '
-                   f'fill="{MUTED}">{stamp}</text>')
+    for k, line in enumerate(stamp_lines):  # small and unobtrusive, bottom right
+        y = H - 8 - STAMP_LINE * (len(stamp_lines) - 1 - k)
+        out.append(f'<text x="{W - 10}" y="{y}" font-size="10" text-anchor="end" '
+                   f'fill="{MUTED}">{line}</text>')
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
@@ -1524,13 +1582,15 @@ METHODOLOGY = """\
   runs its PSNR tune (it offers no other in low delay), libaom and libvpx default to
   `--tune psnr` with AQ off, and openh264 and NVENC run with adaptive quantisation off. They are scored on the chart's clip set and rungs and never change
   it. The libaom and libvpx `--tune ssim` and openh264 adaptive-quantisation variants
-  are measured the same way. A variant is plotted where it scores better for its
-  encoder than the charted setting by more than {tune_gain} BD-J points (for x264 and
-  x265, the better of their two tunes). On these clips that is `--tune ssim` for x264
-  ultrafast and veryfast, `--tune psnr` for x264 medium and every x265 preset, and
-  `--tune ssim` for libaom rt 8 / rt 10 and libvpx rt 9; libvpx rt 7 scores worse with
-  it, and openh264's adaptive quantisation produced byte-identical streams in our
-  harness (no effect), so neither is plotted. Each plotted variant is
+  are measured the same way. A variant is plotted only where it is distinguishably
+  better for its encoder than the charted setting: its direct paired BD-J against that
+  setting, on the same clips and rungs, is negative and the 95% bootstrap interval
+  (clips resampled within content class) excludes zero; with two tunes, the larger
+  gain. {tuned_summary} The others stay in the table with their intervals
+  (openh264's adaptive quantisation produced byte-identical streams in our harness).
+  This direct comparison and the BD-J columns (each setting against the x264 anchor)
+  can differ by a few tenths; small disagreements between them are within the
+  per-clip noise. Each plotted variant is
   drawn in its default twin's shape, lightly filled, joined to it by a dashed line;
   every variant is in the "Metric-tuned references" table, and every point against
   the better-scoring x264 medium tune is in the table after it. Until they are
@@ -1554,7 +1614,8 @@ def render(args: argparse.Namespace) -> None:
         binary_overrides(args.binary_for), binary_overrides(args.presets_for))[1:]
     tuned, side_curves = side_points(runner, quality, families, tuned_families, clips,
                                      args.frames, dict(TUNED), args.rungs)
-    twins = best_tunes(tuned, quality.points)
+    gains = tune_gains(side_curves, tuned, quality)
+    twins = best_tunes(tuned, gains)
     alt = next((p for p in twins if tuned_base(p.family) == ANCHOR), None)
     alt_rows = second_anchor_points(
         runner, quality, side_curves, families + tuned_families, alt.family,
@@ -1594,7 +1655,7 @@ def render(args: argparse.Namespace) -> None:
             *([f"The same on x86 (one Ryzen 9 5950X core):\n\n"
                f"![bitrate vs x86 speed]({stem.name}{X86.suffix}.svg)\n"] if x86 else []),
             markdown_table(points, front, x86), coverage_note(quality),
-            *([tuned_table(tuned, quality.points, twins),
+            *([tuned_table(tuned, quality.points, twins, gains),
                second_anchor_table(alt_rows, alt.label)] if alt else []),
             *([hardware_table(hardware, speeds, hardware_timing.get("platform", ""))]
               if hardware else []),
@@ -1608,7 +1669,8 @@ def render(args: argparse.Namespace) -> None:
         page.append(METHODOLOGY.format(
             clips=len(clips), classes=len({c.content_class for c in clips}),
             frames=args.frames, min_scored=MIN_SCORED_FRACTION,
-            low=" / ".join(map(str, LOW_LADDER_KBPS)), tune_gain=TUNE_MIN_GAIN,
+            low=" / ".join(map(str, LOW_LADDER_KBPS)),
+            tuned_summary=tuned_summary(twins, gains),
             platform=timing.get("platform", "n/a"), rung=timing.get("rung_kbps", "n/a"),
             x86_note=(X86_NOTE.format(stem=stem.name, rounds=X86_ROUNDS)
                       + meta.get("x86_timing_note", "")) if x86 else "",
