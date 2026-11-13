@@ -75,7 +75,7 @@ are needed: each worker has its own ordinary WASM memory.
   PSNR is against the same captured source frames as a live version's. **Match this in
   the other version** sets the other version live to the stream's size, frame rate,
   target (peak 2×), 1 s buffer and key interval, starting with the same codec (the
-  preset is yours). The 17 streams (14 MB, Xiph, Blender and SVT 2022 clips only;
+  preset is yours). The 40 streams (27 MiB; every clip has 3 to 5, several at one size and rate across encoders; Xiph, Blender and SVT 2022 clips only;
   no Netflix: NoDerivatives) and their commands are listed in
   [`docs/results/reference-streams.md`](../docs/results/reference-streams.md);
   `tools/web/make-reference-streams.py` regenerates them all and that table.

@@ -7,7 +7,7 @@ import { createRenderer } from './renderer.js';
 import { Advanced } from './advanced.js';
 import { cliCommand, cliPreset } from './options.js';
 import { FRAME_RATES, tickMs, tickStep } from './timeline.js';
-import { fetchStream, loadManifest, referenceStream, streamTitle } from './reference.js';
+import { fetchStream, loadManifest, referenceStream, streamGroups, streamTitle } from './reference.js';
 import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, RATE_LIMITS_KBPS, RESOLUTIONS } from './view-settings.js';
 
 // Statistics cover this many recent coded frames.
@@ -119,7 +119,8 @@ export class Panel {
       this.streams = await loadManifest();
     } catch (error) { this.status(error.message, true); return; }
     this.status('');
-    this.streamPicker.innerHTML = this.streams.map(entry => `<option value="${entry.id}">${escapeHtml(`${this.clipTitle(entry.clip)} · ${streamTitle(entry)}`)}</option>`).join('');
+    this.streamPicker.innerHTML = streamGroups(this.streams).map(([clip, entries]) => `<optgroup label="${escapeHtml(this.clipTitle(clip))}">${
+      entries.map(entry => `<option value="${entry.id}">${escapeHtml(streamTitle(entry))}</option>`).join('')}</optgroup>`).join('');
     this.choose(this.reference ?? this.streams[0]);
     this.changed('reference');
   }

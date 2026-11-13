@@ -21,6 +21,17 @@ export function loadManifest(fetcher = fetch) {
   return manifest;
 }
 
+/**
+ * The streams grouped for the picker: by clip, in manifest order, and within a
+ * clip by encoder, then size, frame rate and bitrate. Returns [[clip, entries]].
+ */
+export function streamGroups(streams) {
+  const groups = new Map();
+  for (const entry of streams) groups.set(entry.clip, [...(groups.get(entry.clip) ?? []), entry]);
+  const order = (a, b) => a.label.localeCompare(b.label) || b.height - a.height || b.fps - a.fps || a.targetKbps - b.targetKbps;
+  return [...groups].map(([clip, entries]) => [clip, entries.sort(order)]);
+}
+
 /** One line naming a stream in a picker. */
 export function streamTitle(entry) {
   return `${entry.label} · ${entry.width}×${entry.height} · ${entry.fps} fps · ${entry.targetKbps} kbps`;

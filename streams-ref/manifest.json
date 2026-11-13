@@ -36,6 +36,39 @@
    "chroma": "4:2:0"
   },
   {
+   "id": "xiph-johnny-openh264-1280x720-30fps-300k",
+   "file": "xiph-johnny-openh264-1280x720-30fps-300k.ivf",
+   "clip": "xiph-johnny",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 300,
+   "actualKbps": 300.1,
+   "bufferMs": 1000,
+   "bytes": 378701,
+   "sha256": "01e6c5e8a4ba3e3aad5bdc2ab9ac659f256e56a1c054ed6b79ac515e81b94c01",
+   "sourceFile": "clips/xiph-johnny-720p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 300 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
    "id": "xiph-johnny-svtav1-m12-1280x720-30fps-300k",
    "file": "xiph-johnny-svtav1-m12-1280x720-30fps-300k.ivf",
    "clip": "xiph-johnny",
@@ -69,6 +102,39 @@
    "chroma": "4:2:0"
   },
   {
+   "id": "xiph-johnny-vpx-rt7-1280x720-30fps-300k",
+   "file": "xiph-johnny-vpx-rt7-1280x720-30fps-300k.ivf",
+   "clip": "xiph-johnny",
+   "codec": "vp9",
+   "encoder": "vpx-rt7",
+   "label": "libvpx VP9 realtime cpu-used 7",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 300,
+   "actualKbps": 301.5,
+   "bufferMs": 1000,
+   "bytes": 380456,
+   "sha256": "453965158ad77af75b0914dd068ddca9761d48e6d30f9d0407fa50c7734cad8e",
+   "sourceFile": "clips/xiph-johnny-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=300 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
    "id": "xiph-johnny-openh264-640x360-15fps-150k",
    "file": "xiph-johnny-openh264-640x360-15fps-150k.ivf",
    "clip": "xiph-johnny",
@@ -97,6 +163,39 @@
      "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
     },
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-four-people-x264-medium-854x480-30fps-400k",
+   "file": "xiph-four-people-x264-medium-854x480-30fps-400k.ivf",
+   "clip": "xiph-four-people",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 854,
+   "height": 480,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 400,
+   "actualKbps": 354.0,
+   "bufferMs": 1000,
+   "bytes": 446124,
+   "sha256": "4085ab2f4ddacc5df0dacc31ad762c2346c8ae3418a080721711e0f94dd1371a",
+   "sourceFile": "clips/xiph-four-people-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 400 --vbv-maxrate 400 --vbv-bufsize 400 --input-res 854x480 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
@@ -168,6 +267,39 @@
    "chroma": "4:2:0"
   },
   {
+   "id": "xiph-four-people-svtav1-m12-854x480-30fps-400k",
+   "file": "xiph-four-people-svtav1-m12-854x480-30fps-400k.ivf",
+   "clip": "xiph-four-people",
+   "codec": "av1",
+   "encoder": "svtav1-m12",
+   "label": "SVT-AV1 M12 --rtc",
+   "chartConfiguration": true,
+   "width": 854,
+   "height": 480,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 400,
+   "actualKbps": 400.3,
+   "bufferMs": 1000,
+   "bytes": 504028,
+   "sha256": "14e02d02668f90ab170b8d137c2b414574f5e594384113f487d1c7bb62a1e040",
+   "sourceFile": "clips/xiph-four-people-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 400 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 854 -h 480 -n 300 -i source.yuv -b stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
+    "source": {
+     "url": "https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+     "ref": "v4.3.0",
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe"
+    },
+    "version": "SVT-AV1 v4.3.0 (release)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
    "id": "xiph-kristen-sara-nvenc-h264-1280x720-30fps-600k",
    "file": "xiph-kristen-sara-nvenc-h264-1280x720-30fps-600k.ivf",
    "clip": "xiph-kristen-sara",
@@ -193,6 +325,105 @@
     "source": {},
     "version": "ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers / built with gcc 14.3.0 (conda-forge gcc 14.3.0-3)",
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-kristen-sara-x264-veryfast-1280x720-30fps-600k",
+   "file": "xiph-kristen-sara-x264-veryfast-1280x720-30fps-600k.ivf",
+   "clip": "xiph-kristen-sara",
+   "codec": "h264",
+   "encoder": "x264-veryfast",
+   "label": "x264 veryfast",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 600,
+   "actualKbps": 553.9,
+   "bufferMs": 1000,
+   "bytes": 695950,
+   "sha256": "b200f4100fad7216ec336373f5e8aceb3fe6f0d68753a95347cd582abb48be6a",
+   "sourceFile": "clips/xiph-kristen-sara-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset veryfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-kristen-sara-vpx-rt9-1280x720-30fps-600k",
+   "file": "xiph-kristen-sara-vpx-rt9-1280x720-30fps-600k.ivf",
+   "clip": "xiph-kristen-sara",
+   "codec": "vp9",
+   "encoder": "vpx-rt9",
+   "label": "libvpx VP9 realtime cpu-used 9",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 600,
+   "actualKbps": 603.7,
+   "bufferMs": 1000,
+   "bytes": 758227,
+   "sha256": "70b3c8f39cf7e564438dd2d4cb0dbd1290b8ff9e426cbd17cd2795b40b0e8302",
+   "sourceFile": "clips/xiph-kristen-sara-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=9 --end-usage=cbr --target-bitrate=600 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-kristen-sara-openh264-640x360-30fps-100k",
+   "file": "xiph-kristen-sara-openh264-640x360-30fps-100k.ivf",
+   "clip": "xiph-kristen-sara",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 100,
+   "actualKbps": 100.3,
+   "bufferMs": 1000,
+   "bytes": 128958,
+   "sha256": "dcccea994e7b5d9bba71d12fc3db4360839e2830ef01b25630ef83693269b9f3",
+   "sourceFile": "clips/xiph-kristen-sara-360p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 640 --height 360 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 100 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
@@ -231,6 +462,72 @@
    "chroma": "4:2:0"
   },
   {
+   "id": "xiph-vidyo4-openh264-640x360-30fps-100k",
+   "file": "xiph-vidyo4-openh264-640x360-30fps-100k.ivf",
+   "clip": "xiph-vidyo4",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 100,
+   "actualKbps": 100.1,
+   "bufferMs": 1000,
+   "bytes": 128778,
+   "sha256": "de6dd611593595f9baa9d5d0d8823ee52e38717a34a0ff25797eb5599dcc1f69",
+   "sourceFile": "clips/xiph-vidyo4-360p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 640 --height 360 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 100 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-vidyo4-vpx-rt7-640x360-30fps-100k",
+   "file": "xiph-vidyo4-vpx-rt7-640x360-30fps-100k.ivf",
+   "clip": "xiph-vidyo4",
+   "codec": "vp9",
+   "encoder": "vpx-rt7",
+   "label": "libvpx VP9 realtime cpu-used 7",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 100,
+   "actualKbps": 100.5,
+   "bufferMs": 1000,
+   "bytes": 129302,
+   "sha256": "6d055bee215782a1a39902928827ac38d2504d26a40d7ab7cb7e947acfca4490",
+   "sourceFile": "clips/xiph-vidyo4-360p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=100 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=640 --height=360 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
    "id": "xiph-vidyo3-vpx-rt9-1280x720-15fps-250k",
    "file": "xiph-vidyo3-vpx-rt9-1280x720-15fps-250k.ivf",
    "clip": "xiph-vidyo3",
@@ -259,6 +556,105 @@
      "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
     },
     "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-vidyo3-x264-medium-1280x720-15fps-250k",
+   "file": "xiph-vidyo3-x264-medium-1280x720-15fps-250k.ivf",
+   "clip": "xiph-vidyo3",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 250,
+   "actualKbps": 230.4,
+   "bufferMs": 1000,
+   "bytes": 289892,
+   "sha256": "295e8dddc7694cdcc559c5efc5119867961c6d41712edb6f8ee7f6b0787cedc5",
+   "sourceFile": "clips/xiph-vidyo3-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 250 --vbv-maxrate 250 --vbv-bufsize 250 --input-res 1280x720 --fps 15/1 --frames 150 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-vidyo3-openh264-1280x720-15fps-250k",
+   "file": "xiph-vidyo3-openh264-1280x720-15fps-250k.ivf",
+   "clip": "xiph-vidyo3",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 250,
+   "actualKbps": 250.4,
+   "bufferMs": 1000,
+   "bytes": 314880,
+   "sha256": "ee62dcf5478d9b9bacc22c94c51040d53e124d3a75bf7f16e2c39c70260e5faf",
+   "sourceFile": "clips/xiph-vidyo3-720p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 15 --frames 150 --usage camera-realtime --complexity medium --cabac 0 --bitrate 250 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "xiph-vidyo3-aom-rt8-1280x720-15fps-250k",
+   "file": "xiph-vidyo3-aom-rt8-1280x720-15fps-250k.ivf",
+   "clip": "xiph-vidyo3",
+   "codec": "av1",
+   "encoder": "aom-rt8",
+   "label": "libaom AV1 realtime cpu-used 8",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 250,
+   "actualKbps": 251.6,
+   "bufferMs": 1000,
+   "bytes": 316372,
+   "sha256": "45be3e571f6da75781a97fe13207df2fba2838b4086b1a69c4e3d10b5287d33d",
+   "sourceFile": "clips/xiph-vidyo3-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/aomenc --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=8 --end-usage=cbr --target-bitrate=250 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=150 --kf-max-dist=150 --i420 --width=1280 --height=720 --fps=15/1 --limit=150 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/aomenc",
+    "source": {
+     "url": "https://aomedia.googlesource.com/aom",
+     "ref": "v3.15.3",
+     "commit": "b141d9c45db236335351c8a4b2a14b3ade27c937"
+    },
+    "version": "AOMedia Project AV1 Encoder 3.15.3 (default)"
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
@@ -330,6 +726,39 @@
    "chroma": "4:2:0"
   },
   {
+   "id": "tos-canal-vpx-good4-1280x720-30fps-1200k",
+   "file": "tos-canal-vpx-good4-1280x720-30fps-1200k.ivf",
+   "clip": "tos-canal",
+   "codec": "vp9",
+   "encoder": "vpx-good4",
+   "label": "libvpx VP9 good cpu-used 4 (one pass, no lag)",
+   "chartConfiguration": false,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 360,
+   "loopTicks": 360,
+   "keyInterval": 300,
+   "targetKbps": 1200,
+   "actualKbps": 1210.5,
+   "bufferMs": 1000,
+   "bytes": 1820143,
+   "sha256": "a9d58a6765eaa8f6db65075ae525f5e7f3fb93d7e4962f07efd39332dfdef07c",
+   "sourceFile": "clips/tos-canal-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=1200 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=360 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
    "id": "tos-canal-aom-rt8-640x360-10fps-150k",
    "file": "tos-canal-aom-rt8-640x360-10fps-150k.ivf",
    "clip": "tos-canal",
@@ -358,6 +787,39 @@
      "commit": "b141d9c45db236335351c8a4b2a14b3ade27c937"
     },
     "version": "AOMedia Project AV1 Encoder 3.15.3 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "tos-canal-openh264-640x360-10fps-150k",
+   "file": "tos-canal-openh264-640x360-10fps-150k.ivf",
+   "clip": "tos-canal",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 10,
+   "frames": 120,
+   "loopTicks": 360,
+   "keyInterval": 100,
+   "targetKbps": 150,
+   "actualKbps": 150.1,
+   "bufferMs": 1000,
+   "bytes": 226601,
+   "sha256": "e702a9d35db43ecf2118a7374774e16e72b3e7be934c997e9bddf756376344b3",
+   "sourceFile": "clips/tos-canal-360p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 640 --height 360 --fps 10 --frames 120 --usage camera-realtime --complexity medium --cabac 0 --bitrate 150 --intra-period 100 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
@@ -426,6 +888,39 @@
    "chroma": "4:2:0"
   },
   {
+   "id": "svt-waterfall-vpx-rt7-1280x720-30fps-2000k",
+   "file": "svt-waterfall-vpx-rt7-1280x720-30fps-2000k.ivf",
+   "clip": "svt-waterfall",
+   "codec": "vp9",
+   "encoder": "vpx-rt7",
+   "label": "libvpx VP9 realtime cpu-used 7",
+   "chartConfiguration": true,
+   "width": 1280,
+   "height": 720,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 2000,
+   "actualKbps": 2132.6,
+   "bufferMs": 1000,
+   "bytes": 2669415,
+   "sha256": "3f92e75bb3a41bdfcfae970375351b51ca9941981c42fc6c57dc9c6aaa87832c",
+   "sourceFile": "clips/svt-waterfall-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=2000 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
    "id": "svt-smoke-sauna-vpx-good4-854x480-30fps-600k",
    "file": "svt-smoke-sauna-vpx-good4-854x480-30fps-600k.ivf",
    "clip": "svt-smoke-sauna",
@@ -446,6 +941,105 @@
    "sha256": "814c126e60bacf18196248d0ead5778ff239b381cd61887965d918bc11d5aa30",
    "sourceFile": "clips/svt-smoke-sauna-720p.mp4",
    "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=600 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=854 --height=480 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "svt-smoke-sauna-x264-medium-854x480-30fps-600k",
+   "file": "svt-smoke-sauna-x264-medium-854x480-30fps-600k.ivf",
+   "clip": "svt-smoke-sauna",
+   "codec": "h264",
+   "encoder": "x264-medium",
+   "label": "x264 medium",
+   "chartConfiguration": true,
+   "width": 854,
+   "height": 480,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 600,
+   "actualKbps": 592.7,
+   "bufferMs": 1000,
+   "bytes": 744448,
+   "sha256": "bf999aea7b61051302a41a80ee0359e10843240fa0c5367d7f4f405350181c08",
+   "sourceFile": "clips/svt-smoke-sauna-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 600 --vbv-maxrate 600 --vbv-bufsize 600 --input-res 854x480 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "svt-smoke-sauna-svtav1-m12-854x480-30fps-600k",
+   "file": "svt-smoke-sauna-svtav1-m12-854x480-30fps-600k.ivf",
+   "clip": "svt-smoke-sauna",
+   "codec": "av1",
+   "encoder": "svtav1-m12",
+   "label": "SVT-AV1 M12 --rtc",
+   "chartConfiguration": true,
+   "width": 854,
+   "height": 480,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 600,
+   "actualKbps": 533.2,
+   "bufferMs": 1000,
+   "bytes": 670188,
+   "sha256": "d7d968ebc6c0c7df7c29a8ff194ad45f61b4581aa5c1cf1a4981152e25e76b71",
+   "sourceFile": "clips/svt-smoke-sauna-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp --rtc 1 --preset 12 --pred-struct 1 --hierarchical-levels 0 --rc 2 --tbr 600 --buf-sz 1000 --buf-initial-sz 600 --buf-optimal-sz 600 --keyint 300 --scd 0 --lp 1 --fps-num 30 --fps-denom 1 -w 854 -h 480 -n 300 -i source.yuv -b stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/SvtAv1EncApp",
+    "source": {
+     "url": "https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+     "ref": "v4.3.0",
+     "commit": "e3d63405f9ba8219913a7276c2c47d10e5d022fe"
+    },
+    "version": "SVT-AV1 v4.3.0 (release)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "svt-smoke-sauna-vpx-rt9-640x360-15fps-200k",
+   "file": "svt-smoke-sauna-vpx-rt9-640x360-15fps-200k.ivf",
+   "clip": "svt-smoke-sauna",
+   "codec": "vp9",
+   "encoder": "vpx-rt9",
+   "label": "libvpx VP9 realtime cpu-used 9",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 200,
+   "actualKbps": 200.4,
+   "bufferMs": 1000,
+   "bytes": 252292,
+   "sha256": "590f5fe889c80c075701fab28feae299aff50ad342b034f13e3cd8b2bbe99a43",
+   "sourceFile": "clips/svt-smoke-sauna-360p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=9 --end-usage=cbr --target-bitrate=200 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=150 --kf-max-dist=150 --i420 --width=640 --height=360 --fps=15/1 --limit=150 --ivf -o stream.out source.yuv",
    "version": {
     "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
     "source": {
@@ -484,6 +1078,105 @@
     "source": {},
     "version": "ffmpeg version 7.1.1 Copyright (c) 2000-2025 the FFmpeg developers / built with gcc 14.3.0 (conda-forge gcc 14.3.0-3)",
     "gpu": "NVIDIA GeForce RTX 5090, 610.57.04"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "svt-midnight-sun-x265-medium-640x360-30fps-400k",
+   "file": "svt-midnight-sun-x265-medium-640x360-30fps-400k.ivf",
+   "clip": "svt-midnight-sun",
+   "codec": "hevc",
+   "encoder": "x265-medium",
+   "label": "x265 medium",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 400,
+   "actualKbps": 406.5,
+   "bufferMs": 1000,
+   "bytes": 511705,
+   "sha256": "8b6094321b60c2db187d4b09731b9a05d8fe014a74c1f71c7b33d0effcb05ecb",
+   "sourceFile": "clips/svt-midnight-sun-360p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 400 --vbv-maxrate 400 --vbv-bufsize 400 --input-res 640x360 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x265",
+    "source": {
+     "url": "https://bitbucket.org/multicoreware/x265_git.git",
+     "ref": "4.2",
+     "commit": "e444744c03978c1fb4e037168967020cf2648427"
+    },
+    "version": "HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "svt-midnight-sun-vpx-rt7-640x360-30fps-400k",
+   "file": "svt-midnight-sun-vpx-rt7-640x360-30fps-400k.ivf",
+   "clip": "svt-midnight-sun",
+   "codec": "vp9",
+   "encoder": "vpx-rt7",
+   "label": "libvpx VP9 realtime cpu-used 7",
+   "chartConfiguration": true,
+   "width": 640,
+   "height": 360,
+   "fps": 30,
+   "frames": 300,
+   "loopTicks": 300,
+   "keyInterval": 300,
+   "targetKbps": 400,
+   "actualKbps": 419.9,
+   "bufferMs": 1000,
+   "bytes": 528534,
+   "sha256": "ca3f2db66496f895ecb36259206206f938904f5eafb684ac4f5eda6f4aad3aad",
+   "sourceFile": "clips/svt-midnight-sun-360p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --rt --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=7 --end-usage=cbr --target-bitrate=400 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=640 --height=360 --fps=30/1 --limit=300 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "svt-midnight-sun-openh264-384x216-15fps-100k",
+   "file": "svt-midnight-sun-openh264-384x216-15fps-100k.ivf",
+   "clip": "svt-midnight-sun",
+   "codec": "h264",
+   "encoder": "openh264",
+   "label": "openh264 (real-time, medium complexity)",
+   "chartConfiguration": true,
+   "width": 384,
+   "height": 216,
+   "fps": 15,
+   "frames": 150,
+   "loopTicks": 300,
+   "keyInterval": 150,
+   "targetKbps": 100,
+   "actualKbps": 100.4,
+   "bufferMs": 1000,
+   "bytes": 127271,
+   "sha256": "d98b9f4189bec62c693b578c5028000a59d75976998baad6f0d8a5fbb2078fc1",
+   "sourceFile": "clips/svt-midnight-sun-360p.mp4",
+   "command": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 384 --height 216 --fps 15 --frames 150 --usage camera-realtime --complexity medium --cabac 0 --bitrate 100 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1",
+   "version": {
+    "binary": "~/nanocodec-data/work/ratecontrol/bin/openh264-harness",
+    "source": {
+     "url": "https://github.com/cisco/openh264.git",
+     "ref": "v2.7.0",
+     "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
+    },
+    "version": "openh264 v2.7.0 (eval openh264-harness driver)"
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
@@ -550,6 +1243,72 @@
      "commit": "1bca62311e447fd9c39fc93de2c4b96cd5ce971c"
     },
     "version": "openh264 v2.7.0 (eval openh264-harness driver)"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "bbb-tree-x264-veryfast-854x480-30fps-500k",
+   "file": "bbb-tree-x264-veryfast-854x480-30fps-500k.ivf",
+   "clip": "bbb-tree",
+   "codec": "h264",
+   "encoder": "x264-veryfast",
+   "label": "x264 veryfast",
+   "chartConfiguration": true,
+   "width": 854,
+   "height": 480,
+   "fps": 30,
+   "frames": 420,
+   "loopTicks": 420,
+   "keyInterval": 300,
+   "targetKbps": 500,
+   "actualKbps": 496.0,
+   "bufferMs": 1000,
+   "bytes": 873009,
+   "sha256": "4a61879107f17d1e3ef93e27c700c56c082a3d6685d944017d704c22e6e29794",
+   "sourceFile": "clips/bbb-tree-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/x264 --preset veryfast --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 500 --vbv-maxrate 500 --vbv-bufsize 500 --input-res 854x480 --fps 30/1 --frames 420 --threads 1 --output stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/x264",
+    "source": {
+     "url": "https://code.videolan.org/videolan/x264.git",
+     "ref": "stable",
+     "commit": "b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+    },
+    "version": "x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0"
+   },
+   "bitDepth": 8,
+   "chroma": "4:2:0"
+  },
+  {
+   "id": "bbb-tree-vpx-good4-854x480-30fps-500k",
+   "file": "bbb-tree-vpx-good4-854x480-30fps-500k.ivf",
+   "clip": "bbb-tree",
+   "codec": "vp9",
+   "encoder": "vpx-good4",
+   "label": "libvpx VP9 good cpu-used 4 (one pass, no lag)",
+   "chartConfiguration": false,
+   "width": 854,
+   "height": 480,
+   "fps": 30,
+   "frames": 420,
+   "loopTicks": 420,
+   "keyInterval": 300,
+   "targetKbps": 500,
+   "actualKbps": 524.7,
+   "bufferMs": 1000,
+   "bytes": 923249,
+   "sha256": "7cb10e9b88cd7c61a5c0214b52fd7fd011dc792ff436cad41170639428e21635",
+   "sourceFile": "clips/bbb-tree-720p.mp4",
+   "command": "~/nanocodec-data/anchors/x86_64/bin/vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=4 --end-usage=cbr --target-bitrate=500 --buf-sz=1000 --buf-initial-sz=600 --buf-optimal-sz=600 --kf-min-dist=300 --kf-max-dist=300 --i420 --width=854 --height=480 --fps=30/1 --limit=420 --ivf -o stream.out source.yuv",
+   "version": {
+    "binary": "~/nanocodec-data/anchors/x86_64/bin/vpxenc",
+    "source": {
+     "url": "https://github.com/webmproject/libvpx.git",
+     "ref": "v1.16.0",
+     "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6"
+    },
+    "version": "WebM Project VP9 Encoder v1.16.0 (default)"
    },
    "bitDepth": 8,
    "chroma": "4:2:0"
