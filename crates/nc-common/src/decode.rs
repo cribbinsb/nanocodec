@@ -126,6 +126,18 @@ impl<'a> BitReader<'a> {
             .map_err(|_| DecodeError::Malformed("exp-Golomb overflow"))
     }
 
+    /// Read `ue(v)` syntax whose semantics bound it to `0..=max`, so the
+    /// arithmetic that follows (`+ 1`, sizes, shifts) cannot overflow.
+    /// # Errors
+    /// Rejects truncation and values above `max`, reported as `what`.
+    pub fn read_ue_max(&mut self, max: u32, what: &'static str) -> Result<u32> {
+        let value = self.read_ue()?;
+        if value > max {
+            return Err(DecodeError::Malformed(what));
+        }
+        Ok(value)
+    }
+
     /// Read signed exponential Golomb syntax.
     /// # Errors
     /// Rejects truncation and values outside `i32`.

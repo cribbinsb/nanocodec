@@ -1,0 +1,23 @@
+# Replays fuzz inputs through the same drivers as the fuzz targets, without
+# libFuzzer, so they also run as a WASM (wasm32-wasip1) module under node.
+[package]
+name = "nc-fuzz-replay"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+members = ["."]
+
+[dependencies]
+nc-common = { path = "../../crates/nc-common" }
+nc-encoder = { path = "../../crates/nc-encoder" }
+nc-h264 = { path = "../../crates/nc-h264" }
+nc-hevc = { path = "../../crates/nc-hevc" }
+nc-vvc = { path = "../../crates/nc-vvc" }
+nc-av1 = { path = "../../crates/nc-av1" }
+nc-vp9 = { path = "../../crates/nc-vp9" }
+nc-av2 = { path = "../../crates/nc-av2" }
+
+[profile.release]
+debug = 1

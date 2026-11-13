@@ -1,0 +1,21 @@
+# H.264 NAL unit headers (Table 7-1) after a start code, and
+# profile_idc / exp-Golomb prefixes common at the start of a slice.
+sps="\x00\x00\x01\x67"
+pps="\x00\x00\x01\x68"
+idr="\x00\x00\x01\x65"
+p_slice="\x00\x00\x01\x41"
+non_ref_slice="\x00\x00\x01\x01"
+sei="\x00\x00\x01\x06"
+aud="\x00\x00\x01\x09"
+eos="\x00\x00\x01\x0a"
+baseline="\x42"
+main="\x4d"
+high="\x64"
+ue0="\x80"
+ue1_2="\x40"
+ue3_6="\x20"
+# Shared framing entries (dict/common.dict).
+sep="NCPK"
+sc3="\x00\x00\x01"
+sc4="\x00\x00\x00\x01"
+ivf="DKIF"

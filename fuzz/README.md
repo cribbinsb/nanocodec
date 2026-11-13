@@ -16,7 +16,8 @@ stranger's bytes reach, so a finding is a finding in shipped code:
 Bits 2..6 are the AV1 operating point (VP9: `> 0` decodes the base layer
 only); bit 7 skips AV1 film grain. One decoder instance takes every packet of
 an input, so references, probability contexts, reordering and layer state
-carry over. `fuzz_targets/common/mod.rs` holds the shared layout code.
+carry over. `fuzz_targets/common/mod.rs` holds the shared layout code and
+`common/drive.rs` the per-decoder drivers, which `replay/` also runs.
 
 ## Seeds
 
@@ -28,6 +29,13 @@ refresh, starved keys, SVC), the official vectors under
 `~/nanocodec-data/conformance`, `web/streams-ref`, and short encodes of our
 own (colour-signalled, tiny and odd sizes, `--resize`, LTR, film grain,
 L2T3/L3T3). Merge them into a minimal corpus with `-merge=1`.
+
+Deep, cheap sessions use small inputs: `--max-len 4096 --max-frames 3
+--headers` over 3-frame encodes of 16x16 to 64x64 pictures (every preset
+and tool) adds header-only seeds (parameter sets, sequence headers, a VP9
+superframe index, IVF headers, truncated first packets), run with
+`-max_len=4096` and the codec's dictionary `dict/<codec>.dict` (start
+codes, NAL/OBU header bytes, VP9 frame markers and superframe markers).
 
 ## Build and run
 
@@ -45,20 +53,34 @@ memory-capped scope, at most 25 minutes):
 
 ```sh
 systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 \
-  "$BINARY" "$CORPUS" -dict=fuzz/fuzz.dict -max_len=65536 -rss_limit_mb=4096 \
+  "$BINARY" "$CORPUS" -dict=fuzz/dict/$CODEC.dict -max_len=65536 -rss_limit_mb=4096 \
   -malloc_limit_mb=2048 -timeout=10 -max_total_time=1500 -fork=3 \
   -ignore_crashes=1 -ignore_ooms=1 -ignore_timeouts=1 \
   -artifact_prefix="$ARTIFACTS/" -print_final_stats=1
 ```
 
-(`fuzz.dict` holds the packet separator, start codes and the IVF
-signature). A clean exit proves nothing by itself: read the final
+(`dict/common.dict` holds the entries every codec's dictionary shares). A clean exit proves nothing by itself: read the final
 `oom/timeout/crash` counters and the artifact directory. A timeout is a
 finding only when the decode time is out of proportion to the coded picture
 area (a valid 49-frame 832x480 VVC stream takes ~45 s under the sanitizer).
 Replay an artifact with `"$BINARY" ARTIFACT`, minimise it with
 `-minimize_crash=1 -runs=N`, fix the cause, and land the minimised input as
 a regression test in the decoder crate.
+
+## Replay, natively and as WASM
+
+`replay/` runs inputs through the same drivers without libFuzzer, so the
+decoders can be checked as the browser runs them:
+
+```sh
+cd fuzz/replay
+RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-wasip1
+python3 pack.py CORPUS_DIR... | node ../../tools/ci/wasi-run.mjs \
+  "$CARGO_TARGET_DIR"/wasm32-wasip1/release/nc-fuzz-replay.wasm CODEC
+```
+
+A panic traps the module; the last `input N` line on stderr names the
+input (`pack.py` prints the index-to-path map).
 
 Campaign results: `docs/results/fuzzing.md`; working log:
 `docs/handoff/astra-fuzz.md`.

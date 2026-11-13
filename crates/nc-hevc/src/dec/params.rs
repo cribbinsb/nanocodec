@@ -34,6 +34,11 @@ const MAX_LUMA_SAMPLES: u64 = 35_651_584;
 /// Tile columns / rows limit (level 6.2, Table A.8).
 const MAX_TILE_COLUMNS: u32 = 20;
 const MAX_TILE_ROWS: u32 = 22;
+/// Largest log2 size difference in the SPS block-size syntax: the 64x64 CTB
+/// over the 8x8 minimum coding block (§7.4.3.2.1).
+const MAX_LOG2_DIFF: u32 = 3;
+/// Largest `delta_poc_s*_minus1` / `abs_delta_rps_minus1` (§7.4.8).
+const MAX_DELTA_POC_MINUS1: u32 = (1 << 15) - 1;
 /// `aspect_ratio_idc` that carries an explicit sample aspect ratio.
 const EXTENDED_SAR: u32 = 255;
 
@@ -109,7 +114,10 @@ impl ScalingLists {
                 } else {
                     // scaling_list_pred_mode_flag 0: copy a previous matrix
                     // of this size, or the default one for delta 0.
-                    let delta = r.read_ue()? as usize * step;
+                    // §7.4.5: scaling_list_pred_matrix_id_delta <= matrixId / step.
+                    let delta = r.read_ue_max(matrix as u32, "scaling_list_pred_matrix_id_delta")?
+                        as usize
+                        * step;
                     lists[size][matrix] = if delta == 0 {
                         defaults[size][matrix].clone()
                     } else {
@@ -294,7 +302,9 @@ impl Sps {
         if r.read_bit()? {
             for c in &mut crop {
                 // Offsets count chroma samples (SubWidthC = SubHeightC = 2).
-                *c = 2 * r.read_ue()? as usize;
+                // Bounded before doubling, so the sums below cannot wrap a
+                // 32-bit `usize` (WASM) into a valid-looking window.
+                *c = 2 * r.read_ue_max(width.max(height), "conf_win_offset")? as usize;
             }
         }
         if crop[0] + crop[1] >= width as usize || crop[2] + crop[3] >= height as usize {
@@ -303,31 +313,37 @@ impl Sps {
         if r.read_ue()? != 0 || r.read_ue()? != 0 {
             return Err(DecodeError::Unsupported("bit depth other than 8"));
         }
-        let log2_max_poc_lsb = r.read_ue()? + 4;
-        if log2_max_poc_lsb > 16 {
-            return Err(DecodeError::Malformed("log2_max_pic_order_cnt_lsb_minus4"));
-        }
+        // §7.4.3.2.1: log2_max_pic_order_cnt_lsb_minus4 is in 0..=12.
+        let log2_max_poc_lsb = r.read_ue_max(12, "log2_max_pic_order_cnt_lsb_minus4")? + 4;
         let all_layers = r.read_bit()?;
         let mut dpb = [(1, 0, None); MAX_SUB_LAYERS];
         let first = if all_layers { 0 } else { max_sub_layers - 1 };
         for entry in &mut dpb[first..max_sub_layers] {
-            let buffering = r.read_ue()? as usize + 1;
-            let reorder = r.read_ue()? as usize;
+            let buffering =
+                r.read_ue_max(MAX_DPB as u32, "sps_max_dec_pic_buffering_minus1")? as usize + 1;
+            let reorder = r.read_ue_max(MAX_DPB as u32, "sps_max_num_reorder_pics")? as usize;
             let latency = r.read_ue()?;
             if buffering > MAX_DPB || reorder >= buffering {
                 return Err(DecodeError::Malformed("sub-layer ordering info"));
             }
             // SpsMaxLatencyPictures = reorder + latency_increase_plus1 - 1.
-            let limit = (latency != 0).then(|| reorder as u32 + latency - 1);
+            // Saturating: a limit beyond u32 never binds.
+            let limit = (latency != 0).then(|| (latency - 1).saturating_add(reorder as u32));
             *entry = (buffering, reorder, limit);
         }
         for layer in 0..first {
             dpb[layer] = dpb[first];
         }
-        let log2_min_cb = r.read_ue()? + 3;
-        let log2_ctb = log2_min_cb + r.read_ue()?;
-        let log2_min_tb = r.read_ue()? + 2;
-        let log2_max_tb = log2_min_tb + r.read_ue()?;
+        // §7.4.3.2.1 bounds each size by the 64x64 CTB, which keeps the
+        // sums and shifts below in range; the checks after them are exact.
+        let log2_min_cb =
+            r.read_ue_max(MAX_LOG2_DIFF, "log2_min_luma_coding_block_size_minus3")? + 3;
+        let log2_ctb = log2_min_cb
+            + r.read_ue_max(MAX_LOG2_DIFF, "log2_diff_max_min_luma_coding_block_size")?;
+        let log2_min_tb =
+            r.read_ue_max(MAX_LOG2_DIFF, "log2_min_luma_transform_block_size_minus2")? + 2;
+        let log2_max_tb = log2_min_tb
+            + r.read_ue_max(MAX_LOG2_DIFF, "log2_diff_max_min_luma_transform_block_size")?;
         if !(4..=6).contains(&log2_ctb)
             || log2_min_cb > log2_ctb
             || log2_min_tb >= log2_min_cb
@@ -356,8 +372,13 @@ impl Sps {
         let pcm = if r.read_bit()? {
             let bit_depth_luma = r.read_bits(4)? + 1;
             let bit_depth_chroma = r.read_bits(4)? + 1;
-            let log2_min = r.read_ue()? + 3;
-            let log2_max = log2_min + r.read_ue()?;
+            let log2_min =
+                r.read_ue_max(MAX_LOG2_DIFF, "log2_min_pcm_luma_coding_block_size_minus3")? + 3;
+            let log2_max = log2_min
+                + r.read_ue_max(
+                    MAX_LOG2_DIFF,
+                    "log2_diff_max_min_pcm_luma_coding_block_size",
+                )?;
             if bit_depth_luma > 8 || bit_depth_chroma > 8 || log2_max > 5.min(log2_ctb) {
                 return Err(DecodeError::Malformed("PCM parameters"));
             }
@@ -493,7 +514,8 @@ pub(super) fn short_term_set(
     if index != 0 && r.read_bit()? {
         // inter_ref_pic_set_prediction_flag: predict from a previous set.
         let delta_idx = if in_slice {
-            r.read_ue()? as usize + 1
+            // §7.4.8: delta_idx_minus1 is in 0..=idx - 1.
+            r.read_ue_max(index as u32, "delta_idx_minus1")? as usize + 1
         } else {
             1
         };
@@ -502,10 +524,8 @@ pub(super) fn short_term_set(
             .and_then(|i| sets.get(i))
             .ok_or(DecodeError::Malformed("delta_idx_minus1"))?;
         let sign = r.read_bit()?;
-        let magnitude = r.read_ue()? + 1;
-        if magnitude > 1 << 15 {
-            return Err(DecodeError::Malformed("abs_delta_rps_minus1"));
-        }
+        // §7.4.8: abs_delta_rps_minus1 is in 0..=2^15 - 1.
+        let magnitude = r.read_ue_max(MAX_DELTA_POC_MINUS1, "abs_delta_rps_minus1")? + 1;
         let delta_rps = if sign {
             -(magnitude as i32)
         } else {
@@ -561,20 +581,21 @@ pub(super) fn short_term_set(
         }
         return Ok(set);
     }
-    let negative = r.read_ue()? as usize;
-    let positive = r.read_ue()? as usize;
+    let negative = r.read_ue_max(MAX_DPB as u32, "num_negative_pics")? as usize;
+    let positive = r.read_ue_max(MAX_DPB as u32, "num_positive_pics")? as usize;
     if negative + positive >= MAX_DPB {
         return Err(DecodeError::Malformed("reference picture set size"));
     }
     let mut set = ShortTermSet::default();
     let mut poc = 0i32;
     for _ in 0..negative {
-        poc -= r.read_ue()? as i32 + 1;
+        // §7.4.8: delta_poc_s0_minus1 is in 0..=2^15 - 1.
+        poc -= r.read_ue_max(MAX_DELTA_POC_MINUS1, "delta_poc_s0_minus1")? as i32 + 1;
         set.negative.push((poc, r.read_bit()?));
     }
     poc = 0;
     for _ in 0..positive {
-        poc += r.read_ue()? as i32 + 1;
+        poc += r.read_ue_max(MAX_DELTA_POC_MINUS1, "delta_poc_s1_minus1")? as i32 + 1;
         set.positive.push((poc, r.read_bit()?));
     }
     if poc > 1 << 16 || set.negative.last().is_some_and(|&(d, _)| d < -(1 << 16)) {
@@ -595,7 +616,7 @@ fn tile_boundaries(
     }
     let mut sizes = Vec::with_capacity(count);
     for _ in 0..count - 1 {
-        sizes.push(r.read_ue()? + 1);
+        sizes.push(r.read_ue_max(MAX_SIDE, "tile size")? + 1);
     }
     Ok(Some(sizes))
 }
@@ -705,8 +726,10 @@ impl Pps {
         let extra_slice_header_bits = r.read_bits(3)?;
         let sign_hiding = r.read_bit()?;
         let cabac_init_present = r.read_bit()?;
-        let l0 = r.read_ue()? as usize + 1;
-        let l1 = r.read_ue()? as usize + 1;
+        let l0 =
+            r.read_ue_max(MAX_DPB as u32, "num_ref_idx_l0_default_active_minus1")? as usize + 1;
+        let l1 =
+            r.read_ue_max(MAX_DPB as u32, "num_ref_idx_l1_default_active_minus1")? as usize + 1;
         if l0 > MAX_DPB - 1 || l1 > MAX_DPB - 1 {
             return Err(DecodeError::Malformed("num_ref_idx_default_active"));
         }
@@ -737,8 +760,8 @@ impl Pps {
         let tiles_enabled = r.read_bit()?;
         let entropy_sync = r.read_bit()?;
         let tiles = if tiles_enabled {
-            let columns = r.read_ue()? + 1;
-            let rows = r.read_ue()? + 1;
+            let columns = r.read_ue_max(MAX_TILE_COLUMNS, "num_tile_columns_minus1")? + 1;
+            let rows = r.read_ue_max(MAX_TILE_ROWS, "num_tile_rows_minus1")? + 1;
             if columns > MAX_TILE_COLUMNS || rows > MAX_TILE_ROWS || columns * rows < 2 {
                 return Err(DecodeError::Malformed("tile count"));
             }
@@ -770,10 +793,8 @@ impl Pps {
             None
         };
         let lists_modification = r.read_bit()?;
-        let log2_parallel_merge_level = r.read_ue()? + 2;
-        if log2_parallel_merge_level > 6 {
-            return Err(DecodeError::Malformed("log2_parallel_merge_level"));
-        }
+        // §7.4.3.3: Log2ParMrgLevel is at most CtbLog2SizeY (6).
+        let log2_parallel_merge_level = r.read_ue_max(4, "log2_parallel_merge_level_minus2")? + 2;
         let slice_header_extension = r.read_bit()?;
         no_extensions(&mut r)?;
         Ok((
@@ -843,5 +864,52 @@ mod tests {
             vec![0, 2, 7, 10]
         );
         assert!(Tiles::boundaries(2, Some(&[10]), 10).is_err());
+    }
+
+    /// An SPS (§7.3.2.2) up to the coded size, 64x64, then `rest`.
+    fn sps_prefix(rest: impl FnOnce(&mut nc_common::BitWriter)) -> Vec<u8> {
+        let mut w = nc_common::BitWriter::new();
+        w.put_bits(0, 4); // sps_video_parameter_set_id
+        w.put_bits(0, 3); // sps_max_sub_layers_minus1
+        w.put_bit(true); // sps_temporal_id_nesting_flag
+        for _ in 0..3 {
+            w.put_bits(0, 32); // profile_tier_level: 96 bits
+        }
+        w.put_ue(0); // sps_seq_parameter_set_id
+        w.put_ue(1); // chroma_format_idc: 4:2:0
+        w.put_ue(64);
+        w.put_ue(64);
+        rest(&mut w);
+        w.put_bits(0, 32); // never reached
+        while !w.is_byte_aligned() {
+            w.put_bit(false);
+        }
+        w.into_bytes()
+    }
+
+    /// Values near `u32::MAX` used to wrap in `+ 4` and in the window sums
+    /// (on a 32-bit `usize`, WASM) before any range check.
+    #[test]
+    fn sps_values_are_bounded_before_arithmetic() {
+        let window = sps_prefix(|w| {
+            w.put_bit(true); // conformance_window_flag
+            for _ in 0..4 {
+                w.put_ue(0x8000_0000);
+            }
+        });
+        assert_eq!(
+            Sps::parse(&window).err(),
+            Some(DecodeError::Malformed("conf_win_offset"))
+        );
+        let poc_lsb = sps_prefix(|w| {
+            w.put_bit(false); // conformance_window_flag
+            w.put_ue(0); // bit_depth_luma_minus8
+            w.put_ue(0); // bit_depth_chroma_minus8
+            w.put_ue(u32::MAX - 1); // log2_max_pic_order_cnt_lsb_minus4
+        });
+        assert_eq!(
+            Sps::parse(&poc_lsb).err(),
+            Some(DecodeError::Malformed("log2_max_pic_order_cnt_lsb_minus4"))
+        );
     }
 }

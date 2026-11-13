@@ -6,7 +6,9 @@ configuration byte, then either packets separated by `NCPK` (browser / C API
 paths, configuration 0 or 1) or a whole container file (command-line path,
 configuration 2, or 3 for --all-layers): Annex-B for H.264/HEVC/VVC, IVF for
 AV1/VP9/AV2. Every stream named on the command line yields one seed of each
-form, holding as many leading frames as fit in --max-len.
+form, holding as many leading frames as fit in --max-len (at most
+--max-frames); --headers adds header-only seeds (parameter sets, sequence
+headers, a VP9 superframe index, IVF headers, truncated first packets).
 
     fuzz/build_seeds.py --codec vvc --out DIR STREAM...
 
@@ -28,7 +30,7 @@ IVF_HEADER, IVF_FRAME_HEADER = 32, 12
 IVF_CODECS = {"av1": b"AV01", "vp9": b"VP90", "av2": b"AV02"}
 ANNEX_B_CODECS = ("h264", "hevc", "vvc")
 START_CODE = b"\x00\x00\x00\x01"
-# Frames per seed: enough for references, reordering and a layer cycle,
+# Default frames per seed: enough for references, reordering and a layer cycle,
 # few enough that a sanitizer build decodes a seed well inside the 10 s
 # timeout (a 49-frame 832x480 VVC vector takes ~45 s under ASan).
 MAX_FRAMES = 8
@@ -96,18 +98,81 @@ def ivf_file(fourcc: bytes, frames: list[bytes]) -> bytes:
     return header + body
 
 
-def leading(frames: list[bytes], cost, max_len: int) -> list[bytes]:
-    """The longest prefix of `frames` (at most MAX_FRAMES) whose encoding
+def leading(frames: list[bytes], cost, max_len: int, max_frames: int) -> list[bytes]:
+    """The longest prefix of `frames` (at most `max_frames`) whose encoding
     (`cost`) fits."""
     taken = []
-    for frame in frames[:MAX_FRAMES]:
+    for frame in frames[:max_frames]:
         if cost(taken + [frame]) > max_len:
             break
         taken.append(frame)
     return taken
 
 
-def seeds_for(codec: str, path: Path, max_len: int) -> list[bytes]:
+def leb128(data: bytes, at: int) -> tuple[int, int]:
+    """An AV1/AV2 `leb128()` value at `at` and the offset after it."""
+    value = 0
+    for i in range(8):
+        byte = data[at + i]
+        value |= (byte & 0x7F) << (7 * i)
+        if not byte & 0x80:
+            return value, at + i + 1
+    raise ValueError("leb128 too long")
+
+
+def obus(codec: str, packet: bytes) -> list[tuple[int, bytes]]:
+    """(obu_type, whole OBU) of a low-overhead temporal unit. AV1 (§5.3.1):
+    header, then a size; AV2 (§5): a size covering the header, whose type
+    is bits 2..6 of its first byte."""
+    units, at = [], 0
+    while at < len(packet):
+        if codec == "av2":
+            size, payload = leb128(packet, at)
+            units.append(((packet[payload] >> 2) & 31, packet[at:payload + size]))
+            at = payload + size
+            continue
+        header = packet[at]
+        start, at = at, at + 1 + ((header >> 2) & 1)
+        if not header & 2:
+            raise ValueError("OBU without size")
+        size, at = leb128(packet, at)
+        at += size
+        units.append(((header >> 3) & 15, packet[start:at]))
+    return units
+
+
+# OBU types that carry only headers: AV1 temporal delimiter, sequence
+# header, metadata, padding (§6.2.2); AV2 sequence header, temporal
+# delimiter, multi-stream decoder operation.
+HEADER_OBUS = {"av1": (1, 2, 5, 15), "av2": (1, 2, 20)}
+# Bytes of a first packet kept by the truncated header seeds.
+TRUNCATIONS = (16, 48, 128)
+SUPERFRAME_MARKER_MASK, SUPERFRAME_MARKER = 0xE0, 0xC0
+
+
+def header_packets(codec: str, frames: list[bytes]) -> list[bytes]:
+    """Packets holding headers only: parameter sets, sequence-header OBUs,
+    a VP9 superframe index, and truncations of the first packet."""
+    first = frames[0]
+    packets = [first[:n] for n in TRUNCATIONS if n < len(first)]
+    if codec in ANNEX_B_CODECS:
+        parameters = [n for n in nal_units(first) if not is_vcl(codec, n)]
+        if parameters:
+            packets.append(b"".join(START_CODE + n for n in parameters))
+    elif codec in HEADER_OBUS:
+        kept = [unit for kind, unit in obus(codec, first) if kind in HEADER_OBUS[codec]]
+        if kept:
+            packets.append(b"".join(kept))
+    else:
+        last = first[-1]
+        if last & SUPERFRAME_MARKER_MASK == SUPERFRAME_MARKER:
+            index_len = 2 + (((last >> 3) & 3) + 1) * ((last & 7) + 1)
+            packets.append(first[-index_len:])
+    return packets
+
+
+def seeds_for(codec: str, path: Path, max_len: int, max_frames: int,
+              headers: bool) -> list[bytes]:
     data = path.read_bytes()
     if data[:4] == b"DKIF":
         frames = ivf_frames(data)
@@ -115,21 +180,31 @@ def seeds_for(codec: str, path: Path, max_len: int) -> list[bytes]:
         frames = access_units(codec, data)
     else:
         raise ValueError(f"{path}: {codec} streams must be IVF")
-    packets = leading(frames, lambda f: 1 + len(SEPARATOR.join(f)), max_len)
-    if not packets:
+    if not frames:
         return []
-    seeds = [bytes([CONFIG_BROWSER]) + SEPARATOR.join(packets)]
+    packets = leading(frames, lambda f: 1 + len(SEPARATOR.join(f)), max_len, max_frames)
+    seeds = [bytes([CONFIG_BROWSER]) + SEPARATOR.join(packets)] if packets else []
     if codec in ANNEX_B_CODECS:
-        container = leading(frames, lambda f: 1 + sum(map(len, f)), max_len)
-        seeds.append(bytes([CONFIG_CLI]) + b"".join(container))
+        container = leading(frames, lambda f: 1 + sum(map(len, f)), max_len, max_frames)
+        if container:
+            seeds.append(bytes([CONFIG_CLI]) + b"".join(container))
     else:
         fourcc = IVF_CODECS[codec]
-        container = leading(frames, lambda f: 1 + len(ivf_file(fourcc, f)), max_len)
+        container = leading(frames, lambda f: 1 + len(ivf_file(fourcc, f)), max_len, max_frames)
         if container:
             seeds.append(bytes([CONFIG_CLI]) + ivf_file(fourcc, container))
             if codec in ("av1", "vp9"):
                 seeds.append(bytes([CONFIG_CLI_ALL_LAYERS]) + ivf_file(fourcc, container))
-    return seeds
+    if headers:
+        for packet in header_packets(codec, frames):
+            seeds.append(bytes([CONFIG_BROWSER]) + packet)
+            if codec in ANNEX_B_CODECS:
+                seeds.append(bytes([CONFIG_CLI]) + packet)
+            else:
+                seeds.append(bytes([CONFIG_CLI]) + ivf_file(IVF_CODECS[codec], [packet]))
+        if codec not in ANNEX_B_CODECS:
+            seeds.append(bytes([CONFIG_CLI]) + ivf_file(IVF_CODECS[codec], []))
+    return [seed for seed in seeds if len(seed) <= max_len]
 
 
 def main() -> int:
@@ -138,13 +213,16 @@ def main() -> int:
                         choices=sorted([*ANNEX_B_CODECS, *IVF_CODECS]))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--max-len", type=int, default=65536)
+    parser.add_argument("--max-frames", type=int, default=MAX_FRAMES)
+    parser.add_argument("--headers", action="store_true",
+                        help="also write header-only and truncated seeds")
     parser.add_argument("streams", type=Path, nargs="+")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     written = 0
     for stream in args.streams:
         try:
-            seeds = seeds_for(args.codec, stream, args.max_len)
+            seeds = seeds_for(args.codec, stream, args.max_len, args.max_frames, args.headers)
         except (OSError, ValueError, IndexError) as error:
             print(f"skip {stream}: {error}", file=sys.stderr)
             continue

@@ -1,0 +1,17 @@
+# VP9 uncompressed header starts (§6.2): key, inter, show-existing,
+# the sync code, and superframe index markers (Annex B).
+key="\x82"
+key_intra_only_profile1="\xa2"
+inter="\x86"
+show_existing="\x88"
+sync="\x49\x83\x42"
+superframe_2x1="\xc1"
+superframe_2x2="\xc9"
+superframe_3x2="\xca"
+superframe_8x4="\xdf"
+fourcc="VP90"
+# Shared framing entries (dict/common.dict).
+sep="NCPK"
+sc3="\x00\x00\x01"
+sc4="\x00\x00\x00\x01"
+ivf="DKIF"

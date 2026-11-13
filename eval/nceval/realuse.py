@@ -368,6 +368,8 @@ def add_periodic_pulse(runner: "Runner", anchor: Family, test: Family, clips: li
     curves = runner.measure(f"{label} periodic keys ({PERIODIC_KEY_SECONDS:g} s)",
                             [anchor, test], clips, frames, PERIODIC_RUNGS, PERIODIC_KEY_SECONDS)
     for clip in clips:
+        if clip.name not in per_clip:
+            continue  # no row at the level (our encoder refused the clip there): nothing to fill
         a, t = curves[(anchor.name, clip.name)], curves[(test.name, clip.name)]
         if anchor.own:
             a, t, _, _ = jreal.pair_rungs(a, t)

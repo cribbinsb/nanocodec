@@ -16,6 +16,8 @@ pub(super) const MAX_DPB_FRAMES: usize = 16;
 /// Largest picture accepted, in macroblocks: level 5.2's `MaxFS` (Table A-1),
 /// which bounds memory for hostile input as well.
 const MAX_FRAME_MBS: usize = 36_864;
+/// Luma samples per macroblock side.
+const MB_SIZE: usize = 16;
 /// Largest picture side in macroblocks (`sqrt(8 * MaxFS)`, §A.3.1 item f).
 const MAX_SIDE_MBS: usize = 543;
 /// `log2_max_frame_num_minus4` and `log2_max_pic_order_cnt_lsb_minus4` are 0..=12.
@@ -103,8 +105,8 @@ impl Sps {
     /// The visible (cropped) size.
     pub fn visible_size(&self) -> (usize, usize) {
         (
-            self.width_mbs * 16 - self.crop.left - self.crop.right,
-            self.height_mbs * 16 - self.crop.top - self.crop.bottom,
+            self.width_mbs * MB_SIZE - self.crop.left - self.crop.right,
+            self.height_mbs * MB_SIZE - self.crop.top - self.crop.bottom,
         )
     }
 
@@ -250,19 +252,26 @@ fn parse_crop(
         return Ok(Crop::default());
     }
     let unit = if monochrome { 1 } else { 2 };
-    let mut offset = || -> Result<usize> { Ok(r.ue()? as usize * unit) };
+    // An offset beyond the coded size is invalid anyway (eqs. 7-19..7-22);
+    // bounding it first keeps the products and sums below from overflowing
+    // a 32-bit `usize` (WASM).
+    let largest = (width_mbs.max(height_mbs) * MB_SIZE) as u32;
+    let mut offset =
+        || -> Result<usize> { Ok(r.ue_max(largest, "frame_crop_offset")? as usize * unit) };
     let crop = Crop {
         left: offset()?,
         right: offset()?,
         top: offset()?,
         bottom: offset()?,
     };
-    if crop.left + crop.right >= width_mbs * 16 || crop.top + crop.bottom >= height_mbs * 16 {
+    if crop.left + crop.right >= width_mbs * MB_SIZE
+        || crop.top + crop.bottom >= height_mbs * MB_SIZE
+    {
         return Err(DecodeError::Malformed("frame cropping"));
     }
     // Pictures are handed out as 4:2:0, which needs an even visible size.
-    if !(width_mbs * 16 - crop.left - crop.right).is_multiple_of(2)
-        || !(height_mbs * 16 - crop.top - crop.bottom).is_multiple_of(2)
+    if !(width_mbs * MB_SIZE - crop.left - crop.right).is_multiple_of(2)
+        || !(height_mbs * MB_SIZE - crop.top - crop.bottom).is_multiple_of(2)
     {
         return Err(DecodeError::Unsupported("odd cropped 4:0:0 size"));
     }
@@ -337,4 +346,46 @@ fn parse_hrd(r: &mut Reader<'_>) -> Result<()> {
     // dpb_output_delay_length_minus1, time_offset_length.
     r.bits(20)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nc_common::BitWriter;
+
+    /// A Baseline SPS of one macroblock whose crop offsets are `offset`.
+    fn sps_with_crop(offset: u32) -> Vec<u8> {
+        let mut w = BitWriter::new();
+        w.put_bits(66, 8); // profile_idc: Baseline
+        w.put_bits(0, 8); // constraint flags
+        w.put_bits(30, 8); // level_idc
+        w.put_ue(0); // seq_parameter_set_id
+        w.put_ue(0); // log2_max_frame_num_minus4
+        w.put_ue(2); // pic_order_cnt_type
+        w.put_ue(1); // max_num_ref_frames
+        w.put_bit(false); // gaps_in_frame_num_value_allowed_flag
+        w.put_ue(0); // pic_width_in_mbs_minus1
+        w.put_ue(0); // pic_height_in_map_units_minus1
+        w.put_bit(true); // frame_mbs_only_flag
+        w.put_bit(true); // direct_8x8_inference_flag
+        w.put_bit(true); // frame_cropping_flag
+        for _ in 0..4 {
+            w.put_ue(offset);
+        }
+        while !w.is_byte_aligned() {
+            w.put_bit(false);
+        }
+        w.into_bytes()
+    }
+
+    /// Offsets near 2^31 used to be multiplied and summed before the size
+    /// check, which overflows a 32-bit `usize` (WASM); they are now
+    /// rejected as they are read.
+    #[test]
+    fn crop_offsets_are_bounded_before_arithmetic() {
+        assert_eq!(
+            parse(&sps_with_crop(0x7fff_ffff)).err(),
+            Some(DecodeError::Malformed("frame_crop_offset"))
+        );
+    }
 }

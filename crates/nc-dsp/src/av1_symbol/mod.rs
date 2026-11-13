@@ -75,6 +75,9 @@ pub fn av1_find_symbol<const N: usize>(
     value: u32,
 ) -> Av1SymbolInterval {
     debug_assert!(check_contract(icdf, symbols) && value < range && range <= 0xffff);
+    if N <= SMALL_ALPHABET {
+        return find_small_symbol(icdf, symbols, range, value);
+    }
     #[cfg(all(target_arch = "x86_64", not(miri)))]
     return sse2::find_symbol(icdf, symbols, range, value);
     #[cfg(all(target_arch = "aarch64", not(miri)))]
@@ -83,6 +86,47 @@ pub fn av1_find_symbol<const N: usize>(
     return simd128::find_symbol(icdf, symbols, range, value);
     #[allow(unreachable_code)]
     reference::find_symbol(icdf, symbols, range, value)
+}
+
+/// Alphabets this small (the coefficient tokens' 3 and 4, and binary
+/// symbols) take [`find_small_symbol`].
+const SMALL_ALPHABET: usize = 4;
+
+/// [`av1_find_symbol`] of at most 4 symbols in scalar registers: their (at
+/// most three nonzero) bounds, the symbol as the count of bounds above
+/// `value` (they fall with the symbol), and the interval by selects. The
+/// vector search stored the bounds and reloaded two of them, on the serial
+/// chain from one symbol to the next.
+#[inline]
+fn find_small_symbol<const N: usize>(
+    icdf: &[u16; N],
+    symbols: usize,
+    range: u32,
+    value: u32,
+) -> Av1SymbolInterval {
+    let scale = range >> 8;
+    // Bound `i`, 0 from the last symbol on.
+    let bound = |i: usize| -> u32 {
+        if i + 1 < symbols && i < N {
+            ((scale * (u32::from(icdf[i]) >> PROBABILITY_SHIFT)) >> (7 - PROBABILITY_SHIFT))
+                + MIN_PROBABILITY * (symbols - 1 - i) as u32
+        } else {
+            0
+        }
+    };
+    let (b0, b1, b2) = (bound(0), bound(1), bound(2));
+    let symbol = usize::from(value < b0) + usize::from(value < b1) + usize::from(value < b2);
+    let (lower, upper) = match symbol {
+        0 => (b0, range),
+        1 => (b1, b0),
+        2 => (b2, b1),
+        _ => (0, b2),
+    };
+    Av1SymbolInterval {
+        symbol,
+        lower,
+        upper,
+    }
 }
 
 /// Move inverse CDF `icdf` of a `symbols`-symbol alphabet towards

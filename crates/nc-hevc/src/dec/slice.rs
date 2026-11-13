@@ -178,17 +178,16 @@ pub(super) fn parse(
             return Err(DecodeError::Malformed("num_entry_point_offsets"));
         }
         if entry_points > 0 {
-            let bits = r.read_ue()? + 1;
-            if bits > 32 {
-                return Err(DecodeError::Malformed("offset_len_minus1"));
-            }
+            // §7.4.7.1: offset_len_minus1 is in 0..=31.
+            let bits = r.read_ue_max(31, "offset_len_minus1")? + 1;
             // Substreams are contiguous; the decoder finds each one where
             // the previous ends, so the offsets are only skipped.
             r.skip_bits(entry_points * bits as usize)?;
         }
     }
     if pps.slice_header_extension {
-        let length = r.read_ue()? as usize;
+        // §7.4.7.1: slice_segment_header_extension_length is in 0..=256.
+        let length = r.read_ue_max(256, "slice_segment_header_extension_length")? as usize;
         r.skip_bits(8 * length)?;
     }
     // byte_alignment(): a one bit then zeros.
@@ -268,7 +267,7 @@ fn independent(
         num_ref_idx[..lists].copy_from_slice(&pps.num_ref_idx_default[..lists]);
         if r.read_bit()? {
             for n in &mut num_ref_idx[..lists] {
-                *n = r.read_ue()? as usize + 1;
+                *n = r.read_ue_max(MAX_DPB as u32, "num_ref_idx_active_minus1")? as usize + 1;
                 if *n > MAX_DPB - 1 {
                     return Err(DecodeError::Malformed("num_ref_idx_active_minus1"));
                 }
@@ -392,9 +391,9 @@ fn long_term_entries(
     let from_sps = if candidates.is_empty() {
         0
     } else {
-        r.read_ue()? as usize
+        r.read_ue_max(MAX_DPB as u32, "num_long_term_sps")? as usize
     };
-    let from_slice = r.read_ue()? as usize;
+    let from_slice = r.read_ue_max(MAX_DPB as u32, "num_long_term_pics")? as usize;
     if from_sps > candidates.len() || from_sps + from_slice >= MAX_DPB {
         return Err(DecodeError::Malformed("num_long_term_pics"));
     }

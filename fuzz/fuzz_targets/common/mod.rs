@@ -18,6 +18,8 @@ use std::hint::black_box;
 
 use nc_common::{Picture, PlaneIndex, ShownPicture};
 
+pub mod drive;
+
 /// The command-line decoder's container readers, compiled from the CLI's own
 /// source so the fuzzer exercises the exact framing code it ships.
 #[allow(

@@ -1,0 +1,14 @@
+# AV2 OBUs (§5): a size covering the header, then obu_type << 2.
+td="\x01\x08"
+seq="\x04"
+tile_group="\x10"
+closed_loop_key="\x1c"
+msdo="\x50"
+ext_flag="\x80"
+global_layer="\x1f"
+fourcc="AV02"
+# Shared framing entries (dict/common.dict).
+sep="NCPK"
+sc3="\x00\x00\x01"
+sc4="\x00\x00\x00\x01"
+ivf="DKIF"
