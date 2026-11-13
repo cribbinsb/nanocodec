@@ -1,6 +1,6 @@
 # Bitrate vs encode speed
 
-<sub>Updated 2026-11-13, build 730e4e16 (H.264: 399e5c44; VP9 Faster, VP9 Fastest: 7abbc815; H.264 Fast, VP9, VP9 Fast: 7eb909e8; VVC: 8d1a6af4; AV2 Fast: a566db89; AV1 Fast: de63c65f; H.264 Faster, HEVC, HEVC Fast, AV1, VVC Fast, AV1 Faster, HEVC Faster, H.264 Fastest: e122b42b; AV2: ee584d1c); AV2 timed on 3a3d48f5 (same streams); H.264 Faster, H.264 Fastest, HEVC, HEVC Fast, HEVC Faster, AV1, AV1 Faster, VVC Fast, H.264 Fast, VP9, VP9 Fast timed on 5a825a5b (same streams)</sub>
+<sub>Updated 2026-11-13, build 730e4e16 (H.264: 399e5c44; VP9 Faster, VP9 Fastest: 7abbc815; H.264 Fast, VP9, VP9 Fast: 7eb909e8; AV2 Fast: a566db89; VVC, VVC Fast: cba4292f; AV1 Fast: de63c65f; H.264 Faster, HEVC, HEVC Fast, AV1, AV1 Faster, HEVC Faster, H.264 Fastest: e122b42b; AV2: ee584d1c); AV2 timed on 3a3d48f5 (same streams); H.264 Faster, H.264 Fastest, HEVC, HEVC Fast, HEVC Faster, AV1, AV1 Faster, H.264 Fast, VP9, VP9 Fast timed on 5a825a5b (same streams)</sub>
 
 ![bitrate vs speed](bd-vs-speed.svg)
 
@@ -10,12 +10,12 @@ The same on x86 (one Ryzen 9 5950X core):
 
 | Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | per-clip IQR (BD-J) | fps (Jetson, 1 core) | speed vs x264 medium | fps (x86, 1 core) | x86 speed vs x264 medium | clips | notes |
 |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---|
-| **VVC** | -54.0% | -55.0% | -60.2% | -59.3 … -45.9 | 27.5 | 1.03× | 67.5 | 1.00× | 11/11 | Pareto; Pareto x86 |
+| **VVC** | -54.0% | -55.0% | -60.2% | -59.3 … -45.9 | 27.9 | 1.05× | 71.8 | 1.06× | 11/11 | Pareto; Pareto x86 |
 | **AV2** | -53.7% | -57.7% | -59.7% | -57.7 … -45.6 | 31.5 | 1.18× | 85.5 | 1.27× | 11/11 | Pareto; Pareto x86 |
 | **AV1** | -50.9% | -55.0% | -54.8% | -53.3 … -43.5 | 41.1 | 1.54× | 102.6 | 1.52× | 11/11 | Pareto; Pareto x86 |
 | **HEVC** | -49.3% | -50.1% | -55.7% | -55.6 … -42.2 | 51.0 | 1.91× | 121.0 | 1.79× | 11/11 | Pareto; Pareto x86 |
 | **VP9** | -48.1% | -51.9% | -50.9% | -52.8 … -40.3 | 34.4 | 1.29× | 94.2 | 1.39× | 11/11 |  |
-| **VVC Fast** | -46.4% | -45.8% | -53.2% | -52.2 … -38.6 | 46.8 | 1.75× | 107.5 | 1.59× | 11/11 |  |
+| **VVC Fast** | -46.4% | -45.8% | -53.2% | -52.2 … -38.6 | 47.3 | 1.77× | 115.4 | 1.71× | 11/11 |  |
 | **AV2 Fast** | -46.2% | -48.4% | -51.8% | -51.8 … -38.0 | 44.1 | 1.65× | 125.4 | 1.86× | 11/11 | Pareto x86 |
 | SVT-AV1 M8 | -45.5% | -49.4% | -44.5% | -48.3 … -40.1 | 14.3 | 0.53× | 45.2 | 0.62× | 11/11 | 2 rate-invalid pts |
 | **AV1 Fast** | -44.9% | -46.2% | -51.1% | -48.8 … -36.3 | 65.2 | 2.44× | 165.8 | 2.45× | 11/11 | Pareto; Pareto x86 |
@@ -110,7 +110,7 @@ Direct BD-rate of our encoders against the reference encoders and against each o
   --rc-lookahead 0 --no-scenecut --threads 1`, ABR with a 1 s VBV at each target.
   BD 0 % and speed 1× by definition.
 - **Points:** every encoder in its own real-time rate control at the same targets:
-  ours in CBR (`--bitrate`, 1 s buffer; build 730e4e16 (H.264: 399e5c44; VP9 Faster, VP9 Fastest: 7abbc815; H.264 Fast, VP9, VP9 Fast: 7eb909e8; VVC: 8d1a6af4; AV2 Fast: a566db89; AV1 Fast: de63c65f; H.264 Faster, HEVC, HEVC Fast, AV1, VVC Fast, AV1 Faster, HEVC Faster, H.264 Fastest: e122b42b; AV2: ee584d1c); AV2 timed on 3a3d48f5 (same streams); H.264 Faster, H.264 Fastest, HEVC, HEVC Fast, HEVC Faster, AV1, AV1 Faster, VVC Fast, H.264 Fast, VP9, VP9 Fast timed on 5a825a5b (same streams), its presets), openh264
+  ours in CBR (`--bitrate`, 1 s buffer; build 730e4e16 (H.264: 399e5c44; VP9 Faster, VP9 Fastest: 7abbc815; H.264 Fast, VP9, VP9 Fast: 7eb909e8; AV2 Fast: a566db89; VVC, VVC Fast: cba4292f; AV1 Fast: de63c65f; H.264 Faster, HEVC, HEVC Fast, AV1, AV1 Faster, HEVC Faster, H.264 Fastest: e122b42b; AV2: ee584d1c); AV2 timed on 3a3d48f5 (same streams); H.264 Faster, H.264 Fastest, HEVC, HEVC Fast, HEVC Faster, AV1, AV1 Faster, H.264 Fast, VP9, VP9 Fast timed on 5a825a5b (same streams), its presets), openh264
   realtime (medium complexity, CAVLC), SVT-AV1 v4.3.0 `--rtc --rc 2` (CBR, 1 s buffer),
   x264 / x265 4.2 as the anchor (zero latency, no B-frames, one thread / no pools),
   libvpx v1.16.0 VP9 and libaom v3.15.3 AV1 in realtime CBR (`--rt --end-usage=cbr

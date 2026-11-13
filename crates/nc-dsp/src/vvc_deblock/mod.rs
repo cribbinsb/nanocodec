@@ -210,6 +210,11 @@ impl LineTerms {
 }
 
 /// A segment's filter from the terms of its lines 0 and 3.
+#[allow(
+    clippy::inline_always,
+    reason = "two scalar calls per SIMD edge spill live sample vectors; keep decisions in the kernel"
+)]
+#[inline(always)]
 fn decide(lines: &[LineTerms; 2], beta: i32, tc: i32, lengths: [usize; 2]) -> LumaFilter {
     if lengths.iter().any(|&n| n > 3)
         && lines.iter().map(|l| l.long_activity).sum::<i32>() < beta

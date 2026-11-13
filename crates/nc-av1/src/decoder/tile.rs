@@ -269,7 +269,8 @@ impl<'a> FrameDecoder<'a> {
         let margin = MAX_SUPERBLOCK_MI;
         let sb_mi = sequence_tools.superblock.width_mi();
         maps.blocks.start_frame(mi_cols);
-        maps.edges.start_frame(mi_cols, mi_rows);
+        maps.edges
+            .start_frame(mi_cols, mi_rows, &header.loop_filter);
         maps.cdef.start_frame(mi_cols, mi_rows);
         if header.kind == FrameKind::Inter || header.allow_intrabc {
             maps.motion.start_frame(mi_cols, mi_rows);

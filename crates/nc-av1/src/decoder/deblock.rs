@@ -163,6 +163,9 @@ impl PlaneSides {
 /// The edge state of a frame, reused across frames.
 #[derive(Debug, Default)]
 pub(super) struct EdgeMap {
+    /// The frame is deblocked (a luma level is nonzero, as [`apply`]
+    /// tests): otherwise nothing is recorded, as nothing reads the map.
+    recording: bool,
     luma: PlaneSides,
     /// U and V share their areas (and sizes).
     chroma: PlaneSides,
@@ -178,8 +181,10 @@ impl EdgeMap {
     /// Shape the map for a frame of `mi_cols` x `mi_rows` luma units
     /// (4:2:0, both even). Stale records are never read: a unit an edge
     /// reads across from is in the right column or bottom row of an area
-    /// inside the frame, written before the filter runs.
-    pub(super) fn start_frame(&mut self, mi_cols: usize, mi_rows: usize) {
+    /// inside the frame, written before the filter runs. Frames that are
+    /// not deblocked (`lf`'s luma levels both zero) record nothing.
+    pub(super) fn start_frame(&mut self, mi_cols: usize, mi_rows: usize, lf: &LoopFilter) {
+        self.recording = deblocked(lf);
         self.luma.start_frame(mi_cols, mi_rows);
         self.chroma.start_frame(mi_cols / 2, mi_rows / 2);
     }
@@ -195,7 +200,7 @@ impl EdgeMap {
         luma_tx: Option<(u8, u8)>,
         chroma: bool,
     ) {
-        if mi_col >= self.luma.columns || mi_row >= self.luma.rows {
+        if !self.recording || mi_col >= self.luma.columns || mi_row >= self.luma.rows {
             return;
         }
         let l = block.levels;
@@ -228,7 +233,7 @@ impl EdgeMap {
     /// Record one leaf of an inter block's transform tree: a luma area of
     /// one `tx` transform at luma unit (`x4`, `y4`).
     pub(super) fn leaf(&mut self, (x4, y4): (usize, usize), tx: (u8, u8), block: EdgeBlock) {
-        if x4 >= self.luma.columns || y4 >= self.luma.rows {
+        if !self.recording || x4 >= self.luma.columns || y4 >= self.luma.rows {
             return;
         }
         let l = block.levels;
@@ -320,6 +325,12 @@ fn filter_length(luma: bool, side_log2: u8) -> Av1FilterLength {
     }
 }
 
+/// Whether a frame is deblocked at all: §7.14.1 skips the whole process
+/// when both luma levels are zero (chroma levels are then not coded).
+fn deblocked(lf: &LoopFilter) -> bool {
+    lf.level[0] != 0 || lf.level[1] != 0
+}
+
 /// Deblock `recon` (§7.14) with the frame's `lf` parameters. `width` x
 /// `height` is the frame size: edges at or beyond it are not filtered.
 pub(super) fn apply(
@@ -330,7 +341,7 @@ pub(super) fn apply(
     (width, height): (usize, usize),
     runs: &mut Vec<EdgeRun<Av1EdgeFilter>>,
 ) {
-    if lf.level[0] == 0 && lf.level[1] == 0 {
+    if !deblocked(lf) {
         return;
     }
     let limits = limits(lf.sharpness);
@@ -612,9 +623,27 @@ mod tests {
     }
 
     #[test]
+    fn frames_not_deblocked_record_nothing() {
+        let mut map = EdgeMap::default();
+        map.start_frame(8, 4, &LoopFilter::default());
+        let block = EdgeBlock {
+            size: BlockSize::new(4, 3).unwrap(),
+            skipped_inter: false,
+            levels: [0; 4],
+        };
+        map.block((0, 0), block, Some((3, 3)), true);
+        map.leaf((0, 0), (3, 3), block);
+        assert!(map.luma.areas.is_empty() && map.chroma.areas.is_empty());
+    }
+
+    #[test]
     fn records_cover_the_area_inside_the_frame() {
         let mut map = EdgeMap::default();
-        map.start_frame(8, 4);
+        let deblocked = LoopFilter {
+            level: [1, 1, 1, 1],
+            ..LoopFilter::default()
+        };
+        map.start_frame(8, 4, &deblocked);
         let block = EdgeBlock {
             size: BlockSize::new(5, 4).unwrap(),
             skipped_inter: true,

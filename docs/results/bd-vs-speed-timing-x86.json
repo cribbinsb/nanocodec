@@ -669,9 +669,9 @@
     "bodycam_bc1": 0.9552554112554112
    },
    "ms_per_frame": {
-    "lowlight_city_night": 14.644966864573037,
-    "crowd_mot17_09": 14.094424024937432,
-    "bodycam_bc1": 15.752219467019874
+    "lowlight_city_night": 12.675362428898445,
+    "crowd_mot17_09": 12.781611429985917,
+    "bodycam_bc1": 16.682228313708464
    },
    "anchor_ms_per_frame": {
     "lowlight_city_night": 11.77076962962963,
@@ -679,15 +679,15 @@
     "bodycam_bc1": 18.31204765432099
    },
    "raw_ms_per_frame": {
-    "lowlight_city_night": 16.392766666666667,
-    "crowd_mot17_09": 16.284353333333332,
-    "bodycam_bc1": 16.394986666666668
+    "lowlight_city_night": 19.22993333333333,
+    "crowd_mot17_09": 18.257939999999998,
+    "bodycam_bc1": 20.37872
    },
    "same_session_time_ratio": {
     "svtav1-m13": {
-     "lowlight_city_night": 3.8882109154458466,
-     "crowd_mot17_09": 2.440913896774724,
-     "bodycam_bc1": 2.795577438730252
+     "lowlight_city_night": 3.3277475597608444,
+     "crowd_mot17_09": 2.2461527973497386,
+     "bodycam_bc1": 2.5803620486486674
     }
    }
   },
@@ -698,9 +698,9 @@
     "bodycam_bc1": 0.9485474525474525
    },
    "ms_per_frame": {
-    "lowlight_city_night": 7.973874853244225,
-    "crowd_mot17_09": 9.045049910402856,
-    "bodycam_bc1": 11.170821685187336
+    "lowlight_city_night": 8.265471670982059,
+    "crowd_mot17_09": 8.390454517182212,
+    "bodycam_bc1": 9.372101274362779
    },
    "anchor_ms_per_frame": {
     "lowlight_city_night": 11.77076962962963,
@@ -708,15 +708,15 @@
     "bodycam_bc1": 18.31204765432099
    },
    "raw_ms_per_frame": {
-    "lowlight_city_night": 12.465046666666666,
-    "crowd_mot17_09": 13.821646666666666,
-    "bodycam_bc1": 16.48814
+    "lowlight_city_night": 10.058746666666668,
+    "crowd_mot17_09": 9.969986666666667,
+    "bodycam_bc1": 9.352353333333333
    },
    "same_session_time_ratio": {
     "svtav1-m13": {
-     "lowlight_city_night": 1.9942942536856227,
-     "crowd_mot17_09": 1.577437794497962,
-     "bodycam_bc1": 1.5670850488303079
+     "lowlight_city_night": 2.0305436454373362,
+     "crowd_mot17_09": 1.4882392935284658,
+     "bodycam_bc1": 1.5415444509626155
     }
    }
   },
