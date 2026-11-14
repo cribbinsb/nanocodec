@@ -32,6 +32,9 @@ let source;
 let held = null;
 // Set when the first real frame is coded: start-up warm-up (encode-warmup.js) stops then.
 let coding = false;
+// A key frame was requested and the next coded frame is it: that frame says so
+// (`keyRequested`), so the page's debug report can replay the request exactly.
+let keyRequested = false;
 /** Convert a captured frame (capture-worker.js) into `source`. */
 function convert(frame) {
   if (frame.kind === 'planes') {
@@ -58,7 +61,9 @@ function encodeFrame({ frame, timestamp }) {
   // rate control budgets each for the real time since the previous one.
   const packet = config.timed ? encoder.encode_at(source, timestamp * MICROSECONDS_PER_MS) : encoder.encode(source);
   const packed = packedSource();
-  return { timestamp, source: packed.buffer, colour: source.colour, packet, repeat: encoder.repeat, key: encoder.key,
+  const requested = keyRequested;
+  keyRequested = false;
+  return { timestamp, source: packed.buffer, colour: source.colour, packet, repeat: encoder.repeat, key: encoder.key, keyRequested: requested,
     quantizer: encoder.quantizer, encodeMs: performance.now() - start };
 }
 function configureRate(c) {
@@ -98,6 +103,7 @@ async function receive({ data: message }) {
       self.postMessage({ type: 'decoder-connected' });
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
+      keyRequested = true;
     } else if (message.type === 'rate') {
       config = message.config;
       configureRate(config);
