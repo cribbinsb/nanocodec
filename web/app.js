@@ -31,6 +31,7 @@ import { trace, traceTail } from './trace.js';
 import { buildReport, clipSeconds, formatReport, sha256 } from './debug-report.js';
 import { download } from './streams.js';
 import { RELAXED_SIMD } from './wasm.js';
+import { SpeedHint } from './speed-hint.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause'), stepButton = $('#step');
@@ -85,6 +86,7 @@ const panels = ['A', 'B'].map((letter, i) => {
   return panel;
 });
 const loupe = new Loupe($('#loupe'), panels);
+const speedHint = new SpeedHint($('#speed-hint'), applyLighter);
 // Coding-tool overlays and statistics (analysis-view.js); off until switched on.
 const analysis = new AnalysisController($('#analysis'), $('#versions'), panels, {
   onEnabled: () => analysisSwitched(),
@@ -146,7 +148,7 @@ function setPauseButton(label, pressed) { pauseButton.textContent = label; pause
 function stop(keepSource = false) {
   ++generation; clearTimeout(timer); clearTimeout(restartTimer); stoppedByFailure = false; restartPending = false;
   switchWanted = false; switchBusy = false;
-  comparison?.terminate(); comparison = null;
+  comparison?.terminate(); comparison = null; speedHint.clear();
   running = false; preparing = false; paused = false; pausing = false;
   pauseButton.disabled = true; setPauseButton('Pause', false); stepButton.disabled = true;
   $("#keyframe").disabled = true;
@@ -313,6 +315,21 @@ function matchOther(panel, entry) {
   const other = panels.find(p => p !== panel);
   other.match(matchingSettings(entry));
   settingsChanged('match', other);
+}
+/**
+ * A lighter configuration from the speed note: view `index` takes the preset, or
+ * every live view at its size takes the smaller size (the views stay comparable).
+ * Either restarts the comparison, as changing the control does.
+ */
+function applyLighter(index, change) {
+  const panel = panels[index];
+  if (change.preset) { panel.preset.value = change.preset; panel.preset.dispatchEvent(new Event('change')); return; }
+  const { width, height } = panel.current;
+  for (const other of panels) {
+    if (other.preEncoded || other.current.width !== width || other.current.height !== height) continue;
+    other.resolution.value = `${change.width}x${change.height}`;
+    other.resolution.dispatchEvent(new Event('change'));
+  }
 }
 function resetViews() {
   for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
@@ -526,6 +543,8 @@ function finishFrame(token, results, originals, tick) {
     ? `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps${pace(deliveryRate)} · bitrate per second of source time`
     : `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps delivered${limit(deliveryRate)} · bitrate per second of source time${
       kind === 'camera' ? '' : ` · ${APPROXIMATE}`}`;
+  speedHint.update(panels.map(panel => ({ letter: panel.letter, config: panel.current, encodeMs: panel.stageTimes().encode, frames: panel.count })),
+    Boolean(exact));
   scheduleFrame(token);
 }
 /**

@@ -24,9 +24,10 @@ block's PSNR in the hover record; off again restores the page."""
 import functools
 import http.server
 import threading
+import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
 web = Path(__file__).resolve().parents[1]
 # Frames a playing comparison must deliver after a switch to count as going on.
@@ -86,6 +87,15 @@ LAYER_COLOURS = """(() => { const c = document.querySelector('.analysis-layer'),
 # The PSNR map shows several colours (a flat map would mean nothing was measured).
 MIN_MAP_COLOURS = 4
 PSNR_TOLERANCE_DB = 0.01
+# A wait for something the page does once (a module load, a decoder switch, a restart) fails after this long (ms).
+EVENT_TIMEOUT_MS = 60000
+# A wait for frames fails only when no frame has been compared for this long (s): a
+# slow machine delivers slowly, a stalled page not at all.
+STALL_S = 30
+FRAME_POLL_S = 0.5
+# Page events kept per page for a failure's report (trace.js lines on the console).
+EVENTS_SHOWN = 40
+EVENTS = {}
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -97,20 +107,51 @@ def state(page):
     return page.evaluate(STATE)
 
 
+def watch(page):
+    """Keep the page's lifecycle events (trace.js), for a failure's report."""
+    EVENTS[page] = []
+    page.on('console', lambda m: EVENTS[page].append(m.text) if m.text.startswith('page: ') else None)
+
+
+def stalled(page, what):
+    """An assertion naming what the test waited for, the page's state and its last events."""
+    session = page.evaluate("document.querySelector('#session-stats').textContent")
+    return AssertionError(f'waited for {what}; state {state(page)}; session "{session}"; last events:\n' + '\n'.join(EVENTS.get(page, [])[-EVENTS_SHOWN:]))
+
+
+def wait(page, condition, what, timeout=EVENT_TIMEOUT_MS):
+    """Wait for a JS `condition`; on timeout fail with what the page was doing."""
+    try:
+        page.wait_for_function(condition, timeout=timeout)
+    except PlaywrightTimeout:
+        raise stalled(page, what) from None
+
+
+def wait_frames(page, frames):
+    """Wait until `frames` more frames are compared, failing only if none comes for STALL_S."""
+    target = state(page)['compared'] + frames
+    last, progress_at = None, time.monotonic()
+    while (compared := state(page)['compared']) < target:
+        if compared != last:
+            last, progress_at = compared, time.monotonic()
+        elif time.monotonic() - progress_at > STALL_S:
+            raise stalled(page, f'{frames} more frames (no frame for {STALL_S} s)')
+        time.sleep(FRAME_POLL_S)
+
+
 def wait_running(page, frames=FRAMES_AFTER_SWITCH):
     """Wait until the comparison is live and has compared `frames` more frames."""
-    page.wait_for_function(LIVE, timeout=60000)
-    page.wait_for_function("document.querySelector('#session-stats').textContent.includes('fps')", timeout=60000)
-    start = state(page)['compared']
-    page.wait_for_function(f"+(document.querySelector('#session-stats').textContent.match(/(\\d+) frames compared/)?.[1] ?? -1) >= {start + frames}", timeout=60000)
+    wait(page, LIVE, 'the comparison to run')
+    wait(page, "document.querySelector('#session-stats').textContent.includes('fps')", 'the first delivery rate')
+    wait_frames(page, frames)
 
 
 def toggle_analysis(page, on):
     """Click the analysis switch and wait until the decoders have switched."""
     page.locator('.analysis-toggle').click()
-    page.wait_for_function("document.querySelector('#runtime-label').textContent !== 'Switching decoders…'", timeout=60000)
+    wait(page, "document.querySelector('#runtime-label').textContent !== 'Switching decoders…'", 'the decoder switch')
     if on:
-        page.wait_for_function("[...document.querySelectorAll('.analysis-stats')].every(s => s.querySelector('table'))", timeout=60000)
+        wait(page, "[...document.querySelectorAll('.analysis-stats')].every(s => s.querySelector('table'))", 'both statistics tables')
         page.wait_for_function(DRAWN, timeout=10000)
     else:
         page.wait_for_function("[...document.querySelectorAll('.analysis-layer')].every(c => c.hidden)", timeout=10000)
@@ -167,6 +208,7 @@ def check_sampled_clip(browser, port):
     """Without WebCodecs the clip is sampled while it plays (capture.js): switching keeps the session there too."""
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     page.on('pageerror', lambda error: errors.append(str(error)))
+    watch(page)
     page.add_init_script(WORKER_HOOK + 'delete window.VideoDecoder;')
     page.goto(f'http://127.0.0.1:{port}/?display=cpu')
     wait_running(page)
@@ -178,6 +220,7 @@ def check_psnr_map(browser, port):
     """The PSNR map, statistics and hover record, on a paused comparison."""
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     page.on('pageerror', lambda error: errors.append(str(error)))
+    watch(page)
     page.add_init_script(WORKER_HOOK)
     page.add_init_script(FRAME_HOOK)
     # Headless Chromium's software GL is refused by the automatic choice: ask for WebGL2.
@@ -222,6 +265,7 @@ try:
         browser = p.chromium.launch(headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'])
         page = browser.new_page(viewport={'width': 1400, 'height': 1000})
         page.on('pageerror', lambda error: errors.append(str(error)))
+        watch(page)
         page.add_init_script(WORKER_HOOK)
         page.goto(f'http://127.0.0.1:{server.server_port}/?display=cpu')
         # The default comparison (A: H.264, B: AV1) runs; no analysis element exists yet.
@@ -244,13 +288,13 @@ try:
         assert 'QP' in page.locator('.analysis-tip').first.text_content()
         # Every codec's views are analysed: an AV2 view fills its statistics too.
         page.locator('.codec-picker').nth(1).select_option('av2')
-        page.wait_for_function("document.querySelectorAll('.analysis-stats')[1].textContent.includes('Prediction')", timeout=60000)
+        wait(page, "document.querySelectorAll('.analysis-stats')[1].textContent.includes('Prediction')", 'the AV2 view\'s statistics')
         # Off: the overlay hides and the pictures are unzoomed.
         toggle_analysis(page, False)
         assert page.evaluate("[...document.querySelectorAll('.viewport')].every(v => !v.querySelector('canvas').style.transform)")
         # Sample clip, B a pre-encoded stream (its decoder re-decodes from the stream's last key).
         page.locator('.view-source [data-view-source="reference"]').nth(1).click()
-        page.wait_for_function("document.querySelectorAll('.frame-badge')[1].textContent.includes('PRE-ENCODED')", timeout=60000)
+        wait(page, "document.querySelectorAll('.frame-badge')[1].textContent.includes('PRE-ENCODED')", 'the pre-encoded view')
         wait_running(page)
         check_switch_cases(page, 'clip reference')
         page.locator('.view-source [data-view-source="live"]').nth(1).click()

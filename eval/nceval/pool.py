@@ -41,6 +41,7 @@ from pathlib import Path
 
 from .clips import Clip, load_clipset
 from .config import Paths
+from .ctc.sequences import SEALED_FAMILIES as CTC_SEALED_FAMILIES
 
 #: Clip sets the pool takes its clips from (hires: 1080p/5MP copies of TRAIN
 #: sources; quick/smoke: duplicates).
@@ -50,6 +51,11 @@ POOL_SETS = ("main", "broad_independent_v1", "layergate_fit", "layergate_fit2", 
 #: (eval/clipset/select_independent.py: 150 never-used sources, 2026-11-13) is the
 #: independent test's fresh set and the candidate main chart.
 SEALED_SETS = ("adv12", "independent")
+#: The standards lens's sequences (nceval.ctc.sequences, 2026-11-14) are
+#: sealed by family: they are downloaded on rented machines only, so there is
+#: no clip set file here, but a copy of the same source in the pool (the
+#: KristenAndSara excerpt) must not be drawn either.
+SEALED_FAMILIES = CTC_SEALED_FAMILIES
 SEALED_SPLIT = "test"
 #: Source quality (owner, 2026-11-11): our encoder sees clean camera frames,
 #: so a clip of a poorly compressed source mostly tests transcoding. Each
@@ -91,7 +97,7 @@ def load_pool(paths: Paths, usable: Callable[[Clip], bool] = lambda clip: True) 
     """Every pool clip (see the module docstring) that is `usable`, by name.
 
     The screens pass "has enough ladder rungs under its 50% cap for a BD"."""
-    sealed_families, chosen = set(), {}
+    sealed_families, chosen = set(SEALED_FAMILIES), {}
     sets = {name: load_clipset(paths.clips / f"{name}.json", paths.data_root).clips
             for name in (*POOL_SETS, *SEALED_SETS) if (paths.clips / f"{name}.json").exists()}
     for name, clips in sets.items():

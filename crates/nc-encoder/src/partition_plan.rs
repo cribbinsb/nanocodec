@@ -99,6 +99,7 @@ use crate::backend::CodecBackend;
 use crate::decision::{Measurer, is_square_leaf, is_static, leaf_area, n_variance, refined_vector};
 use crate::encoder::{MAX_TILING_SQUARES, search_vector, search_vectors};
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
+use crate::noise_skip::NoiseMap;
 use crate::params::PlannerParams;
 use crate::partition::Block;
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
@@ -167,6 +168,9 @@ pub(crate) struct Planner<'a, B: CodecBackend> {
     pub motion: Option<&'a MotionAnalysis>,
     /// Static map (`None` on the first inter frame).
     pub pre: Option<&'a PreAnalysis>,
+    /// The noise split (`planner.noise_split`): the noise map and the noise
+    /// skip's test, `None` while either is off.
+    pub noise: Option<NoiseTest<'a>>,
     /// Coded picture size.
     pub width: usize,
     pub height: usize,
@@ -185,6 +189,21 @@ pub(crate) struct Planner<'a, B: CodecBackend> {
     /// 1.7% of AV1 Faster's P-frame instructions).
     pub leaf_bits: OnceCell<f32>,
 }
+
+/// The noise skip's test (`noise_skip.rs`) as the planner's noise split
+/// applies it.
+#[derive(Clone, Copy)]
+pub(crate) struct NoiseTest<'a> {
+    pub map: &'a NoiseMap,
+    /// `decision.noise_skip`.
+    pub scale: f32,
+    /// `decision.noise_skip_chroma_ratio`.
+    pub chroma_ratio: f32,
+}
+
+/// Smallest node the noise split splits: its quarters are the noise skip's
+/// smallest block (16x16).
+const NOISE_SPLIT_MIN_LOG2: u8 = 5;
 
 /// Residual statistics of a node already measured at up to two vectors
 /// (its parent's search vector and the zero vector), from the parent's
@@ -254,6 +273,9 @@ impl<B: CodecBackend> Planner<'_, B> {
                 stats,
             )
         });
+        if can_split && leaf.is_some() && self.noise_quarters_disagree(&node) {
+            return self.split(node, limits, children_known);
+        }
         let is_static = leaf.is_some() && self.pre.is_some_and(|pre| is_static::<B>(pre, &node));
         if is_static {
             return leaf.map_or((0.0, Partition::Leaf(None)), |(cost, stats)| {
@@ -305,6 +327,50 @@ impl<B: CodecBackend> Planner<'_, B> {
             ),
             None => (split_cost, Partition::Split(Box::new(children))),
         }
+    }
+
+    /// The noise split: whether `node` is a still node (every cell trusted
+    /// by the noise map) that fails the noise skip's test while some of its
+    /// quarters pass it. As one leaf it would be coded whole, quarters that
+    /// are within the camera's noise included; split, those quarters skip.
+    ///
+    /// What it skips: large leaves on noisy still content, which the noise
+    /// skip rejects for one changing 8x8 cell (a still webcam at 1 Mbps:
+    /// 45% of AV1's area failed, 77% of it in 64x64 leaves, and the 16x16
+    /// quarters of a third of that would pass). Why safe: it only adds
+    /// partition bits on still nodes where at least one quarter then codes
+    /// nothing; nodes that pass whole or fail in every quarter are planned
+    /// as before.
+    fn noise_quarters_disagree(&self, node: &Block) -> bool {
+        let Some(noise) = self.noise else {
+            return false;
+        };
+        let pictures = (self.source, self.reference);
+        let passes = |block: &Block| {
+            noise
+                .map
+                .explains(self.dsp, block, pictures, noise.scale, noise.chroma_ratio)
+        };
+        node.log2_size() >= NOISE_SPLIT_MIN_LOG2
+            && node.is_inside(self.width, self.height)
+            && noise.map.trusts(node)
+            && !passes(node)
+            && node.quadrants().iter().any(passes)
+    }
+
+    /// (cost, plan) of `node` split into its four quarters, each planned
+    /// on its own.
+    fn split(&self, node: Block, limits: Limits, known: [Known; 4]) -> (f32, Partition) {
+        let lambda = self.backend.lambda() * self.params.lambda_scale;
+        let mut cost =
+            lambda * self.params.split_rate_factor * self.backend.partition_bits(&node, true);
+        let mut children = std::array::from_fn(|_| Partition::Leaf(None));
+        for (i, child) in node.quadrants().into_iter().enumerate() {
+            let (child_cost, plan) = self.plan_node(child, limits, known[i]);
+            cost += child_cost;
+            children[i] = plan;
+        }
+        (cost, Partition::Split(Box::new(children)))
     }
 
     /// `best`, the square plan of leaf-capable `node` (whose leaf costs
@@ -761,6 +827,7 @@ mod tests {
             reference: &reference,
             motion: None,
             pre: None,
+            noise: None,
             width: 32,
             height: 32,
             params: &params,

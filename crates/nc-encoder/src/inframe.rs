@@ -82,6 +82,8 @@ pub(crate) struct InFrameControl {
     budgets: f64,
     /// Whether keys are steered (by the hard limit) too.
     keys: bool,
+    /// Whether the soft limit applies only during the cadence start-up.
+    startup_only: bool,
     /// Largest coarsening, QP units.
     max_offset: f64,
     /// Largest change between consecutive rows, QP units.
@@ -108,6 +110,7 @@ impl InFrameControl {
             room: f64::from(params.room),
             budgets: f64::from(params.budgets),
             keys: params.keys >= 0.5,
+            startup_only: params.startup_only >= 0.5,
             max_offset: f64::from(params.max_offset),
             row_step: f64::from(params.row_step),
             exponent: f64::from(params.exponent),
@@ -122,9 +125,16 @@ impl InFrameControl {
     /// The frame's bit limit from the re-code room `room_bits` (infinite
     /// when re-coding is off) and the uncorrected frame budget
     /// `uniform_bits`; the soft limit applies to inter frames only (keys
-    /// are planned loans) and keys are steered only with `inframe.keys`.
+    /// are planned loans), with `inframe.startup_only` only to frames in the
+    /// cadence start-up (`startup`), and keys are steered only with
+    /// `inframe.keys`.
     /// `None` when neither limit is finite.
-    pub fn frame_limit(&self, key: bool, room_bits: f64, uniform_bits: f64) -> Option<f64> {
+    pub fn frame_limit(
+        &self,
+        (key, startup): (bool, bool),
+        room_bits: f64,
+        uniform_bits: f64,
+    ) -> Option<f64> {
         if key && !self.keys {
             return None;
         }
@@ -133,7 +143,7 @@ impl InFrameControl {
         } else {
             f64::INFINITY
         };
-        let soft = if self.budgets > 0. && !key {
+        let soft = if self.budgets > 0. && !key && (startup || !self.startup_only) {
             self.budgets * uniform_bits
         } else {
             f64::INFINITY
@@ -252,11 +262,21 @@ mod tests {
     #[test]
     fn limits_take_the_tighter_and_spare_keys_the_soft_one() {
         let mut c = control(0.5, 8.);
-        assert_eq!(c.frame_limit(true, 100_000., 1_000.), None);
+        assert_eq!(c.frame_limit((true, false), 100_000., 1_000.), None);
         c.keys = true;
-        assert_eq!(c.frame_limit(false, 100_000., 1_000.), Some(8_000.));
-        assert_eq!(c.frame_limit(true, 100_000., 1_000.), Some(50_000.));
-        assert_eq!(c.frame_limit(true, f64::INFINITY, 1_000.), None);
+        assert_eq!(
+            c.frame_limit((false, false), 100_000., 1_000.),
+            Some(8_000.)
+        );
+        assert_eq!(
+            c.frame_limit((true, false), 100_000., 1_000.),
+            Some(50_000.)
+        );
+        assert_eq!(c.frame_limit((true, false), f64::INFINITY, 1_000.), None);
+        c.startup_only = true;
+        c.room = 0.;
+        assert_eq!(c.frame_limit((false, false), 100_000., 1_000.), None);
+        assert_eq!(c.frame_limit((false, true), 100_000., 1_000.), Some(8_000.));
     }
 
     #[test]

@@ -112,6 +112,9 @@ pub(crate) struct QpCadence {
     static_scaling: f64,
     /// Motion limits of the motion gate, or `None` when it is off.
     motion_limits: Option<MotionHint>,
+    /// Whether frames after the start-up cadence all play the same role
+    /// (the cyclic spatial cadence refines blocks there instead).
+    steady_flat: bool,
 }
 
 impl QpCadence {
@@ -138,6 +141,7 @@ impl QpCadence {
                 camera_motion: f64::from(params.cadence_max_camera_motion),
                 compensable: f64::from(params.cadence_max_compensable),
             }),
+            steady_flat: false,
         }
     }
 
@@ -150,6 +154,37 @@ impl QpCadence {
             leaf_penalty: self.leaf_penalty * scale,
             ..self
         }
+    }
+
+    /// This cadence with every frame after the start-up cadence at the same
+    /// quantizer: what rate control and the frame roles see when the cyclic
+    /// spatial cadence (`cyclic_cadence.rs`) gives the steady-state boost to
+    /// blocks instead. The start-up cadence stays: right after a key few
+    /// blocks are still yet, and whole finer frames refine the rest too.
+    pub fn flattened(self) -> Self {
+        Self {
+            period: 1,
+            steady_flat: true,
+            ..self
+        }
+    }
+
+    /// Whether `distance` frames after the last key is in the start-up
+    /// cadence.
+    pub fn in_startup(&self, distance: u64) -> bool {
+        distance <= self.startup_end
+    }
+
+    /// The period and base boost (QP units) in force `distance` frames after
+    /// the last key: what the cyclic spatial cadence spreads over a cycle.
+    pub fn band(&self, distance: u64) -> (u64, f64) {
+        let (period, _) = self.period_at(distance);
+        let boost = if distance <= self.startup_end {
+            self.startup_base_boost
+        } else {
+            self.base_boost
+        };
+        (period, boost)
     }
 
     /// Whether every inter frame gets the same quantizer (the cadence is off).
@@ -170,6 +205,9 @@ impl QpCadence {
 
     /// Role of the inter frame `distance` frames after the last key (`distance >= 1`).
     pub fn role(&self, distance: u64) -> CadenceRole {
+        if self.steady_flat && !self.in_startup(distance) {
+            return CadenceRole::Middle;
+        }
         let (period, origin) = self.period_at(distance);
         if period > 1 && (distance - origin).is_multiple_of(period) {
             CadenceRole::Base
@@ -354,6 +392,19 @@ mod tests {
         assert_eq!(c.offset(5, 1.), 1.);
         assert_eq!(c.offset(6, 1.), 0.);
         assert_eq!(c.offset(8, 0.5), -1.5);
+    }
+
+    #[test]
+    fn flattened_keeps_the_startup_cadence_only() {
+        let mut o = ParamOverrides::default();
+        o.set("rate.cadence_startup_period", 8.);
+        o.set("rate.cadence_startup_frames", 16.);
+        let flat = QpCadence::from_params(&RateParams::from_overrides(&o)).flattened();
+        assert!(flat.offset(8, 1.) < 0.);
+        assert!(flat.in_startup(16) && !flat.in_startup(17));
+        for distance in 17..40 {
+            assert_eq!(flat.offset(distance, 1.), 0.);
+        }
     }
 
     #[test]

@@ -85,6 +85,9 @@ class SessionSpec:
     root_gb: int = 12
     arch: str = "amd64"  # "amd64" or "arm64" (the AMI's)
     tags: dict[str, str] = field(default_factory=dict)
+    #: ExpectedEnd = launch + lifetime + this margin (the cleanup's slack; the
+    #: instance itself stops at the lifetime).
+    end_margin_minutes: int = 15
 
 
 class BudgetExceeded(RuntimeError):
@@ -132,7 +135,8 @@ class Session:
         self.launched: datetime.datetime | None = None
         self.egress_bytes = 0
         self.spot_request: str | None = None
-        self.expected_end = utc_now() + datetime.timedelta(minutes=spec.lifetime_minutes + 15)
+        self.expected_end = utc_now() + datetime.timedelta(
+            minutes=spec.lifetime_minutes + spec.end_margin_minutes)
 
     # --- lifecycle -------------------------------------------------------------------
 

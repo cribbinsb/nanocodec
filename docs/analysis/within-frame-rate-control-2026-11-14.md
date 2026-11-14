@@ -391,3 +391,75 @@ What the census shows:
     per-CTU writing. The estimate is cheap: one add per CU.
   - Most promising for quality: recommendation #2, the cyclic spatial cadence. It attacks the bimodal base-frame cost at
     its cause instead of bounding it.
+
+## 5. Cyclic spatial cadence (`rate.cadence_spatial`, registered, off)
+
+Recommendation #2, built in `nc-encoder/src/cyclic_cadence.rs`. In steady state (after the start-up cadence that
+follows every key), the cadence's base boost goes to a rotating band of quantizer squares instead of to whole
+base frames. The band is `1 / cadence_period` of the candidate squares, taken in raster order from where the last
+frame's band stopped.
+
+- **Candidates:** squares whose every 8x8 cell has been static for at least 2 frames, and whose last coded step is
+  coarser than the band's step (libvpx's "coded coarser than the boost" rule).
+- **Keys:** every key, periodic or first, resets each square to the key's step.
+- **Rate control:** it sees a flat steady-state cadence, and budgets the band as planned block offsets.
+- **Mode decision:** band squares take the zero vector with no candidate, sub-pel or intra search. They are
+  static and re-coded only to refine them, as in the references' cyclic refresh.
+
+`inframe.startup_only` limits the in-frame soft limit to the start-up cadence; it is used by variant v3 below.
+
+**Variants**
+
+- **v1:** the band from the first inter frame after a key, candidates from the still map.
+- **v2:** v1 plus the start-up frame cadence kept, plus short-run static candidates.
+- **v3:** v2 plus `inframe.budgets=8` during start-up only.
+
+The figures below are for v2 with the zero-vector path. Setup: the six still points, 600 frames, a key every
+10 s. Each column is against the Default of the same build; "matched" is at matched rate against the Default's
+curve, and f300-360 is the window after the second key.
+
+| Point | AV1: rate; re-codes; worst-1% Y; matched PSNR-YUV / VMAF; f300-360 | H.264: same |
+|---|---|---|
+| chirla 47 | 1.001→0.998; 22→12; +0.49; −0.18 / −0.03; +0.15 | 0.987→0.992; 12→5; +0.05; −0.02 / +0.43; +0.08 |
+| chirla 93 | 1.037→1.015; 8→6; −0.52; −0.12 / +0.10; +0.04 | 0.987→0.995; 4→4; +0.77; +0.05 / +0.24; +1.06 |
+| chirla 187 | 1.015→0.995; 23→10; +0.60; +0.05 / −0.14; +1.31 | 0.997→0.985; 2→2; 0.00; −0.25 / +0.05; +0.46 |
+| meva 97 | 0.984→1.025; 16→7; +0.32; −0.25 / −0.31; −0.29 | 0.962→1.002; 16→10; +1.63; +0.02 / +0.78; +0.18 |
+| meva 194 | 1.033→0.994; 8→9; +0.01; +0.12 / +0.52; +0.58 | 1.006→0.992; 6→5; +1.82; +0.25 / +1.04; +2.08 |
+| meva 388 | 1.028→0.994; 7→2; +2.94; +0.15 / +0.49; +2.12 | 1.027→0.995; 3→1; +0.13; 0.00 / +0.21; +0.07 |
+
+Frames 0-60 are identical to the Default, because the start-up cadence is unchanged.
+
+**How the earlier variants did**
+
+- **v1** removed the bursts: largest frame 10-25 U, re-codes 87→26 (AV1). But it lost frames 0-60 at all 12
+  points (−0.2 to −1.4 dB), and lost 0.8-0.9 dB PSNR-YUV at matched rate on the lowest rungs.
+- **v3** had the strongest bit control: largest frame 8-25 U, re-codes 87→23 (AV1) and 43→10 (H.264). But it lost
+  frames 0-60 by 0.6-1.5 dB everywhere: the start-up bursts are worth their bits.
+- **v2 without the zero-vector path** lost 0.97 dB worst-1% on H.264 chirla 47.
+
+**L1 screen** (v2 before the zero-vector path; today's quick draw, 150 frames): AV1 J +0.11% [−0.25, +0.81],
+H.264 −0.72% [−1.03, +0.41]. With `cadence_startup_frames` at 100 the band is active for only about 50 of the 150
+frames, so the 600-frame long window is its real test.
+
+**Long-window rate** (AV1, the draw's 30 clips with ≥600 frames, 114 streams, Default → band):
+
+| | Default | Band |
+|---|---:|---:|
+| Median achieved / target | 0.989 | 0.991 |
+| Streams more than 2.5% over target | 26 | 23 |
+| Re-codes | 276 | 178 |
+
+The largest rises lift undershooting static streams to about target.
+
+**CPU** (x86 instructions; static_cam22, 250 coded frames, 150 kbps, one key):
+
+- **H.264:** +3.5%. Without the zero-vector path it was +5.6%: band squares cannot take the static-skip shortcut.
+- **AV1:** +15.6%. On this clip the band changed adaptive resolution's trajectory: 100 frames at 720p instead of
+  91, and a late switch up left the 10 s window at about 160 kbps on a 150 kbps target.
+
+**Noise skip.** Band squares stay open to the noise skip (`decision.noise_skip`), and to that test alone. A square
+whose zero-vector residual is within the camera's noise is skipped and marked settled, so with the noise skip on
+the band never refines noise. Not yet measured with both on; that waits for the skip-aware budget.
+
+**Hand-off:** v2 (with the zero-vector path) goes to the tuner for the long-window L3 (`docs/handoff/tuning.md`), with
+two flags: AV1 meva 97's rate ends at +2.5%, and AV1 chirla 93's worst-1% falls by 0.52 dB.

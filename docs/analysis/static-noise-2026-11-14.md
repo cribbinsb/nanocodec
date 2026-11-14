@@ -329,3 +329,37 @@ split" (test 16x16 quarters, split where they disagree) is the next step.
   off.
 - It barely undershoots at 1 Mbps (AV1 988, HEVC 774, H.264 527 kbps).
 - The skip-aware budget is the better route.
+
+## 8. Noise split (`planner.noise_split`, landed off)
+
+**What it does:**
+- A still node of 32x32 or more, trusted by the noise map, that fails the noise test while some of its
+  16x16 quarters pass, is split by the partition planner (`partition_plan.rs`).
+- The passing quarters then skip.
+- It applies to AV1 and HEVC; H.264 macroblocks are already 16x16.
+- VP9, VVC and AV2 first need the static-skip path (§6).
+
+**Webcam** (skip c 4 + skip budget + noise split). kbps / PSNR-Y against clean, uncapped in brackets:
+
+| target | AV1 | HEVC |
+|---|---|---|
+| 300 | 204 / 43.42 (296 / 43.35) | 162 / 44.52 (296 / 44.60) |
+| 1000 | 285 / 44.70 (988 / 44.77) | 198 / 44.82 (987 / 45.26) |
+
+- Without the split: AV1 247 and 476 kbps; HEVC 186 and 274 kbps.
+- HEVC at 1 Mbps loses 0.44 dB against uncapped, so the split is recommended for AV1 only until HEVC is
+  understood.
+
+**Partition-bit cost** (AV1, 1 Mbps, P frames, libaom inspection):
+- partition bits 36 → 86 kbit over 299 frames (0.4% → 1.6% of P bits);
+- total P bits 9331 → 5508 kbit.
+
+**60 s at 1000 kbps**, against clean, off in brackets:
+- AV1 ramp: 779 kbps, last-window worst 40.85 (40.87).
+- AV1 object: 672 kbps. Band after the object leaves 43.19, then 43.31 by 42-45 s (43.34 / 43.38). Moving
+  region 43.41 (43.34).
+- HEVC object: 801 kbps. Band 42.45 / 42.43 (42.55 / 42.44).
+
+**Checks:**
+- Identity off: 52/52.
+- Landing conformance with skip, budget and split on: AV1 and HEVC, every shipped preset, 222/222 bit-exact.

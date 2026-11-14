@@ -171,6 +171,25 @@ pub(crate) fn first_key_lookahead(params: &RateParams, model: &RateModel) -> f64
         model.first_key_lookahead
     }
 }
+/// The QP cadence rate control plans with: the configured one, scaled for
+/// the backend's `calibration` and flattened by [`spatial_aware`].
+fn rate_cadence(params: &RateParams, calibration: &RateModel) -> QpCadence {
+    spatial_aware(
+        QpCadence::from_params(params).scaled(cadence_scale(params, calibration)),
+        params,
+    )
+}
+
+/// `cadence`, flattened when the cyclic spatial cadence
+/// (`rate.cadence_spatial`) gives its boost to blocks instead of frames.
+pub(crate) fn spatial_aware(cadence: QpCadence, params: &RateParams) -> QpCadence {
+    if params.cadence_spatial >= 0.5 {
+        cadence.flattened()
+    } else {
+        cadence
+    }
+}
+
 /// The cadence scale in force: `rate.cadence_scale` when set, else the
 /// backend's (`RateModel::cadence_scale`).
 pub(crate) fn cadence_scale(params: &RateParams, model: &RateModel) -> f64 {
@@ -670,7 +689,7 @@ impl RateController {
             relearn: [false; MODEL_CLASSES],
             model_hint: [1.; MODEL_CLASSES],
             scene_hint_ratio: f64::from(params.scene_hint_ratio),
-            cadence: QpCadence::from_params(params).scaled(cadence_scale(params, &calibration)),
+            cadence: rate_cadence(params, &calibration),
             first_key_boost: config.keyframe_boost * f64::from(params.first_key_boost_scale),
             loan_boost: config.keyframe_boost * f64::from(params.first_key_boost_scale),
             frames_since_key: 0,

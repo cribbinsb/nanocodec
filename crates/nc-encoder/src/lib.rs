@@ -41,6 +41,7 @@ mod cdef_search;
 mod chroma_offset;
 pub mod chroma_policy;
 mod config;
+mod cyclic_cadence;
 mod decision;
 mod encoder;
 mod feedback;

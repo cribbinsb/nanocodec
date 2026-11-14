@@ -265,6 +265,8 @@ param_group! {
         /// See `partition_plan.rs` for the measurements behind the default.
         lambda_scale: 2.0, [0.25, 8.0],
             "planner λ multiple of the mode-decision λ: higher splits less",
+        noise_split: 0.0, [0.0, 1.0],
+            "1 splits a still node of 32x32 or more that fails the noise skip's test (`decision.noise_skip`) when some of its quarters pass it, so they can skip: more of a noisy still picture is skipped (AV1 and HEVC plan large leaves)",
         distortion_cap_per_lambda: 0.125, [0.0, 1.0],
             "per-sample distortion cap as a fraction of planner λ: higher lets noisy blocks split",
         split_rate_factor: 2.0, [0.5, 4.0],
@@ -863,6 +865,8 @@ param_group! {
         // -5.2% / -5.7%, AV1 -3.4% / -3.7%; every clip gains in every codec.
         // The base frames' finer step raises the rate of a given --qp by
         // 2-12% at matched QP.
+        cadence_spatial: 0.0, [0.0, 1.0],
+            "1 gives the cadence's base boost to a rotating 1/period band of still blocks every frame instead of to whole base frames (`cyclic_cadence.rs`, needs `persist.reuse` and block QP; flat IPP only): smoother frame sizes on still content; 0 is the frame cadence",
         cadence_fixed_qp: 1.0, [0.0, 1.0],
             "1 also applies the cadence at fixed QP; 0 keeps fixed-QP frames flat (the cadence then only shapes rate control)",
     }
@@ -1065,6 +1069,8 @@ param_group! {
         // keys too: meva 97 kbps worst-1% PSNR-Y 29.14 -> 26.96 dB, chirla
         // 47 kbps 28.81 -> 27.31 (a key coarsened mid-way leaves its lower
         // rows coarse for the whole GOP; a re-code coarsens it evenly).
+        startup_only: 0.0, [0.0, 1.0],
+            "in-frame rate control: 1 applies the soft limit (`inframe.budgets`) only during the QP cadence's start-up after each key, where whole finer base frames remain under the cyclic spatial cadence (`rate.cadence_spatial`); 0 applies it to every inter frame",
         keys: 0.0, [0.0, 1.0],
             "in-frame rate control: 1 steers key frames by the re-code room too; 0 leaves keys to the whole-frame re-code",
         max_offset: 12.0, [1.0, 24.0],

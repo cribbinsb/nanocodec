@@ -121,15 +121,15 @@ never redistribute, and record the URL and the MD5 in the results.
 | A3 | ControlledBurn (30), WestWindEasy (30) | NTIA/ITS, research use, attribution kept | yes |
 | A3 | Vidyo3, Vidyo4 (60) | Vidyo: "only for developing, testing and promulgating technology standards" | **no**: our use is product evaluation, not standards work |
 | A3 | DrivingPOV, RollerCoaster | 10-bit sources | no (8-bit project) |
-| A4 360p | BlueSky_v2 (25), Stockholm (59.94) | TU München / SVT test-sequence terms (research) | yes |
+| A4 360p | BlueSky_v2 (25), Stockholm (59.94) | TU München (Taurus Media) / SVT 2001 set: "Restrictions of use: No restrictions" | yes |
 | A4 | RedKayak, SnowMountain, SpeedBag, TouchdownPass (29.97) | NTIA/ITS research use | yes |
 | A5 270p | FourPeople (60) | public domain (Vidyo) | yes |
-| A5 | ParkJoy (50) | SVT test-sequence terms (research) | yes |
+| A5 | ParkJoy (50) | SVT 2006 multi-format set: "only ... for developing, testing and presenting technology standards" | **no**, as Vidyo3/4 |
 | A5 | Vertical_Bayshore 270x480 (29.97) | CC BY-SA 4.0 (James Leslie Skinner) | yes |
 | A5 | SparksElevator | 10-bit source | no |
 | JVET E | FourPeople, Johnny, KristenAndSara 1280x720p60, 600 frames (`media.xiph.org/video/derf/y4m/`) | public domain (Vidyo) | yes (secondary) |
 
-That is 13 primary sequences (4 + 6 + 3) and 3 secondary ones. Every one is 8-bit 4:2:0 at its native depth.
+That is 12 primary sequences (4 + 6 + 2) and 3 secondary ones. Every one is 8-bit 4:2:0 at its native depth.
 Whether the research-use terms (NTIA, SVT, TUM) cover a company's internal evaluation is a judgement call. We
 take them to cover it, because nothing is redistributed and the use is measurement. The owner may decide
 otherwise, and the run can drop those sequences without changing the method.
@@ -176,3 +176,15 @@ Our encoders: every codec at its Default and Fast presets, fixed QP (`--qp`, one
 - Cost: about 13 x 6 QP x ~25 configurations ≈ 2,000 short encodes plus 3 x 6 x ~10 long ones. The slowest
   single jobs (VTM and libaom speed 0 at 720p) take minutes, so one spot c7a session fits well inside the
   $25 cap.
+
+## 5. Changes after this note was first landed (same day)
+
+- **Licence tiers.** Each sequence carries a tier (`free`: public domain, CC BY-SA or "no restrictions";
+  `research`: NTIA/ITS research-use). The owner chose to include both in the main tables, and the free-only
+  figure is shown beside them. ParkJoy was dropped: its notice limits use to standards work, like Vidyo3/4.
+- **Run time.** Every run must finish within 30 minutes (owner rule). VTM-24 and libaom speed 0 take about 4 s
+  per 270p frame on our PC, so they run on classes A4/A5 only; A3 has HM as its standards anchor.
+  **JVET class E codes the first 150 frames, not the CTC's 600.** That is a stated deviation; the full
+  600-frame run remains an option.
+- **Pool overlap.** KristenAndSara was already in the screening pool (an excerpt of the same Xiph file). It
+  was screened on before this lens existed. Sealing the lens's families removes it from the pool from now on.

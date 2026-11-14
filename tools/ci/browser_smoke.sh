@@ -8,7 +8,8 @@
 # throttling (web/tests/source-switch.py), a pre-encoded view's PSNR equal to the
 # offline value frame by frame on a busy page (web/tests/reference-psnr.py), a sample-clip
 # comparison byte-identical on a slowed page (web/tests/exact-source.py), a starved
-# webcam holding its bitrate with counted skips (web/tests/live-skip.py), the analysis mode
+# webcam holding its bitrate with counted skips (web/tests/live-skip.py), a one-CPU
+# machine offered a lighter size that speeds it up (web/tests/speed-hint.py), the analysis mode
 # (web/tests/analysis-smoke.py), its PSNR map and per-plane PSNR equal to an offline
 # native decode against the demo's source frames, for a pre-encoded and a live view,
 # on a normal and a slowed page (web/tests/psnr-map.py), what a live view codes against the
@@ -52,6 +53,7 @@ elif python3 -c 'import playwright' 2>/dev/null; then
     python3 web/tests/reference-psnr.py
     python3 web/tests/exact-source.py
     python3 web/tests/live-skip.py
+    python3 web/tests/speed-hint.py
     # Analysis mode: the lazily loaded analysis module, overlay, statistics, zoom.
     python3 web/tests/analysis-smoke.py
     python3 web/tests/psnr-map.py
