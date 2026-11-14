@@ -32,6 +32,43 @@ function getStringFromWasm0(ptr, len) {
 
 let WASM_VECTOR_LEN = 0;
 
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
+}
+/**
+ * MS-SSIM of two `width` x `height` luma planes (rows without padding), as
+ * the evaluation scores it (`nc_dsp::ms_ssim`); `None` for a plane too
+ * small for five scales. The demo's metrics worker calls it with a source
+ * luma and `BrowserDecoder::scored_luma`. Only in the analysis build.
+ * # Errors
+ * Rejects planes whose length is not `width * height`.
+ * @param {Uint8Array} reference
+ * @param {Uint8Array} distorted
+ * @param {number} width
+ * @param {number} height
+ * @returns {number | undefined}
+ */
+export function ms_ssim_luma(reference, distorted, width, height) {
+    const ptr0 = passArray8ToWasm0(reference, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(distorted, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.ms_ssim_luma(ptr0, len0, ptr1, len1, width, height);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    return ret[0] === 0 ? undefined : ret[1];
+}
+
 const cachedTextEncoder = new TextEncoder();
 
 if (!('encodeInto' in cachedTextEncoder)) {
@@ -82,12 +119,6 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
-}
-
-function takeFromExternrefTable0(idx) {
-    const value = wasm.__wbindgen_externrefs.get(idx);
-    wasm.__externref_table_dealloc(idx);
-    return value;
 }
 /**
  * `codec`'s registered parameters, as a JSON array of `{name, default,
@@ -177,13 +208,6 @@ export function check_parameters(codec, text) {
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
-}
-
-function passArray8ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 1, 1) >>> 0;
-    getUint8ArrayMemory0().set(arg, ptr / 1);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
 }
 
 let cachedFloat64ArrayMemory0 = null;
@@ -301,6 +325,24 @@ export class BrowserDecoder {
     get spatial_id() {
         const ret = wasm.browserdecoder_spatial_id(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Copy the luma of the latest decoded frame at the size the last `psnr`
+     * call compared (a smaller spatial layer upscaled, as there) into a
+     * reused buffer and return its byte offset in WASM memory
+     * (`error_map_width * error_map_height` bytes, read as for
+     * `rgba_frame`): the distorted plane `ms_ssim_luma` scores in the
+     * metrics worker. Only in the analysis build.
+     * # Errors
+     * Rejects calls made before `psnr` has scored a decoded frame.
+     * @returns {number}
+     */
+    scored_luma() {
+        const ret = wasm.browserdecoder_scored_luma(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Decode coded frame `index` and report its outcome, never throwing

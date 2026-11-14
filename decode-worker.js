@@ -40,10 +40,13 @@
 // that has its source also carries the PSNR map (`errorMap`, error-map.js):
 // the decoder's squared error per block against that source (nc-web
 // `error_map`, which reuses the source the frame's `psnr` call unpacked),
-// turned into dB here, off the page's thread.
+// turned into dB here, off the page's thread. MS-SSIM is scored by a metrics
+// worker this worker starts (metrics-worker.js): the newest shown frame
+// whenever it is free, sent to the page as 'ms-ssim' with its tick.
 import { ANALYSIS_MODULE_URL, MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
 import { errorMap, errorMapBuffers } from './error-map.js';
+import { tickAt } from './timeline.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
 let module, decoder, wasm;
@@ -82,6 +85,56 @@ function analysisRecords() {
   if (analysisState !== 'on') return null;
   const offset = decoder.analysis_frame();
   return new Int16Array(wasm.memory.buffer, offset, decoder.analysis_length).slice().buffer;
+}
+// MS-SSIM (analysis mode): the metrics worker, whether it is scoring a frame,
+// and the newest frame waiting for it ({ tick, width, height, reference, distorted }).
+let metrics = null, metricsBusy = false, nextScore = null;
+/**
+ * A score starts at most this often (ms), whatever the frame rate: each costs
+ * ~110 ms of CPU at 720p, which competes with the encoders and decoders on a
+ * busy machine. Scoring every frame it could took a slowed 1280x720 + 640x360
+ * comparison from 244 to 74 delivered frames (web/tests/psnr-map.py, 2026-11-14).
+ * The newest frame waits for the next slot, so a paused frame is scored within it.
+ */
+const SCORE_INTERVAL_MS = 1000;
+// When the last score started, and the timer for the next slot (0: none).
+let lastScoreAt = -Infinity, scoreTimer = 0;
+/** Start the metrics worker on the analysis module (`wasmModule`, compiled by the page). */
+function startMetrics(wasmModule) {
+  metrics = new Worker(new URL('./metrics-worker.js', import.meta.url), { type: 'module' });
+  metrics.onmessage = ({ data }) => {
+    if (data.type === 'error') { self.postMessage(data); return; }
+    self.postMessage({ type: 'ms-ssim', tick: data.tick, value: data.value, ms: data.ms });
+    metricsBusy = false;
+    sendScore();
+  };
+  metrics.postMessage({ type: 'init', wasmModule });
+}
+/** Keep the shown frame of `tick` (scored against `source`, packed I420) as the next to score, replacing an unscored one. */
+function queueScore(tick, source) {
+  if (!metrics || !source) return;
+  const width = decoder.error_map_width, height = decoder.error_map_height;
+  // After the frame's psnr call: the scored size is the source's. The copy may grow
+  // WASM memory (detaching older views), so the view is made after it.
+  const offset = decoder.scored_luma();
+  const distorted = new Uint8Array(wasm.memory.buffer, offset, width * height).slice();
+  const reference = new Uint8Array(source, 0, width * height).slice();
+  nextScore = { tick, width, height, reference: reference.buffer, distorted: distorted.buffer };
+  sendScore();
+}
+/** Hand the metrics worker the waiting frame if it is free and its slot has come (SCORE_INTERVAL_MS). */
+function sendScore() {
+  if (metricsBusy || !nextScore) return;
+  const wait = lastScoreAt + SCORE_INTERVAL_MS - performance.now();
+  if (wait > 0) {
+    scoreTimer ||= setTimeout(() => { scoreTimer = 0; sendScore(); }, wait);
+    return;
+  }
+  lastScoreAt = performance.now();
+  metricsBusy = true;
+  const score = nextScore;
+  nextScore = null;
+  metrics.postMessage({ type: 'score', ...score }, [score.reference, score.distorted]);
 }
 /** The PSNR map of the decoder's latest frame against `result`'s source, scored last (null without analysis or a source). */
 function blockErrors(result) {
@@ -141,6 +194,8 @@ function decodeAndPost(type, message) {
   const pixels = decodedPixels(format, displayColour);
   // After the pixels: packing may grow WASM memory too, and is copied at once.
   const analysis = analysisRecords(), errors = blockErrors(result);
+  // A replay's frames carry no timestamp: the page names the tick on screen.
+  queueScore(message.tick ?? tickAt(result.timestamp), result.source);
   result.decodeStageMs += performance.now() - displayStart;
   const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean), ...(analysis ? [analysis] : []),
     ...(errors ? errorMapBuffers(errors) : [])];
@@ -170,7 +225,7 @@ self.onmessage = async ({ data: message }) => {
       wasm = await module.default({ module_or_path: message.wasmModule });
       decoder = new module.BrowserDecoder(message.codec);
       if (message.operatingPoint) decoder.set_operating_point(message.operatingPoint);
-      if (message.analysis) startAnalysis();
+      if (message.analysis) { startAnalysis(); startMetrics(message.wasmModule); }
       message.port.onmessage = receivePacket;
       self.postMessage({ type: 'ready' });
       // Not awaited: real packets are handled as they come and stop it.

@@ -1,6 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * MS-SSIM of two `width` x `height` luma planes (rows without padding), as
+ * the evaluation scores it (`nc_dsp::ms_ssim`); `None` for a plane too
+ * small for five scales. The demo's metrics worker calls it with a source
+ * luma and `BrowserDecoder::scored_luma`. Only in the analysis build.
+ * # Errors
+ * Rejects planes whose length is not `width * height`.
+ */
+export function ms_ssim_luma(reference: Uint8Array, distorted: Uint8Array, width: number, height: number): number | undefined;
+/**
  * `codec`'s registered parameters, as a JSON array of `{name, default,
  * min, max, doc}` (defaults are the codec's own).
  * # Errors
@@ -51,6 +60,17 @@ export class BrowserDecoder {
    * decoded.
    */
   rgba_frame(colour: string): number;
+  /**
+   * Copy the luma of the latest decoded frame at the size the last `psnr`
+   * call compared (a smaller spatial layer upscaled, as there) into a
+   * reused buffer and return its byte offset in WASM memory
+   * (`error_map_width * error_map_height` bytes, read as for
+   * `rgba_frame`): the distorted plane `ms_ssim_luma` scores in the
+   * metrics worker. Only in the analysis build.
+   * # Errors
+   * Rejects calls made before `psnr` has scored a decoded frame.
+   */
+  scored_luma(): number;
   /**
    * Decode coded frame `index` and report its outcome, never throwing
    * for stream problems. `references` is the transport's dependency
@@ -365,6 +385,7 @@ export interface InitOutput {
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];
   readonly browserdecoder_psnr: (a: number, b: number, c: number) => [number, number, number];
   readonly browserdecoder_rgba_frame: (a: number, b: number, c: number) => [number, number, number];
+  readonly browserdecoder_scored_luma: (a: number) => [number, number, number];
   readonly browserdecoder_set_analysis: (a: number, b: number) => number;
   readonly browserdecoder_set_operating_point: (a: number, b: number) => [number, number];
   readonly browserdecoder_spatial_id: (a: number) => number;
@@ -390,6 +411,7 @@ export interface InitOutput {
   readonly decodeoutcome_decoded: (a: number) => number;
   readonly decodeoutcome_reason: (a: number) => [number, number];
   readonly decodeoutcome_report_index: (a: number) => number;
+  readonly ms_ssim_luma: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
   readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
   readonly sourceframe_colour: (a: number) => [number, number];
   readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
@@ -399,8 +421,8 @@ export interface InitOutput {
   readonly sourceframe_packed_length: (a: number) => number;
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
-  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __externref_table_dealloc: (a: number) => void;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_start: () => void;
 }

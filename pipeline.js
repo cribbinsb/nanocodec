@@ -114,7 +114,7 @@ class View {
     if (!frames.length) { resolve({ empty: true }); return; }
     const coded = frames.map(({ packet, key }) => ({ packet: packet.slice(), key, repeat: false, quantizer: null, encodeMs: null }));
     if (original) Object.assign(coded.at(-1), { source: original.i420.slice().buffer, colour: original.colour });
-    worker.postMessage({ type: 'replay', coded, display: this.panel.renderer.format },
+    worker.postMessage({ type: 'replay', coded, display: this.panel.renderer.format, tick: +this.panel.badge.dataset.tick },
       coded.flatMap(c => [c.packet.buffer, ...(c.source ? [c.source] : [])]));
   }
   /** Whether `switchDecoders` can re-decode this view's picture (see MAX_REPLAY_BYTES). */
@@ -317,6 +317,8 @@ export class Comparison {
     if (data.type === 'error') {
       view.panel.element.classList.add('error');
       this.fail(new Error(`Version ${view.panel.letter}: ${data.message}`));
+    } else if (data.type === 'ms-ssim') {
+      view.panel.scoredMsSsim(data);
     } else if (data.type === 'decoder-connected') {
       view.decoderConnected();
     } else if (data.type === 'frame') {

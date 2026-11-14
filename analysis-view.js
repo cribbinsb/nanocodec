@@ -173,6 +173,8 @@ class AnalysisView {
     // The latest PSNR map (error-map.js `errorMap`), its image at the drawn grid
     // and plane (made when first drawn), and the mean PSNR of each plane.
     this.errors = null; this.errorImage = null; this.errorImageKey = ''; this.psnr = new RunningSummary();
+    // The latest MS-SSIM the metrics worker scored ({ tick, value }) and the scores so far.
+    this.msSsim = null; this.msSsimScores = [];
     this.drawRequested = false; this.statsShownAt = 0; this.statsTimer = 0; this.hover = null; this.pinned = false;
     this.built = false;
   }
@@ -200,12 +202,12 @@ class AnalysisView {
     for (const element of [this.layer, this.stats, this.fullscreen]) element.hidden = !on;
     this.panel.viewport.classList.toggle('analysing', on);
     if (!on) { this.records = null; this.errors = null; this.hideTip(); }
-    this.running.reset(); this.psnr.reset(); this.summary = null; this.state = on ? 'waiting' : 'off';
+    this.running.reset(); this.psnr.reset(); this.msSsim = null; this.msSsimScores = []; this.summary = null; this.state = on ? 'waiting' : 'off';
     this.place(); this.showStats();
   }
   /** A new comparison started: forget the previous stream's statistics. */
   reset() {
-    this.running.reset(); this.psnr.reset(); this.summary = null; this.records = null; this.errors = null;
+    this.running.reset(); this.psnr.reset(); this.summary = null; this.records = null; this.errors = null; this.msSsim = null; this.msSsimScores = [];
     this.state = this.enabled ? 'waiting' : 'off';
     if (this.built) this.showStats();
   }
@@ -236,6 +238,13 @@ class AnalysisView {
     this.requestDraw();
     this.scheduleStats();
     if (this.hover && this.pinned) this.showTip(this.hover);
+  }
+  /** The metrics worker scored the frame of `tick` (null: too small for five scales). */
+  scoredMsSsim(tick, value) {
+    if (!this.enabled) return;
+    this.msSsim = { tick, value };
+    if (value !== null) this.msSsimScores.push(value);
+    this.scheduleStats();
   }
   /** Picture size in samples: the canvas holds the decoded picture at its own size. */
   pictureSize() { return { width: this.panel.canvas.width, height: this.panel.canvas.height }; }
@@ -424,6 +433,8 @@ class AnalysisView {
     this.stats.innerHTML = `<p class="analysis-note">Analysis on: decode timing is not representative (the decoder records every block).</p><table><thead><tr><th>By area</th><td>This frame</td><td>Mean of ${this.running.frames}</td></tr></thead><tbody>${[
       row(`PSNR vs source (dB) · ${this.errors ? `${this.errors.width}×${this.errors.height}` : '—'}`, psnrText(this.errors && framePsnr(this.errors)),
         psnrText(psnrMean?.psnr)),
+      row('MS-SSIM (luma, as the evaluation)', this.msSsim ? `${this.msSsim.value === null ? 'too small' : this.msSsim.value.toFixed(5)} · tick ${this.msSsim.tick}` : '—',
+        this.msSsimScores.length ? `${(this.msSsimScores.reduce((a, b) => a + b, 0) / this.msSsimScores.length).toFixed(5)} over ${this.msSsimScores.length} scored` : '—'),
       row('Source frame compared', Number.isFinite(this.tick) ? `tick ${this.tick} · ${(tickMs(this.tick) / 1000).toFixed(3)} s` : '—', ''),
       row('Source rendition', this.panel.current?.rendition ?? 'not a sample clip', ''),
       row('Prediction', shareText(now.pred, ['intra', 'inter', 'merge', 'skip']), shareText(mean.pred, ['intra', 'inter', 'merge', 'skip'])),
@@ -437,7 +448,7 @@ class AnalysisView {
       row('QP', qp(now), mean.qp == null ? '—' : mean.qp.toFixed(1)),
       row('QP changes (blocks)', String(now.qpDeltas), mean.qpDeltas?.toFixed(0) ?? '—'),
       row('Bits / pixel', now.bitsPerPixel.toFixed(3), (mean.bitsPerPixel ?? 0).toFixed(3)),
-    ].join('')}</tbody></table><p class="analysis-note">PSNR: per plane against the source frame this view coded, at its own size, on the source timeline's tick shown (30 ticks a second; views showing the same tick were scored against the same instant); PSNR-YUV weights the planes ${YUV_WEIGHTS.join(':')}, as the PSNR-YUV above.${
+    ].join('')}</tbody></table><p class="analysis-note">PSNR: per plane against the source frame this view coded, at its own size, on the source timeline's tick shown (30 ticks a second; views showing the same tick were scored against the same instant); PSNR-YUV weights the planes ${YUV_WEIGHTS.join(':')}, as the PSNR-YUV above. MS-SSIM (~0.1 s a 720p frame) is scored in its own worker on the newest frame at most once a second, so not every frame; a paused frame is always scored.${
       this.panel.current?.entry?.sourceNote ? ` Source note: ${escapeHtml(this.panel.current.entry.sourceNote)}` : ''}</p>`;
   }
 }
