@@ -21,3 +21,14 @@ spatial.base_scale = 0.5
 spatial.base_rate_share = 0.3
 spatial.inter_layer = 1
 spatial.enhancement_interval = 1
+# Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
+vp9.tx_search_min_levels = 0
+vp9.inter_rounding_divisor = 4
+vp9.inter_tx_split_spread = 1
+vp9.lambda_per_step_squared = 0.09
+planner.lambda_scale = 3.1625
+quant.trellis_lambda_scale = 1
+decision.intra_gate_variance = 0
+vp9.filter_level_scale = 1
+vp9.chroma_delta_q = -8
+vp9.inter_intra_dc_only = 0

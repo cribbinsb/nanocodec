@@ -38,3 +38,7 @@ spatial.inter_layer = 1
 spatial.enhancement_interval = 1
 spatial.proxy_bilinear = 1
 spatial.base_box_downscale = 1
+# Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
+quant.trellis_lambda_scale = 1
+vp9.filter_level_scale = 1
+vp9.inter_intra_dc_only = 0

@@ -109,3 +109,9 @@ nonbase.analysis.window_half_width = 1
 # (libvpx real-time, vp9.filter_search_rt; 2026-11-13): pool L1-L3 (n 127)
 # quality +0.18%, BETTER at k 0.6; Jetson -1.0%, x86 instructions about -2%.
 vp9.filter_search_rt = 1
+# Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
+vp9.inter_rounding_divisor = 4
+vp9.lambda_per_step_squared = 0.09
+quant.trellis_lambda_scale = 1
+vp9.filter_level_scale = 1
+vp9.chroma_delta_q = -8

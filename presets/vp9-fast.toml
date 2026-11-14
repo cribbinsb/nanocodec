@@ -61,3 +61,7 @@ decision.intra_gate_variance = 49.0420171397338
 # The Default's error-gap chroma offset (2026-11-12) is not screened for this
 # preset.
 vp9.chroma_delta_gap_slope = 0
+# Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
+quant.trellis_lambda_scale = 1
+vp9.filter_level_scale = 1
+vp9.inter_intra_dc_only = 0

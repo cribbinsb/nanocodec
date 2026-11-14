@@ -104,3 +104,9 @@ vp9.nonrd_block_test = 1
 # real-time): quality -0.26% (better, pool L1), x86 instructions -6.1%.
 # (Its search with exact token costs was ~12% of a P frame.)
 vp9.inter_intra_tx_depth = 0
+# Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial #23).
+vp9.inter_rounding_divisor = 4
+vp9.lambda_per_step_squared = 0.09
+quant.trellis_lambda_scale = 1
+vp9.filter_level_scale = 1
+vp9.chroma_delta_q = -8

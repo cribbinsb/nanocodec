@@ -833,8 +833,8 @@ impl CodecBackend for Vp9Backend {
         // cd9ea802 on the study's rotation: disjoint L3 (79 clips,
         // single-point) J -0.74% [-1.18, -0.30], L2 (ladder) -1.21% [-1.58,
         // -0.83], no guard. CPU x86 -1.5%, Jetson cycles -1.1%. vp9-fast pins
-        // the previous value.
-        ("planner.lambda_scale", 3.162_5),
+        // the previous value. (Re-tuned to 2.38 on 2026-11-14: the CPU cut
+        // at the end of this list.)
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,
@@ -852,7 +852,6 @@ impl CodecBackend for Vp9Backend {
         ("quant.trellis_key", 1.0),
         ("quant.trellis_states", 1.0),
         ("quant.trellis_chroma", 0.0),
-        ("decision.intra_gate_variance", 0.0),
         ("planner.depth_removal_min_quantizer", 0.86),
         // AV2's error-gap chroma offset: chroma 3 qindex finer per dB that
         // the previous frame's chroma was cleaner than its luma beyond 10 dB
@@ -871,6 +870,25 @@ impl CodecBackend for Vp9Backend {
         // `spatial.enhancement_intra_gate`): its measured results include it
         // (docs/handoff/spatial-svc.md). Single-layer streams never read it.
         ("spatial.enhancement_intra_gate", 1.0),
+        // Jointly re-tuned as a CPU cut at equal quality (2026-11-14; study
+        // vp9-default-speed-2026-11-13, trial #23, mode-decision / quantiser /
+        // filter levers): P-frame intra DC only, the transform search from 4
+        // levels, the inter rounding divisor 4 -> 3.78, a lower
+        // planner lambda (3.16 -> 2.38), a weaker loop filter (0.63), more
+        // chroma (delta q -14) and the values below. Head 7c0d98dc, pool levels
+        // of rotation 2026-11-14: disjoint L3 (79 clips, single-point) J -0.02%
+        // [-0.94, +0.75], pooled -0.12%, no guard; x86 instructions -12.2%,
+        // Jetson cycles -8.0%. The other VP9 presets pin the previous values.
+        ("vp9.tx_search_min_levels", 4.0),
+        ("vp9.inter_rounding_divisor", 3.783),
+        ("vp9.inter_tx_split_spread", 1.047),
+        ("vp9.lambda_per_step_squared", 0.1006),
+        ("planner.lambda_scale", 2.379),
+        ("quant.trellis_lambda_scale", 1.139),
+        ("decision.intra_gate_variance", 6.857),
+        ("vp9.filter_level_scale", 0.6274),
+        ("vp9.chroma_delta_q", -14.0),
+        ("vp9.inter_intra_dc_only", 1.0),
     ];
 
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
