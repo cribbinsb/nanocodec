@@ -3,7 +3,7 @@
 //! reference, for every alphabet size up to 16, random valid inverse CDFs
 //! (including the extremes 0 and 32767), ranges, values and rates.
 use crate::{check::CheckReport, rng::Rng};
-use nc_dsp::av1_symbol::{av1_adapt_cdf, av1_find_symbol, reference};
+use nc_dsp::av1_symbol::{av1_adapt_cdf, av1_decode_symbol_step, av1_find_symbol, reference};
 
 /// Probabilities are 15-bit; an inverse CDF entry stays below this.
 const PROB_TOP: usize = 1 << 15;
@@ -60,6 +60,27 @@ fn check_size<const N: usize>(rng: &mut Rng, report: &mut CheckReport) {
                 "av1_find_symbol {icdf:?} symbols {symbols} range {range} value {value}: \
                  {fast:?} != {slow:?}"
             ));
+        }
+        if (5..=8).contains(&N) {
+            for rate in [None, Some(4), Some(5), Some(6), Some(7)] {
+                let window = (u64::from(value) << 48) | 0x0000_a53c_019e_7fff;
+                let (mut a, mut b) = (icdf, icdf);
+                let step = av1_decode_symbol_step(&mut a, symbols, window, range, rate);
+                let expected = reference::decode_symbol_step(&mut b, symbols, window, range, rate);
+                report.cases += 1;
+                if step != expected || a != b {
+                    report.failures.push(format!("av1_symbol_step N={N} n={symbols} rate={rate:?}: {step:?}/{a:?} != {expected:?}/{b:?}"));
+                }
+                // Nonterminal zeros expose signed adaptation overflow if a
+                // narrower CDF invariant than our public contract is assumed.
+                let (mut a, mut b) = ([0u16; N], [0u16; N]);
+                let step = av1_decode_symbol_step(&mut a, symbols, 0, range, rate);
+                let expected = reference::decode_symbol_step(&mut b, symbols, 0, range, rate);
+                report.cases += 1;
+                if step != expected || a != b {
+                    report.failures.push(format!("av1_symbol_step zero CDF N={N} n={symbols} rate={rate:?}: {step:?}/{a:?} != {expected:?}/{b:?}"));
+                }
+            }
         }
         let symbol = rng.below(symbols);
         let rate = *RATES.start() + rng.below(RATES.clone().count()) as u32;

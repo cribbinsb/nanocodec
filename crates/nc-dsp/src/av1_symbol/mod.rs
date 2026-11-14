@@ -36,6 +36,12 @@ mod simd128;
 mod sse2;
 
 pub mod reference;
+mod step;
+pub use step::{Av1SymbolStep, av1_decode_symbol_step};
+
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+#[allow(unsafe_code)]
+mod neon_step;
 
 /// Bits dropped from a probability before the interval split
 /// (`EC_PROB_SHIFT`).

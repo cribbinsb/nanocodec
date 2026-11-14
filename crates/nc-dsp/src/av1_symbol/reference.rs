@@ -43,3 +43,26 @@ pub fn adapt_cdf<const N: usize>(icdf: &mut [u16; N], symbol: usize, symbols: us
         }
     }
 }
+
+/// Full symbol step, using the independent scalar interval and adaptation loops.
+#[must_use]
+pub fn decode_symbol_step<const N: usize>(
+    icdf: &mut [u16; N],
+    symbols: usize,
+    window: u64,
+    range: u32,
+    rate: Option<u32>,
+) -> super::Av1SymbolStep {
+    let interval = find_symbol(icdf, symbols, range, (window >> 48) as u32);
+    if let Some(rate) = rate {
+        adapt_cdf(icdf, interval.symbol, symbols, rate);
+    }
+    let range = interval.upper - interval.lower;
+    let shift = range.leading_zeros() - 16;
+    super::Av1SymbolStep {
+        symbol: interval.symbol,
+        window: (window - (u64::from(interval.lower) << 48)) << shift,
+        range: range << shift,
+        shift,
+    }
+}

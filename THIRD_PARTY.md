@@ -307,7 +307,12 @@ symbol kernels (`crates/nc-dsp/src/av1_symbol`: every interval bound and
 the CDF adaptation in 16-bit lanes, the decoded symbol counted from the
 comparison mask, the interval read back from the stored bounds) follow
 the design of dav1d 1.5.4 `src/msac.c` and `src/x86/msac.asm`, and are
-reimplemented in Rust.
+reimplemented in Rust. The fused NEON symbol step (`av1_symbol/neon_step.rs`)
+uses the shared CDF load, comparison-mask adaptation, SQDMULH interval scaling
+and table interval selection design of dav1d 1.5.4
+`src/arm/64/msac.S` (`decode_update`), Copyright © 2019 VideoLAN and dav1d
+authors and Martin Storsjo, BSD-2-Clause. Its biased signed adaptation also
+preserves zero-probability entries allowed by our broader kernel contract.
 
 CDEF (`crates/nc-dsp/src/cdef/band.rs`, `cdef/direction_avx2.rs`) is
 reimplemented in Rust from dav1d 1.5.4 `src/cdef_apply_tmpl.c` (`cdef_brow`:

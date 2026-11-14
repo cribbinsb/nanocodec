@@ -259,6 +259,27 @@ impl<'a> SymbolReader<'a> {
     /// `read_symbol` with an adaptive CDF of a `symbols`-symbol alphabet.
     #[inline]
     pub(crate) fn symbol<const N: usize>(&mut self, cdf: &mut Cdf<N>, symbols: usize) -> usize {
+        #[cfg(all(target_arch = "aarch64", not(miri)))]
+        if (5..=8).contains(&N) {
+            let rate = self.adapt.then(|| adaptation_rate(cdf.count, symbols));
+            let step = nc_dsp::av1_symbol::av1_decode_symbol_step(
+                &mut cdf.icdf,
+                symbols,
+                self.window,
+                self.range,
+                rate,
+            );
+            self.window = step.window;
+            self.range = step.range;
+            self.bits -= step.shift as i32;
+            if self.bits < 0 {
+                self.refill();
+            }
+            if self.adapt {
+                advance_counter(&mut cdf.count);
+            }
+            return step.symbol;
+        }
         let symbol = self.decode(&cdf.icdf, symbols);
         if self.adapt {
             cdf.adapt(symbol, symbols);
