@@ -39,6 +39,8 @@ pub(crate) const HOLD_MIN_STILL_RUN: u8 = 4;
 pub(crate) struct StillPlan {
     schedule: Option<PlannedRefinement>,
     hold: bool,
+    /// `rate.hold_recover`: hold only cells already as good as the level.
+    hold_recover: bool,
     prekey_quiet_frames: u64,
     /// Whether the frame being planned is a refinement or holds its still
     /// blocks: its level is planned, and its model learnt, without its
@@ -54,6 +56,7 @@ impl StillPlan {
         Self {
             schedule: PlannedRefinement::new(params, fps).filter(|_| available),
             hold: available && (params.hold_still >= 0.5 || params.refine >= 0.5),
+            hold_recover: params.hold_recover >= 0.5,
             prekey_quiet_frames: if available {
                 (f64::from(params.prekey_quiet) * fps).round() as u64
             } else {
@@ -96,7 +99,7 @@ impl StillPlan {
             .horizon
             .is_some_and(|to_key| to_key <= self.prekey_quiet_frames);
         if self.hold || quiet {
-            term.hold_still(frame, HOLD_MIN_STILL_RUN);
+            term.hold_still(frame, HOLD_MIN_STILL_RUN, self.hold_recover);
             self.without_offsets = true;
         }
     }

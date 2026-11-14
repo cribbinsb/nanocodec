@@ -509,21 +509,30 @@ impl ReuseTerm {
     /// whole picture unplanned: the bursts planned refinements replace (AV1
     /// `chirla` 93 kbps with the cadence flat: 10-14-budget frames at the
     /// level). A cell whose source moved forgets its held step.
-    pub fn hold_still(&mut self, frame: &ReuseFrame<'_>, min_run: u8) {
+    ///
+    /// With `recover`, a cell is held only when its measured error is no
+    /// worse than what the frame's step would deliver: a cell left poor (a
+    /// starved key, a moved-and-settled block) is coded at the level and
+    /// recovers, where the held step alone kept it at its coarse coding.
+    pub fn hold_still(&mut self, frame: &ReuseFrame<'_>, min_run: u8, recover: bool) {
         let runs = frame.still.runs.cells();
         if frame.key || self.held.len() != runs.len() {
             return;
         }
+        let level = expected_distortion(frame.sample_step) * SPREAD;
         for (cell, &run) in runs.iter().enumerate() {
             if run == 0 {
                 self.held[cell] = f64::INFINITY;
                 continue;
             }
             let held = self.held[cell];
+            let poor = recover
+                && (self.flags[cell] & (KNOWN | DIRTY) != KNOWN || self.error[cell] > level);
             if run < min_run
                 || self.offsets[cell] != 0.
                 || !held.is_finite()
                 || held <= frame.sample_step
+                || poor
             {
                 continue;
             }

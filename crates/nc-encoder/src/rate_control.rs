@@ -413,6 +413,13 @@ const STARTUP_CAMERA_MOTION: f64 = 1.0;
 /// Range of the debt correction of a frame budget (`budget`): a buffer of
 /// debt quarters it, a buffer of credit doubles it at most.
 const MIN_BUDGET_CORRECTION: f64 = 0.25;
+/// Steps above the closed-form level that `inter_level_step` searches when
+/// it prices the refinement of the held still picture (`rate.held_quality`):
+/// eight times, three octaves, is beyond any held step the level drifted
+/// below in the audit's traces.
+const HELD_SEARCH_RANGE: f64 = 8.;
+/// Bisection steps of that search: 2^-20 of three octaves.
+const HELD_SEARCH_ITERATIONS: u32 = 20;
 /// Least of a held key's repayment phase, in uniform budgets, left to its
 /// inter frames when the key alone takes the whole phase (`boost_repaying`).
 const HELD_KEY_MIN_PHASE_SHARE: f64 = 1.;
@@ -1185,13 +1192,63 @@ impl RateController {
         &self,
         hint: f64,
         budget: f64,
-        strength: f64,
+        (strength, still): (f64, f64),
         layer: LayerPosition,
         distance: u64,
     ) -> Option<f64> {
+        let roles = self.cycle_roles(strength, layer, distance)?;
         let exponent = self.settings.config.rate_exponent;
+        let frames = roles.len() as f64;
+        let ordinary = |step: f64| {
+            roles
+                .iter()
+                .map(|&(model, ratio)| model * hint / (step * ratio).powf(exponent))
+                .sum::<f64>()
+        };
+        let weighted: f64 = roles
+            .iter()
+            .map(|&(model, ratio)| model * ratio.powf(-exponent))
+            .sum();
+        let closed = (weighted * hint / (frames * budget)).powf(1. / exponent);
+        let refine = |step: f64| {
+            roles
+                .iter()
+                .map(|&(_, ratio)| self.still.refine_bits(step * ratio, still))
+                .sum::<f64>()
+        };
+        if refine(closed) <= 0. {
+            return Some(closed);
+        }
+        // The refinement a finer level triggers is part of the plan: the
+        // coarsest step whose ordinary and refinement bits fit the cycle's
+        // budget (both fall as the step grows, so a bisection on log step).
+        let fits = |step: f64| ordinary(step) + refine(step) <= frames * budget;
+        let (mut lo, mut hi) = (closed.ln(), (closed * HELD_SEARCH_RANGE).ln());
+        if !fits(hi.exp()) {
+            return Some(hi.exp());
+        }
+        for _ in 0..HELD_SEARCH_ITERATIONS {
+            let mid = f64::midpoint(lo, hi);
+            if fits(mid.exp()) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        Some(hi.exp())
+    }
+
+    /// The per-role bits models and step ratios of the cadence cycle (or
+    /// layered mini-GOP) holding the frame `distance` frames after the key;
+    /// a role not yet observed borrows the mean of the observed roles.
+    fn cycle_roles(
+        &self,
+        strength: f64,
+        layer: LayerPosition,
+        distance: u64,
+    ) -> Option<Vec<(f64, f64)>> {
         if layer.is_flat() && self.cadence.is_flat() {
-            return self.model[INTER_MODEL].map(|m| (m * hint / budget).powf(1. / exponent));
+            return self.model[INTER_MODEL].map(|m| vec![(m, 1.)]);
         }
         let observed: Vec<f64> = self.model[INTER_MODEL..]
             .iter()
@@ -1202,25 +1259,27 @@ impl RateController {
             return None;
         }
         let fallback = observed.iter().sum::<f64>() / observed.len() as f64;
-        let (mut weighted, mut frames) = (0., 0.);
-        let mut add = |role: CadenceRole, offset: f64| {
+        let role = |role: CadenceRole, offset: f64| {
             let model = self.model[INTER_MODEL + role.index()].unwrap_or(fallback);
-            weighted += model * step_ratio(offset).powf(-exponent);
-            frames += 1.;
+            (model, step_ratio(offset))
         };
-        if layer.is_flat() {
-            for d in self.cadence.cycle(distance) {
-                add(self.cadence.role(d), self.cadence.offset(d, strength));
-            }
+        Some(if layer.is_flat() {
+            self.cadence
+                .cycle(distance)
+                .map(|d| role(self.cadence.role(d), self.cadence.offset(d, strength)))
+                .collect()
         } else {
-            for position in layer.cycle() {
-                add(
-                    CadenceRole::of_layer(position),
-                    self.ladder.offset(position),
-                );
-            }
-        }
-        Some((weighted * hint / (frames * budget)).powf(1. / exponent))
+            layer
+                .cycle()
+                .into_iter()
+                .map(|position| {
+                    role(
+                        CadenceRole::of_layer(position),
+                        self.ladder.offset(position),
+                    )
+                })
+                .collect()
+        })
     }
 
     /// The step of a key frame: the finer of what its budget affords (the
@@ -1398,7 +1457,14 @@ impl RateController {
 
     /// The frame just selected on `budget`: its plan is its ordinary budget
     /// and prediction plus its refinement loan (0 on an ordinary frame).
-    fn add_refinement_loan(&mut self, key: bool, budget: f64) {
+    /// A flat inter frame at quantizer `q` with `still` share also plans
+    /// the refinement of the held still picture it triggers
+    /// (`rate.held_quality`).
+    fn add_plan_extras(&mut self, (key, flat): (bool, bool), q: u32, still: f64, budget: f64) {
+        if !key && flat {
+            let step = self.steps[q as usize];
+            self.last_predicted += self.still.plan_held(step, still, self.last_predicted);
+        }
         let loan = self.still.on_select(key, self.last_predicted, budget);
         self.last_predicted += loan;
         self.last_budget = budget + loan;
@@ -1649,7 +1715,9 @@ impl RateController {
         let level_step = if key {
             self.model[KEY_MODEL].map(|m| (m * h / budget).powf(1. / exponent))
         } else {
-            self.inter_level_step(h, budget, strength, layer, index - self.last_key_index)
+            let still = hint.static_fraction;
+            let distance = index - self.last_key_index;
+            self.inter_level_step(h, budget, (strength, still), layer, distance)
         }
         .unwrap_or_else(|| self.bootstrap_step(key, hint, budget));
         // Block-level offsets change the frame's effective step: the frame
@@ -1718,7 +1786,7 @@ impl RateController {
         self.last_predicted = self.model[slot].map_or(budget, |m| {
             m * h / (self.steps[q as usize] * self.block_ratio).powf(exponent)
         });
-        self.add_refinement_loan(key, budget);
+        self.add_plan_extras((key, layer.is_flat()), q, hint.static_fraction, budget);
         let cadence_offset = if key || !layer.is_flat() {
             0.
         } else {
@@ -1982,10 +2050,14 @@ impl RateController {
         // A refinement frame's bits are its ordinary plan plus the refined
         // blocks: the role model learns from ordinary frames only, the loan
         // its cost scale.
-        if !self.still.refining() {
+        // A frame refining the held still picture neither: its bits beyond
+        // the per-role prediction are the refinement's.
+        if !self.still.refining() && !self.still.held_refining() {
             self.learn(bits);
         }
         self.still.settle(bits as f64);
+        let key_step = self.last_key.then(|| self.steps[self.current as usize]);
+        self.still.observe_held(bits as f64, key_step);
         self.inframe_ratio = 1.;
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);

@@ -31,8 +31,13 @@ const LOAN_OVERRUN: f64 = 1.5;
 /// the first refinement's loan is not underestimated into a re-code.
 const INITIAL_COST_SCALE: f64 = 2.;
 
+use crate::held_quality::HeldQuality;
 use crate::params::RateParams;
 use crate::period_ledger::PeriodLedger;
+
+/// Weight of each refining frame in the held-quality coefficient: they come
+/// a few a second, and their sizes vary by an order of magnitude.
+const HELD_SMOOTHING: f64 = 0.3;
 
 /// Rate control's part of still-scene coding: the refinement loan
 /// (`rate.refine`), the quiet run-up to a key (`rate.prekey_quiet`), the
@@ -55,6 +60,12 @@ pub(crate) struct StillRate {
     pub key_hold_buffers: f64,
     /// The key-period ceiling (`rate.period_ceiling`; `None`: off).
     ledger: Option<PeriodLedger>,
+    /// The held still quality and its refinement price
+    /// (`rate.held_quality`; `None`: off).
+    held: Option<HeldQuality>,
+    /// The flat inter frame being coded: its step, still share and the
+    /// per-role model's prediction of it (`None`: not one).
+    held_frame: Option<(f64, f64, f64)>,
 }
 
 impl StillRate {
@@ -69,6 +80,44 @@ impl StillRate {
             prekey_quiet_frames: f64::from(params.prekey_quiet) * fps,
             key_hold_buffers: f64::from(params.key_hold_still),
             ledger: (params.period_ceiling >= 0.5).then(PeriodLedger::default),
+            held: (params.held_quality >= 0.5)
+                .then(|| HeldQuality::new(f64::from(params.held_exponent), HELD_SMOOTHING)),
+            held_frame: None,
+        }
+    }
+
+    /// The bits a frame at `step` with `still` share is predicted to spend
+    /// refining the still picture (0 when off).
+    pub fn refine_bits(&self, step: f64, still: f64) -> f64 {
+        self.held
+            .as_ref()
+            .map_or(0., |held| held.refine_bits(step, still))
+    }
+
+    /// Plan a flat inter frame at `step` with `still` share whose per-role
+    /// prediction is `ordinary` bits: its predicted refinement bits.
+    pub fn plan_held(&mut self, step: f64, still: f64, ordinary: f64) -> f64 {
+        self.held_frame = self.held.as_ref().map(|_| (step, still, ordinary));
+        self.refine_bits(step, still)
+    }
+
+    /// Whether the frame being coded refines the still picture (its bits
+    /// are not the per-role model's to learn from).
+    pub fn held_refining(&self) -> bool {
+        matches!((&self.held, self.held_frame), (Some(held), Some((step, still, _))) if held.refines(step, still))
+    }
+
+    /// The frame just coded took `bits`: a key at `key_step` seeds the held
+    /// step, a planned flat inter frame moves it.
+    pub fn observe_held(&mut self, bits: f64, key_step: Option<f64>) {
+        let frame = self.held_frame.take();
+        let Some(held) = self.held.as_mut() else {
+            return;
+        };
+        match (key_step, frame) {
+            (Some(step), _) => held.seed_key(step),
+            (None, Some((step, still, ordinary))) => held.observe(step, still, bits, ordinary),
+            (None, None) => {}
         }
     }
 

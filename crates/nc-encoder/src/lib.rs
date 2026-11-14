@@ -46,6 +46,7 @@ mod decision;
 mod encoder;
 mod feedback;
 mod frame_role;
+mod held_quality;
 mod hold;
 mod inframe;
 mod input;
