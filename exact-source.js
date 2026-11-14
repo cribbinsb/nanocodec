@@ -5,6 +5,12 @@
 // the clip's time just runs slower than real time (app.js says by how much), so a
 // run's pictures, streams and numbers are those of a machine that keeps up.
 // Live sources (the webcam) are sampled by capture.js instead.
+//
+// A sample clip ships in several renditions (clips.js `clipRendition`); each
+// view codes the one for its own height, as the pre-encoded streams were made
+// (tools/web/make-reference-streams.py `clip_file`), so views that straddle a
+// rendition boundary have one exact source each (`ViewSources`), advanced on
+// the same ticks.
 import { ClipSource } from './clip-source.js';
 import { drawScene } from './scene.js';
 import { snapshot } from './capture.js';
@@ -46,4 +52,39 @@ export class ExactSource {
     return { picture: frame, element: frame, width: frame.displayWidth, height: frame.displayHeight };
   }
   close() { this.clip?.close(); }
+}
+
+/**
+ * The exact sources of a comparison: one per distinct source among the views
+ * (a clip's rendition for each view's height, else one for all), with which
+ * view codes from which.
+ */
+export class ViewSources {
+  /**
+   * `urls[i]`: view i's source (a rendition URL, a file URL, or 'scene'); null
+   * when the browser cannot decode one of them frame by frame (the page then
+   * samples the playing video).
+   */
+  static async open(kind, urls, { fps, loops }) {
+    const distinct = [...new Set(urls)];
+    const sources = await Promise.all(distinct.map(url => ExactSource.open(kind, { url, fps, loops })));
+    if (sources.some(source => !source)) { for (const source of sources) source?.close(); return null; }
+    const lengths = new Set(sources.map(source => source.loopLength));
+    if (lengths.size > 1) throw new Error(`The clip's renditions differ in length (${[...lengths].join(', ')} ticks)`);
+    return new ViewSources(distinct.map((url, i) => ({ url, source: sources[i], views: urls.flatMap((u, view) => (u === url ? [view] : [])) })));
+  }
+  constructor(entries) { this.entries = entries; }
+  /** Ticks in one loop (every source has the same). */
+  get loopLength() { return this.entries[0].source.loopLength; }
+  ended(tick) { return this.entries[0].source.ended(tick); }
+  /**
+   * The pictures of `tick` for the views that code it (`coding`): one shot
+   * (ExactSource.picture, plus `views`, the view indices it is for) per source
+   * a coding view reads; the scene is drawn at `width` x `height`.
+   */
+  async pictures(tick, coding, width, height) {
+    const wanted = this.entries.map(entry => ({ ...entry, views: entry.views.filter(view => coding[view]) })).filter(entry => entry.views.length);
+    return Promise.all(wanted.map(async ({ source, views }) => ({ ...(await source.picture(tick, width, height)), views })));
+  }
+  close() { for (const { source } of this.entries) source.close(); }
 }

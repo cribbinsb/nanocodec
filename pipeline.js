@@ -286,18 +286,20 @@ export class Comparison {
   /** Which views code `tick`. */
   coding(tick) { return this.views.map(view => view.codes(tick)); }
   /**
-   * Send the picture (capture.js `snapshot`, of a `sourceWidth` x `sourceHeight`
-   * source) captured at `tick` to the views that code it (`coding`); the capture
-   * worker takes it over and closes it.
+   * Send the pictures of `tick` to the views that code it (`coding`): `shots`
+   * holds one per source, `{ picture, width, height, views }` (capture.js
+   * `snapshot`, its size, the view indices it is for). The capture worker takes
+   * them over and closes them.
    */
-  send(tick, picture, sourceWidth, sourceHeight, coding) {
+  send(tick, shots, coding) {
     const id = ++this.nextId;
     this.inFlight.set(id, { tick, coding, results: this.views.map(() => null) });
     // Each frame names the format the view's renderer draws, which changes if a GL context is lost.
     const displays = this.views.map(({ panel }) => panel.renderer.format);
-    Promise.resolve(picture).then(frame => {
-      if (this.closed) { frame.close(); return; }
-      this.capture.postMessage({ type: 'frame', id, timestamp: tickMs(tick), picture: frame, sourceWidth, sourceHeight, displays, coding }, [frame]);
+    Promise.all(shots.map(shot => shot.picture)).then(pictures => {
+      if (this.closed) { for (const picture of pictures) picture.close(); return; }
+      const sources = shots.map((shot, i) => ({ picture: pictures[i], sourceWidth: shot.width, sourceHeight: shot.height, views: shot.views }));
+      this.capture.postMessage({ type: 'frame', id, timestamp: tickMs(tick), sources, displays, coding }, pictures);
     }).catch(error => this.fail(error));
   }
   requestKeyframes() { for (const view of this.views) view.requestKeyframe(); }

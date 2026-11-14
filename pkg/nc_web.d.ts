@@ -70,11 +70,11 @@ export class BrowserDecoder {
    */
   decoded_i420(): Uint8Array;
   /**
-   * Select the operating point (`0..=31` on AV1, `0..=1` on VP9 where `> 0`
-   * selects base-only `S0` decoding; default `0`) before or between packets.
+   * Select the operating point (`0..=31` on AV1, `0..=2` on VP9; default `0`)
+   * before or between packets.
    * # Errors
    * Rejects non-zero operating points on codecs other than AV1 and VP9, and
-   * values above 31.
+   * out-of-range operating points.
    */
   set_operating_point(op: number): void;
   /**

@@ -95,7 +95,10 @@ export function clipById(id) {
 }
 
 // The smallest variant at least `height` tall (the largest when none is), so the
-// canvas only ever scales the clip down.
+// canvas only ever scales the clip down. Each view codes the variant for its own
+// height (exact-source.js ViewSources); tools/web/make-reference-streams.py
+// `clip_file` applies this rule to VARIANT_HEIGHTS read from this file, so the
+// pre-encoded streams code the same pixels as a live view of their size.
 export function clipUrl(clip, height) {
   const variant = VARIANT_HEIGHTS.find(h => h >= height) ?? VARIANT_HEIGHTS.at(-1);
   return `clips/${clip.id}-${variant}p.mp4`;

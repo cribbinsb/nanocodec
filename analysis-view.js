@@ -421,6 +421,7 @@ class AnalysisView {
       row(`PSNR vs source (dB) · ${this.errors ? `${this.errors.width}×${this.errors.height}` : '—'}`, psnrText(this.errors && framePsnr(this.errors)),
         psnrText(psnrMean?.psnr)),
       row('Source frame compared', Number.isFinite(this.tick) ? `tick ${this.tick} · ${(tickMs(this.tick) / 1000).toFixed(3)} s` : '—', ''),
+      row('Source rendition', this.panel.current?.rendition ?? 'not a sample clip', ''),
       row('Prediction', shareText(now.pred, ['intra', 'inter', 'merge', 'skip']), shareText(mean.pred, ['intra', 'inter', 'merge', 'skip'])),
       row('Block size', shareText(now.cbSize), shareText(mean.cbSize)),
       row('Partition', shareText(now.shape), shareText(mean.shape)),
