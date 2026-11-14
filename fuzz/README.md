@@ -75,9 +75,13 @@ decoders can be checked as the browser runs them:
 ```sh
 cd fuzz/replay
 RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-wasip1
-python3 pack.py CORPUS_DIR... | node ../../tools/ci/wasi-run.mjs \
-  "$CARGO_TARGET_DIR"/wasm32-wasip1/release/nc-fuzz-replay.wasm CODEC
+python3 pack.py CORPUS_DIR... > archive.bin
+node ../../tools/ci/wasi-run.mjs \
+  "$CARGO_TARGET_DIR"/wasm32-wasip1/release/nc-fuzz-replay.wasm CODEC < archive.bin
 ```
+
+Redirect a file rather than piping: node's WASI stdin reports `EAGAIN`
+on a pipe that is not yet full.
 
 A panic traps the module; the last `input N` line on stderr names the
 input (`pack.py` prints the index-to-path map).

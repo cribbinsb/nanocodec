@@ -110,18 +110,29 @@ unsafe fn quantize_levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Qua
     }
     // SAFETY: `len >= 1` (caller contract for both pointers).
     let dc = unsafe { quantize_one(*src, 0, q) };
-    // SAFETY: as above.
-    unsafe { *dst = dc };
     let dc_nonzero = u32::from(dc != 0);
     let (offset, divisor) = quant_terms(q, q.ac_step);
+    // AV2 shares this entry with larger scales; retain its scalar fallback.
+    if divisor.is_power_of_two() && q.log_scale <= 2 {
+        // SAFETY: len is positive; this helper processes only AC coefficients.
+        unsafe { *dst = dc };
+        // SAFETY: forwarded source/destination extent; DC was handled above.
+        return dc_nonzero + unsafe { quantize_power_of_two(src, dst, len, q, offset, divisor) };
+    }
     let Some(reciprocal) = Reciprocal::new(divisor) else {
+        // SAFETY: len is positive; the scalar fallback starts at index one.
+        unsafe { *dst = dc };
         // SAFETY: forwarded contract.
         return dc_nonzero + unsafe { quantize_tail(src, dst, 1, len, q) };
     };
     let ac = AcQuantizer::new(q, offset, divisor, reciprocal);
     let mut nonzero_lanes = vdupq_n_u32(0);
-    let octets_end = 1 + (len - 1) / 8 * 8;
-    for i in (1..octets_end).step_by(8) {
+    // Quantize aligned vectors with AC parameters, then replace lane zero
+    // with its saved DC result. This avoids three scalar AC divisions on
+    // normal power-of-two block lengths. The original DC was read above;
+    // no store precedes the corresponding load, including in-place calls.
+    let octets_end = len / 8 * 8;
+    for i in (0..octets_end).step_by(8) {
         // SAFETY: `i + 8 <= len`; loaded before the stores below.
         let (c0, c1) = unsafe { (vld1q_s32(src.add(i)), vld1q_s32(src.add(i + 4))) };
         let (n0, n1) = (ac.numerator(c0), ac.numerator(c1));
@@ -159,7 +170,54 @@ unsafe fn quantize_levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Qua
         done += 4;
     }
     // SAFETY: forwarded contract.
-    dc_nonzero + vaddvq_u32(nonzero_lanes) + unsafe { quantize_tail(src, dst, done, len, q) }
+    let nonzero = vaddvq_u32(nonzero_lanes) + unsafe { quantize_tail(src, dst, done, len, q) };
+    // SAFETY: len is positive, and the vector/tail pass wrote destination
+    // zero. Remove that lane's provisional count before installing DC.
+    unsafe {
+        let provisional_dc_nonzero = u32::from(*dst != 0);
+        *dst = dc;
+        nonzero - provisional_dc_nonzero + dc_nonzero
+    }
+}
+
+/// Exact power-of-two division needs only a lane shift, not scalar division.
+/// The numerator is unchanged from the general quantizer; no approximate
+/// reciprocal or narrower coefficient contract is introduced.
+///
+/// # Safety
+/// Same buffers and coefficient bounds as `quantize_levels`; `divisor` is
+/// a power of two. Coefficient zero has already been processed separately.
+#[target_feature(enable = "neon")]
+unsafe fn quantize_power_of_two(
+    src: *const i32,
+    dst: *mut i32,
+    len: usize,
+    q: &Av1Quantizer,
+    offset: u32,
+    divisor: u32,
+) -> u32 {
+    let input_shift = vdupq_n_s32(7 + q.log_scale as i32);
+    let divide_shift = vdupq_n_s32(-(divisor.trailing_zeros() as i32));
+    let offset = vdupq_n_u32(offset);
+    let limit = vdupq_n_u32(q.max_level as u32);
+    let mut counts = vdupq_n_u32(0);
+    let end = 1 + (len - 1) / 4 * 4;
+    for i in (1..end).step_by(4) {
+        // SAFETY: i + 4 <= len. Load precedes the store for in-place calls.
+        let c = unsafe { vld1q_s32(src.add(i)) };
+        let numerator = vaddq_u32(
+            vshlq_u32(vreinterpretq_u32_s32(vabsq_s32(c)), input_shift),
+            offset,
+        );
+        let magnitude = vreinterpretq_s32_u32(vminq_u32(vshlq_u32(numerator, divide_shift), limit));
+        let sign = vshrq_n_s32::<31>(c);
+        let level = vsubq_s32(veorq_s32(magnitude, sign), sign);
+        counts = count_nonzero(counts, level);
+        // SAFETY: same four valid destination lanes as above.
+        unsafe { vst1q_s32(dst.add(i), level) };
+    }
+    // SAFETY: the remaining indices are within the forwarded extents.
+    vaddvq_u32(counts) + unsafe { quantize_tail(src, dst, end, len, q) }
 }
 
 /// [`quantize_levels`] in place.
@@ -311,6 +369,117 @@ unsafe fn coefficient_gain(original: &[i32], dequantized: &[i32]) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aligned_ac_vectors_restore_dc_and_count_exactly() {
+        for ac_step in [5, 73, 1828] {
+            for dc_step in [4, 129, 1828] {
+                for log_scale in 0..=5 {
+                    for len in (0..=37).chain([64, 256, 1024]) {
+                        let q = Av1Quantizer {
+                            dc_step,
+                            ac_step,
+                            rounding_q7: 48,
+                            max_level: 8191,
+                            log_scale,
+                        };
+                        let input: Vec<_> = (0..len)
+                            .map(|i| {
+                                if i == 0 {
+                                    75
+                                } else {
+                                    ((i * 139 + 17) % 8192) as i32 - 4096
+                                }
+                            })
+                            .collect();
+                        let expected: Vec<_> = input
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &v)| quantize_one(v, i, &q))
+                            .collect();
+                        let mut out = vec![12345; len + 1];
+                        // SAFETY: NEON is mandatory; output covers every input.
+                        let count = unsafe { quantize_from(&input, &q, &mut out) };
+                        assert_eq!(&out[..len], &expected, "{q:?}, len={len}");
+                        assert_eq!(out[len], 12345);
+                        assert_eq!(count as usize, expected.iter().filter(|&&v| v != 0).count());
+                        let mut inplace = input;
+                        // SAFETY: NEON is mandatory and the input slice is valid.
+                        assert_eq!(unsafe { quantize(&mut inplace, &q) }, count);
+                        assert_eq!(inplace, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn power_of_two_division_matches_scalar_and_preserves_tail() {
+        let magnitudes = [
+            0,
+            1,
+            3,
+            4,
+            7,
+            8,
+            15,
+            16,
+            31,
+            32,
+            63,
+            64,
+            127,
+            128,
+            32767,
+            (1 << 22) - 1,
+        ];
+        for ac_step in [4, 8, 16, 32, 64, 128] {
+            for rounding_q7 in [0, 41, 48, 64, 127] {
+                for log_scale in [0, 1, 2, 3, 4, 5] {
+                    for max_level in [1, 8191, 32768] {
+                        let q = Av1Quantizer {
+                            dc_step: 73,
+                            ac_step,
+                            rounding_q7,
+                            max_level,
+                            log_scale,
+                        };
+                        for len in 0..=37 {
+                            let source: Vec<_> = (0..len)
+                                .map(|i| {
+                                    let magnitude = magnitudes[i % magnitudes.len()];
+                                    let magnitude = if log_scale > 2 {
+                                        magnitude.min((1 << 16) - 1)
+                                    } else {
+                                        magnitude
+                                    };
+                                    if i % 2 == 0 { magnitude } else { -magnitude }
+                                })
+                                .collect();
+                            let expected: Vec<_> = source
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &v)| quantize_one(v, i, &q))
+                                .collect();
+                            let mut output = vec![12345; len + 1];
+                            // SAFETY: NEON is mandatory; output covers the input.
+                            let count = unsafe { quantize_from(&source, &q, &mut output) };
+                            assert_eq!(&output[..len], &expected, "{q:?}, len={len}");
+                            assert_eq!(output[len], 12345);
+                            assert_eq!(
+                                count as usize,
+                                expected.iter().filter(|&&v| v != 0).count()
+                            );
+                            let mut inplace = source;
+                            // SAFETY: NEON is mandatory and the slice is valid.
+                            assert_eq!(unsafe { quantize(&mut inplace, &q) }, count);
+                            assert_eq!(inplace, expected);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn zero_vector_threshold_matches_scalar_on_both_sides() {
