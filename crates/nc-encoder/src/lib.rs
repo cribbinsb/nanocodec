@@ -135,7 +135,9 @@ pub use zero_residual::{
     TextureScales, ZeroLimits, residual_quantises_to_zero, residual_quantises_to_zero_scaled,
 };
 
-pub use rate_control::{RateControlConfig, RateControlError, RateControlStats, RateModel};
+pub use rate_control::{
+    RateControlConfig, RateControlError, RateControlStats, RateModel, RatePlanTrace,
+};
 pub use spatial::{
     CombinedCbrBuffer, EnhancementIntra, MAX_SPATIAL_LAYERS, OperatingPointSpec, ScalabilityMode,
     SpatialConfig,

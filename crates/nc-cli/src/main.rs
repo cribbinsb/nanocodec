@@ -580,8 +580,9 @@ fn encode(args: &EncodeArgs) -> Result<(), String> {
 }
 
 /// One `--rate-log` row: the frame's type (or `Dropped`), quantizers, size,
-/// the controller's buffer and rate statistics, and the coded picture size
-/// (smaller than the stream while adaptive resolution codes at half size).
+/// the controller's buffer and rate statistics, the coded picture size
+/// (smaller than the stream while adaptive resolution codes at half size),
+/// and the controller's plan of the frame (`RatePlanTrace`).
 fn write_rate_row(
     log: &mut impl Write,
     index: u32,
@@ -598,7 +599,7 @@ fn write_rate_row(
     };
     writeln!(
         log,
-        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height}",
+        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0}",
         frame.metadata.quantizer,
         stats.current_quantizer,
         frame.data.len(),
@@ -609,7 +610,15 @@ fn write_rate_row(
         stats.target_bps,
         stats.key_loan_bits,
         stats.residual_sigma,
-        stats.recoded_frames
+        stats.recoded_frames,
+        stats.plan.budget_bits,
+        stats.plan.predicted_bits,
+        stats.plan.level_quantizer,
+        stats.plan.cadence_offset,
+        stats.plan.static_fraction,
+        stats.plan.excess_bits,
+        stats.plan.debit_bits,
+        stats.plan.capacity_bits
     )
 }
 
@@ -816,7 +825,7 @@ fn run<B: CodecBackend, S: FrameSink>(
     }
     let mut rate_log = args.rate_log.as_deref().map(stdio::create).transpose()?;
     if let Some(log) = &mut rate_log {
-        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height").map_err(|error|error.to_string())?;
+        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits").map_err(|error|error.to_string())?;
     }
     let mut input = FrameReader::new(
         stdio::open_raw(&args.input)?,

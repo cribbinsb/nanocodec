@@ -484,3 +484,47 @@ picture already holds. The encoder knows that quality from the reference's level
 quantizer. Predicting the burst from it would let the plan choose a base level that fits its cycle, without
 coding twice and without a debt-driven cut that lands on the frames after a key. The plan trace on
 `feature/still-overshoot-probe` is the tool to check such a predictor against these traces.
+
+### Refinement-burst predictor (2026-11-14), not adopted
+
+**Model.** A base frame finer than the quality the still picture already holds costs `c * still * octaves^γ`
+on top of the per-role model. "Held quality" is the finest step of the last 2 base frames since the key, with
+the key seeding it; `octaves` is how many octaves finer the frame is. The coefficient `c` is learned from base
+frames that refined. The per-role base model learns only from base frames that did not refine. The cycle plan
+then solves for the level including the predicted burst. Registered as `rate.burst_model` (default off) and
+`rate.burst_exponent`; the code is on unlanded branch `feature/burst-predictor`.
+
+**Offline accuracy on the 18 traces.** Burst frames' actual/predicted, geometric mean (median in brackets), with
+γ = 2 and 2 held base frames: AV1 9.3 → 2.2 (11.7 → 2.3); H.264 and HEVC 6.4 → 1.7. Other base frames: 0.13 →
+0.19, so they stay over-predicted, as the per-role model already over-predicted them.
+
+**Closed loop.** AV1 Default, the six points, γ = 2 against the Default:
+- **Burst prediction:** bursts' actual/predicted median falls from 2.8-22.4 to 1.8-4.1.
+- **Budget floor:** the share of P budgets at the floor falls from 6-77% to 1-12%.
+- **Limit cycle damped:** the level's median swing in a 4-frame group falls from 20 to 1-10 qindex.
+- **Re-codes:** the Default's own `rate.recode_overflow` re-codes fall from 7-26 to 3-8 per 600 frames.
+
+| Point | Default: rate / worst-1% Y / re-coded | γ = 1.5 | γ = 2 | γ = 3 |
+|---|---|---|---|---|
+| chirla 47 | 1.001 / 28.81 / 22 | 1.003 / 31.99 / 6 | 1.009 / 31.99 / 6 | 0.999 / 31.99 / 10 |
+| chirla 93 | 1.037 / 35.40 / 8 | 0.987 / 35.59 / 3 | 0.992 / 35.59 / 3 | 0.962 / 35.59 / 7 |
+| chirla 187 | 1.030 / 38.97 / 26 | 0.969 / 39.36 / 6 | 0.945 / 39.36 / 3 | 0.912 / 39.36 / 7 |
+| meva 97 | 0.984 / 29.14 / 16 | 0.968 / 29.46 / 8 | 0.970 / **27.52** / 8 | 0.904 / 29.46 / 2 |
+| meva 194 | 1.033 / 33.06 / 8 | 0.843 / **32.52** / 4 | 0.903 / 32.79 / 5 | 0.881 / **29.32** / 8 |
+| meva 388 | 1.028 / 33.91 / 7 | 0.936 / **32.39** / 12 | 0.911 / 36.31 / 5 | 0.911 / 36.51 / 7 |
+
+PSNR-YUV per 150-frame window, Default → γ = 2:
+- chirla 93: 41.62 → 42.58 for frames 300-449.
+- meva 194: 42.28 → 41.87 and 39.46 → 38.74 for frames 150-299 and 300-449.
+- meva 97: 36.49 → 34.51 for frames 300-449.
+
+**Verdict: fails the probe criteria.**
+- **Rate:** both worst points come inside 2.5% at every γ. But chirla 47 goes 0.2-0.8 points further over target
+  at γ 1.5 and 2, and meva and chirla 187 now undershoot by 5-10%.
+- **Worst-1% PSNR-Y:** at γ = 2 meva 97 falls 1.6 dB. That is the second key, coded at qindex 248 instead of 226.
+  The Default reached that key with 0.85 buffer of banked undershoot and gave it 27U. The predictor spends evenly,
+  arrives with no credit, and the key gets 11U. The frames after it inherit the coarser key.
+- **Diagnosis:** the predictor fixes the misprediction and damps the limit cycle. It is now too cautious on
+  meva (undershoot), and the remaining worst-1% loss is the key budget, not the base frames. An adoptable version
+  needs the over-prediction of non-bursting base frames removed (they still read 5x too large) and a check of
+  how the key budget responds to credit. Not built further.

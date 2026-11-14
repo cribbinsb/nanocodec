@@ -500,6 +500,7 @@ impl SpatialSession {
             recoded_frames,
             key_loan_bits,
             residual_sigma,
+            plan: s0.plan,
         })
     }
 

@@ -228,6 +228,29 @@ pub struct RateControlStats {
     /// (`quality_cap::residual_sigma`); 0 unless
     /// [`RateControlConfig::temporal_noise_stat`] is on.
     pub residual_sigma: f64,
+    /// How the latest frame was planned, a rate-log diagnostic.
+    pub plan: RatePlanTrace,
+}
+/// The controller's plan of the latest frame and its state after it: a
+/// diagnostic for the rate log (`nanocodec --rate-log`), read by no decision.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RatePlanTrace {
+    /// Bits the frame was budgeted, after the debt correction.
+    pub budget_bits: f64,
+    /// Bits the frame's model predicted at its quantizer.
+    pub predicted_bits: f64,
+    /// Inter level quantizer (before cadence offsets; the key's own on a key).
+    pub level_quantizer: u32,
+    /// Cadence offset applied, in QP units (negative is finer).
+    pub cadence_offset: f64,
+    /// Share of unchanged blocks the frame's analysis saw.
+    pub static_fraction: f64,
+    /// Debt beyond the scheduled key loan after the frame, in bits.
+    pub excess_bits: f64,
+    /// The debit term after the frame, in bits.
+    pub debit_bits: f64,
+    /// The buffer capacity in bits (what the correction divides by).
+    pub capacity_bits: f64,
 }
 #[derive(Debug, Clone, Copy)]
 struct Settings {
@@ -701,6 +724,7 @@ impl RateController {
                 recoded_frames: 0,
                 key_loan_bits: 0.,
                 residual_sigma: 0.,
+                plan: RatePlanTrace::default(),
             },
         })
     }
@@ -1465,7 +1489,24 @@ impl RateController {
         self.last_predicted = self.model[slot].map_or(budget, |m| {
             m * h / (self.steps[q as usize] * self.block_ratio).powf(exponent)
         });
+        let cadence_offset = if key || !layer.is_flat() {
+            0.
+        } else {
+            self.cadence.offset(index - self.last_key_index, strength)
+        };
+        self.trace_plan(level, cadence_offset, hint.static_fraction);
         q
+    }
+    /// Record the plan of the frame just selected in the rate-log trace.
+    fn trace_plan(&mut self, level: u32, cadence_offset: f64, static_fraction: f64) {
+        self.stats.plan = RatePlanTrace {
+            budget_bits: self.last_budget,
+            predicted_bits: self.last_predicted,
+            level_quantizer: level,
+            cadence_offset,
+            static_fraction,
+            ..self.stats.plan
+        };
     }
     /// With `rate.recode_overflow`, the coarser quantizer to code the
     /// current frame again at when its `bits` would overflow the buffer
@@ -1756,6 +1797,9 @@ impl RateController {
         self.stats.actual_bps = self.stats.total_bits as f64 / self.elapsed;
         self.stats.max_frame_bits = self.stats.max_frame_bits.max(bits);
         self.stats.key_loan_bits = self.scheduled_key_debt;
+        self.stats.plan.excess_bits = self.excess();
+        self.stats.plan.debit_bits = self.debit.unwrap_or(0.);
+        self.stats.plan.capacity_bits = self.settings.capacity;
     }
     pub const fn stats(&self) -> RateControlStats {
         self.stats
@@ -1814,6 +1858,27 @@ mod tests {
         residual_sigma: None,
         motion: None,
     };
+    #[test]
+    fn rate_log_plan_reports_the_frame_and_the_state_after_it() {
+        let mut r = controller(200_000);
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(40_000);
+        let still = Complexity {
+            static_fraction: 1.,
+            ..HINT
+        };
+        let q = r.select(false, 4, still, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(5_000);
+        let plan = r.stats().plan;
+        assert_eq!(plan.budget_bits, r.last_budget);
+        assert!(plan.predicted_bits > 0.);
+        // Frame 4 is a base frame of the default four-frame cadence: its
+        // quantizer is finer than the level by the full boost.
+        assert!(plan.cadence_offset < 0. && q < plan.level_quantizer);
+        assert_eq!(plan.static_fraction, 1.);
+        assert_eq!(plan.excess_bits, r.excess());
+        assert_eq!(plan.capacity_bits, r.settings.capacity);
+    }
     #[test]
     fn tiny_buffer_large_key_loan_does_not_invent_credit() {
         let mut r = controller(200_000);
