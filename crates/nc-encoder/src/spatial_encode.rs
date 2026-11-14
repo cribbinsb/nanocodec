@@ -36,10 +36,10 @@ use crate::reuse::{ReuseFrame, ReuseTerm};
 use crate::second_reference::SecondReference;
 use crate::source_scale::PictureResampler;
 use crate::spatial::{
-    BASE_SLOT_OFFSET, CombinedCbrBuffer, EnhancementClock, EnhancementIntra, LayerDropFacts,
-    MAX_SPATIAL_LAYERS, ShareRequest, SpatialConfig, SpatialLayerPlan, SpatialStructure,
-    SpatialUnitDrop, TemporalUnitPlan, decide_unit_drop_layers, layer_slot_offset,
-    layer_temporal_slots, spatial_pool_slots, split_rate_control,
+    BASE_SLOT_OFFSET, CombinedCbrBuffer, EnhancementClock, EnhancementIntra, InterLayerMode,
+    LayerDropFacts, MAX_SPATIAL_LAYERS, ShareRequest, SpatialConfig, SpatialLayerPlan,
+    SpatialStructure, SpatialUnitDrop, TemporalUnitPlan, decide_unit_drop_layers,
+    layer_slot_offset, layer_temporal_slots, spatial_pool_slots, split_rate_control,
 };
 use crate::startup_lookahead::startup_scene_profile;
 use crate::timeline::FrameTime;
@@ -53,10 +53,8 @@ pub struct LayerFrameMetadata {
     pub temporal_layer: u8,
     /// Monotone index among coded layer pictures across the stream.
     pub picture_index: u64,
-    /// Engine frame type (`Key` or `Inter`).
+    /// Engine frame type (`Key` on `S0` keyframes and `S1`/`S2` `INTRA_ONLY_FRAME`s; `Inter` otherwise).
     pub frame_type: FrameType,
-    /// True when `frame_type == Key` is an `INTRA_ONLY_FRAME` (`AV1 §5.9.2`).
-    pub intra_only: bool,
     /// True when `spatial_id >= 1` is an enhancement-only repair picture.
     pub enhancement_repair: bool,
     /// Visible width of this layer's picture.
@@ -71,6 +69,11 @@ pub struct LayerFrameMetadata {
     pub quantizer: u32,
     /// Earlier `picture_index` values this layer picture predicts from.
     pub references: ReferencedFrames,
+    /// True when `spatial_id >= 1` predicts from `spatial_id - 1` in this
+    /// temporal unit (`AV1 §7.18` / `VP9` inter-layer dependency; true on all
+    /// units in `InterLayerMode::On` and on key units in `InterLayerMode::KeyOnly`,
+    /// false on `S0`, non-key units in `KeyOnly`, `INTRA_ONLY` repairs, and `Off`).
+    pub inter_layer_ref: bool,
     /// True when this layer picture can be dropped relative to base operating
     /// points (true on enhancement layers `spatial_id >= 1`, and on non-reference
     /// top temporal layer `S0` pictures).
@@ -82,6 +85,13 @@ pub struct LayerFrameMetadata {
 }
 
 impl LayerFrameMetadata {
+    /// Whether this layer picture is an enhancement-layer `INTRA_ONLY_FRAME`
+    /// (`AV1 §5.9.2` / `§6.8.2`: `spatial_id >= 1` and `frame_type == Key`).
+    #[must_use]
+    pub const fn is_intra_only(&self) -> bool {
+        self.spatial_id > 0 && matches!(self.frame_type, FrameType::Key)
+    }
+
     /// Whether operating point `op_index` (`0` = highest quality) includes this
     /// layer picture.
     #[must_use]
@@ -299,7 +309,7 @@ impl SpatialSession {
         flags: (bool, bool),
     ) -> Result<(Self, LayerState), ConfigError> {
         let num_layers = usize::from(spatial.layers);
-        let pool_slots = spatial_pool_slots(spatial.layers);
+        let pool_slots = spatial_pool_slots(spatial.layers, spatial.inter_layer);
         let multiple = 1usize << backend.min_block_log2();
         let bad_dims = |_| ConfigError::Dimensions {
             width: config.width,
@@ -335,8 +345,8 @@ impl SpatialSession {
                 enh_temporal_layers
             };
             let reads_repeats = s == 0 && structure.reads_repeats();
-            let second =
-                (s > 0 && spatial.inter_layer).then(|| SecondReference::new(0, &ref_params));
+            let second = (s > 0 && spatial.inter_layer.active_on_inter_unit())
+                .then(|| SecondReference::new(0, &ref_params));
             let (state, recon) = spatial_layer_state(
                 config,
                 backend,
@@ -578,10 +588,21 @@ impl<B: CodecBackend> Encoder<B> {
         layer_plan: &SpatialLayerPlan,
         params: &mut crate::DecisionParams,
     ) {
-        let gated = self
-            .spatial_config()
-            .is_some_and(|c| c.enhancement_intra == EnhancementIntra::Gated);
-        if gated && layer_plan.spatial_id > 0 && !layer_plan.intra_only {
+        let Some(scfg) = self.spatial_config() else {
+            return;
+        };
+        // The gate leans on the lower layer's prediction to stand in for
+        // intra, so K-SVC gates only the pictures that have it. Independent
+        // layers keep their original rule (every inter picture), which their
+        // streams were tuned with.
+        let has_gate_reference = match scfg.inter_layer {
+            InterLayerMode::Off => !layer_plan.intra_only,
+            _ => layer_plan.predicts_from_lower,
+        };
+        let apply_gate = scfg.enhancement_intra == EnhancementIntra::Gated
+            && layer_plan.spatial_id > 0
+            && has_gate_reference;
+        if apply_gate {
             params.intra_test_dc = 0.0;
             params.intra_gate_variance = params
                 .intra_gate_variance
@@ -659,7 +680,8 @@ impl<B: CodecBackend> Encoder<B> {
             max_quantizer: model.max_quantizer + headroom,
             ..model
         };
-        let clear_enh_loan = spatial.config.inter_layer && spatial.config.enhancement_interval > 1;
+        let clear_enh_loan = spatial.config.inter_layer.active_on_inter_unit()
+            && spatial.config.enhancement_interval > 1;
         for (sid, budget) in (0..num_layers).zip(budgets) {
             let clear_loan = sid == 1 && clear_enh_loan;
             let layer = spatial.layer_mut(&mut self.layer, sid);
@@ -687,11 +709,14 @@ impl<B: CodecBackend> Encoder<B> {
         if let Some(cbr) = spatial.combined_cbr.as_mut() {
             cbr.reconfigure(config);
         } else {
-            spatial.combined_cbr = Some(CombinedCbrBuffer::with_share_caps(
-                config,
-                self.config.frame_rate,
-                &spatial.config.layer_rate_shares,
-            ));
+            spatial.combined_cbr = Some(
+                CombinedCbrBuffer::with_share_caps(
+                    config,
+                    self.config.frame_rate,
+                    &spatial.config.layer_rate_shares,
+                )
+                .with_inter_layer(spatial.config.inter_layer),
+            );
         }
         spatial.rate_config = Some(config);
         self.backend.set_rate_control_enabled(true);
@@ -1070,7 +1095,7 @@ impl<B: CodecBackend> Encoder<B> {
             spatial.last_layer_quantizer[0] = s0_quantizer;
             if !tu_plan.key_unit
                 && tu_plan.upper[0].is_some()
-                && spatial.config.inter_layer
+                && spatial.config.inter_layer.active_on_key_unit()
                 && spatial.config.enhancement_interval == 1
                 && let (Some(cbr), Some(s0_rc)) = (
                     spatial.combined_cbr.as_ref(),
@@ -1092,7 +1117,6 @@ impl<B: CodecBackend> Encoder<B> {
             temporal_layer: tu_plan.base.temporal_id,
             picture_index: tu_plan.base.picture_index,
             frame_type: tu_plan.base.frame_type,
-            intra_only: false,
             enhancement_repair: false,
             width: base_w,
             height: base_h,
@@ -1100,6 +1124,7 @@ impl<B: CodecBackend> Encoder<B> {
             byte_len: s0_bytes.len(),
             quantizer: s0_quantizer,
             references: tu_plan.base.referenced_pictures,
+            inter_layer_ref: false,
             droppable: tu_plan.base.references.refresh.is_empty(),
             operating_point_mask: op_mask,
         };
@@ -1248,7 +1273,6 @@ impl<B: CodecBackend> Encoder<B> {
             temporal_layer: layer_plan.temporal_id,
             picture_index: layer_plan.picture_index,
             frame_type: layer_plan.frame_type,
-            intra_only: layer_plan.intra_only,
             enhancement_repair: layer_plan.enhancement_repair,
             width: layer_w,
             height: layer_h,
@@ -1256,6 +1280,7 @@ impl<B: CodecBackend> Encoder<B> {
             byte_len: layer_bytes.len(),
             quantizer: layer_quantizer,
             references: layer_plan.referenced_pictures,
+            inter_layer_ref: layer_plan.predicts_from_lower,
             droppable: true,
             operating_point_mask: op_mask,
         };
@@ -1346,7 +1371,7 @@ impl<B: CodecBackend> Encoder<B> {
         spatial.last_layer_quantizer[usize::from(done.sid)] = done.layer_quantizer;
         if done.has_coded_upper
             && !done.layer_reset
-            && spatial.config.inter_layer
+            && spatial.config.inter_layer.active_on_key_unit()
             && let (Some(cbr), Some(rc)) = (
                 spatial.combined_cbr.as_ref(),
                 self.layer.rate_control.as_mut(),
@@ -1371,8 +1396,8 @@ impl<B: CodecBackend> Encoder<B> {
     }
 
     /// Make enhancement layer `layer_plan.spatial_id` active, injecting the
-    /// upscaled `(spatial_id - 1)` proxy into its reference pool when
-    /// `spatial.inter_layer` is active.
+    /// upscaled `(spatial_id - 1)` proxy into its reference pool only on units
+    /// where `layer_plan` actually predicts from `(spatial_id - 1)`.
     fn prepare_upper_layer_state(
         &mut self,
         layer_plan: &SpatialLayerPlan,
@@ -1384,8 +1409,8 @@ impl<B: CodecBackend> Encoder<B> {
         if let Some(rc) = self.layer.rate_control.as_mut() {
             rc.set_frame_interval(layer_interval);
         }
-        let spatial = self.spatial.as_mut().expect("spatial mode");
-        if spatial.config.inter_layer {
+        if layer_plan.predicts_from_lower {
+            let spatial = self.spatial.as_mut().expect("spatial mode");
             let lower_visible = spatial.visible_recon[step]
                 .as_ref()
                 .expect("lower layer's visible reconstruction is present");
@@ -1420,17 +1445,18 @@ impl<B: CodecBackend> Encoder<B> {
         if rc_key {
             self.layer.last_key_index = index;
         }
+        let from_lower_key = rc_key && layer_plan.predicts_from_lower;
         let analysis = analyzer.as_ref().and_then(Analyzer::analysis);
         let source = match (analyzer.as_ref(), own_input.as_ref()) {
             (Some(a), _) => a.frame(),
             (None, Some(buf)) => buf,
             (None, None) => unreachable!("layer owns analyzer or input"),
         };
-        // On a key/repair TU, enhancement layers (`S1`, `S2`) predict from the
-        // same instant's lower layer: motion measured against their own previous
-        // temporal frame is for the reuse stillness run only, not coding.
+        // On an inter-layer key/repair TU, enhancement layers (`S1`, `S2`) predict
+        // from the same instant's lower layer: motion measured against their own
+        // previous temporal frame is for the reuse stillness run only, not coding.
         let motion = analysis
-            .filter(|_| !(layer_plan.spatial_id > 0 && rc_key))
+            .filter(|_| !from_lower_key)
             .and_then(|a| a.motion.as_ref());
         let pre = analysis.filter(|_| motion.is_some()).map(|a| &a.pre);
         let still = analysis.filter(|_| motion.is_some()).map(|a| &a.still);
@@ -1444,6 +1470,7 @@ impl<B: CodecBackend> Encoder<B> {
             index,
             layer_plan.frame_type,
             rc_key,
+            from_lower_key,
             layer_plan.references,
             analysis.map(|a| &a.pre),
             motion,
@@ -1651,12 +1678,13 @@ impl<B: CodecBackend> Encoder<B> {
         layer_index: u64,
         frame_type: FrameType,
         rc_key: bool,
+        from_lower_key: bool,
         references: crate::structure::FrameReferences,
         pre: Option<&nc_analysis::preanalysis::PreAnalysis>,
         motion: Option<&nc_analysis::MotionAnalysis>,
         key_reuse_offset: f64,
     ) -> FramePlan {
-        let share = self.layer_share(layer_index, rc_key, pre);
+        let share = self.layer_share(layer_index, rc_key, from_lower_key, pre);
         let mut plan = self.frame_plan_with_rc_key(
             layer_index,
             frame_type,
@@ -1678,6 +1706,7 @@ impl<B: CodecBackend> Encoder<B> {
         &self,
         layer_index: u64,
         rc_key: bool,
+        from_lower_key: bool,
         pre: Option<&nc_analysis::preanalysis::PreAnalysis>,
     ) -> LayerShare {
         let spatial = self.spatial.as_ref().expect("spatial mode");
@@ -1698,7 +1727,7 @@ impl<B: CodecBackend> Encoder<B> {
                     .and_then(RateController::inter_level)
             })
             .flatten();
-        let lower_quantizer = if sid > 0 && rc_key {
+        let lower_quantizer = if from_lower_key {
             spatial.last_layer_quantizer[usize::from(sid - 1)]
         } else {
             spatial.last_layer_quantizer[usize::from(sid)]
@@ -1707,6 +1736,7 @@ impl<B: CodecBackend> Encoder<B> {
         cbr.plan_share(&ShareRequest {
             spatial_id: sid,
             key: rc_key,
+            from_lower_key,
             has_coded_upper_layer: spatial.current_layer_has_coded_upper,
             layer_index,
             inter_layer: spatial.config.inter_layer,

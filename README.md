@@ -228,6 +228,14 @@ libaom L2T3 is +18.1% and ours −46.6%. Single-layer
 AV1 / VP9 Default on the same clips: −53.0% / −50.1%. The three-layer streams' 180p operating point is +4.9%
 (L3T1) against AV1 Default coded alone at 180p.
 
+AV1 also codes the WebRTC K-SVC modes (`--scalability L2T1_KEY` … `L3T3_KEY`): the upper layers predict from the
+layer below only in key units, so between keys a relay forwards each receiver one layer. Each view scored at the
+rate its receiver downloads, on the same 8 clips (build 95728f25, every anchor from that build, 2026-11-14):
+L3T1_KEY's 720p, 360p and 180p views are +4.3%, −1.3% and +1.6% against AV1 Default coded alone at that size
+(full SVC L3T1: +35.7%, +21.4%, +2.1%), its total −9.8% against three-way simulcast, at 1.53× the encode
+instructions of single-layer AV1 Default (full SVC L3T1: 1.87×). L3T3_KEY and the method:
+[svc-chart.md](docs/results/svc-chart.md#k-svc-key-modes-av1-l3t1_key-and-l3t3_key).
+
 ### In the browser (WebAssembly)
 
 Frames per second of the browser build on one PC core (AMD Ryzen 9 5950X, shared machine, ±10%),

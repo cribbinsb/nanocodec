@@ -5,6 +5,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "analysis")]
+mod error_map;
 mod options;
 mod pixels;
 mod source;
@@ -122,14 +124,23 @@ impl EncoderKind {
         }
     }
 
-    fn encode(&mut self, source: &Picture) -> EncodedFrame {
-        match self {
-            Self::H264(e) => e.encode(source),
-            Self::Hevc(e) => e.encode(source),
-            Self::Av1(e) => e.encode(source),
-            Self::Vp9(e) => e.encode(source),
-            Self::Av2(e) => e.encode(source),
-            Self::Vvc(e) => e.encode(source),
+    /// Encode `source`, one nominal frame interval after the previous frame
+    /// (`timestamp_us` None) or captured at `timestamp_us`: rate control then
+    /// budgets it for the real time since the previous frame (`Encoder::encode_at`).
+    fn encode(&mut self, source: &Picture, timestamp_us: Option<i64>) -> EncodedFrame {
+        match (self, timestamp_us) {
+            (Self::H264(e), None) => e.encode(source),
+            (Self::H264(e), Some(t)) => e.encode_at(source, t),
+            (Self::Hevc(e), None) => e.encode(source),
+            (Self::Hevc(e), Some(t)) => e.encode_at(source, t),
+            (Self::Av1(e), None) => e.encode(source),
+            (Self::Av1(e), Some(t)) => e.encode_at(source, t),
+            (Self::Vp9(e), None) => e.encode(source),
+            (Self::Vp9(e), Some(t)) => e.encode_at(source, t),
+            (Self::Av2(e), None) => e.encode(source),
+            (Self::Av2(e), Some(t)) => e.encode_at(source, t),
+            (Self::Vvc(e), None) => e.encode(source),
+            (Self::Vvc(e), Some(t)) => e.encode_at(source, t),
         }
     }
 }
@@ -299,8 +310,32 @@ impl BrowserEncoder {
     /// # Errors
     /// Rejects a frame of another size or colour than the configuration's.
     pub fn encode(&mut self, source: &SourceFrame) -> Result<Vec<u8>, JsValue> {
+        self.encode_timed(source, None)
+    }
+
+    /// [`BrowserEncoder::encode`] for a frame captured at `timestamp_us`
+    /// (microseconds, any origin): a live source whose frames may be skipped.
+    /// Rate control budgets the frame for the time since the previous one, so
+    /// the bitrate holds in real time.
+    /// # Errors
+    /// As [`BrowserEncoder::encode`].
+    pub fn encode_at(
+        &mut self,
+        source: &SourceFrame,
+        timestamp_us: f64,
+    ) -> Result<Vec<u8>, JsValue> {
+        // Microsecond capture times are integers well inside f64's exact range.
+        #[allow(clippy::cast_possible_truncation, reason = "integral microseconds")]
+        self.encode_timed(source, Some(timestamp_us.round() as i64))
+    }
+
+    fn encode_timed(
+        &mut self,
+        source: &SourceFrame,
+        timestamp_us: Option<i64>,
+    ) -> Result<Vec<u8>, JsValue> {
         let picture = self.input(source)?;
-        let frame = self.inner.encode(picture);
+        let frame = self.inner.encode(picture, timestamp_us);
         self.repeat = frame.metadata.held || frame.metadata.dropped;
         self.key = frame.metadata.frame_type == FrameType::Key && !self.repeat;
         if !self.repeat {
@@ -476,6 +511,10 @@ pub struct BrowserDecoder {
     /// (`analysis_frame`), reused across frames.
     #[cfg(feature = "analysis")]
     analysis: Vec<i16>,
+    /// The latest PSNR map's squared error per block (`error_map`), reused
+    /// across frames.
+    #[cfg(feature = "analysis")]
+    error_sums: Vec<u32>,
 }
 
 /// One packet's outcome (`nc_common::outcome::FrameOutcome`): decoded, or
@@ -563,6 +602,8 @@ impl BrowserDecoder {
             frames: ReceivedFrames::default(),
             #[cfg(feature = "analysis")]
             analysis: Vec::new(),
+            #[cfg(feature = "analysis")]
+            error_sums: Vec::new(),
         })
     }
 
@@ -641,6 +682,63 @@ impl BrowserDecoder {
     #[wasm_bindgen(getter)]
     pub fn analysis_halfwords(&self) -> usize {
         stream_stats::PACKED_HALFWORDS
+    }
+
+    #[cfg(feature = "analysis")]
+    /// The squared error of the latest decoded frame against the source frame
+    /// the last `psnr` call scored it against, per block of the PSNR map's
+    /// fixed grid (`error_map::block_sse`: luma blocks row by row, then Cb,
+    /// then Cr), at the size `psnr` compared (`error_map_width` x
+    /// `error_map_height`: a smaller spatial layer is upscaled to the stream
+    /// size, as there). Returns the byte offset of the `u32` sums in WASM
+    /// memory, read as for `rgba_frame`; `error_map_length` is their count.
+    /// Only in the analysis build of the module.
+    /// # Errors
+    /// Rejects calls made before `psnr` has scored a decoded frame.
+    pub fn error_map(&mut self) -> Result<usize, JsValue> {
+        let mut sums = std::mem::take(&mut self.error_sums);
+        let reference = self
+            .reference
+            .as_ref()
+            .ok_or_else(|| js_error("No source frame scored yet"))?;
+        let size = (reference.width(), reference.height());
+        let shown = self.shown().ok_or_else(|| js_error("No decoded frame"))?;
+        let decoded = if (shown.width(), shown.height()) == size {
+            shown
+        } else {
+            self.scaled_decoded
+                .as_ref()
+                .filter(|p| (p.width(), p.height()) == size)
+                .map(ShownPicture::whole)
+                .ok_or_else(|| js_error("No scored frame of the source's size"))?
+        };
+        error_map::block_sse(&self.dsp, reference, decoded, &mut sums);
+        self.error_sums = sums;
+        Ok(self.error_sums.as_ptr() as usize)
+    }
+
+    #[cfg(feature = "analysis")]
+    /// The number of `u32` sums `error_map` wrote.
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn error_map_length(&self) -> usize {
+        self.error_sums.len()
+    }
+
+    #[cfg(feature = "analysis")]
+    /// Width of the picture `error_map` measured (the source's).
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn error_map_width(&self) -> usize {
+        self.reference.as_ref().map_or(0, Picture::width)
+    }
+
+    #[cfg(feature = "analysis")]
+    /// Height of the picture `error_map` measured (the source's).
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn error_map_height(&self) -> usize {
+        self.reference.as_ref().map_or(0, Picture::height)
     }
 
     /// Select the operating point (`0..=31` on AV1, `0..=1` on VP9 where `> 0`
@@ -1062,7 +1160,7 @@ mod input_tests {
                 padded.extend_borders();
                 assert_eq!(
                     visible.encode(&source).unwrap(),
-                    extended.inner.encode(&padded).data,
+                    extended.inner.encode(&padded, None).data,
                     "{codec} frame {frame}"
                 );
             }
@@ -1229,6 +1327,53 @@ mod input_tests {
                     "l3t3 op {op} frame {frame}"
                 );
                 assert_eq!((dec.stream_width(), dec.stream_height()), (width, height));
+            }
+        }
+    }
+
+    #[test]
+    fn av1_three_layer_ksvc_extracted_streams_decode_in_browser() {
+        let (width, height) = (256, 144);
+        let mut ksvc_encoder = BrowserEncoder::new(
+            "av1",
+            width,
+            height,
+            140,
+            30,
+            30,
+            "svc3",
+            Some("spatial.inter_layer=2\nhold.enable=0".to_owned()),
+            false,
+            None,
+        )
+        .unwrap();
+        let mut ksvc_extractors: Vec<nc_av1::Av1StreamExtractor> = (0..3u8)
+            .map(|op| nc_av1::Av1StreamExtractor::new(op).unwrap())
+            .collect();
+        let mut ksvc_decoders: Vec<BrowserDecoder> = (0..3)
+            .map(|_| BrowserDecoder::new("av1").unwrap())
+            .collect();
+        for frame in 0..4 {
+            let rgba: Vec<u8> = (0..4 * width * height)
+                .map(|i| (i * 17 + i / 19 + frame * 37) as u8)
+                .collect();
+            let (source, packed) = source_of(width, height, &rgba);
+            let packet = ksvc_encoder.encode(&source).unwrap();
+            for op in 0..3usize {
+                let (rx_bytes, _) = ksvc_extractors[op]
+                    .extract_temporal_unit(&packet)
+                    .unwrap()
+                    .unwrap();
+                let expected_sid = (2 - op) as u8;
+                if frame > 0 {
+                    assert_eq!(
+                        nc_av1::temporal_unit_layers(&rx_bytes).unwrap(),
+                        vec![(0, expected_sid)]
+                    );
+                }
+                ksvc_decoders[op].decode(&rx_bytes).unwrap();
+                assert_eq!(ksvc_decoders[op].spatial_id(), expected_sid);
+                assert!(ksvc_decoders[op].psnr(&packed).unwrap() > 16.0);
             }
         }
     }

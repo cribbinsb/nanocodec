@@ -1282,8 +1282,16 @@ impl CodecBackend for Av1Backend {
         refresh: SlotMask,
         refresh_all: bool,
     ) {
-        let num_layers = self.spatial.as_ref().map_or(2, |sp| sp.config.layers);
-        let held = (spatial_id + 1 < num_layers)
+        // Hold the normative picture only when the layer above predicts from
+        // it in this unit (AV1 §7.11.3.3 scaled prediction).
+        let store_for_upper = self.spatial.as_ref().is_some_and(|sp| {
+            spatial_id + 1 < sp.config.layers
+                && sp
+                    .config
+                    .inter_layer
+                    .active_in_unit(sp.current_layer.key_unit)
+        });
+        let held = (store_for_upper && (refresh_all || !refresh.is_empty()))
             .then(|| HeldReference::new(Rc::new(recon.clone()), size.0, size.1));
         self.store
             .commit_spatial(refresh, refresh_all, held.as_ref());

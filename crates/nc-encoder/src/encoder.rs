@@ -1780,10 +1780,12 @@ impl<B: CodecBackend> Encoder<B> {
     /// - Losing a referenced `S0` picture (`spatial_id == 0`) forces a full
     ///   key temporal unit.
     /// - Losing a referenced `S1` or `S2` picture while lower layers are intact
-    ///   schedules an enhancement-only repair from that layer upward on the
-    ///   next temporal unit (`S0` and any intact lower layer code as ordinary
-    ///   inter frames while repaired layers predict only from the layer
-    ///   immediately below or intra-only).
+    ///   schedules an enhancement-only repair on the next temporal unit (`S0`
+    ///   and any intact lower layer code as ordinary inter frames). In full
+    ///   SVC it repairs that layer and every layer above it from the layer
+    ///   immediately below; in K-SVC and independent layers it repairs that
+    ///   layer alone, intra-only, unless the loss was in the key unit, which
+    ///   the layers above predicted from.
     /// - Losing a non-reference picture (top temporal layer) or a picture
     ///   older than the layer's last repair needs no action.
     pub fn report_layer_loss(&mut self, tu_index: u64, spatial_id: u8) {
@@ -1794,32 +1796,32 @@ impl<B: CodecBackend> Encoder<B> {
             return;
         };
         let num_layers = spatial.config.layers;
-        match spatial_id {
-            0 => {
-                if spatial.structure.needs_layer_repair(0, tu_index) {
-                    self.request_keyframe();
-                } else if spatial.config.inter_layer {
-                    for upper in 1..num_layers {
-                        if spatial.structure.needs_layer_repair(upper, tu_index) {
-                            spatial.structure.request_layer_repair(upper);
-                            break;
-                        }
-                    }
+        if spatial_id >= num_layers {
+            return;
+        }
+        let structure = &mut spatial.structure;
+        let lost_layer_needs_repair = structure.needs_layer_repair(spatial_id, tu_index);
+        if lost_layer_needs_repair {
+            if spatial_id == 0 {
+                self.request_keyframe();
+                return;
+            }
+            structure.request_layer_repair(spatial_id);
+        }
+        // The layers above predicted from the lost picture only in a unit that
+        // crosses layers: every unit in full SVC, the key unit alone in K-SVC.
+        let lost_unit_is_key = tu_index == structure.last_key_tu();
+        if !spatial.config.inter_layer.active_in_unit(lost_unit_is_key) {
+            return;
+        }
+        for upper in (spatial_id + 1)..num_layers {
+            if structure.needs_layer_repair(upper, tu_index) {
+                structure.request_layer_repair(upper);
+                // A full-SVC repair already cascades upward from `upper`.
+                if !lost_layer_needs_repair || spatial.config.inter_layer.active_on_inter_unit() {
+                    break;
                 }
             }
-            s if s < num_layers => {
-                if spatial.structure.needs_layer_repair(s, tu_index) {
-                    spatial.structure.request_layer_repair(s);
-                } else if spatial.config.inter_layer {
-                    for upper in (s + 1)..num_layers {
-                        if spatial.structure.needs_layer_repair(upper, tu_index) {
-                            spatial.structure.request_layer_repair(upper);
-                            break;
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
     }
 

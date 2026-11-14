@@ -12,8 +12,15 @@
 // - hovering a block (or tapping it) shows its record;
 // - the layout can show both views stacked at full width, or one view large;
 //   each view can go fullscreen;
-// - the magnifier (loupe.js) draws the overlay too (`drawInto`).
-import { ANALYSIS_CODECS, FIELD, LAYERS, LAYER_LABELS, PRED_COLOURS, RunningSummary, describeBlock, differenceSummary, drawOverlay, recordsAt, summarise } from './analysis.js';
+// - the magnifier (loupe.js) draws the overlay too (`drawInto`);
+// - the PSNR map (error-map.js) colours each block of a fixed grid by its PSNR
+//   against the source the view coded, for one plane at a time, at 16x16 luma
+//   blocks or, zoomed in to FINE_GRID_ZOOM and beyond, 8x8 (fixed blocks rather
+//   than each codec's partition, so the two views compare block for block); the
+//   statistics show the frame's PSNR of each plane and the hover record the block's.
+import { ANALYSIS_CODECS, FIELD, HEAT_LAYERS, LAYERS, LAYER_LABELS, PRED_COLOURS, RunningSummary, describeBlock, differenceSummary, drawOverlay, recordsAt, summarise } from './analysis.js';
+import { PLANES, PSNR_SCALE, YUV_WEIGHTS, describeError, errorPixels, formatPsnr, psnrColour, yuvPsnr } from './error-map.js';
+import { tickMs } from './timeline.js';
 
 const MIN_ZOOM = 1, MAX_ZOOM = 32;
 // One wheel notch (deltaY 100) zooms by this factor.
@@ -26,6 +33,16 @@ const STATS_INTERVAL_MS = 250;
 const PRECISIONS = ['integer', 'half', 'quarter', 'eighth'];
 const LAYOUTS = { side: 'Side by side', stacked: 'Stacked', 'expand-A': 'A large', 'expand-B': 'B large' };
 const DEFAULT_LAYERS = ['blocks', 'vectors'];
+// The PSNR map shows 8x8 blocks from this shared zoom on (16x16 below it).
+const FINE_GRID_ZOOM = 4;
+// Colour stops of the PSNR map's scale bar.
+const SCALE_STOPS = 5;
+const escapeHtml = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+// PSNR-YUV's label in the statistics, with its weighting.
+const YUV_LABEL = `YUV (${YUV_WEIGHTS.join(':')})`;
+const psnrText = psnr => (psnr ? [...PLANES, YUV_LABEL].map(name => `${name} ${formatPsnr(psnr[name])}`).join(' · ') : '—');
+/** A PSNR map's frame PSNR of each plane and PSNR-YUV, by name. */
+const framePsnr = errors => ({ ...Object.fromEntries(PLANES.map((plane, i) => [plane, errors.frame[i]])), [YUV_LABEL]: yuvPsnr(errors.frame) });
 // Phone widths stack the views when analysis is on (styles.css uses the same width).
 const NARROW_QUERY = '(max-width: 700px)';
 const UNSUPPORTED = 'Analysis is not available for this codec.';
@@ -35,12 +52,23 @@ const shareText = (map, order) => Object.entries(map ?? {})
   .sort(([a], [b]) => (order ? order.indexOf(a) - order.indexOf(b) : (parseInt(b) || 0) - (parseInt(a) || 0)))
   .filter(([, v]) => v >= 0.001).map(([k, v]) => `${k} ${percent(v)}`).join(' · ') || '—';
 
+/** The PSNR map's colour scale as a CSS gradient, low to high, opaque. */
+function scaleGradient() {
+  const stops = Array.from({ length: SCALE_STOPS }, (_, i) => {
+    const [r, g, b] = psnrColour(PSNR_SCALE.low + (PSNR_SCALE.high - PSNR_SCALE.low) * i / (SCALE_STOPS - 1));
+    return `rgb(${r} ${g} ${b})`;
+  });
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
 /** The page-wide analysis state and controls; one AnalysisView per panel. */
 export class AnalysisController {
   /** `element`: the #analysis section; `onEnabled(on)`: tell the decoders. `loupeActive()`: the magnifier owns pointer input. */
   constructor(element, versions, panels, { onEnabled, loupeActive }) {
     this.element = element; this.versions = versions; this.onEnabled = onEnabled; this.loupeActive = loupeActive;
     this.enabled = false; this.layers = new Set(DEFAULT_LAYERS); this.layout = 'side';
+    // The PSNR map's plane: 0 Y, 1 Cb, 2 Cr (error-map.js PLANES).
+    this.plane = 0;
     this.zoom = { scale: MIN_ZOOM, u: 0.5, v: 0.5 };
     element.innerHTML = `<div class="analysis-bar"><span class="control-label">ANALYSIS</span><button class="analysis-toggle" aria-pressed="false">Analysis off</button>
       <div class="segmented analysis-options analysis-layers" role="group" aria-label="Overlay layers">${LAYERS.map(layer =>
@@ -49,11 +77,15 @@ export class AnalysisController {
         `<button data-layout="${value}" aria-pressed="false">${label}</button>`).join('')}</div>
       <div class="analysis-options analysis-zoom"><button data-zoom="out" aria-label="Zoom out">−</button><output>1×</output><button data-zoom="in" aria-label="Zoom in">+</button><button data-zoom="reset">Fit</button></div>
       <span class="analysis-hint analysis-options">Scroll or pinch to zoom · drag to pan · hover or tap a block</span>
-      <span class="analysis-legend analysis-options">${['intra', 'inter', 'skip', 'merge'].map((name, i) => `<i style="--c:${PRED_COLOURS[i]}"></i>${name}`).join(' ')}</span></div>`;
+      <span class="analysis-legend analysis-options">${['intra', 'inter', 'skip', 'merge'].map((name, i) => `<i style="--c:${PRED_COLOURS[i]}"></i>${name}`).join(' ')}</span>
+      <div class="analysis-options analysis-psnr" hidden><div class="segmented" role="group" aria-label="PSNR map plane">${PLANES.map((plane, i) =>
+        `<button data-plane="${i}" aria-pressed="false">${plane}</button>`).join('')}</div>
+        <span class="analysis-psnr-scale">PSNR vs source (dB): ${PSNR_SCALE.low} or less <i style="--scale:${scaleGradient()}"></i> ${PSNR_SCALE.high} or more · <output></output></span></div></div>`;
     this.toggle = element.querySelector('.analysis-toggle');
     this.toggle.addEventListener('click', () => this.setEnabled(!this.enabled));
     for (const button of element.querySelectorAll('[data-layer]')) button.addEventListener('click', () => this.toggleLayer(button.dataset.layer));
     for (const button of element.querySelectorAll('[data-layout]')) button.addEventListener('click', () => this.setLayout(button.dataset.layout));
+    for (const button of element.querySelectorAll('[data-plane]')) button.addEventListener('click', () => { this.plane = +button.dataset.plane; this.showControls(); this.redraw(); });
     element.querySelector('[data-zoom="in"]').addEventListener('click', () => this.zoomBy(BUTTON_ZOOM));
     element.querySelector('[data-zoom="out"]').addEventListener('click', () => this.zoomBy(1 / BUTTON_ZOOM));
     element.querySelector('[data-zoom="reset"]').addEventListener('click', () => this.setZoom({ scale: MIN_ZOOM, u: 0.5, v: 0.5 }));
@@ -78,9 +110,7 @@ export class AnalysisController {
   toggleLayer(layer) {
     if (this.layers.has(layer)) this.layers.delete(layer);
     else {
-      // The two heat maps share the fill: one at a time.
-      if (layer === 'qp') this.layers.delete('bits');
-      if (layer === 'bits') this.layers.delete('qp');
+      if (HEAT_LAYERS.includes(layer)) for (const heat of HEAT_LAYERS) this.layers.delete(heat);
       this.layers.add(layer);
     }
     this.showControls(); this.redraw();
@@ -102,8 +132,11 @@ export class AnalysisController {
     const half = 0.5 / zoom.scale, clamp = value => Math.max(half, Math.min(1 - half, value));
     this.zoom = { scale: zoom.scale, u: clamp(zoom.u), v: clamp(zoom.v) };
     this.zoomLabel.textContent = `${this.zoom.scale.toFixed(this.zoom.scale < 10 ? 1 : 0).replace(/\.0$/, '')}×`;
+    this.showControls();
     this.redraw();
   }
+  /** Whether the PSNR map shows its fine grid (8x8) rather than the coarse one (16x16). */
+  get fineGrid() { return this.zoom.scale >= FINE_GRID_ZOOM; }
   redraw() { for (const view of this.views) view.place(); }
   /** The difference line, when both views have statistics. */
   showDifference() {
@@ -120,6 +153,10 @@ export class AnalysisController {
       button.classList.toggle('selected', this.layout === button.dataset.layout);
     }
     for (const layout of Object.keys(LAYOUTS)) this.versions.classList.toggle(`layout-${layout}`, this.enabled && this.layout === layout);
+    this.element.querySelector('.analysis-psnr').hidden = !this.layers.has('psnr');
+    for (const button of this.element.querySelectorAll('[data-plane]')) button.setAttribute('aria-pressed', String(+button.dataset.plane === this.plane));
+    const block = this.fineGrid ? '8×8' : '16×16';
+    this.element.querySelector('.analysis-psnr-scale output').textContent = `${PLANES[this.plane]}, ${block} luma blocks (8×8 from ${FINE_GRID_ZOOM}× zoom)`;
   }
 }
 
@@ -129,6 +166,9 @@ class AnalysisView {
     this.panel = panel; this.controller = controller;
     panel.analysis = this;
     this.records = null; this.state = 'off'; this.running = new RunningSummary(); this.summary = null;
+    // The latest PSNR map (error-map.js `errorMap`), its image at the drawn grid
+    // and plane (made when first drawn), and the mean PSNR of each plane.
+    this.errors = null; this.errorImage = null; this.errorImageKey = ''; this.psnr = new RunningSummary();
     this.drawRequested = false; this.statsShownAt = 0; this.statsTimer = 0; this.hover = null; this.pinned = false;
     this.built = false;
   }
@@ -155,18 +195,24 @@ class AnalysisView {
     if (!this.built) return;
     for (const element of [this.layer, this.stats, this.fullscreen]) element.hidden = !on;
     this.panel.viewport.classList.toggle('analysing', on);
-    if (!on) { this.records = null; this.hideTip(); }
-    this.running.reset(); this.summary = null; this.state = on ? 'waiting' : 'off';
+    if (!on) { this.records = null; this.errors = null; this.hideTip(); }
+    this.running.reset(); this.psnr.reset(); this.summary = null; this.state = on ? 'waiting' : 'off';
     this.place(); this.showStats();
   }
   /** A new comparison started: forget the previous stream's statistics. */
   reset() {
-    this.running.reset(); this.summary = null; this.records = null; this.state = this.enabled ? 'waiting' : 'off';
+    this.running.reset(); this.psnr.reset(); this.summary = null; this.records = null; this.errors = null;
+    this.state = this.enabled ? 'waiting' : 'off';
     if (this.built) this.showStats();
   }
-  /** A decoded frame was shown: its records (`result.analysis`, an ArrayBuffer of packed records) if any. */
-  update(result) {
+  /**
+   * A decoded frame was shown for source tick `tick`: its records
+   * (`result.analysis`, an ArrayBuffer of packed records) and PSNR map
+   * (`result.errorMap`) if any.
+   */
+  update(result, tick) {
     if (!this.enabled) return;
+    this.tick = tick;
     this.state = result.analysisState ?? (ANALYSIS_CODECS.has(this.panel.current?.codec) ? 'waiting' : 'unsupported');
     if (result.analysis) {
       this.records = new Int16Array(result.analysis);
@@ -174,6 +220,12 @@ class AnalysisView {
       this.running.add(this.summary);
     } else if (!result.repeat) {
       this.records = null;
+    }
+    if (result.errorMap) {
+      this.errors = result.errorMap; this.errorImageKey = '';
+      this.psnr.add({ psnr: framePsnr(this.errors) });
+    } else if (!result.repeat) {
+      this.errors = null;
     }
     // A view that fell back from WebGL has a new canvas: zoom it too.
     if (this.placedCanvas !== this.panel.canvas) this.place();
@@ -225,6 +277,7 @@ class AnalysisView {
     const scale = map.s * ratio;
     context.setTransform(scale, 0, 0, scale, map.ox * ratio, map.oy * ratio);
     const clip = { x: -map.ox / map.s, y: -map.oy / map.s, width: map.box.width / map.s, height: map.box.height / map.s };
+    this.drawErrors(context);
     drawOverlay(context, this.records, { codec: this.panel.current?.codec, layers: this.controller.layers, scale, clip });
     if (this.hover) this.outline(context, this.hover, scale);
   }
@@ -235,7 +288,32 @@ class AnalysisView {
     context.save();
     context.setTransform(scale, 0, 0, scale, -region.x * picture.width * scale, -region.y * picture.height * scale);
     const clip = { x: region.x * picture.width, y: region.y * picture.height, width: region.width * picture.width, height: height / scale };
+    this.drawErrors(context);
     drawOverlay(context, this.records, { codec: this.panel.current?.codec, layers: this.controller.layers, scale, clip });
+    context.restore();
+  }
+  /**
+   * The PSNR map under the outlines, when its layer is on: one image pixel per
+   * block, scaled unsmoothed onto the blocks (in picture coordinates, through
+   * the context's transform) and clipped to the picture, as edge blocks overhang it.
+   */
+  drawErrors(context) {
+    if (!this.errors || !this.controller.layers.has('psnr')) return;
+    const { fineGrid: fine, plane } = this.controller, key = `${fine}:${plane}`;
+    if (this.errorImageKey !== key) {
+      const { rgba, columns, rows } = errorPixels(this.errors, fine, plane);
+      this.errorImage ??= document.createElement('canvas');
+      this.errorImage.width = columns; this.errorImage.height = rows;
+      this.errorImage.getContext('2d').putImageData(new ImageData(rgba, columns, rows), 0, 0);
+      this.errorImageKey = key;
+    }
+    // The map is at its source's size, which a smaller spatial layer is scaled to (decode-worker.js).
+    const picture = this.pictureSize(), grid = fine ? this.errors.fine : this.errors.coarse;
+    const sx = picture.width / this.errors.width, sy = picture.height / this.errors.height;
+    context.save();
+    context.beginPath(); context.rect(0, 0, picture.width, picture.height); context.clip();
+    context.imageSmoothingEnabled = false;
+    context.drawImage(this.errorImage, 0, 0, grid.columns * grid.block * sx, grid.rows * grid.block * sy);
     context.restore();
   }
   outline(context, found, scale) {
@@ -303,12 +381,15 @@ class AnalysisView {
     const at = this.records && this.pictureAt(event);
     if (!at) { this.hideTip(); return; }
     this.hover = recordsAt(this.records, at.x, at.y);
+    this.hoverPoint = { x: at.x, y: at.y };
     this.tipAt = { x: event.clientX - at.map.box.left, y: event.clientY - at.map.box.top };
     this.showTip(this.hover);
     this.requestDraw();
   }
   showTip(found) {
     const lines = describeBlock(this.records, found, this.panel.current?.codec);
+    const error = this.errors && describeError(this.errors, this.hoverPoint.x, this.hoverPoint.y, this.controller.fineGrid, this.pictureSize());
+    if (error) lines.push(error);
     if (!lines.length) { this.hideTip(); return; }
     this.tip.textContent = lines.join('\n');
     this.tip.hidden = false;
@@ -332,11 +413,14 @@ class AnalysisView {
     this.controller.showDifference();
     if (!this.enabled) { this.stats.textContent = ''; return; }
     if (this.state === 'unsupported') { this.stats.textContent = UNSUPPORTED; return; }
-    const now = this.summary, mean = this.running.mean();
-    if (!now) { this.stats.textContent = 'Analysis: loading the analysis decoder (the comparison restarts with it)…'; return; }
+    const now = this.summary, mean = this.running.mean(), psnrMean = this.psnr.mean();
+    if (!now) { this.stats.textContent = 'Analysis: loading the analysis decoder…'; return; }
     const row = (label, value, average) => `<tr><th>${label}</th><td>${value}</td><td>${average}</td></tr>`;
     const qp = s => s?.qp == null ? '—' : `${s.qp.toFixed(1)}${s.qpRange ? ` [${s.qpRange[0]}–${s.qpRange[1]}]` : ''}`;
     this.stats.innerHTML = `<p class="analysis-note">Analysis on: decode timing is not representative (the decoder records every block).</p><table><thead><tr><th>By area</th><td>This frame</td><td>Mean of ${this.running.frames}</td></tr></thead><tbody>${[
+      row(`PSNR vs source (dB) · ${this.errors ? `${this.errors.width}×${this.errors.height}` : '—'}`, psnrText(this.errors && framePsnr(this.errors)),
+        psnrText(psnrMean?.psnr)),
+      row('Source frame compared', Number.isFinite(this.tick) ? `tick ${this.tick} · ${(tickMs(this.tick) / 1000).toFixed(3)} s` : '—', ''),
       row('Prediction', shareText(now.pred, ['intra', 'inter', 'merge', 'skip']), shareText(mean.pred, ['intra', 'inter', 'merge', 'skip'])),
       row('Block size', shareText(now.cbSize), shareText(mean.cbSize)),
       row('Partition', shareText(now.shape), shareText(mean.shape)),
@@ -348,6 +432,7 @@ class AnalysisView {
       row('QP', qp(now), mean.qp == null ? '—' : mean.qp.toFixed(1)),
       row('QP changes (blocks)', String(now.qpDeltas), mean.qpDeltas?.toFixed(0) ?? '—'),
       row('Bits / pixel', now.bitsPerPixel.toFixed(3), (mean.bitsPerPixel ?? 0).toFixed(3)),
-    ].join('')}</tbody></table>`;
+    ].join('')}</tbody></table><p class="analysis-note">PSNR: per plane against the source frame this view coded, at its own size, on the source timeline's tick shown (30 ticks a second; views showing the same tick were scored against the same instant); PSNR-YUV weights the planes ${YUV_WEIGHTS.join(':')}, as the PSNR-YUV above.${
+      this.panel.current?.entry?.sourceNote ? ` Source note: ${escapeHtml(this.panel.current.entry.sourceNote)}` : ''}</p>`;
   }
 }

@@ -22,6 +22,10 @@ const MAX_PICTURE_SIZE: usize = 35_651_584;
 
 /// `OperatingPointIdc` bit of spatial layer 0 (AV1 §6.4.1).
 const SPATIAL_LAYER_SHIFT: u32 = 8;
+/// The four spatial-layer bits of `operating_point_idc` (after the shift).
+const SPATIAL_LAYER_BITS: u32 = 0xF;
+/// The eight temporal-layer bits of `operating_point_idc`.
+const TEMPORAL_LAYER_BITS: u32 = 0xFF;
 
 /// The decoder-relevant fields of a sequence header (names follow §5.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +99,16 @@ pub(crate) struct OperatingPoint {
 pub(crate) struct FrameIdLengths {
     pub delta: u32,
     pub id: u32,
+}
+
+/// Highest `(spatial_id, temporal_id)` an `operating_point_idc` (§6.4.1)
+/// includes; `(0, 0)` for `idc == 0` (every layer, no extension headers).
+pub(crate) fn idc_highest_layers(idc: u32) -> (u8, u8) {
+    let highest = |bits: u32| (u32::BITS - bits.leading_zeros()).saturating_sub(1) as u8;
+    (
+        highest((idc >> SPATIAL_LAYER_SHIFT) & SPATIAL_LAYER_BITS),
+        highest(idc & TEMPORAL_LAYER_BITS),
+    )
 }
 
 impl Sequence {

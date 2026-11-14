@@ -140,6 +140,9 @@ enum Sent {
 struct SpatialSent {
     /// Prefix bitstreams stripped to `spatial_id <= k` for `k in 0..MAX_SPATIAL_LAYERS`.
     prefix_data: [Option<Vec<u8>>; nc_encoder::MAX_SPATIAL_LAYERS],
+    /// Standalone single-layer bitstreams (`spatial_id == k`) for K-SVC / independent
+    /// non-key temporal units where lower layers are not forwarded.
+    single_data: [Option<Vec<u8>>; nc_encoder::MAX_SPATIAL_LAYERS],
     /// Coded spatial layers in OBU order (`0, 1[, 2]`): `(metadata, recon_md5)`.
     layers: Vec<(LayerFrameMetadata, String)>,
 }
@@ -316,26 +319,36 @@ fn prepare_encoded<B: CodecBackend>(
     let scfg = encoder
         .spatial_config()
         .ok_or("session: missing spatial config")?;
-    let num_layers = usize::from(scfg.layers);
     let mut prefix_data: [Option<Vec<u8>>; nc_encoder::MAX_SPATIAL_LAYERS] =
+        std::array::from_fn(|_| None);
+    let mut single_data: [Option<Vec<u8>>; nc_encoder::MAX_SPATIAL_LAYERS] =
         std::array::from_fn(|_| None);
     for layer_meta in &frame.layers {
         let sid = layer_meta.spatial_id;
-        let stripped = match encoder.config().codec {
+        let (stripped, single) = match encoder.config().codec {
             Codec::Av1 => {
-                if usize::from(sid) + 1 == frame.layers.len() {
+                let prefix = if usize::from(sid) + 1 == frame.layers.len() {
                     frame.data.clone()
                 } else {
                     nc_av1::filter_temporal_unit_layers(&frame.data, |_, s| s <= sid)
                         .map_err(|e| e.to_string())?
-                }
+                };
+                let only = if sid == 0 {
+                    prefix.clone()
+                } else {
+                    nc_av1::filter_temporal_unit_layers(&frame.data, |_, s| s == sid)
+                        .map_err(|e| e.to_string())?
+                };
+                (prefix, Some(only))
             }
             Codec::Vp9 => {
-                if sid == 0 && frame.layers.len() > 1 {
+                let prefix = if sid == 0 && frame.layers.len() > 1 {
                     nc_vp9::strip_superframe_to_base(&frame.data).map_err(|e| e.to_string())?
                 } else {
                     frame.data.clone()
-                }
+                };
+                let only = (sid == 0).then(|| prefix.clone());
+                (prefix, only)
             }
             codec => {
                 return Err(format!(
@@ -344,6 +357,7 @@ fn prepare_encoded<B: CodecBackend>(
             }
         };
         prefix_data[usize::from(sid)] = Some(stripped);
+        single_data[usize::from(sid)] = single;
     }
     let mut layer_entries = Vec::with_capacity(frame.layers.len());
     for layer_meta in &frame.layers {
@@ -352,10 +366,29 @@ fn prepare_encoded<B: CodecBackend>(
             .ok_or_else(|| format!("session: missing S{} reconstruction", layer_meta.spatial_id))?;
         layer_entries.push((*layer_meta, md5::picture(recon)));
     }
+    let text = format_spatial_reply(&frame, scfg, op);
+    let sent = SpatialSent {
+        prefix_data,
+        single_data,
+        layers: layer_entries,
+    };
+    Ok((text, Some((idx, Sent::Spatial(Box::new(sent))))))
+}
+
+fn format_spatial_reply(
+    frame: &EncodedFrame,
+    scfg: &nc_encoder::SpatialConfig,
+    op: OperatingPointSpec,
+) -> String {
+    let num_layers = usize::from(scfg.layers);
     let mut layer_bytes = vec![0usize; num_layers];
+    let mut layer_il = vec![0u8; num_layers];
     for layer_meta in &frame.layers {
         if let Some(slot) = layer_bytes.get_mut(usize::from(layer_meta.spatial_id)) {
             *slot = layer_meta.byte_len;
+        }
+        if let Some(slot) = layer_il.get_mut(usize::from(layer_meta.spatial_id)) {
+            *slot = u8::from(layer_meta.inter_layer_ref);
         }
     }
     let layers_field = layer_bytes
@@ -363,32 +396,39 @@ fn prepare_encoded<B: CodecBackend>(
         .map(usize::to_string)
         .collect::<Vec<_>>()
         .join(":");
-    let repair_tag = if frame
+    let il_tag = if scfg.inter_layer == nc_encoder::InterLayerMode::On {
+        String::new()
+    } else {
+        format!(
+            " il={}",
+            layer_il
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(":")
+        )
+    };
+    let mut repair_tag = String::new();
+    if frame
         .layers
         .iter()
         .any(|l| l.spatial_id == 1 && l.enhancement_repair)
     {
-        " repair=s1"
-    } else if frame
+        repair_tag.push_str(" repair=s1");
+    }
+    if frame
         .layers
         .iter()
         .any(|l| l.spatial_id == 2 && l.enhancement_repair)
     {
-        " repair=s2"
-    } else {
-        ""
-    };
-    let text = format!(
-        "{} op={}:{} layers={layers_field}{repair_tag}",
-        describe(&frame),
+        repair_tag.push_str(" repair=s2");
+    }
+    format!(
+        "{} op={}:{} layers={layers_field}{il_tag}{repair_tag}",
+        describe(frame),
         op.max_spatial_id,
         op.max_temporal_id
-    );
-    let sent = SpatialSent {
-        prefix_data,
-        layers: layer_entries,
-    };
-    Ok((text, Some((idx, Sent::Spatial(Box::new(sent))))))
+    )
 }
 
 /// The base 6-token `encode` reply for `frame`.
@@ -496,51 +536,70 @@ impl Receiver {
         op: OperatingPointSpec,
         arrived: [bool; nc_encoder::MAX_SPATIAL_LAYERS],
     ) -> Result<&'static str, String> {
-        let (s0_meta, s0_md5) = &tu.layers[0];
+        let (s0_meta, _) = &tu.layers[0];
         if s0_meta.temporal_layer > op.max_temporal_id {
             return Ok("skipped-op");
-        }
-        if !arrived[0] {
-            return Ok("lost");
-        }
-        if self.mode == ReceiverMode::Transport
-            && !s0_meta
-                .references
-                .iter()
-                .all(|r| self.good_spatial.contains(&r))
-        {
-            return Ok("missing-reference");
         }
         // Highest spatial layer in this TU belonging to the subscribed operating point.
         let target_idx = tu
             .layers
             .iter()
-            .enumerate()
-            .filter(|(_, (m, _))| {
+            .rposition(|(m, _)| {
                 m.spatial_id <= op.max_spatial_id && m.temporal_layer <= op.max_temporal_id
             })
-            .map(|(i, _)| i)
-            .next_back()
             .unwrap_or(0);
-        let target_sid = tu.layers[target_idx].0.spatial_id;
+        let (target_meta, _) = &tu.layers[target_idx];
+        let target_sid = target_meta.spatial_id;
+        let s0_refs_ok = self.mode == ReceiverMode::Bitstream
+            || s0_meta
+                .references
+                .iter()
+                .all(|r| self.good_spatial.contains(&r));
 
-        // Walk upward from S1..=target_sid while packets arrive and references hold.
+        // Walk upward from S0..=target_idx to see whether the full prefix arrived
+        // with intact references.
+        let mut full_prefix_ok = arrived[0] && s0_refs_ok;
         let mut playable_idx = 0usize;
         let mut stopped_lost = false;
-        for idx in 1..=target_idx {
-            let (meta, _) = &tu.layers[idx];
-            let sid = usize::from(meta.spatial_id);
-            let refs_ok = self.mode == ReceiverMode::Bitstream
-                || meta.references.iter().all(|r| {
-                    tu.layers[..idx].iter().any(|(lm, _)| lm.picture_index == r)
-                        || self.good_spatial.contains(&r)
-                });
-            if arrived[sid] && refs_ok {
-                playable_idx = idx;
-            } else {
-                stopped_lost = !arrived[sid];
-                break;
+        if full_prefix_ok {
+            for idx in 1..=target_idx {
+                let (meta, _) = &tu.layers[idx];
+                let sid = usize::from(meta.spatial_id);
+                let refs_ok = self.mode == ReceiverMode::Bitstream
+                    || meta.references.iter().all(|r| {
+                        tu.layers[..idx].iter().any(|(lm, _)| lm.picture_index == r)
+                            || self.good_spatial.contains(&r)
+                    });
+                if arrived[sid] && refs_ok {
+                    playable_idx = idx;
+                } else {
+                    full_prefix_ok = false;
+                    stopped_lost = !arrived[sid];
+                    break;
+                }
             }
+        }
+
+        if !full_prefix_ok
+            && target_idx > 0
+            && let Some(status) = self.try_decode_standalone_target(
+                tu,
+                target_idx,
+                arrived[0] && s0_refs_ok,
+                arrived[usize::from(target_sid)],
+            )?
+        {
+            return Ok(status);
+        }
+
+        if !arrived[0] {
+            if arrived[usize::from(target_sid)] {
+                return Ok("missing-reference");
+            }
+            return Ok("lost");
+        }
+        if !s0_refs_ok {
+            return Ok("missing-reference");
         }
 
         let playable_sid = tu.layers[playable_idx].0.spatial_id;
@@ -554,6 +613,17 @@ impl Receiver {
             "enh-frozen"
         };
 
+        self.decode_playable_prefix(tu, playable_idx, ok_status)
+    }
+
+    fn decode_playable_prefix(
+        &mut self,
+        tu: &SpatialSent,
+        playable_idx: usize,
+        ok_status: &'static str,
+    ) -> Result<&'static str, String> {
+        let (s0_meta, s0_md5) = &tu.layers[0];
+        let playable_sid = tu.layers[playable_idx].0.spatial_id;
         let data = tu.prefix_data[usize::from(playable_sid)]
             .as_deref()
             .ok_or("session: missing stripped prefix data")?;
@@ -592,6 +662,52 @@ impl Receiver {
             &top_decoded,
         )?;
         Ok(if all_exact { ok_status } else { "mismatch" })
+    }
+
+    /// K-SVC / independent non-key unit or standalone `INTRA_ONLY` repair:
+    /// when `target_idx > 0` does not depend on lower layers in this TU and
+    /// the full prefix is unavailable (e.g. a selective forwarder sent only
+    /// `{Sk}`, or an intermediate layer was lost), decode `{Sk}` standalone.
+    fn try_decode_standalone_target(
+        &mut self,
+        tu: &SpatialSent,
+        target_idx: usize,
+        s0_playable: bool,
+        target_arrived: bool,
+    ) -> Result<Option<&'static str>, String> {
+        let (s0_meta, s0_md5) = &tu.layers[0];
+        let (target_meta, target_md5) = &tu.layers[target_idx];
+        let target_sid = target_meta.spatial_id;
+        let target_refs_ok = self.mode == ReceiverMode::Bitstream
+            || target_meta
+                .references
+                .iter()
+                .all(|r| self.good_spatial.contains(&r));
+        let Some(single_bytes) = tu.single_data[usize::from(target_sid)].as_deref() else {
+            return Ok(None);
+        };
+        if !target_arrived || target_meta.inter_layer_ref || !target_refs_ok {
+            return Ok(None);
+        }
+        if s0_playable
+            && let Some(s0_bytes) = tu.prefix_data[0].as_deref()
+            && let Ok(Some(s0_dec)) = self.decoder.decode(s0_bytes)
+            && s0_dec.md5() == *s0_md5
+        {
+            self.good_spatial.insert(s0_meta.picture_index);
+        }
+        let decoded = match self.decoder.decode(single_bytes) {
+            Ok(Some(decoded)) => decoded,
+            Err(DecodeError::MissingReference) => return Ok(Some("missing-reference")),
+            Ok(None) | Err(_) => return Ok(Some("error")),
+        };
+        let exact = decoded.md5() == *target_md5;
+        if exact {
+            self.good_spatial.insert(target_meta.picture_index);
+        }
+        let decoded = decoded.to_picture()?;
+        Self::present(&mut self.display, self.stream, &mut self.shown, &decoded)?;
+        Ok(Some(if exact { "good" } else { "mismatch" }))
     }
 
     /// Put `decoded` on screen. Takes the screen fields rather than `self`:

@@ -393,7 +393,9 @@ fn parse_scalability(args: &[String]) -> Result<Option<ScalabilityMode>, String>
         return Err("--scalability and --temporal-layers cannot be combined".into());
     }
     ScalabilityMode::parse(&spec).map(Some).ok_or_else(|| {
-        format!("unsupported --scalability '{spec}' (expected L1T1..L1T3, L2T1..L2T3, L3T1..L3T3)")
+        format!(
+            "unsupported --scalability '{spec}' (expected L1T1..L1T3, L2T1..L2T3[_KEY], L3T1..L3T3[_KEY])"
+        )
     })
 }
 
@@ -707,7 +709,7 @@ impl ReconOutputs {
         if let Some(out) = layer_md5.as_mut() {
             writeln!(
                 out,
-                "tu,spatial_id,temporal_layer,frame_type,width,height,bytes,md5,droppable,op_mask"
+                "tu,spatial_id,temporal_layer,frame_type,width,height,bytes,md5,droppable,op_mask,inter_layer_ref"
             )
             .map_err(|e| e.to_string())?;
         }
@@ -767,7 +769,7 @@ impl ReconOutputs {
             let pic = encoder.reconstruction();
             writeln!(
                 out,
-                "{index},0,{},{:?},{},{},{},{},0,1",
+                "{index},0,{},{:?},{},{},{},{},0,1,0",
                 frame.metadata.temporal_layer,
                 frame.metadata.frame_type,
                 pic.width(),
@@ -783,7 +785,7 @@ impl ReconOutputs {
                     .ok_or("missing spatial layer reconstruction")?;
                 writeln!(
                     out,
-                    "{index},{},{},{:?},{},{},{},{},{},{}",
+                    "{index},{},{},{:?},{},{},{},{},{},{},{}",
                     layer.spatial_id,
                     layer.temporal_layer,
                     layer.frame_type,
@@ -792,7 +794,8 @@ impl ReconOutputs {
                     layer.byte_len,
                     md5::picture(pic),
                     u8::from(layer.droppable),
-                    layer.operating_point_mask
+                    layer.operating_point_mask,
+                    u8::from(layer.inter_layer_ref)
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -916,28 +919,48 @@ fn apply_simulated_loss<B: CodecBackend>(
         && lost_sid >= 1
         && !frame.layers.is_empty()
     {
+        let mut lost_mask = 1u8 << lost_sid;
         for layer in &frame.layers {
-            if layer.spatial_id < lost_sid {
-                encoder.acknowledge_layer(tu, layer.spatial_id);
+            if layer.spatial_id > lost_sid
+                && layer.inter_layer_ref
+                && (lost_mask & (1u8 << (layer.spatial_id - 1))) != 0
+            {
+                lost_mask |= 1u8 << layer.spatial_id;
             }
         }
-        encoder.report_layer_loss(tu, lost_sid);
-        if frame.layers.iter().any(|l| l.spatial_id >= lost_sid) {
+        for layer in &frame.layers {
+            if (lost_mask & (1u8 << layer.spatial_id)) == 0 {
+                encoder.acknowledge_layer(tu, layer.spatial_id);
+            } else {
+                encoder.report_layer_loss(tu, layer.spatial_id);
+            }
+        }
+        if frame
+            .layers
+            .iter()
+            .any(|l| (lost_mask & (1u8 << l.spatial_id)) != 0)
+        {
             frame.data = match encoder.config().codec {
-                Codec::Av1 => {
-                    nc_av1::filter_temporal_unit_layers(&frame.data, |_, sid| sid < lost_sid)
-                        .map_err(|e| e.to_string())?
-                }
+                Codec::Av1 => nc_av1::filter_temporal_unit_layers(&frame.data, |_, sid| {
+                    (lost_mask & (1u8 << sid)) == 0
+                })
+                .map_err(|e| e.to_string())?,
                 Codec::Vp9 if lost_sid == 1 => {
                     nc_vp9::strip_superframe_to_base(&frame.data).map_err(|e| e.to_string())?
                 }
                 codec => return Err(format!("{codec:?} does not support spatial layer loss")),
             };
-            frame.layers.retain(|l| l.spatial_id < lost_sid);
-            if frame.layers.len() == 1 {
-                frame.layers[0].byte_len = frame.data.len();
-            } else if let Some(last) = frame.layers.last_mut() {
-                last.byte_len = frame.data.len().saturating_sub(last.byte_offset);
+            frame
+                .layers
+                .retain(|l| (lost_mask & (1u8 << l.spatial_id)) == 0);
+            let mut offset = 0usize;
+            let remaining = frame.layers.len();
+            for (idx, layer) in frame.layers.iter_mut().enumerate() {
+                layer.byte_offset = offset;
+                if idx + 1 == remaining {
+                    layer.byte_len = frame.data.len().saturating_sub(offset);
+                }
+                offset += layer.byte_len;
             }
         }
         return Ok(false);

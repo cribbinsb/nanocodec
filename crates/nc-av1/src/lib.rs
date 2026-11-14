@@ -60,7 +60,8 @@ mod transform;
 mod txsize;
 
 pub use backend::decoder::{
-    Decoder, MAX_OPERATING_POINT, filter_temporal_unit_layers, temporal_unit_layer,
+    Av1StreamExtractor, Decoder, ExtractedTemporalUnit, MAX_OPERATING_POINT,
+    filter_temporal_unit_layers, lowest_spatial_operating_point, temporal_unit_layer,
     temporal_unit_layers,
 };
 pub use backend::{Av1Backend, FRAME_IDS_PARAM};

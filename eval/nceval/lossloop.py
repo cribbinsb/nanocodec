@@ -69,6 +69,15 @@ class SpatialTuInfo:
     num_layers: int = 2
     s1_repair: bool = False
     s2_repair: bool = False
+    il_refs: tuple[int, ...] | None = None
+
+    def needs_lower_layers(self, target_sid: int) -> bool:
+        """Whether `target_sid` (`1` or `2`) predicts across spatial layers in this TU."""
+        if target_sid <= 0:
+            return False
+        if self.il_refs is None or target_sid >= len(self.il_refs):
+            return True
+        return self.il_refs[target_sid] != 0
 
 
 def _parse_spatial_extra(extra: list[str]) -> SpatialTuInfo | None:
@@ -76,10 +85,12 @@ def _parse_spatial_extra(extra: list[str]) -> SpatialTuInfo | None:
         return None
     op_part = next((t[3:] for t in extra if t.startswith("op=")), None)
     lay_part = next((t[7:] for t in extra if t.startswith("layers=")), None)
+    il_part = next((t[3:] for t in extra if t.startswith("il=")), None)
     if op_part is None or lay_part is None:
         return None
     max_s, max_t = (int(v) for v in op_part.split(":"))
     parts = [int(v) for v in lay_part.split(":")]
+    il_refs = tuple(int(v) for v in il_part.split(":")) if il_part is not None else None
     s0_b = parts[0]
     s1_b = parts[1] if len(parts) > 1 else 0
     s2_b = parts[2] if len(parts) > 2 else 0
@@ -87,7 +98,7 @@ def _parse_spatial_extra(extra: list[str]) -> SpatialTuInfo | None:
     s2_repair = "repair=s2" in extra
     return SpatialTuInfo(
         max_s, max_t, s0_b, s1_b, s2_bytes=s2_b, num_layers=len(parts),
-        s1_repair=s1_repair, s2_repair=s2_repair,
+        s1_repair=s1_repair, s2_repair=s2_repair, il_refs=il_refs,
     )
 
 
@@ -122,6 +133,16 @@ class SentFrame:
     num_spatial_layers: int = 2
     is_spatial: bool = False
     dropped_by_op: bool = False
+    #: Spatial layer forwarded standalone on a K-SVC / independent non-key TU (`1` or `2`).
+    single_layer_sid: int | None = None
+
+    def receiver_arrived(self) -> bool:
+        """Whether the receiver's target layer packet(s) arrived on this TU."""
+        if self.single_layer_sid == 1:
+            return self.enh_arrived
+        if self.single_layer_sid == 2:
+            return self.s2_arrived
+        return self.arrived
 
     @property
     def recovery(self) -> bool:
@@ -299,14 +320,12 @@ def run_loop(session: Session, ticks: int, fps: float, forward: LossModel,
             buffer.append(frame)
             if not frame.dropped_by_op:
                 latest_sent = index
-                if spatial.op_max_spatial >= 1:
+                if spatial.op_max_spatial >= 1 and frame.enh_packets > 0:
                     track_enh = True
-                    if spatial.s1_bytes > 0:
-                        latest_enh_sent = index
-                if spatial.op_max_spatial >= 2:
+                    latest_enh_sent = index
+                if spatial.op_max_spatial >= 2 and frame.s2_packets > 0:
                     track_top = True
-                    if spatial.s2_bytes > 0:
-                        latest_top_sent = index
+                    latest_top_sent = index
         else:
             frame = SentFrame(tick, index, kind, layer, size, references, packet_count(size))
             transmit(frame, forward, feedback, rtt_ticks)
@@ -332,7 +351,7 @@ def run_loop(session: Session, ticks: int, fps: float, forward: LossModel,
                     latest_enh_good = frame.index
                 if frame.is_spatial and frame.s2_bytes > 0:
                     latest_top_good = frame.index
-                send_feedback(tick, "ack", frame.index)
+                send_feedback(tick, "ack", frame.index, frame.single_layer_sid)
             elif frame.status in ("s1-only", "s2-frozen"):
                 # S0 and S1 both decoded bit-exactly and keep playing; only S2 freezes.
                 latest_good, corrupt = frame.index, False
@@ -356,6 +375,22 @@ def run_loop(session: Session, ticks: int, fps: float, forward: LossModel,
                     send_feedback(tick, "loss", frame.index, 1)
             elif frame.status == "mismatch":
                 corrupt = True
+            elif frame.single_layer_sid == 1:
+                if (
+                    (frame.status == "lost" and (enh_lost_unrepaired is None or frame.enh_repair))
+                    or (frame.status in FROZEN_STATUSES and enh_lost_unrepaired is None)
+                ):
+                    enh_lost_unrepaired = frame.index
+                    last_enh_report = tick
+                    send_feedback(tick, "loss", frame.index, 1)
+            elif frame.single_layer_sid == 2:
+                if (
+                    (frame.status == "lost" and (top_lost_unrepaired is None or frame.s2_repair))
+                    or (frame.status in FROZEN_STATUSES and top_lost_unrepaired is None)
+                ):
+                    top_lost_unrepaired = frame.index
+                    last_top_report = tick
+                    send_feedback(tick, "loss", frame.index, 2)
             elif frame.status == "lost" or (frame.status in FROZEN_STATUSES
                                              and lost_unrepaired is None):
                 # A refused frame the transport did not report (the decoder
@@ -374,10 +409,11 @@ def run_loop(session: Session, ticks: int, fps: float, forward: LossModel,
                             "corrupt" if corrupt else "frozen" if frozen else "good")
         enh_frozen = False
         if track_enh:
-            enh_frozen = latest_enh_good < latest_enh_sent or frozen
+            enh_frozen = latest_enh_good < latest_enh_sent or (frozen and lost_unrepaired is not None)
             if not enh_frozen:
                 enh_lost_unrepaired = None
-            elif not frozen and enh_lost_unrepaired is not None and tick - last_enh_report >= report_every:
+            elif (lost_unrepaired is None and enh_lost_unrepaired is not None
+                  and tick - last_enh_report >= report_every):
                 last_enh_report = tick
                 send_feedback(tick, "loss", enh_lost_unrepaired, 1)
             trace.enhancement_screen.append(
@@ -387,7 +423,8 @@ def run_loop(session: Session, ticks: int, fps: float, forward: LossModel,
             top_frozen = latest_top_good < latest_top_sent or enh_frozen or frozen
             if not top_frozen:
                 top_lost_unrepaired = None
-            elif (not frozen and not enh_frozen and top_lost_unrepaired is not None
+            elif (lost_unrepaired is None and enh_lost_unrepaired is None
+                  and top_lost_unrepaired is not None
                   and tick - last_top_report >= report_every):
                 last_top_report = tick
                 send_feedback(tick, "loss", top_lost_unrepaired, 2)
@@ -404,13 +441,14 @@ def _build_spatial_frame(tick: int, index: int, kind: str, layer: int,
                          top_forward: LossModel,
                          feedback: Feedback, rtt_ticks: int) -> SentFrame:
     """Packetize and transmit one spatial TU according to the subscribed operating point."""
+    s0_pkts = packet_count(spatial.s0_bytes)
     s1_pkts = packet_count(spatial.s1_bytes) if spatial.s1_bytes > 0 else 0
     s2_pkts = packet_count(spatial.s2_bytes) if spatial.s2_bytes > 0 else 0
     if layer > spatial.op_max_temporal:
         return SentFrame(
             tick, index, kind, layer, 0, references, 0, ready=tick, arrived=False,
             enh_arrived=False, s2_arrived=False,
-            enh_packets_dropped=packet_count(spatial.s0_bytes) + s1_pkts + s2_pkts,
+            enh_packets_dropped=s0_pkts + s1_pkts + s2_pkts,
             enh_repair=spatial.s1_repair, s2_repair=spatial.s2_repair,
             num_spatial_layers=spatial.num_layers, is_spatial=True, dropped_by_op=True,
         )
@@ -418,7 +456,7 @@ def _build_spatial_frame(tick: int, index: int, kind: str, layer: int,
         # Subscribed to base operating point: drop S1 and S2 packets before the link.
         frame = SentFrame(
             tick, index, kind, layer, spatial.s0_bytes, references,
-            packet_count(spatial.s0_bytes), s0_bytes=spatial.s0_bytes,
+            s0_pkts, s0_bytes=spatial.s0_bytes,
             enh_packets_dropped=s1_pkts + s2_pkts, enh_arrived=False, s2_arrived=False,
             enh_repair=spatial.s1_repair, s2_repair=spatial.s2_repair,
             num_spatial_layers=spatial.num_layers, is_spatial=True,
@@ -426,10 +464,23 @@ def _build_spatial_frame(tick: int, index: int, kind: str, layer: int,
         transmit(frame, forward, feedback, rtt_ticks)
         return frame
     if spatial.op_max_spatial == 1:
+        if not spatial.needs_lower_layers(1) and s1_pkts > 0:
+            # K-SVC / independent non-key unit: selective forwarder sends only S1.
+            frame = SentFrame(
+                tick, index, kind, layer, spatial.s1_bytes, references,
+                0, ready=tick, arrived=False, s0_bytes=0,
+                enh_bytes=spatial.s1_bytes, enh_packets=s1_pkts,
+                enh_packets_dropped=s0_pkts + s2_pkts, s2_arrived=False,
+                enh_repair=spatial.s1_repair, s2_repair=spatial.s2_repair,
+                num_spatial_layers=spatial.num_layers, is_spatial=True,
+                single_layer_sid=1,
+            )
+            _transmit_enhancement(frame, enh_forward, feedback, rtt_ticks)
+            return frame
         # Subscribed to S1 operating point (2-layer full or 3-layer middle): drop S2 packets.
         frame = SentFrame(
             tick, index, kind, layer, spatial.s0_bytes + spatial.s1_bytes, references,
-            packet_count(spatial.s0_bytes), s0_bytes=spatial.s0_bytes,
+            s0_pkts, s0_bytes=spatial.s0_bytes,
             enh_bytes=spatial.s1_bytes, enh_packets=s1_pkts,
             enh_packets_dropped=s2_pkts, s2_arrived=False,
             enh_repair=spatial.s1_repair, s2_repair=spatial.s2_repair,
@@ -439,11 +490,24 @@ def _build_spatial_frame(tick: int, index: int, kind: str, layer: int,
         if s1_pkts > 0:
             _transmit_enhancement(frame, enh_forward, feedback, rtt_ticks)
         return frame
-    # Subscribed to top S2 operating point (3-layer full): transmit S0, S1, and S2.
+    if not spatial.needs_lower_layers(2) and s2_pkts > 0:
+        # K-SVC / independent non-key unit: selective forwarder sends only S2.
+        frame = SentFrame(
+            tick, index, kind, layer, spatial.s2_bytes, references,
+            0, ready=tick, arrived=False, enh_arrived=False, s0_bytes=0,
+            s2_bytes=spatial.s2_bytes, s2_packets=s2_pkts,
+            enh_packets_dropped=s0_pkts + s1_pkts,
+            enh_repair=spatial.s1_repair, s2_repair=spatial.s2_repair,
+            num_spatial_layers=spatial.num_layers, is_spatial=True,
+            single_layer_sid=2,
+        )
+        _transmit_top_enhancement(frame, top_forward, feedback, rtt_ticks)
+        return frame
+    # Subscribed to top S2 operating point (3-layer full or K-SVC key TU): transmit S0, S1, and S2.
     frame = SentFrame(
         tick, index, kind, layer,
         spatial.s0_bytes + spatial.s1_bytes + spatial.s2_bytes, references,
-        packet_count(spatial.s0_bytes), s0_bytes=spatial.s0_bytes,
+        s0_pkts, s0_bytes=spatial.s0_bytes,
         enh_bytes=spatial.s1_bytes, enh_packets=s1_pkts,
         s2_bytes=spatial.s2_bytes, s2_packets=s2_pkts,
         enh_repair=spatial.s1_repair, s2_repair=spatial.s2_repair,
@@ -560,7 +624,7 @@ def frame_stats(trace: Trace, fps: float, intra_period: int) -> dict:
         if f.dropped_by_op:
             return 0
         if f.is_spatial:
-            return (wire_bytes(f.s0_bytes)
+            return ((wire_bytes(f.s0_bytes) if f.packets > 0 else 0)
                     + (wire_bytes(f.enh_bytes) if f.enh_packets > 0 else 0)
                     + (wire_bytes(f.s2_bytes) if f.s2_packets > 0 else 0))
         return wire_bytes(f.bytes)
@@ -592,7 +656,7 @@ def frame_stats(trace: Trace, fps: float, intra_period: int) -> dict:
         "recovery_kbps": extra * 8 / seconds / 1000,
         "packets_inter": packets(inter),
         "packets_key": packets(keys),
-        "frames_lost": sum(not f.arrived and not f.dropped_by_op for f in frames),
+        "frames_lost": sum(not f.receiver_arrived() and not f.dropped_by_op for f in frames),
         "packets_lost": sum(f.lost_packets + f.enh_lost_packets + f.s2_lost_packets for f in frames),
         "statuses": statuses,
         "mismatches": statuses.get("mismatch", 0),
@@ -646,7 +710,9 @@ def enhancement_recovery_times(trace: Trace, tick_ms: float) -> list[float]:
 def recovery_times(trace: Trace, tick_ms: float) -> list[float]:
     """Per loss event after the first picture: from the tick its first lost
     frame was sent to the next tick with the newest frame on screen."""
-    lost_ticks = sorted(f.tick for f in trace.frames if not f.arrived)
+    lost_ticks = sorted(
+        f.tick for f in trace.frames if not f.dropped_by_op and not f.receiver_arrived()
+    )
     times = []
     screen = trace.screen
     first_good = next((t for t, s in enumerate(screen) if s == "good"), len(screen))

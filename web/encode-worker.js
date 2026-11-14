@@ -16,6 +16,8 @@
 //
 // The module build (relaxed SIMD or plain SIMD128) is chosen in wasm.js.
 import { MODULE_URL } from './wasm.js';
+// Frame timestamps from the page are in milliseconds; the encoder takes microseconds.
+const MICROSECONDS_PER_MS = 1000;
 import { warmUpEncoder } from './encode-warmup.js';
 // The colour of the sample clips (limited-range BT.709): the usual first frame's.
 const DEFAULT_COLOUR = 'bt709';
@@ -52,7 +54,9 @@ function packedSource() {
 function encodeFrame({ frame, timestamp }) {
   const start = performance.now();
   convert(frame);
-  const packet = encoder.encode(source);
+  // A live source's frames carry their capture time (some may have been skipped):
+  // rate control budgets each for the real time since the previous one.
+  const packet = config.timed ? encoder.encode_at(source, timestamp * MICROSECONDS_PER_MS) : encoder.encode(source);
   const packed = packedSource();
   return { timestamp, source: packed.buffer, colour: source.colour, packet, repeat: encoder.repeat, key: encoder.key,
     quantizer: encoder.quantizer, encodeMs: performance.now() - start };
@@ -87,6 +91,11 @@ async function receive({ data: message }) {
           .then(report => self.postMessage({ type: 'warmed', ...report }))
           .catch(error => console.warn('encoder warm-up failed:', error));
       }
+    } else if (message.type === 'decoder') {
+      // The view's decoder was replaced (analysis switched, pipeline.js
+      // `switchDecoders`): packets go to the new one from the next frame on.
+      decoderPort = message.port;
+      self.postMessage({ type: 'decoder-connected' });
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
     } else if (message.type === 'rate') {

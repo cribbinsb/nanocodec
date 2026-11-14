@@ -61,11 +61,14 @@ FILTER_INTRA = {Codec.AV1: (0, 1)}
 CAVLC = {Codec.H264: (0, 1)}
 QUANTIZERS = {Codec.H264: (18, 46), Codec.HEVC: (18, 46), Codec.VVC: (18, 58), Codec.AV1: (40, 230), Codec.VP9: (0, 255)}
 # Two-layer spatial scalability modes (shared by AV1 and VP9) and three-layer
-# AV1 SVC modes (L3T1/L3T2/L3T3, independent layers, and custom non-2:1 scales).
+# AV1 SVC + K-SVC modes (L2T*_KEY, L3T*_KEY, independent layers, custom scales).
 TWO_LAYER_SPATIAL_STRUCTURES = (
     "spatial-l2t1", "spatial-l2t1-indep", "spatial-l2t2", "spatial-l2t3", "spatial-sparse")
 AV1_SPATIAL_STRUCTURES = TWO_LAYER_SPATIAL_STRUCTURES + (
-    "spatial-l3t1", "spatial-l3t1-indep", "spatial-l3t2", "spatial-l3t3", "spatial-l3-custom")
+    "spatial-l2t1-key", "spatial-l2t2-key", "spatial-l2t3-key",
+    "spatial-l3t1", "spatial-l3t1-indep", "spatial-l3t2", "spatial-l3t3",
+    "spatial-l3t1-key", "spatial-l3t2-key", "spatial-l3t3-key",
+    "spatial-l3-custom")
 SPATIAL_SCALES = (0.8, 0.6666667, 0.5)
 THREE_LAYER_SCALE_PAIRS = ((0.25, 0.5), (0.3333333, 0.6666667), (0.4, 0.75))
 # Decimated enhancement intervals 2..8 (SPATIAL_MIN_INTERVAL + 0..SPATIAL_INTERVALS-1).
@@ -175,7 +178,7 @@ class StressCase:
         return self.features.structure.startswith("spatial-")
 
     @property
-    def spatial_sparse_spec(self) -> tuple[int, float, int, bool]:
+    def spatial_sparse_spec(self) -> tuple[int, float, int, int]:
         """(temporal_layers, base_scale, enhancement_interval, inter_layer) for `spatial-sparse`.
 
         Each dimension reads different digits of the seed, so consecutive
@@ -186,15 +189,20 @@ class StressCase:
         t_layers = 2 if (self.seed // 4) % 2 == 1 else 1
         scale = SPATIAL_SCALES[k % len(SPATIAL_SCALES)]
         interval = SPATIAL_MIN_INTERVAL + (k // len(SPATIAL_SCALES)) % SPATIAL_INTERVALS
-        inter_layer = (self.seed % 5) != 0
+        if self.seed % 5 == 0:
+            inter_layer = 0
+        elif self.codec == Codec.AV1 and self.seed % 5 == 1:
+            inter_layer = 2
+        else:
+            inter_layer = 1
         return t_layers, scale, interval, inter_layer
 
     @property
-    def spatial_l3_custom_spec(self) -> tuple[int, float, float, bool]:
+    def spatial_l3_custom_spec(self) -> tuple[int, float, float, int]:
         """(temporal_layers, s0_scale, s1_scale, inter_layer) for `spatial-l3-custom`."""
         t_layers = 1 + (self.seed % 3)
         s0_scale, s1_scale = THREE_LAYER_SCALE_PAIRS[(self.seed // 3) % len(THREE_LAYER_SCALE_PAIRS)]
-        inter_layer = (self.seed % 5) != 0
+        inter_layer = 0 if self.seed % 5 == 0 else (2 if self.seed % 5 == 1 else 1)
         return t_layers, s0_scale, s1_scale, inter_layer
 
     @property
@@ -202,10 +210,10 @@ class StressCase:
         extra = ""
         if self.features.structure == "spatial-sparse":
             t_layers, scale, interval, inter_layer = self.spatial_sparse_spec
-            extra = f"-t{t_layers}-s{scale:.2f}-i{interval}-il{int(inter_layer)}"
+            extra = f"-t{t_layers}-s{scale:.2f}-i{interval}-il{inter_layer}"
         elif self.features.structure == "spatial-l3-custom":
             t_layers, s0, s1, inter_layer = self.spatial_l3_custom_spec
-            extra = f"-t{t_layers}-s{s0:.2f}_{s1:.2f}-il{int(inter_layer)}"
+            extra = f"-t{t_layers}-s{s0:.2f}_{s1:.2f}-il{inter_layer}"
         return (f"{self.codec.value}-{self.width}x{self.height}-seed{self.seed}-"
                 f"q{self.quantizer}-{self.features.label()}{extra}")
 
@@ -224,6 +232,12 @@ class StressCase:
             flags += ["--scalability", "L2T2", "--param", "layers.adaptive=0"]
         elif f.structure == "spatial-l2t3":
             flags += ["--scalability", "L2T3", "--param", "layers.adaptive=0"]
+        elif f.structure == "spatial-l2t1-key":
+            flags += ["--scalability", "L2T1_KEY"]
+        elif f.structure == "spatial-l2t2-key":
+            flags += ["--scalability", "L2T2_KEY", "--param", "layers.adaptive=0"]
+        elif f.structure == "spatial-l2t3-key":
+            flags += ["--scalability", "L2T3_KEY", "--param", "layers.adaptive=0"]
         elif f.structure == "spatial-l3t1":
             flags += ["--scalability", "L3T1"]
         elif f.structure == "spatial-l3t1-indep":
@@ -232,20 +246,26 @@ class StressCase:
             flags += ["--scalability", "L3T2", "--param", "layers.adaptive=0"]
         elif f.structure == "spatial-l3t3":
             flags += ["--scalability", "L3T3", "--param", "layers.adaptive=0"]
+        elif f.structure == "spatial-l3t1-key":
+            flags += ["--scalability", "L3T1_KEY"]
+        elif f.structure == "spatial-l3t2-key":
+            flags += ["--scalability", "L3T2_KEY", "--param", "layers.adaptive=0"]
+        elif f.structure == "spatial-l3t3-key":
+            flags += ["--scalability", "L3T3_KEY", "--param", "layers.adaptive=0"]
         elif f.structure == "spatial-l3-custom":
             t_layers, s0_scale, s1_scale, inter_layer = self.spatial_l3_custom_spec
             flags += ["--scalability", f"L3T{t_layers}",
                       "--param", "layers.adaptive=0",
                       "--param", f"spatial.s0_scale={s0_scale}",
                       "--param", f"spatial.s1_scale={s1_scale}",
-                      "--param", f"spatial.inter_layer={int(inter_layer)}"]
+                      "--param", f"spatial.inter_layer={inter_layer}"]
         elif f.structure == "spatial-sparse":
             t_layers, scale, interval, inter_layer = self.spatial_sparse_spec
             flags += ["--scalability", "L2T2" if t_layers == 2 else "L2T1",
                       "--param", "layers.adaptive=0",
                       "--param", f"spatial.base_scale={scale}",
                       "--param", f"spatial.enhancement_interval={interval}",
-                      "--param", f"spatial.inter_layer={int(inter_layer)}"]
+                      "--param", f"spatial.inter_layer={inter_layer}"]
         if f.structure.endswith("ltr-loss"):
             flags += ["--ltr-interval", str(LTR_INTERVAL), "--simulate-loss", str(self.lost_frame)]
         if f.structure.startswith("refresh"):

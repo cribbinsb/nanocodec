@@ -528,3 +528,70 @@ PSNR-YUV per 150-frame window, Default → γ = 2:
   meva (undershoot), and the remaining worst-1% loss is the key budget, not the base frames. An adoptable version
   needs the over-prediction of non-bursting base frames removed (they still read 5x too large) and a check of
   how the key budget responds to credit. Not built further.
+
+### Two-sided base-frame model and key reserve (2026-11-14), not adopted; handed on
+
+**Two-sided model.** A base frame is predicted on both sides of the held quality:
+- at or coarser than it: an inherited cost `A · (held/step)^1.5`;
+- finer than it: a burst term `c · still · octaves^0.5` on top.
+
+The burst exponent is low so that the term is an expectation: many refining base frames stay cheap and only some
+refine everything.
+
+Offline on the 18 traces (AV1; H.264/HEVC give similar numbers):
+
+| Base frames | Per-role model, actual/predicted (geometric mean) | Two-sided model |
+|---|---|---|
+| Bursts (> one cycle budget) | 9.3 | 2.6 |
+| At or coarser than held | 0.07 | 0.40 (median 0.52, within about 2x) |
+| Finer than held but cheap (165 of 574) | | 0.06 |
+| Sum of all base bits | 0.56-1.70 | 0.84-0.99 |
+
+The cheap refining frames are still over-predicted about 16x (actual/predicted 0.06), and nothing in the trace
+tells them apart from bursts. The base frame's realised block offsets may: the reuse term's per-block quantizers
+are not in the trace.
+
+**What the second key is made of.** The key's budget is the planned loan, about 7 frame budgets (U), times the
+debt correction. Its size is then set by `key_step` (often finer than the budget, because the frames around it hold
+finer quality) and capped by the strict-CBR re-code room: 1.4 buffers minus the strict occupancy.
+- **Reconciling "in debt" with "0.85 buffer of credit":** the audit's "in debt" is the controller's excess (debt
+  beyond the scheduled key loan) at the over-target points. meva 97 is on target (0.984), and its Default reached
+  the second key 0.85 buffer in credit, with the strict buffer 0.14 full.
+- **What decides the key, at all six points:** the strict occupancy before it. In the Default it was 0.72-0.93
+  buffer on chirla 47 and 187 and on meva 388 (keys 10.6-18.6U, qindex 128-284). With the model it was 0.86-0.92
+  on meva 97 and 194, which capped the key at 11-14U against the Default's 23-27U.
+- The planned loan is never what starves a key; the key already takes more than the plan.
+
+**Key reserve (`rate.key_reserve_seconds`).** In the last second before a periodic key, inter budgets are lowered
+so the strict buffer keeps room for the key. The room kept is the larger of the plan and the last key's size; the
+first version, sized by the plan alone, never bound.
+- **Why it fails:** budgets in that second fell to 0.25-1.5U, but base bursts of 2-13U still came, because they
+  are still individually mispredicted, and the buffer stayed 0.8-0.9 full.
+
+**Probe** (AV1 Default, six points, 600 frames, key every 10 s). Values are rate / worst-1% PSNR-Y (dB):
+
+| Point | Default | Two-sided (`burst_model=1`, exponent 0.5) | + key reserve 1 s |
+|---|---|---|---|
+| chirla 47 | 1.001 / 28.81 | 0.974 / 31.99 | 0.974 / 31.99 |
+| chirla 93 | 1.037 / 35.40 | 0.987 / 35.18 | 0.987 / 35.18 |
+| chirla 187 | 1.030 / 38.97 | 0.925 / 39.36 | 0.925 / 39.36 |
+| meva 97 | 0.984 / 29.14 | 0.983 / 29.14 | 0.984 / 29.04 |
+| meva 194 | 1.033 / 33.06 | 0.989 / **30.18** | 0.979 / **30.46** |
+| meva 388 | 1.028 / 33.91 | 0.939 / 36.85 | 0.939 / 36.85 |
+
+- **Rate passes:** both worst points come inside 2.5%, no point's rate gets worse, and every undershoot beyond
+  3% (chirla 187, meva 388) has better worst-1% and mean PSNR than the Default. Re-codes per 600 frames: 3-13 (two-sided) and 5-19 (with the reserve), against the Default's 7-26.
+- **Limit cycle damped:** P budgets at the floor fall to 1-8%, and the level's median swing in a 4-frame group
+  to 1-9 qindex.
+- **Fails on meva 194:** worst-1% PSNR-Y falls 2.6-2.9 dB. That is the second key, capped by the strict buffer's
+  room (0.86 full, 13-14U, qindex 215-219 against 23U and 178).
+
+**Handed on to the within-frame control review (worktree `inframe-rc`).** The base-frame side works. What is
+left is keeping the strict buffer's room for a still scene's key while individual bursts stay unpredictable,
+which needs within-frame control (or a burst trim that spares the key's surroundings). Where things are:
+- Code (not clippy-clean, `RateController::new` is over the line limit): branch `feature/burst-predictor`, head
+  4b87d871: `crates/nc-encoder/src/refinement_burst.rs` and `rate.key_reserve_seconds`.
+- Traces and scripts: `~/nanocodec-data/work/still-overshoot/`. `frames/` holds the Default traces of 6 points ×
+  3 codecs; `pred2/` and `pred3/` the closed-loop traces; `predictor_study2.py` and `bias_study.py` the offline
+  accuracy; `probe.py` the probe.
+- The `--rate-log` plan columns are landed (3e18a0ff).

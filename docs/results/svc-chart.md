@@ -92,3 +92,23 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 - Rate validity flags (realuse.rate_valid) are not shown: our points carry no key-loan adjustment here.
 - Clips left out for every point (no reliable overlap): static_cam29, pan_bdd_00cef86b, handheld_mot17_10.
 - Low rungs (40/75 kbps at 720p30, every point) on: static_otw_homes390, static_cam29, static_london_bus, pan_bdd_00cef86b, bodycam_airport, handheld_mot17_10.
+
+## K-SVC (KEY) modes: AV1 L3T1_KEY and L3T3_KEY
+
+<sub>Measured 2026-11-14 at the merge of feature/svc-key (build 95728f25: every point and every anchor in this section from that one build and today's presets); not yet in the table and chart above, which are from earlier builds.</sub>
+
+In a KEY mode the upper layers predict from the layer below only in key temporal units, so a relay forwards one receiver `{S0..Sk}` on key units and `{Sk}` alone otherwise. Each view is scored at the rate its receiver downloads (`svcbase.av1_ksvc_receiver_bits`): 720p view against AV1 Default coded alone at 720p, 360p and 180p views against AV1 Default coded alone at that size (the three-way simulcast's streams), total against full SVC and against three-way simulcast. BD-J (mean of the PSNR-YUV, VMAF v1 and MS-SSIM BD-rates); the chart's 8 clips, 150 frames, the chart's ladder and low rungs, one key, 1 s buffer. In brackets, all 11 natural VAL clips (the 8 plus static_cam29, pan_bdd_00cef86b and handheld_mot17_10).
+
+| View (BD-J) | L3T1_KEY | L3T3_KEY | full SVC L3T1 | full SVC L3T3 |
+|---|---:|---:|---:|---:|
+| 720p view vs AV1 720p alone | +4.3% (+3.2%) | +3.9% (+5.4%) | +35.7% (+34.5%) | +30.7% (+32.0%) |
+| 360p view vs AV1 360p alone | -1.3% (+0.0%) | -3.1% (-0.3%) | +21.4% (+22.3%) | +18.0% (+20.8%) |
+| 180p view vs AV1 180p alone | +1.6% (+4.8%) | -2.3% (+1.9%) | +2.1% (+5.4%) | -2.2% (+2.4%) |
+| total vs full SVC L3T1 | -0.3% (-0.0%) | -1.0% (+1.4%) | | -3.8% (-1.6%) |
+| total vs full SVC L3T3 | | +3.0% (+3.0%) | | |
+| total vs three-way simulcast | -9.8% (-9.5%) | -10.6% (-8.3%) | -9.5% (-9.5%) | -13.1% (-11.0%) |
+| share of the total rate: 720p / 360p / 180p view | 77% / 20% / 7% | 77% / 20% / 7% | 100% / 27% / 7% | 100% / 27% / 7% |
+
+Encode instructions per frame (callgrind, the chart's three timing clips lowlight_city_night, crowd_mot17_09, bodycam_bc1 at the 600 kbps rung, all layers) relative to single-layer AV1 Default at 720p: L3T1_KEY 1.53x (1.58 / 1.51 / 1.51), L3T3_KEY 1.41x (1.53 / 1.40 / 1.31), full SVC L3T1 1.87x. **L3T1_KEY misses the 1.5x target** of the brief (the branch reported 1.48x against an older single-layer build).
+
+libaom `svc_encoder_rtc` v3.15.3 in its KEY mode (layering mode 10, L3T3, CBR, the settings in the method below): on the 11 clips its total-rate curve is +110.6% BD-J (rt 10) and +109.1% (rt 8) against our L3T3_KEY (10 of 11 clips overlap). In that version of the example, modes 9 and 10 produce the same streams: the inter-layer (GOLDEN) reference is only switched on in the code that follows `case 11`, which mode 9 never reaches, so its L3T3 is already key-unit-only inter-layer prediction; the L3T3 rows above score it at full-SVC receiver rates, its KEY rows at K-SVC receiver rates. libaom's SVC encoder is a mature, general implementation; ours codes a narrow real-time subset, so this compares two configurations on these clips, not the encoders in general.

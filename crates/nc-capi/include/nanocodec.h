@@ -92,6 +92,7 @@ typedef struct nc_layer_frame {
     uint8_t spatial_id;             /* 0 = base (S0), 1 = S1, 2 = S2 */
     uint8_t temporal_layer;         /* 0..2 */
     uint8_t droppable;              /* non-zero: droppable without breaking its spatial layer */
+    uint8_t inter_layer_ref;        /* non-zero: predicts from spatial_id - 1 in this packet */
     uint32_t operating_point_mask;  /* bit i = 1 when operating point i includes this layer */
     uint32_t width, height;         /* visible size of this layer picture */
     size_t byte_offset;             /* offset in nc_packet.data */

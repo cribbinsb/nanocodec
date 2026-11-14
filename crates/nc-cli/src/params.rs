@@ -12,9 +12,12 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use nc_av1::Av1Backend;
-use nc_encoder::{CodecBackend, ParamOverrides, ScalabilityMode, engine_specs};
+use nc_encoder::{CodecBackend, InterLayerMode, ParamOverrides, ScalabilityMode, engine_specs};
 use nc_h264::H264Backend;
 use nc_hevc::HevcBackend;
+
+/// The inter-layer prediction mode parameter a `--scalability` name sets.
+const INTER_LAYER_PARAM: &str = "spatial.inter_layer";
 
 /// Built-in presets: name and parameter-file text.
 const PRESETS: &[(&str, &str)] = &[
@@ -96,6 +99,16 @@ pub fn overrides_from_args_with_scalability(
     if let Some(mode) = scalability {
         if mode.spatial_layers() >= 2 {
             overrides.set("spatial.layers", f32::from(mode.spatial_layers()));
+            // A `_KEY` mode selects K-SVC; a full-SVC mode name undoes a
+            // preset's K-SVC but keeps independent layers (`inter_layer = 0`).
+            let inter_layer = overrides
+                .get(INTER_LAYER_PARAM)
+                .map(InterLayerMode::from_param);
+            if mode.is_key_mode() {
+                overrides.set(INTER_LAYER_PARAM, InterLayerMode::KeyOnly.param_value());
+            } else if inter_layer == Some(InterLayerMode::KeyOnly) {
+                overrides.set(INTER_LAYER_PARAM, InterLayerMode::On.param_value());
+            }
         } else if overrides.contains("spatial.layers") {
             overrides.set("spatial.layers", 1.0);
         }

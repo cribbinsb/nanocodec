@@ -55,6 +55,7 @@ mod cdef;
 mod cdf;
 mod coefficients;
 mod deblock;
+mod extract;
 mod film_grain;
 mod frame_header;
 mod motion;
@@ -68,6 +69,8 @@ mod subset;
 mod tests;
 mod tile;
 mod transform;
+
+pub use extract::{Av1StreamExtractor, ExtractedTemporalUnit, lowest_spatial_operating_point};
 
 /// Luma border of reconstructed (reference) pictures: motion vectors may
 /// point this far outside the frame.

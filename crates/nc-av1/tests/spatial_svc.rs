@@ -2,7 +2,10 @@
 
 #![forbid(unsafe_code)]
 
-use nc_av1::{Av1Backend, Decoder, filter_temporal_unit_layers, temporal_unit_layers};
+use nc_av1::{
+    Av1Backend, Av1StreamExtractor, Decoder, filter_temporal_unit_layers,
+    lowest_spatial_operating_point, temporal_unit_layers,
+};
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides, StreamSignal};
 
@@ -578,5 +581,176 @@ fn custom_non_dyadic_three_layer_scales_and_loss_repair_round_trip() {
         dec_s2.recycle(p2);
         dec_s1.recycle(p1);
         dec_s0.recycle(p0);
+    }
+}
+
+fn verify_ksvc_mode_round_trip(num_layers: u8, temporal_layers: u8) {
+    let (width, height) = (192, 96);
+    let mut params = ParamOverrides::default();
+    params.set("spatial.layers", f32::from(num_layers));
+    params.set("spatial.inter_layer", 2.0);
+    params.set("layers.adaptive", 0.0);
+    let config = make_config(width, height, temporal_layers, 8, params);
+    let mut encoder = Encoder::<Av1Backend>::new(config).expect("valid K-SVC config");
+
+    let op_count = usize::from(num_layers) * usize::from(temporal_layers);
+    let mut extractors: Vec<Av1StreamExtractor> = (0..op_count as u8)
+        .map(|op| Av1StreamExtractor::new(op).expect("valid op"))
+        .collect();
+    let mut extracted_decoders: Vec<Decoder> = (0..op_count).map(|_| Decoder::new()).collect();
+    let mut op_decoders: Vec<Decoder> = (0..op_count as u8)
+        .map(|op| {
+            let mut d = Decoder::new();
+            d.set_operating_point(op).expect("valid op");
+            d
+        })
+        .collect();
+
+    for frame_idx in 0..10 {
+        let encoded = encoder.encode(&synthetic_frame(width, height, frame_idx));
+        if frame_idx == 0 {
+            let base_op = lowest_spatial_operating_point(&encoded.data).expect("base op");
+            assert_eq!(base_op, (num_layers - 1) * temporal_layers);
+        }
+        let is_key_tu = frame_idx % 8 == 0;
+        let tid = encoded.metadata.temporal_layer;
+        let recons: Vec<Picture> = (0..num_layers)
+            .map(|s| encoder.layer_reconstruction(s).unwrap().clone())
+            .collect();
+        for (s, layer_meta) in encoded.layers.iter().enumerate() {
+            assert_eq!(layer_meta.inter_layer_ref, s > 0 && is_key_tu);
+        }
+
+        let t = usize::from(temporal_layers);
+        for op in 0..op_count {
+            let want_spatial = (usize::from(num_layers) - 1 - op / t) as u8;
+            let max_tid = (t - 1 - (op % t)) as u8;
+            let extracted = extractors[op]
+                .extract_temporal_unit(&encoded.data)
+                .expect("valid extraction");
+            if tid <= max_tid {
+                let (unit_bytes, out_size) = extracted.expect("included TU must emit bytes");
+                let exp_recon = &recons[usize::from(want_spatial)];
+                assert_eq!(out_size, (exp_recon.width(), exp_recon.height()));
+                let kept_layers = temporal_unit_layers(&unit_bytes).expect("valid extracted TU");
+                let want_layers: Vec<(u8, u8)> = if is_key_tu {
+                    (0..=want_spatial).map(|s| (tid, s)).collect()
+                } else {
+                    vec![(tid, want_spatial)]
+                };
+                assert_eq!(kept_layers, want_layers);
+
+                let (pic_ext, sid_ext) = extracted_decoders[op]
+                    .decode_with_layer(&unit_bytes)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(sid_ext, want_spatial);
+                assert_pictures_bit_exact(&pic_ext, exp_recon, "K-SVC extracted");
+                extracted_decoders[op].recycle(pic_ext);
+
+                let (pic_op, sid_op) = op_decoders[op]
+                    .decode_with_layer(&encoded.data)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(sid_op, want_spatial);
+                assert_pictures_bit_exact(&pic_op, exp_recon, "K-SVC op");
+                op_decoders[op].recycle(pic_op);
+            } else {
+                assert!(extracted.is_none());
+                assert!(
+                    op_decoders[op]
+                        .decode_with_layer(&encoded.data)
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ksvc_two_and_three_layer_modes_extract_single_layer_nonkey_and_decode_bit_exact() {
+    for (num_layers, temporal_layers) in [(2u8, 1u8), (2, 3), (3, 1), (3, 2), (3, 3)] {
+        verify_ksvc_mode_round_trip(num_layers, temporal_layers);
+    }
+}
+
+#[test]
+fn ksvc_s2_and_s1_losses_recover_via_standalone_intra_only_without_lower_resend() {
+    let (width, height) = (192, 96);
+    let mut params = ParamOverrides::default();
+    params.set("spatial.layers", 3.0);
+    params.set("spatial.inter_layer", 2.0);
+    params.set("layers.adaptive", 0.0);
+    let config = make_config(width, height, 2, 30, params);
+    let mut encoder = Encoder::<Av1Backend>::new(config).expect("valid L3T2_KEY config");
+
+    let mut ext = vec![
+        Av1StreamExtractor::new(0).unwrap(),
+        Av1StreamExtractor::new(2).unwrap(),
+        Av1StreamExtractor::new(4).unwrap(),
+    ]
+    .into_boxed_slice();
+    let mut dec = vec![Decoder::new(), Decoder::new(), Decoder::new()].into_boxed_slice();
+    let check_layer = |dec: &mut Decoder, bytes: &[u8], exp: &Picture, msg: &str| {
+        let p = dec.decode(bytes).expect(msg);
+        assert_pictures_bit_exact(&p, exp, msg);
+        dec.recycle(p);
+    };
+
+    for frame_idx in 0..9 {
+        let encoded = encoder.encode(&synthetic_frame(width, height, frame_idx));
+        let recons = [
+            encoder.layer_reconstruction(0).unwrap().clone(),
+            encoder.layer_reconstruction(1).unwrap().clone(),
+            encoder.layer_reconstruction(2).unwrap().clone(),
+        ];
+        let u2 = ext[0]
+            .extract_temporal_unit(&encoded.data)
+            .unwrap()
+            .unwrap()
+            .0;
+        let u1 = ext[1]
+            .extract_temporal_unit(&encoded.data)
+            .unwrap()
+            .unwrap()
+            .0;
+        let u0 = ext[2]
+            .extract_temporal_unit(&encoded.data)
+            .unwrap()
+            .unwrap()
+            .0;
+
+        if frame_idx == 2 {
+            check_layer(&mut dec[1], &u1, &recons[1], "S1 during S2 loss");
+            check_layer(&mut dec[2], &u0, &recons[0], "S0 during S2 loss");
+            encoder.report_layer_loss(2, 2);
+            continue;
+        }
+        if frame_idx == 3 {
+            assert!(encoded.layers[2].is_intra_only() && encoded.layers[2].enhancement_repair);
+            assert!(!encoded.layers[2].inter_layer_ref && !encoded.layers[1].enhancement_repair);
+            assert_eq!(encoded.layers[1].frame_type, nc_encoder::FrameType::Inter);
+            assert_eq!(temporal_unit_layers(&u2).unwrap(), vec![(0, 2)]);
+        }
+        if frame_idx == 4 || frame_idx == 5 {
+            assert_eq!(encoded.layers[1].temporal_layer, u8::from(frame_idx == 4));
+            assert!(!encoded.layers[1].enhancement_repair);
+            check_layer(&mut dec[0], &u2, &recons[2], "S2 during S1 loss");
+            check_layer(&mut dec[2], &u0, &recons[0], "S0 during S1 loss");
+            encoder.report_layer_loss(frame_idx as u64, 1);
+            continue;
+        }
+        if frame_idx == 6 {
+            assert!(encoded.layers[1].is_intra_only() && encoded.layers[1].enhancement_repair);
+            assert!(!encoded.layers[2].enhancement_repair && !encoded.layers[2].inter_layer_ref);
+            assert_eq!(encoded.layers[2].frame_type, nc_encoder::FrameType::Inter);
+            assert_eq!(temporal_unit_layers(&u1).unwrap(), vec![(0, 1)]);
+            assert_eq!(temporal_unit_layers(&u2).unwrap(), vec![(0, 2)]);
+        }
+
+        check_layer(&mut dec[0], &u2, &recons[2], "S2 decode");
+        check_layer(&mut dec[1], &u1, &recons[1], "S1 decode");
+        check_layer(&mut dec[2], &u0, &recons[0], "S0 decode");
     }
 }

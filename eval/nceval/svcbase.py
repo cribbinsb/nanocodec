@@ -65,9 +65,15 @@ SPATIAL_LAYERS_PARAM = "spatial.layers"
 TWO_LAYERS = 2
 #: The codecs with spatial SVC.
 SVC_CODECS = (Codec.AV1, Codec.VP9)
-#: AV1 OBU header fields (AV1 section 5.3).
+#: AV1 OBU header fields and frame-header flags (AV1 sections 5.3, 5.9.2).
 OBU_HAS_EXTENSION = 0x04
 OBU_HAS_SIZE = 0x02
+OBU_TEMPORAL_DELIMITER = 2
+OBU_FRAME_HEADER = 3
+OBU_FRAME = 6
+#: Top three bits of an uncompressed AV1 frame header (`show_existing_frame` +
+#: `frame_type`, AV1 section 5.9.2): all zero iff `KEY_FRAME` (`frame_type == 0`).
+AV1_KEY_HEADER_MASK = 0xE0
 #: VP9 superframe index (VP9 Annex B.3): its marker byte's top bits.
 SUPERFRAME_MARKER_MASK = 0xE0
 SUPERFRAME_MARKER = 0xC0
@@ -226,6 +232,48 @@ def av1_base_bytes(unit: bytes, max_spatial_id: int = 0) -> int:
     return base
 
 
+def av1_ksvc_receiver_bytes(unit: bytes, target_spatial_id: int) -> int:
+    """Bytes of one AV1 K-SVC temporal unit downloaded by a receiver of
+    `target_spatial_id`: `{S0..=target_spatial_id}` on key units (where `S0` is a
+    `KEY_FRAME`, AV1 section 5.9.2) and `{target_spatial_id}` alone (plus one
+    temporal delimiter and any sequence/metadata header) on non-key units."""
+    if target_spatial_id <= 0:
+        return av1_base_bytes(unit, 0)
+    s0_is_key = has_target = seen_td = False
+    shared_bytes = target_bytes = pos = 0
+    while pos < len(unit):
+        start, header = pos, unit[pos]
+        obu_type = (header >> 3) & 0x0F
+        has_ext = bool(header & OBU_HAS_EXTENSION)
+        pos += 1
+        spatial_id = 0
+        if has_ext:
+            spatial_id = (unit[pos] >> 3) & 0x03
+            pos += 1
+        if header & OBU_HAS_SIZE:
+            size, pos = leb128(unit, pos)
+        else:
+            size = len(unit) - pos
+        payload_start = pos
+        pos += size
+        obu_len = pos - start
+        if obu_type in (OBU_FRAME_HEADER, OBU_FRAME) and spatial_id == 0 and size > 0:
+            if (unit[payload_start] & AV1_KEY_HEADER_MASK) == 0:
+                s0_is_key = True
+        if obu_type == OBU_TEMPORAL_DELIMITER:
+            if not seen_td:
+                seen_td = True
+                shared_bytes += obu_len
+        elif not has_ext:
+            shared_bytes += obu_len
+        elif spatial_id == target_spatial_id:
+            has_target = True
+            target_bytes += obu_len
+    if s0_is_key:
+        return av1_base_bytes(unit, target_spatial_id)
+    return (shared_bytes + target_bytes) if has_target else 0
+
+
 def vp9_superframe_sizes(unit: bytes) -> list[int] | None:
     """The frame sizes a VP9 superframe index lists (Annex B.3), or None for a
     unit that is one frame."""
@@ -296,6 +344,14 @@ def av1_operating_point_bits(path: Path, max_spatial_id: int) -> list[int]:
     """Per temporal unit: the bits of spatial layers up to `max_spatial_id` (an AV1
     stream's lower operating point at every temporal layer)."""
     return [av1_base_bytes(unit, max_spatial_id) * 8
+            for _, unit in ivf_frames(path.read_bytes())]
+
+
+def av1_ksvc_receiver_bits(path: Path, target_spatial_id: int) -> list[int]:
+    """Per temporal unit: the wire bits a K-SVC receiver of `target_spatial_id`
+    downloads (`{S0..=target_spatial_id}` on key units, `{target_spatial_id}`
+    alone on non-key units)."""
+    return [av1_ksvc_receiver_bytes(unit, target_spatial_id) * 8
             for _, unit in ivf_frames(path.read_bytes())]
 
 
@@ -397,12 +453,14 @@ def base_decode_command(stream: Path, codec: Codec, paths: Paths,
 
 def own_base_layer(stream: Path, codec: Codec, binary: Path, layer_md5: Path, clip: Clip,
                    frames: int, coded: list[bool], scratch: Path, paths: Paths,
-                   source: ClipFrames | None = None, spatial_id: int = 0, steps: int = 1):
+                   source: ClipFrames | None = None, spatial_id: int = 0, steps: int = 1,
+                   key_mode: bool = False):
     """Our stream's lower spatial layer `spatial_id` (default the two-layer base,
     operating point 1), `steps` 2:1 steps below the full size, scored at its own
     size against the downscaled source; it must decode to the encoder's own
-    reconstruction of that layer (`layer_md5`). VP9's base-only stream is
-    `nanocodec extract --base-only`'s (written beside `stream`, removed after)."""
+    reconstruction of that layer (`layer_md5`). VP9's base-only stream (and AV1's
+    K-SVC per-receiver `S1` stream) is `nanocodec extract`'s (written beside
+    `stream`, removed after)."""
     if codec not in SVC_CODECS:
         raise ValueError(f"{codec.value} has no spatial layers")
     size = layer_size(clip, steps)
@@ -415,6 +473,16 @@ def own_base_layer(stream: Path, codec: Codec, binary: Path, layer_md5: Path, cl
             stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if extract.returncode:
             raise RuntimeError(f"{stream}: extract --base-only: {extract.stderr[-300:]}")
+    elif codec is Codec.AV1 and key_mode and spatial_id > 0:
+        op = operating_point(stream, spatial_id)
+        base_stream = stream.with_name(f"{stream.stem}.op{op}{stream.suffix}")
+        extract = subprocess.run(
+            [str(binary), "extract", "--codec", "av1", "--operating-point", str(op),
+             "--input", str(stream), "--output", str(base_stream)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if extract.returncode:
+            raise RuntimeError(
+                f"{stream}: extract --operating-point {op}: {extract.stderr[-300:]}")
     try:
         with ScaledFrames(clip, frames, scratch, paths, source, size) as scaled:
             measured, md5s = decode_scored(

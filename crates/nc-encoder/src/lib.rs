@@ -139,6 +139,6 @@ pub use rate_control::{
     RateControlConfig, RateControlError, RateControlStats, RateModel, RatePlanTrace,
 };
 pub use spatial::{
-    CombinedCbrBuffer, EnhancementIntra, MAX_SPATIAL_LAYERS, OperatingPointSpec, ScalabilityMode,
-    SpatialConfig,
+    CombinedCbrBuffer, EnhancementIntra, InterLayerMode, MAX_SPATIAL_LAYERS, OperatingPointSpec,
+    ScalabilityMode, SpatialConfig,
 };

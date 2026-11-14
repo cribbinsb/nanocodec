@@ -32,6 +32,13 @@ struct ExtractArgs {
 enum Action {
     /// Write the access units of layers up to `max_layer` to `output`.
     Keep { max_layer: u8, output: PathBuf },
+    /// Strip an AV1 spatial stream to `operating_point` (`None` = `--base-only`,
+    /// resolved from the sequence header) using normative DPB reachability
+    /// (`nc_av1::Av1StreamExtractor`) and write IVF to `output`.
+    Av1Spatial {
+        operating_point: Option<u8>,
+        output: PathBuf,
+    },
     /// Strip a VP9 spatial stream to `operating_point` (optionally guided by a
     /// `--layer-md5` sidecar CSV for temporal operating points) and write IVF
     /// to `output`.
@@ -71,6 +78,25 @@ fn parse(args: &[String]) -> Result<ExtractArgs, String> {
     };
     let has_base_only = args.iter().any(|a| a == "--base-only");
     let has_op = args.iter().any(|a| a == "--operating-point");
+    if codec == Codec::Av1 && (has_base_only || has_op) {
+        let operating_point = if has_op {
+            Some(crate::decode::parse_operating_point(
+                &get("--operating-point")?,
+                "",
+            )?)
+        } else {
+            None
+        };
+        return Ok(ExtractArgs {
+            codec,
+            temporal_layers: 1,
+            input: get("--input")?.into(),
+            action: Action::Av1Spatial {
+                operating_point,
+                output: get("--output")?.into(),
+            },
+        });
+    }
     if codec == Codec::Vp9 && (has_base_only || has_op) {
         let operating_point = if has_op {
             crate::decode::parse_operating_point(&get("--operating-point")?, "")?
@@ -135,6 +161,13 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
     match &args.action {
         Action::Keep { max_layer, output } => {
             let kept = extract(&args, *max_layer, &input)?;
+            stdio::write_all(output, &kept)
+        }
+        Action::Av1Spatial {
+            operating_point,
+            output,
+        } => {
+            let kept = extract_av1_spatial(*operating_point, &input)?;
             stdio::write_all(output, &kept)
         }
         Action::Vp9Spatial {
@@ -219,6 +252,56 @@ fn extract(args: &ExtractArgs, max_layer: u8, input: &[u8]) -> Result<Vec<u8>, S
                 Ok(())
             })?;
         }
+    }
+    Ok(output)
+}
+
+fn extract_av1_spatial(operating_point: Option<u8>, input: &[u8]) -> Result<Vec<u8>, String> {
+    let fourcc = ivf_fourcc(Codec::Av1).expect("AV1 streams are IVF");
+    let mut output = Vec::new();
+    let mut kept = 0u32;
+    let mut extractor: Option<nc_av1::Av1StreamExtractor> = None;
+    let mut first_size: Option<(usize, usize)> = None;
+    read_ivf(&mut Cursor::new(input), |header, frame| {
+        if header.fourcc() != fourcc {
+            return Err("extraction requires an AV1 IVF stream".into());
+        }
+        if output.is_empty() {
+            output.extend_from_slice(&header.bytes);
+        }
+        if extractor.is_none() {
+            let op = match operating_point {
+                Some(op) => op,
+                None => nc_av1::lowest_spatial_operating_point(frame.packet)
+                    .map_err(|e| e.to_string())?,
+            };
+            extractor = Some(nc_av1::Av1StreamExtractor::new(op).map_err(|e| e.to_string())?);
+        }
+        let ext = extractor.as_mut().expect("initialized above");
+        let Some((packet, size)) = ext
+            .extract_temporal_unit(frame.packet)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(());
+        };
+        first_size.get_or_insert(size);
+        let mut frame_hdr = *frame.header;
+        let len = u32::try_from(packet.len()).map_err(|_| "AV1 frame too large".to_string())?;
+        frame_hdr[..4].copy_from_slice(&len.to_le_bytes());
+        output.extend_from_slice(&frame_hdr);
+        output.extend_from_slice(&packet);
+        kept += 1;
+        Ok(())
+    })?;
+    if output.len() >= 32 {
+        if let Some((w, h)) = first_size
+            && let (Ok(w16), Ok(h16)) = (u16::try_from(w), u16::try_from(h))
+        {
+            output[12..14].copy_from_slice(&w16.to_le_bytes());
+            output[14..16].copy_from_slice(&h16.to_le_bytes());
+        }
+        let count = IVF_FRAME_COUNT_OFFSET..IVF_FRAME_COUNT_OFFSET + 4;
+        output[count].copy_from_slice(&kept.to_le_bytes());
     }
     Ok(output)
 }

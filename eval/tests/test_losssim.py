@@ -403,3 +403,147 @@ def test_three_layer_s2_loss_freezes_only_top_view_and_s1_loss_freezes_s1_and_s2
     assert trace_mid.screen == ["good"] * 8
     assert trace_mid.enhancement_screen == ["good"] * 8
     assert not trace_mid.top_enhancement_screen
+
+
+class KsvcThreeLayerFakeSession:
+    """Three-layer K-SVC session (`il=0:1:1` on key TUs, `il=0:0:0` on non-key TUs)."""
+
+    def __init__(self, op_max_spatial: int):
+        self.next = 0
+        self.op_max_spatial = op_max_spatial
+        self.key_requested = True
+        self.s1_repair_requested = False
+        self.s2_repair_requested = False
+        self.s0_repaired_from = 0
+        self.s1_repaired_from = 0
+        self.s2_repaired_from = 0
+        self.s0_good: set[int] = set()
+        self.s1_good: set[int] = set()
+        self.s2_good: set[int] = set()
+        self.s1_repairs: set[int] = set()
+        self.s2_repairs: set[int] = set()
+        self.layer_reports: list[tuple[int, int | None]] = []
+        self.last_spatial_info: SpatialTuInfo | None = None
+        self.reports_applied: list[tuple[int, int]] = []
+
+    def acknowledge(self, index: int, spatial_id: int | None = None) -> None:
+        pass
+
+    def report_loss(self, index: int, spatial_id: int | None = None) -> None:
+        self.reports_applied.append((self.next, index))
+        self.layer_reports.append((index, spatial_id))
+        if spatial_id is None or spatial_id == 0:
+            if index >= self.s0_repaired_from:
+                self.key_requested = True
+        elif spatial_id == 1 and index >= self.s1_repaired_from:
+            self.s1_repair_requested = True
+        elif spatial_id == 2 and index >= self.s2_repaired_from:
+            self.s2_repair_requested = True
+
+    def encode(self):
+        idx = self.next
+        self.next += 1
+        key = s1_repair = s2_repair = False
+        if self.key_requested:
+            key = True
+            self.key_requested = self.s1_repair_requested = self.s2_repair_requested = False
+            self.s0_repaired_from = self.s1_repaired_from = self.s2_repaired_from = idx
+        else:
+            if self.s1_repair_requested:
+                s1_repair = True
+                self.s1_repair_requested = False
+                self.s1_repaired_from = idx
+                self.s1_repairs.add(idx)
+            if self.s2_repair_requested:
+                s2_repair = True
+                self.s2_repair_requested = False
+                self.s2_repaired_from = idx
+                self.s2_repairs.add(idx)
+        s0_b, s1_b, s2_b = (2000, 2000, 2000) if key else (500, 900, 1100)
+        il_refs = (0, 1, 1) if key else (0, 0, 0)
+        self.last_spatial_info = SpatialTuInfo(
+            self.op_max_spatial, 0, s0_b, s1_b, s2_bytes=s2_b, num_layers=3,
+            s1_repair=s1_repair, s2_repair=s2_repair, il_refs=il_refs,
+        )
+        return idx, ("key" if key else "inter"), 0, s0_b + s1_b + s2_b, (() if key else (idx - 1,))
+
+    def receive_spatial(self, index: int, s0_arrived: bool, s1_arrived: bool,
+                        s2_arrived: bool | None = None) -> str:
+        assert s2_arrived is not None
+        key = index == self.s0_repaired_from
+        if not key and self.op_max_spatial == 2:
+            # Selective forwarder dropped S0 and S1 before the link on every non-key TU!
+            assert not s0_arrived and not s1_arrived
+            if not s2_arrived:
+                return "lost"
+            if index in self.s2_repairs or (index - 1) in self.s2_good:
+                self.s2_good.add(index)
+                return "good"
+            return "missing-reference"
+        if not key and self.op_max_spatial == 1:
+            assert not s0_arrived and not s2_arrived
+            if not s1_arrived:
+                return "lost"
+            if index in self.s1_repairs or (index - 1) in self.s1_good:
+                self.s1_good.add(index)
+                return "good"
+            return "missing-reference"
+        if not s0_arrived:
+            return "lost"
+        self.s0_good.add(index)
+        if self.op_max_spatial == 0:
+            return "good"
+        if not s1_arrived:
+            return "base-only"
+        self.s1_good.add(index)
+        if self.op_max_spatial == 1:
+            return "good"
+        if not s2_arrived:
+            return "s1-only"
+        self.s2_good.add(index)
+        return "good"
+
+    def show(self) -> None:
+        pass
+
+
+def test_ksvc_selective_forwarding_recovers_s2_and_s1_without_lower_layer_resend():
+    # Top 720p receiver (`op_max_spatial == 2`): on non-key TUs only S2 is sent,
+    # and an S2 loss on TU 2 triggers `loss 2 2` (NOT a whole-stream keyframe!)
+    # and recovers on TU 4 via standalone S2 repair without resending S0 or S1.
+    s2_session = KsvcThreeLayerFakeSession(op_max_spatial=2)
+    # Key at TU 0 takes 2 S2 packets, TU 1 takes 1 -> draw 3 is TU 2's S2 packet.
+    s2_draws = iter([False, False, False, True] + [False] * 20)
+
+    class S2Loss:
+        def lost(self) -> bool:
+            return next(s2_draws, False)
+
+    trace_s2 = run_loop(
+        s2_session, 8, 30.0, AlwaysLost() if False else NoLoss(),
+        Feedback(25.0, NoLoss()),
+        enhancement_forward=NoLoss(), top_enhancement_forward=S2Loss(),
+    )
+    stats_s2 = frame_stats(trace_s2, 30.0, 300)
+    assert s2_session.layer_reports == [(2, 2)]
+    assert stats_s2["keys"] == 1 and stats_s2["response_keys"] == 0
+    assert stats_s2["s2_repairs"] == 1 and stats_s2["enhancement_repairs"] == 0
+    assert all(f.packets == 0 and f.enh_packets == 0 for f in trace_s2.frames[1:])
+    assert trace_s2.screen == [
+        "good", "good", "frozen", "frozen", "good", "good", "good", "good"]
+
+    # Middle 360p receiver (`op_max_spatial == 1`): 100% S0 loss on non-key TUs has
+    # zero effect because S0 is dropped before the link on non-key TUs!
+    s1_session = KsvcThreeLayerFakeSession(op_max_spatial=1)
+    s0_nonkey_loss = iter([False, False] + [True] * 20)
+
+    class NonKeyS0Loss:
+        def lost(self) -> bool:
+            return next(s0_nonkey_loss, True)
+
+    trace_s1 = run_loop(
+        s1_session, 8, 30.0, NonKeyS0Loss(), Feedback(25.0, NoLoss()),
+        enhancement_forward=NoLoss(),
+    )
+    assert trace_s1.screen == ["good"] * 8
+    assert trace_s1.enhancement_screen == ["good"] * 8

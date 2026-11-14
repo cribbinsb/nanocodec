@@ -107,9 +107,9 @@ from .realuse import LADDER_KBPS, Runner, main_clips, natural_val, own_family, p
 from .slots import cpu_slots
 from .stages import balanced_parts
 from .svcbase import (BASE_RATE_SHARE, THREE_LAYER_RATE_SHARES, Md5Sink, ScaledFrames,
-                      av1_operating_point_bits, base_size, decode_scored, ivf_frames,
-                      layer_size, operating_point, own_base_layer, per_input, split_rate,
-                      split_rate3, stream_layer_bits, vp9_first_frames, write_ivf)
+                      av1_ksvc_receiver_bits, av1_operating_point_bits, base_size, decode_scored,
+                      ivf_frames, layer_size, operating_point, own_base_layer, per_input,
+                      split_rate, split_rate3, stream_layer_bits, vp9_first_frames, write_ivf)
 from .sweep import IVF_FILE_HEADER_BYTES
 from .yuv import YuvFormat
 
@@ -122,8 +122,9 @@ from .yuv import YuvFormat
 #: 50/70/100 and 30.0 dB at 60/80/100, against 30.9 dB for L2T1.
 TEMPORAL_SHARES_L2T3 = (0.6, 0.8, 1.0)
 #: svc_encoder_rtc layering modes by (spatial, temporal) layers
-#: (examples/svc_encoder_rtc.cc set_layer_pattern: 5 L2T1, 7 L2T3, 6 L3T1, 9 L3T3).
+#: (examples/svc_encoder_rtc.cc set_layer_pattern: 5 L2T1, 7 L2T3, 6 L3T1, 9 L3T3, 10 L3T3_KEY).
 AOM_LAYERING_MODES = {(2, 1): 5, (2, 3): 7, (3, 1): 6, (3, 3): 9}
+AOM_KEY_LAYERING_MODES = {(3, 3): 10}
 #: svc_encoder_rtc's quantizer ceiling: the full range, as aomenc's default (the
 #: main chart's libaom points). The example's own 52 cannot reach the low rungs:
 #: pan_jaad_0101 at 600 kbps L2T1 came out at 2.4x the target (1.0x with 63).
@@ -171,7 +172,8 @@ LOWEST_ANCHOR = ("nanocodec-av1-180p", "AV1 Default, 180p alone")
 class SvcPoint:
     """One SVC chart point: `kind` ours / aom / vpx / simulcast, its temporal
     layers, the reference program's speed (aom, vpx), our preset and extra
-    --param pairs, the codec, and its spatial layers (2, or 3: AV1 only)."""
+    --param pairs, the codec, its spatial layers (2 or 3), and whether it uses
+    K-SVC (`key_mode`: inter-layer prediction on key temporal units only)."""
     name: str
     label: str
     kind: str
@@ -181,6 +183,7 @@ class SvcPoint:
     preset: str = SVC_PRESET
     codec: Codec = Codec.AV1
     layers: int = 2
+    key_mode: bool = False
 
     @property
     def ours(self) -> bool:
@@ -226,6 +229,27 @@ POINTS = (
     SvcPoint("libaom-svc-cpu10-L3T1", "libaom SVC L3T1 rt 10", "aom", 1, 10, layers=3),
     SvcPoint("libaom-svc-cpu8-L3T3", "libaom SVC L3T3 rt 8", "aom", 3, 8, layers=3),
     SvcPoint("libaom-svc-cpu10-L3T3", "libaom SVC L3T3 rt 10", "aom", 3, 10, layers=3),
+    SvcPoint(f"nanocodec-av1@{SVC_PRESET}+L2T1_KEY", "AV1 SVC L2T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), key_mode=True),
+    SvcPoint(f"nanocodec-av1@{SVC_PRESET}+L2T3_KEY", "AV1 SVC L2T3_KEY", "ours", 3,
+             params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
+             key_mode=True),
+    SvcPoint(f"nanocodec-av1@{SVC_FAST_PRESET}+L2T1_KEY", "AV1 SVC Fast L2T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=SVC_FAST_PRESET,
+             key_mode=True),
+    SvcPoint(f"nanocodec-av1@{SVC3_PRESET}+L3T1_KEY", "AV1 SVC L3T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=SVC3_PRESET, layers=3,
+             key_mode=True),
+    SvcPoint(f"nanocodec-av1@{SVC3_PRESET}+L3T3_KEY", "AV1 SVC L3T3_KEY", "ours", 3,
+             params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
+             preset=SVC3_PRESET, layers=3, key_mode=True),
+    SvcPoint(f"nanocodec-av1@{SVC3_FAST_PRESET}+L3T1_KEY", "AV1 SVC Fast L3T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=SVC3_FAST_PRESET, layers=3,
+             key_mode=True),
+    SvcPoint("libaom-svc-cpu8-L3T3_KEY", "libaom SVC L3T3_KEY rt 8", "aom", 3, 8, layers=3,
+             key_mode=True),
+    SvcPoint("libaom-svc-cpu10-L3T3_KEY", "libaom SVC L3T3_KEY rt 10", "aom", 3, 10, layers=3,
+             key_mode=True),
 )
 #: The realuse-measured points: (family, label).
 LINES = ((ANCHOR, "x264 medium (720p)"), (SINGLE_LAYER, "AV1 Default 720p (single layer)"),
@@ -307,6 +331,8 @@ class SvcBench:
             parts += [point.layers, THREE_LAYER_RATE_SHARES]
         if point.kind == "aom" and point.temporal_layers == 3:
             parts += [list(TEMPORAL_SHARES_L2T3)]
+        if point.key_mode:  # full-SVC identities (and their caches) stay as they were
+            parts.append("key")
         return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
 
     def result_path(self, point: SvcPoint, clip: Clip, kbps: int) -> Path:
@@ -362,9 +388,11 @@ class SvcBench:
         binary = self.binary_of(point.name)
         # The 360p operating point (op 1): the base of two layers, S1 of three.
         base = own_base_layer(stream, point.codec, binary, md5, clip, self.frames, coded,
-                              scratch, self.paths, spatial_id=point.layers - 2)
+                              scratch, self.paths, spatial_id=point.layers - 2,
+                              key_mode=point.key_mode)
         lowest = own_base_layer(stream, point.codec, binary, md5, clip, self.frames, coded,
-                                scratch, self.paths, steps=2) if point.layers == 3 else None
+                                scratch, self.paths, steps=2,
+                                key_mode=point.key_mode) if point.layers == 3 else None
         return self.result(point, clip, kbps, stream, outcome.measurement, base, coded, lowest)
 
     def _aom(self, point: SvcPoint, clip: Clip, kbps: int, scratch: Path) -> dict:
@@ -439,10 +467,11 @@ class SvcBench:
         rates = point.layer_rates(kbps)
         layers = [round(rate * share) for rate in rates
                   for share in (TEMPORAL_SHARES_L2T3 if point.temporal_layers == 3 else (1.0,))]
+        lm_table = AOM_KEY_LAYERING_MODES if point.key_mode else AOM_LAYERING_MODES
         return [str(self.aom_tool()), "-w", str(clip.width), "-h", str(clip.height),
                 "-t", f"{den}/{num}", "-k", str(self.intra),
                 "-sl", str(point.layers), "-tl", str(point.temporal_layers),
-                "-lm", str(AOM_LAYERING_MODES[(point.layers, point.temporal_layers)]),
+                "-lm", str(lm_table[(point.layers, point.temporal_layers)]),
                 "-sp", str(point.speed), "-aq", "1", "-th", "1", "--drop-frame=0",
                 "--error-resilient=0", "--test-decode=0", f"--max-q={AOM_MAX_Q}",
                 "-b", str(sum(rates)), "-bl", ",".join(map(str, layers)),
@@ -548,20 +577,26 @@ class SvcBench:
         coded = coded or [True] * self.frames
         totals, bases = stream_layer_bits(stream, point.codec)
         lowest_bits = None
-        if point.layers == 3:  # the 360p operating point carries S0 and S1
-            lowest_bits, bases = bases, av1_operating_point_bits(stream, 1)
+        if point.layers == 3:  # full SVC carries S0+S1; K-SVC carries S0+S1 on key, S1 on inter
+            lowest_bits = bases
+            bases = (av1_ksvc_receiver_bits(stream, 1) if point.key_mode
+                     else av1_operating_point_bits(stream, 1))
+        top_bits = (per_input(av1_ksvc_receiver_bits(stream, point.layers - 1), coded)
+                    if point.key_mode else None)
         keys = [f.frame_type == "I" for f in
                 with_held_frames(probe_frames(stream, self.paths), coded)]
         return self.summary(point, clip, kbps, per_input(totals, coded),
                             per_input(bases, coded), keys, full, base,
-                            (per_input(lowest_bits, coded), lowest) if lowest else None)
+                            (per_input(lowest_bits, coded), lowest) if lowest else None,
+                            top_bits=top_bits)
 
     def summary(self, point: SvcPoint, clip: Clip, kbps: int, totals: list[int],
-                bases: list[int], keys: list[bool], full, base, lowest=None) -> dict:
+                bases: list[int], keys: list[bool], full, base, lowest=None,
+                top_bits: list[int] | None = None) -> dict:
         """The realuse result layout (cbr.summarize) for operating point 0 at the total
         rate, with the 360p operating point's own result (at its own rate) under
-        "base" and, for three layers, the 180p one's (`lowest`: its bits and
-        measurement) under "lowest"."""
+        "base", a three-layer stream's 180p result under "lowest", and (for K-SVC)
+        the 720p receiver's own downloaded stream rate under "top_view"."""
         if not len(totals) == len(bases) == len(keys) == self.frames:
             raise RuntimeError(f"{point.name} {clip.name} {kbps}: {len(totals)} temporal "
                                f"units, expected {self.frames}")
@@ -577,9 +612,12 @@ class SvcBench:
             return result
         rates = point.layer_rates(kbps)
         result = one(kbps, totals, full)
-        result["base"] = one(sum(rates[:-1]), bases, base)
+        base_target = rates[-2] if point.key_mode else sum(rates[:-1])
+        result["base"] = one(base_target, bases, base)
         if lowest:
             result["lowest"] = one(rates[0], *lowest)
+        if top_bits is not None:
+            result["top_view"] = one(rates[-1], top_bits, full)
         if point.ours:
             result["binary_commit"] = buildinfo.info_of(self.binary_of(point.name))["commit"]
         return result
@@ -656,10 +694,12 @@ def run_jobs(bench: SvcBench, jobs: list[tuple], workers: int) -> dict:
 
 
 def svc_curves(results: dict, points: list[SvcPoint], clips: list[Clip], frames: int
-               ) -> tuple[dict, dict, dict]:
-    """(op 0 curves, 360p operating point curves, three-layer 180p operating point
-    curves) as {(family, clip): [point terms]}, rungs in rate order."""
+               ) -> tuple[dict, dict, dict, dict]:
+    """(op 0 total-rate curves, 720p receiver-rate curves, 360p operating point
+    curves, three-layer 180p operating point curves) as {(family, clip): [point terms]},
+    rungs in rate order."""
     full: dict = {}
+    top_view: dict = {}
     base: dict = {}
     lowest: dict = {}
     for point in points:
@@ -668,11 +708,13 @@ def svc_curves(results: dict, points: list[SvcPoint], clips: list[Clip], frames:
                           if n == point.name and c == clip.name)
             window = frames / clip.fps
             full[(point.name, clip.name)] = [point_terms(r, window) for _, r in rows]
+            top_view[(point.name, clip.name)] = [
+                point_terms(r.get("top_view", r), window) for _, r in rows]
             base[(point.name, clip.name)] = [point_terms(r["base"], window) for _, r in rows]
             if point.layers == 3:
                 lowest[(point.name, clip.name)] = [point_terms(r["lowest"], window)
                                                    for _, r in rows]
-    return full, base, lowest
+    return full, top_view, base, lowest
 
 
 def line_families(bench: SvcBench, paths: Paths) -> list[Family]:
@@ -685,6 +727,7 @@ def line_families(bench: SvcBench, paths: Paths) -> list[Family]:
 class Measured:
     """Everything the chart is drawn from."""
     full: dict
+    top_view: dict
     base: dict
     lowest: dict
     families: list[Family]
@@ -707,7 +750,7 @@ def measure_all(args: argparse.Namespace, clips: list[Clip], points: list[SvcPoi
     curves = runner.measure("svc chart lines", lines_f, clips, FRAMES, budgeted=False) \
         if lines_f else {}
     results = run_jobs(bench, jobs_for(points, clips), args.workers)
-    full, base, lowest = svc_curves(results, points, clips, FRAMES)
+    full, top_view, base, lowest = svc_curves(results, points, clips, FRAMES)
     curves.update(full)
     families = lines_f + [Family(p.name, p.codec, bench.binary_of(p.name), own=p.ours)
                           for p in points]
@@ -719,15 +762,15 @@ def measure_all(args: argparse.Namespace, clips: list[Clip], points: list[SvcPoi
         for key, terms in extra.items():
             curves[key] = curves[key] + terms
         results.update(run_jobs(bench, jobs_for(points, low, low_ladder), args.workers))
-        full, base, lowest = svc_curves(results, points, clips, FRAMES)
+        full, top_view, base, lowest = svc_curves(results, points, clips, FRAMES)
         curves.update(full)
     labels = dict(LINES) | {p.name: p.label for p in points}
     for key in list(curves):  # rungs in rate order for the BD curves
         curves[key] = sorted(curves[key], key=lambda t: t["kbps"])
-    for lower in (base, lowest):
+    for lower in (top_view, base, lowest):
         for key in list(lower):
             lower[key] = sorted(lower[key], key=lambda t: t["kbps"])
-    return Measured(curves, base, lowest, families, labels, low, results)
+    return Measured(curves, top_view, base, lowest, families, labels, low, results)
 
 
 def selected_points(spec: str | None) -> list[SvcPoint]:
@@ -1100,6 +1143,20 @@ def with_speed(points: list[ChartPoint], timing: dict | None, timed: dict[str, f
     return out, estimated
 
 
+def top_view_points(measured: Measured, clips: list[Clip], points: list[SvcPoint]
+                    ) -> list[ChartPoint]:
+    """Each SVC point's 720p receiver view (operating point 0 at the wire rate its
+    receiver downloads: all layers in full SVC, `{S0..=S_top}` on key units and
+    `{S_top}` alone on non-key units in K-SVC) vs its codec's single-layer Default
+    at 720p."""
+    curves = dict(measured.top_view)
+    for codec, single in SINGLE_LAYERS.items():
+        for clip in clips:
+            curves[(single, clip.name)] = measured.full[(single, clip.name)]
+    return lower_points(curves, clips, [p for p in points if p.kind != "simulcast"],
+                        lambda p: SINGLE_LAYERS[p.codec])
+
+
 def base_points(measured: Measured, clips: list[Clip], points: list[SvcPoint]
                 ) -> list[ChartPoint]:
     """Each point's 360p operating point (operating point 1, at its own rate) vs its
@@ -1142,16 +1199,19 @@ def lower_points(curves: dict, clips: list[Clip], points: list[SvcPoint], anchor
 def base_summary(measured: Measured, name: str, key: str = "base"
                  ) -> tuple[float, float, float]:
     """(mean share of the total rate, mean PSNR-YUV, mean VMAF v1) of a point's
-    lower operating point `key` ("base": 360p; "lowest": a three-layer 180p)."""
+    operating point `key` ("base": 360p; "lowest": a three-layer 180p;
+    "top_view": 720p receiver's downloaded view)."""
     rows = [r for (n, _, _), r in measured.results.items() if n == name]
-    share = sum(r[key]["kbps"] / r["kbps"] for r in rows) / len(rows)
-    return (share, sum(r[key]["psnr_yuv"] for r in rows) / len(rows),
-            sum(r[key]["vmaf_v1"] for r in rows) / len(rows))
+    sub = [r.get(key, r) if key == "top_view" else r[key] for r in rows]
+    share = sum(s["kbps"] / r["kbps"] for s, r in zip(sub, rows)) / len(rows)
+    return (share, sum(s["psnr_yuv"] for s in sub) / len(sub),
+            sum(s["vmaf_v1"] for s in sub) / len(sub))
 
 
-def markdown(points: list[ChartPoint], x86: list[ChartPoint], bases: list[ChartPoint],
-             lowest: list[ChartPoint], measured: Measured, timing: dict | None, excluded,
-             meta: str, estimated: dict[str, set[str]]) -> str:
+def markdown(points: list[ChartPoint], x86: list[ChartPoint], top_views: list[ChartPoint],
+             bases: list[ChartPoint], lowest: list[ChartPoint], measured: Measured,
+             timing: dict | None, excluded, meta: str,
+             estimated: dict[str, set[str]]) -> str:
     on_x86 = {p.family: p for p in x86}
 
     def speed_cell(value: float | None, family: str, column: str, spec: str, unit: str) -> str:
@@ -1201,8 +1261,9 @@ def markdown(points: list[ChartPoint], x86: list[ChartPoint], bases: list[ChartP
               f"Jetson column applies the x86 ratio to the Jetson's timed fps.\n",
               "## 360p operating point (operating point 1)\n",
               "360p output against the source downscaled to 360p (ffmpeg Lanczos), at the "
-              "operating point's own rate (what a 360p receiver gets: the base layer of two, "
-              "the 180p and 360p layers of three), as BD-J against the same codec's Default "
+              "operating point's own rate (what a 360p receiver gets: the base layer of two; "
+              "the 180p and 360p layers of three in full SVC, or `{S0, S1}` on key units and "
+              "`{S1}` alone on non-key units in KEY modes), as BD-J against the same codec's Default "
               "coded alone at 360p (the two-layer simulcast's low stream): AV1 points against "
               "AV1 Default, VP9 points against VP9 Default.\n",
               "| Encoder | base BD-J | base BD-PSNR-YUV | base BD-VMAF v1 | base share of total "
@@ -1237,6 +1298,23 @@ def markdown(points: list[ChartPoint], x86: list[ChartPoint], bases: list[ChartP
     share, psnr, vmaf = base_summary(measured, simulcast3.name, "lowest")
     lines.append(f"| {LOWEST_ANCHOR[1]} | +0.0% | +0.0% | +0.0% | "
                  f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | |")
+    lines += ["", "## 720p receiver view (operating point 0 at its own downloaded rate)\n",
+              "720p output against the source at the wire rate a 720p receiver downloads "
+              "(all layers in full SVC; `{S0..=S_top}` on key units and `{S_top}` alone on "
+              "non-key units in KEY modes), as BD-J against the same codec's single-layer "
+              "Default at 720p.\n",
+              "| Encoder | 720p view BD-J | 720p view BD-PSNR-YUV | 720p view BD-VMAF v1 | "
+              "720p share of total rate | mean 720p PSNR-YUV | mean 720p VMAF v1 | clips |",
+              "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for codec, single in SINGLE_LAYERS.items():
+        for t in sorted((t for t in top_views if codec_of[t.family] is codec),
+                        key=lambda p: (p.bd_j is None, p.bd_j or 0)):
+            share, psnr, vmaf = base_summary(measured, t.family, "top_view")
+            lines.append(f"| {t.label} | {fmt(t.bd_j)} | {fmt(t.bd_psnr)} | {fmt(t.bd_vmaf)} | "
+                         f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | "
+                         f"{t.scored}/{t.clips} |")
+        single_label = dict(LINES)[single]
+        lines.append(f"| {single_label} | +0.0% | +0.0% | +0.0% | 100% | | | |")
     lines += ["", "## Method\n",
               f"- Every two-layer point targets the total rung with {BASE_RATE_SHARE:.0%} "
               "for the base layer (our `spatial.base_rate_share` default; our encoder adapts "
@@ -1330,6 +1408,7 @@ def render(args: argparse.Namespace) -> None:
     x86, x86_estimated = with_speed(points, timing, timed_fps(out, X86.column), X86.column)
     estimated = {JETSON.column: jetson_estimated, X86.column: x86_estimated}
     used = [c for c in clips if c.name not in {e.clip for e in excluded}]
+    top_views = top_view_points(measured, used, list(POINTS))
     bases = base_points(measured, used, list(POINTS))
     lowest = lowest_points(measured, used, list(POINTS))
     commit = buildinfo.info_of(Path(args.binary).resolve())["commit"]
@@ -1340,8 +1419,8 @@ def render(args: argparse.Namespace) -> None:
     meta = (f"Updated {datetime.date.today().isoformat()}, build {commit[:8]}{others}; libaom "
             f"svc_encoder_rtc v3.15.3, libvpx vp9_spatial_svc_encoder v1.16.0; {timed_x86} "
             "(see the notes)")
-    (out / f"{OUTPUT_STEM}.md").write_text(markdown(jetson, x86, bases, lowest, measured,
-                                                    timing, excluded, meta, estimated))
+    (out / f"{OUTPUT_STEM}.md").write_text(markdown(jetson, x86, top_views, bases, lowest,
+                                                    measured, timing, excluded, meta, estimated))
     (out / f"{OUTPUT_STEM}.csv").write_text(csv_rows(jetson, x86, bases, lowest, measured))
     if timing:
         (out / f"{OUTPUT_STEM}.svg").write_text(svg_chart(

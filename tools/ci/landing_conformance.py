@@ -229,12 +229,13 @@ def cases(codecs: list[Codec]) -> list[Case]:
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
-    # Spatial presets (av1-svc*, vp9-svc*): LnT1 and LnT3 at their own layer count
-    # n, every operating point.
+    # Spatial presets (av1-svc*, vp9-svc*): LnT1 and LnT3 (plus KEY modes on AV1)
+    # at their own layer count n, every operating point.
     base += [Case(codec, preset, f"svc-l{layers}{mode}-{clip}-{rate}")
              for codec in codecs for preset in shipped_presets(codec)
              if (layers := spatial_layers(preset)) > 1
-             for mode in ("t1", "t3") for clip in ("crowd", "pan", "lowlight")
+             for mode in ("t1", "t3", *(("t1_key", "t3_key") if codec is Codec.AV1 else ()))
+             for clip in ("crowd", "pan", "lowlight")
              for rate in ("mid", "starved")]
     for svc_codec in (Codec.AV1, Codec.VP9):
         if svc_codec in codecs:
@@ -252,15 +253,22 @@ def cases(codecs: list[Codec]) -> list[Case]:
                      Case(svc_codec, "default", "svc-l2t2-crowd-s1loss"),
                      Case(svc_codec, "default", "svc-480p30_720p5-crowd720p5-s1loss")]
     if Codec.AV1 in codecs:
-        # Three-layer AV1 SVC: (L3T1, L3T2, L3T3) x 3 clips x 2 rates, plus
-        # custom non-2:1 scales, S2->S1->TU frame dropping, and S1 / S2 loss repair.
+        # Three-layer AV1 SVC and K-SVC (L2T1_KEY..L3T3_KEY) x 3 clips x 2 rates,
+        # plus custom non-2:1 scales, S2->S1->TU frame dropping, and S1 / S2 loss repair.
         base += [Case(Codec.AV1, "default", f"svc-{mode}-{clip}-{rate}")
-                 for mode in ("l3t1", "l3t2", "l3t3")
+                 for mode in ("l3t1", "l3t2", "l3t3",
+                              "l2t1_key", "l2t2_key", "l2t3_key",
+                              "l3t1_key", "l3t2_key", "l3t3_key")
                  for clip in ("crowd", "pan", "lowlight")
                  for rate in ("mid", "starved")]
         base += [Case(Codec.AV1, "default", "svc-l3t2-pan-drop"),
                  Case(Codec.AV1, "default", "svc-l3t2-crowd-s1loss"),
                  Case(Codec.AV1, "default", "svc-l3t2-crowd-s2loss"),
+                 Case(Codec.AV1, "default", "svc-l2t2_key-pan-drop"),
+                 Case(Codec.AV1, "default", "svc-l2t2_key-crowd-s1loss"),
+                 Case(Codec.AV1, "default", "svc-l3t2_key-pan-drop"),
+                 Case(Codec.AV1, "default", "svc-l3t2_key-crowd-s1loss"),
+                 Case(Codec.AV1, "default", "svc-l3t2_key-crowd-s2loss"),
                  Case(Codec.AV1, "default", "svc-l3custom-pan-mid")]
     return base
 

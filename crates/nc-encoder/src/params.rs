@@ -117,6 +117,12 @@ impl ParamOverrides {
         self.0.contains_key(name)
     }
 
+    /// The explicit override of `name`, if this map has one.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<f32> {
+        self.0.get(name).copied()
+    }
+
     /// These overrides with every input frame coded (`hold.enable` = 0):
     /// for tests that encode a repeated picture to exercise coding itself.
     #[must_use]
@@ -972,8 +978,22 @@ param_group! {
             "three-layer fraction of the total CBR target capped to the lowest spatial layer S0 (180p); unspent inter bits flow upward to S1 and S2",
         s1_rate_share: 0.26, [0.1, 0.7],
             "three-layer fraction of the total CBR target capped to the middle spatial layer S1 (360p); unspent inter bits flow upward to S2",
-        inter_layer: 1.0, [0.0, 1.0],
-            "1 lets each enhancement layer predict from the same temporal unit's lower-layer picture upscaled (AV1 §7.11.3.3); 0 codes each layer from its own temporal history only",
+        // K-SVC nominal rate shares (`spatial.inter_layer = 2`, 3-clip J_real
+        // screen on static_otw_homes390, pan_jaad_0101, crowd_pp22_051):
+        // - 2-layer `0.32` (vs `0.35` / `0.28`): 720p view +5.50% (+5.90% / +5.23%),
+        //   360p view -13.44% (-13.32% / -12.11%), total vs simulcast -18.58%
+        //   (-18.18% / -19.01%).
+        // - 3-layer `(0.08, 0.24)` (vs `(0.08, 0.26)` / `(0.07, 0.22)`): 720p view
+        //   +4.21% (+3.76% / +6.76%), 360p view -8.43% (-7.53% / -7.00%), 180p view
+        //   -1.62% (-1.77% / +0.93%), total vs simulcast3 -11.59% (-10.50% / -11.55%).
+        key_base_rate_share: 0.32, [0.1, 0.8],
+            "two-layer K-SVC (`inter_layer = 2`) fraction of the total CBR target capped to S0: without P-frame inter-layer prediction S1 does not amortise S0 inter bits, so a slightly lower cap than full SVC balances the 360p and 720p views",
+        key_s0_rate_share: 0.08, [0.05, 0.6],
+            "three-layer K-SVC (`inter_layer = 2`) fraction of the total CBR target capped to S0 (180p); unspent static inter bits flow upward to S1 and S2",
+        key_s1_rate_share: 0.24, [0.1, 0.7],
+            "three-layer K-SVC (`inter_layer = 2`) fraction of the total CBR target capped to S1 (360p), which a 360p K-SVC viewer receives without S0 on non-key units",
+        inter_layer: 1.0, [0.0, 2.0],
+            "inter-layer prediction mode: 1 = full SVC (every TU, AV1 §7.11.3.3); 2 = KEY / K-SVC (key TUs only, single-layer temporal on P-frames); 0 = independent layers",
         // Speed lever (svc-fast, 2026-11-12): the proxy is a search aid only
         // (the backend predicts from the base picture by AV1 §7.11.3.3), and
         // the Lanczos-3 upscale was ~10% of an av1-svc-fast encode's instructions.

@@ -167,7 +167,22 @@ are needed: each worker has its own ordinary WASM memory.
   the pixels are unsmoothed and the overlay stays sharp. Hovering a block (or tapping
   it) shows its record. The magnifier draws the overlay too. With analysis on, the
   decode worker copies the records out of WASM memory each frame: see
-  `docs/handoff/stream-analysis.md` for the decode cost.
+  `docs/handoff/stream-analysis.md` for the decode cost. Switching analysis on or
+  off does not restart: the comparison keeps its instant (paused stays paused,
+  playing continues) while each view's decoder moves to the other module and
+  decodes the view's stream again from its last key frame to the picture on
+  screen (live encoders keep running; a live view keeps the packets since its
+  last key frame for this, up to 64 MiB, past which the switch restarts).
+  **PSNR map** (`error-map.js`; nc-web `error_map`, analysis build only): each
+  block of a fixed grid (16×16 luma, 8×8 from 4× zoom; the same blocks for every
+  codec, unlike each codec's own partition) coloured by its PSNR against the exact
+  source frame the view coded, on a fixed scale (red 20 dB or less, blue 50 dB or
+  more; identical blocks are 100 dB, the cap, drawn as the top), for Y, Cb or Cr.
+  The statistics give the frame's PSNR of each plane and PSNR-YUV (6:1:1, the same
+  formula as the PSNR-YUV number) and the source tick compared; the hover record
+  gives the block's. The decode worker computes it (nc-dsp's SSE kernel per block,
+  dB in JS). `web/tests/psnr-map.py` checks every value against a native decode
+  of the same access units scored against the demo's own source frames.
 - **Stop:** ends both workers and releases camera tracks. Switching away from
   the tab also stops capture; press Start to resume.
 - **Download:** AV1, VP9 and AV2 are IVF with captured media timestamps; H.264/HEVC/VVC are Annex-B

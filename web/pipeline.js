@@ -17,6 +17,15 @@
 // decoded it, so each view shows the newest tick it has, and views at the same
 // rate show the same tick. The page captures nothing while the queue is full
 // (`full`), which bounds the added latency.
+//
+// Switching analysis on or off (analysis-view.js) changes only the decoders'
+// module (`switchDecoders`): once no capture is in flight, each view starts a
+// decode worker on the other build and has it decode the view's stream again
+// from its last key frame up to the picture on screen, so the new decoder holds
+// the same references and shows the same picture (the bitstream is unchanged).
+// Live encoders keep running and are given the new decoder's port. A live view
+// keeps the packets since its last key frame for this (`sinceKey`); a
+// pre-encoded view has its whole stream.
 import { codesTick, tickAt, tickMs } from './timeline.js';
 import { framesToDecode, streamFrameAtTick } from './reference.js';
 import { SourcePicture } from './colour.js';
@@ -32,6 +41,13 @@ import { compiledAnalysisModule, compiledModule } from './wasm.js';
 export const MAX_FRAMES_IN_FLIGHT = 4;
 const START_TIMEOUT_MS = 30000;
 const LOAD_FAILED = 'Could not load the WASM codec. Build the demo with tools/web/build.sh, then serve the web directory over HTTP.';
+/**
+ * A live view keeps at most this many bytes of packets since its last key frame
+ * for re-decoding (one key interval: 30 s at the default 300 kbps is ~1 MiB).
+ * Past it the view cannot switch decoders in place until its next key frame,
+ * and switching analysis restarts the comparison instead.
+ */
+const MAX_REPLAY_BYTES = 64 * 1024 * 1024;
 
 const startWorker = script => new Worker(new URL(script, import.meta.url), { type: 'module' });
 
@@ -41,22 +57,70 @@ class View {
     this.panel = panel;
     this.workers = workers;
     this.decoder = workers.at(-1);
-    const failed = event => onFailure(new Error(event.message || LOAD_FAILED));
+    this.onMessage = onMessage;
+    this.failed = event => onFailure(new Error(event.message || LOAD_FAILED));
     this.ready = Promise.all(workers.map(worker => new Promise(resolve => {
       worker.onmessage = ({ data }) => { if (data.type === 'ready') resolve(); else onMessage(this, data); };
-      worker.onerror = failed;
+      worker.onerror = this.failed;
     })));
   }
+  /** Whether analysis is wanted for this view (analysis-view.js). */
+  get analysisWanted() { return Boolean(this.panel.analysis?.enabled); }
   /**
    * Start the decode worker on `port`, where packets will arrive, with the
    * compiled codec module: the analysis build when the view's analysis is on
-   * (analysis-view.js; switching it restarts the comparison).
+   * (analysis-view.js). `warmUp`: run the decoder's start-up warm-up (warmup.js).
    */
-  initDecoder(port, { wasmModule, analysisModule }) {
-    const analysis = Boolean(this.panel.analysis?.enabled);
-    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, analysis,
-      wasmModule: analysis ? analysisModule : wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
+  initDecoder(port, { wasmModule, analysisModule }, warmUp = true) {
+    this.analysing = this.analysisWanted;
+    this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, analysis: this.analysing, warmUp,
+      wasmModule: this.analysing ? analysisModule : wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
   }
+  /**
+   * Replace the decode worker with one on the module analysis now wants, and
+   * have it decode `replayFrames()` again; resolves to the result of the last of
+   * them (the picture on screen, decode-worker.js 'replayed'), or null when the
+   * view has shown nothing yet. Only while no capture is in flight.
+   */
+  async switchDecoder(modules) {
+    const old = this.decoder, worker = startWorker('./decode-worker.js');
+    const channel = new MessageChannel();
+    const replayed = new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) => {
+        if (data.type === 'ready') this.sendReplay(worker, resolve);
+        else if (data.type === 'replayed') resolve(data);
+        else if (data.type === 'error') reject(new Error(`Version ${this.panel.letter}: ${data.message}`));
+      };
+      worker.onerror = event => reject(new Error(event.message || LOAD_FAILED));
+    });
+    const analysing = this.analysing;
+    this.decoder = worker;
+    this.initDecoder(channel.port1, modules, false);
+    let result;
+    try { result = await replayed; } catch (error) {
+      worker.terminate(); this.decoder = old; this.analysing = analysing;
+      throw error;
+    }
+    worker.onmessage = ({ data }) => this.onMessage(this, data);
+    worker.onerror = this.failed;
+    old.terminate();
+    this.workers[this.workers.length - 1] = worker;
+    await this.connectDecoder(channel.port2);
+    return result.empty ? null : result;
+  }
+  /** Post the frames to decode again to a new decode worker, with the shown frame's source for its PSNR. */
+  sendReplay(worker, resolve) {
+    const frames = this.replayFrames(), original = this.panel.original;
+    if (!frames.length) { resolve({ empty: true }); return; }
+    const coded = frames.map(({ packet, key }) => ({ packet: packet.slice(), key, repeat: false, quantizer: null, encodeMs: null }));
+    if (original) Object.assign(coded.at(-1), { source: original.i420.slice().buffer, colour: original.colour });
+    worker.postMessage({ type: 'replay', coded, display: this.panel.renderer.format },
+      coded.flatMap(c => [c.packet.buffer, ...(c.source ? [c.source] : [])]));
+  }
+  /** Whether `switchDecoders` can re-decode this view's picture (see MAX_REPLAY_BYTES). */
+  get replayable() { return true; }
+  /** Note a decoded result's coded frames for `replayFrames` (a pre-encoded view has its stream). */
+  retain() {}
   /** Ask for a key frame (only a live encoder can). */
   requestKeyframe() {}
   /** Apply the panel's current rate settings (only a live encoder has any). */
@@ -69,6 +133,10 @@ class LiveView extends View {
   constructor(panel, onMessage, onFailure) {
     super(panel, [startWorker('./encode-worker.js'), startWorker('./decode-worker.js')], onMessage, onFailure);
     this.encoder = this.workers[0];
+    // The packets since the last key frame ({ packet, key }), and their
+    // bytes; null past MAX_REPLAY_BYTES until the next key frame.
+    this.sinceKey = [];
+    this.sinceKeyBytes = 0;
     // The shown SVC layer changes on the fly: only the decode worker hears of it.
     panel.operatingPoint?.addEventListener('change', () => {
       this.decoder.postMessage({ type: 'operating-point', operatingPoint: +panel.operatingPoint.value });
@@ -86,6 +154,30 @@ class LiveView extends View {
   codes(tick) { return codesTick(this.panel.current.step, tick); }
   requestKeyframe() { this.encoder.postMessage({ type: 'keyframe' }); }
   updateRate() { this.encoder.postMessage({ type: 'rate', config: this.panel.current }); }
+  /** Keep a decoded result's coded frames (frame holds code nothing) for `replayFrames`. */
+  retain({ earlier = [], ...shown }) {
+    for (const coded of [...earlier, shown]) {
+      if (coded.repeat) continue;
+      if (coded.key) { this.sinceKey = []; this.sinceKeyBytes = 0; }
+      if (!this.sinceKey) continue;
+      this.sinceKeyBytes += coded.packet.byteLength;
+      if (this.sinceKeyBytes > MAX_REPLAY_BYTES) this.sinceKey = null;
+      else this.sinceKey.push({ packet: coded.packet, key: coded.key });
+    }
+  }
+  get replayable() { return this.sinceKey !== null; }
+  replayFrames() { return this.sinceKey; }
+  /**
+   * The encoder posts its packets to the new decoder from its next frame on;
+   * resolves once it has the port, so no later capture can reach the old one
+   * (captures come on another port, in no order with this message).
+   */
+  connectDecoder(port) {
+    return new Promise(resolve => {
+      this.decoderConnected = resolve;
+      this.encoder.postMessage({ type: 'decoder', port }, [port]);
+    });
+  }
 }
 
 /** A pre-encoded reference stream (reference.js), decoded in the browser. */
@@ -120,6 +212,14 @@ class ReferenceView extends View {
     }));
     this.port.postMessage({ id, display, coded, bufferFullness: null, bufferOverflows: 0 }, [captured.data, ...coded.map(c => c.packet.buffer)]);
   }
+  /** The stream frames from the key frame at or before the last one decoded up to it. */
+  replayFrames() {
+    if (this.last === null) return [];
+    const { packets, entry } = this.stream, first = this.last - this.last % entry.keyInterval;
+    return Array.from({ length: this.last - first + 1 }, (_, i) => ({ packet: packets[first + i], key: i === 0 }));
+  }
+  /** Stream packets go to the new decoder from the next capture on. */
+  connectDecoder(port) { this.port.close(); this.port = port; }
   terminate() { this.port?.close(); this.capturePort?.close(); super.terminate(); }
 }
 
@@ -167,6 +267,22 @@ export class Comparison {
   }
   /** Whether the queue is full: the page should not capture until a frame completes. */
   get full() { return this.inFlight.size >= MAX_FRAMES_IN_FLIGHT; }
+  /** Whether no capture is in flight (every view has shown every frame sent). */
+  get idle() { return this.inFlight.size === 0; }
+  /** Whether some view's decoder is not on the module analysis now wants. */
+  get decodersStale() { return this.views.some(view => view.analysing !== view.analysisWanted); }
+  /** Whether every view can switch its decoder in place (`switchDecoders`). */
+  get canSwitchDecoders() { return this.views.every(view => view.replayable); }
+  /**
+   * Put every view whose decoder is on the wrong module (analysis switched) on
+   * the right one, without restarting: see the file comment. Call only when
+   * `idle`. Resolves to each view's re-decoded result (or null: not switched,
+   * or nothing shown yet).
+   */
+  async switchDecoders() {
+    const [wasmModule, analysisModule] = await Promise.all([compiledModule(), this.views.some(v => v.analysisWanted) ? compiledAnalysisModule() : null]);
+    return Promise.all(this.views.map(view => (view.analysing === view.analysisWanted ? null : view.switchDecoder({ wasmModule, analysisModule }))));
+  }
   /** Which views code `tick`. */
   coding(tick) { return this.views.map(view => view.codes(tick)); }
   /**
@@ -199,9 +315,12 @@ export class Comparison {
     if (data.type === 'error') {
       view.panel.element.classList.add('error');
       this.fail(new Error(`Version ${view.panel.letter}: ${data.message}`));
+    } else if (data.type === 'decoder-connected') {
+      view.decoderConnected();
     } else if (data.type === 'frame') {
       const frame = this.inFlight.get(data.id);
       if (!frame) return;
+      if (!data.held) view.retain(data);
       frame.results[this.views.indexOf(view)] = data;
       this.release();
     }

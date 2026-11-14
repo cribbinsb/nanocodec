@@ -626,30 +626,65 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
             f"sequence header operating points {stream_ops} != expected {operating_points}",
         )
 
-    tus: dict[int, list[tuple[int, int, int, int, str]]] = {}
+    tus: dict[int, list[tuple[int, int, int, int, str, int, str]]] = {}
     with layer_md5.open(newline="") as handle:
         for row in csv.DictReader(handle):
+            sid = int(row["spatial_id"])
+            ftype = row.get("frame_type", "")
+            default_il = 1 if (sid > 0 and ftype == "Inter") else 0
+            il_ref = int(row.get("inter_layer_ref") or default_il)
             tus.setdefault(int(row["tu"]), []).append((
-                int(row["spatial_id"]), int(row["temporal_layer"]),
-                int(row["width"]), int(row["height"]), row["md5"].strip().lower()))
+                sid, int(row["temporal_layer"]),
+                int(row["width"]), int(row["height"]),
+                row["md5"].strip().lower(), il_ref, ftype))
     ordered_tus = [tus[tu] for tu in sorted(tus)]
+    max_stream_t = max((t for _, t in stream_ops), default=0)
     dav1d = find_anchor_tool("dav1d", paths)
     aomdec = find_tool("aomdec", paths)
 
-    with cpu_slots(1):
-        for op_idx, (idc, (max_s, _)) in enumerate(zip(idcs, stream_ops)):
+    with cpu_slots(1), tempfile.TemporaryDirectory(prefix="nc-av1-op-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        for op_idx, (idc, (max_s, max_t)) in enumerate(zip(idcs, stream_ops)):
             shown = []
             all_layers = []
+            extracted_shown = []
+            extracted_layers = []
+            has_stripped_lower = False
+            stripped_lower_since_key = False
             for layers in ordered_tus:
                 kept = [
                     entry for entry in layers
                     if idc == 0 or (((idc >> entry[1]) & 1) != 0 and ((idc >> (8 + entry[0])) & 1) != 0)
                 ]
                 if kept:
+                    if kept[0][0] == 0 and kept[0][6] == "Key":
+                        stripped_lower_since_key = False
                     shown.append((kept[-1][2], kept[-1][3], kept[-1][4]))
                     all_layers.extend((e[2], e[3], e[4]) for e in kept)
+                    if stripped_lower_since_key and kept[-1][0] < max_s:
+                        continue
+                    chain = [kept[-1]]
+                    cur_idx = len(kept) - 1
+                    while cur_idx > 0 and kept[cur_idx][5] != 0:
+                        prev_sid = kept[cur_idx][0] - 1
+                        prev_idx = next(
+                            (k for k in range(cur_idx - 1, -1, -1) if kept[k][0] == prev_sid),
+                            None,
+                        )
+                        if prev_idx is None:
+                            break
+                        chain.append(kept[prev_idx])
+                        cur_idx = prev_idx
+                    chain.reverse()
+                    if len(chain) < len(kept):
+                        has_stripped_lower = True
+                        stripped_lower_since_key = True
+                    extracted_shown.append((kept[-1][2], kept[-1][3], kept[-1][4]))
+                    extracted_layers.extend((e[2], e[3], e[4]) for e in chain)
             shown_dims = [(w, h) for w, h, _ in shown]
             shown_md5s = [m for _, _, m in shown]
+            ext_shown_dims = [(w, h) for w, h, _ in extracted_shown]
+            ext_shown_md5s = [m for _, _, m in extracted_shown]
 
             for label, cmd in (
                 (f"dav1d op={op_idx} alllayers=0",
@@ -682,6 +717,106 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
                 bad = first_mismatch(got_own, shown_md5s)
                 if bad is not None:
                     return GateResult(False, f"nanocodec op={op_idx}: MD5 mismatch at frame {bad}")
+
+            if own_decoder is not None and (len(idcs) > 1 or has_stripped_lower):
+                op_ivf = tmp / f"op{op_idx}.ivf"
+                ext = subprocess.run(
+                    [str(own_decoder), "extract", "--codec", "av1",
+                     "--operating-point", str(op_idx),
+                     "--input", str(bitstream), "--output", str(op_ivf)],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=DECODE_TIMEOUT_SECONDS)
+                if ext.returncode != 0:
+                    return GateResult(
+                        False,
+                        f"nanocodec extract av1 op={op_idx}: {ext.stderr.strip()[-240:]}",
+                    )
+                if max_s == 0 and max_t == max_stream_t and len(idcs) > 1:
+                    base_ivf = tmp / f"base_{op_idx}.ivf"
+                    ext_base = subprocess.run(
+                        [str(own_decoder), "extract", "--codec", "av1", "--base-only",
+                         "--input", str(bitstream), "--output", str(base_ivf)],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        timeout=DECODE_TIMEOUT_SECONDS)
+                    if ext_base.returncode != 0:
+                        return GateResult(
+                            False,
+                            f"nanocodec extract av1 --base-only: {ext_base.stderr.strip()[-240:]}",
+                        )
+                    if base_ivf.read_bytes() != op_ivf.read_bytes():
+                        return GateResult(
+                            False,
+                            f"nanocodec extract av1 --base-only differs from op={op_idx}",
+                        )
+                for label, cmd in (
+                    (f"dav1d extracted op={op_idx}",
+                     [str(dav1d), "-q", "--filmgrain", "0",
+                      "--alllayers", "0", "--muxer", "yuv", "-i", str(op_ivf), "-o", "-"]),
+                    (f"aomdec extracted op={op_idx}",
+                     [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
+                      "-o", "-", str(op_ivf)]),
+                ):
+                    err, got = _pipe_i420_md5s(cmd, ext_shown_dims)
+                    if err:
+                        return GateResult(False, f"{label}: {err}")
+                    bad = first_mismatch(got, ext_shown_md5s)
+                    if bad is not None:
+                        return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
+                for own_label, own_flags in (
+                    (f"nanocodec extracted op={op_idx}", []),
+                    (f"nanocodec extracted --operating-point {op_idx}",
+                     ["--operating-point", str(op_idx)]),
+                ):
+                    res_ext = subprocess.run(
+                        [str(own_decoder), "decode", "--codec", "av1", "--film-grain", "0",
+                         *own_flags, "--input", str(op_ivf), "--frame-md5", "-"],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        timeout=DECODE_TIMEOUT_SECONDS)
+                    if res_ext.returncode != 0:
+                        return GateResult(
+                            False, f"{own_label}: {res_ext.stderr.strip()[-240:]}")
+                    got_ext = [
+                        line.strip().lower() for line in res_ext.stdout.splitlines() if line.strip()
+                    ]
+                    if len(got_ext) != len(ext_shown_md5s):
+                        return GateResult(
+                            False,
+                            f"{own_label}: {len(got_ext)} frames, expected {len(ext_shown_md5s)}",
+                        )
+                    bad = first_mismatch(got_ext, ext_shown_md5s)
+                    if bad is not None:
+                        return GateResult(False, f"{own_label}: MD5 mismatch at frame {bad}")
+                if has_stripped_lower:
+                    ext_all_md5s = [m for _, _, m in extracted_layers]
+                    res_ext_all = subprocess.run(
+                        [str(own_decoder), "decode", "--codec", "av1", "--film-grain", "0",
+                         "--all-layers", "1", "--input", str(op_ivf), "--frame-md5", "-"],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        timeout=DECODE_TIMEOUT_SECONDS)
+                    if res_ext_all.returncode != 0:
+                        return GateResult(
+                            False,
+                            f"nanocodec extracted op={op_idx} all-layers: "
+                            f"{res_ext_all.stderr.strip()[-240:]}",
+                        )
+                    got_ext_all = [
+                        line.strip().lower()
+                        for line in res_ext_all.stdout.splitlines()
+                        if line.strip()
+                    ]
+                    if len(got_ext_all) != len(ext_all_md5s):
+                        return GateResult(
+                            False,
+                            f"nanocodec extracted op={op_idx} all-layers: "
+                            f"{len(got_ext_all)} pictures, expected {len(ext_all_md5s)}",
+                        )
+                    bad = first_mismatch(got_ext_all, ext_all_md5s)
+                    if bad is not None:
+                        return GateResult(
+                            False,
+                            f"nanocodec extracted op={op_idx} all-layers: "
+                            f"MD5 mismatch at picture {bad}",
+                        )
 
             if max_s > 0:
                 all_dims = [(w, h) for w, h, _ in all_layers]

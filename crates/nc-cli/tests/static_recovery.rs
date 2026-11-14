@@ -308,55 +308,88 @@ fn av1_svc_presets_recover() {
         include_str!("../../../presets/av1-svc-fast.toml"),
     ] {
         check_preset::<nc_av1::Av1Backend>(Codec::Av1, preset, &SVC_RECOVERY);
+        let ksvc = format!("{preset}\nspatial.inter_layer = 2\n");
+        check_preset::<nc_av1::Av1Backend>(Codec::Av1, &ksvc, &SVC_RECOVERY);
     }
 }
 
 /// Three spatial layers (`spatial.layers = 3`): after a starved key temporal
-/// unit, BOTH upper layers (`S1` at 64x32 and `S2` at 128x64) stay degraded
-/// when `persist.reuse = 0` and refine on static content when `persist.reuse = 1`
-/// with the three-layer presets (`av1-svc3`, `av1-svc3-fast`).
-///
-/// At 128x64 (`30 kbps`), `S0` (32x16, `0.47 bpp`) and `S1` (64x32, `0.24 bpp`)
-/// give a finer `TU 0` stationary-startup anchor (`S2` 45.0 dB vs 44.4 in
-/// 2-layer; `S1` 47.3-48.1 dB). After the starved key, `S2` refines from
-/// ~35 dB (`persist.reuse = 0`) to 42.1 dB (`THREE_LAYER_S2_RECOVERED_DB`) and
-/// `S1` refines to 42.8-44.9 dB (`THREE_LAYER_S1_RECOVERED_DB`).
-fn run_three_layer_recovery(
+/// unit, BOTH upper layers (`S1` at 128x64 and `S2` at 256x128, so `S1` spans
+/// two 64x64 AV1 superblocks horizontally just like the 1- and 2-layer tests'
+/// full-size layer) stay degraded when `persist.reuse = 0` and refine on
+/// static content when `persist.reuse = 1` with the three-layer presets
+/// (`av1-svc3`, `av1-svc3-fast`) in both full SVC and K-SVC (`inter_layer = 2`).
+fn frame_sized(width: usize, height: usize, index: usize) -> Picture {
+    let mut picture = Picture::new(width, height, 0).unwrap();
+    for plane in PlaneIndex::ALL {
+        let mut view = picture.plane_mut(plane).view_mut();
+        for y in 0..view.height() {
+            for (x, v) in view.row_mut(y).iter_mut().enumerate() {
+                *v = if plane != PlaneIndex::Y {
+                    128
+                } else if x < width / 2 {
+                    let (xf, yf) = (x as f64, y as f64);
+                    (128.
+                        + 40. * (xf * 0.7 + yf * 0.3).sin()
+                        + 30. * (yf * 1.1).sin() * (xf * 0.45).cos()
+                        + ((x * 37 + y * 91) % 23) as f64) as u8
+                } else {
+                    let moved = x + 3 * index;
+                    (128. + 50. * (moved as f64 * 0.5).sin() + ((moved * 53 + y * 17) % 29) as f64)
+                        as u8
+                };
+            }
+        }
+    }
+    picture
+}
+
+fn static_psnr_cols(source: &Picture, recon: &Picture, static_w: usize) -> f64 {
+    let h = recon.height();
+    let (s, r) = (
+        source.plane(PlaneIndex::Y).view(),
+        recon.plane(PlaneIndex::Y).view(),
+    );
+    let sse: u64 = (0..h)
+        .map(|y| {
+            s.row(y)[..static_w]
+                .iter()
+                .zip(&r.row(y)[..static_w])
+                .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
+                .sum::<u64>()
+        })
+        .sum();
+    let mse = sse as f64 / (h * static_w) as f64;
+    10. * (255. * 255. / mse.max(1e-9)).log10()
+}
+
+/// Scale factor for 3-layer K-SVC recovery (`256x128` top / `128x64` `S1` /
+/// `64x32` `S0`), giving `S1` two 64x64 AV1 superblocks horizontally so
+/// per-superblock `delta_q` separates the static left half from the moving half.
+const THREE_LAYER_KSVC_SCALE: usize = 2;
+
+fn run_three_layer_recovery<B: CodecBackend>(
+    codec: Codec,
     preset: &str,
     box_downscale: bool,
+    scale: usize,
     (starve, reuse): (bool, bool),
     frames: usize,
 ) -> (Vec<f64>, Vec<f64>) {
-    let static_psnr_half = |s1_ref: &Picture, recon: &Picture| -> f64 {
-        let static_w = STATIC_WIDTH / 2;
-        let h = recon.height();
-        let (s, r) = (
-            s1_ref.plane(PlaneIndex::Y).view(),
-            recon.plane(PlaneIndex::Y).view(),
-        );
-        let sse: u64 = (0..h)
-            .map(|y| {
-                s.row(y)[..static_w]
-                    .iter()
-                    .zip(&r.row(y)[..static_w])
-                    .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
-                    .sum::<u64>()
-            })
-            .sum();
-        let mse = sse as f64 / (h * static_w) as f64;
-        10. * (255. * 255. / mse.max(1e-9)).log10()
-    };
+    let w = WIDTH * scale;
+    let h = HEIGHT * scale;
+    let target_bps = TARGET_BPS * (scale * scale) as u64;
 
     let dsp = nc_dsp::Dsp::new();
-    let mut lanczos = nc_dsp::PlaneResampler::new((WIDTH, HEIGHT), (WIDTH / 2, HEIGHT / 2));
-    let mut s1_ref = Picture::new(WIDTH / 2, HEIGHT / 2, 0).unwrap();
+    let mut lanczos = nc_dsp::PlaneResampler::new((w, h), (w / 2, h / 2));
+    let mut s1_ref = Picture::new(w / 2, h / 2, 0).unwrap();
     let mut params = preset_params(preset);
     params.set("spatial.layers", 3.0);
     params.set("persist.reuse", if reuse { 1.0 } else { 0.0 });
-    let mut encoder = Encoder::<nc_av1::Av1Backend>::new(EncoderConfig {
-        codec: Codec::Av1,
-        width: WIDTH,
-        height: HEIGHT,
+    let mut encoder = Encoder::<B>::new(EncoderConfig {
+        codec,
+        width: w,
+        height: h,
         frame_rate: FrameRate { num: 15, den: 1 },
         quantizer: 180,
         intra_period: 1000,
@@ -368,7 +401,7 @@ fn run_three_layer_recovery(
     })
     .unwrap();
     let rate = |target| RateControlConfig::new(target);
-    encoder.set_rate_control(rate(TARGET_BPS)).unwrap();
+    encoder.set_rate_control(rate(target_bps)).unwrap();
     let mut s1_psnrs = Vec::with_capacity(frames);
     let mut s2_psnrs = Vec::with_capacity(frames);
     for index in 0..frames {
@@ -376,9 +409,9 @@ fn run_three_layer_recovery(
             encoder.set_rate_control(rate(STARVED_BPS)).unwrap();
             encoder.request_keyframe();
         } else if starve && index == STARVED_KEY + 1 {
-            encoder.set_rate_control(rate(TARGET_BPS)).unwrap();
+            encoder.set_rate_control(rate(target_bps)).unwrap();
         }
-        let source = frame(index);
+        let source = frame_sized(w, h, index);
         if box_downscale {
             dsp.downscale_2x(
                 &source.plane(PlaneIndex::Y).view(),
@@ -392,23 +425,76 @@ fn run_three_layer_recovery(
             );
         }
         encoder.encode(&source);
-        s1_psnrs.push(static_psnr_half(
+        s1_psnrs.push(static_psnr_cols(
             &s1_ref,
             encoder.layer_reconstruction(1).expect("S1 recon"),
+            (STATIC_WIDTH * scale) / 2,
         ));
-        s2_psnrs.push(static_psnr(
+        s2_psnrs.push(static_psnr_cols(
             &source,
             encoder.layer_reconstruction(2).expect("S2 recon"),
+            STATIC_WIDTH * scale,
         ));
     }
     (s1_psnrs, s2_psnrs)
+}
+
+fn check_three_layer_preset<B: CodecBackend>(
+    codec: Codec,
+    name: &str,
+    preset: &str,
+    box_downscale: bool,
+    ksvc_scale: usize,
+    (s1_recovery, s2_recovery): (&Recovery, &Recovery),
+) {
+    const MIN_REUSE_GAIN_DB: f64 = 3.0;
+    let frames = STARVED_KEY + s1_recovery.frames + STAYS_RECOVERED_FRAMES;
+    let run = |cfg: &str, scale: usize, flags: (bool, bool)| {
+        run_three_layer_recovery::<B>(codec, cfg, box_downscale, scale, flags, frames)
+    };
+    let (steady_s1, steady_s2) = run(preset, 1, (false, true));
+    let (starved_s1, starved_s2) = run(preset, 1, (true, true));
+    let (stuck_s1, stuck_s2) = run(preset, 1, (true, false));
+    for index in STARVED_KEY + s1_recovery.frames..frames {
+        assert!(
+            stuck_s1[index] < steady_s1[index] - DEGRADED_DB,
+            "{name} S1 reuse=0 frame {index}: {:.2} vs {:.2} dB",
+            stuck_s1[index],
+            steady_s1[index]
+        );
+        assert!(
+            stuck_s2[index] < steady_s2[index] - DEGRADED_DB,
+            "{name} S2 reuse=0 frame {index}: {:.2} vs {:.2} dB",
+            stuck_s2[index],
+            steady_s2[index]
+        );
+        assert!(
+            starved_s1[index] > stuck_s1[index] + MIN_REUSE_GAIN_DB,
+            "{name} S1 reuse gain frame {index}: {:.2} vs {:.2} dB",
+            starved_s1[index],
+            stuck_s1[index]
+        );
+        assert!(
+            starved_s2[index] > stuck_s2[index] + MIN_REUSE_GAIN_DB,
+            "{name} S2 reuse gain frame {index}: {:.2} vs {:.2} dB",
+            starved_s2[index],
+            stuck_s2[index]
+        );
+    }
+    assert_recovers(codec, (&steady_s1, &starved_s1), s1_recovery);
+    assert_recovers(codec, (&steady_s2, &starved_s2), s2_recovery);
+
+    let ksvc_preset = format!("{preset}\nspatial.inter_layer = 2\n");
+    let (k_steady_s1, k_steady_s2) = run(&ksvc_preset, ksvc_scale, (false, true));
+    let (k_starved_s1, k_starved_s2) = run(&ksvc_preset, ksvc_scale, (true, true));
+    assert_recovers(codec, (&k_steady_s1, &k_starved_s1), s1_recovery);
+    assert_recovers(codec, (&k_steady_s2, &k_starved_s2), s2_recovery);
 }
 
 #[test]
 fn av1_three_layer_svc_recovers_every_upper_layer() {
     const THREE_LAYER_S1_RECOVERED_DB: f64 = 6.0;
     const THREE_LAYER_S2_RECOVERED_DB: f64 = 3.5;
-    const MIN_REUSE_GAIN_DB: f64 = 3.0;
 
     let s1_recovery = Recovery {
         frames: RECOVERY_FRAMES + 1,
@@ -418,7 +504,6 @@ fn av1_three_layer_svc_recovers_every_upper_layer() {
         frames: RECOVERY_FRAMES + 1,
         shortfall_db: THREE_LAYER_S2_RECOVERED_DB,
     };
-    let frames = STARVED_KEY + s1_recovery.frames + STAYS_RECOVERED_FRAMES;
     for (name, preset, box_downscale) in [
         (
             "av1-svc3",
@@ -431,40 +516,14 @@ fn av1_three_layer_svc_recovers_every_upper_layer() {
             true,
         ),
     ] {
-        let (steady_s1, steady_s2) =
-            run_three_layer_recovery(preset, box_downscale, (false, true), frames);
-        let (starved_s1, starved_s2) =
-            run_three_layer_recovery(preset, box_downscale, (true, true), frames);
-        let (stuck_s1, stuck_s2) =
-            run_three_layer_recovery(preset, box_downscale, (true, false), frames);
-        for index in STARVED_KEY + s1_recovery.frames..frames {
-            assert!(
-                stuck_s1[index] < steady_s1[index] - DEGRADED_DB,
-                "{name} S1 reuse=0 frame {index}: {:.2} vs {:.2} dB",
-                stuck_s1[index],
-                steady_s1[index]
-            );
-            assert!(
-                stuck_s2[index] < steady_s2[index] - DEGRADED_DB,
-                "{name} S2 reuse=0 frame {index}: {:.2} vs {:.2} dB",
-                stuck_s2[index],
-                steady_s2[index]
-            );
-            assert!(
-                starved_s1[index] > stuck_s1[index] + MIN_REUSE_GAIN_DB,
-                "{name} S1 reuse gain frame {index}: {:.2} vs {:.2} dB",
-                starved_s1[index],
-                stuck_s1[index]
-            );
-            assert!(
-                starved_s2[index] > stuck_s2[index] + MIN_REUSE_GAIN_DB,
-                "{name} S2 reuse gain frame {index}: {:.2} vs {:.2} dB",
-                starved_s2[index],
-                stuck_s2[index]
-            );
-        }
-        assert_recovers(Codec::Av1, (&steady_s1, &starved_s1), &s1_recovery);
-        assert_recovers(Codec::Av1, (&steady_s2, &starved_s2), &s2_recovery);
+        check_three_layer_preset::<nc_av1::Av1Backend>(
+            Codec::Av1,
+            name,
+            preset,
+            box_downscale,
+            THREE_LAYER_KSVC_SCALE,
+            (&s1_recovery, &s2_recovery),
+        );
     }
 }
 

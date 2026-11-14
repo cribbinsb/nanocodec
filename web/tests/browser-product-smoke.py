@@ -13,8 +13,6 @@ import threading
 from playwright.sync_api import sync_playwright
 
 web = Path(__file__).resolve().parents[1]
-# The default page must deliver at least this share of the frames it could (see the check).
-DELIVERY_FLOOR = 0.7
 class Quiet(http.server.SimpleHTTPRequestHandler):
     """Static files with HTTP range requests, as real hosts serve them: a browser
     seeks a video (the page's Step) only when the server answers ranges."""
@@ -97,7 +95,8 @@ try:
         # the slower one's first, as frames are in flight).
         page.wait_for_function('[0, 1].every(v => window.workerFrames.filter(f => f.view === v).length >= 2)', timeout=60000)
         assert page.locator('#clip-credit').is_visible()
-        assert page.evaluate("!document.querySelector('#input-video').paused")
+        # A sample clip is decoded frame by frame for the comparison (exact-source.js), not played.
+        assert page.evaluate("document.querySelector('#input-video').paused")
         # H.264 and AV1 under CBR hold frame 0 back for the start-up lookahead,
         # then deliver it with frame 1.
         assert page.evaluate('window.heldFrames') == 2
@@ -110,26 +109,9 @@ try:
         # PSNR comes from the decode worker for every frame.
         assert page.evaluate('window.workerFrames.every(f => f.psnr > 20)')
         # The session line names the busiest worker.
-        page.wait_for_function(r"/fps delivered · (keeping up, slowest|limited by|waiting for source frames \(slowest stage) (encode|decode) [AB] \(\d+ ms\)/.test(document.querySelector('#session-stats').textContent)", timeout=10000)
-        # Delivery floor on the default page: over 5 s the views must show at least
-        # DELIVERY_FLOOR of the instants the pipeline could take, the fewer of the
-        # source frames presented on coded ticks (a 15 fps view of a 60 fps clip:
-        # every 4th frame) and what the slowest stage allows. A capture that
-        # samples the video on a timer instead locked in phase with it and fell
-        # to ~1 fps (2026-11-14).
-        delivery = page.evaluate('''async () => {
-          const video = document.querySelector('#input-video'), presented = [];
-          const onFrame = (_, m) => { presented.push(Math.round(m.mediaTime * 60)); video.requestVideoFrameCallback(onFrame); };
-          video.requestVideoFrameCallback(onFrame);
-          const count = () => +document.querySelector('#session-stats').textContent.match(/(\\d+) frames compared/)[1];
-          const before = count(), start = performance.now();
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          const seconds = (performance.now() - start) / 1000;
-          const stageMs = Math.max(...[...document.querySelectorAll('[data-metric=encode], [data-metric=decode]')].map(e => +e.textContent || 0));
-          return { delivered: (count() - before) / seconds, instants: presented.filter(f => f % 4 === 0).length / seconds, stageRate: 1000 / stageMs };
-        }''')
-        floor = DELIVERY_FLOOR * min(delivery['instants'], delivery['stageRate'])
-        assert delivery['delivered'] >= floor, delivery
+        # The session line says how fast the clip's time runs and names the busiest worker
+        # (web/tests/exact-source.py checks that nothing is skipped when it is slow).
+        page.wait_for_function(r"/\d+ fps · (real time, slowest (encode|decode) [AB] \(\d+ ms\)|running at [0-9.]+× real time \(slowest (encode|decode) [AB], \d+ ms\))/.test(document.querySelector('#session-stats').textContent)", timeout=10000)
         autostart_configs = page.evaluate('window.workerConfigs')
         assert all(c['targetKbps'] == 300 and c['keyInterval'] == 30 * c['fps'] for c in autostart_configs)
         # Headless Chromium on SwiftShader loses new GL contexts once and restores them ~1 s later.
@@ -147,8 +129,8 @@ try:
         page.locator('.loupe-toggle').click()
         # Clips come in 360p and 720p files (clips.js): the default 854x480 reads the 720p
         # one (scaled down), picking a clip restarts on it, and 640x360 switches to the 360p file.
-        clip_src = "document.querySelector('#input-video').currentSrc"
-        assert page.evaluate(clip_src).endswith('/clips/netflix-bar-scene-720p.mp4')
+        clip_files = "performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/clips/') && n.endsWith('.mp4'))"
+        assert page.evaluate(clip_files)[-1].endswith('/clips/netflix-bar-scene-720p.mp4')
         assert page.evaluate('window.workerFrames.every(f => f.width === 854 && f.height === 480)')
         # The masthead links to the project page.
         assert page.locator('.project-link').get_attribute('href') == 'https://github.com/cribbinsb/nanocodec'
@@ -165,7 +147,7 @@ try:
             for picker in page.locator('.resolution').all():
                 picker.select_option(resolution)
             page.locator('#clip').select_option(clip_id)
-            page.wait_for_function(f"{clip_src}.endsWith('/clips/{clip_id}-{variant}.mp4')", timeout=10000)
+            page.wait_for_function(f"{clip_files}.some(n => n.endsWith('/clips/{clip_id}-{variant}.mp4'))", timeout=10000)
             width = int(resolution.split('x')[0])
             before = page.evaluate('window.workerFrames.length')
             page.wait_for_function(f'window.workerFrames.slice({before}).filter(f => f.width === {width}).length >= 4', timeout=60000)

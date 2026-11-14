@@ -10,7 +10,7 @@
 //! (`S0` alone, or `S0 + S1`) is strictly reference-closed and never depends
 //! on a higher spatial layer (`libaom` `examples/svc_encoder_rtc.cc`,
 //! `set_layer_pattern` modes `6` = `L3T1`, `8` = `L3T2`, `9` = `L3T3`,
-//! `11` = `L3T3` K-SVC):
+//! `10` = `L3T3` K-SVC):
 //!
 //! - Slots `0..=1` ([`BASE_TEMPORAL_SLOTS`], `layer_temporal_slots(0)`):
 //!   `S0` temporal hierarchy (slot `0` for `T0` in `T1`/`T2`/`T3`; slot `1`
@@ -21,17 +21,29 @@
 //!   in 3-layer mode (`L3T1`/`L3T2`/`L3T3`), `S2`'s temporal hierarchy (slot
 //!   `4` for `T0`; slot `5` for `T1` in `L3T3`).
 //! - Disposable (`T2`) inter-layer scratch slots ([`inter_layer_scratch_slot`]):
-//!   on non-reference `T2` temporal units (`T3` hierarchies) with
-//!   `spatial.inter_layer = 1`, a disposable lower-layer picture refreshes its
-//!   dedicated scratch slot so the layer immediately above can predict from the
-//!   same instant's lower picture without overwriting `T0`/`T1` temporal slots:
-//!   - In 2-layer mode (`num_layers = 2`): `S0 -> S1` uses slot `4`
+//!   on non-reference `T2` temporal units (`T3` hierarchies) with full SVC
+//!   (`spatial.inter_layer = 1`, [`InterLayerMode::On`]), a disposable
+//!   lower-layer picture refreshes its dedicated scratch slot so the layer
+//!   immediately above can predict from the same instant's lower picture
+//!   without overwriting `T0`/`T1` temporal slots:
+//!   - In 2-layer full SVC (`num_layers = 2`): `S0 -> S1` uses slot `4`
 //!     ([`INTER_LAYER_SCRATCH_SLOT`]); slots `5..=7` stay unused (`SPATIAL_POOL_SLOTS = 5`).
-//!   - In 3-layer mode (`num_layers = 3`): `S0 -> S1` uses slot `6`
+//!   - In 3-layer full SVC (`num_layers = 3`): `S0 -> S1` uses slot `6`
 //!     (`inter_layer_scratch_slot(3, 0)`), `S1 -> S2` uses slot `7`
 //!     (`inter_layer_scratch_slot(3, 1)`), and `S2` refreshes `SlotMask::NONE`,
-//!     filling all 8 DPB slots (`spatial_pool_slots(3) = 8`) with zero
-//!     cross-layer collisions across `L3T1`, `L3T2`, and `L3T3`.
+//!     filling all 8 DPB slots (`spatial_pool_slots(3, InterLayerMode::On) = 8`)
+//!     with zero cross-layer collisions across `L3T1`, `L3T2`, and `L3T3`.
+//!   - In K-SVC (`spatial.inter_layer = 2`, [`InterLayerMode::KeyOnly`],
+//!     `L2T*_KEY` / `L3T*_KEY`) and independent layers ([`InterLayerMode::Off`]),
+//!     non-key temporal units never cross spatial layers, so disposable `T2`
+//!     pictures never refresh scratch slots: 2-layer K-SVC uses only `4` slots
+//!     (`0..=3`, leaving slots `4..=7` free) and 3-layer K-SVC only `6`
+//!     (`0..=5`, leaving `6..=7` free). The freed slots shrink each layer's
+//!     `ReferencePool` and `Analyzer` allocations (`4`/`6` vs `5`/`8`) and are
+//!     the `AV1 §7.20` / `VP9 §6.2` headroom a per-layer second temporal or
+//!     long-term reference would use (as `libaom` `svc_encoder_rtc` `-lm 10`
+//!     and `libvpx` `INTER_LAYER_PRED_OFF_NONKEY` use `GOLDEN`/`ALTREF`); no
+//!     such reference is coded yet.
 //! - Why `S2` predicts from `S1` + earlier `S2` (and not directly from `S0`):
 //!   matching `libaom` `svc_encoder_rtc.cc` modes `6`/`8`/`9`, `S1` already
 //!   reconstructs both upscaled `S0` content and `360p` mid-frequency detail,
@@ -107,11 +119,82 @@ pub const fn inter_layer_scratch_slot(num_layers: u8, lower_spatial_id: u8) -> u
     (num_layers as usize) * SLOTS_PER_SPATIAL_LAYER + (lower_spatial_id as usize)
 }
 
-/// Total active DPB slots needed by `num_layers` spatial SVC (`5` for 2 layers,
-/// all `8` for 3): a temporal pair per layer and a scratch slot per step.
+/// Inter-layer prediction mode (`spatial.inter_layer`, `AV1 §7.11.3.3`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterLayerMode {
+    /// Independent spatial layers (`spatial.inter_layer = 0`): no inter-layer
+    /// prediction on any temporal unit (`S1`/`S2` start with `INTRA_ONLY_FRAME`).
+    Off,
+    /// Full spatial SVC (`spatial.inter_layer = 1`): enhancement layers predict
+    /// from the immediately-lower layer on both key and non-key temporal units.
+    On,
+    /// K-SVC (`spatial.inter_layer = 2`, `L*T*_KEY`): enhancement layers predict
+    /// from the immediately-lower layer on key temporal units only, and from
+    /// their own temporal slots only on all non-key temporal units.
+    KeyOnly,
+}
+
+impl InterLayerMode {
+    /// Decode `spatial.inter_layer` (`< 0.5` = [`Self::Off`], `< 1.5` = [`Self::On`],
+    /// `>= 1.5` = [`Self::KeyOnly`]).
+    #[must_use]
+    pub fn from_param(value: f32) -> Self {
+        if value < 0.5 {
+            Self::Off
+        } else if value < 1.5 {
+            Self::On
+        } else {
+            Self::KeyOnly
+        }
+    }
+
+    /// The `spatial.inter_layer` value that selects this mode.
+    #[must_use]
+    pub const fn param_value(self) -> f32 {
+        match self {
+            Self::Off => 0.0,
+            Self::On => 1.0,
+            Self::KeyOnly => 2.0,
+        }
+    }
+
+    /// Whether enhancement layers predict from the immediately-lower layer on key TUs.
+    #[must_use]
+    pub const fn active_on_key_unit(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Whether enhancement layers predict from the immediately-lower layer on non-key TUs.
+    #[must_use]
+    pub const fn active_on_inter_unit(self) -> bool {
+        matches!(self, Self::On)
+    }
+
+    /// Whether an enhancement picture of a key (`key_unit`) or non-key unit
+    /// predicts from the layer immediately below it: the one rule every
+    /// reference, repair and rate decision of a mode follows.
+    #[must_use]
+    pub const fn active_in_unit(self, key_unit: bool) -> bool {
+        if key_unit {
+            self.active_on_key_unit()
+        } else {
+            self.active_on_inter_unit()
+        }
+    }
+}
+
+/// Total active DPB slots needed by `num_layers` spatial SVC under `inter_layer`:
+/// `5` / `8` in full SVC ([`InterLayerMode::On`], a temporal pair per layer plus
+/// a scratch slot per step), and `4` / `6` in [`InterLayerMode::KeyOnly`] or
+/// [`InterLayerMode::Off`] (no scratch slots needed on non-key `T2` frames).
 #[must_use]
-pub const fn spatial_pool_slots(num_layers: u8) -> usize {
-    (num_layers as usize) * SLOTS_PER_SPATIAL_LAYER + (num_layers.saturating_sub(1) as usize)
+pub const fn spatial_pool_slots(num_layers: u8, inter_layer: InterLayerMode) -> usize {
+    let temporal = (num_layers as usize) * SLOTS_PER_SPATIAL_LAYER;
+    if inter_layer.active_on_inter_unit() {
+        temporal + (num_layers.saturating_sub(1) as usize)
+    } else {
+        temporal
+    }
 }
 
 /// First reference slot belonging to the base spatial layer (`spatial_id = 0`).
@@ -126,8 +209,8 @@ pub const TOP_ENHANCEMENT_TEMPORAL_SLOTS: SlotMask = layer_temporal_slots(2);
 pub const INTER_LAYER_SCRATCH_SLOT: usize = inter_layer_scratch_slot(2, 0);
 /// Mask containing only [`INTER_LAYER_SCRATCH_SLOT`].
 pub const INTER_LAYER_SCRATCH_MASK: SlotMask = SlotMask(1 << INTER_LAYER_SCRATCH_SLOT);
-/// Active reference-pool slots kept by two-layer spatial SVC (`0..=4`).
-pub const SPATIAL_POOL_SLOTS: usize = spatial_pool_slots(2);
+/// Active reference-pool slots kept by two-layer full spatial SVC (`0..=4`).
+pub const SPATIAL_POOL_SLOTS: usize = spatial_pool_slots(2, InterLayerMode::On);
 
 /// `operating_point_idc` spatial-layer mask for `S0` only (`AV1 §6.4.1`).
 const SPATIAL_LAYER_0_IDC: u16 = 0b0001 << 8;
@@ -158,7 +241,7 @@ const AV1_MAX_REF_DOWNSCALE: usize = 2;
 /// Maximum reference upscale (`FrameWidth <= 16 * RefWidth`, `AV1 §7.11.3.3`).
 const AV1_MAX_REF_UPSCALE: usize = 16;
 
-/// WebRTC-style scalability mode identifiers (`--scalability`).
+/// WebRTC-style scalability mode identifiers (`--scalability`, W3C WebRTC-SVC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalabilityMode {
     /// 1 spatial layer, 1 temporal layer (flat single-layer).
@@ -167,22 +250,34 @@ pub enum ScalabilityMode {
     L1T2,
     /// 1 spatial layer, 3 temporal layers.
     L1T3,
-    /// 2 spatial layers, 1 temporal layer.
+    /// 2 spatial layers, 1 temporal layer (full SVC).
     L2T1,
-    /// 2 spatial layers, 2 temporal layers.
+    /// 2 spatial layers, 2 temporal layers (full SVC).
     L2T2,
-    /// 2 spatial layers, 3 temporal layers.
+    /// 2 spatial layers, 3 temporal layers (full SVC).
     L2T3,
-    /// 3 spatial layers, 1 temporal layer.
+    /// 2 spatial layers, 1 temporal layer, key-frame inter-layer only (K-SVC).
+    L2T1Key,
+    /// 2 spatial layers, 2 temporal layers, key-frame inter-layer only (K-SVC).
+    L2T2Key,
+    /// 2 spatial layers, 3 temporal layers, key-frame inter-layer only (K-SVC).
+    L2T3Key,
+    /// 3 spatial layers, 1 temporal layer (full SVC).
     L3T1,
-    /// 3 spatial layers, 2 temporal layers.
+    /// 3 spatial layers, 2 temporal layers (full SVC).
     L3T2,
-    /// 3 spatial layers, 3 temporal layers.
+    /// 3 spatial layers, 3 temporal layers (full SVC).
     L3T3,
+    /// 3 spatial layers, 1 temporal layer, key-frame inter-layer only (K-SVC).
+    L3T1Key,
+    /// 3 spatial layers, 2 temporal layers, key-frame inter-layer only (K-SVC).
+    L3T2Key,
+    /// 3 spatial layers, 3 temporal layers, key-frame inter-layer only (K-SVC).
+    L3T3Key,
 }
 
 impl ScalabilityMode {
-    /// Parse a case-insensitive mode name (`L1T1`..`L3T3`).
+    /// Parse a case-insensitive mode name (`L1T1`..`L3T3`, `L2T1_KEY`..`L3T3_KEY`).
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         match text.to_ascii_uppercase().as_str() {
@@ -192,9 +287,15 @@ impl ScalabilityMode {
             "L2T1" => Some(Self::L2T1),
             "L2T2" => Some(Self::L2T2),
             "L2T3" => Some(Self::L2T3),
+            "L2T1_KEY" => Some(Self::L2T1Key),
+            "L2T2_KEY" => Some(Self::L2T2Key),
+            "L2T3_KEY" => Some(Self::L2T3Key),
             "L3T1" => Some(Self::L3T1),
             "L3T2" => Some(Self::L3T2),
             "L3T3" => Some(Self::L3T3),
+            "L3T1_KEY" => Some(Self::L3T1Key),
+            "L3T2_KEY" => Some(Self::L3T2Key),
+            "L3T3_KEY" => Some(Self::L3T3Key),
             _ => None,
         }
     }
@@ -204,8 +305,18 @@ impl ScalabilityMode {
     pub const fn spatial_layers(self) -> u8 {
         match self {
             Self::L1T1 | Self::L1T2 | Self::L1T3 => 1,
-            Self::L2T1 | Self::L2T2 | Self::L2T3 => 2,
-            Self::L3T1 | Self::L3T2 | Self::L3T3 => 3,
+            Self::L2T1
+            | Self::L2T2
+            | Self::L2T3
+            | Self::L2T1Key
+            | Self::L2T2Key
+            | Self::L2T3Key => 2,
+            Self::L3T1
+            | Self::L3T2
+            | Self::L3T3
+            | Self::L3T1Key
+            | Self::L3T2Key
+            | Self::L3T3Key => 3,
         }
     }
 
@@ -213,10 +324,24 @@ impl ScalabilityMode {
     #[must_use]
     pub const fn temporal_layers(self) -> u8 {
         match self {
-            Self::L1T1 | Self::L2T1 | Self::L3T1 => 1,
-            Self::L1T2 | Self::L2T2 | Self::L3T2 => 2,
-            Self::L1T3 | Self::L2T3 | Self::L3T3 => 3,
+            Self::L1T1 | Self::L2T1 | Self::L2T1Key | Self::L3T1 | Self::L3T1Key => 1,
+            Self::L1T2 | Self::L2T2 | Self::L2T2Key | Self::L3T2 | Self::L3T2Key => 2,
+            Self::L1T3 | Self::L2T3 | Self::L2T3Key | Self::L3T3 | Self::L3T3Key => 3,
         }
+    }
+
+    /// Whether this mode restricts inter-layer prediction to key temporal units (`*_KEY`).
+    #[must_use]
+    pub const fn is_key_mode(self) -> bool {
+        matches!(
+            self,
+            Self::L2T1Key
+                | Self::L2T2Key
+                | Self::L2T3Key
+                | Self::L3T1Key
+                | Self::L3T2Key
+                | Self::L3T3Key
+        )
     }
 
     /// Canonical uppercase mode name.
@@ -229,9 +354,15 @@ impl ScalabilityMode {
             Self::L2T1 => "L2T1",
             Self::L2T2 => "L2T2",
             Self::L2T3 => "L2T3",
+            Self::L2T1Key => "L2T1_KEY",
+            Self::L2T2Key => "L2T2_KEY",
+            Self::L2T3Key => "L2T3_KEY",
             Self::L3T1 => "L3T1",
             Self::L3T2 => "L3T2",
             Self::L3T3 => "L3T3",
+            Self::L3T1Key => "L3T1_KEY",
+            Self::L3T2Key => "L3T2_KEY",
+            Self::L3T3Key => "L3T3_KEY",
         }
     }
 }
@@ -283,8 +414,8 @@ pub struct SpatialConfig {
     pub base_size: (usize, usize),
     /// Visible dimensions `(width, height)` of the highest spatial layer (`spatial_id = layers - 1`).
     pub full_size: (usize, usize),
-    /// Whether each enhancement layer predicts from the same temporal unit's lower picture.
-    pub inter_layer: bool,
+    /// Inter-layer prediction mode (`Off`, `On`, or `KeyOnly`).
+    pub inter_layer: InterLayerMode,
     /// `S1` is coded in every `enhancement_interval`-th temporal unit (`1..=30`, 2-layer only).
     pub enhancement_interval: u32,
     /// Whether exact `2:1` inter-layer steps use a bilinear `[1 3]/4` search proxy
@@ -350,18 +481,22 @@ impl SpatialConfig {
             enhancement_interval,
         )?;
         let full_size = (config.width, config.height);
-        let inter_layer = params.inter_layer >= 0.5;
+        let inter_layer = InterLayerMode::from_param(params.inter_layer);
         let (layer_sizes, layer_rate_shares, operating_points) = if layers == 2 {
             let base_size = base_layer_size(full_size, params.base_scale)?;
-            let s0_share =
-                f64::from(params.base_rate_share).clamp(MIN_BASE_RATE_SHARE, MAX_BASE_RATE_SHARE);
+            let raw_base = if inter_layer == InterLayerMode::KeyOnly {
+                params.key_base_rate_share
+            } else {
+                params.base_rate_share
+            };
+            let s0_share = f64::from(raw_base).clamp(MIN_BASE_RATE_SHARE, MAX_BASE_RATE_SHARE);
             let ops = build_operating_points(
                 base_size,
                 full_size,
                 config.frame_rate,
                 config.temporal_layers,
                 enhancement_interval,
-                inter_layer,
+                inter_layer.active_on_inter_unit(),
             );
             (
                 vec![base_size, full_size],
@@ -370,10 +505,13 @@ impl SpatialConfig {
             )
         } else {
             let sizes = three_layer_sizes(full_size, params.s0_scale, params.s1_scale)?;
-            let s0_share =
-                f64::from(params.s0_rate_share).clamp(MIN_S0_RATE_SHARE, MAX_S0_RATE_SHARE);
-            let s1_share =
-                f64::from(params.s1_rate_share).clamp(MIN_S1_RATE_SHARE, MAX_S1_RATE_SHARE);
+            let (raw_s0, raw_s1) = if inter_layer == InterLayerMode::KeyOnly {
+                (params.key_s0_rate_share, params.key_s1_rate_share)
+            } else {
+                (params.s0_rate_share, params.s1_rate_share)
+            };
+            let s0_share = f64::from(raw_s0).clamp(MIN_S0_RATE_SHARE, MAX_S0_RATE_SHARE);
+            let s1_share = f64::from(raw_s1).clamp(MIN_S1_RATE_SHARE, MAX_S1_RATE_SHARE);
             if s0_share + s1_share > MAX_LOWER_RATE_SHARE_SUM {
                 return Err(ConfigError::SpatialScalability(
                     "s0_rate_share + s1_rate_share must not exceed 0.90 (leave >= 10% for S2)",
@@ -708,6 +846,11 @@ pub struct SpatialLayerPlan {
     /// True when this enhancement picture (`spatial_id >= 1`) resets its own
     /// temporal reference chain on a non-key repair temporal unit.
     pub enhancement_repair: bool,
+    /// True when this enhancement picture predicts from the same unit's
+    /// picture of the layer below ([`InterLayerMode::active_in_unit`]; never
+    /// on `S0` or an `INTRA_ONLY_FRAME`). A relay must forward that lower
+    /// picture to this layer's receivers in this unit, and only then.
+    pub predicts_from_lower: bool,
     /// Reference slot links and refresh mask in the 8-slot DPB (`0..8`).
     pub references: FrameReferences,
     /// Earlier coded `picture_index` values this picture predicts from.
@@ -757,7 +900,7 @@ pub struct SpatialStructure {
     temporal: [TemporalStructure; MAX_SPATIAL_LAYERS],
     temporal_layers: u8,
     enhancement_interval: u32,
-    inter_layer: bool,
+    inter_layer: InterLayerMode,
     s1_min_temporal_id: u8,
     tu_index: u64,
     last_key_tu: u64,
@@ -768,7 +911,7 @@ pub struct SpatialStructure {
     non_reference: VecDeque<u64>,
     layer_repaired_from_tu: [u64; MAX_SPATIAL_LAYERS],
     layer_non_reference_tus: [VecDeque<u64>; MAX_SPATIAL_LAYERS],
-    repair_from_layer: Option<u8>,
+    repair_layers: [bool; MAX_SPATIAL_LAYERS - 1],
 }
 
 impl SpatialStructure {
@@ -778,7 +921,7 @@ impl SpatialStructure {
         num_layers: u8,
         temporal_layers: u8,
         enhancement_interval: u32,
-        inter_layer: bool,
+        inter_layer: InterLayerMode,
         adaptive_rule: Option<crate::structure::AdaptiveRule>,
     ) -> Self {
         let num_layers = num_layers.clamp(2, MAX_SPATIAL_LAYERS as u8);
@@ -805,7 +948,7 @@ impl SpatialStructure {
             s1_min_temporal_id: decimated_enhancement_temporal_id(
                 temporal_layers,
                 interval,
-                inter_layer,
+                inter_layer.active_on_inter_unit(),
             ),
             tu_index: 0,
             last_key_tu: 0,
@@ -818,7 +961,7 @@ impl SpatialStructure {
             layer_non_reference_tus: std::array::from_fn(|_| {
                 VecDeque::with_capacity(NON_REFERENCE_MEMORY)
             }),
-            repair_from_layer: None,
+            repair_layers: [false; MAX_SPATIAL_LAYERS - 1],
         }
     }
 
@@ -832,6 +975,12 @@ impl SpatialStructure {
     #[must_use]
     pub const fn temporal_layers(&self) -> u8 {
         self.temporal_layers
+    }
+
+    /// Capture-order index of the most recent key temporal unit.
+    #[must_use]
+    pub const fn last_key_tu(&self) -> u64 {
+        self.last_key_tu
     }
 
     /// Whether adaptive temporal gating reads repeat detection on the base analyzer.
@@ -857,7 +1006,7 @@ impl SpatialStructure {
         if s >= usize::from(self.num_layers) {
             return false;
         }
-        if spatial_id > 0 && self.repair_from_layer.is_some_and(|r| r <= spatial_id) {
+        if spatial_id > 0 && self.repair_layers[s - 1] {
             return false;
         }
         tu_index >= self.layer_repaired_from_tu[s]
@@ -865,24 +1014,28 @@ impl SpatialStructure {
             && !self.layer_non_reference_tus[s].contains(&tu_index)
     }
 
-    /// Schedule an enhancement-only repair from `spatial_id` (`1` or `2`) upward
-    /// on the next coded temporal unit: layers `< spatial_id` code as ordinary
-    /// inter frames, while layers `>= spatial_id` reset their temporal slots
-    /// predicting only from the layer immediately below (`inter_layer = 1`) or
-    /// `INTRA_ONLY_FRAME` (`inter_layer = 0`).
+    /// Schedule an enhancement-only repair on the next coded temporal unit:
+    /// - In [`InterLayerMode::On`], cascades from `spatial_id` upward (`S1`
+    ///   repair also repairs `S2`) predicting from the layer immediately below.
+    /// - In [`InterLayerMode::KeyOnly`] and [`InterLayerMode::Off`], repairs
+    ///   `spatial_id` alone via `INTRA_ONLY_FRAME` while lower (and intact
+    ///   higher) spatial layers carry on untouched.
     pub fn request_layer_repair(&mut self, spatial_id: u8) {
         if spatial_id >= 1 && spatial_id < self.num_layers {
-            self.repair_from_layer = Some(
-                self.repair_from_layer
-                    .map_or(spatial_id, |cur| cur.min(spatial_id)),
-            );
+            if self.inter_layer.active_on_inter_unit() {
+                for s in spatial_id..self.num_layers {
+                    self.repair_layers[usize::from(s - 1)] = true;
+                }
+            } else {
+                self.repair_layers[usize::from(spatial_id - 1)] = true;
+            }
         }
     }
 
     /// Whether any enhancement-layer repair (`S1` or `S2`) is pending.
     #[must_use]
-    pub const fn enhancement_repair_pending(&self) -> bool {
-        self.repair_from_layer.is_some()
+    pub fn enhancement_repair_pending(&self) -> bool {
+        self.repair_layers.contains(&true)
     }
 
     /// Next temporal unit's index.
@@ -905,17 +1058,17 @@ impl SpatialStructure {
     /// Whether `spatial_id` (`0..num_layers`) is scheduled in the next temporal
     /// unit if coded (`key_unit` and a pending repair always schedule all layers).
     #[must_use]
-    pub const fn layer_due(&self, spatial_id: u8, key_unit: bool) -> bool {
+    pub fn layer_due(&self, spatial_id: u8, key_unit: bool) -> bool {
         if spatial_id >= self.num_layers {
             return false;
         }
         if spatial_id == 0 || self.num_layers == 3 {
             return true;
         }
-        if key_unit || self.tu_index == 0 || self.repair_from_layer.is_some() {
+        if key_unit || self.tu_index == 0 || self.enhancement_repair_pending() {
             return true;
         }
-        (self.tu_index - self.last_key_tu).is_multiple_of(self.enhancement_interval as u64)
+        (self.tu_index - self.last_key_tu).is_multiple_of(u64::from(self.enhancement_interval))
     }
 
     /// Preview the base layer's references for the next temporal unit (for
@@ -923,7 +1076,7 @@ impl SpatialStructure {
     #[must_use]
     pub fn peek_base(&self, key_unit: bool) -> FrameReferences {
         let key = key_unit || self.tu_index == 0;
-        if !key && self.repair_from_layer.is_some() && self.temporal_layers > 1 {
+        if !key && self.enhancement_repair_pending() && self.temporal_layers > 1 {
             let mut refs = self.temporal[0].peek(self.coded_counts[0], true);
             refs.refresh = BASE_TEMPORAL_SLOTS;
             return refs;
@@ -949,7 +1102,7 @@ impl SpatialStructure {
         let s = usize::from(spatial_id);
         s < usize::from(self.num_layers)
             && !key_unit
-            && self.repair_from_layer.is_none()
+            && !self.enhancement_repair_pending()
             && self.tu_index > 0
             && self.temporal[s].next_is_droppable()
     }
@@ -995,24 +1148,24 @@ impl SpatialStructure {
         kept_layers: u8,
     ) -> TemporalUnitPlan {
         let key = key_unit || self.tu_index == 0;
-        let repair_from = if key {
-            self.repair_from_layer = None;
+        let repaired = if key {
+            self.repair_layers = [false; MAX_SPATIAL_LAYERS - 1];
             self.last_key_tu = self.tu_index;
-            None
+            [false; MAX_SPATIAL_LAYERS - 1]
         } else {
-            self.repair_from_layer.take()
+            std::mem::take(&mut self.repair_layers)
         };
+        let repair_from = repaired.iter().position(|&r| r).map(|idx| (idx + 1) as u8);
+        let any_repair = repair_from.is_some();
         let n = usize::from(self.num_layers);
         let kept = kept_layers.clamp(1, self.num_layers);
         let mut code_layer = [false; MAX_SPATIAL_LAYERS];
         code_layer[0] = true;
         for (s, coded) in code_layer.iter_mut().enumerate().take(n).skip(1) {
             let sid = s as u8;
-            let due = repair_from.is_some() || self.layer_due(sid, key);
-            let can_drop = sid >= kept
-                && !key
-                && repair_from.is_none()
-                && self.temporal[s].next_is_droppable();
+            let due = any_repair || self.layer_due(sid, key);
+            let can_drop =
+                sid >= kept && !key && !any_repair && self.temporal[s].next_is_droppable();
             *coded = due && !can_drop;
         }
         // Never code a higher spatial layer when the layer below it was dropped.
@@ -1022,13 +1175,12 @@ impl SpatialStructure {
             }
         }
         for (s, &coded) in code_layer.iter().enumerate().take(n).skip(1) {
-            let due = repair_from.is_some() || self.layer_due(s as u8, key);
+            let due = any_repair || self.layer_due(s as u8, key);
             if due && !coded && self.enhancement_interval == 1 {
                 let _ = self.temporal[s].drop_next();
             }
         }
 
-        let any_repair = repair_from.is_some();
         let (base, mut lower_slot) = self.advance_base_layer(key, any_repair, code_layer[1]);
         let mut lower_temporal_id = base.temporal_id;
         let mut upper = [None; MAX_SPATIAL_LAYERS - 1];
@@ -1039,14 +1191,19 @@ impl SpatialStructure {
                 break;
             }
             let sid = s as u8;
-            let mode = match repair_from {
-                _ if key => UpperLayerMode::KeyUnit,
-                Some(r) if r <= sid => UpperLayerMode::LayerRepair,
-                // A repair above this layer restarts the temporal hierarchy
-                // below it (`advance_base_layer`), so this intact layer
-                // restarts too, keeping its operating points closed.
-                Some(_) if self.temporal_layers > 1 => UpperLayerMode::RestartIntactTemporal,
-                _ => UpperLayerMode::Normal,
+            let mode = if key {
+                UpperLayerMode::KeyUnit
+            } else if repaired[s - 1] {
+                UpperLayerMode::LayerRepair
+            } else if any_repair && self.temporal_layers > 1 {
+                // Keep all spatial layers' temporal mini-GOP positions aligned at
+                // `T0` on a repair TU so `T0`-only operating points receive the
+                // repaired layer's `INTRA_ONLY` refresh without phase drift;
+                // intact layers remain ordinary `Inter` frames (and in K-SVC still
+                // predict solely from their own `T0` slot).
+                UpperLayerMode::RestartIntactTemporal
+            } else {
+                UpperLayerMode::Normal
             };
             let (plan, slot_for_next) = self.advance_upper_layer(UpperLayerAdvance {
                 spatial_id: sid,
@@ -1061,7 +1218,7 @@ impl SpatialStructure {
         }
 
         let current_tu = self.tu_index;
-        self.record_repair_tracking(current_tu, key, repair_from, &base, &upper);
+        self.record_repair_tracking(current_tu, key, repaired, &base, &upper);
         self.tu_index += 1;
         TemporalUnitPlan {
             tu_index: current_tu,
@@ -1075,18 +1232,19 @@ impl SpatialStructure {
     fn advance_base_layer(
         &mut self,
         key: bool,
-        any_repair: bool,
+        cascade_repair: bool,
         code_s1: bool,
     ) -> (SpatialLayerPlan, usize) {
         let base_layer_index = self.coded_counts[0];
         self.coded_counts[0] += 1;
-        let restart_base = key || (any_repair && self.temporal_layers > 1);
+        let restart_base = key || (cascade_repair && self.temporal_layers > 1);
         let mut base_refs = self.temporal[0].next(base_layer_index, restart_base);
         if key {
             base_refs.refresh = SlotMask::ALL;
-        } else if any_repair && self.temporal_layers > 1 {
+        } else if cascade_repair && self.temporal_layers > 1 {
             base_refs.refresh = BASE_TEMPORAL_SLOTS;
-        } else if code_s1 && self.inter_layer && base_refs.refresh.is_empty() {
+        } else if code_s1 && self.inter_layer.active_on_inter_unit() && base_refs.refresh.is_empty()
+        {
             // Disposable S0 frame needed as S1's inter-layer reference in this TU:
             // place it in S0's dedicated scratch slot (4 in 2-layer, 6 in 3-layer)
             // so slots 0..=1 stay untouched.
@@ -1122,6 +1280,7 @@ impl SpatialStructure {
             },
             intra_only: false,
             enhancement_repair: false,
+            predicts_from_lower: false,
             references: base_refs,
             referenced_pictures: base_referenced,
         };
@@ -1140,6 +1299,9 @@ impl SpatialStructure {
         let offset = layer_slot_offset(spatial_id);
         let layer_reset = matches!(mode, UpperLayerMode::KeyUnit | UpperLayerMode::LayerRepair);
         let restart_temporal = layer_reset || matches!(mode, UpperLayerMode::RestartIntactTemporal);
+        let inter_layer_active = self
+            .inter_layer
+            .active_in_unit(matches!(mode, UpperLayerMode::KeyUnit));
         let layer_index = self.coded_counts[s];
         self.coded_counts[s] += 1;
         let raw = self.temporal[s].next(layer_index, restart_temporal);
@@ -1148,7 +1310,11 @@ impl SpatialStructure {
         } else {
             shift_mask(raw.refresh, offset)
         };
-        if !layer_reset && code_next_upper && self.inter_layer && shifted_refresh.is_empty() {
+        if !layer_reset
+            && code_next_upper
+            && self.inter_layer.active_on_inter_unit()
+            && shifted_refresh.is_empty()
+        {
             // Disposable (`T2`) picture the layer above predicts from in this
             // TU: place it in this layer's scratch slot so its own `T0`/`T1`
             // slots stay untouched.
@@ -1156,11 +1322,12 @@ impl SpatialStructure {
             shifted_refresh = SlotMask::only(scratch);
         }
         let temporal_id = if spatial_id == 1 && self.enhancement_interval > 1 {
-            self.s1_min_temporal_id.max(if self.inter_layer {
-                lower_temporal_id
-            } else {
-                0
-            })
+            self.s1_min_temporal_id
+                .max(if self.inter_layer.active_on_inter_unit() {
+                    lower_temporal_id
+                } else {
+                    0
+                })
         } else {
             raw.position.layer
         };
@@ -1182,6 +1349,7 @@ impl SpatialStructure {
                 interval,
                 lower_slot,
                 layer_reset,
+                inter_layer_active,
             );
         let pic_index = self.next_picture_index;
         self.next_picture_index += 1;
@@ -1199,6 +1367,7 @@ impl SpatialStructure {
             frame_type,
             intra_only,
             enhancement_repair: matches!(mode, UpperLayerMode::LayerRepair),
+            predicts_from_lower: inter_layer_active,
             references,
             referenced_pictures,
         };
@@ -1215,8 +1384,9 @@ impl SpatialStructure {
         interval: u32,
         lower_slot: usize,
         layer_reset: bool,
+        inter_layer_active: bool,
     ) -> (FrameType, bool, FrameReferences, ReferencedFrames) {
-        if layer_reset && self.inter_layer {
+        if layer_reset && inter_layer_active {
             let refs = FrameReferences {
                 position,
                 reference: ReferenceLink {
@@ -1242,7 +1412,7 @@ impl SpatialStructure {
         } else {
             let primary_slot = raw_ref.slot + offset;
             let primary_distance = raw_ref.distance.saturating_mul(interval);
-            let secondary = self.inter_layer.then_some(ReferenceLink {
+            let secondary = inter_layer_active.then_some(ReferenceLink {
                 slot: lower_slot,
                 distance: 0,
             });
@@ -1267,7 +1437,7 @@ impl SpatialStructure {
         &mut self,
         current_tu: u64,
         key: bool,
-        repair_from: Option<u8>,
+        repaired: [bool; MAX_SPATIAL_LAYERS - 1],
         base: &SpatialLayerPlan,
         upper: &[Option<SpatialLayerPlan>; MAX_SPATIAL_LAYERS - 1],
     ) {
@@ -1275,8 +1445,12 @@ impl SpatialStructure {
         if key {
             self.repaired_from = base.picture_index;
             self.layer_repaired_from_tu[..n].fill(current_tu);
-        } else if let Some(r) = repair_from {
-            self.layer_repaired_from_tu[usize::from(r)..n].fill(current_tu);
+        } else {
+            for s in 1..n {
+                if repaired[s - 1] {
+                    self.layer_repaired_from_tu[s] = current_tu;
+                }
+            }
         }
         let plans = [Some(base), upper[0].as_ref(), upper[1].as_ref()];
         let mut layer_ref = [false; MAX_SPATIAL_LAYERS];
@@ -1301,10 +1475,11 @@ impl SpatialStructure {
                 push_bounded(non_ref, current_tu);
             }
         }
+        let inter_layer_tu = self.inter_layer.active_in_unit(key);
         let mut pic_ref = [false; MAX_SPATIAL_LAYERS];
         for s in (0..n).rev() {
             pic_ref[s] = plans[s].is_some()
-                && (layer_ref[s] || (self.inter_layer && s + 1 < n && pic_ref[s + 1]));
+                && (layer_ref[s] || (inter_layer_tu && s + 1 < n && pic_ref[s + 1]));
         }
         for (&plan, &is_pic_ref) in plans.iter().zip(pic_ref.iter()).take(n) {
             if let (Some(p), false) = (plan, is_pic_ref) {
@@ -1382,7 +1557,7 @@ pub fn split_rate_control(
     frame_rate: FrameRate,
     intra_period: u32,
     enhancement_interval: u32,
-    inter_layer: bool,
+    inter_layer: InterLayerMode,
 ) -> Result<Vec<LayerRateBudget>, RateControlError> {
     let num_layers = shares.len();
     if total.target_bps < num_layers as u64 {
@@ -1429,7 +1604,7 @@ pub fn split_rate_control(
             } else {
                 1
             };
-            if s > 0 && inter_layer {
+            if s > 0 && inter_layer.active_on_key_unit() {
                 if interval == 1 {
                     let key_boost_scale = if s == top {
                         ENHANCEMENT_KEY_BOOST_SCALE
@@ -1439,8 +1614,10 @@ pub fn split_rate_control(
                     cfg.keyframe_boost = (total.keyframe_boost * key_boost_scale).max(1.0);
                     cfg.initial_key_complexity =
                         (total.initial_key_complexity * ENHANCEMENT_KEY_COMPLEXITY_SCALE).max(1.0);
-                    cfg.initial_bits_per_pixel = Some(base_bpp * ENHANCEMENT_BPP_SCALE);
-                } else {
+                    if inter_layer.active_on_inter_unit() {
+                        cfg.initial_bits_per_pixel = Some(base_bpp * ENHANCEMENT_BPP_SCALE);
+                    }
+                } else if inter_layer.active_on_inter_unit() {
                     let n = f64::from(interval);
                     cfg.keyframe_boost = 1.0;
                     cfg.initial_key_complexity = 1.0;
@@ -1592,6 +1769,17 @@ impl CombinedCbrBuffer {
             buffer_overflows: 0,
             peak_tu_bits: 0,
         }
+    }
+
+    /// Configure initial inter-layer hit-rate expectations for `inter_layer`
+    /// (`0.0` in [`InterLayerMode::KeyOnly`] / [`InterLayerMode::Off`] where
+    /// P-frames do not reference lower spatial layers).
+    #[must_use]
+    pub fn with_inter_layer(mut self, inter_layer: InterLayerMode) -> Self {
+        if !inter_layer.active_on_inter_unit() {
+            self.inter_layer_hit_rates = [0.0; MAX_SPATIAL_LAYERS - 1];
+        }
+        self
     }
 
     /// Reconfigure target bitrate and buffer duration mid-stream.
@@ -1760,7 +1948,7 @@ impl CombinedCbrBuffer {
         if request.spatial_id > 0 {
             share.room_bits =
                 self.remaining_tu_room(request.interval, request.ceiling, request.prior_layer_bits);
-            if request.key && request.inter_layer {
+            if request.from_lower_key {
                 let (anchor, clear_key_loan) = enhancement_key_anchor(self.num_layers, request);
                 share.key_anchor = Some(anchor);
                 share.clear_key_loan = clear_key_loan;
@@ -1772,7 +1960,7 @@ impl CombinedCbrBuffer {
         }
         if !request.key
             && request.has_coded_upper_layer
-            && request.inter_layer
+            && request.inter_layer.active_on_key_unit()
             && request.enhancement_interval == 1
         {
             let upper_level = request.upper_inter_level.unwrap_or(
@@ -1926,13 +2114,17 @@ pub(crate) struct ShareRequest {
     pub spatial_id: u8,
     /// Planned as a key picture (`S0` key, or `S1`/`S2` key or repair picture).
     pub key: bool,
+    /// True when `spatial_id >= 1` resets its temporal chain by predicting from
+    /// `spatial_id - 1` (`KeyUnit` in `On`/`KeyOnly`, `LayerRepair` in `On`;
+    /// false on `INTRA_ONLY_FRAME` in `Off` and `KeyOnly` `LayerRepair`).
+    pub from_lower_key: bool,
     /// Whether `spatial_id + 1` is also coded in this temporal unit (so
     /// `spatial_id` acts as a capped lower layer).
     pub has_coded_upper_layer: bool,
     /// The frame's index within its layer.
     pub layer_index: u64,
     /// `spatial.inter_layer`.
-    pub inter_layer: bool,
+    pub inter_layer: InterLayerMode,
     /// `spatial.enhancement_interval`.
     pub enhancement_interval: u32,
     /// This temporal unit's duration (`None`: the nominal one).
@@ -1990,7 +2182,8 @@ const KEY_MAX_FINER_THAN_BASE: u32 = 4;
 
 fn enhancement_key_anchor(num_layers: u8, request: &ShareRequest) -> (KeyAnchor, bool) {
     let lower_q = request.lower_quantizer;
-    let moving_startup = request.layer_index == 0
+    let moving_startup = request.inter_layer.active_on_key_unit()
+        && request.layer_index == 0
         && request
             .startup_profile
             .is_some_and(|(peak, static_fraction)| {
@@ -2001,7 +2194,7 @@ fn enhancement_key_anchor(num_layers: u8, request: &ShareRequest) -> (KeyAnchor,
         max: max.max(min),
         seed_inter_offset,
     };
-    if request.enhancement_interval > 1 {
+    if request.enhancement_interval > 1 && request.inter_layer.active_on_key_unit() {
         let anchor = anchor(
             lower_q.saturating_sub(DECIMATED_KEY_FINER),
             lower_q.saturating_add(DECIMATED_KEY_COARSER),
@@ -2186,20 +2379,35 @@ mod tests {
 
     #[test]
     fn scalability_modes_parse_and_map_layers() {
-        for (name, s, t) in [
-            ("L1T1", 1, 1),
-            ("l1t2", 1, 2),
-            ("L1T3", 1, 3),
-            ("L2T1", 2, 1),
-            ("l2t2", 2, 2),
-            ("L2T3", 2, 3),
-            ("L3T1", 3, 1),
-            ("l3t2", 3, 2),
-            ("L3T3", 3, 3),
+        for (name, s, t, key) in [
+            ("L1T1", 1, 1, false),
+            ("l1t2", 1, 2, false),
+            ("L1T3", 1, 3, false),
+            ("L2T1", 2, 1, false),
+            ("l2t2", 2, 2, false),
+            ("L2T3", 2, 3, false),
+            ("L2T1_KEY", 2, 1, true),
+            ("l2t2_key", 2, 2, true),
+            ("L2T3_KEY", 2, 3, true),
+            ("L3T1", 3, 1, false),
+            ("l3t2", 3, 2, false),
+            ("L3T3", 3, 3, false),
+            ("L3T1_KEY", 3, 1, true),
+            ("l3t2_key", 3, 2, true),
+            ("L3T3_KEY", 3, 3, true),
         ] {
             let mode = ScalabilityMode::parse(name).unwrap();
-            assert_eq!((mode.spatial_layers(), mode.temporal_layers()), (s, t));
+            assert_eq!(
+                (
+                    mode.spatial_layers(),
+                    mode.temporal_layers(),
+                    mode.is_key_mode()
+                ),
+                (s, t, key)
+            );
+            assert_eq!(ScalabilityMode::parse(mode.as_str()), Some(mode));
         }
+        assert!(ScalabilityMode::parse("L1T1_KEY").is_none());
         assert!(ScalabilityMode::parse("L4T1").is_none());
         assert!(ScalabilityMode::parse("L2T4").is_none());
         assert!(ScalabilityMode::parse("L3T4").is_none());
@@ -2290,7 +2498,7 @@ mod tests {
     fn assert_all_operating_points_reference_closed(
         temporal_layers: u8,
         enhancement_interval: u32,
-        inter_layer: bool,
+        inter_layer: InterLayerMode,
     ) {
         let mut s = SpatialStructure::with_layers(
             2,
@@ -2305,7 +2513,7 @@ mod tests {
             FrameRate { num: 30, den: 1 },
             temporal_layers,
             enhancement_interval,
-            inter_layer,
+            inter_layer.active_on_inter_unit(),
         );
         let mut tus = Vec::new();
         for tu in 0..36 {
@@ -2342,7 +2550,11 @@ mod tests {
     #[test]
     fn operating_points_are_closed_across_all_modes_and_intervals() {
         for temporal_layers in 1..=3 {
-            for inter_layer in [false, true] {
+            for inter_layer in [
+                InterLayerMode::Off,
+                InterLayerMode::On,
+                InterLayerMode::KeyOnly,
+            ] {
                 for interval in [1, 2, 3, 4, 5, 6, 8] {
                     assert_all_operating_points_reference_closed(
                         temporal_layers,
@@ -2356,14 +2568,20 @@ mod tests {
 
     #[test]
     fn three_layer_dpb_map_and_operating_points_are_closed_across_l3t1_l3t2_l3t3() {
-        assert_eq!(spatial_pool_slots(2), 5);
-        assert_eq!(spatial_pool_slots(3), 8);
+        assert_eq!(spatial_pool_slots(2, InterLayerMode::On), 5);
+        assert_eq!(spatial_pool_slots(3, InterLayerMode::On), 8);
+        assert_eq!(spatial_pool_slots(2, InterLayerMode::KeyOnly), 4);
+        assert_eq!(spatial_pool_slots(3, InterLayerMode::KeyOnly), 6);
         assert_eq!(inter_layer_scratch_slot(2, 0), 4);
         assert_eq!(inter_layer_scratch_slot(3, 0), 6);
         assert_eq!(inter_layer_scratch_slot(3, 1), 7);
 
         for temporal_layers in 1..=3 {
-            for inter_layer in [false, true] {
+            for inter_layer in [
+                InterLayerMode::Off,
+                InterLayerMode::On,
+                InterLayerMode::KeyOnly,
+            ] {
                 let mut s = SpatialStructure::with_layers(3, temporal_layers, 1, inter_layer, None);
                 let ops = build_three_layer_operating_points(
                     [(320, 180), (640, 360), (1280, 720)],
@@ -2377,7 +2595,7 @@ mod tests {
 
                 let mut tus = Vec::new();
                 for tu in 0..36 {
-                    // Exercise S2-only repair on TU 9, S1+S2 repair on TU 15, S2 drop on TU 21,
+                    // Exercise S2-only repair on TU 9, S1 repair on TU 15, S2 drop on TU 21,
                     // and key TU on TU 24:
                     if tu == 9 {
                         s.request_layer_repair(2);
@@ -2386,7 +2604,7 @@ mod tests {
                     }
                     let kept = if tu == 21 { 2 } else { 3 };
                     let plan = s.next_temporal_unit_layers(tu == 0 || tu == 24, kept);
-                    if temporal_layers == 3 && inter_layer && tu == 1 {
+                    if temporal_layers == 3 && inter_layer == InterLayerMode::On && tu == 1 {
                         // Disposable T2 TU in L3T3: S0 -> slot 6, S1 -> slot 7, S2 -> NONE!
                         assert_eq!(
                             plan.base.references.refresh,
@@ -2414,6 +2632,16 @@ mod tests {
                             })
                         );
                     }
+                    if temporal_layers == 3 && inter_layer == InterLayerMode::KeyOnly && tu == 1 {
+                        // Disposable T2 TU in L3T3_KEY: scratch slots 6, 7 stay completely unused!
+                        assert_eq!(plan.base.references.refresh, SlotMask::NONE);
+                        let s1 = plan.upper[0].unwrap();
+                        assert_eq!(s1.references.refresh, SlotMask::NONE);
+                        assert_eq!(s1.references.secondary, None);
+                        let s2 = plan.upper[1].unwrap();
+                        assert_eq!(s2.references.refresh, SlotMask::NONE);
+                        assert_eq!(s2.references.secondary, None);
+                    }
                     tus.push(plan);
                 }
 
@@ -2429,7 +2657,7 @@ mod tests {
                                 for dep in plan.referenced_pictures.iter() {
                                     assert!(
                                         decoded.contains(&dep),
-                                        "L3T{temporal_layers} (inter={inter_layer}) OP {:#x} missing S{} dep {dep} at TU {}",
+                                        "L3T{temporal_layers} (inter={inter_layer:?}) OP {:#x} missing S{} dep {dep} at TU {}",
                                         op.idc,
                                         plan.spatial_id,
                                         tu.tu_index
@@ -2445,8 +2673,58 @@ mod tests {
     }
 
     #[test]
+    fn ksvc_three_layer_single_layer_forwarding_is_reference_closed() {
+        for temporal_layers in 1..=3 {
+            let mut s =
+                SpatialStructure::with_layers(3, temporal_layers, 1, InterLayerMode::KeyOnly, None);
+            let ops = build_three_layer_operating_points(
+                [(320, 180), (640, 360), (1280, 720)],
+                FrameRate { num: 30, den: 1 },
+                temporal_layers,
+            );
+            let mut tus = Vec::new();
+            for tu in 0..36 {
+                if tu == 9 {
+                    s.request_layer_repair(2);
+                } else if tu == 15 {
+                    s.request_layer_repair(1);
+                }
+                let kept = if tu == 21 { 2 } else { 3 };
+                tus.push(s.next_temporal_unit_layers(tu == 0 || tu == 24, kept));
+            }
+            // A K-SVC receiver targeting `max_s` receives `{S0..=max_s}` on key TUs and
+            // `{max_s}` ONLY on every non-key TU (including S1/S2 repair TUs).
+            for op in &ops {
+                let mut decoded: HashSet<u64> = HashSet::new();
+                for tu in &tus {
+                    for plan in tu.layer_plans() {
+                        let in_time = (op.idc >> plan.temporal_id) & 1 != 0;
+                        let in_ksvc = if tu.key_unit {
+                            plan.spatial_id <= op.max_spatial_id
+                        } else {
+                            plan.spatial_id == op.max_spatial_id
+                        };
+                        if in_time && in_ksvc {
+                            for dep in plan.referenced_pictures.iter() {
+                                assert!(
+                                    decoded.contains(&dep),
+                                    "L3T{temporal_layers}_KEY single-layer receiver OP {:#x} missing S{} dep {dep} at TU {}",
+                                    op.idc,
+                                    plan.spatial_id,
+                                    tu.tu_index
+                                );
+                            }
+                            decoded.insert(plan.picture_index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn l2t1_l2t2_l2t3_slot_isolation_and_key_units() {
-        let mut s = SpatialStructure::with_layers(2, 3, 1, true, None);
+        let mut s = SpatialStructure::with_layers(2, 3, 1, InterLayerMode::On, None);
         let tu0 = s.next_temporal_unit_layers(true, 2);
         assert_eq!(
             (tu0.base.frame_type, tu0.base.intra_only),
@@ -2481,7 +2759,7 @@ mod tests {
             })
         );
 
-        let mut indep = SpatialStructure::with_layers(2, 2, 1, false, None);
+        let mut indep = SpatialStructure::with_layers(2, 2, 1, InterLayerMode::Off, None);
         let k0 = indep.next_temporal_unit_layers(true, 2);
         let e0 = k0.upper[0].unwrap();
         assert_eq!((e0.frame_type, e0.intra_only), (FrameType::Key, true));
@@ -2491,7 +2769,7 @@ mod tests {
 
     #[test]
     fn decimated_enhancement_cadence_and_enhancement_first_drops() {
-        let mut s = SpatialStructure::with_layers(2, 1, 6, true, None);
+        let mut s = SpatialStructure::with_layers(2, 1, 6, InterLayerMode::On, None);
         let mut coded_s1 = Vec::new();
         for tu in 0..19 {
             let drop_s1 = tu == 12;
@@ -2513,7 +2791,7 @@ mod tests {
             FrameRate { num: 30, den: 1 },
             300,
             6,
-            true,
+            InterLayerMode::On,
         )
         .unwrap()[..] else {
             panic!("two layer budgets");
@@ -2543,10 +2821,15 @@ mod tests {
         total.buffer_ms = 1000;
         total.peak_bps = Some(1_200_000);
         let shares = [0.12, 0.25, 0.63];
-        let [s0, s1, s2] =
-            split_rate_control(total, &shares, FrameRate { num: 30, den: 1 }, 300, 1, true)
-                .unwrap()[..]
-        else {
+        let [s0, s1, s2] = split_rate_control(
+            total,
+            &shares,
+            FrameRate { num: 30, den: 1 },
+            300,
+            1,
+            InterLayerMode::On,
+        )
+        .unwrap()[..] else {
             panic!("three layer budgets");
         };
         assert_eq!(
@@ -2591,7 +2874,7 @@ mod tests {
                 FrameRate { num: 30, den: 1 },
                 300,
                 interval,
-                true,
+                InterLayerMode::On,
             )
             .unwrap()[..] else {
                 panic!("two layer budgets");
@@ -2735,7 +3018,7 @@ mod tests {
 
     #[test]
     fn per_layer_loss_distinguishes_s0_key_s1_repair_s2_repair_and_non_reference_tus() {
-        let mut s = SpatialStructure::with_layers(3, 3, 1, true, None);
+        let mut s = SpatialStructure::with_layers(3, 3, 1, InterLayerMode::On, None);
         let _tu0 = s.next_temporal_unit_layers(true, 3);
         let _tu1 = s.next_temporal_unit_layers(false, 3); // T2 non-reference
         let _tu2 = s.next_temporal_unit_layers(false, 3); // T1 reference
@@ -2784,7 +3067,7 @@ mod tests {
         );
 
         // Independent layers (inter_layer=0) repair S1 with an INTRA_ONLY_FRAME.
-        let mut indep = SpatialStructure::with_layers(2, 1, 6, false, None);
+        let mut indep = SpatialStructure::with_layers(2, 1, 6, InterLayerMode::Off, None);
         let _ = indep.next_temporal_unit_layers(true, 2);
         let _ = indep.next_temporal_unit_layers(false, 2);
         assert!(!indep.needs_layer_repair(1, 1));
@@ -2802,13 +3085,93 @@ mod tests {
         assert_eq!(enh_rep.referenced_pictures, ReferencedFrames::NONE);
     }
 
+    #[test]
+    fn ksvc_per_layer_loss_repairs_only_the_affected_spatial_layer() {
+        let mut ksvc = SpatialStructure::with_layers(3, 3, 1, InterLayerMode::KeyOnly, None);
+        let k_tu0 = ksvc.next_temporal_unit_layers(true, 3);
+        let k_s1_0 = k_tu0.upper[0].unwrap();
+        let k_s2_0 = k_tu0.upper[1].unwrap();
+        assert_eq!(
+            (k_s1_0.frame_type, k_s1_0.intra_only),
+            (FrameType::Inter, false)
+        );
+        assert_eq!(
+            k_s1_0.referenced_pictures.iter().collect::<Vec<_>>(),
+            vec![k_tu0.base.picture_index]
+        );
+        assert_eq!(
+            (k_s2_0.frame_type, k_s2_0.intra_only),
+            (FrameType::Inter, false)
+        );
+        assert_eq!(
+            k_s2_0.referenced_pictures.iter().collect::<Vec<_>>(),
+            vec![k_s1_0.picture_index]
+        );
+        let _k_tu1 = ksvc.next_temporal_unit_layers(false, 3); // T2
+        let _k_tu2 = ksvc.next_temporal_unit_layers(false, 3); // T1
+        assert!(ksvc.needs_layer_repair(2, 2));
+        ksvc.request_layer_repair(2);
+        let k_tu3 = ksvc.next_temporal_unit_layers(false, 3);
+        assert_eq!(k_tu3.base.temporal_id, 0);
+        assert_eq!(k_tu3.base.frame_type, FrameType::Inter);
+        assert_eq!(k_tu3.base.references.refresh, BASE_TEMPORAL_SLOTS);
+        let k_s1_3 = k_tu3.upper[0].unwrap();
+        assert!(!k_s1_3.enhancement_repair);
+        assert_eq!(
+            (k_s1_3.frame_type, k_s1_3.intra_only),
+            (FrameType::Inter, false)
+        );
+        assert_eq!(k_s1_3.temporal_id, 0);
+        assert_eq!(k_s1_3.references.secondary, None);
+        assert_eq!(
+            k_s1_3.referenced_pictures.iter().collect::<Vec<_>>(),
+            vec![k_s1_0.picture_index]
+        );
+        let k_s2_3 = k_tu3.upper[1].unwrap();
+        assert!(k_s2_3.enhancement_repair);
+        assert_eq!(k_s2_3.temporal_id, 0);
+        assert_eq!(
+            (k_s2_3.frame_type, k_s2_3.intra_only),
+            (FrameType::Key, true)
+        );
+        assert_eq!(k_s2_3.references.refresh, TOP_ENHANCEMENT_TEMPORAL_SLOTS);
+        assert_eq!(k_s2_3.referenced_pictures, ReferencedFrames::NONE);
+
+        // TU 4 is disposable T2; TU 5 is referenced T1 -> losing S1 on TU 5 repairs ONLY S1 on TU 6!
+        let _k_tu4 = ksvc.next_temporal_unit_layers(false, 3); // T2
+        assert!(!ksvc.needs_layer_repair(1, 4));
+        let _k_tu5 = ksvc.next_temporal_unit_layers(false, 3); // T1
+        assert!(ksvc.needs_layer_repair(1, 5));
+        ksvc.request_layer_repair(1);
+        let k_tu6 = ksvc.next_temporal_unit_layers(false, 3);
+        let k_s1_6 = k_tu6.upper[0].unwrap();
+        let k_s2_6 = k_tu6.upper[1].unwrap();
+        assert!(k_s1_6.enhancement_repair);
+        assert_eq!(
+            (k_s1_6.frame_type, k_s1_6.intra_only),
+            (FrameType::Key, true)
+        );
+        assert_eq!(k_s1_6.referenced_pictures, ReferencedFrames::NONE);
+        assert!(!k_s2_6.enhancement_repair);
+        assert_eq!(
+            (k_s2_6.frame_type, k_s2_6.intra_only),
+            (FrameType::Inter, false)
+        );
+        assert_eq!(k_s2_6.references.secondary, None);
+        assert_eq!(
+            k_s2_6.referenced_pictures.iter().collect::<Vec<_>>(),
+            vec![k_s2_3.picture_index]
+        );
+    }
+
     fn share_request(spatial_id: u8, key: bool) -> ShareRequest {
         ShareRequest {
             spatial_id,
             key,
+            from_lower_key: spatial_id > 0 && key,
             has_coded_upper_layer: spatial_id == 0,
             layer_index: 0,
-            inter_layer: true,
+            inter_layer: InterLayerMode::On,
             enhancement_interval: 1,
             interval: None,
             ceiling: 1.0,
@@ -2917,5 +3280,68 @@ mod tests {
         assert!((active_share - 0.35).abs() < 1e-6);
         assert!((active_scale - 1.0).abs() < 1e-6);
         assert_eq!(active_min_q, None);
+    }
+
+    #[test]
+    fn key_only_rate_shares_and_combined_buffer_reallocation() {
+        let mut cfg = sample_config();
+        cfg.params.set("spatial.base_rate_share", 0.35);
+        cfg.params.set("spatial.s0_rate_share", 0.08);
+        cfg.params.set("spatial.s1_rate_share", 0.26);
+        cfg.params.set("spatial.inter_layer", 2.0);
+        let sp2 = SpatialConfig::from_encoder_config_max(&cfg, 3)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (sp2.layer_rate_shares[0] - f64::from(SpatialParams::default().key_base_rate_share))
+                .abs()
+                < 1e-6
+        );
+
+        cfg.params.set("spatial.layers", 3.0);
+        let sp3 = SpatialConfig::from_encoder_config_max(&cfg, 3)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (sp3.layer_rate_shares[0] - f64::from(SpatialParams::default().key_s0_rate_share))
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (sp3.layer_rate_shares[1] - f64::from(SpatialParams::default().key_s1_rate_share))
+                .abs()
+                < 1e-6
+        );
+
+        let cbr = CombinedCbrBuffer::with_share_caps(
+            RateControlConfig::new(500_000),
+            FrameRate { num: 30, den: 1 },
+            &sp2.layer_rate_shares,
+        )
+        .with_inter_layer(InterLayerMode::KeyOnly);
+        let static_s0 = ShareRequest {
+            inter_layer: InterLayerMode::KeyOnly,
+            static_fraction: 0.95,
+            upper_inter_level: Some(160),
+            ..share_request(0, false)
+        };
+        let s0_share = cbr.plan_share(&static_s0);
+        assert!(s0_share.budget_scale < 0.70);
+        assert!(s0_share.min_inter_quantizer.is_some());
+
+        let moving_key = ShareRequest {
+            inter_layer: InterLayerMode::KeyOnly,
+            startup_profile: Some((4.0, 0.05)),
+            ..share_request(1, true)
+        };
+        let key_share = cbr.plan_share(&moving_key);
+        assert!(key_share.clear_key_loan);
+        assert_eq!(
+            key_share.key_anchor.map(|a| (a.min, a.max)),
+            Some((
+                100 + MOVING_STARTUP_KEY_MIN_LEAD,
+                100 + MOVING_STARTUP_KEY_MAX_LEAD
+            ))
+        );
     }
 }

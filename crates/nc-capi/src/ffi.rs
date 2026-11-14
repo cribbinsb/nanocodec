@@ -172,6 +172,8 @@ pub struct NcLayerFrame {
     pub temporal_layer: u8,
     /// Non-zero when droppable without breaking its spatial layer's reference chain.
     pub droppable: u8,
+    /// Non-zero when this layer picture predicts from `spatial_id - 1` in this packet.
+    pub inter_layer_ref: u8,
     /// Bit `i` is `1` when operating point `i` includes this layer picture.
     pub operating_point_mask: u32,
     /// Visible width of this layer picture.
@@ -583,6 +585,7 @@ pub unsafe extern "C" fn nc_encoder_encode(
                         spatial_id: l.spatial_id,
                         temporal_layer: l.temporal_layer,
                         droppable: u8::from(l.droppable),
+                        inter_layer_ref: u8::from(l.inter_layer_ref),
                         operating_point_mask: l.operating_point_mask,
                         width: l.width as u32,
                         height: l.height as u32,
@@ -1288,5 +1291,97 @@ mod tests {
             // SAFETY: created above, not used again.
             unsafe { nc_decoder_destroy(dec) };
         }
+    }
+
+    #[test]
+    fn av1_ksvc_packet_layers_signal_inter_layer_ref_only_on_key_units() {
+        let (w, h) = (160u32, 96u32);
+        let mut cfg = NcEncoderConfig {
+            codec: 0,
+            width: 0,
+            height: 0,
+            fps_num: 0,
+            fps_den: 0,
+            quantizer: 0,
+            intra_period: 0,
+            temporal_layers: 0,
+            intra_refresh_period: 0,
+            ltr_interval: 0,
+            target_kbps: 0,
+            peak_kbps: 0,
+            buffer_ms: 0,
+            frame_drop: 0,
+            colour: [0; 3],
+            full_range: 0,
+            timing: 0,
+            film_grain: 0,
+            film_grain_strength: 0.0,
+        };
+        // SAFETY: valid cfg pointer.
+        let status = unsafe { nc_encoder_config_default(&raw mut cfg, NC_CODEC_AV1, w, h) };
+        assert_eq!(status, NcStatus::Ok);
+        cfg.temporal_layers = 2;
+        let params = [
+            NcParam {
+                name: c"spatial.layers".as_ptr(),
+                value: 3.0,
+            },
+            NcParam {
+                name: c"spatial.inter_layer".as_ptr(),
+                value: 2.0,
+            },
+            NcParam {
+                name: c"layers.adaptive".as_ptr(),
+                value: 0.0,
+            },
+            NcParam {
+                name: c"hold.enable".as_ptr(),
+                value: 0.0,
+            },
+        ];
+        let mut enc = std::ptr::null_mut();
+        // SAFETY: valid config, params and out pointer.
+        let status = unsafe {
+            nc_encoder_create(&raw const cfg, params.as_ptr(), params.len(), &raw mut enc)
+        };
+        assert_eq!(status, NcStatus::Ok);
+        for idx in 0..4u8 {
+            let y_plane = vec![100u8.wrapping_add(idx * 11); (w * h) as usize];
+            let uv_plane = vec![128u8; ((w / 2) * (h / 2)) as usize];
+            let frame = NcFrame {
+                format: NC_FORMAT_I420,
+                planes: [y_plane.as_ptr(), uv_plane.as_ptr(), uv_plane.as_ptr()],
+                strides: [w as usize, (w / 2) as usize, (w / 2) as usize],
+                has_timestamp: 0,
+                timestamp_us: 0,
+            };
+            let mut pkt = NcPacket {
+                data: std::ptr::null(),
+                size: 0,
+                index: 0,
+                timestamp_us: 0,
+                keyframe: 0,
+                temporal_layer: 0,
+                dropped: 0,
+                quantizer: 0,
+            };
+            // SAFETY: valid pointers.
+            let status = unsafe { nc_encoder_encode(enc, &raw const frame, &raw mut pkt) };
+            assert_eq!(status, NcStatus::Ok);
+            let mut layers_ptr: *const NcLayerFrame = std::ptr::null();
+            let mut layer_count = 0usize;
+            // SAFETY: valid pointers.
+            let status =
+                unsafe { nc_encoder_packet_layers(enc, &raw mut layers_ptr, &raw mut layer_count) };
+            assert_eq!(status, NcStatus::Ok);
+            assert_eq!(layer_count, 3);
+            // SAFETY: valid slice of `layer_count` entries.
+            let layers = unsafe { std::slice::from_raw_parts(layers_ptr, layer_count) };
+            assert_eq!(layers[0].inter_layer_ref, 0);
+            assert_eq!(layers[1].inter_layer_ref, u8::from(idx == 0));
+            assert_eq!(layers[2].inter_layer_ref, u8::from(idx == 0));
+        }
+        // SAFETY: created above, not used again.
+        unsafe { nc_encoder_destroy(enc) };
     }
 }
