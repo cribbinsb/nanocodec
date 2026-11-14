@@ -317,7 +317,7 @@ export class Panel {
     const result = this.metricsResult;
     this.metricsShownAt = performance.now();
     const encode = this.current.entry ? null : this.average('encode');
-    for (const [key, value] of Object.entries({ bitrate: this.average('bytes') * 8 * this.current.fps / 1000, encode, decode: this.average('decode'), psnr: this.average('psnr') })) {
+    for (const [key, value] of Object.entries({ bitrate: this.bitrate(), encode, decode: this.average('decode'), psnr: this.average('psnr') })) {
       this.element.querySelector(`[data-metric="${key}"]`).textContent = value === null ? 'n/a' : value.toFixed(key === 'bitrate' ? 0 : 1);
     }
     this.element.querySelector('.frame-count').textContent = this.current.entry
@@ -343,6 +343,18 @@ export class Panel {
     if (this.current.rateMode !== 'cbr') return `Fixed ${quantizer} ${this.current.qp}`;
     return `Target ${this.current.targetKbps} kbps · ${quantizer} ${result.quantizer} · buffer ${(result.bufferFullness * 100).toFixed(0)}%${result.bufferOverflows ? ` · ${result.bufferOverflows} buffer overruns` : ''}`;
   }
+  /**
+   * Kilobits per second of source time over the recent frames: their bytes over
+   * the time they cover (first to last timestamp plus one frame interval). Every
+   * coded frame counts, so where frames were skipped (a live source the page
+   * could not keep up with) the rate is per real second, not per frame x fps.
+   */
+  bitrate() {
+    if (!this.history.length) return null;
+    const bytes = this.history.reduce((sum, f) => sum + f.bytes, 0);
+    const seconds = (this.history.at(-1).timestamp - this.history[0].timestamp + 1000 / this.current.fps) / 1000;
+    return bytes * 8 / seconds / 1000;
+  }
   /** Mean of one recorded field over the recent frames that have it. */
   average(key) {
     const values = this.history.map(f => f[key]).filter(Number.isFinite);
@@ -353,7 +365,7 @@ export class Panel {
   /** Count, chart and save one coded frame. */
   record(coded) {
     ++this.count;
-    this.history.push({ bytes: coded.packet.byteLength, encode: coded.encodeMs, decode: coded.decodeMs, decodeStage: coded.decodeStageMs, psnr: coded.psnr, key: coded.key });
+    this.history.push({ bytes: coded.packet.byteLength, encode: coded.encodeMs, decode: coded.decodeMs, decodeStage: coded.decodeStageMs, psnr: coded.psnr, key: coded.key, timestamp: coded.timestamp });
     if (this.history.length > HISTORY_FRAMES) this.history.shift();
     // A pre-encoded view downloads its whole stream file instead.
     if (this.current.entry) { this.downloadButton.disabled = false; return; }

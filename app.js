@@ -2,10 +2,15 @@
 // two views (panel.js), the capture loop on the shared source timeline
 // (timeline.js, capture.js), and pause, frame stepping and the session line.
 //
-// Captures run at the timeline's SOURCE_FPS; each view codes the ticks of its
-// own frame rate and is given the source drawn at its own resolution. Pause
-// stops on the next captured tick that every view codes, and Step moves to the
-// next such tick, so paused views always show the same source instant.
+// Each view codes the ticks of its own frame rate and is given the source drawn
+// at its own resolution. Sample clips, files the browser can decode frame by
+// frame and the test scene are exact sources (exact-source.js): the page asks
+// for every tick a view codes, in order, as fast as the pipeline takes them, and
+// the clip's time runs slower than real time when it cannot keep up; nothing is
+// skipped, so pictures, streams and numbers do not depend on the machine. The
+// webcam (and a file the browser can only play) is sampled live on the timeline
+// (capture.js). Pause stops on the next tick every view codes, and Step moves to
+// the next such tick, so paused views always show the same source instant.
 //
 // Switching analysis on or off while comparing keeps the session: captures
 // wait until none is in flight, the views' decoders move to the other module
@@ -18,6 +23,7 @@ import { Loupe } from './loupe.js';
 import { AnalysisController } from './analysis-view.js';
 import { drawScene } from './scene.js';
 import { FrameSource } from './capture.js';
+import { ExactSource } from './exact-source.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 import { SOURCE_FPS, nextCommonTick, tickMs } from './timeline.js';
 import { matchingSettings } from './view-settings.js';
@@ -34,6 +40,8 @@ const NOT_READY_RETRY_MS = 100;
 const KEEPING_UP = 0.95;
 // Delivery under this fraction of the slowest stage's own rate is not that stage's limit.
 const STAGE_BOUND = 0.8;
+// Said of a clip or file the browser cannot decode frame by frame (exact-source.js), so it is sampled while it plays.
+const APPROXIMATE = 'this browser/file cannot be read frame by frame: frames may be skipped and the numbers are approximate';
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
 let showOriginal = false, delivered = 0;
@@ -51,6 +59,12 @@ let switchWanted = false, switchBusy = false;
 // The original frame (largest view size) of the instant on screen, for the magnifier.
 let original = null;
 const frames = new FrameSource(video, error => { if (running || preparing) fail(error); });
+// The exact source of the current clip, file or scene (null: sampled live), the
+// identity it was opened for, and whether the pump is fetching a picture.
+let exact = null, exactFor = null, pumping = false;
+// Exact sources: the wall time of tick 0, so the clip never runs faster than real
+// time; moved later whenever the pipeline falls behind, so it never catches up in a burst.
+let clockOrigin = 0;
 // Capture follows the source: a staged frame on a tick some view codes is captured
 // as soon as it is presented (capture.js), not on the next timer tick.
 frames.wanted = tick => !comparison || comparison.coding(tick).some(Boolean);
@@ -97,9 +111,9 @@ function pause() {
 function enterPause() {
   trace('paused', lastTick);
   pausing = false; paused = true; pausedAt = performance.now(); clearTimeout(timer);
-  if (kind !== 'scene') video.pause();
+  if (!exact && kind !== 'scene') video.pause();
   setPauseButton('Resume', true);
-  stepButton.disabled = !frames.canStep;
+  stepButton.disabled = !exact && !frames.canStep;
   $('#runtime-label').textContent = 'Paused';
 }
 async function resume() {
@@ -111,7 +125,7 @@ async function resume() {
 async function play(heldAt) {
   const token = generation;
   try {
-    if (kind !== 'scene') await video.play();
+    if (!exact && kind !== 'scene') await video.play();
     if (token !== generation) return;
     const now = performance.now(), gap = now - heldAt;
     if (delivered) firstDeliveredAt += gap;
@@ -144,7 +158,7 @@ async function switchDecodersWhenIdle() {
   const token = generation, playing = !paused, heldAt = performance.now();
   switchWanted = false; switchBusy = true;
   clearTimeout(timer);
-  if (playing && kind !== 'scene') video.pause();
+  if (playing && !exact && kind !== 'scene') video.pause();
   try {
     const results = await comparison.switchDecoders();
     if (token !== generation) return;
@@ -159,8 +173,39 @@ async function switchDecodersWhenIdle() {
   switchWanted = comparison.decodersStale;
   if (switchWanted) { switchDecodersWhenIdle(); return; }
   if (playing) { await play(heldAt); return; }
-  pauseButton.disabled = false; stepButton.disabled = !frames.canStep;
+  pauseButton.disabled = false; stepButton.disabled = !exact && !frames.canStep;
   $('#runtime-label').textContent = 'Paused';
+}
+/**
+ * Exact sources: send every tick a view codes, in order, while the pipeline has
+ * room (a completed frame calls this again through scheduleFrame).
+ */
+async function pump(token) {
+  if (pumping) return;
+  pumping = true;
+  try {
+    while (token === generation && running && !paused && !comparison.full && !((switchWanted || switchBusy) && !pausing)) {
+      const tick = nextCodedTick(lastTick);
+      if (exact.ended(tick)) { stop(); $('#session-stats').textContent = `${delivered} frames compared · video ended`; return; }
+      const due = clockOrigin + tickMs(tick), now = performance.now();
+      if (due > now) { timer = setTimeout(() => pump(token), due - now); return; }
+      clockOrigin = Math.max(clockOrigin, now - tickMs(tick + 1));
+      const shot = await exact.picture(tick, ...largestView());
+      if (token !== generation || !running || paused) { shot.picture.close?.(); return; }
+      send(tick, shot);
+    }
+  } catch (error) { if (token === generation) fail(error); } finally { pumping = false; }
+}
+/** The first tick after `after` that some view codes. */
+function nextCodedTick(after) {
+  let tick = after + 1;
+  while (!comparison.coding(tick).some(Boolean)) ++tick;
+  return tick;
+}
+/** The largest view size, at which the scene is drawn. */
+function largestView() {
+  const largest = panels.map(p => p.current).reduce((a, b) => (b.width > a.width ? b : a));
+  return [largest.width, largest.height];
 }
 /** While paused, show the next instant every view codes. */
 async function step() {
@@ -168,8 +213,13 @@ async function step() {
   const token = generation, tick = nextCommonTick(lastTick, panels.map(p => p.current.step));
   stepping = true; stepButton.disabled = true;
   try {
-    const shown = await frames.advanceTo(tick);
-    if (token === generation) capture(shown);
+    if (exact) {
+      const shot = await exact.picture(tick, ...largestView());
+      if (token === generation) send(tick, shot); else shot.picture.close?.();
+    } else {
+      const shown = await frames.advanceTo(tick);
+      if (token === generation) capture(shown);
+    }
   } catch (error) { if (token === generation) fail(error); }
   stepping = false;
   if (token === generation && paused && !switchWanted) stepButton.disabled = false;
@@ -235,7 +285,21 @@ async function metadata() {
     video.addEventListener('loadedmetadata', loaded, { once: true }); video.addEventListener('error', failed, { once: true });
   });
 }
+/** The exact source for the current clip, file or scene, reused while the source is the same (null: none). */
+async function openExact() {
+  const url = kind === 'clip' ? clipUrl(clip, Math.max(...panels.map(p => p.current.height))) : kind === 'file' ? fileUrl : kind;
+  if (exactFor === url) return exact;
+  exact?.close();
+  exact = kind === 'camera' ? null : await ExactSource.open(kind, { url, fps: kind === 'clip' ? clip.fps : null, loops: kind === 'clip' });
+  exactFor = url;
+  return exact;
+}
 async function prepareSource(token) {
+  if (kind === 'file' && file && loadedSource !== file) {
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    fileUrl = URL.createObjectURL(file); loadedSource = null;
+  }
+  if (await openExact()) { video.pause(); return; }
   if (kind === 'scene') return;
   if (kind === 'camera') {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS or localhost and a browser with camera support. You can still use the test scene or a video file.');
@@ -251,10 +315,6 @@ async function prepareSource(token) {
     loadVideo(url, url);
   } else {
     if (!file) throw new Error('Choose a video file first.');
-    if (loadedSource !== file) {
-      if (fileUrl) URL.revokeObjectURL(fileUrl);
-      fileUrl = URL.createObjectURL(file);
-    }
     loadVideo(file, fileUrl);
     if (video.ended) video.currentTime = 0;
   }
@@ -295,10 +355,11 @@ async function start() {
     if (token !== generation) return;
     await Promise.all(panels.map(panel => panel.prepare()));
     if (token !== generation) return;
-    frames.reset(kind, kind === 'clip' ? clip.fps : SOURCE_FPS);
+    if (!exact) frames.reset(kind, kind === 'clip' ? clip.fps : SOURCE_FPS);
+    const loopLength = (exact ?? frames).loopLength;
     for (const panel of panels) {
-      if (panel.current.entry && panel.stream.loopTicks !== frames.loopLength) {
-        throw new Error(`Version ${panel.letter}: the stream was made for a ${panel.stream.loopTicks}-tick loop, the clip has ${frames.loopLength}`);
+      if (panel.current.entry && panel.stream.loopTicks !== loopLength) {
+        throw new Error(`Version ${panel.letter}: the stream was made for a ${panel.stream.loopTicks}-tick loop, the clip has ${loopLength}`);
       }
     }
     comparison = new Comparison(panels, {
@@ -309,7 +370,7 @@ async function start() {
     if (token !== generation) return;
     pendingRateChange = false;
     $("#keyframe").disabled = false; pauseButton.disabled = false;
-    running = true; preparing = false; delivered = 0; firstDeliveredAt = 0; lastTick = -1; nextDeadline = performance.now();
+    running = true; preparing = false; delivered = 0; firstDeliveredAt = 0; lastTick = -1; nextDeadline = clockOrigin = performance.now();
     document.body.classList.add('running'); startButton.textContent = 'Stop comparison'; $('#runtime-label').textContent = 'Encoding + decoding live';
     scheduleFrame(token);
   } catch (error) { if (token === generation) fail(error); }
@@ -321,6 +382,7 @@ function scheduleFrame(token) {
   clearTimeout(timer);
   // A decoder switch waits for the frames in flight; a pause under way still reaches its instant.
   if (token !== generation || !running || paused || comparison.full || ((switchWanted || switchBusy) && !pausing)) return;
+  if (exact) { pump(token); return; }
   timer = setTimeout(() => sendFrame(token), Math.max(0, nextDeadline - performance.now()));
 }
 function sendFrame(token) {
@@ -339,12 +401,13 @@ function captureNext(token) {
 function capture(tick) {
   const coding = comparison.coding(tick);
   if (!coding.some(Boolean)) { lastTick = tick; return; }
-  const largest = panels.map(p => p.current).reduce((a, b) => (b.width > a.width ? b : a));
-  const shot = frames.capture(tick, largest.width, largest.height);
+  const shot = frames.capture(tick, ...largestView());
   // No frame yet (a source or webcam just starting): try again on the next tick.
-  if (!shot) return;
+  if (shot) send(tick, shot, coding);
+}
+/** Show the picture of `tick` in the preview and send it to the views that code it. */
+function send(tick, { picture, element, width, height }, coding = comparison.coding(tick)) {
   lastTick = tick;
-  const { picture, element, width, height } = shot;
   const scale = Math.min(PREVIEW_WIDTH / width, PREVIEW_HEIGHT / height);
   preview.fillStyle = '#000'; preview.fillRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
   preview.drawImage(element, (PREVIEW_WIDTH - width * scale) / 2, (PREVIEW_HEIGHT - height * scale) / 2, width * scale, height * scale);
@@ -384,21 +447,37 @@ function finishFrame(token, results, originals, tick) {
   const now = paused ? pausedAt : performance.now();
   if (delivered === 1) firstDeliveredAt = now;
   const deliveryRate = delivered > 1 ? (delivered - 1) * 1000 / Math.max(now - firstDeliveredAt, 1) : 0;
-  $('#session-stats').textContent = `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps delivered${limit(deliveryRate)} · bitrate per view at its own frame rate`;
+  $('#session-stats').textContent = exact
+    ? `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps${pace(deliveryRate)} · bitrate per second of source time`
+    : `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps delivered${limit(deliveryRate)} · bitrate per second of source time${
+      kind === 'camera' ? '' : ` · ${APPROXIMATE}`}`;
   scheduleFrame(token);
 }
 /**
  * The busiest worker (encode and decode per view), which sets the delivered
  * rate once it falls below the fastest view's frame rate.
  */
-function limit(deliveryRate) {
-  if (!deliveryRate) return '';
+/** The busiest stage: { name, ms } over the encode and decode workers of both views. */
+function slowestStage() {
   const stages = panels.flatMap(panel => {
     const { encode, decode } = panel.stageTimes();
     return [{ name: `encode ${panel.letter}`, ms: encode }, { name: `decode ${panel.letter}`, ms: decode }].filter(s => s.ms !== null);
   });
-  const slowest = stages.reduce((a, b) => (b.ms > a.ms ? b : a));
-  const stage = `${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
+  return stages.reduce((a, b) => (b.ms > a.ms ? b : a));
+}
+/**
+ * Exact sources: how fast the clip's time runs. Below real time nothing is
+ * skipped, so the pictures and numbers are those of a machine that keeps up.
+ */
+function pace(deliveryRate) {
+  if (!deliveryRate) return '';
+  const target = Math.max(...panels.map(p => p.current.fps)), speed = deliveryRate / target, slowest = slowestStage();
+  if (speed >= KEEPING_UP) return ` · real time, slowest ${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
+  return ` · running at ${speed.toFixed(2)}× real time (slowest ${slowest.name}, ${slowest.ms.toFixed(0)} ms): pictures and numbers are unaffected`;
+}
+function limit(deliveryRate) {
+  if (!deliveryRate) return '';
+  const slowest = slowestStage(), stage = `${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
   const target = Math.max(...panels.map(p => p.current.fps));
   if (deliveryRate >= KEEPING_UP * target) return ` · keeping up, slowest ${stage}`;
   // Stages overlap (pipeline.js), so the slowest one allows 1000 / ms frames per
@@ -409,6 +488,7 @@ function limit(deliveryRate) {
 }
 function sourceChanged(next) {
   stop(); kind = next; message(); resetViews();
+  exact?.close(); exact = null; exactFor = null;
   preview.clearRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
   if (kind === "scene") drawScene(preview, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0);
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
