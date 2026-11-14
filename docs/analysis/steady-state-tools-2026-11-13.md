@@ -220,12 +220,27 @@ The trade is the same in window 0 as in steady state. Our variance AQ gives some
 cost, wherever it runs. It is not what changes after start-up. Whether a better AQ (SVT-style, or
 x264's variance AQ, which keeps PSNR) would win the MS-SSIM third is a separate question.
 
+## Update 2026-11-14: finding 2 followed up
+
+- **Cause: found, then lost.** An instrumented encode logged search, chosen and skip
+  vectors per block. On pan at 350 kbps (H.264), 33–36% of macroblocks after frame 75 chose
+  the zero vector although the motion search found at least a sample of motion. In all of
+  them zero was the P_Skip vector. Body-cam at 212 kbps: H.264 23%, AV1 20%.
+- **Existing gates cleared.** Sub-pel gates off, `h264.static_skip` 0 and the search
+  shortcuts off do not change the zero area or quality.
+- **A lever that prices the zero vector** on moving blocks under a moving camera removes the
+  chain (zero area 67 → 36%, near x264's 23%), but quality barely moves:
+  - +0.3 dB on the diagnostic point;
+  - on held-out pool clips (600 frames, CBR ladder, BD PSNR-YUV): H.264 +0.92% / −0.46%
+    on two pans, −0.11% on a moving crowd; AV1 +0.26% / +0.45% on the pans.
+- **Conclusion.** The zero-vector field is a symptom with little cost of its own. It is not
+  where the steady-state pan loss sits. The lever was not landed (branch
+  `movingzero-lever`; docs/handoff/tuning.md "Steady-state levers").
+
 ## Suggested next steps (not done)
 
-1. **H.264 zero-vector lock-in on moving cameras** (finding 2). Count P_Skip blocks whose vector was
-   forced to zero by §8.4.1.1 on the pan and body-cam clips. Screen a cost that lets inter blocks with the
-   predicted vector break the zero chain. Then check AV1's body-cam sub-pel gap through the sub-pel
-   gates.
+1. **H.264 zero-vector lock-in on moving cameras** (finding 2). Done 2026-11-14, see the update above:
+   a real effect on the vectors, little on quality.
 2. **AV1 partition / transform size against qindex** (finding 3). Compare the split and transform-size
    decisions at qindex 95–155 with SVT's on the crowd and static clips. The λ–qindex mapping and the
    split rate are the first suspects.

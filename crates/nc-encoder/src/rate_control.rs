@@ -388,6 +388,10 @@ const RECODE_FILL: f64 = 0.9;
 /// wound it up and static scenes then ran 6% under the target for the next
 /// 15 s (`long_static_chirla_s024c2` AV1 400 kbps, 5 s horizon).
 const DEBIT_MAX_BUFFERS: f64 = 0.25;
+/// Time constant of the running share of unchanged blocks that sets each
+/// key's repay horizon (`repay_seconds_for_key`): about a second of history,
+/// so one frame's flash or pan does not decide a 10 s phase.
+const STILL_AVERAGE_SECONDS: f64 = 1.0;
 /// Model slot of key frames; inter roles follow at `INTER_MODEL + role`.
 const KEY_MODEL: usize = 0;
 const INTER_MODEL: usize = 1;
@@ -505,8 +509,20 @@ pub(crate) struct RateController {
     /// Effective step ratio of the frame's block-level offsets (planned at
     /// `select`, replaced by the realised one before `feedback`); 1 without.
     block_ratio: f64,
-    /// `rate.key_repay_seconds`.
+    /// `rate.key_repay_seconds`: the moving-scene repay horizon and the
+    /// debit term's horizon.
     key_repay_seconds: f64,
+    /// `rate.key_repay_still_seconds` (0: the same as `key_repay_seconds`),
+    /// `rate.key_repay_still_from` and `rate.key_repay_still_full`.
+    key_repay_still_seconds: f64,
+    key_repay_still_from: f64,
+    key_repay_still_full: f64,
+    /// Running share of unchanged 8x8 blocks over the inter frames
+    /// ([`STILL_AVERAGE_SECONDS`]); 0 before the first one.
+    still_share: f64,
+    /// The current key's repay horizon, chosen when the key is planned
+    /// (`repay_seconds_for_key`).
+    phase_repay_seconds: f64,
     /// `rate.key_cap_buffer` and `rate.key_cap_gop` (`key_bits_cap`).
     key_cap_buffer: f64,
     key_cap_gop: f64,
@@ -618,6 +634,11 @@ impl RateController {
             held_spent: 0.,
             block_ratio: 1.,
             key_repay_seconds: f64::from(params.key_repay_seconds),
+            key_repay_still_seconds: f64::from(params.key_repay_still_seconds),
+            key_repay_still_from: f64::from(params.key_repay_still_from),
+            key_repay_still_full: f64::from(params.key_repay_still_full),
+            still_share: 0.,
+            phase_repay_seconds: f64::from(params.key_repay_seconds),
             key_cap_buffer: f64::from(params.key_cap_buffer),
             key_cap_gop: f64::from(params.key_cap_gop),
             first_key_lookahead: first_key_lookahead(params, &calibration),
@@ -750,8 +771,32 @@ impl RateController {
     /// capped at `rate.key_repay_seconds` so very long or infinite periods
     /// (single-key streams, intra refresh) still repay the first key.
     fn repay_frames(&self) -> u32 {
-        let horizon = (self.key_repay_seconds * self.frame_fps).ceil().max(1.);
+        let horizon = (self.phase_repay_seconds * self.frame_fps).ceil().max(1.);
         self.period.max(1).min(horizon as u32)
+    }
+    /// The repay horizon of a key planned now: `rate.key_repay_seconds`,
+    /// blended linearly towards `rate.key_repay_still_seconds` as the running
+    /// share of unchanged blocks rises from `rate.key_repay_still_from` to
+    /// `rate.key_repay_still_full`. Chosen once per key, so a phase's loan
+    /// and repayment stay consistent; the first key has no history and takes
+    /// the moving-scene horizon. Safe for the rate: the loan is repaid in
+    /// full either way, only more slowly, and the debit term keeps the
+    /// moving-scene horizon, so the long-run rate holds.
+    fn repay_seconds_for_key(&self) -> f64 {
+        let still = if self.key_repay_still_seconds > 0. {
+            self.key_repay_still_seconds
+        } else {
+            self.key_repay_seconds
+        };
+        let span = self.key_repay_still_full - self.key_repay_still_from;
+        let weight = if span > 0. {
+            ((self.still_share - self.key_repay_still_from) / span).clamp(0., 1.)
+        } else if self.still_share >= self.key_repay_still_full {
+            1.
+        } else {
+            0.
+        };
+        self.key_repay_seconds + weight * (still - self.key_repay_seconds)
     }
     /// Inter-frame budget of the repayment phase of a key at `boost` times
     /// it: the key plus `repay_frames - 1` inter frames at it spend exactly
@@ -1274,6 +1319,10 @@ impl RateController {
                 self.first_key_cap_buffer = 0.;
             }
             self.last_key_index = index;
+            self.phase_repay_seconds = self.repay_seconds_for_key();
+        } else {
+            let weight = (1. / (STILL_AVERAGE_SECONDS * self.frame_fps)).min(1.);
+            self.still_share += (hint.static_fraction - self.still_share) * weight;
         }
         let h = hint.value(key);
         let held = std::mem::take(&mut self.held_pending);
@@ -1997,6 +2046,43 @@ mod tests {
         let before = r.model[slot];
         r.feedback(1_000_000);
         assert!(r.model[slot] > before.map(|m| m * 4.));
+    }
+
+    #[test]
+    fn a_still_scene_key_repays_over_the_still_horizon() {
+        let still = Complexity {
+            static_fraction: 0.95,
+            ..HINT
+        };
+        let half = Complexity {
+            static_fraction: 0.7,
+            ..HINT
+        };
+        let plan = |overrides: &[(&str, f32)], hint: Complexity| {
+            let mut r = controller_with(500_000, overrides);
+            r.period = 600;
+            r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(10_000);
+            for i in 1..300 {
+                r.select(false, i, hint, LayerPosition::FLAT, &LayerShare::WHOLE);
+                r.feedback(1_000);
+            }
+            r.select(true, 300, hint, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.repay_frames()
+        };
+        // Default (still horizon 0): every key repays over rate.key_repay_seconds.
+        assert_eq!(plan(&[], still), 150);
+        let longer = [("rate.key_repay_still_seconds", 10.)];
+        // The first key has no history: the moving-scene horizon.
+        let mut first = controller_with(500_000, &longer);
+        first.period = 600;
+        first.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert_eq!(first.repay_frames(), 150);
+        // A still scene's later key takes the still horizon; half-way between
+        // `still_from` (0.5) and `still_full` (0.9), half of the extra time.
+        assert_eq!(plan(&longer, still), 300);
+        assert_eq!(plan(&longer, half), 225);
+        assert_eq!(plan(&longer, HINT), 150);
     }
 
     #[test]

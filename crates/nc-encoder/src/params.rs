@@ -733,6 +733,17 @@ param_group! {
             "rate control: most bits a key may take, as a share of its repayment phase's bits (the key period, at most the repay horizon; 0 = none): lower keeps short GOPs of static content on target, where the key level floor would otherwise spend the whole GOP on the key",
         key_repay_seconds: 5.0, [0.1, 60.0],
             "rate control: longest time over which a key's extra bits are repaid by the following P frames (the key period if shorter), and the debit term's horizon (`rate.debit`): lower recovers sooner after a key in long or single-key streams",
+        // A still scene's key is referenced for its whole period, so it may
+        // be repaid more slowly; a moving one's frames after the key need
+        // the bits back soon. Tuner, 720-frame long-horizon clips (H.264
+        // Default, repay 7.7-8.1 s for every scene): static J -5.1..-8.0%
+        // with worst-1% much better, crowd worst-1% VMAF +8.2..+8.3%.
+        key_repay_still_seconds: 0.0, [0.0, 60.0],
+            "rate control: the key repay horizon of a still scene (0 = `rate.key_repay_seconds`); each key's horizon blends linearly from `rate.key_repay_seconds` to this as the running share of unchanged blocks rises from `rate.key_repay_still_from` to `rate.key_repay_still_full`; the debit term keeps `rate.key_repay_seconds`: higher repays still scenes' keys more slowly, keeping their quality up for longer",
+        key_repay_still_from: 0.5, [0.0, 1.0],
+            "rate control, with `rate.key_repay_still_seconds`: share of unchanged 8x8 blocks below which a key repays over `rate.key_repay_seconds`",
+        key_repay_still_full: 0.9, [0.0, 1.0],
+            "rate control, with `rate.key_repay_still_seconds`: share of unchanged 8x8 blocks from which a key repays over the still horizon",
         // The horizon 10 -> 5 s with the debit term: 600-frame long clips
         // (keys every 10 s) AV1 J +0.12% at 5 s, +0.15% at 10 s against
         // the proportional controller; at 150 frames 5 s leaves 3-12 of
