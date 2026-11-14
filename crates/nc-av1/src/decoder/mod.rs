@@ -36,7 +36,8 @@
 //! `S1` until an `S1`-only intra repair or key unit arrives, or report per-layer
 //! loss (`Encoder::report_layer_loss`) so the encoder emits an `S1` repair.
 use super::{Dsp, Picture, PlaneIndex, coeff_cdf_q_ctx};
-use block_size::BlockSize;
+use crate::segment_id::SegmentMap;
+use block_size::{BlockSize, MI_SIZE_LOG2};
 use cdf::Cdfs;
 use frame_header::{FrameHeader, NUM_REF_FRAMES, PRIMARY_REF_NONE, SlotHeader};
 use motion_field::{MotionField, ProjectionSource, SavedMotion, TemporalField};
@@ -93,6 +94,9 @@ struct SavedFrame {
     /// The vectors kept for temporal prediction (empty unless the
     /// sequence uses it).
     motion: SavedMotion,
+    /// The segment map later frames may keep or predict from (`None`: the
+    /// frame did not enable segmentation, every id 0).
+    segments: Option<Rc<SegmentMap>>,
 }
 
 /// Stateful AV1 decoder: one temporal unit (low-overhead OBU format, as in
@@ -731,6 +735,8 @@ impl Decoder {
         let recon = self
             .pictures
             .take(coded_width, coded_height, RECON_BORDER)?;
+        let previous_segments =
+            self.previous_segments(header, &params, (coded_width, coded_height))?;
         let temporal = temporal_field(&mut self.field, header, &seq, &references);
         let mut state = tile::FrameDecoder::new(
             coded,
@@ -749,6 +755,7 @@ impl Decoder {
             inter_tools,
             temporal,
         );
+        state.previous_segments = previous_segments;
         state.tiles(&header.tiles, tiles, !header.disable_cdf_update)?;
         // The post-decode filters (§7.14–7.17): deblocking, CDEF,
         // superres, loop restoration, which also reads deblocked rows.
@@ -795,6 +802,7 @@ impl Decoder {
             header: slot_header(header),
             spatial_id,
             motion: saved_motion.unwrap_or_default(),
+            segments: params.segments.map(|_| Rc::new(self.maps.segments.clone())),
         });
         // Our hold on the references ends here, so a slot the refresh
         // replaces can hand its picture back for reuse instead of freeing
@@ -808,6 +816,27 @@ impl Decoder {
             self.pictures.give(unused.picture);
         }
         Ok(None)
+    }
+
+    /// `load_previous_segment_ids` (§7.20): the primary reference's segment
+    /// map, when the frame enables segmentation and the map covers its
+    /// `coded` size (else every previous id is 0).
+    fn previous_segments(
+        &self,
+        header: &FrameHeader,
+        params: &subset::FrameParameters,
+        (width, height): (usize, usize),
+    ) -> Result<Option<Rc<SegmentMap>>, DecodeError> {
+        if params.segments.is_none() || header.primary_ref_frame == PRIMARY_REF_NONE {
+            return Ok(None);
+        }
+        let primary = header.ref_frame_idx[usize::from(header.primary_ref_frame)];
+        let mi = (width >> MI_SIZE_LOG2, height >> MI_SIZE_LOG2);
+        Ok(self
+            .slot(primary)?
+            .segments
+            .clone()
+            .filter(|map| map.covers(mi)))
     }
 
     /// The frame `coded` (after CDEF) at its upscaled width (§7.16): itself
@@ -859,6 +888,7 @@ impl Decoder {
                 header: slot.header.clone(),
                 spatial_id: slot.spatial_id,
                 motion: slot.motion.clone(),
+                segments: slot.segments.clone(),
             });
         }
     }

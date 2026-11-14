@@ -132,7 +132,7 @@ impl FrameDecoder<'_> {
             pred,
             shape: scratch.shape,
             flags: coded,
-            qp: self.current_q as i16,
+            qp: self.block_q as i16,
             bits: (reader.bits_consumed() - scratch.start) as u32,
             ..Self::placed(RecordKind::Coding, block)
         };
@@ -210,7 +210,7 @@ impl FrameDecoder<'_> {
             w: tx.width() as u16,
             h: tx.height() as u16,
             flags: if eob > 0 { flags::CODED_Y } else { 0 },
-            qp: self.current_q as i16,
+            qp: self.block_q as i16,
             nonzero: eob.min(usize::from(u16::MAX)) as u16,
             ..BlockRecord::default()
         };

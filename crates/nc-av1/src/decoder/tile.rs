@@ -16,12 +16,14 @@ use super::motion::{MotionCell, MotionGrid};
 use super::motion_field::MAX_PROJECTION_DISTANCE;
 use super::motion_field::{SavedMotion, TemporalField};
 use super::mv_stack::MvFrame;
-use super::subset::FrameParameters;
+use super::subset::{FrameParameters, SegmentQuantizers};
 use crate::backend::{Dsp, FrameKind, HORZ_ALIKE, Picture, PlaneIndex, VERT_ALIKE, gather};
 use crate::decoder_range::SymbolReader;
+use crate::segment_id::{MAX_SEGMENTS, SegmentMap, neg_deinterleave};
 use crate::tables::Partition;
 use crate::tables::{AC_QLOOKUP, DC_QLOOKUP};
 use nc_common::decode::DecodeError;
+use std::rc::Rc;
 
 // The analysis records (feature `analysis`); every hook below is compiled
 // out without it.
@@ -68,6 +70,10 @@ pub(super) struct FrameMaps {
     cdef_scratch: cdef::CdefScratch,
     /// The luma transforms of the inter block being decoded.
     tx_leaves: Vec<inter_residual::TxLeaf>,
+    /// Segment ids of the frame's 4x4 units, when it enables segmentation,
+    /// and each unit's `seg_id_predicted` (temporal prediction only).
+    pub(super) segments: SegmentMap,
+    segment_predicted: SegmentMap,
     /// Inter prediction scratch.
     prediction: inter_pred::PredictionScratch,
     /// Where analysis records go, when they are being collected.
@@ -88,6 +94,8 @@ impl FrameMaps {
             cdef: CdefMap::default(),
             cdef_scratch: cdef::CdefScratch::default(),
             tx_leaves: Vec::new(),
+            segments: SegmentMap::default(),
+            segment_predicted: SegmentMap::default(),
             prediction: inter_pred::PredictionScratch::default(),
             #[cfg(feature = "analysis")]
             stats: None,
@@ -112,8 +120,13 @@ pub(super) struct FrameDecoder<'a> {
     /// row to the left.
     above: [Vec<u8>; 3],
     left: [Vec<u8>; 3],
-    /// Dequantiser steps of each plane.
+    /// Dequantiser steps of each plane at `CurrentQIndex`.
     steps: [Steps; 3],
+    /// Those of the block being decoded: `steps`, moved by its segment's
+    /// quantizer offset (§7.12.2 `get_qindex`).
+    block_steps: [Steps; 3],
+    /// The block's qindex (`get_qindex(0, segment_id)`).
+    block_q: u32,
     /// `CurrentQIndex`, which `delta_q_abs` moves (§5.11.12).
     current_q: u32,
     /// `ReadDeltas`: the superblock's first block codes its deltas.
@@ -157,6 +170,9 @@ pub(super) struct FrameDecoder<'a> {
     coefficients: Box<CoefficientBuffer>,
     /// The restoration units superblocks code, when a plane is restored.
     pub(super) restoration: Option<LrUnitReader>,
+    /// The primary reference's segment map, when it covers this frame
+    /// (`load_previous_segment_ids`, §7.20).
+    pub(super) previous_segments: Option<Rc<SegmentMap>>,
 }
 
 /// The sequence-header tools the block layer follows.
@@ -314,6 +330,12 @@ impl<'a> FrameDecoder<'a> {
             .saved_sides
             .filter(|_| header.kind == FrameKind::Inter)
             .map(|_| SavedMotion::new(mi_cols, mi_rows));
+        if let Some(segments) = header.segments {
+            maps.segments.reset(mi_cols, mi_rows);
+            if segments.temporal_update {
+                maps.segment_predicted.reset(mi_cols, mi_rows);
+            }
+        }
         let base_q_idx = header.base_q_idx;
         let plane_steps = header
             .quant_deltas
@@ -334,6 +356,8 @@ impl<'a> FrameDecoder<'a> {
             ],
             left: [vec![0; sb_mi], vec![0; sb_mi / 2], vec![0; sb_mi / 2]],
             steps: plane_steps,
+            block_steps: plane_steps,
+            block_q: base_q_idx,
             current_q: base_q_idx,
             read_deltas: false,
             recon,
@@ -353,6 +377,7 @@ impl<'a> FrameDecoder<'a> {
             cdef: sequence_tools.cdef,
             mono_chrome: sequence_tools.mono_chrome,
             restoration,
+            previous_segments: None,
             mv_frame,
             coefficients: CoefficientBuffer::new(),
         }
@@ -617,6 +642,10 @@ impl<'a> FrameDecoder<'a> {
             && inter_frame
             && self.read_skip_mode(r, size, near);
         let skip = skip_mode || r.boolean(&mut self.cdfs.skip[near.skip_context()]);
+        let segment = match self.header.segments {
+            Some(segments) => self.read_segment_id(r, block, skip, segments)?,
+            None => 0,
+        };
         if !skip {
             self.read_cdef(r, (mi_col, mi_row), block.units());
         }
@@ -624,6 +653,7 @@ impl<'a> FrameDecoder<'a> {
             self.read_delta_qindex(r, size, skip);
             self.read_deltas = false;
         }
+        self.set_block_q(segment);
         let inter = skip_mode
             || inter_frame && r.boolean(&mut self.cdfs.intra_inter[near.intra_inter_context()]);
         let intrabc =
@@ -680,6 +710,93 @@ impl<'a> FrameDecoder<'a> {
             let q = self.current_q as i32 + (delta << res);
             self.set_q_index(q.clamp(MIN_DELTA_QINDEX, MAX_QINDEX) as u32);
         }
+    }
+    /// `intra_segment_id()` / `inter_segment_id()` without pre-skip ids
+    /// (§5.11.8, §5.11.19): a frame that keeps its reference's map copies
+    /// it (the block takes the smallest id under it); otherwise a block
+    /// predicted from the reference's map (`seg_id_predicted`) takes that,
+    /// and the others read their id against the spatial prediction
+    /// ([`Self::read_spatial_segment_id`]). The id fills the block's units.
+    // Out of line: only streams with segmentation reach it.
+    #[cold]
+    #[inline(never)]
+    fn read_segment_id(
+        &mut self,
+        r: &mut SymbolReader<'_>,
+        block: BlockPos,
+        skip: bool,
+        segments: SegmentQuantizers,
+    ) -> Result<u8, DecodeError> {
+        let (at, units) = ((block.mi_col, block.mi_row), block.units());
+        let previous = self.previous_segments.clone();
+        let previous = previous.as_deref();
+        if !segments.update_map {
+            self.maps.segments.copy_from(previous, at, units);
+            return Ok(previous.map_or(0, |map| map.min_over(at, units)));
+        }
+        let id = if segments.temporal_update {
+            let predicted = !skip && {
+                let (up, left) = block.available(PlaneIndex::Y);
+                let flags = &self.maps.segment_predicted;
+                let ctx = usize::from(up && flags.get(at.0, at.1 - 1) != 0)
+                    + usize::from(left && flags.get(at.0 - 1, at.1) != 0);
+                r.boolean(&mut self.cdfs.segment_predicted[ctx])
+            };
+            self.maps
+                .segment_predicted
+                .fill(at, units, u8::from(predicted));
+            if predicted {
+                previous.map_or(0, |map| map.min_over(at, units))
+            } else {
+                self.read_spatial_segment_id(r, block, skip, segments.last_active)?
+            }
+        } else {
+            self.read_spatial_segment_id(r, block, skip, segments.last_active)?
+        };
+        self.maps.segments.fill(at, units, id);
+        Ok(id)
+    }
+    /// `read_segment_id()` (§5.11.9): a skipped block takes its spatial
+    /// prediction, another codes its id against it.
+    fn read_spatial_segment_id(
+        &mut self,
+        r: &mut SymbolReader<'_>,
+        block: BlockPos,
+        skip: bool,
+        last_active: u8,
+    ) -> Result<u8, DecodeError> {
+        let at = (block.mi_col, block.mi_row);
+        let prediction = self
+            .maps
+            .segments
+            .predict(at, block.available(PlaneIndex::Y));
+        if skip {
+            return Ok(prediction.pred);
+        }
+        let coded = r.symbol(&mut self.cdfs.segment_id[prediction.ctx], MAX_SEGMENTS);
+        let count = usize::from(last_active) + 1;
+        let id = neg_deinterleave(coded, usize::from(prediction.pred), count);
+        if id >= count {
+            return Err(DecodeError::Malformed(
+                "AV1 segment_id beyond LastActiveSegId",
+            ));
+        }
+        Ok(id as u8)
+    }
+    /// The block's qindex and dequantiser steps: `CurrentQIndex` moved by
+    /// `segment`'s quantizer offset (§7.12.2 `get_qindex(0, segment_id)`).
+    fn set_block_q(&mut self, segment: u8) {
+        let offset = self.header.segments.map_or(0, |segments| {
+            i32::from(segments.alt_q[usize::from(segment)])
+        });
+        if offset == 0 {
+            self.block_q = self.current_q;
+            self.block_steps = self.steps;
+            return;
+        }
+        let q = (self.current_q as i32 + offset).clamp(0, MAX_QINDEX) as u32;
+        self.block_q = q;
+        self.block_steps = self.header.quant_deltas.map(|deltas| steps(q, deltas));
     }
     /// Set `CurrentQIndex` and the dequantiser steps that follow it.
     fn set_q_index(&mut self, q_index: u32) {

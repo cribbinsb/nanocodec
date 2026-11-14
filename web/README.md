@@ -135,7 +135,7 @@ are needed: each worker has its own ordinary WASM memory.
   - **Persistence AQ** (codecs with block QP): `persist.strength=2`; the reuse term
     (`persist.reuse`) is on by default.
   - **Temporal layers** 1–3 (`layers.count`) and **Second reference**
-    (`refs.second=1`, H.264; not with layers).
+    (`refs.second=1`, H.264, AV1 and VP9; not with layers).
   - **Parameter overrides:** free-form `name=value` lines (the CLI's parameter-file
     format), applied after the toggles. The search box autocompletes the codec's
     registered parameters and shows each one's description, default and range;

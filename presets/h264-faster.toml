@@ -100,3 +100,6 @@ analysis.one_position_sad_per_pixel = 0.6666667
 # Intra modes by coded cost (Default since 2026-11-13, study
 # h264-default-arms-2026-11-13) stay off here: pinned, byte-identical.
 h264.intra_rd = 0
+# The quiet second before a key (`rate.prekey_quiet`, H.264 Default since
+# 2026-11-14) stays off here: pinned, byte-identical.
+rate.prekey_quiet = 0

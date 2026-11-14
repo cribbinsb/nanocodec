@@ -332,7 +332,7 @@ impl FrameDecoder<'_> {
                     fills_block,
                 },
                 source,
-                steps: self.steps[plane_index],
+                steps: self.block_steps[plane_index],
             };
             coefficients::read(
                 &mut self.cdfs.coefficients,

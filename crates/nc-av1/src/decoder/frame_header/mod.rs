@@ -6,7 +6,7 @@ use nc_common::decode::{BitReader, DecodeError};
 
 mod filters;
 mod motion;
-mod quant;
+pub(super) mod quant;
 mod tiles;
 
 pub(crate) use filters::{CdefParams, LoopFilter, LrType, Restoration};

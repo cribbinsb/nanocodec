@@ -169,7 +169,46 @@ full decision +16.1%.
 | VP9 | −4.5 / −3.8 | −20.6 / −28.9 (Default −17.3 / −26.6) |
 | H.264, against its flat structure (`layers.count` 1) | −3.1 / −2.6 | +7.8 / +3.5 (Default +5.8 / −2.3) |
 
+**Normal screen (AV1, CBR, `--clips adopt` 2026-11-14 draw), `refs.second` + `second_full`:** L1 J −3.13%
+[−4.34, −2.15] (n 24), L2 −1.92% [−2.45, −1.41] (n 48), L3 −2.21% [−2.75, −1.73] (n 126, pooled) → BETTER, no
+guard. x86 instructions +17.4% on a 720p CBR clip. So this lever gains under both lenses; at k 0.1 it nets
+about −0.5% on the normal screen. Handed to the tuner (`docs/handoff/tuning.md`).
+
 H.264's Default (adaptive three temporal layers) already beats flat + second reference on the lens (J −2.3 vs
 +3.5), and the second reference is rejected with temporal layers, so it is not an H.264 lever. Flat H.264 is
 +6.2 / J worse than the layered Default on the lens: hierarchical P is worth about 8 J points there, which is the
 next thing to measure for the other codecs (AV1 supports layers; `layers.count` 3 with the H.264 gates).
+
+### Further probes (lens, fixed QP, paired vs each codec's Default: Weighted / J)
+
+| Probe | Result |
+|---|---|
+| AV1 `refs.second` + `second_full` on JVET LD-P class E (3 seq, 150 f) | −2.9 / −2.7 (vs HM LD-P: Weighted +41.0, J +29.5) |
+| Adaptive three temporal layers (`layers.count` 3 with H.264's gates), AV1 | +3.6 / −0.4 |
+| the same, HEVC | +4.1 / −0.5 |
+| the same, VVC | +1.9 / −3.0 |
+
+Hierarchical P helps the J terms a little and costs luma (Weighted) in AV1, HEVC and VVC: not a lens lever as
+configured (H.264's fixed-QP layer ladder, `layers.base_step_ratio` 0.4).
+
+**A caveat on the lens's own figure.** BD-rate over the overlap only means a change that moves a curve's quality
+range moves its BD against an anchor even at equal efficiency, because our gap to x264 is larger at low rates.
+Layered AV1 reads Weighted −16.7 vs x264 (Default −14.4) while its paired figure against the Default is +3.6.
+Proposed: report each candidate's paired BD against our own Default beside its anchor BD, and treat the paired
+figure as the decision number.
+
+## Summary
+
+| | Under the lens (AOM LD, fixed QP) | Under the normal screen |
+|---|---|---|
+| AV1 `refs.second` + `second_full` (landed off, handed to the tuner) | Weighted −6.0, J −5.0 (JVET-E −2.9 / −2.7) | L3 J −2.21% [−2.75, −1.73], BETTER, no guard |
+| VP9, the same | −4.5 / −3.8 | not screened |
+| Frame-level knobs (cadence, lambda, rounding, trellis, chroma) | all within ±2.5 | not screened |
+| CPU of the lever | +16-17% x86 instructions | |
+
+Exchange rate proposed: a lens gain is worth taking for an L3 loss of at most a fifth of it (e.g. −5% lens for
+≤ +1% L3); the second reference needs no exchange, it gains on both, and only its CPU is the question.
+
+Sources: the lens's 15 sequences were downloaded to `~/nanocodec-data/work/ctc-improve/src` (about 1.6 GB of raw
+I420) and deleted at the end of the project; the run directories (results JSON and per-frame hashes only) are
+kept in `~/nanocodec-data/work/ctc-improve/runs`. No AWS was used.

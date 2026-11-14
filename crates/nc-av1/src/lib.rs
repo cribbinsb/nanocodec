@@ -54,6 +54,7 @@ mod range_coder;
 mod reference_store;
 mod restoration;
 mod scaled_reference;
+mod segment_id;
 mod superres;
 mod tables;
 mod transform;

@@ -33,3 +33,6 @@ h264.intra8x8_gate_satd = 0
 # Intra modes by coded cost (Default since 2026-11-13, study
 # h264-default-arms-2026-11-13) stay off here: pinned, byte-identical.
 h264.intra_rd = 0
+# The quiet second before a key (`rate.prekey_quiet`, H.264 Default since
+# 2026-11-14) stays off here: pinned, byte-identical.
+rate.prekey_quiet = 0

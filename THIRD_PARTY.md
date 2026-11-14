@@ -18,6 +18,9 @@ Used in `crates/nc-av1`:
   approximation (`av1_cost_symbol`).
 - `src/mvcoding.rs`: motion-vector difference coding and default CDFs.
 - `src/coeff.rs`: coefficient coding and context derivation.
+- `src/segment_id.rs`: segment-id spatial prediction and context
+  (`av1_get_spatial_seg_pred`) and id interleaving (`av1_neg_interleave`,
+  `av1_neg_deinterleave`).
 - `src/cfl.rs`: chroma-from-luma subsampling and signed rounding from
   `av1/common/cfl.c` and `cfl.h`.
 - `src/backend.rs`: partition syntax including edge handling.

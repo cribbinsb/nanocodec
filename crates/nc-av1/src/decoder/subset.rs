@@ -3,6 +3,7 @@
 //! first tool it does not decode yet. The names are what
 //! `tools/ci/av1_conformance.sh` reports per vector, so they double as the
 //! conformance gap list.
+use super::frame_header::quant::{MAX_SEGMENTS, SEG_LVL_ALT_Q, SEG_LVL_MAX};
 use super::frame_header::{
     CdefParams, FrameHeader, FrameSize, FrameType, GlobalMotion, LoopFilter, Restoration,
     TOTAL_REFS, TxMode,
@@ -30,9 +31,12 @@ pub(super) struct FrameParameters {
     pub reduced_tx_set: bool,
     /// `TX_MODE_SELECT`: blocks code their transform sizes.
     pub tx_mode_select: bool,
-    /// `CodedLossless` (segmentation is outside the subset, so every
-    /// block's `Lossless`): 4x4 Walsh-Hadamard transforms only.
+    /// `CodedLossless` (segments are never lossless in the subset, so
+    /// every block's `Lossless`): 4x4 Walsh-Hadamard transforms only.
     pub lossless: bool,
+    /// Segmentation with spatially predicted ids and quantizer offsets
+    /// only (`None`: off).
+    pub segments: Option<SegmentQuantizers>,
     pub loop_filter: LoopFilter,
     pub cdef: CdefParams,
     /// The frame's size, including its superres upscaling.
@@ -58,6 +62,21 @@ pub(super) struct FrameParameters {
     pub allow_intrabc: bool,
 }
 
+/// The segmentation the block layer decodes: ids coded with spatial
+/// prediction (§5.11.9), kept from or temporally predicted by the primary
+/// reference's map (§5.11.19), and segments that differ only in their
+/// quantizer (`SEG_LVL_ALT_Q`, §7.12.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SegmentQuantizers {
+    /// `FeatureData[segment][SEG_LVL_ALT_Q]` (0 where the feature is off).
+    pub alt_q: [i16; MAX_SEGMENTS],
+    /// `LastActiveSegId`.
+    pub last_active: u8,
+    /// `segmentation_update_map` and `segmentation_temporal_update`.
+    pub update_map: bool,
+    pub temporal_update: bool,
+}
+
 /// The block layer's frame parameters for `h`.
 ///
 /// # Errors
@@ -73,6 +92,7 @@ pub(super) fn frame_parameters(h: &FrameHeader) -> Result<FrameParameters, Decod
         FrameType::Switch => return Err(DecodeError::Unsupported("AV1 switch frames")),
     };
     check_coding_tools(h)?;
+    let segments = segment_quantizers(h)?;
     let q = &h.quant;
     if q.qm.is_some() {
         unsupported("AV1 quantizer matrices")?;
@@ -90,6 +110,7 @@ pub(super) fn frame_parameters(h: &FrameHeader) -> Result<FrameParameters, Decod
         reduced_tx_set: h.reduced_tx_set,
         tx_mode_select: h.tx_mode == TxMode::Select,
         lossless: h.coded_lossless,
+        segments,
         loop_filter: h.loop_filter,
         cdef: h.cdef,
         size: h.size,
@@ -108,13 +129,38 @@ pub(super) fn frame_parameters(h: &FrameHeader) -> Result<FrameParameters, Decod
     })
 }
 
+/// The frame's segmentation, or `Unsupported` for the parts outside the
+/// subset: features other than the quantizer, and lossless segments in a
+/// frame that is not wholly lossless.
+fn segment_quantizers(h: &FrameHeader) -> Result<Option<SegmentQuantizers>, DecodeError> {
+    let s = &h.segmentation;
+    if !s.enabled {
+        return Ok(None);
+    }
+    let mut alt_q = [0; MAX_SEGMENTS];
+    for (segment, (enabled, data)) in s.features.enabled.iter().zip(&s.features.data).enumerate() {
+        if (0..SEG_LVL_MAX).any(|feature| feature != SEG_LVL_ALT_Q && enabled[feature]) {
+            unsupported("AV1 segment features other than the quantizer")?;
+        }
+        if enabled[SEG_LVL_ALT_Q] {
+            alt_q[segment] = data[SEG_LVL_ALT_Q];
+        }
+        if s.qindex(h.quant.base_q_idx, segment) == 0 && !h.coded_lossless {
+            unsupported("AV1 lossless segments")?;
+        }
+    }
+    Ok(Some(SegmentQuantizers {
+        alt_q,
+        last_active: s.last_active,
+        update_map: s.update_map,
+        temporal_update: s.temporal_update,
+    }))
+}
+
 /// Prediction and coefficient tools.
 fn check_coding_tools(h: &FrameHeader) -> Result<(), DecodeError> {
     if !h.size.width.is_multiple_of(2) || !h.size.height.is_multiple_of(2) {
         unsupported("AV1 odd frame size")?;
-    }
-    if h.segmentation.enabled {
-        unsupported("AV1 segmentation")?;
     }
     if h.delta.lf_present {
         unsupported("AV1 block loop filter deltas")?;
