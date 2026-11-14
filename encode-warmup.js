@@ -52,7 +52,7 @@ export async function warmUpEncoder(module, config, stop) {
   const c = config;
   // The RGBA path's colour: the frames below are RGBA.
   const encoder = new module.BrowserEncoder(c.codec, WARM_UP_WIDTH, WARM_UP_HEIGHT, c.qp, c.fps,
-    c.keyInterval, c.preset, c.overrides, c.filmGrain, 'bt601');
+    c.keyInterval, c.preset, c.overrides, c.filmGrain, 'bt601', Boolean(c.stillCamera));
   const source = new module.SourceFrame(WARM_UP_WIDTH, WARM_UP_HEIGHT);
   if (c.rateMode === 'cbr') encoder.set_rate_control(c.targetKbps, c.peakKbps, c.bufferMs);
   let frames = 0, longestFrameMs = performance.now() - created;

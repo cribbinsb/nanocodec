@@ -679,6 +679,10 @@ export class BrowserEncoder {
      * output. `colour` (optional, [`SourceFrame`] names, default `bt601`)
      * is the matrix and range of the input, which the stream signals
      * (AV2, whose subset has no colour syntax, signals nothing).
+     * `still_camera` (optional, default off) adds the still-camera noise
+     * handling over the preset, under `overrides`: it lowers the bitrate on
+     * still noisy scenes, is off in every preset, and on AV1 may run a long
+     * still stream slightly over target (`still_camera.rs` in nc-encoder).
      * # Errors
      * Rejects invalid codecs, presets, overrides, configurations, film
      * grain outside AV1, unknown colours, or dimensions above1080p.
@@ -692,8 +696,9 @@ export class BrowserEncoder {
      * @param {string | null | undefined} overrides
      * @param {boolean} film_grain
      * @param {string | null} [colour]
+     * @param {boolean | null} [still_camera]
      */
-    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain, colour) {
+    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain, colour, still_camera) {
         const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(preset_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -702,7 +707,7 @@ export class BrowserEncoder {
         var len2 = WASM_VECTOR_LEN;
         var ptr3 = isLikeNone(colour) ? 0 : passStringToWasm0(colour, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         var len3 = WASM_VECTOR_LEN;
-        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain, ptr3, len3);
+        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain, ptr3, len3, isLikeNone(still_camera) ? 0xFFFFFF : still_camera ? 1 : 0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

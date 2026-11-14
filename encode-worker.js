@@ -76,7 +76,8 @@ function configureRate(c) {
 function createEncoder(colour) {
   const c = config;
   encoder?.free();
-  encoder = new module.BrowserEncoder(c.codec, c.width, c.height, c.qp, c.fps, c.keyInterval, c.preset, c.overrides, c.filmGrain, colour);
+  encoder = new module.BrowserEncoder(c.codec, c.width, c.height, c.qp, c.fps, c.keyInterval, c.preset, c.overrides, c.filmGrain, colour,
+    Boolean(c.stillCamera));
   configureRate(c);
 }
 /** Handle a page or capture message; any failure is reported to the page. */

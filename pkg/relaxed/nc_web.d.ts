@@ -164,11 +164,15 @@ export class BrowserEncoder {
    * output. `colour` (optional, [`SourceFrame`] names, default `bt601`)
    * is the matrix and range of the input, which the stream signals
    * (AV2, whose subset has no colour syntax, signals nothing).
+   * `still_camera` (optional, default off) adds the still-camera noise
+   * handling over the preset, under `overrides`: it lowers the bitrate on
+   * still noisy scenes, is off in every preset, and on AV1 may run a long
+   * still stream slightly over target (`still_camera.rs` in nc-encoder).
    * # Errors
    * Rejects invalid codecs, presets, overrides, configurations, film
    * grain outside AV1, unknown colours, or dimensions above1080p.
    */
-  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean, colour?: string | null);
+  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean, colour?: string | null, still_camera?: boolean | null);
   /**
    * Encode one source frame as an access unit / AV1 temporal unit:
    * empty when the input repeated the picture ([`BrowserEncoder::repeat`]).
@@ -323,7 +327,7 @@ export interface InitOutput {
   readonly browserencoder_encode_at: (a: number, b: number, c: number) => [number, number, number, number];
   readonly browserencoder_key: (a: number) => number;
   readonly browserencoder_look_ahead: (a: number, b: number) => [number, number];
-  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
+  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => [number, number, number];
   readonly browserencoder_quantizer: (a: number) => number;
   readonly browserencoder_repeat: (a: number) => number;
   readonly browserencoder_request_keyframe: (a: number) => void;
