@@ -130,23 +130,32 @@ class-balanced estimate with bootstrap intervals; the two differ by up to about 
 **Coding efficiency vs rate control** (development clips, not the held-out set). A CBR-vs-CBR comparison mixes
 two things: how well each encoder codes, and how much its real-time rate control costs it. Measured separately on
 the 11 development clips (150 frames, one key, 150/300/600/1200 kbps, no low rungs; build ce34e12c, crates as
-7fd7eb1e; [rc-cost-2026-11-14.csv](docs/results/rc-cost-2026-11-14.csv), `eval/nceval/rc_cost.py`), for our AV1
-Default so far:
+7fd7eb1e; [rc-cost-2026-11-14.csv](docs/results/rc-cost-2026-11-14.csv), `eval/nceval/rc_cost.py`). BD-J, with the
+number of clips that have a reliable BD in brackets:
 
-| AV1 Default vs | both in CBR | both at fixed QP |
-|---|---:|---:|
-| x264 `medium --tune psnr` | −38.3% (9 clips) | −33.9% (10 clips) |
-| x264 `medium`, default tuning | −45.4% (8 clips) | −37.1% (11 clips) |
+| Ours vs | CBR vs CBR, x264 `--tune psnr` | fixed QP vs fixed QP, x264 `--tune psnr` | CBR vs CBR, x264 default | fixed QP vs fixed QP, x264 default | own rate-control cost (CBR vs own fixed QP) |
+|---|---:|---:|---:|---:|---:|
+| VVC Default | −42.5% (9) | −39.2% (10) | −49.8% (9) | −40.4% (10) | +17.1% (11) |
+| AV2 Default | −41.4% (9) | −37.7% (10) | −47.6% (7) | −39.1% (10) | +13.2% (11) |
+| AV1 Default | −38.3% (9) | −33.9% (10) | −45.4% (8) | −37.1% (11) | +16.0% (11) |
+| HEVC Default | −38.1% (10) | −31.4% (10) | −44.4% (9) | −34.7% (11) | +21.5% (11) |
+| VP9 Default | −38.6% (11) | −29.0% (10) | −42.9% (9) | −33.0% (11) | +16.4% (11) |
+| H.264 Default | −13.1% (11) | +2.6% (11) | −18.0% (9) | +0.4% (11) | +10.7% (11) |
+| H.264 Fastest | +8.6% (11) | +33.1% (11) | +0.7% (10) | +29.6% (11) | +14.9% (11) |
+| x264 `medium --tune psnr` | | | | | +48.6% (11) |
+| x264 `medium`, default tuning | | | | | +70.5% (10) |
 
-| Rate-control cost (BD-J of an encoder's CBR against its own fixed QP; positive = bits lost) | |
-|---|---:|
-| nanocodec AV1 Default | +16.0% |
-| x264 `medium --tune psnr` | +48.6% |
-| x264 `medium`, default tuning | +70.5% |
+What this shows, plainly:
 
-So part of every CBR margin above is x264's rate control in this low-delay, 1 s-buffer mode, not coding
-efficiency: at fixed QP against fixed QP our AV1 needs about 34% fewer bits than PSNR-tuned x264 on these clips.
-The other codecs' lines are being added to the same file.
+- **Our H.264 Default codes about as well as x264 `medium` at fixed QP** (+0.4% against default-tuned x264,
+  +2.6% against `--tune psnr`): its whole margin in the CBR charts comes from rate control, where x264 in this
+  low-delay, 1 s-buffer mode loses far more (+48.6% / +70.5% against its own fixed QP) than ours (+10.7%).
+- **Our H.264 Fastest needs 29.6% / 33.1% more bits than x264 `medium` at fixed QP**; it trades coding efficiency
+  for speed, and its CBR figures (+0.7% / +8.6%) are much closer only because of the rate-control difference.
+- **Our newer-codec Defaults need 29–40% fewer bits than x264 `medium` at fixed QP** against either tuning (AV1
+  −33.9% against `--tune psnr`), so most of their CBR margin is coding efficiency, and 3–10 points of it (against
+  `--tune psnr`) is rate control.
+- **Our own rate-control cost** ranges from +10.7% (H.264) to +21.5% (HEVC), against +48.6% for PSNR-tuned x264.
 
 **How to read this.** Where we are behind:
 

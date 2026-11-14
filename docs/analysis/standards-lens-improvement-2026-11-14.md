@@ -63,6 +63,22 @@ The same on the lens, our AV1 against each x264 mode (J / Weighted): x264 fixed 
 QP) and −11.6 / −3.9 (ours CBR); x264 CBR −37.8 / −36.7 (ours CBR, the chart's pairing on the lens's content);
 x264 `--tune psnr` CBR −29.3 / −21.3; x264 `--tune psnr` fixed QP −20.8 / −9.1 (ours fixed QP).
 
+### Every Default (and H.264 Fastest) on the chart's clips (rc-cost-2026-11-14.csv, BD-J)
+
+| Encoder | CBR vs x264 CBR | CBR vs x264 `--tune psnr` CBR | fixed QP vs x264 fixed QP | fixed QP vs x264 `--tune psnr` fixed QP | own RC cost |
+|---|---:|---:|---:|---:|---:|
+| VVC | −49.8 | −42.5 | −40.4 | −39.2 | +17.1 |
+| AV2 | −47.6 | −41.4 | −39.1 | −37.7 | +13.2 |
+| AV1 | −45.4 | −38.3 | −37.1 | −33.9 | +16.0 |
+| HEVC | −44.4 | −38.1 | −34.7 | −31.4 | +21.5 |
+| VP9 | −42.9 | −38.6 | −33.0 | −29.0 | +16.4 |
+| H.264 | −18.0 | −13.1 | +0.4 | +2.6 | +10.7 |
+| H.264 Fastest | +0.7 | +8.6 | +29.6 | +33.1 | +14.9 |
+| x264 medium / `--tune psnr` | | | | | +70.5 / +48.6 |
+
+Clips with a reliable BD differ by row (7-11 of 11). H.264 Default's chart margin over x264 medium is all rate
+control: at fixed QP the two are level on these clips.
+
 ### Other factors (already measured in the audit, not re-measured)
 
 - Window: over 600 frames our BD-J vs x264 is 4-9 points less favourable than over 150 frames
@@ -94,7 +110,7 @@ these is disclosed somewhere; together they make the −50.9 read as a codec-eff
 4. Keep the standards lens as the content-independent cross-check and quote it beside the chart.
 
 Implemented in `eval/` for these: `python3 -m nceval.rc_cost` (lines 2 and 3, and the chart pairing without
-the low-rung rule, against x264 medium at both tunings; AV1 Default measured, other encoders by `--encoders`); `nceval.ctc local --x264 cbr|psnr-cbr|psnr-qp` (the x264 modes on the lens)
+the low-rung rule, against x264 medium at both tunings; every Default and H.264 Fastest measured); `nceval.ctc local --x264 cbr|psnr-cbr|psnr-qp` (the x264 modes on the lens)
 and `nceval.ctc compare --anchor ENCODER:KIND` (any curve as the zero line).
 
 ## Part B: improving under the lens

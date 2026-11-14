@@ -31,7 +31,8 @@ against `docs/results/` on the day; if the independent re-run's held-out table h
 > (150–1200 kbps at 720p; savings are about half at higher rates), on 135 held-out clips from sources we had
 > never used (5-second windows, one key frame), our AV1 Default needs about 38% fewer bits than it (45% fewer than
 > x264's default tuning); our two fastest H.264 presets are not ahead of it. Part of that margin is x264's rate
-> control in this mode: at fixed QP against fixed QP, on the clips we tune beside, the AV1 figure is about 34%.
+> control in this mode: at fixed QP against fixed QP, on the clips we tune beside, the AV1 figure is about 34%,
+> and our H.264 Default is level with x264 (its whole margin is rate control).
 > Over 20-second windows (71 held-out sources) our margins are 6–10 points smaller, and SVT-AV1 M8, about 3x
 > slower, is level with our AV1. It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
 >

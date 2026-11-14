@@ -64,8 +64,10 @@ threads, lookahead or B-frames, where they will do better. Within that configura
 - **Rate control is part of what is compared.** Every encoder runs its own real-time CBR, so a margin mixes coding
   efficiency with how much each rate control costs. Measured separately on the development clips for our AV1
   Default: at fixed QP against fixed QP it needs 33.9% fewer bits than PSNR-tuned x264 `medium` (38.3% in CBR
-  against CBR); CBR costs our AV1 16.0% against its own fixed QP, x264 `--tune psnr` 48.6% and default-tuned x264
-  70.5% ([rc-cost-2026-11-14.csv](results/rc-cost-2026-11-14.csv)).
+  against CBR); CBR costs our encoders 10.7–21.5% against their own fixed QP, x264 `--tune psnr` 48.6% and
+  default-tuned x264 70.5% ([rc-cost-2026-11-14.csv](results/rc-cost-2026-11-14.csv)). Our H.264 Default is level
+  with x264 `medium` at fixed QP (+0.4% / +2.6% against `--tune psnr`): its whole CBR margin is rate control, and
+  our H.264 Fastest needs about 30% more bits than x264 `medium` at fixed QP.
 
 On the 135 fresh held-out clips against that anchor (commit 8b492382): AV1 Default −38.5%, HEVC −40.2%, VVC
 −44.7%, H.264 Default −19.0%, H.264 Fast −11.1%, H.264 Faster −3.2% (+0.0% on all held-out clips: not ahead), and
