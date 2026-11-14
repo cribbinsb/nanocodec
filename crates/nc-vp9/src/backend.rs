@@ -1027,7 +1027,7 @@ impl CodecBackend for Vp9Backend {
     }
 
     fn supports_second_reference(&self) -> bool {
-        self.spatial.is_some()
+        true
     }
 
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {

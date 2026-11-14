@@ -788,3 +788,17 @@ fn vp9_ksvc_key_unit_enhancement_loss_repairs_at_full_size() {
     let p1 = dec.decode(&s1_repair).unwrap();
     assert_eq!(bytes(&p1), bytes(encoder.layer_reconstruction(1).unwrap()));
 }
+
+/// The last high-quality frame as a second reference on a flat stream
+/// (`refs.second`): a second `ref_frame_idx` entry and per-block choices,
+/// decoded exactly by our decoder.
+#[test]
+fn flat_second_reference_round_trips_and_changes_the_stream() {
+    let second = [("refs.second", 1.0), ("refs.second_full", 1.0)];
+    let (packets, recons, _) = coded_sequence(1, &second, None);
+    let mut decoder = Decoder::new();
+    for (packet, recon) in packets.iter().zip(&recons) {
+        assert_eq!(&bytes(&decoder.decode(packet).unwrap()), recon);
+    }
+    assert_ne!(packets, coded_sequence(1, &[], None).0);
+}

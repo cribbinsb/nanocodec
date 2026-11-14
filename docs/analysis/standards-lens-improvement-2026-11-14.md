@@ -140,4 +140,36 @@ Measured with `nceval.ctc local --kinds qp` on the 12 AOM-LD sequences.
 | `chroma.policy` 1, `chroma.offset` 1 | +2.4 / +2.4 | −15.6 / −22.3 |
 | `av1.inter_rounding_q7` 48 | +0.3 / +0.1 | −14.0 / −23.3 |
 
+| `decision.lambda_scale` 0.85 | −0.2 / −0.3 | −14.5 / −23.6 |
+| `quant.trellis_states` 4 | −0.4 / −0.4 | −14.9 / −23.9 |
+| `av1.chroma_delta_q` −16 (Default −32: coarser chroma) | +0.3 / +0.9 | −15.2 / −23.1 |
+| `refs.second` 1 (last HQ frame as a second reference, cheap ranking) | −2.6 / −2.2 | −16.6 / −25.0 |
+| **`refs.second` 1 + `refs.second_full` 1** (full mode decision against it) | **−6.0 / −5.0** | **−19.2 / −26.7** |
+| `refs.second` 1 + full cadence period 8 throughout | −0.7 / −0.8 | −13.7 / −23.0 |
+
 (Parameter probes only; the cadence items touch machinery another agent is changing, so no code change there.)
+The paired column is the cleaner comparison: the "vs x264" means are over each variant's own overlap with
+x264's curve, so small changes can move them differently.
+
+The frame-level knobs are at or near their optimum under the lens too (all within ±2.5). The one lever is
+structural: what HM's LD-P gains from four references, the second reference gives in part. Against HM-19 LD-P
+(exhaustive reference software) AV1 Default with it goes from Weighted +72.7 / J +51.8 to +62.1 / +44.2.
+
+**Code change (bb141513, off by default):** `refs.second` was H.264-only on flat streams. AV1 and VP9 already
+signal a second `ref_frame_idx` entry for spatial S1 frames; the same syntax serves the flat case, so their
+backends now accept it. Every Default and shipped preset is byte-identical (52/52 streams); with it on, 12
+streams per codec decode bit-exactly in dav1d + aomdec and vpxdec + ffmpeg (CBR, starved CBR with keys, fixed
+QP, 720p, the Fast preset; holds off so the standard decoders' frame counts compare), and in our own decoders
+(new round-trip tests). CPU, x86 instructions (FourPeople 270p, qindex 160, 130 frames): cheap ranking +11.2%,
+full decision +16.1%.
+
+| Codec (lens, fixed QP) | `refs.second` + `second_full`, paired vs its Default: Weighted / J | vs x264 medium: Weighted / J |
+|---|---:|---:|
+| AV1 | −6.0 / −5.0 | −19.2 / −26.7 (Default −14.4 / −23.5) |
+| VP9 | −4.5 / −3.8 | −20.6 / −28.9 (Default −17.3 / −26.6) |
+| H.264, against its flat structure (`layers.count` 1) | −3.1 / −2.6 | +7.8 / +3.5 (Default +5.8 / −2.3) |
+
+H.264's Default (adaptive three temporal layers) already beats flat + second reference on the lens (J −2.3 vs
++3.5), and the second reference is rejected with temporal layers, so it is not an H.264 lever. Flat H.264 is
++6.2 / J worse than the layered Default on the lens: hierarchical P is worth about 8 J points there, which is the
+next thing to measure for the other codecs (AV1 supports layers; `layers.count` 3 with the H.264 gates).

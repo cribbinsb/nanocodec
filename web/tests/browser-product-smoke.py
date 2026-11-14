@@ -164,7 +164,7 @@ try:
         page.wait_for_function("[...document.querySelectorAll('.advanced-toggles')].every(t => !t.hidden)", timeout=30000)
         offered = page.evaluate("""[...document.querySelectorAll('.advanced')].map(a =>
           [...a.querySelectorAll('[data-option]')].filter(l => !l.hidden).map(l => l.dataset.option))""")
-        assert offered == [['blockQp', 'temporalLayers', 'secondReference'], ['filmGrain', 'blockQp', 'temporalLayers']], offered
+        assert offered == [['blockQp', 'temporalLayers', 'secondReference'], ['filmGrain', 'blockQp', 'temporalLayers', 'secondReference']], offered
         # Film grain and one parameter override on B: a bad line shows an inline error and
         # is not applied; a good one restarts B with it over the preset.
         page.evaluate('window.workerConfigs.length = 0')

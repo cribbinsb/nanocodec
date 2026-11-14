@@ -1206,8 +1206,12 @@ impl CodecBackend for Av1Backend {
         true
     }
 
+    /// Spatial S1 frames carry the lower layer here; flat streams carry the
+    /// last high-quality frame (`refs.second`, the engine's long-term slot).
+    /// Both are a second `ref_frame_idx` entry (AV1 §5.9.2) and a per-block
+    /// reference choice, so the same syntax serves both.
     fn supports_second_reference(&self) -> bool {
-        self.spatial.is_some()
+        true
     }
 
     fn supports_compound_reference(&self) -> bool {

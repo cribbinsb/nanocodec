@@ -413,6 +413,9 @@ const STARTUP_CAMERA_MOTION: f64 = 1.0;
 /// Range of the debt correction of a frame budget (`budget`): a buffer of
 /// debt quarters it, a buffer of credit doubles it at most.
 const MIN_BUDGET_CORRECTION: f64 = 0.25;
+/// Least of a held key's repayment phase, in uniform budgets, left to its
+/// inter frames when the key alone takes the whole phase (`boost_repaying`).
+const HELD_KEY_MIN_PHASE_SHARE: f64 = 1.;
 const MAX_BUDGET_CORRECTION: f64 = 2.;
 /// Coded frames over which the time of held frames (`hold.rs`) is spread
 /// ([`RateController::hold_frame`]): the smoothing horizon of the held
@@ -1228,6 +1231,23 @@ impl RateController {
         level_step.min(budget_step).max(allowance_step)
     }
 
+    /// The repayment-phase boost whose phase repays a key of `bits`: a held
+    /// still key (`rate.key_hold_still`) is sized by the quality it holds,
+    /// not by its plan, so its whole size is scheduled as its loan and the
+    /// inter frames of its phase (within the key period) repay it, rather
+    /// than the excess falling to the proportional correction, which on
+    /// still scenes left it partly unpaid at the next key (AV1 chirla
+    /// 187 kbps, 600 f, N 1.5: 1.053 of target). With F phase frames at
+    /// uniform budget U, the key at boost b and F - 1 frames at
+    /// U·F/(F-1+b) spend F·U when b = bits·(F-1)/(F·U - bits); a key of a
+    /// whole phase or more leaves the phase's frames almost nothing.
+    fn boost_repaying(&self, bits: f64) -> f64 {
+        let frames = f64::from(self.repay_frames());
+        let phase = frames * self.uniform_budget();
+        let left = (phase - bits).max(self.uniform_budget() * HELD_KEY_MIN_PHASE_SHARE);
+        bits * (frames - 1.) / left
+    }
+
     /// Whether the key being planned is a periodic key of a still scene
     /// planned at the quality its inter frames hold (`rate.key_hold_still`).
     fn holds_still_key(&self) -> bool {
@@ -1945,6 +1965,9 @@ impl RateController {
         // unspent budget to the frames after it.)
         if self.last_key {
             self.frames_since_key = 0;
+            if self.holds_still_key() {
+                self.loan_boost = self.boost_repaying(bits as f64);
+            }
             self.scheduled_key_debt =
                 (self.loan_inter_budget() * self.loan_boost - uniform).max(0.);
         } else {
