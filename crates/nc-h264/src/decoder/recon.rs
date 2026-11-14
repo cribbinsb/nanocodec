@@ -147,7 +147,7 @@ fn luma_nxn(
             let (x4, y4) = ((b8 % 2) * 2, (b8 / 2) * 2);
             let (px, py) = (x + x4 * 4, y + y4 * 4);
             let mode = mb.intra_modes[y4 * 4 + x4];
-            intra::predict_nxn(plane, px, py, 8, mode, intra.block(x4, y4, 2))?;
+            intra::predict_8x8(dsp, plane, px, py, mode, intra.block(x4, y4, 2))?;
             residual.add_luma_8x8(dsp, b8, &mut block_view(plane, (px, py), 8));
         }
         return Ok(());

@@ -62,7 +62,7 @@ unsafe fn chroma_pair(u: &mut [u8], v: &mut [u8], edge: &Edge) {
 #[target_feature(enable = "simd128")]
 pub(super) unsafe fn hevc_luma(plane: &mut [u8], edge: &HevcEdge) {
     // SAFETY: SIMD128 is enabled for this function (dispatch contract).
-    unsafe { hevc::luma::<I16x8>(plane, edge) }
+    unsafe { hevc::luma_vector_decisions::<I16x8>(plane, edge) }
 }
 
 #[target_feature(enable = "simd128")]

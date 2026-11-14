@@ -125,6 +125,8 @@ nc_encoder::param_group! {
         // -3.9 / -4.0 / -1.4%, 2 -3.4 / -3.2 / -1.3%. Default 2 (`DEFAULT_PARAMS`).
         coarse_rd_candidates: 0.0, [0.0, 10.0],
             "with vvc.coarse_inter_intra, full RD only for this many of the core modes and MPMs, the cheapest by the SATD proxy (HEVC Default codes its single cheapest; 0: all of them): lower is faster, coarser intra",
+        inter_intra_estimated_only: 0.0, [0.0, 1.0],
+            "with vvc.coarse_inter_intra, 1 codes P-frame intra CUs outside intra-dense pictures with DC (chroma derived) where DC intra beat inter outright, keeping the coarse search for those the engine's directional estimate chose: faster, coarser intra",
         inter_intra_dc_only: 0.0, [0.0, 1.0],
             "1 codes P-frame intra CUs outside intra-dense pictures with DC and the derived chroma direction, without a search (HEVC's hevc.inter_intra_dc_only; overrides vvc.coarse_inter_intra): faster, coarser intra",
         // 0.3: see `inter_intra` (worst frames 56-99% intra, crowd and
@@ -520,6 +522,7 @@ impl VvcParams {
                 None
             },
             self.coarse_intra_dense_share,
+            self.inter_intra_estimated_only >= 0.5,
         )
     }
 }
@@ -1848,10 +1851,13 @@ impl VvcBackend {
         reconstruction: &Picture,
     ) -> Option<crate::intra::LumaChoice> {
         let search = if self.inter {
+            let estimated = self
+                .intra_fallback
+                .is_some_and(|(at, _)| at == (block.x, block.y, block.log2_size()));
             self.inter_intra_search.search(
                 block,
-                self.geometry.coded_width,
-                self.geometry.ctu_size(),
+                (self.geometry.coded_width, self.geometry.ctu_size()),
+                estimated,
             )
         } else {
             self.key_intra_search

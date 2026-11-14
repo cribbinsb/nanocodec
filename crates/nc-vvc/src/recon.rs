@@ -413,7 +413,8 @@ const TEXTURE_GROWTH_SIDE: usize = 16;
 /// ones; 16x16 luma 8% (0.3% wrong); 16x16 chroma 47% (3%, single ±1
 /// levels). VVC Default, Jetson cycles (chart clips, 150 f, CBR 600) /
 /// L1 J (2026-11-14 draw, 24 clips): 0.5 0.0% / 0.00%, 1 -2.4% / -0.15%
-/// [-0.33, +0.10], 1.5 -4.7% / +0.54% [+0.16, +0.77].
+/// [-0.33, +0.10], 1.25 -4.1% / +0.06% [-0.10, +0.34], 1.5 -4.7% / +0.54%
+/// [+0.16, +0.77].
 fn texture_quantises_to_zero(
     dsp: &nc_dsp::Dsp,
     (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),

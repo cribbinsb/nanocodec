@@ -190,12 +190,16 @@ unsafe fn run<B: Bytes, const WIDTH: usize>(
     }
 }
 
-/// Match libvpx's NEON dual layout: sixteen independent lines share the byte
+/// Match the existing NEON dual layout: sixteen independent lines share the byte
 /// masks, with two sets of eight widened lanes for flat smoothing. Tails keep
 /// the existing eight-line entry and oracle behavior.
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 #[inline(never)]
-#[target_feature(enable = "neon")]
+#[cfg_attr(target_arch = "aarch64", target_feature(enable = "neon"))]
+#[cfg_attr(target_arch = "wasm32", target_feature(enable = "simd128"))]
 unsafe fn run_paired<const WIDTH: usize>(
     data: &mut [u8],
     edge: usize,
@@ -206,7 +210,10 @@ unsafe fn run_paired<const WIDTH: usize>(
     limits: Vp9FilterLimits,
 ) {
     use crate::deblock::av1_tile::PairedTile;
+    #[cfg(target_arch = "aarch64")]
     use crate::lpf_bytes::{neon::B, neon_wide::B as Wide};
+    #[cfg(target_arch = "wasm32")]
+    use crate::lpf_bytes::{simd128::B, simd128_wide::B as Wide};
     const PAIRED_LINES: usize = 2 * LANES;
     let reach = if WIDTH == 16 { LANES } else { INNER };
     let independent = (along == 1 && step >= lines) || (step == 1 && along >= 2 * reach);
@@ -216,7 +223,7 @@ unsafe fn run_paired<const WIDTH: usize>(
     }
     let full = lines / PAIRED_LINES * PAIRED_LINES;
     for first in (0..full).step_by(PAIRED_LINES) {
-        // SAFETY: caller validates both complete eight-line tiles; NEON is enabled.
+        // SAFETY: caller validates both complete eight-line tiles; the lane ISA is enabled.
         unsafe {
             group::<Wide, PairedTile<Wide>, PAIRED_LINES, WIDTH>(
                 data,

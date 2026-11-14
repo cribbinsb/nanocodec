@@ -29,6 +29,10 @@ pub(crate) struct InterIntraSearch {
     /// `vvc.coarse_intra_dense_share`: the intra share above which a
     /// picture is intra-dense.
     dense_share: f32,
+    /// `vvc.inter_intra_estimated_only`: outside intra-dense pictures, CUs
+    /// the engine chose as DC intra (not by its directional estimate) are
+    /// coded DC without a search.
+    estimated_only: bool,
     /// Luma samples of the picture's intra CUs coded so far.
     intra_samples: usize,
     /// Intra share of the last committed P picture (0 after a key picture).
@@ -40,11 +44,13 @@ impl InterIntraSearch {
         ranked: DirectionSearch,
         cheap: Option<DirectionSearch>,
         dense_share: f32,
+        estimated_only: bool,
     ) -> Self {
         Self {
             ranked,
             cheap,
             dense_share,
+            estimated_only,
             intra_samples: 0,
             previous_share: 0.,
         }
@@ -58,8 +64,23 @@ impl InterIntraSearch {
     /// The search for intra CU `block`: ranked once the intra CUs so far
     /// cover more than the dense share of the CTUs coded so far (at least
     /// one CTU row, so the first CUs do not decide alone), or covered more
-    /// of the previous P picture.
-    pub(crate) fn search(&self, block: &Block, width: usize, ctu: usize) -> DirectionSearch {
+    /// of the previous P picture; otherwise the cheap one, or none (DC) for
+    /// a CU the engine's directional estimate did not choose (`estimated`)
+    /// under `vvc.inter_intra_estimated_only`.
+    ///
+    /// Speed heuristic (`vvc.inter_intra_estimated_only`): a CU where DC
+    /// intra beat inter outright skips the coarse search's SATD proxy and
+    /// RD candidates; the directional estimate saw no direction worth its
+    /// bits there, and 66% of searched P-picture intra CUs end planar or DC
+    /// anyway (chart clips, 60 f, CBR 600). VVC Default, Jetson cycles
+    /// (chart clips, 150 f, CBR 600) -2.9%, L1 J (2026-11-14 draw) +0.45%
+    /// [+0.16, +0.96].
+    pub(crate) fn search(
+        &self,
+        block: &Block,
+        (width, ctu): (usize, usize),
+        estimated: bool,
+    ) -> DirectionSearch {
         let Some(cheap) = self.cheap else {
             return self.ranked;
         };
@@ -68,6 +89,8 @@ impl InterIntraSearch {
         let share = self.intra_samples as f32 / coded as f32;
         if share > self.dense_share || self.previous_share > self.dense_share {
             self.ranked
+        } else if self.estimated_only && !estimated {
+            DirectionSearch::DcOnly
         } else {
             cheap
         }
@@ -105,47 +128,73 @@ mod tests {
 
     #[test]
     fn coarse_until_the_picture_is_intra_dense() {
-        let mut search = InterIntraSearch::new(RANKED, COARSE, 0.3);
+        let mut search = InterIntraSearch::new(RANKED, COARSE, 0.3, false);
         search.begin_picture();
         let first = Block::square(0, 0, 6);
-        assert_eq!(search.search(&first, WIDTH, CTU), COARSE_SEARCH);
+        assert_eq!(search.search(&first, (WIDTH, CTU), true), COARSE_SEARCH);
         // Two of the first row's four CTUs intra: half the row.
         search.add(&first);
         search.add(&Block::square(64, 0, 6));
-        assert_eq!(search.search(&Block::square(128, 0, 6), WIDTH, CTU), RANKED);
+        assert_eq!(
+            search.search(&Block::square(128, 0, 6), (WIDTH, CTU), true),
+            RANKED
+        );
         // Second row, first CTU: 2 of 5 CTUs coded so far are intra.
-        assert_eq!(search.search(&Block::square(0, 64, 6), WIDTH, CTU), RANKED);
-        let mut sparse = InterIntraSearch::new(RANKED, COARSE, 0.45);
+        assert_eq!(
+            search.search(&Block::square(0, 64, 6), (WIDTH, CTU), true),
+            RANKED
+        );
+        let mut sparse = InterIntraSearch::new(RANKED, COARSE, 0.45, false);
         sparse.add(&first);
         sparse.add(&Block::square(64, 0, 6));
         assert_eq!(
-            sparse.search(&Block::square(0, 64, 6), WIDTH, CTU),
+            sparse.search(&Block::square(0, 64, 6), (WIDTH, CTU), true),
             COARSE_SEARCH
         );
         // The next picture starts ranked from the previous share (2/8).
         search.commit(true, WIDTH * 128);
         search.begin_picture();
-        assert_eq!(search.search(&first, WIDTH, CTU), COARSE_SEARCH);
-        let mut dense = InterIntraSearch::new(RANKED, COARSE, 0.2);
+        assert_eq!(search.search(&first, (WIDTH, CTU), true), COARSE_SEARCH);
+        let mut dense = InterIntraSearch::new(RANKED, COARSE, 0.2, false);
         dense.add(&first);
         dense.add(&Block::square(64, 0, 6));
         dense.commit(true, WIDTH * 128);
         dense.begin_picture();
-        assert_eq!(dense.search(&first, WIDTH, CTU), RANKED);
+        assert_eq!(dense.search(&first, (WIDTH, CTU), true), RANKED);
         // A key picture resets it.
         dense.commit(false, WIDTH * 128);
-        assert_eq!(dense.search(&first, WIDTH, CTU), COARSE_SEARCH);
+        assert_eq!(dense.search(&first, (WIDTH, CTU), true), COARSE_SEARCH);
+    }
+
+    #[test]
+    fn dc_only_where_the_estimate_did_not_choose_intra() {
+        let mut search = InterIntraSearch::new(RANKED, COARSE, 0.3, true);
+        search.begin_picture();
+        let first = Block::square(0, 0, 6);
+        assert_eq!(search.search(&first, (WIDTH, CTU), true), COARSE_SEARCH);
+        assert_eq!(
+            search.search(&first, (WIDTH, CTU), false),
+            DirectionSearch::DcOnly
+        );
+        // Intra-dense pictures keep the ranked search for every CU.
+        search.add(&first);
+        search.add(&Block::square(64, 0, 6));
+        let third = Block::square(128, 0, 6);
+        assert_eq!(search.search(&third, (WIDTH, CTU), false), RANKED);
     }
 
     #[test]
     fn ranked_without_the_coarse_lever_or_at_full_share() {
-        let mut search = InterIntraSearch::new(RANKED, None, 0.3);
-        assert_eq!(search.search(&Block::square(0, 0, 4), WIDTH, CTU), RANKED);
-        search = InterIntraSearch::new(RANKED, COARSE, 1.0);
+        let mut search = InterIntraSearch::new(RANKED, None, 0.3, false);
+        assert_eq!(
+            search.search(&Block::square(0, 0, 4), (WIDTH, CTU), true),
+            RANKED
+        );
+        search = InterIntraSearch::new(RANKED, COARSE, 1.0, false);
         search.add(&Block::square(0, 0, 6));
         search.commit(true, CTU * CTU);
         assert_eq!(
-            search.search(&Block::square(0, 0, 4), WIDTH, CTU),
+            search.search(&Block::square(0, 0, 4), (WIDTH, CTU), true),
             COARSE_SEARCH
         );
     }

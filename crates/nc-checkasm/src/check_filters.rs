@@ -39,6 +39,7 @@ pub(crate) fn check_filters(
     check_sao_stats_boundaries(candidate, reference, report);
     check_hevc_chroma_footprint(candidate, reference, report);
     check_hevc_strong_boundaries(candidate, reference, report);
+    check_hevc_segment_masks(candidate, reference, report);
     for _ in 0..iterations * 8 {
         check_cdef(candidate, reference, rng, report);
         check_cdef_blocks(candidate, reference, rng, report);
@@ -890,6 +891,66 @@ fn check_sao_stats_boundaries(candidate: &Dsp, reference: &Dsp, report: &mut Che
                         record(report, candidate.isa(), got == want, || {
                             format!(
                                 "sao sampled width{width} rows{rows} step{step} class{class} pattern{pattern}"
+                            )
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Independent segment outcomes and full public byte thresholds. Comparing
+/// the whole plane also checks transpose stores and untouched neighbours.
+fn check_hevc_segment_masks(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
+    const SIDE: usize = 16;
+    const TAPS: [[u8; 8]; 5] = [
+        [100, 100, 100, 100, 103, 103, 103, 103], // smooth / strong
+        [100, 104, 100, 100, 120, 120, 124, 120], // weak, side decisions
+        [100, 160, 100, 100, 103, 103, 160, 103], // curvature rejection
+        [0, 0, 0, 0, 255, 255, 255, 255],         // large signed delta
+        [255, 255, 255, 255, 0, 0, 0, 0],         // reversed signed delta
+    ];
+    for vertical in [false, true] {
+        for first in 0..TAPS.len() {
+            for second in 0..TAPS.len() {
+                let mut input = vec![127u8; SIDE * SIDE];
+                for line in 0..8 {
+                    let mut taps = TAPS[if line < 4 { first } else { second }];
+                    // Unequal endpoints catch accidental first-line-only decisions.
+                    if line == 3 || line == 7 {
+                        taps[1] = taps[1].saturating_add(1);
+                        taps[6] = taps[6].saturating_sub(1);
+                    }
+                    for (tap, value) in taps.into_iter().enumerate() {
+                        let (x, y) = if vertical {
+                            (4 + tap, 4 + line)
+                        } else {
+                            (4 + line, 4 + tap)
+                        };
+                        input[y * SIDE + x] = value;
+                    }
+                }
+                for beta in [0, 1, 8, 16, 32, 64, 128, 255] {
+                    for tc in [
+                        [0, 0],
+                        [0, 4],
+                        [4, 0],
+                        [4, 4],
+                        [1, 255],
+                        [255, 1],
+                        [255, 255],
+                    ] {
+                        let mut output = [input.clone(), input.clone()];
+                        for (dsp, pixels) in [candidate, reference].into_iter().zip(&mut output) {
+                            let mut view =
+                                PlaneViewMut::new(pixels, SIDE, SIDE, SIDE).expect("plane");
+                            let at = if vertical { (8, 4) } else { (4, 8) };
+                            dsp.hevc_deblock_luma_edge(&mut view, at, vertical, tc, beta);
+                        }
+                        record(report, candidate.isa(), output[0] == output[1], || {
+                            format!(
+                                "hevc segment masks vertical {vertical} patterns {first}/{second} tc {tc:?} beta {beta}"
                             )
                         });
                     }

@@ -124,6 +124,56 @@ fn accumulate(state: &mut State, pair: v128, weight: i16) {
     state.sum[1] = i16x8_add(state.sum[1], i16x8_extmul_high_i8x16(pair, weight));
 }
 
+/// Add one tap distance, preserving primary-then-secondary accumulation.
+/// `K` is 0 or 1, so every direction-table lookup and secondary weight is
+/// constant after inlining; the source/destination footprint is unchanged.
+#[target_feature(enable = "simd128")]
+#[inline]
+unsafe fn distance<const N: usize, const DIR: usize, const K: usize>(
+    state: &mut State,
+    base: *const u8,
+    stride: usize,
+    args: &CdefArgs,
+    clip: bool,
+) {
+    // SAFETY: filter checked the complete window for both tap distances.
+    unsafe {
+        if args.pri != 0 {
+            let value = pair::<N>(
+                state,
+                base,
+                stride,
+                DIRECTIONS[DIR][K],
+                args.pri,
+                args.pri_shift,
+                clip,
+            );
+            accumulate(state, value, args.pri_taps[K]);
+        }
+        if args.sec != 0 {
+            let a = pair::<N>(
+                state,
+                base,
+                stride,
+                DIRECTIONS[(DIR + 2) & 7][K],
+                args.sec,
+                args.sec_shift,
+                clip,
+            );
+            let b = pair::<N>(
+                state,
+                base,
+                stride,
+                DIRECTIONS[(DIR + 6) & 7][K],
+                args.sec,
+                args.sec_shift,
+                clip,
+            );
+            accumulate(state, i8x16_add(a, b), SEC_TAPS[K]);
+        }
+    }
+}
+
 #[target_feature(enable = "simd128")]
 #[inline]
 unsafe fn filter<const N: usize, const DIR: usize>(
@@ -155,41 +205,11 @@ unsafe fn filter<const N: usize, const DIR: usize>(
                 high: centre,
                 sum: [i16x8_splat(0); 2],
             };
-            for (k, &weight) in SEC_TAPS.iter().enumerate() {
-                if args.pri != 0 {
-                    let value = pair::<N>(
-                        &mut state,
-                        base,
-                        stride,
-                        DIRECTIONS[DIR][k],
-                        args.pri,
-                        args.pri_shift,
-                        clip,
-                    );
-                    accumulate(&mut state, value, args.pri_taps[k]);
-                }
-                if args.sec != 0 {
-                    let a = pair::<N>(
-                        &mut state,
-                        base,
-                        stride,
-                        DIRECTIONS[(DIR + 2) & 7][k],
-                        args.sec,
-                        args.sec_shift,
-                        clip,
-                    );
-                    let b = pair::<N>(
-                        &mut state,
-                        base,
-                        stride,
-                        DIRECTIONS[(DIR + 6) & 7][k],
-                        args.sec,
-                        args.sec_shift,
-                        clip,
-                    );
-                    accumulate(&mut state, i8x16_add(a, b), weight);
-                }
-            }
+            // Keep the two tap distances explicit. The WASM backend retains
+            // the former two-iteration loop, preventing constant direction
+            // offsets and secondary weights (2, 1) from folding in V8.
+            distance::<N, DIR, 0>(&mut state, base, stride, args, clip);
+            distance::<N, DIR, 1>(&mut state, base, stride, args, clip);
             let centres = [
                 u16x8_extend_low_u8x16(centre),
                 u16x8_extend_high_u8x16(centre),

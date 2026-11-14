@@ -10,6 +10,7 @@
 //! the block in the picture, where the residual is then added.
 
 use nc_common::PlaneViewMut;
+use nc_dsp::{Dsp, H264Intra8x8Edges};
 
 use super::{DecodeError, Result};
 
@@ -250,6 +251,45 @@ fn directional_allowed(mode: u8, avail: Avail) -> bool {
         }
         _ => false,
     }
+}
+
+/// Reuse the encoder's DSP predictor while preserving decoder availability.
+/// Gather raw samples before filtering: the DSP applies §8.3.2.2.1 once.
+pub(super) fn predict_8x8(
+    dsp: &Dsp,
+    plane: &mut PlaneViewMut<'_>,
+    x0: usize,
+    y0: usize,
+    mode: u8,
+    avail: Avail,
+) -> Result<()> {
+    if !directional_allowed(mode, avail) {
+        return Err(DecodeError::Malformed(
+            "intra mode needs unavailable samples",
+        ));
+    }
+    let raw = Edge::gather(plane, x0, y0, MAX_DIRECTIONAL, avail);
+    let edges = H264Intra8x8Edges {
+        top: core::array::from_fn(|i| raw.line[MAX_DIRECTIONAL + 1 + i]),
+        left: core::array::from_fn(|j| raw.line[MAX_DIRECTIONAL - 1 - j]),
+        corner: raw.line[MAX_DIRECTIONAL],
+        has_top: avail.top,
+        has_top_right: avail.top_right,
+        has_left: avail.left,
+        has_corner: avail.top_left,
+    };
+    let mut prediction = [0u8; MAX_DIRECTIONAL * MAX_DIRECTIONAL];
+    dsp.h264_intra_8x8(&edges.filtered(), mode, &mut prediction);
+    let mut out = block(plane, x0, y0, MAX_DIRECTIONAL);
+    for (y, row) in prediction
+        .as_chunks::<MAX_DIRECTIONAL>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        out.row_mut(y)[..MAX_DIRECTIONAL].copy_from_slice(row);
+    }
+    Ok(())
 }
 
 /// `Intra_4x4` (`n` 4) or `Intra_8x8` (`n` 8) prediction of the block at
@@ -608,14 +648,26 @@ mod tests {
                 left: flags & 4 != 0,
                 top_left: flags & 8 != 0,
             };
-            for _ in 0..8 {
+            for pattern in 0..12 {
                 let mut source = Plane::new(32, 32, 0).unwrap();
                 for y in 0..32 {
-                    for v in source.view_mut().row_mut(y) {
-                        *v = noise();
+                    for (x, v) in source.view_mut().row_mut(y).iter_mut().enumerate() {
+                        *v = match pattern {
+                            0 => 0,
+                            1 => 255,
+                            2 => {
+                                if (x + y) % 2 == 0 {
+                                    0
+                                } else {
+                                    255
+                                }
+                            }
+                            3 => (x * 7 + y * 13) as u8,
+                            _ => noise(),
+                        };
                     }
                 }
-                let (x0, y0) = (8, 8);
+                let (x0, y0) = (9, 7);
                 let view = source.view();
                 let edges = H264Intra8x8Edges {
                     top: core::array::from_fn(|i| view.row(y0 - 1)[x0 + i]),
@@ -632,7 +684,17 @@ mod tests {
                     predict_nxn(&mut decoded.view_mut(), x0, y0, 8, mode, avail).unwrap();
                     let mut kernel = [0u8; 64];
                     dsp.h264_intra_8x8(&refs, mode, &mut kernel);
+                    let mut dispatched = source.clone();
+                    predict_8x8(&dsp, &mut dispatched.view_mut(), x0, y0, mode, avail).unwrap();
                     let decoded = decoded.view();
+                    let dispatched = dispatched.view();
+                    for y in 0..32 {
+                        assert_eq!(
+                            decoded.row(y),
+                            dispatched.row(y),
+                            "dispatch mode {mode} flags {flags:#06b} row {y}"
+                        );
+                    }
                     for (i, &k) in kernel.iter().enumerate() {
                         assert_eq!(
                             decoded.row(y0 + i / 8)[x0 + i % 8],
@@ -642,6 +704,31 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn dispatched_8x8_respects_missing_picture_edges() {
+        let dsp = Dsp::new();
+        let none = Avail {
+            left: false,
+            top: false,
+            top_right: false,
+            top_left: false,
+        };
+        let mut data = [0xa5; 9 * 8];
+        {
+            let mut plane = PlaneViewMut::new(&mut data, 9, 8, 8).unwrap();
+            assert!(predict_8x8(&dsp, &mut plane, 0, 0, VERTICAL, none).is_err());
+        }
+        assert_eq!(data, [0xa5; 9 * 8]);
+        {
+            let mut plane = PlaneViewMut::new(&mut data, 9, 8, 8).unwrap();
+            predict_8x8(&dsp, &mut plane, 0, 0, DC, none).unwrap();
+        }
+        for row in data.as_chunks::<9>().0 {
+            assert_eq!(&row[..8], &[128; 8]);
+            assert_eq!(row[8], 0xa5);
         }
     }
 

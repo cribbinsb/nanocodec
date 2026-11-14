@@ -21,6 +21,7 @@ const LANES: usize = HEVC_LINES;
 /// Positions loaded across the edge: p3..q3.
 const POSITIONS: usize = 8;
 /// Segments per call.
+#[cfg(not(target_arch = "wasm32"))]
 const SEGMENTS: usize = HEVC_LINES / HEVC_SEGMENT;
 
 /// −1 in the lanes where `a < b`, else 0.
@@ -31,6 +32,7 @@ fn less<V: I16FilterLanes>(a: V, b: V) -> V {
 }
 
 /// The lane mask value of a decision: −1 (all bits set) if taken, else 0.
+#[cfg(not(target_arch = "wasm32"))]
 fn lane_mask(taken: bool) -> i16 {
     -i16::from(taken)
 }
@@ -74,6 +76,7 @@ fn store<V: I16x8Shuffles>(
 
 /// The segments' luma decisions as per-lane masks (−1 taken, 0 not):
 /// strong filter, normal filter, normal filter of p1, of q1; and `tC`.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Default)]
 struct Decisions {
     /// Some segment takes the strong filter.
@@ -86,6 +89,7 @@ struct Decisions {
 }
 
 /// Per-lane inputs of the luma decisions (§8.7.2.5.3).
+#[cfg(not(target_arch = "wasm32"))]
 struct DecisionInputs {
     /// `|p2 − 2p1 + p0|`.
     dp: [i16; LANES],
@@ -98,6 +102,7 @@ struct DecisionInputs {
 }
 
 /// Decide every segment; `None` if no segment is filtered.
+#[cfg(not(target_arch = "wasm32"))]
 fn decide(e: &HevcEdge, inputs: &DecisionInputs) -> Option<Decisions> {
     let beta = i32::from(e.beta);
     let mut out = Decisions::default();
@@ -174,6 +179,7 @@ fn strong_side<V: I16FilterLanes>([x3, x2, x1, x0]: [V; 4], [y0, y1]: [V; 2], tc
 #[allow(clippy::inline_always)]
 #[inline(always)]
 #[allow(clippy::similar_names)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn luma<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e: &HevcEdge) {
     let samples = load::<V>(plane, e);
     let [p3, p2, p1, p0, q0, q1, q2, q3] = samples;
@@ -194,10 +200,46 @@ pub(crate) unsafe fn luma<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e
     let Some(d) = decide(e, &inputs) else {
         return;
     };
-    let (strong, normal) = (V::load(&d.strong), V::load(&d.normal));
-    let (filter_p1, filter_q1) = (V::load(&d.filter_p1), V::load(&d.filter_q1));
-    let tc = V::load(&d.tc);
+    let masks = DecisionMasks {
+        any_strong: d.any_strong,
+        strong: V::load(&d.strong),
+        normal: V::load(&d.normal),
+        filter_p1: V::load(&d.filter_p1),
+        filter_q1: V::load(&d.filter_q1),
+        tc: V::load(&d.tc),
+    };
+    apply(plane, e, samples, masks);
+}
 
+/// Decision masks already expanded to the segment's four lanes.
+#[derive(Clone, Copy)]
+struct DecisionMasks<V> {
+    any_strong: bool,
+    strong: V,
+    normal: V,
+    filter_p1: V,
+    filter_q1: V,
+    tc: V,
+}
+
+/// The unchanged filter arithmetic shared by scalar and vector decisions.
+#[allow(clippy::inline_always, clippy::similar_names)]
+#[inline(always)]
+fn apply<V: I16x8Shuffles + I16FilterLanes>(
+    plane: &mut [u8],
+    e: &HevcEdge,
+    samples: [V; POSITIONS],
+    d: DecisionMasks<V>,
+) {
+    let [p3, p2, p1, p0, q0, q1, q2, q3] = samples;
+    let DecisionMasks {
+        any_strong,
+        strong,
+        normal,
+        filter_p1,
+        filter_q1,
+        tc,
+    } = d;
     let raw = q0
         .sub(p0)
         .mul(V::splat(9))
@@ -226,7 +268,7 @@ pub(crate) unsafe fn luma<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e
         q2,
         q3,
     ];
-    if d.any_strong {
+    if any_strong {
         let [sp0, sp1, sp2] = strong_side([p3, p2, p1, p0], [q0, q1], tc.add(tc));
         let [sq0, sq1, sq2] = strong_side([q3, q2, q1, q0], [p0, p1], tc.add(tc));
         for (k, filtered) in [(1, sp2), (2, sp1), (3, sp0), (4, sq0), (5, sq1), (6, sq2)] {
@@ -235,4 +277,97 @@ pub(crate) unsafe fn luma<V: I16x8Shuffles + I16FilterLanes>(plane: &mut [u8], e
     }
     // Positions p2..q2 (1..7) change.
     store(plane, e, out, (1, POSITIONS - 1));
+}
+
+/// Keep the two four-line decisions in vectors on SIMD128. The existing
+/// arithmetic computes every lane already; endpoint shuffles avoid spilling
+/// four input arrays and rebuilding five mask/tC arrays through scalar loops.
+///
+/// # Safety
+/// V's ISA is enabled and the caller validates the eight-line HEVC footprint.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(clippy::inline_always, clippy::similar_names)]
+#[inline(always)]
+pub(crate) unsafe fn luma_vector_decisions<V: I16x8Shuffles + I16FilterLanes>(
+    plane: &mut [u8],
+    e: &HevcEdge,
+) {
+    let samples = load::<V>(plane, e);
+    let [p3, p2, p1, p0, q0, q1, q2, q3] = samples;
+    let two = V::splat(2);
+    let dp = p2.sub(p1.mul(two)).add(p0).abs();
+    let dq = q2.sub(q1.mul(two)).add(q0).abs();
+    let ends = p3.sub(p0).abs().add(q0.sub(q3).abs());
+    let step = p0.sub(q0).abs();
+    let Some(d) = vector_decisions(e, dp, dq, ends, step) else {
+        return;
+    };
+    apply(plane, e, samples, d);
+}
+
+/// Replicate each segment's first/last endpoint over its four lanes.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn endpoints<V: I16x8Shuffles>(x: V) -> (V, V) {
+    const FIRST: [u8; 16] = [0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9, 8, 9, 8, 9];
+    const LAST: [u8; 16] = [6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15];
+    (x.shuffle_bytes(&FIRST), x.shuffle_bytes(&LAST))
+}
+
+/// Only lanes 0 and 4 are needed because each decision fills a whole segment.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn any_segment<V: I16x8Shuffles>(mask: V) -> bool {
+    let mut lanes = [0; LANES];
+    mask.store(&mut lanes);
+    lanes[0] != 0 || lanes[HEVC_SEGMENT] != 0
+}
+
+/// H.265 §8.7.2.5.3, the same strict tests as `decide`, without scalar
+/// decision arrays. Byte inputs imply dp/dq <= 510, each endpoint's sum <= 1020,
+/// and the two-endpoint sum / doubled maximum <= 2040. Public beta/tC are u8:
+/// 5*tC + 1 <= 1276, beta + beta/2 <= 382. Every intermediate fits signed16.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(clippy::inline_always, clippy::similar_names)]
+#[inline(always)]
+fn vector_decisions<V: I16x8Shuffles + I16FilterLanes>(
+    e: &HevcEdge,
+    dp: V,
+    dq: V,
+    ends: V,
+    step: V,
+) -> Option<DecisionMasks<V>> {
+    let zero = V::splat(0);
+    let beta = V::splat(e.beta);
+    let tc = V::load(&[
+        e.tc[0], e.tc[0], e.tc[0], e.tc[0], e.tc[1], e.tc[1], e.tc[1], e.tc[1],
+    ]);
+    let (d0, d3) = endpoints(dp.add(dq));
+    let active = tc.gt_mask(zero).and(less(d0.add(d3), beta));
+    if !any_segment(active) {
+        return None;
+    }
+    let (end0, end3) = endpoints(ends);
+    let (step0, step3) = endpoints(step);
+    let maximum = d0.max(d3);
+    let strong = active
+        .and(less(maximum.add(maximum), beta.sra(2)))
+        .and(less(end0.max(end3), beta.sra(3)))
+        .and(less(
+            step0.max(step3),
+            tc.mul(V::splat(5)).add(V::splat(1)).sra(1),
+        ));
+    let threshold = beta.add(beta.sra(1)).sra(3);
+    let (dp0, dp3) = endpoints(dp);
+    let (dq0, dq3) = endpoints(dq);
+    Some(DecisionMasks {
+        any_strong: any_segment(strong),
+        strong,
+        normal: active.and(strong.eq_mask(zero)),
+        filter_p1: less(dp0.add(dp3), threshold),
+        filter_q1: less(dq0.add(dq3), threshold),
+        tc,
+    })
 }
