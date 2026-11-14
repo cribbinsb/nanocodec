@@ -89,6 +89,16 @@ function analysisRecords() {
 // MS-SSIM (analysis mode): the metrics worker, whether it is scoring a frame,
 // and the newest frame waiting for it ({ tick, width, height, reference, distorted }).
 let metrics = null, metricsBusy = false, nextScore = null;
+/**
+ * A score starts at most this often (ms), whatever the frame rate: each costs
+ * ~110 ms of CPU at 720p, which competes with the encoders and decoders on a
+ * busy machine. Scoring every frame it could took a slowed 1280x720 + 640x360
+ * comparison from 244 to 74 delivered frames (web/tests/psnr-map.py, 2026-11-14).
+ * The newest frame waits for the next slot, so a paused frame is scored within it.
+ */
+const SCORE_INTERVAL_MS = 1000;
+// When the last score started, and the timer for the next slot (0: none).
+let lastScoreAt = -Infinity, scoreTimer = 0;
 /** Start the metrics worker on the analysis module (`wasmModule`, compiled by the page). */
 function startMetrics(wasmModule) {
   metrics = new Worker(new URL('./metrics-worker.js', import.meta.url), { type: 'module' });
@@ -112,9 +122,15 @@ function queueScore(tick, source) {
   nextScore = { tick, width, height, reference: reference.buffer, distorted: distorted.buffer };
   sendScore();
 }
-/** Hand the metrics worker the waiting frame if it is free. */
+/** Hand the metrics worker the waiting frame if it is free and its slot has come (SCORE_INTERVAL_MS). */
 function sendScore() {
   if (metricsBusy || !nextScore) return;
+  const wait = lastScoreAt + SCORE_INTERVAL_MS - performance.now();
+  if (wait > 0) {
+    scoreTimer ||= setTimeout(() => { scoreTimer = 0; sendScore(); }, wait);
+    return;
+  }
+  lastScoreAt = performance.now();
   metricsBusy = true;
   const score = nextScore;
   nextScore = null;

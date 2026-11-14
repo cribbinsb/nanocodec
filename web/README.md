@@ -194,8 +194,8 @@ are needed: each worker has its own ordinary WASM memory.
   **MS-SSIM** (luma, the evaluation's definition: `eval/nceval/msssim.py` =
   libvmaf `float_ms_ssim`, reimplemented in nc-dsp `ms_ssim`) costs ~0.1 s per 720p
   frame in WASM, so with analysis on each view's decode worker hands it to its own
-  metrics worker (`metrics-worker.js`), which scores the newest shown frame whenever
-  it is free: not every frame, but always the paused one. The statistics show the
+  metrics worker (`metrics-worker.js`), which scores the newest shown frame at most
+  once a second: not every frame, but always the paused one. The statistics show the
   latest score with its tick and the mean of the scored frames; `psnr-map.py`
   checks every score against `msssim.py` within 0.001.
 - **Stop:** ends both workers and releases camera tracks. Switching away from

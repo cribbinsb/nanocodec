@@ -448,7 +448,7 @@ class AnalysisView {
       row('QP', qp(now), mean.qp == null ? '—' : mean.qp.toFixed(1)),
       row('QP changes (blocks)', String(now.qpDeltas), mean.qpDeltas?.toFixed(0) ?? '—'),
       row('Bits / pixel', now.bitsPerPixel.toFixed(3), (mean.bitsPerPixel ?? 0).toFixed(3)),
-    ].join('')}</tbody></table><p class="analysis-note">PSNR: per plane against the source frame this view coded, at its own size, on the source timeline's tick shown (30 ticks a second; views showing the same tick were scored against the same instant); PSNR-YUV weights the planes ${YUV_WEIGHTS.join(':')}, as the PSNR-YUV above. MS-SSIM (~0.1 s a 720p frame) is scored in its own worker on the newest frame whenever it is free, so not every frame; a paused frame is always scored.${
+    ].join('')}</tbody></table><p class="analysis-note">PSNR: per plane against the source frame this view coded, at its own size, on the source timeline's tick shown (30 ticks a second; views showing the same tick were scored against the same instant); PSNR-YUV weights the planes ${YUV_WEIGHTS.join(':')}, as the PSNR-YUV above. MS-SSIM (~0.1 s a 720p frame) is scored in its own worker on the newest frame at most once a second, so not every frame; a paused frame is always scored.${
       this.panel.current?.entry?.sourceNote ? ` Source note: ${escapeHtml(this.panel.current.entry.sourceNote)}` : ''}</p>`;
   }
 }

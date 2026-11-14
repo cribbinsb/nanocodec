@@ -2,9 +2,9 @@
 // ~100 ms per 720p frame (nc-web `ms_ssim_luma`, the evaluation's definition,
 // nc-dsp `ms_ssim`), against a few ms of decode. A view's decode worker starts
 // one with analysis on and sends it the newest shown frame's luma and its
-// source luma whenever it is free (decode-worker.js `queueScore`): frames
-// shown meanwhile are skipped, and the last one shown (a paused frame) is
-// always scored. Each score goes back with the tick it belongs to.
+// source luma at most once a second (decode-worker.js `queueScore`,
+// SCORE_INTERVAL_MS): frames shown meanwhile are skipped, and the last one
+// shown (a paused frame) is always scored. Each score goes back with the tick it belongs to.
 import { ANALYSIS_MODULE_URL } from './wasm.js';
 
 let module = null;

@@ -14,7 +14,8 @@ a pre-encoded stream. Paused stays paused on the same instant (both views' ticks
 and the frame count unchanged), with the overlay drawn; playing goes on from
 where it was (the count keeps rising, the ticks do not go back); live encoders
 are never re-created. A paused switch shows bit-identical pictures (the new
-decoders decode the same stream again).
+decoders decode the same stream again), and switched on, the paused frame
+gets its MS-SSIM.
 
 The PSNR map (error-map.js): drawn with several colours, a finite per-frame
 PSNR of each plane in both views' statistics, the luma value matching an
@@ -93,6 +94,12 @@ EVENT_TIMEOUT_MS = 60000
 # slow machine delivers slowly, a stalled page not at all.
 STALL_S = 30
 FRAME_POLL_S = 0.5
+# Each view's MS-SSIM row names the paused frame's tick (the metrics worker scored it).
+PAUSED_FRAME_SCORED = """[...document.querySelectorAll('.version')].every(v => {
+  const row = [...v.querySelectorAll('.analysis-stats tr')].find(r => r.textContent.startsWith('MS-SSIM'));
+  return row && row.querySelector('td').textContent.endsWith(`tick ${v.querySelector('.frame-badge').dataset.tick}`); })"""
+# A paused frame is scored within the next once-a-second slot, after the decoder switch (ms).
+MS_SSIM_TIMEOUT_MS = 15000
 # Page events kept per page for a failure's report (trace.js lines on the console).
 EVENTS_SHOWN = 40
 EVENTS = {}
@@ -181,6 +188,9 @@ def check_paused_switch(page, case, on):
     # Every view's decoder was replaced.
     assert after['decoders'] == before['decoders'] + 2, (case, before, after)
     assert page.locator('#pause').text_content() == 'Resume', case
+    if on:
+        # The paused frame is always scored (MS-SSIM, at most once a second while playing).
+        wait(page, PAUSED_FRAME_SCORED, f'{case}: MS-SSIM of the paused frame', MS_SSIM_TIMEOUT_MS)
 
 
 def check_playing_switch(page, case, on):

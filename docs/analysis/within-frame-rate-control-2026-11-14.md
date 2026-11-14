@@ -517,9 +517,57 @@ frames, `add_noise.py`, 15 fps, CBR 1000 kbps, one key. Each cell is kbps / PSNR
 | bodycam_bc1_540p | AV1 | 0.989→0.990 | −0.02 | −0.53 | 0.00 |
 | | H.264 | 0.987→0.987 | −0.04 | −0.26 | 0.00 |
 
-No re-codes in either arm. The band's strength is 0 under camera motion, so the small VMAF loss is probably the
-strength-scaled frame cadence that the band mode drops in steady state. Not isolated.
+No re-codes in either arm. The loss came from flat areas on a moving camera counting as still (section 5.2).
 
-**Hand-off:** v2 with the zero-vector path and the 5.1 candidates goes to the tuner for the long-window L3
-(`docs/handoff/tuning.md`). Two flags: H.264 meva 388's worst-1% falls by 0.52 dB, and AV1 still costs on noisy
-stills.
+### 5.2 Tuner result and per-frame diagnosis: not adopted (2026-11-14)
+
+**The tuner's screens of `rate.cadence_spatial=1` on AV1 Default were worse.**
+
+| Level | J (90% interval) | Notes |
+|---|---|---|
+| L1 | −0.59% | |
+| L2 | +0.50% | static class +1.7% |
+| L3 | +0.51% [+0.22, +0.80], n = 127 | |
+| 600-frame final (30 clips, key every 10 s) | +2.01% [+1.33, +2.66] | static +2.59%; pan guard tripped (+3.43%) |
+
+The rate side worked in the final: the Default's meva_admin overshoot was gone and no point went over target.
+
+**Per frame** (AV1 Default against band, every rung, one key):
+
+- **Before the band acts.** On fit_static_otw283, fit_static_otw399 and pool_lowlight_jaad_0026_540p, the two
+  arms are identical until frame 104, where the start-up cadence ends.
+- **Then the band loses ground.** It gains 0.2-0.4 dB in frames 104-119, then loses 0.3-1.3 dB in frames 120-149.
+- **What the Default does there.** Its base frames in that window are deep refinements of the whole picture, far
+  below the cadence's 3 QP because the level's limit cycle lands them deep:
+  - otw283 at 600 kbps, frame 124: qindex 58 and 76 kB, against 112-120 around it.
+  - otw399 at 1200 kbps, frame 116: qindex 75 and 65 kB.
+  - Every later frame inherits these refinements. The band arm codes the same frames at qindex 114 for 2.5 kB.
+- **pool_chad_4_109 over 600 frames.** Rate is the same in both arms (0.978-0.989 against 0.986). The Default's
+  bursts at frames 236, 424, 484 and 544 (64-118 kB at qindex 77-116) are each 3.5-5.5 dB above the band arm at
+  the same frame. Mean PSNR-Y over 600 frames is 0.2-0.56 dB lower with the band.
+
+**Deeper bands do not recover it.** Band boost 6 and 9 QP instead of 3: rate control raises the level to pay for
+the band (otw283 at 600 kbps: q 112 → 141 / 162). Frames 120-149 still lose 0.2-1.5 dB on all three clips,
+roughly as at boost 3.
+
+**Moving content.** The VMAF loss on moving clips came from flat areas on a moving camera: they match equally at
+every vector, so they counted as still and were coded as copies. Two probes:
+
+- Keeping the frame cadence for the share outside the band made it worse (AV1 pan VMAF −1.21).
+- A camera-still condition on the candidates removed most of it (pan_jaad_video_0194: AV1 −0.56 → −0.10, H.264
+  −0.35 → −0.06).
+
+Neither was landed, because the lever is not adopted.
+
+**Conclusion.**
+
+- **Where the quality comes from.** The Default's quality on static scenes comes from the same deep, rare
+  whole-picture refinements that cause the bursts and the overshoot. A whole-picture refinement is inherited by
+  every later frame until the scene changes, and at equal rate it buys more than the same bits spread over a
+  budgeted band.
+- **Why the band cannot match it.** The band is paid for in every frame's budget, so it can only refine shallowly.
+  Refining deeply means borrowing bits that later frames repay, which is the burst again.
+- **What could be tried, not tried.** A band refined deeply and rarely, with its bits treated as a cycle-long
+  loan, would be bursts by area rather than by frame. It may still keep frame sizes smoother, but nothing measured
+  here says it would win J.
+- **Decision.** `rate.cadence_spatial` stays registered and off.
