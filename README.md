@@ -188,6 +188,21 @@ are needed: each worker has its own ordinary WASM memory.
   of the same access units scored against the demo's own source frames.
 - **Stop:** ends both workers and releases camera tracks. Switching away from
   the tab also stops capture; press Start to resume.
+- **Debug report** (`debug-report.js`): "Debug report ↓" saves the page's whole
+  state as one Markdown file (readable sections, then a JSON block, schema
+  `nanocodec-debug-report/1`): the build commit (`pkg/build.json`, written by
+  `tools/web/build.sh`), browser, source (clip id and file SHA-256, exact or sampled
+  path, loop; a webcam or local file is described, never embedded), each view's
+  effective configuration, every number shown in its panel and statistics, its
+  recent coded frames (tick, source frame, type, quantizer, bytes, SHA-256 of the
+  access unit, timings, PSNR), the bitrate and PSNR windows with their formulas,
+  mid-run changes (rate, key frame requests) and the event log tail. "with
+  streams" adds the access units since each view's last key frame (base64).
+  `python3 tools/web/replay-debug-report.py REPORT.md [--nanocodec BIN]`
+  regenerates a sample clip's source frames, re-encodes live views natively,
+  checks every access unit's hash, decodes with ffmpeg and re-scores every
+  frame's PSNR, and recomputes the shown bitrate, PSNR and times; any mismatch
+  fails it. `web/tests/debug-report.py` runs it on reports the page saved.
 - **Download:** AV1, VP9 and AV2 are IVF with captured media timestamps; H.264/HEVC/VVC are Annex-B
   elementary streams. Each view retains at most16MiB of complete packets from
   the beginning of the current run. When full, playback continues and the saved

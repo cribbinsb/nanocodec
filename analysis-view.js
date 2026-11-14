@@ -135,6 +135,10 @@ export class AnalysisController {
     this.showControls();
     this.redraw();
   }
+  /** The analysis state for the debug report (debug-report.js). */
+  debugState() {
+    return { enabled: this.enabled, layers: [...this.layers], layout: this.layout, zoom: { ...this.zoom }, plane: PLANES[this.plane], fineGrid: this.fineGrid };
+  }
   /** Whether the PSNR map shows its fine grid (8x8) rather than the coarse one (16x16). */
   get fineGrid() { return this.zoom.scale >= FINE_GRID_ZOOM; }
   redraw() { for (const view of this.views) view.place(); }
