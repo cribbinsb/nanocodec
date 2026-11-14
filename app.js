@@ -26,6 +26,8 @@ const PREVIEW_WIDTH = 160, PREVIEW_HEIGHT = 90;
 const NOT_READY_RETRY_MS = 100;
 // Delivery within this fraction of the target frame rate counts as keeping up.
 const KEEPING_UP = 0.95;
+// Delivery under this fraction of the slowest stage's own rate is not that stage's limit.
+const STAGE_BOUND = 0.8;
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
 let showOriginal = false, delivered = 0;
@@ -40,6 +42,10 @@ let nextDeadline = 0, firstDeliveredAt = 0, lastTick = -1;
 // The original frame (largest view size) of the instant on screen, for the magnifier.
 let original = null;
 const frames = new FrameSource(video, error => { if (running || preparing) fail(error); });
+// Capture follows the source: a staged frame on a tick some view codes is captured
+// as soon as it is presented (capture.js), not on the next timer tick.
+frames.wanted = tick => !comparison || comparison.coding(tick).some(Boolean);
+frames.onCandidate = () => { if (running && !paused) { nextDeadline = performance.now(); scheduleFrame(generation); } };
 // `?display=cpu|webgl|webgl2` overrides the frame renderer's automatic choice (renderer.js), e.g. to compare the paths.
 const display = new URLSearchParams(location.search).get('display') || 'auto';
 const clipTitle = id => clipById(id).title;
@@ -339,7 +345,12 @@ function limit(deliveryRate) {
   const slowest = stages.reduce((a, b) => (b.ms > a.ms ? b : a));
   const stage = `${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
   const target = Math.max(...panels.map(p => p.current.fps));
-  return deliveryRate >= KEEPING_UP * target ? ` · keeping up, slowest ${stage}` : ` · limited by ${stage}`;
+  if (deliveryRate >= KEEPING_UP * target) return ` · keeping up, slowest ${stage}`;
+  // Stages overlap (pipeline.js), so the slowest one allows 1000 / ms frames per
+  // second; well below that, the views wait for source frames (capture takes every
+  // presented frame on a coded tick, capture.js), e.g. a browser dropping frames.
+  if (deliveryRate < STAGE_BOUND * 1000 / slowest.ms) return ` · waiting for source frames (slowest stage ${stage})`;
+  return ` · limited by ${stage}`;
 }
 function sourceChanged(next) {
   stop(); kind = next; message(); resetViews();
