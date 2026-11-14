@@ -461,5 +461,65 @@ The largest rises lift undershooting static streams to about target.
 whose zero-vector residual is within the camera's noise is skipped and marked settled, so with the noise skip on
 the band never refines noise. Not yet measured with both on; that waits for the skip-aware budget.
 
-**Hand-off:** v2 (with the zero-vector path) goes to the tuner for the long-window L3 (`docs/handoff/tuning.md`), with
-two flags: AV1 meva 97's rate ends at +2.5%, and AV1 chirla 93's worst-1% falls by 0.52 dB.
+### 5.1 Follow-up: noise-robust candidates and the noise skip (2026-11-14)
+
+**Candidates.** Candidates now come from each cell's zero vector predicting it about as well as its best match
+(`noise_skip::zero_explains`) for 2 frames in a row, instead of pre-analysis' static flag. On a noisy still that
+flag reads mid-tones as changed, so the band found few squares and lost the frame cadence's steady-state
+refinement.
+
+**Noise skip.** A band square whose zero-vector residual is within the camera's noise (the noise map's test,
+while `decision.noise_skip` is on) is coded at the frame quantizer and settled.
+
+**The six still points with the new candidates** (same setup as section 5; vs the Default of the same build):
+
+| Point | AV1: rate; re-codes; worst-1% Y; matched PSNR-YUV / VMAF; f300-360 | H.264: same |
+|---|---|---|
+| chirla 47 | 1.001→0.995; 22→15; +1.62; +0.07 / +0.68; +0.75 | 0.987→0.996; 12→6; +0.05; −0.03 / +0.47; −0.03 |
+| chirla 93 | 1.037→1.004; 8→5; +0.20; +0.40 / +0.56; +1.78 | 0.987→0.995; 4→2; +0.77; +0.02 / +0.27; +1.26 |
+| chirla 187 | 1.015→1.014; 23→12; +0.60; +0.04 / +0.22; +1.60 | 0.997→0.989; 2→2; 0.00; −0.33 / 0.00; +0.05 |
+| meva 97 | 0.984→1.003; 16→5; +0.32; −0.09 / −0.18; −0.53 | 0.962→0.998; 16→6; +1.31; +0.02 / +0.36; −0.39 |
+| meva 194 | 1.033→0.993; 8→7; −0.27; +0.03 / +0.24; −0.20 | 1.006→1.000; 6→6; +1.82; +0.17 / +0.89; +1.59 |
+| meva 388 | 1.028→0.991; 7→2; +2.66; +0.15 / +0.48; +1.81 | 1.027→0.992; 3→2; −0.52; −0.15 / −0.11; −0.94 |
+
+- Re-codes fall 84→46 (AV1) and 43→20 (H.264).
+- No AV1 point ends more than 1.4% over target, and none gets worse on rate.
+- The worst worst-1% change is H.264 meva 388 at −0.52 dB.
+
+**Synthetic noisy stills.** The static-noise agent's recipe: frame 0 of `static_meva_hospital` at 854x480, 300
+frames, `add_noise.py`, 15 fps, CBR 1000 kbps, one key. Each cell is kbps / PSNR-Y against the clean original.
+"skip" is `decision.noise_skip=4`, `noise_skip_chroma_ratio=2` and `rate.skip_budget=1`; "both" adds the band.
+
+| sigma | codec | off | band | skip | both |
+|---|---|---|---|---|---|
+| 1.15 | AV1 | 988 / 43.73 | 991 / 43.44 | 845 / 43.83 | 893 / 43.49 |
+| | H.264 | 985 / 44.05 | 987 / 43.99 | 361 / 44.04 | 369 / 44.00 |
+| 2.9 | AV1 | 988 / 37.31 | 991 / 37.05 | 265 / 37.94 | 378 / 37.54 |
+| | H.264 | 986 / 38.06 | 987 / 38.05 | 109 / 38.95 | 109 / 38.97 |
+| 7 | AV1 | 988 / 31.55 | 991 / 31.22 | 728 / 31.51 | 770 / 31.24 |
+| | H.264 | 985 / 32.32 | 984 / 32.37 | 575 / 32.77 | 574 / 32.83 |
+
+- **H.264:** the band leaves the noise skip's undershoot and quality intact. Both together match the skip alone
+  within 2% of rate and 0.06 dB.
+- **AV1:** the band still costs on noisy stills. Alone it loses 0.26-0.33 dB against the clean scene at the same
+  rate. With the skip it adds 6-43% rate and loses 0.27-0.40 dB.
+- Before the new candidates the AV1 losses were twice as large: band alone −0.94 / −0.98 / −0.43 dB, and with the
+  skip 910 / 390 / 774 kbps.
+- AV1's noise skip is itself weak here (845 kbps at sigma 1.15 against H.264's 361; the static-noise agent's open
+  AV1 finding). So the band should stay off for AV1 on noisy still scenes until that gap is understood.
+
+**Moving content** (a5392646, lowest rung, 600 frames, band on vs off):
+
+| Clip | Codec | Rate | PSNR-YUV | VMAF v1 | Worst-1% Y |
+|---|---|---|---|---|---|
+| pan_jaad_video_0194 | AV1 | 0.988→0.986 | −0.07 | −0.56 | −0.11 |
+| | H.264 | 0.989→0.989 | −0.01 | −0.35 | +0.06 |
+| bodycam_bc1_540p | AV1 | 0.989→0.990 | −0.02 | −0.53 | 0.00 |
+| | H.264 | 0.987→0.987 | −0.04 | −0.26 | 0.00 |
+
+No re-codes in either arm. The band's strength is 0 under camera motion, so the small VMAF loss is probably the
+strength-scaled frame cadence that the band mode drops in steady state. Not isolated.
+
+**Hand-off:** v2 with the zero-vector path and the 5.1 candidates goes to the tuner for the long-window L3
+(`docs/handoff/tuning.md`). Two flags: H.264 meva 388's worst-1% falls by 0.52 dB, and AV1 still costs on noisy
+stills.

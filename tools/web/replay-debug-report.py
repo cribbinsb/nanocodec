@@ -12,7 +12,8 @@ the page:
 - for a live view of a sample clip (the frames are regenerated with
   tools/web/make-reference-streams.py `write_source`, the demo's own source
   frames), encodes the same frames with the native CLI at the view's
-  configuration (live rate changes become --rate-change) and checks every
+  configuration (live rate changes become --rate-change, requested key frames
+  --keyframe) and checks every
   reported access unit's hash and size: the WASM and native encoders are the
   same code, so the streams must be identical;
 - decodes the stream (the native one, a pre-encoded file, or a stream embedded
@@ -205,8 +206,9 @@ def psnr_checks(letter: str, frames: list[dict], pictures: list[np.ndarray], sou
     return checks
 
 
-def cli_command(nanocodec: Path, config: dict, frames: int, colour: str | None, rate_changes: list[str], source: Path, out: Path) -> list[str]:
-    """The native encode of the page's configuration (web/options.js cliCommand, plus colour and rate changes)."""
+def cli_command(nanocodec: Path, config: dict, frames: int, colour: str | None, rate_changes: list[str], keyframes: list[int],
+                source: Path, out: Path) -> list[str]:
+    """The native encode of the page's configuration (web/options.js cliCommand, plus colour, rate changes and requested key frames)."""
     args = [str(nanocodec), 'encode', '--codec', config['codec'], '--input', str(source), '--width', str(config['width']),
             '--height', str(config['height']), '--fps', str(config['fps']), '--frames', str(frames),
             '--intra-period', str(config['keyInterval']), '--qp', str(config['qp']), '--output', str(out)]
@@ -225,6 +227,8 @@ def cli_command(nanocodec: Path, config: dict, frames: int, colour: str | None, 
         args += ['--colour', family, '--range', 'full' if full else 'limited']
     for change in rate_changes:
         args += ['--rate-change', change]
+    for frame in keyframes:
+        args += ['--keyframe', str(frame)]
     return args
 
 
@@ -314,9 +318,6 @@ class Replay:
         """Re-encode the session from its first tick natively and compare units and PSNR."""
         letter, config, frames = view['letter'], view['config'], view['frames']
         step = SOURCE_FPS // config['fps']
-        unreproducible = [i for i in view['interventions'] if i['kind'] == 'keyframe' or (i['kind'] == 'operating-point' and i['operatingPoint'] == 0)]
-        if unreproducible:
-            return [Check(letter, 'native re-encode', '—', '—', True, f'key frames were requested at ticks {[i["tick"] for i in unreproducible]}: not replayed')]
         if not self.nanocodec:
             return [Check(letter, 'native re-encode', '—', '—', False, 'no native nanocodec (--nanocodec or NC_NANOCODEC_BIN)')]
         count = frames[-1]['tick'] // step + 1
@@ -328,10 +329,18 @@ class Replay:
         with input_path.open('wb') as out:
             for index in range(count):
                 out.write(source[index % loop_frames].tobytes())
-        rate_changes = [f'{i["tick"] // step}:{i["targetKbps"]}:{i["peakKbps"]}:{i["bufferMs"]}' for i in view['interventions'] if i['kind'] == 'rate']
+        # Rate changes at the first frame the encode worker coded with them (`rateChanges`).
+        changes = view.get('rateChanges', [])
+        if any(change['rateMode'] != 'cbr' for change in changes):
+            return [Check(letter, 'native re-encode', '—', '—', True, 'not replayed: a live switch to a fixed quantizer has no CLI equivalent')]
+        rate_changes = [f'{c["tick"] // step}:{c["targetKbps"]}:{c["peakKbps"]}:{c["bufferMs"]}' for c in changes]
+        # Key frames the page requested ("Request keyframes", back to a full SVC layer), by the frame that coded them.
+        keyframes = [tick // step for tick in view.get('requestedKeys', [])]
         colour = next((f['colour'] for f in frames if f.get('colour')), None)
         out_path = self.scratch / f'{letter}.stream'
-        command = cli_command(self.nanocodec, config, count, colour, rate_changes, input_path, out_path)
+        # The encode starts at the run's first rate settings; `config` holds the latest.
+        start = {**config, **view.get('initialRate', {})}
+        command = cli_command(self.nanocodec, start, count, colour, rate_changes, keyframes, input_path, out_path)
         subprocess.run(command, capture_output=True, check=True)
         input_path.unlink()
         data = out_path.read_bytes()

@@ -768,8 +768,10 @@ impl<B: CodecBackend> Encoder<B> {
             .filter(|_| self.reuse_frame.is_some())
             .map(ReuseTerm::offsets);
         let cyclic = self.cyclic.as_mut().expect("checked above");
+        cyclic.observe(&analysis.pre, motion);
         let strength = cyclic.strength(f64::from(analysis.pre.static_fraction), hint);
-        let band = cyclic.plan(&analysis.still, distance, level_step, strength);
+        let size = (analysis.pre.blocks.cols(), analysis.pre.blocks.rows());
+        let band = cyclic.plan(size, distance, level_step, strength);
         if band.is_empty() {
             return false;
         }
@@ -2229,28 +2231,20 @@ impl<B: CodecBackend> Encoder<B> {
             return Some(mode);
         }
         // The static skip proves a zero residual at the frame quantizer; a
-        // block coded finer than the frame (`refined`) may well code one. A
-        // square of the cyclic band is still offered to the noise skip
-        // alone: its zero-vector residual within the camera's noise means
-        // refining it would code noise (`noise_skip.rs`).
+        // block coded finer than the frame (`refined`) may well code one.
         let band = refined
             && self
                 .cyclic
                 .as_ref()
                 .is_some_and(|c| c.in_band((node.x, node.y)));
-        let noise_only = band && self.frame_decision_params.noise_skip > 0.;
-        let skip_allowed = (!refined || noise_only)
+        let skip_allowed = !refined
             && refresh.is_none_or(|w| {
                 self.backend
                     .static_skip_vector(node)
                     .is_some_and(|mv| w.allows(node, mv))
             });
-        let mode = if skip_allowed
-            && self.try_static_skip(node, frame, (source, reference), recon, noise_only)
+        let mode = if skip_allowed && self.try_static_skip(node, frame, (source, reference), recon)
         {
-            if noise_only && let Some(cyclic) = self.cyclic.as_mut() {
-                cyclic.settled((node.x, node.y));
-            }
             let skip = self
                 .backend
                 .static_skip_vector(node)
@@ -2622,7 +2616,11 @@ impl<B: CodecBackend> Encoder<B> {
             .window
             .as_ref()
             .map_or(RefreshRegion::Dirty, |w| w.region(&node));
-        let qp_offset = self.leaf_qp_offset(&node);
+        let qp_offset = if inter.is_some() && self.band_within_noise(&node, (source, reference)) {
+            0
+        } else {
+            self.leaf_qp_offset(&node)
+        };
         let (mode, chosen, selected_ref) = match inter {
             None => (PredictionMode::IntraDc, ReferenceChoice::Primary, None),
             Some(_) if region == RefreshRegion::Intra => (
@@ -2719,6 +2717,37 @@ impl<B: CodecBackend> Encoder<B> {
         }
     }
 
+    /// Whether `node` lies in the cyclic band but its zero-vector residual
+    /// is already within the camera's noise (`noise_skip.rs`, while on):
+    /// refining it would code noise, so it is coded at the frame quantizer
+    /// and its square is settled (not offered again until coded coarser).
+    /// Without this, AV1 (whose backend often declines the noise skip on a
+    /// block planned finer) refined noise: synthetic noisy still at sigma
+    /// 2.9, band + noise skip 390 kbps / 37.33 dB against the clean scene
+    /// vs noise skip alone 265 kbps / 37.94 dB.
+    fn band_within_noise(&mut self, node: &Block, pictures: (&Picture, &Picture)) -> bool {
+        let params = &self.frame_decision_params;
+        if params.noise_skip <= 0.
+            || !self
+                .cyclic
+                .as_ref()
+                .is_some_and(|c| c.in_band((node.x, node.y)))
+        {
+            return false;
+        }
+        let within = self.layer.noise_map.explains(
+            &self.dsp,
+            node,
+            pictures,
+            params.noise_skip,
+            params.noise_skip_chroma_ratio,
+        );
+        if within && let Some(cyclic) = self.cyclic.as_mut() {
+            cyclic.settled((node.x, node.y));
+        }
+        within
+    }
+
     fn leaf_qp_offset(&mut self, node: &Block) -> i16 {
         let random_qp = self
             .random
@@ -2760,15 +2789,13 @@ impl<B: CodecBackend> Encoder<B> {
 impl<B: CodecBackend> Encoder<B> {
     /// Offer `node` to the backend's static skip when pre-analysis marks it
     /// static, or when the noise skip (`noise_skip.rs`, while on) finds its
-    /// zero-vector residual within the camera's noise (only then with
-    /// `noise_only`: a block planned finer than the frame).
+    /// zero-vector residual within the camera's noise.
     fn try_static_skip(
         &mut self,
         node: &Block,
         frame: &FrameInputs<'_>,
         (source, reference): (&Picture, &Picture),
         recon: &mut Picture,
-        noise_only: bool,
     ) -> bool {
         let params = &self.frame_decision_params;
         let within_noise = params.noise_skip > 0.
@@ -2779,8 +2806,7 @@ impl<B: CodecBackend> Encoder<B> {
                 params.noise_skip,
                 params.noise_skip_chroma_ratio,
             );
-        if !within_noise && (noise_only || !frame.pre.is_some_and(|pre| is_static::<B>(pre, node)))
-        {
+        if !within_noise && !frame.pre.is_some_and(|pre| is_static::<B>(pre, node)) {
             return false;
         }
         let still = frame.still.is_some_and(|still| is_still::<B>(still, node));

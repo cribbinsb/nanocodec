@@ -240,7 +240,7 @@ impl NoiseMap {
 
 /// Whether a cell's zero-motion SAD `zero` is within what noise explains
 /// of its best match's SAD `best`.
-fn zero_explains(zero: u32, best: u32) -> bool {
+pub(crate) fn zero_explains(zero: u32, best: u32) -> bool {
     zero * ZERO_MATCH_DIVISOR <= best * ZERO_MATCH_RATIO + ZERO_MATCH_SLACK * ZERO_MATCH_DIVISOR
 }
 

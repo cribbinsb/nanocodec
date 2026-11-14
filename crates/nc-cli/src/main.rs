@@ -136,6 +136,9 @@ struct EncodeArgs {
     /// Mid-stream resolution changes (`--resize FRAME:WxH`), in frame
     /// order: the input's frames have the new size from FRAME on.
     resizes: Vec<(u32, usize, usize)>,
+    /// Input frames coded as key frames on request (`--keyframe FRAME`), in
+    /// order: as a live caller's "request a key frame" before that frame.
+    keyframes: Vec<u32>,
     rate_log: Option<PathBuf>,
     /// Input frame times (`--timestamps`), microseconds.
     timestamps: Option<Vec<i64>>,
@@ -171,6 +174,7 @@ const USAGE: &str = concat!(
     "       [--buffer-ms ms] [--peak-bitrate kbps] [--min-qp Q] [--max-qp Q]\n",
     "       [--max-qp-step N] [--rate-log frames.csv] [--frame-drop]\n",
     "       [--rate-change FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]]... [--resize FRAME:WxH]...\n",
+    "       [--keyframe FRAME]...\n",
     "       nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]\n",
     "                 [--frame-md5 frames.md5] [--film-grain 0|1] [--operating-point N]   (AV1)\n",
     "       nanocodec extract --codec av1|av2|h264|hevc|vvc --temporal-layers N --max-layer M\n",
@@ -359,6 +363,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         rate_control,
         rate_changes,
         resizes: parse_resizes(args)?,
+        keyframes: parse_keyframes(args)?,
         rate_log: get("--rate-log").map(PathBuf::from),
         timestamps,
         timestamps_out: get("--timestamps-out").map(PathBuf::from),
@@ -457,6 +462,21 @@ fn parse_resizes(args: &[String]) -> Result<Vec<(u32, usize, usize)>, String> {
         .collect::<Result<Vec<_>, String>>()?;
     resizes.sort_unstable();
     Ok(resizes)
+}
+
+/// Every `--keyframe FRAME`, in frame order.
+fn parse_keyframes(args: &[String]) -> Result<Vec<u32>, String> {
+    let mut frames = args
+        .windows(2)
+        .filter(|pair| pair[0] == "--keyframe")
+        .map(|pair| {
+            pair[1]
+                .parse()
+                .map_err(|_| format!("bad --keyframe {} (FRAME)", pair[1]))
+        })
+        .collect::<Result<Vec<u32>, String>>()?;
+    frames.sort_unstable();
+    Ok(frames)
 }
 
 /// `--timing`; without it, timestamped input is signalled as variable-rate.
@@ -659,10 +679,11 @@ impl<W: Write> FrameSink for AnnexB<W> {
     }
 }
 
-/// The mid-stream changes (`--rate-change`, `--resize`) still to apply.
+/// The mid-stream changes (`--rate-change`, `--resize`, `--keyframe`) still to apply.
 struct PendingChanges<'a> {
     rate: std::iter::Peekable<std::slice::Iter<'a, rate_control::RateChange>>,
     resize: std::iter::Peekable<std::slice::Iter<'a, (u32, usize, usize)>>,
+    keyframes: std::iter::Peekable<std::slice::Iter<'a, u32>>,
 }
 
 impl<'a> PendingChanges<'a> {
@@ -670,6 +691,7 @@ impl<'a> PendingChanges<'a> {
         Self {
             rate: args.rate_changes.iter().peekable(),
             resize: args.resizes.iter().peekable(),
+            keyframes: args.keyframes.iter().peekable(),
         }
     }
 
@@ -690,6 +712,11 @@ impl<'a> PendingChanges<'a> {
                 .set_resolution(width, height)
                 .map_err(|error| error.to_string())?;
             input.set_size(width, height);
+        }
+        // A request, as BrowserEncoder::request_keyframe: rate-control history is kept.
+        if self.keyframes.next_if(|&&frame| frame <= index).is_some() {
+            while self.keyframes.next_if(|&&frame| frame <= index).is_some() {}
+            encoder.request_keyframe();
         }
         Ok(())
     }

@@ -3,8 +3,9 @@
 downloads the debug report (web/debug-report.js), and
 tools/web/replay-debug-report.py must find zero mismatches in it.
 
-Two runs: the default comparison (live H.264 and AV1 on the default clip) with
-the streams embedded, where the native re-encode must give every access unit
+Two runs: the default comparison (live H.264 and AV1 on the default clip),
+with "Request keyframes" pressed and A's target rate changed midway and the
+streams embedded, where the native re-encode must give every access unit
 the page coded and the shown bitrate, PSNR and times must follow from the
 report's window; and a pre-encoded view beside a live one with analysis on
 (PSNR-Y/Cb/Cr checked too), without streams, whose report must stay under
@@ -14,6 +15,7 @@ MAX_DEFAULT_BYTES.
 """
 import functools
 import http.server
+import json
 import os
 import subprocess
 import sys
@@ -49,11 +51,19 @@ def report_of(page, path: Path, streams: bool) -> Path:
     return path
 
 
+def parse_state(path: Path) -> dict:
+    """The report's JSON block."""
+    text = path.read_text()
+    start = text.rfind('```json') + len('```json')
+    return json.loads(text[start:text.index('\n```', start)])
+
+
 def replay(path: Path):
     result = subprocess.run([sys.executable, str(REPO / 'tools/web/replay-debug-report.py'), str(path)], capture_output=True, text=True)
     bad = [line for line in result.stdout.splitlines() if line.startswith('BAD')]
     assert result.returncode == 0, '\n'.join(bad[:40]) + result.stdout[-300:] + result.stderr[-2000:]
     print(result.stdout.splitlines()[-1])
+    return result.stdout
 
 
 def main():
@@ -66,7 +76,16 @@ def main():
         page = browser.new_page(accept_downloads=True, viewport={'width': 1400, 'height': 1000})
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.goto(f'http://127.0.0.1:{server.server_port}/')
-        replay(report_of(page, Path(scratch) / 'default.md', streams=True))
+        # A key frame request midway: the replay codes it at the frame the page did.
+        page.wait_for_function(f'{COMPARED} >= {FRAMES_BEFORE_PAUSE // 2}', timeout=120000)
+        page.locator('#keyframe').click()
+        page.locator('.target-rate').nth(0).fill('400')
+        page.locator('.target-rate').nth(0).press('Enter')
+        default = report_of(page, Path(scratch) / 'default.md', streams=True)
+        state = parse_state(default)
+        assert all(view['requestedKeys'] for view in state['views']), 'the key frame request was not recorded'
+        assert [c['targetKbps'] for c in state['views'][0]['rateChanges']] == [400], state['views'][0]['rateChanges']
+        replay(default)
         # A pre-encoded view beside a live one, analysis on.
         page.locator('#pause').click()
         page.locator('.view-source [data-view-source="reference"]').nth(0).click()

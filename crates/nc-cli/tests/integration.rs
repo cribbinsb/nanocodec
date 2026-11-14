@@ -7,6 +7,7 @@
 mod decode_cli;
 mod film_grain_cli;
 mod frame_hold;
+mod keyframe_cli;
 mod rate_control_cli;
 mod restoration_cli;
 mod sse_log_cli;
