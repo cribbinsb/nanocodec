@@ -31,6 +31,7 @@ export const browserencoder_buffer_overflows: (a: number) => number;
 export const browserencoder_colour: (a: number) => [number, number];
 export const browserencoder_disable_rate_control: (a: number) => void;
 export const browserencoder_encode: (a: number, b: number) => [number, number, number, number];
+export const browserencoder_encode_at: (a: number, b: number, c: number) => [number, number, number, number];
 export const browserencoder_key: (a: number) => number;
 export const browserencoder_look_ahead: (a: number, b: number) => [number, number];
 export const browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];

@@ -260,6 +260,8 @@ export class Panel {
   }
   reset(config) {
     this.current = config; this.frames = []; this.history = []; this.bytes = 0; this.full = false; this.count = 0;
+    // Ticks of this view's rate the source skipped, and the last tick it got.
+    this.skipped = 0; this.lastTick = null;
     this.element.querySelector('.rate-status').textContent = config.source === SOURCES.reference ? 'Pre-encoded offline · waiting for frames'
       : config.rateMode === 'cbr' ? `Target ${config.targetKbps} kbps · waiting for frames` : 'Fixed quantizer';
     this.shown = false; this.element.classList.remove('error'); this.downloadButton.disabled = true;
@@ -322,7 +324,7 @@ export class Panel {
     }
     this.element.querySelector('.frame-count').textContent = this.current.entry
       ? `${this.count} stream frames decoded · stream ${(this.current.entry.bytes / 1024).toFixed(0)} KiB`
-      : `${this.count} frames · ${(this.bytes / 1024).toFixed(0)} KiB saved${this.full ? ' · buffer full' : ''}`;
+      : `${this.count} frames · ${(this.bytes / 1024).toFixed(0)} KiB saved${this.full ? ' · buffer full' : ''}${this.skipNote()}`;
     this.element.querySelector('.rate-status').textContent = this.rateStatus(result);
     this.drawHistory();
     this.describeSettings();
@@ -354,6 +356,21 @@ export class Panel {
     const bytes = this.history.reduce((sum, f) => sum + f.bytes, 0);
     const seconds = (this.history.at(-1).timestamp - this.history[0].timestamp + 1000 / this.current.fps) / 1000;
     return bytes * 8 / seconds / 1000;
+  }
+  /** For a live view that skipped frames: how many, and the rate it delivers against its configured one. */
+  skipNote() {
+    if (!this.skipped || this.history.length < 2) return '';
+    const seconds = (this.history.at(-1).timestamp - this.history[0].timestamp) / 1000;
+    return ` · ${this.skipped} skipped: configured ${this.current.fps} fps, delivering ${((this.history.length - 1) / seconds).toFixed(1)}`;
+  }
+  /**
+   * A frame of tick `tick` went to this view: count the ticks of its rate since
+   * the previous one that it never got (a live source the page could not keep up
+   * with skips them; an exact source never does).
+   */
+  sent(tick) {
+    if (this.lastTick !== null) this.skipped += Math.max(0, Math.floor((tick - this.lastTick) / this.current.step) - 1);
+    this.lastTick = tick;
   }
   /** Mean of one recorded field over the recent frames that have it. */
   average(key) {

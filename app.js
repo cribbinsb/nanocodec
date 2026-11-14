@@ -364,6 +364,9 @@ async function start() {
         throw new Error(`Version ${panel.letter}: the stream was made for a ${panel.stream.loopTicks}-tick loop, the clip has ${loopLength}`);
       }
     }
+    // Sampled live (webcam, or a file read while it plays): frames may be skipped,
+    // so each carries its capture time to the encoder (encode-worker.js).
+    for (const panel of panels) panel.current = { ...panel.current, timed: !exact };
     comparison = new Comparison(panels, {
       onFrame: (results, originals, tick) => finishFrame(token, results, originals, tick),
       onError: error => { if (token === generation) fail(error); },
@@ -410,6 +413,7 @@ function capture(tick) {
 /** Show the picture of `tick` in the preview and send it to the views that code it. */
 function send(tick, { picture, element, width, height }, coding = comparison.coding(tick)) {
   lastTick = tick;
+  panels.forEach((panel, i) => { if (coding[i]) panel.sent(tick); });
   const scale = Math.min(PREVIEW_WIDTH / width, PREVIEW_HEIGHT / height);
   preview.fillStyle = '#000'; preview.fillRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
   preview.drawImage(element, (PREVIEW_WIDTH - width * scale) / 2, (PREVIEW_HEIGHT - height * scale) / 2, width * scale, height * scale);

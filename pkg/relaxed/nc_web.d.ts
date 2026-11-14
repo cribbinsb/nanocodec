@@ -177,6 +177,15 @@ export class BrowserEncoder {
    */
   encode(source: SourceFrame): Uint8Array;
   /**
+   * [`BrowserEncoder::encode`] for a frame captured at `timestamp_us`
+   * (microseconds, any origin): a live source whose frames may be skipped.
+   * Rate control budgets the frame for the time since the previous one, so
+   * the bitrate holds in real time.
+   * # Errors
+   * As [`BrowserEncoder::encode`].
+   */
+  encode_at(source: SourceFrame, timestamp_us: number): Uint8Array;
+  /**
    * Fraction of the configured bitrate buffer currently occupied.
    */
   readonly buffer_fullness: number;
@@ -311,6 +320,7 @@ export interface InitOutput {
   readonly browserencoder_colour: (a: number) => [number, number];
   readonly browserencoder_disable_rate_control: (a: number) => void;
   readonly browserencoder_encode: (a: number, b: number) => [number, number, number, number];
+  readonly browserencoder_encode_at: (a: number, b: number, c: number) => [number, number, number, number];
   readonly browserencoder_key: (a: number) => number;
   readonly browserencoder_look_ahead: (a: number, b: number) => [number, number];
   readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];

@@ -630,6 +630,27 @@ export class BrowserEncoder {
         return ret !== 0;
     }
     /**
+     * [`BrowserEncoder::encode`] for a frame captured at `timestamp_us`
+     * (microseconds, any origin): a live source whose frames may be skipped.
+     * Rate control budgets the frame for the time since the previous one, so
+     * the bitrate holds in real time.
+     * # Errors
+     * As [`BrowserEncoder::encode`].
+     * @param {SourceFrame} source
+     * @param {number} timestamp_us
+     * @returns {Uint8Array}
+     */
+    encode_at(source, timestamp_us) {
+        _assertClass(source, SourceFrame);
+        const ret = wasm.browserencoder_encode_at(this.__wbg_ptr, source.__wbg_ptr, timestamp_us);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * Quantizer reported for the latest frame, in the codec's native scale.
      * @returns {number}
      */
