@@ -995,6 +995,18 @@ impl CodecBackend for HevcBackend {
         ("hevc.merge_candidates", 4.0),
         ("planner.depth_removal_th_32_16", 0.0),
         ("planner.depth_removal_th_16_8", 0.0),
+        // Quiet second before a scheduled key (`rate.prekey_quiet`, as the
+        // H.264 Default since 6e1a695b): no cadence base boost and still
+        // blocks held, so a still scene's key is not paid for by a
+        // refinement burst just before it. 600-frame long-window L3 (keys
+        // every 10 s, 31 points, 6e1a695b): J -1.26% [-1.95, -0.62], static
+        // -4.4%, crowd -0.6%, no ceiling point; key pulse +0.26 dB (guard
+        // 0.25, judged noise: worst-1% terms all within +2%); worst 1 s
+        // window max 2.24 -> 2.28 x target. Re-codes on the 14 static long
+        // points 10.5 -> 10.6 per 1000 frames; CPU x86 x1.0001, Jetson
+        // cycles x1.0015. 150-frame levels inert (no periodic key).
+        // hevc-fast, -faster and -better pin it off.
+        ("rate.prekey_quiet", 1.0),
     ];
 
     // A flat field-by-field initialisation of the backend's state.

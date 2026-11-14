@@ -103,3 +103,6 @@ planner.split_rate_factor = 2
 hevc.merge_candidates = 2
 planner.depth_removal_th_32_16 = 25
 planner.depth_removal_th_16_8 = 50
+# The quiet second before a key (`rate.prekey_quiet`, HEVC Default since
+# 2026-11-14) stays off here: pinned, byte-identical.
+rate.prekey_quiet = 0
