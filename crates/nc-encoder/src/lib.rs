@@ -152,7 +152,8 @@ pub use zero_residual::{
 };
 
 pub use rate_control::{
-    RateControlConfig, RateControlError, RateControlStats, RateModel, RatePlanTrace,
+    ForcedQuantizer, RateControlConfig, RateControlError, RateControlStats, RateModel,
+    RatePlanTrace,
 };
 pub use spatial::{
     CombinedCbrBuffer, EnhancementIntra, InterLayerMode, MAX_SPATIAL_LAYERS, OperatingPointSpec,

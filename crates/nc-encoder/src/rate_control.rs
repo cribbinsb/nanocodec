@@ -280,6 +280,66 @@ pub struct RatePlanTrace {
     /// (`rate.recode_overflow`, at most `MAX_RECODES`).
     pub codings: u32,
 }
+/// A quantizer imposed on the next frame in place of the one rate control
+/// planned ([`crate::Encoder::force_next_quantizer`]): an oracle for
+/// measuring what a quantizer sequence costs with every other part of the
+/// controller (its tools, budgets and buffers) unchanged, e.g. a stream's
+/// own logged sequence smoothed (`eval/nceval/rc_oracle.py`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForcedQuantizer {
+    /// The frame's quantizer, as `RateControlStats::current_quantizer`
+    /// reports it (past the codec's largest within the λ headroom).
+    pub quantizer: u32,
+    /// The inter level the frame stands for (the level later frames are
+    /// smoothed against, and the reuse term's step); the quantizer itself
+    /// when `None`. Ignored on keys.
+    pub level: Option<u32>,
+}
+/// How a frame has been coded so far: its re-codes, the (step, bits) of its
+/// previous coding (`recode_quantizer`), and whether its quantizer was
+/// imposed ([`RateController::force`]: never re-coded, so the oracle's
+/// sequence is coded as given).
+#[derive(Debug, Clone, Copy, Default)]
+struct FrameCoding {
+    recodes: u32,
+    trial: Option<(f64, f64)>,
+    forced: bool,
+}
+/// The complexity hint inter levels are planned from: the
+/// running geometric mean of the inter hints with `rate.level_hint_weight`
+/// (the frame's own `hint` at weight 1). A frame's hint is its own
+/// temporal activity, so planning the level from it alone makes the
+/// level follow every frame's noise: AV1 Default on `handheld_mot17_10`
+/// (300 kbps) moved its level 5-10 qindex per frame at a steady budget.
+/// With the mean the level moves with sustained changes, and a busier
+/// single frame costs more bits at the same quantizer, as at fixed QP.
+/// (Replaying the logged quantizers with a centred one-second mean of
+/// the level instead: AV1 BD-J -1.7% on the natural VAL clips, bodycam
+/// -3.4%, pan -3.7%; `docs/analysis/rc-cost-decomposition-2026-11-14.md`.)
+#[derive(Debug, Clone, Copy)]
+struct LevelHint {
+    /// `rate.level_hint_weight`: 1 plans from each frame's own hint.
+    weight: f64,
+    /// The running geometric mean (`None` before the first inter frame and
+    /// after a resolution change).
+    mean: Option<f64>,
+}
+impl LevelHint {
+    fn new(weight: f64) -> Self {
+        Self { weight, mean: None }
+    }
+    /// The hint an inter frame of complexity `hint` is planned from.
+    fn plan(&mut self, hint: f64) -> f64 {
+        if self.weight >= 1. {
+            return hint;
+        }
+        let mean = self.mean.map_or(hint, |mean| {
+            (mean.ln() + self.weight * (hint.ln() - mean.ln())).exp()
+        });
+        self.mean = Some(mean);
+        mean
+    }
+}
 #[derive(Debug, Clone, Copy)]
 struct Settings {
     config: RateControlConfig,
@@ -611,10 +671,8 @@ pub(crate) struct RateController {
     /// `rate.recode_overflow_inter`: the same ceiling for inter frames
     /// (`recode_ceiling` when 0).
     recode_ceiling_inter: f64,
-    /// Re-codes of the current frame so far, and the (step, bits) of its
-    /// previous coding (`recode_quantizer`).
-    recodes_this_frame: u32,
-    recode_trial: Option<(f64, f64)>,
+    /// How the current frame has been coded so far (re-codes, forcing).
+    coding: FrameCoding,
     last_key_index: u64,
     /// Model slot of the frame awaiting feedback.
     current_slot: usize,
@@ -638,6 +696,8 @@ pub(crate) struct RateController {
     last_budget: f64,
     /// `rate.level_step_scale`.
     level_step_scale: f64,
+    /// The complexity hint inter levels are planned from (`rate.level_hint_weight`).
+    level_hint: LevelHint,
     last_peak: f64,
     last_key: bool,
     last_predicted: f64,
@@ -732,8 +792,7 @@ impl RateController {
             first_key_cap_buffer: 0.,
             recode_ceiling: f64::from(params.recode_overflow),
             recode_ceiling_inter: f64::from(params.recode_overflow_inter),
-            recodes_this_frame: 0,
-            recode_trial: None,
+            coding: FrameCoding::default(),
             ladder,
             last_key_index: 0,
             current_slot: KEY_MODEL,
@@ -747,6 +806,7 @@ impl RateController {
             last_inter_hint: None,
             last_budget: 1.,
             level_step_scale: f64::from(params.level_step_scale),
+            level_hint: LevelHint::new(f64::from(params.level_hint_weight)),
             last_peak: 1.,
             last_key: false,
             last_predicted: 1.,
@@ -1141,7 +1201,7 @@ impl RateController {
         } else {
             f64::INFINITY
         };
-        let room = (strict, self.settings.capacity, self.still_share);
+        let room = (strict, self.still_share);
         self.still.ledger_room(target / self.frame_fps, debt, room)
     }
     /// The short window's room for the next frame (unbounded when off, and
@@ -1602,11 +1662,11 @@ impl RateController {
         let current_step = self.steps[self.current as usize];
         let size = discarded_bits as f64;
         self.learn(discarded_bits);
-        if self.recodes_this_frame == 0 {
+        if self.coding.recodes == 0 {
             self.stats.recoded_frames += 1;
         }
-        self.recodes_this_frame += 1;
-        self.recode_trial = Some((current_step, size));
+        self.coding.recodes += 1;
+        self.coding.trial = Some((current_step, size));
         self.current = new_q.clamp(self.settings.min, self.settings.max);
         if !self.last_key {
             self.last_inter_quantizer = Some(self.current);
@@ -1616,6 +1676,7 @@ impl RateController {
     pub fn set_picture_size(&mut self, pixels: usize) {
         self.pixels = pixels as f64;
         self.relearn = [true; MODEL_CLASSES];
+        self.level_hint.mean = None;
     }
 
     /// Largest change of the inter level from one frame to the next: the
@@ -1717,7 +1778,8 @@ impl RateController {
         } else {
             let still = hint.static_fraction;
             let distance = index - self.last_key_index;
-            self.inter_level_step(h, budget, (strength, still), layer, distance)
+            let planned = self.level_hint.plan(h);
+            self.inter_level_step(planned, budget, (strength, still), layer, distance)
         }
         .unwrap_or_else(|| self.bootstrap_step(key, hint, budget));
         // Block-level offsets change the frame's effective step: the frame
@@ -1775,8 +1837,7 @@ impl RateController {
             self.last_inter_hint = Some(h);
         }
         self.current = q;
-        self.recodes_this_frame = 0;
-        self.recode_trial = None;
+        self.coding = FrameCoding::default();
         self.current_slot = slot;
         self.last_hint = h;
         self.last_index = index;
@@ -1806,6 +1867,25 @@ impl RateController {
             ..self.stats.plan
         };
     }
+    /// Code the frame just selected at `forced` instead of its plan, and
+    /// return the quantizer: the budget, buffers and models carry on as
+    /// planned, so only the quantizer sequence differs from the
+    /// controller's own.
+    pub(crate) fn force(&mut self, forced: ForcedQuantizer) -> u32 {
+        let (min, max) = (self.settings.min, self.settings.max);
+        let q = forced.quantizer.clamp(min, max);
+        if !self.last_key {
+            self.last_inter_quantizer = Some(forced.level.unwrap_or(q).clamp(min, max));
+        }
+        self.current = q;
+        self.coding.forced = true;
+        let exponent = self.settings.config.rate_exponent;
+        self.last_predicted = self.model[self.current_slot].map_or(self.last_budget, |m| {
+            m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
+        });
+        self.stats.plan.predicted_bits = self.last_predicted;
+        q
+    }
     /// With `rate.recode_overflow`, the coarser quantizer to code the
     /// current frame again at when its `bits` would overflow the buffer
     /// drained at the target rate (what a strict-CBR receiver holds), or
@@ -1821,15 +1901,17 @@ impl RateController {
     pub fn recode_quantizer(&mut self, bits: u64) -> Option<u32> {
         let room = self.strict_room(self.last_key);
         let size = bits as f64;
-        if size <= room
+        if self.coding.forced
+            || size <= room
             || self.current >= self.settings.max
-            || self.recodes_this_frame >= MAX_RECODES
+            || self.coding.recodes >= MAX_RECODES
         {
             return None;
         }
         let current_step = self.steps[self.current as usize];
         let exponent = self
-            .recode_trial
+            .coding
+            .trial
             .map_or(RECODE_FIRST_EXPONENT, |(step, trial_bits)| {
                 ((trial_bits / size).ln() / (current_step / step).ln())
                     .clamp(RECODE_EXPONENT_RANGE.0, RECODE_EXPONENT_RANGE.1)
@@ -1842,11 +1924,11 @@ impl RateController {
         // planning frames that overflow (static_london_bus H.264 150 kbps
         // re-coded every frame from 37 on).
         self.learn(bits);
-        if self.recodes_this_frame == 0 {
+        if self.coding.recodes == 0 {
             self.stats.recoded_frames += 1;
         }
-        self.recodes_this_frame += 1;
-        self.recode_trial = Some((current_step, size));
+        self.coding.recodes += 1;
+        self.coding.trial = Some((current_step, size));
         self.current = quantizer;
         self.last_predicted = goal;
         Some(quantizer)
@@ -2130,7 +2212,7 @@ impl RateController {
         self.stats.plan.excess_bits = self.excess();
         self.stats.plan.debit_bits = self.debit.unwrap_or(0.);
         self.stats.plan.capacity_bits = self.settings.capacity;
-        self.stats.plan.codings = 1 + self.recodes_this_frame;
+        self.stats.plan.codings = 1 + self.coding.recodes;
     }
     pub const fn stats(&self) -> RateControlStats {
         self.stats
@@ -2396,6 +2478,52 @@ mod tests {
         let rate = bits as f64 / 3.;
         assert!((rate / 500_000. - 1.).abs() < 0.12, "{rate}");
         assert!(r.stats().buffer_fullness.is_finite());
+    }
+    /// Inter levels of 120 frames whose hint alternates by `swing` around
+    /// HINT, each frame coding exactly as busy as its hint says.
+    fn levels_under_alternating_hints(weight: f32, swing: f64) -> Vec<u32> {
+        let mut r = controller_with(500_000, &[("rate.level_hint_weight", weight)]);
+        (0..120)
+            .map(|i| {
+                let multiplier = if i % 2 == 0 { swing } else { 1. / swing };
+                let hint = Complexity {
+                    temporal: HINT.temporal * multiplier,
+                    ..HINT
+                };
+                let q = r.select(i == 0, i, hint, LayerPosition::FLAT, &LayerShare::WHOLE);
+                let step = 2f64.powf(f64::from(q) / 6.) / 2f64.powf(32. / 6.);
+                r.feedback((500_000. / 30. * multiplier / step.powf(1.1)) as u64);
+                q
+            })
+            .collect()
+    }
+    #[test]
+    fn the_level_follows_the_mean_hint_not_each_frames_noise() {
+        let spread = |levels: &[u32]| {
+            let tail = &levels[60..];
+            tail.iter().max().unwrap() - tail.iter().min().unwrap()
+        };
+        let own = levels_under_alternating_hints(1., 1.5);
+        let mean = levels_under_alternating_hints(0.2, 1.5);
+        assert!(spread(&own) >= 2, "{own:?}");
+        assert!(spread(&mean) < spread(&own), "{mean:?} vs {own:?}");
+    }
+    #[test]
+    fn a_forced_quantizer_is_coded_as_given_and_never_recoded() {
+        let mut r = controller_with(200_000, &[("rate.recode_overflow", 1.)]);
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(40_000);
+        r.select(false, 1, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        let forced = ForcedQuantizer {
+            quantizer: 20,
+            level: Some(22),
+        };
+        assert_eq!(r.force(forced), 20);
+        assert_eq!(r.recode_quantizer(10_000_000), None);
+        assert_eq!(r.inter_level(), Some(22));
+        r.feedback(10_000_000);
+        r.select(false, 2, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert!(r.recode_quantizer(10_000_000).is_some());
     }
     #[test]
     fn peak_headroom_is_physical_and_live_reconfigure_keeps_history() {

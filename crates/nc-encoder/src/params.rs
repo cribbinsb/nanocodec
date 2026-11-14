@@ -853,6 +853,8 @@ param_group! {
         // vs 1: AV1 -0.1%, H.264 -0.0%, HEVC -0.3%, no guard tripped; mean
         // |dPSNR| -0.03..-0.05 dB (bodycam -0.10..-0.16), bodycam worst-1%
         // -26..-31%. 0.25 reacts too slowly (AV1 J_real +1.1%).
+        level_hint_weight: 1.0, [0.02, 1.0],
+            "rate control: weight of each inter frame's complexity hint in the running (geometric) mean the inter level is planned from; the frame's own size is still predicted from its own hint (1 = plan from the frame's own hint): lower keeps the level steady through frame-to-frame complexity noise, which the buffer absorbs as fixed QP would",
         level_step_scale: 0.5, [0.05, 2.0],
             "rate control: the per-frame limit on inter-level changes is the codec's step limit times this: lower smooths frame-to-frame quality, higher reacts faster",
         cadence_scale: 0.0, [0.0, 2.0],

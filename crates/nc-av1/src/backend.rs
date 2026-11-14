@@ -1004,6 +1004,16 @@ impl CodecBackend for Av1Backend {
         // pooled +0.03%, no guard; x86 instructions -2.9%, Jetson cycles
         // -2.4%. The other AV1 presets pin 0 (both seeds refined).
         ("decision.seed_refine_ratio", 1.1),
+        // The target as a ceiling over every key period (`rate.period_ceiling`,
+        // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still
+        // scenes). 600-frame long-window L3 (keys every 10 s, 31 points,
+        // draw 2026-11-14): J -1.27% [-2.23, -0.49] BETTER, no guard; static
+        // -5.0%, crowd -0.1%, pan and lowlight 0.0%; periodic-key pulse
+        // -0.10 dB; achieved/target max 1.033 -> 1.000 (static median 0.993
+        // -> 0.977); re-codes on the 22 static and crowd points 6.1 -> 11.0
+        // per 1000 frames. Inert within one key period (150-frame levels and
+        // single-key streams unchanged). The other AV1 presets pin it off.
+        ("rate.period_ceiling", 1.0),
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,

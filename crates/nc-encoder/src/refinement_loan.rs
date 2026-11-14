@@ -138,7 +138,7 @@ impl StillRate {
 
     /// The ledger's room for an inter frame (`PeriodLedger::room`;
     /// unbounded when off).
-    pub fn ledger_room(&self, uniform: f64, debt: f64, strict: (f64, f64, f64)) -> f64 {
+    pub fn ledger_room(&self, uniform: f64, debt: f64, strict: (f64, f64)) -> f64 {
         self.ledger
             .as_ref()
             .map_or(f64::INFINITY, |ledger| ledger.room(uniform, debt, strict))

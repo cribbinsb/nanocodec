@@ -117,3 +117,5 @@ av1.skip_bias_energy = 0.25
 # static-recovery fix: tests/static_recovery.rs).
 # Pinned before AV1 Default's seed refinement gate (2026-11-14).
 decision.seed_refine_ratio = 0
+# Pinned before AV1 Default's key-period ceiling (2026-11-14).
+rate.period_ceiling = 0

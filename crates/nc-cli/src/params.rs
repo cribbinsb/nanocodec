@@ -336,6 +336,9 @@ mod tests {
         // Fast keeps both sub-sample seeds refined when the Default adopted
         // the seed gate (2026-11-14).
         expected.set("decision.seed_refine_ratio", 0.0);
+        // Fast keeps budget-only debt correction when the Default adopted the
+        // key-period ceiling (2026-11-14).
+        expected.set("rate.period_ceiling", 0.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "av1-fast"])).unwrap(),
             expected

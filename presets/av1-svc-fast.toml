@@ -59,3 +59,5 @@ spatial.proxy_bilinear = 1
 spatial.base_box_downscale = 1
 # Pinned before AV1 Default's seed refinement gate (2026-11-14).
 decision.seed_refine_ratio = 0
+# Pinned before AV1 Default's key-period ceiling (2026-11-14).
+rate.period_ceiling = 0

@@ -47,6 +47,7 @@ mod md5;
 #[cfg(test)]
 mod outcome_tests;
 mod params;
+mod qp_replay;
 mod rate_control;
 mod session;
 mod spatial_stats;
@@ -89,7 +90,13 @@ const VVC_BLOCK_LOG2: u8 = 5;
 const DEFAULT_INTRA_PERIOD_SECONDS: u32 = 10;
 
 /// `encode`/`session` path options read, any one of which may be stdin (`-`).
-const ENCODE_INPUT_FLAGS: &[&str] = &["--input", "--sse-reference", "--timestamps", "--params"];
+const ENCODE_INPUT_FLAGS: &[&str] = &[
+    "--input",
+    "--sse-reference",
+    "--timestamps",
+    "--params",
+    "--qp-replay",
+];
 /// `encode`/`session` path options written, any one of which may be stdout (`-`).
 const ENCODE_OUTPUT_FLAGS: &[&str] = &[
     "--output",
@@ -140,6 +147,9 @@ struct EncodeArgs {
     /// order: as a live caller's "request a key frame" before that frame.
     keyframes: Vec<u32>,
     rate_log: Option<PathBuf>,
+    /// `--qp-replay`: quantizers imposed on rate control's plan, by input
+    /// frame (`qp_replay.rs`).
+    qp_replay: Option<qp_replay::Replay>,
     /// Input frame times (`--timestamps`), microseconds.
     timestamps: Option<Vec<i64>>,
     timestamps_out: Option<PathBuf>,
@@ -176,6 +186,7 @@ const USAGE: &str = concat!(
     "                          AV1 may run a long still stream slightly over target)\n",
     "       [--buffer-ms ms] [--peak-bitrate kbps] [--min-qp Q] [--max-qp Q]\n",
     "       [--max-qp-step N] [--rate-log frames.csv] [--frame-drop]\n",
+    "       [--qp-replay quantizers.txt]   (with --bitrate: an oracle, see qp_replay.rs)\n",
     "       [--rate-change FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]]... [--resize FRAME:WxH]...\n",
     "       [--keyframe FRAME]...\n",
     "       nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]\n",
@@ -317,6 +328,16 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
             timestamps::read(stdio::open(Path::new(&path))?).map_err(|e| format!("{path}: {e}"))
         })
         .transpose()?;
+    let qp_replay = get("--qp-replay")
+        .map(|path| {
+            let text = std::io::read_to_string(stdio::open(Path::new(&path))?)
+                .map_err(|e| format!("{path}: {e}"))?;
+            qp_replay::parse(&text)
+        })
+        .transpose()?;
+    if qp_replay.is_some() && rate_control.is_none() {
+        return Err("--qp-replay needs --bitrate".into());
+    }
     let block_log2 = parse_block_log2(get("--block").as_deref(), codec)?;
     let frame_rate = parse_fps(&required(get("--fps"), "--fps")?)?;
     Ok(EncodeArgs {
@@ -368,6 +389,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
         resizes: parse_resizes(args)?,
         keyframes: parse_keyframes(args)?,
         rate_log: get("--rate-log").map(PathBuf::from),
+        qp_replay,
         timestamps,
         timestamps_out: get("--timestamps-out").map(PathBuf::from),
         simulate_loss: get("--simulate-loss")
@@ -893,6 +915,9 @@ fn run<B: CodecBackend, S: FrameSink>(
     let mut pending = PendingChanges::new(args);
     for index in 0..args.frames {
         pending.apply(index, &mut encoder, &mut input)?;
+        if let Some(replay) = &args.qp_replay {
+            encoder.force_next_quantizer(replay.get(index as usize).copied().flatten());
+        }
         let timestamp = frame_timestamp(args.timestamps.as_deref(), index)?;
         let started = Instant::now();
         let Some(mut frame) = input.encode_next(&mut encoder, timestamp)? else {

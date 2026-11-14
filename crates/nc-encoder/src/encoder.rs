@@ -54,8 +54,8 @@ use crate::qp_cadence::{
 use crate::quality_cap::residual_sigma;
 use crate::random_decisions::{DebugRng, RandomDecisions};
 use crate::rate_control::{
-    Complexity, LayerShare, RateControlConfig, RateControlError, RateControlStats, RateController,
-    RateModel, cadence_scale, spatial_aware,
+    Complexity, ForcedQuantizer, LayerShare, RateControlConfig, RateControlError, RateControlStats,
+    RateController, RateModel, cadence_scale, spatial_aware,
 };
 use crate::references::ReferencePool;
 use crate::refinement_gain::luma_mse;
@@ -259,6 +259,9 @@ pub struct Encoder<B: CodecBackend> {
     /// Quantizer of the frame being coded (block offsets are relative to it).
     frame_quantizer: u32,
     force_keyframe: bool,
+    /// A quantizer imposed on the next frame under rate control
+    /// ([`Encoder::force_next_quantizer`]).
+    forced_quantizer: Option<ForcedQuantizer>,
     /// Long-term reference with feedback (`ltr.interval`), when enabled.
     ltr: Option<LongTermReference>,
     /// Receiver feedback: slot contents and repairs (`feedback.rs`).
@@ -459,6 +462,7 @@ impl<B: CodecBackend> Encoder<B> {
             block_terms: Vec::new(),
             frame_quantizer: 0,
             force_keyframe: false,
+            forced_quantizer: None,
             ltr,
             feedback: LossFeedback::default(),
             refresh: None,
@@ -570,6 +574,17 @@ impl<B: CodecBackend> Encoder<B> {
         self.layer.rate_control.as_ref().map(RateController::stats)
     }
 
+    /// Code the next frame at `forced` instead of the quantizer rate
+    /// control plans for it (`None`: the plan), without re-coding it; the
+    /// controller otherwise runs as usual. An oracle for measuring a
+    /// quantizer sequence (`nanocodec encode --qp-replay`), not a control:
+    /// the target is not held. It applies to the next frame planned under
+    /// rate control (single-layer streams), so a caller replaying a
+    /// sequence sets it before every input frame.
+    pub fn force_next_quantizer(&mut self, forced: Option<ForcedQuantizer>) {
+        self.forced_quantizer = forced;
+    }
+
     /// Request an intra refresh on the next input frame, without resetting RC history.
     pub fn request_keyframe(&mut self) {
         self.force_keyframe = true;
@@ -642,7 +657,10 @@ impl<B: CodecBackend> Encoder<B> {
                         controller.effective_block_offset(aq.total_weight(), aq.offset_cells());
                 }
             }
-            let quantizer = controller.select(rc_key, index, hint, references.position, share);
+            let mut quantizer = controller.select(rc_key, index, hint, references.position, share);
+            if let Some(forced) = self.forced_quantizer.take() {
+                quantizer = controller.force(forced);
+            }
             if let Some(inframe) = self.inframe.as_mut() {
                 let (room, uniform) = controller.inframe_bounds();
                 let sb_log2 = self.backend.superblock_log2();

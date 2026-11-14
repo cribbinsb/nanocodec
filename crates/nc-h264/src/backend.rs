@@ -1948,6 +1948,17 @@ impl CodecBackend for H264Backend {
         // extra re-codes add about 0.2% of frames on still scenes.
         // h264-fast, -faster, -fastest and -balanced pin it off.
         ("rate.prekey_quiet", 1.0),
+        // The target as a ceiling over every key period (`rate.period_ceiling`,
+        // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still
+        // scenes), with the key reserve sized by the last key and the still
+        // share. 600-frame long-window L3 (keys every 10 s, 31 points, draw
+        // 2026-11-14): J -0.19% [-0.41, +0.00] BETTER, no guard; static
+        // -0.75%, the moving classes unchanged; periodic-key pulse -0.36 dB;
+        // achieved/target max 0.997 -> 0.999, worst 1 s window max 2.52 ->
+        // 2.32 x target; re-codes on the 22 static and crowd points 6.6 ->
+        // 7.3 per 1000 frames. Inert within one key period. The other H.264
+        // presets pin it off.
+        ("rate.period_ceiling", 1.0),
     ];
 
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
