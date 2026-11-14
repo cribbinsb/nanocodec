@@ -80,7 +80,9 @@ def single_points(runner: realuse.Runner, anchor: Family, test: Family, clips: l
                            "base_quality": jreal.point_base_quality(anchor_curve, points[0]),
                            "worst": jreal.point_worst(anchor_curve, points[0]),
                            **jreal.ceiling_terms("test", points[:1]),
-                           **jreal.ceiling_terms("anchor", same_rung)}
+                           **jreal.ceiling_terms("anchor", same_rung),
+                           "test_long_over_points": jreal.long_ceiling_failures(same_rung,
+                                                                                points[:1])}
     if missing:
         # A point that silently failed (e.g. the GPU out of memory) is never data.
         raise ValueError(f"{test.name}: no point on {', '.join(missing)}")

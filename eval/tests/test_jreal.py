@@ -240,6 +240,19 @@ def test_ceiling_guard_absolute_on_long_windows_compares_short_ones(monkeypatch)
     assert not any("ceiling" in g for g in same["guards"])
 
 
+def test_long_ceiling_follows_an_anchor_already_over_it(monkeypatch):
+    monkeypatch.setattr(jreal, "CEILING_MODE", jreal.CEILING_ABSOLUTE)
+    long = lambda points: [dict(p, window_seconds=20.0) for p in points]  # noqa: E731
+    over = long(with_target(with_buffer(curve(), 0.9, 0), 0.04))  # 1.5 points past 2.5%
+    # The same targets, each point a little further over them.
+    at = lambda share: [dict(p, kbps=p["target_kbps"] * (1 + share)) for p in over]  # noqa
+    near, far = at(0.043), at(0.05)
+    assert jreal.long_ceiling_failures(over, near) == 0  # 0.3 points further over
+    assert jreal.long_ceiling_failures(over, far) == 4  # 1.0 point further over
+    inside = [dict(p, kbps=p["target_kbps"]) for p in over]
+    assert jreal.long_ceiling_failures(inside, near) == 4  # absolute where the anchor keeps it
+
+
 def test_flicker_guard_allows_headroom_below_the_reference():
     anchor = [{"flicker_psnr_y": 0.1}, {"flicker_psnr_y": 0.2}]
     # the anchor (0.15) lies 0.25 dB below a 0.40 reference: a +0.2 delta is inside it

@@ -8,7 +8,7 @@
   "nanocodec-hevc@hevc-fast": "0cdb619d",
   "nanocodec-av1": "f29b5933",
   "nanocodec-av1@av1-fast": "0cdb619d",
-  "nanocodec-vp9": "0cdb619d",
+  "nanocodec-vp9": "cb9d0b87",
   "nanocodec-vp9@vp9-fast": "0cdb619d",
   "nanocodec-av2": "0cdb619d",
   "nanocodec-av2@av2-fast": "0cdb619d",
@@ -16,14 +16,15 @@
   "nanocodec-vvc@vvc-fast": "0cdb619d",
   "nanocodec-av1@av1-faster": "0cdb619d",
   "nanocodec-hevc@hevc-faster": "0cdb619d",
-  "nanocodec-h264@h264-fastest": "0cdb619d",
+  "nanocodec-h264@h264-fastest": "cb9d0b87",
   "nanocodec-vp9@vp9-faster": "0cdb619d",
   "nanocodec-vp9@vp9-fastest": "0cdb619d"
  },
  "builds": {
   "730e4e16": "730e4e16",
   "0cdb619d": "0cdb619d",
-  "f29b5933": "f29b5933"
+  "f29b5933": "f29b5933",
+  "cb9d0b87": "cb9d0b87"
  },
  "tools": {
   "x264": "0.165",

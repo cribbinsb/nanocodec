@@ -164,6 +164,11 @@ CEILING_RELATIVE, CEILING_ABSOLUTE = "relative", "absolute"
 CEILING_MODE = CEILING_ABSOLUTE
 CEILING_ABSOLUTE_SECONDS = 19.0
 CEILING_MARGIN_PCT = 0.25
+#: Long windows where the anchor itself is over CEILING_TOLERANCE (a rate-control
+#: defect on some static clips, docs/results/rate-control-audit): a test point
+#: fails only when it is more than this many percentage points further over
+#: target than the anchor's point at the same target (coordinator, 2026-11-14).
+CEILING_LONG_MARGIN_PCT = 0.5
 #: Rate-controlled curves have 4 ladder points; a staged proxy keeps 3.
 BD_MIN_POINTS = 3
 #: A point whose leaky bucket peaks above this multiple of the buffer
@@ -394,6 +399,7 @@ def compare_clip(anchor: list[dict], test: list[dict], min_points: int = BD_MIN_
         terms[f"{side}_overruns"] = sum(p.get("overruns", 0) for p in points)
         terms[f"{side}_noncompliant"] = sum(1 for p in points if noncompliant(p))
         terms.update(ceiling_terms(side, points))
+    terms["test_long_over_points"] = long_ceiling_failures(anchor, test)
     return terms
 
 
@@ -441,15 +447,39 @@ def ceiling_terms(side: str, points: list[dict]) -> dict[str, float]:
     """One arm's ceiling totals for `compliance`: points over target on long windows
     (judged absolutely), and the over-target sum and count of the rest."""
     rated = [p for p in points if p.get("target_kbps")]
-    long = lambda p: (CEILING_MODE == CEILING_ABSOLUTE  # noqa: E731
-                      and p.get("window_seconds", 0.0) >= CEILING_ABSOLUTE_SECONDS)
-    short = [over_target_pct(p) for p in rated if not long(p)]
+    short = [over_target_pct(p) for p in rated if not is_long_window(p)]
     return {f"{side}_long_over_points": sum(1 for p in rated
-                                            if long(p) and over_target_pct(p) > 0),
-            f"{side}_long_rated_points": sum(1 for p in rated if long(p)),
+                                            if is_long_window(p) and over_target_pct(p) > 0),
+            f"{side}_long_rated_points": sum(1 for p in rated if is_long_window(p)),
             f"{side}_over_target_sum": sum(short),
             f"{side}_over_target_points": sum(1 for e in short if e > 0),
             f"{side}_rated_points": len(short)}
+
+
+def is_long_window(point: dict) -> bool:
+    """A point the ceiling guard judges as a long window (absolute mode only)."""
+    return (CEILING_MODE == CEILING_ABSOLUTE
+            and point.get("window_seconds", 0.0) >= CEILING_ABSOLUTE_SECONDS)
+
+
+def long_ceiling_failures(anchor: list[dict], test: list[dict]) -> int:
+    """The test's long-window points that break the ceiling. On a clip where every
+    anchor long-window point keeps CEILING_TOLERANCE, any test point over it fails
+    (absolute); on a clip where the anchor's own point is over it, each test point is
+    judged against the anchor's point at the same target: it fails only when its
+    excess (over_target_pct) is more than CEILING_LONG_MARGIN_PCT above the anchor's."""
+    anchor_long = {p["target_kbps"]: over_target_pct(p) for p in anchor
+                   if p.get("target_kbps") and is_long_window(p)}
+    relative = any(excess > 0 for excess in anchor_long.values())
+    failures = 0
+    for p in test:
+        if not (p.get("target_kbps") and is_long_window(p)):
+            continue
+        excess = over_target_pct(p)
+        allowed = anchor_long.get(p["target_kbps"], 0.0) + CEILING_LONG_MARGIN_PCT \
+            if relative else 0.0
+        failures += excess > allowed
+    return failures
 
 
 def ceiling_excess(buffer: dict) -> float | None:

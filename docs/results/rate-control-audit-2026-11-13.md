@@ -374,3 +374,52 @@ the chart sample (section 8, above), is a separate effect, seen on 8 of 144 poin
   (section 3), packet loss, and subjective quality.
 - **"Best settings":** the metric-tuned reference settings are the best we found among each encoder's
   documented metric tunes. They are not an exhaustive search of each encoder's settings.
+
+## Addendum (tuner, 2026-11-14): the Default over 2.5% on long windows
+
+AV1 Default (at c9d12db4^, rate.debit on) exceeds its CBR target by more than
+2.5% over a 600-frame window with a key every 10 s on two pool static clips
+(rotation 2026-11-14 L3 draw, measured from frame 0, our reconstruction):
+
+| Clip | Target | Achieved / target |
+|---|---|---|
+| pool_static_chirla_chirla_seq_024_camera_7_2023 | 187 kbps | 1.0516 (+5.2%) |
+| pool_external_meva_admin_720p_536p | 388 kbps | 1.0254 (+2.5%) |
+
+This is a rate-control defect on static content (the debit term holds the
+full-length rate under the target, but a 20 s window with two keys can still
+end over it), not a guard problem. Until it is fixed, the tuner's long-window
+ceiling guard (jreal.long_ceiling_failures) judges such clips per point
+against the Default (a candidate fails only when more than
+CEILING_LONG_MARGIN_PCT, 0.5 points, further over target than the Default's
+point at the same target).
+
+### Probes of two fixes (tuner, 2026-11-14), not adopted
+
+AV1 Default, the two static clips above, 600 frames, a key every 10 s,
+achieved / target per ladder point.
+
+| Point | Default | Refinement deferred by debt (0.5→1.5 / 0.25→1 / 0→0.5 buffers) | Cadence base boost bounded by debt (0.25→1.25 / 0.1→0.6 / 0→0.3) |
+|---|---|---|---|
+| chirla 47 kbps | 1.001 | 0.989 / 0.976 / 0.987 | 0.959 / 0.958 / 0.991 |
+| chirla 93 kbps | 1.037 | 1.017 / 1.013 / 1.012 | 1.026 / 1.015 / 1.011 |
+| chirla 187 kbps | 1.030 | 1.044 / 1.058 / 1.053 | 1.036 / **1.002** / 1.040 |
+| meva admin 97 kbps | 0.984 | 0.975 / 0.966 / 0.959 | 0.979 / 0.955 / 0.987 |
+| meva admin 194 kbps | 1.033 | 1.013 / 0.993 / 0.972 | 0.970 / 1.012 / 1.035 |
+| meva admin 388 kbps | 1.028 | 1.039 / 1.044 / 1.031 | 1.023 / **1.022** / 0.985 |
+
+Reading:
+- The excess is carried by the QP cadence's base frames, not the reuse
+  term's refinement: 60 of the 66 P frames above one frame budget sit on the
+  cadence period (chirla 187 kbps), coded at qindex 23 against 71 for the
+  other P frames. Deferring refinement made the worst points worse.
+- A debt-driven cut of the base boost (0.1→0.6) brings both worst points
+  inside 2.5%, but it lands on whichever base frames come next, including
+  those right after a key: chirla 93 kbps worst-1% PSNR-Y 35.40 → 30.57 dB,
+  frames 300-449 PSNR-YUV 41.62 → 38.94 dB (starved base frames after the
+  second key).
+- The response is non-monotonic in the thresholds (the controller's
+  trajectory on these clips is chaotic): tuning a bound to six points would
+  overfit. A targeted fix needs per-frame evidence of which base frames to
+  trim (for example sparing the frames after a key, or bounding each base
+  frame by what the window can afford). Not built.
