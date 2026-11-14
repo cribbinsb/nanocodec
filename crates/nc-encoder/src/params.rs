@@ -971,6 +971,12 @@ param_group! {
             "1 runs the full mode decision (sub-sample refinement, intra trial) against the second reference; 0 ranks its zero, predicted and scaled-seed vectors only: 0 is faster",
         second_compound_margin: 0.15, [0.0, 4.0],
             "compound inter trial gate: try the equal-weight average of primary and secondary inter winners only when the worse single-reference cost is within this fraction of the better one (0 = off when neither ties; higher tries compound on more blocks)",
+        second_screen_ratio: 0.0, [0.0, 8.0],
+            "second-reference screen (`second_screen.rs`, 0 = off): a block tries the second reference only when its best whole-sample SAD there is under this many times the primary choice's SAD (at one λ per sample, away from previous wins): lower is faster",
+        second_screen_cost_exponent: 0.2, [0.0, 1.0],
+            "second-reference screen: the SAD-ratio limit grows as the primary choice's cost per sample in λ to this power (blocks predicted poorly have more to win): higher tries more poorly predicted blocks",
+        second_screen_persist: 1.65, [1.0, 8.0],
+            "second-reference screen: the SAD-ratio limit is multiplied by this next to a block that chose the second reference in the previous picture (wins persist): higher favours past wins",
     }
 }
 

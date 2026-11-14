@@ -23,8 +23,9 @@ use crate::backend::{
 use crate::config::{Codec, ConfigError, EncoderConfig, FrameRate};
 use crate::cyclic_cadence::CyclicCadence;
 use crate::decision::{
-    Choice, DecisionScratch, choose_compound_mode, choose_inter_mode, choose_secondary_mode,
-    is_square_leaf, is_static, is_still, leaf_area, leaf_extent, leaf_log2_min_side,
+    BlockSads, Choice, DecisionScratch, choose_compound_mode, choose_inter_mode,
+    choose_secondary_mode, is_square_leaf, is_static, is_still, leaf_area, leaf_extent,
+    leaf_log2_min_side,
 };
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
@@ -1820,6 +1821,10 @@ impl<B: CodecBackend> Encoder<B> {
             recon,
         } = pictures;
         self.backend.begin_frame(plan);
+        let coded_size = (self.layer.coded_width, self.layer.coded_height);
+        if let Some(screen) = self.layer.second.as_mut().and_then(|s| s.screen.as_mut()) {
+            screen.begin_picture(plan.index, coded_size);
+        }
         let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
         if steering && let Some(inframe) = self.inframe.as_mut() {
             inframe.begin_frame(self.backend.coded_bits().unwrap_or(0));
@@ -2384,6 +2389,11 @@ impl<B: CodecBackend> Encoder<B> {
                 source_moments,
                 refresh,
             );
+            if chosen != ReferenceChoice::Primary
+                && let Some(screen) = self.layer.second.as_mut().and_then(|s| s.screen.as_mut())
+            {
+                screen.record_win((node.x, node.y), leaf_extent::<B>(node));
+            }
             if self.backend.wants_sub_block_motion()
                 && is_square_leaf::<B>(node)
                 && node.log2_size() > SUB_BLOCK_LOG2
@@ -2493,6 +2503,14 @@ impl<B: CodecBackend> Encoder<B> {
             return (primary, ReferenceChoice::Primary);
         }
         let seed = scaled_vector(search_mv, ratio);
+        if !self.passes_secondary_screen(
+            node,
+            (source, primary_reference, secondary),
+            seed,
+            primary,
+        ) {
+            return (primary, ReferenceChoice::Primary);
+        }
         let include_dc = !primary.mode.is_inter();
         let Some(second) = self.secondary_choice(
             node,
@@ -2558,6 +2576,50 @@ impl<B: CodecBackend> Encoder<B> {
         let lambda = self.backend.lambda() * self.frame_decision_params.lambda_scale;
         primary_cost > gate * lambda * leaf_area::<B>(node) as f32
             && primary_cost > f32::NEG_INFINITY
+    }
+
+    /// Whether the second-reference screen (`second_screen.rs`), when on,
+    /// lets leaf `node` try the `secondary` reference: from the whole-sample
+    /// SADs of the secondary at the zero vector and `seed` against the
+    /// primary reference's at the `primary` choice's vector, and that
+    /// choice's cost. An intra primary choice, or a vector whose window
+    /// leaves the padded picture, is not screened.
+    fn passes_secondary_screen(
+        &self,
+        node: &Block,
+        (source, primary_reference, secondary): (&Picture, &Picture, &Picture),
+        seed: Mv,
+        primary: Choice,
+    ) -> bool {
+        let Some(screen) = self.layer.second.as_ref().and_then(|s| s.screen.as_ref()) else {
+            return true;
+        };
+        let PredictionMode::Inter(primary_mv) = primary.mode.prediction() else {
+            return true;
+        };
+        let sads = BlockSads::new::<B>(&self.dsp, source, node);
+        let primary_sad = sads.at(primary_reference, primary_mv);
+        let zero_sad = sads.at(secondary, Mv::ZERO);
+        let seed_sad = if seed.full_pel() == (0, 0) {
+            None
+        } else {
+            sads.at(secondary, seed)
+        };
+        // The better of the two (`Option::min` would rank `None` lowest).
+        let secondary_sad = match (zero_sad, seed_sad) {
+            (Some(zero), Some(seed)) => Some(zero.min(seed)),
+            (zero, seed) => zero.or(seed),
+        };
+        let (Some(primary_sad), Some(secondary_sad)) = (primary_sad, secondary_sad) else {
+            return true;
+        };
+        let lambda = self.backend.lambda() * self.frame_decision_params.lambda_scale;
+        let area = leaf_area::<B>(node);
+        screen.worth_trying(
+            ((node.x, node.y), leaf_extent::<B>(node)),
+            (secondary_sad, primary_sad),
+            primary.cost / (lambda * area as f32),
+        )
     }
 
     /// The best inter mode of `node` predicted from the `secondary`

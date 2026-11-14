@@ -20,6 +20,7 @@
 use nc_analysis::link::{ReferenceLink, SlotMask};
 
 use crate::params::{LtrParams, ParamOverrides, RefParams};
+use crate::second_screen::SecondScreen;
 use crate::structure::FrameReferences;
 
 /// Whether `refs.second` is on in `params`.
@@ -60,6 +61,8 @@ pub(crate) struct SecondReference {
     /// `refs.second_min_still`: frames whose still-block fraction is lower
     /// do not reference the HQ frame.
     min_still: f32,
+    /// `refs.second_screen_ratio`: the blocks that try the HQ frame, when on.
+    pub(crate) screen: Option<SecondScreen>,
 }
 
 impl SecondReference {
@@ -74,6 +77,7 @@ impl SecondReference {
             compound_margin: params.second_compound_margin,
             max_distance: params.second_max_distance.round() as u32,
             min_still: params.second_min_still,
+            screen: SecondScreen::new(params),
         }
     }
 

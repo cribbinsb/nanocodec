@@ -1975,6 +1975,46 @@ fn clamped_window(plane: &Plane, x0: isize, y0: isize, width: usize, height: usi
     out
 }
 
+/// Whole-sample SADs of one leaf's source luma against reference
+/// pictures: a match estimate far cheaper than [`Measurer`]'s residual
+/// statistics (no sub-sample phases, no window bookkeeping), for screening
+/// (`second_screen.rs`), which compares only ratios of such SADs.
+pub(crate) struct BlockSads<'a> {
+    dsp: &'a Dsp,
+    src: PlaneView<'a>,
+    size: BlockSize,
+    position: (isize, isize),
+}
+
+impl<'a> BlockSads<'a> {
+    /// The SADs of leaf `block` of backend `B` in `source`.
+    pub(crate) fn new<B: CodecBackend>(dsp: &'a Dsp, source: &'a Picture, block: &Block) -> Self {
+        let (w, h) = leaf_extent::<B>(block);
+        Self {
+            dsp,
+            src: source
+                .plane(PlaneIndex::Y)
+                .region(block.x as isize, block.y as isize, w, h)
+                .expect("blocks lie inside the coded picture"),
+            size: BlockSize::new(w, h).expect("engine blocks are kernel sizes"),
+            position: (block.x as isize, block.y as isize),
+        }
+    }
+
+    /// The SAD against `reference` at `mv`'s whole-sample position (its
+    /// fraction dropped), or `None` when that block leaves the padded plane.
+    pub(crate) fn at(&self, reference: &Picture, mv: Mv) -> Option<u32> {
+        let (dx, dy) = mv.full_pel();
+        let block = reference.plane(PlaneIndex::Y).region(
+            self.position.0 + dx as isize,
+            self.position.1 + dy as isize,
+            self.size.width(),
+            self.size.height(),
+        )?;
+        Some(self.dsp.sad(self.size, &self.src, &block))
+    }
+}
+
 /// A block of zero samples: the "prediction" whose residual variance is the
 /// source's own variance.
 static ZEROS: [u8; 64 * 64] = [0; 64 * 64];

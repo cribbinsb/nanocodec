@@ -1862,10 +1862,24 @@ impl CodecBackend for H264Backend {
         ("decision.refine_cheap_vector", 1.0),
         ("decision.refine_cheap_min_lambdas", 0.0),
         ("decision.subpel_walk", 1.0),
-        ("decision.intra_gate_variance", 25.0),
         ("h264.intra4x4_all_modes", 1.0),
         ("analysis.window_half_width", 4.0),
         ("analysis.mixed_motion", 1.0),
+        // Motion search without its zero-vector shortcuts (no static
+        // superblocks, no zero-only window, HME always run) and DC intra
+        // tried from residual variance 16 (was 25): what they skip is whole
+        // superblocks whose zero-vector SAD looked small, where H.264's 16x16
+        // macroblocks still find better vectors (HEVC and VVC: no effect).
+        // Fixed QP, matched QP, 14 pool clips (nceval.fixedqp, draw
+        // fixedqp-2026-11-14): J -1.0% [-1.9, -0.2] and -0.3%. CPU: x86 P
+        // instructions +2.1%, Jetson cycles +2.8%. Adoption screen (k 0.1,
+        // dCPU 2.1, day's pool draw): L3 BETTER, J -0.17% [-0.33, -0.02]
+        // (n 126, L2+L3 pooled), no guard. docs/analysis/fixed-qp-gap-2026-11-14.md.
+        // h264-fast, -faster, -fastest and -balanced pin the old values.
+        ("analysis.static_sad_per_pixel", 0.0),
+        ("analysis.one_position_sad_per_pixel", 0.0),
+        ("analysis.skip_hme_sad_per_pixel", 0.0),
+        ("decision.intra_gate_variance", 16.0),
         ("quant.trellis_lambda_scale", 1.3),
         ("h264.split_gate_lambda", 0.8),
         // Intra_8x8 in every frame, on every macroblock that tries intra

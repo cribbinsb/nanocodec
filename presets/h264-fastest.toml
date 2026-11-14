@@ -73,3 +73,5 @@ h264.intra_rd = 0
 # The quiet second before a key (`rate.prekey_quiet`, H.264 Default since
 # 2026-11-14) stays off here: pinned, byte-identical.
 rate.prekey_quiet = 0
+# Default dropped its motion-search shortcuts (2026-11-14, fixed-qp program); this preset keeps them.
+analysis.static_sad_per_pixel = 1
