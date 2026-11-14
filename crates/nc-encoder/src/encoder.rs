@@ -13,7 +13,7 @@ use std::cell::OnceCell;
 use nc_analysis::preanalysis::PreAnalysis;
 use nc_analysis::still::StillMap;
 use nc_analysis::{Analyzer, FrameAnalysis, MotionAnalysis, NoTimer};
-use nc_common::{Picture, PlaneIndex, RawFrame};
+use nc_common::{Picture, PlaneIndex, PlaneView, RawFrame};
 use nc_dsp::Dsp;
 
 use crate::aq::{BlockAq, native_offset};
@@ -62,6 +62,7 @@ use crate::refresh::{
     IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshSweep, RefreshWindow,
 };
 use crate::resolution::{CodedScale, ResolutionPolicy, half_size};
+use crate::resolution_evidence::HalfSizeProbe;
 use crate::reuse::{CodedFrame, ReuseFrame, ReuseTerm};
 use crate::scene::{FrameCosts, SceneDetector};
 use crate::second_reference::{SecondReference, second_reference_enabled};
@@ -208,6 +209,8 @@ pub struct Encoder<B: CodecBackend> {
     /// Adaptive coded resolution (`resolution.adaptive`), under rate
     /// control with a backend that scales references.
     resolution: Option<ResolutionPolicy>,
+    /// The measurements `resolution` decides on; present with it.
+    resolution_probe: Option<HalfSizeProbe>,
     /// The last frame's reconstruction, kept when a coded-size switch
     /// (`set_coded_resolution`) resampled the pictures it lived in; cleared
     /// by the next frame.
@@ -405,6 +408,16 @@ impl<B: CodecBackend> Encoder<B> {
             let resolution = adaptive_resolution(&config, &backend, (width, height))?;
             (scaler, resolution)
         };
+        let resolution_probe = match resolution {
+            Some(_) => Some(
+                HalfSizeProbe::new(
+                    (config.width, config.height),
+                    half_size(config.width, config.height),
+                )
+                .map_err(bad_dims)?,
+            ),
+            None => None,
+        };
         let timeline = Timeline::new(config.frame_rate);
         let key_clock = KeyClock::new(timeline.nominal_us());
         let debug = DebugParams::from_overrides(&config.params);
@@ -421,6 +434,7 @@ impl<B: CodecBackend> Encoder<B> {
             layer,
             scaler,
             resolution,
+            resolution_probe,
             switched_recon: None,
             structure,
             dsp: Dsp::new(),
@@ -984,6 +998,46 @@ impl<B: CodecBackend> Encoder<B> {
         Ok(())
     }
 
+    /// Under `resolution.adaptive`, measure an inter frame's displayed
+    /// error and the half size's floor when the policy asks for evidence
+    /// (`resolution_evidence.rs`). `stream_input` is the caller's
+    /// stream-size picture, if it passed one; `coded_source` and `recon`
+    /// are the frame's coded-size source and reconstruction.
+    fn gather_resolution_evidence(
+        &mut self,
+        stream_input: Option<&Picture>,
+        coded_source: &Picture,
+        recon: &Picture,
+    ) {
+        let (Some(policy), Some(probe)) =
+            (self.resolution.as_mut(), self.resolution_probe.as_mut())
+        else {
+            return;
+        };
+        if !policy.wants_evidence() {
+            return;
+        }
+        let coded = (self.layer.width, self.layer.height);
+        let sample = match self.scaler.as_ref() {
+            None => probe.full_size(
+                &self.dsp,
+                &visible_luma(coded_source, coded),
+                &visible_luma(recon, coded),
+            ),
+            Some(scaler) => {
+                let stream = (self.config.width, self.config.height);
+                let source = stream_input.unwrap_or_else(|| scaler.input());
+                probe.half_size(
+                    &self.dsp,
+                    &visible_luma(source, stream),
+                    &visible_luma(coded_source, coded),
+                    &visible_luma(recon, coded),
+                )
+            }
+        };
+        policy.add_evidence(sample);
+    }
+
     /// After an inter frame under `resolution.adaptive`: hand rate
     /// control's planned step to the policy (`resolution.rs`) and switch
     /// the coded size for the next frame when it says so.
@@ -1313,6 +1367,7 @@ impl<B: CodecBackend> Encoder<B> {
         // The input goes into the analyzer's buffer first (resampled when
         // frames are coded smaller than the stream): frame hold decides
         // from its pre-analysis.
+        let stream_input = input;
         let input = if self.scaler.is_some() {
             self.scale_source(input);
             None
@@ -1586,6 +1641,9 @@ impl<B: CodecBackend> Encoder<B> {
             (coded_source, recon),
             &data,
         );
+        if frame_type == FrameType::Inter {
+            self.gather_resolution_evidence(stream_input, coded_source, recon);
+        }
         self.layer.analyzer = analyzer;
         self.layer.input = own_input;
         pool.finish(references.refresh, &self.dsp);
@@ -3192,6 +3250,14 @@ fn padding_buffers(
         source: Picture::new(coded_width, coded_height, 0)?,
         visible_recon: Picture::new(config.width, config.height, 0)?,
     }))
+}
+
+/// The top-left `width` x `height` luma of `picture` (its visible area).
+fn visible_luma(picture: &Picture, (width, height): (usize, usize)) -> PlaneView<'_> {
+    picture
+        .plane(PlaneIndex::Y)
+        .region(0, 0, width, height)
+        .expect("the visible area lies inside the picture")
 }
 
 /// The adaptive-resolution policy `resolution.adaptive` asks for, checked

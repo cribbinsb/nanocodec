@@ -1008,11 +1008,12 @@ param_group! {
 
 param_group! {
     /// Adaptive coded resolution (`resolution.rs`): half size per dimension
-    /// while rate control plans past the codec's largest quantizer, for
-    /// codecs with scaled references (AV1), switched without key frames.
+    /// while rate control plans past the codec's largest quantizer and the
+    /// measured error says the half size wins, for codecs with scaled
+    /// references (AV1), switched without key frames.
     pub struct ResolutionParams ("resolution") {
         adaptive: 0.0, [0.0, 1.0],
-            "1 codes at half size per dimension (no key frame; players still display the stream size) while rate control's level plans past the largest quantizer, and back at full size when the rate allows; codecs with scaled references only (AV1)",
+            "1 codes at half size per dimension (no key frame; players still display the stream size) while rate control's level plans past the largest quantizer and the measured luma error says the half size shows a better picture, and back at full size when the rate allows or it no longer does; codecs with scaled references only (AV1)",
         down_step_ratio: 1.25, [1.0, 8.0],
             "switch down when the full-size level's planned step averages this multiple of the largest quantizer's step",
         up_step_ratio: 0.8, [0.25, 1.0],
@@ -1023,6 +1024,10 @@ param_group! {
             "time constant of the moving average of the planned step",
         dwell_seconds: 2.0, [0.0, 30.0],
             "shortest time at one size before switching again",
+        down_floor_ratio: 0.3, [0.0, 2.0],
+            "switch down only when the half size's floor (the source halved and shown upscaled) averages at most this fraction of the full size's displayed luma error: lower switches on less content",
+        up_floor_ratio: 0.4, [0.0, 2.0],
+            "switch back up when the half size's floor averages at least this fraction of its own displayed luma error (the half size is no longer winning): higher keeps the half size longer",
     }
 }
 

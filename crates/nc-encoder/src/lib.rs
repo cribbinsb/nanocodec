@@ -78,6 +78,7 @@ mod refinement_gain;
 mod refinement_loan;
 mod refresh;
 mod resolution;
+mod resolution_evidence;
 mod reuse;
 mod scene;
 mod second_reference;

@@ -255,12 +255,21 @@ impl SourceScaler {
 /// for planes exactly twice the destination, else scalar Lanczos-3.
 pub(crate) fn scale_source_picture(dsp: &Dsp, src: &Picture, dst: &mut Picture) {
     for plane in PlaneIndex::ALL {
-        let (from, mut to) = (src.plane(plane).view(), dst.plane_mut(plane).view_mut());
-        if (from.width(), from.height()) == (2 * to.width(), 2 * to.height()) {
-            dsp.downscale_2x(&from, &mut to);
-        } else {
-            resample_plane(&from, &mut to);
-        }
+        scale_source_plane(
+            dsp,
+            &src.plane(plane).view(),
+            &mut dst.plane_mut(plane).view_mut(),
+        );
+    }
+}
+
+/// One plane of [`scale_source_picture`]: all of `from` resampled into all
+/// of `to`.
+pub(crate) fn scale_source_plane(dsp: &Dsp, from: &PlaneView<'_>, to: &mut PlaneViewMut<'_>) {
+    if (from.width(), from.height()) == (2 * to.width(), 2 * to.height()) {
+        dsp.downscale_2x(from, to);
+    } else {
+        resample_plane(from, to);
     }
 }
 

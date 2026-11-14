@@ -109,12 +109,13 @@ VMAFX_CUDA_BACKEND = "vmafx-cuda"
 METRICS_BACKENDS = (LIBVMAF_CPU_BACKEND, VMAFX_CUDA_BACKEND)
 DEFAULT_METRICS_BACKEND = VMAFX_CUDA_BACKEND
 #: The VMAFx `vmaf` tool; default: our patched CUDA build under $NC_DATA_ROOT/ext,
-#: VMAFx 1068c699 plus ext/vmafx-patches 0001-0008 (frame-0 fix, MS-SSIM sums
+#: VMAFx 1068c699 plus ext/vmafx-patches 0001-0009 (frame-0 fix, MS-SSIM sums
 #: on the GPU, scoring servers with a bounded pool, direct reads, wider
-#: ADM/CAMBI launches; docs/handoff/vmafx-gpu.md). A frozen build directory:
-#: a new build goes into a new one and this default moves.
+#: ADM/CAMBI launches, server inputs relayed with stall timeouts;
+#: docs/handoff/vmafx-gpu.md). A frozen build directory: a new build goes
+#: into a new one and this default moves.
 VMAFX_ENV = "NC_VMAFX"
-VMAFX_DEFAULT = Path("ext/vmafx-serve3/build-cuda/tools/vmaf")
+VMAFX_DEFAULT = Path("ext/vmafx-serve4/build-cuda/tools/vmaf")
 #: "0" scores each point in its own VMAFx process instead of the server pool.
 VMAFX_SERVER_ENV = "NC_VMAFX_SERVER"
 _NO_GPU_HINT = (f"see docs/handoff/eval-throughput.md \"GPU VMAF\", or set "

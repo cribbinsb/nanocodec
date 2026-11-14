@@ -23,6 +23,13 @@ memory-free stub that keeps the name for a few hours, so clients of a
 retired build fail loudly instead of starting it again. Servers of builds
 before the drain request existed ignore it and exit after their idle time.
 
+Stalls fail loudly (VMAFx patch 0009, after a silent 15-minute pool wedge on
+2026-11-14): the client opens its inputs and passes them as descriptors, so
+a server never blocks opening a FIFO whose writer is gone; a run whose client
+hung up, or whose inputs stall, is abandoned and frees its slot; a client
+that hears no heartbeat from its server fails. Each exits `STATUS_STALLED`
+with a message naming the server.
+
 `python3 -m nceval gpu-status` lists the servers, their GPU memory and idle
 time.
 """
@@ -45,6 +52,10 @@ STATE_PREFIX = "vmaf-serve-"
 #: A run's exit status when its server was drained, or had no GPU memory in time.
 STATUS_RETIRED = 86
 STATUS_NO_MEMORY = 87
+#: A run's exit status when it was abandoned as stalled: its inputs moved no
+#: byte for 180 s (server side), or its client heard nothing from the server
+#: for 240 s (a wedged server). vmaf_serve.cpp has the reasons for the values.
+STATUS_STALLED = 88
 DRAIN_TIMEOUT_SECONDS = 10
 
 
@@ -121,7 +132,7 @@ def drain_other_builds(tool: Path) -> list[str]:
 
 def format_status(found: list[Server]) -> str:
     lines = [f"{'server':<58} {'pid':>8} {'state':<9} {'run':>4} {'wait':>4} {'done':>6} "
-             f"{'fail':>5} {'GPU MiB':>8} {'idle s':>7}  tool"]
+             f"{'fail':>5} {'stall':>5} {'GPU MiB':>8} {'idle s':>7}  tool"]
     total = 0
     for s in found:
         state = "retired" if s.retired else s.state.get("state", "?")
@@ -129,7 +140,7 @@ def format_status(found: list[Server]) -> str:
         total += s.gpu_mib or 0
         lines.append(f"{s.name:<58} {s.pid:>8} {state:<9} {s.state.get('running', ''):>4} "
                      f"{s.state.get('waiting', ''):>4} {s.state.get('done', ''):>6} "
-                     f"{s.state.get('failed', ''):>5} {s.gpu_mib if s.gpu_mib is not None else '-':>8} "
+                     f"{s.state.get('failed', ''):>5} {s.state.get('stalled', ''):>5} {s.gpu_mib if s.gpu_mib is not None else '-':>8} "
                      f"{f'{idle:.0f}' if idle is not None else '-':>7}  {s.tool}")
     lines.append(f"{len(found)} servers, {total} MiB of GPU memory")
     return "\n".join(lines)

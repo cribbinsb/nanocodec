@@ -1,28 +1,55 @@
 //! Adaptive coded resolution (`resolution.adaptive`): code at half size
-//! per dimension while the bitrate is too low for the full size.
+//! per dimension while the half size shows the viewer a better picture than
+//! the full size at the stream's rate.
 //!
 //! Past the codec's largest quantizer (AV1 qindex 255) rate control can
 //! only spend fewer bits by raising λ (`rate.lambda_headroom_octaves`):
 //! more skipped blocks and dropped residual at a step that cannot get
 //! coarser, so each coded block stays dear. There a half-size picture,
-//! upscaled by the player, beats the full size (720p vs 360p at 100 kbps:
-//! `docs/handoff/res-indep.md`). This policy watches the planned quantizer
-//! step of rate control's inter level relative to the largest step, and
-//! switches the coded size, without a key frame, for backends whose
-//! references may differ in size from the frame
-//! (`CodecBackend::supports_scaled_references`; `Encoder::set_coded_resolution`).
+//! upscaled by the player, can beat the full size (720p vs 360p at 100
+//! kbps: `docs/handoff/res-indep.md`), but only on content that loses
+//! little to the halving. The policy switches the coded size, without a key
+//! frame, for backends whose references may differ in size from the frame
+//! (`CodecBackend::supports_scaled_references`;
+//! `Encoder::set_coded_resolution`).
 //!
-//! Decisions use a moving average of the log step ratio, so single frames
-//! do not switch, and two thresholds with a gap between them (hysteresis):
-//! down when the full-size level sits `down_step_ratio` past the ceiling,
-//! up when the level the full size would need (the half-size level times
-//! `half_step_gain`, the step ratio between the two sizes at the same
-//! rate) is back below `up_step_ratio` of it. Each size is kept at least
-//! `dwell_seconds`; the first decision waits only for one averaging window,
-//! so a starved stream leaves the full size within its first second.
-//! Codec-neutral: the thresholds are step ratios.
+//! Two conditions, each with hysteresis:
+//! - *Rate*: a moving average of log2(planned step / largest step) of rate
+//!   control's inter level. Down needs the full-size level `down_step_ratio`
+//!   past the ceiling; the half size goes back up once the level the full
+//!   size would need (the half-size level times `half_step_gain`) is below
+//!   `up_step_ratio` of it.
+//! - *Evidence* (`resolution_evidence.rs`): while the rate condition holds
+//!   at full size, and all the time at half size, every
+//!   [`EVIDENCE_PERIOD`]th frame measures the luma error the viewer sees
+//!   (`coded`) and the half size's floor (the source halved and shown
+//!   upscaled). Down also needs at least [`MIN_EVIDENCE`] samples with the
+//!   averaged floor at most `down_floor_ratio` of the full size's coded
+//!   error; a half size whose averaged floor reaches `up_floor_ratio` of its
+//!   own displayed error goes back up whatever the rate. The rate level
+//!   alone used to decide: a coding tool that spends a few more bits per
+//!   level (`refs.second`) tipped `pool_chad_4_109` and
+//!   `pool_pan_jaad_video_0194` (150 kbps 720p) into a half size 2.5 dB
+//!   worse (`docs/handoff/adaptive-resolution.md`, "Evidence").
+//!
+//! Each size is kept at least `dwell_seconds`; the first decision waits
+//! only for one averaging window. Codec-neutral: the thresholds are step
+//! and error ratios.
 
 use crate::params::ResolutionParams;
+use crate::resolution_evidence::Distortions;
+
+/// Inter frames between two evidence measurements: each costs a display
+/// upscale and two error sums over the stream-size luma (a half-size
+/// downscale too at full size), a few ms at 720p on one core, so it runs
+/// on about four frames a second at 30 fps, and only while the rate
+/// condition holds or the stream is at half size.
+pub(crate) const EVIDENCE_PERIOD: u32 = 8;
+/// Evidence samples before the evidence may switch the size: about a
+/// second at 30 fps.
+const MIN_EVIDENCE: u32 = 4;
+/// Weight of each new sample in the evidence's moving averages.
+const EVIDENCE_WEIGHT: f64 = 0.25;
 
 /// The two coded sizes the policy chooses between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +91,15 @@ pub(crate) struct ResolutionPolicy {
     /// Moving average of log2(planned step / largest step) at the
     /// current size; `None` before the first observation.
     average: Option<f64>,
+    /// `resolution.down_floor_ratio`.
+    down_floor_ratio: f64,
+    /// `resolution.up_floor_ratio`.
+    up_floor_ratio: f64,
+    /// Moving averages of the measured distortions at the current size,
+    /// since the evidence last started.
+    evidence: Option<Distortions>,
+    /// Samples in `evidence`.
+    samples: u32,
 }
 
 impl ResolutionPolicy {
@@ -82,7 +118,42 @@ impl ResolutionPolicy {
             scale: CodedScale::Full,
             frames: 0,
             average: None,
+            down_floor_ratio: f64::from(params.down_floor_ratio),
+            up_floor_ratio: f64::from(params.up_floor_ratio),
+            evidence: None,
+            samples: 0,
         })
+    }
+
+    /// Whether this inter frame's distortions should be measured
+    /// ([`Self::add_evidence`]): every [`EVIDENCE_PERIOD`]th frame at half
+    /// size, and at full size while the rate condition for going down holds
+    /// (measuring nothing on streams that never get there).
+    pub(crate) fn wants_evidence(&self) -> bool {
+        let due = self.frames.is_multiple_of(EVIDENCE_PERIOD);
+        match self.scale {
+            CodedScale::Half => due,
+            CodedScale::Full => due && self.rate_says_down(),
+        }
+    }
+
+    /// A frame's measured distortions at the current size.
+    pub(crate) fn add_evidence(&mut self, sample: Distortions) {
+        let blend = |old: f64, new: f64| old + EVIDENCE_WEIGHT * (new - old);
+        self.evidence = Some(self.evidence.map_or(sample, |e| Distortions {
+            floor: blend(e.floor, sample.floor),
+            coded: blend(e.coded, sample.coded),
+        }));
+        self.samples += 1;
+    }
+
+    fn rate_says_down(&self) -> bool {
+        self.average.is_some_and(|a| a >= self.down_log2)
+    }
+
+    /// The averaged evidence, once there are enough samples.
+    fn settled_evidence(&self) -> Option<Distortions> {
+        self.evidence.filter(|_| self.samples >= MIN_EVIDENCE)
     }
 
     /// After an inter frame whose rate-control level plans a quantizer step
@@ -95,12 +166,29 @@ impl ResolutionPolicy {
             .map_or(sample, |a| a + self.weight * (sample - a));
         self.average = Some(average);
         self.frames += 1;
+        if self.scale == CodedScale::Full && !self.rate_says_down() {
+            // Evidence gathered while the rate was starved says nothing
+            // about the next time it is.
+            self.evidence = None;
+            self.samples = 0;
+        }
         if self.frames < self.hold_frames {
             return None;
         }
+        let evidence = self.settled_evidence();
         let next = match self.scale {
-            CodedScale::Full if average >= self.down_log2 => CodedScale::Half,
-            CodedScale::Half if average + self.gain_log2 <= self.up_log2 => CodedScale::Full,
+            CodedScale::Full
+                if self.rate_says_down()
+                    && evidence.is_some_and(|e| e.floor <= self.down_floor_ratio * e.coded) =>
+            {
+                CodedScale::Half
+            }
+            CodedScale::Half
+                if average + self.gain_log2 <= self.up_log2
+                    || evidence.is_some_and(|e| e.floor >= self.up_floor_ratio * e.coded) =>
+            {
+                CodedScale::Full
+            }
             _ => return None,
         };
         // The level is expected to move by the gain at the new size.
@@ -111,6 +199,8 @@ impl ResolutionPolicy {
         self.average = Some(average + shift);
         self.scale = next;
         self.frames = 0;
+        self.evidence = None;
+        self.samples = 0;
         self.hold_frames = self.dwell_frames;
         Some(next)
     }
@@ -142,17 +232,64 @@ mod tests {
         assert!(ResolutionPolicy::new(&params, 30.0).is_none());
     }
 
+    /// The half size's floor and the full size's error on content where
+    /// the half size wins (measured on Crowd Run at 100 kbps, 720p: floor
+    /// about 120, displayed error about 630) and where it loses
+    /// (`pool_chad_4_109` at 150 kbps: floor about 310, error about 235).
+    const HALF_WINS: Distortions = Distortions {
+        floor: 120.0,
+        coded: 630.0,
+    };
+    const HALF_LOSES: Distortions = Distortions {
+        floor: 310.0,
+        coded: 235.0,
+    };
+
+    /// One inter frame at `step_ratio`, measured as `evidence` when the
+    /// policy asks.
+    fn frame(
+        p: &mut ResolutionPolicy,
+        step_ratio: f64,
+        evidence: Distortions,
+    ) -> Option<CodedScale> {
+        if p.wants_evidence() {
+            p.add_evidence(evidence);
+        }
+        p.observe(step_ratio)
+    }
+
     #[test]
     fn switches_down_past_the_ceiling_after_the_dwell_and_back_up() {
         let mut p = policy(1.0);
-        // Below the ceiling: never switches.
-        assert!((0..100).all(|_| p.observe(0.8).is_none()));
-        // Far past it: switches once the average crosses, not on one frame.
-        assert_eq!(p.observe(4.0), None);
-        let down = (0..100).position(|_| p.observe(4.0).is_some());
+        // Below the ceiling: never switches, and measures nothing.
+        assert!((0..100).all(|_| !p.wants_evidence() && p.observe(0.8).is_none()));
+        // Far past it, on content the half size wins: switches once the
+        // average crosses and the evidence has settled, not on one frame.
+        assert_eq!(frame(&mut p, 4.0, HALF_WINS), None);
+        let down = (0..100).position(|_| frame(&mut p, 4.0, HALF_WINS).is_some());
         assert!(down.is_some());
         // At half size the level falls; it must stay for the dwell time.
-        let up = (0..200).position(|_| p.observe(0.2) == Some(CodedScale::Full));
+        let up = (0..200).position(|_| frame(&mut p, 0.2, HALF_WINS) == Some(CodedScale::Full));
+        assert!(up.is_some_and(|frames| frames + 1 >= 30));
+    }
+
+    #[test]
+    fn stays_at_full_size_where_the_half_size_loses() {
+        let mut p = policy(1.0);
+        assert!((0..600).all(|_| frame(&mut p, 8.0, HALF_LOSES).is_none()));
+    }
+
+    #[test]
+    fn half_size_goes_back_up_when_it_stops_winning_whatever_the_rate() {
+        let mut p = policy(1.0);
+        while frame(&mut p, 8.0, HALF_WINS).is_none() {}
+        // Still starved, but the half size now shows little more than its
+        // floor: back to full size after the dwell.
+        let shown_near_floor = Distortions {
+            floor: 120.0,
+            coded: 200.0,
+        };
+        let up = (0..300).position(|_| frame(&mut p, 8.0, shown_near_floor).is_some());
         assert!(up.is_some_and(|frames| frames + 1 >= 30));
     }
 
@@ -161,9 +298,14 @@ mod tests {
         let mut p = policy(0.0);
         let params = ResolutionParams::from_overrides(&ParamOverrides::default());
         // Switched down, a half-size level that maps just above the up
-        // threshold keeps the half size.
-        while p.observe(8.0).is_none() {}
+        // threshold keeps the half size, as does evidence between the
+        // down and up ratios.
+        while frame(&mut p, 8.0, HALF_WINS).is_none() {}
         let hold = f64::from(params.up_step_ratio) / f64::from(params.half_step_gain) * 1.05;
-        assert!((0..300).all(|_| p.observe(hold).is_none()));
+        let between = Distortions {
+            floor: 100.0,
+            coded: 100.0 / (0.5 * f64::from(params.down_floor_ratio + params.up_floor_ratio)),
+        };
+        assert!((0..300).all(|_| frame(&mut p, hold, between).is_none()));
     }
 }
