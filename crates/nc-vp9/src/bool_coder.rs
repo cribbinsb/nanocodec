@@ -218,7 +218,10 @@ impl<'a> BoolReader<'a> {
     #[cfg(feature = "analysis")]
     #[must_use]
     pub fn bits_consumed(&self) -> usize {
-        (self.position * 8).saturating_sub(self.buffered.max(0) as usize)
+        // Padding past the partition's end counts as read, so the count
+        // never goes backwards when a refill pads.
+        (self.position * 8 + self.padding.max(0) as usize)
+            .saturating_sub(self.buffered.max(0) as usize)
     }
 
     /// Whether any read needed a bit beyond the partition.

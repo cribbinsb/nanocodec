@@ -309,6 +309,18 @@ fn analysis_leaves_decoding_unchanged_and_tiles_each_frame() {
         assert_eq!(covered, area, "frame {index}: blocks tile the frame");
         let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
         assert_eq!(intra == area, index % 3 == 0, "frame {index}");
+        // Block bits never run backwards at the tile's end (padding counts
+        // as read): their sum is the tile's bits, plus at most the padding
+        // the reader's window can hold.
+        let bits: u64 = frame.tallies[keys::CB_BITS]
+            .values()
+            .map(|t| t.weight)
+            .sum();
+        let tile_bits = 8 * frame.get("slice_bytes", 0).weight;
+        assert!(
+            bits <= tile_bits + u64::from(u64::BITS),
+            "frame {index}: {bits} block bits in {tile_bits}"
+        );
     }
 }
 #[test]

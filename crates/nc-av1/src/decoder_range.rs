@@ -124,6 +124,10 @@ pub(crate) struct SymbolReader<'a> {
     /// The tile's size in bytes (analysis: bits consumed).
     #[cfg(feature = "analysis")]
     length: usize,
+    /// Padding bits shifted into the window past the tile's end (analysis:
+    /// they count as read, so bits consumed never goes backwards).
+    #[cfg(feature = "analysis")]
+    padding_bits: usize,
 }
 
 impl<'a> SymbolReader<'a> {
@@ -138,6 +142,8 @@ impl<'a> SymbolReader<'a> {
             adapt: true,
             #[cfg(feature = "analysis")]
             length: data.len(),
+            #[cfg(feature = "analysis")]
+            padding_bits: 0,
         };
         reader.refill();
         reader
@@ -146,7 +152,8 @@ impl<'a> SymbolReader<'a> {
     /// what a block cost; the window's lookahead counts as unread).
     #[cfg(feature = "analysis")]
     pub(crate) fn bits_consumed(&self) -> usize {
-        ((self.length - self.data.len()) * 8).saturating_sub(self.bits.max(0) as usize)
+        ((self.length - self.data.len()) * 8 + self.padding_bits)
+            .saturating_sub(self.bits.max(0) as usize)
     }
 
     /// This reader with symbols adapting their CDFs (`adapt`) or not (a
@@ -176,6 +183,10 @@ impl<'a> SymbolReader<'a> {
                     (1u64 << top) - 1
                 };
                 self.padding_refills += 1;
+                #[cfg(feature = "analysis")]
+                {
+                    self.padding_bits += top.max(0) as usize;
+                }
                 shift = -8;
                 break;
             };
