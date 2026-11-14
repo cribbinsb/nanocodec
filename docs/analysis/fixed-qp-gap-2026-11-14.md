@@ -146,9 +146,47 @@ only, neighbour state at planning time) splits more than the tuned variance mode
 4 for VVC) and loses. The code was dropped. A better partition RD needs chroma and the real mode decision,
 not this proxy.
 
-### AV1, VP9, AV2
+### AV1 (n = 16)
 
-Being re-measured after the VMAFx server change (queue `~/nanocodec-data/work/fixedqp/queue.txt`).
+| Change | J [90 % CI] | PSNR | VMAF | MS-SSIM |
+|---|---|---:|---:|---:|
+| pre-transform skip off (`av1.pre_tx_skip` 0) | -2.3 [-3.3, -1.2] | -2.0 | -1.6 | -3.7 |
+| second reference (`refs.second` + `second_full`; owned by another agent) | -2.1 [-3.5, -0.9] | -2.5 | -1.5 | -3.2 |
+| loop restoration | -0.9 [-1.7, -0.1] | -3.4 | +2.6 | -1.5 |
+| no depth removal | -0.7 [-1.0, -0.5] | -0.5 | -0.9 | -0.4 |
+| chroma policy | -0.7 [-1.3, -0.1] | +0.6 | -0.2 | -2.5 |
+| rdo_max | -0.6 [-0.8, -0.4] | | | |
+| biased skip off | -0.6 [-1.1, 0.0] | | | |
+| motion search maximal / trellis 8 | -0.5 / -0.5 | | | |
+| transform split everywhere / P intra search 2 / sub-pel walk | -0.4 / -0.3 / -0.3 | | | |
+| hierarchical P | -0.1 [-2.2, +2.2] | | | |
+| 8x8 inter leaves / chroma skip off / residual RD everywhere | +1.8 / +2.4 / +0.7 | | | |
+
+CPU costs of the AV1 gainers are queued (`cost-av1`).
+
+### VP9 (n = 16)
+
+Nothing beyond the second reference (-2.2, owned elsewhere): TU spread -0.4, trellis 8 -0.3, motion
+search / no depth removal -0.2. Hierarchical P +6.2, 1/8-sample vectors +1.2, chroma policy +0.7,
+directional intra estimate +0.5. VP9's search is saturated at its tools.
+
+### VVC: the per-unit keep/drop check (`vvc.unit_zero_rd`, landed off)
+
+The Fable diagnosis in `docs/handoff/vvc.md` replayed VVenC's decisions in our encoder and gained only
+2-3 points, so partition and mode decision are not the VVC blocker. Its largest stage after chroma was a
+per-TU zero-out by RD (teacher-forced P bits -13 to -35 points at 1.5 λ). Implemented as
+`vvc.unit_zero_rd`: a P-picture unit whose error without residual is within s·λ·(bits + 1) of its coded
+error codes no residual. Closed loop, fixed QP, matched QP, 16 clips:
+
+| s | J [90 % CI] | PSNR | VMAF | MS-SSIM |
+|---|---|---:|---:|---:|
+| 0.5 | -1.0 [-1.7, -0.4] | -1.3 | -0.3 | -1.9 |
+| 1 | -1.0 [-2.0, -0.1] | -1.4 | +1.4 | -3.2 |
+| 1.5 (the prototype's) | +0.8 [-0.4, +2.0] | -0.1 | +4.5 | -1.6 |
+| 2 | +4.5 [+2.7, +6.3] | +3.4 | +10.0 | +1.6 |
+
+Teacher forcing overstated it: closed loop, dropped residual degrades the references, and VMAF loses
+detail first. 0.25 / 0.75 and the CPU cost are queued, then the adoption screen and a port to HEVC.
 
 ## 3. Phase 2 so far: costs of the gains (matched QP, same 16 clips; x86 callgrind P-frame instructions)
 

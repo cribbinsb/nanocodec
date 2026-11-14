@@ -28,6 +28,7 @@ struct InitTable {
     intra_chroma_pred_mode: [u8; 2],
     merge_flag: u8,
     merge_idx: u8,
+    ref_idx: u8,
     mvp_flag: u8,
     rqt_root_cbf: u8,
     cu_qp_delta_abs: u8,
@@ -57,6 +58,10 @@ const INIT: InitTable = InitTable {
     intra_chroma_pred_mode: [63, 152],
     merge_flag: 110,
     merge_idx: 122,
+    // `ref_idx_l0` (§9.3.2.2, its initValue table): 153 for both contexts
+    // of every initType; with at most two references only the first bin is
+    // coded.
+    ref_idx: 153,
     mvp_flag: 168,
     rqt_root_cbf: 79,
     // Table 9-24: the same value for both contexts and every initType.
@@ -127,6 +132,8 @@ pub struct Contexts {
     pub merge_flag: Context,
     /// `merge_idx` bin 0.
     pub merge_idx: Context,
+    /// `ref_idx_l0` bin 0.
+    pub ref_idx: Context,
     /// `mvp_l0_flag`.
     pub mvp_flag: Context,
     /// `rqt_root_cbf`.
@@ -177,6 +184,7 @@ impl Contexts {
             intra_chroma_pred_mode: one(INIT.intra_chroma_pred_mode[t]),
             merge_flag: one(INIT.merge_flag),
             merge_idx: one(INIT.merge_idx),
+            ref_idx: one(INIT.ref_idx),
             mvp_flag: one(INIT.mvp_flag),
             rqt_root_cbf: one(INIT.rqt_root_cbf),
             cu_qp_delta_abs: [one(INIT.cu_qp_delta_abs); 2],

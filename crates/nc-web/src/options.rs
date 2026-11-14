@@ -282,12 +282,11 @@ mod tests {
     fn the_options_follow_the_codecs() {
         assert!(offers(Codec::Av1, CuratedOption::FilmGrain));
         assert!(!offers(Codec::H264, CuratedOption::FilmGrain));
-        // AV1 and VP9 take the second reference on flat streams since 9fe4dd1b;
-        // HEVC has no second-reference syntax in our backend.
-        for codec in [Codec::H264, Codec::Av1, Codec::Vp9] {
+        // AV1 and VP9 take the second reference on flat streams since
+        // 9fe4dd1b, HEVC since its second ref_idx_l0 entry.
+        for codec in [Codec::H264, Codec::Av1, Codec::Vp9, Codec::Hevc] {
             assert!(offers(codec, CuratedOption::SecondReference));
         }
-        assert!(!offers(Codec::Hevc, CuratedOption::SecondReference));
         assert!(offers(Codec::H264, CuratedOption::TemporalLayers));
         assert!(offers(Codec::Av1, CuratedOption::BlockQp));
     }

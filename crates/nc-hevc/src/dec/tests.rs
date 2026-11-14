@@ -679,6 +679,31 @@ mod round_trips {
         }
     }
 
+    /// The last high-quality frame as a second reference (`refs.second`):
+    /// two `ref_idx_l0` entries, per-PU choices, merge and AMVP candidates
+    /// on both, decoded exactly by our decoder; and the recode contract
+    /// holds with it.
+    #[test]
+    fn second_reference_streams_decode_exactly() {
+        let config = |second: f32, identity: f32| {
+            let mut settings = super::browser_tests::config(64, 64, 30, false);
+            settings.params.set("refs.second", second);
+            settings.params.set("refs.second_full", second);
+            settings.params.set("debug.recode_identity", identity);
+            settings.intra_period = 12;
+            settings
+        };
+        let (packets, recons, _) = coded_sequence(config(1., 0.), Some(150_000), 16);
+        let mut decoder = Decoder::new();
+        for (packet, recon) in packets.iter().zip(&recons) {
+            compare(&decoder.decode(packet).unwrap(), recon);
+        }
+        let (without, _, _) = coded_sequence(config(0., 0.), Some(150_000), 16);
+        assert_ne!(packets, without, "the second reference changes the stream");
+        let (recoded, _, _) = coded_sequence(config(1., 1.), Some(150_000), 16);
+        assert_eq!(packets, recoded);
+    }
+
     #[test]
     fn layered_streams_and_their_sub_layers_decode_exactly() {
         for layers in [2u8, 3] {

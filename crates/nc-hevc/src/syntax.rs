@@ -136,6 +136,8 @@ pub enum CuKind {
     Amvp {
         /// The vector.
         mv: Mv,
+        /// `ref_idx_l0`, coded only in slices with two references.
+        ref_idx: Option<u8>,
         /// The predictor it is coded against.
         pred: Mv,
         /// `mvp_l0_flag`.
@@ -457,10 +459,20 @@ fn write_cu(
                 qp,
             );
         }
-        CuKind::Amvp { mv, pred, mvp_idx } => {
+        CuKind::Amvp {
+            mv,
+            ref_idx,
+            pred,
+            mvp_idx,
+        } => {
             w.encode_bin(&mut ctx.pred_mode_flag, false); // MODE_INTER
             w.encode_bin(&mut ctx.part_mode, true); // PART_2Nx2N
             w.encode_bin(&mut ctx.merge_flag, false);
+            if let Some(ref_idx) = ref_idx {
+                // ref_idx_l0 (§7.3.8.6): truncated rice with cMax
+                // `num_ref_idx_l0_active_minus1` = 1, one context-coded bin.
+                w.encode_bin(&mut ctx.ref_idx, ref_idx == 1);
+            }
             write_mvd(w, ctx, mv, pred);
             w.encode_bin(&mut ctx.mvp_flag, mvp_idx == 1);
             let residual = cu.tus.units(tables.units).iter().any(TransformUnit::coded);

@@ -34,6 +34,9 @@ pub struct Cell {
     pub skip: bool,
     /// Motion vector of the (single) prediction unit, inter CUs only.
     pub mv: Mv,
+    /// `ref_idx_l0` of that prediction unit: 0 for the previous picture, 1
+    /// for the second reference (`refs.second`) on slices that have one.
+    pub ref_idx: u8,
     /// `CtDepth` of the covering CU.
     pub depth: u8,
     /// The luma transform block covering the cell has coefficients.

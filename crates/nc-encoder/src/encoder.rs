@@ -2407,10 +2407,8 @@ impl<B: CodecBackend> Encoder<B> {
                 source_moments,
                 refresh,
             );
-            if chosen != ReferenceChoice::Primary
-                && let Some(screen) = self.layer.second.as_mut().and_then(|s| s.screen.as_mut())
-            {
-                screen.record_win((node.x, node.y), leaf_extent::<B>(node));
+            if secondary.is_some() {
+                self.observe_second_choice(node, chosen);
             }
             if self.backend.wants_sub_block_motion()
                 && is_square_leaf::<B>(node)
@@ -2435,6 +2433,19 @@ impl<B: CodecBackend> Encoder<B> {
         };
         self.window = window;
         mode
+    }
+
+    /// Leaf `node`, offered the second reference, made `chosen`: the
+    /// frame switch's share and the screen's win map follow it.
+    fn observe_second_choice(&mut self, node: &Block, chosen: ReferenceChoice) {
+        let Some(second) = self.layer.second.as_mut() else {
+            return;
+        };
+        let chose = chosen != ReferenceChoice::Primary;
+        second.observe_leaf(leaf_area::<B>(node), chose);
+        if chose && let Some(screen) = second.screen.as_mut() {
+            screen.record_win((node.x, node.y), leaf_extent::<B>(node));
+        }
     }
 
     /// The syntax stress test's random leaf choice (`debug.random_decisions`):

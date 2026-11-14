@@ -30,6 +30,7 @@ use super::{
 };
 use crate::grid::{Cell, quadrant};
 use crate::headers::{LOG2_CTB, LOG2_MIN_CB, LOG2_MIN_TB, SliceDeblocking};
+use crate::mvpred::Motion;
 use crate::predict::{self, CHROMA_DM, ModeCode};
 use crate::sao::{self, BANDS, ComponentSao, CtbSao, MAX_OFFSET, PictureSao, SaoKind, Signal};
 use crate::scan::ScanKind;
@@ -379,7 +380,7 @@ impl HevcBackend {
     ) {
         let predictors = self
             .current
-            .filter(|c| (c.x, c.y, c.log2) == (block.x, block.y, block.log2_size()))
+            .filter(|c| c.of(block, self.active_ref))
             .unwrap_or_else(|| self.predictors(block));
         self.predict_inter_cu(block, mv, reference);
         let (max_log2, depth) = (
@@ -422,8 +423,13 @@ impl HevcBackend {
             });
         }
         let residual = tus.as_slice().iter().any(TransformUnit::coded);
-        let merge = predictors.merge.as_slice();
-        let merge_indices: Vec<usize> = (0..merge.len()).filter(|&i| merge[i] == mv).collect();
+        let motion = Motion {
+            mv,
+            ref_idx: self.active_ref,
+        };
+        let merge_indices: Vec<usize> = (predictors.merge.motions().enumerate())
+            .filter_map(|(i, m)| (m == motion).then_some(i))
+            .collect();
         let rng = self.rng();
         let kind = if !merge_indices.is_empty() && !rng.chance(AMVP_ANYWAY_CHANCE) {
             let merge_idx = merge_indices[rng.below(merge_indices.len() as u64) as usize];
@@ -436,6 +442,7 @@ impl HevcBackend {
             let mvp_idx = rng.below(predictors.amvp.len() as u64) as usize;
             CuKind::Amvp {
                 mv,
+                ref_idx: (self.reference_list.count() > 1).then_some(self.active_ref),
                 pred: predictors.amvp[mvp_idx],
                 mvp_idx,
             }
@@ -446,6 +453,7 @@ impl HevcBackend {
             Cell {
                 skip,
                 mv,
+                ref_idx: self.active_ref,
                 ..Cell::default()
             },
             tus.as_slice(),

@@ -141,6 +141,10 @@ nc_encoder::param_group! {
             "1 computes 16- and 32-point forward DCT rows with staged butterflies and skips proven-zero column groups (HEVC Default's hevc.fast_forward16/32): faster, approximate coefficients",
         shave_gap: 8.0, [0.0, 16.0],
             "drop trailing ±1 levels that are at least this many scan positions past the previous level (SVT shave_coeff, HEVC's hevc.shave_gap; 0 off): lower drops more",
+        // The per-unit keep/drop check of docs/handoff/vvc.md (Fable gap
+        // diagnosis: teacher-forced P bits fell 13-35 points at 1.5).
+        unit_zero_rd: 0.0, [0.0, 4.0],
+            "P pictures: a coded transform unit whose squared error with no residual is within this many λ times its coefficient bits (plus one) of its coded error codes no residual (0 off; not with dependent quantisation): higher drops more residual",
         trellis_round_up: 1.0, [0.0, 1.0],
             "with quant.trellis, 1 lets a level rise to the nearest above the dead-zone quantiser's (HEVC's trellis); 0 only lowers levels: cheaper, keeps the dead zones",
         trellis_key_lambda_scale: 1.0, [0.0, 2.0],
@@ -339,6 +343,8 @@ pub struct VvcBackend {
     /// `vvc.zero_residual_texture` in percent (`recon::Quant`).
     inter_zero_texture_percent: u32,
     shave_gap: usize,
+    /// `vvc.unit_zero_rd`: λ multiple of the per-unit keep/drop check (0 off).
+    unit_zero_rd: f32,
     forward: nc_dsp::HevcForwardMode,
     /// The SPS's luma-to-chroma QP map.
     chroma_qp: ChromaQpTable,
@@ -774,6 +780,7 @@ impl CodecBackend for VvcBackend {
             inter_zero_bound_percent: (params.pre_transform_zero_scale * 100.).round() as u32,
             inter_zero_texture_percent: (params.zero_residual_texture * 100.).round() as u32,
             shave_gap: params.shave_gap.round() as usize,
+            unit_zero_rd: params.unit_zero_rd,
             forward: forward_mode(&params, trellis.is_some() || params.dep_quant >= 0.5),
             rounding: Rounding {
                 intra: params.intra_rounding.round() as i32,
@@ -1515,6 +1522,11 @@ impl VvcBackend {
         let level = recon::quantize_rect(
             &self.dsp, source, plane, unit, prediction, quant, search, scratch,
         );
+        let scaling = recon::Scaling {
+            qp: quant.qp,
+            dependent: self.tools.dep_quant,
+            transform: quant.transform,
+        };
         recon::store(
             &self.dsp,
             reconstruction,
@@ -1522,13 +1534,73 @@ impl VvcBackend {
             unit,
             prediction,
             level,
-            recon::Scaling {
-                qp: quant.qp,
-                dependent: self.tools.dep_quant,
-                transform: quant.transform,
-            },
+            scaling,
         );
-        level.to_vec()
+        let level = level.to_vec();
+        if self.drops_residual(
+            source,
+            reconstruction,
+            (plane, unit, prediction),
+            &level,
+            lambdas,
+        ) {
+            recon::store(
+                &self.dsp,
+                reconstruction,
+                plane,
+                unit,
+                prediction,
+                &[],
+                scaling,
+            );
+            return Vec::new();
+        }
+        level
+    }
+
+    /// The per-unit keep/drop check (`vvc.unit_zero_rd`): whether P-picture
+    /// unit `unit` of `plane`, coded with `levels` into `reconstruction`,
+    /// costs more than its `prediction` alone, its coefficient bits priced at
+    /// `vvc.unit_zero_rd` times the plane's λ (one bit more for the coded
+    /// block flag). The trellis decides levels one at a time and keeps a unit
+    /// whose few levels buy less than their bits as a whole (with the
+    /// position and flag syntax); a check of the whole unit drops it.
+    /// Not with dependent quantisation, whose levels depend on the states of
+    /// the levels before them.
+    fn drops_residual(
+        &self,
+        source: &Picture,
+        reconstruction: &Picture,
+        (plane, (x, y, width), prediction): (PlaneIndex, (usize, usize, usize), &[u8]),
+        levels: &[i32],
+        lambdas: [f32; 2],
+    ) -> bool {
+        if self.unit_zero_rd <= 0.0
+            || !self.inter
+            || self.tools.dep_quant
+            || levels.iter().all(|&l| l == 0)
+        {
+            return false;
+        }
+        let height = prediction.len() / width;
+        let ch = usize::from(plane != PlaneIndex::Y);
+        let mut contexts = self.contexts.coeff.clone();
+        let mut bits = crate::coeff::BitCost::default();
+        crate::coeff::emit_rect(&mut bits, &mut contexts, levels, (width, height), ch);
+        let size = nc_dsp::BlockSize::new(width, height).expect("a transform unit size");
+        let original = source
+            .plane(plane)
+            .region(x as isize, y as isize, width, height)
+            .expect("the unit lies inside the picture");
+        let coded_view = reconstruction
+            .plane(plane)
+            .region(x as isize, y as isize, width, height)
+            .expect("the unit lies inside the picture");
+        let coded = self.dsp.variance(size, &original, &coded_view).sse;
+        let predicted = nc_common::PlaneView::new(prediction, width, width, height)
+            .expect("the prediction covers the unit");
+        let uncoded = self.dsp.variance(size, &original, &predicted).sse;
+        uncoded as f32 <= coded as f32 + self.unit_zero_rd * lambdas[ch] * (bits.0 + 1.0)
     }
 
     /// The motion of CU `block` coded in `mode` (none for intra), refined

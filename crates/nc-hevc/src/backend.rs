@@ -32,9 +32,9 @@ use nc_dsp::{BlockSize, Dsp, HevcForwardMode, HevcForwardStaging, HevcQuantizer,
 use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
-    FrameType, LtrParams, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
-    RefreshWindow, StaticSkipTest, ZeroLimits, copy_zero_vector_prediction, long_term_slot,
-    reference_slots, zero_vector_residual_is_zero,
+    FrameType, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
+    ReferenceChoice, RefreshWindow, StaticSkipTest, ZeroLimits, copy_zero_vector_prediction,
+    long_term_slot, reference_slots, uses_long_term_slot, zero_vector_residual_is_zero,
 };
 
 use crate::collocated::MotionStore;
@@ -49,7 +49,8 @@ use crate::headers::{
 };
 use crate::inter::{predict_chroma, predict_luma};
 use crate::mvpred::{
-    AMVP_CANDIDATES, DEFAULT_MERGE_CANDIDATES, MAX_MERGE_CANDIDATES, MergeList, candidate_lists,
+    AMVP_CANDIDATES, DEFAULT_MERGE_CANDIDATES, MAX_MERGE_CANDIDATES, MergeList, Motion,
+    ReferenceDistances, candidate_lists,
 };
 use crate::predict::{Refs, Sides, most_probable};
 use crate::quant;
@@ -132,6 +133,9 @@ mod cost {
     pub const FLAG: f32 = 1.0;
     /// DC intra: MPM flag and index, chroma mode.
     pub const INTRA_DC: f32 = 4.0;
+    /// `ref_idx_l0` of a slice with two references (§9.3.3.2 truncated
+    /// rice, cMax 1): one context-coded bin.
+    pub const REF_IDX: f32 = 1.0;
     /// `merge_idx` (§9.3.3.2 truncated rice, cMax `candidates` − 1): one
     /// bin per index step, the last index needing no terminating bin.
     pub fn merge_idx(idx: usize, candidates: usize) -> f32 {
@@ -139,14 +143,23 @@ mod cost {
     }
 }
 
-/// Predictor lists of the block the engine is currently deciding.
+/// Predictor lists of the block the engine is currently deciding: the
+/// merge list, and the AMVP list of reference `ref_idx`.
 #[derive(Debug, Clone, Copy)]
 struct Predictors {
     x: usize,
     y: usize,
     log2: u8,
+    ref_idx: u8,
     merge: MergeList,
     amvp: [Mv; AMVP_CANDIDATES],
+}
+
+impl Predictors {
+    /// Whether these are the lists of `block` predicted from `ref_idx`.
+    fn of(&self, block: &Block, ref_idx: u8) -> bool {
+        (self.x, self.y, self.log2, self.ref_idx) == (block.x, block.y, block.log2_size(), ref_idx)
+    }
 }
 
 /// Frame-constant quantisation and decision weights. A plane has one QP;
@@ -345,9 +358,21 @@ impl FastForward {
 #[derive(Debug, Clone, Copy)]
 struct CachedLuma {
     block: Block,
-    mv: Mv,
+    motion: Motion,
     filter: nc_dsp::Filter,
     frame_index: u64,
+}
+
+/// `ref_idx_l0` of an engine reference choice. Compound prediction is
+/// never offered (P slices, `supports_compound_reference` is false).
+fn ref_idx_of(reference: ReferenceChoice) -> u8 {
+    match reference {
+        ReferenceChoice::Primary => 0,
+        ReferenceChoice::Secondary => 1,
+        ReferenceChoice::Compound { .. } => {
+            unreachable!("HEVC P slices code no compound prediction")
+        }
+    }
 }
 
 /// The coded picture size for a visible `width` x `height`: whole minimum
@@ -396,6 +421,11 @@ pub struct HevcBackend {
     motion: MotionStore,
     /// The current picture's place in the temporal structure.
     references: FrameReferences,
+    /// The slice's reference list (`refs.second` adds a second entry).
+    reference_list: ReferenceDistances,
+    /// `ref_idx_l0` the engine is deciding or coding the current CU with
+    /// (`CodecBackend::select_reference`).
+    active_ref: u8,
     /// POC of the picture each reference slot holds (checks the SPS
     /// reference picture sets against the engine's structure).
     slot_poc: [u32; MAX_REFERENCE_SLOTS],
@@ -603,13 +633,13 @@ impl CodingTools {
 struct EarlyMergeHint {
     frame_index: u64,
     block: Block,
-    mv: Mv,
+    motion: Motion,
     sse_per_sample: f32,
 }
 
 impl EarlyMergeHint {
-    fn matches(self, frame_index: u64, block: &Block, mv: Mv) -> bool {
-        self.frame_index == frame_index && self.block == *block && self.mv == mv
+    fn matches(self, frame_index: u64, block: &Block, motion: Motion) -> bool {
+        self.frame_index == frame_index && self.block == *block && self.motion == motion
     }
 }
 
@@ -1014,6 +1044,8 @@ impl CodecBackend for HevcBackend {
                 },
             ),
             references: FrameReferences::FLAT,
+            reference_list: ReferenceDistances::one(1),
+            active_ref: 0,
             slot_poc: [0; MAX_REFERENCE_SLOTS],
             long_term_slot: long_term_slot(config.temporal_layers),
             next_cu: 0,
@@ -1102,6 +1134,17 @@ impl CodecBackend for HevcBackend {
         true
     }
 
+    /// The second reference (`refs.second`) is a second short-term entry of
+    /// the slice's reference picture set and list (`ref_idx_l0` 1, HEVC
+    /// §7.3.7, §8.3.2), chosen per prediction unit.
+    fn supports_second_reference(&self) -> bool {
+        true
+    }
+
+    fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
+        self.active_ref = ref_idx_of(reference);
+    }
+
     /// Rank inter candidates with HEVC's own 8-tap luma filter (the engine's
     /// SVT light-PD1 flow). Quick clips, 10 s IP, PSNR-YUV BD vs svtav1-m12
     /// (fast check): −3.0% → −4.9%.
@@ -1127,7 +1170,10 @@ impl CodecBackend for HevcBackend {
         self.inter_pred[0][..area].copy_from_slice(prediction);
         self.cached_luma = Some(CachedLuma {
             block: *block,
-            mv,
+            motion: Motion {
+                mv,
+                ref_idx: self.active_ref,
+            },
             filter,
             frame_index: self.frame_index,
         });
@@ -1163,10 +1209,14 @@ impl CodecBackend for HevcBackend {
         lambda: f32,
     ) -> bool {
         self.early_merge = None;
+        let motion = Motion {
+            mv,
+            ref_idx: self.active_ref,
+        };
         if self.early_merge_lambdas <= 0.0
             || self.slice != SliceKind::Predicted
             || !mv.is_full_pel()
-            || self.current.is_none_or(|p| p.merge.as_slice()[0] != mv)
+            || self.current.is_none_or(|p| p.merge.get(0) != motion)
         {
             return false;
         }
@@ -1177,7 +1227,7 @@ impl CodecBackend for HevcBackend {
         self.early_merge = Some(EarlyMergeHint {
             frame_index: self.frame_index,
             block: *block,
-            mv,
+            motion,
             sse_per_sample: limit,
         });
         true
@@ -1250,8 +1300,10 @@ impl CodecBackend for HevcBackend {
         let p = self.predictors(block);
         self.current = Some(p);
         // Merge candidates cost almost nothing to signal; AMVP predictors
-        // cost only a zero vector difference.
-        out.extend(p.merge.as_slice().iter().chain(&p.amvp).copied());
+        // cost only a zero vector difference. With a second reference, a
+        // merge vector of the other reference is still a likely vector:
+        // `mode_bits` prices it as AMVP.
+        out.extend(p.merge.vectors().iter().chain(&p.amvp).copied());
     }
 
     fn mode_bits(&self, block: &Block, mode: &PredictionMode) -> f32 {
@@ -1265,9 +1317,13 @@ impl CodecBackend for HevcBackend {
             PredictionMode::Inter(mv) => {
                 let p = self
                     .current
-                    .filter(|c| (c.x, c.y, c.log2) == (block.x, block.y, block.log2_size()))
+                    .filter(|c| c.of(block, self.active_ref))
                     .unwrap_or_else(|| self.predictors(block));
-                if let Some(idx) = p.merge.index_of(mv) {
+                let motion = Motion {
+                    mv,
+                    ref_idx: self.active_ref,
+                };
+                if let Some(idx) = p.merge.index_of(motion) {
                     // Skip, or merge with residual.
                     cost::SKIP_FLAG + cost::merge_idx(idx, self.info.merge_candidates)
                 } else {
@@ -1276,7 +1332,11 @@ impl CodecBackend for HevcBackend {
                         .iter()
                         .map(|&pred| mvd_bits(mv, pred))
                         .fold(f32::INFINITY, f32::min);
-                    cost::SKIP_FLAG + cost::MODE_AND_PART + 2.0 * cost::FLAG + mvd
+                    cost::SKIP_FLAG
+                        + cost::MODE_AND_PART
+                        + 2.0 * cost::FLAG
+                        + self.ref_idx_bits()
+                        + mvd
                 }
             }
         }
@@ -1292,6 +1352,7 @@ impl CodecBackend for HevcBackend {
 
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.references = plan.references;
+        self.active_ref = 0;
         self.frame_index = plan.index;
         self.cached_luma = None;
         match plan.frame_type {
@@ -1304,10 +1365,12 @@ impl CodecBackend for HevcBackend {
                     self.key_index = plan.index;
                 }
                 self.poc = self.picture_order_count(plan.index);
+                self.reference_list = ReferenceDistances::one(1);
             }
             FrameType::Inter => {
                 self.slice = SliceKind::Predicted;
                 self.poc = self.picture_order_count(plan.index);
+                self.reference_list = self.slice_reference_list();
             }
         }
         self.qp = match plan.frame_type {
@@ -1381,6 +1444,7 @@ impl CodecBackend for HevcBackend {
         recon: &mut Picture,
     ) {
         self.begin_block_qp(decision.qp_offset);
+        self.active_ref = ref_idx_of(decision.reference);
         match decision.mode {
             mode if self.random.is_some() => {
                 self.encode_random_cu(block, mode, source, reference, recon);
@@ -1398,6 +1462,8 @@ impl CodecBackend for HevcBackend {
         self.current = None;
         self.cached_luma = None;
         self.early_merge = None;
+        // The next CU's decision starts on the structure's reference.
+        self.active_ref = 0;
     }
 
     fn filter_frame(&mut self, source: &Picture, recon: &mut Picture) {
@@ -1516,7 +1582,7 @@ impl CodecBackend for HevcBackend {
                     qp,
                     self.slice_sao(),
                     self.temporal_mvp(),
-                    self.info.merge_candidates,
+                    (self.reference_list.count(), self.info.merge_candidates),
                     self.deblocking,
                 );
                 if self.references.position.is_top_layer() {
@@ -1546,9 +1612,11 @@ impl CodecBackend for HevcBackend {
         }
         // The picture's motion becomes the collocated motion of the slots
         // it refreshed (the grid is reset for the next picture).
-        let distance = self.references.reference.distance as i32;
-        self.motion
-            .save(&mut self.grid, distance, self.references.refresh);
+        self.motion.save(
+            &mut self.grid,
+            self.reference_list.by_index(),
+            self.references.refresh,
+        );
         for (slot, poc) in self.slot_poc.iter_mut().enumerate() {
             if self.references.refresh.contains(slot) {
                 *poc = self.poc;
@@ -1590,6 +1658,12 @@ impl HevcBackend {
     fn long_term_set(&self) -> Vec<(u32, bool)> {
         let slot = self.references.reference.slot;
         let mut set = vec![(self.poc - self.slot_poc[slot], true)];
+        // The second reference (`refs.second`) is the long-term slot's
+        // picture, used: its POC distance is larger than the first
+        // reference's, so the sorted set lists it second (`ref_idx_l0` 1).
+        if let Some(second) = self.references.secondary {
+            set.push((self.poc - self.slot_poc[second.slot], true));
+        }
         for kept in [0, self.long_term_slot] {
             let distance = self.poc - self.slot_poc[kept];
             if !self.references.refresh.contains(kept) && set.iter().all(|&(d, _)| d != distance) {
@@ -1612,23 +1686,48 @@ impl HevcBackend {
 
     fn predictors(&self, block: &Block) -> Predictors {
         let size = block.size();
-        let reference = self.references.reference;
-        let collocated = self
-            .motion
-            .collocated(reference.slot, reference.distance as i32);
+        // The collocated picture is `ref_idx_l0` 0 (`collocated_ref_idx` 0).
+        let collocated = self.motion.collocated(self.references.reference.slot);
         let collocated = self.temporal_mvp().then_some(&collocated);
         let (merge, amvp) = candidate_lists(
             &self.grid,
             collocated,
             (block.x, block.y, size),
-            self.info.merge_candidates,
+            (
+                self.info.merge_candidates,
+                &self.reference_list,
+                self.active_ref,
+            ),
         );
         Predictors {
             x: block.x,
             y: block.y,
             log2: block.log2_size(),
+            ref_idx: self.active_ref,
             merge,
             amvp,
+        }
+    }
+
+    /// The reference list of the current P slice: the structure's reference,
+    /// and the second reference (`refs.second`) when the engine gave one, by
+    /// POC distance.
+    fn slice_reference_list(&self) -> ReferenceDistances {
+        let distance = |slot: usize| (self.poc - self.slot_poc[slot]) as i32;
+        let primary = distance(self.references.reference.slot);
+        match self.references.secondary {
+            Some(second) => ReferenceDistances::two(primary, distance(second.slot)),
+            None => ReferenceDistances::one(primary),
+        }
+    }
+
+    /// Estimated bits of `ref_idx_l0` in this slice (none with one
+    /// reference).
+    fn ref_idx_bits(&self) -> f32 {
+        if self.reference_list.count() > 1 {
+            cost::REF_IDX
+        } else {
+            0.0
         }
     }
 
@@ -1671,9 +1770,13 @@ impl HevcBackend {
     /// Consume only a matching exact luma prediction. The one-reference frame
     /// contract guarantees its reference pixels stay unchanged until this CU.
     fn predict_inter_cu(&mut self, block: &Block, mv: Mv, reference: &Picture) {
+        let motion = Motion {
+            mv,
+            ref_idx: self.active_ref,
+        };
         let reuse_luma = self.cached_luma.take().is_some_and(|cached| {
             cached.block == *block
-                && cached.mv == mv
+                && cached.motion == motion
                 && cached.filter == nc_dsp::Filter::HevcLuma
                 && cached.frame_index == self.frame_index
         });
@@ -1710,20 +1813,24 @@ impl HevcBackend {
     ) {
         let predictors = self
             .current
-            .filter(|c| (c.x, c.y, c.log2) == (block.x, block.y, block.log2_size()))
+            .filter(|c| c.of(block, self.active_ref))
             .unwrap_or_else(|| self.predictors(block));
+        let motion = Motion {
+            mv,
+            ref_idx: self.active_ref,
+        };
         if self.still_skipped.take() == Some((block.x, block.y)) {
             // `try_static_skip` wrote the reconstruction (the co-located
             // reference samples); only the syntax remains.
             let tus = self.uncoded_transform_units(block);
-            self.record_inter_cu(block, mv, &predictors, &tus);
+            self.record_inter_cu(block, motion, &predictors, &tus);
             return;
         }
         self.predict_inter_cu(block, mv, reference);
         let hint = self
             .early_merge
             .take()
-            .filter(|hint| hint.matches(self.frame_index, block, mv));
+            .filter(|hint| hint.matches(self.frame_index, block, motion));
         if hint.is_some_and(|hint| {
             self.early_merge_chroma_confident(block, source, hint.sse_per_sample)
         }) {
@@ -1736,6 +1843,7 @@ impl HevcBackend {
                 Cell {
                     skip: true,
                     mv,
+                    ref_idx: self.active_ref,
                     tu: u32::MAX,
                     ..Cell::default()
                 },
@@ -1758,7 +1866,7 @@ impl HevcBackend {
             }
             tus
         };
-        self.record_inter_cu(block, mv, &predictors, &tus);
+        self.record_inter_cu(block, motion, &predictors, &tus);
     }
 
     /// The transform units of an inter CU coded with no residual (as the
@@ -1778,17 +1886,20 @@ impl HevcBackend {
         tus
     }
 
-    /// Choose the syntax of an inter CU with vector `mv` and residual `tus`
-    /// (skip, merge or AMVP) and record it.
+    /// Choose the syntax of an inter CU with `motion` and residual `tus`
+    /// (skip, merge or AMVP) and record it. `predictors` hold the AMVP list
+    /// of `motion`'s reference.
     fn record_inter_cu(
         &mut self,
         block: &Block,
-        mv: Mv,
+        motion: Motion,
         predictors: &Predictors,
         tus: &TransformUnits,
     ) {
+        debug_assert_eq!(predictors.ref_idx, motion.ref_idx);
         let residual = tus.as_slice().iter().any(TransformUnit::coded);
-        let merge_idx = predictors.merge.index_of(mv);
+        let merge_idx = predictors.merge.index_of(motion);
+        let Motion { mv, ref_idx } = motion;
 
         let kind = match merge_idx {
             Some(merge_idx) if !residual => CuKind::Skip { merge_idx },
@@ -1801,13 +1912,19 @@ impl HevcBackend {
                     .enumerate()
                     .min_by(|a, b| mvd_bits(mv, a.1).total_cmp(&mvd_bits(mv, b.1)))
                     .expect("two AMVP candidates");
-                CuKind::Amvp { mv, pred, mvp_idx }
+                CuKind::Amvp {
+                    mv,
+                    ref_idx: (self.reference_list.count() > 1).then_some(ref_idx),
+                    pred,
+                    mvp_idx,
+                }
             }
         };
         let skip = matches!(kind, CuKind::Skip { .. });
         let cell = Cell {
             skip,
             mv,
+            ref_idx,
             ..Cell::default()
         };
         self.record_cu(block, cell, tus.as_slice());
@@ -2527,7 +2644,7 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
         temporal_layers: config.temporal_layers,
         signal: config.signal,
         frame_rate: config.frame_rate,
-        long_term: LtrParams::from_overrides(&config.params).interval > 0.0,
+        long_term: uses_long_term_slot(&config.params),
         block_qp: false,
         merge_candidates: params.merge_candidates.round() as usize,
     }
@@ -2914,7 +3031,7 @@ mod exact_prediction_cache_tests {
         let mv = Mv { x: -1, y: 3 };
         let mut expected = backend.inter_pred.clone();
         predict_cu(&backend.dsp, &block, mv, &reference, &mut expected, false);
-        for miss in 0..6 {
+        for miss in 0..7 {
             backend.cache_exact_luma(
                 &block,
                 mv,
@@ -2930,8 +3047,9 @@ mod exact_prediction_cache_tests {
                     cached.block.log2_width += 1;
                     cached.block.log2_height += 1;
                 }
-                3 => cached.mv.x += 1,
+                3 => cached.motion.mv.x += 1,
                 4 => cached.filter = Filter::Av1,
+                5 => cached.motion.ref_idx = 1,
                 _ => cached.frame_index += 1,
             }
             backend.predict_inter_cu(&block, mv, &reference);
@@ -3017,10 +3135,19 @@ mod early_merge_tests {
         backend.early_merge_lambdas = 0.25;
         assert!(backend.prefer_cached_inter(&block, Mv::ZERO, stats, 4.0));
         let hint = backend.early_merge.unwrap();
-        assert!(hint.matches(1, &block, Mv::ZERO));
-        assert!(!hint.matches(2, &block, Mv::ZERO));
-        assert!(!hint.matches(1, &Block { x: 16, ..block }, Mv::ZERO));
-        assert!(!hint.matches(1, &block, Mv { x: 4, y: 0 }));
+        let on_first = |mv| Motion { mv, ref_idx: 0 };
+        assert!(hint.matches(1, &block, on_first(Mv::ZERO)));
+        assert!(!hint.matches(2, &block, on_first(Mv::ZERO)));
+        assert!(!hint.matches(1, &Block { x: 16, ..block }, on_first(Mv::ZERO)));
+        assert!(!hint.matches(1, &block, on_first(Mv { x: 4, y: 0 })));
+        assert!(!hint.matches(
+            1,
+            &block,
+            Motion {
+                mv: Mv::ZERO,
+                ref_idx: 1
+            }
+        ));
         assert!(!backend.prefer_cached_inter(
             &block,
             Mv::ZERO,

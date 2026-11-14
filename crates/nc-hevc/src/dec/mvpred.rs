@@ -11,6 +11,7 @@
 use nc_encoder::Mv;
 
 use super::picture::{Motion, PictureState, PuMotion, RefPic, flag};
+use crate::collocated::scale_mv;
 
 /// Most merge candidates (`MaxNumMergeCand` ≤ 5).
 const MAX_MERGE: usize = 5;
@@ -69,29 +70,6 @@ pub(super) struct Predictor<'a> {
     pub max_merge: usize,
     pub b_slice: bool,
     pub num_ref_idx: [usize; 2],
-}
-
-/// `Clip3(−128, 127, ·)` of a POC distance.
-fn clip_distance(d: i32) -> i32 {
-    d.clamp(-128, 127)
-}
-
-/// POC-distance scaling of a vector (equations 8-180 to 8-183).
-fn scale(mv: Mv, td: i32, tb: i32) -> Mv {
-    let (td, tb) = (clip_distance(td), clip_distance(tb));
-    if td == 0 {
-        return mv;
-    }
-    let tx = (16384 + (td.abs() >> 1)) / td;
-    let factor = ((tb * tx + 32) >> 6).clamp(-4096, 4095);
-    let component = |v: i16| {
-        let p = factor * i32::from(v);
-        (p.signum() * ((p.abs() + 127) >> 8)).clamp(-32768, 32767) as i16
-    };
-    Mv {
-        x: component(mv.x),
-        y: component(mv.y),
-    }
 }
 
 impl Predictor<'_> {
@@ -311,7 +289,7 @@ impl Predictor<'_> {
         Some(if target.long_term || col_diff == cur_diff {
             mv
         } else {
-            scale(mv, col_diff, cur_diff)
+            scale_mv(mv, col_diff, cur_diff)
         })
     }
 
@@ -396,7 +374,7 @@ impl Predictor<'_> {
             Some(if r.long_term || target.long_term {
                 m.mv[l]
             } else {
-                scale(m.mv[l], self.poc - r.poc, self.poc - target.poc)
+                scale_mv(m.mv[l], self.poc - r.poc, self.poc - target.poc)
             })
         })
     }

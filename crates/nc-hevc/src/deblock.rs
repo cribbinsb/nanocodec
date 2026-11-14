@@ -189,9 +189,11 @@ fn strength(p: &Cell, q: &Cell) -> u8 {
     if transform_edge && (p.luma_coded || q.luma_coded) {
         return 1;
     }
-    // One reference picture and one vector per prediction unit: only the
-    // vector difference can make the motion "different".
-    let differs = (i32::from(p.mv.x) - i32::from(q.mv.x)).abs() >= MV_DIFF_THRESHOLD
+    // One vector per prediction unit (P slices): the motion differs when
+    // the reference pictures do (distinct `ref_idx_l0` entries are distinct
+    // pictures) or a vector component differs by a whole sample.
+    let differs = p.ref_idx != q.ref_idx
+        || (i32::from(p.mv.x) - i32::from(q.mv.x)).abs() >= MV_DIFF_THRESHOLD
         || (i32::from(p.mv.y) - i32::from(q.mv.y)).abs() >= MV_DIFF_THRESHOLD;
     u8::from(prediction_edge && differs)
 }

@@ -173,8 +173,9 @@ pub struct StreamInfo {
     pub signal: StreamSignal,
     /// Nominal frame rate (the VUI timing clock).
     pub frame_rate: FrameRate,
-    /// A long-term reference is kept (`ltr.interval`): slices carry their
-    /// own reference picture sets ([`SliceReferenceSet::Explicit`]).
+    /// A picture is kept in the long-term slot (`ltr.interval`, or the
+    /// second reference `refs.second`): slices carry their own reference
+    /// picture sets ([`SliceReferenceSet::Explicit`]).
     pub long_term: bool,
     /// CUs carry `cu_qp_delta` (`cu_qp_delta_enabled_flag`), one per
     /// CTB-sized quantization group (`diff_cu_qp_delta_depth` 0).
@@ -196,7 +197,8 @@ impl StreamInfo {
     fn dpb_pictures(&self) -> u32 {
         let largest = self.reference_sets().iter().map(|set| set.len()).max();
         let largest = largest.unwrap_or(0) as u32;
-        // A long-term reference is kept beside the structure's pictures.
+        // A long-term or second reference is kept beside the structure's
+        // pictures.
         let kept = largest + u32::from(self.long_term);
         kept + 1
     }
@@ -551,7 +553,7 @@ pub fn p_slice_header(
     qp: SliceQp,
     sao: (bool, bool),
     temporal_mvp: bool,
-    merge_candidates: usize,
+    (references_active, merge_candidates): (usize, usize),
     deblocking: SliceDeblocking,
 ) {
     w.put_bit(true); // first_slice_segment_in_pic_flag
@@ -570,12 +572,21 @@ pub fn p_slice_header(
             write_reference_set(w, sps_count, entries);
         }
     }
-    // slice_temporal_mvp_enabled_flag. The collocated picture is the one
-    // reference (collocated_ref_idx is inferred 0 and not coded).
-    w.put_bit(temporal_mvp);
+    w.put_bit(temporal_mvp); // slice_temporal_mvp_enabled_flag
     w.put_bit(sao.0); // slice_sao_luma_flag
     w.put_bit(sao.1); // slice_sao_chroma_flag
-    w.put_bit(false); // num_ref_idx_active_override_flag (one reference)
+    // num_ref_idx_active_override_flag: the PPS default is one reference;
+    // a slice with the second reference (`refs.second`) has two.
+    let two_references = references_active > 1;
+    w.put_bit(two_references);
+    if two_references {
+        w.put_ue(references_active as u32 - 1); // num_ref_idx_l0_active_minus1
+    }
+    if temporal_mvp && two_references {
+        // collocated_ref_idx (P slice: from list 0): the first reference.
+        // With one reference it is inferred 0 and not coded.
+        w.put_ue(0);
+    }
     // five_minus_max_num_merge_cand (§7.4.7.1)
     w.put_ue((crate::mvpred::MAX_MERGE_CANDIDATES - merge_candidates) as u32);
     qp.write(w);

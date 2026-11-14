@@ -175,3 +175,26 @@ Landed form:
 - **Bundle:** H.264 Default takes `rate.period_ceiling = 1`. `h264-fast`, `-faster`, `-fastest` and `-balanced`
   pin it off (8/8 streams byte-identical). `static_recovery` passes.
 - **Why the gain is small:** H.264 Default already ran under target (prekey quiet second, since 6e1a695b).
+
+**Landed** (verified by the landing conformance check, 470/470 streams bit-exact in every decoder):
+- 14553dee (AV1 Default) and 4d23a3c7 (H.264 Default).
+- The reserve fix: 11c4c7fe, d5ddaaad and 3de876e0. Clean-up: bc79caf0. Test fix: 80a85d76.
+- Tools: 84b65d5f (`--qp-replay`, `rc_oracle`, `rate.level_hint_weight`).
+
+**AV1 final-check** (3de876e0 → 14553dee): full ladder, 600 frames, keys every 10 s, 31 clips. J −1.27%
+[−2.11, −0.57] BETTER, no guard.
+
+**H.264 final-check** (bc79caf0 → 4d23a3c7, same setup): J −0.39% [−0.62, −0.18] BETTER, no guard.
+
+## Next steps
+
+- **HEVC** was not decomposed. It has the largest whole cost (+21.5%), so it comes first, with the same tool:
+  `python3 -m nceval.rc_oracle --codec hevc --clips val`. Then the pool's `quick` draw for more clips per class.
+- **Port the ceiling** to HEVC, VVC, VP9 and AV2 Default: the same 600-frame L3 for each (`final_only.py` in
+  `~/nanocodec-data/work/rc-cost/`, a wrapper that runs `nceval.screen` at L3 only).
+- **Still-scene key allocation** is the largest part left: +65% (AV1) / +27% (H.264) of the static cost on the
+  150-frame window. A first key sized by the start-up lookahead's still share would take crowd's +3.6 and
+  avoid pan's −4.1. Measure it at 600 frames, where the window does not reward the key so much.
+- **Jitter:** measure the `trailing` oracle. If a causal mean recovers the centred one's −1.7% (AV1), the
+  level filter needs a different form, such as a filtered budget correction instead of a filtered hint. If it
+  does not, the gain needs lookahead, which low-delay real time does not have.

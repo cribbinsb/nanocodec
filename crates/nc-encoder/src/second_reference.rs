@@ -16,6 +16,15 @@
 //! [`FrameReferences::secondary`]. Mode decision then chooses the reference
 //! per block (`encoder.rs`, `decide_inter_leaf`). Flat structures only so far,
 //! and not beside a long-term reference with feedback or intra refresh.
+//!
+//! [`FrameSwitch`] (`refs.second_frame_min_share`, off by default) drops the
+//! second reference from whole frames while the last frame that had it chose
+//! it on too little of its area, offering it again every
+//! `refs.second_frame_probe` frames so a scene can re-qualify: wins come in
+//! runs of frames (static and panning scenes hold 92% of the chosen area).
+//! Measured with screen 3.0, share 0.05, probe 8 (AV1 Default CBR, L3):
+//! J -0.51% at +3.1% Jetson cycles (screen 3.0 alone: -1.64% at +14-16%),
+//! the best J per cycle of the gates tried (`docs/handoff/tuning.md`).
 
 use nc_analysis::link::{ReferenceLink, SlotMask};
 
@@ -63,6 +72,64 @@ pub(crate) struct SecondReference {
     min_still: f32,
     /// `refs.second_screen_ratio`: the blocks that try the HQ frame, when on.
     pub(crate) screen: Option<SecondScreen>,
+    /// `refs.second_frame_min_share`: the frames that offer it, when on.
+    switch: Option<FrameSwitch>,
+}
+
+/// The frame-level switch (module docs): the chosen share of the last frame
+/// that offered the second reference, and the frames since one did.
+#[derive(Debug, Clone)]
+struct FrameSwitch {
+    /// `refs.second_frame_min_share`.
+    min_share: f32,
+    /// `refs.second_frame_probe`.
+    probe: u32,
+    /// Chosen share of the last frame folded in (1 before any: on).
+    share: f32,
+    /// Frames coded without the second reference since that frame.
+    skipped: u32,
+    /// Luma area choosing the second reference, and offered it, in the frame
+    /// being coded (folded in when the next frame is coded).
+    chosen_area: u64,
+    offered_area: u64,
+}
+
+impl FrameSwitch {
+    fn new(params: &RefParams) -> Option<Self> {
+        (params.second_frame_min_share > 0.0).then(|| Self {
+            min_share: params.second_frame_min_share,
+            probe: (params.second_frame_probe.round() as u32).max(1),
+            share: 1.0,
+            skipped: 0,
+            chosen_area: 0,
+            offered_area: 0,
+        })
+    }
+
+    /// The share and skip count as of the next frame: the frame coded last
+    /// counts once it offered the second reference to any block.
+    fn current(&self) -> (f32, u32) {
+        if self.offered_area > 0 {
+            (self.chosen_area as f32 / self.offered_area as f32, 0)
+        } else {
+            (self.share, self.skipped)
+        }
+    }
+
+    /// Whether the next frame offers the second reference.
+    fn allows(&self) -> bool {
+        let (share, skipped) = self.current();
+        share >= self.min_share || skipped + 1 >= self.probe
+    }
+
+    /// The next frame is coded, `with_second` reference or not.
+    fn coded(&mut self, with_second: bool) {
+        (self.share, self.skipped) = self.current();
+        (self.chosen_area, self.offered_area) = (0, 0);
+        if !with_second {
+            self.skipped += 1;
+        }
+    }
 }
 
 impl SecondReference {
@@ -78,6 +145,7 @@ impl SecondReference {
             max_distance: params.second_max_distance.round() as u32,
             min_still: params.second_min_still,
             screen: SecondScreen::new(params),
+            switch: FrameSwitch::new(params),
         }
     }
 
@@ -114,6 +182,7 @@ impl SecondReference {
                     && references.refresh != SlotMask::ALL
                     && index - held <= u64::from(self.max_distance)
                     && still_fraction.is_none_or(|still| still >= self.min_still)
+                    && self.switch.as_ref().is_none_or(FrameSwitch::allows)
             })
             .map(|held| ReferenceLink {
                 slot: self.slot,
@@ -130,6 +199,20 @@ impl SecondReference {
     pub(crate) fn coded(&mut self, index: u64, references: &FrameReferences) {
         if references.refresh.contains(self.slot) {
             self.held = Some(index);
+        }
+        if let Some(switch) = self.switch.as_mut() {
+            switch.coded(references.secondary.is_some());
+        }
+    }
+
+    /// A leaf of `area` luma samples was offered the second reference and
+    /// `chose` it (alone or in compound) or not: the frame switch's share.
+    pub(crate) fn observe_leaf(&mut self, area: usize, chose: bool) {
+        if let Some(switch) = self.switch.as_mut() {
+            switch.offered_area += area as u64;
+            if chose {
+                switch.chosen_area += area as u64;
+            }
         }
     }
 }
@@ -184,6 +267,44 @@ mod tests {
         second.coded(4, &refs);
         let refs = second.apply(5, (false, None), flat(1));
         assert_eq!(refs.secondary, None);
+    }
+
+    #[test]
+    fn frame_switch_drops_low_share_frames_and_probes() {
+        let defaults = RefParams::from_overrides(&ParamOverrides::default());
+        let mut second = SecondReference::new(
+            1,
+            &RefParams {
+                second_frame_min_share: 0.1,
+                second_frame_probe: 3.0,
+                ..defaults
+            },
+        );
+        let key = FrameReferences {
+            refresh: SlotMask::ALL,
+            ..flat(1)
+        };
+        second.coded(0, &second.apply(0, (true, None), key));
+        second.coded(1, &second.apply(1, (false, None), flat(1)));
+        // Frame 2 offers it; blocks choose it on 5% of the area.
+        let refs = second.apply(2, (false, None), flat(1));
+        assert!(refs.secondary.is_some());
+        second.coded(2, &refs);
+        second.observe_leaf(95, false);
+        second.observe_leaf(5, true);
+        // Frames 3 and 4 drop it; frame 5 is the probe.
+        for index in 3..5 {
+            let refs = second.apply(index, (false, None), flat(1));
+            assert!(refs.secondary.is_none(), "frame {index}");
+            second.coded(index, &refs);
+        }
+        let refs = second.apply(5, (false, None), flat(1));
+        assert!(refs.secondary.is_some());
+        second.coded(5, &refs);
+        // The probe finds a 50% share: frame 6 keeps it.
+        second.observe_leaf(50, true);
+        second.observe_leaf(50, false);
+        assert!(second.apply(6, (false, None), flat(1)).secondary.is_some());
     }
 
     #[test]
