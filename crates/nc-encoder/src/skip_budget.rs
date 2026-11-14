@@ -14,9 +14,10 @@
 //! where content changes (an object, a light change) blocks stop passing
 //! and the share falls in the next frame, restoring the budget; the
 //! smallest scale ([`SkipBudget::scale`]'s floor) keeps a mostly still
-//! frame able to refine its moving part, and starved streams scale less. Rate control drains only the
-//! scaled allowance from its debt, so the unspent part is forgiven, never
-//! banked for a later burst.
+//! frame able to refine its moving part, and starved streams scale less.
+//! What a scaled frame leaves unspent, up to the share its scale took, is
+//! forgiven rather than banked for a later burst ([`forgiven`]); bits it
+//! spends above its scaled allowance are ordinary debt, never extra debt.
 
 use crate::bpp_curve;
 use crate::params::RateParams;
@@ -72,6 +73,21 @@ impl SkipBudget {
     }
 }
 
+/// The part of a frame's underspend that is forgiven rather than
+/// credited, for a frame whose budget would have been `unscaled` and was
+/// planned at skip-budget `scale`: what it left of `unscaled`, up to the
+/// part the scale took away.
+///
+/// Measured against the frame's own unscaled plan, not the uniform budget:
+/// the plan already holds the repayment of a key's loan and of any debt, so
+/// forgiving underspend against the uniform budget forgave that repayment
+/// and ran streams over target (a static clip at 600 frames, AV1, 2.5%
+/// over; a noisy still at 150 frames, H.264, 11% over). Bits spent above
+/// the scaled plan are ordinary debt.
+pub(crate) fn forgiven(bits: f64, unscaled: f64, scale: f64) -> f64 {
+    (unscaled - bits).clamp(0., unscaled * (1. - scale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +117,19 @@ mod tests {
         );
         b.reset();
         assert_eq!(b.scale(GENEROUS), 1.);
+    }
+
+    #[test]
+    fn only_an_actual_underspend_is_forgiven() {
+        // Scale 0.5 of a 100-bit allowance: up to 50 bits are forgiven.
+        assert_eq!(forgiven(20., 100., 0.5), 50.);
+        assert_eq!(forgiven(80., 100., 0.5), 20.);
+        assert_eq!(
+            forgiven(130., 100., 0.5),
+            0.,
+            "an overspend is ordinary debt"
+        );
+        assert_eq!(forgiven(0., 100., 1.), 0., "off forgives nothing");
     }
 
     #[test]

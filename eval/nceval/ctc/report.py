@@ -28,6 +28,7 @@ CSV with reliable=0 and left out of the means.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -228,12 +229,40 @@ def point_rows(points: list[Point]) -> list[dict]:
              **{m: round(v, 4) for m, v in p.quality.items()}} for p in points]
 
 
+def stream_rows(results: list[Path]) -> list[dict]:
+    """Per stream: its decoded frames and the SHA-256 of its per-frame MD5 list (the
+    worker's `hashes/<id>.md5`, beside each results directory), so the full lists can
+    stay out of the repository and still be checked against."""
+    rows = []
+    for directory in results:
+        hashes = directory.parent / "hashes"
+        for path in sorted(hashes.rglob("*.md5")) if hashes.is_dir() else ():
+            text = path.read_bytes()
+            rows.append({"id": str(path.relative_to(hashes).with_suffix("")),
+                         "frames": text.count(b"\n"),
+                         "md5_list_sha256": hashlib.sha256(text).hexdigest()})
+    return rows
+
+
+def sources(results: list[Path]) -> list[dict]:
+    """The downloaded sequences' digests, as the workers recorded them."""
+    records = {}
+    for directory in results:
+        manifest = directory.parent / "sources.json"
+        if manifest.exists():
+            records.update({r["name"]: r for r in json.loads(manifest.read_text())})
+    return [records[name] for name in sorted(records)]
+
+
 def report(results: list[Path], out: Path) -> dict:
-    """Write points.csv and bd.csv under `out`; return the summaries for the page."""
+    """Write points.csv, bd.csv, streams.csv and sources.json under `out`; return the
+    summaries for the page."""
     points = load_points(results)
     curves = Curves(points)
     out.mkdir(parents=True, exist_ok=True)
     write_csv(out / "points.csv", point_rows(points))
+    write_csv(out / "streams.csv", stream_rows(results))
+    (out / "sources.json").write_text(json.dumps(sources(results), indent=1) + "\n")
     rows = [r for c in CONDITIONS.values() for r in bd_rows(curves, c)]
     write_csv(out / "bd.csv", [{**r, "bd": None if r["bd"] is None else round(r["bd"], 3),
                                 "overlap": round(r["overlap"], 3)} for r in rows])

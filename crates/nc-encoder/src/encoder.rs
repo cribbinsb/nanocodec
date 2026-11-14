@@ -36,7 +36,7 @@ use crate::key_plan::{KeyPlanMode, KeyPlanner};
 use crate::layer::LayerPosition;
 use crate::ltr::{LongTermReference, LtrAction, long_term_slot};
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
-use crate::noise_skip::NoiseMap;
+use crate::noise_skip::{NoiseMap, camera_is_still};
 use crate::params::RefParams;
 use crate::params::{
     AnalysisParams, DebugParams, DecisionParams, InFrameParams, LayerParams, LtrParams,
@@ -1501,7 +1501,8 @@ impl<B: CodecBackend> Encoder<B> {
         if decision_params.noise_skip > 0.
             && let (Some(pre), Some(motion)) = (pre, motion)
         {
-            self.layer.noise_map.update(pre, &motion.fine);
+            let still = camera_is_still(motion, (self.layer.width, self.layer.height));
+            self.layer.noise_map.update(pre, &motion.fine, still);
         }
 
         self.backend
@@ -1769,6 +1770,7 @@ impl<B: CodecBackend> Encoder<B> {
                             map: &self.layer.noise_map,
                             scale: decision.noise_skip,
                             chroma_ratio: decision.noise_skip_chroma_ratio,
+                            step: self.sample_step(self.frame_quantizer) as f32,
                         });
                     let planner = |motion, pre| Planner {
                         dsp: &self.dsp,
@@ -2741,6 +2743,7 @@ impl<B: CodecBackend> Encoder<B> {
             pictures,
             params.noise_skip,
             params.noise_skip_chroma_ratio,
+            self.sample_step(self.frame_quantizer) as f32,
         );
         if within && let Some(cyclic) = self.cyclic.as_mut() {
             cyclic.settled((node.x, node.y));
@@ -2805,6 +2808,7 @@ impl<B: CodecBackend> Encoder<B> {
                 (source, reference),
                 params.noise_skip,
                 params.noise_skip_chroma_ratio,
+                self.sample_step(self.frame_quantizer) as f32,
             );
         if !within_noise && !frame.pre.is_some_and(|pre| is_static::<B>(pre, node)) {
             return false;

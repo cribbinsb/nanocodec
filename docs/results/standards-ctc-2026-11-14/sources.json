@@ -1,0 +1,107 @@
+[
+ {
+  "name": "BlueSky_360p25_v2",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/BlueSky_360p25_v2.y4m",
+  "md5": "722261f9e84578203ea9486673ffb274",
+  "sha256": "443b20308b31fe53a479b832557b090ca7dce32a66d9105cac04dc78839d9607",
+  "frames": 130
+ },
+ {
+  "name": "ControlledBurn_1280x720p30_420",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a3_720p/ControlledBurn_1280x720p30_420.y4m",
+  "md5": "875d857d8ef1b7f1b653c4c530669005",
+  "sha256": "7bed1c1b9d4b3113c102731f4eb58f5295a3cd7ce429c5b0679c86cce42d6427",
+  "frames": 130
+ },
+ {
+  "name": "FourPeople_1280x720_60_E",
+  "url": "https://media.xiph.org/video/derf/y4m/FourPeople_1280x720_60.y4m",
+  "md5": "83a3c203dc86fe8ecaa9010ad59f5757",
+  "sha256": "c8877dab4220847942eba4ab57ac36b4a0509694d25c42fe67a641ddbfa5cfe8",
+  "frames": 150
+ },
+ {
+  "name": "FourPeople_480x270_60",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a5_270p/FourPeople_480x270_60.y4m",
+  "md5": "4d35db57a2377e4211134db345dea225",
+  "sha256": "c64b6a2e5bf4cb05a606fe2545f4314c46bd925eea8d80c1afb06f40ddc7f5da",
+  "frames": 130
+ },
+ {
+  "name": "Johnny_1280x720_60",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a3_720p/Johnny_1280x720_60.y4m",
+  "md5": "1d6aab4003385c255262a88f4df7cccc",
+  "sha256": "68d51b725ee982e82e481a235e4266f0c1c85e2ca35e95dd426a93fe83bc05db",
+  "frames": 130
+ },
+ {
+  "name": "Johnny_1280x720_60_E",
+  "url": "https://media.xiph.org/video/derf/y4m/Johnny_1280x720_60.y4m",
+  "md5": "d79fc456a38ffd85e486e3ba959173ca",
+  "sha256": "412eef72f06e22bad30cccc527eddc3ae1cb98f3c145472f13f30844520b2517",
+  "frames": 150
+ },
+ {
+  "name": "KristenAndSara_1280x720_60",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a3_720p/KristenAndSara_1280x720_60.y4m",
+  "md5": "43bb17b78086d0183642c7b74cc1c903",
+  "sha256": "3b01baf8e5b32ef09a1496315e7d700e17f9597306ae28a2d73e5fef97698f02",
+  "frames": 130
+ },
+ {
+  "name": "KristenAndSara_1280x720_60_E",
+  "url": "https://media.xiph.org/video/derf/y4m/KristenAndSara_1280x720_60.y4m",
+  "md5": "4cf1f4ce85c1dfb87a45c155a80f0268",
+  "sha256": "02da5c2587935edef071a6b8b0fa92dc28fe17b9b546bcf10a4eb12bc3a4508e",
+  "frames": 150
+ },
+ {
+  "name": "RedKayak_360_2997",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/RedKayak_360_2997.y4m",
+  "md5": "4205131788b94668c4feef73ce44aec9",
+  "sha256": "01f2123abceaff05e2cf4ff945db331bce36d8f787e213d67094f37a2f5b2ac9",
+  "frames": 130
+ },
+ {
+  "name": "SnowMountain_640x360_2997",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/SnowMountain_640x360_2997.y4m",
+  "md5": "63ae6b7fb786883c2144552e98d0c4dd",
+  "sha256": "5d9983f764d842498416c40a57470f9cd99842d568a5a5a92eb6e1bf32ea8edb",
+  "frames": 130
+ },
+ {
+  "name": "SpeedBag_640x360_2997",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/SpeedBag_640x360_2997.y4m",
+  "md5": "8bfe53f0215b749744b3947e16ab09a4",
+  "sha256": "9f6857a8e782138ce7185b81ca0bed6fda36f7f8d0d176d5e64059faf2566004",
+  "frames": 130
+ },
+ {
+  "name": "Stockholm_640x360_5994",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/Stockholm_640x360_5994.y4m",
+  "md5": "62d126930a6c8f61f5267f0b21746cde",
+  "sha256": "70cbf66bae4a8b5f70b5d9cf52a8547eda6feea49e6aeb4c3afb29c56d4c8ec6",
+  "frames": 130
+ },
+ {
+  "name": "TouchdownPass_640x360_2997",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/TouchdownPass_640x360_2997.y4m",
+  "md5": "dd98868ad8286eb0fb0b8c00827098a1",
+  "sha256": "a76ae7ce3826362b5ab062fb3625573aba98f93afca82c471ebb61339ea80a93",
+  "frames": 130
+ },
+ {
+  "name": "Vertical_Bayshore_270x480_2997",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a5_270p/Vertical_Bayshore_270x480_2997.y4m",
+  "md5": "6ec078264f2ae2c99e2fbe108b774847",
+  "sha256": "09d4a0be8104490516abfeeed4c2acfb8aab9cde62e348b5a1cac0f95d668a46",
+  "frames": 130
+ },
+ {
+  "name": "WestWindEasy_1280x720p30_420",
+  "url": "https://media.xiph.org/video/aomctc/test_set/a3_720p/WestWindEasy_1280x720p30_420.y4m",
+  "md5": "da8afe9c91a260c835b39f58b13c99e7",
+  "sha256": "043720c5d25670d75fac3b180738ff8f4ec8c9106d68cc3849bd1ded47c53021",
+  "frames": 130
+ }
+]

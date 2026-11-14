@@ -183,7 +183,8 @@ Our encoders: every codec at its Default and Fast presets, fixed QP (`--qp`, one
   `research`: NTIA/ITS research-use). The owner chose to include both in the main tables, and the free-only
   figure is shown beside them. ParkJoy was dropped: its notice limits use to standards work, like Vidyo3/4.
 - **Run time.** Every run must finish within 30 minutes (owner rule). VTM-24 and libaom speed 0 take about 4 s
-  per 270p frame on our PC, so they run on classes A4/A5 only; A3 has HM as its standards anchor.
+  per 270p frame, so VTM runs on class A5 only and libaom speed 0 on A4/A5 only; A3 has HM as its standards
+  anchor. Results: [standards-ctc-2026-11-14.md](../results/standards-ctc-2026-11-14.md).
   **JVET class E codes the first 150 frames, not the CTC's 600.** That is a stated deviation; the full
   600-frame run remains an option.
 - **Pool overlap.** KristenAndSara was already in the screening pool (an excerpt of the same Xiph file). It

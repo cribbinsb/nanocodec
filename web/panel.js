@@ -449,6 +449,12 @@ export class Panel {
       initialRate: this.initialRate, interventions: this.interventions, requestedKeys: this.requestedKeys, rateChanges: this.rateChanges, log: this.log,
     };
   }
+  /** The metrics worker scored the frame of `tick` (decode-worker.js): note it in the log and the statistics. */
+  scoredMsSsim({ tick, value }) {
+    const entry = this.log.findLast(frame => frame.tick === tick);
+    if (entry) entry.msSsim = value;
+    this.analysis?.scoredMsSsim(tick, value);
+  }
   /** Note something that changed the live encoder mid-run (rate, key frame request), for the debug report. */
   intervene(kind, tick, details = {}) { this.interventions.push({ kind, tick, ...details }); }
   /** Count, chart and save one coded frame. */

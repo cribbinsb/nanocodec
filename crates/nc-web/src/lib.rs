@@ -517,6 +517,9 @@ pub struct BrowserDecoder {
     /// across frames.
     #[cfg(feature = "analysis")]
     error_sums: Vec<u32>,
+    /// The latest frame's luma at the scored size (`scored_luma`), reused.
+    #[cfg(feature = "analysis")]
+    scored_luma: Vec<u8>,
 }
 
 /// One packet's outcome (`nc_common::outcome::FrameOutcome`): decoded, or
@@ -606,6 +609,8 @@ impl BrowserDecoder {
             analysis: Vec::new(),
             #[cfg(feature = "analysis")]
             error_sums: Vec::new(),
+            #[cfg(feature = "analysis")]
+            scored_luma: Vec::new(),
         })
     }
 
@@ -741,6 +746,41 @@ impl BrowserDecoder {
     #[wasm_bindgen(getter)]
     pub fn error_map_height(&self) -> usize {
         self.reference.as_ref().map_or(0, Picture::height)
+    }
+
+    #[cfg(feature = "analysis")]
+    /// Copy the luma of the latest decoded frame at the size the last `psnr`
+    /// call compared (a smaller spatial layer upscaled, as there) into a
+    /// reused buffer and return its byte offset in WASM memory
+    /// (`error_map_width * error_map_height` bytes, read as for
+    /// `rgba_frame`): the distorted plane `ms_ssim_luma` scores in the
+    /// metrics worker. Only in the analysis build.
+    /// # Errors
+    /// Rejects calls made before `psnr` has scored a decoded frame.
+    pub fn scored_luma(&mut self) -> Result<usize, JsValue> {
+        let mut luma = std::mem::take(&mut self.scored_luma);
+        let reference = self
+            .reference
+            .as_ref()
+            .ok_or_else(|| js_error("No source frame scored yet"))?;
+        let size = (reference.width(), reference.height());
+        let shown = self.shown().ok_or_else(|| js_error("No decoded frame"))?;
+        let decoded = if (shown.width(), shown.height()) == size {
+            shown
+        } else {
+            self.scaled_decoded
+                .as_ref()
+                .filter(|p| (p.width(), p.height()) == size)
+                .map(ShownPicture::whole)
+                .ok_or_else(|| js_error("No scored frame of the source's size"))?
+        };
+        luma.clear();
+        decoded
+            .plane(PlaneIndex::Y)
+            .rows()
+            .for_each(|row| luma.extend_from_slice(row));
+        self.scored_luma = luma;
+        Ok(self.scored_luma.as_ptr() as usize)
     }
 
     /// Select the operating point (`0..=31` on AV1, `0..=2` on VP9; default `0`)
@@ -989,6 +1029,30 @@ impl BrowserDecoder {
         pixels::pack_i420(picture, &mut bytes);
         Ok(bytes)
     }
+}
+
+#[cfg(feature = "analysis")]
+/// MS-SSIM of two `width` x `height` luma planes (rows without padding), as
+/// the evaluation scores it (`nc_dsp::ms_ssim`); `None` for a plane too
+/// small for five scales. The demo's metrics worker calls it with a source
+/// luma and `BrowserDecoder::scored_luma`. Only in the analysis build.
+/// # Errors
+/// Rejects planes whose length is not `width * height`.
+#[wasm_bindgen]
+pub fn ms_ssim_luma(
+    reference: &[u8],
+    distorted: &[u8],
+    width: usize,
+    height: usize,
+) -> Result<Option<f64>, JsValue> {
+    let view = |data| {
+        nc_common::PlaneView::new(data, width, width, height)
+            .filter(|_| data.len() == width * height)
+    };
+    let (Some(a), Some(b)) = (view(reference), view(distorted)) else {
+        return Err(js_error("Planes must be width * height bytes"));
+    };
+    Ok(nc_dsp::ms_ssim::ms_ssim(&a, &b))
 }
 
 /// `codec`'s registered parameters, as a JSON array of `{name, default,

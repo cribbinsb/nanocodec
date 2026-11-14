@@ -23,7 +23,7 @@ use crate::qp_cadence::{
 use crate::quality_cap::QualityFloor;
 use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
-use crate::skip_budget::SkipBudget;
+use crate::skip_budget::{self, SkipBudget};
 use crate::{Codec, FrameRate};
 use std::fmt;
 
@@ -649,6 +649,9 @@ pub(crate) struct RateController {
     /// The current frame's skip-aware budget scale (1 for keys and when
     /// off): its budget and what its interval drains from the debt.
     frame_skip_scale: f64,
+    /// The current frame's budget without the skip-aware scale: what it
+    /// would have been planned, debt repayment included.
+    unscaled_budget: f64,
 }
 impl RateController {
     #[allow(clippy::too_many_arguments)]
@@ -761,6 +764,7 @@ impl RateController {
             },
             skip_budget: SkipBudget::new(params),
             frame_skip_scale: 1.,
+            unscaled_budget: 0.,
         })
     }
     /// Apply a changed target, peak or buffer mid-stream (a transport's
@@ -987,13 +991,16 @@ impl RateController {
         }
     }
     fn budget(&self, key: bool) -> f64 {
+        self.budget_at(key, self.frame_skip_scale)
+    }
+    /// [`Self::budget`] at skip-budget scale `skip_scale`.
+    fn budget_at(&self, key: bool, skip_scale: f64) -> f64 {
         let s = self.settings;
         let mut scheduled = if key {
             let boost = self.key_boost();
             self.phase_inter_budget(boost) * boost
         } else {
-            self.inter_budget() * self.share.budget_scale * self.frame_skip_scale
-                + self.held_budget()
+            self.inter_budget() * self.share.budget_scale * skip_scale + self.held_budget()
         };
         if !key && self.share.reallocated_bits > 0. {
             scheduled += self.share.reallocated_bits;
@@ -1491,6 +1498,7 @@ impl RateController {
         self.held_spent = if key { 0. } else { self.held_budget() };
         self.frame_skip_scale = self.skip_scale(key);
         let budget = self.budget(key);
+        self.unscaled_budget = self.budget_at(key, 1.);
         let slot = self.model_slot(key, index, layer);
         let strength = self.cadence.strength(hint.static_fraction, hint.motion);
         let exponent = self.settings.config.rate_exponent;
@@ -1832,10 +1840,8 @@ impl RateController {
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);
         let p = self.inter_budget();
-        // A skip-scaled frame drains only its scaled allowance: what the
-        // noise skip saved is forgiven, not banked (`skip_budget.rs`).
-        self.fullness +=
-            bits as f64 - uniform * self.frame_skip_scale - std::mem::take(&mut self.held_spent);
+        self.fullness += bits as f64 - uniform - std::mem::take(&mut self.held_spent)
+            + skip_budget::forgiven(bits as f64, self.unscaled_budget, self.frame_skip_scale);
         if bonus > 0.0 {
             self.fullness -= bonus;
         }

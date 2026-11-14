@@ -41,6 +41,7 @@
 //!   variance times `decision.noise_skip_chroma_ratio` squared.
 
 use nc_analysis::Grid;
+use nc_analysis::MotionAnalysis;
 use nc_analysis::motion::MotionBlock;
 use nc_analysis::noise::MEAN_ABS_DIFF_PER_SIGMA;
 use nc_analysis::preanalysis::PreAnalysis;
@@ -74,6 +75,25 @@ const ZERO_MATCH_DIVISOR: u32 = 4;
 /// Absolute slack of the zero-match test: one code value per sample of an
 /// 8x8 cell.
 const ZERO_MATCH_SLACK: u32 = 64;
+/// Largest camera displacement per frame (`GlobalMotion::peak_displacement`,
+/// luma samples) at which the noise map still learns. On a moving camera,
+/// flat areas move with nearly equal SADs at every vector, so the zero
+/// vector "explains" them and their motion error read as noise: the noise
+/// skip then kept stale content on a pan (`pool_pan_jaad_video_0194`,
+/// 150 kbps, AV1, with the skip-aware budget: 1.4 dB lost, 14-49% of the
+/// picture skipped). Still cameras read at most 0.5 samples (the TRAIN
+/// and VAL clips, `rate_control.rs` `STARTUP_CAMERA_MOTION`).
+const MAX_STILL_CAMERA_SAMPLES: f32 = 0.5;
+/// The noise skip acts only where the frame's quantizer step is at most
+/// this many cell noise sigmas. At a coarser step the codec's own
+/// zero-residual test already skips what noise alone changes, and what is
+/// left within "noise" is the coarse reconstruction's own error: skipping
+/// it froze a poor picture. On `pool_pan_jaad_video_0194` at 150 kbps
+/// (AV1 qindex 255, a 228-sample step) a 4% budget change flipped which
+/// blocks the noise test passed and lost 1.4 dB from one base frame on.
+/// A still webcam at 1 Mbps codes at steps of 7-20 samples with cell sigmas
+/// of 0.5-3.5, inside the bound.
+const CODABLE_STEPS_PER_SIGMA: f32 = 16.;
 /// Smallest cell sigma: half a code value, the rounding the
 /// reconstruction carries even where the source does not change at all
 /// (clipped highlights read sigma 0).
@@ -110,12 +130,22 @@ impl NoiseMap {
     }
 
     /// Learn from a frame's pre-analysis (each cell's zero-motion SAD
-    /// against the previous source) and its 8x8 motion field (the best
-    /// match): cells the zero vector predicts about as well as the best
-    /// match ([`zero_explains`]) update their variance from the zero-motion
-    /// SAD, other cells forget theirs.
-    pub(crate) fn update(&mut self, pre: &PreAnalysis, fine: &Grid<MotionBlock>) {
+    /// against the previous source) and its motion analysis: cells the zero
+    /// vector predicts about as well as the best match ([`zero_explains`])
+    /// update their variance from the zero-motion SAD, other cells forget
+    /// theirs. A frame whose camera moves (`camera_still` false,
+    /// [`camera_is_still`]) forgets the whole map.
+    pub(crate) fn update(
+        &mut self,
+        pre: &PreAnalysis,
+        fine: &Grid<MotionBlock>,
+        camera_still: bool,
+    ) {
         let blocks = &pre.blocks;
+        if !camera_still {
+            self.cells = Grid::filled(blocks.cols(), blocks.rows(), Cell::default());
+            return;
+        }
         if self.cells.cols() != blocks.cols() || self.cells.rows() != blocks.rows() {
             self.cells = Grid::filled(blocks.cols(), blocks.rows(), Cell::default());
         }
@@ -187,8 +217,10 @@ impl NoiseMap {
         (source, reference): (&Picture, &Picture),
         scale: f32,
         chroma_ratio: f32,
+        step: f32,
     ) -> bool {
         let (width, height) = (block.width(), block.height());
+        let codable = codable_variance(step);
         let (col0, row0) = (block.x / CELL, block.y / CELL);
         let (cols, rows) = (width / CELL, height / CELL);
         if cols > MAX_COLS || !self.trusts(block) {
@@ -204,9 +236,9 @@ impl NoiseMap {
                 row_view(reference, PlaneIndex::Y, block.x, y, width),
             );
             dsp.variance_8x8_row(&src, &rf, sse);
-            run.iter()
-                .zip(sse.iter())
-                .all(|(c, v)| v.sse as f32 <= scale * c.variance * CELL_SAMPLES)
+            run.iter().zip(sse.iter()).all(|(c, v)| {
+                c.variance >= codable && v.sse as f32 <= scale * c.variance * CELL_SAMPLES
+            })
         });
         if !luma_ok {
             return false;
@@ -236,6 +268,21 @@ impl NoiseMap {
             })
         })
     }
+}
+
+/// The smallest cell noise variance the noise skip acts on at a frame
+/// quantizer of sample step `step`: noise of sigma below
+/// `step / CODABLE_STEPS_PER_SIGMA` is not what a step that coarse codes.
+fn codable_variance(step: f32) -> f32 {
+    let sigma = step / CODABLE_STEPS_PER_SIGMA;
+    sigma * sigma
+}
+
+/// Whether the camera is still in a frame's motion analysis (pictures of
+/// `width` x `height`): its peak displacement below
+/// [`MAX_STILL_CAMERA_SAMPLES`].
+pub(crate) fn camera_is_still(motion: &MotionAnalysis, (width, height): (usize, usize)) -> bool {
+    motion.global.peak_displacement(width, height) < MAX_STILL_CAMERA_SAMPLES
 }
 
 /// Whether a cell's zero-motion SAD `zero` is within what noise explains
@@ -289,16 +336,23 @@ mod tests {
         // Zero SAD 72 per 64 samples (sigma about 1), a noise match at 64.
         let (pre, fine) = frame(4, 4, 72, 64);
         for _ in 1..MIN_RUN {
-            map.update(&pre, &fine);
+            map.update(&pre, &fine, true);
         }
         assert!(!map.trusts(&block));
-        map.update(&pre, &fine);
+        map.update(&pre, &fine, true);
         assert!(map.trusts(&block));
         let cell = *map.cells.get(1, 1);
         assert!((cell.variance - (72. / 64. / MEAN_ABS_DIFF_PER_SIGMA).powi(2)).abs() < 1e-4);
         // Texture moving: the zero vector is far worse than the best match.
         let (pre, fine) = frame(4, 4, 2000, 300);
-        map.update(&pre, &fine);
+        map.update(&pre, &fine, true);
+        assert!(!map.trusts(&block));
+        // A moving camera forgets everything, still-looking cells included.
+        let (pre, fine) = frame(4, 4, 72, 64);
+        for _ in 0..MIN_RUN {
+            map.update(&pre, &fine, true);
+        }
+        map.update(&pre, &fine, false);
         assert!(!map.trusts(&block));
     }
 
@@ -309,7 +363,7 @@ mod tests {
         fine.get_mut(2, 2).sad = 64 * 64;
         pre.blocks.get_mut(3, 3).sad_prev = Some(0);
         let mut map = NoiseMap::new();
-        map.update(&pre, &fine);
+        map.update(&pre, &fine, true);
         let median = 1. / MEAN_ABS_DIFF_PER_SIGMA;
         let capped = map.cells.get(2, 2).variance;
         assert!((capped - (CAP_TO_MEDIAN * median).powi(2)).abs() < 1e-3);

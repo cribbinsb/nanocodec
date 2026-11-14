@@ -14,7 +14,9 @@ demo's own source frame of that tick at the view's size, from the clip
 rendition for that size (tools/web/make-reference-streams.py `write_source`,
 as the streams were made; the page gives each view that rendition,
 exact-source.js ViewSources, and names it in the statistics). On a sample of
-frames every 16x16 luma block of the map is checked too. A live view's packets
+frames every 16x16 luma block of the map is checked too, and every MS-SSIM the page's metrics worker scored
+(analysis on) must equal eval/nceval/msssim.py's on the same luma within
+MS_SSIM_TOLERANCE. A live view's packets
 must be byte-identical in the normal and slowed runs (exact sources: the
 machine's speed changes nothing).
 
@@ -52,6 +54,9 @@ MIN_FRAMES = 20
 BLOCK_SAMPLE_EVERY = 8
 MAP_BLOCK = 16
 MAX_PSNR_DB = 100.0
+# The page's MS-SSIM against the evaluation's (eval/nceval/msssim.py), and the scores each view must have.
+MS_SSIM_TOLERANCE = 0.001
+MIN_SCORED = 5
 PLANE_WEIGHTS = (6, 1, 1)
 IVF_FOURCC = {'av1': b'AV01', 'vp9': b'VP90'}
 STALL = 'setInterval(() => { const t = performance.now(); while (performance.now() - t < 30); }, 170);'
@@ -63,16 +68,17 @@ MANIFEST = {e['id']: e for e in json.loads((WEB / 'streams-ref/manifest.json').r
 # capture worker: everything recorded is reset then. Each view's coded packets are
 # kept in order (a live view's for the native decode), and each shown frame with a
 # PSNR map is recorded.
-HOOK = '''window.__m = { shown: [], packets: [[], []] };
+HOOK = '''window.__m = { shown: [], packets: [[], []], scored: [] };
 const Original = Worker; let decoders = 0;
 window.Worker = class extends Original {
   constructor(url, ...rest) {
     super(url, ...rest);
     const script = String(url).split('/').pop();
-    if (script === 'capture-worker.js') { window.__m = { shown: [], packets: [[], []] }; decoders = 0; }
+    if (script === 'capture-worker.js') { window.__m = { shown: [], packets: [[], []], scored: [] }; decoders = 0; }
     if (script !== 'decode-worker.js') return;
     const view = decoders++ % 2;
     this.addEventListener('message', ({ data: d }) => {
+      if (d.type === 'ms-ssim' && d.value !== null) window.__m.scored.push({ view, tick: d.tick, value: d.value });
       if (d.type !== 'frame' || d.held) return;
       const packets = window.__m.packets[view];
       for (const c of [...(d.earlier || []), d]) if (!c.repeat) packets.push({ tick: Math.round(c.timestamp * 30 / 1000), data: c.packet.slice() });
@@ -168,7 +174,7 @@ def page_run(port: int, setup, slowed: bool) -> dict:
         time.sleep(1)
         renditions = page.evaluate("""[...document.querySelectorAll('.analysis-stats')].map(s =>
           [...s.querySelectorAll('tr')].find(r => r.textContent.startsWith('Source rendition'))?.querySelector('td').textContent)""")
-        data = {'shown': page.evaluate('window.__m.shown'), 'renditions': renditions,
+        data = {'shown': page.evaluate('window.__m.shown'), 'scored': page.evaluate('window.__m.scored'), 'renditions': renditions,
                 'packets': [[(p['tick'], base64.b64decode(p['data'])) for p in page.evaluate(f'window.__packets({v})')] for v in (0, 1)]}
         browser.close()
     assert not errors, errors
@@ -283,11 +289,37 @@ def check(run: dict, label: str, scenario: Scenario, offline: Offline) -> dict:
         largest = max(largest, *(abs(page - expected) for _, page, expected in values))
         wrong += [(label, 'AB'[frame['view']], frame['tick'], name, round(page, 4), round(expected, 4))
                   for name, page, expected in values if abs(page - expected) > TOLERANCE_DB]
-    assert not wrong, f'{scenario.name}: {len(wrong)} values differ from the offline PSNR: {wrong[:8]}'
+    scored = ms_ssim_checks(run, scenario, offline, pictures)
+    wrong += [(label, *item) for item in scored['wrong']]
+    assert not wrong, f'{scenario.name}: {len(wrong)} values differ from the offline PSNR or MS-SSIM: {wrong[:8]}'
     for i in (0, 1):
         shown = sum(f['view'] == i for f in run['shown'])
         assert shown >= MIN_FRAMES, f'{label}: view {"AB"[i]} showed only {shown} frames'
-    return {'frames': checked, 'largest_difference_db': round(largest, 6)}
+    return {'frames': checked, 'largest_difference_db': round(largest, 6), 'ms_ssim_frames': scored['frames'], 'largest_ms_ssim_difference': scored['largest']}
+
+
+def ms_ssim_checks(run: dict, scenario: Scenario, offline: 'Offline', pictures: list) -> dict:
+    """Each MS-SSIM the page's metrics worker scored against the evaluation's on the same decoded and source luma."""
+    sys.path.insert(0, str(REPO / 'eval'))
+    from nceval.msssim import ms_ssim
+    wrong, largest = [], 0.0
+    for i in (0, 1):
+        assert sum(s['view'] == i for s in run['scored']) >= MIN_SCORED, f'view {"AB"[i]}: too few MS-SSIM scores'
+    for score in run['scored']:
+        view = scenario.views[score['view']]
+        source_frames, step = offline.source(view), SOURCE_FPS // view.fps
+        local = (score['tick'] % (len(source_frames) * step)) // step
+        if view.stream:
+            decoded = offline.stream(view)[local]
+        else:
+            ticks = [tick for tick, _ in run['packets'][score['view']]]
+            decoded = pictures[score['view']][max(i for i, tick in enumerate(ticks) if tick <= score['tick'])]
+        luma = view.width * view.height
+        expected = ms_ssim(source_frames[local][:luma].reshape(view.height, view.width), decoded[:luma].reshape(view.height, view.width))
+        largest = max(largest, abs(score['value'] - expected))
+        if abs(score['value'] - expected) > MS_SSIM_TOLERANCE:
+            wrong.append(('AB'[score['view']], score['tick'], 'MS-SSIM', round(score['value'], 6), round(expected, 6)))
+    return {'wrong': wrong, 'frames': len(run['scored']), 'largest': round(largest, 7)}
 
 
 def same_streams(runs: dict, scenario: Scenario):

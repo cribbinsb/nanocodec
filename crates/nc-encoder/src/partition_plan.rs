@@ -199,6 +199,8 @@ pub(crate) struct NoiseTest<'a> {
     pub scale: f32,
     /// `decision.noise_skip_chroma_ratio`.
     pub chroma_ratio: f32,
+    /// The frame quantizer's sample step.
+    pub step: f32,
 }
 
 /// Smallest node the noise split splits: its quarters are the noise skip's
@@ -347,9 +349,14 @@ impl<B: CodecBackend> Planner<'_, B> {
         };
         let pictures = (self.source, self.reference);
         let passes = |block: &Block| {
-            noise
-                .map
-                .explains(self.dsp, block, pictures, noise.scale, noise.chroma_ratio)
+            noise.map.explains(
+                self.dsp,
+                block,
+                pictures,
+                noise.scale,
+                noise.chroma_ratio,
+                noise.step,
+            )
         };
         node.log2_size() >= NOISE_SPLIT_MIN_LOG2
             && node.is_inside(self.width, self.height)

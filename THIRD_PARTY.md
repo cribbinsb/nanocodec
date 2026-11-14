@@ -808,6 +808,10 @@ Used in `eval/nceval`:
   Gaussian window, the 9x9 9/7 low-pass decimation table and the per-scale
   exponents, reimplemented on OpenCV filters.
 
+Used in `crates/nc-dsp/src/ms_ssim.rs`: the same MS-SSIM (window taps, 9x9
+low-pass table, exponents and steps) reimplemented in Rust, for the browser
+demo's analysis mode.
+
 ## Standard reference software — JM, HM, VTM (ideas and non-normative constants)
 
 The ITU-T / ISO/IEC reference encoders are the source of several standard

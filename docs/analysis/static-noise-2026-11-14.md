@@ -363,3 +363,54 @@ split" (test 16x16 quarters, split where they disagree) is the next step.
 **Checks:**
 - Identity off: 52/52.
 - Landing conformance with skip, budget and split on: AV1 and HEVC, every shipped preset, 222/222 bit-exact.
+
+## 9. Pair fixes after the tuner's screens (2026-11-14)
+
+The tuner found three faults with the noise skip and the skip-aware budget both on. The demo's webcam
+settings were reverted (df5337e8) while they were fixed.
+
+**Pan at the lowest rung** (`pool_pan_jaad_video_0194`, start 169, 150 kbps, AV1):
+- The pair scored 24.81 dB against 26.23 off.
+- The camera had nearly stopped (peak displacement 0.0-0.5 samples). At qindex 255, the noise test passed
+  on the coarse reconstruction's own error.
+- A 4% budget change flipped which blocks passed, and one base frame refined at 110 instead of 1187 bytes.
+  The loss persisted from there.
+- Fix: the noise skip acts only where the frame's sample step is at most 16 cell sigmas. At coarser steps the
+  codec's own zero test applies.
+- Separately, the noise map now learns only while the camera is still: peak displacement under 0.5 samples.
+
+**Over target** (chirla cam 7, start 55, 187 kbps, 600 f, AV1: 1.029; `pool_meva_hospital_g301`, start 1031,
+212 kbps, H.264: 1.111):
+- Underspend was forgiven against the uniform budget, which forgave the repayment of the key loan.
+- Fix: forgiveness is measured against the frame's own unscaled plan.
+
+Pair against off after the fixes (kbps ratio / PSNR-Y against source):
+
+| point | off | pair before | pair now |
+|---|---|---|---|
+| pan 0194, AV1, 150 kbps, 150 f | 0.998 / 26.23 | 0.980 / 24.81 | 0.998 / 26.23 |
+| chirla cam 7, AV1, 187 kbps, 600 f | 1.006 / 44.72 | 1.029 / 44.73 | 1.017 / 44.85 |
+| meva_hospital_g301, H.264, 212 kbps | 1.075 / 40.39 | 1.111 / 40.29 | 1.075 / 40.39 |
+| meva_admin, H.264, 388 kbps | 1.055 / 40.62 | 1.179 / 40.56 | 1.053 / 40.62 |
+| meva_admin, AV1, 388 kbps | 1.044 / 40.59 | 1.114 / 40.60 | (= off with the guard) |
+
+- The noise skip alone still runs chirla cam 7 at 1.023 of target. Adopting the skip without the budget
+  needs that looked at.
+
+**Synthetic noisy stills, pair now.** kbps / PSNR-Y against the clean original:
+
+| target, sigma | AV1 | H.264 |
+|---|---|---|
+| 1000, 1.15 | 891 / 43.65 (off 43.54) | 412 / 43.86 (off 43.82) |
+| 1000, 2.9 | 505 / 37.28 (off 36.93) | 145 / 38.50 (off 37.70) |
+| 300, 1.15 | 297 / 41.69 (off 294 / 41.94) | 264 / 41.71 (off 296 / 42.01) |
+| 300, 2.9 | 267 / 35.79 (off 296 / 35.73) | 198 / 36.46 (off 296 / 36.57) |
+
+HEVC at 1000 kbps: sigma 1.15, 930 kbps / 43.04; sigma 2.9, 459 kbps / 36.88.
+
+**60 s at 1000 kbps, pair now:**
+- Ramp: last-window worst frame AV1 40.90 (off 40.87), H.264 41.06 (off 41.00).
+- Object: band after it leaves AV1 43.36 (43.34), H.264 43.52 (43.44).
+- Rate: AV1 899-919 kbps, H.264 443-577 kbps.
+
+The webcam captures were deleted before this fix, so the webcam table in §7 predates it.

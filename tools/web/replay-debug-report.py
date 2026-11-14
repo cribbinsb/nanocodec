@@ -19,7 +19,9 @@ the page:
 - decodes the stream (the native one, a pre-encoded file, or a stream embedded
   in the report) with an independent decoder (ffmpeg; AV2 with nanocodec's
   own) and scores every reported frame against its source frame: the page's
-  PSNR-YUV and, with analysis on, PSNR-Y/Cb/Cr must agree within PSNR_TOLERANCE_DB.
+  PSNR-YUV and, with analysis on, PSNR-Y/Cb/Cr must agree within PSNR_TOLERANCE_DB,
+  and each MS-SSIM the page scored must agree with eval/nceval/msssim.py within
+  MS_SSIM_TOLERANCE.
 
 It prints one row per checked number and exits non-zero on any mismatch. A
 webcam, local file or test scene cannot be regenerated: their statistics and
@@ -50,6 +52,8 @@ DATA = Path(os.environ.get('NC_DATA_ROOT', Path.home() / 'nanocodec-data'))
 SCHEMA = 'nanocodec-debug-report/1'
 SOURCE_FPS = 30
 PSNR_TOLERANCE_DB = 0.01
+# The page's MS-SSIM against the evaluation's, per scored frame.
+MS_SSIM_TOLERANCE = 0.001
 # Shown numbers are rounded: bitrate to 1 kbps, PSNR and times to 0.1.
 SHOWN_DECIMALS = {'bitrate': 0, 'psnr': 1, 'encode': 1, 'decode': 1}
 MAX_PSNR_DB = 100.0
@@ -196,14 +200,34 @@ def psnr_checks(letter: str, frames: list[dict], pictures: list[np.ndarray], sou
             index += 1
             shown = pictures[index]
         source = source_of(frame['tick'])
-        if shown is None or source is None or frame['psnr'] is None:
-            continue
-        planes = plane_psnr(shown, source, width, height)
-        checks.append(Check(letter, f'tick {frame["tick"]} PSNR-YUV', round(frame['psnr'], 4), round(yuv(planes), 4),
+        if shown is not None and source is not None:
+            checks += frame_checks(letter, frame, shown, source, width, height, decoder)
+    return checks
+
+
+def frame_checks(letter: str, frame: dict, decoded: np.ndarray, source: np.ndarray, width: int, height: int, decoder: str) -> list[Check]:
+    """A reported frame's PSNR-YUV, per-plane PSNR and MS-SSIM (where the page scored them) against `decoded` and `source`."""
+    checks = []
+    tick = frame['tick']
+    if frame['psnr'] is not None:
+        planes = plane_psnr(decoded, source, width, height)
+        checks.append(Check(letter, f'tick {tick} PSNR-YUV', round(frame['psnr'], 4), round(yuv(planes), 4),
                             abs(frame['psnr'] - yuv(planes)) <= PSNR_TOLERANCE_DB, decoder))
         for name, page, offline in zip(PLANES, frame.get('planes') or [], planes):
-            checks.append(Check(letter, f'tick {frame["tick"]} PSNR-{name}', round(page, 4), round(offline, 4), abs(page - offline) <= PSNR_TOLERANCE_DB))
+            checks.append(Check(letter, f'tick {tick} PSNR-{name}', round(page, 4), round(offline, 4), abs(page - offline) <= PSNR_TOLERANCE_DB))
+    if frame.get('msSsim') is not None:
+        luma = width * height
+        offline = evaluation_ms_ssim(source[:luma].reshape(height, width), decoded[:luma].reshape(height, width))
+        checks.append(Check(letter, f'tick {tick} MS-SSIM', round(frame['msSsim'], 6), round(offline, 6),
+                            abs(frame['msSsim'] - offline) <= MS_SSIM_TOLERANCE, 'eval/nceval/msssim.py'))
     return checks
+
+
+def evaluation_ms_ssim(reference: np.ndarray, distorted: np.ndarray) -> float:
+    """The evaluation's MS-SSIM (eval/nceval/msssim.py, libvmaf's float_ms_ssim), loaded on first use (it needs OpenCV)."""
+    sys.path.insert(0, str(REPO / 'eval'))
+    from nceval.msssim import ms_ssim
+    return ms_ssim(reference, distorted)
 
 
 def cli_command(nanocodec: Path, config: dict, frames: int, colour: str | None, rate_changes: list[str], keyframes: list[int],
@@ -305,13 +329,8 @@ class Replay:
         source_of = self.source_of(config)
         for frame in view['frames']:
             source = source_of(frame['tick'])
-            if source is None or frame['psnr'] is None:
-                continue
-            planes = plane_psnr(pictures[(frame['tick'] % loop) // step], source, config['width'], config['height'])
-            checks.append(Check(letter, f'tick {frame["tick"]} PSNR-YUV', round(frame['psnr'], 4), round(yuv(planes), 4),
-                                abs(frame['psnr'] - yuv(planes)) <= PSNR_TOLERANCE_DB, decoder))
-            for name, page, offline in zip(PLANES, frame.get('planes') or [], planes):
-                checks.append(Check(letter, f'tick {frame["tick"]} PSNR-{name}', round(page, 4), round(offline, 4), abs(page - offline) <= PSNR_TOLERANCE_DB))
+            if source is not None:
+                checks += frame_checks(letter, frame, pictures[(frame['tick'] % loop) // step], source, config['width'], config['height'], decoder)
         return checks
 
     def live(self, view: dict) -> list[Check]:

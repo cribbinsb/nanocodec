@@ -50,6 +50,7 @@ mod hevc_weight;
 #[allow(unsafe_code)]
 mod lpf_bytes;
 mod mc;
+pub mod ms_ssim;
 mod pixel;
 #[allow(unsafe_code)]
 mod prefetch;
