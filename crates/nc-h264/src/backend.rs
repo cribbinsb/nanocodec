@@ -16,8 +16,8 @@ use nc_dsp::{BlockSize, Dsp};
 use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType, Mv,
-    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, holds_frames, long_term_slot,
-    reference_slots, uses_long_term_slot,
+    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, StaticSkipTest, holds_frames,
+    long_term_slot, reference_slots, uses_long_term_slot,
 };
 
 use crate::cabac::{BinCosts, BinSink, CabacEncoder, MbPart, SliceKind};
@@ -1750,6 +1750,16 @@ impl CodecBackend for H264Backend {
     /// `begin_frame` reads only committed state (reference bookkeeping,
     /// `idr_pic_id`); `commit_frame` advances it.
     const RECODE: bool = true;
+    const REPORTS_CODED_BITS: bool = true;
+
+    /// The slice's bits so far: the CAVLC writer's, or the CABAC coder's.
+    fn coded_bits(&mut self) -> Option<u64> {
+        match (&self.cavlc, &self.cabac) {
+            (Some(cavlc), _) => Some(cavlc.bit_len()),
+            (None, Some(cabac)) => Some(cabac.bit_len()),
+            (None, None) => None,
+        }
+    }
 
     // λ past QP 51 also widens the zero-residual bounds and prunes residual
     // (`quantizers_at`, `residual_rd_multiplier`). CBR 150 f, headroom 2
@@ -2143,12 +2153,25 @@ impl CodecBackend for H264Backend {
         source: &Picture,
         reference: &Picture,
         recon: &mut Picture,
-        _still: bool,
+        test: StaticSkipTest,
     ) -> bool {
+        let pos = (block.x, block.y);
+        if test.within_noise {
+            // The engine's noise skip tested the zero vector; P_Skip codes
+            // it only where the skip vector predicted from the neighbours
+            // (H.264 §8.4.1.1) is zero.
+            let skip = self.static_skip_mv(block);
+            if skip == Mv::ZERO
+                && let Some((luma, chroma)) = whole_sample_macroblock(reference, pos, skip)
+            {
+                write_prediction_views(recon, pos, &luma, &chroma);
+                self.static_skip = Some(Self::mb_index(block));
+                return true;
+            }
+        }
         if self.tuning.static_skip < 0.5 {
             return false;
         }
-        let pos = (block.x, block.y);
         let skip = self.static_skip_mv(block);
         let limits = self.quantizers.inter_zero_limits_scaled(
             self.tuning.static_skip_luma_scale,

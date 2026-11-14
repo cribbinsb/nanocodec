@@ -27,7 +27,9 @@
 // On the RGBA path each view gets the picture letterboxed into its own size
 // (aspect kept, black bars), as the page did before; views of one size share a
 // single conversion. Only the views that code the frame's tick get it
-// (`coding`, timeline.js).
+// (`coding`, timeline.js). A frame may come with several pictures, one per
+// source (each view codes its own rendition of a clip, exact-source.js), each
+// converted for the views it is for.
 import { RGBA_COLOUR, colourOf } from './colour.js';
 
 /** VideoFrame formats whose planes nc-web `SourceFrame.from_planes` reads. */
@@ -114,18 +116,20 @@ async function frames(picture, sourceWidth, sourceHeight, coding) {
   }
   return result;
 }
-/** Convert one picture for every view and post each its frame. */
-async function capture({ id, timestamp, picture, sourceWidth, sourceHeight, displays, coding }) {
+/** Convert each source's picture for the coding views it is for, and post each view its frame. */
+async function capture({ id, timestamp, sources, displays, coding }) {
   try {
-    const converted = await frames(picture, sourceWidth, sourceHeight, coding);
-    views.forEach(({ port }, i) => {
-      const frame = converted[i];
-      if (frame) port.postMessage({ type: 'frame', id, timestamp, frame, display: displays[i] }, [frame.data]);
-    });
+    for (const { picture, sourceWidth, sourceHeight, views: forViews } of sources) {
+      const converted = await frames(picture, sourceWidth, sourceHeight, coding.map((c, i) => c && forViews.includes(i)));
+      views.forEach(({ port }, i) => {
+        const frame = converted[i];
+        if (frame) port.postMessage({ type: 'frame', id, timestamp, frame, display: displays[i] }, [frame.data]);
+      });
+    }
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   } finally {
-    picture.close();
+    for (const { picture } of sources) picture.close();
   }
 }
 

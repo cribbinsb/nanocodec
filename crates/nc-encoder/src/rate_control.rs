@@ -20,7 +20,7 @@ use crate::qp_cadence::{
     CadenceRole, LayerLadder, MotionHint, QP_UNITS_PER_OCTAVE, QpCadence, nearest_quantizer,
     step_ratio,
 };
-use crate::quality_cap::max_quality_step;
+use crate::quality_cap::QualityFloor;
 use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
 use crate::{Codec, FrameRate};
@@ -251,6 +251,9 @@ pub struct RatePlanTrace {
     pub debit_bits: f64,
     /// The buffer capacity in bits (what the correction divides by).
     pub capacity_bits: f64,
+    /// Times the frame was coded: 1, plus its re-codes
+    /// (`rate.recode_overflow`, at most `MAX_RECODES`).
+    pub codings: u32,
 }
 #[derive(Debug, Clone, Copy)]
 struct Settings {
@@ -490,8 +493,8 @@ pub(crate) struct RateController {
     current: u32,
     /// Inter-frame *level* quantizer (before cadence offsets): what smoothing limits.
     last_inter_quantizer: Option<u32>,
-    /// Absolute quality ceiling (`rate.max_quality_qp`).
-    max_quality_step: f64,
+    /// The quality ceiling: the finest step any frame may use.
+    quality_floor: QualityFloor,
     /// Whether the quality cap raised the current frame's quantizer.
     quality_capped: bool,
     /// Whether finer inter frames still buy quality (`rate.min_refinement_gain`).
@@ -534,6 +537,10 @@ pub(crate) struct RateController {
     /// Effective step ratio of the frame's block-level offsets (planned at
     /// `select`, replaced by the realised one before `feedback`); 1 without.
     block_ratio: f64,
+    /// Effective step ratio of the rows in-frame rate control coarsened
+    /// (`inframe.rs`; set before `feedback` or a re-code learns from a
+    /// coding, reset after `feedback`); 1 without.
+    inframe_ratio: f64,
     /// `rate.key_repay_seconds`: the moving-scene repay horizon and the
     /// debit term's horizon.
     key_repay_seconds: f64,
@@ -648,7 +655,7 @@ impl RateController {
             pixels: pixels as f64,
             current: q,
             last_inter_quantizer: None,
-            max_quality_step: max_quality_step(params, codec),
+            quality_floor: QualityFloor::new(params, codec),
             quality_capped: false,
             refinement: RefinementGain::new(f64::from(params.min_refinement_gain)),
             cap_frames: 0,
@@ -665,6 +672,7 @@ impl RateController {
             held_per_frame: 0.,
             held_spent: 0.,
             block_ratio: 1.,
+            inframe_ratio: 1.,
             key_repay_seconds: f64::from(params.key_repay_seconds),
             key_repay_still_seconds: f64::from(params.key_repay_still_seconds),
             key_repay_still_from: f64::from(params.key_repay_still_from),
@@ -1199,7 +1207,7 @@ impl RateController {
     /// Whether the encoder should measure each frame's temporal noise
     /// ([`Complexity::residual_sigma`]).
     pub fn wants_temporal_noise(&self) -> bool {
-        self.settings.config.temporal_noise_stat
+        self.settings.config.temporal_noise_stat || self.quality_floor.wants_noise()
     }
 
     /// Whether the encoder should report each inter frame's luma distortion
@@ -1220,10 +1228,31 @@ impl RateController {
     /// Finest quantizer the quality cap allows the next frame
     /// (`quality_cap.rs`).
     fn quality_floor(&self) -> u32 {
-        if self.max_quality_step > 0. {
-            self.quantizer_for(self.max_quality_step)
+        self.quantizer_for(self.quality_floor.step())
+    }
+
+    /// The QP offset of the next frame from the inter level: its layer's
+    /// ladder offset, its cadence offset, or 0 (keys and flat streams).
+    fn frame_offset(&self, key: bool, layer: LayerPosition, index: u64, strength: f64) -> f64 {
+        if key || (layer.is_flat() && self.cadence.is_flat()) {
+            0.
+        } else if !layer.is_flat() {
+            self.ladder.offset(layer)
         } else {
-            self.settings.min
+            self.cadence.offset(index - self.last_key_index, strength)
+        }
+    }
+
+    /// The floor of a frame at `offset` QP from the inter level: the quality
+    /// floor `floor`, or with `rate.quality_floor_cadence` the floor moved by
+    /// a finer frame's offset, so the cadence's base frames keep their boost
+    /// while the floor bounds the level.
+    fn frame_floor(&self, floor: u32, offset: f64) -> u32 {
+        let step = self.quality_floor.step();
+        if self.quality_floor.keeps_cadence() && offset < 0. && step > 0. {
+            self.quantizer_for(step * step_ratio(offset))
+        } else {
+            floor
         }
     }
 
@@ -1446,21 +1475,19 @@ impl RateController {
             self.stats.residual_sigma +=
                 RESIDUAL_SIGMA_SMOOTHING * (sigma - self.stats.residual_sigma);
         }
+        self.quality_floor.observe(key, hint.residual_sigma);
         let floor = self.quality_floor();
         let (level, share_capped) = self.share_bounded_level(key, level, floor, share);
         let (level, held) = self.hold_exhausted_refinement(key, level);
-        let q = if key || (layer.is_flat() && self.cadence.is_flat()) {
+        let offset = self.frame_offset(key, layer, index, strength);
+        let q = if offset == 0. {
             level
-        } else if !layer.is_flat() {
-            let step = self.steps[level as usize] * step_ratio(self.ladder.offset(layer));
-            nearest_quantizer(&self.steps, (self.settings.min, self.settings.max), step)
         } else {
-            let offset = self.cadence.offset(index - self.last_key_index, strength);
             let step = self.steps[level as usize] * step_ratio(offset);
             nearest_quantizer(&self.steps, (self.settings.min, self.settings.max), step)
         };
         self.quality_capped = q < floor || goal < floor || held || share_capped;
-        let mut q = q.max(floor);
+        let mut q = q.max(self.frame_floor(floor, offset));
         if let Some(min_q) = share.min_inter_quantizer.filter(|_| !key) {
             q = q.max(min_q.clamp(self.settings.min, self.settings.max));
         }
@@ -1552,6 +1579,15 @@ impl RateController {
         self.current = quantizer;
         self.last_predicted = goal;
         Some(quantizer)
+    }
+
+    /// The bounds in-frame rate control (`inframe.rs`) steers the planned
+    /// frame by: the room `recode_quantizer` would enforce on it (infinite
+    /// when re-coding is off) and the uncorrected frame budget, which does
+    /// not shrink with the debt (bounds scaled by the corrected budget
+    /// starved the frames after a key: audit addendum, `rate.burst_cycles`).
+    pub(crate) fn inframe_bounds(&self) -> (f64, f64) {
+        (self.strict_room(self.last_key), self.uniform_budget())
     }
 
     /// Frames between scheduled key frames from now on (`u32::MAX`: none,
@@ -1651,6 +1687,13 @@ impl RateController {
         self.block_ratio = step_ratio(offset_qp);
     }
 
+    /// The realised offset, in QP units, of the rows in-frame rate control
+    /// coarsened in the coding about to be learnt from (`feedback` or
+    /// `recode_quantizer`), on top of the block offsets.
+    pub(crate) fn set_inframe_offset(&mut self, offset_qp: f64) {
+        self.inframe_ratio = step_ratio(offset_qp);
+    }
+
     /// Account for a dropped frame: its interval passes with no bits, so the
     /// buffer drains and the target debt falls by an under-spent inter
     /// budget. The models are untouched (nothing was coded).
@@ -1706,7 +1749,7 @@ impl RateController {
     fn learn(&mut self, bits: u64) {
         let class = self.current_slot;
         let value = bits as f64
-            * (self.steps[self.current as usize] * self.block_ratio)
+            * (self.steps[self.current as usize] * self.block_ratio * self.inframe_ratio)
                 .powf(self.settings.config.rate_exponent)
             / self.last_hint;
         let ratio = (bits as f64 / self.last_predicted.max(1.))
@@ -1734,6 +1777,7 @@ impl RateController {
     }
     pub fn feedback(&mut self, bits: u64) {
         self.learn(bits);
+        self.inframe_ratio = 1.;
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);
         let p = self.inter_budget();
@@ -1800,6 +1844,7 @@ impl RateController {
         self.stats.plan.excess_bits = self.excess();
         self.stats.plan.debit_bits = self.debit.unwrap_or(0.);
         self.stats.plan.capacity_bits = self.settings.capacity;
+        self.stats.plan.codings = 1 + self.recodes_this_frame;
     }
     pub const fn stats(&self) -> RateControlStats {
         self.stats

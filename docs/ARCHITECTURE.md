@@ -294,6 +294,12 @@ online measure of whether finer inter frames still buy quality;
 `startup_lookahead` sizes the first
 key frame from the first two source frames' motion. Frame dropping is opt-in
 (`RateControlConfig::frame_drop`), because analytics users need every frame.
+`inframe` (off by default) steers a frame while it is coded: after each
+superblock row it projects the frame's size from the backend's bit count
+(`CodecBackend::coded_bits`; H.264 and AV1 so far) and coarsens the
+remaining rows, within bounded steps, past a limit in frame budgets
+(`inframe.budgets`) or the re-code room (`inframe.room`). Measurements:
+`docs/analysis/within-frame-rate-control-2026-11-14.md`.
 Fixed QP remains available and is what BD-rate sweeps use.
 
 ## 7. The `CodecBackend` trait and the codecs

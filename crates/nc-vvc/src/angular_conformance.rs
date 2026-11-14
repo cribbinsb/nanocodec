@@ -240,6 +240,7 @@ impl ForcedFrame {
                 nc_common::ColourInfo::default(),
                 &ChromaQpTable::identity(),
                 headers::Tools::default(),
+                None,
             ),
             &mut packet,
         );

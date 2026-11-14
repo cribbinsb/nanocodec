@@ -431,6 +431,12 @@ param_group! {
         // crowd backgrounds next to moving people (AV1 Fast train6 crowd
         // +7.3 J points). The residual is still coded, so the backend's own
         // skip tests decide whether anything is sent.
+        // The noise skip (`noise_skip.rs`): off by default; calibration in
+        // docs/analysis/static-noise-2026-11-14.md.
+        noise_skip: 0.0, [0.0, 8.0],
+            "codes a still block as a zero-vector skip when its zero-vector residual's mean squared error is at most this multiple of the cell's temporal noise variance, in every 8x8 cell (0 = off): higher stops coding sensor noise sooner, at a reconstruction further from the scene",
+        noise_skip_chroma_ratio: 1.0, [0.25, 4.0],
+            "the noise skip's chroma bound: the luma noise sigma times this (pre-analysis measures no chroma noise): higher lets chroma noise pass",
         static_zero_vector: 0.0, [0.0, 1.0],
             "1 codes inter blocks the stillness detector (`still.*`) marks still with the zero vector, skipping candidate search, sub-sample refinement and the intra trial: faster on static content",
         // Encoder-side approximation (a Fast lever; default exact): the
@@ -800,8 +806,22 @@ param_group! {
             "variance AQ: largest block offset either way, in QP units: higher allows stronger per-block redistribution",
         aq_strength: 0.0, [0.0, 3.0],
             "variance AQ: QP units per octave of block variance away from the frame mean (0 = off): higher moves more bits from detailed to flat blocks",
+        // One codec-independent form: the H.264 QP of the pixel-domain step
+        // (0.625 * 2^(QP/6)), mapped per codec by `quality_cap.rs`, so one
+        // value is one step in every codec. Equivalents (AV1 and VP9 by
+        // their AC quantizer tables): QP 10 = step 2.0 = AV1/VP9 qindex 9;
+        // QP 14 = 3.2 = qindex 19; QP 18 = 5.0 = qindex 33; QP 20 = 6.3 =
+        // qindex 44; QP 22 = 7.9 = qindex 57; HEVC and VVC QP equal H.264
+        // QP. Census of the 2026-11-14 L1 draw (every Default, every rung,
+        // 150 f, plus the 600 f long list): no stream reaches QP 10 (42/42
+        // sampled points byte-identical with it on); QP 14 binds on one
+        // static long-window H.264 point (docs/analysis/static-noise-2026-11-14.md).
         max_quality_qp: 10.0, [0.0, 51.0],
             "rate control quality ceiling: finest quantizer step of any frame, as the H.264 QP of the same pixel-domain step (0 = none): higher stops spending bits sooner on easy content",
+        noise_floor_scale: 0.0, [0.0, 32.0],
+            "rate control quality ceiling: finest pixel-domain quantizer step of any frame, as this multiple of the temporal noise sigma measured on still blocks (0 = none; no floor while too little of the picture is still): higher stops coding sensor noise sooner",
+        quality_floor_cadence: 0.0, [0.0, 1.0],
+            "1 lets QP-cadence base frames go finer than the quality floor by their cadence offset (the floor bounds the inter level); 0 clamps every frame at the floor",
         // CBR 240 f single key, PSNR-YUV / VMAF v1 BD vs 0 (lower rate at
         // the same quality wins; the target is a ceiling): static/lowlight
         // set H.264 -5.3/-2.8%, HEVC -16.1/-11.9%, AV1 -11.1/-7.1%
@@ -1023,6 +1043,30 @@ param_group! {
 }
 
 param_group! {
+    /// In-frame rate control (`inframe.rs`): coarsening the rest of a frame
+    /// whose size, projected after each superblock row, passes its limit.
+    /// Off by default (both limits 0).
+    pub struct InFrameParams ("inframe") {
+        room: 0.0, [0.0, 1.0],
+            "in-frame rate control: steer each frame to end within this share of the room a re-code would enforce (`rate.recode_overflow`; 0 = no hard limit): higher re-codes more, lower coarsens more frames mid-way",
+        budgets: 0.0, [0.0, 64.0],
+            "in-frame rate control: soft limit of an inter frame in uncorrected frame budgets (target / frame rate; 0 = none): lower bounds static refinement bursts harder",
+        // AV1 Default, the audit's six still points, 600 f, room 0.9 on
+        // keys too: meva 97 kbps worst-1% PSNR-Y 29.14 -> 26.96 dB, chirla
+        // 47 kbps 28.81 -> 27.31 (a key coarsened mid-way leaves its lower
+        // rows coarse for the whole GOP; a re-code coarsens it evenly).
+        keys: 0.0, [0.0, 1.0],
+            "in-frame rate control: 1 steers key frames by the re-code room too; 0 leaves keys to the whole-frame re-code",
+        max_offset: 12.0, [1.0, 24.0],
+            "in-frame rate control: largest coarsening of a row, in QP units",
+        row_step: 3.0, [0.5, 12.0],
+            "in-frame rate control: largest offset change between consecutive superblock rows, in QP units: lower is smoother across the frame, higher reacts faster",
+        exponent: 2.0, [0.5, 4.0],
+            "in-frame rate control: slope of bits against step assumed for the rows still to code: higher coarsens less per projected excess",
+    }
+}
+
+param_group! {
     /// Test-only modes (`random_decisions.rs`); never set in real encodes.
     pub struct DebugParams ("debug") {
         random_decisions: 0.0, [0.0, 16_777_215.0],
@@ -1041,6 +1085,7 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         AnalysisParams::SPECS,
         StillParams::SPECS,
         RateParams::SPECS,
+        InFrameParams::SPECS,
         PersistParams::SPECS,
         LayerParams::SPECS,
         SceneParams::SPECS,

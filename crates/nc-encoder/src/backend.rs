@@ -35,6 +35,7 @@ use crate::config::{ConfigError, EncoderConfig};
 use crate::mv::Mv;
 use crate::partition::Block;
 use crate::refresh::RefreshWindow;
+use crate::still_skip::StaticSkipTest;
 use crate::structure::FrameReferences;
 
 /// [`CodecBackend::loop_filter_reach`] of codecs whose filters modify at
@@ -705,9 +706,12 @@ pub trait CodecBackend {
 
     /// Offered for inter blocks that pre-analysis marks static (unchanged
     /// since the previous source frame, against a noise-aware bound), before
-    /// any mode decision; `still` says whether the stillness detector
+    /// any mode decision; `test.still` says whether the stillness detector
     /// (`nc_analysis::still`: static for several frames, away from motion)
-    /// also marks the whole block. Return true to code `block` in the
+    /// also marks the whole block, and `test.within_noise` that its
+    /// zero-vector residual is within the camera's noise
+    /// (`decision.noise_skip`), in which case a backend whose skip vector
+    /// is zero should accept it whatever its own test says. Return true to code `block` in the
     /// codec's skip mode with its [`CodecBackend::static_skip_vector`], which
     /// the engine then passes to [`CodecBackend::encode_block`] as the inter
     /// vector without measuring candidates. A backend should accept only when its own
@@ -723,9 +727,9 @@ pub trait CodecBackend {
         source: &Picture,
         reference: &Picture,
         recon: &mut Picture,
-        still: bool,
+        test: StaticSkipTest,
     ) -> bool {
-        let _ = (block, source, reference, recon, still);
+        let _ = (block, source, reference, recon, test);
         false
     }
 
@@ -858,6 +862,17 @@ pub trait CodecBackend {
     /// [`CodecBackend::commit_frame`]. Only then may rate control re-code a
     /// frame that would overflow the buffer (`rate.recode_overflow`).
     const RECODE: bool = false;
+
+    /// Whether [`Self::coded_bits`] reports the frame's size while it is
+    /// coded, which in-frame rate control (`inframe.rs`) needs.
+    const REPORTS_CODED_BITS: bool = false;
+
+    /// Bits of the frame being coded so far, from `begin_frame` on
+    /// (approximate where the entropy coder holds bits back or codes later);
+    /// `None` when the backend cannot tell before `end_frame`.
+    fn coded_bits(&mut self) -> Option<u64> {
+        None
+    }
 
     /// Commit the state later frames read (reference contexts, counters,
     /// the previous frame's syntax) once the unit `end_frame` returned is

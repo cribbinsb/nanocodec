@@ -30,6 +30,18 @@ pub const MIN_STILL_SKIP_SIZE: usize = 16;
 /// limits themselves scale through [`PlaneZeroLimits::scaled`]).
 const TEXTURE_SCALE: f32 = 1.0;
 
+/// What the engine knows about a block it offers for a static skip
+/// ([`crate::CodecBackend::try_static_skip`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StaticSkipTest {
+    /// The stillness detector (`nc_analysis::still`) marks the whole block.
+    pub still: bool,
+    /// The block's zero-vector residual is within what the camera's noise
+    /// explains (`decision.noise_skip`): the backend should accept it as a
+    /// zero-vector skip with no residual whatever its own test says.
+    pub within_noise: bool,
+}
+
 /// Zero limits of the luma and chroma quantisers of a frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaneZeroLimits {

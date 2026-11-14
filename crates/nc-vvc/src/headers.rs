@@ -9,6 +9,7 @@ use nc_common::{
     decode::{BitReader, DecodeError, Result},
     nal,
 };
+use nc_encoder::{FrameRate, TimingSignal};
 
 /// §7.4.3.4: `CtbLog2SizeY` is `sps_log2_ctu_size_minus5` + 5; a larger
 /// CTU also signals `sps_max_luma_transform_size_64_flag` (§7.3.2.4).
@@ -33,6 +34,33 @@ pub(crate) const TRAIL_NUT: u8 = 0;
 const MAIN_10_PROFILE: u32 = 1;
 const LEVEL_6: u32 = 96;
 const POC_BITS: u32 = 8;
+
+/// Stream timing in the SPS without HRD buffer models
+/// (`general_timing_hrd_parameters()` and `ols_timing_hrd_parameters()`,
+/// H.266 §7.3.5.1-2): the clock tick and whether pictures are one tick
+/// apart. Informative: it never changes decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Timing {
+    /// `num_units_in_tick`: one tick per nominal picture.
+    pub num_units_in_tick: u32,
+    /// `time_scale`: ticks per `num_units_in_tick` seconds.
+    pub time_scale: u32,
+    /// `fixed_pic_rate_general_flag`: pictures are exactly one tick apart.
+    /// Off for variable-rate captures (timestamps, skipped frames).
+    pub fixed_rate: bool,
+}
+
+impl Timing {
+    /// The timing the engine's signalling asks for; none for
+    /// [`TimingSignal::Nominal`], which keeps the historical headers.
+    pub(crate) fn from_signal(signal: TimingSignal, rate: FrameRate) -> Option<Self> {
+        (signal != TimingSignal::Nominal).then_some(Self {
+            num_units_in_tick: rate.den,
+            time_scale: rate.num,
+            fixed_rate: signal == TimingSignal::Constant,
+        })
+    }
+}
 
 /// The picture geometry a stream codes: the visible size, the coded size
 /// (whole minimum coding units; CTUs crossing the right or bottom edge are
@@ -160,15 +188,17 @@ impl AffineTool {
 }
 
 /// The SPS up to the VUI flag, around the chroma QP table: [`sps_head`],
-/// the table, then [`sps_tools`].
+/// the table, [`sps_tools`], then [`sps_timing`].
 pub(crate) fn sps_prefix(
     geometry: &Geometry,
     chroma_qp: &ChromaQpTable,
     tools: Tools,
+    timing: Option<Timing>,
 ) -> BitWriter {
     let mut w = sps_head(geometry, tools);
     chroma_qp.write(&mut w);
     sps_tools(&mut w, tools);
+    sps_timing(&mut w, timing, 1);
     w
 }
 
@@ -331,7 +361,8 @@ fn partitioning_bits(geometry: &Geometry) -> usize {
     fields.bit_len()
 }
 
-/// The SPS's fixed tool flags after the chroma QP table, up to the VUI flag.
+/// The SPS's fixed tool flags after the chroma QP table, up to
+/// `sps_timing_hrd_params_present_flag`.
 pub(crate) fn sps_tools(w: &mut BitWriter, tools: Tools) {
     w.put_bit(true); // SAO
     w.put_bit(tools.alf); // sps_alf_enabled_flag
@@ -385,11 +416,60 @@ pub(crate) fn sps_tools(w: &mut BitWriter, tools: Tools) {
     w.put_bit(tools.dep_quant); // sps_dep_quant_enabled_flag
     w.put_bit(true); // sign hiding (sps_sign_data_hiding_enabled_flag)
     w.put_bit(false); // virtual boundaries
-    w.put_bit(false); // HRD
+}
+
+/// The SPS from `sps_timing_hrd_params_present_flag` (present: the PTL/DPB/HRD
+/// flag is set) up to the VUI flag, for `layers` temporal sublayers.
+fn sps_timing(w: &mut BitWriter, timing: Option<Timing>, layers: u8) {
+    w.put_bit(timing.is_some()); // sps_timing_hrd_params_present_flag
+    if let Some(timing) = timing {
+        // general_timing_hrd_parameters() (§7.3.5.1), no NAL or VCL HRD.
+        w.put_bits(timing.num_units_in_tick, 32);
+        w.put_bits(timing.time_scale, 32);
+        w.put_bit(false); // general_nal_hrd_params_present_flag
+        w.put_bit(false); // general_vcl_hrd_params_present_flag
+        if layers > 1 {
+            // One set for the highest sublayer, inferred for the lower ones.
+            w.put_bit(false); // sps_sublayer_cpb_params_present_flag
+        }
+        // ols_timing_hrd_parameters() (§7.3.5.2) for that sublayer.
+        w.put_bit(timing.fixed_rate); // fixed_pic_rate_general_flag
+        if timing.fixed_rate {
+            // fixed_pic_rate_within_cvs_flag is inferred 1: one tick per picture.
+            w.put_ue(0); // elemental_duration_in_tc_minus1
+        } else {
+            w.put_bit(false); // fixed_pic_rate_within_cvs_flag
+        }
+    }
     w.put_bit(false); // field sequence
 }
 
-/// The tools [`sps_tools`] wrote at `r`, which it leaves at the VUI flag.
+/// The timing [`sps_timing`] wrote for one sublayer at `r`, which it leaves at
+/// the VUI flag. Like [`read_sps_tools`] it reads, not checks: the decoder
+/// compares the whole SPS with the one it would write.
+pub(crate) fn read_sps_timing(r: &mut BitReader<'_>) -> Result<Option<Timing>> {
+    let timing = if r.read_bit()? {
+        let num_units_in_tick = r.read_bits(32)?;
+        let time_scale = r.read_bits(32)?;
+        r.skip_bits(2)?; // NAL and VCL HRD flags
+        let fixed_rate = r.read_bit()?;
+        if fixed_rate || r.read_bit()? {
+            r.read_ue()?; // elemental_duration_in_tc_minus1
+        }
+        Some(Timing {
+            num_units_in_tick,
+            time_scale,
+            fixed_rate,
+        })
+    } else {
+        None
+    };
+    r.skip_bits(1)?; // field sequence
+    Ok(timing)
+}
+
+/// The tools [`sps_tools`] wrote at `r`, which it leaves at
+/// `sps_timing_hrd_params_present_flag`.
 /// Fields this subset fixes are skipped, not checked: the decoder compares
 /// the whole SPS with the one these tools write.
 pub(crate) fn read_sps_tools(r: &mut BitReader<'_>) -> Result<Tools> {
@@ -431,7 +511,7 @@ pub(crate) fn read_sps_tools(r: &mut BitReader<'_>) -> Result<Tools> {
     // MRL, MIP, CCLM, chroma collocation (2), palette, IBC, LADF, scaling lists.
     r.skip_bits(9)?;
     tools.dep_quant = r.read_bit()?;
-    r.skip_bits(4)?; // sign hiding, virtual boundaries, HRD, field sequence
+    r.skip_bits(2)?; // sign hiding, virtual boundaries
     Ok(tools)
 }
 
@@ -440,8 +520,9 @@ pub(crate) fn sps(
     colour: nc_common::ColourInfo,
     chroma_qp: &ChromaQpTable,
     tools: Tools,
+    timing: Option<Timing>,
 ) -> Vec<u8> {
-    sps_layered(geometry, colour, chroma_qp, tools, 1)
+    sps_layered(geometry, colour, chroma_qp, tools, timing, 1)
 }
 
 /// SPS for the shared engine's low-delay temporal structure.
@@ -450,14 +531,16 @@ pub(crate) fn sps_layered(
     colour: nc_common::ColourInfo,
     chroma_qp: &ChromaQpTable,
     tools: Tools,
+    timing: Option<Timing>,
     layers: u8,
 ) -> Vec<u8> {
     let mut w = if layers == 1 {
-        sps_prefix(geometry, chroma_qp, tools)
+        sps_prefix(geometry, chroma_qp, tools, timing)
     } else {
         let mut w = sps_layered_head(geometry, tools, layers);
         chroma_qp.write(&mut w);
         sps_tools(&mut w, tools);
+        sps_timing(&mut w, timing, layers);
         w
     };
     w.put_bit(colour.is_signalled());

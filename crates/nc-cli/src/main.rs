@@ -59,6 +59,7 @@ mod timestamps;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use crate::framing::IvfWriter;
 use crate::spatial_stats::SpatialTelemetry;
@@ -584,13 +585,16 @@ fn encode(args: &EncodeArgs) -> Result<(), String> {
 /// One `--rate-log` row: the frame's type (or `Dropped`), quantizers, size,
 /// the controller's buffer and rate statistics, the coded picture size
 /// (smaller than the stream while adaptive resolution codes at half size),
-/// and the controller's plan of the frame (`RatePlanTrace`).
+/// the controller's plan of the frame (`RatePlanTrace`), and the wall time
+/// of reading and encoding it (microseconds; a re-coded frame's includes
+/// every coding).
 fn write_rate_row(
     log: &mut impl Write,
     index: u32,
     frame: &EncodedFrame,
     stats: &RateControlStats,
     (width, height): (usize, usize),
+    encode_us: u128,
 ) -> std::io::Result<()> {
     let kind = if frame.metadata.dropped {
         "Dropped".to_string()
@@ -601,7 +605,7 @@ fn write_rate_row(
     };
     writeln!(
         log,
-        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0}",
+        "{index},{kind},{},{},{},{:.6},{},{},{},{},{:.0},{:.3},{},{width},{height},{:.0},{:.0},{},{:.3},{:.4},{:.0},{:.0},{:.0},{},{encode_us}",
         frame.metadata.quantizer,
         stats.current_quantizer,
         frame.data.len(),
@@ -620,7 +624,8 @@ fn write_rate_row(
         stats.plan.static_fraction,
         stats.plan.excess_bits,
         stats.plan.debit_bits,
-        stats.plan.capacity_bits
+        stats.plan.capacity_bits,
+        stats.plan.codings
     )
 }
 
@@ -828,7 +833,7 @@ fn run<B: CodecBackend, S: FrameSink>(
     }
     let mut rate_log = args.rate_log.as_deref().map(stdio::create).transpose()?;
     if let Some(log) = &mut rate_log {
-        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits").map_err(|error|error.to_string())?;
+        writeln!(log,"frame,type,planned_qp,qp,bytes,buffer_fullness,actual_bps,total_bits,buffer_overflows,target_bps,key_loan_bits,residual_sigma,recoded_frames,width,height,budget_bits,predicted_bits,level_q,cadence_offset,static_fraction,excess_bits,debit_bits,capacity_bits,codings,encode_us").map_err(|error|error.to_string())?;
     }
     let mut input = FrameReader::new(
         stdio::open_raw(&args.input)?,
@@ -851,9 +856,11 @@ fn run<B: CodecBackend, S: FrameSink>(
     for index in 0..args.frames {
         pending.apply(index, &mut encoder, &mut input)?;
         let timestamp = frame_timestamp(args.timestamps.as_deref(), index)?;
+        let started = Instant::now();
         let Some(mut frame) = input.encode_next(&mut encoder, timestamp)? else {
             return Err(format!("input ended after {index} frames"));
         };
+        let encode_us = started.elapsed().as_micros();
         let pts = match (&args.timestamps, timestamp) {
             (Some(times), Some(t)) => u64::try_from(t - times[0]).unwrap_or(0),
             _ => u64::from(index),
@@ -880,7 +887,8 @@ fn run<B: CodecBackend, S: FrameSink>(
                 .rate_control_stats()
                 .ok_or("rate statistics unavailable")?;
             let size = (shown_pic.width(), shown_pic.height());
-            write_rate_row(log, index, &frame, &stats, size).map_err(|error| error.to_string())?;
+            write_rate_row(log, index, &frame, &stats, size, encode_us)
+                .map_err(|error| error.to_string())?;
         }
         let stream = (encoder.config().width, encoder.config().height);
         recon_out.write(index, shown_pic, stream, coded, lost)?;

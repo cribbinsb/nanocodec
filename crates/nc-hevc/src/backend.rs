@@ -33,8 +33,8 @@ use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
     FrameType, LtrParams, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
-    RefreshWindow, ZeroLimits, copy_zero_vector_prediction, long_term_slot, reference_slots,
-    zero_vector_residual_is_zero,
+    RefreshWindow, StaticSkipTest, ZeroLimits, copy_zero_vector_prediction, long_term_slot,
+    reference_slots, zero_vector_residual_is_zero,
 };
 
 use crate::collocated::MotionStore;
@@ -1180,33 +1180,39 @@ impl CodecBackend for HevcBackend {
     }
 
     fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
-        (self.still_skip_limit_scale > 0.0).then_some(Mv::ZERO)
+        // Also the vector of the engine's noise skip, which needs no
+        // `hevc.still_skip`.
+        Some(Mv::ZERO)
     }
 
     /// `hevc.still_skip`: a still CU whose zero-vector residual would
     /// quantise to zero in every plane is coded as the zero vector with no
-    /// residual (`nc_encoder::still_skip`).
+    /// residual (`nc_encoder::still_skip`); so is one the engine's noise
+    /// skip passes (`test.within_noise`).
     fn try_static_skip(
         &mut self,
         block: &Block,
         source: &Picture,
         reference: &Picture,
         recon: &mut Picture,
-        still: bool,
+        test: StaticSkipTest,
     ) -> bool {
-        if !still || self.still_skip_limit_scale <= 0.0 || self.random.is_some() {
+        if self.random.is_some() {
             return false;
         }
-        let [luma, chroma] = self
-            .frame_quantization
-            .planes
-            .each_ref()
-            .map(|plane| ZeroLimits {
-                dc: plane.inter_zero_limit,
-                ac: plane.inter_zero_limit,
+        let accepted = test.within_noise
+            || (test.still && self.still_skip_limit_scale > 0.0 && {
+                let [luma, chroma] =
+                    self.frame_quantization
+                        .planes
+                        .each_ref()
+                        .map(|plane| ZeroLimits {
+                            dc: plane.inter_zero_limit,
+                            ac: plane.inter_zero_limit,
+                        });
+                let limits = PlaneZeroLimits { luma, chroma }.scaled(self.still_skip_limit_scale);
+                zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits)
             });
-        let limits = PlaneZeroLimits { luma, chroma }.scaled(self.still_skip_limit_scale);
-        let accepted = zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits);
         if accepted {
             copy_zero_vector_prediction(block, reference, recon);
             self.still_skipped = Some((block.x, block.y));

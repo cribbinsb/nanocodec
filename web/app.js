@@ -23,7 +23,7 @@ import { Loupe } from './loupe.js';
 import { AnalysisController } from './analysis-view.js';
 import { drawScene } from './scene.js';
 import { FrameSource } from './capture.js';
-import { ExactSource } from './exact-source.js';
+import { ViewSources } from './exact-source.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 import { SOURCE_FPS, nextCommonTick, tickMs } from './timeline.js';
 import { matchingSettings } from './view-settings.js';
@@ -59,8 +59,9 @@ let switchWanted = false, switchBusy = false;
 // The original frame (largest view size) of the instant on screen, for the magnifier.
 let original = null;
 const frames = new FrameSource(video, error => { if (running || preparing) fail(error); });
-// The exact source of the current clip, file or scene (null: sampled live), the
-// identity it was opened for, and whether the pump is fetching a picture.
+// The exact sources of the current clip, file or scene (exact-source.js
+// ViewSources: a clip's rendition for each view's height; null: sampled live),
+// the identity they were opened for, and whether the pump is fetching pictures.
 let exact = null, exactFor = null, pumping = false;
 // Exact sources: the wall time of tick 0, so the clip never runs faster than real
 // time; moved later whenever the pipeline falls behind, so it never catches up in a burst.
@@ -192,9 +193,9 @@ async function pump(token) {
       const due = clockOrigin + tickMs(tick), now = performance.now();
       if (due > now) { timer = setTimeout(() => pump(token), due - now); return; }
       clockOrigin = Math.max(clockOrigin, now - tickMs(tick + 1));
-      const shot = await exact.picture(tick, ...largestView());
-      if (!mayCapture()) { shot.picture.close?.(); return; }
-      send(tick, shot);
+      const shots = await exact.pictures(tick, comparison.coding(tick), ...largestView());
+      if (!mayCapture()) { closeShots(shots); return; }
+      send(tick, shots);
     }
   } catch (error) { if (token === generation) fail(error); } finally { pumping = false; }
 }
@@ -204,6 +205,8 @@ function nextCodedTick(after) {
   while (!comparison.coding(tick).some(Boolean)) ++tick;
   return tick;
 }
+/** Release pictures that will not be sent. */
+function closeShots(shots) { for (const shot of shots) shot.picture.close?.(); }
 /** The largest view size, at which the scene is drawn. */
 function largestView() {
   const largest = panels.map(p => p.current).reduce((a, b) => (b.width > a.width ? b : a));
@@ -216,8 +219,8 @@ async function step() {
   stepping = true; stepButton.disabled = true;
   try {
     if (exact) {
-      const shot = await exact.picture(tick, ...largestView());
-      if (token === generation) send(tick, shot); else shot.picture.close?.();
+      const shots = await exact.pictures(tick, comparison.coding(tick), ...largestView());
+      if (token === generation) send(tick, shots); else closeShots(shots);
     } else {
       const shown = await frames.advanceTo(tick);
       if (token === generation) capture(shown);
@@ -287,13 +290,17 @@ async function metadata() {
     video.addEventListener('loadedmetadata', loaded, { once: true }); video.addEventListener('error', failed, { once: true });
   });
 }
-/** The exact source for the current clip, file or scene, reused while the source is the same (null: none). */
+/** Each view's source: a clip's rendition for the view's height (clips.js clipUrl), the file, or the scene. */
+function viewSourceUrls() {
+  return panels.map(panel => (kind === 'clip' ? clipUrl(clip, panel.current.height) : kind === 'file' ? fileUrl : kind));
+}
+/** The exact sources for the current clip, file or scene, reused while they are the same (null: none). */
 async function openExact() {
-  const url = kind === 'clip' ? clipUrl(clip, Math.max(...panels.map(p => p.current.height))) : kind === 'file' ? fileUrl : kind;
-  if (exactFor === url) return exact;
+  const urls = viewSourceUrls(), identity = urls.join(' ');
+  if (exactFor === identity) return exact;
   exact?.close();
-  exact = kind === 'camera' ? null : await ExactSource.open(kind, { url, fps: kind === 'clip' ? clip.fps : null, loops: kind === 'clip' });
-  exactFor = url;
+  exact = kind === 'camera' ? null : await ViewSources.open(kind, urls, { fps: kind === 'clip' ? clip.fps : null, loops: kind === 'clip' });
+  exactFor = identity;
   return exact;
 }
 async function prepareSource(token) {
@@ -312,7 +319,8 @@ async function prepareSource(token) {
       for (const track of stream.getTracks()) track.addEventListener('ended', () => { if (camera === stream) fail('The webcam disconnected or camera access was stopped.'); });
     }
   } else if (kind === 'clip') {
-    // The URL is the source identity: a size change that picks another variant reloads.
+    // One playing video for every view: the tallest view's rendition. The URL is the
+    // source identity: a size change that picks another variant reloads.
     const url = clipUrl(clip, Math.max(...panels.map(p => p.current.height)));
     loadVideo(url, url);
   } else {
@@ -366,7 +374,10 @@ async function start() {
     }
     // Sampled live (webcam, or a file read while it plays): frames may be skipped,
     // so each carries its capture time to the encoder (encode-worker.js).
-    for (const panel of panels) panel.current = { ...panel.current, timed: !exact };
+    // The clip file each view codes (and is scored against): its own height's rendition on
+    // the exact path, the playing video's otherwise.
+    const renditions = exact ? viewSourceUrls() : panels.map(() => clipUrl(clip, Math.max(...panels.map(p => p.current.height))));
+    panels.forEach((panel, i) => { panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null }; });
     comparison = new Comparison(panels, {
       onFrame: (results, originals, tick) => finishFrame(token, results, originals, tick),
       onError: error => { if (token === generation) fail(error); },
@@ -408,11 +419,15 @@ function capture(tick) {
   if (!coding.some(Boolean)) { lastTick = tick; return; }
   const shot = frames.capture(tick, ...largestView());
   // No frame yet (a source or webcam just starting): try again on the next tick.
-  if (shot) send(tick, shot, coding);
+  if (shot) send(tick, [{ ...shot, views: coding.flatMap((c, i) => (c ? [i] : [])) }], coding);
 }
-/** Show the picture of `tick` in the preview and send it to the views that code it. */
-function send(tick, { picture, element, width, height }, coding = comparison.coding(tick)) {
+/**
+ * Show the picture of `tick` in the preview and send the views that code it
+ * their pictures (`shots`: one per source, each with the `views` it is for).
+ */
+function send(tick, shots, coding = comparison.coding(tick)) {
   lastTick = tick;
+  const { element, width, height } = shots.reduce((a, b) => (b.width > a.width ? b : a));
   panels.forEach((panel, i) => { if (coding[i]) panel.sent(tick); });
   const scale = Math.min(PREVIEW_WIDTH / width, PREVIEW_HEIGHT / height);
   preview.fillStyle = '#000'; preview.fillRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
@@ -426,7 +441,7 @@ function send(tick, { picture, element, width, height }, coding = comparison.cod
     });
     pendingRateChange = false;
   }
-  comparison.send(tick, picture, width, height, coding);
+  comparison.send(tick, shots, coding);
   if (pausing && coding.every(Boolean)) enterPause();
 }
 /** Every view that codes `tick` decoded it: show them and update the session line. */

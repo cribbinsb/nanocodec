@@ -45,6 +45,7 @@ mod encoder;
 mod feedback;
 mod frame_role;
 mod hold;
+mod inframe;
 mod input;
 mod intra_candidates;
 mod intra_estimate;
@@ -54,6 +55,7 @@ mod key_qp;
 mod layer;
 mod ltr;
 mod mv;
+mod noise_skip;
 // Public so `param_group!` (which names `$crate::params::…`) works in backend crates.
 pub mod params;
 mod partition;
@@ -112,9 +114,9 @@ pub use nc_analysis::grain;
 pub use nc_analysis::link::{MAX_REFERENCE_SLOTS, ReferenceLink, SlotMask};
 pub use nc_common::{ColourDescription, ColourInfo};
 pub use params::{
-    AnalysisParams, ChromaParams, DebugParams, DecisionParams, LayerParams, LtrParams, ParamError,
-    ParamOverrides, ParamSpec, PersistParams, PlannerParams, QuantParams, RateParams, RefParams,
-    RefreshParams, SceneParams, SpatialParams, StillParams, engine_specs,
+    AnalysisParams, ChromaParams, DebugParams, DecisionParams, InFrameParams, LayerParams,
+    LtrParams, ParamError, ParamOverrides, ParamSpec, PersistParams, PlannerParams, QuantParams,
+    RateParams, RefParams, RefreshParams, SceneParams, SpatialParams, StillParams, engine_specs,
 };
 pub use partition::Block;
 pub use pre_tx_skip::{QuantizerBand, pre_tx_skip_score, pre_tx_skips};
@@ -124,7 +126,8 @@ pub use refresh::{IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshWindow
 pub use second_reference::uses_long_term_slot;
 pub use shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 pub use still_skip::{
-    MIN_STILL_SKIP_SIZE, PlaneZeroLimits, copy_zero_vector_prediction, zero_vector_residual_is_zero,
+    MIN_STILL_SKIP_SIZE, PlaneZeroLimits, StaticSkipTest, copy_zero_vector_prediction,
+    zero_vector_residual_is_zero,
 };
 pub use structure::{FrameReferences, MAX_TEMPORAL_LAYERS, reference_slots};
 pub use timeline::MICROS_PER_SECOND;

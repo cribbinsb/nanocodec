@@ -76,8 +76,10 @@ TABLE = REPO / "docs/results/reference-streams.md"
 
 # web/timeline.js SOURCE_FPS: the page samples every source on a 30 Hz tick grid.
 SOURCE_FPS = 30
-# web/clips.js VARIANT_HEIGHTS: the hosted file the page reads for a view height.
-VARIANT_HEIGHTS = (360, 720)
+# The hosted renditions, read from web/clips.js VARIANT_HEIGHTS (one list for both):
+# a view of height h reads the smallest at least h tall (clips.js clipUrl, `clip_file`).
+VARIANT_HEIGHTS = tuple(int(h) for h in re.search(r"const VARIANT_HEIGHTS = \[([\d, ]+)\]",
+                                                  (WEB / "clips.js").read_text()).group(1).split(","))
 # The chart's key interval (eval/nceval/cbr.py DEFAULT_INTRA_PERIOD): 10 s.
 KEY_INTERVAL_SECONDS = 10
 # The supplied bodycam SoC streams' key interval (SUPPLIED): frames 0 and 150 of 300 at 30 fps.

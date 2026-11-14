@@ -28,8 +28,7 @@ both standard decoders and our own (nceval.conformance.gate_stream):
     large    `main` on a few 720-line frames (largest blocks, long vectors)
     timed    capture timestamps with skipped captures (a live sender that cannot
              keep up, `--timestamps`), three temporal layers, keys every
-             TIMED_KEY_PERIOD nominal frames of capture time (default preset;
-             not VVC, which writes no stream timing yet)
+             TIMED_KEY_PERIOD nominal frames of capture time (default preset)
 
 A spatial preset (two layers: presets/av1-svc*.toml, presets/vp9-svc*.toml)
 is checked as SVC instead: L2T1 and L2T3 at two rates on three clips, every
@@ -147,8 +146,6 @@ SVC_RATE_BPP = {
 }
 # Codecs without intra refresh (docs/handoff/vp9-av2.md).
 NO_INTRA_REFRESH = (Codec.VP9, Codec.AV2)
-# `--timestamps` signals capture timing in the stream, which VVC does not write yet.
-NO_CAPTURE_TIMING = (Codec.VVC,)
 
 
 @dataclass(frozen=True)
@@ -242,7 +239,7 @@ def cases(codecs: list[Codec]) -> list[Case]:
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
-    base += [Case(codec, "default", "timed") for codec in codecs if codec not in NO_CAPTURE_TIMING]
+    base += [Case(codec, "default", "timed") for codec in codecs]
     # Spatial presets (av1-svc*, vp9-svc*): LnT1, LnT3, LnT1_KEY, and LnT3_KEY
     # at their own layer count n, every operating point.
     base += [Case(codec, preset, f"svc-l{layers}{mode}-{clip}-{rate}")

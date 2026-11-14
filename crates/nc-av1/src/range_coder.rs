@@ -167,7 +167,13 @@ pub struct SymbolWriter {
     cnt: i32,
     /// Whether coded symbols adapt their CDFs (`disable_cdf_update = 0`).
     adapt: bool,
+    /// Deferred intervals already priced by `coded_bits`, and their bits.
+    priced: usize,
+    priced_bits: f64,
 }
+
+/// `cnt` of a fresh encoder: no bit waits in `low`.
+const CNT_START: i32 = -9;
 
 impl Default for SymbolWriter {
     fn default() -> Self {
@@ -186,8 +192,10 @@ impl SymbolWriter {
             spans: Vec::new(),
             low: 0,
             rng: 0x8000,
-            cnt: -9,
+            cnt: CNT_START,
             adapt: true,
+            priced: 0,
+            priced_bits: 0.,
         }
     }
 
@@ -209,6 +217,27 @@ impl SymbolWriter {
             intervals: Some(Vec::with_capacity(1 << 12)),
             ..Self::new()
         }
+    }
+
+    /// Approximate bits coded so far, for in-frame rate control: the output
+    /// bytes plus the bits waiting in `low`, or in a deferred stream the
+    /// information content of the recorded intervals (each `-log2` of its
+    /// probability, priced once, on the first query after it was recorded;
+    /// spans filled in later are not counted).
+    pub fn coded_bits(&mut self) -> u64 {
+        let Some(intervals) = self.intervals.as_ref() else {
+            let waiting = u64::try_from(self.cnt - CNT_START).unwrap_or(0);
+            return 8 * self.precarry.len() as u64 + waiting;
+        };
+        let top = f64::from(PROB_TOP).log2();
+        for interval in &intervals[self.priced..] {
+            let width = u32::from(interval.fl)
+                .saturating_sub(u32::from(interval.fh))
+                .max(1);
+            self.priced_bits += top - f64::from(width).log2();
+        }
+        self.priced = intervals.len();
+        self.priced_bits as u64
     }
 
     /// Reserve a literal bit in a deferred stream (initially false).

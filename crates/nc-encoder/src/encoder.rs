@@ -28,17 +28,19 @@ use crate::decision::{
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
+use crate::inframe::{InFrameControl, row_weights};
 use crate::input::write_raw;
 use crate::key_clock::KeyClock;
 use crate::key_plan::{KeyPlanMode, KeyPlanner};
 use crate::layer::LayerPosition;
 use crate::ltr::{LongTermReference, LtrAction, long_term_slot};
 use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
+use crate::noise_skip::NoiseMap;
 use crate::params::RefParams;
 use crate::params::{
-    AnalysisParams, DebugParams, DecisionParams, LayerParams, LtrParams, ParamOverrides,
-    PersistParams, PlannerParams, RateParams, RefreshParams, ResolutionParams, SceneParams,
-    SpatialParams, StillParams, engine_specs,
+    AnalysisParams, DebugParams, DecisionParams, InFrameParams, LayerParams, LtrParams,
+    ParamOverrides, PersistParams, PlannerParams, RateParams, RefreshParams, ResolutionParams,
+    SceneParams, SpatialParams, StillParams, engine_specs,
 };
 use crate::partition::{Block, should_split};
 use crate::partition_plan::{LeafStats, Partition, Planner};
@@ -65,6 +67,7 @@ use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 use crate::source_scale::{SourceScaler, scale_source_picture};
 use crate::spatial::SpatialConfig;
 use crate::startup_lookahead::startup_camera_motion;
+use crate::still_skip::StaticSkipTest;
 use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure};
 use crate::timeline::{FrameTime, Timeline};
 use nc_analysis::link::{MAX_REFERENCE_SLOTS, SlotMask};
@@ -181,6 +184,9 @@ pub(super) struct LayerState {
     /// Quantizer of the last key or high-quality frame (`is_high_quality`):
     /// the quality held frames build on.
     pub(super) last_quantizer: u32,
+    /// Per-cell temporal noise of the still picture, for the noise skip
+    /// (`decision.noise_skip`); updated only while that is on.
+    pub(super) noise_map: NoiseMap,
 }
 
 /// The encoder: configuration, a codec backend and the reconstructions.
@@ -229,6 +235,9 @@ pub struct Encoder<B: CodecBackend> {
     /// `(expected bits weight, offset in QP units)` of every block coded with AQ this frame:
     /// the realised offsets rate control normalizes its model with.
     block_offsets: Vec<(f64, f64)>,
+    /// In-frame rate control (`inframe.*`), for backends that code block
+    /// quantizers and report their bits mid-frame; `None` when off.
+    inframe: Option<InFrameControl>,
     /// Quantizer of the frame being coded (block offsets are relative to it).
     frame_quantizer: u32,
     force_keyframe: bool,
@@ -355,6 +364,7 @@ impl<B: CodecBackend> Encoder<B> {
                 rate_control_ladder: layer_params.rate_control_ladder(config.temporal_layers),
                 cadence,
                 last_key_index: 0,
+                noise_map: NoiseMap::new(),
                 last_quantizer: 0,
             };
             (None, layer)
@@ -372,7 +382,9 @@ impl<B: CodecBackend> Encoder<B> {
         let debug = DebugParams::from_overrides(&config.params);
         let random = RandomDecisions::from_seed(debug.random_decisions);
         let recode_identity = debug.recode_identity >= 0.5;
-        enable_backend_options(&mut backend, random.as_ref(), use_aq);
+        let inframe = InFrameControl::new(&InFrameParams::from_overrides(&config.params))
+            .filter(|_| B::SUPPORTS_BLOCK_QP && B::REPORTS_CODED_BITS);
+        enable_backend_options(&mut backend, random.as_ref(), use_aq || inframe.is_some());
         let encoder = Self {
             recode_identity,
             hold: FrameHold::new(&config),
@@ -398,6 +410,7 @@ impl<B: CodecBackend> Encoder<B> {
             lookahead: None,
             reuse_frame: None,
             block_offsets: Vec::new(),
+            inframe,
             frame_quantizer: 0,
             force_keyframe: false,
             ltr,
@@ -579,7 +592,16 @@ impl<B: CodecBackend> Encoder<B> {
                 hint.block_qp_offset =
                     controller.effective_block_offset(aq.total_weight(), aq.offset_cells());
             }
-            controller.select(rc_key, index, hint, references.position, share)
+            let quantizer = controller.select(rc_key, index, hint, references.position, share);
+            if let Some(inframe) = self.inframe.as_mut() {
+                let (room, uniform) = controller.inframe_bounds();
+                let sb_log2 = self.backend.superblock_log2();
+                let rows = self.layer.coded_height.div_ceil(1 << sb_log2);
+                let limit = inframe.frame_limit(rc_key, room, uniform);
+                let weights = limit.map(|_| row_weights(pre, sb_log2, rows));
+                inframe.plan_frame(limit, weights.into_iter().flatten());
+            }
+            quantizer
         } else if frame_type == FrameType::Key || self.config.quantizer < self.quantizer_bounds().0
         {
             // Keys keep the configured (T0) quantizer; backends apply their
@@ -612,7 +634,9 @@ impl<B: CodecBackend> Encoder<B> {
             quantizer,
             references,
             lambda_scale,
-            block_qp: self.random.is_some() || self.active_aq().is_some(),
+            block_qp: self.random.is_some()
+                || self.active_aq().is_some()
+                || self.inframe.as_ref().is_some_and(InFrameControl::steering),
         }
     }
 
@@ -1395,6 +1419,11 @@ impl<B: CodecBackend> Encoder<B> {
             self.frame_params(index, &references, role, analysis);
         self.frame_decision_params = decision_params;
         self.apply_backend_role(role);
+        if decision_params.noise_skip > 0.
+            && let (Some(pre), Some(motion)) = (pre, motion)
+        {
+            self.layer.noise_map.update(pre, &motion.fine);
+        }
 
         self.backend
             .set_noise_sigma(analysis.map_or(0.0, |a| a.noise_sigma));
@@ -1515,8 +1544,12 @@ impl<B: CodecBackend> Encoder<B> {
             let size = (self.layer.width, self.layer.height);
             term.observe(&self.dsp, (coded_source, recon), size, coded);
         }
+        let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
+        if steering {
+            self.report_inframe_offset();
+        }
         if let Some(controller) = self.layer.rate_control.as_mut() {
-            if let Some(aq) = self.layer.aq.as_ref().filter(|aq| aq.active()) {
+            if let Some(aq) = self.layer.aq.as_ref().filter(|aq| aq.active() && !steering) {
                 let offsets = self.block_offsets.iter().copied();
                 let realised = controller.effective_block_offset(aq.total_weight(), offsets);
                 controller.set_realised_block_offset(realised);
@@ -1579,6 +1612,9 @@ impl<B: CodecBackend> Encoder<B> {
         if self.recode_identity && codings == 1 {
             return Some(plan);
         }
+        if self.inframe.as_ref().is_some_and(InFrameControl::steering) {
+            self.report_inframe_offset();
+        }
         let planned = self.layer.rate_control.as_mut()?.recode_quantizer(bits)?;
         let (quantizer, lambda_scale) = self.coded_quantizer(planned);
         Some(FramePlan {
@@ -1586,6 +1622,18 @@ impl<B: CodecBackend> Encoder<B> {
             lambda_scale,
             ..plan
         })
+    }
+
+    /// Tell rate control how much coarser the rows in-frame control
+    /// coarsened made the coding just finished, before it learns from it.
+    fn report_inframe_offset(&mut self) {
+        let (Some(controller), Some(inframe)) =
+            (self.layer.rate_control.as_mut(), self.inframe.as_ref())
+        else {
+            return;
+        };
+        let (total, offsets) = inframe.realised();
+        controller.set_inframe_offset(controller.effective_block_offset(total, offsets));
     }
 
     /// Code one picture from `begin_frame` to `end_frame` (the partition
@@ -1606,6 +1654,10 @@ impl<B: CodecBackend> Encoder<B> {
             recon,
         } = pictures;
         self.backend.begin_frame(plan);
+        let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
+        if steering && let Some(inframe) = self.inframe.as_mut() {
+            inframe.begin_frame(self.backend.coded_bits().unwrap_or(0));
+        }
         if B::OWN_PICTURE_PIPELINE {
             self.backend.encode_picture(
                 plan,
@@ -1672,6 +1724,12 @@ impl<B: CodecBackend> Encoder<B> {
                         recon: &mut *recon,
                     };
                     self.code_node(sb, plan.as_ref(), pictures, inter);
+                }
+                if steering && let Some(bits) = self.backend.coded_bits() {
+                    self.inframe
+                        .as_mut()
+                        .expect("steering implies in-frame control")
+                        .end_row(bits);
                 }
             }
             self.backend.filter_frame(coded_source, recon);
@@ -2090,15 +2148,8 @@ impl<B: CodecBackend> Encoder<B> {
                     .static_skip_vector(node)
                     .is_some_and(|mv| w.allows(node, mv))
             });
-        let mode = if skip_allowed
-            && frame.pre.is_some_and(|pre| is_static::<B>(pre, node))
-            && self.backend.try_static_skip(
-                node,
-                source,
-                reference,
-                recon,
-                frame.still.is_some_and(|still| is_still::<B>(still, node)),
-            ) {
+        let mode = if skip_allowed && self.try_static_skip(node, frame, (source, reference), recon)
+        {
             let skip = self
                 .backend
                 .static_skip_vector(node)
@@ -2511,8 +2562,11 @@ impl<B: CodecBackend> Encoder<B> {
         // Rate control's realised offset needs only the leaves coded off the
         // frame quantizer (the others' ratio is 1; the frame's total weight
         // covers them): on a frame where the reuse term refines a few cells,
-        // a few leaves.
-        if let Some(aq) = self.active_aq().filter(|_| qp_offset != 0) {
+        // a few leaves. A frame in-frame control steers keeps its planned
+        // block offset and reports the rows it coarsened instead
+        // (`Encoder::report_inframe_offset`).
+        let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
+        if let Some(aq) = self.active_aq().filter(|_| qp_offset != 0 && !steering) {
             let frame_step = self.quantizer_steps[self.frame_quantizer as usize];
             let coded = (i64::from(self.frame_quantizer) + i64::from(qp_offset)) as usize;
             let offset = QP_UNITS_PER_OCTAVE * (self.quantizer_steps[coded] / frame_step).log2();
@@ -2561,15 +2615,22 @@ impl<B: CodecBackend> Encoder<B> {
                 )
             });
         let qp_offset = random_qp.unwrap_or_else(|| {
-            self.active_aq().map_or(0, |aq| {
-                let codec = self.config.codec;
-                native_offset(
-                    &self.quantizer_steps,
-                    (min_quantizer(codec), max_quantizer(codec)),
-                    self.frame_quantizer,
-                    aq.offset_qp(node),
-                )
-            })
+            let inframe = self
+                .inframe
+                .as_ref()
+                .filter(|c| c.steering())
+                .map_or(0., InFrameControl::offset_qp);
+            let aq = self.active_aq().map(|aq| aq.offset_qp(node));
+            if aq.is_none() && inframe == 0. {
+                return 0;
+            }
+            let codec = self.config.codec;
+            native_offset(
+                &self.quantizer_steps,
+                (min_quantizer(codec), max_quantizer(codec)),
+                self.frame_quantizer,
+                aq.unwrap_or(0.) + inframe,
+            )
         });
         if qp_offset == 0 {
             0
@@ -2580,6 +2641,41 @@ impl<B: CodecBackend> Encoder<B> {
 }
 
 impl<B: CodecBackend> Encoder<B> {
+    /// Offer `node` to the backend's static skip when pre-analysis marks it
+    /// static, or when the noise skip (`noise_skip.rs`, while on) finds its
+    /// zero-vector residual within the camera's noise.
+    fn try_static_skip(
+        &mut self,
+        node: &Block,
+        frame: &FrameInputs<'_>,
+        (source, reference): (&Picture, &Picture),
+        recon: &mut Picture,
+    ) -> bool {
+        let params = &self.frame_decision_params;
+        let within_noise = params.noise_skip > 0.
+            && self.layer.noise_map.explains(
+                &self.dsp,
+                node,
+                (source, reference),
+                params.noise_skip,
+                params.noise_skip_chroma_ratio,
+            );
+        if !within_noise && !frame.pre.is_some_and(|pre| is_static::<B>(pre, node)) {
+            return false;
+        }
+        let still = frame.still.is_some_and(|still| is_still::<B>(still, node));
+        self.backend.try_static_skip(
+            node,
+            source,
+            reference,
+            recon,
+            StaticSkipTest {
+                still,
+                within_noise,
+            },
+        )
+    }
+
     /// Code the static skip of `node` at vector `skip`, and report it to the
     /// reuse term (a copy of the reference at the zero vector).
     fn code_static_skip(

@@ -67,13 +67,8 @@ fn encode<B: CodecBackend>(codec: Codec, cbr: bool, repeated: bool) -> (Vec<Vec<
         },
         key_qp_offset: None,
         temporal_layers: 1,
-        // VVC has no timing signalling (the stream is untimed).
         signal: StreamSignal {
-            timing: if codec == Codec::Vvc {
-                TimingSignal::Nominal
-            } else {
-                TimingSignal::Variable
-            },
+            timing: TimingSignal::Variable,
             ..StreamSignal::default()
         },
         params: ParamOverrides::default(),

@@ -48,8 +48,11 @@ are needed: each worker has its own ordinary WASM memory.
   (`tests/clip-cadence.py` checks one distinct frame per tick). They are loaded by relative URL, listed in `clips.js` and credited next to the
   picker; a clip's file is fetched only when it is selected. Each clip has a 360p
   file (used at 384×216 and 640×360) and a 720p file (854×480, the default, and
-  1280×720); the page reads the file for the larger of the two versions' sizes, and a
-  resolution change that needs the other file reloads it. Sources, segment times, changes and
+  1280×720); each version codes, and is scored against, the file for its own size
+  (the rendition the pre-encoded streams of that size were made from; two files are
+  decoded when the versions straddle 360p, `exact-source.js` `ViewSources`), and the
+  analysis statistics name it. Without WebCodecs the one playing video is the larger
+  version's file. A resolution change that needs another file reloads it. Sources, segment times, changes and
   verbatim notices are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
 - **Two versions:** choose H.264, HEVC, AV1, VVC, VP9 or AV2 independently, or a

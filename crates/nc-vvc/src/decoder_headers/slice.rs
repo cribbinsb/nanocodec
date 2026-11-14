@@ -275,6 +275,7 @@ mod tests {
             ColourInfo::default(),
             &ChromaQpTable::hevc(0),
             headers::Tools::default(),
+            None,
         ))
         .unwrap();
         let p = PictureParameters::parse(&headers::pps(&geometry, false), &s).unwrap();

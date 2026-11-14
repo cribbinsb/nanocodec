@@ -670,8 +670,9 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
         large_transforms: transforms.large_transforms,
         ..headers::read_sps_tools(&mut r)?
     };
+    let timing = headers::read_sps_timing(&mut r)?;
     let colour = read_colour(&mut r)?;
-    if bytes != headers::sps(&geometry, colour, &chroma_qp, tools) {
+    if bytes != headers::sps(&geometry, colour, &chroma_qp, tools, timing) {
         return Err(DecodeError::Unsupported("VVC SPS tools"));
     }
     Ok(SequenceInfo {

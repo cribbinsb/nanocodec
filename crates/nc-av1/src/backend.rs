@@ -21,8 +21,8 @@ use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
     FrameType, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
-    ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig, SpatialLayerFrame, ZeroLimits,
-    copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
+    ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest,
+    ZeroLimits, copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
     zero_vector_residual_is_zero,
 };
 
@@ -895,6 +895,13 @@ impl CodecBackend for Av1Backend {
     /// `begin_frame` starts from committed state (slot CDFs, CDEF memory,
     /// the previous frame's kind); `commit_frame` advances it.
     const RECODE: bool = true;
+    const REPORTS_CODED_BITS: bool = true;
+
+    /// The tile's bits so far (the frame header is written at
+    /// `end_frame` and not counted).
+    fn coded_bits(&mut self) -> Option<u64> {
+        Some(self.writer.coded_bits())
+    }
 
     /// The DC-aware intra test stays off for AV1: on VAL-150 (full gate) it
     /// loses VMAF v1 although PSNR gains. With every block also trying intra
@@ -1411,7 +1418,9 @@ impl CodecBackend for Av1Backend {
     }
 
     fn static_skip_vector(&mut self, _block: &Block) -> Option<Mv> {
-        (self.params.still_skip >= 0.5).then_some(Mv::ZERO)
+        // Also the vector of the engine's noise skip, which needs no
+        // `av1.still_skip`.
+        Some(Mv::ZERO)
     }
 
     fn copied_reference(&self, block: &Block) -> bool {
@@ -1421,25 +1430,29 @@ impl CodecBackend for Av1Backend {
 
     /// `av1.still_skip`: a still block whose zero-vector residual would
     /// quantise to zero in every plane is coded as the zero vector with no
-    /// residual (`nc_encoder::still_skip`).
+    /// residual (`nc_encoder::still_skip`); so is one the engine's noise
+    /// skip passes (`test.within_noise`).
     fn try_static_skip(
         &mut self,
         block: &Block,
         source: &Picture,
         reference: &Picture,
         recon: &mut Picture,
-        still: bool,
+        test: StaticSkipTest,
     ) -> bool {
         // A held reference predicts scaled, not the engine's proxy.
-        if !still || self.params.still_skip < 0.5 || self.held_reference().is_some() {
+        if self.held_reference().is_some() {
             return false;
         }
-        let limits = PlaneZeroLimits {
-            luma: self.zero_limits(PlaneIndex::Y),
-            chroma: self.zero_limits(PlaneIndex::U),
-        }
-        .scaled(self.params.still_skip_limit_scale);
-        let accepted = zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits);
+        let accepted = test.within_noise
+            || (test.still && self.params.still_skip >= 0.5 && {
+                let limits = PlaneZeroLimits {
+                    luma: self.zero_limits(PlaneIndex::Y),
+                    chroma: self.zero_limits(PlaneIndex::U),
+                }
+                .scaled(self.params.still_skip_limit_scale);
+                zero_vector_residual_is_zero(&self.dsp, block, source, reference, limits)
+            });
         if accepted {
             copy_zero_vector_prediction(block, reference, recon);
             self.still_skipped = Some((block.x, block.y));

@@ -206,4 +206,188 @@ backends report a bit position. #2 next if #1 leaves the bursts in place.
 
 ## 4. Prototype measurements
 
-Pending: in-frame control (`inframe.*`, branch `feature/inframe-rc`).
+### 4.1 What was built (`inframe.*`, registered, off)
+
+`nc-encoder/src/inframe.rs`. After each superblock row the encoder asks the backend for the frame's bits so far
+(`CodecBackend::coded_bits`). It projects the rest of the frame from the bits per unit of weight spent so far,
+where a row's weight is block AQ's expected bit weight from the pre-analysis (no new pass). When the
+projection passes the frame's limit, the remaining rows are coarsened. The rules:
+
+- **Bounded steps.** Rows only get coarser than the plan, by at most `inframe.row_step` (3) QP per row and
+  `inframe.max_offset` (12) in all.
+- **Engine plumbing.** The offset travels through the engine's block-QP path, so λ follows the coded step.
+- **Rate model.** The coarsened rows are reported to rate control as a realised offset (`set_inframe_offset`),
+  so the size model learns the frame's real step.
+
+Two limits, either or both:
+
+- **`inframe.room`** is a share of the room the whole-frame re-code would enforce: a re-code replacement.
+- **`inframe.budgets`** is a multiple of the *uncorrected* frame budget (target / fps). It is a burst bound
+  that does not shrink with the debt, unlike the `rate.burst_cycles` probe.
+
+Keys are left to the whole-frame re-code unless `inframe.keys` is 1.
+
+**Backends.** H.264 reports exact CAVLC bits and CABAC bits including the carry-pending bytes. AV1 reports range-coder
+bytes, or for deferred tiles the information content of the recorded intervals, priced once per query.
+
+**AV1 cost.** AV1 frames carry `delta_q_present` while armed, so an armed AV1 stream changes even where no row is
+coarsened.
+
+**Checks.**
+- With both limits off, every shipped preset of every codec is byte-identical to the integration branch: 52 of
+  52 streams, two 720p clips, CBR 600 kbps.
+- With in-frame control forced on (`budgets=4`, `room=0.9`, `keys=1`), the landing conformance check passes for
+  H.264 and AV1: all 225 streams are bit-exact in JM, ffmpeg, aomdec, dav1d and ours, covering every preset, layers,
+  intra refresh and starved keys.
+
+**Not wired.** HEVC (whose slice is written at `end_frame`), VP9 (whose symbols are recorded for the frame's
+probabilities), VVC and AV2 report nothing, so in-frame control stays off for them.
+
+### 4.2 Bit control: the audit's six still points
+
+Setup: 600 frames from frame 0, a key every 10 s, our reconstruction, build `feature/inframe-rc` (in-frame control off is byte-identical to the integration branch).
+Script: `bitctl.py`, which runs the shared point engine with a `--rate-log` encode per point.
+
+Column notes:
+
+- **U** is one uncorrected frame budget (target/fps). Inter frame sizes are given in U as p95 / max.
+- **Re-coded** counts frames re-coded per 600.
+- **Worst-1%** is the worst-1% PSNR-Y.
+- **Rate** is achieved / target over 600 frames.
+
+AV1 Default:
+
+| Point | Default: rate / max U / re-coded / worst-1% / PSNR-YUV | `budgets=8` (keys exempt) | `room=0.9` (keys exempt) | `room=0.9` (keys steered too) |
+|---|---|---|---|---|
+| chirla 47 | 1.001 / 40.3 / 22 / 28.81 / 40.11 | 1.011 / 18.8 / 11 / 29.10 / 39.44 | 1.018 / 33.9 / 13 / 29.05 / 39.98 | 1.008 / 34.2 / 14 / **27.31** / 39.59 |
+| chirla 93 | 1.037 / 38.6 / 8 / 35.40 / 43.57 | 1.008 / 19.4 / 6 / 35.08 / 43.51 | 0.995 / 36.2 / 3 / 35.51 / 43.55 | 1.006 / 36.2 / 3 / 35.51 / 43.56 |
+| chirla 187 | 1.030 / 35.6 / 26 / 38.97 / 45.76 | 1.026 / 22.5 / 1 / 38.72 / 45.72 | 1.051 / 30.3 / 3 / 39.32 / 45.97 | 1.042 / 30.3 / 6 / 39.32 / 45.80 |
+| meva 97 | 0.984 / 30.2 / 16 / 29.14 / 38.16 | 1.014 / 14.8 / 5 / 29.27 / 37.77 | 1.009 / 30.7 / 0 / **26.98** / 37.54 | 1.011 / 30.3 / 0 / **26.96** / 37.66 |
+| meva 194 | 1.033 / 37.1 / 8 / 33.06 / 40.94 | 0.998 / 9.4 / 1 / 32.77 / 40.45 | 1.041 / 32.2 / 0 / 32.36 / 40.80 | 1.014 / 31.5 / 0 / 32.45 / 40.76 |
+| meva 388 | 1.028 / 36.6 / 7 / 33.91 / 42.73 | 1.004 / 9.1 / 0 / 36.32 / 42.58 | 1.016 / 31.8 / 0 / 35.64 / 42.64 | 1.039 / 29.8 / 0 / 35.61 / 42.76 |
+
+H.264 Default:
+
+| Point | Default: rate / max U / re-coded / worst-1% / PSNR-YUV | `budgets=8` | `room=0.9` (keys exempt) |
+|---|---|---|---|
+| chirla 47 | 0.987 / 30.0 / 12 / 30.88 / 40.33 | 0.976 / 13.9 / 4 / 30.55 / 39.98 | 1.003 / 28.5 / 4 / **25.42** / 39.31 |
+| chirla 93 | 0.987 / 31.8 / 4 / 33.69 / 43.44 | 0.977 / 13.0 / 2 / 34.08 / 43.37 | 0.998 / 36.9 / 0 / 33.20 / 43.19 |
+| chirla 187 | 0.997 / 32.4 / 2 / 38.43 / 46.49 | 0.980 / 12.9 / 0 / 37.77 / 45.98 | 1.006 / 31.9 / 1 / 38.38 / 46.61 |
+| meva 97 | 0.962 / 27.7 / 16 / 26.97 / 37.04 | 0.977 / 8.3 / 1 / 28.54 / 36.80 | 1.021 / 35.4 / 4 / **24.08** / 36.75 |
+| meva 194 | 1.006 / 37.2 / 6 / 29.73 / 40.42 | 0.994 / 8.2 / 1 / 31.28 / 40.08 | 1.020 / 33.5 / 0 / 31.59 / 40.72 |
+| meva 388 | 1.027 / 33.2 / 3 / 35.37 / 43.03 | 0.997 / 7.9 / 0 / 34.98 / 42.51 | 1.004 / 31.8 / 0 / 34.60 / 42.81 |
+
+Other limits tried: `budgets=12` (AV1 rate 0.999–1.055, max 12–25 U); `budgets=16`; `room=0.9` with
+`budgets=8`, which matches `budgets=8` within noise.
+
+What the tables show:
+
+- **`budgets=8` does the bit-control job.** It bounds every frame's size: the largest inter frame falls from 28–40 U to 8–23 U, with
+  AV1's misses past 8 U coming from rows coded before the projection caught up. Re-codes fall from 87 to 24 per
+  3,600 frames in AV1 and from 43 to 8 in H.264. Every point lands at 0.976–1.026 of target. AV1's four points over 2.5% (+2.8% to +3.7%)
+  end at −0.2% to +2.6%. Worst-1% PSNR-Y moves −0.7 to +2.4 dB. The large drops of the
+  after-the-fact bounds (−1.8 to −2.9 dB on meva 194, audit addenda) do not appear.
+- **It costs mean quality on still content, and the lower rate explains little of it.** PSNR-YUV is −0.05 to −0.67 dB, against rate
+  changes of −3.4% to +3.0%. At matched rate (the Default's three ladder points interpolated in log-rate to the
+  candidate's achieved rate) the loss is:
+
+  | | chirla 47 / 93 / 187 | meva 97 / 194 / 388 |
+  |---|---|---|
+  | AV1 PSNR-YUV | −0.72 / +0.08 / −0.03 | −0.51 / −0.36 / −0.09 |
+  | AV1 VMAF v1 | −0.44 / +0.58 / +0.62 | −1.56 / −0.53 / +0.25 |
+  | H.264 PSNR-YUV | −0.30 / −0.03 / −0.43 | −0.31 / −0.28 / −0.41 |
+  | H.264 VMAF v1 | +0.23 / +0.40 / +0.17 | −0.22 / +0.32 / −0.11 |
+
+  MS-SSIM at matched rate moves −0.0033 to +0.0005. Still-scene refinement bursts are efficient: they buy quality
+  that every later frame inherits. A bound gives part of that up, and a row bound also refines the top of the
+  picture first.
+- **`room` is not a re-code replacement.** With keys steered, or with only inter frames, it removes most
+  re-codes but drops worst-1% PSNR-Y by 1.5–5.5 dB on chirla 47 and meva 97. The frames that reach the re-code room are the
+  ones after a key. A re-code coarsens them evenly; row steering leaves their lower rows up to 12 QP coarser.
+  On static content those rows stay coarse until refined again.
+
+### 4.3 Quality: L1 screen (rotation 2026-11-14 quick draw, 24 clips, 150 frames, `budgets=8` vs off)
+
+| Codec | J (90% CI) | Clips changed | Largest per-clip effects |
+|---|---|---|---|
+| AV1 Default | −1.18% [−2.38, +0.52] | 24 of 24 (armed frames carry `delta_q_present`) | `otw_portrait_crowd_1080p` −22.4%, `drone_rounda` −5.7%; static `bdd_00dc5030` +8.8%, `long_static_chirla` +1.6% |
+| H.264 Default | −0.38% [−1.50, +0.63] | 10 of 24 | `otw_portrait_crowd_1080p` −16.7%; `aboda_video11` +5.1%, static `bdd_00dc5030` +3.8%, `pan_jaad_0101` +1.8% |
+
+Both intervals include 0. The mean rests on one clip: without `otw_portrait_crowd_1080p` both are about 0 or
+slightly worse. Static clips lose, as in 4.2.
+
+### 4.4 Re-code census (owner question: how often do we re-encode?)
+
+Each point was encoded once with `--rate-log`; the new `codings` and `encode_us` columns give each frame's
+codings and wall time. Streams were deleted. Build `feature/inframe-rc` with in-frame control off, which is
+byte-identical to the integration branch.
+
+Column notes:
+
+- **base** means a cadence base frame (a negative cadence offset).
+- **Time** is a re-coded inter frame's wall time over its stream's median single-coded inter frame. It was
+  measured on a loaded machine, so read it as a ratio within each stream.
+- **Most codings** is the most times any one frame was coded.
+
+**Day's L1 draw** (24 clips, every rung, 150 frames, one key; 93 streams, ~13,870 frames per config):
+
+| Config | Re-coded per 1000: all / key / base / other inter | Streams with none | Most codings | Time: median, max |
+|---|---|---:|---:|---|
+| AV1 Default / Fast | 1.4 / 0 / 8.6 / 0.0; 0.9 / 0 / 5.0 / 0.1 | 86% / 90% | 3 | 10.3x, 15.9x; 7.8x, 10.9x |
+| HEVC Default / Fast | 1.7 / 0 / 10.4 / 0.0; 0.6 / 0 / 4.1 / 0.0 | 90% / 92% | 3 | 8.4x, 17.1x; 5.4x, 11.0x |
+| H.264 Default | 1.1 / 0 / 12.1 / 0.1 | 89% | 3 | 6.3x, 16.1x |
+| H.264 Fast / Faster / Fastest | 0.5 / 0.6 / 1.2 (nearly all base frames) | 95% / 94% / 91% | 3 | 3.0–3.2x, max 4.8x |
+| VP9 Default / Fast | 1.1 / 0.5 | 89% / 94% | 3 | 11.2x (max 21.2x) / 7.0x |
+| VVC Default / Fast | 0.9 / 0.7 | 90% / 92% | 3 | 8.0x / 5.8x |
+| AV2 Default / Fast | 2.4 / 1.3 | 85% / 90% | 3 | 9.3x (max 21.6x) / 5.3x |
+| H.264 Default, `inframe.budgets=8` | 0.0 | 100% | 1 | — |
+| AV1 Default, `inframe.budgets=8` | 0.1 | 99% | 3 | 7.6x |
+
+By class, almost all re-codes are on drone clips (5–22 per 1000, 4 streams) and static clips (0.4–6.2). Crowd
+has 0–2.7, pan 0–0.8, body-cam 0–1, and lowlight and texture 0. Over the 14 configs without in-frame control,
+163 frames were coded twice and 43 three times.
+
+**Long window** (the draw's 30 clips with ≥600 frames, every rung, 600 frames, a key every 10 s; 114 streams,
+~68,200 frames per config):
+
+| Config | Re-coded per 1000: all / key / base / other inter | Streams with none | Most codings | Time: median, max |
+|---|---|---:|---:|---|
+| AV1 Default | 4.2 / 44 / 16.2 / 1.0 | 68% | 3 | 10.5x, 39x |
+| HEVC Default | 4.0 / 40 / 17.0 / 0.6 | 70% | 3 | 8.9x, 23x |
+| H.264 Default | 3.3 / 32 / 25.7 / 0.7 | 68% | 3 | 6.5x, 21x |
+| AV1 Default, `inframe.budgets=8` | 1.0 / 32 / 0.6 / 1.0 | 79% | 3 | 4.2x, 13x |
+| H.264 Default, `inframe.budgets=8` | 0.8 / 40 / 0.3 / 0.7 | 80% | 3 | 2.8x, 14x |
+
+By class, static clips have 7.8–9.9 per 1000 (1.9–2.4 with `budgets=8`), pan ≤0.1, and crowd and lowlight 0.
+
+What the census shows:
+
+- **No first key was re-coded** (0 of 114 in every config).
+- **Periodic keys were re-coded 8–11 times out of 137 (6–8%).** In-frame control leaves keys alone by default,
+  so this is the same with it on.
+- **A frame is coded at most three times** (`MAX_RECODES` 2).
+- **What would make inter re-codes unnecessary.** In-frame control with a hard guarantee: a last resort of the
+  maximum offset, then zero residual, in the remaining rows. That bounds a frame at the room plus one superblock
+  row. The `room` probe (4.2) shows the cost: steering at the hard limit hurts the frames after a key more than a
+  uniform re-code does. So the guarantee should stay a rare backstop behind a soft bound and a better base-frame
+  predictor.
+- **Periodic keys.** Either keep strict-buffer room before the key, which bounded bursts now make feasible, or
+  size the key from an intra pre-estimate.
+
+### 4.5 Verdict and hand-off
+
+- **`inframe.budgets` is a working bit-control lever.** It bounds frame size in budget units and removes nearly
+  every base-frame re-code (4.4), with no worst-frame collapse. But it costs real mean quality on still scenes:
+  −0.03 to −0.72 dB PSNR-YUV at matched rate. On the L1 draw it is J-neutral within noise. It is landed off by
+  default for deployments that value steady frame sizes and few re-codes: low-latency transport, real-time
+  deadlines. It is **not handed to the tuner for the Defaults**, because it fails the still-scene quality gate.
+- **`inframe.room` is rejected as a re-code replacement.** Whole-frame re-codes beat row steering on the frames
+  after a key. It stays registered because `budgets` uses the same machinery and the hard limit is the basis of a max-frame-size
+  option, but it is not recommended.
+- **Next, if pursued:**
+  - Arm AV1's `delta_q` only on frames that can burst: cadence base frames, or frames finer than their reference.
+  - Wire HEVC. Its slice is written at `end_frame` from recorded CUs, so it needs either a running estimate (the
+    CABAC bin costs the decisions already price, summed per coded CU into a counter `coded_bits` reads) or
+    per-CTU writing. The estimate is cheap: one add per CU.
+  - Most promising for quality: recommendation #2, the cyclic spatial cadence. It attacks the bimodal base-frame cost at
+    its cause instead of bounding it.

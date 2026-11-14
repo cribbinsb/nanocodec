@@ -16,8 +16,8 @@ async function capture(picture) {
   const channel = new MessageChannel();
   worker.postMessage({ type: 'init', views: [{ port: channel.port1, width: video.videoWidth, height: video.videoHeight }] }, [channel.port1]);
   const received = new Promise(resolve => { channel.port2.onmessage = ({ data }) => resolve(data.frame); });
-  worker.postMessage({ type: 'frame', id: 1, timestamp: 0, picture, sourceWidth: video.videoWidth,
-    sourceHeight: video.videoHeight, displays: ['i420'], coding: [true] }, [picture]);
+  worker.postMessage({ type: 'frame', id: 1, timestamp: 0, sources: [{ picture, sourceWidth: video.videoWidth,
+    sourceHeight: video.videoHeight, views: [0] }], displays: ['i420'], coding: [true] }, [picture]);
   const frame = await received;
   channel.port2.close();
   return frame;

@@ -27,6 +27,7 @@ use crate::encoder::{
 };
 use crate::feedback::ReferencedFrames;
 use crate::hold::LastCoded;
+use crate::noise_skip::NoiseMap;
 use crate::params::{LayerParams, RateParams, RefParams};
 use crate::rate_control::{
     LayerShare, MAX_RECODES, RECODE_FIRST_EXPONENT, RateControlConfig, RateControlError,
@@ -258,6 +259,7 @@ fn spatial_layer_state<B: CodecBackend>(
         rate_control_ladder: layer_params.rate_control_ladder(temporal_layers),
         cadence: configured_cadence(&layer_cfg, backend),
         last_key_index: 0,
+        noise_map: NoiseMap::new(),
         last_quantizer: 0,
     };
     Ok((state, last_visible_recon))

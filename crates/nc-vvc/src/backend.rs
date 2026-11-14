@@ -13,7 +13,7 @@ use nc_common::{Picture, PlaneIndex};
 use nc_dsp::{Dsp, Filter};
 use nc_encoder::{
     Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType,
-    Mv, PartitionShape, PredictionMode, ShapeSet, TimingSignal,
+    Mv, PartitionShape, PredictionMode, ShapeSet,
 };
 
 mod alf_search;
@@ -343,6 +343,8 @@ pub struct VvcBackend {
     /// The SPS's luma-to-chroma QP map.
     chroma_qp: ChromaQpTable,
     colour: nc_common::ColourInfo,
+    /// The SPS's stream timing, when the configuration signals it.
+    timing: Option<headers::Timing>,
     key_qp_offset: i32,
     rate_control: bool,
     /// The intra-refresh window of the current frame (`set_refresh`), if
@@ -785,6 +787,7 @@ impl CodecBackend for VvcBackend {
                 None => ChromaQpTable::hevc(params.chroma_qp_offset.round() as i32),
             },
             colour: config.signal.colour,
+            timing: headers::Timing::from_signal(config.signal.timing, config.frame_rate),
             key_qp_offset: config.key_qp_offset.unwrap_or_else(|| {
                 nc_encoder::fixed_qp_key_offset(config.intra_period, KEY_QP_OFFSET_AT_REFERENCE)
                     + params.key_qp_offset_delta.round() as i32
@@ -1382,9 +1385,6 @@ fn check_config(config: &EncoderConfig) -> Result<(), ConfigError> {
             max: headers::MAX_QP,
         });
     }
-    if config.signal.timing != TimingSignal::Nominal {
-        return Err(ConfigError::Unsupported("VVC has no HRD timing yet"));
-    }
     Ok(())
 }
 
@@ -1705,6 +1705,7 @@ impl VvcBackend {
                 self.colour,
                 &self.chroma_qp,
                 self.tools,
+                self.timing,
                 self.temporal_layers,
             ),
             out,

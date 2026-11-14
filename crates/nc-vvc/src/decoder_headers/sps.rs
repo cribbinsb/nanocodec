@@ -252,6 +252,7 @@ mod tests {
                 ColourInfo::default(),
                 &map,
                 headers::Tools::default(),
+                None,
             );
             let s = Sequence::parse(&bytes).unwrap();
             assert_eq!(
@@ -267,6 +268,30 @@ mod tests {
             }
             for end in 0..bytes.len() {
                 assert!(Sequence::parse(&bytes[..end]).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn timed_encoder_sps_parses() {
+        let geometry = headers::Geometry::new(640, 360, headers::MIN_CTU_LOG2);
+        for fixed_rate in [false, true] {
+            let timing = headers::Timing {
+                num_units_in_tick: 1001,
+                time_scale: 30000,
+                fixed_rate,
+            };
+            for layers in [1, 3] {
+                let bytes = headers::sps_layered(
+                    &geometry,
+                    ColourInfo::default(),
+                    &ChromaQpTable::hevc(0),
+                    headers::Tools::default(),
+                    Some(timing),
+                    layers,
+                );
+                let s = Sequence::parse(&bytes).unwrap();
+                assert_eq!(s.ctu_log2, headers::MIN_CTU_LOG2);
             }
         }
     }
