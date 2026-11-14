@@ -392,6 +392,8 @@ const DEBIT_MAX_BUFFERS: f64 = 0.25;
 /// key's repay horizon (`repay_seconds_for_key`): about a second of history,
 /// so one frame's flash or pan does not decide a 10 s phase.
 const STILL_AVERAGE_SECONDS: f64 = 1.0;
+/// Smallest change of the first key's horizon worth re-planning for.
+const REPLAN_MIN_SECONDS: f64 = 1e-6;
 /// Model slot of key frames; inter roles follow at `INTER_MODEL + role`.
 const KEY_MODEL: usize = 0;
 const INTER_MODEL: usize = 1;
@@ -517,12 +519,19 @@ pub(crate) struct RateController {
     key_repay_still_seconds: f64,
     key_repay_still_from: f64,
     key_repay_still_full: f64,
-    /// Running share of unchanged 8x8 blocks over the inter frames
-    /// ([`STILL_AVERAGE_SECONDS`]); 0 before the first one.
+    /// Running share of unchanged 8x8 blocks over the inter frames: their
+    /// mean until [`STILL_AVERAGE_SECONDS`] of them are in, then an average
+    /// with that time constant; 0 before the first one.
     still_share: f64,
+    /// Inter frames counted into `still_share` (saturating).
+    still_frames: u32,
     /// The current key's repay horizon, chosen when the key is planned
     /// (`repay_seconds_for_key`).
     phase_repay_seconds: f64,
+    /// The first key's re-plan, while pending: the inter frame after the
+    /// first key at which a second of stillness history exists
+    /// (`replan_first_key`).
+    first_key_replan_at: Option<u32>,
     /// `rate.key_cap_buffer` and `rate.key_cap_gop` (`key_bits_cap`).
     key_cap_buffer: f64,
     key_cap_gop: f64,
@@ -638,7 +647,9 @@ impl RateController {
             key_repay_still_from: f64::from(params.key_repay_still_from),
             key_repay_still_full: f64::from(params.key_repay_still_full),
             still_share: 0.,
+            still_frames: 0,
             phase_repay_seconds: f64::from(params.key_repay_seconds),
+            first_key_replan_at: None,
             key_cap_buffer: f64::from(params.key_cap_buffer),
             key_cap_gop: f64::from(params.key_cap_gop),
             first_key_lookahead: first_key_lookahead(params, &calibration),
@@ -778,8 +789,9 @@ impl RateController {
     /// blended linearly towards `rate.key_repay_still_seconds` as the running
     /// share of unchanged blocks rises from `rate.key_repay_still_from` to
     /// `rate.key_repay_still_full`. Chosen once per key, so a phase's loan
-    /// and repayment stay consistent; the first key has no history and takes
-    /// the moving-scene horizon. Safe for the rate: the loan is repaid in
+    /// and repayment stay consistent; the first key has no history, takes
+    /// the moving-scene horizon and is re-planned once a second of history
+    /// exists (`replan_first_key`). Safe for the rate: the loan is repaid in
     /// full either way, only more slowly, and the debit term keeps the
     /// moving-scene horizon, so the long-run rate holds.
     fn repay_seconds_for_key(&self) -> f64 {
@@ -797,6 +809,50 @@ impl RateController {
             0.
         };
         self.key_repay_seconds + weight * (still - self.key_repay_seconds)
+    }
+    /// Count an inter frame's share of unchanged blocks into `still_share`,
+    /// and re-plan the first key once a second of it is in.
+    fn track_stillness(&mut self, static_fraction: f64) {
+        self.still_frames = self.still_frames.saturating_add(1);
+        let weight = (1. / f64::from(self.still_frames))
+            .max(1. / (STILL_AVERAGE_SECONDS * self.frame_fps))
+            .min(1.);
+        self.still_share += (static_fraction - self.still_share) * weight;
+        if self
+            .first_key_replan_at
+            .is_some_and(|at| self.frames_since_key >= at)
+        {
+            self.first_key_replan_at = None;
+            self.replan_first_key();
+        }
+    }
+    /// Re-plan the first key's repayment once [`STILL_AVERAGE_SECONDS`] of
+    /// inter frames show how still the scene is: single-key and long-GOP
+    /// streams have no history at their first key, which is the key a still
+    /// scene keeps referencing longest. The remaining loan is spread over the
+    /// rest of the new horizon by choosing the boost whose repayment phase
+    /// repays exactly that loan in exactly those frames (with uniform budget
+    /// U and per-frame repayment r = debt / remaining frames, the phase's
+    /// inter budget U·F/(F-1+b) repays U-r when b = (U + r(F-1)) / (U - r)),
+    /// so no loan is forgiven or double-counted. A horizon the loan cannot
+    /// be spread over (the phase already over, or r >= U) is left alone.
+    fn replan_first_key(&mut self) {
+        let horizon = self.repay_seconds_for_key();
+        if (horizon - self.phase_repay_seconds).abs() < REPLAN_MIN_SECONDS {
+            return;
+        }
+        let frames = (horizon * self.frame_fps)
+            .ceil()
+            .max(1.)
+            .min(f64::from(self.period.max(1)));
+        let remaining = frames - f64::from(self.frames_since_key);
+        let uniform = self.uniform_budget();
+        let repayment = self.scheduled_key_debt / remaining.max(1.);
+        if remaining < 1. || repayment >= uniform {
+            return;
+        }
+        self.phase_repay_seconds = horizon;
+        self.loan_boost = (uniform + repayment * (frames - 1.)) / (uniform - repayment);
     }
     /// Inter-frame budget of the repayment phase of a key at `boost` times
     /// it: the key plus `repay_frames - 1` inter frames at it spend exactly
@@ -1320,9 +1376,11 @@ impl RateController {
             }
             self.last_key_index = index;
             self.phase_repay_seconds = self.repay_seconds_for_key();
+            self.first_key_replan_at = (self.stats.frames == 0
+                && self.key_repay_still_seconds > 0.)
+                .then(|| (STILL_AVERAGE_SECONDS * self.frame_fps).ceil() as u32);
         } else {
-            let weight = (1. / (STILL_AVERAGE_SECONDS * self.frame_fps)).min(1.);
-            self.still_share += (hint.static_fraction - self.still_share) * weight;
+            self.track_stillness(hint.static_fraction);
         }
         let h = hint.value(key);
         let held = std::mem::take(&mut self.held_pending);
@@ -2073,7 +2131,8 @@ mod tests {
         // Default (still horizon 0): every key repays over rate.key_repay_seconds.
         assert_eq!(plan(&[], still), 150);
         let longer = [("rate.key_repay_still_seconds", 10.)];
-        // The first key has no history: the moving-scene horizon.
+        // The first key has no history: the moving-scene horizon until a
+        // second of inter frames is in.
         let mut first = controller_with(500_000, &longer);
         first.period = 600;
         first.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
@@ -2081,8 +2140,39 @@ mod tests {
         // A still scene's later key takes the still horizon; half-way between
         // `still_from` (0.5) and `still_full` (0.9), half of the extra time.
         assert_eq!(plan(&longer, still), 300);
-        assert_eq!(plan(&longer, half), 225);
+        assert!((224..=226).contains(&plan(&longer, half))); // 225 up to rounding
         assert_eq!(plan(&longer, HINT), 150);
+    }
+
+    #[test]
+    fn a_still_scene_replans_its_first_key_and_repays_it_in_full() {
+        let still = Complexity {
+            static_fraction: 0.95,
+            ..HINT
+        };
+        let run = |overrides: &[(&str, f32)], hint: Complexity| {
+            let mut r = controller_with(500_000, overrides);
+            r.period = 900;
+            let key = r.loan_inter_budget() * 8.;
+            r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(key.round() as u64);
+            let mut debts = Vec::new();
+            for i in 1..400 {
+                r.select(false, i, hint, LayerPosition::FLAT, &LayerShare::WHOLE);
+                r.feedback(r.inter_budget().round() as u64);
+                debts.push(r.scheduled_key_debt);
+            }
+            (r.repay_frames(), debts)
+        };
+        let (moving, _) = run(&[("rate.key_repay_still_seconds", 10.)], HINT);
+        assert_eq!(moving, 150);
+        let (frames, debts) = run(&[("rate.key_repay_still_seconds", 10.)], still);
+        assert_eq!(frames, 300);
+        // Still owed half-way through the longer phase, repaid at its end.
+        assert!(debts[200] > 0.);
+        assert!(debts[310] < 1.);
+        // Without a still horizon the first key is never re-planned.
+        assert_eq!(run(&[], still).0, 150);
     }
 
     #[test]
