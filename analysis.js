@@ -41,8 +41,11 @@ const CODEC_UNITS = {
 };
 const units = codec => CODEC_UNITS[codec] ?? CODEC_UNITS.hevc;
 /** The overlay layers a viewer can switch on. */
-export const LAYERS = ['blocks', 'transforms', 'vectors', 'intra', 'qp', 'bits'];
-export const LAYER_LABELS = { blocks: 'Blocks', transforms: 'Transforms', vectors: 'Motion vectors', intra: 'Intra modes', qp: 'QP map', bits: 'Bits map' };
+export const LAYERS = ['blocks', 'transforms', 'vectors', 'intra', 'qp', 'bits', 'psnr'];
+export const LAYER_LABELS = { blocks: 'Blocks', transforms: 'Transforms', vectors: 'Motion vectors', intra: 'Intra modes', qp: 'QP map', bits: 'Bits map', psnr: 'PSNR map' };
+/** The heat maps share the fill under the outlines: one at a time. The PSNR map
+ * (error-map.js) is drawn by analysis-view.js from the decoder's error sums, not the records. */
+export const HEAT_LAYERS = ['qp', 'bits', 'psnr'];
 export const PRED_COLOURS = ['#ff5a36', '#3b8bff', '#a8b3ad', '#27c27a'];
 // Heat maps use fixed scales so two views compare directly.
 const BITS_PER_PIXEL_SCALE = { low: Math.log2(1 / 64), high: Math.log2(4) };

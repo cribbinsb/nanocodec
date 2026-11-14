@@ -286,7 +286,7 @@ export class Panel {
     this.element.querySelector('.empty-overlay').hidden = true;
     // `earlier`: frames coded with this one (start-up lookahead, or stream frames a capture skipped).
     for (const coded of [...(result.earlier ?? []), result]) this.record(coded);
-    this.analysis?.update(result);
+    this.analysis?.update(result, tick);
     this.badge.dataset.tick = String(tick);
     this.label(showOriginal, result);
     this.scheduleMetrics(result);
@@ -300,7 +300,7 @@ export class Panel {
   redisplay(result, showOriginal) {
     const free = this.renderer.show(result);
     if (showOriginal) this.renderer.showOriginal(this.original?.image ?? null);
-    this.analysis?.update(result);
+    this.analysis?.update(result, +this.badge.dataset.tick);
     this.label(showOriginal, result);
     return free;
   }

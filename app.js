@@ -183,15 +183,17 @@ async function switchDecodersWhenIdle() {
 async function pump(token) {
   if (pumping) return;
   pumping = true;
+  // A decoder switch (or pause) may begin while a picture is decoded: re-checked before sending.
+  const mayCapture = () => token === generation && running && !paused && !((switchWanted || switchBusy) && !pausing);
   try {
-    while (token === generation && running && !paused && !comparison.full && !((switchWanted || switchBusy) && !pausing)) {
+    while (mayCapture() && !comparison.full) {
       const tick = nextCodedTick(lastTick);
       if (exact.ended(tick)) { stop(); $('#session-stats').textContent = `${delivered} frames compared · video ended`; return; }
       const due = clockOrigin + tickMs(tick), now = performance.now();
       if (due > now) { timer = setTimeout(() => pump(token), due - now); return; }
       clockOrigin = Math.max(clockOrigin, now - tickMs(tick + 1));
       const shot = await exact.picture(tick, ...largestView());
-      if (token !== generation || !running || paused) { shot.picture.close?.(); return; }
+      if (!mayCapture()) { shot.picture.close?.(); return; }
       send(tick, shot);
     }
   } catch (error) { if (token === generation) fail(error); } finally { pumping = false; }

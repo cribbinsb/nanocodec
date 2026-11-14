@@ -119,6 +119,19 @@ export class BrowserDecoder {
    */
   decode(packet: Uint8Array): void;
   /**
+   * The squared error of the latest decoded frame against the source frame
+   * the last `psnr` call scored it against, per block of the PSNR map's
+   * fixed grid (`error_map::block_sse`: luma blocks row by row, then Cb,
+   * then Cr), at the size `psnr` compared (`error_map_width` x
+   * `error_map_height`: a smaller spatial layer is upscaled to the stream
+   * size, as there). Returns the byte offset of the `u32` sums in WASM
+   * memory, read as for `rgba_frame`; `error_map_length` is their count.
+   * Only in the analysis build of the module.
+   * # Errors
+   * Rejects calls made before `psnr` has scored a decoded frame.
+   */
+  error_map(): number;
+  /**
    * The `spatial_id` (`0..=3`) of the latest shown AV1 or VP9 frame (`0` on
    * single-layer streams and other codecs).
    */
@@ -137,6 +150,18 @@ export class BrowserDecoder {
    * The number of `i16` values `analysis_frame` packed.
    */
   readonly analysis_length: number;
+  /**
+   * Width of the picture `error_map` measured (the source's).
+   */
+  readonly error_map_width: number;
+  /**
+   * Height of the picture `error_map` measured (the source's).
+   */
+  readonly error_map_height: number;
+  /**
+   * The number of `u32` sums `error_map` wrote.
+   */
+  readonly error_map_length: number;
   /**
    * `i16` values per packed analysis record.
    */
@@ -322,6 +347,10 @@ export interface InitOutput {
   readonly browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
   readonly browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
+  readonly browserdecoder_error_map: (a: number) => [number, number, number];
+  readonly browserdecoder_error_map_height: (a: number) => number;
+  readonly browserdecoder_error_map_length: (a: number) => number;
+  readonly browserdecoder_error_map_width: (a: number) => number;
   readonly browserdecoder_height: (a: number) => number;
   readonly browserdecoder_i420_frame: (a: number) => [number, number, number];
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];

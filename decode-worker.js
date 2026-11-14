@@ -36,9 +36,14 @@
 // replaces this worker with one on the other build (pipeline.js
 // `switchDecoders`): the page posts it a 'replay' of the stream from its last
 // key frame to the picture on screen, decoded here at once and answered with
-// that picture ('replayed', as a 'frame').
+// that picture ('replayed', as a 'frame'). With analysis on, a shown frame
+// that has its source also carries the PSNR map (`errorMap`, error-map.js):
+// the decoder's squared error per block against that source (nc-web
+// `error_map`, which reuses the source the frame's `psnr` call unpacked),
+// turned into dB here, off the page's thread.
 import { ANALYSIS_MODULE_URL, MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
+import { errorMap, errorMapBuffers } from './error-map.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
 let module, decoder, wasm;
@@ -77,6 +82,13 @@ function analysisRecords() {
   if (analysisState !== 'on') return null;
   const offset = decoder.analysis_frame();
   return new Int16Array(wasm.memory.buffer, offset, decoder.analysis_length).slice().buffer;
+}
+/** The PSNR map of the decoder's latest frame against `result`'s source, scored last (null without analysis or a source). */
+function blockErrors(result) {
+  if (analysisState !== 'on' || !result.source) return null;
+  const offset = decoder.error_map();
+  const sums = new Uint32Array(wasm.memory.buffer, offset, decoder.error_map_length);
+  return errorMap(sums, decoder.error_map_width, decoder.error_map_height);
 }
 /**
  * Decode one coded frame and score it against its source. `decodeMs` is the
@@ -128,13 +140,14 @@ function decodeAndPost(type, message) {
   if (result.colour) displayColour = result.colour;
   const pixels = decodedPixels(format, displayColour);
   // After the pixels: packing may grow WASM memory too, and is copied at once.
-  const analysis = analysisRecords();
+  const analysis = analysisRecords(), errors = blockErrors(result);
   result.decodeStageMs += performance.now() - displayStart;
-  const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean), ...(analysis ? [analysis] : [])];
+  const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean), ...(analysis ? [analysis] : []),
+    ...(errors ? errorMapBuffers(errors) : [])];
   self.postMessage({ type, id: message.id, ...result, colour: displayColour, earlier, format, pixels, width: decoder.width,
     height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
     spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows,
-    analysis, analysisState }, transfer);
+    analysis, analysisState, errorMap: errors }, transfer);
 }
 /** One frame from the encode worker: decode it and post it to the page. */
 function receivePacket({ data: message }) {

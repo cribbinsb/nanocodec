@@ -394,6 +394,30 @@ export class BrowserDecoder {
         return ret >>> 0;
     }
     /**
+     * Width of the picture `error_map` measured (the source's).
+     * @returns {number}
+     */
+    get error_map_width() {
+        const ret = wasm.browserdecoder_error_map_width(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Height of the picture `error_map` measured (the source's).
+     * @returns {number}
+     */
+    get error_map_height() {
+        const ret = wasm.browserdecoder_error_map_height(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * The number of `u32` sums `error_map` wrote.
+     * @returns {number}
+     */
+    get error_map_length() {
+        const ret = wasm.browserdecoder_error_map_length(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * `i16` values per packed analysis record.
      * @returns {number}
      */
@@ -485,6 +509,26 @@ export class BrowserDecoder {
     get height() {
         const ret = wasm.browserdecoder_height(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * The squared error of the latest decoded frame against the source frame
+     * the last `psnr` call scored it against, per block of the PSNR map's
+     * fixed grid (`error_map::block_sse`: luma blocks row by row, then Cb,
+     * then Cr), at the size `psnr` compared (`error_map_width` x
+     * `error_map_height`: a smaller spatial layer is upscaled to the stream
+     * size, as there). Returns the byte offset of the `u32` sums in WASM
+     * memory, read as for `rgba_frame`; `error_map_length` is their count.
+     * Only in the analysis build of the module.
+     * # Errors
+     * Rejects calls made before `psnr` has scored a decoded frame.
+     * @returns {number}
+     */
+    error_map() {
+        const ret = wasm.browserdecoder_error_map(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
 }
 if (Symbol.dispose) BrowserDecoder.prototype[Symbol.dispose] = BrowserDecoder.prototype.free;
