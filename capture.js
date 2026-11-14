@@ -180,6 +180,9 @@ export class FrameSource {
     const length = this.loopLength, loop = Number.isFinite(length) ? Math.floor(tick / length) : 0;
     const target = { frame: frameAtTick(tick - this.loopStart(loop), this.fps), loop };
     this.loop = loop; this.lastMediaMs = -Infinity;
+    // The paused video may have run on past the pause instant and left a newer
+    // candidate; the step's frame (earlier than that) must become the candidate.
+    this.candidate?.picture.close(); this.candidate = null;
     const reached = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => { this.waiting = null; reject(new Error(SEEK_FAILED)); }, SEEK_TIMEOUT_MS);
       this.waiting = { target, resolve: () => { clearTimeout(timeout); resolve(); } };

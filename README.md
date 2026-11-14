@@ -81,9 +81,9 @@ are needed: each worker has its own ordinary WASM memory.
   the other version** sets the other version live to the stream's size, frame rate,
   target (peak 2×), 1 s buffer and key interval, starting with the same codec (the
   preset is yours). **BWC SOC**: six FoodMarket streams supplied by the owner from a
-  body-worn-camera SoC's hardware encoder (EVBR, one key frame), shown as supplied, with no
+  body-worn-camera SoC's hardware encoder (EVBR, a key frame every 5 s), shown as supplied, with no
   command line, and with x264 medium / openh264 / x265 medium encodes at the same 1000 / 1500 /
-  2000 kbps beside them (each panel names its rate control). The 68 streams (every clip has 3 or more, several at one size and rate
+  2000 kbps and key interval beside them (each panel names its rate control). The 68 streams (every clip has 3 or more, several at one size and rate
   across encoders; Xiph, Blender, SVT 2022 and MOTChallenge clips, the MOT streams under
   CC BY-NC-SA 3.0 with that notice in their panel; of Netflix only FoodMarket, by the owner's decision,
   with its CC BY-NC-ND notice) and their commands are listed in
