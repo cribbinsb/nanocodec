@@ -24,20 +24,19 @@ impl AnyDecoder {
             Self::H264(decoder) => decoder.decode(packet).map(Some),
             Self::Hevc(decoder) => decoder.decode(packet).map(Some),
             Self::Av1(decoder) => decoder.decode_optional(packet),
-            Self::Vp9(decoder) => decoder.decode(packet).map(Some),
+            Self::Vp9(decoder) => decoder.decode_optional(packet),
         }
     }
 
     fn set_operating_point(&mut self, op: u8) -> Result<(), DecodeError> {
         match self {
             Self::Av1(decoder) => decoder.set_operating_point(op),
-            Self::Vp9(decoder) if op <= 1 => {
-                decoder.set_base_only(op > 0);
-                Ok(())
+            Self::Vp9(decoder) if op <= nc_vp9::MAX_VP9_OPERATING_POINT => {
+                decoder.set_operating_point(op)
             }
             _ if op == 0 => Ok(()),
             _ => Err(DecodeError::Unsupported(
-                "operating points above 0 require AV1 (0..=31) or VP9 (0..=1)",
+                "operating points above 0 require AV1 (0..=31) or VP9 (0..=2)",
             )),
         }
     }
@@ -94,7 +93,7 @@ impl Receiver {
         outcome
     }
 
-    /// Select the scalable operating point (`0..=31` on AV1, `0..=1` on VP9).
+    /// Select the scalable operating point (`0..=31` on AV1, `0..=2` on VP9).
     ///
     /// # Errors
     ///

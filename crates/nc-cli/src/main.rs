@@ -945,8 +945,14 @@ fn apply_simulated_loss<B: CodecBackend>(
                     (lost_mask & (1u8 << sid)) == 0
                 })
                 .map_err(|e| e.to_string())?,
-                Codec::Vp9 if lost_sid == 1 => {
-                    nc_vp9::strip_superframe_to_base(&frame.data).map_err(|e| e.to_string())?
+                Codec::Vp9 => {
+                    let coded_sids: Vec<u8> = frame.layers.iter().map(|l| l.spatial_id).collect();
+                    nc_vp9::filter_superframe_layers(&frame.data, |idx| {
+                        coded_sids
+                            .get(idx)
+                            .is_some_and(|&sid| (lost_mask & (1u8 << sid)) == 0)
+                    })
+                    .map_err(|e| e.to_string())?
                 }
                 codec => return Err(format!("{codec:?} does not support spatial layer loss")),
             };

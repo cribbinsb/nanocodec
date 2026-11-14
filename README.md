@@ -235,6 +235,10 @@ L3T1_KEY's 720p, 360p and 180p views are +4.3%, −1.3% and +1.6% against AV1 De
 (full SVC L3T1: +35.7%, +21.4%, +2.1%), its total −9.8% against three-way simulcast, at 1.53× the encode
 instructions of single-layer AV1 Default (full SVC L3T1: 1.87×). L3T3_KEY and the method:
 [svc-chart.md](docs/results/svc-chart.md#k-svc-key-modes-av1-l3t1_key-and-l3t3_key).
+VP9 codes the same three-layer and K-SVC modes (`--preset vp9-svc3` / `vp9-svc3-fast`): VP9 L3T1_KEY's views
+are +3.5%, +1.2% and +4.8% against VP9 Default alone (+5.9% for 180p on all 11 clips, above the +5% target), its
+total −11.8% against three-way simulcast, at 1.64× the encode instructions of single-layer VP9 Default
+([svc-chart.md](docs/results/svc-chart.md#vp9-three-layers-l3t1-l3t3-and-k-svc-l3t1_key-l3t3_key)).
 
 ### In the browser (WebAssembly)
 

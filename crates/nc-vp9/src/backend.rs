@@ -18,8 +18,9 @@ use std::rc::Rc;
 use nc_common::{Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
     Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType,
-    MAX_REFERENCE_SLOTS, Mv as EngineMv, PredictionMode, QuantParams, ReferenceChoice, SlotMask,
-    SpatialConfig, SpatialLayerFrame, spatial::INTER_LAYER_SCRATCH_MASK,
+    InterLayerMode, MAX_REFERENCE_SLOTS, MAX_SPATIAL_LAYERS, Mv as EngineMv, PredictionMode,
+    QuantParams, ReferenceChoice, SlotMask, SpatialConfig, SpatialLayerFrame,
+    spatial::layer_slot_offset,
 };
 
 use crate::block_qp::SegmentQuantizers;
@@ -429,22 +430,25 @@ impl LayerGrids {
 }
 
 /// Normative reference picture and size (`RefFrameWidth`, `RefFrameHeight`,
-/// VP9 §8.5.2.3) held for base-layer (`S0`) slots so `S1` predicts from `S0`
-/// via scaled convolution (`vp9_convolve_scaled`) while the engine's `S1`
-/// pool holds an upscaled full-size proxy for motion estimation.
+/// VP9 §8.5.2.3) held for lower-layer (`S0`, and `S1` of three) slots so an
+/// upper spatial layer predicts from the exact lower-layer reconstruction via
+/// scaled convolution (`vp9_convolve_scaled`) while the engine's pool holds an
+/// upscaled proxy for motion estimation.
 #[derive(Debug, Clone)]
 struct HeldReference {
     picture: Rc<Picture>,
     width: usize,
     height: usize,
+    spatial_id: u8,
 }
 
 impl HeldReference {
-    fn new(picture: Rc<Picture>, width: usize, height: usize) -> Self {
+    fn new(picture: Rc<Picture>, width: usize, height: usize, spatial_id: u8) -> Self {
         Self {
             picture,
             width,
             height,
+            spatial_id,
         }
     }
 
@@ -488,11 +492,6 @@ impl ReferenceStore {
     }
 }
 
-/// The largest enhancement/base size ratio VP9 spatial SVC encodes: the
-/// scaled prediction is stress-tested (`syntax_stress.py --spatial`) at
-/// 1.25x to 2x; VP9 itself allows up to 16x.
-const MAX_SPATIAL_UPSCALE: usize = 2;
-
 /// Whether a frame of `frame` size may predict from a reference of
 /// `reference` size in VP9 (§7.2, frame size with refs semantics; libvpx
 /// `valid_ref_frame_size`): `2 * width >= ref_width` and
@@ -503,26 +502,45 @@ fn reference_scale_allowed(reference: (usize, usize), frame: (usize, usize)) -> 
     fits(reference.0, frame.0) && fits(reference.1, frame.1)
 }
 
-/// Two-layer spatial SVC state on [`Vp9Backend`].
+/// Disposable scratch slot refreshed by a hidden spatial layer picture (`S0`,
+/// `S1` of three, or `S_top` in K-SVC) whose temporal `refresh` mask is empty
+/// (`T2`), so `show_existing_frame` has a slot holding it without overwriting
+/// any layer's temporal hierarchy (`0..2*N`): `(2,0)->4`, `(2,1)->5`,
+/// `(3,0)->6`, `(3,1)->7`, `(3,2)->7`.
+const fn hidden_scratch_slot(num_layers: u8, spatial_id: u8) -> usize {
+    let slot = (num_layers as usize) * 2 + (spatial_id as usize);
+    if slot < MAX_REFERENCE_SLOTS {
+        slot
+    } else {
+        MAX_REFERENCE_SLOTS - 1
+    }
+}
+
+/// Multi-layer (`2` or `3`) spatial SVC and K-SVC state on [`Vp9Backend`]
+/// (structure after libvpx `vp9/encoder/vp9_svc_layercontext.c`,
+/// `INTER_LAYER_PRED_ON` and `INTER_LAYER_PRED_OFF_NONKEY`, BSD-3-Clause,
+/// `THIRD_PARTY.md`).
 #[derive(Debug)]
 struct BackendSpatial {
-    /// The grids of the layer not being coded (the active one is
+    num_layers: u8,
+    inter_layer: InterLayerMode,
+    /// The grids of the layers not currently being coded (the active layer is
     /// [`Vp9Backend::grids`]).
-    parked: LayerGrids,
+    parked: [Option<LayerGrids>; MAX_SPATIAL_LAYERS],
     active_spatial_id: u8,
     current_layer: SpatialLayerFrame,
-    /// The last coded picture, of either layer, was a key frame: the
+    /// The last coded picture in the temporal unit was a key frame: the
     /// decoder adapts the next frame's probabilities at the after-key rate
-    /// (`COUNT_SAT_AFTER_KEY`), whatever its layer.
+    /// (`COUNT_SAT_AFTER_KEY`, VP9 §8.4), whatever its layer.
     previous_key: bool,
-    /// A base temporal-layer-0 picture has been coded since the last key
-    /// (see [`Self::context_use`]).
+    /// A base (`S0`) temporal-layer-0 picture has been coded since the last
+    /// key (see [`Self::context_use`]).
     base_since_key: bool,
-    /// An error-resilient enhancement picture reset every context of the
-    /// receivers that decoded it but not of base-only receivers, so the
-    /// base layer's pictures are error resilient too, up to the next one of
-    /// temporal layer 0.
-    base_context_diverged: bool,
+    /// Per-layer flag set when an error-resilient repair on one layer reset all
+    /// four contexts (`vp9_setup_past_independence`, VP9 §7.2) on receivers
+    /// that decoded it, forcing each diverged layer to emit error-resilient
+    /// frames up to and including its next temporal-layer-0 picture.
+    context_diverged: [bool; MAX_SPATIAL_LAYERS],
     /// The probabilities the current frame is coded with: its starting
     /// context plus its forward updates (`end_frame`), which adaptation
     /// keeps where it does not adapt.
@@ -533,30 +551,27 @@ struct BackendSpatial {
 }
 
 impl BackendSpatial {
-    /// How the current layer's frame uses the probability contexts. Each
-    /// layer adapts its own context (`frame_context_idx` = its spatial id)
-    /// from its own earlier pictures, as a single-layer stream does, so
-    /// neither restarts from the defaults every frame (error resilience
-    /// cost the 360p base 6-18% at equal quantizer). Every operating point
-    /// must decode a frame identically, which a frame's context and
-    /// adaptation rate allow only when they do not depend on frames some
-    /// receivers drop:
-    /// - temporal layers above 0 read their layer's context but do not
-    ///   refresh it (a receiver may drop them);
-    /// - the base's first temporal-layer-0 picture after a key does not
-    ///   refresh: whether it adapts at the after-key rate depends on
-    ///   whether the receiver decoded the key unit's enhancement picture;
-    /// - an enhancement repair is error resilient (the receiver lost the
-    ///   picture that refreshed its context), which resets every context of
-    ///   receivers of both layers, so the base's pictures are error
-    ///   resilient too, up to its next temporal-layer-0 one.
+    /// How the current layer's frame uses the four probability contexts
+    /// (`frame_context_idx` $\in \{0, 1, 2\}$ = `spatial_id`, VP9 §6.2 / §7.2):
+    /// - temporal layers above `0` read their layer's context without
+    ///   refreshing it (a lower-frame-rate receiver drops them);
+    /// - `S0`'s first `T0` picture after a key does not refresh: whether it
+    ///   adapts at `COUNT_SAT_AFTER_KEY` depends on whether the receiver
+    ///   decoded the key unit's upper layers;
+    /// - an enhancement repair (`from_base_only` or `intra_only` outside a key
+    ///   unit) is error resilient, resetting all four contexts on receivers
+    ///   that decode it, so every other layer (and the repaired layer if
+    ///   repaired above `T0`) emits error-resilient frames through its next
+    ///   `T0` picture.
     ///
-    /// The previous frame's vectors are never used (`previous_vectors`):
-    /// every base picture is hidden and every enhancement picture follows
-    /// one, so no decoder uses them (`use_prev_frame_mvs`, VP9 §7.2).
+    /// Every spatial layer frame has `use_prev_frame_mvs = 0` (`VP9 §7.2`):
+    /// lower layers are always hidden (`show_frame = 0`), and in K-SVC the top
+    /// layer is hidden too (displayed by `show_existing_frame`, which leaves
+    /// `last_show_frame = 0`) so stripping lower layers on non-key units keeps
+    /// `use_prev_frame_mvs = 0` on every receiver.
     fn context_use(&self, key: bool) -> ContextUse {
         let layer = &self.current_layer;
-        let base = layer.spatial_id == 0;
+        let s = usize::from(layer.spatial_id);
         if key {
             return ContextUse {
                 error_resilient: false,
@@ -564,10 +579,8 @@ impl BackendSpatial {
                 refresh: true,
             };
         }
-        // An enhancement picture coded afresh (from the base, or intra)
-        // outside a key unit repairs a lost one (`Encoder::report_layer_loss`).
-        let repair = !base && !layer.key_unit && (layer.from_base_only || layer.intra_only);
-        if (base && self.base_context_diverged) || repair {
+        let repair = s > 0 && !layer.key_unit && (layer.from_base_only || layer.intra_only);
+        if self.context_diverged[s] || repair {
             return ContextUse {
                 error_resilient: true,
                 index: 0,
@@ -577,31 +590,43 @@ impl BackendSpatial {
         ContextUse {
             error_resilient: false,
             index: layer.spatial_id,
-            refresh: layer.temporal_id == 0 && (!base || self.base_since_key),
+            refresh: layer.temporal_id == 0 && (s > 0 || self.base_since_key),
         }
     }
 
     /// Advance the cross-layer state past a committed frame.
     fn committed(&mut self, header: &FrameHeader) {
-        let (key, error_resilient) = (header.key, header.error_resilient);
+        let key = header.key;
         for (slot, size) in self.slot_sizes.iter_mut().enumerate() {
             if header.refresh & (1 << slot) != 0 {
                 *size = Some((header.width, header.height));
             }
         }
-        let base = self.current_layer.spatial_id == 0;
+        let s = usize::from(self.current_layer.spatial_id);
+        let lowest = self.current_layer.temporal_id == 0;
+        let repair = s > 0
+            && !self.current_layer.key_unit
+            && (self.current_layer.from_base_only || self.current_layer.intra_only);
         self.previous_key = key;
         if key {
             self.base_since_key = false;
-            self.base_context_diverged = false;
-        } else if base {
-            // Every base picture stays error resilient until one of
-            // temporal layer 0, which every base receiver decodes.
-            let lowest = self.current_layer.temporal_id == 0;
+            self.context_diverged = [false; MAX_SPATIAL_LAYERS];
+            return;
+        }
+        if s == 0 {
             self.base_since_key |= lowest;
-            self.base_context_diverged &= !lowest;
-        } else if error_resilient {
-            self.base_context_diverged = true;
+        }
+        if repair {
+            for (id, div) in self
+                .context_diverged
+                .iter_mut()
+                .enumerate()
+                .take(usize::from(self.num_layers))
+            {
+                *div = (id != s) || !lowest;
+            }
+        } else if header.error_resilient {
+            self.context_diverged[s] &= !lowest;
         }
     }
 }
@@ -640,7 +665,7 @@ pub struct Vp9Backend {
     /// the engine's `S1` pool holds an upscaled proxy.
     store: ReferenceStore,
     /// Spatial SVC configuration and parked layer state when active.
-    spatial: Option<BackendSpatial>,
+    spatial: Option<Box<BackendSpatial>>,
     /// Active reference choice (`Primary` = `LAST_FRAME`, `Secondary` =
     /// `GOLDEN_FRAME`) during mode evaluation and block coding.
     active_ref: ReferenceChoice,
@@ -1013,24 +1038,43 @@ impl CodecBackend for Vp9Backend {
         true
     }
 
+    fn max_spatial_layers(&self) -> u8 {
+        MAX_SPATIAL_LAYERS as u8
+    }
+
     fn configure_spatial(&mut self, spatial: &SpatialConfig) -> Result<(), ConfigError> {
-        if !reference_scale_allowed(spatial.base_size, spatial.full_size) {
+        if spatial.layer_sizes.len() != usize::from(spatial.layers)
+            || spatial.layer_sizes.first() != Some(&spatial.base_size)
+            || spatial.layer_sizes.last() != Some(&spatial.full_size)
+        {
             return Err(ConfigError::SpatialScalability(
-                "VP9 spatial layer scale outside §7.2 reference limits (base at least 1/16 of the full size)",
+                "VP9 spatial layer dimensions do not match layer_sizes",
             ));
         }
-        let (base, full) = (spatial.base_size, spatial.full_size);
-        if full.0 > MAX_SPATIAL_UPSCALE * base.0 || full.1 > MAX_SPATIAL_UPSCALE * base.1 {
-            return Err(ConfigError::SpatialScalability(
-                "VP9 spatial layers are verified up to a 2:1 base (spatial.base_scale >= 0.5)",
-            ));
+        for pair in spatial.layer_sizes.windows(2) {
+            let (low, high) = (pair[0], pair[1]);
+            if !reference_scale_allowed(low, high) {
+                return Err(ConfigError::SpatialScalability(
+                    "VP9 spatial layer scale outside §7.2 reference limits (base at least 1/16 of the upper layer)",
+                ));
+            }
+        }
+        let top_id = spatial.layers - 1;
+        let mut parked: [Option<LayerGrids>; MAX_SPATIAL_LAYERS] = std::array::from_fn(|_| None);
+        for (s, &(w, h)) in spatial.layer_sizes[..usize::from(top_id)]
+            .iter()
+            .enumerate()
+        {
+            parked[s] = Some(LayerGrids::new(w, h));
         }
         self.grids = LayerGrids::new(spatial.full_size.0, spatial.full_size.1);
-        self.spatial = Some(BackendSpatial {
-            parked: LayerGrids::new(spatial.base_size.0, spatial.base_size.1),
-            active_spatial_id: 1,
+        self.spatial = Some(Box::new(BackendSpatial {
+            num_layers: spatial.layers,
+            inter_layer: spatial.inter_layer,
+            parked,
+            active_spatial_id: top_id,
             current_layer: SpatialLayerFrame {
-                spatial_id: 1,
+                spatial_id: top_id,
                 temporal_id: 0,
                 width: spatial.full_size.0,
                 height: spatial.full_size.1,
@@ -1041,10 +1085,10 @@ impl CodecBackend for Vp9Backend {
             },
             previous_key: false,
             base_since_key: false,
-            base_context_diverged: false,
+            context_diverged: [false; MAX_SPATIAL_LAYERS],
             coded_context: FrameContext::default(),
             slot_sizes: [None; MAX_REFERENCE_SLOTS],
-        });
+        }));
         Ok(())
     }
 
@@ -1053,7 +1097,11 @@ impl CodecBackend for Vp9Backend {
             return;
         };
         if sp.active_spatial_id != layer.spatial_id {
-            std::mem::swap(&mut self.grids, &mut sp.parked);
+            let next = sp.parked[usize::from(layer.spatial_id)]
+                .take()
+                .expect("configured spatial layer grids");
+            let prev = std::mem::replace(&mut self.grids, next);
+            sp.parked[usize::from(sp.active_spatial_id)] = Some(prev);
             sp.active_spatial_id = layer.spatial_id;
         }
         debug_assert_eq!(
@@ -1069,13 +1117,17 @@ impl CodecBackend for Vp9Backend {
         spatial_id: u8,
         recon: &Picture,
         size: (usize, usize),
-        refresh: SlotMask,
+        _refresh: SlotMask,
         refresh_all: bool,
     ) {
+        let keep = self
+            .spatial
+            .as_ref()
+            .is_some_and(|sp| spatial_id + 1 < sp.num_layers);
         let held =
-            (spatial_id == 0).then(|| HeldReference::new(Rc::new(recon.clone()), size.0, size.1));
+            keep.then(|| HeldReference::new(Rc::new(recon.clone()), size.0, size.1, spatial_id));
         self.store
-            .commit_spatial(refresh, refresh_all, held.as_ref());
+            .commit_spatial(SlotMask(self.header.refresh), refresh_all, held.as_ref());
     }
 
     fn finish_spatial_tu(&mut self, data: &mut Vec<u8>, layer_lengths: &[usize]) {
@@ -1376,7 +1428,14 @@ impl CodecBackend for Vp9Backend {
             self.grids.committed_segment_features
         };
         let (primary_slot, secondary_slot) = if spatial_intra_only {
-            (0, 0)
+            let slot = self.spatial.as_ref().map_or(0, |sp| {
+                if sp.current_layer.key_unit {
+                    0
+                } else {
+                    layer_slot_offset(sp.active_spatial_id) as u8
+                }
+            });
+            (slot, slot)
         } else {
             let p = plan.references.reference.slot as u8;
             let s = plan.references.secondary.map_or(p, |sec| sec.slot as u8);
@@ -1645,7 +1704,9 @@ impl CodecBackend for Vp9Backend {
             if key || self.header.error_resilient {
                 // `vp9_setup_past_independence` reset every context.
                 self.grids.context = FrameContext::default();
-                sp.parked.context = FrameContext::default();
+                for grids in sp.parked.iter_mut().flatten() {
+                    grids.context = FrameContext::default();
+                }
             }
             if self.header.refresh_context && !self.header.error_resilient {
                 self.grids.context = self.context.adapted_from_coded(
@@ -1672,22 +1733,23 @@ impl CodecBackend for Vp9Backend {
 }
 
 impl Vp9Backend {
-    /// Normative reference picture (when held in `self.store` for an `S0` slot
-    /// referenced by `S1`) and `(RefFrameWidth, RefFrameHeight)` for the active
-    /// reference (`LAST_FRAME` or `GOLDEN_FRAME`).
+    /// Normative reference picture (when held in `self.store` for a lower
+    /// spatial layer's slot referenced by an upper layer) and
+    /// `(RefFrameWidth, RefFrameHeight)` for the active reference (`LAST_FRAME`
+    /// or `GOLDEN_FRAME`).
     fn active_reference(&self) -> (Option<Rc<Picture>>, (usize, usize)) {
         let own_size = (self.grids.width, self.grids.height);
-        if self
-            .spatial
-            .as_ref()
-            .is_some_and(|sp| sp.active_spatial_id == 1)
+        if let Some(sp) = &self.spatial
+            && sp.active_spatial_id > 0
         {
             let slot = if self.active_ref == ReferenceChoice::Secondary {
                 usize::from(self.header.ref_slots[1])
             } else {
                 usize::from(self.header.ref_slots[0])
             };
-            if let Some(held) = self.store.held(slot) {
+            if let Some(held) = self.store.held(slot)
+                && held.spatial_id != sp.active_spatial_id
+            {
                 return (Some(Rc::clone(&held.picture)), held.size());
             }
         }
@@ -2818,8 +2880,11 @@ impl Vp9Backend {
     ) -> FrameHeader {
         // A spatial layer's frame takes its size from a reference of its own
         // layer (VP9 §6.2.6: 4 bytes a frame); a key unit's enhancement
-        // picture, whose references are all the base, writes it.
+        // picture (whose references are the base) and a standalone `intra_only`
+        // repair (whose receiver slot may still hold `S0` from the key unit)
+        // write the explicit frame size.
         let size_from_ref = match &self.spatial {
+            Some(sp) if !sp.current_layer.key_unit && sp.current_layer.intra_only => None,
             Some(sp) => {
                 let size = (self.grids.width, self.grids.height);
                 ref_slots
@@ -2828,11 +2893,14 @@ impl Vp9Backend {
             }
             None => Some(0),
         };
-        // A base-layer picture is never shown itself (`superframe.rs`).
-        let base_layer = self
-            .spatial
-            .as_ref()
-            .is_some_and(|sp| sp.current_layer.spatial_id == 0);
+        // Lower spatial layers (`spatial_id + 1 < num_layers`) and K-SVC top
+        // layers (`InterLayerMode::KeyOnly`) are coded with `show_frame = 0`
+        // and displayed via `show_existing_frame` (`superframe.rs`), keeping
+        // `use_prev_frame_mvs = 0` (`VP9 §7.2`) across all extracted views.
+        let hidden_layer = self.spatial.as_ref().is_some_and(|sp| {
+            sp.current_layer.spatial_id + 1 < sp.num_layers
+                || sp.inter_layer == InterLayerMode::KeyOnly
+        });
         let interp_filter = match &mut self.random {
             Some(random) => random.interp_filter(),
             None => INTERP_FILTERS
@@ -2841,17 +2909,21 @@ impl Vp9Backend {
         };
         let refresh = match plan.references.refresh {
             _ if key => ALL_SLOTS,
-            // A unit without an enhancement picture shows its base picture
-            // with `show_existing_frame`, which needs a slot holding it: one
-            // that refreshes none (a disposable top temporal layer picture)
-            // refreshes the inter-layer scratch slot, which only the same
-            // unit's enhancement picture reads.
-            mask if base_layer && mask.is_empty() => INTER_LAYER_SCRATCH_MASK.0,
+            // A hidden spatial layer picture (`S0`, `S1` of three, or `S_top`
+            // in K-SVC) is shown via `show_existing_frame` when it is the top
+            // layer of a unit or extracted view, which needs a slot holding
+            // it: a disposable `T2` picture with empty `refresh` refreshes its
+            // scratch slot (`hidden_scratch_slot`), leaving temporal slots
+            // `0..2*N` untouched.
+            mask if hidden_layer && mask.is_empty() => {
+                let sp = self.spatial.as_ref().expect("hidden_layer implies spatial");
+                1u8 << hidden_scratch_slot(sp.num_layers, sp.current_layer.spatial_id)
+            }
             mask => mask.0,
         };
         FrameHeader {
             key,
-            show_frame: !base_layer,
+            show_frame: !hidden_layer,
             error_resilient: context_use.error_resilient,
             context_index: context_use.index,
             refresh_context: context_use.refresh,

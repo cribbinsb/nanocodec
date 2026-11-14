@@ -112,3 +112,22 @@ In a KEY mode the upper layers predict from the layer below only in key temporal
 Encode instructions per frame (callgrind, the chart's three timing clips lowlight_city_night, crowd_mot17_09, bodycam_bc1 at the 600 kbps rung, all layers) relative to single-layer AV1 Default at 720p: L3T1_KEY 1.53x (1.58 / 1.51 / 1.51), L3T3_KEY 1.41x (1.53 / 1.40 / 1.31), full SVC L3T1 1.87x. **L3T1_KEY misses the 1.5x target** of the brief (the branch reported 1.48x against an older single-layer build).
 
 libaom `svc_encoder_rtc` v3.15.3 in its KEY mode (layering mode 10, L3T3, CBR, the settings in the method below): on the 11 clips its total-rate curve is +110.6% BD-J (rt 10) and +109.1% (rt 8) against our L3T3_KEY (10 of 11 clips overlap). In that version of the example, modes 9 and 10 produce the same streams: the inter-layer (GOLDEN) reference is only switched on in the code that follows `case 11`, which mode 9 never reaches, so its L3T3 is already key-unit-only inter-layer prediction; the L3T3 rows above score it at full-SVC receiver rates, its KEY rows at K-SVC receiver rates. libaom's SVC encoder is a mature, general implementation; ours codes a narrow real-time subset, so this compares two configurations on these clips, not the encoders in general.
+
+## VP9: three layers (L3T1, L3T3) and K-SVC (L3T1_KEY, L3T3_KEY)
+
+<sub>Measured 2026-11-14 at the merge of feature/svc-key (build 463b5f14: every point and anchor in this section from that one build); not yet in the table and chart above.</sub>
+
+`presets/vp9-svc3.toml` (vp9-svc at three layers, 2:1 steps, shares 0.08 / 0.26; K-SVC 0.08 / 0.24) packs each unit as a VP9 superframe `[S0, S1, S2]` with per-layer probability contexts; lower layers, and in K-SVC the top layer too, are hidden frames shown with `show_existing_frame`. Same method as the AV1 K-SVC section: each view at its receiver's own rate against VP9 Default coded alone at that size, the chart's 8 clips (all 11 in brackets). The svc3 presets keep vp9-svc's values from before the VP9 Default CPU cut (88a246f4); the single-layer and size-alone anchors are today's VP9 Default.
+
+| View (BD-J) | L3T1_KEY | L3T3_KEY | full SVC L3T1 | full SVC L3T3 |
+|---|---:|---:|---:|---:|
+| 720p view vs VP9 720p alone | +3.5% (+3.2%) | +1.4% (+2.9%) | +35.6% (+35.0%) | +30.5% |
+| 360p view vs VP9 360p alone | +1.2% (+2.5%) | -1.9% (+1.0%) | +23.6% (+25.3%) | +19.8% |
+| 180p view vs VP9 180p alone | +4.8% (**+5.9%**) | +0.9% (+3.9%) | +5.2% (+6.2%) | +0.0% |
+| total vs full SVC L3T1 | -1.5% (-0.9%) | -3.9% (-1.8%) | | -4.2% |
+| total vs three-way simulcast | -11.8% (-11.4%) | -14.3% (-12.5%) | -10.2% (-10.5%) | -14.5% |
+| share of the total rate: 720p / 360p / 180p view | 78% / 20% / 7% | 78% / 20% / 6% | 100% / 27% / 7% | 100% / 27% / 7% |
+
+Encode instructions per frame (callgrind, the three timing clips at the 600 kbps rung) relative to single-layer VP9 Default at 720p: L3T1_KEY 1.64x, L3T3_KEY 1.50x, full SVC L3T1 1.90x. **L3T1_KEY misses the 1.5x target**, and the L3T1_KEY 180p view misses its +5% target on all 11 clips (+5.9%; +4.8% on the chart's 8). Part of the CPU ratio is the anchor: today's VP9 Default is about 12% cheaper on x86 after its CPU cut, which the svc3 presets do not take.
+
+libvpx `vp9_spatial_svc_encoder` v1.16.0 in L3T1_KEY (settings as in the method below, inter-layer prediction on key frames only): its total-rate curve is +95.9% (speed 9) and +96.9% (speed 7) BD-J against our full-SVC L3T1 on the 11 clips (9 overlapping). libvpx's SVC encoder is a mature, general implementation; ours codes a narrow real-time subset, so this compares two configurations on these clips, not the encoders in general.

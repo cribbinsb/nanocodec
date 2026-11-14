@@ -13,12 +13,16 @@ mod block_qp;
 pub use backend::Vp9Backend;
 pub mod bool_coder;
 mod decoder;
+mod extract;
 pub mod stream;
 pub mod superframe;
 pub use decoder::{DecodedFrame, Decoder};
+pub use extract::{
+    ExtractedVp9Packet, MAX_VP9_OPERATING_POINT, Vp9ExtractTarget, Vp9StreamExtractor,
+};
 pub use superframe::{
-    escape_single_frame, pack_spatial_tu, pack_superframe, parse_uncompressed_header_info,
-    split_superframe, strip_superframe_to_base,
+    escape_single_frame, filter_superframe_layers, pack_coded_layers, pack_spatial_tu,
+    pack_superframe, parse_uncompressed_header_info, split_superframe, strip_superframe_to_base,
 };
 
 mod coeff;

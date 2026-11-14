@@ -383,7 +383,7 @@ pub unsafe extern "C" fn nc_decoder_destroy(decoder: *mut NcDecoder) {
 }
 
 /// Select the scalable operating point (`0..=31` on AV1, e.g. `0..=8` in `L3T3`;
-/// `0..=1` on VP9).
+/// `0..=2` on VP9).
 ///
 /// # Safety
 ///
@@ -1380,6 +1380,134 @@ mod tests {
             assert_eq!(layers[0].inter_layer_ref, 0);
             assert_eq!(layers[1].inter_layer_ref, u8::from(idx == 0));
             assert_eq!(layers[2].inter_layer_ref, u8::from(idx == 0));
+        }
+        // SAFETY: created above, not used again.
+        unsafe { nc_encoder_destroy(enc) };
+    }
+
+    fn create_vp9_ksvc_encoder(w: u32, h: u32) -> *mut NcEncoder {
+        let mut cfg = NcEncoderConfig {
+            codec: 0,
+            width: 0,
+            height: 0,
+            fps_num: 0,
+            fps_den: 0,
+            quantizer: 0,
+            intra_period: 0,
+            temporal_layers: 0,
+            intra_refresh_period: 0,
+            ltr_interval: 0,
+            target_kbps: 0,
+            peak_kbps: 0,
+            buffer_ms: 0,
+            frame_drop: 0,
+            colour: [0; 3],
+            full_range: 0,
+            timing: 0,
+            film_grain: 0,
+            film_grain_strength: 0.0,
+        };
+        // SAFETY: valid cfg pointer.
+        let status = unsafe { nc_encoder_config_default(&raw mut cfg, NC_CODEC_VP9, w, h) };
+        assert_eq!(status, NcStatus::Ok);
+        cfg.temporal_layers = 2;
+        let params = [
+            NcParam {
+                name: c"spatial.layers".as_ptr(),
+                value: 3.0,
+            },
+            NcParam {
+                name: c"spatial.inter_layer".as_ptr(),
+                value: 2.0,
+            },
+            NcParam {
+                name: c"layers.adaptive".as_ptr(),
+                value: 0.0,
+            },
+            NcParam {
+                name: c"hold.enable".as_ptr(),
+                value: 0.0,
+            },
+        ];
+        let mut enc = std::ptr::null_mut();
+        // SAFETY: valid config, params and out pointer.
+        let status = unsafe {
+            nc_encoder_create(&raw const cfg, params.as_ptr(), params.len(), &raw mut enc)
+        };
+        assert_eq!(status, NcStatus::Ok);
+        enc
+    }
+
+    #[test]
+    fn vp9_ksvc_operating_points_and_layers_cross_the_abi() {
+        let (w, h) = (160u32, 96u32);
+        let enc = create_vp9_ksvc_encoder(w, h);
+        let mut decs = [std::ptr::null_mut(); 3];
+        for (op, slot) in decs.iter_mut().enumerate() {
+            // SAFETY: valid out pointer.
+            let st_create = unsafe { nc_decoder_create(NC_CODEC_VP9, slot) };
+            assert_eq!(st_create, NcStatus::Ok);
+            // SAFETY: valid decoder pointer created above.
+            let st_op = unsafe { nc_decoder_set_operating_point(*slot, op as u8) };
+            assert_eq!(st_op, NcStatus::Ok);
+        }
+        // SAFETY: valid decoder pointer; op 3 is out of range for VP9 (0..=2).
+        let st_bad = unsafe { nc_decoder_set_operating_point(decs[0], 3) };
+        assert_eq!(st_bad, NcStatus::InvalidArgument);
+
+        for idx in 0..3u8 {
+            let y_plane = vec![90u8.wrapping_add(idx * 13); (w * h) as usize];
+            let uv_plane = vec![128u8; ((w / 2) * (h / 2)) as usize];
+            let frame = NcFrame {
+                format: NC_FORMAT_I420,
+                planes: [y_plane.as_ptr(), uv_plane.as_ptr(), uv_plane.as_ptr()],
+                strides: [w as usize, (w / 2) as usize, (w / 2) as usize],
+                has_timestamp: 0,
+                timestamp_us: 0,
+            };
+            let mut pkt = NcPacket {
+                data: std::ptr::null(),
+                size: 0,
+                index: 0,
+                timestamp_us: 0,
+                keyframe: 0,
+                temporal_layer: 0,
+                dropped: 0,
+                quantizer: 0,
+            };
+            // SAFETY: valid encoder, frame, and packet pointers.
+            let st_enc = unsafe { nc_encoder_encode(enc, &raw const frame, &raw mut pkt) };
+            assert_eq!(st_enc, NcStatus::Ok);
+            // SAFETY: valid packet slice owned by `enc` until next encode/destroy.
+            let bytes = unsafe { std::slice::from_raw_parts(pkt.data, pkt.size) };
+            for (op, &dec) in decs.iter().enumerate() {
+                assert_eq!(decode(dec, bytes, u64::from(idx), &[]).outcome, NC_DECODED);
+                let mut pic = NcPicture {
+                    planes: [std::ptr::null(); 3],
+                    strides: [0; 3],
+                    width: 0,
+                    height: 0,
+                };
+                let mut sid = 99u8;
+                // SAFETY: valid decoder and picture pointers.
+                let st_pic = unsafe { nc_decoder_picture(dec, &raw mut pic) };
+                assert_eq!(st_pic, NcStatus::Ok);
+                // SAFETY: valid decoder and sid pointers.
+                let st_sid = unsafe { nc_decoder_spatial_id(dec, &raw mut sid) };
+                assert_eq!(st_sid, NcStatus::Ok);
+                let expected_sid = 2 - op as u8;
+                let expected_dim = match expected_sid {
+                    0 => (40, 24),
+                    1 => (80, 48),
+                    _ => (160, 96),
+                };
+                assert_eq!(sid, expected_sid);
+                assert_eq!((pic.width, pic.height), expected_dim);
+            }
+        }
+        for dec in decs {
+            // SAFETY: created above, not used again.
+            unsafe { nc_decoder_destroy(dec) };
         }
         // SAFETY: created above, not used again.
         unsafe { nc_encoder_destroy(enc) };

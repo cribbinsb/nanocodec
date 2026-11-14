@@ -1,0 +1,32 @@
+# VP9 SVC, three spatial layers: L3T1 (720p30 over 360p30 over 180p30, 2:1
+# steps), the standard WebRTC ladder, packed as VP9 Annex B superframes
+# [S0, S1, S2] with per-layer probability contexts (`frame_context_idx` =
+# spatial_id, docs/handoff/spatial-svc.md §14). The VP9 Default's parameters
+# plus the three-layer spatial defaults, written out so the tuner can move
+# them. Its own optimisation target: measured on the SVC chart
+# (eval/nceval/svc_chart.py, docs/results/svc-chart.md) by BD-J of operating
+# point 0 at its receiver rate, with the 360p and 180p operating points as
+# guards. `--temporal-layers 3` (or `--scalability L3T3`) gives L3T3;
+# `--scalability L3T1_KEY` / `L3T3_KEY` gives WebRTC K-SVC.
+spatial.layers = 3
+spatial.s0_scale = 0.25
+spatial.s1_scale = 0.5
+# Nominal caps of the 180p and 360p layers (720p takes the rest plus their
+# unspent inter bits); K-SVC (`spatial.inter_layer = 2`) uses
+# `spatial.key_s0_rate_share` (0.08) and `spatial.key_s1_rate_share` (0.24).
+spatial.s0_rate_share = 0.08
+spatial.s1_rate_share = 0.26
+spatial.inter_layer = 1
+spatial.enhancement_interval = 1
+# Pinned before VP9 Default's CPU cut (2026-11-14, study vp9-default-speed trial
+# #23), as vp9-svc: this preset was measured with those values.
+vp9.tx_search_min_levels = 0
+vp9.inter_rounding_divisor = 4
+vp9.inter_tx_split_spread = 1
+vp9.lambda_per_step_squared = 0.09
+planner.lambda_scale = 3.1625
+quant.trellis_lambda_scale = 1
+decision.intra_gate_variance = 0
+vp9.filter_level_scale = 1
+vp9.chroma_delta_q = -8
+vp9.inter_intra_dc_only = 0

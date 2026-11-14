@@ -39,11 +39,11 @@ enum Action {
         operating_point: Option<u8>,
         output: PathBuf,
     },
-    /// Strip a VP9 spatial stream to `operating_point` (optionally guided by a
-    /// `--layer-md5` sidecar CSV for temporal operating points) and write IVF
-    /// to `output`.
+    /// Strip a VP9 spatial stream to `operating_point` (`None` = `--base-only`;
+    /// optionally guided by a `--layer-md5` sidecar CSV for temporal operating
+    /// points) using [`nc_vp9::Vp9StreamExtractor`] and write IVF to `output`.
     Vp9Spatial {
-        operating_point: u8,
+        operating_point: Option<u8>,
         layer_md5: Option<PathBuf>,
         output: PathBuf,
     },
@@ -99,9 +99,12 @@ fn parse(args: &[String]) -> Result<ExtractArgs, String> {
     }
     if codec == Codec::Vp9 && (has_base_only || has_op) {
         let operating_point = if has_op {
-            crate::decode::parse_operating_point(&get("--operating-point")?, "")?
+            Some(crate::decode::parse_operating_point(
+                &get("--operating-point")?,
+                "",
+            )?)
         } else {
-            1
+            None
         };
         let layer_md5 = args
             .iter()
@@ -309,8 +312,6 @@ fn extract_av1_spatial(operating_point: Option<u8>, input: &[u8]) -> Result<Vec<
 #[derive(Clone, Copy)]
 struct Vp9SidecarLayer {
     spatial_id: u8,
-    width: usize,
-    height: usize,
     op_mask: u32,
 }
 
@@ -331,33 +332,57 @@ fn parse_vp9_sidecar(path: &std::path::Path) -> Result<Vec<Vec<Vp9SidecarLayer>>
         let spatial_id: u8 = cols[1]
             .parse()
             .map_err(|e| format!("bad spatial_id: {e}"))?;
-        let width: usize = cols[4].parse().map_err(|e| format!("bad width: {e}"))?;
-        let height: usize = cols[5].parse().map_err(|e| format!("bad height: {e}"))?;
         let op_mask: u32 = cols
             .get(9)
             .and_then(|s| s.parse().ok())
             .unwrap_or(if spatial_id == 0 { 0b11 } else { 0b01 });
         tus.entry(tu).or_default().push(Vp9SidecarLayer {
             spatial_id,
-            width,
-            height,
             op_mask,
         });
     }
     Ok(tus.into_values().collect())
 }
 
+/// The spatial view operating point `op` selects: `(spatial layers in the
+/// stream, highest spatial_id op includes)`, read from the sidecar's operating
+/// point masks. The temporal operating points per spatial view are not a fixed
+/// count (a decimated enhancement layer has fewer), so the view is looked up,
+/// not derived from `op`.
+fn sidecar_view(tus: &[Vec<Vp9SidecarLayer>], op: u8) -> (u8, u8) {
+    let layers = || tus.iter().flatten();
+    let num_spatial = layers().map(|l| l.spatial_id).max().unwrap_or(0) + 1;
+    let bit = 1u32.checked_shl(u32::from(op)).unwrap_or(0);
+    let top = layers()
+        .filter(|l| l.op_mask & bit != 0)
+        .map(|l| l.spatial_id)
+        .max()
+        .unwrap_or(0);
+    (num_spatial, top)
+}
+
 fn extract_vp9_spatial(
-    operating_point: u8,
+    operating_point: Option<u8>,
     layer_md5: Option<&std::path::Path>,
     input: &[u8],
 ) -> Result<Vec<u8>, String> {
     let sidecar = layer_md5.map(parse_vp9_sidecar).transpose()?;
+    // Without a sidecar the operating point is the spatial view itself.
+    let view = match (operating_point, sidecar.as_ref()) {
+        (Some(op), Some(tus)) => Some(sidecar_view(tus, op)),
+        _ => None,
+    };
     let fourcc = ivf_fourcc(Codec::Vp9).expect("VP9 streams are IVF");
+    let mut extractor = match (operating_point, view) {
+        (Some(_), Some((num_spatial, top))) => {
+            nc_vp9::Vp9StreamExtractor::new(num_spatial - 1 - top).map_err(|e| e.to_string())?
+        }
+        (Some(op), None) => nc_vp9::Vp9StreamExtractor::new(op).map_err(|e| e.to_string())?,
+        (None, _) => nc_vp9::Vp9StreamExtractor::base_only(),
+    };
     let mut output = Vec::new();
     let mut kept = 0u32;
     let mut tu_idx = 0usize;
-    let mut base_width: Option<usize> = None;
     let mut first_size: Option<(usize, usize)> = None;
     read_ivf(&mut Cursor::new(input), |header, frame| {
         if header.fourcc() != fourcc {
@@ -368,38 +393,54 @@ fn extract_vp9_spatial(
         }
         let idx = tu_idx;
         tu_idx += 1;
-        let strip_to_base = if let Some(tus) = &sidecar {
+        let filtered_pkt: Option<Vec<u8>> = if let Some(tus) = &sidecar {
             let layers = tus
                 .get(idx)
                 .ok_or_else(|| format!("--layer-md5 has fewer TUs than IVF ({idx})"))?;
-            let bit = 1u32.checked_shl(u32::from(operating_point)).unwrap_or(0);
-            let included: Vec<&Vp9SidecarLayer> =
-                layers.iter().filter(|l| (l.op_mask & bit) != 0).collect();
-            if included.is_empty() {
+            let (in_temporal_op, temporal_keep): (bool, Option<(u8, u32)>) = match operating_point {
+                Some(op) => {
+                    let bit = 1u32.checked_shl(u32::from(op)).unwrap_or(0);
+                    let max_s = view.map_or(0, |(_, top)| top);
+                    (
+                        layers.iter().any(|l| (l.op_mask & bit) != 0),
+                        Some((max_s, bit)),
+                    )
+                }
+                None => (layers.iter().any(|l| l.spatial_id == 0), None),
+            };
+            if !in_temporal_op {
+                extractor
+                    .skip_packet(frame.packet)
+                    .map_err(|e| e.to_string())?;
                 return Ok(());
             }
-            if let Some(s0) = layers.iter().find(|l| l.spatial_id == 0) {
-                base_width = Some(s0.width);
-            }
-            let top = included.last().expect("non-empty");
-            first_size.get_or_insert((top.width, top.height));
-            top.spatial_id == 0
-        } else {
-            operating_point > 0
-        };
-        let packet = if strip_to_base {
-            let stripped =
-                nc_vp9::strip_superframe_to_base(frame.packet).map_err(|e| e.to_string())?;
-            if let Ok(info) = nc_vp9::parse_uncompressed_header_info(&stripped, base_width)
-                && let Some((w, h)) = info.coded_size
+            if let Some((max_s, bit)) = temporal_keep
+                && layers
+                    .iter()
+                    .any(|l| l.spatial_id <= max_s && (l.op_mask & bit) == 0)
             {
-                base_width = Some(w);
-                first_size.get_or_insert((w, h));
+                Some(
+                    nc_vp9::filter_superframe_layers(frame.packet, |k| {
+                        layers
+                            .get(k)
+                            .is_some_and(|l| l.spatial_id > max_s || (l.op_mask & bit) != 0)
+                    })
+                    .map_err(|e| e.to_string())?,
+                )
+            } else {
+                None
             }
-            stripped
         } else {
-            frame.packet.to_vec()
+            None
         };
+        let pkt = filtered_pkt.as_deref().unwrap_or(frame.packet);
+        let extracted = extractor.extract_packet(pkt).map_err(|e| e.to_string())?;
+        let Some((packet, size)) = extracted else {
+            return Ok(());
+        };
+        if let Some(sz) = size {
+            first_size.get_or_insert(sz);
+        }
         let mut frame_hdr = *frame.header;
         let len = u32::try_from(packet.len()).map_err(|_| "VP9 frame too large".to_string())?;
         frame_hdr[..4].copy_from_slice(&len.to_le_bytes());

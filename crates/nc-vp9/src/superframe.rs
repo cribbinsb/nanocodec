@@ -29,6 +29,12 @@
 //!
 //! # Display semantics (`show_frame`, VP9 §6.2 / §7.1)
 //!
+//! Every lower spatial layer (`S0`, and `S1` of three) is coded with
+//! `show_frame = 0`, and so is the top layer in K-SVC (`_KEY` modes), where a
+//! receiver may get the top layer without the layers below; a unit whose
+//! last coded frame is hidden ends with a `show_existing_frame` of the slot
+//! it refreshed ([`pack_spatial_tu`]). For two layers:
+//!
 //! `S0` is always coded with `show_frame = 0` (`intra_only = 0` on inter
 //! frames) and refreshes at least one reference slot:
 //! - in a 2-layer temporal unit `[S0, S1]`, `S1` (`show_frame = 1`) is the
@@ -66,17 +72,17 @@ const SIZE_BYTES_SHIFT: u8 = 3;
 const SIZE_BYTES_MINUS_1_MASK: u8 = 0x03;
 
 /// VP9 2-bit `frame_marker` at the start of every uncompressed header (`VP9 §6.2`).
-const FRAME_MARKER: u32 = 0b10;
+pub(crate) const FRAME_MARKER: u32 = 0b10;
 /// A Profile 0 `show_existing_frame` header without its 3-bit slot
 /// (`frame_marker`, `profile_low_bit`, `profile_high_bit`,
 /// `show_existing_frame = 1`): one byte with the slot (`VP9 §6.2`).
 const SHOW_EXISTING_FRAME: u8 = 0b1000_1000;
 
 /// VP9 24-bit `sync_code` on key and intra-only frames (`VP9 §6.2.2`).
-const SYNC_CODE: u32 = 0x49_83_42;
+pub(crate) const SYNC_CODE: u32 = 0x49_83_42;
 
 /// Number of active inter reference slots per frame (`LAST`, `GOLDEN`, `ALTREF`).
-const REFS_PER_FRAME: usize = 3;
+pub(crate) const REFS_PER_FRAME: usize = 3;
 
 /// `MAX_TILE_WIDTH_B64` and `MIN_TILE_WIDTH_B64` in 64x64 superblocks (`VP9 §6.2.10`).
 const MAX_TILE_WIDTH_SB: usize = 64;
@@ -468,7 +474,7 @@ fn skip_loop_quant_seg_tile(bits: &mut BitReader<'_>, width: usize) -> Result<()
     Ok(())
 }
 
-fn read_color_config_profile0(bits: &mut BitReader<'_>) -> Result<()> {
+pub(crate) fn read_color_config_profile0(bits: &mut BitReader<'_>) -> Result<()> {
     let color_space = bits.read_bits(3)?;
     if color_space == 7 {
         return Err(DecodeError::Unsupported("VP9 sRGB in profile 0"));
@@ -565,7 +571,7 @@ fn shows_frame(frame: &[u8]) -> Result<bool> {
     bits.read_bit()
 }
 
-fn trim_escape_padding(packet: &[u8]) -> &[u8] {
+pub(crate) fn trim_escape_padding(packet: &[u8]) -> &[u8] {
     if packet.len() >= 2
         && packet[packet.len() - 1] == 0x00
         && (packet[packet.len() - 2] & SUPERFRAME_MARKER_MASK) == SUPERFRAME_MARKER
@@ -578,21 +584,116 @@ fn trim_escape_padding(packet: &[u8]) -> &[u8] {
 
 /// Finalize a spatial temporal unit (`data` containing concatenated layer frames
 /// with byte lengths `layer_lengths`):
-/// - When `layer_lengths` has 2..=8 frames (`[S0, S1]`), appends the VP9 Annex B
-///   superframe index (`§B.2`).
-/// - When `layer_lengths` has 1 frame (`S0`-only TU on a sparse enhancement
-///   schedule or when `S1` was dropped by rate control), appends a
-///   `show_existing_frame` of `S0` and the index of the two (the module
-///   docs).
+/// - When `layer_lengths` has 1 frame, escapes a shown frame or appends a
+///   `show_existing_frame` pointer for a hidden frame (`[S0, sef]`).
+/// - When `layer_lengths` has 2..=7 frames, appends `show_existing_frame` when
+///   the final coded frame is hidden (such as a K-SVC unit or a 3-layer unit
+///   whose `S2` was dropped) and writes the Annex B superframe index (`§B.2`).
 pub fn pack_spatial_tu(data: &mut Vec<u8>, layer_lengths: &[usize]) {
     match layer_lengths.len() {
         0 => {}
         1 => {
-            *data = show_hidden_base(data)
-                .expect("the encoder's base frame is hidden and refreshes a slot");
+            if shows_frame(data).expect("valid encoder VP9 header") {
+                *data = escape_single_frame(data);
+            } else {
+                *data = show_hidden_base(data)
+                    .expect("the encoder's hidden layer frame refreshes a slot");
+            }
         }
-        _ => write_superframe_index(data, layer_lengths),
+        _ => {
+            let last_len = *layer_lengths.last().expect("at least 2 layers");
+            let last_start = data.len() - last_len;
+            if shows_frame(&data[last_start..]).expect("valid encoder VP9 header") {
+                write_superframe_index(data, layer_lengths);
+            } else {
+                let refresh =
+                    refresh_frame_flags(&data[last_start..]).expect("valid encoder VP9 header");
+                assert!(refresh != 0, "hidden top spatial frame must refresh a slot");
+                let slot = refresh.trailing_zeros() as u8;
+                data.push(SHOW_EXISTING_FRAME | slot);
+                let mut lengths = Vec::with_capacity(layer_lengths.len() + 1);
+                lengths.extend_from_slice(layer_lengths);
+                lengths.push(1);
+                write_superframe_index(data, &lengths);
+            }
+        }
     }
+}
+
+/// Pack `1..=7` coded layer frames into a standalone VP9 packet, appending a
+/// 1-byte `show_existing_frame` pointer whenever the final coded frame has
+/// `show_frame = 0` (`VP9 §6.2`, `Annex B §B.2`).
+///
+/// # Errors
+///
+/// Returns [`DecodeError`] if any header is malformed or a hidden final frame
+/// refreshes no slot.
+pub fn pack_coded_layers(coded: &[&[u8]]) -> Result<Vec<u8>> {
+    match coded {
+        [] => Ok(Vec::new()),
+        [single] => {
+            if shows_frame(single)? {
+                Ok(escape_single_frame(single))
+            } else {
+                show_hidden_base(single)
+            }
+        }
+        many => {
+            let last = *many.last().expect("non-empty");
+            if shows_frame(last)? {
+                Ok(pack_superframe(many))
+            } else {
+                let refresh = refresh_frame_flags(last)?;
+                if refresh == 0 {
+                    return Err(DecodeError::Malformed(
+                        "VP9 hidden layer frame refreshes no slot to show",
+                    ));
+                }
+                let sef = [SHOW_EXISTING_FRAME | (refresh.trailing_zeros() as u8)];
+                let mut slices = Vec::with_capacity(many.len() + 1);
+                slices.extend_from_slice(many);
+                slices.push(&sef);
+                Ok(pack_superframe(&slices))
+            }
+        }
+    }
+}
+
+fn is_show_existing_frame(frame: &[u8]) -> Result<bool> {
+    let mut bits = BitReader::new(frame);
+    if bits.read_bits(2)? != FRAME_MARKER {
+        return Err(DecodeError::Malformed("VP9 frame marker"));
+    }
+    if bits.read_bits(2)? != 0 {
+        return Err(DecodeError::Unsupported("VP9 profile other than 0"));
+    }
+    bits.read_bit()
+}
+
+/// Filter the coded spatial layers (`0..N`, excluding any trailing
+/// `show_existing_frame` pointer) of `packet` by `keep(coded_index)` and repack
+/// the kept frames as a valid VP9 packet (or empty `Vec` if none are kept).
+///
+/// # Errors
+///
+/// Returns [`DecodeError`] if any frame header in `packet` is malformed.
+pub fn filter_superframe_layers(
+    packet: &[u8],
+    mut keep: impl FnMut(usize) -> bool,
+) -> Result<Vec<u8>> {
+    let raw_frames = split_superframe(packet).unwrap_or_else(|| vec![trim_escape_padding(packet)]);
+    let mut kept = Vec::with_capacity(raw_frames.len());
+    let mut coded_idx = 0usize;
+    for raw in raw_frames {
+        if is_show_existing_frame(raw)? {
+            continue;
+        }
+        if keep(coded_idx) {
+            kept.push(raw);
+        }
+        coded_idx += 1;
+    }
+    pack_coded_layers(&kept)
 }
 
 #[cfg(test)]

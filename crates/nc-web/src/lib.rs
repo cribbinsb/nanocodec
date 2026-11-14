@@ -191,6 +191,8 @@ fn preset(codec: Codec, name: &str) -> Result<ParamOverrides, String> {
         ("fastest", Codec::Vp9) => include_str!("../../../presets/vp9-fastest.toml"),
         ("svc", Codec::Vp9) => include_str!("../../../presets/vp9-svc.toml"),
         ("svc-fast", Codec::Vp9) => include_str!("../../../presets/vp9-svc-fast.toml"),
+        ("svc3", Codec::Vp9) => include_str!("../../../presets/vp9-svc3.toml"),
+        ("svc3-fast", Codec::Vp9) => include_str!("../../../presets/vp9-svc3-fast.toml"),
         ("fast", Codec::Av2) => include_str!("../../../presets/av2-fast.toml"),
         ("fast", Codec::Vvc) => include_str!("../../../presets/vvc-fast.toml"),
         _ => return Err(format!("No {name} preset for this codec")),
@@ -741,21 +743,18 @@ impl BrowserDecoder {
         self.reference.as_ref().map_or(0, Picture::height)
     }
 
-    /// Select the operating point (`0..=31` on AV1, `0..=1` on VP9 where `> 0`
-    /// selects base-only `S0` decoding; default `0`) before or between packets.
+    /// Select the operating point (`0..=31` on AV1, `0..=2` on VP9; default `0`)
+    /// before or between packets.
     /// # Errors
     /// Rejects non-zero operating points on codecs other than AV1 and VP9, and
-    /// values above 31.
+    /// out-of-range operating points.
     pub fn set_operating_point(&mut self, op: u8) -> Result<(), JsValue> {
         if op > nc_av1::MAX_OPERATING_POINT {
             return Err(js_error("Operating point must be in 0..=31"));
         }
         match &mut self.inner {
             DecoderKind::Av1(d) => d.set_operating_point(op).map_err(js_error),
-            DecoderKind::Vp9(d) => {
-                d.set_base_only(op > 0);
-                Ok(())
-            }
+            DecoderKind::Vp9(d) => d.set_operating_point(op).map_err(js_error),
             _ if op == 0 => Ok(()),
             _ => Err(js_error(
                 "Operating points are supported on AV1 and VP9 only",
@@ -1374,6 +1373,76 @@ mod input_tests {
                 ksvc_decoders[op].decode(&rx_bytes).unwrap();
                 assert_eq!(ksvc_decoders[op].spatial_id(), expected_sid);
                 assert!(ksvc_decoders[op].psnr(&packed).unwrap() > 16.0);
+            }
+        }
+    }
+
+    #[test]
+    fn vp9_three_layer_and_ksvc_operating_points_decode_in_browser() {
+        let (width, height) = (256, 128);
+        let mut ksvc_encoder = BrowserEncoder::new(
+            "vp9",
+            width,
+            height,
+            140,
+            30,
+            30,
+            "svc3",
+            Some("spatial.inter_layer=2\nhold.enable=0".to_owned()),
+            false,
+            None,
+        )
+        .unwrap();
+        let mut op_decoders: Vec<BrowserDecoder> = (0..3u8)
+            .map(|op| {
+                let mut d = BrowserDecoder::new("vp9").unwrap();
+                d.set_operating_point(op).unwrap();
+                d
+            })
+            .collect();
+        let mut extractors: Vec<nc_vp9::Vp9StreamExtractor> = (0..3u8)
+            .map(|op| nc_vp9::Vp9StreamExtractor::new(op).unwrap())
+            .collect();
+        let mut ext_decoders: Vec<BrowserDecoder> = (0..3)
+            .map(|_| BrowserDecoder::new("vp9").unwrap())
+            .collect();
+        for frame in 0..4 {
+            let rgba: Vec<u8> = (0..4 * width * height)
+                .map(|i| (i * 17 + i / 19 + frame * 37) as u8)
+                .collect();
+            let (source, packed) = source_of(width, height, &rgba);
+            let packet = ksvc_encoder.encode(&source).unwrap();
+            for op in 0..3usize {
+                let expected_sid = (2 - op) as u8;
+                let expected_dim = match expected_sid {
+                    0 => (64, 32),
+                    1 => (128, 64),
+                    _ => (256, 128),
+                };
+                op_decoders[op].decode(&packet).unwrap();
+                assert_eq!(op_decoders[op].spatial_id(), expected_sid);
+                assert_eq!(
+                    (op_decoders[op].width(), op_decoders[op].height()),
+                    expected_dim
+                );
+                assert_eq!(
+                    (
+                        op_decoders[op].stream_width(),
+                        op_decoders[op].stream_height()
+                    ),
+                    (width, height)
+                );
+                assert!(op_decoders[op].psnr(&packed).unwrap() > 16.0);
+
+                let (rx_bytes, _) = extractors[op].extract_packet(&packet).unwrap().unwrap();
+                ext_decoders[op].decode(&rx_bytes).unwrap();
+                assert_eq!(
+                    (ext_decoders[op].width(), ext_decoders[op].height()),
+                    expected_dim
+                );
+                if op == 0 {
+                    assert!(ext_decoders[op].psnr(&packed).unwrap() > 16.0);
+                }
             }
         }
     }

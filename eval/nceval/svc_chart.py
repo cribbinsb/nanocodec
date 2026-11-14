@@ -107,9 +107,10 @@ from .realuse import LADDER_KBPS, Runner, main_clips, natural_val, own_family, p
 from .slots import cpu_slots
 from .stages import balanced_parts
 from .svcbase import (BASE_RATE_SHARE, THREE_LAYER_RATE_SHARES, Md5Sink, ScaledFrames,
-                      av1_ksvc_receiver_bits, av1_operating_point_bits, base_size, decode_scored,
-                      ivf_frames, layer_size, operating_point, own_base_layer, per_input,
-                      split_rate, split_rate3, stream_layer_bits, vp9_first_frames, write_ivf)
+                      base_size, decode_scored, ivf_frames, ksvc_receiver_bits, layer_size,
+                      operating_point, operating_point_bits, own_base_layer, per_input,
+                      split_rate, split_rate3, stream_layer_bits, vp9_extract_view,
+                      vp9_superframe_sizes, write_ivf)
 from .sweep import IVF_FILE_HEADER_BYTES
 from .yuv import YuvFormat
 
@@ -137,17 +138,22 @@ SVC_FAST_PRESET = "av1-svc-fast"
 #: L3T1 at 720p + 360p + 180p, and its speed point.
 SVC3_PRESET = "av1-svc3"
 SVC3_FAST_PRESET = "av1-svc3-fast"
-#: The VP9 presets (presets/vp9-svc.toml, presets/vp9-svc-fast.toml): the same roles.
+#: The VP9 presets (presets/vp9-svc*.toml): 2-layer and 3-layer SVC and their speed points.
 VP9_SVC_PRESET = "vp9-svc"
 VP9_SVC_FAST_PRESET = "vp9-svc-fast"
+VP9_SVC3_PRESET = "vp9-svc3"
+VP9_SVC3_FAST_PRESET = "vp9-svc3-fast"
 #: vp9_spatial_svc_encoder: cyclic-refresh AQ (aq-mode 3, as WebRTC's VP9 sets
 #: it) and the full quantizer range, as svc_encoder_rtc (AOM_MAX_Q); its minimum
 #: is WebRTC's VP9 one.
 VPX_AQ_MODE = 3
 VPX_MIN_Q = 2
 VPX_MAX_Q = 63
-#: The base layer's scale, lowest layer first (vp9_spatial_svc_encoder -r).
+#: Spatial scale factors, lowest layer first (`vp9_spatial_svc_encoder -r`), and
+#: 3-temporal-layer scheme (`VP9E_TEMPORAL_LAYERING_MODE_0212`, `-tlm 3`).
 VPX_SCALE_FACTORS = "1/2,1/1"
+VPX_SCALE_FACTORS_3 = "1/4,1/2,1/1"
+VPX_TEMPORAL_LAYERING_MODE_T3 = 3
 #: The reference encoders' point kinds (every other kind is ours).
 REFERENCE_KINDS = ("aom", "vpx")
 #: Result layout revision: part of every SVC point's identity.
@@ -163,9 +169,11 @@ SINGLE_LAYERS = {Codec.AV1: SINGLE_LAYER, Codec.VP9: "nanocodec-vp9"}
 #: simulcast point's low stream).
 BASE_ANCHORS = {Codec.AV1: ("nanocodec-av1-360p", "AV1 Default, 360p alone"),
                 Codec.VP9: ("nanocodec-vp9-360p", "VP9 Default, 360p alone")}
-#: The 180p table's anchor: AV1 Default at quarter size (the three-layer
+#: The 180p table's anchors: each codec's Default at quarter size (the three-layer
 #: simulcast point's lowest stream).
 LOWEST_ANCHOR = ("nanocodec-av1-180p", "AV1 Default, 180p alone")
+LOWEST_ANCHORS = {Codec.AV1: LOWEST_ANCHOR,
+                  Codec.VP9: ("nanocodec-vp9-180p", "VP9 Default, 180p alone")}
 
 
 @dataclass(frozen=True)
@@ -250,6 +258,46 @@ POINTS = (
              key_mode=True),
     SvcPoint("libaom-svc-cpu10-L3T3_KEY", "libaom SVC L3T3_KEY rt 10", "aom", 3, 10, layers=3,
              key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC_PRESET}+L2T1_KEY", "VP9 SVC L2T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC_PRESET,
+             codec=Codec.VP9, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC_PRESET}+L2T3_KEY", "VP9 SVC L2T3_KEY", "ours", 3,
+             params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
+             preset=VP9_SVC_PRESET, codec=Codec.VP9, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC_FAST_PRESET}+L2T1_KEY", "VP9 SVC Fast L2T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC_FAST_PRESET,
+             codec=Codec.VP9, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}", "VP9 SVC L3T1", "ours", 1,
+             preset=VP9_SVC3_PRESET, codec=Codec.VP9, layers=3),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}+L3T3", "VP9 SVC L3T3", "ours", 3,
+             params=("--param", "layers.adaptive=0"), preset=VP9_SVC3_PRESET,
+             codec=Codec.VP9, layers=3),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_FAST_PRESET}", "VP9 SVC Fast L3T1", "ours", 1,
+             preset=VP9_SVC3_FAST_PRESET, codec=Codec.VP9, layers=3),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}+L3T1_KEY", "VP9 SVC L3T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC3_PRESET,
+             codec=Codec.VP9, layers=3, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}+L3T3_KEY", "VP9 SVC L3T3_KEY", "ours", 3,
+             params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
+             preset=VP9_SVC3_PRESET, codec=Codec.VP9, layers=3, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_FAST_PRESET}+L3T1_KEY", "VP9 SVC Fast L3T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC3_FAST_PRESET,
+             codec=Codec.VP9, layers=3, key_mode=True),
+    SvcPoint("simulcast3-vp9", "VP9 simulcast 720p+360p+180p", "simulcast", codec=Codec.VP9,
+             layers=3),
+    # libvpx L2T1_KEY rt 7 and L3T3_KEY rt 7/9 lack x264 overlap on pan_jaad_0101 /
+    # crowd_mot20_06 / lowlight_bdd_00ce95b0 (like libvpx L2T3), which would drop the
+    # shared chart from 8/8 clips to 5/5; reported in spatial-svc.md §14.5 instead.
+    SvcPoint("libvpx-svc-cpu9-L2T1_KEY", "libvpx SVC L2T1_KEY rt 9", "vpx", 1, 9,
+             codec=Codec.VP9, key_mode=True),
+    SvcPoint("libvpx-svc-cpu7-L3T1", "libvpx SVC L3T1 rt 7", "vpx", 1, 7,
+             codec=Codec.VP9, layers=3),
+    SvcPoint("libvpx-svc-cpu9-L3T1", "libvpx SVC L3T1 rt 9", "vpx", 1, 9,
+             codec=Codec.VP9, layers=3),
+    SvcPoint("libvpx-svc-cpu7-L3T1_KEY", "libvpx SVC L3T1_KEY rt 7", "vpx", 1, 7,
+             codec=Codec.VP9, layers=3, key_mode=True),
+    SvcPoint("libvpx-svc-cpu9-L3T1_KEY", "libvpx SVC L3T1_KEY rt 9", "vpx", 1, 9,
+             codec=Codec.VP9, layers=3, key_mode=True),
 )
 #: The realuse-measured points: (family, label).
 LINES = ((ANCHOR, "x264 medium (720p)"), (SINGLE_LAYER, "AV1 Default 720p (single layer)"),
@@ -271,6 +319,18 @@ def merge_temporal_units(path: Path) -> None:
         else:
             units.append((pts, payload))
     write_ivf(path, data[:IVF_FILE_HEADER_BYTES], units)
+
+
+def _vpx_temporal_bitrates(rate: int, shares: tuple[float, ...]) -> list[int]:
+    """Cumulative temporal bitrates for one spatial layer (`vp9_spatial_svc_encoder`
+    requires strictly increasing positive integer targets across temporal layers)."""
+    out = [max(1, round(rate * s)) for s in shares]
+    out[-1] = max(rate, len(shares))
+    for i in range(len(out) - 2, -1, -1):
+        out[i] = min(out[i], out[i + 1] - 1)
+    for i in range(len(out)):
+        out[i] = max(out[i], (out[i - 1] + 1) if i else 1)
+    return out
 
 
 # --- measurement ------------------------------------------------------------------------
@@ -410,16 +470,25 @@ class SvcBench:
                            lowest=lowest[0] if lowest else None)
 
     def _vpx(self, point: SvcPoint, clip: Clip, kbps: int, scratch: Path) -> dict:
-        stream, base_stream = scratch / "s.ivf", scratch / "base.ivf"
+        stream = scratch / "s.ivf"
         with cpu_slots(1):
             returncode, stderr = run_fed(self.vpx_command(point, clip, kbps, stream), clip,
                                          self.frames)
         if returncode:
             raise RuntimeError(f"{point.name} {clip.name} {kbps}: {stderr[-300:]}")
-        vp9_first_frames(stream, base_stream)
-        full = self.vpx_decode_scored(stream, clip, spatial_id=1, scratch=scratch)
-        base = self.vpx_decode_scored(base_stream, clip, spatial_id=0, scratch=scratch)
-        return self.result(point, clip, kbps, stream, full, base)
+        top = point.layers - 1
+        views = []
+        for sid in range(top, -1, -1):
+            if sid == top and not point.key_mode:
+                view_stream = stream
+            else:
+                view_stream = scratch / f"view_s{sid}.ivf"
+                vp9_extract_view(stream, view_stream, spatial_id=sid, key_mode=point.key_mode)
+            views.append(self.vpx_decode_scored(view_stream, clip, spatial_id=sid, top=top,
+                                                scratch=scratch))
+        full, base, *lowest = views
+        return self.result(point, clip, kbps, stream, full, base,
+                           lowest=lowest[0] if lowest else None)
 
     def _simulcast(self, point: SvcPoint, clip: Clip, kbps: int, scratch: Path) -> dict:
         """Independent single-layer streams, one per layer size (lowest first), at the
@@ -478,21 +547,28 @@ class SvcBench:
                 "-o", str(out), "-"]
 
     def vpx_command(self, point: SvcPoint, clip: Clip, kbps: int, out: Path) -> list[str]:
-        """vp9_spatial_svc_encoder in one-pass CBR at a real-time speed: L2T1 at its
-        own 2:1 downscale, inter-layer prediction on, cyclic-refresh AQ
-        (VPX_AQ_MODE), no lag, no frame drops, one thread, the full quantizer
-        range; it reads the clip's file itself (`-f` frames)."""
+        """vp9_spatial_svc_encoder in one-pass CBR at a real-time speed: 2- or
+        3-layer 2:1 downscales, Full SVC (`--inter-layer-pred=0`) or K-SVC
+        (`--inter-layer-pred=2`), cyclic-refresh AQ (VPX_AQ_MODE), no lag, no
+        frame drops, one thread, the full quantizer range (`-f` frames)."""
         num, den = fps_fraction(clip.fps)
-        base, full = split_rate(kbps)
-        bounds = lambda q: ",".join([str(q)] * 2)  # noqa: E731 (one per spatial layer)
+        rates = point.layer_rates(kbps)
+        shares = TEMPORAL_SHARES_L2T3 if point.temporal_layers == 3 else (1.0,)
+        bitrates = [b for rate in rates for b in _vpx_temporal_bitrates(rate, shares)]
+        total_kbps = sum(bitrates[point.temporal_layers - 1 :: point.temporal_layers])
+        scale_factors = VPX_SCALE_FACTORS_3 if point.layers == 3 else VPX_SCALE_FACTORS
+        tlm = (["-tlm", str(VPX_TEMPORAL_LAYERING_MODE_T3)]
+               if point.temporal_layers == 3 else [])
+        ilp = 2 if point.key_mode else 0
+        bounds = lambda q: ",".join([str(q)] * point.layers)  # noqa: E731
         return [str(self.vpx_tool()), "-w", str(clip.width), "-h", str(clip.height),
                 "-t", f"{den}/{num}", "-k", str(self.intra), "-f", str(self.frames),
-                "-sl", "2", "-tl", str(point.temporal_layers), "-r", VPX_SCALE_FACTORS,
-                "-sp", str(point.speed), "-aq", str(VPX_AQ_MODE), "-th", "1",
-                "--rc-end-usage=1", "--lag-in-frames=0", "--drop-frame=0",
-                "--inter-layer-pred=0", f"--min-q={bounds(VPX_MIN_Q)}",
-                f"--max-q={bounds(VPX_MAX_Q)}", "-b", str(base + full),
-                "-bl", f"{base},{full}", "-o", str(out), str(clip.yuv)]
+                "-sl", str(point.layers), "-tl", str(point.temporal_layers), *tlm,
+                "-r", scale_factors, "-sp", str(point.speed), "-aq", str(VPX_AQ_MODE),
+                "-th", "1", "--rc-end-usage=1", "--lag-in-frames=0", "--drop-frame=0",
+                f"--inter-layer-pred={ilp}", f"--min-q={bounds(VPX_MIN_Q)}",
+                f"--max-q={bounds(VPX_MAX_Q)}", "-b", str(total_kbps),
+                "-bl", ",".join(map(str, bitrates)), "-o", str(out), str(clip.yuv)]
 
     def layer_reference(self, clip: Clip, spatial_id: int, top: int, scratch: Path,
                         stack: contextlib.ExitStack) -> tuple[Path | ScaledFrames, YuvFormat]:
@@ -504,29 +580,32 @@ class SvcBench:
         return (stack.enter_context(ScaledFrames(clip, self.frames, scratch, self.paths,
                                                  size=size)), YuvFormat(*size))
 
-    def vpx_decode_scored(self, stream: Path, clip: Clip, spatial_id: int, scratch: Path):
-        """libvpx's layer `spatial_id` (`stream`: the full stream, or the base-only
-        one) decoded by vpxdec into the J_real metrics, checked against ffmpeg's
-        decode (ffmpeg_vp9_shown_md5s)."""
+    def vpx_decode_scored(self, stream: Path, clip: Clip, spatial_id: int, scratch: Path,
+                          top: int = 1):
+        """libvpx's layer `spatial_id` (of `top + 1`, `stream`: that receiver's
+        view stream) decoded by vpxdec into the J_real metrics, checked against
+        ffmpeg's decode (`ffmpeg_vp9_shown_md5s`)."""
         vpxdec = find_anchor_tool("vpxdec", self.paths)
         with contextlib.ExitStack() as stack:
-            reference, fmt = self.layer_reference(clip, spatial_id, 1, scratch, stack)
+            reference, fmt = self.layer_reference(clip, spatial_id, top, scratch, stack)
             measured, md5s = decode_scored(lambda out: [
                 str(vpxdec), "--codec=vp9", "--rawvideo", "--i420", "--threads=1",
                 "-o", out, str(stream)], reference, fmt, self.frames, clip.fps,
                 [True] * self.frames, self.paths)
-        layers = [base_size(clip), (fmt.width, fmt.height)] if spatial_id == 1 else \
-            [(fmt.width, fmt.height)]
-        if md5s != self.ffmpeg_vp9_shown_md5s(stream, layers):
+        all_layers = [layer_size(clip, top - sid) for sid in range(spatial_id + 1)]
+        if md5s != self.ffmpeg_vp9_shown_md5s(stream, all_layers):
             raise RuntimeError(f"{stream}: spatial layer {spatial_id} decodes differ")
         return measured
 
-    def ffmpeg_vp9_shown_md5s(self, stream: Path, layers: list[tuple[int, int]]) -> list[str]:
+    def ffmpeg_vp9_shown_md5s(self, stream: Path,
+                              all_layers: list[tuple[int, int]]) -> list[str]:
         """MD5 of each temporal unit's top layer as ffmpeg decodes `stream`. ffmpeg
-        outputs every frame coded with show_frame = 1, and libvpx codes every
-        spatial layer shown, so each unit yields one picture per layer (`layers`:
-        their sizes, lowest first), where vpxdec outputs the unit's last."""
-        sizes = [w * h + 2 * ((w + 1) // 2) * ((h + 1) // 2) for w, h in layers]
+        outputs every frame coded with `show_frame = 1`, and libvpx codes every
+        spatial layer shown (`1..=len(all_layers)` frames in a temporal unit,
+        ending at `all_layers[-1]`), where vpxdec outputs the unit's last."""
+        byte_sizes = [w * h + 2 * ((w + 1) // 2) * ((h + 1) // 2) for w, h in all_layers]
+        tu_counts = [len(vp9_superframe_sizes(payload) or [1])
+                     for _, payload in ivf_frames(stream.read_bytes())]
         digests = []
         with cpu_slots(1):
             process = subprocess.Popen(
@@ -535,13 +614,14 @@ class SvcBench:
                  "-fps_mode", "passthrough", "-noautoscale", "-f", "rawvideo",
                  "-pix_fmt", "yuv420p", "-"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            while True:
+            for count in tu_counts:
+                sizes = byte_sizes[-count:]
                 unit = [process.stdout.read(n) for n in sizes]
-                if not unit[0]:
-                    break
                 if any(len(picture) != n for picture, n in zip(unit, sizes)):
                     raise RuntimeError(f"{stream}: ffmpeg ended inside a temporal unit")
                 digests.append(hashlib.md5(unit[-1]).hexdigest())
+            if process.stdout.read(1):
+                raise RuntimeError(f"{stream}: ffmpeg produced extra pictures")
             if process.wait():
                 raise RuntimeError(f"{stream}: ffmpeg failed ({process.returncode})")
         return digests
@@ -579,9 +659,9 @@ class SvcBench:
         lowest_bits = None
         if point.layers == 3:  # full SVC carries S0+S1; K-SVC carries S0+S1 on key, S1 on inter
             lowest_bits = bases
-            bases = (av1_ksvc_receiver_bits(stream, 1) if point.key_mode
-                     else av1_operating_point_bits(stream, 1))
-        top_bits = (per_input(av1_ksvc_receiver_bits(stream, point.layers - 1), coded)
+            bases = (ksvc_receiver_bits(stream, point.codec, 1) if point.key_mode
+                     else operating_point_bits(stream, point.codec, 1))
+        top_bits = (per_input(ksvc_receiver_bits(stream, point.codec, point.layers - 1), coded)
                     if point.key_mode else None)
         keys = [f.frame_type == "I" for f in
                 with_held_frames(probe_frames(stream, self.paths), coded)]
@@ -811,7 +891,8 @@ TIMED_FAMILIES = (ANCHOR, SINGLE_LAYER, f"{SINGLE_LAYER}@av1-fast", "libaom-av1-
 #: Each SVC speed preset's single-layer counterpart (its timed bridge).
 FAST_BRIDGES = {SVC_FAST_PRESET: f"{SINGLE_LAYER}@av1-fast",
                 SVC3_FAST_PRESET: f"{SINGLE_LAYER}@av1-fast",
-                VP9_SVC_FAST_PRESET: f"{SINGLE_LAYERS[Codec.VP9]}@vp9-fast"}
+                VP9_SVC_FAST_PRESET: f"{SINGLE_LAYERS[Codec.VP9]}@vp9-fast",
+                VP9_SVC3_FAST_PRESET: f"{SINGLE_LAYERS[Codec.VP9]}@vp9-fast"}
 
 
 def bridge(name: str) -> str:
@@ -1173,15 +1254,16 @@ def base_points(measured: Measured, clips: list[Clip], points: list[SvcPoint]
 def lowest_points(measured: Measured, clips: list[Clip], points: list[SvcPoint]
                   ) -> list[ChartPoint]:
     """Each three-layer point's 180p operating point (operating point 2, at its own
-    rate) vs AV1 Default coded alone at that size (the three-way simulcast's
+    rate) vs its codec's Default coded alone at that size (the three-way simulcast's
     lowest stream)."""
     curves = dict(measured.lowest)
-    simulcast = next(p for p in points if p.kind == "simulcast" and p.layers == 3)
-    for clip in clips:
-        curves[(LOWEST_ANCHOR[0], clip.name)] = measured.lowest[(simulcast.name, clip.name)]
+    for simulcast in (p for p in points if p.kind == "simulcast" and p.layers == 3):
+        for clip in clips:
+            curves[(LOWEST_ANCHORS[simulcast.codec][0], clip.name)] = \
+                measured.lowest[(simulcast.name, clip.name)]
     return lower_points(curves, clips,
                         [p for p in points if p.kind != "simulcast" and p.layers == 3],
-                        lambda _: LOWEST_ANCHOR[0])
+                        lambda p: LOWEST_ANCHORS[p.codec][0])
 
 
 def lower_points(curves: dict, clips: list[Clip], points: list[SvcPoint], anchor
@@ -1284,20 +1366,24 @@ def markdown(points: list[ChartPoint], x86: list[ChartPoint], top_views: list[Ch
                      f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | |")
     lines += ["", "## 180p operating point of three layers (operating point 2)\n",
               "180p output against the source downscaled to 180p (ffmpeg Lanczos), at the "
-              "180p layer's own rate (what a thumbnail receiver gets), as BD-J against AV1 "
-              "Default coded alone at 180p (the three-way simulcast's lowest stream).\n",
+              "180p layer's own rate (what a thumbnail receiver gets), as BD-J against the "
+              "same codec's Default coded alone at 180p (the three-way simulcast's lowest "
+              "stream): AV1 points against AV1 Default, VP9 points against VP9 Default.\n",
               "| Encoder | 180p BD-J | 180p BD-PSNR-YUV | 180p BD-VMAF v1 | 180p share of "
               "total rate | mean 180p PSNR-YUV | mean 180p VMAF v1 | clips |",
               "|---|---:|---:|---:|---:|---:|---:|---:|"]
-    for b in sorted(lowest, key=lambda p: (p.bd_j is None, p.bd_j or 0)):
-        share, psnr, vmaf = base_summary(measured, b.family, "lowest")
-        lines.append(f"| {b.label} | {fmt(b.bd_j)} | {fmt(b.bd_psnr)} | {fmt(b.bd_vmaf)} | "
-                     f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | "
-                     f"{b.scored}/{b.clips} |")
-    simulcast3 = next(p for p in POINTS if p.kind == "simulcast" and p.layers == 3)
-    share, psnr, vmaf = base_summary(measured, simulcast3.name, "lowest")
-    lines.append(f"| {LOWEST_ANCHOR[1]} | +0.0% | +0.0% | +0.0% | "
-                 f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | |")
+    for codec in LOWEST_ANCHORS:
+        for b in sorted((b for b in lowest if codec_of[b.family] is codec),
+                        key=lambda p: (p.bd_j is None, p.bd_j or 0)):
+            share, psnr, vmaf = base_summary(measured, b.family, "lowest")
+            lines.append(f"| {b.label} | {fmt(b.bd_j)} | {fmt(b.bd_psnr)} | {fmt(b.bd_vmaf)} | "
+                         f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | "
+                         f"{b.scored}/{b.clips} |")
+        simulcast3 = next(p for p in POINTS
+                          if p.kind == "simulcast" and p.codec is codec and p.layers == 3)
+        share, psnr, vmaf = base_summary(measured, simulcast3.name, "lowest")
+        lines.append(f"| {LOWEST_ANCHORS[codec][1]} | +0.0% | +0.0% | +0.0% | "
+                     f"{share * 100:.0f}% | {psnr:.2f} dB | {vmaf:.1f} | |")
     lines += ["", "## 720p receiver view (operating point 0 at its own downloaded rate)\n",
               "720p output against the source at the wire rate a 720p receiver downloads "
               "(all layers in full SVC; `{S0..=S_top}` on key units and `{S_top}` alone on "
@@ -1412,8 +1498,9 @@ def render(args: argparse.Namespace) -> None:
     bases = base_points(measured, used, list(POINTS))
     lowest = lowest_points(measured, used, list(POINTS))
     commit = buildinfo.info_of(Path(args.binary).resolve())["commit"]
-    others = "".join(f", {name.partition('@')[2]} at {buildinfo.info_of(path)['commit'][:8]}"
-                     for name, path in binary_overrides(args.binary_for).items())
+    others = "".join(
+        f", {name.partition('@')[2] or name} at {buildinfo.info_of(path)['commit'][:8]}"
+        for name, path in binary_overrides(args.binary_for).items())
     timed_x86 = "paired-timed x86 speed" if not x86_estimated - {SINGLE_LAYER} else \
         "speed partly estimated from instruction counts"
     meta = (f"Updated {datetime.date.today().isoformat()}, build {commit[:8]}{others}; libaom "

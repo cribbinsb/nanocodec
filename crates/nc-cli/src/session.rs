@@ -342,13 +342,24 @@ fn prepare_encoded<B: CodecBackend>(
                 (prefix, Some(only))
             }
             Codec::Vp9 => {
-                let prefix = if sid == 0 && frame.layers.len() > 1 {
-                    nc_vp9::strip_superframe_to_base(&frame.data).map_err(|e| e.to_string())?
-                } else {
+                let coded_sids: Vec<u8> = frame.layers.iter().map(|l| l.spatial_id).collect();
+                let prefix = if usize::from(sid) + 1 == frame.layers.len() {
                     frame.data.clone()
+                } else {
+                    nc_vp9::filter_superframe_layers(&frame.data, |idx| {
+                        coded_sids.get(idx).is_some_and(|&s| s <= sid)
+                    })
+                    .map_err(|e| e.to_string())?
                 };
-                let only = (sid == 0).then(|| prefix.clone());
-                (prefix, only)
+                let only = if sid == 0 {
+                    prefix.clone()
+                } else {
+                    nc_vp9::filter_superframe_layers(&frame.data, |idx| {
+                        coded_sids.get(idx) == Some(&sid)
+                    })
+                    .map_err(|e| e.to_string())?
+                };
+                (prefix, Some(only))
             }
             codec => {
                 return Err(format!(
@@ -484,7 +495,7 @@ impl Receiver {
         decoder.skip_film_grain();
         if codec == Codec::Av1 {
             decoder
-                .set_operating_point(operating_point)
+                .set_operating_point(Some(operating_point))
                 .expect("operating point validated by parse_operating_point");
         }
         Self {

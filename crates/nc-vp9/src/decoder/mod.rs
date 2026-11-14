@@ -40,10 +40,9 @@ use self::header::{
     read_compressed,
 };
 use self::recon::{Reference, extend_reference};
+use crate::extract::{MAX_VP9_OPERATING_POINT, Vp9StreamExtractor};
 use crate::probs::{Adaptation, FrameContext};
-use crate::superframe::{
-    parse_uncompressed_header_info, split_superframe, strip_superframe_to_base,
-};
+use crate::superframe::{parse_uncompressed_header_info, split_superframe};
 use crate::types::MI_SIZE;
 
 /// `reset_frame_context` values (VP9 §7.2): reset the frame's context, or all.
@@ -111,13 +110,19 @@ pub struct Decoder {
     /// decoded; lost, and rebuilt, only when a frame fails).
     scratch: Option<Box<BlockScratch>>,
     /// When `true`, multi-frame Annex B superframes are stripped to their
-    /// base layer (`S0`) via [`strip_superframe_to_base`] before
-    /// decoding.
+    /// lowest spatial layer (`S0`) via [`Vp9StreamExtractor`] before decoding.
     base_only: bool,
+    /// Selected spatial operating point (`0..=2`, default `0`).
+    operating_point: u8,
+    /// Active selective-forwarding extractor when [`Self::base_only`] or
+    /// [`Self::set_operating_point`] has been configured.
+    extractor: Option<Vp9StreamExtractor>,
+    /// Distinct spatial layer dimensions observed on key superframes (`0..N`).
+    layer_sizes: Vec<(usize, usize)>,
     /// `spatial_id` of the latest frame shown.
     last_spatial_id: Option<u8>,
     /// Maximum `(width, height)` seen across frames in the stream (including
-    /// enhancement frames stripped when [`Self::base_only`] is active).
+    /// enhancement frames stripped when [`Self::extractor`] is active).
     max_size: Option<(usize, usize)>,
     dsp: nc_dsp::Dsp,
     /// Coding-tool analysis, collected only when enabled.
@@ -140,6 +145,9 @@ impl Default for Decoder {
             shown: None,
             scratch: None,
             base_only: false,
+            operating_point: 0,
+            extractor: None,
+            layer_sizes: Vec::new(),
             last_spatial_id: None,
             max_size: None,
             dsp: nc_dsp::Dsp::new(),
@@ -157,17 +165,45 @@ impl Decoder {
     }
 
     /// Enable or disable base-only mode (`S0`). When enabled, enhancement
-    /// frames in Annex B superframes are stripped via
-    /// [`strip_superframe_to_base`] and only the base layer is
-    /// decoded and displayed.
+    /// frames in Annex B superframes are stripped via [`Vp9StreamExtractor`]
+    /// and only the lowest spatial layer (`S0`) is decoded and displayed.
     pub fn set_base_only(&mut self, base_only: bool) {
         self.base_only = base_only;
+        if base_only {
+            self.extractor = Some(Vp9StreamExtractor::base_only());
+        } else {
+            self.operating_point = 0;
+            self.extractor = None;
+        }
     }
 
     /// Whether base-only mode is active.
     #[must_use]
     pub fn base_only(&self) -> bool {
         self.base_only
+    }
+
+    /// Select the spatial operating point (`0..=2`, default `0` = highest
+    /// spatial layer in the stream, `1` = middle of 3 or base of 2, `2` =
+    /// lowest of 3).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::Unsupported`] if `operating_point > 2`.
+    pub fn set_operating_point(&mut self, operating_point: u8) -> Result<()> {
+        if operating_point > MAX_VP9_OPERATING_POINT {
+            return Err(DecodeError::Unsupported("VP9 operating point out of range"));
+        }
+        self.base_only = false;
+        self.operating_point = operating_point;
+        self.extractor = Some(Vp9StreamExtractor::new(operating_point)?);
+        Ok(())
+    }
+
+    /// Active spatial operating point (`0` by default).
+    #[must_use]
+    pub fn operating_point(&self) -> u8 {
+        self.operating_point
     }
 
     /// `spatial_id` (`0` on single-layer or base-layer TUs, `1` on enhancement
@@ -193,8 +229,12 @@ impl Decoder {
     /// Truncated or malformed data, a profile other than 0, or a frame
     /// whose references are missing.
     pub fn decode_packet(&mut self, packet: &[u8]) -> Result<Option<DecodedFrame>> {
+        let (frame, dropped) = self.decode_frames(packet)?;
+        if dropped {
+            return Ok(None);
+        }
         self.release_shown();
-        let Some(frame) = self.decode_frames(packet)? else {
+        let Some(frame) = frame else {
             return Ok(None);
         };
         self.last_spatial_id = Some(frame.spatial_id);
@@ -204,7 +244,8 @@ impl Decoder {
     }
 
     /// Decode one packet and return `(picture, spatial_id)` for the shown
-    /// frame (even dimensions).
+    /// frame (even dimensions), or `None` when the selected operating point
+    /// dropped all frames in the packet.
     ///
     /// # Errors
     ///
@@ -219,46 +260,64 @@ impl Decoder {
         Ok(Some((frame.picture, frame.spatial_id)))
     }
 
+    /// Decode one packet and return its shown picture (even dimensions), or
+    /// `None` when the selected operating point dropped all frames in the
+    /// packet.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::decode_with_layer`].
+    pub fn decode_optional(&mut self, packet: &[u8]) -> Result<Option<Picture>> {
+        self.decode_with_layer(packet)
+            .map(|opt| opt.map(|(pic, _)| pic))
+    }
+
     /// Decode all spatial layers present in `packet` in superframe order (`S0`
-    /// then `S1`, or `S0` alone when [`Self::base_only`] is set) and return
-    /// each layer's [`DecodedFrame`].
+    /// .. `S_top`, or the extracted subset when [`Self::extractor`] is active)
+    /// and return each layer's [`DecodedFrame`].
     ///
     /// # Errors
     ///
     /// As [`Self::decode_packet`].
     pub fn decode_all_layers(&mut self, packet: &[u8]) -> Result<Vec<DecodedFrame>> {
+        let extracted;
+        let packet = if let Some(ext) = self.extractor.as_mut() {
+            let opt = ext.extract_packet(packet)?;
+            let sizes = ext.layer_sizes().to_vec();
+            self.note_extractor_sizes(&sizes);
+            let Some((bytes, _)) = opt else {
+                return Ok(Vec::new());
+            };
+            extracted = bytes;
+            &extracted[..]
+        } else {
+            packet
+        };
         self.release_shown();
-        if self.base_only {
-            let stripped = strip_superframe_to_base(packet)?;
-            return Ok(self.decode_packet(&stripped)?.into_iter().collect());
-        }
-        if let Some(frames) = split_superframe(packet) {
-            let mut outputs = Vec::with_capacity(frames.len());
-            let mut last_stored = None;
-            for (idx, raw) in frames.into_iter().enumerate() {
-                let (stored, _) = self.decode_frame_layer(raw, idx as u8, true)?;
-                // A unit's lone hidden base is shown again by the
-                // `show_existing_frame` after it: one layer picture.
-                let repeated = |s: &Arc<StoredFrame>| {
-                    last_stored
-                        .as_ref()
-                        .is_some_and(|last| Arc::ptr_eq(last, s))
-                };
-                if let Some(stored) = stored.filter(|s| !repeated(s)) {
-                    outputs.push(visible(&stored, &mut self.pictures)?);
-                    if let Some(prev) = last_stored.replace(stored) {
-                        self.release(prev);
-                    }
+        let slices = split_superframe(packet).unwrap_or_else(|| vec![packet]);
+        let mut outputs = Vec::with_capacity(slices.len());
+        let mut last_stored = None;
+        for (idx, raw) in slices.into_iter().enumerate() {
+            let (stored, _) = self.decode_frame_layer(raw, idx as u8, true)?;
+            // A unit's hidden layer is shown again by the
+            // `show_existing_frame` after it: one layer picture.
+            let repeated = |s: &Arc<StoredFrame>| {
+                last_stored
+                    .as_ref()
+                    .is_some_and(|last| Arc::ptr_eq(last, s))
+            };
+            if let Some(stored) = stored.filter(|s| !repeated(s)) {
+                outputs.push(visible(&stored, &mut self.pictures)?);
+                if let Some(prev) = last_stored.replace(stored) {
+                    self.release(prev);
                 }
             }
-            if let Some(last) = last_stored {
-                self.last_spatial_id = Some(last.spatial_id);
-                self.shown = Some(last);
-            }
-            Ok(outputs)
-        } else {
-            Ok(self.decode_packet(packet)?.into_iter().collect())
         }
+        if let Some(last) = last_stored {
+            self.last_spatial_id = Some(last.spatial_id);
+            self.shown = Some(last);
+        }
+        Ok(outputs)
     }
 
     /// Decode one packet that shows a frame of even size.
@@ -278,23 +337,29 @@ impl Decoder {
     }
 
     /// [`Self::decode`] without the output copy: the frame is shown by
-    /// [`Self::shown`] until the next call.
+    /// [`Self::shown`] until the next call. When the selected operating point
+    /// drops all frames in `packet`, the previous shown frame is retained.
     ///
     /// # Errors
     ///
     /// As [`Self::decode`].
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
-        if !self.decode_kept(packet)? {
-            return Err(DecodeError::Unsupported("VP9 packet without a shown frame"));
+        let (frame, dropped) = self.decode_frames(packet)?;
+        if dropped {
+            return Ok(());
         }
-        if self
-            .shown
-            .as_ref()
-            .is_some_and(|frame| !(frame.width.is_multiple_of(2) && frame.height.is_multiple_of(2)))
-        {
+        let Some(frame) = frame else {
+            self.release_shown();
+            return Err(DecodeError::Unsupported("VP9 packet without a shown frame"));
+        };
+        if !(frame.width.is_multiple_of(2) && frame.height.is_multiple_of(2)) {
+            self.release(frame);
             self.release_shown();
             return Err(DecodeError::Unsupported("VP9 odd frame dimensions"));
         }
+        self.release_shown();
+        self.last_spatial_id = Some(frame.spatial_id);
+        self.shown = Some(frame);
         Ok(())
     }
 
@@ -306,9 +371,12 @@ impl Decoder {
     ///
     /// As [`Self::decode_packet`].
     pub fn decode_kept(&mut self, packet: &[u8]) -> Result<bool> {
-        // Release the previous frame first, so this one can reuse it.
+        let (frame, dropped) = self.decode_frames(packet)?;
+        if dropped {
+            return Ok(false);
+        }
         self.release_shown();
-        self.shown = self.decode_frames(packet)?;
+        self.shown = frame;
         self.last_spatial_id = self.shown.as_ref().map(|f| f.spatial_id);
         Ok(self.shown.is_some())
     }
@@ -345,26 +413,52 @@ impl Decoder {
         );
     }
 
-    fn note_superframe_max_size(&mut self, packet: &[u8]) {
-        let fallback_width = self.base_width_hint();
-        if let Some(frames) = split_superframe(packet) {
-            for raw in frames {
-                if let Ok(info) = parse_uncompressed_header_info(raw, fallback_width)
-                    && let Some((w, h)) = info.coded_size
-                {
-                    self.record_max_size(w, h);
-                }
-            }
+    fn note_extractor_sizes(&mut self, sizes: &[(usize, usize)]) {
+        for &(w, h) in sizes {
+            self.record_max_size(w, h);
+        }
+        if sizes.len() > 1 && sizes.windows(2).all(|p| p[0] != p[1]) {
+            self.layer_sizes.clear();
+            self.layer_sizes.extend_from_slice(sizes);
         }
     }
 
-    /// Decode the frames of one packet; returns the one it shows last.
-    fn decode_frames(&mut self, packet: &[u8]) -> Result<Option<Arc<StoredFrame>>> {
-        let stripped;
-        let packet = if self.base_only {
-            self.note_superframe_max_size(packet);
-            stripped = strip_superframe_to_base(packet)?;
-            &stripped[..]
+    fn note_key_superframe_sizes(&mut self, frames: &[&[u8]]) {
+        if frames.len() <= 1 {
+            return;
+        }
+        let fallback_width = self.base_width_hint();
+        let mut sizes = Vec::with_capacity(frames.len());
+        let mut has_key = false;
+        for &raw in frames {
+            if let Ok(info) = parse_uncompressed_header_info(raw, fallback_width) {
+                if info.show_existing_frame {
+                    continue;
+                }
+                has_key |= info.key_frame;
+                if let Some(sz) = info.coded_size {
+                    self.record_max_size(sz.0, sz.1);
+                    sizes.push(sz);
+                }
+            }
+        }
+        if has_key && sizes.len() > 1 && sizes.windows(2).all(|p| p[0] != p[1]) {
+            self.layer_sizes = sizes;
+        }
+    }
+
+    /// Decode the frames of one packet; returns `(shown_frame, dropped_by_op)`.
+    fn decode_frames(&mut self, packet: &[u8]) -> Result<(Option<Arc<StoredFrame>>, bool)> {
+        let extracted;
+        let packet = if let Some(ext) = self.extractor.as_mut() {
+            let opt = ext.extract_packet(packet)?;
+            let sizes = ext.layer_sizes().to_vec();
+            self.note_extractor_sizes(&sizes);
+            let Some((bytes, _)) = opt else {
+                return Ok((None, true));
+            };
+            extracted = bytes;
+            &extracted[..]
         } else {
             packet
         };
@@ -375,6 +469,9 @@ impl Decoder {
             }
         };
         if let Some(frames) = split_superframe(packet) {
+            if self.extractor.is_none() {
+                self.note_key_superframe_sizes(&frames);
+            }
             for (idx, frame) in frames.into_iter().enumerate() {
                 let (frame, _) = self.decode_frame_layer(frame, idx as u8, false)?;
                 show(self, frame);
@@ -390,7 +487,7 @@ impl Decoder {
                 rest = &rest[padding..];
             }
         }
-        Ok(shown)
+        Ok((shown, false))
     }
 
     /// Drop the shown frame (see [`Self::release`]).
@@ -476,11 +573,16 @@ impl Decoder {
             show_frame: header.show_frame,
             key: header.key,
         });
+        let resolved_spatial_id = self
+            .layer_sizes
+            .iter()
+            .position(|&sz| sz == (width, height))
+            .map_or(spatial_id, |i| i as u8);
         let stored = Arc::new(StoredFrame {
             picture: recon,
             width,
             height,
-            spatial_id,
+            spatial_id: resolved_spatial_id,
         });
         for (slot, entry) in self.slots.iter_mut().enumerate() {
             if header.refresh & (1 << slot) != 0

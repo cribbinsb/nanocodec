@@ -195,7 +195,7 @@ typedef struct nc_picture {
 nc_status nc_decoder_create(uint32_t codec, nc_decoder **out);
 void nc_decoder_destroy(nc_decoder *decoder);
 
-/* Select the operating point (0..31 on AV1, e.g. 0..8 in L3T3; 0..1 on VP9). */
+/* Select the operating point (0..31 on AV1, e.g. 0..8 in L3T3; 0..2 on VP9). */
 nc_status nc_decoder_set_operating_point(nc_decoder *decoder, uint8_t operating_point);
 
 /* Decode coded frame `index` (nc_packet.index); `references` may be NULL

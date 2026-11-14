@@ -965,10 +965,10 @@ param_group! {
 param_group! {
     /// Spatial scalability (`spatial.rs`): a scaled base layer (`spatial_id = 0`)
     /// plus up to two enhancement layers (`spatial_id = 1, 2`) in one stream,
-    /// for codecs that support it (AV1: up to 3 layers; VP9: up to 2 layers).
+    /// for codecs that support it (AV1 and VP9: up to 3 layers).
     pub struct SpatialParams ("spatial") {
         layers: 1.0, [1.0, 3.0],
-            "number of spatial layers (1 = single layer; 2 = S0 + full-size S1; 3 = quarter S0 + half S1 + full-size S2 on AV1)",
+            "number of spatial layers (1 = single layer; 2 = S0 + full-size S1; 3 = quarter S0 + half S1 + full-size S2 on AV1 and VP9)",
         base_scale: 0.5, [0.25, 1.0],
             "two-layer base spatial layer size relative to the stream dimensions (0.5 = 2:1; e.g. 0.6667 = 720p->480p via polyphase Lanczos-3)",
         s0_scale: 0.25, [0.0625, 1.0],

@@ -48,6 +48,11 @@ const PRESETS: &[(&str, &str)] = &[
         "vp9-svc-fast",
         include_str!("../../../presets/vp9-svc-fast.toml"),
     ),
+    ("vp9-svc3", include_str!("../../../presets/vp9-svc3.toml")),
+    (
+        "vp9-svc3-fast",
+        include_str!("../../../presets/vp9-svc3-fast.toml"),
+    ),
     (
         "vp9-faster",
         include_str!("../../../presets/vp9-faster.toml"),

@@ -537,6 +537,44 @@ fn vp9_svc_presets_recover() {
         include_str!("../../../presets/vp9-svc-fast.toml"),
     ] {
         check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, preset, &VP9_SVC_RECOVERY);
+        let ksvc = format!("{preset}\nspatial.inter_layer = 2\n");
+        check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, &ksvc, &VP9_SVC_RECOVERY);
+    }
+}
+
+#[test]
+fn vp9_three_layer_svc_recovers_every_upper_layer() {
+    const VP9_THREE_LAYER_S1_RECOVERED_DB: f64 = 7.5;
+    const VP9_THREE_LAYER_S2_RECOVERED_DB: f64 = 5.0;
+
+    let s1_recovery = Recovery {
+        frames: RECOVERY_FRAMES + 1,
+        shortfall_db: VP9_THREE_LAYER_S1_RECOVERED_DB,
+    };
+    let s2_recovery = Recovery {
+        frames: RECOVERY_FRAMES + 1,
+        shortfall_db: VP9_THREE_LAYER_S2_RECOVERED_DB,
+    };
+    for (name, preset, box_downscale) in [
+        (
+            "vp9-svc3",
+            include_str!("../../../presets/vp9-svc3.toml"),
+            false,
+        ),
+        (
+            "vp9-svc3-fast",
+            include_str!("../../../presets/vp9-svc3-fast.toml"),
+            true,
+        ),
+    ] {
+        check_three_layer_preset::<nc_vp9::Vp9Backend>(
+            Codec::Vp9,
+            name,
+            preset,
+            box_downscale,
+            THREE_LAYER_KSVC_SCALE,
+            (&s1_recovery, &s2_recovery),
+        );
     }
 }
 

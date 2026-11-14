@@ -27,7 +27,7 @@ struct DecodeArgs {
     output: Option<PathBuf>,
     frame_md5: Option<PathBuf>,
     film_grain: FilmGrain,
-    operating_point: u8,
+    operating_point: Option<u8>,
     all_layers: bool,
 }
 
@@ -133,7 +133,7 @@ fn parse(args: &[String]) -> Result<DecodeArgs, String> {
         },
         frame_md5,
         film_grain: film_grain.unwrap_or(FilmGrain::Apply),
-        operating_point: operating_point.unwrap_or(0),
+        operating_point,
         all_layers: all_layers.unwrap_or(false),
     })
 }
@@ -448,12 +448,14 @@ impl Decoder {
         }
     }
 
-    /// Select the operating point (`0` = highest quality on AV1 and VP9;
-    /// `> 0` on VP9 decodes the base spatial layer only).
-    pub(crate) fn set_operating_point(&mut self, operating_point: u8) -> Result<(), DecodeError> {
-        match self {
-            Self::Av1(decoder) => decoder.set_operating_point(operating_point)?,
-            Self::Vp9(decoder) => decoder.set_base_only(operating_point > 0),
+    /// Select the operating point (`0..=31` on AV1, `0..=2` on VP9).
+    pub(crate) fn set_operating_point(
+        &mut self,
+        operating_point: Option<u8>,
+    ) -> Result<(), DecodeError> {
+        match (self, operating_point) {
+            (Self::Av1(decoder), Some(op)) => decoder.set_operating_point(op)?,
+            (Self::Vp9(decoder), Some(op)) => decoder.set_operating_point(op)?,
             _ => {}
         }
         Ok(())
@@ -467,13 +469,13 @@ fn decode_stream<R: BufRead>(
     input: &mut R,
     output: &mut impl FnMut(&Shown) -> Result<(), String>,
 ) -> Result<u64, String> {
-    decode_stream_with_op(codec, film_grain, 0, false, input, output)
+    decode_stream_with_op(codec, film_grain, None, false, input, output)
 }
 
 fn decode_stream_with_op<R: BufRead>(
     codec: Codec,
     film_grain: FilmGrain,
-    operating_point: u8,
+    operating_point: Option<u8>,
     all_layers: bool,
     input: &mut R,
     output: &mut impl FnMut(&Shown) -> Result<(), String>,

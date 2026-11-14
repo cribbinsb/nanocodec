@@ -298,15 +298,18 @@ fn spatial_backend_superframe_and_stripped_base_round_trip() {
     use nc_encoder::CodecBackend;
     use nc_vp9::strip_superframe_to_base;
 
-    // Scale > 2x (e.g. base_scale = 0.25 -> 4x) is rejected by Vp9Backend (verified up to 2:1).
-    let mut bad_cfg = config(128, 96, 110);
-    bad_cfg.params.set("spatial.layers", 2.0);
-    bad_cfg.params.set("spatial.base_scale", 0.25);
-    assert!(Encoder::<Vp9Backend>::new(bad_cfg).is_err());
-
-    let mut bad_backend = Vp9Backend::new(&config(96, 72, 100)).unwrap();
+    // Scale > 16x (outside VP9 §7.2 reference limits) is rejected by Vp9Backend.
+    let mut bad_backend = Vp9Backend::new(&config(144, 144, 100)).unwrap();
     let mut ok_cfg = config(128, 96, 100);
     ok_cfg.params.set("spatial.layers", 2.0);
+    let mut over_16x = nc_encoder::SpatialConfig::from_encoder_config(&ok_cfg, true)
+        .unwrap()
+        .unwrap();
+    over_16x.base_size = (8, 8);
+    over_16x.full_size = (144, 144);
+    over_16x.layer_sizes = vec![(8, 8), (144, 144)];
+    assert!(bad_backend.configure_spatial(&over_16x).is_err());
+
     let mut bad_spatial = nc_encoder::SpatialConfig::from_encoder_config(&ok_cfg, true)
         .unwrap()
         .unwrap();
@@ -396,6 +399,164 @@ fn spatial_backend_superframe_and_stripped_base_round_trip() {
     }
 }
 
+/// Exercise three-layer VP9 spatial SVC (`L3T1`..`L3T3`, `inter_layer = 0`),
+/// Verify three-layer VP9 Full SVC (`L3T1`..`L3T3`, `inter_layer = 0|1`),
+/// two- and three-layer K-SVC (`L2T1_KEY`..`L3T3_KEY`), `Vp9StreamExtractor`
+/// per-receiver selective forwarding (`op 0..layers`), and `Decoder::set_operating_point`
+/// across our decoder, `vpxdec`, and `ffmpeg-decode`.
+#[test]
+fn three_layer_and_key_modes_round_trip_every_receiver_view() {
+    for (layers, temporal_layers, inter_layer) in [
+        (2u8, 1u8, 2u8),
+        (2, 2, 2),
+        (2, 3, 2),
+        (3, 1, 1),
+        (3, 2, 1),
+        (3, 3, 1),
+        (3, 1, 0),
+        (3, 1, 2),
+        (3, 2, 2),
+        (3, 3, 2),
+    ] {
+        verify_vp9_svc_mode_views(layers, temporal_layers, inter_layer);
+    }
+}
+
+fn verify_vp9_svc_mode_views(layers: u8, temporal_layers: u8, inter_layer: u8) {
+    use nc_vp9::Vp9StreamExtractor;
+
+    let (full_w, full_h) = (128, 96);
+    let mut cfg = config(full_w, full_h, 110);
+    cfg.temporal_layers = temporal_layers;
+    cfg.intra_period = 4;
+    cfg.params.set("spatial.layers", f32::from(layers));
+    cfg.params
+        .set("spatial.inter_layer", f32::from(inter_layer));
+    cfg.params.set("layers.adaptive", 0.0);
+
+    let mut encoder = Encoder::<Vp9Backend>::new(cfg).unwrap();
+    let n = usize::from(layers);
+    let mut op_decs: Vec<Decoder> = (0..layers)
+        .map(|op| {
+            let mut d = Decoder::new();
+            d.set_operating_point(op).unwrap();
+            d
+        })
+        .collect();
+    let mut extractors: Vec<Vp9StreamExtractor> = (0..layers)
+        .map(|op| Vp9StreamExtractor::new(op).unwrap())
+        .collect();
+    let mut ext_decs: Vec<Decoder> = (0..layers).map(|_| Decoder::new()).collect();
+    let mut all_dec = Decoder::new();
+    let mut per_op_packets: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n];
+    let mut per_op_i420: Vec<Vec<u8>> = vec![Vec::new(); n];
+
+    for tu in 0..6usize {
+        let encoded = encoder.encode(&moving(full_w, full_h, tu * 2));
+        assert_eq!(encoded.layers.len(), n);
+        assert_eq!(all_dec.decode_all_layers(&encoded.data).unwrap().len(), n);
+
+        for op in 0..layers {
+            let target_sid = layers - 1 - op;
+            let recon = encoder.layer_reconstruction(target_sid).unwrap();
+            let (pic, sid) = op_decs[usize::from(op)]
+                .decode_with_layer(&encoded.data)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                sid, target_sid,
+                "L{layers}T{temporal_layers} il={inter_layer} tu={tu} op={op}"
+            );
+            assert_eq!(bytes(&pic), bytes(recon));
+
+            let (ext_pkt, ext_size) = extractors[usize::from(op)]
+                .extract_packet(&encoded.data)
+                .unwrap()
+                .unwrap();
+            assert_eq!(ext_size, Some((recon.width(), recon.height())));
+            if inter_layer == 2 && !tu.is_multiple_of(4) && target_sid > 0 {
+                assert!(ext_pkt.len() < encoded.data.len() || target_sid + 1 < layers);
+            }
+            let ext_pic = ext_decs[usize::from(op)].decode(&ext_pkt).unwrap();
+            assert_eq!(bytes(&ext_pic), bytes(recon));
+            per_op_packets[usize::from(op)].push(ext_pkt);
+            per_op_i420[usize::from(op)].extend_from_slice(&bytes(recon));
+        }
+    }
+
+    for op in 0..layers {
+        let recon = encoder.layer_reconstruction(layers - 1 - op).unwrap();
+        verify_external_vp9_decoders(
+            &per_op_packets[usize::from(op)],
+            (recon.width(), recon.height()),
+            &per_op_i420[usize::from(op)],
+        );
+    }
+}
+
+/// Standalone K-SVC loss recovery on `L3T1_KEY`: drop `S1` on TU 1 and `S2` on
+/// TU 3; `S0` never resets, `S1` repairs standalone on TU 2 without `S0`
+/// resending, and `S2` repairs standalone on TU 4 without `S0` or `S1` resending.
+#[test]
+fn vp9_ksvc_standalone_layer_loss_recovers_without_lower_resend() {
+    use nc_vp9::filter_superframe_layers;
+
+    let (full_w, full_h) = (128, 96);
+    let mut cfg = config(full_w, full_h, 110);
+    cfg.temporal_layers = 1;
+    cfg.intra_period = 30;
+    cfg.params.set("spatial.layers", 3.0);
+    cfg.params.set("spatial.inter_layer", 2.0);
+    cfg.params.set("layers.adaptive", 0.0);
+    let mut encoder = Encoder::<Vp9Backend>::new(cfg).unwrap();
+    let mut s0_pkts = Vec::new();
+    let mut s1_pkts = Vec::new();
+    let mut s2_pkts = Vec::new();
+    let mut s0_i420 = Vec::new();
+    let mut s1_i420 = Vec::new();
+    let mut s2_i420 = Vec::new();
+
+    for tu in 0..6usize {
+        if tu == 2 {
+            encoder.report_layer_loss(1, 1);
+        } else if tu == 4 {
+            encoder.report_layer_loss(3, 2);
+        }
+        let encoded = encoder.encode(&moving(full_w, full_h, tu * 2));
+        if tu == 2 {
+            assert!(encoded.layers[1].enhancement_repair && !encoded.layers[1].inter_layer_ref);
+            assert!(!encoded.layers[2].enhancement_repair);
+        } else if tu == 4 {
+            assert!(encoded.layers[2].enhancement_repair && !encoded.layers[2].inter_layer_ref);
+            assert!(!encoded.layers[1].enhancement_repair);
+        }
+
+        s0_pkts.push(filter_superframe_layers(&encoded.data, |s| s == 0).unwrap());
+        s0_i420.extend_from_slice(&bytes(encoder.layer_reconstruction(0).unwrap()));
+
+        if tu != 1 {
+            let s1_pkt =
+                filter_superframe_layers(&encoded.data, |s| if tu == 0 { s <= 1 } else { s == 1 })
+                    .unwrap();
+            s1_pkts.push(s1_pkt);
+            s1_i420.extend_from_slice(&bytes(encoder.layer_reconstruction(1).unwrap()));
+        }
+        if tu != 3 {
+            let s2_pkt = if tu == 0 {
+                encoded.data.clone()
+            } else {
+                filter_superframe_layers(&encoded.data, |s| s == 2).unwrap()
+            };
+            s2_pkts.push(s2_pkt);
+            s2_i420.extend_from_slice(&bytes(encoder.layer_reconstruction(2).unwrap()));
+        }
+    }
+
+    verify_external_vp9_decoders(&s0_pkts, (32, 24), &s0_i420);
+    verify_external_vp9_decoders(&s1_pkts, (64, 48), &s1_i420);
+    verify_external_vp9_decoders(&s2_pkts, (128, 96), &s2_i420);
+}
+
 /// An external decoder named by environment variable `name` (e.g. `NC_VPXDEC`,
 /// `NC_FFMPEG`, as in the VVC conformance test), when set and present.
 fn external_decoder(name: &str) -> Option<std::path::PathBuf> {
@@ -447,8 +608,15 @@ fn verify_external_vp9_decoders(
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(&ivf).unwrap();
-        let out = child.wait_with_output().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let ivf_ref = &ivf;
+        let out = std::thread::scope(|s| {
+            s.spawn(move || {
+                let mut stdin = stdin;
+                stdin.write_all(ivf_ref).unwrap();
+            });
+            child.wait_with_output().unwrap()
+        });
         assert!(
             out.status.success(),
             "vpxdec failed: {}",
@@ -488,8 +656,15 @@ fn verify_external_vp9_decoders(
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(&ivf).unwrap();
-        let out = child.wait_with_output().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let ivf_ref = &ivf;
+        let out = std::thread::scope(|s| {
+            s.spawn(move || {
+                let mut stdin = stdin;
+                stdin.write_all(ivf_ref).unwrap();
+            });
+            child.wait_with_output().unwrap()
+        });
         assert!(
             out.status.success(),
             "ffmpeg-decode failed: {}",
@@ -529,4 +704,87 @@ fn analysis_leaves_decoding_unchanged_and_tiles_each_frame() {
         let intra = frame.get(keys::CB_PRED, Pred::Intra as i64).weight;
         assert_eq!(intra == covered, index == 0, "frame {index}");
     }
+}
+
+/// When middle layer `S1` is dropped on disk (`[S0, S2, sef]` in `L3T2_KEY`),
+/// `Vp9StreamExtractor` and `Decoder::set_operating_point` still keep `S2` on
+/// `op = 0`, skip the missing `S1` TU on `op = 1` until `S1`'s `intra_only`
+/// repair, and decode `S0` uninterrupted on `op = 2`.
+#[test]
+fn vp9_ksvc_middle_layer_loss_extracts_all_three_operating_points() {
+    use nc_vp9::{Vp9StreamExtractor, filter_superframe_layers};
+
+    let (full_w, full_h) = (128, 96);
+    let mut cfg = config(full_w, full_h, 110);
+    cfg.temporal_layers = 2;
+    cfg.intra_period = 20;
+    cfg.params.set("spatial.layers", 3.0);
+    cfg.params.set("spatial.inter_layer", 2.0);
+    cfg.params.set("layers.adaptive", 0.0);
+    let mut encoder = Encoder::<Vp9Backend>::new(cfg).unwrap();
+
+    let mut extractors: Vec<Vp9StreamExtractor> = (0..3)
+        .map(|op| Vp9StreamExtractor::new(op).unwrap())
+        .collect();
+    let mut decs: Vec<Decoder> = (0..3)
+        .map(|op| {
+            let mut d = Decoder::new();
+            d.set_operating_point(op).unwrap();
+            d
+        })
+        .collect();
+    let mut counts = [0usize; 3];
+
+    for tu in 0..8u32 {
+        if tu == 3 {
+            encoder.report_layer_loss(2, 1);
+        }
+        let encoded = encoder.encode(&moving(full_w, full_h, (tu as usize) * 2));
+        let wire = if tu == 2 {
+            filter_superframe_layers(&encoded.data, |s| s != 1).unwrap()
+        } else {
+            encoded.data.clone()
+        };
+        for op in 0..3usize {
+            let target_sid = 2 - (op as u8);
+            let ext = extractors[op].extract_packet(&wire).unwrap();
+            let dec = decs[op].decode_optional(&wire).unwrap();
+            assert_eq!(ext.is_some(), dec.is_some());
+            if let Some(pic) = dec {
+                let recon = encoder.layer_reconstruction(target_sid).unwrap();
+                assert_eq!(bytes(&pic), bytes(recon));
+                counts[op] += 1;
+            }
+        }
+    }
+    assert_eq!(counts, [8, 7, 8]);
+}
+
+/// If `S1` is lost on key TU 0 itself (so the receiver only decoded `S0` into
+/// all 8 DPB slots at half size), the standalone `intra_only` repair on `S1`
+/// must still signal explicit `(full_w, full_h)` rather than inheriting the
+/// stale `S0` size from slot 2.
+#[test]
+fn vp9_ksvc_key_unit_enhancement_loss_repairs_at_full_size() {
+    use nc_vp9::filter_superframe_layers;
+
+    let (full_w, full_h) = (128, 96);
+    let mut cfg = config(full_w, full_h, 110);
+    cfg.intra_period = 20;
+    cfg.params.set("spatial.layers", 2.0);
+    cfg.params.set("spatial.inter_layer", 2.0);
+    let mut encoder = Encoder::<Vp9Backend>::new(cfg).unwrap();
+    let mut dec = Decoder::new();
+
+    let tu0 = encoder.encode(&moving(full_w, full_h, 0));
+    let s0_only = filter_superframe_layers(&tu0.data, |s| s == 0).unwrap();
+    let p0 = dec.decode(&s0_only).unwrap();
+    assert_eq!((p0.width(), p0.height()), (64, 48));
+
+    encoder.report_layer_loss(0, 1);
+    let tu1 = encoder.encode(&moving(full_w, full_h, 2));
+    assert!(tu1.layers[1].enhancement_repair && !tu1.layers[1].inter_layer_ref);
+    let s1_repair = filter_superframe_layers(&tu1.data, |s| s == 1).unwrap();
+    let p1 = dec.decode(&s1_repair).unwrap();
+    assert_eq!(bytes(&p1), bytes(encoder.layer_reconstruction(1).unwrap()));
 }

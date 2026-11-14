@@ -77,9 +77,10 @@ AV1_KEY_HEADER_MASK = 0xE0
 #: VP9 superframe index (VP9 Annex B.3): its marker byte's top bits.
 SUPERFRAME_MARKER_MASK = 0xE0
 SUPERFRAME_MARKER = 0xC0
-#: A VP9 Profile 0 frame's first byte: its show_existing_frame and show_frame
-#: bits (VP9 section 6.2).
+#: A VP9 Profile 0 frame's first byte: its show_existing_frame, frame_type
+#: (`0 = KEY_FRAME`, `1 = INTER_FRAME`), and show_frame bits (VP9 section 6.2).
 VP9_SHOW_EXISTING_BIT = 0x08
+VP9_FRAME_TYPE_BIT = 0x04
 VP9_SHOW_FRAME_BIT = 0x02
 #: A show_existing_frame (Profile 0): one byte.
 VP9_SHOW_EXISTING_BYTES = 1
@@ -289,6 +290,74 @@ def vp9_superframe_sizes(unit: bytes) -> list[int] | None:
             for i in range(count)]
 
 
+def vp9_pack_superframe(frames: list[bytes]) -> bytes:
+    """Pack `frames` as a single VP9 IVF frame (`frames[0]` alone when there is
+    one frame, or concatenated with a VP9 Annex B.3 superframe index)."""
+    if len(frames) == 1:
+        return frames[0]
+    magnitude = max(1, max((len(f).bit_length() + 7) // 8 for f in frames))
+    marker = SUPERFRAME_MARKER | ((magnitude - 1) << 3) | (len(frames) - 1)
+    index = (bytes([marker])
+             + b"".join(len(f).to_bytes(magnitude, "little") for f in frames)
+             + bytes([marker]))
+    return b"".join(frames) + index
+
+
+def vp9_coded_layers(unit: bytes) -> list[bytes]:
+    """The coded spatial-layer frames of one VP9 temporal unit, lowest first,
+    excluding any trailing 1-byte `show_existing_frame` marker."""
+    sizes = vp9_superframe_sizes(unit)
+    if sizes is None:
+        return [unit] if unit else []
+    frames, pos = [], 0
+    for size in sizes:
+        frames.append(unit[pos:pos + size])
+        pos += size
+    if len(frames) > 1 and (frames[-1][0] & VP9_SHOW_EXISTING_BIT):
+        frames.pop()
+    return frames
+
+
+def vp9_packed_bytes(kept: list[bytes]) -> int:
+    """Wire bytes of `kept` VP9 coded layers as delivered to a receiver: a shown
+    top frame goes alone (1 frame) or with an `N`-frame superframe index; a
+    hidden top frame adds a 1-byte `show_existing_frame` and an `(N+1)`-frame
+    superframe index (`nc-vp9` `pack_coded_layers`)."""
+    if not kept:
+        return 0
+    magnitude = max(1, max((len(f).bit_length() + 7) // 8 for f in kept))
+    if kept[-1][0] & (VP9_SHOW_EXISTING_BIT | VP9_SHOW_FRAME_BIT):
+        if len(kept) == 1:
+            return len(kept[0])
+        return sum(len(f) for f in kept) + 2 + len(kept) * magnitude
+    count = len(kept) + 1
+    return sum(len(f) for f in kept) + VP9_SHOW_EXISTING_BYTES + 2 + count * magnitude
+
+
+def vp9_operating_point_bytes(unit: bytes, max_spatial_id: int = 0) -> int:
+    """Wire bytes of one VP9 temporal unit for a Full-SVC receiver of spatial
+    layers `0..=max_spatial_id`."""
+    coded = vp9_coded_layers(unit)
+    return vp9_packed_bytes(coded[:max_spatial_id + 1])
+
+
+def vp9_ksvc_receiver_bytes(unit: bytes, target_spatial_id: int) -> int:
+    """Wire bytes of one VP9 K-SVC temporal unit downloaded by a receiver of
+    `target_spatial_id`: `{S0..=target_spatial_id}` on key units (where `S0` is
+    a `KEY_FRAME`, VP9 section 6.2) and `{target_spatial_id}` alone on non-key units."""
+    if target_spatial_id <= 0:
+        return vp9_operating_point_bytes(unit, 0)
+    coded = vp9_coded_layers(unit)
+    if not coded:
+        return 0
+    s0_is_key = (coded[0][0] & (VP9_SHOW_EXISTING_BIT | VP9_FRAME_TYPE_BIT)) == 0
+    if s0_is_key:
+        return vp9_packed_bytes(coded[:target_spatial_id + 1])
+    if target_spatial_id >= len(coded):
+        return 0
+    return vp9_packed_bytes([coded[target_spatial_id]])
+
+
 def vp9_base_bytes(unit: bytes) -> int:
     """Base-layer bytes of one VP9 temporal unit: what a base-only receiver gets.
     A superframe's first frame is S0 (ours and libvpx's pack the layers lowest
@@ -296,18 +365,31 @@ def vp9_base_bytes(unit: bytes) -> int:
     goes alone; ours is hidden, so the base-only unit adds a one-byte
     show_existing_frame and a two-frame superframe index (nc-vp9
     superframe.rs: `[S0, show_existing_frame]`, as a unit without S1 is coded)."""
-    sizes = vp9_superframe_sizes(unit)
-    if sizes is None:
-        return len(unit)
-    base = sizes[0]
-    if unit[0] & (VP9_SHOW_EXISTING_BIT | VP9_SHOW_FRAME_BIT):
-        return base
-    magnitude = max(1, (base.bit_length() + 7) // 8)
-    return base + VP9_SHOW_EXISTING_BYTES + 2 + 2 * magnitude
+    return vp9_operating_point_bytes(unit, 0)
 
 
 def base_layer_bytes(unit: bytes, codec: Codec) -> int:
     return av1_base_bytes(unit) if codec is Codec.AV1 else vp9_base_bytes(unit)
+
+
+def vp9_extract_view(source: Path, out: Path, spatial_id: int = 0,
+                     key_mode: bool = False) -> None:
+    """Extract spatial layer `spatial_id`'s receiver stream from a libvpx SVC
+    stream (`show_frame = 1` on every spatial layer): `{S0..=spatial_id}` on
+    Full SVC and key units of K-SVC, and `{S_{spatial_id}}` alone on non-key
+    units of K-SVC."""
+    data = source.read_bytes()
+    frames = []
+    for pts, unit in ivf_frames(data):
+        coded = vp9_coded_layers(unit)
+        s0_is_key = bool(coded) and (coded[0][0] & (VP9_SHOW_EXISTING_BIT | VP9_FRAME_TYPE_BIT)) == 0
+        if key_mode and spatial_id > 0 and not s0_is_key:
+            kept = [coded[spatial_id]] if spatial_id < len(coded) else []
+        else:
+            kept = coded[:spatial_id + 1]
+        if kept:
+            frames.append((pts, vp9_pack_superframe(kept)))
+    write_ivf(out, data[:IVF_FILE_HEADER_BYTES], frames)
 
 
 def vp9_first_frames(source: Path, out: Path) -> None:
@@ -315,12 +397,7 @@ def vp9_first_frames(source: Path, out: Path) -> None:
     frame. libvpx codes every spatial layer with show_frame = 1, so these
     frames decode as they are (ours code S0 hidden: `nanocodec extract
     --base-only` adds a show_existing_frame)."""
-    data = source.read_bytes()
-    frames = []
-    for pts, unit in ivf_frames(data):
-        sizes = vp9_superframe_sizes(unit)
-        frames.append((pts, unit if sizes is None else unit[:sizes[0]]))
-    write_ivf(out, data[:IVF_FILE_HEADER_BYTES], frames)
+    vp9_extract_view(source, out, spatial_id=0, key_mode=False)
 
 
 def operating_point(stream: Path, spatial_id: int) -> int:
@@ -352,6 +429,25 @@ def av1_ksvc_receiver_bits(path: Path, target_spatial_id: int) -> list[int]:
     downloads (`{S0..=target_spatial_id}` on key units, `{target_spatial_id}`
     alone on non-key units)."""
     return [av1_ksvc_receiver_bytes(unit, target_spatial_id) * 8
+            for _, unit in ivf_frames(path.read_bytes())]
+
+
+def operating_point_bits(path: Path, codec: Codec, max_spatial_id: int) -> list[int]:
+    """Per temporal unit: wire bits of spatial layers `0..=max_spatial_id` for a
+    Full-SVC stream (`AV1` or `VP9`)."""
+    if codec is Codec.AV1:
+        return av1_operating_point_bits(path, max_spatial_id)
+    return [vp9_operating_point_bytes(unit, max_spatial_id) * 8
+            for _, unit in ivf_frames(path.read_bytes())]
+
+
+def ksvc_receiver_bits(path: Path, codec: Codec, target_spatial_id: int) -> list[int]:
+    """Per temporal unit: wire bits a K-SVC receiver of `target_spatial_id`
+    downloads (`{S0..=target_spatial_id}` on key units, `{target_spatial_id}`
+    alone on non-key units) for `AV1` or `VP9`."""
+    if codec is Codec.AV1:
+        return av1_ksvc_receiver_bits(path, target_spatial_id)
+    return [vp9_ksvc_receiver_bytes(unit, target_spatial_id) * 8
             for _, unit in ivf_frames(path.read_bytes())]
 
 
@@ -466,13 +562,14 @@ def own_base_layer(stream: Path, codec: Codec, binary: Path, layer_md5: Path, cl
     size = layer_size(clip, steps)
     base_stream = stream
     if codec is Codec.VP9:
-        base_stream = stream.with_name(f"{stream.stem}.base{stream.suffix}")
+        base_stream = stream.with_name(f"{stream.stem}.op{steps}{stream.suffix}")
         extract = subprocess.run(
-            [str(binary), "extract", "--codec", "vp9", "--base-only", "--input", str(stream),
-             "--output", str(base_stream)],
+            [str(binary), "extract", "--codec", "vp9", "--operating-point", str(steps),
+             "--input", str(stream), "--output", str(base_stream)],
             stdin=subprocess.DEVNULL, capture_output=True, text=True)
         if extract.returncode:
-            raise RuntimeError(f"{stream}: extract --base-only: {extract.stderr[-300:]}")
+            raise RuntimeError(
+                f"{stream}: extract vp9 --operating-point {steps}: {extract.stderr[-300:]}")
     elif codec is Codec.AV1 and key_mode and spatial_id > 0:
         op = operating_point(stream, spatial_id)
         base_stream = stream.with_name(f"{stream.stem}.op{op}{stream.suffix}")

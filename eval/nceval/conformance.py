@@ -869,11 +869,13 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
 def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                               own_decoder: Path | None = None) -> GateResult:
     """Verify every VP9 spatial/temporal operating point (full superframe stream,
-    base-only stripped stream, and any temporal sub-operating points in `op_mask`,
-    plus `nanocodec decode --operating-point 1` and `--all-layers 1` on the
-    unstripped stream) bit-exact against `--layer-md5` across `vpxdec`,
-    `ffmpeg-decode`, and `nanocodec decode` with zero YUV files on disk."""
-    tus: dict[int, list[tuple[int, int, int, int, str, int]]] = {}
+    K-SVC and lower-layer stripped streams, and any temporal sub-operating points
+    in `op_mask`, plus `nanocodec decode --operating-point 0..N-1` and
+    `--all-layers 1` on the unstripped stream) bit-exact against `--layer-md5`
+    across `vpxdec`, `ffmpeg-decode`, and `nanocodec decode` with zero YUV files on disk."""
+    from .svcbase import VP9_SHOW_FRAME_BIT, ivf_frames, vp9_coded_layers
+
+    tus: dict[int, list[tuple[int, int, int, int, str, int, int, str]]] = {}
     with layer_md5.open(newline="") as handle:
         for row in csv.DictReader(handle):
             sid = int(row["spatial_id"])
@@ -881,11 +883,61 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
             tus.setdefault(int(row["tu"]), []).append((
                 sid, int(row["temporal_layer"]),
                 int(row["width"]), int(row["height"]),
-                row["md5"].strip().lower(), op_mask))
+                row["md5"].strip().lower(), op_mask,
+                int(row.get("inter_layer_ref") or 0),
+                row["frame_type"].strip()))
     ordered_tus = [tus[tu] for tu in sorted(tus)]
     num_ops = max((entry[5].bit_length() for layers in ordered_tus for entry in layers), default=1)
+    num_spatial = max((entry[0] for layers in ordered_tus for entry in layers), default=0) + 1
+    # Each spatial view's full-rate operating point: the first (highest quality)
+    # one whose top layer is that view's. Not a fixed stride: a decimated
+    # enhancement layer has fewer temporal operating points than the base.
+    op_tops = [max((e[0] for layers in ordered_tus for e in layers if (e[5] >> op) & 1),
+                   default=0) for op in range(num_ops)]
+    view_ops: dict[int, int] = {}
+    for op, top in enumerate(op_tops):
+        view_ops.setdefault(num_spatial - 1 - top, op)
+    first_pkts = ivf_frames(bitstream.read_bytes())
+    first_coded = vp9_coded_layers(first_pkts[0][1]) if first_pkts else []
+    top_is_hidden = len(first_coded) > 1 and not bool(first_coded[-1][0] & VP9_SHOW_FRAME_BIT)
     vpxdec = find_tool("vpxdec", paths)
     ffmpeg = find_anchor_tool("ffmpeg-decode", paths)
+
+    def expected_for_op(op_idx: int) -> tuple[list[tuple[int, int, str]], list[tuple[int, int, str]]]:
+        bit = 1 << op_idx
+        max_s = op_tops[op_idx]
+        shown: list[tuple[int, int, str]] = []
+        ext_shown: list[tuple[int, int, str]] = []
+        stripped_lower_since_key = False
+        for layers in ordered_tus:
+            kept = [entry for entry in layers if (entry[5] & bit) != 0]
+            if not kept:
+                continue
+            if kept[0][0] == 0 and kept[0][7] == "Key":
+                stripped_lower_since_key = False
+            shown.append((kept[-1][2], kept[-1][3], kept[-1][4]))
+            sel = next((e for e in kept if e[0] == max_s), None)
+            if sel is None:
+                if stripped_lower_since_key:
+                    continue
+                below = [e for e in kept if e[0] < max_s]
+                if not below:
+                    continue
+                sel = below[-1]
+            below_kept = [e for e in kept if e[0] <= sel[0]]
+            if (sel[0] + 1 < num_spatial) or top_is_hidden:
+                chain = [sel]
+                cur = sel
+                while cur[6] != 0 and cur[0] > 0:
+                    prev = next((e for e in reversed(below_kept) if e[0] == cur[0] - 1), None)
+                    if prev is None:
+                        break
+                    chain.append(prev)
+                    cur = prev
+                if len(chain) < len(below_kept):
+                    stripped_lower_since_key = True
+            ext_shown.append((sel[2], sel[3], sel[4]))
+        return shown, ext_shown
 
     with cpu_slots(1), tempfile.TemporaryDirectory(prefix="nc-vp9-op-") as tmp_dir:
         tmp = Path(tmp_dir)
@@ -908,48 +960,50 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
             if bad is not None:
                 return GateResult(False, f"nanocodec vp9 all-layers: MD5 mismatch at picture {bad}")
 
-            s0_md5s = [layers[0][4] for layers in ordered_tus]
-            res_base = subprocess.run(
-                [str(own_decoder), "decode", "--codec", "vp9", "--operating-point", "1",
-                 "--input", str(bitstream), "--frame-md5", "-"],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                timeout=DECODE_TIMEOUT_SECONDS)
-            if res_base.returncode != 0:
-                return GateResult(
-                    False,
-                    f"nanocodec vp9 --operating-point 1: {res_base.stderr.strip()[-240:]}",
-                )
-            got_base = [
-                line.strip().lower() for line in res_base.stdout.splitlines() if line.strip()
-            ]
-            if len(got_base) != len(s0_md5s):
-                return GateResult(
-                    False,
-                    f"nanocodec vp9 --operating-point 1: {len(got_base)} frames, "
-                    f"expected {len(s0_md5s)}",
-                )
-            bad = first_mismatch(got_base, s0_md5s)
-            if bad is not None:
-                return GateResult(
-                    False,
-                    f"nanocodec vp9 --operating-point 1: MD5 mismatch at frame {bad}",
-                )
+            for sp_op in range(num_spatial):
+                _, sp_ext_shown = expected_for_op(view_ops[sp_op])
+                sp_md5s = [m for _, _, m in sp_ext_shown]
+                res_sp = subprocess.run(
+                    [str(own_decoder), "decode", "--codec", "vp9",
+                     "--operating-point", str(sp_op),
+                     "--input", str(bitstream), "--frame-md5", "-"],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=DECODE_TIMEOUT_SECONDS)
+                if res_sp.returncode != 0:
+                    return GateResult(
+                        False,
+                        f"nanocodec vp9 --operating-point {sp_op}: "
+                        f"{res_sp.stderr.strip()[-240:]}",
+                    )
+                got_sp = [
+                    line.strip().lower() for line in res_sp.stdout.splitlines() if line.strip()
+                ]
+                if len(got_sp) != len(sp_md5s):
+                    return GateResult(
+                        False,
+                        f"nanocodec vp9 --operating-point {sp_op}: {len(got_sp)} frames, "
+                        f"expected {len(sp_md5s)}",
+                    )
+                bad = first_mismatch(got_sp, sp_md5s)
+                if bad is not None:
+                    return GateResult(
+                        False,
+                        f"nanocodec vp9 --operating-point {sp_op}: MD5 mismatch at frame {bad}",
+                    )
 
         for op_idx in range(num_ops):
-            bit = 1 << op_idx
-            shown = []
-            for layers in ordered_tus:
-                kept = [entry for entry in layers if (entry[5] & bit) != 0]
-                if kept:
-                    shown.append((kept[-1][2], kept[-1][3], kept[-1][4]))
+            shown, ext_shown = expected_for_op(op_idx)
             shown_dims = [(w, h) for w, h, _ in shown]
             shown_md5s = [m for _, _, m in shown]
+            ext_dims = [(w, h) for w, h, _ in ext_shown]
+            ext_md5s = [m for _, _, m in ext_shown]
 
-            if op_idx == 0:
-                op_ivf = bitstream
-            else:
-                if own_decoder is None:
+            if own_decoder is None:
+                if op_idx > 0:
                     continue
+                op_ivf = bitstream
+                ivf_targets = [(f"op={op_idx}", op_ivf, shown_dims, shown_md5s)]
+            else:
                 op_ivf = tmp / f"op{op_idx}.ivf"
                 ext = subprocess.run(
                     [str(own_decoder), "extract", "--codec", "vp9",
@@ -962,7 +1016,27 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                         False,
                         f"nanocodec extract vp9 op={op_idx}: {ext.stderr.strip()[-240:]}",
                     )
-                if op_idx == 1 and len(shown) == len(ordered_tus):
+                if num_ops == num_spatial:  # no temporal subsets: the op is the view
+                    noside_ivf = tmp / f"noside_op{op_idx}.ivf"
+                    ext_noside = subprocess.run(
+                        [str(own_decoder), "extract", "--codec", "vp9",
+                         "--operating-point", str(op_idx),
+                         "--input", str(bitstream), "--output", str(noside_ivf)],
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                        timeout=DECODE_TIMEOUT_SECONDS)
+                    if ext_noside.returncode != 0:
+                        return GateResult(
+                            False,
+                            f"nanocodec extract vp9 nosidecar op={op_idx}: "
+                            f"{ext_noside.stderr.strip()[-240:]}",
+                        )
+                    if noside_ivf.read_bytes() != op_ivf.read_bytes():
+                        return GateResult(
+                            False,
+                            f"nanocodec extract vp9 --operating-point {op_idx} differs from "
+                            f"sidecar op={op_idx}",
+                        )
+                if op_idx == view_ops[num_spatial - 1] and len(shown) == len(ordered_tus):
                     base_ivf = tmp / "base_only.ivf"
                     ext_base = subprocess.run(
                         [str(own_decoder), "extract", "--codec", "vp9", "--base-only",
@@ -972,32 +1046,37 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                     if ext_base.returncode != 0:
                         return GateResult(
                             False,
-                            f"nanocodec extract vp9 --base-only: {ext_base.stderr.strip()[-240:]}",
+                            f"nanocodec extract vp9 --base-only: {ext.stderr.strip()[-240:] or ext_base.stderr.strip()[-240:]}",
                         )
                     if base_ivf.read_bytes() != op_ivf.read_bytes():
                         return GateResult(
                             False,
-                            "nanocodec extract vp9 --base-only differs from sidecar op=1",
+                            f"nanocodec extract vp9 --base-only differs from sidecar op={op_idx}",
                         )
+                ivf_targets = [(f"op={op_idx}", op_ivf, ext_dims, ext_md5s)]
+                if (op_idx == 0 and op_ivf != bitstream and len(shown) == len(ordered_tus)
+                        and op_ivf.read_bytes() != bitstream.read_bytes()):
+                    ivf_targets.insert(0, ("unstripped", bitstream, shown_dims, shown_md5s))
 
-            for label, cmd in (
-                (f"vpxdec op={op_idx}",
-                 [str(vpxdec), "--codec=vp9", "--rawvideo", "--i420", "--threads=1",
-                  "-o", "-", str(op_ivf)]),
-                (f"ffmpeg-vp9 op={op_idx}",
-                 [str(ffmpeg), "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
-                  "-filter_threads", "1", "-threads", "1", "-f", "ivf", "-c:v", "vp9",
-                  "-i", str(op_ivf), "-fps_mode", "passthrough", "-threads", "1",
-                  "-noautoscale", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]),
-            ):
-                err, got = _pipe_i420_md5s(cmd, shown_dims)
-                if err:
-                    return GateResult(False, f"{label}: {err}")
-                bad = first_mismatch(got, shown_md5s)
-                if bad is not None:
-                    return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
+            for tag, target_ivf, target_dims, target_md5s in ivf_targets:
+                for label, cmd in (
+                    (f"vpxdec {tag}",
+                     [str(vpxdec), "--codec=vp9", "--rawvideo", "--i420", "--threads=1",
+                      "-o", "-", str(target_ivf)]),
+                    (f"ffmpeg-vp9 {tag}",
+                     [str(ffmpeg), "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
+                      "-filter_threads", "1", "-threads", "1", "-f", "ivf", "-c:v", "vp9",
+                      "-i", str(target_ivf), "-fps_mode", "passthrough", "-threads", "1",
+                      "-noautoscale", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]),
+                ):
+                    err, got = _pipe_i420_md5s(cmd, target_dims)
+                    if err:
+                        return GateResult(False, f"{label}: {err}")
+                    bad = first_mismatch(got, target_md5s)
+                    if bad is not None:
+                        return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
 
-            if own_decoder is not None and op_idx > 0:
+            if own_decoder is not None:
                 res = subprocess.run(
                     [str(own_decoder), "decode", "--codec", "vp9",
                      "--input", str(op_ivf), "--frame-md5", "-"],
@@ -1009,13 +1088,13 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                         f"nanocodec vp9 stripped op={op_idx}: {res.stderr.strip()[-240:]}",
                     )
                 got_own = [line.strip().lower() for line in res.stdout.splitlines() if line.strip()]
-                if len(got_own) != len(shown_md5s):
+                if len(got_own) != len(ext_md5s):
                     return GateResult(
                         False,
                         f"nanocodec vp9 stripped op={op_idx}: {len(got_own)} frames, "
-                        f"expected {len(shown_md5s)}",
+                        f"expected {len(ext_md5s)}",
                     )
-                bad = first_mismatch(got_own, shown_md5s)
+                bad = first_mismatch(got_own, ext_md5s)
                 if bad is not None:
                     return GateResult(
                         False,

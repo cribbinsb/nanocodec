@@ -74,9 +74,9 @@ THREE_LAYER_SCALE_PAIRS = ((0.25, 0.5), (0.3333333, 0.6666667), (0.4, 0.75))
 # Decimated enhancement intervals 2..8 (SPATIAL_MIN_INTERVAL + 0..SPATIAL_INTERVALS-1).
 SPATIAL_MIN_INTERVAL, SPATIAL_INTERVALS = 2, 7
 # VP9 codes no intra refresh yet (layers and LTR recovery use
-# error-resilient frames) and keeps two-layer SVC only.
+# error-resilient frames); both AV1 and VP9 support 2-layer, 3-layer, and KEY SVC.
 CODEC_STRUCTURES = {
-    Codec.VP9: tuple(s for s in STRUCTURES if not s.startswith("refresh")) + TWO_LAYER_SPATIAL_STRUCTURES,
+    Codec.VP9: tuple(s for s in STRUCTURES if not s.startswith("refresh")) + AV1_SPATIAL_STRUCTURES,
     Codec.AV1: STRUCTURES + AV1_SPATIAL_STRUCTURES,
 }
 STRIDE = 37
@@ -110,22 +110,17 @@ def features_for(codec: Codec, seed: int, spatial_only: bool = False) -> Feature
 
 
 def spatial_features_for(codec: Codec, seed: int) -> Features:
-    """Spatial-SVC draw (`syntax_stress.py --spatial`): on VP9 even seeds code
-    `spatial-sparse` and odd seeds cycle the four 2-layer fixed modes; on AV1
-    every third seed codes `spatial-sparse` while the remaining two-thirds
-    cycle all 2-layer and 3-layer modes (`L2T*`, `L3T*`, custom 3-layer scales)."""
+    """Spatial-SVC draw (`syntax_stress.py --spatial`): on AV1 and VP9 every
+    third seed codes `spatial-sparse` while the remaining two-thirds cycle all
+    2-layer, 3-layer, and KEY modes (`L2T*`, `L3T*`, `*_KEY`, custom 3-layer scales)."""
     if codec not in (Codec.AV1, Codec.VP9):
         raise ValueError("spatial stress draws are AV1 and VP9 only")
-    if codec == Codec.VP9:
-        fixed = tuple(s for s in TWO_LAYER_SPATIAL_STRUCTURES if s != "spatial-sparse")
-        structure = "spatial-sparse" if seed % 2 == 0 else fixed[(seed // 2) % len(fixed)]
+    fixed = tuple(s for s in AV1_SPATIAL_STRUCTURES if s != "spatial-sparse")
+    if seed % 3 == 0:
+        structure = "spatial-sparse"
     else:
-        fixed = tuple(s for s in AV1_SPATIAL_STRUCTURES if s != "spatial-sparse")
-        if seed % 3 == 0:
-            structure = "spatial-sparse"
-        else:
-            idx = seed - (seed // 3) - 1
-            structure = fixed[idx % len(fixed)]
+        idx = seed - (seed // 3) - 1
+        structure = fixed[idx % len(fixed)]
     rest = list(product(RATES, LOOP_FILTER.get(codec, (0,)), FILTER_INTRA.get(codec, (0,))))
     rate, loop_filter, filter_intra = rest[(seed * STRIDE) % len(rest)]
     return Features(structure, rate, loop_filter, filter_intra)
@@ -191,7 +186,7 @@ class StressCase:
         interval = SPATIAL_MIN_INTERVAL + (k // len(SPATIAL_SCALES)) % SPATIAL_INTERVALS
         if self.seed % 5 == 0:
             inter_layer = 0
-        elif self.codec == Codec.AV1 and self.seed % 5 == 1:
+        elif self.codec in (Codec.AV1, Codec.VP9) and self.seed % 5 == 1:
             inter_layer = 2
         else:
             inter_layer = 1

@@ -101,6 +101,10 @@ Used in `crates/nc-dsp`:
   (`aom_dsp/loopfilter.c`).
 
 Used in `crates/nc-encoder`:
+- `src/spatial.rs`: the spatial SVC reference structures (which slot each
+  layer predicts from and refreshes, per temporal unit, for L2T*/L3T* and the
+  K-SVC `_KEY` modes) follow `examples/svc_encoder_rtc.cc`
+  `set_layer_pattern` (modes 5-10); no code is copied.
 - `src/cdef_search.rs`: the greedy CDEF strength-set selection idea of
   `joint_strength_search` (`av1/encoder/pickcdef.c`), reimplemented.
 
@@ -469,6 +473,12 @@ The encoder's real-time shortcuts in `crates/nc-vp9/src/backend.rs`
 transform-block skip thresholds of `model_rd_for_sb_y`, the DC-only path of
 `vp9_xform_quant_dc` / `vpx_fdctNxN_1`, and the level-magnitude rate of
 `block_yrd` from `vp9/encoder/vp9_pickmode.c` and `vp9_encodemb.c`.
+The spatial SVC layer structure in `crates/nc-vp9/src/backend.rs` and
+`crates/nc-encoder/src/spatial.rs` (full SVC and K-SVC: inter-layer
+prediction on every unit or on key units only, hidden lower layers shown by
+`show_existing_frame`) follows `vp9/encoder/vp9_svc_layercontext.c`
+(`INTER_LAYER_PRED_ON`, `INTER_LAYER_PRED_OFF_NONKEY`) and
+`examples/vp9_spatial_svc_encoder.c`; no code is copied.
 `tools/codegen/check_vp9_kernels.py` verifies these modules' compact golden
 vectors/hashes against original C functions extracted from the pinned commit.
 It compiles temporary external oracles, reads expected values directly from

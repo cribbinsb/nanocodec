@@ -547,3 +547,85 @@ def test_ksvc_selective_forwarding_recovers_s2_and_s1_without_lower_layer_resend
     )
     assert trace_s1.screen == ["good"] * 8
     assert trace_s1.enhancement_screen == ["good"] * 8
+
+
+def test_vp9_real_session_three_layer_and_ksvc_loss_recovery(tmp_path):
+    from nceval.config import find_tool, load_paths
+    from nceval.lossloop import Session
+    from nceval.yuv import YuvFormat
+
+    paths = load_paths()
+    # An end-to-end check of a built encoder (NC_NANOCODEC_BIN or
+    # target/release); the eval suite at landing runs without one, and the
+    # nc-vp9 roundtrip tests cover the same receivers there.
+    try:
+        binary = find_tool("nanocodec", paths)
+    except FileNotFoundError:
+        pytest.skip("no nanocodec build")
+    width, height, frames = 128, 96, 12
+    fmt = YuvFormat(width, height)
+    clip = tmp_path / "src.yuv"
+    buf = bytearray()
+    for f in range(frames):
+        for y in range(height):
+            for x in range(width):
+                buf.append((x * 3 + y * 5 + f * 17) & 0xFF)
+        buf.extend([128] * (width * height // 2))
+    clip.write_bytes(bytes(buf))
+
+    def run_case(scalability: str, op: int, drop_layer: int, drop_draw: int):
+        cmd = [
+            str(binary), "session", "--codec", "vp9",
+            "--input", str(clip), "--width", str(width), "--height", str(height),
+            "--fps", "30", "--frames", str(frames), "--intra-period", "60",
+            "--bitrate", "400", "--scalability", scalability,
+            "--operating-point", str(op), "--param", "layers.adaptive=0",
+        ]
+        draws = iter([i == drop_draw for i in range(64)])
+
+        class SingleDrop:
+            def lost(self) -> bool:
+                return next(draws, False)
+
+        enh_loss = SingleDrop() if drop_layer == 1 else NoLoss()
+        top_loss = SingleDrop() if drop_layer == 2 else NoLoss()
+        session = Session(cmd, fmt, [])
+        try:
+            trace = run_loop(
+                session, frames, 30.0, NoLoss(), Feedback(25.0, NoLoss()),
+                enhancement_forward=enh_loss, top_enhancement_forward=top_loss,
+            )
+            shown = session.close()
+        except BaseException:
+            session.kill()
+            raise
+        assert shown == frames
+        stats = frame_stats(trace, 30.0, 60)
+        assert stats["decode_errors"] == 0 and stats["mismatches"] == 0
+        assert stats["response_keys"] == 0
+        assert trace.screen[-1] == "good"
+        return trace, stats
+
+    # L2T1_KEY top view (op 0 = S1): S1 loss recovers standalone with zero S0 packets on inter TUs.
+    trace_l2k, stats_l2k = run_case("L2T1_KEY", op=0, drop_layer=1, drop_draw=2)
+    assert stats_l2k["enhancement_repairs"] >= 1
+    assert all(f.packets == 0 for f in trace_l2k.frames[1:])
+
+    # L3T1 Full SVC top view (op 0 = S2): S1 and S2 losses repair without a keyframe.
+    _, stats_l3_s1 = run_case("L3T1", op=0, drop_layer=1, drop_draw=2)
+    assert stats_l3_s1["enhancement_repairs"] >= 1
+    _, stats_l3_s2 = run_case("L3T1", op=0, drop_layer=2, drop_draw=2)
+    assert stats_l3_s2["s2_repairs"] >= 1
+
+    # L3T1_KEY top view (op 0 = S2) and middle view (op 1 = S1): standalone repairs, lower layers stripped.
+    trace_l3k_s2, stats_l3k_s2 = run_case("L3T1_KEY", op=0, drop_layer=2, drop_draw=2)
+    assert stats_l3k_s2["s2_repairs"] >= 1
+    assert all(f.packets == 0 and f.enh_packets == 0 for f in trace_l3k_s2.frames[1:])
+
+    trace_l3k_s1, stats_l3k_s1 = run_case("L3T1_KEY", op=1, drop_layer=1, drop_draw=2)
+    assert stats_l3k_s1["enhancement_repairs"] >= 1
+    assert all(f.packets == 0 for f in trace_l3k_s1.frames[1:])
+
+    # L3T3_KEY top view (op 0 = S2): T0 S2 loss at TU 4 (draw 5 after 2-packet key) repairs standalone.
+    _, stats_l3t3k = run_case("L3T3_KEY", op=0, drop_layer=2, drop_draw=5)
+    assert stats_l3t3k["s2_repairs"] >= 1
