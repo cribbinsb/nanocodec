@@ -72,16 +72,21 @@ are needed: each worker has its own ordinary WASM memory.
   its own resolution, so with different sizes the two are not directly comparable
   (the page says so under the session line); bitrate, timings and PSNR are each
   per version at its own frame rate.
-- **Pre-encoded streams (`reference.js`, `streams-ref/`):** a version's source can be
-  "Pre-encoded · other encoders": a clip coded offline by x264, openh264, x265,
+- **Pre-encoded streams (`reference.js`, `streams-ref/`):** each version's top has two
+  buttons, "nanocodec (live)" and "Reference encoder" (disabled, with the reason, for
+  the webcam, a file or the test scene: streams exist for the sample clips only). A
+  reference stream is a clip coded offline by x264, openh264, x265,
   SVT-AV1, libaom, libvpx or NVENC in the chart configurations
   (`docs/results/bd-vs-speed.md`), fetched with progress when chosen and decoded here
-  by our WASM decoder (no encode worker). The panel labels it "pre-encoded offline"
+  by our WASM decoder (no encode worker). The picker lists the playing clip's streams
+  grouped by encoder, each named by encoder, codec, size, frame rate and bitrate, then
+  other clips' (choosing one switches the clip; a clip with none says so). A reference
+  version hides the codec picker and the live settings. The panel labels it "pre-encoded offline"
   and shows the encoder, its version and source commit, the exact command (Copy),
   clip, size, frame rate, target and actual bitrate; Encode shows "n/a". Choosing a
   stream switches to its clip; it loops with the clip on the shared timeline, and its
-  PSNR is against the same captured source frames as a live version's. **Match this in
-  the other version** sets the other version live to the stream's size, frame rate,
+  PSNR is against the same captured source frames as a live version's. **Match nanocodec to
+  this stream** sets the other version live to the stream's size, frame rate,
   target (peak 2×), 1 s buffer and key interval, starting with the same codec (the
   preset is yours). **BWC SOC**: six FoodMarket streams supplied by the owner from a
   body-worn-camera SoC's hardware encoder (EVBR, a key frame every 5 s), shown as supplied, with no

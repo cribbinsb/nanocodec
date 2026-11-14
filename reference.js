@@ -33,6 +33,20 @@ export function streamGroups(streams) {
   return [...groups].map(([clip, entries]) => [clip, entries.sort(order)]);
 }
 
+/**
+ * The streams for the stream picker when the page plays sample clip `clip`:
+ * that clip's streams grouped by encoder (`[[label, entries]]`, encoders and
+ * entries ordered as in `streamGroups`), then every other clip's streams
+ * (`[[clip, entries]]`; choosing one switches the clip). `this` lists first.
+ */
+export function pickerGroups(streams, clip) {
+  const ordered = streamGroups(streams);
+  const own = ordered.find(([id]) => id === clip)?.[1] ?? [];
+  const byEncoder = new Map();
+  for (const entry of own) byEncoder.set(entry.label, [...(byEncoder.get(entry.label) ?? []), entry]);
+  return { encoders: [...byEncoder], otherClips: ordered.filter(([id]) => id !== clip) };
+}
+
 /** One line naming a stream in a picker: encoder, codec (one encoder name may cover several), size, rate, bitrate. */
 export function streamTitle(entry) {
   return `${entry.label} · ${CODECS[entry.codec].label} · ${entry.width}×${entry.height} · ${entry.fps} fps · ${entry.targetKbps} kbps`;
