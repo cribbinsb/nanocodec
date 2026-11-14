@@ -32,10 +32,13 @@ const LOAN_OVERRUN: f64 = 1.5;
 const INITIAL_COST_SCALE: f64 = 2.;
 
 use crate::params::RateParams;
+use crate::period_ledger::PeriodLedger;
 
 /// Rate control's part of still-scene coding: the refinement loan
-/// (`rate.refine`), the quiet run-up to a key (`rate.prekey_quiet`) and the
-/// held key (`rate.key_hold_still`).
+/// (`rate.refine`), the quiet run-up to a key (`rate.prekey_quiet`), the
+/// held key (`rate.key_hold_still`) and the key-period ceiling that repays
+/// the bursts of still scenes (`rate.period_ceiling`, which bounds every
+/// inter frame in debt, still or not).
 #[derive(Debug, Clone)]
 pub(crate) struct StillRate {
     loan: Option<RefinementLoan>,
@@ -50,6 +53,8 @@ pub(crate) struct StillRate {
     prekey_quiet_frames: f64,
     /// `rate.key_hold_still` (buffers; 0: off).
     pub key_hold_buffers: f64,
+    /// The key-period ceiling (`rate.period_ceiling`; `None`: off).
+    ledger: Option<PeriodLedger>,
 }
 
 impl StillRate {
@@ -63,7 +68,31 @@ impl StillRate {
             ordinary: (0., 0.),
             prekey_quiet_frames: f64::from(params.prekey_quiet) * fps,
             key_hold_buffers: f64::from(params.key_hold_still),
+            ledger: (params.period_ceiling >= 0.5).then(PeriodLedger::default),
         }
+    }
+
+    /// Plan the key-period ledger for the frame at stream time `elapsed`
+    /// (`PeriodLedger::plan`).
+    pub fn plan_period(&mut self, elapsed: f64, period: f64, fps: f64, to_key: Option<u64>) {
+        if let Some(ledger) = self.ledger.as_mut() {
+            ledger.plan(elapsed, period, fps, to_key);
+        }
+    }
+
+    /// A key of `bits` was coded (the ledger reserves its size for the next).
+    pub fn observe_key(&mut self, bits: f64) {
+        if let Some(ledger) = self.ledger.as_mut() {
+            ledger.observe_key(bits);
+        }
+    }
+
+    /// The ledger's room for an inter frame (`PeriodLedger::room`;
+    /// unbounded when off).
+    pub fn ledger_room(&self, uniform: f64, debt: f64, strict: (f64, f64, f64)) -> f64 {
+        self.ledger
+            .as_ref()
+            .map_or(f64::INFINITY, |ledger| ledger.room(uniform, debt, strict))
     }
 
     /// The budget cut of the next inter frame that repays a refinement.

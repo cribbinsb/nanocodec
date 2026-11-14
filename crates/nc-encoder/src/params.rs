@@ -889,6 +889,8 @@ param_group! {
             "with `rate.refine`, 1 keeps the start-up cadence after each key (whole finer frames), 0 makes every inter frame flat so refinements do all the refining",
         key_hold_still: 0.0, [0.0, 4.0],
             "buffers a periodic key of a still scene (running unchanged-block share at least `rate.key_repay_still_from`) may take whatever the debt, planned at the quality the inter frames hold rather than by its repay phase or the debt correction (0 = off): the frames after it repay it",
+        period_ceiling: 0.0, [0.0, 1.0],
+            "1 holds the target as a ceiling over every key period: an inter frame may take at most what the rest of the period can repay of the stream's spend above the target line (`period_ledger.rs`), and is re-coded coarser past it; 0 corrects debt through budgets only",
         prekey_quiet: 0.0, [0.0, 10.0],
             "seconds before a scheduled periodic key in which inter frames get no cadence base boost and hold still blocks at the quality they have (`ReuseTerm::hold_still`; 0 = off): whatever they refined there the key codes again",
     }

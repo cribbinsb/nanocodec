@@ -1108,7 +1108,34 @@ impl RateController {
                 room.max(self.channel_drain())
             }
         };
-        buffer.min(self.window_room(key))
+        buffer.min(self.window_room(key)).min(self.ledger_room(key))
+    }
+    /// Length of a key-period ledger period: the key period's duration, or
+    /// the key repay horizon without periodic keys.
+    fn ledger_seconds(&self) -> f64 {
+        if self.period == 0 || self.period == u32::MAX {
+            self.key_repay_seconds
+        } else {
+            f64::from(self.period) / self.frame_fps
+        }
+    }
+    /// The key-period ledger's room for an inter frame (`rate.period_ceiling`;
+    /// unbounded for keys and when off): what the rest of the key period can
+    /// repay of the spend above the target line.
+    fn ledger_room(&self, key: bool) -> f64 {
+        if key {
+            return f64::INFINITY;
+        }
+        let target = self.settings.config.target_bps as f64;
+        let debt = self.stats.total_bits as f64 - target * self.elapsed;
+        let ceiling = self.recode_ceiling(true);
+        let strict = if ceiling > 0. {
+            ceiling * self.settings.capacity - self.strict_occupancy
+        } else {
+            f64::INFINITY
+        };
+        let room = (strict, self.settings.capacity, self.still_share);
+        self.still.ledger_room(target / self.frame_fps, debt, room)
     }
     /// The short window's room for the next frame (unbounded when off, and
     /// for a key the window exempts).
@@ -1568,6 +1595,21 @@ impl RateController {
         (level, capped)
     }
 
+    /// Start planning a frame with its `share` of a combined buffer: a
+    /// share may drop the key loan, and the key-period ledger counts the
+    /// frames left in its period.
+    fn begin_frame(&mut self, index: u64, share: &LayerShare) {
+        if share.clear_key_loan {
+            self.clear_key_loan();
+        }
+        let period = u64::from(self.period);
+        let to_key = (period > 0 && self.period != u32::MAX)
+            .then(|| period - index.saturating_sub(self.last_key_index) % period);
+        self.still
+            .plan_period(self.elapsed, self.ledger_seconds(), self.frame_fps, to_key);
+        self.share = *share;
+    }
+
     /// Choose the quantizer of the next frame, at temporal-layer position
     /// `layer` (layered structures apply the per-layer ladder offsets around
     /// the level quantizer, like the flat pseudo-layer cadence).
@@ -1581,10 +1623,7 @@ impl RateController {
         layer: LayerPosition,
         share: &LayerShare,
     ) -> u32 {
-        if share.clear_key_loan {
-            self.clear_key_loan();
-        }
-        self.share = *share;
+        self.begin_frame(index, share);
         if key {
             if self.stats.frames > 0 {
                 self.first_key_cap_buffer = 0.;
@@ -1965,6 +2004,7 @@ impl RateController {
         // unspent budget to the frames after it.)
         if self.last_key {
             self.frames_since_key = 0;
+            self.still.observe_key(bits as f64);
             if self.holds_still_key() {
                 self.loan_boost = self.boost_repaying(bits as f64);
             }
