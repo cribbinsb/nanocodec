@@ -311,8 +311,11 @@ export class Panel {
     this.skipped = 0; this.lastTick = null;
     // For the debug report: recent coded frames with their packets, and what changed the live encoder mid-run.
     this.log = []; this.interventions = [];
-    // Ticks of the frames coded as key frames on request, for the whole run (debug report).
-    this.requestedKeys = [];
+    // Ticks of the frames coded as key frames on request, and of the first frames
+    // coded at changed rate settings ({ tick, ...settings }), for the whole run (debug report).
+    this.requestedKeys = []; this.rateChanges = [];
+    // The rate settings the run started with (`current` follows live rate changes).
+    this.initialRate = { rateMode: config.rateMode, targetKbps: config.targetKbps, peakKbps: config.peakKbps, bufferMs: config.bufferMs };
     this.element.querySelector('.rate-status').textContent = config.source === SOURCES.reference ? 'Pre-encoded offline · waiting for frames'
       : config.rateMode === 'cbr' ? `Target ${config.targetKbps} kbps · waiting for frames` : 'Fixed quantizer';
     this.shown = false; this.element.classList.remove('error'); this.downloadButton.disabled = true;
@@ -443,7 +446,7 @@ export class Panel {
       shown: shownNumbers(this.element),
       window: { fps: this.current.fps, bitrateFormula: BITRATE_FORMULA, psnrFormula: PSNR_FORMULA,
         frames: this.history.map(({ bytes, timestamp, psnr, encode, decode }) => ({ bytes, timestamp, psnr, encodeMs: encode, decodeMs: decode })) },
-      interventions: this.interventions, requestedKeys: this.requestedKeys, log: this.log,
+      initialRate: this.initialRate, interventions: this.interventions, requestedKeys: this.requestedKeys, rateChanges: this.rateChanges, log: this.log,
     };
   }
   /** Note something that changed the live encoder mid-run (rate, key frame request), for the debug report. */
@@ -452,6 +455,7 @@ export class Panel {
   record(coded) {
     ++this.count;
     if (coded.keyRequested) this.requestedKeys.push(tickAt(coded.timestamp));
+    if (coded.rateApplied) this.rateChanges.push({ tick: tickAt(coded.timestamp), ...coded.rateApplied });
     this.log.push({ tick: tickAt(coded.timestamp), key: coded.key, repeat: coded.repeat, quantizer: coded.quantizer, bytes: coded.packet.byteLength,
       packet: coded.packet, encodeMs: coded.encodeMs, decodeMs: coded.decodeMs, psnr: coded.psnr, planes: coded.errorMap?.frame ?? null,
       colour: coded.colour ?? null });

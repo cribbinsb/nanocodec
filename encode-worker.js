@@ -32,9 +32,11 @@ let source;
 let held = null;
 // Set when the first real frame is coded: start-up warm-up (encode-warmup.js) stops then.
 let coding = false;
-// A key frame was requested and the next coded frame is it: that frame says so
-// (`keyRequested`), so the page's debug report can replay the request exactly.
-let keyRequested = false;
+// A key frame was requested, or the rate settings changed, and the next coded
+// frame is the first to have it: that frame says so (`keyRequested`,
+// `rateApplied`), so the page's debug report can replay it at exactly that
+// frame (these messages and the captures come on different ports).
+let keyRequested = false, rateApplied = null;
 /** Convert a captured frame (capture-worker.js) into `source`. */
 function convert(frame) {
   if (frame.kind === 'planes') {
@@ -61,9 +63,9 @@ function encodeFrame({ frame, timestamp }) {
   // rate control budgets each for the real time since the previous one.
   const packet = config.timed ? encoder.encode_at(source, timestamp * MICROSECONDS_PER_MS) : encoder.encode(source);
   const packed = packedSource();
-  const requested = keyRequested;
-  keyRequested = false;
-  return { timestamp, source: packed.buffer, colour: source.colour, packet, repeat: encoder.repeat, key: encoder.key, keyRequested: requested,
+  const requested = keyRequested, rate = rateApplied;
+  keyRequested = false; rateApplied = null;
+  return { timestamp, source: packed.buffer, colour: source.colour, packet, repeat: encoder.repeat, key: encoder.key, keyRequested: requested, rateApplied: rate,
     quantizer: encoder.quantizer, encodeMs: performance.now() - start };
 }
 function configureRate(c) {
@@ -107,6 +109,7 @@ async function receive({ data: message }) {
     } else if (message.type === 'rate') {
       config = message.config;
       configureRate(config);
+      rateApplied = { rateMode: config.rateMode, targetKbps: config.targetKbps, peakKbps: config.peakKbps, bufferMs: config.bufferMs };
     } else if (message.type === 'frame') {
       if (!held && encoder.wants_look_ahead) {
         // Nothing to show yet: the page still hears that frame 0 is done, in order.
