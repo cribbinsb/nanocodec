@@ -350,9 +350,9 @@
     "bodycam_bc1": 0.9918108558108558
    },
    "ms_per_frame": {
-    "lowlight_city_night": 5.3597541773493,
-    "crowd_mot17_09": 6.742995953675789,
-    "bodycam_bc1": 6.075577050288598
+    "lowlight_city_night": 5.2907963698916225,
+    "crowd_mot17_09": 6.857220093340642,
+    "bodycam_bc1": 6.660641541020379
    },
    "anchor_ms_per_frame": {
     "lowlight_city_night": 11.77076962962963,
@@ -360,28 +360,28 @@
     "bodycam_bc1": 18.31204765432099
    },
    "raw_ms_per_frame": {
-    "lowlight_city_night": 9.24562,
-    "crowd_mot17_09": 10.463280000000001,
-    "bodycam_bc1": 8.210493333333332
+    "lowlight_city_night": 8.359293333333333,
+    "crowd_mot17_09": 9.146346666666666,
+    "bodycam_bc1": 8.604853333333335
    },
    "same_session_time_ratio": {
     "svtav1-m13": {
-     "lowlight_city_night": 1.3865527027414408,
-     "crowd_mot17_09": 1.1895326922885938,
-     "bodycam_bc1": 1.1333063434953423
+     "lowlight_city_night": 1.3084484426107295,
+     "crowd_mot17_09": 1.0974062294410205,
+     "bodycam_bc1": 1.1217626913801104
     }
    }
   },
   "nanocodec-av1": {
    "budget_fraction": {
-    "lowlight_city_night": 0.9882703962703963,
-    "crowd_mot17_09": 0.993232,
-    "bodycam_bc1": 1.006111222111222
+    "lowlight_city_night": 1.01195337995338,
+    "crowd_mot17_09": 1.004936,
+    "bodycam_bc1": 1.007126207126207
    },
    "ms_per_frame": {
-    "lowlight_city_night": 9.349455972205437,
-    "crowd_mot17_09": 9.318795525399114,
-    "bodycam_bc1": 10.633031314680014
+    "lowlight_city_night": 8.78451007489688,
+    "crowd_mot17_09": 9.209745644972275,
+    "bodycam_bc1": 10.082526295522571
    },
    "anchor_ms_per_frame": {
     "lowlight_city_night": 11.77076962962963,
@@ -389,15 +389,15 @@
     "bodycam_bc1": 18.31204765432099
    },
    "raw_ms_per_frame": {
-    "lowlight_city_night": 12.320813333333334,
-    "crowd_mot17_09": 11.94618,
-    "bodycam_bc1": 14.286200000000003
+    "lowlight_city_night": 10.836766666666666,
+    "crowd_mot17_09": 12.218473333333334,
+    "bodycam_bc1": 14.606573333333332
    },
    "same_session_time_ratio": {
     "svtav1-m13": {
-     "lowlight_city_night": 2.32998224520309,
-     "crowd_mot17_09": 1.6804425417852547,
-     "bodycam_bc1": 1.5565630856673298
+     "lowlight_city_night": 2.2925583614084255,
+     "crowd_mot17_09": 1.6563135164003344,
+     "bodycam_bc1": 1.4038996577738396
     }
    }
   },

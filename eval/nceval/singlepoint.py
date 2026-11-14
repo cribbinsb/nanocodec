@@ -78,6 +78,7 @@ def single_points(runner: realuse.Runner, anchor: Family, test: Family, clips: l
                            "quality": quality, "quality_low": quality,
                            "noncompliant": int(jreal.noncompliant(points[0])),
                            "base_quality": jreal.point_base_quality(anchor_curve, points[0]),
+                           "worst": jreal.point_worst(anchor_curve, points[0]),
                            **jreal.ceiling_terms("test", points[:1]),
                            **jreal.ceiling_terms("anchor", same_rung)}
     if missing:
@@ -93,6 +94,20 @@ def balanced_j(rows: dict[str, dict], term: str = "quality") -> float | None:
         if row.get(term) is not None:
             classes.setdefault(row["class"], []).append(row[term])
     return sum(sum(v) / len(v) for v in classes.values()) / len(classes) if classes else None
+
+
+#: The classes whose worst frames a deeper QP cadence hurts (the long-horizon
+#: guard's static and crowd clips failed H.264 #2, 2026-11-14).
+WORST_GUARD_CLASSES = ("static", "crowd")
+
+
+def worst_constraint(rows: dict[str, dict]) -> list[float]:
+    """The worst-1% guard at single points (<= 0 when met): the class-balanced
+    worst-1% delta (jreal.point_worst: the worse of PSNR-Y and VMAF) of the
+    WORST_GUARD_CLASSES rows against jreal.WORST_GUARD_PCT."""
+    worst = balanced_j({n: r for n, r in rows.items() if r["class"] in WORST_GUARD_CLASSES},
+                       "worst")
+    return [] if worst is None else [worst - jreal.WORST_GUARD_PCT]
 
 
 def ceiling_constraint(rows: dict[str, dict]) -> list[float]:

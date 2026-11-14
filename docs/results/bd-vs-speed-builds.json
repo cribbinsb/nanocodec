@@ -6,7 +6,7 @@
   "nanocodec-h264@h264-faster": "0cdb619d",
   "nanocodec-hevc": "0cdb619d",
   "nanocodec-hevc@hevc-fast": "0cdb619d",
-  "nanocodec-av1": "0cdb619d",
+  "nanocodec-av1": "f29b5933",
   "nanocodec-av1@av1-fast": "0cdb619d",
   "nanocodec-vp9": "0cdb619d",
   "nanocodec-vp9@vp9-fast": "0cdb619d",
@@ -22,7 +22,8 @@
  },
  "builds": {
   "730e4e16": "730e4e16",
-  "0cdb619d": "0cdb619d"
+  "0cdb619d": "0cdb619d",
+  "f29b5933": "f29b5933"
  },
  "tools": {
   "x264": "0.165",
@@ -32,5 +33,7 @@
   "libaom": "v3.15.3"
  },
  "x86_timing_note": "\n  Refresh of 2026-11-11: only our points were re-timed (the reference encoders' timings\n  are from the earlier session). The PC ran about 9% faster that night (paired x264 medium\n  73 vs 67.6 fps), so each of our per-clip times is scaled by the reference session's x264\n  medium time over its paired x264 medium time; speed ratios are unchanged and the raw\n  times are kept in `bd-vs-speed-timing-x86.json` (`raw_ms_per_frame`).",
- "timed_on": {}
+ "timed_on": {
+  "nanocodec-av1@av1-fast": "f29b5933"
+ }
 }

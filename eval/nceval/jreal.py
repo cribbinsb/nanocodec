@@ -315,6 +315,13 @@ def point_rate_delta(anchor: list[dict], point: dict, metric: str) -> float | No
     return 100.0 * (point["kbps"] / math.exp(log_rate) - 1.0)
 
 
+def point_worst(anchor: list[dict], point: dict) -> float | None:
+    """The single-point worst-1% delta of one clip: the larger of WORST_METRICS'
+    point_rate_delta (the worst-1% guard's terms at one rung), None if missing."""
+    deltas = [point_rate_delta(anchor, point, metric) for metric in WORST_METRICS]
+    return None if None in deltas else max(deltas)
+
+
 def point_quality(anchor: list[dict], point: dict) -> float | None:
     """The single-point J quality of one clip: the mean of the headline metrics'
     point_rate_delta, None if any is missing."""

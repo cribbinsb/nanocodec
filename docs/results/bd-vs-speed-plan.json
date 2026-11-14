@@ -403,8 +403,8 @@
   },
   "nanocodec-av1": {
    "lowlight_city_night": {
-    "qp": 189,
-    "bytes": 370972,
+    "qp": 188,
+    "bytes": 379862,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -428,14 +428,14 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "189"
+     "188"
     ],
     "fps": 29.97,
-    "key": "a4d47b6a5a10d96d"
+    "key": "e26acad7a511d92b"
    },
    "crowd_mot17_09": {
-    "qp": 215,
-    "bytes": 372462,
+    "qp": 214,
+    "bytes": 376851,
     "target_bytes": 375000,
     "argv": [
      "{BIN}/nanocodec",
@@ -459,14 +459,14 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "215"
+     "214"
     ],
     "fps": 30.0,
-    "key": "c599d37966906bce"
+    "key": "46dbd1c5f7283403"
    },
    "bodycam_bc1": {
-    "qp": 207,
-    "bytes": 377669,
+    "qp": 206,
+    "bytes": 378050,
     "target_bytes": 375375,
     "argv": [
      "{BIN}/nanocodec",
@@ -490,10 +490,10 @@
      "--output",
      "{OUTPUT}",
      "--qp",
-     "207"
+     "206"
     ],
     "fps": 29.97,
-    "key": "f5341d3a66633dc7"
+    "key": "948228fe5d51d3bc"
    }
   },
   "nanocodec-av1@av1-fast": {
@@ -528,7 +528,7 @@
      "av1-fast"
     ],
     "fps": 29.97,
-    "key": "978c6bc97c0cc02c"
+    "key": "e51c3af5aece9a66"
    },
    "crowd_mot17_09": {
     "qp": 216,
@@ -561,7 +561,7 @@
      "av1-fast"
     ],
     "fps": 30.0,
-    "key": "6e857a8b37415f11"
+    "key": "75d8b1f718f6af2b"
    },
    "bodycam_bc1": {
     "qp": 211,
@@ -594,7 +594,7 @@
      "av1-fast"
     ],
     "fps": 29.97,
-    "key": "7c96fec9e439fad7"
+    "key": "75b01b061ff3dd12"
    }
   },
   "nanocodec-vp9": {
@@ -3542,8 +3542,8 @@
   "nanocodec-h264": "c2ad459a9ce44826ff1fa81b98b889c3d23d0f29dacfa7c9cb434ba831e562ff",
   "nanocodec-hevc": "9bddea18b442249695751a42587a90050a80cfd01f1be51268b17e511a839e08",
   "nanocodec-hevc@hevc-fast": "9bddea18b442249695751a42587a90050a80cfd01f1be51268b17e511a839e08",
-  "nanocodec-av1": "9bddea18b442249695751a42587a90050a80cfd01f1be51268b17e511a839e08",
-  "nanocodec-av1@av1-fast": "3dc9b83e8b23440c67431f379a70d77e8dacb23c39babfc115a45423e6fae9c4",
+  "nanocodec-av1": "a2ffabb7be6fc645f05500d5290761d262cf2b2cc0b514fad9be250df450dad2",
+  "nanocodec-av1@av1-fast": "a2ffabb7be6fc645f05500d5290761d262cf2b2cc0b514fad9be250df450dad2",
   "nanocodec-vp9": "9bddea18b442249695751a42587a90050a80cfd01f1be51268b17e511a839e08",
   "nanocodec-av2": "18f14a4823d4101094e2f5729f19001af2a344d6699068a598b010917e386a9b",
   "nanocodec-vvc": "1fa4f788cf859e3a0e4f9676c08ede5188d41feb3e79eff6f3d4cab2d68aa38a",

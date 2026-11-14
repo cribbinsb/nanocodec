@@ -133,7 +133,7 @@ import optuna
 
 from . import interval, jetson, jreal, levels, pool, realuse, slots
 from .singlepoint import (RESHAPE_PCT, RESHAPE_T, assign_rungs, balanced_j, base_constraint,
-                          ceiling_constraint, rung_trend, single_points)
+                          ceiling_constraint, rung_trend, single_points, worst_constraint)
 from .cbr import DEFAULT_INTRA_PERIOD, Family
 from .clips import Clip, load_clipset
 from .codecs import Codec
@@ -537,6 +537,10 @@ class Study:
             raise ValueError("no J_real quality on any clip")
         constraint = class_constraints(rows) + base_constraint(rows) + ceiling_constraint(rows)
         if self.short_guard_pct is not None:
+            # A long-window study also guards the worst frames (worst-1%): a deeper QP
+            # cadence bought J there and failed the long-horizon guard (H.264 #2:
+            # static clip worst-1% PSNR-Y +53%, 2026-11-14).
+            constraint += worst_constraint(rows)
             short = balanced_j(single_points(runner, self.anchor, test, stage_1, self.rungs))
             trial.set_user_attr("short_j", short)
             constraint.append((short or 0.0) - self.short_guard_pct)
