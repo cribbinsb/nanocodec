@@ -276,6 +276,13 @@ fn round_narrow16(low: __m256i, high: __m256i) -> Narrow16 {
 }
 
 impl InverseLanes for Narrow16 {
+    /// Complete the independent odd/even halves separately to shorten live
+    /// ranges. Existing row/column guards and wide fallbacks are unchanged.
+    #[inline(always)]
+    fn idct32(input: &[Self; 32], output: &mut [Self; 32], cospi: &[i32; 64], bit: u32) {
+        super::dct::idct32_half_scheduled(input, output, cospi, bit);
+    }
+
     #[inline(always)]
     fn splat(value: i32) -> Self {
         // SAFETY: AVX2 entry points only; the graphs splat only zero.

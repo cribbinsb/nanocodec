@@ -238,6 +238,32 @@ pub(crate) fn {name}<V: super::forward_lanes::ForwardLanes>(
     return "\n".join(wrappers) + "\n" + full
 
 
+def inverse32_half_schedule(full: str) -> str:
+    """Run independent odd/even halves to completion before the final merge.
+
+    Preserve every expression and stage clamp. Check the independence when
+    generating so a future upstream graph cannot silently break the schedule.
+    """
+    head, body = full.split("    // stage 0;", 1)
+    independent, merge = body.split("    // stage 9", 1)
+    halves: list[list[str]] = [[], []]
+    for line in independent.splitlines():
+        if not line.strip() or line.strip().startswith("//"):
+            continue
+        match = re.fullmatch(r"    (?:step|output)\[(\d+)\] = (.*);", line)
+        if match is None:
+            raise ValueError(f"unrecognised inverse32 assignment: {line}")
+        half = int(match[1]) // 16
+        dependencies = re.findall(r"(?:step|output)\[(\d+)\]", match[2])
+        if any(int(index) // 16 != half for index in dependencies):
+            raise ValueError(f"inverse32 cross-half dependency: {line}")
+        halves[half].append(line)
+    head = head.replace("fn idct32<", "fn idct32_half_scheduled<")
+    head = head.replace("#[inline(always)]", '#[cfg(target_arch = "x86_64")]\n#[inline(always)]')
+    return (head + "    // Independent odd half, then even half.\n"
+            + "\n".join(halves[1] + halves[0]) + "\n    // stage 9" + merge)
+
+
 def main() -> None:
     libaom, out_path = Path(sys.argv[1]), Path(sys.argv[2])
     parts = [
@@ -260,6 +286,9 @@ def main() -> None:
             translated = forward_low_half_specialization(translated, size)
         parts.append(translated)
         parts.append("")
+        if rust_name == "idct32":
+            parts.append(inverse32_half_schedule(translated))
+            parts.append("")
     inverse = (libaom / "av1/common/av1_inv_txfm1d.c").read_text()
     for size, limits in [(32, (8, 16)), (64, (8, 16, 32))]:
         for limit in limits:

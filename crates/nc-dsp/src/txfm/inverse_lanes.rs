@@ -35,6 +35,12 @@ pub(crate) trait InverseLanes: Copy {
     /// `half_btf` whose second input is a structural zero:
     /// `round_shift(w * a, bit)`.
     fn mul_round(w: i32, a: Self, bit: u32) -> Self;
+    /// Full 32-point graph; lane implementations may choose an exact schedule.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn idct32(input: &[Self; 32], output: &mut [Self; 32], cospi: &[i32; 64], bit: u32) {
+        super::dct::idct32(input, output, cospi, bit);
+    }
     /// Clamp to the 8-bit stage range (16 bits).
     fn clamp16(self) -> Self;
 }

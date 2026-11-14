@@ -154,7 +154,7 @@ fn idct<V: InverseLanes, const N: usize>(x: &[V; N], y: &mut [V; N], live: usize
             } else if live <= 16 {
                 dct::idct32_low16(x, y, cospi, bit);
             } else {
-                dct::idct32(x, y, cospi, bit);
+                V::idct32(x, y, cospi, bit);
             }
         }
         64 => {
