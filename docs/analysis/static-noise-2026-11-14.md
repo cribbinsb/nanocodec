@@ -264,3 +264,68 @@ too coarse (docs/handoff/rate-control.md).
   `--rtc` gets 44.9 and libaom rt gets 45.6 (−1.5 to −2.3 dB). Our H.264 and HEVC get 44.6-44.7.
 - *Static detection on webcams.* The analyzer's noise estimate reads clipped highlights, so pre-analysis
   classes 7% of a still webcam picture static. This also starves `still_skip` and `static_zero_vector`.
+
+## 7. Skip-aware budget (`rate.skip_budget`, landed off)
+
+**What it does** (`skip_budget.rs`):
+- An inter frame's budget is scaled by max(floor, 1 − s × the share of the previous frame's area the noise
+  skip took).
+- Rate control drains only the scaled allowance from its debt, so the unspent part is forgiven, never banked.
+- s follows the stream's bits per pixel (`bpp_curve.rs`, log-interpolated): `rate.skip_budget` (1) from
+  0.15 bpp up, `rate.skip_budget_starved` (0.3) at 0.02 bpp and below. At a starved rate the skipped area's
+  bits still buy refinement: at 300 kbps, H.264 loses 0.9 dB at s = 1 and 0.2 dB at s = 0.5.
+- Floor `rate.skip_budget_floor` is 0.1.
+- Keys reset the share.
+- The skip already is the per-block "settled / unsettled" split: settled blocks get no residual, changing
+  blocks are coded at the frame quantizer. So the budget follows the unsettled share, and recovering areas
+  keep their bits.
+
+**Webcam** (noise skip c 4, chroma ratio 2, skip budget on). Achieved kbps / PSNR-Y against the 17-frame
+mean, uncapped in brackets:
+
+| target | AV1 | HEVC | H.264 |
+|---|---|---|---|
+| 300 | 247 / 43.19 (296 / 43.35) | 186 / 44.61 (296 / 44.60) | 159 / 44.39 (298 / 44.66) |
+| 1000 | 476 / 44.86 (988 / 44.77) | 274 / 45.05 (987 / 45.26) | 199 / 44.80 (994 / 44.95) |
+
+**Synthetic stills at 1000 kbps** (s = 1). kbps / PSNR-Y against the clean original, off in brackets:
+
+| sigma | AV1 | H.264 |
+|---|---|---|
+| 1.15 | 865 / 43.63 (987 / 43.54) | 395 / 43.75 (986 / 43.82) |
+| 2.9 | 447 / 37.16 (986 / 36.93) | 109 / 38.47 (986 / 37.70) |
+| 7 | 820 / 30.90 (987 / 30.83) | 509 / 32.46 (985 / 31.89) |
+
+**60 s robustness at 1000 kbps** (AV1 / H.264, against clean, off in brackets):
+- Ramp: last-window worst frame 40.87 / 40.84 (40.87 / 41.00).
+- Object: the band it crosses is at 43.36 / 43.14 dB in the 2 s after it leaves (43.34 / 43.44 off), and
+  back to 43.44 / 43.55 by 42-45 s. Nothing lingers to the next key.
+- The moving region while the object moves: 43.39 / 43.33 (43.34 / 43.21).
+- Mean rate: AV1 873-898, H.264 394-541 kbps.
+- Per-second traces were reported with the work. They were measured with budget strength 1; the
+  bits-per-pixel curve does not change it at 1000 kbps, which is 0.16 bpp.
+
+**Rate-control audit still points** (long_static_chirla_s024c2 at 47/93/187 kbps, 600 f, key every 10 s,
+against source):
+- rate 0.956-1.049;
+- PSNR-YUV −0.25 to +0.16 dB;
+- worst-1% PSNR-Y unchanged or better.
+Chirla is a clean, compressed source with little noise to skip.
+
+**Why AV1 undershoots least** (webcam, 1000 kbps, instrumented):
+
+| | AV1 | HEVC | H.264 |
+|---|---|---|---|
+| area noise-skipped | 52% | 73% | 80% |
+| area tested and failed | 45% | 25% | 17% |
+| failed area in 64x64 leaves | 77% | 21% | — |
+| failed area whose 16x16 quarters pass | 25% | 12% | 0 |
+
+AV1's partition planner gives still content 64x64 leaves, so one failing 8x8 cell fails the block. A "noise
+split" (test 16x16 quarters, split where they disagree) is the next step.
+
+**The clamped noise floor** (`rate.noise_floor_max_qp` 16 / `_starved` 30, bits-per-pixel curve):
+- It passes the ramp and object tests: AV1 is identical to the skip alone, and H.264's ramp is better than
+  off.
+- It barely undershoots at 1 Mbps (AV1 988, HEVC 774, H.264 527 kbps).
+- The skip-aware budget is the better route.

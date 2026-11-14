@@ -66,7 +66,7 @@ def page_psnr() -> list[tuple[int, float]]:
             page = browser.new_page()
             page.add_init_script(HOOK)
             page.goto(f'http://127.0.0.1:{server.server_port}/')
-            page.locator('.source-picker').nth(0).select_option('reference')
+            page.locator('.view-source [data-view-source="reference"]').nth(0).click()
             page.wait_for_function("document.querySelectorAll('.stream-picker')[0].options.length > 10", timeout=30000)
             page.locator('.stream-picker').nth(0).select_option(STREAM)
             page.wait_for_function("document.querySelector('#clip').value === 'netflix-food-market'", timeout=30000)

@@ -260,6 +260,7 @@ fn spatial_layer_state<B: CodecBackend>(
         cadence: configured_cadence(&layer_cfg, backend),
         last_key_index: 0,
         noise_map: NoiseMap::new(),
+        noise_skipped_area: 0,
         last_quantizer: 0,
     };
     Ok((state, last_visible_recon))

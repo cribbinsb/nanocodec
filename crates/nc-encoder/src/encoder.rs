@@ -187,6 +187,9 @@ pub(super) struct LayerState {
     /// Per-cell temporal noise of the still picture, for the noise skip
     /// (`decision.noise_skip`); updated only while that is on.
     pub(super) noise_map: NoiseMap,
+    /// Luma area the noise skip took in the frame being coded, for the
+    /// skip-aware budget (`rate.skip_budget`).
+    pub(super) noise_skipped_area: usize,
 }
 
 /// The encoder: configuration, a codec backend and the reconstructions.
@@ -365,6 +368,7 @@ impl<B: CodecBackend> Encoder<B> {
                 cadence,
                 last_key_index: 0,
                 noise_map: NoiseMap::new(),
+                noise_skipped_area: 0,
                 last_quantizer: 0,
             };
             (None, layer)
@@ -1555,6 +1559,8 @@ impl<B: CodecBackend> Encoder<B> {
                 controller.set_realised_block_offset(realised);
             }
             controller.feedback(bit_count(data));
+            let area = (self.layer.width * self.layer.height).max(1);
+            controller.observe_noise_skip(self.layer.noise_skipped_area as f64 / area as f64);
             if controller.wants_distortion() {
                 let (width, height) = (self.layer.coded_width, self.layer.coded_height);
                 controller.observe_distortion(luma_mse(
@@ -1566,6 +1572,7 @@ impl<B: CodecBackend> Encoder<B> {
                 ));
             }
         }
+        self.layer.noise_skipped_area = 0;
     }
 
     /// Resample `input`, or the frame written into the scaler's stream-size
@@ -2664,7 +2671,7 @@ impl<B: CodecBackend> Encoder<B> {
             return false;
         }
         let still = frame.still.is_some_and(|still| is_still::<B>(still, node));
-        self.backend.try_static_skip(
+        let accepted = self.backend.try_static_skip(
             node,
             source,
             reference,
@@ -2673,7 +2680,11 @@ impl<B: CodecBackend> Encoder<B> {
                 still,
                 within_noise,
             },
-        )
+        );
+        if accepted && within_noise {
+            self.layer.noise_skipped_area += node.width() * node.height();
+        }
+        accepted
     }
 
     /// Code the static skip of `node` at vector `skip`, and report it to the

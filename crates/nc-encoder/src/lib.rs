@@ -35,6 +35,7 @@
 
 mod aq;
 mod backend;
+mod bpp_curve;
 mod cdef_model;
 mod cdef_search;
 mod chroma_offset;
@@ -76,6 +77,7 @@ mod reuse;
 mod scene;
 mod second_reference;
 mod shape;
+mod skip_budget;
 mod source_scale;
 pub mod spatial;
 mod startup_lookahead;

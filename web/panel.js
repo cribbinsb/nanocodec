@@ -7,7 +7,7 @@ import { createRenderer } from './renderer.js';
 import { Advanced } from './advanced.js';
 import { cliCommand, cliPreset } from './options.js';
 import { FRAME_RATES, tickAt, tickMs, tickStep } from './timeline.js';
-import { fetchStream, loadManifest, referenceStream, streamGroups, streamTitle } from './reference.js';
+import { fetchStream, loadManifest, pickerGroups, referenceStream, streamTitle } from './reference.js';
 import { trace } from './trace.js';
 import { BITRATE_FORMULA, PSNR_FORMULA, shownNumbers } from './debug-report.js';
 import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, RATE_LIMITS_KBPS, RESOLUTIONS } from './view-settings.js';
@@ -46,18 +46,23 @@ export class Panel {
     this.fetches = new Map();
     this.element = document.createElement('article'); this.element.className = 'version';
     this.element.innerHTML = `
-      <div class="version-top"><span class="version-letter">${letter}</span><h2>Version ${letter}</h2><select class="source-picker" aria-label="Version ${letter} source"><option value="${SOURCES.live}">Live · nanocodec</option><option value="${SOURCES.reference}">Pre-encoded · other encoders</option></select><select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></div>
+      <div class="version-top"><span class="version-letter">${letter}</span><h2>Version ${letter}</h2><div class="segmented view-source" role="group" aria-label="Version ${letter} source"><button type="button" data-view-source="${SOURCES.live}" aria-pressed="true">nanocodec (live)</button><button type="button" data-view-source="${SOURCES.reference}" aria-pressed="false">Reference encoder</button></div><select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></div>
+      <p class="source-unavailable" hidden>Reference streams exist for the sample clips only: choose a sample clip to compare with another encoder.</p>
       <div class="viewport"><canvas aria-label="Version ${letter} decoded output"></canvas><div class="empty-overlay"><div class="empty-symbol">◉</div><strong>Your decoded video appears here</strong><span>Choose a source and start comparing</span></div><span class="frame-badge">WASM DECODER · READY</span></div>
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
       <div class="picture-options"><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label></div>
-      <div class="reference-options" hidden><label class="compact-control">Pre-encoded stream<select class="stream-picker"></select></label><p class="reference-status" role="status"></p><div class="reference-info"><p class="reference-label"></p><dl class="reference-facts"></dl><p class="reference-version"></p><div class="reference-command"><code class="reference-cli"></code><button type="button" class="copy-command">Copy</button></div><button type="button" class="match">Match this in the other version</button></div></div>
+      <div class="reference-options" hidden><label class="compact-control">Reference stream (encoder · codec · size · rate · bitrate)<select class="stream-picker"></select></label><p class="reference-hint" hidden>This clip has no reference streams: the list shows other sample clips’ streams, and choosing one switches the page to that clip.</p><p class="reference-status" role="status"></p><div class="reference-info"><p class="reference-label"></p><dl class="reference-facts"></dl><p class="reference-version"></p><div class="reference-command"><code class="reference-cli"></code><button type="button" class="copy-command">Copy</button></div><button type="button" class="match">Match nanocodec to this stream</button><p class="match-note">Sets the other version to live nanocodec at this stream’s codec, size, frame rate and bitrate.</p></div></div>
       <div class="options"><label class="compact-control">Rate mode<select class="rate-mode"><option value="cbr" selected>Target bitrate</option><option value="qp">Fixed quantizer</option></select></label><div class="rate-options"><label class="compact-control">Target (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><label class="compact-control">Peak (kbps)${rateInput('peak-rate', DEFAULT_PEAK_KBPS)}</label><label class="compact-control">Buffer<select class="buffer-ms">${options(BUFFER_CHOICES_MS.map(ms => [ms, ms < 1000 ? `${ms} ms` : `${ms / 1000} second${ms > 1000 ? 's' : ''}`]), DEFAULT_BUFFER_MS)}</select></label></div><div class="quality-option" hidden><label class="quality-label" for="qp-${letter}">Compression / quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div><label class="compact-control">Encoder preset<select class="preset"><option value="default">Default</option><option value="fast">Fast · quality tradeoff</option><option value="faster">Faster · H.264, HEVC, AV1 and VP9</option><option value="fastest">Fastest · H.264 and VP9</option><option value="svc">SVC · full + half-size layers (AV1, VP9)</option><option value="svc-fast">SVC Fast · full + half-size layers (AV1, VP9)</option><option value="svc3">SVC 3 layers · full, half and quarter size (AV1)</option><option value="svc3-fast">SVC 3 layers Fast · full, half and quarter size (AV1)</option></select></label><label class="compact-control layer-control" hidden>Shown layer<select class="operating-point"><option value="0" selected>Full size (operating point 0)</option><option value="1">Half size (operating point 1)</option><option value="2">Quarter size (operating point 2)</option></select></label><label class="compact-control">Keyframe interval<select class="gop">${options(GOP_SECONDS.map(s => [s, `${s} second${s > 1 ? 's' : ''}`]), DEFAULT_GOP_SECONDS)}</select></label></div>
       <p class="rate-status" aria-live="off">Target 300 kbps · waiting for frames</p><div class="history"><div class="history-label"><span>FRAME SIZE · LAST ${HISTORY_FRAMES} FRAMES</span><span class="history-max">—</span></div><canvas width="540" height="42" aria-label="Recent compressed frame sizes"></canvas></div>
       <div class="version-bottom"><span class="frame-count">No frames encoded</span><button class="download" disabled>Download stream ↓</button></div>
       <details class="reproduce"><summary>Settings · CLI command</summary><p class="effective"></p><code class="cli"></code></details>`;
     container.append(this.element);
     const $ = selector => this.element.querySelector(selector);
-    this.source = $('.source-picker');
+    // Live nanocodec or a reference encoder's stream (SOURCES), chosen with the buttons.
+    this.sourceChoice = SOURCES.live;
+    this.sourceButtons = [...this.element.querySelectorAll('.view-source button')];
+    // The sample clip the page plays (null for the webcam, a file or the scene: no reference streams).
+    this.clip = null;
     this.codec = $('.codec-picker'); this.codec.value = codec;
     this.resolution = $('.resolution'); this.fps = $('.fps');
     this.streamPicker = $('.stream-picker');
@@ -89,7 +94,8 @@ export class Panel {
     this.codec.addEventListener('change', () => { this.updateCodec(); changed(); });
     this.qp.addEventListener('input', () => this.updateLabel());
     for (const control of [this.qp, this.preset, this.gop, this.resolution, this.fps]) control.addEventListener('change', () => changed());
-    this.source.addEventListener('change', () => this.sourceChanged());
+    this.markSource();
+    for (const button of this.sourceButtons) button.addEventListener('click', () => { if (button.dataset.viewSource !== this.sourceChoice) this.setSource(button.dataset.viewSource); });
     this.streamPicker.addEventListener('change', () => { this.choose(this.streams.find(s => s.id === this.streamPicker.value)); changed('reference'); });
     $('.copy-command').addEventListener('click', () => navigator.clipboard?.writeText(this.reference?.command ?? ''));
     $('.match').addEventListener('click', () => { if (this.reference) onMatch(this.reference); });
@@ -113,7 +119,36 @@ export class Panel {
     this.viewport.dataset.display = this.renderer.kind;
   }
   /** Whether this view plays a pre-encoded stream. */
-  get preEncoded() { return this.source.value === SOURCES.reference; }
+  get preEncoded() { return this.sourceChoice === SOURCES.reference; }
+  /** Choose live or reference (the buttons), then apply it. */
+  setSource(source) {
+    this.sourceChoice = source;
+    this.sourceChanged();
+  }
+  /**
+   * The page now plays sample clip `clip` (null: another source, where only live
+   * encodes exist): the reference choice is offered or disabled with the reason,
+   * and the stream list puts that clip's streams first.
+   */
+  setClip(clip) {
+    this.clip = clip;
+    this.sourceButtons[1].disabled = !clip;
+    this.sourceButtons[1].title = clip ? '' : 'Reference streams exist for the sample clips only';
+    this.element.querySelector('.source-unavailable').hidden = Boolean(clip);
+    if (this.streams.length) this.fillStreamPicker();
+  }
+  /** The stream picker: the current clip's streams by encoder, then other clips' (choosing one switches the clip). */
+  fillStreamPicker() {
+    const option = (entry, text) => `<option value="${entry.id}">${escapeHtml(text)}</option>`;
+    const { encoders, otherClips } = pickerGroups(this.streams, this.clip);
+    this.streamPicker.innerHTML = [
+      ...encoders.map(([label, entries]) => `<optgroup label="${escapeHtml(label)}">${entries.map(e => option(e, streamTitle(e))).join('')}</optgroup>`),
+      ...otherClips.map(([clip, entries]) => `<optgroup label="${escapeHtml(`Other clip: ${this.clipTitle(clip)} (switches the clip)`)}">${
+        entries.map(e => option(e, streamTitle(e))).join('')}</optgroup>`),
+    ].join('');
+    if (this.reference) this.streamPicker.value = this.reference.id;
+    this.element.querySelector('.reference-hint').hidden = encoders.length > 0;
+  }
   /** The view's name in captions: codec, or the reference encoder. */
   get title() { return this.preEncoded && this.reference ? this.reference.label : this.codec.selectedOptions[0].text; }
   /** Switch between live and pre-encoded; the stream list loads on first use. */
@@ -125,9 +160,8 @@ export class Panel {
       this.streams = await loadManifest();
     } catch (error) { this.status(error.message, true); return; }
     this.status('');
-    this.streamPicker.innerHTML = streamGroups(this.streams).map(([clip, entries]) => `<optgroup label="${escapeHtml(this.clipTitle(clip))}">${
-      entries.map(entry => `<option value="${entry.id}">${escapeHtml(streamTitle(entry))}</option>`).join('')}</optgroup>`).join('');
-    this.choose(this.reference ?? this.streams[0]);
+    this.fillStreamPicker();
+    this.choose(this.reference ?? this.streams.find(s => s.clip === this.clip) ?? this.streams[0]);
     this.changed('reference');
   }
   /** Select a stream (manifest record); its file loads when the comparison starts. */
@@ -163,9 +197,17 @@ export class Panel {
     this.element.querySelector('.reference-options').hidden = !preEncoded;
     this.element.querySelector('.picture-options').hidden = preEncoded;
     this.element.querySelector('.options').hidden = preEncoded;
-    this.codec.disabled = preEncoded;
+    this.codec.hidden = preEncoded;
+    this.markSource();
     this.element.classList.toggle('pre-encoded', preEncoded);
     if (!preEncoded) this.reference = null;
+  }
+  /** Show which source is chosen on its buttons. */
+  markSource() {
+    for (const button of this.sourceButtons) {
+      const selected = button.dataset.viewSource === this.sourceChoice;
+      button.setAttribute('aria-pressed', String(selected)); button.classList.toggle('selected', selected);
+    }
   }
   /** Pick the first stream of `clip` if the selected one is of another clip; false if there is none. */
   followClip(clip) {
@@ -175,7 +217,7 @@ export class Panel {
     return Boolean(entry);
   }
   /** Leave pre-encoded mode (its stream cannot play on the current source); the caller restarts. */
-  goLive() { this.source.value = SOURCES.live; this.showSource(); }
+  goLive() { this.sourceChoice = SOURCES.live; this.showSource(); }
   /** Load the selected stream's file (once per stream), with progress in the panel. */
   /**
    * Load the stream of the settings this view was last reset with (`current`), once
@@ -210,7 +252,7 @@ export class Panel {
   }
   /** Apply live settings that match a pre-encoded stream (view-settings.js `matchingSettings`). */
   match(settings) {
-    this.source.value = SOURCES.live; this.showSource();
+    this.sourceChoice = SOURCES.live; this.showSource();
     this.resolution.value = `${settings.width}x${settings.height}`; this.fps.value = String(settings.fps);
     if (this.codec.value !== settings.codec) { this.codec.value = settings.codec; this.updateCodec(); }
     this.rateMode.value = settings.rateMode; this.targetRate.value = settings.targetKbps; this.peakRate.value = settings.peakKbps;

@@ -23,6 +23,7 @@ use crate::qp_cadence::{
 use crate::quality_cap::QualityFloor;
 use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
+use crate::skip_budget::SkipBudget;
 use crate::{Codec, FrameRate};
 use std::fmt;
 
@@ -624,6 +625,11 @@ pub(crate) struct RateController {
     /// reallocated bits also to the frame's drain ([`Self::feedback`]).
     share: LayerShare,
     stats: RateControlStats,
+    /// The skip-aware budget (`rate.skip_budget`).
+    skip_budget: SkipBudget,
+    /// The current frame's skip-aware budget scale (1 for keys and when
+    /// off): its budget and what its interval drains from the debt.
+    frame_skip_scale: f64,
 }
 impl RateController {
     #[allow(clippy::too_many_arguments)]
@@ -734,6 +740,8 @@ impl RateController {
                 residual_sigma: 0.,
                 plan: RatePlanTrace::default(),
             },
+            skip_budget: SkipBudget::new(params),
+            frame_skip_scale: 1.,
         })
     }
     /// Apply a changed target, peak or buffer mid-stream (a transport's
@@ -809,6 +817,18 @@ impl RateController {
     /// drains from a receiver's buffer.
     fn channel_drain(&self) -> f64 {
         self.settings.config.target_bps as f64 / self.frame_fps
+    }
+    /// The skip-aware budget scale of the next frame: 1 for keys.
+    fn skip_scale(&self, key: bool) -> f64 {
+        if key {
+            1.
+        } else {
+            self.skip_budget.scale(self.bits_per_pixel())
+        }
+    }
+    /// The target's bits per frame per luma sample (`bpp_curve.rs`).
+    fn bits_per_pixel(&self) -> f64 {
+        self.channel_drain() / self.pixels.max(1.)
     }
     /// Frames over which a key's loan is repaid: the key period,
     /// capped at `rate.key_repay_seconds` so very long or infinite periods
@@ -953,7 +973,8 @@ impl RateController {
             let boost = self.key_boost();
             self.phase_inter_budget(boost) * boost
         } else {
-            self.inter_budget() * self.share.budget_scale + self.held_budget()
+            self.inter_budget() * self.share.budget_scale * self.frame_skip_scale
+                + self.held_budget()
         };
         if !key && self.share.reallocated_bits > 0. {
             scheduled += self.share.reallocated_bits;
@@ -1216,6 +1237,16 @@ impl RateController {
         self.refinement.enabled() && !self.last_key
     }
 
+    /// The share (0..=1) of the frame just coded that the noise skip took,
+    /// for the skip-aware budget of the next inter frame; a key resets it.
+    pub fn observe_noise_skip(&mut self, skipped_share: f64) {
+        if self.last_key {
+            self.skip_budget.reset();
+        } else {
+            self.skip_budget.observe(skipped_share);
+        }
+    }
+
     /// The luma mean squared error of the frame just coded, for the
     /// refinement-gain measure of the quality cap.
     pub fn observe_distortion(&mut self, mse: f64) {
@@ -1228,7 +1259,7 @@ impl RateController {
     /// Finest quantizer the quality cap allows the next frame
     /// (`quality_cap.rs`).
     fn quality_floor(&self) -> u32 {
-        self.quantizer_for(self.quality_floor.step())
+        self.quantizer_for(self.quality_floor.step(self.bits_per_pixel()))
     }
 
     /// The QP offset of the next frame from the inter level: its layer's
@@ -1248,7 +1279,7 @@ impl RateController {
     /// a finer frame's offset, so the cadence's base frames keep their boost
     /// while the floor bounds the level.
     fn frame_floor(&self, floor: u32, offset: f64) -> u32 {
-        let step = self.quality_floor.step();
+        let step = self.quality_floor.step(self.bits_per_pixel());
         if self.quality_floor.keeps_cadence() && offset < 0. && step > 0. {
             self.quantizer_for(step * step_ratio(offset))
         } else {
@@ -1439,6 +1470,7 @@ impl RateController {
         let held = std::mem::take(&mut self.held_pending);
         self.held_per_frame += (held - self.held_per_frame) / HELD_TIME_FRAMES;
         self.held_spent = if key { 0. } else { self.held_budget() };
+        self.frame_skip_scale = self.skip_scale(key);
         let budget = self.budget(key);
         let slot = self.model_slot(key, index, layer);
         let strength = self.cadence.strength(hint.static_fraction, hint.motion);
@@ -1781,7 +1813,10 @@ impl RateController {
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);
         let p = self.inter_budget();
-        self.fullness += bits as f64 - uniform - std::mem::take(&mut self.held_spent);
+        // A skip-scaled frame drains only its scaled allowance: what the
+        // noise skip saved is forgiven, not banked (`skip_budget.rs`).
+        self.fullness +=
+            bits as f64 - uniform * self.frame_skip_scale - std::mem::take(&mut self.held_spent);
         if bonus > 0.0 {
             self.fullness -= bonus;
         }

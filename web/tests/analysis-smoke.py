@@ -249,11 +249,11 @@ try:
         toggle_analysis(page, False)
         assert page.evaluate("[...document.querySelectorAll('.viewport')].every(v => !v.querySelector('canvas').style.transform)")
         # Sample clip, B a pre-encoded stream (its decoder re-decodes from the stream's last key).
-        page.locator('.source-picker').nth(1).select_option('reference')
+        page.locator('.view-source [data-view-source="reference"]').nth(1).click()
         page.wait_for_function("document.querySelectorAll('.frame-badge')[1].textContent.includes('PRE-ENCODED')", timeout=60000)
         wait_running(page)
         check_switch_cases(page, 'clip reference')
-        page.locator('.source-picker').nth(1).select_option('live')
+        page.locator('.view-source [data-view-source="live"]').nth(1).click()
         # The webcam (Chromium's fake camera), two live encodes.
         page.locator('[data-source="camera"]').click()
         page.locator('#start').click()

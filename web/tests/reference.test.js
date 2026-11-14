@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import { CLIPS } from '../clips.js';
-import { fetchStream, framesToDecode, referenceStream, streamFrameAtTick, streamGroups } from '../reference.js';
+import { fetchStream, framesToDecode, pickerGroups, referenceStream, streamFrameAtTick, streamGroups } from '../reference.js';
 import { matchProblems, matchingSettings } from '../view-settings.js';
 import { tickStep } from '../timeline.js';
 
@@ -119,4 +119,13 @@ test('the loader checks the frame count and reports fetch progress and errors', 
   await assert.rejects(fetchStream(entry, () => {}, async () => { throw new TypeError('offline'); }), /network error/);
   const short = { ok: true, body: new Blob([bytes.subarray(0, 100)]).stream() };
   await assert.rejects(fetchStream(entry, () => {}, async () => short), /truncated/);
+});
+
+test('the picker lists the playing clip\'s streams by encoder, then other clips', () => {
+  const entry = (clip, label, codec, height) => ({ clip, label, codec, height, width: height * 16 / 9, fps: 30, targetKbps: 300 });
+  const streams = [entry('a', 'x264', 'h264', 720), entry('b', 'x265', 'hevc', 360), entry('a', 'SVT-AV1', 'av1', 360), entry('a', 'x264', 'h264', 360)];
+  const { encoders, otherClips } = pickerGroups(streams, 'a');
+  assert.deepEqual(encoders.map(([label, entries]) => [label, entries.map(e => e.height)]), [['SVT-AV1', [360]], ['x264', [720, 360]]]);
+  assert.deepEqual(otherClips.map(([clip]) => clip), ['b']);
+  assert.equal(pickerGroups(streams, 'none').encoders.length, 0);
 });

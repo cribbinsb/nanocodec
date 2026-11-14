@@ -308,7 +308,7 @@ function settingsChanged(change, panel) {
   restartPending = true;
   restartTimer = setTimeout(() => { trace('restart'); stop(true); start(); }, 200);
 }
-/** "Match this in the other view": the other view becomes a live encode at the stream's settings. */
+/** "Match nanocodec to this stream": the other view becomes a live encode at the stream's settings. */
 function matchOther(panel, entry) {
   const other = panels.find(p => p !== panel);
   other.match(matchingSettings(entry));
@@ -563,6 +563,8 @@ function limit(deliveryRate) {
 }
 function sourceChanged(next) {
   stop(); kind = next; message(); resetViews();
+  // Reference streams exist for the sample clips only.
+  for (const panel of panels) panel.setClip(kind === 'clip' ? clip.id : null);
   exact?.close(); exact = null; exactFor = null;
   preview.clearRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
   if (kind === "scene") drawScene(preview, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0);

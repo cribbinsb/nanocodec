@@ -818,8 +818,18 @@ param_group! {
         // static long-window H.264 point (docs/analysis/static-noise-2026-11-14.md).
         max_quality_qp: 10.0, [0.0, 51.0],
             "rate control quality ceiling: finest quantizer step of any frame, as the H.264 QP of the same pixel-domain step (0 = none): higher stops spending bits sooner on easy content",
+        skip_budget: 0.0, [0.0, 1.0],
+            "rate control: an inter frame's budget shrinks by this times the share of the picture the noise skip (`decision.noise_skip`) took in the frame before (on a generous stream, see `skip_budget_starved`), and the unspent part is forgiven (0 = off): higher lets still scenes undershoot further",
+        skip_budget_starved: 0.3, [0.0, 1.0],
+            "the skip-aware budget's strength on a starved stream (0.02 bits per pixel and below; `rate.skip_budget` applies from 0.15 up, log-interpolated between): lower keeps more of a low target",
+        skip_budget_floor: 0.1, [0.02, 1.0],
+            "the skip-aware budget's smallest scale of an inter frame's budget: higher keeps more bits for the changing part of a mostly still picture",
         noise_floor_scale: 0.0, [0.0, 32.0],
             "rate control quality ceiling: finest pixel-domain quantizer step of any frame, as this multiple of the temporal noise sigma measured on still blocks (0 = none; no floor while too little of the picture is still): higher stops coding sensor noise sooner",
+        noise_floor_max_qp: 16.0, [0.0, 51.0],
+            "the noise-relative floor's clamp on a generous stream (0.15 bits per pixel and up; log-interpolated to `noise_floor_max_qp_starved`): the coarsest step it may impose, as an H.264 QP: lower keeps more refinement at generous rates",
+        noise_floor_max_qp_starved: 30.0, [0.0, 51.0],
+            "the noise-relative floor's clamp on a starved stream (0.02 bits per pixel and below), as an H.264 QP",
         quality_floor_cadence: 0.0, [0.0, 1.0],
             "1 lets QP-cadence base frames go finer than the quality floor by their cadence offset (the floor bounds the inter level); 0 clamps every frame at the floor",
         // CBR 240 f single key, PSNR-YUV / VMAF v1 BD vs 0 (lower rate at

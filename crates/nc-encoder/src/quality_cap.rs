@@ -16,6 +16,7 @@ use nc_analysis::motion::MotionBlock;
 use nc_analysis::noise::MEAN_ABS_DIFF_PER_SIGMA;
 use nc_analysis::{Grid, Mv};
 
+use crate::bpp_curve;
 use crate::config::Codec;
 use crate::params::RateParams;
 use crate::qp_cadence::step_ratio;
@@ -58,8 +59,10 @@ impl QualityFloor {
 
     /// Finest step any frame may use, in rate-control step units (0: no
     /// floor): the coarser of the two floors.
-    pub(crate) fn step(&self) -> f64 {
-        self.absolute.max(self.noise.step())
+    /// Finest step any frame may use at `bpp` bits per pixel, in
+    /// rate-control step units (0: no floor): the coarser of the two floors.
+    pub(crate) fn step(&self, bpp: f64) -> f64 {
+        self.absolute.max(self.noise.step(bpp))
     }
 
     /// Whether the noise-relative floor needs every inter frame's sigma.
@@ -113,6 +116,13 @@ pub(crate) struct NoiseFloor {
     scale: f64,
     /// Pixel-domain step of one rate-control step unit of the codec.
     pixel_step_per_unit: f64,
+    /// `rate.noise_floor_max_qp` / `rate.noise_floor_max_qp_starved`: the
+    /// coarsest the floor may make the step, as an H.264 QP, on a generous
+    /// and on a starved stream (`bpp_curve.rs`). At generous rates the
+    /// floor may only trim very fine refinement: unclamped (k 16 at
+    /// 1 Mbps) it let a slow light ramp lose 5 dB and kept an uncovered
+    /// background 3.4 dB down until the next key.
+    max_qp: (f64, f64),
     /// Running sigma of the still blocks; `None` before the first estimate
     /// and while the picture is not still enough to measure it.
     sigma: Option<f64>,
@@ -127,6 +137,10 @@ impl NoiseFloor {
         Self {
             scale: f64::from(params.noise_floor_scale),
             pixel_step_per_unit: pixel_step_per_unit(codec),
+            max_qp: (
+                f64::from(params.noise_floor_max_qp_starved),
+                f64::from(params.noise_floor_max_qp),
+            ),
             sigma: None,
         }
     }
@@ -145,12 +159,15 @@ impl NoiseFloor {
         self.sigma = frame_sigma.map(|s| self.sigma.map_or(s, |p| p + SIGMA_SMOOTHING * (s - p)));
     }
 
-    /// Finest step the floor allows, in rate-control step units; 0 when off
-    /// or without an estimate.
-    pub(crate) fn step(&self) -> f64 {
-        self.sigma
-            .filter(|_| self.enabled())
-            .map_or(0., |s| self.scale * s / self.pixel_step_per_unit)
+    /// Finest step the floor allows at `bpp` bits per pixel, in
+    /// rate-control step units, at most the clamp's step; 0 when off or
+    /// without an estimate.
+    pub(crate) fn step(&self, bpp: f64) -> f64 {
+        let clamp_qp = bpp_curve::interpolate(bpp, self.max_qp.0, self.max_qp.1);
+        let clamp = H264_STEP_AT_QP0 * step_ratio(clamp_qp) / self.pixel_step_per_unit;
+        self.sigma.filter(|_| self.enabled()).map_or(0., |s| {
+            (self.scale * s / self.pixel_step_per_unit).min(clamp)
+        })
     }
 }
 
@@ -207,22 +224,43 @@ mod tests {
         assert_eq!(step(0., Codec::H264), 0.);
     }
 
+    /// Bits per pixel of a starved stream: the floor's clamp (QP 30) is
+    /// far coarser than these tests' floors.
+    const STARVED_BPP: f64 = 0.001;
+
+    #[test]
+    fn a_generous_stream_clamps_the_noise_floor() {
+        let mut params = crate::ParamOverrides::default();
+        params.set("rate.noise_floor_scale", 16.);
+        let mut floor = NoiseFloor::new(&RateParams::from_overrides(&params), Codec::H264);
+        floor.observe(false, Some(1.));
+        // 16 x sigma 1 is a 16-sample step; at 1 bit per pixel the clamp is
+        // H.264 QP 16: 0.625 * 2^(16/6) samples, 2^(16/6) units; starved,
+        // QP 30 (20 samples) does not bind.
+        assert!((floor.step(1.) - step_ratio(16.)).abs() < 1e-9);
+        assert!((floor.step(STARVED_BPP) - 16. / H264_STEP_AT_QP0).abs() < 1e-9);
+    }
+
     #[test]
     fn noise_floor_follows_the_still_sigma_and_lifts_without_it() {
         let mut params = crate::ParamOverrides::default();
         params.set("rate.noise_floor_scale", 4.);
         let mut floor = NoiseFloor::new(&RateParams::from_overrides(&params), Codec::H264);
-        assert_eq!(floor.step(), 0.);
+        assert_eq!(floor.step(STARVED_BPP), 0.);
         floor.observe(false, Some(1.));
         // 4 x sigma 1 = a 4-sample step, in 0.625-sample H.264 units.
-        assert!((floor.step() - 6.4).abs() < 1e-9);
+        assert!((floor.step(STARVED_BPP) - 6.4).abs() < 1e-9);
         floor.observe(true, None);
         assert!(
-            (floor.step() - 6.4).abs() < 1e-9,
+            (floor.step(STARVED_BPP) - 6.4).abs() < 1e-9,
             "a key keeps the estimate"
         );
         floor.observe(false, None);
-        assert_eq!(floor.step(), 0., "a moving frame lifts the floor");
+        assert_eq!(
+            floor.step(STARVED_BPP),
+            0.,
+            "a moving frame lifts the floor"
+        );
         let off = NoiseFloor::new(
             &RateParams::from_overrides(&crate::ParamOverrides::default()),
             Codec::H264,

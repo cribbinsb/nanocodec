@@ -117,7 +117,7 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
 
 
 def choose_stream(page, view: int, stream: str, clip: str):
-    page.locator('.source-picker').nth(view).select_option('reference')
+    page.locator('.view-source [data-view-source="reference"]').nth(view).click()
     page.wait_for_function(f"document.querySelectorAll('.stream-picker')[{view}].options.length > 10", timeout=30000)
     page.locator('.stream-picker').nth(view).select_option(stream)
     page.wait_for_function(f"document.querySelector('#clip').value === '{clip}'", timeout=30000)

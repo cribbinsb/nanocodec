@@ -197,7 +197,7 @@ try:
         # "Match" sets A live to the stream's size, frame rate and bitrate; A then runs
         # at 30 fps against B's 15 fps stream.
         reference_id = 'xiph-johnny-openh264-640x360-15fps-150k'
-        page.locator('.source-picker').nth(1).select_option('reference')
+        page.locator('.view-source [data-view-source="reference"]').nth(1).click()
         page.wait_for_function(f"[...document.querySelectorAll('.stream-picker')[1].options].some(o => o.value === '{reference_id}')", timeout=10000)
         page.locator('.stream-picker').nth(1).select_option(reference_id)
         page.wait_for_function("document.querySelector('#clip').value === 'xiph-johnny'", timeout=10000)
@@ -231,7 +231,7 @@ try:
         page.locator('#step').click()
         page.wait_for_function(f"{badge_ticks}.every(t => t === {paused_ticks[0] + 2})", timeout=30000)
         page.locator('#pause').click()
-        page.locator('.source-picker').nth(1).select_option('live')
+        page.locator('.view-source [data-view-source="live"]').nth(1).click()
         # B restarts live (its frames resume) before the webcam run is configured.
         page.wait_for_function("document.querySelectorAll('.frame-badge')[1].textContent.startsWith('WASM DECODED')", timeout=60000)
         # A back at the default rates for the webcam run.

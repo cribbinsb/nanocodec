@@ -69,7 +69,7 @@ def main():
         replay(report_of(page, Path(scratch) / 'default.md', streams=True))
         # A pre-encoded view beside a live one, analysis on.
         page.locator('#pause').click()
-        page.locator('.source-picker').nth(0).select_option('reference')
+        page.locator('.view-source [data-view-source="reference"]').nth(0).click()
         page.wait_for_function("document.querySelectorAll('.stream-picker')[0].options.length > 10", timeout=30000)
         page.locator('.stream-picker').nth(0).select_option(STREAM)
         page.wait_for_function("document.querySelectorAll('.frame-badge')[0].textContent.includes('PRE-ENCODED')", timeout=60000)
