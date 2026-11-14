@@ -29,6 +29,7 @@ use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
 use crate::input::write_raw;
+use crate::key_clock::KeyClock;
 use crate::key_plan::{KeyPlanMode, KeyPlanner};
 use crate::layer::LayerPosition;
 use crate::ltr::{LongTermReference, LtrAction, long_term_slot};
@@ -207,6 +208,10 @@ pub struct Encoder<B: CodecBackend> {
     next_index: u64,
     /// Frame timestamps and the intervals rate control budgets.
     timeline: Timeline,
+    /// The time of the frame being coded (set before its type is chosen).
+    frame_time: FrameTime,
+    /// The periodic key schedule for timestamped frames (`key_clock.rs`).
+    key_clock: KeyClock,
     /// Quantizer step of every native quantizer, for step-domain QP offsets.
     quantizer_steps: Vec<f64>,
     /// `quantizer_steps` extended past the largest quantizer by
@@ -363,6 +368,7 @@ impl<B: CodecBackend> Encoder<B> {
             (scaler, resolution)
         };
         let timeline = Timeline::new(config.frame_rate);
+        let key_clock = KeyClock::new(timeline.nominal_us());
         let debug = DebugParams::from_overrides(&config.params);
         let random = RandomDecisions::from_seed(debug.random_decisions);
         let recode_identity = debug.recode_identity >= 0.5;
@@ -380,6 +386,12 @@ impl<B: CodecBackend> Encoder<B> {
             dsp: Dsp::new(),
             next_index: 0,
             timeline,
+            frame_time: FrameTime {
+                timestamp_us: 0,
+                interval: None,
+                timed: false,
+            },
+            key_clock,
             quantizer_steps,
             rate_steps,
             cadence_fixed_qp,
@@ -634,8 +646,16 @@ impl<B: CodecBackend> Encoder<B> {
 
     /// Whether frame `index` is a scheduled key frame: every `intra_period`
     /// frames, or only the first while intra refresh replaces periodic keys.
+    /// A timestamped frame follows time instead (`key_clock.rs`): a live
+    /// source's skipped captures do not stretch the key interval; untimed
+    /// frames keep the frame-count schedule exactly.
     fn periodic_key(&self, index: u64) -> bool {
-        index.is_multiple_of(self.key_period())
+        if self.frame_time.timed {
+            self.key_clock
+                .is_due(self.frame_time.timestamp_us, self.key_period())
+        } else {
+            index.is_multiple_of(self.key_period())
+        }
     }
 
     /// Block AQ, when the frame being coded has any non-zero offset: a
@@ -651,7 +671,14 @@ impl<B: CodecBackend> Encoder<B> {
     /// later key is scheduled).
     fn frames_to_next_key(&self, index: u64) -> Option<u64> {
         let period = self.key_period();
-        (period != u64::MAX && period > 0).then(|| period - index % period)
+        (period != u64::MAX && period > 0).then(|| {
+            if self.frame_time.timed {
+                self.key_clock
+                    .frames_to_next(self.frame_time.timestamp_us, period)
+            } else {
+                period - index % period
+            }
+        })
     }
 
     /// The sample-unit quantiser step the reuse term's error gate compares
@@ -699,6 +726,7 @@ impl<B: CodecBackend> Encoder<B> {
             return Err(ConfigError::FrameRate);
         }
         self.timeline.set_rate(rate);
+        self.key_clock.set_nominal(self.timeline.nominal_us());
         if let Some(spatial) = self.spatial.as_mut() {
             spatial.set_frame_rate(&mut self.layer, rate);
         } else if let Some(controller) = self.layer.rate_control.as_mut() {
@@ -1194,6 +1222,7 @@ impl<B: CodecBackend> Encoder<B> {
         self.switched_recon = None;
         let index = self.next_index;
         let time = self.timeline.next(timestamp_us);
+        self.frame_time = time;
         if let Some(controller) = self.layer.rate_control.as_mut() {
             controller.set_frame_interval(time.interval);
         }
@@ -1202,6 +1231,9 @@ impl<B: CodecBackend> Encoder<B> {
         }
         self.next_index += 1;
         let (scheduled, ltr_action) = self.ltr_plan(index);
+        if time.timed {
+            self.key_clock.coded(time.timestamp_us, self.key_period());
+        }
         // A recovery frame restarts the layer pattern, as a key frame does.
         let recovery = ltr_action == LtrAction::Recover;
         let planned = self.with_ltr(

@@ -48,6 +48,7 @@ mod hold;
 mod input;
 mod intra_candidates;
 mod intra_estimate;
+mod key_clock;
 mod key_plan;
 mod key_qp;
 mod layer;

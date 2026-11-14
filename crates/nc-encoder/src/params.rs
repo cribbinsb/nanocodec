@@ -800,18 +800,21 @@ param_group! {
             "variance AQ: largest block offset either way, in QP units: higher allows stronger per-block redistribution",
         aq_strength: 0.0, [0.0, 3.0],
             "variance AQ: QP units per octave of block variance away from the frame mean (0 = off): higher moves more bits from detailed to flat blocks",
-        max_quality_qp: 0.0, [0.0, 51.0],
+        max_quality_qp: 10.0, [0.0, 51.0],
             "rate control quality ceiling: finest quantizer step of any frame, as the H.264 QP of the same pixel-domain step (0 = none): higher stops spending bits sooner on easy content",
         // CBR 240 f single key, PSNR-YUV / VMAF v1 BD vs 0 (lower rate at
         // the same quality wins; the target is a ceiling): static/lowlight
         // set H.264 -5.3/-2.8%, HEVC -16.1/-11.9%, AV1 -11.1/-7.1%
         // (static_otw_homes390 -31..-46%, worst-1% -19..-27%); TRAIN staged
         // proxy-6 neutral (+0.1..-0.6%; moving clips never engage it); VAL
-        // H.264 -10.1/-8.4%, HEVC -9.5/-9.2%, AV1 -5.6/-6.6%. Off by default:
-        // the long-GOP check failed. With no bound on the climb, inter frames
-        // that inherit their key read as a flat slope at any QP, so the level
-        // climbs to the maximum (long_static_chirla_s024c2 1800 f at 150 kbps:
-        // 20 kbps, VMAF 92 -> 71).
+        // H.264 -10.1/-8.4%, HEVC -9.5/-9.2%, AV1 -5.6/-6.6%. Not tuned as a
+        // quality lever: the long-GOP check failed. With no bound on the climb,
+        // inter frames that inherit their key read as a flat slope at any QP,
+        // so the level climbs to the maximum (long_static_chirla_s024c2 1800 f
+        // at 150 kbps: 20 kbps, VMAF 92 -> 71). The default 10 is only a
+        // backstop against coding noise (owner-approved, 2026-11-14): no
+        // benchmark stream reaches it (static-noise census, 588 encodes; every
+        // preset of every codec byte-identical on the 2026-11-14 sample).
         min_refinement_gain: 0.0, [0.0, 1.0],
             "rate control quality ceiling: luma PSNR (dB) per finer QP below which inter frames stop getting finer, measured online over the cadence (0 = off): higher underspends sooner on content whose quality has stopped improving",
         // CBR flicker set (3 lowlight, bodycam, crowd, pan; 150 f), J_real

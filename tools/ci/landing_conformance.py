@@ -26,6 +26,10 @@ both standard decoders and our own (nceval.conformance.gate_stream):
     layers   three temporal layers in CBR, keys interrupting the mini-GOPs
     refresh  intra refresh instead of periodic keys, in CBR (not VP9/AV2)
     large    `main` on a few 720-line frames (largest blocks, long vectors)
+    timed    capture timestamps with skipped captures (a live sender that cannot
+             keep up, `--timestamps`), three temporal layers, keys every
+             TIMED_KEY_PERIOD nominal frames of capture time (default preset;
+             not VVC, which writes no stream timing yet)
 
 A spatial preset (two layers: presets/av1-svc*.toml, presets/vp9-svc*.toml)
 is checked as SVC instead: L2T1 and L2T3 at two rates on three clips, every
@@ -124,6 +128,11 @@ LAYER_KEY_PERIOD = 10  # not a multiple of the 4-frame mini-GOP
 SVC_KEY_PERIOD = 10
 SVC_720P5_KEY_PERIOD = 12  # hits TUs 0 and 12; TUs 6 and 18 are inter 720p5 frames
 REFRESH_PERIOD = 5
+# Timed case: capture intervals, in nominal frames, repeated over the clip (skips of
+# one and two frames between delivered ones), and the key period in nominal frames.
+TIMED_GAPS = (1, 2, 1, 1, 3, 1, 2)
+TIMED_KEY_PERIOD = 8
+NOMINAL_MS = 1000 / FPS
 # CBR rates in bits per pixel per frame: comfortable, starved, and between.
 MAIN_BPP, STARVED_BPP, MID_BPP = 0.3, 0.02, 0.12
 # Spatial SVC with --frame-drop far below the maximum-quantizer floor (about
@@ -138,6 +147,8 @@ SVC_RATE_BPP = {
 }
 # Codecs without intra refresh (docs/handoff/vp9-av2.md).
 NO_INTRA_REFRESH = (Codec.VP9, Codec.AV2)
+# `--timestamps` signals capture timing in the stream, which VVC does not write yet.
+NO_CAPTURE_TIMING = (Codec.VVC,)
 
 
 @dataclass(frozen=True)
@@ -201,6 +212,8 @@ class Case:
             "layers": ["--bitrate", kbps(MID_BPP), "--intra-period", str(LAYER_KEY_PERIOD),
                        "--temporal-layers", "3"],
             "refresh": ["--bitrate", kbps(MID_BPP), "--intra-refresh", str(REFRESH_PERIOD)],
+            "timed": ["--bitrate", kbps(MID_BPP), "--intra-period", str(TIMED_KEY_PERIOD),
+                      "--temporal-layers", "3"],
         }[self.kind]
         return ["--preset", self.preset, *flags]
 
@@ -229,6 +242,7 @@ def cases(codecs: list[Codec]) -> list[Case]:
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
+    base += [Case(codec, "default", "timed") for codec in codecs if codec not in NO_CAPTURE_TIMING]
     # Spatial presets (av1-svc*, vp9-svc*): LnT1 and LnT3 (plus KEY modes on AV1)
     # at their own layer count n, every operating point.
     base += [Case(codec, preset, f"svc-l{layers}{mode}-{clip}-{rate}")
@@ -303,6 +317,19 @@ def source_clip(shape: Shape, paths: Paths, directory: Path) -> Path:
     return path
 
 
+def timestamps_file(frames: int, directory: Path) -> Path:
+    """A capture timestamp file (`--timestamps`, mkvmerge v2) for `frames` delivered
+    frames TIMED_GAPS nominal intervals apart."""
+    path = directory / f"timed_{frames}f.txt"
+    if not path.is_file():
+        times, at = [], 0
+        for i in range(frames):
+            times.append(f"{at * NOMINAL_MS:.3f}")
+            at += TIMED_GAPS[i % len(TIMED_GAPS)]
+        path.write_text("# timestamp format v2\n" + "\n".join(times) + "\n")
+    return path
+
+
 @dataclass
 class Outcome:
     case: Case
@@ -319,6 +346,8 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
     rate_log = work / f"{case.name}.rate.csv"
     layer_md5 = work / f"{case.name}.layers.csv" if case.is_spatial else None
     extra = ["--layer-md5", str(layer_md5)] if layer_md5 is not None else []
+    if case.kind == "timed":
+        extra += ["--timestamps", str(timestamps_file(shape.frames, work))]
 
     def command(recon: str) -> list[str]:
         return [str(binary), "encode", "--codec", case.codec.value, "--input", str(clip),

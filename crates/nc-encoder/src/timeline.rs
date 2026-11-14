@@ -27,6 +27,9 @@ pub(crate) struct FrameTime {
     /// Seconds since the previous frame for rate control; `None` means
     /// the nominal frame duration.
     pub interval: Option<f64>,
+    /// Whether the caller gave the capture time (a live source that may skip
+    /// frames: the key schedule then follows time, `key_clock.rs`).
+    pub timed: bool,
 }
 
 /// The timestamps of the frames coded so far.
@@ -48,6 +51,11 @@ impl Timeline {
         }
     }
 
+    /// One nominal frame interval, in microseconds.
+    pub fn nominal_us(&self) -> i64 {
+        self.nominal_us
+    }
+
     /// Untimed frames from now on are one nominal frame of `rate` apart.
     pub fn set_rate(&mut self, rate: FrameRate) {
         self.nominal_us = Self::new(rate).nominal_us;
@@ -61,15 +69,18 @@ impl Timeline {
                 FrameTime {
                     timestamp_us,
                     interval: Some(seconds.clamp(MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS)),
+                    timed: true,
                 }
             }
             (Some(timestamp_us), None) => FrameTime {
                 timestamp_us,
                 interval: None,
+                timed: true,
             },
             (None, last) => FrameTime {
                 timestamp_us: last.map_or(0, |l| l + self.nominal_us),
                 interval: None,
+                timed: false,
             },
         };
         self.last_us = Some(time.timestamp_us);
@@ -93,7 +104,8 @@ mod tests {
             t.next(None),
             FrameTime {
                 timestamp_us: 33367,
-                interval: None
+                interval: None,
+                timed: false,
             }
         );
     }
