@@ -951,6 +951,20 @@ impl CodecBackend for HevcBackend {
         ("planner.lambda_scale", 2.581_25),
         ("planner.split_rate_factor", 2.262_5),
         ("hevc.tu16_chroma_concentration", 0.35),
+        // Four merge candidates (MaxNumMergeCand, `mvpred.rs`) and no depth
+        // removal (16x16 and 8x8 always on offer to the planner). What they
+        // add: the third spatial candidate and TMVP for skip and merge, and
+        // planned splits the motion-search costs had ruled out. Fixed QP,
+        // matched QP (nceval.fixedqp, 15 pool clips): merge 4 J -1.7%
+        // [-2.0, -1.0] (3: -1.3%, 5: -1.7%), no depth removal -0.4%. CPU: x86
+        // P instructions +2.2%, Jetson cycles +1.7%. Adoption screen (k 0.1,
+        // dCPU 2.2, the day's pool draw): L2 J -1.12% [-1.53, -0.75], L3
+        // (full ladder) BETTER, J -1.01% [-1.34, -0.72] (n 126, L2+L3
+        // pooled), no guard. docs/analysis/fixed-qp-gap-2026-11-14.md.
+        // hevc-fast, -faster and -better pin the old values.
+        ("hevc.merge_candidates", 4.0),
+        ("planner.depth_removal_th_32_16", 0.0),
+        ("planner.depth_removal_th_16_8", 0.0),
     ];
 
     // A flat field-by-field initialisation of the backend's state.

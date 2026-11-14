@@ -20,3 +20,7 @@ hevc.sao_stats_row_step = 1
 # (2026-11-12) are not screened for this preset: it keeps the previous values.
 hevc.inter_rounding = 128
 hevc.intra_rounding = 171
+# Default's four merge candidates and no depth removal (2026-11-14, fixed-qp
+# program) stay off here: pinned, byte-identical.
+hevc.merge_candidates = 2
+planner.depth_removal_th_16_8 = 50

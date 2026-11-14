@@ -175,7 +175,8 @@ geometric mean, relative to the Default.
 At the Default's exchange rate (k 0.1, so 1 % CPU is worth 0.1 % J), the candidates that pay are
 H.264's motion-search early exits off plus the wider intra gate (about -1.3 J for +2 %), and HEVC's
 four-entry merge list plus no depth removal (about -2.1 J for +2.2 %). Both went to the adoption screen
-(`nceval.screen --clips adopt`, k 0.1, with dcpu). The rest are tuner arms at best: they gain at fixed QP
+(`nceval.screen --clips adopt`, k 0.1, with dcpu) and both were adopted (b34e52d0 for H.264, and HEVC
+below). The rest are tuner arms at best: they gain at fixed QP
 but cost 6-100 % CPU.
 
 `hevc.merge_candidates` (new, default 2, so streams are unchanged) sets `MaxNumMergeCand` (HEVC
@@ -187,7 +188,7 @@ decoder (`landing_conformance.py --param`, 21/21 streams each). It landed off in
 
 | # | Tool | Est. BD-J (fixed QP) | CPU (x86) | Codecs | Status |
 |---|---|---|---|---|---|
-| 1 | HEVC merge list 4 + no depth removal | -2.1 | +2.2 % x86, +1.7 % Jetson cycles | HEVC (Fast too) | adoption screen |
+| 1 | HEVC merge list 4 + no depth removal | -2.1 | +2.2 % x86, +1.7 % Jetson cycles | HEVC (Fast next) | **adopted** (screen L2 J -1.12 [-1.53, -0.75]; L3 full ladder BETTER, J -1.01 [-1.34, -0.72], n 126, no guard; 900-frame single-key chirla at CBR 300: Y per third -0.01 / +0.08 / -0.04 dB at +0.2 % rate) |
 | 2 | H.264 motion-search early exits off + intra gate 16 | ~ -1.3 | +2.1 % x86, +2.8 % Jetson cycles | H.264 | **adopted** (screen L3 BETTER, J -0.17 [-0.33, -0.02], n 126, no guard) |
 | 3 | Second reference ported to HEVC/VVC/AV2 (backend signalling only; the engine feature exists) | AV1 -5 / VP9 -4 on the lens; tuner, CBR: AV1 -2.2 J at +17.6 % Jetson | high | HEVC, VVC, AV2 | next code work; design for CPU |
 | 4 | Expensive search levers (partition search, RD transform size, trellis 8, full P intra, TU spread) | -0.2 to -0.7 each | +6 to +78 % | H.264, HEVC | tuner arms, not Default |

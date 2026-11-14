@@ -72,3 +72,8 @@ hevc.intra_rounding = 171
 # Except the planner lambda: 3.163 since 2026-11-13 (with the rank margin above).
 planner.lambda_scale = 3.163
 planner.split_rate_factor = 2
+# Default's four merge candidates and no depth removal (2026-11-14, fixed-qp
+# program) stay off here: pinned, byte-identical.
+hevc.merge_candidates = 2
+planner.depth_removal_th_32_16 = 25
+planner.depth_removal_th_16_8 = 50
