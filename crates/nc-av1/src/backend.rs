@@ -962,6 +962,14 @@ impl CodecBackend for Av1Backend {
         // guard; x86 instructions -4.2%, Jetson cycles -3.1%. av1-svc and
         // av1-svc3 pin 48.
         ("av1.inter_rounding_q7", 41.0),
+        // Each sub-sample seed refined only when its whole-sample distortion
+        // is within 1.1x the other's (`decision.seed_refine_ratio`, the
+        // engine's seed gate from vvc-default-prune): a CPU cut at equal
+        // quality. Head 91c6823e, pool levels of rotation 2026-11-14:
+        // disjoint L3 (79 clips, single-point) J +0.07% [-0.23, +0.38],
+        // pooled +0.03%, no guard; x86 instructions -2.9%, Jetson cycles
+        // -2.4%. The other AV1 presets pin 0 (both seeds refined).
+        ("decision.seed_refine_ratio", 1.1),
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,

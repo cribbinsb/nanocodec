@@ -197,7 +197,8 @@ def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[C
                                 key_seconds=key_seconds)
         rows = compare(curves, families[0].name, families[1].name, clips, paired=True)
         summary = jreal.summarise(rows)
-        return {"stage": level, "estimator": LADDER, "per_clip": rows, "summary": summary,
+        return {"stage": level, "estimator": LADDER, "sigma": 0.0, "frames": frames,
+                "per_clip": rows, "summary": summary,
                 "verdict": jreal.objective(summary, args.dcpu, 0.0, args.k)}
     track = Track(level, clips, None, [])
     run_step(runner, families, [(track, Stage(level, None, RUNGS[level], 0.0))], frames, True,

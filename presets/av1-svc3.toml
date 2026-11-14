@@ -19,3 +19,5 @@ spatial.enhancement_interval = 1
 av1.compound = 1
 # Pinned before AV1 Default's inter rounding CPU cut (48 -> 41, 2026-11-13).
 av1.inter_rounding_q7 = 48
+# Pinned before AV1 Default's seed refinement gate (2026-11-14).
+decision.seed_refine_ratio = 0

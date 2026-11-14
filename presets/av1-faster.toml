@@ -115,3 +115,5 @@ av1.skip_bias_energy = 0.25
 # (+8.1% for -3.0%), the HME trio, 32x32 minimum inter blocks, integer
 # probes off, `persist.reuse` 0 (-3.0% time for 0 quality, but it is the
 # static-recovery fix: tests/static_recovery.rs).
+# Pinned before AV1 Default's seed refinement gate (2026-11-14).
+decision.seed_refine_ratio = 0

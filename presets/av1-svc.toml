@@ -32,3 +32,5 @@ av1.pre_tx_skip_score = 68.79
 av1.pre_tx_skip_energy = 15.18
 # Pinned before AV1 Default's inter rounding CPU cut (48 -> 41, 2026-11-13).
 av1.inter_rounding_q7 = 48
+# Pinned before AV1 Default's seed refinement gate (2026-11-14).
+decision.seed_refine_ratio = 0

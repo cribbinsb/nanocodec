@@ -295,6 +295,9 @@ mod tests {
         expected.set("av1.inter_rounding_q7", 41.0);
         // Fast's key frames are DC-only, as SVT M12 (L3 2026-11-13).
         expected.set("av1.keyframe_intra_modes", 0.0);
+        // Fast keeps both sub-sample seeds refined when the Default adopted
+        // the seed gate (2026-11-14).
+        expected.set("decision.seed_refine_ratio", 0.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "av1-fast"])).unwrap(),
             expected
