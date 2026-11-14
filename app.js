@@ -17,7 +17,6 @@
 // and decode the picture on screen again (pipeline.js `switchDecoders`), and a
 // paused comparison stays paused on that instant while a playing one continues
 // from it.
-import { withCameraSettings } from './camera-defaults.js';
 import { Panel } from './panel.js';
 import { Comparison } from './pipeline.js';
 import { Loupe } from './loupe.js';
@@ -311,8 +310,6 @@ function settingsChanged(change, panel) {
   restartPending = true;
   restartTimer = setTimeout(() => { trace('restart'); stop(true); start(); }, 200);
 }
-/** A view's settings for the next run: a live webcam encode adds the still-camera settings (camera-defaults.js). */
-const liveConfig = panel => (kind === 'camera' ? withCameraSettings(panel.config()) : panel.config());
 /** "Match nanocodec to this stream": the other view becomes a live encode at the stream's settings. */
 function matchOther(panel, entry) {
   const other = panels.find(p => p !== panel);
@@ -335,7 +332,7 @@ function applyLighter(index, change) {
   }
 }
 function resetViews() {
-  for (const panel of panels) { panel.reset(liveConfig(panel)); panel.analysis.reset(); }
+  for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
   original = null; loupe.frameShown(null);
 }
 /** Say when the views' numbers are not directly comparable. */
@@ -430,7 +427,7 @@ async function start() {
   trace('start', token, panels.map(p => `${p.letter}:${p.reference?.id ?? p.config().codec}`).join(' '));
   preparing = true; message(); startButton.textContent = 'Cancel'; $('#session-stats').textContent = 'Loading codec workers…';
   checkReferences();
-  for (const panel of panels) { panel.reset(liveConfig(panel)); panel.analysis.reset(); }
+  for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
   describeViews();
   original = null; loupe.frameShown(null);
   try {
