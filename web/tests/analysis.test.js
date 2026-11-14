@@ -3,7 +3,7 @@
 // block lookup behind the hover record.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FIELD, HALFWORDS, KIND, PRED, RunningSummary, describeBlock, intraDirection, recordCount, recordsAt, summarise } from '../analysis.js';
+import { FIELD, HALFWORDS, KIND, PRED, RunningSummary, describeBlock, differenceSummary, intraDirection, recordCount, recordsAt, summarise } from '../analysis.js';
 
 /** Pack records given as field objects (the nc-common layout). */
 function pack(list) {
@@ -79,4 +79,13 @@ test('the block under a point and its description', () => {
   assert.match(lines[0], /^skip 16×16 at \(16, 0\)/);
   assert.match(lines.at(-1), /MV \(0.5, -1\) px · ref 0 · mode 0/);
   assert.deepEqual(recordsAt(RECORDS, 40, 5), { coding: -1, prediction: -1, transform: -1 });
+});
+
+test('the difference line compares two views by area', () => {
+  const a = { pred: { skip: 0.4, intra: 0.03 }, cbSize: { 32: 0.9, 16: 0.1 }, qp: 37.8 };
+  const b = { pred: { skip: 0.29, intra: 0.07 }, cbSize: { '64x32': 0.2, 16: 0.8 }, qp: 35.06 };
+  assert.equal(differenceSummary(a, b, ['hevc', 'h264']),
+    'A vs B, mean by area: skip 40% vs 29% · intra 3% vs 7% · blocks ≥32 90% vs 20% · QP 37.8 vs 35.1');
+  assert.match(differenceSummary(a, b, ['hevc', 'av1']), /QP \(different scales\)/);
+  assert.match(differenceSummary(a, b, ['vvc', 'h264']), /· QP 37\.8/);
 });

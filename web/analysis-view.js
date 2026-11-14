@@ -13,7 +13,7 @@
 // - the layout can show both views stacked at full width, or one view large;
 //   each view can go fullscreen;
 // - the magnifier (loupe.js) draws the overlay too (`drawInto`).
-import { ANALYSIS_CODECS, FIELD, LAYERS, LAYER_LABELS, PRED_COLOURS, RunningSummary, describeBlock, drawOverlay, recordsAt, summarise } from './analysis.js';
+import { ANALYSIS_CODECS, FIELD, LAYERS, LAYER_LABELS, PRED_COLOURS, RunningSummary, describeBlock, differenceSummary, drawOverlay, recordsAt, summarise } from './analysis.js';
 
 const MIN_ZOOM = 1, MAX_ZOOM = 32;
 // One wheel notch (deltaY 100) zooms by this factor.
@@ -28,7 +28,7 @@ const LAYOUTS = { side: 'Side by side', stacked: 'Stacked', 'expand-A': 'A large
 const DEFAULT_LAYERS = ['blocks', 'vectors'];
 // Phone widths stack the views when analysis is on (styles.css uses the same width).
 const NARROW_QUERY = '(max-width: 700px)';
-const UNSUPPORTED = 'Analysis is not available for this codec yet (H.264, HEVC, AV1, VP9 and VVC so far).';
+const UNSUPPORTED = 'Analysis is not available for this codec.';
 
 const percent = value => `${(100 * value).toFixed(value < 0.1 ? 1 : 0)}%`;
 const shareText = (map, order) => Object.entries(map ?? {})
@@ -59,6 +59,9 @@ export class AnalysisController {
     element.querySelector('[data-zoom="reset"]').addEventListener('click', () => this.setZoom({ scale: MIN_ZOOM, u: 0.5, v: 0.5 }));
     this.zoomLabel = element.querySelector('.analysis-zoom output');
     this.views = panels.map(panel => new AnalysisView(panel, this));
+    // When both views are analysed: one line comparing them, under the views.
+    this.difference = document.createElement('p'); this.difference.className = 'analysis-difference'; this.difference.hidden = true;
+    versions.after(this.difference);
     this.showControls();
   }
   setEnabled(on) {
@@ -102,6 +105,14 @@ export class AnalysisController {
     this.redraw();
   }
   redraw() { for (const view of this.views) view.place(); }
+  /** The difference line, when both views have statistics. */
+  showDifference() {
+    const means = this.views.map(view => view.state !== 'unsupported' && view.running.mean());
+    this.difference.hidden = !this.enabled || !means.every(Boolean);
+    if (this.difference.hidden) return;
+    const codecs = this.views.map(view => view.panel.current?.codec);
+    this.difference.textContent = differenceSummary(means[0], means[1], codecs, this.views.map(view => view.panel.letter));
+  }
   showControls() {
     for (const button of this.element.querySelectorAll('[data-layer]')) button.setAttribute('aria-pressed', String(this.layers.has(button.dataset.layer)));
     for (const button of this.element.querySelectorAll('[data-layout]')) {
@@ -318,6 +329,7 @@ class AnalysisView {
   }
   showStats() {
     this.statsShownAt = performance.now();
+    this.controller.showDifference();
     if (!this.enabled) { this.stats.textContent = ''; return; }
     if (this.state === 'unsupported') { this.stats.textContent = UNSUPPORTED; return; }
     const now = this.summary, mean = this.running.mean();

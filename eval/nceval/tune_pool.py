@@ -193,6 +193,14 @@ LONG_GUARD_FRAMES = 720
 #: A long-window study's guard: the 150-frame (one key) J of its stage-1 clips may
 #: lose at most this much (coordinator, 2026-11-13): a session's start still counts.
 SHORT_WINDOW_GUARD_PCT = 1.5
+#: A long-window trial costs ~4x a 150-frame one, so it is staged tighter: stage 1
+#: on two clips of each class the long window hurts most (the diagnosis' worst:
+#: crowd, static, pan, bodycam), 16 clips in all, and a trial whose stage-1 J is
+#: more than WINDOW_REACH_PCT behind the best full trial stops there.
+WINDOW_STAGE_1_CLASSES = ("crowd", "static", "pan", "bodycam")
+WINDOW_STAGE_1_PER_CLASS = 2
+WINDOW_TRIAL_CLIPS = 16
+WINDOW_REACH_PCT = 1.0
 #: Terms of the long-horizon guard: J first, then worst-1 % and the key pulse.
 LONG_TERMS = ("quality", "bd_worst_psnr_y", "bd_worst_vmaf_v1", "d_periodic_pulse_psnr_y")
 #: Null distribution (mean, sd) of each term per long clip and codec: the preset
@@ -383,7 +391,10 @@ def long_window_sets(key: str, frames: int) -> tuple[list[Clip], list[Clip]]:
         for queue in queues.values():
             if queue:
                 ordered.append(queue.pop(0))
-    return ordered[:TRIAL_CLIPS], ordered[TRIAL_CLIPS:]
+    first = [c for cls in WINDOW_STAGE_1_CLASSES
+             for c in [c for c in ordered if c.content_class == cls][:WINDOW_STAGE_1_PER_CLASS]]
+    ordered = first + [c for c in ordered if c not in first]
+    return ordered[:WINDOW_TRIAL_CLIPS], ordered[WINDOW_TRIAL_CLIPS:]
 
 
 def clip_record(clips: list[Clip]) -> list[dict]:
@@ -456,6 +467,9 @@ class Study:
         #: A long-window study's guard on the start: the stage-1 clips' 150-frame J
         #: (one key) may lose at most this much (percent; None: no guard).
         self.short_guard_pct: float | None = attrs.get("short_guard_pct")
+        self.stage_1_clips: int = attrs.get("stage_1_clips", STAGE_1_CLIPS)
+        #: Stop a trial whose stage-1 J trails the best full trial by more than this.
+        self.reach_pct: float | None = attrs.get("reach_pct")
         self.anchor_cost: float = attrs["anchor_cost"]
         self.k: float = attrs["k"]
         self.workers: int = attrs["workers"]
@@ -477,6 +491,14 @@ class Study:
         return [t for t in pareto_front(self.study.get_trials(deepcopy=False))
                 if t.number not in dropped]
 
+    def out_of_reach(self, stats: dict) -> bool:
+        """Stage-1 J more than `reach_pct` behind the best full-fidelity trial."""
+        full = [trial_j(t) for t in self.study.get_trials(deepcopy=False)
+                if t.state == optuna.trial.TrialState.COMPLETE
+                and t.user_attrs.get(FIDELITY_ATTR) in (FULL, LADDER)]
+        return (self.reach_pct is not None and stats["mean"] is not None and bool(full)
+                and stats["mean"] > min(full) + self.reach_pct)
+
     def dominated(self, stats: dict, cpu: float) -> bool:
         return stats["lo"] is not None and any(
             trial_cpu(t) <= cpu and trial_j(t) < stats["lo"] for t in self.front())
@@ -489,7 +511,7 @@ class Study:
                       f"nanocodec-{self.codec.value}@{settings_label(values)}")
         runner = self.runner(max(1, self.workers // PARALLEL_TRIALS))
         started = time.monotonic()
-        stage_1, stage_2 = self.clips[:STAGE_1_CLIPS], self.clips[STAGE_1_CLIPS:]
+        stage_1, stage_2 = self.clips[:self.stage_1_clips], self.clips[self.stage_1_clips:]
         with ThreadPoolExecutor(1) as background:
             cost = background.submit(cpu_cost, self.binary, self.codec, values)
             rows = single_points(runner, self.anchor, test, stage_1, self.rungs, self.frames,
@@ -505,7 +527,8 @@ class Study:
         # study's trials stopped here on J alone).
         credit = self.k * 100 * (cpu - 1)
         loses = stats["lo"] is not None and stats["lo"] + credit > interval.STOP_LOWER_PCT
-        fidelity = STOPPED if (loses or over_cap or self.dominated(stats, cpu)) else FULL
+        fidelity = STOPPED if (loses or over_cap or self.dominated(stats, cpu)
+                               or self.out_of_reach(stats)) else FULL
         if fidelity == FULL:
             rows |= single_points(runner, self.anchor, test, stage_2, self.rungs, self.frames,
                                   key_seconds=self.key_seconds)
@@ -677,7 +700,10 @@ def create(args: argparse.Namespace) -> optuna.Study:
              "domains": domains, "rotation": key, "half": args.half,
              "clips": clip_record(clips), "recheck_clips": clip_record(recheck),
              "rungs": assign_rungs(clips), "frames": frames, "key_seconds": key_seconds,
-             "short_guard_pct": SHORT_WINDOW_GUARD_PCT if window else None, "k": args.k,
+             "short_guard_pct": SHORT_WINDOW_GUARD_PCT if window else None,
+             "stage_1_clips": WINDOW_STAGE_1_PER_CLASS * len(WINDOW_STAGE_1_CLASSES) if window
+             else STAGE_1_CLIPS,
+             "reach_pct": WINDOW_REACH_PCT if window else None, "k": args.k,
              "workers": workers, "measurement": measurement_fingerprint(),
              "cpu_max": args.cpu_max, "j_max": args.j_max,
              "anchor_cost": anchor_cost}

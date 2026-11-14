@@ -151,8 +151,9 @@ pub struct RateModel<'a> {
     ctx: TxbContext,
     /// Bits of the coded block flag and the luma transform type.
     coded_block_bits: f32,
-    /// Whether the DC coefficient is negative (its sign is context coded).
-    dc_negative: bool,
+    /// `dc_sign` cost of the DC coefficient's sign (context coded), in
+    /// 1/512 bit: the same for every candidate, so priced once.
+    dc_sign_q9: u32,
     /// The transform's scan and `nz_map_ctx_offset`, looked up once.
     scan: &'static [u16],
     nz_offsets: &'static [u8],
@@ -181,13 +182,15 @@ impl<'a> RateModel<'a> {
                 cdfs.write_intra_tx_type_dct(&mut counter, tx, intra_mode);
             }
         }
+        let dc_sign_q9 =
+            cdfs.dc_sign[plane as usize][ctx.dc_sign].cost_q9(usize::from(dc_negative));
         Self {
             cdfs,
             tx,
             plane,
             ctx,
             coded_block_bits: counter.bits(),
-            dc_negative,
+            dc_sign_q9,
             scan: scan(tx),
             nz_offsets: nz_map_ctx_offset(tx),
         }
@@ -304,12 +307,25 @@ impl CoeffRateModel for RateModel<'_> {
                 cost += self.range_cost_q9(LevelMap::br_context(pos, row, col, br_sum), level);
             }
             cost += if pos == 0 {
-                self.cdfs.dc_sign[pt][self.ctx.dc_sign].cost_q9(usize::from(self.dc_negative))
+                self.dc_sign_q9
             } else {
                 COST_UNITS_PER_BIT
             };
             bits[i] = q9_to_bits(cost) + golomb_bits(level) as f32;
         }
+    }
+
+    /// [`Self::level_rates`] of a zero (only its `coeff_base` symbol, under
+    /// the survivor's context: a survivor has coded a level, so its state is
+    /// never the initial one), then [`Self::advance`].
+    fn zero_step(&mut self, state: &mut ContextState, scan_pos: usize) -> f32 {
+        debug_assert_ne!(state.diagonal, NO_DIAGONAL);
+        let (pos, row, col) = self.coordinates(scan_pos);
+        let (base_sum, _) = state.neighbour_sums(row, row + col);
+        let ctx = LevelMap::base_context(pos, base_sum, self.nz_offsets[pos]);
+        let cost = self.cdfs.base[self.tx.index()][self.plane as usize][ctx].cost_q9(0);
+        self.advance(state, scan_pos, 0);
+        q9_to_bits(cost)
     }
 
     fn advance(&self, state: &mut ContextState, scan_pos: usize, level: u32) {

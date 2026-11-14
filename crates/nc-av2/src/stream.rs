@@ -113,6 +113,30 @@ pub struct Decoder {
     workspace: tile_decoder::Workspace,
 }
 impl Decoder {
+    /// Start collecting coding-tool analysis into `stats` (block records,
+    /// and per-frame tallies unless `records_only`) from the next frame on.
+    /// Decoding is unchanged.
+    #[cfg(feature = "analysis")]
+    pub fn collect_stats(&mut self, stats: nc_common::stream_stats::StreamStats) {
+        self.workspace.stats = Some(stats);
+    }
+
+    /// The analysis collected so far, if enabled: the block records of the
+    /// last decoded frame and the tallies of every completed one.
+    #[cfg(feature = "analysis")]
+    #[must_use]
+    pub fn stats(&self) -> Option<&nc_common::stream_stats::StreamStats> {
+        self.workspace.stats.as_ref()
+    }
+
+    /// Complete the analysis and hand it over; collection stops.
+    #[cfg(feature = "analysis")]
+    pub fn take_stats(&mut self) -> Option<nc_common::stream_stats::StreamStats> {
+        let mut stats = self.workspace.stats.take()?;
+        stats.finish();
+        Some(stats)
+    }
+
     /// Decode a packet, returning the borrowed visible picture (the
     /// reconstruction inside the sequence's conformance window) to avoid a
     /// frame copy when nothing is cropped.
@@ -185,6 +209,10 @@ impl Decoder {
                         };
                     picture = Some(decoded);
                     refresh = refreshed;
+                    #[cfg(feature = "analysis")]
+                    if let Some(s) = &mut self.workspace.stats {
+                        s.finish();
+                    }
                     context = models.map(|mut models| {
                         models.restart_adaptation();
                         Rc::from(models)

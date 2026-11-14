@@ -12,5 +12,10 @@ nc-encoder.workspace = true
 nc-common.workspace = true
 nc-dsp.workspace = true
 
+[features]
+# Decoder analysis records (`tile_analysis`): off in normal builds, so the
+# decoder contains no analysis code (docs/handoff/stream-analysis.md).
+analysis = ["nc-common/analysis"]
+
 [lints]
 workspace = true

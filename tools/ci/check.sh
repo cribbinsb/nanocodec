@@ -112,7 +112,7 @@ if ! $quick; then
     # compiling and tested (docs/handoff/stream-analysis.md).
     step "analysis feature (clippy + tests)"
     cargo clippy -p nc-cli -p nc-web --features analysis --all-targets -- -D warnings
-    cargo test -p nc-common -p nc-hevc -p nc-h264 -p nc-av1 -p nc-vp9 -p nc-vvc -p nc-cli --features analysis --quiet
+    cargo test -p nc-common -p nc-hevc -p nc-h264 -p nc-av1 -p nc-vp9 -p nc-vvc -p nc-av2 -p nc-cli --features analysis --quiet
 
     step "clippy (aarch64 cross-check)"
     cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings

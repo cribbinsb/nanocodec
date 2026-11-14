@@ -116,6 +116,9 @@ struct TileDecoder<'r> {
     /// Default flag models, for fixed probabilities when the tile does not
     /// adapt (present only when the frame filters with CCSO).
     ccso_defaults: Option<Box<TileCdfs>>,
+    /// The frame's analysis records, when they are collected.
+    #[cfg(feature = "analysis")]
+    analysis: crate::tile_analysis::Recorder<'r>,
 }
 
 /// What the decoder keeps between pictures instead of allocating them per
@@ -131,6 +134,9 @@ pub(crate) struct Workspace {
     cdef_source: cdef::PictureFilterScratch,
     ccso_source: CcsoSource,
     deblock_map: deblock::EdgeMap,
+    /// The decoder's analysis, collected only when enabled.
+    #[cfg(feature = "analysis")]
+    pub(crate) stats: Option<nc_common::stream_stats::StreamStats>,
 }
 
 impl Default for Workspace {
@@ -141,6 +147,8 @@ impl Default for Workspace {
             cdef_source: cdef::PictureFilterScratch::default(),
             ccso_source: CcsoSource::new(),
             deblock_map: deblock::EdgeMap::default(),
+            #[cfg(feature = "analysis")]
+            stats: None,
         }
     }
 }
@@ -217,6 +225,12 @@ pub(crate) fn decode(
             .ccso
             .is_on()
             .then(|| Box::new(TileCdfs::new(params.qindex))),
+        #[cfg(feature = "analysis")]
+        analysis: crate::tile_analysis::Recorder::new(
+            work.stats.as_mut(),
+            &params,
+            (reference.is_some(), data.len()),
+        ),
     };
     let mut partitions = PartitionReader::new(width, height)?;
     for y in (0..height).step_by(SUPERBLOCK) {
@@ -277,6 +291,10 @@ impl TileDecoder<'_> {
         size: usize,
     ) -> Result<()> {
         self.state.check_order(x, y)?;
+        #[cfg(feature = "analysis")]
+        {
+            self.analysis.start = reader.bits_consumed();
+        }
         if self.reference.is_some_and(|r| r.skip_mode) {
             let context = self.state.skip_mode_context(x, y, size);
             if reader.model(&SKIP_MODE[context], |m| &mut m.skip_mode[context])? == 1 {
@@ -357,6 +375,11 @@ impl TileDecoder<'_> {
         self.state
             .edges
             .record(block_edges((x, y), self.plane_qindex, layout, false));
+        #[cfg(feature = "analysis")]
+        if self.analysis.on() {
+            let block = self.placed_block(reader, (x, y), size);
+            self.analysis.intra_block(block, (luma, chroma), layout);
+        }
         self.state.record(
             x,
             y,
@@ -437,6 +460,8 @@ impl TileDecoder<'_> {
         motion: BlockMotion,
     ) -> Result<()> {
         let block_log2 = size.ilog2();
+        #[cfg(feature = "analysis")]
+        let mut analysis_layout = None;
         if skip {
             self.state.clear_coeff_contexts(x, y, size);
             self.state.edges.record(block_edges(
@@ -459,6 +484,10 @@ impl TileDecoder<'_> {
                 Layout::lossy(block_log2, tx_partition::read(reader, block_log2, true)?)
             };
             self.residual_planes(reader, layout, (x, y), Source::Inter, true)?;
+            #[cfg(feature = "analysis")]
+            {
+                analysis_layout = Some(layout);
+            }
             self.state
                 .edges
                 .record(block_edges((x, y), self.plane_qindex, layout, false));
@@ -475,7 +504,28 @@ impl TileDecoder<'_> {
                 skip_mode: matches!(motion, BlockMotion::Compound(_)),
             },
         );
+        #[cfg(feature = "analysis")]
+        if self.analysis.on() {
+            let block = self.placed_block(reader, (x, y), size);
+            self.analysis.inter_block(block, &motion, analysis_layout);
+        }
         self.state.motion.commit_motion(x, y, size, motion)
+    }
+
+    /// The current block as the analysis records place it.
+    #[cfg(feature = "analysis")]
+    fn placed_block(
+        &self,
+        reader: &Reader<'_>,
+        origin: (usize, usize),
+        size: usize,
+    ) -> crate::tile_analysis::PlacedBlock {
+        crate::tile_analysis::PlacedBlock {
+            origin,
+            size,
+            qindex: self.plane_qindex.luma.ac,
+            bits: (reader.bits_consumed() - self.analysis.start) as u32,
+        }
     }
 
     /// Read, reconstruct and store every transform of the block in coding

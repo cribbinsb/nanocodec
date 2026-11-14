@@ -648,6 +648,14 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Stream bits shifted into the value so far (analysis: differences
+    /// give what a block cost).
+    #[cfg(feature = "analysis")]
+    #[must_use]
+    pub(crate) fn bits_consumed(&self) -> usize {
+        self.consumed
+    }
+
     /// Start one tile. At most 15 implicit zero bits may follow its final byte.
     /// # Errors
     /// Rejects empty input.

@@ -38,6 +38,9 @@ mod block_state;
 mod chroma_weight;
 mod packet;
 mod pre_tx_skip;
+// The tile decoder's analysis records (feature `analysis`).
+#[cfg(feature = "analysis")]
+mod tile_analysis;
 mod tile_decoder;
 pub use backend::Av2Backend;
 pub use stream::{Decoder, temporal_unit_layer};

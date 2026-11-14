@@ -1,9 +1,9 @@
 //! `nanocodec stat` (analysis builds: `--features analysis`): decode an
-//! H.264, HEVC, AV1, VP9 or VVC stream with coding-tool
+//! H.264, HEVC, AV1, VP9, VVC or AV2 stream with coding-tool
 //! statistics enabled ([`nc_common::stream_stats`]) and write them as JSON,
 //! to show which block sizes, modes, motion, transforms, QPs and filters an
 //! encoder actually used. The input is Annex-B or an IVF file of Annex-B
-//! access units (H.264, HEVC), Annex-B (VVC) or IVF (AV1, VP9); `eval/nceval/streamstats.py` summarises the output.
+//! access units (H.264, HEVC), Annex-B (VVC) or IVF (AV1, VP9, AV2); `eval/nceval/streamstats.py` summarises the output.
 
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
@@ -32,7 +32,8 @@ fn parse(args: &[String]) -> Result<StatArgs, String> {
         Some("av1") => Codec::Av1,
         Some("vp9") => Codec::Vp9,
         Some("vvc") => Codec::Vvc,
-        _ => return Err("stat needs --codec h264|hevc|av1|vp9|vvc".into()),
+        Some("av2") => Codec::Av2,
+        _ => return Err("stat needs --codec h264|hevc|av1|vp9|vvc|av2".into()),
     };
     let input = get("--input").ok_or("missing --input")?.into();
     Ok(StatArgs {
@@ -52,7 +53,7 @@ pub(super) fn run(args: &[String]) -> Result<(), String> {
         Codec::Av1 => av1(&data)?,
         Codec::Vp9 => vp9(&data)?,
         Codec::Vvc => vvc(&data)?,
-        Codec::Av2 => unreachable!("parse accepts the codecs with analysis only"),
+        Codec::Av2 => av2(&data)?,
     };
     let json = stats.to_json();
     match &args.json {
@@ -127,6 +128,18 @@ fn vvc(data: &[u8]) -> Result<StreamStats, String> {
         Ok(())
     })?;
     decoder.flush().map_err(|e| e.to_string())?;
+    Ok(decoder.take_stats().unwrap_or_default())
+}
+
+/// AV2 in IVF: every temporal unit.
+fn av2(data: &[u8]) -> Result<StreamStats, String> {
+    let mut decoder = nc_av2::stream::Decoder::default();
+    decoder.collect_stats(StreamStats::default());
+    read_ivf(&mut Cursor::new(data), |_, frame| {
+        decoder
+            .decode_shown(frame.packet)
+            .map_err(|e| e.to_string())
+    })?;
     Ok(decoder.take_stats().unwrap_or_default())
 }
 
