@@ -576,6 +576,20 @@ impl CoeffRateModel for RateModel<'_> {
         }
     }
 
+    /// [`Self::level_rates`] of a zero (only its base symbol, under the
+    /// survivor's context: a survivor has coded a level, so its state is
+    /// never the initial one), then [`Self::advance`].
+    fn zero_step(&mut self, state: &mut ContextState, scan_pos: usize) -> f32 {
+        debug_assert_ne!(state.diagonal, NO_DIAGONAL);
+        let at = self.positions[scan_pos];
+        let plane = self.block.ctx.plane;
+        let region = at.region(plane);
+        let base_context = levels::base_context(state.neighbours(at), at, region, plane);
+        let q9 = self.base_cost(BaseFamily::plain(region, false), base_context, 0);
+        self.advance(state, scan_pos, 0);
+        q9 as f32 / COST_UNITS_PER_BIT as f32
+    }
+
     fn advance(&self, state: &mut ContextState, scan_pos: usize, level: u32) {
         let at = self.positions[scan_pos];
         let diagonal = at.diagonal();
