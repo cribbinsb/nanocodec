@@ -423,3 +423,64 @@ Reading:
   overfit. A targeted fix needs per-frame evidence of which base frames to
   trim (for example sparing the frames after a key, or bounding each base
   frame by what the window can afford). Not built.
+
+### Refinement bursts: per-frame evidence and a re-code bound probe (2026-11-14), not adopted
+
+**Method.** We added a per-frame plan trace to the rate log: budget, prediction, level quantizer, cadence offset,
+still share, excess and debit. It is byte-identical and kept unlanded on branch `feature/still-overshoot-probe`.
+We traced the six ladder points with AV1, HEVC and H.264 Default. Settings are as above: 600 frames from frame
+0, a key every 10 s, our reconstruction. "U" is one frame's uniform budget, and a base frame's cycle budget is 4U.
+
+| Point | Rate (AV1 / HEVC / H.264) | AV1: P budgets at the 0.25 floor | AV1: base bits / 4U, p50 / p90 | AV1: bursts (> 4U) of base frames | AV1: share of P bits in bursts | Burst actual / predicted, median (AV1 / HEVC / H.264) |
+|---|---|---|---|---|---|---|
+| chirla 47 | 1.001 / 0.994 / 0.987 | 14% | 0.15 / 3.4 | 22 / 121 | 62% | 5.2 / 4.7 / 2.7 |
+| chirla 93 | 1.037 / 0.993 / 0.987 | 46% | 0.07 / 4.7 | 23 / 120 | 76% | 13.8 / 2.4 / 3.8 |
+| chirla 187 | 1.030 / 1.011 / 0.997 | 77% | 0.22 / 3.7 | 36 / 122 | 80% | 22.4 / 18.4 / 15.4 |
+| meva 97 | 0.984 / 0.907 / 0.962 | 6% | 0.10 / 3.7 | 27 / 122 | 71% | 2.8 / 6.9 / 6.2 |
+| meva 194 | 1.033 / 0.996 / 1.006 | 49% | 0.07 / 4.7 | 24 / 124 | 82% | 13.1 / 5.4 / 7.9 |
+| meva 388 | 1.028 / 0.998 / 1.027 | 47% | 0.05 / 4.5 | 27 / 124 | 86% | 13.6 / 4.7 / 6.9 |
+
+- **Sizes are bimodal.** About 80% of base frames cost almost nothing: they are coarser than the quality the still
+  picture already holds, and they inherit it. The rest are bursts of 1-9 cycle budgets. Bursts occur both during
+  the start-up cadence (7-9 per point) and in steady state (13-30), not mainly after keys. The first start-up
+  base after the first key has no base model yet, and on chirla 187 it alone takes 30U (0.7 buffer).
+- **Why AV1 runs over.** The per-role base model learns alternately from cheap base frames and from bursts. AV1
+  mispredicts bursts by 13-22x at the over-target points (HEVC and H.264 by 2-8x, except chirla 187). AV1's
+  level then swings about 40 qindex within a cycle, a limit cycle: after a burst the level climbs, the next base
+  is cheap, the model collapses, the level falls and the next base bursts. H.264's level stays within about ±3 QP.
+- **No authority left.** Half to three quarters of AV1's P budgets sit at the correction floor, and the mean debt
+  is 0.5-0.8 buffer. The 20 s overshoot is the 0.8-0.9 buffer still owed at frame 600 (one buffer is 5% of 20 s).
+  The cadence scale (1.4) and boost are the same in H.264 and AV1, so they are not the difference.
+- **Quality.** A burst raises PSNR-Y by +1.4 to +2.4 dB at that frame. It decays by 0.4-1.0 dB within 8 frames.
+
+**Probe: `rate.burst_cycles` (registered, default off).** An inter frame that codes more than N times its
+cadence cycle's corrected budget is re-coded coarser through the existing re-code path. A bound at planning time
+cannot reach these frames: the plan already predicts they fit.
+
+| Point | Default: rate / worst-1% Y / re-coded | N = 2 | N = 4 | N = 8 |
+|---|---|---|---|---|
+| chirla 47 | 1.001 / 28.81 / 22 | 0.839 / 31.67 / 47 | 0.919 / 31.99 / 29 | 0.987 / 28.81 / 25 |
+| chirla 93 | 1.037 / 35.40 / 8 | 0.860 / 35.26 / 44 | 0.998 / 35.17 / 28 | 0.969 / **34.27** / 25 |
+| chirla 187 | 1.030 / 38.97 / 26 | 0.928 / 38.96 / 43 | 0.992 / 39.36 / 41 | 1.008 / 39.36 / 32 |
+| meva 97 | 0.984 / 29.14 / 16 | 0.748 / 29.36 / 32 | 0.916 / 28.81 / 26 | 0.969 / 29.46 / 19 |
+| meva 194 | 1.033 / 33.06 / 8 | 0.852 / 32.85 / 35 | 0.973 / **30.14** / 29 | 0.992 / **31.31** / 18 |
+| meva 388 | 1.028 / 33.91 / 7 | 0.964 / 32.96 / 41 | 0.991 / 36.85 / 25 | 1.005 / 36.85 / 12 |
+
+"Re-coded" counts frames re-coded per 600, including the Default's own `rate.recode_overflow` re-codes. PSNR-YUV
+per 150-frame window, Default → N = 8: meva 194 frames 300-449 39.46 → 38.65; chirla 93 41.62 → 41.41.
+
+- **Verdict: fails the probe criteria.** N = 4 and N = 8 bring every point inside 2.5% without raising any point's
+  rate. But meva 194's worst-1% PSNR-Y falls 1.8-2.9 dB, and with N = 8 chirla 93's falls 1.1 dB.
+- **Where the worst frames are.** They are frames 302-313, right after the second key. The stream enters that key
+  at the correction floor, so the bound (which scales with the corrected budget) re-codes exactly the frames that
+  rebuild the picture. This is the same failure as the debt-scaled boost.
+- **Cost.** N = 8 adds 3-17 re-codes per 600 frames (0.5-2.8%). A re-coded frame is coded twice, which is a
+  deadline risk on the Jetson. Instruction counts were not measured because the bound failed on quality first.
+- The response is again non-monotonic in N on meva 194 (worst-1% 32.85 / 30.14 / 31.31). Not built further.
+
+**Recommendation: a predictor fix, not a size bound.** The root cause is a bimodal base cost that the per-role
+power-law model cannot represent. A base frame costs real bits only when it is finer than the quality the still
+picture already holds. The encoder knows that quality from the reference's level, or from the previous burst's
+quantizer. Predicting the burst from it would let the plan choose a base level that fits its cycle, without
+coding twice and without a debt-driven cut that lands on the frames after a key. The plan trace on
+`feature/still-overshoot-probe` is the tool to check such a predictor against these traces.

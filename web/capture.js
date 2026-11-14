@@ -11,6 +11,11 @@
 // without the callback or VideoFrame take the picture at capture time and the
 // media time from `currentTime` (close, not exact), and cannot step frames
 // (`canStep`).
+// A staged frame that falls on a tick some view codes (`wanted`) is also kept
+// as the candidate until a newer one comes, and `onCandidate` tells the page at
+// once: a capture timer sampling the latest presented frame instead can lock in
+// phase with the video (a 60 fps clip sampled every 33 ms always on an odd
+// frame) and capture almost nothing.
 // Sample clips loop: each loop continues the tick count, so ticks only grow.
 // The built-in scene is drawn at the tick's own time; the webcam has no
 // timeline of its own, so its ticks follow the wall clock.
@@ -65,6 +70,11 @@ export class FrameSource {
     this.watching = false;
     // The staged frame: a VideoFrame of the last presented video frame.
     this.staged = null;
+    // The newest staged frame on a wanted tick: { tick, picture }, or null.
+    this.candidate = null;
+    // Whether a view codes `tick` (set by the page), and its callback for a new candidate.
+    this.wanted = () => true;
+    this.onCandidate = () => {};
     this.reset('scene');
   }
   /**
@@ -77,6 +87,7 @@ export class FrameSource {
     this.waiting = null;
     this.started = performance.now();
     this.staged?.close(); this.staged = null;
+    this.candidate?.picture.close(); this.candidate = null;
     if (this.staging && !this.watching) this.watch();
   }
   /** Whether the source is a video with its own media timeline. */
@@ -111,12 +122,27 @@ export class FrameSource {
     if (mediaMs < this.lastMediaMs - LOOP_BACKSTEP_MS && this.kind === 'clip') ++this.loop;
     this.lastMediaMs = mediaMs;
     this.presented = { frame: Math.round(mediaMs * this.fps / 1000), loop: this.loop };
+    if (this.staged) this.keepCandidate();
     if (this.waiting) this.checkStep();
+  }
+  /** Keep the staged frame as the candidate if it falls on a newer tick a view codes. */
+  keepCandidate() {
+    const ticks = ticksOfFrame(this.presented.frame, this.fps);
+    if (!ticks) return;
+    const offset = this.loopStart(this.presented.loop);
+    for (let tick = Math.max(ticks[0] + offset, (this.candidate?.tick ?? -1) + 1); tick <= ticks[1] + offset; tick++) {
+      if (!this.wanted(tick)) continue;
+      this.candidate?.picture.close();
+      this.candidate = { tick, picture: this.staged.clone() };
+      this.onCandidate();
+      return;
+    }
   }
   /** The first tick after `after` that can be captured now, or null if there is none yet. */
   nextTick(after) {
     if (!this.timed) return Math.max(tickAt(performance.now() - this.started), after + 1);
-    if (!this.staging) this.stage(this.video.currentTime * 1000);
+    if (this.staging) return this.candidate && this.candidate.tick > after ? this.candidate.tick : null;
+    this.stage(this.video.currentTime * 1000);
     if (!this.presented) return null;
     const ticks = ticksOfFrame(this.presented.frame, this.fps);
     if (!ticks) return null;
@@ -138,7 +164,7 @@ export class FrameSource {
       return { picture: snapshot(this.surface), element: this.surface, width, height };
     }
     const { video } = this;
-    const picture = this.staging ? this.staged?.clone() : videoSnapshot(video);
+    const picture = this.staging ? this.candidate?.picture.clone() : videoSnapshot(video);
     if (!picture) return null;
     return { picture, element: video, width: video.videoWidth, height: video.videoHeight };
   }
@@ -164,7 +190,7 @@ export class FrameSource {
     this.video.addEventListener('seeked', () => setTimeout(() => this.stageSeeked(target), SEEKED_GRACE_MS), { once: true });
     this.video.currentTime = (target.frame + FRAME_MIDPOINT) / this.fps;
     await reached;
-    return ticksOfFrame(this.presented.frame, this.fps)[0] + this.loopStart(this.presented.loop);
+    return this.candidate?.tick ?? ticksOfFrame(this.presented.frame, this.fps)[0] + this.loopStart(this.presented.loop);
   }
   /** Stage the seeked-to frame if a step still waits for it (see advanceTo). */
   stageSeeked(target) {

@@ -80,6 +80,8 @@ SOURCE_FPS = 30
 VARIANT_HEIGHTS = (360, 720)
 # The chart's key interval (eval/nceval/cbr.py DEFAULT_INTRA_PERIOD): 10 s.
 KEY_INTERVAL_SECONDS = 10
+# The supplied bodycam SoC streams' key interval (SUPPLIED): frames 0 and 150 of 300 at 30 fps.
+SUPPLIED_KEY_SECONDS = 5
 IVF_HEADER = struct.Struct("<4sHH4sHHIII4x")
 IVF_FRAME = struct.Struct("<IQ")
 IVF_FOURCC = {Codec.H264: b"H264", Codec.HEVC: b"HEVC", Codec.AV1: b"AV01", Codec.VP9: b"VP90"}
@@ -131,6 +133,11 @@ class Entry:
     height: int
     fps: int
     kbps: int
+    key_seconds: int = KEY_INTERVAL_SECONDS  # another interval only to match a supplied stream's
+
+    @property
+    def key_interval(self) -> int:
+        return self.key_seconds * self.fps
 
     @property
     def name(self) -> str:
@@ -209,8 +216,9 @@ GRID = [
     Entry("mot17-night-crowd", "openh264", 1280, 720, 30, 800),
     Entry("mot17-night-crowd", "vpx-rt9", 640, 360, 15, 250),
     # Netflix FoodMarket (owner's decision for this clip only): software encoders at the
-    # supplied bodycam SoC streams' size, rate and bitrates (SUPPLIED), one key frame each.
-    *(Entry("netflix-food-market", encoder, 1280, 720, 30, kbps)
+    # supplied bodycam SoC streams' size, rate, bitrates and key interval (SUPPLIED: a key
+    # every 5 s, frames 0 and 150), so the comparison is like for like.
+    *(Entry("netflix-food-market", encoder, 1280, 720, 30, kbps, key_seconds=SUPPLIED_KEY_SECONDS)
       for encoder in ("x264-medium", "openh264", "x265-medium") for kbps in (1000, 1500, 2000)),
 ]
 
@@ -264,16 +272,19 @@ class Supplied:
         return f"{self.clip}-bwc-soc-{PAGE_CODEC[self.codec]}-{self.width}x{self.height}-{self.fps}fps-{self.kbps}k"
 
 
-# The owner's bodycam SoC streams of FoodMarket (README supplied with them): the SoC's
-# hardware encoder at the camera's shipped recording settings, EVBR rate control, one key
-# frame for the whole clip, P frames only, H.264 High / HEVC Main, fed NV12 copies of the
-# demo's former source frames (BT.601 via RGB, make-reference-streams.py before e41b52fa).
-# The PSNR gap was measured against both sources (docs/handoff/browser-demo.md).
+# The owner's bodycam SoC streams of FoodMarket (v2, 2026-11-14; README supplied with them):
+# the SoC's hardware encoder at the camera's recording settings with a fix to how its rate
+# control picks the first key frame's quantiser (v1 had a fixed QP 26 key at every rate),
+# EVBR rate control, a key frame every 5 s, P frames only, H.264 High / HEVC Main. Their
+# PSNR-Y against the demo's former source frames (BT.601 via RGB, make-reference-streams.py
+# before e41b52fa) equals the README's to 0.01 dB, so they were fed those frames again,
+# not the current ones; the gap was measured against both (docs/handoff/browser-demo.md).
 BWC_SOC = {
     "label": "BWC SOC",
     "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the "
-                  "camera's shipped recording settings (P frames only, one key frame for the whole clip). Not made by "
-                  "any tool in this repository; vendor and model are not named.",
+                  "camera's recording settings, with a fix to how its rate control picks the first key frame's "
+                  "quantiser (P frames only, a key frame every 5 s). Not made by any tool in this repository; vendor "
+                  "and model are not named.",
     "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
     "rateControl": "the camera's EVBR recording rate control (not CBR)",
     "command": "not available (hardware encoder)",
@@ -283,17 +294,17 @@ SUPPLIED_SOURCE_NOTE = ("Encoded from an earlier RGB-converted copy of the demo'
                         "own input.")
 SUPPLIED = [
     Supplied("netflix-food-market", Codec.H264, 1280, 720, 30, 1000,
-             "fc95b04cb0164b6bba2c0d8dd1a0deaae11b8bf628fc1de87bf1763cc0dcc142", 0.35),
+             "9d0ce5b075f00bd771ac0b23b108579e6658f75bd702ad61193caef6e9cf621a", 0.37),
     Supplied("netflix-food-market", Codec.H264, 1280, 720, 30, 1500,
-             "ed46beee28e5f4231a01db937ae11564c8e2fd0f8d7dbe694d677a0098eaf4b0", 0.50),
+             "190157e0d217b916b2eec1c29f64d7f7c94af2383165956c9e0ab508f5ce2b49", 0.50),
     Supplied("netflix-food-market", Codec.H264, 1280, 720, 30, 2000,
-             "3c28057273bba7efdadbee04dc37358122c2497c2f985f0b8f71601a94e85088", 0.62),
+             "dca953101d27dccee2031f28c0e7d790de1fd9e74668f69b29dfe8788e548408", 0.62),
     Supplied("netflix-food-market", Codec.HEVC, 1280, 720, 30, 1000,
-             "cfad9531973646ab79d768867d5fef701ce78216a5c24b3fcda6bca1d6b2daa5", 0.35),
+             "11b015dc548c370f4152bc478cdb3e4f263e44e88abae3aff044cb0b2575b299", 0.36),
     Supplied("netflix-food-market", Codec.HEVC, 1280, 720, 30, 1500,
-             "e4da0d56f481328b84124df4d064b9f138dfaf6a040152c11e7019c728f5a830", 0.45),
+             "ec0cd6f874131a220e52cb19c20d0596a07e8e1fa231dd5c97ea4512902ddda0", 0.46),
     Supplied("netflix-food-market", Codec.HEVC, 1280, 720, 30, 2000,
-             "fb17c690e1a1db44da87daaf9182c32a5c7c05c8fb3d8b2a6eac5d631d1de589", 0.55),
+             "aef5bc5d184de34da5b307f3de51065b2809cdd82c0e3abd6e03be789f229c61", 0.55),
 ]
 
 
@@ -352,7 +363,7 @@ def family(encoder: Encoder) -> Family:
 def command(encoder: Encoder, entry: Entry, frames: int, yuv: Path, out: Path) -> list[str]:
     clip = Clip(name=entry.clip, yuv=yuv, width=entry.width, height=entry.height, fps=entry.fps,
                 frames=frames, source_kbps=0.0, content_class="", split="")
-    cmd = family(encoder).command(clip, frames, KEY_INTERVAL_SECONDS * entry.fps, out, None, kbps=entry.kbps)
+    cmd = family(encoder).command(clip, frames, entry.key_interval, out, None, kbps=entry.kbps)
     rewrites = dict(encoder.rewrite)
     return [rewrites.get(arg, arg) for arg in cmd]
 
@@ -493,7 +504,7 @@ def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]
         "id": entry.name, "file": target.name, "clip": entry.clip, "codec": PAGE_CODEC[fam.codec],
         "encoder": encoder.key, "label": encoder.label, "chartConfiguration": encoder.chart,
         "width": entry.width, "height": entry.height, "fps": entry.fps, "frames": frames,
-        "loopTicks": loop_ticks, "keyInterval": KEY_INTERVAL_SECONDS * entry.fps,
+        "loopTicks": loop_ticks, "keyInterval": entry.key_interval,
         "targetKbps": entry.kbps, "actualKbps": round(coded * 8 / seconds / 1000, 1), "bufferMs": BUFFER_MS,
         "bytes": target.stat().st_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         "sourceFile": f"clips/{clip_file(entry.clip, entry.height).name}",
@@ -508,15 +519,24 @@ def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]
     return record, hashes
 
 
-def key_frames(packets: list[bytes], codec: Codec) -> int:
-    """How many access units hold an IDR (H.264 NAL type 5) or IRAP picture (HEVC 16-23)."""
+def key_frames(packets: list[bytes], codec: Codec) -> list[int]:
+    """The access units that hold an IDR (H.264 NAL type 5) or IRAP picture (HEVC 16-23)."""
     def keyed(unit: bytes) -> bool:
         for m in re.finditer(b"\x00\x00\x01", unit):
             header = unit[m.end()]
             if (codec == Codec.H264 and header & 0x1F == 5) or (codec == Codec.HEVC and 16 <= (header >> 1) & 0x3F <= 23):
                 return True
         return False
-    return sum(map(keyed, packets))
+    return [index for index, unit in enumerate(packets) if keyed(unit)]
+
+
+def key_interval(item: Supplied, keys: list[int], frames: int) -> int:
+    """A supplied stream's key interval: its key frames must start the stream and be
+    evenly spaced, as the page's matching key interval assumes."""
+    interval = keys[1] - keys[0] if len(keys) > 1 else frames
+    if keys != list(range(0, frames, interval)):
+        raise RuntimeError(f"{item.name}: key frames at {keys} are not evenly spaced from frame 0")
+    return interval
 
 
 def check_supplied(item: Supplied, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]:
@@ -535,12 +555,13 @@ def check_supplied(item: Supplied, nanocodec: Path, scratch: Path) -> tuple[dict
     source = clip_file(item.clip, item.height)
     _, _, clip_fps, clip_frames = probe(source)
     frames, keys = len(packets), key_frames(packets, item.codec)
+    interval = key_interval(item, keys, frames)
     record = {
         "id": item.name, "file": target.name, "clip": item.clip, "codec": PAGE_CODEC[item.codec],
         "encoder": "bwc-soc", "label": BWC_SOC["label"], "chartConfiguration": False, "supplied": True,
         "width": item.width, "height": item.height, "fps": item.fps, "frames": frames,
-        "loopTicks": round(clip_frames * SOURCE_FPS / clip_fps), "keyFrames": keys,
-        "keyInterval": frames if keys == 1 else KEY_INTERVAL_SECONDS * item.fps,
+        "loopTicks": round(clip_frames * SOURCE_FPS / clip_fps), "keyFrames": len(keys),
+        "keyInterval": interval,
         "targetKbps": item.kbps, "actualKbps": round(sum(map(len, packets)) * 8 / (frames / item.fps) / 1000, 1),
         "bufferMs": BUFFER_MS, "bytes": target.stat().st_size, "sha256": item.sha256,
         "sourceFile": f"clips/{source.name}", "sourceSha256": sha256(source),

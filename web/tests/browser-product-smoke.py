@@ -13,6 +13,8 @@ import threading
 from playwright.sync_api import sync_playwright
 
 web = Path(__file__).resolve().parents[1]
+# The default page must deliver at least this share of the frames it could (see the check).
+DELIVERY_FLOOR = 0.7
 class Quiet(http.server.SimpleHTTPRequestHandler):
     """Static files with HTTP range requests, as real hosts serve them: a browser
     seeks a video (the page's Step) only when the server answers ranges."""
@@ -108,7 +110,26 @@ try:
         # PSNR comes from the decode worker for every frame.
         assert page.evaluate('window.workerFrames.every(f => f.psnr > 20)')
         # The session line names the busiest worker.
-        page.wait_for_function(r"/fps delivered · (keeping up, slowest|limited by) (encode|decode) [AB] \(\d+ ms\)/.test(document.querySelector('#session-stats').textContent)", timeout=10000)
+        page.wait_for_function(r"/fps delivered · (keeping up, slowest|limited by|waiting for source frames \(slowest stage) (encode|decode) [AB] \(\d+ ms\)/.test(document.querySelector('#session-stats').textContent)", timeout=10000)
+        # Delivery floor on the default page: over 5 s the views must show at least
+        # DELIVERY_FLOOR of the instants the pipeline could take, the fewer of the
+        # source frames presented on coded ticks (a 15 fps view of a 60 fps clip:
+        # every 4th frame) and what the slowest stage allows. A capture that
+        # samples the video on a timer instead locked in phase with it and fell
+        # to ~1 fps (2026-11-14).
+        delivery = page.evaluate('''async () => {
+          const video = document.querySelector('#input-video'), presented = [];
+          const onFrame = (_, m) => { presented.push(Math.round(m.mediaTime * 60)); video.requestVideoFrameCallback(onFrame); };
+          video.requestVideoFrameCallback(onFrame);
+          const count = () => +document.querySelector('#session-stats').textContent.match(/(\\d+) frames compared/)[1];
+          const before = count(), start = performance.now();
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          const seconds = (performance.now() - start) / 1000;
+          const stageMs = Math.max(...[...document.querySelectorAll('[data-metric=encode], [data-metric=decode]')].map(e => +e.textContent || 0));
+          return { delivered: (count() - before) / seconds, instants: presented.filter(f => f % 4 === 0).length / seconds, stageRate: 1000 / stageMs };
+        }''')
+        floor = DELIVERY_FLOOR * min(delivery['instants'], delivery['stageRate'])
+        assert delivery['delivered'] >= floor, delivery
         autostart_configs = page.evaluate('window.workerConfigs')
         assert all(c['targetKbps'] == 300 and c['keyInterval'] == 30 * c['fps'] for c in autostart_configs)
         # Headless Chromium on SwiftShader loses new GL contexts once and restores them ~1 s later.

@@ -59,21 +59,21 @@ decoder, our native decoder and both WASM builds (`web/tests/reference-streams-w
 | mot17-night-crowd | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 800 | 731.7 | 897 |
 | mot17-night-crowd | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 800 | 799.9 | 980 |
 | mot17-night-crowd | libvpx VP9 realtime cpu-used 9 | vp9 | CBR (--end-usage=cbr), 1 s buffer | 640x360 | 15 | 250 | 250.7 | 308 |
-| netflix-food-market | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1000 | 1011.1 | 1238 |
-| netflix-food-market | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1500 | 1511.4 | 1849 |
-| netflix-food-market | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 2000 | 2013.8 | 2462 |
-| netflix-food-market | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 1000 | 1000.7 | 1225 |
-| netflix-food-market | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 1500 | 1500.5 | 1835 |
-| netflix-food-market | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 2000 | 2001.4 | 2447 |
+| netflix-food-market | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1000 | 1010.6 | 1237 |
+| netflix-food-market | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1500 | 1512.4 | 1850 |
+| netflix-food-market | x264 medium | h264 | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 2000 | 2015.4 | 2464 |
+| netflix-food-market | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 1000 | 1000.0 | 1224 |
+| netflix-food-market | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 1500 | 1500.3 | 1835 |
+| netflix-food-market | openh264 (real-time, medium complexity) | h264 | openh264 real-time bitrate control at the target (the chart's) | 1280x720 | 30 | 2000 | 2000.5 | 2446 |
 | netflix-food-market | x265 medium | hevc | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1000 | 1006.0 | 1232 |
-| netflix-food-market | x265 medium | hevc | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1500 | 1504.1 | 1840 |
-| netflix-food-market | x265 medium | hevc | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 2000 | 2001.8 | 2447 |
-| netflix-food-market | BWC SOC (supplied; hardware encoder) | h264 | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1000 | 999.8 | 1224 |
-| netflix-food-market | BWC SOC (supplied; hardware encoder) | h264 | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1500 | 1495.9 | 1830 |
-| netflix-food-market | BWC SOC (supplied; hardware encoder) | h264 | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 2000 | 1975.1 | 2415 |
-| netflix-food-market | BWC SOC (supplied; hardware encoder) | hevc | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1000 | 1000.2 | 1224 |
-| netflix-food-market | BWC SOC (supplied; hardware encoder) | hevc | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1500 | 1499.8 | 1834 |
-| netflix-food-market | BWC SOC (supplied; hardware encoder) | hevc | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 2000 | 1994.4 | 2438 |
+| netflix-food-market | x265 medium | hevc | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 1500 | 1503.8 | 1839 |
+| netflix-food-market | x265 medium | hevc | ABR with a 1 s VBV at the target (the chart's CBR) | 1280x720 | 30 | 2000 | 2001.2 | 2446 |
+| netflix-food-market | BWC SOC (supplied; hardware encoder) | h264 | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1000 | 999.7 | 1224 |
+| netflix-food-market | BWC SOC (supplied; hardware encoder) | h264 | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1500 | 1496.7 | 1831 |
+| netflix-food-market | BWC SOC (supplied; hardware encoder) | h264 | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 2000 | 1975.9 | 2416 |
+| netflix-food-market | BWC SOC (supplied; hardware encoder) | hevc | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1000 | 999.7 | 1224 |
+| netflix-food-market | BWC SOC (supplied; hardware encoder) | hevc | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 1500 | 1499.7 | 1834 |
+| netflix-food-market | BWC SOC (supplied; hardware encoder) | hevc | the camera's EVBR recording rate control (not CBR) | 1280x720 | 30 | 2000 | 1994.7 | 2438 |
 
 ## Versions and commands
 
@@ -347,47 +347,47 @@ decoder, our native decoder and both WASM builds (`web/tests/reference-streams-w
 - `netflix-food-market-x264-medium-1280x720-30fps-1000k`: x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0 (source stable b35605ace3dd)
 
   ```
-  ~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv
+  ~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv
   ```
 - `netflix-food-market-x264-medium-1280x720-30fps-1500k`: x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0 (source stable b35605ace3dd)
 
   ```
-  ~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv
+  ~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv
   ```
 - `netflix-food-market-x264-medium-1280x720-30fps-2000k`: x264 0.165.x / built on Nov 6 2026, gcc: 15.2.0 (source stable b35605ace3dd)
 
   ```
-  ~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv
+  ~/nanocodec-data/anchors/x86_64/bin/x264 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --threads 1 --output stream.out source.yuv
   ```
 - `netflix-food-market-openh264-1280x720-30fps-1000k`: openh264 v2.7.0 (eval openh264-harness driver) (source v2.7.0 1bca62311e44)
 
   ```
-  ~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1000 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1
+  ~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1000 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1
   ```
 - `netflix-food-market-openh264-1280x720-30fps-1500k`: openh264 v2.7.0 (eval openh264-harness driver) (source v2.7.0 1bca62311e44)
 
   ```
-  ~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1500 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1
+  ~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 1500 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1
   ```
 - `netflix-food-market-openh264-1280x720-30fps-2000k`: openh264 v2.7.0 (eval openh264-harness driver) (source v2.7.0 1bca62311e44)
 
   ```
-  ~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 2000 --intra-period 300 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1
+  ~/nanocodec-data/work/ratecontrol/bin/openh264-harness --input source.yuv --output stream.out --width 1280 --height 720 --fps 30 --frames 300 --usage camera-realtime --complexity medium --cabac 0 --bitrate 2000 --intra-period 150 --temporal-layers 1 --adaptive-quant 0 --scene-change 0 --background-detection 1 --denoise 0 --ltr 0 --frame-skip 0 --threads 1
   ```
 - `netflix-food-market-x265-medium-1280x720-30fps-1000k`: HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit (source 4.2 e444744c0397)
 
   ```
-  ~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out
+  ~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 1000 --vbv-maxrate 1000 --vbv-bufsize 1000 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out
   ```
 - `netflix-food-market-x265-medium-1280x720-30fps-1500k`: HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit (source 4.2 e444744c0397)
 
   ```
-  ~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out
+  ~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 1500 --vbv-maxrate 1500 --vbv-bufsize 1500 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out
   ```
 - `netflix-food-market-x265-medium-1280x720-30fps-2000k`: HEVC encoder version 4.2 / build info [Linux][GCC 15.2.0][64 bit] 8bit (source 4.2 e444744c0397)
 
   ```
-  ~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out
+  ~/nanocodec-data/anchors/x86_64/bin/x265 --preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 150 --min-keyint 150 --bitrate 2000 --vbv-maxrate 2000 --vbv-bufsize 2000 --input-res 1280x720 --fps 30/1 --frames 300 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input source.yuv --output stream.out
   ```
 - `netflix-food-market-bwc-soc-h264-1280x720-30fps-1000k`: hardware encoder of a production body-worn-camera SoC (vendor and model not named)
 

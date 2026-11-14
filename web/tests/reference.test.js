@@ -61,7 +61,7 @@ test('every clip offers at least three streams, some at one matched size and rat
   assert.equal(groups.length, new Set(manifest.streams.map(e => e.clip)).size);
 });
 
-test('supplied streams say what they are and match a live view with one key frame per loop', () => {
+test('supplied streams say what they are and match a live view with a key frame every 5 s', () => {
   const supplied = manifest.streams.filter(e => e.supplied);
   assert.equal(supplied.length, 6);
   for (const entry of supplied) {
@@ -70,15 +70,17 @@ test('supplied streams say what they are and match a live view with one key fram
     assert.match(entry.provenance, /Not made by any tool in this repository/);
     assert.match(entry.rateControl, /EVBR/);
     assert.match(entry.sourceNote, /dB lower/);
-    assert.equal(entry.keyFrames, 1);
-    // One key frame in the 10 s loop: the live view's key interval becomes 10 s.
-    assert.equal(matchingSettings(entry).gopSeconds * entry.fps, entry.frames);
+    assert.equal(entry.keyFrames, 2);
+    // Keys at frames 0 and 150 of the 10 s loop: the live view's key interval becomes 5 s.
+    assert.equal(matchingSettings(entry).gopSeconds, 5);
   }
-  // Software encodes of the same clip, size, rate and bitrates, one key frame each.
+  // Software encodes of the same clip, size, rate, bitrates and key interval.
   for (const encoder of ['x264-medium', 'openh264', 'x265-medium']) {
     const runs = manifest.streams.filter(e => e.clip === 'netflix-food-market' && e.encoder === encoder);
     assert.deepEqual(runs.map(e => e.targetKbps).sort(), [1000, 1500, 2000], encoder);
-    for (const e of runs) assert.ok(e.keyFrames === 1 && e.width === 1280 && e.fps === 30 && e.rateControl, e.id);
+    for (const e of runs) {
+      assert.ok(e.keyFrames === 2 && e.keyInterval === 150 && e.width === 1280 && e.fps === 30 && e.rateControl, e.id);
+    }
   }
 });
 

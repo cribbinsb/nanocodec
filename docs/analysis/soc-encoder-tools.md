@@ -1,5 +1,20 @@
 # BWC SOC hardware encoder: which coding tools its streams use
 
+> **2026-11-14: the demo now carries the owner's v2 BWC SOC streams.** The camera's
+> rate control now picks the first key frame's quantiser from the rate (v1 had a fixed
+> QP 26 key at every rate), and there is a key frame every 5 s (frames 0 and 150). The
+> tables below describe the **v1** streams (one key frame). v2, from the same
+> `nanocodec stat` records ("Frame QP" = area-mean coding-block QP; P = the 298 P frames):
+>
+> | Stream | Key frame 0 | Key frame 150 | P mean frame QP |
+> |---|---|---|---:|
+> | H.264 1000 | 33 KiB @ 30.3 | 23 KiB @ 33.0 | 36.3 |
+> | H.264 1500 | 49 KiB @ 26.4 | 29 KiB @ 30.0 | 33.1 |
+> | H.264 2000 | 58 KiB @ 24.7 | 35 KiB @ 28.0 | 31.1 |
+> | HEVC 1000 | 31 KiB @ 30.9 | 22 KiB @ 33.4 | 38.2 |
+> | HEVC 1500 | 46 KiB @ 27.0 | 31 KiB @ 29.9 | 35.6 |
+> | HEVC 2000 | 56 KiB @ 25.2 | 38 KiB @ 27.9 | 33.7 |
+
 What a body-worn-camera SoC's hardware encoder ("BWC SOC") actually codes,
 read from its streams by our instrumented decoders (`nanocodec stat`), next to
 x265 / x264 medium, openh264 and our own encoder on the same input. **One clip
