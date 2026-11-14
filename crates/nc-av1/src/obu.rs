@@ -604,6 +604,12 @@ pub enum FrameKind {
 /// they load the CDFs saved with the reference's slot (AV1 §5.9.2
 /// `load_cdfs`).
 const PRIMARY_REF_LAST: u32 = 0;
+/// `SEG_LVL_MAX` and `SEG_LVL_ALT_Q` (AV1 §6.8.13).
+const SEG_LVL_MAX: usize = 8;
+const SEG_LVL_ALT_Q: usize = 0;
+/// `Segmentation_Feature_Bits[SEG_LVL_ALT_Q]`: the value is `su(1+8)`.
+const ALT_Q_BITS: u32 = 8;
+const ALT_Q_MASK: u32 = (1 << (ALT_Q_BITS + 1)) - 1;
 /// `REFS_PER_FRAME`: `LAST_FRAME` .. `ALTREF_FRAME`.
 const REFS_PER_FRAME: usize = 7;
 /// Bits of `render_width_minus_1` / `render_height_minus_1` (§5.9.6).
@@ -644,6 +650,10 @@ pub struct FrameHeader {
     pub chroma_delta_q: i32,
     /// `delta_q_present`: superblocks code `delta_qindex` (§5.11.12).
     pub delta_q_present: bool,
+    /// `segmentation_params()` (§5.9.14): `SEG_LVL_ALT_Q` of segments 1..7
+    /// (segment 0 codes none), every block coding its id; `None`:
+    /// segmentation off.
+    pub segmentation: Option<[i16; 8]>,
     /// Deblocking levels and sharpness of the frame.
     pub loop_filter: LoopFilterParams,
     /// `TX_MODE_SELECT` (blocks signal transform sizes) rather than
@@ -919,7 +929,7 @@ impl FrameHeader {
             }
         }
         w.put_bit(false); // using_qmatrix
-        w.put_bit(false); // segmentation_enabled
+        self.write_segmentation(w, inter);
         // delta_q_params() (coded because base_q_idx > 0), §5.9.17.
         w.put_bit(self.delta_q_present);
         if self.delta_q_present {
@@ -946,6 +956,34 @@ impl FrameHeader {
             grain.write(w, inter); // film_grain_params()
         }
         w.byte_align_zero();
+    }
+
+    /// `segmentation_params()` (§5.9.14): off, or enabled with a fresh map
+    /// (`segmentation_update_map` 1, no temporal prediction) and, on every
+    /// segment but 0, `SEG_LVL_ALT_Q` (so `LastActiveSegId` is 7). Inter
+    /// frames load from a primary reference and so code the update flags;
+    /// intra frames imply them.
+    fn write_segmentation(&self, w: &mut BitWriter, inter: bool) {
+        let Some(alt_q) = self.segmentation else {
+            w.put_bit(false); // segmentation_enabled
+            return;
+        };
+        w.put_bit(true); // segmentation_enabled
+        if inter {
+            w.put_bit(true); // segmentation_update_map
+            w.put_bit(false); // segmentation_temporal_update
+            w.put_bit(true); // segmentation_update_data
+        }
+        for (segment, &delta) in alt_q.iter().enumerate() {
+            for feature in 0..SEG_LVL_MAX {
+                let enabled = feature == SEG_LVL_ALT_Q && segment > 0;
+                w.put_bit(enabled); // feature_enabled
+                if enabled {
+                    // feature_value su(1 + 8).
+                    w.put_bits((i32::from(delta) as u32) & ALT_Q_MASK, ALT_Q_BITS + 1);
+                }
+            }
+        }
     }
 
     /// `frame_size()` (§5.9.5): the size itself only under

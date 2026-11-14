@@ -1,6 +1,8 @@
-//! Block-level quantizers through segmentation: VP9 has no per-block
-//! quantizer delta, so a frame's block offsets are carried by up to eight
-//! segments, each with its own `SEG_LVL_ALT_Q` (VP9 §6.2.11, §7.2.10).
+//! Block-level quantizers through segmentation: codecs whose per-block
+//! quantizer is a segment's (VP9, which has no block delta; AV1 at 8x8
+//! granularity, finer than its superblock delta) carry a frame's block
+//! offsets by up to eight segments, each with its own `SEG_LVL_ALT_Q` (VP9
+//! §6.2.11, §7.2.10; AV1 §5.9.14, §7.12.2).
 //!
 //! Segment 0 always codes the frame quantizer. The others are handed out in
 //! coding order to the first distinct offsets the engine asks for; once all
@@ -10,7 +12,8 @@
 //! the segment codes. A segment's qindex never reaches 0, which would
 //! quantize with the lossless frame's smallest step.
 
-use crate::segmentation::MAX_SEGMENTS;
+/// Segments a frame codes (VP9 and AV1 `MAX_SEGMENTS`).
+pub const MAX_SEGMENTS: usize = 8;
 
 /// Smallest qindex a segment codes.
 const MIN_SEGMENT_QINDEX: i32 = 1;
@@ -20,7 +23,7 @@ const MAX_QINDEX: i32 = 255;
 /// The quantizer offset (from the frame's `base_q_idx`) of every segment in
 /// use this frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SegmentQuantizers {
+pub struct SegmentQuantizers {
     base: u8,
     /// Offset of each segment handed out so far; segment 0 is the frame's.
     offsets: [Option<i16>; MAX_SEGMENTS],
@@ -28,7 +31,8 @@ pub(crate) struct SegmentQuantizers {
 
 impl SegmentQuantizers {
     /// Only segment 0 (the frame quantizer `base`) in use.
-    pub(crate) fn new(base: u8) -> Self {
+    #[must_use]
+    pub fn new(base: u8) -> Self {
         let mut offsets = [None; MAX_SEGMENTS];
         offsets[0] = Some(0);
         Self { base, offsets }
@@ -37,7 +41,7 @@ impl SegmentQuantizers {
     /// The segment that codes `requested` (an offset from the frame
     /// quantizer) and the offset it actually codes: a segment with that
     /// offset, a new one, or once all are in use the nearest.
-    pub(crate) fn assign(&mut self, requested: i16) -> (u8, i16) {
+    pub fn assign(&mut self, requested: i16) -> (u8, i16) {
         let base = i32::from(self.base);
         let wanted = (base + i32::from(requested)).clamp(MIN_SEGMENT_QINDEX, MAX_QINDEX) - base;
         let wanted = wanted as i16;
@@ -58,9 +62,20 @@ impl SegmentQuantizers {
         (segment as u8, offset)
     }
 
+    /// The segment that codes `offset`, an offset [`Self::assign`] returned
+    /// this frame (segment 0, the frame quantizer's, for any other).
+    #[must_use]
+    pub fn segment_of(&self, offset: i16) -> u8 {
+        self.offsets
+            .iter()
+            .position(|&o| o == Some(offset))
+            .map_or(0, |segment| segment as u8)
+    }
+
     /// The `SEG_LVL_ALT_Q` data of every segment: a delta, or with
     /// `absolute` the segment's qindex; `None` where it is the frame's.
-    pub(crate) fn feature_data(&self, absolute: bool) -> [Option<i16>; MAX_SEGMENTS] {
+    #[must_use]
+    pub fn feature_data(&self, absolute: bool) -> [Option<i16>; MAX_SEGMENTS] {
         self.offsets.map(|offset| match offset {
             Some(0) | None => None,
             Some(offset) if absolute => Some(i16::from(self.base) + offset),

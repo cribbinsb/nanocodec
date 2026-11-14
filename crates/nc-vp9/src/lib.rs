@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 mod backend;
-mod block_qp;
 pub use backend::Vp9Backend;
 pub mod bool_coder;
 mod decoder;

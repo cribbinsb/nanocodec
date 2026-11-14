@@ -334,8 +334,8 @@ impl<B: CodecBackend> Encoder<B> {
         let second = second_reference(&config, &backend, ltr.is_some())?;
         let (quantizer_steps, rate_steps) = quantizer_step_tables(&backend, &config);
         let cadence = configured_cadence(&config, &backend);
-        let aq = BlockAq::new(&config.params, B::BLOCK_QP_LOG2, B::BLOCK_QP_OFFSETS)
-            .filter(|_| B::SUPPORTS_BLOCK_QP);
+        let (qp_log2, qp_offsets) = backend.block_qp_grid();
+        let aq = BlockAq::new(&config.params, qp_log2, qp_offsets).filter(|_| B::SUPPORTS_BLOCK_QP);
         let reuse = (PersistParams::from_overrides(&config.params).reuse >= 0.5)
             .then(|| ReuseTerm::new(B::SUPPORTS_BLOCK_QP));
         let cadence_fixed_qp = RateParams::from_overrides(&config.params).cadence_fixed_qp >= 0.5;
@@ -347,7 +347,7 @@ impl<B: CodecBackend> Encoder<B> {
                 && use_aq
                 && reuse.is_some(),
             unflattened_cadence(&config, &backend),
-            B::BLOCK_QP_LOG2,
+            qp_log2,
         );
         let still = StillPlan::new(
             &RateParams::from_overrides(&config.params),

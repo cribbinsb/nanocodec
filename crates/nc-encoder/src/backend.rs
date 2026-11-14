@@ -231,6 +231,15 @@ pub trait CodecBackend {
     /// and +1%, -2 to -3 dB).
     const SUPPORTS_LAMBDA_HEADROOM: bool = false;
 
+    /// The block-quantizer grid of this backend as configured:
+    /// ([`Self::BLOCK_QP_LOG2`], [`Self::BLOCK_QP_OFFSETS`]) unless its
+    /// block-QP syntax depends on its settings (AV1 `av1.segment_qp`:
+    /// 8x8 segment ids with up to seven offsets, instead of one delta per
+    /// superblock).
+    fn block_qp_grid(&self) -> (u8, usize) {
+        (Self::BLOCK_QP_LOG2, Self::BLOCK_QP_OFFSETS)
+    }
+
     /// The engine will send non-zero [`BlockDecision::qp_offset`]s (AQ or
     /// the syntax stress test is on), called once before the first frame.
     /// Backends whose block-QP syntax costs bits even at offset 0 (AV1

@@ -17,8 +17,9 @@ use crate::mvcoding::MvCdfs;
 use crate::tables::{
     ANGLE_DELTA_CDF, CFL_ALPHA_CDF, CFL_SIGN_CDF, COMP_INTER_CDF, COMP_REF_TYPE_CDF, DELTA_Q_CDF,
     DRL_CDF, FILTER_INTRA_CDF, FILTER_INTRA_MODE_CDF, INTER_COMPOUND_MODE_CDF, INTRA_INTER_CDF,
-    KF_Y_MODE_CDF, NEWMV_CDF, PARTITION_CDF, REFMV_CDF, SINGLE_REF_CDF, SKIP_CDF, TX_SIZE_CDF,
-    TXFM_PARTITION_CDF, UNI_COMP_REF_CDF, UV_MODE_CDF, WIENER_RESTORE_CDF, Y_MODE_CDF, ZEROMV_CDF,
+    KF_Y_MODE_CDF, NEWMV_CDF, PARTITION_CDF, REFMV_CDF, SINGLE_REF_CDF, SKIP_CDF,
+    SPATIAL_PRED_SEG_TREE_CDF, TX_SIZE_CDF, TXFM_PARTITION_CDF, UNI_COMP_REF_CDF, UV_MODE_CDF,
+    WIENER_RESTORE_CDF, Y_MODE_CDF, ZEROMV_CDF,
 };
 use nc_encoder::symbol_cost::{SymbolCosts, symbol_bits};
 
@@ -213,6 +214,8 @@ pub struct CdfContext {
     pub tx_depth: [[Cdf<3>; 3]; 4],
     /// `delta_q_abs` of superblock quantizer deltas.
     pub delta_q: Cdf<4>,
+    /// `segment_id` coded against its spatial prediction, by context.
+    pub segment_id: [Cdf<8>; 3],
     /// `use_wiener` of loop restoration units (AV1 §5.11.58).
     pub use_wiener: Cdf<2>,
     /// Motion-vector difference CDFs (`MvCtx` 0).
@@ -250,6 +253,7 @@ impl CdfContext {
             txfm_split: TXFM_PARTITION_CDF.cdfs(),
             tx_depth: TX_SIZE_CDF.cdfs(),
             delta_q: Cdf::new(DELTA_Q_CDF),
+            segment_id: SPATIAL_PRED_SEG_TREE_CDF.cdfs(),
             use_wiener: Cdf::new(WIENER_RESTORE_CDF),
             mv: MvCdfs::default(),
             coeff: CoeffCdfs::new(q_ctx),
@@ -294,6 +298,7 @@ impl ResetCounters for CdfContext {
         self.txfm_split.reset_counters();
         self.tx_depth.reset_counters();
         self.delta_q.reset_counters();
+        self.segment_id.reset_counters();
         self.use_wiener.reset_counters();
         self.mv.reset_counters();
         self.coeff.reset_counters();

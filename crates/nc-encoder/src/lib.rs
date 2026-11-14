@@ -80,6 +80,7 @@ mod resolution;
 mod reuse;
 mod scene;
 mod second_reference;
+pub mod segment_quantizers;
 mod shape;
 mod skip_budget;
 mod source_scale;

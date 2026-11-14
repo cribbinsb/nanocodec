@@ -6,7 +6,7 @@
 //! Written: a segment map coded every enabled frame (`update_map` = 1),
 //! each id either explicit or predicted from the last segmented frame's
 //! map (`temporal_update`), the per-segment quantizer (`SEG_LVL_ALT_Q`:
-//! block-level QP, `block_qp.rs`) and loop-filter level (`SEG_LVL_ALT_LF`),
+//! block-level QP, `nc_encoder::segment_quantizers`) and loop-filter level (`SEG_LVL_ALT_LF`),
 //! each absolute or a delta from the frame value. Features and the last map
 //! persist across frames until a key frame resets them.
 //! The decoder parses every segmentation feature (`decoder/header.rs`).

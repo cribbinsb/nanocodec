@@ -171,8 +171,6 @@ pub(crate) fn neg_deinterleave(diff: usize, pred: usize, count: usize) -> usize 
 /// The coded symbol of `id` relative to prediction `pred` among `count`
 /// ids: ids near the prediction get small symbols, alternating above and
 /// below it (libaom `av1_neg_interleave`).
-// The encoder's half; until our encoder codes segment ids, tests use it.
-#[cfg(test)]
 pub(crate) fn neg_interleave(id: usize, pred: usize, count: usize) -> usize {
     let (x, r, max) = (id as i64, pred as i64, count as i64);
     let diff = x - r;

@@ -69,9 +69,12 @@ use nc_encoder::symbol_cost::symbol_bits;
 
 mod delta_q;
 mod p_intra;
+mod segments;
 mod stress;
+use crate::segment_id::MAX_SEGMENTS;
 use delta_q::DeltaQ;
 use p_intra::InterFrameIntra;
+use segments::SegmentCoding;
 use stress::RandomSyntax;
 
 /// 64x64 superblocks (`use_128x128_superblock = 0`).
@@ -434,6 +437,10 @@ pub struct Av1Backend {
     block_q_idx: u32,
     /// Superblock quantizer deltas (`BlockDecision::qp_offset`).
     delta_q: DeltaQ,
+    /// Segment-id block quantizers (`av1.segment_qp`), instead of `delta_q`.
+    segments: SegmentCoding,
+    /// `av1.segment_qp`.
+    segment_qp: bool,
     /// One offset shared by chroma quantization and the eventual frame header.
     frame_chroma_delta_q: i32,
     /// Registered frame-kind rounding, converted once rather than per block.
@@ -795,6 +802,8 @@ nc_encoder::param_group! {
         /// on with a long-term reference.
         frame_ids: 0.0, [0.0, 1.0],
             "1 codes frame ids (frame_id_numbers_present_flag, AV1 §5.9.2) so a decoder can tell a lost reference from the stream alone (receivers without the RTP dependency descriptor); on anyway with ltr.interval; costs idLen + 7 delta lengths per inter frame (23 bits flat or layered, up to 65 with a long-term reference)",
+        segment_qp: 0.0, [0.0, 1.0],
+            "1 codes block quantizer offsets as 8x8 segment ids with up to seven quantizers a frame (AV1 §5.9.14, §5.11.9, `backend/segments.rs`) instead of one delta per 64x64 superblock: the reuse term's hold and refinements reach single cells; stream-fixed",
         /// Super-resolution (`superres.rs`): fewer coded samples per frame
         /// at starved bitrates, upscaled normatively by the decoder.
         superres_denom: 8.0, [8.0, 16.0],
@@ -864,6 +873,12 @@ const BASE_PERIOD_PARAM: &str = "av1.base_period";
 /// receiver that sends loss feedback but has no RTP dependency descriptor).
 pub const FRAME_IDS_PARAM: &str = "av1.frame_ids";
 
+/// `av1.segment_qp`: block quantizers as segment ids (fixed for a stream:
+/// the engine's block-QP grid follows it).
+const SEGMENT_QP_PARAM: &str = "av1.segment_qp";
+/// log2 of the 8x8 square one segment id quantizes in the engine's plan.
+const SEGMENT_QP_LOG2: u8 = 3;
+
 /// The frame ids of a stream with `config`: when `av1.frame_ids` asks for
 /// them or a long-term reference is in use (loss resilience, where a
 /// browser receiver must tell a lost reference from the stream), with
@@ -891,7 +906,19 @@ impl CodecBackend for Av1Backend {
     /// the stream-fixed ones below.
     const FRAME_PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[Av1Params::SPECS];
     /// Frame ids are sequence-header syntax.
-    const STREAM_FIXED_PARAMS: &'static [&'static str] = &[FRAME_IDS_PARAM];
+    const STREAM_FIXED_PARAMS: &'static [&'static str] = &[FRAME_IDS_PARAM, SEGMENT_QP_PARAM];
+
+    fn block_qp_grid(&self) -> (u8, usize) {
+        if self.segment_qp {
+            (SEGMENT_QP_LOG2, MAX_SEGMENTS - 1)
+        } else {
+            (Self::BLOCK_QP_LOG2, Self::BLOCK_QP_OFFSETS)
+        }
+    }
+
+    fn block_qp_offset(&mut self, requested: i16) -> i16 {
+        self.segments.assign(requested)
+    }
     /// `begin_frame` starts from committed state (slot CDFs, CDEF memory,
     /// the previous frame's kind); `commit_frame` advances it.
     const RECODE: bool = true;
@@ -1068,6 +1095,8 @@ impl CodecBackend for Av1Backend {
             frame_q_idx: config.quantizer,
             block_q_idx: config.quantizer,
             delta_q: DeltaQ::default(),
+            segments: SegmentCoding::default(),
+            segment_qp: params.segment_qp >= 0.5,
             frame_chroma_delta_q: noise_adapted_chroma_delta(
                 params.chroma_delta_q,
                 0.0,
@@ -1311,7 +1340,11 @@ impl CodecBackend for Av1Backend {
     /// Every reference names a slot (`ref_frame_idx`) and every frame its
     /// `refresh_frame_flags`, so the long-term slot needs nothing new.
     fn enable_block_qp(&mut self) {
-        self.delta_q.enable();
+        if self.segment_qp {
+            self.segments.enable();
+        } else {
+            self.delta_q.enable();
+        }
     }
 
     fn enable_random_decisions(&mut self, rng: nc_encoder::DebugRng) {
@@ -1630,6 +1663,9 @@ impl CodecBackend for Av1Backend {
         }
         self.set_block_qindex(self.frame_q_idx);
         self.delta_q.start_frame(self.frame_q_idx, plan.block_qp);
+        let size = (self.grids.width, self.grids.height);
+        self.segments
+            .start_frame(self.frame_q_idx, plan.block_qp, size);
         self.loop_filter = self.frame_loop_filter();
         self.tx_mode = self.frame_tx_mode();
         self.grids.txfm.start_frame();
@@ -1701,9 +1737,7 @@ impl CodecBackend for Av1Backend {
         recon: &mut Picture,
     ) {
         self.active_ref = decision.reference;
-        let block_q_idx = self
-            .delta_q
-            .block_qindex(self.frame_q_idx, decision.qp_offset);
+        let block_q_idx = self.block_qindex(decision.qp_offset);
         self.use_block_qindex(block_q_idx);
         let (inter, intra_mode) =
             self.choose_block_prediction(block, decision, source, reference, recon);
@@ -1724,9 +1758,7 @@ impl CodecBackend for Av1Backend {
         recon: &mut Picture,
     ) {
         self.active_ref = decision.reference;
-        let block_q_idx = self
-            .delta_q
-            .block_qindex(self.frame_q_idx, decision.qp_offset);
+        let block_q_idx = self.block_qindex(decision.qp_offset);
         self.use_block_qindex(block_q_idx);
         let (PredictionMode::Inter(primary_mv), ReferenceChoice::Compound { secondary_mv }) =
             (decision.mode, decision.reference)
@@ -1808,6 +1840,7 @@ impl CodecBackend for Av1Backend {
             base_q_idx: self.frame_q_idx,
             chroma_delta_q: self.chroma_delta_q(),
             delta_q_present: self.delta_q.present(),
+            segmentation: self.segments.header(),
             loop_filter: self.loop_filter,
             tx_mode_select: self.tx_mode == TxMode::Select,
             disable_cdf_update: !self.adapts_cdfs(),
@@ -1991,6 +2024,9 @@ impl Av1Backend {
         let (above, left) = self.neighbours(block);
         self.writer
             .write_bool(skip, &mut self.cdfs.skip[skip_context(above, left)]);
+        let area = (block.x, block.y, block.width(), block.height());
+        let segment_cdfs = &mut self.cdfs.segment_id;
+        (self.segments).write(&mut self.writer, segment_cdfs, area, block_q_idx, skip);
         self.write_cdef_index(block, skip);
         self.write_delta_qindex(block, block_q_idx, skip);
         let mut info = ModeInfo {
@@ -2391,11 +2427,13 @@ impl Av1Backend {
     /// This frame's `TxMode`: inter frames signal transform sizes with
     /// `av1.inter_tx_split`, and always in the syntax stress test. Without
     /// the split search they still do when blocks may be refined
-    /// (`delta_q_present`): a refined 64x64 block needs four 32x32
+    /// (`delta_q_present`, or segment ids): a refined 64x64 block needs four 32x32
     /// transforms (see [`Self::refined_tx_split`]).
     fn frame_tx_mode(&self) -> TxMode {
-        let select =
-            self.params.inter_tx_split >= 0.5 || self.random.is_some() || self.delta_q.present();
+        let select = self.params.inter_tx_split >= 0.5
+            || self.random.is_some()
+            || self.delta_q.present()
+            || self.segments.active();
         if self.kind == FrameKind::Inter && select {
             TxMode::Select
         } else {
@@ -2622,6 +2660,14 @@ impl Av1Backend {
                 self.grids.cdef_slots[index] = Some(self.writer.reserve_literal());
             }
         }
+    }
+
+    /// The qindex of a block the engine codes `offset` from the frame
+    /// quantizer: its segment's, or the superblock delta's.
+    fn block_qindex(&self, offset: i16) -> u32 {
+        self.segments
+            .block_qindex(offset)
+            .unwrap_or_else(|| self.delta_q.block_qindex(self.frame_q_idx, offset))
     }
 
     /// Quantize the following blocks at `q_idx` (`CurrentQIndex`); chroma

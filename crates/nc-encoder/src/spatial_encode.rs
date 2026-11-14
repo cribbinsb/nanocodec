@@ -235,8 +235,9 @@ fn spatial_layer_state<B: CodecBackend>(
         .then(|| Picture::new(w, h, 0))
         .transpose()
         .map_err(bad_dims)?;
+    let (qp_log2, qp_offsets) = backend.block_qp_grid();
     let aq = use_aq
-        .then(|| BlockAq::new(&config.params, B::BLOCK_QP_LOG2, B::BLOCK_QP_OFFSETS))
+        .then(|| BlockAq::new(&config.params, qp_log2, qp_offsets))
         .flatten();
     let reuse = use_reuse.then(|| ReuseTerm::new(B::SUPPORTS_BLOCK_QP));
     let last_visible_recon = Picture::new(w, h, 0).map_err(bad_dims)?;

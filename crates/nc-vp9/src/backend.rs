@@ -23,7 +23,6 @@ use nc_encoder::{
     spatial::layer_slot_offset,
 };
 
-use crate::block_qp::SegmentQuantizers;
 use crate::bool_coder::BitSink;
 use crate::coeff::{self, Model, PlaneType};
 use crate::contexts::{self, EntropyContexts};
@@ -43,6 +42,7 @@ use crate::types::{
     SUPERBLOCK_LOG2, max_tx_size, size_group, uv_tx_size,
 };
 use crate::{loopfilter, motion};
+use nc_encoder::segment_quantizers::SegmentQuantizers;
 
 /// The non-directional modes and V/H a pruned intra search starts with.
 const BASE_INTRA_MODES: [IntraMode; 4] = [IntraMode::Dc, IntraMode::V, IntraMode::H, IntraMode::Tm];
@@ -1186,7 +1186,7 @@ impl CodecBackend for Vp9Backend {
     }
 
     /// Frames whose blocks may carry offsets then code segment ids,
-    /// segment 0 at the frame quantizer (`block_qp.rs`). Other frames
+    /// segment 0 at the frame quantizer (`nc_encoder::segment_quantizers`). Other frames
     /// leave segmentation to `vp9.skip_filter_off`: segment ids on every
     /// block of a frame that refines a few cost a 4-clip TRAIN proxy +2.9%
     /// `J_real` (`static_cam22` key 48.7 KB against 46.0 KB).
