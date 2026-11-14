@@ -3,15 +3,18 @@
 //! retain both normative rounding stages. Installed only with dotprod support.
 //! Five paired Orin runs: HEVC CPU -5.91%/-5.66%, AV1 -7.02%/-6.28%
 //! on bodycam/crowd, with identical streams and independent decoder gates.
+//! Even-phase subpel row scheduling follows SVT-AV1 4.3.0
+//! `Source/Lib/ASM_NEON_DOTPROD/variance_neon_dotprod.c` (BSD-2-Clause):
+//! independent column accumulators and two output rows per iteration.
 //! Ordinary variance row packing and vector reductions follow libaom 3.15.3
 //! `aom_dsp/arm/variance_neon_dotprod.c` (BSD-2-Clause; `THIRD_PARTY.md`).
 
 use super::{Variance, VarianceEnergy};
 use crate::simd::neon_dot::udot as dot;
 use core::arch::aarch64::{
-    uint8x16_t, vabdq_u8, vaddvq_s32, vaddvq_u32, vcombine_u8, vdup_n_u8, vdupq_n_u8, vdupq_n_u32,
-    vget_high_u8, vget_low_u8, vhaddq_u8, vld1_u8, vld1q_u8, vmlal_u8, vmull_u8,
-    vreinterpretq_s32_u32, vrhaddq_u8, vrshrn_n_u16, vsubq_u32,
+    uint8x16_t, uint32x4_t, vabdq_u8, vaddq_u32, vaddvq_s32, vaddvq_u32, vcombine_u8, vdup_n_u8,
+    vdupq_n_u8, vdupq_n_u32, vget_high_u8, vget_low_u8, vhaddq_u8, vld1_u8, vld1q_u8, vmlal_u8,
+    vmull_u8, vreinterpretq_s32_u32, vrhaddq_u8, vrshrn_n_u16, vsubq_u32,
 };
 
 #[inline]
@@ -60,7 +63,7 @@ pub(super) unsafe fn variance<const W: usize>(
     // Keep independent sums for the 16-byte columns and walk rows once.
     // W is constant, so the inner loop unrolls without a candidate-order
     // change (only exact integer sums are reassociated).
-    let mut squares = [vdupq_n_u32(0); 4];
+    let mut squares = [vdupq_n_u32(0); SUBPEL_MAX_COLUMNS];
     let mut source_sum = squares;
     let mut pred_sum = squares;
     let ones = vdupq_n_u8(1);
@@ -241,6 +244,26 @@ pub(super) unsafe fn subpel<const W: usize>(
     assert!(xo < 8 && yo < 8 && h > 0);
     assert!(rf.len() > h * ref_stride + W);
     assert!(src.len() >= (h - 1) * src_stride + W);
+    if yo != 0 && (xo | yo) & 1 == 0 {
+        // SAFETY: the complete windows above also cover the paired-row path.
+        return unsafe {
+            match (xo, yo) {
+                (0, 2) => block_even::<W, 0, 2>(rf, ref_stride, src, src_stride, h),
+                (0, 4) => block_even::<W, 0, 4>(rf, ref_stride, src, src_stride, h),
+                (0, 6) => block_even::<W, 0, 6>(rf, ref_stride, src, src_stride, h),
+                (2, 2) => block_even::<W, 2, 2>(rf, ref_stride, src, src_stride, h),
+                (2, 4) => block_even::<W, 2, 4>(rf, ref_stride, src, src_stride, h),
+                (2, 6) => block_even::<W, 2, 6>(rf, ref_stride, src, src_stride, h),
+                (4, 2) => block_even::<W, 4, 2>(rf, ref_stride, src, src_stride, h),
+                (4, 4) => block_even::<W, 4, 4>(rf, ref_stride, src, src_stride, h),
+                (4, 6) => block_even::<W, 4, 6>(rf, ref_stride, src, src_stride, h),
+                (6, 2) => block_even::<W, 6, 2>(rf, ref_stride, src, src_stride, h),
+                (6, 4) => block_even::<W, 6, 4>(rf, ref_stride, src, src_stride, h),
+                (6, 6) => block_even::<W, 6, 6>(rf, ref_stride, src, src_stride, h),
+                _ => unreachable!("checked even offsets with a vertical phase"),
+            }
+        };
+    }
     // SAFETY: the assertions cover every16-byte load, including the one-byte
     // shifted horizontal taps and the extra bottom row. ISA is enabled here.
     unsafe {
@@ -300,6 +323,106 @@ unsafe fn block<const W: usize, const H: bool, const V: bool>(
     Variance {
         sse: vaddvq_u32(squares),
         sum: vaddvq_u32(source_sum) as i32 - vaddvq_u32(pred_sum) as i32,
+    }
+}
+
+const SUBPEL_MAX_COLUMNS: usize = 64 / 16;
+
+/// One row of an even-phase bilinear block, with a separate accumulation
+/// chain for each 16-byte column. The previous filtered row is reused.
+#[inline]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn even_row<const W: usize, const X: usize, const Y: usize>(
+    rf: *const u8,
+    src: *const u8,
+    previous: &mut [uint8x16_t; SUBPEL_MAX_COLUMNS],
+    squares: &mut [uint32x4_t; SUBPEL_MAX_COLUMNS],
+    source_sum: &mut [uint32x4_t; SUBPEL_MAX_COLUMNS],
+    pred_sum: &mut [uint32x4_t; SUBPEL_MAX_COLUMNS],
+) {
+    let ones = vdupq_n_u8(1);
+    // SAFETY: caller supplies a complete current reference/source row;
+    // each 16-byte load and horizontal one-byte tap lies in those windows.
+    unsafe {
+        for c in 0..W / 16 {
+            let mut next = vld1q_u8(rf.add(c * 16));
+            if X != 0 {
+                next = blend(next, vld1q_u8(rf.add(c * 16 + 1)), X);
+            }
+            let prediction = blend(previous[c], next, Y);
+            previous[c] = next;
+            let source = vld1q_u8(src.add(c * 16));
+            let difference = vabdq_u8(source, prediction);
+            squares[c] = dot(squares[c], difference, difference);
+            source_sum[c] = dot(source_sum[c], source, ones);
+            pred_sum[c] = dot(pred_sum[c], prediction, ones);
+        }
+    }
+}
+
+/// SVT's even-phase two-row schedule, retaining a checked single-row tail
+/// because our shared kernels also accept odd block heights.
+#[target_feature(enable = "neon,dotprod")]
+#[allow(clippy::needless_range_loop)] // Match the fixed column schedule used by the row helper.
+unsafe fn block_even<const W: usize, const X: usize, const Y: usize>(
+    rf: &[u8],
+    rs: usize,
+    src: &[u8],
+    ss: usize,
+    h: usize,
+) -> Variance {
+    let mut previous = [vdupq_n_u8(0); SUBPEL_MAX_COLUMNS];
+    let mut squares = [vdupq_n_u32(0); SUBPEL_MAX_COLUMNS];
+    let mut source_sum = squares;
+    let mut pred_sum = squares;
+    // SAFETY: subpel validated W+1 bytes for h+1 reference rows and W
+    // bytes for h source rows. W is 16/32/64; the fixed arrays cover W/16.
+    unsafe {
+        for c in 0..W / 16 {
+            previous[c] = vld1q_u8(rf.as_ptr().add(c * 16));
+            if X != 0 {
+                previous[c] = blend(previous[c], vld1q_u8(rf.as_ptr().add(c * 16 + 1)), X);
+            }
+        }
+        let mut r = 0;
+        while r + 1 < h {
+            even_row::<W, X, Y>(
+                rf.as_ptr().add((r + 1) * rs),
+                src.as_ptr().add(r * ss),
+                &mut previous,
+                &mut squares,
+                &mut source_sum,
+                &mut pred_sum,
+            );
+            even_row::<W, X, Y>(
+                rf.as_ptr().add((r + 2) * rs),
+                src.as_ptr().add((r + 1) * ss),
+                &mut previous,
+                &mut squares,
+                &mut source_sum,
+                &mut pred_sum,
+            );
+            r += 2;
+        }
+        if r < h {
+            even_row::<W, X, Y>(
+                rf.as_ptr().add((r + 1) * rs),
+                src.as_ptr().add(r * ss),
+                &mut previous,
+                &mut squares,
+                &mut source_sum,
+                &mut pred_sum,
+            );
+        }
+    }
+    for c in 1..W / 16 {
+        squares[0] = vaddq_u32(squares[0], squares[c]);
+        source_sum[0] = vaddq_u32(source_sum[0], source_sum[c]);
+        pred_sum[0] = vaddq_u32(pred_sum[0], pred_sum[c]);
+    }
+    Variance {
+        sse: vaddvq_u32(squares[0]),
+        sum: vaddvq_s32(vreinterpretq_s32_u32(vsubq_u32(source_sum[0], pred_sum[0]))),
     }
 }
 
@@ -417,7 +540,7 @@ mod tests {
         }
         let scalar = crate::diff::scalar::diff_fns();
         for (index, w) in [(2, 16), (3, 32), (4, 64)] {
-            for h in [1, 4, 16, 64] {
+            for h in [1, 3, 4, 7, 15, 16, 63, 64] {
                 for pattern in 0..4 {
                     let rf: Vec<u8> = (0..(h + 1) * (w + 1))
                         .map(|i| match pattern {

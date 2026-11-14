@@ -850,3 +850,14 @@ The paired SIMD128 AV1 filter transpose in
 2018–2021 and Two Orioles LLC 2018, BSD-2-Clause). Its byte/word/dword unpack stages are
 adapted to paired 8x8 groups in Rust SIMD128, retaining our shared filter
 arithmetic; no assembly is copied.
+
+## SVT-AV1 NEON dot-product subpixel schedule — BSD-2-Clause
+
+`crates/nc-dsp/src/diff/neon_dotprod.rs` reimplements the independent
+column accumulators and two-row even-phase bilinear schedule in pinned
+SVT-AV1 v4.3.0 `Source/Lib/ASM_NEON_DOTPROD/variance_neon_dotprod.c`
+(`FUSED_SUBPEL_VAR_WXH_XY`). That file credits Copyright (c) 2023, Alliance
+for Open Media. All rights reserved, and specifies BSD-2-Clause and the
+Alliance for Open Media Patent License 1.0. The BSD-2-Clause text is
+reproduced under libaom above. Our implementation retains the shared
+signed sum result and adds a single-row tail for odd block heights.
