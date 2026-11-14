@@ -114,6 +114,27 @@ const MEASURE_PERIOD: usize = 4;
 /// source's noise variance is half the change).
 const NOISE_REALISATIONS: f64 = 2.;
 
+/// Most QP units [`ReuseTerm::hold_still`] codes a held cell coarser than
+/// the frame: two octaves of step put any residual of its error deep in the
+/// dead zone.
+const MAX_HOLD_OFFSET: f64 = 12.;
+/// Bits per sample per octave of a residual's error removed (rate-distortion
+/// of a Gaussian at high rate: `R = ½·log2(σ²/D)`).
+const RATE_PER_OCTAVE_OF_DISTORTION: f64 = 0.5;
+
+/// Bounds of one planned refinement ([`ReuseTerm::plan_refinement`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RefinementLimits {
+    /// Smallest estimated bits worth a refinement.
+    pub least: f64,
+    /// Estimated bits at which no more cells are added.
+    pub most: f64,
+    /// Most QP units a cell is coded finer than the frame.
+    pub max_offset: f64,
+    /// Fewest frames a cell's source has been still.
+    pub min_run: u8,
+}
+
 /// What the reuse term needs to know about the frame being planned.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReuseFrame<'a> {
@@ -202,6 +223,9 @@ pub(crate) struct ReuseTerm {
     /// refinements; other inter frames copy still cells).
     coded_error: Vec<f64>,
     coded_step: Vec<f64>,
+    /// The finest sample step every cell was coded at since its source
+    /// last moved (infinite: unknown), for [`Self::hold_still`].
+    held: Vec<f64>,
     /// The squared inter-level step below which each cell may be degraded
     /// (rounded up; 0: never, an unknown error): the planner's prefilter,
     /// one small array instead of the cells' history.
@@ -249,6 +273,7 @@ impl ReuseTerm {
             attempt: Vec::new(),
             coded_error: Vec::new(),
             coded_step: Vec::new(),
+            held: Vec::new(),
             degrade_below: Vec::new(),
             flags: Vec::new(),
             offsets: Vec::new(),
@@ -407,6 +432,107 @@ impl ReuseTerm {
         self.candidates = candidates;
     }
 
+    /// Plan a refinement of `frame` (after [`Self::plan`]): still cells
+    /// reused for long (`R`: their still run, up to the next key) whose
+    /// reconstruction is worse than their price step `λ / (1 + R)` would
+    /// deliver, above their source's noise, get that price (at most
+    /// `limits.max_offset` QP finer), in order of forward value per
+    /// estimated bit (`R` times the error removed, over the bits that
+    /// remove it) until the estimated bits reach `limits.most`. The bits
+    /// of a cell are the rate of its residual at its step (half a bit per
+    /// sample per halving of its error, the high-rate rule), which the loan
+    /// scales by what refinements really cost. Returns the estimate, or 0
+    /// (and plans nothing more) when it would be below `limits.least`.
+    pub fn plan_refinement(&mut self, frame: &ReuseFrame<'_>, limits: RefinementLimits) -> f64 {
+        let runs = frame.still.runs.cells();
+        let pre = frame.pre.blocks.cells();
+        if frame.key || self.error.len() != runs.len() || pre.len() != runs.len() {
+            return 0.;
+        }
+        let mut chosen: Vec<(f64, usize, f64, f64)> = Vec::new();
+        for cell in 0..runs.len() {
+            let run = runs[cell];
+            if run < limits.min_run
+                || self.flags[cell] & (KNOWN | DIRTY) != KNOWN
+                || self.offsets[cell] != 0.
+            {
+                continue;
+            }
+            let reuse = frame.reuse(run) as f64;
+            let noise = source_change(pre[cell].sad_prev) / NOISE_REALISATIONS;
+            let offset = reuse_offset(reuse)
+                .max(offset_to(step_for_distortion(noise), frame.sample_step))
+                .max(-limits.max_offset);
+            if offset >= 0. || offset >= self.attempt[cell] - REUSE_QP_PER_OCTAVE {
+                continue;
+            }
+            let error = self.error[cell];
+            let distortion = expected_distortion(frame.sample_step * step_ratio(offset));
+            if error <= (distortion + noise) * SPREAD {
+                continue;
+            }
+            let bits = CELL_SAMPLES * RATE_PER_OCTAVE_OF_DISTORTION * (error / distortion).log2();
+            let value = reuse * (error - distortion) * CELL_SAMPLES;
+            chosen.push((value / bits, cell, offset, bits));
+        }
+        chosen.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+        let mut estimate = 0.;
+        let taken = chosen
+            .iter()
+            .take_while(|&&(_, _, _, bits)| {
+                let fits = estimate < limits.most;
+                estimate += bits;
+                fits
+            })
+            .count();
+        if estimate < limits.least {
+            return 0.;
+        }
+        for &(_, cell, offset, _) in &chosen[..taken] {
+            self.offsets[cell] = offset;
+            self.offset_cells.push(cell);
+            if self.per_block {
+                self.flags[cell] |= REFINED;
+            }
+        }
+        self.any_offset = !self.offset_cells.is_empty();
+        estimate
+    }
+
+    /// Hold the still cells of an ordinary frame of `frame` (after
+    /// [`Self::plan`]) at the finest step they were coded at since their
+    /// source settled (`held`): a cell still for `min_run` frames whose
+    /// held step is coarser than the frame's gets the offset to it, so its
+    /// residual (that step's quantisation noise) codes to nothing and it is
+    /// copied. Without this a frame whose level fell below the quality a
+    /// still picture holds (cheap still frames lower the level) refines the
+    /// whole picture unplanned: the bursts planned refinements replace (AV1
+    /// `chirla` 93 kbps with the cadence flat: 10-14-budget frames at the
+    /// level). A cell whose source moved forgets its held step.
+    pub fn hold_still(&mut self, frame: &ReuseFrame<'_>, min_run: u8) {
+        let runs = frame.still.runs.cells();
+        if frame.key || self.held.len() != runs.len() {
+            return;
+        }
+        for (cell, &run) in runs.iter().enumerate() {
+            if run == 0 {
+                self.held[cell] = f64::INFINITY;
+                continue;
+            }
+            let held = self.held[cell];
+            if run < min_run
+                || self.offsets[cell] != 0.
+                || !held.is_finite()
+                || held <= frame.sample_step
+            {
+                continue;
+            }
+            self.offsets[cell] = offset_to(held, frame.sample_step).min(MAX_HOLD_OFFSET);
+            self.offset_cells.push(cell);
+        }
+        self.any_offset = !self.offset_cells.is_empty();
+    }
+
     /// Whether the planned frame is an inter frame predicting from the
     /// frame before (`previous_reference`), so that a block copied from its
     /// reference at the zero vector leaves its cells as the term last saw
@@ -423,7 +549,7 @@ impl ReuseTerm {
         &mut self,
         (x, y): (usize, usize),
         (width, height): (usize, usize),
-        copy: bool,
+        (copy, step): (bool, f64),
     ) {
         let cols = self.cols;
         if (copy && self.copies_previous) || cols == 0 {
@@ -432,11 +558,17 @@ impl ReuseTerm {
         let (col0, col1) = ((x / CELL).min(cols), ((x + width) / CELL).min(cols));
         for row in (y / CELL)..(y + height) / CELL {
             // Rows past the picture (a block over its padding) end it.
-            let Some(flags) = self.flags.get_mut(row * cols + col0..row * cols + col1) else {
+            let cells = row * cols + col0..row * cols + col1;
+            let Some(flags) = self.flags.get_mut(cells.clone()) else {
                 break;
             };
             for flags in flags {
                 *flags |= DIRTY;
+            }
+            if let Some(held) = self.held.get_mut(cells) {
+                for held in held {
+                    *held = held.min(step);
+                }
             }
         }
     }
@@ -503,6 +635,8 @@ impl ReuseTerm {
             }
             self.coded_step.clear();
             self.coded_step.resize(cells, coded.sample_step);
+            self.held.clear();
+            self.held.resize(cells, f64::INFINITY);
             self.measured.clear();
             self.measured.resize(cells, self.frame);
             self.degrade_below.clear();
@@ -683,6 +817,9 @@ impl ReuseTerm {
         if coded.key || offset < 0. {
             self.coded_error[cell] = self.error[cell];
             self.coded_step[cell] = coded.sample_step * step_ratio(offset);
+            if coded.key {
+                self.held[cell] = self.coded_step[cell];
+            }
         }
         if !coded.key && offset < 0. {
             self.attempt[cell] = offset;
@@ -904,7 +1041,7 @@ mod tests {
         }
         t.set_reference(true);
         for (cell, &coded) in coded.iter().enumerate() {
-            t.coded_block((cell * CELL, 0), (CELL, CELL), !coded);
+            t.coded_block((cell * CELL, 0), (CELL, CELL), (!coded, 1.));
         }
         let analysis = pre(&vec![sad; values.len()]);
         let map = still(runs.to_vec());

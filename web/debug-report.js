@@ -99,7 +99,8 @@ export function shownNumbers(element) {
 /** A short human summary line of a view. */
 function viewLine(view) {
   const c = view.config;
-  const what = view.config.source === 'reference' ? `pre-encoded \`${view.streamId}\`` : `live nanocodec ${c.codec} ${c.preset}`;
+  const what = view.config.source === 'reference' ? `pre-encoded \`${view.streamId}\``
+    : `live nanocodec ${c.codec} ${c.preset}${c.stillCamera ? ' + still-camera noise handling' : ''}`;
   return `${what} · ${c.width}×${c.height} · ${c.fps} fps · ${c.rateMode === 'cbr' ? `target ${c.targetKbps} kbps` : `fixed quantizer ${c.qp}`}${c.rendition ? ` · codes ${c.rendition}` : ''}`;
 }
 

@@ -27,12 +27,13 @@ against `docs/results/` on the day; if the independent re-run's held-out table h
 > It is a narrow subset: 8-bit 4:2:0, forward prediction only, no lookahead, one thread, CBR. The comparisons in
 > the README are against other encoders' real-time settings on one thread (x264 zerolatency without B-frames,
 > SVT-AV1 `--rtc`, libvpx/libaom realtime); those are mature, general-purpose encoders that do better in other
-> modes. At low rates (150–1200 kbps at 720p; savings are about half at higher rates), on 137 held-out clips
-> from sources we had never used (5-second windows, one key frame), our AV1 Default needs about 45% fewer bits
-> than x264 `medium` at those settings, and about 38% fewer than x264 `medium --tune psnr`; our fastest H.264
-> preset needs more bits than the latter. On the 11 clips we tune beside the AV1 figure is about 51%, and over
-> 20-second windows (71 held-out sources) about 6 points less (−40.8%), level with SVT-AV1 M8, which is about
-> 3x slower. It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
+> modes. Our zero line is x264 `medium --tune zerolatency,psnr` with the same 1 s buffer as ours. At low rates
+> (150–1200 kbps at 720p; savings are about half at higher rates), on 135 held-out clips from sources we had
+> never used (5-second windows, one key frame), our AV1 Default needs about 38% fewer bits than it (45% fewer than
+> x264's default tuning); our two fastest H.264 presets are not ahead of it. Part of that margin is x264's rate
+> control in this mode: at fixed QP against fixed QP, on the clips we tune beside, the AV1 figure is about 34%.
+> Over 20-second windows (71 held-out sources) our margins are 6–10 points smaller, and SVT-AV1 M8, about 3x
+> slower, is level with our AV1. It is slower than SVT-AV1's fastest real-time presets; our decoders are slower than dav1d and vpxdec.
 >
 > The FAQ answers the questions I expected (benchmarks, rate control, overfitting, licences, what's missing):
 > https://github.com/cribbinsb/nanocodec/blob/main/docs/FAQ.md. We also had an agent red-team our own claims

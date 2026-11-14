@@ -63,6 +63,7 @@ pub mod params;
 mod partition;
 mod partition_plan;
 mod persistence;
+mod planned_refinement;
 mod pre_tx_skip;
 mod psy;
 mod qp_cadence;
@@ -72,6 +73,7 @@ mod rate_control;
 mod rate_window;
 mod references;
 mod refinement_gain;
+mod refinement_loan;
 mod refresh;
 mod resolution;
 mod reuse;
@@ -82,6 +84,7 @@ mod skip_budget;
 mod source_scale;
 pub mod spatial;
 mod startup_lookahead;
+mod still_camera;
 mod still_skip;
 mod structure;
 pub mod symbol_cost;
@@ -128,6 +131,7 @@ pub use random_decisions::DebugRng;
 pub use refresh::{IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshWindow};
 pub use second_reference::uses_long_term_slot;
 pub use shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
+pub use still_camera::still_camera_params;
 pub use still_skip::{
     MIN_STILL_SKIP_SIZE, PlaneZeroLimits, StaticSkipTest, copy_zero_vector_prediction,
     zero_vector_residual_is_zero,

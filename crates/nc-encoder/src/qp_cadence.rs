@@ -169,6 +169,18 @@ impl QpCadence {
         }
     }
 
+    /// This cadence with every inter frame at the same quantizer, start-up
+    /// included: planned refinements (`rate.refine`, `refine_startup` 0)
+    /// do all the refining.
+    pub fn flat(self) -> Self {
+        Self {
+            period: 1,
+            startup_end: 0,
+            steady_flat: true,
+            ..self
+        }
+    }
+
     /// Whether `distance` frames after the last key is in the start-up
     /// cadence.
     pub fn in_startup(&self, distance: u64) -> bool {

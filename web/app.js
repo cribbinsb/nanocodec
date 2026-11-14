@@ -36,6 +36,8 @@ import { SpeedHint } from './speed-hint.js';
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause'), stepButton = $('#step');
 const startButton = $('#start'), video = $('#input-video'), notice = $('#notice');
+// The still-camera noise handling for live encodes (nc-encoder still_camera.rs); on by default here.
+const stillCamera = $('#still-camera');
 const preview = $('#source-preview').getContext('2d');
 const PREVIEW_WIDTH = 160, PREVIEW_HEIGHT = 90;
 // How long to wait for a video that is not ready to show a frame (ms).
@@ -109,7 +111,7 @@ async function downloadReport() {
       clipSeconds: clipSeconds(lastTick, loopLength), loop: Number.isFinite(loopLength) ? Math.floor(lastTick / loopLength) : 0,
       session: text('#session-stats'), runtime: text('#runtime-label'), notice: notice.hidden ? null : notice.textContent,
       viewNote: $('#view-note').hidden ? null : text('#view-note'),
-      delivered, analysis: analysis.debugState(), magnifier: loupe.enabled, showOriginal },
+      delivered, analysis: analysis.debugState(), magnifier: loupe.enabled, showOriginal, stillCamera: stillCamera.checked },
     events: traceTail(),
   }, panels.map(panel => panel.debugState()), { includeStreams: $('#debug-streams').checked });
   download(new Blob([formatReport(report)], { type: 'text/markdown' }), `nanocodec-debug-${report.page.time.replace(/[:.]/g, '-')}.md`);
@@ -447,7 +449,10 @@ async function start() {
     // The clip file each view codes (and is scored against): its own height's rendition on
     // the exact path, the playing video's otherwise.
     const renditions = exact ? viewSourceUrls() : panels.map(() => clipUrl(clip, Math.max(...panels.map(p => p.current.height))));
-    panels.forEach((panel, i) => { panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null }; });
+    panels.forEach((panel, i) => {
+      panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null,
+        stillCamera: panel.current.source === 'live' && stillCamera.checked };
+    });
     comparison = new Comparison(panels, {
       onFrame: (results, originals, tick) => finishFrame(token, results, originals, tick),
       onError: error => { if (token === generation) fail(error); },
@@ -602,6 +607,7 @@ for (const group of CLIP_GROUPS) {
   clipPicker.append(optgroup);
 }
 clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); start(); });
+stillCamera.addEventListener('change', () => settingsChanged('still-camera'));
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
 $('#keyframe').addEventListener('click', () => {
   if (!running) return;

@@ -1,0 +1,8 @@
+line,test,test_mode,anchor,anchor_mode,bd_j,bd_psnr_yuv,bd_vmaf_v1,bd_ms_ssim,clips,frames,ladder_kbps,binary_commit
+cbr_vs_cbr,nanocodec-av1,cbr,x264-medium,cbr,-45.4,-49.5,-48.7,-33.5,8,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780
+qp_vs_qp,nanocodec-av1,qp,x264-medium,qp,-37.1,-35.5,-32.2,-31.9,11,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780
+cbr_vs_cbr,nanocodec-av1,cbr,x264-medium~psnr,cbr,-38.3,-41.8,-34.1,-35.1,9,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780
+qp_vs_qp,nanocodec-av1,qp,x264-medium~psnr,qp,-33.9,-31.9,-30.2,-28.6,10,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780
+rc_cost,nanocodec-av1,cbr,nanocodec-av1,qp,16.0,10.1,14.4,14.4,11,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780
+rc_cost,x264-medium,cbr,x264-medium,qp,70.5,62.7,106.2,40.0,10,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780
+rc_cost,x264-medium~psnr,cbr,x264-medium~psnr,qp,48.6,37.8,46.0,50.5,11,150,150/300/600/1200,ce34e12c1020b5e3f6abfcb7c12faf62806c2780

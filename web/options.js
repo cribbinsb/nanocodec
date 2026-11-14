@@ -57,7 +57,8 @@ export function settingLines(text) {
 
 /**
  * The `nanocodec encode` command with the settings of `config` (as Panel.config returns it)
- * for `frames` frames: codec, size, rate, key interval, quantizer seed, preset, overrides.
+ * for `frames` frames: codec, size, rate, key interval, quantizer seed, preset, overrides,
+ * film grain and the still-camera noise handling.
  */
 export function cliCommand(config, frames) {
   const args = ['nanocodec encode', `--codec ${config.codec}`, '--input source.yuv',
@@ -68,6 +69,7 @@ export function cliCommand(config, frames) {
   if (preset) args.push(`--preset ${preset}`);
   for (const setting of settingLines(config.overrides)) args.push(`--param ${setting}`);
   if (config.filmGrain) args.push('--film-grain');
+  if (config.stillCamera) args.push('--still-camera');
   args.push(`--output stream.${streamExtension(config.codec)}`);
   return args.join(' ');
 }

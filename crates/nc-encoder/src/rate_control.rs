@@ -23,6 +23,7 @@ use crate::qp_cadence::{
 use crate::quality_cap::QualityFloor;
 use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
+use crate::refinement_loan::StillRate;
 use crate::skip_budget::{self, SkipBudget};
 use crate::{Codec, FrameRate};
 use std::fmt;
@@ -181,9 +182,13 @@ fn rate_cadence(params: &RateParams, calibration: &RateModel) -> QpCadence {
 }
 
 /// `cadence`, flattened when the cyclic spatial cadence
-/// (`rate.cadence_spatial`) gives its boost to blocks instead of frames.
+/// (`rate.cadence_spatial`) gives its boost to blocks instead of frames,
+/// or when planned refinements (`rate.refine`) refine still blocks instead
+/// of whole base frames (their start-up cadence too with `refine_startup` 0).
 pub(crate) fn spatial_aware(cadence: QpCadence, params: &RateParams) -> QpCadence {
-    if params.cadence_spatial >= 0.5 {
+    if params.refine >= 0.5 && params.refine_startup < 0.5 {
+        cadence.flat()
+    } else if params.cadence_spatial >= 0.5 || params.refine >= 0.5 {
         cadence.flattened()
     } else {
         cadence
@@ -652,6 +657,8 @@ pub(crate) struct RateController {
     /// The current frame's budget without the skip-aware scale: what it
     /// would have been planned, debt repayment included.
     unscaled_budget: f64,
+    /// The refinement loan, quiet run-up and held key of still scenes.
+    still: StillRate,
 }
 impl RateController {
     #[allow(clippy::too_many_arguments)]
@@ -765,6 +772,7 @@ impl RateController {
             skip_budget: SkipBudget::new(params),
             frame_skip_scale: 1.,
             unscaled_budget: 0.,
+            still: StillRate::new(params, f64::from(rate.num) / f64::from(rate.den)),
         })
     }
     /// Apply a changed target, peak or buffer mid-stream (a transport's
@@ -1000,7 +1008,11 @@ impl RateController {
             let boost = self.key_boost();
             self.phase_inter_budget(boost) * boost
         } else {
-            self.inter_budget() * self.share.budget_scale * skip_scale + self.held_budget()
+            (self.inter_budget() - self.still.repayment())
+                .max(self.inter_budget() * MIN_BUDGET_CORRECTION)
+                * self.share.budget_scale
+                * skip_scale
+                + self.held_budget()
         };
         if !key && self.share.reallocated_bits > 0. {
             scheduled += self.share.reallocated_bits;
@@ -1023,7 +1035,11 @@ impl RateController {
     }
     /// Debt beyond the scheduled key loan: what the correction repays.
     fn excess(&self) -> f64 {
-        self.fullness - self.settings.capacity / 2. - self.scheduled_key_debt
+        self.fullness - self.settings.capacity / 2. - self.scheduled_debt()
+    }
+    /// Debt repaid on schedule: the key's loan and a refinement's.
+    fn scheduled_debt(&self) -> f64 {
+        self.scheduled_key_debt + self.still.outstanding()
     }
     /// The debit term, after a frame interval: the debt correction alone
     /// is proportional, and on content whose bits come in one-sided bursts
@@ -1043,7 +1059,7 @@ impl RateController {
         let Some(integral) = self.debit else {
             return;
         };
-        let floor = self.settings.capacity / 2. + self.scheduled_key_debt - self.debit_credit;
+        let floor = self.settings.capacity / 2. + self.scheduled_debt() - self.debit_credit;
         self.fullness = self.fullness.max(floor);
         let horizon = (self.key_repay_seconds * self.frame_fps).max(1.);
         let most = DEBIT_MAX_BUFFERS * self.settings.capacity;
@@ -1079,7 +1095,11 @@ impl RateController {
             f64::INFINITY
         } else {
             let room = ceiling * self.settings.capacity - self.strict_occupancy;
-            if key {
+            if key && self.holds_still_key() {
+                // A still scene's key may take `rate.key_hold_still` buffers whatever the
+                // debt: the frames after it repay it.
+                room.max(self.settings.capacity * self.still.key_hold_buffers)
+            } else if key {
                 room
             } else {
                 room.max(self.channel_drain())
@@ -1200,7 +1220,20 @@ impl RateController {
             (m * hint / self.key_allowance()).powf(1. / self.settings.config.rate_exponent)
                 / self.block_ratio
         });
+        if self.holds_still_key() {
+            // The held quality, within the buffers alone: the frames after
+            // the key repay what it borrows.
+            return level_step.max(allowance_step);
+        }
         level_step.min(budget_step).max(allowance_step)
+    }
+
+    /// Whether the key being planned is a periodic key of a still scene
+    /// planned at the quality its inter frames hold (`rate.key_hold_still`).
+    fn holds_still_key(&self) -> bool {
+        self.still.key_hold_buffers > 0.
+            && self.stats.frames > 0
+            && self.still_share >= self.key_repay_still_from
     }
 
     /// Most bits a key may take: what the peak channel and the physical
@@ -1211,7 +1244,14 @@ impl RateController {
     /// level took a whole 1 s GOP's bits (VP9 `static_chirla_s000c3_360p`
     /// 150 kbps, key every 30 frames: keys of 141-150 kbit against a budget
     /// of 32 kbit, every GOP 13-23% over).
+    ///
+    /// A still scene's key with `rate.key_hold_still` is bounded by the
+    /// strict buffer's room alone (at least that many buffers): its loan is
+    /// repaid by the frames after it.
     fn key_allowance(&self) -> f64 {
+        if self.holds_still_key() {
+            return self.strict_room(true).max(1.);
+        }
         let frames = f64::from(self.repay_frames());
         let repayable = self.uniform_budget() * (frames - (frames - 1.) * MIN_BUDGET_CORRECTION);
         (self.settings.peak / self.frame_fps + (self.settings.capacity - self.occupancy))
@@ -1296,8 +1336,53 @@ impl RateController {
         } else if !layer.is_flat() {
             self.ladder.offset(layer)
         } else {
-            self.cadence.offset(index - self.last_key_index, strength)
+            self.cadence_offset(index, strength)
         }
+    }
+
+    /// The cadence offset of flat inter frame `index` at `strength`, quieted
+    /// before a key.
+    fn cadence_offset(&self, index: u64, strength: f64) -> f64 {
+        self.quieted(
+            index,
+            self.cadence.offset(index - self.last_key_index, strength),
+        )
+    }
+
+    /// The frame just selected on `budget`: its plan is its ordinary budget
+    /// and prediction plus its refinement loan (0 on an ordinary frame).
+    fn add_refinement_loan(&mut self, key: bool, budget: f64) {
+        let loan = self.still.on_select(key, self.last_predicted, budget);
+        self.last_predicted += loan;
+        self.last_budget = budget + loan;
+    }
+
+    /// `offset` with no base boost in the last `rate.prekey_quiet` before a
+    /// scheduled periodic key: whatever a finer frame refines there the key
+    /// codes again (AV1 Default, 600 f still points: 8-20% of the base
+    /// bursts' bits fell in the second before a key).
+    fn quieted(&self, index: u64, offset: f64) -> f64 {
+        let period = u64::from(self.period);
+        let to_key = (period > 0 && period != u64::from(u32::MAX))
+            .then(|| period - (index - self.last_key_index) % period);
+        self.still.quieted(to_key, offset)
+    }
+
+    /// The largest loan a refinement of the next inter frame may take: its
+    /// `rate.refine_budgets` uniform budgets, within the room the strict
+    /// buffer leaves beyond the frame's own budget (so a refinement that
+    /// costs its loan is never re-coded); 0 when off or below
+    /// `rate.refine_min_budgets`. With the smallest worthwhile loan.
+    pub(crate) fn refinement_room(&self) -> Option<(f64, f64)> {
+        let room = (self.strict_room(false) - self.budget(false)).max(0.);
+        self.still.room(self.uniform_budget(), room)
+    }
+
+    /// Plan the next inter frame as a refinement whose blocks were
+    /// estimated at `estimate` bits: its loan comes on top of its ordinary
+    /// budget (`RefinementLoan`).
+    pub(crate) fn plan_refinement(&mut self, estimate: f64) {
+        self.still.plan(estimate);
     }
 
     /// The floor of a frame at `offset` QP from the inter level: the quality
@@ -1569,16 +1654,16 @@ impl RateController {
         self.last_hint = h;
         self.last_index = index;
         self.last_key = key;
-        self.last_budget = budget;
         self.last_peak =
             self.settings.peak / self.frame_fps + (self.settings.capacity - self.occupancy);
         self.last_predicted = self.model[slot].map_or(budget, |m| {
             m * h / (self.steps[q as usize] * self.block_ratio).powf(exponent)
         });
+        self.add_refinement_loan(key, budget);
         let cadence_offset = if key || !layer.is_flat() {
             0.
         } else {
-            self.cadence.offset(index - self.last_key_index, strength)
+            self.cadence_offset(index, strength)
         };
         self.trace_plan(level, cadence_offset, hint.static_fraction);
         q
@@ -1835,7 +1920,13 @@ impl RateController {
         self.model_hint[class] = self.last_hint;
     }
     pub fn feedback(&mut self, bits: u64) {
-        self.learn(bits);
+        // A refinement frame's bits are its ordinary plan plus the refined
+        // blocks: the role model learns from ordinary frames only, the loan
+        // its cost scale.
+        if !self.still.refining() {
+            self.learn(bits);
+        }
+        self.still.settle(bits as f64);
         self.inframe_ratio = 1.;
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);

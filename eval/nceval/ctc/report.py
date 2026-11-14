@@ -73,16 +73,21 @@ def _psnr(mse: float) -> float:
     return 10.0 * math.log10(PEAK_SQUARED / mse)
 
 
+#: Figures read from libvmaf's pooled means, in the CSV's column order.
+_POOLED = {"SSIM": "float_ssim", "MS-SSIM": "float_ms_ssim", "VMAF": "vmaf",
+           "VMAF-NEG": "vmaf_neg", "CIEDE2000": "ciede2000", "PSNR-HVS": "psnr_hvs",
+           "CAMBI": "cambi"}
+
+
 def quality_of(record: dict) -> dict[str, float]:
+    """A point's figures; a lean-scored point (worker.py `metrics`) has only those
+    its metric set measured."""
     means, overall = record["means"], record["overall_psnr"]
     y, u, v = overall["apsnr_y"], overall["apsnr_cb"], overall["apsnr_cr"]
     yf, uf, vf = means["psnr_y"], means["psnr_cb"], means["psnr_cr"]
     return {"Y": y, "U": u, "V": v,
             "APSNR-YUV": _psnr(sum(w * _mse(p) for w, p in zip(APSNR_WEIGHTS, (y, u, v)))),
-            "SSIM": means["float_ssim"], "MS-SSIM": means["float_ms_ssim"],
-            "VMAF": means["vmaf"], "VMAF-NEG": means["vmaf_neg"],
-            "CIEDE2000": means["ciede2000"], "PSNR-HVS": means["psnr_hvs"],
-            "CAMBI": means["cambi"],
+            **{figure: means[metric] for figure, metric in _POOLED.items() if metric in means},
             "Y-fa": yf, "U-fa": uf, "V-fa": vf,
             "PSNR-YUV": sum(w * p for w, p in zip(PSNR_YUV_WEIGHTS, (yf, uf, vf))),
             "VMAF-v1": means["vmaf_v1"]}

@@ -5,7 +5,7 @@
 //!                  --fps F --qp Q --frames N --output out.{ivf,264,hevc,vvc}
 //!                  [--recon recon.yuv] [--display-recon shown.yuv]
 //!                  [--block 8|16|32|64] [--intra-period N] [--key-qp-offset D] [--preset NAME] [--params FILE]
-//!                  [--param name=value]... [--film-grain [STRENGTH]]
+//!                  [--param name=value]... [--film-grain [STRENGTH]] [--still-camera]
 //! nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]
 //!                  [--frame-md5 frames.md5] [--film-grain 0|1]   (AV1: 0 shows frames grain-free)
 //! nanocodec params      # list tunable parameters, defaults, ranges
@@ -171,6 +171,9 @@ const USAGE: &str = concat!(
     "       [--ltr-interval frames] [--simulate-loss frame]\n",
     "       [--preset NAME] [--params FILE] [--param name=value]...\n",
     "       [--film-grain [STRENGTH]]   (AV1 only)\n",
+    "       [--still-camera]   (noise skip + skip-aware budget, AV1 also the noise split, over the\n",
+    "                          preset: lowers the bitrate on still noisy scenes; off in every preset;\n",
+    "                          AV1 may run a long still stream slightly over target)\n",
     "       [--buffer-ms ms] [--peak-bitrate kbps] [--min-qp Q] [--max-qp Q]\n",
     "       [--max-qp-step N] [--rate-log frames.csv] [--frame-drop]\n",
     "       [--rate-change FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]]... [--resize FRAME:WxH]...\n",
@@ -420,14 +423,22 @@ fn parse_temporal_layers(args: &[String]) -> Result<u8, String> {
         .map_err(|_| format!("bad value for --temporal-layers: {value}"))
 }
 
-/// The heuristic parameters (`--preset`, `--params`, `--scalability`, `--param`)
-/// with the options that stand for parameters applied over them.
+/// The heuristic parameters (`--preset`, `--still-camera`, `--params`,
+/// `--scalability`, `--param`) with the options that stand for parameters
+/// applied over them.
 fn encode_params(args: &[String], codec: Codec) -> Result<ParamOverrides, String> {
     let number = |v: String, flag: &str| {
         v.parse::<u64>()
             .map_err(|_| format!("bad value for {flag}: {v}"))
     };
-    let mut params = params::overrides_from_args_with_scalability(args, parse_scalability(args)?)?;
+    // `--still-camera` lays its parameters over the preset (`still_camera.rs`).
+    let named = if args.iter().any(|a| a == "--still-camera") {
+        nc_encoder::still_camera_params(codec)
+    } else {
+        ParamOverrides::default()
+    };
+    let mut params =
+        params::overrides_from_args_with_scalability(args, &named, parse_scalability(args)?)?;
     // `--intra-refresh N` is `--param refresh.period=N`.
     if let Some(period) = params::flag_value(args, "--intra-refresh") {
         params.set("refresh.period", number(period, "--intra-refresh")? as f32);

@@ -120,6 +120,9 @@ pub struct NcEncoderConfig {
     /// Film grain strength relative to the measured source noise; 0 = the
     /// default.
     pub film_grain_strength: f32,
+    /// Non-zero: the still-camera noise handling over the preset
+    /// (`nc_encoder::still_camera_params`); `params` still win.
+    pub still_camera: u8,
 }
 
 /// `nc_frame`: one borrowed input frame.
@@ -298,6 +301,7 @@ pub unsafe extern "C" fn nc_encoder_config_default(
         timing: 0,
         film_grain: 0,
         film_grain_strength: 0.0,
+        still_camera: 0,
     };
     NcStatus::Ok
 }
@@ -984,6 +988,7 @@ fn session_config(config: &NcEncoderConfig, params: &[NcParam]) -> Option<Sessio
         },
         film_grain: config.film_grain != 0,
         film_grain_strength: film_grain_strength(config.film_grain_strength).ok()?,
+        still_camera: config.still_camera != 0,
         params: overrides,
     })
 }
@@ -1181,6 +1186,7 @@ mod tests {
             timing: 0,
             film_grain: 0,
             film_grain_strength: 0.0,
+            still_camera: 0,
         };
         // SAFETY: valid cfg pointer.
         let status = unsafe { nc_encoder_config_default(&raw mut cfg, NC_CODEC_AV1, w, h) };
@@ -1316,6 +1322,7 @@ mod tests {
             timing: 0,
             film_grain: 0,
             film_grain_strength: 0.0,
+            still_camera: 0,
         };
         // SAFETY: valid cfg pointer.
         let status = unsafe { nc_encoder_config_default(&raw mut cfg, NC_CODEC_AV1, w, h) };
@@ -1406,6 +1413,7 @@ mod tests {
             timing: 0,
             film_grain: 0,
             film_grain_strength: 0.0,
+            still_camera: 0,
         };
         // SAFETY: valid cfg pointer.
         let status = unsafe { nc_encoder_config_default(&raw mut cfg, NC_CODEC_VP9, w, h) };

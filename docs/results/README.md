@@ -17,9 +17,14 @@ comparison encoder for the same quality.
 
 ## Bitrate vs speed
 
-**Headline (held-out):** the README's charts are on 138 clips from never-used sources:
-[bd-vs-speed-independent_fresh_2026-11-13.md](bd-vs-speed-independent_fresh_2026-11-13.md) (137 scored) and the
-209-clip set [bd-vs-speed-independent_2026-11-13.md](bd-vs-speed-independent_2026-11-13.md), commit 8b492382.
+**Headline (held-out):** the README's charts are on 138 clips from never-used sources against x264 `medium
+--tune zerolatency,psnr`:
+[bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr.md](bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr.md)
+(135 scored) and all 209 held-out clips
+[bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr.md](bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr.md),
+commit 8b492382; against the default-tuned x264 `medium`:
+[fresh](bd-vs-speed-independent_fresh_2026-11-13.md), [all](bd-vs-speed-independent_2026-11-13.md). Coding
+efficiency vs rate-control cost, on the development clips: [rc-cost-2026-11-14.csv](rc-cost-2026-11-14.csv).
 The charts and tables below are the **development chart** on the 11 clips we tune beside
 ([development-chart.md](development-chart.md)); for most of our presets they are more favourable than the held-out
 numbers.

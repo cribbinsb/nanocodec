@@ -618,9 +618,16 @@ class Refresh:
             meta.write_text(json.dumps(self.meta(), indent=1) + "\n")
         clipset = (["--clipset", str(Path(self.args.clipset).resolve()),
                     "--prebuilt", str(self.streams())] if self.args.clipset else [])
-        self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset,
+        anchor = ["--anchor", self.args.anchor] if getattr(self.args, "anchor", None) else []
+        if self.args.clipset:
+            title = f"Bitrate vs encode speed, held-out clips ({Path(self.args.clipset).stem})"
+            anchor += ["--title", title + (f", zero line {self.args.anchor}" if anchor else "")]
+        self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset, *anchor,
                   "--timing", str(REPO / TIMING_FILE), "--timing-x86", str(REPO / TIMING_X86_FILE),
-                  "--timing-hardware", str(REPO / TIMING_HARDWARE_FILE), "--meta", str(meta), "--out", str(REPO / RESULTS),
+                  # NVENC runs only on this PC's GPU: never on a rented clip set's streams
+                  *([] if self.args.clipset else
+                    ["--timing-hardware", str(REPO / TIMING_HARDWARE_FILE)]),
+                  "--meta", str(meta), "--out", str(REPO / RESULTS),
                   "--workers", str(self.args.workers)], "render.log", REPO / "eval", scope=True)
 
     def check(self) -> None:
@@ -850,6 +857,8 @@ def main() -> None:
     p.add_argument("--x86-rounds", type=int, default=HOST_ROUNDS,
                    help=f"interleaved x86 timing rounds per clip (default {HOST_ROUNDS}; "
                         "more on a loaded PC)")
+    p.add_argument("--anchor", help="render (only) against another zero line, e.g. "
+                   "x264-medium~psnr: nceval.chart render --anchor (outputs get a -vs- suffix)")
     p.add_argument("--clipset", help="refresh the chart on this clip set (the held-out chart) "
                    "instead of the main one; its points are measured on rented machines")
     p.add_argument("--seed", action="store_true",

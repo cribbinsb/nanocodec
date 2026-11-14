@@ -82,10 +82,13 @@ const PRESETS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Build the overrides from `args`: `--preset NAME`, `--params FILE`,
-/// optional `--scalability`, and any number of `--param name=value`.
+/// Build the overrides from `args`: `--preset NAME`, then `named` (the
+/// named settings such as `--still-camera`, `nc_encoder::still_camera_params`),
+/// `--params FILE`, optional `--scalability`, and any number of
+/// `--param name=value`, later settings winning.
 pub fn overrides_from_args_with_scalability(
     args: &[String],
+    named: &ParamOverrides,
     scalability: Option<ScalabilityMode>,
 ) -> Result<ParamOverrides, String> {
     let mut overrides = ParamOverrides::default();
@@ -97,6 +100,7 @@ pub fn overrides_from_args_with_scalability(
             .ok_or_else(|| format!("unknown preset '{name}' (built in: {})", preset_names()))?;
         apply_file_text(&mut overrides, text, &format!("preset {name}"))?;
     }
+    overrides = overrides.overlaid_with(named);
     if let Some(path) = flag_value(args, "--params") {
         let text = crate::stdio::read_text(Path::new(&path))?;
         apply_file_text(&mut overrides, &text, &path)?;
@@ -135,7 +139,7 @@ pub fn overrides_from_args_with_scalability(
 
 #[cfg(test)]
 pub fn overrides_from_args(args: &[String]) -> Result<ParamOverrides, String> {
-    overrides_from_args_with_scalability(args, None)
+    overrides_from_args_with_scalability(args, &ParamOverrides::default(), None)
 }
 
 /// `nanocodec params [--codec C]`: every parameter with its default, range
@@ -258,6 +262,22 @@ mod tests {
                 .is_empty()
         );
         assert!(overrides_from_args(&args(&["--preset", "nope"])).is_err());
+    }
+    #[test]
+    fn named_settings_lie_over_the_preset_and_under_params() {
+        let named = nc_encoder::still_camera_params(nc_encoder::Codec::Av1);
+        let o = overrides_from_args_with_scalability(
+            &args(&["--preset", "av1-fast", "--param", "decision.noise_skip=2"]),
+            &named,
+            None,
+        )
+        .unwrap();
+        assert_eq!(o.get("rate.skip_budget"), named.get("rate.skip_budget"));
+        assert_eq!(
+            o.get("planner.noise_split"),
+            named.get("planner.noise_split")
+        );
+        assert_eq!(o.get("decision.noise_skip"), Some(2.0));
     }
     #[test]
     fn av1_fast_preserves_frozen_controls_and_accepts_chroma_override() {

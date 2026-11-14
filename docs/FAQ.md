@@ -43,25 +43,34 @@ AI-written; see "What do the benchmarks show" below for what it does and does no
 ## What the benchmarks show, and what they do not
 
 **What is compared?** Each encoder in its own real-time, low-delay rate control at the same bitrate targets on one
-CPU thread: 720p, 150 frames per clip with one key frame, 150–1200 kbps (plus 40 and 75 kbps on four clips, for
+CPU thread, against x264 `medium --tune zerolatency,psnr` as the zero line: 720p, 150 frames per clip with one key frame, 150–1200 kbps (plus 40 and 75 kbps on four clips, for
 every encoder), 1 s buffer. Reference encoders and versions: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3,
 libvpx v1.16.0, openh264 v2.7.0, NVENC (RTX 5090). Command lines: [bd-vs-speed.md](results/bd-vs-speed.md#method)
 and [tools/anchors/README.md](../tools/anchors/README.md).
 
-**Is that fair to them?** It is one configuration: the one our use case needs (no B-frames, no lookahead, one
-thread, CBR with a 1 s buffer). Those projects are general-purpose and are usually run with more threads,
-lookahead or B-frames, where they will do better. x264's and x265's defaults are tuned for how the picture looks
-(psychovisual optimisations), which PSNR, VMAF and MS-SSIM cannot judge, and we ran no subjective test; our
-presets were tuned on exactly the PSNR / VMAF / MS-SSIM mix we report. So the chart also shows x264 and x265 at
-the metric-oriented tuning their own documentation provides (`--tune psnr` or `--tune ssim`, whichever scores
-better for each), beside their default-tuned points. The AV1 and VP9 references (SVT-AV1 `--rtc`, libaom,
-libvpx realtime) already run their PSNR tunes, and openh264 and NVENC run with adaptive quantisation off. That matters: on the 137 fresh held-out clips of the headline chart (commit 8b492382), x264
-`medium --tune psnr` (otherwise the same settings) needs 10.3% fewer bits than the default-tuned anchor on BD-J,
-and against it our savings are about 7–10 points smaller: AV1 Default −37.9% instead of −45.3%, HEVC −39.8% (−47.0%),
-VVC −44.3% (−51.1%), H.264 Default −19.1% (−28.7%), H.264 Fast −11.2%, H.264 Faster −3.3% (−0.0% on all 209
-clips: not ahead), and our H.264 Fastest needs more bits (+4.5%; +9.1% on all 209)
-([table](../README.md#quality-and-speed)). We would welcome better settings for any reference within the same
-constraints.
+**Is the comparison fair to them?** It is one configuration: the one our use case needs (no B-frames, no
+lookahead, one thread, CBR with a 1 s buffer). Those projects are general-purpose and are usually run with more
+threads, lookahead or B-frames, where they will do better. Within that configuration we made three choices:
+
+- **The zero line is x264 `medium` set up as a careful live sender for these metrics:** `--tune
+  zerolatency,psnr` (psychovisual optimisation and adaptive quantisation off), no B-frames, no lookahead, ABR with
+  the same 1 s VBV our encoders get. x264's default tuning favours how the picture looks, which PSNR, VMAF and
+  MS-SSIM cannot judge (we ran no subjective test), so against the metrics we report it needs 10.3% more bits than
+  the PSNR tune on the fresh held-out clips; it stays in the table as a row. Our presets are tuned on exactly this
+  metric mix.
+- **Every other reference at its own metric-oriented setting:** x264 and x265 also at `--tune psnr` / `--tune
+  ssim` where that is distinguishably better for them; SVT-AV1 `--rtc`, libaom and libvpx realtime already run
+  their PSNR tunes; openh264 and NVENC run with adaptive quantisation off (turning it on did not help them).
+- **Rate control is part of what is compared.** Every encoder runs its own real-time CBR, so a margin mixes coding
+  efficiency with how much each rate control costs. Measured separately on the development clips for our AV1
+  Default: at fixed QP against fixed QP it needs 33.9% fewer bits than PSNR-tuned x264 `medium` (38.3% in CBR
+  against CBR); CBR costs our AV1 16.0% against its own fixed QP, x264 `--tune psnr` 48.6% and default-tuned x264
+  70.5% ([rc-cost-2026-11-14.csv](results/rc-cost-2026-11-14.csv)).
+
+On the 135 fresh held-out clips against that anchor (commit 8b492382): AV1 Default −38.5%, HEVC −40.2%, VVC
+−44.7%, H.264 Default −19.0%, H.264 Fast −11.1%, H.264 Faster −3.2% (+0.0% on all held-out clips: not ahead), and
+our H.264 Fastest needs more bits (+4.7%; +9.2% on all) ([table](../README.md#quality-and-speed)). We would welcome
+better settings for any reference within the same constraints.
 
 **Why a composite metric ("BD-J")?** We tune on it, so we report it, but every table also gives the plain
 BD-PSNR-YUV and BD-VMAF numbers ([full table](results/bd-vs-speed.md), [per metric](results/README.md#per-metric)).

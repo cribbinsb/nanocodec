@@ -10,7 +10,8 @@
 // comparison is meant to stay as set up.
 //
 // The estimate scales the view's measured per-frame encode time (the encode
-// worker's, with its source conversion) by PRESET_COST and by picture area. It
+// worker's, with its source conversion) by PRESET_COST and by picture area
+// (SIZE_COST_EXPONENT). It
 // only picks the choices and is never shown: the delivered rate also depends on
 // decoding, scoring, capture and the other view, which do not scale with this
 // view's settings and, on few cores, share them (one CPU, 720p30 H.264 vs AV1:
@@ -33,6 +34,14 @@ export const PRESET_COST = {
   vp9: { default: 1, fast: 0.7, faster: 0.5, fastest: 0.45 },
   av2: { default: 1 },
 };
+/**
+ * Encode time scales with picture area to this power. Less than linear: the
+ * view's measured time includes scaling the clip's rendition to the view and
+ * per-frame work that does not shrink with the picture. Measured in the page on
+ * one CPU (speed-hint.py, 2026-11-14): 1280x720 -> 854x480 (area / 2.25) cut
+ * the encode time 1.27x for AV1 Default and 1.55x for H.264 Default.
+ */
+const SIZE_COST_EXPONENT = 0.5;
 /** The share of the frame interval an estimated encode may take (decode, capture and the page need the rest). */
 const FIT_SHARE = 0.85;
 /** A view is slow when it encodes below this share of its frame rate (app.js KEEPING_UP is the same). */
@@ -54,7 +63,7 @@ const area = (width, height) => width * height;
 export function lighterChoices({ codec, preset, width, height, fps }, encodeMs) {
   const costs = PRESET_COST[codec], budget = FIT_SHARE * 1000 / fps, options = [];
   const atPreset = name => encodeMs * costs[name] / costs[preset];
-  const atSize = (w, h) => encodeMs * area(w, h) / area(width, height);
+  const atSize = (w, h) => encodeMs * (area(w, h) / area(width, height)) ** SIZE_COST_EXPONENT;
   if (preset in costs) {
     const lighter = Object.keys(costs).filter(name => (name === 'default' || CODECS[codec][name]) && costs[name] < costs[preset])
       .sort((a, b) => costs[b] - costs[a]);

@@ -5,6 +5,7 @@
                                 [--source-dir /mnt/ctc] [--shard I/N]
                                 [--skip-done RESULTS[,RESULTS...]]
     python3 -m nceval.ctc report --results DIR[,DIR...] --out DIR   (points.csv, bd.csv, tables.md)
+    python3 -m nceval.ctc local | compare ...   (one variant on this machine: ctc/local.py)
 
 `stage` writes a run directory for ctc/worker.py (jobs, sources, tools as
 symlinks). `--references` is a directory with bin/{TAppEncoder,EncoderApp,
@@ -22,6 +23,7 @@ from pathlib import Path
 
 from ..config import load_paths
 from . import plan as planner
+from .local import main_local
 from .report import report
 from .tables import page_tables
 
@@ -98,6 +100,7 @@ def main(argv: list[str]) -> None:
     r.add_argument("--results", required=True)
     r.add_argument("--out", required=True)
     r.set_defaults(handler=report_command)
+    main_local(sub)
     args = parser.parse_args(argv)
     args.handler(args)
 

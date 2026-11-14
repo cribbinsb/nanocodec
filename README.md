@@ -59,83 +59,108 @@ advantage of being built after them, with their code to learn from.
 ## Quality and speed
 
 The charts compare every encoder in its own real-time rate control at the same bitrate targets, on one CPU core,
-on **138 held-out clips from sources none of our tuning, screens or charts had used** (137 scored; see below).
-The clips we tune beside give more favourable numbers for most of our presets; they are on a
+on **held-out clips from sources none of our tuning, screens or charts had used**. The zero line is **x264
+`medium` set up as a careful live sender for these metrics**: `--tune zerolatency,psnr` (no psychovisual
+optimisation, no adaptive quantisation), no B-frames, no lookahead, ABR with the same 1 s VBV our encoders get, one
+key frame. x264's default tuning, which favours how the picture looks, is kept as a row. The clips we tune beside
+give more favourable numbers for most of our presets; they are on a
 [development page](docs/results/development-chart.md).
 
-![Bitrate saving vs encode speed on 137 held-out clips, one Jetson Orin Nano core](docs/results/bd-vs-speed-independent_fresh_2026-11-13.svg)
+![Bitrate saving vs encode speed on 135 held-out clips, against x264 medium --tune psnr, one Jetson Orin Nano core](docs/results/bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr.svg)
 
-![Bitrate saving vs encode speed on 137 held-out clips, one Ryzen 9 5950X core](docs/results/bd-vs-speed-independent_fresh_2026-11-13-x86.svg)
+![Bitrate saving vs encode speed on 135 held-out clips, against x264 medium --tune psnr, one Ryzen 9 5950X core](docs/results/bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr-x86.svg)
 
 <sub>**What is measured.** Clips: 138 never-used camera sources (`independent_fresh_2026-11-13`, drawn by a fixed
-seeded rule; [list and rules](docs/results/independent-2026-11-13.md#clips)), mostly 540p–720p; 137 scored (one
-clip has no reliable curve overlap for libaom rt 8 and is left out for every encoder). Window: 150 frames per clip
-from frame 0, one key frame (5 s at 30 fps; see [window length](#window-length)). Rates: CBR at 150–1200 kbps for
-720p30, scaled to each clip's pixel rate and capped at half the source's bitrate, plus 40/75 kbps on clips that
-need them, 1 s buffer (see [bitrate range](#bitrate-range)). Our encoders at commit 8b492382 (with the rate-control
-change of 2026-11-13), measured 2026-11-13; references: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom v3.15.3,
-libvpx v1.16.0, openh264 v2.7.0, one thread, low delay, settings in [the method](docs/results/bd-vs-speed.md#method).
-Metric: BD-rate on achieved bitrates against x264 `medium --tune zerolatency --bframes 0 --rc-lookahead 0 --threads 1`
-(ABR, 1 s VBV); BD-J = PSNR-YUV, VMAF v1 (model v1.0.16) and MS-SSIM in equal thirds, averaged over content
-classes and over the full and lower-rate halves of the curves. The bars are the per-clip interquartile range;
-95% bootstrap intervals for an earlier build of the same clips are in the
-[independent report](docs/results/independent-2026-11-13.md). Scoring: stock libvmaf 3.2.1 on rented CPUs and our
-GPU path, which agree at stored precision. Speed: not measured on these clips but on the main chart's three timing
-clips (single thread, fixed quantizer near 600 kbps; CBR takes our encoders a median ~2% more CPU, up to 7% for HEVC
-Default): Jetson, one Cortex-A78AE core at 1.728 GHz; PC, one Ryzen 9 5950X core on a shared, loaded machine,
-normalised by x264 `medium` runs in the same rounds (read PC differences of a few percent as noise). Full pages:
-[fresh 138](docs/results/bd-vs-speed-independent_fresh_2026-11-13.md),
-[all 209](docs/results/bd-vs-speed-independent_2026-11-13.md).</sub>
+seeded rule; [list and rules](docs/results/independent-2026-11-13.md#clips)), mostly 540p–720p; 135 have a reliable
+curve overlap with this anchor for every encoder and are scored (the others are left out for everyone). Window:
+150 frames per clip from frame 0, one key frame (5 s at 30 fps; see [window length](#window-length)). Rates: CBR at
+150–1200 kbps for 720p30, scaled to each clip's pixel rate and capped at half the source's bitrate, plus 40/75 kbps
+on the clips the default-anchored chart needs them on, 1 s buffer (see [bitrate range](#bitrate-range)). Our
+encoders at commit 8b492382 (with the rate-control change of 2026-11-13), encoded and scored 2026-11-13, drawn
+2026-11-14 against this anchor from the same points; references: x264 0.165, x265 4.2, SVT-AV1 v4.3.0, libaom
+v3.15.3, libvpx v1.16.0, openh264 v2.7.0, one thread, low delay
+([settings](docs/results/bd-vs-speed.md#method)). Metric: BD-rate on achieved bitrates; BD-J = PSNR-YUV, VMAF v1
+(model v1.0.16) and MS-SSIM in equal thirds, averaged over content classes and over the full and lower-rate halves
+of the curves. The bars are the per-clip interquartile range; 95% bootstrap intervals for an earlier build are in
+the [independent report](docs/results/independent-2026-11-13.md). Scoring: stock libvmaf 3.2.1 on rented CPUs and
+our GPU path, which agree at stored precision. Speed: not measured on these clips but on the main chart's three
+timing clips (single thread, fixed quantizer near 600 kbps; CBR takes our encoders a median ~2% more CPU, up to 7%
+for HEVC Default), from the timing record as of 2026-11-14: Jetson, one Cortex-A78AE core at 1.728 GHz; PC, one
+Ryzen 9 5950X core on a shared, loaded machine, normalised by x264 `medium` runs in the same rounds (read PC
+differences of a few percent as noise). Full pages:
+[fresh](docs/results/bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr.md),
+[all held-out](docs/results/bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr.md); the same data against
+the default-tuned x264 `medium`: [fresh](docs/results/bd-vs-speed-independent_fresh_2026-11-13.md),
+[all](docs/results/bd-vs-speed-independent_2026-11-13.md).</sub>
 
-| Encoder | BD-J, 137 fresh clips | BD-J, 207 of 209 held-out clips | vs x264 `medium --tune psnr`, fresh | vs x264 `medium --tune psnr`, all | fps, Jetson core | fps, PC core |
-|---|---:|---:|---:|---:|---:|---:|
-| nanocodec VVC Default | −51.1% | −48.6% | −44.3% | −41.6% | 27.9 | 71.8 |
-| nanocodec AV2 Default | −49.2% | −46.5% | −42.3% | −39.4% | 31.5 | 85.5 |
-| nanocodec HEVC Default | −47.0% | −43.9% | −39.8% | −36.5% | 51.0 | 121.0 |
-| nanocodec VP9 Default | −45.4% | −43.4% | −37.8% | −35.8% | 34.4 | 94.2 |
-| nanocodec AV1 Default | −45.3% | −43.5% | −37.9% | −35.9% | 41.1 | 102.6 |
-| nanocodec AV1 Fast | −40.2% | −37.3% | −32.0% | −28.9% | 65.2 | 165.8 |
-| nanocodec HEVC Fast | −40.0% | −37.8% | −31.6% | −29.5% | 78.5 | 175.8 |
-| SVT-AV1 v4.3.0 M8 | −42.2% | −36.6% | −34.0% | −27.5% | 14.3 | 45.2 |
-| x265 4.2 `medium --tune psnr` | −33.7% | −31.0% | −24.8% | −22.0% | 8.0* | 25.6* |
-| x265 4.2 `medium` | −30.3% | −27.8% | −20.5% | −17.9% | 8.0 | 25.6 |
-| SVT-AV1 v4.3.0 M12 `--rtc` | −29.1% | −21.9% | −19.1% | −11.3% | 70.9 | 182.1 |
-| SVT-AV1 v4.3.0 M13 `--rtc` | −27.0% | −20.1% | −16.8% | −9.2% | 79.2 | 193.1 |
-| nanocodec H.264 Default | −28.7% | −25.9% | −19.1% | −16.4% | 74.4 | 175.9 |
-| libaom v3.15.3 realtime `--cpu-used=8` | −27.7% | −24.3% | −17.0% | −14.0% | 17.4 | 42.1 |
-| nanocodec H.264 Fast | −21.5% | −18.3% | −11.2% | −8.1% | 113.5 | 230.2 |
-| nanocodec H.264 Faster | −14.5% | −11.1% | −3.3% | −0.0% | 133.7 | 265.7 |
-| x264 0.165 `medium --tune psnr` | −10.3% | −10.1% | 0 | 0 | 26.7* | 67.6* |
-| nanocodec H.264 Fastest | −7.4% | −2.7% | +4.5% | +9.1% | 155.4 | 313.7 |
-| libvpx v1.16.0 VP9 realtime `--cpu-used=9` | −2.1% | −0.1% | +11.7% | +13.1% | 47.8 | 113.0 |
-| x264 0.165 `veryfast` | −0.1% | +3.9% | +13.5% | +18.0% | 85.4 | 206.4 |
-| x264 0.165 `medium` (the anchor) | 0 | 0 | +13.4% | +13.0% | 26.7 | 67.6 |
-| openh264 v2.7.0 | +14.2% | +13.9% | +30.9% | +29.4% | 111.5 | 260.3 |
-| x264 0.165 `ultrafast` | +33.1% | +39.4% | +49.4% | +56.5% | 190.5 | 547.1 |
+| Encoder (150 frames, one key frame) | BD-J, 135 fresh clips | BD-J, all held-out clips | for comparison: vs default-tuned x264 `medium`, fresh | fps, Jetson core | fps, PC core |
+|---|---:|---:|---:|---:|---:|
+| nanocodec VVC Default | −44.7% | −41.8% | −51.1% | 27.9 | 71.8 |
+| nanocodec AV2 Default | −42.9% | −39.6% | −49.2% | 31.5 | 85.5 |
+| nanocodec HEVC Default | −40.2% | −36.7% | −47.0% | 51.0 | 121.0 |
+| nanocodec AV1 Default | −38.5% | −36.1% | −45.3% | 44.1 | 107.0 |
+| nanocodec VP9 Default | −38.3% | −35.9% | −45.4% | 39.2 | 100.0 |
+| nanocodec AV1 Fast | −32.6% | −29.1% | −40.2% | 66.7 | 160.6 |
+| nanocodec HEVC Fast | −32.1% | −29.7% | −40.0% | 78.5 | 175.8 |
+| SVT-AV1 v4.3.0 M8 | −34.4% | −27.7% | −42.2% | 14.3 | 45.2 |
+| x265 4.2 `medium --tune psnr` | −25.5% | −22.3% | −33.7% | 8.0* | 25.6* |
+| x265 4.2 `medium` | −21.1% | −18.1% | −30.3% | 8.0 | 25.6 |
+| SVT-AV1 v4.3.0 M12 `--rtc` | −19.9% | −11.6% | −29.1% | 70.9 | 182.1 |
+| nanocodec H.264 Default | −19.0% | −16.4% | −28.7% | 74.4 | 175.9 |
+| SVT-AV1 v4.3.0 M13 `--rtc` | −17.6% | −9.5% | −27.0% | 79.2 | 193.1 |
+| libaom v3.15.3 realtime `--cpu-used=8` | −17.2% | −14.1% | −27.7% | 17.4 | 42.1 |
+| nanocodec H.264 Fast | −11.1% | −8.1% | −21.5% | 113.5 | 230.2 |
+| nanocodec H.264 Faster | −3.2% | +0.0% | −14.5% | 133.7 | 265.7 |
+| x264 0.165 `medium --tune zerolatency,psnr` (the zero line) | 0 | 0 | −10.3% | 26.7* | 67.6* |
+| nanocodec H.264 Fastest | +4.7% | +9.2% | −7.4% | 153.5 | 311.8 |
+| libvpx v1.16.0 VP9 realtime `--cpu-used=9` | +11.4% | +13.0% | −2.1% | 47.8 | 113.0 |
+| x264 0.165 `veryfast` | +13.4% | +18.0% | −0.1% | 85.4 | 206.4 |
+| x264 0.165 `medium`, default tuning | +13.8% | +13.1% | 0 | 26.7 | 67.6 |
+| openh264 v2.7.0 | +31.7% | +29.8% | +14.2% | 111.5 | 260.3 |
+| x264 0.165 `ultrafast` | +48.5% | +56.1% | +33.1% | 190.5 | 547.1 |
 
-<sub>Negative: fewer bits than x264 `medium` (default tuning) for the same quality. "Fresh": 137 of the 138
-never-used clips. "All": 207 of 209 clips (the fresh set plus 71 clips of an earlier held-out check, which our
-rotating screens have drawn on since 2026-11-11). * the default-tuned run's fps (the metric-tuned run is not yet
-timed). These pages use the chart tool's method (one clip set shared by every encoder, clips without an overlap
-left out); the [independent report](docs/results/independent-2026-11-13.md), on an earlier build, uses a
-per-encoder class-balanced estimate with bootstrap intervals; the two differ by up to about 1.3 points.</sub>
+<sub>Negative: fewer bits than x264 `medium --tune zerolatency,psnr` for the same quality. "Fresh": 135 of the 138
+never-used clips. "All held-out": 205 of 209 clips (the fresh set plus 71 clips of an earlier held-out check,
+which our rotating screens have drawn on since 2026-11-11). The comparison column is the same data against the
+default-tuned x264 `medium` (137 fresh clips). * the default-tuned run's fps (the tuned run is not yet timed).
+These pages use the chart tool's method (one clip set shared by every encoder, clips without an overlap left out);
+the [independent report](docs/results/independent-2026-11-13.md), on an earlier build, uses a per-encoder
+class-balanced estimate with bootstrap intervals; the two differ by up to about 1.3 points.</sub>
 
-**How to read this.** x264's and x265's defaults are tuned for how the picture looks (psychovisual
-optimisations), which PSNR, VMAF and MS-SSIM cannot judge, and no subjective test was run; our presets are tuned
-on exactly this metric mix. So every number is also given against x264 `medium --tune psnr`, its documented
-metric-oriented tuning, which needs 10.3% fewer bits than the default-tuned anchor on these clips. The charts
-also plot each reference's metric-oriented tuning where it is distinguishably better for that encoder (lightly
-filled, joined to its default point by a dashed line). Where we are behind:
+**Coding efficiency vs rate control** (development clips, not the held-out set). A CBR-vs-CBR comparison mixes
+two things: how well each encoder codes, and how much its real-time rate control costs it. Measured separately on
+the 11 development clips (150 frames, one key, 150/300/600/1200 kbps, no low rungs; build ce34e12c, crates as
+7fd7eb1e; [rc-cost-2026-11-14.csv](docs/results/rc-cost-2026-11-14.csv), `eval/nceval/rc_cost.py`), for our AV1
+Default so far:
 
-- **Against x264 `medium --tune psnr`**, our H.264 Faster saves 3.3% on the fresh clips and nothing on all 209
-  (−0.0%), and H.264 Fastest needs more bits (+4.5% fresh, +9.1% all).
+| AV1 Default vs | both in CBR | both at fixed QP |
+|---|---:|---:|
+| x264 `medium --tune psnr` | −38.3% (9 clips) | −33.9% (10 clips) |
+| x264 `medium`, default tuning | −45.4% (8 clips) | −37.1% (11 clips) |
+
+| Rate-control cost (BD-J of an encoder's CBR against its own fixed QP; positive = bits lost) | |
+|---|---:|
+| nanocodec AV1 Default | +16.0% |
+| x264 `medium --tune psnr` | +48.6% |
+| x264 `medium`, default tuning | +70.5% |
+
+So part of every CBR margin above is x264's rate control in this low-delay, 1 s-buffer mode, not coding
+efficiency: at fixed QP against fixed QP our AV1 needs about 34% fewer bits than PSNR-tuned x264 on these clips.
+The other codecs' lines are being added to the same file.
+
+**How to read this.** Where we are behind:
+
+- **Against x264 `medium --tune psnr`**, our H.264 Faster saves 3.2% on the fresh clips and nothing on all
+  held-out clips (+0.0%), and H.264 Fastest needs more bits (+4.7% fresh, +9.2% all).
 - **Speed per quality:** SVT-AV1 M12 and M13 `--rtc`, x264 `veryfast` / `ultrafast` and openh264 encode faster
   than our AV1, HEVC and VVC Defaults, and x264 `ultrafast` is faster than any preset of ours; our VVC Default
   runs below 30 fps at 720p on the Jetson core.
 - **On the fresh clips SVT-AV1 M8** (14 fps on the Jetson) needs fewer bits than our AV1 Fast and HEVC Fast (on
-  all 209 it does not).
+  all held-out clips it does not).
 
-Per-metric numbers, per-clip spread and known weaknesses: **[docs/results/](docs/results/README.md)**.
+The charts also plot each reference's other metric-oriented tunings where they are distinguishably better for
+that encoder (lightly filled, joined to the default point by a dashed line). Per-metric numbers, per-clip spread
+and known weaknesses: **[docs/results/](docs/results/README.md)**.
 
 #### Window length
 

@@ -61,6 +61,10 @@ typedef struct nc_encoder_config {
     uint8_t timing;             /* header timing: 0 nominal, 1 constant, 2 variable rate */
     uint8_t film_grain;         /* AV1 film grain synthesis; other codecs: NC_ERROR_CONFIG */
     float film_grain_strength;  /* relative to the measured source noise; 0 = the default */
+    uint8_t still_camera;       /* still-camera noise handling over the preset: noise skip and
+                                   skip-aware budget (AV1 also the noise split); lowers the bitrate
+                                   on still noisy scenes; off in every preset; on AV1 a long still
+                                   stream may run slightly over target; nc_param entries still win */
 } nc_encoder_config;
 
 typedef struct nc_param {

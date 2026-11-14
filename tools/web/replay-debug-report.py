@@ -246,6 +246,8 @@ def cli_command(nanocodec: Path, config: dict, frames: int, colour: str | None, 
             args += ['--param', '='.join(part.strip() for part in setting.split('='))]
     if config.get('filmGrain'):
         args.append('--film-grain')
+    if config.get('stillCamera'):
+        args.append('--still-camera')
     if colour and config['codec'] != 'av2':
         family, _, full = colour.partition('-')
         args += ['--colour', family, '--range', 'full' if full else 'limited']

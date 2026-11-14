@@ -295,12 +295,15 @@ def low_rung_clips(curves: dict, families: list[Family], clips: list[Clip]) -> l
 
 
 def chart_curves(runner: Runner, families: list[Family], clips: list[Clip], frames: int,
-                 label: str, rungs: tuple[int, ...] | None = None) -> tuple[dict, list[Clip]]:
+                 label: str, rungs: tuple[int, ...] | None = None,
+                 judge: list[Family] | None = None) -> tuple[dict, list[Clip]]:
     """Every family's curves, with the low rungs on the clips that need them
     (low_rung_clips, judged on the real-use ladder, or its `rungs` indices), and
-    those clips."""
+    those clips. `judge` (default: `families`, anchor first) decides which clips get
+    low rungs: a chart drawn against another anchor keeps the default chart's low
+    rungs, so it re-uses the same points instead of asking for new ones."""
     curves = runner.measure(label, families, clips, frames, rungs)
-    low = low_rung_clips(curves, families, clips)
+    low = low_rung_clips(curves, judge or families, clips)
     if low:
         extra = runner.measure(f"{label} low rungs", families, low, frames, ladder=low_ladder)
         for key, points in extra.items():
@@ -595,12 +598,14 @@ class Quality:
 
 
 def quality_points(runner: Runner, families: list[Family], clips: list[Clip],
-                   frames: int, rungs: tuple[int, ...] | None = None) -> Quality:
+                   frames: int, rungs: tuple[int, ...] | None = None,
+                   judge: list[Family] | None = None) -> Quality:
     """BD of every family vs the anchor (families[0]) and of SELECTED_PAIRS, from
-    cached points (`rungs`: those indices of the real-use ladder only)."""
-    curves, low = chart_curves(runner, families, clips, frames, "chart render", rungs)
+    cached points (`rungs`: those indices of the real-use ladder only; `judge`: the
+    families that decide the low rungs, chart_curves)."""
+    curves, low = chart_curves(runner, families, clips, frames, "chart render", rungs, judge)
     # a family off the chart's lists (the independent test's extra references) by name
-    labels = {**{f.name: f.name for f in families}, **dict(OURS + REFERENCES)}
+    labels = {**{f.name: f.name for f in families}, **dict(OURS + REFERENCES + TUNED)}
     by_name = {f.name: f for f in families}
     points, excluded = anchor_points(curves, families, clips, runner, labels)
     pairs = [(labels[ref], versus(curves, ref, by_name[ours], clips, runner, labels[ours],
@@ -1009,10 +1014,10 @@ def tuned_table(tuned: list[ChartPoint], defaults: list[ChartPoint],
 
 
 def second_anchor_table(points: list[ChartPoint], anchor_label: str) -> str:
-    """Every point's BD-rate vs the metric-tuned x264 medium."""
+    """Every point's BD-rate vs a second anchor (the other x264 medium tuning)."""
     lines = [f"## Against {anchor_label}\n",
              f"The same points with {anchor_label} as the zero line instead of the chart's "
-             "default-tuned x264 medium: direct BD-rate on the chart's clips and rungs (a clip "
+             "own: direct BD-rate on the chart's clips and rungs (a clip "
              "without a direct overlap is left out of that row).\n",
              "| Encoder | BD-J | BD-PSNR-YUV | BD-VMAF v1 | BD-MS-SSIM | clips |",
              "|---|---:|---:|---:|---:|---:|"]
@@ -1032,21 +1037,22 @@ def coverage_note(quality: Quality) -> str:
             f"chained (point, clip) pairs: {chained}.\n")
 
 
-def excluded_table(excluded: list[Excluded], points: list[ChartPoint]) -> str:
+def excluded_table(excluded: list[Excluded], points: list[ChartPoint], anchor: str = ANCHOR,
+                   anchor_label: str = "x264 medium") -> str:
     """The clips left out for every point, why, and each point's direct BD-J there."""
     labels = {p.family: p.label for p in points}
     lines = ["## Excluded clips\n",
              "Left out for every encoder, so that all points are averaged over the same "
-             "clips: on these, some encoders' curves have no reliable overlap with x264 "
-             "medium's (even with its extra rungs, which the 50% source cap limits).\n"]
+             f"clips: on these, some encoders' curves have no reliable overlap with {anchor_label}'s "
+             "(even with its extra rungs, which the 50% source cap limits).\n"]
     for e in excluded:
         names = ", ".join(labels.get(n, n) for n in e.unscored)
         lines.append(f"- **{e.clip}** ({e.content_class}): no reliable overlap for {names}.")
-    lines += ["", "Direct BD-J vs x264 medium on them, where it exists:\n",
+    lines += ["", f"Direct BD-J vs {anchor_label} on them, where it exists:\n",
               "| Encoder | " + " | ".join(e.clip for e in excluded) + " |",
               "|---|" + "---:|" * len(excluded)]
     for p in sorted(points, key=lambda p: (p.bd_j is None, p.bd_j or 0)):
-        if p.family == ANCHOR:
+        if p.family == anchor:
             continue
         cells = [fmt(dict(e.direct).get(p.family)) for e in excluded]
         lines.append(f"| {p.label} | " + " | ".join(cells) + " |")
@@ -1355,7 +1361,7 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
               platform: SpeedPlatform = JETSON, stamp: str = "",
               heading: str = "Bitrate vs single-threaded encode speed",
               note: str = BARS_NOTE, hardware: list[ChartPoint] = (),
-              hardware_footnote: str = "") -> str:
+              hardware_footnote: str = "", anchor_label: str = "x264 medium") -> str:
     """The chart. `hardware` points (GPU encoders, the PC's chart only) are drawn at
     their fps in their own style, or past the right edge when faster than the axis
     (off_scale_markers); the axis is set by `points` alone."""
@@ -1399,7 +1405,7 @@ def svg_chart(points: list[ChartPoint], front: list[ChartPoint], subtitle: str,
     out.append(f'<text x="{frame.left + frame.width / 2}" y="{frame.top + frame.height + 36}" '
                f'text-anchor="middle" fill="{INK}">{platform.axis}</text>')
     out.append(f'<text transform="translate(18,{frame.top + frame.height / 2}) rotate(-90)" '
-               f'text-anchor="middle" fill="{INK}">BD-rate vs x264 medium (J composite; '
+               f'text-anchor="middle" fill="{INK}">BD-rate vs {anchor_label} (J composite; '
                f'lower is better)</text>')
     path = " ".join(f"{frame.x(p.fps):.1f},{frame.y(p.bd_j):.1f}" for p in front)
     out.append(f'<polyline points="{path}" fill="none" stroke="{FRONT_COLOUR}" '
@@ -1636,24 +1642,41 @@ def render(args: argparse.Namespace) -> None:
     families = chart_families(Path(args.binary).resolve(), Path(args.presets_dir),
                               binaries=binary_overrides(args.binary_for),
                               presets_for=binary_overrides(args.presets_for))
+    labels = dict(OURS + REFERENCES + TUNED)
+    # --anchor: another zero line (x264 medium --tune psnr); the default anchor stays as
+    # a row, and the low rungs stay the default chart's (chart_curves `judge`)
+    judge = families
+    zero = args.anchor or ANCHOR
+    if zero != ANCHOR:
+        families = [*chart_families(Path(args.binary).resolve(), Path(args.presets_dir), [zero],
+                                    binary_overrides(args.binary_for),
+                                    binary_overrides(args.presets_for))[1:], *families]
+    zero_label = labels.get(zero, zero)
     clips = chart_clips(args.clipset)
     runner = Runner(load_paths(), EVALUATION_GATE, args.workers, args.over_budget,
                     stored_ms_ssim=True,  # untouched families keep their stored numbers
                     prebuilt=args.prebuilt)
-    quality = quality_points(runner, families, clips, args.frames, args.rungs)
+    quality = quality_points(runner, families, clips, args.frames, args.rungs, judge)
     points, pairs, excluded = quality.points, quality.pairs, quality.excluded
     tuned_families = chart_families(
         Path(args.binary).resolve(), Path(args.presets_dir),
-        args.tuned.split(",") if args.tuned else [name for name, _ in TUNED],
+        [n for n in (args.tuned.split(",") if args.tuned else [name for name, _ in TUNED])
+         if n != zero],
         binary_overrides(args.binary_for), binary_overrides(args.presets_for))[1:]
     tuned, side_curves = side_points(runner, quality, families, tuned_families, clips,
                                      args.frames, dict(TUNED), args.rungs)
     gains = tune_gains(side_curves, tuned, quality)
     twins = best_tunes(tuned, gains)
-    alt = next((p for p in twins if tuned_base(p.family) == ANCHOR), None)
+    # the second table: against the better x264 medium tune on the default chart, and
+    # against the default x264 medium on a chart drawn against a tuned one
+    if zero != ANCHOR:
+        alt_name, alt_label = ANCHOR, "x264 medium (default tuning)"
+    else:
+        alt = next((p for p in twins if tuned_base(p.family) == ANCHOR), None)
+        alt_name, alt_label = (alt.family, alt.label) if alt else (None, "")
     alt_rows = second_anchor_points(
-        runner, quality, side_curves, families + tuned_families, alt.family,
-        {**dict(OURS + REFERENCES + TUNED)}) if alt else []
+        runner, quality, side_curves, families + tuned_families, alt_name,
+        labels) if alt_name else []
     hardware, hardware_timing, speeds = [], {}, {}
     if args.timing_hardware:  # the hardware encoders run only on the PC's own GPU
         hardware_timing = json.loads(Path(args.timing_hardware).read_text())
@@ -1666,20 +1689,23 @@ def render(args: argparse.Namespace) -> None:
             speeds)
     untimed = points
     if args.timing:
-        points = with_speed(points, json.loads(Path(args.timing).read_text()))
-        points += with_twin_speed(with_speed(twins, json.loads(Path(args.timing).read_text())),
-                                  points)
+        timing = json.loads(Path(args.timing).read_text())
+        points = with_speed(points, timing)
+        # a tuned anchor takes its default twin's fps, as the tuned twins do
+        points = with_twin_speed(points, points) + with_twin_speed(with_speed(twins, timing),
+                                                                   points)
     else:
         points += twins
     x86 = None
     if args.timing_x86:
         x86_timing = json.loads(Path(args.timing_x86).read_text())
         x86 = with_speed(untimed, x86_timing)
-        x86 += with_twin_speed(with_speed(twins, x86_timing), x86)
+        x86 = with_twin_speed(x86, x86) + with_twin_speed(with_speed(twins, x86_timing), x86)
     front = pareto(points)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    stem = out / (OUTPUT_STEM + (f"-{Path(args.clipset).stem}" if args.clipset else ""))
+    stem = out / (OUTPUT_STEM + (f"-{Path(args.clipset).stem}" if args.clipset else "")
+                  + (f"-vs-{zero.replace(PROFILE_SEPARATOR, '-')}" if zero != ANCHOR else ""))
     stem.with_suffix(".csv").write_text(csv_text(points, front))
     if hardware:
         stem.with_name(stem.name + "-hardware.csv").write_text(hardware_csv(hardware, speeds))
@@ -1689,18 +1715,21 @@ def render(args: argparse.Namespace) -> None:
                                  "speed: the main chart's timing clips" if args.clipset else "")
     speed_note = ([CLIPSET_SPEED_NOTE.format(clips=len(clips), clipset=Path(args.clipset).stem)]
                   if args.clipset else [])
-    page = [f"# {args.title}\n", f"<sub>{stamp}</sub>\n", *speed_note,
+    zero_note = ([f"**Zero line: {zero_label}** (the default-tuned x264 medium is a row of its "
+                  "own). The low rungs are the default chart's, so the points are the same.\n"]
+                 if zero != ANCHOR else [])
+    page = [f"# {args.title}\n", f"<sub>{stamp}</sub>\n", *zero_note, *speed_note,
             f"![bitrate vs speed]({stem.name}.svg)\n",
             *([f"The same on x86 (one Ryzen 9 5950X core):\n\n"
                f"![bitrate vs x86 speed]({stem.name}{X86.suffix}.svg)\n"] if x86 else []),
             markdown_table(points, front, x86), coverage_note(quality),
             weighting_table(quality, families, dict(OURS + REFERENCES)),
-            *([tuned_table(tuned, quality.points, twins, gains),
-               second_anchor_table(alt_rows, alt.label)] if alt else []),
+            *([tuned_table(tuned, quality.points, twins, gains)] if tuned else []),
+            *([second_anchor_table(alt_rows, alt_label)] if alt_rows else []),
             *([hardware_table(hardware, speeds, hardware_timing.get("platform", ""))]
               if hardware else []),
             *([chained_table(points)] if any(p.chained for p in points) else []),
-            *([excluded_table(excluded, points)] if excluded else []),
+            *([excluded_table(excluded, points, zero, zero_label)] if excluded else []),
             "## Selected pairs\n\nDirect BD-rate of our encoders against the reference "
             "encoders and against each other, on the same points (no anchor in between; "
             "ours vs ours drops the rungs either arm overshot, as on the board).\n", pairs_table(pairs)]
@@ -1717,14 +1746,16 @@ def render(args: argparse.Namespace) -> None:
             **meta))
     stem.with_suffix(".md").write_text("\n".join(page))
     if any(p.fps for p in points):
-        stem.with_suffix(".svg").write_text(svg_chart(points, front, subtitle, stamp=stamp))
+        stem.with_suffix(".svg").write_text(svg_chart(points, front, subtitle, stamp=stamp,
+                                                      anchor_label=zero_label))
     if x86:
         x86_stem = stem.with_name(stem.name + X86.suffix)
         x86_front = pareto(x86)
         x86_stem.with_suffix(".csv").write_text(csv_text(x86, x86_front, X86))
         x86_stem.with_suffix(".svg").write_text(svg_chart(x86, x86_front, subtitle, X86,
                                                           stamp, hardware=hardware,
-                                                          hardware_footnote=hardware_note(speeds)))
+                                                          hardware_footnote=hardware_note(speeds),
+                                                          anchor_label=zero_label))
         print(f"wrote {x86_stem}.{{csv,svg}}")
     print(markdown_table(points, front, x86))
     print(pairs_table(pairs))
@@ -1767,6 +1798,8 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--timing-hardware", help="the hardware encoders' timing JSON "
                    "(tools/dev/nvenc_timing.py): adds them (measured on this PC's GPU), "
                    "with their fps, in a table of their own and past the chart's edge")
+    r.add_argument("--anchor", help="another zero line, e.g. x264-medium~psnr (the default "
+                   f"{ANCHOR} stays as a row; outputs get a -vs-<anchor> suffix)")
     r.add_argument("--tuned", help="comma-separated tuned reference families to show "
                    "(default: every one in TUNED)")
     r.add_argument("--out", default="../docs/results")

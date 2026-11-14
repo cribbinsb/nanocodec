@@ -53,6 +53,9 @@ pub struct SessionConfig {
     pub film_grain: bool,
     /// Its strength; `None` = the default.
     pub film_grain_strength: Option<f32>,
+    /// The still-camera noise handling (`nc_encoder::still_camera_params`),
+    /// under `params`.
+    pub still_camera: bool,
     /// Heuristic parameters set away from their defaults.
     pub params: ParamOverrides,
 }
@@ -78,6 +81,7 @@ impl SessionConfig {
             signal: StreamSignal::default(),
             film_grain: false,
             film_grain_strength: None,
+            still_camera: false,
             params: ParamOverrides::default(),
         }
     }
@@ -194,7 +198,11 @@ impl Session {
     ///
     /// A [`SessionError`] if the engine rejects the configuration.
     pub fn new(config: &SessionConfig) -> Result<Self, SessionError> {
-        let mut params = config.params.clone();
+        let mut params = if config.still_camera {
+            nc_encoder::still_camera_params(config.codec).overlaid_with(&config.params)
+        } else {
+            config.params.clone()
+        };
         if config.intra_refresh_period > 0 {
             params.set("refresh.period", config.intra_refresh_period as f32);
         }

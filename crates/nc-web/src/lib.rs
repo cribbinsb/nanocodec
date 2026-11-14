@@ -211,14 +211,16 @@ fn preset(codec: Codec, name: &str) -> Result<ParamOverrides, String> {
     Ok(params)
 }
 
-/// The encoder's parameters: the preset, then the free-form `overrides`
-/// (`options::parse_overrides`), then film grain synthesis (AV1 only) at
-/// its default strength when `film_grain` is set.
+/// The encoder's parameters: the preset, then the still-camera noise handling
+/// when `still_camera` is set (`nc_encoder::still_camera_params`), then the
+/// free-form `overrides` (`options::parse_overrides`), then film grain
+/// synthesis (AV1 only) at its default strength when `film_grain` is set.
 fn encoder_params(
     codec: Codec,
     preset_name: &str,
     overrides: &str,
     film_grain: bool,
+    still_camera: bool,
 ) -> Result<ParamOverrides, String> {
     let overrides = options::parse_overrides(codec, overrides).map_err(|errors| {
         errors
@@ -227,7 +229,11 @@ fn encoder_params(
             .collect::<Vec<_>>()
             .join("; ")
     })?;
-    let mut params = preset(codec, preset_name)?.overlaid_with(&overrides);
+    let mut params = preset(codec, preset_name)?;
+    if still_camera {
+        params = params.overlaid_with(&nc_encoder::still_camera_params(codec));
+    }
+    let mut params = params.overlaid_with(&overrides);
     if film_grain {
         nc_av1::enable_film_grain(codec, None, &mut params).map_err(|e| e.to_string())?;
     }
@@ -245,6 +251,10 @@ impl BrowserEncoder {
     /// output. `colour` (optional, [`SourceFrame`] names, default `bt601`)
     /// is the matrix and range of the input, which the stream signals
     /// (AV2, whose subset has no colour syntax, signals nothing).
+    /// `still_camera` (optional, default off) adds the still-camera noise
+    /// handling over the preset, under `overrides`: it lowers the bitrate on
+    /// still noisy scenes, is off in every preset, and on AV1 may run a long
+    /// still stream slightly over target (`still_camera.rs` in nc-encoder).
     /// # Errors
     /// Rejects invalid codecs, presets, overrides, configurations, film
     /// grain outside AV1, unknown colours, or dimensions above1080p.
@@ -261,6 +271,7 @@ impl BrowserEncoder {
         overrides: Option<String>,
         film_grain: bool,
         colour: Option<String>,
+        still_camera: Option<bool>,
     ) -> Result<Self, JsValue> {
         if width > 1920 || height > 1080 || width < 64 || height < 64 {
             return Err(js_error("Use dimensions between64x64 and1920x1080"));
@@ -286,7 +297,14 @@ impl BrowserEncoder {
                 colour: signalled_colour(codec, matrix),
                 ..Default::default()
             },
-            params: encoder_params(codec, preset_name, &overrides, film_grain).map_err(js_error)?,
+            params: encoder_params(
+                codec,
+                preset_name,
+                &overrides,
+                film_grain,
+                still_camera.unwrap_or(false),
+            )
+            .map_err(js_error)?,
         };
         let inner = match codec {
             Codec::H264 => EncoderKind::H264(Box::new(Encoder::new(config).map_err(js_error)?)),
@@ -1116,7 +1134,7 @@ mod preset_tests {
     #[test]
     fn film_grain_is_av1_only() {
         let fast = preset(Codec::Av1, "fast").unwrap();
-        let grain = encoder_params(Codec::Av1, "fast", "", true).unwrap();
+        let grain = encoder_params(Codec::Av1, "fast", "", true, false).unwrap();
         let enable = nc_av1::Av1Backend::PARAM_SPECS
             .iter()
             .flat_map(|specs| specs.iter())
@@ -1125,7 +1143,7 @@ mod preset_tests {
         assert_eq!(fast.value(enable), 0.0);
         assert_eq!(grain.value(enable), 1.0);
         for codec in [Codec::H264, Codec::Hevc, Codec::Vvc, Codec::Vp9, Codec::Av2] {
-            assert!(encoder_params(codec, "default", "", true).is_err());
+            assert!(encoder_params(codec, "default", "", true, false).is_err());
         }
     }
 
@@ -1138,18 +1156,35 @@ mod preset_tests {
                 .find(|s| s.name == name)
                 .unwrap()
         };
-        let params = encoder_params(Codec::Av1, "fast", "av1.chroma_delta_q = -12", false).unwrap();
+        let params =
+            encoder_params(Codec::Av1, "fast", "av1.chroma_delta_q = -12", false, false).unwrap();
         assert_eq!(params.value(spec("av1.chroma_delta_q")), -12.0);
         assert_eq!(
             params.value(spec("av1.pre_tx_skip")),
             1.0,
             "the rest of Fast stays"
         );
-        let error = encoder_params(Codec::Av1, "default", "\nav1.nope=1", false).unwrap_err();
+        let error =
+            encoder_params(Codec::Av1, "default", "\nav1.nope=1", false, false).unwrap_err();
         assert!(
             error.starts_with("parameter line 2: unknown parameter"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn still_camera_lies_over_the_preset_under_overrides() {
+        let on =
+            encoder_params(Codec::Av1, "fast", "decision.noise_skip = 2", false, true).unwrap();
+        let expected = nc_encoder::still_camera_params(Codec::Av1);
+        assert_eq!(
+            on.get("planner.noise_split"),
+            expected.get("planner.noise_split")
+        );
+        assert_eq!(on.get("rate.skip_budget"), expected.get("rate.skip_budget"));
+        assert_eq!(on.get("decision.noise_skip"), Some(2.0));
+        let off = encoder_params(Codec::Av1, "fast", "", false, false).unwrap();
+        assert_eq!(off, preset(Codec::Av1, "fast").unwrap());
     }
 
     #[test]
@@ -1209,8 +1244,10 @@ mod input_tests {
             ("av2", 140),
         ] {
             let make = || {
-                BrowserEncoder::new(codec, width, height, qp, 30, 300, "fast", None, false, None)
-                    .unwrap()
+                BrowserEncoder::new(
+                    codec, width, height, qp, 30, 300, "fast", None, false, None, None,
+                )
+                .unwrap()
             };
             let (mut visible, mut extended) = (make(), make());
             let mut padded = Picture::new(width, height, 64).unwrap();
@@ -1246,6 +1283,7 @@ mod input_tests {
                 "fast",
                 Some(overrides.to_owned()),
                 false,
+                None,
                 None,
             )
             .unwrap();
@@ -1308,6 +1346,7 @@ mod input_tests {
             "fast",
             Some("spatial.layers=3\nhold.enable=0".to_owned()),
             false,
+            None,
             None,
         )
         .unwrap();
@@ -1408,6 +1447,7 @@ mod input_tests {
             Some("spatial.inter_layer=2\nhold.enable=0".to_owned()),
             false,
             None,
+            None,
         )
         .unwrap();
         let mut ksvc_extractors: Vec<nc_av1::Av1StreamExtractor> = (0..3u8)
@@ -1454,6 +1494,7 @@ mod input_tests {
             "svc3",
             Some("spatial.inter_layer=2\nhold.enable=0".to_owned()),
             false,
+            None,
             None,
         )
         .unwrap();

@@ -2,6 +2,10 @@
 """A live source on a machine that cannot keep up: frames are skipped and
 rate control budgets by time, so the real bitrate holds.
 
+The skip accounting runs with the still-camera noise handling off (the page's
+toggle, on by default): it tests frame-skip rate control alone. One more run
+at share 1/2 with it on checks that the rate still stays under the ceiling.
+
 Headless Chromium's synthetic webcam feeds both views (H.264 and AV1, 640x360,
 30 fps, 100 kbps CBR). The pipeline is starved by letting pictures through to
 the capture worker at most once every 1000 / (30 * share) ms (a slow encoder:
@@ -57,7 +61,7 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def run(port, share):
+def run(port, share, still_camera=False):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'])
         page = browser.new_page()
@@ -65,6 +69,7 @@ def run(port, share):
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK % {'period': 1000 / (FPS * share)})
         page.goto(f'http://127.0.0.1:{port}/')
+        page.locator('#still-camera').set_checked(still_camera)
         page.locator('[data-source="camera"]').click()
         for picker in page.locator('.resolution').all():
             picker.select_option('640x360')
@@ -94,13 +99,16 @@ def run(port, share):
         seconds = (coded[-1]['t'] - coded[0]['t']) / 1000 + 1 / FPS
         kbps = sum(c['bytes'] for c in coded) * 8 / seconds / 1000
         delivered = len(coded) / seconds
-        assert abs(kbps - TARGET_KBPS) <= RATE_TOLERANCE * TARGET_KBPS, (share, view, kbps)
+        # The still-camera handling may spend less on still noisy content (the target is a ceiling).
+        assert kbps <= (1 + RATE_TOLERANCE) * TARGET_KBPS, (share, view, kbps)
+        if not still_camera:
+            assert abs(kbps - TARGET_KBPS) <= RATE_TOLERANCE * TARGET_KBPS, (share, view, kbps)
         whole = sum(c['bytes'] for c in every) * 8 / ((every[-1]['t'] - every[0]['t']) / 1000 + 1 / FPS) / 1000
         assert whole <= (1 + RATE_CEILING) * TARGET_KBPS, (share, view, 'whole run', whole)
         assert delivered < FPS * (share + 0.25), (share, view, delivered)
         shown = re.search(r'(\d+) skipped', counts[view])
         assert shown and int(shown[1]) == expected_skips, (counts[view], expected_skips)
-        out.append({'view': view, 'kbps': round(kbps, 1), 'fps': round(delivered, 1), 'skipped': expected_skips})
+        out.append({'view': view, 'kbps': round(kbps, 1), 'whole_kbps': round(whole, 1), 'fps': round(delivered, 1), 'skipped': expected_skips})
     return out
 
 
@@ -109,6 +117,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         results = {f'1/{int(1 / share)}': run(server.server_port, share) for share in (1 / 2, 1 / 4)}
+        results['1/2 still-camera on'] = run(server.server_port, 1 / 2, still_camera=True)
     finally:
         server.shutdown()
     print(json.dumps({'status': 'pass', 'results': results}))

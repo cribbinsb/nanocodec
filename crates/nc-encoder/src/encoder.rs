@@ -45,6 +45,7 @@ use crate::params::{
 };
 use crate::partition::{Block, should_split};
 use crate::partition_plan::{LeafStats, NoiseTest, Partition, Planner};
+use crate::planned_refinement::StillPlan;
 use crate::qp_cadence::{
     CadenceRole, LayerLadder, MotionHint, QP_UNITS_PER_OCTAVE, QpCadence, nearest_quantizer,
     step_ratio,
@@ -245,6 +246,10 @@ pub struct Encoder<B: CodecBackend> {
     /// The cyclic spatial cadence (`rate.cadence_spatial`), for flat
     /// single-layer streams with block quantizers and the reuse term.
     cyclic: Option<CyclicCadence>,
+    /// Planned refinements and the hold of still blocks (`rate.refine`,
+    /// `rate.hold_still`, `rate.prekey_quiet`), for flat single-layer
+    /// streams with block quantizers and the reuse term.
+    still: StillPlan,
     /// Scratch: the reuse term's and the band's offsets of every cell.
     block_terms: Vec<f64>,
     /// Quantizer of the frame being coded (block offsets are relative to it).
@@ -344,6 +349,11 @@ impl<B: CodecBackend> Encoder<B> {
             unflattened_cadence(&config, &backend),
             B::BLOCK_QP_LOG2,
         );
+        let still = StillPlan::new(
+            &RateParams::from_overrides(&config.params),
+            f64::from(config.frame_rate.num) / f64::from(config.frame_rate.den),
+            spatial_cfg.is_none() && use_aq && reuse.is_some(),
+        );
         let (spatial, layer) = if let Some(scfg) = spatial_cfg {
             let (session, enhancement) =
                 SpatialSession::new(&config, &backend, scfg, (use_aq, reuse.is_some()))?;
@@ -430,6 +440,7 @@ impl<B: CodecBackend> Encoder<B> {
             block_offsets: Vec::new(),
             inframe,
             cyclic,
+            still,
             block_terms: Vec::new(),
             frame_quantizer: 0,
             force_keyframe: false,
@@ -609,8 +620,12 @@ impl<B: CodecBackend> Encoder<B> {
                         hint.spatial
                     });
                 }
-                hint.block_qp_offset =
-                    controller.effective_block_offset(aq.total_weight(), aq.offset_cells());
+                // A refinement frame's level is planned as without its
+                // refined blocks, whose bits are its loan.
+                if !self.still.without_offsets {
+                    hint.block_qp_offset =
+                        controller.effective_block_offset(aq.total_weight(), aq.offset_cells());
+                }
             }
             let quantizer = controller.select(rc_key, index, hint, references.position, share);
             if let Some(inframe) = self.inframe.as_mut() {
@@ -1430,9 +1445,13 @@ impl<B: CodecBackend> Encoder<B> {
             let reference_index = index.checked_sub(u64::from(references.reference.distance));
             let follows = references.reference.distance == 1
                 || (reference_index.is_some() && reference_index == self.layer.reuse_last_frame);
+            self.still.without_offsets = false;
             if let Some(term) = self.layer.reuse.as_mut().filter(|_| reuse_frame) {
                 term.plan(&frame);
                 term.set_reference(!key && follows);
+                let flat = references.position.is_flat() && follows;
+                let controller = self.layer.rate_control.as_mut();
+                self.still.plan(term, &frame, controller, (index, flat));
             }
             let band = self.plan_band(index, key, &references, analysis, motion);
             let reuse = self
@@ -1629,7 +1648,13 @@ impl<B: CodecBackend> Encoder<B> {
             self.report_inframe_offset();
         }
         if let Some(controller) = self.layer.rate_control.as_mut() {
-            if let Some(aq) = self.layer.aq.as_ref().filter(|aq| aq.active() && !steering) {
+            let planned_without_offsets = self.still.without_offsets;
+            if let Some(aq) = self
+                .layer
+                .aq
+                .as_ref()
+                .filter(|aq| aq.active() && !steering && !planned_without_offsets)
+            {
                 let offsets = self.block_offsets.iter().copied();
                 let realised = controller.effective_block_offset(aq.total_weight(), offsets);
                 controller.set_realised_block_offset(realised);
@@ -2699,23 +2724,19 @@ impl<B: CodecBackend> Encoder<B> {
                 .encode_block(&node, &decision, source, selected_ref, recon);
         }
         let reuse_frame = self.reuse_frame.is_some();
+        let copy = chosen == ReferenceChoice::Primary && self.backend.copied_reference(&node);
+        let step = self
+            .sample_step((i64::from(self.frame_quantizer) + i64::from(qp_offset)).max(0) as u32);
         if let Some(term) = self
             .layer
             .reuse
             .as_mut()
             .filter(|_| inter.is_some() && reuse_frame)
         {
-            let copy = chosen == ReferenceChoice::Primary && self.backend.copied_reference(&node);
-            term.coded_block((node.x, node.y), leaf_extent::<B>(&node), copy);
+            term.coded_block((node.x, node.y), leaf_extent::<B>(&node), (copy, step));
         }
-        let copy = chosen == ReferenceChoice::Primary && self.backend.copied_reference(&node);
-        if !copy && self.cyclic.is_some() {
-            let step = self.sample_step(
-                (i64::from(self.frame_quantizer) + i64::from(qp_offset)).max(0) as u32,
-            );
-            if let Some(cyclic) = self.cyclic.as_mut() {
-                cyclic.coded((node.x, node.y), step);
-            }
+        if !copy && let Some(cyclic) = self.cyclic.as_mut() {
+            cyclic.coded((node.x, node.y), step);
         }
     }
 
@@ -2847,8 +2868,13 @@ impl<B: CodecBackend> Encoder<B> {
             recon,
         );
         let reuse_frame = self.reuse_frame.is_some();
+        let step = self.sample_step(self.frame_quantizer);
         if let Some(term) = self.layer.reuse.as_mut().filter(|_| reuse_frame) {
-            term.coded_block((node.x, node.y), leaf_extent::<B>(node), skip == Mv::ZERO);
+            term.coded_block(
+                (node.x, node.y),
+                leaf_extent::<B>(node),
+                (skip == Mv::ZERO, step),
+            );
         }
     }
 

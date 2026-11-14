@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import stat
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 
 from nceval import pool
 from nceval.config import Paths
-from nceval.ctc import conditions, plan, report, sequences, worker
+from nceval.ctc import conditions, local, plan, report, sequences, worker
 
 FAKE_FFMPEG = "#!/bin/sh\necho 'ffmpeg version n8.0.1'\n"
 
@@ -112,3 +113,42 @@ def test_report_halving_the_rate_at_equal_quality_is_minus_fifty(tmp_path):
     assert rows[("hm-ldp", "x264-medium", "Y")]["bd"] == pytest.approx(-50.0)
     assert rows[("hm-ldp", "x264-medium", "Weighted")]["bd"] == pytest.approx(-50.0)
     assert (tmp_path / "out" / "bd.csv").exists()
+
+
+def _local_args(**overrides) -> argparse.Namespace:
+    values = {"conditions": "aom-ld", "sequences": "FourPeople_480x270_60", "kinds": "qp,cbr",
+              "encoder": "nanocodec-av1", "param": ["refs.second=1"], "label": "two",
+              "x264": "qp"}
+    return argparse.Namespace(**{**values, **overrides})
+
+
+def test_local_variant_is_renamed_not_decoded_and_carries_its_params(fake_paths, monkeypatch):
+    monkeypatch.setattr(local, "load_paths", lambda: fake_paths)
+    jobs = local.local_jobs(_local_args(), Path("/src"))
+    assert len(jobs) == 12 and all(j["encoder"] == "nanocodec-av1+two" for j in jobs)
+    assert all(j["decoders"] == [] and j["encode"][-2:] == ["--param", "refs.second=1"]
+               for j in jobs)
+    assert all(j["bitstream"] in j["encode"] and "+two" in j["bitstream"] for j in jobs)
+    ids = {j["id"] for j in jobs}
+    assert all(j["rate_of"] in ids for j in jobs if j["kind"] == "cbr")
+
+
+def test_local_x264_cbr_twin_uses_the_charts_vbv(fake_paths, monkeypatch):
+    monkeypatch.setattr(local, "load_paths", lambda: fake_paths)
+    jobs = local.local_jobs(_local_args(encoder="x264-medium", x264="psnr-cbr"), Path("/src"))
+    cbr = [j for j in jobs if j["kind"] == "cbr"]
+    assert len(cbr) == 6 and len(jobs) == 12
+    for job in cbr:
+        encode = job["encode"]
+        assert "--qp" not in encode and encode.count("{KBPS}") == 3
+        assert encode[encode.index("--tune") + 1] == "zerolatency,psnr"
+        assert job["bitstream"] in encode and job["rate_of"] in {j["id"] for j in jobs}
+
+
+def test_lean_points_have_the_weighted_and_j_figures(tmp_path):
+    record = _record("aom-ld/FourPeople_480x270_60/x/q22", 100.0, 40.0)
+    record["means"] = {k: record["means"][k] for k in ("psnr_y", "psnr_cb", "psnr_cr",
+                                                       "float_ms_ssim", "vmaf_v1")}
+    quality = report.quality_of(record)
+    assert {"Y", "U", "V", "PSNR-YUV", "MS-SSIM", "VMAF-v1"} <= set(quality)
+    assert "VMAF" not in quality

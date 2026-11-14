@@ -57,6 +57,10 @@ IVF_SIZE_FIELD = 4
 VMAF_V1_MODEL = "vmaf_v1.0.16_3d0h.json"
 #: Per-frame metrics kept in the results (the rest are kept as sequence means).
 PER_FRAME = ("psnr_y", "psnr_cb", "psnr_cr")
+#: The lean metric set's features: `--aom_ctc v6.0`'s own PSNR and MS-SSIM settings
+#: (libvmaf v3.2.1 tools/cli_parse.c, aom_ctc_v6_0).
+LEAN_PSNR = "psnr=reduced_hbd_peak=true:enable_apsnr=true:min_sse=0.5"
+LEAN_MS_SSIM = "float_ms_ssim=enable_db=true:clip_db=true"
 MEAN_METRICS = ("psnr_y", "psnr_cb", "psnr_cr", "float_ssim", "float_ms_ssim", "ciede2000",
                 "psnr_hvs", "cambi", "vmaf", "vmaf_neg", "vmaf_v1")
 
@@ -193,11 +197,21 @@ def finish(process: subprocess.Popen, label: str) -> tuple[float, float]:
 
 
 def vmaf_process(job: dict, source: str, report: Path) -> subprocess.Popen:
+    """libvmaf scoring the pictures written to its stdin against `source`.
+
+    The job's metric set (`metrics`): "ctc" (default) is `--aom_ctc v6.0` plus
+    VMAF v1; "lean" keeps only what the Weighted figure and our J read (the
+    overall PSNR exactly as `--aom_ctc v6.0` computes it, MS-SSIM in dB, VMAF
+    v1), a quarter of the CPU: the local iteration loop (ctc/local.py)."""
     width, height = job["width"], job["height"]
-    model = (f"path={VMAF_V1_MODEL}:name=vmaf_v1:cambi.enc_width={width}"
-             f":cambi.enc_height={height}:cambi.enc_bitdepth=8")
+    model = f"path={VMAF_V1_MODEL}:name=vmaf_v1"
+    if job.get("metrics", "ctc") == "lean":
+        metrics = ["--feature", LEAN_PSNR, "--feature", LEAN_MS_SSIM]
+    else:
+        metrics = ["--aom_ctc", "v6.0"]
+        model += f":cambi.enc_width={width}:cambi.enc_height={height}:cambi.enc_bitdepth=8"
     return subprocess.Popen(["bin/vmaf", "-r", source, "-d", "/dev/stdin", "-w", str(width),
-                             "-h", str(height), "-p", "420", "-b", "8", "--aom_ctc", "v6.0",
+                             "-h", str(height), "-p", "420", "-b", "8", *metrics,
                              "--model", model, "--threads", "1", "--json", "-o", str(report),
                              "-q"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)
@@ -227,7 +241,8 @@ def decode_hashes(argv: list[str], bitstream: str, frame_bytes: int, forward=Non
 def scored(report: Path) -> dict:
     data = json.loads(report.read_text())
     frames = sorted(data["frames"], key=lambda f: f["frameNum"])
-    return {"means": {m: data["pooled_metrics"][m]["mean"] for m in MEAN_METRICS},
+    pooled = data["pooled_metrics"]
+    return {"means": {m: pooled[m]["mean"] for m in MEAN_METRICS if m in pooled},
             "overall_psnr": data["aggregate_metrics"],
             "per_frame": {m: [f["metrics"][m] for f in frames] for m in PER_FRAME},
             "scored_frames": len(frames)}
