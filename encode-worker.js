@@ -87,6 +87,11 @@ async function receive({ data: message }) {
           .then(report => self.postMessage({ type: 'warmed', ...report }))
           .catch(error => console.warn('encoder warm-up failed:', error));
       }
+    } else if (message.type === 'decoder') {
+      // The view's decoder was replaced (analysis switched, pipeline.js
+      // `switchDecoders`): packets go to the new one from the next frame on.
+      decoderPort = message.port;
+      self.postMessage({ type: 'decoder-connected' });
     } else if (message.type === 'keyframe') {
       encoder.request_keyframe();
     } else if (message.type === 'rate') {

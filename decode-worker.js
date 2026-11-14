@@ -32,7 +32,11 @@
 // of the module (wasm.js), whose decoder keeps each picture's block records
 // (BrowserDecoder.set_analysis), and every shown frame carries them as one
 // packed Int16Array buffer (`analysis`), with `analysisState` 'on', or
-// 'unsupported' for codecs whose decoder has none yet.
+// 'unsupported' for codecs whose decoder has none yet. Switching analysis
+// replaces this worker with one on the other build (pipeline.js
+// `switchDecoders`): the page posts it a 'replay' of the stream from its last
+// key frame to the picture on screen, decoded here at once and answered with
+// that picture ('replayed', as a 'frame').
 import { ANALYSIS_MODULE_URL, MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
@@ -108,6 +112,30 @@ function convertCapture({ frame, width, height }) {
   const offset = source.packed();
   return { source: new Uint8Array(wasm.memory.buffer, offset, source.packed_length).slice().buffer, colour: source.colour };
 }
+/**
+ * Decode a message's coded frames (`coded`; the page's renderer format in
+ * `display`) and post the last as `type`, with its pixels, records and every
+ * timing, to the page.
+ */
+function decodeAndPost(type, message) {
+  // Several coded frames: frame 0 after the start-up lookahead, the frames a
+  // pre-encoded stream skipped, or a replay; the last is shown, the `earlier` ones counted.
+  const decoded = message.coded.map(decodeFrame);
+  const result = decoded.at(-1), earlier = decoded.slice(0, -1);
+  const displayStart = performance.now();
+  const format = message.display === 'i420' ? 'i420' : 'rgba';
+  // The last colour seen (frames decoded only for their references carry none).
+  if (result.colour) displayColour = result.colour;
+  const pixels = decodedPixels(format, displayColour);
+  // After the pixels: packing may grow WASM memory too, and is copied at once.
+  const analysis = analysisRecords();
+  result.decodeStageMs += performance.now() - displayStart;
+  const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean), ...(analysis ? [analysis] : [])];
+  self.postMessage({ type, id: message.id, ...result, colour: displayColour, earlier, format, pixels, width: decoder.width,
+    height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
+    spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows,
+    analysis, analysisState }, transfer);
+}
 /** One frame from the encode worker: decode it and post it to the page. */
 function receivePacket({ data: message }) {
   realData = true;
@@ -116,23 +144,7 @@ function receivePacket({ data: message }) {
       self.postMessage({ type: 'frame', id: message.id, held: true });
       return;
     }
-    // Several coded frames: frame 0 after the start-up lookahead, or the frames
-    // a pre-encoded stream skipped; the last is shown, the `earlier` ones counted.
-    const decoded = message.coded.map(decodeFrame);
-    const result = decoded.at(-1), earlier = decoded.slice(0, -1);
-    const displayStart = performance.now();
-    const format = message.display === 'i420' ? 'i420' : 'rgba';
-    // The last colour seen (frames decoded only for their references carry none).
-    if (result.colour) displayColour = result.colour;
-    const pixels = decodedPixels(format, displayColour);
-    // After the pixels: packing may grow WASM memory too, and is copied at once.
-    const analysis = analysisRecords();
-    result.decodeStageMs += performance.now() - displayStart;
-    const transfer = [pixels.buffer, ...decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean), ...(analysis ? [analysis] : [])];
-    self.postMessage({ type: 'frame', id: message.id, ...result, colour: displayColour, earlier, format, pixels, width: decoder.width,
-      height: decoder.height, streamWidth: decoder.stream_width, streamHeight: decoder.stream_height,
-      spatialId: decoder.spatial_id, bufferFullness: message.bufferFullness, bufferOverflows: message.bufferOverflows,
-      analysis, analysisState }, transfer);
+    decodeAndPost('frame', message);
   } catch (error) {
     self.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
@@ -162,6 +174,9 @@ self.onmessage = async ({ data: message }) => {
       } else {
         pendingOperatingPoint = message.operatingPoint;
       }
+    } else if (message.type === 'replay') {
+      realData = true;
+      decodeAndPost('replayed', message);
     } else if (message.type === 'recycle') {
       if (sparePixels.length < MAX_SPARE_PIXELS) sparePixels.push(new Uint8Array(message.buffer));
     }

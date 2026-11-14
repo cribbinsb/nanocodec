@@ -6,6 +6,12 @@
 // own frame rate and is given the source drawn at its own resolution. Pause
 // stops on the next captured tick that every view codes, and Step moves to the
 // next such tick, so paused views always show the same source instant.
+//
+// Switching analysis on or off while comparing keeps the session: captures
+// wait until none is in flight, the views' decoders move to the other module
+// and decode the picture on screen again (pipeline.js `switchDecoders`), and a
+// paused comparison stays paused on that instant while a playing one continues
+// from it.
 import { Panel } from './panel.js';
 import { Comparison } from './pipeline.js';
 import { Loupe } from './loupe.js';
@@ -39,6 +45,9 @@ let restartPending = false;
 // `pausing`: Pause was pressed; the views stop at the next tick they all code.
 let paused = false, pausing = false, pausedAt = 0, stepping = false;
 let nextDeadline = 0, firstDeliveredAt = 0, lastTick = -1;
+// Analysis was switched while comparing: no captures until the decoders have
+// moved to the other module (`switchDecoders`); `switchBusy` while they move.
+let switchWanted = false, switchBusy = false;
 // The original frame (largest view size) of the instant on screen, for the magnifier.
 let original = null;
 const frames = new FrameSource(video, error => { if (running || preparing) fail(error); });
@@ -60,8 +69,7 @@ const panels = ['A', 'B'].map((letter, i) => {
 const loupe = new Loupe($('#loupe'), panels);
 // Coding-tool overlays and statistics (analysis-view.js); off until switched on.
 const analysis = new AnalysisController($('#analysis'), $('#versions'), panels, {
-  // The analysis build of the decoders is loaded at the next start: restart.
-  onEnabled: () => settingsChanged('analysis'),
+  onEnabled: () => analysisSwitched(),
   loupeActive: () => loupe.enabled,
 });
 
@@ -69,6 +77,7 @@ function message(text = '') { notice.textContent = text; notice.hidden = !text; 
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
 function stop(keepSource = false) {
   ++generation; clearTimeout(timer); clearTimeout(restartTimer); stoppedByFailure = false; restartPending = false;
+  switchWanted = false; switchBusy = false;
   comparison?.terminate(); comparison = null;
   running = false; preparing = false; paused = false; pausing = false;
   pauseButton.disabled = true; setPauseButton('Pause', false); stepButton.disabled = true;
@@ -95,12 +104,16 @@ function enterPause() {
 }
 async function resume() {
   if (!running || !paused) return;
-  const token = generation;
   pauseButton.disabled = true; stepButton.disabled = true;
+  await play(pausedAt);
+}
+/** Play on from the instant on screen, held since `heldAt` (performance.now()). */
+async function play(heldAt) {
+  const token = generation;
   try {
     if (kind !== 'scene') await video.play();
     if (token !== generation) return;
-    const now = performance.now(), gap = now - pausedAt;
+    const now = performance.now(), gap = now - heldAt;
     if (delivered) firstDeliveredAt += gap;
     // Wall-clock sources continue from the instant on screen.
     frames.started = now - tickMs(lastTick + 1);
@@ -109,6 +122,45 @@ async function resume() {
     $('#runtime-label').textContent = 'Encoding + decoding live';
     scheduleFrame(token);
   } catch (error) { if (token === generation) fail(error); }
+}
+/**
+ * Analysis was switched on or off. A running comparison keeps going on the
+ * same instant (see the file comment); a starting one restarts with the new
+ * module, a stopped one waits for Start. A live view past its re-decode limit
+ * (pipeline.js MAX_REPLAY_BYTES) cannot switch in place: the comparison restarts.
+ */
+function analysisSwitched() {
+  if (!running) { settingsChanged('analysis'); return; }
+  if (!comparison.canSwitchDecoders) { trace('analysis switch restarts: a view is past its re-decode limit'); settingsChanged('analysis'); return; }
+  trace('analysis switch', analysis.enabled ? 'on' : 'off', paused ? 'paused' : 'playing');
+  switchWanted = true;
+  pauseButton.disabled = true; stepButton.disabled = true;
+  $('#runtime-label').textContent = 'Switching decoders…';
+  switchDecodersWhenIdle();
+}
+/** Switch the decoders once nothing is in flight and no pause or step is under way (called again as those end). */
+async function switchDecodersWhenIdle() {
+  if (!switchWanted || switchBusy || pausing || stepping || !comparison.idle) return;
+  const token = generation, playing = !paused, heldAt = performance.now();
+  switchWanted = false; switchBusy = true;
+  clearTimeout(timer);
+  if (playing && kind !== 'scene') video.pause();
+  try {
+    const results = await comparison.switchDecoders();
+    if (token !== generation) return;
+    results.forEach((result, i) => {
+      if (!result) return;
+      const replaced = panels[i].redisplay(result, showOriginal);
+      if (replaced) comparison.recycle(i, replaced);
+    });
+  } catch (error) { if (token === generation) fail(error); return; }
+  switchBusy = false;
+  // Switched again meanwhile: switch back before going on.
+  switchWanted = comparison.decodersStale;
+  if (switchWanted) { switchDecodersWhenIdle(); return; }
+  if (playing) { await play(heldAt); return; }
+  pauseButton.disabled = false; stepButton.disabled = !frames.canStep;
+  $('#runtime-label').textContent = 'Paused';
 }
 /** While paused, show the next instant every view codes. */
 async function step() {
@@ -120,7 +172,8 @@ async function step() {
     if (token === generation) capture(shown);
   } catch (error) { if (token === generation) fail(error); }
   stepping = false;
-  if (token === generation && paused) stepButton.disabled = false;
+  if (token === generation && paused && !switchWanted) stepButton.disabled = false;
+  switchDecodersWhenIdle();
 }
 function fail(error) {
   const detail = error instanceof Error ? error.message : String(error);
@@ -266,14 +319,15 @@ async function start() {
 // skips ticks rather than queueing frames (pipeline.js).
 function scheduleFrame(token) {
   clearTimeout(timer);
-  if (token !== generation || !running || paused || comparison.full) return;
+  // A decoder switch waits for the frames in flight; a pause under way still reaches its instant.
+  if (token !== generation || !running || paused || comparison.full || ((switchWanted || switchBusy) && !pausing)) return;
   timer = setTimeout(() => sendFrame(token), Math.max(0, nextDeadline - performance.now()));
 }
 function sendFrame(token) {
   try { captureNext(token); } catch (error) { if (token === generation) fail(error); }
 }
 function captureNext(token) {
-  if (token !== generation || !running || paused) return;
+  if (token !== generation || !running || paused || ((switchWanted || switchBusy) && !pausing)) return;
   if (kind !== 'scene' && video.readyState < 2) { nextDeadline = performance.now() + NOT_READY_RETRY_MS; scheduleFrame(token); return; }
   if (kind === 'file' && video.ended) { stop(); $('#session-stats').textContent = `${delivered} frames compared · video ended`; return; }
   nextDeadline = Math.max(nextDeadline + 1000 / SOURCE_FPS, performance.now());
@@ -318,6 +372,7 @@ function finishFrame(token, results, originals, tick) {
     });
   }
   catch (error) { fail(error); return; }
+  switchDecodersWhenIdle();
   // Frame 0 held for the start-up lookahead returns no source.
   const shown = originals.filter(Boolean);
   if (shown.length) original = shown.reduce((a, b) => (b.width > a.width ? b : a));

@@ -167,7 +167,12 @@ are needed: each worker has its own ordinary WASM memory.
   the pixels are unsmoothed and the overlay stays sharp. Hovering a block (or tapping
   it) shows its record. The magnifier draws the overlay too. With analysis on, the
   decode worker copies the records out of WASM memory each frame: see
-  `docs/handoff/stream-analysis.md` for the decode cost.
+  `docs/handoff/stream-analysis.md` for the decode cost. Switching analysis on or
+  off does not restart: the comparison keeps its instant (paused stays paused,
+  playing continues) while each view's decoder moves to the other module and
+  decodes the view's stream again from its last key frame to the picture on
+  screen (live encoders keep running; a live view keeps the packets since its
+  last key frame for this, up to 64 MiB, past which the switch restarts).
 - **Stop:** ends both workers and releases camera tracks. Switching away from
   the tab also stops capture; press Start to resume.
 - **Download:** AV1, VP9 and AV2 are IVF with captured media timestamps; H.264/HEVC/VVC are Annex-B

@@ -333,7 +333,7 @@ class AnalysisView {
     if (!this.enabled) { this.stats.textContent = ''; return; }
     if (this.state === 'unsupported') { this.stats.textContent = UNSUPPORTED; return; }
     const now = this.summary, mean = this.running.mean();
-    if (!now) { this.stats.textContent = 'Analysis: loading the analysis decoder (the comparison restarts with it)…'; return; }
+    if (!now) { this.stats.textContent = 'Analysis: loading the analysis decoder…'; return; }
     const row = (label, value, average) => `<tr><th>${label}</th><td>${value}</td><td>${average}</td></tr>`;
     const qp = s => s?.qp == null ? '—' : `${s.qp.toFixed(1)}${s.qpRange ? ` [${s.qpRange[0]}–${s.qpRange[1]}]` : ''}`;
     this.stats.innerHTML = `<p class="analysis-note">Analysis on: decode timing is not representative (the decoder records every block).</p><table><thead><tr><th>By area</th><td>This frame</td><td>Mean of ${this.running.frames}</td></tr></thead><tbody>${[

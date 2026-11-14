@@ -26,6 +26,8 @@ import { SOURCE_FPS, frameAtTick, loopTicks, tickAt, tickMs, ticksOfFrame } from
 const LOOP_BACKSTEP_MS = 500;
 // Seek to the middle of a frame's display interval, so rounding cannot land on its neighbour.
 const FRAME_MIDPOINT = 0.5;
+// VideoFrame timestamps are in microseconds.
+const MICROSECONDS_PER_MS = 1000;
 // A step whose frame is not presented within this time failed (ms): the server
 // cannot seek (it ignores HTTP range requests) or the video stalled.
 const SEEK_TIMEOUT_MS = 5000;
@@ -51,7 +53,9 @@ export function snapshot(source) {
 export function videoSnapshot(video) {
   if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) return null;
   try {
-    return snapshot(video);
+    // A VideoFrame of a video keeps that frame's own media timestamp (no override):
+    // the element may already show a later frame than the one a frame callback names.
+    return typeof VideoFrame === 'function' ? new VideoFrame(video) : createImageBitmap(video);
   } catch (error) {
     if (error.name === 'InvalidStateError') return null;
     throw error;
@@ -109,7 +113,9 @@ export class FrameSource {
           if (frame) {
             this.staged?.close();
             this.staged = frame;
-            this.stage(metadata.mediaTime * 1000);
+            // The frame's own timestamp, not the callback's media time: when the page
+            // runs late the element has moved on, and the snapshot holds the newer frame.
+            this.stage(frame.timestamp / MICROSECONDS_PER_MS);
           }
         } catch (error) { this.onError(error); }
       }

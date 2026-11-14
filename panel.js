@@ -292,6 +292,18 @@ export class Panel {
     this.scheduleMetrics(result);
     return free;
   }
+  /**
+   * Show `result` (the picture on screen, decoded again by a replaced decoder:
+   * pipeline.js `switchDecoders`) with its records; nothing is counted, and the
+   * original and tick stay. Returns a pixel buffer the worker may reuse.
+   */
+  redisplay(result, showOriginal) {
+    const free = this.renderer.show(result);
+    if (showOriginal) this.renderer.showOriginal(this.original?.image ?? null);
+    this.analysis?.update(result);
+    this.label(showOriginal, result);
+    return free;
+  }
   /** Show `result`'s metrics now if METRICS_INTERVAL_MS has passed, else once that interval ends. */
   scheduleMetrics(result) {
     this.metricsResult = result;
