@@ -41,6 +41,7 @@ import contextlib
 import hashlib
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -100,7 +101,7 @@ CQP_POINTS = 4
 #: with an encoder's rate floor.
 UNREACHABLE_RATE_ERROR = 0.10
 #: Anchor programs (Family.kind); "" is our own encoder.
-ANCHOR_KINDS = ("svt", "openh264", "x264", "x265", "vpx", "aom", "nvenc")
+ANCHOR_KINDS = ("svt", "openh264", "x264", "x265", "vpx", "aom", "nvenc", "vvenc", "avm")
 #: Each anchor program's preset when a family names none: the bars and context
 #: anchors the board was seeded with. A family at its kind's default preset
 #: keeps the cache identity it had before presets were configurable.
@@ -109,7 +110,8 @@ DEFAULT_ANCHOR_PRESETS = {"svt": "12", "x264": "veryfast", "x265": "superfast"}
 #: x264-medium, svtav1-m8), by kind.
 #: libvpx / libaom presets are their realtime --cpu-used speeds (libvpx-vp9-cpu7).
 ANCHOR_PRESET_PREFIXES = {"svt": "svtav1-m", "x264": "x264-", "x265": "x265-",
-                          "vpx": "libvpx-vp9-cpu", "aom": "libaom-av1-cpu"}
+                          "vpx": "libvpx-vp9-cpu", "aom": "libaom-av1-cpu",
+                          "vvenc": "vvenc-ld-", "avm": "avm-ld-s"}
 #: Other settings of the anchors than the chart's (Family.profile), to measure how
 #: much of a gap depends on the chart's choices (docs/results/rate-control-audit-*):
 #:   lookahead  x264 / x265 without --tune zerolatency: their default B-frames,
@@ -145,9 +147,25 @@ METRIC_TUNES = ("psnr", "ssim")
 #: A profiled anchor family's name: `<family>~<profile>` (x264-medium~psnr).
 PROFILE_SEPARATOR = "~"
 ANCHOR_TOOLS = {"svt": "SvtAv1EncApp", "x264": "x264", "x265": "x265", "vpx": "vpxenc",
-                "aom": "aomenc"}
+                "aom": "aomenc", "vvenc": "vvencFFapp", "avm": "avmenc"}
 ANCHOR_CODECS = {"svt": Codec.AV1, "x264": Codec.H264, "x265": Codec.HEVC, "vpx": Codec.VP9,
-                 "aom": Codec.AV1}
+                 "aom": Codec.AV1, "vvenc": Codec.VVC, "avm": Codec.AV2}
+#: Fixed-QP-only references for the newer formats (nceval.fixedqp): VVenC with
+#: its low-delay configuration files (`vvenc-ld-faster`: cfg/experimental/
+#: lowdelay_faster.cfg, B slices from past pictures only, 4 references, GOP-8 QP
+#: offsets) and the AVM AV2 reference (`avm-ld-s<cpu-used>`, good deadline, no
+#: lag). Neither is installed by build_anchors.sh's default x86 prefix, so each
+#: has an environment override and a known fallback location.
+REFERENCE_TOOL_ENV = {"vvenc": "NC_VVENC_APP", "avm": "NC_AVMENC"}
+REFERENCE_TOOL_FALLBACK = {
+    "vvenc": Path("work/h266/vvenc/bin/release-static/vvencFFapp"),
+    "avm": Path("anchors/vp9-av2/bin/avmenc"),
+}
+#: VVenC's configuration files, relative to its install root (the tool's
+#: grandparent's parent: <root>/bin/release-static/vvencFFapp).
+VVENC_CONFIG_DIR = Path("cfg/experimental")
+#: VVenC and AVM code 8 bits here, like every encoder in the project.
+REFERENCE_BIT_DEPTH = 8
 #: NVIDIA NVENC through ffmpeg: fixed-function GPU hardware, a chart reference on the
 #: quality axis only (its speed is not CPU speed). Family -> (codec, ffmpeg encoder,
 #: preset, tune): the default preset with low-latency tuning, as streaming
@@ -228,6 +246,8 @@ class Family:
             return self._libvpx_aom_command(clip, frames, intra, out, kbps, qp, layers)
         if self.kind == "nvenc":
             return self._nvenc_command(clip, frames, intra, out, kbps, layers)
+        if self.kind in ("vvenc", "avm"):
+            return self._reference_command(clip, frames, intra, out, kbps, qp, layers)
         if self.kind == "svt":
             # Fixed QP mirrors the svtav1-m12 sweep adapter (AQ off); CBR keeps
             # SVT's own RTC CBR defaults (AQ included): that is the bar.
@@ -316,6 +336,35 @@ class Family:
                 f"--width={clip.width}", f"--height={clip.height}", f"--fps={num}/{den}",
                 f"--limit={frames}", "--ivf", "-o", str(out), str(clip.yuv)]
 
+    def _reference_command(self, clip: Clip, frames: int, intra: int, out: Path,
+                           kbps: int | None, qp: int | None, layers: int) -> list[str]:
+        """VVenC low delay / AVM, fixed QP only, one thread, one key frame.
+
+        These are coding-efficiency references (nceval.fixedqp), not
+        real-time bars: no CBR is configured for them.
+        """
+        if layers != 1 or kbps or qp is None:
+            raise ValueError(f"{self.name}: only flat fixed QP is configured")
+        num, den = fps_fraction(clip.fps)
+        depth = str(REFERENCE_BIT_DEPTH)
+        if self.kind == "vvenc":
+            config = self.tool.parents[2] / VVENC_CONFIG_DIR / f"lowdelay_{self.preset}.cfg"
+            return [str(self.tool), "-c", str(config), "-i", str(clip.yuv),
+                    "-s", f"{clip.width}x{clip.height}", "--FrameRate", str(num),
+                    "--FrameScale", str(den), "-f", str(frames), "-q", str(qp),
+                    f"--InputBitDepth={depth}", f"--OutputBitDepth={depth}",
+                    f"--InternalBitDepth={depth}", "--ConformanceWindowMode=1",
+                    "--Threads=1", "--MaxParallelFrames=0", "-b", str(out), "-o", "/dev/null"]
+        return [str(self.tool), "--good", "--passes=1", f"--cpu-used={self.preset}",
+                "--threads=1", "--row-mt=0", "--tile-columns=0", "--lag-in-frames=0",
+                "--auto-alt-ref=0", "--enable-fwd-kf=0", "--aq-mode=0", "--deltaq-mode=0",
+                "--end-usage=q", f"--qp={qp}", f"--min-qp={qp}", f"--max-qp={qp}",
+                "--disable-warning-prompt", f"--bit-depth={depth}", f"--input-bit-depth={depth}",
+                f"--kf-min-dist={intra}", f"--kf-max-dist={intra}",
+                f"--width={clip.width}", f"--height={clip.height}", "--i420",
+                f"--fps={num}/{den}", f"--limit={frames}", "--ivf", "-o", str(out),
+                str(clip.yuv)]
+
     def _nvenc_command(self, clip: Clip, frames: int, intra: int, out: Path,
                        kbps: int | None, layers: int) -> list[str]:
         """ffmpeg's NVENC encoder (`extra`: encoder, preset, tune) in low-delay CBR.
@@ -342,8 +391,9 @@ class Family:
 
     @property
     def quantizer_grid(self) -> range:
-        return COARSE_GRIDS[self.codec] if self.own else (
-            SVT_QP_GRID if self.kind == "svt" else COARSE_GRIDS[Codec.H264])
+        if self.own or self.kind in ("vvenc", "avm"):
+            return COARSE_GRIDS[self.codec]
+        return SVT_QP_GRID if self.kind == "svt" else COARSE_GRIDS[Codec.H264]
 
 
 @dataclass(frozen=True)
@@ -826,10 +876,25 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False) -> Family:
         if name.startswith(prefix) and len(name) > len(prefix):
             codec = ANCHOR_CODECS[kind]
             compares = (Codec.AV1, Codec.HEVC) if kind == "svt" else (codec,)
-            return Family(name, codec, find_tool(ANCHOR_TOOLS[kind], paths), cqp=cqp, kind=kind,
+            return Family(name, codec, anchor_tool(kind, paths), cqp=cqp, kind=kind,
                           compares=compares, preset=name.removeprefix(prefix))
     raise ValueError(f"unknown anchor family {name!r}: expected "
                      f"{', '.join(p + '<preset>' for p in ANCHOR_PRESET_PREFIXES.values())}")
+
+
+def anchor_tool(kind: str, paths: Paths) -> Path:
+    """An anchor kind's program: the environment override (REFERENCE_TOOL_ENV),
+    then the usual search (find_tool), then the known fallback location."""
+    override = os.environ.get(REFERENCE_TOOL_ENV.get(kind, ""))
+    if override:
+        return Path(override)
+    try:
+        return find_tool(ANCHOR_TOOLS[kind], paths)
+    except FileNotFoundError:
+        fallback = paths.data_root / REFERENCE_TOOL_FALLBACK.get(kind, Path(ANCHOR_TOOLS[kind]))
+        if kind in REFERENCE_TOOL_FALLBACK and fallback.is_file():
+            return fallback
+        raise
 
 
 def nvenc_family(name: str, paths: Paths) -> Family:

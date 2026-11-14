@@ -17,7 +17,6 @@ use crate::cabac::CabacWriter;
 use crate::contexts::{Contexts, SliceKind};
 use crate::grid::Grid;
 use crate::headers::{LOG2_CTB, LOG2_MIN_CB, LOG2_MIN_TB, SIGN_DATA_HIDING};
-use crate::mvpred::MAX_MERGE_CANDIDATES;
 use crate::predict::{CHROMA_DM, ModeCode};
 use crate::quant_group::QuantGroup;
 use crate::residual::write_residual;
@@ -293,11 +292,13 @@ pub fn write_slice_data(
     grid: &Grid,
     transform: TransformSyntax<'_>,
     sao: Option<(&PictureSao, sao::Components)>,
+    merge_candidates: usize,
 ) -> BitWriter {
     let tables = Tables {
         transform,
         levels,
         units,
+        merge_candidates,
     };
     let mut w = CabacWriter::new();
     // Contexts are initialised at the start of every slice (§9.3.2.2).
@@ -401,6 +402,8 @@ struct Tables<'a> {
     levels: &'a [i16],
     /// The picture's transform unit store.
     units: &'a [TransformUnit],
+    /// `MaxNumMergeCand` of the slice: `merge_idx`'s cMax + 1.
+    merge_candidates: usize,
 }
 
 fn write_cu(
@@ -418,7 +421,7 @@ fn write_cu(
         w.encode_bin(&mut ctx.cu_skip_flag[skip_ctx_inc(grid, block)], skip);
     }
     match cu.kind {
-        CuKind::Skip { merge_idx } => write_merge_idx(w, ctx, merge_idx),
+        CuKind::Skip { merge_idx } => write_merge_idx(w, ctx, merge_idx, tables.merge_candidates),
         CuKind::Intra { luma, chroma } => {
             if slice == SliceKind::Predicted {
                 w.encode_bin(&mut ctx.pred_mode_flag, true); // MODE_INTRA
@@ -442,7 +445,7 @@ fn write_cu(
             w.encode_bin(&mut ctx.pred_mode_flag, false); // MODE_INTER
             w.encode_bin(&mut ctx.part_mode, true); // PART_2Nx2N
             w.encode_bin(&mut ctx.merge_flag, true);
-            write_merge_idx(w, ctx, merge_idx);
+            write_merge_idx(w, ctx, merge_idx, tables.merge_candidates);
             // rqt_root_cbf is inferred 1 for a merged 2Nx2N CU.
             write_transform_tree(
                 w,
@@ -717,12 +720,12 @@ fn write_cu_qp_delta(w: &mut CabacWriter, ctx: &mut Contexts, delta: i32) {
 
 /// `merge_idx` (§9.3.3.2 TR): truncated rice with cMax `MaxNumMergeCand − 1`,
 /// first bin context coded, the rest bypass.
-fn write_merge_idx(w: &mut CabacWriter, ctx: &mut Contexts, idx: usize) {
-    if MAX_MERGE_CANDIDATES < 2 {
+fn write_merge_idx(w: &mut CabacWriter, ctx: &mut Contexts, idx: usize, candidates: usize) {
+    if candidates < 2 {
         return;
     }
     w.encode_bin(&mut ctx.merge_idx, idx > 0);
-    let c_max = MAX_MERGE_CANDIDATES - 1;
+    let c_max = candidates - 1;
     let mut bin = 1;
     while bin < c_max && idx >= bin {
         w.encode_bypass(u32::from(idx > bin), 1);

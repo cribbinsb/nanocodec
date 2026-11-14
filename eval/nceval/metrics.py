@@ -109,13 +109,14 @@ VMAFX_CUDA_BACKEND = "vmafx-cuda"
 METRICS_BACKENDS = (LIBVMAF_CPU_BACKEND, VMAFX_CUDA_BACKEND)
 DEFAULT_METRICS_BACKEND = VMAFX_CUDA_BACKEND
 #: The VMAFx `vmaf` tool; default: our patched CUDA build under $NC_DATA_ROOT/ext,
-#: VMAFx 1068c699 plus ext/vmafx-patches 0001-0009 (frame-0 fix, MS-SSIM sums
+#: VMAFx 1068c699 plus ext/vmafx-patches 0001-0010 (frame-0 fix, MS-SSIM sums
 #: on the GPU, scoring servers with a bounded pool, direct reads, wider
-#: ADM/CAMBI launches, server inputs relayed with stall timeouts;
+#: ADM/CAMBI launches, server inputs relayed with stall timeouts, one-way
+#: drains by server generation;
 #: docs/handoff/vmafx-gpu.md). A frozen build directory: a new build goes
 #: into a new one and this default moves.
 VMAFX_ENV = "NC_VMAFX"
-VMAFX_DEFAULT = Path("ext/vmafx-serve4/build-cuda/tools/vmaf")
+VMAFX_DEFAULT = Path("ext/vmafx-serve5/build-cuda/tools/vmaf")
 #: "0" scores each point in its own VMAFx process instead of the server pool.
 VMAFX_SERVER_ENV = "NC_VMAFX_SERVER"
 _NO_GPU_HINT = (f"see docs/handoff/eval-throughput.md \"GPU VMAF\", or set "
@@ -156,8 +157,12 @@ def vmafx_command(paths: Paths) -> list[str]:
 
 @functools.lru_cache(maxsize=None)
 def _retire_other_pools(tool: Path) -> None:
-    """Once per process: the default build drains the servers of any other."""
-    gpuserve.drain_other_builds(tool)
+    """Once per process: the default build drains the servers of older builds,
+    and fails loudly (MetricFailed) if a newer build's pool is live."""
+    try:
+        gpuserve.drain_older_builds(tool)
+    except gpuserve.OlderThanLivePool as error:
+        raise MetricFailed(str(error)) from error
 
 
 # Self-check input: big enough for every VMAF v1 feature's pyramid.

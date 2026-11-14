@@ -8,7 +8,11 @@ every change that can alter a stream (tools/dev/land.sh runs it when the
 candidate reaches nc-cli, i.e. any encoder, codec, DSP or embedded-preset
 change) and on demand:
 
-    tools/ci/landing_conformance.py [--codecs h264,av1] [--workers 8]
+    tools/ci/landing_conformance.py [--codecs h264,av1] [--workers 8] [--param a.b=1 ...]
+
+`--param` adds encoder parameters to every case: a lever that lands off by
+default is checked this way before it lands (the shipped presets alone never
+switch it on).
 
 For every shipped preset of every codec (`default` plus the codec's
 presets/<codec>-*.toml) it encodes a few short streams of real content that
@@ -332,12 +336,13 @@ class Outcome:
 
 
 def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
-             work: Path) -> Outcome:
+             work: Path, params: tuple[str, ...] = ()) -> Outcome:
     shape, clip = case.shape, clips[case.shape]
     stream = work / f"{case.name}{case.codec.bitstream_suffix}"
     rate_log = work / f"{case.name}.rate.csv"
     layer_md5 = work / f"{case.name}.layers.csv" if case.is_spatial else None
     extra = ["--layer-md5", str(layer_md5)] if layer_md5 is not None else []
+    extra += [arg for pair in params for arg in ("--param", pair)]
     if case.kind == "timed":
         extra += ["--timestamps", str(timestamps_file(shape.frames, work))]
 
@@ -371,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--codecs", default=",".join(c.value for c in CODECS))
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument("--param", action="append", default=[],
+                        help="name=value added to every case (a lever that lands off)")
     args = parser.parse_args(argv)
     if not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must be 1..{MAX_WORKERS}")
@@ -386,7 +393,8 @@ def main(argv: list[str] | None = None) -> int:
     # The large and 720p SVC cases first: the longest jobs, so the pool ends together.
     todo.sort(key=lambda case: case.shape.width < 1280)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        outcomes = list(pool.map(lambda case: run_case(case, clips, binary, paths, work), todo))
+        outcomes = list(pool.map(lambda case: run_case(case, clips, binary, paths, work,
+                                                        tuple(args.param)), todo))
     failures = [o for o in outcomes if not o.passed]
     for failure in failures:
         print(f"FAIL {failure.case.name}: {failure.reason}\n  repro: {failure.repro}")
@@ -399,7 +407,8 @@ def main(argv: list[str] | None = None) -> int:
         presets = sorted({o.case.preset for o in mine})
         print(f"  {codec.value:<5} {sum(o.passed for o in mine)}/{len(mine)} streams, "
               f"presets {', '.join(presets)}; {sum(o.uncoded for o in mine)} held/dropped frames")
-    print(f"landing conformance: {len(outcomes) - len(failures)}/{len(outcomes)} streams "
+    extra = f" with {' '.join(args.param)}" if args.param else ""
+    print(f"landing conformance{extra}: {len(outcomes) - len(failures)}/{len(outcomes)} streams "
           f"bit-exact in every decoder ({binary}, {time.monotonic() - started:.0f} s)")
     return 1 if failures else 0
 

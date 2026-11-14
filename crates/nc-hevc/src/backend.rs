@@ -48,7 +48,9 @@ use crate::headers::{
     nal_header, p_slice_header, pps, sps, vps,
 };
 use crate::inter::{predict_chroma, predict_luma};
-use crate::mvpred::{AMVP_CANDIDATES, MAX_MERGE_CANDIDATES, candidate_lists};
+use crate::mvpred::{
+    AMVP_CANDIDATES, DEFAULT_MERGE_CANDIDATES, MAX_MERGE_CANDIDATES, MergeList, candidate_lists,
+};
 use crate::predict::{Refs, Sides, most_probable};
 use crate::quant;
 use crate::quant::{
@@ -130,8 +132,11 @@ mod cost {
     pub const FLAG: f32 = 1.0;
     /// DC intra: MPM flag and index, chroma mode.
     pub const INTRA_DC: f32 = 4.0;
-    /// `merge_idx` with two candidates: one bin.
-    pub const MERGE_IDX: f32 = 1.0;
+    /// `merge_idx` (§9.3.3.2 truncated rice, cMax `candidates` − 1): one
+    /// bin per index step, the last index needing no terminating bin.
+    pub fn merge_idx(idx: usize, candidates: usize) -> f32 {
+        (idx + 1).min(candidates - 1) as f32
+    }
 }
 
 /// Predictor lists of the block the engine is currently deciding.
@@ -140,7 +145,7 @@ struct Predictors {
     x: usize,
     y: usize,
     log2: u8,
-    merge: [Mv; MAX_MERGE_CANDIDATES],
+    merge: MergeList,
     amvp: [Mv; AMVP_CANDIDATES],
 }
 
@@ -655,6 +660,13 @@ nc_encoder::param_group! {
             "inter quantiser rounding offset (1/512 step; HM 85, default 128 keeps texture SVT keeps): lower widens the dead zone",
         chroma_inter_rounding: INTER_ROUNDING_512THS as f32, [0.0, 256.0],
             "inter chroma quantiser rounding offset (1/512 step): higher keeps the colour detail VMAF's chroma feature measures",
+        // MaxNumMergeCand: more spatial (and the temporal) candidates for
+        // merge and skip, each ranked by mode decision and costing about a
+        // bypass bin more to index. VVC's six-candidate list (with TMVP)
+        // measured -1.9% J_real at +6.9% instructions (docs/handoff/vvc.md
+        // "vvc-tmvp"); HEVC P slices have no history or pairwise candidates.
+        merge_candidates: DEFAULT_MERGE_CANDIDATES as f32, [1.0, MAX_MERGE_CANDIDATES as f32],
+            "merge candidates per P slice (MaxNumMergeCand, HEVC §7.4.7.1): more cheap vectors for skip and merge, a slightly longer merge_idx",
         sao_luma: 1.0, [0.0, 1.0],
             "luma SAO edge offset on (1) or off (0)",
         sao_chroma: 1.0, [0.0, 1.0],
@@ -1140,7 +1152,7 @@ impl CodecBackend for HevcBackend {
         if self.early_merge_lambdas <= 0.0
             || self.slice != SliceKind::Predicted
             || !mv.is_full_pel()
-            || self.current.is_none_or(|p| p.merge[0] != mv)
+            || self.current.is_none_or(|p| p.merge.as_slice()[0] != mv)
         {
             return false;
         }
@@ -1225,7 +1237,7 @@ impl CodecBackend for HevcBackend {
         self.current = Some(p);
         // Merge candidates cost almost nothing to signal; AMVP predictors
         // cost only a zero vector difference.
-        out.extend(p.merge.iter().chain(&p.amvp).copied());
+        out.extend(p.merge.as_slice().iter().chain(&p.amvp).copied());
     }
 
     fn mode_bits(&self, block: &Block, mode: &PredictionMode) -> f32 {
@@ -1241,10 +1253,9 @@ impl CodecBackend for HevcBackend {
                     .current
                     .filter(|c| (c.x, c.y, c.log2) == (block.x, block.y, block.log2_size()))
                     .unwrap_or_else(|| self.predictors(block));
-                if p.merge.contains(&mv) {
-                    // Skip, or merge with residual: `merge_idx` is one bin
-                    // with two candidates.
-                    cost::SKIP_FLAG + cost::MERGE_IDX
+                if let Some(idx) = p.merge.index_of(mv) {
+                    // Skip, or merge with residual.
+                    cost::SKIP_FLAG + cost::merge_idx(idx, self.info.merge_candidates)
                 } else {
                     let mvd = p
                         .amvp
@@ -1444,6 +1455,7 @@ impl CodecBackend for HevcBackend {
                 intra_depth: self.info.intra_transform_depth,
             },
             self.sao.as_ref().map(|sao| (sao, self.sao_components)),
+            self.info.merge_candidates,
         );
 
         let qp = SliceQp {
@@ -1490,6 +1502,7 @@ impl CodecBackend for HevcBackend {
                     qp,
                     self.slice_sao(),
                     self.temporal_mvp(),
+                    self.info.merge_candidates,
                     self.deblocking,
                 );
                 if self.references.position.is_top_layer() {
@@ -1590,7 +1603,12 @@ impl HevcBackend {
             .motion
             .collocated(reference.slot, reference.distance as i32);
         let collocated = self.temporal_mvp().then_some(&collocated);
-        let (merge, amvp) = candidate_lists(&self.grid, collocated, block.x, block.y, size);
+        let (merge, amvp) = candidate_lists(
+            &self.grid,
+            collocated,
+            (block.x, block.y, size),
+            self.info.merge_candidates,
+        );
         Predictors {
             x: block.x,
             y: block.y,
@@ -1756,7 +1774,7 @@ impl HevcBackend {
         tus: &TransformUnits,
     ) {
         let residual = tus.as_slice().iter().any(TransformUnit::coded);
-        let merge_idx = predictors.merge.iter().position(|&m| m == mv);
+        let merge_idx = predictors.merge.index_of(mv);
 
         let kind = match merge_idx {
             Some(merge_idx) if !residual => CuKind::Skip { merge_idx },
@@ -2497,6 +2515,7 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
         frame_rate: config.frame_rate,
         long_term: LtrParams::from_overrides(&config.params).interval > 0.0,
         block_qp: false,
+        merge_candidates: params.merge_candidates.round() as usize,
     }
 }
 

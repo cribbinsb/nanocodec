@@ -422,9 +422,8 @@ impl HevcBackend {
             });
         }
         let residual = tus.as_slice().iter().any(TransformUnit::coded);
-        let merge_indices: Vec<usize> = (0..predictors.merge.len())
-            .filter(|&i| predictors.merge[i] == mv)
-            .collect();
+        let merge = predictors.merge.as_slice();
+        let merge_indices: Vec<usize> = (0..merge.len()).filter(|&i| merge[i] == mv).collect();
         let rng = self.rng();
         let kind = if !merge_indices.is_empty() && !rng.chance(AMVP_ANYWAY_CHANCE) {
             let merge_idx = merge_indices[rng.below(merge_indices.len() as u64) as usize];

@@ -127,8 +127,6 @@ const LOG2_MAX_POC_LSB_MINUS4: u32 = 4;
 pub const SIGN_DATA_HIDING: bool = true;
 /// Bits of `slice_pic_order_cnt_lsb`.
 pub const POC_LSB_BITS: u32 = LOG2_MAX_POC_LSB_MINUS4 + 4;
-/// `MaxNumMergeCand` (`five_minus_max_num_merge_cand` = 5 − this).
-const MAX_NUM_MERGE_CAND: u32 = crate::mvpred::MAX_MERGE_CANDIDATES as u32;
 /// Main profile (`general_profile_idc`, HEVC §A.3.2).
 const PROFILE_MAIN: u32 = 1;
 /// Main 10 (Main streams also conform to it, so its compatibility flag is set).
@@ -181,6 +179,9 @@ pub struct StreamInfo {
     /// CUs carry `cu_qp_delta` (`cu_qp_delta_enabled_flag`), one per
     /// CTB-sized quantization group (`diff_cu_qp_delta_depth` 0).
     pub block_qp: bool,
+    /// `MaxNumMergeCand` of every P slice (1..=5,
+    /// `mvpred::MAX_MERGE_CANDIDATES`).
+    pub merge_candidates: usize,
 }
 
 impl StreamInfo {
@@ -550,6 +551,7 @@ pub fn p_slice_header(
     qp: SliceQp,
     sao: (bool, bool),
     temporal_mvp: bool,
+    merge_candidates: usize,
     deblocking: SliceDeblocking,
 ) {
     w.put_bit(true); // first_slice_segment_in_pic_flag
@@ -574,7 +576,8 @@ pub fn p_slice_header(
     w.put_bit(sao.0); // slice_sao_luma_flag
     w.put_bit(sao.1); // slice_sao_chroma_flag
     w.put_bit(false); // num_ref_idx_active_override_flag (one reference)
-    w.put_ue(5 - MAX_NUM_MERGE_CAND); // five_minus_max_num_merge_cand
+    // five_minus_max_num_merge_cand (§7.4.7.1)
+    w.put_ue((crate::mvpred::MAX_MERGE_CANDIDATES - merge_candidates) as u32);
     qp.write(w);
     deblocking.write(w);
     w.trailing_bits(); // byte_alignment()

@@ -16,12 +16,21 @@ Bounds (the GPU is shared with other jobs and another user):
     at 720p), and concurrent points beyond its slots wait in the servers
     instead of starting more of them.
 
-Switching builds: the first run of the default build in a process drains
-every server of another build (`--drain-server`). A drained server finishes
-its runs, refuses new ones (exit `STATUS_RETIRED`) and re-executes into a
-memory-free stub that keeps the name for a few hours, so clients of a
-retired build fail loudly instead of starting it again. Servers of builds
-before the drain request existed ignore it and exit after their idle time.
+Switching builds is one way. Every build has a generation (`vmaf
+--serve-generation`, the VMAFx patch that last changed the server; builds
+before generations count as 0). The first run of the default build in a
+process
+  - fails (`OlderThanLivePool`) if a live server of a NEWER generation
+    exists: its eval tree is older than the live scoring build and must be
+    rebased, never drain the newer pool;
+  - drains every server of an OLDER generation (`--drain-server`). A drained
+    server finishes its runs, refuses new ones (exit `STATUS_RETIRED`) and
+    re-executes into a memory-free stub that keeps the name for a few hours,
+    so clients of a retired build fail loudly instead of starting it again.
+Servers since generation 10 also refuse a drain from a build that is not
+newer, so even an old tree's unconditional drain cannot retire them (on
+2026-11-14 an older tree drained the newer serve4 pool and every current job
+failed as retired). Servers of the same generation are left alone.
 
 Stalls fail loudly (VMAFx patch 0009, after a silent 15-minute pool wedge on
 2026-11-14): the client opens its inputs and passes them as descriptors, so
@@ -36,6 +45,7 @@ time.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import subprocess
@@ -57,6 +67,12 @@ STATUS_NO_MEMORY = 87
 #: for 240 s (a wedged server). vmaf_serve.cpp has the reasons for the values.
 STATUS_STALLED = 88
 DRAIN_TIMEOUT_SECONDS = 10
+#: Generation of builds that predate generations (serve3, serve4).
+UNVERSIONED_GENERATION = 0
+
+
+class OlderThanLivePool(RuntimeError):
+    """This process's default VMAFx build is older than a live pool's."""
 
 
 def name_prefix() -> str:
@@ -90,6 +106,10 @@ class Server:
     gpu_mib: int | None
 
     @property
+    def generation(self) -> int:
+        return int(self.state.get("generation", UNVERSIONED_GENERATION))
+
+    @property
     def idle_seconds(self) -> float | None:
         since = self.state.get("idle_since")
         return time.time() - since if since else None
@@ -117,13 +137,44 @@ def servers() -> list[Server]:
     return sorted(found, key=lambda s: s.name)
 
 
-def drain_other_builds(tool: Path) -> list[str]:
-    """Drain every running server of another build than `tool`; their names."""
+@functools.lru_cache(maxsize=None)
+def tool_generation(tool: Path) -> int:
+    """The server generation of `tool` (UNVERSIONED_GENERATION for builds
+    that cannot say)."""
+    try:
+        run = subprocess.run([str(tool), "--serve-generation"], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=DRAIN_TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError):
+        return UNVERSIONED_GENERATION
+    text = run.stdout.strip()
+    return int(text) if run.returncode == 0 and text.isdigit() else UNVERSIONED_GENERATION
+
+
+def newer_live_servers(found: list[Server], generation: int) -> list[Server]:
+    """Live (not retired) servers of a newer generation than `generation`."""
+    return [s for s in found if not s.retired and s.generation > generation]
+
+
+def drain_targets(found: list[Server], tool: Path, generation: int) -> list[Server]:
+    """Live servers that `tool` (of `generation`) may drain: older generations only."""
     current = f"{name_prefix()}{build_identity(tool)}-"
+    return [s for s in found if not s.retired and not s.name.startswith(current)
+            and s.generation < generation]
+
+
+def drain_older_builds(tool: Path) -> list[str]:
+    """Take over the pool for `tool`: fail if a newer build's pool is live,
+    else drain every server of an older generation; their names."""
+    generation = tool_generation(tool)
+    found = servers()
+    newer = newer_live_servers(found, generation)
+    if newer:
+        raise OlderThanLivePool(
+            f"your eval tree is older than the live scoring build: its VMAFx {tool} is "
+            f"generation {generation}, but server {newer[0].name} runs generation "
+            f"{newer[0].generation} ({newer[0].tool}); rebase onto variance-integration")
     drained = []
-    for server in servers():
-        if server.retired or server.name.startswith(current):
-            continue
+    for server in drain_targets(found, tool, generation):
         subprocess.run([str(tool), "--drain-server", server.name], stdin=subprocess.DEVNULL,
                        capture_output=True, timeout=DRAIN_TIMEOUT_SECONDS)
         drained.append(server.name)
@@ -132,7 +183,7 @@ def drain_other_builds(tool: Path) -> list[str]:
 
 def format_status(found: list[Server]) -> str:
     lines = [f"{'server':<58} {'pid':>8} {'state':<9} {'run':>4} {'wait':>4} {'done':>6} "
-             f"{'fail':>5} {'stall':>5} {'GPU MiB':>8} {'idle s':>7}  tool"]
+             f"{'fail':>5} {'stall':>5} {'gen':>3} {'GPU MiB':>8} {'idle s':>7}  tool"]
     total = 0
     for s in found:
         state = "retired" if s.retired else s.state.get("state", "?")
@@ -140,7 +191,7 @@ def format_status(found: list[Server]) -> str:
         total += s.gpu_mib or 0
         lines.append(f"{s.name:<58} {s.pid:>8} {state:<9} {s.state.get('running', ''):>4} "
                      f"{s.state.get('waiting', ''):>4} {s.state.get('done', ''):>6} "
-                     f"{s.state.get('failed', ''):>5} {s.state.get('stalled', ''):>5} {s.gpu_mib if s.gpu_mib is not None else '-':>8} "
+                     f"{s.state.get('failed', ''):>5} {s.state.get('stalled', ''):>5} {s.generation:>3} {s.gpu_mib if s.gpu_mib is not None else '-':>8} "
                      f"{f'{idle:.0f}' if idle is not None else '-':>7}  {s.tool}")
     lines.append(f"{len(found)} servers, {total} MiB of GPU memory")
     return "\n".join(lines)
