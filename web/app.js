@@ -27,7 +27,10 @@ import { ViewSources } from './exact-source.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 import { SOURCE_FPS, nextCommonTick, tickMs } from './timeline.js';
 import { matchingSettings } from './view-settings.js';
-import { trace } from './trace.js';
+import { trace, traceTail } from './trace.js';
+import { buildReport, clipSeconds, formatReport, sha256 } from './debug-report.js';
+import { download } from './streams.js';
+import { RELAXED_SIMD } from './wasm.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause'), stepButton = $('#step');
@@ -88,6 +91,56 @@ const analysis = new AnalysisController($('#analysis'), $('#versions'), panels, 
   loupeActive: () => loupe.enabled,
 });
 
+// What tools/web/build.sh wrote about the module build (commit, profile), for the debug report.
+const BUILD_INFO_URL = new URL('./pkg/build.json', import.meta.url);
+/** The page's whole state as a debug report (debug-report.js), downloaded as Markdown. */
+async function downloadReport() {
+  const build = await fetch(BUILD_INFO_URL).then(response => (response.ok ? response.json() : {}), () => ({}));
+  const loopLength = exact?.loopLength ?? frames.loopLength;
+  const text = selector => $(selector).textContent;
+  const report = await buildReport({
+    build: { commit: build.commit ?? 'unknown', dirty: Boolean(build.dirty), profile: build.profile ?? 'unknown',
+      module: RELAXED_SIMD ? 'SIMD128 + relaxed SIMD (pkg/relaxed)' : 'SIMD128 (pkg)' },
+    page: { url: location.href, time: new Date().toISOString(), userAgent: navigator.userAgent, hardwareConcurrency: navigator.hardwareConcurrency },
+    source: await sourceState(loopLength),
+    state: { playback: paused ? 'paused' : running ? 'playing' : preparing ? 'starting' : 'stopped', tick: lastTick,
+      clipSeconds: clipSeconds(lastTick, loopLength), loop: Number.isFinite(loopLength) ? Math.floor(lastTick / loopLength) : 0,
+      session: text('#session-stats'), runtime: text('#runtime-label'), notice: notice.hidden ? null : notice.textContent,
+      viewNote: $('#view-note').hidden ? null : text('#view-note'),
+      delivered, analysis: analysis.debugState(), magnifier: loupe.enabled, showOriginal },
+    events: traceTail(),
+  }, panels.map(panel => panel.debugState()), { includeStreams: $('#debug-streams').checked });
+  download(new Blob([formatReport(report)], { type: 'text/markdown' }), `nanocodec-debug-${report.page.time.replace(/[:.]/g, '-')}.md`);
+}
+/** A decoded clip's container facts (clip-source.js), for the debug report. */
+const containerFacts = source => source && { codec: source.config.codec, width: source.config.codedWidth, height: source.config.codedHeight,
+  frames: source.frameCount, fps: source.fps, timescale: source.timescale };
+/**
+ * The source for the debug report: what it is, the hash of each file the views
+ * code (a clip's rendition per view, exact-source.js), and whether replay can regenerate it.
+ */
+async function sourceState(loopLength) {
+  const base = { kind, path: kind === 'camera' ? 'webcam, sampled live' : exact ? 'exact: decoded frame by frame' : 'sampled while the video plays',
+    loopLength: Number.isFinite(loopLength) ? loopLength : null };
+  if (kind === 'clip') {
+    const files = [...new Set(panels.map(panel => panel.current.rendition))];
+    const renditions = await Promise.all(files.map(async name => {
+      const decoded = exact?.entries.find(entry => entry.url.endsWith(`/${name}`))?.source.clip;
+      const bytes = decoded?.bytes ?? new Uint8Array(await (await fetch(`clips/${name}`)).arrayBuffer());
+      return { file: name, sha256: await sha256(bytes), container: containerFacts(decoded) };
+    }));
+    return { ...base, clip: clip.id, fps: clip.fps, renditions, reproducible: true };
+  }
+  if (kind === 'file') {
+    const decoded = exact?.entries[0].source.clip;
+    return { ...base, file: file?.name ?? null, size: file?.size ?? null, type: file?.type ?? null, sha256: file ? await sha256(await file.arrayBuffer()) : null,
+      fps: decoded?.fps ?? null, container: containerFacts(decoded), reproducible: false,
+      reason: 'a local file is never embedded; replay checks the statistics and any embedded streams' };
+  }
+  const reason = kind === 'camera' ? 'a webcam picture is never embedded; replay checks the statistics and any embedded streams'
+    : 'the test scene is drawn by the browser; replay checks the statistics and any embedded streams';
+  return { ...base, fps: kind === 'scene' ? SOURCE_FPS : null, reproducible: false, reason };
+}
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
 function stop(keepSource = false) {
@@ -437,6 +490,7 @@ function send(tick, shots, coding = comparison.coding(tick)) {
       if (panel.current.source !== 'live') return;
       // Only the rate changes here: other settings restart the comparison.
       panel.current = { ...panel.current, ...panel.rateSettings() }; panel.history = [];
+      panel.intervene('rate', tick, panel.rateSettings());
       comparison.updateRate(i);
     });
     pendingRateChange = false;
@@ -528,7 +582,15 @@ for (const group of CLIP_GROUPS) {
 }
 clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); start(); });
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
-$('#keyframe').addEventListener('click', () => { if (running) comparison.requestKeyframes(); });
+$('#keyframe').addEventListener('click', () => {
+  if (!running) return;
+  comparison.requestKeyframes();
+  for (const panel of panels) if (panel.current.source === 'live') panel.intervene('keyframe', lastTick + 1);
+});
+$('#debug-report').addEventListener('click', () => downloadReport().catch(error => message(`Debug report failed: ${error.message}`)));
+// Page errors go to the event log the debug report keeps.
+window.addEventListener('error', event => trace('page error', event.message));
+window.addEventListener('unhandledrejection', event => trace('unhandled rejection', event.reason?.message ?? String(event.reason)));
 pauseButton.addEventListener('click', () => { if (paused) resume(); else pause(); });
 stepButton.addEventListener('click', step);
 startButton.addEventListener('click', () => { if (running || preparing) stop(); else start(); });

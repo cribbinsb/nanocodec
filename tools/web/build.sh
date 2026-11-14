@@ -42,5 +42,10 @@ build "$target_root/relaxed-simd" +simd128,+relaxed-simd "$pkg_dir/relaxed"
 # The analysis module (decoders that record every block, web/analysis-view.js):
 # loaded only when a viewer switches analysis on, so one SIMD128 build.
 build "$target_root/analysis" +simd128 "$pkg_dir/analysis" analysis
+# The commit the modules were built from, which the page's debug report names
+# (web/debug-report.js); "dirty": the crates or the page had local changes.
+dirty=false
+git diff --quiet HEAD -- crates web Cargo.toml Cargo.lock || dirty=true
+printf '{"commit": "%s", "dirty": %s, "profile": "%s"}\n' "$(git rev-parse HEAD)" "$dirty" "$profile" > "$pkg_dir/build.json"
 printf 'Built %s, %s/relaxed and %s/analysis.' "$pkg_dir" "$pkg_dir" "$pkg_dir"
 printf ' Serve with: python3 -m http.server 8765 --bind 127.0.0.1 --directory web\n'

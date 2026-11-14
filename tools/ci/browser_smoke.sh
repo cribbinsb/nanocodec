@@ -14,7 +14,8 @@
 # on a normal and a slowed page (web/tests/psnr-map.py), what a live view codes against the
 # clip file's decoded planes on three clips (web/tests/capture-identity.py; run
 # it without --clips for every clip) and spatial SVC's operating points against
-# the native decoder (web/tests/svc-operating-points.py). nc-web embeds the encoder and every codec crate, so
+# the native decoder (web/tests/svc-operating-points.py), and the debug report reproduced
+# natively with zero mismatches (web/tests/debug-report.py). nc-web embeds the encoder and every codec crate, so
 # a change there can break the page (frame hold once stopped it: the
 # workers expected a packet per input). Called by check.sh (every run, --quick included, so
 # browser API changes cannot land unchecked) and by land.sh for a candidate
@@ -62,6 +63,8 @@ elif python3 -c 'import playwright' 2>/dev/null; then
         NC_NANOCODEC_BIN=${CARGO_TARGET_DIR:-target}/${WEB_PROFILE:-gate}/nanocodec
     fi
     NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/svc-operating-points.py
+    # The debug report reproduces natively with zero mismatches.
+    NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/debug-report.py
 else
     echo 'browser product smoke skipped: Playwright is not installed' >&2
 fi

@@ -328,9 +328,10 @@ def probe(path: Path) -> tuple[int, int, float, int]:
     return s["width"], s["height"], num / den, int(s["nb_read_frames"])
 
 
-def write_source(entry: Entry, path: Path) -> tuple[int, int]:
-    """Write the entry's I420 frames to `path`; returns (frames, loop ticks)."""
-    source = clip_file(entry.clip, entry.height)
+def write_source(entry: Entry, path: Path, source: Path | None = None) -> tuple[int, int]:
+    """Write the entry's I420 frames to `path`; returns (frames, loop ticks). `source`: another
+    rendition of the clip than the entry's own (the page loads one for its taller view)."""
+    source = source or clip_file(entry.clip, entry.height)
     source_width, source_height, clip_fps, clip_frames = probe(source)
     loop_ticks = round(clip_frames * SOURCE_FPS / clip_fps)
     step = SOURCE_FPS // entry.fps

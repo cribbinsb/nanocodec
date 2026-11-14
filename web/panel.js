@@ -6,13 +6,16 @@ import { CODECS, streamExtension } from './codecs.js';
 import { createRenderer } from './renderer.js';
 import { Advanced } from './advanced.js';
 import { cliCommand, cliPreset } from './options.js';
-import { FRAME_RATES, tickMs, tickStep } from './timeline.js';
+import { FRAME_RATES, tickAt, tickMs, tickStep } from './timeline.js';
 import { fetchStream, loadManifest, referenceStream, streamGroups, streamTitle } from './reference.js';
 import { trace } from './trace.js';
+import { BITRATE_FORMULA, PSNR_FORMULA, shownNumbers } from './debug-report.js';
 import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, RATE_LIMITS_KBPS, RESOLUTIONS } from './view-settings.js';
 
 // Statistics cover this many recent coded frames.
 const HISTORY_FRAMES = 90;
+// The debug report's record of recent coded frames (debug-report.js): 30 s at 30 fps.
+const DEBUG_LOG_FRAMES = 900;
 // The metrics, rate line, frame-size chart and settings text are redrawn at most
 // this often (and once more after the last frame), not on every frame: they
 // write and lay out DOM text, read a computed style and repaint a 90-bar chart.
@@ -63,6 +66,8 @@ export class Panel {
     // Which SVC operating point this view decodes: switched while running, without
     // restarting the encoder (pipeline.js passes it to the decode worker).
     this.operatingPoint = $('.operating-point');
+    // Going back to the full layer asks the encoder for a key frame (pipeline.js).
+    this.operatingPoint.addEventListener('change', () => this.intervene('operating-point', +this.badge.dataset.tick, { operatingPoint: +this.operatingPoint.value }));
     this.preset.addEventListener('change', () => this.updateLayers());
     this.advanced = new Advanced(letter, codec, changed); $('.options').append(this.advanced.element);
     this.reproduce = $('.reproduce');
@@ -262,6 +267,8 @@ export class Panel {
     this.current = config; this.frames = []; this.history = []; this.bytes = 0; this.full = false; this.count = 0;
     // Ticks of this view's rate the source skipped, and the last tick it got.
     this.skipped = 0; this.lastTick = null;
+    // For the debug report: recent coded frames with their packets, and what changed the live encoder mid-run.
+    this.log = []; this.interventions = [];
     this.element.querySelector('.rate-status').textContent = config.source === SOURCES.reference ? 'Pre-encoded offline · waiting for frames'
       : config.rateMode === 'cbr' ? `Target ${config.targetKbps} kbps · waiting for frames` : 'Fixed quantizer';
     this.shown = false; this.element.classList.remove('error'); this.downloadButton.disabled = true;
@@ -379,9 +386,31 @@ export class Panel {
   }
   /** Mean ms per frame each of this view's workers is busy: encoding (none for a pre-encoded stream), and decoding with PSNR and display hand-off. */
   stageTimes() { return { encode: this.average('encode'), decode: this.average('decodeStage') }; }
+  /**
+   * This view for the debug report (debug-report.js `buildReport`): its effective
+   * configuration as the workers got it, its stream, every number it shows, the
+   * window its bitrate and PSNR are computed over, interventions and coded frames.
+   */
+  debugState() {
+    const { entry, ...config } = this.current;
+    return {
+      letter: this.letter, config: { ...config, operatingPoint: +this.operatingPoint.value, analysis: Boolean(this.analysis?.enabled) },
+      streamId: entry?.id ?? null, streamFile: entry?.file ?? null, streamBytes: this.stream?.bytes ?? null, sourceNote: entry?.sourceNote ?? null,
+      shown: shownNumbers(this.element),
+      window: { fps: this.current.fps, bitrateFormula: BITRATE_FORMULA, psnrFormula: PSNR_FORMULA,
+        frames: this.history.map(({ bytes, timestamp, psnr, encode, decode }) => ({ bytes, timestamp, psnr, encodeMs: encode, decodeMs: decode })) },
+      interventions: this.interventions, log: this.log,
+    };
+  }
+  /** Note something that changed the live encoder mid-run (rate, key frame request), for the debug report. */
+  intervene(kind, tick, details = {}) { this.interventions.push({ kind, tick, ...details }); }
   /** Count, chart and save one coded frame. */
   record(coded) {
     ++this.count;
+    this.log.push({ tick: tickAt(coded.timestamp), key: coded.key, repeat: coded.repeat, quantizer: coded.quantizer, bytes: coded.packet.byteLength,
+      packet: coded.packet, encodeMs: coded.encodeMs, decodeMs: coded.decodeMs, psnr: coded.psnr, planes: coded.errorMap?.frame ?? null,
+      colour: coded.colour ?? null });
+    if (this.log.length > DEBUG_LOG_FRAMES) this.log.shift();
     this.history.push({ bytes: coded.packet.byteLength, encode: coded.encodeMs, decode: coded.decodeMs, decodeStage: coded.decodeStageMs, psnr: coded.psnr, key: coded.key, timestamp: coded.timestamp });
     if (this.history.length > HISTORY_FRAMES) this.history.shift();
     // A pre-encoded view downloads its whole stream file instead.
