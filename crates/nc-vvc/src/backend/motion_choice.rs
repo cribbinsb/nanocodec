@@ -102,10 +102,10 @@ impl VvcBackend {
         if let Some((model, cost)) = best_affine {
             keep_cheapest(&mut best, Motion::Affine(model), cost);
         }
-        let Some((candidate, _)) = best.filter(|&(_, cost)| cost < search.vector_cost) else {
+        let Some((candidate, cost)) = best.filter(|&(_, cost)| cost < search.vector_cost) else {
             return vector;
         };
-        if !self.pairwise_merge_check && Some(candidate) == off_grid {
+        if Some(candidate) == off_grid && !self.confirms_off_grid(&search, cost) {
             return candidate;
         }
         // Both predictions are known already: the vector's from the search,
@@ -115,6 +115,20 @@ impl VvcBackend {
         let wins = self.luma_rd(&search, &candidate, known)
             < self.luma_rd(&search, &vector, Some(&search.vector_prediction));
         if wins { candidate } else { vector }
+    }
+
+    /// Whether the off-grid merge candidate of SATD-domain cost `cost` is
+    /// confirmed against the vector by luma rate-distortion cost
+    /// (`vvc.pairwise_merge_check`). Speed heuristic
+    /// (`vvc.pairwise_merge_sure_ratio`): a candidate whose SATD cost is at
+    /// most that fraction of the vector's is taken unchecked, skipping two
+    /// luma RD codings; a clear SATD lead rarely reverses under RD (the
+    /// SATD winner wins 82-84% of all checks, chart clips at CBR 600).
+    /// SATD leads are small (0.8 changes nothing): Jetson cycles (chart
+    /// clips, 150 f) / L1 J (2026-11-14 draw): 0.9 -0.2% / -0.24%, 0.97
+    /// -0.4% / -0.15%.
+    fn confirms_off_grid(&self, search: &Search<'_>, cost: f32) -> bool {
+        self.pairwise_merge_check && cost > self.pairwise_merge_sure_ratio * search.vector_cost
     }
 
     /// The shared state of `block`'s searches (its predictors `p`), with

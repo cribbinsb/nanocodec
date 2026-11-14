@@ -65,11 +65,48 @@ pub fn residual_quantises_to_zero(
     limits: ZeroLimits,
     texture_scale: f32,
 ) -> bool {
+    let scales = TextureScales {
+        sub_block: texture_scale,
+        gradient: texture_scale,
+    };
+    residual_quantises_to_zero_scaled(dsp, n, src, pred, limits, scales)
+}
+
+/// The AC energy allowances of [`residual_quantises_to_zero_scaled`], in
+/// squared AC zero limits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureScales {
+    /// For each 8x8 sub-block's mean-removed energy.
+    pub sub_block: f32,
+    /// For the energy of the sub-block means around the block mean.
+    pub gradient: f32,
+}
+
+/// [`residual_quantises_to_zero`] with separate allowances for the
+/// sub-blocks' texture and the block's gradient. A sub-block's energy
+/// reaches a coefficient of a larger block only through the basis
+/// restricted to its 64 samples (a fraction `64 / n²` of the basis energy),
+/// so its allowance may grow with the block where the gradient's may not.
+///
+/// # Panics
+///
+/// If `n` is not a multiple of 8 or the views are smaller than `n`.
+#[must_use]
+pub fn residual_quantises_to_zero_scaled(
+    dsp: &Dsp,
+    n: usize,
+    src: &PlaneView<'_>,
+    pred: &PlaneView<'_>,
+    limits: ZeroLimits,
+    scales: TextureScales,
+) -> bool {
     assert!(
         n.is_multiple_of(SUB_BLOCK),
         "block side {n} is not a multiple of 8"
     );
-    let ac_energy_limit = f64::from(texture_scale) * f64::from(limits.ac).powi(2);
+    let ac_squared = f64::from(limits.ac).powi(2);
+    let sub_block_limit = f64::from(scales.sub_block) * ac_squared;
+    let gradient_limit = f64::from(scales.gradient) * ac_squared;
     let mut block_sum = 0_i64;
     // Sum over sub-blocks of sum_i^2 / 64: the energy of the sub-block means.
     let mut mean_energy = 0.0_f64;
@@ -86,7 +123,7 @@ pub fn residual_quantises_to_zero(
         for stats in row_stats.iter() {
             let sum = i64::from(stats.sum);
             let sum_sq = (sum * sum) as f64 / SUB_BLOCK_AREA as f64;
-            if f64::from(stats.sse) - sum_sq >= ac_energy_limit {
+            if f64::from(stats.sse) - sum_sq >= sub_block_limit {
                 return false;
             }
             block_sum += sum;
@@ -96,7 +133,7 @@ pub fn residual_quantises_to_zero(
     let area = (n * n) as f64;
     let dc = block_sum as f64 / n as f64;
     let gradient_energy = mean_energy - (block_sum * block_sum) as f64 / area;
-    dc.abs() < f64::from(limits.dc) && gradient_energy < ac_energy_limit
+    dc.abs() < f64::from(limits.dc) && gradient_energy < gradient_limit
 }
 
 #[cfg(test)]

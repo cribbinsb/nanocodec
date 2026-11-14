@@ -161,6 +161,7 @@ impl ForcedFrame {
                     qp: self.qp,
                     rounding_512ths: NEAREST_ROUNDING_512THS,
                     zero_bound_percent: recon::EXACT_ZERO_BOUND_PERCENT,
+                    zero_texture_percent: 0,
                     shave_gap: 0,
                     forward: nc_dsp::HevcForwardMode::EXACT,
                     transform: crate::mts::Selection::Dct2,

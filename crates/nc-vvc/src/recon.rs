@@ -29,6 +29,9 @@ pub(crate) struct Quant {
     /// coefficient, in percent: 100 is exact (only blocks proven to quantise
     /// to zero skip the transform); more also drops near-zero residuals.
     pub(crate) zero_bound_percent: u32,
+    /// The texture zero test's AC energy allowance in percent of the squared
+    /// zero limit ([`texture_quantises_to_zero`]; 0: off).
+    pub(crate) zero_texture_percent: u32,
     /// [`shave_isolated_ones`]' minimum scan gap (0: never shave).
     pub(crate) shave_gap: usize,
     /// The 16- and 32-point forward DCT ([`EXACT_FORWARD`] or, with the
@@ -92,6 +95,8 @@ pub(crate) struct Quantizers {
     pub(crate) inter_rounding: [i32; 2],
     /// Inter blocks' [`Quant::zero_bound_percent`] (intra stays exact).
     pub(crate) inter_zero_bound_percent: u32,
+    /// Inter blocks' [`Quant::zero_texture_percent`] (intra never skips).
+    pub(crate) inter_zero_texture_percent: u32,
     /// [`Quant::shave_gap`] of every block.
     pub(crate) shave_gap: usize,
     /// [`Quant::forward`] of every block.
@@ -127,6 +132,11 @@ impl Quantizers {
             } else {
                 self.inter_zero_bound_percent
             },
+            zero_texture_percent: if intra {
+                0
+            } else {
+                self.inter_zero_texture_percent
+            },
             shave_gap: self.shave_gap,
             forward: self.forward,
             transform: if intra && chroma == 0 {
@@ -147,6 +157,7 @@ impl Quantizers {
             intra_rounding: INTRA_ROUNDING_512THS as i32,
             inter_rounding: [INTER_ROUNDING_512THS as i32; 2],
             inter_zero_bound_percent: EXACT_ZERO_BOUND_PERCENT,
+            inter_zero_texture_percent: 0,
             shave_gap: 0,
             forward: EXACT_FORWARD,
             intra_luma: crate::mts::Selection::Dct2,
@@ -350,12 +361,82 @@ fn quantize_into(
             return false;
         }
     }
+    if quant.zero_texture_percent > 0
+        && texture_quantises_to_zero(
+            dsp,
+            (source, prediction),
+            &quantizer,
+            quant.zero_texture_percent,
+        )
+    {
+        return false;
+    }
     let coded = if width == LARGE_SIDE {
         forward_large(dsp, (source, prediction), quant, &quantizer, scratch)
     } else {
         forward(dsp, (source, prediction), quant, &quantizer, scratch)
     };
     coded && choose_levels(dsp, quant, &quantizer, search, (width, height), scratch)
+}
+
+/// Square sides the texture zero test takes: whole 8x8 sub-blocks, without
+/// the 64-point transform's different coefficient scale.
+const TEXTURE_TEST_SIDES: std::ops::RangeInclusive<usize> = 8..=32;
+/// The 8-bit forward transform's gain over the orthonormal DCT is
+/// `TRANSFORM_GAIN_NUMERATOR / sqrt(area)` (`2^(15 - 8 - log2 n)` for an
+/// `n`-square block, §8.7.4.4 with the encoder's matching shifts).
+const TRANSFORM_GAIN_NUMERATOR: f32 = 128.;
+/// Percent per unit of a texture scale.
+const PERCENT: f32 = 100.;
+
+/// The block side from which a sub-block's texture allowance grows with the
+/// block's area: an 8x8 sub-block's energy reaches an `n`-point coefficient
+/// through at most `(16 / n)²` of its weight (the basis is at most `2 / n`
+/// per sample over 64 samples), so above 16 the allowance grows by
+/// `(n / 16)²` while the bound per sub-block stays the same.
+const TEXTURE_GROWTH_SIDE: usize = 16;
+
+/// Speed heuristic (`vvc.zero_residual_texture`): whether a square inter
+/// block's residual is predicted to quantise to all-zero levels from its
+/// energy alone ([`nc_encoder::residual_quantises_to_zero_scaled`], as AV2's
+/// `av2.zero_test_texture_scale`): the DC, every 8x8 sub-block's
+/// mean-removed energy (allowance grown with the block,
+/// [`TEXTURE_GROWTH_SIDE`]) and the sub-block means' spread (the gradient)
+/// against the orthonormal zero limit. It skips the forward transform,
+/// quantisation and trellis of blocks the residual-SAD bound could not
+/// settle; safe where each part's energy is below its limit, as no
+/// coefficient then gathers a level from one part (energy spread over
+/// parts may still add up: a heuristic). Win rate at scale 1 (chart clips,
+/// 60 f, CBR 600, P pictures; docs/handoff/vvc.md "vvc-default-prune"): of
+/// the 32x32 luma blocks past the SAD bound (77% code nothing) it flags
+/// 46%, saving 22% of the full transforms, and zeroes 0.5% of the coded
+/// ones; 16x16 luma 8% (0.3% wrong); 16x16 chroma 47% (3%, single ±1
+/// levels). VVC Default, Jetson cycles (chart clips, 150 f, CBR 600) /
+/// L1 J (2026-11-14 draw, 24 clips): 0.5 0.0% / 0.00%, 1 -2.4% / -0.15%
+/// [-0.33, +0.10], 1.5 -4.7% / +0.54% [+0.16, +0.77].
+fn texture_quantises_to_zero(
+    dsp: &nc_dsp::Dsp,
+    (source, prediction): (&PlaneView<'_>, &PlaneView<'_>),
+    quantizer: &VvcQuantizer,
+    percent: u32,
+) -> bool {
+    let side = prediction.width();
+    if side != prediction.height() || !TEXTURE_TEST_SIDES.contains(&side) {
+        return false;
+    }
+    let gain = TRANSFORM_GAIN_NUMERATOR / side as f32;
+    let limit = quantizer.largest_zero_coefficient() as f32 / gain;
+    let limits = nc_encoder::ZeroLimits {
+        dc: limit,
+        ac: limit,
+    };
+    let scale = percent as f32 / PERCENT;
+    let growth = (side as f32 / TEXTURE_GROWTH_SIDE as f32).max(1.).powi(2);
+    let scales = nc_encoder::TextureScales {
+        sub_block: scale * growth,
+        gradient: scale,
+    };
+    nc_encoder::residual_quantises_to_zero_scaled(dsp, side, source, prediction, limits, scales)
 }
 
 /// The encoder's forward 64-point DCT-II (`nc_dsp::Dsp::vvc_forward64`, an

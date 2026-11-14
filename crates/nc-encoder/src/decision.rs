@@ -426,73 +426,68 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
         let integer = integer_probe_worth_trying(start.0, lambda, area, params)
             .then(|| best_integer_neighbor::<B>(search_mv, start.0, block, stats_of))
             .flatten();
-        let (_, new_distortion, new) = refine_codec_seed(
-            (start.0, start.1, search_mv),
-            lambda,
-            leaf_area::<B>(block) as f32,
-            params,
-            refine_cost,
-        );
+        // The best cheap vector (NEAREST/NEAR, often inherited at integer
+        // positions) is measured before either seed is refined, so that
+        // `decision.seed_refine_ratio` can compare the two seeds.
+        let best_cheap = (params.refine_cheap_vector >= 0.5)
+            .then(|| {
+                best_cheap_vector(
+                    &candidates[1..cheap],
+                    seeds,
+                    search_mv,
+                    bilinear,
+                    distortion_of,
+                )
+            })
+            .flatten();
+        let seed_gate = SeedGate {
+            ratio: params.seed_refine_ratio,
+        };
+        let (_, new_distortion, new) = if seed_gate.refines(start.0, best_cheap.map(|(d, _)| d)) {
+            refine_codec_seed(
+                (start.0, start.1, search_mv),
+                lambda,
+                area,
+                params,
+                refine_cost,
+            )
+        } else {
+            (start.0, start.1, search_mv)
+        };
         bilinear.push((new, new_distortion));
         candidates.push(new);
         if let Some((mv, _)) = integer {
             candidates.push(mv);
         }
-        if params.refine_cheap_vector >= 0.5 {
-            // The NEW seed is the motion-search vector; the cheap vectors
-            // (NEAREST/NEAR, often inherited at integer positions) are
-            // otherwise ranked only where they stand. Refining the best of
-            // them yields a NEW candidate with a small vector difference.
-            // Work: one bilinear distortion per cheap vector plus one
-            // sub-sample refinement (at most 8 more evaluations) per block,
-            // and one more exact ranking candidate when it moves.
-            // Each distinct vector once: merge lists repeat vectors (HEVC
-            // crowd_mot17_09 QP 36: 3.7% of all bilinear measurements were
-            // such repeats); the first of equal minima wins either way.
-            // The codec's refinement-only seeds compete here too, and only
-            // here: the best of all (refined or not) becomes a candidate.
-            let cheap_vectors = &candidates[1..cheap];
-            // Whether the `i`-th vector of cheap vectors then seeds repeats
-            // an earlier one.
-            let measured_before = |i: usize, mv: Mv| {
-                let seen_seeds = i.saturating_sub(cheap_vectors.len());
-                holds(&cheap_vectors[..i.min(cheap_vectors.len())], mv)
-                    || holds(&seeds[..seen_seeds], mv)
-            };
-            let best_cheap = cheap_vectors
-                .iter()
-                .chain(seeds.iter())
-                .enumerate()
-                .filter(|&(i, &mv)| mv != search_mv && !measured_before(i, mv))
-                .map(|(_, &mv)| {
-                    let distortion = distortion_of(mv).0;
-                    bilinear.push((mv, distortion));
-                    (distortion, mv)
-                })
-                .min_by(|a, b| a.0.total_cmp(&b.0));
-            // Skipped (as for the NEW seed) when the cheap vector already
-            // predicts within `refine_cheap_min_lambdas` λ per sample: a
-            // sub-sample move cannot repay its vector bits there.
-            let worth =
-                |distortion: f32| distortion >= params.refine_cheap_min_lambdas * lambda * area;
-            let best = best_cheap.map(|(distortion, mv)| {
-                if worth(distortion) {
-                    let (_, refined_distortion, refined) = refine_codec_seed(
-                        (distortion, distortion, mv),
-                        lambda,
-                        area,
-                        params,
-                        refine_cost,
-                    );
-                    bilinear.push((refined, refined_distortion));
-                    refined
-                } else {
-                    mv
-                }
-            });
-            if let Some(best) = best.filter(|&mv| !holds(candidates, mv)) {
-                candidates.push(best);
+        // The NEW seed is the motion-search vector; the cheap vectors are
+        // otherwise ranked only where they stand. Refining the best of them
+        // yields a NEW candidate with a small vector difference. Work: one
+        // sub-sample refinement (at most 8 more evaluations) per block, and
+        // one more exact ranking candidate when it moves. Skipped (as for
+        // the NEW seed) when the cheap vector already predicts within
+        // `refine_cheap_min_lambdas` λ per sample: a sub-sample move cannot
+        // repay its vector bits there.
+        let worth = |distortion: f32| {
+            distortion >= params.refine_cheap_min_lambdas * lambda * area
+                && seed_gate.refines(distortion, Some(start.0))
+        };
+        let best = best_cheap.map(|(distortion, mv)| {
+            if worth(distortion) {
+                let (_, refined_distortion, refined) = refine_codec_seed(
+                    (distortion, distortion, mv),
+                    lambda,
+                    area,
+                    params,
+                    refine_cost,
+                );
+                bilinear.push((refined, refined_distortion));
+                refined
+            } else {
+                mv
             }
+        });
+        if let Some(best) = best.filter(|&mv| !holds(candidates, mv)) {
+            candidates.push(best);
         }
         // The optional probe already measured this integer predictor exactly.
         let known_stats = |mv| match integer {
@@ -981,6 +976,64 @@ fn refine_codec_subpel(
 /// where (or whether) a vector repeats depends on the content, so an
 /// early-exit search mispredicts its exit about once per call; this scans
 /// the whole list without branches.
+/// The cheap vector (`cheap_vectors`, then the codec's refinement-only
+/// `seeds`) of least bilinear distortion other than `search_mv`, as
+/// `(distortion, vector)`; every distinct vector is measured once and noted
+/// in `bilinear`. Merge lists repeat vectors (HEVC `crowd_mot17_09` QP 36:
+/// 3.7% of all bilinear measurements were such repeats); the first of equal
+/// minima wins either way.
+fn best_cheap_vector(
+    cheap_vectors: &[Mv],
+    seeds: &[Mv],
+    search_mv: Mv,
+    bilinear: &mut Vec<(Mv, f32)>,
+    distortion_of: impl Fn(Mv) -> (f32, f32),
+) -> Option<(f32, Mv)> {
+    // Whether the `i`-th vector of cheap vectors then seeds repeats an
+    // earlier one.
+    let measured_before = |i: usize, mv: Mv| {
+        let seen_seeds = i.saturating_sub(cheap_vectors.len());
+        holds(&cheap_vectors[..i.min(cheap_vectors.len())], mv) || holds(&seeds[..seen_seeds], mv)
+    };
+    cheap_vectors
+        .iter()
+        .chain(seeds.iter())
+        .enumerate()
+        .filter(|&(i, &mv)| mv != search_mv && !measured_before(i, mv))
+        .map(|(_, &mv)| {
+            let distortion = distortion_of(mv).0;
+            bilinear.push((mv, distortion));
+            (distortion, mv)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+/// Speed heuristic (`decision.seed_refine_ratio`): which of the two
+/// sub-sample seeds of the exact-filter ranking (the motion-search vector
+/// and the best cheap vector) are refined. A seed whose whole-sample
+/// distortion is more than `ratio` times the other's is ranked where it
+/// stands: its refinement (up to eight bilinear evaluations) rarely ends
+/// below the better seed's. VVC Default (chart clips, 60 f, CBR 600, P
+/// pictures; docs/handoff/vvc.md "vvc-default-prune"): where the search
+/// vector is at least 1.1 times the best cheap vector's distortion, its
+/// refinement wins 1.2-5.6% of the leaves (unrefined 0%); below 0.9 times,
+/// the refined cheap vector wins 0.5-3.5%. 0 refines both. VVC Default,
+/// Jetson cycles (chart clips, 150 f, CBR 600) / L1 J (2026-11-14 draw,
+/// 24 clips): 1.1 -1.6% / -0.09% [-0.19, +0.14], 2 -0.0% / -0.02%. Other
+/// codecs not measured.
+#[derive(Debug, Clone, Copy)]
+struct SeedGate {
+    ratio: f32,
+}
+
+impl SeedGate {
+    /// Whether a seed of whole-sample `distortion` is refined against the
+    /// other seed's distortion `other` (`None`: no other seed).
+    fn refines(self, distortion: f32, other: Option<f32>) -> bool {
+        self.ratio <= 0.0 || other.is_none_or(|other| distortion <= self.ratio * other)
+    }
+}
+
 fn holds(list: &[Mv], mv: Mv) -> bool {
     list.iter().fold(false, |found, candidate| {
         found | (candidate.bits() == mv.bits())

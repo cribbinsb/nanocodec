@@ -131,7 +131,9 @@ pub use trellis::{
     Candidates, CoeffRateModel, ForwardCoeffRateModel, ForwardTrellis, MAX_CANDIDATES, Trellis,
     ZERO_CANDIDATE_MAX_LEVEL,
 };
-pub use zero_residual::{ZeroLimits, residual_quantises_to_zero};
+pub use zero_residual::{
+    TextureScales, ZeroLimits, residual_quantises_to_zero, residual_quantises_to_zero_scaled,
+};
 
 pub use rate_control::{RateControlConfig, RateControlError, RateControlStats, RateModel};
 pub use spatial::{

@@ -133,6 +133,8 @@ nc_encoder::param_group! {
             "with vvc.coarse_inter_intra or vvc.inter_intra_dc_only, P-frame intra CUs keep the ranked search once intra CUs cover more than this share of the picture so far (or of the previous P picture): lower protects more fast-motion pictures and saves less; 1 never",
         pre_transform_zero_scale: recon::PRE_TRANSFORM_ZERO_SCALE, [1.0, 4.0],
             "inter residual SAD zero-bound multiplier before transform: 1 exact, higher skips near-zero detail for speed; intra unchanged",
+        zero_residual_texture: 0.0, [0.0, 8.0],
+            "inter transform blocks (square, 8 to 32) past the SAD zero bound skip the transform when their residual energy predicts all-zero levels (nc_encoder::residual_quantises_to_zero, AV2's av2.zero_test_texture_scale): the AC energy allowance in squared zero limits, 0 off; higher skips more, drops more small levels",
         fast_forward: 0.0, [0.0, 1.0],
             "1 computes 16- and 32-point forward DCT rows with staged butterflies and skips proven-zero column groups (HEVC Default's hevc.fast_forward16/32): faster, approximate coefficients",
         shave_gap: 8.0, [0.0, 16.0],
@@ -166,6 +168,10 @@ nc_encoder::param_group! {
         // lowlight). Screen evidence: docs/handoff/vvc.md "vvc-default-speed".
         pairwise_merge_check: 1.0, [0.0, 1.0],
             "with vvc.pairwise_merge_reach, 1 confirms an off-grid merge candidate that beats the engine's vector by SATD with luma rate-distortion costs of both; 0 takes it on SATD alone: faster, a few worse choices",
+        pairwise_merge_sure_ratio: 0.0, [0.0, 1.0],
+            "with vvc.pairwise_merge_check, an off-grid merge candidate whose SATD cost is at most this fraction of the engine vector's is taken without the luma rate-distortion check; 0 always checks: higher is faster",
+        early_merge_lambdas: 0.0, [0.0, 1.0],
+            "P-picture leaves whose first merge candidate is the planner's whole-sample vector with SSE per sample at most this many lambdas take it without the engine's ranking (HEVC Fast's hevc.early_merge_lambdas): 0 off, higher is faster",
         // Default off until screened (docs/handoff/vvc.md "vvc-mts").
         mts: 0.0, [0.0, 1.0],
             "1 enables multiple transform selection (sps_mts_enabled_flag): luma may use DST-VII and DCT-VIII as well as the DCT-II; intra sub-partitions then use them implicitly by size: sharper residuals, more transform work",
@@ -328,6 +334,8 @@ pub struct VvcBackend {
     rounding: Rounding,
     /// `vvc.pre_transform_zero_scale` in percent (`recon::Quant`).
     inter_zero_bound_percent: u32,
+    /// `vvc.zero_residual_texture` in percent (`recon::Quant`).
+    inter_zero_texture_percent: u32,
     shave_gap: usize,
     forward: nc_dsp::HevcForwardMode,
     /// The SPS's luma-to-chroma QP map.
@@ -396,6 +404,11 @@ pub struct VvcBackend {
     /// `vvc.pairwise_merge_check`: off-grid merge candidates are confirmed
     /// by luma RD.
     pairwise_merge_check: bool,
+    /// `vvc.pairwise_merge_sure_ratio`: an off-grid candidate this far
+    /// ahead by SATD skips the confirmation.
+    pairwise_merge_sure_ratio: f32,
+    /// `vvc.early_merge_lambdas` (`CodecBackend::prefer_cached_inter`).
+    early_merge_lambdas: f32,
     /// `vvc.dep_quant_*` λ multiples: luma, chroma's further, keys' further.
     dep_quant_lambda: [f32; 3],
     /// `quant.trellis`: trellis quantisation of every coded transform block.
@@ -754,6 +767,7 @@ impl CodecBackend for VvcBackend {
             geometry,
             qp: config.quantizer,
             inter_zero_bound_percent: (params.pre_transform_zero_scale * 100.).round() as u32,
+            inter_zero_texture_percent: (params.zero_residual_texture * 100.).round() as u32,
             shave_gap: params.shave_gap.round() as usize,
             forward: forward_mode(&params, trellis.is_some() || params.dep_quant >= 0.5),
             rounding: Rounding {
@@ -793,6 +807,8 @@ impl CodecBackend for VvcBackend {
             mts_search: params.mts_search(),
             pairwise_merge_reach: params.pairwise_merge_reach.round() as i32,
             pairwise_merge_check: params.pairwise_merge_check >= 0.5,
+            pairwise_merge_sure_ratio: params.pairwise_merge_sure_ratio,
+            early_merge_lambdas: params.early_merge_lambdas,
             quant_scratch: Box::default(),
             planning_scratch: std::cell::RefCell::default(),
             items: Vec::new(),
@@ -928,6 +944,29 @@ impl CodecBackend for VvcBackend {
     }
     fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
         self.cache_predictors(block).merge[0].quarter()
+    }
+    /// Speed heuristic (`vvc.early_merge_lambdas`, HEVC Fast's early merge):
+    /// a leaf whose first merge candidate is the planner's whole-sample
+    /// vector and already predicts it within the threshold (SSE per sample
+    /// in λ) is coded with it, skipping the engine's candidate measurements,
+    /// sub-sample refinements and exact predictions. Such a block's residual
+    /// is about to quantise away, and merge index 0 is its cheapest vector
+    /// signalling, so another candidate rarely pays. VVC Default, Jetson
+    /// cycles (chart clips, 150 f, CBR 600) / L1 J (2026-11-14 draw): 0.03
+    /// -0.9% / +0.27% [-0.07, +0.67]; 0.1 failed L1 (J +2.7%, crowd and
+    /// low-light quality guards).
+    fn prefer_cached_inter(
+        &mut self,
+        block: &Block,
+        mv: Mv,
+        stats: nc_dsp::Variance,
+        lambda: f32,
+    ) -> bool {
+        self.early_merge_lambdas > 0.0
+            && self.inter
+            && mv.is_full_pel()
+            && (stats.sse as f32) <= self.early_merge_lambdas * lambda * block.area() as f32
+            && self.cache_predictors(block).merge[0].quarter() == Some(mv)
     }
     fn mode_bits(&self, block: &Block, mode: &PredictionMode) -> f32 {
         let computed;
@@ -1716,6 +1755,7 @@ impl VvcBackend {
             intra_rounding: self.rounding.intra,
             inter_rounding: self.rounding.inter,
             inter_zero_bound_percent: self.inter_zero_bound_percent,
+            inter_zero_texture_percent: self.inter_zero_texture_percent,
             shave_gap: self.shave_gap,
             forward: self.forward,
             intra_luma: crate::mts::luma(self.tools.mts, true, false, 0),

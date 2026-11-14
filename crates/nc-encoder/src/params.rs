@@ -396,6 +396,8 @@ param_group! {
             "exact-filter codecs: 1 also refines the best cheap (NEAREST/NEAR) vector to sub-sample precision and ranks it as a NEW candidate; 0 refines only the search seed",
         refine_cheap_min_lambdas: 0.05, [0.0, 64.0],
             "with the cheap-vector refinement on, refine the cheap vector only when its residual variance/sample is at least this lambda multiple: higher is faster",
+        seed_refine_ratio: 0.0, [0.0, 4.0],
+            "with the cheap-vector refinement on, each of the two sub-sample seeds (search vector, best cheap vector) is refined only when its whole-sample distortion is at most this multiple of the other's; 0 refines both: lower is faster",
         // Speed levers for the Fast preset search (engine-cpu, 2026-11-09;
         // defaults unchanged). P-frame instructions, crowd_mot17_09 720p,
         // AV1 q180 / HEVC QP 36: max_cheap_vectors 2 -5.0% / -1.7%, 1
