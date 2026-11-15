@@ -446,6 +446,9 @@ def test_sample_policy_picks_first_and_one_rotating_point():
     assert all(standard_decoders_needed(GatePolicy.FULL, "a", i, 6) for i in range(6))
 
 
+QUEUE_WAIT_SECONDS = 30
+
+
 def test_waiting_multi_slot_request_is_not_overtaken(tmp_path, monkeypatch):
     """FIFO across processes: a later single-slot request queues behind a
     waiting two-slot request instead of taking the slot that frees first."""
@@ -455,11 +458,22 @@ def test_waiting_multi_slot_request_is_not_overtaken(tmp_path, monkeypatch):
               "cm = slots.cpu_slots(int(sys.argv[2])); cm.__enter__(); "
               "open(sys.argv[3], 'w').write(str(time.monotonic())); time.sleep(0.3); cm.__exit__(None, None, None)")
     root = str(Path(__file__).resolve().parents[1])
+    queue = slots.slot_directory() / "queue"
+
+    def wait_for_queued(count):
+        # Fixed sleeps raced interpreter start-up on a loaded machine: the
+        # one-slot holder could queue first. Wait for the tickets instead.
+        deadline = time.monotonic() + QUEUE_WAIT_SECONDS
+        while len(list(queue.glob("*.ticket"))) < count:
+            assert time.monotonic() < deadline, f"{count} waiters never queued"
+            time.sleep(0.01)
+
     with slots.cpu_slots(1):
         two = subprocess.Popen([sys.executable, "-c", holder, root, "2", str(tmp_path / "two")])
-        time.sleep(0.5)  # the two-slot request is now queued
+        wait_for_queued(1)
         one = subprocess.Popen([sys.executable, "-c", holder, root, "1", str(tmp_path / "one")])
-        time.sleep(0.5)  # one slot is free, yet the single request must wait its turn
+        wait_for_queued(2)
+        time.sleep(0.2)  # one slot is free, yet the single request must wait its turn
         assert not (tmp_path / "one").exists() and not (tmp_path / "two").exists()
     assert two.wait(10) == 0 and one.wait(10) == 0
     assert float((tmp_path / "two").read_text()) < float((tmp_path / "one").read_text())

@@ -5,16 +5,16 @@
 // source luma at most once a second (decode-worker.js `queueScore`,
 // SCORE_INTERVAL_MS): frames shown meanwhile are skipped, and the last one
 // shown (a paused frame) is always scored. Each score goes back with the tick it belongs to.
-import { ANALYSIS_MODULE_URL } from './wasm.js';
+import { MODULE_URL } from './wasm.js';
 
 let module = null;
-// Resolves once the analysis module is instantiated ('init' carries the compiled module).
+// Resolves once the codec module is instantiated ('init' carries the compiled module).
 let ready = null;
 
 self.onmessage = async ({ data: message }) => {
   try {
     if (message.type === 'init') {
-      ready = import(ANALYSIS_MODULE_URL).then(async loaded => {
+      ready = import(MODULE_URL).then(async loaded => {
         await loaded.default({ module_or_path: message.wasmModule });
         module = loaded;
       });

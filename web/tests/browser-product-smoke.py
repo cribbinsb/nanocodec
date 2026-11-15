@@ -286,6 +286,10 @@ try:
             picker.select_option('10')
         for picker in page.locator('.gop').all():
             picker.select_option('30')
+        # Let that restart configure its encoders first: on a loaded machine they could
+        # otherwise post their configs after the reset below and count as the webcam's.
+        burst = "['vp9', 'av2'].every(codec => window.workerConfigs.some(c => c.codec === codec && c.width === 384 && c.fps === 10))"
+        page.wait_for_function(burst, timeout=60000)
         # Choosing the webcam starts it (camera access is asked for at once).
         page.evaluate('window.workerFrames.length = 0; window.workerConfigs.length = 0')
         page.locator('[data-source="camera"]').click()

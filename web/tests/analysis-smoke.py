@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Headless Chromium smoke of the analysis mode (analysis-view.js), after
 tools/web/build.sh: the default page has no analysis elements; switching
-analysis on loads the analysis module (pkg/analysis/) without restarting the
+analysis on (decoders recording, same module) without restarting the
 comparison, draws the overlay and fills the statistics of the H.264 and AV1
 views and of an AV2 view and the line comparing the two views, zooms both
 views together and shows a block's record on hover; switching it off restores
@@ -354,7 +354,6 @@ try:
         assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.querySelectorAll('canvas').length)") == [1, 1]
         # Sample clip, two live encodes: every switch keeps the session.
         check_switch_cases(page, 'clip live')
-        assert any('/pkg/analysis/' in n for n in page.evaluate("performance.getEntriesByType('resource').map(e => e.name)"))
         # On again for the overlay checks: statistics, difference line, zoom, hover.
         toggle_analysis(page, True)
         page.wait_for_function("document.querySelector('.analysis-difference').textContent.includes('mean by area')", timeout=10000)

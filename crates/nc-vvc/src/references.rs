@@ -16,8 +16,8 @@ use crate::motion::{ActiveReferences, MAX_ACTIVE_REFERENCES};
 /// The POC distance up to which a listed picture may stay in the DPB: the
 /// pictures of a coded video sequence span less than `MaxPicOrderCntLsb / 2`
 /// (§8.3.1 with `POC_BITS` 8, `headers.rs`), the current picture and the
-/// previous one included. The engine's second reference stays within
-/// `refs.second_max_distance` (at most 64).
+/// previous one included. The engine's second reference stays within 64
+/// frames (`second_reference.rs`, `MAX_DISTANCE`).
 const MAX_LISTED_DISTANCE: u32 = (1 << (crate::headers::POC_BITS - 1)) - 2;
 
 #[derive(Debug, Clone, Copy)]

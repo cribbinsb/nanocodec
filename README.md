@@ -9,16 +9,26 @@ own decoders run as WebAssembly.
 [FAQ](docs/FAQ.md) · [Architecture](docs/ARCHITECTURE.md) · [Detailed results](docs/results/README.md) ·
 [Credits, licences, patents](docs/LEGAL.md)
 
-## What it does
+## Is this for you?
 
-- **Low delay only:** forward prediction (no B-frames, no lookahead), one slice or tile per frame, real-time CBR
-  with a 1 s buffer, one thread, 8-bit 4:2:0.
-- **Loss resilience:** temporal layers, long-term references, intra refresh, key frame on request, and spatial
-  scalability (SVC) for AV1 and VP9.
-- **Its own decoders** for all six formats, natively and in WebAssembly; the browser demo encodes and decodes
-  on your machine.
+If you are looking for a real-time video encoder and decoder for live camera streams, at low bitrate and low
+delay, you may be in the right place:
+
+- **BSD-licensed:** BSD 3-Clause code (no patent licence; see [Licence and patents](#licence-and-patents)).
+- **Safe Rust:** written in Rust; `unsafe` is confined to the SIMD kernels and the C API.
+- **Six formats, one engine:** H.264, HEVC, VVC (H.266), AV1, VP9 and AV2 encoders, each with its own
+  decoder; the same rate control, analysis and mode decision drive all six.
+- **Fast real-time codecs:** single-thread, low-delay encoding (no B-frames, no lookahead, real-time CBR with a
+  1 s buffer); measured speeds and quality against x264, x265, SVT-AV1, libaom, libvpx and openh264 are on the
+  [results pages](https://cribbinsb.github.io/nanocodec/results/).
+- **Optimised for x86, Arm and WebAssembly:** hand-written SIMD kernels for AVX2 / AVX-512, NEON and WASM
+  SIMD128; the encoders and decoders run in the browser ([demo](https://cribbinsb.github.io/nanocodec/)).
+- **Error resilience:** temporal layers, long-term references, key frames on request and intra refresh (H.264,
+  HEVC, VVC, AV1).
+- **SVC:** spatial and temporal scalability for AV1 and VP9, including the WebRTC-style K-SVC and L1T2 / L1T3
+  modes.
 - **Standard bitstreams only:** every shipped preset's streams are decoded bit-exactly by two standard decoders
-  per format before results are published.
+  per format before results are published. 8-bit 4:2:0 only.
 
 ## Headline results
 

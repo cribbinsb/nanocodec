@@ -413,7 +413,7 @@ def main() -> None:
                         "one binary; ladder for code changes and anything reshaping the curve)")
     p.add_argument("--final-frames", type=int, nargs="?", const=600,
                    help="--clips adopt: L3 on this long window (600 when given without a "
-                        "value; keys every 10 s, not pooled with L2): for changes to rate, "
+                        "value; keys every 10 s): for changes to rate, "
                         "keys, cadence or key-frame quality and a preset bundle's final check "
                         "(nceval.levels.LONG_FRAMES)")
     p.add_argument("--rotation",

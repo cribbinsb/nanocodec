@@ -1891,6 +1891,16 @@ impl CodecBackend for H264Backend {
         ("decision.intra_gate_variance", 16.0),
         ("quant.trellis_lambda_scale", 1.3),
         ("h264.split_gate_lambda", 0.8),
+        // Split search without the uniform-vector exit: whole-sample
+        // quadrant vectors that agree with the 16x16 one still hide the
+        // sub-sample motion differences fine texture has. Fixed QP (with
+        // split_refine_mv16, draw fixedqp-2026-11-14) -0.7% J. Adoption
+        // screen (k 0.1, dCPU +2.4% Jetson cycles, day's pool draw): L1 J
+        // +0.08% [-0.24, +0.43] n 24, L2 -0.29% [-0.46, -0.13] n 48,
+        // L3 (600 f, single-point) J -1.29% [-2.04, -0.51] n 27, BETTER, no
+        // guard. split_gate_satd is inert here (split_gate_lambda replaces
+        // it). h264-fast, -faster, -fastest and -balanced pin 4.
+        ("h264.split_uniform_qpel", 0.0),
         // Intra_8x8 in every frame, on every macroblock that tries intra
         // (docs/handoff/h264.md "Intra_8x8"): J_real staged TRAIN (18 clips,
         // 150 f) at k 0.1 BETTER, J -0.2% (quality full -0.7%, low -0.3%;

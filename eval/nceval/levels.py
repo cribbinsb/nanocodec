@@ -6,7 +6,7 @@ nceval.pool's draw in order, candidate vs anchor in CBR on the ladder:
     level   clips                                       per clip
     quick   L1: the key's chosen set (pool.L1_SETS),    one rung, single-point
             else 24 drawn families, every stratum
-    adopt   48 more, disjoint                           full ladder
+    adopt   48 more, disjoint                           single-point
     final   every other pool family (one clip each)     single-point (parameter-only
                                                         changes) or full ladder
 
@@ -20,9 +20,12 @@ single-point when the arms differ only in parameters (one binary, or
 commits with identical crates/), the full ladder for code changes; charts
 and structural changes keep the full ladder.
 
-Each level is decided on its per-clip J deltas (nceval.interval): L1 and L2
-stop only a confidently worse candidate; L3 adopts when the interval
-favours it, judged on L2 and L3's clips together.
+Each level is decided on its own per-clip J deltas (nceval.interval): L1 and
+L2 stop only a confidently worse candidate; L3 adopts when the interval
+favours it, judged on L3's clips alone. L2 was a full ladder whose rows L3
+pooled until 2026-11-15; it is single-point (1 candidate encode per clip
+instead of 4, about 4x faster) since the owner found the pipeline too slow,
+so L3 no longer pools it.
 `--max-level 2` stops after L2 (ranking ideas; not adoption evidence). The
 draw (rotation key, clips and start frames) is in the result JSON.
 
@@ -67,16 +70,13 @@ RUNGS = {pool.QUICK: OUTER_THREE, pool.ADOPT: ALL_FOUR, pool.FINAL: ALL_FOUR}
 SINGLE, LADDER, AUTO = "single", "ladder", "auto"
 FINAL_GPU_SLOTS = 16
 GPU_SLOTS_ENV = "NC_GPU_SLOTS"
-#: Levels whose clips L3's adoption interval pools (same full ladder).
-FINAL_POOLED = (pool.ADOPT, pool.FINAL)
 #: The long-window L3 (coordinator, 2026-11-13): 150 frames with one key reward
 #: an unrepaid first-key loan (the audit's long clips lose 4-9 BD-J points from
 #: 150 to 600 frames), so changes to rate, keys, cadence or key-frame quality,
 #: and the final check of a preset bundle, decide on LONG_FRAMES with a key
 #: every LONG_KEY_SECONDS (`final_frames`); L1, L2 and study trials stay at 150
 #: frames as cheap rankers. Only the L3 clips with LONG_FRAMES frames take part
-#: (`long_clips`: about a third of the pool), from frame 0. Such an L3 is not
-#: pooled with L2 (a different window).
+#: (`long_clips`: about a third of the pool), from frame 0.
 LONG_FRAMES = 600
 LONG_KEY_SECONDS = 10.0
 
@@ -90,11 +90,11 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
         args: argparse.Namespace, levels: tuple[str, ...] | None = None) -> dict:
     """Run the levels in order, stopping at a confident loss; the result fields.
 
-    L1 is single-point; L3 is single-point when `args.final_estimator` says so
-    (small changes), else the full ladder. A single-point level whose deltas
+    L1 and L2 are single-point; L3 is single-point when `args.final_estimator`
+    says so (small changes), else the full ladder. A single-point level whose deltas
     trend with the rung is re-measured on the full ladder (singlepoint.reshaping).
     `args.final_frames` (LONG_FRAMES) runs L3 on the long window, keys every
-    LONG_KEY_SECONDS, unpooled.
+    LONG_KEY_SECONDS.
     """
     levels = levels or pool.LEVELS[:args.max_level]
     frames = int(args.frames)
@@ -121,10 +121,6 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
                                estimator_of(level, args), args, key_seconds)
         result["frames"] = level_frames
         rows = result["per_clip"]
-        if level == pool.FINAL and not long_window:
-            pooled = {name: row for s in stages if s["stage"] in FINAL_POOLED
-                      for name, row in s["per_clip"].items()}
-            rows = {**pooled, **rows}
         if level == pool.FINAL:
             pulse = one_per_class(clips)
             add_periodic_pulse(runner, *families, pulse, frames, result["per_clip"], level)
@@ -143,7 +139,7 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
             print(format_stage(result), flush=True)
         print(f"{level} ({result['estimator']}): {interval.describe(stats)}"
               + (f" ({level_frames} f, keys every {LONG_KEY_SECONDS:g} s)" if long_window
-                 else " (L2+L3 pooled)" if level == pool.FINAL else "")
+                 else "")
               + f" -> {result['decision'].upper()} ({wall / 60:.1f} min)"
               + (f"; guards (judge): {'; '.join(result['verdict']['guards'])}"
                  if result["verdict"]["guards"] else ""), flush=True)
@@ -168,8 +164,8 @@ def long_clips(clips: list[Clip], frames: int) -> list[Clip]:
 
 
 def estimator_of(level: str, args: argparse.Namespace) -> str:
-    """L1 single-point; L2 full ladder; L3 as `args.final_estimator` (default ladder)."""
-    if level == pool.QUICK:
+    """L1 and L2 single-point; L3 as `args.final_estimator` (default ladder)."""
+    if level in (pool.QUICK, pool.ADOPT):
         return SINGLE
     if level == pool.FINAL:
         return getattr(args, "final_estimator", None) or LADDER

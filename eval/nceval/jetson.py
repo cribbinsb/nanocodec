@@ -36,6 +36,11 @@ SOURCE = f"{WORK}/src"
 TARGET = "nanocodec-data/targets/chart-build"
 BUILD_JOBS = 6
 SCRATCH = "nanocodec-data/work/tune-jetson"
+#: What the build reads: the workspace manifests, the crates (with the test data
+#: they include) and the embedded presets. The whole repository (docs, web, eval
+#: data) was 231 MB an archive against 15 MB, sent, unpacked and checksummed on
+#: the board for every build.
+BUILD_INPUTS = ("Cargo.toml", "Cargo.lock", "rustfmt.toml", "crates", "presets")
 #: 720p, 150-frame copies of nceval.tune.COST_CLIPS (tools/dev/offpath_ab.sh uses them too).
 CLIP_DIR = "nanocodec-data/work/adopted-fast-reference-native"
 CLIPS = {"crowd_mot17_09": 30.0, "bodycam_bc1": 29.97, "static_cam22": 25.0}
@@ -52,27 +57,44 @@ def ssh(command: str, capture: bool = True) -> str:
                           stdin=subprocess.DEVNULL).stdout or ""
 
 
+def build_command(commit: str) -> str:
+    """The shell pipeline that builds `commit` (8-character abbreviation) on the board.
+
+    `git archive` of BUILD_INPUTS is synced into the board's persistent source tree
+    (rsync without -t: only the files that changed get new times, so cargo rebuilds
+    only what they touch; an archive's own mtimes are the commit time, which let
+    cargo keep a stale binary) and built under the shared build lock and the
+    tree's own lock. The tree has no git, so NC_BUILD_COMMIT stamps the binary,
+    and no marker is written unless `--version` names the commit. One command
+    for the tuner's builds and chart refresh's (tools/dev/chart_refresh.py)."""
+    full = subprocess.run(["git", "-C", str(REPO), "rev-parse", f"{commit}^{{commit}}"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    stage = f"{WORK}/stage-{commit}"
+    build = f"{BUILDS_ROOT}/{commit}"
+    built = f"~/{TARGET}/release/nanocodec"
+    stamp_check = (f"{{ {built} --version | grep -Eq '^nanocodec [^ ]+ {full}$' || "
+                   f"{{ echo \"Jetson build is not {full}: $({built} --version)\" >&2; "
+                   f"false; }}; }}")
+    inner = (f"rsync -rc --delete {stage}/ {SOURCE}/ && cd {SOURCE} && "
+             f"nice -n 19 env PATH=$HOME/.cargo/bin:$PATH NC_BUILD_COMMIT={full} "
+             f"cargo build --release -j{BUILD_JOBS} -p nc-cli --target-dir ~/{TARGET} && "
+             f"{stamp_check} && mkdir -p ~/{build} && cp {built} ~/{build}/ && "
+             f"echo {commit} > ~/{build}/{COMPLETE_MARKER}")
+    remote = (f"rm -rf {stage} && mkdir -p {stage} {SOURCE} && tar -x -C {stage} && "
+              f"~/nanocodec-data/jetson-build.sh flock {SOURCE}.lock "
+              f"bash -c {shlex.quote(inner)}; status=$?; rm -rf {stage}; exit $status")
+    return (f"git -C {shlex.quote(str(REPO))} archive {commit} {' '.join(BUILD_INPUTS)} | "
+            f"ssh -o BatchMode=yes {require('NC_JETSON')} {shlex.quote(remote)}")
+
+
 def ensure_build(commit: str) -> str:
     """The board's release binary of `commit` (built now unless it exists), named by
     its 8-character abbreviation as chart refresh names its builds."""
     commit = commit[:SHORT_COMMIT]
     build = f"{BUILDS_ROOT}/{commit}"
-    marker = f"~/{build}/{COMPLETE_MARKER}"
-    if ssh(f"cat {marker} 2>/dev/null || true").strip() == commit:
-        return f"~/{build}/nanocodec"
-    stage = f"{WORK}/stage-{commit}"
-    inner = (f"rsync -rc --delete {stage}/ {SOURCE}/ && cd {SOURCE} && "
-             f"nice -n 19 env PATH=$HOME/.cargo/bin:$PATH cargo build --release "
-             f"-j{BUILD_JOBS} -p nc-cli --target-dir ~/{TARGET} && "
-             f"mkdir -p ~/{build} && cp ~/{TARGET}/release/nanocodec ~/{build}/ && "
-             f"echo {commit} > {marker}")
-    remote = (f"rm -rf {stage} && mkdir -p {stage} {SOURCE} && tar -x -C {stage} && "
-              f"~/nanocodec-data/jetson-build.sh flock {SOURCE}.lock "
-              f"bash -c {shlex.quote(inner)}; status=$?; rm -rf {stage}; exit $status")
-    archive = subprocess.run(["git", "-C", str(REPO), "archive", commit], check=True,
-                             capture_output=True).stdout
-    subprocess.run(["ssh", "-o", "BatchMode=yes", require("NC_JETSON"), remote],
-                   input=archive, check=True, capture_output=True)
+    if ssh(f"cat ~/{build}/{COMPLETE_MARKER} 2>/dev/null || true").strip() != commit:
+        subprocess.run(["bash", "-o", "pipefail", "-c", build_command(commit)], check=True,
+                       capture_output=True)
     return f"~/{build}/nanocodec"
 
 

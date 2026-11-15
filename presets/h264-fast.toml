@@ -77,3 +77,6 @@ rate.period_ceiling = 0
 rate.fixed_qp_profile = 0
 # Pinned before H.264 Default's key still boost (2026-11-14).
 rate.key_still_boost = 0
+# The Default's split search without the uniform-vector exit (2026-11-15),
+# pinned so this preset's streams do not move with the Default.
+h264.split_uniform_qpel = 4

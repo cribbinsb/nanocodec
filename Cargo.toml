@@ -66,6 +66,17 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
+# The browser module (tools/web/build.sh). Thin LTO decodes as fast as fat
+# LTO in WASM and gives the same module (8.45 MB, 2.68 MB gzipped) with ~20%
+# less cold build time; 16 codegen units made a 15% larger module, AV1 12%
+# faster but VVC 11% slower; no LTO was 5-20% slower (2026-11-15, 720p, six
+# codecs, docs/handoff/browser-demo.md "Build"). Native stays on fat LTO:
+# against thin LTO with 16 units it encodes 1-30% faster and decodes up to
+# 16% faster (HEVC 5% slower).
+[profile.web]
+inherits = "release"
+lto = "thin"
+
 # The landing gate's release builds (host checkasm, the browser module smoke
 # test): release code generation without whole-program LTO, split into
 # codegen units and incremental, so a rebuild after a one-crate change takes

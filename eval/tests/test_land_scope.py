@@ -71,6 +71,24 @@ def test_eval_web_and_docs_changes_skip_the_conformance_check(graph):
     assert land_scope.needs_conformance(["Cargo.lock"], set(), True)
 
 
+@pytest.mark.parametrize("paths, codecs", [
+    (["crates/nc-vp9/src/lib.rs"], ["vp9"]),
+    (["crates/nc-vp9/src/lib.rs", "presets/av1-fast.toml"], ["av1", "vp9"]),
+    (["crates/nc-encoder/src/lib.rs"], ["all"]),
+    (["crates/nc-cli/src/main.rs"], ["all"]),
+    (["presets/default.toml"], ["all"]),
+    (["eval/nceval/conformance.py"], ["all"]),
+    (["crates/nc-web/src/lib.rs"], ["0"]),
+])
+def test_the_conformance_check_codes_only_the_changed_codecs(graph, paths, codecs):
+    dirs, dependents, embedded = graph
+    crates = set()
+    for path in paths:
+        crates |= land_scope.classify(path, ROOT, dirs, embedded)[1]
+    affected = land_scope.closure(crates, dependents)
+    assert land_scope.conformance_codecs(paths, affected, False) == codecs
+
+
 def test_only_a_change_to_the_page_runs_the_chromium_page_tests():
     assert land_scope.changes_page("web", "web/app.js")
     assert land_scope.changes_page("crate", "crates/nc-web/src/lib.rs")

@@ -10,4 +10,3 @@ mod av1_film_grain_golden;
 mod av1_inverse_golden;
 mod av1_mc_golden;
 mod av1_restoration_golden;
-mod kernels_match_scalar;

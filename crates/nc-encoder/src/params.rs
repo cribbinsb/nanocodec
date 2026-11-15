@@ -972,28 +972,12 @@ param_group! {
     pub struct RefParams ("refs") {
         second: 0.0, [0.0, 1.0],
             "1 lets inter blocks also predict from the last high-quality frame (key or cadence base), held in the long-term slot: helps where that frame is coded finer than the previous one, at a second mode decision per block",
-        second_gate_lambdas: 0.0, [0.0, 64.0],
-            "try the second reference only on blocks whose primary choice costs more than this many λ per sample (0 tries every block): higher is faster",
         second_refine_margin: 0.3, [0.0, 4.0],
             "cheap ranking: refine the second reference's best vector to sub-sample precision only when it costs within this fraction above the primary choice (0 refines only outright winners): higher is slower",
-        second_max_distance: 64.0, [2.0, 64.0],
-            "frames after the high-quality frame that may still reference it (64 = no limit): higher reaches further, at a second mode decision on more frames",
-        second_min_still: 0.0, [0.0, 1.0],
-            "still-block fraction below which a frame does not reference the high-quality frame (0 = every frame): higher limits it to fixed cameras, faster",
         second_full: 0.0, [0.0, 1.0],
             "1 runs the full mode decision (sub-sample refinement, intra trial) against the second reference; 0 ranks its zero, predicted and scaled-seed vectors only: 0 is faster",
         second_compound_margin: 0.15, [0.0, 4.0],
             "compound inter trial gate: try the equal-weight average of primary and secondary inter winners only when the worse single-reference cost is within this fraction of the better one (0 = off when neither ties; higher tries compound on more blocks)",
-        second_frame_min_share: 0.0, [0.0, 1.0],
-            "second-reference frame switch (0 = off): after a frame with the second reference where blocks choosing it cover less than this share of the area it was offered on, later frames drop it until a probe (`refs.second_frame_probe`): higher is faster",
-        second_frame_probe: 8.0, [1.0, 64.0],
-            "with `refs.second_frame_min_share`: while switched off, every this-many-th frame offers the second reference again to re-measure its share: lower re-qualifies sooner, at more probe frames",
-        second_screen_ratio: 0.0, [0.0, 8.0],
-            "second-reference screen (`second_screen.rs`, 0 = off): a block tries the second reference only when its best whole-sample SAD there is under this many times the primary choice's SAD (at one λ per sample, away from previous wins): lower is faster",
-        second_screen_cost_exponent: 0.2, [0.0, 1.0],
-            "second-reference screen: the SAD-ratio limit grows as the primary choice's cost per sample in λ to this power (blocks predicted poorly have more to win): higher tries more poorly predicted blocks",
-        second_screen_persist: 1.65, [1.0, 8.0],
-            "second-reference screen: the SAD-ratio limit is multiplied by this next to a block that chose the second reference in the previous picture (wins persist): higher favours past wins",
     }
 }
 

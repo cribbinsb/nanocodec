@@ -78,7 +78,6 @@ mod resolution_evidence;
 mod reuse;
 mod scene;
 mod second_reference;
-mod second_screen;
 pub mod segment_quantizers;
 mod shape;
 mod skip_budget;

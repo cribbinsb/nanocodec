@@ -489,7 +489,7 @@ run_checks() {
     local -A plan=()
     local key values root=$PWD scratch status=0 group
     while read -r key values; do plan[$key]=$values; done <<<"$1"
-    if [[ "${NC_LAND_FULL:-0}" == 1 ]]; then plan[rust]=all plan[eval]=1 plan[web]=1 plan[page]=1 plan[conformance]=1; fi
+    if [[ "${NC_LAND_FULL:-0}" == 1 ]]; then plan[rust]=all plan[eval]=1 plan[web]=1 plan[page]=1 plan[conformance]=all; fi
     local -A pid=() failed=()
     scratch=$(mktemp -d)
     python_checks plan >"$scratch/python" 2>&1 &
@@ -549,12 +549,14 @@ rust_checks() {
 
 conformance_check() {
     local -n p=$1
-    [[ "${p[conformance]}" == 1 && $mode != fast ]] || return 0
+    [[ "${p[conformance]}" != 0 && $mode != fast ]] || return 0
+    local codecs=()
+    [[ "${p[conformance]}" == all ]] || codecs=(--codecs "${p[conformance]// /,}")
     # The gate profile: release code generation, incremental, no LTO (same streams).
     printf '== landing conformance (every shipped preset vs the standard decoders and ours)\n'
     timed "conformance build" cargo build --profile gate --quiet -p nc-cli || return 1
     NC_NANOCODEC_BIN="$CARGO_TARGET_DIR/gate" timed "landing conformance" \
-        python3 tools/ci/landing_conformance.py || return 1
+        python3 tools/ci/landing_conformance.py "${codecs[@]}" || return 1
 }
 
 main "$@"

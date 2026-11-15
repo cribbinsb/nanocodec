@@ -130,6 +130,11 @@ BUILD_TREE = DATA / "worktrees" / "chart-build"
 BUILD_TARGET = DATA / "targets" / "chart-build"
 SCORING_TREE = DATA / "worktrees" / "chart-build-gate"
 SCORING_TARGET = DATA / "targets" / "chart-build-gate"
+#: Gate builds the landing scripts keep warm (land.sh: the lander and the
+#: verifier): a clean one of COMMIT codes the same streams as our own scoring
+#: build, so it is copied instead of building one (7 min in a cold tree).
+GATE_DONORS = (DATA / "targets" / "verifier" / "gate" / "nanocodec",
+               DATA / "targets" / "lander" / "gate" / "nanocodec")
 SCORING_PROFILE = "gate"
 #: A build directory's binaries: the scoring build (scan, measure, render) and
 #: the timed profile-guided release build (time-x86, tools/dev/pgo_build.sh;
@@ -142,10 +147,6 @@ TIMED_BINARY = "nanocodec-timed-pgo"
 PGO_BUILD = REPO / "tools" / "dev" / "pgo_build.sh"
 WORK = DATA / "work" / "chart-refresh"
 JETSON_WORK = "nanocodec-data/work/chart-refresh"
-JETSON_TARGET = "nanocodec-data/targets/chart-build"
-#: The Jetson's persistent build source tree (incremental builds) and its lock.
-JETSON_SRC = f"{JETSON_WORK}/src"
-JETSON_BUILD_JOBS = 6
 RESULTS = "docs/results"
 BUILDS_FILE = f"{RESULTS}/bd-vs-speed-builds.json"
 #: A chart on another clip set (--clipset) keeps its own build record beside the main one.
@@ -282,6 +283,11 @@ class Refresh:
             if not self.args.dry_run:
                 place(self.build_dir(donor) / SCORING_BINARY,
                       self.build_dir(self.commit) / SCORING_BINARY)
+        elif (warm := self.gate_donor()) is not None:
+            self.say(f"  build {self.commit}: the landing scripts' gate build {warm}")
+            if not self.args.dry_run:  # the copy is checked: a landing may rebuild it meanwhile
+                place(warm, self.build_dir(self.commit) / SCORING_BINARY)
+                verify_build(self.build_dir(self.commit) / SCORING_BINARY, self.commit)
         else:
             self.cargo_build(SCORING_TREE, SCORING_TARGET, SCORING_PROFILE,
                              self.build_dir(self.commit) / SCORING_BINARY)
@@ -343,6 +349,16 @@ class Refresh:
                        check=True)
         (target / COMPLETE_MARKER).write_text(self.commit + "\n")
 
+    def gate_donor(self) -> Path | None:
+        """A landing script's gate build that is exactly COMMIT (clean), if any."""
+        if SCORING_PROFILE != "gate":
+            return None
+        sys.path.insert(0, str(REPO / "eval"))
+        from nceval.buildinfo import info_of, stamp_problem
+        full = git("rev-parse", f"{self.commit}^{{commit}}")
+        return next((binary for binary in GATE_DONORS
+                     if binary.is_file() and stamp_problem(info_of(binary), full) is None), None)
+
     def binary_donor(self) -> str | None:
         """A recorded build (complete on the PC) whose binaries COMMIT would rebuild unchanged."""
         for build in sorted(self.record["builds"]):
@@ -373,30 +389,10 @@ class Refresh:
             raise SystemExit(f"the Jetson build of {self.commit} is incomplete")
 
     def jetson_build_command(self) -> str:
-        """git archive of COMMIT synced into the Jetson's persistent source tree (rsync
-        without -t: only the files that changed get new times, so cargo rebuilds only
-        what they touch; an archive's own mtimes are the commit time, which let cargo
-        keep a stale binary), built under the shared build lock and the tree's own
-        lock. The tree has no git, so NC_BUILD_COMMIT stamps the binary, and the
-        build is refused (no marker) unless `--version` names COMMIT."""
-        stage = f"{JETSON_WORK}/stage-{self.commit}"
-        build = f"{BUILDS_ROOT}/{self.commit}"
-        full = git("rev-parse", f"{self.commit}^{{commit}}")
-        built = f"~/{JETSON_TARGET}/release/nanocodec"
-        stamp_check = (f"{{ {built} --version | grep -Eq '^nanocodec [^ ]+ {full}$' || "
-                       f"{{ echo \"Jetson build is not {full}: $({built} --version)\" >&2; "
-                       f"false; }}; }}")
-        inner = (f"rsync -rc --delete {stage}/ {JETSON_SRC}/ && cd {JETSON_SRC} && "
-                 f"nice -n 19 env PATH=$HOME/.cargo/bin:$PATH NC_BUILD_COMMIT={full} "
-                 f"cargo build --release -j{JETSON_BUILD_JOBS} -p nc-cli "
-                 f"--target-dir ~/{JETSON_TARGET} && {stamp_check} && "
-                 f"mkdir -p ~/{build} && cp {built} ~/{build}/ && "
-                 f"echo {self.commit} > ~/{build}/{COMPLETE_MARKER}")
-        remote = (f"rm -rf {stage} && mkdir -p {stage} {JETSON_SRC} && tar -x -C {stage} && "
-                  f"~/nanocodec-data/jetson-build.sh flock {JETSON_SRC}.lock "
-                  f"bash -c {shlex.quote(inner)}; status=$?; rm -rf {stage}; exit $status")
-        return (f"git -C {shlex.quote(str(REPO))} archive {self.commit} | "
-                f"ssh -o BatchMode=yes {jetson()} {shlex.quote(remote)}")
+        """The board's build of COMMIT (nceval.jetson.build_command, shared with the tuner)."""
+        sys.path.insert(0, str(REPO / "eval"))
+        from nceval.jetson import build_command
+        return build_command(self.commit)
 
     def jetson_build_done(self) -> bool:
         marker = f"~/{BUILDS_ROOT}/{self.commit}/{COMPLETE_MARKER}"

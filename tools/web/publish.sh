@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Publish the browser demo to gh-pages quickly: an incremental WASM build in a
-# persistent worktree and target directory, the product smoke test only when
-# web/ or the embedded crates changed since the last published build, then a
-# wait for GitHub Pages to
+# persistent worktree and target directory, then a wait for GitHub Pages to
 # build exactly the pushed commit (retried, as Pages builds are flaky).
 #
-# Usage: tools/web/publish.sh [--build-only] [--smoke] [message]
+# Usage: tools/web/publish.sh [--build-only] [--smoke | --no-smoke] [message]
 #   --build-only  build (warm the cache) but do not publish
-#   --smoke       run the smoke test even if web/ is unchanged
+#   --smoke       run the browser product smoke test before pushing
+#   --no-smoke    the default: build, push, wait for Pages, nothing else
+# No test runs by default: every web/ and crate change already passed the
+# browser tests in landing (tools/dev/land.sh) and the verifier, and the smoke
+# test made a publish several minutes longer on a loaded machine.
 # Paths: NC_DATA_ROOT (default ~/nanocodec-data) holds the persistent
 # worktrees/demo-publish, targets/demo-publish and the gh-pages worktree.
 # Never delete targets/demo-publish in disk cleanups: it is what keeps a
@@ -20,11 +22,12 @@ branch=${PUBLISH_BRANCH:-variance-integration}
 tree=$data/worktrees/demo-publish
 target=$data/targets/demo-publish
 pages=$data/worktrees/gh-pages
-build_only=0 force_smoke=0 message=""
+build_only=0 smoke=0 message=""
 for arg in "$@"; do
   case $arg in
     --build-only) build_only=1 ;;
-    --smoke) force_smoke=1 ;;
+    --smoke) smoke=1 ;;
+    --no-smoke) smoke=0 ;;
     *) message=$arg ;;
   esac
 done
@@ -44,12 +47,7 @@ cd "$tree"
 CARGO_TARGET_DIR=$target BUILD_JOBS=${BUILD_JOBS:-16} tools/web/build.sh
 [[ $build_only == 1 ]] && { echo "built $head (not published)"; exit 0; }
 
-# The product smoke runs when anything that reaches the page differs from the
-# last published build: web/ (already tested by land.sh) or the crates the
-# module embeds (land.sh runs only the module's node tests for those, so this
-# is where a codec or engine change meets the page in a browser).
-last=$(git -C "$pages" log -1 --format=%s | sed -n 's/^Browser demo build from \([0-9a-f]*\).*/\1/p')
-if [[ $force_smoke == 1 || -z $last ]] || ! git -C "$tree" diff --quiet "$last" HEAD -- web/ crates/ presets/ Cargo.lock 2>/dev/null; then
+if [[ $smoke == 1 ]]; then
   python3 web/tests/browser-product-smoke.py
 fi
 

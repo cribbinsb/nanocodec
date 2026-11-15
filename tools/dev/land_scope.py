@@ -51,7 +51,11 @@ stdout, one `key value...` line per key, which land.sh reads:
                                      crates/nc-web/**; a codec or engine change
                                      gets the module's node tests only, and the
                                      page tests at the next demo publish)
-    conformance 0 | 1                run the landing conformance check
+    conformance 0 | all | <codec>... run the landing conformance check: for every
+                                     codec, or only the codecs whose own crate or
+                                     presets/<codec>-*.toml changed (a change to
+                                     shared code, nc-cli, default.toml or the
+                                     check itself runs all)
     docs   <file>...                 files for tools/dev/check_docs.py
     python <file>...                 files to byte-compile
     shell  <file>...                 files for bash -n
@@ -89,6 +93,13 @@ CONFORMANCE_FILES = (
 )
 # The crate every stream is encoded by: a change it depends on can alter streams.
 ENCODER_CRATE = "nc-cli"
+#: Codec crates, by the codec name tools/ci/landing_conformance.py --codecs takes:
+#: a change reaching only some of them needs only their streams checked.
+CODEC_CRATES = {"nc-h264": "h264", "nc-hevc": "hevc", "nc-vvc": "vvc", "nc-av1": "av1",
+                "nc-vp9": "vp9", "nc-av2": "av2"}
+#: Crates that reach nc-cli without coding any stream (their changes cannot
+#: alter one): only the browser module, the C API and the kernel tests.
+NON_STREAM_CRATES = {"nc-web", "nc-capi", "nc-checkasm"}
 #: The browser module's own crate: a change here is a change to the page's API.
 PAGE_CRATE_DIR = "crates/nc-web/"
 
@@ -184,6 +195,32 @@ def changes_page(kind, path):
     return kind == "web" or path.startswith(PAGE_CRATE_DIR)
 
 
+def conformance_codecs(changed, affected, full):
+    """The landing conformance plan: ["0"], ["all"] or the codecs to check.
+
+    A change whose stream-relevant crates are only codec crates (and presets of
+    those codecs) needs only their streams: on 2026-11-15 a VP9-only change
+    still coded all 497 streams (8-13 min)."""
+    if not needs_conformance(changed, affected, full):
+        return ["0"]
+    if full or any(p in CONFORMANCE_FILES for p in changed):
+        return ["all"]
+    codecs = set()
+    for crate in affected - NON_STREAM_CRATES - {ENCODER_CRATE}:
+        if crate not in CODEC_CRATES:
+            return ["all"]  # shared code: every codec's streams
+        codecs.add(CODEC_CRATES[crate])
+    for path in changed:
+        if path.startswith("presets/") and path.endswith(".toml") and "/" not in path[8:]:
+            codec = Path(path).stem.split("-")[0]
+            if codec not in CODEC_CRATES.values():
+                return ["all"]  # default.toml and the like: every codec
+            codecs.add(codec)
+        elif path.startswith(f"crates/{ENCODER_CRATE}/"):
+            return ["all"]
+    return sorted(codecs) or ["all"]
+
+
 def needs_conformance(changed, affected, full):
     """Whether the landing conformance check runs (module docstring)."""
     return full or ENCODER_CRATE in affected or any(p in CONFORMANCE_FILES for p in changed)
@@ -235,9 +272,9 @@ def plan(root, base):
 
     for kind, path in rows:
         print(f"  {kind:<9} {path}", file=sys.stderr)
-    conformance = needs_conformance(changed, affected, full)
+    conformance = conformance_codecs(changed, affected, full)
     out = [("rust", rust), ("eval", [str(int(eval_tests))]), ("web", [str(int(web))]),
-           ("page", [str(int(page or full))]), ("conformance", [str(int(conformance))])]
+           ("page", [str(int(page or full))]), ("conformance", conformance)]
     out += [(key, files) for key, files in lists.items()]
     return "\n".join(" ".join([key, *values]) for key, values in out)
 

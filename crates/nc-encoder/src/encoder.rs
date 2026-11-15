@@ -22,9 +22,8 @@ use crate::backend::{
 };
 use crate::config::{Codec, ConfigError, EncoderConfig, FrameRate};
 use crate::decision::{
-    BlockSads, Choice, DecisionScratch, choose_compound_mode, choose_inter_mode,
-    choose_secondary_mode, is_square_leaf, is_static, is_still, leaf_area, leaf_extent,
-    leaf_log2_min_side,
+    Choice, DecisionScratch, choose_compound_mode, choose_inter_mode, choose_secondary_mode,
+    is_square_leaf, is_static, is_still, leaf_area, leaf_extent, leaf_log2_min_side,
 };
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
@@ -1380,7 +1379,7 @@ impl<B: CodecBackend> Encoder<B> {
             self.structure
                 .peek(index, scheduled == FrameType::Key || recovery),
         );
-        let planned = self.with_second(index, planned, (scheduled == FrameType::Key, None, None));
+        let planned = self.with_second(index, planned, (scheduled == FrameType::Key, None));
         // Shared analysis, when enabled, runs on every frame so that the
         // next frame always has its reference's source to search against.
         // The analyzer is moved out of `self` for the frame so its results
@@ -1410,16 +1409,11 @@ impl<B: CodecBackend> Encoder<B> {
         let references = self.structure.next(index, key || recovery);
         let ltr_action = if key { LtrAction::None } else { ltr_action };
         let references = self.with_ltr(ltr_action, index, references);
-        let still_fraction = analyzer
-            .as_ref()
-            .and_then(Analyzer::analysis)
-            .filter(|a| a.motion.is_some())
-            .map(|a| a.still.fraction);
         let depth = analyzer
             .as_ref()
             .and_then(Analyzer::analysis)
             .map(|a| self.cadence_depth(a, &references));
-        let references = self.with_second(index, references, (key, still_fraction, depth));
+        let references = self.with_second(index, references, (key, depth));
         if let Some(ltr) = self.ltr.as_mut() {
             ltr.coded(index, key, ltr_action);
         }
@@ -1791,10 +1785,6 @@ impl<B: CodecBackend> Encoder<B> {
             recon,
         } = pictures;
         self.backend.begin_frame(plan);
-        let coded_size = (self.layer.coded_width, self.layer.coded_height);
-        if let Some(screen) = self.layer.second.as_mut().and_then(|s| s.screen.as_mut()) {
-            screen.begin_picture(plan.index, coded_size);
-        }
         let sb_log2 = self.backend.superblock_log2();
         let sb = 1usize << sb_log2;
         for y in (0..self.layer.coded_height).step_by(sb) {
@@ -1901,20 +1891,19 @@ impl<B: CodecBackend> Encoder<B> {
         }
     }
 
-    /// `references` of frame `index` (a key frame if `key`, with the
-    /// analysis' still-block fraction and the cadence strength `depth` if
-    /// known) with the second reference, when it is on
+    /// `references` of frame `index` (a key frame if `key`, at the cadence
+    /// strength `depth` if known) with the second reference, when it is on
     /// (`second_reference.rs`).
     fn with_second(
         &self,
         index: u64,
         references: FrameReferences,
-        (key, still_fraction, depth): (bool, Option<f32>, Option<f64>),
+        (key, depth): (bool, Option<f64>),
     ) -> FrameReferences {
         match self.layer.second.as_ref() {
             Some(second) => {
                 let high_quality = key || self.is_high_quality(index, references.position);
-                let applied = second.apply(index, (high_quality, still_fraction), references);
+                let applied = second.apply(index, high_quality, references);
                 second.planned(applied, high_quality, depth)
             }
             None => references,
@@ -2350,9 +2339,6 @@ impl<B: CodecBackend> Encoder<B> {
                 source_moments,
                 refresh,
             );
-            if secondary.is_some() {
-                self.observe_second_choice(node, chosen);
-            }
             if self.backend.wants_sub_block_motion()
                 && is_square_leaf::<B>(node)
                 && node.log2_size() > SUB_BLOCK_LOG2
@@ -2376,19 +2362,6 @@ impl<B: CodecBackend> Encoder<B> {
         };
         self.window = window;
         mode
-    }
-
-    /// Leaf `node`, offered the second reference, made `chosen`: the
-    /// frame switch's share and the screen's win map follow it.
-    fn observe_second_choice(&mut self, node: &Block, chosen: ReferenceChoice) {
-        let Some(second) = self.layer.second.as_mut() else {
-            return;
-        };
-        let chose = chosen != ReferenceChoice::Primary;
-        second.observe_leaf(leaf_area::<B>(node), chose);
-        if chose && let Some(screen) = second.screen.as_mut() {
-            screen.record_win((node.x, node.y), leaf_extent::<B>(node));
-        }
     }
 
     /// The syntax stress test's random leaf choice (`debug.random_decisions`):
@@ -2469,20 +2442,13 @@ impl<B: CodecBackend> Encoder<B> {
         // still predict disoccluded or fast-moving blocks that forced the
         // temporal primary reference into intra, counting DC error when
         // `!primary.mode.is_inter()`.
-        if (!primary.mode.is_inter() && ratio > 0.0)
-            || !self.secondary_worth_trying(node, primary.cost)
-        {
+        // A cached planner choice (cost `-inf`) was accepted as good
+        // without ranking: there is no cost for the secondary to beat.
+        let ranked = primary.cost > 0.0;
+        if (!primary.mode.is_inter() && ratio > 0.0) || !ranked {
             return (primary, ReferenceChoice::Primary);
         }
         let seed = scaled_vector(search_mv, ratio);
-        if !self.passes_secondary_screen(
-            node,
-            (source, primary_reference, secondary),
-            seed,
-            primary,
-        ) {
-            return (primary, ReferenceChoice::Primary);
-        }
         let include_dc = !primary.mode.is_inter();
         let Some(second) = self.secondary_choice(
             node,
@@ -2536,62 +2502,6 @@ impl<B: CodecBackend> Encoder<B> {
             self.backend.select_reference(node, chosen);
         }
         (best, chosen)
-    }
-
-    /// Whether leaf `node`, whose primary choice cost `primary_cost`, tries
-    /// the second reference (`refs.second_gate_lambdas`): a block the
-    /// primary reference already predicts within the gate has little left
-    /// for a finer reference to win. A cached planner choice (`-inf`) was
-    /// accepted as good without ranking.
-    fn secondary_worth_trying(&self, node: &Block, primary_cost: f32) -> bool {
-        let gate = self.layer.second.as_ref().map_or(0.0, |s| s.gate_lambdas);
-        let lambda = self.backend.lambda() * self.frame_decision_params.lambda_scale;
-        primary_cost > gate * lambda * leaf_area::<B>(node) as f32
-            && primary_cost > f32::NEG_INFINITY
-    }
-
-    /// Whether the second-reference screen (`second_screen.rs`), when on,
-    /// lets leaf `node` try the `secondary` reference: from the whole-sample
-    /// SADs of the secondary at the zero vector and `seed` against the
-    /// primary reference's at the `primary` choice's vector, and that
-    /// choice's cost. An intra primary choice, or a vector whose window
-    /// leaves the padded picture, is not screened.
-    fn passes_secondary_screen(
-        &self,
-        node: &Block,
-        (source, primary_reference, secondary): (&Picture, &Picture, &Picture),
-        seed: Mv,
-        primary: Choice,
-    ) -> bool {
-        let Some(screen) = self.layer.second.as_ref().and_then(|s| s.screen.as_ref()) else {
-            return true;
-        };
-        let PredictionMode::Inter(primary_mv) = primary.mode.prediction() else {
-            return true;
-        };
-        let sads = BlockSads::new::<B>(&self.dsp, source, node);
-        let primary_sad = sads.at(primary_reference, primary_mv);
-        let zero_sad = sads.at(secondary, Mv::ZERO);
-        let seed_sad = if seed.full_pel() == (0, 0) {
-            None
-        } else {
-            sads.at(secondary, seed)
-        };
-        // The better of the two (`Option::min` would rank `None` lowest).
-        let secondary_sad = match (zero_sad, seed_sad) {
-            (Some(zero), Some(seed)) => Some(zero.min(seed)),
-            (zero, seed) => zero.or(seed),
-        };
-        let (Some(primary_sad), Some(secondary_sad)) = (primary_sad, secondary_sad) else {
-            return true;
-        };
-        let lambda = self.backend.lambda() * self.frame_decision_params.lambda_scale;
-        let area = leaf_area::<B>(node);
-        screen.worth_trying(
-            ((node.x, node.y), leaf_extent::<B>(node)),
-            (secondary_sad, primary_sad),
-            primary.cost / (lambda * area as f32),
-        )
     }
 
     /// The best inter mode of `node` predicted from the `secondary`

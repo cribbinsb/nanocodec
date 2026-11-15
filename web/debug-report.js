@@ -116,7 +116,7 @@ export function formatReport(report) {
     'Reproduce: `python3 tools/web/replay-debug-report.py <this file>`', '',
     '## Build and browser', '',
     `- Page: ${page.url}`, `- Browser: ${page.userAgent}`, `- Logical processors: ${page.hardwareConcurrency}`,
-    `- Codec module: ${build.module}${state.analysis.enabled ? ' (decoders on the analysis module)' : ''} · profile ${build.profile}`,
+    `- Codec module: ${build.module}${state.analysis.enabled ? ' (decoders recording analysis)' : ''} · profile ${build.profile}`,
     `- Source path: ${source.path} (the session line below gives the speed)`, '',
     '## Source', '',
     `- ${source.kind}${source.clip ? ` \`${source.clip}\` (${source.fps} fps, loop ${source.loopLength} ticks)` : ''}${source.sha256 ? ` · SHA-256 \`${source.sha256}\`` : ''}`,

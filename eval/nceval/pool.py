@@ -18,7 +18,7 @@ Levels (nceval.realuse runs them in order; docs/PROCEDURES.md):
 
   L1 quick   LEVEL_SIZES["quick"] families, every stratum, 3 rungs: kills
              clear losers in a few minutes.
-  L2 adopt   a disjoint draw of LEVEL_SIZES["adopt"], full ladder.
+  L2 adopt   a disjoint draw of LEVEL_SIZES["adopt"], single-point.
   L3 final   every other family of the pool (one clip each), full ladder,
              in parts under 30 min: required before a preset/Default change
              lands, and after every bundle (`realuse final-check`).
