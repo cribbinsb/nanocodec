@@ -76,16 +76,16 @@ from .stages import balanced_parts
 #: The neutral anchor every point is compared with (BD 0, speed 1).
 ANCHOR = "x264-medium"
 #: Our points: (family, chart label).
-OURS = (("nanocodec-h264", "H.264"), ("nanocodec-h264@fast", "H.264 Fast"),
+OURS = (("nanocodec-h264@slow", "H.264 Slow"), ("nanocodec-h264", "H.264"), ("nanocodec-h264@fast", "H.264 Fast"),
         ("nanocodec-h264@faster", "H.264 Faster"),
         ("nanocodec-h264@veryfast", "H.264 Veryfast"), ("nanocodec-hevc@slow", "HEVC Slow"),
         ("nanocodec-hevc", "HEVC"),
         ("nanocodec-hevc@fast", "HEVC Fast"), ("nanocodec-hevc@faster", "HEVC Faster"),
         ("nanocodec-av1@slow", "AV1 Slow"), ("nanocodec-av1", "AV1"),
         ("nanocodec-av1@fast", "AV1 Fast"), ("nanocodec-av1@faster", "AV1 Faster"),
-        ("nanocodec-vp9", "VP9"),
+        ("nanocodec-vp9@slow", "VP9 Slow"), ("nanocodec-vp9", "VP9"),
         ("nanocodec-vp9@fast", "VP9 Fast"), ("nanocodec-vp9@faster", "VP9 Faster"),
-        ("nanocodec-vp9@veryfast", "VP9 Veryfast"), ("nanocodec-av2", "AV2"),
+        ("nanocodec-vp9@veryfast", "VP9 Veryfast"), ("nanocodec-av2@slow", "AV2 Slow"), ("nanocodec-av2", "AV2"),
         ("nanocodec-av2@fast", "AV2 Fast"), ("nanocodec-vvc@slow", "VVC Slow"), ("nanocodec-vvc", "VVC"),
         ("nanocodec-vvc@fast", "VVC Fast"))
 #: Reference encoders: (family, chart label). Families are cbr.anchor_families.

@@ -509,6 +509,11 @@ class Bench:
                     return old
         return base
 
+    def has_prebuilt(self, point: Point) -> bool:
+        """Whether `prebuilt` holds the point's stream (or its refusal)."""
+        base = self.prebuilt_base(point)
+        return Path(f"{base}.done").exists() or Path(f"{base}.failed").exists()
+
     def point_dir(self, family: Family, clip: Clip) -> Path:
         # The cache keys on the family's name, not its codec (`identity`), so an
         # own family named without its codec would share points across codecs.
@@ -662,7 +667,11 @@ class Bench:
             spec = StreamSpec(clip.clean_reference or source, fmt, self.frames, clip.fps,
                               self.paths)
             rate_log = rate_csv if family.own and point.kbps else None
-            if self.prebuilt is not None:
+            # A point the rented machine did not encode (a family kept on its build,
+            # a stream filed under an older key) is encoded here instead: slower
+            # than a lookup, but never a failed chart (coordinator, 2026-11-15).
+            prebuilt = self.prebuilt is not None and self.has_prebuilt(point)
+            if prebuilt:
                 gate, measured = self._score_prebuilt(point, stream, rate_log, coded_times,
                                                       spec)
             elif family.own:
