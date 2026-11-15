@@ -224,7 +224,10 @@ class Refresh:
             raise SystemExit(f"--retime: not chart families, or also in --families: "
                              f"{', '.join(clash)}")
         #: Every family timed on this commit's build.
-        self.timed = self.targets + self.retimed
+        #: Reference encoders to scan and time on COMMIT's session (--time-anchors):
+        #: new zero-line neighbours (the fixed-QP chart's slower settings).
+        self.anchors = [a for a in getattr(args, "time_anchors", "").split(",") if a]
+        self.timed = self.targets + self.retimed + self.anchors
         self.print_lock = threading.Lock()
         WORK.mkdir(parents=True, exist_ok=True)
 
@@ -482,7 +485,7 @@ class Refresh:
             self.say(f"  {family}: streams unchanged since {self.record['families'][family]}: "
                      f"its quality points are kept, it is only timed")
             self.retimed.append(family)
-        self.timed = self.targets + self.retimed
+        self.timed = self.targets + self.retimed + self.anchors
 
     def drop_unused_builds(self) -> None:
         for family in self.targets:  # measured and timed on one build again
@@ -678,7 +681,7 @@ class Refresh:
         """chart_sanity.py on the refreshed families' codecs: flags printed, never fatal."""
         if not self.timed or self.args.dry_run:
             return
-        codecs = {chart_sanity.codec_of(f) for f in self.timed}
+        codecs = {chart_sanity.codec_of(f) for f in self.timed if f.startswith("nanocodec-")}
         try:
             flags = chart_sanity.check(codecs, instructions=not self.args.metrics_only)
         except (Exception, SystemExit) as error:  # advisory: it never stops a refresh
@@ -920,6 +923,9 @@ def main() -> None:
                    help="comma-separated chart families only re-timed on COMMIT's build: their "
                         "streams must equal their recorded build's (checked), so their quality "
                         "points stay")
+    p.add_argument("--time-anchors", default="",
+                   help="comma-separated reference encoders (cbr.preset_anchor names, e.g. "
+                        "x264-veryslow) also scanned and timed on both machines")
     p.add_argument("--metrics-only", action="store_true",
                    help="no scan and no timing (nor the release and Jetson builds they need): "
                         "quality only, the stored timings stay")
@@ -951,7 +957,7 @@ def main() -> None:
                         "facts follow")
     p.add_argument("--dry-run", action="store_true", help="print the steps' commands only")
     args = p.parse_args()
-    if not (args.families or args.rescore or args.retime):
+    if not (args.families or args.rescore or args.retime or args.time_anchors):
         p.error("give --families, --retime, --rescore or a combination")
     began = time.monotonic()
     Refresh(args).execute(args.start)

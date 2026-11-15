@@ -492,6 +492,23 @@ class Bench:
         identity = self.identity(point.family, point.clip, point.label, scored=False)
         return f"{point.clip.name}/{point.family.name}/{point.label}-{identity}"
 
+    def prebuilt_base(self, point: Point) -> Path:
+        """A prebuilt point's files: under its current key, else (ours, encoded before
+        2026-11-15) under its old binary-bytes identity and old family name, in
+        `prebuilt` or the held-out chart's first stream directory."""
+        base = self.prebuilt / self.prebuilt_key(point)
+        family = point.family
+        if Path(f"{base}.done").exists() or not family.own:
+            return base
+        legacy = hashlib.sha256(family.tool.read_bytes()).hexdigest()
+        identity = self.identity(family, point.clip, point.label, scored=False, tool_hash=legacy)
+        for root in (self.prebuilt, *LEGACY_PREBUILT_ROOTS):
+            for name in legacy_family_names(family.name):
+                old = root / point.clip.name / name / f"{point.label}-{identity}"
+                if Path(f"{old}.done").exists():
+                    return old
+        return base
+
     def point_dir(self, family: Family, clip: Clip) -> Path:
         # The cache keys on the family's name, not its codec (`identity`), so an
         # own family named without its codec would share points across codecs.
@@ -565,7 +582,8 @@ class Bench:
 
     def cached(self, point: Point) -> bool:
         """Whether `point` is already measured and reusable (for pricing a run)."""
-        return self._reusable(point, self.result_path(point)) is not None
+        path = self.result_path(point)
+        return (self._reusable(point, path) or self._legacy_result(point, path)) is not None
 
     def components(self, spec: StreamSpec) -> list:
         return real_metrics(spec) if self.metric_set == "real" else metric_components(spec)
@@ -722,7 +740,7 @@ class Bench:
         """Gate and score a stream encoded elsewhere (see `prebuilt`); its rate log
         and coded-frame times are copied to where the local encode puts them."""
         family = point.family
-        base = self.prebuilt / self.prebuilt_key(point)
+        base = self.prebuilt_base(point)
         failed = Path(f"{base}.failed")
         if not Path(f"{base}.done").exists() and failed.exists():
             reason = " | ".join(json.loads(failed.read_text())["stderr"][-2:])
@@ -1210,6 +1228,10 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
+
+#: Where the held-out chart's streams were kept before its per-clip-set directories.
+LEGACY_PREBUILT_ROOTS = (Path.home() / "nanocodec-data" / "work" / "independent" / "streams",)
 
 
 def legacy_family_names(name: str) -> list[str]:

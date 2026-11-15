@@ -467,6 +467,8 @@ def run(args: argparse.Namespace) -> None:
     if len(todo) < len(jobs):
         say(f"{len(jobs) - len(todo)} of {len(jobs)} encodes scored or already here: skipped")
         jobs = todo
+    if not jobs:  # nothing to encode: no instance (2026-11-15, one was rented for none)
+        return
     tools = {p.family.tool.name: p.family.tool for _, p in jobs}
     version = subprocess.run([str(tools["nanocodec"]), "--version"], capture_output=True,
                              text=True, check=True).stdout.strip() if "nanocodec" in tools else ""
@@ -573,6 +575,15 @@ def score_cloud(args: argparse.Namespace) -> None:
     region, cores = INSTANCES[args.instance_type]
     CLOUD_RESULTS.mkdir(parents=True, exist_ok=True)  # the seed (none on a first session)
     run = setup(args)
+    pending = [j for j in run.ladder(args.rungs) + run.extras() if not j[0].cached(j[1])]
+    if not pending:  # the ladder is all here: are its low rungs too? (score's rule)
+        curves = run.runner.measure("held-out ladder", run.families, run.clips, run.frames,
+                                    args.rungs, run.key_seconds, budgeted=False)
+        low = low_rung_clips(curves, run.families, run.clips)
+        pending = [j for j in run.low_rungs(low) if not j[0].cached(j[1])]
+    if not pending:  # every point scored here already: no instance (76259 re-scored once)
+        say("every point is scored here: no scoring session")
+        return
     if subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--", "eval", "tools"],
                       capture_output=True, text=True, check=True).stdout.strip():
         raise SystemExit("commit eval/ and tools/ first: the remote runs this repository's HEAD")
