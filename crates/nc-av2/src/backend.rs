@@ -452,18 +452,6 @@ impl Av2Backend {
 /// AVM `RELATIVE_DIST_BITS` 8: reference distances are clamped to 127.
 const MAX_RELATIVE_DISTANCE: u32 = 127;
 
-/// The reference rank a block's choice names: the previous picture is rank
-/// 0, the second reference rank 1.
-fn reference_rank(choice: ReferenceChoice) -> u8 {
-    match choice {
-        ReferenceChoice::Primary => 0,
-        ReferenceChoice::Secondary => 1,
-        ReferenceChoice::Compound { .. } => {
-            unreachable!("AV2 offers no compound reference")
-        }
-    }
-}
-
 /// The sequence's motion-vector reference lists from `av2.max_drl_bits`
 /// and `av2.ref_mv_bank`.
 fn reference_lists(params: &ToolParams) -> ListConfig {
@@ -896,6 +884,21 @@ impl CodecBackend for Av2Backend {
         // -0.8% (instructions +0.3%). static_recovery passes. The other AV2
         // presets pin it off.
         ("structure.inherited_depth", 1.0),
+        // The unified structure's reference plan (`structure.unified`,
+        // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
+        // (key, cadence base) also predict from the high-quality frame before
+        // them where the cadence strength is 0.75 or more, as in AV1, VP9,
+        // HEVC and VVC. Build 9521a088, pool levels of draw 2026-11-15: L1
+        // -1.46% [-1.78, -0.63]; L2 -1.51% [-2.37, -0.63]; L3 (78 clips) J
+        // -1.16% [-1.54, -0.79], no guard (static -2.3%, crowd -1.6%, lowlight
+        // -1.0%, pan -0.5%, bodycam -0.4%). Jetson cycles +1.3% (lowlight
+        // +3.5, crowd +0.9, bodycam -0.1), instructions +1.1%. Those streams
+        // were scored on the encoder's reconstruction; the screen's build
+        // kept no slot for the plan's first high-quality frame after a key
+        // (`physical`, below), which that frame then named: fixed with this
+        // adoption, and the final-check measures the fixed streams. AV2
+        // Fast pins it off.
+        ("structure.unified", 1.0),
         // Depth removal at half the engine's threshold scale (SVT
         // `qp_scale_factor`): the scale grows with the headroom below the
         // top quantizer, and AV2's coarser qindex scale (step doubling every
@@ -975,7 +978,11 @@ impl CodecBackend for Av2Backend {
             order_hint: 0,
             display_order: 0,
             slot_display_orders: [0; REFERENCE_SLOTS as usize],
-            physical: (nc_encoder::RefParams::from_overrides(&config.params).second >= 0.5)
+            // The second reference's slots, for `refs.second` and for the
+            // unified plan alike; beside temporal layers the engine codes
+            // neither.
+            physical: (nc_encoder::second_reference_enabled(&config.params)
+                && config.temporal_layers == 1)
                 .then_some(PhysicalSlots::AFTER_KEY),
             qindex: 0,
             quant_deltas: QuantDeltas::NONE,
@@ -1050,7 +1057,7 @@ impl CodecBackend for Av2Backend {
 
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
         if let Some(coder) = self.coder.as_mut() {
-            coder.select_reference(reference_rank(reference));
+            coder.select_reference(reference.single_index());
         }
     }
 
@@ -1353,7 +1360,7 @@ impl CodecBackend for Av2Backend {
     ) {
         let coder = self.coder();
         coder.set_block_offset(decision.qp_offset);
-        coder.select_reference(reference_rank(decision.reference));
+        coder.select_reference(decision.reference.single_index());
         let position = (block.x, block.y);
         match (decision.mode, reference) {
             (PredictionMode::Inter(mv), Some(reference)) => {
@@ -2004,7 +2011,8 @@ mod tests {
     /// skip mode requested, which frames with two references leave off).
     #[test]
     fn second_reference_decodes_to_the_reconstruction() {
-        let plain = coded_sequence(&[], None).0;
+        // Against a stream without the Default's reference plan.
+        let plain = coded_sequence(&[("structure.unified", 0.0)], None).0;
         for (params, bitrate) in [
             (&[("refs.second", 1.0)][..], None),
             (&[("refs.second", 1.0), ("refs.second_full", 1.0)], None),

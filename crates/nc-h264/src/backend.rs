@@ -521,16 +521,6 @@ fn restore_luma(picture: &mut Picture, (x, y): (usize, usize), luma: &[u8; MB_SI
     }
 }
 
-/// `ref_idx_l0` of the engine's reference choice (`references.rs`: the
-/// secondary reference is list index 1).
-fn ref_idx_of(choice: ReferenceChoice) -> u8 {
-    match choice {
-        ReferenceChoice::Primary => 0,
-        ReferenceChoice::Secondary => 1,
-        ReferenceChoice::Compound { .. } => unreachable!("H.264 uses single-reference P slices"),
-    }
-}
-
 impl H264Backend {
     fn mb_index(block: &Block) -> (usize, usize) {
         (block.x / MB_SIZE, block.y / MB_SIZE)
@@ -2116,7 +2106,7 @@ impl CodecBackend for H264Backend {
     }
 
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
-        self.selected_ref = ref_idx_of(reference);
+        self.selected_ref = reference.single_index();
     }
 
     /// `I_NxN` picks a direction per 8x8 (`Intra_8x8`) or 4x4 block; the
@@ -2407,7 +2397,7 @@ impl CodecBackend for H264Backend {
         let sub_vectors = self.sub_vectors.take();
         let mb_qp = (i32::from(self.qp) + i32::from(decision.qp_offset)).clamp(0, QP_MAX as i32);
         self.use_qp(mb_qp as u8);
-        self.selected_ref = ref_idx_of(decision.reference);
+        self.selected_ref = decision.reference.single_index();
         self.code_macroblock(block, *decision, source, reference, recon, sub_vectors);
         self.selected_ref = 0;
         self.use_qp(self.qp);

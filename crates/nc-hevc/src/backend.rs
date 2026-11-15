@@ -364,18 +364,6 @@ struct CachedLuma {
     frame_index: u64,
 }
 
-/// `ref_idx_l0` of an engine reference choice. Compound prediction is
-/// never offered (P slices, `supports_compound_reference` is false).
-fn ref_idx_of(reference: ReferenceChoice) -> u8 {
-    match reference {
-        ReferenceChoice::Primary => 0,
-        ReferenceChoice::Secondary => 1,
-        ReferenceChoice::Compound { .. } => {
-            unreachable!("HEVC P slices code no compound prediction")
-        }
-    }
-}
-
 /// The coded picture size for a visible `width` x `height`: whole minimum
 /// coding blocks (`pic_width_in_luma_samples` must be a multiple of
 /// `MinCbSizeY`, §7.4.3.2.1).
@@ -1207,7 +1195,7 @@ impl CodecBackend for HevcBackend {
     }
 
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
-        self.active_ref = ref_idx_of(reference);
+        self.active_ref = reference.single_index();
     }
 
     /// Rank inter candidates with HEVC's own 8-tap luma filter (the engine's
@@ -1511,7 +1499,7 @@ impl CodecBackend for HevcBackend {
         recon: &mut Picture,
     ) {
         self.begin_block_qp(decision.qp_offset);
-        self.active_ref = ref_idx_of(decision.reference);
+        self.active_ref = decision.reference.single_index();
         match decision.mode {
             mode if self.random.is_some() => {
                 self.encode_random_cu(block, mode, source, reference, recon);

@@ -85,3 +85,5 @@ structure.inherited_depth = 0
 av2.parity_hiding = 0
 planner.depth_removal_th_32_16 = 25
 planner.depth_removal_th_16_8 = 50
+# Pinned before AV2 Default's reference plan (2026-11-15).
+structure.unified = 0

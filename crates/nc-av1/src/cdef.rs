@@ -1,10 +1,11 @@
 //! CDEF, the constrained directional enhancement filter (AV1 §7.15), and the
 //! encoder's choice of its strengths.
 //!
-//! The filter must match decoders bit-exactly. The strength adjustment here
-//! is ported from libaom (`av1/common/cdef_block.c`: `adjust_strength`;
-//! `av1/common/cdef.c`; BSD-2-Clause, Alliance for Open Media); the
-//! direction search and the block filter are `nc_dsp::Dsp::cdef_find_dir`
+//! The filter must match decoders bit-exactly. The frame-level structure
+//! here is ported from libaom (`av1/common/cdef.c`; BSD-2-Clause, Alliance
+//! for Open Media); the strength adjustment (`nc_dsp::cdef_adjust_strength`,
+//! shared with AV2 and the decoders), the direction search and the block
+//! filter are `nc_dsp::Dsp::cdef_find_dir`
 //! and `nc_dsp::Dsp::cdef_filter` (SIMD, same libaom semantics), the filter
 //! reading a padded 16-bit copy of the unfiltered plane. Directions come
 //! from the unfiltered luma and are found once per call, for every plane,
@@ -594,7 +595,7 @@ fn plane_blocks(
             let adjusted = if chroma {
                 pri
             } else {
-                adjust_strength(pri, unit.var)
+                i32::from(nc_dsp::cdef_adjust_strength(pri as u8, unit.var))
             };
             // Skipped blocks: the output already holds the unfiltered samples.
             (adjusted != 0 || sec != 0).then(|| CdefBlock {
@@ -611,20 +612,6 @@ fn plane_blocks(
         damping,
     };
     (filter, blocks)
-}
-
-/// libaom `adjust_strength`: scale the luma primary strength by the block's
-/// directional contrast.
-pub(crate) fn adjust_strength(strength: i32, var: i32) -> i32 {
-    if var == 0 {
-        return 0;
-    }
-    let i = if var >> 6 != 0 {
-        (31 - (var >> 6).leading_zeros() as i32).min(12)
-    } else {
-        0
-    };
-    (strength * (4 + i) + 8) >> 4
 }
 
 /// Superblock side of the picture-variance estimate.

@@ -674,7 +674,7 @@ fn filter_units(
         let primary = if chroma {
             strength.primary
         } else {
-            adjust_strength(strength.primary, unit.var)
+            nc_dsp::cdef_adjust_strength(strength.primary, unit.var)
         };
         if primary == 0 && strength.secondary == 0 {
             continue; // the output already holds the unfiltered samples
@@ -696,27 +696,6 @@ fn filter_units(
             dsp.cdef_filter_blocks(size, input, blocks, secondary, damping, output);
         }
     }
-}
-
-/// AVM `adjust_strength`: scale the luma primary strength by the block's
-/// directional contrast.
-fn adjust_strength(strength: u8, var: i32) -> u8 {
-    /// Contrast below `1 << VAR_SHIFT` counts as the lowest class.
-    const VAR_SHIFT: u32 = 6;
-    /// Highest contrast class (`AVMMIN(get_msb(var >> 6), 12)`).
-    const MAX_CLASS: i32 = 12;
-    /// Strength scale of the lowest class, in sixteenths.
-    const BASE_SCALE: i32 = 4;
-    if var == 0 {
-        return 0;
-    }
-    let scaled = var >> VAR_SHIFT;
-    let class = if scaled == 0 {
-        0
-    } else {
-        (scaled.ilog2() as i32).min(MAX_CLASS)
-    };
-    ((i32::from(strength) * (BASE_SCALE + class) + 8) >> 4) as u8
 }
 
 /// AC steps (AV1 `ac_qlookup` scale) from which the damping grows by one:
@@ -1295,14 +1274,5 @@ mod tests {
         assert!(CdefParams::new(3, strong, Strength::OFF).is_err());
         assert!(CdefParams::new(7, Strength::OFF, Strength::OFF).is_err());
         assert!(CdefParams::new(2, Strength::OFF, Strength::OFF).is_err());
-    }
-
-    #[test]
-    fn adjust_strength_matches_avm_classes() {
-        assert_eq!(adjust_strength(15, 0), 0);
-        assert_eq!(adjust_strength(15, 63), (15 * 4 + 8) >> 4);
-        assert_eq!(adjust_strength(15, 64), (15 * 4 + 8) >> 4);
-        assert_eq!(adjust_strength(15, 128), (15 * 5 + 8) >> 4);
-        assert_eq!(adjust_strength(15, i32::MAX), 15);
     }
 }

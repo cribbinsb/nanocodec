@@ -144,7 +144,7 @@ pub use presets::{PresetError, Speed, preset_params, speeds};
 pub use psy::{ac_energy, psy_penalty};
 pub use random_decisions::DebugRng;
 pub use refresh::{IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshWindow};
-pub use second_reference::uses_long_term_slot;
+pub use second_reference::{second_reference_enabled, uses_long_term_slot};
 pub use shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 pub use still_camera::still_camera_params;
 pub use still_skip::{

@@ -34,7 +34,7 @@ use crate::structure::FrameReferences;
 /// Whether `params` ask for a second reference: `refs.second`, or the
 /// unified structure's plan (`structure.unified`).
 #[must_use]
-pub(crate) fn second_reference_enabled(params: &ParamOverrides) -> bool {
+pub fn second_reference_enabled(params: &ParamOverrides) -> bool {
     RefParams::from_overrides(params).second >= 0.5 || TierPlan::new(params).is_some()
 }
 

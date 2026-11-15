@@ -1112,7 +1112,7 @@ impl CodecBackend for VvcBackend {
         true
     }
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
-        self.set_active_ref(ref_idx_of(reference));
+        self.set_active_ref(reference.single_index());
     }
     fn set_rate_control_enabled(&mut self, enabled: bool) {
         self.rate_control = enabled;
@@ -1221,7 +1221,7 @@ impl CodecBackend for VvcBackend {
         reconstruction: &mut Picture,
     ) {
         self.begin_block_qp(decision.qp_offset);
-        self.set_active_ref(ref_idx_of(decision.reference));
+        self.set_active_ref(decision.reference.single_index());
         let (mode, (intra_mode, chroma_mode, isp)) =
             self.block_mode(block, decision, source, reference, reconstruction);
         let motion = self.block_motion(block, mode, source, reference);
@@ -1497,19 +1497,9 @@ fn check_config(config: &EncoderConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Reference index of the previous picture.
+/// Reference index of the previous picture
+/// (`ReferenceChoice::Primary.single_index()`).
 const PRIMARY_REF_IDX: u8 = 0;
-/// Reference index of the second reference (`references.rs`).
-const SECOND_REF_IDX: u8 = 1;
-
-/// The `ref_idx_l0` of the engine's reference choice (no compound
-/// prediction in P slices).
-fn ref_idx_of(reference: ReferenceChoice) -> u8 {
-    match reference {
-        ReferenceChoice::Secondary => SECOND_REF_IDX,
-        ReferenceChoice::Primary | ReferenceChoice::Compound { .. } => PRIMARY_REF_IDX,
-    }
-}
 
 /// The `merge_idx` of the first merge candidate equal to `mv` into the
 /// reference of the predictors `p`.

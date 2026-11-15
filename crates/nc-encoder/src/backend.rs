@@ -108,6 +108,27 @@ pub enum ReferenceChoice {
     },
 }
 
+impl ReferenceChoice {
+    /// The reference index of a single-reference choice in a codec whose
+    /// list holds the primary reference first and the secondary second
+    /// (H.264 and HEVC `ref_idx_l0`, VVC, AV2's reference rank).
+    ///
+    /// # Panics
+    ///
+    /// For [`ReferenceChoice::Compound`], which only codecs declaring
+    /// `CodecBackend::supports_compound_reference` are given.
+    #[must_use]
+    pub fn single_index(self) -> u8 {
+        match self {
+            Self::Primary => 0,
+            Self::Secondary => 1,
+            Self::Compound { .. } => {
+                unreachable!("compound prediction in a single-reference codec")
+            }
+        }
+    }
+}
+
 /// Everything the engine decided about one leaf block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockDecision {

@@ -25,6 +25,12 @@ both standard decoders and our own (nceval.conformance.gate_stream):
 
     main     CBR at a comfortable rate, one key: the preset's coding tools
     fixedqp  `--qp` (the codec's fixed-QP profile) with a key every KEY_PERIOD frames
+    still    a still low-light scene in CBR, keys every STILL_KEY_PERIOD frames,
+             with `structure.secondary_min_depth` 0: the first high-quality
+             frame after each key predicts from that key as its second
+             reference (the unified structure's plan; AV2 named a slot the
+             key had not filled there, 2026-11-15) (medium preset)
+    stillqp  `still` at a fixed quantizer
     starved  CBR far below the content's rate with a key every KEY_PERIOD
              frames (keys under a starved budget) over a source that
              freezes for FREEZE_FRAMES frames (frame holds)
@@ -128,6 +134,11 @@ SVC_720P5_PAN = Shape(1280, 720, 19, "clips/main/pan_jaad_0101.yuv", (1280, 720)
 SVC_720P5_LOWLIGHT = Shape(
     1280, 720, 19, "clips/main/lowlight_city_night.yuv", (1280, 720), (0, 0)
 )
+# A still scene at full size, read in place: both keys' first high-quality
+# frames (8 frames after each, the start-up cadence) are inside it.
+STILL = Shape(1280, 720, 24, "clips/main/lowlight_city_night.yuv", (1280, 720), (0, 0))
+STILL_KEY_PERIOD = 12
+STILL_PARAMS = ("--param", "structure.secondary_min_depth=0")
 SPATIAL_SHAPES = {
     "crowd": SMALL,
     "pan": SVC_PAN,
@@ -194,12 +205,13 @@ class Case:
         if self.kind.startswith("svc-"):
             clip_tag = self.kind.split("-")[2]
             return SPATIAL_SHAPES[clip_tag]
-        return {"large": LARGE, "switch": SWITCH}.get(self.kind, SMALL)
+        return {"large": LARGE, "switch": SWITCH, "still": STILL,
+                "stillqp": STILL}.get(self.kind, SMALL)
 
     @property
     def rate_controlled(self) -> bool:
         """Every case codes in CBR but the fixed-QP one (`--qp`, no rate log)."""
-        return self.kind != "fixedqp"
+        return self.kind not in ("fixedqp", "stillqp")
 
     @property
     def is_spatial(self) -> bool:
@@ -257,6 +269,10 @@ class Case:
                        *(arg for pair in SWITCH_PARAMS for arg in ("--param", pair))],
             "fixedqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
                         "--intra-period", str(KEY_PERIOD)],
+            "still": ["--bitrate", kbps(STARVED_BPP), "--intra-period", str(STILL_KEY_PERIOD),
+                      *STILL_PARAMS],
+            "stillqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
+                        "--intra-period", str(STILL_KEY_PERIOD), *STILL_PARAMS],
         }[self.kind]
         return [*preset_cli_args(self.codec, self.preset), *flags]
 
@@ -288,6 +304,7 @@ def cases(codecs: list[Codec]) -> list[Case]:
             if spatial_layers(codec, preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
     base += [Case(codec, MEDIUM, "timed") for codec in codecs]
+    base += [Case(codec, MEDIUM, kind) for codec in codecs for kind in ("still", "stillqp")]
     base += [Case(codec, preset, "switch") for codec in codecs
              if codec in ADAPTIVE_RESOLUTION_CODECS
              for preset in shipped_presets(codec) if spatial_layers(codec, preset) == 1]
