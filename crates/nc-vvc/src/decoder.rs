@@ -405,7 +405,10 @@ impl Decoder {
                 &header,
                 poc,
                 [&pocs[0], &pocs[1]],
-                [&pictures[0], &pictures[1]],
+                (
+                    [&pictures[0], &pictures[1]],
+                    parameters.wraparound.map(|offset| offset as i32),
+                ),
                 &self.dsp,
             );
         }
@@ -420,13 +423,18 @@ impl Decoder {
             pocs.clone(),
         ));
         let references = pocs.each_ref().map(|list| references.pictures(list));
-        crate::decoder_blocks::inverse_residuals(&mut units, sequence, &header, &self.dsp);
+        let lists = crate::decoder_blocks::scaling_lists(&header, &self.adaptation[2])?;
+        crate::decoder_blocks::inverse_residuals(&mut units, sequence, &header, lists, &self.dsp);
         let mut picture = crate::decoder_blocks::reconstruct(
             &units,
             sequence,
             parameters.dimensions.map(|v| v as usize),
             header.picture.joint_sign,
-            crate::decoder_blocks::InterSources::new([&references[0], &references[1]], &header),
+            crate::decoder_blocks::InterSources::new(
+                [&references[0], &references[1]],
+                &header,
+                parameters.wraparound,
+            ),
             &self.dsp,
             reshape.as_ref().map(|m| (m, header.picture.chroma_scale)),
         )?;
@@ -438,27 +446,35 @@ impl Decoder {
                 &mut picture.plane_mut(nc_common::PlaneIndex::Y).view_mut(),
             );
         }
-        crate::decoder_blocks::deblock(
-            &mut picture,
-            &units,
-            sequence,
-            parameters,
-            &header,
-            &self.dsp,
-        );
+        self.filter_general(&mut picture, &units, &parsed.filters, &header, poc)?;
+        Ok(picture)
+    }
+
+    /// The loop filters of a general picture: deblocking, then SAO and ALF.
+    fn filter_general(
+        &self,
+        picture: &mut Picture,
+        units: &[crate::decoder_blocks::Unit],
+        filters: &[crate::decoder_blocks::CtuFilters],
+        header: &crate::decoder_headers::SliceHeader,
+        #[cfg_attr(not(test), allow(unused_variables))] poc: i32,
+    ) -> Result<()> {
+        let sequence = self.general_sequence.as_ref().unwrap();
+        let parameters = self.general_picture.as_ref().unwrap();
+        crate::decoder_blocks::deblock(picture, units, sequence, parameters, header, &self.dsp);
         #[cfg(test)]
-        crate::decoder_blocks::compare_trace(&picture, "NC_DBF ", poc);
+        crate::decoder_blocks::compare_trace(picture, "NC_DBF ", poc);
         crate::decoder_blocks::apply_filters(
-            &mut picture,
-            &parsed.filters,
+            picture,
+            filters,
             sequence,
-            &header,
+            header,
             &self.adaptation[0],
             &self.dsp,
         )?;
         #[cfg(test)]
-        crate::decoder_blocks::compare_trace(&picture, "NC_FINAL ", poc);
-        Ok(picture)
+        crate::decoder_blocks::compare_trace(picture, "NC_FINAL ", poc);
+        Ok(())
     }
 
     /// Decode one of our own streams' pictures (`predicted`: a P picture)

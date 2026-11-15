@@ -16,7 +16,7 @@ pub struct VvcLfnst {
     pub prediction_size: (usize, usize),
 }
 
-fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &mut [i16]) {
+pub(super) fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &mut [i16]) {
     let (width, height) = size;
     let (pred_width, pred_height) = transform.prediction_size;
     let wide =

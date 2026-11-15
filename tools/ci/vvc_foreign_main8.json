@@ -396,6 +396,22 @@
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_intra_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ai-sao.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 3 -q 42 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --SAO=1"
  },
  {
+  "name": "vtm-ai-scaling-ctc",
+  "encoder": "vtm",
+  "tools": "explicit scaling lists, CTC all-intra",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "5517a5eef6e5a3c28fe978dc1435e3a6084e3703ea3b7d4490044789d08099a2",
+  "frames": [
+   "47b2b00b5f8a36670cef89654244765b",
+   "75c10cf107e4eb4aa3013976656d0c87",
+   "c166d5fc9a7a6cb49cbd561a03952c0b"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_intra_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ai-scaling-ctc.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 3 -q 42 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --ScalingList=2 --ScalingListFile=/home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/scaling_list/sample_scaling_list_file.txt"
+ },
+ {
   "name": "vtm-ai-scaling-default",
   "encoder": "vtm",
   "tools": "scaling lists (default)",
@@ -410,6 +426,38 @@
   ],
   "tail": 0,
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_intra_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ai-scaling-default.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 3 -q 42 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --ScalingList=1"
+ },
+ {
+  "name": "vtm-ai-scaling-file",
+  "encoder": "vtm",
+  "tools": "scaling lists (explicit)",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "d43cc7369b62674c013bb748c6005c0d4db91a5d78694eb9caa008552de117b9",
+  "frames": [
+   "3cf9a123d6af4fbae64a8a761e5bf2bb",
+   "6c38758d73dbb9c2296f63b5bba26142",
+   "67ade26afd4bf22177769311de44a127"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_intra_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ai-scaling-file.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 3 -q 42 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --ScalingList=2 --ScalingListFile=/home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/scaling_list/sample_scaling_list_file.txt"
+ },
+ {
+  "name": "vtm-ai-scaling-lfnst",
+  "encoder": "vtm",
+  "tools": "explicit scaling lists on LFNST blocks",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "9b3291e67a2437e3d664a2d5e2cf15b9710435698563feee7a8010697fdcdae8",
+  "frames": [
+   "05cf3337b0f326faf76cad99f910f4e7",
+   "ef41ef1c682c06c6d8bb16e988d25892",
+   "c121ded112cad520e4fff61bf5121381"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_intra_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ai-scaling-lfnst.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 3 -q 42 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --ScalingList=2 --ScalingListFile=/home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/scaling_list/sample_scaling_list_file.txt --DisableScalingMatrixForLFNST=0"
  },
  {
   "name": "vtm-ai-signhide",
@@ -943,6 +991,28 @@
   ],
   "tail": 0,
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldb-wpp-ctu32-dqp.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --WaveFrontSynchro=1 --CTUSize=32 --MaxCUWidth=32 --MaxCUHeight=32 --Log2MaxTbSize=5 --MaxBTLumaISlice=32 --MaxBTChromaISlice=32 --MaxBTNonISlice=32 --MaxTTLumaISlice=32 --MaxTTChromaISlice=32 --MaxTTNonISlice=32 --MaxDeltaQP=3 --MaxCuDQPSubdiv=2"
+ },
+ {
+  "name": "vtm-ldb-wrap-short-ctc",
+  "encoder": "vtm",
+  "tools": "wrap-around offset below the width, CTC low-delay B",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "70d1d46f29c45c4e57aef050c0aebfd2dee3faae317499e11910415031d52708",
+  "frames": [
+   "44df2639f9b5750f0433a96ce76117b4",
+   "9f55fa37ac9fac5ab8f5d8d34311b995",
+   "fa2488d6fc86b5e738e9832f856b3580",
+   "97845395e9e6ae0d585af12158c6a8ae",
+   "f0821a4218231eeb218daf6b8389913f",
+   "965427151292f4ec417a629eebffa841",
+   "731744f350e4a4395e46442111d70231",
+   "96fe41df7ba2b037ed52ff4ae7aa9064",
+   "7b65373fc8b005de6b9b026b276ff1f6"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldb-wrap-short-ctc.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --WrapAround=1 --WrapAroundOffset=576"
  },
  {
   "name": "vtm-ldp-affine",
@@ -1671,6 +1741,28 @@
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-scaling-default.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --ScalingList=1"
  },
  {
+  "name": "vtm-ldp-scaling-file",
+  "encoder": "vtm",
+  "tools": "scaling lists (explicit)",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "d653f8c4346c4ec312e107ecb786f2dd414c49feabd8ed343d0901f6f9ad63f2",
+  "frames": [
+   "7fe6472e9713593bbb5e22aad3a25e66",
+   "7fe6472e9713593bbb5e22aad3a25e66",
+   "5c366cb684df343f23314a7fe475409d",
+   "f9f8504112f25d48bfa2dcd17c571852",
+   "43f15fbc908b59645ad0cb076f74576d",
+   "6d6cb24564417865259c007225fee443",
+   "4a4f9aea1ff600c8232e9a070adab25c",
+   "a9da1264ae4ab208c33a2cf7a2a14c91",
+   "a310e234220eae6b507aa96b1939d45a"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-scaling-file.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --ScalingList=2 --ScalingListFile=/home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/scaling_list/sample_scaling_list_file.txt"
+ },
+ {
   "name": "vtm-ldp-signhide",
   "encoder": "vtm",
   "tools": "sign data hiding",
@@ -1801,6 +1893,28 @@
   ],
   "tail": 0,
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-wpp.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --WaveFrontSynchro=1"
+ },
+ {
+  "name": "vtm-ldp-wrap",
+  "encoder": "vtm",
+  "tools": "wrap-around",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "8c51419ff7f383e47591a928f09e5a1c1b8ab7623025bcd538425675aa950c09",
+  "frames": [
+   "c1108e6cf79c5752244046e78f3d027a",
+   "c1108e6cf79c5752244046e78f3d027a",
+   "a46a25aff7629423f9b99667161ec94f",
+   "a06389e9327b8dd5764a2a72954d8533",
+   "30dd767ad9f26dea2c66e44cb1e508da",
+   "3d9c16ad582d41bcd7646e434a7a76b1",
+   "b3425e21b5a8351fdef33372df7353f8",
+   "af120767a361a9e2d1224241204a5081",
+   "d76e390c18fd2a8e274e6b0be32c5ad6"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-wrap.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --WrapAround=1 --WrapAroundOffset=640"
  },
  {
   "name": "vtm-lmcs-ra",
@@ -2088,6 +2202,36 @@
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_randomaccess_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ra-ltr.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --CompositeLTReference=1"
  },
  {
+  "name": "vtm-ra-scaling-ctc",
+  "encoder": "vtm",
+  "tools": "explicit scaling lists, CTC random access",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "a805304e7eb18b81ae16884d3a9bd07990acf1a27b4b422acaa67f7c34c703ce",
+  "frames": [
+   "0f0a6a98a6248c175c3e4821f0f48f79",
+   "7f8df4db5bb9b389885fb2dae1827c1e",
+   "081868ab7e32677e6a2c797b665b6ab9",
+   "6583527e8e8e13d2d8a486e3e08ed89e",
+   "4fad0eb7db1cd694777f35d8006ce4c7",
+   "a84135d33b05fdab5781e577c47214aa",
+   "b5bc3dd57b4ac769673dd0b67262b4e0",
+   "7fb3d7a50f2af963d8d6a05be44bdc7f",
+   "941130fe133ae60b7c047ae4f20cc74f",
+   "4c4c9abd20e15fee284cdae351b2a14b",
+   "d986a55ae57d7c35401f0a9dc425b297",
+   "38aae9890998fb0e9b842ff3083af42d",
+   "f8477a755452021d9217c74c29a90290",
+   "f23c44ce1eaa9744c2e729a10f6ae004",
+   "65d7367182a224bcb193199d4a64b158",
+   "5fa2753b336c62f9e2c435afeb3442a7",
+   "b18c2a4522f72ee7d90522321716e91d"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_randomaccess_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ra-scaling-ctc.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --ScalingList=2 --ScalingListFile=/home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/scaling_list/sample_scaling_list_file.txt"
+ },
+ {
   "name": "vtm-ra-smvd",
   "encoder": "vtm",
   "tools": "SMVD",
@@ -2176,6 +2320,36 @@
   ],
   "tail": 0,
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_randomaccess_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ra-wpp-ctc.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --WaveFrontSynchro=1"
+ },
+ {
+  "name": "vtm-ra-wrap-ctc",
+  "encoder": "vtm",
+  "tools": "wrap-around, CTC random access",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "7236b46b2c861179ebfba75bddf82519ee82214e04ac12afc65823c034a69264",
+  "frames": [
+   "c341d8f245cfc5daf239a45dc6e24d89",
+   "b5ede855c300fa0868169b6fbae724c1",
+   "6536cf54a8b47c9073ddca44fe85ad1a",
+   "a7c128db85e9ec2a13dfd110ac804ad8",
+   "164f2923326bb2d5454d207fac392409",
+   "f77f72c87ce1c77e3227f9ffea319678",
+   "98af8de407f513bb10cc7af82d2d18e8",
+   "3f9f72843fbcd77ad39bc64fa73f2d0d",
+   "1b40491a582f66d4180c8d1788b6c041",
+   "a020c44da0590a5d1a6b5a8354681c3e",
+   "4d2425f3ae3e48654be4a1d7831e85c7",
+   "4de64701e4562e4b976abe791f9c5f41",
+   "7e18bac4fc08c7102a21fcceef50ee84",
+   "a3cd11e497678c02fc7d23ef8b983a04",
+   "8738092e76f6c8d14df9d487caa0bcf8",
+   "619a821b0d43cb21456783e5e337d9a1",
+   "4f8efaa0ccccd4cffe5b84847e233424"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_randomaccess_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/jaad_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ra-wrap-ctc.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --WrapAround=1 --WrapAroundOffset=640"
  },
  {
   "name": "vtm-sbtmvp-b",

@@ -85,7 +85,63 @@ fn inverse_sized<const AREA: usize>(
     }
 }
 
+/// H.266 §8.7.3 scaling with an explicit scaling matrix: `matrix` holds the
+/// factor `m` of each coefficient (row-major, 16 is the flat value) and
+/// `flat` the parameters of [`scaling`]. The arithmetic and both saturating
+/// clamps are those of the shared flat kernel (`hevc_scale`); a scalar loop,
+/// since each coefficient has its own multiplier and only streams with
+/// explicit scaling lists come here.
+fn scale_with_matrix(levels: &[i32], flat: &super::HevcQuantizer, matrix: &[u8], out: &mut [i16]) {
+    let unit = flat.level_scale / FLAT_SCALING_FACTOR;
+    let product_limit = super::generic::hevc_dequant_product_limit(flat);
+    let level_limit = super::generic::HEVC_DEQUANT_LEVEL_LIMIT;
+    let round = 1 << (flat.bd_shift - 1);
+    for ((scaled, &level), &factor) in out.iter_mut().zip(levels).zip(matrix) {
+        // |level| <= 2^16 and factor * unit <= 255 * 102: the product fits.
+        let product = (level.clamp(-level_limit, level_limit) * unit * i32::from(factor))
+            .clamp(-product_limit, product_limit);
+        let value = ((product << flat.per) + round) >> flat.bd_shift;
+        *scaled = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    }
+}
+
+/// The scaling factor `m` of a flat scaling list, folded into
+/// `HevcQuantizer::level_scale`.
+const FLAT_SCALING_FACTOR: i32 = 16;
+
 impl Dsp {
+    /// VVC 8-bit inverse scaling with an explicit scaling matrix, then the
+    /// optional inverse LFNST and the inverse primary transform, for the
+    /// decoder of streams with explicit scaling lists. `matrix` holds the
+    /// scaling factor of each coefficient of the block, row-major.
+    /// # Panics
+    /// If a dimension is not a power of two in 2..=64, the block has fewer
+    /// than four samples, QP exceeds 63, or a slice is short.
+    #[allow(clippy::too_many_arguments)] // one transform block's parameters
+    pub fn vvc_inverse_with_matrix(
+        &self,
+        size: (usize, usize),
+        kinds: [crate::VvcTransformKind; 2],
+        lfnst: Option<crate::VvcLfnst>,
+        levels: &[i32],
+        (qp, dependent): (u8, bool),
+        matrix: &[u8],
+        out: &mut [i16],
+    ) {
+        let (width, height) = size;
+        let length = width * height;
+        assert!(kinds[0].valid(width) && kinds[1].valid(height) && length >= 4 && qp <= 63);
+        assert!(levels.len() >= length && matrix.len() >= length && out.len() >= length);
+        let flat = scaling(size, qp, dependent);
+        crate::vvc_mts::with_scratch(length, |scaled| {
+            scale_with_matrix(&levels[..length], &flat, matrix, &mut scaled[..length]);
+            if let Some(transform) = lfnst {
+                super::vvc_lfnst::inverse(size, transform, &mut scaled[..length]);
+            }
+            super::vvc_primary::inverse(size, kinds, &scaled[..length], out);
+        });
+    }
+
     /// Invert transform skip and optional block differential residuals using
     /// the shared dequantizer. `bdpcm` is zero, one (horizontal), or two (vertical).
     /// # Panics
@@ -220,3 +276,64 @@ mod tests {
 #[cfg(test)]
 #[path = "vvc_skip_tests.rs"]
 mod skip_tests;
+
+#[cfg(test)]
+mod matrix_tests {
+    use super::*;
+    use crate::{Isa, VvcTransformKind};
+
+    /// H.266 §8.7.3 in 64-bit integers, for one coefficient.
+    fn reference(level: i32, factor: u8, size: (usize, usize), qp: u8, dependent: bool) -> i16 {
+        let log2_area = size.0.ilog2() + size.1.ilog2();
+        let rectangular = log2_area & 1;
+        let shift = 3 + log2_area / 2 + rectangular + u32::from(dependent);
+        let scales = [[40, 45, 51, 57, 64, 72], [57, 64, 72, 80, 90, 102]];
+        let qp = i64::from(qp) + i64::from(dependent);
+        let scale = scales[rectangular as usize][(qp % 6) as usize];
+        let product = (i64::from(level) * i64::from(factor) * scale) << (qp / 6);
+        ((product + (1 << (shift - 1))) >> shift).clamp(-32768, 32767) as i16
+    }
+
+    #[test]
+    fn matrix_scaling_matches_the_specification_equation() {
+        let levels: Vec<i32> = (0..64)
+            .map(|i| [0, 1, -1, 37, -915, 32767, -32768, 6000][i % 8])
+            .collect();
+        let matrix: Vec<u8> = (0..64).map(|i| [16, 1, 255, 8, 97][i % 5]).collect();
+        for size in [(8, 8), (16, 4), (4, 8), (2, 32)] {
+            for qp in [0, 5, 22, 37, 63] {
+                for dependent in [false, true] {
+                    let mut scaled = [0; 64];
+                    scale_with_matrix(&levels, &scaling(size, qp, dependent), &matrix, &mut scaled);
+                    for (index, &value) in scaled.iter().enumerate() {
+                        let expected = reference(levels[index], matrix[index], size, qp, dependent);
+                        assert_eq!(value, expected, "{size:?} qp {qp} {dependent} {index}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_flat_matrix_decodes_as_the_flat_path() {
+        let dsp = Dsp::with_isa(Isa::Scalar).unwrap();
+        let flat = [16u8; 4096];
+        for size in [(4, 4), (8, 16), (32, 32), (64, 64), (16, 2)] {
+            let length = size.0 * size.1;
+            let levels: Vec<i32> = (0..length)
+                .map(|i| {
+                    if i % 64 < 6 && i < 32 * size.0 {
+                        (i as i32 % 9 - 4) * 30
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            let (mut expected, mut actual) = (vec![0i16; length], vec![0i16; length]);
+            let kinds = [VvcTransformKind::Dct2; 2];
+            dsp.vvc_inverse_primary(size, kinds, &levels, 30, true, &mut expected);
+            dsp.vvc_inverse_with_matrix(size, kinds, None, &levels, (30, true), &flat, &mut actual);
+            assert_eq!(actual, expected, "{size:?}");
+        }
+    }
+}

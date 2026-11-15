@@ -25,9 +25,10 @@ delay, you may be in the right place:
   conformance streams we test, so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine
-  official 8-bit conformance streams and 121 of 133 short 8-bit streams we coded with VTM and VVenC to cover the
+  official 8-bit conformance streams and 129 of 138 short 8-bit streams we coded with VTM and VVenC to cover the
   Main 10 tools one by one (it is 8-bit only and still rejects pictures of several slices, subpictures,
-  reference picture resampling and four smaller tools, so it is not a compliant Main 10 decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
+  reference picture resampling and loop filters that may not cross a boundary, so it is not a compliant Main 10
+  decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
   decodes our own streams and 9 of 30 foreign test streams bit-exact (streams of the reference encoder with
   the fewest tools; the rest use tools outside our subset).
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
@@ -93,6 +94,17 @@ included, in the development history. How it is checked is in the [FAQ](docs/FAQ
 
 ## Quick start
 
+From [crates.io](https://crates.io/crates/nanocodec-cli):
+
+```sh
+cargo install nanocodec-cli
+nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 \
+  --fps 30 --frames 150 --bitrate 600 --buffer-ms 1000 --output video.ivf
+nanocodec decode --codec av1 --input video.ivf --output decoded.yuv
+```
+
+Or from this repository:
+
 ```sh
 cargo build --release
 target/release/nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 \
@@ -106,9 +118,10 @@ module and the presets; more CLI detail: [crates/nc-cli/README.md](crates/nc-cli
 
 ## Use from Rust
 
-Once published on crates.io: `cargo add nanocodec`. Each codec is a cargo feature (`h264`, `hevc`, `vvc`, `av1`,
-`vp9`, `av2`; all on by default), and the crate documentation has an encode and decode example. The command-line
-tool is `cargo install nanocodec-cli`. The crates are published with `tools/release/publish_crates.sh`.
+`cargo add nanocodec` ([crates.io](https://crates.io/crates/nanocodec), [docs](https://docs.rs/nanocodec)).
+Each codec is a cargo feature (`h264`, `hevc`, `vvc`, `av1`, `vp9`, `av2`; all on by default), and the crate
+documentation has an encode and decode example. The engine, codecs, C API and browser bindings are also published
+separately as `nanocodec-*` crates.
 
 ## Presets
 

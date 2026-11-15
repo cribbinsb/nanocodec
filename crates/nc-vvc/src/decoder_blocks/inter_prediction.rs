@@ -10,6 +10,9 @@ use nc_dsp::{Dsp, Filter, HevcWeights};
 pub(crate) struct Sources<'a> {
     pub pictures: [&'a [&'a Picture]; 2],
     pub weights: Option<&'a Weights>,
+    /// Horizontal wrap-around offset in luma samples, when the PPS enables
+    /// wrap-around motion compensation.
+    pub wraparound: Option<u32>,
 }
 
 impl<'a> Sources<'a> {
@@ -18,11 +21,19 @@ impl<'a> Sources<'a> {
     pub(crate) fn new(
         pictures: [&'a [&'a Picture]; 2],
         header: &'a crate::decoder_headers::SliceHeader,
+        wraparound: Option<u32>,
     ) -> Self {
         Self {
             pictures,
             weights: Some(&header.weights).filter(|w| !w.lists[0].is_empty()),
+            wraparound,
         }
+    }
+
+    /// The wrap-around offset in samples of `plane`.
+    pub(super) fn wrap(&self, plane: PlaneIndex) -> Option<i32> {
+        self.wraparound
+            .map(|offset| (offset >> u32::from(plane != PlaneIndex::Y)) as i32)
     }
 
     /// References predicted from with the default weights.
@@ -31,6 +42,7 @@ impl<'a> Sources<'a> {
         Self {
             pictures,
             weights: None,
+            wraparound: None,
         }
     }
 }
@@ -123,8 +135,10 @@ pub(super) fn predict(
     out: &mut [u8],
 ) {
     let luma = plane == PlaneIndex::Y;
-    // Explicit weights apply to the high-precision samples, also of one list.
-    let weighted = references.weights.is_some() && motion.weight == 0;
+    // Explicit weights apply to the high-precision samples, also of one list;
+    // so does the wrapped fetch, which the direct path does not have.
+    let weighted =
+        (references.weights.is_some() && motion.weight == 0) || references.wraparound.is_some();
     if motion.lists.iter().flatten().count() == 1 && !(motion.half && luma) && !weighted {
         let (list, vector) = motion
             .lists
@@ -166,6 +180,7 @@ pub(super) fn predict(
                 size,
                 vector.vector,
                 (luma, motion.half, affine),
+                references.wrap(plane),
                 &mut samples[list],
             );
         }
@@ -227,6 +242,7 @@ pub(super) fn precision(
     size: (usize, usize),
     vector: Mv16,
     (luma, half, affine): (bool, bool, bool),
+    wrap: Option<i32>,
     out: &mut [i16],
 ) {
     precision_window(
@@ -235,7 +251,7 @@ pub(super) fn precision(
         ((x, y), size),
         vector,
         (luma, half, affine),
-        None,
+        (None, wrap),
         out,
     );
 }
@@ -248,7 +264,7 @@ pub(super) fn precision_window(
     ((x, y), size): ((usize, usize), (usize, usize)),
     vector: Mv16,
     (luma, half, affine): (bool, bool, bool),
-    bounds: Option<super::refinement::Bounds>,
+    (bounds, wrap): (Option<super::refinement::Bounds>, Option<i32>),
     out: &mut [i16],
 ) {
     let filter = if luma && affine {
@@ -268,8 +284,8 @@ pub(super) fn precision_window(
         y as i32 + (vector.y >> bits) - filter.before() as i32,
     );
     let (w, h) = (size.0 + filter.taps() - 1, size.1 + filter.taps() - 1);
-    if let Some(window) = bounds
-        .is_none()
+    let direct = bounds.is_none() && super::refinement::unwrapped(reference, origin.0, w, wrap);
+    if let Some(window) = direct
         .then(|| reference.region(origin.0 as isize, origin.1 as isize, w, h))
         .flatten()
     {
@@ -283,6 +299,7 @@ pub(super) fn precision_window(
                     (origin.0 + x as i32, origin.1 + y as i32),
                     bounds,
                     reference,
+                    wrap,
                 );
                 *pixel = view.row(sy)[sx];
             }
@@ -451,6 +468,7 @@ fn geometric(
             size,
             vector.vector,
             (chroma == 0, false, false),
+            references.wrap(plane),
             samples,
         );
     }

@@ -56,7 +56,7 @@ fn official_predicted_syntax() {
                 let (_, pocs) = dpb.prepare(previous.take(), s, &header, kind, 1).unwrap();
                 let references = pocs.each_ref().map(|list| dpb.pictures(list));
                 let dsp = nc_dsp::Dsp::new();
-                inverse_residuals(&mut units, s, &header, &dsp);
+                inverse_residuals(&mut units, s, &header, None, &dsp);
                 let mut reconstructed = reconstruct(
                     &units,
                     s,

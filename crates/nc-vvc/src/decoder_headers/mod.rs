@@ -1,7 +1,7 @@
 //! Bounded H.266 parameter-set syntax, independent of the encoder's writers.
 //! Syntax checked against BSD-licensed `VVdeC`; see `THIRD_PARTY.md`.
 mod aps;
-pub(super) use aps::{Adaptation, Data as AdaptationData};
+pub(super) use aps::{Adaptation, Data as AdaptationData, Scaling as ScalingLists};
 mod picture;
 pub(super) use picture::PictureHeader;
 mod pps;

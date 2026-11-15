@@ -28,6 +28,7 @@ pub(super) fn predict(
             (4, 4),
             vector.vector,
             (true, false, true),
+            references.wrap(PlaneIndex::Y),
             &mut samples[list],
         );
         let Some(corrections) = fields[list].and_then(|f| f.refinement()) else {
@@ -39,7 +40,7 @@ pub(super) fn predict(
             position,
             (4, 4),
             vector.vector,
-            None,
+            (None, references.wrap(PlaneIndex::Y)),
             &samples[list],
             &mut padded,
         );

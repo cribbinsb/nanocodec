@@ -233,6 +233,23 @@ def streams():
         vtm('vtm-ai-tiles-ibc-screen', 'ai', 'tiles + IBC, screen content', f'{tiles} IBC=1 HashME=1',
             clip='screen', frames=3, qp=32, minimal=False),
     ]
+    # Wrap-around with every tool on a panning clip (vectors leave the picture).
+    out += [
+        vtm('vtm-ra-wrap-ctc', 'ra', 'wrap-around, CTC random access', 'WrapAround=1 WrapAroundOffset=640',
+            clip='jaad', frames=17, minimal=False),
+        vtm('vtm-ldb-wrap-short-ctc', 'ldb', 'wrap-around offset below the width, CTC low-delay B',
+            'WrapAround=1 WrapAroundOffset=576', clip='jaad', minimal=False),
+    ]
+    # Explicit scaling lists with every transform tool, and applied to LFNST blocks.
+    lists = f'ScalingList=2 ScalingListFile={VTM_CFG}/scaling_list/sample_scaling_list_file.txt'
+    out += [
+        vtm('vtm-ai-scaling-ctc', 'ai', 'explicit scaling lists, CTC all-intra', lists, clip='jaad', frames=3,
+            qp=42, minimal=False),
+        vtm('vtm-ra-scaling-ctc', 'ra', 'explicit scaling lists, CTC random access', lists, frames=17,
+            minimal=False),
+        vtm('vtm-ai-scaling-lfnst', 'ai', 'explicit scaling lists on LFNST blocks',
+            f'{lists} DisableScalingMatrixForLFNST=0', clip='jaad', frames=3, qp=42, minimal=False),
+    ]
     # Intra block copy on screen-like content, where encoders use it.
     out += [
         vtm('vtm-ai-ibc-screen', 'ai', 'IBC, screen content (dual tree)', 'IBC=1 HashME=1',

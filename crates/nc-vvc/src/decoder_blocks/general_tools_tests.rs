@@ -59,7 +59,7 @@ fn official_general_intra_reconstruction() {
                     }
                 }
                 let dsp = nc_dsp::Dsp::new();
-                inverse_residuals(&mut parsed.units, s, &header, &dsp);
+                inverse_residuals(&mut parsed.units, s, &header, None, &dsp);
                 let mut picture = reconstruct(
                     &parsed.units,
                     s,

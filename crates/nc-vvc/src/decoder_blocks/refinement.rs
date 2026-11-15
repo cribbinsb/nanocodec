@@ -21,14 +21,26 @@ pub(super) struct Bounds {
     minimum: (i32, i32),
     maximum: (i32, i32),
 }
+/// The reference sample position a prediction reads for `(x, y)`: inside a
+/// refinement window's padding bounds, wrapped horizontally by `wrap` samples
+/// when the picture wraps around (H.266 §8.5.6.3.2 `ClipH`), then inside the
+/// picture.
 pub(super) fn clamp_position(
     (mut x, mut y): (i32, i32),
     bounds: Option<Bounds>,
     reference: &Plane,
+    wrap: Option<i32>,
 ) -> (usize, usize) {
     if let Some(bounds) = bounds {
         x = x.clamp(bounds.minimum.0, bounds.maximum.0);
         y = y.clamp(bounds.minimum.1, bounds.maximum.1);
+    }
+    if let Some(offset) = wrap {
+        if x < 0 {
+            x += offset;
+        } else if x >= reference.width() as i32 {
+            x -= offset;
+        }
     }
     (
         x.clamp(0, reference.width() as i32 - 1) as usize,
@@ -41,7 +53,7 @@ pub(crate) fn derive(
     header: &SliceHeader,
     poc: i32,
     pocs: [&[i32]; 2],
-    pictures: [&[&Picture]; 2],
+    (pictures, wrap): ([&[&Picture]; 2], Option<i32>),
     dsp: &Dsp,
 ) {
     if header.picture.motion.bdof_disabled && header.picture.motion.dmvr_disabled {
@@ -94,7 +106,7 @@ pub(crate) fn derive(
                         pictures[list][usize::from(vector.reference)].plane(PlaneIndex::Y),
                         (x, y),
                         (width + 4, height + 4),
-                        vector.vector,
+                        (vector.vector, wrap),
                         &mut pixels,
                         &mut inputs[list],
                     );
@@ -112,12 +124,18 @@ pub(crate) fn derive(
     }
 }
 
+/// Whether a window of `width` samples from column `left` needs no
+/// wrap-around: the plane's replicated border serves only those.
+pub(super) fn unwrapped(reference: &Plane, left: i32, width: usize, wrap: Option<i32>) -> bool {
+    wrap.is_none() || (left >= 0 && left + width as i32 <= reference.width() as i32)
+}
+
 fn bilinear(
     dsp: &Dsp,
     reference: &Plane,
     position: (usize, usize),
     size: (usize, usize),
-    vector: Mv16,
+    (vector, wrap): (Mv16, Option<i32>),
     scratch: &mut [u8; BILINEAR_SIDE * BILINEAR_SIDE],
     out: &mut [i16],
 ) {
@@ -127,7 +145,10 @@ fn bilinear(
     );
     let (w, h) = (size.0 + 1, size.1 + 1);
     let phases = ((vector.x & 15) as usize, (vector.y & 15) as usize);
-    if let Some(window) = reference.region(origin.0 as isize, origin.1 as isize, w, h) {
+    if let Some(window) = unwrapped(reference, origin.0, w, wrap)
+        .then(|| reference.region(origin.0 as isize, origin.1 as isize, w, h))
+        .flatten()
+    {
         dsp.vvc_dmvr_bilinear(size, &window, phases, out);
         return;
     }
@@ -135,8 +156,8 @@ fn bilinear(
     let view = reference.view();
     for (y, row) in pixels.chunks_exact_mut(w).enumerate() {
         for (x, pixel) in row.iter_mut().enumerate() {
-            let (sx, sy) =
-                clamp_position((origin.0 + x as i32, origin.1 + y as i32), None, reference);
+            let at = (origin.0 + x as i32, origin.1 + y as i32);
+            let (sx, sy) = clamp_position(at, None, reference, wrap);
             *pixel = view.row(sy)[sx];
         }
     }
@@ -226,7 +247,7 @@ pub(super) fn predict(
                     (at, (width, height)),
                     vector.vector,
                     (chroma == 0, motion.half, false),
-                    bounds,
+                    (bounds, references.wrap(plane)),
                     &mut samples[list],
                 );
                 if bdof {
@@ -235,7 +256,7 @@ pub(super) fn predict(
                         at,
                         (width, height),
                         vector.vector,
-                        bounds,
+                        (bounds, references.wrap(plane)),
                         &samples[list],
                         &mut padded[list][..(width + 2) * (height + 2)],
                     );
@@ -267,7 +288,7 @@ pub(super) fn padding(
     position: (usize, usize),
     size: (usize, usize),
     vector: Mv16,
-    bounds: Option<Bounds>,
+    (bounds, wrap): (Option<Bounds>, Option<i32>),
     interior: &[i16],
     samples: &mut [i16],
 ) {
@@ -288,6 +309,7 @@ pub(super) fn padding(
                     (origin.0 + x as i32 - 1, origin.1 + y as i32 - 1),
                     bounds,
                     reference,
+                    wrap,
                 );
                 *value = i16::from(view.row(sy)[sx]) << 6;
             }

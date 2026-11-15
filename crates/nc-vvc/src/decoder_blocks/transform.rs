@@ -7,80 +7,128 @@ pub(crate) fn inverse_residuals(
     units: &mut [Unit],
     sequence: &Sequence,
     header: &SliceHeader,
+    lists: Option<&crate::decoder_headers::ScalingLists>,
     dsp: &Dsp,
 ) {
+    let mut factors = Vec::new();
     for unit in units {
-        let kinds = primary_kinds(unit, sequence);
-        let direction = if unit.channel == 0 || unit.chroma_mode >= 67 {
-            unit.luma_mode
-        } else {
-            unit.chroma_mode
-        };
-        let direction = if unit.mip.is_some() { 0 } else { direction };
         let quant = unit.quant();
-        for transform in &mut unit.transforms {
-            for (plane, levels) in transform
-                .levels
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| !v.is_empty())
-            {
+        // Before the transforms are taken: the kinds depend on the first.
+        let kinds = primary_kinds(unit, sequence);
+        let mut transforms = std::mem::take(&mut unit.transforms);
+        for transform in &mut transforms {
+            for plane in 0..3 {
+                if transform.levels[plane].is_empty() {
+                    continue;
+                }
                 let channel = usize::from(plane != 0);
                 let block = if plane == 0 {
                     transform.block
                 } else {
                     transform.chroma_block.unwrap()
                 };
+                let size = (block.width() >> channel, block.height() >> channel);
                 let qp = qp(quant, transform.joint, plane, sequence, header);
+                let levels = &transform.levels[plane];
                 let residual = &mut transform.residuals[plane];
                 residual.clear();
                 residual.resize(levels.len(), 0);
                 if transform.skip[plane] {
                     dsp.vvc_inverse_skip(
-                        (block.width() >> channel, block.height() >> channel),
+                        size,
                         levels,
                         qp.max(4 + 6 * sequence.tools.min_qp_ts),
                         unit.bdpcm[channel],
                         residual,
                     );
                 } else {
-                    let size = (block.width() >> channel, block.height() >> channel);
-                    if unit.lfnst != 0 && (plane == 0 || !unit.combined) {
-                        let prediction_size = if unit.isp.is_some() {
-                            (unit.node.width, unit.node.height)
-                        } else {
-                            size
-                        };
-                        dsp.vvc_inverse_lfnst(
-                            size,
-                            VvcLfnst {
-                                index: unit.lfnst,
-                                direction,
-                                prediction_size,
-                            },
-                            levels,
-                            qp,
-                            header.dependent_quant,
-                            residual,
-                        );
-                    } else {
-                        let kinds = if plane == 0 {
-                            kinds
-                        } else {
-                            [VvcTransformKind::Dct2; 2]
-                        };
-                        dsp.vvc_inverse_primary(
-                            size,
-                            kinds,
-                            levels,
-                            qp,
-                            header.dependent_quant,
-                            residual,
-                        );
-                    }
+                    let scaling = Scaling {
+                        qp,
+                        dependent: header.dependent_quant,
+                        lists,
+                        factors: &mut factors,
+                    };
+                    inverse_transform(
+                        dsp,
+                        unit,
+                        sequence,
+                        (plane, size, kinds),
+                        scaling,
+                        levels,
+                        residual,
+                    );
                 }
             }
         }
+        unit.transforms = transforms;
+    }
+}
+
+/// Inverse scaling parameters of one transform block.
+struct Scaling<'a> {
+    qp: u8,
+    dependent: bool,
+    /// The slice's explicit scaling lists, and scratch for a block's factors.
+    lists: Option<&'a crate::decoder_headers::ScalingLists>,
+    factors: &'a mut Vec<u8>,
+}
+
+/// Scale and inverse-transform (LFNST, then the primary transform) one
+/// plane of a transform block that does not skip the transform;
+/// `luma_kinds` are the CU's luma primary transforms.
+fn inverse_transform(
+    dsp: &Dsp,
+    unit: &Unit,
+    sequence: &Sequence,
+    (plane, size, luma_kinds): (usize, (usize, usize), [VvcTransformKind; 2]),
+    scaling: Scaling<'_>,
+    levels: &[i32],
+    residual: &mut [i16],
+) {
+    let direction = if unit.mip.is_some() {
+        0
+    } else if unit.channel == 0 || unit.chroma_mode >= 67 {
+        unit.luma_mode
+    } else {
+        unit.chroma_mode
+    };
+    let lfnst = (unit.lfnst != 0 && (plane == 0 || !unit.combined)).then(|| VvcLfnst {
+        index: unit.lfnst,
+        direction,
+        prediction_size: if unit.isp.is_some() {
+            (unit.node.width, unit.node.height)
+        } else {
+            size
+        },
+    });
+    let kinds = if plane == 0 && lfnst.is_none() {
+        luma_kinds
+    } else {
+        [VvcTransformKind::Dct2; 2]
+    };
+    let Scaling {
+        qp,
+        dependent,
+        lists,
+        factors,
+    } = scaling;
+    if let Some(lists) = lists.filter(|_| super::scaling_lists::applies(sequence, lfnst.is_some()))
+    {
+        let intra = unit.inter.is_none();
+        super::scaling_lists::factors(lists, intra, plane, size, factors);
+        dsp.vvc_inverse_with_matrix(
+            size,
+            kinds,
+            lfnst,
+            levels,
+            (qp, dependent),
+            factors,
+            residual,
+        );
+    } else if let Some(lfnst) = lfnst {
+        dsp.vvc_inverse_lfnst(size, lfnst, levels, qp, dependent, residual);
+    } else {
+        dsp.vvc_inverse_primary(size, kinds, levels, qp, dependent, residual);
     }
 }
 

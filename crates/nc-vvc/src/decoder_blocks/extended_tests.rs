@@ -32,7 +32,7 @@ fn official_extended_intra_syntax() {
                         units.iter().filter(|u| u.mip.is_some()).count()
                     );
                     let dsp = nc_dsp::Dsp::new();
-                    inverse_residuals(&mut units, s, &header, &dsp);
+                    inverse_residuals(&mut units, s, &header, None, &dsp);
                     let mut decoded = reconstruct(
                         &units,
                         s,

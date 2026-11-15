@@ -65,7 +65,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 .unwrap();
                 super::extended_tests::compare_derived_motion(&units, poc);
                 references.record_motion(MotionField::new(&units, dimensions, poc, lists.clone()));
-                inverse_residuals(&mut units, s, &h, &dsp);
+                inverse_residuals(&mut units, s, &h, None, &dsp);
                 let pictures = lists.each_ref().map(|list| references.pictures(list));
                 let mut picture = reconstruct(
                     &units,

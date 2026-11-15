@@ -12,13 +12,15 @@ mod deblock;
 mod filter_syntax;
 mod filters;
 mod ibc;
-pub(crate) use filter_syntax::counts as filter_counts;
+pub(crate) use filter_syntax::{CtuFilters, counts as filter_counts};
 pub(crate) use filters::apply as apply_filters;
 pub(crate) struct Parsed {
     pub units: Vec<Unit>,
     pub filters: Vec<filter_syntax::CtuFilters>,
 }
 mod sbt;
+mod scaling_lists;
+pub(crate) use scaling_lists::of_slice as scaling_lists;
 mod skip_coeff;
 pub(super) use deblock::apply as deblock;
 mod reconstruct;
@@ -302,12 +304,7 @@ fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Resul
     // Each unsupported tool is named, so a corpus run reports what is missing.
     let tiles = p.partitioning.tiles.iter().any(|v| v.len() != 1);
     let filtered = h.sao.contains(&true) || h.alf.enabled.contains(&true);
-    let inter = h.kind != 2;
     let unsupported = [
-        (
-            inter && s.tools.wraparound,
-            "VVC wrap-around motion compensation",
-        ),
         (!h.picture.output, "VVC non-output picture"),
         (
             h.picture.boundaries.iter().any(|v| !v.is_empty()),
@@ -315,7 +312,6 @@ fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Resul
         ),
         (s.ctu_log2 > 7, "VVC CTU size"),
         (s.tools.palette, "VVC palette mode"),
-        (h.scaling, "VVC explicit scaling lists"),
         (
             tiles && filtered && !p.partitioning.filter_across_tiles,
             "VVC SAO or ALF without filtering across tiles",
