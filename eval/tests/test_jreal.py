@@ -97,6 +97,16 @@ def test_only_the_periodic_pulse_is_guarded():
     assert any("periodic" in g for g in big_periodic["guards"])
 
 
+def test_one_pulsing_clip_fails_at_either_key_period():
+    summary = summary_for(curve(scale=0.9))
+    rows = {f"s{i}": {"class": "static", "d_periodic_pulse_long_psnr_y": v}
+            for i, v in enumerate((0.0, 0.0, 0.0, 0.7))}  # mean 0.18 dB, one clip 0.7
+    summary["d_periodic_pulse_long_psnr_y"] = jreal.aggregate(rows, "d_periodic_pulse_long_psnr_y")
+    verdict = jreal.objective(summary)
+    assert verdict["decision"] == "worse"
+    assert any("d_periodic_pulse_long_psnr_y (worst clip)" in g for g in verdict["guards"])
+
+
 def test_aggregate_is_class_balanced_with_median_and_missing():
     rows = {"s1": {"class": "static", "quality": -30.0},
             "s2": {"class": "static", "quality": -30.0},

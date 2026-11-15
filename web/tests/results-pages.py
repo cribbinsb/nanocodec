@@ -25,6 +25,7 @@ WEB = Path(__file__).resolve().parents[1]
 # Each page and the data files it renders: its figures may come only from those.
 PAGES = {"index.html": ("chart",), "codecs.html": ("chart",),
          "speed.html": ("chart", "wasm", "decoders", "wasm-yardstick", "hardware"), "rate-control.html": ("rc-cost",),
+         "fixed-qp.html": ("fixed-qp-lens",),
          "svc.html": ("svc",), "method.html": ("chart", "window"), "yardsticks.html": ()}
 VIEWPORTS = {"desktop": (1280, 900), "phone": (400, 860)}
 # Numbers that the pages' prose uses as names or setup facts, not results:
@@ -32,7 +33,7 @@ VIEWPORTS = {"desktop": (1280, 900), "phone": (400, 860)}
 # (Ryzen 9 5950X, x264, x265, Cortex-A78AE, RTX 5090, H.264, AV1, ...), the
 # 150-frame and 600-frame windows of the window study (5 s / 20 s, a key every
 # 10 s) and the 95% bootstrap intervals.
-NAMED_CONSTANTS = {"0", "1", "2", "3", "4", "5", "8", "9", "10", "20", "30", "95", "150", "180",
+NAMED_CONSTANTS = {"0", "0.04", "0.92", "1", "2", "3", "4", "5", "8", "9", "10", "20", "30", "95", "150", "180",
                    "264", "265", "360", "420", "600", "720", "5950", "5090", "78"}
 NUMBER = re.compile(r"(?<![\w.])[−+-]?\d[\d,]*(?:\.\d+)?")
 # Product and format names whose digits are not figures.
@@ -98,7 +99,9 @@ def check_page(page, url: str, allowed: set[str], problems: list[str], label: st
                 problems.append(f"{label} [{state}]: figure {token!r} is not in the data")
 
     scan("default")
-    groups = page.query_selector_all("main .segmented")
+    # The rate-mode switch links the CBR and fixed-QP pages: each is checked on its own.
+    groups = [g for g in page.query_selector_all("main .segmented")
+              if not g.evaluate("g => Boolean(g.closest('.mode-switch'))")]
     for g, group in enumerate(groups):
         for b, button in enumerate(group.query_selector_all("button")):
             if button.is_disabled():

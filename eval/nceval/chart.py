@@ -86,7 +86,7 @@ OURS = (("nanocodec-h264", "H.264"), ("nanocodec-h264@fast", "H.264 Fast"),
         ("nanocodec-vp9", "VP9"),
         ("nanocodec-vp9@fast", "VP9 Fast"), ("nanocodec-vp9@faster", "VP9 Faster"),
         ("nanocodec-vp9@veryfast", "VP9 Veryfast"), ("nanocodec-av2", "AV2"),
-        ("nanocodec-av2@fast", "AV2 Fast"), ("nanocodec-vvc", "VVC"),
+        ("nanocodec-av2@fast", "AV2 Fast"), ("nanocodec-vvc@slow", "VVC Slow"), ("nanocodec-vvc", "VVC"),
         ("nanocodec-vvc@fast", "VVC Fast"))
 #: Reference encoders: (family, chart label). Families are cbr.anchor_families.
 REFERENCES = (("openh264-baseline", "openh264"),

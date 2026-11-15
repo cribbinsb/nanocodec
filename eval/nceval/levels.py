@@ -130,6 +130,13 @@ def run(runner: Runner, families: tuple[Family, Family], paths: Paths,
         stats = interval.interval(rows, args.dcpu, args.k)
         result["interval"] = stats
         result["decision"] = interval.decide(stats, final=level == pool.FINAL)
+        pulsing = [g for g in result.get("verdict", {}).get("guards", [])
+                   if g.startswith(jreal.PULSE_TERMS)]
+        if level == pool.FINAL and pulsing:
+            # A visible periodic-key pulse fails the screen outright, unlike the other
+            # guards (judgement calls): it slipped through as one on 2026-11-15.
+            result["decision"] = interval.WORSE
+            print(f"{level}: periodic-key pulse: {'; '.join(pulsing)} -> WORSE", flush=True)
         wall = time.monotonic() - started
         per_level[level] = {"decision": result["decision"], "estimator": result["estimator"],
                             **stats, "guards": result["verdict"]["guards"],

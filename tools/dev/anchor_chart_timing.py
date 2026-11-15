@@ -309,9 +309,15 @@ def pinned_cpu_ms_per_frame(cmd: list[str], cpu: int, env: dict[str, str] | None
 
 def host_time_clip(plan: dict, name: str, clip: str, tools: dict[str, str],
                    clip_paths: dict[str, pathlib.Path], cpu: int, rounds: int,
-                   work_dir: pathlib.Path, strict: bool = True) -> dict:
-    """One point, the anchor and the second anchor on one clip and one CPU: a warm-up,
-    then `rounds` rounds of the three back to back in rotated order.
+                   work_dir: pathlib.Path, strict: bool = True,
+                   anchor_per_second: float | None = None) -> dict:
+    """One point and the second anchor on one clip and one CPU: a warm-up, then
+    `rounds` rounds back to back in rotated order. The anchor (x264 medium, the
+    slowest program by far: ~60 % of every round) runs in the rounds only without
+    `anchor_per_second`, the session's anchor / second-anchor time ratio on this clip
+    (`host_anchor_ratio`); with it the point's ratio to the anchor is its per-round
+    ratio to the second anchor divided by that (a pair took ~76 s with the anchor in
+    every round, ~25 s without).
 
     The boosting cores' clock follows the whole package's load and moves within a
     session, so each round's point time is divided by the anchors' times of that same
@@ -319,7 +325,10 @@ def host_time_clip(plan: dict, name: str, clip: str, tools: dict[str, str],
     minimum, taken from other rounds than the point's, varied 1.4-1.6x within one
     session). Medians of the raw times are kept for reference. Not `strict`, a stream
     of another size than the plan's is recorded (`planned_bytes`), not fatal."""
-    labels = {"point": name, "anchor": plan["anchor"], SECOND_ANCHOR: SECOND_ANCHOR}
+    labels = {"point": name, SECOND_ANCHOR: SECOND_ANCHOR}
+    if anchor_per_second is None:
+        labels["anchor"] = plan["anchor"]
+    reference = "anchor" if anchor_per_second is None else SECOND_ANCHOR
     # a point may name a partner timed in the same rounds on the same core (e.g. the
     # same encoder on another SIMD tier): its time ratio is then a direct pairing
     partner = plan["points"][name][clip].get("pair_with")
@@ -349,15 +358,41 @@ def host_time_clip(plan: dict, name: str, clip: str, tools: dict[str, str],
             shift = round_index % len(roles)
             for role in roles[shift:] + roles[:shift]:
                 samples[role].append(pinned_cpu_ms_per_frame(cmds[role], cpu, envs[role]))
-            if ratio_settled(samples["point"], samples["anchor"]):
+            if ratio_settled(samples["point"], samples[reference]):
                 break
-    return {"ms_per_frame": {r: statistics.median(v) for r, v in samples.items()},
-            "time_ratio": {labels[r]: statistics.median(p / a for p, a in
-                                                        zip(samples["point"], samples[r]))
-                           for r in roles if r != "point"},
+    ms_per_frame = {r: statistics.median(v) for r, v in samples.items()}
+    time_ratio = {labels[r]: statistics.median(p / a for p, a in zip(samples["point"], samples[r]))
+                  for r in roles if r != "point"}
+    if anchor_per_second is not None:
+        time_ratio[plan["anchor"]] = time_ratio[SECOND_ANCHOR] / anchor_per_second
+        ms_per_frame["anchor"] = ms_per_frame[SECOND_ANCHOR] * anchor_per_second
+    return {"ms_per_frame": ms_per_frame, "time_ratio": time_ratio,
+            "anchor_per_second": anchor_per_second,
             "samples": samples, "streams": streams, "cpu": cpu,
             "budget_fraction": streams["point"]["bytes"]
             / plan["points"][name][clip]["target_bytes"]}
+
+
+def host_anchor_ratio(plan: dict, clip: str, tools: dict[str, str],
+                      clip_paths: dict[str, pathlib.Path], cpu: int, rounds: int,
+                      work_dir: pathlib.Path) -> float:
+    """The anchor's time over the second anchor's on `clip`, this session, this CPU:
+    their median per-round ratio (warm-up first, rounds until it settles)."""
+    with tempfile.TemporaryDirectory(dir=work_dir) as tmp:
+        out = pathlib.Path(tmp) / "s.bin"
+        cmds = [[tools[n]] + [str(clip_paths[clip]) if a == "{INPUT}" else
+                              str(out) if a == "{OUTPUT}" else a
+                              for a in plan["points"][n][clip]["argv"][1:]]
+                for n in (plan["anchor"], SECOND_ANCHOR)]
+        for cmd in cmds:
+            pinned_cpu_ms_per_frame(cmd, cpu)
+        anchor, second = [], []
+        for round_index in range(rounds):
+            for cmd in (cmds if round_index % 2 == 0 else cmds[::-1]):
+                (anchor if cmd is cmds[0] else second).append(pinned_cpu_ms_per_frame(cmd, cpu))
+            if ratio_settled(anchor, second):
+                break
+    return statistics.median(a / b for a, b in zip(anchor, second))
 
 
 def ratio_settled(point: list[float], anchor: list[float]) -> bool:
@@ -404,6 +439,14 @@ def time_pairs(plan: dict, names: list[str], tools: dict[str, str],
     for name in names:
         for clip in CLIPS:
             pending.put((name, clip))
+    # The anchor's ratio to the second anchor, once per clip this session, the
+    # clips side by side on the CPUs: the points' rounds then leave the anchor out.
+    with ThreadPoolExecutor(len(cpus)) as pool:
+        per_second = dict(zip(CLIPS, pool.map(
+            lambda job: host_anchor_ratio(plan, job[0], tools, clip_paths, job[1], rounds, work_dir),
+            [(clip, cpus[i % len(cpus)]) for i, clip in enumerate(CLIPS)])))
+    print("anchor / second anchor: " + ", ".join(f"{c} {r:.3f}" for c, r in per_second.items()),
+          flush=True)
     timed: dict[str, dict] = {name: {} for name in names}
     errors: dict[str, str] = {}
     lock = threading.Lock()
@@ -424,7 +467,7 @@ def time_pairs(plan: dict, names: list[str], tools: dict[str, str],
                 return
             try:
                 entry = host_time_clip(plan, name, clip, tools, clip_paths, cpu, rounds,
-                                       work_dir, strict)
+                                       work_dir, strict, per_second[clip])
             except (Exception, SystemExit) as error:
                 if strict:
                     raise

@@ -150,6 +150,12 @@ FLICKER_WINDOW = 8
 #: window for every encoder, so A/B and anchor comparisons stay like for like.
 WORST_WINDOW = 4
 PULSE_GUARD_DB = 0.25
+#: The periodic-key pulse of any single clip, at either key period: a pulse
+#: visible on one scene fails even when the class means hide it (2026-11-15:
+#: rate.key_inherit, +1.61 dB on HEVC at 10 s keys).
+PULSE_WORST_CLIP_DB = 0.5
+#: The per-clip periodic-key pulse terms: keys every 2 s and every 10 s (realuse).
+PULSE_TERMS = ("d_periodic_pulse_psnr_y", "d_periodic_pulse_long_psnr_y")
 #: Spatial SVC's base-layer guard (BD-rate, percent): as the worst-1% guard,
 #: the most a change may cost a secondary output it does not optimise.
 SVC_BASE_GUARD_PCT = 2.0
@@ -542,7 +548,7 @@ TERMS = ("quality", "quality_low",
          *(f"bd_{m}" for m in HEADLINE_METRICS), *(f"low_{m}" for m in HEADLINE_METRICS),
          *(f"bd_{m}" for m in WORST_METRICS + WORST_FRAME_METRICS),
          "d_flicker_psnr_y", "d_flicker_guard_psnr_y", "d_flicker_frame_psnr_y",
-         "d_first_pulse_psnr_y", "d_periodic_pulse_psnr_y", "base_quality")
+         "d_first_pulse_psnr_y", *PULSE_TERMS, "base_quality")
 
 
 def aggregate(per_clip: dict[str, dict], term: str) -> dict:
@@ -567,6 +573,7 @@ def aggregate(per_clip: dict[str, dict], term: str) -> dict:
         "median": statistics.median(values) if values else None,
         "classes": class_means,
         "worse": sum(1 for v in values if v > 0),
+        "max": max(values) if values else None,
         "scored": len(values),
         "missing": missing,
     }
@@ -608,8 +615,10 @@ def objective(summary: dict[str, dict], dcpu_pct: float | None = None,
         check(f"bd_{metric}", summary[f"bd_{metric}"]["balanced"], WORST_GUARD_PCT, True)
     flicker = summary.get("d_flicker_guard_psnr_y", summary["d_flicker_psnr_y"])
     check("d_flicker_guard_psnr_y", flicker["balanced"], FLICKER_GUARD_DB, False)
-    check("d_periodic_pulse_psnr_y", summary["d_periodic_pulse_psnr_y"]["balanced"],
-          PULSE_GUARD_DB, False)
+    for term in PULSE_TERMS:
+        if term in summary:  # summaries from before the long pass have only the 2 s term
+            check(term, summary[term]["balanced"], PULSE_GUARD_DB, False)
+            check(f"{term} (worst clip)", summary[term].get("max"), PULSE_WORST_CLIP_DB, False)
     if "base_quality" in summary:  # None (unchecked) unless both arms are two-layer
         check("svc base_quality", summary["base_quality"]["balanced"], SVC_BASE_GUARD_PCT, True)
     buffer = summary.get("compliance")

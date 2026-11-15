@@ -671,7 +671,10 @@ class Refresh:
         if not self.timed or self.args.dry_run:
             return
         codecs = {chart_sanity.codec_of(f) for f in self.timed}
-        flags = chart_sanity.check(codecs, instructions=not self.args.metrics_only)
+        try:
+            flags = chart_sanity.check(codecs, instructions=not self.args.metrics_only)
+        except (Exception, SystemExit) as error:  # advisory: it never stops a refresh
+            flags = [f"the sanity check itself failed: {str(error)[:300]}"]
         for flag in flags:
             self.say(f"  FLAG {flag}")
         if flags:

@@ -49,7 +49,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import jreal
@@ -352,6 +352,13 @@ def compare(curves: dict, anchor: str, test: str, clips: list[Clip],
 #: periodic-key pulse is used; the main pass keeps one key per clip.
 PERIODIC_KEY_SECONDS = 2.0
 PERIODIC_RUNGS = (0, 1)
+#: The long periodic-key pass beside it: keys every LONG_PULSE_KEY_SECONDS on
+#: LONG_PULSE_FRAMES frames (keys at 0 and 300 at 30 fps), one clip per class long
+#: enough. A pulse that builds up over a long key period does not show at 2 s keys:
+#: 2026-11-15, rate.key_inherit passed the 2 s guard and pulsed +1.61 dB (HEVC) and
+#: +0.68 dB (AV2) at 10 s keys.
+LONG_PULSE_KEY_SECONDS = 10.0
+LONG_PULSE_FRAMES = 600
 
 
 def one_per_class(clips: list[Clip], preferred: tuple[str, ...] = ()) -> list[Clip]:
@@ -363,18 +370,30 @@ def one_per_class(clips: list[Clip], preferred: tuple[str, ...] = ()) -> list[Cl
 
 
 def add_periodic_pulse(runner: "Runner", anchor: Family, test: Family, clips: list[Clip],
-                       frames: int, per_clip: dict[str, dict], label: str) -> None:
-    """Measure the periodic-key pass on `clips` and fill d_periodic_pulse_psnr_y."""
-    curves = runner.measure(f"{label} periodic keys ({PERIODIC_KEY_SECONDS:g} s)",
-                            [anchor, test], clips, frames, PERIODIC_RUNGS, PERIODIC_KEY_SECONDS)
-    for clip in clips:
-        if clip.name not in per_clip:
-            continue  # no row at the level (our encoder refused the clip there): nothing to fill
-        a, t = curves[(anchor.name, clip.name)], curves[(test.name, clip.name)]
-        if anchor.own:
-            a, t, _, _ = jreal.pair_rungs(a, t)
-        terms = jreal.compare_clip(a, t, min_points=2)
-        per_clip[clip.name]["d_periodic_pulse_psnr_y"] = terms["d_periodic_pulse_psnr_y"]
+                       frames: int, per_clip: dict[str, dict], label: str,
+                       pool: list[Clip] | None = None) -> None:
+    """Measure the periodic-key passes and fill, in the rows of `per_clip`,
+    d_periodic_pulse_psnr_y (keys every PERIODIC_KEY_SECONDS on `clips`) and
+    d_periodic_pulse_long_psnr_y (every LONG_PULSE_KEY_SECONDS, LONG_PULSE_FRAMES
+    frames from frame 0, on one clip per class of `pool` (default: the rows'
+    clips in `clips`) long enough)."""
+    passes = [(clips, frames, PERIODIC_KEY_SECONDS, "d_periodic_pulse_psnr_y")]
+    long_pool = [replace(c, start_frame=0) for c in (pool or clips)
+                 if c.frames >= LONG_PULSE_FRAMES and c.name in per_clip]
+    if long_pool:
+        passes.append((one_per_class(long_pool), LONG_PULSE_FRAMES, LONG_PULSE_KEY_SECONDS,
+                       "d_periodic_pulse_long_psnr_y"))
+    for pass_clips, pass_frames, seconds, term in passes:
+        curves = runner.measure(f"{label} periodic keys ({seconds:g} s)", [anchor, test],
+                                pass_clips, pass_frames, PERIODIC_RUNGS, seconds)
+        for clip in pass_clips:
+            row = per_clip.get(clip.name)
+            if row is None:
+                continue  # no row at the level (our encoder refused the clip there)
+            a, t = curves[(anchor.name, clip.name)], curves[(test.name, clip.name)]
+            if anchor.own:
+                a, t, _, _ = jreal.pair_rungs(a, t)
+            row[term] = jreal.compare_clip(a, t, min_points=2)["d_periodic_pulse_psnr_y"]
 
 
 def param_args(pairs: list[str]) -> tuple[str, ...]:
