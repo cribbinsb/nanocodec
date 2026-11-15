@@ -24,20 +24,31 @@ macro_rules! trace {
     };
 }
 
+mod coefficients;
 pub mod context;
+mod intra;
 mod partition;
+pub mod pixels;
+mod reconstruction;
 pub mod record;
 pub mod size;
 mod syntax;
+mod transform;
 
 use std::fmt;
+
+use std::rc::Rc;
 
 use super::cdfs::Cdfs;
 use super::frame_header::{FrameHeader, FrameType};
 use super::sequence::SequenceHeader;
 use crate::entropy::{Cdf, Reader};
+use coefficients::{LEVELS, Scans};
 use context::Contexts;
+use intra::LUMA_MAP_SIDE;
 use nc_common::decode::{DecodeError, Result};
+use pixels::Planes;
+use reconstruction::ChromaResiduals;
 use size::BlockSize;
 
 /// Receives the block layer's trace lines, in dav2d's `DEBUG_BLOCK_INFO`
@@ -49,6 +60,9 @@ const UNIT_LOG2: u32 = 2;
 /// 4x4 units per 64x64 block, as a shift (filter blocks and the CDEF
 /// index map are counted in 64x64 blocks).
 const UNITS64_LOG2: u32 = 4;
+
+/// Coefficients of one transform (at most 32x32 are coded).
+const COEFFICIENTS: usize = 32 * 32;
 
 /// What the block layer needs of the frame, in 4x4 units.
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +88,7 @@ struct Bounds {
 /// The state of one tile being decoded (dav2d `Dav2dTaskContext` with its
 /// `Dav2dTileState`): the symbol reader and models, the contexts, and
 /// where the current block is.
+#[allow(clippy::struct_excessive_bools, reason = "the tile's running flags")]
 struct Tile<'a, 't> {
     frame: &'a FrameHeader,
     sequence: &'a SequenceHeader,
@@ -104,7 +119,41 @@ struct Tile<'a, 't> {
     /// flag (for the loop-filter group).
     ccso_flags: Vec<[bool; 3]>,
     gdf_flags: Vec<bool>,
+    /// The dequantizer steps (DC, AC) per plane at `qindex` (dav2d
+    /// `ts->dq`).
+    dequant: [[u32; 2]; 3],
+    /// Per superblock row of 4x4 units (luma, chroma), the units already
+    /// coded (dav2d `is_coded`), for above-right and below-left edges.
+    coded: [[u64; 64]; 2],
+    /// Per 4x4 unit of the current 64x64 (16x16 units): the luma
+    /// directional mode index, forward skip coding and transform type
+    /// (dav2d `luma_intra_dir_mode_map`, `luma_fsc_map`, `txtp_map`).
+    luma_direction_map: [u8; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
+    luma_fsc_map: [u8; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
+    luma_type_map: [u8; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
+    /// Coefficient scratch: one luma transform, a block's chroma, the
+    /// level buffer, the scans.
+    luma_coefficients: Vec<i16>,
+    chroma_residuals: ChromaResiduals,
+    levels: Vec<i8>,
+    scans: Rc<Scans>,
+    /// Whether the last U transform had coefficients (V's skip context).
+    u_has_coefficients: bool,
+    /// The frame being reconstructed.
+    planes: Planes,
+    /// Intra prediction's edge buffer (dav2d `scratch.edge`).
+    edge: Vec<u8>,
     trace: Option<BlockTrace<'t>>,
+}
+
+/// A decoded tile: the reconstructed planes (padded to whole
+/// superblocks) and the final models.
+#[derive(Debug)]
+pub struct DecodedTile {
+    /// The reconstruction before loop filters.
+    pub planes: Planes,
+    /// The models after the tile.
+    pub cdfs: Box<Cdfs>,
 }
 
 /// Decode the one tile of a frame through the general block layer.
@@ -117,7 +166,7 @@ pub fn decode_tile(
     cdfs: Box<Cdfs>,
     data: &[u8],
     trace: Option<BlockTrace<'_>>,
-) -> Result<()> {
+) -> Result<DecodedTile> {
     if frame.tiles.columns() * frame.tiles.rows() != 1 {
         return Err(DecodeError::Unsupported("AV2 multiple tiles"));
     }
@@ -156,9 +205,26 @@ pub fn decode_tile(
         cdef_index: vec![None; filter_blocks],
         ccso_flags: vec![[false; 3]; filter_blocks],
         gdf_flags: vec![false; filter_blocks],
+        dequant: [[0; 2]; 3],
+        coded: [[0; 64]; 2],
+        luma_direction_map: [context::NO_DIRECTION; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
+        luma_fsc_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
+        luma_type_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
+        luma_coefficients: vec![0; COEFFICIENTS],
+        chroma_residuals: ChromaResiduals::default(),
+        levels: vec![0; LEVELS],
+        scans: Rc::new(Scans::new()),
+        u_has_coefficients: false,
+        planes: Planes::new(geometry.columns, geometry.rows, geometry.superblock_units),
+        edge: vec![0; nc_dsp::av2_dec::ipred::EDGE_LEN],
         trace,
     };
-    tile.decode(size)
+    tile.dequant = tile.dequantizers(tile.qindex);
+    tile.decode(size)?;
+    Ok(DecodedTile {
+        planes: tile.planes,
+        cdfs: tile.cdfs,
+    })
 }
 
 impl Tile<'_, '_> {
@@ -193,6 +259,7 @@ impl Tile<'_, '_> {
             while column < self.bounds.column_end {
                 (self.row, self.column) = (row, column);
                 self.sdp_cfl_disallowed = false;
+                self.coded = [[0; 64]; 2];
                 let root = self.geometry.root;
                 let mut direction = 0;
                 self.superblock(1, Some(root), Some(root), &mut direction)?;
@@ -242,4 +309,57 @@ impl Tile<'_, '_> {
 /// Luma samples of `units` 4x4 units.
 fn samples(units: u32) -> u32 {
     units << UNIT_LOG2
+}
+
+/// The dequantizer step of a quantizer index (dav2d `dav2d_dq_lookup`):
+/// 64 for lossless, else a 24-entry mantissa table doubling every 24
+/// indices.
+fn dequantizer_step(qindex: i32) -> u32 {
+    const LOSSLESS_STEP: u32 = 64;
+    const OCTAVE: i32 = 24;
+    const MANTISSAS: [u32; 24] = [
+        40, 41, 43, 44, 45, 47, 48, 49, 51, 52, 54, 55, 57, 59, 60, 62, 64, 66, 68, 70, 72, 74, 76,
+        78,
+    ];
+    if qindex == 0 {
+        return LOSSLESS_STEP;
+    }
+    let index = qindex - 1;
+    MANTISSAS[(index % OCTAVE) as usize] << (index / OCTAVE)
+}
+
+/// A plane quantizer index from the luma AC index and a delta (dav2d
+/// `clip_qidx`): lossless stays lossless unless the delta is positive.
+fn delta_qindex(qindex: i32, delta: i32) -> i32 {
+    const MAX: i32 = 255;
+    if qindex == 0 && delta <= 0 {
+        0
+    } else {
+        (qindex + delta).clamp(1, MAX)
+    }
+}
+
+impl Tile<'_, '_> {
+    /// The DC and AC steps of each plane at superblock quantizer `qindex`
+    /// (dav2d `init_quant_tables`, one segment).
+    fn dequantizers(&self, qindex: u16) -> [[u32; 2]; 3] {
+        let quantizer = &self.frame.quantizer;
+        let base = &self.sequence.quant;
+        let yac = i32::from(qindex);
+        let step = |delta: i32| dequantizer_step(delta_qindex(yac, delta));
+        [
+            [
+                step(i32::from(quantizer.y_dc) + i32::from(base.base_y_dc_delta)),
+                dequantizer_step(yac),
+            ],
+            [
+                step(i32::from(quantizer.u_dc) + i32::from(base.base_uv_dc_delta)),
+                step(i32::from(quantizer.u_ac) + i32::from(base.base_uv_ac_delta)),
+            ],
+            [
+                step(i32::from(quantizer.v_dc) + i32::from(base.base_uv_dc_delta)),
+                step(i32::from(quantizer.v_ac) + i32::from(base.base_uv_ac_delta)),
+            ],
+        ]
+    }
 }

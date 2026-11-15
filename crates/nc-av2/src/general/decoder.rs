@@ -94,6 +94,9 @@ pub struct Decoder {
     workspace: tile_decoder::Workspace,
     /// Where the general block layer's trace goes, if anywhere.
     block_trace: TraceSink,
+    /// Diagnosis: general-path frames skip their loop filters (as dav2d's
+    /// `--inloopfilters none`), to hold the reconstruction against it.
+    unfiltered: bool,
 }
 
 /// A block-trace sink ([`Decoder::trace_blocks`]).
@@ -392,7 +395,8 @@ impl Decoder {
         let Ok(params) =
             subset_sequence.and_then(|sequence| subset::tile_params(&sequence, &header))
         else {
-            return self.decode_general(&header, tiles);
+            let picture = self.decode_general(&header, tiles)?;
+            return self.finish_frame(header, picture, None);
         };
         let size = (header.width as usize, header.height as usize);
         let (picture, models) = if header.is_intra() {
@@ -443,6 +447,21 @@ impl Decoder {
         if let Some(stats) = &mut self.workspace.stats {
             stats.finish();
         }
+        let models = models.map(|mut models| {
+            models.restart_adaptation();
+            Rc::from(models)
+        });
+        self.finish_frame(header, picture, models)
+    }
+
+    /// Queue a decoded frame for output when shown and keep it in the slots
+    /// it refreshes, with its final models (`context`).
+    fn finish_frame(
+        &mut self,
+        header: FrameHeader,
+        picture: Picture,
+        context: Option<Rc<TileCdfs>>,
+    ) -> Result<()> {
         let picture = Rc::new(picture);
         if header.show_immediate {
             self.queue_output(&picture, header.order)?;
@@ -453,13 +472,7 @@ impl Decoder {
             frame: self.state.frames,
         };
         self.state.frames = self.state.frames.wrapping_add(1);
-        let data = SlotData {
-            picture,
-            context: models.map(|mut models| {
-                models.restart_adaptation();
-                Rc::from(models)
-            }),
-        };
+        let data = SlotData { picture, context };
         for slot in 0..MAX_SLOTS {
             if refresh & (1 << slot) != 0 {
                 self.state.headers[slot] = Some(held.clone());
@@ -471,10 +484,9 @@ impl Decoder {
         Ok(())
     }
 
-    /// Decode a frame through the general block layer. It parses blocks
-    /// up to the first tool not built yet, which it names; it does not yet
-    /// reconstruct pictures.
-    fn decode_general(&mut self, header: &FrameHeader, tiles: &[u8]) -> Result<()> {
+    /// Decode a frame through the general block layer: the reconstruction
+    /// before the loop filters, or the first tool not built yet.
+    fn decode_general(&mut self, header: &FrameHeader, tiles: &[u8]) -> Result<Picture> {
         if header.primary_reference.is_some() && !header.no_cross_frame_context {
             return Err(DecodeError::Unsupported(
                 "AV2 inherited CDFs in the general block layer",
@@ -486,10 +498,37 @@ impl Decoder {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
         });
-        block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
-        Err(DecodeError::Unsupported(
-            "AV2 reconstruction in the general block layer",
-        ))
+        let decoded = block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
+        let deblock = &header.deblock;
+        let deblocked = deblock.level_y.iter().any(|&on| on) || deblock.level_u || deblock.level_v;
+        if !self.unfiltered
+            && (deblocked || header.cdef.is_some() || header.ccso.enabled || header.gdf.mode != 0)
+        {
+            return Err(DecodeError::Unsupported(
+                "AV2 loop filters in the general block layer",
+            ));
+        }
+        let (width, height) = (header.width as usize, header.height as usize);
+        let mut picture = self.workspace.pictures.take(width, height, 0)?;
+        for (index, plane) in picture.planes_mut().iter_mut().enumerate() {
+            let (w, h) = (plane.width(), plane.height());
+            let stride = decoded.planes.stride[index];
+            let mut view = plane.view_mut();
+            for (y, row) in decoded.planes.data[index]
+                .chunks(stride)
+                .take(h)
+                .enumerate()
+            {
+                view.row_mut(y)[..w].copy_from_slice(&row[..w]);
+            }
+        }
+        Ok(picture)
+    }
+
+    /// Diagnosis: output general-path frames before their loop filters
+    /// (dav2d `--inloopfilters none`), which are then not applied.
+    pub fn skip_loop_filters(&mut self) {
+        self.unfiltered = true;
     }
 
     /// Send the general block layer's trace (dav2d's `DEBUG_BLOCK_INFO`

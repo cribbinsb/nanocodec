@@ -40,6 +40,7 @@ DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
 # suite here and build its manifest with tools/dev/conformance_manifest.py.
 SUITES = {
     "hevc-v1": ("hevc", ROOT / "tools/ci/hevc_conformance_v1.json", DATA / "conformance/hevc/streams"),
+    "vvc-v1": ("vvc", ROOT / "tools/ci/vvc_conformance_v1.json", DATA / "conformance/vvc/streams"),
 }
 
 CHUNK = 1 << 20

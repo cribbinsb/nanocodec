@@ -22,6 +22,7 @@ mod av1_inverse;
 pub mod av1_mc;
 pub mod av1_restoration;
 pub mod av1_symbol;
+pub mod av2_dec;
 mod av2_intra;
 mod av2_txfm;
 mod block;
@@ -110,7 +111,7 @@ pub use cdef::band::{
 pub use cdef::{CDEF_PADDING, CDEF_UNAVAILABLE, CdefBlock, CdefSource};
 pub use codec_txfm::{
     H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer, HevcTransform, VvcLfnst,
-    VvcQuantizer, VvcTransformKind,
+    VvcQuantizer, VvcTransformKind, scale_coefficient,
 };
 pub use convert::DisplayMatrix;
 pub use cpu::Isa;

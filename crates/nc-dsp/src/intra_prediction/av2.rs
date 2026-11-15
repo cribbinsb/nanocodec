@@ -50,7 +50,7 @@ const MAX_ANGLE: u16 = 270;
 /// Positional step per unit distance by angle, 256 × cotangent-like
 /// (`dr_intra_derivative`); only angles used by the nominal directions and
 /// their deltas are read.
-const DERIVATIVE: [i32; 90] = [
+pub(crate) const DERIVATIVE: [i32; 90] = [
     0, 4096, 2048, 1365, 1024, 819, 682, 585, 512, 455, 409, 409, 409, 372, 341, 292, 273, 256,
     227, 215, 204, 186, 178, 170, 157, 151, 146, 136, 132, 128, 117, 110, 107, 99, 97, 97, 93, 87,
     83, 81, 77, 74, 73, 69, 66, 64, 62, 59, 56, 55, 53, 50, 49, 47, 44, 42, 42, 41, 38, 37, 35, 32,

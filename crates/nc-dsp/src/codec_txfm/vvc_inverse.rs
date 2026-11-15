@@ -93,15 +93,8 @@ fn inverse_sized<const AREA: usize>(
 /// explicit scaling lists come here.
 fn scale_with_matrix(levels: &[i32], flat: &super::HevcQuantizer, matrix: &[u8], out: &mut [i16]) {
     let unit = flat.level_scale / FLAT_SCALING_FACTOR;
-    let product_limit = super::generic::hevc_dequant_product_limit(flat);
-    let level_limit = super::generic::HEVC_DEQUANT_LEVEL_LIMIT;
-    let round = 1 << (flat.bd_shift - 1);
     for ((scaled, &level), &factor) in out.iter_mut().zip(levels).zip(matrix) {
-        // |level| <= 2^16 and factor * unit <= 255 * 102: the product fits.
-        let product = (level.clamp(-level_limit, level_limit) * unit * i32::from(factor))
-            .clamp(-product_limit, product_limit);
-        let value = ((product << flat.per) + round) >> flat.bd_shift;
-        *scaled = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        *scaled = super::scale_coefficient(level, i32::from(factor), unit, flat.per, flat.bd_shift);
     }
 }
 

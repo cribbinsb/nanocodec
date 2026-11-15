@@ -119,6 +119,11 @@ def chart_points() -> list[str]:
 #: the chart times fixed QP; this measures what real-use CBR (rate control, re-codes)
 #: costs on top. Our points take the harness's CBR arguments, x264 its ABR + VBV.
 CBR_VARIANT_SUFFIX = "@cbr"
+#: Each of our points run by an earlier build (`--baseline-binary`), as `<point>@base`,
+#: paired with the point in the same rounds on the same core: a before/after speed
+#: comparison of two builds. Only the variants are timed (the point is their partner).
+BASELINE_SUFFIX = "@base"
+BASELINE_BINARY = "nanocodec-base"
 CBR_BUFFER_MS = 1000
 
 
@@ -136,9 +141,10 @@ def cbr_argv(argv: list[str], kbps: int) -> list[str]:
 
 
 def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool,
-               cbr_variants: bool = False) -> dict:
+               cbr_variants: bool = False, baseline: bool = False) -> dict:
     """The plan's entries for `points` (and both anchors), plus the AVX2-only M13 and,
-    with `isa_variants`, each of our points again on our AVX2 tier (ISA_VARIANT)."""
+    with `isa_variants`, each of our points again on our AVX2 tier (ISA_VARIANT); with
+    `baseline`, each of our points again on the baseline build (BASELINE_SUFFIX)."""
     plan = json.loads(plan_file.read_text())
     keep = {*points, plan["anchor"], act.SECOND_ANCHOR}
     entries = {n: v for n, v in plan["points"].items() if n in keep}
@@ -150,6 +156,12 @@ def cloud_plan(points: list[str], arch: str, plan_file: Path, isa_variants: bool
         for name in [n for n in entries if n.startswith("nanocodec")]:
             entries[f"{name}{ISA_VARIANT_SUFFIX}"] = {
                 clip: {**entry, "env": ISA_VARIANT_ENV, "pair_with": name}
+                for clip, entry in entries[name].items()}
+    if baseline:
+        for name in [n for n in entries if n.startswith("nanocodec")]:
+            entries[f"{name}{BASELINE_SUFFIX}"] = {
+                clip: {**entry, "argv": [f"{{BIN}}/{BASELINE_BINARY}", *entry["argv"][1:]],
+                       "pair_with": name}
                 for clip, entry in entries[name].items()}
     if cbr_variants:
         for name in [n for n in entries if n.startswith("nanocodec") or n == plan["anchor"]]:
@@ -354,6 +366,11 @@ def summarize(out: Path, points: list[str], repeats: int, anchor: str) -> dict:
             if not path.is_file():
                 continue
             clips = json.loads(path.read_text())["clips"].values()
+            partner = name.removesuffix(BASELINE_SUFFIX) if name.endswith(BASELINE_SUFFIX) \
+                else None
+            if partner:  # this build's time over the baseline's: < 1 is faster
+                row[f"repeat-{repeat}-over-base"] = 1 / geomean(
+                    c["time_ratio"][partner] for c in clips)
             row[f"repeat-{repeat}"] = {
                 "fps": 1000 / geomean(c["ms_per_frame"]["point"] for c in clips),
                 "ratio_x264_medium": geomean(c["time_ratio"][anchor] for c in clips),
@@ -376,6 +393,9 @@ def print_summary(summary: dict, repeats: int) -> None:
                                        for r in range(1, repeats + 1))
           + f" {'/M13 PC':>8s} {'/x264m':>7s} {'PC':>7s}")
     for name, row in summary.items():
+        over_base = [f"{row[k]:.4f}" for k in sorted(row) if k.endswith("-over-base")]
+        if over_base:
+            print(f"{name:28s} new/base time: {' '.join(over_base)}")
         cells = []
         for repeat in range(1, repeats + 1):
             r = row.get(f"repeat-{repeat}")
@@ -409,6 +429,9 @@ def main(argv: list[str]) -> None:
                         help=f"also time each of our points with {ISA_VARIANT_ENV}")
     parser.add_argument("--checkasm", type=Path,
                         help="an nc-checkasm build: run its benchmarks per x86 tier")
+    parser.add_argument("--baseline-binary", type=Path,
+                        help="an earlier build of ours (with --binary): each of our points "
+                        "is timed against it in the same rounds on the same core")
     parser.add_argument("--cbr-variants", action="store_true",
                         help="each of our points (and the anchor) again in CBR at the rung")
     parser.add_argument("--perf", help="comma-separated plan points to profile with perf")
@@ -425,8 +448,11 @@ def main(argv: list[str]) -> None:
     if arch == "arm64" and not (args.binary and args.tools_dir and args.expect_version):
         raise SystemExit("an arm64 instance needs aarch64 builds: --binary, --tools-dir and "
                          "--expect-version (the binary's `--version` line)")
+    if args.baseline_binary and not args.binary:
+        raise SystemExit("--baseline-binary compares with --binary: give both")
     points = args.points.split(",") if args.points else chart_points()
-    plan = cloud_plan(points, arch, args.plan, args.isa_variants, args.cbr_variants)
+    plan = cloud_plan(points, arch, args.plan, args.isa_variants, args.cbr_variants,
+                      bool(args.baseline_binary))
     if arch == "amd64":
         points = [*points, AVX2_VARIANT]
     if args.isa_variants:
@@ -434,6 +460,9 @@ def main(argv: list[str]) -> None:
     if args.cbr_variants:
         points += [f"{p}{CBR_VARIANT_SUFFIX}" for p in points
                    if p.startswith("nanocodec") or p == plan["anchor"]]
+    if args.baseline_binary:  # the variants' partners are the points themselves
+        points = [f"{p}{BASELINE_SUFFIX}" if p.startswith("nanocodec") else p
+                  for p in points]
     points = slowest_first(points)
     missing = [p for p in points if p not in plan["points"]]
     if missing:
@@ -443,6 +472,8 @@ def main(argv: list[str]) -> None:
     # sessions run side by side: one staging directory each
     stage_dir = WORK_DIR / f"stage-{args.instance_type}-{stamp}-{os.getpid()}"
     ours = {"nanocodec": args.binary} if args.binary else chart_binaries(plan)
+    if args.baseline_binary:
+        ours[BASELINE_BINARY] = args.baseline_binary
     # the remote readiness check compares each binary's version stamp with these
     versions = {name: args.expect_version or subprocess.run(
         [str(path), "--version"], capture_output=True, text=True, check=True).stdout.strip()

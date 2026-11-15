@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Generate the general AV2 decoder's intra prediction tables from dav2d.
+
+    tools/codegen/gen_av2_dec_ipred_tables.py DAV2D_SRC [--write]
+
+DAV2D_SRC is a dav2d checkout at the pin below (e.g.
+~/nanocodec-data/anchors/vp9-av2/src/dav2d-237229e). The script parses the C
+initialisers of the tables in `src/tables.c` that `src/ipred_tmpl.c` and
+`src/ibp.c` read (designated `[n] =` rows and short rows are zero-filled, as C
+does) and writes crates/nc-dsp/src/av2_dec/ipred/tables.rs. Without --write it
+only checks that the checked-in file is current.
+"""
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+PIN = '237229ebfefd4eb8e0e25ad9636803bb93bae0c6'
+OUT = ROOT / 'crates/nc-dsp/src/av2_dec/ipred/tables.rs'
+# Values per line of a long one-dimensional table.
+ROW = 16
+
+# (dav2d name, Rust name, element type, doc comment).
+TABLES = [
+    ('dav2d_sm_weights', 'SMOOTH_WEIGHTS', 'u8',
+     'Smooth predictor weights by block-size scale (`dav2d_sm_weights`): entry\n'
+     '/// `i` is `32 >> min(6, (i << 2) >> scale)`, AVM\'s scales 0 and 2 merged.'),
+    ('dav2d_dc_ibp_weights', 'DC_IBP_WEIGHTS', 'u8',
+     'DC intra bi-prediction weights (`dav2d_dc_ibp_weights`): the `n` weights\n'
+     '/// of an `n`-sample ramp start at index `n`.'),
+    ('dav2d_div_recip', 'DIV_RECIP', 'u16',
+     'Reciprocals `512 * 256 / (256 + 2i)` rounded (`dav2d_div_recip`), indexed\n'
+     '/// by a divisor\'s 7-bit fraction between powers of two.'),
+    ('dav2d_div_scale_sh_offset', 'DIV_SCALE_SH_OFFSET', 'u16',
+     'Offsets of the normalised MHCCP divisor per region (`dav2d_div_scale_sh_offset`).'),
+    ('dav2d_div_scale_sh_bias', 'DIV_SCALE_SH_BIAS', 'u16',
+     'Bias of each region\'s reciprocal polynomial (`dav2d_div_scale_sh_bias`).'),
+    ('dav2d_div_scale_sh_coefw', 'DIV_SCALE_SH_COEFW', 'u8',
+     'Squared-term coefficient of each region\'s reciprocal polynomial\n'
+     '/// (`dav2d_div_scale_sh_coefw`).'),
+    ('dav2d_dip_weights', 'DIP_WEIGHTS', 'u16',
+     'Data-driven intra prediction weights (`dav2d_dip_weights`) by mode, coarse\n'
+     '/// output sample and input feature; each is the AVM weight plus 4096, which\n'
+     '/// the predictor removes by subtracting the feature sum.'),
+]
+
+
+def strip_comments(text):
+    return re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
+
+
+def declaration(source, name):
+    """Return (dims, initialiser text) of the C array `name`."""
+    pattern = r'\b' + name + r'((?:\s*\[[^\]]*\])+)\s*(?:,\s*\d+\s*\))?\s*=\s*\{'
+    match = re.search(pattern, source)
+    if match is None:
+        raise ValueError(f'missing table {name}')
+    dims = [eval_dim(d) for d in re.findall(r'\[([^\]]*)\]', match[1])]
+    depth, start = 0, match.end() - 1
+    for i in range(start, len(source)):
+        depth += {'{': 1, '}': -1}.get(source[i], 0)
+        if depth == 0:
+            return dims, source[start:i + 1]
+    raise ValueError(f'unterminated table {name}')
+
+
+def eval_dim(text):
+    text = re.sub(r'/\*.*?\*/', '', text).strip()
+    if not re.fullmatch(r'[0-9 +*]+', text):
+        raise ValueError(f'unexpected dimension {text!r}')
+    return eval(text)  # digits and + * only, checked above
+
+
+def tokens(text):
+    return re.findall(r'\[\s*\d+\s*\]\s*=|[{},]|-?\d+', text)
+
+
+def parse(toks, pos, dims):
+    """Parse one braced initialiser at toks[pos] into a zero-filled nested list."""
+    assert toks[pos] == '{'
+    pos += 1
+    if len(dims) == 1:
+        out, index = [0] * dims[0], 0
+    else:
+        out, index = [zero(dims[1:]) for _ in range(dims[0])], 0
+    while toks[pos] != '}':
+        if toks[pos].startswith('['):
+            index = int(re.search(r'\d+', toks[pos])[0])
+            pos += 1
+        if toks[pos] == '{':
+            out[index], pos = parse(toks, pos, dims[1:])
+        else:
+            out[index], pos = int(toks[pos]), pos + 1
+        index += 1
+        if toks[pos] == ',':
+            pos += 1
+    return out, pos + 1
+
+
+def zero(dims):
+    return [0] * dims[0] if len(dims) == 1 else [zero(dims[1:]) for _ in range(dims[0])]
+
+
+def rust_type(ty, dims):
+    out = ty
+    for d in reversed(dims):
+        out = f'[{out}; {d}]'
+    return out
+
+
+def rust_value(value, indent=0):
+    pad = '    ' * (indent + 1)
+    if not isinstance(value[0], list):
+        if len(value) <= ROW:
+            return '[' + ', '.join(str(v) for v in value) + ']'
+        rows = [', '.join(str(v) for v in value[i:i + ROW]) for i in range(0, len(value), ROW)]
+        return '[\n' + ',\n'.join(pad + r for r in rows) + ',\n' + '    ' * indent + ']'
+    inner = ',\n'.join(pad + rust_value(v, indent + 1) for v in value)
+    return '[\n' + inner + ',\n' + '    ' * indent + ']'
+
+
+def generate(source_dir):
+    text = strip_comments((source_dir / 'src/tables.c').read_text())
+    out = [
+        '//! Generated by `tools/codegen/gen_av2_dec_ipred_tables.py` from dav2d',
+        f'//! `src/tables.c` (commit {PIN[:7]}; Copyright © 2018-2026 `VideoLAN` and',
+        '//! dav2d authors, BSD-2-Clause, see `docs/licenses/dav2d`). Do not edit.',
+        '//!',
+        '//! The constant tables of the intra predictors in [`super`].',
+        '',
+    ]
+    for c_name, rust_name, ty, doc in TABLES:
+        dims, init = declaration(text, c_name)
+        value, _ = parse(tokens(init), 0, dims)
+        out.append(f'/// {doc}')
+        out.append('#[rustfmt::skip]')
+        out.append(f'pub(super) const {rust_name}: {rust_type(ty, dims)} = '
+                   f'{rust_value(value)};')
+        out.append('')
+    return '\n'.join(out)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('source', type=Path)
+    parser.add_argument('--write', action='store_true')
+    args = parser.parse_args()
+    commit = subprocess.run(['git', '-C', str(args.source), 'rev-parse', 'HEAD'],
+                            capture_output=True, text=True).stdout.strip()
+    if commit != PIN:
+        sys.exit(f'expected dav2d {PIN}, got {commit or "no git checkout"}')
+    text = generate(args.source)
+    if args.write:
+        OUT.write_text(text)
+    elif OUT.read_text() != text:
+        sys.exit(f'{OUT.relative_to(ROOT)} is stale; rerun with --write')
+
+
+if __name__ == '__main__':
+    main()

@@ -35,7 +35,7 @@ use crate::quant::{MAX_CHROMA_QPI, chroma_qp_table};
 use crate::scan::{ScanKind, Scans};
 
 /// `levelScale` (§8.6.3).
-const LEVEL_SCALE: [i64; 6] = [40, 45, 51, 57, 64, 72];
+const LEVEL_SCALE: [i32; 6] = [40, 45, 51, 57, 64, 72];
 /// Coefficients of the largest transform block.
 const MAX_COEFFS: usize = 32 * 32;
 /// `cu_qp_delta_abs` prefix length before the Exp-Golomb suffix.
@@ -1299,15 +1299,15 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
         let factors = self.cx.scaling().map(|s| s.factors(log2, matrix));
         // bdShift = BitDepth + log2(nTbS) + 10 − 15 (§8.6.3).
         let shift = depths.plane(c).bits() + u32::from(log2) - SCALING_SHIFT_BELOW;
-        let scale = LEVEL_SCALE[(qp % 6) as usize] << (qp / 6);
+        let (level_scale, per) = (LEVEL_SCALE[(qp % 6) as usize], (qp / 6) as u32);
         let (mut rows, mut columns) = (0, 0);
         for &p in &self.s.positions {
             let p = usize::from(p);
             rows = rows.max((p >> log2) + 1);
             columns = columns.max((p & ((1 << log2) - 1)) + 1);
-            let m = factors.map_or(i64::from(FLAT_SCALE), |f| i64::from(f[p]));
-            let v = (i64::from(self.s.levels[p]) * m * scale + (1 << (shift - 1))) >> shift;
-            self.s.levels[p] = v.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
+            let m = factors.map_or(i32::from(FLAT_SCALE), |f| i32::from(f[p]));
+            let level = i32::from(self.s.levels[p]);
+            self.s.levels[p] = nc_dsp::scale_coefficient(level, m, level_scale, per, shift);
         }
         (rows, columns)
     }

@@ -64,6 +64,7 @@ pub(crate) mod h264_inverse8;
 mod inverse_add;
 #[allow(unsafe_code)]
 pub(crate) mod scalar;
+mod scaling_matrix;
 pub(crate) mod vvc_forward;
 #[cfg(any(
     target_arch = "x86_64",
@@ -79,6 +80,7 @@ mod vvc_forward_narrow;
 #[allow(unsafe_code)]
 mod vvc_forward_simd;
 pub(crate) mod vvc_inverse;
+pub use scaling_matrix::scale_coefficient;
 mod vvc_lfnst;
 pub(crate) mod vvc_primary;
 pub(crate) use generic::{H264_MAX_LEVEL, scale_level as h264_scale_level};

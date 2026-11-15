@@ -30,7 +30,7 @@ const MAX_QINDEX: i32 = 255;
 
 /// A context neighbour: an edge and its index there.
 #[derive(Debug, Clone, Copy)]
-enum Neighbour {
+pub(super) enum Neighbour {
     Above(usize),
     Left(usize),
 }
@@ -129,15 +129,6 @@ impl Tile<'_, '_> {
         Ok(())
     }
 
-    /// An intra block's modes, prediction and residual (the intra and
-    /// residual groups).
-    #[allow(clippy::unused_self, reason = "the tool group fills it in")]
-    fn intra_block(&mut self, _depth: usize, _record: &BlockRecord) -> Result<()> {
-        Err(DecodeError::Unsupported(
-            "AV2 intra blocks (general block layer)",
-        ))
-    }
-
     /// An intra block-copy block (the intra group).
     #[allow(clippy::unused_self, reason = "the tool group fills it in")]
     fn intrabc_block(&mut self, _depth: usize, _record: &BlockRecord) -> Result<()> {
@@ -218,7 +209,11 @@ impl Tile<'_, '_> {
     }
 
     /// A context field of a neighbour.
-    fn neighbour_value(&self, neighbour: Neighbour, field: fn(&context::Edge) -> &Vec<u8>) -> u8 {
+    pub(super) fn neighbour_value(
+        &self,
+        neighbour: Neighbour,
+        field: fn(&context::Edge) -> &Vec<u8>,
+    ) -> u8 {
         match neighbour {
             Neighbour::Above(index) => field(&self.contexts.above)[index],
             Neighbour::Left(index) => field(&self.contexts.left)[index],
@@ -304,7 +299,7 @@ impl Tile<'_, '_> {
     /// The spatial neighbours of luma contexts, not across the superblock
     /// top: left then above at the far edges when the block lies inside
     /// the frame, else at the near edges (dav2d `decode_b` `nb`, `boff`).
-    fn spatial_neighbours(&self, size: BlockSize) -> [Option<Neighbour>; 2] {
+    pub(super) fn spatial_neighbours(&self, size: BlockSize) -> [Option<Neighbour>; 2] {
         let (bw4, bh4) = size.units();
         let w4 = bw4.min(self.geometry.columns - self.column);
         let h4 = bh4.min(self.geometry.rows - self.row);
@@ -544,7 +539,11 @@ impl Tile<'_, '_> {
             delta = -delta;
         }
         let scaled = delta << res_log2;
+        let previous = self.qindex;
         self.qindex = (i32::from(self.qindex) + scaled).clamp(MIN_QINDEX, MAX_QINDEX) as u16;
+        if self.qindex != previous {
+            self.dequant = self.dequantizers(self.qindex);
+        }
         let range = self.reader.range();
         let qindex = self.qindex;
         trace!(self, depth, "Post-delta_q[{delta}->{qindex}]: r={range}");

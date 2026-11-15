@@ -159,7 +159,7 @@ struct TileDecoder<'r> {
 #[derive(Debug)]
 pub(crate) struct Workspace {
     dsp: Dsp,
-    pictures: PictureRecycler,
+    pub(crate) pictures: PictureRecycler,
     cdef_source: cdef::PictureFilterScratch,
     ccso_source: CcsoSource,
     deblock_map: deblock::EdgeMap,

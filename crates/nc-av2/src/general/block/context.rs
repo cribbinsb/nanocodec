@@ -27,7 +27,35 @@ pub struct Edge {
     pub intrabc: Vec<u8>,
     /// The neighbour's segment id was predicted.
     pub segment_predicted: Vec<u8>,
+    /// The neighbour's luma intra mode (dav2d `IntraPredMode`; DC for
+    /// inter blocks).
+    pub mode: Vec<u8>,
+    /// The neighbour's directional luma mode index (0..56: direction and
+    /// angle delta), [`NO_DIRECTION`] when not directional.
+    pub direction: Vec<u8>,
+    /// The neighbour used forward skip coding.
+    pub fsc: Vec<u8>,
+    /// The neighbour used a reference line beyond the first.
+    pub mrl: Vec<u8>,
+    /// The neighbour blended two reference lines.
+    pub multi_mrl: Vec<u8>,
+    /// The neighbour used data-driven intra prediction.
+    pub dip: Vec<u8>,
+    /// The neighbour's chroma intra mode (per chroma 4x4 unit).
+    pub uv_mode: Vec<u8>,
+    /// The luma coefficient context of the transform covering the unit:
+    /// the level sum capped at 63, plus the DC sign in bits 6-7 (dav2d
+    /// `lcoef`; 0x40 when nothing is coded).
+    pub luma_coefficients: Vec<u8>,
+    /// The same per chroma 4x4 unit, for U and V (dav2d `ccoef`).
+    pub chroma_coefficients: [Vec<u8>; 2],
 }
+
+/// [`Edge::direction`] of a block without a directional luma mode.
+pub const NO_DIRECTION: u8 = 0xff;
+/// [`Edge::luma_coefficients`] of a transform without coefficients (a
+/// zero sum with the "no sign" DC code).
+pub const NO_COEFFICIENTS: u8 = 0x40;
 
 impl Edge {
     /// An edge of `units` 4x4 units.
@@ -40,6 +68,15 @@ impl Edge {
             intra: vec![0; units],
             intrabc: vec![0; units],
             segment_predicted: vec![0; units],
+            mode: vec![0; units],
+            direction: vec![NO_DIRECTION; units],
+            fsc: vec![0; units],
+            mrl: vec![0; units],
+            multi_mrl: vec![0; units],
+            dip: vec![0; units],
+            uv_mode: vec![0; units],
+            luma_coefficients: vec![NO_COEFFICIENTS; units],
+            chroma_coefficients: [vec![NO_COEFFICIENTS; units], vec![NO_COEFFICIENTS; units]],
         }
     }
 
@@ -54,6 +91,17 @@ impl Edge {
         self.intra.fill(u8::from(intra_frame));
         self.intrabc.fill(0);
         self.segment_predicted.fill(0);
+        self.mode.fill(0);
+        self.direction.fill(NO_DIRECTION);
+        self.fsc.fill(0);
+        self.mrl.fill(0);
+        self.multi_mrl.fill(0);
+        self.dip.fill(0);
+        self.uv_mode.fill(0);
+        self.luma_coefficients.fill(NO_COEFFICIENTS);
+        for plane in &mut self.chroma_coefficients {
+            plane.fill(NO_COEFFICIENTS);
+        }
     }
 }
 

@@ -71,10 +71,136 @@ pub struct Cdfs {
     pub ccso: [[Cdf<2>; 4]; 3],
     /// A superblock quantizer delta (the last symbol escapes) (AVM `default_delta_q_cdf`).
     pub delta_q: Cdf<8>,
+    /// Whether a lossless luma block is DPCM coded (AVM `default_dpcm_cdf`).
+    pub dpcm_y: Cdf<2>,
+    /// The direction of luma DPCM (horizontal) (AVM `default_dpcm_vert_horz_cdf`).
+    pub dpcm_dir_y: Cdf<2>,
+    /// Whether a lossless chroma block is DPCM coded (AVM `default_dpcm_uv_cdf`).
+    pub dpcm_uv: Cdf<2>,
+    /// The direction of chroma DPCM (horizontal) (AVM `default_dpcm_uv_vert_horz_cdf`).
+    pub dpcm_dir_uv: Cdf<2>,
+    /// The luma mode set (0: the first 13 indices) (AVM `default_y_mode_set_cdf`).
+    pub y_mode_set: Cdf<4>,
+    /// The luma mode index in set 0 (the last symbol escapes) (AVM `default_y_mode_idx_cdf[a]`).
+    pub y_mode_index: [Cdf<8>; 3],
+    /// The luma mode index past the escape (AVM `default_y_mode_idx_offset_cdf[a]`).
+    pub y_mode_offset: [Cdf<6>; 3],
+    /// Whether a block uses forward skip coding (AVM `default_fsc_mode_cdf[a][b]`).
+    pub fsc: [[Cdf<2>; 6]; 4],
+    /// The reference line of a directional luma block (AVM `default_mrl_index_cdf[a]`).
+    pub mrl_index: [Cdf<4>; 3],
+    /// Whether two reference lines are blended (AVM `default_multi_line_mrl_cdf[a]`).
+    pub multi_mrl: [Cdf<2>; 3],
+    /// Whether a luma block uses a palette (AVM `default_palette_y_mode_cdf`).
+    pub palette_y: Cdf<2>,
+    /// Whether a luma block uses data-driven intra prediction (AVM `default_intra_dip_cdf[a]`).
+    pub dip: [Cdf<2>; 3],
+    /// The data-driven intra prediction mode (AVM `default_intra_dip_mode_n6_cdf`).
+    pub dip_mode: Cdf<6>,
+    /// Whether a chroma block is predicted from luma (AVM `default_cfl_cdf[a]`).
+    pub cfl: [Cdf<2>; 3],
+    /// The chroma mode index (the last symbol escapes) (AVM `default_uv_mode_cdf[a]`).
+    pub uv_mode: [Cdf<8>; 2],
+    /// Whether chroma from luma is the multi-hypothesis model (AVM `default_cfl_mhccp_switch_cdf`).
+    pub mhccp: Cdf<2>,
+    /// The multi-hypothesis model's direction (AVM `default_filter_dir_cdf[a]`).
+    pub mhccp_direction: [Cdf<3>; 4],
+    /// Whether chroma from luma signals its scales (AVM `default_cfl_index_cdf`).
+    pub cfl_type: Cdf<2>,
+    /// The joint signs of the chroma from luma scales (AVM `default_cfl_sign_cdf`).
+    pub cfl_sign: Cdf<8>,
+    /// A chroma from luma scale magnitude (AVM `default_cfl_alpha_cdf[a]`).
+    pub cfl_alpha: [Cdf<8>; 6],
+    /// Whether a lossless block uses its largest transform (size group, inter) (AVM `default_lossless_tx_size_cdf[a][b]`).
+    pub lossless_tx_size: [[Cdf<2>; 2]; 4],
+    /// Whether a block splits its transform (forward skip coding, inter, size) (AVM `default_txfm_do_partition_cdf[a][b][c]`).
+    pub tx_split: [[[Cdf<2>; 9]; 2]; 2],
+    /// Whether a one-direction transform split is four-way (AVM `default_txfm_2or3_way_partition_type_cdf[a][b][c]`).
+    pub tx_part_1d: [[[Cdf<2>; 2]; 2]; 2],
+    /// The transform split type of a block both of whose sides split (AVM `default_txfm_4way_partition_type_cdf[a][b][c]`).
+    pub tx_part_2d: [[[Cdf<7>; 14]; 2]; 2],
+    /// The same in sequences with the reduced transform partition set (AVM `default_txfm_4way_partition_type_reduced_cdf[a][b][c]`).
+    pub tx_part_2d_reduced: [[[Cdf<7>; 14]; 2]; 2],
+    /// Whether a lossless inter 4x4 transform is the identity (AVM `default_lossless_inter_tx_type_cdf`).
+    pub tx_type_lossless: Cdf<2>,
+    /// Whether the long side of a 32-long transform is a DCT (inter) (AVM `default_tx_ext_32_cdf[a]`).
+    pub tx_type_long32_dct: [Cdf<2>; 2],
+    /// The short-side type of a long intra transform (AVM `default_intra_ext_tx_short_side_cdf[a]`).
+    pub tx_type_intra_short: [Cdf<4>; 4],
+    /// An intra luma transform type (AVM `default_intra_ext_tx_cdf[1][a]`).
+    pub tx_type_intra: [Cdf<7>; 4],
+    /// The same with the reduced transform set (AVM `default_intra_ext_tx_cdf[2][a]`).
+    pub tx_type_intra_reduced: [Cdf<2>; 4],
+    /// The secondary transform kernel (inter, size) (AVM `default_stx_cdf[a][b]`).
+    pub stx: [[Cdf<4>; 5]; 2],
+    /// The secondary transform set of an `ADST_ADST` transform (AVM `default_most_probable_stx_set_cdf_ADST_ADST`).
+    pub stx_set_adst: Cdf<4>,
+    /// The secondary transform set (AVM `default_most_probable_stx_set_cdf`).
+    pub stx_set: Cdf<7>,
+    /// The cross-chroma transform (AVM `default_cctx_type_cdf`).
+    pub cctx: Cdf<7>,
+    /// Whether a luma or U transform has no coefficients (inter or forward skip, size, context) (AVM `av2_default_txb_skip_cdfs[q][a][b][c]`).
+    pub txb_skip: [[[Cdf<2>; 10]; 5]; 2],
+    /// Whether a V transform has no coefficients (AVM `av2_default_v_txb_skip_cdfs[q][a]`).
+    pub txb_skip_v: [Cdf<2>; 12],
+    /// The end-of-block class of 16 coefficients (AVM `av2_default_eob_multi16_cdfs[q][a]`).
+    pub eob16: [Cdf<5>; 3],
+    /// The same of 32 (AVM `av2_default_eob_multi32_cdfs[q][a]`).
+    pub eob32: [Cdf<6>; 3],
+    /// The same of 64 (AVM `av2_default_eob_multi64_cdfs[q][a]`).
+    pub eob64: [Cdf<7>; 3],
+    /// The same of 128 (AVM `av2_default_eob_multi128_cdfs[q][a]`).
+    pub eob128: [Cdf<8>; 3],
+    /// The same of 256 (escapes) (AVM `av2_default_eob_multi256_cdfs[q][a]`).
+    pub eob256: [Cdf<8>; 3],
+    /// The same of 512 (escapes) (AVM `av2_default_eob_multi512_cdfs[q][a]`).
+    pub eob512: [Cdf<8>; 3],
+    /// The same of 1024 (escapes) (AVM `av2_default_eob_multi1024_cdfs[q][a]`).
+    pub eob1024: [Cdf<8>; 3],
+    /// The end of block's high offset bit (AVM `av2_default_eob_extra_cdfs[q]`).
+    pub eob_extra: Cdf<2>,
+    /// The last luma level, high frequencies (AVM `av2_default_coeff_base_eob_multi_cdfs[q][a][b]`).
+    pub eob_base_hf: [[Cdf<3>; 4]; 5],
+    /// A luma base level, high frequencies (size, context, TCQ) (AVM `av2_default_coeff_base_multi_cdfs[q][a][b][c]`).
+    pub base_hf: [[[Cdf<4>; 2]; 20]; 5],
+    /// A luma low range, high frequencies (AVM `av2_default_coeff_lps_multi_cdfs[q][a]`).
+    pub range_hf: [Cdf<4>; 7],
+    /// The last luma level, low frequencies (AVM `av2_default_coeff_base_lf_eob_multi_cdfs[q][a][b]`).
+    pub eob_base_lf: [[Cdf<5>; 4]; 5],
+    /// A luma base level, low frequencies (AVM `av2_default_coeff_base_lf_multi_cdfs[q][a][b][c]`).
+    pub base_lf: [[[Cdf<6>; 2]; 33]; 5],
+    /// A luma low range, low frequencies (AVM `av2_default_coeff_lps_lf_multi_cdfs[q][a]`).
+    pub range_lf: [Cdf<4>; 14],
+    /// A parity-hidden DC level (AVM `av2_default_coeff_base_ph_cdfs[q][a]`).
+    pub parity_dc: [Cdf<4>; 5],
+    /// A DC sign (chroma, parity hidden, context) (AVM `av2_default_dc_sign_cdfs[q][a][b][c]`).
+    pub dc_sign: [[[Cdf<2>; 3]; 2]; 2],
+    /// The first level of a forward-skip block (AVM `av2_default_coeff_base_bob_multi_cdfs[q][a][b]`).
+    pub bob_base: [[Cdf<3>; 3]; 3],
+    /// A forward-skip low range (AVM `av2_default_coeff_lps_multi_cdfs_idtx[q][a][b]`).
+    pub range_idtx: [[Cdf<4>; 7]; 3],
+    /// A forward-skip base level (AVM `av2_default_coeff_base_multi_cdfs_idtx[q][a][b]`).
+    pub base_idtx: [[Cdf<4>; 7]; 3],
+    /// A forward-skip sign (AVM `av2_default_idtx_sign_cdfs[q][a][b]`).
+    pub sign_idtx: [[Cdf<2>; 9]; 3],
+    /// The last chroma level, high frequencies (AVM `av2_default_coeff_base_eob_multi_uv_cdfs[q][a]`).
+    pub eob_base_uv_hf: [Cdf<3>; 4],
+    /// A chroma base level, high frequencies (AVM `av2_default_coeff_base_multi_uv_cdfs[q][a]`).
+    pub base_uv_hf: [Cdf<4>; 12],
+    /// A chroma low range, high frequencies (AVM `av2_default_coeff_lps_multi_uv_cdfs[q][a]`).
+    pub range_uv_hf: [Cdf<4>; 4],
+    /// The last chroma level, low frequencies (AVM `av2_default_coeff_base_lf_eob_multi_uv_cdfs[q][a]`).
+    pub eob_base_uv_lf: [Cdf<5>; 4],
+    /// A chroma base level, low frequencies (AVM `av2_default_coeff_base_lf_multi_uv_cdfs[q][a]`).
+    pub base_uv_lf: [Cdf<6>; 12],
 }
 impl Cdfs {
     /// The defaults of a frame at base quantizer `qindex`.
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "generated: one line per model family"
+    )]
     pub fn new(qindex: u16) -> Self {
         #[allow(unused_variables, reason = "the coefficient families use it")]
         let q = category(qindex);
@@ -99,10 +225,79 @@ impl Cdfs {
             cdef_index8: defaults::CDEF_INDEX8.build(),
             ccso: defaults::CCSO.map(|value| value.map(Initial::build)),
             delta_q: defaults::DELTA_Q.build(),
+            dpcm_y: defaults::DPCM_Y.build(),
+            dpcm_dir_y: defaults::DPCM_DIR_Y.build(),
+            dpcm_uv: defaults::DPCM_UV.build(),
+            dpcm_dir_uv: defaults::DPCM_DIR_UV.build(),
+            y_mode_set: defaults::Y_MODE_SET.build(),
+            y_mode_index: defaults::Y_MODE_INDEX.map(Initial::build),
+            y_mode_offset: defaults::Y_MODE_OFFSET.map(Initial::build),
+            fsc: defaults::FSC.map(|value| value.map(Initial::build)),
+            mrl_index: defaults::MRL_INDEX.map(Initial::build),
+            multi_mrl: defaults::MULTI_MRL.map(Initial::build),
+            palette_y: defaults::PALETTE_Y.build(),
+            dip: defaults::DIP.map(Initial::build),
+            dip_mode: defaults::DIP_MODE.build(),
+            cfl: defaults::CFL.map(Initial::build),
+            uv_mode: defaults::UV_MODE.map(Initial::build),
+            mhccp: defaults::MHCCP.build(),
+            mhccp_direction: defaults::MHCCP_DIRECTION.map(Initial::build),
+            cfl_type: defaults::CFL_TYPE.build(),
+            cfl_sign: defaults::CFL_SIGN.build(),
+            cfl_alpha: defaults::CFL_ALPHA.map(Initial::build),
+            lossless_tx_size: defaults::LOSSLESS_TX_SIZE.map(|value| value.map(Initial::build)),
+            tx_split: defaults::TX_SPLIT.map(|value| value.map(|value| value.map(Initial::build))),
+            tx_part_1d: defaults::TX_PART_1D
+                .map(|value| value.map(|value| value.map(Initial::build))),
+            tx_part_2d: defaults::TX_PART_2D
+                .map(|value| value.map(|value| value.map(Initial::build))),
+            tx_part_2d_reduced: defaults::TX_PART_2D_REDUCED
+                .map(|value| value.map(|value| value.map(Initial::build))),
+            tx_type_lossless: defaults::TX_TYPE_LOSSLESS.build(),
+            tx_type_long32_dct: defaults::TX_TYPE_LONG32_DCT.map(Initial::build),
+            tx_type_intra_short: defaults::TX_TYPE_INTRA_SHORT.map(Initial::build),
+            tx_type_intra: defaults::TX_TYPE_INTRA.map(Initial::build),
+            tx_type_intra_reduced: defaults::TX_TYPE_INTRA_REDUCED.map(Initial::build),
+            stx: defaults::STX.map(|value| value.map(Initial::build)),
+            stx_set_adst: defaults::STX_SET_ADST.build(),
+            stx_set: defaults::STX_SET.build(),
+            cctx: defaults::CCTX.build(),
+            txb_skip: defaults::TXB_SKIP[q]
+                .map(|value| value.map(|value| value.map(Initial::build))),
+            txb_skip_v: defaults::TXB_SKIP_V[q].map(Initial::build),
+            eob16: defaults::EOB16[q].map(Initial::build),
+            eob32: defaults::EOB32[q].map(Initial::build),
+            eob64: defaults::EOB64[q].map(Initial::build),
+            eob128: defaults::EOB128[q].map(Initial::build),
+            eob256: defaults::EOB256[q].map(Initial::build),
+            eob512: defaults::EOB512[q].map(Initial::build),
+            eob1024: defaults::EOB1024[q].map(Initial::build),
+            eob_extra: defaults::EOB_EXTRA[q].build(),
+            eob_base_hf: defaults::EOB_BASE_HF[q].map(|value| value.map(Initial::build)),
+            base_hf: defaults::BASE_HF[q].map(|value| value.map(|value| value.map(Initial::build))),
+            range_hf: defaults::RANGE_HF[q].map(Initial::build),
+            eob_base_lf: defaults::EOB_BASE_LF[q].map(|value| value.map(Initial::build)),
+            base_lf: defaults::BASE_LF[q].map(|value| value.map(|value| value.map(Initial::build))),
+            range_lf: defaults::RANGE_LF[q].map(Initial::build),
+            parity_dc: defaults::PARITY_DC[q].map(Initial::build),
+            dc_sign: defaults::DC_SIGN[q].map(|value| value.map(|value| value.map(Initial::build))),
+            bob_base: defaults::BOB_BASE[q].map(|value| value.map(Initial::build)),
+            range_idtx: defaults::RANGE_IDTX[q].map(|value| value.map(Initial::build)),
+            base_idtx: defaults::BASE_IDTX[q].map(|value| value.map(Initial::build)),
+            sign_idtx: defaults::SIGN_IDTX[q].map(|value| value.map(Initial::build)),
+            eob_base_uv_hf: defaults::EOB_BASE_UV_HF[q].map(Initial::build),
+            base_uv_hf: defaults::BASE_UV_HF[q].map(Initial::build),
+            range_uv_hf: defaults::RANGE_UV_HF[q].map(Initial::build),
+            eob_base_uv_lf: defaults::EOB_BASE_UV_LF[q].map(Initial::build),
+            base_uv_lf: defaults::BASE_UV_LF[q].map(Initial::build),
         }
     }
     /// Move every model back along its adaptation-rate schedule (AVM
     /// `av2_reset_cdf_symbol_counters`) before later frames inherit them.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "generated: one loop per model family"
+    )]
     pub fn restart_adaptation(&mut self) {
         for v0 in &mut self.part_split {
             for v1 in v0 {
@@ -158,6 +353,209 @@ impl Cdfs {
             }
         }
         self.delta_q.restart_adaptation();
+        self.dpcm_y.restart_adaptation();
+        self.dpcm_dir_y.restart_adaptation();
+        self.dpcm_uv.restart_adaptation();
+        self.dpcm_dir_uv.restart_adaptation();
+        self.y_mode_set.restart_adaptation();
+        for v0 in &mut self.y_mode_index {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.y_mode_offset {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.fsc {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.mrl_index {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.multi_mrl {
+            v0.restart_adaptation();
+        }
+        self.palette_y.restart_adaptation();
+        for v0 in &mut self.dip {
+            v0.restart_adaptation();
+        }
+        self.dip_mode.restart_adaptation();
+        for v0 in &mut self.cfl {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.uv_mode {
+            v0.restart_adaptation();
+        }
+        self.mhccp.restart_adaptation();
+        for v0 in &mut self.mhccp_direction {
+            v0.restart_adaptation();
+        }
+        self.cfl_type.restart_adaptation();
+        self.cfl_sign.restart_adaptation();
+        for v0 in &mut self.cfl_alpha {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.lossless_tx_size {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.tx_split {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.tx_part_1d {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.tx_part_2d {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.tx_part_2d_reduced {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        self.tx_type_lossless.restart_adaptation();
+        for v0 in &mut self.tx_type_long32_dct {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.tx_type_intra_short {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.tx_type_intra {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.tx_type_intra_reduced {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.stx {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        self.stx_set_adst.restart_adaptation();
+        self.stx_set.restart_adaptation();
+        self.cctx.restart_adaptation();
+        for v0 in &mut self.txb_skip {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.txb_skip_v {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob16 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob32 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob64 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob128 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob256 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob512 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob1024 {
+            v0.restart_adaptation();
+        }
+        self.eob_extra.restart_adaptation();
+        for v0 in &mut self.eob_base_hf {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.base_hf {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.range_hf {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob_base_lf {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.base_lf {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.range_lf {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.parity_dc {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.dc_sign {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.bob_base {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.range_idtx {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.base_idtx {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.sign_idtx {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.eob_base_uv_hf {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.base_uv_hf {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.range_uv_hf {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.eob_base_uv_lf {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.base_uv_lf {
+            v0.restart_adaptation();
+        }
     }
 }
 #[cfg(test)]
@@ -175,6 +573,10 @@ mod tests {
     }
     /// Our models update as AVM's `update_cdf` does, from the same defaults.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "generated: one loop per model family"
+    )]
     fn original_c_update_traces() {
         for (q, expected) in [0, 91, 141, 191].into_iter().zip(defaults::TRACE_HASHES) {
             let mut models = Cdfs::new(q);
@@ -233,6 +635,209 @@ mod tests {
                 }
             }
             trace(&mut models.delta_q, &mut hash);
+            trace(&mut models.dpcm_y, &mut hash);
+            trace(&mut models.dpcm_dir_y, &mut hash);
+            trace(&mut models.dpcm_uv, &mut hash);
+            trace(&mut models.dpcm_dir_uv, &mut hash);
+            trace(&mut models.y_mode_set, &mut hash);
+            for v0 in &mut models.y_mode_index {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.y_mode_offset {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.fsc {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.mrl_index {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.multi_mrl {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.palette_y, &mut hash);
+            for v0 in &mut models.dip {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.dip_mode, &mut hash);
+            for v0 in &mut models.cfl {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.uv_mode {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.mhccp, &mut hash);
+            for v0 in &mut models.mhccp_direction {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.cfl_type, &mut hash);
+            trace(&mut models.cfl_sign, &mut hash);
+            for v0 in &mut models.cfl_alpha {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.lossless_tx_size {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.tx_split {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.tx_part_1d {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.tx_part_2d {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.tx_part_2d_reduced {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            trace(&mut models.tx_type_lossless, &mut hash);
+            for v0 in &mut models.tx_type_long32_dct {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tx_type_intra_short {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tx_type_intra {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tx_type_intra_reduced {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.stx {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            trace(&mut models.stx_set_adst, &mut hash);
+            trace(&mut models.stx_set, &mut hash);
+            trace(&mut models.cctx, &mut hash);
+            for v0 in &mut models.txb_skip {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.txb_skip_v {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob16 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob32 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob64 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob128 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob256 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob512 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob1024 {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.eob_extra, &mut hash);
+            for v0 in &mut models.eob_base_hf {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.base_hf {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.range_hf {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob_base_lf {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.base_lf {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.range_lf {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.parity_dc {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.dc_sign {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.bob_base {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.range_idtx {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.base_idtx {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.sign_idtx {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.eob_base_uv_hf {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.base_uv_hf {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.range_uv_hf {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.eob_base_uv_lf {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.base_uv_lf {
+                trace(v0, &mut hash);
+            }
             assert_eq!(hash, expected);
         }
     }

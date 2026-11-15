@@ -640,6 +640,20 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   `tools/codegen/gen_av2_general_cdfs.py`. Where dav2d and AVM v1.0.0
   differ (the layer dependency maps of the sequence header; a repeated
   output order, which AVM rejects and dav2d drops), AVM is followed.
+- `crates/nc-dsp/src/av2_dec/itx.rs`, `itx_1d.rs` and `stx.rs` (the general
+  decoder's inverse, cross-chroma and secondary transforms) from
+  `src/itx_tmpl.c`, `src/itx_1d.c`, `src/stx_tmpl.c` and the size, shift,
+  DDT-mask, CCTX-angle and end-of-block tables of `src/tables.c` and
+  `src/scan.c`; `itx_kernels.rs` and `stx_tables.rs` are generated from
+  `src/itx_1d.c` and `src/stx_tables.c` by
+  `tools/codegen/gen_av2_dec_tables.py`.
+- `crates/nc-dsp/src/av2_dec/ipred.rs` and `ipred/` (every intra predictor
+  of the general decoder, 8-bit 4:2:0): from `src/ipred_tmpl.c`,
+  `src/ipred_prepare_tmpl.c`, `src/ipred.h`, `src/ipred_prepare.h`,
+  `src/intra_edge.h`, `src/ibp.c` and `src/derivation.h` (`derive_alpha`);
+  the smooth, DC bi-prediction, reciprocal, MHCCP divisor and DIP weight
+  tables (`ipred/tables.rs`) are extracted from `src/tables.c` by
+  `tools/codegen/gen_av2_dec_ipred_tables.py`.
 
 ## VVenC — BSD-3-Clause-Clear
 

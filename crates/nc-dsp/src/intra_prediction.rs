@@ -380,7 +380,8 @@ pub(crate) fn smooth_weights(side: usize) -> &'static [u8] {
     &SMOOTH_WEIGHTS[side - 4..2 * side - 4]
 }
 
-fn paeth(left: u8, top: u8, corner: u8) -> u8 {
+/// Paeth's choice among `left`, `top` and `corner` (AV1 and AV2 alike).
+pub(crate) fn paeth(left: u8, top: u8, corner: u8) -> u8 {
     let base = i32::from(left) + i32::from(top) - i32::from(corner);
     let dl = (base - i32::from(left)).abs();
     let dt = (base - i32::from(top)).abs();

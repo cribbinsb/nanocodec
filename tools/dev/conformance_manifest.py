@@ -115,8 +115,39 @@ def probe_hevc(path):
     return None
 
 
+VVC_PROFILES = {"Main 10": "Main 10", "65": "Main 10 Still Picture",
+                "Main 10 Still Picture": "Main 10 Still Picture"}
+#: ffprobe pixel formats: chroma format and bit depth.
+PIXEL_FORMATS = {"gray": ("4:0:0", 8), "yuv420p": ("4:2:0", 8), "gray10le": ("4:0:0", 10),
+                 "yuv420p10le": ("4:2:0", 10), "yuv422p10le": ("4:2:2", 10),
+                 "yuv444p10le": ("4:4:4", 10), "yuv444p": ("4:4:4", 8)}
+
+
+def probe_vvc(path):
+    """Profile, chroma format, depth and cropped size from ffprobe (its VVC
+    parser reads the SPS, subpictures included), or None."""
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                             "stream=profile,pix_fmt,width,height", "-of", "json", str(path)],
+                            capture_output=True, text=True, timeout=60, check=False)
+    streams = json.loads(result.stdout or "{}").get("streams", [])
+    if len(streams) != 1 or streams[0].get("pix_fmt") not in PIXEL_FORMATS:
+        return None
+    info = streams[0]
+    chroma, depth = PIXEL_FORMATS[info["pix_fmt"]]
+    w, h = info["width"], info["height"]
+    sub_w, sub_h = {"4:0:0": (1, 1), "4:2:0": (2, 2), "4:2:2": (2, 1), "4:4:4": (1, 1)}[chroma]
+    chroma_samples = 0 if chroma == "4:0:0" else 2 * (w // sub_w) * (h // sub_h)
+    profile = str(info.get("profile"))
+    return {"profile": VVC_PROFILES.get(profile, f"profile {profile}"),
+            "chroma_format": chroma, "bit_depth": [depth, depth], "width": w, "height": h,
+            "frame_bytes": (w * h + chroma_samples) * (2 if depth > 8 else 1)}
+
+
 # suite -> (probe, reference decoder command for (bitstream, output path)).
 SUITES = {
+    "vvc-v1": (probe_vvc, lambda bitstream, out: [
+        str(DATA / "work/standards-eval/src/VTM/bin/DecoderAppStatic"), "-b", str(bitstream),
+        "-o", str(out), "-d", "0"]),
     "hevc-v1": (probe_hevc, lambda bitstream, out: [
         str(DATA / "anchors/x86_64/bin/TAppDecoder"), "-b", str(bitstream), "-o", str(out), "-d", "0"]),
 }
@@ -137,7 +168,9 @@ def shipped_md5s(directory):
 
 
 def reference_hashes(command, frame_bytes):
-    """Hash the reference decoder's output, written into a FIFO."""
+    """Hash the reference decoder's output, written into a FIFO; also its
+    exit status (VTM exits 1 on a picture-hash SEI mismatch, as after a GDR
+    start, though its output is the conformance output)."""
     with tempfile.TemporaryDirectory(prefix="conformance-") as scratch:
         fifo = Path(scratch) / "out.yuv"
         os.mkfifo(fifo)
@@ -151,15 +184,16 @@ def reference_hashes(command, frame_bytes):
         reader = threading.Thread(target=drain)
         reader.start()
         try:
-            subprocess.run(command(fifo), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                           check=True, timeout=REFERENCE_TIMEOUT)
+            status = subprocess.run(command(fifo), stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, check=False,
+                                    timeout=REFERENCE_TIMEOUT).returncode
         finally:
             # A decoder that failed before opening its output: release the reader.
             if reader.is_alive():
                 with open(fifo, "wb"):
                     pass
             reader.join()
-    return hashes
+    return hashes, status
 
 
 def build_entry(suite, streams, directory):
@@ -168,14 +202,22 @@ def build_entry(suite, streams, directory):
     info = probe(path) if path else None
     if info is None:
         return directory.name, None
-    hashes = reference_hashes(lambda out: reference(path, out), info["frame_bytes"])
+    try:
+        hashes, status = reference_hashes(lambda out: reference(path, out), info["frame_bytes"])
+    except subprocess.TimeoutExpired:
+        print(f"skip {directory.name}: reference decoder timed out", file=sys.stderr)
+        return directory.name, None
     shipped = shipped_md5s(directory)
     md5 = hashes.whole.hexdigest()
+    if status != 0 and not hashes.frames:
+        print(f"skip {directory.name}: reference decoder failed ({status})", file=sys.stderr)
+        return directory.name, None
     return directory.name, {
         "name": directory.name, "bitstream": str(path.relative_to(streams)), **info,
         "md5": md5, "frames": len(hashes.frames), "frame_md5": hashes.frames,
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "shipped_md5_agrees": (md5 in shipped) if shipped else None,
+        **({"reference_status": status} if status else {}),
     }
 
 

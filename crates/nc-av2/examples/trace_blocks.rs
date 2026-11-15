@@ -2,7 +2,10 @@
 //! layer's trace in dav2d's `DEBUG_BLOCK_INFO` format, then the first
 //! error: what `tools/dev/av2_foreign/block_trace.py` holds against dav2d.
 //!
-//! `cargo run -p nanocodec-av2 --example trace_blocks -- FILE`
+//! `cargo run -p nanocodec-av2 --example trace_blocks -- FILE [UNFILTERED.yuv]`
+//!
+//! With a second path, it also writes every output picture before the loop
+//! filters (I420), to hold against dav2d `--inloopfilters none`.
 use std::io::Write;
 
 /// IVF file and frame header sizes.
@@ -33,6 +36,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("usage: trace_blocks FILE")?;
     let file = std::fs::read(path)?;
     let mut decoder = nc_av2::Decoder::default();
+    let mut unfiltered = match std::env::args().nth(2) {
+        Some(path) => {
+            decoder.skip_loop_filters();
+            Some(std::fs::File::create(path)?)
+        }
+        None => None,
+    };
     decoder.trace_blocks(Box::new(|line| {
         let _ = writeln!(std::io::stdout().lock(), "{line}");
     }));
@@ -41,7 +51,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("ERROR {error}");
             break;
         }
-        while decoder.next_output() {}
+        while decoder.next_output() {
+            if let (Some(out), Some(shown)) = (unfiltered.as_mut(), decoder.shown()) {
+                for plane in nc_common::PlaneIndex::ALL {
+                    let view = shown.plane(plane);
+                    for y in 0..view.height() {
+                        out.write_all(&view.row(y)[..view.width()])?;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
