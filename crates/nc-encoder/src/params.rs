@@ -894,17 +894,15 @@ param_group! {
             "1 applies the codec's fixed-QP profile (`CodecBackend::FIXED_QP_PARAMS`: its static frame-level pattern for coding without rate control) beneath the caller's settings; the CLI sets it for --qp without --bitrate, a preset may pin 0",
         key_still_boost: 0.0, [0.0, 18.0],
             "QP units finer a key frame is coded on a fixed camera (scaled by how still the scene is: the running unchanged-block share, or the start-up lookahead's for the first key, from 0.8 to 1), its loan repaid on schedule by the frames after it (0 = off): higher invests more in the picture a still scene's later frames inherit",
-        // Shared default (AV1, VP9, HEVC, VVC, AV2 Defaults; inert where no
-        // still boost is set or the inheritance depth is off): 600-frame L3,
-        // keys every 10 s, draw 2026-11-15, no guard: AV1 -1.08%, VP9
-        // -1.19%, HEVC -0.32%, VVC -1.06%, AV2 -0.87% (crowd -2.5..-3.0%);
-        // `rate_control.rs` `inherited_key_weight`. H.264 has no inheritance
-        // depth yet, so it is inert there.
-        key_inherit: 1.0, [0.0, 1.0],
+        // Off (owner, 2026-11-15): on in every Default it made keys pulse
+        // visibly at keys every 10 s (final-check 478e8249 -> 556e6550:
+        // periodic-key pulse HEVC +1.61 dB, AV2 +0.68 dB against +0.25)
+        // although J improved (600-frame L3: AV1 -1.08%, VP9 -1.19%, HEVC
+        // -0.32%, VVC -1.06%, AV2 -0.87%). It may return only pulse-capped,
+        // under +0.25 dB at keys every 2 s and 10 s.
+        key_inherit: 0.0, [0.0, 1.0],
             "the share of `rate.key_still_boost` the measured inheritance can give a key: the boost scales by the larger of the fixed-camera share and this times the inheritance (the cadence depth `structure.inherited_depth` asks for, above its probe floor): a scene whose inter frames keep the high-quality frames' quality, such as a crowd's still background, gets the boost although under 0.8 of its blocks are unchanged; 0 scales by the unchanged share alone (higher: finer keys on inheriting scenes, a larger key pulse)",
-        // At keys every 2 s the full share raised the periodic-key pulse by
-        // 0.64-0.85 dB; scaled by the period it is 0.00 at the same J.
-        key_inherit_lifetime: 10.0, [0.0, 60.0],
+        key_inherit_lifetime: 0.0, [0.0, 60.0],
             "with `rate.key_inherit`, the key period (seconds) at which the inheritance's share of the boost is full; shorter periods get it in proportion, as fewer frames inherit the key before the next one replaces it (0 = whatever the period): higher spends less on short key periods",
         key_hold_still: 0.0, [0.0, 4.0],
             "buffers a periodic key of a still scene (running unchanged-block share at least `rate.key_repay_still_from`) may take whatever the debt, planned at the quality the inter frames hold rather than by its repay phase or the debt correction (0 = off): the frames after it repay it",
