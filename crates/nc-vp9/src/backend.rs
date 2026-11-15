@@ -2448,12 +2448,7 @@ impl Vp9Backend {
             .map(|plane| {
                 let ss = usize::from(plane != PlaneIndex::Y);
                 let (x, y, n) = (block.x >> ss, block.y >> ss, block.size() >> ss);
-                let size = nc_dsp::BlockSize::new(n, n).expect("square VP9 plane block");
-                let (src, rec) = (source.plane(plane), recon.plane(plane));
-                let (xi, yi) = (x as isize, y as isize);
-                let src = src.region(xi, yi, n, n).expect("block inside the picture");
-                let rec = rec.region(xi, yi, n, n).expect("block inside the picture");
-                u64::from(self.dsp.variance(size, &src, &rec).sse)
+                nc_encoder::block_sse(&self.dsp, (source, recon), plane, (x, y, n))
             })
             .sum()
     }
@@ -2596,18 +2591,13 @@ impl Vp9Backend {
         if spread <= 1.0 {
             return false;
         }
-        let (n, half) = (block.size(), block.size() / 2);
-        let size = nc_dsp::BlockSize::new(half, half).expect("square VP9 quadrant");
-        let quadrants = [(0, 0), (half, 0), (0, half), (half, half)].map(|(dx, dy)| {
-            let packed = &self.scratch.prediction[dy * n + dx..];
-            let pred = PlaneView::new(packed, n, half, half).expect("packed prediction");
-            let (x, y) = ((block.x + dx) as isize, (block.y + dy) as isize);
-            let src = source
-                .plane(PlaneIndex::Y)
-                .region(x, y, half, half)
-                .expect("block inside the source");
-            u64::from(self.dsp.variance(size, &src, &pred).sse)
-        });
+        let n = block.size();
+        let pred = PlaneView::new(&self.scratch.prediction, n, n, n).expect("packed prediction");
+        let src = source
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, n, n)
+            .expect("block inside the source");
+        let quadrants = nc_encoder::quadrant_sse(&self.dsp, &src, &pred, n);
         let total: u64 = quadrants.iter().sum();
         let largest = quadrants.into_iter().max().unwrap_or(0);
         (largest as f32) * QUADRANTS < spread * total as f32

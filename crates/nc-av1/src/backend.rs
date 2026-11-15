@@ -3194,22 +3194,10 @@ impl Av1Backend {
     /// The largest quarter's prediction error exceeds
     /// `inter_tx_split_concentration` times the quarters' mean.
     fn error_concentrated(&self, n: usize, src: &PlaneView<'_>, pred: &PlaneView<'_>) -> bool {
-        let half = n / 2;
-        let quarter = BlockSize::new(half, half).expect("square AV1 block size");
-        let quarters: [u32; 4] = std::array::from_fn(|i| {
-            let (qx, qy) = ((i % 2) * half, (i / 2) * half);
-            let s = src
-                .sub_view(qx, qy, half, half)
-                .expect("quarter inside block");
-            let p = pred
-                .sub_view(qx, qy, half, half)
-                .expect("quarter inside block");
-            self.dsp.variance(quarter, &s, &p).sse
-        });
-        let total: u64 = quarters.iter().map(|&q| u64::from(q)).sum();
-        let largest = quarters.iter().copied().max().unwrap_or(0);
-        f64::from(largest) * 4.0
-            > f64::from(self.params.inter_tx_split_concentration) * total as f64
+        let quarters = nc_encoder::quadrant_sse(&self.dsp, src, pred, n);
+        let total: u64 = quarters.iter().sum();
+        let largest = quarters.into_iter().max().unwrap_or(0);
+        largest as f64 * 4.0 > f64::from(self.params.inter_tx_split_concentration) * total as f64
     }
 
     /// Past qindex 255 (`lambda_scale` > 1) rate control wants a coarser

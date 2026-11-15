@@ -281,4 +281,5 @@ Progress is recorded below as it lands.
 | 11-15 | #5 key quantizer | `scaled_quantizer` (AV1, VP9, AV2 `keyframe_step_permille` search) beside `offset_key_quantizer` (a73985d0, audit-fixes); exact. |
 | 11-15 | #2 trellis settings, #4 planned dead zone, #6 shave | `nc_encoder::TrellisSettings` (all six codecs), `planned_min_level` / `apply_planned_dead_zone` (H.264, HEVC, AV1, VP9; generic over i16/i32 levels for the parked HEVC/VVC i16 branch), `shave_isolated_ones` (HEVC, VVC; VP9's and AV1's rules differ and stay theirs); exact. |
 | 11-15 | #11 intra fallback | `BlockDecision::intra_fallback` replaces the `CodecBackend::intra_fallback` hook and four (position, vector) stashes; exact. |
+| 11-15 | #13, #15 block and quadrant SSE | `nc_encoder::block_sse` (HEVC, VP9, H.264), `quadrant_sse` under the HEVC/VP9/AV1 split gates (each keeps its comparison); exact (252/252). |
 | 11-15 | #14 | not shared: HEVC/VVC `QuantGroup` and AV1/AV2 `block_qindex` are each codec's delta-QP syntax state, which belongs in the codec crate. |

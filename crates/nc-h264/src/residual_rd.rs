@@ -106,15 +106,7 @@ pub fn luma_gains<'a>(
 /// The luma squared error of `recon` against `source` over the macroblock
 /// at `(x, y)`.
 pub fn luma_sse(dsp: &Dsp, source: &Picture, recon: &Picture, (x, y): (usize, usize)) -> f32 {
-    fn region(picture: &Picture, (x, y): (usize, usize)) -> PlaneView<'_> {
-        picture
-            .plane(PlaneIndex::Y)
-            .region(x as isize, y as isize, MB, MB)
-            .expect("macroblock inside the picture")
-    }
-    let size = BlockSize::new(MB, MB).expect("16x16 is a kernel size");
-    let (src, rec) = (region(source, (x, y)), region(recon, (x, y)));
-    dsp.variance(size, &src, &rec).sse as f32
+    nc_encoder::block_sse(dsp, (source, recon), PlaneIndex::Y, (x, y, MB)) as f32
 }
 
 /// The coded luma quadrants worth their bits at `lambda` (squared error

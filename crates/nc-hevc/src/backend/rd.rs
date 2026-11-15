@@ -8,7 +8,6 @@
 //! (`HevcBackend::lambda`).
 
 use nc_common::{Picture, PlaneIndex, PlaneView};
-use nc_dsp::BlockSize;
 
 use super::HevcBackend;
 use crate::cabac::Context;
@@ -102,12 +101,7 @@ impl HevcBackend {
         plane: PlaneIndex,
         (x, y, n): (usize, usize, usize),
     ) -> u64 {
-        let size = BlockSize::new(n, n).expect("transform sizes 4..32");
-        let src = source.plane(plane).view();
-        let rec = recon.plane(plane).view();
-        let src = src.sub_view(x, y, n, n).expect("block inside the picture");
-        let rec = rec.sub_view(x, y, n, n).expect("block inside the picture");
-        u64::from(self.dsp.variance(size, &src, &rec).sse)
+        nc_encoder::block_sse(&self.dsp, (source, recon), plane, (x, y, n))
     }
 
     /// How unevenly the residual `src − pred` of an `n`-square block (n ≥ 8)
@@ -120,17 +114,9 @@ impl HevcBackend {
         pred: &PlaneView<'_>,
         n: usize,
     ) -> f32 {
-        let half = n / 2;
-        let size = BlockSize::new(half, half).expect("quadrants 4..16");
-        let mut largest = 0u64;
-        let mut total = 0u64;
-        for (qx, qy) in [(0, 0), (half, 0), (0, half), (half, half)] {
-            let a = src.sub_view(qx, qy, half, half).expect("quadrant");
-            let b = pred.sub_view(qx, qy, half, half).expect("quadrant");
-            let sse = u64::from(self.dsp.variance(size, &a, &b).sse);
-            largest = largest.max(sse);
-            total += sse;
-        }
+        let quadrants = nc_encoder::quadrant_sse(&self.dsp, src, pred, n);
+        let largest = quadrants.into_iter().max().unwrap_or(0);
+        let total: u64 = quadrants.iter().sum();
         if total == 0 {
             1.0
         } else {

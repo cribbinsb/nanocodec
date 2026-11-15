@@ -35,6 +35,7 @@
 
 mod aq;
 mod backend;
+mod block_error;
 mod bpp_curve;
 mod cdef_model;
 mod cdef_search;
@@ -100,6 +101,7 @@ pub use backend::{
     BlockDecision, CodecBackend, DEFAULT_LOOP_FILTER_REACH, FramePlan, FrameType, PredictionMode,
     ReferenceChoice, SpatialLayerFrame,
 };
+pub use block_error::{block_sse, quadrant_sse};
 pub use cdef_model::{CDEF_MODEL_MAX_Q, cdef_strengths_from_q};
 pub use cdef_search::{StrengthSelection, select_strength_sets};
 pub use chroma_offset::{
