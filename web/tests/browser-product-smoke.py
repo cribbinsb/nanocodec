@@ -98,7 +98,7 @@ try:
             .observe({ type: 'resource', buffered: true });''')
         page.goto(f'http://127.0.0.1:{server.server_port}/?display=webgl2')
         # The page opens already comparing, without a user gesture: a pre-encoded x264
-        # stream in A and live nanocodec H.264 Default matched to it in B (app.js
+        # stream in A and live nanocodec H.264 Medium matched to it in B (app.js
         # OPENING_STREAM), on that stream's clip. Each view has decoded two frames (the
         # faster view can deliver several before the slower one's first, as frames are in flight).
         page.wait_for_function('[0, 1].every(v => window.workerFrames.filter(f => f.view === v).length >= 2)', timeout=60000)
@@ -106,7 +106,7 @@ try:
         assert page.locator('#clip').input_value() == 'xiph-four-people'
         assert page.locator('.stream-picker').nth(0).input_value() == 'xiph-four-people-x264-medium-854x480-30fps-400k'
         summary = page.locator('#summary').inner_text()
-        assert summary.startswith('Comparing x264 medium, pre-encoded H.264') and 'nanocodec H.264 Default, encoding live (854×480, 30 fps, 400 kbps)' in summary, summary
+        assert summary.startswith('Comparing x264 medium, pre-encoded H.264') and 'nanocodec H.264 Medium, encoding live (854×480, 30 fps, 400 kbps)' in summary, summary
         # The top bar has the source, the clip and one Pause button; nothing to start or stop.
         assert page.locator('#start').count() == 0 and page.locator('#original').count() == 0
         assert page.locator('#step').is_hidden() and page.locator('#keyframe').is_hidden()
