@@ -8,7 +8,7 @@
 //! Luma uses one transform per block or the 4-way split
 //! ([`crate::tx_partition`]). Mirrors the encoder's syntax order exactly.
 use crate::block_coder::{
-    IS_INTER, LOSSLESS_TX_SIZE, LOSSLESS_TX4_SYMBOL, SKIP, SKIP_MODE_FILTER,
+    IS_INTER, LOSSLESS_TX_SIZE, LOSSLESS_TX4_SYMBOL, SINGLE_REF, SKIP, SKIP_MODE_FILTER,
     SKIP_MODE_SKIP_CONTEXTS, block_edges, lossless_size_group, plane_origin, skipped_layout, store,
 };
 use crate::block_state::{BlockInfo, BlockState};
@@ -32,7 +32,7 @@ use crate::{coeff, motion, prediction, transform};
 use nc_common::decode::{DecodeError, Result};
 use nc_common::{Picture, PictureRecycler, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::intra_prediction::av2::Av2IntraEdges;
-use nc_dsp::{BlockSize, Dsp, Residual32};
+use nc_dsp::{BlockSize, Dsp, Residual16};
 
 /// Most samples of one plane block (64×64 luma).
 const MAX_PLANE_AREA: usize = 64 * 64;
@@ -69,13 +69,34 @@ enum Source {
     Inter,
 }
 
-/// An inter picture's reference, the frame's interpolation filter mode and
-/// whether blocks may code skip mode.
+/// An inter picture's reference (rank 0), any second reference, the
+/// frame's interpolation filter mode and whether blocks may code skip mode.
 #[derive(Clone, Copy)]
 pub(crate) struct InterReference<'r> {
     pub picture: &'r Picture,
+    pub second: Option<SecondReference<'r>>,
     pub filter: FrameFilter,
     pub skip_mode: bool,
+}
+
+/// A frame's second reference (`num_total_refs` 2, rank 1), with both
+/// ranks' distances from the current picture in frames (AVM
+/// `ref_frame_relative_dist`).
+#[derive(Clone, Copy)]
+pub(crate) struct SecondReference<'r> {
+    pub picture: &'r Picture,
+    pub distances: [i32; 2],
+}
+
+impl<'r> InterReference<'r> {
+    /// The picture of reference rank `rank`.
+    fn picture_of(&self, rank: u8) -> Result<&'r Picture> {
+        match (rank, self.second) {
+            (0, _) => Ok(self.picture),
+            (1, Some(second)) => Ok(second.picture),
+            _ => Err(DecodeError::Malformed("AV2 reference rank")),
+        }
+    }
 }
 
 struct TileDecoder<'r> {
@@ -100,7 +121,7 @@ struct TileDecoder<'r> {
     compound: prediction::CompoundScratch,
     /// Scratch of one transform: levels, residual, prediction, reconstruction.
     levels: Vec<i32>,
-    residual: Vec<i32>,
+    residual: Vec<i16>,
     tx_prediction: Vec<u8>,
     /// Intra edge arrays, reused across predictions.
     edges: Av2IntraEdges,
@@ -162,6 +183,33 @@ impl Workspace {
     }
 }
 
+/// Check an inter frame's references against the subset and give the
+/// motion lists any second reference.
+/// # Errors
+/// Rejects skip mode with switchable filters (neighbouring skip-mode
+/// blocks' filter contexts are outside the subset) or beside a second
+/// reference (skip mode would pair the two references, AVM
+/// `av2_setup_skip_mode_allowed`).
+fn prepare_references(state: &mut BlockState, reference: Option<InterReference<'_>>) -> Result<()> {
+    let Some(reference) = reference else {
+        return Ok(());
+    };
+    if reference.skip_mode && reference.filter == FrameFilter::Switchable {
+        return Err(DecodeError::Unsupported(
+            "AV2 skip mode with switchable filters",
+        ));
+    }
+    let Some(second) = reference.second else {
+        return Ok(());
+    };
+    if reference.skip_mode {
+        return Err(DecodeError::Unsupported(
+            "AV2 skip mode with two references",
+        ));
+    }
+    state.motion.set_reference_distances(&second.distances)
+}
+
 /// Decode one tile of a key (`reference` is `None`) or inter picture and
 /// apply its in-loop filters (deblocking, then CDEF). An adapting tile
 /// starts from `inherited` models (cross-frame context) or the defaults,
@@ -176,12 +224,6 @@ pub(crate) fn decode(
     inherited: Option<&TileCdfs>,
     work: &mut Workspace,
 ) -> Result<(Picture, Option<Box<TileCdfs>>)> {
-    if reference.is_some_and(|r| r.skip_mode && r.filter == FrameFilter::Switchable) {
-        // Neighbouring skip-mode blocks' filter contexts are outside the subset.
-        return Err(DecodeError::Unsupported(
-            "AV2 skip mode with switchable filters",
-        ));
-    }
     let mut reader = Reader::new(data)?;
     match (params.adaptive_cdf, inherited) {
         (true, Some(models)) => reader.adapt_from(models.clone()),
@@ -232,6 +274,7 @@ pub(crate) fn decode(
             (reference.is_some(), data.len()),
         ),
     };
+    prepare_references(&mut decoder.state, reference)?;
     let mut partitions = PartitionReader::new(width, height)?;
     for y in (0..height).step_by(SUPERBLOCK) {
         for x in (0..width).step_by(SUPERBLOCK) {
@@ -390,6 +433,7 @@ impl TileDecoder<'_> {
                 luma_mode: luma,
                 filter: None,
                 skip_mode: false,
+                reference: 0,
             },
         );
         self.state.motion.commit_intra(x, y, size)
@@ -405,19 +449,21 @@ impl TileDecoder<'_> {
         let skip_context = self.state.skip_context(x, y, size);
         let skip = reader.model(&SKIP[skip_context], |m| &mut m.block_skip[skip_context])? != 0;
         self.read_cdef_index(reader, ((x, y), size), skip)?;
-        let (mode, mv) = self.read_vector(reader, (x, y), size)?;
+        let rank = self.read_reference(reader, (x, y), size)?;
+        let (mode, mv) = self.read_vector(reader, (x, y), size, rank)?;
         let filter = match reference.filter {
             FrameFilter::Fixed(filter) => filter,
             FrameFilter::Switchable if interp_filter::is_coded(mode) => {
-                let context = self.state.filter_context(x, y, size);
+                let context = self.state.filter_context(x, y, size, rank);
                 self.filter_symbols.read(reader, context)?
             }
             FrameFilter::Switchable => interp_filter::UNCODED,
         };
-        self.predict(reference.picture, filter, (x, y), size, mv)?;
+        self.predict(reference.picture_of(rank)?, filter, (x, y), size, mv)?;
         let motion = BlockMotion::Single {
             vector: mv,
             is_new: mode == InterMode::New,
+            reference: rank,
         };
         self.finish_inter(reader, (x, y), size, (skip, filter), motion)
     }
@@ -502,6 +548,10 @@ impl TileDecoder<'_> {
                 luma_mode: Mode::Dc,
                 filter: Some(filter),
                 skip_mode: matches!(motion, BlockMotion::Compound(_)),
+                reference: match motion {
+                    BlockMotion::Single { reference, .. } => reference,
+                    BlockMotion::Compound(_) => 0,
+                },
             },
         );
         #[cfg(feature = "analysis")]
@@ -601,7 +651,7 @@ impl TileDecoder<'_> {
                         (levels, eob, dequantizer),
                         qindex,
                     ) {
-                        Residual32::Constant(constant)
+                        Residual16::Constant(constant)
                     } else {
                         transform::reconstruct_with(
                             &self.dsp,
@@ -610,7 +660,7 @@ impl TileDecoder<'_> {
                             qindex,
                             residual,
                         )?;
-                        Residual32::Samples(residual)
+                        Residual16::Samples(residual)
                     };
                     let side = tx.width();
                     let prediction = PlaneView::new(predicted, side, side, side).unwrap();
@@ -618,7 +668,7 @@ impl TileDecoder<'_> {
                     let mut destination = plane
                         .sub_view_mut(position.0, position.1, side, side)
                         .unwrap();
-                    self.dsp.reconstruct_i32(
+                    self.dsp.reconstruct_i16(
                         BlockSize::new(side, side).unwrap(),
                         &prediction,
                         output,
@@ -638,14 +688,33 @@ impl TileDecoder<'_> {
         Ok(())
     }
 
-    /// Read the inter mode, DRL index and vector difference.
+    /// Read the block's reference rank (AVM `read_single_ref`): rank 0
+    /// unless the frame has two references, where one symbol names rank 0
+    /// (1) or rank 1 (0).
+    fn read_reference(
+        &self,
+        reader: &mut Reader<'_>,
+        (x, y): (usize, usize),
+        size: usize,
+    ) -> Result<u8> {
+        if self.state.motion.reference_count() < 2 {
+            return Ok(0);
+        }
+        let context = self.state.single_reference_context(x, y, size);
+        let symbol = reader.model(&SINGLE_REF[context], |m| &mut m.single_ref[context])?;
+        Ok(u8::from(symbol == 0))
+    }
+
+    /// Read the inter mode, DRL index and vector difference of a block on
+    /// reference rank `rank`.
     fn read_vector(
         &self,
         reader: &mut Reader<'_>,
         (x, y): (usize, usize),
         size: usize,
+        rank: u8,
     ) -> Result<(InterMode, (i32, i32))> {
-        let candidates = self.state.motion.candidates(x, y, size)?;
+        let candidates = self.state.motion.candidates_for(x, y, size, rank)?;
         let mode = mv_refs::read_inter_mode(reader, candidates.mode_context)?;
         let index = if mode.has_drl() {
             mv_refs::read_drl(reader, candidates)?

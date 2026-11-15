@@ -7,12 +7,11 @@ use super::{COS_BITS, Lanes, Products};
 use crate::Vp9Pass;
 use crate::txfm::inverse_lanes::InverseLanes;
 use core::arch::x86_64::{
-    __m128i, __m256i, _mm_add_epi16, _mm_cvtepu8_epi16, _mm_cvtsi32_si128, _mm_loadl_epi64,
-    _mm_loadu_si128, _mm_mulhrs_epi16, _mm_packus_epi16, _mm_packus_epi32, _mm_set1_epi16,
-    _mm_storel_epi64, _mm_storeu_si128, _mm_sub_epi16, _mm_unpackhi_epi16, _mm_unpacklo_epi16,
-    _mm256_add_epi32, _mm256_and_si256, _mm256_castsi128_si256, _mm256_castsi256_si128,
-    _mm256_cvtepi16_epi32, _mm256_extracti128_si256, _mm256_inserti128_si256, _mm256_loadu_si256,
-    _mm256_madd_epi16, _mm256_set1_epi32, _mm256_sra_epi32, _mm256_srai_epi32, _mm256_storeu_si256,
+    __m128i, __m256i, _mm_add_epi16, _mm_cvtepu8_epi16, _mm_loadl_epi64, _mm_loadu_si128,
+    _mm_mulhrs_epi16, _mm_packus_epi16, _mm_packus_epi32, _mm_set1_epi16, _mm_storel_epi64,
+    _mm_storeu_si128, _mm_sub_epi16, _mm_unpackhi_epi16, _mm_unpacklo_epi16, _mm256_add_epi32,
+    _mm256_and_si256, _mm256_castsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
+    _mm256_inserti128_si256, _mm256_madd_epi16, _mm256_set1_epi32, _mm256_srai_epi32,
     _mm256_sub_epi32,
 };
 
@@ -128,12 +127,6 @@ impl Lanes for Narrow {
         }
     }
     #[inline(always)]
-    fn load_i32_wrapping(src: &[i32]) -> Self {
-        let src = &src[..super::LANES];
-        // SAFETY: the checked slice holds one unaligned eight-element load.
-        unsafe { Wide(_mm256_loadu_si256(src.as_ptr().cast())).narrow() }
-    }
-    #[inline(always)]
     fn load_i16(src: &[i16]) -> Self {
         let src = &src[..super::LANES];
         // SAFETY: the checked slice holds all eight i16 samples.
@@ -148,27 +141,19 @@ impl Lanes for Narrow {
         }
     }
     #[inline(always)]
-    fn store_shifted(self, dst: &mut [i32], shift: u32) {
-        let dst = &mut dst[..super::LANES];
-        // SAFETY: AVX2 is enabled and the checked destination holds eight i32
-        // outputs. Widen before rounding to avoid i16 rounding overflow.
-        unsafe {
-            let sum = _mm256_add_epi32(
-                _mm256_cvtepi16_epi32(self.0),
-                _mm256_set1_epi32(1 << (shift - 1)),
-            );
-            let out = _mm256_sra_epi32(sum, _mm_cvtsi32_si128(shift as i32));
-            _mm256_storeu_si256(dst.as_mut_ptr().cast(), out);
-        }
+    fn round_shift(self, shift: u32) -> Self {
+        // SAFETY: AVX2 is enabled; register-only arithmetic. `mulhrs` by
+        // 2^(15 - shift) is exactly `(x + 2^(shift - 1)) >> shift` (libvpx
+        // rounds the same way).
+        unsafe { Self(_mm_mulhrs_epi16(self.0, _mm_set1_epi16(1 << (15 - shift)))) }
     }
     #[inline(always)]
     unsafe fn add_shifted(self, dst: *mut u8, shift: u32) {
+        let residual = self.round_shift(shift).0;
         // SAFETY: AVX2 is enabled and the caller's destination holds the
-        // eight samples. `mulhrs` by 2^(15 - shift) is exactly
-        // `(x + 2^(shift - 1)) >> shift` (libvpx rounds the same way); the
-        // residual plus a pixel fits i16 and `packus` clips to 0..=255.
+        // eight samples. The residual plus a pixel fits i16 and `packus`
+        // clips to 0..=255.
         unsafe {
-            let residual = _mm_mulhrs_epi16(self.0, _mm_set1_epi16(1 << (15 - shift)));
             let pixels = _mm_cvtepu8_epi16(_mm_loadl_epi64(dst.cast_const().cast()));
             let bytes = _mm_packus_epi16(_mm_add_epi16(residual, pixels), residual);
             _mm_storel_epi64(dst.cast(), bytes);
@@ -191,8 +176,8 @@ pub(crate) unsafe fn inverse(
     log2: u8,
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
-    output: &mut [i32],
+    input: &[i16],
+    output: &mut [i16],
 ) {
     super::inverse::<Narrow>(log2, columns, rows, input, output);
 }
@@ -202,7 +187,7 @@ pub(crate) unsafe fn inverse_add(
     log2: u8,
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
+    input: &[i16],
     nonzero: (usize, usize),
     dst: &mut [u8],
     dst_stride: usize,

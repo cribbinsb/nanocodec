@@ -51,6 +51,10 @@
 //! scaling; this differs from libaom only for coefficients the dequantiser
 //! cannot produce, and it keeps every SIMD product in 32 bits.
 
+pub(crate) mod dav1d_model;
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+pub(crate) mod dav1d_neon;
 #[allow(unsafe_code)]
 mod generic;
 #[allow(unsafe_code)]
@@ -308,19 +312,32 @@ impl Av1TxType {
 /// The 2-D inverse of one size: column then row kernel, column-major
 /// `coeffs` (module docs), added to `dst` at `dst_stride` with 8-bit
 /// clipping.
-pub(crate) type InverseAddFn = unsafe fn(
+pub(crate) type InverseAddFn<C> = unsafe fn(
     vertical: Kernel1d,
     horizontal: Kernel1d,
-    coeffs: &[i32],
+    coeffs: &[C],
     nonzero_rows: usize,
     dst: &mut [u8],
     dst_stride: usize,
 );
 
+/// An inverse taking 16-bit coefficients directly, with dav1d's ABI
+/// (`inv_txfm_add_*_8bpc`): destination and stride, coefficients (zeroed
+/// where read), and the last scan index `eob - 1`.
+pub(crate) type DirectI16Fn = unsafe extern "C" fn(*mut u8, isize, *mut i16, i32);
+
 /// One ISA's 2-D inverses, indexed like [`Av1TxSize::ALL`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Av1InverseFns {
-    pub add: [InverseAddFn; 19],
+    pub add: [InverseAddFn<i32>; 19],
+    /// The same on 16-bit coefficients (the 8-bit decoder's storage). A
+    /// square `DCT_DCT` entry takes the side of its nonzero low square as
+    /// `nonzero_rows`.
+    pub add_i16: [InverseAddFn<i16>; 19],
+    /// Where an ISA has them, direct 16-bit inverses by size index and type
+    /// discriminant (dav1d's NEON assembly); they take precedence over
+    /// `add_i16` and `dc`.
+    pub direct_i16: [[Option<DirectI16Fn>; 16]; 19],
     pub dc: unsafe fn(Av1TxSize, i32, &mut [u8], usize),
 }
 
@@ -355,7 +372,7 @@ pub fn av1_inverse_nonzero_rows(tx: Av1TxSize, kind: Av1TxType, eob: usize) -> u
     }
 }
 
-/// Highest end-of-block of a `DCT_DCT` 32x32 or 64x64 whose nonzero
+/// Highest end-of-block of a `DCT_DCT` 16x16, 32x32 or 64x64 whose nonzero
 /// coefficients all lie in the low 8x8 (the first 36 positions of the
 /// default zig-zag scan, §5.11.41, cover exactly the `r + c < 8` triangle).
 pub const AV1_LOW8_MAX_EOB: usize = 36;
@@ -364,7 +381,9 @@ pub const AV1_LOW16_MAX_EOB: usize = 136;
 
 /// The side of the low-frequency square that holds every nonzero
 /// coefficient of a 32x32 or 64x64 `DCT_DCT` with end-of-block `eob`
-/// (8, 16 or 32), for the EOB-sparse inverse kernels.
+/// (8, 16 or 32), for the EOB-sparse inverse kernels. A 16x16's square is
+/// this side capped at 16: its scan covers the `r + c < 16` triangle by
+/// position 136 too.
 #[must_use]
 pub const fn av1_dct_nonzero_side(eob: usize) -> usize {
     if eob <= AV1_LOW8_MAX_EOB {

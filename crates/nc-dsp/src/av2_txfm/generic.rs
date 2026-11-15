@@ -23,15 +23,15 @@ use core::mem::MaybeUninit;
 use super::{DC_WEIGHT, DCT_BASIS, MAX_CODED_SIDE, MAX_POINTS};
 use crate::codec_txfm::generic::{as_uninit, written};
 use crate::simd::I32Lanes;
-use crate::txfm::generic::store_pass;
+use crate::txfm::generic::{store_pass, store_pass_sat16};
 
 /// Coded coefficients of the largest transform.
 const MAX_CODED_AREA: usize = MAX_CODED_SIDE * MAX_CODED_SIDE;
 
 /// Range of the inverse column pass output: the 8-bit residual range
 /// (AVM `inv_txfm_c`: `±(1 << bd)`, upper bound exclusive).
-const RESIDUAL_MIN: i32 = -256;
-const RESIDUAL_MAX: i32 = 255;
+pub(super) const RESIDUAL_MIN: i32 = -256;
+pub(super) const RESIDUAL_MAX: i32 = 255;
 
 /// The odd half of the `2H`-point matrix: row `r` is the first `H` samples
 /// of basis vector `2r + 1` (the `N`-point vector `k` is 64-point row
@@ -230,15 +230,20 @@ fn forward_dct<V: I32Lanes, const N: usize>(x: &[V; N], y: &mut [V; N], outputs:
 /// blocks end early in the scan, so most of a large transform's
 /// coefficients are zero.
 ///
+/// The coefficients, the row pass's clamped output and the residual are
+/// 16-bit values (AVM `clamp_buf` to `bd + 8` bits, then `±(1 << bd)`), so
+/// they are stored as `i16`; only the products and their sums before each
+/// rounding shift need the 32-bit lanes (they reach `2^27`, module docs).
+///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs); `V::LANES <= C`.
 #[inline(always)]
 pub(crate) unsafe fn inverse<V: I32Lanes, const C: usize>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     nonzero: usize,
     shifts: (u32, u32),
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     // Each arm inlines a copy of the passes with its input bound constant
     // (see `corner_bound`).
@@ -281,62 +286,63 @@ pub(super) const fn corner_bound<const C: usize>(nonzero: usize) -> CornerBound 
 /// As [`inverse`].
 #[inline(always)]
 unsafe fn inverse_within<V: I32Lanes, const C: usize>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     nonzero: usize,
     inputs: usize,
     shifts: (u32, u32),
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     debug_assert!(nonzero <= inputs);
     let lanes = V::LANES;
     let mut x = [V::splat(0); C];
     let mut y = [V::splat(0); C];
     // The input transposed, `t[k * C + r] = coeffs[r][k]`, so that the row
-    // pass is lane-parallel; clamped to 16 bits (AVM `clamp_buf`). Tiles
-    // outside the nonzero corner are stored as zeros without loading.
-    let mut t = [MaybeUninit::<i32>::uninit(); MAX_CODED_AREA];
+    // pass is lane-parallel. Tiles outside the nonzero corner are stored as
+    // zeros without loading.
+    let mut t = [MaybeUninit::<i16>::uninit(); MAX_CODED_AREA];
     for r0 in (0..C).step_by(lanes) {
         for k0 in (0..C).step_by(lanes) {
             for (i, lane) in x[..lanes].iter_mut().enumerate() {
                 *lane = if r0 < nonzero && k0 < nonzero {
-                    V::load(&coeffs[(r0 + i) * C + k0..]).clamp16()
+                    V::load_i16(&coeffs[(r0 + i) * C + k0..])
                 } else {
                     V::splat(0)
                 };
             }
-            V::store_transposed(&x[..lanes], &mut t[k0 * C + r0..], C);
+            V::store_transposed_sat16(&x[..lanes], &mut t[k0 * C + r0..], C);
         }
     }
     // SAFETY: every (r0, k0) tile of the C x C buffer was written above.
     let t = unsafe { written(&t, C * C) };
-    // The row pass's output, row-major.
-    let mut m = [MaybeUninit::<i32>::uninit(); MAX_CODED_AREA];
+    // The row pass's output, row-major, clamped to 16 bits by the
+    // saturating store (AVM `clamp_buf`).
+    let mut m = [MaybeUninit::<i16>::uninit(); MAX_CODED_AREA];
     for r0 in (0..C).step_by(lanes) {
         if r0 < nonzero {
             for (k, lane) in x.iter_mut().enumerate() {
-                *lane = V::load(&t[k * C + r0..]);
+                *lane = V::load_i16(&t[k * C + r0..]);
             }
             inverse_dct(&x, inputs, &mut y);
             for lane in &mut y {
-                *lane = lane.round_shift(shifts.0).clamp16();
+                *lane = lane.round_shift(shifts.0);
             }
         } else {
             y = [V::splat(0); C];
         }
-        store_pass::<V>(&y, r0, C, &mut m);
+        store_pass_sat16::<V>(&y, r0, C, &mut m);
     }
     // SAFETY: rows r0..r0 + LANES of `m` were written for every r0.
     let m = unsafe { written(&m, C * C) };
     let (low, high) = (V::splat(RESIDUAL_MIN), V::splat(RESIDUAL_MAX));
     for x0 in (0..C).step_by(lanes) {
         for (r, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&m[r * C + x0..]);
+            *lane = V::load_i16(&m[r * C + x0..]);
         }
         // Rows of `m` from `nonzero` on are zero (zero coefficient rows).
         inverse_dct(&x, inputs, &mut y);
         for (r, lane) in y.iter().enumerate() {
             let sample = lane.round_shift(shifts.1).max(low).min(high);
-            sample.store(&mut out[r * C + x0..]);
+            sample.store_sat16(&mut out[r * C + x0..]);
         }
     }
 }
@@ -350,10 +356,10 @@ unsafe fn inverse_within<V: I32Lanes, const C: usize>(
 /// As [`inverse`].
 #[inline(always)]
 pub(crate) unsafe fn inverse64<V: I32Lanes>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     nonzero: usize,
     shifts: (u32, u32),
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     const SIDE: usize = 2 * MAX_CODED_SIDE;
     let mut coded = [0; MAX_CODED_AREA];
@@ -448,7 +454,7 @@ macro_rules! av2_txfm_kernels {
         }
 
         $(#[$attr])*
-        unsafe fn inverse64(coeffs: &[i32], nonzero: usize, out: &mut [i32]) {
+        unsafe fn inverse64(coeffs: &[i16], nonzero: usize, out: &mut [i16]) {
             // SAFETY: see the module docs.
             unsafe { g::inverse64::<$v>(coeffs, nonzero, Av2TxSize::Tx64.inverse_shifts(), out) }
         }
@@ -466,7 +472,7 @@ macro_rules! av2_txfm_kernels {
         }
 
         $(#[$attr])*
-        unsafe fn $inverse(coeffs: &[i32], nonzero: usize, out: &mut [i32]) {
+        unsafe fn $inverse(coeffs: &[i16], nonzero: usize, out: &mut [i16]) {
             // SAFETY: see the module docs.
             unsafe {
                 g::inverse::<$lanes, $n>(coeffs, nonzero, Av2TxSize::$size.inverse_shifts(), out)

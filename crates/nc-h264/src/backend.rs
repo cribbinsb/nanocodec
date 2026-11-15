@@ -1782,6 +1782,20 @@ impl CodecBackend for H264Backend {
 
     /// The shared decision values of the same joint-search set as the
     /// `H264Params` defaults (measured together; validated for H.264 only).
+    // The fixed-QP profile (`--qp`): a coarser odd-position leaf (+2), the
+    // gentler cadence (scale 1, not the CBR Default's 1.4), base frames at
+    // 0.8 λ, and the key 8 QP finer than the P frames (6). Fixed QP, matched
+    // QP (nceval.fixedqp, 14-16 pool clips): draw fixedqp-2026-11-14 J -1.9%
+    // [-2.9, -0.8], draw fixedqp-2026-11-14-second -2.9% [-4.6, -1.6]; each
+    // alone -0.4..-1.7%. docs/analysis/fixed-qp-gap-2026-11-14.md
+    // "fixed-QP profile". The Fast presets pin it off.
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
+        ("rate.cadence_leaf_penalty", 2.0),
+        ("rate.cadence_scale", 1.0),
+        ("decision.base_lambda_scale", 0.8),
+        ("h264.keyframe_qp_offset", 8.0),
+    ];
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)

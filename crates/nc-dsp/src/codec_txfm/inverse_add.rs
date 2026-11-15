@@ -1,7 +1,7 @@
 //! Fused HEVC inverse transform and reconstruction through the shared DSP.
-//! The existing i32 coefficient layout is retained; only the first pass
-//! has block-sized
-//! scratch. Final transposes stay in registers and add directly to u8.
+//! Coefficients come in 16 bits (the scaling process's range, §8.6.3);
+//! only the first pass has block-sized scratch. Final transposes stay in
+//! registers and add directly to u8.
 //! HEVC §8.6.4.2 specifies column shift 7, clamp16, then row shift 12.
 
 #![allow(clippy::inline_always)]
@@ -13,8 +13,8 @@ use core::mem::MaybeUninit;
 
 /// Add a constant DCT DC residual with both normative roundings.
 #[inline(always)]
-pub(super) fn dc<V: I32Lanes, const N: usize>(coefficient: i32, dst: &mut [u8], stride: usize) {
-    let coefficient = coefficient.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+pub(super) fn dc<V: I32Lanes, const N: usize>(coefficient: i16, dst: &mut [u8], stride: usize) {
+    let coefficient = i32::from(coefficient);
     let first = (coefficient * 64 + 64) >> 7;
     let residual = (first * 64 + 2048) >> 12;
     if residual != 0 {
@@ -28,7 +28,7 @@ pub(super) fn dc<V: I32Lanes, const N: usize>(coefficient: i32, dst: &mut [u8], 
 /// `extent` is at most `(N, N)` and covers every nonzero coefficient.
 #[inline(always)]
 pub(super) unsafe fn inverse_add<V: I32Lanes, T: BoundedLine, const N: usize>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     (rows, columns): (usize, usize),
     dst: &mut [u8],
     stride: usize,
@@ -49,7 +49,7 @@ pub(super) unsafe fn inverse_add<V: I32Lanes, T: BoundedLine, const N: usize>(
     let mut g = [MaybeUninit::<i32>::uninit(); MAX_AREA];
     for x0 in (0..written_columns).step_by(lanes) {
         for (k, lane) in x[..rows].iter_mut().enumerate() {
-            *lane = V::load(&coeffs[k * N + x0..]).clamp16();
+            *lane = V::load_i16(&coeffs[k * N + x0..]);
         }
         T::apply_bounded(&x, &mut y, rows);
         first.apply(&mut y);

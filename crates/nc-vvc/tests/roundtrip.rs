@@ -475,3 +475,37 @@ fn analysis_leaves_decoding_unchanged_and_tiles_each_picture() {
         assert_eq!(intra == covered, index == 0, "frame {index}");
     }
 }
+
+/// The second reference (`refs.second`): the key stays in RPL0 as a second
+/// entry and CUs choose it with `ref_idx_l0` 1. A scene that leaves and
+/// returns predicts from the key again, so the stream shrinks; every picture
+/// decodes exactly, also after the key has left the DPB (past the POC
+/// distance it may be listed at) and across the POC LSB wrap.
+#[test]
+fn second_reference_returns_to_the_key_and_decodes_exactly() {
+    let (w, h) = (96, 64);
+    // Scene A (the key), scene B for a few pictures, then A again.
+    let scene = |frame: usize| split_texture(w, h, if (1..4).contains(&frame) { 7 } else { 0 });
+    let mut totals = Vec::new();
+    for second in [0., 1.] {
+        let mut c = config(w, h, 30);
+        c.intra_period = 1000;
+        c.params.set("refs.second", second);
+        let mut encoder = Encoder::<VvcBackend>::new(c).unwrap();
+        let mut decoder = Decoder::new();
+        let mut total = 0;
+        for frame in 0..300 {
+            let packet = encoder.encode(&scene(frame));
+            if frame < 8 {
+                total += packet.data.len();
+            }
+            assert_eq!(
+                bytes(&decoder.decode(&packet.data).unwrap()),
+                bytes(encoder.reconstruction()),
+                "refs.second {second} frame {frame}"
+            );
+        }
+        totals.push(total);
+    }
+    assert!(totals[1] < totals[0], "{totals:?}");
+}

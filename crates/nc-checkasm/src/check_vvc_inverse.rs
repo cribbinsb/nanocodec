@@ -3,7 +3,7 @@ use crate::{check::CheckReport, rng::Rng};
 use nc_dsp::Dsp;
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
-    const GUARD: i32 = 0x1234_5678;
+    const GUARD: i16 = 0x1234;
     for width in [2, 4, 8, 16, 32] {
         for height in [2, 4, 8, 16, 32] {
             for qp in 0..=63 {

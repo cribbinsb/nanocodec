@@ -17,13 +17,18 @@
 //! loads need `unsafe`.
 
 use core::arch::wasm32::{
-    i16x8_abs, i16x8_add, i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_add, u8x16_sub_sat,
-    u16x8_add, u16x8_extadd_pairwise_u8x16, u16x8_extend_low_u8x16, u16x8_max, u16x8_splat, u32x4,
-    u32x4_extadd_pairwise_u16x8, u32x4_extract_lane, u32x4_lt, u32x4_min, u32x4_splat, u64x2, v128,
-    v128_bitselect, v128_load, v128_load64_zero, v128_or, v128_store,
+    i16x8_abs, i16x8_add, i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_add,
+    i32x4_extend_high_i16x8, i32x4_extend_low_i16x8, i32x4_shuffle, u8x16_sub_sat, u16x8_add,
+    u16x8_extadd_pairwise_u8x16, u16x8_extend_low_u8x16, u16x8_lt, u16x8_max, u16x8_min,
+    u16x8_shuffle, u16x8_splat, u32x4, u32x4_extadd_pairwise_u16x8, u32x4_extract_lane,
+    u32x4_splat, u64x2, v128, v128_bitselect, v128_load, v128_load64_zero, v128_or, v128_store,
+    v128_store64_lane,
 };
 
-use super::{GRID_BLOCKS, GridBest, PixelFns, normalise_satd_4x4, normalise_satd_8x8};
+use super::{
+    GRID_SMALL_BLOCKS, GridBest, GridCosts, PairwiseU16, PixelFns, normalise_satd_4x4,
+    normalise_satd_8x8,
+};
 
 /// The SIMD128 kernel table (SIMD128 is a compile-time feature).
 pub(crate) fn pixel_fns() -> PixelFns {
@@ -305,7 +310,7 @@ unsafe fn sad_quads_8x8_row(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    out: &mut [[u32; 4]],
+    out: &mut [[u16; 4]],
 ) {
     let pairs = out.len() / 2;
     let (batches, tail) = out.as_chunks_mut::<2>();
@@ -329,14 +334,15 @@ unsafe fn sad_quads_8x8_row(
 }
 
 /// Two adjacent blocks: pair sums of 16 byte differences accumulate in
-/// u16 lanes, then four-column sums give each block's left/right quadrants.
+/// u16 lanes, then four-column sums give each block's left/right quadrants,
+/// still u16 (a 4x4 SAD is at most 4080).
 #[target_feature(enable = "simd128")]
 unsafe fn sad_quads_8x8_pair(
     src: &[u8],
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [[u32; 4]; 2] {
+) -> [[u16; 4]; 2] {
     let mut halves = [u16x8_splat(0); 2];
     for y in 0..8 {
         // SAFETY: both 8x8 blocks cover a 16-byte row (caller contract).
@@ -348,29 +354,21 @@ unsafe fn sad_quads_8x8_pair(
         };
         halves[y / 4] = u16x8_add(halves[y / 4], abs_diff_widened(a, b));
     }
-    let top = u32x4_extadd_pairwise_u16x8(halves[0]);
-    let bottom = u32x4_extadd_pairwise_u16x8(halves[1]);
-    [
-        [
-            u32x4_extract_lane::<0>(top),
-            u32x4_extract_lane::<1>(top),
-            u32x4_extract_lane::<0>(bottom),
-            u32x4_extract_lane::<1>(bottom),
-        ],
-        [
-            u32x4_extract_lane::<2>(top),
-            u32x4_extract_lane::<3>(top),
-            u32x4_extract_lane::<2>(bottom),
-            u32x4_extract_lane::<3>(bottom),
-        ],
-    ]
+    // [block 0 top left/right, block 1 top left/right, then the bottoms];
+    // as u32 pairs, swap the middle two into block order.
+    let sums = pairwise_add_u16(halves[0], halves[1]);
+    let mut quads = [[0u16; 4]; 2];
+    let ordered = i32x4_shuffle::<0, 2, 1, 3>(sums, sums);
+    // SAFETY: `quads` is 16 writable bytes.
+    unsafe { v128_store(quads.as_mut_ptr().cast(), ordered) };
+    quads
 }
 
 /// Quadrant SADs of an 8x8 block. Each row's absolute differences, widened
 /// to u16, put column i in lane i (lanes 0..4: left quadrant, 4..8: right);
 /// one accumulator per half of the block: at most 4 * 255 per lane.
 #[target_feature(enable = "simd128")]
-unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize) -> [u32; 4] {
+unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize) -> [u16; 4] {
     let mut halves = [u16x8_splat(0); 2];
     for y in 0..8 {
         // SAFETY: row y (8 bytes) is inside the 8x8 blocks.
@@ -383,7 +381,13 @@ unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: us
         let diff = v128_or(u8x16_sub_sat(a, b), u8x16_sub_sat(b, a));
         halves[y / 4] = u16x8_add(halves[y / 4], u16x8_extend_low_u8x16(diff));
     }
-    quad_sums(halves)
+    // Two pairwise adds: [top left, top right, bottom left, bottom right].
+    let pairs = pairwise_add_u16(halves[0], halves[1]);
+    let sums = pairwise_add_u16(pairs, pairs);
+    let mut quads = [0u16; 4];
+    // SAFETY: `quads` is 8 writable bytes.
+    unsafe { v128_store64_lane::<0>(sums, quads.as_mut_ptr().cast()) };
+    quads
 }
 
 /// Quadrant SADs of a 16x16 block. The widened absolute differences of a
@@ -457,15 +461,16 @@ unsafe fn sad_scan_16x16_even_rows(
 
 /// The 8x8 SADs of a 64x64 block. Each 16-byte column of a row accumulates
 /// widened pair sums: u16 lanes 0..4 belong to the left 8x8 block, 4..8 to
-/// the right one (at most 8 * 510 per lane over a block row).
+/// the right one (at most 8 * 510 per lane over a block row). Three
+/// pairwise adds then give the row's eight block SADs in order, still u16.
 #[target_feature(enable = "simd128")]
 unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
     src: &[u8],
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [u32; 64] {
-    let mut grid = [0u32; 64];
+) -> [u16; 64] {
+    let mut grid = [0u16; 64];
     for (block_row, out) in grid.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         let mut acc = [u16x8_splat(0); 4];
         for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
@@ -481,14 +486,42 @@ unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
                 *sums = u16x8_add(*sums, abs_diff_widened(a, b));
             }
         }
-        for (c, &sums) in acc.iter().enumerate() {
-            // Lanes of the u32 view: [left, left, right, right] pair sums.
-            let wide = u32x4_extadd_pairwise_u16x8(sums);
-            out[2 * c] = u32x4_extract_lane::<0>(wide) + u32x4_extract_lane::<1>(wide);
-            out[2 * c + 1] = u32x4_extract_lane::<2>(wide) + u32x4_extract_lane::<3>(wide);
-        }
+        let blocks = pairwise_add_u16(
+            pairwise_add_u16(acc[0], acc[1]),
+            pairwise_add_u16(acc[2], acc[3]),
+        );
+        // SAFETY: `out` holds eight u16.
+        unsafe { v128_store(out.as_mut_ptr().cast(), blocks) };
     }
     grid
+}
+
+/// Sums of adjacent u16 lanes, `a`'s then `b`'s (NEON `addp`).
+#[inline]
+#[target_feature(enable = "simd128")]
+fn pairwise_add_u16(a: v128, b: v128) -> v128 {
+    u16x8_add(
+        u16x8_shuffle::<0, 2, 4, 6, 8, 10, 12, 14>(a, b),
+        u16x8_shuffle::<1, 3, 5, 7, 9, 11, 13, 15>(a, b),
+    )
+}
+
+/// [`PairwiseU16`] as [`pairwise_add_u16`].
+struct Pairs;
+
+impl PairwiseU16 for Pairs {
+    #[allow(clippy::inline_always)] // must inline into the grid kernels
+    #[inline(always)]
+    fn pairwise(a: [u16; 8], b: [u16; 8]) -> [u16; 8] {
+        let mut out = [0; 8];
+        // SAFETY: SIMD128 is a compile-time feature of this module; each
+        // array holds eight u16.
+        unsafe {
+            let sums = pairwise_add_u16(v128_load(a.as_ptr().cast()), v128_load(b.as_ptr().cast()));
+            v128_store(out.as_mut_ptr().cast(), sums);
+        }
+        out
+    }
 }
 
 /// [`sad_grid_8x8_in_64x64`] summed into every block size and folded into
@@ -499,40 +532,45 @@ unsafe fn sad_grid_best_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 ) {
     // SAFETY: the kernel contract covers both 64x64 blocks.
     let grid = unsafe { sad_grid_8x8_in_64x64::<STEP>(src, src_stride, rf, ref_stride) };
-    keep_min(best, &super::grid_costs(&grid, visible, STEP as u32), tag);
-}
-
-/// Keep-minimum over a grid update, four blocks per step: `u32x4_min`, and
-/// the tag taken from `tag` wherever the cost was lower.
-#[target_feature(enable = "simd128")]
-fn keep_min(best: &mut GridBest, cost: &[u32; GRID_BLOCKS], tag: u32) {
-    let lanes = GRID_BLOCKS / 4 * 4;
-    let fresh = u32x4_splat(tag);
-    for i in (0..lanes).step_by(4) {
-        // SAFETY: elements i..i + 4 are inside all three 85-element arrays.
-        unsafe {
-            let b = v128_load(best.sad.as_ptr().add(i).cast());
-            let c = v128_load(cost.as_ptr().add(i).cast());
-            let t = v128_load(best.tag.as_ptr().add(i).cast());
-            v128_store(best.sad.as_mut_ptr().add(i).cast(), u32x4_min(b, c));
-            v128_store(
-                best.tag.as_mut_ptr().add(i).cast(),
-                v128_bitselect(fresh, t, u32x4_lt(c, b)),
-            );
-        }
-    }
-    super::scalar::keep_min(
-        &mut best.sad[lanes..],
-        &mut best.tag[lanes..],
-        &cost[lanes..],
+    keep_min(
+        best,
+        &super::grid_costs::<Pairs>(&grid, visible, STEP as u16),
         tag,
     );
+}
+
+/// Keep-minimum over a grid update: the u16 SADs eight blocks per step
+/// (`u16x8_min`), the tag taken from `tag` wherever the cost was lower
+/// (the compare mask sign-extended to the u32 tags), then the five large
+/// blocks.
+#[target_feature(enable = "simd128")]
+fn keep_min(best: &mut GridBest, cost: &GridCosts, tag: u32) {
+    let fresh = u32x4_splat(tag);
+    for i in (0..GRID_SMALL_BLOCKS).step_by(8) {
+        // SAFETY: elements i..i + 8 are inside the 80-element SAD arrays
+        // and the 85-element tag array.
+        unsafe {
+            let b = v128_load(best.small.as_ptr().add(i).cast());
+            let c = v128_load(cost.small.as_ptr().add(i).cast());
+            let lower = u16x8_lt(c, b);
+            v128_store(best.small.as_mut_ptr().add(i).cast(), u16x8_min(b, c));
+            let masks = [
+                i32x4_extend_low_i16x8(lower),
+                i32x4_extend_high_i16x8(lower),
+            ];
+            for (half, mask) in masks.into_iter().enumerate() {
+                let at = best.tag.as_mut_ptr().add(i + 4 * half).cast();
+                v128_store(at, v128_bitselect(fresh, v128_load(at), mask));
+            }
+        }
+    }
+    super::scalar::keep_min_large(best, cost, tag);
 }
 
 // ----------------------------------------------------------------- SATD ----
@@ -685,7 +723,7 @@ fn pairwise_add_sub(a: v128, b: v128) -> (v128, v128) {
 unsafe fn sad_4x4_macroblock(
     luma: super::BlockPair<'_>,
     chroma: [super::BlockPair<'_>; 2],
-) -> ([[u32; 4]; 4], [[u32; 4]; 2]) {
+) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
     // SAFETY: the row kernel's ISA is this module's (checked by the
     // dispatcher), and the slices satisfy the kernel contract.
     unsafe { super::macroblock_from_rows(sad_quads_8x8_row, luma, chroma) }

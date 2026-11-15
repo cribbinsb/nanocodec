@@ -44,19 +44,21 @@ pub(crate) fn bench_extra(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSi
         "sad_4x4_macroblock",
         mb,
         time(|| {
-            dsp.sad_quads_macroblock((&src, &pred), [(&src, &pred); 2])
-                .0[0][0]
+            u32::from(
+                dsp.sad_quads_macroblock((&src, &pred), [(&src, &pred); 2])
+                    .0[0][0],
+            )
         }),
     );
     let block = BlockSize::new(SIDE, SIDE).expect("block");
     let mut best = GridBest::default();
-    let visible = [u32::MAX; SIDE];
+    let visible = [u16::MAX; SIDE];
     push(
         "sad_grid_best_even",
         block,
         time(|| {
             dsp.sad_grid_best_64x64_at(&src, &pred, (0, 0), &visible, GridRows::Even, &mut best, 1);
-            best.sad[0]
+            best.sad(0)
         }),
     );
     // Four adjacent full-pel positions, including every hierarchy level.
@@ -79,7 +81,7 @@ pub(crate) fn bench_extra(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSi
                     &mut best,
                     [0, 1, 2, 3],
                 );
-                best.sad[84]
+                best.sad(84)
             }),
         );
     }

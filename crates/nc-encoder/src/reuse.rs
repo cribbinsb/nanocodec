@@ -873,7 +873,7 @@ fn offset_to(to: f64, from: f64) -> f64 {
 
 /// Mean squared frame-to-frame change of a cell's source, from its SAD
 /// against the previous source frame (0 without one).
-fn source_change(sad_prev: Option<u32>) -> f64 {
+fn source_change(sad_prev: Option<u16>) -> f64 {
     let mean_abs = f64::from(sad_prev.unwrap_or(0)) / CELL_SAMPLES;
     GAUSSIAN_SQUARE_PER_SQUARED_ABS * mean_abs * mean_abs
 }
@@ -925,7 +925,7 @@ mod tests {
 
     /// A one-row pre-analysis whose static cells changed by `sad_prev`
     /// each.
-    fn pre(sad_prev: &[u32]) -> PreAnalysis {
+    fn pre(sad_prev: &[u16]) -> PreAnalysis {
         let cells = sad_prev
             .iter()
             .map(|&sad| BlockStats {
@@ -1037,7 +1037,7 @@ mod tests {
         t: &mut ReuseTerm,
         values: &[u8],
         (coded, runs): (&[bool], &[u8]),
-        sad: u32,
+        sad: u16,
     ) -> Vec<f64> {
         let width = CELL * values.len();
         let source = Picture::new(width, CELL, 0).unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
     #[test]
     fn a_jump_is_owed_until_restored_or_the_source_moves() {
         let mut t = tracker();
-        let mut restore = |value: u8, sad: u32| {
+        let mut restore = |value: u8, sad: u16| {
             code(&mut t, &[value], (&[true], &[9]), sad);
             t.restore[0]
         };

@@ -18,15 +18,12 @@ use super::Av2TxSize;
 use super::typed::{self, Av2TxType, Matrix};
 use crate::codec_txfm::generic::{as_uninit, written};
 use crate::simd::I32Lanes;
-use crate::txfm::generic::store_pass;
+use crate::txfm::generic::{store_pass, store_pass_sat16};
 
 /// Largest side of a typed transform.
 const MAX_SIDE: usize = 32;
 /// Sizes with typed transforms (4x4 to 32x32).
 pub(crate) const TYPED_SIZES: usize = 4;
-/// 16-bit clamp of the inverse input and row pass (as `typed`).
-const COEFF_MIN: i32 = -32768;
-const COEFF_MAX: i32 = 32767;
 /// Range of the inverse column pass output (as `typed`).
 const RESIDUAL_MIN: i32 = -256;
 const RESIDUAL_MAX: i32 = 255;
@@ -35,7 +32,7 @@ const RESIDUAL_MAX: i32 = 255;
 pub(crate) type Av2ForwardTypedFn =
     unsafe fn(tx_type: Av2TxType, residual: &[i16], stride: usize, out: &mut [i32]);
 /// Inverse typed AV2 transform of one size (see [`typed::inverse`]).
-pub(crate) type Av2InverseTypedFn = unsafe fn(tx_type: Av2TxType, coeffs: &[i32], out: &mut [i32]);
+pub(crate) type Av2InverseTypedFn = unsafe fn(tx_type: Av2TxType, coeffs: &[i16], out: &mut [i16]);
 
 /// One ISA's typed AV2 transforms, indexed by [`Av2TxSize`] (4x4..32x32).
 #[derive(Debug, Clone, Copy)]
@@ -145,8 +142,8 @@ pub(crate) unsafe fn forward<V: I32Lanes, const N: usize>(
 #[inline(always)]
 pub(crate) unsafe fn inverse<V: I32Lanes, const N: usize>(
     tx_type: Av2TxType,
-    coeffs: &[i32],
-    out: &mut [i32],
+    coeffs: &[i16],
+    out: &mut [i16],
 ) {
     let size = Av2TxSize::from_side(N).expect("typed transform side");
     let (vertical, horizontal) = (
@@ -157,46 +154,44 @@ pub(crate) unsafe fn inverse<V: I32Lanes, const N: usize>(
     let lanes = V::LANES;
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
-    let (coeff_min, coeff_max) = (V::splat(COEFF_MIN), V::splat(COEFF_MAX));
-    // The clamped input transposed, `t[k * N + r] = coeffs[r][k]`.
-    let mut t = [MaybeUninit::<i32>::uninit(); MAX_SIDE * MAX_SIDE];
+    // The input transposed, `t[k * N + r] = coeffs[r][k]`.
+    let mut t = [MaybeUninit::<i16>::uninit(); MAX_SIDE * MAX_SIDE];
     for r0 in (0..N).step_by(lanes) {
         for k0 in (0..N).step_by(lanes) {
             for (i, lane) in x[..lanes].iter_mut().enumerate() {
-                *lane = V::load(&coeffs[(r0 + i) * N + k0..])
-                    .max(coeff_min)
-                    .min(coeff_max);
+                *lane = V::load_i16(&coeffs[(r0 + i) * N + k0..]);
             }
-            V::store_transposed(&x[..lanes], &mut t[k0 * N + r0..], N);
+            V::store_transposed_sat16(&x[..lanes], &mut t[k0 * N + r0..], N);
         }
     }
     // SAFETY: every (r0, k0) tile of the N x N buffer was written above.
     let t = unsafe { written(&t, N * N) };
-    // The row pass's output, row-major.
-    let mut m = [MaybeUninit::<i32>::uninit(); MAX_SIDE * MAX_SIDE];
+    // The row pass's output, row-major, clamped to 16 bits by the
+    // saturating store (as `typed`).
+    let mut m = [MaybeUninit::<i16>::uninit(); MAX_SIDE * MAX_SIDE];
     for r0 in (0..N).step_by(lanes) {
         for (k, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&t[k * N + r0..]);
+            *lane = V::load_i16(&t[k * N + r0..]);
         }
         inverse_1d(horizontal, &x, &mut y);
         for lane in &mut y {
-            *lane = lane.round_shift(first).max(coeff_min).min(coeff_max);
+            *lane = lane.round_shift(first);
         }
-        store_pass::<V>(&y, r0, N, &mut m);
+        store_pass_sat16::<V>(&y, r0, N, &mut m);
     }
     // SAFETY: rows r0..r0 + LANES of `m` were written for every r0.
     let m = unsafe { written(&m, N * N) };
     let (low, high) = (V::splat(RESIDUAL_MIN), V::splat(RESIDUAL_MAX));
     for x0 in (0..N).step_by(lanes) {
         for (r, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&m[r * N + x0..]);
+            *lane = V::load_i16(&m[r * N + x0..]);
         }
         inverse_1d(vertical, &x, &mut y);
         for (r, lane) in y.iter().enumerate() {
             lane.round_shift(second)
                 .max(low)
                 .min(high)
-                .store(&mut out[r * N + x0..]);
+                .store_sat16(&mut out[r * N + x0..]);
         }
     }
 }
@@ -206,7 +201,7 @@ pub(crate) fn scalar_fns() -> Av2TypedFns {
     unsafe fn forward_ref<const N: usize>(t: Av2TxType, r: &[i16], s: usize, o: &mut [i32]) {
         typed::forward(Av2TxSize::from_side(N).expect("typed side"), t, r, s, o);
     }
-    unsafe fn inverse_ref<const N: usize>(t: Av2TxType, c: &[i32], o: &mut [i32]) {
+    unsafe fn inverse_ref<const N: usize>(t: Av2TxType, c: &[i16], o: &mut [i16]) {
         typed::inverse(Av2TxSize::from_side(N).expect("typed side"), t, c, o);
     }
     Av2TypedFns {
@@ -241,7 +236,7 @@ macro_rules! typed_fns {
             }
             $(#[$attr])*
             unsafe fn inverse<V: $crate::simd::I32Lanes, const N: usize>(
-                t: Av2TxType, c: &[i32], o: &mut [i32],
+                t: Av2TxType, c: &[i16], o: &mut [i16],
             ) {
                 // SAFETY: as above.
                 unsafe { tl::inverse::<V, N>(t, c, o) }

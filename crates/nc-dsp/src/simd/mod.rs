@@ -117,6 +117,20 @@ pub(crate) trait I32Lanes: Copy {
     fn store(self, dst: &mut [i32]);
     /// The first `LANES` values of `src`, sign-extended.
     fn load_i16(src: &[i16]) -> Self;
+    /// Store into the first `LANES` values of `dst`, each lane saturated to
+    /// the signed 16-bit range: [`I32Lanes::clamp16`] then a narrowing
+    /// store (16-bit transform stages). ISAs override it with one
+    /// saturating narrow.
+    #[inline]
+    fn store_sat16(self, dst: &mut [i16]) {
+        const MAX_LANES: usize = 16;
+        assert!(Self::LANES <= MAX_LANES);
+        let mut wide = [0; MAX_LANES];
+        self.store(&mut wide);
+        for (narrow, &value) in dst[..Self::LANES].iter_mut().zip(&wide) {
+            *narrow = saturate_i16(value);
+        }
+    }
     /// `dst[i] = clamp(dst[i] + lane i, 0, 255)` for the first `LANES` bytes.
     fn add_to_u8(self, dst: &mut [u8]);
     /// Store the `LANES` x `LANES` tile formed by `rows` (`rows.len() ==
@@ -124,6 +138,28 @@ pub(crate) trait I32Lanes: Copy {
     /// `dst[c * dst_stride + r]`. `dst` may be uninitialised; every element
     /// of the tile is written.
     fn store_transposed(rows: &[Self], dst: &mut [MaybeUninit<i32>], dst_stride: usize);
+    /// [`I32Lanes::store_transposed`] into 16-bit storage, each lane
+    /// saturated as by [`I32Lanes::store_sat16`]. ISAs override it to
+    /// narrow the transposed registers directly.
+    #[inline]
+    #[allow(unsafe_code)]
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
+        const MAX_LANES: usize = 16;
+        assert!(Self::LANES <= MAX_LANES);
+        let mut tile = [MaybeUninit::<i32>::uninit(); MAX_LANES * MAX_LANES];
+        Self::store_transposed(rows, &mut tile, Self::LANES);
+        // SAFETY: store_transposed wrote every cell of this complete tile.
+        let tile = unsafe {
+            core::slice::from_raw_parts(tile.as_ptr().cast::<i32>(), Self::LANES * Self::LANES)
+        };
+        for row in 0..Self::LANES {
+            let values = &tile[row * Self::LANES..][..Self::LANES];
+            let dst = &mut dst[row * dst_stride..][..Self::LANES];
+            for (narrow, &value) in dst.iter_mut().zip(values) {
+                *narrow = MaybeUninit::new(saturate_i16(value));
+            }
+        }
+    }
     /// Transpose a square lane tile and add its rows to an 8-bit picture.
     /// Like `store_transposed`, but clips after adding the prediction.
     /// ISA implementations can keep the transpose in registers.
@@ -157,6 +193,8 @@ pub(crate) trait I32Lanes: Copy {
 /// arithmetic), with a matching 32-bit accumulator.
 /// Entries of an [`I16Lanes::lookup`] table: 256 and one of padding.
 pub(crate) const LOOKUP_TABLE: usize = 257;
+/// Lanes of the widest [`I16Lanes`] vector (AVX-512).
+const MAX_I16_LANES: usize = 32;
 
 pub(crate) trait I16Lanes: Copy {
     /// Lanes per vector.
@@ -173,6 +211,30 @@ pub(crate) trait I16Lanes: Copy {
     fn load(src: &[i16]) -> Self;
     /// Store into the first `LANES` values of `dst`.
     fn store(self, dst: &mut [i16]);
+    /// The first `LANES` values of `src`, sign-extended (8-bit film grain).
+    /// The default builds the vector in memory; the grain kernels' ISAs
+    /// override it with a widening load.
+    #[inline(always)]
+    #[allow(clippy::inline_always, reason = "per vector in the grain kernels")]
+    fn load_i8(src: &[i8]) -> Self {
+        let mut lanes = [0i16; MAX_I16_LANES];
+        for (lane, &value) in lanes.iter_mut().zip(&src[..Self::LANES]) {
+            *lane = i16::from(value);
+        }
+        Self::load(&lanes)
+    }
+    /// Store `clamp(lane, -128, 127)` into the first `LANES` values of
+    /// `dst`. The default narrows in memory; the grain kernels' ISAs
+    /// override it with a saturating narrow.
+    #[inline(always)]
+    #[allow(clippy::inline_always, reason = "per vector in the grain kernels")]
+    fn store_i8(self, dst: &mut [i8]) {
+        let mut lanes = [0i16; MAX_I16_LANES];
+        self.store(&mut lanes);
+        for (out, &lane) in dst[..Self::LANES].iter_mut().zip(&lanes) {
+            *out = lane.clamp(i16::from(i8::MIN), i16::from(i8::MAX)) as i8;
+        }
+    }
     /// Lane-wise wrapping add.
     fn add(self, other: Self) -> Self;
     /// Lane-wise wrapping subtract.
@@ -379,6 +441,25 @@ pub(crate) trait I16x8Shuffles: I16Lanes {
     fn sum_lanes4(x: [Self::Wide; 4]) -> Self::Wide;
 }
 
+/// 32-bit lanes whose values fit `i16`, multiplied two vectors at a time:
+/// each lane packs a value of two vectors as a 16-bit pair, and one pairwise
+/// multiply-add by two constants (`vpmaddwd`, `i32x4.dot_i16x8_s`) does two
+/// products per lane (the AV2 inverse DCT's butterflies, `av2_txfm::paired`).
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) trait WordPairLanes: I32Lanes {
+    /// One 16-bit pair per lane.
+    type Pairs: Copy;
+    /// Lane `i` holds (`self[i]`, `high[i]`) truncated to 16 bits each:
+    /// exact when every value fits `i16`.
+    fn word_pairs(self, high: Self) -> Self::Pairs;
+    /// `low * w0 + high * w1` per lane, exact in `i32`, with the weights
+    /// packed as `weights = (w1 << 16) | (w0 as u16)`.
+    fn pair_dot(pairs: Self::Pairs, weights: i32) -> Self;
+}
+
 /// Signed 16-bit lanes taken as pairs, with one 32-bit lane per pair: the
 /// pairwise multiply-add of matrix products on 16-bit operands (`vvc_mts`).
 pub(crate) trait I16Pairs: I16Lanes {
@@ -394,6 +475,14 @@ pub(crate) trait I16Pairs: I16Lanes {
     /// The lanes of `low` then those of `high`, each saturated to 16 bits:
     /// the inverse of taking a vector as pairs.
     fn narrow_pairs(low: Self::Pairs, high: Self::Pairs) -> Self;
+}
+
+/// `value` saturated to the signed 16-bit range (one lane of
+/// [`I32Lanes::store_sat16`]).
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) fn saturate_i16(value: i32) -> i16 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 /// The two 16-bit halves of a 32-bit lane holding `first` in its low half.

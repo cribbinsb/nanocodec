@@ -104,7 +104,7 @@ fn measure(
         )
         .unwrap();
         for i in 0..16 {
-            let value = (i32::from(pixels[i]) + reconstructed[i]).clamp(0, 255);
+            let value = (i32::from(pixels[i]) + i32::from(reconstructed[i])).clamp(0, 255);
             result.recon +=
                 (i64::from(view.row(by + i / 4)[bx + i % 4]) - i64::from(value)).pow(2) as u64;
         }

@@ -33,7 +33,7 @@ pub(crate) const IDR_N_LP: u8 = 8;
 pub(crate) const TRAIL_NUT: u8 = 0;
 const MAIN_10_PROFILE: u32 = 1;
 const LEVEL_6: u32 = 96;
-const POC_BITS: u32 = 8;
+pub(crate) const POC_BITS: u32 = 8;
 
 /// Stream timing in the SPS without HRD buffer models
 /// (`general_timing_hrd_parameters()` and `ols_timing_hrd_parameters()`,
@@ -136,9 +136,20 @@ pub(crate) struct Tools {
     /// `sps_max_luma_transform_size_64_flag` (64x64 CTUs only): a 64x64 CU
     /// codes one 64-point transform unit (`transform_tree`).
     pub large_transforms: bool,
+    /// The DPB also holds the second reference (`refs.second`,
+    /// `references.rs`): `sps_max_dec_pic_buffering_minus1` one more.
+    pub second_reference: bool,
 }
 
 impl Tools {
+    /// These tools, the DPB also holding the second reference when `second`.
+    pub(crate) fn with_second_reference(self, second: bool) -> Self {
+        Self {
+            second_reference: second,
+            ..self
+        }
+    }
+
     /// log2 of `MaxTbSizeY` (§7.4.3.4).
     pub(crate) fn max_tb_log2(&self) -> u8 {
         crate::transform_tree::MAX_TB_LOG2 + u8::from(self.large_transforms)
@@ -159,6 +170,7 @@ impl Default for Tools {
             merge_candidates: DEFAULT_MERGE_CANDIDATES,
             mts: None,
             large_transforms: false,
+            second_reference: false,
         }
     }
 }
@@ -258,7 +270,9 @@ fn sps_layered_head(geometry: &Geometry, tools: Tools, layers: u8) -> BitWriter 
     if layers > 1 {
         w.put_bit(false); // sublayer DPB parameters inherited
     }
-    w.put_ue(nc_encoder::reference_slots(layers) as u32); // references plus current picture
+    // References plus the current picture (sps_max_dec_pic_buffering_minus1).
+    let references = nc_encoder::reference_slots(layers) + usize::from(tools.second_reference);
+    w.put_ue(references as u32);
     w.put_ue(0); // max_num_reorder_pics
     w.put_ue(0); // max_latency_increase_plus1
     let min_cb_log2 = partitioning.min_cb_log2;
@@ -625,11 +639,12 @@ pub(crate) enum SliceAlf {
     },
 }
 
-/// The slice header with its embedded picture header. `alf`: `None` when
-/// the SPS has no ALF; `block_qp`: the PPS enables `cu_qp_delta`;
-/// `temporal_mvp`: `ph_temporal_mvp_enabled_flag` of an inter picture,
-/// `None` when the SPS has no TMVP (the collocated picture is the only
-/// reference, so no `sh_collocated_*` syntax follows).
+/// The slice header with its embedded picture header of a picture with
+/// one reference (tests). `alf`: `None` when the SPS has no ALF;
+/// `block_qp`: the PPS enables `cu_qp_delta`; `temporal_mvp`:
+/// `ph_temporal_mvp_enabled_flag` of an inter picture, `None` when the SPS
+/// has no TMVP.
+#[cfg(test)]
 pub(crate) fn slice(
     qp: u32,
     inter: bool,
@@ -649,7 +664,9 @@ pub(crate) fn slice(
     )
 }
 
-/// Picture reference syntax follows the slots selected by the shared engine.
+/// The slice header with its embedded picture header (as [`slice`] for one
+/// reference): its RPL0, active references and collocated reference follow
+/// `references` (`references.rs`).
 pub(crate) fn slice_layered(
     qp: u32,
     inter: bool,
@@ -697,7 +714,19 @@ pub(crate) fn slice_layered(
         }
         w.put_ue(0); // empty local RPL1
         if references.count > 1 {
-            w.put_bit(false); // default one active reference; retain the other in DPB
+            // sh_num_ref_idx_active_override_flag: the PPS default is one
+            // active reference; the other entry is only retained in the DPB
+            // unless this picture predicts from it.
+            let both = references.active > 1;
+            w.put_bit(both);
+            if both {
+                w.put_ue(references.active as u32 - 1); // sh_num_ref_idx_active_minus1[0]
+            }
+        }
+        if temporal_mvp == Some(true) && references.active > 1 {
+            // sh_collocated_ref_idx: the previous picture (§7.3.7.1; P
+            // slices infer sh_collocated_from_l0_flag 1).
+            w.put_ue(COLLOCATED_REF_IDX);
         }
     } else {
         w.put_bit(false); // no_output_of_prior_pics_flag
@@ -731,6 +760,10 @@ fn slice_alf(w: &mut BitWriter, alf: Option<SliceAlf>) {
         }
     }
 }
+
+/// `sh_collocated_ref_idx`: the collocated picture is always the previous
+/// picture, reference index 0.
+pub(crate) const COLLOCATED_REF_IDX: u32 = 0;
 
 /// `ph_cu_qp_delta_subdiv_*_slice`: 0, one quantization group per CTB.
 pub(crate) const QUANT_GROUP_SUBDIV: u32 = 0;

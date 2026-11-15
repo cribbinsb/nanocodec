@@ -339,6 +339,12 @@ mod tests {
         // Fast keeps budget-only debt correction when the Default adopted the
         // key-period ceiling (2026-11-14).
         expected.set("rate.period_ceiling", 0.0);
+        // Fast keeps a single reference when the Default adopted the unified
+        // structure's reference plan (2026-11-14).
+        expected.set("structure.unified", 0.0);
+        // Fast keeps its keys' budget sizing when the Default adopted the
+        // key still boost (2026-11-14).
+        expected.set("rate.key_still_boost", 0.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "av1-fast"])).unwrap(),
             expected

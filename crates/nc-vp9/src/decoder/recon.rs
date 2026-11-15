@@ -880,7 +880,7 @@ fn add_residual(
     recon: &mut Picture,
     block: &TxBlock,
     (ty, lossless): (TxType, bool),
-    coefficients: &[i32],
+    coefficients: &[i16],
     extent: Extent,
 ) {
     if lossless {
@@ -1037,25 +1037,25 @@ mod tests {
             } else {
                 1 + (next() as usize % 4)
             };
-            let mut coefficients = [0i32; 16];
+            let mut coefficients = [0i16; 16];
             for (i, c) in coefficients.iter_mut().enumerate() {
                 if i / 4 < rows && i % 4 < columns {
                     *c = match next() % 5 {
                         0 => 0,
-                        1 => i32::from(next() as i16),
-                        2 => [i32::MAX, i32::MIN, 32767, -32768][next() as usize % 4],
-                        _ => (next() % 2001) as i32 - 1000,
+                        1 => next() as i16,
+                        2 => [i16::MAX, i16::MIN, 1, -1][next() as usize % 4],
+                        _ => (next() % 2001) as i16 - 1000,
                     };
                 }
             }
             let prediction: Vec<u8> = (0..4 * 6).map(|_| next() as u8).collect();
-            let mut residual = [0i32; 16];
+            let mut residual = [0i16; 16];
             crate::transform::inverse(&dsp, TxSize::Tx4, ty, false, &coefficients, &mut residual);
             let mut want = prediction.clone();
             for (y, row) in residual.as_chunks::<4>().0.iter().enumerate() {
                 for (x, &r) in row.iter().enumerate() {
                     let sample = &mut want[y * 6 + x];
-                    *sample = (i32::from(*sample) + r).clamp(0, 255) as u8;
+                    *sample = (i32::from(*sample) + i32::from(r)).clamp(0, 255) as u8;
                 }
             }
             let mut got = prediction;

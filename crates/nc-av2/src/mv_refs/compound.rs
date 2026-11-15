@@ -18,8 +18,10 @@
 //!    three entries, taken for both vectors alike.
 //!
 //! Temporal, trajectory, TIP and warp candidates are disabled by the
-//! sequence, and every block uses the one reference, so a compound
-//! neighbour always matches the pair. See `THIRD_PARTY.md` for reference
+//! sequence, and skip mode is off in frames with a second reference
+//! (`Av2Backend::skip_mode_enabled`), so every block of a skip-mode frame
+//! uses the one reference and a compound neighbour always matches the
+//! pair. See `THIRD_PARTY.md` for reference
 //! terms.
 use super::{
     BlockKey, EXTENSION_PAIRS, Entry, MAX_PRUNE_COMPARISONS, MAX_STACK, MIN_EXTENSION_SIDE, Pair,
@@ -29,11 +31,13 @@ use crate::entropy::{Reader, Writer};
 use nc_common::decode::Result;
 use nc_encoder::symbol_cost::symbol_bits;
 
-/// AVM `MAX_DR_STACK_SIZE`: derived pairs and single vectors kept.
-const DERIVED_CAPACITY: usize = 4;
-/// AVM `MAX_DR_PR_NUM`: duplicate comparisons the derived-pair and
-/// single-vector lists may each spend; later entries are added unpruned.
-const DERIVED_PRUNE_COMPARISONS: u32 = 2;
+/// AVM `MAX_DR_STACK_SIZE`: derived pairs and single vectors kept (and
+/// the single-reference list's projected vectors).
+pub(super) const DERIVED_CAPACITY: usize = 4;
+/// AVM `MAX_DR_PR_NUM`: duplicate comparisons the derived-pair,
+/// single-vector and projected-vector lists may each spend; later entries
+/// are added unpruned.
+pub(super) const DERIVED_PRUNE_COMPARISONS: u32 = 2;
 
 /// AVM `default_skip_drl_cdf[idx]` (inverse): the skip-mode DRL
 /// decisions, by position (the third and later share the last model).
@@ -115,7 +119,7 @@ impl SkipCandidates {
 /// `derived_mv_stack` with `drl_dr_pr_count`, `single_mv` with
 /// `drl_dr_single_pr_count`).
 #[derive(Debug)]
-struct Pruned<T, const N: usize> {
+pub(super) struct Pruned<T, const N: usize> {
     entries: [T; N],
     count: usize,
     comparisons: u32,
@@ -123,7 +127,7 @@ struct Pruned<T, const N: usize> {
 }
 
 impl<T: Copy + PartialEq + Default, const N: usize> Pruned<T, N> {
-    fn new(budget: u32) -> Self {
+    pub(super) fn new(budget: u32) -> Self {
         Self {
             entries: [T::default(); N],
             count: 0,
@@ -150,7 +154,7 @@ impl<T: Copy + PartialEq + Default, const N: usize> Pruned<T, N> {
     /// Append `entry` unless it is listed (budget permitting) or the list
     /// holds `limit` entries already. AVM compares before it checks for
     /// room.
-    fn add(&mut self, entry: T, limit: usize) {
+    pub(super) fn add(&mut self, entry: T, limit: usize) {
         if self.is_new(entry) && self.count < limit.min(N) {
             self.push(entry);
         }
@@ -161,7 +165,7 @@ impl<T: Copy + PartialEq + Default, const N: usize> Pruned<T, N> {
         self.count += 1;
     }
 
-    fn listed(&self) -> &[T] {
+    pub(super) fn listed(&self) -> &[T] {
         &self.entries[..self.count]
     }
 }

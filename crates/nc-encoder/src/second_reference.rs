@@ -25,17 +25,73 @@
 //! Measured with screen 3.0, share 0.05, probe 8 (AV1 Default CBR, L3):
 //! J -0.51% at +3.1% Jetson cycles (screen 3.0 alone: -1.64% at +14-16%),
 //! the best J per cycle of the gates tried (`docs/handoff/tuning.md`).
+//!
+//! [`TierPlan`] (`structure.unified`, off by default) is the unified
+//! structure's reference plan (`docs/handoff/unified-structure.md` §3): the
+//! frame's tier decides whether it carries the second reference, with no
+//! block statistics. It also runs beside temporal layers where the backend
+//! allows (`CodecBackend::SECOND_REFERENCE_WITH_LAYERS`): the flat
+//! mini-GOPs of an adaptive stream carry it.
 
 use nc_analysis::link::{ReferenceLink, SlotMask};
 
-use crate::params::{LtrParams, ParamOverrides, RefParams};
+use crate::params::{
+    LtrParams, ParamOverrides, RefParams, RefreshParams, SpatialParams, StructureParams,
+};
 use crate::second_screen::SecondScreen;
 use crate::structure::FrameReferences;
 
-/// Whether `refs.second` is on in `params`.
+/// Whether `params` ask for a second reference: `refs.second`, or the
+/// unified structure's plan (`structure.unified`).
 #[must_use]
 pub(crate) fn second_reference_enabled(params: &ParamOverrides) -> bool {
-    RefParams::from_overrides(params).second >= 0.5
+    RefParams::from_overrides(params).second >= 0.5 || TierPlan::new(params).is_some()
+}
+
+/// The unified structure's reference plan: which frames carry the second
+/// reference, from their tier alone.
+///
+/// Only high-quality (HQ) frames carry it, and only where the QP cadence
+/// codes them clearly finer than the frames between (its strength, the
+/// plan's depth). The saving of the second reference is not additive over
+/// frames: a block that predicts from the HQ frame on one frame of a
+/// mini-GOP passes the detail on to the others, so one tier keeps about half
+/// of the every-frame gain, and the HQ tier does it on the fewest frames.
+/// Measured (AV1 Default CBR, probe build on 5dd01a46, draw 2026-11-14, cheap
+/// ranking): every frame L2 J -1.96% at +21.7% Jetson cycles (full
+/// decision); HQ frames only -0.70% at +4.2%; HQ frames at depth 0.75 and
+/// above L3 (ladder, n=126) -0.53% [-0.76, -0.27] at +2.8%, the depth limit
+/// removing the cost on a shaking camera and two thirds of it on a crowd
+/// (`docs/handoff/unified-structure.md` §9).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TierPlan {
+    /// `structure.secondary_min_depth`.
+    min_depth: f64,
+}
+
+impl TierPlan {
+    /// The plan `params` ask for (`structure.unified`), if any. The plan is
+    /// a default way of coding, not a requested feature, so it steps aside
+    /// for the features that need the long-term slot or a single reference
+    /// themselves (a long-term reference with feedback, spatial layers,
+    /// intra refresh) where an explicit `refs.second` is refused.
+    pub(crate) fn new(params: &ParamOverrides) -> Option<Self> {
+        let plan = StructureParams::from_overrides(params);
+        let taken = LtrParams::from_overrides(params).interval > 0.0
+            || RefreshParams::from_overrides(params).period > 0.0
+            || SpatialParams::from_overrides(params).layers.round() > 1.0;
+        (plan.unified >= 0.5 && !taken).then(|| Self {
+            min_depth: f64::from(plan.secondary_min_depth),
+        })
+    }
+
+    /// Whether a frame of this tier carries the second reference: an HQ
+    /// frame (`high_quality`) at a cadence strength of `depth` (`None`
+    /// before the frame is analysed: the plan is then not yet known, and
+    /// the frame is treated as carrying it).
+    fn offers(self, high_quality: bool, depth: Option<f64>) -> bool {
+        high_quality && depth.is_none_or(|depth| depth >= self.min_depth)
+    }
 }
 
 /// Whether the stream `params` configure keeps a frame in the long-term
@@ -74,6 +130,11 @@ pub(crate) struct SecondReference {
     pub(crate) screen: Option<SecondScreen>,
     /// `refs.second_frame_min_share`: the frames that offer it, when on.
     switch: Option<FrameSwitch>,
+    /// `structure.unified`: the tiers that carry it, when on.
+    plan: Option<TierPlan>,
+    /// No frame carries it for now (intra refresh running under the plan);
+    /// HQ frames still refresh the slot, so it is current when released.
+    suspended: bool,
 }
 
 /// The frame-level switch (module docs): the chosen share of the last frame
@@ -146,6 +207,42 @@ impl SecondReference {
             min_still: params.second_min_still,
             screen: SecondScreen::new(params),
             switch: FrameSwitch::new(params),
+            plan: None,
+            suspended: false,
+        }
+    }
+
+    /// Whether the unified plan chooses the frames (`structure.unified`),
+    /// not `refs.second` alone.
+    pub(crate) fn is_planned(&self) -> bool {
+        self.plan.is_some()
+    }
+
+    /// Stop offering the second reference (`suspended`), or offer it again.
+    pub(crate) fn suspend(&mut self, suspended: bool) {
+        self.suspended = suspended;
+    }
+
+    /// This second reference carried by the frames `plan` chooses.
+    pub(crate) fn with_plan(self, plan: Option<TierPlan>) -> Self {
+        Self { plan, ..self }
+    }
+
+    /// `references` (from [`SecondReference::apply`]) as the unified plan,
+    /// when on, leaves them for a frame that is `high_quality` or not, at a
+    /// cadence strength of `depth` when known.
+    pub(crate) fn planned(
+        &self,
+        references: FrameReferences,
+        high_quality: bool,
+        depth: Option<f64>,
+    ) -> FrameReferences {
+        match self.plan {
+            Some(plan) if self.suspended || !plan.offers(high_quality, depth) => FrameReferences {
+                secondary: None,
+                ..references
+            },
+            _ => references,
         }
     }
 
@@ -267,6 +364,54 @@ mod tests {
         second.coded(4, &refs);
         let refs = second.apply(5, (false, None), flat(1));
         assert_eq!(refs.secondary, None);
+    }
+
+    #[test]
+    fn the_plan_gives_the_second_reference_to_deep_hq_frames_only() {
+        let mut params = ParamOverrides::default();
+        assert_eq!(TierPlan::new(&params), None);
+        params.set("structure.unified", 1.0);
+        params.set("structure.secondary_min_depth", 0.5);
+        let second = SecondReference::new(1, &RefParams::from_overrides(&params))
+            .with_plan(TierPlan::new(&params));
+        let with_secondary = FrameReferences {
+            secondary: Some(ReferenceLink {
+                slot: 1,
+                distance: 4,
+            }),
+            ..flat(1)
+        };
+        let carries = |high_quality, depth| {
+            second
+                .planned(with_secondary, high_quality, depth)
+                .secondary
+                .is_some()
+        };
+        assert!(carries(true, Some(0.5)));
+        assert!(carries(true, None));
+        assert!(!carries(true, Some(0.4)));
+        assert!(!carries(false, Some(1.0)));
+        // Suspended (intra refresh), no frame carries it.
+        let mut suspended = second.clone();
+        suspended.suspend(true);
+        assert!(
+            suspended
+                .planned(with_secondary, true, Some(1.0))
+                .secondary
+                .is_none()
+        );
+        // The plan steps aside for intra refresh.
+        let mut refresh = params.clone();
+        refresh.set("refresh.period", 30.0);
+        assert_eq!(TierPlan::new(&refresh), None);
+        // Without a plan nothing changes.
+        let plain = SecondReference::new(1, &RefParams::from_overrides(&params));
+        assert!(
+            plain
+                .planned(with_secondary, false, Some(0.0))
+                .secondary
+                .is_some()
+        );
     }
 
     #[test]

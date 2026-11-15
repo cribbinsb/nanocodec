@@ -8,7 +8,7 @@
 //! and dropping an inter residual by rate and distortion, and writes the
 //! reconstruction into the engine's picture. [`crate::tile_decoder`] reads
 //! exactly this subset.
-use crate::block_state::{BlockInfo, BlockState, SavedContexts};
+use crate::block_state::{BlockInfo, BlockState, REFERENCE_CONTEXTS, SavedContexts};
 use crate::ccso::{self, CcsoParams, CcsoSource, UnitFlags};
 use crate::ccso_search;
 use crate::cdef::{self, CdefParams, StrengthIndices};
@@ -41,6 +41,9 @@ use nc_encoder::{DebugRng, IntraModeSet, residual_quantises_to_zero, with_neighb
 
 /// `intra_inter` CDFs by context (AVM `default_intra_inter_cdf`).
 pub(crate) const IS_INTER: [[u16; 2]; 4] = [[31246, 0], [18387, 0], [22313, 0], [4972, 0]];
+/// AVM `default_single_ref_cdf[ctx][0]` (inverse): whether a block of a
+/// two-reference frame predicts from rank 0 (symbol 1) or rank 1 (0).
+pub(crate) const SINGLE_REF: [[u16; 2]; REFERENCE_CONTEXTS] = [[6299, 0], [19137, 0], [30169, 0]];
 /// `skip_txfm` CDFs by context (AVM `default_skip_txfm_cdfs`): the
 /// skipped neighbours, plus [`SKIP_MODE_SKIP_CONTEXTS`] in a skip-mode block.
 pub(crate) const SKIP: [[u16; 2]; 6] = [
@@ -132,6 +135,8 @@ struct CachedLuma {
     size: usize,
     mv: (i32, i32),
     filter: InterpFilter,
+    /// The reference rank it was predicted from.
+    reference: u8,
 }
 
 /// How RD-trial rate estimates use the tile's adaptive models.
@@ -595,8 +600,8 @@ struct Quantizer {
     /// [`ForwardSlot`].
     coefficients: Vec<i32>,
     /// Dequantized coefficients for the reconstruction.
-    dequantized: Vec<i32>,
-    inverse: Vec<i32>,
+    dequantized: Vec<i16>,
+    inverse: Vec<i16>,
 }
 
 impl Quantizer {
@@ -960,6 +965,9 @@ pub(crate) struct BlockCoder {
     /// The engine's exact luma prediction of the block it is about to code
     /// ([`Self::cache_luma`]), reused instead of predicting it again.
     cached_luma: Option<CachedLuma>,
+    /// The reference rank the engine is deciding for, and the next inter
+    /// block predicts from ([`Self::select_reference`]).
+    reference: u8,
     cached_luma_samples: Vec<u8>,
     /// One filter candidate's luma prediction ([`Self::choose_filter`]).
     filter_trial: Vec<u8>,
@@ -1066,6 +1074,7 @@ impl BlockCoder {
             skip_second: Vec::new(),
             compound: crate::prediction::CompoundScratch::default(),
             cached_luma: None,
+            reference: 0,
             cached_luma_samples: Vec::with_capacity(MAX_PLANE_AREA),
             filter_trial: vec![0; MAX_PLANE_AREA],
             filter_symbols: FilterSymbols::new(),
@@ -1087,19 +1096,38 @@ impl BlockCoder {
         })
     }
 
-    /// The motion candidates of the block of side `size` at `(x, y)`.
+    /// Name the frame's references by their distances from the current
+    /// picture, in rank order (one, or two with a second reference).
+    /// # Errors
+    /// Rejects a count outside 1..=2 and non-positive distances.
+    pub fn set_reference_distances(&mut self, distances: &[i32]) -> Result<()> {
+        self.state.motion.set_reference_distances(distances)
+    }
+
+    /// Predict the next inter blocks, and price their candidates, from
+    /// reference rank `reference`.
+    pub fn select_reference(&mut self, reference: u8) {
+        self.reference = reference;
+    }
+
+    /// The motion candidates of the block of side `size` at `(x, y)` into
+    /// the selected reference.
     pub fn candidates(&self, x: usize, y: usize, size: usize) -> Result<Candidates> {
-        self.state.motion.candidates(x, y, size)
+        self.state.motion.candidates_for(x, y, size, self.reference)
     }
 
     /// Approximate bits of the prediction-type syntax of a block:
-    /// `intra_inter`, plus DC modes for an intra block.
+    /// `intra_inter`, plus DC modes for an intra block, or the reference
+    /// symbol of an inter block in a two-reference frame.
     pub fn prediction_type_bits(&self, x: usize, y: usize, size: usize, is_inter: bool) -> f32 {
         let context = self.state.intra_inter_context(x, y, size);
         let mut bits = symbol_bits(&IS_INTER[context], usize::from(is_inter));
         if !is_inter {
             let (above, left) = self.state.mode_neighbours(x, y, size);
             bits += intra_modes::dc_bits(above, left);
+        } else if self.state.motion.reference_count() > 1 {
+            let context = self.state.single_reference_context(x, y, size);
+            bits += symbol_bits(&SINGLE_REF[context], usize::from(self.reference == 0));
         }
         bits
     }
@@ -1364,6 +1392,7 @@ impl BlockCoder {
                 luma_mode: luma,
                 filter: None,
                 skip_mode: false,
+                reference: 0,
             },
         );
         self.state.motion.commit_intra(x, y, size)
@@ -2162,6 +2191,7 @@ impl BlockCoder {
                 luma_mode: Mode::Dc,
                 filter: Some(block.filter),
                 skip_mode: matches!(block.signal, Signal::Skip { .. }),
+                reference: block.reference,
             },
         );
         match chosen {
@@ -2198,11 +2228,18 @@ impl BlockCoder {
         source: &Picture,
         reference: &Picture,
     ) -> Result<(InterBlock, [u64; 3])> {
-        let candidates = self.state.motion.candidates(x, y, size)?;
-        let (mode, index) = choose_signalling(candidates, mv);
+        let reference_rank = self.reference;
+        let candidates = self.candidates(x, y, size)?;
+        // A vector no predictor can express (only possible beside a
+        // projected odd eighth-sample predictor, `choose_signalling`) is
+        // replaced by the always-expressible zero vector.
+        let (mv, (mode, index)) = match choose_signalling(candidates, mv) {
+            Some(signal) => (mv, signal),
+            None => ((0, 0), (InterMode::Global, 0)),
+        };
         let filter_context = (self.options.filter == FrameFilter::Switchable
             && interp_filter::is_coded(mode))
-        .then(|| self.state.filter_context(x, y, size));
+        .then(|| self.state.filter_context(x, y, size, reference_rank));
         let (filter, plane_sse) =
             self.predict_inter(reference, source, (x, y), size, mv, filter_context)?;
         let single = InterBlock {
@@ -2210,6 +2247,7 @@ impl BlockCoder {
             y,
             size,
             filter,
+            reference: reference_rank,
             signal: Signal::Single {
                 mv,
                 mode,
@@ -3199,6 +3237,7 @@ impl BlockCoder {
             y,
             size,
             filter,
+            reference,
             signal,
         } = *block;
         let skip_mode = matches!(signal, Signal::Skip { .. });
@@ -3230,6 +3269,15 @@ impl BlockCoder {
                 candidates,
                 filter_context,
             } => {
+                // AVM `read_ref_frames` (`read_single_ref`): with two
+                // references, one symbol names rank 0 (1) or rank 1 (0).
+                if self.state.motion.reference_count() > 1 {
+                    let context = self.state.single_reference_context(x, y, size);
+                    self.writer
+                        .model(usize::from(reference == 0), &SINGLE_REF[context], |m| {
+                            &mut m.single_ref[context]
+                        })?;
+                }
                 mv_refs::write_inter_mode(&mut self.writer, candidates.mode_context, mode)?;
                 if mode.has_drl() {
                     mv_refs::write_drl(&mut self.writer, candidates, index)?;
@@ -3297,6 +3345,7 @@ impl BlockCoder {
             size,
             mv,
             filter,
+            reference: self.reference,
         };
         if self.cached_luma.take() == Some(key) {
             // The cache becomes the luma prediction (no copy); the old
@@ -3340,6 +3389,7 @@ impl BlockCoder {
             size,
             mv,
             filter,
+            reference: self.reference,
         });
     }
 
@@ -3644,6 +3694,8 @@ struct InterBlock {
     size: usize,
     /// The block's interpolation filter.
     filter: InterpFilter,
+    /// The reference rank it predicts from (0 in skip mode).
+    reference: u8,
     signal: Signal,
 }
 
@@ -3675,6 +3727,7 @@ impl InterBlock {
             Signal::Single { mv, mode, .. } => BlockMotion::Single {
                 vector: mv,
                 is_new: mode == InterMode::New,
+                reference: self.reference,
             },
             Signal::Skip { pair, .. } => BlockMotion::Compound(pair),
         }
@@ -3713,7 +3766,10 @@ pub(crate) fn block_edges(
 
 /// The cheapest way to signal `mv`: NEARMV when it is a DRL candidate,
 /// GLOBALMV for zero, otherwise NEWMV from the nearest candidate.
-pub(crate) fn choose_signalling(candidates: Candidates, mv: (i32, i32)) -> (InterMode, usize) {
+pub(crate) fn choose_signalling(
+    candidates: Candidates,
+    mv: (i32, i32),
+) -> Option<(InterMode, usize)> {
     let mut best = if mv == (0, 0) {
         Some((InterMode::Global, 0))
     } else {
@@ -3733,15 +3789,26 @@ pub(crate) fn choose_signalling(candidates: Candidates, mv: (i32, i32)) -> (Inte
             });
         }
     }
-    best.unwrap_or_else(|| {
-        let index = (0..candidates.derived().len())
-            .min_by_key(|&i| {
-                let v = candidates.vectors[i];
-                (mv.0 - v.0).abs() + (mv.1 - v.1).abs()
-            })
-            .unwrap_or(0);
-        (InterMode::New, index)
-    })
+    if best.is_some() {
+        return best;
+    }
+    // A NEWMV difference is coded in quarter samples, so its predictor
+    // must be quarter-sample too: a vector projected from the other
+    // reference may not be (`mv_refs`), and is passed over. Every list
+    // holds the zero vector unless projected vectors fill it.
+    (0..candidates.derived().len())
+        .filter(|&i| is_quarter_sample(candidates.vectors[i]))
+        .min_by_key(|&i| {
+            let v = candidates.vectors[i];
+            (mv.0 - v.0).abs() + (mv.1 - v.1).abs()
+        })
+        .map(|index| (InterMode::New, index))
+}
+
+/// Whether both components of an eighth-sample vector are whole quarter
+/// samples.
+fn is_quarter_sample((row, col): (i32, i32)) -> bool {
+    row % 2 == 0 && col % 2 == 0
 }
 
 /// The trellis λ per plane kind of a frame whose mode-decision λ is
@@ -3805,29 +3872,25 @@ pub(crate) fn plane_origin(plane: usize, (x, y): (usize, usize)) -> (usize, usiz
 }
 
 /// Clamped sum of a prediction and a reconstructed residual.
-pub(crate) fn add_residual(predicted: &[u8], residual: &[i32], out: &mut [u8]) {
+pub(crate) fn add_residual(predicted: &[u8], residual: &[i16], out: &mut [u8]) {
     // Equal-length slices indexed together vectorize; a three-way zip did
-    // not (about 1% of the encoder's instructions). The sum runs in 16-bit
-    // lanes, because baseline x86-64 has no 32-bit minimum or maximum but
-    // has saturating 16-bit packs and adds: the residual saturates to
-    // `i16`, the sum saturates, and the clamp to a sample is then the same
-    // as clamping the exact 32-bit sum.
+    // not (about 1% of the encoder's instructions). The sum saturates in
+    // 16 bits, and the clamp to a sample is then the same as clamping the
+    // exact sum.
     let n = out.len();
     let (predicted, residual) = (&predicted[..n], &residual[..n]);
     for i in 0..n {
-        let residual = residual[i].clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         out[i] = i16::from(predicted[i])
-            .saturating_add(residual)
+            .saturating_add(residual[i])
             .clamp(0, i16::from(u8::MAX)) as u8;
     }
 }
 
 /// [`add_residual`] of a residual that is `residual` at every sample (a DC
 /// only transform, [`transform::dc_only_residual`]), `-256..=255`.
-pub(crate) fn add_constant_residual(predicted: &[u8], residual: i32, out: &mut [u8]) {
+pub(crate) fn add_constant_residual(predicted: &[u8], residual: i16, out: &mut [u8]) {
     let n = out.len();
     let predicted = &predicted[..n];
-    let residual = residual.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     for i in 0..n {
         out[i] = i16::from(predicted[i])
             .saturating_add(residual)

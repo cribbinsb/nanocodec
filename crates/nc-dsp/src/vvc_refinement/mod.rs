@@ -14,7 +14,7 @@ mod x86;
 type Bilinear = unsafe fn((usize, usize), &nc_common::PlaneView<'_>, (usize, usize), &mut [i16]);
 type Dmvr = unsafe fn((usize, usize), [&[i16]; 2]) -> ([i32; 2], bool);
 type Bdof = unsafe fn((usize, usize), [&[i16]; 2], &mut [u8]);
-type Prof = unsafe fn(&[i16; 36], &[[i32; 2]; 16], &mut [i16; 16]);
+type Prof = unsafe fn(&[i16; 36], &[[i8; 2]; 16], &mut [i16; 16]);
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
     pub bilinear: Bilinear,

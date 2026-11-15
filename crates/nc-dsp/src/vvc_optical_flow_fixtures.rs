@@ -1,6 +1,6 @@
 //! Independent PROF samples from `VVdeC` d2614690, official `8b400_B_2` POC 16/8.
 //! Input/output values use the shared DSP's unsigned six-fraction-bit convention.
-pub(super) type Case = (bool, [i16; 36], [[i32; 2]; 16], [i16; 16]);
+pub(super) type Case = (bool, [i16; 36], [[i8; 2]; 16], [i16; 16]);
 pub(super) const CASES: &[Case] = &[
     (
         false,

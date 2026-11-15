@@ -7,13 +7,15 @@ use crate::{
     headers, inter,
     inter_intra::InterIntraSearch,
     motion::{Motion, MotionGrid, Mv16},
-    recon, syntax, transform_tree,
+    recon,
+    references::References,
+    syntax, transform_tree,
 };
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::{Dsp, Filter};
 use nc_encoder::{
     Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType,
-    Mv, PartitionShape, PredictionMode, ShapeSet,
+    Mv, PartitionShape, PredictionMode, ReferenceChoice, ShapeSet,
 };
 
 mod alf_search;
@@ -145,6 +147,8 @@ nc_encoder::param_group! {
         // diagnosis: teacher-forced P bits fell 13-35 points at 1.5).
         unit_zero_rd: 0.0, [0.0, 4.0],
             "P pictures: a coded transform unit whose squared error with no residual is within this many λ times its coefficient bits (plus one) of its coded error codes no residual (0 off; not with dependent quantisation): higher drops more residual",
+        unit_zero_rd_max_levels: 1024.0, [1.0, 1024.0],
+            "with `vvc.unit_zero_rd`, only units with at most this many nonzero levels are checked: lower is faster, checks fewer units",
         trellis_round_up: 1.0, [0.0, 1.0],
             "with quant.trellis, 1 lets a level rise to the nearest above the dead-zone quantiser's (HEVC's trellis); 0 only lowers levels: cheaper, keeps the dead zones",
         trellis_key_lambda_scale: 1.0, [0.0, 2.0],
@@ -345,6 +349,8 @@ pub struct VvcBackend {
     shave_gap: usize,
     /// `vvc.unit_zero_rd`: λ multiple of the per-unit keep/drop check (0 off).
     unit_zero_rd: f32,
+    /// `vvc.unit_zero_rd_max_levels`: units with more levels are kept unchecked.
+    unit_zero_rd_max_levels: f32,
     forward: nc_dsp::HevcForwardMode,
     /// The SPS's luma-to-chroma QP map.
     chroma_qp: ChromaQpTable,
@@ -360,7 +366,10 @@ pub struct VvcBackend {
     poc: u8,
     next_poc: u8,
     temporal_layers: u8,
-    references: crate::references::References,
+    references: References,
+    /// The reference index of the motion the engine is deciding or the CU
+    /// being coded uses (`select_reference`): 1 is the second reference.
+    active_ref: u8,
     lambda: f32,
     dsp: Dsp,
     motion: MotionGrid,
@@ -381,9 +390,9 @@ pub struct VvcBackend {
     /// (`CodecBackend::intra_fallback`), consumed by its `encode_block`.
     intra_fallback: Option<((usize, usize, u8), Mv)>,
     /// The engine's exact luma prediction of its best candidate
-    /// (`cache_exact_luma`), with its block and vector; reused by
-    /// `encode_block` when the decision keeps that vector.
-    cached_luma: Option<(Block, Mv)>,
+    /// (`cache_exact_luma`), with its block, vector and reference index;
+    /// reused by `encode_block` when the decision keeps that motion.
+    cached_luma: Option<(Block, Mv, u8)>,
     /// Samples of `cached_luma`, block-width rows (kept allocated).
     cached_luma_samples: Vec<u8>,
     /// Each plane's inter prediction of the CU being coded (kept allocated).
@@ -456,6 +465,8 @@ impl VvcParams {
                 inter: self.mts_inter >= 0.5,
             }),
             large_transforms: self.large_transforms(),
+            // The backend sets it from the engine's parameters (`new`).
+            second_reference: false,
         }
     }
 
@@ -575,6 +586,14 @@ impl CodecBackend for VvcBackend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 6.0),
         ("rate.cadence_motion_gate", 1.0),
+        // The target as a ceiling over every key period (`rate.period_ceiling`,
+        // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still scenes).
+        // 600-frame long-window L3 (keys every 10 s, 31 points, draw 2026-11-14):
+        // J -0.83% [-1.46, -0.30] BETTER, no guard; static -3.3%, moving classes
+        // unchanged; achieved/target max 1.020 -> 0.999; re-codes on the 22 static
+        // and crowd points 4.9 -> 6.7 per 1000 frames.
+        // Inert within one key period. The other VVC presets pin it off.
+        ("rate.period_ceiling", 1.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         // Re-tuned 2026-11-13 as a CPU cut at equal quality (CPU-capped study
         // vvc-default-speed-2026-11-13, trial #2): mode-decision lambda 0.8 ->
@@ -594,6 +613,15 @@ impl CodecBackend for VvcBackend {
         ("vvc.sao_luma_lambda_scale", 2.1),
         ("vvc.chroma_qp_offset", -1.0),
         ("vvc.shave_gap", 9.0),
+        // The per-unit keep/drop check (`drops_residual`) on P-picture units
+        // with at most 4 levels, at half the λ. Fixed QP, matched QP
+        // (nceval.fixedqp, 16 pool clips): J -1.1% [-1.8, -0.4] (all units
+        // -1.0%; λ x1.5 +0.8%, x2 +4.5%: VMAF loses first). CPU: x86 P
+        // instructions +2.1%, Jetson cycles +1.2%. Adoption screen (k 0.1,
+        // dCPU 2.1): L3 BETTER, J -0.19% [-0.48, +0.08] (n 126), no guard.
+        // docs/analysis/fixed-qp-gap-2026-11-14.md. vvc-fast pins it off.
+        ("vvc.unit_zero_rd", 0.5),
+        ("vvc.unit_zero_rd_max_levels", 4.0),
         // Trellis quantisation of the coded luma blocks (`trellis.rs`; HEVC
         // Default's arm), at half its λ on key pictures: the full λ saved
         // 5-15% of a key's bits at 0.2-0.4 dB less luma that rate control
@@ -769,6 +797,8 @@ impl CodecBackend for VvcBackend {
             crate::coding_tree::Partitioning::of_mode(params.mtt.round() as u8, ctu_log2);
         let geometry = headers::Geometry::new(config.width, config.height, ctu_log2)
             .with_partitioning(partitioning);
+        let second_reference = nc_encoder::uses_long_term_slot(&config.params);
+        let tools = params.tools().with_second_reference(second_reference);
         let trellis = crate::trellis::TrellisQuant::from_params(
             &nc_encoder::QuantParams::from_overrides(&config.params),
             params.trellis_round_up >= 0.5,
@@ -781,6 +811,7 @@ impl CodecBackend for VvcBackend {
             inter_zero_texture_percent: (params.zero_residual_texture * 100.).round() as u32,
             shave_gap: params.shave_gap.round() as usize,
             unit_zero_rd: params.unit_zero_rd,
+            unit_zero_rd_max_levels: params.unit_zero_rd_max_levels,
             forward: forward_mode(&params, trellis.is_some() || params.dep_quant >= 0.5),
             rounding: Rounding {
                 intra: params.intra_rounding.round() as i32,
@@ -826,7 +857,7 @@ impl CodecBackend for VvcBackend {
             planning_scratch: std::cell::RefCell::default(),
             items: Vec::new(),
             sao: Vec::new(),
-            tools: params.tools(),
+            tools,
             alf: crate::alf::Decision::default(),
             alf_search: AlfSearch::new(&AlfSearchParams::from_overrides(&config.params)),
             current: None,
@@ -841,14 +872,15 @@ impl CodecBackend for VvcBackend {
             poc: 0,
             next_poc: 0,
             temporal_layers: config.temporal_layers,
-            references: crate::references::References::new(config.temporal_layers),
+            references: References::new(config.temporal_layers, second_reference),
+            active_ref: PRIMARY_REF_IDX,
             lambda: 1.,
             dsp: Dsp::new(),
             motion: MotionGrid::new(
                 geometry.coded_width,
                 geometry.coded_height,
                 ctu_log2,
-                params.tools().merge_candidates,
+                tools.merge_candidates,
             )
             .with_slots(nc_encoder::reference_slots(config.temporal_layers)),
             block_qp: None,
@@ -891,7 +923,7 @@ impl CodecBackend for VvcBackend {
         }
         self.cached_luma_samples.clear();
         self.cached_luma_samples.extend_from_slice(prediction);
-        self.cached_luma = Some((*block, mv));
+        self.cached_luma = Some((*block, mv, self.active_ref));
     }
 
     fn lambda(&self) -> f32 {
@@ -931,6 +963,9 @@ impl CodecBackend for VvcBackend {
             (quant, self.tools.max_tb_log2()),
             &mut self.planning_scratch.borrow_mut(),
         );
+        // The planner measures the previous picture, which is the active
+        // reference between CU decisions (`encode_block` restores it).
+        debug_assert_eq!(self.active_ref, PRIMARY_REF_IDX);
         let mode_bits = self.mode_bits(block, &PredictionMode::Inter(mv));
         Some(sse as f32 + self.lambda * (coefficient_bits + mode_bits))
     }
@@ -938,17 +973,18 @@ impl CodecBackend for VvcBackend {
     // Merge candidates off the quarter-sample grid (merged from affine
     // neighbours, pairwise averages) are not offered: the engine prices
     // quarter samples only. Each vector is offered once (the engine measures
-    // every entry; longer merge lists repeat the zero vector).
+    // every entry; longer merge lists repeat the zero vector). Only the
+    // candidates into the reference being decided are offered.
     fn mv_candidates(&mut self, block: &Block, out: &mut Vec<Mv>) {
+        let ref_idx = self.active_ref;
         let p = self.cache_predictors(block);
         let start = out.len();
         let amvp = &p.amvp[crate::motion::Amvr::Quarter as usize];
         for mv in p
             .merge
-            .as_slice()
-            .iter()
-            .chain(amvp)
-            .filter_map(|mv| mv.quarter())
+            .vectors_into(ref_idx)
+            .chain(amvp.iter().copied())
+            .filter_map(Mv16::quarter)
         {
             if !out[start..].contains(&mv) {
                 out.push(mv);
@@ -956,7 +992,11 @@ impl CodecBackend for VvcBackend {
         }
     }
     fn skip_vector(&mut self, block: &Block) -> Option<Mv> {
-        self.cache_predictors(block).merge[0].quarter()
+        let ref_idx = self.active_ref;
+        self.cache_predictors(block)
+            .merge
+            .first_into(ref_idx)
+            .and_then(Mv16::quarter)
     }
     /// Speed heuristic (`vvc.early_merge_lambdas`, HEVC Fast's early merge):
     /// a leaf whose first merge candidate is the planner's whole-sample
@@ -979,14 +1019,18 @@ impl CodecBackend for VvcBackend {
             && self.inter
             && mv.is_full_pel()
             && (stats.sse as f32) <= self.early_merge_lambdas * lambda * block.area() as f32
-            && self.cache_predictors(block).merge[0].quarter() == Some(mv)
+            && self
+                .cache_predictors(block)
+                .merge
+                .first_into(PRIMARY_REF_IDX)
+                == Some(Mv16::from_quarter(mv))
     }
     fn mode_bits(&self, block: &Block, mode: &PredictionMode) -> f32 {
         let computed;
         let p = match &self.current {
             Some((cached, p)) if cached == block => p,
             _ => {
-                computed = self.motion.predictors(block);
+                computed = self.motion.predictors(block, self.active_ref);
                 &computed
             }
         };
@@ -1020,6 +1064,14 @@ impl CodecBackend for VvcBackend {
     fn supports_temporal_layers(&self) -> bool {
         true
     }
+    /// The last high-quality picture as a second entry of RPL0
+    /// (`references.rs`) and `ref_idx_l0` 1 per CU (§7.3.11.7).
+    fn supports_second_reference(&self) -> bool {
+        true
+    }
+    fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
+        self.set_active_ref(ref_idx_of(reference));
+    }
     fn set_rate_control_enabled(&mut self, enabled: bool) {
         self.rate_control = enabled;
     }
@@ -1050,11 +1102,11 @@ impl CodecBackend for VvcBackend {
             Contexts::new(self.qp, self.inter).with_dependent_quantization(self.tools.dep_quant);
         self.begin_block_qp_frame();
         self.references.begin(plan.references, self.poc, self.inter);
-        self.motion.select_collocated(
+        self.motion.select_references(
             plan.references.reference.slot,
-            self.references.syntax.distances[0],
-            self.references.collocated_distance(),
+            self.references.syntax.active_references(),
         );
+        self.active_ref = PRIMARY_REF_IDX;
         self.motion.reset(self.temporal_mvp());
         self.current = None;
         self.cached_luma = None;
@@ -1128,6 +1180,7 @@ impl CodecBackend for VvcBackend {
         reconstruction: &mut Picture,
     ) {
         self.begin_block_qp(decision.qp_offset);
+        self.set_active_ref(ref_idx_of(decision.reference));
         let (mode, (intra_mode, chroma_mode, isp)) =
             self.block_mode(block, decision.mode, source, reference, reconstruction);
         let motion = self.block_motion(block, mode, source, reference);
@@ -1222,6 +1275,8 @@ impl CodecBackend for VvcBackend {
             mts,
         );
         self.current = None;
+        // The next CU's decision starts from the previous picture.
+        self.active_ref = PRIMARY_REF_IDX;
     }
     fn loop_filter_frame(&mut self, recon: &mut Picture) {
         let qp = crate::filter::DeblockQp {
@@ -1335,7 +1390,7 @@ impl CodecBackend for VvcBackend {
                     syntax::block(
                         &mut cabac,
                         &mut contexts,
-                        (self.inter, self.tools),
+                        (self.inter, self.references.syntax.active, self.tools),
                         neighbours,
                         coding,
                     );
@@ -1392,12 +1447,34 @@ fn check_config(config: &EncoderConfig) -> Result<(), ConfigError> {
             max: headers::MAX_QP,
         });
     }
+    // Affine candidate lists (`affine_candidates`) know one reference only.
+    if nc_encoder::uses_long_term_slot(&config.params)
+        && VvcParams::from_overrides(&config.params).affine >= 0.5
+    {
+        return Err(ConfigError::SecondReference("not with vvc.affine yet"));
+    }
     Ok(())
 }
 
-/// The `merge_idx` of the first merge candidate equal to `mv`.
+/// Reference index of the previous picture.
+const PRIMARY_REF_IDX: u8 = 0;
+/// Reference index of the second reference (`references.rs`).
+const SECOND_REF_IDX: u8 = 1;
+
+/// The `ref_idx_l0` of the engine's reference choice (no compound
+/// prediction in P slices).
+fn ref_idx_of(reference: ReferenceChoice) -> u8 {
+    match reference {
+        ReferenceChoice::Secondary => SECOND_REF_IDX,
+        ReferenceChoice::Primary | ReferenceChoice::Compound { .. } => PRIMARY_REF_IDX,
+    }
+}
+
+/// The `merge_idx` of the first merge candidate equal to `mv` into the
+/// reference of the predictors `p`.
+#[inline]
 fn merge_position(p: &crate::motion::Predictors, mv: Mv16) -> Option<usize> {
-    p.merge.position(mv)
+    p.merge.position(mv, p.amvp_ref)
 }
 
 /// The encoder's forward rounding offsets, in 1/512 of a step.
@@ -1421,9 +1498,11 @@ impl VvcBackend {
         mts: u8,
     ) {
         let p = self.predictors(block);
+        let ref_idx = self.active_ref;
         let inter = motion.map(|motion| syntax::Inter {
             motion,
-            syntax: self.inter_syntax(block, &p, motion),
+            ref_idx,
+            syntax: self.inter_syntax(block, &p, motion, ref_idx),
         });
         let coded = transform_tree::coded_units(block, isp, &levels, self.tools.max_tb_log2());
         let merged = inter.is_some_and(|i| {
@@ -1448,27 +1527,31 @@ impl VvcBackend {
             },
         });
         self.motion
-            .record(block, motion.as_ref(), skip, intra_mode, &coded);
+            .record(block, motion.as_ref(), ref_idx, skip, intra_mode, &coded);
     }
 
-    /// The cheapest signalling of inter CU motion `motion` given the CU's
-    /// predictors `p`: a merge candidate equal to it, else AMVP.
+    /// The cheapest signalling of inter CU motion `motion` into reference
+    /// `ref_idx` given the CU's predictors `p`: a merge candidate equal to
+    /// it, else AMVP.
     fn inter_syntax(
         &self,
         block: &Block,
         p: &crate::motion::Predictors,
         motion: Motion,
+        ref_idx: u8,
     ) -> syntax::InterSyntax {
         match motion {
             Motion::Vector(mv) => {
+                debug_assert_eq!(p.amvp_ref, ref_idx);
                 if let Some(index) = merge_position(p, mv) {
                     return syntax::InterSyntax::Merge(index);
                 }
-                let (amvr, mvp, _) = syntax::amvp_coding(&self.contexts, p, mv);
+                let amvp = &p.amvp;
+                let (amvr, mvp, _) = syntax::amvp_coding(&self.contexts, amvp, mv);
                 syntax::InterSyntax::Amvp {
                     mvp,
                     amvr,
-                    mvd: syntax::mvd_of(mv, p.amvp[amvr as usize][mvp], amvr),
+                    mvd: syntax::mvd_of(mv, amvp[amvr as usize][mvp], amvr),
                 }
             }
             Motion::Affine(model) => {
@@ -1575,11 +1658,13 @@ impl VvcBackend {
         levels: &[i32],
         lambdas: [f32; 2],
     ) -> bool {
-        if self.unit_zero_rd <= 0.0
-            || !self.inter
-            || self.tools.dep_quant
-            || levels.iter().all(|&l| l == 0)
-        {
+        if self.unit_zero_rd <= 0.0 || !self.inter || self.tools.dep_quant {
+            return false;
+        }
+        // Units with many levels carry real detail and are never worth
+        // dropping; counting first spares them the coefficient pricing.
+        let nonzero = levels.iter().filter(|&&l| l != 0).count();
+        if nonzero == 0 || nonzero as f32 > self.unit_zero_rd_max_levels {
             return false;
         }
         let height = prediction.len() / width;
@@ -1730,7 +1815,7 @@ impl VvcBackend {
     /// Copy the engine's cached luma prediction of `block` at `mv` into
     /// `out` if there is one; the cache is consumed either way.
     fn take_cached_luma(&mut self, block: &Block, mv: Mv, out: &mut [u8]) -> bool {
-        let hit = self.cached_luma.take() == Some((*block, mv));
+        let hit = self.cached_luma.take() == Some((*block, mv, self.active_ref));
         if hit {
             out.copy_from_slice(&self.cached_luma_samples);
         }
@@ -1760,12 +1845,27 @@ impl VvcBackend {
         inter::predict_cu_into(&self.dsp, reference, plane, block, motion, prediction);
     }
 
-    /// `block`'s predictors: the cached ones when the engine is deciding
-    /// it (the grid changes only when a CU is coded, which clears them).
+    /// `block`'s predictors into the active reference: the cached ones when
+    /// the engine is deciding it (the grid changes only when a CU is
+    /// coded, which clears them).
     fn predictors(&self, block: &Block) -> crate::motion::Predictors {
         self.current
             .filter(|(cached, _)| cached == block)
-            .map_or_else(|| self.motion.predictors(block), |(_, p)| p)
+            .map_or_else(
+                || self.motion.predictors(block, self.active_ref),
+                |(_, p)| p,
+            )
+    }
+
+    /// Make `ref_idx` the active reference. Cached predictors are into the
+    /// active reference (`Predictors::amvp_ref`), so a change drops them:
+    /// the cache stays keyed by the block alone, and a single-reference
+    /// picture, whose reference never changes, compares no indices.
+    fn set_active_ref(&mut self, ref_idx: u8) {
+        if ref_idx != self.active_ref {
+            self.active_ref = ref_idx;
+            self.current = None;
+        }
     }
 
     /// Parameter sets repeated at every key for independent extraction and recovery.
@@ -1811,16 +1911,21 @@ impl VvcBackend {
         self.tools.temporal_mvp && self.inter && self.refresh.is_none()
     }
 
-    /// `block`'s predictors, kept for the engine's following calls about
-    /// it (`current` is cleared whenever a CU is coded).
+    /// `block`'s predictors into the active reference, kept for the
+    /// engine's following calls about it (`current` is cleared whenever a
+    /// CU is coded).
     fn cache_predictors(&mut self, block: &Block) -> &crate::motion::Predictors {
         if self
             .current
             .as_ref()
             .is_none_or(|(cached, _)| cached != block)
         {
-            self.current = Some((*block, self.motion.predictors(block)));
+            self.current = Some((*block, self.motion.predictors(block, self.active_ref)));
         }
+        debug_assert_eq!(
+            self.current.as_ref().map(|(_, p)| p.amvp_ref),
+            Some(self.active_ref)
+        );
         &self.current.as_ref().expect("cached above").1
     }
 

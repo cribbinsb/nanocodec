@@ -64,11 +64,46 @@ const ROWS_CAPACITY: usize = CODED_MAX * 64;
 /// `round(2^12 / sqrt(2))`: the 2:1 rectangle input scale (§7.13.3).
 const INV_SQRT2: i32 = 2896;
 
+/// A stored dequantised coefficient the drivers read: `i32` (the encoder's
+/// buffers) or `i16` (the 8-bit decoder's: §7.12.3 clamps dequantised values
+/// to `BitDepth + 8` bits, so 16 bits hold them exactly).
+pub(crate) trait NarrowCoefficient: Copy {
+    /// The first `V::LANES` values, saturated to 16 bits (libaom's input
+    /// clamp).
+    fn narrow<V: NarrowLanes>(src: &[Self]) -> V;
+    /// The first `W::LANES` values, widened to 32 bits.
+    fn wide<W: I32Lanes>(src: &[Self]) -> W;
+}
+
+impl NarrowCoefficient for i32 {
+    #[inline(always)]
+    fn narrow<V: NarrowLanes>(src: &[i32]) -> V {
+        V::load_i32_saturating(src)
+    }
+
+    #[inline(always)]
+    fn wide<W: I32Lanes>(src: &[i32]) -> W {
+        W::load(src)
+    }
+}
+
+impl NarrowCoefficient for i16 {
+    #[inline(always)]
+    fn narrow<V: NarrowLanes>(src: &[i16]) -> V {
+        V::load_i16(src)
+    }
+
+    #[inline(always)]
+    fn wide<W: I32Lanes>(src: &[i16]) -> W {
+        W::load_i16(src)
+    }
+}
+
 /// [`Self::LANES`] 16-bit lanes (one transform each) of an inverse pass,
 /// exact only inside the L1 limit (the [`InverseLanes`] arithmetic wraps),
 /// plus the loads, stores and shuffles the pass drivers need. Lanes come in
 /// groups of [`GROUP`] (128-bit halves), and shuffles stay within a group.
-pub(super) trait NarrowLanes: InverseLanes {
+pub(crate) trait NarrowLanes: InverseLanes {
     /// Transforms per batch: [`GROUP`] or `2 * GROUP`.
     const LANES: usize;
     /// Per-lane L1 norms, saturating.
@@ -225,9 +260,9 @@ pub(super) struct Inverse {
 ///
 /// If a buffer is too short or the extent exceeds the coded area.
 #[inline(always)]
-pub(super) fn inverse<V: NarrowLanes, const W: usize, const H: usize>(
+pub(super) fn inverse<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
-    coeffs: &[i32],
+    coeffs: &[C],
     dst: &mut [u8],
     stride: usize,
 ) {
@@ -242,7 +277,7 @@ pub(super) fn inverse<V: NarrowLanes, const W: usize, const H: usize>(
     let mut rows = [MaybeUninit::<i16>::uninit(); ROWS_CAPACITY];
     assert!(live_rows * W <= ROWS_CAPACITY && live_rows <= coded_h);
     for r0 in (0..live_rows).step_by(V::LANES) {
-        let output = row_batch::<V, W, H>(inverse, coeffs, r0);
+        let output = row_batch::<V, C, W, H>(inverse, coeffs, r0);
         for k0 in (0..W).step_by(GROUP) {
             let mut tile = [V::splat(0); GROUP];
             tile.copy_from_slice(&output[k0..k0 + GROUP]);
@@ -276,9 +311,9 @@ const fn size<const W: usize, const H: usize>() -> Av1TxSize {
 /// size's row shift. Coefficients are clamped to 16 bits on load (libaom's
 /// input clamp) and prescaled for 2:1 rectangles.
 #[inline(always)]
-fn row_batch<V: NarrowLanes, const W: usize, const H: usize>(
+fn row_batch<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
-    coeffs: &[i32],
+    coeffs: &[C],
     r0: usize,
 ) -> [V; W] {
     let coded_h = H.min(CODED_MAX);
@@ -286,7 +321,7 @@ fn row_batch<V: NarrowLanes, const W: usize, const H: usize>(
     let mut x = [V::splat(0); W];
     let mut norm = V::norm_zero();
     for (c, lane) in x[..inverse.columns].iter_mut().enumerate() {
-        let v = V::load_i32_saturating(&coeffs[c * coded_h + r0..][..V::LANES]);
+        let v = C::narrow::<V>(&coeffs[c * coded_h + r0..][..V::LANES]);
         norm = v.accumulate_l1(norm);
         // The 16-bit clamp after the scaling (libaom `clamp_buf`) is the
         // identity: the scale shrinks.
@@ -297,7 +332,7 @@ fn row_batch<V: NarrowLanes, const W: usize, const H: usize>(
         };
     }
     if !V::within_limit(norm, l1_limit(inverse.horizontal, W)) {
-        return wide_row_batch::<V, W, H>(inverse, coeffs, r0);
+        return wide_row_batch::<V, C, W, H>(inverse, coeffs, r0);
     }
     let mut y = [V::splat(0); W];
     transform(inverse.horizontal, &x, &mut y, inverse.columns);
@@ -317,9 +352,9 @@ fn row_batch<V: NarrowLanes, const W: usize, const H: usize>(
 /// `V::Wide::LANES` lanes at a time, then the row shift and libaom's 16-bit
 /// column input clamp, which the saturating narrow applies.
 #[inline(never)]
-fn wide_row_batch<V: NarrowLanes, const W: usize, const H: usize>(
+fn wide_row_batch<V: NarrowLanes, C: NarrowCoefficient, const W: usize, const H: usize>(
     inverse: Inverse,
-    coeffs: &[i32],
+    coeffs: &[C],
     r0: usize,
 ) -> [V; W] {
     let coded_h = H.min(CODED_MAX);
@@ -329,7 +364,7 @@ fn wide_row_batch<V: NarrowLanes, const W: usize, const H: usize>(
     let mut out = x;
     for part in (0..V::LANES).step_by(V::Wide::LANES) {
         for (c, lane) in x[..inverse.columns].iter_mut().enumerate() {
-            let v = I32Lanes::clamp16(V::Wide::load(&coeffs[c * coded_h + r0 + part..]));
+            let v = I32Lanes::clamp16(C::wide::<V::Wide>(&coeffs[c * coded_h + r0 + part..]));
             *lane = if size.is_two_to_one() {
                 v.mul_scalar(INV_SQRT2).round_shift(INVERSE_COS_BIT)
             } else {
@@ -432,8 +467,8 @@ impl Inverse {
 /// The square `DCT_DCT` of side `N` whose nonzero coefficients lie in the
 /// top-left `limit` square (8, 16 or 32; at most the coded side).
 #[inline(always)]
-pub(super) fn inverse_dct<V: NarrowLanes, const N: usize>(
-    coeffs: &[i32],
+pub(super) fn inverse_dct<V: NarrowLanes, C: NarrowCoefficient, const N: usize>(
+    coeffs: &[C],
     dst: &mut [u8],
     stride: usize,
     limit: usize,
@@ -444,8 +479,63 @@ pub(super) fn inverse_dct<V: NarrowLanes, const N: usize>(
         rows: limit,
         columns: limit,
     };
-    inverse::<V, N, N>(extent, coeffs, dst, stride);
+    inverse::<V, C, N, N>(extent, coeffs, dst, stride);
 }
+
+/// The `av1_inverse` table entry for `W`x`H` (both sides at least 8) on `V`
+/// lanes: coefficient rows from `nonzero_rows` on are zero. A square
+/// `DCT_DCT` takes `nonzero_rows` as the side of its nonzero low square (its
+/// columns are as sparse as its rows) and runs that EOB-sparse graph.
+#[inline(always)]
+pub(super) fn inverse_lanes<
+    V: NarrowLanes,
+    C: NarrowCoefficient,
+    const W: usize,
+    const H: usize,
+>(
+    kernels: (Kernel1d, Kernel1d),
+    coeffs: &[C],
+    nonzero_rows: usize,
+    dst: &mut [u8],
+    stride: usize,
+) {
+    if W == H && kernels == (Kernel1d::Dct, Kernel1d::Dct) {
+        inverse_dct_square::<V, C, W>(coeffs, dst, stride, nonzero_rows);
+    } else {
+        inverse::<V, C, W, H>(
+            Inverse::of::<W, H>(kernels, nonzero_rows),
+            coeffs,
+            dst,
+            stride,
+        );
+    }
+}
+
+/// [`inverse_dct`] of an `N`x`N` whose nonzero coefficients lie in the low
+/// `limit` square, rounded up to 8, 16 or the coded side. Each case passes a
+/// constant limit, so the driver's loops unroll for it as in the full-size
+/// kernels (a runtime limit cost x86 0.4-0.6% decode instructions on the
+/// 16x16).
+#[inline(always)]
+pub(super) fn inverse_dct_square<V: NarrowLanes, C: NarrowCoefficient, const N: usize>(
+    coeffs: &[C],
+    dst: &mut [u8],
+    stride: usize,
+    limit: usize,
+) {
+    let coded = N.min(CODED_MAX);
+    if limit <= LOW_SQUARE_8 {
+        inverse_dct::<V, C, N>(coeffs, dst, stride, LOW_SQUARE_8);
+    } else if limit <= LOW_SQUARE_16 && LOW_SQUARE_16 < coded {
+        inverse_dct::<V, C, N>(coeffs, dst, stride, LOW_SQUARE_16);
+    } else {
+        inverse_dct::<V, C, N>(coeffs, dst, stride, coded);
+    }
+}
+
+/// The low squares of [`inverse_dct_square`].
+const LOW_SQUARE_8: usize = 8;
+const LOW_SQUARE_16: usize = 16;
 
 /// The guard-boundary check every ISA's tests run.
 #[cfg(test)]

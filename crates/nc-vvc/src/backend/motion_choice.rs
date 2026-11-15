@@ -75,9 +75,8 @@ impl VvcBackend {
         if !affine
             && !p
                 .merge
-                .as_slice()
-                .iter()
-                .any(|&m| m.quarter().is_none() && near(m))
+                .vectors_into(self.active_ref)
+                .any(|m| m.quarter().is_none() && near(m))
         {
             return vector;
         }
@@ -151,7 +150,7 @@ impl VvcBackend {
         let satd_lambda = self.lambda.sqrt();
         let cached = mv
             .quarter()
-            .is_some_and(|q| self.cached_luma == Some((*block, q)));
+            .is_some_and(|q| self.cached_luma == Some((*block, q, self.active_ref)));
         let vector_prediction = if cached {
             Cow::Borrowed(&self.cached_luma_samples[..])
         } else {
@@ -173,19 +172,19 @@ impl VvcBackend {
         }
     }
 
-    /// The cheapest regular merge candidate off the quarter-sample grid
-    /// among those `near` accepts.
+    /// The cheapest regular merge candidate into the CU's reference off the
+    /// quarter-sample grid among those `near` accepts.
     fn off_grid_merge(&self, s: &Search<'_>, near: impl Fn(Mv16) -> bool) -> Option<(Motion, f32)> {
         let mut best = None;
-        let merge = s.p.merge.as_slice();
+        let ref_idx = self.active_ref;
         // The RD buffers are free until the confirmation (`luma_rd`), which
         // reuses the cheapest candidate's prediction from `kept`.
         let mut prediction = self.rd_prediction.borrow_mut();
         let mut kept = self.rd_best_prediction.borrow_mut();
-        for (index, &candidate) in merge.iter().enumerate() {
+        for (index, candidate) in s.p.merge.of_reference(ref_idx) {
             if candidate.quarter().is_none()
                 && near(candidate)
-                && !merge[..index].contains(&candidate)
+                && s.p.merge.position(candidate, ref_idx) == Some(index)
             {
                 let bits = self.vector_bits(&s.frame.cu, &s.p, candidate);
                 vector_prediction(&s.frame, candidate, &mut prediction);
@@ -316,9 +315,10 @@ impl VvcBackend {
             .position(|candidate| candidate == model)
     }
 
-    /// Estimated bits of coding one-vector motion `mv` for `cu` (skip or
-    /// merge, else AMVP; with affine motion enabled, the flags saying it is
-    /// not affine).
+    /// Estimated bits of coding one-vector motion `mv` for `cu` into the
+    /// reference of its predictors `p` (`amvp_ref`): skip or merge, else
+    /// AMVP with its reference index; with affine motion enabled, the flags
+    /// saying it is not affine.
     pub(super) fn vector_bits(&self, cu: &Block, p: &Predictors, mv: Mv16) -> f32 {
         let c = &self.contexts;
         if let Some(index) = merge_position(p, mv) {
@@ -336,11 +336,13 @@ impl VvcBackend {
         } else {
             0.
         };
+        let references = self.references.syntax.active;
         c.skip[p.skip_ctx].bits(false)
             + c.intra[p.intra_ctx].bits(false)
             + c.merge.bits(false)
             + not_affine
-            + syntax::amvp_coding(c, p, mv).2
+            + syntax::ref_index_bits(c, references, p.amvp_ref)
+            + syntax::amvp_coding(c, &p.amvp, mv).2
     }
 
     /// Estimated bits of merging sub-block candidate `index` (as a skip CU).

@@ -187,7 +187,7 @@ pub(crate) fn inter_block(
     layout: Option<Layout>,
 ) {
     let (pred, mv, compound) = match *motion {
-        BlockMotion::Single { vector, is_new } => {
+        BlockMotion::Single { vector, is_new, .. } => {
             let pred = match (is_new, layout.is_some()) {
                 (true, _) => Pred::Inter,
                 (false, true) => Pred::Merge,

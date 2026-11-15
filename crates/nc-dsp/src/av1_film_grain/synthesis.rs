@@ -77,8 +77,8 @@ fn synthesize_plane(
     let block = BLOCK >> sub;
     let reach = OVERLAP >> sub;
     let stride = plane_w.div_ceil(block) * block + reach;
-    let mut current = vec![0i16; (block + reach) * stride];
-    let mut previous = vec![0i16; current.len()];
+    let mut current = vec![0i8; (block + reach) * stride];
+    let mut previous = vec![0i8; current.len()];
     let bounds = if params.clip_to_restricted_range {
         [
             RESTRICTED_MIN as u8,
@@ -153,7 +153,7 @@ fn fill_stripe(
     sub: usize,
     index: usize,
     stride: usize,
-    stripe: &mut [i16],
+    stripe: &mut [i8],
 ) {
     // The block side is a constant per plane type, so each row's copy is a
     // fixed-size move rather than a `memcpy` call.
@@ -173,7 +173,7 @@ fn fill_stripe_blocks<const SIDE: usize>(
     sub: usize,
     index: usize,
     stride: usize,
-    stripe: &mut [i16],
+    stripe: &mut [i8],
 ) {
     let block = BLOCK >> sub;
     let reach = OVERLAP >> sub;
@@ -186,10 +186,10 @@ fn fill_stripe_blocks<const SIDE: usize>(
         let overlap = if params.overlap && x != 0 { reach } else { 0 };
         for y in 0..SIDE {
             let start = (base_y + y) * template.columns + base_x;
-            let source: &[i16; SIDE] = template.values[start..start + SIDE]
+            let source: &[i8; SIDE] = template.values[start..start + SIDE]
                 .try_into()
                 .expect("a template row holds a block");
-            let destination: &mut [i16; SIDE] = (&mut stripe[y * stride + x..][..SIDE])
+            let destination: &mut [i8; SIDE] = (&mut stripe[y * stride + x..][..SIDE])
                 .try_into()
                 .expect("a stripe row holds a block");
             // The previous block's overhang, then the whole row at once (a
@@ -198,7 +198,7 @@ fn fill_stripe_blocks<const SIDE: usize>(
             *destination = *source;
             for (j, &previous) in old.iter().enumerate().take(overlap) {
                 destination[j] =
-                    blend_overlap(i32::from(previous), i32::from(source[j]), j, sub) as i16;
+                    blend_overlap(i32::from(previous), i32::from(source[j]), j, sub) as i8;
             }
         }
     }

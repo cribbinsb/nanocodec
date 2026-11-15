@@ -283,8 +283,17 @@ mod tests {
         assert!(offers(Codec::Av1, CuratedOption::FilmGrain));
         assert!(!offers(Codec::H264, CuratedOption::FilmGrain));
         // AV1 and VP9 take the second reference on flat streams since
-        // 9fe4dd1b, HEVC since its second ref_idx_l0 entry.
-        for codec in [Codec::H264, Codec::Av1, Codec::Vp9, Codec::Hevc] {
+        // 9fe4dd1b, HEVC since its second ref_idx_l0 entry, AV2 since its
+        // `num_total_refs` 2 port, VVC as a second RPL0 entry.
+        let codecs = [
+            Codec::H264,
+            Codec::Av1,
+            Codec::Vp9,
+            Codec::Hevc,
+            Codec::Av2,
+            Codec::Vvc,
+        ];
+        for codec in codecs {
             assert!(offers(codec, CuratedOption::SecondReference));
         }
         assert!(offers(Codec::H264, CuratedOption::TemporalLayers));

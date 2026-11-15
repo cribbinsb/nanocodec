@@ -22,12 +22,18 @@ const ZERO_LEVELS: [i32; 1 << (2 * transform_tree::MAX_TB_LOG2)] =
 pub(crate) fn block(
     r: &mut Reader<'_>,
     c: &mut Contexts,
-    (inter, tools): (bool, Tools),
+    (inter, references, tools): (bool, usize, Tools),
     (grid, p): (&MotionGrid, &Predictors),
     cu: nc_encoder::Block,
     delta_pending: bool,
 ) -> Result<Coding> {
-    let neighbours = Neighbours { grid, p, cu, tools };
+    let neighbours = Neighbours {
+        grid,
+        p,
+        cu,
+        tools,
+        references,
+    };
     let mut coding = Coding {
         inter: None,
         cu,
@@ -104,6 +110,8 @@ struct Neighbours<'a> {
     p: &'a Predictors,
     cu: nc_encoder::Block,
     tools: Tools,
+    /// `NumRefIdxActive[0]`.
+    references: usize,
 }
 
 /// §7.3.11.7 `merge_data` of a skip or merge CU.
@@ -120,12 +128,15 @@ fn merge_data(r: &mut Reader<'_>, c: &mut Contexts, n: &Neighbours<'_>) -> Resul
         );
         return Ok(Inter {
             motion: Motion::Affine(list[index]),
+            ref_idx: 0,
             syntax: InterSyntax::SubblockMerge(index),
         });
     }
     let index = merge_index(r, c, n.tools.merge_candidates, 0)?;
+    let candidate = n.p.merge.candidate(index);
     Ok(Inter {
-        motion: Motion::Vector(n.p.merge[index]),
+        motion: Motion::Vector(candidate.mv),
+        ref_idx: candidate.ref_idx,
         syntax: InterSyntax::Merge(index),
     })
 }
@@ -138,7 +149,11 @@ fn amvp(r: &mut Reader<'_>, c: &mut Contexts, n: &Neighbours<'_>) -> Result<Inte
     } else {
         None
     };
+    let ref_idx = crate::syntax::ref_index(r, c, n.references, 0)?;
     if let Some(six) = six {
+        if ref_idx != 0 {
+            return Err(DecodeError::Unsupported("VVC affine second reference"));
+        }
         return affine_amvp(r, c, n, six);
     }
     let mvd = read_mvd(r, c)?;
@@ -148,9 +163,16 @@ fn amvp(r: &mut Reader<'_>, c: &mut Contexts, n: &Neighbours<'_>) -> Result<Inte
     } else {
         crate::syntax::amvr_precision(r, c, Amvr::Quarter)?
     };
-    let mv = add_mvd(n.p.amvp[amvr as usize][mvp], mvd, amvr)?;
+    // The CU's predictors were derived into reference 0.
+    let amvp = if ref_idx == n.p.amvp_ref {
+        n.p.amvp
+    } else {
+        n.grid.predictors(&n.cu, ref_idx).amvp
+    };
+    let mv = add_mvd(amvp[amvr as usize][mvp], mvd, amvr)?;
     Ok(Inter {
         motion: Motion::Vector(mv),
+        ref_idx,
         syntax: InterSyntax::Amvp { mvp, amvr, mvd },
     })
 }
@@ -179,6 +201,7 @@ fn affine_amvp(
     }
     Ok(Inter {
         motion: Motion::Affine(crate::affine::Model { cp, six }),
+        ref_idx: 0,
         syntax: InterSyntax::AffineAmvp { mvp, mvd },
     })
 }

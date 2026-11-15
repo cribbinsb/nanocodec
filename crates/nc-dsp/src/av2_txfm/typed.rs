@@ -19,8 +19,9 @@
 //!
 //! The passes, shifts and clamps are those of the parent module's DCTs: the
 //! forward transforms columns (vertical kernel) then rows (horizontal
-//! kernel), the inverse rows then columns, clamping coefficients and the
-//! row output to 16 bits and the residual to `-256..=255`.
+//! kernel), the inverse rows then columns, on 16-bit coefficients, clamping
+//! the row output to 16 bits and the residual to `-256..=255` (stored as
+//! `i16`).
 
 use super::adst_tables::{ADST4, ADST8, ADST16, FDST4, FDST8, FDST16, IDENTITY_SCALES};
 use super::{Av2TxSize, DCT_BASIS, MAX_POINTS};
@@ -29,9 +30,10 @@ use super::{Av2TxSize, DCT_BASIS, MAX_POINTS};
 const MAX_SIDE: usize = 32;
 /// Largest side of the ADST kernels.
 const MAX_ADST_SIDE: usize = 16;
-/// 16-bit clamp of the inverse input and row pass (AVM `clamp_buf`, `bd + 8`).
-const COEFF_MIN: i32 = -32768;
-const COEFF_MAX: i32 = 32767;
+/// 16-bit clamp of the inverse row pass (AVM `clamp_buf`, `bd + 8`; the
+/// input's clamp is its `i16` type).
+const COEFF_MIN: i32 = i16::MIN as i32;
+const COEFF_MAX: i32 = i16::MAX as i32;
 /// Range of the inverse column pass output (AVM `inv_txfm_c`, 8-bit video).
 const RESIDUAL_MIN: i32 = -256;
 const RESIDUAL_MAX: i32 = 255;
@@ -222,7 +224,7 @@ fn forward_n<const N: usize>(
 ///
 /// # Panics
 /// If `tx_type` does not exist at `size` or the slices are short.
-pub(crate) fn inverse(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i32], out: &mut [i32]) {
+pub(crate) fn inverse(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i16], out: &mut [i16]) {
     match size.side() {
         4 => inverse_n::<4>(size, tx_type, coeffs, out),
         8 => inverse_n::<8>(size, tx_type, coeffs, out),
@@ -235,7 +237,7 @@ pub(crate) fn inverse(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i32], out: 
 /// scaled by one input value and skip zero inputs, which leave the sums
 /// unchanged: quantized blocks are mostly zero, so the rows below the
 /// last nonzero one are never transformed (bit-exact; integer sums).
-fn inverse_n<const N: usize>(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i32], out: &mut [i32]) {
+fn inverse_n<const N: usize>(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i16], out: &mut [i16]) {
     let (first, second) = size.inverse_shifts();
     // The row pass's output, row-major; rows from `used` on are zero.
     let mut rows = [[0; N]; N];
@@ -247,7 +249,7 @@ fn inverse_n<const N: usize>(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i32]
         }
         used = r + 1;
         for (k, &c) in input.iter().enumerate() {
-            let c = c.clamp(COEFF_MIN, COEFF_MAX);
+            let c = i32::from(c);
             match horizontal {
                 Matrix::Dense(m) if c != 0 => {
                     for (sum, &weight) in line.iter_mut().zip(&m[k * N..(k + 1) * N]) {
@@ -284,7 +286,8 @@ fn inverse_n<const N: usize>(size: Av2TxSize, tx_type: Av2TxType, coeffs: &[i32]
     }
     for (sums, out) in columns.iter().zip(out.as_chunks_mut::<N>().0) {
         for (sample, &sum) in out.iter_mut().zip(sums) {
-            *sample = round_shift(sum, second).clamp(RESIDUAL_MIN, RESIDUAL_MAX);
+            // In -256..=255, so the narrowing is exact.
+            *sample = round_shift(sum, second).clamp(RESIDUAL_MIN, RESIDUAL_MAX) as i16;
         }
     }
 }

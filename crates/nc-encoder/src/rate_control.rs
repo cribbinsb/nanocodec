@@ -16,6 +16,7 @@
 //! overflow the buffer even at the maximum quantizer ([`RateController::should_drop`]).
 use crate::layer::LayerPosition;
 use crate::params::RateParams;
+use crate::period_ledger::fixed_camera;
 use crate::qp_cadence::{
     CadenceRole, LayerLadder, MotionHint, QP_UNITS_PER_OCTAVE, QpCadence, nearest_quantizer,
     step_ratio,
@@ -255,6 +256,29 @@ pub struct RateControlStats {
     pub residual_sigma: f64,
     /// How the latest frame was planned, a rate-log diagnostic.
     pub plan: RatePlanTrace,
+}
+impl RateControlStats {
+    /// The statistics of a controller that has coded nothing, at quantizer
+    /// `quantizer` and target `target_bps`.
+    fn start(quantizer: u32, target_bps: u64) -> Self {
+        Self {
+            current_quantizer: quantizer,
+            buffer_fullness: 0.,
+            actual_bps: 0.,
+            total_bits: 0,
+            frames: 0,
+            target_bps,
+            buffer_overflows: 0,
+            max_frame_bits: 0,
+            peak_overflows: 0,
+            target_unreachable_frames: 0,
+            dropped_frames: 0,
+            recoded_frames: 0,
+            key_loan_bits: 0.,
+            residual_sigma: 0.,
+            plan: RatePlanTrace::default(),
+        }
+    }
 }
 /// The controller's plan of the latest frame and its state after it: a
 /// diagnostic for the rate log (`nanocodec --rate-log`), read by no decision.
@@ -665,6 +689,12 @@ pub(crate) struct RateController {
     /// cap; [`RateController::observe_startup_motion`]).
     first_key_lookahead: f64,
     first_key_cap_buffer: f64,
+    /// `rate.key_still_boost`, the start-up lookahead's unchanged-block
+    /// share (for the first key), and the boost the key being coded took
+    /// (`key_still_offset`; 0 for inter frames and unboosted keys).
+    key_still_boost: f64,
+    startup_still_share: f64,
+    key_still_applied: f64,
     /// `rate.recode_overflow`: the buffer fullness re-codes keep frames
     /// under, as a multiple of the capacity; 0 is off.
     recode_ceiling: f64,
@@ -790,6 +820,9 @@ impl RateController {
             key_cap_gop: f64::from(params.key_cap_gop),
             first_key_lookahead: first_key_lookahead(params, &calibration),
             first_key_cap_buffer: 0.,
+            key_still_boost: f64::from(params.key_still_boost),
+            startup_still_share: 0.,
+            key_still_applied: 0.,
             recode_ceiling: f64::from(params.recode_overflow),
             recode_ceiling_inter: f64::from(params.recode_overflow_inter),
             coding: FrameCoding::default(),
@@ -822,23 +855,7 @@ impl RateController {
             window_tolerance: f64::from(params.window_tolerance),
             window_keys: params.window_keys >= 0.5,
             share: LayerShare::WHOLE,
-            stats: RateControlStats {
-                current_quantizer: q,
-                buffer_fullness: 0.,
-                actual_bps: 0.,
-                total_bits: 0,
-                frames: 0,
-                target_bps: config.target_bps,
-                buffer_overflows: 0,
-                max_frame_bits: 0,
-                peak_overflows: 0,
-                target_unreachable_frames: 0,
-                dropped_frames: 0,
-                recoded_frames: 0,
-                key_loan_bits: 0.,
-                residual_sigma: 0.,
-                plan: RatePlanTrace::default(),
-            },
+            stats: RateControlStats::start(q, config.target_bps),
             skip_budget: SkipBudget::new(params),
             frame_skip_scale: 1.,
             unscaled_budget: 0.,
@@ -1361,8 +1378,9 @@ impl RateController {
     /// rule replaces the former `rate.key_level_offset` floor (inter level
     /// minus 6 QP times the static share) and per-codec periodic boosts.
     fn key_step(&self, budget_step: f64, reuse_offset: f64, hint: f64) -> f64 {
+        let finer = step_ratio(-self.key_still_offset());
         let Some(level) = self.last_inter_quantizer else {
-            return budget_step;
+            return budget_step * finer;
         };
         let level_step = self.steps[level as usize] * step_ratio(reuse_offset);
         let allowance_step = self.model[KEY_MODEL].map_or(0., |m| {
@@ -1374,7 +1392,26 @@ impl RateController {
             // the key repay what it borrows.
             return level_step.max(allowance_step);
         }
-        level_step.min(budget_step).max(allowance_step)
+        (level_step.min(budget_step) * finer).max(allowance_step)
+    }
+
+    /// QP units finer the key being planned is coded on a fixed camera
+    /// (`rate.key_still_boost` times `period_ledger::fixed_camera` of the
+    /// running unchanged-block share, or the start-up lookahead's before
+    /// any inter frame). A still scene's later frames inherit the key: at
+    /// 150 frames with one key, replaying CBR with fixed QP's key-to-level
+    /// ratio (much finer) instead of CBR's own key gained AV1 static clips
+    /// 65% BD-J and cost pan 4% (`docs/analysis/rc-cost-decomposition-2026-11-14.md`).
+    fn key_still_offset(&self) -> f64 {
+        if self.key_still_boost <= 0. {
+            return 0.;
+        }
+        let share = if self.still_frames == 0 {
+            self.startup_still_share
+        } else {
+            self.still_share
+        };
+        self.key_still_boost * fixed_camera(share)
     }
 
     /// The repayment-phase boost whose phase repays a key of `bits`: a held
@@ -1611,6 +1648,13 @@ impl RateController {
     /// it. Under camera motion the picture is replaced within seconds and a
     /// smaller key (cap 0.2-0.3) won pan by 12-15% in a blanket screen,
     /// which lost crowd by 2-11% (`rate.key_cap_buffer`).
+    /// The start-up lookahead's share of unchanged blocks between the first
+    /// two frames: how still the scene is before any inter frame
+    /// (`key_still_offset`).
+    pub fn observe_startup_still(&mut self, still_share: f64) {
+        self.startup_still_share = still_share;
+    }
+
     pub fn observe_startup_motion(&mut self, peak_displacement: f64) {
         if self.stats.frames == 0 && peak_displacement >= STARTUP_CAMERA_MOTION {
             self.first_key_cap_buffer = self.first_key_lookahead;
@@ -1826,6 +1870,7 @@ impl RateController {
         }
         if key {
             self.loan_boost = self.key_boost();
+            self.key_still_applied = self.key_still_offset();
             if let Some(seed_offset) = share.key_anchor.and_then(|a| a.seed_inter_offset)
                 && self.last_inter_quantizer.is_none()
             {
@@ -2161,7 +2206,13 @@ impl RateController {
             self.still.observe_key(bits as f64);
             if self.holds_still_key() {
                 self.loan_boost = self.boost_repaying(bits as f64);
+            } else if self.key_still_applied > 0. {
+                // A boosted key costs more than its plan: its whole size is
+                // scheduled, so the frames of its phase repay it rather than
+                // the proportional correction (an undershoot keeps the plan).
+                self.loan_boost = self.loan_boost.max(self.boost_repaying(bits as f64));
             }
+            self.key_still_applied = 0.;
             self.scheduled_key_debt =
                 (self.loan_inter_budget() * self.loan_boost - uniform).max(0.);
         } else {
@@ -2507,6 +2558,32 @@ mod tests {
         let mean = levels_under_alternating_hints(0.2, 1.5);
         assert!(spread(&own) >= 2, "{own:?}");
         assert!(spread(&mean) < spread(&own), "{mean:?} vs {own:?}");
+    }
+    /// The quantizer of the periodic key after 59 inter frames whose
+    /// unchanged-block share is `still`, at `rate.key_still_boost` `boost`.
+    fn periodic_key_quantizer(boost: f32, still: f64) -> u32 {
+        let mut r = controller_with(500_000, &[("rate.key_still_boost", boost)]);
+        let hint = Complexity {
+            static_fraction: still,
+            ..HINT
+        };
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(100_000);
+        for i in 1..30 {
+            r.select(false, i, hint, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(16_000);
+        }
+        r.select(true, 30, HINT, LayerPosition::FLAT, &LayerShare::WHOLE)
+    }
+    #[test]
+    fn a_still_scenes_key_is_coded_finer_with_the_still_boost() {
+        let plain = periodic_key_quantizer(0., 1.);
+        assert!(periodic_key_quantizer(6., 1.) < plain);
+        // Moving content (a third of the blocks unchanged) keeps its key.
+        assert_eq!(
+            periodic_key_quantizer(6., 0.3),
+            periodic_key_quantizer(0., 0.3)
+        );
     }
     #[test]
     fn a_forced_quantizer_is_coded_as_given_and_never_recoded() {

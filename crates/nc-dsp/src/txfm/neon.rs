@@ -36,6 +36,7 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         forward_dct_64: super::neon_forward::forward_64,
         inverse_dct_add_64: super::neon_inverse::inverse_64,
         inverse_dct_add_sparse: [
+            super::neon_inverse::inverse_16_sparse,
             super::neon_inverse::inverse_32_sparse,
             super::neon_inverse::inverse_64_sparse,
         ],

@@ -50,6 +50,8 @@
 
 pub(crate) mod generic;
 #[allow(unsafe_code)]
+pub(crate) mod h264_inverse8;
+#[allow(unsafe_code)]
 mod inverse_add;
 #[allow(unsafe_code)]
 pub(crate) mod scalar;
@@ -707,7 +709,7 @@ impl HevcForwardMode {
 }
 
 /// Inverse HEVC transform: row-major coefficients to row-major residual.
-pub(crate) type HevcInverseFn = unsafe fn(coeffs: &[i32], out: &mut [i32]);
+pub(crate) type HevcInverseFn = unsafe fn(coeffs: &[i16], out: &mut [i16]);
 /// Forward H.264 4x4 transform of `out.len()` blocks, `blocks_wide` per row
 /// of blocks, from a residual region at `stride`.
 pub(crate) type H264Forward4Fn =
@@ -740,14 +742,14 @@ pub(crate) type H264AddInverse4Fn = unsafe fn(
 /// H.264 reconstruction of already-scaled 4x4 blocks in place
 /// (`generic::h264_add_scaled_4x4`).
 pub(crate) type H264AddScaled4Fn =
-    unsafe fn(coeffs: &[[i32; 16]], blocks_wide: usize, dst: &mut [u8], stride: usize);
+    unsafe fn(coeffs: &[[i16; 16]], blocks_wide: usize, dst: &mut [u8], stride: usize);
 /// H.264 reconstruction of a macroblock's already-scaled luma 4x4 blocks
 /// with known coded and AC masks (`generic::h264_add_scaled_mb`).
 pub(crate) type H264AddScaledMbFn =
-    unsafe fn(coeffs: &[[i32; 16]; 16], masks: (u16, u16), dst: &mut [u8], stride: usize);
+    unsafe fn(coeffs: &[[i16; 16]; 16], masks: (u16, u16), dst: &mut [u8], stride: usize);
 /// H.264 reconstruction of an already-scaled 8x8 block in place
-/// (`generic::h264_add_scaled_8x8`).
-pub(crate) type H264AddScaled8Fn = unsafe fn(coeffs: &[i32; 64], dst: &mut [u8], stride: usize);
+/// (`h264_inverse8`, in 16-bit lanes).
+pub(crate) type H264AddScaled8Fn = unsafe fn(coeffs: &[i16; 64], dst: &mut [u8], stride: usize);
 /// H.264 chroma transform and quantisation of one 4:2:0 component
 /// (`generic::h264_forward_quantize_chroma`).
 pub(crate) type H264ForwardQuantizeChromaFn = unsafe fn(
@@ -776,12 +778,12 @@ pub(crate) type NonzeroMaskFn = unsafe fn(levels: &[i32]) -> u64;
 /// block).
 pub(crate) const MAX_MASK_LEVELS: usize = 64;
 /// HEVC scaling (eq. 8-309) of `levels` into `out`.
-pub(crate) type HevcScaleFn = unsafe fn(levels: &[i32], q: &HevcQuantizer, out: &mut [i32]);
+pub(crate) type HevcScaleFn = unsafe fn(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]);
 
-/// Fused HEVC inverse of i32 coefficients, added into an 8-bit picture.
-/// The `(rows, columns)` extent covers every nonzero coefficient (see
-/// `Dsp::hevc_inverse_add`).
-pub(crate) type HevcInverseAddFn = unsafe fn(&[i32], (usize, usize), &mut [u8], usize);
+/// Fused HEVC inverse of 16-bit coefficients (the scaling process's range,
+/// §8.6.3), added into an 8-bit picture. The `(rows, columns)` extent
+/// covers every nonzero coefficient (see `Dsp::hevc_inverse_add`).
+pub(crate) type HevcInverseAddFn = unsafe fn(&[i16], (usize, usize), &mut [u8], usize);
 
 /// One ISA's HEVC and H.264 transform kernels.
 #[derive(Debug, Clone, Copy)]

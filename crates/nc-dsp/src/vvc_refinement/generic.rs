@@ -70,6 +70,20 @@ pub(super) unsafe fn dmvr<V: I32Lanes>(
     })
 }
 
+/// The gradients of [`crate::vvc_optical_flow::gradient`] for `W::LANES`
+/// samples from `at`, in 16-bit lanes (within ±1023).
+#[inline(always)]
+pub(super) unsafe fn gradient16<W: I16Lanes>(samples: &[i16], stride: usize, at: usize) -> [W; 2] {
+    [
+        W::load(&samples[at + 1..])
+            .sra(6)
+            .sub(W::load(&samples[at - 1..]).sra(6)),
+        W::load(&samples[at + stride..])
+            .sra(6)
+            .sub(W::load(&samples[at - stride..]).sra(6)),
+    ]
+}
+
 #[inline(always)]
 pub(super) unsafe fn gradient<V: I32Lanes>(samples: &[i16], stride: usize, at: usize) -> [V; 2] {
     [
@@ -85,7 +99,7 @@ pub(super) unsafe fn gradient<V: I32Lanes>(samples: &[i16], stride: usize, at: u
 #[inline(always)]
 pub(super) unsafe fn prof<V: I32Lanes>(
     samples: &[i16; 36],
-    corrections: &[[i32; 2]; 16],
+    corrections: &[[i8; 2]; 16],
     out: &mut [i16; 16],
 ) {
     debug_assert_eq!(V::LANES, 4);
@@ -93,8 +107,8 @@ pub(super) unsafe fn prof<V: I32Lanes>(
         let at = (y + 1) * 6 + 1;
         // SAFETY: caller supplies a supported four-lane ISA and padded 6×6 block.
         let [gx, gy] = unsafe { gradient::<V>(samples, 6, at) };
-        let cx = core::array::from_fn::<_, 4, _>(|x| corrections[y * 4 + x][0]);
-        let cy = core::array::from_fn::<_, 4, _>(|x| corrections[y * 4 + x][1]);
+        let cx = core::array::from_fn::<_, 4, _>(|x| i32::from(corrections[y * 4 + x][0]));
+        let cy = core::array::from_fn::<_, 4, _>(|x| i32::from(corrections[y * 4 + x][1]));
         let delta = gx
             .mul(V::load(&cx))
             .add(gy.mul(V::load(&cy)))

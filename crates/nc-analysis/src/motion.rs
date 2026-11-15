@@ -37,7 +37,10 @@
 //! has no scene cuts; the zz gates cost one SAD per SB on still areas.
 
 use nc_common::{Plane, PlaneView};
-use nc_dsp::{BlockSize, Dsp, GRID_BLOCKS, GridBest, GridRows, prefetch_block};
+use nc_dsp::{
+    BlockSize, Dsp, GRID_BLOCKS, GRID_LARGE_BLOCKS, GRID_SMALL_BLOCKS, GridBest, GridRows,
+    prefetch_block,
+};
 
 use crate::effort::MotionEffort;
 use crate::global::GlobalMotion;
@@ -331,6 +334,10 @@ pub struct MotionInputs<'a> {
     pub pre: &'a PreAnalysis,
     /// Last frame's HME vectors, if any (temporal seeds).
     pub last_hme: Option<&'a Grid<Mv>>,
+    /// External per-SB HME centres (luma samples), e.g. 2x-scaled 32x32
+    /// vectors from an exact 2:1 lower spatial layer (`S_{k-1} -> S_k`),
+    /// bypassing this frame's quarter/half HME search when present.
+    pub external_hme: Option<&'a Grid<Mv>>,
     /// Last frame's 32x32 field, if any (temporal full-pel candidates).
     pub last_32x32: Option<&'a AggregatedField>,
     /// Last frame's 16x16 field, if any (candidates for mixed motion).
@@ -518,18 +525,20 @@ impl SbBest {
     fn block(&self, i: usize) -> MotionBlock {
         MotionBlock {
             mv: unpack(self.0.tag[i]),
-            sad: self.0.sad[i],
+            sad: self.0.sad(i),
         }
     }
 
     /// [8x8, 16x16, 32x32, 64x64] sums of the blocks' best SADs.
     fn me_dist(&self) -> [u32; 4] {
-        let total = |range: std::ops::Range<usize>| self.0.sad[range].iter().sum();
+        let (small, large) = (&self.0.small, &self.0.large);
+        let total = |sads: &[u16]| sads.iter().map(|&s| u32::from(s)).sum();
+        let at_64 = AT_64 - AT_32;
         [
-            total(0..AT_16),
-            total(AT_16..AT_32),
-            total(AT_32..AT_64),
-            self.0.sad[AT_64],
+            total(&small[..AT_16]),
+            total(&small[AT_16..]),
+            large[..at_64].iter().sum(),
+            large[at_64],
         ]
     }
 
@@ -538,7 +547,7 @@ impl SbBest {
     /// result is the same `f64` as the two-pass mean-removed sum (whose
     /// terms are also exact), without its chain of 128 dependent `f64` adds.
     fn cost_variance_8x8(&self) -> f32 {
-        let b8 = &self.0.sad[..AT_16];
+        let b8 = &self.0.small[..AT_16];
         let n = b8.len() as u64;
         let sum: u64 = b8.iter().map(|&s| u64::from(s)).sum();
         let sum_sq: u64 = b8.iter().map(|&s| u64::from(s) * u64::from(s)).sum();
@@ -548,7 +557,7 @@ impl SbBest {
 }
 
 /// Every 8x8 block of an SB counts (the SB is inside the picture).
-const ALL_VISIBLE: [u32; 64] = [u32::MAX; 64];
+const ALL_VISIBLE: [u16; 64] = [u16::MAX; 64];
 
 fn pack(mv: Mv) -> u32 {
     u32::from(mv.x as u16) | (u32::from(mv.y as u16) << 16)
@@ -629,10 +638,10 @@ impl SbSearchContext<'_, '_> {
         (stats, centre, best)
     }
 
-    /// Mask of the SB's 64 8x8 blocks inside the picture (`u32::MAX`) or
+    /// Mask of the SB's 64 8x8 blocks inside the picture (`u16::MAX`) or
     /// outside it (0): blocks outside count as SAD zero, so larger blocks at
     /// the picture edge are judged on their visible part only.
-    fn visible(&self) -> [u32; 64] {
+    fn visible(&self) -> [u16; 64] {
         let blocks = &self.inputs.pre.blocks;
         let (c0, r0) = (self.sb_col * BLOCKS_PER_SB, self.sb_row * BLOCKS_PER_SB);
         if c0 + BLOCKS_PER_SB <= blocks.cols() && r0 + BLOCKS_PER_SB <= blocks.rows() {
@@ -640,7 +649,7 @@ impl SbSearchContext<'_, '_> {
         }
         std::array::from_fn(|i| {
             if c0 + i % 8 < blocks.cols() && r0 + i / 8 < blocks.rows() {
-                u32::MAX
+                u16::MAX
             } else {
                 0
             }
@@ -648,7 +657,7 @@ impl SbSearchContext<'_, '_> {
     }
 
     /// Fold the SB's SADs at `mv` into `best`.
-    fn evaluate(&self, src: &PlaneView<'_>, mv: Mv, visible: &[u32; 64], best: &mut SbBest) {
+    fn evaluate(&self, src: &PlaneView<'_>, mv: Mv, visible: &[u16; 64], best: &mut SbBest) {
         let (x, y) = ((self.sb_col * SB) as isize, (self.sb_row * SB) as isize);
         match self.full.sb_position(x, y, mv) {
             Some(position) => self.dsp.sad_grid_best_64x64_at(
@@ -670,7 +679,7 @@ impl SbSearchContext<'_, '_> {
         &self,
         src: &PlaneView<'_>,
         mvs: [Mv; 4],
-        visible: &[u32; 64],
+        visible: &[u16; 64],
         best: &mut SbBest,
     ) {
         let (x, y) = ((self.sb_col * SB) as isize, (self.sb_row * SB) as isize);
@@ -698,7 +707,7 @@ impl SbSearchContext<'_, '_> {
         &self,
         src: &PlaneView<'_>,
         mv: Mv,
-        visible: &[u32; 64],
+        visible: &[u16; 64],
         best: &mut SbBest,
     ) {
         let (x, y) = ((self.sb_col * SB) as isize, (self.sb_row * SB) as isize);
@@ -724,7 +733,7 @@ impl SbSearchContext<'_, '_> {
         let (c0, r0) = (self.sb_col * BLOCKS_PER_SB, self.sb_row * BLOCKS_PER_SB);
         (r0..r0 + BLOCKS_PER_SB)
             .flat_map(|r| blocks.row_run(c0, r, BLOCKS_PER_SB))
-            .map(|block| block.sad_prev.unwrap_or(0))
+            .map(|block| u32::from(block.sad_prev.unwrap_or(0)))
             .sum()
     }
 
@@ -735,10 +744,11 @@ impl SbSearchContext<'_, '_> {
         let blocks = &self.inputs.pre.blocks;
         let (c0, r0) = (self.sb_col * BLOCKS_PER_SB, self.sb_row * BLOCKS_PER_SB);
         let mut grid = GridBest {
-            sad: [0; GRID_BLOCKS],
+            small: [0; GRID_SMALL_BLOCKS],
+            large: [0; GRID_LARGE_BLOCKS],
             tag: [pack(Mv::ZERO); GRID_BLOCKS],
         };
-        for (r, out) in grid.sad[..AT_16]
+        for (r, out) in grid.small[..AT_16]
             .as_chunks_mut::<BLOCKS_PER_SB>()
             .0
             .iter_mut()
@@ -751,22 +761,23 @@ impl SbSearchContext<'_, '_> {
                 *sad = block.sad_prev.unwrap_or(0);
             }
         }
-        // 16x16, 32x32 and 64x64 blocks, row-major within each size.
+        // 16x16 (at most four 8x8 SADs: u16), 32x32 and 64x64 blocks,
+        // row-major within each size.
         for i in 0..AT_32 - AT_16 {
             let (c, r) = (2 * (i % 4), 2 * (i / 4));
-            grid.sad[AT_16 + i] = [(c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1)]
+            grid.small[AT_16 + i] = [(c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1)]
                 .iter()
-                .map(|&(c, r)| grid.sad[r * BLOCKS_PER_SB + c])
+                .map(|&(c, r)| grid.small[r * BLOCKS_PER_SB + c])
                 .sum();
         }
         for i in 0..AT_64 - AT_32 {
             let (c, r) = (2 * (i % 2), 2 * (i / 2));
-            grid.sad[AT_32 + i] = [(c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1)]
+            grid.large[i] = [(c, r), (c + 1, r), (c, r + 1), (c + 1, r + 1)]
                 .iter()
-                .map(|&(c, r)| grid.sad[AT_16 + r * 4 + c])
+                .map(|&(c, r)| u32::from(grid.small[AT_16 + r * 4 + c]))
                 .sum();
         }
-        grid.sad[AT_64] = grid.sad[AT_32..AT_64].iter().sum();
+        grid.large[AT_64 - AT_32] = grid.large[..AT_64 - AT_32].iter().sum();
         SbBest(grid)
     }
 
@@ -782,13 +793,18 @@ impl SbSearchContext<'_, '_> {
 
     /// Quarter-resolution search: the best vector (in luma samples) over
     /// the window around the best of zero and the seed candidates.
-    /// The window centre of a hierarchical SB: the previous frame's
-    /// (rescaled) HME vector with `hme_from_seed`, else a new HME search.
+    /// The window centre of a hierarchical SB: an external HME seed when
+    /// supplied, else the previous frame's (rescaled) HME vector with
+    /// `hme_from_seed`, else a new HME search.
     fn hme_or_seed(&self, effort: &mut MotionEffort) -> Mv {
         let seed = self
             .inputs
-            .last_hme
-            .filter(|_| self.inputs.config.hme_from_seed)
+            .external_hme
+            .or_else(|| {
+                self.inputs
+                    .last_hme
+                    .filter(|_| self.inputs.config.hme_from_seed)
+            })
             .and_then(|grid| grid.try_get(self.sb_col as isize, self.sb_row as isize));
         match seed {
             Some(&mv) => mv,
@@ -966,7 +982,7 @@ impl SbSearchContext<'_, '_> {
             self.evaluate(src, start, &visible, &mut best);
             positions += 1;
             let pixels = visible.iter().filter(|&&v| v != 0).count() * BLOCK * BLOCK;
-            (best.0.sad[AT_64] as f32) < config.window_exit_sad_per_pixel * pixels as f32
+            (best.0.sad(AT_64) as f32) < config.window_exit_sad_per_pixel * pixels as f32
         };
         if !centre_only {
             let skip_centre = positions > 0;
@@ -1014,7 +1030,7 @@ impl SbSearchContext<'_, '_> {
         // with one vector, e.g. a crowd): one position per further vector
         // that blocks of this area had recently. Static and uniformly moving
         // SBs never get here.
-        if config.mixed_motion && best.0.sad[AT_64] > MIXED_MOTION_FACTOR * best.me_dist()[0].max(1)
+        if config.mixed_motion && best.0.sad(AT_64) > MIXED_MOTION_FACTOR * best.me_dist()[0].max(1)
         {
             effort.mixed_sbs += 1;
             let mut more = [Mv::ZERO; 20];
@@ -1113,7 +1129,7 @@ impl Fields {
                 best.block(r * 8 + c)
             });
         }
-        let split = |kids: [usize; 4]| kids.iter().map(|&k| best.0.sad[k]).sum();
+        let split = |kids: [usize; 4]| kids.iter().map(|&k| best.0.sad(k)).sum();
         for r in 0..4 {
             store_row(&mut self.agg[0], (sb_col * 4, sb_row * 4 + r), 4, |c| {
                 let kids = [0, 1, 8, 9].map(|k| (2 * r) * 8 + 2 * c + k);
@@ -1231,7 +1247,7 @@ mod tests {
     }
 
     /// The two-pass mean-removed variance the integer form replaced.
-    fn two_pass(sads: &[u32]) -> f32 {
+    fn two_pass(sads: &[u16]) -> f32 {
         let n = sads.len() as f64;
         let mean = sads.iter().map(|&s| f64::from(s)).sum::<f64>() / n;
         let var = sads
@@ -1249,26 +1265,26 @@ mod tests {
         let mut state = 0x9e37_79b9_u64;
         for case in 0..2000 {
             let mut best = SbBest::default();
-            for sad in &mut best.0.sad[..AT_16] {
+            for sad in &mut best.0.small[..AT_16] {
                 state = state
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
                 *sad = match case % 4 {
-                    0 => ((state >> 33) % (MAX_SAD + 1)) as u32,
-                    1 => ((state >> 33) % 64) as u32,
+                    0 => ((state >> 33) % (MAX_SAD + 1)) as u16,
+                    1 => ((state >> 33) % 64) as u16,
                     2 => {
                         if state >> 63 == 0 {
                             0
                         } else {
-                            MAX_SAD as u32
+                            MAX_SAD as u16
                         }
                     }
-                    _ => (MAX_SAD - (state >> 33) % 16) as u32,
+                    _ => (MAX_SAD - (state >> 33) % 16) as u16,
                 };
             }
             assert_eq!(
                 best.cost_variance_8x8().to_bits(),
-                two_pass(&best.0.sad[..AT_16]).to_bits(),
+                two_pass(&best.0.small[..AT_16]).to_bits(),
                 "case {case}"
             );
         }

@@ -7,7 +7,8 @@
 //! with `pmaddwd`. A complete-stripe entry prepares taps once and rotates
 //! the seven row pointers, following the reference stripe schedule. The
 //! horizontal and vertical arithmetic is unchanged. The self-guided rows
-//! are [`super::sgr_lanes`] on eight 32-bit lanes; their factor uses
+//! are [`super::sgr_lanes`] on eight 32-bit lanes (16-bit rows widened
+//! with `vpmovsxwd`, narrowed with `packssdw`); their factor uses
 //! dav1d's reciprocal form with exact rounding.
 //!
 //! Why the 16-bit horizontal sum is exact: with the centre tap less 128,
@@ -26,15 +27,15 @@
 
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_loadl_epi64, _mm_loadu_si128, _mm_packs_epi32, _mm_packus_epi16,
-    _mm_storel_epi64, _mm256_add_epi16, _mm256_add_epi32, _mm256_adds_epi16,
-    _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_cmpeq_epi32, _mm256_cvtepi32_ps,
-    _mm256_cvtepu8_epi32, _mm256_cvttps_epi32, _mm256_div_ps, _mm256_extracti128_si256,
-    _mm256_loadu_si256, _mm256_loadu2_m128i, _mm256_madd_epi16, _mm256_maddubs_epi16,
-    _mm256_max_epi32, _mm256_min_epi32, _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_packs_epi32,
-    _mm256_packus_epi16, _mm256_permute4x64_epi64, _mm256_set1_epi16, _mm256_set1_epi32,
-    _mm256_shuffle_epi8, _mm256_slli_epi16, _mm256_slli_epi32, _mm256_srai_epi16,
-    _mm256_srai_epi32, _mm256_srli_epi32, _mm256_storeu_si256, _mm256_sub_epi32,
-    _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
+    _mm_storel_epi64, _mm_storeu_si128, _mm256_add_epi16, _mm256_add_epi32, _mm256_adds_epi16,
+    _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_cmpeq_epi32, _mm256_cvtepi16_epi32,
+    _mm256_cvtepi32_ps, _mm256_cvtepu8_epi32, _mm256_cvttps_epi32, _mm256_div_ps,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_loadu2_m128i, _mm256_madd_epi16,
+    _mm256_maddubs_epi16, _mm256_max_epi32, _mm256_min_epi32, _mm256_mullo_epi16,
+    _mm256_mullo_epi32, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute4x64_epi64,
+    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_shuffle_epi8, _mm256_slli_epi16,
+    _mm256_slli_epi32, _mm256_srai_epi16, _mm256_srai_epi32, _mm256_srli_epi32,
+    _mm256_storeu_si256, _mm256_sub_epi32, _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
 };
 
 use super::kernels::{Kernels, WIENER_ROWS};
@@ -371,10 +372,28 @@ impl SgrLanes for Lanes {
         Self(unsafe { _mm256_loadu_si256(src.as_ptr().cast()) })
     }
     #[inline(always)]
+    fn load_i16(src: &[i16]) -> Self {
+        let src = &src[..8];
+        // SAFETY: see the impl comment.
+        Self(unsafe { _mm256_cvtepi16_epi32(_mm_loadu_si128(src.as_ptr().cast())) })
+    }
+    #[inline(always)]
     fn load_u8(src: &[u8]) -> Self {
         let src = &src[..8];
         // SAFETY: see the impl comment.
         Self(unsafe { _mm256_cvtepu8_epi32(_mm_loadl_epi64(src.as_ptr().cast())) })
+    }
+    #[inline(always)]
+    fn store_i16(self, dst: &mut [i16]) {
+        let dst = &mut dst[..8];
+        // SAFETY: see the impl comment.
+        unsafe {
+            let words = _mm_packs_epi32(
+                _mm256_castsi256_si128(self.0),
+                _mm256_extracti128_si256::<1>(self.0),
+            );
+            _mm_storeu_si128(dst.as_mut_ptr().cast(), words);
+        }
     }
     #[inline(always)]
     fn store(self, dst: &mut [i32]) {

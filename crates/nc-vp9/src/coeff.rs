@@ -530,7 +530,7 @@ impl ReadSetup {
     }
 
     /// Clear only scan positions visited by the preceding transform block.
-    pub(crate) fn clear(&self, coefficients: &mut [i32], eob: usize) {
+    pub(crate) fn clear(&self, coefficients: &mut [i16], eob: usize) {
         for &position in &self.order.scan[..eob] {
             coefficients[usize::from(position)] = 0;
         }
@@ -542,7 +542,7 @@ impl ReadSetup {
 /// what it read with [`clear`]); returns where they lie.
 pub(crate) fn read(
     reader: &mut BoolReader<'_>,
-    coefficients: &mut [i32],
+    coefficients: &mut [i16],
     cache: &mut TokenCache,
     model: Model,
     coder: &mut Coder<'_>,
@@ -562,7 +562,7 @@ pub(crate) fn read(
 #[inline(always)]
 pub(crate) fn read_prepared(
     reader: &mut BoolReader<'_>,
-    coefficients: &mut [i32],
+    coefficients: &mut [i16],
     cache: &mut TokenCache,
     setup: &ReadSetup,
     coder: &mut Coder<'_>,
@@ -584,7 +584,7 @@ pub(crate) fn read_prepared(
 #[inline(always)]
 fn read_tokens(
     reader: &mut BoolReader<'_>,
-    coefficients: &mut [i32],
+    coefficients: &mut [i16],
     cache: &mut TokenCache,
     setup: &ReadSetup,
     coder: &mut Coder<'_>,
@@ -639,8 +639,15 @@ fn read_tokens(
             } else {
                 1
             };
-            let value = (magnitude * step) >> dequantizer.shift;
-            coefficients[position] = if reader.read(128) { -value } else { value };
+            // The product stays 32-bit. §8.6.2 makes a valid stream's
+            // dequantized value fit 16 bits (libvpx's 8-bit `dqcoeff` is
+            // `int16_t`); a corrupt one wraps, as every inverse treated it.
+            let value = ((magnitude * step) >> dequantizer.shift) as i16;
+            coefficients[position] = if reader.read(128) {
+                value.wrapping_neg()
+            } else {
+                value
+            };
             cache[position] = energy(magnitude);
             rows = rows.max((position >> *row_shift) + 1);
             columns = columns.max((position & *column_mask) + 1);
@@ -658,7 +665,7 @@ fn read_tokens(
 }
 
 /// Zero the coefficients [`read`] may have set for an end of block `eob`.
-pub(crate) fn clear(coefficients: &mut [i32], model: Model, eob: usize) {
+pub(crate) fn clear(coefficients: &mut [i16], model: Model, eob: usize) {
     for &position in &scan_order(model.tx, model.ty).scan[..eob] {
         coefficients[usize::from(position)] = 0;
     }
@@ -759,7 +766,12 @@ mod tests {
                                 .rposition(|&level| level != 0)
                                 .map_or(0, |last| last / side + 1);
                             assert_eq!(extent.rows, rows);
-                            assert_eq!(&decoded, levels);
+                            assert!(
+                                decoded
+                                    .iter()
+                                    .map(|&c| i32::from(c))
+                                    .eq(levels.iter().copied())
+                            );
                             clear(&mut decoded, model, eob);
                             assert!(decoded.iter().all(|&l| l == 0));
                         }

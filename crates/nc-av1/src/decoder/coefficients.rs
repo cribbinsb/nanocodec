@@ -44,9 +44,10 @@ const EOB_EXTRA_FIRST: usize = 2;
 /// the shift (§7.12.3; libaom masks the same).
 const LEVEL_MASK: u32 = 0xf_ffff;
 const DEQUANT_MASK: u64 = 0xff_ffff;
-/// Dequantised coefficients clamp to `BitDepth + 8` bits.
-const COEFF_MIN: i32 = -(1 << 15);
-const COEFF_MAX: i32 = (1 << 15) - 1;
+/// Dequantised coefficients clamp to `BitDepth + 8` bits: at 8 bits, the
+/// range of the 16-bit buffer.
+const COEFF_MIN: i32 = i16::MIN as i32;
+const COEFF_MAX: i32 = i16::MAX as i32;
 /// The largest 8-bit quantiser step (`Ac_Qlookup[0][255]`). A token below
 /// [`MAX_TOKEN`] times it stays below both the 24-bit wrap and
 /// [`COEFF_MAX`], so those coefficients need neither (dav1d's `ac_noqm`).
@@ -190,7 +191,7 @@ pub(crate) struct CoefficientBuffer {
     /// Dequantised coefficients of the block being decoded; all zero
     /// between blocks ([`CoefficientBuffer::clear`]). Between the level
     /// and sign passes they hold the tokens and their chain.
-    pub coefficients: [i32; MAX_CODED],
+    pub coefficients: [i16; MAX_CODED],
 }
 
 /// Coefficients of the largest coded area (32x32).
@@ -381,19 +382,21 @@ fn coefficient(
     negative: bool,
     step: i32,
     shift: u32,
-) -> Result<(i32, u32), DecodeError> {
+) -> Result<(i16, u32), DecodeError> {
     debug_assert!((0..=MAX_STEP).contains(&step));
     if tok < MAX_TOKEN {
-        // Below the 24-bit wrap and the clamp: see [`MAX_STEP`].
+        // Below the 24-bit wrap and the clamp: see [`MAX_STEP`]. The value
+        // is within 16 bits, so the narrowing is exact.
         let magnitude = (tok as i32 * step) >> shift;
-        return Ok((if negative { -magnitude } else { magnitude }, tok));
+        return Ok(((if negative { -magnitude } else { magnitude }) as i16, tok));
     }
     let level = (tok + read_golomb(r)?) & LEVEL_MASK;
     // The product wraps at 24 bits, is divided by `dqDenom` and clamped to
     // the coefficient range.
     let magnitude = (((u64::from(level) * step as u64) & DEQUANT_MASK) >> shift) as i32;
     let value = if negative { -magnitude } else { magnitude };
-    Ok((value.clamp(COEFF_MIN, COEFF_MAX), level))
+    // Clamped to the 16-bit range, so the narrowing is exact.
+    Ok((value.clamp(COEFF_MIN, COEFF_MAX) as i16, level))
 }
 
 /// A Golomb-coded remainder (§5.11.39 `read_golomb`). Out of line: rare
@@ -556,7 +559,11 @@ mod tests {
                             .iter()
                             .map(|&l| dequantized(l, tx.dequant_shift()))
                             .collect();
-                        assert_eq!(&buffer.coefficients[..n], &expected[..]);
+                        let stored: Vec<i32> = buffer.coefficients[..n]
+                            .iter()
+                            .map(|&c| i32::from(c))
+                            .collect();
+                        assert_eq!(stored, expected);
                         buffer.clear();
                         assert!(buffer.coefficients.iter().all(|&c| c == 0));
                     }

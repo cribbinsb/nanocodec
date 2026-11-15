@@ -63,7 +63,7 @@ fn hevc_forward_ref(t: HevcTransform, residual: &[i16]) -> Vec<i32> {
 
 /// `nc-hevc` `transform::inverse`.
 #[allow(clippy::many_single_char_names)]
-fn hevc_inverse_ref(t: HevcTransform, d: &[i32]) -> Vec<i32> {
+fn hevc_inverse_ref(t: HevcTransform, d: &[i16]) -> Vec<i16> {
     let n = t.side();
     let mut g = vec![0i64; n * n];
     for x in 0..n {
@@ -74,14 +74,30 @@ fn hevc_inverse_ref(t: HevcTransform, d: &[i32]) -> Vec<i32> {
             g[y * n + x] = round_shift_i64(v, 7).clamp(-32768, 32767);
         }
     }
-    let mut out = vec![0i32; n * n];
+    let mut out = vec![0i16; n * n];
     for y in 0..n {
         for x in 0..n {
             let v: i64 = (0..n).map(|k| basis(t, k, x) * g[y * n + k]).sum();
-            out[y * n + x] = round_shift_i64(v, 12) as i32;
+            out[y * n + x] = i16::try_from(round_shift_i64(v, 12)).expect("16-bit residual");
         }
     }
     out
+}
+
+/// The inverse's unclamped second pass fits 16 bits for any 16-bit first
+/// pass (`generic` module docs): its largest absolute column sum `L` of a
+/// basis keeps `(2^15 · L + 2^11) >> 12` within `i16`.
+#[test]
+fn residual_bound_fits_i16() {
+    for t in HevcTransform::ALL {
+        let n = t.side();
+        let column_sum = (0..n)
+            .map(|x| (0..n).map(|k| basis(t, k, x).abs()).sum::<i64>())
+            .max()
+            .unwrap();
+        let bound = round_shift_i64((1 << 15) * column_sum, 12);
+        assert!(bound <= i64::from(i16::MAX), "{t:?}: {bound}");
+    }
 }
 
 /// `nc-hevc` `quant::quantize`.
@@ -97,7 +113,7 @@ fn hevc_quantize_ref(coeffs: &mut [i32], qp: i32, log2: u8, intra: bool) {
 }
 
 /// `nc-hevc` `quant::dequantize`.
-fn hevc_dequantize_ref(levels: &[i32], qp: i32, log2: u8) -> Vec<i32> {
+fn hevc_dequantize_ref(levels: &[i32], qp: i32, log2: u8) -> Vec<i16> {
     const LEVEL_SCALE: [i64; 6] = [40, 45, 51, 57, 64, 72];
     let bd_shift = 8 + i32::from(log2) - 5;
     let scale = 16 * LEVEL_SCALE[(qp % 6) as usize];
@@ -105,7 +121,7 @@ fn hevc_dequantize_ref(levels: &[i32], qp: i32, log2: u8) -> Vec<i32> {
         .iter()
         .map(|&l| {
             let v = ((i64::from(l) * scale) << (qp / 6)) + (1i64 << (bd_shift - 1));
-            (v >> bd_shift).clamp(-32768, 32767) as i32
+            (v >> bd_shift).clamp(-32768, 32767) as i16
         })
         .collect()
 }
@@ -127,8 +143,9 @@ fn hevc_transforms_match_the_backend() {
             }
             for amplitude in [1, 300, 32768] {
                 for _ in 0..20 {
-                    let d: Vec<i32> = (0..n * n).map(|_| rng.next(amplitude)).collect();
-                    let d: Vec<i32> = d.iter().map(|&v| v.clamp(-32768, 32767)).collect();
+                    let d: Vec<i16> = (0..n * n)
+                        .map(|_| rng.next(amplitude).clamp(-32768, 32767) as i16)
+                        .collect();
                     let mut got = vec![0; n * n];
                     dsp.hevc_inverse(t, &d, &mut got);
                     assert_eq!(got, hevc_inverse_ref(t, &d), "{t:?} inverse");
@@ -478,6 +495,19 @@ fn h264_add_inverse_matches_dequantise_inverse_and_add() {
     }
 }
 
+/// The blocks narrowed to the decoder's 16-bit coefficient storage.
+fn narrow<const N: usize>(blocks: &[[i32; N]]) -> Vec<[i16; N]> {
+    blocks
+        .iter()
+        .map(|b| b.map(|c| i16::try_from(c).expect("16-bit coefficient")))
+        .collect()
+}
+
+/// Largest 8x8 coefficient for which every intermediate of a dense block
+/// stays in 16 bits (two passes of gain at most 12 each: 12² · 227 < 2^15),
+/// the range in which the 16-bit inverse equals the 32-bit one.
+const CONFORMING_8X8_AMPLITUDE: i32 = 227;
+
 #[test]
 fn h264_add_scaled_matches_inverse_and_add() {
     use nc_common::PlaneViewMut;
@@ -487,7 +517,7 @@ fn h264_add_scaled_matches_inverse_and_add() {
         let pred = prediction(&mut rng);
         let mut fused = pred.clone();
         let mut view = PlaneViewMut::new(&mut fused, 16, 16, 16).unwrap();
-        dsp.h264_add_scaled_4x4(&coeffs, 4, &mut view);
+        dsp.h264_add_scaled_4x4(&narrow(&coeffs), 4, &mut view);
         let mut residual = vec![[0; 16]; 16];
         dsp.h264_inverse_4x4(&coeffs, &mut residual);
         for (b, block) in residual.iter().enumerate() {
@@ -497,11 +527,11 @@ fn h264_add_scaled_matches_inverse_and_add() {
                 assert_eq!(i32::from(fused[at]), want, "4x4 block {b}");
             }
         }
-        for coeffs in sparse_blocks::<64>(&mut rng, 6, 3000) {
+        for coeffs in sparse_blocks::<64>(&mut rng, 6, CONFORMING_8X8_AMPLITUDE) {
             let pred = prediction(&mut rng);
             let mut fused = pred.clone();
             let mut view = PlaneViewMut::new(&mut fused, 16, 8, 8).unwrap();
-            dsp.h264_add_scaled_8x8(&coeffs, &mut view);
+            dsp.h264_add_scaled_8x8(&narrow(&[coeffs])[0], &mut view);
             let mut residual = [0; 64];
             dsp.h264_inverse_8x8(&coeffs, &mut residual);
             for (i, &r) in residual.iter().enumerate() {
@@ -518,8 +548,8 @@ fn h264_add_scaled_mb_matches_the_block_form() {
     use nc_common::PlaneViewMut;
     let mut rng = Rng(0x5eed_0000_0000_0a6b);
     for dsp in dsps() {
-        let blocks = sparse_blocks::<16>(&mut rng, 16, 3000);
-        let coeffs: [[i32; 16]; 16] = core::array::from_fn(|b| blocks[b]);
+        let blocks = narrow(&sparse_blocks::<16>(&mut rng, 16, 3000));
+        let coeffs: [[i16; 16]; 16] = core::array::from_fn(|b| blocks[b]);
         let coded = blocks.iter().enumerate().fold(0u16, |m, (b, block)| {
             m | (u16::from(block.iter().any(|&c| c != 0)) << b)
         });

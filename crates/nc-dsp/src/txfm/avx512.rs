@@ -10,7 +10,7 @@ pub(crate) fn install(table: &mut TxfmFns) {
     table.inverse_dct_add[2..].copy_from_slice(&[inverse_16, inverse_32]);
     table.forward_dct_64 = forward_64;
     table.inverse_dct_add_64 = inverse_64;
-    table.inverse_dct_add_sparse = [inverse_32_sparse, inverse_64_sparse];
+    table.inverse_dct_add_sparse[1..].copy_from_slice(&[inverse_32_sparse, inverse_64_sparse]);
     table.forward_dct_raster[2..]
         .copy_from_slice(&[Some(forward_16_raster), Some(forward_32_raster)]);
     table.forward_dct_low[1..].copy_from_slice(&[Some(forward_32_low), Some(forward_64_low)]);

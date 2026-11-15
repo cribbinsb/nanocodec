@@ -77,11 +77,13 @@ pub(crate) fn basis_entry(
 pub(crate) fn inverse(
     size: (usize, usize),
     kinds: [VvcTransformKind; 2],
-    coefficients: &[i32],
-    out: &mut [i32],
+    coefficients: &[i16],
+    out: &mut [i16],
 ) {
     let (width, height) = size;
-    let rounded = |sum: i32, shift: u32| ((sum + (1 << (shift - 1))) >> shift).clamp(-32768, 32767);
+    let rounded = |sum: i32, shift: u32| {
+        ((sum + (1 << (shift - 1))) >> shift).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    };
     if width == 1 || height == 1 {
         let (length, kind) = if width == 1 {
             (height, kinds[1])
@@ -90,13 +92,13 @@ pub(crate) fn inverse(
         };
         for (x, target) in out[..length].iter_mut().enumerate() {
             let sum = (0..kind.frequencies(length))
-                .map(|k| kind.basis(length, k, x) * coefficients[k])
+                .map(|k| kind.basis(length, k, x) * i32::from(coefficients[k]))
                 .sum();
             *target = rounded(sum, 13);
         }
         return;
     }
-    let mut intermediate = [0; 4096];
+    let mut intermediate = [0i16; 4096];
     let [horizontal, vertical] = kinds;
     let horizontal_count = horizontal.frequencies(width);
     let vertical_count = vertical.frequencies(height);
@@ -112,7 +114,7 @@ pub(crate) fn inverse(
             let sum = weights[..vertical_count]
                 .iter()
                 .enumerate()
-                .map(|(k, &weight)| weight * coefficients[k * width + x])
+                .map(|(k, &weight)| weight * i32::from(coefficients[k * width + x]))
                 .sum();
             intermediate[y * width + x] = rounded(sum, 7);
         }
@@ -125,7 +127,7 @@ pub(crate) fn inverse(
             let sum = weights[..horizontal_count]
                 .iter()
                 .zip(&intermediate[y * width..y * width + horizontal_count])
-                .map(|(&weight, &coefficient)| weight * coefficient)
+                .map(|(&weight, &coefficient)| weight * i32::from(coefficient))
                 .sum();
             out[y * width + x] = rounded(sum, 12);
         }
@@ -145,7 +147,7 @@ impl Dsp {
         levels: &[i32],
         qp: u8,
         dependent: bool,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let (width, height) = size;
         assert!(kinds[0].valid(width) && kinds[1].valid(height) && width * height >= 4);

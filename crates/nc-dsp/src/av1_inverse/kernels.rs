@@ -13,10 +13,15 @@ use super::Av1InverseFns;
 macro_rules! inverse_fns {
     ($(#[$isa:meta])*; $small:ty, $wide:ty, $constant:path, $large:ident) => {
         $(#[$isa])*
-        unsafe fn add<V: crate::simd::I32Lanes, const W: usize, const H: usize>(
+        unsafe fn add<
+            V: crate::simd::I32Lanes,
+            C: crate::txfm::narrow_inverse::NarrowCoefficient,
+            const W: usize,
+            const H: usize,
+        >(
             vertical: super::super::Kernel1d,
             horizontal: super::super::Kernel1d,
-            coeffs: &[i32],
+            coeffs: &[C],
             nonzero_rows: usize,
             dst: &mut [u8],
             dst_stride: usize,
@@ -26,9 +31,9 @@ macro_rules! inverse_fns {
             // counts chosen below divide both sides.
             unsafe {
                 if W >= 8 && H >= 8 {
-                    $large::<W, H>((vertical, horizontal), coeffs, nonzero_rows, dst, dst_stride);
+                    $large::<C, W, H>((vertical, horizontal), coeffs, nonzero_rows, dst, dst_stride);
                 } else {
-                    super::super::generic::inverse_add::<V, W, H>(
+                    super::super::generic::inverse_add::<V, C, W, H>(
                         vertical, horizontal, coeffs, nonzero_rows, dst, dst_stride,
                     );
                 }
@@ -47,26 +52,48 @@ macro_rules! inverse_fns {
         pub(crate) fn inverse_fns() -> super::Av1InverseFns {
             super::Av1InverseFns {
                 dc,
+                direct_i16: [[None; 16]; 19],
                 add: [
-                    add::<$small, 4, 4>,
-                    add::<$wide, 8, 8>,
-                    add::<$wide, 16, 16>,
-                    add::<$wide, 32, 32>,
-                    add::<$wide, 64, 64>,
-                    add::<$small, 4, 8>,
-                    add::<$small, 8, 4>,
-                    add::<$wide, 8, 16>,
-                    add::<$wide, 16, 8>,
-                    add::<$wide, 16, 32>,
-                    add::<$wide, 32, 16>,
-                    add::<$wide, 32, 64>,
-                    add::<$wide, 64, 32>,
-                    add::<$small, 4, 16>,
-                    add::<$small, 16, 4>,
-                    add::<$wide, 8, 32>,
-                    add::<$wide, 32, 8>,
-                    add::<$wide, 16, 64>,
-                    add::<$wide, 64, 16>,
+                    add::<$small, i32, 4, 4>,
+                    add::<$wide, i32, 8, 8>,
+                    add::<$wide, i32, 16, 16>,
+                    add::<$wide, i32, 32, 32>,
+                    add::<$wide, i32, 64, 64>,
+                    add::<$small, i32, 4, 8>,
+                    add::<$small, i32, 8, 4>,
+                    add::<$wide, i32, 8, 16>,
+                    add::<$wide, i32, 16, 8>,
+                    add::<$wide, i32, 16, 32>,
+                    add::<$wide, i32, 32, 16>,
+                    add::<$wide, i32, 32, 64>,
+                    add::<$wide, i32, 64, 32>,
+                    add::<$small, i32, 4, 16>,
+                    add::<$small, i32, 16, 4>,
+                    add::<$wide, i32, 8, 32>,
+                    add::<$wide, i32, 32, 8>,
+                    add::<$wide, i32, 16, 64>,
+                    add::<$wide, i32, 64, 16>,
+                ],
+                add_i16: [
+                    add::<$small, i16, 4, 4>,
+                    add::<$wide, i16, 8, 8>,
+                    add::<$wide, i16, 16, 16>,
+                    add::<$wide, i16, 32, 32>,
+                    add::<$wide, i16, 64, 64>,
+                    add::<$small, i16, 4, 8>,
+                    add::<$small, i16, 8, 4>,
+                    add::<$wide, i16, 8, 16>,
+                    add::<$wide, i16, 16, 8>,
+                    add::<$wide, i16, 16, 32>,
+                    add::<$wide, i16, 32, 16>,
+                    add::<$wide, i16, 32, 64>,
+                    add::<$wide, i16, 64, 32>,
+                    add::<$small, i16, 4, 16>,
+                    add::<$small, i16, 16, 4>,
+                    add::<$wide, i16, 8, 32>,
+                    add::<$wide, i16, 32, 8>,
+                    add::<$wide, i16, 16, 64>,
+                    add::<$wide, i16, 64, 16>,
                 ],
             }
         }
@@ -80,16 +107,20 @@ pub(crate) mod scalar {
 
     /// The generic driver on one `i32` lane, with the SIMD entry points'
     /// signature.
-    unsafe fn large<const W: usize, const H: usize>(
+    unsafe fn large<
+        C: crate::txfm::narrow_inverse::NarrowCoefficient,
+        const W: usize,
+        const H: usize,
+    >(
         (vertical, horizontal): (super::super::Kernel1d, super::super::Kernel1d),
-        coeffs: &[i32],
+        coeffs: &[C],
         nonzero_rows: usize,
         dst: &mut [u8],
         stride: usize,
     ) {
         // SAFETY: scalar lanes need no ISA; one lane divides every side.
         unsafe {
-            super::super::generic::inverse_add::<i32, W, H>(
+            super::super::generic::inverse_add::<i32, C, W, H>(
                 vertical,
                 horizontal,
                 coeffs,
@@ -140,7 +171,10 @@ pub(crate) fn for_isa(isa: crate::Isa) -> Av1InverseFns {
         #[cfg(target_arch = "x86_64")]
         crate::Isa::Avx2 => avx2::inverse_fns(),
         #[cfg(target_arch = "aarch64")]
-        crate::Isa::Neon => neon::inverse_fns(),
+        crate::Isa::Neon => super::Av1InverseFns {
+            direct_i16: super::dav1d_neon::table(),
+            ..neon::inverse_fns()
+        },
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         crate::Isa::Simd128 => simd128::inverse_fns(),
         #[allow(unreachable_patterns)]

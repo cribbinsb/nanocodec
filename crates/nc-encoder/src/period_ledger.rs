@@ -36,6 +36,15 @@ const MIN_ROOM: f64 = 0.25;
 /// camera): a crowd scene keeping it re-coded the frames before every key
 /// (AV1 crowd mot20 85 kbps: 16 re-codes, frames before the key -3 dB).
 const STILL_FROM: f64 = 0.8;
+
+/// How much of a fixed camera a scene is, `[0, 1]`, from its running share of
+/// unchanged blocks: 0 up to [`STILL_FROM`] (moving content, or a moving part
+/// in a fixed frame large enough to keep keys small), rising to 1 when every
+/// block is unchanged. Shared by the key reserve here and the key's still
+/// boost (`rate.key_still_boost`).
+pub(crate) fn fixed_camera(still_share: f64) -> f64 {
+    ((still_share - STILL_FROM) / (1. - STILL_FROM)).clamp(0., 1.)
+}
 /// How much more than the last key a key of a wholly still scene needs: it
 /// codes the quality the inter frames refined since (chirla 93 kbps: 31
 /// budgets after a 17-budget key, 1.8x).
@@ -101,7 +110,7 @@ impl PeriodLedger {
         // (AV1 Default, keys every 2 s: periodic-key pulse +2.25 dB, crowd
         // +3.9, lowlight +4.5); only a key inside the period (requested
         // mid-period) is paid for in it.
-        let still = ((still_share - STILL_FROM) / (1. - STILL_FROM)).clamp(0., 1.);
+        let still = fixed_camera(still_share);
         let key = if self.key_in_period {
             self.last_key_bits - uniform
         } else if self.key_due.is_some() {

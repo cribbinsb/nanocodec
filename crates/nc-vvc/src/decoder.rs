@@ -57,6 +57,9 @@ pub struct Decoder {
     /// reference, and what [`Self::shown`] shows.
     reference: Option<Picture>,
     reference_border_ready: bool,
+    /// The other pictures the latest picture's RPL0 keeps in the DPB
+    /// (§8.3.2: the second reference, `references.rs`), with their POCs.
+    retained: Vec<(u8, Picture)>,
     /// Whether the last decode succeeded, so `reference` is its picture.
     shown: bool,
     /// Replaced references, reused as later reconstructions and output copies.
@@ -438,7 +441,7 @@ impl Decoder {
         clippy::let_and_return,
         reason = "the analysis build calls `decode_slice` with its records"
     )]
-    fn decode_own(&mut self, rbsp: &[u8], predicted: bool) -> Result<(Picture, u8)> {
+    fn decode_own(&mut self, rbsp: &[u8], predicted: bool) -> Result<OwnPicture> {
         let geometry = self
             .geometry
             .ok_or(DecodeError::Malformed("slice before SPS"))?;
@@ -459,6 +462,16 @@ impl Decoder {
                 self.tools.merge_candidates,
             )
         });
+        // The pictures a P picture's RPL0 may list: the latest and those it
+        // kept.
+        let latest = self
+            .next_poc
+            .map(|next| next.wrapping_sub(1))
+            .zip(self.reference.as_ref());
+        let dpb: Vec<(u8, &Picture)> = latest
+            .into_iter()
+            .chain(self.retained.iter().map(|(poc, picture)| (*poc, picture)))
+            .collect();
         // The analysis build passes its records along (one more argument).
         #[cfg(feature = "analysis")]
         let decoded = decode_slice(
@@ -467,7 +480,7 @@ impl Decoder {
             &chroma_qp,
             (self.tools, self.pps_block_qp == Some(true)),
             predicted,
-            (self.reference.as_ref(), motion),
+            (&dpb, motion),
             &self.alf_banks,
             self.next_poc,
             &self.dsp,
@@ -485,13 +498,25 @@ impl Decoder {
             &chroma_qp,
             (self.tools, self.pps_block_qp == Some(true)),
             predicted,
-            (self.reference.as_ref(), motion),
+            (&dpb, motion),
             &self.alf_banks,
             self.next_poc,
             &self.dsp,
             &mut self.pictures,
         );
         decoded
+    }
+
+    /// Keep, of the retained pictures, those the new picture's RPL0 lists
+    /// (`listed` POCs); the others leave the DPB (§8.3.2).
+    fn retain(&mut self, listed: &[u8]) {
+        let (kept, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retained)
+            .into_iter()
+            .partition(|(poc, _)| listed.contains(poc));
+        self.retained = kept;
+        for (_, picture) in released {
+            self.pictures.give(picture);
+        }
     }
 
     fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<()> {
@@ -546,7 +571,11 @@ impl Decoder {
                     let decoded = self.decode_general(&rbsp, kind, unit[1] & 7)?;
                     // Access-unit decoding exposes the decoded reference; the streaming
                     // API applies display ordering after cropping the output copy.
-                    picture = Some((decoded, 0));
+                    picture = Some(OwnPicture {
+                        picture: decoded,
+                        poc: 0,
+                        listed: Vec::new(),
+                    });
                 }
                 kind @ (headers::IDR_N_LP | headers::TRAIL_NUT)
                     if picture.is_none() && self.pps_block_qp.is_some() =>
@@ -563,11 +592,24 @@ impl Decoder {
                 }
             }
         }
-        let (coded, poc) = picture.ok_or(DecodeError::Malformed("missing VVC picture"))?;
+        let OwnPicture {
+            picture: coded,
+            poc,
+            listed,
+        } = picture.ok_or(DecodeError::Malformed("missing VVC picture"))?;
+        self.retain(&listed);
         // Extend only when a later inter picture actually uses this reference.
         // All-intra streams and the final output need no border work.
         if let Some(replaced) = self.reference.replace(coded) {
-            self.pictures.give(replaced);
+            let previous = self.next_poc.map(|next| next.wrapping_sub(1));
+            // A stream with a second reference keeps every picture the new
+            // one lists (§8.3.2), which a later picture may list again; its
+            // borders were extended when the new picture predicted from it.
+            // Other streams list only the latest picture, never again.
+            match previous.filter(|poc| self.tools.second_reference && listed.contains(poc)) {
+                Some(poc) => self.retained.push((poc, replaced)),
+                None => self.pictures.give(replaced),
+            }
         }
         if let Some(motion) = self.motion.as_mut().filter(|_| self.tools.temporal_mvp) {
             motion.commit_motion_field();
@@ -672,9 +714,16 @@ fn parse_sps(bytes: &[u8]) -> Result<SequenceInfo> {
     };
     let timing = headers::read_sps_timing(&mut r)?;
     let colour = read_colour(&mut r)?;
-    if bytes != headers::sps(&geometry, colour, &chroma_qp, tools, timing) {
-        return Err(DecodeError::Unsupported("VVC SPS tools"));
-    }
+    // The DPB size says whether the stream keeps a second reference; the
+    // other tool flags were read above.
+    let tools = [false, true]
+        .into_iter()
+        .map(|second_reference| headers::Tools {
+            second_reference,
+            ..tools
+        })
+        .find(|&tools| bytes == headers::sps(&geometry, colour, &chroma_qp, tools, timing))
+        .ok_or(DecodeError::Unsupported("VVC SPS tools"))?;
     Ok(SequenceInfo {
         geometry,
         colour,
@@ -749,30 +798,27 @@ fn decode_slice(
     chroma_qp: &ChromaQpTable,
     (tools, block_qp): (headers::Tools, bool),
     inter_frame: bool,
-    (reference, motion): (Option<&Picture>, &mut MotionGrid),
+    (dpb, motion): (&[(u8, &Picture)], &mut MotionGrid),
     alf_banks: &[Option<Box<crate::alf_aps::SignalledFilters>>; ALF_APS_IDS],
     next_poc: Option<u8>,
     dsp: &Dsp,
     pictures: &mut PictureRecycler,
     #[cfg(feature = "analysis")] mut stats: Option<&mut nc_common::stream_stats::StreamStats>,
-) -> Result<(Picture, u8)> {
+) -> Result<OwnPicture> {
     let (header, data) = parse_slice_header(bytes, (tools, block_qp), inter_frame, alf_banks)?;
     #[cfg(feature = "analysis")]
     if let Some(s) = stats.as_deref_mut() {
         crate::analysis::picture_facts(s, inter_frame, header.qp, data.len());
     }
+    let (listed, references) = slice_references(&header, inter_frame, next_poc, dpb)?;
     let OwnSliceHeader {
         poc,
         qp,
         alf,
         bank,
         temporal_mvp,
+        references: rpl,
     } = header;
-    if inter_frame && (reference.is_none() || next_poc != Some(poc)) {
-        return Err(DecodeError::Malformed(
-            "missing or out-of-order VVC reference",
-        ));
-    }
     let mut reader = Reader::new(data)?;
     let mut contexts = Contexts::new(qp, inter_frame).with_dependent_quantization(tools.dep_quant);
     let (cw, ch) = (geometry.coded_width, geometry.coded_height);
@@ -783,6 +829,7 @@ fn decode_slice(
     // this picture serves as a reference.
     let border = if inter_frame { REFERENCE_BORDER } else { 0 };
     let mut picture = pictures.take(cw, ch, border)?;
+    motion.select_references(0, rpl.active_references());
     motion.reset(temporal_mvp == Some(true));
     let mut sao = Vec::new();
     let mut alf_decisions: Vec<crate::alf::CtbAlf> = Vec::new();
@@ -792,7 +839,8 @@ fn decode_slice(
         motion: &mut *motion,
         picture: &mut picture,
         inter_frame,
-        reference,
+        references,
+        active_references: rpl.active,
         dsp,
         qp: [qp, chroma_qp.map(qp)],
         partitioning: geometry.partitioning,
@@ -858,7 +906,45 @@ fn decode_slice(
             bank,
         );
     }
-    Ok((picture, poc))
+    Ok(OwnPicture::new(picture, poc, listed))
+}
+
+/// The POCs of the pictures the RPL0 of slice `header` lists (none for an
+/// intra picture), each found in `dpb` (§8.3.2), and those pictures by
+/// reference index; a P picture must follow `next_poc`.
+#[allow(clippy::type_complexity, reason = "the POCs and their pictures")]
+fn slice_references<'a>(
+    header: &OwnSliceHeader<'_>,
+    inter_frame: bool,
+    next_poc: Option<u8>,
+    dpb: &[(u8, &'a Picture)],
+) -> Result<(
+    Vec<u8>,
+    [Option<&'a Picture>; crate::motion::MAX_ACTIVE_REFERENCES],
+)> {
+    let mut references = [None; crate::motion::MAX_ACTIVE_REFERENCES];
+    if !inter_frame {
+        return Ok((Vec::new(), references));
+    }
+    if next_poc != Some(header.poc) {
+        return Err(DecodeError::Malformed("out-of-order VVC picture"));
+    }
+    let rpl = &header.references;
+    let listed: Vec<u8> = rpl.distances[..rpl.count]
+        .iter()
+        .map(|&distance| header.poc.wrapping_sub(distance as u8))
+        .collect();
+    for (index, &listed_poc) in listed.iter().enumerate() {
+        let picture = dpb
+            .iter()
+            .find(|(held, _)| *held == listed_poc)
+            .map(|(_, picture)| *picture)
+            .ok_or(DecodeError::Malformed("missing VVC reference"))?;
+        if let Some(reference) = references.get_mut(index) {
+            *reference = Some(picture);
+        }
+    }
+    Ok((listed, references))
 }
 
 /// What a slice of our own streams signals in its header.
@@ -871,6 +957,26 @@ struct OwnSliceHeader<'b> {
     bank: Option<&'b crate::alf_aps::SignalledFilters>,
     /// `ph_temporal_mvp_enabled_flag`; `None` without TMVP in the SPS.
     temporal_mvp: Option<bool>,
+    /// RPL0 of a P picture (`references.rs`).
+    references: crate::references::Syntax,
+}
+
+/// A picture of our own streams: its samples, POC and the POCs its RPL0
+/// lists.
+struct OwnPicture {
+    picture: Picture,
+    poc: u8,
+    listed: Vec<u8>,
+}
+
+impl OwnPicture {
+    fn new(picture: Picture, poc: u8, listed: Vec<u8>) -> Self {
+        Self {
+            picture,
+            poc,
+            listed,
+        }
+    }
 }
 
 /// Parse the slice header (with its embedded picture header) of one of our
@@ -901,9 +1007,11 @@ fn parse_slice_header<'a, 'b>(
         r.skip_bits(1)?; // no-output flag
     }
     let (alf, bank) = slice_alf(&mut r, tools, alf_banks)?;
-    if inter_frame {
-        r.skip_bits(6)?; // local RPL0/RPL1
-    }
+    let references = if inter_frame {
+        read_reference_lists(&mut r, temporal_mvp == Some(true))?
+    } else {
+        crate::references::Syntax::FLAT
+    };
     let qp = 26i64 + i64::from(r.read_se()?);
     if !(0..=i64::from(headers::MAX_QP)).contains(&qp) {
         return Err(DecodeError::Malformed("VVC QP"));
@@ -911,7 +1019,15 @@ fn parse_slice_header<'a, 'b>(
     let qp = qp as u32;
     r.skip_bits(3)?; // SAO luma/chroma and sign hiding flags, validated by canonical header
     r.trailing_bits()?;
-    let prefix = headers::slice(qp, inter_frame, poc, alf, block_qp, temporal_mvp);
+    let prefix = headers::slice_layered(
+        qp,
+        inter_frame,
+        poc,
+        alf,
+        block_qp,
+        temporal_mvp,
+        &references,
+    );
     if !bytes.starts_with(&prefix) {
         return Err(DecodeError::Unsupported("VVC slice header"));
     }
@@ -922,9 +1038,41 @@ fn parse_slice_header<'a, 'b>(
             alf,
             bank,
             temporal_mvp,
+            references,
         },
         r.remaining_bytes()?,
     ))
+}
+
+/// A P slice's local RPL0 (one or two short-term entries), empty RPL1,
+/// active-reference override and collocated reference (§7.3.7.1,
+/// §7.3.10), as `headers::slice_layered` writes them; the caller checks
+/// the whole header against its canonical form.
+fn read_reference_lists(
+    r: &mut BitReader<'_>,
+    temporal_mvp: bool,
+) -> Result<crate::references::Syntax> {
+    let mut syntax = crate::references::Syntax::FLAT;
+    let count = r.read_ue()? as usize;
+    if !(1..=syntax.distances.len()).contains(&count) {
+        return Err(DecodeError::Unsupported("VVC RPL0 size"));
+    }
+    let mut previous = 0;
+    for distance in &mut syntax.distances[..count] {
+        // Cumulative delta, then strp_entry_sign_flag (earlier pictures).
+        *distance = previous + r.read_ue_max(u32::from(u8::MAX), "abs_delta_poc_st")? + 1;
+        r.skip_bits(1)?;
+        previous = *distance;
+    }
+    syntax.count = count;
+    r.read_ue()?; // RPL1, empty
+    if count > 1 && r.read_bit()? {
+        syntax.active = r.read_ue_max(1, "sh_num_ref_idx_active_minus1")? as usize + 1;
+    }
+    if temporal_mvp && syntax.active > 1 {
+        r.read_ue()?; // sh_collocated_ref_idx
+    }
+    Ok(syntax)
 }
 
 struct SliceDecoder<'a, 'b> {
@@ -933,7 +1081,10 @@ struct SliceDecoder<'a, 'b> {
     motion: &'a mut MotionGrid,
     picture: &'a mut Picture,
     inter_frame: bool,
-    reference: Option<&'a Picture>,
+    /// The pictures RPL0 lists (the first `active_references` active).
+    references: [Option<&'a Picture>; crate::motion::MAX_ACTIVE_REFERENCES],
+    /// `NumRefIdxActive[0]`.
+    active_references: usize,
     dsp: &'a Dsp,
     /// Luma and chroma QP.
     qp: [u32; 2],
@@ -1008,7 +1159,7 @@ impl SliceDecoder<'_, '_> {
 
     /// Decode and reconstruct coding unit `block`.
     fn coding_unit(&mut self, block: nc_encoder::Block) -> Result<()> {
-        let p = self.motion.predictors(&block);
+        let p = self.motion.predictors(&block, 0);
         let pending = self
             .block_qp
             .as_ref()
@@ -1016,7 +1167,7 @@ impl SliceDecoder<'_, '_> {
         let coding = decoder_syntax::block(
             self.reader,
             self.contexts,
-            (self.inter_frame, self.tools),
+            (self.inter_frame, self.active_references, self.tools),
             (self.motion, &p),
             block,
             pending,
@@ -1049,9 +1200,11 @@ impl SliceDecoder<'_, '_> {
             crate::analysis::coding_unit(s, &block, &coding, self.qp[0], &units);
         }
         let motion = coding.inter.map(|inter| inter.motion);
+        let ref_idx = coding.inter.map_or(0, |inter| inter.ref_idx);
         self.motion.record(
             &block,
             motion.as_ref(),
+            ref_idx,
             coding.skip,
             coding.intra_mode,
             &units,
@@ -1141,7 +1294,10 @@ impl SliceDecoder<'_, '_> {
         // predicted straight into the picture, then each unit's residual is
         // added in place.
         let reference = self
-            .reference
+            .references
+            .get(usize::from(inter.ref_idx))
+            .copied()
+            .flatten()
             .ok_or(DecodeError::Malformed("VVC inter CU without reference"))?;
         let mut prediction = block_region(self.picture, plane, cu);
         crate::inter::predict_cu_view(

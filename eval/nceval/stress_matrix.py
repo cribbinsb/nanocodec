@@ -4,7 +4,8 @@ Random decisions (`debug.random_decisions`) cover block-level syntax; the
 real-use features change frame-level syntax and reference handling, so every
 combination has to be decoded by the standard decoders too:
 
-  structure   flat, 2 layers, 3 layers adaptive, 3 layers fixed,
+  structure   flat, 2 layers adaptive, 2 layers fixed, 3 layers adaptive,
+              3 layers fixed,
               long-term reference with a reported loss (the lost frame is left
               out of the stream, the encoder recovers from the LTR), flat and
               with 2 or 3 fixed layers (a lost top-layer frame needs no
@@ -45,8 +46,8 @@ LTR_INTERVAL = 3
 # Frames whose loss the LTR case may report: not the first frame, a key frame
 # or the last frame (whose loss would leave nothing to recover).
 LOSS_CANDIDATES = (2, 3, 4, 5, 6, 7, 9, 10)
-STRUCTURES = ("flat", "layers2", "layers3", "layers3-fixed", "ltr-loss", "layers2-fixed-ltr-loss",
-              "layers3-fixed-ltr-loss", "refresh7", "refresh4", "resize")
+STRUCTURES = ("flat", "layers2", "layers2-fixed", "layers3", "layers3-fixed", "ltr-loss",
+              "layers2-fixed-ltr-loss", "layers3-fixed-ltr-loss", "refresh7", "refresh4", "resize")
 # Resolution switches of the "resize" structure: to half size (even
 # dimensions) and back, away from the key frames at 0 and INTRA_PERIOD.
 RESIZE_DOWN, RESIZE_UP = 5, 9

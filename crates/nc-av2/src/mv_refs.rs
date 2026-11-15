@@ -18,9 +18,17 @@
 //!
 //! Duplicates are pruned only while the list's comparison budget lasts
 //! (AVM `MAX_PR_NUM`). The sequence disables DRL reordering, temporal
-//! (TMVP) candidates and warp, and every block uses the one reference, so
-//! derived (other-reference) candidates never appear and the weights AVM
-//! keeps never matter.
+//! (TMVP) candidates and warp, so the weights AVM keeps never matter.
+//!
+//! A frame may have a second reference (`refs.second`: ranks 0 and 1,
+//! both past pictures). Each block's list is then built for its own
+//! reference: neighbours on that reference contribute their vectors, and
+//! neighbours on the other one contribute their vectors projected by the
+//! two references' distances (AVM `add_ref_mv_candidate`'s derived SMVP,
+//! `get_mv_projection`), which fill open entries after the bank
+//! (`add_derived_smvp_candidates`). Mode contexts count only neighbours on
+//! the block's reference, and the bank keeps one list per reference
+//! (`get_rmb_list_index`).
 //!
 //! Motion is stored per 8×8 cell. AVM reads 4×4 units, but every coded block
 //! here covers whole cells, and the superblock-boundary rule of
@@ -34,6 +42,7 @@
 mod compound;
 
 use crate::entropy::{Reader, Writer};
+use compound::{DERIVED_CAPACITY, DERIVED_PRUNE_COMPARISONS, Pruned};
 pub use compound::{SKIP_MODE, SkipCandidates, read_skip_drl, skip_drl_bits, write_skip_drl};
 use nc_common::decode::{DecodeError, Result};
 use nc_encoder::symbol_cost::symbol_bits;
@@ -62,6 +71,20 @@ const EIGHTHS: i32 = 8;
 const MAX_COMPONENT: i32 = 32766;
 /// AVM `MAX_REF_MV_STACK_SIZE`: entries of a reference list.
 pub const MAX_STACK: usize = 6;
+/// References a frame of the subset may name (`num_total_refs`): the
+/// previous picture and the second reference.
+pub const MAX_REFERENCES: usize = 2;
+/// AVM `MAX_FRAME_DISTANCE`: projection distances are clamped to it.
+const MAX_FRAME_DISTANCE: i32 = 31;
+/// AVM `div_mult`: 16384 / distance, for MV projection.
+const DIV_MULT: [i64; 32] = [
+    0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
+    1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
+];
+/// Fractional bits of the projection factors.
+const PROJECTION_SHIFT: u32 = 14;
+/// AVM `MV_UPP - 1`: the largest projected component.
+const MAX_PROJECTED: i64 = (1 << 16) - 1;
 /// AVM `MAX_PR_NUM`: duplicate comparisons a list may spend; later
 /// candidates are appended unpruned.
 const MAX_PRUNE_COMPARISONS: u32 = 16;
@@ -154,6 +177,9 @@ struct Entry {
     second: Option<Narrow>,
     /// The (first) vector was coded as NEWMV (counted by mode contexts).
     is_new: bool,
+    /// The reference rank both vectors point into (a compound block's is
+    /// rank 0 twice).
+    reference: u8,
 }
 
 impl Entry {
@@ -176,6 +202,8 @@ pub enum BlockMotion {
         vector: Vector,
         /// Coded as NEWMV.
         is_new: bool,
+        /// The reference rank it points into.
+        reference: u8,
     },
     /// A same-reference compound block (skip mode: `NEAR_NEARMV`).
     Compound(Pair),
@@ -350,7 +378,8 @@ impl<T: Copy + PartialEq> BankList<T> {
 /// the subset codes.
 #[derive(Debug, Default, Clone)]
 struct Bank {
-    single: BankList<Vector>,
+    /// One list per single reference rank.
+    single: [BankList<Vector>; MAX_REFERENCES],
     compound: BankList<Pair>,
     /// Updates in the current superblock, over both lists (AVM
     /// `rmb_sb_hits`). AVM also limits updates per 8×8 unit
@@ -368,7 +397,7 @@ impl Bank {
         self.updates += 1;
         match entry.pair() {
             Some(pair) => self.compound.update(pair),
-            None => self.single.update(entry.vector()),
+            None => self.single[usize::from(entry.reference)].update(entry.vector()),
         }
     }
 }
@@ -386,10 +415,15 @@ pub struct ReferenceGrid {
     width: usize,
     height: usize,
     config: ListConfig,
+    /// Each reference rank's distance from the current picture in frames
+    /// (AVM `ref_frame_relative_dist`), for the first `references` ranks.
+    distances: [i32; MAX_REFERENCES],
+    references: usize,
     cells: Vec<Cell>,
     bank: Bank,
-    /// The most recent block's candidate list, valid until the next commit.
-    last: std::cell::Cell<Option<(BlockKey, Candidates)>>,
+    /// The most recent block's candidate list and its reference rank,
+    /// valid until the next commit.
+    last: std::cell::Cell<Option<((BlockKey, u8), Candidates)>>,
     /// The most recent block's skip-mode list, likewise.
     last_skip: std::cell::Cell<Option<(BlockKey, SkipCandidates)>>,
 }
@@ -413,11 +447,33 @@ impl ReferenceGrid {
             width,
             height,
             config: config.validate()?,
+            distances: [1; MAX_REFERENCES],
+            references: 1,
             cells: vec![Cell::Uncoded; width / CELL * (height / CELL)],
             bank: Bank::default(),
             last: std::cell::Cell::new(None),
             last_skip: std::cell::Cell::new(None),
         })
+    }
+
+    /// Name the frame's references by their distances from the current
+    /// picture in frames, in rank order (one or two, each at least 1).
+    /// Call before the first block.
+    /// # Errors
+    /// Rejects a count outside 1..=2 and non-positive distances.
+    pub fn set_reference_distances(&mut self, distances: &[i32]) -> Result<()> {
+        if !(1..=MAX_REFERENCES).contains(&distances.len()) || distances.iter().any(|&d| d < 1) {
+            return Err(DecodeError::Unsupported("AV2 reference distances"));
+        }
+        self.distances[..distances.len()].copy_from_slice(distances);
+        self.references = distances.len();
+        Ok(())
+    }
+
+    /// The frame's number of references (`num_total_refs`).
+    #[must_use]
+    pub fn reference_count(&self) -> usize {
+        self.references
     }
 
     /// Validate a square block of side `size` at `(x, y)`, inside the picture.
@@ -508,6 +564,7 @@ impl ReferenceGrid {
             first: Narrow::new((0, 0)),
             second: None,
             is_new: false,
+            reference: 0,
         };
         let mut entries = [unused; BANK_ABOVE_ROW_UPDATES];
         let mut count = 0;
@@ -528,21 +585,40 @@ impl ReferenceGrid {
         (entries, count)
     }
 
-    /// Derive the selectable references before coding the inter block of
-    /// side `size` at `(x, y)`.
+    /// Derive the selectable references into reference rank 0 before
+    /// coding the inter block of side `size` at `(x, y)`.
     /// # Errors
     /// Rejects invalid geometry or missing mandatory above/left neighbours.
     pub fn candidates(&self, x: usize, y: usize, size: usize) -> Result<Candidates> {
+        self.candidates_for(x, y, size, 0)
+    }
+
+    /// Derive the selectable references into reference rank `reference`
+    /// before coding the inter block of side `size` at `(x, y)`.
+    /// # Errors
+    /// Rejects invalid geometry, a rank the frame does not have, or missing
+    /// mandatory above/left neighbours.
+    pub fn candidates_for(
+        &self,
+        x: usize,
+        y: usize,
+        size: usize,
+        reference: u8,
+    ) -> Result<Candidates> {
         // The engine prices every candidate vector of a block (mode_bits),
         // each asking for the same list: derive it once until the grid
         // changes ([`Self::fill`] clears the memo).
-        if let Some((key, candidates)) = self.last.get()
-            && key == (x, y, size)
+        let key = ((x, y, size), reference);
+        if let Some((cached, candidates)) = self.last.get()
+            && cached == key
         {
             return Ok(candidates);
         }
-        let candidates = self.derive_candidates(x, y, size)?;
-        self.last.set(Some(((x, y, size), candidates)));
+        if usize::from(reference) >= self.references {
+            return Err(DecodeError::Malformed("AV2 reference rank"));
+        }
+        let candidates = self.derive_candidates(x, y, size, reference)?;
+        self.last.set(Some((key, candidates)));
         Ok(candidates)
     }
 
@@ -585,27 +661,56 @@ impl ReferenceGrid {
         ]
     }
 
-    fn derive_candidates(&self, x: usize, y: usize, size: usize) -> Result<Candidates> {
+    fn derive_candidates(
+        &self,
+        x: usize,
+        y: usize,
+        size: usize,
+        reference: u8,
+    ) -> Result<Candidates> {
         self.check_block(x, y, size)?;
         let (px, py, last) = (x as i32, y as i32, size as i32 - 1);
         self.check_neighbours_coded(px, py)?;
-        let left = [self.get(px - 1, py + last), self.get(px - 1, py)];
-        let above = [self.get(px + last, py - 1), self.get(px, py - 1)];
+        // AVM `av2_find_mode_ctx` counts neighbours on the block's
+        // reference only.
+        let on_reference = |entry: Option<Entry>| entry.filter(|e| e.reference == reference);
+        let left = [self.get(px - 1, py + last), self.get(px - 1, py)].map(on_reference);
+        let above = [self.get(px + last, py - 1), self.get(px, py - 1)].map(on_reference);
         let matched = |side: &[Option<Entry>; 2]| u8::from(side.iter().any(Option::is_some));
         let new = left.iter().chain(&above).flatten().any(|e| e.is_new);
         let mode_context = matched(&left) + matched(&above) + 2 * u8::from(new);
         let mut stack = Stack::default();
-        // Both vectors of a same-reference compound neighbour match the
-        // reference (AVM `add_ref_mv_candidate`: `candidate->ref_frame[ref]
-        // == rf[0]` for `ref` 0 and 1).
+        let mut derived = Pruned::<Vector, DERIVED_CAPACITY>::new(DERIVED_PRUNE_COMPARISONS);
         for entry in self.scan(x, y, size).into_iter().flatten() {
-            stack.add(entry.first.vector());
-            if let Some(second) = entry.second {
-                stack.add(second.vector());
+            // AVM `scan_blk_mbmi` adds nothing, projected vectors included,
+            // once the list is full.
+            if stack.count >= MAX_STACK {
+                continue;
+            }
+            // Both vectors of a same-reference compound neighbour count
+            // (AVM `add_ref_mv_candidate`: `candidate->ref_frame[ref]` for
+            // `ref` 0 and 1).
+            for vector in [Some(entry.first), entry.second].into_iter().flatten() {
+                if entry.reference == reference {
+                    stack.add(vector.vector());
+                } else {
+                    let projected = self.project(vector.vector(), reference, entry.reference);
+                    derived.add(projected, DERIVED_CAPACITY);
+                }
             }
         }
         if self.config.ref_mv_bank {
-            self.add_bank_candidates(&mut stack, (px, py), size as i32);
+            self.add_bank_candidates(&mut stack, (px, py), size as i32, reference);
+        }
+        // Projected vectors fill open entries after the bank (AVM
+        // `fill_mvp_from_derived_smvp`), compared within the list's budget.
+        let limit = self.config.entries();
+        if stack.count < limit {
+            for &vector in derived.listed() {
+                if stack.is_new(vector) && stack.count < limit {
+                    stack.push(vector);
+                }
+            }
         }
         // AVM clamps the derived entries before inserting global motion.
         for vector in &mut stack.vectors[..stack.count] {
@@ -626,6 +731,25 @@ impl ReferenceGrid {
             self.config.max_drl_bits,
             mode_context,
         ))
+    }
+
+    /// A neighbour's `vector` into reference rank `from`, scaled to rank
+    /// `to` by their distances (AVM `get_mv_projection`; both references
+    /// lie in the past, on the same side). The result may be an odd
+    /// eighth-sample vector, which only the block that selects it as a
+    /// predictor must avoid.
+    fn project(&self, vector: Vector, to: u8, from: u8) -> Vector {
+        let numerator = i64::from(self.distances[usize::from(to)].min(MAX_FRAME_DISTANCE));
+        let denominator = self.distances[usize::from(from)].min(MAX_FRAME_DISTANCE);
+        let factor = numerator * DIV_MULT[denominator as usize];
+        let rounding = 1_i64 << (PROJECTION_SHIFT - 1);
+        let scale = |v: i32| {
+            let product = i64::from(v) * factor;
+            let magnitude = (product.abs() + rounding) >> PROJECTION_SHIFT;
+            let signed = if product < 0 { -magnitude } else { magnitude };
+            signed.clamp(-MAX_PROJECTED, MAX_PROJECTED) as i32
+        };
+        (scale(vector.0), scale(vector.1))
     }
 
     /// `vector` clamped to reach at most [`MV_BORDER`] beyond the picture
@@ -660,9 +784,15 @@ impl ReferenceGrid {
     /// vectors listed already (budget permitting) and vectors whose
     /// reference block would lie wholly outside the picture (AVM
     /// `add_ref_mv_bank_candidates`, `check_rmb_cand`).
-    fn add_bank_candidates(&self, stack: &mut Stack, (px, py): (i32, i32), size: i32) {
+    fn add_bank_candidates(
+        &self,
+        stack: &mut Stack,
+        (px, py): (i32, i32),
+        size: i32,
+        reference: u8,
+    ) {
         let limit = self.config.entries();
-        for vector in self.bank.single.newest_first() {
+        for vector in self.bank.single[usize::from(reference)].newest_first() {
             if stack.count >= limit {
                 break;
             }
@@ -685,7 +815,12 @@ impl ReferenceGrid {
         vector: Vector,
         is_new: bool,
     ) -> Result<()> {
-        self.commit_motion(x, y, size, BlockMotion::Single { vector, is_new })
+        let motion = BlockMotion::Single {
+            vector,
+            is_new,
+            reference: 0,
+        };
+        self.commit_motion(x, y, size, motion)
     }
 
     /// Store the final motion of the inter block of side `size` at `(x, y)`
@@ -699,10 +834,17 @@ impl ReferenceGrid {
         size: usize,
         motion: BlockMotion,
     ) -> Result<()> {
-        let (vectors, is_new) = match motion {
-            BlockMotion::Single { vector, is_new } => ([vector, vector], is_new),
-            BlockMotion::Compound((first, second)) => ([first, second], false),
+        let (vectors, is_new, reference) = match motion {
+            BlockMotion::Single {
+                vector,
+                is_new,
+                reference,
+            } => ([vector, vector], is_new, reference),
+            BlockMotion::Compound((first, second)) => ([first, second], false, 0),
         };
+        if usize::from(reference) >= self.references {
+            return Err(DecodeError::Malformed("AV2 reference rank"));
+        }
         if vectors
             .iter()
             .flat_map(|&(row, col)| [row, col])
@@ -714,6 +856,7 @@ impl ReferenceGrid {
             first: Narrow::new(vectors[0]),
             second: matches!(motion, BlockMotion::Compound(_)).then(|| Narrow::new(vectors[1])),
             is_new,
+            reference,
         };
         self.fill(x, y, size, Some(entry))?;
         if self.config.ref_mv_bank {

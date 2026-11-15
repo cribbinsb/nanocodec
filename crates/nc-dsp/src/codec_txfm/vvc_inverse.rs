@@ -32,7 +32,7 @@ pub(crate) fn inverse(
     levels: &[i32],
     qp: u8,
     dependent: bool,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     assert!([2, 4, 8, 16, 32].contains(&width) && [2, 4, 8, 16, 32].contains(&height));
     assert!(qp <= 63 && levels.len() >= width * height && out.len() >= width * height);
@@ -53,7 +53,7 @@ fn inverse_sized<const AREA: usize>(
     (width, height): (usize, usize),
     levels: &[i32],
     (qp, dependent): (u8, bool),
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     let scaling = scaling((width, height), qp, dependent);
     let mut scaled = [0; AREA];
@@ -96,7 +96,7 @@ impl Dsp {
         levels: &[i32],
         qp: u8,
         bdpcm: u8,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let valid = |n: usize| n.is_power_of_two() && (2..=32).contains(&n);
         assert!(valid(width) && valid(height) && qp <= 63 && bdpcm <= 2);
@@ -124,7 +124,7 @@ impl Dsp {
 mod tests {
     use super::*;
     use crate::Isa;
-    fn reference(width: usize, height: usize, levels: &[i32], qp: u8, dependent: bool) -> Vec<i32> {
+    fn reference(width: usize, height: usize, levels: &[i32], qp: u8, dependent: bool) -> Vec<i16> {
         let area_log = width.ilog2() + height.ilog2();
         let adjusted = u32::from(qp) + u32::from(dependent);
         let shift = area_log as i32 / 2 - 1 + (area_log as i32 & 1) + i32::from(dependent)
@@ -166,7 +166,7 @@ mod tests {
                             * intermediate[y * width + k]
                     })
                     .sum();
-                out[y * width + x] = ((sum + 2048) >> 12) as i32;
+                out[y * width + x] = i16::try_from((sum + 2048) >> 12).unwrap();
             }
         }
         out

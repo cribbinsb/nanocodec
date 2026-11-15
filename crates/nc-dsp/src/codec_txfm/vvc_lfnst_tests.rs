@@ -39,7 +39,8 @@ fn lfnst_reference_impulses_cover_wide_angles_transpose_and_zero_out() {
                         &mut coefficients,
                     );
                     for value in coefficients {
-                        for byte in value.to_le_bytes() {
+                        // Hashed as i32: the digests predate 16-bit outputs.
+                        for byte in i32::from(value).to_le_bytes() {
                             digest = (digest ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
                         }
                     }

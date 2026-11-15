@@ -153,6 +153,17 @@ const PENDING_TREE_PROBS: [u8; segmentation::TREE_PROBS] = [255; segmentation::T
 /// Side (log2) of the square sharing one block quantizer: a superblock,
 /// so a frame's offsets stay few enough for its eight segments.
 const BLOCK_QP_LOG2: u8 = 6;
+/// Minimum `|offset|` (qindex units) accepted on `S0` of a three-layer spatial
+/// stream (`16` qindex): `Segmentation::standalone` (`VP9 §6.2.11 / §6.4.8`)
+/// sends `update_data = 1`, seven tree probabilities, and an explicit segment
+/// id on every block (including `skip = 1`), costing ~120-180 bits/frame on
+/// `320x180`, so small row-steering and cyclic-band nudges cost more in map
+/// syntax than they save, while large `ReuseTerm` static-recovery refinements
+/// still pass through. With the idle-segmentation switch-off
+/// (`finish_segment_quantizers`), the `L3T1_KEY` 180p view went from +7.0% to
+/// +1.3% BD-J vs 180p coded alone (11 chart clips; 720p view +1.0 pp,
+/// svc-next merge review, 2026-11-14).
+const THREE_LAYER_S0_MIN_SEGMENT_OFFSET: u16 = 16;
 
 nc_encoder::param_group! {
     pub(crate) struct Vp9Params ("vp9") {
@@ -357,7 +368,7 @@ struct Scratch {
     kept_chroma: Vec<CodedTx>,
     /// One inter plane block's 4x4 SADs against its prediction, raster
     /// order ([`plane_quad_sads`]).
-    quad_sads: Vec<u32>,
+    quad_sads: Vec<u16>,
 }
 
 impl Scratch {
@@ -872,6 +883,14 @@ impl CodecBackend for Vp9Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 4.0),
         ("rate.cadence_motion_gate", 1.0),
+        // The target as a ceiling over every key period (`rate.period_ceiling`,
+        // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still scenes).
+        // 600-frame long-window L3 (keys every 10 s, 31 points, draw 2026-11-14):
+        // J -1.33% [-2.53, -0.32] BETTER, no guard; static -5.5%, crowd +0.2%,
+        // pan and lowlight unchanged; achieved/target max 1.007 -> 1.000; re-codes
+        // on the 22 static and crowd points 5.5 -> 10.8 per 1000 frames.
+        // Inert within one key period. The other VP9 presets pin it off.
+        ("rate.period_ceiling", 1.0),
         ("decision.codec_subpel_seed_lambdas", 0.0),
         ("quant.trellis", 1.0),
         ("quant.trellis_key", 1.0),
@@ -1195,6 +1214,15 @@ impl CodecBackend for Vp9Backend {
     }
 
     fn block_qp_offset(&mut self, requested: i16) -> i16 {
+        if self.random.is_none()
+            && self
+                .spatial
+                .as_ref()
+                .is_some_and(|sp| sp.num_layers >= 3 && sp.current_layer.spatial_id == 0)
+            && requested.unsigned_abs() < THREE_LAYER_S0_MIN_SEGMENT_OFFSET
+        {
+            return 0;
+        }
         match self.block_qp.as_mut() {
             Some(segments) if self.header.segmentation.enabled => segments.assign(requested).1,
             _ => 0,
@@ -1681,7 +1709,10 @@ impl CodecBackend for Vp9Backend {
         }
         let tile = std::mem::take(&mut self.writer).finish_with_modes(
             &recorder::slot_probs(&updates.coef),
-            self.header.segmentation.tree_probs,
+            self.header
+                .segmentation
+                .enabled
+                .then_some(self.header.segmentation.tree_probs),
             mode_updates.as_ref().map(|(_, new)| new),
         );
         let mut packet = self.header.write(compressed.len());
@@ -2673,13 +2704,22 @@ impl Vp9Backend {
     }
 
     /// Write the frame's segment quantizers into its features, sending them
-    /// when they changed.
+    /// when they changed; on a spatial frame where no block took a non-default
+    /// feature (`SegmentFeatures::default`), turn segmentation off so the
+    /// header and tile omit `Segmentation::standalone`'s empty table and map.
     fn finish_segment_quantizers(&mut self) {
         let (Some(segments), true) = (&self.block_qp, self.header.segmentation.enabled) else {
             return;
         };
         let segmentation = &mut self.header.segmentation;
         segmentation.features.quantizer = segments.feature_data(segmentation.features.absolute);
+        if self.spatial.is_some()
+            && self.random.is_none()
+            && segmentation.features == SegmentFeatures::default()
+        {
+            *segmentation = Segmentation::disabled(self.segment_state);
+            return;
+        }
         segmentation.update_data |= segmentation.features != self.segment_state;
     }
 
@@ -3674,11 +3714,11 @@ fn plane_quad_sads(
     (source, recon): (&Picture, &Picture),
     plane: PlaneIndex,
     (x, y, n): (usize, usize, usize),
-    out: &mut [u32],
+    out: &mut [u16],
 ) {
     let columns = n / QUAD_SIDE;
     let blocks = n / QUAD_STRIP;
-    let mut strip = [[0u32; 4]; 64 / QUAD_STRIP];
+    let mut strip = [[0u16; 4]; 64 / QUAD_STRIP];
     for row in (0..n).step_by(QUAD_STRIP) {
         let (xi, yi) = (x as isize, (y + row) as isize);
         let src = source.plane(plane).region(xi, yi, n, QUAD_STRIP);
@@ -3709,7 +3749,7 @@ struct QuadSads {
 
 impl QuadSads {
     /// The SAD of the `side`x`side` transform block `tx_block`.
-    fn tx_sad(self, quads: &[u32], tx_block: &TxBlock, side: usize) -> u32 {
+    fn tx_sad(self, quads: &[u16], tx_block: &TxBlock, side: usize) -> u32 {
         let (cx, cy) = (
             (tx_block.x - self.x) / QUAD_SIDE,
             (tx_block.y - self.y) / QUAD_SIDE,
@@ -3718,7 +3758,10 @@ impl QuadSads {
         (cy..cy + cells)
             .map(|row| {
                 let start = row * self.columns + cx;
-                quads[start..start + cells].iter().sum::<u32>()
+                quads[start..start + cells]
+                    .iter()
+                    .map(|&sad| u32::from(sad))
+                    .sum::<u32>()
             })
             .sum()
     }

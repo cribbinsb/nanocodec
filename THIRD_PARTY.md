@@ -324,6 +324,23 @@ the two halves of a 256-bit register, mirrored line pairs squared by one
 `pmaddwd`, the best direction by `phminposuw`). Copyright © 2018 VideoLAN
 and dav1d authors; Copyright © 2018 Two Orioles, LLC.
 
+The scalar model of dav1d's arm64 inverse transforms
+(`crates/nc-dsp/src/av1_inverse/dav1d_model.rs`) reimplements in Rust the
+arithmetic, coefficient tables (`idct_coeffs`, `idct64_coeffs`,
+`iadst4/8/16_coeffs`), identity fusions and end-of-block tables of dav1d
+1.5.4 `src/arm/64/itx.S` (8-bit `inv_txfm_add_*_neon`), Copyright © 2018
+VideoLAN and dav1d authors, Copyright © 2019 Martin Storsjo, BSD-2-Clause.
+That assembly itself is vendored unchanged as
+`crates/nc-dsp/src/av1_inverse/dav1d_itx_neon.s` (with `src/arm/asm.S` and
+`src/arm/64/util.S`, preprocessed by `tools/dev/vendor_dav1d_itx.sh`; its
+licence header is kept) and linked through `global_asm!` in
+`av1_inverse/dav1d_neon.rs`, the AV1 decoder's NEON inverse transforms.
+nc-checkasm's conformant-block check
+(`crates/nc-checkasm/src/check_av1_conformant.rs`) reimplements the
+floating-point forward transforms and per-size scale factors of dav1d
+1.5.4 `tests/checkasm/itx.c`, Copyright © 2018 VideoLAN and dav1d authors,
+Copyright © 2018 Two Orioles, LLC, BSD-2-Clause.
+
 The AVX-512 interior CDEF filter (`crates/nc-dsp/src/cdef/avx512.rs`)
 widens the existing packed-byte AVX2 schedule inspired by dav1d/SVT-AV1:
 constrained signed byte differences, paired `pmaddubsw` tap weighting, and

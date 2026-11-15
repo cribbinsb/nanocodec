@@ -9,10 +9,11 @@
 # --max-layer M`, must decode bit-exactly to the encoder's reconstruction of
 # the kept frames in nanocodec's own decoder and in every standard decoder:
 # JM and ffmpeg (H.264), HM and ffmpeg (HEVC), aomdec, dav1d and ffmpeg
-# (AV1), avmdec and dav2d (AV2). Decoders that can select the operating
-# point themselves (HM -t, dav1d and aomdec --oppoint) must also produce the
-# same frames from the full stream; AV2 streams carry no operating-point
-# set, so their lower layers are checked through extracted sub-streams.
+# (AV1), vpxdec and ffmpeg (VP9), avmdec and dav2d (AV2). Decoders that can
+# select the operating point themselves (HM -t, dav1d and aomdec --oppoint)
+# must also produce the same frames from the full stream; VP9 and AV2 streams
+# carry no operating-point set, so their lower layers are checked through
+# extracted sub-streams.
 #
 # Usage: tools/ci/temporal_layers_conformance.sh [codec ...]   (default: all
 # codecs with layered support). Needs the pinned decoders from
@@ -27,7 +28,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 CODECS=("$@")
-((${#CODECS[@]})) || CODECS=(h264 hevc av1 av2 vvc)
+((${#CODECS[@]})) || CODECS=(h264 hevc av1 vp9 av2 vvc)
 
 # width height frames intra_period
 SHAPES=(
@@ -97,6 +98,12 @@ decode_all() {
         -f rawvideo -pix_fmt yuv420p "$WORK/ffmpeg.yuv"
       echo own aomdec dav1d ffmpeg
       ;;
+    vp9)
+      "$ANCHORS/vpxdec" --codec=vp9 --rawvideo --i420 --threads=1 -o "$WORK/vpxdec.yuv" "$stream"
+      ffmpeg -v error -y -xerror -c:v vp9 -i "$stream" -fps_mode passthrough \
+        -f rawvideo -pix_fmt yuv420p "$WORK/ffmpeg.yuv"
+      echo own vpxdec ffmpeg
+      ;;
     av2)
       # Every shape is whole 8x8 blocks: no conformance-window cropping
       # (which dav2d ignores).
@@ -132,7 +139,7 @@ for codec in "${CODECS[@]}"; do
     continue
   fi
   case $codec in
-    h264) q=30 ext=264 ;; hevc) q=30 ext=hevc ;; av1) q=120 ext=ivf ;; av2) q=140 ext=ivf ;;
+    h264) q=30 ext=264 ;; hevc) q=30 ext=hevc ;; av1) q=120 ext=ivf ;; vp9) q=120 ext=ivf ;; av2) q=140 ext=ivf ;;
   esac
   for layers in 2 3; do
     for shape in "${SHAPES[@]}" "${ADAPTIVE_SHAPES[@]/#/adaptive }"; do

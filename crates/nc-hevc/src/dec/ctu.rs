@@ -188,9 +188,11 @@ struct TuNode {
 /// cleared again.
 #[derive(Debug)]
 pub(super) struct Scratch {
-    levels: Vec<i32>,
+    /// Parsed, then scaled, levels: 16 bits by §7.4.9.11 (`CoeffMinY` to
+    /// `CoeffMaxY`) and §8.6.3 (the scaled values' clamp).
+    levels: Vec<i16>,
     positions: Vec<u16>,
-    residual: Vec<i32>,
+    residual: Vec<i16>,
     pred: Vec<u8>,
     /// Intra reference samples, refilled per block.
     refs: Refs,
@@ -1251,13 +1253,14 @@ impl SegmentDecoder<'_, '_> {
             residual.copy_from_slice(&self.s.levels[..count]);
         } else {
             for (r, &level) in residual.iter_mut().zip(&self.s.levels[..count]) {
-                *r = ((level << TRANSFORM_SKIP_SHIFT) + (1 << (RESIDUAL_SHIFT - 1)))
-                    >> RESIDUAL_SHIFT;
+                // |r| <= (2^15 · 2^7 + 2^11) >> 12 = 1024.
+                *r = (((i32::from(level) << TRANSFORM_SKIP_SHIFT) + (1 << (RESIDUAL_SHIFT - 1)))
+                    >> RESIDUAL_SHIFT) as i16;
             }
         }
         for (row, line) in residual.chunks_exact(n).enumerate() {
             for (s, &r) in dst.row_mut(row).iter_mut().zip(line) {
-                *s = (i32::from(*s) + r).clamp(0, 255) as u8;
+                *s = (i32::from(*s) + i32::from(r)).clamp(0, 255) as u8;
             }
         }
     }
@@ -1288,7 +1291,7 @@ impl SegmentDecoder<'_, '_> {
             columns = columns.max((p & ((1 << log2) - 1)) + 1);
             let m = factors.map_or(i64::from(FLAT_SCALE), |f| i64::from(f[p]));
             let v = (i64::from(self.s.levels[p]) * m * scale + (1 << (shift - 1))) >> shift;
-            self.s.levels[p] = v.clamp(-32768, 32767) as i32;
+            self.s.levels[p] = v.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
         }
         (rows, columns)
     }

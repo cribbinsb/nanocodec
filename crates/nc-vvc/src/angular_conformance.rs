@@ -194,8 +194,8 @@ impl ForcedFrame {
         syntax::block(
             &mut self.writer,
             &mut self.contexts,
-            (false, crate::headers::Tools::default()),
-            &self.grid.predictors(&block).contexts(),
+            (false, 1, crate::headers::Tools::default()),
+            &self.grid.predictors(&block, 0).contexts(),
             &syntax::Coding {
                 inter: None,
                 cu: block,
@@ -208,7 +208,7 @@ impl ForcedFrame {
                 mts: 0,
             },
         );
-        self.grid.record(&block, None, false, selected, &units);
+        self.grid.record(&block, None, 0, false, selected, &units);
     }
     fn encode(mut self) -> (Vec<u8>, Vec<u8>) {
         for y in (0..64).step_by(32) {

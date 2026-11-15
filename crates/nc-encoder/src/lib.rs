@@ -127,7 +127,8 @@ pub use nc_common::{ColourDescription, ColourInfo};
 pub use params::{
     AnalysisParams, ChromaParams, DebugParams, DecisionParams, InFrameParams, LayerParams,
     LtrParams, ParamError, ParamOverrides, ParamSpec, PersistParams, PlannerParams, QuantParams,
-    RateParams, RefParams, RefreshParams, SceneParams, SpatialParams, StillParams, engine_specs,
+    RateParams, RefParams, RefreshParams, SceneParams, SpatialParams, StillParams, StructureParams,
+    engine_specs,
 };
 pub use partition::Block;
 pub use pre_tx_skip::{QuantizerBand, pre_tx_skip_score, pre_tx_skips};

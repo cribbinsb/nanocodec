@@ -128,10 +128,14 @@ fn round2(value: i32, bits: u32) -> i32 {
     }
 }
 
-/// A grain template: `rows` x `columns` values.
+/// A grain template: `rows` x `columns` 8-bit grain values (dav1d's
+/// `entry` at 8bpc). The white noise is within `round2(±1752, 4)` (the
+/// extremes of [`GAUSSIAN_SEQUENCE`] at the smallest shift) and the
+/// auto-regressive filter clamps to `GrainMin..=GrainMax`, so `i8` is
+/// exact.
 struct Template {
     columns: usize,
-    values: Vec<i16>,
+    values: Vec<i8>,
 }
 
 impl Template {
@@ -154,7 +158,7 @@ fn white_noise(
                 round2(
                     i32::from(GAUSSIAN_SEQUENCE[random.next(GAUSSIAN_BITS)]),
                     shift,
-                ) as i16
+                ) as i8
             } else {
                 0
             }
@@ -219,7 +223,7 @@ fn auto_regress(
             for &(column, coefficient) in &left {
                 sum += coefficient * i32::from(row[(x as isize + column) as usize]);
             }
-            row[x] = (i32::from(row[x]) + round2(sum, shift)).clamp(GRAIN_MIN, GRAIN_MAX) as i16;
+            row[x] = (i32::from(row[x]) + round2(sum, shift)).clamp(GRAIN_MIN, GRAIN_MAX) as i8;
         }
     }
 }
@@ -293,25 +297,34 @@ pub fn av1_grain_template_rms(p: &Av1FilmGrainParams) -> [f64; 3] {
 
 /// The scaling lookup of a plane (AV1 §7.18.3.4): piecewise-linear
 /// through the points, flat outside them.
-fn scaling_lut<const N: usize>(points: &Av1ScalingPoints<N>) -> [i32; 256] {
-    let mut lut = [0i32; 256];
+///
+/// Every value is a point's scaling or between two neighbours' (the
+/// rounded interpolation never overshoots its end: checked over every
+/// step in `scaling_interpolation_stays_between_points`), so `u8` is exact.
+fn scaling_lut<const N: usize>(points: &Av1ScalingPoints<N>) -> [u8; 256] {
+    let mut lut = [0u8; 256];
     if points.count == 0 {
         return lut;
     }
     let value = |i: usize| usize::from(points.value[i]);
     let scaling = |i: usize| i32::from(points.scaling[i]);
-    lut[..value(0)].fill(scaling(0));
+    lut[..value(0)].fill(points.scaling[0]);
     for i in 0..points.count - 1 {
         let delta_y = scaling(i + 1) - scaling(i);
         let delta_x = (value(i + 1) - value(i)) as i32;
         let delta = i64::from(delta_y) * i64::from((65536 + (delta_x >> 1)) / delta_x);
         for x in 0..delta_x {
-            lut[value(i) + x as usize] = scaling(i) + ((i64::from(x) * delta + 32768) >> 16) as i32;
+            lut[value(i) + x as usize] = interpolate(scaling(i), i64::from(x) * delta) as u8;
         }
     }
     let last = points.count - 1;
-    lut[value(last)..].fill(scaling(last));
+    lut[value(last)..].fill(points.scaling[last]);
     lut
+}
+
+/// `scaling + Round2(offset, 16)`: a step of the scaling interpolation.
+fn interpolate(scaling: i32, offset: i64) -> i32 {
+    scaling + ((offset + 32768) >> 16) as i32
 }
 
 /// `RandomRegister` of luma stripe `index`.
@@ -347,4 +360,35 @@ pub fn av1_add_film_grain(
     output: [&mut PlaneViewMut<'_>; 3],
 ) {
     crate::Dsp::new().av1_add_film_grain(p, input, (width, height), output);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`Template`]'s bound: white noise at the smallest shift fits `i8`.
+    #[test]
+    fn white_noise_fits_i8() {
+        let shift = GAUSSIAN_PRECISION - 8;
+        for &g in &GAUSSIAN_SEQUENCE {
+            let v = round2(i32::from(g), shift);
+            assert!((GRAIN_MIN..=GRAIN_MAX).contains(&v), "{g} -> {v}");
+        }
+    }
+
+    /// [`scaling_lut`]'s bound: every interpolation step between two
+    /// scalings stays between them, so the lookup fits `u8`.
+    #[test]
+    fn scaling_interpolation_stays_between_points() {
+        for delta_x in 1..=255_i32 {
+            let reciprocal = i64::from((65536 + (delta_x >> 1)) / delta_x);
+            for delta_y in -255..=255_i32 {
+                let delta = i64::from(delta_y) * reciprocal;
+                for x in 0..delta_x {
+                    let step = interpolate(0, i64::from(x) * delta);
+                    assert!((delta_y.min(0)..=delta_y.max(0)).contains(&step));
+                }
+            }
+        }
+    }
 }

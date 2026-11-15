@@ -6,6 +6,8 @@
 
 #![allow(clippy::inline_always)]
 
+use core::ops::Range;
+
 use super::{Variance, VarianceEnergy, bilinear_taps};
 use crate::simd::I16Lanes;
 
@@ -40,8 +42,8 @@ pub(crate) unsafe fn residual<V: I16Lanes, const W: usize, const SUM_ABS: bool>(
     );
     // |src - pred| sums stay in i16 lanes for `span` rows and widen once per
     // span instead of once per vector: one span covers every block up to
-    // 32 wide (`abs_rows_per_widen`), so only wider blocks loop over spans.
-    let span = abs_rows_per_widen(W, V::LANES);
+    // 32 wide (`rows_per_widen`), so only wider blocks loop over spans.
+    let span = rows_per_widen(W, V::LANES);
     if !SUM_ABS || span >= MAX_BLOCK_HEIGHT {
         // SAFETY: the assertion above covers rows `0..h` of `W` values.
         let narrow = unsafe {
@@ -121,12 +123,55 @@ unsafe fn residual_rows<V: I16Lanes, const W: usize, const SUM_ABS: bool>(
     narrow
 }
 
-/// Rows of a `width`-wide block whose absolute 8-bit residuals fit an i16
-/// lane: a row adds at most 255 per vector, `width.div_ceil(lanes)`
+/// Rows of a `width`-wide block whose sums of values of magnitude at most
+/// 255 (8-bit samples, their differences and absolute differences) fit an
+/// i16 lane: a row adds at most 255 per vector, `width.div_ceil(lanes)`
 /// vectors, so 128 rows for one vector per row, 16 for 64 samples in
 /// 8-lane vectors (16 * 8 * 255 = 32640 <= 32767), 32 in 16-lane vectors.
-const fn abs_rows_per_widen(width: usize, lanes: usize) -> usize {
+const fn rows_per_widen(width: usize, lanes: usize) -> usize {
     i16::MAX as usize / (width.div_ceil(lanes) * u8::MAX as usize)
+}
+
+/// Rows `0..h` of a `W`-wide block in spans of [`rows_per_widen`]: per span
+/// the sums stay in i16 lanes (one wrapping add per vector, exact by the
+/// bound) and widen once into the 32-bit accumulator, as libaom's AVX2
+/// variance keeps its sum in 16 bits. Blocks up to 32 wide take one span.
+#[inline(always)]
+fn widen_spans<V: I16Lanes, const W: usize>(h: usize) -> WidenSpans {
+    WidenSpans {
+        top: 0,
+        h,
+        span: rows_per_widen(W, V::LANES),
+    }
+}
+
+/// The iterator of [`widen_spans`]. Its span is a constant of each kernel,
+/// so where it covers the tallest block the whole loop folds to `0..h`
+/// (with `step_by` the span bookkeeping cost about 40 instructions per
+/// call, more than it saved on a 16x16 block on x86).
+struct WidenSpans {
+    top: usize,
+    h: usize,
+    span: usize,
+}
+
+impl Iterator for WidenSpans {
+    type Item = Range<usize>;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Range<usize>> {
+        if self.top >= self.h {
+            return None;
+        }
+        let end = if self.span >= MAX_BLOCK_HEIGHT {
+            self.h
+        } else {
+            self.h.min(self.top + self.span)
+        };
+        let rows = self.top..end;
+        self.top = end;
+        Some(rows)
+    }
 }
 
 /// `dst = clamp(dst + residual)` over a `W`-wide block of `h` rows.
@@ -189,15 +234,19 @@ pub(crate) unsafe fn variance<V: I16Lanes, const W: usize>(
 ) -> Variance {
     assert!(covers(src.len(), src_stride, h, W) && covers(pred.len(), pred_stride, h, W));
     let (mut sum, mut sse) = (V::acc_zero(), V::acc_zero());
-    for r in 0..h {
-        // SAFETY: the assertion above covers rows `0..h` of `W` samples.
-        let (source, prediction) =
-            unsafe { (row::<W>(src, src_stride, r), row::<W>(pred, pred_stride, r)) };
-        for c0 in (0..W).step_by(V::LANES) {
-            let difference = V::load_u8(&source[c0..]).sub(V::load_u8(&prediction[c0..]));
-            sum = V::acc_add(sum, difference);
-            sse = V::acc_add_sq(sse, difference);
+    for rows in widen_spans::<V, W>(h) {
+        let mut narrow = V::splat(0);
+        for r in rows {
+            // SAFETY: the assertion above covers rows `0..h` of `W` samples.
+            let (source, prediction) =
+                unsafe { (row::<W>(src, src_stride, r), row::<W>(pred, pred_stride, r)) };
+            for c0 in (0..W).step_by(V::LANES) {
+                let difference = V::load_u8(&source[c0..]).sub(V::load_u8(&prediction[c0..]));
+                narrow = narrow.add(difference);
+                sse = V::acc_add_sq(sse, difference);
+            }
         }
+        sum = V::acc_add(sum, narrow);
     }
     Variance {
         sse: V::acc_sum(sse) as u32,
@@ -223,14 +272,18 @@ pub(crate) unsafe fn block_sums<V: I16Lanes, const W: usize>(
 ) -> Variance {
     assert!(covers(src.len(), src_stride, h, W));
     let (mut sum, mut sse) = (V::acc_zero(), V::acc_zero());
-    for r in 0..h {
-        // SAFETY: the assertion above covers rows `0..h` of `W` samples.
-        let source = unsafe { row::<W>(src, src_stride, r) };
-        for c0 in (0..W).step_by(V::LANES) {
-            let x = V::load_u8(&source[c0..]);
-            sum = V::acc_add(sum, x);
-            sse = V::acc_add_sq(sse, x);
+    for rows in widen_spans::<V, W>(h) {
+        let mut narrow = V::splat(0);
+        for r in rows {
+            // SAFETY: the assertion above covers rows `0..h` of `W` samples.
+            let source = unsafe { row::<W>(src, src_stride, r) };
+            for c0 in (0..W).step_by(V::LANES) {
+                let x = V::load_u8(&source[c0..]);
+                narrow = narrow.add(x);
+                sse = V::acc_add_sq(sse, x);
+            }
         }
+        sum = V::acc_add(sum, narrow);
     }
     Variance {
         sse: V::acc_sum(sse) as u32,
@@ -258,18 +311,23 @@ pub(crate) unsafe fn variance_energy<V: I16Lanes, const W: usize>(
     assert!(covers(src.len(), src_stride, h, W) && covers(pred.len(), pred_stride, h, W));
     let (mut sum, mut sse) = (V::acc_zero(), V::acc_zero());
     let (mut pred_sum, mut pred_sq) = (V::acc_zero(), V::acc_zero());
-    for r in 0..h {
-        // SAFETY: the assertion above covers rows `0..h` of `W` samples.
-        let (source, prediction) =
-            unsafe { (row::<W>(src, src_stride, r), row::<W>(pred, pred_stride, r)) };
-        for c0 in (0..W).step_by(V::LANES) {
-            let p = V::load_u8(&prediction[c0..]);
-            let difference = V::load_u8(&source[c0..]).sub(p);
-            sum = V::acc_add(sum, difference);
-            sse = V::acc_add_sq(sse, difference);
-            pred_sum = V::acc_add(pred_sum, p);
-            pred_sq = V::acc_add_sq(pred_sq, p);
+    for rows in widen_spans::<V, W>(h) {
+        let (mut narrow, mut pred_narrow) = (V::splat(0), V::splat(0));
+        for r in rows {
+            // SAFETY: the assertion above covers rows `0..h` of `W` samples.
+            let (source, prediction) =
+                unsafe { (row::<W>(src, src_stride, r), row::<W>(pred, pred_stride, r)) };
+            for c0 in (0..W).step_by(V::LANES) {
+                let p = V::load_u8(&prediction[c0..]);
+                let difference = V::load_u8(&source[c0..]).sub(p);
+                narrow = narrow.add(difference);
+                sse = V::acc_add_sq(sse, difference);
+                pred_narrow = pred_narrow.add(p);
+                pred_sq = V::acc_add_sq(pred_sq, p);
+            }
         }
+        sum = V::acc_add(sum, narrow);
+        pred_sum = V::acc_add(pred_sum, pred_narrow);
     }
     VarianceEnergy {
         residual: Variance {
@@ -432,29 +490,34 @@ impl Block<'_> {
             }
         }
         let (mut sum, mut sse) = (V::acc_zero(), V::acc_zero());
-        for r in 0..h {
-            let next_row = if V_PASS { r + 1 } else { r };
-            // SAFETY: rows up to `h` of W + 1 (reference) and `h - 1` of W
-            // (source) are inside the windows, as the caller guarantees.
-            let (next, source) = unsafe {
-                (
-                    row_n(self.rf, self.ref_stride, next_row, W + 1),
-                    row::<W>(self.src, self.src_stride, r),
-                )
-            };
-            for (i, previous) in upper.iter_mut().enumerate().take(chunks) {
-                let c0 = i * V::LANES;
-                let lower = first_pass::<V, H>(next, c0, fx);
-                let pred = if V_PASS {
-                    bilinear_blend(*previous, lower, fy1_q15)
-                } else {
-                    lower
+        for rows in widen_spans::<V, W>(h) {
+            let mut narrow = V::splat(0);
+            for r in rows {
+                let next_row = if V_PASS { r + 1 } else { r };
+                // SAFETY: rows up to `h` of W + 1 (reference) and `h - 1` of
+                // W (source) are inside the windows, as the caller guarantees.
+                let (next, source) = unsafe {
+                    (
+                        row_n(self.rf, self.ref_stride, next_row, W + 1),
+                        row::<W>(self.src, self.src_stride, r),
+                    )
                 };
-                let diff = V::load_u8(&source[c0..]).sub(pred);
-                sum = V::acc_add(sum, diff);
-                sse = V::acc_add_sq(sse, diff);
-                *previous = lower;
+                for (i, previous) in upper.iter_mut().enumerate().take(chunks) {
+                    let c0 = i * V::LANES;
+                    let lower = first_pass::<V, H>(next, c0, fx);
+                    let pred = if V_PASS {
+                        bilinear_blend(*previous, lower, fy1_q15)
+                    } else {
+                        lower
+                    };
+                    // A prediction of 8-bit samples, so |diff| <= 255.
+                    let diff = V::load_u8(&source[c0..]).sub(pred);
+                    narrow = narrow.add(diff);
+                    sse = V::acc_add_sq(sse, diff);
+                    *previous = lower;
+                }
             }
+            sum = V::acc_add(sum, narrow);
         }
         Variance {
             sse: V::acc_sum(sse) as u32,

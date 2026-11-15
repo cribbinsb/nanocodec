@@ -289,58 +289,88 @@ fn plane(p: &Picture, index: PlaneIndex) -> PlaneView<'_> {
 
 /// Weights of the binomial blur `[1 2 1] / 4` along each axis; the 3x3
 /// kernel (their outer product) sums to [`BLUR_SUM`].
-const BLUR_TAPS: [i32; 3] = [1, 2, 1];
-const BLUR_SUM: i32 = 16;
+const BLUR_TAPS: [i16; 3] = [1, 2, 1];
+const BLUR_SUM: i16 = 16;
+/// Largest block a split takes (the luma block; chroma's is half).
+const MAX_SPLIT_SIDE: usize = BLOCK;
+/// Values of the largest split.
+const MAX_SPLIT_AREA: usize = MAX_SPLIT_SIDE * MAX_SPLIT_SIDE;
+/// Side of the largest blur window: the block and one neighbour each way.
+const MAX_WINDOW_SIDE: usize = MAX_SPLIT_SIDE + 2;
+// The blur sums fit `i16`: a row pass is at most 4 · 255, the 3x3 sum and
+// `BLUR_SUM · sample` at most 16 · 255.
+const _: () = assert!(BLUR_SUM as i32 * 255 <= i16::MAX as i32);
 
 /// The blurred part and the noise (what the blur removed) of a square block,
-/// row-major, in levels.
+/// row-major, as exact integers in 1/[`BLUR_SUM`] levels ([`levels`] reads
+/// them as levels).
 struct BlockSplit {
     side: usize,
-    blurred: Vec<f64>,
-    noise: Vec<f64>,
+    /// The 3x3 blur sums, within `0..=16 · 255`.
+    blurred: [i16; MAX_SPLIT_AREA],
+    /// `BLUR_SUM · sample − sum`, within `±16 · 255`.
+    noise: [i16; MAX_SPLIT_AREA],
 }
 
 impl BlockSplit {
     /// The split of `plane`'s `side` x `side` block at `(x0, y0)`; the blur
     /// reads one neighbour beyond the block, clamped to the plane.
     fn new(plane: &PlaneView<'_>, (x0, y0): (usize, usize), side: usize) -> Self {
+        assert!(side <= MAX_SPLIT_SIDE, "grain split side {side}");
         let (width, height) = (plane.width(), plane.height());
         let span = side + 2;
-        let mut window = Vec::with_capacity(span * span);
+        let mut window = [0u8; MAX_WINDOW_SIDE * MAX_WINDOW_SIDE];
         let interior = x0 >= 1 && x0 + side < width;
-        for dy in 0..span {
+        for (dy, out) in window.chunks_exact_mut(span).take(span).enumerate() {
             let row = plane.row((y0 + dy).saturating_sub(1).min(height - 1));
             if interior {
-                window.extend(row[x0 - 1..=x0 + side].iter().map(|&v| i32::from(v)));
+                out.copy_from_slice(&row[x0 - 1..=x0 + side]);
             } else {
-                let clamped = |dx: usize| row[(x0 + dx).saturating_sub(1).min(width - 1)];
-                window.extend((0..span).map(|dx| i32::from(clamped(dx))));
+                for (dx, o) in out.iter_mut().enumerate() {
+                    *o = row[(x0 + dx).saturating_sub(1).min(width - 1)];
+                }
             }
         }
+        let window = &window[..span * span];
         // Separable integer passes: rows, then columns.
-        let tap = |t: &[i32]| BLUR_TAPS[0] * t[0] + BLUR_TAPS[1] * t[1] + BLUR_TAPS[2] * t[2];
-        let across: Vec<i32> = window
-            .chunks_exact(span)
-            .flat_map(|row| row.windows(3).map(tap))
-            .collect();
-        let unit = f64::from(BLUR_SUM);
-        let mut blurred = Vec::with_capacity(side * side);
-        let mut noise = Vec::with_capacity(side * side);
+        let tap = |t: [i16; 3]| BLUR_TAPS[0] * t[0] + BLUR_TAPS[1] * t[1] + BLUR_TAPS[2] * t[2];
+        let mut across = [0i16; MAX_WINDOW_SIDE * MAX_SPLIT_SIDE];
+        for (row, out) in window.chunks_exact(span).zip(across.chunks_exact_mut(side)) {
+            for (t, o) in row.windows(3).zip(out) {
+                *o = tap([t[0], t[1], t[2]].map(i16::from));
+            }
+        }
+        let across = &across[..span * side];
+        let mut split = Self {
+            side,
+            blurred: [0; MAX_SPLIT_AREA],
+            noise: [0; MAX_SPLIT_AREA],
+        };
         for (y, rows) in across.windows(3 * side).step_by(side).enumerate() {
             let (above, rest) = rows.split_at(side);
             let (middle, below) = rest.split_at(side);
             let centre = &window[(y + 1) * span + 1..][..side];
-            for (((&sample, &a), &m), &b) in centre.iter().zip(above).zip(middle).zip(below) {
-                let sum = tap(&[a, m, b]);
-                blurred.push(f64::from(sum) / unit);
-                noise.push(f64::from(BLUR_SUM * sample - sum) / unit);
+            let blurred = &mut split.blurred[y * side..][..side];
+            let noise = &mut split.noise[y * side..][..side];
+            for (x, (((&sample, &a), &m), &b)) in
+                centre.iter().zip(above).zip(middle).zip(below).enumerate()
+            {
+                let sum = tap([a, m, b]);
+                blurred[x] = sum;
+                noise[x] = BLUR_SUM * i16::from(sample) - sum;
             }
         }
-        Self {
-            side,
-            blurred,
-            noise,
-        }
+        split
+    }
+
+    /// The blurred part, in 1/[`BLUR_SUM`] levels.
+    fn blurred(&self) -> &[i16] {
+        &self.blurred[..self.side * self.side]
+    }
+
+    /// What the blur removed, in 1/[`BLUR_SUM`] levels.
+    fn noise(&self) -> &[i16] {
+        &self.noise[..self.side * self.side]
     }
 
     /// Whether the block is flat under `settings`: its blurred part, less
@@ -349,10 +379,16 @@ impl BlockSplit {
     /// blur as "noise", but as a few large values among many small ones;
     /// noise is near Gaussian.
     fn is_flat(&self, settings: &MeasureSettings) -> bool {
-        let structure = shading_free_variance(&self.blurred, self.side).sqrt();
-        structure <= settings.flat_structure + BLURRED_NOISE_RATIO * rms(&self.noise)
-            && kurtosis(&self.noise) <= settings.max_kurtosis
+        let structure = shading_free_variance(levels(self.blurred()), self.side).sqrt();
+        structure <= settings.flat_structure + BLURRED_NOISE_RATIO * rms(levels(self.noise()))
+            && kurtosis(levels(self.noise())) <= settings.max_kurtosis
     }
+}
+
+/// Split values in 1/[`BLUR_SUM`] levels, as levels (exact: a quotient by
+/// a power of two).
+fn levels(values: &[i16]) -> impl ExactSizeIterator<Item = f64> + Clone + '_ {
+    values.iter().map(|&v| f64::from(v) / f64::from(BLUR_SUM))
 }
 
 /// Below this variance (levels²) a block has no tails to measure: it is
@@ -361,9 +397,9 @@ const NOISELESS_VARIANCE: f64 = 1e-3;
 
 /// `E[(v − mean)⁴] / variance²` of `values`: 3 for Gaussian noise, larger
 /// when a few samples carry most of the energy.
-fn kurtosis(values: &[f64]) -> f64 {
+fn kurtosis(values: impl ExactSizeIterator<Item = f64> + Clone) -> f64 {
     let count = values.len().max(1) as f64;
-    let mean = values.iter().sum::<f64>() / count;
+    let mean = values.clone().sum::<f64>() / count;
     let (mut second, mut fourth) = (0.0, 0.0);
     for v in values {
         let d2 = (v - mean).powi(2);
@@ -385,15 +421,15 @@ fn kurtosis(values: &[f64]) -> f64 {
 const BLURRED_NOISE_RATIO: f64 = 0.5;
 
 /// Root mean square of `values` about their mean.
-fn rms(values: &[f64]) -> f64 {
+fn rms(values: impl ExactSizeIterator<Item = f64> + Clone) -> f64 {
     variance(values).sqrt()
 }
 
 /// Variance of `values` about their mean.
-fn variance(values: &[f64]) -> f64 {
+fn variance(values: impl ExactSizeIterator<Item = f64> + Clone) -> f64 {
     let count = values.len().max(1) as f64;
-    let mean = values.iter().sum::<f64>() / count;
-    values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count
+    let mean = values.clone().sum::<f64>() / count;
+    values.map(|v| (v - mean).powi(2)).sum::<f64>() / count
 }
 
 /// The variance of the `side` x `side` block `values` (row-major) about its
@@ -402,17 +438,15 @@ fn variance(values: &[f64]) -> f64 {
 /// two slopes take `(Σ x v)² / Σ x²` and `(Σ y v)² / Σ y²` out of the
 /// variance in closed form (`Σ (x − centre)²` over the block is
 /// `n² (n² − 1) / 12`).
-fn shading_free_variance(values: &[f64], side: usize) -> f64 {
+fn shading_free_variance(values: impl Iterator<Item = f64>, side: usize) -> f64 {
     let centre = (side as f64 - 1.0) / 2.0;
     let (mut sum, mut squares, mut sum_x, mut sum_y) = (0.0, 0.0, 0.0, 0.0);
-    for (y, row) in values.chunks_exact(side).enumerate() {
-        let dy = y as f64 - centre;
-        for (x, &v) in row.iter().enumerate() {
-            sum += v;
-            squares += v * v;
-            sum_x += (x as f64 - centre) * v;
-            sum_y += dy * v;
-        }
+    for (i, v) in values.enumerate() {
+        let (x, y) = (i % side, i / side);
+        sum += v;
+        squares += v * v;
+        sum_x += (x as f64 - centre) * v;
+        sum_y += (y as f64 - centre) * v;
     }
     let area = (side * side) as f64;
     let spread = area * (area - 1.0) / 12.0;
@@ -476,17 +510,18 @@ fn noise_plane(
         let Some(bin) = *bin else { continue };
         let origin = ((i % mask.columns) * block, (i / mask.columns) * block);
         active[origin.1..origin.1 + block].fill(true);
-        let noise = BlockSplit::new(source, origin, block).noise;
-        let mean = noise.iter().sum::<f64>() / noise.len() as f64;
+        let split = BlockSplit::new(source, origin, block);
+        let noise = split.noise();
+        let mean = levels(noise).sum::<f64>() / noise.len() as f64;
         for (y, rows) in noise.chunks_exact(block).enumerate() {
             let out = &mut values[(origin.1 + y) * width + origin.0..][..block];
-            for (o, &n) in out.iter_mut().zip(rows) {
+            for (o, n) in out.iter_mut().zip(levels(rows)) {
                 *o = ((n - mean) * unit).round().clamp(-NOISE_CLAMP, NOISE_CLAMP) as i16;
             }
         }
-        let kept = BlockSplit::new(coded, origin, block).noise;
-        let removed: Vec<f64> = noise.iter().zip(&kept).map(|(n, k)| n - k).collect();
-        bins[bin].add(variance(&noise), variance(&removed));
+        let kept = BlockSplit::new(coded, origin, block);
+        let removed = levels(noise).zip(levels(kept.noise())).map(|(n, k)| n - k);
+        bins[bin].add(variance(levels(noise)), variance(removed));
     }
     NoisePlane {
         width,
@@ -824,7 +859,7 @@ mod tests {
         let ramp: Vec<f64> = (0..side * side)
             .map(|i| 3.0 + 0.5 * (i % side) as f64 - 1.5 * (i / side) as f64)
             .collect();
-        assert!(shading_free_variance(&ramp, side) < 1e-9);
+        assert!(shading_free_variance(ramp.iter().copied(), side) < 1e-9);
         // A ±1 checkerboard is orthogonal to every plane: its variance stays.
         let checker: Vec<f64> = ramp
             .iter()
@@ -837,7 +872,7 @@ mod tests {
                 }
             })
             .collect();
-        assert!((shading_free_variance(&checker, side) - 1.0).abs() < 1e-9);
+        assert!((shading_free_variance(checker.into_iter(), side) - 1.0).abs() < 1e-9);
     }
 
     #[test]

@@ -24,6 +24,7 @@ the decode worker posted, on the WebGL display's packed I420) to 0.01 dB, the
 block's PSNR in the hover record; off again restores the page."""
 import functools
 import http.server
+import re
 import threading
 import time
 from pathlib import Path
@@ -33,8 +34,6 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwrig
 web = Path(__file__).resolve().parents[1]
 # Frames a playing comparison must deliver after a switch to count as going on.
 FRAMES_AFTER_SWITCH = 5
-# Time for the frames in flight at a pause to land before its instant is read (ms).
-SETTLE_MS = 1000
 
 # Records which workers the page starts (an encoder re-created would be a restart).
 WORKER_HOOK = '''window.workerScripts = [];
@@ -103,6 +102,16 @@ MS_SSIM_TIMEOUT_MS = 15000
 # Page events kept per page for a failure's report (trace.js lines on the console).
 EVENTS_SHOWN = 40
 EVENTS = {}
+# The trace.js event of a pause reaching its instant: the source tick both views stop at.
+PAUSED_EVENT = re.compile(r'^page: trace \d+ paused (?P<tick>\d+)$')
+EVENT_POLL_MS = 100
+# What a failure's report shows besides the state: the session line, the page's
+# notice (a view sent back to live, a failure) and each view's badge.
+REPORT = r'''() => ({
+  session: document.querySelector('#session-stats').textContent,
+  notice: document.querySelector('#notice').textContent,
+  badges: [...document.querySelectorAll('.frame-badge')].map(b => b.textContent),
+})'''
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -122,8 +131,7 @@ def watch(page):
 
 def stalled(page, what):
     """An assertion naming what the test waited for, the page's state and its last events."""
-    session = page.evaluate("document.querySelector('#session-stats').textContent")
-    return AssertionError(f'waited for {what}; state {state(page)}; session "{session}"; last events:\n' + '\n'.join(EVENTS.get(page, [])[-EVENTS_SHOWN:]))
+    return AssertionError(f'waited for {what}; state {state(page)}; {page.evaluate(REPORT)}; last events:\n' + '\n'.join(EVENTS.get(page, [])[-EVENTS_SHOWN:]))
 
 
 def wait(page, condition, what, timeout=EVENT_TIMEOUT_MS):
@@ -132,6 +140,28 @@ def wait(page, condition, what, timeout=EVENT_TIMEOUT_MS):
         page.wait_for_function(condition, timeout=timeout)
     except PlaywrightTimeout:
         raise stalled(page, what) from None
+
+
+def wait_event(page, pattern, since, what):
+    """The first page event matching `pattern` after the first `since` events, waiting for it."""
+    deadline = time.monotonic() + EVENT_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        for line in EVENTS[page][since:]:
+            if match := pattern.match(line):
+                return match
+        # Playwright delivers console events while it waits.
+        page.wait_for_timeout(EVENT_POLL_MS)
+    raise stalled(page, what)
+
+
+def wait_started(page, since, views):
+    """Wait until a comparison of `views` (trace.js, e.g. 'A:h264 B:av2') has started and runs.
+
+    A settings change restarts after a short delay: until then the old session
+    is still live, so the start event, not the live label, says the new one began."""
+    started = re.compile(rf'^page: trace \d+ start \d+ {re.escape(views)}$')
+    wait_event(page, started, since, f'a comparison of {views} to start')
+    wait_running(page)
 
 
 def wait_frames(page, frames):
@@ -165,9 +195,15 @@ def toggle_analysis(page, on):
 
 
 def pause(page):
+    """Pause, and wait until both views show the paused instant.
+
+    The page pauses when it sends a tick both views code; the frames still in
+    flight then land, so the instant is read only once both badges show it."""
+    since = len(EVENTS[page])
     page.locator('#pause').click()
-    page.wait_for_function("document.querySelector('#runtime-label').textContent === 'Paused'", timeout=30000)
-    page.wait_for_timeout(SETTLE_MS)
+    tick = int(wait_event(page, PAUSED_EVENT, since, 'the pause')['tick'])
+    wait(page, f"[...document.querySelectorAll('.frame-badge')].every(b => +b.dataset.tick === {tick})", f'both views at the paused tick {tick}')
+    wait(page, "document.querySelector('#runtime-label').textContent === 'Paused'", 'the paused label')
 
 
 def resume(page):
@@ -297,7 +333,9 @@ try:
         page.wait_for_function("!document.querySelector('.analysis-tip').hidden", timeout=5000)
         assert 'QP' in page.locator('.analysis-tip').first.text_content()
         # Every codec's views are analysed: an AV2 view fills its statistics too.
+        since = len(EVENTS[page])
         page.locator('.codec-picker').nth(1).select_option('av2')
+        wait_started(page, since, 'A:h264 B:av2')
         wait(page, "document.querySelectorAll('.analysis-stats')[1].textContent.includes('Prediction')", 'the AV2 view\'s statistics')
         # Off: the overlay hides and the pictures are unzoomed.
         toggle_analysis(page, False)

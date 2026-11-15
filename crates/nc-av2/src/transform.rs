@@ -53,8 +53,10 @@ impl Rounding {
 const UNIT_QUANT: i32 = 1 << QUANT_BITS;
 const MAX_LEVEL: i32 = (1 << 20) - 1;
 const DEQUANT_MASK: u32 = 0x00ff_ffff;
-const COEFF_MIN: i32 = -32768;
-const COEFF_MAX: i32 = 32767;
+/// The normative 8-bit coefficient range (AVM `clamp_buf`, `bd + 8` bits):
+/// exactly `i16`, the type dequantized coefficients are stored in.
+const COEFF_MIN: i32 = i16::MIN as i32;
+const COEFF_MAX: i32 = i16::MAX as i32;
 /// Largest residual magnitude: the difference of two 8-bit samples.
 const RESIDUAL_LIMIT: i32 = 255;
 /// Levels per chunk of the sparse quantization and dequantization passes
@@ -246,11 +248,16 @@ fn wht_forward(input: &[i32; WHT_AREA]) -> [i32; WHT_AREA] {
     nc_dsp::reversible_wht4::forward(input).map(|value| value * UNIT_QUANT)
 }
 
-fn wht_inverse(input: &[i32; WHT_AREA]) -> [i32; WHT_AREA] {
-    nc_dsp::reversible_wht4::inverse(&input.map(|value| value >> QUANT_BITS))
+/// The lossless 4×4 residual of the dequantized `input`. A conforming
+/// stream's residual is a difference of 8-bit samples; a hostile one's is
+/// saturated to `i16`, which the saturating pixel addition makes exact
+/// (`Dsp::reconstruct_i16`).
+fn wht_inverse(input: &[i16; WHT_AREA]) -> [i16; WHT_AREA] {
+    nc_dsp::reversible_wht4::inverse(&input.map(|value| i32::from(value) >> QUANT_BITS))
+        .map(|value| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
 }
 
-fn wht_block(values: &[i32]) -> &[i32; WHT_AREA] {
+fn wht_block(values: &[i16]) -> &[i16; WHT_AREA] {
     values[..WHT_AREA]
         .try_into()
         .expect("slice has the 4x4 length")
@@ -475,10 +482,11 @@ impl HalfStepDequantizer {
     }
 }
 
-/// A signed dequantized coefficient clipped to the normative 8-bit range.
+/// A signed dequantized coefficient clipped to the normative 8-bit range,
+/// which `i16` holds exactly.
 #[must_use]
-pub fn clamp_coefficient(value: i32) -> i32 {
-    value.clamp(COEFF_MIN, COEFF_MAX)
+pub fn clamp_coefficient(value: i32) -> i16 {
+    value.clamp(COEFF_MIN, COEFF_MAX) as i16
 }
 
 /// Squared pixel error per squared coefficient error: AVM's transforms are
@@ -637,7 +645,8 @@ pub fn quantize_residual(
 ///
 /// Magnitudes are multiplied, masked to 24 bits, rounded from Q3, shifted by
 /// the size's dequantization shift (AVM `av2_read_coeffs_txb`) and clipped
-/// with their sign to the normative 8-bit coefficient range.
+/// with their sign to the normative 8-bit coefficient range, which is
+/// `i16`'s.
 ///
 /// # Errors
 /// Rejects coded levels exceeding AV2's 20-bit limit, including `i32::MIN`.
@@ -648,7 +657,7 @@ pub fn dequantize(
     size: TxSize,
     levels: &[i32],
     qindex: impl Into<Qindices>,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> Result<()> {
     let qindex = qindex.into();
     let area = size.coded_len();
@@ -681,15 +690,15 @@ pub fn dequantize(
 /// the low 24 bits of the product survive the mask, so a wrapping 32-bit
 /// product is exact (and vectorizes, unlike 64 bits).
 #[inline]
-fn dequantize_level(value: i32, step: u32, shift: u32) -> i32 {
+fn dequantize_level(value: i32, step: u32, shift: u32) -> i16 {
     let product = value.unsigned_abs().wrapping_mul(step) & DEQUANT_MASK;
     let magnitude = (((product + 4) >> QUANT_BITS) >> shift) as i32;
-    (magnitude * value.signum()).clamp(COEFF_MIN, COEFF_MAX)
+    clamp_coefficient(magnitude * value.signum())
 }
 
 /// The DC coefficient of `level`: DC has its own step (`dequant[pos != 0]`
 /// in AVM `av2_read_coeffs_txb`).
-fn dequantize_dc(size: TxSize, level: i32, qindex: Qindices) -> i32 {
+fn dequantize_dc(size: TxSize, level: i32, qindex: Qindices) -> i16 {
     if qindex.dc == qindex.ac {
         dequantize_level(
             level,
@@ -698,7 +707,7 @@ fn dequantize_dc(size: TxSize, level: i32, qindex: Qindices) -> i32 {
         )
     } else {
         let magnitude = dequantized_magnitude(size, qindex.dc, level.unsigned_abs());
-        (magnitude * level.signum()).clamp(COEFF_MIN, COEFF_MAX)
+        clamp_coefficient(magnitude * level.signum())
     }
 }
 
@@ -710,7 +719,7 @@ fn dequantize_square(
     size: TxSize,
     levels: &[i32],
     qindex: Qindices,
-    out: &mut [i32],
+    out: &mut [i16],
     side: usize,
 ) -> Result<()> {
     let coded = size.coded_width();
@@ -763,7 +772,7 @@ pub fn reconstruct(
     transform: (TxSize, TxType),
     levels: &[i32],
     qindex: impl Into<Qindices>,
-    residual: &mut [i32],
+    residual: &mut [i16],
 ) -> Result<()> {
     let eob = crate::coeff::end_of_block(&levels[..transform.0.coded_len()], transform.0);
     reconstruct_with(
@@ -798,10 +807,10 @@ pub fn reconstruct_with(
     transform: (TxSize, TxType),
     (levels, eob, dequantizer): (&[i32], usize, Dequantizer),
     qindex: impl Into<Qindices>,
-    residual: &mut [i32],
+    residual: &mut [i16],
 ) -> Result<()> {
     let qindex = qindex.into();
-    with_scratch(transform.0.coded_len(), |coefficients: &mut [i32]| {
+    with_scratch(transform.0.coded_len(), |coefficients: &mut [i16]| {
         reconstruct_into(
             dsp,
             transform,
@@ -830,8 +839,8 @@ pub fn reconstruct_into(
     (size, tx_type): (TxSize, TxType),
     (levels, eob, dequantizer): (&[i32], usize, Dequantizer),
     qindex: impl Into<Qindices>,
-    coefficients: &mut [i32],
-    residual: &mut [i32],
+    coefficients: &mut [i16],
+    residual: &mut [i16],
 ) -> Result<()> {
     let qindex = qindex.into();
     let lossless = is_lossless(size, tx_type, qindex.ac)?;
@@ -875,7 +884,7 @@ pub fn dc_only_residual(
     (size, tx_type): (TxSize, TxType),
     (levels, eob, dequantizer): (&[i32], usize, Dequantizer),
     qindex: impl Into<Qindices>,
-) -> Option<i32> {
+) -> Option<i16> {
     let qindex = qindex.into();
     let level = levels[0];
     let applies = eob == 1
@@ -1185,14 +1194,17 @@ mod tests {
         levels
     }
 
-    fn reconstruct_of(dsp: &Dsp, size: TxSize, levels: &[i32], qindex: u8) -> Vec<i32> {
+    fn reconstruct_of(dsp: &Dsp, size: TxSize, levels: &[i32], qindex: u8) -> Vec<i16> {
         let mut residual = vec![0; size.width() * size.width()];
         reconstruct(dsp, (size, TxType::DctDct), levels, qindex, &mut residual).unwrap();
         residual
     }
 
-    fn hash(hash: &mut u64, values: &[i32]) {
+    /// FNV-1a over the values sign-extended to 32 bits (the fixtures'
+    /// hashes, whatever the stored width).
+    fn hash<T: Copy + Into<i32>>(hash: &mut u64, values: &[T]) {
         for &value in values {
+            let value: i32 = value.into();
             *hash = (*hash ^ u64::from(value as u32)).wrapping_mul(1_099_511_628_211);
         }
     }
@@ -1971,7 +1983,7 @@ mod tests {
         [1, 1, -5, -1, -1, 2, 1, 9, 1, 5, -1, 3, -8, 2, -11, 3],
         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     ];
-    const DEQUANT: [[i32; 16]; 7] = [
+    const DEQUANT: [[i16; 16]; 7] = [
         [
             88, 136, -424, -80, 168, -144, 472, 640, 56, 272, -136, 392, -728, 48, -856, 600,
         ],
@@ -1992,7 +2004,7 @@ mod tests {
         ],
         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     ];
-    const RECON: [[i32; 16]; 7] = [
+    const RECON: [[i16; 16]; 7] = [
         [
             17, -23, 55, -101, 37, 0, -7, 85, -92, 41, 5, -64, 3, 72, -18, 29,
         ],
@@ -2013,7 +2025,7 @@ mod tests {
         ],
         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     ];
-    const EXTREME_DEQUANT: [[i32; 16]; 3] = [
+    const EXTREME_DEQUANT: [[i16; 16]; 3] = [
         [
             0, 8, -8, 16, -16, 136, -136, 8184, -8184, 32767, -32768, 32767, -32768, 32767, -32768,
             32767,
@@ -2095,7 +2107,7 @@ mod tests {
             )
         };
         for value in [-255, 0, 255] {
-            assert_eq!(round_trip(&[value; 16]), [value; 16]);
+            assert_eq!(round_trip(&[i32::from(value); 16]), [value; 16]);
         }
         let mut state = 0x7a15_3b91u32;
         for _ in 0..2048 {
@@ -2105,14 +2117,14 @@ mod tests {
                 state ^= state << 5;
                 (state % 511) as i32 - 255
             });
-            assert_eq!(round_trip(&source), source);
+            assert_eq!(round_trip(&source), source.map(|v| v as i16));
         }
     }
 
     #[test]
     fn rejects_hostile_ranges_before_arithmetic() {
         let dsp = Dsp::new();
-        let mut out = [0; 4096];
+        let (mut out, mut residual) = ([0; 4096], [0; 4096]);
         assert!(forward(&dsp, (TxSize::Tx4, TxType::DctDct), &[256; 16], 1, &mut out).is_err());
         assert!(
             forward(
@@ -2137,18 +2149,33 @@ mod tests {
         for size in TxSize::ALL {
             for value in [i32::MIN, i32::MAX, MAX_LEVEL + 1, -MAX_LEVEL - 1] {
                 assert!(
-                    reconstruct(&dsp, (size, TxType::DctDct), &[value; 1024], 255, &mut out)
-                        .is_err()
+                    reconstruct(
+                        &dsp,
+                        (size, TxType::DctDct),
+                        &[value; 1024],
+                        255,
+                        &mut residual
+                    )
+                    .is_err()
                 );
             }
             for qindex in 1..=255 {
-                reconstruct(&dsp, (size, TxType::DctDct), &[0; 1024], qindex, &mut out).unwrap();
-                assert!(out.iter().all(|&v| v == 0));
+                reconstruct(
+                    &dsp,
+                    (size, TxType::DctDct),
+                    &[0; 1024],
+                    qindex,
+                    &mut residual,
+                )
+                .unwrap();
+                assert!(residual.iter().all(|&v| v == 0));
             }
         }
         for size in [TxSize::Tx8, TxSize::Tx16, TxSize::Tx32, TxSize::Tx64] {
             assert!(forward(&dsp, (size, TxType::DctDct), &[0; 4096], 0, &mut out).is_err());
-            assert!(reconstruct(&dsp, (size, TxType::DctDct), &[0; 1024], 0, &mut out).is_err());
+            assert!(
+                reconstruct(&dsp, (size, TxType::DctDct), &[0; 1024], 0, &mut residual).is_err()
+            );
         }
         assert_eq!(reconstruct_of(&dsp, TxSize::Tx4, &[0; 16], 0), [0; 16]);
     }

@@ -1,10 +1,12 @@
 //! VVC prediction refinement arithmetic shared by decoder motion controllers.
 //! PROF follows BSD-Clear `VVdeC` `InterPrediction`; see `THIRD_PARTY.md`.
 #![allow(unsafe_code)]
-pub(super) fn gradient(samples: &[i16], stride: usize, at: usize) -> [i32; 2] {
+/// The horizontal and vertical gradients at `at` (§8.5.6.5): differences
+/// of samples shifted down by six, so within ±1023 for any 16-bit input.
+pub(super) fn gradient(samples: &[i16], stride: usize, at: usize) -> [i16; 2] {
     [
-        i32::from(samples[at + 1] >> 6) - i32::from(samples[at - 1] >> 6),
-        i32::from(samples[at + stride] >> 6) - i32::from(samples[at - stride] >> 6),
+        (samples[at + 1] >> 6) - (samples[at - 1] >> 6),
+        (samples[at + stride] >> 6) - (samples[at - stride] >> 6),
     ]
 }
 
@@ -16,7 +18,7 @@ impl crate::Dsp {
     pub fn vvc_prof_refine(
         &self,
         samples: &[i16; 36],
-        corrections: &[[i32; 2]; 16],
+        corrections: &[[i8; 2]; 16],
         out: &mut [i16; 16],
     ) {
         assert!(
@@ -32,12 +34,12 @@ impl crate::Dsp {
     }
 }
 
-pub(crate) fn scalar(samples: &[i16; 36], corrections: &[[i32; 2]; 16], out: &mut [i16; 16]) {
+pub(crate) fn scalar(samples: &[i16; 36], corrections: &[[i8; 2]; 16], out: &mut [i16; 16]) {
     for (index, value) in out.iter_mut().enumerate() {
         let at = (index / 4 + 1) * 6 + index % 4 + 1;
-        let [gx, gy] = gradient(samples, 6, at);
-        let correction =
-            (gx * corrections[index][0] + gy * corrections[index][1]).clamp(-8192, 8191);
+        let [gx, gy] = gradient(samples, 6, at).map(i32::from);
+        let [cx, cy] = corrections[index].map(i32::from);
+        let correction = (gx * cx + gy * cy).clamp(-8192, 8191);
         *value = (i32::from(samples[at]) + correction).clamp(-32768, 32767) as i16;
     }
 }
@@ -76,7 +78,8 @@ mod tests {
                 .collect();
             assert_eq!(values.len(), 69);
             let samples = std::array::from_fn(|i| values[1 + i] as i16);
-            let corrections = std::array::from_fn(|i| [values[37 + 2 * i], values[38 + 2 * i]]);
+            let corrections =
+                std::array::from_fn(|i| [values[37 + 2 * i] as i8, values[38 + 2 * i] as i8]);
             let expected: Vec<i16> = lines
                 .next()
                 .unwrap()

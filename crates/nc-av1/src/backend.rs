@@ -987,6 +987,12 @@ impl CodecBackend for Av1Backend {
     /// 12.8x bc1, 12.0x → 20.8x airport; Jetson CPU 6.6x → 9.8x crowd09,
     /// 8.7x → 13.3x airport (the Default's key/P guard is ~15x, Fast's
     /// ~10x). Fast keeps all three off.
+    /// The high-quality frame's slot is one more `ref_frame_idx` entry and
+    /// refresh bit beside the layer pattern's (AV1 §5.9.2); every frame of a
+    /// flat mini-GOP and every high-quality frame has `temporal_id` 0, so no
+    /// frame references a higher layer.
+    const SECOND_REFERENCE_WITH_LAYERS: bool = true;
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // A coarser inter rounding offset (48 -> 41, AV1 Fast's value): a CPU
         // cut at equal quality (study av1-default-md-2026-11-13 trial #1,
@@ -1014,6 +1020,33 @@ impl CodecBackend for Av1Backend {
         // per 1000 frames. Inert within one key period (150-frame levels and
         // single-key streams unchanged). The other AV1 presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
+        // times how still the scene is): its later frames inherit it. Pool
+        // levels, draw 2026-11-14: L1 -0.57% [-1.24, -0.03]; L2 -1.87%
+        // [-2.49, -1.25] (worst-1% PSNR-Y -4.3%, VMAF -5.7%, no guard);
+        // 600-frame L3 (keys every 10 s) -1.95% [-2.51, -1.41], no guard,
+        // static -7.1%, crowd -0.7%, pan and lowlight unchanged;
+        // achieved/target max 1.000; re-codes on the 22 static and crowd
+        // points 11.0 -> 15.8 per 1000 frames (still scenes only). 10 QP:
+        // -2.63% but the periodic-key pulse guard trips (+0.52 dB). The other
+        // AV1 presets pin it off.
+        ("rate.key_still_boost", 6.0),
+        // The unified structure's reference plan (`structure.unified`,
+        // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
+        // (key, cadence base) also predict from the high-quality frame before
+        // them where the cadence strength is 0.75 or more, by the cheap
+        // ranking. Head c5738d1f against 5dd01a46, pool levels of draw
+        // 2026-11-14: L3 (ladder, 126 clips) J -0.53% [-0.76, -0.27], no
+        // guard; 600-frame L3 (keys every 10 s, 31 clips) -0.37% [-0.80,
+        // +0.04], no guard; Jetson cycles +2.9% (lowlight +6.6, crowd +2.1,
+        // bodycam +0.7), instructions +2.3%; 900 f single key: no drift
+        // (+0.00..+0.05 dB). It replaces a separate second-reference gate
+        // (owner, 2026-11-14); the full decision on those frames gave -0.61%
+        // at +4.0% cycles. Final-check on f151cc10 (with the key still boost
+        // above; 600-frame L3, ladder, 31 clips): J -0.58% [-0.82, -0.37]
+        // BETTER, no guard. docs/handoff/unified-structure.md section 11. The
+        // other AV1 presets pin it off.
+        ("structure.unified", 1.0),
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,

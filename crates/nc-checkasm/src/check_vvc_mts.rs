@@ -12,7 +12,9 @@ const KINDS: [VvcTransformKind; 3] = [
     VvcTransformKind::Dst7,
     VvcTransformKind::Dct8,
 ];
+/// Fills the outputs' tails: forward coefficients and inverse residuals.
 const GUARD: i32 = 0x1234_5678;
+const RESIDUAL_GUARD: i16 = 0x1234;
 /// Level patterns: full-range noise, extremes, low-frequency only.
 const PATTERNS: usize = 3;
 
@@ -47,13 +49,13 @@ fn inverse(
                         _ => 0,
                     })
                     .collect();
-                let mut expected = vec![GUARD; count + 4];
+                let mut expected = vec![RESIDUAL_GUARD; count + 4];
                 let mut actual = expected.clone();
                 let size = (width, height);
                 reference.vvc_inverse_primary(size, kinds, &levels, qp, dependent, &mut expected);
                 candidate.vvc_inverse_primary(size, kinds, &levels, qp, dependent, &mut actual);
                 report.cases += 1;
-                if actual != expected || actual[count..].iter().any(|&v| v != GUARD) {
+                if actual != expected || actual[count..].iter().any(|&v| v != RESIDUAL_GUARD) {
                     report.failures.push(format!(
                         "{} vvc_inverse_primary {width}x{height} {kinds:?} qp={qp} dependent={dependent} pattern={pattern}",
                         candidate.isa()

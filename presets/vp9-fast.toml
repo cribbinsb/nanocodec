@@ -65,3 +65,5 @@ vp9.chroma_delta_gap_slope = 0
 quant.trellis_lambda_scale = 1
 vp9.filter_level_scale = 1
 vp9.inter_intra_dc_only = 0
+# Pinned before VP9 Default's key-period ceiling (2026-11-14).
+rate.period_ceiling = 0

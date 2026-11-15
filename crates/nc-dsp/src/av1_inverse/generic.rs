@@ -28,6 +28,7 @@ use crate::simd::I32Lanes;
 use crate::txfm::COSPI_12;
 use crate::txfm::dct;
 use crate::txfm::generic::store_pass;
+use crate::txfm::narrow_inverse::NarrowCoefficient;
 
 /// Largest row-pass buffer: 32 coded rows of 64 outputs.
 const MAX_BUFFER: usize = AV1_MAX_CODED_SIDE * 64;
@@ -84,10 +85,15 @@ fn transform_1d<V: I32Lanes, const N: usize>(kind: Kernel1d, x: &[V; N], y: &mut
 ///
 /// `V`'s ISA must be available, and `V::LANES` must divide `W` and `H`.
 #[inline(always)]
-pub(super) unsafe fn inverse_add<V: I32Lanes, const W: usize, const H: usize>(
+pub(super) unsafe fn inverse_add<
+    V: I32Lanes,
+    C: NarrowCoefficient,
+    const W: usize,
+    const H: usize,
+>(
     vertical: Kernel1d,
     horizontal: Kernel1d,
-    coeffs: &[i32],
+    coeffs: &[C],
     nonzero_rows: usize,
     dst: &mut [u8],
     dst_stride: usize,
@@ -116,7 +122,7 @@ pub(super) unsafe fn inverse_add<V: I32Lanes, const W: usize, const H: usize>(
         }
         let mut any = V::splat(0);
         for (c, lane) in x[..coded_w].iter_mut().enumerate() {
-            let v = V::load(&coeffs[c * coded_h + r0..]).clamp16();
+            let v = C::wide::<V>(&coeffs[c * coded_h + r0..]).clamp16();
             any = any.or(v);
             // The 16-bit clamp after the scaling (libaom `clamp_buf`) is
             // the identity here: |v| <= 2^15 shrinks.

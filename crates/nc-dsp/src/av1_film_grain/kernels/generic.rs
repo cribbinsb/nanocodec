@@ -11,14 +11,14 @@ use crate::simd::I16Lanes;
 #[inline(always)]
 unsafe fn add_noise<V: I16Lanes>(
     source: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scales: V,
     bounds: [u8; 2],
     out: &mut [u8],
 ) {
     // The Q15 scale reproduces AV1's signed round-shift exactly
     // (`Av1GrainScaling`) without overflowing a signed 16-bit product.
-    let noise = V::load(grain).mul_q15_round(scales);
+    let noise = V::load_i8(grain).mul_q15_round(scales);
     V::load_u8(source)
         .add(noise)
         .max(V::splat(i16::from(bounds[0])))
@@ -33,7 +33,7 @@ unsafe fn add_noise<V: I16Lanes>(
 #[inline(always)]
 pub(super) unsafe fn luma<V: I16Lanes>(
     source: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     out: &mut [u8],
@@ -62,7 +62,7 @@ pub(super) unsafe fn luma<V: I16Lanes>(
 pub(super) unsafe fn chroma<V: I16Lanes>(
     source: &[u8],
     luma: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     coefficients: [i16; 3],
@@ -106,17 +106,17 @@ pub(super) unsafe fn chroma<V: I16Lanes>(
 }
 
 #[inline(always)]
-pub(super) unsafe fn blend<V: I16Lanes>(old: &[i16], new: &mut [i16], weights: [i16; 2]) {
+pub(super) unsafe fn blend<V: I16Lanes>(old: &[i8], new: &mut [i8], weights: [i16; 2]) {
     let end = new.len() / V::LANES * V::LANES;
     for x in (0..end).step_by(V::LANES) {
-        V::load(&old[x..])
+        V::load_i8(&old[x..])
             .mul(V::splat(weights[0]))
-            .add(V::load(&new[x..]).mul(V::splat(weights[1])))
+            .add(V::load_i8(&new[x..]).mul(V::splat(weights[1])))
             .add(V::splat(16))
             .sra(5)
-            .max(V::splat(-128))
-            .min(V::splat(127))
-            .store(&mut new[x..]);
+            .max(V::splat(i16::from(i8::MIN)))
+            .min(V::splat(i16::from(i8::MAX)))
+            .store_i8(&mut new[x..]);
     }
     super::blend(&old[end..], &mut new[end..], weights);
 }

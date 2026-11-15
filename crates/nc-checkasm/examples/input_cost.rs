@@ -54,12 +54,12 @@ fn main() {
                     black_box(&input),
                     &reference,
                     [(0, 0), (1, 0), (2, 0), (3, 0)],
-                    &[u32::MAX; 64],
+                    &[u16::MAX; 64],
                     rows,
                     &mut best,
                     [0, 1, 2, 3],
                 );
-                sum += u64::from(black_box(best.sad[84]));
+                sum += u64::from(black_box(best.sad(84)));
             }
         } else {
             for n in [8, 16, 32, 64] {

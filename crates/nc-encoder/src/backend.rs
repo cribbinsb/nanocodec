@@ -203,6 +203,22 @@ pub trait CodecBackend {
     /// opts in here with the evidence in a comment.
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[];
 
+    /// This codec's fixed-QP profile: defaults that apply on top of
+    /// [`CodecBackend::DEFAULT_PARAMS`] only when `rate.fixed_qp_profile` is
+    /// on (the CLI turns it on for `--qp` without `--bitrate`). A static,
+    /// content-independent frame-level pattern (QP offsets per cadence
+    /// position, λ factors, per-position effort) suits fixed QP, where no
+    /// rate control adapts it; the CBR defaults stay as they are.
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[];
+
+    /// Whether the backend can signal a second reference
+    /// ([`CodecBackend::supports_second_reference`]) in a stream with
+    /// temporal layers: the high-quality frame in the long-term slot beside
+    /// the layer pattern's slots. Without it a configuration asking for both
+    /// is refused, and the second reference alone drops the backend's own
+    /// `layers.*` defaults.
+    const SECOND_REFERENCE_WITH_LAYERS: bool = false;
+
     /// Whether the backend codes [`BlockDecision::qp_offset`] with block-level
     /// QP syntax. The engine sends non-zero offsets only to backends that do.
     const SUPPORTS_BLOCK_QP: bool = false;

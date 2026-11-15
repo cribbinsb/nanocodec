@@ -302,9 +302,12 @@ pub struct InterHeader {
     /// one distinct picture.
     pub refresh_flags: u8,
     /// The slot holding the reference picture, signalled explicitly
-    /// (`explicit_ref_frame_map`, one reference) exactly when the sequence
-    /// enables explicit references; `None` otherwise.
+    /// (`explicit_ref_frame_map`, rank 0) exactly when the sequence enables
+    /// explicit references; `None` otherwise.
     pub reference: Option<u8>,
+    /// The slot of a second reference (`refs.second`: rank 1, so
+    /// `num_total_refs` 2); only with an explicit `reference`.
+    pub second_reference: Option<u8>,
     /// Deblocking parameters (off for lossless frames).
     pub deblock: DeblockParams,
     /// CDEF parameters (off for lossless frames).
@@ -345,6 +348,15 @@ fn validate_inter(seq: &SequenceHeader, frame: &InterHeader) -> Result<()> {
     if frame.cross_frame_context && !frame.adaptive_cdf {
         return Err(DecodeError::Unsupported(
             "AV2 cross-frame context without CDF updates",
+        ));
+    }
+    if frame
+        .second_reference
+        .is_some_and(|slot| slot >= REFERENCE_SLOTS)
+        || (frame.second_reference.is_some() && frame.reference.is_none())
+    {
+        return Err(DecodeError::Malformed(
+            "AV2 second reference without an explicit first",
         ));
     }
     match (seq.layering.explicit_references, frame.reference) {
@@ -409,8 +421,12 @@ pub fn write_inter(seq: &SequenceHeader, frame: InterHeader) -> Result<Vec<u8>> 
     bits.put_bits(u32::from(frame.refresh_flags), u32::from(REFERENCE_SLOTS));
     if let Some(slot) = frame.reference {
         bits.put_bit(true); // explicit_ref_frame_map
-        bits.put_bits(1, REFERENCE_COUNT_BITS); // num_total_refs
-        bits.put_bits(u32::from(slot), SLOT_BITS);
+        let count = 1 + u32::from(frame.second_reference.is_some());
+        bits.put_bits(count, REFERENCE_COUNT_BITS); // num_total_refs
+        // `ref_frame_idx[i]` in rank order (AVM `remapped_ref_idx`).
+        for slot in std::iter::once(slot).chain(frame.second_reference) {
+            bits.put_bits(u32::from(slot), SLOT_BITS);
+        }
     }
     // Otherwise the mapping is derived: every slot holds the previous picture.
     bits.put_bit(false); // allow_intrabc
@@ -588,6 +604,7 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
             cross_frame_context: false,
             refresh_flags: REFRESH_ALL,
             reference: seq.layering.explicit_references.then_some(0),
+            second_reference: None,
             deblock: DeblockParams::OFF,
             cdef: CdefParams::OFF,
             ccso: CcsoParams::OFF,
@@ -610,22 +627,10 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
     let order_hint = bits.read_bits(u32::from(seq.order_hint_bits))? as u16;
     let cross_frame_context = read_primary_reference(&mut bits)?;
     let refresh_flags = bits.read_bits(u32::from(REFERENCE_SLOTS))? as u8;
-    let reference = if seq.layering.explicit_references {
-        fixed(
-            &mut bits,
-            1,
-            1,
-            "AV2 derived references in an explicit sequence",
-        )?;
-        fixed(
-            &mut bits,
-            1,
-            REFERENCE_COUNT_BITS,
-            "AV2 more than one reference",
-        )?;
-        Some(bits.read_bits(SLOT_BITS)? as u8)
+    let (reference, second_reference) = if seq.layering.explicit_references {
+        read_reference_map(&mut bits)?
     } else {
-        None
+        (None, None)
     };
     fixed(&mut bits, 0, 1, "AV2 intra block copy")?;
     fixed(&mut bits, 1, 1, "AV2 non-quarter-pel motion")?;
@@ -662,6 +667,7 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
         cross_frame_context,
         refresh_flags,
         reference,
+        second_reference,
         deblock,
         cdef,
         ccso,
@@ -672,6 +678,26 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
     };
     validate_inter(seq, &frame)?;
     Ok((frame, bits.position() / 8))
+}
+
+/// The explicit reference map (`explicit_ref_frame_map` 1,
+/// `num_total_refs`, then each rank's slot): the rank-0 slot and any rank-1
+/// slot.
+fn read_reference_map(bits: &mut BitReader<'_>) -> Result<(Option<u8>, Option<u8>)> {
+    fixed(bits, 1, 1, "AV2 derived references in an explicit sequence")?;
+    let count = bits.read_bits(REFERENCE_COUNT_BITS)?;
+    if !(1..=2).contains(&count) {
+        return Err(DecodeError::Unsupported(
+            "AV2 other than one or two references",
+        ));
+    }
+    let first = bits.read_bits(SLOT_BITS)? as u8;
+    let second = if count == 2 {
+        Some(bits.read_bits(SLOT_BITS)? as u8)
+    } else {
+        None
+    };
+    Ok((Some(first), second))
 }
 
 /// The deltas of AVM `setup_quantization` after `base_qindex`, in our
@@ -805,6 +831,7 @@ mod tests {
                     levels: LevelCoding::Plain,
                     refresh_flags: 255,
                     reference: None,
+                    second_reference: None,
                     adaptive_cdf,
                     cross_frame_context: false,
                     deblock: DeblockParams::from_qindex(quantizer),
@@ -866,6 +893,7 @@ mod tests {
                 cross_frame_context: false,
                 refresh_flags,
                 reference: Some(slot),
+                second_reference: None,
                 deblock: DeblockParams::from_qindex(120),
                 cdef: CdefParams::OFF,
                 ccso: CcsoParams::OFF,
@@ -932,6 +960,7 @@ mod tests {
             levels: LevelCoding::Plain,
             refresh_flags: REFRESH_ALL,
             reference: None,
+            second_reference: None,
             adaptive_cdf: true,
             cross_frame_context: false,
             deblock: DeblockParams::from_qindex(120),
@@ -1068,6 +1097,7 @@ mod tests {
                     cross_frame_context: false,
                     refresh_flags: 255,
                     reference: None,
+                    second_reference: None,
                     deblock: DeblockParams::OFF,
                     cdef: CdefParams::OFF,
                     ccso: CcsoParams::OFF,

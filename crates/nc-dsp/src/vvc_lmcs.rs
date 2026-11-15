@@ -93,12 +93,12 @@ impl VvcLmcs {
 impl Dsp {
     /// Scale 8-bit chroma residuals with the LMCS eleven-fraction-bit multiplier.
     /// Input clipping precedes symmetric rounding, as required by H.266 §8.7.5.
-    pub fn vvc_scale_chroma_residual(&self, scale: i32, residual: &mut [i32]) {
+    pub fn vvc_scale_chroma_residual(&self, scale: i32, residual: &mut [i16]) {
         assert!((0..=16384).contains(&scale));
         for value in residual {
-            let input = (*value).clamp(-256, 255);
-            let scaled = input.signum() * ((input.abs() * scale + 1024) >> 11);
-            *value = scaled.clamp(-32768, 32767);
+            let input = i32::from(*value).clamp(-256, 255);
+            // At most 256 · 2^14 >> 11 = 2048 in magnitude: fits 16 bits.
+            *value = (input.signum() * ((input.abs() * scale + 1024) >> 11)) as i16;
         }
     }
 

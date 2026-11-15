@@ -8,7 +8,7 @@ use crate::{
     cabac::CabacWriter,
     coeff::Bins,
     contexts::Contexts,
-    motion::{Amvr, Motion, Mv16, Predictors},
+    motion::{AmvpLists, Amvr, Motion, Mv16},
     transform_tree,
 };
 use nc_common::decode::Result;
@@ -32,10 +32,12 @@ pub(crate) enum InterSyntax {
     },
 }
 
-/// A coded inter CU's motion and its signalling.
+/// A coded inter CU's motion, the reference it predicts from
+/// (`RefIdxL0`: signalled for AMVP, inherited by merge) and its signalling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Inter {
     pub motion: Motion,
+    pub ref_idx: u8,
     pub syntax: InterSyntax,
 }
 
@@ -80,12 +82,12 @@ pub(crate) enum Item {
     },
 }
 
-/// Coding unit `coding` in a picture with (`inter`) or without P slices,
-/// with the SPS's optional `tools`.
+/// Coding unit `coding` in a picture with (`inter`) or without P slices
+/// of `references` active references, with the SPS's optional `tools`.
 pub(crate) fn block(
     w: &mut CabacWriter,
     c: &mut Contexts,
-    (inter, tools): (bool, crate::headers::Tools),
+    (inter, references, tools): (bool, usize, crate::headers::Tools),
     p: &crate::motion::CuContexts,
     coding: &Coding,
 ) {
@@ -111,41 +113,16 @@ pub(crate) fn block(
         }
         w.encode_bin(&mut c.intra[p.intra_ctx], intra);
     }
-    if let Some(Inter { motion, syntax }) = motion {
+    if let Some(motion) = motion {
         let merged = matches!(
-            syntax,
+            motion.syntax,
             InterSyntax::Merge(_) | InterSyntax::SubblockMerge(_)
         );
         w.encode_bin(&mut c.merge, merged);
         if merged {
-            merge_data(w, c, tools, p, &cu, syntax);
+            merge_data(w, c, tools, p, &cu, motion.syntax);
         } else {
-            if affine_signalled(tools, &cu) {
-                let model = match motion {
-                    Motion::Affine(model) => Some(model.six),
-                    Motion::Vector(_) => None,
-                };
-                affine_flags(w, c, tools, p.affine_ctx, model).expect("valid affine flags");
-            }
-            match syntax {
-                InterSyntax::Amvp { mvp, amvr, mvd } => {
-                    write_mvd(w, c, mvd);
-                    w.encode_bin(&mut c.mvp, mvp != 0);
-                    if mvd != [0; 2] {
-                        amvr_precision(w, c, amvr).expect("valid AMVR precision");
-                    }
-                }
-                InterSyntax::AffineAmvp { mvp, mvd } => {
-                    let Motion::Affine(model) = motion else {
-                        unreachable!("affine AMVP codes an affine model");
-                    };
-                    for &delta in &mvd[..model.points()] {
-                        write_mvd(w, c, delta);
-                    }
-                    w.encode_bin(&mut c.mvp, mvp != 0);
-                }
-                InterSyntax::Merge(_) | InterSyntax::SubblockMerge(_) => unreachable!(),
-            }
+            amvp_data(w, c, (references, tools), p, &cu, motion);
             let present = levels.iter().flatten().any(|&v| v != 0);
             w.encode_bin(&mut c.root_cbf, present);
             if !present {
@@ -183,6 +160,53 @@ pub(crate) fn block(
         crate::mts::code(w, &mut c.mts_idx, mts).expect("valid mts_idx");
     } else {
         debug_assert_eq!(mts, 0, "mts_idx without its syntax");
+    }
+}
+
+/// §7.3.11.5 the motion of an AMVP CU `cu` (`inter` not a merge) in a
+/// slice of `references` active references: the affine flags,
+/// `ref_idx_l0`, the MVDs, `mvp_l0_flag` and the AMVR precision.
+fn amvp_data(
+    w: &mut CabacWriter,
+    c: &mut Contexts,
+    (references, tools): (usize, crate::headers::Tools),
+    p: &crate::motion::CuContexts,
+    cu: &nc_encoder::Block,
+    inter: Inter,
+) {
+    let Inter {
+        motion,
+        ref_idx,
+        syntax,
+    } = inter;
+    if affine_signalled(tools, cu) {
+        let model = match motion {
+            Motion::Affine(model) => Some(model.six),
+            Motion::Vector(_) => None,
+        };
+        affine_flags(w, c, tools, p.affine_ctx, model).expect("valid affine flags");
+    }
+    ref_index(w, c, references, ref_idx).expect("an active reference");
+    match syntax {
+        InterSyntax::Amvp { mvp, amvr, mvd } => {
+            write_mvd(w, c, mvd);
+            w.encode_bin(&mut c.mvp, mvp != 0);
+            if mvd != [0; 2] {
+                amvr_precision(w, c, amvr).expect("valid AMVR precision");
+            }
+        }
+        InterSyntax::AffineAmvp { mvp, mvd } => {
+            let Motion::Affine(model) = motion else {
+                unreachable!("affine AMVP codes an affine model");
+            };
+            for &delta in &mvd[..model.points()] {
+                write_mvd(w, c, delta);
+            }
+            w.encode_bin(&mut c.mvp, mvp != 0);
+        }
+        InterSyntax::Merge(_) | InterSyntax::SubblockMerge(_) => {
+            unreachable!("AMVP data of a merge CU")
+        }
     }
 }
 
@@ -386,6 +410,51 @@ pub(crate) fn merge_index(
     Ok(decoded)
 }
 
+/// §7.3.11.7 `ref_idx_l0` of an AMVP CU in a slice of `references` active
+/// references: truncated Rice up to `references` − 1, the first two bins
+/// context coded, the rest bypass (§9.3.4.2, Table 132); absent with one
+/// reference.
+pub(crate) fn ref_index(
+    io: &mut impl Bins,
+    c: &mut Contexts,
+    references: usize,
+    ref_idx: u8,
+) -> Result<u8> {
+    if references <= 1 {
+        return Ok(0);
+    }
+    let last = references - 1;
+    let mut decoded = 0;
+    for bin in 0..last {
+        let more = usize::from(ref_idx) > decoded;
+        let coded = match c.ref_idx.get_mut(bin) {
+            Some(context) => io.bin(context, more)?,
+            None => io.bypass(u32::from(more), 1)? == 1,
+        };
+        if !coded {
+            break;
+        }
+        decoded += 1;
+    }
+    Ok(decoded as u8)
+}
+
+/// Estimated bits of [`ref_index`], without changing state.
+#[inline]
+pub(crate) fn ref_index_bits(c: &Contexts, references: usize, ref_idx: u8) -> f32 {
+    if references <= 1 {
+        return 0.;
+    }
+    let ref_idx = usize::from(ref_idx);
+    (0..references.saturating_sub(1))
+        .take(ref_idx + 1)
+        .map(|bin| {
+            let more = ref_idx > bin;
+            c.ref_idx.get(bin).map_or(1., |context| context.bits(more))
+        })
+        .sum()
+}
+
 /// Estimated bits of [`merge_index`], without changing state.
 pub(crate) fn merge_index_bits(c: &Contexts, size: usize, index: usize) -> f32 {
     if size == 1 {
@@ -430,14 +499,15 @@ fn amvr_bits(c: &Contexts, amvr: Amvr) -> f32 {
         }
 }
 
-/// The cheapest way to code AMVP vector `mv`: its precision, predictor
-/// index and estimated bits (MVD, `mvp_l0_flag` and the AMVR bins). A
-/// coarser precision needs `mv` on its grid and a nonzero MVD (a zero MVD
-/// codes no `amvr_flag`, which means quarter samples).
-pub(crate) fn amvp_coding(c: &Contexts, p: &Predictors, mv: Mv16) -> (Amvr, usize, f32) {
+/// The cheapest way to code AMVP vector `mv` against the predictors
+/// `amvp` of its reference: its precision, predictor index and estimated
+/// bits (MVD, `mvp_l0_flag` and the AMVR bins). A coarser precision needs
+/// `mv` on its grid and a nonzero MVD (a zero MVD codes no `amvr_flag`,
+/// which means quarter samples).
+pub(crate) fn amvp_coding(c: &Contexts, amvp: &AmvpLists, mv: Mv16) -> (Amvr, usize, f32) {
     let mut best = (Amvr::Quarter, 0, f32::INFINITY);
     for amvr in Amvr::ALL.into_iter().filter(|a| a.holds(mv)) {
-        for (index, &pred) in p.amvp[amvr as usize].iter().enumerate() {
+        for (index, &pred) in amvp[amvr as usize].iter().enumerate() {
             let delta = mvd_of(mv, pred, amvr);
             let zero = delta == [0; 2];
             if zero && amvr != Amvr::Quarter {

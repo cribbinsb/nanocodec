@@ -1,7 +1,10 @@
 //! The self-guided row kernels written once over [`SgrLanes`], eight
 //! 32-bit lanes, which each ISA module implements with its vector type and
 //! instantiates inside its `#[target_feature]` functions
-//! ([`sgr_kernels`]). The arithmetic is the scalar references' in
+//! ([`sgr_kernels`]). The rows that fit 16 bits (horizontal sums, `A`,
+//! the filtered samples; bounds in [`super::self_guided`]) are stored as
+//! `i16` and widened on load; the arithmetic stays 32-bit because every
+//! product (`A · Src`, the squares, `p · s`) and `B` need it. The arithmetic is the scalar references' in
 //! [`super::self_guided`], term for term; the only change of form is the
 //! `A` lookup (`av1_x_by_xplus1`), by default computed as the spec's quotient
 //! `((z << 8) + z / 2) / (z + 1)` in single precision: both operands are
@@ -36,10 +39,14 @@ pub(super) trait SgrLanes: Copy {
     fn splat(value: i32) -> Self;
     /// `src[..8]`.
     fn load(src: &[i32]) -> Self;
+    /// `src[..8]`, sign-extended.
+    fn load_i16(src: &[i16]) -> Self;
     /// `src[..8]`, zero-extended.
     fn load_u8(src: &[u8]) -> Self;
     /// Store into `dst[..8]`.
     fn store(self, dst: &mut [i32]);
+    /// Store into `dst[..8]` lanes that fit `i16` (saturating otherwise).
+    fn store_i16(self, dst: &mut [i16]);
     /// Store `clamp(lane, 0, 255)` into `dst[..8]`.
     fn store_u8_sat(self, dst: &mut [u8]);
     /// Lane-wise wrapping add.
@@ -75,6 +82,26 @@ pub(super) trait SgrLanes: Copy {
     }
 }
 
+/// A row element that loads into [`SgrLanes`]: the `i16` rows widen.
+pub(super) trait LaneRow: Copy {
+    /// `src[..8]` as eight 32-bit lanes.
+    fn load<V: SgrLanes>(src: &[Self]) -> V;
+}
+
+impl LaneRow for i16 {
+    #[inline(always)]
+    fn load<V: SgrLanes>(src: &[Self]) -> V {
+        V::load_i16(src)
+    }
+}
+
+impl LaneRow for i32 {
+    #[inline(always)]
+    fn load<V: SgrLanes>(src: &[Self]) -> V {
+        V::load(src)
+    }
+}
+
 /// `5 · (x + y) + x`: the radius-2 weights 6 (`x`) and 5 (`y`) without a
 /// multiply.
 #[inline(always)]
@@ -102,36 +129,36 @@ fn filtered<V: SgrLanes, const SHIFT: i32>(a: V, b: V, src: &[u8], j: usize) -> 
 /// (written as functions, not closures, so that they inline into the
 /// kernels' `#[target_feature]` bodies).
 #[inline(always)]
-fn weigh_between<V: SgrLanes>(v: [&[i32]; 2], j: usize) -> V {
-    let straight = V::load(&v[0][j + 1..]).add(V::load(&v[1][j + 1..]));
-    let diagonal = V::load(&v[0][j..])
-        .add(V::load(&v[0][j + 2..]))
-        .add(V::load(&v[1][j..]))
-        .add(V::load(&v[1][j + 2..]));
+fn weigh_between<V: SgrLanes, T: LaneRow>(v: [&[T]; 2], j: usize) -> V {
+    let straight = T::load::<V>(&v[0][j + 1..]).add(T::load(&v[1][j + 1..]));
+    let diagonal = T::load::<V>(&v[0][j..])
+        .add(T::load(&v[0][j + 2..]))
+        .add(T::load(&v[1][j..]))
+        .add(T::load(&v[1][j + 2..]));
     six_five(straight, diagonal)
 }
 
 /// Columns `j..j + 8` of the radius-2 weights on a box row.
 #[inline(always)]
-fn weigh_on<V: SgrLanes>(v: &[i32], j: usize) -> V {
+fn weigh_on<V: SgrLanes, T: LaneRow>(v: &[T], j: usize) -> V {
     six_five(
-        V::load(&v[j + 1..]),
-        V::load(&v[j..]).add(V::load(&v[j + 2..])),
+        T::load(&v[j + 1..]),
+        T::load::<V>(&v[j..]).add(T::load(&v[j + 2..])),
     )
 }
 
 /// Columns `j..j + 8` of the radius-1 weights.
 #[inline(always)]
-fn weigh_around<V: SgrLanes>(v: [&[i32]; 3], j: usize) -> V {
-    let cross = V::load(&v[1][j..])
-        .add(V::load(&v[1][j + 1..]))
-        .add(V::load(&v[1][j + 2..]))
-        .add(V::load(&v[0][j + 1..]))
-        .add(V::load(&v[2][j + 1..]));
-    let diagonal = V::load(&v[0][j..])
-        .add(V::load(&v[0][j + 2..]))
-        .add(V::load(&v[2][j..]))
-        .add(V::load(&v[2][j + 2..]));
+fn weigh_around<V: SgrLanes, T: LaneRow>(v: [&[T]; 3], j: usize) -> V {
+    let cross = T::load::<V>(&v[1][j..])
+        .add(T::load(&v[1][j + 1..]))
+        .add(T::load(&v[1][j + 2..]))
+        .add(T::load(&v[0][j + 1..]))
+        .add(T::load(&v[2][j + 1..]));
+    let diagonal = T::load::<V>(&v[0][j..])
+        .add(T::load(&v[0][j + 2..]))
+        .add(T::load(&v[2][j..]))
+        .add(T::load(&v[2][j + 2..]));
     four_three(cross, diagonal)
 }
 
@@ -143,7 +170,7 @@ fn weigh_around<V: SgrLanes>(v: [&[i32]; 3], j: usize) -> V {
 #[inline(always)]
 pub(super) unsafe fn box_sums<V: SgrLanes, const R: usize>(
     src: &[u8],
-    sum: &mut [i32],
+    sum: &mut [i16],
     squares: &mut [i32],
     n: usize,
 ) {
@@ -155,7 +182,7 @@ pub(super) unsafe fn box_sums<V: SgrLanes, const R: usize>(
             s = s.add(p);
             q = q.add(p.mul(p));
         }
-        s.store(&mut sum[j..]);
+        s.store_i16(&mut sum[j..]);
         q.store(&mut squares[j..]);
     }
 }
@@ -168,10 +195,10 @@ pub(super) unsafe fn box_sums<V: SgrLanes, const R: usize>(
 /// `V`'s ISA must be available.
 #[inline(always)]
 pub(super) unsafe fn box_ab<V: SgrLanes, const N: usize>(
-    sums: [&[i32]; N],
+    sums: [&[i16]; N],
     squares: [&[i32]; N],
     scale: u32,
-    (a, b): (&mut [i32], &mut [i32]),
+    (a, b): (&mut [i16], &mut [i32]),
     n: usize,
 ) {
     let count = (N * N) as u32;
@@ -180,10 +207,10 @@ pub(super) unsafe fn box_ab<V: SgrLanes, const N: usize>(
     let (zero, z_max) = (V::splat(0), V::splat(Z_MAX));
     let unit = V::splat(1 << SGR_BITS);
     for j in (0..n).step_by(LANES) {
-        let mut sum = V::load(&sums[0][j..]);
+        let mut sum = V::load_i16(&sums[0][j..]);
         let mut square = V::load(&squares[0][j..]);
         for row in 1..N {
-            sum = sum.add(V::load(&sums[row][j..]));
+            sum = sum.add(V::load_i16(&sums[row][j..]));
             square = square.add(V::load(&squares[row][j..]));
         }
         let p = square.mul(count_v).sub(sum.mul(sum)).max(zero);
@@ -202,7 +229,7 @@ pub(super) unsafe fn box_ab<V: SgrLanes, const N: usize>(
             .mul(recip)
             .add(V::splat(1 << (RECIP_BITS - 1)))
             .shr::<{ RECIP_BITS as i32 }>();
-        factor.store(&mut a[j..]);
+        factor.store_i16(&mut a[j..]);
         mean.store(&mut b[j..]);
     }
 }
@@ -215,15 +242,15 @@ pub(super) unsafe fn box_ab<V: SgrLanes, const N: usize>(
 /// `V`'s ISA must be available.
 #[inline(always)]
 pub(super) unsafe fn filter_between<V: SgrLanes>(
-    a: [&[i32]; 2],
+    a: [&[i16]; 2],
     b: [&[i32]; 2],
     src: &[u8],
-    out: &mut [i32],
+    out: &mut [i16],
     n: usize,
 ) {
     for j in (0..n).step_by(LANES) {
         filtered::<V, { TWO_ROW_SHIFT as i32 }>(weigh_between(a, j), weigh_between(b, j), src, j)
-            .store(&mut out[j..]);
+            .store_i16(&mut out[j..]);
     }
 }
 
@@ -234,15 +261,15 @@ pub(super) unsafe fn filter_between<V: SgrLanes>(
 /// `V`'s ISA must be available.
 #[inline(always)]
 pub(super) unsafe fn filter_on<V: SgrLanes>(
-    a: &[i32],
+    a: &[i16],
     b: &[i32],
     src: &[u8],
-    out: &mut [i32],
+    out: &mut [i16],
     n: usize,
 ) {
     for j in (0..n).step_by(LANES) {
         filtered::<V, { ONE_ROW_SHIFT as i32 }>(weigh_on(a, j), weigh_on(b, j), src, j)
-            .store(&mut out[j..]);
+            .store_i16(&mut out[j..]);
     }
 }
 
@@ -253,10 +280,10 @@ pub(super) unsafe fn filter_on<V: SgrLanes>(
 /// `V`'s ISA must be available.
 #[inline(always)]
 pub(super) unsafe fn filter_around<V: SgrLanes>(
-    a: [&[i32]; 3],
+    a: [&[i16]; 3],
     b: [&[i32]; 3],
     src: &[u8],
-    out: &mut [i32],
+    out: &mut [i16],
     n: usize,
 ) {
     if n == 0 {
@@ -264,14 +291,16 @@ pub(super) unsafe fn filter_around<V: SgrLanes>(
     }
     let padded = n.checked_add(LANES - 1).expect("SGR row extent") / LANES * LANES;
     let neighbors = padded.checked_add(2).expect("SGR neighbor extent");
-    assert!(a.iter().chain(&b).all(|row| row.len() >= neighbors));
+    assert!(
+        a.iter().all(|row| row.len() >= neighbors) && b.iter().all(|row| row.len() >= neighbors)
+    );
     assert!(src.len() >= padded && out.len() >= padded);
     // All eight-lane loads, including the two horizontal neighbors, fit
     // after these row checks. Fixed-size views keep bounds checks outside
     // the pixel loop instead of repeating them for every neighbor load.
     for j in (0..padded).step_by(LANES) {
         // SAFETY: j <= padded - LANES; the six input rows have at least
-        // padded + 2 words. These immutable windows may overlap.
+        // padded + 2 elements. These immutable windows may overlap.
         let a = core::array::from_fn(|row| unsafe {
             core::slice::from_raw_parts(a[row].as_ptr().add(j), LANES + 2)
         });
@@ -289,7 +318,7 @@ pub(super) unsafe fn filter_around<V: SgrLanes>(
             )
         };
         filtered::<V, { TWO_ROW_SHIFT as i32 }>(weigh_around(a, 0), weigh_around(b, 0), src, 0)
-            .store(out);
+            .store_i16(out);
     }
 }
 
@@ -301,7 +330,7 @@ pub(super) unsafe fn filter_around<V: SgrLanes>(
 #[inline(always)]
 pub(super) unsafe fn blend<V: SgrLanes>(
     src: &[u8],
-    filtered: [&[i32]; 2],
+    filtered: [&[i16]; 2],
     weights: [i32; 2],
     dst: &mut [u8],
 ) {
@@ -312,8 +341,8 @@ pub(super) unsafe fn blend<V: SgrLanes>(
         let u = V::load_u8(&src[j..]).shl::<{ SOURCE_SHIFT as i32 }>();
         let v = u
             .mul(V::splat(PRJ_ONE))
-            .add(w0.mul(V::load(&filtered[0][j..]).sub(u)))
-            .add(w1.mul(V::load(&filtered[1][j..]).sub(u)))
+            .add(w0.mul(V::load_i16(&filtered[0][j..]).sub(u)))
+            .add(w1.mul(V::load_i16(&filtered[1][j..]).sub(u)))
             .add(round)
             .sra::<{ BLEND_SHIFT as i32 }>();
         if j + LANES <= n {
@@ -331,23 +360,23 @@ pub(super) unsafe fn blend<V: SgrLanes>(
 macro_rules! sgr_kernels {
     ($(#[$feature:meta])*; $lanes:ty) => {
         $(#[$feature])*
-        unsafe fn box_sums3(src: &[u8], sum: &mut [i32], squares: &mut [i32], n: usize) {
+        unsafe fn box_sums3(src: &[u8], sum: &mut [i16], squares: &mut [i32], n: usize) {
             // SAFETY: the table holding this kernel was built for its ISA.
             unsafe { super::sgr_lanes::box_sums::<$lanes, 1>(src, sum, squares, n) }
         }
 
         $(#[$feature])*
-        unsafe fn box_sums5(src: &[u8], sum: &mut [i32], squares: &mut [i32], n: usize) {
+        unsafe fn box_sums5(src: &[u8], sum: &mut [i16], squares: &mut [i32], n: usize) {
             // SAFETY: the table holding this kernel was built for its ISA.
             unsafe { super::sgr_lanes::box_sums::<$lanes, 2>(src, sum, squares, n) }
         }
 
         $(#[$feature])*
         unsafe fn box_ab3(
-            sums: [&[i32]; 3],
+            sums: [&[i16]; 3],
             squares: [&[i32]; 3],
             scale: u32,
-            ab: (&mut [i32], &mut [i32]),
+            ab: (&mut [i16], &mut [i32]),
             n: usize,
         ) {
             // SAFETY: the table holding this kernel was built for its ISA.
@@ -356,10 +385,10 @@ macro_rules! sgr_kernels {
 
         $(#[$feature])*
         unsafe fn box_ab5(
-            sums: [&[i32]; 5],
+            sums: [&[i16]; 5],
             squares: [&[i32]; 5],
             scale: u32,
-            ab: (&mut [i32], &mut [i32]),
+            ab: (&mut [i16], &mut [i32]),
             n: usize,
         ) {
             // SAFETY: the table holding this kernel was built for its ISA.
@@ -367,25 +396,25 @@ macro_rules! sgr_kernels {
         }
 
         $(#[$feature])*
-        unsafe fn between(a: [&[i32]; 2], b: [&[i32]; 2], src: &[u8], out: &mut [i32], n: usize) {
+        unsafe fn between(a: [&[i16]; 2], b: [&[i32]; 2], src: &[u8], out: &mut [i16], n: usize) {
             // SAFETY: the table holding this kernel was built for its ISA.
             unsafe { super::sgr_lanes::filter_between::<$lanes>(a, b, src, out, n) }
         }
 
         $(#[$feature])*
-        unsafe fn on(a: &[i32], b: &[i32], src: &[u8], out: &mut [i32], n: usize) {
+        unsafe fn on(a: &[i16], b: &[i32], src: &[u8], out: &mut [i16], n: usize) {
             // SAFETY: the table holding this kernel was built for its ISA.
             unsafe { super::sgr_lanes::filter_on::<$lanes>(a, b, src, out, n) }
         }
 
         $(#[$feature])*
-        unsafe fn around(a: [&[i32]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i32], n: usize) {
+        unsafe fn around(a: [&[i16]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i16], n: usize) {
             // SAFETY: the table holding this kernel was built for its ISA.
             unsafe { super::sgr_lanes::filter_around::<$lanes>(a, b, src, out, n) }
         }
 
         $(#[$feature])*
-        unsafe fn blend(src: &[u8], filtered: [&[i32]; 2], weights: [i32; 2], dst: &mut [u8]) {
+        unsafe fn blend(src: &[u8], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [u8]) {
             // SAFETY: the table holding this kernel was built for its ISA.
             unsafe { super::sgr_lanes::blend::<$lanes>(src, filtered, weights, dst) }
         }
@@ -410,9 +439,9 @@ mod tests {
             for n in [1_usize, 7, 8, 9, 15, 16, 17, 31, 32, 33] {
                 let padded = n.div_ceil(LANES) * LANES;
                 let neighbors = padded + 2;
-                let a: [Vec<i32>; 3] = core::array::from_fn(|row| {
+                let a: [Vec<i16>; 3] = core::array::from_fn(|row| {
                     (0..neighbors + 2)
-                        .map(|j| ((j * 37 + row * 71) % 257) as i32)
+                        .map(|j| ((j * 37 + row * 71) % 257) as i16)
                         .collect()
                 });
                 let b: [Vec<i32>; 3] = core::array::from_fn(|row| {
@@ -425,15 +454,15 @@ mod tests {
                 let src: Vec<u8> = (0..padded).map(|j| (j * 37) as u8).collect();
                 let mut expected = vec![0; padded];
                 self_guided::filter_around(a, b, &src, &mut expected, padded);
-                let mut guarded = vec![i32::MIN; padded + 2];
+                let mut guarded = vec![i16::MIN; padded + 2];
                 // SAFETY: the ISA is available; each input has the exact
                 // asserted padded extent and the output is exclusively borrowed.
                 unsafe {
                     kernel(a, b, &src, &mut guarded[1..=padded], n);
                 }
                 assert_eq!(&guarded[1..=padded], expected, "{isa:?}, n={n}");
-                assert_eq!(guarded[0], i32::MIN);
-                assert_eq!(guarded[padded + 1], i32::MIN);
+                assert_eq!(guarded[0], i16::MIN);
+                assert_eq!(guarded[padded + 1], i16::MIN);
             }
             // SAFETY: this ISA is available and zero output must not touch buffers.
             unsafe {
@@ -451,30 +480,28 @@ mod tests {
         {
             let kernel = kernels::kernels(isa).around;
             for short in 0..8 {
-                let rows = [[1; LANES + 2]; 6];
-                let mut refs = rows.each_ref().map(<[i32; LANES + 2]>::as_slice);
-                if short < 6 {
-                    refs[short] = &refs[short][..=LANES];
+                let a_rows = [[1_i16; LANES + 2]; 3];
+                let b_rows = [[1_i32; LANES + 2]; 3];
+                let mut a = a_rows.each_ref().map(<[i16; LANES + 2]>::as_slice);
+                let mut b = b_rows.each_ref().map(<[i32; LANES + 2]>::as_slice);
+                match short {
+                    0..3 => a[short] = &a[short][..=LANES],
+                    3..6 => b[short - 3] = &b[short - 3][..=LANES],
+                    _ => {}
                 }
                 let src = [17; LANES];
-                let mut out = [i32::MIN; LANES];
+                let mut out = [i16::MIN; LANES];
                 let src_len = if short == 6 { LANES - 1 } else { LANES };
                 let out_len = if short == 7 { LANES - 1 } else { LANES };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // SAFETY: ISA is available. The kernel's checked-slice
                     // contract must reject these deliberately short buffers.
                     unsafe {
-                        kernel(
-                            [refs[0], refs[1], refs[2]],
-                            [refs[3], refs[4], refs[5]],
-                            &src[..src_len],
-                            &mut out[..out_len],
-                            1,
-                        );
+                        kernel(a, b, &src[..src_len], &mut out[..out_len], 1);
                     }
                 }));
                 assert!(result.is_err(), "{isa:?}, short buffer {short}");
-                assert_eq!(out, [i32::MIN; LANES]);
+                assert_eq!(out, [i16::MIN; LANES]);
             }
         }
     }

@@ -37,10 +37,12 @@ use crate::tables::{
 /// to [`MAX_TOKEN`]) above [`TOKEN_SHIFT`], and below it the storage
 /// position of the next nonzero coefficient in scan order (0: none).
 pub(super) const TOKEN_SHIFT: u32 = 11;
-pub(super) const LINK_MASK: i32 = (1 << TOKEN_SHIFT) - 1;
+pub(super) const LINK_MASK: i16 = (1 << TOKEN_SHIFT) - 1;
 /// The largest token: base levels plus the whole `coeff_br` range. A
 /// coefficient at this token continues with a Golomb remainder.
 pub(super) const MAX_TOKEN: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE as u32 + 1;
+// An entry, like a dequantised coefficient, fits the 16-bit buffer.
+const _: () = assert!((MAX_TOKEN << TOKEN_SHIFT) | LINK_MASK as u32 <= i16::MAX as u32);
 /// Levels coded by `coeff_base` / `coeff_base_eob` (`NUM_BASE_LEVELS`).
 const NUM_BASE_LEVELS: u32 = 2;
 /// `coeff_base` and `coeff_base_eob` alphabets.
@@ -349,7 +351,7 @@ pub(super) fn read<const CLASS: u8>(
     cdfs: LevelCdfs<'_>,
     r: &mut SymbolReader<'_>,
     levels: &mut LevelBuffer,
-    cf: &mut [i32; MAX_CODED],
+    cf: &mut [i16; MAX_CODED],
     walk: Walk,
     last: usize,
     size_log2: usize,
@@ -374,7 +376,7 @@ pub(super) fn read<const CLASS: u8>(
     if tok > NUM_BASE_LEVELS {
         tok = read_br(r, &mut br[walk.br_group::<CLASS>(p)]);
     }
-    cf[p.rc & (MAX_CODED - 1)] = (tok << TOKEN_SHIFT) as i32;
+    cf[p.rc & (MAX_CODED - 1)] = (tok << TOKEN_SHIFT) as i16;
     levels.set(p.at, entry(tok));
 
     // The AC coefficients in reverse scan order. `rc` is the position of
@@ -392,7 +394,7 @@ pub(super) fn read<const CLASS: u8>(
         // Branch-free on the token: zero entries stay zero and do not move
         // the chain.
         let link = if tok != 0 {
-            (tok << TOKEN_SHIFT) as i32 | rc as i32
+            ((tok << TOKEN_SHIFT) | rc as u32) as i16
         } else {
             0
         };

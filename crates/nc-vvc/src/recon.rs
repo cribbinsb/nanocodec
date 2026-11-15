@@ -1076,12 +1076,10 @@ fn add_sized<const N: usize>(
     let mut scaled = [0; N];
     dsp.vvc_dequantize(levels, quantizer, &mut scaled);
     let tx = nc_dsp::HevcTransform::dct(side.ilog2() as u8).unwrap();
-    let mut wide = [0; N];
-    dsp.hevc_inverse(tx, &scaled, &mut wide);
-    // The inverse 8-bit DCT-II stays within ±23040 even at 32x32: the
-    // first pass clamps to 16 bits, then at most 32 taps of magnitude 90
-    // accumulate before a 12-bit shift. This fits the shared add contract.
-    let residual: [i16; N] = std::array::from_fn(|i| wide[i] as i16);
+    let mut residual = [0; N];
+    // Within the shared add contract: the inverse DCT-II's residual is at
+    // most about 2^14 in magnitude (`Dsp::hevc_inverse`).
+    dsp.hevc_inverse(tx, &scaled, &mut residual);
     dsp.add_residual(
         BlockSize::new(side, side).unwrap(),
         prediction,
@@ -1109,7 +1107,8 @@ fn dc_residual(dsp: &nc_dsp::Dsp, level: i32, quantizer: &VvcQuantizer) -> i32 {
     levels[0] = level;
     let mut scaled = [0; 16];
     dsp.vvc_dequantize(&levels, quantizer, &mut scaled);
-    let first = ((DCT_DC_TAP * scaled[0] + (1 << (FIRST_STAGE_SHIFT - 1))) >> FIRST_STAGE_SHIFT)
+    let first = ((DCT_DC_TAP * i32::from(scaled[0]) + (1 << (FIRST_STAGE_SHIFT - 1)))
+        >> FIRST_STAGE_SHIFT)
         .clamp(*STAGE_RANGE.start(), *STAGE_RANGE.end());
     (DCT_DC_TAP * first + (1 << (RESIDUAL_SHIFT - 1))) >> RESIDUAL_SHIFT
 }
@@ -1172,29 +1171,25 @@ fn add_rect_sized<const N: usize>(
     } else {
         levels
     };
-    let mut wide = [0; N];
+    let mut residual = [0; N];
     dsp.vvc_inverse_primary(
         (width, height),
         kinds,
         levels,
         qp as u8,
         dependent,
-        &mut wide[..samples],
+        &mut residual[..samples],
     );
     let Some(size) = BlockSize::new(width, height) else {
         // Intra sub-partitions 1 or 2 wide: a few samples, in scalar.
-        for (y, residual) in wide[..samples].chunks_exact(width).enumerate() {
+        for (y, residual) in residual[..samples].chunks_exact(width).enumerate() {
             for (sample, &r) in prediction.row_mut(y).iter_mut().zip(residual) {
-                *sample = (i32::from(*sample) + r).clamp(0, 255) as u8;
+                *sample = (i32::from(*sample) + i32::from(r)).clamp(0, 255) as u8;
             }
         }
         return;
     };
-    // Within ±23040 as for squares (`add_sized`).
-    let mut residual = [0i16; N];
-    for (out, &value) in residual.iter_mut().zip(&wide[..samples]) {
-        *out = value as i16;
-    }
+    // Within the add contract as for squares (`add_sized`).
     dsp.add_residual(size, prediction, &residual[..samples], width);
 }
 
@@ -1228,7 +1223,7 @@ mod tests {
                         dsp.hevc_inverse(transform, &scaled, &mut residual);
                         let constant = dc_residual(&dsp, level, &quantizer);
                         assert!(
-                            residual.iter().all(|&r| r == constant),
+                            residual.iter().all(|&r| i32::from(r) == constant),
                             "{n}x{n} qp {qp} dependent {dependent} level {level}"
                         );
                     }

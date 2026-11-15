@@ -38,7 +38,8 @@ use core::arch::x86_64::{
 use core::mem::MaybeUninit;
 
 use super::{
-    I16FilterLanes, I16Lanes, I16Pairs, I16x8Shuffles, I32Lanes, LOOKUP_TABLE, packed_pair,
+    I16FilterLanes, I16Lanes, I16Pairs, I16x8Shuffles, I32Lanes, LOOKUP_TABLE, WordPairLanes,
+    packed_pair,
 };
 
 /// Eight `i32` lanes (AVX2).
@@ -103,6 +104,20 @@ fn count(bits: u32) -> __m128i {
 }
 
 // ---------------------------------------------------------------- I32x8 ----
+
+impl WordPairLanes for I32x8 {
+    type Pairs = WordPairs8;
+
+    #[inline(always)]
+    fn word_pairs(self, high: Self) -> WordPairs8 {
+        I32x8::word_pairs(self, high)
+    }
+
+    #[inline(always)]
+    fn pair_dot(pairs: WordPairs8, weights: i32) -> Self {
+        pairs.dot(weights)
+    }
+}
 
 impl I32Lanes for I32x8 {
     const LANES: usize = 8;
@@ -290,6 +305,43 @@ impl I32Lanes for I32x8 {
             // SAFETY: ISA enabled; the slice covers one complete vector.
             unsafe {
                 _mm256_storeu_si256(dst.as_mut_ptr().cast(), value.0);
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn store_sat16(self, dst: &mut [i16]) {
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // slices are indexed before every load and store.
+        unsafe {
+            let dst = &mut dst[..8];
+            let words = _mm_packs_epi32(
+                _mm256_castsi256_si128(self.0),
+                _mm256_extracti128_si256::<1>(self.0),
+            );
+            _mm_storeu_si128(dst.as_mut_ptr().cast(), words);
+        }
+    }
+
+    #[inline(always)]
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
+        /// `vpermq` order putting each pack's first-row quads before its
+        /// second-row quads.
+        const ROWS_IN_HALVES: i32 = 0b11_01_10_00;
+        let out = transpose_i32x8(rows);
+        for (r, pair) in out.as_chunks::<2>().0.iter().enumerate() {
+            // SAFETY: ISA enabled; each slice covers one complete 8-lane row.
+            unsafe {
+                let words = _mm256_permute4x64_epi64::<ROWS_IN_HALVES>(_mm256_packs_epi32(
+                    pair[0].0, pair[1].0,
+                ));
+                let first = &mut dst[2 * r * dst_stride..][..Self::LANES];
+                _mm_storeu_si128(first.as_mut_ptr().cast(), _mm256_castsi256_si128(words));
+                let second = &mut dst[(2 * r + 1) * dst_stride..][..Self::LANES];
+                _mm_storeu_si128(
+                    second.as_mut_ptr().cast(),
+                    _mm256_extracti128_si256::<1>(words),
+                );
             }
         }
     }
@@ -527,6 +579,36 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn store_sat16(self, dst: &mut [i16]) {
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // slices are indexed before every load and store.
+        unsafe {
+            let dst = &mut dst[..4];
+            _mm_storel_epi64(dst.as_mut_ptr().cast(), _mm_packs_epi32(self.0, self.0));
+        }
+    }
+
+    #[inline(always)]
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
+        /// Bytes of one 4-lane row of words: the second row's offset.
+        const ROW_BYTES: i32 = 8;
+        let out = transpose_i32x4(rows);
+        for (r, pair) in out.as_chunks::<2>().0.iter().enumerate() {
+            // SAFETY: ISA enabled; each slice covers one complete 4-lane row.
+            unsafe {
+                let words = _mm_packs_epi32(pair[0].0, pair[1].0);
+                let first = &mut dst[2 * r * dst_stride..][..Self::LANES];
+                _mm_storel_epi64(first.as_mut_ptr().cast(), words);
+                let second = &mut dst[(2 * r + 1) * dst_stride..][..Self::LANES];
+                _mm_storel_epi64(
+                    second.as_mut_ptr().cast(),
+                    _mm_srli_si128::<ROW_BYTES>(words),
+                );
+            }
+        }
+    }
+
+    #[inline(always)]
     fn add_transposed_u8(rows: &[Self], dst: &mut [u8], dst_stride: usize) {
         let needed = dst_stride
             .checked_mul(Self::LANES - 1)
@@ -636,6 +718,32 @@ impl I16Lanes for I16x16 {
         unsafe {
             let src = &src[..16];
             Self(_mm256_cvtepu8_epi16(_mm_loadu_si128(src.as_ptr().cast())))
+        }
+    }
+
+    #[inline(always)]
+    fn load_i8(src: &[i8]) -> Self {
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // slices are indexed before every load and store.
+        unsafe {
+            let src = &src[..16];
+            Self(core::arch::x86_64::_mm256_cvtepi8_epi16(_mm_loadu_si128(
+                src.as_ptr().cast(),
+            )))
+        }
+    }
+
+    #[inline(always)]
+    fn store_i8(self, dst: &mut [i8]) {
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // slices are indexed before every load and store.
+        unsafe {
+            let dst = &mut dst[..16];
+            let bytes = core::arch::x86_64::_mm_packs_epi16(
+                _mm256_castsi256_si128(self.0),
+                _mm256_extracti128_si256::<1>(self.0),
+            );
+            _mm_storeu_si128(dst.as_mut_ptr().cast(), bytes);
         }
     }
 

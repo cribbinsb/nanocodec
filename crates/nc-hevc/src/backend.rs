@@ -649,8 +649,8 @@ struct Scratch {
     residual: Box<[i16; MAX_COEFFS]>,
     levels: Box<[i32; MAX_COEFFS]>,
     coeffs: Box<[i32; MAX_COEFFS]>,
-    scaled: Box<[i32; MAX_COEFFS]>,
-    decoded: Box<[i32; MAX_COEFFS]>,
+    scaled: Box<[i16; MAX_COEFFS]>,
+    decoded: Box<[i16; MAX_COEFFS]>,
 }
 
 impl Default for Scratch {
@@ -913,6 +913,14 @@ impl CodecBackend for HevcBackend {
     ///   bc1 Q42). Removal off at every QP lost the low half (+0.4%).
     ///
     /// See docs/handoff/hevc.md.
+    // The fixed-QP profile (`--qp`): the QP cadence at full strength on every
+    // frame, a static per-position pattern as the standards' test conditions
+    // use, instead of scaling it by each frame's still-block share. Fixed QP,
+    // matched QP (nceval.fixedqp, two pool draws of 15 clips): J -1.1%
+    // [-2.1, +0.1] and -1.0% [-2.0, -0.2]; CPU unchanged.
+    // docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Start-up QP cadence (period 8, base frames 6 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
@@ -928,6 +936,16 @@ impl CodecBackend for HevcBackend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 6.0),
         ("rate.cadence_motion_gate", 1.0),
+        // The target as a ceiling over every key period (`rate.period_ceiling`,
+        // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still scenes).
+        // 600-frame long-window L3 (keys every 10 s, 31 points, draw 2026-11-14):
+        // on top of the quiet second before a key (`rate.prekey_quiet`): J -0.20%
+        // [-0.40, -0.00] BETTER, no guard; static -0.78%, moving classes
+        // unchanged; re-codes on the 22 static and crowd points 6.8 -> 8.0 per
+        // 1000 frames. (Before the quiet second: J -0.84%, static -3.4%,
+        // achieved/target max 1.008 -> 1.000.)
+        // Inert within one key period. The other HEVC presets pin it off.
+        ("rate.period_ceiling", 1.0),
         ("decision.intra_gate_variance", 0.0),
         ("decision.codec_subpel_seed_lambdas", 0.05),
         ("decision.subpel_move_bias", 1.1),
@@ -2421,7 +2439,7 @@ fn reconstruct_square(
     (x, y): (usize, usize),
     n: usize,
     (pred, stride): (&[u8], usize),
-    residual: &[i32],
+    residual: &[i16],
 ) {
     match n {
         4 => reconstruct::<4>(out, x, y, pred, stride, residual),
@@ -2439,7 +2457,7 @@ fn reconstruct<const N: usize>(
     y: usize,
     pred: &[u8],
     stride: usize,
-    residual: &[i32],
+    residual: &[i16],
 ) {
     let out_stride = out.stride();
     let dst = block_mut::<N>(out, x, y);
@@ -2448,7 +2466,7 @@ fn reconstruct<const N: usize>(
         let dst = &mut dst[row * out_stride..row * out_stride + N];
         let pred = &pred[row * stride..row * stride + N];
         for ((d, &p), &r) in dst.iter_mut().zip(pred).zip(residual) {
-            *d = (i32::from(p) + r).clamp(0, 255) as u8;
+            *d = (i32::from(p) + i32::from(r)).clamp(0, 255) as u8;
         }
     }
 }

@@ -22,9 +22,24 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.vvc_forward_dct = super::vvc_forward_simd::simd128;
     super::simd128_inverse::install(&mut table);
     table.nonzero_mask = nonzero_mask;
+    table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table.hevc_forward_bounded[2] = staged16_bounded;
     table.hevc_forward_bounded[3] = staged32_bounded;
     table
+}
+
+/// The H.264 8x8 decoder inverse in eight 16-bit lanes (`h264_inverse8`).
+///
+/// # Safety
+///
+/// Kernel contract (`codec_txfm` module docs).
+unsafe fn h264_add_scaled_8x8(coeffs: &[i16; 64], dst: &mut [u8], stride: usize) {
+    // SAFETY: SIMD128 (a build-time feature) is available here; the caller's contract is forwarded.
+    unsafe {
+        super::h264_inverse8::add_scaled_8x8_lanes::<crate::simd::simd128::I16x8>(
+            coeffs, dst, stride,
+        );
+    }
 }
 
 /// The 16-point bounded forward: staged modes take the 16-bit packed rows

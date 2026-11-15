@@ -56,6 +56,7 @@ dependencies = [
 name = "nc-checkasm"
 version = "0.1.0"
 dependencies = [
+ "nc-av1",
  "nc-common",
  "nc-dsp",
 ]

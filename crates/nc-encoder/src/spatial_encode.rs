@@ -11,7 +11,9 @@
 //! swaps the whole [`LayerState`] on layer switch so all layers share the exact
 //! partition planner, leaf mode decision, AQ, reuse term and recode machinery.
 
+use nc_analysis::grid::Grid;
 use nc_analysis::link::FrameLink;
+use nc_analysis::mv::Mv;
 use nc_analysis::{Analyzer, NoTimer};
 use nc_common::Picture;
 
@@ -351,7 +353,7 @@ impl SpatialSession {
             let reads_repeats = s == 0 && structure.reads_repeats();
             let second = (s > 0 && spatial.inter_layer.active_on_inter_unit())
                 .then(|| SecondReference::new(0, &ref_params));
-            let (state, recon) = spatial_layer_state(
+            let (mut state, recon) = spatial_layer_state(
                 config,
                 backend,
                 spatial.layer_sizes[s],
@@ -361,6 +363,13 @@ impl SpatialSession {
                 second,
                 flags,
             )?;
+            if s > 0
+                && spatial.enhancement_interval == 1
+                && can_seed_cross_layer_hme(spatial.layer_sizes[s - 1], spatial.layer_sizes[s])
+                && let Some(a) = state.analyzer.as_mut()
+            {
+                a.set_external_hme_seeded(true);
+            }
             visible_recon[s] = Some(recon);
             if s + 1 == num_layers {
                 top_state = Some(state);
@@ -834,6 +843,17 @@ impl<B: CodecBackend> Encoder<B> {
 
         let (s0_recon_buf, s0_analyzer, tu_plan, s1_interval_for_code) =
             self.analyze_and_commit_s0(tu_index, scheduled_key, kept_layers);
+        let mut prev_layer_hme = tu_plan.upper[0].as_ref().and_then(|s1| {
+            let scfg = &self.spatial.as_ref().expect("spatial mode").config;
+            next_layer_hme_seed(
+                s0_analyzer.as_ref().and_then(Analyzer::analysis),
+                scfg.base_size,
+                tu_plan.base.references.reference.distance,
+                scfg.layer_sizes[1],
+                tu_plan.key_unit,
+                s1,
+            )
+        });
         let full_lookahead = self.lookahead.take();
         let (mut data, mut out_quantizer, s0_meta) = self.encode_s0_layer(
             &tu_plan,
@@ -857,16 +877,18 @@ impl<B: CodecBackend> Encoder<B> {
             } else {
                 time.interval
             };
-            let has_coded_upper = tu_plan.upper.get(s + 1).is_some_and(Option::is_some);
-            let (bytes, quantizer, meta) = self.encode_upper_layer(
+            let next_upper = tu_plan.upper.get(s + 1).and_then(Option::as_ref);
+            let (bytes, quantizer, meta, next_hme) = self.encode_upper_layer(
                 tu_plan.key_unit,
                 plan,
-                has_coded_upper,
+                next_upper,
+                prev_layer_hme.as_ref(),
                 full_src,
                 source_written,
                 interval,
                 data.len(),
             );
+            prev_layer_hme = next_hme;
             data.extend_from_slice(&bytes);
             layers.push(meta);
             out_quantizer = quantizer;
@@ -1187,67 +1209,44 @@ impl<B: CodecBackend> Encoder<B> {
         &mut self,
         key_unit: bool,
         layer_plan: &SpatialLayerPlan,
-        has_coded_upper: bool,
+        next_upper: Option<&SpatialLayerPlan>,
+        external_hme: Option<&Grid<Mv>>,
         full_src: &Picture,
         source_already_written: bool,
         layer_interval: Option<f64>,
         byte_offset: usize,
-    ) -> (Vec<u8>, u32, LayerFrameMetadata) {
+    ) -> (Vec<u8>, u32, LayerFrameMetadata, Option<Grid<Mv>>) {
         let sid = layer_plan.spatial_id;
         let step = usize::from(sid - 1);
         let layer_reset = key_unit || layer_plan.enhancement_repair;
+        let has_coded_upper = next_upper.is_some();
         let mut recon_buf = self.prepare_upper_layer_state(layer_plan, layer_interval);
-        let analyzer =
-            self.analyze_upper_layer(layer_plan, layer_reset, full_src, source_already_written);
+        let analyzer = self.analyze_upper_layer(
+            layer_plan,
+            layer_reset,
+            external_hme,
+            full_src,
+            source_already_written,
+        );
+        let next_hme = next_upper.and_then(|upper| {
+            let scfg = &self.spatial.as_ref().expect("spatial mode").config;
+            next_layer_hme_seed(
+                analyzer.as_ref().and_then(Analyzer::analysis),
+                scfg.layer_sizes[usize::from(sid)],
+                layer_plan.analysis_distance(layer_reset),
+                scfg.layer_sizes[usize::from(upper.spatial_id)],
+                key_unit,
+                upper,
+            )
+        });
 
-        // In 3-layer mode when S1 (`sid == 1`) codes with S2 (`has_coded_upper`)
-        // on an inter TU, split incoming unspent S0 bits `u0` between S1 (`r1`)
-        // and direct carry to S2 (`u0 - r1`) before S1 selects its quantizer:
-        let s1_static = analyzer
-            .as_ref()
-            .and_then(Analyzer::analysis)
-            .map_or(0.0, |a| a.pre.static_fraction);
-        let prev_ref_stats = {
-            let spatial = self.spatial.as_mut().expect("spatial mode");
-            spatial.current_layer_has_coded_upper = has_coded_upper;
-            if sid == 1
-                && has_coded_upper
-                && !layer_reset
-                && spatial.current_tu_reallocated_bits > 0.0
-            {
-                let s2_inter = spatial
-                    .layer(&self.layer, 2)
-                    .rate_control
-                    .as_ref()
-                    .and_then(RateController::inter_level);
-                if let Some(cbr) = spatial.combined_cbr.as_ref() {
-                    let (r1, carry_s2) = cbr.split_s0_reallocation_for_s1(
-                        spatial.current_tu_reallocated_bits,
-                        s1_static,
-                        self.layer.width * self.layer.height,
-                        s2_inter,
-                    );
-                    spatial.current_tu_reallocated_bits = r1;
-                    spatial.current_tu_carry_to_s2 = carry_s2;
-                }
-            }
-            spatial.coding_inter_layer_step = layer_plan.references.secondary.map(|_| step);
-            spatial.step_ref_stats[step]
-        };
-
-        let nominal_inter_budget = (!layer_reset && has_coded_upper)
-            .then(|| {
-                self.layer
-                    .rate_control
-                    .as_ref()
-                    .map(RateController::inter_frame_budget)
-            })
-            .flatten()
-            .unwrap_or(0.0);
-        let incoming_reallocated = self
-            .spatial
-            .as_ref()
-            .map_or(0.0, |s| s.current_tu_reallocated_bits);
+        let (prev_ref_stats, nominal_inter_budget, incoming_reallocated) = self
+            .prepare_upper_layer_budget(
+                layer_plan,
+                layer_reset,
+                has_coded_upper,
+                analyzer.as_ref(),
+            );
 
         let (layer_bytes, layer_quantizer) =
             self.code_spatial_layer(key_unit, layer_plan, analyzer, &mut recon_buf);
@@ -1288,17 +1287,82 @@ impl<B: CodecBackend> Encoder<B> {
             droppable: true,
             operating_point_mask: op_mask,
         };
-        (layer_bytes, layer_quantizer, meta)
+        (layer_bytes, layer_quantizer, meta, next_hme)
+    }
+
+    /// Budget an enhancement layer before coding it: returns its step's
+    /// previous reference statistics, its nominal inter budget (when a layer
+    /// above codes in this inter unit) and the bits reallocated to it so far.
+    ///
+    /// In 3-layer mode when S1 (`sid == 1`) codes with S2 (`has_coded_upper`)
+    /// on an inter TU, incoming unspent S0 bits `u0` are split between S1
+    /// (`r1`) and a direct carry to S2 (`u0 - r1`) before S1 selects its
+    /// quantizer.
+    fn prepare_upper_layer_budget(
+        &mut self,
+        layer_plan: &SpatialLayerPlan,
+        layer_reset: bool,
+        has_coded_upper: bool,
+        analyzer: Option<&Analyzer>,
+    ) -> (SpatialReferenceStats, f64, f64) {
+        let sid = layer_plan.spatial_id;
+        let step = usize::from(sid - 1);
+        let s1_static = analyzer
+            .and_then(Analyzer::analysis)
+            .map_or(0.0, |a| a.pre.static_fraction);
+        let prev_ref_stats = {
+            let spatial = self.spatial.as_mut().expect("spatial mode");
+            spatial.current_layer_has_coded_upper = has_coded_upper;
+            if sid == 1
+                && has_coded_upper
+                && !layer_reset
+                && spatial.current_tu_reallocated_bits > 0.0
+            {
+                let s2_inter = spatial
+                    .layer(&self.layer, 2)
+                    .rate_control
+                    .as_ref()
+                    .and_then(RateController::inter_level);
+                if let Some(cbr) = spatial.combined_cbr.as_ref() {
+                    let (r1, carry_s2) = cbr.split_s0_reallocation_for_s1(
+                        spatial.current_tu_reallocated_bits,
+                        s1_static,
+                        self.layer.width * self.layer.height,
+                        s2_inter,
+                    );
+                    spatial.current_tu_reallocated_bits = r1;
+                    spatial.current_tu_carry_to_s2 = carry_s2;
+                }
+            }
+            spatial.coding_inter_layer_step = layer_plan.references.secondary.map(|_| step);
+            spatial.step_ref_stats[step]
+        };
+        let nominal_inter_budget = (!layer_reset && has_coded_upper)
+            .then(|| {
+                self.layer
+                    .rate_control
+                    .as_ref()
+                    .map(RateController::inter_frame_budget)
+            })
+            .flatten()
+            .unwrap_or(0.0);
+        let incoming_reallocated = self
+            .spatial
+            .as_ref()
+            .map_or(0.0, |s| s.current_tu_reallocated_bits);
+        (prev_ref_stats, nominal_inter_budget, incoming_reallocated)
     }
 
     fn analyze_upper_layer(
         &mut self,
         layer_plan: &SpatialLayerPlan,
         layer_reset: bool,
+        external_hme: Option<&Grid<Mv>>,
         full_src: &Picture,
         source_already_written: bool,
     ) -> Option<Analyzer> {
         let sid = layer_plan.spatial_id;
+        let run_motion = layer_plan.uses_temporal_motion(layer_reset);
         let mut analyzer = self.layer.analyzer.take();
         if let Some(a) = analyzer.as_mut() {
             if !source_already_written {
@@ -1332,7 +1396,7 @@ impl<B: CodecBackend> Encoder<B> {
                 &layer_plan.references,
                 layer_reset,
             );
-            a.analyze_written_timed(link, &mut NoTimer);
+            a.analyze_written_spatial(link, external_hme, run_motion, &mut NoTimer);
         } else if !source_already_written && let Some(buf) = self.layer.input.as_mut() {
             for plane in nc_common::PlaneIndex::ALL {
                 buf.plane_mut(plane)
@@ -1457,8 +1521,9 @@ impl<B: CodecBackend> Encoder<B> {
             (None, None) => unreachable!("layer owns analyzer or input"),
         };
         // On an inter-layer key/repair TU, enhancement layers (`S1`, `S2`) predict
-        // from the same instant's lower layer: motion measured against their own
-        // previous temporal frame is for the reuse stillness run only, not coding.
+        // from the same instant's lower layer: no motion is searched against their
+        // own previous picture (`uses_temporal_motion`), only the stillness run is
+        // carried, so neither coding nor AQ sees motion.
         let motion = analysis
             .filter(|_| !from_lower_key)
             .and_then(|a| a.motion.as_ref());
@@ -1466,7 +1531,7 @@ impl<B: CodecBackend> Encoder<B> {
         let still = analysis.filter(|_| motion.is_some()).map(|a| &a.still);
 
         let (reuse_frame, key_reuse_offset) =
-            self.plan_spatial_reuse_and_aq(layer_plan, rc_key, analysis);
+            self.plan_spatial_reuse_and_aq(layer_plan, rc_key, analysis, motion);
 
         self.block_offsets.clear();
         let plan = self.spatial_frame_plan(
@@ -1623,6 +1688,7 @@ impl<B: CodecBackend> Encoder<B> {
         layer_plan: &SpatialLayerPlan,
         rc_key: bool,
         analysis: Option<&nc_analysis::FrameAnalysis>,
+        motion: Option<&nc_analysis::MotionAnalysis>,
     ) -> (bool, f64) {
         let index = layer_plan.layer_frame_index;
         let reuse_frame = on_reuse_chain(rc_key, &layer_plan.references);
@@ -1664,7 +1730,7 @@ impl<B: CodecBackend> Encoder<B> {
             .map(ReuseTerm::offsets);
         let mut key_reuse_offset = 0.0;
         if let Some(aq) = self.layer.aq.as_mut() {
-            aq.plan(&analysis.pre, analysis.motion.as_ref(), offsets);
+            aq.plan(&analysis.pre, motion, offsets);
         } else if rc_key {
             key_reuse_offset = self
                 .layer
@@ -2090,4 +2156,51 @@ fn next_source_mut(layer: &mut LayerState) -> &mut Picture {
         (None, Some(buf)) => buf,
         (None, None) => unreachable!("layer owns analyzer or input"),
     }
+}
+
+/// The only layer step whose lower layer's motion seeds the upper layer's HME
+/// (`next_layer_hme_seed`): an exact 2:1 step, where a lower layer's 32x32
+/// cell covers the same area as an upper layer's 64x64 superblock.
+const HME_SEED_STEP: u8 = 2;
+
+/// Whether `lower_size -> upper_size` is an exact 2:1 spatial step whose lower
+/// layer covers at least a full `HME_BLOCK` (`SB` luma samples) vertically and
+/// two `32x32` cells (`2 * SB`) horizontally without matching quarter-level
+/// border padding (`nc_analysis::motion::hme`).
+fn can_seed_cross_layer_hme(lower_size: (usize, usize), upper_size: (usize, usize)) -> bool {
+    let sb = nc_analysis::motion::SB;
+    let step = usize::from(HME_SEED_STEP);
+    upper_size == (lower_size.0 * step, lower_size.1 * step)
+        && lower_size.0 >= 2 * sb
+        && lower_size.1 >= sb
+}
+
+/// Scale `S_{k-1}`'s 32x32 motion vectors by 2 to seed `S_k`'s 64x64 SB HME
+/// window centres when `S_k` runs motion search across an exact 2:1 spatial
+/// step at the same temporal reference distance.
+fn next_layer_hme_seed(
+    lower_analysis: Option<&nc_analysis::FrameAnalysis>,
+    lower_size: (usize, usize),
+    lower_dist: u32,
+    upper_size: (usize, usize),
+    key_unit: bool,
+    upper_plan: &SpatialLayerPlan,
+) -> Option<Grid<Mv>> {
+    let upper_reset = key_unit || upper_plan.enhancement_repair;
+    if !upper_plan.uses_temporal_motion(upper_reset)
+        || !can_seed_cross_layer_hme(lower_size, upper_size)
+        || upper_plan.analysis_distance(upper_reset) != lower_dist
+    {
+        return None;
+    }
+    // `aggregated[1]` is the 32x32 field (as `TemporalSeeds`' `field_32x32`).
+    let blocks = &lower_analysis?.motion.as_ref()?.aggregated[1].blocks;
+    let limit = nc_analysis::motion::HME_LIMIT * nc_analysis::motion::HME_SCALE;
+    let step = i16::from(HME_SEED_STEP);
+    let cells = blocks
+        .cells()
+        .iter()
+        .map(|b| b.mv.scaled(step).clamped(limit))
+        .collect();
+    Some(Grid::from_cells(blocks.cols(), blocks.rows(), cells))
 }

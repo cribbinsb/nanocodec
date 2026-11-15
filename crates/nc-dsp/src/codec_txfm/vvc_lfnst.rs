@@ -16,7 +16,7 @@ pub struct VvcLfnst {
     pub prediction_size: (usize, usize),
 }
 
-fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &mut [i32]) {
+fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &mut [i16]) {
     let (width, height) = size;
     let (pred_width, pred_height) = transform.prediction_size;
     let wide =
@@ -65,14 +65,15 @@ fn inverse(size: (usize, usize), transform: VvcLfnst, coefficients: &mut [i32]) 
             let sum: i32 = matrix[position][..active]
                 .iter()
                 .zip(&input[..active])
-                .map(|(&basis, &value)| i32::from(basis) * value)
+                .map(|(&basis, &value)| i32::from(basis) * i32::from(value))
                 .sum();
             let destination = if transpose {
                 x * width + y
             } else {
                 y * width + x
             };
-            coefficients[destination] = ((sum + 64) >> 7).clamp(-32768, 32767);
+            coefficients[destination] =
+                ((sum + 64) >> 7).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
             position += 1;
         }
     }
@@ -89,7 +90,7 @@ impl Dsp {
         levels: &[i32],
         qp: u8,
         dependent: bool,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let (width, height) = size;
         let valid = |n: usize| n.is_power_of_two() && (4..=64).contains(&n);

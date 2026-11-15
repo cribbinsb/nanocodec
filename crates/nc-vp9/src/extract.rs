@@ -1,12 +1,13 @@
-//! Per-receiver VP9 spatial-SVC stream extraction: what a selective
-//! forwarding relay sends one receiver of an L2T*/L3T* or K-SVC (`_KEY`)
-//! stream. VP9 carries no layer ids (§6.2), so the extractor follows each
+//! Per-receiver VP9 stream extraction: spatial-SVC superframe stripping
+//! (`L2T*`/`L3T*` and `_KEY`) via [`Vp9StreamExtractor`], and single-layer
+//! temporal sub-stream classification (`L1T2`/`L1T3`) via [`access_unit_layer`].
+//! VP9 carries no layer ids (§6.2), so spatial extraction follows each
 //! superframe's frames (Annex B §B.1–§B.3) through the eight reference slots
 //! (`refresh_frame_flags`, `ref_frame_idx`, §6.2 / §7.2) and keeps, per
 //! temporal unit, the frames the target layer's frame reaches: `[S0..=Sk]`
 //! in full SVC, and in K-SVC `[S0..=Sk]` on key units and `[Sk]` alone (with
-//! its `show_existing_frame`) otherwise. `nanocodec extract
-//! --operating-point` and `Decoder::set_operating_point` use it.
+//! its `show_existing_frame`) otherwise. `nanocodec extract` and
+//! `Decoder::set_operating_point` use it.
 
 use nc_common::decode::{BitReader, DecodeError, Result};
 
@@ -155,6 +156,41 @@ struct ScannedFrame<'a> {
 
 /// Extracted VP9 packet bytes paired with the shown frame's `(width, height)`.
 pub type ExtractedVp9Packet = (Vec<u8>, Option<(usize, usize)>);
+
+/// Temporal layer (`0..temporal_layers`) of an emitted single-spatial-layer VP9
+/// packet (`VP9 §6.2`, `nc_encoder::structure`):
+/// - Key frames, single-layer streams (`temporal_layers == 1`), and base-layer
+///   inter frames refreshing slot `0` (`refresh_frame_flags & 1 != 0`) return `0`.
+/// - Non-reference inter frames (`refresh_frame_flags == 0`) return the top
+///   temporal layer (`temporal_layers - 1`).
+/// - Middle-layer inter frames (`refresh_frame_flags != 0` without slot `0`,
+///   i.e. `T1` in `L1T3` refreshing slot `1`) return `1.min(temporal_layers - 1)`.
+///
+/// # Errors
+///
+/// Returns [`DecodeError`] if `temporal_layers` is outside `1..=3`, `packet` is
+/// a multi-frame spatial superframe, or its uncompressed header is malformed.
+pub fn access_unit_layer(packet: &[u8], temporal_layers: u8) -> Result<u8> {
+    if !(1..=3).contains(&temporal_layers) {
+        return Err(DecodeError::Unsupported(
+            "VP9 temporal layer count out of range",
+        ));
+    }
+    if split_superframe(packet).is_some() {
+        return Err(DecodeError::Unsupported(
+            "VP9 spatial superframe; use --operating-point",
+        ));
+    }
+    let prefix = parse_frame_prefix(trim_escape_padding(packet))?;
+    let top = temporal_layers - 1;
+    if temporal_layers == 1 || prefix.key_frame || (prefix.refresh_mask & 1) != 0 {
+        Ok(0)
+    } else if prefix.refresh_mask == 0 {
+        Ok(top)
+    } else {
+        Ok(1.min(top))
+    }
+}
 
 /// Stateful VP9 Annex B superframe selective-forwarding extractor (`VP9 §6.2`,
 /// `Annex B §B.1–§B.3`).
@@ -424,5 +460,50 @@ impl Vp9StreamExtractor {
             pack_coded_layers(&kept_slices)?
         };
         Ok(Some((out, coded[top_idx].size)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Vp9Backend;
+    use nc_common::{Picture, PlaneIndex};
+    use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides, StreamSignal};
+
+    #[test]
+    fn access_unit_layer_matches_emitted_vp9_temporal_layers() {
+        for temporal_layers in [1u8, 2, 3] {
+            let mut params = ParamOverrides::default();
+            params.set("layers.adaptive", 0.0);
+            params.set("hold.enable", 0.0);
+            let mut enc = Encoder::<Vp9Backend>::new(EncoderConfig {
+                codec: Codec::Vp9,
+                width: 64,
+                height: 64,
+                frame_rate: FrameRate { num: 30, den: 1 },
+                quantizer: 120,
+                intra_period: 30,
+                temporal_layers,
+                block_log2: 4,
+                key_qp_offset: None,
+                signal: StreamSignal::default(),
+                params,
+            })
+            .unwrap();
+            let mut pic = Picture::new(64, 64, 0).unwrap();
+            for f in 0..5u8 {
+                let mut view = pic.plane_mut(PlaneIndex::Y).view_mut();
+                for y in 0..view.height() {
+                    view.row_mut(y).fill(40u8.wrapping_add(f * 19));
+                }
+                let coded = enc.encode(&pic);
+                assert_eq!(
+                    access_unit_layer(&coded.data, temporal_layers).unwrap(),
+                    coded.metadata.temporal_layer
+                );
+            }
+        }
+        assert!(access_unit_layer(&[0x82], 0).is_err());
+        assert!(access_unit_layer(&[0x82], 4).is_err());
     }
 }

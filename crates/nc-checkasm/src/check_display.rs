@@ -200,49 +200,35 @@ fn check_sse(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut Check
     }
 }
 
-/// Full i32 extremes, asymmetric strides, untouched padding, and both DC/sample
-/// inputs exercise the saturating narrow/add identities used by every ISA.
+/// Full i16 extremes, asymmetric strides, untouched padding, and both DC/sample
+/// inputs exercise the saturating add identities used by every ISA.
 fn check_reconstruction(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
-    use nc_dsp::{BlockSize, Residual32};
+    use nc_dsp::{BlockSize, Residual16};
     for width in [4, 8, 16, 32, 64] {
         let height = 4 << rng.below(5);
         let size = BlockSize::new(width, height).unwrap();
         let ps = width + 3;
         let ds = width + 7;
         let prediction: Vec<_> = (0..ps * height).map(|_| extreme_byte(rng)).collect();
-        let values = [
-            i32::MIN,
-            -32769,
-            -32768,
-            -256,
-            -255,
-            -1,
-            0,
-            1,
-            255,
-            256,
-            32767,
-            32768,
-            i32::MAX,
-        ];
+        let values = [i16::MIN, -256, -255, -1, 0, 1, 255, 256, i16::MAX];
         let residual: Vec<_> = (0..width * height)
             .map(|_| values[rng.below(values.len())])
             .collect();
         let input = PlaneView::new(&prediction, ps, width, height).unwrap();
         for residual in [
-            Residual32::Samples(&residual),
-            Residual32::Constant(values[rng.below(values.len())]),
+            Residual16::Samples(&residual),
+            Residual16::Constant(values[rng.below(values.len())]),
         ] {
             let run = |dsp: &Dsp| {
                 let mut output = vec![0xa5; 1 + ds * height];
                 let mut view = PlaneViewMut::new(&mut output[1..], ds, width, height).unwrap();
-                dsp.reconstruct_i32(size, &input, residual, &mut view);
+                dsp.reconstruct_i16(size, &input, residual, &mut view);
                 output
             };
             report.cases += 1;
             if run(candidate) != run(reference) {
                 report.failures.push(format!(
-                    "{} reconstruct_i32 {width}x{height}: outputs differ",
+                    "{} reconstruct_i16 {width}x{height}: outputs differ",
                     candidate.isa()
                 ));
             }

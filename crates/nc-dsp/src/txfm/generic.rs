@@ -86,6 +86,20 @@ pub(crate) fn store_pass<V: I32Lanes>(
     }
 }
 
+/// [`store_pass`] into 16-bit storage, each lane saturated to `i16`
+/// ([`I32Lanes::store_transposed_sat16`]).
+#[inline(always)]
+pub(crate) fn store_pass_sat16<V: I32Lanes>(
+    lanes: &[V],
+    first: usize,
+    n: usize,
+    buf: &mut [MaybeUninit<i16>],
+) {
+    for k0 in (0..n).step_by(V::LANES) {
+        V::store_transposed_sat16(&lanes[k0..k0 + V::LANES], &mut buf[first * n + k0..], n);
+    }
+}
+
 /// [`store_pass`] of the first `lanes.len()` outputs only, into rows of
 /// `stride` values: `buf[(first + i) * stride + k] = lane i of lanes[k]`.
 #[cfg(any(

@@ -126,6 +126,8 @@ pub struct TileCdfs {
     pub skip_drl: [Cdf<2>; 3],
     /// AVM `default_intra_inter_cdf[a]` (q selected at construction; a/b are array axes).
     pub is_inter: [Cdf<2>; 4],
+    /// AVM `default_single_ref_cdf[a][0]` (q selected at construction; a/b are array axes).
+    pub single_ref: [Cdf<2>; 3],
     /// AVM `default_inter_single_mode_cdf[a]` (q selected at construction; a/b are array axes).
     pub inter_mode: [Cdf<3>; 5],
     /// AVM `default_drl_cdf[a][b]` (q selected at construction; a/b are array axes).
@@ -252,6 +254,7 @@ impl TileCdfs {
             skip_mode: defaults::SKIP_MODE.map(Initial::build),
             skip_drl: defaults::SKIP_DRL.map(Initial::build),
             is_inter: defaults::IS_INTER.map(Initial::build),
+            single_ref: defaults::SINGLE_REF.map(Initial::build),
             inter_mode: defaults::INTER_MODE.map(Initial::build),
             drl: defaults::DRL.map(|value| value.map(Initial::build)),
             mv_set: defaults::MV_SET.build(),
@@ -441,6 +444,9 @@ impl TileCdfs {
             v0.restart_adaptation();
         }
         for v0 in &mut self.is_inter {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.single_ref {
             v0.restart_adaptation();
         }
         for v0 in &mut self.inter_mode {
@@ -658,6 +664,9 @@ mod tests {
                 trace(v0, &mut hash);
             }
             for v0 in &mut models.is_inter {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.single_ref {
                 trace(v0, &mut hash);
             }
             for v0 in &mut models.inter_mode {

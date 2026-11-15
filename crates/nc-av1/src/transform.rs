@@ -267,10 +267,10 @@ pub fn inverse_dct_add(
     }
 }
 
-/// EOB-bounded inverse: the default 32x32 scan first reaches coordinate 8
-/// at position 36, and coordinate 16 at 136 (`nc_dsp::av1_dct_nonzero_side`).
-/// Thus the preceding EOB prefixes fit low8/16 squares (also for 64x64's
-/// coded 32x32). Pinned SVT similarly dispatches low1/8/16/32 kernels using
+/// EOB-bounded inverse: the default 16x16 and 32x32 scans first reach
+/// coordinate 8 at position 36, and coordinate 16 at 136
+/// (`nc_dsp::av1_dct_nonzero_side`). Thus the preceding EOB prefixes fit
+/// low8/16 squares (also for 64x64's coded 32x32). Pinned SVT similarly dispatches low1/8/16/32 kernels using
 /// its EOB-derived coordinate bounds.
 pub fn inverse_dct_add_eob(
     dsp: &Dsp,
@@ -279,8 +279,8 @@ pub fn inverse_dct_add_eob(
     eob: usize,
     dst: &mut nc_common::PlaneViewMut<'_>,
 ) {
-    if matches!(tx, TxSize::Tx32x32 | TxSize::Tx64x64) {
-        let limit = nc_dsp::av1_dct_nonzero_side(eob);
+    if matches!(tx, TxSize::Tx16x16 | TxSize::Tx32x32 | TxSize::Tx64x64) {
+        let limit = nc_dsp::av1_dct_nonzero_side(eob).min(tx.size());
         dsp.av1_inverse_dct_add_sparse(tx.size(), coeffs, limit, dst);
     } else {
         inverse_dct_add(dsp, tx, coeffs, dst);
@@ -419,6 +419,17 @@ mod tests {
         let expected =
             1024.0 * (2.0 * f64::from((1 << 22) - 1) * -32768.0 - 32768.0 * 32768.0) / 4.0;
         assert_eq!(coefficient_gain(&dsp, tx, &original, &dequant), expected);
+    }
+
+    /// The 16x16 low-8 bound the sparse inverse relies on: the scan's first
+    /// `LOW8_MAX_EOB` positions lie in the low 8x8 and the next does not.
+    #[test]
+    fn scan_16x16_prefix_fits_the_low_8x8() {
+        const SIDE: usize = 16;
+        let scan = &crate::tables::DEFAULT_SCAN_16X16;
+        let inside = |p: u16| usize::from(p) / SIDE < 8 && usize::from(p) % SIDE < 8;
+        assert!(scan[..LOW8_MAX_EOB].iter().all(|&p| inside(p)));
+        assert!(!inside(scan[LOW8_MAX_EOB]));
     }
 
     #[test]

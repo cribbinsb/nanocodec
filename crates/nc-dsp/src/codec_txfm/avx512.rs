@@ -58,7 +58,7 @@ macro_rules! sizes {
             unsafe { g::hevc_forward::<I32x16,$line,$n,$log>(src,stride,out); }
         }
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $i(coeffs:&[i32],out:&mut [i32]) {
+        unsafe fn $i(coeffs:&[i16],out:&mut [i16]) {
             // SAFETY: validated block and supported ISA from Dsp.
             unsafe { g::hevc_inverse_bounded::<I32x16,$inv,$n>(coeffs,out); }
         }

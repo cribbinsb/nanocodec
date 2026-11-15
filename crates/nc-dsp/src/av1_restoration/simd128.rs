@@ -16,10 +16,11 @@
 use core::arch::wasm32::{
     f32x4_convert_i32x4, f32x4_div, i8x16_shuffle, i16x8_add, i16x8_add_sat, i16x8_mul,
     i16x8_narrow_i32x4, i16x8_shl, i16x8_shr, i16x8_shuffle, i16x8_splat, i32x4_add,
-    i32x4_dot_i16x8, i32x4_eq, i32x4_max, i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_splat,
-    i32x4_sub, i32x4_trunc_sat_f32x4, i64x2_extract_lane, u8x16_narrow_i16x8,
-    u16x8_extend_high_u8x16, u16x8_extend_low_u8x16, u32x4_extend_high_u16x8,
-    u32x4_extend_low_u16x8, u32x4_shr, u64x2_splat, v128, v128_load, v128_store,
+    i32x4_dot_i16x8, i32x4_eq, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8, i32x4_max,
+    i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_splat, i32x4_sub, i32x4_trunc_sat_f32x4,
+    i64x2_extract_lane, u8x16_narrow_i16x8, u16x8_extend_high_u8x16, u16x8_extend_low_u8x16,
+    u32x4_extend_high_u16x8, u32x4_extend_low_u16x8, u32x4_shr, u64x2_splat, v128, v128_load,
+    v128_store,
 };
 
 use super::kernels::{Kernels, WIENER_ROWS};
@@ -205,6 +206,16 @@ impl SgrLanes for Lanes {
         }
     }
     #[inline(always)]
+    fn load_i16(src: &[i16]) -> Self {
+        let src = &src[..8];
+        // SAFETY: the load covers `src`.
+        let words = unsafe { v128_load(src.as_ptr().cast()) };
+        Self(
+            i32x4_extend_low_i16x8(words),
+            i32x4_extend_high_i16x8(words),
+        )
+    }
+    #[inline(always)]
     fn load_u8(src: &[u8]) -> Self {
         let bytes = u64::from_le_bytes(src[..8].try_into().expect("eight bytes"));
         let words = u16x8_extend_low_u8x16(u64x2_splat(bytes));
@@ -221,6 +232,12 @@ impl SgrLanes for Lanes {
             v128_store(dst.as_mut_ptr().cast(), self.0);
             v128_store(dst[4..].as_mut_ptr().cast(), self.1);
         }
+    }
+    #[inline(always)]
+    fn store_i16(self, dst: &mut [i16]) {
+        let dst = &mut dst[..8];
+        // SAFETY: the store covers `dst`.
+        unsafe { v128_store(dst.as_mut_ptr().cast(), i16x8_narrow_i32x4(self.0, self.1)) }
     }
     #[inline(always)]
     fn store_u8_sat(self, dst: &mut [u8]) {

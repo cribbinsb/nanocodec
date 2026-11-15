@@ -18,6 +18,7 @@ pub mod superframe;
 pub use decoder::{DecodedFrame, Decoder};
 pub use extract::{
     ExtractedVp9Packet, MAX_VP9_OPERATING_POINT, Vp9ExtractTarget, Vp9StreamExtractor,
+    access_unit_layer,
 };
 pub use superframe::{
     escape_single_frame, filter_superframe_layers, pack_coded_layers, pack_spatial_tu,

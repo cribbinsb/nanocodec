@@ -239,11 +239,13 @@ pub(crate) fn source_dc(plane: &nc_common::Plane, x: usize, y: usize, n: usize) 
 }
 
 /// Reusable dequantization and inverse-transform buffers (reused rather
-/// than zeroed per transform block: only the block's area is read).
+/// than zeroed per transform block: only the block's area is read). Both
+/// are 16-bit: dequantized values fit 16 bits (§8.6.2; the encoder caps its
+/// levels so, `Vp9QuantStep`), and so do the residuals.
 #[derive(Debug, Clone)]
 pub(crate) struct ResidualBuffers {
-    dequantized: [i32; 32 * 32],
-    residual: [i32; 32 * 32],
+    dequantized: [i16; 32 * 32],
+    residual: [i16; 32 * 32],
     /// The instance's kernels (the dispatched inverse transform).
     dsp: nc_dsp::Dsp,
 }
@@ -266,16 +268,17 @@ impl ResidualBuffers {
         lossless: bool,
         levels: &[i32],
         steps: Steps,
-    ) -> &[i32] {
+    ) -> &[i16] {
         let area = tx.area();
         // Every AC level shares one step: one branch-free pass the compiler
         // vectorizes, then the DC (`transform::dequantize_level`'s rule).
+        // The products stay 32-bit; the capped results fit 16 bits.
         let shift = tx.dequant_shift();
         for (value, &level) in self.dequantized[..area].iter_mut().zip(&levels[..area]) {
-            let magnitude = (level.unsigned_abs() as i32 * steps.ac) >> shift;
+            let magnitude = ((level.unsigned_abs() as i32 * steps.ac) >> shift) as i16;
             *value = if level < 0 { -magnitude } else { magnitude };
         }
-        self.dequantized[0] = transform::dequantize_level(tx, 0, levels[0], steps);
+        self.dequantized[0] = transform::dequantize_level(tx, 0, levels[0], steps) as i16;
         transform::inverse(
             &self.dsp,
             tx,
@@ -305,7 +308,7 @@ impl ResidualBuffers {
         if dc_only_applies(block.tx, ty, lossless)
             && levels[1..area].iter().all(|&level| level == 0)
         {
-            let dc = transform::dequantize_level(block.tx, 0, levels[0], steps);
+            let dc = transform::dequantize_level(block.tx, 0, levels[0], steps) as i16;
             add_constant(recon, block, transform::dc_only_residual(block.tx, dc));
             return;
         }
@@ -322,7 +325,7 @@ impl ResidualBuffers {
         recon: &mut Picture,
         block: &TxBlock,
         (ty, lossless): (TxType, bool),
-        coefficients: &[i32],
+        coefficients: &[i16],
         extent: Extent,
     ) {
         let area = block.tx.area();
@@ -358,24 +361,24 @@ fn dc_only_applies(tx: TxSize, ty: TxType, lossless: bool) -> bool {
 }
 
 /// Add `value` to the prediction under `block`, clipping to 8 bits.
-fn add_constant(recon: &mut Picture, block: &TxBlock, value: i32) {
+fn add_constant(recon: &mut Picture, block: &TxBlock, value: i16) {
     let side = block.tx.side();
     let mut view = recon.plane_mut(block.plane).view_mut();
     for dy in 0..side {
         for sample in &mut view.row_mut(block.y + dy)[block.x..block.x + side] {
-            *sample = (i32::from(*sample) + value).clamp(0, 255) as u8;
+            *sample = (i32::from(*sample) + i32::from(value)).clamp(0, 255) as u8;
         }
     }
 }
 
 /// Add a raster `residual` to the prediction under `block`, clipping.
-fn add_block(recon: &mut Picture, block: &TxBlock, residual: &[i32]) {
+fn add_block(recon: &mut Picture, block: &TxBlock, residual: &[i16]) {
     let side = block.tx.side();
     let mut view = recon.plane_mut(block.plane).view_mut();
     for (dy, row) in residual.chunks_exact(side).enumerate() {
         let samples = &mut view.row_mut(block.y + dy)[block.x..block.x + side];
         for (sample, &r) in samples.iter_mut().zip(row) {
-            *sample = (i32::from(*sample) + r).clamp(0, 255) as u8;
+            *sample = (i32::from(*sample) + i32::from(r)).clamp(0, 255) as u8;
         }
     }
 }

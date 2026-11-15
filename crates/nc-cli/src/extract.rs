@@ -8,8 +8,10 @@
 //! point selection, AV1 §7.18; the sequence header keeps listing every
 //! operating point, which stays valid since the dropped frames refresh no
 //! reference slot the kept ones use), AV2 likewise by the frame OBU's
-//! `temporal_id` (`nc_av2::temporal_unit_layer`). VVC uses NAL `TemporalId`
-//! (`nc_vvc::access_unit_layer`), retaining each kept picture's prefix ALF APS.
+//! `temporal_id` (`nc_av2::temporal_unit_layer`), VP9 by the uncompressed
+//! header's `refresh_frame_flags` (`nc_vp9::access_unit_layer`), and VVC by
+//! NAL `TemporalId` (`nc_vvc::access_unit_layer`), retaining each kept
+//! picture's prefix ALF APS.
 
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -127,9 +129,6 @@ fn parse(args: &[String]) -> Result<ExtractArgs, String> {
             },
         });
     }
-    if codec == Codec::Vp9 {
-        return Err(NO_VP9_LAYERS.into());
-    }
     let temporal_layers = layer("--temporal-layers")?;
     if !(1..=MAX_TEMPORAL_LAYERS).contains(&temporal_layers) {
         return Err("need 1 <= --temporal-layers <= 3".into());
@@ -153,9 +152,6 @@ fn parse(args: &[String]) -> Result<ExtractArgs, String> {
         action,
     })
 }
-
-/// VP9 temporal layer extraction without `--base-only` / `--operating-point`.
-const NO_VP9_LAYERS: &str = "VP9 temporal layer extraction is not supported";
 
 /// Run `nanocodec extract`.
 pub(super) fn run(args: &[String]) -> Result<(), String> {
@@ -198,7 +194,7 @@ fn layer_of(codec: Codec, unit: &[u8], temporal_layers: u8) -> Result<u8, String
         Codec::Vvc => nc_vvc::access_unit_layer(unit),
         Codec::Av1 => nc_av1::temporal_unit_layer(unit),
         Codec::Av2 => nc_av2::temporal_unit_layer(unit),
-        Codec::Vp9 => return Err(NO_VP9_LAYERS.into()),
+        Codec::Vp9 => nc_vp9::access_unit_layer(unit, temporal_layers),
     }
     .map_err(|e| e.to_string())
 }
@@ -211,11 +207,12 @@ fn layers(args: &ExtractArgs, input: &[u8]) -> Result<Vec<u8>, String> {
         Ok(())
     };
     match args.codec {
-        Codec::Av1 | Codec::Av2 => read_ivf(&mut Cursor::new(input), |_, frame| add(frame.packet))?,
+        Codec::Av1 | Codec::Av2 | Codec::Vp9 => {
+            read_ivf(&mut Cursor::new(input), |_, frame| add(frame.packet))?
+        }
         Codec::H264 | Codec::Hevc | Codec::Vvc => {
             read_annex_b(args.codec, &mut Cursor::new(input), add)?
         }
-        Codec::Vp9 => return Err(NO_VP9_LAYERS.into()),
     };
     Ok(layers)
 }
@@ -226,9 +223,8 @@ fn extract(args: &ExtractArgs, max_layer: u8, input: &[u8]) -> Result<Vec<u8>, S
         Ok(layer_of(args.codec, unit, args.temporal_layers)? <= max_layer)
     };
     match args.codec {
-        Codec::Vp9 => return Err(NO_VP9_LAYERS.into()),
-        Codec::Av1 | Codec::Av2 => {
-            let fourcc = ivf_fourcc(args.codec).expect("AV1 and AV2 streams are IVF");
+        Codec::Av1 | Codec::Av2 | Codec::Vp9 => {
+            let fourcc = ivf_fourcc(args.codec).expect("AV1, AV2, and VP9 streams are IVF");
             let mut kept = 0u32;
             read_ivf(&mut Cursor::new(input), |header, frame| {
                 if header.fourcc() != fourcc {
@@ -484,6 +480,22 @@ mod tests {
         assert!(matches!(parse(&list).unwrap().action, Action::List));
         assert!(with("3", "3").is_err());
         assert!(with("4", "0").is_err());
+        let vp9 = strings(&[
+            "--codec",
+            "vp9",
+            "--temporal-layers",
+            "3",
+            "--max-layer",
+            "1",
+            "--input",
+            "a",
+            "--output",
+            "b",
+        ]);
+        assert!(matches!(
+            parse(&vp9).unwrap().action,
+            Action::Keep { max_layer: 1, .. }
+        ));
     }
 
     #[test]

@@ -92,12 +92,23 @@ pub(super) fn one_by_x(n: u32) -> u32 {
 
 // ------------------------------------------------- scalar references ----
 
+/// The largest horizontal box sum, five samples of 255 (radius 2): the
+/// `i16` storage of the sums is exact (dav1d 8bpc keeps them in `int16_t`).
+const MAX_ROW_SUM: i32 = 5 * 255;
+const _: () = assert!(MAX_ROW_SUM <= i16::MAX as i32);
+
+/// The largest blend factor `A` (`x_by_xplus1(255)`); every `A` is in
+/// `1..=256`, so its `i16` storage is exact.
+const MAX_FACTOR: u32 = 1 << SGR_BITS;
+const _: () = assert!(MAX_FACTOR <= i16::MAX as u32);
+
 /// Scalar reference of the horizontal box sums of radius `R`: `sum[j]`
 /// and `squares[j]` over `src[j..j + 2R + 1]`, for `j < n`.
-pub(super) fn box_sums<const R: usize>(src: &[u8], sum: &mut [i32], squares: &mut [i32], n: usize) {
+pub(super) fn box_sums<const R: usize>(src: &[u8], sum: &mut [i16], squares: &mut [i32], n: usize) {
     for j in 0..n {
         let samples = src[j..=j + 2 * R].iter().map(|&s| i32::from(s));
-        sum[j] = samples.clone().sum();
+        // At most MAX_ROW_SUM, so the narrowing is exact.
+        sum[j] = samples.clone().sum::<i32>() as i16;
         squares[j] = samples.map(|s| s * s).sum();
     }
 }
@@ -107,10 +118,10 @@ pub(super) fn box_sums<const R: usize>(src: &[u8], sum: &mut [i32], squares: &mu
 /// blend factor `A` into `a` and the scaled mean `B` into `b` (AV1
 /// §7.17.3, `p`, `z`, `a2`, `b2`).
 pub(super) fn box_ab<const N: usize>(
-    sums: [&[i32]; N],
+    sums: [&[i16]; N],
     squares: [&[i32]; N],
     scale: u32,
-    (a, b): (&mut [i32], &mut [i32]),
+    (a, b): (&mut [i16], &mut [i32]),
     n: usize,
 ) {
     let count = (N * N) as u32;
@@ -120,7 +131,8 @@ pub(super) fn box_ab<const N: usize>(
         let p = (square * count).saturating_sub(sum * sum);
         let z = (p * scale + (1 << (MTABLE_BITS - 1))) >> MTABLE_BITS;
         let factor = x_by_xplus1(z);
-        a[j] = factor as i32;
+        // At most MAX_FACTOR, so the narrowing is exact.
+        a[j] = factor as i16;
         b[j] = ((((1 << SGR_BITS) - factor) * sum * one_by_x(count) + (1 << (RECIP_BITS - 1)))
             >> RECIP_BITS) as i32;
     }
@@ -128,57 +140,81 @@ pub(super) fn box_ab<const N: usize>(
 
 /// The filtered sample from weighted sums of `A` and `B` (AV1 §7.17.3
 /// `v = a * Src + b`).
-fn filtered(weighted_a: i32, weighted_b: i32, source: u8, shift: u32) -> i32 {
-    (weighted_a * i32::from(source) + weighted_b + (1 << (shift - 1))) >> shift
+///
+/// It fits `i16`: per box `1 ≤ A ≤ 256` and `0 ≤ B ≤ ((256 − A) · 255 · n
+/// · one_by_x(n) + 2^11) >> 12` (`n` = 9 or 25), so `A · Src + B ≤ 65344`
+/// over every `A`; the weights (32 or 16) are removed by the shift (9 or
+/// 8), so `0 ≤ v ≤ 4084 < 2^13`, as in dav1d's 8bpc `int16_t` rows.
+fn filtered(weighted_a: i32, weighted_b: i32, source: u8, shift: u32) -> i16 {
+    ((weighted_a * i32::from(source) + weighted_b + (1 << (shift - 1))) >> shift) as i16
+}
+
+/// `A` in 32 bits, for the weighted sums.
+fn wide(v: &[i16], j: usize) -> i32 {
+    i32::from(v[j])
 }
 
 /// Scalar reference of a radius-2 output row between two box rows
 /// (`above`, `below`): weights 6 straight across, 5 diagonally. Box
 /// columns are offset by one: column `j` reads index `j + 1`.
 pub(super) fn filter_between(
-    a: [&[i32]; 2],
+    a: [&[i16]; 2],
     b: [&[i32]; 2],
     src: &[u8],
-    out: &mut [i32],
+    out: &mut [i16],
     n: usize,
 ) {
-    let weigh = |v: [&[i32]; 2], j: usize| {
+    let weigh_a = |v: [&[i16]; 2], j: usize| {
+        (wide(v[0], j + 1) + wide(v[1], j + 1)) * 6
+            + (wide(v[0], j) + wide(v[0], j + 2) + wide(v[1], j) + wide(v[1], j + 2)) * 5
+    };
+    let weigh_b = |v: [&[i32]; 2], j: usize| {
         (v[0][j + 1] + v[1][j + 1]) * 6 + (v[0][j] + v[0][j + 2] + v[1][j] + v[1][j + 2]) * 5
     };
     for j in 0..n {
-        out[j] = filtered(weigh(a, j), weigh(b, j), src[j], TWO_ROW_SHIFT);
+        out[j] = filtered(weigh_a(a, j), weigh_b(b, j), src[j], TWO_ROW_SHIFT);
     }
 }
 
 /// Scalar reference of a radius-2 output row on a box row: weights 6 at
 /// the centre, 5 left and right.
-pub(super) fn filter_on(a: &[i32], b: &[i32], src: &[u8], out: &mut [i32], n: usize) {
-    let weigh = |v: &[i32], j: usize| v[j + 1] * 6 + (v[j] + v[j + 2]) * 5;
+pub(super) fn filter_on(a: &[i16], b: &[i32], src: &[u8], out: &mut [i16], n: usize) {
+    let weigh_a = |v: &[i16], j: usize| wide(v, j + 1) * 6 + (wide(v, j) + wide(v, j + 2)) * 5;
+    let weigh_b = |v: &[i32], j: usize| v[j + 1] * 6 + (v[j] + v[j + 2]) * 5;
     for j in 0..n {
-        out[j] = filtered(weigh(a, j), weigh(b, j), src[j], ONE_ROW_SHIFT);
+        out[j] = filtered(weigh_a(a, j), weigh_b(b, j), src[j], ONE_ROW_SHIFT);
     }
 }
 
 /// Scalar reference of a radius-1 output row from the box rows above, on
 /// and below: weights 4 on the cross, 3 on the diagonals.
-pub(super) fn filter_around(a: [&[i32]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i32], n: usize) {
-    let weigh = |v: [&[i32]; 3], j: usize| {
+pub(super) fn filter_around(a: [&[i16]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i16], n: usize) {
+    let weigh_a = |v: [&[i16]; 3], j: usize| {
+        (wide(v[1], j)
+            + wide(v[1], j + 1)
+            + wide(v[1], j + 2)
+            + wide(v[0], j + 1)
+            + wide(v[2], j + 1))
+            * 4
+            + (wide(v[0], j) + wide(v[0], j + 2) + wide(v[2], j) + wide(v[2], j + 2)) * 3
+    };
+    let weigh_b = |v: [&[i32]; 3], j: usize| {
         (v[1][j] + v[1][j + 1] + v[1][j + 2] + v[0][j + 1] + v[2][j + 1]) * 4
             + (v[0][j] + v[0][j + 2] + v[2][j] + v[2][j + 2]) * 3
     };
     for j in 0..n {
-        out[j] = filtered(weigh(a, j), weigh(b, j), src[j], TWO_ROW_SHIFT);
+        out[j] = filtered(weigh_a(a, j), weigh_b(b, j), src[j], TWO_ROW_SHIFT);
     }
 }
 
 /// Scalar reference of the projection (AV1 §7.17.3:
 /// `v = w0 · (flt0 − u) + w1 · (flt1 − u) + u · 2^7`), `dst[j]` from
 /// `src[j]` and the two filtered rows.
-pub(super) fn blend(src: &[u8], filtered: [&[i32]; 2], weights: [i32; 2], dst: &mut [u8]) {
+pub(super) fn blend(src: &[u8], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [u8]) {
     for (j, dst) in dst.iter_mut().enumerate() {
         let u = i32::from(src[j]) << SOURCE_SHIFT;
-        let v =
-            (u << PRJ_BITS) + weights[0] * (filtered[0][j] - u) + weights[1] * (filtered[1][j] - u);
+        let [f0, f1] = filtered.map(|row| i32::from(row[j]));
+        let v = (u << PRJ_BITS) + weights[0] * (f0 - u) + weights[1] * (f1 - u);
         *dst = ((v + (1 << (BLEND_SHIFT - 1))) >> BLEND_SHIFT).clamp(0, 255) as u8;
     }
 }
@@ -187,49 +223,49 @@ pub(super) fn blend(src: &[u8], filtered: [&[i32]; 2], weights: [i32; 2], dst: &
 
 /// Rows of `len` values in one buffer, addressed modulo their count.
 #[derive(Debug, Default)]
-struct Ring {
-    data: Vec<i32>,
+struct Ring<T> {
+    data: Vec<T>,
     len: usize,
     count: usize,
 }
 
-impl Ring {
+impl<T: Copy + Default> Ring<T> {
     fn reset(&mut self, count: usize, len: usize) {
         super::grow(&mut self.data, count * len);
         (self.count, self.len) = (count, len);
     }
 
-    fn row(&self, index: usize) -> &[i32] {
+    fn row(&self, index: usize) -> &[T] {
         let start = index % self.count * self.len;
         &self.data[start..start + self.len]
     }
 
-    fn row_mut(&mut self, index: usize) -> &mut [i32] {
+    fn row_mut(&mut self, index: usize) -> &mut [T] {
         let start = index % self.count * self.len;
         &mut self.data[start..start + self.len]
     }
 }
 
 /// The rings of one box-filter pass: horizontal sums and squares by
-/// window row, `A` and `B` by box row.
+/// window row, `A` and `B` by box row. The sums and `A` fit `i16`
+/// ([`MAX_ROW_SUM`], [`MAX_FACTOR`]); the squares and `B` (up to about
+/// 65280) do not.
 #[derive(Debug, Default)]
 struct PassRings {
-    sums: Ring,
-    squares: Ring,
-    a: Ring,
-    b: Ring,
+    sums: Ring<i16>,
+    squares: Ring<i32>,
+    a: Ring<i16>,
+    b: Ring<i32>,
     /// The next window row whose horizontal sums are due.
     next_window_row: usize,
 }
 
 impl PassRings {
     fn reset(&mut self, radius: usize, box_rows: usize, len: usize) {
-        for ring in [&mut self.sums, &mut self.squares] {
-            ring.reset(2 * radius + 1, len);
-        }
-        for ring in [&mut self.a, &mut self.b] {
-            ring.reset(box_rows, len);
-        }
+        self.sums.reset(2 * radius + 1, len);
+        self.squares.reset(2 * radius + 1, len);
+        self.a.reset(box_rows, len);
+        self.b.reset(box_rows, len);
         self.next_window_row = 0;
     }
 }
@@ -239,7 +275,7 @@ impl PassRings {
 pub(super) struct SgrScratch {
     radius2: PassRings,
     radius1: PassRings,
-    filtered: [Vec<i32>; 2],
+    filtered: [Vec<i16>; 2],
 }
 
 /// The window rows of one region and what the kernels read of them.

@@ -4,7 +4,11 @@
 //! 2010 The `WebM` Project authors, see `THIRD_PARTY.md`. Do not edit by hand.
 //!
 //! The inverse wraps every stage to 16 bits (`WRAPLOW`, the 8-bit decoder's
-//! `int16_t` storage); the forward keeps full precision.
+//! `int16_t` storage); the forward keeps full precision. The inverse's sums
+//! of products are wrapping i32, as libvpx's `int` stage variables: each is
+//! consumed only through `wrap` or `wrap(round_shift(..))`, and a sum taken
+//! modulo 2^32, shifted right by 14 and truncated to 16 bits equals the
+//! exact one (the discarded multiple, 2^18, is itself a multiple of 2^16).
 
 #![allow(
     clippy::too_many_lines,
@@ -19,6 +23,7 @@
 )]
 
 use super::VP9_COSPI_64 as C_TABLE;
+use std::num::Wrapping;
 
 const C: [i64; 32] = {
     let mut c = [0i64; 32];
@@ -30,43 +35,61 @@ const C: [i64; 32] = {
     c
 };
 
+/// A stage value of the inverse: wrapping i32.
+type Stage = Wrapping<i32>;
+
+/// The cosines as [`Stage`] values, for the inverse.
+const COS: [Stage; 32] = {
+    let mut c = [Wrapping(0); 32];
+    let mut k = 0;
+    while k < 32 {
+        c[k] = Wrapping(C_TABLE[k]);
+        k += 1;
+    }
+    c
+};
+
 /// 14-bit rounding (`dct_const_round_shift`).
 fn round_shift(value: i64) -> i64 {
     (value + (1 << 13)) >> 14
 }
 
 /// Normative inverse 8-point ADST (libvpx `iadst8_c`).
-pub(super) fn iadst8(input: &[i32; 8], output: &mut [i32; 8]) {
+pub(super) fn iadst8(input: &[i16; 8], output: &mut [i16; 8]) {
     /// `WRAPLOW`: truncate to 16 bits.
-    fn wrap(value: i64) -> i64 {
-        i64::from(value as i16)
+    fn wrap(value: Stage) -> Stage {
+        Wrapping(i32::from(value.0 as i16))
+    }
+    /// 14-bit rounding (`dct_const_round_shift`) modulo 2^32.
+    fn round_shift(value: Stage) -> Stage {
+        (value + Wrapping(1 << 13)) >> 14
     }
     let (mut s0, mut s1, mut s2, mut s3, mut s4, mut s5, mut s6, mut s7): (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
     );
-    let mut x0 = i64::from(input[7]);
-    let mut x1 = i64::from(input[0]);
-    let mut x2 = i64::from(input[5]);
-    let mut x3 = i64::from(input[2]);
-    let mut x4 = i64::from(input[3]);
-    let mut x5 = i64::from(input[4]);
-    let mut x6 = i64::from(input[1]);
-    let mut x7 = i64::from(input[6]);
-    s0 = (C[2] * x0 + C[30] * x1);
-    s1 = (C[30] * x0 - C[2] * x1);
-    s2 = (C[10] * x2 + C[22] * x3);
-    s3 = (C[22] * x2 - C[10] * x3);
-    s4 = (C[18] * x4 + C[14] * x5);
-    s5 = (C[14] * x4 - C[18] * x5);
-    s6 = (C[26] * x6 + C[6] * x7);
-    s7 = (C[6] * x6 - C[26] * x7);
+    let mut x0 = Wrapping(i32::from(input[7]));
+    let mut x1 = Wrapping(i32::from(input[0]));
+    let mut x2 = Wrapping(i32::from(input[5]));
+    let mut x3 = Wrapping(i32::from(input[2]));
+    let mut x4 = Wrapping(i32::from(input[3]));
+    let mut x5 = Wrapping(i32::from(input[4]));
+    let mut x6 = Wrapping(i32::from(input[1]));
+    let mut x7 = Wrapping(i32::from(input[6]));
+    s0 = (COS[2] * x0 + COS[30] * x1);
+    s1 = (COS[30] * x0 - COS[2] * x1);
+    s2 = (COS[10] * x2 + COS[22] * x3);
+    s3 = (COS[22] * x2 - COS[10] * x3);
+    s4 = (COS[18] * x4 + COS[14] * x5);
+    s5 = (COS[14] * x4 - COS[18] * x5);
+    s6 = (COS[26] * x6 + COS[6] * x7);
+    s7 = (COS[6] * x6 - COS[26] * x7);
     x0 = wrap(round_shift(s0 + s4));
     x1 = wrap(round_shift(s1 + s5));
     x2 = wrap(round_shift(s2 + s6));
@@ -79,10 +102,10 @@ pub(super) fn iadst8(input: &[i32; 8], output: &mut [i32; 8]) {
     s1 = x1;
     s2 = x2;
     s3 = x3;
-    s4 = (C[8] * x4 + C[24] * x5);
-    s5 = (C[24] * x4 - C[8] * x5);
-    s6 = (-C[24] * x6 + C[8] * x7);
-    s7 = (C[8] * x6 + C[24] * x7);
+    s4 = (COS[8] * x4 + COS[24] * x5);
+    s5 = (COS[24] * x4 - COS[8] * x5);
+    s6 = (-COS[24] * x6 + COS[8] * x7);
+    s7 = (COS[8] * x6 + COS[24] * x7);
     x0 = wrap(s0 + s2);
     x1 = wrap(s1 + s3);
     x2 = wrap(s0 - s2);
@@ -91,82 +114,86 @@ pub(super) fn iadst8(input: &[i32; 8], output: &mut [i32; 8]) {
     x5 = wrap(round_shift(s5 + s7));
     x6 = wrap(round_shift(s4 - s6));
     x7 = wrap(round_shift(s5 - s7));
-    s2 = (C[16] * (x2 + x3));
-    s3 = (C[16] * (x2 - x3));
-    s6 = (C[16] * (x6 + x7));
-    s7 = (C[16] * (x6 - x7));
+    s2 = (COS[16] * (x2 + x3));
+    s3 = (COS[16] * (x2 - x3));
+    s6 = (COS[16] * (x6 + x7));
+    s7 = (COS[16] * (x6 - x7));
     x2 = wrap(round_shift(s2));
     x3 = wrap(round_shift(s3));
     x6 = wrap(round_shift(s6));
     x7 = wrap(round_shift(s7));
-    output[0] = (wrap(x0)) as i32;
-    output[1] = (wrap(-x4)) as i32;
-    output[2] = (wrap(x6)) as i32;
-    output[3] = (wrap(-x2)) as i32;
-    output[4] = (wrap(x3)) as i32;
-    output[5] = (wrap(-x7)) as i32;
-    output[6] = (wrap(x5)) as i32;
-    output[7] = (wrap(-x1)) as i32;
+    output[0] = (wrap(x0)).0 as i16;
+    output[1] = (wrap(-x4)).0 as i16;
+    output[2] = (wrap(x6)).0 as i16;
+    output[3] = (wrap(-x2)).0 as i16;
+    output[4] = (wrap(x3)).0 as i16;
+    output[5] = (wrap(-x7)).0 as i16;
+    output[6] = (wrap(x5)).0 as i16;
+    output[7] = (wrap(-x1)).0 as i16;
 }
 
 /// Normative inverse 16-point ADST (libvpx `iadst16_c`).
-pub(super) fn iadst16(input: &[i32; 16], output: &mut [i32; 16]) {
+pub(super) fn iadst16(input: &[i16; 16], output: &mut [i16; 16]) {
     /// `WRAPLOW`: truncate to 16 bits.
-    fn wrap(value: i64) -> i64 {
-        i64::from(value as i16)
+    fn wrap(value: Stage) -> Stage {
+        Wrapping(i32::from(value.0 as i16))
+    }
+    /// 14-bit rounding (`dct_const_round_shift`) modulo 2^32.
+    fn round_shift(value: Stage) -> Stage {
+        (value + Wrapping(1 << 13)) >> 14
     }
     let (mut s0, mut s1, mut s2, mut s3, mut s4, mut s5, mut s6, mut s7): (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
     );
     let (mut s8, mut s9, mut s10, mut s11, mut s12, mut s13, mut s14, mut s15): (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
+        Stage,
     );
-    let mut x0 = i64::from(input[15]);
-    let mut x1 = i64::from(input[0]);
-    let mut x2 = i64::from(input[13]);
-    let mut x3 = i64::from(input[2]);
-    let mut x4 = i64::from(input[11]);
-    let mut x5 = i64::from(input[4]);
-    let mut x6 = i64::from(input[9]);
-    let mut x7 = i64::from(input[6]);
-    let mut x8 = i64::from(input[7]);
-    let mut x9 = i64::from(input[8]);
-    let mut x10 = i64::from(input[5]);
-    let mut x11 = i64::from(input[10]);
-    let mut x12 = i64::from(input[3]);
-    let mut x13 = i64::from(input[12]);
-    let mut x14 = i64::from(input[1]);
-    let mut x15 = i64::from(input[14]);
-    s0 = x0 * C[1] + x1 * C[31];
-    s1 = x0 * C[31] - x1 * C[1];
-    s2 = x2 * C[5] + x3 * C[27];
-    s3 = x2 * C[27] - x3 * C[5];
-    s4 = x4 * C[9] + x5 * C[23];
-    s5 = x4 * C[23] - x5 * C[9];
-    s6 = x6 * C[13] + x7 * C[19];
-    s7 = x6 * C[19] - x7 * C[13];
-    s8 = x8 * C[17] + x9 * C[15];
-    s9 = x8 * C[15] - x9 * C[17];
-    s10 = x10 * C[21] + x11 * C[11];
-    s11 = x10 * C[11] - x11 * C[21];
-    s12 = x12 * C[25] + x13 * C[7];
-    s13 = x12 * C[7] - x13 * C[25];
-    s14 = x14 * C[29] + x15 * C[3];
-    s15 = x14 * C[3] - x15 * C[29];
+    let mut x0 = Wrapping(i32::from(input[15]));
+    let mut x1 = Wrapping(i32::from(input[0]));
+    let mut x2 = Wrapping(i32::from(input[13]));
+    let mut x3 = Wrapping(i32::from(input[2]));
+    let mut x4 = Wrapping(i32::from(input[11]));
+    let mut x5 = Wrapping(i32::from(input[4]));
+    let mut x6 = Wrapping(i32::from(input[9]));
+    let mut x7 = Wrapping(i32::from(input[6]));
+    let mut x8 = Wrapping(i32::from(input[7]));
+    let mut x9 = Wrapping(i32::from(input[8]));
+    let mut x10 = Wrapping(i32::from(input[5]));
+    let mut x11 = Wrapping(i32::from(input[10]));
+    let mut x12 = Wrapping(i32::from(input[3]));
+    let mut x13 = Wrapping(i32::from(input[12]));
+    let mut x14 = Wrapping(i32::from(input[1]));
+    let mut x15 = Wrapping(i32::from(input[14]));
+    s0 = x0 * COS[1] + x1 * COS[31];
+    s1 = x0 * COS[31] - x1 * COS[1];
+    s2 = x2 * COS[5] + x3 * COS[27];
+    s3 = x2 * COS[27] - x3 * COS[5];
+    s4 = x4 * COS[9] + x5 * COS[23];
+    s5 = x4 * COS[23] - x5 * COS[9];
+    s6 = x6 * COS[13] + x7 * COS[19];
+    s7 = x6 * COS[19] - x7 * COS[13];
+    s8 = x8 * COS[17] + x9 * COS[15];
+    s9 = x8 * COS[15] - x9 * COS[17];
+    s10 = x10 * COS[21] + x11 * COS[11];
+    s11 = x10 * COS[11] - x11 * COS[21];
+    s12 = x12 * COS[25] + x13 * COS[7];
+    s13 = x12 * COS[7] - x13 * COS[25];
+    s14 = x14 * COS[29] + x15 * COS[3];
+    s15 = x14 * COS[3] - x15 * COS[29];
     x0 = wrap(round_shift(s0 + s8));
     x1 = wrap(round_shift(s1 + s9));
     x2 = wrap(round_shift(s2 + s10));
@@ -191,14 +218,14 @@ pub(super) fn iadst16(input: &[i32; 16], output: &mut [i32; 16]) {
     s5 = x5;
     s6 = x6;
     s7 = x7;
-    s8 = x8 * C[4] + x9 * C[28];
-    s9 = x8 * C[28] - x9 * C[4];
-    s10 = x10 * C[20] + x11 * C[12];
-    s11 = x10 * C[12] - x11 * C[20];
-    s12 = -x12 * C[28] + x13 * C[4];
-    s13 = x12 * C[4] + x13 * C[28];
-    s14 = -x14 * C[12] + x15 * C[20];
-    s15 = x14 * C[20] + x15 * C[12];
+    s8 = x8 * COS[4] + x9 * COS[28];
+    s9 = x8 * COS[28] - x9 * COS[4];
+    s10 = x10 * COS[20] + x11 * COS[12];
+    s11 = x10 * COS[12] - x11 * COS[20];
+    s12 = -x12 * COS[28] + x13 * COS[4];
+    s13 = x12 * COS[4] + x13 * COS[28];
+    s14 = -x14 * COS[12] + x15 * COS[20];
+    s15 = x14 * COS[20] + x15 * COS[12];
     x0 = wrap(s0 + s4);
     x1 = wrap(s1 + s5);
     x2 = wrap(s2 + s6);
@@ -219,18 +246,18 @@ pub(super) fn iadst16(input: &[i32; 16], output: &mut [i32; 16]) {
     s1 = x1;
     s2 = x2;
     s3 = x3;
-    s4 = x4 * C[8] + x5 * C[24];
-    s5 = x4 * C[24] - x5 * C[8];
-    s6 = -x6 * C[24] + x7 * C[8];
-    s7 = x6 * C[8] + x7 * C[24];
+    s4 = x4 * COS[8] + x5 * COS[24];
+    s5 = x4 * COS[24] - x5 * COS[8];
+    s6 = -x6 * COS[24] + x7 * COS[8];
+    s7 = x6 * COS[8] + x7 * COS[24];
     s8 = x8;
     s9 = x9;
     s10 = x10;
     s11 = x11;
-    s12 = x12 * C[8] + x13 * C[24];
-    s13 = x12 * C[24] - x13 * C[8];
-    s14 = -x14 * C[24] + x15 * C[8];
-    s15 = x14 * C[8] + x15 * C[24];
+    s12 = x12 * COS[8] + x13 * COS[24];
+    s13 = x12 * COS[24] - x13 * COS[8];
+    s14 = -x14 * COS[24] + x15 * COS[8];
+    s15 = x14 * COS[8] + x15 * COS[24];
     x0 = wrap(s0 + s2);
     x1 = wrap(s1 + s3);
     x2 = wrap(s0 - s2);
@@ -247,14 +274,14 @@ pub(super) fn iadst16(input: &[i32; 16], output: &mut [i32; 16]) {
     x13 = wrap(round_shift(s13 + s15));
     x14 = wrap(round_shift(s12 - s14));
     x15 = wrap(round_shift(s13 - s15));
-    s2 = (-C[16]) * (x2 + x3);
-    s3 = C[16] * (x2 - x3);
-    s6 = C[16] * (x6 + x7);
-    s7 = C[16] * (-x6 + x7);
-    s10 = C[16] * (x10 + x11);
-    s11 = C[16] * (-x10 + x11);
-    s14 = (-C[16]) * (x14 + x15);
-    s15 = C[16] * (x14 - x15);
+    s2 = (-COS[16]) * (x2 + x3);
+    s3 = COS[16] * (x2 - x3);
+    s6 = COS[16] * (x6 + x7);
+    s7 = COS[16] * (-x6 + x7);
+    s10 = COS[16] * (x10 + x11);
+    s11 = COS[16] * (-x10 + x11);
+    s14 = (-COS[16]) * (x14 + x15);
+    s15 = COS[16] * (x14 - x15);
     x2 = wrap(round_shift(s2));
     x3 = wrap(round_shift(s3));
     x6 = wrap(round_shift(s6));
@@ -263,22 +290,22 @@ pub(super) fn iadst16(input: &[i32; 16], output: &mut [i32; 16]) {
     x11 = wrap(round_shift(s11));
     x14 = wrap(round_shift(s14));
     x15 = wrap(round_shift(s15));
-    output[0] = (wrap(x0)) as i32;
-    output[1] = (wrap(-x8)) as i32;
-    output[2] = (wrap(x12)) as i32;
-    output[3] = (wrap(-x4)) as i32;
-    output[4] = (wrap(x6)) as i32;
-    output[5] = (wrap(x14)) as i32;
-    output[6] = (wrap(x10)) as i32;
-    output[7] = (wrap(x2)) as i32;
-    output[8] = (wrap(x3)) as i32;
-    output[9] = (wrap(x11)) as i32;
-    output[10] = (wrap(x15)) as i32;
-    output[11] = (wrap(x7)) as i32;
-    output[12] = (wrap(x5)) as i32;
-    output[13] = (wrap(-x13)) as i32;
-    output[14] = (wrap(x9)) as i32;
-    output[15] = (wrap(-x1)) as i32;
+    output[0] = (wrap(x0)).0 as i16;
+    output[1] = (wrap(-x8)).0 as i16;
+    output[2] = (wrap(x12)).0 as i16;
+    output[3] = (wrap(-x4)).0 as i16;
+    output[4] = (wrap(x6)).0 as i16;
+    output[5] = (wrap(x14)).0 as i16;
+    output[6] = (wrap(x10)).0 as i16;
+    output[7] = (wrap(x2)).0 as i16;
+    output[8] = (wrap(x3)).0 as i16;
+    output[9] = (wrap(x11)).0 as i16;
+    output[10] = (wrap(x15)).0 as i16;
+    output[11] = (wrap(x7)).0 as i16;
+    output[12] = (wrap(x5)).0 as i16;
+    output[13] = (wrap(-x13)).0 as i16;
+    output[14] = (wrap(x9)).0 as i16;
+    output[15] = (wrap(-x1)).0 as i16;
 }
 
 /// Encoder forward 8-point ADST (libvpx `fadst8`).

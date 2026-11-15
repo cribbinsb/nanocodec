@@ -6,13 +6,11 @@ use crate::Vp9Pass;
 use crate::txfm::inverse_lanes::InverseLanes;
 use core::arch::wasm32::{
     i16x8_add, i16x8_q15mulr_sat, i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_add,
-    i32x4_dot_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8, i32x4_extmul_high_i16x8,
-    i32x4_extmul_low_i16x8, i32x4_shr, i32x4_splat, i32x4_sub, u8x16_narrow_i16x8,
-    u16x8_extend_low_u8x16, u16x8_narrow_i32x4, v128, v128_and, v128_load, v128_load64_zero,
-    v128_store, v128_store64_lane,
+    i32x4_dot_i16x8, i32x4_extmul_high_i16x8, i32x4_extmul_low_i16x8, i32x4_shr, i32x4_splat,
+    i32x4_sub, u8x16_narrow_i16x8, u16x8_extend_low_u8x16, u16x8_narrow_i32x4, v128, v128_and,
+    v128_load, v128_load64_zero, v128_store, v128_store64_lane,
 };
 
-const HALF: usize = 4;
 const LOW_WORD: i32 = 0xffff;
 
 #[derive(Clone, Copy)]
@@ -116,18 +114,6 @@ impl Lanes for Narrow {
         Wide([i32x4_dot_i16x8(lo, weights), i32x4_dot_i16x8(hi, weights)])
     }
     #[inline(always)]
-    fn load_i32_wrapping(src: &[i32]) -> Self {
-        let src = &src[..super::LANES];
-        // SAFETY: the checked slice holds both unaligned four-element loads.
-        unsafe {
-            Wide([
-                v128_load(src.as_ptr().cast()),
-                v128_load(src.as_ptr().add(HALF).cast()),
-            ])
-            .narrow()
-        }
-    }
-    #[inline(always)]
     fn load_i16(src: &[i16]) -> Self {
         let src = &src[..super::LANES];
         // SAFETY: the checked slice holds all sixteen bytes of the vector.
@@ -142,23 +128,16 @@ impl Lanes for Narrow {
         }
     }
     #[inline(always)]
-    fn store_shifted(self, dst: &mut [i32], shift: u32) {
-        let dst = &mut dst[..super::LANES];
-        let round = i32x4_splat(1 << (shift - 1));
-        let lo = i32x4_shr(i32x4_add(i32x4_extend_low_i16x8(self.0), round), shift);
-        let hi = i32x4_shr(i32x4_add(i32x4_extend_high_i16x8(self.0), round), shift);
-        // SAFETY: the checked destination holds both four-element stores.
-        unsafe {
-            v128_store(dst.as_mut_ptr().cast(), lo);
-            v128_store(dst.as_mut_ptr().add(HALF).cast(), hi);
-        }
+    fn round_shift(self, shift: u32) -> Self {
+        // `q15mulr` by 2^(15 - shift) is exactly `(x + 2^(shift - 1)) >>
+        // shift` (it saturates only for -32768 * -32768).
+        Self(i16x8_q15mulr_sat(self.0, i16x8_splat(1 << (15 - shift))))
     }
     #[inline(always)]
     unsafe fn add_shifted(self, dst: *mut u8, shift: u32) {
-        // `q15mulr` by 2^(15 - shift) is exactly `(x + 2^(shift - 1)) >>
-        // shift` (it saturates only for -32768 * -32768); the residual plus
-        // a pixel fits i16 and the unsigned saturating narrow clips.
-        let residual = i16x8_q15mulr_sat(self.0, i16x8_splat(1 << (15 - shift)));
+        // The residual plus a pixel fits i16 and the unsigned saturating
+        // narrow clips.
+        let residual = self.round_shift(shift).0;
         // SAFETY: the caller's destination holds the eight samples.
         unsafe {
             let pixels = u16x8_extend_low_u8x16(v128_load64_zero(dst.cast_const().cast()));
@@ -181,8 +160,8 @@ pub(crate) unsafe fn inverse(
     log2: u8,
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
-    output: &mut [i32],
+    input: &[i16],
+    output: &mut [i16],
 ) {
     super::inverse::<Narrow>(log2, columns, rows, input, output);
 }
@@ -192,7 +171,7 @@ pub(crate) unsafe fn inverse_add(
     log2: u8,
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
+    input: &[i16],
     nonzero: (usize, usize),
     dst: &mut [u8],
     dst_stride: usize,

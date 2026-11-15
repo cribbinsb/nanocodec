@@ -58,7 +58,7 @@ pub(crate) fn scalar(size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) 
     for list in 0..2 {
         samples[list][..count].copy_from_slice(&inputs[list][..count]);
     }
-    let mut gradients = [[[0i32; 2]; MAX_PADDED]; 2];
+    let mut gradients = [[[0i16; 2]; MAX_PADDED]; 2];
     for list in 0..2 {
         for y in 1..=height {
             for x in 1..=width {
@@ -78,7 +78,7 @@ pub(crate) fn scalar(size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) 
                 for x in x0..x0 + 6 {
                     let at = y * stride + x;
                     let [gx, gy] = std::array::from_fn(|axis| {
-                        (gradients[0][at][axis] + gradients[1][at][axis]) >> 1
+                        (i32::from(gradients[0][at][axis]) + i32::from(gradients[1][at][axis])) >> 1
                     });
                     let difference =
                         i32::from(samples[1][at] >> 4) - i32::from(samples[0][at] >> 4);
@@ -95,7 +95,9 @@ pub(crate) fn scalar(size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) 
                     let at = (y + 1) * stride + x + 1;
                     let correction: i32 = (0..2)
                         .map(|axis| {
-                            vector[axis] * (gradients[0][at][axis] - gradients[1][at][axis])
+                            vector[axis]
+                                * (i32::from(gradients[0][at][axis])
+                                    - i32::from(gradients[1][at][axis]))
                         })
                         .sum();
                     let value = i32::from(samples[0][at]) + i32::from(samples[1][at]) + correction;

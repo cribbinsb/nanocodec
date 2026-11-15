@@ -871,6 +871,8 @@ param_group! {
             "1 gives the cadence's base boost to a rotating 1/period band of still blocks every frame instead of to whole base frames (`cyclic_cadence.rs`, needs `persist.reuse` and block QP; flat IPP only): smoother frame sizes on still content; 0 is the frame cadence",
         cadence_fixed_qp: 1.0, [0.0, 1.0],
             "1 also applies the cadence at fixed QP; 0 keeps fixed-QP frames flat (the cadence then only shapes rate control)",
+        fixed_qp_profile: 0.0, [0.0, 1.0],
+            "1 applies the codec's fixed-QP profile (`CodecBackend::FIXED_QP_PARAMS`: its static frame-level pattern for coding without rate control) beneath the caller's settings; the CLI sets it for --qp without --bitrate, a preset may pin 0",
         hold_still: 0.0, [0.0, 1.0],
             "1 holds still blocks of ordinary inter frames at the finest step they were coded at since their source settled (`ReuseTerm::hold_still`, needs `persist.reuse` and block QP; flat IPP only), so a level below the quality a still picture holds does not refine it unplanned (on by itself with `rate.refine`); 0 is off",
         hold_recover: 0.0, [0.0, 1.0],
@@ -891,6 +893,8 @@ param_group! {
             "with `rate.refine`, most QP units a refined block is coded finer than the frame",
         refine_startup: 1.0, [0.0, 1.0],
             "with `rate.refine`, 1 keeps the start-up cadence after each key (whole finer frames), 0 makes every inter frame flat so refinements do all the refining",
+        key_still_boost: 0.0, [0.0, 18.0],
+            "QP units finer a key frame is coded on a fixed camera (scaled by how still the scene is: the running unchanged-block share, or the start-up lookahead's for the first key, from 0.8 to 1), its loan repaid on schedule by the frames after it (0 = off): higher invests more in the picture a still scene's later frames inherit",
         key_hold_still: 0.0, [0.0, 4.0],
             "buffers a periodic key of a still scene (running unchanged-block share at least `rate.key_repay_still_from`) may take whatever the debt, planned at the quality the inter frames hold rather than by its repay phase or the debt correction (0 = off): the frames after it repay it",
         held_quality: 0.0, [0.0, 1.0],
@@ -952,6 +956,19 @@ param_group! {
     pub struct LtrParams ("ltr") {
         interval: 0.0, [0.0, 600.0],
             "frames between long-term reference marks (0 = off): lower keeps a more recent recovery point, at more marks awaiting acknowledgement",
+    }
+}
+
+param_group! {
+    /// The unified frame structure (`docs/handoff/unified-structure.md`): one
+    /// plan gives each frame its tier, its references and whether it is
+    /// kept. So far the plan covers the references (`second_reference.rs`,
+    /// `TierPlan`).
+    pub struct StructureParams ("structure") {
+        unified: 0.0, [0.0, 1.0],
+            "1 lets the structure plan each frame's references from its tier: high-quality frames (key, cadence base) also predict from the high-quality frame before them, held in the long-term slot, where the cadence makes them clearly finer (`structure.secondary_min_depth`); works beside temporal layers where the codec allows",
+        secondary_min_depth: 0.75, [0.0, 1.0],
+            "with `structure.unified`: least cadence strength (0..1, how much finer the high-quality frames are coded) at which a high-quality frame carries the second reference: higher is faster, 0 gives it to every high-quality frame",
     }
 }
 
@@ -1156,6 +1173,7 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         RefreshParams::SPECS,
         LtrParams::SPECS,
         RefParams::SPECS,
+        StructureParams::SPECS,
         QuantParams::SPECS,
         ChromaParams::SPECS,
         ResolutionParams::SPECS,

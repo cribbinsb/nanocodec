@@ -10,7 +10,7 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         inverse_dct_add: [inverse_4, inverse_8, inverse_16, inverse_32],
         forward_dct_64: forward_64,
         inverse_dct_add_64: inverse_64,
-        inverse_dct_add_sparse: [inverse_32_sparse, inverse_64_sparse],
+        inverse_dct_add_sparse: [inverse_16_sparse, inverse_32_sparse, inverse_64_sparse],
         coefficient_gain,
         quantize,
         quantize_from,
@@ -70,6 +70,13 @@ unsafe fn dequantize(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
     for (i, (&level, dq)) in levels.iter().zip(out.iter_mut()).enumerate() {
         *dq = dequantize_one(level, i, q);
     }
+}
+
+/// The full reference 16x16 inverse: coefficients outside the low square are
+/// zero, so `limit` changes nothing.
+unsafe fn inverse_16_sparse(coeffs: &[i32], dst: &mut [u8], stride: usize, _limit: usize) {
+    // SAFETY: this table is installed only when its ISA is supported.
+    unsafe { inverse_16(coeffs, dst, stride) }
 }
 
 unsafe fn inverse_32_sparse(coeffs: &[i32], dst: &mut [u8], stride: usize, limit: usize) {

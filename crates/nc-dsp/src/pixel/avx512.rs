@@ -1,19 +1,20 @@
 //! AVX-512F/BW/VL motion costs. A 64-byte row supplies eight independent
 //! 8x8 SAD columns; four candidates reuse each source load. Hierarchy
-//! aggregation stays in `grid_costs`, and masked strict-less updates retain
-//! the original candidate on ties, including the five-element final group.
+//! aggregation stays in `grid_costs`, and masked strict-less updates of the
+//! u16 SADs retain the original candidate on ties.
 //!
 //! Layout ideas: SVT-AV1 v4.3.0 `compute_sad_intrin_avx512.c` (Intel,
 //! BSD-2-Clause/AOM patent licence) and libaom v3.15.3 `sad_hwy.h`
 //! (Alliance for Open Media, BSD-2-Clause/AOM patent licence). Reimplemented
 //! with Rust intrinsics and our existing block/visibility contracts.
 
-use super::{GRID_BLOCKS, GridBest, PixelFns};
+use super::{GRID_SMALL_BLOCKS, GridBest, GridCosts, PixelFns};
 use core::arch::x86_64::{
-    _mm_loadu_si128, _mm256_storeu_si256, _mm512_add_epi64, _mm512_broadcast_i32x4,
-    _mm512_cmplt_epu32_mask, _mm512_cvtepi64_epi32, _mm512_inserti32x4, _mm512_loadu_si512,
-    _mm512_mask_storeu_epi32, _mm512_maskz_loadu_epi32, _mm512_reduce_add_epi64, _mm512_sad_epu8,
-    _mm512_set1_epi32, _mm512_setzero_si512, _mm512_storeu_si512, _mm512_zextsi128_si512,
+    _mm_loadu_si128, _mm_storeu_si128, _mm256_cmplt_epu16_mask, _mm256_loadu_si256,
+    _mm256_mask_storeu_epi16, _mm512_add_epi64, _mm512_broadcast_i32x4, _mm512_cvtepi64_epi16,
+    _mm512_inserti32x4, _mm512_loadu_si512, _mm512_mask_storeu_epi32, _mm512_reduce_add_epi64,
+    _mm512_sad_epu8, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_storeu_si512,
+    _mm512_zextsi128_si512,
 };
 
 /// Override only implemented kernels, retaining AVX2 for narrower shapes.
@@ -66,14 +67,14 @@ unsafe fn sad64_x4(src: &[u8], ss: usize, refs: [&[u8]; 4], rs: usize, h: usize)
 }
 
 /// Produce one or four grids in source-row order. Each SAD lane is at most
-/// 8*8*255, so narrowing the completed 64-bit sums to u32 is exact.
+/// 8*8*255, so narrowing the completed 64-bit sums to u16 is exact.
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
 unsafe fn grids<const STEP: usize, const C: usize>(
     src: &[u8],
     ss: usize,
     refs: [&[u8]; C],
     rs: usize,
-) -> [[u32; 64]; C] {
+) -> [[u16; 64]; C] {
     let mut result = [[0; 64]; C];
     for by in 0..8 {
         let mut sums = [_mm512_setzero_si512(); C];
@@ -87,11 +88,11 @@ unsafe fn grids<const STEP: usize, const C: usize>(
             }
         }
         for (dst, sum) in result.iter_mut().zip(sums) {
-            // SAFETY: eight u32 outputs at the start of this block row.
+            // SAFETY: eight u16 outputs at the start of this block row.
             unsafe {
-                _mm256_storeu_si256(
+                _mm_storeu_si128(
                     dst.as_mut_ptr().add(by * 8).cast(),
-                    _mm512_cvtepi64_epi32(sum),
+                    _mm512_cvtepi64_epi16(sum),
                 );
             };
         }
@@ -105,13 +106,17 @@ unsafe fn grid<const STEP: usize>(
     ss: usize,
     rf: &[u8],
     rs: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 ) {
     // SAFETY: the dispatcher validates both grids and this ISA.
     let [grid] = unsafe { grids::<STEP, 1>(src, ss, [rf], rs) };
-    keep_min(best, &super::grid_costs(&grid, visible, STEP as u32), tag);
+    keep_min(
+        best,
+        &super::grid_costs::<super::avx2::Pairs>(&grid, visible, STEP as u16),
+        tag,
+    );
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -120,7 +125,7 @@ unsafe fn grid_x4<const STEP: usize>(
     ss: usize,
     refs: [&[u8]; 4],
     rs: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tags: [u32; 4],
 ) {
@@ -129,28 +134,33 @@ unsafe fn grid_x4<const STEP: usize>(
     // Fold in exactly the single-candidate order. No winner selection is
     // reordered across candidates; lowest index wins equal costs.
     for (grid, tag) in costs.iter().zip(tags) {
-        keep_min(best, &super::grid_costs(grid, visible, STEP as u32), tag);
+        keep_min(
+            best,
+            &super::grid_costs::<super::avx2::Pairs>(grid, visible, STEP as u16),
+            tag,
+        );
     }
 }
 
+/// Keep-minimum over a grid update: masked strict-less stores of the u16
+/// SADs and their u32 tags, sixteen blocks per step, then the five large
+/// blocks.
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-fn keep_min(best: &mut GridBest, cost: &[u32; GRID_BLOCKS], tag: u32) {
+fn keep_min(best: &mut GridBest, cost: &GridCosts, tag: u32) {
     const LANES: usize = 16;
-    for i in (0..GRID_BLOCKS).step_by(LANES) {
-        let mask = (u32::MAX >> (32 - (GRID_BLOCKS - i).min(LANES))) as u16;
-        // SAFETY: the mask covers only the remaining elements of all arrays.
+    let fresh = _mm512_set1_epi32(tag as i32);
+    for i in (0..GRID_SMALL_BLOCKS).step_by(LANES) {
+        // SAFETY: elements i..i + 16 are inside the 80-element SAD arrays
+        // and the 85-element tag array.
         unsafe {
-            let old = _mm512_maskz_loadu_epi32(mask, best.sad.as_ptr().add(i).cast());
-            let new = _mm512_maskz_loadu_epi32(mask, cost.as_ptr().add(i).cast());
-            let better = _mm512_cmplt_epu32_mask(new, old) & mask;
-            _mm512_mask_storeu_epi32(best.sad.as_mut_ptr().add(i).cast(), better, new);
-            _mm512_mask_storeu_epi32(
-                best.tag.as_mut_ptr().add(i).cast(),
-                better,
-                _mm512_set1_epi32(tag as i32),
-            );
+            let old = _mm256_loadu_si256(best.small.as_ptr().add(i).cast());
+            let new = _mm256_loadu_si256(cost.small.as_ptr().add(i).cast());
+            let better = _mm256_cmplt_epu16_mask(new, old);
+            _mm256_mask_storeu_epi16(best.small.as_mut_ptr().add(i).cast(), better, new);
+            _mm512_mask_storeu_epi32(best.tag.as_mut_ptr().add(i).cast(), better, fresh);
         }
     }
+    super::scalar::keep_min_large(best, cost, tag);
 }
 
 /// Four adjacent 16x16 candidates occupy the four 128-bit sublanes.

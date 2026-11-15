@@ -105,7 +105,7 @@ pub(crate) struct Field {
 impl Field {
     /// Per-sample PROF corrections, in 1/32-sample units, relative to a 4×4 centre.
     /// Constant fields and the bandwidth fallback have no optical-flow refinement.
-    pub(crate) fn refinement(&self) -> Option<[[i32; 2]; 16]> {
+    pub(crate) fn refinement(&self) -> Option<[[i8; 2]; 16]> {
         if self.fallback.is_some() || (self.hor == (0, 0) && self.ver == (0, 0)) {
             return None;
         }
@@ -113,8 +113,8 @@ impl Field {
             let x = 4 * (i % 4) as i64 - 6;
             let y = 4 * (i / 4) as i64 - 6;
             [
-                round_shift(self.hor.0 * x + self.ver.0 * y, 8).clamp(-31, 31),
-                round_shift(self.hor.1 * x + self.ver.1 * y, 8).clamp(-31, 31),
+                round_shift(self.hor.0 * x + self.ver.0 * y, 8).clamp(-31, 31) as i8,
+                round_shift(self.hor.1 * x + self.ver.1 * y, 8).clamp(-31, 31) as i8,
             ]
         }))
     }

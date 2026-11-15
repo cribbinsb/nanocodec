@@ -122,6 +122,13 @@ nc_status nc_encoder_encode(nc_encoder *encoder, const nc_frame *frame, nc_packe
 nc_status nc_encoder_packet_layers(const nc_encoder *encoder,
                                    const nc_layer_frame **layers, size_t *count);
 
+/* Coded-frame indices (nc_packet.index) the latest encoded packet predicts
+ * from, for RTP dependency signalling (*count 0 and *references NULL on key,
+ * intra-only, dropped or held packets, and after nc_encoder_flush); the array
+ * is borrowed until the next call on this encoder. */
+nc_status nc_encoder_packet_references(const nc_encoder *encoder,
+                                       const uint64_t **references, size_t *count);
+
 /*
  * Optional one-frame start-up lookahead. Before the first frame, if
  * nc_encoder_wants_look_ahead sets *wants to 1 (rate control on, and a codec

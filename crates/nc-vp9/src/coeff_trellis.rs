@@ -243,13 +243,7 @@ impl TrellisQuantizer {
             let p = usize::from(p);
             let step = i64::from(steps.step(p));
             let magnitude = i64::from(coefficients[p].unsigned_abs());
-            let plain = levels[p].unsigned_abs();
-            let past_half = 2 * (magnitude << shift) >= (2 * i64::from(plain) + 1) * step;
-            let nearest = if past_half && (plain as i32) < super::MAX_LEVEL {
-                plain + 1
-            } else {
-                plain
-            };
+            let nearest = nearest_level(magnitude, levels[p].unsigned_abs(), step, shift);
             Candidates::around(nearest, |level| {
                 let error = (magnitude - ((i64::from(level) * step) >> shift)) as f64;
                 (error * error * to_sse) as f32
@@ -271,6 +265,20 @@ impl TrellisQuantizer {
             any |= level != 0;
         }
         any
+    }
+}
+
+/// The level nearest `magnitude` (a coefficient's, before the 32x32
+/// `shift`) at `step`, from the plain quantiser's `plain` (rounded below
+/// half a step): one more when the magnitude is past the half step, unless
+/// that would leave the token range or the 16-bit dequantized range.
+fn nearest_level(magnitude: i64, plain: u32, step: i64, shift: u32) -> u32 {
+    let cap = nc_dsp::Vp9QuantStep::max_level(step as i32, shift).min(super::MAX_LEVEL as u32);
+    let past_half = 2 * (magnitude << shift) >= (2 * i64::from(plain) + 1) * step;
+    if past_half && plain < cap {
+        plain + 1
+    } else {
+        plain
     }
 }
 
@@ -300,6 +308,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A level rounded up never dequantizes beyond 16 bits: at step 128
+    /// the plain quantiser's cap is 255 (32640), and a coefficient of 32767
+    /// is past its half step, but 256 · 128 = 32768 would overflow.
+    #[test]
+    fn rounding_up_stops_at_the_dequantized_cap() {
+        let cap = nc_dsp::Vp9QuantStep::max_level(128, 0);
+        assert_eq!(cap, 255);
+        assert_eq!(nearest_level(32767, cap, 128, 0), cap);
+        assert_eq!(nearest_level(32767, cap - 1, 128, 0), cap);
+        assert_eq!(nearest_level(100, 0, 128, 0), 1);
+        assert_eq!(nearest_level(63, 0, 128, 0), 0);
     }
 
     /// Summed token rates equal the coder's estimate (`coeff::cost`).

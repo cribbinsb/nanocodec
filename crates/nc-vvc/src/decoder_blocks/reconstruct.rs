@@ -30,7 +30,7 @@ pub(crate) fn reconstruct(
         for (transform_index, transform) in unit.transforms.iter().enumerate() {
             let mut mixed = [Vec::new(), Vec::new()];
             if transform.joint != 0 {
-                let coded = &transform.levels[if transform.joint == 1 { 2 } else { 1 }];
+                let coded = &transform.residuals[if transform.joint == 1 { 2 } else { 1 }];
                 let mut cb = vec![0; coded.len()];
                 let mut cr = cb.clone();
                 nc_dsp::vvc_joint_chroma(coded, transform.joint, joint_sign, &mut cb, &mut cr);
@@ -85,7 +85,7 @@ pub(crate) fn reconstruct(
                 let residual = if transform.joint != 0 && index != 0 {
                     &mixed[index - 1]
                 } else {
-                    &transform.levels[index]
+                    &transform.residuals[index]
                 };
                 let mut scaled;
                 let residual = if index != 0 && residual.len() > 4 {

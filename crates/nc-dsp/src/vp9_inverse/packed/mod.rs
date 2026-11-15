@@ -2,8 +2,8 @@
 //! The unchanged `vp9_txfm` functions are the oracle. Like libvpx's NEON
 //! and SSE kernels (BSD-3-Clause; `THIRD_PARTY.md`), rotations widen before
 //! rounding and the separable passes transpose eight transforms together.
-//! Unlike a saturating pack, narrowing preserves VP9's stage wrapping even
-//! for arbitrary i32 input coefficients after their initial i16 truncation.
+//! Coefficients, the row-pass scratch and the residuals are all i16, as in
+//! libvpx's 8-bit build.
 
 #![allow(clippy::inline_always)]
 
@@ -59,12 +59,13 @@ trait Lanes: InverseLanes {
     type Wide: Products<Narrow = Self>;
     fn wide(self, weight: i32) -> Self::Wide;
     fn products(w0: i32, a: Self, w1: i32, b: Self) -> Self::Wide;
-    fn load_i32_wrapping(src: &[i32]) -> Self;
     fn load_i16(src: &[i16]) -> Self;
     fn store_i16(self, dst: &mut [i16]);
-    fn store_shifted(self, dst: &mut [i32], shift: u32);
-    /// Round by `shift` and add to the eight samples at `dst`, clipping to
-    /// 8 bits.
+    /// `(x + 2^(shift - 1)) >> shift` per lane, exact over the whole i16
+    /// range (`shift` is 5 or 6).
+    fn round_shift(self, shift: u32) -> Self;
+    /// [`Self::round_shift`] added to the eight samples at `dst`, clipping
+    /// to 8 bits.
     ///
     /// # Safety
     ///
@@ -126,7 +127,7 @@ fn line<V: Lanes, const N: usize>(kind: Vp9Pass, input: &[V; N], output: &mut [V
 #[inline(always)]
 fn first_pass<V: Lanes, const N: usize>(
     rows: Vp9Pass,
-    input: &[i32],
+    input: &[i16],
     nonzero_rows: usize,
     temp: &mut [i16],
 ) {
@@ -172,8 +173,8 @@ const fn output_shift(n: usize) -> u32 {
 fn transform<V: Lanes, const N: usize>(
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
-    output: &mut [i32],
+    input: &[i16],
+    output: &mut [i16],
 ) {
     let input = &input[..N * N];
     let output = &mut output[..N * N];
@@ -185,7 +186,9 @@ fn transform<V: Lanes, const N: usize>(
     for col in (0..N).step_by(LANES) {
         let y = column_pass::<V, N>(columns, temp, col);
         for (row, value) in y.into_iter().enumerate() {
-            value.store_shifted(&mut output[row * N + col..], output_shift(N));
+            value
+                .round_shift(output_shift(N))
+                .store_i16(&mut output[row * N + col..]);
         }
     }
 }
@@ -219,7 +222,7 @@ fn add_rows<V: Lanes, const N: usize>(
 #[inline(always)]
 fn transform_add<V: Lanes, const N: usize>(
     (columns, rows): (Vp9Pass, Vp9Pass),
-    input: &[i32],
+    input: &[i16],
     nonzero_rows: usize,
     dst: &mut [u8],
     dst_stride: usize,
@@ -241,10 +244,10 @@ fn transform_add<V: Lanes, const N: usize>(
 /// The eight rows from `first` of an `N`-wide raster block, columns
 /// `col..col + 8`, transposed: element `i` holds column `col + i`.
 #[inline(always)]
-fn load_tile<V: Lanes, const N: usize>(input: &[i32], first: usize, col: usize) -> [V; LANES] {
+fn load_tile<V: Lanes, const N: usize>(input: &[i16], first: usize, col: usize) -> [V; LANES] {
     let mut tile = [V::splat(0); LANES];
     for (row, lanes) in tile.iter_mut().enumerate() {
-        *lanes = V::load_i32_wrapping(&input[(first + row) * N + col..]);
+        *lanes = V::load_i16(&input[(first + row) * N + col..]);
     }
     transpose(tile)
 }
@@ -261,7 +264,7 @@ fn load_tile<V: Lanes, const N: usize>(input: &[i32], first: usize, col: usize) 
 /// column transform with the rows past `K` zero, adding straight into `dst`.
 #[inline(always)]
 fn dct_add<V: Lanes, const N: usize, const K: usize, const G: usize>(
-    input: &[i32],
+    input: &[i16],
     dst: &mut [u8],
     dst_stride: usize,
 ) {
@@ -327,11 +330,11 @@ fn corner_dct<V: Lanes, const N: usize, const K: usize>(input: &[V; N]) -> [V; N
 /// `vpx_idctNxN_1_add`: `clip(p + r)` is `p` saturating-plus `min(r, 255)`,
 /// or saturating-minus for a negative `r`). Fixed-width rows vectorise.
 #[inline(always)]
-fn dc_add<const N: usize>(dc: i32, dst: &mut [u8], dst_stride: usize) {
+fn dc_add<const N: usize>(dc: i16, dst: &mut [u8], dst_stride: usize) {
     let wrap = |value: i32| i32::from(value as i16);
     let rotate = |value: i32| wrap((value * COSINE[32] + (1 << (COS_BITS - 1))) >> COS_BITS);
     let shift = output_shift(N);
-    let residual = (rotate(rotate(wrap(dc))) + (1 << (shift - 1))) >> shift;
+    let residual = (rotate(rotate(i32::from(dc))) + (1 << (shift - 1))) >> shift;
     let magnitude = residual.unsigned_abs().min(u32::from(u8::MAX)) as u8;
     for row in dst.chunks_mut(dst_stride).take(N) {
         let row: &mut [u8; N] = (&mut row[..N]).try_into().unwrap();
@@ -353,7 +356,7 @@ fn dc_add<const N: usize>(dc: i32, dst: &mut [u8], dst_stride: usize) {
 fn inverse_add<V: Lanes>(
     log2: u8,
     passes: (Vp9Pass, Vp9Pass),
-    input: &[i32],
+    input: &[i16],
     (rows, columns): (usize, usize),
     (dst, dst_stride): (&mut [u8], usize),
 ) {
@@ -383,7 +386,7 @@ fn inverse_add<V: Lanes>(
 }
 
 #[inline(always)]
-fn inverse<V: Lanes>(log2: u8, columns: Vp9Pass, rows: Vp9Pass, input: &[i32], output: &mut [i32]) {
+fn inverse<V: Lanes>(log2: u8, columns: Vp9Pass, rows: Vp9Pass, input: &[i16], output: &mut [i16]) {
     match log2 {
         3 => transform::<V, 8>(columns, rows, input, output),
         4 => transform::<V, 16>(columns, rows, input, output),

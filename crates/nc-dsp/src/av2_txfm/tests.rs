@@ -47,14 +47,11 @@ fn forward_reference(size: Av2TxSize, residual: &[i16]) -> Vec<i32> {
 }
 
 /// AVM `inv_txfm_c` as two plain matrix products with clamps, plus the 2x2
-/// repetition of 64x64.
-fn inverse_reference(size: Av2TxSize, coeffs: &[i32]) -> Vec<i32> {
+/// repetition of 64x64 (the input clamp is the `i16` type).
+fn inverse_reference(size: Av2TxSize, coeffs: &[i16]) -> Vec<i16> {
     let c = size.coded_side();
     let (first, second) = size.inverse_shifts();
-    let input: Vec<i64> = coeffs
-        .iter()
-        .map(|&v| i64::from(v.clamp(-32768, 32767)))
-        .collect();
+    let input: Vec<i64> = coeffs.iter().map(|&v| i64::from(v)).collect();
     let mut rows = vec![0i64; c * c];
     for r in 0..c {
         for x in 0..c {
@@ -68,7 +65,7 @@ fn inverse_reference(size: Av2TxSize, coeffs: &[i32]) -> Vec<i32> {
     for y in 0..c {
         for x in 0..c {
             let sum: i64 = (0..c).map(|k| matrix(c, k, y) * rows[k * c + x]).sum();
-            let sample = round_shift(sum, second).clamp(-256, 255) as i32;
+            let sample = round_shift(sum, second).clamp(-256, 255) as i16;
             for dy in 0..scale {
                 for dx in 0..scale {
                     out[(y * scale + dy) * n + x * scale + dx] = sample;
@@ -77,6 +74,11 @@ fn inverse_reference(size: Av2TxSize, coeffs: &[i32]) -> Vec<i32> {
         }
     }
     out
+}
+
+/// `value` saturated to `i16`, as the dequantiser clamps.
+fn saturate(value: i32) -> i16 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 /// Deterministic xorshift values.
@@ -133,15 +135,15 @@ fn butterflies_equal_matrix_products() {
                 "{size:?} {mode}"
             );
 
-            let coeffs: Vec<i32> = (0..c * c)
+            let coeffs: Vec<i16> = (0..c * c)
                 .map(|i| match mode {
-                    0 => 40_000,
-                    1 if i % 2 == 0 => 32767,
-                    1 => -32768,
-                    2 => values.below(1 << 16) - (1 << 15),
-                    3 if values.below(8) == 0 => values.below(4001) - 2000,
+                    0 => i16::MAX,
+                    1 if i % 2 == 0 => i16::MAX,
+                    1 => i16::MIN,
+                    2 => (values.below(1 << 16) - (1 << 15)) as i16,
+                    3 if values.below(8) == 0 => (values.below(4001) - 2000) as i16,
                     3 => 0,
-                    _ => forward[i],
+                    _ => saturate(forward[i]),
                 })
                 .collect();
             let mut inverse = vec![0; n * n];
@@ -165,9 +167,10 @@ fn typed_dct_matrices_equal_the_butterflies() {
         dsp.av2_forward(*size, &residual, n, &mut butterfly);
         typed::forward(*size, Av2TxType::DCT, &residual, n, &mut matrix);
         assert_eq!(butterfly, matrix, "forward {size:?}");
-        let coeffs: Vec<i32> = (0..n * n)
-            .map(|_| values.below(1 << 16) - (1 << 15))
+        let coeffs: Vec<i16> = (0..n * n)
+            .map(|_| (values.below(1 << 16) - (1 << 15)) as i16)
             .collect();
+        let (mut butterfly, mut matrix) = (vec![0; n * n], vec![0; n * n]);
         dsp.av2_inverse(*size, &coeffs, &mut butterfly);
         typed::inverse(*size, Av2TxType::DCT, &coeffs, &mut matrix);
         assert_eq!(butterfly, matrix, "inverse {size:?}");
@@ -180,20 +183,8 @@ fn dc_residual_equals_the_full_inverse() {
     let mut values = Values(0x1234_5679);
     for size in Av2TxSize::ALL {
         let (n, c) = (size.side(), size.coded_side());
-        let extremes = [
-            0,
-            1,
-            -1,
-            7,
-            -8,
-            32767,
-            -32768,
-            40_000,
-            -40_000,
-            i32::MAX,
-            i32::MIN,
-        ];
-        let random = (0..200).map(|_| values.below(1 << 17) - (1 << 16));
+        let extremes = [0, 1, -1, 7, -8, i16::MAX, i16::MIN];
+        let random = (0..200).map(|_| (values.below(1 << 16) - (1 << 15)) as i16);
         for dc in extremes.into_iter().chain(random) {
             let mut coeffs = vec![0; c * c];
             coeffs[0] = dc;

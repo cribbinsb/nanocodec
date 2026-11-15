@@ -253,7 +253,7 @@ impl Prepared {
             let zero = coefficients.iter().all(|&v| v == 0);
             result.skip &= zero;
             for i in 0..16 {
-                let value = (predicted[i] + inverse[i]).clamp(0, 255) as u8;
+                let value = (predicted[i] + i32::from(inverse[i])).clamp(0, 255) as u8;
                 result.pixels[index][i] = value;
             }
             if measure_distortion {
@@ -300,7 +300,7 @@ impl Prepared {
             let (row, col) = (i / 8, i % 8);
             let block = (row / 4) * 2 + col / 4;
             let offset = (row % 4) * 4 + col % 4;
-            let value = (predicted[i] + inverse[i]).clamp(0, 255) as u8;
+            let value = (predicted[i] + i32::from(inverse[i])).clamp(0, 255) as u8;
             self.pixels[block][offset] = value;
             if measure.0 {
                 let error = i64::from(view.row(y + row)[x + col]) - i64::from(value);
@@ -717,6 +717,7 @@ fn encode_inter_impl(
         levels: crate::coeff::LevelCoding::Plain,
         refresh_flags: 255,
         reference: None,
+        second_reference: None,
         adaptive_cdf,
         cross_frame_context: false,
         deblock: crate::deblock::DeblockParams::OFF,
@@ -762,7 +763,7 @@ fn code_residual<const N: usize>(
     size: TxSize,
     residual: &[i32; N],
     qindex: u8,
-) -> Result<([i32; N], [i32; N])> {
+) -> Result<([i32; N], [i16; N])> {
     let mut levels = [0; N];
     let mut inverse = [0; N];
     if residual.iter().any(|&v| v != 0) {

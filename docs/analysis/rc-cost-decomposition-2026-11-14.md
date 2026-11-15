@@ -198,3 +198,76 @@ Landed form:
 - **Jitter:** measure the `trailing` oracle. If a causal mean recovers the centred one's −1.7% (AV1), the
   level filter needs a different form, such as a filtered budget correction instead of a filtered hint. If it
   does not, the gain needs lookahead, which low-delay real time does not have.
+
+## Follow-up (2026-11-14 evening)
+
+### The ceiling in every Default
+
+Same fix, same 600-frame L3 (keys every 10 s, 31 points, draw 2026-11-14). Each codec's other presets pin
+it off (byte-identical).
+
+| Codec | J (90% interval) | static | moving classes | achieved/target max | re-codes per 1000 (static + crowd) | landed |
+|---|---|---|---|---|---|---|
+| AV1 | −1.27 [−2.23, −0.49] | −5.0 | ≤ 0.1 | 1.033 → 1.000 | 6.1 → 11.0 | 14553dee |
+| H.264 | −0.19 [−0.41, +0.00] | −0.75 | 0 | 0.997 → 0.999 | 6.6 → 7.3 | 4d23a3c7 |
+| HEVC (with `rate.prekey_quiet`) | −0.20 [−0.40, −0.00] | −0.78 | 0 | | 6.8 → 8.0 | 0e0da898 |
+| VVC | −0.83 [−1.46, −0.30] | −3.3 | 0 | 1.020 → 0.999 | 4.9 → 6.7 | 935b1726 |
+| VP9 | −1.33 [−2.53, −0.32] | −5.5 | crowd +0.2 | 1.007 → 1.000 | 5.5 → 10.8 | d5cf4fe9 |
+| AV2 | −0.62 [−1.38, +0.05] | −2.8 | crowd +0.3 | 0.999 → 1.000 | 13.0 → 17.2 | 487dff46 |
+
+No guard tripped in any codec. HEVC was screened twice. On the earlier base it gave −0.84 (static −3.4). It
+landed after the quiet second before keys (`rate.prekey_quiet`, 98bbd409), which takes most of the same
+still-scene gain.
+
+### Key still boost (`rate.key_still_boost`), in AV1 Default at 6
+
+A key is coded `boost × fixed_camera(still share)` QP units finer. The still share is the running share of
+unchanged blocks, or the start-up lookahead's share for the first key, and `fixed_camera` is the ledger's
+0.8 → 1 map. A boosted key's whole size is scheduled as its loan. On top of AV1 Default with the ceiling,
+draw 2026-11-14:
+
+| Boost | L1 | L2 | 600-frame L3 | Guards |
+|---|---|---|---|---|
+| 6 | −0.57 [−1.24, −0.03] | −1.87 [−2.49, −1.25]; worst-1% PSNR-Y −4.3%, VMAF −5.7% | −1.95 [−2.51, −1.41]; static −7.1, crowd −0.7, pan and lowlight 0 | none |
+| 10 | | | −2.63 [−3.34, −1.91]; static −9.2, crowd −1.3 | periodic-key pulse +0.52 dB |
+
+At 6:
+- **Rate:** achieved/target max 1.000; the worst 1 s window is unchanged.
+- **Re-codes** (static and crowd): 11.0 → 15.8 per 1000 frames, all on still scenes.
+
+### The trailing oracle: how much of the jitter gain a causal controller can reach
+
+AV1 Default, VAL (as in the decomposition, rebuilt at the head):
+
+| Variant vs replay | J | bodycam | crowd | lowlight | pan | static |
+|---|---|---|---|---|---|---|
+| centred 1 s mean (`smooth`) | −1.5 | −3.4 | −1.0 | −0.3 | −4.2 | +1.4 |
+| trailing 1 s mean (`trailing`) | −0.6 | +0.4 | −0.9 | +0.6 | −1.4 | −1.5 |
+
+About 40% of the gain is reachable without foresight, almost all of it on pan and crowd. Body-cam's −3.4
+needs the next half second, which low-delay coding does not have. This fits the causal `rate.level_hint_weight`
+screen (L2 +0.30%). The jitter lever is worth at most about −0.6% here, so it is not pursued further.
+
+### HEVC decomposition
+
+HEVC Default at the head before the HEVC ceiling (with `rate.prekey_quiet`), VAL, same setup as above. BD-J by
+step, whole and crowd / pan / bodycam / lowlight / static:
+
+| Step | HEVC | by class |
+|---|---:|---|
+| **Whole cost** | **+21.5** | +7.8 / −2.4 / +2.8 / −1.2 / +100.3 |
+| re-codes | 0.0 | 0 |
+| fast jitter (smooth → replay) | −0.1 | −0.8 / +2.2 / +0.7 / +0.2 / −2.7 |
+| slow drift (flat → smooth) | +8.5 | +2.1 / −0.5 / +1.6 / +0.3 / +38.9 |
+| key allocation (flat_key → flat) | +16.8 | +6.1 / −5.0 / +0.1 / −1.7 / +84.6 |
+| the rest | +0.2 | small |
+
+- **What dominates:** as in AV1 and H.264, still scenes and the key. Here the key is the largest single part,
+  and crowd pays the most for it (+6.1).
+- **Jitter:** HEVC's fast jitter is small. Its level moves 0.5–1.2 QP per frame on moving content.
+- **Size model:** within 1.3–1.5x on moving content (log2 SD 0.30–0.56). 17% of static inter frames miss by
+  4x or more.
+- **Trailing mean:** it beats the replay on static (−11%, the drift cut short), not on moving content.
+
+**Next:** `rate.key_still_boost` is screened for HEVC, H.264, VVC, VP9 and AV2 through L1, L2 and the
+600-frame L3.

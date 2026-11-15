@@ -1,7 +1,7 @@
 //! neon wrappers for shared VVC refinement lane arithmetic.
 #![allow(unsafe_code)]
 use super::{Kernels, generic};
-use crate::simd::neon::{I16x8, I32x4};
+use crate::simd::neon::{I16x4, I16x8, I32x4};
 pub(super) const KERNELS: Kernels = Kernels {
     bilinear,
     dmvr,
@@ -29,11 +29,11 @@ unsafe fn dmvr(size: (usize, usize), inputs: [&[i16]; 2]) -> ([i32; 2], bool) {
 unsafe fn bdof(size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) {
     // SAFETY: this wrapper enables the four-lane ISA; public API checks buffers.
     unsafe {
-        super::bdof::bdof::<I32x4>(size, inputs, out);
+        super::bdof::bdof::<I32x4, I16x4>(size, inputs, out);
     }
 }
 #[target_feature(enable = "neon")]
-unsafe fn prof(samples: &[i16; 36], corrections: &[[i32; 2]; 16], out: &mut [i16; 16]) {
+unsafe fn prof(samples: &[i16; 36], corrections: &[[i8; 2]; 16], out: &mut [i16; 16]) {
     // SAFETY: this wrapper enables the four-lane ISA; fixed arrays bound loads.
     unsafe {
         generic::prof::<I32x4>(samples, corrections, out);

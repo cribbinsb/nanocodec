@@ -88,9 +88,10 @@ use crate::backend::FrameType;
 use crate::config::{ConfigError, EncoderConfig, FrameRate};
 use crate::feedback::ReferencedFrames;
 use crate::layer::LayerPosition;
-use crate::params::{LtrParams, RefParams, RefreshParams, ResolutionParams, SpatialParams};
+use crate::params::{LtrParams, RefreshParams, ResolutionParams, SpatialParams};
 use crate::rate_control::{KeyAnchor, LayerShare, RateControlConfig, RateControlError};
 use crate::resolution::half_size;
+use crate::second_reference::second_reference_enabled;
 use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, TemporalStructure};
 
 /// Maximum spatial layers supported by the shared engine (`S0`, `S1`, `S2`).
@@ -584,7 +585,7 @@ fn validate_spatial_compatible_tools(
             "not supported with spatial layers",
         ));
     }
-    if RefParams::from_overrides(&config.params).second >= 0.5 {
+    if second_reference_enabled(&config.params) {
         return Err(ConfigError::SecondReference(
             "not supported with spatial layers (inter-layer prediction uses the second reference)",
         ));
@@ -855,6 +856,29 @@ pub struct SpatialLayerPlan {
     pub references: FrameReferences,
     /// Earlier coded `picture_index` values this picture predicts from.
     pub referenced_pictures: ReferencedFrames,
+}
+
+impl SpatialLayerPlan {
+    /// Whether source analysis measures motion against this layer's own
+    /// previous picture (`reset`: a key unit, or this layer's repair unit).
+    /// An intra-only picture, or a reset picture coded from the layer below,
+    /// would discard that motion, so it is not searched.
+    #[must_use]
+    pub fn uses_temporal_motion(&self, reset: bool) -> bool {
+        !(self.intra_only || (reset && self.predicts_from_lower))
+    }
+
+    /// Distance (in this layer's pictures) of the reference source analysis
+    /// measures motion against: a reset picture analyses against its own
+    /// previous picture (stillness runs carry across starved keys).
+    #[must_use]
+    pub fn analysis_distance(&self, reset: bool) -> u32 {
+        if reset {
+            1
+        } else {
+            self.references.reference.distance
+        }
+    }
 }
 
 /// Planned coding schedule for one multi-layer temporal unit.

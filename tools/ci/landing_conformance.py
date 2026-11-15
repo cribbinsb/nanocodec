@@ -24,6 +24,7 @@ both standard decoders and our own (nceval.conformance.gate_stream):
     AV1 aomdec + dav1d (ffmpeg)    VP9 vpxdec + ffmpeg    AV2 avmdec + dav2d
 
     main     CBR at a comfortable rate, one key: the preset's coding tools
+    fixedqp  `--qp` (the codec's fixed-QP profile) with a key every KEY_PERIOD frames
     starved  CBR far below the content's rate with a key every KEY_PERIOD
              frames (keys under a starved budget) over a source that
              freezes for FREEZE_FRAMES frames (frame holds)
@@ -55,6 +56,7 @@ from __future__ import annotations
 import argparse
 import csv
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -71,13 +73,15 @@ from nceval.codecs import Codec  # noqa: E402
 from nceval.config import Paths, find_tool, load_paths  # noqa: E402
 from nceval.conformance import (  # noqa: E402
     gate_av1_operating_points,
+    gate_stream,
     gate_vp9_operating_points,
 )
+from nceval.display import switched_format  # noqa: E402
 from nceval.framepipe import ProcessFailed  # noqa: E402
 from nceval.framestats import UNCODED_FRAME_TYPES  # noqa: E402
 from nceval.metrics import StreamSpec  # noqa: E402
 from nceval.point import run_point  # noqa: E402
-from nceval.yuv import YuvFormat  # noqa: E402
+from nceval.yuv import SwitchedFormat, YuvFormat  # noqa: E402
 
 CODECS = (Codec.H264, Codec.HEVC, Codec.VVC, Codec.AV1, Codec.VP9, Codec.AV2)
 PRESETS_DIR = REPO_ROOT / "presets"
@@ -138,6 +142,10 @@ TIMED_KEY_PERIOD = 8
 NOMINAL_MS = 1000 / FPS
 # CBR rates in bits per pixel per frame: comfortable, starved, and between.
 MAIN_BPP, STARVED_BPP, MID_BPP = 0.3, 0.02, 0.12
+#: The fixed-QP case's quantizer per codec scale (`--qp`: the fixed-QP profile,
+#: `CodecBackend::FIXED_QP_PARAMS`): mid-range, a key every KEY_PERIOD frames.
+FIXED_QP = {"qp": 32, "qindex": 160}
+QINDEX_CODECS = (Codec.AV1, Codec.VP9, Codec.AV2)
 # Spatial SVC with --frame-drop far below the maximum-quantizer floor (about
 # 30 kbps at 720p30), so rate control drops S1 and then whole TUs.
 SVC_DROP_BPP = 0.0011
@@ -164,6 +172,11 @@ class Case:
             clip_tag = self.kind.split("-")[2]
             return SPATIAL_SHAPES[clip_tag]
         return LARGE if self.kind == "large" else SMALL
+
+    @property
+    def rate_controlled(self) -> bool:
+        """Every case codes in CBR but the fixed-QP one (`--qp`, no rate log)."""
+        return self.kind != "fixedqp"
 
     @property
     def is_spatial(self) -> bool:
@@ -212,9 +225,15 @@ class Case:
             "starved": ["--bitrate", kbps(STARVED_BPP), "--intra-period", str(KEY_PERIOD)],
             "layers": ["--bitrate", kbps(MID_BPP), "--intra-period", str(LAYER_KEY_PERIOD),
                        "--temporal-layers", "3"],
+            "l1t2": ["--bitrate", kbps(MID_BPP), "--intra-period", str(LAYER_KEY_PERIOD),
+                     "--scalability", "L1T2", "--param", "layers.adaptive=0"],
+            "l1t3": ["--bitrate", kbps(MID_BPP), "--intra-period", str(LAYER_KEY_PERIOD),
+                     "--scalability", "L1T3", "--param", "layers.adaptive=0"],
             "refresh": ["--bitrate", kbps(MID_BPP), "--intra-refresh", str(REFRESH_PERIOD)],
             "timed": ["--bitrate", kbps(MID_BPP), "--intra-period", str(TIMED_KEY_PERIOD),
                       "--temporal-layers", "3"],
+            "fixedqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
+                        "--intra-period", str(KEY_PERIOD)],
         }[self.kind]
         return ["--preset", self.preset, *flags]
 
@@ -239,7 +258,7 @@ def spatial_layers(preset: str) -> int:
 
 
 def cases(codecs: list[Codec]) -> list[Case]:
-    kinds = ("main", "starved", "layers", "refresh", "large")
+    kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp")
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
@@ -254,6 +273,8 @@ def cases(codecs: list[Codec]) -> list[Case]:
              for rate in ("mid", "starved")]
     for svc_codec in (Codec.AV1, Codec.VP9):
         if svc_codec in codecs:
+            base += [Case(svc_codec, "default", "l1t2"),
+                     Case(svc_codec, "default", "l1t3")]
             # (L2T1..L2T3, L3T1..L3T3, L2T1_KEY..L3T3_KEY) x 3 clips x 2 rates +
             # (480p30 + 720p5) x 2 clips x 2 rates, custom 3-layer scales,
             # frame-dropping, and S1 / S2 loss repair cases.
@@ -339,7 +360,7 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
              work: Path, params: tuple[str, ...] = ()) -> Outcome:
     shape, clip = case.shape, clips[case.shape]
     stream = work / f"{case.name}{case.codec.bitstream_suffix}"
-    rate_log = work / f"{case.name}.rate.csv"
+    rate_log = work / f"{case.name}.rate.csv" if case.rate_controlled else None
     layer_md5 = work / f"{case.name}.layers.csv" if case.is_spatial else None
     extra = ["--layer-md5", str(layer_md5)] if layer_md5 is not None else []
     extra += [arg for pair in params for arg in ("--param", pair)]
@@ -349,8 +370,8 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
     def command(recon: str) -> list[str]:
         return [str(binary), "encode", "--codec", case.codec.value, "--input", str(clip),
                 "--width", str(shape.width), "--height", str(shape.height), "--fps", str(FPS),
-                "--frames", str(shape.frames), *case.flags(), "--rate-log", str(rate_log),
-                *extra, "--output", str(stream), "--display-recon", recon]
+                "--frames", str(shape.frames), *case.flags(),
+                *(["--rate-log", str(rate_log)] if rate_log else []), *extra, "--output", str(stream), "--display-recon", recon]
     repro = " ".join(command("recon.yuv"))
     spec = StreamSpec(reference=clip, fmt=shape.fmt, frames=shape.frames, fps=FPS, paths=None)
     try:
@@ -358,8 +379,10 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
                            rate_log=rate_log, layer_md5=layer_md5)
     except ProcessFailed as err:
         return Outcome(case, False, f"encode: {err}", repro)
-    with rate_log.open(newline="") as log:
-        uncoded = sum(row["type"] in UNCODED_FRAME_TYPES for row in csv.DictReader(log))
+    uncoded = 0
+    if rate_log is not None:
+        with rate_log.open(newline="") as log:
+            uncoded = sum(row["type"] in UNCODED_FRAME_TYPES for row in csv.DictReader(log))
     if not result.gate.passed:
         return Outcome(case, False, result.gate.reason, repro)
     if layer_md5 is not None:
@@ -369,7 +392,54 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
             op_gate = gate_vp9_operating_points(stream, layer_md5, paths, own_decoder=binary)
         if not op_gate.passed:
             return Outcome(case, False, op_gate.reason, repro)
+    if case.kind in ("l1t2", "l1t3"):
+        t_layers = 2 if case.kind == "l1t2" else 3
+        t_gate = _gate_temporal_substreams(case, stream, rate_log, result.gate.frame_hashes,
+                                           t_layers, binary, paths, work)
+        if t_gate:
+            return Outcome(case, False, t_gate, repro)
     return Outcome(case, True, uncoded=uncoded)
+
+
+def _gate_temporal_substreams(case: Case, stream: Path, rate_log: Path,
+                              full_hashes: list[str], t_layers: int,
+                              binary: Path, paths: Paths, work: Path) -> str:
+    """Verify `nanocodec extract --temporal-layers` sub-streams for L1T2/L1T3."""
+    listed = subprocess.run(
+        [str(binary), "extract", "--codec", case.codec.value,
+         "--temporal-layers", str(t_layers), "--list", "--input", str(stream)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if listed.returncode != 0:
+        return f"extract --list failed: {listed.stderr.strip()}"
+    pkt_layers = [int(line) for line in listed.stdout.splitlines() if line.strip()]
+    if len(pkt_layers) != len(full_hashes):
+        return f"extract --list reported {len(pkt_layers)} packets, expected {len(full_hashes)}"
+    with rate_log.open(newline="") as log:
+        coded_rows = [row for row in csv.DictReader(log) if row["type"] not in UNCODED_FRAME_TYPES]
+    fmt = case.shape.fmt
+    for max_tl in range(t_layers - 1):
+        sub = work / f"{case.name}.max_t{max_tl}{case.codec.bitstream_suffix}"
+        extracted = subprocess.run(
+            [str(binary), "extract", "--codec", case.codec.value,
+             "--temporal-layers", str(t_layers), "--max-layer", str(max_tl),
+             "--input", str(stream), "--output", str(sub)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if extracted.returncode != 0:
+            return f"extract --max-layer {max_tl} failed: {extracted.stderr.strip()}"
+        kept_hashes = [h for h, tl in zip(full_hashes, pkt_layers) if tl <= max_tl]
+        kept_sizes = [(int(r["width"]), int(r["height"]))
+                      for r, tl in zip(coded_rows, pkt_layers) if tl <= max_tl]
+        sub_sizes: SwitchedFormat | None = None
+        if kept_sizes and any(sz != (fmt.width, fmt.height) for sz in kept_sizes):
+            sw = switched_format(kept_sizes)
+            sub_sizes = sw if isinstance(sw, SwitchedFormat) else SwitchedFormat(sw, ())
+        sub_gate = gate_stream(sub, case.codec, fmt, len(kept_hashes), paths,
+                               own_decoder=binary, coded_sizes=sub_sizes)
+        if not sub_gate.passed:
+            return f"max_t{max_tl}: {sub_gate.reason}"
+        if sub_gate.frame_hashes != kept_hashes:
+            return f"max_t{max_tl}: extracted decode differs from full stream's kept frames"
+    return ""
 
 
 def main(argv: list[str] | None = None) -> int:

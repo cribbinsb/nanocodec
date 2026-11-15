@@ -24,16 +24,14 @@ fn forward_1d([a, b, c, d]: [i32; 4]) -> [i32; 4] {
     ]
 }
 
-/// Products are formed in 64 bits: coefficients of a corrupt stream can
-/// be far outside the 16-bit range of valid ones (the results then wrap as
-/// libvpx's `WRAPLOW` does, and valid streams are unaffected).
-fn inverse_1d(input: [i32; 4]) -> [i32; 4] {
-    let [a, b, c, d] = input.map(i64::from);
-    let [cos8, cos16, cos24] = [COS8, COS16, COS24].map(i64::from);
-    let even0 = wrap(round((a + c) * cos16));
-    let even1 = wrap(round((a - c) * cos16));
-    let odd0 = wrap(round(b * cos24 - d * cos8));
-    let odd1 = wrap(round(b * cos8 + d * cos24));
+/// On the 16-bit coefficients (§8.6.2) every sum fits i32: the largest,
+/// `(a + c) * COS16`, is below 2^16 * 2^14.
+fn inverse_1d(input: [i16; 4]) -> [i16; 4] {
+    let [a, b, c, d] = input.map(i32::from);
+    let even0 = i32::from(wrap(round_dct((a + c) * COS16)));
+    let even1 = i32::from(wrap(round_dct((a - c) * COS16)));
+    let odd0 = i32::from(wrap(round_dct(b * COS24 - d * COS8)));
+    let odd1 = i32::from(wrap(round_dct(b * COS8 + d * COS24)));
     [
         wrap(even0 + odd1),
         wrap(even1 + odd0),
@@ -42,10 +40,10 @@ fn inverse_1d(input: [i32; 4]) -> [i32; 4] {
     ]
 }
 
-const SIN1: i64 = 5283;
-const SIN2: i64 = 9929;
-const SIN3: i64 = 13377;
-const SIN4: i64 = 15212;
+const SIN1: i32 = 5283;
+const SIN2: i32 = 9929;
+const SIN3: i32 = 13377;
+const SIN4: i32 = 15212;
 
 /// Column/row transform pair, in VP9's normative transform-type order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,16 +62,18 @@ fn round(value: i64) -> i32 {
     ((value + (1 << 13)) >> 14) as i32
 }
 
-fn wrap(value: i32) -> i32 {
-    i32::from(value as i16)
+/// `WRAPLOW`: VP9 keeps 16 bits between stages.
+fn wrap(value: i32) -> i16 {
+    value as i16
 }
 
 fn forward_adst(input: [i32; 4]) -> [i32; 4] {
     let [a, b, c, d] = input.map(i64::from);
-    let first = SIN1 * a + SIN2 * b + SIN4 * d;
-    let middle = SIN3 * (a + b - d);
-    let last = SIN4 * a - SIN1 * b + SIN2 * d;
-    let third = SIN3 * c;
+    let [sin1, sin2, sin3, sin4] = [SIN1, SIN2, SIN3, SIN4].map(i64::from);
+    let first = sin1 * a + sin2 * b + sin4 * d;
+    let middle = sin3 * (a + b - d);
+    let last = sin4 * a - sin1 * b + sin2 * d;
+    let third = sin3 * c;
     [
         round(first + third),
         round(middle),
@@ -82,17 +82,19 @@ fn forward_adst(input: [i32; 4]) -> [i32; 4] {
     ]
 }
 
-fn inverse_adst(input: [i32; 4]) -> [i32; 4] {
-    let [a, b, c, d] = input.map(i64::from);
+/// On 16-bit inputs every sum fits i32: the largest weighs four inputs by
+/// at most `SIN1 + SIN2 + SIN3 + SIN4` = 43801 < 2^16.
+fn inverse_adst(input: [i16; 4]) -> [i16; 4] {
+    let [a, b, c, d] = input.map(i32::from);
     let first = SIN1 * a + SIN4 * c + SIN2 * d;
     let second = SIN2 * a - SIN1 * c - SIN4 * d;
     let middle = SIN3 * b;
-    let difference = i64::from(wrap((a - c + d) as i32));
+    let difference = i32::from(wrap(a - c + d));
     [
-        wrap(round(first + middle)),
-        wrap(round(second + middle)),
-        wrap(round(SIN3 * difference)),
-        wrap(round(first + second - middle)),
+        wrap(round_dct(first + middle)),
+        wrap(round_dct(second + middle)),
+        wrap(round_dct(SIN3 * difference)),
+        wrap(round_dct(first + second - middle)),
     ]
 }
 
@@ -139,7 +141,7 @@ pub(crate) fn forward(input: &[i32; 16], transform: Transform) -> [i32; 16] {
 
 /// Normative inverse 4x4 transform of dequantized coefficients
 /// (libvpx `vp9_iht4x4_16_add_c`), before adding the prediction.
-pub(crate) fn inverse(input: &[i32; 16], transform: Transform) -> [i32; 16] {
+pub(crate) fn inverse(input: &[i16; 16], transform: Transform) -> [i16; 16] {
     let mut rows = [0; 16];
     for y in 0..4 {
         let row = std::array::from_fn(|x| input[y * 4 + x]);
@@ -159,7 +161,7 @@ pub(crate) fn inverse(input: &[i32; 16], transform: Transform) -> [i32; 16] {
             inverse_1d(column)
         };
         for y in 0..4 {
-            output[y * 4 + x] = (transformed[y] + 8) >> 4;
+            output[y * 4 + x] = ((i32::from(transformed[y]) + 8) >> 4) as i16;
         }
     }
     output
@@ -169,11 +171,11 @@ pub(crate) fn inverse(input: &[i32; 16], transform: Transform) -> [i32; 16] {
 mod tests {
     use super::*;
 
-    /// Corrupt streams can carry any 32-bit coefficient: the inverse must
+    /// Corrupt streams can carry any 16-bit coefficient: the inverse must
     /// wrap, not overflow (fuzzing found the overflow).
     #[test]
     fn inverse_wraps_extreme_coefficients() {
-        for value in [i32::MAX, i32::MIN, 1 << 20, -(1 << 24)] {
+        for value in [i16::MAX, i16::MIN, 1 << 12, -(1 << 14)] {
             for transform in [
                 Transform::DctDct,
                 Transform::AdstDct,

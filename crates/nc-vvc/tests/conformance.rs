@@ -250,6 +250,10 @@ fn skip_chain_poc_wrap_and_key_recovery_match_standard_decoders() {
     let vvdec = std::env::var("NC_VVDEC").unwrap();
     let mut c = config(64, 64, 22);
     c.intra_period = 1000;
+    // A still source is a run of repeats, which frame hold (`hold.rs`, on by
+    // default) leaves uncoded: the stream would carry three pictures and
+    // never wrap the 8-bit POC LSB. Code every frame.
+    c.params.set("hold.enable", 0.);
     let mut encoder = Encoder::<VvcBackend>::new(c).unwrap();
     let source = Picture::new(64, 64, 0).unwrap();
     let mut stream = Vec::new();

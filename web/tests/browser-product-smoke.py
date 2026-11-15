@@ -89,6 +89,12 @@ try:
           };''')
         # Headless Chromium has only software GL (SwiftShader), which the automatic
         # choice refuses: ask for WebGL2 explicitly to exercise the GL display.
+        # Every URL the page requests. The Resource Timing buffer keeps only the first 250
+        # entries and the page has passed that before the pre-encoded step (each restart's
+        # workers record their scripts and modules), so read them from an observer instead.
+        page.add_init_script('''window.resourceNames = [];
+          new PerformanceObserver(list => { for (const e of list.getEntries()) window.resourceNames.push(e.name); })
+            .observe({ type: 'resource', buffered: true });''')
         page.goto(f'http://127.0.0.1:{server.server_port}/?display=webgl2')
         # The page opens already comparing the default sample clip, without a user gesture.
         # Each view has decoded two frames (the faster view can deliver several before
@@ -129,13 +135,13 @@ try:
         page.locator('.loupe-toggle').click()
         # Clips come in 360p and 720p files (clips.js): the default 854x480 reads the 720p
         # one (scaled down), picking a clip restarts on it, and 640x360 switches to the 360p file.
-        clip_files = "performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/clips/') && n.endsWith('.mp4'))"
+        clip_files = "window.resourceNames.filter(n => n.includes('/clips/') && n.endsWith('.mp4'))"
         assert page.evaluate(clip_files)[-1].endswith('/clips/netflix-bar-scene-720p.mp4')
         assert page.evaluate('window.workerFrames.every(f => f.width === 854 && f.height === 480)')
         # The masthead links to the project page.
         assert page.locator('.project-link').get_attribute('href') == 'https://github.com/cribbinsb/nanocodec'
         # Only the default clip loads on page open: no other clip file was requested.
-        fetched = page.evaluate("performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/clips/') && n.endsWith('.mp4'))")
+        fetched = page.evaluate("window.resourceNames.filter(n => n.includes('/clips/') && n.endsWith('.mp4'))")
         assert all(n.endswith('/clips/netflix-bar-scene-720p.mp4') for n in fetched), fetched
         missing = page.evaluate("""import('./clips.js').then(({ CLIPS, clipUrl }) => Promise.all(CLIPS.flatMap(c =>
           [360, 720].map(h => fetch(clipUrl(c, h), { method: 'HEAD' }).then(r => r.ok ? null : clipUrl(c, h)))))
@@ -199,6 +205,10 @@ try:
         reference_id = 'xiph-johnny-openh264-640x360-15fps-150k'
         page.locator('.view-source [data-view-source="reference"]').nth(1).click()
         page.wait_for_function(f"[...document.querySelectorAll('.stream-picker')[1].options].some(o => o.value === '{reference_id}')", timeout=10000)
+        # The switch keeps the playing clip: it picks that clip's first stream (panel.js
+        # sourceChanged), filled in with the list, and restarts on it after the restart delay.
+        switched_to = page.evaluate("document.querySelectorAll('.stream-picker')[1].value")
+        assert switched_to == page.evaluate("import('./reference.js').then(m => m.loadManifest()).then(s => s.find(e => e.clip === 'svt-smoke-sauna').id)"), switched_to
         page.locator('.stream-picker').nth(1).select_option(reference_id)
         page.wait_for_function("document.querySelector('#clip').value === 'xiph-johnny'", timeout=10000)
         page.evaluate('window.workerConfigs.length = 0')
@@ -216,11 +226,12 @@ try:
         assert 'openh264 v' in page.locator('.reference-version').nth(1).inner_text()
         assert page.locator('[data-metric="encode"]').nth(1).inner_text() == 'n/a'
         assert float(page.locator('[data-metric="psnr"]').nth(1).inner_text()) > 25
-        fetched = page.evaluate("performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes('/streams-ref/') && n.endsWith('.ivf'))")
-        # Files are fetched only for streams a comparison started with: the first in the list
-        # (picked when the source switched to pre-encoded) and the chosen one.
-        first = page.evaluate("import('./reference.js').then(m => m.loadManifest()).then(s => s[0].file)")
-        assert f'{reference_id}.ivf' in [n.split('/')[-1] for n in fetched] and {n.split('/')[-1] for n in fetched} <= {first, f'{reference_id}.ivf'}, fetched
+        fetched = page.evaluate("window.resourceNames.filter(n => n.includes('/streams-ref/') && n.endsWith('.ivf'))")
+        # Files are fetched only for streams a comparison started with: the one picked when
+        # the source switched (fetched only if its restart ran before the choice; that
+        # depends on timing) and the chosen one.
+        names = {n.split('/')[-1] for n in fetched}
+        assert f'{reference_id}.ivf' in names and names <= {f'{switched_to}.ivf', f'{reference_id}.ivf'}, fetched
         # Pause lands both views on the next instant both code (a 15 fps instant: an even
         # tick); Step moves both to the next one.
         page.locator('#pause').click()

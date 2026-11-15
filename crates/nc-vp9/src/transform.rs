@@ -301,20 +301,21 @@ pub(crate) fn coefficient_sse(
 }
 
 /// `cospi_16_64` and the DCT's 14-bit fixed point.
-const COSPI_16_64: i64 = 11_585;
+const COSPI_16_64: i32 = 11_585;
 const DCT_ROUND_BITS: u32 = 14;
 
 /// The constant residual of a DCT block whose only coefficient is DC
 /// (libvpx `vpx_idctNxN_1_add`): every stage of both passes carries the
 /// DC product unchanged, so the full transform gives this value
 /// everywhere. Exact; most coded blocks at low rates are DC-only.
-pub(crate) fn dc_only_residual(tx: TxSize, dc: i32) -> i32 {
-    let round = |value: i64| ((value + (1 << (DCT_ROUND_BITS - 1))) >> DCT_ROUND_BITS) as i32;
-    let wrap = |value: i32| i32::from(value as i16);
-    let rows = wrap(round(i64::from(dc as i16) * COSPI_16_64));
-    let columns = wrap(round(i64::from(rows) * COSPI_16_64));
+pub(crate) fn dc_only_residual(tx: TxSize, dc: i16) -> i16 {
+    // A 16-bit value times the 14-bit cosine fits i32.
+    let rotate = |value: i32| {
+        i32::from(((value * COSPI_16_64 + (1 << (DCT_ROUND_BITS - 1))) >> DCT_ROUND_BITS) as i16)
+    };
+    let columns = rotate(rotate(i32::from(dc)));
     let shift = inverse_output_shift(tx);
-    (columns + (1 << (shift - 1))) >> shift
+    ((columns + (1 << (shift - 1))) >> shift) as i16
 }
 
 /// Final rounding shift of the 8x8 (5) and larger (6) inverse transforms.
@@ -322,27 +323,30 @@ fn inverse_output_shift(tx: TxSize) -> u32 {
     if tx == TxSize::Tx8 { 5 } else { 6 }
 }
 
-/// Normative inverse transform of dequantized raster coefficients into a
-/// residual, before adding the prediction and clipping.
+/// Normative inverse transform of dequantized raster coefficients (16-bit,
+/// §8.6.2) into a residual, before adding the prediction and clipping.
 pub(crate) fn inverse(
     dsp: &nc_dsp::Dsp,
     tx: TxSize,
     ty: TxType,
     lossless: bool,
-    dequantized: &[i32],
-    residual: &mut [i32],
+    dequantized: &[i16],
+    residual: &mut [i16],
 ) {
     let area = tx.area();
     if lossless {
         // The reference dequantizer multiplies by 4 and its WHT shifts it
-        // back out (`UNIT_QUANT_SHIFT`).
-        let levels: [i32; 16] = std::array::from_fn(|i| dequantized[i] >> 2);
-        residual[..16].copy_from_slice(&nc_dsp::reversible_wht4::inverse(&levels));
+        // back out (`UNIT_QUANT_SHIFT`). A lossless residual is a sample
+        // difference, so a valid stream's fits 16 bits.
+        let levels: [i32; 16] = std::array::from_fn(|i| i32::from(dequantized[i]) >> 2);
+        let wht = nc_dsp::reversible_wht4::inverse(&levels);
+        for (value, &r) in residual[..16].iter_mut().zip(&wht) {
+            *value = r as i16;
+        }
         return;
     }
     if tx == TxSize::Tx4 {
-        let input: [i32; 16] = std::array::from_fn(|i| dequantized[i]);
-        residual[..16].copy_from_slice(&hybrid::inverse(&input, ty));
+        residual[..16].copy_from_slice(&hybrid::inverse(dequantized[..16].try_into().unwrap(), ty));
         return;
     }
     if ty == TxType::DctDct && dequantized[1..area].iter().all(|&c| c == 0) {
@@ -368,7 +372,7 @@ mod tests {
         let dsp = nc_dsp::Dsp::new();
         for tx in [TxSize::Tx8, TxSize::Tx16, TxSize::Tx32] {
             let area = tx.area();
-            for dc in (i32::from(i16::MIN)..=i32::from(i16::MAX)).step_by(13) {
+            for dc in (i16::MIN..=i16::MAX).step_by(13) {
                 let mut input = vec![0; area];
                 input[0] = dc;
                 let mut full = vec![0; area];
@@ -412,10 +416,10 @@ mod tests {
                 (Rounding::Intra, 1),
                 &mut levels
             ));
-            let dequantized: Vec<i32> = levels
+            let dequantized: Vec<i16> = levels
                 .iter()
                 .enumerate()
-                .map(|(i, &l)| dequantize_level(tx, i, l, steps))
+                .map(|(i, &l)| i16::try_from(dequantize_level(tx, i, l, steps)).unwrap())
                 .collect();
             let mut output = vec![0; area];
             inverse(
@@ -483,7 +487,10 @@ mod tests {
             (Rounding::Intra, 1),
             &mut levels,
         );
-        let dequantized: Vec<i32> = levels.iter().map(|&l| l * 4).collect();
+        let dequantized: Vec<i16> = levels
+            .iter()
+            .map(|&l| i16::try_from(l * 4).unwrap())
+            .collect();
         let mut output = [0; 16];
         inverse(
             &nc_dsp::Dsp::new(),
@@ -493,9 +500,6 @@ mod tests {
             &dequantized,
             &mut output,
         );
-        assert_eq!(
-            output.to_vec(),
-            residual.iter().map(|&r| i32::from(r)).collect::<Vec<_>>()
-        );
+        assert_eq!(output.to_vec(), residual);
     }
 }

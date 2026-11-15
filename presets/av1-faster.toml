@@ -119,3 +119,7 @@ av1.skip_bias_energy = 0.25
 decision.seed_refine_ratio = 0
 # Pinned before AV1 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
+# Pinned before AV1 Default's unified reference plan (2026-11-14).
+structure.unified = 0
+# Pinned before AV1 Default's key still boost (2026-11-14).
+rate.key_still_boost = 0

@@ -80,6 +80,9 @@ pub enum StatRows {
 
 /// Statistics read on every other row count each sample twice.
 const EVEN_ROW_SCALE: u32 = 2;
+/// [`EVEN_ROW_SCALE`] for the u16 quadrant SADs: a doubled even-row 4x4
+/// half is at most `2 * 8 * 255`, and their block sum an 8x8 SAD.
+const EVEN_ROW_SAD_SCALE: u16 = EVEN_ROW_SCALE as u16;
 /// The quarter (4x4 luma, chroma quadrant) static limit on even-row
 /// statistics relative to every row's. Calibrated so the static share
 /// matches every-row detection (60 frames each of six TRAIN clips: crowd,
@@ -99,8 +102,8 @@ pub struct BlockStats {
     /// Sum of squared deviations from the mean (64 x the variance).
     pub sum_sq_dev: u32,
     /// SAD against the co-located block of the previous frame (`None` for
-    /// the first frame).
-    pub sad_prev: Option<u32>,
+    /// the first frame); an 8x8 SAD, at most `64 * 255`.
+    pub sad_prev: Option<u16>,
     /// Unchanged since the previous frame (see module docs).
     pub is_static: bool,
 }
@@ -256,17 +259,17 @@ pub fn analyze(
     let mut blocks = vec![BlockStats::default(); cols * rows];
     // Kernels work on a whole row of blocks per call.
     let mut moments = vec![Moments::default(); cols];
-    let mut quads = vec![[0u32; 4]; cols];
+    let mut quads = vec![[0u16; 4]; cols];
     let mut chroma = [
-        vec![[0u32; 4]; cols.div_ceil(CHROMA_PAIR)],
-        vec![[0u32; 4]; cols.div_ceil(CHROMA_PAIR)],
+        vec![[0u16; 4]; cols.div_ceil(CHROMA_PAIR)],
+        vec![[0u16; 4]; cols.div_ceil(CHROMA_PAIR)],
     ];
     // Even rows: a strip's luma halves, and the chroma halves of a strip
     // pair (U, V), measured on its first strip.
-    let mut luma_halves = vec![[0u32; 4]; cols];
+    let mut luma_halves = vec![[0u16; 4]; cols];
     let mut chroma_halves = [
-        vec![[0u32; 4]; cols.div_ceil(CHROMA_PAIR)],
-        vec![[0u32; 4]; cols.div_ceil(CHROMA_PAIR)],
+        vec![[0u16; 4]; cols.div_ceil(CHROMA_PAIR)],
+        vec![[0u16; 4]; cols.div_ceil(CHROMA_PAIR)],
     ];
     let (mut static_count, mut luma_sum) = (0usize, 0u64);
     let strips = rows.div_ceil(CHROMA_PAIR);
@@ -337,13 +340,7 @@ pub fn analyze(
                 for (i, ((stats, m), quad)) in stats.iter_mut().zip(moments).zip(quads).enumerate()
                 {
                     let q = CHROMA_PAIR * half + i;
-                    let sad = quad[0] + quad[1] + quad[2] + quad[3];
-                    let busiest = quad[0].max(quad[1]).max(quad[2]).max(quad[3]);
-                    // Both tests, without a branch: the first alone
-                    // mispredicted on about one block in four (callgrind
-                    // branch simulation, crowd 720p).
-                    let is_static =
-                        (sad <= limits.block) & (busiest.max(u[q]).max(v[q]) <= limits.sub_block);
+                    let (sad, is_static) = limits.classify(*quad, u[q].max(v[q]));
                     static_count += usize::from(is_static);
                     *stats = block_stats(*m, Some(sad), is_static);
                     luma_sum += u64::from(stats.mean);
@@ -360,9 +357,27 @@ pub fn analyze(
     }
 }
 
+impl StaticLimits {
+    /// A block's SAD from its luma quadrant SADs, and whether it is static
+    /// given those and its busiest chroma quadrant SAD. Stored as u16,
+    /// compared as u32 (the limits' type; computing in u16 cost x86 8% of
+    /// the caller's loop).
+    #[inline]
+    fn classify(self, quad: [u16; 4], chroma: u16) -> (u16, bool) {
+        let quad = quad.map(u32::from);
+        let sad = quad[0] + quad[1] + quad[2] + quad[3];
+        let busiest = quad[0].max(quad[1]).max(quad[2]).max(quad[3]);
+        // Both tests, without a branch: the first alone mispredicted on
+        // about one block in four (callgrind branch simulation, crowd 720p).
+        let is_static = (sad <= self.block) & (busiest.max(u32::from(chroma)) <= self.sub_block);
+        // Four 4x4 SADs: an 8x8 SAD, which fits u16.
+        (sad as u16, is_static)
+    }
+}
+
 /// The statistics of a block with luma `moments`.
 #[inline]
-fn block_stats(moments: Moments, sad_prev: Option<u32>, is_static: bool) -> BlockStats {
+fn block_stats(moments: Moments, sad_prev: Option<u16>, is_static: bool) -> BlockStats {
     BlockStats {
         mean: moments.mean_8x8(),
         sum: moments.sum as u16,
@@ -419,10 +434,10 @@ fn even_rows(picture: &Picture, plane: PlaneIndex, strip: usize, width: usize) -
 /// (`[left, right]` of the first block row, then of the second): each half
 /// doubled as two quadrants, the other two empty, so their sum is the block
 /// SAD estimate and their maximum the quarter estimate (module docs).
-fn spread_luma_halves(halves: &[[u32; 4]], half: usize, quads: &mut [[u32; 4]]) {
+fn spread_luma_halves(halves: &[[u16; 4]], half: usize, quads: &mut [[u16; 4]]) {
     for (out, h) in quads.iter_mut().zip(halves) {
         let (left, right) = (h[CHROMA_PAIR * half], h[CHROMA_PAIR * half + 1]);
-        *out = [EVEN_ROW_SCALE * left, EVEN_ROW_SCALE * right, 0, 0];
+        *out = [EVEN_ROW_SAD_SCALE * left, EVEN_ROW_SAD_SCALE * right, 0, 0];
     }
 }
 
@@ -434,7 +449,7 @@ fn chroma_pair_halves(
     cur: &Picture,
     prev: &Picture,
     strip: usize,
-    out: &mut [Vec<[u32; 4]>; 2],
+    out: &mut [Vec<[u16; 4]>; 2],
 ) {
     // The pair's first strip index in units of strip pairs.
     let pair = strip / CHROMA_PAIR;
@@ -451,12 +466,12 @@ fn chroma_pair_halves(
 /// Chroma strip `which` (0 or 1) of a pair as quadrant SADs from its
 /// even-row halves: each column half, doubled, stands for both quadrants
 /// it covers (module docs).
-fn spread_chroma_halves(halves: &[Vec<[u32; 4]>; 2], which: usize, out: &mut [Vec<[u32; 4]>; 2]) {
+fn spread_chroma_halves(halves: &[Vec<[u16; 4]>; 2], which: usize, out: &mut [Vec<[u16; 4]>; 2]) {
     for (halves, quads) in halves.iter().zip(out.iter_mut()) {
         for (h, q) in halves.iter().zip(quads.iter_mut()) {
             let (left, right) = (
-                EVEN_ROW_SCALE * h[CHROMA_PAIR * which],
-                EVEN_ROW_SCALE * h[CHROMA_PAIR * which + 1],
+                EVEN_ROW_SAD_SCALE * h[CHROMA_PAIR * which],
+                EVEN_ROW_SAD_SCALE * h[CHROMA_PAIR * which + 1],
             );
             *q = [left, right, left, right];
         }
@@ -474,7 +489,7 @@ fn chroma_strip_sads(
     cur: &Picture,
     prev: &Picture,
     strip: usize,
-    out: &mut [Vec<[u32; 4]>; 2],
+    out: &mut [Vec<[u16; 4]>; 2],
 ) {
     let y = (strip * BLOCK) as isize;
     for (plane, quads) in [PlaneIndex::U, PlaneIndex::V].into_iter().zip(out) {

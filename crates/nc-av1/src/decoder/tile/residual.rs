@@ -355,10 +355,10 @@ impl FrameDecoder<'_> {
             if self.header.lossless {
                 inverse_wht(self.dsp, &self.coefficients.coefficients, &mut dst);
             } else {
-                self.dsp.av1_inverse_add(
+                self.dsp.av1_inverse_add_i16(
                     tx.dsp(),
                     coded.kind,
-                    &self.coefficients.coefficients,
+                    &mut self.coefficients.coefficients,
                     coded.eob,
                     &mut dst,
                 );
@@ -374,9 +374,8 @@ impl FrameDecoder<'_> {
 // Out of line: our own streams are never lossless.
 #[cold]
 #[inline(never)]
-fn inverse_wht(dsp: &Dsp, coefficients: &[i32], dst: &mut PlaneViewMut<'_>) {
-    let coefficients = coefficients[..TX_4X4_COEFFICIENTS]
-        .try_into()
-        .expect("4x4 coefficients");
-    dsp.av1_inverse_wht_add(coefficients, dst);
+fn inverse_wht(dsp: &Dsp, coefficients: &[i16], dst: &mut PlaneViewMut<'_>) {
+    let coefficients: [i32; TX_4X4_COEFFICIENTS] =
+        core::array::from_fn(|i| i32::from(coefficients[i]));
+    dsp.av1_inverse_wht_add(&coefficients, dst);
 }

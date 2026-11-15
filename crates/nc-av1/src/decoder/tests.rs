@@ -1082,7 +1082,13 @@ fn garbage_between_frames_changes_nothing() {
 fn flat_second_reference_round_trips_and_changes_the_stream() {
     // The last high-quality frame as a second reference on a flat stream
     // (`refs.second`): a second `ref_frame_idx` entry and per-block choices.
-    let second = [("refs.second", 1.0), ("refs.second_full", 1.0)];
+    // The Default's unified plan (`structure.unified`) is pinned off on
+    // both sides: it would limit the second reference to HQ frames.
+    let second = [
+        ("structure.unified", 0.0),
+        ("refs.second", 1.0),
+        ("refs.second_full", 1.0),
+    ];
     let with = overlay_packets(&second, 12);
-    assert_ne!(with, overlay_packets(&[], 12));
+    assert_ne!(with, overlay_packets(&[("structure.unified", 0.0)], 12));
 }

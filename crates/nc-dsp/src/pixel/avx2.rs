@@ -14,19 +14,24 @@
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_abs_epi16, _mm_add_epi16, _mm_add_epi32, _mm_add_epi64,
     _mm_cvtepu8_epi16, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_hadd_epi16, _mm_hsub_epi16,
-    _mm_loadl_epi64, _mm_loadu_si128, _mm_madd_epi16, _mm_sad_epu8, _mm_set1_epi16, _mm_setr_epi32,
-    _mm_setzero_si128, _mm_shuffle_epi32, _mm_sub_epi16, _mm_unpackhi_epi32, _mm_unpacklo_epi32,
-    _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_add_epi16, _mm256_add_epi32, _mm256_add_epi64,
-    _mm256_blendv_epi8, _mm256_castsi256_si128, _mm256_cmpeq_epi32, _mm256_cvtepu8_epi16,
+    _mm_loadl_epi64, _mm_loadu_si128, _mm_madd_epi16, _mm_packus_epi32, _mm_sad_epu8,
+    _mm_set1_epi16, _mm_setr_epi32, _mm_setzero_si128, _mm_shuffle_epi32, _mm_storeu_si128,
+    _mm_sub_epi16, _mm_unpackhi_epi32, _mm_unpacklo_epi32, _mm_unpacklo_epi64, _mm256_abs_epi16,
+    _mm256_add_epi16, _mm256_add_epi32, _mm256_add_epi64, _mm256_blendv_epi8,
+    _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16,
     _mm256_extracti128_si256, _mm256_hadd_epi16, _mm256_hsub_epi16, _mm256_loadu_si256,
     _mm256_loadu2_m128i, _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_max_epu8, _mm256_min_epu8,
-    _mm256_min_epu32, _mm256_permute2x128_si256, _mm256_sad_epu8, _mm256_set1_epi8,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setr_epi64x, _mm256_setzero_si256,
+    _mm256_min_epu16, _mm256_packus_epi32, _mm256_permute2x128_si256, _mm256_permute4x64_epi64,
+    _mm256_permutevar8x32_epi32, _mm256_sad_epu8, _mm256_set1_epi8, _mm256_set1_epi16,
+    _mm256_set1_epi32, _mm256_setr_epi32, _mm256_setr_epi64x, _mm256_setzero_si256,
     _mm256_storeu_si256, _mm256_sub_epi8, _mm256_sub_epi16, _mm256_unpackhi_epi64,
     _mm256_unpacklo_epi64, _mm256_zextsi128_si256,
 };
 
-use super::{BlockPair, GRID_BLOCKS, GridBest, PixelFns, normalise_satd_4x4, normalise_satd_8x8};
+use super::{
+    BlockPair, GRID_SMALL_BLOCKS, GridBest, GridCosts, PairwiseU16, PixelFns, narrow_sad_4x4,
+    normalise_satd_4x4, normalise_satd_8x8,
+};
 
 /// The AVX2 kernel table.
 ///
@@ -230,7 +235,7 @@ unsafe fn sad_quads_8x8_row(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    out: &mut [[u32; 4]],
+    out: &mut [[u16; 4]],
 ) {
     let groups = out.len() / 4;
     let (batches, tail) = out.as_chunks_mut::<4>();
@@ -261,13 +266,11 @@ unsafe fn sad_quads_8x8_row(
         let hi = _mm256_unpackhi_epi64(halves[0], halves[1]);
         let first = _mm256_permute2x128_si256::<0x20>(lo, hi);
         let second = _mm256_permute2x128_si256::<0x31>(lo, hi);
-        // SAFETY: the four records contain 64 writable bytes. The two
-        // unaligned stores cover the first and last two records.
-        unsafe {
-            let dst = quads.as_mut_ptr();
-            _mm256_storeu_si256(dst.cast(), first);
-            _mm256_storeu_si256(dst.add(2).cast(), second);
-        }
+        // Pack to u16 (a 4x4 SAD is at most 4080): records [0 2 | 1 3],
+        // then into order.
+        let packed = _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packus_epi32(first, second));
+        // SAFETY: the four records are 32 writable bytes.
+        unsafe { _mm256_storeu_si256(quads.as_mut_ptr().cast(), packed) };
     }
     for (i, quads) in tail.iter_mut().enumerate() {
         let col = 8 * (4 * groups + i);
@@ -282,7 +285,7 @@ unsafe fn sad_quads_8x8_row(
 /// right quadrant's in the high lane. Rows 0..4 accumulate into the top
 /// quadrants, 4..8 the bottom.
 #[target_feature(enable = "avx2")]
-unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize) -> [u32; 4] {
+unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize) -> [u16; 4] {
     let mut halves = [_mm_setzero_si128(); 2];
     for y in (0..8).step_by(2) {
         // SAFETY: rows y and y + 1 (8 bytes each) are inside the 8x8 blocks.
@@ -296,7 +299,7 @@ unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: us
     }
     let (top_left, top_right) = lane_pair(halves[0]);
     let (bottom_left, bottom_right) = lane_pair(halves[1]);
-    [top_left, top_right, bottom_left, bottom_right]
+    [top_left, top_right, bottom_left, bottom_right].map(narrow_sad_4x4)
 }
 
 /// The 4x4 SADs of a 4:2:0 macroblock in one call (the H.264 zero-residual
@@ -308,7 +311,7 @@ unsafe fn sad_quads_8x8(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: us
 unsafe fn sad_4x4_macroblock(
     (src, src_stride, rf, ref_stride): BlockPair<'_>,
     [u, v]: [BlockPair<'_>; 2],
-) -> ([[u32; 4]; 4], [[u32; 4]; 2]) {
+) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
     // [block row][left 8 columns, right 8 columns]: 64-bit lanes hold the
     // sums of 4x4 blocks (2k, 2k + 1) of that half.
     let mut sums = [[_mm_setzero_si128(); 2]; 4];
@@ -334,13 +337,13 @@ unsafe fn sad_4x4_macroblock(
         );
     }
     // 4x4 block (bx, by) is in quadrant (bx / 2, by / 2) at (bx % 2, by % 2).
-    let mut luma = [[0u32; 4]; 4];
+    let mut luma = [[0u16; 4]; 4];
     for (by, halves) in sums.iter().enumerate() {
         for (half, &pair) in halves.iter().enumerate() {
             let (left, right) = lane_pair(pair);
             let quadrant = &mut luma[(by / 2) * 2 + half];
-            quadrant[(by % 2) * 2] = left;
-            quadrant[(by % 2) * 2 + 1] = right;
+            quadrant[(by % 2) * 2] = narrow_sad_4x4(left);
+            quadrant[(by % 2) * 2 + 1] = narrow_sad_4x4(right);
         }
     }
     // SAFETY: each chroma pair covers its 8x8 block (kernel contract).
@@ -471,8 +474,8 @@ unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [u32; 64] {
-    let mut grid = [0u32; 64];
+) -> [u16; 64] {
+    let mut grid = [0u16; 64];
     for (block_row, out) in grid.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         let mut acc = [_mm256_setzero_si256(); 2];
         for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
@@ -488,14 +491,18 @@ unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
                 *sums = _mm256_add_epi64(*sums, _mm256_sad_epu8(a, b));
             }
         }
-        for (half, &sums) in acc.iter().enumerate() {
-            let mut lanes = [0u64; 4];
-            // SAFETY: `lanes` is 32 writable bytes.
-            unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sums) };
-            for (i, &lane) in lanes.iter().enumerate() {
-                out[4 * half + i] = lane as u32;
-            }
-        }
+        // Each 64-bit lane holds one SAD below 2^14. As u32 lanes the pack
+        // gives blocks [0 1 4 5 | 2 3 6 7]; reorder, then pack to u16.
+        let blocks = _mm256_permutevar8x32_epi32(
+            _mm256_packus_epi32(acc[0], acc[1]),
+            _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7),
+        );
+        let blocks = _mm_packus_epi32(
+            _mm256_castsi256_si128(blocks),
+            _mm256_extracti128_si256::<1>(blocks),
+        );
+        // SAFETY: `out` holds eight u16.
+        unsafe { _mm_storeu_si128(out.as_mut_ptr().cast(), blocks) };
     }
     grid
 }
@@ -508,42 +515,67 @@ unsafe fn sad_grid_best_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 ) {
     // SAFETY: the kernel contract covers both 64x64 blocks.
     let grid = unsafe { sad_grid_8x8_in_64x64::<STEP>(src, src_stride, rf, ref_stride) };
-    keep_min(best, &super::grid_costs(&grid, visible, STEP as u32), tag);
-}
-
-/// Keep-minimum over a grid update, eight blocks per step: `vpminud`, and
-/// the tag taken from `tag` wherever the minimum changed the best.
-#[target_feature(enable = "avx2")]
-fn keep_min(best: &mut GridBest, cost: &[u32; GRID_BLOCKS], tag: u32) {
-    let lanes = GRID_BLOCKS / 8 * 8;
-    let fresh = _mm256_set1_epi32(tag as i32);
-    for i in (0..lanes).step_by(8) {
-        // SAFETY: elements i..i + 8 are inside all three 85-element arrays.
-        unsafe {
-            let b = _mm256_loadu_si256(best.sad.as_ptr().add(i).cast());
-            let c = _mm256_loadu_si256(cost.as_ptr().add(i).cast());
-            let t = _mm256_loadu_si256(best.tag.as_ptr().add(i).cast());
-            let min = _mm256_min_epu32(b, c);
-            let unchanged = _mm256_cmpeq_epi32(min, b);
-            _mm256_storeu_si256(best.sad.as_mut_ptr().add(i).cast(), min);
-            _mm256_storeu_si256(
-                best.tag.as_mut_ptr().add(i).cast(),
-                _mm256_blendv_epi8(fresh, t, unchanged),
-            );
-        }
-    }
-    super::scalar::keep_min(
-        &mut best.sad[lanes..],
-        &mut best.tag[lanes..],
-        &cost[lanes..],
+    keep_min(
+        best,
+        &super::grid_costs::<Pairs>(&grid, visible, STEP as u16),
         tag,
     );
+}
+
+/// [`PairwiseU16`] as one `phaddw` (a wrapping add: the sums fit u16).
+pub(super) struct Pairs;
+
+impl PairwiseU16 for Pairs {
+    #[allow(clippy::inline_always)] // must inline into the grid kernels
+    #[inline(always)]
+    fn pairwise(a: [u16; 8], b: [u16; 8]) -> [u16; 8] {
+        let mut out = [0; 8];
+        // SAFETY: AVX2 (and AVX-512) kernels only (module docs); each array
+        // holds eight u16.
+        unsafe {
+            let sums = _mm_hadd_epi16(
+                _mm_loadu_si128(a.as_ptr().cast()),
+                _mm_loadu_si128(b.as_ptr().cast()),
+            );
+            _mm_storeu_si128(out.as_mut_ptr().cast(), sums);
+        }
+        out
+    }
+}
+
+/// Keep-minimum over a grid update: the u16 SADs sixteen blocks per step
+/// (`vpminuw`), the tag taken from `tag` wherever the minimum changed the
+/// best (the compare mask sign-extended to the u32 tags), then the five
+/// large blocks.
+#[target_feature(enable = "avx2")]
+fn keep_min(best: &mut GridBest, cost: &GridCosts, tag: u32) {
+    let fresh = _mm256_set1_epi32(tag as i32);
+    for i in (0..GRID_SMALL_BLOCKS).step_by(16) {
+        // SAFETY: elements i..i + 16 are inside the 80-element SAD arrays
+        // and the 85-element tag array.
+        unsafe {
+            let b = _mm256_loadu_si256(best.small.as_ptr().add(i).cast());
+            let c = _mm256_loadu_si256(cost.small.as_ptr().add(i).cast());
+            let min = _mm256_min_epu16(b, c);
+            let unchanged = _mm256_cmpeq_epi16(min, b);
+            _mm256_storeu_si256(best.small.as_mut_ptr().add(i).cast(), min);
+            let masks = [
+                _mm256_cvtepi16_epi32(_mm256_castsi256_si128(unchanged)),
+                _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(unchanged)),
+            ];
+            for (half, mask) in masks.into_iter().enumerate() {
+                let at = best.tag.as_mut_ptr().add(i + 8 * half).cast();
+                _mm256_storeu_si256(at, _mm256_blendv_epi8(fresh, _mm256_loadu_si256(at), mask));
+            }
+        }
+    }
+    super::scalar::keep_min_large(best, cost, tag);
 }
 
 // ----------------------------------------------------------------- SATD ----

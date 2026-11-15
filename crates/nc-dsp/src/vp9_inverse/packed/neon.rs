@@ -5,15 +5,14 @@ use super::{COS_BITS, Lanes, Products};
 use crate::Vp9Pass;
 use crate::txfm::inverse_lanes::InverseLanes;
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, vaddq_s16, vaddq_s32, vdupq_n_s16, vdupq_n_s32, vget_low_s16, vld1_u8,
-    vld1q_s16, vld1q_s32, vmlal_high_n_s16, vmlal_n_s16, vmovl_high_s16, vmovl_s16, vmovl_u8,
-    vmovn_high_s32, vmovn_s32, vmull_high_n_s16, vmull_n_s16, vqmovun_s16, vqrdmulhq_n_s16,
-    vreinterpretq_s16_u16, vrshlq_s16, vrshrn_high_n_s32, vrshrn_n_s32, vshlq_s32, vst1_u8,
-    vst1q_s16, vst1q_s32, vsubq_s16, vsubq_s32, vzip1q_s16, vzip2q_s16,
+    int16x8_t, int32x4_t, vaddq_s16, vaddq_s32, vdupq_n_s16, vget_low_s16, vld1_u8, vld1q_s16,
+    vmlal_high_n_s16, vmlal_n_s16, vmovl_u8, vmovn_high_s32, vmovn_s32, vmull_high_n_s16,
+    vmull_n_s16, vqmovun_s16, vqrdmulhq_n_s16, vreinterpretq_s16_u16, vrshlq_s16,
+    vrshrn_high_n_s32, vrshrn_n_s32, vst1_u8, vst1q_s16, vsubq_s16, vsubq_s32, vzip1q_s16,
+    vzip2q_s16,
 };
 
 const COS_SHIFT: i32 = COS_BITS as i32;
-const HALF: usize = 4;
 
 #[derive(Clone, Copy)]
 struct Narrow(int16x8_t);
@@ -137,12 +136,6 @@ impl Lanes for Narrow {
         }
     }
     #[inline(always)]
-    fn load_i32_wrapping(src: &[i32]) -> Self {
-        let src = &src[..super::LANES];
-        // SAFETY: the checked slice holds both four-element loads.
-        unsafe { Wide([vld1q_s32(src.as_ptr()), vld1q_s32(src.as_ptr().add(HALF))]).narrow() }
-    }
-    #[inline(always)]
     fn load_i16(src: &[i16]) -> Self {
         let src = &src[..super::LANES];
         // SAFETY: the checked slice holds eight i16 samples; NEON is enabled.
@@ -157,26 +150,18 @@ impl Lanes for Narrow {
         }
     }
     #[inline(always)]
-    fn store_shifted(self, dst: &mut [i32], shift: u32) {
-        let dst = &mut dst[..super::LANES];
-        // SAFETY: the checked destination holds both stores. Widen before
-        // rounding so i16::MAX plus the rounding offset cannot wrap.
-        unsafe {
-            let round = vdupq_n_s32(1 << (shift - 1));
-            let count = vdupq_n_s32(-(shift as i32));
-            let low = vshlq_s32(vaddq_s32(vmovl_s16(vget_low_s16(self.0)), round), count);
-            let high = vshlq_s32(vaddq_s32(vmovl_high_s16(self.0), round), count);
-            vst1q_s32(dst.as_mut_ptr(), low);
-            vst1q_s32(dst.as_mut_ptr().add(HALF), high);
-        }
+    fn round_shift(self, shift: u32) -> Self {
+        // SAFETY: NEON is enabled; register-only arithmetic. The rounding
+        // shift is exact over the whole i16 range.
+        unsafe { Self(vrshlq_s16(self.0, vdupq_n_s16(-(shift as i16)))) }
     }
     #[inline(always)]
     unsafe fn add_shifted(self, dst: *mut u8, shift: u32) {
+        let residual = self.round_shift(shift).0;
         // SAFETY: the caller's destination holds the eight samples. The
-        // rounding shift is exact over the whole i16 range; the residual
-        // plus a pixel fits i16 and the unsigned saturating narrow clips.
+        // residual plus a pixel fits i16 and the unsigned saturating narrow
+        // clips.
         unsafe {
-            let residual = vrshlq_s16(self.0, vdupq_n_s16(-(shift as i16)));
             let pixels = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(dst.cast_const())));
             vst1_u8(dst, vqmovun_s16(vaddq_s16(residual, pixels)));
         }
@@ -198,8 +183,8 @@ pub(crate) unsafe fn inverse(
     log2: u8,
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
-    output: &mut [i32],
+    input: &[i16],
+    output: &mut [i16],
 ) {
     super::inverse::<Narrow>(log2, columns, rows, input, output);
 }
@@ -209,7 +194,7 @@ pub(crate) unsafe fn inverse_add(
     log2: u8,
     columns: Vp9Pass,
     rows: Vp9Pass,
-    input: &[i32],
+    input: &[i16],
     nonzero: (usize, usize),
     dst: &mut [u8],
     dst_stride: usize,

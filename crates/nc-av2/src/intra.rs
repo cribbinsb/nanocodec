@@ -133,7 +133,8 @@ impl Tile {
         )?;
         let mut view = self.reconstruction.plane_mut(PlaneIndex::Y).view_mut();
         for i in 0..64 {
-            view.row_mut(y + i / 8)[x + i % 8] = (prediction[i] + residual[i]).clamp(0, 255) as u8;
+            view.row_mut(y + i / 8)[x + i % 8] =
+                (prediction[i] + i32::from(residual[i])).clamp(0, 255) as u8;
         }
         self.update_context8(x, y, coefficients);
         Ok(())
@@ -159,8 +160,9 @@ impl Tile {
         let mut view = self.reconstruction.plane_mut(PlaneIndex::ALL[p]).view_mut();
         for row in 0..4 {
             for col in 0..4 {
-                view.row_mut(y + row)[x + col] =
-                    (prediction[row * 4 + col] + residual[row * 4 + col]).clamp(0, 255) as u8;
+                view.row_mut(y + row)[x + col] = (prediction[row * 4 + col]
+                    + i32::from(residual[row * 4 + col]))
+                .clamp(0, 255) as u8;
             }
         }
         self.update_context(p, x, y, coefficients);

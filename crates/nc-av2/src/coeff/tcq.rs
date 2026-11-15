@@ -72,7 +72,7 @@ pub(crate) fn dequantize(
     size: TxSize,
     (levels, eob): (&[i32], usize),
     qindex: Qindices,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     out[..size.coded_len()].fill(0);
     let mut state = INITIAL_STATE;

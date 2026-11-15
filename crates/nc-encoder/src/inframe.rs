@@ -56,7 +56,7 @@ pub(crate) fn row_weights(pre: Option<&PreAnalysis>, sb_log2: u8, rows: usize) -
             let covered = cells.get(first..last).unwrap_or(&[]);
             let measured: f64 = covered
                 .iter()
-                .map(|b| 1. + f64::from(b.sad_prev.unwrap_or(b.sum_sq_dev)).sqrt())
+                .map(|b| 1. + f64::from(b.sad_prev.map_or(b.sum_sq_dev, u32::from)).sqrt())
                 .sum();
             let uncovered = cell_rows_per_sb * cols - covered.len();
             measured + uncovered as f64

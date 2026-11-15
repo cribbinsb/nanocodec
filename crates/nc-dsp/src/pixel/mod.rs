@@ -90,9 +90,19 @@ pub(crate) type SadQuadsFn =
     unsafe fn(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize) -> [u32; 4];
 
 /// Quadrant SADs of each 8x8 block along a row: block i covers columns
-/// 8i..8i+8.
+/// 8i..8i+8. A 4x4 SAD is at most `16 * 255 = 4080`, so they are u16.
 pub(crate) type SadQuads8x8RowFn =
-    unsafe fn(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize, out: &mut [[u32; 4]]);
+    unsafe fn(src: &[u8], src_stride: usize, rf: &[u8], ref_stride: usize, out: &mut [[u16; 4]]);
+
+/// Largest SAD of a 4x4 block: 16 samples of 8 bits.
+const MAX_SAD_4X4: u32 = 16 * 255;
+
+/// A 4x4 SAD as `u16` (it is at most [`MAX_SAD_4X4`]).
+#[inline]
+pub(crate) fn narrow_sad_4x4(sad: u32) -> u16 {
+    debug_assert!(sad <= MAX_SAD_4X4);
+    sad as u16
+}
 
 /// One plane of a [`SadMacroblockFn`] call: source and reference with their
 /// strides.
@@ -102,7 +112,7 @@ pub(crate) type BlockPair<'a> = (&'a [u8], usize, &'a [u8], usize);
 /// four 4x4 SADs, and per chroma plane the four 4x4 SADs of its 8x8 block
 /// (each `[top-left, top-right, bottom-left, bottom-right]`).
 pub(crate) type SadMacroblockFn =
-    unsafe fn(luma: BlockPair<'_>, chroma: [BlockPair<'_>; 2]) -> ([[u32; 4]; 4], [[u32; 4]; 2]);
+    unsafe fn(luma: BlockPair<'_>, chroma: [BlockPair<'_>; 2]) -> ([[u16; 4]; 4], [[u16; 4]; 2]);
 
 /// [`SadMacroblockFn`] from a [`SadQuads8x8RowFn`]: two rows of two luma
 /// 8x8 blocks, then each chroma block.
@@ -110,20 +120,17 @@ pub(crate) type SadMacroblockFn =
 /// # Safety
 ///
 /// As for `row`'s ISA; the slices satisfy the kernel contract.
-#[cfg(any(
-    target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
 #[inline]
 pub(crate) unsafe fn macroblock_from_rows(
     row: SadQuads8x8RowFn,
     (src, src_stride, rf, ref_stride): BlockPair<'_>,
     chroma: [BlockPair<'_>; 2],
-) -> ([[u32; 4]; 4], [[u32; 4]; 2]) {
-    let mut luma = [[0u32; 4]; 4];
+) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
+    let mut luma = [[0u16; 4]; 4];
     let (top, bottom) = luma.split_at_mut(2);
-    let mut planes = [[[0u32; 4]; 1]; 2];
+    let mut planes = [[[0u16; 4]; 1]; 2];
     // SAFETY: forwarded from the caller (a 16x16 luma block is two rows of
     // two 8x8 blocks, each chroma block one).
     unsafe {
@@ -175,23 +182,65 @@ pub enum GridRows {
     Even = 1,
 }
 
+/// The first [`GRID_SMALL_BLOCKS`] blocks of a grid update (the 8x8 and
+/// 16x16 ones) have SADs that fit `u16`: at most `16 * 16 * 255 = 65280`,
+/// with even-row doubling too. The 32x32 and 64x64 SADs need `u32`.
+/// Keeping the small ones in `u16` doubles the lanes of the hot sums and
+/// minimum (SVT-AV1's motion search keeps them in 16-bit lanes too).
+pub const GRID_SMALL_BLOCKS: usize = 80;
+/// The 32x32 and 64x64 blocks of a grid update, after the small ones.
+pub const GRID_LARGE_BLOCKS: usize = GRID_BLOCKS - GRID_SMALL_BLOCKS;
+
+/// Largest SAD of an 8x8 block: 64 samples of 8 bits.
+const MAX_SAD_8X8: u32 = 64 * 255;
+
+/// An 8x8 SAD as `u16` (it is at most [`MAX_SAD_8X8`]).
+#[inline]
+pub(crate) fn narrow_sad_8x8(sad: u32) -> u16 {
+    debug_assert!(sad <= MAX_SAD_8X8);
+    sad as u16
+}
+
 /// Running bests of a grid update: SAD and tag per block (see
 /// [`GRID_BLOCKS`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridBest {
-    /// Best SAD per block (`u32::MAX` before any update).
-    pub sad: [u32; GRID_BLOCKS],
+    /// Best SAD of each 8x8 and 16x16 block (`u16::MAX`, above any SAD,
+    /// before any update).
+    pub small: [u16; GRID_SMALL_BLOCKS],
+    /// Best SAD of each 32x32 block and the 64x64 block (`u32::MAX`
+    /// before any update).
+    pub large: [u32; GRID_LARGE_BLOCKS],
     /// Tag of the update that gave each best.
     pub tag: [u32; GRID_BLOCKS],
+}
+
+impl GridBest {
+    /// Best SAD of block `block`, in [`GRID_BLOCKS`] order.
+    #[must_use]
+    pub fn sad(&self, block: usize) -> u32 {
+        match block.checked_sub(GRID_SMALL_BLOCKS) {
+            None => u32::from(self.small[block]),
+            Some(large) => self.large[large],
+        }
+    }
 }
 
 impl Default for GridBest {
     fn default() -> Self {
         Self {
-            sad: [u32::MAX; GRID_BLOCKS],
+            small: [u16::MAX; GRID_SMALL_BLOCKS],
+            large: [u32::MAX; GRID_LARGE_BLOCKS],
             tag: [0; GRID_BLOCKS],
         }
     }
+}
+
+/// The SADs of one grid update, split as in [`GridBest`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GridCosts {
+    pub small: [u16; GRID_SMALL_BLOCKS],
+    pub large: [u32; GRID_LARGE_BLOCKS],
 }
 
 /// Fold the SADs of a 64x64 block at one position into `best`: 8x8 SADs
@@ -201,10 +250,19 @@ pub(crate) type SadGridBestFn = unsafe fn(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 );
+
+/// Adjacent-lane sums of two eight-lane u16 rows: `[a0 + a1, a2 + a3,
+/// a4 + a5, a6 + a7, b0 + b1, .., b6 + b7]` (NEON `addp`, x86 `phaddw`),
+/// for [`grid_costs`]. Each ISA supplies its instruction: from the scalar
+/// form the compiler built lane shuffles (x86: twice the grid's
+/// instructions). Callers keep every sum within u16.
+pub(crate) trait PairwiseU16 {
+    fn pairwise(a: [u16; 8], b: [u16; 8]) -> [u16; 8];
+}
 
 /// The shared middle of every ISA's grid update: scale (row subsampling)
 /// and mask the 8x8 SADs and sum
@@ -216,46 +274,53 @@ pub(crate) type SadGridBestFn = unsafe fn(
 // target only (measured: 15% of motion-search instructions on x86).
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(crate) fn grid_costs(grid: &[u32; 64], visible: &[u32; 64], scale: u32) -> [u32; GRID_BLOCKS] {
-    // Written as constant-length loops over whole rows (eight 8x8 SADs per
-    // row) so the compiler keeps them in vector registers: add two rows,
-    // then adjacent pairs. (`array::from_fn` with closures was not inlined.)
-    let mut rows = [[0u32; 8]; 8];
+pub(crate) fn grid_costs<P: PairwiseU16>(
+    grid: &[u16; 64],
+    visible: &[u16; 64],
+    scale: u16,
+) -> GridCosts {
+    // Whole rows of eight 8x8 SADs, so the compiler keeps them in vector
+    // registers. A scaled 8x8 SAD is at most `MAX_SAD_8X8` and a 16x16 sum
+    // four of them, so both stay in u16; the 32x32 sums widen.
+    let mut rows = [[0u16; 8]; 8];
     for (r, row) in rows.iter_mut().enumerate() {
         for (c, value) in row.iter_mut().enumerate() {
             *value = (grid[8 * r + c] * scale) & visible[8 * r + c];
         }
     }
-    let mut s16 = [[0u32; 4]; 4];
-    for (r, out) in s16.iter_mut().enumerate() {
-        let mut sum = [0u32; 8];
+    let mut pairs = [[0u16; 8]; 4];
+    for (r, sum) in pairs.iter_mut().enumerate() {
         for (c, value) in sum.iter_mut().enumerate() {
             *value = rows[2 * r][c] + rows[2 * r + 1][c];
         }
-        for (c, value) in out.iter_mut().enumerate() {
-            *value = sum[2 * c] + sum[2 * c + 1];
-        }
     }
-    let mut s32 = [[0u32; 2]; 2];
-    for (r, out) in s32.iter_mut().enumerate() {
-        for (c, value) in out.iter_mut().enumerate() {
-            *value = s16[2 * r][2 * c]
-                + s16[2 * r][2 * c + 1]
-                + s16[2 * r + 1][2 * c]
-                + s16[2 * r + 1][2 * c + 1];
-        }
-    }
-    let mut cost = [0u32; GRID_BLOCKS];
-    for (dst, src) in cost[..64].as_chunks_mut::<8>().0.iter_mut().zip(&rows) {
+    // 16x16 rows 0 and 1, then rows 2 and 3.
+    let s16 = [
+        P::pairwise(pairs[0], pairs[1]),
+        P::pairwise(pairs[2], pairs[3]),
+    ];
+    let mut small = [0u16; GRID_SMALL_BLOCKS];
+    for (dst, src) in small[..64].as_chunks_mut::<8>().0.iter_mut().zip(&rows) {
         *dst = *src;
     }
-    for (dst, src) in cost[64..80].as_chunks_mut::<4>().0.iter_mut().zip(&s16) {
+    for (dst, src) in small[64..].as_chunks_mut::<8>().0.iter_mut().zip(&s16) {
         *dst = *src;
     }
-    cost[80..82].copy_from_slice(&s32[0]);
-    cost[82..84].copy_from_slice(&s32[1]);
-    cost[84] = s32[0][0] + s32[0][1] + s32[1][0] + s32[1][1];
-    cost
+    // A 32x32 block: two 16x16 blocks of each of its two 16x16 rows.
+    let s32 = |half: &[u16; 8], c: usize| {
+        u32::from(half[c])
+            + u32::from(half[c + 1])
+            + u32::from(half[c + 4])
+            + u32::from(half[c + 5])
+    };
+    let s32 = [
+        s32(&s16[0], 0),
+        s32(&s16[0], 2),
+        s32(&s16[1], 0),
+        s32(&s16[1], 2),
+    ];
+    let large = [s32[0], s32[1], s32[2], s32[3], s32.iter().sum()];
+    GridCosts { small, large }
 }
 
 /// Four grid positions, folded in input order to preserve ties.
@@ -264,7 +329,7 @@ pub(crate) type SadGridBestX4Fn = unsafe fn(
     src_stride: usize,
     refs: [&[u8]; 4],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tags: [u32; 4],
 );

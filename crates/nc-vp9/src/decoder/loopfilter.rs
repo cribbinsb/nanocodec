@@ -4,7 +4,10 @@
 //! (`vp9_loopfilter.c` `vp9_build_mask`, `vp9_adjust_mask`,
 //! `vp9_filter_block_plane_ss00` / `_ss11`; BSD-3-Clause, see
 //! `THIRD_PARTY.md`): each block ORs its edges into its superblock's masks
-//! as it is stored, and the filter walks only the set bits.
+//! as it is stored, and the filter walks only the set bits. Runs of units
+//! of one edge width and level along a line are one kernel call each; the
+//! runs come from per-superblock "same level as the previous unit" bit
+//! masks, so the walk does bit operations per run, not work per unit.
 //!
 //! Superblocks run in raster order; in each, every plane filters all its
 //! vertical edges, then all horizontal ones. Each 8x8 unit's edges come
@@ -187,14 +190,16 @@ fn builds_chroma(row: usize, col: usize) -> bool {
 }
 
 /// The masks of one direction of one plane, ready to filter: per unit the
-/// edge width (16, 8 or 4 wide), the internal 4x4 edge, and the level.
-/// `N` units per side, bit `index * N + position` where `index` is the
-/// line of edges (a column for vertical edges, a row for horizontal ones).
+/// edge width (16, 8 or 4 wide), the internal 4x4 edge, and whether it has
+/// the level of the unit before it along its line. `N` units per side, bit
+/// `index * N + position` where `index` is the line of edges (a column for
+/// vertical edges, a row for horizontal ones).
 struct EdgeMasks {
     sixteen: u64,
     eight: u64,
     four: u64,
     internal: u64,
+    same_level: u64,
 }
 
 impl EdgeMasks {
@@ -212,6 +217,45 @@ fn transpose8(mut x: u64) -> u64 {
     x ^= t ^ (t << 14);
     let t = (x ^ (x >> 28)) & 0x0000_0000_f0f0_f0f0;
     x ^ t ^ (t << 28)
+}
+
+/// Bit `i` set where byte `i` of `x` is zero (exact, no borrow between
+/// bytes: Hacker's Delight 6-1).
+fn zero_bytes(x: u64) -> u64 {
+    const LOW7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    // Multiplying the eight byte flags (bits 0, 8, ..) gathers them into the top byte.
+    const GATHER: u64 = 0x0102_0408_1020_4080;
+    let nonzero = (((x & LOW7) + LOW7) | x) & HIGH;
+    (((!nonzero & HIGH) >> 7).wrapping_mul(GATHER)) >> 56
+}
+
+/// Which units filter at the level of the unit before them along a line of
+/// edges, for `side` x `side` units whose levels are the low `side` bytes of
+/// `rows`: bit `row * side + col` of `.0` where unit (row, col) has the
+/// level of (row, col - 1), of `.1` where it has that of (row - 1, col).
+/// Units in column / row 0 have no predecessor and their bits mean nothing.
+/// The edge walk reads runs of one level from these bits, not per unit.
+fn same_levels(rows: &[u64], side: usize) -> (u64, u64) {
+    let line = (1u64 << side) - 1;
+    let (mut left, mut above) = (0, 0);
+    let mut previous = 0;
+    for (row, &levels) in rows.iter().enumerate() {
+        left |= (zero_bytes(levels ^ (levels << 8)) & line) << (row * side);
+        above |= (zero_bytes(levels ^ previous) & line) << (row * side);
+        previous = levels;
+    }
+    (left, above)
+}
+
+/// The chroma (4:2:0) unit levels: luma units at even rows and columns,
+/// four bytes per row.
+fn chroma_rows(luma: &[u64; SB_MI]) -> [u64; SB_MI / 2] {
+    std::array::from_fn(|row| {
+        let x = luma[2 * row] & 0x00ff_00ff_00ff_00ff;
+        let x = (x | (x >> 8)) & 0x0000_ffff_0000_ffff;
+        (x | (x >> 16)) & 0xffff_ffff
+    })
 }
 
 /// Transpose a 4x4 bit matrix (bit `row * 4 + col` to `col * 4 + row`).
@@ -343,50 +387,66 @@ impl SuperblockMask {
         self
     }
 
-    /// The luma vertical (`vertical`) or horizontal edges, indexed by line
-    /// of edges: columns for vertical ones (transposed), rows otherwise.
+    /// The luma levels, one row of units per word (byte `col` of row `row`).
+    fn level_rows(&self) -> [u64; SB_MI] {
+        std::array::from_fn(|row| {
+            let bytes = self.levels[row * SB_MI..][..SB_MI]
+                .try_into()
+                .expect("a row");
+            u64::from_le_bytes(bytes)
+        })
+    }
+
+    /// The luma vertical and horizontal edges, indexed by line of edges:
+    /// columns for vertical ones (transposed), rows for horizontal ones.
     /// `top_row`: the superblock starts the frame (no top edges in row 0).
-    fn luma(&self, vertical: bool, top_row: bool) -> EdgeMasks {
-        if vertical {
+    fn luma(&self, top_row: bool) -> [EdgeMasks; 2] {
+        let (same_left, same_above) = same_levels(&self.level_rows(), SB_MI);
+        let keep = if top_row { !0xff } else { u64::MAX };
+        [
             EdgeMasks {
                 sixteen: transpose8(self.left_y[2]),
                 eight: transpose8(self.left_y[1]),
                 four: transpose8(self.left_y[0]),
                 internal: transpose8(self.int_4x4_y),
-            }
-        } else {
-            let keep = if top_row { !0xff } else { u64::MAX };
+                same_level: transpose8(same_above),
+            },
             EdgeMasks {
                 sixteen: self.above_y[2] & keep,
                 eight: self.above_y[1] & keep,
                 four: self.above_y[0] & keep,
                 internal: self.int_4x4_y,
-            }
-        }
+                same_level: same_left,
+            },
+        ]
     }
 
     /// The chroma counterpart of [`Self::luma`]; `last_row`: the chroma row
     /// (0..4) holding the frame's last unit row when it is odd, whose
     /// internal horizontal edges are not filtered.
-    fn chroma(&self, vertical: bool, top_row: bool, last_row: Option<usize>) -> EdgeMasks {
-        if vertical {
+    fn chroma(&self, top_row: bool, last_row: Option<usize>) -> [EdgeMasks; 2] {
+        let side = SB_MI / 2;
+        let (same_left, same_above) = same_levels(&chroma_rows(&self.level_rows()), side);
+        let keep: u16 = if top_row { !0xf } else { u16::MAX };
+        let internal = last_row.map_or(self.int_4x4_uv, |row| {
+            self.int_4x4_uv & !(0xf << (row * side))
+        });
+        [
             EdgeMasks {
                 sixteen: u64::from(transpose4(self.left_uv[2])),
                 eight: u64::from(transpose4(self.left_uv[1])),
                 four: u64::from(transpose4(self.left_uv[0])),
                 internal: u64::from(transpose4(self.int_4x4_uv)),
-            }
-        } else {
-            let keep: u16 = if top_row { !0xf } else { u16::MAX };
-            let internal =
-                last_row.map_or(self.int_4x4_uv, |row| self.int_4x4_uv & !(0xf << (row * 4)));
+                same_level: u64::from(transpose4(same_above as u16)),
+            },
             EdgeMasks {
                 sixteen: u64::from(self.above_uv[2] & keep),
                 eight: u64::from(self.above_uv[1] & keep),
                 four: u64::from(self.above_uv[0] & keep),
                 internal: u64::from(internal),
-            }
-        }
+                same_level: same_left,
+            },
+        ]
     }
 }
 
@@ -477,36 +537,19 @@ impl Deblocker {
             let mask = mask.adjusted((mi_row, mi_col), frame);
             let origin = (mi_col * MI_SIZE, mi_row * MI_SIZE);
             let top = mi_row == 0;
-            let level = |index: usize, position: usize, vertical: bool, ss: usize| {
-                let (row, col) = if vertical {
-                    (position, index)
-                } else {
-                    (index, position)
-                };
-                mask.levels[(row << ss) * SB_MI + (col << ss)]
-            };
             let ctx = FilterContext {
                 dsp,
                 limits: &self.limits,
                 origin,
+                levels: &mask.levels,
             };
-            ctx.plane(&mut y, &mask.luma(true, top), true, 0, &level);
-            ctx.plane(&mut y, &mask.luma(false, top), false, 0, &level);
+            let [vertical, horizontal] = mask.luma(top);
+            ctx.plane::<true, 0>(&mut y, &vertical);
+            ctx.plane::<false, 0>(&mut y, &horizontal);
+            let [vertical, horizontal] = mask.chroma(top, last_chroma_row);
             for plane in [&mut u, &mut v] {
-                ctx.plane(
-                    plane,
-                    &mask.chroma(true, top, last_chroma_row),
-                    true,
-                    1,
-                    &level,
-                );
-                ctx.plane(
-                    plane,
-                    &mask.chroma(false, top, last_chroma_row),
-                    false,
-                    1,
-                    &level,
-                );
+                ctx.plane::<true, 1>(plane, &vertical);
+                ctx.plane::<false, 1>(plane, &horizontal);
             }
         }
     }
@@ -518,76 +561,78 @@ struct FilterContext<'a> {
     limits: &'a [Limits],
     /// The superblock's luma top-left sample.
     origin: (usize, usize),
+    /// The level of each luma unit.
+    levels: &'a [u8; SB_MI * SB_MI],
 }
 
 impl FilterContext<'_> {
-    /// Filter one direction of one plane of the superblock: lines of edges
-    /// in order (columns left to right, or rows top to bottom). Within a
-    /// line, units cover different lines across the edge, so each edge
-    /// class can run as a whole: runs of units of one width and level are
-    /// one kernel call each, and the internal 4x4 edges follow their units'
-    /// outer edges, as in libvpx's per-row passes.
-    fn plane(
+    /// Filter the vertical (`VERTICAL`) or horizontal edges of one plane
+    /// (subsampled by `SS`) of the superblock: lines of edges in order
+    /// (columns left to right, or rows top to bottom). Within a line, units
+    /// cover different lines across the edge, so each edge class can run
+    /// as a whole: runs of units of one width and level are one kernel call
+    /// each, read from the masks (`same_level`) rather than unit by unit, and
+    /// the internal 4x4 edges follow their units' outer edges, as in
+    /// libvpx's per-row passes.
+    fn plane<const VERTICAL: bool, const SS: usize>(
         &self,
         view: &mut PlaneViewMut<'_>,
         edges: &EdgeMasks,
-        vertical: bool,
-        ss: usize,
-        level: &impl Fn(usize, usize, bool, usize) -> u8,
     ) {
-        let side = SB_MI >> ss;
+        let side = SB_MI >> SS;
         let line_mask = (1u64 << side) - 1;
-        let (x0, y0) = (self.origin.0 >> ss, self.origin.1 >> ss);
+        let (x0, y0) = (self.origin.0 >> SS, self.origin.1 >> SS);
         let classes = [
             (edges.sixteen, Width::Sixteen, 0),
             (edges.eight, Width::Eight, 0),
             (edges.four, Width::Four, 0),
             (edges.internal, Width::Four, INTERNAL_OFFSET),
         ];
+        let any = edges.any();
         for index in 0..side {
             let shift = index * side;
-            if (edges.any() >> shift) & line_mask == 0 {
+            if (any >> shift) & line_mask == 0 {
                 continue;
             }
+            let same = (edges.same_level >> shift) & line_mask;
             for (mask, width, inset) in classes {
                 let mut bits = (mask >> shift) & line_mask;
                 while bits != 0 {
                     let start = bits.trailing_zeros() as usize;
-                    let unit_level = level(index, start, vertical, ss);
-                    let mut end = start + 1;
-                    while end < side
-                        && (bits >> end) & 1 != 0
-                        && level(index, end, vertical, ss) == unit_level
-                    {
-                        end += 1;
-                    }
-                    bits &= !((1u64 << end) - (1u64 << start));
+                    // The run continues while the next unit has this edge and level.
+                    let units = 1 + ((bits & same) >> (start + 1)).trailing_ones() as usize;
+                    bits &= !(((1u64 << units) - 1) << start);
+                    let (row, col) = if VERTICAL {
+                        (start, index)
+                    } else {
+                        (index, start)
+                    };
+                    let level = self.levels[(row << SS) * SB_MI + (col << SS)];
                     let along = start * MI_SIZE;
                     let across = index * MI_SIZE + inset;
-                    let (x, y) = if vertical {
+                    let (x, y) = if VERTICAL {
                         (x0 + across, y0 + along)
                     } else {
                         (x0 + along, y0 + across)
                     };
-                    let lines = (end - start) * MI_SIZE;
-                    self.edge(view, (x, y), (vertical, lines), width, unit_level);
+                    self.edge::<VERTICAL>(view, (x, y), units * MI_SIZE, width, level);
                 }
             }
         }
     }
 
     /// Filter `lines` lines of the edge at plane sample `(x, y)`.
-    fn edge(
+    fn edge<const VERTICAL: bool>(
         &self,
         view: &mut PlaneViewMut<'_>,
         (x, y): (usize, usize),
-        (vertical, lines): (bool, usize),
+        lines: usize,
         width: Width,
         level: u8,
     ) {
         let limits = self.limits[usize::from(level)];
         let stride = view.stride();
-        let (step, along) = if vertical { (1, stride) } else { (stride, 1) };
+        let (step, along) = if VERTICAL { (1, stride) } else { (stride, 1) };
         self.dsp.vp9_filter_edge(
             view.data_mut(),
             y * stride + x,
@@ -626,6 +671,49 @@ mod tests {
                 }
             }
             assert_eq!(transpose4(small), expected);
+        }
+    }
+
+    #[test]
+    fn same_level_bits_match_the_definition() {
+        for seed in 0..64u64 {
+            let mut mask = SuperblockMask::default();
+            let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            for level in &mut mask.levels {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                // Few distinct levels, so that runs occur; 0x80 tests the borrow.
+                *level = [0, 1, 0x80, 0xff][(state >> 60) as usize % 4];
+            }
+            let at = |row: usize, col: usize| mask.levels[row * SB_MI + col];
+            let (left, above) = same_levels(&mask.level_rows(), SB_MI);
+            let (left_uv, above_uv) = same_levels(&chroma_rows(&mask.level_rows()), SB_MI / 2);
+            for row in 0..SB_MI {
+                for col in 0..SB_MI {
+                    let bit = row * SB_MI + col;
+                    if col > 0 {
+                        assert_eq!(left >> bit & 1 != 0, at(row, col) == at(row, col - 1));
+                    }
+                    if row > 0 {
+                        assert_eq!(above >> bit & 1 != 0, at(row, col) == at(row - 1, col));
+                    }
+                }
+            }
+            let side = SB_MI / 2;
+            for row in 0..side {
+                for col in 0..side {
+                    let bit = row * side + col;
+                    let level = at(2 * row, 2 * col);
+                    if col > 0 {
+                        assert_eq!(left_uv >> bit & 1 != 0, level == at(2 * row, 2 * col - 2));
+                    }
+                    if row > 0 {
+                        assert_eq!(above_uv >> bit & 1 != 0, level == at(2 * row - 2, 2 * col));
+                    }
+                }
+            }
+            assert_eq!(left_uv >> (side * side), 0);
         }
     }
 }

@@ -6,13 +6,13 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::aarch64::{
-    int16x8_t, int32x4_t, uint32x4_t, vaddl_s16, vaddq_s16, vaddq_s32, vaddv_u8, vandq_u8,
-    vcombine_u8, vcombine_u16, vdupq_n_s32, vget_high_s16, vget_high_u8, vget_low_s16, vget_low_u8,
-    vld1q_s16, vld1q_s32, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_n_s16, vmlaq_n_s16, vmovl_high_s16,
-    vmovl_s16, vmovn_u16, vmovn_u32, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_s32, vqshlq_s32,
-    vreinterpretq_s16_s32, vreinterpretq_s32_s16, vrshlq_s32, vrshrq_n_s32, vshlq_n_s16,
-    vshlq_n_s32, vst1q_s32, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16, vtrn1q_s32, vtrn2q_s16,
-    vtrn2q_s32, vtstq_s32,
+    int16x4_t, int16x8_t, int32x4_t, uint32x4_t, vaddl_s16, vaddq_s16, vaddq_s32, vaddv_u8,
+    vandq_u8, vcombine_u8, vcombine_u16, vdupq_n_s32, vget_high_s16, vget_high_u8, vget_low_s16,
+    vget_low_u8, vld1q_s16, vld1q_s32, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_n_s16, vmlaq_n_s16,
+    vmovl_high_s16, vmovl_s16, vmovn_u16, vmovn_u32, vmull_n_s16, vmulq_n_s16, vmulq_s32,
+    vqmovn_s32, vqshlq_s32, vreinterpretq_s16_s32, vreinterpretq_s32_s16, vrshlq_s32, vrshrq_n_s32,
+    vshlq_n_s16, vshlq_n_s32, vst1_s16, vst1q_s32, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16,
+    vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s32,
 };
 
 use super::generic::{H264Forward8x8, HEVC_DEQUANT_LEVEL_LIMIT};
@@ -40,8 +40,22 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.h264_forward_8x8 = h264_forward_8x8;
     table.h264_forward_4x4 = h264_forward_4x4;
     table.h264_forward_quantize_mb = h264_forward_quantize_mb;
+    table.h264_add_scaled_8x8 = h264_add_scaled_8x8;
     table.nonzero_mask = nonzero_mask;
     table
+}
+
+/// The H.264 8x8 decoder inverse in eight 16-bit lanes (`h264_inverse8`).
+///
+/// # Safety
+///
+/// Kernel contract (`codec_txfm` module docs).
+#[target_feature(enable = "neon")]
+unsafe fn h264_add_scaled_8x8(coeffs: &[i16; 64], dst: &mut [u8], stride: usize) {
+    // SAFETY: NEON is available here; the caller's contract is forwarded.
+    unsafe {
+        super::h264_inverse8::add_scaled_8x8_lanes::<crate::simd::neon::I16x8>(coeffs, dst, stride);
+    }
 }
 
 /// Lane bits of 16 byte flags (two bytes of mask).
@@ -307,7 +321,7 @@ const DEQUANT_STEP: usize = 16;
 /// was latency-bound: each step was one serial 9-instruction chain behind
 /// four slice bounds checks. The ragged tail uses the generic kernel.
 #[target_feature(enable = "neon")]
-unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i32]) {
+unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
     let scaler = HevcScaler::new(q);
     let n = levels.len();
     let (src, _) = levels.as_chunks::<DEQUANT_STEP>();
@@ -317,7 +331,7 @@ unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i32]) {
             // SAFETY: `k + 4 <= 16` values of each chunk.
             unsafe {
                 let value = scaler.value(vld1q_s32(s.as_ptr().add(k)));
-                vst1q_s32(d.as_mut_ptr().add(k), value);
+                vst1_s16(d.as_mut_ptr().add(k), value);
             }
         }
     }
@@ -366,14 +380,14 @@ impl HevcScaler {
     /// The level clamp keeps the product itself within 32 bits
     /// (`2^16 * 1152 < 2^27`).
     #[inline(always)]
-    fn value(&self, level: int32x4_t) -> int32x4_t {
+    fn value(&self, level: int32x4_t) -> int16x4_t {
         // SAFETY: NEON kernels only.
         unsafe {
             let level = vminq_s32(vmaxq_s32(level, self.level_min), self.level_max);
             let product = vmulq_s32(level, self.level_scale);
             let scaled = vrshlq_s32(vqshlq_s32(product, self.per), self.bd_shift);
             // Saturating narrowing is the clamp to 16 bits.
-            vmovl_s16(vqmovn_s32(scaled))
+            vqmovn_s32(scaled)
         }
     }
 }
@@ -425,14 +439,14 @@ unsafe fn staged32_bounded(
 /// architecture choice behind the same shared inverse/add entry point.
 #[target_feature(enable = "neon")]
 unsafe fn inverse_add_buffered<T: super::generic::BoundedLine, const N: usize>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     extent: (usize, usize),
     dst: &mut [u8],
     stride: usize,
 ) {
     use super::generic as g;
     use core::arch::aarch64::{
-        vcombine_s16, vld1_u8, vmovl_u8, vqaddq_s16, vqmovun_s16, vreinterpretq_s16_u16, vst1_u8,
+        vld1_u8, vmovl_u8, vqaddq_s16, vqmovun_s16, vreinterpretq_s16_u16, vst1_u8,
     };
     if extent.0 == 0 || extent.1 == 0 {
         return;
@@ -454,12 +468,10 @@ unsafe fn inverse_add_buffered<T: super::generic::BoundedLine, const N: usize>(
             .zip(residual.as_chunks::<8>().0)
         {
             // SAFETY: each chunk contains eight pixels/residuals, and NEON
-            // is enabled. Saturating to i16 before adding preserves u8 clip.
+            // is enabled. The saturating add preserves the u8 clip.
             unsafe {
-                let lo = vqmovn_s32(vld1q_s32(residual.as_ptr()));
-                let hi = vqmovn_s32(vld1q_s32(residual.as_ptr().add(4)));
                 let pred = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(output.as_ptr())));
-                let sum = vqaddq_s16(vcombine_s16(lo, hi), pred);
+                let sum = vqaddq_s16(vld1q_s16(residual.as_ptr()), pred);
                 vst1_u8(output.as_mut_ptr(), vqmovun_s16(sum));
             }
         }

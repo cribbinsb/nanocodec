@@ -5,7 +5,7 @@
 
 use crate::{BenchResult, CheckReport, rng::Rng};
 use nc_common::PlaneViewMut;
-use nc_dsp::{Av1TxSize, Av1TxType, Dsp};
+use nc_dsp::{Av1TxSize, Av1TxType, Dsp, av1_inverse_add_i16_dav1d_reference};
 
 /// Coefficient patterns per (size, type).
 const PATTERNS: usize = 5;
@@ -46,6 +46,7 @@ pub(crate) fn check(
                     let mut expected = vec![0u8; stride * (h + MARGIN)];
                     rng.fill(&mut expected);
                     let mut actual = expected.clone();
+                    let prediction = actual.clone();
                     for (dsp, pixels, used_eob) in [
                         (reference, &mut expected, size.coded_area()),
                         (candidate, &mut actual, eob),
@@ -58,6 +59,27 @@ pub(crate) fn check(
                         report.failures.push(format!(
                             "av1_inverse_add {w}x{h} {kind:?} pattern={pattern}"
                         ));
+                    }
+                    check_i16(
+                        candidate,
+                        size,
+                        kind,
+                        (&coeffs, eob),
+                        (&prediction, &expected),
+                        report,
+                    );
+                    if candidate.av1_inverse_i16_is_dav1d(size, kind) {
+                        // dav1d's end-of-block skipping on arbitrary input:
+                        // coefficients past the end of block are ignored.
+                        let eob = 1 + rng.below(size.coded_area());
+                        check_i16(
+                            candidate,
+                            size,
+                            kind,
+                            (&coeffs, eob),
+                            (&prediction, &expected),
+                            report,
+                        );
                     }
                 }
             }
@@ -99,6 +121,7 @@ fn check_scan_prefixes(
         let mut expected = vec![0; stride * (size.height() + MARGIN)];
         rng.fill(&mut expected);
         let mut actual = expected.clone();
+        let prediction = actual.clone();
         reference.av1_inverse_add(
             size,
             kind,
@@ -119,6 +142,65 @@ fn check_scan_prefixes(
                 .failures
                 .push(format!("av1 inverse prefix {size:?} {kind:?} eob={eob}"));
         }
+        check_i16(
+            candidate,
+            size,
+            kind,
+            (&coeffs, eob),
+            (&prediction, &expected),
+            report,
+        );
+    }
+}
+
+/// `Dsp::av1_inverse_add_i16` of `coeffs` saturated to 16 bits (the
+/// decoder's storage, §7.12.3), added to `prediction`, equals its
+/// reference: dav1d's scalar model where the candidate runs dav1d's
+/// assembly (exact on any input, and clearing the same coefficients), else `expected`, the 32-bit reference's result for the
+/// same block (which clamps its inputs to 16 bits too).
+fn check_i16(
+    candidate: &Dsp,
+    size: Av1TxSize,
+    kind: Av1TxType,
+    (coeffs, eob): (&[i32], usize),
+    (prediction, expected): (&[u8], &[u8]),
+    report: &mut CheckReport,
+) {
+    let mut narrow: Vec<i16> = coeffs
+        .iter()
+        .map(|&c| c.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
+        .collect();
+    let stride = size.width() + MARGIN;
+    let (w, h) = (size.width(), size.height());
+    let mut reference = expected.to_vec();
+    // dav1d clears exactly the coefficients it reads; elsewhere they may be
+    // left as they are.
+    let mut cleared = None;
+    if candidate.av1_inverse_i16_is_dav1d(size, kind) {
+        reference.copy_from_slice(prediction);
+        let mut scratch = narrow.clone();
+        av1_inverse_add_i16_dav1d_reference(
+            size,
+            kind,
+            &mut scratch,
+            eob,
+            &mut PlaneViewMut::new(&mut reference, stride, w, h).unwrap(),
+        );
+        cleared = Some(scratch);
+    }
+    let mut actual = prediction.to_vec();
+    candidate.av1_inverse_add_i16(
+        size,
+        kind,
+        &mut narrow,
+        eob,
+        &mut PlaneViewMut::new(&mut actual, stride, w, h).unwrap(),
+    );
+    report.cases += 1;
+    if actual != reference || cleared.is_some_and(|cleared| cleared != narrow) {
+        report
+            .failures
+            .push(format!("av1_inverse_add_i16 {size:?} {kind:?} eob={eob}"));
     }
 }
 
@@ -183,5 +265,66 @@ pub(crate) fn bench(dsp: &Dsp, results: &mut Vec<BenchResult>) {
                 }),
             });
         }
+        bench_i16(dsp, size, &coeffs, &mut pixels, results);
+    }
+}
+
+/// The sparse benchmark's end of block: the first ten scan positions, the
+/// diagonals `r + c < 4`.
+const SPARSE_EOB: usize = 10;
+
+/// The decoder's 16-bit entry ([`Dsp::av1_inverse_add_i16`], which clears
+/// the coefficients it reads, so each call copies them in first): a sparse
+/// `DCT_DCT` (the first ten scan positions) and full blocks of the benched
+/// kinds.
+fn bench_i16(
+    dsp: &Dsp,
+    size: Av1TxSize,
+    coeffs: &[i32],
+    pixels: &mut [u8],
+    results: &mut Vec<BenchResult>,
+) {
+    let (w, h) = (size.width(), size.height());
+    let full: Vec<i16> = coeffs[..size.coded_area()]
+        .iter()
+        .map(|&c| c as i16)
+        .collect();
+    let mut sparse = vec![0i16; size.coded_area()];
+    for c in 0..size.coded_width().min(4) {
+        for r in 0..size.coded_height().min(4 - c) {
+            sparse[c * size.coded_height() + r] = full[c * size.coded_height() + r];
+        }
+    }
+    let cases = [(
+        Av1TxType::DctDct,
+        &sparse,
+        SPARSE_EOB,
+        "av1_inverse_i16_eob10",
+    )]
+    .into_iter()
+    .chain(
+        [
+            (Av1TxType::AdstAdst, "av1_inverse_i16_adst_adst"),
+            (Av1TxType::Idtx, "av1_inverse_i16_idtx"),
+            (Av1TxType::DctDct, "av1_inverse_i16_dct_dct"),
+        ]
+        .map(|(kind, name)| (kind, &full, size.coded_area(), name)),
+    );
+    let mut scratch = vec![0i16; size.coded_area()];
+    for (kind, source, eob, name) in cases {
+        if !kind.fits(size) {
+            continue;
+        }
+        results.push(BenchResult {
+            kernel: name,
+            size: (w, h),
+            isa: dsp.isa(),
+            ns_per_call: crate::bench::time(|| {
+                scratch.copy_from_slice(source);
+                let mut dst = PlaneViewMut::new(pixels, w, w, h).expect("plane");
+                dsp.av1_inverse_add_i16(size, kind, &mut scratch, eob, &mut dst);
+                u32::from(pixels[0])
+            }),
+        });
     }
 }

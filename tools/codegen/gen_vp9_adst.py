@@ -6,8 +6,10 @@ Usage: gen_vp9_adst.py /path/to/libvpx-v1.16.0
 The normative inverse (`iadst8_c`, `iadst16_c`, vpx_dsp/inv_txfm.c) and the
 encoder's forward (`fadst8`, `fadst16`, vp9/encoder/vp9_dct.c) are
 straight-line integer code; this script rewrites each statement into Rust
-(i64 arithmetic, `wrap` for WRAPLOW, `round_shift` for the 14-bit rounding)
-so the arithmetic stays exactly the reference's. libvpx is BSD-3-Clause.
+(`wrap` for WRAPLOW, `round_shift` for the 14-bit rounding) so the
+arithmetic stays exactly the reference's: the inverse in wrapping i32 on
+i16 inputs (libvpx's own `int` stage sums), the forward in i64. libvpx is
+BSD-3-Clause.
 """
 import re
 import subprocess
@@ -48,19 +50,23 @@ def translate(lines: list[str], n: int, inverse: bool) -> str:
         if stmt.startswith("memset") or stmt.startswith("return"):
             continue
         stmt = stmt.replace("{", "").replace("}", "").strip()
+        widen = "Wrapping(i32::from(input[\\2]))" if inverse else "i64::from(input[\\2])"
         stmt = re.sub(r"tran_high_t\s+(x\d+)\s*=\s*input\[(\d+)\]",
-                      r"let mut \1 = i64::from(input[\2])", stmt)
-        stmt = re.sub(r"cospi_(\d+)_64", r"C[\1]", stmt)
+                      r"let mut \1 = " + widen, stmt)
+        stmt = re.sub(r"cospi_(\d+)_64", r"COS[\1]" if inverse else r"C[\1]", stmt)
         stmt = stmt.replace("(int)", "").replace("(tran_low_t)", "")
         stmt = stmt.replace("WRAPLOW", "wrap").replace("dct_const_round_shift", "round_shift")
         stmt = stmt.replace("fdct_round_shift", "round_shift")
-        stmt = re.sub(r"output\[(\d+)\]\s*=\s*(.*)", r"output[\1] = (\2) as i32", stmt)
+        narrow = r"output[\1] = (\2).0 as i16" if inverse else r"output[\1] = (\2) as i32"
+        stmt = re.sub(r"output\[(\d+)\]\s*=\s*(.*)", narrow, stmt)
         if not stmt:
             continue
         out.append("    " + stmt + ";")
-    decl = "    let (mut s0, mut s1, mut s2, mut s3, mut s4, mut s5, mut s6, mut s7): (i64, i64, i64, i64, i64, i64, i64, i64);\n"
+    ty = "Stage" if inverse else "i64"
+    types = ", ".join([ty] * 8)
+    decl = f"    let (mut s0, mut s1, mut s2, mut s3, mut s4, mut s5, mut s6, mut s7): ({types});\n"
     if n == 16:
-        decl += "    let (mut s8, mut s9, mut s10, mut s11, mut s12, mut s13, mut s14, mut s15): (i64, i64, i64, i64, i64, i64, i64, i64);\n"
+        decl += f"    let (mut s8, mut s9, mut s10, mut s11, mut s12, mut s13, mut s14, mut s15): ({types});\n"
     return decl + "\n".join(out)
 
 
@@ -75,18 +81,37 @@ def main():
 //! 2010 The `WebM` Project authors, see `THIRD_PARTY.md`. Do not edit by hand.
 //!
 //! The inverse wraps every stage to 16 bits (`WRAPLOW`, the 8-bit decoder's
-//! `int16_t` storage); the forward keeps full precision.
+//! `int16_t` storage); the forward keeps full precision. The inverse's sums
+//! of products are wrapping i32, as libvpx's `int` stage variables: each is
+//! consumed only through `wrap` or `wrap(round_shift(..))`, and a sum taken
+//! modulo 2^32, shifted right by 14 and truncated to 16 bits equals the
+//! exact one (the discarded multiple, 2^18, is itself a multiple of 2^16).
 
 #![allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::similar_names)]
 #![allow(unused_assignments, unused_parens, clippy::identity_op, clippy::neg_multiply)]
 
 use super::VP9_COSPI_64 as C_TABLE;
+use std::num::Wrapping;
 
 const C: [i64; 32] = {
     let mut c = [0i64; 32];
     let mut k = 0;
     while k < 32 {
         c[k] = C_TABLE[k] as i64;
+        k += 1;
+    }
+    c
+};
+
+/// A stage value of the inverse: wrapping i32.
+type Stage = Wrapping<i32>;
+
+/// The cosines as [`Stage`] values, for the inverse.
+const COS: [Stage; 32] = {
+    let mut c = [Wrapping(0); 32];
+    let mut k = 0;
+    while k < 32 {
+        c[k] = Wrapping(C_TABLE[k]);
         k += 1;
     }
     c
@@ -100,11 +125,13 @@ fn round_shift(value: i64) -> i64 {
 '''
     for path, signature, name, n, inverse in FUNCTIONS:
         code = translate(body((source / path).read_text(), signature), n, inverse)
-        wrap = ("/// `WRAPLOW`: truncate to 16 bits.\nfn wrap(value: i64) -> i64 {\n    i64::from(value as i16)\n}\n"
+        wrap = ("/// `WRAPLOW`: truncate to 16 bits.\nfn wrap(value: Stage) -> Stage {\n    Wrapping(i32::from(value.0 as i16))\n}\n"
+                "/// 14-bit rounding (`dct_const_round_shift`) modulo 2^32.\nfn round_shift(value: Stage) -> Stage {\n    (value + Wrapping(1 << 13)) >> 14\n}\n"
                 if inverse else "")
         doc = "Normative inverse" if inverse else "Encoder forward"
         text += f"/// {doc} {n}-point ADST (libvpx `{signature.split()[-1]}`).\n"
-        text += f"pub(super) fn {name}(input: &[i32; {n}], output: &mut [i32; {n}]) {{\n"
+        io = "i16" if inverse else "i32"
+        text += f"pub(super) fn {name}(input: &[{io}; {n}], output: &mut [{io}; {n}]) {{\n"
         if wrap:
             text += "    " + wrap.replace("\n", "\n    ").rstrip() + "\n"
         text += code + "\n}\n\n"

@@ -26,7 +26,9 @@ use core::arch::wasm32::{
 
 use core::mem::MaybeUninit;
 
-use super::{I16FilterLanes, I16Lanes, I16Pairs, I16x8Shuffles, I32Lanes, packed_pair};
+use super::{
+    I16FilterLanes, I16Lanes, I16Pairs, I16x8Shuffles, I32Lanes, WordPairLanes, packed_pair,
+};
 use relaxed::{q15_mul_round, select_i16, select_i32};
 
 /// Lane selects, bounded byte lookups and the rounding Q15 multiply, as relaxed-SIMD instructions
@@ -134,6 +136,26 @@ fn store_low8(v: v128, dst: &mut [u8]) {
 }
 
 // ---------------------------------------------------------------- I32x4 ----
+
+/// Four 16-bit pairs, one per 32-bit lane ([`WordPairLanes`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WordPairs4(v128);
+
+impl WordPairLanes for I32x4 {
+    type Pairs = WordPairs4;
+
+    #[inline(always)]
+    fn word_pairs(self, high: Self) -> WordPairs4 {
+        // The low (even) word of each lane from `self`, the odd word from
+        // the low word of `high`'s lane.
+        WordPairs4(i16x8_shuffle::<0, 8, 2, 10, 4, 12, 6, 14>(self.0, high.0))
+    }
+
+    #[inline(always)]
+    fn pair_dot(pairs: WordPairs4, weights: i32) -> Self {
+        Self(i32x4_dot_i16x8(pairs.0, i32x4_splat(weights)))
+    }
+}
 
 impl I32Lanes for I32x4 {
     const LANES: usize = 4;
@@ -265,23 +287,37 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn store_sat16(self, dst: &mut [i16]) {
+        let dst = &mut dst[..4];
+        // SAFETY: `dst` holds 4 values (8 bytes).
+        unsafe {
+            v128_store64_lane::<0>(i16x8_narrow_i32x4(self.0, self.0), dst.as_mut_ptr().cast());
+        }
+    }
+
+    #[inline(always)]
     fn store_transposed(rows: &[Self], dst: &mut [MaybeUninit<i32>], dst_stride: usize) {
-        let r = [rows[0].0, rows[1].0, rows[2].0, rows[3].0];
-        let t0 = i32x4_shuffle::<0, 4, 1, 5>(r[0], r[1]);
-        let t1 = i32x4_shuffle::<2, 6, 3, 7>(r[0], r[1]);
-        let t2 = i32x4_shuffle::<0, 4, 1, 5>(r[2], r[3]);
-        let t3 = i32x4_shuffle::<2, 6, 3, 7>(r[2], r[3]);
-        let out = [
-            i64x2_shuffle::<0, 2>(t0, t2),
-            i64x2_shuffle::<1, 3>(t0, t2),
-            i64x2_shuffle::<0, 2>(t1, t3),
-            i64x2_shuffle::<1, 3>(t1, t3),
-        ];
-        for (c, &row) in out.iter().enumerate() {
+        for (c, &row) in transpose_i32x4(rows).iter().enumerate() {
             let dst = &mut dst[c * dst_stride..][..Self::LANES];
             // SAFETY: `dst` holds 4 values (indexed above); uninitialised
             // memory may be written.
             unsafe { v128_store(dst.as_mut_ptr().cast(), row) };
+        }
+    }
+
+    #[inline(always)]
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
+        let out = transpose_i32x4(rows);
+        for (c, pair) in out.as_chunks::<2>().0.iter().enumerate() {
+            // Rows `2c` and `2c + 1` narrowed into one vector's halves.
+            let words = i16x8_narrow_i32x4(pair[0], pair[1]);
+            let first = &mut dst[2 * c * dst_stride..][..Self::LANES];
+            // SAFETY: `first` holds 4 values (8 bytes, indexed above);
+            // uninitialised memory may be written.
+            unsafe { v128_store64_lane::<0>(words, first.as_mut_ptr().cast()) };
+            let second = &mut dst[(2 * c + 1) * dst_stride..][..Self::LANES];
+            // SAFETY: as for `first`.
+            unsafe { v128_store64_lane::<1>(words, second.as_mut_ptr().cast()) };
         }
     }
 
@@ -346,6 +382,21 @@ impl I16Lanes for I16x8 {
         let src = &src[..8];
         // SAFETY: `src` holds 8 bytes.
         Self(unsafe { u16x8_load_extend_u8x8(src.as_ptr()) })
+    }
+
+    #[inline(always)]
+    fn load_i8(src: &[i8]) -> Self {
+        let src = &src[..8];
+        // SAFETY: `src` holds 8 bytes.
+        Self(unsafe { core::arch::wasm32::i16x8_load_extend_i8x8(src.as_ptr()) })
+    }
+
+    #[inline(always)]
+    fn store_i8(self, dst: &mut [i8]) {
+        let dst = &mut dst[..8];
+        let bytes = core::arch::wasm32::i8x16_narrow_i16x8(self.0, self.0);
+        // SAFETY: `dst` holds 8 bytes.
+        unsafe { v128_store64_lane::<0>(bytes, dst.as_mut_ptr().cast()) }
     }
 
     #[inline(always)]
@@ -758,4 +809,21 @@ impl I16x8Shuffles for I16x8 {
             i32x4_shuffle::<2, 3, 6, 7>(lo, hi),
         ))
     }
+}
+
+/// The 4x4 tile of `rows` transposed: lane `r` of result `c` is lane `c` of
+/// `rows[r]`.
+#[inline(always)]
+fn transpose_i32x4(rows: &[I32x4]) -> [v128; 4] {
+    let r = [rows[0].0, rows[1].0, rows[2].0, rows[3].0];
+    let t0 = i32x4_shuffle::<0, 4, 1, 5>(r[0], r[1]);
+    let t1 = i32x4_shuffle::<2, 6, 3, 7>(r[0], r[1]);
+    let t2 = i32x4_shuffle::<0, 4, 1, 5>(r[2], r[3]);
+    let t3 = i32x4_shuffle::<2, 6, 3, 7>(r[2], r[3]);
+    [
+        i64x2_shuffle::<0, 2>(t0, t2),
+        i64x2_shuffle::<1, 3>(t0, t2),
+        i64x2_shuffle::<0, 2>(t1, t3),
+        i64x2_shuffle::<1, 3>(t1, t3),
+    ]
 }

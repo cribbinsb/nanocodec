@@ -141,7 +141,7 @@ pub(super) fn read(
     ctx: &mut Contexts,
     scan: &Scan,
     options: Options,
-    levels: &mut [i32],
+    levels: &mut [i16],
     positions: &mut Vec<u16>,
 ) -> Result<bool, DecodeError> {
     // The engine works on a local copy, written back at the end: its
@@ -159,7 +159,7 @@ fn read_levels(
     ctx: &mut Contexts,
     scan: &Scan,
     options: Options,
-    levels: &mut [i32],
+    levels: &mut [i16],
     positions: &mut Vec<u16>,
 ) -> Result<bool, DecodeError> {
     let luma = options.luma;
@@ -231,7 +231,8 @@ fn read_levels(
             &mut greater1_state,
             |index, level| {
                 let raster = scan.positions[first + usize::from(index)];
-                levels[raster] = level;
+                // In -2^15..2^15 - 1: `sub_block_levels` rejects the rest.
+                levels[raster] = level as i16;
                 positions.push(raster as u16);
             },
         )?;

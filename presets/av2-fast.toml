@@ -72,3 +72,5 @@ rate.cadence_scale = 0.7
 # The Default's jointly tuned planner lambda (2026-11-12) is not screened for
 # this preset: it keeps the previous value.
 planner.lambda_scale = 2
+# Pinned before AV2 Default's key-period ceiling (2026-11-14).
+rate.period_ceiling = 0

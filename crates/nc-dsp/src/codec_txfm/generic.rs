@@ -12,6 +12,14 @@
 //!   as loaded; its output is transposed for the row pass, whose output is
 //!   transposed again into the row-major residual.
 //!
+//! The inverse reads 16-bit coefficients (the scaling process's clamp,
+//! HEVC §8.6.3 / VVC §8.7.3) and writes a 16-bit residual: the first pass
+//! clamps to 16 bits (§8.6.4.2), so a residual is at most `(2^15 · L +
+//! 2^11) >> 12` in magnitude, where `L` is the largest absolute column sum
+//! of a basis matrix, at most `64 · N` = 2048 for 32 points (Cauchy-Schwarz:
+//! each basis row has norm `64·√N`). That is below 2^14 + 1, well inside
+//! `i16` (`residual_bound_fits_i16` checks the actual sums).
+//!
 //! Scratch buffers are uninitialised and fully written by the pass before
 //! the one that reads them.
 //!
@@ -30,7 +38,7 @@ use super::{
     QUANT_MF_4X4_POS, QUANT_MF_8X8_POS,
 };
 use crate::simd::I32Lanes;
-use crate::txfm::generic::store_pass;
+use crate::txfm::generic::{store_pass, store_pass_sat16};
 
 /// The largest block: 32x32.
 pub(crate) const MAX_AREA: usize = MAX_SIDE * MAX_SIDE;
@@ -101,19 +109,19 @@ impl Element for i32 {
 ///
 /// Every element of `buf[..len]` must have been written.
 #[inline(always)]
-pub(crate) unsafe fn written(buf: &[MaybeUninit<i32>], len: usize) -> &[i32] {
+pub(crate) unsafe fn written<T>(buf: &[MaybeUninit<T>], len: usize) -> &[T] {
     debug_assert!(len <= buf.len());
-    // SAFETY: the caller wrote `buf[..len]`; `MaybeUninit<i32>` has the
-    // layout of `i32`.
-    unsafe { core::slice::from_raw_parts(buf.as_ptr().cast::<i32>(), len) }
+    // SAFETY: the caller wrote `buf[..len]`; `MaybeUninit<T>` has the
+    // layout of `T`.
+    unsafe { core::slice::from_raw_parts(buf.as_ptr().cast::<T>(), len) }
 }
 
 /// An initialised output slice viewed as possibly-uninitialised storage, so
-/// `store_transposed` can write into it. Sound: writes through the view only
-/// ever store initialised `i32`s.
+/// `store_transposed` (or its 16-bit form) can write into it. Sound: writes
+/// through the view only ever store initialised values.
 #[inline(always)]
-pub(crate) fn as_uninit(out: &mut [i32]) -> &mut [MaybeUninit<i32>] {
-    // SAFETY: `MaybeUninit<i32>` has the layout of `i32`, the view borrows
+pub(crate) fn as_uninit<T: Copy>(out: &mut [T]) -> &mut [MaybeUninit<T>] {
+    // SAFETY: `MaybeUninit<T>` has the layout of `T`, the view borrows
     // `out` mutably for its lifetime, and nothing de-initialises elements.
     unsafe { core::slice::from_raw_parts_mut(out.as_mut_ptr().cast(), out.len()) }
 }
@@ -479,18 +487,18 @@ fn staged_hevc_pass<V: I32Lanes, const N: usize>(
 }
 
 /// 2-D transform, columns first (HEVC inverse): `input` is row-major
-/// `N * N` (`input[k * N + x]`), clamped to 16 bits on load; `out` (`N *
-/// N`) receives the row-major result.
+/// `N * N` (`input[k * N + x]`); `out` (`N * N`) receives the row-major
+/// result (within 16 bits, module docs).
 ///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs); `V::LANES <= N`.
 #[inline(always)]
 pub(crate) unsafe fn columns_then_rows<V, T, const N: usize>(
-    input: &[i32],
+    input: &[i16],
     first: Pass,
     second: Pass,
-    out: &mut [i32],
+    out: &mut [i16],
 ) where
     V: I32Lanes,
     T: Line<V>,
@@ -502,7 +510,7 @@ pub(crate) unsafe fn columns_then_rows<V, T, const N: usize>(
     let mut g = [MaybeUninit::<i32>::uninit(); MAX_AREA];
     for x0 in (0..N).step_by(lanes) {
         for (k, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&input[k * N + x0..]).clamp16();
+            *lane = V::load_i16(&input[k * N + x0..]);
         }
         T::apply(&x, &mut y);
         first.apply(&mut y);
@@ -517,7 +525,7 @@ pub(crate) unsafe fn columns_then_rows<V, T, const N: usize>(
         }
         T::apply(&x, &mut y);
         second.apply(&mut y);
-        store_pass::<V>(&y, y0, N, out);
+        store_pass_sat16::<V>(&y, y0, N, out);
     }
 }
 
@@ -1001,8 +1009,8 @@ pub(crate) unsafe fn hevc_forward<V: I32Lanes, T: Line<V>, const N: usize, const
 /// As [`columns_then_rows`].
 #[inline(always)]
 pub(crate) unsafe fn hevc_inverse<V: I32Lanes, T: Line<V>, const N: usize>(
-    coeffs: &[i32],
-    out: &mut [i32],
+    coeffs: &[i16],
+    out: &mut [i16],
 ) {
     let (first, second) = HEVC_INVERSE_PASSES;
     // SAFETY: forwarded contract.
@@ -1013,8 +1021,8 @@ pub(crate) unsafe fn hevc_inverse<V: I32Lanes, T: Line<V>, const N: usize>(
 /// nonzero one: (1 + last nonzero row, 1 + last nonzero column), (0, 0) for
 /// an all-zero block.
 #[inline(always)]
-pub(crate) fn nonzero_extent<const N: usize>(coeffs: &[i32]) -> (usize, usize) {
-    let mut column_any = [0i32; MAX_SIDE];
+pub(crate) fn nonzero_extent<const N: usize>(coeffs: &[i16]) -> (usize, usize) {
+    let mut column_any = [0i16; MAX_SIDE];
     let mut rows = 0;
     for (k, row) in coeffs[..N * N].as_chunks::<N>().0.iter().enumerate() {
         let mut row_any = 0;
@@ -1045,7 +1053,7 @@ pub(crate) fn nonzero_extent<const N: usize>(coeffs: &[i32]) -> (usize, usize) {
 /// As [`hevc_inverse`].
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline(always)]
-pub(crate) unsafe fn hevc_inverse_bounded<V, T, const N: usize>(coeffs: &[i32], out: &mut [i32])
+pub(crate) unsafe fn hevc_inverse_bounded<V, T, const N: usize>(coeffs: &[i16], out: &mut [i16])
 where
     V: I32Lanes,
     T: BoundedLine,
@@ -1063,8 +1071,8 @@ where
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[inline(always)]
 pub(crate) unsafe fn hevc_inverse_extent<V: I32Lanes, T: BoundedLine, const N: usize>(
-    coeffs: &[i32],
-    out: &mut [i32],
+    coeffs: &[i16],
+    out: &mut [i16],
     extent: (usize, usize),
 ) {
     let (rows, columns) = extent;
@@ -1082,7 +1090,7 @@ pub(crate) unsafe fn hevc_inverse_extent<V: I32Lanes, T: BoundedLine, const N: u
     let mut g = [MaybeUninit::<i32>::uninit(); MAX_AREA];
     for x0 in (0..columns).step_by(lanes) {
         for (k, lane) in x[..rows].iter_mut().enumerate() {
-            *lane = V::load(&coeffs[k * N + x0..]).clamp16();
+            *lane = V::load_i16(&coeffs[k * N + x0..]);
         }
         T::apply_bounded(&x, &mut y, rows);
         first.apply(&mut y);
@@ -1098,7 +1106,7 @@ pub(crate) unsafe fn hevc_inverse_extent<V: I32Lanes, T: BoundedLine, const N: u
         }
         T::apply_bounded(&x, &mut y, columns);
         second.apply(&mut y);
-        store_pass::<V>(&y, y0, N, out);
+        store_pass_sat16::<V>(&y, y0, N, out);
     }
 }
 
@@ -1124,7 +1132,7 @@ pub(crate) fn hevc_dequant_product_limit(q: &HevcQuantizer) -> i32 {
 pub(crate) unsafe fn hevc_dequantize<V: I32Lanes>(
     levels: &[i32],
     q: &HevcQuantizer,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     let lanes = V::LANES;
     let level_limit = HEVC_DEQUANT_LEVEL_LIMIT;
@@ -1138,10 +1146,10 @@ pub(crate) unsafe fn hevc_dequantize<V: I32Lanes>(
             .mul_scalar(q.level_scale)
             .max(V::splat(-product_limit))
             .min(V::splat(product_limit));
+        // The saturating store is the clamp to 16 bits.
         m.shl(q.per)
             .round_shift(q.bd_shift)
-            .clamp16()
-            .store(&mut out[i..]);
+            .store_sat16(&mut out[i..]);
     }
     if done < levels.len() {
         // SAFETY: the scalar lane type needs no ISA.
@@ -1482,7 +1490,7 @@ pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes>(
             if let Some(d) = dc_level {
                 scaled[0] = d;
             }
-            add_inverse_4x4::<V>(&scaled, dst, stride);
+            add_inverse_4x4::<V, i32>(&scaled, dst, stride);
         }
     }
 }
@@ -1497,7 +1505,7 @@ pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes>(
 /// As [`h264_add_inverse_4x4`].
 #[inline(always)]
 pub(crate) unsafe fn h264_add_scaled_4x4<V: I32Lanes>(
-    coeffs: &[[i32; 16]],
+    coeffs: &[[i16; 16]],
     blocks_wide: usize,
     dst: &mut [u8],
     stride: usize,
@@ -1508,7 +1516,7 @@ pub(crate) unsafe fn h264_add_scaled_4x4<V: I32Lanes>(
         if block[1..].iter().fold(0, |any, &c| any | c) == 0 {
             if block[0] != 0 {
                 add_constant::<V>(
-                    I32Lanes::round_shift(block[0], ROUND_6.shift),
+                    I32Lanes::round_shift(i32::from(block[0]), ROUND_6.shift),
                     4,
                     dst,
                     stride,
@@ -1517,7 +1525,7 @@ pub(crate) unsafe fn h264_add_scaled_4x4<V: I32Lanes>(
             continue;
         }
         // SAFETY: forwarded contract.
-        unsafe { add_inverse_4x4::<V>(block, dst, stride) };
+        unsafe { add_inverse_4x4::<V, i16>(block, dst, stride) };
     }
 }
 
@@ -1535,7 +1543,7 @@ pub(crate) unsafe fn h264_add_scaled_4x4<V: I32Lanes>(
 /// As [`h264_add_inverse_4x4`] for a 16x16 region of `dst`.
 #[inline(always)]
 pub(crate) unsafe fn h264_add_scaled_mb<V: I32Lanes>(
-    coeffs: &[[i32; 16]; 16],
+    coeffs: &[[i16; 16]; 16],
     (coded, ac): (u16, u16),
     dst: &mut [u8],
     stride: usize,
@@ -1548,14 +1556,14 @@ pub(crate) unsafe fn h264_add_scaled_mb<V: I32Lanes>(
         let dst = &mut dst[origin..];
         if (ac >> b) & 1 == 0 {
             add_constant::<V>(
-                I32Lanes::round_shift(coeffs[b][0], ROUND_6.shift),
+                I32Lanes::round_shift(i32::from(coeffs[b][0]), ROUND_6.shift),
                 4,
                 dst,
                 stride,
             );
         } else {
             // SAFETY: forwarded contract.
-            unsafe { add_inverse_4x4::<V>(&coeffs[b], dst, stride) };
+            unsafe { add_inverse_4x4::<V, i16>(&coeffs[b], dst, stride) };
         }
     }
 }
@@ -1566,11 +1574,15 @@ pub(crate) unsafe fn h264_add_scaled_mb<V: I32Lanes>(
 ///
 /// As [`h264_add_inverse_4x4`].
 #[inline(always)]
-unsafe fn add_inverse_4x4<V: I32Lanes>(scaled: &[i32; 16], dst: &mut [u8], stride: usize) {
+unsafe fn add_inverse_4x4<V: I32Lanes, E: Element>(
+    scaled: &[E; 16],
+    dst: &mut [u8],
+    stride: usize,
+) {
     let mut residual = [0i32; 16];
     // SAFETY: forwarded contract.
     unsafe {
-        rows_then_columns::<V, i32, H264Idct4, H264Idct4, 4>(
+        rows_then_columns::<V, E, H264Idct4, H264Idct4, 4>(
             scaled,
             4,
             NO_ROUNDING,
@@ -1609,32 +1621,6 @@ pub(crate) unsafe fn h264_add_inverse_8x8<V: I32Lanes>(
         h264_dequantize::<V>(levels, ls, shift, &mut scaled);
         add_inverse_8x8::<V>(&scaled, dst, stride);
     }
-}
-
-/// [`h264_add_scaled_4x4`] for one 8x8 block (§8.5.13.2).
-///
-/// # Safety
-///
-/// As [`h264_add_inverse_8x8`].
-#[inline(always)]
-pub(crate) unsafe fn h264_add_scaled_8x8<V: I32Lanes>(
-    coeffs: &[i32; 64],
-    dst: &mut [u8],
-    stride: usize,
-) {
-    if coeffs[1..].iter().fold(0, |any, &c| any | c) == 0 {
-        if coeffs[0] != 0 {
-            add_constant::<V>(
-                I32Lanes::round_shift(coeffs[0], ROUND_6.shift),
-                8,
-                dst,
-                stride,
-            );
-        }
-        return;
-    }
-    // SAFETY: forwarded contract.
-    unsafe { add_inverse_8x8::<V>(coeffs, dst, stride) };
 }
 
 /// Inverse transform the scaled 8x8 block (§8.5.13.2) and add it to `dst`.
@@ -1930,7 +1916,7 @@ macro_rules! codec_txfm_kernels {
                 h264_add_inverse_4x4,
                 h264_add_inverse_8x8,
                 h264_add_scaled_4x4,
-                h264_add_scaled_8x8,
+                h264_add_scaled_8x8: $crate::codec_txfm::h264_inverse8::add_scaled_8x8,
                 h264_add_scaled_mb,
                 h264_forward_quantize_chroma,
                 quantize,
@@ -1966,7 +1952,7 @@ macro_rules! codec_txfm_kernels {
         $crate::codec_txfm::generic::codec_txfm_kernels!(@bounded [$(#[$attr])*] hevc_forward32_bounded, $v8, $fdct32, 32, 5);
 
         $(#[$attr])*
-        unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i32]) {
+        unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
             // SAFETY: see the module docs.
             unsafe { g::hevc_dequantize::<$v>(levels, q, out) }
         }
@@ -2048,7 +2034,7 @@ macro_rules! codec_txfm_kernels {
 
         $(#[$attr])*
         unsafe fn h264_add_scaled_4x4(
-            coeffs: &[[i32; 16]],
+            coeffs: &[[i16; 16]],
             blocks_wide: usize,
             dst: &mut [u8],
             stride: usize,
@@ -2059,19 +2045,13 @@ macro_rules! codec_txfm_kernels {
 
         $(#[$attr])*
         unsafe fn h264_add_scaled_mb(
-            coeffs: &[[i32; 16]; 16],
+            coeffs: &[[i16; 16]; 16],
             masks: (u16, u16),
             dst: &mut [u8],
             stride: usize,
         ) {
             // SAFETY: see the module docs.
             unsafe { g::h264_add_scaled_mb::<$v4>(coeffs, masks, dst, stride) }
-        }
-
-        $(#[$attr])*
-        unsafe fn h264_add_scaled_8x8(coeffs: &[i32; 64], dst: &mut [u8], stride: usize) {
-            // SAFETY: see the module docs.
-            unsafe { g::h264_add_scaled_8x8::<$v8>(coeffs, dst, stride) }
         }
 
         $(#[$attr])*
@@ -2115,7 +2095,7 @@ macro_rules! codec_txfm_kernels {
     };
     (@add [$(#[$attr:meta])*] $name:ident, $lanes:ty, $transform:ty, $n:literal, $dct:literal) => {
         $(#[$attr])*
-        unsafe fn $name(coeffs: &[i32], extent: (usize, usize), dst: &mut [u8], stride: usize) {
+        unsafe fn $name(coeffs: &[i16], extent: (usize, usize), dst: &mut [u8], stride: usize) {
             // SAFETY: validated buffers and supported ISA, as module docs.
             unsafe { $crate::codec_txfm::inverse_add::inverse_add::<$lanes, $transform, $n>(coeffs, extent, dst, stride, $dct) }
         }
@@ -2136,7 +2116,7 @@ macro_rules! codec_txfm_kernels {
         }
 
         $(#[$attr])*
-        unsafe fn $inverse(coeffs: &[i32], out: &mut [i32]) {
+        unsafe fn $inverse(coeffs: &[i16], out: &mut [i16]) {
             // SAFETY: see the module docs.
             unsafe { g::hevc_inverse::<$lanes, $i, $n>(coeffs, out) }
         }
@@ -2153,21 +2133,21 @@ pub(crate) use codec_txfm_kernels;
 macro_rules! hevc_bounded_inverse_kernels {
     ($(#[$attr:meta])*; $v:ty) => {
         $(#[$attr])*
-        unsafe fn hevc_idct8_bounded(coeffs: &[i32], out: &mut [i32]) {
+        unsafe fn hevc_idct8_bounded(coeffs: &[i16], out: &mut [i16]) {
             use $crate::codec_txfm::generic as g;
             // SAFETY: see the module docs.
             unsafe { g::hevc_inverse_bounded::<$v, g::HevcIdct8, 8>(coeffs, out) }
         }
 
         $(#[$attr])*
-        unsafe fn hevc_idct16_bounded(coeffs: &[i32], out: &mut [i32]) {
+        unsafe fn hevc_idct16_bounded(coeffs: &[i16], out: &mut [i16]) {
             use $crate::codec_txfm::generic as g;
             // SAFETY: see the module docs.
             unsafe { g::hevc_inverse_bounded::<$v, g::HevcIdct16, 16>(coeffs, out) }
         }
 
         $(#[$attr])*
-        unsafe fn hevc_idct32_bounded(coeffs: &[i32], out: &mut [i32]) {
+        unsafe fn hevc_idct32_bounded(coeffs: &[i16], out: &mut [i16]) {
             use $crate::codec_txfm::generic as g;
             // SAFETY: see the module docs.
             unsafe { g::hevc_inverse_bounded::<$v, g::HevcIdct32, 32>(coeffs, out) }

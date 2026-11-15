@@ -32,6 +32,10 @@ const PASS_ONE_LIMIT: u32 = 4;
 const QSTEP_UNIT_QP: f32 = 4.;
 /// Largest transform block.
 const MAX_SAMPLES: usize = 32 * 32;
+/// Largest level: its reconstruction index `2k` (`2k − 1` in states 2 and 3)
+/// must stay within `CoeffMax` = 32767 (§7.3.11.11, §7.4.11.11). A full-scale
+/// 64x64 DC at QP 0 would otherwise reach `k` ≈ 23263, which a decoder rejects.
+const MAX_LEVEL: u16 = i16::MAX as u16 / 2;
 
 /// What the search of one block needs besides its coefficients.
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +51,8 @@ pub(crate) struct DepQuant<'a> {
 #[derive(Debug, Clone, Copy, Default)]
 struct Step {
     from: u8,
-    level: u32,
+    /// At most [`MAX_LEVEL`].
+    level: u16,
 }
 
 /// The reconstruction of level `k` in quantiser state `state`, in steps of
@@ -63,14 +68,17 @@ fn reconstruction(state: u8, k: u32) -> f32 {
 }
 
 /// The candidate levels of a coefficient `magnitude` steps (of QP + 1)
-/// large in quantiser state `state`: zero and the two levels around it.
-fn candidates(state: u8, magnitude: f32) -> [u32; 3] {
+/// large in quantiser state `state`: zero and the two levels around it,
+/// at most [`MAX_LEVEL`].
+fn candidates(state: u8, magnitude: f32) -> [u16; 3] {
+    // A float-to-integer `as` saturates; the clamp below caps it anyway.
     let below = if state < 2 {
         magnitude.floor()
     } else {
         (magnitude + 0.5).floor()
-    } as u32;
-    [0, below.max(1), below.max(1) + 1]
+    } as u16;
+    let below = below.clamp(1, MAX_LEVEL - 1);
+    [0, below, below + 1]
 }
 
 /// Levels of `coefficients` (raster order: the coded region of a transform
@@ -94,9 +102,11 @@ pub(crate) fn quantize(
     let shrink = 2f32.powf(-1. / 6.);
     let magnitude = |p: usize| quantizer.magnitude_in_steps(coefficients[p]) as f32 * shrink;
     // The nearest Q0 levels: the context template and the last position.
-    let mut nearest = [0u32; MAX_SAMPLES];
+    // Rounded magnitudes stay below 2^15 (32767-sample coefficients at
+    // the finest step); `as` saturates in any case.
+    let mut nearest = [0u16; MAX_SAMPLES];
     for (p, level) in nearest[..samples].iter_mut().enumerate() {
-        *level = (magnitude(p) + 0.5) as u32;
+        *level = (magnitude(p) + 0.5) as u16;
     }
     levels[..samples].fill(0);
     let Some(reach) = scan.iter().rposition(|&p| nearest[p] != 0) else {
@@ -141,12 +151,13 @@ pub(crate) fn quantize(
         let last_bits = last_coordinate_bits(&contexts.last_x[ch], x, sides.0, ch)
             + last_coordinate_bits(&contexts.last_y[ch], y, sides.1, ch);
         for k in candidates(0, m).into_iter().filter(|&k| k > 0) {
+            let (level, k) = (k, u32::from(k));
             let error = m - reconstruction(0, k);
             let total =
                 unstarted + error * error * weight + search.lambda * (last_bits + level_bits(k, 0));
             let step = Step {
                 from: UNSTARTED,
-                level: k,
+                level,
             };
             offer(usize::from(next_state(0, k)), total, step, &mut next);
         }
@@ -157,6 +168,7 @@ pub(crate) fn quantize(
             }
             let sig = contexts.sig_context(ch, state, sig_ctx);
             for k in candidates(state, m) {
+                let (level, k) = (k, u32::from(k));
                 let error = m - reconstruction(state, k);
                 let bits = if k == 0 {
                     sig.bits(false)
@@ -164,10 +176,7 @@ pub(crate) fn quantize(
                     sig.bits(true) + level_bits(k, level_ctx)
                 };
                 let total = from + error * error * weight + search.lambda * bits;
-                let step = Step {
-                    from: state,
-                    level: k,
-                };
+                let step = Step { from: state, level };
                 offer(usize::from(next_state(state, k)), total, step, &mut next);
             }
         }
@@ -199,7 +208,7 @@ fn backtrack(
         let Step { from, level } = row[usize::from(state)];
         let pos = scan[sp];
         let sign = if coefficients[pos] < 0 { -1 } else { 1 };
-        levels[pos] = level as i32 * sign;
+        levels[pos] = i32::from(level) * sign;
         if from == UNSTARTED {
             return true;
         }
@@ -211,7 +220,7 @@ fn backtrack(
 /// The context template of position `pos` (§9.3.4.2.8) over the nearest
 /// levels: first-pass magnitude sum, nonzero count, whole sum, diagonal.
 fn template(
-    nearest: &[u32],
+    nearest: &[u16],
     pos: usize,
     (width, height): (usize, usize),
 ) -> (u32, u32, u32, usize) {
@@ -219,11 +228,47 @@ fn template(
     let (mut pass_one, mut count, mut whole) = (0, 0, 0);
     for (dx, dy) in TEMPLATE {
         if x + dx < width && y + dy < height {
-            let a = nearest[(y + dy) * width + x + dx];
+            let a = u32::from(nearest[(y + dy) * width + x + dx]);
             pass_one += pass_one_magnitude(a);
             count += u32::from(a != 0);
             whole += a;
         }
     }
     (pass_one, count, whole, x + y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full-scale DC (the forward transform's 8-bit peak, 32640) of a
+    /// 64x64 block at QP 0 must still code an index `2k − (QState > 1)`
+    /// within `CoeffMax` (§7.4.11.11), which the decoder enforces.
+    #[test]
+    fn full_scale_dc_at_qp_zero_stays_within_coeff_max() {
+        let contexts = CoeffContexts::new(0, false);
+        let search = DepQuant {
+            contexts: &contexts,
+            ch: 0,
+            lambda: 0.,
+        };
+        let sides = (64, 64);
+        let quantizer = VvcQuantizer::rect(0, 6, 6);
+        let mut coefficients = [0i32; MAX_SAMPLES];
+        coefficients[0] = 32640;
+        let mut levels = [0i32; MAX_SAMPLES];
+        assert!(quantize(
+            &search,
+            &coefficients,
+            &quantizer,
+            0,
+            &mut levels,
+            sides
+        ));
+        assert!(
+            i16::try_from(2 * levels[0].unsigned_abs()).is_ok(),
+            "level {}",
+            levels[0]
+        );
+    }
 }

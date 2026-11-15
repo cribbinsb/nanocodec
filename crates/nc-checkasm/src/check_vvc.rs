@@ -55,7 +55,7 @@ fn quant(candidate: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
                 // decoder inputs must saturate correctly even at QP 63.
                 let shift = i32::from(log2) - 1 - i32::from(qp / 6);
                 let scale = [40i64, 45, 51, 57, 64, 72][usize::from(qp % 6)];
-                let expected: Vec<i32> = raw
+                let expected: Vec<i16> = raw
                     .iter()
                     .map(|&v| {
                         let product = i64::from(v) * scale;
@@ -64,7 +64,7 @@ fn quant(candidate: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
                         } else {
                             product << -shift
                         };
-                        v.clamp(-32768, 32767) as i32
+                        v.clamp(-32768, 32767) as i16
                     })
                     .collect();
                 let mut actual = vec![0; len];

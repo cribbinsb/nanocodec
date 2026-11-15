@@ -24,7 +24,7 @@ fn inverse_skip_matches_normative_scaling() {
                     let effective = qp.max(4);
                     let scale = [40i64, 45, 51, 57, 64, 72][usize::from(effective % 6)];
                     let shift = 6 - i32::from(effective / 6);
-                    let expected: Vec<i32> = integrated
+                    let expected: Vec<i16> = integrated
                         .iter()
                         .map(|&level| {
                             let product = i64::from(level) * scale;
@@ -33,7 +33,7 @@ fn inverse_skip_matches_normative_scaling() {
                             } else {
                                 product << -shift
                             })
-                            .clamp(-32768, 32767) as i32
+                            .clamp(-32768, 32767) as i16
                         })
                         .collect();
                     for dsp in [Dsp::with_isa(Isa::Scalar).unwrap(), Dsp::new()] {

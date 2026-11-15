@@ -187,10 +187,10 @@ fn round_clip(sum: i32, shift: u32) -> i32 {
 }
 
 /// The normative inverse of the dequantised coded region `coefficients`
-/// (each within 16 bits) into the 64x64 residual `out`. Only the rows and
-/// columns up to the last nonzero coefficient enter the sums: the rest
-/// adds nothing, and inter blocks at our rates code a few levels near DC.
-fn inverse(coefficients: &[i32], out: &mut [i16]) {
+/// into the 64x64 residual `out`. Only the rows and columns up to the last
+/// nonzero coefficient enter the sums: the rest adds nothing, and inter
+/// blocks at our rates code a few levels near DC.
+fn inverse(coefficients: &[i16], out: &mut [i16]) {
     let lines = coefficients[..CODED_AREA].as_chunks::<CODED_SIDE>().0;
     let (mut rows, mut cols) = (0, 0);
     for (r, line) in lines.iter().enumerate() {
@@ -205,7 +205,7 @@ fn inverse(coefficients: &[i32], out: &mut [i16]) {
         for (sums, &weight) in columns.iter_mut().zip(basis) {
             let weight = i32::from(weight);
             for (sum, &c) in sums[..cols].iter_mut().zip(&line[..cols]) {
-                *sum += weight * c;
+                *sum += weight * i32::from(c);
             }
         }
     }

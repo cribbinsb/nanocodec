@@ -1,4 +1,5 @@
-//! H.266 decoder QP derivation and rectangular inverse residuals via shared DSP.
+//! H.266 decoder QP derivation and rectangular inverse residuals via shared DSP:
+//! each coded plane's levels to its 16-bit residual (`Transform::residuals`).
 use super::{Sequence, SliceHeader, Unit};
 use nc_dsp::{Dsp, VvcLfnst, VvcTransformKind};
 
@@ -19,7 +20,7 @@ pub(crate) fn inverse_residuals(
         for transform in &mut unit.transforms {
             for (plane, levels) in transform
                 .levels
-                .iter_mut()
+                .iter()
                 .enumerate()
                 .filter(|(_, v)| !v.is_empty())
             {
@@ -30,14 +31,16 @@ pub(crate) fn inverse_residuals(
                     transform.chroma_block.unwrap()
                 };
                 let qp = qp(transform.joint, plane, sequence, header);
-                let mut residual = vec![0; levels.len()];
+                let residual = &mut transform.residuals[plane];
+                residual.clear();
+                residual.resize(levels.len(), 0);
                 if transform.skip[plane] {
                     dsp.vvc_inverse_skip(
                         (block.width() >> channel, block.height() >> channel),
                         levels,
                         qp.max(4 + 6 * sequence.tools.min_qp_ts),
                         unit.bdpcm[channel],
-                        &mut residual,
+                        residual,
                     );
                 } else {
                     let size = (block.width() >> channel, block.height() >> channel);
@@ -57,7 +60,7 @@ pub(crate) fn inverse_residuals(
                             levels,
                             qp,
                             header.dependent_quant,
-                            &mut residual,
+                            residual,
                         );
                     } else {
                         let kinds = if plane == 0 {
@@ -71,11 +74,10 @@ pub(crate) fn inverse_residuals(
                             levels,
                             qp,
                             header.dependent_quant,
-                            &mut residual,
+                            residual,
                         );
                     }
                 }
-                *levels = residual;
             }
         }
     }

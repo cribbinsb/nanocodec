@@ -24,6 +24,7 @@ mod bench_vp9_filter;
 mod bench_vp9_line;
 mod bench_vp9_mc;
 pub mod check;
+mod check_av1_conformant;
 mod check_av1_deblock;
 mod check_av1_grain;
 mod check_av1_grid;
@@ -70,7 +71,7 @@ mod check_vvc_refinement;
 mod check_vvc_tx64;
 pub mod rng;
 
-pub use bench::{BenchResult, bench, bench_av1_runs, bench_vp9_mc};
+pub use bench::{BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_vp9_mc};
 pub use check::{CheckReport, check};
 
 mod bench_memory;

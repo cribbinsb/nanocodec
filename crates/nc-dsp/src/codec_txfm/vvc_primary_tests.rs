@@ -105,7 +105,8 @@ fn primary_matches_reference_bases_scaling_clipping_and_zero_out() {
                         let mut actual = vec![0; length];
                         dsp.vvc_inverse_primary(size, kinds, &levels, qp, dependent, &mut actual);
                         for value in actual {
-                            for byte in value.to_le_bytes() {
+                            // Hashed as i32: the digests predate 16-bit outputs.
+                            for byte in i32::from(value).to_le_bytes() {
                                 digest = (digest ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
                             }
                         }

@@ -10,9 +10,9 @@ const PASSES: [(Vp9Pass, Vp9Pass); 4] = [
     (Vp9Pass::Adst, Vp9Pass::Dct),
     (Vp9Pass::Adst, Vp9Pass::Adst),
 ];
-const GUARD: i32 = 0x1234_5678;
+const GUARD: i16 = 0x1234;
 const MAX_SIDE: usize = 32;
-const PATTERNS: usize = 12;
+const PATTERNS: usize = 9;
 
 /// The fused inverse + add against the scalar oracle: coefficients limited
 /// to a `(rows, columns)` extent (as the decoder passes it, including the
@@ -74,16 +74,16 @@ fn sparse_block(
     (rows, columns): (usize, usize),
     pattern: usize,
     rng: &mut Rng,
-) -> Vec<i32> {
+) -> Vec<i16> {
     let mut input = vec![0; side * side];
     for row in input.chunks_exact_mut(side).take(rows) {
         for value in &mut row[..columns] {
             *value = match pattern {
-                0 => (rng.below(512) as i32 - 256) * 8,
-                1 => i32::from(rng.next_u64() as i16),
+                0 => (rng.below(512) as i16 - 256) * 8,
+                1 => rng.next_u64() as i16,
                 _ => {
                     if rng.below(8) == 0 {
-                        rng.below(4096) as i32 - 2048
+                        rng.below(4096) as i16 - 2048
                     } else {
                         0
                     }
@@ -109,35 +109,32 @@ pub(crate) fn check(
                     let mut input = vec![0; samples + 1];
                     for (i, value) in input[1..].iter_mut().enumerate() {
                         *value = match pattern {
-                            0 => rng.next_u64() as i32,
-                            1 => i32::from(rng.next_u64() as i16),
-                            2 => (rng.below(4096) as i32 - 2048) * 8,
-                            3 => i32::MAX,
-                            4 => i32::MIN,
-                            5 => i32::from(i16::MAX),
-                            6 => i32::from(i16::MIN),
-                            7 => {
+                            0 => rng.next_u64() as i16,
+                            1 => (rng.below(4096) as i16 - 2048) * 8,
+                            2 => i16::MAX,
+                            3 => i16::MIN,
+                            4 => {
                                 if i % 2 == 0 {
-                                    32767
+                                    i16::MAX
                                 } else {
-                                    -32768
+                                    i16::MIN
                                 }
                             }
-                            8 => {
+                            5 => {
                                 if i == 0 {
-                                    32767
+                                    i16::MAX
                                 } else {
                                     0
                                 }
                             }
-                            9 => {
+                            6 => {
                                 if i == samples - 1 {
-                                    -32768
+                                    i16::MIN
                                 } else {
                                     0
                                 }
                             }
-                            10 => 65535,
+                            7 => rng.below(3) as i16 - 1,
                             _ => 0,
                         };
                     }
@@ -171,8 +168,8 @@ pub(crate) fn check(
 
 pub(crate) fn bench(dsp: &Dsp, results: &mut Vec<BenchResult>) {
     let mut rng = Rng::new(0x5EED);
-    let input: Vec<i32> = (0..MAX_SIDE * MAX_SIDE)
-        .map(|_| (i32::from(rng.byte()) - 128) * 8)
+    let input: Vec<i16> = (0..MAX_SIDE * MAX_SIDE)
+        .map(|_| (i16::from(rng.byte()) - 128) * 8)
         .collect();
     let mut output = vec![0; MAX_SIDE * MAX_SIDE];
     for log2 in 3..=5 {

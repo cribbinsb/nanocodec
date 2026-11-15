@@ -66,11 +66,11 @@ use crate::resolution::{CodedScale, ResolutionPolicy, half_size};
 use crate::resolution_evidence::HalfSizeProbe;
 use crate::reuse::{CodedFrame, ReuseFrame, ReuseTerm};
 use crate::scene::{FrameCosts, SceneDetector};
-use crate::second_reference::{SecondReference, second_reference_enabled};
+use crate::second_reference::{SecondReference, TierPlan, second_reference_enabled};
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 use crate::source_scale::{SourceScaler, scale_source_picture};
 use crate::spatial::SpatialConfig;
-use crate::startup_lookahead::startup_camera_motion;
+use crate::startup_lookahead::startup_scene_profile;
 use crate::still_skip::StaticSkipTest;
 use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure};
 use crate::timeline::{FrameTime, Timeline};
@@ -1126,13 +1126,17 @@ impl<B: CodecBackend> Encoder<B> {
                 return Err(ConfigError::IntraRefresh("not with a long-term reference"));
             }
             // A block predicting from the HQ frame may reach back past the
-            // sweep's clean region.
-            if self.layer.second.is_some() {
+            // sweep's clean region: an explicit `refs.second` refuses the
+            // sweep, the unified plan (a default) is suspended for it below.
+            if self.layer.second.as_ref().is_some_and(|s| !s.is_planned()) {
                 return Err(ConfigError::IntraRefresh("not with a second reference"));
             }
             if settings.period < MIN_REFRESH_PERIOD {
                 return Err(ConfigError::IntraRefresh("period below 2 frames"));
             }
+        }
+        if let Some(second) = self.layer.second.as_mut() {
+            second.suspend(refresh.is_some());
         }
         self.structure.set_hold_flat(refresh.is_some());
         if refresh != self.refresh.as_ref().map(RefreshSweep::settings) {
@@ -1422,7 +1426,7 @@ impl<B: CodecBackend> Encoder<B> {
             self.structure
                 .peek(index, scheduled == FrameType::Key || recovery),
         );
-        let planned = self.with_second(index, planned, (scheduled == FrameType::Key, None));
+        let planned = self.with_second(index, planned, (scheduled == FrameType::Key, None, None));
         // Shared analysis, when enabled, runs on every frame so that the
         // next frame always has its reference's source to search against.
         // The analyzer is moved out of `self` for the frame so its results
@@ -1453,7 +1457,11 @@ impl<B: CodecBackend> Encoder<B> {
             .and_then(Analyzer::analysis)
             .filter(|a| a.motion.is_some())
             .map(|a| a.still.fraction);
-        let references = self.with_second(index, references, (key, still_fraction));
+        let depth = analyzer
+            .as_ref()
+            .and_then(Analyzer::analysis)
+            .map(|a| self.cadence_depth(a, &references));
+        let references = self.with_second(index, references, (key, still_fraction, depth));
         if let Some(ltr) = self.ltr.as_mut() {
             ltr.coded(index, key, ltr_action);
         }
@@ -1488,7 +1496,7 @@ impl<B: CodecBackend> Encoder<B> {
         };
         if let (Some(next), Some(controller)) =
             (self.lookahead.take(), self.layer.rate_control.as_mut())
-            && let Some(peak) = startup_camera_motion(
+            && let Some((peak, still)) = startup_scene_profile(
                 &self.config,
                 (self.layer.width, self.layer.height),
                 source,
@@ -1496,6 +1504,7 @@ impl<B: CodecBackend> Encoder<B> {
             )
         {
             controller.observe_startup_motion(peak);
+            controller.observe_startup_still(f64::from(still));
         }
         let motion = analysis.and_then(|a| a.motion.as_ref());
         // Static detection compares with the reference's source frame, so it
@@ -1972,21 +1981,36 @@ impl<B: CodecBackend> Encoder<B> {
     }
 
     /// `references` of frame `index` (a key frame if `key`, with the
-    /// analysis' still-block fraction if known) with the second reference,
-    /// when it is on (`second_reference.rs`).
+    /// analysis' still-block fraction and the cadence strength `depth` if
+    /// known) with the second reference, when it is on
+    /// (`second_reference.rs`).
     fn with_second(
         &self,
         index: u64,
         references: FrameReferences,
-        (key, still_fraction): (bool, Option<f32>),
+        (key, still_fraction, depth): (bool, Option<f32>, Option<f64>),
     ) -> FrameReferences {
         match self.layer.second.as_ref() {
             Some(second) => {
                 let high_quality = key || self.is_high_quality(index, references.position);
-                second.apply(index, (high_quality, still_fraction), references)
+                let applied = second.apply(index, (high_quality, still_fraction), references);
+                second.planned(applied, high_quality, depth)
             }
             None => references,
         }
+    }
+
+    /// The QP cadence's strength (0..1) on the frame `analysis` describes:
+    /// how much finer than its neighbours a high-quality frame is coded
+    /// here, the depth the unified reference plan reads (`TierPlan`).
+    fn cadence_depth(&self, analysis: &FrameAnalysis, references: &FrameReferences) -> f64 {
+        let motion = analysis
+            .motion
+            .as_ref()
+            .and_then(|m| cadence_motion_hint(m, references.reference.distance, self.layer.width));
+        self.layer
+            .cadence
+            .strength(f64::from(analysis.pre.static_fraction), motion)
     }
 
     /// Whether inter frame `index` is coded finer than its neighbours: a
@@ -3253,12 +3277,21 @@ const LAYER_PARAM_PREFIX: &str = "layers.";
 /// temporal-structure defaults (H.264 Default's gated L1T3) step aside when
 /// the caller sets the structure itself (a layer count above 1: an explicit
 /// `--temporal-layers` keeps the engine's own layer settings) or asks for a
-/// feature that needs a flat stream (the second reference, `refs.second`).
+/// second reference in a codec that cannot signal one beside layers
+/// (`CodecBackend::SECOND_REFERENCE_WITH_LAYERS`).
+/// With `rate.fixed_qp_profile` the backend's `FIXED_QP_PARAMS` follow.
 fn backend_defaults<B: CodecBackend>(config: &EncoderConfig) -> Vec<(&'static str, f32)> {
-    let own_structure = config.temporal_layers > 1 || second_reference_enabled(&config.params);
+    let flat_only_second =
+        second_reference_enabled(&config.params) && !B::SECOND_REFERENCE_WITH_LAYERS;
+    let own_structure = config.temporal_layers > 1 || flat_only_second;
     let spatial = SpatialParams::from_overrides(&config.params).layers.round() as u8 > 1;
+    let fixed_qp = RateParams::from_overrides(&config.params).fixed_qp_profile >= 0.5;
+    // Later entries win (`ParamOverrides::layered_over`): the fixed-QP
+    // profile replaces the plain defaults it names.
+    let profile: &[(&str, f32)] = if fixed_qp { B::FIXED_QP_PARAMS } else { &[] };
     B::DEFAULT_PARAMS
         .iter()
+        .chain(profile)
         .copied()
         .filter(|(name, _)| !(own_structure && name.starts_with(LAYER_PARAM_PREFIX)))
         .filter(|(name, _)| !(spatial && *name == "resolution.adaptive"))
@@ -3450,10 +3483,18 @@ fn second_reference<B: CodecBackend>(
     if !second_reference_enabled(&config.params) || !backend.supports_inter() {
         return Ok(None);
     }
-    // Layered structures would also need the HQ frame placed after an
-    // older short-term reference in every codec's list; not tested yet.
-    if config.temporal_layers > 1 {
-        return Err(ConfigError::SecondReference("not with temporal layers yet"));
+    // Beside temporal layers the HQ frame's slot follows the layer
+    // pattern's, which each codec must be able to signal.
+    if config.temporal_layers > 1 && !B::SECOND_REFERENCE_WITH_LAYERS {
+        // An explicit `refs.second` is refused; the unified plan, a default
+        // way of coding, steps aside and the stream is coded without it.
+        return if RefParams::from_overrides(&config.params).second >= 0.5 {
+            Err(ConfigError::SecondReference(
+                "not with temporal layers in this codec yet",
+            ))
+        } else {
+            Ok(None)
+        };
     }
     let slot = long_term_slot(config.temporal_layers);
     if !backend.supports_second_reference() {
@@ -3469,10 +3510,10 @@ fn second_reference<B: CodecBackend>(
     if RefreshParams::from_overrides(&config.params).period > 0.0 {
         return Err(ConfigError::SecondReference("not with intra refresh"));
     }
-    Ok(Some(SecondReference::new(
-        slot,
-        &RefParams::from_overrides(&config.params),
-    )))
+    Ok(Some(
+        SecondReference::new(slot, &RefParams::from_overrides(&config.params))
+            .with_plan(TierPlan::new(&config.params)),
+    ))
 }
 
 /// `mv` scaled by `ratio` (to another reference distance), rounded to the

@@ -1,11 +1,17 @@
-//! Checks `nc_dsp::av1_inverse_nonzero_rows`, the row bound the inverse
-//! transform takes from the end of block, against this crate's scan tables:
-//! for every transform size, scan class (2-D zig-zag, `H_*` columns, `V_*`
-//! rows) and end of block, every position of the scan prefix must lie in a
-//! row below the bound. The decoder stores coefficients column-major
-//! (position `c * coded_height + r`), as the inverse reads them.
+//! Each transform's coefficient scan (AV1 §5.11.41: the 2-D zig-zag, `H_*`
+//! column by column, `V_*` row by row) as storage positions: the decoder
+//! stores coefficients column-major (position `c * coded_height + r`), as
+//! the inverse transforms read them. `nc-checkasm` builds end-of-block
+//! consistent test blocks from it.
+//!
+//! The test checks `nc_dsp::av1_inverse_nonzero_rows`, the row bound the
+//! inverse transform takes from the end of block, against these scans: for
+//! every size, scan class and end of block, every position of the scan
+//! prefix must lie in a row below the bound.
 
-use nc_dsp::{Av1TxSize, Av1TxType, av1_inverse_nonzero_rows};
+#[cfg(test)]
+use nc_dsp::av1_inverse_nonzero_rows;
+use nc_dsp::{Av1TxSize, Av1TxType};
 
 use crate::tables::generated::{
     DEFAULT_SCAN_4X4, DEFAULT_SCAN_4X8, DEFAULT_SCAN_4X16, DEFAULT_SCAN_8X4, DEFAULT_SCAN_8X8,
@@ -33,8 +39,10 @@ fn default_scan(width: usize, height: usize) -> &'static [u16] {
     }
 }
 
-/// The storage positions of `kind`'s scan over `tx`'s coded area.
-fn scan_positions(tx: Av1TxSize, kind: Av1TxType) -> Vec<usize> {
+/// The storage positions of `kind`'s scan over `tx`'s coded area, in scan
+/// order.
+#[must_use]
+pub fn scan_positions(tx: Av1TxSize, kind: Av1TxType) -> Vec<usize> {
     use Av1TxType::{HAdst, HDct, HFlipadst, VAdst, VDct, VFlipadst};
     let (w, h) = (tx.coded_width(), tx.coded_height());
     match kind {
@@ -48,6 +56,7 @@ fn scan_positions(tx: Av1TxSize, kind: Av1TxType) -> Vec<usize> {
     }
 }
 
+#[cfg(test)]
 #[test]
 fn row_bound_covers_every_scan_prefix() {
     for tx in Av1TxSize::ALL {

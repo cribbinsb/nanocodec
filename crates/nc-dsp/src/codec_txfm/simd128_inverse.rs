@@ -12,11 +12,11 @@
 //!
 //! # Exactness (range proof)
 //!
-//! - Both passes' inputs fit `i16`: the first pass clamps the coefficients
-//!   to 16 bits, as HEVC §8.6.4.2 and the generic code do, and the second
-//!   pass reads the first's output, clamped to 16 bits after its shift. So
-//!   narrowing them to 16-bit lanes (`i16x8.narrow_i32x4_s`, saturating)
-//!   never changes a value.
+//! - Both passes' inputs fit `i16`: the coefficients are 16-bit storage,
+//!   and the second pass reads the first's output, clamped to 16 bits after
+//!   its shift (HEVC §8.6.4.2). So narrowing them to 16-bit lanes
+//!   (`i16x8.narrow_i32x4_s`, saturating) never changes a value; nor does
+//!   narrowing the residual, which fits 16 bits (`generic` module docs).
 //! - Every basis value has magnitude <= 90 (`DCT32`), so each product has
 //!   magnitude <= 32768 · 90 < 2^22 and a dot of two < 2^23: the 32-bit
 //!   result of `dot_i16x8_s` is exact (it can only wrap for two
@@ -32,7 +32,8 @@
 use core::arch::wasm32::{
     i16x8_narrow_i32x4, i16x8_shuffle, i32x4_add, i32x4_dot_i16x8, i32x4_extend_low_i16x8,
     i32x4_max, i32x4_min, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub, u8x16_narrow_i16x8,
-    u16x8_extend_low_u8x16, v128, v128_load, v128_load32_zero, v128_store, v128_store32_lane,
+    u16x8_extend_low_u8x16, v128, v128_load, v128_load32_zero, v128_load64_zero, v128_store,
+    v128_store32_lane, v128_store64_lane,
 };
 use core::mem::MaybeUninit;
 
@@ -171,6 +172,14 @@ fn load4(src: &[i32], at: usize) -> v128 {
     unsafe { v128_load(src.as_ptr().cast()) }
 }
 
+/// Four 16-bit coefficients of `src` from `at`, as 32-bit lanes.
+#[inline(always)]
+fn load4_i16(src: &[i16], at: usize) -> v128 {
+    let src = &src[at..at + LANES];
+    // SAFETY: `src` holds four `i16`s (8 bytes).
+    i32x4_extend_low_i16x8(unsafe { v128_load64_zero(src.as_ptr().cast()) })
+}
+
 /// Transpose four output vectors from lane-parallel lines into rows.
 #[inline(always)]
 fn transpose(y: &[v128]) -> [v128; LANES] {
@@ -200,6 +209,22 @@ fn store_lines<const N: usize>(y: &[v128], first: usize, dst: &mut [MaybeUninit<
     }
 }
 
+/// Store a group of four lines from the last pass, transposed, into the
+/// 16-bit residual (saturating, values fit: module docs).
+#[inline(always)]
+fn store_residual_lines<const N: usize>(y: &[v128], first: usize, dst: &mut [i16]) {
+    for n in (0..N).step_by(LANES) {
+        for (l, line) in transpose(&y[n..]).into_iter().enumerate() {
+            let at = (first + l) * N + n;
+            let out = &mut dst[at..at + LANES];
+            // SAFETY: out holds four i16 values (8 bytes).
+            unsafe {
+                v128_store64_lane::<0>(i16x8_narrow_i32x4(line, line), out.as_mut_ptr().cast());
+            }
+        }
+    }
+}
+
 /// Fused final transpose, add prediction and clip to 8 bits.
 #[inline(always)]
 fn add_lines<const N: usize>(y: &[v128], first: usize, dst: &mut [u8], stride: usize) {
@@ -224,7 +249,7 @@ fn add_lines<const N: usize>(y: &[v128], first: usize, dst: &mut [u8], stride: u
 /// rows), as the generic `hevc_inverse_bounded`.
 #[inline(always)]
 fn inverse_passes<const N: usize>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     extent: (usize, usize),
     line: fn(&[v128], usize, usize, &mut [v128]),
     mut store: impl FnMut(&[v128], usize),
@@ -239,7 +264,7 @@ fn inverse_passes<const N: usize>(
     let written_columns = columns.div_ceil(LANES) * LANES;
     for x0 in (0..written_columns).step_by(LANES) {
         for (k, lane) in c[..rows].iter_mut().enumerate() {
-            *lane = clamp16(load4(coeffs, k * N + x0));
+            *lane = load4_i16(coeffs, k * N + x0);
         }
         line(&c, 1, rows, &mut y);
         for lane in &mut y {
@@ -262,11 +287,11 @@ fn inverse_passes<const N: usize>(
     }
 }
 
-/// Residual-output adapter retained for existing callers.
+/// Residual-output adapter of the passes.
 #[inline(always)]
 fn inverse<const N: usize>(
-    coeffs: &[i32],
-    out: &mut [i32],
+    coeffs: &[i16],
+    out: &mut [i16],
     line: fn(&[v128], usize, usize, &mut [v128]),
 ) {
     let extent = nonzero_extent::<N>(coeffs);
@@ -275,16 +300,15 @@ fn inverse<const N: usize>(
         out.fill(0);
         return;
     }
-    let slots = super::generic::as_uninit(out);
     inverse_passes::<N>(coeffs, extent, line, |y, row| {
-        store_lines::<N>(y, row, slots);
+        store_residual_lines::<N>(y, row, out);
     });
 }
 
-/// i32-input, u8-output adapter; the paired-dot passes are unchanged.
+/// 16-bit-input, u8-output adapter of the same passes.
 #[inline(always)]
 fn inverse_add<const N: usize>(
-    coeffs: &[i32],
+    coeffs: &[i16],
     extent: (usize, usize),
     dst: &mut [u8],
     stride: usize,
@@ -305,31 +329,31 @@ fn inverse_add<const N: usize>(
 /// # Safety
 ///
 /// Kernel contract (`codec_txfm` module docs).
-unsafe fn hevc_idct8(coeffs: &[i32], out: &mut [i32]) {
+unsafe fn hevc_idct8(coeffs: &[i16], out: &mut [i16]) {
     inverse::<8>(coeffs, out, idct8);
 }
 
 /// # Safety
 ///
 /// Kernel contract (`codec_txfm` module docs).
-unsafe fn hevc_idct16(coeffs: &[i32], out: &mut [i32]) {
+unsafe fn hevc_idct16(coeffs: &[i16], out: &mut [i16]) {
     inverse::<16>(coeffs, out, idct16);
 }
 
 /// # Safety
 ///
 /// Kernel contract (`codec_txfm` module docs).
-unsafe fn hevc_idct32(coeffs: &[i32], out: &mut [i32]) {
+unsafe fn hevc_idct32(coeffs: &[i16], out: &mut [i16]) {
     inverse::<32>(coeffs, out, idct32);
 }
 
-unsafe fn hevc_add8(coeffs: &[i32], extent: (usize, usize), dst: &mut [u8], stride: usize) {
+unsafe fn hevc_add8(coeffs: &[i16], extent: (usize, usize), dst: &mut [u8], stride: usize) {
     inverse_add::<8>(coeffs, extent, dst, stride, idct8);
 }
-unsafe fn hevc_add16(coeffs: &[i32], extent: (usize, usize), dst: &mut [u8], stride: usize) {
+unsafe fn hevc_add16(coeffs: &[i16], extent: (usize, usize), dst: &mut [u8], stride: usize) {
     inverse_add::<16>(coeffs, extent, dst, stride, idct16);
 }
-unsafe fn hevc_add32(coeffs: &[i32], extent: (usize, usize), dst: &mut [u8], stride: usize) {
+unsafe fn hevc_add32(coeffs: &[i16], extent: (usize, usize), dst: &mut [u8], stride: usize) {
     inverse_add::<32>(coeffs, extent, dst, stride, idct32);
 }
 

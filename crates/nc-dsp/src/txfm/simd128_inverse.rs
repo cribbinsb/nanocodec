@@ -18,7 +18,7 @@ use core::arch::wasm32::{
 
 use super::generic::INVERSE_COS_BIT;
 use super::inverse_lanes::InverseLanes;
-use super::narrow_inverse::{self, GROUP, NarrowLanes};
+use super::narrow_inverse::{self, GROUP, NarrowCoefficient, NarrowLanes};
 use crate::av1_inverse::Kernel1d;
 use crate::simd::simd128::{I32x4, relaxed::q15_mul_round};
 
@@ -188,19 +188,28 @@ impl NarrowLanes for Narrow {
 }
 
 pub(super) unsafe fn inverse_8(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow, 8>(coeffs, dst, stride, 8);
+    narrow_inverse::inverse_dct::<Narrow, i32, 8>(coeffs, dst, stride, 8);
 }
 
 pub(super) unsafe fn inverse_16(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow, 16>(coeffs, dst, stride, 16);
+    narrow_inverse::inverse_dct::<Narrow, i32, 16>(coeffs, dst, stride, 16);
 }
 
 pub(super) unsafe fn inverse_32(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow, 32>(coeffs, dst, stride, 32);
+    narrow_inverse::inverse_dct::<Narrow, i32, 32>(coeffs, dst, stride, 32);
 }
 
 pub(super) unsafe fn inverse_64(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow, 64>(coeffs, dst, stride, 32);
+    narrow_inverse::inverse_dct::<Narrow, i32, 64>(coeffs, dst, stride, 32);
+}
+
+pub(super) unsafe fn inverse_16_sparse(
+    coeffs: &[i32],
+    dst: &mut [u8],
+    stride: usize,
+    limit: usize,
+) {
+    narrow_inverse::inverse_dct_square::<Narrow, i32, 16>(coeffs, dst, stride, limit);
 }
 
 pub(super) unsafe fn inverse_32_sparse(
@@ -209,7 +218,7 @@ pub(super) unsafe fn inverse_32_sparse(
     stride: usize,
     limit: usize,
 ) {
-    narrow_inverse::inverse_dct::<Narrow, 32>(coeffs, dst, stride, limit);
+    narrow_inverse::inverse_dct::<Narrow, i32, 32>(coeffs, dst, stride, limit);
 }
 
 pub(super) unsafe fn inverse_64_sparse(
@@ -218,7 +227,7 @@ pub(super) unsafe fn inverse_64_sparse(
     stride: usize,
     limit: usize,
 ) {
-    narrow_inverse::inverse_dct::<Narrow, 64>(coeffs, dst, stride, limit);
+    narrow_inverse::inverse_dct::<Narrow, i32, 64>(coeffs, dst, stride, limit);
 }
 
 /// Transpose eight rows of eight 16-bit lanes: pairs of rows interleaved by
@@ -257,20 +266,21 @@ pub(super) fn transpose8(rows: [v128; GROUP]) -> [v128; GROUP] {
 /// The AV1 inverse of a `W`x`H` transform with both sides at least 8 and
 /// the 1-D kernels `(vertical, horizontal)`, column-major `coeffs` whose rows
 /// from `nonzero_rows` on are zero, added to `dst` (the `av1_inverse` table
-/// entry for those sizes).
+/// entry for those sizes), on eight lanes. A square `DCT_DCT` takes
+/// `nonzero_rows` as the side of its nonzero low square and runs that
+/// EOB-sparse graph.
 ///
 /// # Safety
 ///
 /// None beyond the slice contract (the build enables SIMD128).
-pub(crate) unsafe fn av1_inverse_add<const W: usize, const H: usize>(
+pub(crate) unsafe fn av1_inverse_add<C: NarrowCoefficient, const W: usize, const H: usize>(
     kernels: (Kernel1d, Kernel1d),
-    coeffs: &[i32],
+    coeffs: &[C],
     nonzero_rows: usize,
     dst: &mut [u8],
     stride: usize,
 ) {
-    let extent = narrow_inverse::Inverse::of::<W, H>(kernels, nonzero_rows);
-    narrow_inverse::inverse::<Narrow, W, H>(extent, coeffs, dst, stride);
+    narrow_inverse::inverse_lanes::<Narrow, C, W, H>(kernels, coeffs, nonzero_rows, dst, stride);
 }
 
 #[cfg(test)]

@@ -206,6 +206,9 @@ pub struct Analyzer {
     stat_rows: preanalysis::StatRows,
     /// Detect [`FrameAnalysis::repeat`].
     detect_repeats: bool,
+    /// Normal inter frames receive external HME centres (`analyze_written_spatial`),
+    /// so [`Analyzer::pre_analyze_next`] and frame 0 skip building pyramid levels.
+    external_hme_seeded: bool,
     /// Pre-analysis of the written next frame, computed ahead of its
     /// analysis ([`Analyzer::pre_analyze_next`]), which reuses it.
     pending: Option<PendingPre>,
@@ -269,6 +272,7 @@ impl Analyzer {
             still_config: StillConfig::default(),
             stat_rows: preanalysis::StatRows::All,
             detect_repeats: false,
+            external_hme_seeded: false,
             pending: None,
         })
     }
@@ -340,6 +344,13 @@ impl Analyzer {
     /// off by default: only the temporal-layer gate reads it).
     pub fn set_repeat_detection(&mut self, detect: bool) {
         self.detect_repeats = detect;
+    }
+
+    /// Whether normal inter frames receive external HME centres
+    /// ([`Analyzer::analyze_written_spatial`]), so [`Analyzer::pre_analyze_next`]
+    /// and unreferenced initial frames skip building pyramid levels up front.
+    pub fn set_external_hme_seeded(&mut self, seeded: bool) {
+        self.external_hme_seeded = seeded;
     }
 
     /// [`FrameAnalysis::repeat`] of a frame with pre-analysis `pre`, the
@@ -416,7 +427,8 @@ impl Analyzer {
     /// set the frame's search settings first.
     pub fn pre_analyze_next(&mut self, link: FrameLink) {
         self.pending = None;
-        let pre = self.next_frame_pre(link, &mut NoTimer);
+        let skip_pyramid = self.reuses_hme_seeds(link) || self.external_hme_seeded;
+        let pre = self.next_frame_pre(link, skip_pyramid, &mut NoTimer);
         self.pending = Some(PendingPre {
             reference_slot: link.reference.slot,
             pre,
@@ -426,7 +438,12 @@ impl Analyzer {
     /// The written next frame's pre-analysis against the reference `link`
     /// names, its border extended: the one [`Analyzer::pre_analyze_next`]
     /// left, or measured now.
-    fn next_frame_pre(&mut self, link: FrameLink, timer: &mut impl StageTimer) -> PreAnalysis {
+    fn next_frame_pre(
+        &mut self,
+        link: FrameLink,
+        skip_pyramid: bool,
+        timer: &mut impl StageTimer,
+    ) -> PreAnalysis {
         if let Some(pending) = self
             .pending
             .take()
@@ -434,7 +451,7 @@ impl Analyzer {
         {
             return pending.pre;
         }
-        let builds_pyramid = !self.reuses_hme_seeds(link);
+        let builds_pyramid = !skip_pyramid;
         let stat_rows = self.stat_rows;
         let noise_hint = self.last.as_ref().map_or(0.0, |l| l.noise_sigma);
         let dsp = &self.dsp;
@@ -529,31 +546,72 @@ impl Analyzer {
         link: FrameLink,
         timer: &mut impl StageTimer,
     ) -> &FrameAnalysis {
+        self.analyze_written_spatial(link, None, true, timer)
+    }
+
+    /// Build missing HME pyramids (and half-resolution borders when level 1 is
+    /// active) for `index` and its reference `slot`.
+    fn ensure_hme_pyramids(&mut self, index: usize, slot: usize, timer: &mut impl StageTimer) {
+        let dsp = self.dsp;
+        let prev = self.slots[slot];
+        for i in [Some(index), prev].into_iter().flatten() {
+            if !self.frames[i].pyramid.is_built() {
+                let frame = &mut self.frames[i];
+                timed(timer, Stage::Pyramid, || frame.build_pyramid(&dsp));
+            }
+            if self.search.hme_level1 {
+                self.frames[i].pyramid.ensure_half_border(&dsp);
+            }
+        }
+    }
+
+    /// [`Analyzer::analyze_written_timed`] with optional external per-SB HME
+    /// centres (`external_hme`) and optional motion-search skip (`run_motion`).
+    ///
+    /// In exact 2:1 spatial SVC (`S_{k-1} -> S_k`), `S_{k-1}`'s 32x32 motion
+    /// field (scaled by 2) is already a full-pel search at `S_k`'s half
+    /// resolution, so `S_k` skips building its half/quarter pyramid levels and
+    /// skips `hme` + `hme_level1`. When `run_motion` is `false` (key/repair
+    /// enhancement frames coded solely from the upscaled lower layer), only
+    /// pre-analysis and stillness run. If an unseeded motion search ever runs
+    /// later (e.g. non-2:1 scaling or after a dropped/intra-only lower layer),
+    /// any missing current or reference pyramid is built lazily on demand.
+    ///
+    /// Measured (svc-next merge review, 2026-11-14, with the SVC presets'
+    /// inherited Default levers in the same change): `L3T1_KEY` encode
+    /// instructions -6.9% AV1 / -10.0% VP9 (callgrind, the SVC chart's three
+    /// timing clips), Jetson cycles -6.4% / -8.1%; the 720p view's BD-J moved
+    /// +0.6 pp AV1 / +1.0 pp VP9 (`svc_chart`, 11 clips). Single-layer streams
+    /// never take either path (identical streams).
+    pub fn analyze_written_spatial(
+        &mut self,
+        link: FrameLink,
+        external_hme: Option<&Grid<Mv>>,
+        run_motion: bool,
+        timer: &mut impl StageTimer,
+    ) -> &FrameAnalysis {
         let slot_count = self.frames.len() - 1;
         assert!(
             link.reference.slot < slot_count,
             "reference slot {} not kept",
             link.reference.slot
         );
-        let pre = self.next_frame_pre(link, timer);
+        let (sb_cols, sb_rows) = {
+            let pic = &self.frames[self.next].picture;
+            (pic.width().div_ceil(SB), pic.height().div_ceil(SB))
+        };
+        let external_hme = external_hme.filter(|g| g.cols() >= sb_cols && g.rows() >= sb_rows);
+        let seeded = self.reuses_hme_seeds(link) || external_hme.is_some();
+        let skip_pyramid = seeded
+            || !run_motion
+            || (self.external_hme_seeded && self.slots[link.reference.slot].is_none());
+        let pre = self.next_frame_pre(link, skip_pyramid, timer);
         let index = self.next;
-        let dsp = &self.dsp;
-        // Only the HME search reads a frame's own levels, and later frames
-        // read only references' levels.
-        let seeded = self.reuses_hme_seeds(link);
-        let frame = &mut self.frames[index];
-        if !seeded {
-            timed(timer, Stage::Pyramid, || frame.build_pyramid(dsp));
-        }
-
-        // HME level 1 is the only reader of the half levels' borders.
-        if self.search.hme_level1 {
-            let prev = self.slots[link.reference.slot];
-            for i in [Some(index), prev].into_iter().flatten() {
-                if self.frames[i].pyramid.is_built() {
-                    self.frames[i].pyramid.ensure_half_border(&self.dsp);
-                }
-            }
+        if run_motion
+            && !seeded
+            && (!self.external_hme_seeded || self.slots[link.reference.slot].is_some())
+        {
+            self.ensure_hme_pyramids(index, link.reference.slot, timer);
         }
         let cur = &self.frames[index];
         let prev = self.slots[link.reference.slot].map(|i| &self.frames[i]);
@@ -565,8 +623,10 @@ impl Analyzer {
         let seeds = last
             .as_ref()
             .and_then(|l| l.motion.as_ref())
+            .filter(|_| run_motion)
             .map(|m| TemporalSeeds::rescaled(m, ratio));
-        let motion = prev.map(|prev| {
+        let motion = prev.filter(|_| run_motion).map(|prev| {
+            let dsp = &self.dsp;
             let seeds = seeds.as_ref().map(TemporalSeeds::view);
             let inputs = MotionInputs {
                 cur: cur.picture.plane(PlaneIndex::Y),
@@ -577,6 +637,7 @@ impl Analyzer {
                 prev_half: prev.pyramid.half(),
                 pre: &pre,
                 last_hme: seeds.map(|s| s.hme),
+                external_hme,
                 last_32x32: seeds.map(|s| s.field_32x32),
                 last_16x16: seeds.map(|s| s.field_16x16),
                 last_global: seeds.map_or(GlobalMotion::NONE, |s| s.global),
@@ -606,12 +667,12 @@ impl Analyzer {
         // The noise model reads flat blocks' best-match SADs as sensor noise;
         // over a longer distance real change adds to them, so only frames
         // matched against their immediate predecessor update it.
-        let noise_sigma = match &motion {
-            Some(m) if link.reference.distance == 1 => {
+        let noise_sigma = match (&motion, prev.is_some()) {
+            (Some(m), _) if link.reference.distance == 1 => {
                 noise::update(noise_hint, &pre.blocks, &m.fine)
             }
-            Some(_) => noise_hint,
-            None => noise::first_frame(&pre.blocks),
+            (_, true) => noise_hint,
+            (_, false) => noise::first_frame(&pre.blocks),
         };
         let still = self.still.update(&pre, self.still_config);
         for (slot, held) in self.slots.iter_mut().enumerate().take(slot_count) {

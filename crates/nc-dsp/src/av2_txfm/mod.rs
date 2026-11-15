@@ -25,10 +25,12 @@
 //!
 //! # Passes (AVM `inv_txfm_c` / `fwd_txfm_c`)
 //!
-//! - **Inverse** (normative): coefficients are clamped to 16 bits on load,
-//!   then rows (rounding shift [`Av2TxSize::inverse_shifts`]`.0`, clamp to 16
-//!   bits), then columns (shift `.1`, clamp to the 8-bit residual range
-//!   `-256..=255`). A 64x64 transform codes only its top-left 32x32
+//! - **Inverse** (normative): 16-bit coefficients (AVM clamps them on load;
+//!   here the dequantiser clamps them and they are `i16`), then rows
+//!   (rounding shift [`Av2TxSize::inverse_shifts`]`.0`, clamp to 16 bits),
+//!   then columns (shift `.1`, clamp to the 8-bit residual range
+//!   `-256..=255`). Coefficients, the row output and the residual are stored
+//!   as `i16`. A 64x64 transform codes only its top-left 32x32
 //!   coefficients; AVM inverts them with the *32-point* DCT and repeats every
 //!   residual sample in a 2x2 square.
 //! - **Forward** (encoder choice, AVM's): columns (shift `.0`), then rows
@@ -40,13 +42,14 @@
 //!
 //! # Ranges
 //!
-//! Every kernel computes in 32-bit lanes; nothing overflows within these
-//! contracts, which match AVM's (where its C `int` arithmetic is exact):
+//! Every kernel computes its products and sums in 32-bit lanes; nothing
+//! overflows within these contracts, which match AVM's (where its C `int`
+//! arithmetic is exact):
 //! - forward: residuals of 8-bit samples, `|r| <= 255`. The worst case is the
 //!   64x64 row pass: `255 · 5760 >> 3` per column output, times `5760` (the
 //!   largest absolute row sum of the 64-point matrix) `< 1.06 · 2^30`;
-//! - inverse: inputs clamped to 16 bits, times at most `32 · 90` per output
-//!   (`< 2^27`).
+//! - inverse: 16-bit inputs, times at most `32 · 90` per output (`< 2^27`);
+//!   only the clamped values between the passes are narrowed.
 
 mod adst_tables;
 pub(crate) mod generic;
@@ -59,9 +62,12 @@ pub(crate) mod typed_lanes;
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 #[allow(unsafe_code)]
-mod avx2_paired;
+mod paired;
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
@@ -159,17 +165,30 @@ impl Av2TxSize {
     }
 }
 
+/// The size of side `n` (4, 8, 16, 32 or 64), for kernels monomorphized
+/// by side.
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+const fn size_of_side(n: usize) -> Av2TxSize {
+    match Av2TxSize::from_side(n) {
+        Some(size) => size,
+        None => panic!("not an AV2 transform side"),
+    }
+}
+
 /// Points of the largest DCT.
 const MAX_POINTS: usize = 64;
 
-/// 16-bit clamp of the inverse input and row pass (AVM `clamp_buf`).
-const INVERSE_STAGE_MIN: i32 = -32768;
-const INVERSE_STAGE_MAX: i32 = 32767;
+/// 16-bit clamp of the inverse row pass (AVM `clamp_buf`).
+const INVERSE_STAGE_MIN: i32 = i16::MIN as i32;
+const INVERSE_STAGE_MAX: i32 = i16::MAX as i32;
 /// Range of the inverse column pass output, the 8-bit residual range.
 const INVERSE_RESIDUAL_MIN: i32 = -256;
 const INVERSE_RESIDUAL_MAX: i32 = 255;
 
-/// libaom / AVM `round_shift` for `bits >= 1`, in 64 bits (`i32` input
+/// libaom / AVM `round_shift` for `bits >= 1`, in 64 bits (a 16-bit input
 /// times the DC weight cannot overflow).
 const fn round_shift(value: i64, bits: u32) -> i64 {
     (value + (1 << (bits - 1))) >> bits
@@ -202,23 +221,13 @@ impl Av2TxSize {
     /// constant. The same clamps and shifts as the full inverse, so the
     /// result equals every sample of it (exact).
     #[must_use]
-    pub const fn inverse_dc_residual(self, dc: i32) -> i32 {
+    pub const fn inverse_dc_residual(self, dc: i16) -> i16 {
         let (first, second) = self.inverse_shifts();
-        let dc = clamp(dc, INVERSE_STAGE_MIN, INVERSE_STAGE_MAX) as i64;
-        let row = round_shift(dc * DC_WEIGHT as i64, first);
+        let row = round_shift(dc as i64 * DC_WEIGHT as i64, first);
         let row = clamp_i64(row, INVERSE_STAGE_MIN, INVERSE_STAGE_MAX);
         let sample = round_shift(row * DC_WEIGHT as i64, second);
-        clamp_i64(sample, INVERSE_RESIDUAL_MIN, INVERSE_RESIDUAL_MAX) as i32
-    }
-}
-
-const fn clamp(value: i32, low: i32, high: i32) -> i32 {
-    if value < low {
-        low
-    } else if value > high {
-        high
-    } else {
-        value
+        // In -256..=255, so the narrowing is exact.
+        clamp_i64(sample, INVERSE_RESIDUAL_MIN, INVERSE_RESIDUAL_MAX) as i16
     }
 }
 
@@ -287,7 +296,7 @@ pub(crate) type Av2ForwardFn = unsafe fn(residual: &[i16], stride: usize, out: &
 /// Coefficient rows and columns from `nonzero` (at most the coded side) on
 /// are zero; kernels may skip them, and read nothing outside the top-left
 /// square of side [`Av2TxSize::inverse_read_side`].
-pub(crate) type Av2InverseFn = unsafe fn(coeffs: &[i32], nonzero: usize, out: &mut [i32]);
+pub(crate) type Av2InverseFn = unsafe fn(coeffs: &[i16], nonzero: usize, out: &mut [i16]);
 
 /// One ISA's AV2 transform kernels, indexed by [`Av2TxSize`].
 #[derive(Debug, Clone, Copy)]

@@ -141,7 +141,7 @@ impl CyclicCadence {
             let best = motion
                 .fine
                 .try_get((index % cols) as isize, (index / cols) as isize);
-            let still = matches!((block.sad_prev, best), (Some(zero), Some(best)) if zero_explains(zero, best.sad));
+            let still = matches!((block.sad_prev, best), (Some(zero), Some(best)) if zero_explains(u32::from(zero), best.sad));
             *run = if still {
                 (*run + 1).min(MIN_STATIC_RUN)
             } else {

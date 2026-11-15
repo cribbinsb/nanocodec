@@ -10,7 +10,7 @@ use crate::simd::neon::I16x8;
 use core::arch::aarch64::{
     int16x8_t, uint8x16_t, uint8x16x4_t, vaddq_s16, vaddq_s32, vcombine_u8, vcombine_u16,
     vdupq_n_s16, vdupq_n_s32, vdupq_n_u8, vget_high_s16, vget_high_u8, vget_low_s16, vget_low_u8,
-    vld1q_s16, vld1q_u8, vld1q_u8_x4, vld2q_u8, vmaxq_s16, vminq_s16, vmlal_s16, vmovl_u8,
+    vld1_s8, vld1q_u8, vld1q_u8_x4, vld2q_u8, vmaxq_s16, vminq_s16, vmlal_s16, vmovl_s8, vmovl_u8,
     vmull_s16, vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulhq_s16, vqtbl4q_u8, vqtbx4q_u8,
     vreinterpretq_s16_u16, vrhaddq_u8, vshlq_s16, vshrq_n_s32, vst1q_u8, vsubq_u8,
 };
@@ -46,7 +46,7 @@ fn lookup(table: &[uint8x16x4_t; 4], index: uint8x16_t) -> uint8x16_t {
 #[target_feature(enable = "neon")]
 fn table(scaling: &Av1GrainScaling) -> [uint8x16x4_t; 4] {
     // SAFETY: each quarter is 64 readable bytes of the 256-byte table.
-    core::array::from_fn(|q| unsafe { vld1q_u8_x4(scaling.bytes[q * 64..].as_ptr()) })
+    core::array::from_fn(|q| unsafe { vld1q_u8_x4(scaling.lut[q * 64..].as_ptr()) })
 }
 
 /// Add the grain of 16 samples (`source` bytes `x`, scaled by `scales`) and
@@ -55,18 +55,18 @@ fn table(scaling: &Av1GrainScaling) -> [uint8x16x4_t; 4] {
 #[target_feature(enable = "neon")]
 fn add16(
     source: uint8x16_t,
-    grain: &[i16],
+    grain: &[i8],
     scales: uint8x16_t,
     up: int16x8_t,
     (low, high): (int16x8_t, int16x8_t),
 ) -> uint8x16_t {
-    let grain: &[i16; GROUP] = grain[..GROUP].try_into().expect("16 grain values");
+    let grain: &[i8; GROUP] = grain[..GROUP].try_into().expect("16 grain values");
     let half = |samples: core::arch::aarch64::uint8x8_t,
                 scale: core::arch::aarch64::uint8x8_t,
-                g: &[i16]| {
+                g: &[i8]| {
         let scale = vshlq_s16(vreinterpretq_s16_u16(vmovl_u8(scale)), up);
         // SAFETY: `g` holds 8 values.
-        let noise = vqrdmulhq_s16(unsafe { vld1q_s16(g.as_ptr()) }, scale);
+        let noise = vqrdmulhq_s16(vmovl_s8(unsafe { vld1_s8(g.as_ptr()) }), scale);
         let sum = vaddq_s16(vreinterpretq_s16_u16(vmovl_u8(samples)), noise);
         vqmovun_s16(vminq_s16(vmaxq_s16(sum, low), high))
     };
@@ -79,7 +79,7 @@ fn add16(
 #[target_feature(enable = "neon")]
 unsafe fn luma(
     source: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     out: &mut [u8],
@@ -113,7 +113,7 @@ unsafe fn luma(
 unsafe fn chroma(
     source: &[u8],
     luma: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     coefficients: [i16; 3],
@@ -187,7 +187,7 @@ unsafe fn chroma(
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn blend(old: &[i16], new: &mut [i16], weights: [i16; 2]) {
+unsafe fn blend(old: &[i8], new: &mut [i8], weights: [i16; 2]) {
     // SAFETY: this wrapper enables the lane ISA.
     unsafe { generic::blend::<I16x8>(old, new, weights) }
 }

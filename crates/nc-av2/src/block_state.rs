@@ -43,7 +43,14 @@ pub(crate) struct BlockInfo {
     pub filter: Option<InterpFilter>,
     /// Coded in skip mode (AVM `skip_mode`).
     pub skip_mode: bool,
+    /// An inter block's reference rank (AVM `ref_frame[0]`; a skip-mode
+    /// block's is rank 0 for both vectors); 0 for intra blocks, which
+    /// `is_inter` excludes wherever references are compared.
+    pub reference: u8,
 }
+
+/// AVM `REF_CONTEXTS`: contexts of the single-reference symbols.
+pub(crate) const REFERENCE_CONTEXTS: usize = 3;
 
 /// Neighbour state of one tile.
 #[derive(Debug)]
@@ -154,12 +161,34 @@ impl BlockState {
     }
 
     /// `switchable_interp` symbol context, in 0..4
-    /// ([`interp_filter::context`]).
-    pub fn filter_context(&self, x: usize, y: usize, size: usize) -> usize {
-        interp_filter::context(
-            self.spatial_neighbours(x, y, size)
-                .map(|info| info.and_then(|i| i.filter)),
-        )
+    /// ([`interp_filter::context`]), of a block on reference rank
+    /// `reference`: a neighbour's filter counts only when it predicts from
+    /// the same reference (AVM `get_ref_filter_type`).
+    pub fn filter_context(&self, x: usize, y: usize, size: usize, reference: u8) -> usize {
+        interp_filter::context(self.spatial_neighbours(x, y, size).map(|info| {
+            info.filter(|i| i.reference == reference)
+                .and_then(|i| i.filter)
+        }))
+    }
+
+    /// Context of the first single-reference symbol (rank 0 or not) in a
+    /// frame with two references (AVM `av2_get_ref_pred_context` for rank
+    /// 0): how the neighbours' references to rank 0 compare with theirs to
+    /// later ranks (`av2_collect_neighbors_ref_counts`; a skip-mode block
+    /// names rank 0 twice).
+    pub fn single_reference_context(&self, x: usize, y: usize, size: usize) -> usize {
+        let mut counts = [0_u8; 2];
+        for info in self.line_neighbours(x, y, size).into_iter().flatten() {
+            if info.is_inter {
+                let rank = usize::from(info.reference.min(1));
+                counts[rank] += 1 + u8::from(info.skip_mode);
+            }
+        }
+        match counts[0].cmp(&counts[1]) {
+            std::cmp::Ordering::Less => 0,
+            std::cmp::Ordering::Equal => 1,
+            std::cmp::Ordering::Greater => REFERENCE_CONTEXTS - 1,
+        }
     }
 
     /// `skip_txfm` symbol context, in 0..3.

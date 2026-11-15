@@ -16,6 +16,7 @@ use crate::deblock::DeblockParams;
 use crate::frame_header::{InterHeader, KeyframeHeader, REFERENCE_SLOTS, REFRESH_ALL};
 use crate::interp_filter::FrameFilter;
 use crate::mv_refs::{self, InterMode, ListConfig};
+use crate::physical_slots::PhysicalSlots;
 use crate::pre_tx_skip::PreTxSkip;
 use crate::prediction::InterpFilter;
 use crate::sequence::{Layering, SequenceHeader, TcqFrames};
@@ -26,7 +27,7 @@ use crate::{motion, packet};
 use nc_common::Picture;
 use nc_encoder::{
     Block, BlockDecision, Codec, CodecBackend, ConfigError, EncoderConfig, FramePlan,
-    FrameReferences, FrameType, IntraModeSet, LtrParams, Mv, PredictionMode, QuantParams,
+    FrameReferences, FrameType, IntraModeSet, Mv, PredictionMode, QuantParams, ReferenceChoice,
 };
 use std::rc::Rc;
 
@@ -247,6 +248,15 @@ pub struct Av2Backend {
     /// `quant.trellis`: trellis quantisation of the coded transforms.
     trellis: Option<TrellisSettings>,
     order_hint: u16,
+    /// The last committed frame's display order hint (AVM
+    /// `display_order_hint`: the order hint unwrapped, 0 at the key frame),
+    /// and each slot's picture's, for the distances of a second reference.
+    display_order: u32,
+    slot_display_orders: [u32; REFERENCE_SLOTS as usize],
+    /// The AV2 slots of the engine's slots in a stream with a second
+    /// reference ([`PhysicalSlots`]); `None` otherwise (the engine's slots
+    /// are the AV2 slots).
+    physical: Option<PhysicalSlots>,
     qindex: u8,
     /// The current frame's quantizer offsets.
     quant_deltas: QuantDeltas,
@@ -307,14 +317,15 @@ pub struct Av2Backend {
     block_qp: bool,
 }
 
-/// The sequence's layering for `config`: layered and long-term-reference
-/// structures keep several pictures in the slots and name their reference
+/// The sequence's layering for `config`: layered structures and those
+/// keeping a picture in the long-term slot (a long-term or second
+/// reference) keep several pictures in the slots and name their references
 /// explicitly.
 fn layering(config: &EncoderConfig) -> Layering {
-    let long_term = LtrParams::from_overrides(&config.params).interval > 0.0;
     Layering {
         temporal_layers: config.temporal_layers,
-        explicit_references: config.temporal_layers > 1 || long_term,
+        explicit_references: config.temporal_layers > 1
+            || nc_encoder::uses_long_term_slot(&config.params),
     }
 }
 
@@ -345,8 +356,11 @@ impl Av2Backend {
     /// with one fixed filter (the subset does not track skip-mode blocks'
     /// switchable filter contexts), lossy.
     fn skip_mode_enabled(&self) -> bool {
+        // With a second reference skip mode would pair the two references
+        // (AVM `av2_setup_skip_mode_allowed`), outside the subset.
         self.params.skip_mode >= 0.5
             && !self.key
+            && self.references.secondary.is_none()
             && self.qindex != 0
             && matches!(self.frame_filter, FrameFilter::Fixed(_))
     }
@@ -368,7 +382,7 @@ impl Av2Backend {
     }
 
     /// Start the frame's block coder with `options`, from the inherited
-    /// CDFs where the frame has them.
+    /// CDFs where the frame has them, naming any second reference.
     fn start_coder(&mut self, options: &CoderOptions) {
         let random = self.random.take();
         let inherited = self.inherited_context();
@@ -382,7 +396,13 @@ impl Av2Backend {
             random,
         );
         self.inherits_context = inherits;
-        self.coder = Some(coder.expect("validated AV2 dimensions"));
+        let mut coder = coder.expect("validated AV2 dimensions");
+        if let Some(distances) = self.reference_distances().filter(|_| !self.key) {
+            coder
+                .set_reference_distances(&distances)
+                .expect("past references at distinct, positive distances");
+        }
+        self.coder = Some(coder);
     }
 
     /// The CDFs the current frame starts from: its reference slot's, for an
@@ -398,15 +418,69 @@ impl Av2Backend {
     /// The current inter frame's signalled reference slot (`None`:
     /// implicit, every slot holds the previous picture, as slot 0) and the
     /// slots it refreshes. A flat sequence keeps one picture in every
-    /// slot; explicit references follow the engine's slots.
+    /// slot; explicit references follow the engine's slots, through
+    /// [`PhysicalSlots`] beside a second reference.
     fn slot_signalling(&self) -> (Option<u8>, u8) {
-        if self.sequence.layering.explicit_references {
-            (
-                Some(self.references.reference.slot as u8),
-                self.references.refresh.0,
-            )
-        } else {
-            (None, REFRESH_ALL)
+        if !self.sequence.layering.explicit_references {
+            return (None, REFRESH_ALL);
+        }
+        let mask = self.references.refresh.0;
+        match self.physical {
+            Some(physical) => (
+                Some(self.av2_slot(self.references.reference.slot)),
+                physical.target(mask).map_or(0, |target| 1 << target),
+            ),
+            None => (Some(self.references.reference.slot as u8), mask),
+        }
+    }
+
+    /// The AV2 slot holding engine slot `slot`'s picture.
+    fn av2_slot(&self, slot: usize) -> u8 {
+        self.physical
+            .map_or(slot as u8, |physical| physical.of(slot))
+    }
+
+    /// The AV2 slot of the current inter frame's second reference (rank
+    /// 1), if it has one.
+    fn second_slot(&self) -> Option<u8> {
+        self.references
+            .secondary
+            .map(|link| self.av2_slot(link.slot))
+    }
+
+    /// The current frame's display order hint: 0 for a key frame, else one
+    /// past the last committed frame's (a recoded frame keeps its own).
+    fn current_display_order(&self) -> u32 {
+        if self.key { 0 } else { self.display_order + 1 }
+    }
+
+    /// Both reference ranks' distances from the current picture in frames
+    /// (AVM `ref_frame_relative_dist`, from display order hints and clamped
+    /// as AVM's `get_relative_dist` clamps them), when the frame has a
+    /// second reference.
+    fn reference_distances(&self) -> Option<[i32; 2]> {
+        let second = self.second_slot()?;
+        let first = self.av2_slot(self.references.reference.slot);
+        let current = self.current_display_order();
+        let distance = |slot: u8| {
+            let frames = current - self.slot_display_orders[usize::from(slot)];
+            i32::try_from(frames.min(MAX_RELATIVE_DISTANCE)).expect("clamped")
+        };
+        Some([distance(first), distance(second)])
+    }
+}
+
+/// AVM `RELATIVE_DIST_BITS` 8: reference distances are clamped to 127.
+const MAX_RELATIVE_DISTANCE: u32 = 127;
+
+/// The reference rank a block's choice names: the previous picture is rank
+/// 0, the second reference rank 1.
+fn reference_rank(choice: ReferenceChoice) -> u8 {
+    match choice {
+        ReferenceChoice::Primary => 0,
+        ReferenceChoice::Secondary => 1,
+        ReferenceChoice::Compound { .. } => {
+            unreachable!("AV2 offers no compound reference")
         }
     }
 }
@@ -810,6 +884,14 @@ impl CodecBackend for Av2Backend {
         ("rate.cadence_startup_period", 8.0),
         ("rate.cadence_startup_base_boost", 5.0),
         ("rate.cadence_motion_gate", 1.0),
+        // The target as a ceiling over every key period (`rate.period_ceiling`,
+        // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still scenes).
+        // 600-frame long-window L3 (keys every 10 s, 31 points, draw 2026-11-14):
+        // J -0.62% [-1.38, +0.05] BETTER, no guard; static -2.8%, crowd +0.3%,
+        // pan and lowlight unchanged; achieved/target max 0.999 -> 1.000; re-codes
+        // on the 22 static and crowd points 13.0 -> 17.2 per 1000 frames.
+        // Inert within one key period. The other AV2 presets pin it off.
+        ("rate.period_ceiling", 1.0),
         // Depth removal at half the engine's threshold scale (SVT
         // `qp_scale_factor`): the scale grows with the headroom below the
         // top quantizer, and AV2's coarser qindex scale (step doubling every
@@ -880,6 +962,10 @@ impl CodecBackend for Av2Backend {
             params: ToolParams::from_overrides(&config.params),
             trellis: TrellisSettings::from_params(&QuantParams::from_overrides(&config.params)),
             order_hint: 0,
+            display_order: 0,
+            slot_display_orders: [0; REFERENCE_SLOTS as usize],
+            physical: (nc_encoder::RefParams::from_overrides(&config.params).second >= 0.5)
+                .then_some(PhysicalSlots::AFTER_KEY),
             qindex: 0,
             quant_deltas: QuantDeltas::NONE,
             noise_sigma: 0.0,
@@ -940,6 +1026,20 @@ impl CodecBackend for Av2Backend {
 
     fn supports_long_term_reference(&self) -> bool {
         true
+    }
+
+    /// The last high-quality frame (`refs.second`) as reference rank 1: a
+    /// second `ref_frame_idx` entry (`num_total_refs` 2) and a per-block
+    /// single-reference symbol (AVM `read_single_ref`). No compound
+    /// prediction between the two, and no skip mode beside them.
+    fn supports_second_reference(&self) -> bool {
+        true
+    }
+
+    fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
+        if let Some(coder) = self.coder.as_mut() {
+            coder.select_reference(reference_rank(reference));
+        }
     }
 
     fn supports_inter(&self) -> bool {
@@ -1050,7 +1150,9 @@ impl CodecBackend for Av2Backend {
             return type_bits;
         };
         let target = to_av2(mv);
-        let (signal, index) = block_coder::choose_signalling(candidates, target);
+        let Some((signal, index)) = block_coder::choose_signalling(candidates, target) else {
+            return f32::INFINITY;
+        };
         let mut bits = type_bits + mv_refs::mode_bits(candidates, signal, index);
         if signal == InterMode::New {
             bits += motion::difference_bits(target, candidates.vectors[index]);
@@ -1237,6 +1339,7 @@ impl CodecBackend for Av2Backend {
     ) {
         let coder = self.coder();
         coder.set_block_offset(decision.qp_offset);
+        coder.select_reference(reference_rank(decision.reference));
         let position = (block.x, block.y);
         match (decision.mode, reference) {
             (PredictionMode::Inter(mv), Some(reference)) => {
@@ -1245,6 +1348,10 @@ impl CodecBackend for Av2Backend {
             _ => coder.encode_intra(position, block.size(), source, recon),
         }
         .expect("engine decisions are codable");
+        // The engine ranks the next block's primary reference without
+        // naming it (only the second reference is selected before its
+        // trial): candidates and cached predictions must be rank 0's.
+        coder.select_reference(0);
     }
 
     /// Deblock, then CDEF, then CCSO, the finished reconstruction (it
@@ -1333,6 +1440,7 @@ impl CodecBackend for Av2Backend {
                 levels: self.level_coding(),
                 refresh_flags,
                 reference,
+                second_reference: self.second_slot(),
                 adaptive_cdf,
                 cross_frame_context: self.inherits_context,
                 deblock: self.deblock,
@@ -1361,10 +1469,19 @@ impl CodecBackend for Av2Backend {
         } else {
             self.slot_signalling().1
         };
+        if let Some(physical) = self.physical.as_mut() {
+            if self.key {
+                *physical = PhysicalSlots::AFTER_KEY;
+            } else if refresh != 0 {
+                physical.commit(self.references.refresh.0, refresh.trailing_zeros() as u8);
+            }
+        }
         let context = self.frame_context.take();
+        self.display_order = self.current_display_order();
         for (slot, slot_context) in self.slot_contexts.iter_mut().enumerate() {
             if refresh & (1 << slot) != 0 {
                 slot_context.clone_from(&context);
+                self.slot_display_orders[slot] = self.display_order;
             }
         }
         // A key frame has order hint 0, so the next inter frame's is 1.
@@ -1817,6 +1934,40 @@ mod tests {
             &[("av2.skip_mode", 1.0), ("debug.random_decisions", 3.0)],
         ] {
             let (packets, recons, _) = coded_sequence(params, None);
+            assert_ne!(packets, plain, "{params:?}");
+            let mut decoder = crate::Decoder::default();
+            for (packet, recon) in packets.iter().zip(&recons) {
+                assert_eq!(
+                    &bytes(decoder.decode_ref(packet).unwrap()),
+                    recon,
+                    "{params:?}"
+                );
+            }
+        }
+    }
+
+    /// The second reference (`refs.second`): frames after the key name it
+    /// as rank 1, blocks choose per block, and our decoder follows (both
+    /// rankings, with the bank and long lists, under rate control, and with
+    /// skip mode requested, which frames with two references leave off).
+    #[test]
+    fn second_reference_decodes_to_the_reconstruction() {
+        let plain = coded_sequence(&[], None).0;
+        for (params, bitrate) in [
+            (&[("refs.second", 1.0)][..], None),
+            (&[("refs.second", 1.0), ("refs.second_full", 1.0)], None),
+            (
+                &[
+                    ("refs.second", 1.0),
+                    ("av2.max_drl_bits", 5.0),
+                    ("av2.ref_mv_bank", 1.0),
+                ],
+                None,
+            ),
+            (&[("refs.second", 1.0), ("av2.skip_mode", 1.0)], None),
+            (&[("refs.second", 1.0)], Some(150_000)),
+        ] {
+            let (packets, recons, _) = coded_sequence(params, bitrate);
             assert_ne!(packets, plain, "{params:?}");
             let mut decoder = crate::Decoder::default();
             for (packet, recon) in packets.iter().zip(&recons) {

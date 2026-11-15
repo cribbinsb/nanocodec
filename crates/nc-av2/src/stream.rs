@@ -2,7 +2,7 @@
 use std::rc::Rc;
 
 use crate::cdf_models::TileCdfs;
-use crate::frame_header::{REFERENCE_SLOTS, REFRESH_ALL};
+use crate::frame_header::REFERENCE_SLOTS;
 use crate::tile_decoder::{self, TileParams};
 use crate::{frame_header, inter, intra, obu, sequence::SequenceHeader};
 use nc_common::{
@@ -94,6 +94,10 @@ impl Encoder {
 /// refreshes).
 type SlotContext = Option<Rc<TileCdfs>>;
 
+/// The decoder's reference slots as an inter frame reads them: pictures,
+/// CDFs and display order hints.
+type SlotView<'a> = (&'a [Option<Rc<Picture>>], &'a [SlotContext], &'a [u32]);
+
 /// Decoder retaining sequence syntax and the eight reference slots.
 #[derive(Debug, Default)]
 pub struct Decoder {
@@ -104,6 +108,10 @@ pub struct Decoder {
     /// `frame_context`), for frames that inherit them; `None` where the
     /// picture did not adapt.
     contexts: [SlotContext; REFERENCE_SLOTS as usize],
+    /// Each slot's picture's display order hint (AVM `display_order_hint`,
+    /// the order hint unwrapped: 0 at the key frame), for reference
+    /// distances.
+    display_orders: [u32; REFERENCE_SLOTS as usize],
     /// The last decoded picture, shown by [`Decoder::shown`].
     current: Option<Rc<Picture>>,
     /// [`Decoder::decode_ref`]'s copy of the last picture's conformance
@@ -168,6 +176,8 @@ impl Decoder {
         let mut picture = None;
         let mut refresh = 0;
         let mut context = None;
+        let mut display_order = 0;
+        let mut key = false;
         while !remaining.is_empty() {
             let (unit, rest) = obu::parse(remaining)?;
             remaining = rest;
@@ -196,16 +206,20 @@ impl Decoder {
                         next_sequence.ok_or(DecodeError::MissingKey)?;
                     let (decoded, models, refreshed) =
                         if unit.header.obu_type == frame_header::CLOSED_LOOP_KEY {
-                            let (key, models) =
+                            let (key_picture, models) =
                                 Self::decode_key(&sequence, unit.payload, &mut self.workspace)?;
-                            (key, models, REFRESH_ALL)
+                            display_order = 0;
+                            key = true;
+                            (key_picture, models, KEY_SLOTS)
                         } else {
-                            Self::decode_inter(
-                                (&self.slots, &self.contexts),
+                            let (decoded, models, refreshed, order) = Self::decode_inter(
+                                (&self.slots, &self.contexts, &self.display_orders),
                                 &sequence,
                                 unit.payload,
                                 &mut self.workspace,
-                            )?
+                            )?;
+                            display_order = order;
+                            (decoded, models, refreshed)
                         };
                     picture = Some(decoded);
                     refresh = refreshed;
@@ -225,11 +239,18 @@ impl Decoder {
         self.sequence = next_sequence;
         let picture = Rc::new(picture);
         for (i, (slot, slot_context)) in self.slots.iter_mut().zip(&mut self.contexts).enumerate() {
-            if refresh & (1 << i) == 0 {
-                continue;
-            }
-            slot_context.clone_from(&context);
-            if let Some(replaced) = slot.replace(Rc::clone(&picture)) {
+            let replaced = if refresh & (1 << i) != 0 {
+                slot_context.clone_from(&context);
+                self.display_orders[i] = display_order;
+                slot.replace(Rc::clone(&picture))
+            } else if key {
+                // A key frame empties every slot it does not fill.
+                *slot_context = None;
+                slot.take()
+            } else {
+                None
+            };
+            if let Some(replaced) = replaced {
                 self.workspace.release(replaced);
             }
         }
@@ -282,21 +303,45 @@ impl Decoder {
         )
     }
 
-    /// Decode the inter picture of `payload` from its reference slot (and,
-    /// with cross-frame context, that slot's CDFs), returning it with its
-    /// final CDFs and the slots it refreshes.
+    /// Decode the inter picture of `payload` from its reference slots (and,
+    /// with cross-frame context, the first one's CDFs), returning it with
+    /// its final CDFs, the slots it refreshes and its display order hint.
     fn decode_inter(
-        (slots, contexts): (&[Option<Rc<Picture>>], &[SlotContext]),
+        (slots, contexts, display_orders): SlotView<'_>,
         sequence: &SequenceHeader,
         payload: &[u8],
         work: &mut tile_decoder::Workspace,
-    ) -> Result<(Picture, Option<Box<TileCdfs>>, u8)> {
+    ) -> Result<(Picture, Option<Box<TileCdfs>>, u8, u32)> {
         let (header, offset) = frame_header::parse_inter(sequence, payload)?;
+        let display_order = display_order_hint(
+            header.order_hint,
+            sequence.order_hint_bits,
+            slots
+                .iter()
+                .zip(display_orders)
+                .filter(|(slot, _)| slot.is_some())
+                .map(|(_, &order)| order),
+        );
         // Implicit references refresh every slot: any slot holds the reference.
         let slot = header.reference.unwrap_or(0);
-        let reference = slots[usize::from(slot)]
-            .as_deref()
-            .ok_or(DecodeError::MissingKey)?;
+        let picture_in = |slot: u8| {
+            slots[usize::from(slot)]
+                .as_deref()
+                .ok_or(DecodeError::MissingKey)
+        };
+        let reference = picture_in(slot)?;
+        let distance = |slot: u8| display_order.saturating_sub(display_orders[usize::from(slot)]);
+        let second = match header.second_reference {
+            Some(second) => {
+                let distances = [distance(slot), distance(second)]
+                    .map(|d| i32::try_from(d.min(MAX_RELATIVE_DISTANCE)).expect("small"));
+                Some(tile_decoder::SecondReference {
+                    picture: picture_in(second)?,
+                    distances,
+                })
+            }
+            None => None,
+        };
         let (width, height) = (sequence.max_width as usize, sequence.max_height as usize);
         if reference.width() != width || reference.height() != height {
             return Err(DecodeError::Unsupported(
@@ -337,13 +382,14 @@ impl Decoder {
             params,
             Some(tile_decoder::InterReference {
                 picture: reference,
+                second,
                 filter: header.filter,
                 skip_mode: header.skip_mode,
             }),
             inherited,
             work,
         )?;
-        Ok((picture, models, header.refresh_flags))
+        Ok((picture, models, header.refresh_flags, display_order))
     }
 
     /// Decode a packet and return an owned copy; use `decode_ref` to avoid the copy.
@@ -352,6 +398,30 @@ impl Decoder {
     pub fn decode(&mut self, packet: &[u8]) -> Result<Picture> {
         self.decode_ref(packet).cloned()
     }
+}
+
+/// The slots a closed-loop key frame fills: the first only (AVM
+/// `av2_frame_clears_multiple_inserted_in_one` empties the others).
+const KEY_SLOTS: u8 = 1;
+
+/// AVM `RELATIVE_DIST_BITS` 8: reference distances are clamped to 127.
+const MAX_RELATIVE_DISTANCE: u32 = 127;
+
+/// The display order hint of a frame with `order_hint` (`bits` wide) whose
+/// references' display order hints are `references` (AVM
+/// `get_disp_order_hint`): the order hint unwrapped past the largest of
+/// them.
+fn display_order_hint(order_hint: u16, bits: u8, references: impl Iterator<Item = u32>) -> u32 {
+    let largest = i64::from(references.max().unwrap_or(0));
+    let factor = 1_i64 << bits;
+    let mut order = i64::from(order_hint);
+    while (largest - order).abs() >= factor >> 1 {
+        if order > largest {
+            break;
+        }
+        order += factor;
+    }
+    u32::try_from(order).expect("display order hints stay small")
 }
 
 /// The temporal layer of one temporal unit: its frame OBU's `temporal_id`

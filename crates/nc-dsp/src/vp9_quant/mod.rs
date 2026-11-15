@@ -82,8 +82,17 @@ impl Vp9QuantStep {
                 .expect("step >= 2"),
             offset: (step / rounding_divisor) as u32,
             shift,
-            cap: (((MAX_DEQUANTIZED + 1) << shift) / step - 1) as u32,
+            cap: Self::max_level(step, shift),
         }
+    }
+
+    /// The largest level whose dequantized magnitude `level · step >> shift`
+    /// the 16-bit range holds with a margin (VP9 §8.6.2 requires
+    /// `Dequant` to fit 8 + `BitDepth` bits): every quantizer, the trellis
+    /// included, keeps its levels at most this.
+    #[must_use]
+    pub fn max_level(step: i32, shift: u32) -> u32 {
+        (((MAX_DEQUANTIZED + 1) << shift) / step - 1) as u32
     }
 
     /// The level of coefficient `c` (scalar reference).

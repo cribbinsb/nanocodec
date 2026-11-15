@@ -20,10 +20,10 @@ use core::arch::aarch64::{
     vcombine_u16, vcvtq_f32_s32, vcvtq_s32_f32, vdivq_f32, vdupq_n_s16, vdupq_n_s32, vextq_s16,
     vget_high_u8, vget_high_u16, vget_low_s16, vget_low_u8, vget_low_u16, vld1_u8, vld1q_s16,
     vld1q_s32, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_high_n_s16, vmlal_n_s16, vmlaq_n_s16,
-    vmovl_u8, vmovl_u16, vmull_high_n_s16, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqaddq_s16,
-    vqmovn_s32, vqmovn_u16, vqmovun_s16, vqshrun_n_s32, vreinterpretq_s16_u16,
-    vreinterpretq_s32_u32, vreinterpretq_u32_s32, vshlq_n_s16, vshlq_n_s32, vshrq_n_s16,
-    vshrq_n_s32, vshrq_n_u32, vst1_u8, vst1q_s16, vst1q_s32, vst1q_u8, vsubq_s32,
+    vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmull_high_n_s16, vmull_n_s16, vmulq_n_s16,
+    vmulq_s32, vqaddq_s16, vqmovn_s32, vqmovn_u16, vqmovun_s16, vqshrun_n_s32,
+    vreinterpretq_s16_u16, vreinterpretq_s32_u32, vreinterpretq_u32_s32, vshlq_n_s16, vshlq_n_s32,
+    vshrq_n_s16, vshrq_n_s32, vshrq_n_u32, vst1_u8, vst1q_s16, vst1q_s32, vst1q_u8, vsubq_s32,
 };
 
 use super::kernels::{Kernels, WIENER_ROWS};
@@ -183,6 +183,15 @@ impl SgrLanes for Lanes {
         unsafe { Self(vld1q_s32(src.as_ptr()), vld1q_s32(src[4..].as_ptr())) }
     }
     #[inline(always)]
+    fn load_i16(src: &[i16]) -> Self {
+        let src = &src[..8];
+        // SAFETY: see the impl comment.
+        unsafe {
+            let words = vld1q_s16(src.as_ptr());
+            Self(vmovl_s16(vget_low_s16(words)), vmovl_high_s16(words))
+        }
+    }
+    #[inline(always)]
     fn load_u8(src: &[u8]) -> Self {
         let src = &src[..8];
         // SAFETY: see the impl comment.
@@ -201,6 +210,17 @@ impl SgrLanes for Lanes {
         unsafe {
             vst1q_s32(dst.as_mut_ptr(), self.0);
             vst1q_s32(dst[4..].as_mut_ptr(), self.1);
+        }
+    }
+    #[inline(always)]
+    fn store_i16(self, dst: &mut [i16]) {
+        let dst = &mut dst[..8];
+        // SAFETY: see the impl comment.
+        unsafe {
+            vst1q_s16(
+                dst.as_mut_ptr(),
+                vcombine_s16(vqmovn_s32(self.0), vqmovn_s32(self.1)),
+            );
         }
     }
     #[inline(always)]

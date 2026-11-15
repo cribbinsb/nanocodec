@@ -151,7 +151,7 @@ impl NoiseMap {
         }
         let sigma = |sad: u32| sad as f32 / CELL_SAMPLES / MEAN_ABS_DIFF_PER_SIGMA;
         let still_sad = |col: usize, row: usize| {
-            let zero = blocks.get(col, row).sad_prev?;
+            let zero = u32::from(blocks.get(col, row).sad_prev?);
             let best = fine.try_get(col as isize, row as isize)?;
             zero_explains(zero, best.sad).then_some(zero)
         };
@@ -312,7 +312,7 @@ mod tests {
     use nc_analysis::Mv;
     use nc_analysis::preanalysis::BlockStats;
 
-    fn frame(cols: usize, rows: usize, zero: u32, best: u32) -> (PreAnalysis, Grid<MotionBlock>) {
+    fn frame(cols: usize, rows: usize, zero: u16, best: u32) -> (PreAnalysis, Grid<MotionBlock>) {
         let stats = BlockStats {
             mean: 128,
             sum: 128 * 64,

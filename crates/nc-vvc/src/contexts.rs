@@ -122,6 +122,8 @@ pub(crate) struct Contexts {
     pub merge_idx: Context,
     pub mvd: [Context; 2],
     pub mvp: Context,
+    /// `ref_idx_l0`'s two context-coded bins (P slices only).
+    pub ref_idx: [Context; 2],
     /// `amvr_flag` and the two `amvr_precision_idx` bins (P slices only).
     pub amvr_flag: Context,
     pub amvr_not_half: Context,
@@ -174,6 +176,7 @@ impl Contexts {
             merge_idx: c(20, 4),
             mvd: [c(44, 9), c(43, 5)],
             mvp: c(34, 12),
+            ref_idx: [c(20, 0), c(35, 4)],
             amvr_flag: c(59, 0),
             amvr_not_half: c(60, 4),
             amvr_four: c(48, 5),

@@ -383,7 +383,7 @@ fn parse_encode(args: &[String]) -> Result<EncodeArgs, String> {
             colour: colour::parse(get)?,
             timing: parse_timing(get("--timing").as_deref(), timestamps.is_some())?,
         },
-        params: encode_params(args, codec)?,
+        params: with_fixed_qp_profile(encode_params(args, codec)?, rate_control.is_none()),
         rate_control,
         rate_changes,
         resizes: parse_resizes(args)?,
@@ -448,6 +448,19 @@ fn parse_temporal_layers(args: &[String]) -> Result<u8, String> {
 /// The heuristic parameters (`--preset`, `--still-camera`, `--params`,
 /// `--scalability`, `--param`) with the options that stand for parameters
 /// applied over them.
+/// The fixed-QP profile (`rate.fixed_qp_profile`) for an encode without
+/// rate control, unless the caller or a preset set it: `--qp` codes with
+/// the codec's static fixed-QP pattern (`CodecBackend::FIXED_QP_PARAMS`).
+fn with_fixed_qp_profile(mut params: ParamOverrides, fixed_qp: bool) -> ParamOverrides {
+    if fixed_qp && !params.contains(FIXED_QP_PROFILE_PARAM) {
+        params.set(FIXED_QP_PROFILE_PARAM, 1.0);
+    }
+    params
+}
+
+/// The switch of the codec's fixed-QP profile.
+const FIXED_QP_PROFILE_PARAM: &str = "rate.fixed_qp_profile";
+
 fn encode_params(args: &[String], codec: Codec) -> Result<ParamOverrides, String> {
     let number = |v: String, flag: &str| {
         v.parse::<u64>()

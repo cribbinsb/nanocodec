@@ -6,7 +6,7 @@
 
 use core::mem::MaybeUninit;
 
-use super::I32Lanes;
+use super::{I32Lanes, saturate_i16};
 
 impl I32Lanes for i32 {
     const LANES: usize = 1;
@@ -92,12 +92,20 @@ impl I32Lanes for i32 {
         i32::from(src[0])
     }
 
+    fn store_sat16(self, dst: &mut [i16]) {
+        dst[0] = saturate_i16(self);
+    }
+
     fn add_to_u8(self, dst: &mut [u8]) {
         dst[0] = (i32::from(dst[0]) + self).clamp(0, 255) as u8;
     }
 
     fn store_transposed(rows: &[Self], dst: &mut [MaybeUninit<i32>], _dst_stride: usize) {
         dst[0] = MaybeUninit::new(rows[0]);
+    }
+
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], _dst_stride: usize) {
+        dst[0] = MaybeUninit::new(saturate_i16(rows[0]));
     }
 
     fn gt(self, other: Self) -> Self {

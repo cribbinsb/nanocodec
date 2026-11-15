@@ -253,6 +253,7 @@ pub struct NcDecoder(Receiver);
 pub struct NcEncoder {
     session: Session,
     layers: Vec<NcLayerFrame>,
+    references: Vec<u64>,
 }
 
 /// Run `body`, turning a panic into [`NcStatus::Internal`].
@@ -343,6 +344,7 @@ pub unsafe extern "C" fn nc_encoder_create(
                 *out = Box::into_raw(Box::new(NcEncoder {
                     session,
                     layers: Vec::new(),
+                    references: Vec::new(),
                 }));
                 NcStatus::Ok
             }
@@ -598,6 +600,7 @@ pub unsafe extern "C" fn nc_encoder_encode(
                         quantizer: l.quantizer,
                     })
                     .collect();
+                encoder.references = m.references.iter().collect();
                 NcStatus::Ok
             }
             Err(e) => e.into(),
@@ -630,6 +633,37 @@ pub unsafe extern "C" fn nc_encoder_packet_layers(
         std::ptr::null()
     } else {
         encoder.layers.as_ptr()
+    };
+    NcStatus::Ok
+}
+
+/// Coded-frame indices (`nc_packet.index`) the latest packet encoded by
+/// [`nc_encoder_encode`] predicts from (none, and a null pointer, on key,
+/// intra-only, dropped or held packets and after [`nc_encoder_flush`]),
+/// borrowed until the next call on `encoder`.
+///
+/// # Safety
+///
+/// `encoder`, `references` and `count` must be null or valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nc_encoder_packet_references(
+    encoder: *const NcEncoder,
+    references: *mut *const u64,
+    count: *mut usize,
+) -> NcStatus {
+    // SAFETY: the caller guarantees all three are null or valid.
+    let (Some(encoder), Some(references), Some(count)) = (
+        unsafe { encoder.as_ref() },
+        unsafe { references.as_mut() },
+        unsafe { count.as_mut() },
+    ) else {
+        return NcStatus::InvalidArgument;
+    };
+    *count = encoder.references.len();
+    *references = if encoder.references.is_empty() {
+        std::ptr::null()
+    } else {
+        encoder.references.as_ptr()
     };
     NcStatus::Ok
 }
@@ -702,9 +736,12 @@ pub unsafe extern "C" fn nc_encoder_flush(
     packet: *mut NcPacket,
 ) -> NcStatus {
     // SAFETY: the caller guarantees both are null or valid.
-    let (Some(_), Some(packet)) = (unsafe { encoder.as_mut() }, unsafe { packet.as_mut() }) else {
+    let (Some(encoder), Some(packet)) = (unsafe { encoder.as_mut() }, unsafe { packet.as_mut() })
+    else {
         return NcStatus::InvalidArgument;
     };
+    encoder.layers.clear();
+    encoder.references.clear();
     *packet = NcPacket {
         data: std::ptr::null(),
         size: 0,
@@ -1519,5 +1556,98 @@ mod tests {
         }
         // SAFETY: created above, not used again.
         unsafe { nc_encoder_destroy(enc) };
+    }
+
+    #[test]
+    fn l1t3_packet_references_report_dyadic_dependencies() {
+        let (w, h) = (128u32, 96u32);
+        let mut cfg = NcEncoderConfig {
+            codec: 0,
+            width: 0,
+            height: 0,
+            fps_num: 0,
+            fps_den: 0,
+            quantizer: 0,
+            intra_period: 0,
+            temporal_layers: 0,
+            intra_refresh_period: 0,
+            ltr_interval: 0,
+            target_kbps: 0,
+            peak_kbps: 0,
+            buffer_ms: 0,
+            frame_drop: 0,
+            colour: [0; 3],
+            full_range: 0,
+            timing: 0,
+            film_grain: 0,
+            film_grain_strength: 0.0,
+            still_camera: 0,
+        };
+        for codec in [NC_CODEC_AV1, NC_CODEC_VP9] {
+            // SAFETY: valid cfg pointer.
+            let st_cfg = unsafe { nc_encoder_config_default(&raw mut cfg, codec, w, h) };
+            assert_eq!(st_cfg, NcStatus::Ok);
+            cfg.temporal_layers = 3;
+            let params = [
+                NcParam {
+                    name: c"layers.adaptive".as_ptr(),
+                    value: 0.0,
+                },
+                NcParam {
+                    name: c"hold.enable".as_ptr(),
+                    value: 0.0,
+                },
+            ];
+            let mut enc = std::ptr::null_mut();
+            // SAFETY: valid config, params and out pointer.
+            let st_create = unsafe {
+                nc_encoder_create(&raw const cfg, params.as_ptr(), params.len(), &raw mut enc)
+            };
+            assert_eq!(st_create, NcStatus::Ok);
+            // Dyadic L1T3 cycle (T0, T2, T1, T2, T0): frame 0 key ([]),
+            // frame 1 -> [0], frame 2 -> [0], frame 3 -> [2], frame 4 -> [0].
+            let expected: &[(u8, &[u64])] = &[(0, &[]), (2, &[0]), (1, &[0]), (2, &[2]), (0, &[0])];
+            for (idx, &(want_tl, want_refs)) in expected.iter().enumerate() {
+                let y_plane = vec![64u8.wrapping_add(idx as u8 * 17); (w * h) as usize];
+                let uv_plane = vec![128u8; ((w / 2) * (h / 2)) as usize];
+                let frame = NcFrame {
+                    format: NC_FORMAT_I420,
+                    planes: [y_plane.as_ptr(), uv_plane.as_ptr(), uv_plane.as_ptr()],
+                    strides: [w as usize, (w / 2) as usize, (w / 2) as usize],
+                    has_timestamp: 0,
+                    timestamp_us: 0,
+                };
+                let mut pkt = NcPacket {
+                    data: std::ptr::null(),
+                    size: 0,
+                    index: 0,
+                    timestamp_us: 0,
+                    keyframe: 0,
+                    temporal_layer: 0,
+                    dropped: 0,
+                    quantizer: 0,
+                };
+                // SAFETY: valid encoder, frame, and packet pointers.
+                let st_enc = unsafe { nc_encoder_encode(enc, &raw const frame, &raw mut pkt) };
+                assert_eq!(st_enc, NcStatus::Ok);
+                assert_eq!(pkt.temporal_layer, want_tl);
+                let mut refs_ptr = std::ptr::null();
+                let mut refs_len = 99usize;
+                // SAFETY: valid encoder and output pointers.
+                let st_refs = unsafe {
+                    nc_encoder_packet_references(enc, &raw mut refs_ptr, &raw mut refs_len)
+                };
+                assert_eq!(st_refs, NcStatus::Ok);
+                let refs = if refs_len == 0 {
+                    &[][..]
+                } else {
+                    // SAFETY: non-empty slice borrowed from `enc`.
+                    unsafe { std::slice::from_raw_parts(refs_ptr, refs_len) }
+                };
+                assert_eq!(refs, want_refs);
+            }
+            // SAFETY: created above, not used again.
+            unsafe { nc_encoder_destroy(enc) };
+        }
     }
 }

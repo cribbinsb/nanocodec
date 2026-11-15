@@ -45,7 +45,7 @@ fn official_intra_syntax() {
                 }
                 blocks += fingerprint_levels(&mut coefficients, &units);
                 inverse_residuals(&mut units, s, &header, &nc_dsp::Dsp::new());
-                fingerprint_levels(&mut residuals, &units);
+                fingerprint_residuals(&mut residuals, &units);
                 let reconstructed = reconstruct(
                     &units,
                     s,
@@ -186,10 +186,23 @@ fn compare_reconstruction(picture: &nc_common::Picture, units: &[Unit], frame: u
 }
 
 fn fingerprint_levels(hash: &mut u64, units: &[Unit]) -> usize {
+    fingerprint_planes(hash, units, |transform| &transform.levels)
+}
+
+/// [`fingerprint_levels`] of the inverse residuals.
+fn fingerprint_residuals(hash: &mut u64, units: &[Unit]) -> usize {
+    fingerprint_planes(hash, units, |transform| &transform.residuals)
+}
+
+/// Hash each transform's nonempty planes of `planes`, with their positions.
+fn fingerprint_planes<T: Copy + Into<i32>>(
+    hash: &mut u64,
+    units: &[Unit],
+    planes: impl Fn(&super::Transform) -> &[Vec<T>; 3],
+) -> usize {
     let mut count = 0;
     for transform in units.iter().flat_map(|unit| &unit.transforms) {
-        for (plane, values) in transform
-            .levels
+        for (plane, values) in planes(transform)
             .iter()
             .enumerate()
             .filter(|(_, v)| !v.is_empty())
@@ -206,7 +219,7 @@ fn fingerprint_levels(hash: &mut u64, units: &[Unit]) -> usize {
                     (block.height() >> shift) as i32,
                 ],
             );
-            fingerprint(hash, values.iter().copied());
+            fingerprint(hash, values.iter().map(|&v| v.into()));
             count += 1;
         }
     }

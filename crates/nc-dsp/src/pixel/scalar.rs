@@ -4,7 +4,10 @@
 //! favour obviousness over speed. They are safe functions; they coerce to the
 //! `unsafe fn` kernel pointer types.
 
-use super::{GridBest, PixelFns, normalise_satd_4x4, normalise_satd_8x8};
+use super::{
+    GRID_SMALL_BLOCKS, GridBest, GridCosts, PairwiseU16, PixelFns, narrow_sad_4x4, narrow_sad_8x8,
+    normalise_satd_4x4, normalise_satd_8x8,
+};
 
 /// The scalar kernel table.
 pub(crate) fn pixel_fns() -> PixelFns {
@@ -63,10 +66,11 @@ fn sad_quads_8x8_row(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    out: &mut [[u32; 4]],
+    out: &mut [[u16; 4]],
 ) {
     for (i, quads) in out.iter_mut().enumerate() {
-        *quads = sad_quads::<4>(&src[8 * i..], src_stride, &rf[8 * i..], ref_stride);
+        *quads =
+            sad_quads::<4>(&src[8 * i..], src_stride, &rf[8 * i..], ref_stride).map(narrow_sad_4x4);
     }
 }
 
@@ -87,19 +91,36 @@ fn sad_grid_best_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 ) {
     let grid = sad_grid_8x8_in_64x64::<STEP>(src, src_stride, rf, ref_stride);
-    let cost = super::grid_costs(&grid, visible, STEP as u32);
-    keep_min(&mut best.sad, &mut best.tag, &cost, tag);
+    let cost = super::grid_costs::<Pairs>(&grid, visible, STEP as u16);
+    keep_min(&mut best.small, &mut best.tag, &cost.small, tag);
+    keep_min_large(best, &cost, tag);
 }
 
-/// Keep the minimum per block: where `cost[i] < best.sad[i]`, take the cost
-/// and `tag`. SIMD versions use it for the elements past their last full
-/// register.
-pub(crate) fn keep_min(best_sad: &mut [u32], best_tag: &mut [u32], cost: &[u32], tag: u32) {
+/// [`PairwiseU16`] in plain arithmetic.
+pub(crate) struct Pairs;
+
+impl PairwiseU16 for Pairs {
+    fn pairwise(a: [u16; 8], b: [u16; 8]) -> [u16; 8] {
+        core::array::from_fn(|i| {
+            let row = if i < 4 { &a } else { &b };
+            row[2 * (i % 4)] + row[2 * (i % 4) + 1]
+        })
+    }
+}
+
+/// Keep the minimum per block: where `cost[i] < best_sad[i]`, take the
+/// cost and `tag`.
+pub(crate) fn keep_min<T: Copy + Ord>(
+    best_sad: &mut [T],
+    best_tag: &mut [u32],
+    cost: &[T],
+    tag: u32,
+) {
     for ((b, t), &c) in best_sad.iter_mut().zip(best_tag.iter_mut()).zip(cost) {
         if c < *b {
             *b = c;
@@ -108,23 +129,34 @@ pub(crate) fn keep_min(best_sad: &mut [u32], best_tag: &mut [u32], cost: &[u32],
     }
 }
 
+/// [`keep_min`] of the 32x32 and 64x64 blocks: every SIMD version keeps
+/// the small blocks in vectors and these five here.
+pub(crate) fn keep_min_large(best: &mut GridBest, cost: &GridCosts, tag: u32) {
+    keep_min(
+        &mut best.large,
+        &mut best.tag[GRID_SMALL_BLOCKS..],
+        &cost.large,
+        tag,
+    );
+}
+
 /// The 8x8 SADs of a 64x64 block over every `STEP`-th row of each block.
 fn sad_grid_8x8_in_64x64<const STEP: usize>(
     src: &[u8],
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [u32; 64] {
-    let mut grid = [0u32; 64];
+) -> [u16; 64] {
+    let mut grid = [0u16; 64];
     for (i, result) in grid.iter_mut().enumerate() {
         let (x, y) = (8 * (i % 8), 8 * (i / 8));
-        *result = sad::<8>(
+        *result = narrow_sad_8x8(sad::<8>(
             &src[y * src_stride + x..],
             STEP * src_stride,
             &rf[y * ref_stride + x..],
             STEP * ref_stride,
             8 / STEP,
-        );
+        ));
     }
     grid
 }
@@ -215,8 +247,8 @@ fn walsh_hadamard_in_place(v: &mut [i32], n: usize, step: usize) {
 fn sad_4x4_macroblock(
     (src, src_stride, rf, ref_stride): super::BlockPair<'_>,
     chroma: [super::BlockPair<'_>; 2],
-) -> ([[u32; 4]; 4], [[u32; 4]; 2]) {
-    let mut luma = [[0u32; 4]; 4];
+) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
+    let mut luma = [[0u16; 4]; 4];
     let (top, bottom) = luma.split_at_mut(2);
     sad_quads_8x8_row(src, src_stride, rf, ref_stride, top);
     sad_quads_8x8_row(
@@ -227,7 +259,7 @@ fn sad_4x4_macroblock(
         bottom,
     );
     let planes = chroma.map(|(s, ss, r, rs)| {
-        let mut out = [[0u32; 4]; 1];
+        let mut out = [[0u16; 4]; 1];
         sad_quads_8x8_row(s, ss, r, rs, &mut out);
         out[0]
     });

@@ -191,7 +191,8 @@ pub(crate) type ForwardBoundedFn =
     unsafe fn(residual: &[i16], stride: usize, zero_limit: u32, out: &mut [i32]) -> bool;
 /// Inverse DCT of `coeffs` (`n^2`), added to `dst` (`n` rows at `stride`).
 pub(crate) type InverseDctAddFn = unsafe fn(coeffs: &[i32], dst: &mut [u8], dst_stride: usize);
-/// Sparse large inverse; only a low8/16/32 coefficient square is nonzero.
+/// Sparse inverse DCT; only a low 8/16/32 coefficient square is nonzero
+/// (at most the coded side).
 pub(crate) type SparseInverseDctAddFn = unsafe fn(&[i32], &mut [u8], usize, usize);
 /// Exact unnormalized gain with `|original| < 2^22`, signed16-bit dequantized values.
 pub(crate) type CoefficientGainFn = unsafe fn(&[i32], &[i32]) -> i64;
@@ -213,7 +214,8 @@ pub(crate) struct TxfmFns {
     /// coefficients: not a [`DctSize`], whose sizes keep every coefficient.
     pub forward_dct_64: ForwardDctFn,
     pub inverse_dct_add_64: InverseDctAddFn,
-    pub inverse_dct_add_sparse: [SparseInverseDctAddFn; 2],
+    /// Sparse 16x16, 32x32 and 64x64 inverses, indexed by `log2(side) - 4`.
+    pub inverse_dct_add_sparse: [SparseInverseDctAddFn; 3],
     pub coefficient_gain: CoefficientGainFn,
     pub quantize: QuantizeFn,
     pub quantize_from: QuantizeFromFn,

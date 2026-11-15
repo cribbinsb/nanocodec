@@ -37,6 +37,7 @@ mod block_coder;
 mod block_state;
 mod chroma_weight;
 mod packet;
+mod physical_slots;
 mod pre_tx_skip;
 // The tile decoder's analysis records (feature `analysis`).
 #[cfg(feature = "analysis")]

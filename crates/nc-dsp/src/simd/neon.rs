@@ -225,6 +225,25 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn store_sat16(self, dst: &mut [i16]) {
+        let dst = &mut dst[..4];
+        // SAFETY: NEON kernels only; `dst` holds 4 values.
+        unsafe { vst1_s16(dst.as_mut_ptr(), vqmovn_s32(self.0)) }
+    }
+
+    #[inline(always)]
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
+        for (r, value) in transpose_i32x4(rows).into_iter().enumerate() {
+            let dst = &mut dst[r * dst_stride..][..Self::LANES];
+            // SAFETY: NEON enabled and dst covers one complete 4-lane row;
+            // uninitialised memory may be written.
+            unsafe {
+                vst1_s16(dst.as_mut_ptr().cast(), vqmovn_s32(value.0));
+            }
+        }
+    }
+
+    #[inline(always)]
     fn add_transposed_u8(rows: &[Self], dst: &mut [u8], dst_stride: usize) {
         let needed = dst_stride
             .checked_mul(Self::LANES - 1)
@@ -332,6 +351,22 @@ impl I16Lanes for I16x8 {
         let src = &src[..8];
         // SAFETY: NEON kernels only; `src` holds 8 bytes.
         unsafe { Self(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(src.as_ptr())))) }
+    }
+
+    #[inline(always)]
+    fn load_i8(src: &[i8]) -> Self {
+        use core::arch::aarch64::{vld1_s8, vmovl_s8};
+        let src = &src[..8];
+        // SAFETY: NEON kernels only; `src` holds 8 bytes.
+        unsafe { Self(vmovl_s8(vld1_s8(src.as_ptr()))) }
+    }
+
+    #[inline(always)]
+    fn store_i8(self, dst: &mut [i8]) {
+        use core::arch::aarch64::{vqmovn_s16, vst1_s8};
+        let dst = &mut dst[..8];
+        // SAFETY: NEON kernels only; `dst` holds 8 bytes.
+        unsafe { vst1_s8(dst.as_mut_ptr(), vqmovn_s16(self.0)) }
     }
 
     #[inline(always)]

@@ -305,15 +305,16 @@ impl TileRecorder {
         slot_probs: &[u8; COEF_SLOTS],
         segment_tree_probs: [u8; TREE_PROBS],
     ) -> Vec<u8> {
-        self.finish_with_modes(slot_probs, segment_tree_probs, None)
+        self.finish_with_modes(slot_probs, Some(segment_tree_probs), None)
     }
 
-    /// Write the tile with the coefficient slots', segment-tree, and optional
-    /// mode slots' final probabilities.
+    /// Write the tile with the coefficient slots', optional segment-tree
+    /// (`None` when segmentation was disabled at `end_frame` because no block
+    /// took a non-zero feature), and optional mode slots' final probabilities.
     pub(crate) fn finish_with_modes(
         self,
         slot_probs: &[u8; COEF_SLOTS],
-        segment_tree_probs: [u8; TREE_PROBS],
+        segment_tree_probs: Option<[u8; TREE_PROBS]>,
         mode_probs: Option<&[u8; MODE_SLOTS]>,
     ) -> Vec<u8> {
         let mut writer = BoolWriter::new();
@@ -324,7 +325,10 @@ impl TileRecorder {
                     mode_probs.map_or(recorded.prob, |m| m[usize::from(slot - MODE_SLOT_BASE)])
                 }
                 slot if slot >= SEGMENT_TREE_SLOT => {
-                    segment_tree_probs[usize::from(slot - SEGMENT_TREE_SLOT)]
+                    let Some(probs) = segment_tree_probs else {
+                        continue;
+                    };
+                    probs[usize::from(slot - SEGMENT_TREE_SLOT)]
                 }
                 slot => slot_probs[usize::from(slot)],
             };

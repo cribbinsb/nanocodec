@@ -149,7 +149,7 @@ mod tests {
             dsp.vvc_inverse_primary((width, height), kinds, &levels, 4, false, &mut back);
             for (a, b) in input.iter().zip(&back) {
                 assert!(
-                    (i32::from(*a) - b).abs() <= 3,
+                    (i32::from(*a) - i32::from(*b)).abs() <= 3,
                     "{width}x{height}: {a} vs {b}"
                 );
             }

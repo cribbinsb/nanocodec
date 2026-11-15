@@ -23,8 +23,9 @@ const LIST_INTER_Y: usize = 3;
 const LIST_8X8_INTRA: usize = 0;
 const LIST_8X8_INTER: usize = 1;
 /// Dequantised coefficients of a conforming 8-bit stream lie in
-/// `-2^15..2^15` (§8.5.12.1); hostile input is clamped there so the
-/// transforms cannot overflow.
+/// `-2^15..2^15` (§8.5.12.1), so they are stored in 16 bits; hostile input
+/// is clamped there (the 16-bit 8x8 inverse wraps on it, defined but not
+/// the spec's picture, as any 16-bit decoder).
 const MIN_COEFF: i64 = -(1 << 15);
 const MAX_COEFF: i64 = (1 << 15) - 1;
 
@@ -39,22 +40,22 @@ pub(super) struct Dequantiser {
 #[derive(Debug, Clone)]
 pub(super) struct Residual {
     /// Luma 4x4 blocks by raster index (`y4 * 4 + x4`).
-    luma: [[i32; 16]; 16],
+    luma: [[i16; 16]; 16],
     luma_coded: u16,
     /// Luma 4x4 blocks with a non-zero coefficient other than the DC.
     luma_ac: u16,
     /// Luma 8x8 blocks.
-    luma_8x8: [[i32; 64]; 4],
+    luma_8x8: [[i16; 64]; 4],
     luma_8x8_coded: u8,
     /// Chroma 4x4 blocks of Cb and Cr.
-    chroma: [[[i32; 16]; 4]; 2],
+    chroma: [[[i16; 16]; 4]; 2],
     chroma_coded: [u8; 2],
 }
 
 /// `(level * scale) << (qp / 6)`, shifted down by `shift` with rounding
 /// (eqs. 8-336, 8-337 for 4x4 with shift 4; 8-338, 8-339 for 8x8 with
 /// shift 6; 8-326 for Intra16x16 DC with shift 6).
-fn scale_level(level: i32, scale: i32, qp: i32, shift: i32) -> i32 {
+fn scale_level(level: i32, scale: i32, qp: i32, shift: i32) -> i16 {
     Scaler::new(qp, shift).apply(level, scale)
 }
 
@@ -88,9 +89,9 @@ impl Scaler {
     }
 
     #[inline]
-    fn apply(self, level: i32, scale: i32) -> i32 {
+    fn apply(self, level: i32, scale: i32) -> i16 {
         let product = i64::from(level) * i64::from(scale);
-        (((product << self.left) + self.round) >> self.right).clamp(MIN_COEFF, MAX_COEFF) as i32
+        (((product << self.left) + self.round) >> self.right).clamp(MIN_COEFF, MAX_COEFF) as i16
     }
 }
 
@@ -206,7 +207,7 @@ impl Dequantiser {
         let scale = i64::from(self.scale.scale_4x4[list][(qpc % QP_PERIOD) as usize][0]);
         for (b, &value) in f.iter().enumerate() {
             let dc = ((i64::from(value) * scale) << (qpc / QP_PERIOD)) >> 5;
-            let dc = dc.clamp(MIN_COEFF, MAX_COEFF) as i32;
+            let dc = dc.clamp(MIN_COEFF, MAX_COEFF) as i16;
             out.chroma[comp][b][0] = dc;
             if dc != 0 {
                 out.chroma_coded[comp] |= 1 << b;
@@ -357,7 +358,7 @@ impl Residual {
 }
 
 /// Inverse transform `coeffs` (then zeroed) and add it to `dst`.
-fn add_4x4(dsp: &Dsp, coeffs: &mut [i32; 16], dst: &mut PlaneViewMut<'_>) {
+fn add_4x4(dsp: &Dsp, coeffs: &mut [i16; 16], dst: &mut PlaneViewMut<'_>) {
     dsp.h264_add_scaled_4x4(core::slice::from_ref(coeffs), 1, dst);
     *coeffs = [0; 16];
 }

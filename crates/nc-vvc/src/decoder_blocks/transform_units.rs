@@ -9,6 +9,10 @@ pub(super) struct Transform {
     pub joint: u8,
     pub skip: [bool; 3],
     pub levels: [Vec<i32>; 3],
+    /// The inverse of each coded plane's `levels` (`inverse_residuals`):
+    /// 16 bits, as the transforms clip (§8.7.4.1) and scaling clamps
+    /// (§8.7.3).
+    pub residuals: [Vec<i16>; 3],
 }
 impl Transform {
     fn empty(block: Block) -> Self {
@@ -18,6 +22,7 @@ impl Transform {
             joint: 0,
             skip: [false; 3],
             levels: std::array::from_fn(|_| Vec::new()),
+            residuals: std::array::from_fn(|_| Vec::new()),
         }
     }
 }

@@ -1,11 +1,17 @@
-//! H.266 §8.5.2 merge/AMVP derivation for one-reference CUs (spatial,
-//! temporal from `temporal`, history, pairwise average and zero
-//! candidates), and the per-8x8 record of coded CUs (with the vectors of
-//! their 4x4 sub-blocks) that neighbour derivations, split contexts and
-//! deblocking read. Affine candidate lists are in `affine_candidates`.
+//! H.266 §8.5.2 merge/AMVP derivation for P-slice CUs (spatial, temporal
+//! from `temporal`, history, pairwise average and zero candidates), and the
+//! per-8x8 record of coded CUs (with the vectors of their 4x4 sub-blocks
+//! and their reference index) that neighbour derivations, split contexts
+//! and deblocking read. Affine candidate lists are in `affine_candidates`.
+//!
+//! A picture has one active reference, or two with the second reference
+//! (`refs.second`, `references.rs`): candidates then carry `refIdxL0`
+//! (§8.5.2.2), AMVP keeps only neighbours predicting from the target
+//! picture (§8.5.2.10, no spatial scaling in H.266), the collocated vector
+//! is scaled to the target's POC distance (§8.5.2.12) and zero merge
+//! candidates step through the reference indices (§8.5.2.5).
 //!
 //! Derived from `VVenC` `UnitTools` (BSD-3-Clause-Clear; `THIRD_PARTY.md`).
-//! No multiple reference indices.
 use crate::temporal::MotionField;
 use nc_encoder::Block;
 pub(crate) const GRID_SIZE: usize = 8;
@@ -35,6 +41,10 @@ const _: () = assert!(GRID_SIZE == 1 << crate::temporal::FIELD_LOG2);
 const DEBLOCK_MOTION_STEP: i32 = 8;
 /// §7.4.? `clipToStorageBitDepth`: vectors are stored in 18 bits.
 const MV_STORAGE_BITS: u32 = 18;
+/// Most active references of a P slice this encoder signals
+/// (`NumRefIdxActive[0]`): the previous picture and, with the second
+/// reference, the last high-quality one.
+pub(crate) const MAX_ACTIVE_REFERENCES: usize = 2;
 
 /// A motion vector in sixteenth luma samples, the precision every derived
 /// and stored vector has (§8.5.2: `MvL0` after `AmvrShift`).
@@ -96,6 +106,83 @@ impl Mv16 {
     }
 }
 
+/// A list-0 motion vector and the reference it points into
+/// (`MvL0`, `RefIdxL0`): two candidates are the same motion only when both
+/// agree (§8.5.2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct RefMv {
+    pub mv: Mv16,
+    pub ref_idx: u8,
+}
+
+impl RefMv {
+    /// `mv` into reference `ref_idx`.
+    pub(crate) const fn new(mv: Mv16, ref_idx: u8) -> Self {
+        Self { mv, ref_idx }
+    }
+}
+
+/// A neighbour's or candidate's motion as one picture's merge and AMVP
+/// derivation (§8.5.2) carries it: a bare [`Mv16`] in a picture of one
+/// active reference, where every inter block predicts from reference 0, or
+/// a [`RefMv`] with more. The derivation is written once over this type and
+/// compiled for each: a single-reference picture's carries, stores and
+/// compares no reference index.
+trait Candidate: Copy + PartialEq {
+    /// Whether candidates may point into different references.
+    const MULTI: bool;
+    /// `motion` as a candidate (its index dropped without `MULTI`).
+    fn of(motion: RefMv) -> Self;
+    /// The candidate's vector and reference.
+    fn motion(self) -> RefMv;
+    /// The motion of the coded inter sub-block of `grid` covering luma
+    /// sample `(x, y)`.
+    fn at(grid: &MotionGrid, x: isize, y: isize) -> Option<Self>;
+}
+
+impl Candidate for Mv16 {
+    const MULTI: bool = false;
+    fn of(motion: RefMv) -> Self {
+        motion.mv
+    }
+    fn motion(self) -> RefMv {
+        RefMv::new(self, 0)
+    }
+    fn at(grid: &MotionGrid, x: isize, y: isize) -> Option<Self> {
+        grid.mv_at(x, y)
+    }
+}
+
+impl Candidate for RefMv {
+    const MULTI: bool = true;
+    fn of(motion: RefMv) -> Self {
+        motion
+    }
+    fn motion(self) -> RefMv {
+        self
+    }
+    fn at(grid: &MotionGrid, x: isize, y: isize) -> Option<Self> {
+        grid.motion_at(x, y)
+    }
+}
+
+/// The active references of the current picture: their POC distances
+/// (current minus reference, `DiffPicOrderCnt`), by reference index, and
+/// `NumRefIdxActive[0]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveReferences {
+    pub distances: [u32; MAX_ACTIVE_REFERENCES],
+    pub count: usize,
+}
+
+impl ActiveReferences {
+    /// One reference, the previous picture.
+    pub(crate) const SINGLE: Self = Self {
+        distances: [1; MAX_ACTIVE_REFERENCES],
+        count: 1,
+    };
+}
+
 /// A coded inter CU's motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Motion {
@@ -120,20 +207,68 @@ pub(crate) struct CuContexts {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MergeList {
     mvs: [Mv16; MAX_MERGE_CANDIDATES],
+    /// Each candidate's `refIdxL0` (all 0 with one active reference).
+    refs: [u8; MAX_MERGE_CANDIDATES],
     len: u8,
+    /// Whether the picture has more than one active reference; without,
+    /// every index is 0 and the vectors alone are the motion.
+    multi: bool,
 }
 
 impl MergeList {
-    /// The list's candidates.
+    /// The list's candidates' vectors.
     pub(crate) fn as_slice(&self) -> &[Mv16] {
         &self.mvs[..usize::from(self.len)]
     }
 
-    /// The `merge_idx` of the first candidate equal to `mv`.
-    pub(crate) fn position(&self, mv: Mv16) -> Option<usize> {
+    /// Candidate `index`: its vector and reference.
+    pub(crate) fn candidate(&self, index: usize) -> RefMv {
+        RefMv::new(self.as_slice()[index], self.refs[index])
+    }
+
+    /// The vectors of the candidates into reference `ref_idx`, with their
+    /// `merge_idx`.
+    pub(crate) fn of_reference(&self, ref_idx: u8) -> impl Iterator<Item = (usize, Mv16)> + '_ {
         self.as_slice()
             .iter()
-            .position(|&candidate| candidate == mv)
+            .zip(&self.refs)
+            .enumerate()
+            .filter(move |&(_, (_, &candidate_ref))| candidate_ref == ref_idx)
+            .map(|(index, (&mv, _))| (index, mv))
+    }
+
+    /// The `merge_idx` of the first candidate equal to `mv` into reference
+    /// `ref_idx`. With one active reference the vectors alone are the
+    /// motion.
+    #[expect(
+        clippy::inline_always,
+        reason = "every rate estimate of a vector asks it: outlined it cost 0.17% of a VVC Default encode (x86 callgrind)"
+    )]
+    #[inline(always)]
+    pub(crate) fn position(&self, mv: Mv16, ref_idx: u8) -> Option<usize> {
+        if self.multi {
+            (0..usize::from(self.len))
+                .find(|&index| self.mvs[index] == mv && self.refs[index] == ref_idx)
+        } else {
+            debug_assert_eq!(ref_idx, 0);
+            self.as_slice()
+                .iter()
+                .position(|&candidate| candidate == mv)
+        }
+    }
+
+    /// The vectors of the candidates into reference `ref_idx`.
+    pub(crate) fn vectors_into(&self, ref_idx: u8) -> impl Iterator<Item = Mv16> + '_ {
+        self.as_slice()
+            .iter()
+            .zip(&self.refs)
+            .filter_map(move |(&mv, &candidate_ref)| (candidate_ref == ref_idx).then_some(mv))
+    }
+
+    /// The first candidate's vector, if it is into reference `ref_idx`.
+    pub(crate) fn first_into(&self, ref_idx: u8) -> Option<Mv16> {
+        // A list has at least one candidate (`MaxNumMergeCand` >= 1).
+        (self.refs[0] == ref_idx).then_some(self.mvs[0])
     }
 }
 
@@ -144,12 +279,17 @@ impl std::ops::Index<usize> for MergeList {
     }
 }
 
+/// A CU's AMVP predictors into one reference at each [`Amvr`] precision.
+pub(crate) type AmvpLists = [[Mv16; 2]; Amvr::ALL.len()];
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Predictors {
     /// The regular merge list (§8.5.2.2), `merge_idx` order.
     pub merge: MergeList,
-    /// The AMVP predictors at each [`Amvr`] precision.
-    pub amvp: [[Mv16; 2]; Amvr::ALL.len()],
+    /// The AMVP predictors into reference `amvp_ref`.
+    pub amvp: AmvpLists,
+    /// The reference index `amvp` predicts into.
+    pub amvp_ref: u8,
     pub skip_ctx: usize,
     pub intra_ctx: usize,
     /// `merge_subblock_flag` and `inter_affine_flag` context: affine
@@ -263,7 +403,8 @@ impl CellBlock {
 #[derive(Debug, Clone, Copy)]
 struct Cell {
     /// The vector of the cell's top-left 4x4 sub-block (every sub-block's,
-    /// unless the CU is affine); `None` for intra.
+    /// unless the CU is affine); `None` for intra. Its reference index is
+    /// in `MotionGrid::ref_indices`.
     mv: Option<Mv16>,
     /// The CU's model, if it is an affine CU: its index in
     /// `MotionGrid::affine_models`, from which its other sub-block vectors
@@ -292,16 +433,22 @@ pub(crate) struct MotionGrid {
     ctu_log2: u8,
     cols: usize,
     cells: Vec<Option<Cell>>,
+    /// Each cell's reference index (`RefIdxL0`), written only in pictures
+    /// of more than one active reference (empty until the first): a
+    /// single-reference picture's CUs all predict from reference 0, so its
+    /// data path carries no index.
+    ref_indices: Vec<u8>,
     /// The models of this picture's affine CUs (`Cell::affine`).
     affine_models: Vec<crate::affine::Model>,
     // Normative five-entry history, oldest first. AMVP examines up to four.
-    history: Vec<Mv16>,
+    history: Vec<RefMv>,
     /// `MaxNumMergeCand`.
     merge_candidates: usize,
     /// One stored motion field per shared reference slot. Flat streams keep one.
     collocated: Vec<MotionField>,
     collocated_slot: usize,
-    temporal_distances: [u32; 2],
+    /// The current picture's active references.
+    references: ActiveReferences,
     /// Whether this picture uses temporal candidates
     /// (`ph_temporal_mvp_enabled_flag`).
     temporal: bool,
@@ -316,12 +463,13 @@ impl MotionGrid {
             ctu_log2,
             cols,
             cells: vec![None; cols * height.div_ceil(GRID_SIZE)],
+            ref_indices: Vec::new(),
             affine_models: Vec::new(),
             history: Vec::with_capacity(5),
             merge_candidates,
             collocated: vec![MotionField::new(width, height)],
             collocated_slot: 0,
-            temporal_distances: [1, 1],
+            references: ActiveReferences::SINGLE,
             temporal: false,
         }
     }
@@ -349,13 +497,43 @@ impl MotionGrid {
         self
     }
 
-    pub(crate) fn select_collocated(&mut self, slot: usize, target: u32, source: u32) {
-        self.collocated_slot = slot;
-        self.temporal_distances = [target, source];
+    /// The current picture's active `references` and the slot of its
+    /// collocated picture (`RefPicList[0][0]`: `sh_collocated_ref_idx` 0).
+    pub(crate) fn select_references(
+        &mut self,
+        collocated_slot: usize,
+        references: ActiveReferences,
+    ) {
+        self.collocated_slot = collocated_slot;
+        self.references = references;
+        if references.count > 1 {
+            self.ref_indices.resize(self.cells.len(), 0);
+        }
     }
 
+    /// Whether the current picture has more than one active reference.
+    fn multi_reference(&self) -> bool {
+        self.references.count > 1
+    }
+
+    /// Keep the coded picture's motion as a later picture's collocated
+    /// motion in `slot`: its vectors and its references' distances, and
+    /// each vector's reference index only when it had more than one.
     pub(crate) fn store_motion_field(&mut self, slot: usize) {
-        self.collocated[slot].store(self.cells.iter().map(|cell| cell.and_then(|c| c.mv)));
+        let multi = self.multi_reference();
+        let field = &mut self.collocated[slot];
+        for (entry, cell) in field
+            .vectors_to_store(&self.references)
+            .iter_mut()
+            .zip(&self.cells)
+        {
+            *entry = cell
+                .and_then(|c| c.mv)
+                .map(crate::temporal::at_storage_precision);
+        }
+        if multi {
+            field.store_ref_indices(self.ref_indices.iter().copied());
+        }
     }
     pub(crate) fn begin_ctu(&mut self, x: usize) {
         // §8.5.2.16: history is reset at the start of each tile CTU row.
@@ -387,15 +565,33 @@ impl MotionGrid {
     pub(crate) fn mv_at(&self, x: isize, y: isize) -> Option<Mv16> {
         let cell = self.get(x, y)?;
         let mv = cell.mv?;
+        Some(self.sub_block_vector(cell, mv, x, y))
+    }
+
+    /// The motion of the coded inter sub-block covering luma sample
+    /// `(x, y)` in a picture of more than one active reference: its vector
+    /// and reference.
+    pub(crate) fn motion_at(&self, x: isize, y: isize) -> Option<RefMv> {
+        debug_assert!(self.multi_reference());
+        let mv = self.mv_at(x, y)?;
+        // `mv_at` found a coded cell, so the position is in the grid.
+        let index = (y as usize / GRID_SIZE) * self.cols + x as usize / GRID_SIZE;
+        Some(RefMv::new(mv, self.ref_indices[index]))
+    }
+
+    /// The vector of inter `cell`'s sub-block covering luma sample
+    /// `(x, y)`, given the cell's own (top-left sub-block) vector `mv`.
+    #[inline]
+    fn sub_block_vector(&self, cell: &Cell, mv: Mv16, x: isize, y: isize) -> Mv16 {
         let Some(index) = cell.affine else {
-            return Some(mv);
+            return mv;
         };
         // An affine CU's sub-block vectors follow from its model (as they
         // were derived when it was recorded).
         let cu = cell.cu.block();
         let field = self.affine_models[index as usize].field(cu.width(), cu.height());
         let sub = |c: isize, origin: usize| (c as usize - origin) / SUB_BLOCK;
-        Some(field.at(sub(x, cu.x), sub(y, cu.y)))
+        field.at(sub(x, cu.x), sub(y, cu.y))
     }
 
     /// The coded CU covering luma sample `(x, y)` and its affine model, if
@@ -527,7 +723,22 @@ impl MotionGrid {
     /// For each 4-line segment of the 8 lines from `(x, y)` along an edge,
     /// whether the inter sub-blocks on its two sides move half a sample or
     /// more apart (§8.8.3.5).
-    pub(crate) fn segment_motion(&self, (x, y): (usize, usize), horizontal: bool) -> [bool; 2] {
+    pub(crate) fn segment_motion(&self, at: (usize, usize), horizontal: bool) -> [bool; 2] {
+        if self.multi_reference() {
+            self.segment_motion_for::<RefMv>(at, horizontal)
+        } else {
+            self.segment_motion_for::<Mv16>(at, horizontal)
+        }
+    }
+
+    /// [`Self::segment_motion`], the sides' motion carried as `C`:
+    /// different reference pictures give strength 1 too (with one active
+    /// reference every inter block shares it).
+    fn segment_motion_for<C: Candidate>(
+        &self,
+        (x, y): (usize, usize),
+        horizontal: bool,
+    ) -> [bool; 2] {
         std::array::from_fn(|segment| {
             let (x, y) = (x as isize, y as isize);
             let along = (SUB_BLOCK * segment) as isize;
@@ -536,8 +747,11 @@ impl MotionGrid {
             } else {
                 ((x - 1, y + along), (x, y + along))
             };
-            match (self.mv_at(p.0, p.1), self.mv_at(q.0, q.1)) {
-                (Some(p), Some(q)) => p.far_from(q),
+            match (C::at(self, p.0, p.1), C::at(self, q.0, q.1)) {
+                (Some(p), Some(q)) => {
+                    let (p, q) = (p.motion(), q.motion());
+                    p.ref_idx != q.ref_idx || p.mv.far_from(q.mv)
+                }
                 _ => false,
             }
         })
@@ -580,26 +794,52 @@ impl MotionGrid {
     fn qt_depth(&self, block: &Block) -> u8 {
         self.ctu_log2 - block.log2_width.max(block.log2_height)
     }
-    pub(crate) fn predictors(&self, block: &Block) -> Predictors {
+    /// The predictors of `block`, its AMVP lists into reference `ref_idx`.
+    pub(crate) fn predictors(&self, block: &Block, ref_idx: u8) -> Predictors {
+        // Every picture without the second reference has one active
+        // reference: its derivation, compiled apart, compares no indices.
+        if self.multi_reference() {
+            self.predictors_for::<RefMv>(block, ref_idx)
+        } else {
+            self.predictors_for::<Mv16>(block, ref_idx)
+        }
+    }
+
+    /// [`Self::predictors`], the neighbours' motion carried as `C`.
+    fn predictors_for<C: Candidate>(&self, block: &Block, ref_idx: u8) -> Predictors {
+        let ref_idx = if C::MULTI { ref_idx } else { 0 };
         let (x, y) = (block.x as isize, block.y as isize);
         let (w, h) = (block.width() as isize, block.height() as isize);
         // §8.5.2.3: A1 (left), B1 (above), B0 (above right), A0 (below
         // left), B2 (above left).
-        let left = self.mv_at(x - 1, y + h - 1);
-        let above = self.mv_at(x + w - 1, y - 1);
-        let right = self.mv_at(x + w, y - 1);
-        let below = self.mv_at(x - 1, y + h);
-        let corner = self.mv_at(x - 1, y - 1);
-        let temporal = self.temporal_candidate(block);
+        let left = C::at(self, x - 1, y + h - 1);
+        let above = C::at(self, x + w - 1, y - 1);
+        let right = C::at(self, x + w, y - 1);
+        let below = C::at(self, x - 1, y + h);
+        let corner = C::at(self, x - 1, y - 1);
+        let collocated = self.collocated_motion(block);
+        // The collocated vector into reference 0 serves merge and AMVP.
+        let temporal = collocated.and_then(|c| self.scale_temporal(c, 0));
         let merge = self.merge_list([above, left, right, below, corner], temporal);
-        let spatial = [below.or(left), right.or(above).or(corner)];
-        let amvp = Amvr::ALL.map(|amvr| self.amvp_list(spatial, temporal, amvr));
+        // §8.5.2.10: the first neighbour of each group into the target
+        // picture.
+        let spatial = [
+            first_into(&[below, left], ref_idx),
+            first_into(&[right, above, corner], ref_idx),
+        ];
+        let temporal = if ref_idx == 0 {
+            temporal
+        } else {
+            collocated.and_then(|c| self.scale_temporal(c, ref_idx))
+        };
+        let amvp = Amvr::ALL.map(|amvr| self.amvp_list::<C>(spatial, temporal, ref_idx, amvr));
         let left = self.get(x - 1, y);
         let above = self.get(x, y - 1);
         Predictors {
             mpm: self.intra_mpm(block),
             merge,
             amvp,
+            amvp_ref: ref_idx,
             skip_ctx: usize::from(left.is_some_and(|c| c.skip))
                 + usize::from(above.is_some_and(|c| c.skip)),
             intra_ctx: usize::from(
@@ -609,13 +849,20 @@ impl MotionGrid {
                 + usize::from(self.is_affine(x, y - 1)),
         }
     }
-    /// The collocated vector of `block` (§8.5.2.11), if this picture uses
-    /// temporal candidates.
-    pub(crate) fn temporal_candidate(&self, block: &Block) -> Option<Mv16> {
+    /// The collocated vector of `block` (§8.5.2.11) and the POC distance
+    /// it spans, if this picture uses temporal candidates.
+    #[inline]
+    fn collocated_motion(&self, block: &Block) -> Option<(Mv16, u32)> {
         self.temporal
             .then(|| self.collocated[self.collocated_slot].candidate(block, self.ctu_log2))
             .flatten()
-            .and_then(|mv| self.scale_temporal(mv))
+    }
+
+    /// The collocated vector of `block` (§8.5.2.11) scaled to reference
+    /// index 0, if this picture uses temporal candidates.
+    pub(crate) fn temporal_candidate(&self, block: &Block) -> Option<Mv16> {
+        self.collocated_motion(block)
+            .and_then(|c| self.scale_temporal(c, 0))
     }
 
     /// The collocated vector below and right of `block` alone, if this
@@ -625,22 +872,27 @@ impl MotionGrid {
         self.temporal
             .then(|| self.collocated[self.collocated_slot].bottom_right(block, self.ctu_log2))
             .flatten()
-            .and_then(|mv| self.scale_temporal(mv))
+            .and_then(|c| self.scale_temporal(c, 0))
     }
 
-    fn scale_temporal(&self, mv: Mv16) -> Option<Mv16> {
-        let [target, source] = self.temporal_distances;
+    /// Collocated vector `mv`, spanning POC distance `source`, scaled to
+    /// reference `ref_idx`'s distance (§8.5.2.12).
+    fn scale_temporal(&self, (mv, source): (Mv16, u32), ref_idx: u8) -> Option<Mv16> {
+        let target = self.references.distances[usize::from(ref_idx)];
         crate::temporal::scale(mv, target as i32, source as i32).ok()
     }
 
-    /// §8.5.2.8-8.5.2.9: the AMVP list from the left (A) and above (B)
-    /// spatial predictors at precision `amvr`: both rounded to it, B dropped
-    /// when equal to A, then the collocated vector `temporal` (rounded),
-    /// then history (rounded, not deduplicated), then zero.
-    fn amvp_list(
+    /// §8.5.2.8-8.5.2.9: the AMVP list into reference `ref_idx` from the
+    /// left (A) and above (B) spatial predictors at precision `amvr`: both
+    /// rounded to it, B dropped when equal to A, then the collocated vector
+    /// `temporal` (rounded), then history into the same reference (rounded,
+    /// not deduplicated), then zero.
+    #[inline]
+    fn amvp_list<C: Candidate>(
         &self,
         [a, b]: [Option<Mv16>; 2],
         temporal: Option<Mv16>,
+        ref_idx: u8,
         amvr: Amvr,
     ) -> [Mv16; 2] {
         let mut candidates = Candidates::default();
@@ -659,56 +911,80 @@ impl MotionGrid {
             candidates.push(amvr.round(v));
         }
         // Only already coded spatial cells are available.
-        for &v in self.history.iter().take(4) {
+        for v in self.history.iter().take(4) {
             if candidates.full() {
                 break;
             }
-            candidates.push(amvr.round(v));
+            if !C::MULTI || v.ref_idx == ref_idx {
+                candidates.push(amvr.round(v.mv));
+            }
         }
         candidates.padded()
     }
 
     /// §8.5.2.2-8.5.2.6: the regular merge list from the spatial neighbours'
-    /// vectors `[B1, A1, B0, A0, B2]` (None: unavailable or intra), then the
-    /// collocated vector `temporal`, history, the pairwise average of the
-    /// first two and zero vectors. One reference picture: equal vectors are
-    /// equal motion.
-    fn merge_list(
+    /// motion `[B1, A1, B0, A0, B2]` (None: unavailable or intra), then the
+    /// collocated vector `temporal` (into reference 0), history, the
+    /// pairwise average of the first two (into the first one's reference)
+    /// and zero vectors into each active reference in turn.
+    fn merge_list<C: Candidate>(
         &self,
-        [b1, a1, b0, a0, b2]: [Option<Mv16>; 5],
+        [b1, a1, b0, a0, b2]: [Option<C>; 5],
         temporal: Option<Mv16>,
     ) -> MergeList {
         let size = self.merge_candidates;
         let differs =
-            |candidate: Option<Mv16>, other: Option<Mv16>| candidate.filter(|&v| other != Some(v));
+            |candidate: Option<C>, other: Option<C>| candidate.filter(|&v| other != Some(v));
         let spatial = [b1, differs(a1, b1), differs(b0, b1), differs(a0, a1)];
         let b2 = (spatial.iter().flatten().count() < SPATIAL_BEFORE_B2)
             .then(|| differs(differs(b2, a1), b1))
             .flatten();
-        // Unfilled entries are the zero candidates (one reference index).
+        let temporal = temporal.map(|mv| C::of(RefMv::new(mv, 0)));
         let mut list = MergeList {
             mvs: [Mv16::ZERO; MAX_MERGE_CANDIDATES],
+            refs: [0; MAX_MERGE_CANDIDATES],
             len: size as u8,
+            multi: C::MULTI,
         };
         let mut len = 0;
+        // With one active reference the indices stay 0.
+        let push = |list: &mut MergeList, len: &mut usize, v: C| {
+            let motion = v.motion();
+            list.mvs[*len] = motion.mv;
+            if C::MULTI {
+                list.refs[*len] = motion.ref_idx;
+            }
+            *len += 1;
+        };
         for v in spatial.into_iter().chain([b2, temporal]).flatten() {
             if len == size {
                 return list;
             }
-            list.mvs[len] = v;
-            len += 1;
+            push(&mut list, &mut len, v);
         }
-        for (age, &v) in self.history.iter().rev().enumerate() {
+        let history = self.history.iter().map(|&v| C::of(v));
+        for (age, v) in history.rev().enumerate() {
             if len + 1 >= size {
                 break;
             }
             if age >= HISTORY_PRUNED_ENTRIES || (a1 != Some(v) && b1 != Some(v)) {
-                list.mvs[len] = v;
-                len += 1;
+                push(&mut list, &mut len, v);
             }
         }
         if len >= 2 && len < size {
-            list.mvs[len] = pairwise_average(list.mvs[0], list.mvs[1]);
+            let average = pairwise_average(list.mvs[0], list.mvs[1]);
+            let first = list.refs[0];
+            push(&mut list, &mut len, C::of(RefMv::new(average, first)));
+        }
+        // §8.5.2.5: the zero candidates' `zeroIdx` steps through the active
+        // references, then stays at 0 (their vectors and, with one active
+        // reference, their indices are already zero).
+        if C::MULTI {
+            let references = self.references.count;
+            for (zero, index) in (len..size).enumerate() {
+                let ref_idx = if zero < references { zero } else { 0 };
+                list.refs[index] = ref_idx as u8;
+            }
         }
         list
     }
@@ -719,6 +995,7 @@ impl MotionGrid {
         &mut self,
         block: &Block,
         motion: Option<&Motion>,
+        ref_idx: u8,
         skip: bool,
         intra_mode: u8,
         units: &crate::transform_tree::CodedUnits,
@@ -754,7 +1031,7 @@ impl MotionGrid {
         let transform = units.as_slice()[0].0;
         for &(tu, nonzero) in cells {
             let transform = if narrow { transform } else { tu };
-            let cell = |mv| {
+            let cell = |mv: Option<Mv16>| {
                 Some(Cell {
                     mv,
                     affine,
@@ -785,13 +1062,26 @@ impl MotionGrid {
                 }
             }
         }
+        if self.multi_reference() {
+            self.record_ref_idx(block, ref_idx);
+        }
         // §8.5.2.16: affine CUs leave the history unchanged.
         if let Some(&Motion::Vector(mv)) = motion {
+            let mv = RefMv::new(mv, ref_idx);
             self.history.retain(|&old| old != mv);
             if self.history.len() == 5 {
                 self.history.remove(0);
             }
             self.history.push(mv);
+        }
+    }
+
+    /// Set the reference index of CU `block`'s cells (pictures of more
+    /// than one active reference).
+    fn record_ref_idx(&mut self, block: &Block, ref_idx: u8) {
+        let (x0, x1) = (block.x / GRID_SIZE, (block.x + block.width()) / GRID_SIZE);
+        for y in block.y / GRID_SIZE..(block.y + block.height()) / GRID_SIZE {
+            self.ref_indices[y * self.cols + x0..y * self.cols + x1].fill(ref_idx);
         }
     }
 }
@@ -809,6 +1099,19 @@ pub(crate) struct Edge {
     /// Whether the P and Q sides are affine CUs (their long filters reach
     /// at most 5 samples, §8.8.3.3).
     pub affine: [bool; 2],
+}
+
+/// The vector of the first available neighbour in `group` that predicts
+/// from reference `ref_idx` (§8.5.2.10's spatial AMVP candidates; with one
+/// active reference, every neighbour does).
+#[inline]
+fn first_into<C: Candidate>(group: &[Option<C>], ref_idx: u8) -> Option<Mv16> {
+    group
+        .iter()
+        .flatten()
+        .map(|c| c.motion())
+        .find(|motion| !C::MULTI || motion.ref_idx == ref_idx)
+        .map(|motion| motion.mv)
 }
 
 /// §8.5.2.4 with §8.5.2.14 rounding (right shift 1, ties towards zero):
@@ -904,7 +1207,7 @@ mod tests {
             six: false,
         };
         let units = crate::transform_tree::coded_units(&cu, None, &Default::default(), 5);
-        grid.record(&cu, Some(&Motion::Affine(model)), false, 0, &units);
+        grid.record(&cu, Some(&Motion::Affine(model)), 0, false, 0, &units);
         let field = model.field(16, 16);
         for row in 0..4 {
             for col in 0..4 {

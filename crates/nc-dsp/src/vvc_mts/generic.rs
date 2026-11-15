@@ -26,19 +26,40 @@ use crate::simd::{I16Pairs, I32Lanes};
 /// The most output vectors of one product row (32 outputs of 4 lanes).
 const MAX_VECTORS: usize = MAX_SIDE / 4;
 
+/// Storage of a product's rounded sums: the forward's 32-bit values, or
+/// the inverse's 16-bit ones (every inverse pass clips to 16 bits, so the
+/// saturating narrowing store is that clip).
+trait Sink: Copy {
+    fn store<L: I32Lanes>(value: L, dst: &mut [Self]);
+}
+
+impl Sink for i32 {
+    #[inline(always)]
+    fn store<L: I32Lanes>(value: L, dst: &mut [i32]) {
+        value.store(dst);
+    }
+}
+
+impl Sink for i16 {
+    #[inline(always)]
+    fn store<L: I32Lanes>(value: L, dst: &mut [i16]) {
+        value.store_sat16(dst);
+    }
+}
+
 /// One pass: `out[r * out_stride + c] = round(Σ_{k < depth} left(r, k) ·
 /// B[k][c])` for `r < rows`, `c < cols` (a multiple of the lanes), where
 /// `right` interleaves the rows of `B`; rounded by `shift` bits and
-/// clipped to 16 bits when `clip`.
+/// clipped to 16 bits when `clip` (always so for 16-bit storage).
 #[inline(always)]
 #[allow(clippy::too_many_arguments, reason = "one product's operands")]
-unsafe fn product<V: I16Pairs>(
+unsafe fn product<V: I16Pairs, O: Sink>(
     left: impl Fn(usize, usize) -> i16,
     right: &PairTable,
     (rows, depth, cols): (usize, usize, usize),
     shift: u32,
     clip: bool,
-    out: &mut [i32],
+    out: &mut [O],
     out_stride: usize,
 ) {
     let lanes = V::Pairs::LANES;
@@ -57,7 +78,7 @@ unsafe fn product<V: I16Pairs>(
         for (j, sum) in sums[..vectors].iter().enumerate() {
             let rounded = sum.round_shift(shift);
             let value = if clip { rounded.clamp16() } else { rounded };
-            value.store(&mut out[r * out_stride + j * lanes..]);
+            O::store(value, &mut out[r * out_stride + j * lanes..]);
         }
     }
 }
@@ -66,22 +87,22 @@ unsafe fn product<V: I16Pairs>(
 /// `W`.
 #[inline(always)]
 #[allow(clippy::too_many_arguments, reason = "one product's operands")]
-unsafe fn product_by_width<S: I16Pairs, W: I16Pairs>(
+unsafe fn product_by_width<S: I16Pairs, W: I16Pairs, O: Sink>(
     left: impl Fn(usize, usize) -> i16,
     right: &PairTable,
     shape: (usize, usize, usize),
     shift: u32,
     clip: bool,
-    out: &mut [i32],
+    out: &mut [O],
     out_stride: usize,
 ) {
     // SAFETY: forwarded ISA contract; every output count is 4 or a
     // multiple of `W`'s lanes (8 at most, sides are powers of two).
     unsafe {
         if shape.2 < W::Pairs::LANES {
-            product::<S>(left, right, shape, shift, clip, out, out_stride);
+            product::<S, O>(left, right, shape, shift, clip, out, out_stride);
         } else {
-            product::<W>(left, right, shape, shift, clip, out, out_stride);
+            product::<W, O>(left, right, shape, shift, clip, out, out_stride);
         }
     }
 }
@@ -98,9 +119,9 @@ unsafe fn product_by_width<S: I16Pairs, W: I16Pairs>(
 pub(super) unsafe fn inverse<S: I16Pairs, W: I16Pairs>(
     (width, height): (usize, usize),
     [horizontal, vertical]: [VvcTransformKind; 2],
-    coefficients: &[i32],
-    out: &mut [i32],
-    columns: &mut [i32],
+    coefficients: &[i16],
+    out: &mut [i16],
+    columns: &mut [i16],
 ) {
     let out = &mut out[..width * height];
     let (rows, cols) = nonzero_extent(
@@ -115,10 +136,10 @@ pub(super) unsafe fn inverse<S: I16Pairs, W: I16Pairs>(
     }
     // Columns, transposed: `columns[c * height + y]` is sample row `y` of
     // coefficient column `c` (only the columns holding coefficients).
-    // SAFETY: forwarded contract; coefficients fit 16 bits (dequantised).
+    // SAFETY: forwarded contract.
     unsafe {
-        product_by_width::<S, W>(
-            |c, k| coefficients[k * width + c] as i16,
+        product_by_width::<S, W, i16>(
+            |c, k| coefficients[k * width + c],
             frequency_pairs(vertical, height),
             (cols, rows, height),
             INVERSE_FIRST_SHIFT,
@@ -127,10 +148,10 @@ pub(super) unsafe fn inverse<S: I16Pairs, W: I16Pairs>(
             height,
         );
     }
-    // SAFETY: as above; the column pass clipped to 16 bits.
+    // SAFETY: as above.
     unsafe {
-        product_by_width::<S, W>(
-            |y, c| columns[c * height + y] as i16,
+        product_by_width::<S, W, i16>(
+            |y, c| columns[c * height + y],
             frequency_pairs(horizontal, width),
             (height, cols, width),
             INVERSE_SECOND_SHIFT,
@@ -161,7 +182,7 @@ pub(super) unsafe fn forward<S: I16Pairs, W: I16Pairs>(
     let transformed = out;
     // SAFETY: forwarded contract.
     unsafe {
-        product_by_width::<S, W>(
+        product_by_width::<S, W, i32>(
             |y, x| residual[y * width + x],
             sample_pairs(horizontal, width),
             (height, width, cols),
@@ -176,7 +197,7 @@ pub(super) unsafe fn forward<S: I16Pairs, W: I16Pairs>(
     // residuals within ±255 (module docs).
     // SAFETY: as above.
     unsafe {
-        product_by_width::<S, W>(
+        product_by_width::<S, W, i32>(
             |x, y| transformed[y * cols + x] as i16,
             sample_pairs(vertical, height),
             (cols, height, rows),
@@ -207,8 +228,8 @@ macro_rules! kernels {
         pub(super) unsafe fn inverse(
             size: (usize, usize),
             kinds: [crate::VvcTransformKind; 2],
-            coefficients: &[i32],
-            out: &mut [i32],
+            coefficients: &[i16],
+            out: &mut [i16],
         ) {
             super::with_scratch(size.0 * size.1, |columns| {
                 // SAFETY: target feature enabled; contract forwarded.

@@ -94,9 +94,9 @@ pub(super) struct BlockScratch {
     pub grid: Vec<u32>,
     pub mvs: Vec<MvRef>,
     pub filter_masks: Masks,
-    /// Dequantized coefficients of one transform block, zero between
-    /// blocks (and so between frames).
-    pub coefficients: [i32; 32 * 32],
+    /// Dequantized coefficients of one transform block (16-bit, §8.6.2),
+    /// zero between blocks (and so between frames).
+    pub coefficients: [i16; 32 * 32],
     pub token_cache: TokenCache,
     pub buffers: Box<ResidualBuffers>,
     pub inter: InterScratch,

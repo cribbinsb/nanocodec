@@ -10,7 +10,7 @@ pub(super) const KERNELS: Kernels = Kernels {
 #[target_feature(enable = "avx2")]
 unsafe fn luma(
     source: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     out: &mut [u8],
@@ -22,7 +22,7 @@ unsafe fn luma(
 unsafe fn chroma(
     source: &[u8],
     luma: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     coefficients: [i16; 3],
@@ -34,7 +34,7 @@ unsafe fn chroma(
     }
 }
 #[target_feature(enable = "avx2")]
-unsafe fn blend(old: &[i16], new: &mut [i16], weights: [i16; 2]) {
+unsafe fn blend(old: &[i8], new: &mut [i8], weights: [i16; 2]) {
     // SAFETY: this wrapper enables the lane ISA.
     unsafe { generic::blend::<I16x16>(old, new, weights) }
 }

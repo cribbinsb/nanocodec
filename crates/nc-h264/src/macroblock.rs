@@ -290,7 +290,7 @@ pub fn residual_skip_views(
     // configured bound.
     let mut luma_quadrants = 0;
     for (b8, sads) in luma_sads.iter().enumerate() {
-        if sads.iter().all(|&sad| sad <= luma_limit) {
+        if sads.iter().all(|&sad| u32::from(sad) <= luma_limit) {
             luma_quadrants |= 1 << b8;
         }
     }
@@ -298,7 +298,8 @@ pub fn residual_skip_views(
     // Chroma: each 4x4 SAD within the AC bound and the 8x8 SAD within the
     // DC bound.
     let chroma = chroma_sads.map(|sads| {
-        sads.iter().all(|&sad| sad <= ac_limit) && sads.iter().sum::<u32>() <= dc_limit
+        sads.iter().all(|&sad| u32::from(sad) <= ac_limit)
+            && sads.iter().map(|&sad| u32::from(sad)).sum::<u32>() <= dc_limit
     });
     ResidualSkip {
         luma,

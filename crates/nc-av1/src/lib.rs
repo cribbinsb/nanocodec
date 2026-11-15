@@ -40,8 +40,6 @@ mod decoder_range;
 mod grain;
 mod inter;
 mod intra;
-#[cfg(test)]
-mod inverse_bounds;
 mod loopfilter;
 mod mds3;
 mod modeinfo;
@@ -54,6 +52,7 @@ mod range_coder;
 mod reference_store;
 mod restoration;
 mod scaled_reference;
+mod scan_positions;
 mod segment_id;
 mod superres;
 mod tables;
@@ -67,3 +66,4 @@ pub use backend::decoder::{
 };
 pub use backend::{Av1Backend, FRAME_IDS_PARAM};
 pub use grain::enable_film_grain;
+pub use scan_positions::scan_positions;

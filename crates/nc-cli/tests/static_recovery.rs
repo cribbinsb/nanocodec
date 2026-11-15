@@ -286,11 +286,16 @@ fn h264_layered_streams_recover_at_the_next_base_frame() {
 #[test]
 fn av1_static_content_recovers_from_a_starved_key() {
     // Loop restoration (off in the shipped presets) filters every
-    // reference after CDEF, so its streams must recover too.
+    // reference after CDEF, so its streams must recover too. With the
+    // unified structure's reference plan the starved key becomes the
+    // high-quality frame later ones may predict from: at every depth, they
+    // must not keep the poor picture alive.
     for preset in [
         DEFAULT,
         include_str!("../../../presets/av1-fast.toml"),
         "av1.restoration = 1",
+        "structure.unified = 1",
+        "structure.unified = 1\nstructure.secondary_min_depth = 0\nrefs.second_full = 1",
     ] {
         check::<nc_av1::Av1Backend>(Codec::Av1, preset, &FLAT_RECOVERY);
     }

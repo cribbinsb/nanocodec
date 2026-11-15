@@ -16,13 +16,18 @@
 
 use core::arch::aarch64::{
     int16x8_t, uint8x8_t, uint16x8_t, vabal_u8, vabdq_u8, vabsq_s16, vaddlvq_u16, vaddq_s16,
-    vaddq_u16, vaddvq_u32, vbslq_u32, vcltq_u32, vcombine_s16, vcreate_u8, vdupq_n_u8, vdupq_n_u16,
-    vdupq_n_u32, vget_low_s16, vgetq_lane_u32, vld1_u8, vld1q_u8, vld1q_u32, vminq_u32, vpadalq_u8,
-    vpadalq_u16, vpaddlq_u16, vpmaxq_u16, vreinterpretq_s16_u16, vreinterpretq_u16_s16, vst1q_u32,
-    vsubl_u8, vsubq_s16, vuzp1q_s16, vuzp2q_s16,
+    vaddq_u16, vaddvq_u32, vbslq_u32, vcltq_u16, vcombine_s16, vcreate_u8, vdupq_n_u8, vdupq_n_u16,
+    vdupq_n_u32, vextq_u32, vget_low_s16, vget_low_u16, vgetq_lane_u32, vld1_u8, vld1q_u8,
+    vld1q_u16, vld1q_u32, vminq_u16, vmovl_high_s16, vmovl_s16, vpadalq_u8, vpadalq_u16,
+    vpaddlq_u16, vpaddq_u16, vpmaxq_u16, vreinterpretq_s16_u16, vreinterpretq_u16_s16,
+    vreinterpretq_u16_u32, vreinterpretq_u32_s32, vreinterpretq_u32_u16, vst1_u16, vst1q_u16,
+    vst1q_u32, vsubl_u8, vsubq_s16, vuzp1q_s16, vuzp2q_s16, vzip1q_u32,
 };
 
-use super::{GRID_BLOCKS, GridBest, PixelFns, normalise_satd_4x4, normalise_satd_8x8};
+use super::{
+    GRID_SMALL_BLOCKS, GridBest, GridCosts, PairwiseU16, PixelFns, normalise_satd_4x4,
+    normalise_satd_8x8,
+};
 
 /// The NEON kernel table. NEON is always available on `AArch64`.
 pub(crate) fn pixel_fns() -> PixelFns {
@@ -275,7 +280,7 @@ unsafe fn sad_quads_8x8_row(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    out: &mut [[u32; 4]],
+    out: &mut [[u16; 4]],
 ) {
     let pairs = out.len() / 2;
     for (p, pair) in out[..2 * pairs]
@@ -310,7 +315,7 @@ unsafe fn sad_quads_8x8_pair(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [[u32; 4]; 2] {
+) -> [[u16; 4]; 2] {
     let mut halves = [vdupq_n_u16(0); 2];
     for y in 0..8 {
         // SAFETY: row y (16 bytes) is inside both blocks in both slices.
@@ -322,23 +327,15 @@ unsafe fn sad_quads_8x8_pair(
         };
         halves[y / 4] = vpadalq_u8(halves[y / 4], vabdq_u8(a, b));
     }
-    // Lanes of the u32 view: [block 0 left, block 0 right, block 1 left,
-    // block 1 right].
-    let (top, bottom) = (vpaddlq_u16(halves[0]), vpaddlq_u16(halves[1]));
-    [
-        [
-            vgetq_lane_u32::<0>(top),
-            vgetq_lane_u32::<1>(top),
-            vgetq_lane_u32::<0>(bottom),
-            vgetq_lane_u32::<1>(bottom),
-        ],
-        [
-            vgetq_lane_u32::<2>(top),
-            vgetq_lane_u32::<3>(top),
-            vgetq_lane_u32::<2>(bottom),
-            vgetq_lane_u32::<3>(bottom),
-        ],
-    ]
+    // [block 0 top left/right, block 1 top left/right, then the bottoms],
+    // u16 (a 4x4 SAD is at most 4080); as u32 pairs, zip the top and
+    // bottom halves into block order.
+    let sums = vreinterpretq_u32_u16(vpaddq_u16(halves[0], halves[1]));
+    let ordered = vzip1q_u32(sums, vextq_u32::<2>(sums, sums));
+    let mut quads = [[0u16; 4]; 2];
+    // SAFETY: `quads` holds eight u16.
+    unsafe { vst1q_u16(quads.as_mut_ptr().cast(), vreinterpretq_u16_u32(ordered)) };
+    quads
 }
 
 /// Quadrant SADs of an 8x8 block. `vabal_u8` accumulates each column's
@@ -351,7 +348,7 @@ pub(super) unsafe fn sad_quads_8x8(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [u32; 4] {
+) -> [u16; 4] {
     let mut halves = [vdupq_n_u16(0); 2];
     for y in 0..8 {
         // SAFETY: row y (8 bytes) is inside the 8x8 blocks.
@@ -363,7 +360,12 @@ pub(super) unsafe fn sad_quads_8x8(
         };
         halves[y / 4] = vabal_u8(halves[y / 4], a, b);
     }
-    quad_sums(halves)
+    // Two pairwise adds: [top left, top right, bottom left, bottom right].
+    let pairs = vpaddq_u16(halves[0], halves[1]);
+    let mut quads = [0u16; 4];
+    // SAFETY: `quads` holds four u16.
+    unsafe { vst1_u16(quads.as_mut_ptr(), vget_low_u16(vpaddq_u16(pairs, pairs))) };
+    quads
 }
 
 /// Quadrant SADs of a 16x16 block. `vpadalq_u8` of a 16-byte row's
@@ -433,15 +435,16 @@ unsafe fn sad_scan_16x16_even_rows(
 
 /// The 8x8 SADs of a 64x64 block. Each 16-byte column of a row accumulates
 /// pair sums with `vpadalq_u8`: u16 lanes 0..4 belong to the left 8x8 block,
-/// 4..8 to the right one (at most 8 * 510 per lane over a block row).
+/// 4..8 to the right one (at most 8 * 510 per lane over a block row). Three
+/// pairwise adds then give the row's eight block SADs in order, still u16.
 #[target_feature(enable = "neon")]
 unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
     src: &[u8],
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [u32; 64] {
-    let mut grid = [0u32; 64];
+) -> [u16; 64] {
+    let mut grid = [0u16; 64];
     for (block_row, out) in grid.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         let mut acc = [vdupq_n_u16(0); 4];
         for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
@@ -457,12 +460,11 @@ unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
                 *sums = vpadalq_u8(*sums, vabdq_u8(a, b));
             }
         }
-        for (c, &sums) in acc.iter().enumerate() {
-            // Lanes of the u32 view: [left, left, right, right] pair sums.
-            let wide = vpaddlq_u16(sums);
-            out[2 * c] = vgetq_lane_u32::<0>(wide) + vgetq_lane_u32::<1>(wide);
-            out[2 * c + 1] = vgetq_lane_u32::<2>(wide) + vgetq_lane_u32::<3>(wide);
-        }
+        // Lanes: [L0 L0 R0 R0 L1 L1 R1 R1], [.. blocks 4..8 ..], then the
+        // eight blocks.
+        let blocks = vpaddq_u16(vpaddq_u16(acc[0], acc[1]), vpaddq_u16(acc[2], acc[3]));
+        // SAFETY: `out` holds eight u16.
+        unsafe { vst1q_u16(out.as_mut_ptr(), blocks) };
     }
     grid
 }
@@ -475,40 +477,65 @@ unsafe fn sad_grid_best_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 ) {
     // SAFETY: the kernel contract covers both 64x64 blocks.
     let grid = unsafe { sad_grid_8x8_in_64x64::<STEP>(src, src_stride, rf, ref_stride) };
-    keep_min(best, &super::grid_costs(&grid, visible, STEP as u32), tag);
-}
-
-/// Keep-minimum over a grid update, four blocks per step: `vminq_u32`, and
-/// the tag taken from `tag` wherever the cost was lower.
-#[target_feature(enable = "neon")]
-pub(super) fn keep_min(best: &mut GridBest, cost: &[u32; GRID_BLOCKS], tag: u32) {
-    let lanes = GRID_BLOCKS / 4 * 4;
-    let fresh = vdupq_n_u32(tag);
-    for i in (0..lanes).step_by(4) {
-        // SAFETY: elements i..i + 4 are inside all three 85-element arrays.
-        unsafe {
-            let b = vld1q_u32(best.sad.as_ptr().add(i));
-            let c = vld1q_u32(cost.as_ptr().add(i));
-            let t = vld1q_u32(best.tag.as_ptr().add(i));
-            vst1q_u32(best.sad.as_mut_ptr().add(i), vminq_u32(b, c));
-            vst1q_u32(
-                best.tag.as_mut_ptr().add(i),
-                vbslq_u32(vcltq_u32(c, b), fresh, t),
-            );
-        }
-    }
-    super::scalar::keep_min(
-        &mut best.sad[lanes..],
-        &mut best.tag[lanes..],
-        &cost[lanes..],
+    keep_min(
+        best,
+        &super::grid_costs::<Pairs>(&grid, visible, STEP as u16),
         tag,
     );
+}
+
+/// [`PairwiseU16`] as one `addp`.
+pub(super) struct Pairs;
+
+impl PairwiseU16 for Pairs {
+    #[allow(clippy::inline_always)] // must inline into the grid kernels
+    #[inline(always)]
+    fn pairwise(a: [u16; 8], b: [u16; 8]) -> [u16; 8] {
+        let mut out = [0; 8];
+        // SAFETY: NEON is always available on AArch64; each array holds
+        // eight u16.
+        unsafe {
+            vst1q_u16(
+                out.as_mut_ptr(),
+                vpaddq_u16(vld1q_u16(a.as_ptr()), vld1q_u16(b.as_ptr())),
+            );
+        }
+        out
+    }
+}
+
+/// Keep-minimum over a grid update: the u16 SADs eight blocks per step
+/// (`vminq_u16`), the tag taken from `tag` wherever the cost was lower
+/// (the compare mask sign-extended to the u32 tags), then the five large
+/// blocks.
+#[target_feature(enable = "neon")]
+pub(super) fn keep_min(best: &mut GridBest, cost: &GridCosts, tag: u32) {
+    let fresh = vdupq_n_u32(tag);
+    for i in (0..GRID_SMALL_BLOCKS).step_by(8) {
+        // SAFETY: elements i..i + 8 are inside the 80-element SAD arrays
+        // and the 85-element tag array.
+        unsafe {
+            let b = vld1q_u16(best.small.as_ptr().add(i));
+            let c = vld1q_u16(cost.small.as_ptr().add(i));
+            let lower = vreinterpretq_s16_u16(vcltq_u16(c, b));
+            vst1q_u16(best.small.as_mut_ptr().add(i), vminq_u16(b, c));
+            let masks = [
+                vreinterpretq_u32_s32(vmovl_s16(vget_low_s16(lower))),
+                vreinterpretq_u32_s32(vmovl_high_s16(lower)),
+            ];
+            for (half, mask) in masks.into_iter().enumerate() {
+                let at = best.tag.as_mut_ptr().add(i + 4 * half);
+                vst1q_u32(at, vbslq_u32(mask, fresh, vld1q_u32(at)));
+            }
+        }
+    }
+    super::scalar::keep_min_large(best, cost, tag);
 }
 
 // ----------------------------------------------------------------- SATD ----
@@ -678,13 +705,49 @@ fn pairwise_add_sub(a: int16x8_t, b: int16x8_t) -> (int16x8_t, int16x8_t) {
     (vaddq_s16(even, odd), vsubq_s16(even, odd))
 }
 
-/// The 4x4 SADs of a macroblock from this ISA's row kernel.
+/// The 4x4 SADs of a 4:2:0 macroblock in one pass over the luma rows (the
+/// H.264 zero-residual tests). Each band of four rows accumulates the pair
+/// sums of its 16-byte rows' absolute differences in one u16 register
+/// (lanes 2k, 2k + 1: 4x4 block k of the band); two bands' pairwise sum is
+/// their eight 4x4 SADs, which the zip of [`sad_quads_8x8_pair`] puts in
+/// quadrant order. Chroma blocks are [`sad_quads_8x8`]. Built from two
+/// row-kernel calls instead, the compiler hoisted all 32 luma loads and
+/// shuffled registers around the chroma work (Jetson H.264 +0.6% of the
+/// encode in this kernel).
 #[target_feature(enable = "neon")]
 unsafe fn sad_4x4_macroblock(
-    luma: super::BlockPair<'_>,
-    chroma: [super::BlockPair<'_>; 2],
-) -> ([[u32; 4]; 4], [[u32; 4]; 2]) {
-    // SAFETY: the row kernel's ISA is this module's (checked by the
-    // dispatcher), and the slices satisfy the kernel contract.
-    unsafe { super::macroblock_from_rows(sad_quads_8x8_row, luma, chroma) }
+    (src, src_stride, rf, ref_stride): super::BlockPair<'_>,
+    [u, v]: [super::BlockPair<'_>; 2],
+) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
+    let mut bands = [vdupq_n_u16(0); 4];
+    for (band, sums) in bands.iter_mut().enumerate() {
+        for y in 4 * band..4 * band + 4 {
+            // SAFETY: row y (16 bytes) lies inside both 16x16 blocks
+            // (kernel contract).
+            let (a, b) = unsafe {
+                (
+                    vld1q_u8(src.as_ptr().add(y * src_stride)),
+                    vld1q_u8(rf.as_ptr().add(y * ref_stride)),
+                )
+            };
+            *sums = vpadalq_u8(*sums, vabdq_u8(a, b));
+        }
+    }
+    let mut luma = [[0u16; 4]; 4];
+    for (half, quadrants) in luma.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+        // [band 2h blocks 0..4, band 2h + 1 blocks 0..4]; as u32 pairs, zip
+        // into [quadrant 2h, quadrant 2h + 1] (each 4x4 SAD at most 4080).
+        let sums = vreinterpretq_u32_u16(vpaddq_u16(bands[2 * half], bands[2 * half + 1]));
+        let ordered = vreinterpretq_u16_u32(vzip1q_u32(sums, vextq_u32::<2>(sums, sums)));
+        // SAFETY: the two quadrants are eight writable u16.
+        unsafe { vst1q_u16(quadrants.as_mut_ptr().cast(), ordered) };
+    }
+    // SAFETY: each chroma pair covers its 8x8 block (kernel contract).
+    let chroma = unsafe {
+        [
+            sad_quads_8x8(u.0, u.1, u.2, u.3),
+            sad_quads_8x8(v.0, v.1, v.2, v.3),
+        ]
+    };
+    (luma, chroma)
 }

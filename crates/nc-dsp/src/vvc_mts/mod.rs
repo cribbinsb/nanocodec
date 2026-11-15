@@ -180,7 +180,7 @@ const FORWARD_MATRIX_SHIFT: u32 = 6;
 /// Rows and columns, from the first, holding a nonzero coefficient among the
 /// first `rows` x `cols` of a `width`-wide block (0 when none): the inverse
 /// passes skip the rest, which contributes nothing.
-fn nonzero_extent(coefficients: &[i32], width: usize, rows: usize, cols: usize) -> (usize, usize) {
+fn nonzero_extent(coefficients: &[i16], width: usize, rows: usize, cols: usize) -> (usize, usize) {
     let mut extent: (usize, usize) = (0, 0);
     for (r, line) in coefficients.chunks_exact(width).take(rows).enumerate() {
         if let Some(c) = line[..cols].iter().rposition(|&v| v != 0) {
@@ -191,7 +191,7 @@ fn nonzero_extent(coefficients: &[i32], width: usize, rows: usize, cols: usize) 
 }
 
 /// `(size, kinds, coefficients, out)`: inverse of dequantised coefficients.
-pub(crate) type InverseFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i32], &mut [i32]);
+pub(crate) type InverseFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i16]);
 /// `(size, kinds, residual, out)`: forward of a residual.
 pub(crate) type ForwardFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i32]);
 
@@ -206,19 +206,19 @@ pub(crate) struct Kernels {
 /// stack: zeroing the largest block's (or a 64x64's) for every small one
 /// cost more than its transform (x86 callgrind, crowd key frame with
 /// implicit MTS: memset 43% of the instructions).
-pub(crate) fn with_scratch<R>(area: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
+pub(crate) fn with_scratch<T: Copy + Default, R>(area: usize, f: impl FnOnce(&mut [T]) -> R) -> R {
     const SMALL: usize = 64;
     const MEDIUM: usize = 256;
     const LARGE: usize = MAX_SIDE * MAX_SIDE;
     const LARGEST: usize = 4 * LARGE;
     if area <= SMALL {
-        f(&mut [0; SMALL])
+        f(&mut [T::default(); SMALL])
     } else if area <= MEDIUM {
-        f(&mut [0; MEDIUM])
+        f(&mut [T::default(); MEDIUM])
     } else if area <= LARGE {
-        f(&mut [0; LARGE])
+        f(&mut [T::default(); LARGE])
     } else {
-        f(&mut [0; LARGEST])
+        f(&mut [T::default(); LARGEST])
     }
 }
 
@@ -231,8 +231,8 @@ mod scalar {
         (sum + (1 << (shift - 1))) >> shift
     }
 
-    fn clip16(value: i32) -> i32 {
-        value.clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+    fn clip16(value: i32) -> i16 {
+        value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     }
 
     /// The inverse: columns (rounded by 7 bits, clipped to 16), then rows
@@ -241,16 +241,16 @@ mod scalar {
     pub(super) fn inverse(
         (width, height): (usize, usize),
         [horizontal, vertical]: [VvcTransformKind; 2],
-        coefficients: &[i32],
-        out: &mut [i32],
+        coefficients: &[i16],
+        out: &mut [i16],
     ) {
         let (bh, bv) = (basis(horizontal, width), basis(vertical, height));
         let (fh, fv) = (horizontal.frequencies(width), vertical.frequencies(height));
-        super::with_scratch(width * height, |columns| {
+        super::with_scratch(width * height, |columns: &mut [i16]| {
             for c in 0..fh {
                 for y in 0..height {
                     let sum = (0..fv)
-                        .map(|k| coefficients[k * width + c] * i32::from(bv[k][y]))
+                        .map(|k| i32::from(coefficients[k * width + c]) * i32::from(bv[k][y]))
                         .sum();
                     columns[y * width + c] = clip16(round(sum, INVERSE_FIRST_SHIFT));
                 }
@@ -258,7 +258,7 @@ mod scalar {
             for y in 0..height {
                 for x in 0..width {
                     let sum = (0..fh)
-                        .map(|c| columns[y * width + c] * i32::from(bh[c][x]))
+                        .map(|c| i32::from(columns[y * width + c]) * i32::from(bh[c][x]))
                         .sum();
                     out[y * width + x] = clip16(round(sum, INVERSE_SECOND_SHIFT));
                 }
@@ -276,7 +276,7 @@ mod scalar {
     ) {
         let (bh, bv) = (basis(horizontal, width), basis(vertical, height));
         let (fh, fv) = (horizontal.frequencies(width), vertical.frequencies(height));
-        super::with_scratch(width * height, |rows| {
+        super::with_scratch(width * height, |rows: &mut [i32]| {
             for y in 0..height {
                 for k in 0..fh {
                     let sum = (0..width)
@@ -345,8 +345,7 @@ fn supported((width, height): (usize, usize), kinds: [VvcTransformKind; 2]) -> b
 
 #[allow(unsafe_code)]
 impl Dsp {
-    /// The inverse primary transform of dequantised `coefficients` (within
-    /// 16 bits) of a `width` x `height` block (row-major; `kinds`
+    /// The inverse primary transform of dequantised 16-bit `coefficients` of a `width` x `height` block (row-major; `kinds`
     /// horizontal then vertical) into the residual `out`, as §8.7.4.1.
     /// # Panics
     /// If a side is not 4 to 32, a kind does not apply to its side, or a
@@ -355,17 +354,12 @@ impl Dsp {
         &self,
         size: (usize, usize),
         kinds: [VvcTransformKind; 2],
-        coefficients: &[i32],
-        out: &mut [i32],
+        coefficients: &[i16],
+        out: &mut [i16],
     ) {
         assert!(supported(size, kinds));
         let area = size.0 * size.1;
         assert!(coefficients.len() >= area && out.len() >= area);
-        debug_assert!(
-            coefficients[..area]
-                .iter()
-                .all(|&c| i16::try_from(c).is_ok())
-        );
         // SAFETY: the table matches this CPU; shape and lengths checked.
         unsafe { (self.vvc_mts.inverse)(size, kinds, coefficients, out) }
     }

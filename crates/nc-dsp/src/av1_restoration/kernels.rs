@@ -42,26 +42,26 @@ pub(crate) type WienerHFn = unsafe fn(src: &[u8], taps: WienerTaps, out: &mut [i
 pub(crate) type WienerVFn =
     unsafe fn(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8]);
 /// Horizontal box sums and sums of squares of one radius.
-pub(crate) type BoxSumsFn = unsafe fn(src: &[u8], sum: &mut [i32], squares: &mut [i32], n: usize);
+pub(crate) type BoxSumsFn = unsafe fn(src: &[u8], sum: &mut [i16], squares: &mut [i32], n: usize);
 /// Box statistics `A`, `B` from `N` rows of horizontal sums.
 pub(crate) type BoxAbFn<const N: usize> = unsafe fn(
-    sums: [&[i32]; N],
+    sums: [&[i16]; N],
     squares: [&[i32]; N],
     scale: u32,
-    ab: (&mut [i32], &mut [i32]),
+    ab: (&mut [i16], &mut [i32]),
     n: usize,
 );
 /// A radius-2 output row between two box rows.
 pub(crate) type BetweenFn =
-    unsafe fn(a: [&[i32]; 2], b: [&[i32]; 2], src: &[u8], out: &mut [i32], n: usize);
+    unsafe fn(a: [&[i16]; 2], b: [&[i32]; 2], src: &[u8], out: &mut [i16], n: usize);
 /// A radius-2 output row on a box row.
-pub(crate) type OnFn = unsafe fn(a: &[i32], b: &[i32], src: &[u8], out: &mut [i32], n: usize);
+pub(crate) type OnFn = unsafe fn(a: &[i16], b: &[i32], src: &[u8], out: &mut [i16], n: usize);
 /// A radius-1 output row.
 pub(crate) type AroundFn =
-    unsafe fn(a: [&[i32]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i32], n: usize);
+    unsafe fn(a: [&[i16]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i16], n: usize);
 /// The projection of the filtered rows onto `dst`.
 pub(crate) type BlendFn =
-    unsafe fn(src: &[u8], filtered: [&[i32]; 2], weights: [i32; 2], dst: &mut [u8]);
+    unsafe fn(src: &[u8], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [u8]);
 
 /// One ISA's loop restoration kernels.
 #[derive(Debug, Clone, Copy)]
@@ -108,7 +108,7 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
 }
 
 /// Whether every row holds `n` values and the overread.
-fn rows_cover(rows: &[&[i32]], n: usize) -> bool {
+fn rows_cover<T>(rows: &[&[T]], n: usize) -> bool {
     rows.iter().all(|row| row.len() >= n + AV1_LR_OVERREAD)
 }
 
@@ -150,7 +150,7 @@ impl Kernels {
         &self,
         radius: usize,
         src: &[u8],
-        sum: &mut [i32],
+        sum: &mut [i16],
         squares: &mut [i32],
         n: usize,
     ) {
@@ -168,10 +168,10 @@ impl Kernels {
     /// Radius-1 box statistics of `n` columns.
     pub(crate) fn sgr_box_ab3(
         &self,
-        sums: [&[i32]; 3],
+        sums: [&[i16]; 3],
         squares: [&[i32]; 3],
         scale: u32,
-        (a, b): (&mut [i32], &mut [i32]),
+        (a, b): (&mut [i16], &mut [i32]),
         n: usize,
     ) {
         assert!(rows_cover(&sums, n) && rows_cover(&squares, n));
@@ -183,10 +183,10 @@ impl Kernels {
     /// Radius-2 box statistics of `n` columns.
     pub(crate) fn sgr_box_ab5(
         &self,
-        sums: [&[i32]; 5],
+        sums: [&[i16]; 5],
         squares: [&[i32]; 5],
         scale: u32,
-        (a, b): (&mut [i32], &mut [i32]),
+        (a, b): (&mut [i16], &mut [i32]),
         n: usize,
     ) {
         assert!(rows_cover(&sums, n) && rows_cover(&squares, n));
@@ -196,7 +196,7 @@ impl Kernels {
     }
 
     /// Checks shared by the filtered-row kernels.
-    fn check_filter(a: &[&[i32]], b: &[&[i32]], src: &[u8], out: &[i32], n: usize) {
+    fn check_filter(a: &[&[i16]], b: &[&[i32]], src: &[u8], out: &[i16], n: usize) {
         assert!(rows_cover(a, n + 2) && rows_cover(b, n + 2));
         assert!(src.len() >= n + AV1_LR_OVERREAD && out.len() >= n + AV1_LR_OVERREAD);
     }
@@ -204,10 +204,10 @@ impl Kernels {
     /// A radius-2 output row between box rows.
     pub(crate) fn sgr_filter_between(
         &self,
-        a: [&[i32]; 2],
+        a: [&[i16]; 2],
         b: [&[i32]; 2],
         src: &[u8],
-        out: &mut [i32],
+        out: &mut [i16],
         n: usize,
     ) {
         Self::check_filter(&a, &b, src, out, n);
@@ -218,10 +218,10 @@ impl Kernels {
     /// A radius-2 output row on a box row.
     pub(crate) fn sgr_filter_on(
         &self,
-        a: &[i32],
+        a: &[i16],
         b: &[i32],
         src: &[u8],
-        out: &mut [i32],
+        out: &mut [i16],
         n: usize,
     ) {
         Self::check_filter(&[a], &[b], src, out, n);
@@ -232,10 +232,10 @@ impl Kernels {
     /// A radius-1 output row.
     pub(crate) fn sgr_filter_around(
         &self,
-        a: [&[i32]; 3],
+        a: [&[i16]; 3],
         b: [&[i32]; 3],
         src: &[u8],
-        out: &mut [i32],
+        out: &mut [i16],
         n: usize,
     ) {
         Self::check_filter(&a, &b, src, out, n);
@@ -247,7 +247,7 @@ impl Kernels {
     pub(crate) fn sgr_blend(
         &self,
         src: &[u8],
-        filtered: [&[i32]; 2],
+        filtered: [&[i16]; 2],
         weights: [i32; 2],
         dst: &mut [u8],
     ) {

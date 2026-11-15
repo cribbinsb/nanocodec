@@ -186,7 +186,7 @@ mod tests {
     }
 
     /// A one-row pre-analysis of blocks with these SADs and sums.
-    fn pre(blocks: &[(u32, u16)]) -> PreAnalysis {
+    fn pre(blocks: &[(u16, u16)]) -> PreAnalysis {
         let cells = blocks
             .iter()
             .map(|&(sad, sum)| BlockStats {

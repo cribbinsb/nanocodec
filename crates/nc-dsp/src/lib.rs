@@ -117,9 +117,11 @@ pub use deblock::av2::{AV2_EDGE_LINES, Av2EdgeFilter};
 pub use deblock::runs::{EdgeRun, HevcChromaFilter, HevcLumaFilter};
 pub use deblock::{H264EdgeParams, H264MbEdges};
 pub use diff::{SUBPEL_VARIANCE_POSITIONS, Variance, VarianceEnergy};
-pub use dispatch::{Dsp, H264Predictor};
+pub use dispatch::{
+    Dsp, H264Predictor, av1_inverse_add_i16_dav1d_reference, av1_inverse_has_dav1d_model,
+};
 pub use mc::{Filter, SubBlockMotion};
-pub use pixel::{GRID_BLOCKS, GridBest, GridRows};
+pub use pixel::{GRID_BLOCKS, GRID_LARGE_BLOCKS, GRID_SMALL_BLOCKS, GridBest, GridRows};
 pub use prefetch::prefetch_block;
 pub use resample::PlaneResampler;
 pub use sample::Moments;
@@ -163,4 +165,4 @@ mod vvc_tx64;
 pub use vvc_geo::VvcGeometric;
 
 mod reconstruct;
-pub use reconstruct::Residual32;
+pub use reconstruct::Residual16;

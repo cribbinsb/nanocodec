@@ -32,6 +32,7 @@ pub(crate) unsafe fn txfm_fns() -> TxfmFns {
         forward_dct_64: forward_64,
         inverse_dct_add_64: avx2_inverse::inverse_64,
         inverse_dct_add_sparse: [
+            avx2_inverse::inverse_16_sparse,
             avx2_inverse::inverse_32_sparse,
             avx2_inverse::inverse_64_sparse,
         ],

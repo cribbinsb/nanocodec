@@ -16,7 +16,7 @@ mod replay_hevc_runs;
 
 use std::process::ExitCode;
 
-use nc_checkasm::{BenchResult, bench, bench_av1_runs, bench_vp9_mc, check};
+use nc_checkasm::{BenchResult, bench, bench_av1_inverse, bench_av1_runs, bench_vp9_mc, check};
 use nc_dsp::Isa;
 
 const DEFAULT_SEED: u64 = 1;
@@ -28,6 +28,7 @@ const MAX_PRINTED_FAILURES: usize = 20;
 #[derive(Clone, Copy)]
 enum BenchSet {
     All,
+    Av1Inverse,
     Av1Runs,
     Vp9Mc,
 }
@@ -47,7 +48,7 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("nc-checkasm: {message}");
             eprintln!(
-                "usage: nc-checkasm [--bench|--bench-av1-runs|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
+                "usage: nc-checkasm [--bench|--bench-av1-inverse|--bench-av1-runs|--bench-vp9-mc] [--isa ISA] [--seed N] [--iterations N]"
             );
             return ExitCode::from(2);
         }
@@ -68,6 +69,7 @@ fn main() -> ExitCode {
             .map_or(Isa::ALL.as_slice(), std::slice::from_ref);
         let results = match set {
             BenchSet::All => bench(isas),
+            BenchSet::Av1Inverse => bench_av1_inverse(isas),
             BenchSet::Av1Runs => bench_av1_runs(isas),
             BenchSet::Vp9Mc => bench_vp9_mc(isas),
         };
@@ -89,6 +91,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--bench" | "bench" => options.bench = Some(BenchSet::All),
+            "--bench-av1-inverse" => options.bench = Some(BenchSet::Av1Inverse),
             "--bench-av1-runs" => options.bench = Some(BenchSet::Av1Runs),
             "--bench-vp9-mc" => options.bench = Some(BenchSet::Vp9Mc),
             "--filter-runs" => {

@@ -6,6 +6,8 @@ use nc_dsp::{Av2Kernel, Av2TxSize, Av2TxType, Dsp};
 
 /// Guard value around outputs, to catch out-of-range writes.
 const GUARD: i32 = 0x5A5A_5A5A;
+/// [`GUARD`] of the 16-bit inverse outputs.
+const RESIDUAL_GUARD: i16 = 0x5A5A;
 /// Random blocks per (size, type).
 const RANDOM_BLOCKS: usize = 4;
 /// Largest residual magnitude of 8-bit video (the forward contract).
@@ -76,24 +78,19 @@ fn check_type(
             ));
         }
     }
-    let mut coefficients: Vec<Vec<i32>> = (0..RANDOM_BLOCKS)
-        .map(|_| {
-            (0..n * n)
-                .map(|_| i32::from(rng.next_u64() as i16))
-                .collect()
-        })
+    let mut coefficients: Vec<Vec<i16>> = (0..RANDOM_BLOCKS)
+        .map(|_| (0..n * n).map(|_| rng.next_u64() as i16).collect())
         .collect();
-    coefficients.push((0..n * n).map(|_| rng.next_u64() as i32).collect());
-    coefficients.push(vec![i32::from(i16::MAX); n * n]);
-    coefficients.push(vec![i32::from(i16::MIN); n * n]);
+    coefficients.push(vec![i16::MAX; n * n]);
+    coefficients.push(vec![i16::MIN; n * n]);
     coefficients.push(
         (0..n * n)
-            .map(|i| if i % 2 == 0 { i32::MAX } else { i32::MIN })
+            .map(|i| if i % 2 == 0 { i16::MAX } else { i16::MIN })
             .collect(),
     );
     for coeffs in &coefficients {
         let run = |dsp: &Dsp| {
-            let mut out = vec![GUARD; n * n + 2];
+            let mut out = vec![RESIDUAL_GUARD; n * n + 2];
             dsp.av2_inverse_typed(size, tx_type, coeffs, &mut out[1..=n * n]);
             out
         };

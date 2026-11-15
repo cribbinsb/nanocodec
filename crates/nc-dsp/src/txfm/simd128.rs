@@ -30,6 +30,7 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         forward_dct_64: forward_64,
         inverse_dct_add_64: simd128_inverse::inverse_64,
         inverse_dct_add_sparse: [
+            simd128_inverse::inverse_16_sparse,
             simd128_inverse::inverse_32_sparse,
             simd128_inverse::inverse_64_sparse,
         ],

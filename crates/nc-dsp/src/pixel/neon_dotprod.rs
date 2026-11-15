@@ -24,8 +24,8 @@
 //! Kernel contract: see the `pixel` module docs.
 
 use core::arch::aarch64::{
-    uint8x16_t, uint32x4_t, vabdq_u8, vaddvq_u32, vdupq_n_u8, vdupq_n_u32, vld1q_u8, vpaddq_u32,
-    vst1q_u32,
+    uint8x16_t, uint16x8_t, uint32x4_t, vabdq_u8, vaddvq_u32, vdupq_n_u8, vdupq_n_u32, vld1q_u8,
+    vmovn_high_u32, vmovn_u32, vpaddq_u32, vst1q_u16, vst1q_u32,
 };
 
 use super::GridBest;
@@ -41,6 +41,16 @@ const SCAN_BATCH: usize = 8;
 #[target_feature(enable = "neon,dotprod")]
 fn sad_acc(acc: uint32x4_t, a: uint8x16_t, b: uint8x16_t) -> uint32x4_t {
     udot(acc, vabdq_u8(a, b), vdupq_n_u8(1))
+}
+
+/// A block row's eight 8x8 SADs, in order, from its four 16-byte columns'
+/// `[left, left, right, right]` group sums: one pairwise add per four
+/// blocks, narrowed to u16 (an 8x8 SAD is at most 16320).
+#[inline]
+#[target_feature(enable = "neon")]
+fn block_sads(columns: [uint32x4_t; 4]) -> uint16x8_t {
+    let low = vmovn_u32(vpaddq_u32(columns[0], columns[1]));
+    vmovn_high_u32(low, vpaddq_u32(columns[2], columns[3]))
 }
 
 /// SAD scan of a 16x16 block over rows 0, 2, ..., 14, [`SCAN_BATCH`]
@@ -156,8 +166,8 @@ unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-) -> [u32; 64] {
-    let mut grid = [0u32; 64];
+) -> [u16; 64] {
+    let mut grid = [0u16; 64];
     for (block_row, out) in grid.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         let mut acc = [vdupq_n_u32(0); 4];
         for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
@@ -173,11 +183,8 @@ unsafe fn sad_grid_8x8_in_64x64<const STEP: usize>(
                 *sums = sad_acc(*sums, a, b);
             }
         }
-        // SAFETY: `out` holds eight u32.
-        unsafe {
-            vst1q_u32(out.as_mut_ptr(), vpaddq_u32(acc[0], acc[1]));
-            vst1q_u32(out.as_mut_ptr().add(4), vpaddq_u32(acc[2], acc[3]));
-        }
+        // SAFETY: `out` holds eight u16.
+        unsafe { vst1q_u16(out.as_mut_ptr(), block_sads(acc)) };
     }
     grid
 }
@@ -190,13 +197,17 @@ pub(super) unsafe fn sad_grid_best_64x64<const STEP: usize>(
     src_stride: usize,
     rf: &[u8],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tag: u32,
 ) {
     // SAFETY: the kernel contract covers both 64x64 blocks.
     let grid = unsafe { sad_grid_8x8_in_64x64::<STEP>(src, src_stride, rf, ref_stride) };
-    super::neon::keep_min(best, &super::grid_costs(&grid, visible, STEP as u32), tag);
+    super::neon::keep_min(
+        best,
+        &super::grid_costs::<super::neon::Pairs>(&grid, visible, STEP as u16),
+        tag,
+    );
 }
 
 /// Reuse each source load across four candidate grids. Four columns per
@@ -210,11 +221,11 @@ pub(super) unsafe fn sad_grid_best_x4<const STEP: usize>(
     src_stride: usize,
     refs: [&[u8]; 4],
     ref_stride: usize,
-    visible: &[u32; 64],
+    visible: &[u16; 64],
     best: &mut GridBest,
     tags: [u32; 4],
 ) {
-    let mut grids = [[0u32; 64]; 4];
+    let mut grids = [[0u16; 64]; 4];
     for block_row in 0..8 {
         let mut acc = [[vdupq_n_u32(0); 4]; 4];
         for y in (8 * block_row..8 * block_row + 8).step_by(STEP) {
@@ -233,14 +244,15 @@ pub(super) unsafe fn sad_grid_best_x4<const STEP: usize>(
         for candidate in 0..4 {
             let out = &mut grids[candidate][8 * block_row..8 * block_row + 8];
             let sums = acc.map(|column| column[candidate]);
-            // SAFETY: this block row has eight writable u32 entries.
-            unsafe {
-                vst1q_u32(out.as_mut_ptr(), vpaddq_u32(sums[0], sums[1]));
-                vst1q_u32(out.as_mut_ptr().add(4), vpaddq_u32(sums[2], sums[3]));
-            }
+            // SAFETY: this block row has eight writable u16 entries.
+            unsafe { vst1q_u16(out.as_mut_ptr(), block_sads(sums)) };
         }
     }
     for (grid, tag) in grids.iter().zip(tags) {
-        super::neon::keep_min(best, &super::grid_costs(grid, visible, STEP as u32), tag);
+        super::neon::keep_min(
+            best,
+            &super::grid_costs::<super::neon::Pairs>(grid, visible, STEP as u16),
+            tag,
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! Bit-exactness checks of every kernel of an ISA against the scalar reference.
 
 use nc_common::{PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, GRID_BLOCKS, GridBest, GridRows, Isa, Moments};
+use nc_dsp::{BlockSize, Dsp, GRID_BLOCKS, GRID_SMALL_BLOCKS, GridBest, GridRows, Isa, Moments};
 
 use crate::rng::Rng;
 
@@ -101,6 +101,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_vp9_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_inverse::check_add(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_av1_inverse::check(&candidate, &reference, iterations, &mut rng, &mut report);
+    crate::check_av1_conformant::check(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_filters::check_filters(&candidate, &reference, iterations, &mut rng, &mut report);
     crate::check_vp9_mc::check(&candidate, &reference, &mut rng, &mut report);
     #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
@@ -222,11 +223,15 @@ fn check_case(
     if h == 8 {
         // Every row length, including tails after a 2/4-block SIMD batch.
         for count in 1..=w / 8 {
-            let mut got = vec![[0u32; 4]; count];
+            let mut got = vec![[0u16; 4]; count];
             let mut want = got.clone();
             candidate.sad_quads_8x8_row(&src_view, &ref_views[0], &mut got);
             reference.sad_quads_8x8_row(&src_view, &ref_views[0], &mut want);
-            compare("sad_quads_8x8_row", got.as_flattened(), want.as_flattened());
+            compare(
+                "sad_quads_8x8_row",
+                &widen(got.as_flattened()),
+                &widen(want.as_flattened()),
+            );
         }
     }
     if (w, h) == (16, 16) {
@@ -256,13 +261,13 @@ fn check_quads_16x16(
     );
     compare(
         "sad_quads_macroblock luma",
-        got.0.as_flattened(),
-        want.0.as_flattened(),
+        &widen(got.0.as_flattened()),
+        &widen(want.0.as_flattened()),
     );
     compare(
         "sad_quads_macroblock chroma",
-        got.1.as_flattened(),
-        want.1.as_flattened(),
+        &widen(got.1.as_flattened()),
+        &widen(want.1.as_flattened()),
     );
 }
 
@@ -534,6 +539,16 @@ fn checkerboard(buf: &mut [u8], stride: usize, phase: usize) {
     }
 }
 
+/// u16 SADs as the u32 values `compare` takes.
+fn widen(sads: &[u16]) -> Vec<u32> {
+    sads.iter().map(|&sad| u32::from(sad)).collect()
+}
+
+/// Every block's best SAD, in grid order.
+fn grid_sads(best: &GridBest) -> Vec<u32> {
+    (0..GRID_BLOCKS).map(|block| best.sad(block)).collect()
+}
+
 /// Hierarchy grid SADs, masked edges and ordered multi-candidate ties.
 fn check_grid(
     candidate: &Dsp,
@@ -556,7 +571,7 @@ fn check_grid(
                 &flat_src,
                 &flat_ref,
                 [(0, 0), (1, 0), (2, 0), (3, 0)],
-                &[u32::MAX; 64],
+                &[u16::MAX; 64],
                 rows,
                 &mut best,
                 tags,
@@ -574,14 +589,18 @@ fn check_grid(
     let mut bytes = [0u8; 2 * GRID_BLOCKS + 64];
     rng.fill(&mut bytes);
     for i in 0..GRID_BLOCKS {
-        start.sad[i] = u32::from(bytes[i]) << (4 + i / 32);
+        let sad = u16::from(bytes[i]) << (4 + i / 32);
+        match i.checked_sub(GRID_SMALL_BLOCKS) {
+            None => start.small[i] = sad,
+            Some(large) => start.large[large] = u32::from(sad),
+        }
         start.tag[i] = u32::from(bytes[GRID_BLOCKS + i]);
     }
-    let visible: [u32; 64] = std::array::from_fn(|i| {
+    let visible: [u16; 64] = std::array::from_fn(|i| {
         if bytes[2 * GRID_BLOCKS + i] < 32 {
             0
         } else {
-            u32::MAX
+            u16::MAX
         }
     });
     for rows in [GridRows::All, GridRows::Even] {
@@ -589,7 +608,11 @@ fn check_grid(
         let (s, r) = (src, wide);
         candidate.sad_grid_best_64x64_at(s, r, (0, 0), &visible, rows, &mut got, 7);
         reference.sad_grid_best_64x64_at(s, r, (0, 0), &visible, rows, &mut want, 7);
-        compare("sad_grid_best_64x64 sad", &got.sad, &want.sad);
+        compare(
+            "sad_grid_best_64x64 sad",
+            &grid_sads(&got),
+            &grid_sads(&want),
+        );
         compare("sad_grid_best_64x64 tag", &got.tag, &want.tag);
         for positions in [
             [(0, 0), (1, 0), (2, 0), (3, 0)],
@@ -602,7 +625,7 @@ fn check_grid(
             for (position, tag) in positions.into_iter().zip(tags) {
                 reference.sad_grid_best_64x64_at(s, wide, position, &visible, rows, &mut want, tag);
             }
-            compare("sad_grid_best_x4 sad", &got.sad, &want.sad);
+            compare("sad_grid_best_x4 sad", &grid_sads(&got), &grid_sads(&want));
             compare("sad_grid_best_x4 tag", &got.tag, &want.tag);
             // Repeating the candidates must retain the original tags on ties.
             candidate.sad_grid_best_x4_at(s, wide, positions, &visible, rows, &mut got, [99; 4]);

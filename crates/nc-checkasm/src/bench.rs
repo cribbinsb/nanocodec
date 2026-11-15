@@ -57,6 +57,18 @@ pub struct BenchResult {
     pub ns_per_call: f64,
 }
 
+/// Time only the AV1 inverse transforms, as the full suite does.
+#[must_use]
+pub fn bench_av1_inverse(isas: &[Isa]) -> Vec<BenchResult> {
+    let mut results = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::check_av1_inverse::bench(&dsp, &mut results);
+        }
+    }
+    results
+}
+
 /// Time only the VP9 interpolation kernels, as the full suite does.
 #[must_use]
 pub fn bench_vp9_mc(isas: &[Isa]) -> Vec<BenchResult> {
@@ -368,12 +380,19 @@ fn bench_av2(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSiz
                 coeffs[0] as u32
             }),
         );
-        let mut out = vec![0i32; n * n];
+        // The forward output as inverse input: it fits 16 bits but at
+        // 64x64 (module docs of `av2_txfm`), where it saturates as the
+        // dequantiser would.
+        let levels: Vec<i16> = coeffs
+            .iter()
+            .map(|&c| c.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
+            .collect();
+        let mut out = vec![0i16; n * n];
         push(
             "av2_inverse_dct",
             size,
             time(|| {
-                dsp.av2_inverse(transform, &coeffs, &mut out);
+                dsp.av2_inverse(transform, &levels, &mut out);
                 out[0] as u32
             }),
         );
@@ -402,7 +421,7 @@ fn bench_av2(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSiz
             "av2_inverse_typed",
             size,
             time(|| {
-                dsp.av2_inverse_typed(transform, tx_type, &coeffs, &mut out);
+                dsp.av2_inverse_typed(transform, tx_type, &levels, &mut out);
                 out[0] as u32
             }),
         );
@@ -464,7 +483,7 @@ fn bench_hevc(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
                 }),
             );
         }
-        let mut dequantized = vec![0i32; n * n];
+        let mut dequantized = vec![0i16; n * n];
         if transform != HevcTransform::Dst4 {
             push(
                 "hevc_dequantize",
@@ -476,7 +495,7 @@ fn bench_hevc(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
             );
         }
         dsp.hevc_dequantize(&levels, &q, &mut dequantized);
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         push(
             inverse_name,
             size,
@@ -488,9 +507,9 @@ fn bench_hevc(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
         bench_hevc_inverse_add(dsp, transform, src, push);
         // Every coefficient nonzero: the worst case of the zero-skipping
         // inverses (quantized blocks above are mostly zero).
-        let dense: Vec<i32> = src[..n * n]
+        let dense: Vec<i16> = src[..n * n]
             .iter()
-            .map(|&v| (i32::from(v) - 128) * DENSE_COEFFICIENT_SCALE)
+            .map(|&v| (i16::from(v) - 128) * DENSE_COEFFICIENT_SCALE)
             .collect();
         push(
             "hevc_inverse_dense",
@@ -541,10 +560,10 @@ fn bench_hevc_inverse_add(
             ("hevc_add_full_picture", "hevc_split_full_picture"),
         ),
     ] {
-        let input: Vec<i32> = (0..n * n)
+        let stored: Vec<i16> = (0..n * n)
             .map(|i| {
                 if i / n < corner && i % n < corner {
-                    (i32::from(src[i]) - 128) * 16
+                    (i16::from(src[i]) - 128) * 16
                 } else {
                     0
                 }
@@ -563,7 +582,7 @@ fn bench_hevc_inverse_add(
                 time(|| {
                     dsp.hevc_inverse_add(
                         transform,
-                        &input,
+                        &stored,
                         (corner, corner),
                         &mut PlaneViewMut::new(&mut pixels, stride, n, n).unwrap(),
                     );
@@ -574,10 +593,10 @@ fn bench_hevc_inverse_add(
                 split_name,
                 size,
                 time(|| {
-                    dsp.hevc_inverse(transform, &input, &mut out);
+                    dsp.hevc_inverse(transform, &stored, &mut out);
                     for (row, residual) in pixels.chunks_mut(stride).zip(out.chunks(n)) {
                         for (p, &r) in row.iter_mut().zip(residual) {
-                            *p = (i32::from(*p) + r).clamp(0, 255) as u8;
+                            *p = (i32::from(*p) + i32::from(r)).clamp(0, 255) as u8;
                         }
                     }
                     u32::from(pixels[0])
@@ -589,7 +608,7 @@ fn bench_hevc_inverse_add(
 
 /// Scale of the dense inverse-transform benchmark's coefficients (source
 /// samples minus 128, so up to about ±2^12).
-const DENSE_COEFFICIENT_SCALE: i32 = 32;
+const DENSE_COEFFICIENT_SCALE: i16 = 32;
 
 /// H.264 transforms and quantisers. 4x4 kernels run on a whole 16x16
 /// macroblock (16 blocks) and are reported at 16x16.
@@ -688,12 +707,12 @@ fn bench_size_specific(
     record: &mut impl FnMut(&'static str, f64),
 ) {
     if (w, h) == (8, 8) {
-        let mut out = [[0u32; 4]; 1];
+        let mut out = [[0u16; 4]; 1];
         record(
             "sad_quads",
             time(|| {
                 dsp.sad_quads_8x8_row(s, &refs[0], &mut out);
-                out[0][0]
+                u32::from(out[0][0])
             }),
         );
     }
@@ -715,7 +734,7 @@ fn bench_size_specific(
     }
     if (w, h) == (64, 64) {
         let mut best = GridBest::default();
-        let visible = [u32::MAX; 64];
+        let visible = [u16::MAX; 64];
         let wide = PlaneView::new(rf, STRIDE, 4 * 64, 64).expect("four candidate grids");
         for (single, batched, rows) in [
             ("sad_grid_best", "sad_grid_best_x4", GridRows::All),
@@ -729,7 +748,7 @@ fn bench_size_specific(
                 single,
                 time(|| {
                     dsp.sad_grid_best_64x64_at(s, &refs[0], (0, 0), &visible, rows, &mut best, 1);
-                    best.sad[84]
+                    best.sad(84)
                 }),
             );
             record(
@@ -744,7 +763,7 @@ fn bench_size_specific(
                         &mut best,
                         [1, 2, 3, 4],
                     );
-                    best.sad[84]
+                    best.sad(84)
                 }),
             );
         }

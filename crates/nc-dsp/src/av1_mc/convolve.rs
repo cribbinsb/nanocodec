@@ -84,8 +84,29 @@ impl Av1McAxis {
     }
 }
 
+/// Rows of the horizontal pass at most: the window span of the tallest
+/// block at the largest step from the last start fraction.
+const MAX_INTERMEDIATE_ROWS: usize = Av1McAxis {
+    position: AV1_UNSCALED_STEP - 1,
+    step: AV1_MAX_STEP,
+}
+.span(AV1_MAX_PREDICTION_EDGE);
+/// Columns per strip of the reference passes: the intermediate of one
+/// strip at the largest span (`MAX_INTERMEDIATE_ROWS` rows) stays a small
+/// stack buffer.
+const STRIP: usize = 16;
+
 /// The §7.11.3.4 filter passes over `window` for a `w`x`h` block; `store`
 /// receives each output sample `(row, column, Round2(sum, round1))`.
+///
+/// The block is filtered in strips of [`STRIP`] columns (each output reads
+/// only its own column of the intermediate), so the intermediate is a
+/// fixed `i16` stack buffer rather than a per-call allocation. It fits
+/// `i16`: an 8-bit horizontal sum `Σ tap · sample` lies in
+/// `[−255 · N, 255 · P]` for the kernel's negative and positive tap totals
+/// `N`, `P`; over every AV1 kernel `P ≤ 184` and `N ≤ 56` (sharp, half
+/// position), so after `Round2(·, InterRound0 = 3)` it is within
+/// `−1785..=5865` (`horizontal_intermediate_fits_i16` checks every kernel).
 fn block_inter_prediction(
     filters: Av1Filters,
     window: &PlaneView<'_>,
@@ -98,28 +119,35 @@ fn block_inter_prediction(
     let kernel_x = filters.x.kernel(w);
     let kernel_y = filters.y.kernel(h);
     let rows = y.span(h);
-    let mut intermediate = vec![0i32; rows * w];
-    for (r, line) in intermediate.chunks_exact_mut(w).enumerate() {
-        let source = window.row(r);
-        for (c, out) in line.iter_mut().enumerate() {
-            let (start, phase) = x.sample(c);
-            let sum: i32 = kernel_x[phase]
-                .iter()
-                .zip(&source[start..start + AV1_FILTER_TAPS])
-                .map(|(&t, &s)| i32::from(t) * i32::from(s))
-                .sum();
-            *out = round2(sum, INTER_ROUND0);
+    let mut intermediate = [0i16; MAX_INTERMEDIATE_ROWS * STRIP];
+    for first in (0..w).step_by(STRIP) {
+        let columns = first..w.min(first + STRIP);
+        let width = columns.len();
+        for (r, line) in intermediate.chunks_exact_mut(width).take(rows).enumerate() {
+            let source = window.row(r);
+            for (c, out) in columns.clone().zip(line) {
+                let (start, phase) = x.sample(c);
+                let sum: i32 = kernel_x[phase]
+                    .iter()
+                    .zip(&source[start..start + AV1_FILTER_TAPS])
+                    .map(|(&t, &s)| i32::from(t) * i32::from(s))
+                    .sum();
+                // Within i16 (the doc comment's bound).
+                *out = round2(sum, INTER_ROUND0) as i16;
+            }
         }
-    }
-    for r in 0..h {
-        let (start, phase) = y.sample(r);
-        for c in 0..w {
-            let sum: i32 = kernel_y[phase]
-                .iter()
-                .enumerate()
-                .map(|(t, &tap)| i32::from(tap) * intermediate[(start + t) * w + c])
-                .sum();
-            store(r, c, round2(sum, round1));
+        for r in 0..h {
+            let (start, phase) = y.sample(r);
+            for (i, c) in columns.clone().enumerate() {
+                let sum: i32 = kernel_y[phase]
+                    .iter()
+                    .enumerate()
+                    .map(|(t, &tap)| {
+                        i32::from(tap) * i32::from(intermediate[(start + t) * width + i])
+                    })
+                    .sum();
+                store(r, c, round2(sum, round1));
+            }
         }
     }
 }
@@ -711,7 +739,34 @@ fn tile_window<'w>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::PIXEL_MAX;
     use super::*;
+
+    /// The `block_inter_prediction` bound: every kernel's horizontal sum
+    /// of 8-bit samples, rounded by `InterRound0`, fits its `i16` storage.
+    #[test]
+    fn horizontal_intermediate_fits_i16() {
+        let (mut positive, mut negative) = (0, 0);
+        for filter in Av1Filter::ALL {
+            for length in [4, 8] {
+                for taps in filter.kernel(length) {
+                    let total = |keep: fn(i32) -> bool| {
+                        taps.iter()
+                            .map(|&t| i32::from(t))
+                            .filter(|&t| keep(t))
+                            .sum::<i32>()
+                    };
+                    positive = positive.max(total(|t| t > 0));
+                    negative = negative.max(-total(|t| t < 0));
+                }
+            }
+        }
+        assert_eq!((positive, negative), (184, 56));
+        let largest = round2(PIXEL_MAX * positive, INTER_ROUND0);
+        let smallest = round2(-PIXEL_MAX * negative, INTER_ROUND0);
+        assert_eq!((smallest, largest), (-1785, 5865));
+        assert!(i32::from(i16::MIN) <= smallest && largest <= i32::from(i16::MAX));
+    }
 
     /// Half-sample steps (a reference half the frame's size) through the
     /// interleaved unscaled kernels equal the scaled reference passes, at

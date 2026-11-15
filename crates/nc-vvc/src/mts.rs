@@ -327,7 +327,7 @@ fn estimate(
             .zip(dequantized.iter())
             .zip(levels)
             .filter(|&(_, &level)| level != 0)
-            .map(|((&c, &d), _)| i64::from(c - d).pow(2) - i64::from(c).pow(2))
+            .map(|((&c, &d), _)| (i64::from(c) - i64::from(d)).pow(2) - i64::from(c).pow(2))
             .sum::<i64>();
     }
     let distortion = (error * (width * height) as i64) >> TRANSFORM_DOMAIN_SHIFT;

@@ -51,9 +51,9 @@ fn inverse_matches_the_normative_reference() {
                         }
                     }
                 }
-                let coefficients: Vec<i32> = coefficients
+                let coefficients: Vec<i16> = coefficients
                     .into_iter()
-                    .map(|c| c.clamp(-32768, 32767))
+                    .map(|c| c.clamp(-32768, 32767) as i16)
                     .collect();
                 let mut expected = vec![0; area];
                 crate::codec_txfm::vvc_primary::inverse(size, kinds, &coefficients, &mut expected);
@@ -186,7 +186,7 @@ fn forward_then_inverse_returns_the_residual() {
         let worst = residual
             .iter()
             .zip(&back)
-            .map(|(&a, &b)| (i32::from(a) - b).abs())
+            .map(|(&a, &b)| (i32::from(a) - i32::from(b)).abs())
             .max()
             .unwrap();
         assert!(

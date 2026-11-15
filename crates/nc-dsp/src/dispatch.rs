@@ -514,7 +514,7 @@ impl Dsp {
         &self,
         log2: u8,
         (columns, rows): (crate::Vp9Pass, crate::Vp9Pass),
-        input: &[i32],
+        input: &[i16],
         nonzero: (usize, usize),
         (dst, dst_stride): (&mut [u8], usize),
     ) {
@@ -545,8 +545,9 @@ impl Dsp {
         }
     }
 
-    /// VP9 inverse DCT/ADST with normative i16 stage wrapping. Inputs and
-    /// outputs are packed raster blocks; `log2` is 3..=5, with DCT only at 5.
+    /// VP9 inverse DCT/ADST with normative i16 stage wrapping. Inputs
+    /// (16-bit dequantized coefficients, §8.6.2) and outputs (residuals)
+    /// are packed raster blocks; `log2` is 3..=5, with DCT only at 5.
     /// The free `vp9_inverse_transform` function remains the scalar oracle.
     ///
     /// # Panics
@@ -556,8 +557,8 @@ impl Dsp {
         log2: u8,
         columns: crate::Vp9Pass,
         rows: crate::Vp9Pass,
-        input: &[i32],
-        output: &mut [i32],
+        input: &[i16],
+        output: &mut [i16],
     ) {
         assert!((3..=5).contains(&log2), "VP9 transform size outside 8..=32");
         assert!(
@@ -753,7 +754,7 @@ impl Dsp {
     /// # Panics
     ///
     /// If either view is smaller than 8 rows of `8 * out.len()` samples.
-    pub fn sad_quads_8x8_row(&self, src: &PlaneView<'_>, rf: &PlaneView<'_>, out: &mut [[u32; 4]]) {
+    pub fn sad_quads_8x8_row(&self, src: &PlaneView<'_>, rf: &PlaneView<'_>, out: &mut [[u16; 4]]) {
         check_covers_row(out.len(), src, "source");
         check_covers_row(out.len(), rf, "reference");
         // SAFETY: both views cover the row of blocks (checked above); the
@@ -771,12 +772,12 @@ impl Dsp {
     ///
     /// If either view is smaller than 16x16.
     #[must_use]
-    pub fn sad_quads_16x16(&self, src: &PlaneView<'_>, rf: &PlaneView<'_>) -> [[u32; 4]; 4] {
+    pub fn sad_quads_16x16(&self, src: &PlaneView<'_>, rf: &PlaneView<'_>) -> [[u16; 4]; 4] {
         let size = BlockSize::new(16, 16).expect("16x16 is a block size");
         check_covers(size, src, "source");
         check_covers(size, rf, "reference");
         let (src_stride, ref_stride) = (src.stride(), rf.stride());
-        let mut out = [[0u32; 4]; 4];
+        let mut out = [[0u16; 4]; 4];
         let (top, bottom) = out.split_at_mut(2);
         // SAFETY: both views cover the 16x16 block (checked above), i.e. two
         // rows of two 8x8 blocks; the table matches a supported ISA.
@@ -806,7 +807,7 @@ impl Dsp {
         &self,
         luma: (&PlaneView<'_>, &PlaneView<'_>),
         chroma: [(&PlaneView<'_>, &PlaneView<'_>); 2],
-    ) -> ([[u32; 4]; 4], [[u32; 4]; 2]) {
+    ) -> ([[u16; 4]; 4], [[u16; 4]; 2]) {
         let size = BlockSize::new(16, 16).expect("16x16 is a block size");
         check_covers(size, luma.0, "source");
         check_covers(size, luma.1, "reference");
@@ -826,10 +827,10 @@ impl Dsp {
     ///
     /// If either view is smaller than 8x8.
     #[must_use]
-    pub fn sad_quads_8x8(&self, src: &PlaneView<'_>, rf: &PlaneView<'_>) -> [u32; 4] {
+    pub fn sad_quads_8x8(&self, src: &PlaneView<'_>, rf: &PlaneView<'_>) -> [u16; 4] {
         check_covers_row(1, src, "source");
         check_covers_row(1, rf, "reference");
-        let mut out = [[0u32; 4]; 1];
+        let mut out = [[0u16; 4]; 1];
         // SAFETY: both views cover the 8x8 block (checked above); the table
         // matches a supported ISA.
         unsafe {
@@ -898,7 +899,7 @@ impl Dsp {
     /// against the 64x64 block at `position` inside `reference` into
     /// `best` (see [`GridBest`] for the block order): where a block's SAD
     /// is below its best, the best becomes that SAD and its tag `tag`.
-    /// 8x8 blocks with `visible[i] == 0` count as SAD zero (pass `u32::MAX`
+    /// 8x8 blocks with `visible[i] == 0` count as SAD zero (pass `u16::MAX`
     /// for blocks that count). `rows` selects exact or row-subsampled SADs.
     ///
     /// # Panics
@@ -910,7 +911,7 @@ impl Dsp {
         src: &PlaneView<'_>,
         reference: &PlaneView<'_>,
         position: (usize, usize),
-        visible: &[u32; 64],
+        visible: &[u16; 64],
         rows: GridRows,
         best: &mut GridBest,
         tag: u32,
@@ -942,7 +943,7 @@ impl Dsp {
         src: &PlaneView<'_>,
         reference: &PlaneView<'_>,
         positions: [(usize, usize); 4],
-        visible: &[u32; 64],
+        visible: &[u16; 64],
         rows: GridRows,
         best: &mut GridBest,
         tags: [u32; 4],
@@ -1752,21 +1753,21 @@ impl Dsp {
         }
     }
 
-    /// Add a packed i32 residual (or DC constant) to prediction and store clipped
+    /// Add a packed i16 residual (or DC constant) to prediction and store clipped
     /// pixels directly into the destination plane, without an intermediate block.
     ///
     /// # Panics
     /// If either view or the residual does not cover `size`.
-    pub fn reconstruct_i32(
+    pub fn reconstruct_i16(
         &self,
         size: BlockSize,
         prediction: &PlaneView<'_>,
-        residual: crate::Residual32<'_>,
+        residual: crate::Residual16<'_>,
         dst: &mut PlaneViewMut<'_>,
     ) {
         check_covers(size, prediction, "prediction");
         check_covers(size, &dst.as_view(), "destination");
-        if let crate::Residual32::Samples(r) = residual {
+        if let crate::Residual16::Samples(r) = residual {
             assert!(r.len() >= size.width() * size.height());
         }
         let ds = dst.stride();
@@ -3310,7 +3311,7 @@ impl Dsp {
     /// `coeffs` holds the coded area column-major (coefficient (row `r`,
     /// column `c`) at `c * tx.coded_height() + r`) and `eob` is the
     /// end-of-block of the scan (0 adds nothing). Square `DCT_DCT` runs the
-    /// tuned DCT kernels, using `eob` to pick the EOB-sparse 32/64 graphs.
+    /// tuned DCT kernels, using `eob` to pick the EOB-sparse 16/32/64 graphs.
     ///
     /// # Panics
     ///
@@ -3352,11 +3353,13 @@ impl Dsp {
         // is not uniformly faster (AVX2 8x8 measured +11% instructions).
         if kind == Av1TxType::DctDct && width == height {
             match DctSize::from_side(width) {
-                Some(size) if width <= 16 => self.av1_inverse_dct_add(size, coeffs, dst),
+                Some(size) if width <= 8 => self.av1_inverse_dct_add(size, coeffs, dst),
+                // 16x16 with eob <= 36 runs the low-8 graph: half the row
+                // transforms and half the inputs of each 1-D transform.
                 _ => self.av1_inverse_dct_add_sparse(
                     width,
                     coeffs,
-                    crate::av1_inverse::av1_dct_nonzero_side(eob),
+                    crate::av1_inverse::av1_dct_nonzero_side(eob).min(width),
                     dst,
                 ),
             }
@@ -3384,6 +3387,102 @@ impl Dsp {
                 stride,
             );
         }
+    }
+
+    /// [`Dsp::av1_inverse_add`] on 16-bit coefficients, the 8-bit decoder's
+    /// storage (§7.12.3 clamps dequantised values to `BitDepth + 8` bits).
+    /// The coefficients may be zeroed. `eob` must cover every nonzero
+    /// coefficient of the scan (as decoded), since the kernels skip by it.
+    ///
+    /// Where [`Dsp::av1_inverse_i16_is_dav1d`] (NEON), dav1d's assembly runs
+    /// it: equal to libaom on every conformant block (§7.13.3), dav1d's
+    /// 16-bit saturation otherwise ([`av1_inverse_add_i16_dav1d_reference`]).
+    /// Elsewhere it equals [`Dsp::av1_inverse_add`] for the same values.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dsp::av1_inverse_add`].
+    pub fn av1_inverse_add_i16(
+        &self,
+        tx: Av1TxSize,
+        kind: Av1TxType,
+        coeffs: &mut [i16],
+        eob: usize,
+        dst: &mut PlaneViewMut<'_>,
+    ) {
+        assert!(kind.fits(tx), "{kind:?} is not defined for {tx:?}");
+        let (width, height) = (tx.width(), tx.height());
+        assert!(
+            coeffs.len() >= tx.coded_area(),
+            "{} coefficients for a {width}x{height} transform",
+            coeffs.len()
+        );
+        assert!(
+            dst.width() >= width && dst.height() >= height,
+            "destination {}x{} is smaller than {width}x{height}",
+            dst.width(),
+            dst.height()
+        );
+        if eob == 0 {
+            return;
+        }
+        let stride = dst.stride();
+        let index = tx.index().expect("valid size (checked by fits)");
+        if let Some(direct) = self.av1_inverse.direct_i16[index][kind as usize] {
+            let last = i32::try_from(eob.min(tx.coded_area()) - 1).expect("at most 1024");
+            // SAFETY: the table holds dav1d's NEON functions only on AArch64
+            // NEON. Their contract: `dst` addresses `height` rows of `width`
+            // writable bytes at `stride` (checked above for the view),
+            // `coeffs` holds the coded area column-major and is read and
+            // zeroed only inside it (length checked above; NEON loads need
+            // no alignment), and `last` is a scan index inside the area.
+            unsafe {
+                direct(
+                    dst.data_mut().as_mut_ptr(),
+                    stride as isize,
+                    coeffs.as_mut_ptr(),
+                    last,
+                );
+            }
+            return;
+        }
+        if kind == Av1TxType::DctDct && eob == 1 {
+            // SAFETY: supported ISA and validated destination; DC is clamped
+            // identically to the full graph before either transform pass.
+            unsafe { (self.av1_inverse.dc)(tx, i32::from(coeffs[0]), dst.data_mut(), stride) };
+            return;
+        }
+        // A square DCT_DCT passes the side of its nonzero low square (the
+        // table's contract), other transforms their nonzero rows.
+        let nonzero_rows = if kind == Av1TxType::DctDct && width == height {
+            crate::av1_inverse::av1_dct_nonzero_side(eob).min(tx.coded_height())
+        } else if height == 4 || eob >= tx.coded_area() {
+            tx.coded_height()
+        } else {
+            crate::av1_inverse::av1_inverse_nonzero_rows(tx, kind, eob)
+        };
+        let (vertical, horizontal) = kind.kernels();
+        // SAFETY: the table was built for this CPU's ISA (`with_isa`); the
+        // lengths were checked above (the kernels also index with checks).
+        unsafe {
+            (self.av1_inverse.add_i16[index])(
+                vertical,
+                horizontal,
+                coeffs,
+                nonzero_rows,
+                dst.data_mut(),
+                stride,
+            );
+        }
+    }
+
+    /// Whether [`Dsp::av1_inverse_add_i16`] runs dav1d's assembly for `kind`
+    /// at `tx` (so [`av1_inverse_add_i16_dav1d_reference`] is its
+    /// reference).
+    #[must_use]
+    pub fn av1_inverse_i16_is_dav1d(&self, tx: Av1TxSize, kind: Av1TxType) -> bool {
+        tx.index()
+            .is_some_and(|index| self.av1_inverse.direct_i16[index][kind as usize].is_some())
     }
 
     /// AV1 lossless inverse 4x4 Walsh–Hadamard transform (§7.13.2.10) of
@@ -3445,9 +3544,9 @@ impl Dsp {
         unsafe { (self.txfm.inverse_dct_add_64)(coeffs, dst.data_mut(), stride) }
     }
 
-    /// AV1 large inverse with EOB-proven structural zeros. `side` is32 or64;
-    /// `nonzero_side` is8,16 or32, and coefficients outside that square must
-    /// be zero. This is a semantic promise for matching the full inverse,
+    /// AV1 inverse `DCT_DCT` with EOB-proven structural zeros. `side` is 16,
+    /// 32 or 64; `nonzero_side` is 8, 16 or 32 (at most the coded side), and
+    /// coefficients outside that square must be zero. This is a semantic promise for matching the full inverse,
     /// not a memory-safety precondition: all coefficient values remain safe.
     /// Full inverse methods remain available without this promise.
     ///
@@ -3460,18 +3559,16 @@ impl Dsp {
         nonzero_side: usize,
         dst: &mut PlaneViewMut<'_>,
     ) {
-        assert!(matches!(side, 32 | 64));
-        assert!(matches!(nonzero_side, 8 | 16 | 32));
-        assert!(coeffs.len() >= 1024 && dst.width() >= side && dst.height() >= side);
+        assert!(matches!(side, 16 | 32 | 64));
+        let coded = side.min(crate::AV1_MAX_CODED_SIDE);
+        assert!(matches!(nonzero_side, 8 | 16 | 32) && nonzero_side <= coded);
+        assert!(coeffs.len() >= coded * coded && dst.width() >= side && dst.height() >= side);
         let stride = dst.stride();
+        // The table starts at the 16x16: index log2(side / 16).
+        let index = (side / 16).trailing_zeros() as usize;
         // SAFETY: ISA checked at table installation; dimensions validated above.
         unsafe {
-            (self.txfm.inverse_dct_add_sparse[usize::from(side == 64)])(
-                coeffs,
-                dst.data_mut(),
-                stride,
-                nonzero_side,
-            );
+            (self.txfm.inverse_dct_add_sparse[index])(coeffs, dst.data_mut(), stride, nonzero_side);
         }
     }
 
@@ -3562,13 +3659,13 @@ impl Dsp {
     }
 
     /// AV2 normative inverse DCT (AVM `inv_txfm_c`) of the coded row-major
-    /// `coeffs` (clamped to 16 bits on load) into the row-major `n`x`n`
-    /// residual `out`, each sample within `-256..=255`.
+    /// 16-bit `coeffs` into the row-major `n`x`n` residual `out`, each
+    /// sample within `-256..=255`.
     ///
     /// # Panics
     ///
     /// If `coeffs.len() < size.coded_area()` or `out.len() < n * n`.
-    pub fn av2_inverse(&self, size: Av2TxSize, coeffs: &[i32], out: &mut [i32]) {
+    pub fn av2_inverse(&self, size: Av2TxSize, coeffs: &[i16], out: &mut [i16]) {
         self.av2_inverse_corner(size, coeffs, size.coded_side(), out);
     }
 
@@ -3584,9 +3681,9 @@ impl Dsp {
     pub fn av2_inverse_corner(
         &self,
         size: Av2TxSize,
-        coeffs: &[i32],
+        coeffs: &[i16],
         nonzero: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         check_coeffs(size.coded_side(), coeffs.len());
         check_coeffs(size.side(), out.len());
@@ -3646,8 +3743,8 @@ impl Dsp {
         &self,
         size: Av2TxSize,
         tx_type: Av2TxType,
-        coeffs: &[i32],
-        out: &mut [i32],
+        coeffs: &[i16],
+        out: &mut [i16],
     ) {
         self.av2_inverse_typed_corner(size, tx_type, coeffs, size.coded_side(), out);
     }
@@ -3662,9 +3759,9 @@ impl Dsp {
         &self,
         size: Av2TxSize,
         tx_type: Av2TxType,
-        coeffs: &[i32],
+        coeffs: &[i16],
         nonzero: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         if tx_type == Av2TxType::DCT {
             self.av2_inverse_corner(size, coeffs, nonzero, out);
@@ -3839,7 +3936,7 @@ impl Dsp {
     pub fn hevc_inverse_add(
         &self,
         transform: HevcTransform,
-        coeffs: &[i32],
+        coeffs: &[i16],
         extent: (usize, usize),
         dst: &mut PlaneViewMut<'_>,
     ) {
@@ -3865,13 +3962,15 @@ impl Dsp {
         }
     }
 
-    /// HEVC normative inverse transform (§8.6.4.2) of row-major `coeffs`
-    /// (clamped to 16 bits on load) into the row-major residual `out`.
+    /// HEVC normative inverse transform (§8.6.4.2) of row-major 16-bit
+    /// `coeffs` (the scaling process's range, §8.6.3) into the row-major
+    /// residual `out`, which always fits 16 bits (the first pass clamps;
+    /// `codec_txfm::generic` module docs).
     ///
     /// # Panics
     ///
     /// If `coeffs` or `out` is shorter than `n * n`.
-    pub fn hevc_inverse(&self, transform: HevcTransform, coeffs: &[i32], out: &mut [i32]) {
+    pub fn hevc_inverse(&self, transform: HevcTransform, coeffs: &[i16], out: &mut [i16]) {
         let n = transform.side();
         check_coeffs(n, coeffs.len());
         check_coeffs(n, out.len());
@@ -3913,7 +4012,7 @@ impl Dsp {
     /// # Panics
     ///
     /// If `out` is shorter than `levels`.
-    pub fn hevc_dequantize(&self, levels: &[i32], q: &HevcQuantizer, out: &mut [i32]) {
+    pub fn hevc_dequantize(&self, levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
         assert!(
             out.len() >= levels.len(),
             "dequantise output shorter than input"
@@ -3947,7 +4046,7 @@ impl Dsp {
     /// kernels implement the same scaling, including VVC's extended QP range.
     /// # Panics
     /// If `out` is shorter than `levels`.
-    pub fn vvc_dequantize(&self, levels: &[i32], q: &crate::VvcQuantizer, out: &mut [i32]) {
+    pub fn vvc_dequantize(&self, levels: &[i32], q: &crate::VvcQuantizer, out: &mut [i16]) {
         self.hevc_dequantize(levels, &q.0, out);
     }
 
@@ -3964,7 +4063,7 @@ impl Dsp {
         levels: &[i32],
         qp: u8,
         dependent: bool,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         crate::codec_txfm::vvc_inverse::inverse(self, width, height, levels, qp, dependent, out);
     }
@@ -4304,7 +4403,7 @@ impl Dsp {
     /// does not cover the region.
     pub fn h264_add_scaled_4x4(
         &self,
-        coeffs: &[[i32; 16]],
+        coeffs: &[[i16; 16]],
         blocks_wide: usize,
         dst: &mut PlaneViewMut<'_>,
     ) {
@@ -4337,7 +4436,7 @@ impl Dsp {
     /// If `dst` is smaller than 16x16.
     pub fn h264_add_scaled_mb(
         &self,
-        coeffs: &[[i32; 16]; 16],
+        coeffs: &[[i16; 16]; 16],
         coded: u16,
         ac: u16,
         dst: &mut PlaneViewMut<'_>,
@@ -4358,7 +4457,7 @@ impl Dsp {
     /// # Panics
     ///
     /// If `dst` is smaller than 8x8.
-    pub fn h264_add_scaled_8x8(&self, coeffs: &[i32; 64], dst: &mut PlaneViewMut<'_>) {
+    pub fn h264_add_scaled_8x8(&self, coeffs: &[i16; 64], dst: &mut PlaneViewMut<'_>) {
         assert!(
             dst.width() >= 8 && dst.height() >= 8,
             "destination smaller than 8x8"
@@ -5902,15 +6001,15 @@ impl Dsp {
         &self.av1_lr
     }
 
-    /// Apply AV1 grain to a luma row. Grain is in -128..=127; `scaling` is
-    /// the plane's scaling function. Writes exactly `source.len()` pixels.
+    /// Apply AV1 grain to a luma row (8-bit grain, `GrainMin..=GrainMax`);
+    /// `scaling` is the plane's scaling function. Writes exactly `source.len()` pixels.
     ///
     /// # Panics
     /// Panics for short buffers or reversed clipping bounds.
     pub fn av1_grain_luma_row(
         &self,
         source: &[u8],
-        grain: &[i16],
+        grain: &[i8],
         scaling: &crate::av1_film_grain::Av1GrainScaling,
         bounds: [u8; 2],
         out: &mut [u8],
@@ -5936,7 +6035,7 @@ impl Dsp {
         &self,
         source: &[u8],
         luma: &[u8],
-        grain: &[i16],
+        grain: &[i8],
         scaling: &crate::av1_film_grain::Av1GrainScaling,
         bounds: [u8; 2],
         coefficients: [i16; 3],
@@ -5959,12 +6058,12 @@ impl Dsp {
         }
     }
 
-    /// Blend grain overlap samples in -128..=127 with AV1's weights:
+    /// Blend 8-bit grain overlap samples with AV1's weights:
     /// `[27, 17]`, `[17, 27]`, or `[23, 22]`.
     ///
     /// # Panics
     /// Panics if `old` is shorter than `new`, or weights are invalid.
-    pub fn av1_grain_blend_row(&self, old: &[i16], new: &mut [i16], weights: [i16; 2]) {
+    pub fn av1_grain_blend_row(&self, old: &[i8], new: &mut [i8], weights: [i16; 2]) {
         assert!(old.len() >= new.len());
         assert!(matches!(weights, [27, 17] | [17, 27] | [23, 22]));
         // SAFETY: table is selected for this CPU and buffers checked.
@@ -6104,4 +6203,31 @@ impl Dsp {
             (self.copy_plane)(src.data(), src.stride(), dst.data_mut(), ds, w, h);
         }
     }
+}
+
+/// Whether dav1d's NEON assembly, and so its scalar model
+/// ([`av1_inverse_add_i16_dav1d_reference`]), has `kind` at `tx`.
+#[must_use]
+pub fn av1_inverse_has_dav1d_model(tx: Av1TxSize, kind: Av1TxType) -> bool {
+    crate::av1_inverse::dav1d_model::supports(tx, kind)
+}
+
+/// The scalar reference of dav1d's NEON inverse transforms (the
+/// [`Dsp::av1_inverse_add_i16`] path where [`Dsp::av1_inverse_i16_is_dav1d`]):
+/// the same result on every input, conformant or not, and the same
+/// coefficients zeroed.
+///
+/// # Panics
+///
+/// If dav1d has no such transform, `eob` is 0, or a buffer is too small.
+pub fn av1_inverse_add_i16_dav1d_reference(
+    tx: Av1TxSize,
+    kind: Av1TxType,
+    coeffs: &mut [i16],
+    eob: usize,
+    dst: &mut PlaneViewMut<'_>,
+) {
+    assert!(dst.width() >= tx.width() && dst.height() >= tx.height());
+    let stride = dst.stride();
+    crate::av1_inverse::dav1d_model::inverse_add(tx, kind, coeffs, eob, dst.data_mut(), stride);
 }

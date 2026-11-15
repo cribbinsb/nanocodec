@@ -15,7 +15,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                 })
                 .collect();
             let luma: Vec<u8> = (0..=2 * len).map(|_| rng.byte()).collect();
-            let grain: Vec<i16> = (0..=len)
+            let grain: Vec<i8> = (0..=len)
                 .map(|i| match pattern {
                     1 => -128,
                     2 => 127,
@@ -26,14 +26,14 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                             127
                         }
                     }
-                    _ => i16::from(rng.byte()) - 128,
+                    _ => rng.byte().wrapping_sub(128) as i8,
                 })
                 .collect();
             let scaling = core::array::from_fn(|i| match pattern {
                 1 => 0,
                 2 => 255,
-                3 => i as i32,
-                _ => i32::from(rng.byte()),
+                3 => i as u8,
+                _ => rng.byte(),
             });
             for shift in 8..=11 {
                 let scaling = Av1GrainScaling::new(&scaling, shift);
@@ -105,18 +105,18 @@ fn compare<T: PartialEq>(actual: &[T], expected: &[T], kind: &str, report: &mut 
 fn check_blend(
     candidate: &Dsp,
     reference: &Dsp,
-    grain: &[i16],
+    grain: &[i8],
     len: usize,
     rng: &mut Rng,
     report: &mut CheckReport,
 ) {
     for weights in [[27, 17], [17, 27], [23, 22]] {
-        let mut expected: Vec<i16> = (0..len + 4)
+        let mut expected: Vec<i8> = (0..len + 4)
             .map(|i| {
                 if i == 0 || i > len {
-                    1234
+                    0x5a
                 } else {
-                    i16::from(rng.byte()) - 128
+                    rng.byte().wrapping_sub(128) as i8
                 }
             })
             .collect();

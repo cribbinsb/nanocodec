@@ -9,26 +9,23 @@ use crate::simd::LOOKUP_TABLE;
 mod generic;
 
 /// A plane's scaling function for one frame (AV1 §7.18.3.4): the lookup
-/// (0..=255 per sample value) and `ScalingShift` (8..=11), with the same
-/// lookup pre-scaled to the SIMD kernels' Q15 multiply, `scaling << (15 -
-/// shift)` (at most `255 << 7`, so it fits `i16`), built once per frame
-/// rather than shifted per sample.
+/// (0..=255 per sample value, as dav1d's `uint8_t` table; NEON's `tbl`
+/// reads it directly) and `ScalingShift` (8..=11), with the same lookup
+/// pre-scaled to the SIMD kernels' Q15 multiply, `scaling << (15 - shift)`
+/// (at most `255 << 7`, so it fits `i16`), built once per frame rather than
+/// shifted per sample.
 #[derive(Debug, Clone)]
 pub struct Av1GrainScaling {
-    lut: [i32; 256],
+    lut: [u8; 256],
     #[cfg_attr(
         target_arch = "aarch64",
-        allow(dead_code, reason = "NEON reads `bytes`")
+        allow(dead_code, reason = "NEON looks up `lut`")
     )]
     q15: [i16; LOOKUP_TABLE],
-    /// The lookup as bytes, for table-lookup instructions (NEON `tbl`).
-    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code, reason = "NEON only"))]
-    bytes: [u8; 256],
     shift: u8,
 }
 
-/// The largest scaling value and the Q15 multiply's precision.
-const MAX_SCALING: i32 = 255;
+/// The Q15 multiply's precision.
 const Q15: u8 = 15;
 
 impl Av1GrainScaling {
@@ -36,15 +33,13 @@ impl Av1GrainScaling {
     ///
     /// # Panics
     ///
-    /// If `shift` is not 8..=11 or a lookup value is outside 0..=255.
+    /// If `shift` is not 8..=11.
     #[must_use]
-    pub fn new(lut: &[i32; 256], shift: u8) -> Self {
+    pub fn new(lut: &[u8; 256], shift: u8) -> Self {
         assert!((8..=11).contains(&shift), "grain scaling shift {shift}");
-        assert!(lut.iter().all(|v| (0..=MAX_SCALING).contains(v)));
         Self {
             lut: *lut,
-            q15: core::array::from_fn(|i| lut.get(i).map_or(0, |v| (v << (Q15 - shift)) as i16)),
-            bytes: lut.map(|v| v as u8),
+            q15: core::array::from_fn(|i| lut.get(i).map_or(0, |&v| i16::from(v) << (Q15 - shift))),
             shift,
         }
     }
@@ -56,9 +51,9 @@ mod wasm;
 #[cfg(target_arch = "x86_64")]
 mod x86;
 
-type LumaFn = unsafe fn(&[u8], &[i16], &Av1GrainScaling, [u8; 2], &mut [u8]);
-type ChromaFn = unsafe fn(&[u8], &[u8], &[i16], &Av1GrainScaling, [u8; 2], [i16; 3], &mut [u8]);
-type BlendFn = unsafe fn(&[i16], &mut [i16], [i16; 2]);
+type LumaFn = unsafe fn(&[u8], &[i8], &Av1GrainScaling, [u8; 2], &mut [u8]);
+type ChromaFn = unsafe fn(&[u8], &[u8], &[i8], &Av1GrainScaling, [u8; 2], [i16; 3], &mut [u8]);
+type BlendFn = unsafe fn(&[i8], &mut [i8], [i16; 2]);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Kernels {
@@ -83,14 +78,14 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
     }
 }
 
-fn apply(original: u8, grain: i16, scale: i32, shift: u8, bounds: [u8; 2]) -> u8 {
-    let noise = (scale * i32::from(grain) + (1 << (shift - 1))) >> shift;
+fn apply(original: u8, grain: i8, scale: u8, shift: u8, bounds: [u8; 2]) -> u8 {
+    let noise = (i32::from(scale) * i32::from(grain) + (1 << (shift - 1))) >> shift;
     (i32::from(original) + noise).clamp(i32::from(bounds[0]), i32::from(bounds[1])) as u8
 }
 
 pub(super) fn luma(
     source: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     out: &mut [u8],
@@ -109,7 +104,7 @@ pub(super) fn luma(
 pub(super) fn chroma(
     source: &[u8],
     luma: &[u8],
-    grain: &[i16],
+    grain: &[i8],
     scaling: &Av1GrainScaling,
     bounds: [u8; 2],
     coefficients: [i16; 3],
@@ -125,12 +120,12 @@ pub(super) fn chroma(
     }
 }
 
-pub(super) fn blend(old: &[i16], new: &mut [i16], weights: [i16; 2]) {
+pub(super) fn blend(old: &[i8], new: &mut [i8], weights: [i16; 2]) {
     for (&previous, next) in old.iter().zip(new) {
         *next = ((i32::from(previous) * i32::from(weights[0])
             + i32::from(*next) * i32::from(weights[1])
             + 16)
             >> 5)
-            .clamp(-128, 127) as i16;
+            .clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
     }
 }

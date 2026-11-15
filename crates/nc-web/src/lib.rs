@@ -156,6 +156,7 @@ pub struct BrowserEncoder {
     /// The colour the stream signals, which every input must have.
     matrix: DisplayMatrix,
     key: bool,
+    temporal_layer: u8,
     quantizer: u32,
     /// The last input repeated the picture (`hold.rs`) or was dropped:
     /// nothing was coded, and the decoder keeps showing its last frame.
@@ -320,6 +321,7 @@ impl BrowserEncoder {
             height,
             matrix,
             key: false,
+            temporal_layer: 0,
             quantizer: qp,
             repeat: false,
         })
@@ -358,6 +360,7 @@ impl BrowserEncoder {
         let frame = self.inner.encode(picture, timestamp_us);
         self.repeat = frame.metadata.held || frame.metadata.dropped;
         self.key = frame.metadata.frame_type == FrameType::Key && !self.repeat;
+        self.temporal_layer = frame.metadata.temporal_layer;
         if !self.repeat {
             self.quantizer = frame.metadata.quantizer;
         }
@@ -455,6 +458,13 @@ impl BrowserEncoder {
     #[wasm_bindgen(getter)]
     pub fn key(&self) -> bool {
         self.key
+    }
+
+    /// Temporal layer (`0..=2`) of the last encoded packet (`0` on flat streams).
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn temporal_layer(&self) -> u8 {
+        self.temporal_layer
     }
 }
 
@@ -1549,6 +1559,41 @@ mod input_tests {
                     assert!(ext_decoders[op].psnr(&packed).unwrap() > 16.0);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn browser_encoder_reports_l1t3_temporal_layers() {
+        let (width, height) = (128, 96);
+        for (codec, qp) in [("av1", 140), ("vp9", 140)] {
+            let mut encoder = BrowserEncoder::new(
+                codec,
+                width,
+                height,
+                qp,
+                30,
+                30,
+                "default",
+                Some("layers.count=3\nlayers.adaptive=0\nhold.enable=0".to_owned()),
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+            let mut decoder = BrowserDecoder::new(codec).unwrap();
+            let mut seen = Vec::new();
+            for frame in 0..5 {
+                let rgba: Vec<u8> = (0..4 * width * height)
+                    .map(|i| (i * 13 + i / 17 + frame * 31) as u8)
+                    .collect();
+                let (source, _packed) = source_of(width, height, &rgba);
+                let packet = encoder.encode(&source).unwrap();
+                seen.push(encoder.temporal_layer());
+                if encoder.temporal_layer() <= 1 {
+                    decoder.decode(&packet).unwrap();
+                }
+            }
+            assert_eq!(seen, vec![0, 2, 1, 2, 0]);
         }
     }
 }

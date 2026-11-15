@@ -132,7 +132,7 @@ impl BlockAq {
             pre.blocks
                 .cells()
                 .iter()
-                .map(|b| b.sad_prev.unwrap_or(b.sum_sq_dev) as f32),
+                .map(|b| b.sad_prev.map_or(b.sum_sq_dev, u32::from) as f32),
         );
         for weight in &mut self.bit_weight {
             *weight = 1. + weight.sqrt();
@@ -353,7 +353,7 @@ fn pool_units(values: &mut [f64], cols: usize, unit_log2: u8) {
 /// Expected share of the frame's bits of a cell: its residual activity,
 /// temporal where the pre-analysis has a previous frame, spatial otherwise.
 fn bit_weight(block: &BlockStats) -> f32 {
-    1. + (block.sad_prev.unwrap_or(block.sum_sq_dev) as f32).sqrt()
+    1. + (block.sad_prev.map_or(block.sum_sq_dev, u32::from) as f32).sqrt()
 }
 
 /// `(width, height)` of `block` in cells (at least one each).

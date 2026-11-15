@@ -236,3 +236,68 @@ decoder (`landing_conformance.py --param`, 21/21 streams each). It landed off in
 Not levers at fixed QP on the pool: hierarchical P for HEVC (+2.3) and VVC (-0.7, ambiguous), the chroma
 policy (J-neutral), λ moves, the planner's rectangle RD for H.264/HEVC (no effect), and coded split
 decisions (above).
+
+## 5. The fixed-QP profile (2026-11-14/15)
+
+`CodecBackend::FIXED_QP_PARAMS`: per-codec defaults that apply only with `rate.fixed_qp_profile`,
+which the CLI sets for `--qp` without `--bitrate`. They give a static, content-independent frame
+pattern for coding without rate control. CBR is unchanged, and a preset may pin the profile off
+(the HEVC Fast presets do). Landing conformance gained a `fixedqp` case for every shipped preset.
+Adoption evidence: `nceval.fixedqp` on two pool draws (`fixedqp-2026-11-14` and
+`fixedqp-2026-11-14-second`), plus the AOM CTC LD lens run locally (`nceval.ctc local`).
+
+### Static frame patterns at fixed QP (J against each codec's Default, 15-16 clips)
+
+The reference patterns are transcribed from their configs. JVET/VVenC LD-P (GOP 8, QP offsets 1/4/5 +
+QPOffsetModel, IntraQPOffset -1) maps to our period 8, base -6 (with the model at our QPs) or -3,
+odd +1. libaom LD (16-frame pyramid, fixed offsets) is approximated as period 16, base -8.
+x264/x265 IPPP is flat P with the key ipratio 1.4 (about -3 QP). libvpx rt at fixed q is flat.
+SVT M12 rtc flat IPP is our period-4 cadence. The key offset of the reference patterns is at the
+nearest our parameters reach (AV1 `keyframe_step_permille` 500, HEVC `key_qp_offset_delta` -6,
+H.264 `keyframe_qp_offset` 3/0/6).
+
+| Pattern | AV1 | HEVC | H.264 (flat for the patterns; its Default is layered) |
+|---|---:|---:|---:|
+| ours, SVT-style period 4, strength fixed, no start-up cadence | -0.7 | -0.8 |
+| x264 / x265 IPPP | +6.0 | +5.8 |
+| libvpx flat | (same as x26x at AV1's key limit) | +5.8 |
+| JVET / VVenC LD-P, with the QP model | +14.7 | +5.1 |
+| JVET LD-P, without the model | +3.6 | +1.5 |
+| libaom LD 16 | +18.6 | +7.3 |
+| flat P, our key | +3.7 | |
+| our cadence at full (fixed) strength | +0.3 | **-1.1 [-2.1, +0.1]** |
+| no start-up cadence | -0.6 [-1.0, -0.1] (second draw **+0.6**) | +1.0 |
+| base boost 2 / period 8 boost 4 | -0.3 / -0.2 | |
+| coarser key | -0.3 | -0.5 (VMAF -2.0) |
+| base λ x0.9 / x0.8; leaf λ x1.2 | -0.2 / 0.0; +0.2 | +0.1 / +0.2; +0.3 |
+| non-base frames at the Fast preset's search | +1.3 | +2.0 |
+| leaf loop-filter scale 0.8 / 1.2 (AV1); leaf deblocking off (HEVC) | -0.1 / 0.0 | +4.1 |
+| adaptive references: 3 adaptive layers | +0.5 | |
+| adaptive references: second reference (full) | -2.2 [-4.5, -0.2] | n/a (HEVC port with another agent) |
+
+Our period-4 cadence beats every reference encoder's static pattern on the pool. The deep GOP-8
+and pyramid offsets that pay in the CTCs (with B-pictures and 4 references) cost 4-19 % here, with one
+reference and 150-frame windows. HM/VTM LD-P use QPFactor 1.0 and zero per-entry deblocking offsets,
+so λ follows QP and there is no loop-filter pattern to copy.
+
+**AV1:** no profile. The one single-draw win (no start-up cadence, -0.6) reversed on the second draw
+(+0.6), and combinations did not stack.
+
+**HEVC profile (landed): `rate.cadence_static_scaling` 0.** Draw 1: J -1.1 [-2.1, +0.1]. Draw 2:
+-1.0 [-2.0, -0.2]. AOM CTC LD lens, paired with the Default: Weighted +0.1, J -1.4 (PSNR-YUV -1.6,
+VMAF -1.1, MS-SSIM -2.2). HEVC Default against x264 medium on the lens: J -23.7 -> -23.7 (the
+Weighted figure -11.8 -> -10.8; J's three terms improve). CPU is unchanged. Strict CTC column
+(static structure and references) = adaptive-refs column for HEVC: the profile uses the static
+strength and the Default's flat single reference.
+
+**AV1 second reference by cadence level** (fixed QP; Jetson cycles; measurement switch on a branch,
+not landed: the unified-structure work owns the mechanism): all frames full -2.1 J / +17.9 %;
+base frames only -1.8 / +5.7 %; leaves cheap -1.8 / +13.7 %; leaves only -1.5 / +13.2 %; all cheap
+-1.2 / +12.7 %.
+
+**H.264 profile (landed): leaf penalty 2, cadence scale 1 (CBR Default 1.4), base λ x0.8, key 8 QP finer
+(was 6).** Each alone at fixed QP: -0.6, -0.6, -0.5, -0.9 (draw 1). Together: draw 1 J -1.9 [-2.9, -0.8],
+draw 2 -2.9 [-4.6, -1.6]. AOM CTC LD lens, paired: J -1.0, Weighted -0.1 (VMAF -2.0). H.264 Default vs x264
+medium on the lens: J -2.8 -> -4.0, Weighted +5.4 -> +5.4. The reference patterns on H.264 (flat
+structure): SVT-static +4.2, x26x +7.9, libvpx flat +14.5, JVET +8.7 / +2.1 without the model, libaom
+LD16 +12.7; the Default's adaptive three layers stay (they are the reference management).

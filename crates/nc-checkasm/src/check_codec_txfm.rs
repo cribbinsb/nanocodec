@@ -145,9 +145,9 @@ fn check_hevc_transform(
         let peak = basis_signs(n, stride, rng);
         check_hevc_forward_modes(candidate, reference, transform, &peak, stride, rng, report);
     }
-    let coeffs = coefficients(n * n, mode, rng);
+    let coeffs = clamped16(&coefficients(n * n, mode, rng));
     let inverse = |dsp: &Dsp| {
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         dsp.hevc_inverse(transform, &coeffs, &mut out);
         out
     };
@@ -165,7 +165,7 @@ fn check_hevc_transform(
         }
     }
     let inverse = |dsp: &Dsp| {
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         dsp.hevc_inverse(transform, &corner, &mut out);
         out
     };
@@ -196,18 +196,19 @@ fn check_hevc_inverse_add(
         (rng.below(n + 1), rng.below(n + 1)),
     ] {
         let (rows, columns) = (rows.min(n), columns.min(n));
+        // The decoder's 16-bit storage.
         let mut coeffs = if mode == 4 {
             (0..n * n)
                 .map(|i| {
                     if i.is_multiple_of(2) {
-                        i32::MIN
+                        i16::MIN
                     } else {
-                        i32::MAX
+                        i16::MAX
                     }
                 })
                 .collect()
         } else {
-            coefficients(n * n, mode, rng)
+            clamped16(&coefficients(n * n, mode, rng))
         };
         for (i, c) in coeffs.iter_mut().enumerate() {
             if i / n >= rows || i % n >= columns {
@@ -222,7 +223,8 @@ fn check_hevc_inverse_add(
         for y in 0..n {
             for x in 0..n {
                 let at = 1 + y * stride + x;
-                expected[at] = (i32::from(expected[at]) + residual[y * n + x]).clamp(0, 255) as u8;
+                expected[at] =
+                    (i32::from(expected[at]) + i32::from(residual[y * n + x])).clamp(0, 255) as u8;
             }
         }
         // The corner itself (as a decoder passes it) and an over-estimate.
@@ -312,13 +314,14 @@ fn check_av2_transform(
     record(report, isa, same, || {
         format!("av2_forward {size:?} mode={mode} stride={stride}")
     });
-    // Beyond 16 bits too: the inverse clamps its input (AVM `clamp_buf`).
-    let coeffs: Vec<i32> = coefficients(coded, mode, rng)
+    // Saturated from beyond 16 bits too, so the extremes of the 16-bit
+    // input (the dequantiser's clamp, AVM `clamp_buf`) are covered.
+    let coeffs: Vec<i16> = coefficients(coded, mode, rng)
         .into_iter()
-        .map(|c| if mode == 1 { c * 4 } else { c })
+        .map(|c| saturate_i16(if mode == 1 { c * 4 } else { c }))
         .collect();
     let inverse = |dsp: &Dsp| {
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         dsp.av2_inverse(size, &coeffs, &mut out);
         out
     };
@@ -359,7 +362,7 @@ fn check_hevc_quant(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
         })
         .collect();
     let dequantize = |dsp: &Dsp| {
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         dsp.hevc_dequantize(&levels, &q, &mut out);
         out
     };
@@ -367,6 +370,14 @@ fn check_hevc_quant(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     record(report, isa, same, || {
         format!("hevc_dequantize qp={qp} log2={log2}")
     });
+}
+
+/// `values` clamped into 16-bit storage (the dequantiser's output range).
+fn clamped16(values: &[i32]) -> Vec<i16> {
+    values
+        .iter()
+        .map(|&c| c.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
+        .collect()
 }
 
 fn blocks<const N: usize>(count: usize, mode: usize, rng: &mut Rng) -> Vec<[i32; N]> {
@@ -578,12 +589,18 @@ fn check_h264_add_inverse(
             _ => {}
         }
     };
+    let narrow = |block: &[i32]| -> Vec<i16> { block.iter().map(|&c| c as i16).collect() };
     let mut coeffs = blocks::<16>(bw * bh, 2, rng);
     for block in &mut coeffs {
         scaled(block, rng);
     }
+    let coeffs: Vec<[i16; 16]> = coeffs
+        .iter()
+        .map(|b| narrow(b).try_into().expect("16 values"))
+        .collect();
     let mut coeffs8 = blocks::<64>(1, 2, rng)[0];
     scaled(&mut coeffs8, rng);
+    let coeffs8: [i16; 64] = narrow(&coeffs8).try_into().expect("64 values");
     let add_scaled = |dsp: &Dsp| {
         let mut four = pred.clone();
         let mut view = PlaneViewMut::new(&mut four, stride, 4 * bw, 4 * bh).expect("region");
@@ -600,7 +617,7 @@ fn check_h264_add_inverse(
     // The macroblock form with the caller's coded / AC masks: blocks
     // outside `coded` hold garbage the kernel must not read, blocks outside
     // `ac` only a DC.
-    let mut mb = [[0i32; 16]; 16];
+    let mut mb = [[0i16; 16]; 16];
     for (b, block) in mb.iter_mut().enumerate() {
         *block = coeffs[b % coeffs.len()];
     }
@@ -639,10 +656,13 @@ fn check_av2_inverse_corner(
     let (n, coded) = (size.side(), size.coded_area());
     let isa = candidate.isa();
     let mode = rng.below(4);
-    let coeffs = coefficients(coded, mode, rng);
+    let coeffs: Vec<i16> = coefficients(coded, mode, rng)
+        .into_iter()
+        .map(saturate_i16)
+        .collect();
     let side = size.coded_side();
     let corner = rng.below(side + 1);
-    let cornered: Vec<i32> = coeffs
+    let cornered: Vec<i16> = coeffs
         .iter()
         .enumerate()
         .map(|(i, &c)| {
@@ -654,7 +674,7 @@ fn check_av2_inverse_corner(
         })
         .collect();
     let read = size.inverse_read_side(corner);
-    let unread: Vec<i32> = cornered
+    let unread: Vec<i16> = cornered
         .iter()
         .zip(&coeffs)
         .enumerate()
@@ -666,11 +686,16 @@ fn check_av2_inverse_corner(
             }
         })
         .collect();
-    let mut partial = vec![0i32; n * n];
+    let mut partial = vec![0i16; n * n];
     candidate.av2_inverse_corner(size, &unread, corner, &mut partial);
-    let mut full = vec![0i32; n * n];
+    let mut full = vec![0i16; n * n];
     reference.av2_inverse(size, &cornered, &mut full);
     record(report, isa, partial == full, || {
         format!("av2_inverse_corner {size:?} mode={mode} corner={corner}")
     });
+}
+
+/// `value` saturated to `i16` (the AV2 inverse's 16-bit coefficients).
+fn saturate_i16(value: i32) -> i16 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }

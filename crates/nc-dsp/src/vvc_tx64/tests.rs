@@ -211,7 +211,6 @@ fn the_inverse_matches_the_general_inverse() {
             );
             let mut got = vec![0i16; BLOCK_AREA];
             dsp.vvc_inverse_dct64(&compact, qp, dependent, &mut got);
-            let got: Vec<i32> = got.into_iter().map(i32::from).collect();
             assert_eq!(got, expected, "pattern {pattern} qp {qp} {dependent}");
         }
     }

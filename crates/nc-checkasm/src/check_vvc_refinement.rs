@@ -183,7 +183,7 @@ fn optical(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckRe
             0 => [-31, 31],
             1 => [0, 0],
             2 => [if i % 2 == 0 { -31 } else { 31 }; 2],
-            _ => [rng.below(63) as i32 - 31, rng.below(63) as i32 - 31],
+            _ => [rng.below(63) as i8 - 31, rng.below(63) as i8 - 31],
         });
         let mut expected = [0; 16];
         let mut actual = [0; 16];

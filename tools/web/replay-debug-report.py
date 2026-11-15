@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from decimal import ROUND_FLOOR, Decimal, localcontext
 from pathlib import Path
 
 import numpy as np
@@ -156,13 +157,34 @@ def yuv(planes: list[float]) -> float:
     return sum(w * p for w, p in zip(PLANE_WEIGHTS, planes)) / sum(PLANE_WEIGHTS)
 
 
+def page_sum(values: list[float]) -> float:
+    """Left-to-right float sum, as the page's `reduce((s, v) => s + v, 0)` (Python 3.12's
+    `sum` compensates, and can differ in the last place)."""
+    total = 0.
+    for value in values:
+        total += value
+    return total
+
+
+def to_fixed(value: float, decimals: int) -> str:
+    """JavaScript `Number.prototype.toFixed`, which the page shows numbers with: the exact
+    binary value rounded, an exact tie to the larger neighbour (ECMA-262 §21.1.3.3).
+    Python's format rounds a tie to even, so a window whose mean encode time is exactly
+    68.25 ms (sums of the page's timings are often exact) showed 68.3 and was expected
+    as 68.2."""
+    with localcontext() as context:
+        context.prec = 400
+        scaled = (Decimal(value).scaleb(decimals) + Decimal('0.5')).to_integral_value(ROUND_FLOOR)
+        return f'{scaled.scaleb(-decimals):.{decimals}f}'
+
+
 def window_checks(view: dict) -> list[Check]:
     """The panel's bitrate, PSNR-YUV and times from the report's window, as the page computes them."""
     frames, fps, shown = view['window']['frames'], view['window']['fps'], view['shown']['metrics']
     if not frames:
         return []
     seconds = (frames[-1]['timestamp'] - frames[0]['timestamp'] + 1000 / fps) / 1000
-    mean = lambda key: (lambda values: sum(values) / len(values) if values else None)([f[key] for f in frames if f[key] is not None])
+    mean = lambda key: (lambda values: page_sum(values) / len(values) if values else None)([f[key] for f in frames if f[key] is not None])
     values = {'bitrate': sum(f['bytes'] for f in frames) * 8 / seconds / 1000, 'psnr': mean('psnr'),
               'encode': mean('encodeMs'), 'decode': mean('decodeMs')}
     checks = []
@@ -171,7 +193,7 @@ def window_checks(view: dict) -> list[Check]:
         if value is None:
             checks.append(Check(view['letter'], f'shown {key}', text, 'n/a', text in ('n/a', '—')))
             continue
-        expected = f'{value:.{SHOWN_DECIMALS[key]}f}'
+        expected = to_fixed(value, SHOWN_DECIMALS[key])
         checks.append(Check(view['letter'], f'shown {key}', text, expected, text == expected, view['window']['bitrateFormula'] if key == 'bitrate' else ''))
     return checks
 

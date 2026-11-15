@@ -9300,6 +9300,20 @@ pub(super) const IS_INTER: [Initial<2>; 4] = [
         rates: [2, 3, 4],
     },
 ];
+pub(super) const SINGLE_REF: [Initial<2>; 3] = [
+    Initial {
+        inverse: [6299, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [19137, 0],
+        rates: [2, 2, 3],
+    },
+    Initial {
+        inverse: [30169, 0],
+        rates: [2, 3, 4],
+    },
+];
 pub(super) const INTER_MODE: [Initial<3>; 5] = [
     Initial {
         inverse: [22725, 21668, 0],
@@ -13972,8 +13986,8 @@ pub(super) const BASE_LF_TCQ: [[[Initial<6>; 33]; 5]; 4] = [
 ];
 #[cfg(test)]
 pub(super) const TRACE_HASHES: [u64; 4] = [
-    13_581_021_817_837_484_525,
-    14_925_460_914_117_768_915,
-    228_047_278_519_162_027,
-    8_367_475_528_015_982_486,
+    8_503_839_295_564_221_736,
+    15_866_578_611_065_964_434,
+    3_512_761_540_360_319_826,
+    3_286_060_502_137_083_323,
 ];

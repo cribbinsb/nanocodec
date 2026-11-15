@@ -30,11 +30,12 @@ pub fn kind(log2: u8, intra_luma: bool) -> Option<nc_dsp::HevcTransform> {
 
 /// Constant reconstructed residual when the DCT has only a DC coefficient.
 /// Preserve both normative rounding stages and the intermediate clamp.
-pub fn inverse_dc(dc: i32) -> i32 {
+/// The result is at most 2^10 in magnitude (`64 · 2^15 >> 12`).
+pub fn inverse_dc(dc: i16) -> i16 {
     const DC_BASIS: i32 = 64;
-    let first =
-        ((DC_BASIS * dc + (1 << (INV_SHIFT_1 - 1))) >> INV_SHIFT_1).clamp(COEFF_MIN, COEFF_MAX);
-    (DC_BASIS * first + (1 << (INV_SHIFT_2 - 1))) >> INV_SHIFT_2
+    let first = ((DC_BASIS * i32::from(dc) + (1 << (INV_SHIFT_1 - 1))) >> INV_SHIFT_1)
+        .clamp(COEFF_MIN, COEFF_MAX);
+    ((DC_BASIS * first + (1 << (INV_SHIFT_2 - 1))) >> INV_SHIFT_2) as i16
 }
 
 /// Smallest and largest transform: 4x4 to 32x32.
@@ -334,17 +335,23 @@ mod tests {
         // larger SIMD transforms additionally cover both extrema and signs.
         let mut coeffs = [0; 16];
         let mut out = [0; 16];
-        for dc in -32768..=32767 {
-            coeffs[0] = dc;
+        for dc in i16::MIN..=i16::MAX {
+            coeffs[0] = i32::from(dc);
             inverse(2, &coeffs, &mut out);
-            assert!(out.iter().all(|&v| v == inverse_dc(dc)), "dc {dc}");
+            assert!(
+                out.iter().all(|&v| v == i32::from(inverse_dc(dc))),
+                "dc {dc}"
+            );
         }
         let dsp = nc_dsp::Dsp::new();
         for log2 in MIN_LOG2..=MAX_LOG2 {
             let n = 1usize << log2;
             let mut coeffs = vec![0; n * n];
             let mut out = vec![0; n * n];
-            for dc in (-32768..=32767).step_by(127).chain([32767, -1, 0, 1]) {
+            for dc in (i16::MIN..=i16::MAX)
+                .step_by(127)
+                .chain([i16::MAX, -1, 0, 1])
+            {
                 coeffs[0] = dc;
                 dsp.hevc_inverse(nc_dsp::HevcTransform::dct(log2).unwrap(), &coeffs, &mut out);
                 assert!(
@@ -408,11 +415,12 @@ mod tests {
                 let (mut sw, mut sg) = (vec![0; n * n], vec![0; n * n]);
                 dequantize(&want, qp, log2, &mut sw);
                 dsp.hevc_dequantize(&got, &q, &mut sg);
-                assert_eq!(sg, sw, "dequantise {n} qp {qp}");
+                let widened = |v: &[i16]| v.iter().map(|&v| i32::from(v)).collect::<Vec<_>>();
+                assert_eq!(widened(&sg), sw, "dequantise {n} qp {qp}");
                 let (mut rw, mut rg) = (vec![0; n * n], vec![0; n * n]);
                 inverse(log2, &sw, &mut rw);
                 dsp.hevc_inverse(t, &sg, &mut rg);
-                assert_eq!(rg, rw, "inverse {n}");
+                assert_eq!(widened(&rg), rw, "inverse {n}");
             }
         }
     }
