@@ -295,7 +295,7 @@ fn bench_av1_transforms(
             size,
             time(|| dsp.av1_quantize_from(&coeffs, &q, &mut levels)),
         );
-        let mut dequantized = vec![0i32; n * n];
+        let mut dequantized = vec![0i16; n * n];
         push(
             "av1_dequantize",
             size,
@@ -345,14 +345,13 @@ fn bench_av1_64(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, Block
             coeffs[0] as u32
         }),
     );
-    let dequantized: Vec<i32> = coeffs.iter().map(|&c| i32::from(c)).collect();
     let mut recon = vec![128u8; 64 * 64];
     push(
         "av1_inverse_dct_add_64",
         size_64,
         time(|| {
             let mut dst = PlaneViewMut::new(&mut recon, 64, 64, 64).expect("buffer fits");
-            dsp.av1_inverse_dct_add_64(&dequantized, &mut dst);
+            dsp.av1_inverse_dct_add_64(&coeffs, &mut dst);
             u32::from(recon[0])
         }),
     );
@@ -800,10 +799,10 @@ fn bench_av1_sparse(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, B
             (16, "av1_inverse_full_low16", "av1_inverse_sparse_low16"),
             (32, "av1_inverse_full_low32", "av1_inverse_sparse_low32"),
         ] {
-            let mut coeffs = vec![0_i32; 1024];
+            let mut coeffs = vec![0_i16; 1024];
             for c in 0..limit {
                 for r in 0..limit {
-                    coeffs[c * 32 + r] = (i32::from(src[c * 64 + r]) - 128) * 16;
+                    coeffs[c * 32 + r] = (i16::from(src[c * 64 + r]) - 128) * 16;
                 }
             }
             for sparse in [false, true] {

@@ -164,6 +164,33 @@ pure narrowing.
 - Not done: a reused residual scratch in place of the per-TU `Vec<i16>`. The decoder's tests fingerprint the
   residuals between the inverse and reconstruction passes, so that change means merging the two passes.
 
+**Encoder forward, quantiser and levels (item 7), AV1 and VP9.** Jetson: jperf min of 5 interleaved
+rounds, Default, 30 frames 720p 600 kbps, crowd / lowlight / bodycam. x86: callgrind instructions, same
+clips. 112/112 streams byte-identical on x86 and NEON (every codec's Default and shipped presets, two
+clips, CBR and QP); checkasm passes on AVX2, AVX-512 (SDE `-spr` and `-icx`), NEON and SIMD128.
+
+| Commit | Change | Jetson cycles | Jetson instr. | x86 instr. |
+|---|---|---:|---:|---:|
+| 1a363676 | AV1/VP9 forward DCT family stores i16 (saturating, never triggers); AV1 quantiser i16 in and out, generic over its storage (AV2 keeps i32), vectors from coefficient 0 with a DC fix-up; AV1 levels i16; VP9 coefficients, quantiser input and largest magnitude i16; transpose kernels removed | AV1 −0.30 / −0.49 / −0.18 %; VP9 −0.72 / −1.03 / −0.63 % | AV1 −0.56 / −0.88 / −0.48 %; VP9 −0.67 / −0.50 / −0.69 % | AV1 −0.58 / −0.73 / −0.49 %; VP9 ≈ 0 |
+| (this commit set) | AV1 dequantised coefficients i16 (from coefficient 0, DC fix-up), coefficient gain on i16 (NEON 16-bit products), txfm inverse DCT input i16 on every ISA | AV1 −0.30 / −0.24 / −0.15 % (mean of 3) | AV1 −0.83 / −0.97 / −0.71 % | AV1 −0.85 / −1.07 / −0.76 % |
+
+- **Store-to-load alignment mattered more than the width.** The first i16 quantiser started its vectors at
+  coefficient 1, like the 32-bit one. Its 16-byte loads then straddled two of the forward's 16-byte stores,
+  and Jetson AV1 cycles rose 0.3–0.7 % (pcsample: NEON `quantize_levels` 1.91 → 2.60 % of the encode)
+  while instructions fell. Vectors from coefficient 0, with the DC re-quantised after
+  (`txfm::scalar::fix_dc`), removed that and the scalar tail. The dequantiser needed the same change: from
+  coefficient 1 its i16 stores cost +0.2–0.4 % cycles at −0.5 % instructions.
+- **Not taken: the encoder's reconstruction on the decoder's `av1_inverse_add_i16`.** On the Jetson its
+  dav1d path read scratch past the dequantised extent the encoder fills, so streams changed, and it cost
+  +0.5–0.8 % cycles.
+- **WASM:** encode A/B under node (bench.py clips, 720p 600 kbps, best of 3 alternating rounds) did not
+  resolve these changes. The unchanged H.264 control moved by −1 to −22 % between rounds at machine loads of
+  40–60.
+- **Left for item 7:** H.264, HEVC/VVC and AV2 forward/quantiser/levels; VP9 levels (retry after
+  profiling `residual_of`, the token writer and the trellis).
+  The trellis `Candidates.levels` stay wide (AV2 levels reach 2^20 − 1; the HEVC/VVC/H.264 trellis
+  nearest levels are uncapped).
+
 **WASM** (node, `tools/web/bench.py`, H.264 + HEVC decode, 3 runs alternating old/new): run-to-run noise
 was about ±5 % at a machine load of 45 to 57, and no difference above that noise was measured. A quiet
 machine is needed to resolve the SIMD128 effect.

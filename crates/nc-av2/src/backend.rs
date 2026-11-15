@@ -849,6 +849,12 @@ impl CodecBackend for Av2Backend {
     /// `long_static_chirla_s024c2` 150 kbps YUV per 200 f -0.39/-0.35/-0.15
     /// dB at equal rate (overrun frames 43 -> 2), 300 kbps -0.04..-0.08 dB;
     /// `static_london_bus` 300 f the first 100 f -0.2..-0.4 dB, then level.
+    // The fixed-QP profile (`--qp`): the QP cadence at full strength on every
+    // frame (HEVC's and VVC's profile). Fixed QP, matched QP (nceval.fixedqp,
+    // two pool draws of 16 clips): J -0.7% [-1.6, +0.1] and -2.4% [-3.7,
+    // -1.2]. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         ("decision.exact_rank_margin", 1.1),
         ("decision.refine_cheap_vector", 0.0),

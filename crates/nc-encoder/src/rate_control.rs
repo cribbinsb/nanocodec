@@ -617,8 +617,8 @@ pub(crate) struct RateController {
     quality_floor: QualityFloor,
     /// Whether the quality cap raised the current frame's quantizer.
     quality_capped: bool,
-    /// The cadence strength the structure set for the next frame
-    /// (`set_cadence_depth`), instead of the cadence's own.
+    /// The least cadence strength the structure set for the next frame
+    /// (`set_cadence_depth`).
     cadence_depth: Option<f64>,
     /// Whether finer inter frames still buy quality (`rate.min_refinement_gain`).
     refinement: RefinementGain,
@@ -1511,16 +1511,16 @@ impl RateController {
     }
 
     /// The QP cadence's strength on the frame `hint` describes: the
-    /// structure's depth when it sets one, else the cadence's own.
+    /// cadence's own, or the structure's depth where that is stronger.
     fn cadence_strength(&self, hint: &Complexity) -> f64 {
-        self.cadence_depth
-            .unwrap_or_else(|| self.cadence.strength(hint.static_fraction, hint.motion))
+        let own = self.cadence.strength(hint.static_fraction, hint.motion);
+        self.cadence_depth.map_or(own, |depth| own.max(depth))
     }
 
-    /// The QP cadence's strength (0..1) on the frames that follow, when the
-    /// structure sets it from the measured inheritance
-    /// (`inheritance.rs`, `structure.inherited_depth`); `None` leaves it to
-    /// the cadence (static share and motion gate).
+    /// The least QP cadence strength (0..1) on the frames that follow,
+    /// when the structure sets one from the measured inheritance
+    /// (`inheritance.rs`, `structure.inherited_depth`); `None` leaves the
+    /// strength to the cadence alone (static share and motion gate).
     pub fn set_cadence_depth(&mut self, depth: Option<f64>) {
         self.cadence_depth = depth;
     }
@@ -1566,6 +1566,13 @@ impl RateController {
         } else {
             self.cadence_offset(index, strength)
         }
+    }
+
+    /// The QP offset inter frame `index` at `layer` gets from the inter
+    /// level by its role at cadence `strength` (`frame_offset`), for
+    /// planning that precedes [`Self::select`].
+    pub fn role_offset(&self, layer: LayerPosition, index: u64, strength: f64) -> f64 {
+        self.frame_offset(false, layer, index, strength)
     }
 
     /// The cadence offset of flat inter frame `index` at `strength`, quieted

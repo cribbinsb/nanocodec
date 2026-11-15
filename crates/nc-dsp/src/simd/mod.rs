@@ -131,6 +131,20 @@ pub(crate) trait I32Lanes: Copy {
             *narrow = saturate_i16(value);
         }
     }
+    /// The first `2 * LANES` values of `src`, sign-extended, as two vectors.
+    /// ISAs override it with one full 128-bit load (NEON, SIMD128).
+    #[inline]
+    fn load_i16_pair(src: &[i16]) -> (Self, Self) {
+        (Self::load_i16(src), Self::load_i16(&src[Self::LANES..]))
+    }
+    /// [`I32Lanes::store_sat16`] of `low` then `high` into the first
+    /// `2 * LANES` values of `dst`. ISAs override it to narrow the pair into
+    /// one store (one full 128-bit store on NEON and SIMD128).
+    #[inline]
+    fn store_sat16_pair(low: Self, high: Self, dst: &mut [i16]) {
+        low.store_sat16(dst);
+        high.store_sat16(&mut dst[Self::LANES..]);
+    }
     /// `dst[i] = clamp(dst[i] + lane i, 0, 255)` for the first `LANES` bytes.
     fn add_to_u8(self, dst: &mut [u8]);
     /// Store the `LANES` x `LANES` tile formed by `rows` (`rows.len() ==

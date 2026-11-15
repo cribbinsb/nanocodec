@@ -480,53 +480,53 @@ fn transpose8x2(rows: [__m256i; GROUP]) -> [__m256i; GROUP] {
 }
 
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn inverse_8(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow, i32, 8>(coeffs, dst, stride, 8);
+pub(super) unsafe fn inverse_8(coeffs: &[i16], dst: &mut [u8], stride: usize) {
+    narrow_inverse::inverse_dct::<Narrow, i16, 8>(coeffs, dst, stride, 8);
 }
 
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn inverse_16(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow16, i32, 16>(coeffs, dst, stride, 16);
+pub(super) unsafe fn inverse_16(coeffs: &[i16], dst: &mut [u8], stride: usize) {
+    narrow_inverse::inverse_dct::<Narrow16, i16, 16>(coeffs, dst, stride, 16);
 }
 
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn inverse_32(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow16, i32, 32>(coeffs, dst, stride, 32);
+pub(super) unsafe fn inverse_32(coeffs: &[i16], dst: &mut [u8], stride: usize) {
+    narrow_inverse::inverse_dct::<Narrow16, i16, 32>(coeffs, dst, stride, 32);
 }
 
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn inverse_64(coeffs: &[i32], dst: &mut [u8], stride: usize) {
-    narrow_inverse::inverse_dct::<Narrow16, i32, 64>(coeffs, dst, stride, 32);
+pub(super) unsafe fn inverse_64(coeffs: &[i16], dst: &mut [u8], stride: usize) {
+    narrow_inverse::inverse_dct::<Narrow16, i16, 64>(coeffs, dst, stride, 32);
 }
 
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn inverse_16_sparse(
-    coeffs: &[i32],
+    coeffs: &[i16],
     dst: &mut [u8],
     stride: usize,
     limit: usize,
 ) {
-    narrow_inverse::inverse_dct_square::<Narrow16, i32, 16>(coeffs, dst, stride, limit);
+    narrow_inverse::inverse_dct_square::<Narrow16, i16, 16>(coeffs, dst, stride, limit);
 }
 
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn inverse_32_sparse(
-    coeffs: &[i32],
+    coeffs: &[i16],
     dst: &mut [u8],
     stride: usize,
     limit: usize,
 ) {
-    narrow_inverse::inverse_dct::<Narrow16, i32, 32>(coeffs, dst, stride, limit);
+    narrow_inverse::inverse_dct::<Narrow16, i16, 32>(coeffs, dst, stride, limit);
 }
 
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn inverse_64_sparse(
-    coeffs: &[i32],
+    coeffs: &[i16],
     dst: &mut [u8],
     stride: usize,
     limit: usize,
 ) {
-    narrow_inverse::inverse_dct::<Narrow16, i32, 64>(coeffs, dst, stride, limit);
+    narrow_inverse::inverse_dct::<Narrow16, i16, 64>(coeffs, dst, stride, limit);
 }
 
 /// The AV1 inverse of a `W`x`H` transform with both sides at least 8 and

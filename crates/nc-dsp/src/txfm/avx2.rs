@@ -79,7 +79,7 @@ macro_rules! avx2_forward {
 macro_rules! avx2_inverse {
     ($($inverse:ident, $lanes:ty);*) => {$(
         #[target_feature(enable = "avx2")]
-        unsafe fn $inverse(coeffs: &[i32], dst: &mut [u8], dst_stride: usize) {
+        unsafe fn $inverse(coeffs: &[i16], dst: &mut [u8], dst_stride: usize) {
             // SAFETY: AVX2 is enabled for this function.
             unsafe { generic::$inverse::<$lanes>(coeffs, dst, dst_stride) }
         }
@@ -248,7 +248,7 @@ pub(super) unsafe fn quantize_from<T: Lanes8>(
 }
 
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+pub(super) unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     // SAFETY: AVX2 is enabled for this function.
     unsafe { generic::dequantize::<I32x8>(levels, q, out) }
 }
@@ -256,7 +256,7 @@ pub(super) unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32
 /// Same bounded factoring as NEON, with signed widening products for even
 /// and odd i32 lanes;64-bit accumulators preserve negative gains exactly.
 #[target_feature(enable = "avx2")]
-unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
+unsafe fn coefficient_gain(original: &[i16], dequantized: &[i16]) -> i64 {
     // SAFETY: AVX2 table installed only with ISA support; complete groups
     // are checked before loads. Remaining coefficients use the scalar oracle.
     unsafe {
@@ -266,7 +266,7 @@ unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
         let mut odd = _mm256_setzero_si256();
         for i in (0..end).step_by(8) {
             let c = _mm256_cvtepi16_epi32(_mm_loadu_si128(original.as_ptr().add(i).cast()));
-            let d = _mm256_loadu_si256(dequantized.as_ptr().add(i).cast());
+            let d = _mm256_cvtepi16_epi32(_mm_loadu_si128(dequantized.as_ptr().add(i).cast()));
             let t = _mm256_sub_epi32(_mm256_slli_epi32::<1>(c), d);
             even = _mm256_add_epi64(even, _mm256_mul_epi32(t, d));
             odd = _mm256_add_epi64(

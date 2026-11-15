@@ -328,3 +328,17 @@ stream configured so that it never layers.
 
 **Pool screen** (AV1 Default, draw 2026-11-14): L1 +0.12% [−0.00, +0.12], L2 +0.04% [−0.14, +0.20],
 600-frame L3 −0.02% [−0.39, +0.38] AMBIGUOUS. **Neutral, so not adopted.** It stays registered and off.
+
+### Final-checks of every bundle
+
+`nceval.levels final-check`, each bundle commit against its parent: full ladder, 600 frames, keys every 10 s,
+31 clips, draw 2026-11-14. No guard tripped in any of them.
+
+| Codec | Key-period ceiling | Key still boost |
+|---|---|---|
+| AV1 | −1.27 [−2.11, −0.57] (14553dee) | −1.52 [−1.92, −1.09] (195d1297) |
+| H.264 | −0.39 [−0.62, −0.18] (4d23a3c7) | −1.37 [−1.74, −1.00] (61c3817e) |
+| HEVC | −0.26 [−0.45, −0.10] (0e0da898) | −0.43 [−0.85, −0.06] (c2346bf1) |
+| VVC | −1.03 [−1.61, −0.50] (935b1726) | −1.58 [−2.04, −1.14] (39b54eab) |
+| VP9 | −1.51 [−2.51, −0.66] (d5cf4fe9) | −1.49 [−1.92, −1.07] (7752ddef) |
+| AV2 | −0.82 [−1.38, −0.33] (487dff46) | −1.19 [−1.60, −0.79] (e17fce9d) |

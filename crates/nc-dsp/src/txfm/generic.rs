@@ -238,7 +238,7 @@ macro_rules! dct_2d {
         /// `V`'s ISA must be available (module docs).
         #[inline(always)]
         pub(crate) unsafe fn $inverse<V: I32Lanes>(
-            coeffs: &[i32],
+            coeffs: &[i16],
             dst: &mut [u8],
             dst_stride: usize,
         ) {
@@ -248,7 +248,7 @@ macro_rules! dct_2d {
             let mut y = [V::splat(0); N];
             for r0 in (0..N).step_by(V::LANES) {
                 for (c, lane) in x.iter_mut().enumerate() {
-                    *lane = V::load(&coeffs[c * N + r0..]).clamp16();
+                    *lane = V::load_i16(&coeffs[c * N + r0..]);
                 }
                 dct::$idct(&x, &mut y, &COSPI_12, INVERSE_COS_BIT);
                 for lane in &mut y {
@@ -682,7 +682,7 @@ fn forward_64_rows_impl<V: I32Lanes, const LOW32: bool>(transposed: &[i32], out:
 ///
 /// `V`'s ISA must be available (module docs).
 #[inline(always)]
-pub(crate) unsafe fn inverse_64<V: I32Lanes>(coeffs: &[i32], dst: &mut [u8], dst_stride: usize) {
+pub(crate) unsafe fn inverse_64<V: I32Lanes>(coeffs: &[i16], dst: &mut [u8], dst_stride: usize) {
     const N: usize = 64;
     // The 32 row transforms' outputs, row-major: `buf[r * 64 + c]`.
     let mut buf = [MaybeUninit::<i32>::uninit(); CODED_64 * N];
@@ -690,7 +690,7 @@ pub(crate) unsafe fn inverse_64<V: I32Lanes>(coeffs: &[i32], dst: &mut [u8], dst
     let mut y = [V::splat(0); N];
     for r0 in (0..CODED_64).step_by(V::LANES) {
         for (c, lane) in x[..CODED_64].iter_mut().enumerate() {
-            *lane = V::load(&coeffs[c * CODED_64 + r0..]).clamp16();
+            *lane = V::load_i16(&coeffs[c * CODED_64 + r0..]);
         }
         for lane in &mut x[CODED_64..] {
             *lane = V::splat(0);
@@ -741,7 +741,7 @@ macro_rules! sparse_inverse {
         /// `V`'s ISA must be available and `limit` must be8,16 or32.
         #[inline(always)]
         pub(crate) unsafe fn $name<V: I32Lanes>(
-            coeffs: &[i32],
+            coeffs: &[i16],
             dst: &mut [u8],
             stride: usize,
             limit: usize,
@@ -752,7 +752,7 @@ macro_rules! sparse_inverse {
             let mut y = [V::splat(0); N];
             for r0 in (0..limit).step_by(V::LANES) {
                 for (c, lane) in x[..limit].iter_mut().enumerate() {
-                    *lane = V::load(&coeffs[c * $coded + r0..]).clamp16();
+                    *lane = V::load_i16(&coeffs[c * $coded + r0..]);
                 }
                 match limit {
                     8 => dct::$low8(&x, &mut y, &COSPI_12, INVERSE_COS_BIT),
@@ -807,8 +807,12 @@ sparse_inverse!(
 );
 
 /// AV1 dequantisation (`dequantize_one`, AV1 §7.12.3) of `levels` into
-/// `out`, `V::LANES` AC levels at a time; coefficient 0 (the DC step) and a
-/// ragged tail use the reference.
+/// 16-bit `out`, two vectors then one at a time from coefficient 0 at the
+/// AC step (computed in 32 bits, the 16-bit clamp being the saturating
+/// narrowing store), the reference on a ragged tail, then coefficient 0 at
+/// the DC step. Starting at 0 keeps the stores aligned with the inverse
+/// transform's vector loads (store-to-load forwarding), as the quantiser's
+/// `scalar::fix_dc` does.
 ///
 /// Exact for every 16-bit level: only the low 24 bits of `|level| · step`
 /// survive the mask, and those depend only on the low 32 bits of the
@@ -822,41 +826,47 @@ sparse_inverse!(
 pub(crate) unsafe fn dequantize<V: I32Lanes>(
     levels: &[i16],
     q: &super::Av1Quantizer,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     /// Bits above the 24-bit dequantisation mask in a 32-bit lane.
     const ABOVE_MASK: u32 = 32 - super::DEQUANT_MASK.count_ones();
-    let Some((&dc, ac)) = levels.split_first() else {
+    let Some(&dc) = levels.first() else {
         return;
     };
-    out[0] = super::dequantize_one(i32::from(dc), 0, q);
     let step = V::splat(q.ac_step);
-    let (lo, hi) = (V::splat(i32::from(i16::MIN)), V::splat(i32::from(i16::MAX)));
-    let vector_len = ac.len() / V::LANES * V::LANES;
-    let out_ac = &mut out[1..=ac.len()];
-    for (src, dst) in ac[..vector_len]
-        .chunks_exact(V::LANES)
-        .zip(out_ac.chunks_exact_mut(V::LANES))
-    {
-        let level = V::load_i16(src);
+    let dequantize = |level: V| {
         level
             .abs()
             .mul(step)
             .shl(ABOVE_MASK)
             .shr_logical(ABOVE_MASK + q.log_scale)
             .with_sign_of(level)
-            .max(lo)
-            .min(hi)
-            .store(dst);
+    };
+    let pairs_len = levels.len() / (2 * V::LANES) * (2 * V::LANES);
+    let vector_len = levels.len() / V::LANES * V::LANES;
+    let out = &mut out[..levels.len()];
+    for (src, dst) in levels[..pairs_len]
+        .chunks_exact(2 * V::LANES)
+        .zip(out.chunks_exact_mut(2 * V::LANES))
+    {
+        let (low, high) = V::load_i16_pair(src);
+        V::store_sat16_pair(dequantize(low), dequantize(high), dst);
     }
-    for (i, (&level, dq)) in ac
+    for (src, dst) in levels[pairs_len..vector_len]
+        .chunks_exact(V::LANES)
+        .zip(out[pairs_len..].chunks_exact_mut(V::LANES))
+    {
+        dequantize(V::load_i16(src)).store_sat16(dst);
+    }
+    for (i, (&level, dq)) in levels
         .iter()
-        .zip(out_ac.iter_mut())
+        .zip(out.iter_mut())
         .enumerate()
         .skip(vector_len)
     {
-        *dq = super::dequantize_one(i32::from(level), i + 1, q);
+        *dq = super::dequantize_one(i32::from(level), i, q) as i16;
     }
+    out[0] = super::dequantize_one(i32::from(dc), 0, q) as i16;
 }
 
 #[cfg(test)]

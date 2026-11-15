@@ -547,6 +547,13 @@ param_group! {
             "QP units per octave of a block's average motion-search error away from the frame's mean (0 = off): higher moves more bits from unpredictable to predictable blocks",
         reuse: 1.0, [0.0, 1.0],
             "1 quantizes still blocks at the step their measured reuse warrants (lambda / (1 + reuse)) whenever their reconstruction is worse than that step delivers (`reuse.rs`): 0 is off",
+        // Found by `static_recovery` with a stronger cadence
+        // (`structure.inherited_depth`): the frame after a key is a cadence
+        // leaf, and the one refinement of a starved key's still half landed
+        // coarser by the leaf's offset (AV1: recovered 46.9 dB against an
+        // undisturbed 49.0; 48.4 with the static-scaled cadence).
+        reuse_level_price: 0.0, [0.0, 1.0],
+            "1 prices a still block's refinement against the inter level on every frame: on a frame the QP cadence codes coarser (a leaf) the block gets that much more offset, so a recovery does not depend on the role of the frame it falls on; 0 prices it against the frame's own quantizer",
         memory: 0.75, [0.0, 0.95],
             "weight of the history in each block's moving-average motion error, per frame: higher reacts slower and flickers less",
     }
@@ -979,7 +986,7 @@ param_group! {
         secondary_min_depth: 0.75, [0.0, 1.0],
             "with `structure.unified`: least cadence strength (0..1, how much finer the high-quality frames are coded) at which a high-quality frame carries the second reference: higher is faster, 0 gives it to every high-quality frame",
         inherited_depth: 0.0, [0.0, 1.0],
-            "rate control: 1 sets the QP cadence's strength from the measured inheritance loss (`inheritance.rs`) instead of the static share and the motion gate: full while the frames between keep the high-quality frame's quality, less as they lose it; never at a fixed quantizer",
+            "rate control: 1 makes the QP cadence at least as strong as the measured inheritance loss allows (`inheritance.rs`), beside the static share: full while the frames between keep the high-quality frame's quality, less as they lose it; never at a fixed quantizer",
         depth_full_loss: 0.25, [0.0, 4.0],
             "with `structure.inherited_depth`: inheritance loss (luma dB per QP unit) up to which the cadence has full strength: higher keeps the full cadence on noisier scenes",
         depth_zero_loss: 0.75, [0.0, 4.0],

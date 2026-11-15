@@ -8,13 +8,12 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::aarch64::{
-    int32x4_t, uint32x4_t, vabsq_s32, vaddq_s64, vaddq_u32, vaddvq_s64, vaddvq_u32, vdupq_n_s32,
-    vdupq_n_s64, vdupq_n_u32, veorq_s32, vget_low_s16, vget_low_s32, vget_low_u32, vld1_s16,
-    vld1q_s16, vld1q_s32, vmaxq_u32, vmaxvq_u32, vminq_u32, vmlal_high_s32, vmlal_s32,
-    vmovl_high_s16, vmovl_s16, vmovn_s32, vmull_high_u32, vmull_u32, vreinterpretq_s16_s32,
-    vreinterpretq_s32_u32, vreinterpretq_u32_s32, vreinterpretq_u32_u64, vshlq_n_s32, vshlq_u32,
-    vshrq_n_s32, vst1_s16, vst1q_s16, vst1q_s32, vsubq_s32, vsubq_u32, vtstq_s32, vuzp1q_s16,
-    vuzp2q_u32,
+    int32x4_t, uint32x4_t, vabsq_s32, vaddq_u32, vaddvq_s64, vaddvq_u32, vdupq_n_s32, vdupq_n_s64,
+    vdupq_n_u32, veorq_s32, vget_low_s16, vget_low_u32, vld1_s16, vld1q_s16, vld1q_s32, vmaxq_u32,
+    vmaxvq_u32, vminq_u32, vmovl_high_s16, vmovl_s16, vmovn_s32, vmull_high_s16, vmull_high_u32,
+    vmull_s16, vmull_u32, vpadalq_s32, vreinterpretq_s16_s32, vreinterpretq_s32_u32,
+    vreinterpretq_u32_s32, vreinterpretq_u32_u64, vshlq_u32, vshrq_n_s32, vst1_s16, vst1q_s16,
+    vst1q_s32, vsubq_s32, vsubq_u32, vtstq_s32, vuzp1q_s16, vuzp2q_u32,
 };
 
 use super::scalar::{fix_dc, quantize_tail};
@@ -79,7 +78,7 @@ macro_rules! neon_sizes {
         }
 
         #[target_feature(enable = "neon")]
-        unsafe fn $inverse(coeffs: &[i32], dst: &mut [u8], dst_stride: usize) {
+        unsafe fn $inverse(coeffs: &[i16], dst: &mut [u8], dst_stride: usize) {
             // SAFETY: NEON is enabled for this function.
             unsafe { generic::$inverse::<I32x4>(coeffs, dst, dst_stride) }
         }
@@ -349,30 +348,33 @@ impl AcQuantizer {
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     // SAFETY: NEON is enabled for this function.
     unsafe { generic::dequantize::<I32x4>(levels, q, out) }
 }
 
-/// `c` and `d` are signed 16-bit: `|2c-d| < 2^18`; the 1024-term sum
-/// magnitude is below `2^44`. Widen only the multiply.
+/// `2 * sum(c * d) - sum(d * d)` on eight 16-bit lanes: every product of
+/// two signed 16-bit values fits 32 bits exactly (`smull`, at most `2^30`),
+/// and the products accumulate pairwise into 64-bit lanes (`sadalp`), so
+/// no sum can overflow.
 #[target_feature(enable = "neon")]
-unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
+unsafe fn coefficient_gain(original: &[i16], dequantized: &[i16]) -> i64 {
     // SAFETY: NEON table installed only with ISA support; complete groups
     // are checked before loads. Remaining coefficients use the scalar oracle.
     unsafe {
         let n = original.len().min(dequantized.len());
-        let end = n / 4 * 4;
-        let mut low = vdupq_n_s64(0);
-        let mut high = vdupq_n_s64(0);
-        for i in (0..end).step_by(4) {
-            let c = vmovl_s16(vld1_s16(original.as_ptr().add(i)));
-            let d = vld1q_s32(dequantized.as_ptr().add(i));
-            let t = vsubq_s32(vshlq_n_s32::<1>(c), d);
-            low = vmlal_s32(low, vget_low_s32(t), vget_low_s32(d));
-            high = vmlal_high_s32(high, t, d);
+        let end = n / 8 * 8;
+        let mut cross = vdupq_n_s64(0);
+        let mut square = vdupq_n_s64(0);
+        for i in (0..end).step_by(8) {
+            let c = vld1q_s16(original.as_ptr().add(i));
+            let d = vld1q_s16(dequantized.as_ptr().add(i));
+            cross = vpadalq_s32(cross, vmull_s16(vget_low_s16(c), vget_low_s16(d)));
+            cross = vpadalq_s32(cross, vmull_high_s16(c, d));
+            square = vpadalq_s32(square, vmull_s16(vget_low_s16(d), vget_low_s16(d)));
+            square = vpadalq_s32(square, vmull_high_s16(d, d));
         }
-        vaddvq_s64(vaddq_s64(low, high))
+        2 * vaddvq_s64(cross) - vaddvq_s64(square)
             + super::scalar::coefficient_gain(&original[end..], &dequantized[end..])
     }
 }

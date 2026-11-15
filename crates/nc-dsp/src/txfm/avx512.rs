@@ -25,7 +25,7 @@ macro_rules! sizes {
             unsafe { generic::$f::<I32x16>(src,stride,out) }
         }
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $i(coeffs:&[i32],dst:&mut [u8],stride:usize) {
+        unsafe fn $i(coeffs:&[i16],dst:&mut [u8],stride:usize) {
             // SAFETY: supported ISA and validated buffers from Dsp.
             unsafe { generic::$i::<I32x16>(coeffs,dst,stride) }
         }
@@ -50,14 +50,14 @@ unsafe fn forward_64(src: &[i16], stride: usize, out: &mut [i16]) {
     unsafe { generic::forward_64_pruned::<I32x16>(src, stride, out) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn inverse_64(coeffs: &[i32], dst: &mut [u8], stride: usize) {
+unsafe fn inverse_64(coeffs: &[i16], dst: &mut [u8], stride: usize) {
     // SAFETY: supported ISA and validated buffers from Dsp.
     unsafe { generic::inverse_64::<I32x16>(coeffs, dst, stride) }
 }
 macro_rules! sparse {
     ($($name:ident);*)=>{$(
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $name(coeffs:&[i32],dst:&mut [u8],stride:usize,limit:usize) {
+        unsafe fn $name(coeffs:&[i16],dst:&mut [u8],stride:usize,limit:usize) {
             // SAFETY: supported ISA and validated buffers from Dsp; the
             // selected lane count divides the initialized sparse prefix.
             unsafe {

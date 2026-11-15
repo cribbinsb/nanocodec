@@ -34,7 +34,7 @@ macro_rules! scalar_sizes {
             // SAFETY: the scalar lane type needs no special CPU support.
             unsafe { generic::$forward::<i32>(residual, stride, out) }
         }
-        unsafe fn $inverse(coeffs: &[i32], dst: &mut [u8], dst_stride: usize) {
+        unsafe fn $inverse(coeffs: &[i16], dst: &mut [u8], dst_stride: usize) {
             // SAFETY: as above.
             unsafe { generic::$inverse::<i32>(coeffs, dst, dst_stride) }
         }
@@ -76,31 +76,32 @@ unsafe fn quantize_from<T: QuantStorage>(coeffs: &[T], q: &Av1Quantizer, out: &m
     nonzero
 }
 
-unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     for (i, (&level, dq)) in levels.iter().zip(out.iter_mut()).enumerate() {
-        *dq = dequantize_one(i32::from(level), i, q);
+        // Clamped to 16 bits (`dequantize_one`): the narrowing is exact.
+        *dq = dequantize_one(i32::from(level), i, q) as i16;
     }
 }
 
 /// The full reference 16x16 inverse: coefficients outside the low square are
 /// zero, so `limit` changes nothing.
-unsafe fn inverse_16_sparse(coeffs: &[i32], dst: &mut [u8], stride: usize, _limit: usize) {
+unsafe fn inverse_16_sparse(coeffs: &[i16], dst: &mut [u8], stride: usize, _limit: usize) {
     // SAFETY: this table is installed only when its ISA is supported.
     unsafe { inverse_16(coeffs, dst, stride) }
 }
 
-unsafe fn inverse_32_sparse(coeffs: &[i32], dst: &mut [u8], stride: usize, limit: usize) {
+unsafe fn inverse_32_sparse(coeffs: &[i16], dst: &mut [u8], stride: usize, limit: usize) {
     // SAFETY: this table is installed only when its ISA is supported.
     unsafe { generic::inverse_32_sparse::<i32>(coeffs, dst, stride, limit) }
 }
 
-unsafe fn inverse_64_sparse(coeffs: &[i32], dst: &mut [u8], stride: usize, limit: usize) {
+unsafe fn inverse_64_sparse(coeffs: &[i16], dst: &mut [u8], stride: usize, limit: usize) {
     // SAFETY: this table is installed only when its ISA is supported.
     unsafe { generic::inverse_64_sparse::<i32>(coeffs, dst, stride, limit) }
 }
 
 /// Independent scalar oracle: retain the original two-product formula.
-pub(crate) unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
+pub(crate) unsafe fn coefficient_gain(original: &[i16], dequantized: &[i16]) -> i64 {
     original
         .iter()
         .zip(dequantized)

@@ -347,8 +347,10 @@ impl<B: CodecBackend> Encoder<B> {
         let cadence = configured_cadence(&config, &backend);
         let (qp_log2, qp_offsets) = backend.block_qp_grid();
         let aq = BlockAq::new(&config.params, qp_log2, qp_offsets).filter(|_| B::SUPPORTS_BLOCK_QP);
-        let reuse = (PersistParams::from_overrides(&config.params).reuse >= 0.5)
-            .then(|| ReuseTerm::new(B::SUPPORTS_BLOCK_QP));
+        let persist = PersistParams::from_overrides(&config.params);
+        let reuse = (persist.reuse >= 0.5).then(|| {
+            ReuseTerm::new(B::SUPPORTS_BLOCK_QP).level_priced(persist.reuse_level_price >= 0.5)
+        });
         let cadence_fixed_qp = RateParams::from_overrides(&config.params).cadence_fixed_qp >= 0.5;
         let scene = SceneDetector::new(&SceneParams::from_overrides(&config.params));
         let use_aq = aq.is_some();
@@ -800,6 +802,37 @@ impl<B: CodecBackend> Encoder<B> {
         self.sample_step(level)
     }
 
+    /// QP units inter frame `index` is planned coarser than the inter level
+    /// by its cadence role at strength `depth`, for the reuse term
+    /// (`persist.reuse_level_price`; 0 when off, on keys, on layered frames
+    /// and on frames the cadence does not coarsen).
+    fn reuse_role_offset(
+        &self,
+        index: u64,
+        key: bool,
+        references: &FrameReferences,
+        depth: Option<f64>,
+    ) -> f64 {
+        let level_priced = self
+            .layer
+            .reuse
+            .as_ref()
+            .is_some_and(ReuseTerm::prices_at_level);
+        let (Some(strength), true) = (depth, level_priced && !key) else {
+            return 0.;
+        };
+        let position = references.position;
+        let offset = match self.layer.rate_control.as_ref() {
+            Some(controller) => controller.role_offset(position, index, strength),
+            None if self.cadence_fixed_qp && position.is_flat() => self
+                .layer
+                .cadence
+                .offset(index - self.layer.last_key_index, strength),
+            None => 0.,
+        };
+        offset.max(0.)
+    }
+
     /// Plan the cyclic band of inter frame `index` (`cyclic_cadence.rs`)
     /// into `block_terms`, beside the reuse term's offsets: whether any
     /// cell has a band offset. Keys, layered frames and frames without a
@@ -1020,8 +1053,10 @@ impl<B: CodecBackend> Encoder<B> {
             controller.set_picture_size(width * height);
         }
         // The reuse term's per-cell history is laid out for the old size.
-        if self.layer.reuse.is_some() {
-            self.layer.reuse = Some(ReuseTerm::new(B::SUPPORTS_BLOCK_QP));
+        if let Some(old) = self.layer.reuse.as_ref() {
+            let level_priced = old.prices_at_level();
+            self.layer.reuse =
+                Some(ReuseTerm::new(B::SUPPORTS_BLOCK_QP).level_priced(level_priced));
             self.layer.reuse_last_frame = None;
         }
         Ok(())
@@ -1536,6 +1571,7 @@ impl<B: CodecBackend> Encoder<B> {
                 key,
                 horizon: self.frames_to_next_key(index),
                 sample_step: self.reuse_sample_step(),
+                role_offset: self.reuse_role_offset(index, key, &references, depth),
             };
             // The term's state is the frame before, or on a layered stream
             // the previous base frame (the last one it saw).
@@ -2034,19 +2070,18 @@ impl<B: CodecBackend> Encoder<B> {
     /// how much finer than its neighbours a high-quality frame is coded
     /// here, the depth the unified reference plan reads (`TierPlan`).
     fn cadence_depth(&self, analysis: &FrameAnalysis, references: &FrameReferences) -> f64 {
-        if let Some(depth) = self.inherited_depth() {
-            return depth;
-        }
         let motion = analysis
             .motion
             .as_ref()
             .and_then(|m| cadence_motion_hint(m, references.reference.distance, self.layer.width));
-        self.layer
+        let own = self
+            .layer
             .cadence
-            .strength(f64::from(analysis.pre.static_fraction), motion)
+            .strength(f64::from(analysis.pre.static_fraction), motion);
+        self.inherited_depth().map_or(own, |depth| own.max(depth))
     }
 
-    /// The cadence strength the measured inheritance sets
+    /// The least cadence strength the measured inheritance asks for
     /// (`structure.inherited_depth`), under rate control only: at a fixed
     /// quantizer the tiers never follow content.
     fn inherited_depth(&self) -> Option<f64> {

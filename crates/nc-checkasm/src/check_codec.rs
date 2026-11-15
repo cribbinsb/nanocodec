@@ -370,14 +370,16 @@ fn check_transforms(
         format!("av1_forward_dct {n}x{n} mode={mode} stride={stride}")
     });
 
-    let coeffs: Vec<i32> = (0..n * n)
+    // 16-bit dequantised coefficients (AV1 §7.12.3 clamps them): moderate,
+    // any 16-bit, extremes and sparse.
+    let coeffs: Vec<i16> = (0..n * n)
         .map(|_| match mode {
-            0 => rng.below(4001) as i32 - 2000,
-            1 => rng.below(1 << 16) as i32 - (1 << 15),
-            2 => rng.below(1 << 22) as i32 - (1 << 21),
+            0 => rng.below(4001) as i16 - 2000,
+            1 => rng.next_u64() as i16,
+            2 => [i16::MIN, i16::MAX][rng.below(2)],
             _ => {
                 if rng.below(8) == 0 {
-                    rng.below(20001) as i32 - 10000
+                    rng.below(20001) as i16 - 10000
                 } else {
                     0
                 }
@@ -428,13 +430,13 @@ fn check_transforms_64(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: 
         format!("av1_forward_dct_64 mode={mode} stride={stride}")
     });
 
-    let coeffs: Vec<i32> = (0..CODED)
+    let coeffs: Vec<i16> = (0..CODED)
         .map(|_| match mode {
-            0 => rng.below(4001) as i32 - 2000,
-            1 => rng.below(1 << 22) as i32 - (1 << 21),
+            0 => rng.below(4001) as i16 - 2000,
+            1 => rng.next_u64() as i16,
             _ => {
                 if rng.below(8) == 0 {
-                    rng.below(20001) as i32 - 10000
+                    rng.below(20001) as i16 - 10000
                 } else {
                     0
                 }
@@ -484,7 +486,7 @@ fn check_quantize(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut 
         })
         .collect();
     let run_dq = |dsp: &Dsp| {
-        let mut out = vec![0i32; len];
+        let mut out = vec![0i16; len];
         dsp.av1_dequantize(&levels, &q, &mut out);
         out
     };
@@ -518,22 +520,22 @@ enum InverseAmplitude {
 impl InverseAmplitude {
     const ALL: [Self; 3] = [Self::Extreme, Self::Small, Self::Medium];
 
-    fn sample(self, rng: &mut Rng) -> i32 {
+    fn sample(self, rng: &mut Rng) -> i16 {
         match self {
             Self::Extreme => match rng.below(4) {
-                0 => -32_769,
-                1 => 32_768,
-                2 => rng.below(1 << 22) as i32 - (1 << 21),
-                _ => rng.below(4001) as i32 - 2000,
+                0 => i16::MIN,
+                1 => i16::MAX,
+                2 => rng.next_u64() as i16,
+                _ => rng.below(4001) as i16 - 2000,
             },
             Self::Small => {
                 if rng.below(3) == 0 {
-                    rng.below(257) as i32 - 128
+                    rng.below(257) as i16 - 128
                 } else {
                     0
                 }
             }
-            Self::Medium => rng.below(2801) as i32 - 1400,
+            Self::Medium => rng.below(2801) as i16 - 1400,
         }
     }
 }
@@ -544,7 +546,7 @@ fn check_sparse_inverse(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report:
     for side in [32, 64] {
         for limit in [8, 16, 32] {
             for amplitude in InverseAmplitude::ALL {
-                let mut coefficients = vec![0_i32; 1024];
+                let mut coefficients = vec![0_i16; 1024];
                 for c in 0..limit {
                     for r in 0..limit {
                         coefficients[c * 32 + r] = amplitude.sample(rng);
@@ -606,7 +608,7 @@ fn check_inverse_boundaries<const SIDE: usize>(
     const GUARD: i32 = 23_000;
     const PATTERNS: usize = 4;
     let size = DctSize::from_side(SIDE).expect("square DCT size");
-    for magnitude in [GUARD - 1, GUARD, GUARD + 1, i32::from(i16::MAX), i32::MAX] {
+    for magnitude in [GUARD - 1, GUARD, GUARD + 1, i32::from(i16::MAX)] {
         for pattern in 0..PATTERNS {
             let mut coefficients = vec![0; SIDE * SIDE];
             for column in 0..SIDE {
@@ -621,6 +623,8 @@ fn check_inverse_boundaries<const SIDE: usize>(
                 } else {
                     -value
                 };
+                // Every value is within the 16-bit magnitudes above.
+                let (value, magnitude) = (value as i16, magnitude as i16);
                 match pattern {
                     0 | 1 => coefficients[column * SIDE] = value,
                     2 => coefficients[column * SIDE + column] = magnitude,

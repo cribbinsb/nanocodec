@@ -145,7 +145,7 @@ unsafe fn quantize_from<T: Lanes16>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T
     unsafe { levels(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     // Hardware timing favours AVX2 for these small coefficient blocks.
     if levels.len() <= 64 {
         // SAFETY: same validated slices; AVX2 is required by this tier.
@@ -158,14 +158,14 @@ unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
 // Avoid saving the wide body's registers before taking the small-block fallback.
 #[inline(never)]
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn dequantize_wide(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize_wide(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     // SAFETY: the dispatcher validates the slices and ISA.
     unsafe {
         super::generic::dequantize::<crate::simd::avx512::I32x16>(levels, q, out);
     }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn gain(original: &[i16], dequantized: &[i32]) -> i64 {
+unsafe fn gain(original: &[i16], dequantized: &[i16]) -> i64 {
     let len = original.len().min(dequantized.len());
     let mut sum = _mm512_setzero_si512();
     for i in (0..len).step_by(16) {
@@ -174,7 +174,7 @@ unsafe fn gain(original: &[i16], dequantized: &[i32]) -> i64 {
         let (a, b) = unsafe {
             (
                 _mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(mask, original.as_ptr().add(i))),
-                _mm512_maskz_loadu_epi32(mask, dequantized.as_ptr().add(i).cast()),
+                _mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(mask, dequantized.as_ptr().add(i))),
             )
         };
         let term = _mm512_sub_epi32(_mm512_slli_epi32::<1>(a), b);

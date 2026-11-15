@@ -15,14 +15,14 @@ use core::arch::aarch64::{
     vextq_s16, vget_high_s32, vget_lane_u32, vget_low_s16, vget_low_s32, vget_low_u16, vld1_s16,
     vld1_u8, vld1q_s16, vld1q_s32, vld1q_u8, vmax_s16, vmaxq_s16, vmaxq_s32, vmin_s16, vminq_s16,
     vminq_s32, vminq_u16, vmlal_high_n_s16, vmlal_high_s16, vmlal_n_s16, vmlal_s16, vmlal_u8,
-    vmlaq_laneq_s32, vmlaq_n_s32, vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16, vmull_high_s16,
-    vmull_s16, vmull_u8, vmulq_n_s32, vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16, vorrq_s32,
-    vpadalq_s16, vpaddq_s32, vqmovn_s32, vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulh_s16,
-    vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8, vreinterpret_u32_u8, vreinterpretq_s16_s32,
-    vreinterpretq_s16_u8, vreinterpretq_s16_u16, vreinterpretq_s32_u32, vreinterpretq_u8_s16,
-    vreinterpretq_u16_s16, vreinterpretq_u32_s32, vrshlq_s32, vshl_s16, vshlq_s16, vshlq_s32,
-    vshlq_u32, vshrq_n_s32, vshrq_n_u32, vst1_s16, vst1_u8, vst1q_s16, vst1q_s32, vsub_s16,
-    vsubq_s16, vsubq_s32, vtrnq_s32, vzip1q_s16, vzip2q_s16,
+    vmlaq_laneq_s32, vmlaq_n_s32, vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16,
+    vmull_high_s16, vmull_s16, vmull_u8, vmulq_n_s32, vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16,
+    vorrq_s32, vpadalq_s16, vpaddq_s32, vqmovn_high_s32, vqmovn_s32, vqmovn_u16, vqmovun_s16,
+    vqmovun_s32, vqrdmulh_s16, vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8, vreinterpret_u32_u8,
+    vreinterpretq_s16_s32, vreinterpretq_s16_u8, vreinterpretq_s16_u16, vreinterpretq_s32_u32,
+    vreinterpretq_u8_s16, vreinterpretq_u16_s16, vreinterpretq_u32_s32, vrshlq_s32, vshl_s16,
+    vshlq_s16, vshlq_s32, vshlq_u32, vshrq_n_s32, vshrq_n_u32, vst1_s16, vst1_u8, vst1q_s16,
+    vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32, vtrnq_s32, vzip1q_s16, vzip2q_s16,
 };
 
 use core::mem::MaybeUninit;
@@ -229,6 +229,26 @@ impl I32Lanes for I32x4 {
         let dst = &mut dst[..4];
         // SAFETY: NEON kernels only; `dst` holds 4 values.
         unsafe { vst1_s16(dst.as_mut_ptr(), vqmovn_s32(self.0)) }
+    }
+
+    #[inline(always)]
+    fn load_i16_pair(src: &[i16]) -> (Self, Self) {
+        let src = &src[..8];
+        // SAFETY: NEON kernels only; `src` holds 8 values.
+        unsafe {
+            let values = vld1q_s16(src.as_ptr());
+            (
+                Self(vmovl_s16(vget_low_s16(values))),
+                Self(vmovl_high_s16(values)),
+            )
+        }
+    }
+
+    #[inline(always)]
+    fn store_sat16_pair(low: Self, high: Self, dst: &mut [i16]) {
+        let dst = &mut dst[..8];
+        // SAFETY: NEON kernels only; `dst` holds 8 values.
+        unsafe { vst1q_s16(dst.as_mut_ptr(), vqmovn_high_s32(vqmovn_s32(low.0), high.0)) }
     }
 
     #[inline(always)]

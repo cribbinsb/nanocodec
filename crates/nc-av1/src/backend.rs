@@ -60,7 +60,7 @@ use crate::tables::{
     UV_DC_PRED, UV_INTRA_MODES_CFL_ALLOWED, UV_INTRA_MODES_CFL_NOT_ALLOWED, coeff_cdf_q_ctx,
 };
 use crate::transform::{
-    ForwardPolicy, TxSize, dequantized_extent, forward_dct_with, inverse_dct_add_eob,
+    ForwardPolicy, TxSize, dequantized_extent, forward_dct_with, inverse_dct_add,
     inverse_dct_dc_add, quantize_coded, quantize_coded_from,
 };
 use crate::txsize::{self, TxSplit, TxfmContexts};
@@ -2308,8 +2308,9 @@ struct Scratch {
     /// Contents are unspecified when eob is zero: coefficient coding/context
     /// return before reading them, and the next forward overwrites its area.
     levels: [Vec<i16>; 3],
-    /// Dequantised coefficients of the plane being coded.
-    dequant: Vec<i32>,
+    /// Dequantised coefficients of the plane being coded (16-bit, AV1
+    /// §7.12.3).
+    dequant: Vec<i16>,
     /// Allocated only for enabled transform-domain luma RD and key-frame
     /// transform-based planning or mode search.
     original_coefficients: Vec<i16>,
@@ -3486,7 +3487,7 @@ impl Av1Backend {
                 let dequant = &mut scratch.dequant[..coded_area];
                 self.dsp
                     .av1_dequantize(&levels[..area], &quantizer, &mut dequant[..area]);
-                inverse_dct_add_eob(&self.dsp, tx, dequant, eob, &mut dst);
+                inverse_dct_add(&self.dsp, tx, dequant, eob, &mut dst);
             }
             leaves.push(LumaLeaf {
                 dx,
@@ -4522,7 +4523,7 @@ impl Av1Backend {
         if eob == 1 {
             inverse_dct_dc_add(&self.dsp, tx, dequant[0], &mut dst, &mut scratch.residual);
         } else {
-            inverse_dct_add_eob(&self.dsp, tx, dequant, eob, &mut dst);
+            inverse_dct_add(&self.dsp, tx, dequant, eob, &mut dst);
         }
         let distortion = sse_predicted.map(|sse_predicted| ResidualDistortion {
             sse_predicted,

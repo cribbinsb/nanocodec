@@ -28,9 +28,15 @@
 //! - the shape (`layers.adaptive_max_inheritance_loss`): a mini-GOP is
 //!   layered only while the loss is below the limit (`structure.rs`);
 //! - the depth (`structure.inherited_depth`, rate control only): the cadence
-//!   strength is full while the loss is low and falls as it grows, replacing
-//!   the static-share scaling and the motion gate. At a fixed quantizer the
-//!   depth never follows content.
+//!   is at least as strong as the loss allows, full while it is low and less
+//!   as it grows, whatever the static share says. The static share stays as
+//!   the other floor: it says how much of the picture is copied, and the
+//!   loss, a whole-frame figure, is dominated by the part that is not (a
+//!   half-still picture beside noise recovered 2 dB short after a starved
+//!   key when the loss alone set the strength,
+//!   `crates/nc-cli/tests/static_recovery.rs`). It supersedes the motion
+//!   gate, a proxy for the same thing. At a fixed quantizer the depth never
+//!   follows content.
 
 use crate::params::{LayerParams, StructureParams};
 use crate::structure::INHERITANCE_LOSS_OFF;
@@ -150,8 +156,8 @@ impl Inheritance {
         self.loss
     }
 
-    /// The cadence strength (0..1) the loss asks for, or `None` when the
-    /// depth does not follow it. Unmeasured content gets the full depth:
+    /// The least cadence strength (0..1) the loss asks for, or `None` when
+    /// the depth does not follow it. Unmeasured content gets the full depth:
     /// the measure needs the tiers apart, and full strength everywhere
     /// already beat the static-share scaling on the Gate A clips (-0.67%).
     pub(crate) fn depth(&self) -> Option<f64> {

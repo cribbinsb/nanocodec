@@ -7,8 +7,9 @@
 //!   exactly the scale AV1's quantiser tables assume, and are stored in 16
 //!   bits with saturation (see "Ranges").
 //! - **Inverse DCT + add** (normative, AV1 §7.13.3): libaom's
-//!   `inv_txfm2d_add_c`: row transform on 16-bit-clamped input, rounding
-//!   shift, column transform on 16-bit-clamped input, `round_shift(.., 4)`,
+//!   `inv_txfm2d_add_c`: row transform on 16-bit input (the dequantiser's
+//!   clamp, stored in 16 bits), rounding shift, column transform on
+//!   16-bit-clamped input, `round_shift(.., 4)`,
 //!   added to the prediction with 8-bit clipping. Every butterfly stage is
 //!   clamped to 16 bits (the 8-bit stage range).
 //! - **Quantise** (encoder): `level = (|c| * 2^log_scale * 128 +
@@ -21,7 +22,8 @@
 //!   bits (its 64x64 coefficients and 20-bit levels exceed 16 bits).
 //! - **Dequantise** (normative, AV1 §7.12.3): the magnitude
 //!   `((|level| * step) & 0xFFFFFF) >> log_scale`, signed, clamped to 16
-//!   bits. `log_scale` is 0 up to 16x16 and 1 for 32x32 (`dqDenom`).
+//!   bits and stored in 16 bits. `log_scale` is 0 up to 16x16 and 1 for
+//!   32x32 (`dqDenom`).
 //!
 //! Coefficients use libaom's layout throughout: coefficient (vertical
 //! frequency `r`, horizontal frequency `c`) of an `n`x`n` block is at
@@ -199,21 +201,22 @@ pub(crate) type ForwardDctFn = unsafe fn(residual: &[i16], stride: usize, out: &
 /// coefficient provably has magnitude at most `zero_limit`.
 pub(crate) type ForwardBoundedFn =
     unsafe fn(residual: &[i16], stride: usize, zero_limit: u32, out: &mut [i16]) -> bool;
-/// Inverse DCT of `coeffs` (`n^2`), added to `dst` (`n` rows at `stride`).
-pub(crate) type InverseDctAddFn = unsafe fn(coeffs: &[i32], dst: &mut [u8], dst_stride: usize);
+/// Inverse DCT of the 16-bit dequantised `coeffs` (`n^2`), added to `dst`
+/// (`n` rows at `stride`).
+pub(crate) type InverseDctAddFn = unsafe fn(coeffs: &[i16], dst: &mut [u8], dst_stride: usize);
 /// Sparse inverse DCT; only a low 8/16/32 coefficient square is nonzero
 /// (at most the coded side).
-pub(crate) type SparseInverseDctAddFn = unsafe fn(&[i32], &mut [u8], usize, usize);
-/// Exact unnormalized gain of 16-bit forward coefficients and signed
-/// 16-bit dequantized values.
-pub(crate) type CoefficientGainFn = unsafe fn(&[i16], &[i32]) -> i64;
+pub(crate) type SparseInverseDctAddFn = unsafe fn(&[i16], &mut [u8], usize, usize);
+/// Exact unnormalized gain of 16-bit forward coefficients and 16-bit
+/// dequantized values.
+pub(crate) type CoefficientGainFn = unsafe fn(&[i16], &[i16]) -> i64;
 /// Quantise in place; returns the number of non-zero levels.
 pub(crate) type QuantizeFn = unsafe fn(coeffs: &mut [i16], q: &Av1Quantizer) -> u32;
 /// Quantise `coeffs` into `out` (at least as long), keeping `coeffs`;
 /// returns the number of non-zero levels.
 pub(crate) type QuantizeFromFn<T> = unsafe fn(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32;
 /// Dequantise `levels` into `out` (same length).
-pub(crate) type DequantizeFn = unsafe fn(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]);
+pub(crate) type DequantizeFn = unsafe fn(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]);
 
 /// One ISA's transform kernels, indexed by [`DctSize`].
 #[derive(Debug, Clone, Copy)]
@@ -391,13 +394,13 @@ mod sparse_tests {
         use crate::{Dsp, Isa};
         let reference = Dsp::with_isa(Isa::Scalar).unwrap();
         let cs: [i16; 7] = [-32768, -32767, -1, 0, 1, 32766, 32767];
-        let ds = [-32768, -32767, -1, 0, 1, 32766, 32767];
+        let ds: [i16; 7] = [-32768, -32767, -1, 0, 1, 32766, 32767];
         for n in [
             0, 1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 63, 64, 65, 255, 256, 1023, 1024,
         ] {
             for offset in 0..8 {
                 let mut c = vec![0_i16; n + offset];
-                let mut d = vec![0_i32; n + offset];
+                let mut d = vec![0_i16; n + offset];
                 for seed in 0..8_u32 {
                     let mut state = seed + 17;
                     for i in 0..n {
@@ -411,7 +414,7 @@ mod sparse_tests {
                         d[offset + i] = if seed < 4 {
                             ds[(i + offset + seed as usize) % ds.len()]
                         } else {
-                            (state >> 16) as i32 - 32768
+                            (state >> 16) as i16
                         };
                     }
                     let expected = reference.av1_coefficient_gain(&c[offset..], &d[offset..]);
@@ -430,7 +433,7 @@ mod sparse_tests {
         for isa in Isa::ALL {
             if let Some(dsp) = Dsp::with_isa(isa) {
                 let original = vec![i16::MIN; 1024];
-                let d = vec![32767; 1024];
+                let d = vec![i16::MAX; 1024];
                 let gain = dsp.av1_coefficient_gain(&original, &d);
                 assert!(gain < 0);
                 assert_eq!(gain, reference.av1_coefficient_gain(&original, &d));

@@ -544,13 +544,13 @@ pub(super) mod tests {
     use crate::txfm::{DctSize, scalar};
 
     /// A sparse inverse entry point: `(coeffs, dst, stride, limit)`.
-    pub(in crate::txfm) type SparseInverse = unsafe fn(&[i32], &mut [u8], usize, usize);
+    pub(in crate::txfm) type SparseInverse = unsafe fn(&[i16], &mut [u8], usize, usize);
 
     /// Coefficients whose first row (one transform input vector) has L1
     /// norm exactly `l1`, spread over `limit` inputs with a sign pattern;
     /// the other rows are small so the column pass stays narrow.
-    fn boundary_block(limit: usize, l1: i32, pattern: usize) -> Vec<i32> {
-        let mut coeffs = vec![0_i32; COEFF_STRIDE * COEFF_STRIDE];
+    fn boundary_block(limit: usize, l1: i32, pattern: usize) -> Vec<i16> {
+        let mut coeffs = vec![0_i16; COEFF_STRIDE * COEFF_STRIDE];
         let per_input = l1 / limit as i32;
         for c in 0..limit {
             let magnitude = per_input + i32::from(c == 0) * (l1 - per_input * limit as i32);
@@ -560,9 +560,10 @@ pub(super) mod tests {
                 2 => (c / 2) % 2 == 1,
                 _ => (c * 7 + 3) % 5 < 2,
             };
+            let magnitude = i16::try_from(magnitude).expect("guard norms fit 16-bit inputs");
             coeffs[c * COEFF_STRIDE] = if negative { -magnitude } else { magnitude };
             for r in 1..limit {
-                coeffs[c * COEFF_STRIDE + r] = ((c * 31 + r * 17) % 9) as i32 - 4;
+                coeffs[c * COEFF_STRIDE + r] = ((c * 31 + r * 17) % 9) as i16 - 4;
             }
         }
         coeffs

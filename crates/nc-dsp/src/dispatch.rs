@@ -3241,14 +3241,15 @@ impl Dsp {
         unsafe { (self.txfm.forward_dct_raster[size as usize])(residual, stride, out) }
     }
 
-    /// AV1 inverse 2-D `DCT_DCT` of `coeffs` (dequantised, libaom layout),
-    /// added to the prediction in the top-left `n`x`n` of `dst` with 8-bit
-    /// clipping; bit-exact with AV1 §7.13.3.
+    /// AV1 inverse 2-D `DCT_DCT` of `coeffs` (dequantised, 16-bit as AV1
+    /// §7.12.3 clamps them, libaom layout), added to the prediction in the
+    /// top-left `n`x`n` of `dst` with 8-bit clipping; bit-exact with AV1
+    /// §7.13.3.
     ///
     /// # Panics
     ///
     /// If `coeffs.len() < n * n` or `dst` is smaller than `n`x`n`.
-    pub fn av1_inverse_dct_add(&self, size: DctSize, coeffs: &[i32], dst: &mut PlaneViewMut<'_>) {
+    pub fn av1_inverse_dct_add(&self, size: DctSize, coeffs: &[i16], dst: &mut PlaneViewMut<'_>) {
         let n = size.side();
         assert!(
             coeffs.len() >= n * n,
@@ -3314,14 +3315,21 @@ impl Dsp {
         // Preserve the tuned square kernels, especially the guarded narrow
         // NEON/SIMD128 graphs. Replacing them with the generic sparse graph
         // is not uniformly faster (AVX2 8x8 measured +11% instructions).
+        // They take 16-bit coefficients: saturating here is exact, as the
+        // inverse's first step clamps its input to 16 bits (§7.13.3).
         if kind == Av1TxType::DctDct && width == height {
+            let mut narrow = [0_i16; AV1_MAX_CODED_AREA];
+            let narrow = &mut narrow[..tx.coded_area()];
+            for (n, &c) in narrow.iter_mut().zip(coeffs) {
+                *n = crate::simd::saturate_i16(c);
+            }
             match DctSize::from_side(width) {
-                Some(size) if width <= 8 => self.av1_inverse_dct_add(size, coeffs, dst),
+                Some(size) if width <= 8 => self.av1_inverse_dct_add(size, narrow, dst),
                 // 16x16 with eob <= 36 runs the low-8 graph: half the row
                 // transforms and half the inputs of each 1-D transform.
                 _ => self.av1_inverse_dct_add_sparse(
                     width,
-                    coeffs,
+                    narrow,
                     crate::av1_inverse::av1_dct_nonzero_side(eob).min(width),
                     dst,
                 ),
@@ -3484,13 +3492,14 @@ impl Dsp {
     }
 
     /// AV1 inverse 64x64 `DCT_DCT` of the top-left 32x32 column-major
-    /// `coeffs` (the rest zero), added to the prediction in the top-left
-    /// 64x64 of `dst` with 8-bit clipping; bit-exact with AV1 §7.13.3.
+    /// 16-bit `coeffs` (the rest zero), added to the prediction in the
+    /// top-left 64x64 of `dst` with 8-bit clipping; bit-exact with AV1
+    /// §7.13.3.
     ///
     /// # Panics
     ///
     /// If `coeffs` is shorter than 1024 or `dst` smaller than 64x64.
-    pub fn av1_inverse_dct_add_64(&self, coeffs: &[i32], dst: &mut PlaneViewMut<'_>) {
+    pub fn av1_inverse_dct_add_64(&self, coeffs: &[i16], dst: &mut PlaneViewMut<'_>) {
         assert!(
             coeffs.len() >= 32 * 32,
             "{} coefficients for 32x32",
@@ -3518,7 +3527,7 @@ impl Dsp {
     pub fn av1_inverse_dct_add_sparse(
         &self,
         side: usize,
-        coeffs: &[i32],
+        coeffs: &[i16],
         nonzero_side: usize,
         dst: &mut PlaneViewMut<'_>,
     ) {
@@ -3536,17 +3545,15 @@ impl Dsp {
     }
 
     /// Exact transform-domain distortion gain numerator, `sum(2*c*d-d*d)`,
-    /// of 16-bit forward coefficients `original` and dequantized values,
-    /// which are signed 16-bit (a semantic bound, not a memory-safety
-    /// prerequisite). Negative gains are retained.
+    /// of 16-bit forward coefficients `original` and 16-bit dequantized
+    /// values. Negative gains are retained.
     ///
     /// # Panics
     /// If slice lengths differ or exceed 1024 (or bounds fail in debug builds).
     #[must_use]
-    pub fn av1_coefficient_gain(&self, original: &[i16], dequantized: &[i32]) -> i64 {
+    pub fn av1_coefficient_gain(&self, original: &[i16], dequantized: &[i16]) -> i64 {
         assert_eq!(original.len(), dequantized.len());
         assert!(original.len() <= 1024, "AV1 coded coefficient extent");
-        debug_assert!(dequantized.iter().all(|&d| i16::try_from(d).is_ok()));
         // SAFETY: ISA checked at dispatch installation; buffer lengths checked.
         unsafe { (self.txfm.coefficient_gain)(original, dequantized) }
     }
@@ -3601,12 +3608,14 @@ impl Dsp {
         unsafe { (self.txfm.quantize_from_wide)(coeffs, q, out) }
     }
 
-    /// AV1 dequantisation (AV1 §7.12.3) of `levels` into `out`.
+    /// AV1 dequantisation (AV1 §7.12.3) of `levels` into `out`, which holds
+    /// the 16-bit clamped values (the inverse transform's input,
+    /// [`Self::av1_inverse_add_i16`]).
     ///
     /// # Panics
     ///
     /// If `out` is shorter than `levels`.
-    pub fn av1_dequantize(&self, levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+    pub fn av1_dequantize(&self, levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
         assert!(
             out.len() >= levels.len(),
             "dequantise output shorter than input"
@@ -4617,6 +4626,9 @@ fn check_covers(size: BlockSize, view: &PlaneView<'_>, what: &str) {
 /// Check and describe an H.264 deblocking edge: `reach` samples on each
 /// Zero every coefficient of the `side`x`side` block `coeffs` outside its
 /// top-left `keep`x`keep` square (the same in column-major and raster order).
+/// Coefficients of the largest coded AV1 transform block (32x32).
+const AV1_MAX_CODED_AREA: usize = crate::AV1_MAX_CODED_SIDE * crate::AV1_MAX_CODED_SIDE;
+
 /// `q` for 16-bit levels: positive steps (asserted) and `max_level` capped
 /// at `i16::MAX`. The cap changes no level of a 16-bit coefficient: with
 /// AV1's smallest step (4) and largest `log_scale` (2), `|c| << log_scale /

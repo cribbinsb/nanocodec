@@ -191,7 +191,7 @@ pub fn quantize_coded_from(
     dsp.av1_quantize_from(&coeffs[..prefix], quantizer, &mut levels[..prefix])
 }
 
-/// Leading dequantised coefficients [`inverse_dct_add_eob`] reads for a
+/// Leading dequantised coefficients [`inverse_dct_add`] reads for a
 /// block with end of block `eob` (at least 1): the lines of the EOB-bounded
 /// square for 32x32 and 64x64, else the whole coded block. Every later
 /// level is zero, so it dequantises to zero and adds nothing to
@@ -252,30 +252,19 @@ pub fn forward_dct_with(
     }
 }
 
-/// Inverse 2-D DCT of `coeffs` (dequantised, `coded_size()²`, libaom
-/// layout), added to the prediction already in `dst` (rows at `stride`)
-/// with 8-bit clipping. Bit-exact with AV1 §7.13.3.
+/// Inverse 2-D DCT of `coeffs` (dequantised, 16-bit as AV1 §7.12.3
+/// clamps them, `coded_size()²`, libaom layout) whose nonzero values all
+/// lie in the first `eob` scan positions, added to the prediction already
+/// in `dst` with 8-bit clipping; bit-exact with AV1 §7.13.3. The default
+/// 16x16 and 32x32 scans first reach coordinate 8 at position 36, and
+/// coordinate 16 at 136 (`nc_dsp::av1_dct_nonzero_side`), so the EOB
+/// prefixes fit low 8/16 squares (also for 64x64's coded 32x32), whose
+/// sparse graphs then run; pinned SVT similarly dispatches low1/8/16/32
+/// kernels from its EOB-derived coordinate bounds. Only that square is read.
 pub fn inverse_dct_add(
     dsp: &Dsp,
     tx: TxSize,
-    coeffs: &[i32],
-    dst: &mut nc_common::PlaneViewMut<'_>,
-) {
-    match DctSize::from_side(tx.size()) {
-        Some(size) => dsp.av1_inverse_dct_add(size, coeffs, dst),
-        None => dsp.av1_inverse_dct_add_64(coeffs, dst),
-    }
-}
-
-/// EOB-bounded inverse: the default 16x16 and 32x32 scans first reach
-/// coordinate 8 at position 36, and coordinate 16 at 136
-/// (`nc_dsp::av1_dct_nonzero_side`). Thus the preceding EOB prefixes fit
-/// low8/16 squares (also for 64x64's coded 32x32). Pinned SVT similarly dispatches low1/8/16/32 kernels using
-/// its EOB-derived coordinate bounds.
-pub fn inverse_dct_add_eob(
-    dsp: &Dsp,
-    tx: TxSize,
-    coeffs: &[i32],
+    coeffs: &[i16],
     eob: usize,
     dst: &mut nc_common::PlaneViewMut<'_>,
 ) {
@@ -283,7 +272,8 @@ pub fn inverse_dct_add_eob(
         let limit = nc_dsp::av1_dct_nonzero_side(eob).min(tx.size());
         dsp.av1_inverse_dct_add_sparse(tx.size(), coeffs, limit, dst);
     } else {
-        inverse_dct_add(dsp, tx, coeffs, dst);
+        let size = DctSize::from_side(tx.size()).expect("4x4 and 8x8 are DCT sizes");
+        dsp.av1_inverse_dct_add(size, coeffs, dst);
     }
 }
 
@@ -292,7 +282,7 @@ pub fn inverse_dct_add_eob(
 /// coefficients are in that same forward domain. Keep the actual prediction
 /// SSE at the caller, so uncoded64x64 high-frequency energy is retained.
 /// Forward coefficients and dequantized inputs are 16-bit.
-pub fn coefficient_gain(dsp: &Dsp, tx: TxSize, original: &[i16], dequantized: &[i32]) -> f64 {
+pub fn coefficient_gain(dsp: &Dsp, tx: TxSize, original: &[i16], dequantized: &[i16]) -> f64 {
     let gain = dsp.av1_coefficient_gain(original, dequantized);
     gain as f64 / f64::from(1_u32 << (6 - 2 * tx.dequant_shift()))
 }
@@ -306,7 +296,7 @@ pub fn coefficient_gain(dsp: &Dsp, tx: TxSize, original: &[i16], dequantized: &[
 pub fn inverse_dct_dc_add(
     dsp: &Dsp,
     tx: TxSize,
-    dc: i32,
+    dc: i16,
     dst: &mut nc_common::PlaneViewMut<'_>,
     scratch: &mut [i16],
 ) {
@@ -321,15 +311,16 @@ pub fn inverse_dct_dc_add(
     );
 }
 
-fn inverse_dc_value(tx: TxSize, dc: i32) -> i16 {
+fn inverse_dc_value(tx: TxSize, dc: i16) -> i16 {
     let row_shift = match tx {
         TxSize::Tx4x4 => 0,
         TxSize::Tx8x8 => 1,
         TxSize::Tx16x16 | TxSize::Tx32x32 | TxSize::Tx64x64 => 2,
     };
-    // Each pass clamps its input to 16 bits. Products then fit i32, and
-    // the final residual is within ±1024, safely inside add_residual's range.
-    let dc = dc.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+    // Each pass's input is 16-bit (the second clamped). Products then fit
+    // i32, and the final residual is within ±1024, safely inside
+    // add_residual's range.
+    let dc = i32::from(dc);
     let row = round_shift(dc * INVERSE_COS_PI_OVER_FOUR, INVERSE_COS_BITS);
     let row = round_shift(row, row_shift).clamp(i32::from(i16::MIN), i32::from(i16::MAX));
     let column = round_shift(row * INVERSE_COS_PI_OVER_FOUR, INVERSE_COS_BITS);
@@ -385,13 +376,12 @@ mod tests {
                 let energy = (n * n) as f64 * f64::from(value).powi(2);
                 let ideal_dc = ((8 * n) >> tx.dequant_shift()) as i32 * i32::from(value);
                 let ideal = i16::try_from(ideal_dc).unwrap();
-                assert_eq!(coefficient_gain(&dsp, tx, &[ideal], &[ideal_dc]), energy);
+                assert_eq!(coefficient_gain(&dsp, tx, &[ideal], &[ideal]), energy);
                 assert_eq!(
-                    coefficient_gain(&dsp, tx, &[ideal], &[ideal_dc / 2]),
+                    coefficient_gain(&dsp, tx, &[ideal], &[ideal / 2]),
                     energy * 0.75
                 );
-                let dequantized: Vec<i32> = coefficients.iter().map(|&c| i32::from(c)).collect();
-                let gain = coefficient_gain(&dsp, tx, &coefficients, &dequantized);
+                let gain = coefficient_gain(&dsp, tx, &coefficients, &coefficients);
                 // Integer FDCT rounding matters at unit residuals, but this
                 // tolerance is far smaller than a 16x normalization mistake.
                 assert!(
@@ -411,8 +401,7 @@ mod tests {
         let mut coefficients = vec![0; 1024];
         forward_dct(&dsp, tx, &residual, 64, &mut coefficients);
         let prediction_sse = 4096.0 * 400.0;
-        let dequantized: Vec<i32> = coefficients.iter().map(|&c| i32::from(c)).collect();
-        let gain = coefficient_gain(&dsp, tx, &coefficients, &dequantized);
+        let gain = coefficient_gain(&dsp, tx, &coefficients, &coefficients);
         assert!(
             gain < prediction_sse * 0.1,
             "uncoded three-quadrant energy must remain in actual prediction SSE"
@@ -439,9 +428,7 @@ mod tests {
         use nc_common::PlaneViewMut;
         use nc_dsp::Isa;
         let scalar = Dsp::with_isa(Isa::Scalar).unwrap();
-        let extremes = [
-            -8_388_608, -32_769, -32_768, -32_767, -1, 0, 1, 32_767, 32_768, 8_388_607,
-        ];
+        let extremes: [i16; 7] = [i16::MIN, -32_767, -1, 0, 1, 32_766, i16::MAX];
         for tx in [TxSize::Tx32x32, TxSize::Tx64x64] {
             let n = tx.size();
             let stride = n + 7;
@@ -491,7 +478,7 @@ mod tests {
                     for (i, &position) in scan[..eob].iter().enumerate() {
                         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                         let value = match mode {
-                            0 => (state >> 24) as i32 - 127,
+                            0 => (state >> 24) as i16 - 127,
                             1 => extremes[i % extremes.len()],
                             2 => {
                                 if i + 1 == eob {
@@ -500,15 +487,17 @@ mod tests {
                                     0
                                 }
                             }
-                            _ => (state >> 8) as i32 - 8_388_608,
+                            _ => (state >> 16) as i16,
                         };
                         coefficients[usize::from(position)] = value;
                     }
+                    // The reference reads every coefficient (a full EOB).
                     let mut expected = prediction.clone();
                     inverse_dct_add(
                         &scalar,
                         tx,
                         &coefficients,
+                        coefficients.len(),
                         &mut PlaneViewMut::new(&mut expected, stride, n, n).unwrap(),
                     );
                     for isa in Isa::ALL {
@@ -516,7 +505,7 @@ mod tests {
                             continue;
                         };
                         let mut actual = prediction.clone();
-                        inverse_dct_add_eob(
+                        inverse_dct_add(
                             &dsp,
                             tx,
                             &coefficients,
@@ -542,16 +531,31 @@ mod tests {
             let stride = n + 7;
             let prediction: Vec<u8> = (0..stride * n + 16).map(|i| (i * 37 + 53) as u8).collect();
             for dc in [
-                -8_388_608, -32_769, -32_768, -1024, -65, -33, -17, -1, 0, 1, 17, 33, 65, 1024,
-                32_767, 32_768, 8_388_607,
+                i16::MIN,
+                -32_767,
+                -1024,
+                -65,
+                -33,
+                -17,
+                -1,
+                0,
+                1,
+                17,
+                33,
+                65,
+                1024,
+                32_766,
+                i16::MAX,
             ] {
                 let mut coefficients = vec![0; tx.coded_size() * tx.coded_size()];
                 coefficients[0] = dc;
                 let mut expected = prediction.clone();
+                let eob = coefficients.len();
                 inverse_dct_add(
                     &scalar,
                     tx,
                     &coefficients,
+                    eob,
                     &mut PlaneViewMut::new(&mut expected, stride, n, n).unwrap(),
                 );
                 for isa in Isa::ALL {
@@ -606,12 +610,18 @@ mod tests {
         let residual: Vec<i16> = (0..64 * 64)
             .map(|i| ((i / 64) as i16 - 32) / 2 + ((i % 64) as i16 - 32) / 4)
             .collect();
-        let mut forward = vec![0i16; 32 * 32];
-        forward_dct(&Dsp::new(), TxSize::Tx64x64, &residual, 64, &mut forward);
-        let coeffs: Vec<i32> = forward.iter().map(|&c| i32::from(c)).collect();
+        let mut coeffs = vec![0i16; 32 * 32];
+        forward_dct(&Dsp::new(), TxSize::Tx64x64, &residual, 64, &mut coeffs);
         let mut plane = Plane::new(64, 64, 0).unwrap();
         plane.view_mut().fill(128);
-        inverse_dct_add(&Dsp::new(), TxSize::Tx64x64, &coeffs, &mut plane.view_mut());
+        let eob = coeffs.len();
+        inverse_dct_add(
+            &Dsp::new(),
+            TxSize::Tx64x64,
+            &coeffs,
+            eob,
+            &mut plane.view_mut(),
+        );
         let view = plane.view();
         let worst = (0..64 * 64)
             .map(|i| (i32::from(view.row(i / 64)[i % 64]) - 128 - i32::from(residual[i])).abs())
@@ -624,11 +634,17 @@ mod tests {
     /// DC-only 8x8 coefficient produces a flat block.
     #[test]
     fn dc_coefficient_is_flat() {
-        let mut coeffs = vec![0i32; 64];
+        let mut coeffs = vec![0i16; 64];
         coeffs[0] = 8 * 8 * 10; // orthonormal DC of a flat +10 block, ×8
         let mut plane = Plane::new(8, 8, 0).unwrap();
         plane.view_mut().fill(100);
-        inverse_dct_add(&Dsp::new(), TxSize::Tx8x8, &coeffs, &mut plane.view_mut());
+        inverse_dct_add(
+            &Dsp::new(),
+            TxSize::Tx8x8,
+            &coeffs,
+            1,
+            &mut plane.view_mut(),
+        );
         assert!(plane.view().rows().all(|row| row.iter().all(|&v| v == 110)));
     }
 }

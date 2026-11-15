@@ -324,6 +324,21 @@ impl I32Lanes for I32x8 {
     }
 
     #[inline(always)]
+    fn store_sat16_pair(low: Self, high: Self, dst: &mut [i16]) {
+        /// `vpermq` order putting the pack's `low` quads before its `high`
+        /// quads.
+        const LOW_THEN_HIGH: i32 = 0b11_01_10_00;
+        let dst = &mut dst[..16];
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // `dst` holds 16 values.
+        unsafe {
+            let words =
+                _mm256_permute4x64_epi64::<LOW_THEN_HIGH>(_mm256_packs_epi32(low.0, high.0));
+            _mm256_storeu_si256(dst.as_mut_ptr().cast(), words);
+        }
+    }
+
+    #[inline(always)]
     fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
         /// `vpermq` order putting each pack's first-row quads before its
         /// second-row quads.

@@ -71,7 +71,7 @@ pub(crate) fn txfm_fns() -> TxfmFns {
 ///
 /// Kernel contract (`txfm` module docs).
 #[target_feature(enable = "simd128")]
-unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
+unsafe fn coefficient_gain(original: &[i16], dequantized: &[i16]) -> i64 {
     let n = original.len().min(dequantized.len());
     let (original, dequantized) = (&original[..n], &dequantized[..n]);
     let end = n / 4 * 4;
@@ -81,7 +81,7 @@ unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
         let (c, d) = unsafe {
             (
                 i32x4_extend_low_i16x8(v128_load64_zero(original[i..].as_ptr().cast())),
-                v128_load(dequantized[i..].as_ptr().cast()),
+                i32x4_extend_low_i16x8(v128_load64_zero(dequantized[i..].as_ptr().cast())),
             )
         };
         let t = i32x4_sub(i32x4_shl(c, 1), d);
@@ -102,7 +102,7 @@ macro_rules! simd128_sizes {
             unsafe { generic::$forward::<I32x4>(residual, stride, out) }
         }
 
-        unsafe fn $inverse(coeffs: &[i32], dst: &mut [u8], dst_stride: usize) {
+        unsafe fn $inverse(coeffs: &[i16], dst: &mut [u8], dst_stride: usize) {
             // SAFETY: SIMD128 is enabled for the whole build.
             unsafe { generic::$inverse::<I32x4>(coeffs, dst, dst_stride) }
         }
@@ -340,7 +340,7 @@ unsafe fn quantize_from<T: Lanes>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T])
 }
 
 #[target_feature(enable = "simd128")]
-unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]) {
     // SAFETY: SIMD128 is enabled for this function.
     unsafe { generic::dequantize::<I32x4>(levels, q, out) }
 }

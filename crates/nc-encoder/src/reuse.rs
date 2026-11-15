@@ -151,6 +151,11 @@ pub(crate) struct ReuseFrame<'a> {
     /// The inter level's quantiser step in sample units (an orthonormal
     /// transform coefficient's step).
     pub sample_step: f64,
+    /// QP units the frame itself is planned coarser than the inter level
+    /// by its role (a QP cadence leaf frame), which a refinement takes
+    /// back; 0 on other frames, and unused without
+    /// `persist.reuse_level_price`.
+    pub role_offset: f64,
 }
 
 impl ReuseFrame<'_> {
@@ -192,11 +197,24 @@ impl PlannedOffsets {
     }
 }
 
+/// What the price of an inter frame's refinement is an offset from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PriceBase {
+    /// The frame's own quantizer: on a frame the QP cadence codes coarser
+    /// (a leaf) the refinement lands that much coarser too.
+    Frame,
+    /// The inter level, whatever the frame's role
+    /// (`persist.reuse_level_price`).
+    Level,
+}
+
 /// Per-cell reconstruction history of one stream.
 #[derive(Debug)]
 pub(crate) struct ReuseTerm {
     /// Whether the codec codes the offsets per block (else one per frame).
     per_block: bool,
+    /// What a refinement's price is an offset from.
+    price_base: PriceBase,
     cols: usize,
     /// Frames observed so far: the index of the frame being coded.
     frame: u32,
@@ -264,6 +282,7 @@ impl ReuseTerm {
     pub fn new(per_block: bool) -> Self {
         Self {
             per_block,
+            price_base: PriceBase::Frame,
             cols: 0,
             frame: 0,
             period: MEASURE_PERIOD,
@@ -284,6 +303,41 @@ impl ReuseTerm {
             candidates: Vec::new(),
             pending: Vec::new(),
             row_scratch: Vec::new(),
+        }
+    }
+
+    /// This term pricing refinements against the inter level on every
+    /// frame (`persist.reuse_level_price`), or against the frame's own
+    /// quantizer.
+    #[must_use]
+    pub fn level_priced(self, level_priced: bool) -> Self {
+        Self {
+            price_base: if level_priced {
+                PriceBase::Level
+            } else {
+                PriceBase::Frame
+            },
+            ..self
+        }
+    }
+
+    /// Whether refinements are priced against the inter level
+    /// ([`Self::level_priced`]): the planner then needs each frame's
+    /// [`ReuseFrame::role_offset`].
+    pub fn prices_at_level(&self) -> bool {
+        self.price_base == PriceBase::Level
+    }
+
+    /// QP units a refinement in `frame` takes back from the frame's own
+    /// quantizer. The price is a step relative to the inter level: on a
+    /// frame its role codes coarser, the offset from the frame's quantizer
+    /// is that much larger. (`attempt` records the offset as applied, so
+    /// the next refinement of such a cell waits for slightly more than a
+    /// doubling of its reuse.)
+    fn taken_back(&self, frame: &ReuseFrame<'_>) -> f64 {
+        match self.price_base {
+            PriceBase::Level => frame.role_offset,
+            PriceBase::Frame => 0.,
         }
     }
 
@@ -419,7 +473,7 @@ impl ReuseTerm {
             let refinable = error > expected_distortion(frame.sample_step * step_ratio(price));
             let finer = price < self.attempt[cell] - REUSE_QP_PER_OCTAVE;
             if refinable && finer {
-                planned.set(cell, price);
+                planned.set(cell, price - self.taken_back(frame));
             }
         }
         self.any_offset = !planned.cells.is_empty();
@@ -985,6 +1039,7 @@ mod tests {
             key: false,
             horizon: None,
             sample_step: 16.,
+            role_offset: 0.,
         };
         // Owed 5 at 9, worse than the level (50), owed 5 at 5, and owed 5 at
         // 50 but not still.
@@ -1008,6 +1063,31 @@ mod tests {
     }
 
     #[test]
+    fn a_level_priced_refinement_takes_back_the_frames_role_offset() {
+        let map = still(vec![3, 3]);
+        let unchanged = pre(&[0; 2]);
+        // A cadence leaf frame, 1.5 QP units coarser than the level.
+        let leaf = ReuseFrame {
+            still: &map,
+            pre: &unchanged,
+            key: false,
+            horizon: None,
+            sample_step: 16.,
+            role_offset: 1.5,
+        };
+        let inf = f64::INFINITY;
+        let price = reuse_offset(3.);
+        // Priced against the frame, the refinement lands 1.5 units coarser
+        // than its price; against the level, at its price.
+        let mut by_frame = term(vec![5., inf], vec![9., 5.]);
+        by_frame.plan(&leaf);
+        assert_eq!(by_frame.offsets(), &[price, 0.]);
+        let mut by_level = term(vec![5., inf], vec![9., 5.]).level_priced(true);
+        by_level.plan(&leaf);
+        assert_eq!(by_level.offsets(), &[price - 1.5, 0.]);
+    }
+
+    #[test]
     fn keys_keep_each_still_cells_target_within_its_price() {
         let map = still(vec![200, 200, 0]);
         let unchanged = pre(&[0; 3]);
@@ -1017,6 +1097,7 @@ mod tests {
             key: true,
             horizon: Some(3),
             sample_step: 16.,
+            role_offset: 0.,
         };
         // Error 21.3/4 needs half the step to keep (-6, the price at reuse
         // 3); 21.3/64 would need an eighth, more than the price allows.

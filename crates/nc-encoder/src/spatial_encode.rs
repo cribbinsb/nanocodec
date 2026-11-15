@@ -1707,6 +1707,8 @@ impl<B: CodecBackend> Encoder<B> {
             key: rc_key,
             horizon: self.spatial_frames_to_next_key(layer_plan.spatial_id),
             sample_step: self.reuse_sample_step(),
+            // Spatial layers run no QP cadence roles of their own here.
+            role_offset: 0.,
         };
         let step_dist = if layer_plan.spatial_id == 1 {
             let interval = self

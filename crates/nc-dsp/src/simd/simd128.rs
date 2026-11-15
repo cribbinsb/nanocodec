@@ -16,11 +16,11 @@ use core::arch::wasm32::{
     i8x16_shuffle, i8x16_swizzle, i16x8_abs, i16x8_add, i16x8_eq, i16x8_gt, i16x8_lt, i16x8_max,
     i16x8_min, i16x8_mul, i16x8_narrow_i32x4, i16x8_neg, i16x8_shr, i16x8_shuffle, i16x8_splat,
     i16x8_sub, i32x4_abs, i32x4_add, i32x4_bitmask, i32x4_dot_i16x8, i32x4_eq,
-    i32x4_extadd_pairwise_i16x8, i32x4_extend_low_i16x8, i32x4_extmul_high_i16x8,
-    i32x4_extmul_low_i16x8, i32x4_extract_lane, i32x4_gt, i32x4_max, i32x4_min, i32x4_mul,
-    i32x4_shl, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub, i64x2_shuffle, u8x16_narrow_i16x8,
-    u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, u16x8_min, u16x8_sub_sat,
-    u32x4_extend_low_u16x8, u32x4_shr, v128, v128_and, v128_load, v128_load32_zero,
+    i32x4_extadd_pairwise_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8,
+    i32x4_extmul_high_i16x8, i32x4_extmul_low_i16x8, i32x4_extract_lane, i32x4_gt, i32x4_max,
+    i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub,
+    i64x2_shuffle, u8x16_narrow_i16x8, u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, u16x8_min,
+    u16x8_sub_sat, u32x4_extend_low_u16x8, u32x4_shr, v128, v128_and, v128_load, v128_load32_zero,
     v128_load64_zero, v128_or, v128_store, v128_store32_lane, v128_store64_lane, v128_xor,
 };
 
@@ -284,6 +284,24 @@ impl I32Lanes for I32x4 {
         let sum = i32x4_add(self.0, pred);
         let words = i16x8_narrow_i32x4(sum, sum);
         store_low4(u8x16_narrow_i16x8(words, words), dst);
+    }
+
+    #[inline(always)]
+    fn load_i16_pair(src: &[i16]) -> (Self, Self) {
+        let src = &src[..8];
+        // SAFETY: `src` holds 8 values (16 bytes).
+        let values = unsafe { v128_load(src.as_ptr().cast()) };
+        (
+            Self(i32x4_extend_low_i16x8(values)),
+            Self(i32x4_extend_high_i16x8(values)),
+        )
+    }
+
+    #[inline(always)]
+    fn store_sat16_pair(low: Self, high: Self, dst: &mut [i16]) {
+        let dst = &mut dst[..8];
+        // SAFETY: `dst` holds 8 values (16 bytes).
+        unsafe { v128_store(dst.as_mut_ptr().cast(), i16x8_narrow_i32x4(low.0, high.0)) }
     }
 
     #[inline(always)]

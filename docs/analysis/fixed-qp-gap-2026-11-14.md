@@ -311,3 +311,16 @@ lens, paired: J -1.0, Weighted 0.0. VVC Default vs x264 medium on the lens: Weig
 (published 2026-11-14: -21.6 / -29.9). CPU at fixed QP: x86 P instructions -0.2 %. VVC's other
 patterns: SVT-static +0.4, x26x +11.1, JVET +7.1 / +5.7 without the model, libaom LD16 +1.5, flat +8.0,
 no start-up cadence +1.9, finer key +1.4, H.264's profile +0.9.
+
+**AV2 profile (landed): `rate.cadence_static_scaling` 0, as HEVC and VVC.** Draw `fixedqp-2026-11-15`: J
+-0.7 [-1.6, +0.1]. Draw `-second`: -2.4 [-3.7, -1.2]. AOM CTC LD lens, paired: J -0.8, Weighted -0.5.
+CPU at fixed QP: x86 P instructions +0.7 %. A coarser key (`av2.keyframe_step_permille` 320) gained
+-1.6 on draw 1 but +0.1 on draw 2, so it is left out. AV2's patterns: SVT-static +0.6, x26x +14.3, JVET
++4.5 / +2.4 without the model, libaom LD16 +1.8, flat +7.8, no start-up cadence +1.5, finer key +3.6.
+
+**VP9: no profile.** Fixed strength -0.3 and base boost 2 -0.1; nothing reaches the -0.5 gate. VP9's
+patterns: SVT-static +0.2, x26x +20.6, JVET +10.3 / +5.9, libaom LD16 +5.2, flat +5.9, finer key +2.5,
+H.264's profile +3.5.
+
+Summary of the fixed-QP profiles: H.264 (leaf +2, cadence scale 1, base λ 0.8, key offset 8); HEVC,
+VVC and AV2 (cadence at fixed strength); AV1 and VP9 unchanged. Every Fast preset pins the profile off.
