@@ -13,6 +13,8 @@ use nc_common::{
 };
 use nc_dsp::Dsp;
 
+mod general;
+
 // Four luma samples cover the 8-tap interpolation footprint (two for chroma).
 // Shared Plane border extension lets inter prediction borrow edge windows rather
 // than allocate and gather the same clamped samples for every boundary CU.
@@ -66,7 +68,7 @@ pub struct Decoder {
     pictures: PictureRecycler,
     next_poc: Option<u8>,
     dsp: Dsp,
-    /// Parameter NALs awaiting the next single-slice picture in the streaming API.
+    /// Parameter NALs awaiting the next slice in the streaming API.
     pending: Vec<u8>,
     adaptation: [[Option<Box<crate::decoder_headers::Adaptation>>; 8]; 3],
     /// Our own streams' luma ALF APS banks, by APS id.
@@ -75,6 +77,8 @@ pub struct Decoder {
     general_sequence: Option<Box<crate::decoder_headers::Sequence>>,
     general_picture: Option<Box<crate::decoder_headers::PictureParameters>>,
     general_references: Option<Box<crate::decoder_dpb::References>>,
+    /// A general picture whose slices are still arriving.
+    assembly: Option<Box<general::Assembly>>,
     /// Coding-tool analysis, collected only when enabled.
     #[cfg(feature = "analysis")]
     stats: Option<nc_common::stream_stats::StreamStats>,
@@ -112,9 +116,10 @@ impl Decoder {
 
     /// Feed one NAL without its Annex-B start code. Metadata emits no picture.
     ///
-    /// General single-slice pictures are reordered using the SPS DPB limits.
-    /// Call `next_output` after each NAL and after `flush` to drain additional
-    /// pictures. Unsupported coding tools and multi-slice syntax fail explicitly.
+    /// General pictures are output once their last slice arrives, reordered
+    /// using the SPS DPB limits. Call `next_output` after each NAL and after
+    /// `flush` to drain additional pictures. Unsupported coding tools fail
+    /// explicitly.
     /// # Errors
     /// Rejects malformed metadata, oversized pending headers and unsupported NALs.
     pub fn push_nal(&mut self, nal: &[u8]) -> Result<Option<Picture>> {
@@ -183,7 +188,9 @@ impl Decoder {
         };
         parameters.clear();
         self.pending = parameters;
-        result?;
+        if !result? {
+            return Ok(Pushed::Nothing);
+        }
         if self.general_references.is_none() {
             return Ok(Pushed::Shown);
         }
@@ -235,7 +242,7 @@ impl Decoder {
         self.reference_border_ready = false;
     }
 
-    /// Decode one Annex-B access unit containing exactly one IDR or P picture.
+    /// Decode one Annex-B access unit: one picture, with all its slices.
     /// # Errors
     /// Rejects truncated/malformed data and syntax outside the emitted subset.
     pub fn decode(&mut self, packet: &[u8]) -> Result<Picture> {
@@ -250,7 +257,12 @@ impl Decoder {
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         // A packet that cannot even be split shows nothing either.
         self.shown = false;
-        self.decode_units(annex_b_units(packet)?)
+        if self.decode_units(annex_b_units(packet)?)? {
+            Ok(())
+        } else {
+            self.assembly = None;
+            Err(DecodeError::Malformed("VVC access unit without all slices"))
+        }
     }
 
     /// Whether the active 8-bit sequence codes only the luma plane.
@@ -356,127 +368,6 @@ impl Decoder {
         Ok(())
     }
 
-    fn decode_general(&mut self, rbsp: &[u8], kind: u8, temporal_id: u8) -> Result<Picture> {
-        let sequence = self.general_sequence.as_ref().unwrap();
-        let parameters = self.general_picture.as_ref().unwrap();
-        if usize::from(temporal_id - 1) >= sequence.dpb.len() {
-            return Err(DecodeError::Malformed("VVC temporal layer exceeds SPS"));
-        }
-        let header = crate::decoder_headers::SliceHeader::parse(
-            rbsp,
-            kind,
-            sequence,
-            parameters,
-            self.picture_header.as_deref(),
-        )?;
-        // A GDR picture after the first picture of the stream decodes as any
-        // other (H.266 §8.1.2: NoOutputBeforeRecoveryFlag is 0). One that
-        // starts the stream needs generated references and withheld output.
-        if header.picture.gdr && self.general_references.is_none() {
-            return Err(DecodeError::Unsupported("VVC GDR stream start"));
-        }
-        let reshape = crate::decoder_blocks::reshape_model(sequence, &header, &self.adaptation[1])?;
-        let filter_counts = crate::decoder_blocks::filter_counts(&self.adaptation[0], &header)?;
-        let parsed = crate::decoder_blocks::parse_filtered(
-            rbsp,
-            sequence,
-            parameters,
-            &header,
-            filter_counts,
-        )?;
-        let mut units = parsed.units;
-        let references = self.general_references.get_or_insert_with(Default::default);
-        let (poc, pocs) =
-            references.prepare(self.reference.take(), sequence, &header, kind, temporal_id)?;
-        crate::decoder_blocks::derive_motion(
-            &mut units,
-            parameters.dimensions.map(|v| v as usize),
-            sequence,
-            &header,
-            [&pocs[0], &pocs[1]],
-            references
-                .temporal(poc, [&pocs[0], &pocs[1]], &header, sequence.ctu_log2)
-                .as_ref(),
-        )?;
-        {
-            let pictures = pocs.each_ref().map(|list| references.pictures(list));
-            crate::decoder_blocks::derive_refinement(
-                &mut units,
-                &header,
-                poc,
-                [&pocs[0], &pocs[1]],
-                (
-                    [&pictures[0], &pictures[1]],
-                    parameters.wraparound.map(|offset| offset as i32),
-                ),
-                &self.dsp,
-            );
-        }
-        #[cfg(feature = "analysis")]
-        if let Some(s) = &mut self.stats {
-            crate::decoder_blocks::record_analysis(s, &units, &header, rbsp.len());
-        }
-        references.record_motion(crate::decoder_blocks::MotionField::new(
-            &units,
-            parameters.dimensions.map(|v| v as usize),
-            poc,
-            pocs.clone(),
-        ));
-        let references = pocs.each_ref().map(|list| references.pictures(list));
-        let lists = crate::decoder_blocks::scaling_lists(&header, &self.adaptation[2])?;
-        crate::decoder_blocks::inverse_residuals(&mut units, sequence, &header, lists, &self.dsp);
-        let mut picture = crate::decoder_blocks::reconstruct(
-            &units,
-            sequence,
-            parameters.dimensions.map(|v| v as usize),
-            header.picture.joint_sign,
-            crate::decoder_blocks::InterSources::new(
-                [&references[0], &references[1]],
-                &header,
-                parameters.wraparound,
-            ),
-            &self.dsp,
-            reshape.as_ref().map(|m| (m, header.picture.chroma_scale)),
-        )?;
-        #[cfg(test)]
-        crate::decoder_blocks::compare_trace(&picture, "NC_RECO ", poc);
-        if let Some(model) = &reshape {
-            self.dsp.vvc_inverse_lmcs(
-                model,
-                &mut picture.plane_mut(nc_common::PlaneIndex::Y).view_mut(),
-            );
-        }
-        self.filter_general(&mut picture, &units, &parsed.filters, &header, poc)?;
-        Ok(picture)
-    }
-
-    /// The loop filters of a general picture: deblocking, then SAO and ALF.
-    fn filter_general(
-        &self,
-        picture: &mut Picture,
-        units: &[crate::decoder_blocks::Unit],
-        filters: &[crate::decoder_blocks::CtuFilters],
-        header: &crate::decoder_headers::SliceHeader,
-        #[cfg_attr(not(test), allow(unused_variables))] poc: i32,
-    ) -> Result<()> {
-        let sequence = self.general_sequence.as_ref().unwrap();
-        let parameters = self.general_picture.as_ref().unwrap();
-        crate::decoder_blocks::deblock(picture, units, sequence, parameters, header, &self.dsp);
-        #[cfg(test)]
-        crate::decoder_blocks::compare_trace(picture, "NC_DBF ", poc);
-        crate::decoder_blocks::apply_filters(
-            picture,
-            filters,
-            sequence,
-            header,
-            &self.adaptation[0],
-            &self.dsp,
-        )?;
-        #[cfg(test)]
-        crate::decoder_blocks::compare_trace(picture, "NC_FINAL ", poc);
-        Ok(())
-    }
-
     /// Decode one of our own streams' pictures (`predicted`: a P picture)
     /// on the canonical path; returns it and its POC.
     #[allow(
@@ -561,7 +452,9 @@ impl Decoder {
         }
     }
 
-    fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<()> {
+    /// Decode `units`; `false` when they end inside a general picture whose
+    /// other slices are still to come.
+    fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<bool> {
         self.shown = false;
         let mut picture = None;
         for unit in units {
@@ -572,7 +465,13 @@ impl Decoder {
                 return Err(DecodeError::Unsupported("VVC layer/temporal id"));
             }
             let rbsp = unescape_rbsp(&unit[2..])?;
-            match unit[1] >> 3 {
+            let kind = unit[1] >> 3;
+            // Only slices and APSs may come between the slices of a picture.
+            if self.assembly.is_some() && !matches!(kind, 0..=3 | 7..=10 | 17 | 18) {
+                self.assembly = None;
+                return Err(DecodeError::Malformed("VVC picture with missing slices"));
+            }
+            match kind {
                 kind @ (super::decoder_metadata::AUD
                 | super::decoder_metadata::PREFIX_SEI
                 | super::decoder_metadata::SUFFIX_SEI
@@ -607,17 +506,18 @@ impl Decoder {
                 kind @ (0..=3 | 7..=10) if self.general_picture.is_some() => {
                     if picture.is_some() {
                         return Err(DecodeError::Unsupported(
-                            "VVC multiple slices per access unit",
+                            "VVC multiple pictures per access unit",
                         ));
                     }
-                    let decoded = self.decode_general(&rbsp, kind, unit[1] & 7)?;
                     // Access-unit decoding exposes the decoded reference; the streaming
                     // API applies display ordering after cropping the output copy.
-                    picture = Some(OwnPicture {
-                        picture: decoded,
-                        poc: 0,
-                        listed: Vec::new(),
-                    });
+                    picture = self
+                        .decode_general(&rbsp, kind, unit[1] & 7)?
+                        .map(|decoded| OwnPicture {
+                            picture: decoded,
+                            poc: 0,
+                            listed: Vec::new(),
+                        });
                 }
                 kind @ (headers::IDR_N_LP | headers::TRAIL_NUT)
                     if picture.is_none() && self.pps_block_qp.is_some() =>
@@ -633,6 +533,9 @@ impl Decoder {
                     ));
                 }
             }
+        }
+        if picture.is_none() && self.assembly.is_some() {
+            return Ok(false);
         }
         let OwnPicture {
             picture: coded,
@@ -659,7 +562,7 @@ impl Decoder {
         self.reference_border_ready = false;
         self.next_poc = Some(poc.wrapping_add(1));
         self.shown = true;
-        Ok(())
+        Ok(true)
     }
 }
 

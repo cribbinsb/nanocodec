@@ -1,5 +1,8 @@
-//! H.266 §7.3.2.5 picture parameter sets for single-subpicture pictures.
-use super::{DecodeError, Reader, Result, Sequence};
+//! H.266 §7.3.2.5 picture parameter sets.
+use super::{
+    DecodeError, Reader, Result, Sequence,
+    slices::{SliceLayout, TileGrid},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // Independent flags mandated by PPS syntax.
@@ -10,6 +13,8 @@ pub(crate) struct PictureParameters {
     pub id: u8,
     pub sequence_id: u8,
     pub mixed_nal_types: bool,
+    /// The subpicture IDs in force (`SubpicIdVal`, §7.4.3.5).
+    pub subpicture_ids: Vec<u32>,
     pub dimensions: [u32; 2],
     pub crop: [u32; 4],
     pub scaling_window: [i32; 4],
@@ -51,11 +56,7 @@ impl PictureParameters {
                 "VVC mixed NAL picture without partitions",
             ));
         }
-        if r.flag()? {
-            return Err(DecodeError::Malformed(
-                "VVC PPS subpicture mapping absent from SPS",
-            ));
-        }
+        let subpicture_ids = subpicture_ids(&mut r, s, no_partition)?;
         let grid = dimensions.map(|v| v.div_ceil(1 << s.ctu_log2));
         let partitioning = partition(&mut r, s, grid, no_partition)?;
         let cabac_init = r.flag()?;
@@ -98,6 +99,7 @@ impl PictureParameters {
             id,
             sequence_id,
             mixed_nal_types,
+            subpicture_ids,
             dimensions,
             crop,
             scaling_window,
@@ -172,6 +174,27 @@ fn chroma(r: &mut Reader<'_>, s: &Sequence, present: bool) -> Result<ChromaOffse
     })
 }
 
+/// `pps_subpic_id_mapping_present_flag` and its IDs, or the SPS's.
+fn subpicture_ids(r: &mut Reader<'_>, s: &Sequence, no_partition: bool) -> Result<Vec<u32>> {
+    let subpictures = &s.subpictures;
+    if !r.flag()? {
+        return Ok(subpictures.ids.clone());
+    }
+    if !subpictures.explicit_ids || (subpictures.ids.len() > 1 && no_partition) {
+        return Err(DecodeError::Malformed("VVC PPS subpicture IDs"));
+    }
+    let count = if no_partition {
+        1
+    } else {
+        r.ue(u32::MAX - 1, "VVC PPS subpicture count")? as usize + 1
+    };
+    let bits = r.ue(15, "VVC PPS subpicture ID length")? + 1;
+    if count != subpictures.ids.len() || bits != subpictures.id_bits {
+        return Err(DecodeError::Malformed("VVC PPS subpicture IDs"));
+    }
+    (0..count).map(|_| r.bits(bits)).collect()
+}
+
 fn partition(
     r: &mut Reader<'_>,
     s: &Sequence,
@@ -179,11 +202,11 @@ fn partition(
     no_partition: bool,
 ) -> Result<Partitioning> {
     if no_partition {
+        let tiles = TileGrid::new(&[vec![grid[0]], vec![grid[1]]]);
         return Ok(Partitioning {
-            tiles: [vec![grid[0]], vec![grid[1]]],
+            slices: SliceLayout::whole(&tiles),
+            tiles,
             filter_across_tiles: false,
-            rectangular_slices: true,
-            single_slice: true,
             filter_across_slices: false,
         });
     }
@@ -194,7 +217,7 @@ fn partition(
         r.ue(grid[0] - 1, "VVC tile columns")? + 1,
         r.ue(grid[1] - 1, "VVC tile rows")? + 1,
     ];
-    let mut tiles: [Vec<u32>; 2] = std::array::from_fn(|_| Vec::new());
+    let mut sizes: [Vec<u32>; 2] = std::array::from_fn(|_| Vec::new());
     for axis in 0..2 {
         let mut remaining = grid[axis];
         for _ in 0..counts[axis] {
@@ -202,28 +225,31 @@ fn partition(
             remaining = remaining
                 .checked_sub(size)
                 .ok_or(DecodeError::Malformed("VVC tiles exceed picture"))?;
-            tiles[axis].push(size);
+            sizes[axis].push(size);
         }
-        let repeated = *tiles[axis].last().unwrap();
+        let repeated = *sizes[axis].last().unwrap();
         while remaining > 0 {
             let size = remaining.min(repeated);
-            tiles[axis].push(size);
+            sizes[axis].push(size);
             remaining -= size;
         }
     }
-    let multiple = tiles.iter().map(Vec::len).product::<usize>() > 1;
+    let tiles = TileGrid::new(&sizes);
+    let multiple = tiles.count() > 1;
     let filter_tiles = multiple && r.flag()?;
     let rect = !multiple || r.flag()?;
     let single = rect && r.flag()?;
-    if rect && !single && r.ue(599, "VVC slice count")? != 0 {
-        return Err(DecodeError::Unsupported("VVC rectangular multi-slice PPS"));
-    }
-    let filter_slices = (!rect || single) && r.flag()?;
+    let slices = match (rect, single) {
+        (false, _) => SliceLayout::Raster,
+        (true, true) => SliceLayout::per_subpicture(&tiles, &s.subpictures)?,
+        (true, false) => SliceLayout::parse(r, &tiles, &s.subpictures)?,
+    };
+    let several = !matches!(&slices, SliceLayout::Rectangular { slices, .. } if slices.len() == 1);
+    let filter_slices = (!rect || single || several) && r.flag()?;
     Ok(Partitioning {
         tiles,
+        slices,
         filter_across_tiles: filter_tiles,
-        rectangular_slices: rect,
-        single_slice: single,
         filter_across_slices: filter_slices,
     })
 }
@@ -295,13 +321,13 @@ fn geometry(r: &mut Reader<'_>, s: &Sequence) -> Result<Geometry> {
     })
 }
 
-#[allow(clippy::struct_excessive_bools)] // PPS tile and slice flags are independent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Partitioning {
-    pub tiles: [Vec<u32>; 2],
+    pub tiles: TileGrid,
+    pub slices: SliceLayout,
+    /// `pps_loop_filter_across_tiles_enabled_flag`.
     pub filter_across_tiles: bool,
-    pub rectangular_slices: bool,
-    pub single_slice: bool,
+    /// `pps_loop_filter_across_slices_enabled_flag`.
     pub filter_across_slices: bool,
 }
 struct ChromaOffsets {

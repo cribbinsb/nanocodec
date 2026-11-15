@@ -46,15 +46,15 @@ pub(crate) fn apply(
     units: &[Unit],
     sequence: &Sequence,
     parameters: &PictureParameters,
-    header: &SliceHeader,
+    headers: &[SliceHeader],
     dsp: &Dsp,
 ) {
-    if header.deblock.disabled {
+    if headers.iter().all(|h| h.deblock.disabled) {
         return;
     }
     let stride = picture.width().div_ceil(4);
-    let across_tiles = parameters.partitioning.filter_across_tiles;
-    let virtual_boundaries = &header.picture.boundaries;
+    // Every slice of a picture has its picture header.
+    let virtual_boundaries = &headers[0].picture.boundaries;
     let blocks = edge_blocks(units);
     let grid = edge_grid(&blocks, stride, picture.height());
     for horizontal in [false, true] {
@@ -77,10 +77,6 @@ pub(crate) fn apply(
                     let at = (y >> 2) * stride + (x >> 2);
                     let p = &blocks[grid[channel][at - if horizontal { stride } else { 1 }]];
                     let q = &blocks[grid[channel][at]];
-                    // `pps_loop_filter_across_tiles_enabled_flag` (§8.8.3.2).
-                    if p.unit.tile != q.unit.tile && !across_tiles {
-                        continue;
-                    }
                     let transform_edge = !std::ptr::eq(p, q);
                     let cu_origin = if horizontal {
                         q.unit.node.y
@@ -96,11 +92,21 @@ pub(crate) fn apply(
                     {
                         continue;
                     }
+                    // The edges of a CU in a slice with deblocking disabled
+                    // are not filtered, nor are tile, slice and subpicture
+                    // edges closed to the loop filters (§8.8.3.2).
+                    let header = &headers[usize::from(q.unit.slice)];
+                    if header.deblock.disabled
+                        || !open_edge(p.unit, q.unit, (sequence, parameters), headers)
+                    {
+                        continue;
+                    }
+                    let sides = (&headers[usize::from(p.unit.slice)], header);
                     let sizes = [p, q].map(|u| {
                         let (_, _, width, height) = u.bounds(channel);
                         if horizontal { height } else { width }
                     });
-                    let strength = strength(p, q, plane as usize, (x, y), horizontal, header);
+                    let strength = strength(p, q, plane as usize, (x, y), horizontal, sides);
                     if strength == 0
                         || (channel == 1 && strength == 1 && sizes.iter().any(|&size| size < 16))
                     {
@@ -114,7 +120,7 @@ pub(crate) fn apply(
                         horizontal,
                         strength,
                         sequence,
-                        header,
+                        sides,
                         dsp,
                     );
                 }
@@ -137,7 +143,7 @@ fn filter_edge(
     horizontal: bool,
     strength: i32,
     sequence: &Sequence,
-    header: &SliceHeader,
+    (p_header, header): (&SliceHeader, &SliceHeader),
     dsp: &Dsp,
 ) {
     let channel = usize::from(plane != PlaneIndex::Y);
@@ -152,7 +158,7 @@ fn filter_edge(
         p.transform.joint,
         plane as usize,
         sequence,
-        header,
+        p_header,
     )) + i32::from(transform::qp(
         q.unit.quant(),
         q.transform.joint,
@@ -187,6 +193,29 @@ fn filter_edge(
             boundary,
         );
     }
+}
+
+/// Whether the loop filters may cross the edge between CUs `p` and `q`:
+/// `pps_loop_filter_across_tiles_enabled_flag`,
+/// `pps_loop_filter_across_slices_enabled_flag` and, between subpictures,
+/// `sps_loop_filter_across_subpic_enabled_flag` of both (§8.8.3.2).
+fn open_edge(
+    p: &Unit,
+    q: &Unit,
+    (sequence, parameters): (&Sequence, &PictureParameters),
+    headers: &[SliceHeader],
+) -> bool {
+    // Inside one slice and tile (most edges) nothing is closed.
+    if p.slice == q.slice && p.tile == q.tile {
+        return true;
+    }
+    let partitioning = &parameters.partitioning;
+    let subpictures = [p, q].map(|unit| headers[usize::from(unit.slice)].subpicture);
+    let layout = &sequence.subpictures.layout;
+    (p.tile == q.tile || partitioning.filter_across_tiles)
+        && (p.slice == q.slice || partitioning.filter_across_slices)
+        && (subpictures[0] == subpictures[1]
+            || subpictures.iter().all(|&index| layout[index].filter_across))
 }
 
 /// Luma-adaptive deblocking QP offset of a four-sample edge segment (H.266
@@ -362,7 +391,7 @@ fn strength(
     plane: usize,
     (x, y): (usize, usize),
     horizontal: bool,
-    header: &SliceHeader,
+    headers: (&SliceHeader, &SliceHeader),
 ) -> i32 {
     if p.unit.inter.is_none() || q.unit.inter.is_none() {
         let channel = usize::from(plane != 0);
@@ -417,7 +446,7 @@ fn strength(
             super::motion::at(q.unit, x, y),
         )
     {
-        return motion_strength(p, q, header);
+        return motion_strength(p, q, headers);
     }
     0
 }
@@ -452,20 +481,26 @@ fn edge_grid(blocks: &[EdgeBlock<'_>], stride: usize, height: usize) -> [Vec<usi
     grid
 }
 
+/// Whether motion `p` and `q` (of CUs in slices with headers `headers`)
+/// differ enough to filter their edge. References compare by POC delta,
+/// which names the same picture in any slice of the picture.
 fn motion_strength(
     p: super::motion::Motion,
     q: super::motion::Motion,
-    header: &SliceHeader,
+    headers: (&SliceHeader, &SliceHeader),
 ) -> i32 {
-    let describe = |motion: super::motion::Motion| {
-        std::array::from_fn::<_, 2, _>(|list| {
+    fn describe(
+        motion: super::motion::Motion,
+        header: &SliceHeader,
+    ) -> [Option<(&crate::decoder_headers::ReferenceEntry, crate::motion::Mv16)>; 2] {
+        std::array::from_fn(|list| {
             motion.lists[list].map(|v| {
                 let reference = &header.references[list].entries[usize::from(v.reference)];
                 (reference, v.vector)
             })
         })
-    };
-    let (p, q) = (describe(p), describe(q));
+    }
+    let (p, q) = (describe(p, headers.0), describe(q, headers.1));
     let same =
         |p: Option<(&crate::decoder_headers::ReferenceEntry, crate::motion::Mv16)>,
          q: Option<(&crate::decoder_headers::ReferenceEntry, crate::motion::Mv16)>| match (

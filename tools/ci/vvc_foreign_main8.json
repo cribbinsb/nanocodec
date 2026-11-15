@@ -1683,6 +1683,50 @@
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-ph-in-sh-off.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --EnablePictureHeaderInSliceHeader=0"
  },
  {
+  "name": "vtm-ldp-raster-slices",
+  "encoder": "vtm",
+  "tools": "raster-scan slices",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "89f21a167e246bee3466cf35cc7a3911b69f59ea4d08a878f034aaca3d11c041",
+  "frames": [
+   "7b2b356606a1fcbfdf6df70750f88eb5",
+   "7b2b356606a1fcbfdf6df70750f88eb5",
+   "7589d92d19e492e437d4224c9b1afafd",
+   "41be5dec94940032cd5c892d9a2be643",
+   "2581700fcf2f51a3200c06c27dbda9da",
+   "82d227c22d2911fb07e5410631b3b6f0",
+   "a18f4682064b7c940ac5aa4593afdb29",
+   "9c96d5e6922d32cf3591760fed5da92c",
+   "febd6aa2a20a1e0d032e912c3ce7f27b"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-raster-slices.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --EnablePicPartitioning=1 --TileColumnWidthArray=1 --TileRowHeightArray=1 --RasterScanSlices=1 --RasterSliceSizes=4"
+ },
+ {
+  "name": "vtm-ldp-rect-slices",
+  "encoder": "vtm",
+  "tools": "rectangular slices",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "0977c9dcd6e6b928fecb1f27a9197626878848464ea0acaa131ab1b602fc9a6f",
+  "frames": [
+   "f0569486c8cf7d6568d83389d070795a",
+   "f0569486c8cf7d6568d83389d070795a",
+   "1ac696e4f0943abd91afa0922dc3f325",
+   "fe453a6c25fd6551603197564474db29",
+   "ba9e05b05db288ab2fb435d4eebaee7a",
+   "58c908db2129e7fe48d7a0aa835396e3",
+   "1dd10fdf04de5bb0c796210ebc2e1743",
+   "445961bd85d8583e049f843a49b32bcb",
+   "50b440a4c479fd4cbc572fd6e4fdee90"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-rect-slices.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --EnablePicPartitioning=1 --TileColumnWidthArray=3 --TileRowHeightArray=2 --RasterScanSlices=0 --RectSliceFixedWidth=1 --RectSliceFixedHeight=1"
+ },
+ {
   "name": "vtm-ldp-sao",
   "encoder": "vtm",
   "tools": "SAO",
@@ -1813,6 +1857,28 @@
   ],
   "tail": 0,
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-signhide.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --SignHideFlag=1"
+ },
+ {
+  "name": "vtm-ldp-subpics",
+  "encoder": "vtm",
+  "tools": "subpictures",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "0e463a92d7db867905dddd57cae7d9af2569b32831384f99bd2dfe0a2af3fec2",
+  "frames": [
+   "05b505718632b502a5b23844168aa98c",
+   "05b505718632b502a5b23844168aa98c",
+   "263b8e46a2e8937265a39eba2a42130c",
+   "55f03e2f0f3c95a808ab0b329df1a3e2",
+   "0edf95498423d3dbd1ce31b869ba7ad5",
+   "14431c6ed18459682b04ccd1163f59b2",
+   "32205c143c84c49b949b66f76d81810b",
+   "8736fa4a9d5ca706a87eebecca3ea7f1",
+   "3f4a205dd175788d897cc2e958f618cb"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-subpics.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --EnablePicPartitioning=1 --TileColumnWidthArray=5 --TileRowHeightArray=2 --RasterScanSlices=0 --RectSliceFixedWidth=1 --RectSliceFixedHeight=1 --SubPicInfoPresentFlag=1 --NumSubPics=2 --SubPicCtuTopLeftX=0,0 --SubPicCtuTopLeftY=0,2 --SubPicWidth=5,5 --SubPicHeight=2,1 --SubPicTreatedAsPicFlag=1,1 --LoopFilterAcrossSubpicEnabledFlag=0,0"
  },
  {
   "name": "vtm-ldp-tiles",

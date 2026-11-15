@@ -1,5 +1,5 @@
 //! General picture filter application through the codec's existing SAO/ALF engines.
-use super::{Sequence, SliceHeader, filter_syntax::CtuFilters};
+use super::{Sequence, filter_syntax::CtuFilters};
 use crate::{
     alf::{Analysis, ClippedFilters, CtbFilter},
     alf_aps::SignalledFilters,
@@ -15,7 +15,6 @@ pub(crate) fn apply(
     picture: &mut Picture,
     filters: &[CtuFilters],
     sequence: &Sequence,
-    header: &SliceHeader,
     banks: &[Option<Box<Adaptation>>; 8],
     dsp: &Dsp,
 ) -> Result<()> {
@@ -49,7 +48,7 @@ pub(crate) fn apply(
         .iter()
         .any(|f| f.alf[1..].iter().any(Option::is_some) || f.cross != [0; 2])
     {
-        super::chroma_alf::apply(picture, filters, ctu, header, banks, dsp)?;
+        super::chroma_alf::apply(picture, filters, ctu, banks, dsp)?;
     }
     if !filters.iter().any(|f| f.alf[0].is_some()) {
         return Ok(());
@@ -61,14 +60,14 @@ pub(crate) fn apply(
         .collect();
     analysis.apply(picture, &fixed, None);
     // Every bank sees the pre-ALF samples retained by the shared analysis.
-    for (selection, &id) in header.alf.luma.iter().enumerate() {
-        let Some(AdaptationData::Alf(alf)) = banks[usize::from(id)].as_ref().map(|a| &a.data)
-        else {
-            return Err(DecodeError::Malformed("VVC missing luma ALF bank"));
-        };
+    let mut ids: Vec<u8> = filters.iter().filter_map(|f| f.banks.luma).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        let alf = alf_bank(banks, id)?;
         let decisions: Vec<_> = filters
             .iter()
-            .map(|f| (f.alf[0] == Some(16 + selection as u8)).then_some(CtbFilter::Signalled))
+            .map(|f| (f.banks.luma == Some(id)).then_some(CtbFilter::Signalled))
             .collect();
         if alf.luma.iter().any(|f| f.clip.iter().any(|&c| c != 0)) {
             let bank = ClippedFilters {
@@ -94,4 +93,15 @@ pub(crate) fn apply(
         }
     }
     Ok(())
+}
+
+/// The ALF parameters of APS `id`.
+pub(super) fn alf_bank(
+    banks: &[Option<Box<Adaptation>>; 8],
+    id: u8,
+) -> Result<&crate::decoder_headers::AlfData> {
+    match banks[usize::from(id)].as_ref().map(|a| &a.data) {
+        Some(AdaptationData::Alf(alf)) => Ok(alf),
+        _ => Err(DecodeError::Malformed("VVC missing ALF APS")),
+    }
 }

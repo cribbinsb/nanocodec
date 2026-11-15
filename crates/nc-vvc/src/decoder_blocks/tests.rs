@@ -46,7 +46,7 @@ fn official_intra_syntax() {
                 blocks += fingerprint_levels(&mut coefficients, &units);
                 inverse_residuals(&mut units, s, &header, None, &nc_dsp::Dsp::new());
                 fingerprint_residuals(&mut residuals, &units);
-                let reconstructed = reconstruct(
+                let reconstructed = reconstructed(
                     &units,
                     s,
                     p.dimensions.map(|v| v as usize),

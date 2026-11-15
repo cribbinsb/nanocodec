@@ -37,7 +37,9 @@ pub(super) struct ChromaScale<'a> {
     model: &'a VvcLmcs,
     side: usize,
     columns: usize,
-    origins: Vec<(usize, usize)>,
+    /// The origin of the luma CU at each VPDU's origin, for the VPDUs of
+    /// the CUs given (one slice's).
+    origins: Vec<Option<(usize, usize)>>,
     scales: Vec<Option<i32>>,
 }
 impl<'a> ChromaScale<'a> {
@@ -50,22 +52,15 @@ impl<'a> ChromaScale<'a> {
         let side = (1usize << ctu_log2).min(64);
         let columns = dimensions[0].div_ceil(side);
         let count = columns * dimensions[1].div_ceil(side);
-        let origins = (0..count)
-            .map(|index| {
-                let (x, y) = (index % columns * side, index / columns * side);
-                let unit = units
-                    .iter()
-                    .find(|u| {
-                        u.channel == 0
-                            && u.node.x <= x
-                            && x < u.node.x + u.node.width
-                            && u.node.y <= y
-                            && y < u.node.y + u.node.height
-                    })
-                    .unwrap();
-                (unit.node.x, unit.node.y)
-            })
-            .collect();
+        let mut origins = vec![None; count];
+        for unit in units.iter().filter(|u| u.channel == 0) {
+            let n = unit.node;
+            for y in (n.y.div_ceil(side) * side..n.y + n.height).step_by(side) {
+                for x in (n.x.div_ceil(side) * side..n.x + n.width).step_by(side) {
+                    origins[y / side * columns + x / side] = Some((n.x, n.y));
+                }
+            }
+        }
         Self {
             model,
             side,
@@ -84,7 +79,9 @@ impl<'a> ChromaScale<'a> {
         if let Some(scale) = self.scales[index] {
             return scale;
         }
-        let (x, y) = self.origins[index];
+        // Every chroma block lies in a VPDU whose origin a luma CU of its
+        // slice covers; without one, no neighbour is available.
+        let (x, y) = self.origins[index].unwrap_or((0, 0));
         let view = picture.plane(nc_common::PlaneIndex::Y).view();
         let mut sum = 0u32;
         let mut count = 0u32;

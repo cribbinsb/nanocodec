@@ -36,17 +36,19 @@ fn official_general_inter_syntax() {
                 let (s, p) = (sequence.as_ref().unwrap(), parameters.as_ref().unwrap());
                 let h = SliceHeader::parse(&rbsp, kind, s, p, None).unwrap();
                 let counts = filter_counts(&banks, &h).unwrap();
-                let parsed = parse_filtered(&rbsp, s, p, &h, counts).unwrap_or_else(|e| {
-                    panic!(
-                        "{name} picture {pictures} POC {}: {e:?}",
-                        h.picture.order.lsb
-                    )
-                });
+                let mut filters = vec![CtuFilters::default(); h.ctus.len()];
+                let units = parse_filtered(&rbsp, s, p, &h, counts, 0, &mut filters)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{name} picture {pictures} POC {}: {e:?}",
+                            h.picture.order.lsb
+                        )
+                    });
                 eprintln!(
                     "{name} POC {}: {} units, {} SBT",
                     h.picture.order.lsb,
-                    parsed.units.len(),
-                    parsed.units.iter().filter(|u| u.sbt.is_some()).count()
+                    units.len(),
+                    units.iter().filter(|u| u.sbt.is_some()).count()
                 );
                 pictures += 1;
                 if pictures == limit {

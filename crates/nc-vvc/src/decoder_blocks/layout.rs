@@ -1,5 +1,6 @@
-//! CTU decoding order of a picture's tiles (H.266 §6.5.1): tiles in raster
-//! order, the CTUs of each tile in raster order within it.
+//! The CTUs of one slice in decoding order (H.266 §6.5.1), each with its
+//! tile: the slice's CTU addresses come from its header.
+use crate::decoder_headers::TileGrid;
 
 /// One CTU in decoding order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,39 +28,28 @@ impl Ctu {
     }
 }
 
-/// The CTUs of a picture of `dimensions` luma samples in decoding order;
-/// `tiles` holds the column widths and row heights in CTUs.
-pub(super) fn scan(tiles: &[Vec<u32>; 2], dimensions: [usize; 2], ctu_log2: u8) -> Vec<Ctu> {
+/// The CTUs at addresses `ctus` (a slice's, in decoding order) of a
+/// picture with tile grid `tiles` and CTUs of `ctu_log2`.
+pub(super) fn scan(ctus: &[u32], tiles: &TileGrid, ctu_log2: u8) -> Vec<Ctu> {
     let side = 1usize << ctu_log2;
-    let columns = dimensions[0].div_ceil(side);
-    let starts = |sizes: &[u32]| {
-        sizes
-            .iter()
-            .scan(0, |start, &size| {
-                let first = *start;
-                *start += size as usize;
-                Some((first, size as usize))
-            })
-            .collect::<Vec<_>>()
-    };
-    let (tile_columns, tile_rows) = (starts(&tiles[0]), starts(&tiles[1]));
-    let mut order = Vec::with_capacity(columns * dimensions[1].div_ceil(side));
-    for (row_index, &(top, height)) in tile_rows.iter().enumerate() {
-        for (column_index, &(left, width)) in tile_columns.iter().enumerate() {
-            for y in top..top + height {
-                for x in left..left + width {
-                    order.push(Ctu {
-                        x: x * side,
-                        y: y * side,
-                        address: y * columns + x,
-                        tile: (row_index * tile_columns.len() + column_index) as u16,
-                        tile_origin: (left * side, top * side),
-                    });
-                }
+    let width = tiles.ctus(0);
+    ctus.iter()
+        .map(|&address| {
+            let (x, y) = (address % width, address / width);
+            let column = tiles.index(0, x);
+            let row = tiles.index(1, y);
+            Ctu {
+                x: x as usize * side,
+                y: y as usize * side,
+                address: address as usize,
+                tile: (row * tiles.tiles(0) + column) as u16,
+                tile_origin: (
+                    tiles.span(0, column).start as usize * side,
+                    tiles.span(1, row).start as usize * side,
+                ),
             }
-        }
-    }
-    order
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -69,7 +59,13 @@ mod tests {
     #[test]
     fn tiles_are_scanned_one_after_another() {
         // 5x3 CTUs of 128 in tiles of 3+2 columns and 2+1 rows.
-        let order = scan(&[vec![3, 2], vec![2, 1]], [640, 360], 7);
+        let tiles = TileGrid::new(&[vec![3, 2], vec![2, 1]]);
+        let crate::decoder_headers::SliceLayout::Rectangular { slices, .. } =
+            crate::decoder_headers::SliceLayout::whole(&tiles)
+        else {
+            unreachable!()
+        };
+        let order = scan(&slices[0], &tiles, 7);
         let addresses: Vec<_> = order.iter().map(|ctu| ctu.address).collect();
         assert_eq!(
             addresses,

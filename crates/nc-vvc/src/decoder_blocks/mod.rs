@@ -14,10 +14,6 @@ mod filters;
 mod ibc;
 pub(crate) use filter_syntax::{CtuFilters, counts as filter_counts};
 pub(crate) use filters::apply as apply_filters;
-pub(crate) struct Parsed {
-    pub units: Vec<Unit>,
-    pub filters: Vec<filter_syntax::CtuFilters>,
-}
 mod sbt;
 mod scaling_lists;
 pub(crate) use scaling_lists::of_slice as scaling_lists;
@@ -29,6 +25,8 @@ pub(crate) use reshape::model as reshape_model;
 mod references;
 pub(super) use inter_prediction::Sources as InterSources;
 pub(super) use reconstruct::reconstruct;
+#[cfg(test)]
+use reconstruct::reconstructed;
 mod affine_motion;
 mod amvp_syntax;
 mod initialization;
@@ -37,7 +35,7 @@ mod inter_prediction;
 mod prof;
 mod quant_groups;
 mod refinement;
-pub(crate) use refinement::derive as derive_refinement;
+pub(crate) use refinement::{Edges, derive as derive_refinement};
 mod inter_syntax;
 mod intra_syntax;
 mod isp;
@@ -112,6 +110,9 @@ pub(super) struct Unit {
     chroma_offsets: [i8; 3],
     /// Index of the CU's tile: neighbours in another tile are unavailable.
     tile: u16,
+    /// Index of the CU's slice in its picture (in decoding order): what
+    /// its slice header is, and loop filtering across slice edges.
+    slice: u16,
     transforms: Vec<Transform>,
 }
 impl Unit {
@@ -148,9 +149,12 @@ struct Parser<'a> {
     groups: quant_groups::QuantGroups,
     /// The CTU being parsed.
     ctu: layout::Ctu,
+    /// The index of the slice being parsed in its picture.
+    slice: u16,
 }
 
-/// Decode supported general I/P syntax before reconstruction. Unsupported tools
+/// Parse one slice of the picture: its CUs, and the SAO/ALF syntax of its
+/// CTUs into `filters` (the picture's, by CTU address). Unsupported tools
 /// are rejected before their conditionally present CABAC bins can be misread.
 #[cfg(test)]
 pub(super) fn parse(
@@ -159,7 +163,16 @@ pub(super) fn parse(
     p: &PictureParameters,
     h: &SliceHeader,
 ) -> Result<Vec<Unit>> {
-    parse_filtered(bytes, s, p, h, filter_syntax::Counts::default()).map(|p| p.units)
+    let mut filters = vec![filter_syntax::CtuFilters::default(); h.ctus.len()];
+    parse_filtered(
+        bytes,
+        s,
+        p,
+        h,
+        filter_syntax::Counts::default(),
+        0,
+        &mut filters,
+    )
 }
 
 pub(super) fn parse_filtered(
@@ -168,12 +181,15 @@ pub(super) fn parse_filtered(
     p: &PictureParameters,
     h: &SliceHeader,
     filter_counts: filter_syntax::Counts,
-) -> Result<Parsed> {
+    slice: u16,
+    filters: &mut [filter_syntax::CtuFilters],
+) -> Result<Vec<Unit>> {
     validate_tools(s, p, h)?;
     let dimensions = p.dimensions.map(|v| v as usize);
     let inter = h.kind != 2;
-    let scan = layout::scan(&p.partitioning.tiles, dimensions, s.ctu_log2);
+    let scan = layout::scan(&h.ctus, &p.partitioning.tiles, s.ctu_log2);
     let mut parser = Parser::new(s, p, h, scan[0]);
+    parser.slice = slice;
     let (qp, init_kind) = parser.initialization();
     let mut reader = Reader::new(
         bytes
@@ -182,7 +198,11 @@ pub(super) fn parse_filtered(
     )?;
     let ctu = 1 << s.ctu_log2;
     let columns = dimensions[0].div_ceil(ctu);
-    let mut filters = vec![filter_syntax::CtuFilters::default(); scan.len()];
+    // CTUs of other slices are unavailable (§6.4.4), as are other tiles'.
+    let mut in_slice = vec![false; filters.len()];
+    for position in &scan {
+        in_slice[position.address] = true;
+    }
     let mut filter_models = filter_syntax::Models::new(qp, init_kind);
     let initial = parser.save_contexts(&filter_models);
     // Wavefront: the context variables after the first CTU of the row above.
@@ -204,11 +224,13 @@ pub(super) fn parse_filtered(
             parser.start_row(saved, &mut filter_models);
         }
         parser.ctu = position;
-        // The CTUs to the left and above, when they are in the same tile.
+        // The CTUs to the left and above, when they are in the same tile
+        // and slice.
         let neighbours = [
-            (position.x > position.tile_origin.0).then(|| filters[position.address - 1]),
-            (position.y > position.tile_origin.1).then(|| filters[position.address - columns]),
-        ];
+            (position.x > position.tile_origin.0).then(|| position.address - 1),
+            (position.y > position.tile_origin.1).then(|| position.address - columns),
+        ]
+        .map(|address| address.filter(|&a| in_slice[a]).map(|a| filters[a]));
         filters[position.address] = filter_models.read(
             &mut reader,
             &mut parser.contexts,
@@ -234,10 +256,7 @@ pub(super) fn parse_filtered(
     if !reader.terminate()? {
         return Err(DecodeError::Malformed("VVC slice CABAC termination"));
     }
-    Ok(Parsed {
-        units: parser.units,
-        filters,
-    })
+    Ok(parser.units)
 }
 impl<'a> Parser<'a> {
     fn new(s: &'a Sequence, p: &PictureParameters, h: &'a SliceHeader, first: layout::Ctu) -> Self {
@@ -248,6 +267,7 @@ impl<'a> Parser<'a> {
         let (qp, init_kind) = initialization_of(h);
         Self {
             ctu: first,
+            slice: 0,
             sequence: s,
             header: h,
             dimensions,
@@ -302,7 +322,11 @@ fn initialization_of(h: &SliceHeader) -> (u32, u8) {
 
 fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Result<()> {
     // Each unsupported tool is named, so a corpus run reports what is missing.
-    let tiles = p.partitioning.tiles.iter().any(|v| v.len() != 1);
+    let tiles = p.partitioning.tiles.count() > 1;
+    let slices = !matches!(&p.partitioning.slices,
+        crate::decoder_headers::SliceLayout::Rectangular { slices, .. } if slices.len() == 1);
+    let subpictures =
+        s.subpictures.layout.len() > 1 && s.subpictures.layout.iter().any(|s| !s.filter_across);
     let filtered = h.sao.contains(&true) || h.alf.enabled.contains(&true);
     let unsupported = [
         (!h.picture.output, "VVC non-output picture"),
@@ -315,6 +339,14 @@ fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Resul
         (
             tiles && filtered && !p.partitioning.filter_across_tiles,
             "VVC SAO or ALF without filtering across tiles",
+        ),
+        (
+            slices && filtered && !p.partitioning.filter_across_slices,
+            "VVC SAO or ALF without filtering across slices",
+        ),
+        (
+            subpictures && filtered,
+            "VVC SAO or ALF without filtering across subpictures",
         ),
     ];
     match unsupported.iter().find(|(present, _)| *present) {

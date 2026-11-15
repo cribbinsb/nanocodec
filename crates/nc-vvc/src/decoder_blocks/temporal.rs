@@ -10,15 +10,19 @@ use crate::{decoder_headers::SliceHeader, motion::Mv16};
 pub(crate) struct Field {
     pub poc: i32,
     dimensions: [usize; 2],
-    references: [Vec<i32>; 2],
-    cells: Vec<Option<Motion>>,
+    /// The reference POCs of each slice's two lists, by slice index.
+    references: Vec<[Vec<i32>; 2]>,
+    /// The motion of each 8x8 cell and the index of its slice.
+    cells: Vec<Option<(Motion, u16)>>,
 }
 impl Field {
+    /// The motion of a decoded picture whose slices' reference lists are
+    /// `references` (by slice index).
     pub fn new(
         units: &[Unit],
         dimensions: [usize; 2],
         poc: i32,
-        references: [Vec<i32>; 2],
+        references: Vec<[Vec<i32>; 2]>,
     ) -> Self {
         let stride = dimensions[0].div_ceil(8);
         let mut cells = vec![None; stride * dimensions[1].div_ceil(8)];
@@ -26,7 +30,8 @@ impl Field {
             let n = unit.node;
             for y in (n.y.div_ceil(8) * 8..n.y + n.height).step_by(8) {
                 for x in (n.x.div_ceil(8) * 8..n.x + n.width).step_by(8) {
-                    cells[y / 8 * stride + x / 8] = super::refinement::temporal(unit, x, y);
+                    cells[y / 8 * stride + x / 8] =
+                        super::refinement::temporal(unit, x, y).map(|m| (m, unit.slice));
                 }
             }
         }
@@ -45,8 +50,20 @@ pub(crate) struct Temporal<'a> {
     selected_list: usize,
     low_delay: bool,
     ctu_log2: u8,
+    /// The first column and row past the collocated positions the slice may
+    /// use: the picture's, or its subpicture's when that is treated as a
+    /// picture (§8.5.2.12, §8.5.5.4).
+    limits: [usize; 2],
 }
 impl<'a> Temporal<'a> {
+    /// Keep collocated positions inside the subpicture whose last luma
+    /// column and row are `area[2]` and `area[3]`, if any.
+    pub fn within(mut self, area: Option<[i32; 4]>) -> Self {
+        if let Some([_, _, right, bottom]) = area {
+            self.limits = [right as usize + 1, bottom as usize + 1];
+        }
+        self
+    }
     pub fn new(
         field: &'a Field,
         poc: i32,
@@ -61,14 +78,15 @@ impl<'a> Temporal<'a> {
             selected_list: usize::from(header.collocated[0]),
             low_delay: references.iter().flat_map(|r| r.iter()).all(|&p| p <= poc),
             ctu_log2,
+            limits: field.dimensions,
         }
     }
     fn at(&self, x: usize, y: usize, list: usize, reference: u8, subblock: bool) -> Option<Mv16> {
-        let [width, height] = self.field.dimensions;
-        if x >= width || y >= height {
+        if x >= self.limits[0] || y >= self.limits[1] {
             return None;
         }
-        let cell = self.field.cells[y / 8 * width.div_ceil(8) + x / 8]?;
+        let width = self.field.dimensions[0];
+        let (cell, slice) = self.field.cells[y / 8 * width.div_ceil(8) + x / 8]?;
         let source_list = if self.low_delay || subblock {
             list
         } else {
@@ -81,7 +99,8 @@ impl<'a> Temporal<'a> {
         } else {
             (1 - source_list, cell.lists[1 - source_list]?)
         };
-        let source = self.field.references[source_list][usize::from(vector.reference)];
+        let source =
+            self.field.references[usize::from(slice)][source_list][usize::from(vector.reference)];
         let target = *self.references[list].get(usize::from(reference))?;
         let vector = Mv16 {
             x: storage_precision(vector.vector.x),
@@ -126,8 +145,8 @@ impl<'a> Temporal<'a> {
             n.y >> self.ctu_log2 << self.ctu_log2,
         ];
         let maximum = [
-            (origin[0] + (1 << self.ctu_log2) + 3).min(self.field.dimensions[0] - 1),
-            (origin[1] + (1 << self.ctu_log2) - 1).min(self.field.dimensions[1] - 1),
+            (origin[0] + (1 << self.ctu_log2) + 3).min(self.limits[0] - 1),
+            (origin[1] + (1 << self.ctu_log2) - 1).min(self.limits[1] - 1),
         ];
         let at = |x: usize, y: usize| {
             let x =
@@ -205,17 +224,20 @@ mod tests {
         let field = Field {
             poc: 2,
             dimensions: [8, 8],
-            references: [vec![0], vec![]],
-            cells: vec![Some(Motion {
-                lists: [
-                    Some(Vector {
-                        reference: 0,
-                        vector: Mv16 { x: 64, y: -32 },
-                    }),
-                    None,
-                ],
-                ..Motion::default()
-            })],
+            references: vec![[vec![0], vec![]]],
+            cells: vec![Some((
+                Motion {
+                    lists: [
+                        Some(Vector {
+                            reference: 0,
+                            vector: Mv16 { x: 64, y: -32 },
+                        }),
+                        None,
+                    ],
+                    ..Motion::default()
+                },
+                0,
+            ))],
         };
         let temporal = Temporal {
             field: &field,
@@ -224,6 +246,7 @@ mod tests {
             selected_list: 1,
             low_delay: false,
             ctu_log2: 7,
+            limits: [8, 8],
         };
         assert_eq!(temporal.at(0, 0, 0, 0, false), Some(Mv16 { x: 32, y: -16 }));
         assert_eq!(temporal.at(0, 0, 1, 0, false), Some(Mv16 { x: -32, y: 16 }));

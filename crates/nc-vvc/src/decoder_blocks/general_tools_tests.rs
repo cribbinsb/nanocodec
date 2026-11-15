@@ -39,18 +39,20 @@ fn official_general_intra_reconstruction() {
                 let header = SliceHeader::parse(&rbsp, kind, s, p, None).unwrap();
                 let reshape = reshape_model(s, &header, &reshape_banks).unwrap();
                 let counts = filter_counts(&banks, &header).unwrap();
-                let mut parsed = parse_filtered(&rbsp, s, p, &header, counts).unwrap();
+                let mut filters = vec![CtuFilters::default(); header.ctus.len()];
+                let mut units =
+                    parse_filtered(&rbsp, s, p, &header, counts, 0, &mut filters).unwrap();
                 eprintln!(
                     "{name}: {} CUs, {} CTUs, ISP={}, MTS={}, LFNST={}",
-                    parsed.units.len(),
-                    parsed.filters.len(),
-                    parsed.units.iter().filter(|u| u.isp.is_some()).count(),
-                    parsed.units.iter().filter(|u| u.mts != 0).count(),
-                    parsed.units.iter().filter(|u| u.lfnst != 0).count()
+                    units.len(),
+                    filters.len(),
+                    units.iter().filter(|u| u.isp.is_some()).count(),
+                    units.iter().filter(|u| u.mts != 0).count(),
+                    units.iter().filter(|u| u.lfnst != 0).count()
                 );
                 if let Ok(position) = std::env::var("NC_VVC_DEBUG_POSITION") {
                     let xy: Vec<usize> = position.split(',').map(|v| v.parse().unwrap()).collect();
-                    for unit in &parsed.units {
+                    for unit in &units {
                         if (unit.node.x..unit.node.x + unit.node.width).contains(&xy[0])
                             && (unit.node.y..unit.node.y + unit.node.height).contains(&xy[1])
                         {
@@ -59,9 +61,9 @@ fn official_general_intra_reconstruction() {
                     }
                 }
                 let dsp = nc_dsp::Dsp::new();
-                inverse_residuals(&mut parsed.units, s, &header, None, &dsp);
-                let mut picture = reconstruct(
-                    &parsed.units,
+                inverse_residuals(&mut units, s, &header, None, &dsp);
+                let mut picture = reconstructed(
+                    &units,
                     s,
                     p.dimensions.map(|v| v as usize),
                     header.picture.joint_sign,
@@ -77,9 +79,16 @@ fn official_general_intra_reconstruction() {
                         &mut picture.plane_mut(nc_common::PlaneIndex::Y).view_mut(),
                     );
                 }
-                deblock(&mut picture, &parsed.units, s, p, &header, &dsp);
+                deblock(
+                    &mut picture,
+                    &units,
+                    s,
+                    p,
+                    std::slice::from_ref(&header),
+                    &dsp,
+                );
                 compare(&picture, "NC_DBF ", 0);
-                apply_filters(&mut picture, &parsed.filters, s, &header, &banks, &dsp).unwrap();
+                apply_filters(&mut picture, &filters, s, &banks, &dsp).unwrap();
                 compare(&picture, "NC_FINAL ", 0);
                 assert_picture(&name, &picture, s.chroma);
                 return;

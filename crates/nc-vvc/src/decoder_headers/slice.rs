@@ -1,6 +1,7 @@
 //! H.266 §7.3.7 slice headers and byte-aligned CABAC entry locations.
 use super::{
-    DecodeError, PictureHeader, PictureParameters, Reader, Result, Sequence,
+    DecodeError, PictureHeader, PictureParameters, Reader, Result, Sequence, SliceLayout,
+    Subpictures,
     picture::{AlfSelection, Deblocking, extension},
     rpl,
     weights::Weights,
@@ -30,6 +31,10 @@ pub(crate) struct SliceHeader {
     pub ts_residual_disabled: bool,
     pub entry_offsets: Vec<u64>,
     pub payload_offset: usize,
+    /// The slice's CTU addresses in decoding order (§6.5.1).
+    pub ctus: Vec<u32>,
+    /// The index of the slice's subpicture.
+    pub subpicture: usize,
 }
 impl SliceHeader {
     pub fn parse(
@@ -41,7 +46,7 @@ impl SliceHeader {
     ) -> Result<Self> {
         let mut r = Reader::new(bytes);
         let (embedded, picture) = picture_header(&mut r, s, p, previous)?;
-        slice_address(&mut r, s, p)?;
+        let Address { ctus, subpicture } = slice_address(&mut r, s, p)?;
         let kind = if picture.inter_allowed {
             r.ue(2, "VVC slice type")? as u8
         } else {
@@ -96,7 +101,7 @@ impl SliceHeader {
         let ts_residual_disabled =
             s.transforms.skip_log2.is_some() && !dependent_quant && !sign_hiding && r.flag()?;
         extension(&mut r, p.sh_extension)?;
-        let entry_offsets = entry_offsets(&mut r, s, p)?;
+        let entry_offsets = entry_offsets(&mut r, s, p, &ctus)?;
         r.0.trailing_bits()?; // byte_alignment(): one followed by zero padding.
         let payload_offset = bytes.len() - r.0.remaining_bytes()?.len();
         if payload_offset == bytes.len() {
@@ -124,34 +129,64 @@ impl SliceHeader {
             ts_residual_disabled,
             entry_offsets,
             payload_offset,
+            ctus,
+            subpicture,
         })
     }
 }
-fn slice_address(r: &mut Reader<'_>, s: &Sequence, p: &PictureParameters) -> Result<()> {
-    let tile_count = p.partitioning.tiles.iter().map(Vec::len).product::<usize>();
-    let address = if !p.partitioning.rectangular_slices && tile_count > 1 {
-        let address = r.bits(usize::BITS - (tile_count - 1).leading_zeros())? as usize;
-        if address >= tile_count {
-            return Err(DecodeError::Malformed("VVC slice tile address"));
-        }
-        address
+/// Where a slice lies in its picture.
+struct Address {
+    ctus: Vec<u32>,
+    subpicture: usize,
+}
+
+/// `sh_subpic_id`, `sh_slice_address`, the extra bits and
+/// `sh_num_tiles_in_slice_minus1` (§7.3.7.1), giving the slice's CTUs.
+fn slice_address(r: &mut Reader<'_>, s: &Sequence, p: &PictureParameters) -> Result<Address> {
+    let bits = |count: usize| usize::BITS - count.saturating_sub(1).leading_zeros();
+    let subpicture = if s.subpictures.id_bits > 0 {
+        let id = r.bits(s.subpictures.id_bits)?;
+        Subpictures::index_of(&p.subpicture_ids, id)?
     } else {
         0
+    };
+    let tiles = &p.partitioning.tiles;
+    let (address, rectangular) = match &p.partitioning.slices {
+        SliceLayout::Raster => (r.bits(bits(tiles.count()))? as usize, None),
+        SliceLayout::Rectangular {
+            slices,
+            subpictures,
+        } => {
+            let own = subpictures
+                .get(subpicture)
+                .ok_or(DecodeError::Malformed("VVC slice subpicture"))?;
+            let address = r.bits(bits(own.len()))? as usize;
+            let index = *own
+                .get(address)
+                .ok_or(DecodeError::Malformed("VVC slice address"))?;
+            (address, Some(slices[usize::from(index)].clone()))
+        }
     };
     for &present in &s.extra_sh {
         if present {
             r.flag()?;
         }
     }
-    let count = if !p.partitioning.rectangular_slices && tile_count - address > 1 {
-        r.ue((tile_count - address - 1) as u32, "VVC slice tile count")? as usize + 1
+    let ctus = if let Some(ctus) = rectangular {
+        ctus
     } else {
-        tile_count
+        if address >= tiles.count() {
+            return Err(DecodeError::Malformed("VVC slice tile address"));
+        }
+        let remaining = tiles.count() - address;
+        let count = if remaining > 1 {
+            r.ue((remaining - 1) as u32, "VVC slice tile count")? as usize + 1
+        } else {
+            1
+        };
+        tiles.raster_slice(address, count)
     };
-    if address != 0 || count != tile_count {
-        return Err(DecodeError::Unsupported("VVC partial-picture raster slice"));
-    }
-    Ok(())
+    Ok(Address { ctus, subpicture })
 }
 fn active_references(
     r: &mut Reader<'_>,
@@ -215,17 +250,28 @@ fn chroma_offsets(r: &mut Reader<'_>, s: &Sequence, p: &PictureParameters) -> Re
     }
     Ok(offsets)
 }
-fn entry_offsets(r: &mut Reader<'_>, s: &Sequence, p: &PictureParameters) -> Result<Vec<u64>> {
+/// `sh_entry_offset_len_minus1` and the entry point offsets: one per
+/// substream after the first (a tile, or with entropy synchronisation a CTU
+/// row of a tile; §7.4.8).
+fn entry_offsets(
+    r: &mut Reader<'_>,
+    s: &Sequence,
+    p: &PictureParameters,
+    ctus: &[u32],
+) -> Result<Vec<u64>> {
     if !s.entry_offsets {
         return Ok(Vec::new());
     }
-    let columns = p.partitioning.tiles[0].len();
-    let rows = if s.entropy_sync {
-        p.dimensions[1].div_ceil(1 << s.ctu_log2) as usize
-    } else {
-        p.partitioning.tiles[1].len()
-    };
-    let count = columns * rows - 1;
+    let tiles = &p.partitioning.tiles;
+    let width = tiles.ctus(0);
+    let position = |address: u32| (address % width, address / width);
+    let count = ctus
+        .windows(2)
+        .filter(|pair| {
+            let [(x0, y0), (x1, y1)] = [position(pair[0]), position(pair[1])];
+            tiles.tile_at(x0, y0) != tiles.tile_at(x1, y1) || (s.entropy_sync && y0 != y1)
+        })
+        .count();
     let mut offsets = Vec::with_capacity(count);
     if count > 0 {
         let bits = r.ue(31, "VVC entry offset width")? + 1;

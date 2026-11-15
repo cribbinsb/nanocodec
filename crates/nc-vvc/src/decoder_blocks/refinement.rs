@@ -21,31 +21,91 @@ pub(super) struct Bounds {
     minimum: (i32, i32),
     maximum: (i32, i32),
 }
-/// The reference sample position a prediction reads for `(x, y)`: inside a
-/// refinement window's padding bounds, wrapped horizontally by `wrap` samples
-/// when the picture wraps around (H.266 §8.5.6.3.2 `ClipH`), then inside the
-/// picture.
-pub(super) fn clamp_position(
-    (mut x, mut y): (i32, i32),
-    bounds: Option<Bounds>,
-    reference: &Plane,
-    wrap: Option<i32>,
-) -> (usize, usize) {
-    if let Some(bounds) = bounds {
-        x = x.clamp(bounds.minimum.0, bounds.maximum.0);
-        y = y.clamp(bounds.minimum.1, bounds.maximum.1);
-    }
-    if let Some(offset) = wrap {
-        if x < 0 {
-            x += offset;
-        } else if x >= reference.width() as i32 {
-            x -= offset;
+/// Where the reference samples of one plane may be read from (H.266
+/// §8.5.6.3.2): inside the current subpicture when it is treated as a
+/// picture, else across the left and right picture edges when the picture
+/// wraps around, else inside the picture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Edges {
+    /// The wrap-around offset in samples of the plane.
+    pub wrap: Option<i32>,
+    /// The subpicture's first and last columns and rows in samples of the
+    /// plane (`SubpicLeftBoundaryPos`... divided by the subsampling).
+    pub area: Option<[i32; 4]>,
+}
+impl Edges {
+    /// Whether a window of `size` samples at `origin` reads only what the
+    /// plane holds there, its replicated border included: only those may
+    /// be borrowed directly instead of fetched sample by sample.
+    pub(super) fn direct(
+        self,
+        reference: &Plane,
+        origin: (i32, i32),
+        size: (usize, usize),
+    ) -> bool {
+        let (right, bottom) = (origin.0 + size.0 as i32, origin.1 + size.1 as i32);
+        match (self.area, self.wrap) {
+            (Some([left, top, last_x, last_y]), _) => {
+                origin.0 >= left && origin.1 >= top && right <= last_x + 1 && bottom <= last_y + 1
+            }
+            (None, Some(_)) => origin.0 >= 0 && right <= reference.width() as i32,
+            (None, None) => true,
         }
     }
-    (
-        x.clamp(0, reference.width() as i32 - 1) as usize,
-        y.clamp(0, reference.height() as i32 - 1) as usize,
-    )
+}
+
+/// The reference sample positions a prediction window reads (H.266
+/// §8.5.6.3.2), its clamps worked out once per window: inside a refinement
+/// window's padding bounds, then inside the subpicture treated as a picture,
+/// or wrapped horizontally when the picture wraps around (`ClipH`), then
+/// inside the picture.
+#[derive(Clone, Copy)]
+pub(super) struct Fetch {
+    bounds: Option<Bounds>,
+    /// The wrap-around offset and the plane width, when the picture wraps.
+    wrap: Option<(i32, i32)>,
+    /// The first and last readable column and row.
+    columns: (i32, i32),
+    rows: (i32, i32),
+}
+impl Fetch {
+    pub fn new(reference: &Plane, bounds: Option<Bounds>, edges: Edges) -> Self {
+        let (width, height) = (reference.width() as i32, reference.height() as i32);
+        let (columns, rows) = match edges.area {
+            Some([left, top, right, bottom]) => ((left, right), (top, bottom)),
+            None => ((0, width - 1), (0, height - 1)),
+        };
+        Self {
+            bounds,
+            wrap: edges
+                .wrap
+                .filter(|_| edges.area.is_none())
+                .map(|offset| (offset, width)),
+            columns,
+            rows,
+        }
+    }
+    /// The column read for column `x`.
+    pub fn column(self, mut x: i32) -> usize {
+        if let Some(bounds) = self.bounds {
+            x = x.clamp(bounds.minimum.0, bounds.maximum.0);
+        }
+        if let Some((offset, width)) = self.wrap {
+            if x < 0 {
+                x += offset;
+            } else if x >= width {
+                x -= offset;
+            }
+        }
+        x.clamp(self.columns.0, self.columns.1) as usize
+    }
+    /// The row read for row `y`.
+    pub fn row(self, mut y: i32) -> usize {
+        if let Some(bounds) = self.bounds {
+            y = y.clamp(bounds.minimum.1, bounds.maximum.1);
+        }
+        y.clamp(self.rows.0, self.rows.1) as usize
+    }
 }
 
 pub(crate) fn derive(
@@ -53,7 +113,7 @@ pub(crate) fn derive(
     header: &SliceHeader,
     poc: i32,
     pocs: [&[i32]; 2],
-    (pictures, wrap): ([&[&Picture]; 2], Option<i32>),
+    (pictures, edges): ([&[&Picture]; 2], Edges),
     dsp: &Dsp,
 ) {
     if header.picture.motion.bdof_disabled && header.picture.motion.dmvr_disabled {
@@ -106,7 +166,7 @@ pub(crate) fn derive(
                         pictures[list][usize::from(vector.reference)].plane(PlaneIndex::Y),
                         (x, y),
                         (width + 4, height + 4),
-                        (vector.vector, wrap),
+                        (vector.vector, edges),
                         &mut pixels,
                         &mut inputs[list],
                     );
@@ -124,18 +184,12 @@ pub(crate) fn derive(
     }
 }
 
-/// Whether a window of `width` samples from column `left` needs no
-/// wrap-around: the plane's replicated border serves only those.
-pub(super) fn unwrapped(reference: &Plane, left: i32, width: usize, wrap: Option<i32>) -> bool {
-    wrap.is_none() || (left >= 0 && left + width as i32 <= reference.width() as i32)
-}
-
 fn bilinear(
     dsp: &Dsp,
     reference: &Plane,
     position: (usize, usize),
     size: (usize, usize),
-    (vector, wrap): (Mv16, Option<i32>),
+    (vector, edges): (Mv16, Edges),
     scratch: &mut [u8; BILINEAR_SIDE * BILINEAR_SIDE],
     out: &mut [i16],
 ) {
@@ -145,7 +199,8 @@ fn bilinear(
     );
     let (w, h) = (size.0 + 1, size.1 + 1);
     let phases = ((vector.x & 15) as usize, (vector.y & 15) as usize);
-    if let Some(window) = unwrapped(reference, origin.0, w, wrap)
+    if let Some(window) = edges
+        .direct(reference, origin, (w, h))
         .then(|| reference.region(origin.0 as isize, origin.1 as isize, w, h))
         .flatten()
     {
@@ -154,11 +209,11 @@ fn bilinear(
     }
     let pixels = &mut scratch[..w * h];
     let view = reference.view();
+    let fetch = Fetch::new(reference, None, edges);
     for (y, row) in pixels.chunks_exact_mut(w).enumerate() {
+        let source = view.row(fetch.row(origin.1 + y as i32));
         for (x, pixel) in row.iter_mut().enumerate() {
-            let at = (origin.0 + x as i32, origin.1 + y as i32);
-            let (sx, sy) = clamp_position(at, None, reference, wrap);
-            *pixel = view.row(sy)[sx];
+            *pixel = source[fetch.column(origin.0 + x as i32)];
         }
     }
     dsp.vvc_dmvr_bilinear(size, &PlaneView::new(pixels, w, w, h).unwrap(), phases, out);
@@ -247,7 +302,7 @@ pub(super) fn predict(
                     (at, (width, height)),
                     vector.vector,
                     (chroma == 0, motion.half, false),
-                    (bounds, references.wrap(plane)),
+                    (bounds, references.edges(plane)),
                     &mut samples[list],
                 );
                 if bdof {
@@ -256,7 +311,7 @@ pub(super) fn predict(
                         at,
                         (width, height),
                         vector.vector,
-                        (bounds, references.wrap(plane)),
+                        (bounds, references.edges(plane)),
                         &samples[list],
                         &mut padded[list][..(width + 2) * (height + 2)],
                     );
@@ -288,7 +343,7 @@ pub(super) fn padding(
     position: (usize, usize),
     size: (usize, usize),
     vector: Mv16,
-    (bounds, wrap): (Option<Bounds>, Option<i32>),
+    (bounds, edges): (Option<Bounds>, Edges),
     interior: &[i16],
     samples: &mut [i16],
 ) {
@@ -299,19 +354,15 @@ pub(super) fn padding(
         position.1 as i32 + (vector.y >> 4) + ((vector.y & 15) >> 3),
     );
     let view = reference.view();
+    let fetch = Fetch::new(reference, bounds, edges);
     assert_eq!(samples.len(), stride * (height + 2));
     for (y, row) in samples.chunks_exact_mut(stride).enumerate() {
+        let source = view.row(fetch.row(origin.1 + y as i32 - 1));
         for (x, value) in row.iter_mut().enumerate() {
             if y > 0 && y <= height && x > 0 && x <= width {
                 *value = interior[(y - 1) * width + x - 1];
             } else {
-                let (sx, sy) = clamp_position(
-                    (origin.0 + x as i32 - 1, origin.1 + y as i32 - 1),
-                    bounds,
-                    reference,
-                    wrap,
-                );
-                *value = i16::from(view.row(sy)[sx]) << 6;
+                *value = i16::from(source[fetch.column(origin.0 + x as i32 - 1)]) << 6;
             }
         }
     }

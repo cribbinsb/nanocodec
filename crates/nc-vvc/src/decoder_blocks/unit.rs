@@ -40,6 +40,7 @@ impl Parser<'_> {
             qp: 0,
             chroma_offsets: [0; 3],
             tile: self.ctu.tile,
+            slice: self.slice,
             transforms: super::transform_units::empty_units(
                 node,
                 channel,

@@ -64,10 +64,15 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 )
                 .unwrap();
                 super::extended_tests::compare_derived_motion(&units, poc);
-                references.record_motion(MotionField::new(&units, dimensions, poc, lists.clone()));
+                references.record_motion(MotionField::new(
+                    &units,
+                    dimensions,
+                    poc,
+                    vec![lists.clone()],
+                ));
                 inverse_residuals(&mut units, s, &h, None, &dsp);
                 let pictures = lists.each_ref().map(|list| references.pictures(list));
-                let mut picture = reconstruct(
+                let mut picture = reconstructed(
                     &units,
                     s,
                     dimensions,
@@ -80,7 +85,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 if poc != 0 {
                     compare_regions(&picture, poc);
                 }
-                deblock(&mut picture, &units, s, p, &h, &dsp);
+                deblock(&mut picture, &units, s, p, std::slice::from_ref(&h), &dsp);
                 if poc != 0 {
                     compare_filtered(&picture, poc);
                 }

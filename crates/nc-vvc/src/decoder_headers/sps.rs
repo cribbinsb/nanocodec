@@ -3,6 +3,7 @@
 use super::{
     DecodeError, Reader, Result,
     ptl::Profile,
+    subpictures::Subpictures,
     tools::{Tools, Transforms},
     vui,
 };
@@ -52,6 +53,7 @@ pub(crate) struct Sequence {
     pub ctu_log2: u8,
     pub dimensions: [u32; 2],
     pub crop: [u32; 4],
+    pub subpictures: Subpictures,
     pub gdr: bool,
     pub resampling: bool,
     pub resolution_change: bool,
@@ -99,18 +101,10 @@ impl Sequence {
         let gdr = r.flag()?;
         let resampling = r.flag()?;
         let resolution_change = resampling && r.flag()?;
-        let (dimensions, crop) = geometry(&mut r, chroma)?;
+        let (dimensions, crop, subpictures) = geometry(&mut r, chroma, ctu_log2 as u8)?;
         let entropy_sync = r.flag()?;
         let entry_offsets = r.flag()?;
-        let poc_bits = r.bits(4)? + 4;
-        if poc_bits > 16 {
-            return Err(DecodeError::Malformed("VVC POC width"));
-        }
-        let poc_msb_bits = if r.flag()? {
-            Some(r.ue(31 - poc_bits, "VVC POC MSB cycle width")? as u8 + 1)
-        } else {
-            None
-        };
+        let (poc_bits, poc_msb_bits) = poc_widths(&mut r)?;
         let extra_ph = extra_bits(&mut r)?;
         let extra_sh = extra_bits(&mut r)?;
         let dpb = dpb(&mut r, max_layer)?;
@@ -154,6 +148,7 @@ impl Sequence {
             ctu_log2: ctu_log2 as u8,
             dimensions,
             crop,
+            subpictures,
             gdr,
             resampling,
             resolution_change,
@@ -175,6 +170,21 @@ impl Sequence {
             colour,
         })
     }
+}
+
+/// `sps_log2_max_pic_order_cnt_lsb_minus4 + 4` and, with
+/// `sps_poc_msb_cycle_flag`, `sps_poc_msb_cycle_len_minus1 + 1`.
+fn poc_widths(r: &mut Reader<'_>) -> Result<(u32, Option<u8>)> {
+    let poc_bits = r.bits(4)? + 4;
+    if poc_bits > 16 {
+        return Err(DecodeError::Malformed("VVC POC width"));
+    }
+    let msb_bits = if r.flag()? {
+        Some(r.ue(31 - poc_bits, "VVC POC MSB cycle width")? as u8 + 1)
+    } else {
+        None
+    };
+    Ok((poc_bits, msb_bits))
 }
 
 fn extra_bits(r: &mut Reader<'_>) -> Result<Vec<bool>> {
@@ -200,7 +210,11 @@ fn dpb(r: &mut Reader<'_>, max_layer: usize) -> Result<Vec<[u32; 3]>> {
     Ok(layers)
 }
 
-fn geometry(r: &mut Reader<'_>, chroma: bool) -> Result<([u32; 2], [u32; 4])> {
+fn geometry(
+    r: &mut Reader<'_>,
+    chroma: bool,
+    ctu_log2: u8,
+) -> Result<([u32; 2], [u32; 4], Subpictures)> {
     let dimensions = [
         r.ue(4096, "VVC maximum width")?,
         r.ue(4096, "VVC maximum height")?,
@@ -222,15 +236,14 @@ fn geometry(r: &mut Reader<'_>, chroma: bool) -> Result<([u32; 2], [u32; 4])> {
             ));
         }
     }
-    if r.flag()? {
-        return Err(DecodeError::Unsupported("VVC SPS subpicture geometry"));
-    }
+    let grid = dimensions.map(|size| size.div_ceil(1 << ctu_log2));
+    let subpictures = Subpictures::parse(r, grid, dimensions, ctu_log2)?;
     if r.ue(8, "VVC bit depth")? != 0 {
         return Err(DecodeError::Unsupported(
             "VVC decoder requires 8-bit samples",
         ));
     }
-    Ok((dimensions, crop))
+    Ok((dimensions, crop, subpictures))
 }
 
 #[cfg(test)]

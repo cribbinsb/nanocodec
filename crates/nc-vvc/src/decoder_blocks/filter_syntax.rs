@@ -13,6 +13,19 @@ pub(crate) struct CtuFilters {
     /// Luma: fixed sets 0..15 or APS-list index + 16; chroma: alternative.
     pub alf: [Option<u8>; 3],
     pub cross: [u8; 2],
+    /// The ALF APS IDs the CTU's filters come from, from its slice header
+    /// (slices may name different ones).
+    pub banks: Banks,
+}
+/// ALF APS IDs of one CTU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Banks {
+    /// The luma filter set, when the CTU uses one of an APS (`alf[0]` >= 16).
+    pub luma: Option<u8>,
+    /// The chroma filters, when either chroma plane is filtered.
+    pub chroma: Option<u8>,
+    /// The cross-component filters of Cb and Cr, when used.
+    pub cross: [Option<u8>; 2],
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Counts {
@@ -129,6 +142,13 @@ impl Models {
                 index
             };
             filters.alf[plane] = Some(index);
+            if plane == 0 {
+                filters.banks.luma = index
+                    .checked_sub(16)
+                    .map(|selection| header.alf.luma[usize::from(selection)]);
+            } else {
+                filters.banks.chroma = header.alf.chroma;
+            }
         }
         for plane in 0..2 {
             if header.alf.cross[plane].is_none() {
@@ -145,6 +165,7 @@ impl Models {
                     index += 1;
                 }
                 filters.cross[plane] = index;
+                filters.banks.cross[plane] = header.alf.cross[plane];
             }
         }
         Ok(filters)

@@ -66,36 +66,15 @@ impl References {
         } else {
             lsb
         };
-        let mut retained: [Vec<i32>; 2] = [Vec::new(), Vec::new()];
-        for (list, selected) in header.references.iter().enumerate() {
-            for entry in &selected.entries {
-                let ReferenceEntry::Short(delta) = entry else {
-                    return Err(DecodeError::Unsupported("VVC general long-term reference"));
-                };
-                retained[list].push(
-                    poc.checked_add(*delta)
-                        .ok_or(DecodeError::Malformed("VVC reference POC overflow"))?,
-                );
-            }
-        }
+        let retained = entries(poc, header)?;
+        // The first slice's lists mark the other pictures unused (§8.3.3).
         self.pictures
             .retain(|(poc, _)| retained.iter().any(|list| list.contains(poc)));
         // Inactive RPL entries may become collocated references in a later
         // picture, so retain their motion alongside their decoded samples.
         self.motion
             .retain(|field| retained.iter().any(|list| list.contains(&field.poc)));
-        for (list, &count) in retained.iter_mut().zip(&header.active) {
-            if usize::from(count) > list.len() {
-                return Err(DecodeError::Malformed("VVC active reference count"));
-            }
-            list.truncate(usize::from(count));
-            if list
-                .iter()
-                .any(|poc| !self.pictures.iter().any(|(stored, _)| stored == poc))
-            {
-                return Err(DecodeError::Malformed("VVC missing reference picture"));
-            }
-        }
+        let retained = self.active(retained, header)?;
         // The selected 8-bit profile's DPB is bounded independently of RPL length.
         if self.pictures.len() > 16 {
             return Err(DecodeError::Unsupported("VVC DPB capacity"));
@@ -108,6 +87,29 @@ impl References {
         self.reorder = sequence.dpb.last().unwrap()[1] as usize;
         Ok((poc, retained))
     }
+    /// The active reference POCs of a later slice `header` of picture `poc`
+    /// (§8.3.2), each in the DPB.
+    pub fn slice_lists(&self, poc: i32, header: &SliceHeader) -> Result<[Vec<i32>; 2]> {
+        self.active(entries(poc, header)?, header)
+    }
+
+    /// The first `header.active` POCs of each of `lists`, each in the DPB.
+    fn active(&self, mut lists: [Vec<i32>; 2], header: &SliceHeader) -> Result<[Vec<i32>; 2]> {
+        for (list, &count) in lists.iter_mut().zip(&header.active) {
+            if usize::from(count) > list.len() {
+                return Err(DecodeError::Malformed("VVC active reference count"));
+            }
+            list.truncate(usize::from(count));
+            if list
+                .iter()
+                .any(|poc| !self.pictures.iter().any(|(stored, _)| stored == poc))
+            {
+                return Err(DecodeError::Malformed("VVC missing reference picture"));
+            }
+        }
+        Ok(lists)
+    }
+
     pub fn queue_output(&mut self, picture: Picture) {
         if self.output_enabled {
             self.pending_output.push((self.current.unwrap(), picture));
@@ -167,6 +169,24 @@ impl References {
             })
             .collect()
     }
+}
+
+/// The POCs of every entry of the two reference picture lists of slice
+/// `header` of picture `poc`.
+fn entries(poc: i32, header: &SliceHeader) -> Result<[Vec<i32>; 2]> {
+    let mut lists: [Vec<i32>; 2] = [Vec::new(), Vec::new()];
+    for (list, selected) in header.references.iter().enumerate() {
+        for entry in &selected.entries {
+            let ReferenceEntry::Short(delta) = entry else {
+                return Err(DecodeError::Unsupported("VVC general long-term reference"));
+            };
+            lists[list].push(
+                poc.checked_add(*delta)
+                    .ok_or(DecodeError::Malformed("VVC reference POC overflow"))?,
+            );
+        }
+    }
+    Ok(lists)
 }
 
 #[cfg(test)]

@@ -54,24 +54,24 @@ fn official_predicted_syntax() {
                 .unwrap();
                 record_units(&mut trace, &units, frames);
                 let (_, pocs) = dpb.prepare(previous.take(), s, &header, kind, 1).unwrap();
-                let references = pocs.each_ref().map(|list| dpb.pictures(list));
+                let pictures = pocs.each_ref().map(|list| dpb.pictures(list));
+                let sources =
+                    crate::decoder_blocks::InterSources::unweighted([&pictures[0], &pictures[1]]);
                 let dsp = nc_dsp::Dsp::new();
                 inverse_residuals(&mut units, s, &header, None, &dsp);
-                let mut reconstructed = reconstruct(
+                let mut reconstructed = reconstructed(
                     &units,
                     s,
                     p.dimensions.map(|v| v as usize),
                     header.picture.joint_sign,
-                    crate::decoder_blocks::InterSources::unweighted([
-                        &references[0],
-                        &references[1],
-                    ]),
+                    sources,
                     &dsp,
                     None,
                 )
                 .unwrap();
                 compare_blocks(&reconstructed, &units, frames);
-                deblock(&mut reconstructed, &units, s, p, &header, &dsp);
+                let headers = std::slice::from_ref(&header);
+                deblock(&mut reconstructed, &units, s, p, headers, &dsp);
                 compare_filtered(&reconstructed, frames);
                 assert_picture(&reconstructed, frames);
                 previous = Some(reconstructed);

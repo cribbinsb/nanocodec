@@ -1,7 +1,7 @@
 //! Bounded H.266 parameter-set syntax, independent of the encoder's writers.
 //! Syntax checked against BSD-licensed `VVdeC`; see `THIRD_PARTY.md`.
 mod aps;
-pub(super) use aps::{Adaptation, Data as AdaptationData, Scaling as ScalingLists};
+pub(super) use aps::{Adaptation, Alf as AlfData, Data as AdaptationData, Scaling as ScalingLists};
 mod picture;
 pub(super) use picture::PictureHeader;
 mod pps;
@@ -10,8 +10,12 @@ pub(super) use pps::PictureParameters;
 mod rpl;
 pub(super) use rpl::Entry as ReferenceEntry;
 mod slice;
+mod slices;
+pub(super) use slices::{SliceLayout, TileGrid};
 mod sps;
+mod subpictures;
 pub(super) use slice::SliceHeader;
+pub(super) use subpictures::Subpictures;
 mod tools;
 mod vui;
 mod weights;

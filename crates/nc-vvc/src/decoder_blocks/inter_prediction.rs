@@ -1,5 +1,6 @@
 //! General inter reconstruction through shared interpolation and weighted DSP kernels.
 use super::motion::Motion;
+use super::refinement::Edges;
 use crate::decoder_headers::Weights;
 use crate::motion::Mv16;
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
@@ -10,9 +11,8 @@ use nc_dsp::{Dsp, Filter, HevcWeights};
 pub(crate) struct Sources<'a> {
     pub pictures: [&'a [&'a Picture]; 2],
     pub weights: Option<&'a Weights>,
-    /// Horizontal wrap-around offset in luma samples, when the PPS enables
-    /// wrap-around motion compensation.
-    pub wraparound: Option<u32>,
+    /// Where luma reference samples may be read from.
+    pub edges: Edges,
 }
 
 impl<'a> Sources<'a> {
@@ -21,19 +21,23 @@ impl<'a> Sources<'a> {
     pub(crate) fn new(
         pictures: [&'a [&'a Picture]; 2],
         header: &'a crate::decoder_headers::SliceHeader,
-        wraparound: Option<u32>,
+        edges: Edges,
     ) -> Self {
         Self {
             pictures,
             weights: Some(&header.weights).filter(|w| !w.lists[0].is_empty()),
-            wraparound,
+            edges,
         }
     }
 
-    /// The wrap-around offset in samples of `plane`.
-    pub(super) fn wrap(&self, plane: PlaneIndex) -> Option<i32> {
-        self.wraparound
-            .map(|offset| (offset >> u32::from(plane != PlaneIndex::Y)) as i32)
+    /// Where reference samples of `plane` may be read from (the luma edges
+    /// divided by the chroma subsampling, §8.5.6.3.4).
+    pub(super) fn edges(&self, plane: PlaneIndex) -> Edges {
+        let shift = u32::from(plane != PlaneIndex::Y);
+        Edges {
+            wrap: self.edges.wrap.map(|offset| offset >> shift),
+            area: self.edges.area.map(|area| area.map(|value| value >> shift)),
+        }
     }
 
     /// References predicted from with the default weights.
@@ -42,7 +46,7 @@ impl<'a> Sources<'a> {
         Self {
             pictures,
             weights: None,
-            wraparound: None,
+            edges: Edges::default(),
         }
     }
 }
@@ -136,9 +140,10 @@ pub(super) fn predict(
 ) {
     let luma = plane == PlaneIndex::Y;
     // Explicit weights apply to the high-precision samples, also of one list;
-    // so does the wrapped fetch, which the direct path does not have.
-    let weighted =
-        (references.weights.is_some() && motion.weight == 0) || references.wraparound.is_some();
+    // so do the wrapped and subpicture-clamped fetches, which the direct path
+    // does not have.
+    let weighted = (references.weights.is_some() && motion.weight == 0)
+        || references.edges != Edges::default();
     if motion.lists.iter().flatten().count() == 1 && !(motion.half && luma) && !weighted {
         let (list, vector) = motion
             .lists
@@ -180,7 +185,7 @@ pub(super) fn predict(
                 size,
                 vector.vector,
                 (luma, motion.half, affine),
-                references.wrap(plane),
+                references.edges(plane),
                 &mut samples[list],
             );
         }
@@ -242,7 +247,7 @@ pub(super) fn precision(
     size: (usize, usize),
     vector: Mv16,
     (luma, half, affine): (bool, bool, bool),
-    wrap: Option<i32>,
+    edges: Edges,
     out: &mut [i16],
 ) {
     precision_window(
@@ -251,7 +256,7 @@ pub(super) fn precision(
         ((x, y), size),
         vector,
         (luma, half, affine),
-        (None, wrap),
+        (None, edges),
         out,
     );
 }
@@ -264,7 +269,7 @@ pub(super) fn precision_window(
     ((x, y), size): ((usize, usize), (usize, usize)),
     vector: Mv16,
     (luma, half, affine): (bool, bool, bool),
-    (bounds, wrap): (Option<super::refinement::Bounds>, Option<i32>),
+    (bounds, edges): (Option<super::refinement::Bounds>, Edges),
     out: &mut [i16],
 ) {
     let filter = if luma && affine {
@@ -284,7 +289,7 @@ pub(super) fn precision_window(
         y as i32 + (vector.y >> bits) - filter.before() as i32,
     );
     let (w, h) = (size.0 + filter.taps() - 1, size.1 + filter.taps() - 1);
-    let direct = bounds.is_none() && super::refinement::unwrapped(reference, origin.0, w, wrap);
+    let direct = bounds.is_none() && edges.direct(reference, origin, (w, h));
     if let Some(window) = direct
         .then(|| reference.region(origin.0 as isize, origin.1 as isize, w, h))
         .flatten()
@@ -292,16 +297,12 @@ pub(super) fn precision_window(
         dsp.predict_high_precision(filter, size, &window, phases, luma && half, out);
     } else {
         let view = reference.view();
+        let fetch = super::refinement::Fetch::new(reference, bounds, edges);
         let mut samples = vec![0; w * h];
         for (y, row) in samples.chunks_exact_mut(w).enumerate() {
+            let source = view.row(fetch.row(origin.1 + y as i32));
             for (x, pixel) in row.iter_mut().enumerate() {
-                let (sx, sy) = super::refinement::clamp_position(
-                    (origin.0 + x as i32, origin.1 + y as i32),
-                    bounds,
-                    reference,
-                    wrap,
-                );
-                *pixel = view.row(sy)[sx];
+                *pixel = source[fetch.column(origin.0 + x as i32)];
             }
         }
         let window = PlaneView::new(&samples, w, w, h).unwrap();
@@ -468,7 +469,7 @@ fn geometric(
             size,
             vector.vector,
             (chroma == 0, false, false),
-            references.wrap(plane),
+            references.edges(plane),
             samples,
         );
     }

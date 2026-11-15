@@ -698,6 +698,17 @@ header parsing (see below).
 > ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 > POSSIBILITY OF SUCH DAMAGE.
 
+## VTM (H.266 reference software) — BSD-3-Clause
+
+Source: https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM, version 24.0,
+commit `ca331de230f27e0489df9d2fa6c006e2dcd2ed89`. Copyright (c) 2010-2026, ITU/ISO/IEC.
+
+`crates/nc-vvc/src/decoder_headers/slices.rs` and `subpictures.rs` derive the slice
+and subpicture layout of H.266 §6.5.1 and §7.3.2.4/7.3.2.5 in our own Rust, checked
+against VTM's `PPS::initRectSliceMap`, `PPS::initSubPic` and `HLSyntaxReader` (the same
+inferences and slice ordering). No VTM code is linked or copied; its decoder is the
+reference our foreign-corpus streams are compared with.
+
 ## VVdeC — BSD-3-Clause-Clear
 
 Source: https://github.com/fraunhoferhhi/vvdec, commit `d2614690cf13ceee1631dd6d30141755b8a689de`.
