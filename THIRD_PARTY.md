@@ -640,6 +640,12 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   `block/quantizer_matrices.rs` is generated from `src/quantizer.c`
   (`qm_tbl_32x16`, `qm_tbl_32x32_t`, `dav2d_init_predefined_qm_tables`) by
   `tools/codegen/gen_av2_qm_tables.py`. The general
+  `decode_b`, `reset_context`, `read_mv_residual`, `recon_b`'s intra block
+  copy vector), `src/recon_tmpl.c` (`recon_b`, `decode_coefs`, `mc`,
+  `bawp`), `src/refmvs.c` (`block/motion.rs`: the spatial motion store,
+  MV bank and intra block copy candidate list), `src/env.h` (partition
+  and intra contexts, `fix_int_mv_precision`) and `src/tables.c`
+  (`dav2d_block_dimensions`). The general
   decoder's CDF defaults (`general/cdfs/defaults.rs`) are AVM v1.0.0's
   (`av2/common/entropy_inits_modes.h`), extracted by
   `tools/codegen/gen_av2_general_cdfs.py`. Where dav2d and AVM v1.0.0
@@ -659,6 +665,9 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   the smooth, DC bi-prediction, reciprocal, MHCCP divisor and DIP weight
   tables (`ipred/tables.rs`) are extracted from `src/tables.c` by
   `tools/codegen/gen_av2_dec_ipred_tables.py`.
+- `crates/nc-dsp/src/av2_dec/mc.rs` (intra block copy's bilinear
+  prediction and block-adaptive scaling): from `src/mc_tmpl.c`
+  (`put_bilin_c`, `morph_c`).
 
 ## VVenC — BSD-3-Clause-Clear
 

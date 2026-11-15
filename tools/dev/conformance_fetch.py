@@ -3,7 +3,8 @@
 tools/dev/conformance_manifest.py and tools/ci/conformance.py.
 
 Two kinds of suite:
-- a zip index (JCT-VC): each zip is extracted (member paths checked) into
+- zip indexes (JCT-VC, JVT): each zip listed on the suite's index pages and
+  not excluded by its name pattern is extracted (member paths checked) into
   ``<data>/streams/<zip name>/``;
 - a listed set (libaom, libvpx test data): each file named in a list with
   its SHA-1 and its per-frame ``.md5`` is downloaded from the mirror,
@@ -13,7 +14,7 @@ Two kinds of suite:
 The bitstreams are untrusted data: nothing in them is executed. Files
 already fetched or extracted are kept.
 
-Usage: conformance_fetch.py --suite hevc-v1|av1-libaom [--data DIR]
+Usage: conformance_fetch.py --suite hevc-v1|h264|av1-libaom [--data DIR]
 """
 
 import argparse
@@ -33,23 +34,36 @@ AOM_TEST_DATA = "https://storage.googleapis.com/aom-test-data/"
 #: Container rewrap of Matroska/WebM vectors: suffix -> IVF fourcc.
 REWRAP = {".mkv": "AV01", ".webm": "VP90"}
 
-# suite -> ("zips", index page listing the zips, data directory) or
+JVT = ITU + "/wftp3/av-arch/jvt-site/draft_conformance/"
+
+# suite -> ("zips", index pages listing the zips, zip names to skip (regex or
+#           None), data directory) or
 #          ("listed", mirror, list of "sha1 md5-sha1 name" lines, data directory).
 SUITES = {
-    "hevc-v1": ("zips", ITU + "/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/",
-                DATA / "conformance/hevc"),
+    "hevc-v1": ("zips", (ITU + "/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/",),
+                None, DATA / "conformance/hevc"),
+    # ITU-T H.264.1: AVCv1 (Baseline, Extended, Main), FRExt (High) and the
+    # High 10 streams of the professional profiles. 4:2:2 and 4:4:4 (High
+    # 4:2:2 / 4:4:4 profiles) are not fetched; nor are MVC and SVC.
+    "h264": ("zips", (JVT + "AVCv1/", JVT + "FRExt/", JVT + "Professional_profiles/"),
+             r"^(Hi422|PPH422|PPH444|PPCV444)", DATA / "conformance/h264"),
     "av1-libaom": ("listed", AOM_TEST_DATA, ROOT / "tools/conformance/av1_manifest.txt",
                    DATA / "conformance/av1"),
 }
 
 
-def download(index_url: str, data: Path) -> list[Path]:
+def download(index_urls: tuple[str, ...], skip: str | None, data: Path) -> list[Path]:
     zips = data / "zips"
     zips.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(index_url, timeout=60) as response:
-        index = response.read().decode("latin-1")
+    hrefs = []
+    for index_url in index_urls:
+        with urllib.request.urlopen(index_url, timeout=60) as response:
+            index = response.read().decode("latin-1")
+        hrefs += re.findall(r'HREF="([^"]+\.zip)"', index, re.IGNORECASE)
     paths = []
-    for href in re.findall(r'HREF="([^"]+\.zip)"', index, re.IGNORECASE):
+    for href in hrefs:
+        if skip and re.search(skip, Path(href).name):
+            continue
         target = zips / Path(href).name
         if not target.exists():
             url = href if href.startswith("http") else ITU + href
@@ -113,7 +127,7 @@ def main() -> int:
     if kind == "listed":
         print(f"{fetch_listed(*source, data)} streams in {data / 'streams'}")
         return 0
-    archives = download(source[0], data)
+    archives = download(*source, data)
     for archive in archives:
         extract(archive, data / "streams")
     print(f"{len(archives)} zips in {data / 'streams'}")

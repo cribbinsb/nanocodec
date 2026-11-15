@@ -54,7 +54,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
-pub use cfl::{CflChroma, cfl_pred_420};
+pub use cfl::{CflChroma, cfl_pred_420, derive_alpha};
 pub use mhccp::{
     CFL_MH_MAX_EDGE_SAMPLES, CFL_MH_MAX_LUMA_SIZE, CFL_MH_TOP_STRIDE, cfl_mh_calc_alphas,
     cfl_mh_gen_mat, cfl_mh_gen_y_420, cfl_mh_pred,

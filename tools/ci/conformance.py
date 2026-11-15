@@ -16,10 +16,16 @@ as bytes, deeper ones as 16-bit little-endian.
 
 Usage:
     python3 -I tools/ci/conformance.py --suite hevc-v1 [--bin NANOCODEC]
-        [--profiles "Main,Main 10"] [--max-bit-depth 10] [--only A,B]
-        [--jobs 4] [--timeout 600] [--json OUT]
+        [--profiles "Main,Main 10"] [--max-bit-depth 10] [--scan progressive]
+        [--only A,B] [--jobs 4] [--timeout 600] [--json OUT]
 
-Exit status 0 when every selected stream matches.
+Where the manifest records a stream's scan type and the tools it uses
+(H.264), the summary also counts per profile and scan and groups the
+failures by tool.
+
+Exit status 0 when every selected stream matches, or with `--must-pass
+FILE` (one stream name per line: a decoder still on its way to the whole
+suite) when every listed stream does.
 """
 
 import argparse
@@ -42,6 +48,11 @@ SUITES = {
     "hevc-v1": ("hevc", ROOT / "tools/ci/hevc_conformance_v1.json", DATA / "conformance/hevc/streams"),
     "vvc-v1": ("vvc", ROOT / "tools/ci/vvc_conformance_v1.json", DATA / "conformance/vvc/streams"),
     "av1-libaom": ("av1", ROOT / "tools/ci/av1_conformance_libaom.json", DATA / "conformance/av1/streams"),
+    # ITU-T H.264.1 (AVCv1, FRExt, High 10): conformance_fetch.py --suite h264.
+    "h264": ("h264", ROOT / "tools/ci/h264_conformance.json", DATA / "conformance/h264/streams"),
+    # x264 streams for I/P-only High tools (tools/dev/h264_conformance_supplement.sh).
+    "h264-x264": ("h264", ROOT / "tools/ci/h264_conformance_x264.json",
+                  DATA / "conformance/h264/supplementary"),
 }
 
 CHUNK = 1 << 20
@@ -155,10 +166,35 @@ def selected(entries, args):
             continue
         if names and entry["name"] not in names:
             continue
+        if args.scan and entry.get("scan", "progressive") != args.scan:
+            continue
         keep.append(entry)
     if names and names - {e["name"] for e in keep}:
         raise SystemExit(f"unknown or filtered streams: {sorted(names - {e['name'] for e in keep})}")
     return keep
+
+
+def print_breakdown(entries, results):
+    """Pass counts per profile and scan type, and the failures grouped by
+    the tools beyond the decoder's base profile that each failing stream
+    uses (the manifest's `features`)."""
+    tally, failing = {}, {}
+    for entry in entries:
+        passed = results[entry["name"]]["status"] == "pass"
+        count = tally.setdefault((entry.get("profile"), entry.get("scan")), [0, 0])
+        count[0] += passed
+        count[1] += 1
+        if not passed:
+            key = ", ".join(entry.get("features") or ["no tool beyond Constrained High"])
+            failing.setdefault(key, []).append(entry["name"])
+    print()
+    for (profile, scan), (n, m) in sorted(tally.items(), key=str):
+        print(f"{profile:24} {scan:12} {n}/{m}")
+    if failing:
+        print("\nfailing, by the tools they use:")
+        for key, names in sorted(failing.items(), key=lambda item: -len(item[1])):
+            print(f"{len(names):4}  {key}: {' '.join(sorted(names, key=str.lower))}")
+    print()
 
 
 def main() -> int:
@@ -170,10 +206,13 @@ def main() -> int:
     parser.add_argument("--streams", type=Path, help="override the suite's stream directory")
     parser.add_argument("--profiles", default="", help="comma-separated profile names to keep")
     parser.add_argument("--max-bit-depth", type=int, default=0, help="keep streams up to this depth")
+    parser.add_argument("--scan", choices=("progressive", "interlaced"), help="keep this scan type")
     parser.add_argument("--only", default="", help="comma-separated stream names")
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--must-pass", type=Path,
+                        help="only these streams (one name per line) must match")
     args = parser.parse_args()
     codec, manifest, streams = SUITES[args.suite]
     manifest = args.manifest or manifest
@@ -203,10 +242,19 @@ def main() -> int:
             if r["error"]:
                 line += "  " + r["error"]
         print(line)
+    if any("scan" in e for e in entries):
+        print_breakdown(entries, results)
     depths = ", ".join(f"{bits}-bit {n}/{m}" for bits, (n, m) in sorted(by_depth.items()))
     print(f"{args.suite}: {passed}/{len(results)} streams match the reference decoder ({depths})")
     if args.json:
         args.json.write_text(json.dumps(results, indent=1, sort_keys=True) + "\n")
+    if args.must_pass:
+        required = {line.strip() for line in args.must_pass.read_text().splitlines()
+                    if line.strip() and not line.startswith("#")}
+        failed = sorted(n for n in required & set(results) if results[n]["status"] != "pass")
+        if failed:
+            print(f"required streams that do not match: {' '.join(failed)}")
+        return 0 if not failed else 1
     return 0 if passed == len(results) else 1
 
 

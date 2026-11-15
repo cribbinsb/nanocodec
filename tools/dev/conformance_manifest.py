@@ -32,7 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
 from conformance import SUITES as RUNNER_SUITES, Hashes  # noqa: E402
 
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
-BITSTREAM_SUFFIXES = (".bit", ".bin", ".ivf")
+BITSTREAM_SUFFIXES = (".bit", ".bin", ".ivf", ".264", ".jsv", ".avc", ".26l", ".h264", ".jvt")
+#: Decoded YUVs some suites ship instead of MD5s (H.264.1): hashed for the
+#: cross-check up to this size.
+SHIPPED_YUV_SUFFIXES = (".yuv", ".qcif")
+MAX_SHIPPED_YUV_BYTES = 1 << 30
 #: Largest file read for the MD5s a suite ships.
 MAX_SHIPPED_MD5_BYTES = 1 << 20
 CHUNK = 1 << 20
@@ -59,6 +63,10 @@ class Bits:
         while self.u(1) == 0:
             zeros += 1
         return (1 << zeros) - 1 + self.u(zeros)
+
+    def se(self):
+        code = self.ue()
+        return (code + 1) // 2 if code & 1 else -(code // 2)
 
 
 def annex_b_units(data):
@@ -114,6 +122,173 @@ def probe_hevc(path):
         return {"profile": HEVC_PROFILES.get(profile_idc, f"profile_idc {profile_idc}"),
                 "chroma_format": CHROMA_NAMES[chroma], "bit_depth": depths,
                 "width": w, "height": h, "frame_bytes": (w * h + chroma_samples) * sample_bytes}
+    return None
+
+
+H264_SPS = 7
+#: profile_idc with the FRExt SPS fields (H.264 §7.3.2.1.1).
+H264_HIGH_PROFILE_IDCS = {100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135}
+#: profile_idc -> name; constraint_set flags refine some (H.264 Annex A.2).
+H264_PROFILES = {66: "Baseline", 77: "Main", 88: "Extended", 100: "High", 110: "High 10",
+                 122: "High 4:2:2", 244: "High 4:4:4 Predictive", 44: "CAVLC 4:4:4 Intra"}
+#: Table 7-6: slice_type % 5.
+H264_SLICE_P, H264_SLICE_B, H264_SLICE_I, H264_SLICE_SP, H264_SLICE_SI = range(5)
+H264_PARTITION_NAL_TYPES = {2, 3, 4}
+H264_EXTENSION_NAL_TYPES = {14, 15, 20}
+H264_TRACE_FIELD = re.compile(r"^\[trace_headers @ [^\]]+\] \d+\s+(\S+)\s+\S+ = (-?\d+)$")
+
+
+def skip_h264_scaling_list(r, size):
+    last = following = 8
+    for _ in range(size):
+        if following:
+            following = (last + r.se() + 256) % 256
+        last = following or last
+
+
+def h264_sps(nal):
+    """Profile, chroma format, depths and cropped frame size of an SPS RBSP
+    (H.264 §7.3.2.1.1, cropping §7.4.2.1.1)."""
+    r = Bits(nal[1:])
+    profile_idc, constraints, _level = r.u(8), r.u(8), r.u(8)
+    r.ue()
+    chroma, depths = 1, [8, 8]
+    if profile_idc in H264_HIGH_PROFILE_IDCS:
+        chroma = r.ue()
+        if chroma == 3:
+            r.u(1)
+        depths = [r.ue() + 8, r.ue() + 8]
+        r.u(1)
+        if r.u(1):
+            for i in range(8 if chroma != 3 else 12):
+                if r.u(1):
+                    skip_h264_scaling_list(r, 16 if i < 6 else 64)
+    r.ue()
+    poc_type = r.ue()
+    if poc_type == 0:
+        r.ue()
+    elif poc_type == 1:
+        r.u(1), r.se(), r.se()
+        for _ in range(r.ue()):
+            r.se()
+    r.ue(), r.u(1)
+    width, height_units = r.ue() + 1, r.ue() + 1
+    frame_mbs_only = r.u(1)
+    if not frame_mbs_only:
+        r.u(1)
+    r.u(1)
+    crop = [r.ue() for _ in range(4)] if r.u(1) else [0, 0, 0, 0]
+    sub_w, sub_h = SUBSAMPLING[chroma] if chroma else (1, 1)
+    unit_x, unit_y = sub_w, sub_h * (2 - frame_mbs_only)
+    w = width * 16 - unit_x * (crop[0] + crop[1])
+    h = height_units * 16 * (2 - frame_mbs_only) - unit_y * (crop[2] + crop[3])
+    name = H264_PROFILES.get(profile_idc, f"profile_idc {profile_idc}")
+    if profile_idc == 66 and constraints & 0x40:
+        name = "Constrained Baseline"
+    elif profile_idc == 110 and constraints & 0x10:
+        name = "High 10 Intra"
+    return name, chroma, depths, w, h
+
+
+def h264_trace(path):
+    """Every syntax element ffmpeg's trace_headers prints, as one dict per
+    NAL unit grouped by packet; empty when ffmpeg cannot parse the stream."""
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostdin", "-i", str(path), "-map", "0:v:0", "-c:v", "copy",
+         "-bsf:v", "trace_headers", "-f", "null", "-"],
+        capture_output=True, text=True, errors="replace", check=False, timeout=600)
+    packets, nal = [], None
+    for line in result.stderr.splitlines():
+        if "] Packet:" in line:
+            packets.append([])
+            nal = None
+            continue
+        match = H264_TRACE_FIELD.match(line)
+        if not match:
+            continue
+        name, value = match.group(1).split("[")[0], int(match.group(2))
+        if name == "forbidden_zero_bit":
+            nal = {}
+            if packets:
+                packets[-1].append(nal)
+        elif nal is not None:
+            nal.setdefault(name, set()).add(value)
+    return packets
+
+
+def h264_features(path):
+    """The coding tools beyond Constrained High a stream uses, from its
+    headers (H.264 Annex A.2), and whether it is interlaced (field pictures
+    or MBAFF frames)."""
+    packets = h264_trace(path)
+    if not packets:
+        return ["unparsed headers (FMO)"], "progressive"
+    seen = {}
+    aso = False
+    for packet in packets:
+        first_mbs = []
+        for nal in packet:
+            for name, values in nal.items():
+                seen.setdefault(name, set()).update(values)
+            if nal.get("nal_unit_type", set()) & {1, 5} and "first_mb_in_slice" in nal:
+                first_mbs.append(min(nal["first_mb_in_slice"]))
+        aso |= any(b <= a for a, b in zip(first_mbs, first_mbs[1:]))
+
+    def has(name, value=1):
+        return value in seen.get(name, set())
+
+    slice_types = {t % 5 for t in seen.get("slice_type", set())}
+    nal_types = seen.get("nal_unit_type", set())
+    features = []
+    if H264_SLICE_B in slice_types:
+        direct = {"temporal" if v == 0 else "spatial"
+                  for v in seen.get("direct_spatial_mv_pred_flag", set())}
+        features.append("B slices (" + "+".join(sorted(direct)) + " direct)")
+        if has("weighted_bipred_idc", 1):
+            features.append("explicit bi-pred weights")
+        if has("weighted_bipred_idc", 2):
+            features.append("implicit bi-pred weights")
+    if slice_types & {H264_SLICE_SP, H264_SLICE_SI}:
+        features.append("SP/SI slices")
+    if has("field_pic_flag"):
+        features.append("field pictures")
+    frame_pictures = has("field_pic_flag", 0) or "field_pic_flag" not in seen
+    mbaff = has("mb_adaptive_frame_field_flag") and frame_pictures
+    if mbaff:
+        features.append("MBAFF")
+    if seen.get("num_slice_groups_minus1", {0}) - {0}:
+        features.append("FMO")
+    if aso:
+        features.append("ASO")
+    if has("redundant_pic_cnt_present_flag"):
+        features.append("redundant pictures")
+    if nal_types & H264_PARTITION_NAL_TYPES:
+        features.append("data partitioning")
+    if nal_types & H264_EXTENSION_NAL_TYPES:
+        features.append("SVC/MVC NAL units")
+    if has("qpprime_y_zero_transform_bypass_flag"):
+        features.append("lossless")
+    if seen.get("bit_depth_luma_minus8", {0}) - {0} or seen.get("bit_depth_chroma_minus8", {0}) - {0}:
+        features.append("bit depth above 8")
+    interlaced = has("field_pic_flag") or mbaff
+    return features, "interlaced" if interlaced else "progressive"
+
+
+def probe_h264(path):
+    """Profile, chroma format, depths, cropped size (first SPS), and the
+    tools and scan type the stream uses, or None."""
+    for nal in annex_b_units(path.read_bytes()):
+        if not nal or nal[0] & 31 != H264_SPS:
+            continue
+        name, chroma, depths, w, h = h264_sps(nal)
+        features, scan = h264_features(path)
+        # Monochrome pictures are output as 4:2:0 with mid-grey chroma (JM, ffmpeg).
+        chroma_samples = 2 * ((w + 1) // 2) * ((h + 1) // 2) if chroma in (0, 1) else \
+            2 * (w // SUBSAMPLING[chroma][0]) * (h // SUBSAMPLING[chroma][1])
+        sample_bytes = 2 if max(depths) > 8 else 1
+        return {"profile": name, "chroma_format": CHROMA_NAMES[chroma], "bit_depth": depths,
+                "width": w, "height": h, "frame_bytes": (w * h + chroma_samples) * sample_bytes,
+                "scan": scan, "features": features}
     return None
 
 
@@ -257,21 +432,52 @@ SUITES = {
     # grain applied.
     "av1-libaom": (probe_av1, lambda bitstream, out: [
         str(DATA / "anchors/x86_64/bin/aomdec"), "--i420", "-o", str(out), str(bitstream)]),
+    # JM 19 ldecod: frames in output order, cropped, 4:0:0 written as 4:2:0
+    # with mid-grey chroma, deeper samples as 16-bit little-endian.
+    "h264": (probe_h264, lambda bitstream, out: [
+        str(DATA / "anchors/x86_64/bin/ldecod"), "-p", f"InputFile={bitstream}",
+        "-p", f"OutputFile={out}"]),
 }
+
+SUITES["h264-x264"] = SUITES["h264"]
+
+# suite -> a second decoder's command for (bitstream, output path, probe
+# info): its whole-output MD5 is recorded as a cross-check of the reference.
+CROSS_CHECKS = {
+    "h264": lambda bitstream, out, info: [
+        "ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(bitstream), "-fps_mode", "passthrough",
+        "-f", "rawvideo", "-pix_fmt", "yuv420p10le" if max(info["bit_depth"]) > 8 else "yuv420p",
+        str(out)],
+}
+CROSS_CHECKS["h264-x264"] = CROSS_CHECKS["h264"]
 
 
 def bitstream(directory):
     found = [p for p in directory.rglob("*")
              if p.suffix.lower() in BITSTREAM_SUFFIXES and "__MACOSX" not in p.parts]
+    if len(found) > 1:
+        # Extra streams beside the conformance one (alphaconformanceG): the
+        # one named after the directory.
+        found = [p for p in found if p.stem == directory.name]
     return found[0] if len(found) == 1 else None
 
 
 def shipped_md5s(directory):
+    """The MD5s a stream's directory ships: listed in its MD5 files, or of
+    the decoded YUVs it ships (H.264.1)."""
     found = set()
     for p in directory.rglob("*"):
-        if p.is_file() and "md5" in p.name.lower() and p.stat().st_size < MAX_SHIPPED_MD5_BYTES:
-            found.update(re.findall(r"\b[0-9a-fA-F]{32}\b", p.read_text("latin-1")))
-    return {m.lower() for m in found}
+        if not p.is_file():
+            continue
+        if "md5" in p.name.lower() and p.stat().st_size < MAX_SHIPPED_MD5_BYTES:
+            found.update(m.lower() for m in re.findall(r"\b[0-9a-fA-F]{32}\b", p.read_text("latin-1")))
+        elif p.suffix.lower() in SHIPPED_YUV_SUFFIXES and p.stat().st_size < MAX_SHIPPED_YUV_BYTES:
+            digest = hashlib.md5()
+            with open(p, "rb") as f:
+                while chunk := f.read(CHUNK):
+                    digest.update(chunk)
+            found.add(digest.hexdigest())
+    return found
 
 
 def reference_hashes(command, frame_bytes):
@@ -291,8 +497,9 @@ def reference_hashes(command, frame_bytes):
         reader = threading.Thread(target=drain)
         reader.start()
         try:
+            # In the scratch directory: JM writes its logs into the current one.
             status = subprocess.run(command(fifo), stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, check=False,
+                                    stderr=subprocess.PIPE, check=False, cwd=scratch,
                                     timeout=REFERENCE_TIMEOUT).returncode
         finally:
             # A decoder that never opened its output leaves the reader
@@ -318,6 +525,13 @@ def build_entry(suite, streams, directory):
     except subprocess.TimeoutExpired:
         print(f"skip {directory.name}: reference decoder timed out", file=sys.stderr)
         return directory.name, None
+    cross_check = None
+    if suite in CROSS_CHECKS:
+        try:
+            other, _ = reference_hashes(lambda out: CROSS_CHECKS[suite](path, out, info), None)
+            cross_check = other.whole.hexdigest() == hashes.whole.hexdigest()
+        except subprocess.TimeoutExpired:
+            pass
     shipped = shipped_md5s(directory)
     md5 = hashes.whole.hexdigest()
     if status != 0 and not hashes.frames:
@@ -336,6 +550,7 @@ def build_entry(suite, streams, directory):
         "md5": md5, "frames": len(hashes.frames) if frames else None, "frame_md5": frames,
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "shipped_md5_agrees": agrees,
+        **({"cross_check_agrees": cross_check} if cross_check is not None else {}),
         **({"reference_status": status} if status else {}),
     }
 

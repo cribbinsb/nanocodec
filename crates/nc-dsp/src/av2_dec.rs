@@ -1,7 +1,8 @@
 //! Scalar kernels of the general AV2 decoder (`nc_av2::general`): the
 //! inverse transforms of every size and type with the secondary and
-//! cross-chroma transforms ([`itx`], [`stx`]), and every intra predictor
-//! with its edge preparation ([`ipred`]), for 8-bit 4:2:0.
+//! cross-chroma transforms ([`itx`], [`stx`]), every intra predictor
+//! with its edge preparation ([`ipred`]), and the motion compensation
+//! intra block copy uses ([`mc`]), for 8-bit 4:2:0.
 //!
 //! Ported from dav2d (commit 237229e; Copyright © 2018-2026 `VideoLAN` and
 //! dav2d authors, BSD-2-Clause, see `docs/licenses/dav2d`), which is
@@ -14,5 +15,6 @@ pub mod ipred;
 pub mod itx;
 mod itx_1d;
 mod itx_kernels;
+pub mod mc;
 pub mod stx;
 pub mod stx_tables;

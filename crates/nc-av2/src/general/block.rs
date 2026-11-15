@@ -27,6 +27,8 @@ macro_rules! trace {
 mod coefficients;
 pub mod context;
 mod intra;
+mod intrabc;
+pub mod motion;
 mod palette;
 mod partition;
 pub mod pixels;
@@ -48,6 +50,7 @@ use crate::entropy::{Cdf, Reader};
 use coefficients::{LEVELS, Scans};
 use context::Contexts;
 use intra::LUMA_MAP_SIDE;
+use motion::{MotionStore, StoreGeometry};
 use nc_common::decode::{DecodeError, Result};
 use pixels::Planes;
 use reconstruction::ChromaResiduals;
@@ -66,6 +69,9 @@ const UNITS64_LOG2: u32 = 4;
 
 /// Coefficients of one transform (at most 32x32 are coded).
 const COEFFICIENTS: usize = 32 * 32;
+/// A block copy's source window: up to 64x64 samples and a column and a
+/// row more for the bilinear filter.
+const BLOCK_COPY_WINDOW: usize = 65 * 65;
 
 /// What the block layer needs of the frame, in 4x4 units.
 #[derive(Debug, Clone, Copy)]
@@ -150,6 +156,11 @@ struct Tile<'a, 't> {
     palette_indices: Vec<u8>,
     /// Intra prediction's edge buffer (dav2d `scratch.edge`).
     edge: Vec<u8>,
+    /// The motion of decoded blocks, in frames whose blocks may predict
+    /// vectors (inter frames, or frames allowing intra block copy).
+    motion: Option<MotionStore>,
+    /// A block copy's source window (dav2d `scratch.emu_edge`).
+    window: Vec<u8>,
     trace: Option<BlockTrace<'t>>,
 }
 
@@ -226,6 +237,21 @@ pub fn decode_tile(
         palette_map: Vec::with_capacity(palette::MAX_SIDE * palette::MAX_SIDE),
         palette_indices: Vec::with_capacity(palette::PACKED_INDICES),
         edge: vec![0; nc_dsp::av2_dec::ipred::EDGE_LEN],
+        motion: (!frame.is_intra() || frame.intra_block_copy.is_some()).then(|| {
+            MotionStore::new(
+                StoreGeometry {
+                    columns: geometry.columns,
+                    rows: geometry.rows,
+                    superblock_log2: frame.superblock_log2,
+                    column_start: 0,
+                    column_end: geometry.columns,
+                    row_start: 0,
+                    row_end: geometry.rows,
+                },
+                sequence.references.mv_bank,
+            )
+        }),
+        window: vec![0; BLOCK_COPY_WINDOW],
         trace,
     };
     tile.dequant = tile.dequantizers(tile.qindex);
@@ -264,14 +290,26 @@ impl Tile<'_, '_> {
         let mut row = self.bounds.row_start;
         while row < self.bounds.row_end {
             self.contexts.left.reset(intra_frame);
+            // Inter frames' superblocks below the tile's first row seed the
+            // MV bank from the row above (dav2d `dav2d_refmvs_reset_sb`).
+            let refill = !intra_frame && row != self.bounds.row_start && self.frame.tip.mode != 2;
+            if let Some(motion) = &mut self.motion {
+                motion.start_row();
+            }
             let mut column = self.bounds.column_start;
             while column < self.bounds.column_end {
                 (self.row, self.column) = (row, column);
                 self.sdp_cfl_disallowed = false;
                 self.coded = [[0; 64]; 2];
+                if let Some(motion) = &mut self.motion {
+                    motion.start_superblock(row, column, refill);
+                }
                 let root = self.geometry.root;
                 let mut direction = 0;
                 self.superblock(1, Some(root), Some(root), &mut direction)?;
+                if let Some(motion) = &mut self.motion {
+                    motion.end_superblock(row, column);
+                }
                 column += step;
             }
             row += step;
@@ -301,6 +339,19 @@ impl Tile<'_, '_> {
     /// One equiprobable bit.
     fn bypass(&mut self) -> Result<bool> {
         self.reader.literal(1).map(|bit| bit != 0)
+    }
+
+    /// A value below `n` (at least 2) in equiprobable bits, the shorter
+    /// codes first (dav2d `dav2d_msac_decode_uniform`).
+    fn uniform(&mut self, n: u32) -> Result<u32> {
+        let bits = n.ilog2() + 1;
+        let short = (1 << bits) - n;
+        let value = self.reader.literal(bits - 1)?;
+        Ok(if value < short {
+            value
+        } else {
+            (value << 1) - short + u32::from(self.bypass()?)
+        })
     }
 
     /// Whether the frame is key or intra-only.

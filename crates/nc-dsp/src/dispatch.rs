@@ -250,6 +250,7 @@ impl Dsp {
         txfm::avx512::install(&mut dsp.txfm);
         codec_txfm::avx512::install(&mut dsp.codec_txfm);
         crate::av1_inverse::avx512::install(&mut dsp.av1_inverse);
+        av2_txfm::avx512::install(&mut dsp.av2_txfm);
         Some(dsp)
     }
 

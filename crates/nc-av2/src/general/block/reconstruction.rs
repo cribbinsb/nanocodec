@@ -1,10 +1,11 @@
-//! An intra block's reconstruction (dav2d `recon_b`, `recon_b_luma_tx`,
-//! `cfl`, the intra paths): luma transform by transform in partition
-//! order (prediction from the edge, coefficients, secondary and inverse
-//! transforms), then chroma (both planes' coefficients first, then
-//! prediction or chroma from luma, the cross-chroma and inverse
+//! An intra or block-copy block's reconstruction (dav2d `recon_b`,
+//! `recon_b_luma_tx`, `cfl`): luma transform by transform in partition
+//! order (intra prediction from the edge, coefficients, secondary and
+//! inverse transforms), then chroma (both planes' coefficients first, then
+//! intra prediction or chroma from luma, the cross-chroma and inverse
 //! transforms), with the coded-unit masks that say which above-right and
-//! below-left samples exist.
+//! below-left samples exist. A block copy is predicted before
+//! ([`super::intrabc`]) and takes only the residual here.
 use super::Tile;
 use super::coefficients::{Residual, TransformInput, tx_type};
 use super::context::{self, NO_COEFFICIENTS};
@@ -72,8 +73,9 @@ impl Default for ChromaResiduals {
 }
 
 impl Tile<'_, '_> {
-    /// Reconstruct an intra block (its luma and/or chroma tree parts).
-    pub(super) fn reconstruct_intra(
+    /// Reconstruct an intra or block-copy block (its luma and/or chroma
+    /// tree parts).
+    pub(super) fn reconstruct(
         &mut self,
         depth: usize,
         record: &BlockRecord,
@@ -298,13 +300,17 @@ impl Tile<'_, '_> {
             self.contexts.above.luma_coefficients[column..column + w].fill(context);
             self.contexts.left.luma_coefficients[left..left + h].fill(context);
         }
-        let tx_type = residual.map_or(tx_type::DCT_DCT, |r| r.tx_type & tx_type::TYPE_MASK);
-        let map_row = self.row as usize & (LUMA_MAP_SIDE - 1);
-        let map_column = self.column as usize & (LUMA_MAP_SIDE - 1);
-        for y in map_row..(map_row + th4 as usize).min(LUMA_MAP_SIDE) {
-            let line = y * LUMA_MAP_SIDE;
-            let end = (map_column + tw4 as usize).min(LUMA_MAP_SIDE);
-            self.luma_type_map[line + map_column..line + end].fill(tx_type as u8);
+        // Skipped residuals leave the map as it was (dav2d
+        // `recon_b_luma_tx`).
+        if let Some(residual) = residual {
+            let tx_type = residual.tx_type & tx_type::TYPE_MASK;
+            let map_row = self.row as usize & (LUMA_MAP_SIDE - 1);
+            let map_column = self.column as usize & (LUMA_MAP_SIDE - 1);
+            for y in map_row..(map_row + th4 as usize).min(LUMA_MAP_SIDE) {
+                let line = y * LUMA_MAP_SIDE;
+                let end = (map_column + tw4 as usize).min(LUMA_MAP_SIDE);
+                self.luma_type_map[line + map_column..line + end].fill(tx_type as u8);
+            }
         }
         if record.intra && !record.intrabc && modes.palette.size == 0 {
             self.predict_luma(record, modes, tx, (y_mode, angle), partition);

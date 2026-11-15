@@ -57,7 +57,7 @@ Main 10 natively (10-bit output as 16-bit little-endian samples; the WebAssembly
 
 | Codec | What has been tested | Our decode time ÷ the reference's, x86 / Jetson |
 |---|---|---|
-| H.264 | Constrained High profile: 65/65 of the conformance streams we test in that profile, MD5-exact | FFmpeg: 0.88–1.00x / 0.77–0.85x |
+| H.264 | Constrained High profile. ITU-T H.264.1 suite: 58/190 streams MD5-exact against JM (33/33 Constrained Baseline, 4/7 Baseline, 21/41 progressive Main, 0/24 progressive High, 0/7 High 10, 0/75 interlaced, 0/3 progressive Extended); 8/8 x264 streams for the I/P-only High tools. B slices, interlace and High 10 in progress | FFmpeg: 0.88–1.00x / 0.77–0.85x |
 | HEVC | Main, Main Still Picture and Main 10: 147/147 JCT-VC HEVC_v1 conformance streams of those profiles (136 8-bit, 11 Main 10), MD5-exact against HM; speeds measured on 8-bit streams | FFmpeg: 0.57–0.94x / 0.72–0.92x |
 | AV1 | Main profile, 8-bit 4:2:0: 176/176 libaom `av1-1-b8` test vectors; 10-bit (in progress): 0/66 `av1-1-b10` vectors | dav1d: 1.13–1.58x / 1.09–1.43x (dav1d faster) |
 | VP9 | Profile 0: 303/303 test vectors | vpxdec: 1.32–1.41x / 1.14–1.24x (vpxdec faster; FFmpeg: 0.98–1.10x) |

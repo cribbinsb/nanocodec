@@ -139,12 +139,15 @@ fn implicit_counts(has_t: bool, has_l: bool, w: usize, h: usize) -> (usize, usiz
     }
 }
 
-/// The alpha of `num / den` in 1/32 steps scaled by 32, saturated
-/// (`derive_alpha`).
-fn derive_alpha(num: i32, den: i32) -> i32 {
+/// The slope `num / den` of a least-squares fit, as a fixed-point scale
+/// with 8 fraction bits (1/32 steps scaled by 32 for chroma from luma),
+/// saturated; `fallback` when the fit gives none or zero (dav2d
+/// `derive_alpha`: 0 for chroma from luma, 256 for block-adaptive weights).
+#[must_use]
+pub fn derive_alpha(num: i32, den: i32, fallback: i32) -> i32 {
     const FRACTION_BITS: u32 = 7;
     if num == 0 || den == 0 {
-        return 0;
+        return fallback;
     }
     // Normalise both to 1.7 fixed point, divide by the reciprocal table.
     let normalise = |v: u32, log2: u32| -> i32 {
@@ -162,7 +165,7 @@ fn derive_alpha(num: i32, den: i32) -> i32 {
     let f_n = normalise(num_abs, shift_n);
     let shift_add = shift_d as i32 - shift_n as i32 - 8;
     if shift_add > 1 {
-        return 0;
+        return fallback;
     }
     let shift = 9 + 7 + shift_add;
     let alpha = if shift < 0 {
@@ -170,7 +173,11 @@ fn derive_alpha(num: i32, den: i32) -> i32 {
     } else {
         ((i32::from(DIV_RECIP[f_d as usize]) * f_n) >> shift).min(MAX_IMPLICIT_ALPHA)
     };
-    if num < 0 { -alpha } else { alpha }
+    match alpha {
+        0 => fallback,
+        _ if num < 0 => -alpha,
+        _ => alpha,
+    }
 }
 
 /// The least-squares slopes of U and V on luma over the pairs.
@@ -196,7 +203,7 @@ fn implicit_alphas(pairs: &[[u8; 3]]) -> [i32; 2] {
     let den = sum_xx - ((i64::from(sum_x) * i64::from(sum_x)) >> count_log2) as i32;
     std::array::from_fn(|pl| {
         let num = sum_xy[pl] - ((i64::from(sum_x) * i64::from(sum_y[pl])) >> count_log2) as i32;
-        derive_alpha(num, den)
+        derive_alpha(num, den, 0)
     })
 }
 

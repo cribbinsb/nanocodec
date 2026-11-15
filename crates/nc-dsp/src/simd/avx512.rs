@@ -6,7 +6,7 @@
 //! informed the review, but are not substituted without matching range proofs.
 
 #![allow(clippy::inline_always)]
-use super::I32Lanes;
+use super::{I32Lanes, WordPairLanes};
 use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storeu_si128, _mm256_loadu_si256,
     _mm256_storeu_si256, _mm512_abs_epi32, _mm512_add_epi32, _mm512_cmpeq_epi32_mask,
@@ -23,6 +23,20 @@ use core::mem::MaybeUninit;
 /// Sixteen signed 32-bit transform lanes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct I32x16(__m512i);
+
+impl WordPairLanes for I32x16 {
+    type Pairs = WordPairs16;
+
+    #[inline(always)]
+    fn word_pairs(self, high: Self) -> WordPairs16 {
+        I32x16::word_pairs(self, high)
+    }
+
+    #[inline(always)]
+    fn pair_dot(pairs: WordPairs16, weights: i32) -> Self {
+        pairs.dot(weights)
+    }
+}
 
 /// The 16x16 transpose of `rows` (at least 16): lane `c` of `rows[r]` is
 /// lane `r` of output `c`.

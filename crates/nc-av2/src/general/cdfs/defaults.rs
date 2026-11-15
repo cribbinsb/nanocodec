@@ -2764,6 +2764,156 @@ pub(super) static CFL_ALPHA: [Initial<8>; 6] = [
         rates: [1, 2, 3],
     },
 ];
+pub(super) static INTRABC_MODE: Initial<2> = Initial {
+    inverse: [2775, 0],
+    rates: [2, 2, 3],
+};
+pub(super) static INTRABC_PRECISION: Initial<2> = Initial {
+    inverse: [12990, 0],
+    rates: [1, 2, 3],
+};
+pub(super) static MORPH_PRED: [Initial<2>; 3] = [
+    Initial {
+        inverse: [1053, 0],
+        rates: [0, 2, 4],
+    },
+    Initial {
+        inverse: [13101, 0],
+        rates: [2, 3, 3],
+    },
+    Initial {
+        inverse: [22213, 0],
+        rates: [3, 4, 3],
+    },
+];
+pub(super) static DV_SHELL_SET: Initial<2> = Initial {
+    inverse: [1189, 0],
+    rates: [1, 3, 4],
+};
+pub(super) static DV_CLASS_LOW_INTEGER: Initial<7> = Initial {
+    inverse: [24088, 19045, 14560, 10082, 6046, 2748, 0],
+    rates: [3, 3, 5],
+};
+pub(super) static DV_CLASS_LOW_QUARTER: Initial<8> = Initial {
+    inverse: [25271, 15467, 8920, 5330, 3373, 1889, 765, 0],
+    rates: [2, 3, 4],
+};
+pub(super) static DV_CLASS_HIGH_INTEGER: Initial<7> = Initial {
+    inverse: [12790, 2608, 204, 36, 32, 28, 0],
+    rates: [3, 4, 4],
+};
+pub(super) static DV_CLASS_HIGH_QUARTER: Initial<8> = Initial {
+    inverse: [14299, 5341, 1206, 116, 44, 40, 36, 0],
+    rates: [2, 3, 4],
+};
+pub(super) static DV_OFFSET_LOW: [Initial<2>; 2] = [
+    Initial {
+        inverse: [18181, 0],
+        rates: [1, 1, 3],
+    },
+    Initial {
+        inverse: [11802, 0],
+        rates: [3, 3, 4],
+    },
+];
+pub(super) static DV_OFFSET_CLASS2: Initial<2> = Initial {
+    inverse: [19579, 0],
+    rates: [2, 3, 4],
+};
+pub(super) static DV_OFFSET_HIGH: [Initial<2>; 16] = [
+    Initial {
+        inverse: [14825, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [13834, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [13840, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [14072, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [13724, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [12406, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [12342, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [10205, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [10578, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [9310, 0],
+        rates: [3, 4, 4],
+    },
+    Initial {
+        inverse: [6541, 0],
+        rates: [2, 3, 2],
+    },
+    Initial {
+        inverse: [2003, 0],
+        rates: [0, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+];
+pub(super) static DV_COLUMN_GREATER: [Initial<2>; 2] = [
+    Initial {
+        inverse: [27105, 0],
+        rates: [1, 3, 4],
+    },
+    Initial {
+        inverse: [27912, 0],
+        rates: [3, 4, 4],
+    },
+];
+pub(super) static DV_COLUMN_INDEX: [Initial<2>; 4] = [
+    Initial {
+        inverse: [19323, 0],
+        rates: [2, 3, 3],
+    },
+    Initial {
+        inverse: [19227, 0],
+        rates: [2, 3, 3],
+    },
+    Initial {
+        inverse: [18723, 0],
+        rates: [2, 3, 3],
+    },
+    Initial {
+        inverse: [19880, 0],
+        rates: [1, 2, 3],
+    },
+];
 pub(super) static LOSSLESS_TX_SIZE: [[Initial<2>; 2]; 4] = [
     [
         Initial {
@@ -3553,6 +3703,346 @@ pub(super) static TX_TYPE_INTRA_REDUCED: [Initial<2>; 4] = [
         inverse: [16384, 0],
         rates: [2, 3, 4],
     },
+];
+pub(super) static TX_TYPE_INTER_SHORT: [[Initial<4>; 4]; 3] = [
+    [
+        Initial {
+            inverse: [24421, 12514, 8232, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16774, 6474, 20, 0],
+            rates: [3, 4, 4],
+        },
+        Initial {
+            inverse: [11556, 4958, 20, 0],
+            rates: [3, 4, 4],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+    ],
+    [
+        Initial {
+            inverse: [10953, 7684, 6538, 0],
+            rates: [1, 2, 3],
+        },
+        Initial {
+            inverse: [3414, 1021, 20, 0],
+            rates: [2, 2, 3],
+        },
+        Initial {
+            inverse: [1154, 239, 20, 0],
+            rates: [2, 2, 4],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+    ],
+    [
+        Initial {
+            inverse: [22267, 12178, 8587, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [15172, 6380, 20, 0],
+            rates: [2, 2, 3],
+        },
+        Initial {
+            inverse: [17361, 6293, 36, 0],
+            rates: [1, 2, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+    ],
+];
+pub(super) static TX_TYPE_INTER_SET: [[[Initial<2>; 4]; 3]; 2] = [
+    [
+        [
+            Initial {
+                inverse: [18646, 0],
+                rates: [1, 3, 4],
+            },
+            Initial {
+                inverse: [23806, 0],
+                rates: [1, 2, 3],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+        ],
+        [
+            Initial {
+                inverse: [16345, 0],
+                rates: [1, 3, 3],
+            },
+            Initial {
+                inverse: [9322, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+        ],
+        [
+            Initial {
+                inverse: [9416, 0],
+                rates: [1, 3, 4],
+            },
+            Initial {
+                inverse: [15699, 0],
+                rates: [0, 2, 3],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+        ],
+    ],
+    [
+        [
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [11933, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+        ],
+        [
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [2048, 0],
+                rates: [2, 3, 5],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+        ],
+        [
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+            Initial {
+                inverse: [3911, 0],
+                rates: [2, 4, 2],
+            },
+            Initial {
+                inverse: [16384, 0],
+                rates: [2, 3, 4],
+            },
+        ],
+    ],
+];
+pub(super) static TX_TYPE_INTER_INDEX: [[Initial<8>; 3]; 2] = [
+    [
+        Initial {
+            inverse: [23854, 22036, 20498, 17946, 15640, 13182, 10804, 0],
+            rates: [2, 4, 5],
+        },
+        Initial {
+            inverse: [31608, 31213, 30796, 29354, 28806, 27617, 26860, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [9949, 8430, 7176, 5767, 4373, 3120, 1778, 0],
+            rates: [2, 4, 5],
+        },
+    ],
+    [
+        Initial {
+            inverse: [31628, 31043, 30444, 18115, 13696, 9150, 4659, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [32710, 32507, 32181, 451, 212, 142, 60, 0],
+            rates: [3, 4, 3],
+        },
+        Initial {
+            inverse: [15364, 15099, 14365, 8716, 6375, 4262, 2092, 0],
+            rates: [1, 3, 3],
+        },
+    ],
+];
+pub(super) static TX_TYPE_INTER_OFFSET1: [Initial<8>; 3] = [
+    Initial {
+        inverse: [29647, 26298, 23577, 20488, 14957, 10180, 5071, 0],
+        rates: [4, 5, 6],
+    },
+    Initial {
+        inverse: [32430, 32391, 32197, 32025, 24836, 20908, 15244, 0],
+        rates: [3, 4, 4],
+    },
+    Initial {
+        inverse: [29454, 25143, 22129, 18562, 13405, 9312, 4735, 0],
+        rates: [4, 5, 6],
+    },
+];
+pub(super) static TX_TYPE_INTER_OFFSET2: [Initial<4>; 3] = [
+    Initial {
+        inverse: [24099, 16235, 7913, 0],
+        rates: [4, 5, 6],
+    },
+    Initial {
+        inverse: [23327, 16355, 7492, 0],
+        rates: [4, 5, 5],
+    },
+    Initial {
+        inverse: [24001, 15157, 7892, 0],
+        rates: [3, 2, 5],
+    },
+];
+pub(super) static TX_TYPE_INTER_DCT_IDTX: [[Initial<2>; 4]; 3] = [
+    [
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+    ],
+    [
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+    ],
+    [
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+        Initial {
+            inverse: [16384, 0],
+            rates: [2, 3, 4],
+        },
+    ],
+];
+pub(super) static TX_TYPE_INTER_DCT_IDTX_IDDCT: [[Initial<4>; 4]; 3] = [
+    [
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+    ],
+    [
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+    ],
+    [
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+        Initial {
+            inverse: [24576, 16384, 8192, 0],
+            rates: [3, 4, 5],
+        },
+    ],
 ];
 pub(super) static STX: [[Initial<4>; 5]; 2] = [
     [
@@ -20092,8 +20582,8 @@ pub(super) static BASE_UV_LF: [[Initial<6>; 12]; 4] = [
 ];
 #[cfg(test)]
 pub(super) const TRACE_HASHES: [u64; 4] = [
-    10_379_652_267_492_201_218,
-    17_258_097_354_921_925_960,
-    15_049_992_993_784_921_726,
-    2_898_766_552_018_929_041,
+    4_918_115_764_347_111_380,
+    623_023_119_275_646_174,
+    14_444_355_718_213_519_188,
+    10_293_510_550_590_516_135,
 ];

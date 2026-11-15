@@ -188,6 +188,59 @@ const LONG_TYPES: [[[u16; 4]; 2]; 2] = [
     ],
 ];
 
+/// The inter transform types by coded index: the first set's eight, then
+/// the second set's from [`INTER_SECOND_SET`] (dav2d `txtp_inv_tbl[0]`);
+/// 16x16 transforms have their own twelve (`txtp_inv_tbl[1]`).
+const INTER_TYPES: [u16; 16] = [
+    IDTX,
+    V_DCT,
+    H_DCT,
+    V_ADST,
+    H_ADST,
+    V_FLIPADST,
+    H_FLIPADST,
+    DCT_DCT,
+    ADST_DCT,
+    DCT_ADST,
+    FLIPADST_DCT,
+    DCT_FLIPADST,
+    ADST_ADST,
+    FLIPADST_FLIPADST,
+    ADST_FLIPADST,
+    FLIPADST_ADST,
+];
+const INTER_TYPES_16X16: [u16; 12] = [
+    IDTX,
+    V_DCT,
+    H_DCT,
+    DCT_DCT,
+    ADST_DCT,
+    DCT_ADST,
+    FLIPADST_DCT,
+    DCT_FLIPADST,
+    ADST_ADST,
+    FLIPADST_FLIPADST,
+    ADST_FLIPADST,
+    FLIPADST_ADST,
+];
+/// The inter second set's indices start here.
+const INTER_SECOND_SET: usize = 8;
+/// The types of the reduced inter set 3 (dav2d `txtp_dct_idtx_iddct_tbl`).
+const INTER_DCT_IDTX_IDDCT: [u16; 4] = [DCT_DCT, V_DCT, H_DCT, IDTX];
+/// `reduced_tx_set` values of the inter DCT-or-identity sets, and of the
+/// DCT, identity and one-direction DCT set.
+const REDUCED_DCT_IDTX: [u8; 2] = [1, 2];
+const REDUCED_DCT_IDTX_IDDCT: u8 = 3;
+/// Inter end-of-block positions this close to the origin (row + column)
+/// have context 1; past the block's extent minus this, context 2.
+const INTER_EOB_NEAR: u32 = 2;
+const INTER_EOB_FAR_MARGIN: u32 = 4;
+/// Inter type contexts count at most 8 units a side.
+const INTER_EOB_MAX_UNITS: u32 = 8;
+/// The 32x32 transform and the long (32- or 64-long) side, in side logs.
+const TX32_LOG2: u8 = 3;
+const TX64_LOG2: u8 = 4;
+
 /// The chroma transform type an intra chroma mode implies (dav2d
 /// `dav2d_txtp_from_uvmode`).
 const CHROMA_TYPES: [u16; 14] = [
@@ -542,7 +595,7 @@ impl Tile<'_, '_> {
         } else if input.intra {
             self.intra_luma_type(input, eob)?
         } else {
-            return Err(DecodeError::Unsupported("AV2 inter transform types"));
+            self.inter_luma_type(input, eob)?
         };
         let range = self.reader.range();
         trace!(
@@ -605,6 +658,71 @@ impl Tile<'_, '_> {
             self.symbol(|m| &mut m.tx_type_intra[short])?
         };
         Ok(INTRA_TYPES[size_context][usize::from(input.y_mode)][index])
+    }
+
+    /// An inter (or block-copy) luma transform's type, with a context of
+    /// where the end of block lies (dav2d `decode_coefs`, inter branch).
+    fn inter_luma_type(&mut self, input: &TransformInput, eob: u16) -> Result<u16> {
+        let tx = input.tx;
+        if tx.is_large() {
+            return Ok(DCT_DCT);
+        }
+        let (slw, _) = tx.coded();
+        let eob = u32::from(eob);
+        let (y, x) = (eob >> (2 + slw), eob & ((4 << slw) - 1));
+        let (tw4, th4) = tx.units();
+        let extent = 4 * (tw4.min(INTER_EOB_MAX_UNITS) + th4.min(INTER_EOB_MAX_UNITS));
+        let context = if x + y < INTER_EOB_NEAR {
+            1
+        } else if x + y > extent - INTER_EOB_FAR_MARGIN {
+            2
+        } else {
+            0
+        };
+        let short = usize::from(tx.min());
+        let square32 = TxSize {
+            w: TX32_LOG2,
+            h: TX32_LOG2,
+        };
+        let dct_or_identity = |dct: bool| if dct { DCT_DCT } else { IDTX };
+        if tx == square32 {
+            let dct =
+                self.bool(|m| &mut m.tx_type_inter_dct_idtx[context][usize::from(TX32_LOG2)])?;
+            return Ok(dct_or_identity(dct));
+        }
+        if tx.max() >= TX32_LOG2 {
+            let long_dct = tx.max() == TX64_LOG2 || self.bool(|m| &mut m.tx_type_long32_dct[1])?;
+            let index = self.symbol(|m| &mut m.tx_type_inter_short[context][short])?;
+            return Ok(LONG_TYPES[usize::from(long_dct)][usize::from(tx.w < tx.h)][index]);
+        }
+        let reduced = self.frame.reduced_tx_set;
+        if REDUCED_DCT_IDTX.contains(&reduced) {
+            let dct = self.bool(|m| &mut m.tx_type_inter_dct_idtx[context][short])?;
+            return Ok(dct_or_identity(dct));
+        }
+        if reduced == REDUCED_DCT_IDTX_IDDCT {
+            let index = self.symbol(|m| &mut m.tx_type_inter_dct_idtx_iddct[context][short])?;
+            return Ok(INTER_DCT_IDTX_IDDCT[index]);
+        }
+        let square16 = tx == TxSize { w: 2, h: 2 };
+        let set = usize::from(square16);
+        let second = self.bool(|m| &mut m.tx_type_inter_set[set][context][short])?;
+        Ok(match (second, square16) {
+            (false, false) => {
+                INTER_TYPES[self.symbol(|m| &mut m.tx_type_inter_index[set][context])?]
+            }
+            (false, true) => {
+                INTER_TYPES_16X16[self.symbol(|m| &mut m.tx_type_inter_index[set][context])?]
+            }
+            (true, false) => {
+                INTER_TYPES
+                    [INTER_SECOND_SET + self.symbol(|m| &mut m.tx_type_inter_offset1[context])?]
+            }
+            (true, true) => {
+                INTER_TYPES_16X16
+                    [INTER_SECOND_SET + self.symbol(|m| &mut m.tx_type_inter_offset2[context])?]
+            }
+        })
     }
 
     /// The secondary transform of a luma transform, or the cross-chroma

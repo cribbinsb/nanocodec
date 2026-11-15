@@ -62,6 +62,10 @@ pub(crate) mod typed_lanes;
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
 
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+pub(crate) mod avx512;
+
 #[cfg(any(
     target_arch = "x86_64",
     all(target_arch = "wasm32", target_feature = "simd128")

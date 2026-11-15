@@ -8,6 +8,7 @@
 //! the contexts later blocks read.
 use super::Tile;
 use super::context::{self, NO_DIRECTION};
+use super::motion::Motion;
 use super::palette::Palette;
 use super::record::BlockRecord;
 use super::size::BlockSize;
@@ -227,8 +228,16 @@ impl Tile<'_, '_> {
             modes.smooth_above[1] = is_smooth(self.contexts.above.uv_mode[above]);
             modes.smooth_left[1] = is_smooth(self.contexts.left.uv_mode[left]);
         }
-        self.reconstruct_intra(depth, record, &modes, transforms)?;
-        self.record_intra_contexts(record, &modes);
+        self.reconstruct(depth, record, &modes, transforms)?;
+        self.record_intra_contexts(record, &modes, 0);
+        if let (Some(size), Some(store)) = (record.luma, &mut self.motion) {
+            // Later block copies' lists see no vector here (dav2d
+            // `splat_intraref`).
+            store.splat(record.row, record.column, size, Motion::Intra);
+            if self.sequence.references.mv_bank {
+                store.update_bank(record.row, record.column, size);
+            }
+        }
         Ok(())
     }
 
@@ -588,9 +597,15 @@ impl Tile<'_, '_> {
         ((column >> 1) as usize, context::left_index(row) >> 1)
     }
 
-    /// Record the intra block's modes in the contexts and the separate
-    /// trees' luma maps (dav2d `decode_b` `set_ctx` of the intra branch).
-    fn record_intra_contexts(&mut self, record: &BlockRecord, modes: &IntraModes) {
+    /// Record the intra (or block copy's) modes and its block-adaptive
+    /// scale flag `morph_pred` in the contexts and the separate trees' luma
+    /// maps (dav2d `decode_b` `set_ctx` of the intra and intrabc branches).
+    pub(super) fn record_intra_contexts(
+        &mut self,
+        record: &BlockRecord,
+        modes: &IntraModes,
+        morph_pred: u8,
+    ) {
         if let Some(size) = record.luma {
             let (bw4, bh4) = size.units();
             let column = record.column as usize;
@@ -603,6 +618,7 @@ impl Tile<'_, '_> {
                 u8::from(modes.multi_mrl),
                 u8::from(modes.dip != 0),
                 modes.palette.size,
+                morph_pred,
             ];
             for (edge, start, count) in [
                 (&mut self.contexts.above, column, bw4),
@@ -617,6 +633,7 @@ impl Tile<'_, '_> {
                     (&mut edge.multi_mrl, values[4]),
                     (&mut edge.dip, values[5]),
                     (&mut edge.palette_size, values[6]),
+                    (&mut edge.morph_pred, values[7]),
                 ] {
                     field[start..end].fill(value);
                 }

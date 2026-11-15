@@ -129,6 +129,32 @@ pub struct Cdfs {
     pub cfl_sign: Cdf<8>,
     /// A chroma from luma scale magnitude (AVM `default_cfl_alpha_cdf[a]`).
     pub cfl_alpha: [Cdf<8>; 6],
+    /// Whether a block copy takes its predicted vector as is (no residual) (AVM `default_intrabc_mode_cdf`).
+    pub intrabc_mode: Cdf<2>,
+    /// Whether a block copy vector residual is in quarter samples (AVM `default_intrabc_bv_precision_cdf[0]`).
+    pub intrabc_precision: Cdf<2>,
+    /// Whether a block copy is scaled by a linear model of its edges (AVM `default_morph_pred_cdf[a]`).
+    pub morph_pred: [Cdf<2>; 3],
+    /// Whether a vector residual's shell class is in the upper half (AVM `default_nmv_context.joint_shell_set_cdf`).
+    pub dv_shell_set: Cdf<2>,
+    /// A whole-sample residual's shell class, lower half (AVM `default_nmv_context.joint_shell_class_cdf_0[3]`).
+    pub dv_class_low_integer: Cdf<7>,
+    /// A quarter-sample residual's shell class, lower half (AVM `default_nmv_context.joint_shell_class_cdf_0[5]`).
+    pub dv_class_low_quarter: Cdf<8>,
+    /// A whole-sample residual's shell class, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[3]`).
+    pub dv_class_high_integer: Cdf<7>,
+    /// A quarter-sample residual's shell class, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[5]`).
+    pub dv_class_high_quarter: Cdf<8>,
+    /// The shell offset of class 0 or 1 (AVM `default_nmv_context.shell_offset_low_class_cdf[a]`).
+    pub dv_offset_low: [Cdf<2>; 2],
+    /// Whether the shell offset of class 2 is above 0 (AVM `default_nmv_context.shell_offset_class2_cdf`).
+    pub dv_offset_class2: Cdf<2>,
+    /// A bit of the shell offset of class 3 or more (AVM `default_nmv_context.shell_offset_other_class_cdf[0][a]`).
+    pub dv_offset_high: [Cdf<2>; 16],
+    /// Whether the smaller component steps further up the shell (AVM `default_nmv_context.col_mv_greater_flags_cdf[a]`).
+    pub dv_column_greater: [Cdf<2>; 2],
+    /// Which component is the smaller one (AVM `default_nmv_context.col_mv_index_cdf[a]`).
+    pub dv_column_index: [Cdf<2>; 4],
     /// Whether a lossless block uses its largest transform (size group, inter) (AVM `default_lossless_tx_size_cdf[a][b]`).
     pub lossless_tx_size: [[Cdf<2>; 2]; 4],
     /// Whether a block splits its transform (forward skip coding, inter, size) (AVM `default_txfm_do_partition_cdf[a][b][c]`).
@@ -149,6 +175,20 @@ pub struct Cdfs {
     pub tx_type_intra: [Cdf<7>; 4],
     /// The same with the reduced transform set (AVM `default_intra_ext_tx_cdf[2][a]`).
     pub tx_type_intra_reduced: [Cdf<2>; 4],
+    /// The short-side type of a long inter transform (end-of-block context, size) (AVM `default_inter_ext_tx_short_side_cdf[a][b]`).
+    pub tx_type_inter_short: [[Cdf<4>; 4]; 3],
+    /// Whether an inter type is in the second set (16x16, end-of-block context, size) (AVM `default_inter_tx_type_set_cdf[a][b][c]`).
+    pub tx_type_inter_set: [[[Cdf<2>; 4]; 3]; 2],
+    /// An inter type of the first set (AVM `default_inter_tx_type_idx_cdf[a][b]`).
+    pub tx_type_inter_index: [[Cdf<8>; 3]; 2],
+    /// An inter type of the second set, transforms other than 16x16 (AVM `default_inter_tx_type_offset_1_cdf[a]`).
+    pub tx_type_inter_offset1: [Cdf<8>; 3],
+    /// An inter type of the second set, 16x16 transforms (AVM `default_inter_tx_type_offset_2_cdf[a]`).
+    pub tx_type_inter_offset2: [Cdf<4>; 3],
+    /// Whether an inter type is the DCT, not the identity (reduced sets 1 and 2, 32x32) (AVM `default_inter_ext_tx_cdf[3][a][b]`).
+    pub tx_type_inter_dct_idtx: [[Cdf<2>; 4]; 3],
+    /// An inter type of the DCT, identity and one-direction DCT set (reduced set 3) (AVM `default_inter_ext_tx_cdf[4][a][b]`).
+    pub tx_type_inter_dct_idtx_iddct: [[Cdf<4>; 4]; 3],
     /// The secondary transform kernel (inter, size) (AVM `default_stx_cdf[a][b]`).
     pub stx: [[Cdf<4>; 5]; 2],
     /// The secondary transform set of an `ADST_ADST` transform (AVM `default_most_probable_stx_set_cdf_ADST_ADST`).
@@ -272,6 +312,19 @@ impl Cdfs {
             cfl_type: defaults::CFL_TYPE.build(),
             cfl_sign: defaults::CFL_SIGN.build(),
             cfl_alpha: defaults::CFL_ALPHA.map(Initial::build),
+            intrabc_mode: defaults::INTRABC_MODE.build(),
+            intrabc_precision: defaults::INTRABC_PRECISION.build(),
+            morph_pred: defaults::MORPH_PRED.map(Initial::build),
+            dv_shell_set: defaults::DV_SHELL_SET.build(),
+            dv_class_low_integer: defaults::DV_CLASS_LOW_INTEGER.build(),
+            dv_class_low_quarter: defaults::DV_CLASS_LOW_QUARTER.build(),
+            dv_class_high_integer: defaults::DV_CLASS_HIGH_INTEGER.build(),
+            dv_class_high_quarter: defaults::DV_CLASS_HIGH_QUARTER.build(),
+            dv_offset_low: defaults::DV_OFFSET_LOW.map(Initial::build),
+            dv_offset_class2: defaults::DV_OFFSET_CLASS2.build(),
+            dv_offset_high: defaults::DV_OFFSET_HIGH.map(Initial::build),
+            dv_column_greater: defaults::DV_COLUMN_GREATER.map(Initial::build),
+            dv_column_index: defaults::DV_COLUMN_INDEX.map(Initial::build),
             lossless_tx_size: defaults::LOSSLESS_TX_SIZE.map(|value| value.map(Initial::build)),
             tx_split: defaults::TX_SPLIT.map(|value| value.map(|value| value.map(Initial::build))),
             tx_part_1d: defaults::TX_PART_1D
@@ -285,6 +338,18 @@ impl Cdfs {
             tx_type_intra_short: defaults::TX_TYPE_INTRA_SHORT.map(Initial::build),
             tx_type_intra: defaults::TX_TYPE_INTRA.map(Initial::build),
             tx_type_intra_reduced: defaults::TX_TYPE_INTRA_REDUCED.map(Initial::build),
+            tx_type_inter_short: defaults::TX_TYPE_INTER_SHORT
+                .map(|value| value.map(Initial::build)),
+            tx_type_inter_set: defaults::TX_TYPE_INTER_SET
+                .map(|value| value.map(|value| value.map(Initial::build))),
+            tx_type_inter_index: defaults::TX_TYPE_INTER_INDEX
+                .map(|value| value.map(Initial::build)),
+            tx_type_inter_offset1: defaults::TX_TYPE_INTER_OFFSET1.map(Initial::build),
+            tx_type_inter_offset2: defaults::TX_TYPE_INTER_OFFSET2.map(Initial::build),
+            tx_type_inter_dct_idtx: defaults::TX_TYPE_INTER_DCT_IDTX
+                .map(|value| value.map(Initial::build)),
+            tx_type_inter_dct_idtx_iddct: defaults::TX_TYPE_INTER_DCT_IDTX_IDDCT
+                .map(|value| value.map(Initial::build)),
             stx: defaults::STX.map(|value| value.map(Initial::build)),
             stx_set_adst: defaults::STX_SET_ADST.build(),
             stx_set: defaults::STX_SET.build(),
@@ -447,6 +512,29 @@ impl Cdfs {
         for v0 in &mut self.cfl_alpha {
             v0.restart_adaptation();
         }
+        self.intrabc_mode.restart_adaptation();
+        self.intrabc_precision.restart_adaptation();
+        for v0 in &mut self.morph_pred {
+            v0.restart_adaptation();
+        }
+        self.dv_shell_set.restart_adaptation();
+        self.dv_class_low_integer.restart_adaptation();
+        self.dv_class_low_quarter.restart_adaptation();
+        self.dv_class_high_integer.restart_adaptation();
+        self.dv_class_high_quarter.restart_adaptation();
+        for v0 in &mut self.dv_offset_low {
+            v0.restart_adaptation();
+        }
+        self.dv_offset_class2.restart_adaptation();
+        for v0 in &mut self.dv_offset_high {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.dv_column_greater {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.dv_column_index {
+            v0.restart_adaptation();
+        }
         for v0 in &mut self.lossless_tx_size {
             for v1 in v0 {
                 v1.restart_adaptation();
@@ -492,6 +580,39 @@ impl Cdfs {
         }
         for v0 in &mut self.tx_type_intra_reduced {
             v0.restart_adaptation();
+        }
+        for v0 in &mut self.tx_type_inter_short {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.tx_type_inter_set {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.tx_type_inter_index {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.tx_type_inter_offset1 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.tx_type_inter_offset2 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.tx_type_inter_dct_idtx {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.tx_type_inter_dct_idtx_iddct {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
         }
         for v0 in &mut self.stx {
             for v1 in v0 {
@@ -754,6 +875,29 @@ mod tests {
             for v0 in &mut models.cfl_alpha {
                 trace(v0, &mut hash);
             }
+            trace(&mut models.intrabc_mode, &mut hash);
+            trace(&mut models.intrabc_precision, &mut hash);
+            for v0 in &mut models.morph_pred {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.dv_shell_set, &mut hash);
+            trace(&mut models.dv_class_low_integer, &mut hash);
+            trace(&mut models.dv_class_low_quarter, &mut hash);
+            trace(&mut models.dv_class_high_integer, &mut hash);
+            trace(&mut models.dv_class_high_quarter, &mut hash);
+            for v0 in &mut models.dv_offset_low {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.dv_offset_class2, &mut hash);
+            for v0 in &mut models.dv_offset_high {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.dv_column_greater {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.dv_column_index {
+                trace(v0, &mut hash);
+            }
             for v0 in &mut models.lossless_tx_size {
                 for v1 in v0 {
                     trace(v1, &mut hash);
@@ -799,6 +943,39 @@ mod tests {
             }
             for v0 in &mut models.tx_type_intra_reduced {
                 trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tx_type_inter_short {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.tx_type_inter_set {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.tx_type_inter_index {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.tx_type_inter_offset1 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tx_type_inter_offset2 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tx_type_inter_dct_idtx {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.tx_type_inter_dct_idtx_iddct {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
             }
             for v0 in &mut models.stx {
                 for v1 in v0 {

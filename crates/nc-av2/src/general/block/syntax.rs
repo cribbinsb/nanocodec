@@ -3,8 +3,8 @@
 //! mode, intra or inter, intra block copy, the residual skip flag, the
 //! loop-filter block flags (GDF, the CDEF strength set, CCSO) and the
 //! superblock quantizer delta; then the block goes to the intra, intra
-//! block copy or inter group, each of which answers `Unsupported` until it
-//! is built.
+//! block copy ([`super::intrabc`]) or inter group (which answers
+//! `Unsupported` until it is built).
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::{Tile, UNITS64_LOG2, context, samples};
@@ -127,12 +127,6 @@ impl Tile<'_, '_> {
         }
         self.record_contexts(&record);
         Ok(())
-    }
-
-    /// An intra block-copy block (the intra group).
-    #[allow(clippy::unused_self, reason = "the tool group fills it in")]
-    fn intrabc_block(&mut self, _depth: usize, _record: &BlockRecord) -> Result<()> {
-        Err(DecodeError::Unsupported("AV2 intra block copy blocks"))
     }
 
     /// An inter block's references, motion, prediction and residual (the

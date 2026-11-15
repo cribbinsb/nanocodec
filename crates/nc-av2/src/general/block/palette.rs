@@ -171,7 +171,8 @@ impl Tile<'_, '_> {
         if identity == ROW_COPIED {
             return Err(DecodeError::Malformed("AV2 palette copies a missing row"));
         }
-        let mut first = self.uniform(colors)?;
+        // A palette has at most 8 colours.
+        let mut first = self.uniform(colors as u32)? as u8;
         map[0] = first;
         if identity == ROW_REPEATED {
             for m in 1..length {
@@ -309,20 +310,6 @@ impl Tile<'_, '_> {
             _ => self.symbol(|m| &mut m.palette_index8[context])?,
         };
         Ok(symbol as u8)
-    }
-
-    /// A uniformly coded value below `count` (dav2d
-    /// `dav2d_msac_decode_uniform`): the short codes take one bit less.
-    fn uniform(&mut self, count: usize) -> Result<u8> {
-        let count = count as u32;
-        let bits = count.ilog2() + 1;
-        let short = (1 << bits) - count;
-        let value = self.reader.literal(bits - 1)?;
-        Ok(if value < short {
-            value as u8
-        } else {
-            ((value << 1) - short + self.reader.literal(1)?) as u8
-        })
     }
 
     /// Predict a palette block from its colours and packed index map

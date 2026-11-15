@@ -27,6 +27,9 @@ pub struct Edge {
     pub intra: Vec<u8>,
     /// The neighbour uses intra block copy.
     pub intrabc: Vec<u8>,
+    /// The neighbour is a block copy scaled by block-adaptive weights
+    /// (`morph_pred`).
+    pub morph_pred: Vec<u8>,
     /// The neighbour's segment id was predicted.
     pub segment_predicted: Vec<u8>,
     /// The neighbour's luma intra mode (dav2d `IntraPredMode`; DC for
@@ -74,6 +77,7 @@ impl Edge {
             skip_mode: vec![0; units],
             intra: vec![0; units],
             intrabc: vec![0; units],
+            morph_pred: vec![0; units],
             segment_predicted: vec![0; units],
             mode: vec![0; units],
             direction: vec![NO_DIRECTION; units],
@@ -99,6 +103,7 @@ impl Edge {
         self.skip_mode.fill(0);
         self.intra.fill(u8::from(intra_frame));
         self.intrabc.fill(0);
+        self.morph_pred.fill(0);
         self.segment_predicted.fill(0);
         self.mode.fill(0);
         self.direction.fill(NO_DIRECTION);
