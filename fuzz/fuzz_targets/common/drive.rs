@@ -232,7 +232,7 @@ pub fn av2(data: &[u8]) {
     match config.mode {
         Mode::Browser => {
             for packet in super::packets(data) {
-                if decoder.decode_shown(packet).is_ok() {
+                if decoder.decode_unit(packet).is_ok() && decoder.next_output() {
                     super::read_shown(decoder.shown());
                 }
             }
@@ -245,16 +245,24 @@ pub fn av2(data: &[u8]) {
             }
         }
         Mode::Cli | Mode::CliAllLayers => {
+            // As the CLI: every picture each unit releases, then the hidden
+            // frames still due at the end.
             let _ = framing::read_ivf(&mut &data[..], |header, frame| {
                 if framing::ivf_fourcc(Codec::Av2).is_none_or(|fourcc| header.fourcc() != fourcc) {
                     return Err("IVF codec identifier disagrees with the codec".into());
                 }
                 decoder
-                    .decode_shown(frame.packet)
+                    .decode_unit(frame.packet)
                     .map_err(|e| e.to_string())?;
-                super::read_shown(Some(decoder.shown().expect("a decoded picture is shown")));
+                while decoder.next_output() {
+                    super::read_shown(Some(decoder.shown().expect("an output is shown")));
+                }
                 Ok(())
             });
+            decoder.flush();
+            while decoder.next_output() {
+                super::read_shown(Some(decoder.shown().expect("an output is shown")));
+            }
         }
     }
 }

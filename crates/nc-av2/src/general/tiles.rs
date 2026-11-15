@@ -36,7 +36,7 @@ pub struct TileGeometry {
 
 /// A frame's tile grid: starts of each column and row in superblocks, with
 /// the frame's extent as the last entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TileLayout {
     /// `uniform_tile_spacing_flag`.
     pub uniform: bool,
@@ -92,6 +92,89 @@ fn uniform_starts(log2_count: u32, step: u16, sequence_superblock_log2: u8, size
         extra -= 1;
     }
     starts
+}
+
+/// log2 of a tile count rounded up (bits of a tile index along an axis).
+#[must_use]
+pub fn log2(count: usize) -> u32 {
+    tile_log2(1, count as u32)
+}
+
+/// Superblocks of `geometry` across and down.
+fn superblocks(geometry: TileGeometry) -> (u32, u32) {
+    let log2 = u32::from(geometry.superblock_log2);
+    let count = |size: u32| (size + (1 << log2) - 1) >> log2;
+    (count(geometry.size.0), count(geometry.size.1))
+}
+
+/// Whether a frame of `geometry` may reuse the sequence's tile `layout`:
+/// a non-uniform one when the frame has the sequence's superblock grid, a
+/// uniform one when its tile count still fits (dav2d
+/// `parse_tile_info_frmhdr`).
+#[must_use]
+pub fn reusable(
+    layout: &TileLayout,
+    sequence: &super::sequence::SequenceHeader,
+    geometry: TileGeometry,
+) -> bool {
+    let (columns, rows) = superblocks(geometry);
+    if layout.uniform {
+        let fits = |count: usize, superblocks: u32| {
+            let log2 = log2(count);
+            let tile = (superblocks + (1 << log2) - 1) >> log2;
+            tile * ((1 << log2) - 1) < superblocks
+        };
+        fits(layout.columns(), columns) && fits(layout.rows(), rows)
+    } else {
+        let sequence_grid = superblocks(TileGeometry {
+            size: (sequence.max_width, sequence.max_height),
+            superblock_log2: geometry.sequence_superblock_log2,
+            ..geometry
+        });
+        sequence_grid == (columns, rows)
+    }
+}
+
+/// The sequence's tile `layout` for a frame of `geometry`: a uniform
+/// layout keeps its tile count, spread over the frame's superblocks; a
+/// non-uniform one keeps its starts, in frame superblocks.
+#[must_use]
+pub fn reuse(layout: &TileLayout, geometry: TileGeometry) -> TileLayout {
+    let step = 1_u16 << (geometry.sequence_superblock_log2 - geometry.superblock_log2);
+    let (columns, rows) = superblocks(geometry);
+    let (mut column_starts, mut row_starts) = if layout.uniform {
+        (
+            uniform_starts(
+                log2(layout.columns()),
+                step,
+                geometry.sequence_superblock_log2,
+                geometry.size.0,
+            ),
+            uniform_starts(
+                log2(layout.rows()),
+                step,
+                geometry.sequence_superblock_log2,
+                geometry.size.1,
+            ),
+        )
+    } else {
+        let scaled = |starts: &[u16]| -> Vec<u16> {
+            starts[..starts.len() - 1]
+                .iter()
+                .map(|&start| start * step)
+                .collect()
+        };
+        (scaled(&layout.column_starts), scaled(&layout.row_starts))
+    };
+    // (A reused non-uniform layout's extent equals the frame's: see
+    // `reusable`.)
+    column_starts.push(columns as u16);
+    row_starts.push(rows as u16);
+    TileLayout {
+        uniform: layout.uniform,
+        column_starts,
+        row_starts,
+    }
 }
 
 /// Parse `tile_info` for a frame of `geometry`.

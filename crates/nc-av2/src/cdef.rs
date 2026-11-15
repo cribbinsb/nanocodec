@@ -137,13 +137,14 @@ impl Strength {
         );
     }
 
-    fn read(bits: &mut BitReader<'_>) -> Result<Self> {
+    /// The coded value (`less_4` flag, then two or six bits).
+    fn read_coded(bits: &mut BitReader<'_>) -> Result<u8> {
         let width = if bits.read_bit()? {
             SHORT_STRENGTH_BITS
         } else {
             STRENGTH_BITS
         };
-        Ok(Self::from_coded(bits.read_bits(width)?))
+        Ok(bits.read_bits(width)? as u8)
     }
 }
 
@@ -322,14 +323,34 @@ impl CdefParams {
             Some(on_skipped) => on_skipped,
             None => bits.read_bit()?,
         };
-        let mut sets = [StrengthSet::OFF; MAX_SETS];
-        for set in &mut sets[..count] {
-            set.luma = Strength::read(bits)?;
-            set.chroma = Strength::read(bits)?;
+        let mut coded = [(0, 0); MAX_SETS];
+        for set in &mut coded[..count] {
+            *set = (Strength::read_coded(bits)?, Strength::read_coded(bits)?);
         }
+        Self::decoded(damping, &coded[..count], on_skipped, single_picture)
+    }
+
+    /// The parameters of a frame header that codes `damping`, the coded
+    /// (luma, chroma) strength of each set and the skip choice, as
+    /// [`CdefParams::read`] reads them (`single_picture`: of a single
+    /// picture, whose one zero set means off).
+    /// # Errors
+    /// Rejects out-of-range values.
+    pub fn decoded(
+        damping: u8,
+        coded: &[(u8, u8)],
+        on_skipped: bool,
+        single_picture: bool,
+    ) -> Result<Self> {
+        let mut sets = [StrengthSet::OFF; MAX_SETS];
+        for (set, &(luma, chroma)) in sets.iter_mut().zip(coded) {
+            set.luma = Strength::from_coded(u32::from(luma));
+            set.chroma = Strength::from_coded(u32::from(chroma));
+        }
+        let count = coded.len();
         let params = Self {
             on_skipped,
-            ..Self::with_sets(damping, &sets[..count])?
+            ..Self::with_sets(damping, &sets[..count.min(MAX_SETS)])?
         };
         // A single picture's one zero set is how it codes "off".
         Ok(

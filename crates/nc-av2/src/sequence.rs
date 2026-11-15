@@ -83,6 +83,9 @@ pub struct Variants {
     pub screen_content: Option<bool>,
     /// See `screen_content`.
     pub integer_mv: Option<bool>,
+    /// Frames are output in coding order (`frame_output_order_flag`
+    /// monotonic); other encoders reorder (hidden frames shown later).
+    pub monotonic_output: bool,
     /// The sequence carries a tile layout (`seq_tile_info_present_flag`,
     /// of one tile: others are rejected); frames reuse it.
     pub tiles: Option<SequenceTiles>,
@@ -106,6 +109,7 @@ impl Variants {
         same_reference_compounds: 0,
         screen_content: Some(false),
         integer_mv: None,
+        monotonic_output: true,
         tiles: None,
     };
 }
@@ -396,6 +400,7 @@ fn sequence(s: &mut Syntax<'_>, h: SequenceHeader) -> Result<SequenceHeader> {
         return Err(DecodeError::Unsupported("AV2 bit depth other than eight"));
     }
     let mut temporal_layers = 1;
+    let mut monotonic_output = true;
     if !single {
         s.fixed(0, 3, "AV2 explicit level conformance record")?;
         s.off("AV2 still picture without single-picture header")?;
@@ -405,7 +410,7 @@ fn sequence(s: &mut Syntax<'_>, h: SequenceHeader) -> Result<SequenceHeader> {
         )? as u8
             + 1;
         s.fixed(0, 3, "AV2 embedded layers")?;
-        s.fixed(1, 1, "AV2 non-monotonic output order")?;
+        monotonic_output = s.field(u32::from(h.variants.monotonic_output), 1)? != 0;
     }
     let width_bits = s.field(32 - (h.max_width - 1).leading_zeros().min(31) - 1, 4)? + 1;
     let height_bits = s.field(32 - (h.max_height - 1).leading_zeros().min(31) - 1, 4)? + 1;
@@ -445,6 +450,7 @@ fn sequence(s: &mut Syntax<'_>, h: SequenceHeader) -> Result<SequenceHeader> {
         same_reference_compounds,
         screen_content,
         integer_mv,
+        monotonic_output,
         tiles: sequence_tiles(s, h.variants.tiles, (max_width, max_height, level))?,
         ..variants
     };

@@ -1,10 +1,12 @@
 //! The AV2 backend of the shared engine ([`Av2Backend`], the only encode
-//! path) and the matching emitted-subset decoder ([`Decoder`]).
+//! path) and the AV2 decoder ([`Decoder`]).
 //!
-//! Supports 8-bit 4:2:0 I/P pictures, every intra mode except chroma-from-luma, lossless/lossy residuals,
-//! skip and quarter-pel motion.
-//! This is a bounded subset, not a general-purpose AV2 decoder; competitive
-//! compression and speed remain unmeasured.
+//! The encoder codes 8-bit 4:2:0 I/P pictures: every intra mode except
+//! chroma-from-luma, lossless/lossy residuals, skip and quarter-pel motion.
+//! The decoder is becoming a general 8-bit 4:2:0 decoder for AV2 as AVM
+//! v1.0.0 implements it ([`general`]): its headers and output order are
+//! complete; its blocks still go through the subset our encoder writes
+//! (docs/handoff/av2.md).
 #![forbid(unsafe_code)]
 
 pub mod obu;
@@ -43,10 +45,9 @@ mod pre_tx_skip;
 mod tile_analysis;
 mod tile_decoder;
 pub use backend::Av2Backend;
-pub use stream::{Decoder, temporal_unit_layer};
+pub use general::decoder::{Decoder, temporal_unit_layer};
 mod intra_edges;
 pub mod intra_modes;
 pub mod motion;
 pub mod mv_refs;
 pub mod prediction;
-pub mod stream;

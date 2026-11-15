@@ -1,6 +1,6 @@
 //! Bounded hostile-packet checks for the stateful native decoder.
 //! All fixtures are tiny in-memory pictures; no external decoder or fuzz runtime.
-use nc_av2::{Av2Backend, obu, sequence, stream};
+use nc_av2::{Av2Backend, Decoder, obu, sequence};
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides, StreamSignal};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -69,7 +69,7 @@ impl Fixture {
     /// Such packets are allowed to succeed. Every rejection must be transactional:
     /// a subsequent valid P frame must still reconstruct against the original key.
     fn check(&self, packet: &[u8], must_reject: bool) -> bool {
-        let mut decoder = stream::Decoder::default();
+        let mut decoder = Decoder::default();
         decoder.decode_ref(&self.key).unwrap();
         let result = catch_unwind(AssertUnwindSafe(|| decoder.decode_ref(packet).map(|_| ())));
         assert!(result.is_ok(), "decoder panicked on {} bytes", packet.len());
@@ -225,7 +225,7 @@ fn hostile_framing_layers_dimensions_and_post_picture_errors_are_transactional()
         fixture.check(&packet, true);
     }
     // A missing-reference error must not prevent later normal startup.
-    let mut decoder = stream::Decoder::default();
+    let mut decoder = Decoder::default();
     assert!(decoder.decode_ref(&fixture.forward).is_err());
     decoder.decode_ref(&fixture.key).unwrap();
     equal_pixels(

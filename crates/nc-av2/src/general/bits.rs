@@ -19,6 +19,66 @@ pub fn uniform(bits: &mut BitReader<'_>, count: u32) -> Result<u32> {
     })
 }
 
+/// `value` coded relative to `reference` in `0..count` (AV2 §4.11
+/// `inverse_recenter`).
+fn inverse_recenter(reference: u32, value: u32) -> u32 {
+    if value > reference << 1 {
+        value
+    } else if value & 1 == 0 {
+        (value >> 1) + reference
+    } else {
+        reference - ((value + 1) >> 1)
+    }
+}
+
+/// A value in `0..count` coded as a sub-exponential code with first group
+/// width `k`, recentred on `reference` (dav2d `dav2d_get_bits_subexp_u`,
+/// AVM `avm_rb_read_primitive_refsubexpfin`).
+/// # Errors
+/// Truncation.
+pub fn subexp(bits: &mut BitReader<'_>, reference: u32, count: u32, k: u32) -> Result<u32> {
+    let mut value = 0;
+    for group in 0.. {
+        let width = if group == 0 { k } else { k + group - 1 };
+        let size = 1 << width;
+        if count <= value + 3 * size {
+            let remaining = count - value;
+            if remaining > 1 {
+                value += uniform(bits, remaining)?;
+            }
+            break;
+        }
+        if !bits.read_bit()? {
+            value += bits.read_bits(width)?;
+            break;
+        }
+        value += size;
+    }
+    Ok(if reference * 2 <= count {
+        inverse_recenter(reference, value)
+    } else {
+        count - 1 - inverse_recenter(count - 1 - reference, value)
+    })
+}
+
+/// A signed value in `-(count - 1)..count` coded with [`subexp`] around
+/// `reference` (dav2d `dav2d_get_bits_subexp`).
+/// # Errors
+/// Truncation.
+pub fn signed_subexp(bits: &mut BitReader<'_>, reference: i32, count: u32) -> Result<i32> {
+    let offset = count as i32 - 1;
+    let value = subexp(
+        bits,
+        (reference + offset) as u32,
+        count + offset as u32,
+        SIGNED_SUBEXP_K,
+    )?;
+    Ok(value as i32 - offset)
+}
+
+/// First group width of [`signed_subexp`].
+const SIGNED_SUBEXP_K: u32 = 3;
+
 /// A two's-complement literal of `width` bits (dav2d `dav2d_get_sbits`).
 /// # Errors
 /// Truncation.

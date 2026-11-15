@@ -406,13 +406,39 @@ impl Decoder {
                 }))
             }
             Self::Av2(decoder) => {
-                decoder.decode_shown(packet)?;
-                let shown = decoder.shown().expect("a decoded picture is shown");
-                Ok(Some(Shown::view(shown, 3)))
+                // Written straight from the decoder's picture. A unit may
+                // show nothing (hidden frames) or more ([`Decoder::more`]).
+                decoder.decode_unit(packet)?;
+                Ok(Self::next_av2(decoder))
             }
             Self::H264(decoder) => decoder.decode(packet).map(Shown::whole).map(Some),
             Self::Hevc(decoder) => decoder.decode(packet).map(Shown::whole).map(Some),
             Self::Vvc(decoder) => decoder.decode(packet).map(Shown::whole).map(Some),
+        }
+    }
+
+    /// The next picture of the AV2 output queue.
+    fn next_av2(decoder: &mut nc_av2::Decoder) -> Option<Shown<'_>> {
+        if !decoder.next_output() {
+            return None;
+        }
+        let shown = decoder.shown().expect("a decoded picture is shown");
+        Some(Shown::view(shown, 3))
+    }
+
+    /// A further picture the last packet shows (AV2 temporal units may
+    /// release several), or after [`Decoder::finish`] one still due.
+    pub(crate) fn more(&mut self) -> Option<Shown<'_>> {
+        match self {
+            Self::Av2(decoder) => Self::next_av2(decoder),
+            _ => None,
+        }
+    }
+
+    /// End of stream: AV2 queues the hidden frames still due for output.
+    pub(crate) fn finish(&mut self) {
+        if let Self::Av2(decoder) = self {
+            decoder.flush();
         }
     }
 
@@ -491,9 +517,13 @@ fn decode_stream_with_op<R: BufRead>(
     match codec {
         Codec::Av2 if !starts_with_ivf_signature(input)? => {
             decode_av2_obu_stream(&mut decoder, input, &mut shown, output)?;
+            decoder.finish();
+            write_more(&mut decoder, &mut shown, output)?;
         }
         Codec::Av1 | Codec::Vp9 | Codec::Av2 => {
             decode_ivf_stream(&mut decoder, codec, all_layers, input, &mut shown, output)?;
+            decoder.finish();
+            write_more(&mut decoder, &mut shown, output)?;
         }
         Codec::Hevc => {
             let Decoder::Hevc(hevc) = &mut decoder else {
@@ -601,6 +631,20 @@ fn decode_av2_obu_stream<R: BufRead>(
             *shown += 1;
             output(&frame)?;
         }
+        write_more(decoder, shown, output)?;
+    }
+    Ok(())
+}
+
+/// Write the further pictures the last packet released (AV2).
+fn write_more(
+    decoder: &mut Decoder,
+    shown: &mut u64,
+    output: &mut impl FnMut(&Shown) -> Result<(), String>,
+) -> Result<(), String> {
+    while let Some(frame) = decoder.more() {
+        *shown += 1;
+        output(&frame)?;
     }
     Ok(())
 }
@@ -640,6 +684,7 @@ fn decode_ivf_stream<R: BufRead>(
             output(&frame)?;
             spare.extend(frame.into_owned());
         }
+        write_more(decoder, shown, output)?;
         for picture in spare {
             decoder.recycle(picture);
         }

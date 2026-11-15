@@ -97,6 +97,13 @@ impl DeblockParams {
         Ok(params)
     }
 
+    /// Parameters as a frame header codes them (offsets of any
+    /// `df_par_bits` width, unlike [`DeblockParams::new`]'s encoder range).
+    #[must_use]
+    pub fn decoded(deltas: [Option<i8>; 4]) -> Self {
+        Self { deltas }
+    }
+
     /// The offset of `channel`, or `None` if it is off.
     #[must_use]
     pub fn delta(self, channel: FilterChannel) -> Option<i8> {

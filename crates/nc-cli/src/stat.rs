@@ -133,7 +133,7 @@ fn vvc(data: &[u8]) -> Result<StreamStats, String> {
 
 /// AV2 in IVF: every temporal unit.
 fn av2(data: &[u8]) -> Result<StreamStats, String> {
-    let mut decoder = nc_av2::stream::Decoder::default();
+    let mut decoder = nc_av2::Decoder::default();
     decoder.collect_stats(StreamStats::default());
     read_ivf(&mut Cursor::new(data), |_, frame| {
         decoder

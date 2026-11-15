@@ -2,7 +2,7 @@
 //! bit-exact, and each frame's coding blocks tile the picture.
 #![cfg(feature = "analysis")]
 
-use nc_av2::{Av2Backend, stream};
+use nc_av2::{Av2Backend, Decoder};
 use nc_common::stream_stats::{Pred, RecordKind, StreamStats, keys};
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides, StreamSignal};
@@ -40,7 +40,7 @@ fn analysis_leaves_decoding_unchanged_and_tiles_each_frame() {
         params: ParamOverrides::default().coding_every_frame(),
     };
     let mut encoder = Encoder::<Av2Backend>::new(config).unwrap();
-    let mut decoder = stream::Decoder::default();
+    let mut decoder = Decoder::default();
     decoder.collect_stats(StreamStats::default());
     for phase in 0..FRAMES {
         let packet = encoder.encode(&picture(phase)).data;

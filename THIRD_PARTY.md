@@ -625,8 +625,15 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   8-bit 4:2:0 streams): `sequence.rs` and `tiles.rs` from `src/obu.c`
   (`parse_seq_hdr`, `parse_tile_info`, `calc_uniform_tiles`), `bits.rs` from
   `src/getbits.c`, `references.rs` from `src/obu.c` (`get_ref_frames`,
-  `derive_pri_sec_ref`). Where dav2d and AVM v1.0.0 differ (the layer
-  dependency maps of the sequence header), AVM is followed.
+  `derive_pri_sec_ref`), `frame_header.rs` and `frame_header/` from
+  `src/obu.c` (`parse_frame_hdr` with `read_frame_size`,
+  `find_tip_ref_frames`, `parse_tile_info_frmhdr` and `rescale_matrix`;
+  the non-separable Wiener dictionary and tap ranges, `dav2d_div_recip`
+  and `dav2d_ccso_quant_sz` from `src/tables.c`), `output.rs` from
+  `src/lib.c` (`dav2d_queue_output`, `queue_flush`), `bits.rs`'s
+  sub-exponential codes from `src/getbits.c`. Where dav2d and AVM v1.0.0
+  differ (the layer dependency maps of the sequence header; a repeated
+  output order, which AVM rejects and dav2d drops), AVM is followed.
 
 ## VVenC — BSD-3-Clause-Clear
 

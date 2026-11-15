@@ -915,7 +915,9 @@ impl BrowserDecoder {
             DecoderKind::Hevc(d) => d.decode_shown(packet).map(|()| true),
             DecoderKind::Av1(d) => d.decode_and_show(packet),
             DecoderKind::Vp9(d) => d.decode_and_show(packet),
-            DecoderKind::Av2(d) => d.decode_shown(packet).map(|()| true),
+            // A unit may hold only hidden frames; the player shows the
+            // first picture a unit releases (our encoder's release one).
+            DecoderKind::Av2(d) => d.decode_unit(packet).map(|()| d.next_output()),
             DecoderKind::Vvc(d) => d.decode_shown(packet).map(|()| true),
         };
         self.last_shown = matches!(shown, Ok(true));

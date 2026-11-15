@@ -99,4 +99,5 @@ def main():
         HASHES.write_text("".join(lines))
 
 
-main()
+if __name__ == "__main__":
+    main()
