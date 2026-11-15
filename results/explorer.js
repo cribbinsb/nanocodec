@@ -144,6 +144,11 @@ function render(data, root) {
   const view = data.views.find((v) => v.id === viewId());
   if (view.rate_mode === 'qp') state.platform = 'x86';  // the lens timed the PC only
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
+  for (const b of root.querySelectorAll('[data-control="platform"] button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.value === state.platform));
+    b.disabled = view.rate_mode === 'qp' && b.dataset.value !== 'x86';
+    b.title = b.disabled ? 'The fixed-QP run was timed on the PC only' : '';
+  }
   for (const [name, value] of [['clipset', state.clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
@@ -254,9 +259,9 @@ function controls(data, root) {
     ], state.mode, (v) => { state.mode = v; rerender(); })),
     control('Metric', withData('metric', segmented('Metric', Object.keys(SHORT).map((m) => ({ value: m, label: SHORT[m] })),
       state.metric, (v) => { state.metric = v; rerender(); }))),
-    control('Speed on', segmented('Platform', [
+    control('Speed on', withData('platform', segmented('Platform', [
       { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'PC (x86)' },
-    ], state.platform, (v) => { state.platform = v; rerender(); })),
+    ], state.platform, (v) => { state.platform = v; rerender(); }))),
     control('Codec', codecSelect),
     control('Preset', presetSelect),
   );
