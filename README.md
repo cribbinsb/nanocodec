@@ -97,6 +97,7 @@ One preset ladder for every codec, chosen with `--codec X --preset NAME`:
 
 | Preset | Codecs | Preset file |
 |---|---|---|
+| `slow` | HEVC | `presets/<codec>/slow.toml` |
 | `medium` (the default when no `--preset` is given) | all six | built in (each codec's Default) |
 | `fast` | all six | `presets/<codec>/fast.toml` |
 | `faster` | H.264, HEVC, AV1, VP9 | `presets/<codec>/faster.toml` |
@@ -104,8 +105,8 @@ One preset ladder for every codec, chosen with `--codec X --preset NAME`:
 
 The names rank our own presets for each codec relative to that codec's Default (`medium`). They are **not**
 speed-equivalent to x264's presets of the same name, and the ladders of different codecs do not line up with
-each other; the [results pages](docs/results/README.md) give absolute speeds. `slow` is reserved for a quality
-preset that is not shipped yet.
+each other; the [results pages](docs/results/README.md) give absolute speeds. `slow` is the quality-first rung:
+more compression for about 1.5-2.5x the Default's CPU, still real time and low delay.
 
 Spatial SVC (AV1 and VP9) is a mode, not a speed: `--scalability L2T1` or `L3T1` (also L2T3, L3T3 and the
 `_KEY` variants) with `--preset medium` or `--preset fast`, from `presets/<codec>/{l2,l3}-{medium,fast}.toml`.
@@ -125,7 +126,7 @@ Old names (2026-11-15 and earlier) are rejected with a list of the new ones; the
 | `av1-svc3`, `vp9-svc3` | `--scalability L3T1 --preset medium` |
 | `av1-svc3-fast`, `vp9-svc3-fast` | `--scalability L3T1 --preset fast` |
 | `h264-balanced` | removed (a stale snapshot of an old H.264 Default) |
-| `hevc-better` | removed (tuned against a much older Default; the `slow` work replaces it) |
+| `hevc-better` | `--preset slow` (the old file was tuned against a much older Default) |
 
 ## Licence and patents
 

@@ -91,7 +91,10 @@ main() {
         base=$(git rev-parse "refs/heads/$target")
         git rebase --quiet "$base" || { git rebase --abort 2>/dev/null || true
             die "rebase conflict with $target: rebase, resolve it, then run land.sh again"; }
-        [[ "$(git rev-parse HEAD)" != "$base" ]] || die "nothing to land: $branch equals $target"
+        if [[ "$(git rev-parse HEAD)" == "$base" ]]; then
+            printf '== nothing to land: %s is already on %s\n' "$branch" "$target"
+            exit 0
+        fi
         if [[ -z "$checked_base" ]]; then
             printf '== land %s on %s %s\n' "$branch" "$target" "${base:0:9}"
             guard_warning "$base"

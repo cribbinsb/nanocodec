@@ -25,8 +25,8 @@
 <main>
   <h1>Presets and tuning</h1>
   <p class="lede">A preset is a set of encoder parameters that trades compression for speed. The presets form one
-    ladder, the same names for every codec: <code>veryfast</code>, <code>faster</code>, <code>fast</code> and
-    <code>medium</code>, fastest first.</p>
+    ladder, the same names for every codec: <code>veryfast</code>, <code>faster</code>, <code>fast</code>,
+    <code>medium</code> and <code>slow</code>, fastest first.</p>
 
   <h2 id="default">What the Default is</h2>
   <ul>
@@ -36,8 +36,10 @@
     <li>The faster rungs switch off or narrow coding tools and searches, each one saving CPU for some compression.
       How much, per codec and machine, is on the <a href="../results/speed.html">speed results</a>.</li>
     <li>The names are relative to our own Default for each codec: our <code>veryfast</code> is not as fast as
-      x264's, nor our <code>medium</code> as slow as x264's. <code>slow</code> is reserved for a quality-first
-      rung that no codec has yet.</li>
+      x264's, nor our <code>medium</code> as slow as x264's.</li>
+    <li><code>slow</code> is the quality-first rung: Default plus the work the Default limits for speed (a
+      second reference, wider trellis and refinement searches), for about 1.5-2.5x its CPU. It stays real time
+      and low delay: P frames only, no lookahead.</li>
   </ul>
 
   <h2 id="ladder">Which codec has which rung</h2>

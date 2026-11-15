@@ -110,7 +110,7 @@ const ENCODE_GROUPS: &[GroupDoc] = &[
             ),
             opt(
                 "--preset",
-                "veryfast|faster|fast|medium",
+                "veryfast|faster|fast|medium|slow",
                 "A rung of the speed ladder; medium is the codec's Default and is used without \
                  --preset. Not every codec has every rung (`nanocodec params --codec C`); with \
                  --scalability L2*/L3* a rung takes the codec's file for that many layers.",

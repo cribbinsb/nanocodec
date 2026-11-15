@@ -124,7 +124,7 @@ pub fn listing(codec: Option<&str>) -> Result<String, String> {
     );
     let _ = writeln!(
         out,
-        "# presets: {} (medium = the codec's Default; slow is reserved, not shipped yet)",
+        "# presets: {} (medium = the codec's Default)",
         codec
             .map_or(Speed::LADDER.to_vec(), speeds)
             .iter()

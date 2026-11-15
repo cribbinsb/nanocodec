@@ -1,9 +1,10 @@
 //! The built-in presets: one codec-independent speed ladder, `veryfast`,
-//! `faster`, `fast` and `medium`, with x264's familiar names. `medium` is each
-//! codec's Default (its backend `DEFAULT_PARAMS` over the engine defaults, no
-//! overrides) and what an encode gets without a preset; a faster rung is a
-//! parameter file in the repository's `presets/<codec>/` directory, built in
-//! here. `slow` is reserved for a quality-first rung no codec has yet.
+//! `faster`, `fast`, `medium` and `slow`, with x264's familiar names. `medium`
+//! is each codec's Default (its backend `DEFAULT_PARAMS` over the engine
+//! defaults, no overrides) and what an encode gets without a preset; every
+//! other rung is a parameter file in the repository's `presets/<codec>/`
+//! directory, built in here. `slow` is the quality-first rung: more
+//! compression for more CPU, still real time and low delay.
 //!
 //! The names are relative to our own Default for each codec: `veryfast` here is
 //! not as fast as x264's `veryfast`, nor `medium` as slow as x264's `medium`.
@@ -33,11 +34,20 @@ pub enum Speed {
     Fast,
     /// The codec's Default: no overrides.
     Medium,
+    /// The quality-first rung: more compression than the Default for more
+    /// CPU (about 1.5-2.5x on the Jetson), still real time and low delay.
+    Slow,
 }
 
 impl Speed {
     /// Every rung, fastest first.
-    pub const LADDER: [Self; 4] = [Self::Veryfast, Self::Faster, Self::Fast, Self::Medium];
+    pub const LADDER: [Self; 5] = [
+        Self::Veryfast,
+        Self::Faster,
+        Self::Fast,
+        Self::Medium,
+        Self::Slow,
+    ];
 
     /// The rung's name (`--preset NAME`).
     #[must_use]
@@ -47,6 +57,7 @@ impl Speed {
             Self::Faster => "faster",
             Self::Fast => "fast",
             Self::Medium => "medium",
+            Self::Slow => "slow",
         }
     }
 
@@ -86,6 +97,7 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(H264, 1, Veryfast, include_str!("../../../presets/h264/veryfast.toml")),
     preset_file!(H264, 1, Faster, include_str!("../../../presets/h264/faster.toml")),
     preset_file!(H264, 1, Fast, include_str!("../../../presets/h264/fast.toml")),
+    preset_file!(Hevc, 1, Slow, include_str!("../../../presets/hevc/slow.toml")),
     preset_file!(Hevc, 1, Faster, include_str!("../../../presets/hevc/faster.toml")),
     preset_file!(Hevc, 1, Fast, include_str!("../../../presets/hevc/fast.toml")),
     preset_file!(Vvc, 1, Fast, include_str!("../../../presets/vvc/fast.toml")),
@@ -126,7 +138,7 @@ impl fmt::Display for PresetError {
         match self {
             Self::UnknownName(name) => write!(
                 f,
-                "unknown preset '{name}' (presets: {}; 'slow' is reserved and not shipped yet)",
+                "unknown preset '{name}' (presets: {})",
                 names(&Speed::LADDER)
             ),
             Self::NotOffered { codec, speed } => write!(
@@ -244,7 +256,7 @@ mod tests {
         assert!(
             unknown
                 .to_string()
-                .contains("veryfast, faster, fast, medium")
+                .contains("veryfast, faster, fast, medium, slow")
         );
         assert!(preset_params(Codec::H264, 1, "default").is_err());
         let missing = preset_params(Codec::Vvc, 1, "veryfast").unwrap_err();
@@ -252,6 +264,9 @@ mod tests {
             missing.to_string(),
             "vvc has no 'veryfast' preset (its presets: fast, medium)"
         );
-        assert_eq!(speeds(Codec::H264), Speed::LADDER);
+        assert_eq!(
+            speeds(Codec::Hevc),
+            [Speed::Faster, Speed::Fast, Speed::Medium, Speed::Slow]
+        );
     }
 }

@@ -1,0 +1,35 @@
+# HEVC slow (`--preset slow`): the top of the ladder, Default plus the work
+# Default limits for speed; still real time and low delay (P frames only, no
+# lookahead).
+# Measurements: docs/handoff/presets.md "Slow presets".
+#
+# The shared slow bundle (the same lines in every codec's slow preset):
+# the last high-quality frame as a second reference on every frame with the
+# full mode decision (`refs.second`, `refs.second_full`; the unified plan,
+# which offers it on high-quality frames only, steps aside), four trellis
+# survivors per scan position, and the sub-sample refinement without its
+# early exits (exact ranking of every candidate, both seeds refined).
+structure.unified = 0
+refs.second = 1
+refs.second_full = 1
+quant.trellis_states = 4
+decision.exact_rank_margin = 0
+decision.seed_refine_ratio = 0
+decision.codec_subpel_seed_lambdas = 0
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+# HEVC: Default's encoder-side approximations off (exact staged transforms,
+# exact pre-transform zero bound, SAO statistics on every row, the full
+# angular P-frame intra search), its intra/inter transform-split and NxN
+# gates open, and the fifth merge candidate.
+hevc.fast_forward16 = 0
+hevc.fast_forward32 = 0
+hevc.pre_transform_zero_scale = 1
+hevc.sao_stats_row_step = 1
+hevc.coarse_inter_intra = 0
+hevc.inter_tu_split_spread = 1
+hevc.intra_nxn_min_cost = 0
+hevc.intra_tu_split_min_cost = 0
+hevc.intra_tu_split_spread = 1
+hevc.merge_candidates = 5
+quant.trellis_chroma = 0.25

@@ -598,6 +598,7 @@ fn hevc_presets_recover() {
         DEFAULT,
         include_str!("../../../presets/hevc/fast.toml"),
         include_str!("../../../presets/hevc/faster.toml"),
+        include_str!("../../../presets/hevc/slow.toml"),
     ] {
         check_preset::<nc_hevc::HevcBackend>(Codec::Hevc, preset, &FLAT_RECOVERY);
     }
