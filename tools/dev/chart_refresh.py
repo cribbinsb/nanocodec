@@ -150,6 +150,14 @@ CLIPSET_BUILDS = RESULTS + "/bd-vs-speed-{stem}-builds.json"
 #: The held-out chart's rented sessions: streams (bitstreams, logs) under the data root,
 #: scoring sessions side by side and each one's limit (aws_heldout_chart.py).
 CLIPSET_STREAMS = DATA / "work" / "heldout-chart" / "streams-{stem}"
+#: The held-out charts the README's headline facts come from (nceval.site), refreshed
+#: after the main chart with --heldout, each also rendered against the PSNR-tuned
+#: x264 zero line the README quotes.
+HELDOUT_CLIPSETS = (DATA / "clips" / "independent_fresh_2026-11-13.json",
+                    DATA / "clips" / "independent_2026-11-13.json")
+HELDOUT_TUNED_ANCHOR = "x264-medium~psnr"
+#: Families whose streams are compared at once (each check encodes on one CPU).
+STREAM_CHECK_WORKERS = 3
 CLOUD_SESSIONS = 2
 CLOUD_SCORE_MINUTES = 120
 PLAN_FILE = f"{RESULTS}/bd-vs-speed-plan.json"
@@ -453,18 +461,28 @@ class Refresh:
         """Move each stale family whose streams at COMMIT equal its recorded build's
         from the measured families to the retimed ones."""
         new = self.build_dir(self.commit)
-        for family in list(self.stale):
+
+        def unchanged(family: str) -> bool:
             old = self.build_dir(self.record["families"][family])
-            if self.args.dry_run or not (old / SCORING_BINARY).is_file():
+            return (not self.args.dry_run and (old / SCORING_BINARY).is_file()
+                    and stream_check.identical(family, (old / SCORING_BINARY, old / "presets"),
+                                               (new / SCORING_BINARY, new / "presets"),
+                                               REPO / PLAN_FILE))
+        # Side by side: one at a time the checks of 18 families took 10 min.
+        with ThreadPoolExecutor(STREAM_CHECK_WORKERS) as pool:
+            same = dict(zip(self.stale, pool.map(unchanged, self.stale)))
+        timed_on = self.record.get("timed_on", {})
+        for family in [f for f, equal in same.items() if equal]:
+            self.stale.remove(family)
+            self.targets.remove(family)
+            timed_build = timed_on.get(family, self.record["families"][family])
+            if sources_equal(timed_build, self.commit, speed_inputs(family)):
+                self.say(f"  {family}: streams and its code unchanged since {timed_build}: "
+                         f"kept as it is")
                 continue
-            if stream_check.identical(family, (old / SCORING_BINARY, old / "presets"),
-                                      (new / SCORING_BINARY, new / "presets"),
-                                      REPO / PLAN_FILE):
-                self.say(f"  {family}: streams unchanged since {old.name}: "
-                         f"its quality points are kept, it is only timed")
-                self.stale.remove(family)
-                self.targets.remove(family)
-                self.retimed.append(family)
+            self.say(f"  {family}: streams unchanged since {self.record['families'][family]}: "
+                     f"its quality points are kept, it is only timed")
+            self.retimed.append(family)
         self.timed = self.targets + self.retimed
 
     def drop_unused_builds(self) -> None:
@@ -788,6 +806,24 @@ def build_tree_lock(tree: Path):
         yield
 
 
+#: The preset rung of a family named without one (presets/<codec>/medium.toml).
+DEFAULT_RUNG = "medium"
+#: The crates every family's encode runs (the engine, kernels and front end).
+SHARED_SPEED_CRATES = ("nc-common", "nc-dsp", "nc-analysis", "nc-encoder", "nc-cli")
+
+
+def speed_inputs(family: str) -> tuple[str, ...]:
+    """What a family's encode speed depends on: the shared crates, its own codec's
+    crate, its preset file and the build manifests. A change elsewhere (another
+    codec) leaves its time as it is, so it is not timed again (x86 timing took
+    36 min of a refresh)."""
+    rung = family.split("@")[1] if "@" in family else DEFAULT_RUNG
+    codec = chart_sanity.codec_of(family)
+    return (*(f"crates/{c}" for c in (*SHARED_SPEED_CRATES, f"nc-{codec}")),
+            "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
+            f"presets/{codec}/{rung}.toml")
+
+
 def sources_equal(old: str, new: str, inputs: tuple[str, ...] = BUILD_INPUTS) -> bool:
     """Whether two commits build the same encoder (no change under `inputs`);
     False when `old` is not a commit (a hand-made build)."""
@@ -846,6 +882,21 @@ def merge_timing(stored_path: Path, records: list[Path], rescale: bool) -> None:
     stored_path.write_text(json.dumps(stored, indent=1) + "\n")
 
 
+def refresh_heldout(args: argparse.Namespace) -> None:
+    """Each held-out chart refreshed for the main refresh's families (a family whose
+    streams did not change keeps its points: Refresh.retime_unchanged), then rendered
+    against HELDOUT_TUNED_ANCHOR too."""
+    families = ",".join(f for f in (args.families, args.retime) if f)
+    for clipset in HELDOUT_CLIPSETS:
+        common = [sys.executable, str(Path(__file__).resolve()), args.commit,
+                  "--clipset", str(clipset), "--cloud-budget", str(args.cloud_budget),
+                  *(["--dry-run"] if args.dry_run else [])]
+        print(f"== held-out chart {clipset.stem}", flush=True)
+        subprocess.run([*common, "--families", families, "--metrics-only"], check=True)
+        subprocess.run([*common, "--families", families, "--from", "render",
+                        "--anchor", HELDOUT_TUNED_ANCHOR], check=True)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -881,12 +932,18 @@ def main() -> None:
                    help="with --clipset: start its build record (every family on COMMIT)")
     p.add_argument("--cloud-budget", type=float, default=8.0,
                    help="with --clipset: USD cap over all rented sessions")
+    p.add_argument("--heldout", action="store_true",
+                   help="after the main chart, refresh the held-out charts (HELDOUT_CLIPSETS) "
+                        "for the same families, incrementally, so the README's headline "
+                        "facts follow")
     p.add_argument("--dry-run", action="store_true", help="print the steps' commands only")
     args = p.parse_args()
     if not (args.families or args.rescore or args.retime):
         p.error("give --families, --retime, --rescore or a combination")
     began = time.monotonic()
     Refresh(args).execute(args.start)
+    if args.heldout and not args.clipset:
+        refresh_heldout(args)
     minutes, seconds = divmod(round(time.monotonic() - began), 60)
     print(f"done in {minutes}:{seconds:02d}: commit {RESULTS} and "
           f"{builds_file(args.clipset)}", flush=True)

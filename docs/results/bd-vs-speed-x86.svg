@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1170 886" width="1170" height="886" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">
-<rect width="1170" height="886" fill="#fcfcfb"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1170 898" width="1170" height="898" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12">
+<rect width="1170" height="898" fill="#fcfcfb"/>
 <text x="70" y="20" font-size="15" font-weight="600" fill="#0b0b0b">Bitrate vs single-threaded encode speed: one x86-64 core (AMD Ryzen 9 5950X)</text>
 <text x="70" y="35" fill="#52514e"></text>
 <line x1="70" x2="970" y1="698.8" y2="698.8" stroke="#e4e3df" stroke-width="1"/>
@@ -40,30 +40,30 @@
 <text x="867.3" y="756" text-anchor="middle" fill="#52514e">500</text>
 <text x="520.0" y="776" text-anchor="middle" fill="#0b0b0b">single-thread encode fps, 720p, one Ryzen 9 5950X core (log scale; faster →)</text>
 <text transform="translate(18,390.0) rotate(-90)" text-anchor="middle" fill="#0b0b0b">BD-rate vs x264 medium (J composite; lower is better)</text>
-<polyline points="889.0,194.0 743.9,420.3 706.7,441.0 666.3,478.0 664.7,540.9 651.7,583.7 636.3,585.7 623.2,596.9 615.9,618.0 591.1,628.5 524.3,651.9 517.9,663.9 449.9,672.0 417.0,675.0" fill="none" stroke="#52514e" stroke-width="1.5" stroke-dasharray="5 4"/>
+<polyline points="889.0,194.0 739.3,420.3 703.7,441.0 670.8,478.0 647.3,540.9 638.1,562.2 636.8,583.7 627.4,585.7 620.0,596.9 607.9,618.0 593.0,628.5 533.9,631.8 522.4,652.8 502.0,663.9 454.9,672.0 395.9,676.7" fill="none" stroke="#52514e" stroke-width="1.5" stroke-dasharray="5 4"/>
 <line x1="385.3" y1="392.6" x2="385.3" y2="442.8" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
 <line x1="251.4" y1="590.8" x2="251.4" y2="597.3" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
 <line x1="151.0" y1="600.2" x2="151.0" y2="617.4" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
 <line x1="509.2" y1="421.8" x2="509.2" y2="425.8" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
 <line x1="385.3" x2="385.3" y1="392.6" y2="392.6" stroke="#eb6834" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="584.5" x2="584.5" y1="643.9" y2="463.8" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="666.3" x2="666.3" y1="609.2" y2="411.2" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="706.7" x2="706.7" y1="597.6" y2="360.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="743.9" x2="743.9" y1="583.2" y2="338.7" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="524.3" x2="524.3" y1="678.8" y2="615.7" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="615.9" x2="615.9" y1="644.1" y2="581.4" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="651.7" x2="651.7" y1="627.3" y2="544.9" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="517.9" x2="517.9" y1="709.4" y2="617.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="591.1" x2="591.1" y1="650.3" y2="581.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="623.2" x2="623.2" y1="641.5" y2="554.4" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="484.8" x2="484.8" y1="679.2" y2="601.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="519.1" x2="519.1" y1="635.8" y2="573.3" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="636.3" x2="636.3" y1="623.2" y2="536.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="664.7" x2="664.7" y1="617.0" y2="483.5" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="449.9" x2="449.9" y1="706.3" y2="628.5" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="494.5" x2="494.5" y1="657.3" y2="590.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="417.0" x2="417.0" y1="705.8" y2="630.8" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="517.7" x2="517.7" y1="660.0" y2="592.7" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="579.5" x2="579.5" y1="643.1" y2="464.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="670.8" x2="670.8" y1="609.2" y2="411.2" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="703.7" x2="703.7" y1="597.6" y2="360.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="739.3" x2="739.3" y1="583.2" y2="338.7" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="522.4" x2="522.4" y1="680.3" y2="616.9" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="607.9" x2="607.9" y1="644.1" y2="581.4" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="636.8" x2="636.8" y1="627.3" y2="544.9" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="502.0" x2="502.0" y1="709.4" y2="617.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="593.0" x2="593.0" y1="650.3" y2="581.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="620.0" x2="620.0" y1="641.5" y2="554.4" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="479.4" x2="479.4" y1="679.2" y2="601.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="523.0" x2="523.0" y1="635.8" y2="573.3" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="627.4" x2="627.4" y1="623.2" y2="536.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="647.3" x2="647.3" y1="617.0" y2="483.5" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="454.9" x2="454.9" y1="695.3" y2="633.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="513.8" x2="513.8" y1="657.3" y2="590.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="395.9" x2="395.9" y1="706.0" y2="635.3" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="533.9" x2="533.9" y1="660.0" y2="592.7" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="710.1" x2="710.1" y1="534.7" y2="73.8" stroke="#eb6834" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="889.0" x2="889.0" y1="400.1" y2="70.6" stroke="#eb6834" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="654.2" x2="654.2" y1="490.7" y2="317.7" stroke="#eb6834" stroke-opacity="0.45" stroke-width="2"/>
@@ -84,54 +84,53 @@
 <line x1="509.2" x2="509.2" y1="448.0" y2="395.6" stroke="#eb6834" stroke-opacity="0.45" stroke-width="2"/>
 <g><title>x264 medium: BD-J +0.0%, BD-PSNR +0.0%, BD-VMAF v1 +0.0%, 67.6 fps, 1.00× x264 medium</title><rect x="379.3" y="386.6" width="12" height="12" fill="#eb6834" stroke="#eb6834" stroke-width="2"/></g>
 <text x="395.3" y="382.6" text-anchor="start" fill="#0b0b0b">x264 medium</text>
-<g><title>H.264: BD-J -25.3%, BD-PSNR -27.0%, BD-VMAF v1 -32.8%, 154.5 fps, 2.29× x264 medium</title><circle cx="584.5" cy="521.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="574.5" y="525.9" text-anchor="end" fill="#0b0b0b" font-weight="600">H.264</text>
-<g><title>H.264 Fast: BD-J -16.7%, BD-PSNR -18.3%, BD-VMAF v1 -27.1%, 217.0 fps, 3.21× x264 medium</title><circle cx="666.3" cy="478.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="666.3" y1="470.0" x2="650.3" y2="457.0" stroke="#52514e" stroke-width="0.75"/>
-<text x="650.3" y="454.0" text-anchor="end" fill="#0b0b0b" font-weight="600">H.264 Fast</text>
-<g><title>H.264 Faster: BD-J -9.5%, BD-PSNR -12.1%, BD-VMAF v1 -19.0%, 256.7 fps, 3.80× x264 medium</title><circle cx="706.7" cy="441.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="716.7" y="445.0" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Faster</text>
-<g><title>H.264 Veryfast: BD-J -5.4%, BD-PSNR -7.3%, BD-VMAF v1 -15.3%, 299.6 fps, 4.43× x264 medium</title><circle cx="743.9" cy="420.3" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="753.9" y="424.3" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Veryfast</text>
-<g><title>HEVC: BD-J -50.8%, BD-PSNR -51.4%, BD-VMAF v1 -56.9%, 120.4 fps, 1.78× x264 medium</title><circle cx="524.3" cy="651.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="534.3" y="669.9" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC</text>
-<g><title>HEVC Fast: BD-J -44.2%, BD-PSNR -44.2%, BD-VMAF v1 -51.1%, 176.1 fps, 2.61× x264 medium</title><circle cx="615.9" cy="618.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="615.9" y1="626.0" x2="615.9" y2="654.0" stroke="#52514e" stroke-width="0.75"/>
-<text x="615.9" y="666.0" text-anchor="middle" fill="#0b0b0b" font-weight="600">HEVC Fast</text>
-<g><title>HEVC Faster: BD-J -37.5%, BD-PSNR -35.6%, BD-VMAF v1 -43.2%, 204.3 fps, 3.02× x264 medium</title><circle cx="651.7" cy="583.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="651.7" y1="591.7" x2="667.7" y2="603.7" stroke="#52514e" stroke-width="0.75"/>
-<text x="667.7" y="615.7" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC Faster</text>
-<g><title>AV1: BD-J -53.2%, BD-PSNR -57.1%, BD-VMAF v1 -57.5%, 117.2 fps, 1.73× x264 medium</title><circle cx="517.9" cy="663.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="517.9" y1="655.9" x2="541.9" y2="628.9" stroke="#52514e" stroke-width="0.75"/>
-<text x="541.9" y="625.9" text-anchor="start" fill="#0b0b0b" font-weight="600">AV1</text>
-<g><title>AV1 Fast: BD-J -46.2%, BD-PSNR -47.6%, BD-VMAF v1 -52.8%, 158.9 fps, 2.35× x264 medium</title><circle cx="591.1" cy="628.5" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="591.1" y1="636.5" x2="591.1" y2="678.5" stroke="#52514e" stroke-width="0.75"/>
-<text x="591.1" y="690.5" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV1 Fast</text>
-<g><title>AV1 Faster: BD-J -40.0%, BD-PSNR -40.3%, BD-VMAF v1 -46.6%, 181.4 fps, 2.68× x264 medium</title><circle cx="623.2" cy="596.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="623.2" y1="604.9" x2="655.2" y2="644.9" stroke="#52514e" stroke-width="0.75"/>
-<text x="655.2" y="656.9" text-anchor="start" fill="#0b0b0b" font-weight="600">AV1 Faster</text>
-<g><title>VP9: BD-J -49.4%, BD-PSNR -53.5%, BD-VMAF v1 -52.1%, 102.2 fps, 1.51× x264 medium</title><circle cx="484.8" cy="644.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="484.8" y1="652.7" x2="484.8" y2="680.7" stroke="#52514e" stroke-width="0.75"/>
-<text x="484.8" y="692.7" text-anchor="middle" fill="#0b0b0b" font-weight="600">VP9</text>
-<g><title>VP9 Fast: BD-J -42.9%, BD-PSNR -45.4%, BD-VMAF v1 -47.6%, 117.8 fps, 1.74× x264 medium</title><circle cx="519.1" cy="611.6" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="519.1" y1="603.6" x2="519.1" y2="560.6" stroke="#52514e" stroke-width="0.75"/>
-<text x="519.1" y="557.6" text-anchor="middle" fill="#0b0b0b" font-weight="600">VP9 Fast</text>
-<g><title>VP9 Faster: BD-J -37.8%, BD-PSNR -37.2%, BD-VMAF v1 -44.4%, 191.6 fps, 2.84× x264 medium</title><circle cx="636.3" cy="585.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="636.3" y1="593.7" x2="660.3" y2="619.7" stroke="#52514e" stroke-width="0.75"/>
-<text x="660.3" y="631.7" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Faster</text>
-<g><title>VP9 Veryfast: BD-J -29.1%, BD-PSNR -26.0%, BD-VMAF v1 -40.0%, 215.6 fps, 3.19× x264 medium</title><circle cx="664.7" cy="540.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="674.7" y="544.9" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Veryfast</text>
-<g><title>AV2: BD-J -54.7%, BD-PSNR -58.5%, BD-VMAF v1 -60.5%, 88.4 fps, 1.31× x264 medium</title><circle cx="449.9" cy="672.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="449.9" y1="680.0" x2="449.9" y2="708.0" stroke="#52514e" stroke-width="0.75"/>
-<text x="449.9" y="720.0" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV2</text>
-<g><title>AV2 Fast: BD-J -47.1%, BD-PSNR -48.9%, BD-VMAF v1 -52.5%, 106.4 fps, 1.57× x264 medium</title><circle cx="494.5" cy="632.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="494.5" y1="624.9" x2="478.5" y2="611.9" stroke="#52514e" stroke-width="0.75"/>
-<text x="478.5" y="608.9" text-anchor="end" fill="#0b0b0b" font-weight="600">AV2 Fast</text>
-<g><title>VVC: BD-J -55.3%, BD-PSNR -56.1%, BD-VMAF v1 -61.1%, 77.1 fps, 1.14× x264 medium</title><circle cx="417.0" cy="675.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="407.0" y="679.0" text-anchor="end" fill="#0b0b0b" font-weight="600">VVC</text>
-<g><title>VVC Fast: BD-J -46.9%, BD-PSNR -46.0%, BD-VMAF v1 -53.7%, 117.1 fps, 1.73× x264 medium</title><circle cx="517.7" cy="631.8" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="517.7" y1="623.8" x2="485.7" y2="582.8" stroke="#52514e" stroke-width="0.75"/>
-<text x="485.7" y="579.8" text-anchor="end" fill="#0b0b0b" font-weight="600">VVC Fast</text>
+<g><title>H.264: BD-J -25.4%, BD-PSNR -27.1%, BD-VMAF v1 -32.9%, 151.4 fps, 2.24× x264 medium</title><circle cx="579.5" cy="522.3" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="569.5" y="526.3" text-anchor="end" fill="#0b0b0b" font-weight="600">H.264</text>
+<g><title>H.264 Fast: BD-J -16.7%, BD-PSNR -18.3%, BD-VMAF v1 -27.1%, 221.1 fps, 3.27× x264 medium</title><circle cx="670.8" cy="478.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="670.8" y1="470.0" x2="646.8" y2="443.0" stroke="#52514e" stroke-width="0.75"/>
+<text x="646.8" y="440.0" text-anchor="end" fill="#0b0b0b" font-weight="600">H.264 Fast</text>
+<g><title>H.264 Faster: BD-J -9.5%, BD-PSNR -12.1%, BD-VMAF v1 -19.0%, 253.5 fps, 3.75× x264 medium</title><circle cx="703.7" cy="441.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="713.7" y="445.0" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Faster</text>
+<g><title>H.264 Veryfast: BD-J -5.4%, BD-PSNR -7.3%, BD-VMAF v1 -15.3%, 293.9 fps, 4.35× x264 medium</title><circle cx="739.3" cy="420.3" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="749.3" y="424.3" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Veryfast</text>
+<g><title>HEVC: BD-J -51.0%, BD-PSNR -51.6%, BD-VMAF v1 -57.2%, 119.4 fps, 1.77× x264 medium</title><circle cx="522.4" cy="652.8" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="522.4" y1="660.8" x2="498.4" y2="686.8" stroke="#52514e" stroke-width="0.75"/>
+<text x="498.4" y="698.8" text-anchor="end" fill="#0b0b0b" font-weight="600">HEVC</text>
+<g><title>HEVC Fast: BD-J -44.2%, BD-PSNR -44.2%, BD-VMAF v1 -51.1%, 170.3 fps, 2.52× x264 medium</title><circle cx="607.9" cy="618.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="607.9" y1="626.0" x2="607.9" y2="684.0" stroke="#52514e" stroke-width="0.75"/>
+<text x="607.9" y="696.0" text-anchor="middle" fill="#0b0b0b" font-weight="600">HEVC Fast</text>
+<g><title>HEVC Faster: BD-J -37.5%, BD-PSNR -35.6%, BD-VMAF v1 -43.2%, 192.0 fps, 2.84× x264 medium</title><circle cx="636.8" cy="583.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="636.8" y1="591.7" x2="660.8" y2="617.7" stroke="#52514e" stroke-width="0.75"/>
+<text x="660.8" y="629.7" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC Faster</text>
+<g><title>AV1: BD-J -53.2%, BD-PSNR -57.1%, BD-VMAF v1 -57.5%, 109.7 fps, 1.62× x264 medium</title><circle cx="502.0" cy="663.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="502.0" y1="671.9" x2="518.0" y2="683.9" stroke="#52514e" stroke-width="0.75"/>
+<text x="518.0" y="695.9" text-anchor="start" fill="#0b0b0b" font-weight="600">AV1</text>
+<g><title>AV1 Fast: BD-J -46.2%, BD-PSNR -47.6%, BD-VMAF v1 -52.8%, 160.1 fps, 2.37× x264 medium</title><circle cx="593.0" cy="628.5" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="593.0" y1="636.5" x2="609.0" y2="648.5" stroke="#52514e" stroke-width="0.75"/>
+<text x="609.0" y="660.5" text-anchor="start" fill="#0b0b0b" font-weight="600">AV1 Fast</text>
+<g><title>AV1 Faster: BD-J -40.0%, BD-PSNR -40.3%, BD-VMAF v1 -46.6%, 179.1 fps, 2.65× x264 medium</title><circle cx="620.0" cy="596.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="620.0" y1="604.9" x2="620.0" y2="662.9" stroke="#52514e" stroke-width="0.75"/>
+<text x="620.0" y="674.9" text-anchor="middle" fill="#0b0b0b" font-weight="600">AV1 Faster</text>
+<g><title>VP9: BD-J -49.4%, BD-PSNR -53.5%, BD-VMAF v1 -52.1%, 99.9 fps, 1.48× x264 medium</title><circle cx="479.4" cy="644.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="479.4" y1="636.7" x2="463.4" y2="623.7" stroke="#52514e" stroke-width="0.75"/>
+<text x="463.4" y="620.7" text-anchor="end" fill="#0b0b0b" font-weight="600">VP9</text>
+<g><title>VP9 Fast: BD-J -42.9%, BD-PSNR -45.4%, BD-VMAF v1 -47.6%, 119.7 fps, 1.77× x264 medium</title><circle cx="523.0" cy="611.6" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="523.0" y1="603.6" x2="523.0" y2="560.6" stroke="#52514e" stroke-width="0.75"/>
+<text x="523.0" y="557.6" text-anchor="middle" fill="#0b0b0b" font-weight="600">VP9 Fast</text>
+<g><title>VP9 Faster: BD-J -37.8%, BD-PSNR -37.2%, BD-VMAF v1 -44.4%, 184.7 fps, 2.73× x264 medium</title><circle cx="627.4" cy="585.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="627.4" y1="593.7" x2="659.4" y2="633.7" stroke="#52514e" stroke-width="0.75"/>
+<text x="659.4" y="645.7" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Faster</text>
+<g><title>VP9 Veryfast: BD-J -29.1%, BD-PSNR -26.0%, BD-VMAF v1 -40.0%, 200.5 fps, 2.97× x264 medium</title><circle cx="647.3" cy="540.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="657.3" y="544.9" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Veryfast</text>
+<g><title>AV2: BD-J -54.7%, BD-PSNR -58.6%, BD-VMAF v1 -60.6%, 90.2 fps, 1.34× x264 medium</title><circle cx="454.9" cy="672.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="444.9" y="662.0" text-anchor="end" fill="#0b0b0b" font-weight="600">AV2</text>
+<g><title>AV2 Fast: BD-J -47.1%, BD-PSNR -48.9%, BD-VMAF v1 -52.5%, 115.2 fps, 1.70× x264 medium</title><circle cx="513.8" cy="632.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="513.8" y1="624.9" x2="481.8" y2="583.9" stroke="#52514e" stroke-width="0.75"/>
+<text x="481.8" y="580.9" text-anchor="end" fill="#0b0b0b" font-weight="600">AV2 Fast</text>
+<g><title>VVC: BD-J -55.7%, BD-PSNR -56.5%, BD-VMAF v1 -61.2%, 70.6 fps, 1.05× x264 medium</title><circle cx="395.9" cy="676.7" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="385.9" y="680.7" text-anchor="end" fill="#0b0b0b" font-weight="600">VVC</text>
+<g><title>VVC Fast: BD-J -46.9%, BD-PSNR -46.0%, BD-VMAF v1 -53.7%, 125.2 fps, 1.85× x264 medium</title><circle cx="533.9" cy="631.8" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="543.9" y="635.8" text-anchor="start" fill="#0b0b0b" font-weight="600">VVC Fast</text>
 <g><title>openh264: BD-J +24.6%, BD-PSNR +22.2%, BD-VMAF v1 +21.8%, 260.3 fps, 3.85× x264 medium</title><polygon points="710.1048473470637,273.9977043036886 717.1048473470637,260.9977043036886 703.1048473470637,260.9977043036886" fill="#eb6834" stroke="#eb6834" stroke-width="2"/></g>
 <text x="720.1" y="271.0" text-anchor="start" fill="#0b0b0b">openh264</text>
 <g><title>x264 ultrafast: BD-J +38.9%, BD-PSNR +53.4%, BD-VMAF v1 +8.5%, 547.1 fps, 8.09× x264 medium</title><rect x="883.0" y="188.0" width="12" height="12" fill="#eb6834" stroke="#eb6834" stroke-width="2"/></g>
@@ -213,5 +212,6 @@
 <text x="566" y="822" fill="#0b0b0b">NVENC (RTX 5090 GPU), off scale</text>
 <text x="70" y="844" fill="#52514e">Bars: interquartile range of per-clip BD. Every point is averaged over the same clips (see the table for excluded clips). Hollow: flagged.</text>
 <text x="70" y="860" fill="#52514e">NVENC (RTX 5090 GPU): aggregate encode throughput, 8 parallel streams, frames in GPU memory; GPU time, not CPU, and never on the Pareto front.</text>
-<text x="1160" y="878" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-15, build 730e4e16 (H.264, H.264 Fast, H.264 Faster, HEVC, HEVC Fast, AV1, AV1 Fast, VP9, VP9 Fast, AV2, AV2 Fast, VVC, VVC Fast, AV1 Faster, HEVC Faster, H.264 Veryfast, VP9 Faster, VP9 Veryfast: 478e8249)</text>
+<text x="1160" y="878" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-15, build 730e4e16 (H.264, HEVC, AV1, VP9, AV2, VVC: 43079b05; H.264 Fast, H.264 Faster, HEVC Fast, AV1 Fast, VP9 Fast, AV2 Fast, VVC Fast, AV1 Faster, HEVC Faster, H.264 Veryfast, VP9 Faster,</text>
+<text x="1160" y="890" font-size="10" text-anchor="end" fill="#52514e">VP9 Veryfast: 478e8249); AV1 Fast, AV1 Faster, AV2 Fast, H.264 Fast, H.264 Faster, H.264 Veryfast, HEVC Fast, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast timed on 43079b05 (same streams)</text>
 </svg>

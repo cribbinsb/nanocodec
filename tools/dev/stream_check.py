@@ -64,10 +64,20 @@ def encodes(family: str, build: Build, plan: dict, tmp: Path) -> list[tuple[list
 
 
 def build_shas(family: str, build: Build, plan: dict) -> list[str]:
+    """The checked streams' SHA-256s of `family` on `build`, cached beside the build's
+    binary (a build directory never changes): every refresh compared each family's
+    recorded build again, encoding the same streams each time."""
+    key = hashlib.sha256(json.dumps([plan["points"][family], FRAMES, INTRA_PERIOD, CBR_KBPS],
+                                    sort_keys=True).encode()).hexdigest()[:16]
+    cache = build[0].parent / f"stream-shas-{family}-{key}.json"
+    if cache.is_file():
+        return json.loads(cache.read_text())
     with tempfile.TemporaryDirectory(dir=Path.home() / "nanocodec-data/work") as tmp:
         with ThreadPoolExecutor(JOBS) as pool:
-            return list(pool.map(lambda job: stream_sha(*job),
+            shas = list(pool.map(lambda job: stream_sha(*job),
                                  encodes(family, build, plan, Path(tmp))))
+    cache.write_text(json.dumps(shas))
+    return shas
 
 
 def identical(family: str, old: Build, new: Build, plan_file: Path = PLAN_FILE) -> bool:
