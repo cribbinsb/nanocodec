@@ -82,6 +82,8 @@ planner.depth_removal_th_16_8 = 50
 rate.prekey_quiet = 0
 # Pinned before HEVC Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
+# Pinned before HEVC Default's unified reference plan (2026-11-15).
+structure.unified = 0
 # HEVC Default's fixed-QP profile (2026-11-14) stays off here: pinned, byte-identical.
 rate.fixed_qp_profile = 0
 # Pinned before HEVC Default's key still boost (2026-11-14).

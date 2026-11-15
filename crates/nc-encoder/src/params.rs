@@ -613,6 +613,12 @@ param_group! {
         // (`static_otw_homes390`) loses with layering in every gated preset.
         adaptive_max_noise_residual: 64.0, [0.0, 64.0],
             "adaptive: largest motion-compensated residual (distance-1 best-match SAD per luma sample, running average) of a layered mini-GOP whose compensable share is below `adaptive_noise_compensable` (64 = no gate): lower keeps more noisy still scenes flat",
+        // Inheritance gate (unified structure stage 3, 2026-11-15,
+        // `inheritance.rs`): layering pays only where the frames between
+        // inherit the base frame. Gate A, 31 long-window clips, AV1: below
+        // 0.16 forced L1T3 won on 13 of 18 clips, at or above on 3 of 13.
+        adaptive_max_inheritance_loss: 4.0, [0.0, 4.0],
+            "adaptive: largest inheritance loss (luma dB the other frames of a mini-GOP lose against its high-quality frame per QP unit coarser, running average) of a layered mini-GOP (4 = no gate): lower keeps more scenes whose frames do not inherit (noise) flat; unmeasured scenes stay flat",
         adaptive_noise_compensable: 0.2, [0.0, 1.0],
             "adaptive: compensable share (running average) below which `adaptive_max_noise_residual` applies: higher treats more moving content as noisy still",
         // A parameter so that presets can turn layering on; the stream
@@ -650,6 +656,7 @@ impl LayerParams {
             max_static: self.adaptive_max_static,
             max_camera_jitter: self.adaptive_max_camera_jitter,
             max_noise_residual: self.adaptive_max_noise_residual,
+            max_inheritance_loss: self.adaptive_max_inheritance_loss,
             noise_compensable: self.adaptive_noise_compensable,
             enter_ratio: self.adaptive_enter_ratio,
         })
@@ -853,6 +860,8 @@ param_group! {
         // vs 1: AV1 -0.1%, H.264 -0.0%, HEVC -0.3%, no guard tripped; mean
         // |dPSNR| -0.03..-0.05 dB (bodycam -0.10..-0.16), bodycam worst-1%
         // -26..-31%. 0.25 reacts too slowly (AV1 J_real +1.1%).
+        fixed_overhead: 0.0, [0.0, 1.0],
+            "1 models an inter frame's bits as a fixed overhead plus content that scales with the step (`fixed_overhead.rs`), the overhead learnt from all but wholly unchanged frames; 0 scales the whole frame with the step: 1 keeps header bytes from reading as content on still scenes",
         level_hint_weight: 1.0, [0.02, 1.0],
             "rate control: weight of each inter frame's complexity hint in the running (geometric) mean the inter level is planned from; the frame's own size is still predicted from its own hint (1 = plan from the frame's own hint): lower keeps the level steady through frame-to-frame complexity noise, which the buffer absorbs as fixed QP would",
         level_step_scale: 0.5, [0.05, 2.0],
@@ -969,6 +978,12 @@ param_group! {
             "1 lets the structure plan each frame's references from its tier: high-quality frames (key, cadence base) also predict from the high-quality frame before them, held in the long-term slot, where the cadence makes them clearly finer (`structure.secondary_min_depth`); works beside temporal layers where the codec allows",
         secondary_min_depth: 0.75, [0.0, 1.0],
             "with `structure.unified`: least cadence strength (0..1, how much finer the high-quality frames are coded) at which a high-quality frame carries the second reference: higher is faster, 0 gives it to every high-quality frame",
+        inherited_depth: 0.0, [0.0, 1.0],
+            "rate control: 1 sets the QP cadence's strength from the measured inheritance loss (`inheritance.rs`) instead of the static share and the motion gate: full while the frames between keep the high-quality frame's quality, less as they lose it; never at a fixed quantizer",
+        depth_full_loss: 0.25, [0.0, 4.0],
+            "with `structure.inherited_depth`: inheritance loss (luma dB per QP unit) up to which the cadence has full strength: higher keeps the full cadence on noisier scenes",
+        depth_zero_loss: 0.75, [0.0, 4.0],
+            "with `structure.inherited_depth`: inheritance loss at which the cadence strength reaches its floor (a quarter, so the loss stays measurable): lower removes the cadence from noisy scenes sooner",
     }
 }
 

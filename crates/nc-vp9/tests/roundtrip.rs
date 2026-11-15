@@ -794,11 +794,18 @@ fn vp9_ksvc_key_unit_enhancement_loss_repairs_at_full_size() {
 /// decoded exactly by our decoder.
 #[test]
 fn flat_second_reference_round_trips_and_changes_the_stream() {
-    let second = [("refs.second", 1.0), ("refs.second_full", 1.0)];
+    // The Default's unified plan (`structure.unified`) is pinned off on
+    // both sides: it would limit the second reference to HQ frames.
+    let second = [
+        ("structure.unified", 0.0),
+        ("refs.second", 1.0),
+        ("refs.second_full", 1.0),
+    ];
     let (packets, recons, _) = coded_sequence(1, &second, None);
     let mut decoder = Decoder::new();
     for (packet, recon) in packets.iter().zip(&recons) {
         assert_eq!(&bytes(&decoder.decode(packet).unwrap()), recon);
     }
-    assert_ne!(packets, coded_sequence(1, &[], None).0);
+    let without = coded_sequence(1, &[("structure.unified", 0.0)], None).0;
+    assert_ne!(packets, without);
 }

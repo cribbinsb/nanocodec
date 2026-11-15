@@ -1,58 +1,101 @@
 //! Sixteen-coefficient AVX-512 quantisation through the existing exact
 //! reciprocal proof and scalar DC rule. Masked final groups avoid reading
 //! padding. Widened products preserve the same signed coefficient gains.
-use super::{Av1Quantizer, Reciprocal, TxfmFns, quant_terms, quantize_one};
+
+#![allow(
+    clippy::inline_always,
+    reason = "the storage loads and stores must inline into the ISA kernels"
+)]
+use super::avx2::Lanes8;
+use super::scalar::{fix_dc, quantize_tail};
+use super::{Av1Quantizer, Reciprocal, TxfmFns, quant_terms};
 use core::arch::x86_64::{
-    _mm_cvtsi32_si128, _mm512_abs_epi32, _mm512_add_epi32, _mm512_add_epi64,
-    _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask, _mm512_mask_add_epi32,
-    _mm512_mask_blend_epi32, _mm512_mask_storeu_epi32, _mm512_mask_sub_epi32,
-    _mm512_maskz_loadu_epi32, _mm512_min_epi32, _mm512_mul_epi32, _mm512_mul_epu32,
-    _mm512_reduce_add_epi32, _mm512_reduce_add_epi64, _mm512_set1_epi32, _mm512_set1_epi64,
-    _mm512_setzero_si512, _mm512_sll_epi32, _mm512_slli_epi32, _mm512_slli_epi64, _mm512_srl_epi64,
-    _mm512_srli_epi64, _mm512_sub_epi32,
+    __m512i, _mm_cvtsi32_si128, _mm256_maskz_loadu_epi16, _mm512_abs_epi32, _mm512_add_epi32,
+    _mm512_add_epi64, _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask, _mm512_cvtepi16_epi32,
+    _mm512_mask_add_epi32, _mm512_mask_blend_epi32, _mm512_mask_cvtepi32_storeu_epi16,
+    _mm512_mask_storeu_epi32, _mm512_mask_sub_epi32, _mm512_maskz_loadu_epi32, _mm512_min_epi32,
+    _mm512_mul_epi32, _mm512_mul_epu32, _mm512_reduce_add_epi32, _mm512_reduce_add_epi64,
+    _mm512_set1_epi32, _mm512_set1_epi64, _mm512_setzero_si512, _mm512_sll_epi32,
+    _mm512_slli_epi32, _mm512_slli_epi64, _mm512_srl_epi64, _mm512_srli_epi64, _mm512_sub_epi32,
 };
 
 pub(super) fn install(table: &mut TxfmFns) {
     table.quantize = quantize;
-    table.quantize_from = quantize_from;
+    table.quantize_from = quantize_from::<i16>;
+    table.quantize_from_wide = quantize_from::<i32>;
     table.dequantize = dequantize;
     table.coefficient_gain = gain;
 }
 
-/// Source and destination hold len values and are equal or disjoint.
+/// Quantiser storage loaded and stored sixteen 32-bit lanes at a time,
+/// masked.
+trait Lanes16: Lanes8 {
+    /// The `mask` lanes of the sixteen values at `src`, sign-extended (the
+    /// others zero).
+    ///
+    /// # Safety
+    ///
+    /// AVX-512 is enabled; `src` holds the masked values.
+    unsafe fn load16(mask: u16, src: *const Self) -> __m512i;
+    /// Store the `mask` lanes (each fitting `Self`) at `dst`.
+    ///
+    /// # Safety
+    ///
+    /// AVX-512 is enabled; `dst` holds the masked values.
+    unsafe fn store16(dst: *mut Self, mask: u16, lanes: __m512i);
+}
+
+impl Lanes16 for i32 {
+    #[inline(always)]
+    unsafe fn load16(mask: u16, src: *const Self) -> __m512i {
+        // SAFETY: caller contract.
+        unsafe { _mm512_maskz_loadu_epi32(mask, src.cast()) }
+    }
+    #[inline(always)]
+    unsafe fn store16(dst: *mut Self, mask: u16, lanes: __m512i) {
+        // SAFETY: caller contract.
+        unsafe { _mm512_mask_storeu_epi32(dst.cast(), mask, lanes) }
+    }
+}
+
+impl Lanes16 for i16 {
+    #[inline(always)]
+    unsafe fn load16(mask: u16, src: *const Self) -> __m512i {
+        // SAFETY: caller contract.
+        unsafe { _mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(mask, src)) }
+    }
+    #[inline(always)]
+    unsafe fn store16(dst: *mut Self, mask: u16, lanes: __m512i) {
+        // Truncating narrow: every lane fits 16 bits.
+        // SAFETY: caller contract.
+        unsafe { _mm512_mask_cvtepi32_storeu_epi16(dst.cast(), mask, lanes) }
+    }
+}
+
+/// Masked vectors of 16 from coefficient 0 at the AC step, then the DC
+/// fix-up (`fix_dc`). Source and destination hold len values and are equal
+/// or disjoint.
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Quantizer) -> u32 {
+unsafe fn levels<T: Lanes16>(src: *const T, dst: *mut T, len: usize, q: &Av1Quantizer) -> u32 {
+    let (offset, divisor) = quant_terms(q, q.ac_step);
+    let Some(reciprocal) = Reciprocal::new(divisor) else {
+        // SAFETY: forwarded contract.
+        return unsafe { quantize_tail(src, dst, 0, len, q) };
+    };
     if len == 0 {
         return 0;
     }
-    // SAFETY: len is nonzero and both buffers cover it.
-    let dc = unsafe { quantize_one(*src, 0, q) };
-    // SAFETY: as above; the source value was loaded before this write.
-    unsafe {
-        *dst = dc;
-    }
-    let (offset, divisor) = quant_terms(q, q.ac_step);
-    let Some(reciprocal) = Reciprocal::new(divisor) else {
-        let mut count = u32::from(dc != 0);
-        for i in 1..len {
-            // SAFETY: i lies inside both buffers, loaded before stored.
-            unsafe {
-                let value = quantize_one(*src.add(i), i, q);
-                *dst.add(i) = value;
-                count += u32::from(value != 0);
-            }
-        }
-        return count;
-    };
+    // SAFETY: len is nonzero; read before the vector pass overwrites it.
+    let dc = unsafe { (*src).widen() };
     let zero = _mm512_setzero_si512();
     let mut counts = zero;
     let input_shift = _mm_cvtsi32_si128(7 + q.log_scale as i32);
     let result_shift = _mm_cvtsi32_si128(reciprocal.shift as i32);
     let multiplier = _mm512_set1_epi64(i64::from(reciprocal.multiplier));
-    for i in (1..len).step_by(16) {
+    for i in (0..len).step_by(16) {
         let mask = (u32::MAX >> (32 - (len - i).min(16))) as u16;
         // SAFETY: only valid lanes are read; input and output may alias.
-        let c = unsafe { _mm512_maskz_loadu_epi32(mask, src.add(i).cast()) };
+        let c = unsafe { T::load16(mask, src.add(i)) };
         let numerator = _mm512_add_epi32(
             _mm512_sll_epi32(_mm512_abs_epi32(c), input_shift),
             _mm512_set1_epi32(offset as i32),
@@ -68,7 +111,7 @@ unsafe fn levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Quantizer) -
             _mm512_mask_sub_epi32(magnitude, _mm512_cmplt_epi32_mask(c, zero), zero, magnitude);
         // SAFETY: the same mask bounds the store to the valid output lanes.
         unsafe {
-            _mm512_mask_storeu_epi32(dst.add(i).cast(), mask, signed);
+            T::store16(dst.add(i), mask, signed);
         }
         counts = _mm512_mask_add_epi32(
             counts,
@@ -77,10 +120,11 @@ unsafe fn levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Quantizer) -
             _mm512_set1_epi32(1),
         );
     }
-    u32::from(dc != 0) + _mm512_reduce_add_epi32(counts) as u32
+    // SAFETY: the vector pass wrote `dst[0]` (len >= 1).
+    unsafe { fix_dc(dst, dc, _mm512_reduce_add_epi32(counts) as u32, q) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn quantize(coeffs: &mut [i32], q: &Av1Quantizer) -> u32 {
+unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
     // Hardware timing favours AVX2 for these small coefficient blocks.
     if coeffs.len() <= 16 {
         // SAFETY: same validated slices; AVX2 is required by this tier.
@@ -90,7 +134,7 @@ unsafe fn quantize(coeffs: &mut [i32], q: &Av1Quantizer) -> u32 {
     unsafe { levels(coeffs.as_ptr(), coeffs.as_mut_ptr(), coeffs.len(), q) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn quantize_from(coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32 {
+unsafe fn quantize_from<T: Lanes16>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32 {
     // Hardware timing favours AVX2 for these small coefficient blocks.
     if coeffs.len() <= 16 {
         // SAFETY: same validated slices; AVX2 is required by this tier.
@@ -101,7 +145,7 @@ unsafe fn quantize_from(coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u3
     unsafe { levels(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn dequantize(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
     // Hardware timing favours AVX2 for these small coefficient blocks.
     if levels.len() <= 64 {
         // SAFETY: same validated slices; AVX2 is required by this tier.
@@ -114,14 +158,14 @@ unsafe fn dequantize(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
 // Avoid saving the wide body's registers before taking the small-block fallback.
 #[inline(never)]
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn dequantize_wide(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize_wide(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
     // SAFETY: the dispatcher validates the slices and ISA.
     unsafe {
         super::generic::dequantize::<crate::simd::avx512::I32x16>(levels, q, out);
     }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn gain(original: &[i32], dequantized: &[i32]) -> i64 {
+unsafe fn gain(original: &[i16], dequantized: &[i32]) -> i64 {
     let len = original.len().min(dequantized.len());
     let mut sum = _mm512_setzero_si512();
     for i in (0..len).step_by(16) {
@@ -129,7 +173,7 @@ unsafe fn gain(original: &[i32], dequantized: &[i32]) -> i64 {
         // SAFETY: masks cover only the common prefix of both slices.
         let (a, b) = unsafe {
             (
-                _mm512_maskz_loadu_epi32(mask, original.as_ptr().add(i).cast()),
+                _mm512_cvtepi16_epi32(_mm256_maskz_loadu_epi16(mask, original.as_ptr().add(i))),
                 _mm512_maskz_loadu_epi32(mask, dequantized.as_ptr().add(i).cast()),
             )
         };

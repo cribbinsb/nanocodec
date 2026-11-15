@@ -42,7 +42,8 @@ const COMPOUND_MAGNITUDE: usize = 1 << 13;
 const VARIANCE_POSITIONS: usize = 8;
 /// Largest quantiser step tried (AV1 8-bit `ac_q` at qindex 255 is 1828).
 const MAX_STEP: usize = 1828;
-/// Largest coefficient magnitude quantised (beyond any transform output).
+/// Largest coefficient magnitude the 32-bit (AV2) quantiser is given
+/// (beyond any transform output).
 const MAX_COEFF: usize = 1 << 20;
 /// Largest level cap tried: nc-av1 caps at the level whose dequantised
 /// value saturates, `2^(15 + dqDenom) / step`, at most 32768 at step 4.
@@ -360,7 +361,7 @@ fn check_transforms(
         })
         .collect();
     let run_forward = |dsp: &Dsp| {
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         dsp.av1_forward_dct(size, &residual, stride, &mut out);
         out
     };
@@ -418,7 +419,7 @@ fn check_transforms_64(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: 
         })
         .collect();
     let run_forward = |dsp: &Dsp| {
-        let mut out = vec![0i32; CODED];
+        let mut out = vec![0i16; CODED];
         dsp.av1_forward_dct_64(&residual, stride, &mut out);
         out
     };
@@ -463,13 +464,7 @@ fn check_quantize(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut 
         log_scale: rng.below(MAX_LOG_SCALE + 1) as u32,
     };
     let len = 1 + rng.below(1024);
-    let coeffs: Vec<i32> = (0..len)
-        .map(|_| match rng.below(3) {
-            0 => rng.below(2 * MAX_COEFF + 1) as i32 - MAX_COEFF as i32,
-            1 => rng.below(8 * q.ac_step as usize + 1) as i32 - 4 * q.ac_step,
-            _ => 0,
-        })
-        .collect();
+    let coeffs = narrow_coefficients(rng, len, q.ac_step);
     let run = |dsp: &Dsp| {
         let mut levels = coeffs.clone();
         let nonzero = dsp.av1_quantize(&mut levels, &q);
@@ -480,12 +475,12 @@ fn check_quantize(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut 
         format!("av1_quantize len={len} {q:?}")
     });
 
-    // Mostly realistic levels, plus any i32 (the dequantiser masks the
+    // Mostly realistic levels, plus any i16 (the dequantiser masks the
     // product, so it must be exact for every level).
-    let levels: Vec<i32> = (0..len)
+    let levels: Vec<i16> = (0..len)
         .map(|_| match rng.below(8) {
-            0 => rng.next_u64() as i32,
-            _ => rng.below(16383) as i32 - 8191,
+            0 => rng.next_u64() as i16,
+            _ => rng.below(16383) as i16 - 8191,
         })
         .collect();
     let run_dq = |dsp: &Dsp| {
@@ -674,7 +669,7 @@ fn check_forward_low(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &m
     for side in [16, 32, 64] {
         let coded = side.min(32) * side.min(32);
         let run_low = |dsp: &Dsp| {
-            let mut out = vec![i32::MIN; coded + 3];
+            let mut out = vec![i16::MIN; coded + 3];
             dsp.av1_forward_dct_low(side, &residual, stride, &mut out[..coded]);
             out
         };
@@ -685,7 +680,7 @@ fn check_forward_low(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &m
     }
     for side in [16, 32] {
         let run_raster = |dsp: &Dsp| {
-            let mut out = vec![i32::MIN; side * side + 3];
+            let mut out = vec![i16::MIN; side * side + 3];
             dsp.av1_forward_dct_raster_low(side, &residual, stride, &mut out[..side * side]);
             out
         };
@@ -696,8 +691,23 @@ fn check_forward_low(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &m
     }
 }
 
+/// 16-bit coefficients for the AV1 quantiser: any `i16`, values around
+/// the AC step, and zeros.
+fn narrow_coefficients(rng: &mut Rng, len: usize, ac_step: i32) -> Vec<i16> {
+    (0..len)
+        .map(|_| match rng.below(3) {
+            0 => rng.next_u64() as i16,
+            1 => (rng.below(8 * ac_step as usize + 1) as i32 - 4 * ac_step)
+                .clamp(i16::MIN.into(), i16::MAX.into()) as i16,
+            _ => 0,
+        })
+        .collect()
+}
+
 /// The out-of-place AV1 quantiser against the reference's in-place one;
 /// the source stays unchanged and guard values past the levels untouched.
+/// The 32-bit form (AV2) against the reference's per-coefficient
+/// definition on coefficients up to [`MAX_COEFF`].
 fn check_quantize_from(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     let isa = candidate.isa();
     let q = Av1Quantizer {
@@ -708,22 +718,33 @@ fn check_quantize_from(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: 
         log_scale: rng.below(MAX_LOG_SCALE + 1) as u32,
     };
     let len = 1 + rng.below(1024);
-    let coeffs: Vec<i32> = (0..len)
+    let coeffs = narrow_coefficients(rng, len, q.ac_step);
+    let mut expected = coeffs.clone();
+    let expected_nonzero = reference.av1_quantize(&mut expected, &q);
+    expected.extend([i16::MIN; 3]);
+    let source = coeffs.clone();
+    let mut levels = vec![i16::MIN; len + 3];
+    let nonzero = candidate.av1_quantize_from(&source, &q, &mut levels[..len]);
+    let same = nonzero == expected_nonzero && levels == expected && source == coeffs;
+    record(report, isa, same, || {
+        format!("av1_quantize_from len={len} {q:?}")
+    });
+
+    let wide: Vec<i32> = (0..len)
         .map(|_| match rng.below(3) {
             0 => rng.below(2 * MAX_COEFF + 1) as i32 - MAX_COEFF as i32,
             1 => rng.below(8 * q.ac_step as usize + 1) as i32 - 4 * q.ac_step,
             _ => 0,
         })
         .collect();
-    let mut expected = coeffs.clone();
-    let expected_nonzero = reference.av1_quantize(&mut expected, &q);
-    expected.extend([i32::MIN; 3]);
-    let source = coeffs.clone();
-    let mut levels = vec![i32::MIN; len + 3];
-    let nonzero = candidate.av1_quantize_from(&source, &q, &mut levels[..len]);
-    let same = nonzero == expected_nonzero && levels == expected && source == coeffs;
+    let run_wide = |dsp: &Dsp| {
+        let mut levels = vec![i32::MIN; len + 3];
+        let nonzero = dsp.av1_quantize_from_wide(&wide, &q, &mut levels[..len]);
+        (levels, nonzero)
+    };
+    let same = run_wide(candidate) == run_wide(reference);
     record(report, isa, same, || {
-        format!("av1_quantize_from len={len} {q:?}")
+        format!("av1_quantize_from_wide len={len} {q:?}")
     });
 }
 
@@ -758,7 +779,7 @@ fn check_forward_bounded(
     for size in [DctSize::N16, DctSize::N32] {
         let area = size.side() * size.side();
         let run = |dsp: &Dsp| {
-            let mut out = vec![i32::MIN; area + 3];
+            let mut out = vec![i16::MIN; area + 3];
             let coded = dsp.av1_forward_dct_raster_unless_zero(
                 size,
                 &residual,
@@ -769,9 +790,12 @@ fn check_forward_bounded(
             (coded, out)
         };
         let (coded, out) = run(candidate);
-        let mut full = vec![0i32; area];
+        let mut full = vec![0i16; area];
         reference.av1_forward_dct_raster(size, &residual, stride, &mut full);
-        let sound = coded || full.iter().all(|c| c.unsigned_abs() <= zero_limit);
+        let sound = coded
+            || full
+                .iter()
+                .all(|c| u32::from(c.unsigned_abs()) <= zero_limit);
         let exact = !coded || out[..area] == full[..];
         let same = (coded, out) == run(reference) && sound && exact;
         record(report, isa, same, || {

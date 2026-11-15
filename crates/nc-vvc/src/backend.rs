@@ -572,6 +572,12 @@ impl CodecBackend for VvcBackend {
     // pulse -0.02 dB, dCPU +0.4%. Long GOP (900 f, one key, 300 kbps, Y by
     // thirds): pan_bdd +0.07 / 0.00 / +0.08 dB, chirla -0.20 / -0.09 /
     // -0.04 dB (YUV -0.06): no drift.
+    // The fixed-QP profile (`--qp`): the QP cadence at full strength on every
+    // frame (HEVC's profile). Fixed QP, matched QP (nceval.fixedqp, two pool
+    // draws of 16 clips): J -1.0% [-1.9, -0.1] and -1.0% [-1.6, -0.4]; CPU
+    // unchanged. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Start-up QP cadence (period 8, base frames 6 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)

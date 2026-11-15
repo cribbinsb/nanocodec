@@ -9,13 +9,16 @@
 
 use core::arch::aarch64::{
     int32x4_t, uint32x4_t, vabsq_s32, vaddq_s64, vaddq_u32, vaddvq_s64, vaddvq_u32, vdupq_n_s32,
-    vdupq_n_s64, vdupq_n_u32, veorq_s32, vget_low_s32, vget_low_u32, vld1q_s32, vmaxq_u32,
-    vmaxvq_u32, vminq_u32, vmlal_high_s32, vmlal_s32, vmull_high_u32, vmull_u32,
+    vdupq_n_s64, vdupq_n_u32, veorq_s32, vget_low_s16, vget_low_s32, vget_low_u32, vld1_s16,
+    vld1q_s16, vld1q_s32, vmaxq_u32, vmaxvq_u32, vminq_u32, vmlal_high_s32, vmlal_s32,
+    vmovl_high_s16, vmovl_s16, vmovn_s32, vmull_high_u32, vmull_u32, vreinterpretq_s16_s32,
     vreinterpretq_s32_u32, vreinterpretq_u32_s32, vreinterpretq_u32_u64, vshlq_n_s32, vshlq_u32,
-    vshrq_n_s32, vst1q_s32, vsubq_s32, vsubq_u32, vtstq_s32, vuzp2q_u32,
+    vshrq_n_s32, vst1_s16, vst1q_s16, vst1q_s32, vsubq_s32, vsubq_u32, vtstq_s32, vuzp1q_s16,
+    vuzp2q_u32,
 };
 
-use super::{Av1Quantizer, Reciprocal, TxfmFns, generic, quant_terms, quantize_one};
+use super::scalar::{fix_dc, quantize_tail};
+use super::{Av1Quantizer, QuantStorage, Reciprocal, TxfmFns, generic, quant_terms};
 use crate::simd::neon::I32x4;
 
 /// The NEON transform table (NEON is always present on `AArch64`).
@@ -42,20 +45,14 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         ],
         coefficient_gain,
         quantize,
-        quantize_from,
+        quantize_from: quantize_from::<i16>,
+        quantize_from_wide: quantize_from::<i32>,
         dequantize,
-        // A single 4x4 tile is slower in vectors than scalar (measured).
-        transpose: [
-            super::scalar::transpose::<4>,
-            transpose::<8>,
-            transpose::<16>,
-            transpose::<32>,
-        ],
         forward_dct_raster: [
-            None,
-            Some(super::neon_forward::forward_8_raster),
-            Some(super::neon_forward::forward_16_raster),
-            Some(super::neon_forward::forward_32_raster),
+            forward_4_raster,
+            super::neon_forward::forward_8_raster,
+            super::neon_forward::forward_16_raster,
+            super::neon_forward::forward_32_raster,
         ],
         forward_dct_low: [
             Some(super::neon_forward::forward_16_low),
@@ -73,15 +70,10 @@ pub(crate) fn txfm_fns() -> TxfmFns {
     }
 }
 
-#[target_feature(enable = "neon")]
-unsafe fn transpose<const N: usize>(src: &[i32], dst: &mut [i32]) {
-    generic::transpose::<I32x4, N>(src, dst);
-}
-
 macro_rules! neon_sizes {
     ($($forward:ident, $inverse:ident);*) => {$(
         #[target_feature(enable = "neon")]
-        unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i32]) {
+        unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i16]) {
             // SAFETY: NEON is enabled for this function.
             unsafe { generic::$forward::<I32x4>(residual, stride, out) }
         }
@@ -96,35 +88,132 @@ macro_rules! neon_sizes {
 
 neon_sizes!(forward_4, inverse_4);
 
-/// Quantise: the reference division on coefficient 0 and on ragged tails,
-/// and an exact multiply-and-shift division (`Reciprocal`) on 8 AC
-/// coefficients at a time (then 4), from `src` into `dst`.
+/// [`forward_4`] with raster coefficients (VP9's layout).
+#[target_feature(enable = "neon")]
+unsafe fn forward_4_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
+    // SAFETY: NEON is enabled for this function.
+    unsafe { generic::forward_4_layout::<I32x4, true>(residual, stride, out) }
+}
+
+/// Quantiser storage loaded and stored as two four-lane 32-bit halves.
+trait Lanes: QuantStorage {
+    /// Eight values at `src`, sign-extended to 32 bits.
+    ///
+    /// # Safety
+    ///
+    /// `src` holds eight values.
+    unsafe fn load8(src: *const Self) -> (int32x4_t, int32x4_t);
+    /// Store two four-lane halves (each lane fitting `Self`) at `dst`.
+    ///
+    /// # Safety
+    ///
+    /// `dst` holds eight values.
+    unsafe fn store8(dst: *mut Self, lanes: (int32x4_t, int32x4_t));
+    /// Four values at `src`, sign-extended.
+    ///
+    /// # Safety
+    ///
+    /// `src` holds four values.
+    unsafe fn load4(src: *const Self) -> int32x4_t;
+    /// Store four lanes (each fitting `Self`) at `dst`.
+    ///
+    /// # Safety
+    ///
+    /// `dst` holds four values.
+    unsafe fn store4(dst: *mut Self, lanes: int32x4_t);
+}
+
+impl Lanes for i32 {
+    #[inline(always)]
+    unsafe fn load8(src: *const Self) -> (int32x4_t, int32x4_t) {
+        // SAFETY: caller contract.
+        unsafe { (vld1q_s32(src), vld1q_s32(src.add(4))) }
+    }
+    #[inline(always)]
+    unsafe fn store8(dst: *mut Self, (low, high): (int32x4_t, int32x4_t)) {
+        // SAFETY: caller contract.
+        unsafe {
+            vst1q_s32(dst, low);
+            vst1q_s32(dst.add(4), high);
+        }
+    }
+    #[inline(always)]
+    unsafe fn load4(src: *const Self) -> int32x4_t {
+        // SAFETY: caller contract.
+        unsafe { vld1q_s32(src) }
+    }
+    #[inline(always)]
+    unsafe fn store4(dst: *mut Self, lanes: int32x4_t) {
+        // SAFETY: caller contract.
+        unsafe { vst1q_s32(dst, lanes) }
+    }
+}
+
+impl Lanes for i16 {
+    #[inline(always)]
+    unsafe fn load8(src: *const Self) -> (int32x4_t, int32x4_t) {
+        // SAFETY: caller contract: one 128-bit load.
+        unsafe {
+            let values = vld1q_s16(src);
+            (vmovl_s16(vget_low_s16(values)), vmovl_high_s16(values))
+        }
+    }
+    #[inline(always)]
+    unsafe fn store8(dst: *mut Self, (low, high): (int32x4_t, int32x4_t)) {
+        // The low halves of the 32-bit lanes, in one unzip and one 128-bit
+        // store. Exact: every lane fits 16 bits.
+        // SAFETY: caller contract.
+        unsafe {
+            vst1q_s16(
+                dst,
+                vuzp1q_s16(vreinterpretq_s16_s32(low), vreinterpretq_s16_s32(high)),
+            );
+        }
+    }
+    #[inline(always)]
+    unsafe fn load4(src: *const Self) -> int32x4_t {
+        // SAFETY: caller contract.
+        unsafe { vmovl_s16(vld1_s16(src)) }
+    }
+    #[inline(always)]
+    unsafe fn store4(dst: *mut Self, lanes: int32x4_t) {
+        // SAFETY: caller contract; exact as in `store8`.
+        unsafe { vst1_s16(dst, vmovn_s32(lanes)) }
+    }
+}
+
+/// Quantise: an exact multiply-and-shift division (`Reciprocal`) on 8
+/// coefficients at a time (then 4) from coefficient 0 at the AC step, the
+/// reference division on the ragged tail, then the DC fix-up (`fix_dc`),
+/// from `src` into `dst`.
 ///
 /// # Safety
 ///
 /// `src` and `dst` hold `len` values; they are either disjoint or equal
 /// (in place): each vector is loaded before its levels are stored.
 #[target_feature(enable = "neon")]
-unsafe fn quantize_levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Quantizer) -> u32 {
-    if len == 0 {
-        return 0;
-    }
-    // SAFETY: `len >= 1` (caller contract for both pointers).
-    let dc = unsafe { quantize_one(*src, 0, q) };
-    // SAFETY: as above.
-    unsafe { *dst = dc };
-    let dc_nonzero = u32::from(dc != 0);
+unsafe fn quantize_levels<T: Lanes>(
+    src: *const T,
+    dst: *mut T,
+    len: usize,
+    q: &Av1Quantizer,
+) -> u32 {
     let (offset, divisor) = quant_terms(q, q.ac_step);
     let Some(reciprocal) = Reciprocal::new(divisor) else {
         // SAFETY: forwarded contract.
-        return dc_nonzero + unsafe { quantize_tail(src, dst, 1, len, q) };
+        return unsafe { quantize_tail(src, dst, 0, len, q) };
     };
+    if len == 0 {
+        return 0;
+    }
+    // SAFETY: `len >= 1`; read before the vector pass overwrites it.
+    let dc = unsafe { (*src).widen() };
     let ac = AcQuantizer::new(q, offset, divisor, reciprocal);
     let mut nonzero_lanes = vdupq_n_u32(0);
-    let octets_end = 1 + (len - 1) / 8 * 8;
-    for i in (1..octets_end).step_by(8) {
+    let octets_end = len / 8 * 8;
+    for i in (0..octets_end).step_by(8) {
         // SAFETY: `i + 8 <= len`; loaded before the stores below.
-        let (c0, c1) = unsafe { (vld1q_s32(src.add(i)), vld1q_s32(src.add(i + 4))) };
+        let (c0, c1) = unsafe { T::load8(src.add(i)) };
         let (n0, n1) = (ac.numerator(c0), ac.numerator(c1));
         // Coefficients below one quantizer divisor all produce zero levels:
         // skip the reciprocal products and the nonzero count. Exact (the
@@ -139,15 +228,12 @@ unsafe fn quantize_levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Qua
             levels
         };
         // SAFETY: `i + 8 <= len`.
-        unsafe {
-            vst1q_s32(dst.add(i), l0);
-            vst1q_s32(dst.add(i + 4), l1);
-        }
+        unsafe { T::store8(dst.add(i), (l0, l1)) };
     }
     let mut done = octets_end;
     if done + 4 <= len {
         // SAFETY: `done + 4 <= len`.
-        let c = unsafe { vld1q_s32(src.add(done)) };
+        let c = unsafe { T::load4(src.add(done)) };
         let n = ac.numerator(c);
         let level = if vmaxvq_u32(n) < divisor {
             vdupq_n_s32(0)
@@ -155,17 +241,24 @@ unsafe fn quantize_levels(src: *const i32, dst: *mut i32, len: usize, q: &Av1Qua
             ac.level(n, c)
         };
         // SAFETY: as above.
-        unsafe { vst1q_s32(dst.add(done), level) };
+        unsafe { T::store4(dst.add(done), level) };
         nonzero_lanes = count_nonzero(nonzero_lanes, level);
         done += 4;
     }
     // SAFETY: forwarded contract.
-    dc_nonzero + vaddvq_u32(nonzero_lanes) + unsafe { quantize_tail(src, dst, done, len, q) }
+    let nonzero = vaddvq_u32(nonzero_lanes) + unsafe { quantize_tail(src, dst, done, len, q) };
+    if done == 0 {
+        // The tail quantised coefficient 0 at the DC step.
+        nonzero
+    } else {
+        // SAFETY: the vector pass wrote `dst[0]`.
+        unsafe { fix_dc(dst, dc, nonzero, q) }
+    }
 }
 
 /// [`quantize_levels`] in place.
 #[target_feature(enable = "neon")]
-unsafe fn quantize(coeffs: &mut [i32], q: &Av1Quantizer) -> u32 {
+unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
     let (len, coeffs) = (coeffs.len(), coeffs.as_mut_ptr());
     // SAFETY: source and destination are the same slice; every value is
     // read before its level is written (`quantize_levels`).
@@ -174,35 +267,10 @@ unsafe fn quantize(coeffs: &mut [i32], q: &Av1Quantizer) -> u32 {
 
 /// [`quantize_levels`] from `coeffs` into `out`, which keeps `coeffs`.
 #[target_feature(enable = "neon")]
-unsafe fn quantize_from(coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32 {
+unsafe fn quantize_from<T: Lanes>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32 {
     let out = &mut out[..coeffs.len()];
     // SAFETY: both slices hold `coeffs.len()` values.
     unsafe { quantize_levels(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }
-}
-
-/// The reference quantiser on `src[i]` into `dst[i]` for `i` in
-/// `first..len`; returns the non-zero count.
-///
-/// # Safety
-///
-/// As [`quantize_levels`].
-unsafe fn quantize_tail(
-    src: *const i32,
-    dst: *mut i32,
-    first: usize,
-    len: usize,
-    q: &Av1Quantizer,
-) -> u32 {
-    let mut nonzero = 0;
-    for i in first..len {
-        // SAFETY: `i < len` (caller contract).
-        unsafe {
-            let level = quantize_one(*src.add(i), i, q);
-            *dst.add(i) = level;
-            nonzero += u32::from(level != 0);
-        }
-    }
-    nonzero
 }
 
 /// Add 1 to each lane of `counts` where `levels` is nonzero.
@@ -281,15 +349,15 @@ impl AcQuantizer {
 }
 
 #[target_feature(enable = "neon")]
-unsafe fn dequantize(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
     // SAFETY: NEON is enabled for this function.
     unsafe { generic::dequantize::<I32x4>(levels, q, out) }
 }
 
-/// `|c| < 2^22`, `d` is signed16-bit: `|2c-d| < 2^24`; the1024-term
-/// sum magnitude is below `2^49`. Widen only the multiply, not its inputs.
+/// `c` and `d` are signed 16-bit: `|2c-d| < 2^18`; the 1024-term sum
+/// magnitude is below `2^44`. Widen only the multiply.
 #[target_feature(enable = "neon")]
-unsafe fn coefficient_gain(original: &[i32], dequantized: &[i32]) -> i64 {
+unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
     // SAFETY: NEON table installed only with ISA support; complete groups
     // are checked before loads. Remaining coefficients use the scalar oracle.
     unsafe {
@@ -298,7 +366,7 @@ unsafe fn coefficient_gain(original: &[i32], dequantized: &[i32]) -> i64 {
         let mut low = vdupq_n_s64(0);
         let mut high = vdupq_n_s64(0);
         for i in (0..end).step_by(4) {
-            let c = vld1q_s32(original.as_ptr().add(i));
+            let c = vmovl_s16(vld1_s16(original.as_ptr().add(i)));
             let d = vld1q_s32(dequantized.as_ptr().add(i));
             let t = vsubq_s32(vshlq_n_s32::<1>(c), d);
             low = vmlal_s32(low, vget_low_s32(t), vget_low_s32(d));
@@ -312,6 +380,7 @@ unsafe fn coefficient_gain(original: &[i32], dequantized: &[i32]) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::txfm::quantize_one;
 
     #[test]
     fn zero_vector_threshold_matches_scalar_on_both_sides() {
@@ -327,11 +396,12 @@ mod tests {
                     };
                     let (offset, divisor) = quant_terms(&q, ac_step);
                     let bound = ((divisor - offset - 1) >> (7 + log_scale)) as i32;
-                    let input = [9, bound, -bound, 0, bound, bound + 1, -bound - 1, 1, 0];
+                    let input = [9, bound, -bound, 0, bound, bound + 1, -bound - 1, 1, 0]
+                        .map(|v: i32| v as i16);
                     let expected: Vec<_> = input
                         .iter()
                         .enumerate()
-                        .map(|(i, &v)| quantize_one(v, i, &q))
+                        .map(|(i, &v)| quantize_one(i32::from(v), i, &q) as i16)
                         .collect();
                     let mut actual = input;
                     // SAFETY: NEON is mandatory on AArch64; all buffers are valid.

@@ -4,8 +4,9 @@
 use crate::{check::CheckReport, rng::Rng};
 use nc_dsp::{Dsp, Vp9QuantStep};
 
-/// Coefficient magnitude bound of the kernel contract (`|c| < 2^16`).
-const MAX_MAGNITUDE: i32 = (1 << 16) - 1;
+/// The 16-bit coefficients' extremes.
+const MAX_MAGNITUDE: i16 = i16::MAX;
+const MIN_COEFFICIENT: i16 = i16::MIN;
 /// VP9's quantizer step range.
 const MIN_STEP: usize = 4;
 const MAX_STEP: usize = 1828;
@@ -25,14 +26,14 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
             let dc = Vp9QuantStep::new(dc_step, divisor, shift);
             let ac = Vp9QuantStep::new(ac_step, divisor, shift);
             for pattern in 0..5 {
-                let coefficients: Vec<i32> = (0..len)
+                let coefficients: Vec<i16> = (0..len)
                     .map(|i| match pattern {
-                        0 => rng.below(2 * MAX_MAGNITUDE as usize + 1) as i32 - MAX_MAGNITUDE,
+                        0 => rng.next_u64() as i16,
                         1 => {
                             if i % 2 == 0 {
                                 MAX_MAGNITUDE
                             } else {
-                                -MAX_MAGNITUDE
+                                MIN_COEFFICIENT
                             }
                         }
                         2 => 0,
@@ -40,9 +41,9 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                         3 => {
                             let s = if i == 0 { dc_step } else { ac_step };
                             let t = (s - s / divisor) >> shift;
-                            t + rng.below(5) as i32 - 2
+                            (t + rng.below(5) as i32 - 2) as i16
                         }
-                        _ => rng.below(64) as i32 - 32,
+                        _ => rng.below(64) as i16 - 32,
                     })
                     .collect();
                 let run = |dsp: &Dsp| {
@@ -70,18 +71,18 @@ fn check_largest_magnitude(
     rng: &mut Rng,
     report: &mut CheckReport,
 ) {
-    for len in [0, 1, 3, 4, 7, 8, 9, 16, 17, 64, 256, 1024] {
+    for len in [0, 1, 3, 4, 7, 8, 9, 15, 16, 17, 31, 33, 64, 256, 1024] {
         for pattern in 0..4 {
-            let mut coefficients: Vec<i32> = (0..len)
+            let mut coefficients: Vec<i16> = (0..len)
                 .map(|_| match pattern {
-                    0 => rng.below(2 * MAX_MAGNITUDE as usize + 1) as i32 - MAX_MAGNITUDE,
-                    1 => rng.below(7) as i32 - 3,
+                    0 => rng.next_u64() as i16,
+                    1 => rng.below(7) as i16 - 3,
                     _ => 0,
                 })
                 .collect();
             if pattern == 3 && len > 0 {
                 // One spike anywhere, including the scalar tail.
-                coefficients[rng.below(len)] = -MAX_MAGNITUDE;
+                coefficients[rng.below(len)] = MIN_COEFFICIENT;
             }
             report.cases += 1;
             if candidate.vp9_largest_magnitude(&coefficients)

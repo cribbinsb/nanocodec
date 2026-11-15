@@ -31,6 +31,7 @@ use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
 use crate::inframe::{InFrameControl, row_weights};
+use crate::inheritance::{Inheritance, Tier};
 use crate::input::write_raw;
 use crate::key_clock::KeyClock;
 use crate::key_plan::{KeyPlanMode, KeyPlanner};
@@ -42,7 +43,7 @@ use crate::params::RefParams;
 use crate::params::{
     AnalysisParams, DebugParams, DecisionParams, InFrameParams, LayerParams, LtrParams,
     ParamOverrides, PersistParams, PlannerParams, RateParams, RefreshParams, ResolutionParams,
-    SceneParams, SpatialParams, StillParams, engine_specs,
+    SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
 };
 use crate::partition::{Block, should_split};
 use crate::partition_plan::{LeafStats, NoiseTest, Partition, Planner};
@@ -170,6 +171,9 @@ pub(super) struct LayerState {
     pub(super) rate_control: Option<RateController>,
     /// The last high-quality frame as a second reference (`refs.second`).
     pub(super) second: Option<SecondReference>,
+    /// How much of a high-quality frame the frames after it keep
+    /// (`inheritance.rs`), when the shape or the depth reads it.
+    pub(super) inheritance: Option<Inheritance>,
     /// Variance AQ (`rate.aq_strength`), for backends with block-level QP.
     pub(super) aq: Option<BlockAq>,
     /// The reuse term (`persist.reuse`, `reuse.rs`): per block through
@@ -391,6 +395,10 @@ impl<B: CodecBackend> Encoder<B> {
                 input,
                 rate_control: None,
                 second,
+                inheritance: Inheritance::new(
+                    &layer_params,
+                    &StructureParams::from_overrides(&config.params),
+                ),
                 aq,
                 reuse,
                 reuse_last_frame: None,
@@ -627,7 +635,9 @@ impl<B: CodecBackend> Encoder<B> {
     ) -> FramePlan {
         let cadence_motion = motion
             .and_then(|m| cadence_motion_hint(m, references.reference.distance, self.layer.width));
+        let depth = self.inherited_depth();
         let quantizer = if let Some(controller) = self.layer.rate_control.as_mut() {
+            controller.set_cadence_depth(depth);
             // Reuse this frame's existing8x8 statistics; no lookahead/pixel pass.
             let mut hint = Complexity::from_preanalysis(pre);
             if controller.wants_temporal_noise() {
@@ -1449,6 +1459,10 @@ impl<B: CodecBackend> Encoder<B> {
             }
         }
         let key = frame_type == FrameType::Key;
+        if let Some(inheritance) = self.layer.inheritance.as_ref() {
+            self.structure
+                .observe_inheritance(inheritance.loss().map(|loss| loss as f32));
+        }
         let references = self.structure.next(index, key || recovery);
         let ltr_action = if key { LtrAction::None } else { ltr_action };
         let references = self.with_ltr(ltr_action, index, references);
@@ -1713,8 +1727,31 @@ impl<B: CodecBackend> Encoder<B> {
     ) {
         // Frames coded coarser by design (upper layers, cadence) do not
         // set the quality a hold compares with.
-        if key || self.is_high_quality(index, position) {
+        let high_quality = self.is_high_quality(index, position);
+        if key || high_quality {
             self.layer.last_quantizer = quantizer;
+        }
+        let wants_distortion = self.layer.inheritance.is_some()
+            || self
+                .layer
+                .rate_control
+                .as_ref()
+                .is_some_and(RateController::wants_distortion);
+        let mse = wants_distortion.then(|| {
+            let (width, height) = (self.layer.coded_width, self.layer.coded_height);
+            luma_mse(&self.dsp, coded_source, recon, width, height)
+        });
+        if let (Some(inheritance), Some(mse)) = (self.layer.inheritance.as_mut(), mse) {
+            let tier = if key {
+                Tier::Key
+            } else if high_quality {
+                Tier::HighQuality
+            } else {
+                Tier::Other
+            };
+            let step =
+                self.quantizer_steps[(quantizer as usize).min(self.quantizer_steps.len() - 1)];
+            inheritance.observe(tier, QP_UNITS_PER_OCTAVE * step.log2(), mse);
         }
         if let Some(term) = self.layer.reuse.as_mut().filter(|_| reuse_frame) {
             self.layer.reuse_last_frame = Some(index);
@@ -1748,15 +1785,8 @@ impl<B: CodecBackend> Encoder<B> {
             controller.feedback(bit_count(data));
             let area = (self.layer.width * self.layer.height).max(1);
             controller.observe_noise_skip(self.layer.noise_skipped_area as f64 / area as f64);
-            if controller.wants_distortion() {
-                let (width, height) = (self.layer.coded_width, self.layer.coded_height);
-                controller.observe_distortion(luma_mse(
-                    &self.dsp,
-                    coded_source,
-                    recon,
-                    width,
-                    height,
-                ));
+            if let Some(mse) = mse.filter(|_| controller.wants_distortion()) {
+                controller.observe_distortion(mse);
             }
         }
         self.layer.noise_skipped_area = 0;
@@ -2004,6 +2034,9 @@ impl<B: CodecBackend> Encoder<B> {
     /// how much finer than its neighbours a high-quality frame is coded
     /// here, the depth the unified reference plan reads (`TierPlan`).
     fn cadence_depth(&self, analysis: &FrameAnalysis, references: &FrameReferences) -> f64 {
+        if let Some(depth) = self.inherited_depth() {
+            return depth;
+        }
         let motion = analysis
             .motion
             .as_ref()
@@ -2011,6 +2044,14 @@ impl<B: CodecBackend> Encoder<B> {
         self.layer
             .cadence
             .strength(f64::from(analysis.pre.static_fraction), motion)
+    }
+
+    /// The cadence strength the measured inheritance sets
+    /// (`structure.inherited_depth`), under rate control only: at a fixed
+    /// quantizer the tiers never follow content.
+    fn inherited_depth(&self) -> Option<f64> {
+        self.layer.rate_control.as_ref()?;
+        self.layer.inheritance.as_ref()?.depth()
     }
 
     /// Whether inter frame `index` is coded finer than its neighbours: a

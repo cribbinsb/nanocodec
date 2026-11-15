@@ -142,7 +142,7 @@ fn forward<const N: usize>(
     columns: Vp9Pass,
     rows: Vp9Pass,
     input: &[i16],
-    output: &mut [i32],
+    output: &mut [i16],
     post: impl Fn(i32) -> i32,
 ) {
     /// Input gain for precision; every pass gains sqrt(N/2).
@@ -158,7 +158,7 @@ fn forward<const N: usize>(
     for (y, row) in temp.iter().enumerate() {
         let transformed = forward_line(rows, row);
         for x in 0..N {
-            output[y * N + x] = post(transformed[x]);
+            output[y * N + x] = crate::simd::saturate_i16(post(transformed[x]));
         }
     }
 }
@@ -196,8 +196,12 @@ const fn divide_round(value: i32, d: i32) -> i32 {
 
 /// VP9 forward transform of an `N`x`N` raster residual (`N = 1 << log2` in
 /// 8..=32; 32 is DCT only), returning raster coefficients at VP9's scale:
-/// 8x the orthonormal transform up to 16x16, 4x for 32x32. Encoder-side
-/// only: any accurate transform at this scale is a valid encoder choice.
+/// 8x the orthonormal transform up to 16x16, 4x for 32x32, saturated to 16
+/// bits. Encoder-side only: any accurate transform at this scale is a valid
+/// encoder choice. An orthonormal basis vector's L1 norm is at most
+/// `sqrt(N)`, so 8-bit residuals give coefficients of at most
+/// `8 * 255 * N` (16320 at 8x8, 32640 at 16x16 and, at 4x, 32x32) plus
+/// rounding: the saturation does not trigger.
 ///
 /// # Panics
 ///
@@ -208,7 +212,7 @@ pub fn vp9_forward_transform(
     columns: Vp9Pass,
     rows: Vp9Pass,
     input: &[i16],
-    output: &mut [i32],
+    output: &mut [i16],
 ) {
     match log2 {
         // VP9 truncates the final 8x8 divide toward zero, not arithmetic shift.
@@ -376,7 +380,7 @@ pub(crate) fn vp9_inverse4_add(
 
 /// VP9 8×8 forward DCT (see [`vp9_forward_transform`]).
 #[must_use]
-pub fn vp9_forward_dct8(input: &[i16; 64]) -> [i32; 64] {
+pub fn vp9_forward_dct8(input: &[i16; 64]) -> [i16; 64] {
     let mut output = [0; 64];
     vp9_forward_transform(3, Vp9Pass::Dct, Vp9Pass::Dct, input, &mut output);
     output

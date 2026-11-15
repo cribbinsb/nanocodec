@@ -687,6 +687,11 @@ mod round_trips {
     fn second_reference_streams_decode_exactly() {
         let config = |second: f32, identity: f32| {
             let mut settings = super::browser_tests::config(64, 64, 30, false);
+            // The Default's unified plan (`structure.unified`) is pinned off
+            // on every side: it would limit the second reference to
+            // high-quality frames and give the stream without `refs.second`
+            // one too.
+            settings.params.set("structure.unified", 0.);
             settings.params.set("refs.second", second);
             settings.params.set("refs.second_full", second);
             settings.params.set("debug.recode_identity", identity);

@@ -255,6 +255,8 @@ fn spatial_layer_state<B: CodecBackend>(
         input,
         rate_control: None,
         second,
+        // Spatial layers keep their own structures (`spatial.rs`).
+        inheritance: None,
         aq,
         reuse,
         reuse_last_frame: None,

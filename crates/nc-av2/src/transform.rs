@@ -381,7 +381,7 @@ pub fn quantize(
     let area = size.coded_len();
     let levels = &mut levels[..area];
     let step = quantizer_step_q3(qindex.ac);
-    let nonzero = dsp.av1_quantize_from(
+    let nonzero = dsp.av1_quantize_from_wide(
         &coefficients[..area],
         &Av1Quantizer {
             dc_step: quantizer_step_q3(qindex.dc),

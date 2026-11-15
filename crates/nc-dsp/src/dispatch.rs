@@ -3083,15 +3083,16 @@ impl Dsp {
 impl Dsp {
     /// AV1 forward 2-D `DCT_DCT` (libaom `fwd_txfm2d`) of the `n`x`n`
     /// residual at `residual` (row-major, `stride`), into `out` in libaom's
-    /// column-major coefficient layout (`txfm` module docs). Residuals must
-    /// be differences of 8-bit samples (`|r| <= 255`); larger values give
-    /// unspecified (but memory-safe) results.
+    /// column-major coefficient layout (`txfm` module docs), each
+    /// coefficient in 16 bits. Residuals must be differences of 8-bit
+    /// samples (`|r| <= 255`; the coefficients then fit `i16` exactly);
+    /// larger values give unspecified (but memory-safe) results.
     ///
     /// # Panics
     ///
     /// If `stride < n`, `residual` does not cover `n` rows, or
     /// `out.len() < n * n`.
-    pub fn av1_forward_dct(&self, size: DctSize, residual: &[i16], stride: usize, out: &mut [i32]) {
+    pub fn av1_forward_dct(&self, size: DctSize, residual: &[i16], stride: usize, out: &mut [i16]) {
         let n = size.side();
         assert!(
             stride >= n && residual.len() >= (n - 1) * stride + n,
@@ -3123,7 +3124,7 @@ impl Dsp {
         side: usize,
         residual: &[i16],
         stride: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let index = match side {
             16 => 0,
@@ -3166,7 +3167,7 @@ impl Dsp {
         residual: &[i16],
         stride: usize,
         zero_limit: u32,
-        out: &mut [i32],
+        out: &mut [i16],
     ) -> bool {
         let index = match size {
             DctSize::N16 => 0,
@@ -3194,7 +3195,7 @@ impl Dsp {
         side: usize,
         residual: &[i16],
         stride: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let (index, size) = match side {
             16 => (0, DctSize::N16),
@@ -3217,23 +3218,8 @@ impl Dsp {
         zero_high_frequencies(&mut out[..side * side], side, crate::av1_low_keep(side));
     }
 
-    /// Transpose the `n`x`n` coefficient block `src` into `dst`: converts
-    /// [`Self::av1_forward_dct`]'s column-major layout to raster order (VP9)
-    /// and back.
-    ///
-    /// # Panics
-    ///
-    /// If either slice is shorter than `n * n`.
-    pub fn transpose_coefficients(&self, size: DctSize, src: &[i32], dst: &mut [i32]) {
-        let n = size.side();
-        let (src, dst) = (&src[..n * n], &mut dst[..n * n]);
-        // SAFETY: the table matches a supported ISA (checked in `with_isa`);
-        // both slices hold exactly `n * n` coefficients.
-        unsafe { (self.txfm.transpose[size as usize])(src, dst) }
-    }
-
     /// [`Self::av1_forward_dct`] with raster (row-major) coefficients, the
-    /// layout VP9 uses: the forward kernel, then [`Self::transpose_coefficients`].
+    /// layout VP9 uses.
     ///
     /// # Panics
     ///
@@ -3243,39 +3229,16 @@ impl Dsp {
         size: DctSize,
         residual: &[i16],
         stride: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
-        if let Some(raster) = self.txfm.forward_dct_raster[size as usize] {
-            let n = size.side();
-            assert!(
-                stride >= n && residual.len() >= (n - 1) * stride + n && out.len() >= n * n,
-                "AV1 forward DCT slices do not cover {n}x{n}"
-            );
-            // SAFETY: the table matches a supported ISA; the slices cover
-            // the block (as `av1_forward_dct`).
-            unsafe { raster(residual, stride, out) };
-            return;
-        }
-        // Exact-size scratch: clearing a 32x32 buffer for every 8x8 block
-        // would cost more than the transpose saves.
-        match size {
-            DctSize::N4 => self.forward_dct_raster::<16>(size, residual, stride, out),
-            DctSize::N8 => self.forward_dct_raster::<64>(size, residual, stride, out),
-            DctSize::N16 => self.forward_dct_raster::<256>(size, residual, stride, out),
-            DctSize::N32 => self.forward_dct_raster::<1024>(size, residual, stride, out),
-        }
-    }
-
-    fn forward_dct_raster<const AREA: usize>(
-        &self,
-        size: DctSize,
-        residual: &[i16],
-        stride: usize,
-        out: &mut [i32],
-    ) {
-        let mut column_major = [0; AREA];
-        self.av1_forward_dct(size, residual, stride, &mut column_major);
-        self.transpose_coefficients(size, &column_major, out);
+        let n = size.side();
+        assert!(
+            stride >= n && residual.len() >= (n - 1) * stride + n && out.len() >= n * n,
+            "AV1 forward DCT slices do not cover {n}x{n}"
+        );
+        // SAFETY: the table matches a supported ISA; the slices cover the
+        // block (as `av1_forward_dct`).
+        unsafe { (self.txfm.forward_dct_raster[size as usize])(residual, stride, out) }
     }
 
     /// AV1 inverse 2-D `DCT_DCT` of `coeffs` (dequantised, libaom layout),
@@ -3509,7 +3472,7 @@ impl Dsp {
     ///
     /// If `residual` does not cover 64x64 at `stride` or `out` is shorter
     /// than 1024.
-    pub fn av1_forward_dct_64(&self, residual: &[i16], stride: usize, out: &mut [i32]) {
+    pub fn av1_forward_dct_64(&self, residual: &[i16], stride: usize, out: &mut [i16]) {
         assert!(
             stride >= 64 && residual.len() >= 63 * stride + 64,
             "residual of {} values at stride {stride} does not cover 64x64",
@@ -3572,36 +3535,34 @@ impl Dsp {
         }
     }
 
-    /// Exact transform-domain distortion gain numerator, `sum(2*c*d-d*d)`.
-    /// Original coefficient magnitudes are below `2^22`; dequantized values are
-    /// signed16-bit. These are semantic arithmetic bounds, not memory-safety
-    /// prerequisites. Negative gains and sums up to49 bits are retained.
+    /// Exact transform-domain distortion gain numerator, `sum(2*c*d-d*d)`,
+    /// of 16-bit forward coefficients `original` and dequantized values,
+    /// which are signed 16-bit (a semantic bound, not a memory-safety
+    /// prerequisite). Negative gains are retained.
     ///
     /// # Panics
-    /// If slice lengths differ or exceed1024 (or bounds fail in debug builds).
+    /// If slice lengths differ or exceed 1024 (or bounds fail in debug builds).
     #[must_use]
-    pub fn av1_coefficient_gain(&self, original: &[i32], dequantized: &[i32]) -> i64 {
+    pub fn av1_coefficient_gain(&self, original: &[i16], dequantized: &[i32]) -> i64 {
         assert_eq!(original.len(), dequantized.len());
         assert!(original.len() <= 1024, "AV1 coded coefficient extent");
-        debug_assert!(original.iter().all(|&c| c.unsigned_abs() < 1 << 22));
         debug_assert!(dequantized.iter().all(|&d| i16::try_from(d).is_ok()));
         // SAFETY: ISA checked at dispatch installation; buffer lengths checked.
         unsafe { (self.txfm.coefficient_gain)(original, dequantized) }
     }
 
-    /// AV1 quantisation of `coeffs` in place (`txfm` module docs); returns
-    /// the number of non-zero levels. Coefficient 0 uses the DC step.
+    /// AV1 quantisation of the 16-bit coefficients `coeffs` in place into
+    /// 16-bit levels (`txfm` module docs; `max_level` is capped at
+    /// `i16::MAX`); returns the number of non-zero levels. Coefficient 0
+    /// uses the DC step.
     ///
     /// # Panics
     ///
     /// If a step is not positive.
-    pub fn av1_quantize(&self, coeffs: &mut [i32], q: &Av1Quantizer) -> u32 {
-        assert!(
-            q.dc_step > 0 && q.ac_step > 0,
-            "quantiser steps must be positive"
-        );
+    pub fn av1_quantize(&self, coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
+        let q = narrow_quantizer(q);
         // SAFETY: as for `av1_forward_dct`.
-        unsafe { (self.txfm.quantize)(coeffs, q) }
+        unsafe { (self.txfm.quantize)(coeffs, &q) }
     }
 
     /// [`Self::av1_quantize`] of `coeffs` into `out`, keeping `coeffs` (the
@@ -3610,7 +3571,24 @@ impl Dsp {
     /// # Panics
     ///
     /// If `out` is shorter than `coeffs` or a step is zero.
-    pub fn av1_quantize_from(&self, coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32 {
+    pub fn av1_quantize_from(&self, coeffs: &[i16], q: &Av1Quantizer, out: &mut [i16]) -> u32 {
+        let q = narrow_quantizer(q);
+        assert!(
+            out.len() >= coeffs.len(),
+            "quantise output shorter than input"
+        );
+        // SAFETY: as for `av1_forward_dct`; `out` covers `coeffs`.
+        unsafe { (self.txfm.quantize_from)(coeffs, &q, out) }
+    }
+
+    /// [`Self::av1_quantize_from`] on 32-bit coefficients and levels, for
+    /// AV2's larger range (its 64x64 coefficients and 20-bit levels do not
+    /// fit 16 bits): the same kernel with 32-bit loads and stores.
+    ///
+    /// # Panics
+    ///
+    /// If `out` is shorter than `coeffs` or a step is zero.
+    pub fn av1_quantize_from_wide(&self, coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32 {
         assert!(
             q.dc_step > 0 && q.ac_step > 0,
             "quantiser steps must be positive"
@@ -3620,7 +3598,7 @@ impl Dsp {
             "quantise output shorter than input"
         );
         // SAFETY: as for `av1_forward_dct`; `out` covers `coeffs`.
-        unsafe { (self.txfm.quantize_from)(coeffs, q, out) }
+        unsafe { (self.txfm.quantize_from_wide)(coeffs, q, out) }
     }
 
     /// AV1 dequantisation (AV1 §7.12.3) of `levels` into `out`.
@@ -3628,7 +3606,7 @@ impl Dsp {
     /// # Panics
     ///
     /// If `out` is shorter than `levels`.
-    pub fn av1_dequantize(&self, levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
+    pub fn av1_dequantize(&self, levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
         assert!(
             out.len() >= levels.len(),
             "dequantise output shorter than input"
@@ -4639,7 +4617,22 @@ fn check_covers(size: BlockSize, view: &PlaneView<'_>, what: &str) {
 /// Check and describe an H.264 deblocking edge: `reach` samples on each
 /// Zero every coefficient of the `side`x`side` block `coeffs` outside its
 /// top-left `keep`x`keep` square (the same in column-major and raster order).
-fn zero_high_frequencies(coeffs: &mut [i32], side: usize, keep: usize) {
+/// `q` for 16-bit levels: positive steps (asserted) and `max_level` capped
+/// at `i16::MAX`. The cap changes no level of a 16-bit coefficient: with
+/// AV1's smallest step (4) and largest `log_scale` (2), `|c| << log_scale /
+/// step` stays within `|c|`.
+fn narrow_quantizer(q: &Av1Quantizer) -> Av1Quantizer {
+    assert!(
+        q.dc_step > 0 && q.ac_step > 0,
+        "quantiser steps must be positive"
+    );
+    Av1Quantizer {
+        max_level: q.max_level.min(i32::from(i16::MAX)),
+        ..*q
+    }
+}
+
+fn zero_high_frequencies(coeffs: &mut [i16], side: usize, keep: usize) {
     for (line, values) in coeffs.chunks_exact_mut(side).enumerate() {
         let start = if line < keep { keep } else { 0 };
         values[start..].fill(0);
@@ -5206,17 +5199,16 @@ impl Dsp {
 }
 
 impl Dsp {
-    /// VP9 quantization of `coefficients` into `levels`: index 0 at `dc`,
-    /// the rest at `ac` (`vp9_quant` module docs). Returns whether any level
-    /// is nonzero. Coefficients must satisfy `|c| < 2^16`; larger values give
-    /// unspecified (but memory-safe) levels.
+    /// VP9 quantization of the 16-bit `coefficients` into `levels`: index 0
+    /// at `dc`, the rest at `ac` (`vp9_quant` module docs). Returns whether
+    /// any level is nonzero.
     ///
     /// # Panics
     ///
     /// If the slices differ in length.
     pub fn vp9_quantize(
         &self,
-        coefficients: &[i32],
+        coefficients: &[i16],
         dc: &crate::Vp9QuantStep,
         ac: &crate::Vp9QuantStep,
         levels: &mut [i32],
@@ -5234,7 +5226,7 @@ impl Dsp {
     /// The largest magnitude `max |c|` of `coefficients` (0 when empty): the
     /// VP9 encoder's test for blocks that certainly quantize to zero.
     #[must_use]
-    pub fn vp9_largest_magnitude(&self, coefficients: &[i32]) -> u32 {
+    pub fn vp9_largest_magnitude(&self, coefficients: &[i16]) -> u32 {
         // SAFETY: the table matches the checked CPU ISA; kernels read only
         // within the slice.
         unsafe { (self.vp9_largest_magnitude)(coefficients) }

@@ -11,8 +11,7 @@ pub(crate) fn install(table: &mut TxfmFns) {
     table.forward_dct_64 = forward_64;
     table.inverse_dct_add_64 = inverse_64;
     table.inverse_dct_add_sparse[1..].copy_from_slice(&[inverse_32_sparse, inverse_64_sparse]);
-    table.forward_dct_raster[2..]
-        .copy_from_slice(&[Some(forward_16_raster), Some(forward_32_raster)]);
+    table.forward_dct_raster[2..].copy_from_slice(&[forward_16_raster, forward_32_raster]);
     table.forward_dct_low[1..].copy_from_slice(&[Some(forward_32_low), Some(forward_64_low)]);
     table.forward_dct_raster_low[1] = Some(forward_32_low_raster);
     table.forward_dct_raster_bounded = [forward_16_bounded, forward_32_bounded];
@@ -21,7 +20,7 @@ pub(crate) fn install(table: &mut TxfmFns) {
 macro_rules! sizes {
     ($($f:ident,$i:ident,$layout:ident,$raster:ident,$bounded:ident);*)=>{$(
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $f(src:&[i16],stride:usize,out:&mut [i32]) {
+        unsafe fn $f(src:&[i16],stride:usize,out:&mut [i16]) {
             // SAFETY: supported ISA and validated buffers from Dsp.
             unsafe { generic::$f::<I32x16>(src,stride,out) }
         }
@@ -31,12 +30,12 @@ macro_rules! sizes {
             unsafe { generic::$i::<I32x16>(coeffs,dst,stride) }
         }
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $raster(src:&[i16],stride:usize,out:&mut [i32]) {
+        unsafe fn $raster(src:&[i16],stride:usize,out:&mut [i16]) {
             // SAFETY: supported ISA and validated buffers from Dsp.
             unsafe { generic::$layout::<I32x16,true>(src,stride,out) }
         }
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $bounded(src:&[i16],stride:usize,limit:u32,out:&mut [i32])->bool {
+        unsafe fn $bounded(src:&[i16],stride:usize,limit:u32,out:&mut [i16])->bool {
             // SAFETY: supported ISA and validated buffers from Dsp.
             unsafe { generic::$bounded::<I32x16>(src,stride,limit,out) }
         }
@@ -46,7 +45,7 @@ sizes!(forward_16,inverse_16,forward_16_layout,forward_16_raster,forward_16_boun
        forward_32,inverse_32,forward_32_layout,forward_32_raster,forward_32_bounded);
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward_64(src: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_64(src: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: supported ISA and validated buffers from Dsp.
     unsafe { generic::forward_64_pruned::<I32x16>(src, stride, out) }
 }
@@ -71,21 +70,21 @@ macro_rules! sparse {
 sparse!(inverse_32_sparse;inverse_64_sparse);
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward_32_low(src: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_32_low(src: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: supported ISA; sixteen retained outputs match the lane count.
     unsafe {
         generic::forward_32_low::<I32x16, 16, false>(src, stride, out);
     }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward_32_low_raster(src: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_32_low_raster(src: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: supported ISA; sixteen retained outputs match the lane count.
     unsafe {
         generic::forward_32_low::<I32x16, 16, true>(src, stride, out);
     }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward_64_low(src: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_64_low(src: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: supported ISA; sixteen retained outputs match the lane count.
     unsafe {
         generic::forward_64_low::<I32x16, 16>(src, stride, out);

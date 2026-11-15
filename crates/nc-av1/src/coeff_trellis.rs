@@ -55,11 +55,11 @@ impl TrellisQuantizer {
     pub fn quantize(
         &mut self,
         model: &mut RateModel<'_>,
-        coeffs: &[i32],
+        coeffs: &[i16],
         quantizer: &Av1Quantizer,
         lambda: f32,
         max_states: usize,
-        levels: &mut [i32],
+        levels: &mut [i16],
         eob: usize,
     ) -> u32 {
         let scan = &scan(model.tx)[..eob];
@@ -75,7 +75,7 @@ impl TrellisQuantizer {
                 quantizer.ac_step
             });
             let magnitude = i64::from(coeffs[pos].unsigned_abs());
-            let plain = levels[pos].unsigned_abs();
+            let plain = u32::from(levels[pos].unsigned_abs());
             let past_half = 2 * (magnitude << log_scale) >= (2 * i64::from(plain) + 1) * step;
             let nearest = if past_half && (plain as i32) < quantizer.max_level {
                 plain + 1
@@ -98,7 +98,9 @@ impl TrellisQuantizer {
         let mut nonzero = 0;
         for (i, &p) in scan.iter().enumerate() {
             let pos = usize::from(p);
-            let level = if i < coded { self.chosen[i] as i32 } else { 0 };
+            // Candidates never exceed the nearest level, which the capped
+            // `max_level` keeps within 16 bits (`QuantSteps::quantizer`).
+            let level = if i < coded { self.chosen[i] as i16 } else { 0 };
             levels[pos] = if coeffs[pos] < 0 { -level } else { level };
             nonzero += u32::from(level != 0);
         }
@@ -382,12 +384,12 @@ mod tests {
         for tx in SIZES {
             for plane in [PlaneType::Luma, PlaneType::Chroma] {
                 let area = tx.coded_size() * tx.coded_size();
-                let mut levels = vec![0_i32; area];
+                let mut levels = vec![0_i16; area];
                 for &p in &scan(tx)[..area.min(40)] {
                     let v = match next() % 8 {
                         0..=3 => 0,
                         4 | 5 => 1,
-                        6 => 3 + (next() % 20) as i32,
+                        6 => 3 + (next() % 20) as i16,
                         _ => 2,
                     };
                     levels[usize::from(p)] = if next() % 2 == 0 { v } else { -v };
@@ -401,7 +403,7 @@ mod tests {
                 let mut bits = model.eob_rate(eob - 1);
                 let mut state = model.initial_state();
                 for c in (0..eob).rev() {
-                    let level = levels[usize::from(scan(tx)[c])].unsigned_abs();
+                    let level = u32::from(levels[usize::from(scan(tx)[c])].unsigned_abs());
                     let mut level_bits = [0.0];
                     model.level_rates(&state, c, &[level], &mut level_bits);
                     bits += level_bits[0];

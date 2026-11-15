@@ -501,11 +501,12 @@ mod tests {
                 for inter in [false, true] {
                     for pattern in 0..4 {
                         let n = tx.coded_area();
-                        let levels: Vec<i32> = (0..n)
+                        // The encoder's levels are 16-bit: its extremes.
+                        let levels: Vec<i16> = (0..n)
                             .map(|i| match pattern {
-                                1 => i32::from(i == 0) * -32_768,
-                                2 if i % 7 == 0 => (i % 39) as i32 - 19,
-                                3 if i % 3 == 0 => 1 << 19,
+                                1 => i16::from(i == 0) * i16::MIN,
+                                2 if i % 7 == 0 => (i % 39) as i16 - 19,
+                                3 if i % 3 == 0 => i16::MAX,
                                 3 => -17,
                                 _ => 0,
                             })
@@ -557,7 +558,7 @@ mod tests {
                         assert_eq!((coded.eob, coded.kind), (eob, Av1TxType::DctDct));
                         let expected: Vec<i32> = levels
                             .iter()
-                            .map(|&l| dequantized(l, tx.dequant_shift()))
+                            .map(|&l| dequantized(i32::from(l), tx.dequant_shift()))
                             .collect();
                         let stored: Vec<i32> = buffer.coefficients[..n]
                             .iter()

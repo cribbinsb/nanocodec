@@ -956,6 +956,19 @@ impl CodecBackend for HevcBackend {
         // tripped (+0.36 dB).
         // The other HEVC presets pin it off.
         ("rate.key_still_boost", 4.0),
+        // The unified structure's reference plan (`structure.unified`,
+        // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
+        // (key, cadence base) also predict from the high-quality frame before
+        // them where the cadence strength is 0.75 or more. Build 78191a7a,
+        // pool levels of draw 2026-11-15: L1 -0.52% [-0.88, -0.19]; L2
+        // -0.35% [-0.66, -0.10]; L3 (ladder, 126 clips) J -0.33% [-0.62,
+        // -0.09], no guard; Jetson cycles +2.2% (lowlight +5.2, crowd +2.1,
+        // bodycam +0.2), instructions +1.6%. 600-frame final-check (27 clips,
+        // keys every 10 s): J -0.19% [-0.63, +0.25], no guard; crowd -1.2%,
+        // static -0.4%, lowlight +0.5%: a small gain. Landing conformance with it on:
+        // every stream bit-exact in HM, ffmpeg and ours. The other HEVC
+        // presets pin it off.
+        ("structure.unified", 1.0),
         ("decision.intra_gate_variance", 0.0),
         ("decision.codec_subpel_seed_lambdas", 0.05),
         ("decision.subpel_move_bias", 1.1),

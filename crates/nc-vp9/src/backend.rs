@@ -352,7 +352,7 @@ struct Scratch {
     /// One transform block's residual and coefficients (only the block's
     /// area is used; reused, not zeroed).
     residual: Vec<i16>,
-    coefficients: Vec<i32>,
+    coefficients: Vec<i16>,
     /// The current inter block's prediction, all planes packed.
     prediction: Vec<u8>,
     /// One block's luma prediction while choosing its filter, and the best
@@ -750,7 +750,7 @@ impl Vp9Trellis {
         &mut self,
         (fc, contexts, tx_block, inter): (&FrameContext, &EntropyContexts, &TxBlock, bool),
         ty: transform::TxType,
-        (lambda, coefficients, steps): (f32, &[i32], transform::Steps),
+        (lambda, coefficients, steps): (f32, &[i16], transform::Steps),
         levels: &mut [i32],
     ) -> bool {
         let model = Model::of(tx_block.plane, tx_block.tx, ty, inter);
@@ -900,6 +900,18 @@ impl CodecBackend for Vp9Backend {
         // and crowd points 10.8 -> 15.7 per 1000 frames.
         // The other VP9 presets pin it off.
         ("rate.key_still_boost", 6.0),
+        // The unified structure's reference plan (`structure.unified`,
+        // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
+        // (key, cadence base) also predict from the high-quality frame before
+        // them where the cadence strength is 0.75 or more. Build 78191a7a,
+        // pool levels of draw 2026-11-15: L1 -1.38% [-2.14, -0.73]; L2
+        // -0.74% [-0.97, -0.50]; L3 (ladder, 126 clips) J -0.67% [-0.88,
+        // -0.45], no guard; Jetson cycles +0.8% (lowlight +1.3, crowd +1.1,
+        // bodycam 0.0), instructions +0.6%. 600-frame final-check (27 clips,
+        // keys every 10 s): J -0.58% [-0.78, -0.38], no guard. Landing conformance with it on:
+        // every stream bit-exact in vpxdec, ffmpeg and ours. The other VP9
+        // presets pin it off.
+        ("structure.unified", 1.0),
         ("decision.codec_subpel_seed_lambdas", 0.0),
         ("quant.trellis", 1.0),
         ("quant.trellis_key", 1.0),
@@ -3373,7 +3385,7 @@ impl Vp9Backend {
         tx_block: &TxBlock,
         (tx, offset, quantization): (TxSize, usize, (Rounding, i32)),
         steps: transform::Steps,
-        dc: i32,
+        dc: i16,
     ) -> bool {
         let area = tx.area();
         let coefficients = &mut self.scratch.coefficients[..area];
@@ -3509,7 +3521,7 @@ enum NonrdSkip {
     /// Code it normally.
     None,
     /// Only its DC coefficient (this value) can be nonzero.
-    DcOnly(i32),
+    DcOnly(i16),
     /// Nothing: every coefficient would quantize to zero.
     All,
 }
@@ -3521,7 +3533,8 @@ enum NonrdSkip {
 /// both thresholds. libvpx averages the test over a block's transform units;
 /// here each unit tests its own residual. The DC coefficient is libvpx's
 /// `vpx_fdctNxN_1` (8x the orthonormal DC, 32x32 4x): the residual sum
-/// times 8 / side (32x32: / 8).
+/// times 8 / side (32x32: / 8), at most `2040 * 16` for 8-bit residuals:
+/// a 16-bit coefficient like the forward's.
 fn nonrd_skip(
     variance: nc_dsp::Variance,
     tx: TxSize,
@@ -3544,7 +3557,7 @@ fn nonrd_skip(
     } else {
         sum * DCT_DC_SCALE / tx.side() as i64
     };
-    NonrdSkip::DcOnly(dc as i32)
+    NonrdSkip::DcOnly(i16::try_from(dc).expect("the DC of 8-bit residuals fits 16 bits"))
 }
 
 /// libvpx's skip thresholds are the squared dequantizer step `>> 6`.
@@ -3659,7 +3672,7 @@ fn transform_residual(
     (tx, ty, lossless, partial): (TxSize, transform::TxType, bool, bool),
     residual: &[i16],
     zero_limit: u32,
-    coefficients: &mut [i32],
+    coefficients: &mut [i16],
 ) -> bool {
     let side = tx.side();
     if partial && tx == TxSize::Tx32 {

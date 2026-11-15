@@ -28,7 +28,7 @@ const CHROMA_SKIP_SAD_DEN: u32 = 8;
 #[must_use]
 pub fn shave_trailing_ones(
     scan: &[u16],
-    levels: &mut [i32],
+    levels: &mut [i16],
     mut eob: usize,
     min_zero_run: usize,
 ) -> usize {
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn shaving_drops_isolated_trailing_ones() {
         let scan: Vec<u16> = (0..16).collect();
-        let mut levels = vec![0i32; 16];
+        let mut levels = vec![0i16; 16];
         levels[0] = 5;
         levels[12] = 1;
         let eob = shave_trailing_ones(&scan, &mut levels, 13, 8);

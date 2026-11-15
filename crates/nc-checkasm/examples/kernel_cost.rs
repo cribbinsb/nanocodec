@@ -54,8 +54,9 @@ fn main() {
     let mut sum = 0u64;
     for _ in 0..rounds {
         if mode == "low32" {
-            dsp.av1_forward_dct_raster_low(32, black_box(&residual), 32, &mut out);
-            sum = sum.wrapping_add(black_box(out[1]) as u64);
+            let mut av1 = [0i16; 1024];
+            dsp.av1_forward_dct_raster_low(32, black_box(&residual), 32, &mut av1);
+            sum = sum.wrapping_add(black_box(av1[1]) as u64);
         } else if mode.starts_with("tx") {
             let tx = if mode.contains("16") {
                 HevcTransform::Dct16

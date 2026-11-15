@@ -14,6 +14,7 @@
 //! make a requested rate unattainable; counters expose that fact. With
 //! [`RateControlConfig::frame_drop`] the encoder skips inter frames that would
 //! overflow the buffer even at the maximum quantizer ([`RateController::should_drop`]).
+use crate::fixed_overhead::FixedOverhead;
 use crate::layer::LayerPosition;
 use crate::params::RateParams;
 use crate::period_ledger::fixed_camera;
@@ -616,6 +617,9 @@ pub(crate) struct RateController {
     quality_floor: QualityFloor,
     /// Whether the quality cap raised the current frame's quantizer.
     quality_capped: bool,
+    /// The cadence strength the structure set for the next frame
+    /// (`set_cadence_depth`), instead of the cadence's own.
+    cadence_depth: Option<f64>,
     /// Whether finer inter frames still buy quality (`rate.min_refinement_gain`).
     refinement: RefinementGain,
     /// Consecutive inter frames held by `hold_exhausted_refinement`.
@@ -728,6 +732,8 @@ pub(crate) struct RateController {
     level_step_scale: f64,
     /// The complexity hint inter levels are planned from (`rate.level_hint_weight`).
     level_hint: LevelHint,
+    /// Inter frames' fixed overhead (`rate.fixed_overhead`).
+    overhead: FixedOverhead,
     last_peak: f64,
     last_key: bool,
     last_predicted: f64,
@@ -792,6 +798,7 @@ impl RateController {
             last_inter_quantizer: None,
             quality_floor: QualityFloor::new(params, codec),
             quality_capped: false,
+            cadence_depth: None,
             refinement: RefinementGain::new(f64::from(params.min_refinement_gain)),
             cap_frames: 0,
             seed: q,
@@ -840,6 +847,7 @@ impl RateController {
             last_budget: 1.,
             level_step_scale: f64::from(params.level_step_scale),
             level_hint: LevelHint::new(f64::from(params.level_hint_weight)),
+            overhead: FixedOverhead::new(params.fixed_overhead >= 0.5),
             last_peak: 1.,
             last_key: false,
             last_predicted: 1.,
@@ -1286,6 +1294,8 @@ impl RateController {
             .iter()
             .map(|&(model, ratio)| model * ratio.powf(-exponent))
             .sum();
+        // The frames' fixed overhead is not the content's to spend.
+        let budget = (budget - self.overhead.bits()).max(1.);
         let closed = (weighted * hint / (frames * budget)).powf(1. / exponent);
         let refine = |step: f64| {
             roles
@@ -1498,6 +1508,21 @@ impl RateController {
     /// ([`Complexity::residual_sigma`]).
     pub fn wants_temporal_noise(&self) -> bool {
         self.settings.config.temporal_noise_stat || self.quality_floor.wants_noise()
+    }
+
+    /// The QP cadence's strength on the frame `hint` describes: the
+    /// structure's depth when it sets one, else the cadence's own.
+    fn cadence_strength(&self, hint: &Complexity) -> f64 {
+        self.cadence_depth
+            .unwrap_or_else(|| self.cadence.strength(hint.static_fraction, hint.motion))
+    }
+
+    /// The QP cadence's strength (0..1) on the frames that follow, when the
+    /// structure sets it from the measured inheritance
+    /// (`inheritance.rs`, `structure.inherited_depth`); `None` leaves it to
+    /// the cadence (static share and motion gate).
+    pub fn set_cadence_depth(&mut self, depth: Option<f64>) {
+        self.cadence_depth = depth;
     }
 
     /// Whether the encoder should report each inter frame's luma distortion
@@ -1721,6 +1746,7 @@ impl RateController {
         self.pixels = pixels as f64;
         self.relearn = [true; MODEL_CLASSES];
         self.level_hint.mean = None;
+        self.overhead.reset();
     }
 
     /// Largest change of the inter level from one frame to the next: the
@@ -1815,7 +1841,7 @@ impl RateController {
         let budget = self.budget(key);
         self.unscaled_budget = self.budget_at(key, 1.);
         let slot = self.model_slot(key, index, layer);
-        let strength = self.cadence.strength(hint.static_fraction, hint.motion);
+        let strength = self.cadence_strength(&hint);
         let exponent = self.settings.config.rate_exponent;
         let level_step = if key {
             self.model[KEY_MODEL].map(|m| (m * h / budget).powf(1. / exponent))
@@ -1889,9 +1915,7 @@ impl RateController {
         self.last_key = key;
         self.last_peak =
             self.settings.peak / self.frame_fps + (self.settings.capacity - self.occupancy);
-        self.last_predicted = self.model[slot].map_or(budget, |m| {
-            m * h / (self.steps[q as usize] * self.block_ratio).powf(exponent)
-        });
+        self.last_predicted = self.predicted_bits(q, budget);
         self.add_plan_extras((key, layer.is_flat()), q, hint.static_fraction, budget);
         let cadence_offset = if key || !layer.is_flat() {
             0.
@@ -1924,10 +1948,7 @@ impl RateController {
         }
         self.current = q;
         self.coding.forced = true;
-        let exponent = self.settings.config.rate_exponent;
-        self.last_predicted = self.model[self.current_slot].map_or(self.last_budget, |m| {
-            m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
-        });
+        self.last_predicted = self.predicted_bits(q, self.last_budget);
         self.stats.plan.predicted_bits = self.last_predicted;
         q
     }
@@ -2053,7 +2074,30 @@ impl RateController {
             return None;
         };
         let s = self.settings;
-        Some(model * hint / self.steps[s.max as usize].powf(s.config.rate_exponent))
+        Some(
+            self.overhead.bits()
+                + model * hint / self.steps[s.max as usize].powf(s.config.rate_exponent),
+        )
+    }
+
+    /// The bits the current frame's model slot predicts at quantizer `q`
+    /// for its complexity hint (`fallback` before the slot has a model).
+    fn predicted_bits(&self, q: u32, fallback: f64) -> f64 {
+        let exponent = self.settings.config.rate_exponent;
+        self.model[self.current_slot].map_or(fallback, |m| {
+            self.slot_overhead(self.current_slot)
+                + m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
+        })
+    }
+
+    /// The fixed overhead of a frame of model slot `slot`: inter frames'
+    /// (`rate.fixed_overhead`), none for keys.
+    fn slot_overhead(&self, slot: usize) -> f64 {
+        if slot == KEY_MODEL {
+            0.
+        } else {
+            self.overhead.bits()
+        }
     }
 
     /// The single offset, in QP units, whose step gives a frame the same
@@ -2146,7 +2190,8 @@ impl RateController {
     /// current quantizer.
     fn learn(&mut self, bits: u64) {
         let class = self.current_slot;
-        let value = bits as f64
+        let content = (bits as f64 - self.slot_overhead(class)).max(1.);
+        let value = content
             * (self.steps[self.current as usize] * self.block_ratio * self.inframe_ratio)
                 .powf(self.settings.config.rate_exponent)
             / self.last_hint;
@@ -2181,6 +2226,11 @@ impl RateController {
         // the per-role prediction are the refinement's.
         if !self.still.refining() && !self.still.held_refining() {
             self.learn(bits);
+        }
+        if !self.last_key {
+            let uniform = self.uniform_budget();
+            self.overhead
+                .observe(bits as f64, self.stats.plan.static_fraction, uniform);
         }
         self.still.settle(bits as f64);
         let key_step = self.last_key.then(|| self.steps[self.current as usize]);

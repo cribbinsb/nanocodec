@@ -286,7 +286,8 @@ so λ follows QP and there is no loop-filter pattern to copy.
 **HEVC profile (landed): `rate.cadence_static_scaling` 0.** Draw 1: J -1.1 [-2.1, +0.1]. Draw 2:
 -1.0 [-2.0, -0.2]. AOM CTC LD lens, paired with the Default: Weighted +0.1, J -1.4 (PSNR-YUV -1.6,
 VMAF -1.1, MS-SSIM -2.2). HEVC Default against x264 medium on the lens: J -23.7 -> -23.7 (the
-Weighted figure -11.8 -> -10.8; J's three terms improve). CPU is unchanged. Strict CTC column
+Weighted figure -11.8 -> -10.8; J's three terms improve). CPU at fixed QP: x86 P instructions +1.7 %
+(measured after landing; the commit message's "CPU unchanged" was wrong). Strict CTC column
 (static structure and references) = adaptive-refs column for HEVC: the profile uses the static
 strength and the Default's flat single reference.
 
@@ -301,3 +302,12 @@ draw 2 -2.9 [-4.6, -1.6]. AOM CTC LD lens, paired: J -1.0, Weighted -0.1 (VMAF -
 medium on the lens: J -2.8 -> -4.0, Weighted +5.4 -> +5.4. The reference patterns on H.264 (flat
 structure): SVT-static +4.2, x26x +7.9, libvpx flat +14.5, JVET +8.7 / +2.1 without the model, libaom
 LD16 +12.7; the Default's adaptive three layers stay (they are the reference management).
+
+H.264 profile CPU at fixed QP: x86 P instructions -2.6 %.
+
+**VVC profile (landed): `rate.cadence_static_scaling` 0, as HEVC.** Draw 1: J -1.0 [-1.9, -0.1]. Draw 2:
+-1.0 [-1.6, -0.4]. With leaf penalty 2: -1.2 / -1.0, no gain on draw 2, so it is left out. AOM CTC LD
+lens, paired: J -1.0, Weighted 0.0. VVC Default vs x264 medium on the lens: Weighted / J -22.5 / -30.6
+(published 2026-11-14: -21.6 / -29.9). CPU at fixed QP: x86 P instructions -0.2 %. VVC's other
+patterns: SVT-static +0.4, x26x +11.1, JVET +7.1 / +5.7 without the model, libaom LD16 +1.5, flat +8.0,
+no start-up cadence +1.9, finer key +1.4, H.264's profile +0.9.

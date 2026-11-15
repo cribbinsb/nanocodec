@@ -10,8 +10,9 @@
 //!
 //! # Exactness and ranges
 //!
-//! Contract: `|c| < 2^16` (VP9 coefficients of 8-bit video; 32x32 ones are
-//! at half scale and shifted by one), so numerators stay below `2^18`. With
+//! Coefficients are 16-bit (VP9 coefficients of 8-bit video, as the shared
+//! forward stores them; 32x32 ones are at half scale and shifted by one), so
+//! `|c| <= 2^15` and numerators stay below `2^18`. Levels stay 32-bit. With
 //! `reciprocal = ceil(2^32 / step)` and steps in `MIN_STEP..=MAX_STEP`, the
 //! reciprocal's error is under `step / 2^32` per unit, so
 //! `numerator · reciprocal >> 32` is exactly `floor(numerator / step)`
@@ -107,17 +108,18 @@ impl Vp9QuantStep {
 
 /// Quantize `coefficients` into `levels` (same length): index 0 with `dc`,
 /// the rest with `ac`. Returns whether any level is nonzero.
-pub(crate) type QuantizeFn = unsafe fn(&[i32], &Vp9QuantStep, &Vp9QuantStep, &mut [i32]) -> bool;
+pub(crate) type QuantizeFn = unsafe fn(&[i16], &Vp9QuantStep, &Vp9QuantStep, &mut [i32]) -> bool;
 
 /// The scalar reference.
 pub(crate) unsafe fn quantize(
-    coefficients: &[i32],
+    coefficients: &[i16],
     dc: &Vp9QuantStep,
     ac: &Vp9QuantStep,
     levels: &mut [i32],
 ) -> bool {
     let mut nonzero = false;
     for (i, (&c, level)) in coefficients.iter().zip(levels.iter_mut()).enumerate() {
+        let c = i32::from(c);
         *level = if i == 0 { dc.level(c) } else { ac.level(c) };
         nonzero |= *level != 0;
     }
@@ -126,13 +128,13 @@ pub(crate) unsafe fn quantize(
 
 /// The largest coefficient magnitude `max |c|` (0 for none): the encoder's
 /// all-zero test before quantizing.
-pub(crate) type MagnitudeFn = unsafe fn(&[i32]) -> u32;
+pub(crate) type MagnitudeFn = unsafe fn(&[i16]) -> u32;
 
 /// The scalar reference of [`MagnitudeFn`].
-pub(crate) unsafe fn largest_magnitude(coefficients: &[i32]) -> u32 {
+pub(crate) unsafe fn largest_magnitude(coefficients: &[i16]) -> u32 {
     coefficients
         .iter()
-        .map(|c| c.unsigned_abs())
+        .map(|c| u32::from(c.unsigned_abs()))
         .max()
         .unwrap_or(0)
 }
@@ -172,11 +174,11 @@ pub(crate) fn kernel(isa: Isa) -> QuantizeFn {
 ))]
 #[inline(always)]
 fn split<const LANES: usize>(
-    coefficients: &[i32],
+    coefficients: &[i16],
     dc: &Vp9QuantStep,
     ac: &Vp9QuantStep,
     levels: &mut [i32],
-    vectors: impl FnOnce(&[[i32; LANES]], &mut [[i32; LANES]]) -> bool,
+    vectors: impl FnOnce(&[[i16; LANES]], &mut [[i32; LANES]]) -> bool,
 ) -> bool {
     let n = coefficients.len().min(levels.len());
     let (coefficients, levels) = (&coefficients[..n], &mut levels[..n]);
@@ -184,12 +186,12 @@ fn split<const LANES: usize>(
     let (whole_out, tail_out) = levels.as_chunks_mut::<LANES>();
     let mut nonzero = vectors(whole, whole_out);
     for (&c, level) in tail.iter().zip(tail_out) {
-        *level = ac.level(c);
+        *level = ac.level(i32::from(c));
         nonzero |= *level != 0;
     }
     if let Some(&c) = coefficients.first() {
         let at_ac_step = levels[0];
-        levels[0] = dc.level(c);
+        levels[0] = dc.level(i32::from(c));
         // The vector pass counted index 0 at the AC step. Only when that was
         // its only nonzero contribution and the DC level is zero (rare: the
         // DC step is usually the smaller) does the flag need a recount.

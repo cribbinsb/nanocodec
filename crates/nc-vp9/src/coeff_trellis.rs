@@ -226,7 +226,7 @@ impl TrellisQuantizer {
     pub(crate) fn quantize(
         &mut self,
         model: &mut RateModel<'_>,
-        coefficients: &[i32],
+        coefficients: &[i16],
         steps: Steps,
         (lambda, max_states): (f32, usize),
         levels: &mut [i32],

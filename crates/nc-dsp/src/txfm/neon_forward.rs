@@ -298,7 +298,7 @@ pub(crate) unsafe fn hevc_columns<const N: usize>(m: &[i32], pass_shift: u32, ou
 /// The full scalar graph remains the independent coefficient oracle.
 #[cfg(test)]
 #[target_feature(enable = "neon")]
-unsafe fn forward_64_wide_reference(residual: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_64_wide_reference(residual: &[i16], stride: usize, out: &mut [i16]) {
     const N: usize = 64;
     const CODED: usize = 32;
     let mut buf = [MaybeUninit::<i32>::uninit(); N * CODED];
@@ -336,7 +336,7 @@ unsafe fn forward_64_wide_reference(residual: &[i16], stride: usize, out: &mut [
 /// Low-bit-depth32-point columns: shift2, Q12 cosines, mid-shift4.
 #[cfg(test)]
 #[target_feature(enable = "neon")]
-unsafe fn forward_32_wide_reference(residual: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_32_wide_reference(residual: &[i16], stride: usize, out: &mut [i16]) {
     const N: usize = 32;
     let mut buf = [MaybeUninit::<i32>::uninit(); N * N];
     let mut input = [Column::splat(0); N];
@@ -372,7 +372,7 @@ unsafe fn forward_32_wide_reference(residual: &[i16], stride: usize, out: &mut [
 /// 8-bit residuals, and the rows use the L1 guard (both proved in
 /// `range_probe`).
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_16(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_16(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: dispatcher guarantees NEON and complete8-bit residual windows.
     unsafe {
         forward_narrow_rows::<16, false, 16>(residual, stride, out);
@@ -382,7 +382,7 @@ pub(crate) unsafe fn forward_16(residual: &[i16], stride: usize, out: &mut [i32]
 /// [`forward_16`] with raster coefficients (output tiles transposed in
 /// registers).
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_16_raster(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_16_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: as for `forward_16`.
     unsafe {
         forward_narrow_rows::<16, true, 16>(residual, stride, out);
@@ -394,7 +394,7 @@ pub(crate) unsafe fn forward_16_raster(residual: &[i16], stride: usize, out: &mu
 /// pre-adds: column inputs are at most 255 << 2, and shifted column outputs
 /// fit the row graph's amplitude envelope. No runtime row guard is needed.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_8(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_8(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_8_layout::<false>(residual, stride, out) }
 }
@@ -402,13 +402,13 @@ pub(crate) unsafe fn forward_8(residual: &[i16], stride: usize, out: &mut [i32])
 /// [`forward_8`] with raster (row-major) coefficients, the layout VP9 uses:
 /// the output tile is transposed in registers before the stores.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_8_raster(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_8_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_8_layout::<true>(residual, stride, out) }
 }
 
 #[inline(always)]
-unsafe fn forward_8_layout<const RASTER: bool>(residual: &[i16], stride: usize, out: &mut [i32]) {
+unsafe fn forward_8_layout<const RASTER: bool>(residual: &[i16], stride: usize, out: &mut [i16]) {
     const SIDE: usize = 8;
     const INPUT_SHIFT: i32 = 2;
     const MID_SHIFT: i32 = 1;
@@ -434,11 +434,7 @@ unsafe fn forward_8_layout<const RASTER: bool>(residual: &[i16], stride: usize, 
         };
         for (line, lane) in vectors.iter().enumerate() {
             let dst = &mut out[line * SIDE..][..SIDE];
-            vst1q_s32(dst.as_mut_ptr(), vmovl_s16(vget_low_s16(*lane)));
-            vst1q_s32(
-                dst.as_mut_ptr().add(SIDE / 2),
-                vmovl_s16(vget_high_s16(*lane)),
-            );
+            vst1q_s16(dst.as_mut_ptr(), *lane);
         }
     }
 }
@@ -446,7 +442,7 @@ unsafe fn forward_8_layout<const RASTER: bool>(residual: &[i16], stride: usize, 
 /// Exact guarded eight-lane AV1 forward rows; high-range batches retain
 /// the wide graph. Guard accumulation shares the required row-input loads.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_32(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_32(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: dispatcher guarantees NEON and complete8-bit residual windows.
     unsafe {
         forward_narrow_rows::<32, false, 32>(residual, stride, out);
@@ -456,7 +452,7 @@ pub(crate) unsafe fn forward_32(residual: &[i16], stride: usize, out: &mut [i32]
 /// [`forward_32`] with raster coefficients (output tiles transposed in
 /// registers).
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_32_raster(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_32_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: as for `forward_32`.
     unsafe {
         forward_narrow_rows::<32, true, 32>(residual, stride, out);
@@ -466,7 +462,7 @@ pub(crate) unsafe fn forward_32_raster(residual: &[i16], stride: usize, out: &mu
 /// Exact guarded eight-lane AV1 forward rows; high-range batches retain
 /// the wide graph. Guard accumulation shares the required row-input loads.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_64(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_64(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: dispatcher guarantees NEON and complete8-bit residual windows.
     unsafe {
         forward_narrow_rows::<64, false, 32>(residual, stride, out);
@@ -481,7 +477,7 @@ pub(crate) unsafe fn forward_64(residual: &[i16], stride: usize, out: &mut [i32]
 unsafe fn forward_low<const N: usize, const KEEP: usize, const RASTER: bool>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     let coded = kept(N);
     out[..coded * coded].fill(0);
@@ -493,35 +489,35 @@ unsafe fn forward_low<const N: usize, const KEEP: usize, const RASTER: bool>(
 
 /// [`forward_low`] of a 16x16 block.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_16_low(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_16_low(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_low::<16, { super::low_keep(16) }, false>(residual, stride, out) }
 }
 
 /// [`forward_low`] of a 32x32 block.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_32_low(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_32_low(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_low::<32, { super::low_keep(32) }, false>(residual, stride, out) }
 }
 
 /// [`forward_low`] of a 16x16 block, raster coefficients.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_16_low_raster(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_16_low_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_low::<16, { super::low_keep(16) }, true>(residual, stride, out) }
 }
 
 /// [`forward_low`] of a 32x32 block, raster coefficients.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_32_low_raster(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_32_low_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_low::<32, { super::low_keep(32) }, true>(residual, stride, out) }
 }
 
 /// [`forward_low`] of a 64x64 block (in its coded 32x32 square).
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn forward_64_low(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_64_low(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded contract.
     unsafe { forward_low::<64, { super::low_keep(64) }, false>(residual, stride, out) }
 }
@@ -609,7 +605,7 @@ fn row_dct<V: ForwardLanes, const N: usize>(x: &[V; MAX_POINTS], y: &mut [V; MAX
 unsafe fn forward_narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> u32 {
     let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
     // SAFETY: forwarded contract.
@@ -661,7 +657,7 @@ unsafe fn forward_bounded<const N: usize>(
     stride: usize,
     zero_limit: u32,
     rounding: u32,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> bool {
     let mut buf = [MaybeUninit::<i16>::uninit(); BUFFER_CAPACITY];
     // SAFETY: forwarded contract.
@@ -696,7 +692,7 @@ pub(crate) unsafe fn forward_16_bounded(
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> bool {
     // SAFETY: forwarded contract.
     unsafe {
@@ -716,7 +712,7 @@ pub(crate) unsafe fn forward_32_bounded(
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> bool {
     // SAFETY: forwarded contract.
     unsafe {
@@ -737,7 +733,7 @@ pub(crate) unsafe fn forward_32_bounded(
 #[target_feature(enable = "neon")]
 unsafe fn narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
     buf: &[i16],
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> u32 {
     let (kept, coded) = (KEEP, kept(N));
     let mut input = [Column::splat(0); MAX_POINTS];
@@ -774,12 +770,12 @@ unsafe fn narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
                     let tile =
                         unsafe { transpose(core::array::from_fn(|i| shifted(output[k0 + i]))) };
                     for (i, row) in tile.into_iter().enumerate() {
-                        store_widened(&mut out[(r0 + i) * coded + k0..], row);
+                        store_i16(&mut out[(r0 + i) * coded + k0..], row);
                     }
                 }
             } else {
                 for (k, value) in output[..kept].iter().enumerate() {
-                    store_widened(&mut out[k * coded + r0..], shifted(*value));
+                    store_i16(&mut out[k * coded + r0..], shifted(*value));
                 }
             }
         } else {
@@ -802,11 +798,15 @@ unsafe fn narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
                     let view = as_uninit(&mut out[..coded * coded]);
                     for k0 in (0..kept).step_by(4) {
                         let rows: [I32x4; 4] = core::array::from_fn(|i| shifted(&y[k0 + i]));
-                        I32x4::store_transposed(&rows, &mut view[first * coded + k0..], coded);
+                        I32x4::store_transposed_sat16(
+                            &rows,
+                            &mut view[first * coded + k0..],
+                            coded,
+                        );
                     }
                 } else {
                     for (k, value) in y[..kept].iter().enumerate() {
-                        shifted(value).store(&mut out[k * coded + first..]);
+                        shifted(value).store_sat16(&mut out[k * coded + first..]);
                     }
                 }
             }
@@ -815,16 +815,13 @@ unsafe fn narrow_rows<const N: usize, const RASTER: bool, const KEEP: usize>(
     narrow_batches
 }
 
-/// Store eight i16 lanes widened to i32 at the start of `dest`.
+/// Store eight i16 lanes at the start of `dest`.
 #[inline(always)]
-fn store_widened(dest: &mut [i32], row: int16x8_t) {
+fn store_i16(dest: &mut [i16], row: int16x8_t) {
     let dest = &mut dest[..8];
-    // SAFETY: NEON kernels only; both four-lane stores stay in the checked
+    // SAFETY: NEON kernels only; one 128-bit store into the checked
     // eight-element slice.
-    unsafe {
-        vst1q_s32(dest.as_mut_ptr(), vmovl_s16(vget_low_s16(row)));
-        vst1q_s32(dest.as_mut_ptr().add(4), vmovl_s16(vget_high_s16(row)));
-    }
+    unsafe { vst1q_s16(dest.as_mut_ptr(), row) }
 }
 
 #[cfg(test)]
@@ -1012,7 +1009,7 @@ mod tests {
                     _ => (state % 511) as i16 - 255,
                 };
             }
-            let mut actual = [0x12345; 1026];
+            let mut actual = [0x1234; 1026];
             let mut expected = actual;
             // SAFETY: AArch64 has NEON, residuals are8-bit differences,
             // and both buffers include the full64x64 input/32x32 output.
@@ -1053,7 +1050,7 @@ mod tests {
                     _ => (state % 511) as i16 - 255,
                 };
             }
-            let mut actual = [0x12345; 1026];
+            let mut actual = [0x1234; 1026];
             let mut expected = actual;
             // SAFETY: AArch64 has NEON, residuals are8-bit differences,
             // and both buffers include the full32x32 input/output.

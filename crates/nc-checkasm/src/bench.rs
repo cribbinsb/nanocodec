@@ -272,22 +272,13 @@ fn bench_av1_transforms(
         let n = dct.side();
         let size = BlockSize::new(n, n).expect("DCT sizes are block sizes");
         let residual: Vec<i16> = src[..n * n].iter().map(|&v| i16::from(v) - 128).collect();
-        let mut coeffs = vec![0i32; n * n];
+        let mut coeffs = vec![0i16; n * n];
         push(
             "av1_forward_dct",
             size,
             time(|| {
                 dsp.av1_forward_dct(dct, &residual, n, &mut coeffs);
                 coeffs[0] as u32
-            }),
-        );
-        let mut raster = vec![0i32; n * n];
-        push(
-            "transpose_coefficients",
-            size,
-            time(|| {
-                dsp.transpose_coefficients(dct, &coeffs, &mut raster);
-                raster[1] as u32
             }),
         );
         let mut levels = coeffs.clone();
@@ -318,7 +309,7 @@ fn bench_av1_transforms(
             size,
             time(|| dsp.av1_coefficient_gain(&coeffs, &dequantized) as u32),
         );
-        let mut raster_out = vec![0i32; n * n];
+        let mut raster_out = vec![0i16; n * n];
         push(
             "av1_forward_dct_raster",
             size,
@@ -345,7 +336,7 @@ fn bench_av1_transforms(
 fn bench_av1_64(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSize, f64)) {
     let size_64 = BlockSize::new(64, 64).expect("64x64 is a block size");
     let residual: Vec<i16> = src[..64 * 64].iter().map(|&v| i16::from(v) - 128).collect();
-    let mut coeffs = vec![0i32; 32 * 32];
+    let mut coeffs = vec![0i16; 32 * 32];
     push(
         "av1_forward_dct_64",
         size_64,
@@ -354,13 +345,14 @@ fn bench_av1_64(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, Block
             coeffs[0] as u32
         }),
     );
+    let dequantized: Vec<i32> = coeffs.iter().map(|&c| i32::from(c)).collect();
     let mut recon = vec![128u8; 64 * 64];
     push(
         "av1_inverse_dct_add_64",
         size_64,
         time(|| {
             let mut dst = PlaneViewMut::new(&mut recon, 64, 64, 64).expect("buffer fits");
-            dsp.av1_inverse_dct_add_64(&coeffs, &mut dst);
+            dsp.av1_inverse_dct_add_64(&dequantized, &mut dst);
             u32::from(recon[0])
         }),
     );
@@ -439,9 +431,9 @@ fn bench_vp9_quantize(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str,
         let dc = Vp9QuantStep::new(DC_STEP, INTER_DIVISOR, shift);
         let ac = Vp9QuantStep::new(AC_STEP, INTER_DIVISOR, shift);
         // Transform-like magnitudes: residual bytes scaled up.
-        let coefficients: Vec<i32> = src[..side * side]
+        let coefficients: Vec<i16> = src[..side * side]
             .iter()
-            .map(|&v| (i32::from(v) - 128) * 8)
+            .map(|&v| (i16::from(v) - 128) * 8)
             .collect();
         let mut levels = vec![0i32; side * side];
         push(

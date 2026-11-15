@@ -9,19 +9,54 @@
 use super::I32Lanes;
 use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storeu_si128, _mm256_loadu_si256,
-    _mm512_abs_epi32, _mm512_add_epi32, _mm512_cmpeq_epi32_mask, _mm512_cmpgt_epi32_mask,
-    _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask, _mm512_cvtepi16_epi32, _mm512_cvtepu8_epi32,
-    _mm512_cvtusepi32_epi8, _mm512_loadu_si512, _mm512_mask_blend_epi32, _mm512_mask_sub_epi32,
-    _mm512_maskz_set1_epi32, _mm512_max_epi32, _mm512_min_epi32, _mm512_mullo_epi32,
-    _mm512_or_si512, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_shuffle_i32x4,
-    _mm512_sll_epi32, _mm512_sra_epi32, _mm512_srl_epi32, _mm512_storeu_si512, _mm512_sub_epi32,
-    _mm512_unpackhi_epi32, _mm512_unpackhi_epi64, _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
+    _mm256_storeu_si256, _mm512_abs_epi32, _mm512_add_epi32, _mm512_cmpeq_epi32_mask,
+    _mm512_cmpgt_epi32_mask, _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask,
+    _mm512_cvtepi16_epi32, _mm512_cvtepu8_epi32, _mm512_cvtsepi32_epi16, _mm512_cvtusepi32_epi8,
+    _mm512_loadu_si512, _mm512_mask_blend_epi32, _mm512_mask_sub_epi32, _mm512_maskz_set1_epi32,
+    _mm512_max_epi32, _mm512_min_epi32, _mm512_mullo_epi32, _mm512_or_si512, _mm512_set1_epi32,
+    _mm512_setzero_si512, _mm512_shuffle_i32x4, _mm512_sll_epi32, _mm512_sra_epi32,
+    _mm512_srl_epi32, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_unpackhi_epi32,
+    _mm512_unpackhi_epi64, _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
 use core::mem::MaybeUninit;
 
 /// Sixteen signed 32-bit transform lanes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct I32x16(__m512i);
+
+/// The 16x16 transpose of `rows` (at least 16): lane `c` of `rows[r]` is
+/// lane `r` of output `c`.
+#[inline(always)]
+fn transpose_i32x16(rows: &[I32x16]) -> [__m512i; 16] {
+    assert!(rows.len() >= 16);
+    // SAFETY: these private lane values exist only inside AVX-512 kernels.
+    unsafe {
+        let mut pairs = [_mm512_setzero_si512(); 16];
+        for i in 0..8 {
+            pairs[2 * i] = _mm512_unpacklo_epi32(rows[2 * i].0, rows[2 * i + 1].0);
+            pairs[2 * i + 1] = _mm512_unpackhi_epi32(rows[2 * i].0, rows[2 * i + 1].0);
+        }
+        let mut quads = pairs;
+        for i in (0..16).step_by(4) {
+            quads[i] = _mm512_unpacklo_epi64(pairs[i], pairs[i + 2]);
+            quads[i + 1] = _mm512_unpackhi_epi64(pairs[i], pairs[i + 2]);
+            quads[i + 2] = _mm512_unpacklo_epi64(pairs[i + 1], pairs[i + 3]);
+            quads[i + 3] = _mm512_unpackhi_epi64(pairs[i + 1], pairs[i + 3]);
+        }
+        let mut out = quads;
+        for i in 0..4 {
+            let a = _mm512_shuffle_i32x4::<0x88>(quads[i], quads[i + 4]);
+            let b = _mm512_shuffle_i32x4::<0xdd>(quads[i], quads[i + 4]);
+            let c = _mm512_shuffle_i32x4::<0x88>(quads[i + 8], quads[i + 12]);
+            let d = _mm512_shuffle_i32x4::<0xdd>(quads[i + 8], quads[i + 12]);
+            out[i] = _mm512_shuffle_i32x4::<0x88>(a, c);
+            out[i + 4] = _mm512_shuffle_i32x4::<0x88>(b, d);
+            out[i + 8] = _mm512_shuffle_i32x4::<0xdd>(a, c);
+            out[i + 12] = _mm512_shuffle_i32x4::<0xdd>(b, d);
+        }
+        out
+    }
+}
 
 impl I32Lanes for I32x16 {
     const LANES: usize = 16;
@@ -197,38 +232,27 @@ impl I32Lanes for I32x16 {
     }
 
     #[inline(always)]
+    fn store_sat16(self, dst: &mut [i16]) {
+        let dst = &mut dst[..16];
+        // SAFETY: sixteen writable i16 values; this ISA is available.
+        unsafe { _mm256_storeu_si256(dst.as_mut_ptr().cast(), _mm512_cvtsepi32_epi16(self.0)) }
+    }
+
+    #[inline(always)]
     fn store_transposed(rows: &[Self], dst: &mut [MaybeUninit<i32>], stride: usize) {
-        assert!(rows.len() >= 16);
-        // SAFETY: these private lane values exist only inside AVX-512 kernels;
-        // each destination row is bounds-checked before storing.
-        unsafe {
-            let mut pairs = [_mm512_setzero_si512(); 16];
-            for i in 0..8 {
-                pairs[2 * i] = _mm512_unpacklo_epi32(rows[2 * i].0, rows[2 * i + 1].0);
-                pairs[2 * i + 1] = _mm512_unpackhi_epi32(rows[2 * i].0, rows[2 * i + 1].0);
-            }
-            let mut quads = pairs;
-            for i in (0..16).step_by(4) {
-                quads[i] = _mm512_unpacklo_epi64(pairs[i], pairs[i + 2]);
-                quads[i + 1] = _mm512_unpackhi_epi64(pairs[i], pairs[i + 2]);
-                quads[i + 2] = _mm512_unpacklo_epi64(pairs[i + 1], pairs[i + 3]);
-                quads[i + 3] = _mm512_unpackhi_epi64(pairs[i + 1], pairs[i + 3]);
-            }
-            let mut out = quads;
-            for i in 0..4 {
-                let a = _mm512_shuffle_i32x4::<0x88>(quads[i], quads[i + 4]);
-                let b = _mm512_shuffle_i32x4::<0xdd>(quads[i], quads[i + 4]);
-                let c = _mm512_shuffle_i32x4::<0x88>(quads[i + 8], quads[i + 12]);
-                let d = _mm512_shuffle_i32x4::<0xdd>(quads[i + 8], quads[i + 12]);
-                out[i] = _mm512_shuffle_i32x4::<0x88>(a, c);
-                out[i + 4] = _mm512_shuffle_i32x4::<0x88>(b, d);
-                out[i + 8] = _mm512_shuffle_i32x4::<0xdd>(a, c);
-                out[i + 12] = _mm512_shuffle_i32x4::<0xdd>(b, d);
-            }
-            for (i, value) in out.into_iter().enumerate() {
-                let row = &mut dst[i * stride..][..16];
-                _mm512_storeu_si512(row.as_mut_ptr().cast(), value);
-            }
+        for (i, value) in transpose_i32x16(rows).into_iter().enumerate() {
+            let row = &mut dst[i * stride..][..16];
+            // SAFETY: this ISA is available; the row is bounds-checked.
+            unsafe { _mm512_storeu_si512(row.as_mut_ptr().cast(), value) };
+        }
+    }
+
+    #[inline(always)]
+    fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], stride: usize) {
+        for (i, value) in transpose_i32x16(rows).into_iter().enumerate() {
+            let row = &mut dst[i * stride..][..16];
+            // SAFETY: this ISA is available; the row is bounds-checked.
+            unsafe { _mm256_storeu_si256(row.as_mut_ptr().cast(), _mm512_cvtsepi32_epi16(value)) };
         }
     }
 

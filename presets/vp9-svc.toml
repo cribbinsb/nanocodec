@@ -30,5 +30,9 @@ vp9.chroma_delta_q = -8
 vp9.inter_intra_dc_only = 0
 # Pinned before VP9 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
-# Pinned before VP9 Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
+# Pinned before VP9 Default's unified reference plan (2026-11-15).
+structure.unified = 0
+# Takes VP9 Default's key still boost (rate.key_still_boost 6; spatial rate
+# control reads the start-up still share since d7d6cfd7). svc_chart, the
+# chart's 8 clips, L2T1 720p view vs the pin: -1.9% BD-J (static_london_bus
+# -12.2%, bodycam_airport -3.6%, the others unchanged) (2026-11-15).

@@ -171,14 +171,14 @@ fn nz_map_ctx_offset(tx: TxSize) -> &'static [u8] {
 /// whole scan (the tests' reference; the encoder knows a shorter bound).
 #[cfg(test)]
 #[must_use]
-pub fn end_of_block(tx: TxSize, levels: &[i32]) -> usize {
+pub fn end_of_block(tx: TxSize, levels: &[i16]) -> usize {
     end_of_block_within(tx, levels, scan(tx).len())
 }
 
 /// [`end_of_block`] of `levels` known to be zero from scan position
 /// `scan_len` on.
 #[must_use]
-pub fn end_of_block_within(tx: TxSize, levels: &[i32], scan_len: usize) -> usize {
+pub fn end_of_block_within(tx: TxSize, levels: &[i16], scan_len: usize) -> usize {
     scan(tx)[..scan_len]
         .iter()
         .rposition(|&pos| levels[usize::from(pos)] != 0)
@@ -188,13 +188,13 @@ pub fn end_of_block_within(tx: TxSize, levels: &[i32], scan_len: usize) -> usize
 /// The entropy-context byte a transform block leaves for its neighbours
 /// (libaom `av1_get_txb_entropy_context`): saturated level sum and DC sign.
 #[must_use]
-pub fn entropy_context(tx: TxSize, levels: &[i32], eob: usize) -> u8 {
+pub fn entropy_context(tx: TxSize, levels: &[i16], eob: usize) -> u8 {
     if eob == 0 {
         return 0;
     }
     let sum: u32 = scan(tx)[..eob]
         .iter()
-        .map(|&p| levels[usize::from(p)].unsigned_abs())
+        .map(|&p| u32::from(levels[usize::from(p)].unsigned_abs()))
         .sum();
     let cul = sum.min(u32::from(CUL_LEVEL_MASK)) as u8;
     let dc_category = match levels[0].signum() {
@@ -286,7 +286,7 @@ impl CoeffCdfs {
         is_inter: bool,
         intra_mode: usize,
         ctx: TxbContext,
-        levels: &[i32],
+        levels: &[i16],
         eob: usize,
     ) {
         let txs = tx.index();
@@ -316,7 +316,7 @@ impl CoeffCdfs {
         // `coeff_base`.
         let last = eob - 1;
         let pos = usize::from(scan[last]);
-        let level = levels[pos].abs();
+        let level = i32::from(levels[pos]).abs();
         w.write_symbol(
             (level.min(3) - 1) as usize,
             &mut self.base_eob[txs][pt][base_eob_context(last, n)],
@@ -326,14 +326,14 @@ impl CoeffCdfs {
         for c in (0..last).rev() {
             let pos = usize::from(scan[c]);
             let at = LevelMap::index(pos, bhl);
-            let level = levels[pos].abs();
+            let level = i32::from(levels[pos]).abs();
             let ctx = LevelMap::base_context(pos, map.base_sum(at), nz_offsets[pos]);
             w.write_symbol(level.min(3) as usize, &mut base_cdfs[ctx], BASE_SYMBOLS);
             map.code_level(w, range_cdfs, pos, at, level);
         }
 
         for (c, &p) in scan[..eob].iter().enumerate() {
-            let v = levels[usize::from(p)];
+            let v = i32::from(levels[usize::from(p)]);
             if v == 0 {
                 continue;
             }
@@ -364,7 +364,7 @@ impl CoeffCdfs {
         is_inter: bool,
         intra_mode: usize,
         ctx: TxbContext,
-        levels: &[i32],
+        levels: &[i16],
         eob: usize,
     ) -> f32 {
         let mut counter = BitCounter::default();
@@ -404,7 +404,7 @@ impl CoeffCdfs {
         };
         let last = eob - 1;
         let pos = usize::from(scan[last]);
-        let v = levels[pos];
+        let v = i32::from(levels[pos]);
         let level = v.abs();
         counter.add_q9(
             self.base_eob[txs][pt][base_eob_context(last, n)].cost_q9((level.min(3) - 1) as usize),
@@ -420,7 +420,7 @@ impl CoeffCdfs {
         for c in (0..last).rev() {
             let pos = usize::from(scan[c]);
             let at = LevelMap::index(pos, bhl);
-            let v = levels[pos];
+            let v = i32::from(levels[pos]);
             let level = v.abs();
             let ctx = LevelMap::base_context(pos, map.base_sum(at), nz_offsets[pos]);
             counter.add_q9(base_cdfs[ctx].cost_q9(level.min(3) as usize));
@@ -731,14 +731,14 @@ mod tests {
             };
             let area = tx.coded_size() * tx.coded_size();
             let reach = [1, 4, 40, area][(next() % 4) as usize].min(area);
-            let mut levels = vec![0_i32; area];
+            let mut levels = vec![0_i16; area];
             for &p in &scan(tx)[..reach] {
                 let v = match next() % 10 {
                     0..=4 => 0,
                     5 | 6 => 1,
                     7 => 2,
-                    8 => 3 + (next() % 12) as i32,
-                    _ => 15 + (next() % 300) as i32,
+                    8 => 3 + (next() % 12) as i16,
+                    _ => 15 + (next() % 300) as i16,
                 };
                 levels[usize::from(p)] = if next() % 2 == 0 { v } else { -v };
             }
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn eob_is_one_past_last_nonzero_in_scan_order() {
-        let mut levels = vec![0i32; 16];
+        let mut levels = vec![0i16; 16];
         assert_eq!(end_of_block(TxSize::Tx4x4, &levels), 0);
         levels[0] = 3;
         assert_eq!(end_of_block(TxSize::Tx4x4, &levels), 1);
@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn entropy_context_saturates_and_records_dc_sign() {
-        let mut levels = vec![0i32; 16];
+        let mut levels = vec![0i16; 16];
         levels[0] = -20;
         assert_eq!(entropy_context(TxSize::Tx4x4, &levels, 1), 7 | (1 << 3));
         levels[0] = 2;
@@ -789,7 +789,7 @@ mod tests {
         ] {
             // Empty levels deliberately prove the EOB-zero contract used by
             // backend scratch reuse; poisoned old coefficients must also be inert.
-            let poisoned = vec![i32::MIN; tx.coded_size() * tx.coded_size()];
+            let poisoned = vec![i16::MIN; tx.coded_size() * tx.coded_size()];
             for plane in [PlaneType::Luma, PlaneType::Chroma] {
                 for inter in [false, true] {
                     let ctx = TxbContext::derive(plane, true, &[0], &[0]);

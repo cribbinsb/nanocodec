@@ -28,5 +28,11 @@ vp9.chroma_delta_q = -8
 vp9.inter_intra_dc_only = 0
 # Pinned before VP9 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
-# Pinned before VP9 Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
+# Pinned before VP9 Default's unified reference plan (2026-11-15).
+structure.unified = 0
+# Takes VP9 Default's key still boost (rate.key_still_boost 6; spatial rate
+# control reads the start-up still share since d7d6cfd7). svc_chart, 11
+# natural VAL clips (chart's 8 in brackets), L3T1_KEY vs the pin: 720p view
+# +6.4% -> +3.3% (+6.9% -> +2.9%) vs single layer, 360p +5.0% -> +2.0%,
+# 180p +4.1% -> +2.2%, total vs simulcast -9.0% -> -11.8%; full SVC L3T1
+# 720p view +38.8% -> +36.6% (2026-11-15).

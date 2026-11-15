@@ -107,7 +107,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
     crate::check_relaxed_dot::check(&mut report);
     crate::check_vp9_scaled::check(&candidate, &mut rng.clone(), &mut report);
-    crate::check_transpose::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_raster_dct::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av2_typed::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vp9_quant::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vvc::check(&candidate, &reference, &mut rng, &mut report);

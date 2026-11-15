@@ -100,44 +100,25 @@ pub(crate) fn store_pass_sat16<V: I32Lanes>(
     }
 }
 
-/// [`store_pass`] of the first `lanes.len()` outputs only, into rows of
-/// `stride` values: `buf[(first + i) * stride + k] = lane i of lanes[k]`.
+/// [`store_pass_sat16`] of the first `lanes.len()` outputs only, into rows
+/// of `stride` values: `buf[(first + i) * stride + k] = lane i of lanes[k]`.
 #[cfg(any(
     target_arch = "x86_64",
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 #[inline(always)]
-fn store_pass_prefix<V: I32Lanes>(
+fn store_pass_prefix_sat16<V: I32Lanes>(
     lanes: &[V],
     first: usize,
     stride: usize,
-    buf: &mut [MaybeUninit<i32>],
+    buf: &mut [MaybeUninit<i16>],
 ) {
     for k0 in (0..lanes.len()).step_by(V::LANES) {
-        V::store_transposed(
+        V::store_transposed_sat16(
             &lanes[k0..k0 + V::LANES],
             &mut buf[first * stride + k0..],
             stride,
         );
-    }
-}
-
-/// Transpose the `N`x`N` block `src` into `dst` (`dst[c * N + r] = src[r *
-/// N + c]`), converting between the column-major coefficient layout and
-/// raster order. Each column strip is loaded once and stored as transposed
-/// `V::LANES`-square tiles.
-#[inline(always)]
-pub(crate) fn transpose<V: I32Lanes, const N: usize>(src: &[i32], dst: &mut [i32]) {
-    let src = &src[..N * N];
-    let dst = core::ptr::from_mut(&mut dst[..N * N]) as *mut [MaybeUninit<i32>];
-    // SAFETY: `MaybeUninit<i32>` has the layout of `i32`, and the view only
-    // ever receives initialised values, so the `i32` slice stays valid.
-    let dst = unsafe { &mut *dst };
-    for c0 in (0..N).step_by(V::LANES) {
-        let strip: [V; N] = core::array::from_fn(|r| V::load(&src[r * N + c0..]));
-        for r0 in (0..N).step_by(V::LANES) {
-            V::store_transposed(&strip[r0..r0 + V::LANES], &mut dst[c0 * N + r0..], N);
-        }
     }
 }
 
@@ -146,7 +127,8 @@ macro_rules! dct_2d {
     ($forward:ident, $forward_layout:ident, $columns:ident, $rows:ident, $inverse:ident,
      $n:literal, $fdct:ident, $idct:ident, $cfg:ident, $row_shift:literal) => {
         /// Forward 2-D DCT of an `n`x`n` residual (row-major at `stride`)
-        /// into column-major coefficients `out`.
+        /// into column-major coefficients `out`, each saturated to 16 bits
+        /// (module docs: the saturation never triggers for 8-bit residuals).
         ///
         /// # Safety
         ///
@@ -155,7 +137,7 @@ macro_rules! dct_2d {
         pub(crate) unsafe fn $forward<V: I32Lanes>(
             residual: &[i16],
             stride: usize,
-            out: &mut [i32],
+            out: &mut [i16],
         ) {
             // SAFETY: forwarded contract.
             unsafe { $forward_layout::<V, false>(residual, stride, out) }
@@ -172,7 +154,7 @@ macro_rules! dct_2d {
         pub(crate) unsafe fn $forward_layout<V: I32Lanes, const RASTER: bool>(
             residual: &[i16],
             stride: usize,
-            out: &mut [i32],
+            out: &mut [i16],
         ) {
             const N: usize = $n;
             let mut buf = [MaybeUninit::<i32>::uninit(); N * N];
@@ -226,7 +208,7 @@ macro_rules! dct_2d {
         #[inline(always)]
         pub(crate) unsafe fn $rows<V: I32Lanes, const RASTER: bool>(
             transposed: &[i32],
-            out: &mut [i32],
+            out: &mut [i16],
         ) {
             const N: usize = $n;
             let cfg = &$cfg;
@@ -239,10 +221,10 @@ macro_rules! dct_2d {
                 dct::$fdct(&x, &mut y, cospi(cfg.cos_bit_row), cfg.cos_bit_row);
                 if RASTER {
                     // Lane i of y[k] is coefficient (r0 + i, k).
-                    store_pass::<V>(&y, r0, N, as_uninit(&mut out[..N * N]));
+                    store_pass_sat16::<V>(&y, r0, N, as_uninit(&mut out[..N * N]));
                 } else {
                     for (k, lane) in y.iter().enumerate() {
-                        lane.store(&mut out[k * N + r0..]);
+                        lane.store_sat16(&mut out[k * N + r0..]);
                     }
                 }
             }
@@ -367,7 +349,7 @@ macro_rules! dct_bounded {
             residual: &[i16],
             stride: usize,
             zero_limit: u32,
-            out: &mut [i32],
+            out: &mut [i16],
         ) -> bool {
             const N: usize = $n;
             let mut buf = [MaybeUninit::<i32>::uninit(); N * N];
@@ -436,7 +418,7 @@ macro_rules! dct_low {
         pub(crate) unsafe fn $name<V: I32Lanes, const KEEP: usize, const RASTER: bool>(
             residual: &[i16],
             stride: usize,
-            out: &mut [i32],
+            out: &mut [i16],
         ) {
             const N: usize = $n;
             let cfg = &$cfg;
@@ -474,10 +456,10 @@ macro_rules! dct_low {
                 dct::$fdct(&x, &mut y, cospi(cfg.cos_bit_row), cfg.cos_bit_row);
                 if RASTER {
                     // Lane i of y[k] is coefficient (r0 + i, k).
-                    store_pass_prefix::<V>(&y[..KEEP], r0, N, as_uninit(out));
+                    store_pass_prefix_sat16::<V>(&y[..KEEP], r0, N, as_uninit(out));
                 } else {
                     for (k, lane) in y[..KEEP].iter().enumerate() {
-                        lane.store(&mut out[k * N + r0..]);
+                        lane.store_sat16(&mut out[k * N + r0..]);
                     }
                 }
             }
@@ -513,7 +495,7 @@ pub(super) const INVERSE_64_ROW_SHIFT: u32 = 2;
 ///
 /// `V`'s ISA must be available (module docs).
 #[inline(always)]
-pub(crate) unsafe fn forward_64<V: I32Lanes>(residual: &[i16], stride: usize, out: &mut [i32]) {
+pub(crate) unsafe fn forward_64<V: I32Lanes>(residual: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: forwarded caller contract.
     unsafe { forward_64_impl::<V, false>(residual, stride, out) }
 }
@@ -536,7 +518,7 @@ pub(crate) unsafe fn forward_64<V: I32Lanes>(residual: &[i16], stride: usize, ou
 pub(crate) unsafe fn forward_64_pruned<V: I32Lanes>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     // SAFETY: forwarded caller contract.
     unsafe { forward_64_impl::<V, true>(residual, stride, out) }
@@ -546,7 +528,7 @@ pub(crate) unsafe fn forward_64_pruned<V: I32Lanes>(
 unsafe fn forward_64_impl<V: I32Lanes, const LOW32: bool>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     const N: usize = 64;
     let cfg = &FORWARD_64;
@@ -600,7 +582,7 @@ unsafe fn forward_64_impl<V: I32Lanes, const LOW32: bool>(
 pub(crate) unsafe fn forward_64_low<V: I32Lanes, const KEEP: usize>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     const N: usize = 64;
     let cfg = &FORWARD_64;
@@ -633,7 +615,7 @@ pub(crate) unsafe fn forward_64_low<V: I32Lanes, const KEEP: usize>(
         dct::fdct64_low32(&x, &mut y, cospi(cfg.cos_bit_row), cfg.cos_bit_row);
         for (k, lane) in y[..KEEP].iter().enumerate() {
             lane.round_shift(FORWARD_64_FINAL_SHIFT)
-                .store(&mut out[k * CODED_64 + r0..]);
+                .store_sat16(&mut out[k * CODED_64 + r0..]);
         }
     }
 }
@@ -641,7 +623,7 @@ pub(crate) unsafe fn forward_64_low<V: I32Lanes, const KEEP: usize>(
 /// Wide32-point reference row pass for the native benchmark baseline.
 #[cfg(all(target_arch = "aarch64", test))]
 #[inline(always)]
-pub(crate) fn forward_32_rows<V: I32Lanes>(transposed: &[i32], out: &mut [i32]) {
+pub(crate) fn forward_32_rows<V: I32Lanes>(transposed: &[i32], out: &mut [i16]) {
     const N: usize = 32;
     let mut x = [V::splat(0); N];
     let mut y = [V::splat(0); N];
@@ -656,7 +638,7 @@ pub(crate) fn forward_32_rows<V: I32Lanes>(transposed: &[i32], out: &mut [i32]) 
             FORWARD_32.cos_bit_row,
         );
         for (k, lane) in y.iter().enumerate() {
-            lane.store(&mut out[k * N + r0..]);
+            lane.store_sat16(&mut out[k * N + r0..]);
         }
     }
 }
@@ -664,12 +646,12 @@ pub(crate) fn forward_32_rows<V: I32Lanes>(transposed: &[i32], out: &mut [i32]) 
 /// Pruned row pass for the NEON low-bit-depth driver; the scalar oracle keeps
 /// the full graph in both passes.
 #[cfg(all(target_arch = "aarch64", test))]
-pub(crate) fn forward_64_rows_low32<V: I32Lanes>(transposed: &[i32], out: &mut [i32]) {
+pub(crate) fn forward_64_rows_low32<V: I32Lanes>(transposed: &[i32], out: &mut [i16]) {
     forward_64_rows_impl::<V, true>(transposed, out);
 }
 
 #[inline(always)]
-fn forward_64_rows_impl<V: I32Lanes, const LOW32: bool>(transposed: &[i32], out: &mut [i32]) {
+fn forward_64_rows_impl<V: I32Lanes, const LOW32: bool>(transposed: &[i32], out: &mut [i16]) {
     const N: usize = 64;
     let cfg = &FORWARD_64;
     let mut x = [V::splat(0); N];
@@ -685,7 +667,7 @@ fn forward_64_rows_impl<V: I32Lanes, const LOW32: bool>(transposed: &[i32], out:
         }
         for (k, lane) in y[..CODED_64].iter().enumerate() {
             lane.round_shift(FORWARD_64_FINAL_SHIFT)
-                .store(&mut out[k * CODED_64 + r0..]);
+                .store_sat16(&mut out[k * CODED_64 + r0..]);
         }
     }
 }
@@ -828,18 +810,17 @@ sparse_inverse!(
 /// `out`, `V::LANES` AC levels at a time; coefficient 0 (the DC step) and a
 /// ragged tail use the reference.
 ///
-/// Exact for every `i32` level: only the low 24 bits of `|level| · step`
+/// Exact for every 16-bit level: only the low 24 bits of `|level| · step`
 /// survive the mask, and those depend only on the low 32 bits of the
-/// operands, so a wrapping 32-bit multiply suffices (`|i32::MIN|` wraps to
-/// the same bits as its unsigned magnitude). The mask is a left shift by 8
-/// and a logical right shift by `8 + log_scale`.
+/// operands, so a wrapping 32-bit multiply suffices. The mask is a left
+/// shift by 8 and a logical right shift by `8 + log_scale`.
 ///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs). `out.len() >= levels.len()`.
 #[inline(always)]
 pub(crate) unsafe fn dequantize<V: I32Lanes>(
-    levels: &[i32],
+    levels: &[i16],
     q: &super::Av1Quantizer,
     out: &mut [i32],
 ) {
@@ -848,7 +829,7 @@ pub(crate) unsafe fn dequantize<V: I32Lanes>(
     let Some((&dc, ac)) = levels.split_first() else {
         return;
     };
-    out[0] = super::dequantize_one(dc, 0, q);
+    out[0] = super::dequantize_one(i32::from(dc), 0, q);
     let step = V::splat(q.ac_step);
     let (lo, hi) = (V::splat(i32::from(i16::MIN)), V::splat(i32::from(i16::MAX)));
     let vector_len = ac.len() / V::LANES * V::LANES;
@@ -857,7 +838,7 @@ pub(crate) unsafe fn dequantize<V: I32Lanes>(
         .chunks_exact(V::LANES)
         .zip(out_ac.chunks_exact_mut(V::LANES))
     {
-        let level = V::load(src);
+        let level = V::load_i16(src);
         level
             .abs()
             .mul(step)
@@ -874,6 +855,62 @@ pub(crate) unsafe fn dequantize<V: I32Lanes>(
         .enumerate()
         .skip(vector_len)
     {
-        *dq = super::dequantize_one(level, i + 1, q);
+        *dq = super::dequantize_one(i32::from(level), i + 1, q);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Largest residual magnitude of 8-bit samples (the forward contract).
+    const MAX_RESIDUAL: f64 = 255.0;
+    /// Headroom below `i16::MAX` that every worst-case coefficient keeps,
+    /// covering the rounding by which another residual could exceed it.
+    const ROUNDING_MARGIN: i16 = 64;
+
+    /// The residual that maximises coefficient (`r`, `c`) of an `n`-point
+    /// DCT: ±255 with the signs of its separable basis function (no basis
+    /// value is zero for power-of-two `n`).
+    fn worst_case(n: usize, r: usize, c: usize) -> Vec<i16> {
+        let sign = |i: usize, k: usize| {
+            let angle = (2 * i + 1) as f64 * k as f64 * core::f64::consts::PI / (2 * n) as f64;
+            angle.cos().signum()
+        };
+        (0..n * n)
+            .map(|i| (MAX_RESIDUAL * sign(i / n, r) * sign(i % n, c)) as i16)
+            .collect()
+    }
+
+    /// The saturating 16-bit store never triggers for 8-bit residuals:
+    /// each coefficient's worst case stays [`ROUNDING_MARGIN`] below
+    /// `i16::MAX` (the largest is the DC, 32640 from 16x16 up).
+    #[test]
+    fn forward_outputs_fit_i16_with_margin() {
+        type Forward = unsafe fn(&[i16], usize, &mut [i16]);
+        let sizes: [(usize, usize, Forward); 5] = [
+            (4, 4, super::forward_4::<i32>),
+            (8, 8, super::forward_8::<i32>),
+            (16, 16, super::forward_16::<i32>),
+            (32, 32, super::forward_32::<i32>),
+            (64, super::CODED_64, super::forward_64::<i32>),
+        ];
+        for (n, coded, forward) in sizes {
+            let mut peak = 0;
+            for r in 0..coded {
+                for c in 0..coded {
+                    let positive = worst_case(n, r, c);
+                    let negative: Vec<i16> = positive.iter().map(|&v| -v).collect();
+                    for residual in [positive, negative] {
+                        let mut out = vec![0; coded * coded];
+                        // SAFETY: the scalar lane type needs no CPU support.
+                        unsafe { forward(&residual, n, &mut out) };
+                        peak = peak.max(out[c * coded + r].unsigned_abs());
+                    }
+                }
+            }
+            assert!(
+                peak <= (i16::MAX - ROUNDING_MARGIN).unsigned_abs(),
+                "{n}x{n}: peak {peak}"
+            );
+        }
     }
 }

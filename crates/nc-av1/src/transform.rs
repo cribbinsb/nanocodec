@@ -99,7 +99,7 @@ impl TxSize {
 /// Forward 2-D DCT of the `n`×`n` residual (row-major at `stride`) into
 /// `out` in libaom's column-major layout. For 64x64 only the coded
 /// top-left 32x32 coefficients are returned (`out` holds `coded_size()²`).
-pub fn forward_dct(dsp: &Dsp, tx: TxSize, residual: &[i16], stride: usize, out: &mut [i32]) {
+pub fn forward_dct(dsp: &Dsp, tx: TxSize, residual: &[i16], stride: usize, out: &mut [i16]) {
     match DctSize::from_side(tx.size()) {
         Some(size) => dsp.av1_forward_dct(size, residual, stride, out),
         None => dsp.av1_forward_dct_64(residual, stride, out),
@@ -170,7 +170,7 @@ pub fn quantize_coded(
     dsp: &Dsp,
     policy: ForwardPolicy,
     tx: TxSize,
-    levels: &mut [i32],
+    levels: &mut [i16],
     quantizer: &Av1Quantizer,
 ) -> u32 {
     dsp.av1_quantize(&mut levels[..policy.coded_prefix(tx)], quantizer)
@@ -182,9 +182,9 @@ pub fn quantize_coded_from(
     dsp: &Dsp,
     policy: ForwardPolicy,
     tx: TxSize,
-    coeffs: &[i32],
+    coeffs: &[i16],
     quantizer: &Av1Quantizer,
-    levels: &mut [i32],
+    levels: &mut [i16],
 ) -> u32 {
     let prefix = policy.coded_prefix(tx);
     levels[prefix..coeffs.len()].fill(0);
@@ -243,7 +243,7 @@ pub fn forward_dct_with(
     tx: TxSize,
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     if policy.low(tx) {
         dsp.av1_forward_dct_low(tx.size(), residual, stride, out);
@@ -291,8 +291,8 @@ pub fn inverse_dct_add_eob(
 /// coefficients have spatial energy gain `2^(6-2*dequant_shift)`; dequantized
 /// coefficients are in that same forward domain. Keep the actual prediction
 /// SSE at the caller, so uncoded64x64 high-frequency energy is retained.
-/// Valid forward coefficients fit22 bits; dequantized inputs are clamped16-bit.
-pub fn coefficient_gain(dsp: &Dsp, tx: TxSize, original: &[i32], dequantized: &[i32]) -> f64 {
+/// Forward coefficients and dequantized inputs are 16-bit.
+pub fn coefficient_gain(dsp: &Dsp, tx: TxSize, original: &[i16], dequantized: &[i32]) -> f64 {
     let gain = dsp.av1_coefficient_gain(original, dequantized);
     gain as f64 / f64::from(1_u32 << (6 - 2 * tx.dequant_shift()))
 }
@@ -363,7 +363,7 @@ mod tests {
             let residual = vec![r; n * n];
             let mut out = vec![0; tx.coded_size() * tx.coded_size()];
             forward_dct(&dsp, tx, &residual, n, &mut out);
-            let scaled = out[0] << tx.dequant_shift();
+            let scaled = i32::from(out[0]) << tx.dequant_shift();
             let expected = 8 * i32::from(r) * n as i32;
             assert!(
                 (scaled - expected).abs() <= expected / 64,
@@ -384,12 +384,14 @@ mod tests {
                 forward_dct(&dsp, tx, &residual, n, &mut coefficients);
                 let energy = (n * n) as f64 * f64::from(value).powi(2);
                 let ideal_dc = ((8 * n) >> tx.dequant_shift()) as i32 * i32::from(value);
-                assert_eq!(coefficient_gain(&dsp, tx, &[ideal_dc], &[ideal_dc]), energy);
+                let ideal = i16::try_from(ideal_dc).unwrap();
+                assert_eq!(coefficient_gain(&dsp, tx, &[ideal], &[ideal_dc]), energy);
                 assert_eq!(
-                    coefficient_gain(&dsp, tx, &[ideal_dc], &[ideal_dc / 2]),
+                    coefficient_gain(&dsp, tx, &[ideal], &[ideal_dc / 2]),
                     energy * 0.75
                 );
-                let gain = coefficient_gain(&dsp, tx, &coefficients, &coefficients);
+                let dequantized: Vec<i32> = coefficients.iter().map(|&c| i32::from(c)).collect();
+                let gain = coefficient_gain(&dsp, tx, &coefficients, &dequantized);
                 // Integer FDCT rounding matters at unit residuals, but this
                 // tolerance is far smaller than a 16x normalization mistake.
                 assert!(
@@ -409,15 +411,15 @@ mod tests {
         let mut coefficients = vec![0; 1024];
         forward_dct(&dsp, tx, &residual, 64, &mut coefficients);
         let prediction_sse = 4096.0 * 400.0;
-        let gain = coefficient_gain(&dsp, tx, &coefficients, &coefficients);
+        let dequantized: Vec<i32> = coefficients.iter().map(|&c| i32::from(c)).collect();
+        let gain = coefficient_gain(&dsp, tx, &coefficients, &dequantized);
         assert!(
             gain < prediction_sse * 0.1,
             "uncoded three-quadrant energy must remain in actual prediction SSE"
         );
-        let original = vec![(1 << 22) - 1; 1024];
+        let original = vec![i16::MAX; 1024];
         let dequant = vec![-32768; 1024];
-        let expected =
-            1024.0 * (2.0 * f64::from((1 << 22) - 1) * -32768.0 - 32768.0 * 32768.0) / 4.0;
+        let expected = 1024.0 * (2.0 * f64::from(i16::MAX) * -32768.0 - 32768.0 * 32768.0) / 4.0;
         assert_eq!(coefficient_gain(&dsp, tx, &original, &dequant), expected);
     }
 
@@ -604,8 +606,9 @@ mod tests {
         let residual: Vec<i16> = (0..64 * 64)
             .map(|i| ((i / 64) as i16 - 32) / 2 + ((i % 64) as i16 - 32) / 4)
             .collect();
-        let mut coeffs = vec![0i32; 32 * 32];
-        forward_dct(&Dsp::new(), TxSize::Tx64x64, &residual, 64, &mut coeffs);
+        let mut forward = vec![0i16; 32 * 32];
+        forward_dct(&Dsp::new(), TxSize::Tx64x64, &residual, 64, &mut forward);
+        let coeffs: Vec<i32> = forward.iter().map(|&c| i32::from(c)).collect();
         let mut plane = Plane::new(64, 64, 0).unwrap();
         plane.view_mut().fill(128);
         inverse_dct_add(&Dsp::new(), TxSize::Tx64x64, &coeffs, &mut plane.view_mut());

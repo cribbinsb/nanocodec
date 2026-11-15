@@ -2,7 +2,7 @@
 //! lane, and the per-coefficient quantiser definitions.
 
 use super::generic;
-use super::{Av1Quantizer, TxfmFns, dequantize_one, quantize_one};
+use super::{Av1Quantizer, QuantStorage, TxfmFns, dequantize_one, quantize_one};
 
 pub(crate) fn txfm_fns() -> TxfmFns {
     TxfmFns {
@@ -13,28 +13,24 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         inverse_dct_add_sparse: [inverse_16_sparse, inverse_32_sparse, inverse_64_sparse],
         coefficient_gain,
         quantize,
-        quantize_from,
+        quantize_from: quantize_from::<i16>,
+        quantize_from_wide: quantize_from::<i32>,
         dequantize,
-        transpose: [
-            transpose::<4>,
-            transpose::<8>,
-            transpose::<16>,
-            transpose::<32>,
+        forward_dct_raster: [
+            forward_4_raster,
+            forward_8_raster,
+            forward_16_raster,
+            forward_32_raster,
         ],
-        forward_dct_raster: [None; 4],
         forward_dct_low: [None; 3],
         forward_dct_raster_low: [None; 2],
         forward_dct_raster_bounded: [forward_16_bounded, forward_32_bounded],
     }
 }
 
-pub(crate) unsafe fn transpose<const N: usize>(src: &[i32], dst: &mut [i32]) {
-    generic::transpose::<i32, N>(src, dst);
-}
-
 macro_rules! scalar_sizes {
     ($($forward:ident, $inverse:ident);*) => {$(
-        unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i32]) {
+        unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i16]) {
             // SAFETY: the scalar lane type needs no special CPU support.
             unsafe { generic::$forward::<i32>(residual, stride, out) }
         }
@@ -48,27 +44,41 @@ macro_rules! scalar_sizes {
 scalar_sizes!(forward_4, inverse_4; forward_8, inverse_8; forward_16, inverse_16;
               forward_32, inverse_32; forward_64, inverse_64);
 
-unsafe fn quantize(coeffs: &mut [i32], q: &Av1Quantizer) -> u32 {
+/// Raster-storing forward DCTs (VP9's layout).
+macro_rules! scalar_raster {
+    ($($name:ident, $layout:ident);*) => {$(
+        unsafe fn $name(residual: &[i16], stride: usize, out: &mut [i16]) {
+            // SAFETY: the scalar lane type needs no special CPU support.
+            unsafe { generic::$layout::<i32, true>(residual, stride, out) }
+        }
+    )*};
+}
+
+scalar_raster!(forward_4_raster, forward_4_layout; forward_8_raster, forward_8_layout;
+               forward_16_raster, forward_16_layout; forward_32_raster, forward_32_layout);
+
+unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
     let mut nonzero = 0;
     for (i, c) in coeffs.iter_mut().enumerate() {
-        *c = quantize_one(*c, i, q);
+        *c = i16::narrow(quantize_one(i32::from(*c), i, q));
         nonzero += u32::from(*c != 0);
     }
     nonzero
 }
 
-unsafe fn quantize_from(coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32 {
+unsafe fn quantize_from<T: QuantStorage>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32 {
     let mut nonzero = 0;
     for (i, (&c, level)) in coeffs.iter().zip(out.iter_mut()).enumerate() {
-        *level = quantize_one(c, i, q);
-        nonzero += u32::from(*level != 0);
+        let value = quantize_one(c.widen(), i, q);
+        *level = T::narrow(value);
+        nonzero += u32::from(value != 0);
     }
     nonzero
 }
 
-unsafe fn dequantize(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]) {
+unsafe fn dequantize(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]) {
     for (i, (&level, dq)) in levels.iter().zip(out.iter_mut()).enumerate() {
-        *dq = dequantize_one(level, i, q);
+        *dq = dequantize_one(i32::from(level), i, q);
     }
 }
 
@@ -90,7 +100,7 @@ unsafe fn inverse_64_sparse(coeffs: &[i32], dst: &mut [u8], stride: usize, limit
 }
 
 /// Independent scalar oracle: retain the original two-product formula.
-pub(crate) unsafe fn coefficient_gain(original: &[i32], dequantized: &[i32]) -> i64 {
+pub(crate) unsafe fn coefficient_gain(original: &[i16], dequantized: &[i32]) -> i64 {
     original
         .iter()
         .zip(dequantized)
@@ -106,7 +116,7 @@ unsafe fn forward_16_bounded(
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> bool {
     // SAFETY: the ISA is enabled for this function; forwarded contract.
     unsafe { generic::forward_16_bounded::<i32>(residual, stride, zero_limit, out) }
@@ -117,8 +127,61 @@ unsafe fn forward_32_bounded(
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
 ) -> bool {
     // SAFETY: the ISA is enabled for this function; forwarded contract.
     unsafe { generic::forward_32_bounded::<i32>(residual, stride, zero_limit, out) }
+}
+
+/// The reference quantiser on `src[i]` into `dst[i]` for `i` in
+/// `first..len` (the SIMD kernels' ragged tails); returns the number of
+/// non-zero levels.
+///
+/// # Safety
+///
+/// `src` and `dst` hold `len` values; they are either disjoint or equal
+/// (in place).
+#[inline]
+pub(crate) unsafe fn quantize_tail<T: QuantStorage>(
+    src: *const T,
+    dst: *mut T,
+    first: usize,
+    len: usize,
+    q: &Av1Quantizer,
+) -> u32 {
+    let mut nonzero = 0;
+    for i in first..len {
+        // SAFETY: `i < len` (caller contract); read before written.
+        unsafe {
+            let level = quantize_one((*src.add(i)).widen(), i, q);
+            *dst.add(i) = T::narrow(level);
+            nonzero += u32::from(level != 0);
+        }
+    }
+    nonzero
+}
+
+/// The SIMD kernels quantise whole vectors from coefficient 0, at the AC
+/// step: their loads then match the forward transform's aligned vector
+/// stores (store-to-load forwarding) and no AC vector straddles a ragged
+/// start. This replaces level 0 by the DC step's level of `dc` (coefficient
+/// 0, read before the vector pass, which may run in place) and returns the
+/// vector pass's non-zero count `nonzero` corrected for it.
+///
+/// # Safety
+///
+/// `dst` holds at least one value, written by the vector pass.
+#[inline]
+pub(crate) unsafe fn fix_dc<T: QuantStorage>(
+    dst: *mut T,
+    dc: i32,
+    nonzero: u32,
+    q: &Av1Quantizer,
+) -> u32 {
+    // SAFETY: caller contract.
+    let at_ac_step = unsafe { (*dst).widen() };
+    let level = quantize_one(dc, 0, q);
+    // SAFETY: caller contract.
+    unsafe { *dst = T::narrow(level) };
+    nonzero - u32::from(at_ac_step != 0) + u32::from(level != 0)
 }

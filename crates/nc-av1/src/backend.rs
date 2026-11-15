@@ -2307,32 +2307,32 @@ struct Scratch {
     /// Quantised levels of the block, per plane (libaom layout).
     /// Contents are unspecified when eob is zero: coefficient coding/context
     /// return before reading them, and the next forward overwrites its area.
-    levels: [Vec<i32>; 3],
+    levels: [Vec<i16>; 3],
     /// Dequantised coefficients of the plane being coded.
     dequant: Vec<i32>,
     /// Allocated only for enabled transform-domain luma RD and key-frame
     /// transform-based planning or mode search.
-    original_coefficients: Vec<i32>,
+    original_coefficients: Vec<i16>,
     /// Constant DC prediction for key-frame partition planning.
     flat_prediction: Vec<u8>,
     /// Quantised luma levels of the intra mode search's winner.
-    intra_levels: Vec<i32>,
+    intra_levels: Vec<i16>,
     /// Their unquantised coefficients, where `CachedIntraLevels::originals`
     /// says they were kept (for the trellis).
-    intra_originals: Vec<i32>,
+    intra_originals: Vec<i16>,
     cached_intra: Option<CachedIntraLevels>,
     /// Luma prediction residual of a whole block, for the transform-split
     /// decision.
     tree_residual: Vec<i16>,
     /// Quantised levels of every leaf of a split luma transform tree.
-    tree_levels: Vec<i32>,
+    tree_levels: Vec<i16>,
     /// The block whose one-level split the decision quantised into
     /// `tree_levels`, with each quarter's nonzero count and whether
     /// `tree_originals` holds the quarters' unquantised coefficients.
     tree_trial: Option<(Block, [u32; 4], bool)>,
     /// Unquantised coefficients of the trial's quarters, laid out as
     /// `tree_levels` (for the trellis).
-    tree_originals: Vec<i32>,
+    tree_originals: Vec<i16>,
     /// `quant.trellis` search buffers.
     trellis: TrellisQuantizer,
 }
@@ -5077,10 +5077,10 @@ enum PartitionSymbol {
 /// blocks keep the reverse scan's cheap high-EOB exit.
 /// Zero the levels below `min_level` in magnitude (the planned step's dead
 /// zone, see `planned_min_level`); returns how many remain non-zero.
-fn apply_planned_dead_zone(levels: &mut [i32], min_level: i32) -> u32 {
+fn apply_planned_dead_zone(levels: &mut [i16], min_level: i32) -> u32 {
     let mut nonzero = 0;
     for level in levels.iter_mut() {
-        if level.abs() < min_level {
+        if i32::from(*level).abs() < min_level {
             *level = 0;
         }
         nonzero += u32::from(*level != 0);
@@ -5100,8 +5100,8 @@ fn trellis_quantize(
     tx: TxSize,
     policy: ForwardPolicy,
     quantizer: &Av1Quantizer,
-    coeffs: &[i32],
-    levels: &mut [i32],
+    coeffs: &[i16],
+    levels: &mut [i16],
 ) -> u32 {
     let nonzero = dsp.av1_quantize_from(coeffs, quantizer, levels);
     let eob = quantized_eob(tx, levels, nonzero, policy);
@@ -5131,7 +5131,7 @@ fn trellis_quantize(
 /// End of block of `levels` with `nonzero` nonzero levels, quantised from
 /// a forward transform under `policy` (so zero past its
 /// [`ForwardPolicy::scan_len`]).
-fn quantized_eob(tx: TxSize, levels: &[i32], nonzero: u32, policy: ForwardPolicy) -> usize {
+fn quantized_eob(tx: TxSize, levels: &[i16], nonzero: u32, policy: ForwardPolicy) -> usize {
     if nonzero == 0 {
         0
     } else if nonzero == 1 && levels[0] != 0 {

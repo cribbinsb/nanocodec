@@ -114,19 +114,19 @@ pub(crate) fn passes(ty: TxType) -> (nc_dsp::Vp9Pass, nc_dsp::Vp9Pass) {
     (pass(ty.columns_adst()), pass(ty.rows_adst()))
 }
 
-/// Forward transform of a raster residual (`tx.area()` samples). The
-/// 8..32-point DCT runs on the shared AV1 kernels (SIMD where available):
-/// libaom's forward DCT has VP9's coefficient scale at every size (8x the
-/// orthonormal transform, 4x at 32x32), only its rounding differs, which
-/// any encoder may choose. It returns libaom's column-major layout, so the
-/// result is transposed.
+/// Forward transform of a raster residual (`tx.area()` samples) into 16-bit
+/// coefficients. The 8..32-point DCT runs on the shared AV1 kernels (SIMD
+/// where available): libaom's forward DCT has VP9's coefficient scale at
+/// every size (8x the orthonormal transform, 4x at 32x32), only its
+/// rounding differs, which any encoder may choose; its raster form stores
+/// VP9's layout.
 pub(crate) fn forward(
     dsp: &nc_dsp::Dsp,
     tx: TxSize,
     ty: TxType,
     lossless: bool,
     residual: &[i16],
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     let area = tx.area();
     if lossless || tx == TxSize::Tx4 {
@@ -136,7 +136,13 @@ pub(crate) fn forward(
         } else {
             hybrid::forward(&input, ty)
         };
-        out[..16].copy_from_slice(&coefficients);
+        // 4x4 coefficients of 8-bit residuals fit 16 bits easily (at most
+        // 8x the orthonormal scale, 8 * 255 * 4; the WHT's are smaller), so
+        // the narrowing is exact.
+        for (o, &c) in out[..16].iter_mut().zip(&coefficients) {
+            debug_assert!(i16::try_from(c).is_ok(), "4x4 coefficient {c}");
+            *o = c as i16;
+        }
         return;
     }
     if ty == TxType::DctDct {
@@ -244,14 +250,16 @@ pub(crate) fn quantize(
     dsp: &nc_dsp::Dsp,
     tx: TxSize,
     lossless: bool,
-    coefficients: &[i32],
+    coefficients: &[i16],
     steps: Steps,
     (rounding, min_level): (Rounding, i32),
     levels: &mut [i32],
 ) -> bool {
     let area = tx.area();
     if lossless {
-        levels[..area].copy_from_slice(&coefficients[..area]);
+        for (level, &c) in levels[..area].iter_mut().zip(&coefficients[..area]) {
+            *level = i32::from(c);
+        }
         return levels[..area].iter().any(|&l| l != 0);
     }
     let shift = tx.dequant_shift();
@@ -282,7 +290,7 @@ pub(crate) fn dequantize_level(tx: TxSize, index: usize, level: i32, steps: Step
 /// at twice their value), so the error divides by the squared scale.
 pub(crate) fn coefficient_sse(
     tx: TxSize,
-    coefficients: &[i32],
+    coefficients: &[i16],
     levels: &[i32],
     steps: Steps,
 ) -> u64 {

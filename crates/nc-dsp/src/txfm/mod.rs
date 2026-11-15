@@ -4,7 +4,8 @@
 //! - **Forward DCT** (encoder only): libaom's integer `fwd_txfm2d` for square
 //!   `DCT_DCT` (`av1/encoder/av1_fwd_txfm2d.c`): input shifted left by 2,
 //!   column transform, rounding shift, row transform. Coefficients have
-//!   exactly the scale AV1's quantiser tables assume.
+//!   exactly the scale AV1's quantiser tables assume, and are stored in 16
+//!   bits with saturation (see "Ranges").
 //! - **Inverse DCT + add** (normative, AV1 §7.13.3): libaom's
 //!   `inv_txfm2d_add_c`: row transform on 16-bit-clamped input, rounding
 //!   shift, column transform on 16-bit-clamped input, `round_shift(.., 4)`,
@@ -14,7 +15,10 @@
 //!   step * rounding_q7) / (step * 128)`, capped at `max_level`, signed like
 //!   `c`. With `log_scale = 0` this is `nc-av1`'s quantiser. SIMD versions
 //!   divide exactly by a multiply and a shift (`Reciprocal`), which needs
-//!   `|c| < 2^22` (transform outputs are far smaller).
+//!   `|c| < 2^22` (transform outputs are far smaller). AV1 coefficients and
+//!   levels are 16-bit ([`QuantStorage`] `i16`, `max_level` capped at
+//!   `i16::MAX`); AV2, which reuses the kernel with its own shift, keeps 32
+//!   bits (its 64x64 coefficients and 20-bit levels exceed 16 bits).
 //! - **Dequantise** (normative, AV1 §7.12.3): the magnitude
 //!   `((|level| * step) & 0xFFFFFF) >> log_scale`, signed, clamped to 16
 //!   bits. `log_scale` is 0 up to 16x16 and 1 for 32x32 (`dqDenom`).
@@ -40,6 +44,14 @@
 //! input shift and the growth of an `n`-point transform the largest sum is
 //! about `2^28.5` (32x32 rows: `32 * 2040 * 4096`).
 //!
+//! Forward outputs are stored in 16 bits, each saturated. For 8-bit
+//! residuals the largest output is the DC of a flat ±255 block (every other
+//! basis function has a smaller L1 norm): 8160 at 4x4, 16320 at 8x8 and
+//! 32640 from 16x16 up, plus a few units of rounding, so the saturation
+//! never triggers (`forward_outputs_fit_i16_with_margin` probes every
+//! coefficient's worst-case sign pattern) and the coefficients equal
+//! libaom's 32-bit ones. The 16-bit store halves the coefficient traffic
+//! of the quantiser and the RD paths.//!
 //! # Kernel contract
 //!
 //! Every kernel is an `unsafe fn`, called only from [`crate::Dsp`], which
@@ -181,29 +193,27 @@ impl Av1Quantizer {
 /// Dequantised magnitudes wrap at 24 bits (AV1 §7.12.3).
 pub(crate) const DEQUANT_MASK: i64 = 0xff_ffff;
 
-/// Transpose an `n`x`n` coefficient block `src` into `dst` (both `n^2`).
-pub(crate) type TransposeFn = unsafe fn(src: &[i32], dst: &mut [i32]);
 /// Forward DCT of an `n`x`n` residual at `stride` into `out` (`n^2`).
-pub(crate) type ForwardDctFn = unsafe fn(residual: &[i16], stride: usize, out: &mut [i32]);
+pub(crate) type ForwardDctFn = unsafe fn(residual: &[i16], stride: usize, out: &mut [i16]);
 /// [`ForwardDctFn`] that returns false, leaving `out` untouched, when every
 /// coefficient provably has magnitude at most `zero_limit`.
 pub(crate) type ForwardBoundedFn =
-    unsafe fn(residual: &[i16], stride: usize, zero_limit: u32, out: &mut [i32]) -> bool;
+    unsafe fn(residual: &[i16], stride: usize, zero_limit: u32, out: &mut [i16]) -> bool;
 /// Inverse DCT of `coeffs` (`n^2`), added to `dst` (`n` rows at `stride`).
 pub(crate) type InverseDctAddFn = unsafe fn(coeffs: &[i32], dst: &mut [u8], dst_stride: usize);
 /// Sparse inverse DCT; only a low 8/16/32 coefficient square is nonzero
 /// (at most the coded side).
 pub(crate) type SparseInverseDctAddFn = unsafe fn(&[i32], &mut [u8], usize, usize);
-/// Exact unnormalized gain with `|original| < 2^22`, signed16-bit dequantized values.
-pub(crate) type CoefficientGainFn = unsafe fn(&[i32], &[i32]) -> i64;
+/// Exact unnormalized gain of 16-bit forward coefficients and signed
+/// 16-bit dequantized values.
+pub(crate) type CoefficientGainFn = unsafe fn(&[i16], &[i32]) -> i64;
 /// Quantise in place; returns the number of non-zero levels.
-pub(crate) type QuantizeFn = unsafe fn(coeffs: &mut [i32], q: &Av1Quantizer) -> u32;
+pub(crate) type QuantizeFn = unsafe fn(coeffs: &mut [i16], q: &Av1Quantizer) -> u32;
 /// Quantise `coeffs` into `out` (at least as long), keeping `coeffs`;
 /// returns the number of non-zero levels.
-pub(crate) type QuantizeFromFn =
-    unsafe fn(coeffs: &[i32], q: &Av1Quantizer, out: &mut [i32]) -> u32;
+pub(crate) type QuantizeFromFn<T> = unsafe fn(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32;
 /// Dequantise `levels` into `out` (same length).
-pub(crate) type DequantizeFn = unsafe fn(levels: &[i32], q: &Av1Quantizer, out: &mut [i32]);
+pub(crate) type DequantizeFn = unsafe fn(levels: &[i16], q: &Av1Quantizer, out: &mut [i32]);
 
 /// One ISA's transform kernels, indexed by [`DctSize`].
 #[derive(Debug, Clone, Copy)]
@@ -218,13 +228,13 @@ pub(crate) struct TxfmFns {
     pub inverse_dct_add_sparse: [SparseInverseDctAddFn; 3],
     pub coefficient_gain: CoefficientGainFn,
     pub quantize: QuantizeFn,
-    pub quantize_from: QuantizeFromFn,
+    pub quantize_from: QuantizeFromFn<i16>,
+    /// [`Self::quantize_from`] on 32-bit coefficients and levels (AV2).
+    pub quantize_from_wide: QuantizeFromFn<i32>,
     pub dequantize: DequantizeFn,
-    /// Column-major <-> raster coefficient layout, indexed by [`DctSize`].
-    pub transpose: [TransposeFn; 4],
-    /// Forward DCTs storing raster coefficients directly, where an ISA has
-    /// them (otherwise the forward kernel and [`Self::transpose`]).
-    pub forward_dct_raster: [Option<ForwardDctFn>; 4],
+    /// Forward DCTs storing raster coefficients (VP9's layout), indexed by
+    /// [`DctSize`].
+    pub forward_dct_raster: [ForwardDctFn; 4],
     /// Low-frequency forward DCTs of 16x16, 32x32 and 64x64 blocks (only
     /// the [`low_keep`] lowest frequencies per dimension), where an ISA has
     /// them (otherwise the full forward with the rest zeroed).
@@ -313,6 +323,38 @@ impl Reciprocal {
     }
 }
 
+/// Storage of the quantiser's coefficients and levels (module docs): `i16`
+/// for AV1, `i32` for AV2.
+pub(crate) trait QuantStorage: Copy {
+    /// The stored value as `i32`.
+    fn widen(self) -> i32;
+    /// `value` in storage; the caller guarantees it fits (levels are capped
+    /// at `max_level`, at most `i16::MAX` for `i16`).
+    fn narrow(value: i32) -> Self;
+}
+
+impl QuantStorage for i16 {
+    #[inline]
+    fn widen(self) -> i32 {
+        i32::from(self)
+    }
+    #[inline]
+    fn narrow(value: i32) -> Self {
+        value as i16
+    }
+}
+
+impl QuantStorage for i32 {
+    #[inline]
+    fn widen(self) -> i32 {
+        self
+    }
+    #[inline]
+    fn narrow(value: i32) -> Self {
+        value
+    }
+}
+
 /// The quantiser numerator and divisor of a coefficient magnitude at step
 /// `step`: `level = numerator / divisor`.
 #[inline]
@@ -348,13 +390,13 @@ mod sparse_tests {
     fn gain_dispatch_matches_original_formula_at_extremes_and_tails() {
         use crate::{Dsp, Isa};
         let reference = Dsp::with_isa(Isa::Scalar).unwrap();
-        let cs = [-(1 << 22) + 1, -32768, -1, 0, 1, 32767, (1 << 22) - 1];
+        let cs: [i16; 7] = [-32768, -32767, -1, 0, 1, 32766, 32767];
         let ds = [-32768, -32767, -1, 0, 1, 32766, 32767];
         for n in [
             0, 1, 2, 3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 63, 64, 65, 255, 256, 1023, 1024,
         ] {
             for offset in 0..8 {
-                let mut c = vec![0_i32; n + offset];
+                let mut c = vec![0_i16; n + offset];
                 let mut d = vec![0_i32; n + offset];
                 for seed in 0..8_u32 {
                     let mut state = seed + 17;
@@ -363,7 +405,7 @@ mod sparse_tests {
                         c[offset + i] = if seed < 4 {
                             cs[(i + seed as usize) % cs.len()]
                         } else {
-                            ((state >> 8) % ((1 << 23) - 1)) as i32 - ((1 << 22) - 1)
+                            (state >> 16) as i16
                         };
                         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                         d[offset + i] = if seed < 4 {
@@ -387,7 +429,7 @@ mod sparse_tests {
         }
         for isa in Isa::ALL {
             if let Some(dsp) = Dsp::with_isa(isa) {
-                let original = vec![-(1 << 22) + 1; 1024];
+                let original = vec![i16::MIN; 1024];
                 let d = vec![32767; 1024];
                 let gain = dsp.av1_coefficient_gain(&original, &d);
                 assert!(gain < 0);

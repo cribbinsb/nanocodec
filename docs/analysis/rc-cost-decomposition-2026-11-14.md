@@ -296,3 +296,35 @@ J −1.52% [−1.92, −1.09] BETTER, no guard.
 - The ceiling: HEVC 0e0da898, VVC 935b1726, VP9 d5cf4fe9, AV2 487dff46.
 - The key still boost: AV1 195d1297, H.264 61c3817e, VVC 39b54eab, VP9 7752ddef, HEVC c2346bf1, AV2 e17fce9d.
 - Final-checks of the other nine bundles: `~/nanocodec-data/work/rc-cost/fc-*.log`.
+
+### Fixed per-frame overhead (`rate.fixed_overhead`, registered, off)
+
+The unified-structure agent found that the size model has no fixed term. Header bytes are therefore read as
+content that scales with the step, and a byte or three more per frame (an AV1 OBU extension, `av1.frame_ids`)
+made still-scene rate control drift.
+
+`fixed_overhead.rs` models `bits = F + m · hint / step^e`:
+- `F` is learnt from inter frames with at least 98% unchanged blocks. It follows their smallest size down at
+  once, rises by 1/32 of the gap per frame, and is at most half a frame budget.
+- The content model learns from `bits − F`, and the level is solved for `budget − F`.
+
+**Probe** at the head with the ceiling and key still boost. AV1, 600 frames, keys every 10 s, the 14 static
+long clips each at its rung, PSNR-Y at equal rate; `fo_analyse.py`. The `gflat` arm is the adaptive-layers
+stream configured so that it never layers.
+
+| Pair | mean | per clip |
+|---|---|---|
+| `av1.frame_ids=1` vs flat | +0.03 dB | −0.23 .. +0.63 |
+| same pair, both arms with the overhead model | −0.01 dB | −0.09 .. +0.09 |
+| `gflat` vs flat | +0.01 dB | −0.18 .. +0.41 |
+| same pair, both arms with the overhead model | −0.04 dB | −0.39 .. +0.20 |
+| plain flat stream, with vs without | 0.00 dB | −0.43 .. +0.35 |
+
+- **On this head the drift barely shows.** The ceiling appears to have damped it.
+- **The model makes the stream about 3x less sensitive to added header bytes** (mean |Δ| 0.11 → 0.04 dB).
+- **`gflat` is unchanged.** Its spread is CBR run-to-run sensitivity, not an adaptive-path bias: the two
+  streams diverge at frame ~13, when a 2-bit budget difference rounds the level differently (unified-structure
+  agent).
+
+**Pool screen** (AV1 Default, draw 2026-11-14): L1 +0.12% [−0.00, +0.12], L2 +0.04% [−0.14, +0.20],
+600-frame L3 −0.02% [−0.39, +0.38] AMBIGUOUS. **Neutral, so not adopted.** It stays registered and off.

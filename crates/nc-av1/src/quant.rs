@@ -33,6 +33,12 @@ impl QuantSteps {
 
     /// Kernel parameters for a transform of size `tx` (its `dqDenom`), with
     /// the registered frame-kind rounding offset in units of 1/128 step.
+    ///
+    /// Levels are stored in 16 bits, so `max_level` is also capped at
+    /// `i16::MAX`. The cap never binds: a 16-bit coefficient's level is at
+    /// most `32767 << dqDenom_log2 / step` rounded, and the smallest step
+    /// (4) is at least `dqDenom` (up to 4), so no level, nor the trellis's
+    /// round-up candidate, exceeds 32767.
     #[must_use]
     pub fn quantizer(self, tx: TxSize, rounding_q7: i32) -> Av1Quantizer {
         let log_scale = tx.dequant_shift();
@@ -40,7 +46,7 @@ impl QuantSteps {
             dc_step: self.dc,
             ac_step: self.ac,
             rounding_q7,
-            max_level: self.max_useful_level(log_scale),
+            max_level: self.max_useful_level(log_scale).min(i32::from(i16::MAX)),
             log_scale,
         }
     }

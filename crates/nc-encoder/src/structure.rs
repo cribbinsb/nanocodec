@@ -180,6 +180,17 @@ pub struct AdaptiveRule {
     /// same compensable share) gained 5-15% (`docs/handoff/hierarchical-p.md`
     /// "Layer gate re-fit").
     pub max_noise_residual: f32,
+    /// Largest inheritance loss (`inheritance.rs`: luma dB the other frames
+    /// of a mini-GOP lose against its high-quality frame per QP unit
+    /// coarser) of a layered mini-GOP; at or above
+    /// [`INHERITANCE_LOSS_OFF`] the gate is off. A layered mini-GOP funds
+    /// its base frame much better than the frames above it, which pays
+    /// only where they inherit it: forced L1T3 against flat on the 31
+    /// long-window clips of draw 2026-11-14 (AV1 Default, 600 frames,
+    /// PSNR-YUV rate) won on 13 of 18 clips below 0.16 (mean -3.2%) and on
+    /// 3 of 13 at or above (mean +6.8%). A scene not yet measured stays
+    /// flat: a flat mini-GOP with a cadence measures it.
+    pub max_inheritance_loss: f32,
     /// Compensable share below which the residual gate applies: moving
     /// content (compensable share 0.35 and above on the fitting clips)
     /// has a large residual too, and gains from layering.
@@ -220,6 +231,10 @@ pub const CAMERA_JITTER_OFF: f32 = 64.0;
 /// A noise-residual limit at or above this switches the residual gate off.
 pub const NOISE_RESIDUAL_OFF: f32 = 64.0;
 
+/// An inheritance-loss limit at or above this switches the inheritance gate
+/// off.
+pub const INHERITANCE_LOSS_OFF: f32 = 4.0;
+
 /// Running averages of the motion signal.
 #[derive(Debug, Clone, Copy, Default)]
 struct MotionTrend {
@@ -258,6 +273,8 @@ pub struct TemporalStructure {
     /// that needs every frame to reference the previous one, intra refresh).
     hold_flat: bool,
     trend: MotionTrend,
+    /// The inheritance loss last reported (`observe_inheritance`).
+    inheritance_loss: Option<f32>,
     /// Index of the frame each slot holds (valid once a key frame has been
     /// coded, which refreshes all of them).
     slot_frame: [u64; MAX_REFERENCE_SLOTS],
@@ -279,6 +296,7 @@ impl TemporalStructure {
             adaptive: None,
             hold_flat: false,
             trend: MotionTrend::default(),
+            inheritance_loss: None,
             slot_frame: [0; MAX_REFERENCE_SLOTS],
         }
     }
@@ -326,6 +344,12 @@ impl TemporalStructure {
     pub fn reads_repeats(&self) -> bool {
         self.adaptive
             .is_some_and(|rule| rule.max_repeat_share < 1.0)
+    }
+
+    /// The stream's inheritance loss so far (`Inheritance::loss`), for the
+    /// inheritance gate of an adaptive structure.
+    pub fn observe_inheritance(&mut self, loss: Option<f32>) {
+        self.inheritance_loss = loss;
     }
 
     /// Feed the motion of the frame just analysed (adaptive structures).
@@ -394,7 +418,11 @@ impl TemporalStructure {
                             .trend
                             .camera_jitter
                             .is_some_and(|jitter| jitter <= rule.max_camera_jitter * scale))
-                    && !noisy_still;
+                    && !noisy_still
+                    && (rule.max_inheritance_loss >= INHERITANCE_LOSS_OFF
+                        || self
+                            .inheritance_loss
+                            .is_some_and(|loss| loss <= rule.max_inheritance_loss * scale));
                 if layered { self.layers } else { 1 }
             }
         }
@@ -622,6 +650,7 @@ mod tests {
             max_static: 1.0,
             max_camera_jitter: CAMERA_JITTER_OFF,
             max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
         };
@@ -667,6 +696,7 @@ mod tests {
             max_static: 1.0,
             max_camera_jitter: CAMERA_JITTER_OFF,
             max_noise_residual: 1.8,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.2,
             enter_ratio: 0.9,
         };
@@ -694,6 +724,57 @@ mod tests {
     }
 
     #[test]
+    fn scenes_that_do_not_inherit_or_are_unmeasured_stay_flat() {
+        let rule = AdaptiveRule {
+            max_camera_motion: 1.0,
+            max_compensable: 0.5,
+            min_still: 0.0,
+            max_repeat_share: 1.0,
+            max_static: 1.0,
+            max_camera_jitter: CAMERA_JITTER_OFF,
+            max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: 0.16,
+            noise_compensable: 0.0,
+            enter_ratio: 0.9,
+        };
+        let still = MotionSignal {
+            camera_motion: 0.0,
+            compensable: Some(0.0),
+            still_fraction: 1.0,
+            static_fraction: None,
+            repeat: None,
+            residual: None,
+        };
+        let mut s = TemporalStructure::adaptive(3, rule);
+        let mut index = 0;
+        let mut mini_gop = |s: &mut TemporalStructure| {
+            let layers = s.next(index, index == 0).position.layers;
+            s.observe(still);
+            index += 1;
+            for _ in 1..s.period() {
+                s.next(index, false);
+                s.observe(still);
+                index += 1;
+            }
+            layers
+        };
+        // Still, but nothing measured yet: flat.
+        assert_eq!(mini_gop(&mut s), 1);
+        assert_eq!(mini_gop(&mut s), 1);
+        // The frames inherit: layered from the next mini-GOP on.
+        s.observe_inheritance(Some(0.05));
+        assert_eq!(mini_gop(&mut s), 3);
+        // Inside the limit but not inside the entry margin: stays layered.
+        s.observe_inheritance(Some(0.15));
+        assert_eq!(mini_gop(&mut s), 3);
+        // They stop inheriting (noise): flat again, and 0.15 no longer enters.
+        s.observe_inheritance(Some(0.4));
+        assert_eq!(mini_gop(&mut s), 1);
+        s.observe_inheritance(Some(0.15));
+        assert_eq!(mini_gop(&mut s), 1);
+    }
+
+    #[test]
     fn held_adaptive_structure_turns_flat_after_its_mini_gop() {
         let rule = AdaptiveRule {
             max_camera_motion: 1.0,
@@ -703,6 +784,7 @@ mod tests {
             max_static: 1.0,
             max_camera_jitter: CAMERA_JITTER_OFF,
             max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
         };
@@ -741,6 +823,7 @@ mod tests {
             max_static: 1.0,
             max_camera_jitter: CAMERA_JITTER_OFF,
             max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
         };
@@ -778,6 +861,7 @@ mod tests {
             max_static: 1.0,
             max_camera_jitter: CAMERA_JITTER_OFF,
             max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
         };
@@ -819,6 +903,7 @@ mod tests {
             max_static: 0.7,
             max_camera_jitter: 2.0,
             max_noise_residual: NOISE_RESIDUAL_OFF,
+            max_inheritance_loss: INHERITANCE_LOSS_OFF,
             noise_compensable: 0.0,
             enter_ratio: 0.9,
         };
