@@ -6,9 +6,12 @@
 # x86 x1.69 (Jetson x1.70 for the same set). The full refinement (square,
 # two steps) alone gave -2.23% at x1.95 (break-even k 0.024). L3 (600 f,
 # ladder, n=27): J -2.96% [-3.40, -2.55] at x1.70 Jetson cycles.
-# The shared bundle's second reference stays off: H.264 Default codes
-# temporal layers (layers.count 3), beside which H.264 cannot signal it, and
-# asking for it makes the engine code a flat stream.
+# The shared bundle's second reference stays off here: beside the Default's
+# temporal layers it gained J -0.26% [-0.76, +0.19] against this preset (L3,
+# 600 f; the unified plan's HQ frames only: -0.11%, ambiguous) for +11%
+# Jetson cycles, nothing at k 0.025. H.264's P_Skip reads list index 0 only,
+# so still blocks cannot copy the finer HQ frame cheaply
+# (docs/analysis/primary-reference-refactor.md).
 refs.second = 0
 refs.second_full = 0
 h264.rd_refine = 1
