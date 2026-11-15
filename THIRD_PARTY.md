@@ -864,9 +864,12 @@ The VVC decoder also follows VTM 24.0 (commit
 2010-2026 ITU/ISO/IEC) as the normative reference where VVdeC does not cover a
 tool or the two differ, reimplemented in Rust:
 `crates/nc-vvc/src/decoder_blocks/quant_groups.rs` (quantisation-group starts,
-`CU::predictQP`, `cu_qp_delta` and `cu_chroma_qp_offset` binarisation) and the
+`CU::predictQP`, `cu_qp_delta` and `cu_chroma_qp_offset` binarisation), the
 weighted-prediction selection in `decoder_blocks/inter_prediction.rs`
-(`InterPrediction::xPredInterBi`). The VTM decoder is the reference of the
+(`InterPrediction::xPredInterBi`) and intra block copy in
+`decoder_blocks/ibc.rs` (`CABACReader::cu_skip_flag` and `pred_mode`,
+`PU::getIBCMergeCandidates`, `PU::fillIBCMvpCand`, the IBC branch of
+`DeblockingFilter::xGetBoundaryStrengthSingle`). The VTM decoder is the reference of the
 foreign-stream corpus (`tools/dev/vvc_foreign_corpus.py`); it is run, not
 linked.
 

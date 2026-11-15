@@ -53,6 +53,7 @@ impl Sbt {
         }
     }
 }
+#[derive(Clone)]
 pub(super) struct Models {
     flag: [Context; 2],
     quarter: Context,
@@ -75,7 +76,7 @@ impl Parser<'_> {
         let max = 1 << self.sequence.max_transform_log2;
         if !self.sequence.tools.sbt
             || unit.inter.is_none()
-            || matches!(unit.inter, Some(Inter::Ciip(_)))
+            || matches!(unit.inter, Some(Inter::Ciip(_) | Inter::Ibc(_)))
             || node.width > max
             || node.height > max
             || node.width.max(node.height) < 8

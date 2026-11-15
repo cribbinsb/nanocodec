@@ -1,6 +1,7 @@
 //! General inter CABAC banks, including B/P initialization switching.
 //! Normative tables from BSD-Clear `VVdeC`; see `THIRD_PARTY.md`.
 use super::{Context, initialization::bank};
+#[derive(Clone)]
 pub(super) struct Models {
     pub direction: [Context; 6],
     pub affine: [Context; 3],

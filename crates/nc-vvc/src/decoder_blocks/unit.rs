@@ -20,6 +20,7 @@ impl Parser<'_> {
             motion: None,
             affine_models: [None; 2],
             geometric: None,
+            block_vector: None,
             subblocks: Vec::new(),
             skip: false,
             ciip_weight: 0,
@@ -38,6 +39,7 @@ impl Parser<'_> {
             chroma_mode: intra::PLANAR,
             qp: 0,
             chroma_offsets: [0; 3],
+            tile: self.ctu.tile,
             transforms: super::transform_units::empty_units(
                 node,
                 channel,
@@ -47,8 +49,10 @@ impl Parser<'_> {
         let luma_qp = self.begin_unit_qp(&mut unit);
         let intra = self.prediction(r, &mut unit, constraint)?;
         if unit.skip
-            || (matches!(unit.inter, Some(Inter::Amvp { .. }))
-                && !r.bin(&mut self.contexts.root_cbf)?)
+            || (matches!(
+                unit.inter,
+                Some(Inter::Amvp { .. } | Inter::Ibc(super::ibc::BlockVector::Predicted { .. }))
+            ) && !r.bin(&mut self.contexts.root_cbf)?)
         {
             self.end_unit_qp(&mut unit, luma_qp);
             self.finish_unit(unit);

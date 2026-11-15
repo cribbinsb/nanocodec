@@ -8,6 +8,7 @@ use nc_common::decode::{DecodeError, Result};
 const GROUP_START: [usize; 10] = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
 const STATE_TRANSITIONS: u32 = 32_040;
 
+#[derive(Clone)]
 pub(super) struct Models {
     pub common: CoeffContexts,
     extra_significance: [[[Context; 12]; 2]; 2],

@@ -53,6 +53,7 @@ fn coding_unit(s: &mut StreamStats, unit: &Unit, qp: u32) {
             | Inter::Ciip(index)
             | Inter::Mmvd { base: index, .. },
         ) => (if unit.skip { Pred::Skip } else { Pred::Merge }, index),
+        Some(Inter::Ibc(_)) => (if unit.skip { Pred::Skip } else { Pred::Merge }, 0),
         Some(Inter::Geometric { indices, .. }) => {
             (if unit.skip { Pred::Skip } else { Pred::Merge }, indices[0])
         }

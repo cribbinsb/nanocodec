@@ -11,6 +11,7 @@ mod coeff;
 mod deblock;
 mod filter_syntax;
 mod filters;
+mod ibc;
 pub(crate) use filter_syntax::counts as filter_counts;
 pub(crate) use filters::apply as apply_filters;
 pub(crate) struct Parsed {
@@ -38,6 +39,7 @@ pub(crate) use refinement::derive as derive_refinement;
 mod inter_syntax;
 mod intra_syntax;
 mod isp;
+mod layout;
 mod merge_syntax;
 mod motion;
 mod motion_candidates;
@@ -51,6 +53,7 @@ mod transform_units;
 use transform_units::Transform;
 mod tree;
 mod unit;
+mod wavefront;
 use inter_syntax::Inter;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,6 +85,8 @@ pub(super) struct Unit {
     motion: Option<motion::Motion>,
     affine_models: [Option<crate::affine::Model>; 2],
     geometric: Option<[motion::Motion; 2]>,
+    /// The resolved block vector of an IBC CU (whole samples, 1/16 units).
+    block_vector: Option<crate::motion::Mv16>,
     subblocks: Vec<motion::Motion>,
     skip: bool,
     ciip_weight: u8,
@@ -103,12 +108,19 @@ pub(super) struct Unit {
     qp: u8,
     /// CU chroma QP offsets (Cb, Cr, joint) from the PPS list.
     chroma_offsets: [i8; 3],
+    /// Index of the CU's tile: neighbours in another tile are unavailable.
+    tile: u16,
     transforms: Vec<Transform>,
 }
 impl Unit {
     /// The CU's luma QP and chroma QP offsets, as `transform::qp` takes them.
     fn quant(&self) -> (u8, [i8; 3]) {
         (self.qp, self.chroma_offsets)
+    }
+    /// Whether this is an IBC CU (known from its syntax, before its vector
+    /// is resolved).
+    fn block_vector_signalled(&self) -> bool {
+        matches!(self.inter, Some(Inter::Ibc(_)))
     }
 }
 struct Parser<'a> {
@@ -130,7 +142,10 @@ struct Parser<'a> {
     inter_models: inter_models::Models,
     transform_models: transform_syntax::Models,
     sbt_models: sbt::Models,
+    ibc_models: ibc::Models,
     groups: quant_groups::QuantGroups,
+    /// The CTU being parsed.
+    ctu: layout::Ctu,
 }
 
 /// Decode supported general I/P syntax before reconstruction. Unsupported tools
@@ -154,50 +169,10 @@ pub(super) fn parse_filtered(
 ) -> Result<Parsed> {
     validate_tools(s, p, h)?;
     let dimensions = p.dimensions.map(|v| v as usize);
-    let stride = dimensions[0].div_ceil(4);
-    let cells = stride * dimensions[1].div_ceil(4);
-    let qp = h.qp as u32;
     let inter = h.kind != 2;
-    let init_kind = if h.cabac_init && inter {
-        1 - h.kind
-    } else {
-        h.kind
-    };
-    let mut parser = Parser {
-        sequence: s,
-        header: h,
-        dimensions,
-        stride,
-        grid: [vec![None; cells], vec![None; cells]],
-        units: Vec::new(),
-        contexts: initialization::contexts(qp, init_kind),
-        inter_models: inter_models::Models::new(qp, init_kind),
-        trees: tree::Models::new(qp, init_kind),
-        coefficients: coeff::Models::new(qp, init_kind),
-        skip_coefficients: skip_coeff::Models::new(qp, init_kind),
-        intra_models: intra_syntax::Models::new(qp, init_kind),
-        transform_models: transform_syntax::Models::new(qp, init_kind),
-        sbt_models: sbt::Models::new(qp, init_kind),
-        groups: quant_groups::QuantGroups::new(
-            [p.cu_qp_delta, h.cu_chroma_offsets],
-            [
-                h.picture.qp_subdiv[usize::from(inter)],
-                h.picture.chroma_subdiv[usize::from(inter)],
-            ],
-            &p.cu_chroma_offsets,
-            h.qp as u8,
-            init_kind,
-        ),
-        constraint: initialization::bank([[25, 20], [25, 12], [35, 35]], [1, 0], qp, init_kind),
-        ref_index: initialization::bank([[5, 35], [20, 35], [35, 35]], [0, 4], qp, init_kind),
-        cclm: initialization::bank([[26, 27], [34, 27], [59, 27]], [4, 9], qp, init_kind),
-        joint: initialization::bank(
-            [[42, 43, 52], [27, 36, 45], [12, 21, 35]],
-            [1, 1, 0],
-            qp,
-            init_kind,
-        ),
-    };
+    let scan = layout::scan(&p.partitioning.tiles, dimensions, s.ctu_log2);
+    let mut parser = Parser::new(s, p, h, scan[0]);
+    let (qp, init_kind) = parser.initialization();
     let mut reader = Reader::new(
         bytes
             .get(h.payload_offset..)
@@ -205,41 +180,53 @@ pub(super) fn parse_filtered(
     )?;
     let ctu = 1 << s.ctu_log2;
     let columns = dimensions[0].div_ceil(ctu);
-    let mut filters = Vec::new();
+    let mut filters = vec![filter_syntax::CtuFilters::default(); scan.len()];
     let mut filter_models = filter_syntax::Models::new(qp, init_kind);
-    for y in (0..dimensions[1]).step_by(ctu) {
-        for x in (0..dimensions[0]).step_by(ctu) {
-            let index = filters.len();
-            let neighbours = [
-                if x > 0 {
-                    Some(filters[index - 1])
-                } else {
-                    None
-                },
-                if y > 0 {
-                    Some(filters[index - columns])
-                } else {
-                    None
-                },
-            ];
-            filters.push(filter_models.read(
-                &mut reader,
-                &mut parser.contexts,
-                h,
-                neighbours,
-                filter_counts,
-            )?);
-            if inter {
-                parser.tree(
-                    &mut reader,
-                    Node::root(x, y, ctu),
-                    0,
-                    s.chroma,
-                    Constraint::Any,
-                )?;
-            } else {
-                parser.intra_ctu(&mut reader, Node::root(x, y, ctu))?;
+    let initial = parser.save_contexts(&filter_models);
+    // Wavefront: the context variables after the first CTU of the row above.
+    let mut row_start = None;
+    for (index, &position) in scan.iter().enumerate() {
+        // A tile, and with entropy synchronisation each CTU row of a tile,
+        // is a CABAC substream: a terminating bin and byte alignment end the
+        // one before (H.266 §7.3.11.1).
+        let saved = if position.starts_tile() {
+            Some(&initial)
+        } else {
+            row_start.as_ref().filter(|_| position.starts_row())
+        };
+        if let Some(saved) = saved.filter(|_| index != 0) {
+            if !reader.terminate()? {
+                return Err(DecodeError::Malformed("VVC CABAC substream termination"));
             }
+            reader.restart()?;
+            parser.start_row(saved, &mut filter_models);
+        }
+        parser.ctu = position;
+        // The CTUs to the left and above, when they are in the same tile.
+        let neighbours = [
+            (position.x > position.tile_origin.0).then(|| filters[position.address - 1]),
+            (position.y > position.tile_origin.1).then(|| filters[position.address - columns]),
+        ];
+        filters[position.address] = filter_models.read(
+            &mut reader,
+            &mut parser.contexts,
+            h,
+            neighbours,
+            filter_counts,
+        )?;
+        if inter {
+            parser.tree(
+                &mut reader,
+                Node::root(position.x, position.y, ctu),
+                0,
+                s.chroma,
+                Constraint::Any,
+            )?;
+        } else {
+            parser.intra_ctu(&mut reader, Node::root(position.x, position.y, ctu))?;
+        }
+        if s.entropy_sync && position.starts_row() {
+            row_start = Some(parser.save_contexts(&filter_models));
         }
     }
     if !reader.terminate()? {
@@ -250,8 +237,71 @@ pub(super) fn parse_filtered(
         filters,
     })
 }
+impl<'a> Parser<'a> {
+    fn new(s: &'a Sequence, p: &PictureParameters, h: &'a SliceHeader, first: layout::Ctu) -> Self {
+        let dimensions = p.dimensions.map(|v| v as usize);
+        let stride = dimensions[0].div_ceil(4);
+        let cells = stride * dimensions[1].div_ceil(4);
+        let inter = h.kind != 2;
+        let (qp, init_kind) = initialization_of(h);
+        Self {
+            ctu: first,
+            sequence: s,
+            header: h,
+            dimensions,
+            stride,
+            grid: [vec![None; cells], vec![None; cells]],
+            units: Vec::new(),
+            contexts: initialization::contexts(qp, init_kind),
+            inter_models: inter_models::Models::new(qp, init_kind),
+            trees: tree::Models::new(qp, init_kind),
+            coefficients: coeff::Models::new(qp, init_kind),
+            skip_coefficients: skip_coeff::Models::new(qp, init_kind),
+            intra_models: intra_syntax::Models::new(qp, init_kind),
+            transform_models: transform_syntax::Models::new(qp, init_kind),
+            sbt_models: sbt::Models::new(qp, init_kind),
+            ibc_models: ibc::Models::new(qp, init_kind),
+            groups: quant_groups::QuantGroups::new(
+                [p.cu_qp_delta, h.cu_chroma_offsets],
+                [
+                    h.picture.qp_subdiv[usize::from(inter)],
+                    h.picture.chroma_subdiv[usize::from(inter)],
+                ],
+                &p.cu_chroma_offsets,
+                h.qp as u8,
+                init_kind,
+            ),
+            constraint: initialization::bank([[25, 20], [25, 12], [35, 35]], [1, 0], qp, init_kind),
+            ref_index: initialization::bank([[5, 35], [20, 35], [35, 35]], [0, 4], qp, init_kind),
+            cclm: initialization::bank([[26, 27], [34, 27], [59, 27]], [4, 9], qp, init_kind),
+            joint: initialization::bank(
+                [[42, 43, 52], [27, 36, 45], [12, 21, 35]],
+                [1, 1, 0],
+                qp,
+                init_kind,
+            ),
+        }
+    }
+
+    /// Slice QP and initialisation type of the context variables (§9.3.2.2).
+    fn initialization(&self) -> (u32, u8) {
+        initialization_of(self.header)
+    }
+}
+
+fn initialization_of(h: &SliceHeader) -> (u32, u8) {
+    let kind = if h.cabac_init && h.kind != 2 {
+        1 - h.kind
+    } else {
+        h.kind
+    };
+    (h.qp as u32, kind)
+}
+
 fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Result<()> {
     // Each unsupported tool is named, so a corpus run reports what is missing.
+    let tiles = p.partitioning.tiles.iter().any(|v| v.len() != 1);
+    let filtered = h.sao.contains(&true) || h.alf.enabled.contains(&true);
     let inter = h.kind != 2;
     let unsupported = [
         (
@@ -265,13 +315,10 @@ fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Resul
         ),
         (s.ctu_log2 > 7, "VVC CTU size"),
         (s.tools.palette, "VVC palette mode"),
-        (s.tools.ibc, "VVC intra block copy"),
         (h.scaling, "VVC explicit scaling lists"),
-        (s.entropy_sync, "VVC wavefront entropy synchronisation"),
-        (!h.entry_offsets.is_empty(), "VVC slice entry points"),
         (
-            p.partitioning.tiles.iter().any(|v| v.len() != 1),
-            "VVC multiple tiles",
+            tiles && filtered && !p.partitioning.filter_across_tiles,
+            "VVC SAO or ALF without filtering across tiles",
         ),
     ];
     match unsupported.iter().find(|(present, _)| *present) {
@@ -313,7 +360,10 @@ impl Parser<'_> {
         if x >= self.dimensions[0] || y >= self.dimensions[1] {
             return None;
         }
-        self.grid[channel][y / 4 * self.stride + x / 4].map(|index| &self.units[index])
+        // Another tile's CUs are unavailable (H.266 §6.4.4).
+        self.grid[channel][y / 4 * self.stride + x / 4]
+            .map(|index| &self.units[index])
+            .filter(|unit| unit.tile == self.ctu.tile)
     }
     fn tree(
         &mut self,

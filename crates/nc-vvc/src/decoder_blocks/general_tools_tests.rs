@@ -77,7 +77,7 @@ fn official_general_intra_reconstruction() {
                         &mut picture.plane_mut(nc_common::PlaneIndex::Y).view_mut(),
                     );
                 }
-                deblock(&mut picture, &parsed.units, s, &header, &dsp);
+                deblock(&mut picture, &parsed.units, s, p, &header, &dsp);
                 compare(&picture, "NC_DBF ", 0);
                 apply_filters(&mut picture, &parsed.filters, s, &header, &banks, &dsp).unwrap();
                 compare(&picture, "NC_FINAL ", 0);

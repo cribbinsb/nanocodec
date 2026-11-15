@@ -17,6 +17,9 @@ pub(super) struct Motion {
     pub half: bool,
 }
 
+/// Entries of the motion history list (`MaxNumMergeCand - 1` at most).
+const HISTORY: usize = 5;
+
 pub(crate) fn derive(
     units: &mut [Unit],
     dimensions: [usize; 2],
@@ -30,8 +33,11 @@ pub(crate) fn derive(
     let stride = dimensions[0].div_ceil(4);
     let mut grid = vec![None; stride * dimensions[1].div_ceil(4)];
     let mut owners = vec![None; grid.len()];
-    let mut history = Vec::with_capacity(5);
-    let mut row = usize::MAX;
+    let mut history = Vec::with_capacity(HISTORY);
+    let mut vectors = super::ibc::History::default();
+    // The CTU row and tile of the latest CU: both lists restart at each CTU
+    // row of a tile.
+    let mut row = (usize::MAX, 0);
     for unit_index in 0..units.len() {
         let (previous, remaining) = units.split_at_mut(unit_index);
         let unit = &mut remaining[0];
@@ -39,13 +45,32 @@ pub(crate) fn derive(
             continue;
         }
         let n = unit.node;
-        if n.y >> ctu_log2 != row {
-            row = n.y >> ctu_log2;
+        let tile = unit.tile;
+        if (n.y >> ctu_log2, tile) != row {
+            row = (n.y >> ctu_log2, tile);
             history.clear();
+            vectors.clear();
         }
+        if let Some(Inter::Ibc(signalled)) = unit.inter {
+            let cells = (owners.as_slice(), dimensions);
+            let maximum = sequence.tools.max_ibc_merge;
+            let vector = block_vector(unit, signalled, previous, cells, &mut vectors, maximum)?;
+            unit.block_vector = Some(vector);
+            claim(&mut owners, n, stride, unit_index);
+            continue;
+        }
+        // With entropy synchronisation nothing in a CTU column to the right
+        // of the CU's own is available (H.266 §6.4.4).
+        let right_limit = if sequence.entropy_sync {
+            ((n.x >> ctu_log2) + 1) << ctu_log2
+        } else {
+            usize::MAX
+        };
         let at = |x: usize, y: usize| {
-            if x < dimensions[0] && y < dimensions[1] {
-                grid[(y >> 2) * stride + (x >> 2)]
+            if x < dimensions[0].min(right_limit) && y < dimensions[1] {
+                let index = (y >> 2) * stride + (x >> 2);
+                // Motion of another tile is unavailable (H.266 §6.4.4).
+                grid[index].filter(|_| owners[index].is_some_and(|o| previous[o].tile == tile))
             } else {
                 None
             }
@@ -93,34 +118,91 @@ pub(crate) fn derive(
         .resolve(unit)?;
         restrict_biprediction(unit.node, &mut resolved);
         if let Some(motion) = resolved {
-            if motion.lists.iter().zip(references).any(|(vector, refs)| {
-                vector.is_some_and(|v| usize::from(v.reference) >= refs.len())
-            }) {
-                return Err(DecodeError::Malformed("VVC unavailable motion reference"));
-            }
-            if unit.subblocks.is_empty()
-                && unit.geometric.is_none()
-                && unit.affine_models.iter().all(Option::is_none)
-                && (n.x + n.width) >> merge_log2 > n.x >> merge_log2
-                && (n.y + n.height) >> merge_log2 > n.y >> merge_log2
-            {
-                history.retain(|old| old.lists != motion.lists);
-                if history.len() == 5 {
-                    history.remove(0);
-                }
-                history.push(motion);
-            }
+            record(unit, motion, references, merge_log2, &mut history)?;
         }
         unit.motion = resolved;
         for y in (n.y..n.y + n.height).step_by(4) {
             for x in (n.x..n.x + n.width).step_by(4) {
-                let index = (y >> 2) * stride + (x >> 2);
-                grid[index] = self::at(unit, x, y);
-                owners[index] = Some(unit_index);
+                grid[(y >> 2) * stride + (x >> 2)] = self::at(unit, x, y);
             }
         }
+        claim(&mut owners, n, stride, unit_index);
     }
     Ok(())
+}
+
+/// Resolve an IBC CU's block vector from the IBC CUs to its left (A1) and
+/// above (B1) in its tile, and the vector history (H.266 §8.6.2).
+fn block_vector(
+    unit: &Unit,
+    signalled: super::ibc::BlockVector,
+    previous: &[Unit],
+    (owners, dimensions): (&[Option<usize>], [usize; 2]),
+    vectors: &mut super::ibc::History,
+    maximum: u8,
+) -> Result<Mv16> {
+    let n = unit.node;
+    let stride = dimensions[0].div_ceil(4);
+    let neighbour = |x: usize, y: usize| {
+        let owner: usize = (x < dimensions[0] && y < dimensions[1])
+            .then(|| owners[(y >> 2) * stride + (x >> 2)])
+            .flatten()?;
+        previous[owner]
+            .block_vector
+            .filter(|_| previous[owner].tile == unit.tile)
+    };
+    let neighbours = [
+        neighbour(n.x.wrapping_sub(1), n.y + n.height - 1),
+        neighbour(n.x + n.width - 1, n.y.wrapping_sub(1)),
+    ];
+    let vector = vectors.resolve(signalled, (n.width, n.height), neighbours, maximum);
+    if super::ibc::inside(vector, (n.x, n.y, n.width, n.height), dimensions) {
+        Ok(vector)
+    } else {
+        Err(DecodeError::Malformed("VVC IBC block vector"))
+    }
+}
+
+/// Check a CU's resolved motion against the reference lists and enter it in
+/// the history list when the CU is eligible (§8.5.2.16).
+fn record(
+    unit: &Unit,
+    motion: Motion,
+    references: [&[i32]; 2],
+    merge_log2: u8,
+    history: &mut Vec<Motion>,
+) -> Result<()> {
+    let n = unit.node;
+    if motion
+        .lists
+        .iter()
+        .zip(references)
+        .any(|(vector, refs)| vector.is_some_and(|v| usize::from(v.reference) >= refs.len()))
+    {
+        return Err(DecodeError::Malformed("VVC unavailable motion reference"));
+    }
+    if unit.subblocks.is_empty()
+        && unit.geometric.is_none()
+        && unit.affine_models.iter().all(Option::is_none)
+        && (n.x + n.width) >> merge_log2 > n.x >> merge_log2
+        && (n.y + n.height) >> merge_log2 > n.y >> merge_log2
+    {
+        history.retain(|old| old.lists != motion.lists);
+        if history.len() == HISTORY {
+            history.remove(0);
+        }
+        history.push(motion);
+    }
+    Ok(())
+}
+
+/// Record a CU as the owner of its 4x4 cells.
+fn claim(owners: &mut [Option<usize>], n: super::Node, stride: usize, unit: usize) {
+    for y in (n.y..n.y + n.height).step_by(4) {
+        for x in (n.x..n.x + n.width).step_by(4) {
+            owners[(y >> 2) * stride + (x >> 2)] = Some(unit);
+        }
+    }
 }
 
 fn restrict_biprediction(n: super::Node, resolved: &mut Option<Motion>) {
@@ -162,7 +244,7 @@ impl<F: Fn(usize, usize) -> Option<super::affine_motion::Neighbour>> Selection<'
             )
         };
         let resolved = match unit.inter {
-            None => None,
+            None | Some(Inter::Ibc(_)) => None,
             Some(Inter::Merge(index) | Inter::Ciip(index)) => {
                 Some(candidates()[usize::from(index)])
             }

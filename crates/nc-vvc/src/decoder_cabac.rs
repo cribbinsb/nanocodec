@@ -30,6 +30,12 @@ impl<'a> Reader<'a> {
         ctx.update(value);
         Ok(value)
     }
+    /// Start the next substream, which follows the byte alignment after a
+    /// terminating bin (H.266 §9.3.2.5: a tile or wavefront row ended).
+    pub fn restart(&mut self) -> Result<(), DecodeError> {
+        self.engine = CabacReader::new(self.engine.data(), self.engine.next_byte())?;
+        Ok(())
+    }
     #[inline]
     pub fn bypass(&mut self) -> Result<bool, DecodeError> {
         Ok(self.engine.bypass())

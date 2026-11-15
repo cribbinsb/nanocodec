@@ -50,6 +50,7 @@ pub(crate) fn counts(banks: &[Option<Box<Adaptation>>; 8], header: &SliceHeader)
     }
     Ok(counts)
 }
+#[derive(Clone)]
 pub(super) struct Models {
     chroma: [[Context; 3]; 2],
     alternative: [Context; 2],

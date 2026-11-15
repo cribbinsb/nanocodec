@@ -3,6 +3,7 @@
 use super::initialization::bank;
 use super::{Context, DecodeError, Parser, Reader, Result, Split, Transform, Unit, intra};
 
+#[derive(Clone)]
 pub(super) struct Models {
     bdpcm: [Context; 4],
     mip: [Context; 4],
@@ -163,10 +164,15 @@ impl Parser<'_> {
         }
         let node = unit.node;
         if !unit.combined {
-            unit.luma_mode = self
+            let luma = self
                 .neighbour(node.x + node.width / 2, node.y + node.height / 2, 0)
-                .ok_or(DecodeError::Malformed("VVC missing collocated luma"))?
-                .luma_mode;
+                .ok_or(DecodeError::Malformed("VVC missing collocated luma"))?;
+            // The derived mode of chroma under an IBC luma CU is DC (§8.4.3).
+            unit.luma_mode = if luma.block_vector_signalled() {
+                intra::DC
+            } else {
+                luma.luma_mode
+            };
         }
         unit.chroma_mode =
             if self.sequence.tools.cclm && self.cclm_allowed(unit) && r.bin(&mut self.cclm[0])? {

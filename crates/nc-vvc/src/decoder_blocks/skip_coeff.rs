@@ -6,6 +6,7 @@ use super::{
     initialization::bank,
 };
 
+#[derive(Clone)]
 pub(super) struct Models {
     group: [Context; 3],
     significant: [Context; 3],

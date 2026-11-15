@@ -1,5 +1,5 @@
 //! H.266 general dual-tree intra edge control; all filtering uses shared DSP.
-use super::{Sequence, SliceHeader, Transform, Unit, transform};
+use super::{PictureParameters, Sequence, SliceHeader, Transform, Unit, transform};
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::Dsp;
 
@@ -35,6 +35,9 @@ fn edge_blocks(units: &[Unit]) -> Vec<EdgeBlock<'_>> {
         .collect()
 }
 
+/// Vector difference (1/16 sample units) from which an edge is filtered.
+const HALF_SAMPLE: i32 = 8;
+
 /// Samples along an edge segment whose ends set the LADF luma level.
 const LADF_SEGMENT: usize = 4;
 
@@ -42,6 +45,7 @@ pub(crate) fn apply(
     picture: &mut Picture,
     units: &[Unit],
     sequence: &Sequence,
+    parameters: &PictureParameters,
     header: &SliceHeader,
     dsp: &Dsp,
 ) {
@@ -49,6 +53,7 @@ pub(crate) fn apply(
         return;
     }
     let stride = picture.width().div_ceil(4);
+    let across_tiles = parameters.partitioning.filter_across_tiles;
     let blocks = edge_blocks(units);
     let grid = edge_grid(&blocks, stride, picture.height());
     for horizontal in [false, true] {
@@ -66,6 +71,10 @@ pub(crate) fn apply(
                     let at = (y >> 2) * stride + (x >> 2);
                     let p = &blocks[grid[channel][at - if horizontal { stride } else { 1 }]];
                     let q = &blocks[grid[channel][at]];
+                    // `pps_loop_filter_across_tiles_enabled_flag` (§8.8.3.2).
+                    if p.unit.tile != q.unit.tile && !across_tiles {
+                        continue;
+                    }
                     let transform_edge = !std::ptr::eq(p, q);
                     let cu_origin = if horizontal {
                         q.unit.node.y
@@ -344,6 +353,19 @@ fn strength(
         && q.unit.subblocks.is_empty()
     {
         return 0;
+    }
+    // IBC CUs compare block vectors; an IBC CU beside a motion-compensated
+    // one is a prediction-mode change (§8.8.3.5).
+    if plane == 0 {
+        match (p.unit.block_vector, q.unit.block_vector) {
+            (Some(p), Some(q)) => {
+                return i32::from(
+                    (p.x - q.x).abs() >= HALF_SAMPLE || (p.y - q.y).abs() >= HALF_SAMPLE,
+                );
+            }
+            (None, None) => {}
+            _ => return 1,
+        }
     }
     if plane == 0
         && let (Some(p), Some(q)) = (

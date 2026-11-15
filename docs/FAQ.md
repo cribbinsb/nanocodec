@@ -197,9 +197,10 @@ its output under the GPL; we distribute only the output streams, not the program
   several tools of the newer standards are unused (for example compound prediction and loop restoration in
   AV1/AV2).
 - **Decoders:** H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit 4:2:0) and VP9 (profile 0) pass the
-  conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams and 87 of 116 8-bit VTM and
-  VVenC streams that exercise the Main 10 tools (`docs/handoff/vvc-foreign-corpus.md` lists what fails: intra
-  block copy, multiple slices, tiles and others), so it is not a full Main-profile decoder; the AV2 decoder decodes our own streams and 6 of 30
+  conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams and 121 of 133 8-bit VTM and
+  VVenC streams that exercise the Main 10 tools (`docs/handoff/vvc-foreign-corpus.md` lists what fails: several
+  slices in a picture, subpictures, reference picture resampling and four smaller tools), so it is not a full
+  Main-profile decoder; the AV2 decoder decodes our own streams and 6 of 30
   foreign test streams bit-exact (the six avmenc v1.0.0 key-frame-only streams coded with the fewest tools, of 12
   dav2d 8-bit test streams and 18 avmenc streams); the other 24 need inter prediction from several references,
   hidden and reordered frames, larger superblocks, extended partitions and the other AV2 tools outside our

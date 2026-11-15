@@ -49,6 +49,9 @@ CLIPS = {
     'jaad': ('pan_jaad_0117', 1280, 720, 30, 4754.3),
     'mot': ('crowd_mot17_09', 1280, 720, 30, 2998.0),
 }
+# Synthetic screen-like content (flat areas, repeated patterns, text), which
+# makes encoders choose intra block copy; it has no source bitrate to respect.
+SYNTHETIC = {'screen': 'testsrc2=size={w}x{h}:rate=30'}
 SOURCE_FRAMES = 33
 
 # VTM switches that turn every optional coding tool off: the per-tool streams
@@ -204,6 +207,54 @@ def streams():
         vtm('vtm-single-tree-cu-dqp', 'ldp', 'CU QP delta (single tree intra)',
             'DualITree=0 MaxDeltaQP=3 MaxCuDQPSubdiv=4'),
     ]
+    # Wavefront rows with every tool, in small CTUs (more rows) and all intra.
+    out += [
+        vtm('vtm-ai-wpp-ctc', 'ai', 'WPP, CTC all-intra', 'WaveFrontSynchro=1', clip='jaad', frames=3,
+            qp=42, minimal=False),
+        vtm('vtm-ra-wpp-ctc', 'ra', 'WPP, CTC random access', 'WaveFrontSynchro=1', frames=17,
+            minimal=False),
+        vtm('vtm-ldb-wpp-ctu32-dqp', 'ldb', 'WPP, CTU 32, CU QP delta, CTC low-delay B',
+            'WaveFrontSynchro=1 CTUSize=32 MaxCUWidth=32 MaxCUHeight=32 Log2MaxTbSize=5 MaxBTLumaISlice=32 '
+            'MaxBTChromaISlice=32 MaxBTNonISlice=32 MaxTTLumaISlice=32 MaxTTChromaISlice=32 MaxTTNonISlice=32 '
+            'MaxDeltaQP=3 MaxCuDQPSubdiv=2', minimal=False),
+        vtm('vtm-ai-wpp-ibc-screen', 'ai', 'WPP + IBC, screen content', 'WaveFrontSynchro=1 IBC=1 HashME=1',
+            clip='screen', frames=3, qp=32, minimal=False),
+    ]
+    # Tiles with every tool (loop filters across the tile edges), with
+    # wavefront rows inside the tiles, and uneven tile sizes.
+    tiles = 'EnablePicPartitioning=1 TileColumnWidthArray=3 TileRowHeightArray=2'
+    out += [
+        vtm('vtm-ai-tiles-ctc', 'ai', 'tiles, CTC all-intra', tiles, clip='jaad', frames=3, qp=42,
+            minimal=False),
+        vtm('vtm-ra-tiles-ctc', 'ra', 'tiles, CTC random access', tiles, frames=17, minimal=False),
+        vtm('vtm-ldb-tiles-wpp-ctu64-dqp', 'ldb', 'tiles + WPP, CTU 64, CU QP delta, CTC low-delay B',
+            'EnablePicPartitioning=1 TileColumnWidthArray=3,3 TileRowHeightArray=2 WaveFrontSynchro=1 '
+            'CTUSize=64 MaxBTNonISlice=64 MaxDeltaQP=3 MaxCuDQPSubdiv=2', minimal=False),
+        vtm('vtm-ai-tiles-ibc-screen', 'ai', 'tiles + IBC, screen content', f'{tiles} IBC=1 HashME=1',
+            clip='screen', frames=3, qp=32, minimal=False),
+    ]
+    # Intra block copy on screen-like content, where encoders use it.
+    out += [
+        vtm('vtm-ai-ibc-screen', 'ai', 'IBC, screen content (dual tree)', 'IBC=1 HashME=1',
+            clip='screen', frames=3, qp=32),
+        vtm('vtm-ai-ibc-screen-ctc', 'ai', 'IBC, screen content, CTC all-intra', 'IBC=1 HashME=1',
+            clip='screen', frames=3, qp=32, minimal=False),
+        vtm('vtm-ai-ibc-screen-single-tree', 'ai', 'IBC, screen content (single tree)',
+            'IBC=1 HashME=1 DualITree=0', clip='screen', frames=3, qp=32),
+        vtm('vtm-ai-ibc-screen-lmcs-dqp', 'ai', 'IBC + LMCS + AMVR + CU QP delta, screen content',
+            'IBC=1 HashME=1 LMCSEnable=1 IMV=1 MaxDeltaQP=2 MaxCuDQPSubdiv=2', clip='screen', frames=3,
+            qp=32),
+        vtm('vtm-ldp-ibc-screen', 'ldp', 'IBC, screen content (P)', 'IBC=1 HashME=1 IMV=1',
+            clip='screen', frames=9, qp=32),
+        vtm('vtm-ldb-ibc-screen-ctc', 'ldb', 'IBC, screen content, CTC low-delay B', 'IBC=1 HashME=1',
+            clip='screen', frames=9, qp=32, minimal=False),
+        vtm('vtm-ra-ibc-screen-ctc', 'ra', 'IBC, screen content, CTC random access', 'IBC=1 HashME=1',
+            clip='screen', frames=17, qp=32, minimal=False),
+        vvenc('vvenc-ra-medium-screen', 'randomaccess_medium.cfg', 'VVenC medium random access, screen content',
+              '--IntraPeriod 16 --GOPSize 16 --IBC 1', clip='screen', frames=17, qp=32),
+        vvenc('vvenc-ai-medium-screen', 'randomaccess_medium.cfg', 'VVenC medium all intra, screen content',
+              '--IntraPeriod 1 --GOPSize 1 --MCTF 0 --BIM 0 --IBC 1', clip='screen', frames=3, qp=32),
+    ]
     # VVenC presets: random access, low delay, all intra.
     for preset in ('faster', 'fast', 'medium', 'slow'):
         out.append(vvenc(f'vvenc-ra-{preset}', f'randomaccess_{preset}.cfg', f'VVenC {preset} random access',
@@ -219,24 +270,31 @@ def streams():
 
 def source(spec):
     """Scaled 8-bit 4:2:0 source for a stream; made once, shared by all streams."""
-    name, width, height, _, _ = CLIPS[spec['clip']]
     out_w, out_h = spec['size']
     path = WORK / 'src' / f'{spec["clip"]}_{out_w}x{out_h}.yuv'
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix('.tmp')
-        subprocess.run(
-            ['ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s',
-             f'{width}x{height}', '-i', str(DATA / 'clips/main' / f'{name}.yuv'), '-vf',
-             f'scale={out_w}:{out_h}', '-frames:v', str(SOURCE_FRAMES), '-f', 'rawvideo', str(temp)],
-            check=True)
+        if spec['clip'] in SYNTHETIC:
+            inputs = ['-f', 'lavfi', '-i', SYNTHETIC[spec['clip']].format(w=out_w, h=out_h)]
+        else:
+            name, width, height, _, _ = CLIPS[spec['clip']]
+            inputs = ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', f'{width}x{height}', '-i',
+                      str(DATA / 'clips/main' / f'{name}.yuv'), '-vf', f'scale={out_w}:{out_h}']
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', *inputs, '-pix_fmt', 'yuv420p', '-frames:v',
+                        str(SOURCE_FRAMES), '-f', 'rawvideo', str(temp)], check=True)
         temp.rename(path)
     return path
 
 
+def clip_rate(spec):
+    """(frames per second, source kbps) of a stream's clip."""
+    return (30, float('inf')) if spec['clip'] in SYNTHETIC else CLIPS[spec['clip']][3:5]
+
+
 def encode_command(spec, stream):
     width, height = spec['size']
-    fps = CLIPS[spec['clip']][3]
+    fps = clip_rate(spec)[0]
     if spec['encoder'] == 'vtm':
         command = [str(VTM), '-c', str(VTM_CFG / BASES[spec['base']]), '-i', str(source(spec)),
                    '-b', str(stream), '-o', '', '-wdt', str(width), '-hgt', str(height), '-fr', str(fps),
@@ -353,13 +411,14 @@ def build_one(spec):
     vvdec = vvdec_reference(stream, frame_bytes)
     other = second_reference(stream, frame_bytes, monochrome)
     data = stream.read_bytes()
-    clip = CLIPS[spec['clip']]
-    kbps = len(data) * 8 * clip[3] / spec['frames'] / 1000
+    fps, source_kbps = clip_rate(spec)
+    kbps = len(data) * 8 * fps / spec['frames'] / 1000
     return dict(
         name=spec['name'], status='ok' if main['code'] == 0 and main['frames'] else 'reference-failed',
         encoder=spec['encoder'], tools=spec['tools'], width=width, height=height, monochrome=monochrome,
         coded_frames=spec['frames'], bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
-        kbps=round(kbps, 1), source_kbps=clip[4], within_half_source=kbps <= clip[4] / 2,
+        kbps=round(kbps, 1), source_kbps=None if source_kbps == float('inf') else source_kbps,
+        within_half_source=kbps <= source_kbps / 2,
         frames=main['frames'], md5=main['md5'], tail=main['tail'], reference_error=main['error'],
         vvdec=agreement(vvdec, main), ffmpeg=agreement(other, main),
         command=' '.join(shlex.quote(part) for part in command))

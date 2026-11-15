@@ -20,6 +20,21 @@ pub(super) fn bank<const N: usize, const M: usize>(
 
 pub(super) fn contexts(qp: u32, kind: u8) -> Contexts {
     let mut result = Contexts::new(qp, kind != 2);
+    if kind == 2 {
+        // An I slice reads these only for IBC CUs (H.266 Tables 62, 64-66,
+        // 81 and 87, initType 0), which the shared intra tables leave out.
+        result.skip = bank(
+            [[57, 60, 46], [57, 59, 45], [0, 26, 28]],
+            [5, 4, 8],
+            qp,
+            kind,
+        );
+        result.merge = bank::<1, 1>([[6], [21], [26]], [4], qp, kind)[0];
+        result.merge_idx = bank::<1, 1>([[18], [20], [34]], [4], qp, kind)[0];
+        result.mvd = bank([[51, 36], [44, 43], [14, 45]], [9, 5], qp, kind);
+        result.mvp = bank::<1, 1>([[34], [34], [42]], [12], qp, kind)[0];
+        result.root_cbf = bank::<1, 1>([[12], [5], [6]], [4], qp, kind)[0];
+    }
     if kind != 0 {
         return result;
     }

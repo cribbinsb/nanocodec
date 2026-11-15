@@ -5,24 +5,50 @@ pub(super) struct Availability {
     dimensions: [usize; 2],
     stride: usize,
     completed: [Vec<bool>; 2],
+    /// Tile index of each completed cell, and of the current CU: another
+    /// tile's samples are unavailable.
+    tiles: [Vec<u16>; 2],
+    tile: u16,
+    /// CTU size (log2) when the wavefront rule applies.
+    wavefront: Option<u8>,
+    /// First luma column that the current CU may not refer to.
+    right_limit: usize,
 }
 impl Availability {
-    pub fn new(dimensions: [usize; 2]) -> Self {
+    /// `wavefront`: the CTU size (log2) of a sequence with entropy
+    /// synchronisation, where a CU sees nothing in CTU columns to the right
+    /// of its own (H.266 §6.4.4).
+    pub fn new(dimensions: [usize; 2], wavefront: Option<u8>) -> Self {
         let stride = dimensions[0].div_ceil(4);
         let count = stride * dimensions[1].div_ceil(4);
         Self {
             dimensions,
             stride,
             completed: [vec![false; count], vec![false; count]],
+            tiles: [vec![0; count], vec![0; count]],
+            tile: 0,
+            wavefront,
+            right_limit: usize::MAX,
+        }
+    }
+    /// Set the CU whose neighbours the following queries are about.
+    pub fn enter(&mut self, unit: &super::Unit) {
+        self.tile = unit.tile;
+        if let Some(ctu_log2) = self.wavefront {
+            self.right_limit = ((unit.node.x >> ctu_log2) + 1) << ctu_log2;
         }
     }
     pub fn has(&self, channel: usize, x: isize, y: isize) -> bool {
-        x >= 0
-            && y >= 0
-            && (x as usize) < self.dimensions[0] >> channel
-            && (y as usize) < self.dimensions[1] >> channel
-            && self.completed[channel]
-                [((y as usize) << channel >> 2) * self.stride + ((x as usize) << channel >> 2)]
+        if x < 0
+            || y < 0
+            || (x as usize) << channel >= self.right_limit
+            || (x as usize) >= self.dimensions[0] >> channel
+            || (y as usize) >= self.dimensions[1] >> channel
+        {
+            return false;
+        }
+        let cell = ((y as usize) << channel >> 2) * self.stride + ((x as usize) << channel >> 2);
+        self.completed[channel][cell] && self.tiles[channel][cell] == self.tile
     }
     pub fn mark_transform(&mut self, unit: &super::Unit, transform: &super::Transform) {
         for channel in if unit.combined {
@@ -40,7 +66,9 @@ impl Availability {
             };
             for y in (n.y..n.y + n.height()).step_by(4) {
                 for x in (n.x..n.x + n.width()).step_by(4) {
-                    self.completed[channel][(y >> 2) * self.stride + (x >> 2)] = true;
+                    let cell = (y >> 2) * self.stride + (x >> 2);
+                    self.completed[channel][cell] = true;
+                    self.tiles[channel][cell] = unit.tile;
                 }
             }
         }

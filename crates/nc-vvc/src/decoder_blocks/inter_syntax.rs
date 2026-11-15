@@ -27,6 +27,8 @@ pub(super) enum Inter {
         precision: u8,
         weight: u8,
     },
+    /// Intra block copy: neither intra nor motion-compensated (`MODE_IBC`).
+    Ibc(super::ibc::BlockVector),
 }
 impl Inter {
     pub fn affine(self) -> bool {
@@ -40,9 +42,14 @@ impl Parser<'_> {
         unit: &mut Unit,
         constraint: Constraint,
     ) -> Result<bool> {
+        if unit.channel == 1 {
+            return Ok(true);
+        }
+        if self.sequence.tools.ibc {
+            return self.prediction_with_ibc(r, unit, constraint);
+        }
         if self.header.kind == 2
             || constraint == Constraint::Intra
-            || unit.channel == 1
             || unit.node.width * unit.node.height == 16
         {
             return Ok(true);
@@ -68,6 +75,12 @@ impl Parser<'_> {
         {
             return Ok(true);
         }
+        self.inter_prediction(r, unit)?;
+        Ok(false)
+    }
+    /// Merge or AMVP syntax of a motion-compensated CU, after its mode flags.
+    pub(super) fn inter_prediction(&mut self, r: &mut Reader<'_>, unit: &mut Unit) -> Result<()> {
+        let n = unit.node;
         unit.inter = Some(if unit.skip || r.bin(&mut self.contexts.merge)? {
             self.merge_syntax(r, unit)?
         } else {
@@ -82,7 +95,7 @@ impl Parser<'_> {
             .filter(|u| u.is_some_and(|u| u.inter.is_none()))
             .count() as u8;
         }
-        Ok(false)
+        Ok(())
     }
     pub(super) fn affine_context(&self, unit: &Unit) -> usize {
         let n = unit.node;

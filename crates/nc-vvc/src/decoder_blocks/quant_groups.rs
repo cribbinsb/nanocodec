@@ -31,6 +31,14 @@ pub(super) struct QuantGroups {
     offset_coded: [bool; 2],
     /// Index + 1 into `offsets` in force (0: no CU offset).
     offset_index: u8,
+    slice_qp: u8,
+    models: Models,
+}
+
+/// Context variables of `cu_qp_delta_abs`, `cu_chroma_qp_offset_flag` and
+/// `cu_chroma_qp_offset_idx`.
+#[derive(Clone, Copy)]
+pub(super) struct Models {
     delta: [Context; 2],
     offset_flag: [Context; 1],
     offset_idc: [Context; 1],
@@ -54,10 +62,24 @@ impl QuantGroups {
             delta_coded: false,
             offset_coded: [false; 2],
             offset_index: 0,
-            delta: bank([[35, 35]; 3], [8, 8], qp, init_kind),
-            offset_flag: bank([[35]; 3], [8], qp, init_kind),
-            offset_idc: bank([[35]; 3], [8], qp, init_kind),
+            slice_qp,
+            models: Models {
+                delta: bank([[35, 35]; 3], [8, 8], qp, init_kind),
+                offset_flag: bank([[35]; 3], [8], qp, init_kind),
+                offset_idc: bank([[35]; 3], [8], qp, init_kind),
+            },
         }
+    }
+
+    pub fn models(&self) -> Models {
+        self.models
+    }
+
+    /// A new CABAC substream that resets QP prediction (a wavefront row):
+    /// its context variables, and the slice QP as `qPY_PREV` (§8.7.1).
+    pub fn restart(&mut self, models: Models) {
+        self.models = models;
+        self.qp = self.slice_qp;
     }
 }
 
@@ -141,8 +163,8 @@ impl Parser<'_> {
         let at = |x: usize, y: usize| self.neighbour(x, y, 0).map(|unit| unit.qp);
         let above = at(node.x, node.y.wrapping_sub(1));
         // The first group of a CTB row in a tile continues from the CTB above.
-        if node.x == 0
-            && node.y & mask == 0
+        if self.ctu.starts_row()
+            && (node.x, node.y) == (self.ctu.x, self.ctu.y)
             && let Some(above) = above
         {
             return above;
@@ -194,7 +216,7 @@ impl Parser<'_> {
     }
 
     fn qp_delta(&mut self, r: &mut Reader<'_>) -> Result<i32> {
-        let [first, rest] = &mut self.groups.delta;
+        let [first, rest] = &mut self.groups.models.delta;
         let mut magnitude = u32::from(r.bin(first)?);
         while magnitude != 0 && magnitude < DELTA_PREFIX_MAX && r.bin(rest)? {
             magnitude += 1;
@@ -216,13 +238,44 @@ impl Parser<'_> {
 
     fn chroma_offset_index(&mut self, r: &mut Reader<'_>) -> Result<u8> {
         let g = &mut self.groups;
-        if !r.bin(&mut g.offset_flag[0])? {
+        if !r.bin(&mut g.models.offset_flag[0])? {
             return Ok(0);
         }
         let mut index = 1;
-        while usize::from(index) < g.offsets.len() && r.bin(&mut g.offset_idc[0])? {
+        while usize::from(index) < g.offsets.len() && r.bin(&mut g.models.offset_idc[0])? {
             index += 1;
         }
         Ok(index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subdivision_counts_two_per_quad_and_one_per_binary_split() {
+        let root = Node::root(0, 0, 128);
+        let quad = root.group_children(Split::Quad, false, [2, 0]);
+        assert!(
+            quad.iter()
+                .all(|n| n.subdiv == 2 && n.groups == [true, false])
+        );
+        let binary = quad[0].group_children(Split::Horizontal, false, [2, 0]);
+        assert!(
+            binary
+                .iter()
+                .all(|n| n.subdiv == 3 && n.groups == [false, false])
+        );
+    }
+
+    #[test]
+    fn ternary_parts_share_the_outer_parts_group_test() {
+        let root = Node::root(0, 0, 64);
+        let parts = root.group_children(Split::TripleVertical, false, [1, 2]);
+        let subdivs: Vec<_> = parts.iter().map(|n| n.subdiv).collect();
+        assert_eq!(subdivs, [2, 1, 2]);
+        // The middle part has subdivision 1 but is tested as 2, like the others.
+        assert!(parts.iter().all(|n| n.groups == [false, true]));
     }
 }

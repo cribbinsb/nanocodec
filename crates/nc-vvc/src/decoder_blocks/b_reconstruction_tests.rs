@@ -80,7 +80,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 if poc != 0 {
                     compare_regions(&picture, poc);
                 }
-                deblock(&mut picture, &units, s, &h, &dsp);
+                deblock(&mut picture, &units, s, p, &h, &dsp);
                 if poc != 0 {
                     compare_filtered(&picture, poc);
                 }

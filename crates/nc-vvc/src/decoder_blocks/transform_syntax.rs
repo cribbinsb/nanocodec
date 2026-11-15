@@ -2,6 +2,7 @@
 //! Context initialization and coefficient constraints follow BSD-Clear `VVdeC`.
 use super::{Context, Parser, Reader, Result, Unit, coeff, initialization::bank};
 
+#[derive(Clone)]
 pub(super) struct Models {
     lfnst: [Context; 3],
     mts: [Context; 4],
@@ -98,7 +99,12 @@ impl Parser<'_> {
                 unit.lfnst = 1 + u8::from(reader.bin(&mut self.transform_models.lfnst[2])?);
             }
         }
-        let explicit = self.sequence.transforms.mts[if unit.inter.is_none() { 1 } else { 2 }];
+        // Explicit MTS is for intra and motion-compensated CUs, not IBC.
+        let explicit = match unit.inter {
+            None => self.sequence.transforms.mts[1],
+            Some(super::Inter::Ibc(_)) => false,
+            Some(_) => self.sequence.transforms.mts[2],
+        };
         let first = &unit.transforms[0];
         if explicit
             && unit.channel == 0

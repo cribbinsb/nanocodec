@@ -20,11 +20,15 @@ pub(crate) fn reconstruct(
 ) -> Result<Picture> {
     let mut picture = Picture::new(dimensions[0], dimensions[1], 0)
         .map_err(|_| DecodeError::Malformed("VVC picture dimensions"))?;
-    let mut available = Availability::new(dimensions);
+    let mut available = Availability::new(
+        dimensions,
+        sequence.entropy_sync.then_some(sequence.ctu_log2),
+    );
     let mut chroma_scale = reshape.filter(|(_, enabled)| *enabled).map(|(model, _)| {
         super::reshape::ChromaScale::new(model, units, dimensions, sequence.ctu_log2)
     });
     for unit in units {
+        available.enter(unit);
         let mut isp = super::isp::Prediction::prepare(unit, &picture, &available);
         let ciip = super::ciip::prepare(unit, &picture, &available, dsp);
         for (transform_index, transform) in unit.transforms.iter().enumerate() {
@@ -144,6 +148,14 @@ fn predict(
     let mut prediction = vec![0; width * height];
     if unit.motion.is_some() {
         super::inter_prediction::predict_unit(dsp, references, unit, plane, block, &mut prediction);
+    } else if let Some(vector) = unit.block_vector {
+        super::ibc::predict(
+            picture,
+            plane,
+            vector,
+            (x, y, width, height),
+            &mut prediction,
+        );
     } else if index == 0 && unit.reference_line != 0 {
         let refs = References::gather_mrl(
             picture,

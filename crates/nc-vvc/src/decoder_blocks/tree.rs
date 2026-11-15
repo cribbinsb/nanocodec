@@ -219,6 +219,7 @@ impl Choices {
         c
     }
 }
+#[derive(Clone)]
 pub(super) struct Models {
     split: [Context; 9],
     quad: [Context; 6],

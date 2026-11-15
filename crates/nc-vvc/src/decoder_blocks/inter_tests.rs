@@ -71,7 +71,7 @@ fn official_predicted_syntax() {
                 )
                 .unwrap();
                 compare_blocks(&reconstructed, &units, frames);
-                deblock(&mut reconstructed, &units, s, &header, &dsp);
+                deblock(&mut reconstructed, &units, s, p, &header, &dsp);
                 compare_filtered(&reconstructed, frames);
                 assert_picture(&reconstructed, frames);
                 previous = Some(reconstructed);

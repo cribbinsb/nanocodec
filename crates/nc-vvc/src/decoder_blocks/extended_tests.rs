@@ -46,7 +46,7 @@ fn official_extended_intra_syntax() {
                     if name == "LOSSLESS_A_3" {
                         super::inter_tests::compare_blocks(&decoded, &units, 0);
                     }
-                    deblock(&mut decoded, &units, s, &header, &dsp);
+                    deblock(&mut decoded, &units, s, p, &header, &dsp);
                     let mut hash = 0xcbf2_9ce4_8422_2325u64;
                     for plane in nc_common::PlaneIndex::ALL {
                         let view = decoded.plane(plane).view();

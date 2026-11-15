@@ -373,9 +373,7 @@ impl Decoder {
         // other (H.266 §8.1.2: NoOutputBeforeRecoveryFlag is 0). One that
         // starts the stream needs generated references and withheld output.
         if header.picture.gdr && self.general_references.is_none() {
-            return Err(DecodeError::Unsupported(
-                "VVC stream starting at a GDR picture",
-            ));
+            return Err(DecodeError::Unsupported("VVC GDR stream start"));
         }
         let reshape = crate::decoder_blocks::reshape_model(sequence, &header, &self.adaptation[1])?;
         let filter_counts = crate::decoder_blocks::filter_counts(&self.adaptation[0], &header)?;
@@ -428,12 +426,7 @@ impl Decoder {
             sequence,
             parameters.dimensions.map(|v| v as usize),
             header.picture.joint_sign,
-            crate::decoder_blocks::InterSources {
-                pictures: [&references[0], &references[1]],
-                // The tables are empty unless the PPS enables weighting for
-                // this slice type.
-                weights: Some(&header.weights).filter(|w| !w.lists[0].is_empty()),
-            },
+            crate::decoder_blocks::InterSources::new([&references[0], &references[1]], &header),
             &self.dsp,
             reshape.as_ref().map(|m| (m, header.picture.chroma_scale)),
         )?;
@@ -445,7 +438,14 @@ impl Decoder {
                 &mut picture.plane_mut(nc_common::PlaneIndex::Y).view_mut(),
             );
         }
-        crate::decoder_blocks::deblock(&mut picture, &units, sequence, &header, &self.dsp);
+        crate::decoder_blocks::deblock(
+            &mut picture,
+            &units,
+            sequence,
+            parameters,
+            &header,
+            &self.dsp,
+        );
         #[cfg(test)]
         crate::decoder_blocks::compare_trace(&picture, "NC_DBF ", poc);
         crate::decoder_blocks::apply_filters(

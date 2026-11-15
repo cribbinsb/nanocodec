@@ -12,9 +12,21 @@ pub(crate) struct Sources<'a> {
     pub weights: Option<&'a Weights>,
 }
 
-#[cfg(test)]
 impl<'a> Sources<'a> {
+    /// The references of a slice, with its explicit weights when the PPS
+    /// enables weighting for its type (the tables are empty otherwise).
+    pub(crate) fn new(
+        pictures: [&'a [&'a Picture]; 2],
+        header: &'a crate::decoder_headers::SliceHeader,
+    ) -> Self {
+        Self {
+            pictures,
+            weights: Some(&header.weights).filter(|w| !w.lists[0].is_empty()),
+        }
+    }
+
     /// References predicted from with the default weights.
+    #[cfg(test)]
     pub(crate) fn unweighted(pictures: [&'a [&'a Picture]; 2]) -> Self {
         Self {
             pictures,
@@ -49,16 +61,16 @@ fn explicit(weights: &Weights, motion: Motion, component: usize) -> HevcWeights 
             round: (o0 + o1 + 1) << shift,
             shift: shift + 1,
         },
-        (Some((weight, offset)), None) | (None, Some((weight, offset))) => {
-            let first = motion.lists[0].is_some();
+        // One list (a block without any reference predicts nothing).
+        (first, second) => {
+            let (weight, offset) = first.or(second).unwrap_or_default();
             HevcWeights {
-                w0: if first { weight } else { 0 },
-                w1: if first { 0 } else { weight },
+                w0: if first.is_some() { weight } else { 0 },
+                w1: if first.is_some() { 0 } else { weight },
                 round: (1 << (shift - 1)) + (offset << shift),
                 shift,
             }
         }
-        (None, None) => unreachable!("inter prediction has a reference"),
     }
 }
 
@@ -452,4 +464,85 @@ fn geometric(
         (&samples[0], &samples[1]),
         out,
     );
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::*;
+    use crate::decoder_blocks::motion::Vector;
+
+    /// H.266 §8.5.6.6.3 written out, for one sample.
+    fn reference(weights: &Weights, lists: [Option<(u8, i32)>; 2]) -> i32 {
+        let shift = i32::from(weights.denominators[0]) + 6;
+        let entry = |list: usize, index: u8| weights.lists[list][usize::from(index)][0];
+        let value = match lists {
+            [Some((a, sample)), None] | [None, Some((a, sample))] => {
+                let list = usize::from(lists[0].is_none());
+                let [weight, offset] = entry(list, a).map(i32::from);
+                ((sample * weight + (1 << (shift - 1))) >> shift) + offset
+            }
+            [Some((a, first)), Some((b, second))] => {
+                let ([w0, o0], [w1, o1]) = (entry(0, a).map(i32::from), entry(1, b).map(i32::from));
+                (first * w0 + second * w1 + ((o0 + o1 + 1) << shift)) >> (shift + 1)
+            }
+            [None, None] => unreachable!(),
+        };
+        value.clamp(0, 255)
+    }
+
+    #[test]
+    fn folded_offsets_match_the_specification_formula() {
+        let weights = Weights {
+            denominators: [5, 5, 5],
+            lists: [
+                vec![[[40, -7], [32, 0], [32, 0]], [[-20, 30], [32, 0], [32, 0]]],
+                vec![[[25, 12], [32, 0], [32, 0]]],
+            ],
+            signalled: [vec![true, true], vec![true]],
+        };
+        let dsp = Dsp::new();
+        let vector = |reference| {
+            Some(Vector {
+                reference,
+                vector: Mv16::ZERO,
+            })
+        };
+        for lists in [
+            [Some(0), None],
+            [Some(1), None],
+            [None, Some(0)],
+            [Some(0), Some(0)],
+            [Some(1), Some(0)],
+        ] {
+            let motion = Motion {
+                lists: lists.map(|l| l.and_then(vector)),
+                ..Motion::default()
+            };
+            // High-precision samples (pixel << 6, with filter over- and undershoot).
+            for (first, second) in [
+                (-8192, -8192),
+                (0, 4000),
+                (8128, -3000),
+                (8128, 8128),
+                (-100, 77),
+            ] {
+                let (a, b) = ([first as i16; 16], [second as i16; 16]);
+                let mut out = [0u8; 16];
+                combine(
+                    &dsp,
+                    (motion, Some(&weights), PlaneIndex::Y),
+                    &a,
+                    &b,
+                    (4, 4),
+                    &mut out,
+                );
+                let expected = reference(
+                    &weights,
+                    [lists[0].map(|l| (l, first)), lists[1].map(|l| (l, second))],
+                );
+                assert_eq!(i32::from(out[0]), expected, "{lists:?} {first} {second}");
+                assert!(out.iter().all(|&v| v == out[0]));
+            }
+        }
+    }
 }
