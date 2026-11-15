@@ -257,7 +257,7 @@ mod tests {
     fn slow_is_the_shared_bundle_under_the_codec_file() {
         let shared = parse_file(SHARED_FILES[0].1).unwrap();
         let hevc = preset_params(Codec::Hevc, 1, "slow").unwrap();
-        assert_eq!(hevc.get("refs.second"), Some(1.0));
+        assert_eq!(hevc.get("refs.second"), Some(2.0));
         assert_eq!(hevc.get("hevc.merge_candidates"), Some(5.0));
         assert_eq!(hevc.overlaid_with(&shared), hevc);
     }

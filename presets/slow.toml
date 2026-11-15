@@ -7,9 +7,11 @@
 #
 # The last high-quality frame (key or cadence base) as a second reference on
 # every frame with the full mode decision, not only on the high-quality
-# frames the unified plan offers it on. CBR L3 against each Default: HEVC
+# frames the unified plan offers it on; `refs.second` 2 codes the stream
+# without it where the stream cannot carry it (temporal layers in some
+# codecs, intra refresh, long-term or spatial layers). CBR L3 against each Default: HEVC
 # -1.65% at +24.8% Jetson cycles, AV1 -2.00% at +22%, VVC -1.91% at +13.7%,
 # AV2 -1.46% at +11.9%; VP9 fixed QP -2.2% at +8.3%.
 structure.unified = 0
-refs.second = 1
+refs.second = 2
 refs.second_full = 1

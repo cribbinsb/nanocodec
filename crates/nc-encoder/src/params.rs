@@ -989,8 +989,8 @@ param_group! {
     /// A second reference beside the structure's (`second_reference.rs`):
     /// the last high-quality frame, kept in the long-term slot.
     pub struct RefParams ("refs") {
-        second: 0.0, [0.0, 1.0],
-            "1 lets inter blocks also predict from the last high-quality frame (key or cadence base), held in the long-term slot: helps where that frame is coded finer than the previous one, at a second mode decision per block",
+        second: 0.0, [0.0, 2.0],
+            "1 lets inter blocks also predict from the last high-quality frame (key or cadence base), held in the long-term slot, refused where the stream cannot carry it (temporal layers in some codecs, intra refresh, a long-term reference, spatial layers); 2 the same where it can, coding the stream without it elsewhere (presets): helps where that frame is coded finer than the previous one, at a second mode decision per block",
         second_refine_margin: 0.3, [0.0, 4.0],
             "cheap ranking: refine the second reference's best vector to sub-sample precision only when it costs within this fraction above the primary choice (0 refines only outright winners): higher is slower",
         second_full: 0.0, [0.0, 1.0],

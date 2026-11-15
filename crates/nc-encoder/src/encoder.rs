@@ -63,7 +63,9 @@ use crate::resolution::{CodedScale, ResolutionPolicy, half_size};
 use crate::resolution_evidence::HalfSizeProbe;
 use crate::reuse::{CodedFrame, ReuseFrame, ReuseTerm};
 use crate::scene::{FrameCosts, SceneDetector};
-use crate::second_reference::{SecondReference, TierPlan, second_reference_enabled};
+use crate::second_reference::{
+    SecondReference, TierPlan, second_reference_enabled, second_reference_steps_aside,
+};
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 use crate::source_scale::{SourceScaler, scale_source_picture};
 use crate::spatial::SpatialConfig;
@@ -3288,9 +3290,12 @@ fn second_reference<B: CodecBackend>(
     // Beside temporal layers the HQ frame's slot follows the layer
     // pattern's, which each codec must be able to signal.
     if config.temporal_layers > 1 && !B::SECOND_REFERENCE_WITH_LAYERS {
-        // An explicit `refs.second` is refused; the unified plan, a default
-        // way of coding, steps aside and the stream is coded without it.
-        return if RefParams::from_overrides(&config.params).second >= 0.5 {
+        // An explicit `refs.second` 1 is refused; the unified plan, a default
+        // way of coding, and `refs.second` 2 (a preset's) step aside and the
+        // stream is coded without it.
+        return if RefParams::from_overrides(&config.params).second >= 0.5
+            && !second_reference_steps_aside(&config.params)
+        {
             Err(ConfigError::SecondReference(
                 "not with temporal layers in this codec yet",
             ))

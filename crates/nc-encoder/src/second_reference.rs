@@ -31,11 +31,45 @@ use crate::params::{
 };
 use crate::structure::FrameReferences;
 
+/// `refs.second` at or above this asks for the second reference on every
+/// frame only where the stream can carry it (2: a preset's setting, so an
+/// encode with temporal layers, intra refresh, a long-term reference or
+/// spatial layers is coded without it instead of refused); 1 asks for it
+/// outright, refused there.
+const SECOND_WHERE_POSSIBLE: f32 = 1.5;
+
+/// Whether a feature that needs the long-term slot or a single reference
+/// itself is on: a long-term reference with feedback, intra refresh or
+/// spatial layers. The unified plan and `refs.second` 2 step aside for them.
+fn slot_taken(params: &ParamOverrides) -> bool {
+    LtrParams::from_overrides(params).interval > 0.0
+        || RefreshParams::from_overrides(params).period > 0.0
+        || SpatialParams::from_overrides(params).layers.round() > 1.0
+}
+
+/// Whether `refs.second` asks for the second reference on every frame and
+/// the stream can carry it (temporal layers are decided per codec, later).
+#[must_use]
+pub(crate) fn every_frame_second_reference(params: &ParamOverrides) -> bool {
+    let second = RefParams::from_overrides(params).second;
+    if second >= SECOND_WHERE_POSSIBLE {
+        !slot_taken(params)
+    } else {
+        second >= 0.5
+    }
+}
+
+/// Whether `refs.second` asks for the second reference only where the
+/// stream can carry it (it then steps aside beside temporal layers as well).
+pub(crate) fn second_reference_steps_aside(params: &ParamOverrides) -> bool {
+    RefParams::from_overrides(params).second >= SECOND_WHERE_POSSIBLE
+}
+
 /// Whether `params` ask for a second reference: `refs.second`, or the
 /// unified structure's plan (`structure.unified`).
 #[must_use]
 pub fn second_reference_enabled(params: &ParamOverrides) -> bool {
-    RefParams::from_overrides(params).second >= 0.5 || TierPlan::new(params).is_some()
+    every_frame_second_reference(params) || TierPlan::new(params).is_some()
 }
 
 /// The unified structure's reference plan: which frames carry the second
@@ -67,10 +101,7 @@ impl TierPlan {
     /// intra refresh) where an explicit `refs.second` is refused.
     pub(crate) fn new(params: &ParamOverrides) -> Option<Self> {
         let plan = StructureParams::from_overrides(params);
-        let taken = LtrParams::from_overrides(params).interval > 0.0
-            || RefreshParams::from_overrides(params).period > 0.0
-            || SpatialParams::from_overrides(params).layers.round() > 1.0;
-        (plan.unified >= 0.5 && !taken).then(|| Self {
+        (plan.unified >= 0.5 && !slot_taken(params)).then(|| Self {
             min_depth: f64::from(plan.secondary_min_depth),
         })
     }
