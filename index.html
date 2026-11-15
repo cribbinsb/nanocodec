@@ -19,10 +19,14 @@
     <details class="more"><summary>More</summary><div class="more-menu"><button id="step" disabled title="While paused: show the next instant both versions code">Step one frame ›</button><button id="keyframe" disabled title="Both live encoders code a key frame next">Request keyframes</button><button id="debug-report" title="Save the page's whole state as a Markdown file, to reproduce an issue">Debug report…</button></div></details>
   </section>
   <div class="session-row"><span id="source-name"></span><span id="session-stats" role="status">Starting…</span></div>
+  <div class="notice-slot">
   <p class="legal-notice"><strong>Experimental technology demo, provided as is.</strong> Using it gives you no patent licence for H.264, HEVC, VVC, AV1, VP9 or AV2. Built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC/VVdeC, AVM and the standards' authors, with thanks; written by AI coding agents under one person's direction. <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md" target="_blank" rel="noopener">Credits, licences, patents and disclaimers</a> · <a href="https://github.com/cribbinsb/nanocodec/blob/main/web/clips/ATTRIBUTION.md" target="_blank" rel="noopener">Clip credits</a></p>
+  <div class="notice-stack">
   <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
   <p id="view-note" class="view-note" hidden></p>
   <p id="speed-hint" class="view-note speed-hint" role="status" hidden></p>
+  </div>
+  </div>
   <div class="view-tools"><label class="compact-control layout-control">Layout <select id="layout"></select></label><button id="analysis-toggle" class="analysis-toggle" aria-pressed="false" title="Show which coding tools each encoder used, block by block">Analysis</button><span class="view-hint">Scroll or pinch on a picture to zoom · drag to pan · double-click to reset</span></div>
   <section id="analysis" class="analysis" aria-label="Analysis options"></section>
   <section id="versions" class="versions" aria-label="The two versions, side by side"></section>
