@@ -1,5 +1,5 @@
 // The results explorer (index.html): bitrate saving vs encode speed for every
-// encoder and preset, with the clip set, zero line, rate mode, metric, platform,
+// encoder and preset, with the clip set, rate mode, metric, platform,
 // codecs and presets selectable, a legend that toggles projects, a tooltip per
 // point, a detail panel with the exact command line, and the same view as a table.
 // A link ?codec=&preset= (deep-link.js) opens it filtered to that preset, selected;
@@ -139,14 +139,11 @@ function viewNote(data, view) {
 }
 
 function render(data, root) {
-  if (state.mode === 'cbr' && state.clipset === 'dev') state.zero = 'x264-medium';
+  // One zero line: x264 medium --tune psnr. The development chart has only
+  // the default-tuned line until its next refresh adds the tuned one.
+  state.zero = state.mode === 'cbr' && state.clipset === 'dev' ? 'x264-medium' : TUNED_ZERO;
   const view = data.views.find((v) => v.id === viewId());
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
-  for (const b of root.querySelectorAll('[data-control="zero"] button')) {
-    b.setAttribute('aria-pressed', String(b.dataset.value === state.zero));
-    b.disabled = state.mode === 'cbr' && state.clipset === 'dev' && b.dataset.value === TUNED_ZERO;
-    b.title = b.disabled ? 'The development chart is measured against x264 medium with its default tuning' : '';
-  }
   for (const [name, value] of [['clipset', state.mode === 'qp' ? 'dev' : state.clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
@@ -238,9 +235,6 @@ function controls(data, root) {
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
     ], state.clipset, (v) => { state.clipset = v; rerender(); }))),
-    control('Zero line', withData('zero', segmented('Zero line', [
-      { value: TUNED_ZERO, label: 'x264 medium, --tune psnr' }, { value: 'x264-medium', label: 'x264 medium, default' },
-    ], state.zero, (v) => { state.zero = v; rerender(); }))),
     control('Rate mode', segmented('Rate mode', [
       { value: 'cbr', label: 'CBR' }, { value: 'qp', label: 'Fixed QP' },
     ], state.mode, (v) => { state.mode = v; rerender(); })),
