@@ -60,6 +60,7 @@ from .clips import Clip, load_clipset
 from .codecs import Codec
 from .config import Paths, find_tool, load_paths
 from .conformance import gate_stream
+from .encoders.nanocodec import preset_cli_args
 from . import svcbase
 from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, anchor_check, combination_key,
                          gate_arguments, level_satisfies, point_check)
@@ -839,7 +840,6 @@ def cqp_quantizers(rates: dict[int, float], cbr_kbps: list[float]) -> list[int]:
 def families(args: argparse.Namespace, paths: Paths) -> list[Family]:
     binary = Path(args.binary)
     extra = tuple(x for p in args.param for x in ("--param", p))
-    extra += ("--preset", args.preset) if args.preset else ()
     suffix = f"@{args.label}" if args.label else ""
     chosen = []
     variant = args.baseline_binary is not None
@@ -848,7 +848,8 @@ def families(args: argparse.Namespace, paths: Paths) -> list[Family]:
             base_extra = tuple(x for p in args.baseline_param for x in ("--param", p))
             chosen.append(Family(f"nanocodec-{codec.value}", codec, Path(args.baseline_binary),
                                  base_extra, own=True, cqp=args.cqp))
-        chosen.append(Family(f"nanocodec-{codec.value}{suffix}", codec, binary, extra, own=True,
+        chosen.append(Family(f"nanocodec-{codec.value}{suffix}", codec, binary,
+                             extra + preset_cli_args(codec, args.preset), own=True,
                              variant=variant, cqp=args.cqp))
     if args.anchors:
         ours = {Codec(c) for c in args.codecs.split(",")}
@@ -1156,7 +1157,7 @@ def main(argv: list[str] | None = None) -> None:
                         help="dyadic hierarchical-P layers (SVT: --hierarchical-levels n-1)")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--param", action="append", default=[], help="name=value for nanocodec")
-    parser.add_argument("--preset", help="nanocodec --preset NAME")
+    parser.add_argument("--preset", help="preset stem of presets/<codec>/ (fast, l2-fast, ...)")
     parser.add_argument("--label", help="suffix naming this nanocodec variant")
     parser.add_argument("--baseline-param", action="append", default=[],
                         help="name=value for the baseline build (candidate mode)")

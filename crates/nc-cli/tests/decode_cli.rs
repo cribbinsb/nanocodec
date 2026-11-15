@@ -95,15 +95,7 @@ fn all_codecs_default_fast_key_p_and_repeated_headers_match_encoder_recon() {
                         args.extend(["--param".into(), setting.into()]);
                     }
                 } else {
-                    args.extend([
-                        "--preset".into(),
-                        if codec == "hevc" {
-                            "hevc-fast"
-                        } else {
-                            "h264-fast"
-                        }
-                        .into(),
-                    ]);
+                    args.extend(["--preset".into(), "fast".into()]);
                 }
             }
             run(&args);

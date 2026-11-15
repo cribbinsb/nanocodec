@@ -18,7 +18,7 @@
 // or RGBA converted here in WASM for the CPU path, both with the source's
 // colour matrix and range (colour.js).
 //
-// Spatial SVC (the AV1 and VP9 `svc` presets): the decoder keeps only the
+// Spatial SVC (AV1 and VP9 with 2 or 3 spatial layers, config `spatialLayers`): the decoder keeps only the
 // operating point the viewer picked (BrowserDecoder.set_operating_point: AV1
 // drops the OBUs of other layers, AV1 section 7.18; VP9, which has no layer
 // ids, decodes only the base frame of each [S0, S1] superframe, VP9 Annex B,

@@ -23,9 +23,9 @@ source rate, 150 frames, one key frame, 1 s buffer), with:
 
 Points (`POINTS`):
 
-  - ours: the `av1-svc` and `vp9-svc` presets (presets/<codec>-svc.toml) in L2T1
-    and in L2T3, and their speed points `av1-svc-fast` / `vp9-svc-fast` in L2T1;
-    the three-layer `av1-svc3` in L3T1 and L3T3 and its `av1-svc3-fast` in L3T1;
+  - ours: the `l2-medium` presets (presets/<codec>/l2-medium.toml, AV1 and VP9)
+    in L2T1 and in L2T3, and their speed points `l2-fast` in L2T1; the
+    three-layer `l3-medium` in L3T1 and L3T3 and its `l3-fast` in L3T1;
   - libaom `svc_encoder_rtc` (the real-time SVC example WebRTC's AV1 SVC is
     modelled on; tools/anchors `aomsvc`) in L2T1, L2T3, L3T1 and L3T3 at two
     speeds, CBR
@@ -96,7 +96,7 @@ from .codecs import Codec
 from .config import Paths, find_anchor_tool, find_tool, load_paths
 from .diskguard import check_disk
 from .encoders.base import fps_fraction
-from .encoders.nanocodec import PRESETS_DIR
+from .encoders.nanocodec import PRESETS_DIR, preset_cli_args, preset_path
 from .fingerprint import measurement_fingerprint
 from .framepipe import ProcessFailed
 from .framestats import coded_at_times, probe_frames, with_held_frames
@@ -130,19 +130,13 @@ AOM_KEY_LAYERING_MODES = {(3, 3): 10}
 #: main chart's libaom points). The example's own 52 cannot reach the low rungs:
 #: pan_jaad_0101 at 600 kbps L2T1 came out at 2.4x the target (1.0x with 63).
 AOM_MAX_Q = 63
-#: Our preset for spatial SVC (presets/av1-svc.toml): L2T1 at 720p + 360p.
-SVC_PRESET = "av1-svc"
-#: Its speed point (presets/av1-svc-fast.toml): AV1 Fast's levers plus SVC-only ones.
-SVC_FAST_PRESET = "av1-svc-fast"
-#: The three-layer presets (presets/av1-svc3.toml, presets/av1-svc3-fast.toml):
-#: L3T1 at 720p + 360p + 180p, and its speed point.
-SVC3_PRESET = "av1-svc3"
-SVC3_FAST_PRESET = "av1-svc3-fast"
-#: The VP9 presets (presets/vp9-svc*.toml): 2-layer and 3-layer SVC and their speed points.
-VP9_SVC_PRESET = "vp9-svc"
-VP9_SVC_FAST_PRESET = "vp9-svc-fast"
-VP9_SVC3_PRESET = "vp9-svc3"
-VP9_SVC3_FAST_PRESET = "vp9-svc3-fast"
+#: Our spatial SVC preset stems (presets/<codec>/<stem>.toml, AV1 and VP9 alike):
+#: two layers (L2T1 at 720p + 360p) at the codec's Medium and Fast levers (Fast
+#: adds SVC-only speed levers), and three (L3T1 at 720p + 360p + 180p).
+L2_MEDIUM = "l2-medium"
+L2_FAST = "l2-fast"
+L3_MEDIUM = "l3-medium"
+L3_FAST = "l3-fast"
 #: vp9_spatial_svc_encoder: cyclic-refresh AQ (aq-mode 3, as WebRTC's VP9 sets
 #: it) and the full quantizer range, as svc_encoder_rtc (AOM_MAX_Q); its minimum
 #: is WebRTC's VP9 one.
@@ -167,13 +161,13 @@ SINGLE_LAYER = "nanocodec-av1"
 SINGLE_LAYERS = {Codec.AV1: SINGLE_LAYER, Codec.VP9: "nanocodec-vp9"}
 #: The base-layer table's anchors: each codec's Default at the base size (its
 #: simulcast point's low stream).
-BASE_ANCHORS = {Codec.AV1: ("nanocodec-av1-360p", "AV1 Default, 360p alone"),
-                Codec.VP9: ("nanocodec-vp9-360p", "VP9 Default, 360p alone")}
+BASE_ANCHORS = {Codec.AV1: ("nanocodec-av1-360p", "AV1 Medium, 360p alone"),
+                Codec.VP9: ("nanocodec-vp9-360p", "VP9 Medium, 360p alone")}
 #: The 180p table's anchors: each codec's Default at quarter size (the three-layer
 #: simulcast point's lowest stream).
-LOWEST_ANCHOR = ("nanocodec-av1-180p", "AV1 Default, 180p alone")
+LOWEST_ANCHOR = ("nanocodec-av1-180p", "AV1 Medium, 180p alone")
 LOWEST_ANCHORS = {Codec.AV1: LOWEST_ANCHOR,
-                  Codec.VP9: ("nanocodec-vp9-180p", "VP9 Default, 180p alone")}
+                  Codec.VP9: ("nanocodec-vp9-180p", "VP9 Medium, 180p alone")}
 
 
 @dataclass(frozen=True)
@@ -188,7 +182,7 @@ class SvcPoint:
     temporal_layers: int = 1
     speed: int = 0
     params: tuple[str, ...] = ()
-    preset: str = SVC_PRESET
+    preset: str = L2_MEDIUM
     codec: Codec = Codec.AV1
     layers: int = 2
     key_mode: bool = False
@@ -197,91 +191,96 @@ class SvcPoint:
     def ours(self) -> bool:
         return self.kind not in REFERENCE_KINDS
 
+    @property
+    def scalability(self) -> str:
+        """The `--scalability` mode this point codes (L2T1, L3T3_KEY, ...)."""
+        return f"L{self.layers}T{self.temporal_layers}" + ("_KEY" if self.key_mode else "")
+
     def layer_rates(self, kbps: int) -> tuple[int, ...]:
         """Each spatial layer's share of the total `kbps`, lowest first."""
         return split_rate3(kbps) if self.layers == 3 else split_rate(kbps)
 
 
 POINTS = (
-    SvcPoint(f"nanocodec-av1@{SVC_PRESET}", "AV1 SVC L2T1", "ours", 1),
+    SvcPoint(f"nanocodec-av1@{L2_MEDIUM}", "AV1 L2T1", "ours", 1),
     # A fixed L2T3 pattern, like libaom's: AV1 Default's adaptive layering
     # (`layers.adaptive`) codes moving mini-GOPs flat, which a receiver that
     # drops temporal layers cannot use.
-    SvcPoint(f"nanocodec-av1@{SVC_PRESET}+L2T3", "AV1 SVC L2T3", "ours", 3,
+    SvcPoint(f"nanocodec-av1@{L2_MEDIUM}+L2T3", "AV1 L2T3", "ours", 3,
              params=("--param", "layers.adaptive=0")),
-    SvcPoint(f"nanocodec-av1@{SVC_FAST_PRESET}", "AV1 SVC Fast L2T1", "ours", 1,
-             preset=SVC_FAST_PRESET),
+    SvcPoint(f"nanocodec-av1@{L2_FAST}", "AV1 L2T1 Fast", "ours", 1,
+             preset=L2_FAST),
     SvcPoint("simulcast-av1", "AV1 simulcast 720p+360p", "simulcast"),
     SvcPoint("libaom-svc-cpu8-L2T1", "libaom SVC L2T1 rt 8", "aom", 1, 8),
     SvcPoint("libaom-svc-cpu10-L2T1", "libaom SVC L2T1 rt 10", "aom", 1, 10),
     SvcPoint("libaom-svc-cpu8-L2T3", "libaom SVC L2T3 rt 8", "aom", 3, 8),
     SvcPoint("libaom-svc-cpu10-L2T3", "libaom SVC L2T3 rt 10", "aom", 3, 10),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC_PRESET}", "VP9 SVC L2T1", "ours", 1,
-             preset=VP9_SVC_PRESET, codec=Codec.VP9),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC_PRESET}+L2T3", "VP9 SVC L2T3", "ours", 3,
-             params=("--param", "layers.adaptive=0"), preset=VP9_SVC_PRESET, codec=Codec.VP9),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC_FAST_PRESET}", "VP9 SVC Fast L2T1", "ours", 1,
-             preset=VP9_SVC_FAST_PRESET, codec=Codec.VP9),
+    SvcPoint(f"nanocodec-vp9@{L2_MEDIUM}", "VP9 L2T1", "ours", 1,
+             preset=L2_MEDIUM, codec=Codec.VP9),
+    SvcPoint(f"nanocodec-vp9@{L2_MEDIUM}+L2T3", "VP9 L2T3", "ours", 3,
+             params=("--param", "layers.adaptive=0"), preset=L2_MEDIUM, codec=Codec.VP9),
+    SvcPoint(f"nanocodec-vp9@{L2_FAST}", "VP9 L2T1 Fast", "ours", 1,
+             preset=L2_FAST, codec=Codec.VP9),
     SvcPoint("simulcast-vp9", "VP9 simulcast 720p+360p", "simulcast", codec=Codec.VP9),
     # libvpx's real-time speeds of the main chart (libvpx-vp9-cpu7 / cpu9).
     SvcPoint("libvpx-svc-cpu7-L2T1", "libvpx SVC L2T1 rt 7", "vpx", 1, 7, codec=Codec.VP9),
     SvcPoint("libvpx-svc-cpu9-L2T1", "libvpx SVC L2T1 rt 9", "vpx", 1, 9, codec=Codec.VP9),
-    SvcPoint(f"nanocodec-av1@{SVC3_PRESET}", "AV1 SVC L3T1", "ours", 1, preset=SVC3_PRESET,
+    SvcPoint(f"nanocodec-av1@{L3_MEDIUM}", "AV1 L3T1", "ours", 1, preset=L3_MEDIUM,
              layers=3),
-    SvcPoint(f"nanocodec-av1@{SVC3_PRESET}+L3T3", "AV1 SVC L3T3", "ours", 3,
-             params=("--param", "layers.adaptive=0"), preset=SVC3_PRESET, layers=3),
-    SvcPoint(f"nanocodec-av1@{SVC3_FAST_PRESET}", "AV1 SVC Fast L3T1", "ours", 1,
-             preset=SVC3_FAST_PRESET, layers=3),
+    SvcPoint(f"nanocodec-av1@{L3_MEDIUM}+L3T3", "AV1 L3T3", "ours", 3,
+             params=("--param", "layers.adaptive=0"), preset=L3_MEDIUM, layers=3),
+    SvcPoint(f"nanocodec-av1@{L3_FAST}", "AV1 L3T1 Fast", "ours", 1,
+             preset=L3_FAST, layers=3),
     SvcPoint("simulcast3-av1", "AV1 simulcast 720p+360p+180p", "simulcast", layers=3),
     SvcPoint("libaom-svc-cpu8-L3T1", "libaom SVC L3T1 rt 8", "aom", 1, 8, layers=3),
     SvcPoint("libaom-svc-cpu10-L3T1", "libaom SVC L3T1 rt 10", "aom", 1, 10, layers=3),
     SvcPoint("libaom-svc-cpu8-L3T3", "libaom SVC L3T3 rt 8", "aom", 3, 8, layers=3),
     SvcPoint("libaom-svc-cpu10-L3T3", "libaom SVC L3T3 rt 10", "aom", 3, 10, layers=3),
-    SvcPoint(f"nanocodec-av1@{SVC_PRESET}+L2T1_KEY", "AV1 SVC L2T1_KEY", "ours", 1,
+    SvcPoint(f"nanocodec-av1@{L2_MEDIUM}+L2T1_KEY", "AV1 L2T1_KEY", "ours", 1,
              params=("--param", "spatial.inter_layer=2"), key_mode=True),
-    SvcPoint(f"nanocodec-av1@{SVC_PRESET}+L2T3_KEY", "AV1 SVC L2T3_KEY", "ours", 3,
+    SvcPoint(f"nanocodec-av1@{L2_MEDIUM}+L2T3_KEY", "AV1 L2T3_KEY", "ours", 3,
              params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
              key_mode=True),
-    SvcPoint(f"nanocodec-av1@{SVC_FAST_PRESET}+L2T1_KEY", "AV1 SVC Fast L2T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=SVC_FAST_PRESET,
+    SvcPoint(f"nanocodec-av1@{L2_FAST}+L2T1_KEY", "AV1 L2T1_KEY Fast", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L2_FAST,
              key_mode=True),
-    SvcPoint(f"nanocodec-av1@{SVC3_PRESET}+L3T1_KEY", "AV1 SVC L3T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=SVC3_PRESET, layers=3,
+    SvcPoint(f"nanocodec-av1@{L3_MEDIUM}+L3T1_KEY", "AV1 L3T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L3_MEDIUM, layers=3,
              key_mode=True),
-    SvcPoint(f"nanocodec-av1@{SVC3_PRESET}+L3T3_KEY", "AV1 SVC L3T3_KEY", "ours", 3,
+    SvcPoint(f"nanocodec-av1@{L3_MEDIUM}+L3T3_KEY", "AV1 L3T3_KEY", "ours", 3,
              params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
-             preset=SVC3_PRESET, layers=3, key_mode=True),
-    SvcPoint(f"nanocodec-av1@{SVC3_FAST_PRESET}+L3T1_KEY", "AV1 SVC Fast L3T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=SVC3_FAST_PRESET, layers=3,
+             preset=L3_MEDIUM, layers=3, key_mode=True),
+    SvcPoint(f"nanocodec-av1@{L3_FAST}+L3T1_KEY", "AV1 L3T1_KEY Fast", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L3_FAST, layers=3,
              key_mode=True),
     SvcPoint("libaom-svc-cpu8-L3T3_KEY", "libaom SVC L3T3_KEY rt 8", "aom", 3, 8, layers=3,
              key_mode=True),
     SvcPoint("libaom-svc-cpu10-L3T3_KEY", "libaom SVC L3T3_KEY rt 10", "aom", 3, 10, layers=3,
              key_mode=True),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC_PRESET}+L2T1_KEY", "VP9 SVC L2T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC_PRESET,
+    SvcPoint(f"nanocodec-vp9@{L2_MEDIUM}+L2T1_KEY", "VP9 L2T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L2_MEDIUM,
              codec=Codec.VP9, key_mode=True),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC_PRESET}+L2T3_KEY", "VP9 SVC L2T3_KEY", "ours", 3,
+    SvcPoint(f"nanocodec-vp9@{L2_MEDIUM}+L2T3_KEY", "VP9 L2T3_KEY", "ours", 3,
              params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
-             preset=VP9_SVC_PRESET, codec=Codec.VP9, key_mode=True),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC_FAST_PRESET}+L2T1_KEY", "VP9 SVC Fast L2T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC_FAST_PRESET,
+             preset=L2_MEDIUM, codec=Codec.VP9, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{L2_FAST}+L2T1_KEY", "VP9 L2T1_KEY Fast", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L2_FAST,
              codec=Codec.VP9, key_mode=True),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}", "VP9 SVC L3T1", "ours", 1,
-             preset=VP9_SVC3_PRESET, codec=Codec.VP9, layers=3),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}+L3T3", "VP9 SVC L3T3", "ours", 3,
-             params=("--param", "layers.adaptive=0"), preset=VP9_SVC3_PRESET,
+    SvcPoint(f"nanocodec-vp9@{L3_MEDIUM}", "VP9 L3T1", "ours", 1,
+             preset=L3_MEDIUM, codec=Codec.VP9, layers=3),
+    SvcPoint(f"nanocodec-vp9@{L3_MEDIUM}+L3T3", "VP9 L3T3", "ours", 3,
+             params=("--param", "layers.adaptive=0"), preset=L3_MEDIUM,
              codec=Codec.VP9, layers=3),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_FAST_PRESET}", "VP9 SVC Fast L3T1", "ours", 1,
-             preset=VP9_SVC3_FAST_PRESET, codec=Codec.VP9, layers=3),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}+L3T1_KEY", "VP9 SVC L3T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC3_PRESET,
+    SvcPoint(f"nanocodec-vp9@{L3_FAST}", "VP9 L3T1 Fast", "ours", 1,
+             preset=L3_FAST, codec=Codec.VP9, layers=3),
+    SvcPoint(f"nanocodec-vp9@{L3_MEDIUM}+L3T1_KEY", "VP9 L3T1_KEY", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L3_MEDIUM,
              codec=Codec.VP9, layers=3, key_mode=True),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_PRESET}+L3T3_KEY", "VP9 SVC L3T3_KEY", "ours", 3,
+    SvcPoint(f"nanocodec-vp9@{L3_MEDIUM}+L3T3_KEY", "VP9 L3T3_KEY", "ours", 3,
              params=("--param", "spatial.inter_layer=2", "--param", "layers.adaptive=0"),
-             preset=VP9_SVC3_PRESET, codec=Codec.VP9, layers=3, key_mode=True),
-    SvcPoint(f"nanocodec-vp9@{VP9_SVC3_FAST_PRESET}+L3T1_KEY", "VP9 SVC Fast L3T1_KEY", "ours", 1,
-             params=("--param", "spatial.inter_layer=2"), preset=VP9_SVC3_FAST_PRESET,
+             preset=L3_MEDIUM, codec=Codec.VP9, layers=3, key_mode=True),
+    SvcPoint(f"nanocodec-vp9@{L3_FAST}+L3T1_KEY", "VP9 L3T1_KEY Fast", "ours", 1,
+             params=("--param", "spatial.inter_layer=2"), preset=L3_FAST,
              codec=Codec.VP9, layers=3, key_mode=True),
     SvcPoint("simulcast3-vp9", "VP9 simulcast 720p+360p+180p", "simulcast", codec=Codec.VP9,
              layers=3),
@@ -300,8 +299,8 @@ POINTS = (
              codec=Codec.VP9, layers=3, key_mode=True),
 )
 #: The realuse-measured points: (family, label).
-LINES = ((ANCHOR, "x264 medium (720p)"), (SINGLE_LAYER, "AV1 Default 720p (single layer)"),
-         (SINGLE_LAYERS[Codec.VP9], "VP9 Default 720p (single layer)"))
+LINES = ((ANCHOR, "x264 medium (720p)"), (SINGLE_LAYER, "AV1 Medium 720p (single layer)"),
+         (SINGLE_LAYERS[Codec.VP9], "VP9 Medium 720p (single layer)"))
 
 
 # --- AV1 streams: libaom's framing ---------------------------------------------------
@@ -885,14 +884,11 @@ TIMING_FILE = "svc-chart-timing.json"
 PLAN = Path(__file__).resolve().parents[2] / "docs/results/bd-vs-speed-plan.json"
 #: Main-chart families whose instructions are counted with their timed command: the
 #: anchor and each point's bridge (`bridge`).
-TIMED_FAMILIES = (ANCHOR, SINGLE_LAYER, f"{SINGLE_LAYER}@av1-fast", "libaom-av1-cpu8",
+TIMED_FAMILIES = (ANCHOR, SINGLE_LAYER, f"{SINGLE_LAYER}@fast", "libaom-av1-cpu8",
                   "libaom-av1-cpu10", SINGLE_LAYERS[Codec.VP9],
-                  f"{SINGLE_LAYERS[Codec.VP9]}@vp9-fast", "libvpx-vp9-cpu7", "libvpx-vp9-cpu9")
-#: Each SVC speed preset's single-layer counterpart (its timed bridge).
-FAST_BRIDGES = {SVC_FAST_PRESET: f"{SINGLE_LAYER}@av1-fast",
-                SVC3_FAST_PRESET: f"{SINGLE_LAYER}@av1-fast",
-                VP9_SVC_FAST_PRESET: f"{SINGLE_LAYERS[Codec.VP9]}@vp9-fast",
-                VP9_SVC3_FAST_PRESET: f"{SINGLE_LAYERS[Codec.VP9]}@vp9-fast"}
+                  f"{SINGLE_LAYERS[Codec.VP9]}@fast", "libvpx-vp9-cpu7", "libvpx-vp9-cpu9")
+#: The SVC speed presets, timed by their codec's single-layer Fast (`bridge`).
+FAST_PRESETS = (L2_FAST, L3_FAST)
 
 
 def bridge(name: str) -> str:
@@ -907,8 +903,8 @@ def bridge(name: str) -> str:
         return f"libaom-av1-cpu{point.speed}"
     if point.kind == "vpx":
         return f"libvpx-vp9-cpu{point.speed}"
-    return FAST_BRIDGES.get(point.preset, SINGLE_LAYERS[point.codec]) if point.ours else \
-        SINGLE_LAYERS[point.codec]
+    single = SINGLE_LAYERS[point.codec]
+    return f"{single}@fast" if point.ours and point.preset in FAST_PRESETS else single
 _COLLECTED = re.compile(r"Collected\s*:\s*(\d+)")
 
 
@@ -1059,12 +1055,15 @@ def plan_argv(bench: SvcBench, point: SvcPoint, clip: Clip, kbps: int) -> list[s
         argv = bench.vpx_command(point, clip, kbps, Path("{OUTPUT}"))
         return ["{BIN}/vp9_spatial_svc_encoder", *argv[1:-1], "{INPUT}"]
     num, den = fps_fraction(clip.fps)
+    preset = preset_cli_args(point.codec, point.preset, bench.presets, point.scalability)
+    # --scalability carries the temporal layers (the CLI refuses both); a frozen
+    # pre-rename build gets its old --preset name and --temporal-layers.
+    layers = () if "--scalability" in preset else ("--temporal-layers", str(point.temporal_layers))
     return ["{BIN}/nanocodec", "encode", "--codec", point.codec.value, "--input", "{INPUT}",
             "--width", str(clip.width), "--height", str(clip.height), "--fps", f"{num}/{den}",
             "--frames", str(FRAMES), "--intra-period", str(bench.intra),
-            "--temporal-layers", str(point.temporal_layers), "--output", "{OUTPUT}",
-            "--bitrate", str(kbps), "--buffer-ms", str(BUFFER_MS), "--preset", point.preset,
-            *point.params]
+            *layers, "--output", "{OUTPUT}",
+            "--bitrate", str(kbps), "--buffer-ms", str(BUFFER_MS), *preset, *point.params]
 
 
 def write_plan(args: argparse.Namespace) -> None:
@@ -1092,7 +1091,8 @@ def write_plan(args: argparse.Namespace) -> None:
                     cmd[0] = str(bench.encoder_tool(point))
                 else:  # the preset file itself: this build may predate its registration
                     at = cmd.index("--preset")
-                    cmd[at:at + 2] = ["--params", str(bench.presets / f"{point.preset}.toml")]
+                    cmd[at:at + 2] = ["--params",
+                                      str(preset_path(bench.presets, point.codec, point.preset))]
                 returncode, stderr = run_fed(cmd, clip, FRAMES)
                 if returncode:
                     raise RuntimeError(f"{point.name} {name}: {stderr[-300:]}")
@@ -1408,17 +1408,17 @@ def markdown(points: list[ChartPoint], x86: list[ChartPoint], top_views: list[Ch
               f"{THREE_LAYER_RATE_SHARES[0]:.0%} for 180p and {THREE_LAYER_RATE_SHARES[1]:.0%} "
               "for 360p (our `spatial.s0_rate_share` / `spatial.s1_rate_share` defaults: "
               "caps our encoder passes unspent bits up from).",
-              "- Three layers (AV1): `presets/av1-svc3.toml` (AV1 Default plus "
+              "- Three layers (AV1): `presets/av1/l3-medium.toml` (AV1 Default plus "
               "`spatial.layers = 3`, 2:1 steps) in L3T1 and L3T3 (`layers.adaptive=0`), "
-              "`presets/av1-svc3-fast.toml` (av1-svc-fast's levers) in L3T1; libaom layering "
+              "`presets/av1/l3-fast.toml` (l2-fast's levers) in L3T1; libaom layering "
               "modes 6 (L3T1) and 9 (L3T3), its own 4:2:1 downscales; simulcast three "
               "independent AV1 Default streams. The 360p operating point is decoded at "
               "operating point 1 (dav1d), the 180p at operating point 2, each equal to the "
               "encoder's reconstruction of that layer (aomdec's for libaom).",
-              "- Ours: `presets/av1-svc.toml` / `presets/vp9-svc.toml` (the codec's Default "
+              "- Ours: `presets/av1/l2-medium.toml` / `presets/vp9/l2-medium.toml` (the codec's Default "
               "plus `spatial.layers = 2`), `--temporal-layers 1` (L2T1) or `3` (L2T3, with "
-              "`layers.adaptive=0`), and `presets/av1-svc-fast.toml` / "
-              "`presets/vp9-svc-fast.toml` (the codec's Fast levers, a 2x2-mean base downscale "
+              "`layers.adaptive=0`), and `presets/av1/l2-fast.toml` / "
+              "`presets/vp9/l2-fast.toml` (the codec's Fast levers, a 2x2-mean base downscale "
               "and a bilinear search proxy) in L2T1; CBR, 1 s buffer. Our temporal layers "
               "have no fixed rate split: the rate controller sets each temporal "
               "layer's quantizer step relative to the base from a tuned ladder (`layers.cbr_base_step_ratio`, "

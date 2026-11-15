@@ -408,10 +408,13 @@ node (SIMD128), since CI here only cross-checks aarch64.
   (`nc-encoder/src/params.rs` for the engine, the backend crates for theirs)
   and read once per encoder. `nanocodec params` lists them; `--preset`,
   `--params FILE` and `--param name=value` set them.
-- Each codec has two presets, the built-in files in `presets/`: **Default**
-  (the quality point) and **Fast** (the speed point, which carries the CPU
-  bar). Default must cost at least 1.5× Fast's CPU and buy real quality for
-  it.
+- Every codec shares one preset ladder (`--preset veryfast | faster | fast |
+  medium`, files `presets/<codec>/<name>.toml`; README "Presets"). **Default**
+  (`medium`, built in) is the quality point and **Fast** (`fast`) the speed
+  point, which carries the CPU bar; Default must cost at least 1.5× Fast's CPU
+  and buy real quality for it. The names are relative to each codec's own
+  Default, not to x264's presets of the same name. Spatial SVC is a mode
+  (`--scalability L2T1 | L3T1`) combined with `medium` or `fast`.
 - Presets are points on a Pareto front found by a joint multi-objective
   search over the registered parameters (`eval/nceval/tune.py`, Optuna TPE)
   on TRAIN clips, then confirmed on VAL and on the Jetson. Levers interact,

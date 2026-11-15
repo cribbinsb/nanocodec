@@ -65,9 +65,8 @@ PLANE_WEIGHTS = (6, 1, 1)
 PLANES = ('Y', 'Cb', 'Cr')
 IVF_CODECS = {'av1': b'AV01', 'vp9': b'VP90', 'av2': b'AV02'}
 IVF_HEADER, IVF_FRAME_HEADER = 32, 12
-# The CLI's --preset for the page's preset names (web/options.js cliPreset).
-PRESET_SUFFIX = {'fast': 'fast', 'faster': 'faster', 'fastest': 'fastest', 'svc': 'svc', 'svc-fast': 'svc-fast',
-                 'svc3': 'svc3', 'svc3-fast': 'svc3-fast'}
+# The page's preset the CLI codes without --preset (web/options.js cliPreset).
+DEFAULT_PRESET = 'medium'
 # A replay longer than this many frames is not attempted (30 minutes at 30 fps).
 MAX_REPLAY_FRAMES = 54000
 
@@ -268,8 +267,10 @@ def cli_command(nanocodec: Path, config: dict, frames: int, colour: str | None, 
             '--intra-period', str(config['keyInterval']), '--qp', str(config['qp']), '--output', str(out)]
     if config['rateMode'] == 'cbr':
         args += ['--bitrate', str(config['targetKbps']), '--peak-bitrate', str(config['peakKbps']), '--buffer-ms', str(config['bufferMs'])]
-    if config['preset'] in PRESET_SUFFIX:
-        args += ['--preset', f'{config["codec"]}-{PRESET_SUFFIX[config["preset"]]}']
+    if config['preset'] != DEFAULT_PRESET:
+        args += ['--preset', config['preset']]
+    if config.get('spatialLayers', 1) > 1:
+        args += ['--scalability', f'L{config["spatialLayers"]}T1']
     for line in (config.get('overrides') or '').split('\n'):
         setting = line.split('#')[0].strip()
         if setting:

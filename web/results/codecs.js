@@ -7,7 +7,7 @@ import {
 } from './common.js';
 
 const TUNED_ZERO = 'x264-medium~psnr';
-const PRESET_ORDER = ['Default', 'Fast', 'Faster', 'Fastest'];
+const PRESET_ORDER = ['Medium', 'Fast', 'Faster', 'Veryfast'];
 const state = { zero: TUNED_ZERO, metric: 'j' };
 
 function views(data) {

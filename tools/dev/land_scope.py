@@ -19,7 +19,7 @@ exactly what landing would change. Each changed path falls in one class
                                                             <name> and every crate
                                                             that depends on it
     included   any file a crate embeds with include_str!/   as crate, for the
-               include_bytes! (presets/*.toml today)        embedding crates; plus
+               include_bytes! (presets/<codec>/*.toml)      embedding crates; plus
                                                             eval tests for presets/
     presets    presets/** not embedded (candidates/)        TOML parse + eval tests
     eval       eval/**                                      eval tests
@@ -66,8 +66,8 @@ stdout, one `key value...` line per key, which land.sh reads:
                                      page tests at the next demo publish)
     conformance 0 | all | <codec>... run the landing conformance check: for every
                                      codec, or only the codecs whose own crate or
-                                     presets/<codec>-*.toml changed (a change to
-                                     shared code, nc-cli, default.toml or the
+                                     presets/<codec>/*.toml changed (a change to
+                                     shared code, nc-cli, a top-level preset or the
                                      check itself runs all)
     docs   <file>...                 files for tools/dev/check_docs.py
     python <file>...                 files to byte-compile
@@ -251,11 +251,12 @@ def conformance_codecs(changed, affected, full):
             return ["all"]  # shared code: every codec's streams
         codecs.add(CODEC_CRATES[crate])
     for path in changed:
-        if path.startswith("presets/") and path.endswith(".toml") and "/" not in path[8:]:
-            codec = Path(path).stem.split("-")[0]
-            if codec not in CODEC_CRATES.values():
-                return ["all"]  # default.toml and the like: every codec
-            codecs.add(codec)
+        parts = path.split("/")
+        if parts[0] == "presets" and path.endswith(".toml") and len(parts) <= 3:
+            if len(parts) == 2:
+                return ["all"]  # a top-level presets/*.toml: every codec
+            if parts[1] in CODEC_CRATES.values():
+                codecs.add(parts[1])  # presets/<codec>/<stem>.toml (not presets/candidates/)
         elif path.startswith(f"crates/{ENCODER_CRATE}/"):
             return ["all"]
     return sorted(codecs) or ["all"]
@@ -263,7 +264,15 @@ def conformance_codecs(changed, affected, full):
 
 def needs_conformance(changed, affected, full):
     """Whether the landing conformance check runs (module docstring)."""
-    return full or ENCODER_CRATE in affected or any(p in CONFORMANCE_FILES for p in changed)
+    return (full or ENCODER_CRATE in affected or any(p in CONFORMANCE_FILES for p in changed)
+            or any(shipped_preset(p) for p in changed))
+
+
+def shipped_preset(path):
+    """Whether `path` is a shipped preset file, presets/<codec>/<stem>.toml."""
+    parts = path.split("/")
+    return len(parts) == 3 and parts[0] == "presets" and parts[1] in CODEC_CRATES.values() \
+        and path.endswith(".toml")
 
 
 def plan(root, base):
@@ -278,12 +287,15 @@ def plan_for_paths(root, changed):
     embedded = embedded_files(root, dirs)
 
     full, crates, eval_tests, web, page = False, set(), False, False, False
+    code_crates = set()  # the crates changed code reaches (not embedded presets)
     lists = {"docs": [], "python": [], "shell": [], "toml": [], "fuzz": []}
     rows = []
     for path in changed:
         kind, direct = classify(path, root, dirs, embedded)
         rows.append((kind, path))
         crates |= direct
+        if not (kind == "included" and path.startswith("presets/")):
+            code_crates |= direct
         if kind in ("gate", "unknown"):
             full = True
         elif kind in ("eval", "presets") or (kind == "included" and path.startswith("presets/")):
@@ -318,7 +330,10 @@ def plan_for_paths(root, changed):
 
     for kind, path in rows:
         print(f"  {kind:<9} {path}", file=sys.stderr)
-    conformance = conformance_codecs(changed, affected, full)
+    # A preset file reaches every codec through nc-encoder's table, but codes
+    # only its own codec's streams: the conformance plan follows code changes'
+    # crates and names the preset's codec itself (conformance_codecs).
+    conformance = conformance_codecs(changed, closure(code_crates, dependents), full)
     out = [("rust", rust), ("eval", [str(int(eval_tests))]), ("web", [str(int(web))]),
            ("page", [str(int(page or full))]), ("conformance", conformance),
            ("checkasm", [str(int(checkasm))]),

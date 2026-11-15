@@ -10,16 +10,16 @@
 //! (as a periodic key on a waterfall did in the browser demo), and checks
 //! that the static half returns to the quality of an undisturbed stream
 //! (and that without the term it does not). H.264 runs flat and with the
-//! Default's adaptive layers and the h264-fast / h264-faster / h264-fastest presets: in a
+//! Default's adaptive layers and the H.264 Fast / H.264 Faster / H.264 Veryfast presets: in a
 //! layered stream the static half recovers at the next base-layer frame,
 //! where the reuse term refines (`nc-encoder` `on_reuse_chain`). Every
 //! shipped preset of every codec runs too: a preset's speed shortcut can
-//! drop the refinement (av1-fast's largest-transform mode and vp9-fast's
+//! drop the refinement (AV1 Fast's largest-transform mode and VP9 Fast's
 //! partial forward transform dropped the detail it restores). Measured
 //! static half after the starved key, undisturbed / recovered, dB: HEVC
-//! 41.3 / 42.5 (hevc-fast 39.6 / 41.5), VP9 41.4 / 43.8 (vp9-fast 40.4 /
-//! 44.2, 32.3 before), VVC 41.1 / 42.3 (vvc-fast 40.9 / 41.6), AV2 41.1 /
-//! 43.5 (av2-fast 42.8, 40.2 before), h264-balanced 47.9 / 46.5 (layered).
+//! 41.3 / 42.5 (HEVC Fast 39.6 / 41.5), VP9 41.4 / 43.8 (VP9 Fast 40.4 /
+//! 44.2, 32.3 before), VVC 41.1 / 42.3 (VVC Fast 40.9 / 41.6), AV2 41.1 /
+//! 43.5 (AV2 Fast 42.8, 40.2 before).
 use nc_common::{Picture, PlaneIndex};
 use nc_encoder::{
     Codec, CodecBackend, Encoder, EncoderConfig, FrameRate, ParamOverrides, RateControlConfig,
@@ -192,24 +192,24 @@ const LAYERED_RECOVERY: Recovery = Recovery {
     shortfall_db: LAYERED_RECOVERED_DB,
 };
 /// Largest shortfall of the full-size layer of an SVC stream. Its
-/// undisturbed static half is the stationary-startup anchor (`av1-svc`: the
+/// undisturbed static half is the stationary-startup anchor (`AV1 L2 Medium`: the
 /// first unit's S1 coded near the base's quantizer, 44.4 dB), finer than a
 /// refinement at S1's inter level is priced (offsets down to -12.5 at reuse
 /// 16): the recovered half stays at 42.4 dB (35.3-36.3 without the reuse term;
 /// 35.9 for the rest of the run before S1's key unit was analysed against its
-/// own last picture). av1-svc-fast recovers past it (47.5 vs 44.3).
+/// own last picture). AV1 L2 Fast recovers past it (47.5 vs 44.3).
 const SVC_RECOVERED_DB: f64 = 2.5;
 const SVC_RECOVERY: Recovery = Recovery {
     frames: RECOVERY_FRAMES,
     shortfall_db: SVC_RECOVERED_DB,
 };
 /// The same for VP9 SVC, whose stationary-startup anchor stands further
-/// above what a refinement reaches: vp9-svc's undisturbed static half is
+/// above what a refinement reaches: VP9 L2 Medium's undisturbed static half is
 /// 44.5 dB (the first unit's S1 at q 37), the recovered one 41.0 (33.0
 /// without the reuse term). The reuse term asks for the same refinement as
-/// in av1-svc (-10.9 QP units at the same reuse count), but VP9's S1 codes
+/// in AV1 L2 Medium (-10.9 QP units at the same reuse count), but VP9's S1 codes
 /// this picture at q 145-155 against AV1's 125-139, so the priced
-/// refinement lands at q ~76 (AV1 ~53). vp9-svc-fast, whose S1 runs at q
+/// refinement lands at q ~76 (AV1 ~53). VP9 L2 Fast, whose S1 runs at q
 /// ~65, recovers past it (46.8 vs 43.2).
 const VP9_SVC_RECOVERED_DB: f64 = 4.0;
 const VP9_SVC_RECOVERY: Recovery = Recovery {
@@ -275,9 +275,9 @@ fn h264_static_content_recovers_from_a_starved_key() {
 fn h264_layered_streams_recover_at_the_next_base_frame() {
     for preset in [
         DEFAULT,
-        include_str!("../../../presets/h264-fast.toml"),
-        include_str!("../../../presets/h264-faster.toml"),
-        include_str!("../../../presets/h264-fastest.toml"),
+        include_str!("../../../presets/h264/fast.toml"),
+        include_str!("../../../presets/h264/faster.toml"),
+        include_str!("../../../presets/h264/veryfast.toml"),
     ] {
         check::<nc_h264::H264Backend>(Codec::H264, preset, &LAYERED_RECOVERY);
     }
@@ -292,7 +292,7 @@ fn av1_static_content_recovers_from_a_starved_key() {
     // must not keep the poor picture alive.
     for preset in [
         DEFAULT,
-        include_str!("../../../presets/av1-fast.toml"),
+        include_str!("../../../presets/av1/fast.toml"),
         "av1.restoration = 1",
         "structure.unified = 1",
         "structure.unified = 1\nstructure.secondary_min_depth = 0\nrefs.second_full = 1",
@@ -303,14 +303,14 @@ fn av1_static_content_recovers_from_a_starved_key() {
 
 /// The SVC presets (two spatial layers): the full-size layer, which a
 /// 720p receiver shows, recovers from a starved key unit at its next picture
-/// (`SVC_RECOVERY`), and av1-svc-fast's still content is not left at the
+/// (`SVC_RECOVERY`), and AV1 L2 Fast's still content is not left at the
 /// blurred base (its enhancement pictures coded from the base only use the
 /// exact forward transform: 44.3 dB undisturbed, 32.3 before).
 #[test]
 fn av1_svc_presets_recover() {
     for preset in [
-        include_str!("../../../presets/av1-svc.toml"),
-        include_str!("../../../presets/av1-svc-fast.toml"),
+        include_str!("../../../presets/av1/l2-medium.toml"),
+        include_str!("../../../presets/av1/l2-fast.toml"),
     ] {
         check_preset::<nc_av1::Av1Backend>(Codec::Av1, preset, &SVC_RECOVERY);
         let ksvc = format!("{preset}\nspatial.inter_layer = 2\n");
@@ -323,7 +323,7 @@ fn av1_svc_presets_recover() {
 /// two 64x64 AV1 superblocks horizontally just like the 1- and 2-layer tests'
 /// full-size layer) stay degraded when `persist.reuse = 0` and refine on
 /// static content when `persist.reuse = 1` with the three-layer presets
-/// (`av1-svc3`, `av1-svc3-fast`) in both full SVC and K-SVC (`inter_layer = 2`).
+/// (`AV1 L3 Medium`, `AV1 L3 Fast`) in both full SVC and K-SVC (`inter_layer = 2`).
 fn frame_sized(width: usize, height: usize, index: usize) -> Picture {
     let mut picture = Picture::new(width, height, 0).unwrap();
     for plane in PlaneIndex::ALL {
@@ -511,13 +511,13 @@ fn av1_three_layer_svc_recovers_every_upper_layer() {
     };
     for (name, preset, box_downscale) in [
         (
-            "av1-svc3",
-            include_str!("../../../presets/av1-svc3.toml"),
+            "AV1 L3 Medium",
+            include_str!("../../../presets/av1/l3-medium.toml"),
             false,
         ),
         (
-            "av1-svc3-fast",
-            include_str!("../../../presets/av1-svc3-fast.toml"),
+            "AV1 L3 Fast",
+            include_str!("../../../presets/av1/l3-fast.toml"),
             true,
         ),
     ] {
@@ -532,14 +532,14 @@ fn av1_three_layer_svc_recovers_every_upper_layer() {
     }
 }
 
-/// The VP9 SVC presets, as `av1_svc_presets_recover`: vp9-svc-fast's partial
+/// The VP9 SVC presets, as `av1_svc_presets_recover`: VP9 L2 Fast's partial
 /// forward transform is exact on enhancement pictures coded from the base
 /// only (`nc-vp9` `coding_from_base_only`).
 #[test]
 fn vp9_svc_presets_recover() {
     for preset in [
-        include_str!("../../../presets/vp9-svc.toml"),
-        include_str!("../../../presets/vp9-svc-fast.toml"),
+        include_str!("../../../presets/vp9/l2-medium.toml"),
+        include_str!("../../../presets/vp9/l2-fast.toml"),
     ] {
         check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, preset, &VP9_SVC_RECOVERY);
         let ksvc = format!("{preset}\nspatial.inter_layer = 2\n");
@@ -562,13 +562,13 @@ fn vp9_three_layer_svc_recovers_every_upper_layer() {
     };
     for (name, preset, box_downscale) in [
         (
-            "vp9-svc3",
-            include_str!("../../../presets/vp9-svc3.toml"),
+            "VP9 L3 Medium",
+            include_str!("../../../presets/vp9/l3-medium.toml"),
             false,
         ),
         (
-            "vp9-svc3-fast",
-            include_str!("../../../presets/vp9-svc3-fast.toml"),
+            "VP9 L3 Fast",
+            include_str!("../../../presets/vp9/l3-fast.toml"),
             true,
         ),
     ] {
@@ -587,7 +587,7 @@ fn vp9_three_layer_svc_recovers_every_upper_layer() {
 fn av1_layered_streams_recover_at_the_next_base_frame() {
     check::<nc_av1::Av1Backend>(
         Codec::Av1,
-        include_str!("../../../presets/av1-faster.toml"),
+        include_str!("../../../presets/av1/faster.toml"),
         &LAYERED_RECOVERY,
     );
 }
@@ -596,9 +596,8 @@ fn av1_layered_streams_recover_at_the_next_base_frame() {
 fn hevc_presets_recover() {
     for preset in [
         DEFAULT,
-        include_str!("../../../presets/hevc-fast.toml"),
-        include_str!("../../../presets/hevc-faster.toml"),
-        include_str!("../../../presets/hevc-better.toml"),
+        include_str!("../../../presets/hevc/fast.toml"),
+        include_str!("../../../presets/hevc/faster.toml"),
     ] {
         check_preset::<nc_hevc::HevcBackend>(Codec::Hevc, preset, &FLAT_RECOVERY);
     }
@@ -608,9 +607,9 @@ fn hevc_presets_recover() {
 fn vp9_presets_recover() {
     for preset in [
         DEFAULT,
-        include_str!("../../../presets/vp9-fast.toml"),
-        include_str!("../../../presets/vp9-faster.toml"),
-        include_str!("../../../presets/vp9-fastest.toml"),
+        include_str!("../../../presets/vp9/fast.toml"),
+        include_str!("../../../presets/vp9/faster.toml"),
+        include_str!("../../../presets/vp9/veryfast.toml"),
     ] {
         check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, preset, &FLAT_RECOVERY);
     }
@@ -618,20 +617,14 @@ fn vp9_presets_recover() {
 
 #[test]
 fn vvc_presets_recover() {
-    for preset in [DEFAULT, include_str!("../../../presets/vvc-fast.toml")] {
+    for preset in [DEFAULT, include_str!("../../../presets/vvc/fast.toml")] {
         check_preset::<nc_vvc::VvcBackend>(Codec::Vvc, preset, &FLAT_RECOVERY);
     }
 }
 
 #[test]
 fn av2_presets_recover() {
-    for preset in [DEFAULT, include_str!("../../../presets/av2-fast.toml")] {
+    for preset in [DEFAULT, include_str!("../../../presets/av2/fast.toml")] {
         check_preset::<nc_av2::Av2Backend>(Codec::Av2, preset, &FLAT_RECOVERY);
     }
-}
-
-#[test]
-fn h264_balanced_recovers() {
-    let preset = include_str!("../../../presets/h264-balanced.toml");
-    check_preset::<nc_h264::H264Backend>(Codec::H264, preset, &LAYERED_RECOVERY);
 }

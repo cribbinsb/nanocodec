@@ -882,7 +882,7 @@ mod browser_tests {
     use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides};
     fn fast_parameters() -> ParamOverrides {
         let mut p = ParamOverrides::default();
-        for line in include_str!("../../../../presets/hevc-fast.toml").lines() {
+        for line in include_str!("../../../../presets/hevc/fast.toml").lines() {
             let line = line.split('#').next().unwrap_or("").trim();
             if let Some((key, value)) = line.split_once('=') {
                 p.set(key.trim(), value.trim().parse().unwrap());

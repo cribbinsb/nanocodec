@@ -62,7 +62,7 @@ def test_jetson_merge_keeps_each_points_paired_anchor(tmp_path, stored):
 
 def test_build_note_names_the_families_on_other_builds(tmp_path):
     record = {"base": "aaaa1111", "families": {"nanocodec-h264": "bbbb2222",
-                                               "nanocodec-h264@h264-fast": "bbbb2222",
+                                               "nanocodec-h264@fast": "bbbb2222",
                                                "nanocodec-av1": "aaaa1111"},
               "builds": {"aaaa1111": "aaaa1111", "bbbb2222": "bbbb2222 (landed as cccc3333)"},
               "tools": {"x264": "0.165"}, "x86_timing_note": ""}

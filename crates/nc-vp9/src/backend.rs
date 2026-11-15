@@ -106,7 +106,7 @@ const CODED_INTRA_MODES: [IntraMode; 10] = [
 /// TRAIN -1.3%, VAL -0.6%, held-out `broad_independent_v1` (13 clips, every
 /// class) -1.5%; worst-1% VMAF +2.6% there (a 60 fps pan's start-up
 /// transient). 1.4 gains more (TRAIN -2.0%, VAL -1.4%, held-out -2.1%) but
-/// its held-out worst-1% VMAF is +3.8% (the same pan +44%). `vp9-fast`
+/// its held-out worst-1% VMAF is +3.8% (the same pan +44%). `VP9 Fast`
 /// takes 1.4 (TRAIN -1.9%, VAL -1.7%, no guard).
 const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     cadence_scale: 1.2,
@@ -193,7 +193,7 @@ nc_encoder::param_group! {
         /// (both BETTER, no guard); keys alone (crowd, 4 intra frames,
         /// qindex 130-240) BD-rate PSNR-YUV -3.3%; -0.6% instructions
         /// (crowd 720p 20 f CBR 400). Periodic-key pulse +0.13 / +0.16 dB.
-        /// vp9-fast keeps 0 (not screened there).
+        /// VP9 Fast keeps 0 (not screened there).
         intra_mode_estimate: 1.0, [0.0, 1.0],
             "intra mode choice measures: 0 the first transform block's prediction SSE, 1 the whole block's prediction SATD (up to 32x32; HEVC's CU-level search)",
         /// 2 is a speed lever (libvpx real-time intra masks, 2026-11-13):
@@ -228,7 +228,7 @@ nc_encoder::param_group! {
             "smaller inter transforms are tried only when the luma residual's largest quadrant holds at least this fraction x 1/4 of its energy (1 always): higher is faster, keeps evenly spread residual in one transform",
         /// See `inter_rounding_divisor`. Default no longer shaves (with
         /// key trellis, ungated P-frame intra and fine-quantizer small
-        /// blocks: see `DEFAULT_PARAMS`); vp9-fast keeps 8.
+        /// blocks: see `DEFAULT_PARAMS`); VP9 Fast keeps 8.
         shave_gap: 0.0, [0.0, 16.0],
             "drop trailing ±1 levels at least this many scan positions past the previous level (SVT shave_coeff; 0 off): lower drops more",
         /// A speed lever for Fast: crowd 720p q230 Jetson -3.9%, x86 +1.6%
@@ -237,43 +237,43 @@ nc_encoder::param_group! {
         partial_forward: 0.0, [0.0, 1.0],
             "32x32 transforms code only their low 16x16 frequencies (an encoder-side forward approximation, SVT's TX shortcut): faster, drops fine detail in large blocks",
         /// A speed lever (HEVC's `pre_transform_zero_scale`, default 1:
-        /// exact). Measured for vp9-faster: docs/handoff/vp9-faster.md.
+        /// exact). Measured for VP9 Faster: docs/handoff/vp9-faster.md.
         pre_transform_zero_scale: 1.0, [1.0, 4.0],
             "inter residual zero-bound multiplier before the transform: 1 exact (only blocks proven to quantise to zero skip it), higher drops near-zero inter residual untransformed",
         /// A speed lever (HEVC's `max_transform_log2`, default 5: 32x32).
-        /// Measured for vp9-faster: docs/handoff/vp9-faster.md.
+        /// Measured for VP9 Faster: docs/handoff/vp9-faster.md.
         inter_max_tx_log2: 5.0, [3.0, 5.0],
             "largest transform of inter blocks (log2: 3 8x8, 4 16x16, 5 32x32): smaller is faster (the 32x32 forward and its scans) and codes fine detail of large blocks dearer",
         /// A speed lever (AV1's `pre_tx_skip_energy`, SVT's light-PD1
-        /// energy test; default 0: off). Measured for vp9-faster:
+        /// energy test; default 0: off). Measured for VP9 Faster:
         /// docs/handoff/vp9-faster.md.
         pre_tx_skip_energy: 0.0, [0.0, 100.0],
             "inter blocks whose luma prediction error is below this energy (100 x SSE < energy x area x qindex) code no luma residual, without transforms: higher skips more",
         /// A speed lever (HEVC's and H.264's `inter_intra_dc_only`,
-        /// default 0). Measured for vp9-faster: docs/handoff/vp9-faster.md.
+        /// default 0). Measured for VP9 Faster: docs/handoff/vp9-faster.md.
         inter_intra_dc_only: 0.0, [0.0, 1.0],
             "1 codes intra blocks of inter frames with DC luma and chroma prediction, without a mode search",
         /// A speed lever (libvpx's real-time intra blocks, which code one
-        /// transform size; default 3: no cap). Measured for vp9-faster:
+        /// transform size; default 3: no cap). Measured for VP9 Faster:
         /// docs/handoff/vp9-faster.md.
         inter_intra_tx_depth: 3.0, [0.0, 3.0],
             "intra blocks of inter frames try at most this many smaller transforms (the lesser of this and intra_tx_depth): lower is faster",
         /// A speed lever (libvpx's real-time skip test, default 0: off).
-        /// Alone on vp9-fast at 1: Jetson -5.0% CPU, J_real quality +2.0%
-        /// (pool L1, 2026-11-12); vp9-faster takes it (handoff).
+        /// Alone on VP9 Fast at 1: Jetson -5.0% CPU, J_real quality +2.0%
+        /// (pool L1, 2026-11-12); VP9 Faster takes it (handoff).
         nonrd_skip_scale: 0.0, [0.0, 8.0],
             "inter transform blocks whose residual variance is below this x libvpx's AC threshold (ac_q^2 / 64) skip the transform: coding only DC from the residual sum, or nothing when its mean is below the DC threshold too (0 off)",
         /// A speed lever (libvpx's real-time rate, default 0: off). Alone
-        /// on vp9-fast at 4: Jetson -8.0% CPU, J_real quality +3.1% (pool
-        /// L1, 2026-11-12); vp9-faster takes it (handoff).
+        /// on VP9 Fast at 4: Jetson -8.0% CPU, J_real quality +3.1% (pool
+        /// L1, 2026-11-12); VP9 Faster takes it (handoff).
         /// A speed lever (libvpx's block-level skip test, default 0).
-        /// Measured for vp9-faster: docs/handoff/vp9-faster.md.
+        /// Measured for VP9 Faster: docs/handoff/vp9-faster.md.
         nonrd_block_test: 0.0, [0.0, 1.0],
             "with nonrd_skip_scale, 1 first tests each inter plane block as a whole (libvpx's averaged test): a block with nothing to code skips its transform blocks unvisited",
         residual_bits_per_level: 0.0, [0.0, 16.0],
             "residual RD and transform-size trials price inter levels at this many bits per unit of level magnitude (libvpx block_yrd: 4) instead of their token costs (0)",
         /// A speed lever (libvpx's real-time filter search, default 0).
-        /// Measured for vp9-faster: docs/handoff/vp9-faster.md.
+        /// Measured for VP9 Faster: docs/handoff/vp9-faster.md.
         filter_search_rt: 0.0, [0.0, 1.0],
             "1 tries only the regular and smooth filters on switchable-filter blocks (libvpx real-time), not sharp",
         tx_search_min_levels: 0.0, [0.0, 16.0],
@@ -846,7 +846,7 @@ impl CodecBackend for Vp9Backend {
     /// +6.4% host (148.2 -> 157.7 M, q180), Jetson +11.2% (crowd q180): J
     /// -0.3 with 2:1 weighting. Single-key long GOPs at equal rate, YUV per
     /// third: airport 600 kbps +0.04/+0.07/+0.06 dB, chirla 150 kbps
-    /// +0.01/+0.04/-0.02, homes390 300 kbps -0.05/-0.08/-0.10. vp9-fast keeps
+    /// +0.01/+0.04/-0.02, homes390 300 kbps -0.05/-0.08/-0.10. VP9 Fast keeps
     /// it off.
     ///
     /// Key-frame trellis (`quant.trellis_key` 1), no level shaving
@@ -858,7 +858,7 @@ impl CodecBackend for Vp9Backend {
     /// -1.9%, bodycam +4.0%; proxy-6 -3.3%); periodic-key pulse -0.01 /
     /// +0.02 dB. Alone (6 TRAIN clips, 60 f): `trellis_key` + shave 0 -1.7%,
     /// intra gate 0 -0.7%, depth removal 0.86 -0.6%. Instructions (crowd
-    /// 720p 20 f CBR 400, callgrind): +1.7%, +0.1%, +0.8%. vp9-fast keeps
+    /// 720p 20 f CBR 400, callgrind): +1.7%, +0.1%, +0.8%. VP9 Fast keeps
     /// the engine values.
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Tuned jointly (eval/nceval/tune_pool.py, study
@@ -867,7 +867,7 @@ impl CodecBackend for Vp9Backend {
         // -0.87% [-1.31, -0.43] (overfit gap +1.09); re-checked at head
         // cd9ea802 on the study's rotation: disjoint L3 (79 clips,
         // single-point) J -0.74% [-1.18, -0.30], L2 (ladder) -1.21% [-1.58,
-        // -0.83], no guard. CPU x86 -1.5%, Jetson cycles -1.1%. vp9-fast pins
+        // -0.83], no guard. CPU x86 -1.5%, Jetson cycles -1.1%. VP9 Fast pins
         // the previous value. (Re-tuned to 2.38 on 2026-11-14: the CPU cut
         // at the end of this list.)
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
@@ -942,7 +942,7 @@ impl CodecBackend for Vp9Backend {
         // 4 and pivot 8 / 12 ranked below 3 / 10 at L1. Long GOP (900 f,
         // one key, CBR 400): luma unchanged per third, chroma crowd -0.2 dB,
         // pan +0.1..+0.3 dB, no drift. No extra work (one row-subsampled
-        // plane error per frame). vp9-fast, -faster and -fastest pin 0 (not
+        // plane error per frame). VP9 Fast, Faster and Veryfast pin 0 (not
         // screened there).
         ("vp9.chroma_delta_gap_slope", 3.0),
         // VP9 spatial SVC's enhancement-layer intra gate (the engine's
@@ -2715,7 +2715,7 @@ impl Vp9Backend {
     /// instant's upscaled base only (a key or repair unit's S1): its residual
     /// is the detail the base lacks, all high frequencies, so it keeps every
     /// frequency as a refined block does (as `nc-av1`'s). With
-    /// `vp9.partial_forward` (vp9-svc-fast) still content stayed at the
+    /// `vp9.partial_forward` (VP9 L2 Fast) still content stayed at the
     /// blurred base: the undisturbed static half of
     /// `nc-cli/tests/static_recovery.rs` `vp9_svc_presets_recover` at 32.4 dB,
     /// 43.2 exact.
@@ -3231,7 +3231,7 @@ impl Vp9Backend {
         // frequencies the approximation drops are what it is for. With
         // `vp9.inter_tx_split_spread` keeping such blocks in one 32x32
         // transform, a still region copied from a starved key stayed 8 dB
-        // short for good (`vp9-fast`, `nc-cli/tests/static_recovery.rs`).
+        // short for good (`VP9 Fast`, `nc-cli/tests/static_recovery.rs`).
         // An enhancement picture coded from the upscaled base only keeps every
         // frequency too (`coding_from_base_only`).
         let exact = self.refining_block() || self.coding_from_base_only();
@@ -3263,7 +3263,7 @@ impl Vp9Backend {
     /// take their SADs from one pass over the block (into
     /// `scratch.quad_sads`), so those the zero proof drops (most of them at
     /// real-time rates) build no views or residual. Only small transforms,
-    /// several to the plane block, pay for the pass. vp9-fastest (8x8
+    /// several to the plane block, pay for the pass. VP9 Veryfast (8x8
     /// inter transforms, no size search): -2.4% x86 instructions.
     fn quad_sads(
         &mut self,

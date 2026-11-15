@@ -1664,7 +1664,7 @@ pub fn split_rate_control(
 /// the top layer takes [`ENHANCEMENT_KEY_BOOST_SCALE`], `0.5`): `S0` already
 /// codes the intra `KEY_FRAME` and `S2` follows in the same TU; `0.65` spent
 /// `42.4%` (`156 kb`) of `S1`'s 5 s budget on `TU 0` on `pool_wildtrack_cam1`
-/// at `500 kbps` (Gemini, av1-svc3).
+/// at `500 kbps` (Gemini, AV1 L3 Medium).
 const MIDDLE_LAYER_KEY_BOOST_SCALE: f64 = 0.45;
 
 /// Minimum adaptive `S0` share of the total stream bitrate on static inter

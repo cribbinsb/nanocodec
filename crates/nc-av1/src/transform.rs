@@ -165,7 +165,7 @@ impl ForwardPolicy {
 /// block) where `policy` lets them be nonzero; the rest are zero already and
 /// stay zero. Returns the number of nonzero levels. Exact: a low-frequency
 /// 32x32 forward quantised only its first 16 of 32 lines halves the work
-/// (2026-11-11, x86 av1-faster).
+/// (2026-11-11, x86 AV1 Faster).
 pub fn quantize_coded(
     dsp: &Dsp,
     policy: ForwardPolicy,

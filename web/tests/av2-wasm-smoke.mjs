@@ -38,7 +38,7 @@ function pixels(width, height, frame) {
 // Any even size is coded (padded to 8, cropped by the conformance window);
 // odd sizes are rejected.
 for (const [width, height] of [[320, 180], [66, 64], [64, 66]]) {
-  const evenEncoder = new BrowserEncoder('av2', width, height, 0, 30, 900, 'default');
+  const evenEncoder = new BrowserEncoder('av2', width, height, 0, 30, 900, 'medium');
   const evenDecoder = new BrowserDecoder('av2');
   try {
     const rgba = pixels(width, height, 0);
@@ -51,11 +51,11 @@ for (const [width, height] of [[320, 180], [66, 64], [64, 66]]) {
   } finally { evenEncoder.free(); evenDecoder.free(); }
 }
 for (const [width, height] of [[65, 64], [64, 65]]) {
-  assert.throws(() => new BrowserEncoder('av2', width, height, 0, 30, 900, 'default'), /multiples of 2/);
+  assert.throws(() => new BrowserEncoder('av2', width, height, 0, 30, 900, 'medium'), /multiples of 2/);
 }
-assert.throws(() => new BrowserEncoder('av2', 64, 64, 256, 30, 900, 'default'), /quantizer|quantiser/i);
+assert.throws(() => new BrowserEncoder('av2', 64, 64, 256, 30, 900, 'medium'), /quantizer|quantiser/i);
 
-const encoder = new BrowserEncoder('av2', 64, 64, 0, 30, 900, 'default');
+const encoder = new BrowserEncoder('av2', 64, 64, 0, 30, 900, 'medium');
 const decoder = new BrowserDecoder('av2');
 try {
   {
@@ -97,7 +97,7 @@ try {
 } finally { encoder.free(); decoder.free(); }
 
 // Non-square, partial-superblock geometry is supported when divisible by eight.
-const partialEncoder = new BrowserEncoder('av2', 72, 64, 0, 30, 900, 'default');
+const partialEncoder = new BrowserEncoder('av2', 72, 64, 0, 30, 900, 'medium');
 const partialDecoder = new BrowserDecoder('av2');
 try {
   for (let frame = 0; frame < 2; frame++) {

@@ -1,9 +1,9 @@
 """Spatial SVC streams: their layers' bytes and their lower layers' quality.
 
-A two-layer stream (our `spatial.layers = 2`, presets/<codec>-svc*.toml)
+A two-layer stream (our `spatial.layers = 2`, presets/<codec>/l2-*.toml)
 carries a half-size base layer (operating point 1) under the full-size one
 (operating point 0); a three-layer AV1 stream (`spatial.layers = 3`,
-presets/av1-svc3*.toml) a quarter-size S0 (operating point 2) and a
+presets/av1/l3-*.toml) a quarter-size S0 (operating point 2) and a
 half-size S1 (operating point 1) under it. Measuring it the way a receiver sees it takes two
 things the single-layer path has no use for, shared here by the SVC chart
 (nceval.svc_chart) and by every CBR point of a spatial setting (nceval.cbr:

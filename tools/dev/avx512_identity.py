@@ -12,6 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "eval"))
 from nceval.diskguard import check_disk
+from nceval.encoders.nanocodec import MEDIUM, preset_cli_args
 from nceval.framepipe import FrameHashSink
 from nceval.point import encode_streamed
 from nceval.slots import cpu_slots
@@ -39,7 +40,7 @@ def main() -> None:
     results = []
     for name in ((args.clip,) if args.clip else CLIPS):
         clip = clips[name]
-        for preset in ("default", f"{args.codec}-fast"):
+        for preset in (MEDIUM, "fast"):
             outputs = []
             label = f"{args.codec}-{preset}-{name}"
             for isa in (("avx2", "avx512", "baseline") if args.baseline else ("avx2", "avx512")):
@@ -53,8 +54,7 @@ def main() -> None:
                            "--intra-period", "300", "--qp",
                            "32" if args.codec in ("h264", "hevc", "vvc") else "140",
                            "--output", str(stream)]
-                if preset != "default":
-                    command += ["--preset", preset]
+                command += preset_cli_args(args.codec, preset)
                 if isa == "avx512":
                     command = [str(args.sde.resolve()), f"-{args.model}", "--", *command]
                 sink = FrameHashSink()

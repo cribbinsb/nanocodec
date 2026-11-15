@@ -58,6 +58,7 @@ from .codecs import Codec
 from .config import Paths, find_tool
 from .encoders import resolve_encoder
 from .encoders.base import EncodeJob
+from .encoders.nanocodec import MEDIUM
 from .gatepolicy import EVALUATION_GATE, file_sha256
 from .results import ResultsDb
 from .rows import ROWS, Row
@@ -80,10 +81,17 @@ def jetson_file(paths: Paths) -> Path:
     return paths.data_root / "results" / "jetson-timing.jsonl"
 
 
+#: Timing records from before the preset rename (2026-11-15) name the ladder's
+#: ends by their old names.
+OLD_PRESET_KEYS = {"default": MEDIUM, "fastest": "veryfast"}
+
+
 def preset_key(codec: str, preset: str) -> str:
-    """'hevc-fast', 'Fast', 'fast' -> 'fast'; the timing agents name presets freely."""
+    """'hevc-fast', 'Fast', 'fast' -> 'fast', 'Default' -> 'medium'; the timing
+    agents name presets freely."""
     preset = preset.lower()
-    return preset.removeprefix(f"{codec}-") if preset != codec else "default"
+    preset = preset.removeprefix(f"{codec}-") if preset != codec else MEDIUM
+    return OLD_PRESET_KEYS.get(preset, preset)
 
 
 def anchor_key(anchor: str) -> str:

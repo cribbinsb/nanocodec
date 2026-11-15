@@ -26,7 +26,7 @@ On today's recorded screens (36 candidates x the 29 TRAIN+VAL clips, |J| <=
 against 0.824 / 0.908 for random stratified draws; CUR did no better than
 random (docs/handoff/tuning.md).
 
-    python3 -m nceval.clipselect measure --codec h264 --preset h264-fast \\
+    python3 -m nceval.clipselect measure --codec h264 --preset fast \\
         --binary BIN --space tune_spaces/h264-fast.txt --count 24 --out R.json
     python3 -m nceval.clipselect select --matrix R.json --k 8,12,16 --out subsets.json
 """
@@ -44,7 +44,7 @@ import numpy as np
 from . import levels, pool, realuse
 from .codecs import Codec
 from .config import load_paths
-from .encoders.nanocodec import read_preset
+from .encoders.nanocodec import MEDIUM, preset_values
 from .gatepolicy import EVALUATION_GATE, file_sha256
 from .singlepoint import assign_rungs, single_points
 from .tune import REPO_ROOT, specs_of
@@ -67,7 +67,7 @@ def measure(args: argparse.Namespace) -> None:
     binary, _ = levels.build(args.binary, load_paths(), "tune")
     presets = binary.parent / "presets"
     presets = presets if presets.is_dir() else REPO_ROOT / "presets"
-    preset = read_preset(presets / f"{args.preset}.toml") if args.preset != "default" else {}
+    preset = preset_values(presets, codec, args.preset)
     domains = read_space(Path(args.space).read_text(), specs_of(binary, codec), preset)
     by_family = {}
     for clip in pool.load_pool(load_paths(), levels.usable):
@@ -266,7 +266,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     m = sub.add_parser("measure", help="the response matrix (resumable)")
     m.add_argument("--codec", required=True, choices=[c.value for c in Codec])
-    m.add_argument("--preset", default="default")
+    m.add_argument("--preset", default=MEDIUM)
     m.add_argument("--binary", required=True)
     m.add_argument("--space", required=True, help="nceval.tune_pool space file")
     m.add_argument("--count", type=int, default=24)

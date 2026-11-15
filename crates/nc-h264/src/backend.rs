@@ -63,7 +63,7 @@ nc_encoder::param_group! {
     /// H.264's tunable heuristics (`nanocodec params`). Measured trade-offs
     /// of the defaults are in `docs/handoff/h264.md`. The defaults are the
     /// TRAIN-selected joint-search set (h264-overnight-20261107-v2 trial 51,
-    /// formerly `--preset h264-balanced`): full VAL natural BD-rate -14.5%
+    /// later the `h264-balanced` preset, dropped 2026-11-15): full VAL natural BD-rate -14.5%
     /// PSNR-YUV / -12.6% VMAF-NEG and -11.7% instructions versus the earlier
     /// hand-tuned values; one noise point loses 0.036 dB (disclosed trade-off).
     pub struct H264Params ("h264") {
@@ -107,12 +107,12 @@ nc_encoder::param_group! {
         /// +0.49% VMAF-NEG, VAL +0.36% / +0.28%.
         split_refine_mv16: 0.0, [0.0, 1.0],
             "1 also refines quadrants whose best vector is the (already refined) 16x16 one; 0 skips them: faster",
-        /// A speed lever (h264-fastest): 0 codes every inter macroblock as
+        /// A speed lever (H.264 Veryfast): 0 codes every inter macroblock as
         /// `P_L0_16x16` (or `P_Skip`), with no split search and no 8x8
         /// motion vectors gathered for it.
         partition_search: 1.0, [0.0, 1.0],
             "1 searches 16x8/8x16/8x8 partitions above the split gate; 0 codes every inter macroblock as 16x16: faster",
-        /// A speed lever (h264-fastest): intra macroblocks of P slices
+        /// A speed lever (H.264 Veryfast): intra macroblocks of P slices
         /// predict `Intra_16x16` and chroma from DC only (`Intra_4x4` keeps
         /// its own gate), sparing three luma and six chroma SATDs per trial.
         inter_intra_dc_only: 0.0, [0.0, 1.0],
@@ -210,21 +210,21 @@ nc_encoder::param_group! {
             "with intra8x8, Intra_8x8 tried only above this Intra_16x16 SATD/sample: higher is faster",
         intra8x8_all_modes: 0.0, [0.0, 1.0],
             "1 evaluates all nine Intra_8x8 modes per block instead of the 5-7 mode shortlist: slower, better intra prediction",
-        /// A speed lever (h264-faster): `disable_deblocking_filter_idc` 1 in P
+        /// A speed lever (H.264 Faster): `disable_deblocking_filter_idc` 1 in P
         /// slices skips the boundary-strength pass and every edge filter of
         /// the frame. Key frames stay filtered: every later frame predicts
         /// from them. Legal (§7.4.3), but blockier references at low rates.
-        /// Measured vs h264-fast: J_real (proxy-4, 60 f, CBR ladder) +3.4%
+        /// Measured vs H.264 Fast: J_real (proxy-4, 60 f, CBR ladder) +3.4%
         /// (crowd +8.9); Jetson instructions at fixed QP +0.2 / -2.4%
         /// (crowd 39 / bodycam 45: the blockier references code more
         /// residual), CPU time at the 600 kbps rung -3.5% (on top of the
-        /// h264-faster search levers). Not in h264-faster: blocking then
+        /// H.264 Faster search levers). Not in H.264 Faster: blocking then
         /// accumulates over long GOPs (single key, 300 f, 600 kbps,
         /// static_meva_hospital -0.83 / -1.15 / -1.25 dB per third, against
         /// -0.64 / -0.69 / -0.70 with the filter on).
         deblock_inter: 1.0, [0.0, 1.0],
             "0 switches the deblocking filter off in P slices (key frames stay filtered): faster, blockier at low rates",
-        /// A speed lever (h264-fastest): CAVLC slice data
+        /// A speed lever (H.264 Veryfast): CAVLC slice data
         /// (`entropy_coding_mode_flag` 0, `cavlc.rs`) instead of CABAC. Mode
         /// decision and the rate-distortion tools keep pricing with the
         /// CABAC model (its contexts at their slice-initial state).
@@ -1809,7 +1809,7 @@ impl CodecBackend for H264Backend {
         // 1200 kbps: 6 frames ~1 dB lower after a +2 dB base frame, mean
         // +0.16 dB) and noise-level worst windows on a 10 fps bodycam
         // (within 0.26 dB). 900-frame single-key runs within 0.00..+0.14
-        // dB Y per third. h264-fast and h264-faster keep 1 (held-out
+        // dB Y per third. H.264 Fast and H.264 Faster keep 1 (held-out
         // worst-1% VMAF +6.6%; VAL worst-1% +4%).
         ("rate.cadence_scale", 1.4),
         ("decision.skip_no_refine_lambdas", 0.209_950_97),
@@ -1853,13 +1853,13 @@ impl CodecBackend for H264Backend {
         ("quant.trellis_chroma", 0.0),
         // The Default's quality set (2026-11-10, docs/handoff/h264.md
         // "Default quality set"): CPU spent where J_real at k 0.1 pays,
-        // toward Default = 1.4x h264-fast. Single levers, J_real proxy-6
+        // toward Default = 1.4x H.264 Fast. Single levers, J_real proxy-6
         // quality / host P instructions: full-pel probe -2.3% / +8.0%,
         // refining the cheap vector -1.3% / +7.5%, quarter-sample walk
         // -0.8% / +0.8%, intra gate 25 -0.7% / +0.4%, all Intra_4x4 modes
         // -0.5% / 0, full-pel window 4 -0.3% / +0.8%, trellis λ x1.3
         // -0.3% / +1.7%, mixed motion -0.2% / +0.2%, λ split gate 0.8 -0.3%
-        // / +2.8% (TRAIN). h264-fast pins every one of them back.
+        // / +2.8% (TRAIN). H.264 Fast pins every one of them back.
         ("decision.codec_fullpel_probe", 1.0),
         ("decision.refine_cheap_vector", 1.0),
         ("decision.refine_cheap_min_lambdas", 0.0),
@@ -1877,7 +1877,7 @@ impl CodecBackend for H264Backend {
         // instructions +2.1%, Jetson cycles +2.8%. Adoption screen (k 0.1,
         // dCPU 2.1, day's pool draw): L3 BETTER, J -0.17% [-0.33, -0.02]
         // (n 126, L2+L3 pooled), no guard. docs/analysis/fixed-qp-gap-2026-11-14.md.
-        // h264-fast, -faster, -fastest and -balanced pin the old values.
+        // H.264 Fast, Faster and Veryfast pin the old values.
         ("analysis.static_sad_per_pixel", 0.0),
         ("analysis.one_position_sad_per_pixel", 0.0),
         ("analysis.skip_hme_sad_per_pixel", 0.0),
@@ -1892,7 +1892,7 @@ impl CodecBackend for H264Backend {
         // +0.08% [-0.24, +0.43] n 24, L2 -0.29% [-0.46, -0.13] n 48,
         // L3 (600 f, single-point) J -1.29% [-2.04, -0.51] n 27, BETTER, no
         // guard. split_gate_satd is inert here (split_gate_lambda replaces
-        // it). h264-fast, -faster, -fastest and -balanced pin 4.
+        // it). H.264 Fast, Faster and Veryfast pin 4.
         ("h264.split_uniform_qpel", 0.0),
         // Intra_8x8 in every frame, on every macroblock that tries intra
         // (docs/handoff/h264.md "Intra_8x8"): J_real staged TRAIN (18 clips,
@@ -1901,7 +1901,7 @@ impl CodecBackend for H264Backend {
         // -1.3%, bodycam and pan +0.4%), no guard. Fixed QP 26-38: Riverbed
         // -7.8% PSNR-YUV BD; key frames -5..-12%. CPU: P frames host +2.7%
         // (mean of two QP sets), Jetson crowd +2.2% instructions; key frames
-        // +28%. h264-fast and h264-faster pin it off.
+        // +28%. H.264 Fast and H.264 Faster pin it off.
         ("h264.intra8x8", 2.0),
         // Tuned jointly (eval/nceval/tune_pool.py, study
         // h264-default-eq2-2026-11-11, equal x86 CPU): Intra_8x8 only above
@@ -1909,7 +1909,7 @@ impl CodecBackend for H264Backend {
         // -0.89%, L3 of the study's draw -0.78% [-1.07, -0.48]; re-checked at
         // head 34dfb1d2 on the disjoint L3 (79 clips, single-point) J -0.71%
         // [-1.03, -0.37], no guard; CPU x86 -0.3%, Jetson cycles -1.7%.
-        // h264-fast, -faster, -fastest and -balanced pin the old values.
+        // H.264 Fast, Faster and Veryfast pin the old values.
         ("h264.intra8x8_gate_satd", 9.6),
         // A quality arm, jointly tuned (Default/Fast CPU separation was 1.37x
         // against the 1.5x bar; study h264-default-arms-2026-11-13, (J, CPU)
@@ -1918,7 +1918,7 @@ impl CodecBackend for H264Backend {
         // (79 clips, full ladder: the change reshapes the curve) at head
         // 34d6f18b: quality J -3.56% [-3.98, -3.15], J at k 0.1 -2.34%
         // [-2.76, -1.93], no guard; CPU x86 +6.8%, Jetson cycles +14.9%.
-        // h264-fast, -faster, -fastest and -balanced pin intra_rd off.
+        // H.264 Fast, Faster and Veryfast pin intra_rd off.
         ("h264.intra_rd", 2.0),
         ("decision.lambda_scale", 0.6625),
         // Gated temporal layers (docs/handoff/hierarchical-p.md "Layer
@@ -1932,7 +1932,7 @@ impl CodecBackend for H264Backend {
         // gate): TRAIN 18 clips -8.6% (-6.7 / -6.7 / -10.9), VAL 11 clips
         // -5.7% (-2.3 / -3.1 / -10.9), no guard; 900-frame single-key runs
         // within -0.09..+0.03 dB per third (no drift); x86 instructions
-        // +0.5%. The disposable-frame cuts of h264-fast stay out (pan
+        // +0.5%. The disposable-frame cuts of H.264 Fast stay out (pan
         // -0.32 dB in the long run's middle third).
         // Noisy-still gate (re-fit, 2026-11-11): a still scene whose frame
         // difference is large uncompensable noise stays flat
@@ -1958,7 +1958,7 @@ impl CodecBackend for H264Backend {
         // the cheapest to code): accepted. CPU on the 150-frame cost clips
         // (no periodic key there) x86 x1.0000, Jetson cycles x0.9989; the
         // extra re-codes add about 0.2% of frames on still scenes.
-        // h264-fast, -faster, -fastest and -balanced pin it off.
+        // H.264 Fast, Faster and Veryfast pin it off.
         ("rate.prekey_quiet", 1.0),
         // The target as a ceiling over every key period (`rate.period_ceiling`,
         // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still
@@ -2199,7 +2199,7 @@ impl CodecBackend for H264Backend {
 
     // Inline hint: once the engine's leaf walk grew (rectangular leaves),
     // LLVM stopped inlining this into the static-skip test of
-    // `decide_inter_leaf`. Without the hint h264-fast costs 0.1% more
+    // `decide_inter_leaf`. Without the hint H.264 Fast costs 0.1% more
     // x86 instructions and 0.3-0.7% more Jetson cycles (crowd and bodycam
     // 720p, 60 frames).
     #[inline]

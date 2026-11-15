@@ -66,7 +66,7 @@ from .clips import Clip, load_clipset
 from .flicker_reference import REFERENCE_WINDOW_FLICKER_DB
 from .codecs import Codec
 from .config import Paths, find_tool, load_paths
-from .encoders.nanocodec import PRESETS_DIR, read_preset
+from .encoders.nanocodec import PRESETS_DIR, preset_values
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .rows import ROWS, Row
 from .stages import (ALL_FOUR, PART_FILL, STAGES, TRAIN_PROXY, VAL_PROXY, VAL_STAGES, Stage,
@@ -385,14 +385,15 @@ def param_args(pairs: list[str]) -> tuple[str, ...]:
 
 
 def own_family(encoder: str, binary: Path, presets: Path = PRESETS_DIR) -> Family:
-    """`nanocodec-<codec>[@preset]` in CBR; a preset's values become --param pairs.
+    """`nanocodec-<codec>[@stem]` in CBR; presets/<codec>/<stem>.toml's values
+    become --param pairs (no stem: medium, the engine defaults).
 
     `presets` is the preset directory: a frozen build is measured with the
     presets of its own commit (board --presets-dir), not the tree's newer ones.
     """
     base, _, preset = encoder.partition("@")
     codec = Codec(base.removeprefix("nanocodec-"))
-    overrides = read_preset(presets / f"{preset}.toml") if preset else {}
+    overrides = preset_values(presets, codec, preset)
     extra = param_args([f"{k}={v:g}" for k, v in sorted(overrides.items())])
     return Family(encoder, codec, binary, extra, own=True, cqp=False)
 

@@ -169,7 +169,7 @@ def test_intermediate_prefers_lineage_then_side_then_overlap():
     assert chart.choose_intermediate(av2, [hevc, svt, av1]) is av1  # our side over SVT
     assert chart.choose_intermediate(av2, [hevc, svt]) is svt  # lineage over overlap
     assert chart.choose_intermediate(av2, [hevc]) is hevc
-    tie = candidate("nanocodec-av1@av1-fast", cbr.Codec.AV1, 0.6)
+    tie = candidate("nanocodec-av1@fast", cbr.Codec.AV1, 0.6)
     assert chart.choose_intermediate(av2, [tie, av1]) is av1  # by name: deterministic
     unscored = candidate("nanocodec-vp9", cbr.Codec.VP9, 0.9, legs=(None, -20.0))
     assert chart.choose_intermediate(av2, [unscored]) is None

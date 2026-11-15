@@ -67,6 +67,7 @@ mod period_ledger;
 mod persistence;
 mod planned_dead_zone;
 mod pre_tx_skip;
+mod presets;
 mod psy;
 mod qp_cadence;
 mod quality_cap;
@@ -137,6 +138,7 @@ pub use params::{
 pub use partition::Block;
 pub use planned_dead_zone::{apply_planned_dead_zone, planned_min_level};
 pub use pre_tx_skip::{QuantizerBand, pre_tx_skip_score, pre_tx_skips};
+pub use presets::{PresetError, Speed, preset_params, speeds};
 pub use psy::{ac_energy, psy_penalty};
 pub use random_decisions::DebugRng;
 pub use refresh::{IntraRefresh, MIN_REFRESH_PERIOD, RefreshRegion, RefreshWindow};

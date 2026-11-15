@@ -66,7 +66,7 @@ pub struct RateControlConfig {
     /// Measure each frame's temporal noise (`RateControlStats::residual_sigma`, a
     /// rate-log diagnostic that no decision reads). Off by default: its
     /// median over the frame's 8x8 blocks cost about 1% of an H.264 speed
-    /// preset's instructions (x86 callgrind, h264-faster 720p).
+    /// preset's instructions (x86 callgrind, H.264 Faster 720p).
     pub temporal_noise_stat: bool,
 }
 /// Default [`RateControlConfig::buffer_ms`].

@@ -37,7 +37,7 @@ function wasm(data, root) {
   for (const res of ['720p', '360p']) columns.push({ label: `Decode ${res}`, num: true, cell: (c) => cell('decode', c, '', res) });
   for (const res of ['720p', '360p']) {
     for (const preset of ['default', 'fast']) {
-      columns.push({ label: `Encode ${res} ${preset === 'default' ? 'Default' : 'Fast'}`, num: true, cell: (c) => cell('encode', c, preset, res) });
+      columns.push({ label: `Encode ${res} ${preset === 'default' ? 'Medium (default)' : 'Fast'}`, num: true, cell: (c) => cell('encode', c, preset, res) });
     }
   }
   const builds = [...new Set(data.rows.flatMap((r) => r.builds))];

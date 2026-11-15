@@ -17,8 +17,8 @@ Encodes a fixed stream set with the native CLI at HEAD (crowd/pan/static,
 checking that every module's I420 output hashes equal the native decoder's.
 It also times WASM encode at the demo's settings (15 fps, CBR with 2x peak,
 1 s buffer, 30 s keyframes; `ENCODE_KBPS` per resolution, `--encode-res`)
-for each preset the page offers (`--presets`: Fast only where the demo has
-it) against the native CLI at the same settings.
+for each preset named (`--presets`, ladder names; every codec offers Medium
+and Fast) against the native CLI at the same settings.
 
 Every timing is single-threaded wall time. Each round (`--rounds`) runs every
 job once per module and natively, interleaved, each run the best of
@@ -81,8 +81,6 @@ BUFFER_MS = 1000
 DEMO = {"fps": 15, "buffer_ms": 1000, "key_s": 30}
 # Encode targets: the demo's 300 kbps at its default 640x360, twice that at 720p.
 ENCODE_KBPS = {"720p": 600, "360p": 300}
-# Codecs whose demo panel offers the Fast preset (web/codecs.js).
-WEB_FAST_CODECS = ("h264", "hevc", "av1", "vvc")
 # `--modules` names: the module directory under `--pkg` (tools/web/build.sh).
 MODULE_DIRS = {"simd128": ".", "relaxed": "relaxed"}
 
@@ -239,7 +237,6 @@ def bench_decode(nanocodec: Path, modules: dict[str, Path], jobs, opts) -> list[
 def bench_encode(nanocodec: Path, modules: dict[str, Path], work: Path, codecs, clips, opts) -> list[dict]:
     """WASM and native encode at the demo's settings, interleaved like bench_decode."""
     jobs = [(codec, preset, clip) for codec in codecs for preset in opts.presets
-            if preset == "default" or codec in WEB_FAST_CODECS
             for clip in clips if clip.res in opts.encode_res]
     wasm: dict[tuple, dict] = {}
     native: dict[tuple, float] = {}
@@ -261,7 +258,7 @@ def bench_encode(nanocodec: Path, modules: dict[str, Path], work: Path, codecs, 
                               "--fps", str(DEMO["fps"]), "--bitrate", str(kbps),
                               "--peak-bitrate", str(PEAK_FACTOR * kbps), "--buffer-ms", str(DEMO["buffer_ms"]),
                               "--intra-period", str(DEMO["key_s"] * DEMO["fps"]),
-                              *(["--preset", f"{codec}-fast"] if preset == "fast" else []),
+                              *(["--preset", "fast"] if preset == "fast" else []),
                               "--frames", str(FRAMES), "--output", str(out_file)], opts.cpu)
             native[job] = min(native.get(job, float("inf")), *(wall(command) for _ in range(opts.repeat)))
             out_file.unlink(missing_ok=True)
@@ -349,7 +346,7 @@ def main() -> None:
     parser.add_argument("--targets", type=parse_targets, default=TARGETS_KBPS,
                         help="decode CBR targets, e.g. 720p=300+1200,360p=150+300")
     parser.add_argument("--encode-res", default="360p", help="resolutions to time encode at")
-    parser.add_argument("--presets", default="default", help="comma list of default, fast")
+    parser.add_argument("--presets", default="medium", help="comma list of medium, fast")
     parser.add_argument("--repeat", type=int, default=3, help="passes per timed process")
     parser.add_argument("--rounds", type=int, default=1, help="interleaved rounds (best over rounds)")
     parser.add_argument("--cpu", type=int, help="pin timed processes to this core (14 under host-timed.sh)")

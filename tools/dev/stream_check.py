@@ -55,8 +55,9 @@ def encodes(family: str, build: Build, plan: dict, tmp: Path) -> list[tuple[list
     jobs = []
     for clip, entry in plan["points"][family].items():
         fixed_qp, cbr = tmp / f"{clip}-qp.bin", tmp / f"{clip}-cbr.bin"
-        jobs.append((plan_family(own).command(clips[clip], FRAMES, INTRA_PERIOD, fixed_qp, None,
-                                              qp=entry["qp"]), fixed_qp))
+        planned = plan_family(own, presets)
+        jobs.append((planned.command(clips[clip], FRAMES, INTRA_PERIOD, fixed_qp, None,
+                                     qp=entry["qp"]), fixed_qp))
         jobs.append((own.command(clips[clip], FRAMES, INTRA_PERIOD, cbr, None, kbps=CBR_KBPS),
                      cbr))
     return jobs

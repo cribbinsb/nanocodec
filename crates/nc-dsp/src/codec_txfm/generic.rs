@@ -375,7 +375,7 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
         return false;
     }
     // Groups proven zero by the direct bound (`HevcForwardMode::
-    // zero_columns`): on lowlight 360p hevc-fast 16x16 blocks past the
+    // zero_columns`): on lowlight 360p HEVC Fast 16x16 blocks past the
     // block bound, the upper eight columns in 57-85% (QP 36-42).
     let skip_limit = match zero_limit {
         Some(limit) if mode.zero_columns && !staged => column_limit(second, limit),

@@ -46,7 +46,7 @@ from .lossnet import loss_model
 from .metrics import MetricSession, PsnrMetric, StreamSpec, gpu_slot_need, real_metrics
 from .pool import load_pool
 from .slots import cpu_slots, gpu_slots
-from .tune import read_preset
+from .encoders.nanocodec import preset_values
 from .yuv import YuvFormat
 
 PRESETS_DIR = Path(__file__).resolve().parents[2] / "presets"
@@ -109,7 +109,7 @@ def config_dict(cfg: RunConfig) -> dict:
 def preset_params(codec: str, preset: str) -> list[str]:
     if preset == "default":
         return []
-    values = read_preset(PRESETS_DIR / f"{codec}-{preset}.toml")
+    values = preset_values(PRESETS_DIR, codec, preset)
     return [f"{k}={v:g}" for k, v in sorted(values.items())]
 
 

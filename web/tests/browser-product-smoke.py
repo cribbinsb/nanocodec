@@ -130,7 +130,7 @@ try:
         page.wait_for_function(r"/^\d+ frames compared · [0-9.]+ fps( · running at [0-9.]+× real time, so no frame is skipped)?$/.test(document.querySelector('#session-stats').textContent)"
                                r" && /^(Keeping up · slowest|Limited by) (encode|decode) [AB] \(\d+ ms\)$/.test(document.querySelector('#session-stats').title)", timeout=10000)
         autostart_configs = page.evaluate('window.workerConfigs')
-        assert [(c['codec'], c['width'], c['fps'], c['targetKbps'], c['peakKbps'], c['keyInterval'], c['preset']) for c in autostart_configs] == [('h264', 854, 30, 400, 800, 300, 'default')], autostart_configs
+        assert [(c['codec'], c['width'], c['fps'], c['targetKbps'], c['peakKbps'], c['keyInterval'], c['preset']) for c in autostart_configs] == [('h264', 854, 30, 400, 800, 300, 'medium')], autostart_configs
         # Headless Chromium on SwiftShader loses new GL contexts once and restores them ~1 s later.
         page.wait_for_function("[...document.querySelectorAll('.viewport canvas')].every(c => !c.getContext('webgl2').isContextLost())", timeout=10000)
         # Zoom (view-zoom.js): scrolling up on B zooms both views together, unsmoothed,
@@ -349,7 +349,7 @@ try:
         page.evaluate('window.workerFrames.length = 0')
         page.wait_for_function("window.workerConfigs.slice(-2).every(c => c.codec === 'vvc') && window.workerFrames.length >= 12", timeout=60000)
         assert page.evaluate("window.workerFrames.every(f => f.format === 'i420' && f.width === 384 && f.height === 216)")
-        assert [(c['codec'], c['preset']) for c in page.evaluate('window.workerConfigs')[-2:]] == [('vvc', 'default'), ('vvc', 'fast')]
+        assert [(c['codec'], c['preset']) for c in page.evaluate('window.workerConfigs')[-2:]] == [('vvc', 'medium'), ('vvc', 'fast')]
         assert all(float(t) > 20 for t in page.locator('[data-metric="psnr"]').all_inner_texts())
         assert all(t.startswith('Target 300 kbps · QP') for t in page.locator('.rate-status').all_inner_texts())
         page.locator('.viewport').nth(0).dblclick(position={'x': 100, 'y': 60})  # at fit: nothing to reset

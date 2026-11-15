@@ -65,5 +65,5 @@ def test_command_lines_are_the_harness_settings():
     assert "--tune zerolatency,psnr" in x264 and "--bframes 0" in x264 and "--threads 1" in x264
     svt = chart["points"]["svtav1-m12"]["cbr_command"]
     assert svt.startswith("SvtAv1EncApp --rtc 1 --preset 12") and "--lp 1" in svt
-    ours = chart["points"]["nanocodec-h264@h264-fast"]["cbr_command"]
-    assert ours.startswith("nanocodec encode --codec h264") and ours.endswith("--preset h264-fast")
+    ours = chart["points"]["nanocodec-h264@fast"]["cbr_command"]
+    assert ours.startswith("nanocodec encode --codec h264") and ours.endswith("--preset fast")

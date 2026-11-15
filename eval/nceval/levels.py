@@ -57,7 +57,7 @@ from .cbr import Family, clip_targets
 from .clips import Clip
 from .codecs import Codec
 from .config import Paths, load_paths
-from .encoders.nanocodec import read_preset
+from .encoders.nanocodec import preset_values
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .realuse import (DEFAULT_FRAMES, DEFAULT_WORKERS, LADDER_KBPS, Runner, Track,
                       add_periodic_pulse, compare, format_stage, one_per_class, param_args,
@@ -305,14 +305,12 @@ def no_change_reason(old: tuple[Path, str], new: tuple[Path, str]) -> str | None
     return None
 
 
-def preset_args(binary: Path, preset: str | None) -> list[str]:
-    """--param pairs of `preset` from the build's own presets (repo's for a bare binary)."""
-    if not preset:
-        return []
+def preset_args(binary: Path, codec: Codec, preset: str | None) -> list[str]:
+    """--param pairs of `codec`'s `preset` from the build's own presets (repo's for a bare binary)."""
     directory = binary.parent / "presets"
     if not directory.is_dir():
         directory = Path(__file__).resolve().parents[2] / "presets"
-    values = read_preset(directory / f"{preset}.toml")
+    values = preset_values(directory, codec, preset)
     return [f"{k}={v:g}" for k, v in sorted(values.items())]
 
 
@@ -335,9 +333,9 @@ def final_check(args: argparse.Namespace) -> dict:
     for name in args.codecs.split(","):
         codec = Codec(name)
         anchor = Family(f"nanocodec-{codec.value}", codec, old,
-                        param_args(preset_args(old, args.preset)), own=True, cqp=False)
+                        param_args(preset_args(old, codec, args.preset)), own=True, cqp=False)
         test = Family(f"nanocodec-{codec.value}@candidate", codec, new,
-                      param_args(preset_args(new, args.preset)), own=True, cqp=False)
+                      param_args(preset_args(new, codec, args.preset)), own=True, cqp=False)
         runner = Runner(paths, GatePolicy(EVALUATION_GATE.value), args.workers, args.over_budget)
         screen_args = argparse.Namespace(frames=args.frames, rotation=args.rotation,
                                          max_level=len(pool.LEVELS), dcpu=None,
@@ -358,7 +356,8 @@ def main(argv: list[str] | None = None) -> None:
     f.add_argument("--old", required=True, help="commit or nanocodec binary (the anchor)")
     f.add_argument("--new", required=True, help="commit or nanocodec binary (the candidate)")
     f.add_argument("--codecs", default="h264,hevc,av1")
-    f.add_argument("--preset", help="preset name (each build's own presets/), e.g. h264-fast")
+    f.add_argument("--preset", help="ladder preset stem for every codec (each build's own presets/<codec>/), "
+                   "e.g. fast; default medium")
     f.add_argument("--rotation", help="rotation key to reproduce (default: today, UTC)")
     f.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     f.add_argument("--final-frames", type=int, default=LONG_FRAMES,

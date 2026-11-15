@@ -437,7 +437,7 @@ impl<'a> Level<'a> {
     /// the left SB's centre is the guess). The hint is issued before the
     /// SB's zero SAD and HME, which hide the fetch; without it the grid
     /// kernel's first positions wait on reference cache misses. Exact (a
-    /// hint only); Jetson h264-fast cycles about -0.5% crowd / -0.35% bodycam
+    /// hint only); Jetson H.264 Fast cycles about -0.5% crowd / -0.35% bodycam
     /// (aarch64 only, see `nc_dsp::prefetch_block`).
     fn prefetch_window(&self, sb_col: usize, sb_row: usize, centre: Mv, config: SearchConfig) {
         let corner = Mv::new(

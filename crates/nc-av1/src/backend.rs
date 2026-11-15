@@ -102,7 +102,7 @@ const QINDEX_MAX: u32 = 255;
 /// QP cadence 1.4x the engine's, re-tuned once MS-SSIM was scored on every
 /// frame instead of every 4th (mostly base frames). `J_real` (k 0.1) vs 1:
 /// TRAIN -1.5%, VAL -0.8%; 1.8 WORSE (worst-1% +6..+9%), 0.5 WORSE (+3%).
-/// av1-fast TRAIN -1.4% / VAL -0.4%, av1-faster -0.2% / -0.7% (k 0.6).
+/// AV1 Fast TRAIN -1.4% / VAL -0.4%, AV1 Faster -0.2% / -0.7% (k 0.6).
 /// Pool L3 (79 clips, native 10-30 fps): J -0.81% [-1.24, -0.39]. The 10 fps
 /// clips are neutral (+0.3%), so the held-out 10 fps bodycam loss (+7.6%) is
 /// that clip's alone; a cadence shortened to keep its duration at low frame
@@ -982,8 +982,8 @@ impl CodecBackend for Av1Backend {
         // mode-decision levers only). Head 0cdb619d (rate.debit), pool
         // levels of rotation 2026-11-13: L1 -0.14%, L2 (ladder) -0.09%,
         // disjoint L3 (79 clips, single-point) J +0.16% [-0.17, +0.50], no
-        // guard; x86 instructions -4.2%, Jetson cycles -3.1%. av1-svc and
-        // av1-svc3 pin 48.
+        // guard; x86 instructions -4.2%, Jetson cycles -3.1%. AV1 L2 Medium and
+        // AV1 L3 Medium pin 48.
         ("av1.inter_rounding_q7", 41.0),
         // Each sub-sample seed refined only when its whole-sample distortion
         // is within 1.1x the other's (`decision.seed_refine_ratio`, the
@@ -1073,7 +1073,7 @@ impl CodecBackend for Av1Backend {
         // BETTER -0.2%, quality -0.3% / -0.4%, pulse +0.01 dB. Fixed QP 60 f:
         // Riverbed -4.0% PSNR-YUV / -1.4% VMAF. Cost-clip P frames +1.1%,
         // key 0. Single-key 600 f CBR (chirla, crowd_mot20, pan_bdd): no
-        // drift. av1-fast keeps it off (not screened at k 0.6).
+        // drift. AV1 Fast keeps it off (not screened at k 0.6).
         ("decision.intra_directional", 1.0),
         ("av1.inter_intra_search", 1.0),
         // Adaptive coded resolution (`nc-encoder` `resolution.rs`): half
@@ -2427,7 +2427,7 @@ impl Av1Backend {
         // reuse term restoring detail a degraded reference lost), and an
         // enhancement picture coded from the upscaled base only adds the
         // detail the base lacks: the high frequencies the approximation
-        // drops are what both are for. Approximated, av1-svc-fast's
+        // drops are what both are for. Approximated, AV1 L2 Fast's
         // enhancement layer kept the blurred base on still content
         // (static_recovery.rs: 32.3 dB vs 44.5 exact).
         let applies = self.params.partial_forward >= scope

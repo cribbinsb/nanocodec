@@ -300,7 +300,7 @@
     "key": "388d91d98c1fbffd"
    }
   },
-  "nanocodec-hevc@hevc-fast": {
+  "nanocodec-hevc@fast": {
    "lowlight_city_night": {
     "qp": 42,
     "bytes": 350663,
@@ -496,7 +496,7 @@
     "key": "0dee5b9f46d0e20e"
    }
   },
-  "nanocodec-av1@av1-fast": {
+  "nanocodec-av1@fast": {
    "lowlight_city_night": {
     "qp": 185,
     "bytes": 376927,
@@ -2524,7 +2524,7 @@
     "key": "f65e8ac44549af08"
    }
   },
-  "nanocodec-vp9@vp9-fast": {
+  "nanocodec-vp9@fast": {
    "lowlight_city_night": {
     "qp": 185,
     "bytes": 380565,
@@ -2625,7 +2625,7 @@
     "key": "3fff5ee0625b5ae0"
    }
   },
-  "nanocodec-av2@av2-fast": {
+  "nanocodec-av2@fast": {
    "lowlight_city_night": {
     "qp": 154,
     "bytes": 383117,
@@ -2726,7 +2726,7 @@
     "key": "71d2350e9f609993"
    }
   },
-  "nanocodec-vvc@vvc-fast": {
+  "nanocodec-vvc@fast": {
    "lowlight_city_night": {
     "qp": 40,
     "bytes": 379163,
@@ -2827,7 +2827,7 @@
     "key": "a4ce5f704ea25815"
    }
   },
-  "nanocodec-h264@h264-fast": {
+  "nanocodec-h264@fast": {
    "lowlight_city_night": {
     "qp": 40,
     "bytes": 359508,
@@ -2928,7 +2928,7 @@
     "key": "533924e77689f0b8"
    }
   },
-  "nanocodec-h264@h264-faster": {
+  "nanocodec-h264@faster": {
    "lowlight_city_night": {
     "qp": 40,
     "bytes": 395180,
@@ -3029,7 +3029,7 @@
     "key": "fbc4e5f2ded2ec3b"
    }
   },
-  "nanocodec-av1@av1-faster": {
+  "nanocodec-av1@faster": {
    "lowlight_city_night": {
     "qp": 184,
     "bytes": 374884,
@@ -3130,7 +3130,7 @@
     "key": "ba97868037b88292"
    }
   },
-  "nanocodec-hevc@hevc-faster": {
+  "nanocodec-hevc@faster": {
    "lowlight_city_night": {
     "qp": 41,
     "bytes": 382780,
@@ -3231,7 +3231,7 @@
     "key": "a1685ad651727d48"
    }
   },
-  "nanocodec-h264@h264-fastest": {
+  "nanocodec-h264@veryfast": {
    "lowlight_city_night": {
     "qp": 39,
     "bytes": 387397,
@@ -3332,7 +3332,7 @@
     "key": "76d20bae36bb0c06"
    }
   },
-  "nanocodec-vp9@vp9-faster": {
+  "nanocodec-vp9@faster": {
    "lowlight_city_night": {
     "qp": 196,
     "bytes": 375867,
@@ -3433,7 +3433,7 @@
     "key": "4dc8e80ce6610baf"
    }
   },
-  "nanocodec-vp9@vp9-fastest": {
+  "nanocodec-vp9@veryfast": {
    "lowlight_city_night": {
     "qp": 200,
     "bytes": 373062,
@@ -3541,21 +3541,21 @@
  "nanocodec_sha256": {
   "nanocodec-h264": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
   "nanocodec-hevc": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-hevc@hevc-fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-hevc@fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
   "nanocodec-av1": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-av1@av1-fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-av1@fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
   "nanocodec-vp9": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
   "nanocodec-av2": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
   "nanocodec-vvc": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-vp9@vp9-fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-av2@av2-fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-vvc@vvc-fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-h264@h264-fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-h264@h264-faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-av1@av1-faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-hevc@hevc-faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-h264@h264-fastest": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-vp9@vp9-faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
-  "nanocodec-vp9@vp9-fastest": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a"
+  "nanocodec-vp9@fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-av2@fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-vvc@fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-h264@fast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-h264@faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-av1@faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-hevc@faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-h264@veryfast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-vp9@faster": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a",
+  "nanocodec-vp9@veryfast": "0d74774e3d4792fc71579d504208739184171e3b279c79b4563525fa067d4e9a"
  }
 }

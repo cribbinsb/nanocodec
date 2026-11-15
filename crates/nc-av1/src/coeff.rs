@@ -594,7 +594,7 @@ impl LevelMap {
     /// the range sum), then record the magnitude.
     #[allow(
         clippy::inline_always,
-        reason = "called per coefficient from two sites; as a call it cost +0.8..+1.0 % av1-faster instructions"
+        reason = "called per coefficient from two sites; as a call it cost +0.8..+1.0 % AV1 Faster instructions"
     )]
     #[inline(always)]
     fn code_level<W: SymbolSink>(

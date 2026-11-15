@@ -15,7 +15,7 @@ const manifest = JSON.parse(readFileSync(new URL('streams-ref/manifest.json', we
 test('a demo link reads back as written', () => {
   const link = { codec: 'av1', preset: 'fast', width: 1280, height: 720, fps: 30, kbps: 600 };
   assert.deepEqual(parseDemoQuery(demoQuery(link)), link);
-  const stream = { codec: 'h264', preset: 'default', stream: 'xiph-johnny-x264-medium-1280x720-30fps-300k' };
+  const stream = { codec: 'h264', preset: 'medium', stream: 'xiph-johnny-x264-medium-1280x720-30fps-300k' };
   assert.deepEqual(parseDemoQuery(demoQuery(stream)), stream);
 });
 
@@ -23,8 +23,8 @@ test('a results link reads back as written, and names a chart family', () => {
   for (const preset of CHART_PRESETS) {
     assert.deepEqual(parseResultsQuery(resultsQuery({ codec: 'hevc', preset })), { codec: 'hevc', preset });
   }
-  assert.equal(chartFamily({ codec: 'hevc', preset: 'default' }), 'nanocodec-hevc');
-  assert.equal(chartFamily({ codec: 'h264', preset: 'faster' }), 'nanocodec-h264@h264-faster');
+  assert.equal(chartFamily({ codec: 'hevc', preset: 'medium' }), 'nanocodec-hevc');
+  assert.equal(chartFamily({ codec: 'h264', preset: 'veryfast' }), 'nanocodec-h264@veryfast');
 });
 
 test('every preset of ours on the chart has a link that names it', () => {
@@ -38,8 +38,9 @@ test('links without settings, or with bad ones, ask for nothing', () => {
   assert.equal(parseDemoQuery(''), null);
   assert.equal(parseDemoQuery('?views=live'), null);
   assert.equal(parseDemoQuery('?codec=av1&preset=svc'), null);
+  assert.equal(parseDemoQuery('?codec=h264&preset=default'), null);
   assert.equal(parseDemoQuery('?codec=<b>'), null);
-  assert.deepEqual(parseDemoQuery('?codec=av1&size=big&fps=-3&stream=../x'), { codec: 'av1', preset: 'default' });
+  assert.deepEqual(parseDemoQuery('?codec=av1&size=big&fps=-3&stream=../x'), { codec: 'av1', preset: 'medium' });
   assert.equal(parseResultsQuery('?preset=fast'), null);
 });
 

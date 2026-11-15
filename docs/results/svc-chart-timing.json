@@ -65,27 +65,27 @@
    "lowlight_city_night": 107142508.07333334,
    "bodycam_bc1": 117282614.16666667
   },
-  "nanocodec-av1@av1-svc": {
+  "nanocodec-av1@l2-medium": {
    "lowlight_city_night": 181874119.48666668,
    "crowd_mot17_09": 163213997.49333334,
    "bodycam_bc1": 196318341.62666667
   },
-  "nanocodec-av1@av1-svc+L2T3": {
+  "nanocodec-av1@l2-medium+L2T3": {
    "lowlight_city_night": 170800368.29333332,
    "crowd_mot17_09": 156966107.69333333,
    "bodycam_bc1": 181166194.33333334
   },
-  "nanocodec-av1@av1-svc3": {
+  "nanocodec-av1@l3-medium": {
    "lowlight_city_night": 193353454.54,
    "crowd_mot17_09": 174791857.90666667,
    "bodycam_bc1": 208654453.5
   },
-  "nanocodec-av1@av1-svc3+L3T3": {
+  "nanocodec-av1@l3-medium+L3T3": {
    "lowlight_city_night": 187729911.12,
    "crowd_mot17_09": 169611890.05333334,
    "bodycam_bc1": 197479825.8
   },
-  "nanocodec-av1@av1-svc3-fast": {
+  "nanocodec-av1@l3-fast": {
    "lowlight_city_night": 85172082.22,
    "crowd_mot17_09": 99999808.00666666,
    "bodycam_bc1": 125849074.32
@@ -131,7 +131,7 @@
      "bodycam_bc1": 17.074706666666664
     }
    },
-   "nanocodec-av1@av1-svc": {
+   "nanocodec-av1@l2-medium": {
     "time_ratio": {
      "lowlight_city_night": 1.455980180307096,
      "crowd_mot17_09": 1.176880702948609,
@@ -143,7 +143,7 @@
      "bodycam_bc1": 30.185973333333326
     }
    },
-   "nanocodec-av1@av1-svc+L2T3": {
+   "nanocodec-av1@l2-medium+L2T3": {
     "time_ratio": {
      "lowlight_city_night": 1.3699959498617218,
      "crowd_mot17_09": 1.1256890541214275,
@@ -155,7 +155,7 @@
      "bodycam_bc1": 23.22832
     }
    },
-   "nanocodec-av1@av1-svc-fast": {
+   "nanocodec-av1@l2-fast": {
     "time_ratio": {
      "lowlight_city_night": 0.8858340308736123,
      "crowd_mot17_09": 0.9184438629068158,
@@ -239,7 +239,7 @@
      "bodycam_bc1": 19.02188666666667
     }
    },
-   "nanocodec-vp9@vp9-svc": {
+   "nanocodec-vp9@l2-medium": {
     "time_ratio": {
      "lowlight_city_night": 1.3625829251583412,
      "crowd_mot17_09": 1.149209871239993,
@@ -251,7 +251,7 @@
      "bodycam_bc1": 29.249993333333332
     }
    },
-   "nanocodec-vp9@vp9-svc+L2T3": {
+   "nanocodec-vp9@l2-medium+L2T3": {
     "time_ratio": {
      "lowlight_city_night": 1.273980920013812,
      "crowd_mot17_09": 1.1328159574794388,
@@ -263,7 +263,7 @@
      "bodycam_bc1": 31.071313333333332
     }
    },
-   "nanocodec-vp9@vp9-svc-fast": {
+   "nanocodec-vp9@l2-fast": {
     "time_ratio": {
      "lowlight_city_night": 1.024970874226891,
      "crowd_mot17_09": 0.9579929214359526,
@@ -311,7 +311,7 @@
      "bodycam_bc1": 20.79002666666667
     }
    },
-   "nanocodec-av1@av1-svc3": {
+   "nanocodec-av1@l3-medium": {
     "time_ratio": {
      "lowlight_city_night": 1.576656701044718,
      "crowd_mot17_09": 1.2316371199720428,
@@ -323,7 +323,7 @@
      "bodycam_bc1": 22.32288
     }
    },
-   "nanocodec-av1@av1-svc3+L3T3": {
+   "nanocodec-av1@l3-medium+L3T3": {
     "time_ratio": {
      "lowlight_city_night": 1.5670264642958496,
      "crowd_mot17_09": 1.1452821663271215,
@@ -335,7 +335,7 @@
      "bodycam_bc1": 21.70444
     }
    },
-   "nanocodec-av1@av1-svc3-fast": {
+   "nanocodec-av1@l3-fast": {
     "time_ratio": {
      "lowlight_city_night": 0.9948157127325898,
      "crowd_mot17_09": 0.8973485173721422,
@@ -466,7 +466,7 @@
     },
     "nanocodec_sha256": "2d6b3f9600d0ac129a691f7166337ec308f473fb61ab844e2cbaee3170416fee"
    },
-   "nanocodec-av1@av1-svc-fast": {
+   "nanocodec-av1@l2-fast": {
     "time_ratio": {
      "lowlight_city_night": 0.6869224376103948,
      "crowd_mot17_09": 0.6065240147542125,
@@ -479,7 +479,7 @@
     },
     "nanocodec_sha256": "2d6b3f9600d0ac129a691f7166337ec308f473fb61ab844e2cbaee3170416fee"
    },
-   "nanocodec-av1@av1-svc": {
+   "nanocodec-av1@l2-medium": {
     "time_ratio": {
      "lowlight_city_night": 1.372992264738872,
      "crowd_mot17_09": 1.028499405254468,
@@ -492,7 +492,7 @@
     },
     "nanocodec_sha256": "2d6b3f9600d0ac129a691f7166337ec308f473fb61ab844e2cbaee3170416fee"
    },
-   "nanocodec-av1@av1-svc+L2T3": {
+   "nanocodec-av1@l2-medium+L2T3": {
     "time_ratio": {
      "lowlight_city_night": 1.3032488645776832,
      "crowd_mot17_09": 0.9844704850460861,
@@ -531,7 +531,7 @@
     },
     "nanocodec_sha256": "9943764987b0e0e7bcbf4a87b6e60d0d98bb104e648472bb1b38e69e44197c24"
    },
-   "nanocodec-vp9@vp9-svc-fast": {
+   "nanocodec-vp9@l2-fast": {
     "time_ratio": {
      "lowlight_city_night": 0.8536563995771487,
      "crowd_mot17_09": 0.7776983043443821,
@@ -544,7 +544,7 @@
     },
     "nanocodec_sha256": "cbb302ba55833e4f43e76ea09f11a31d80725221c42463287690839484ea5aae"
    },
-   "nanocodec-vp9@vp9-svc": {
+   "nanocodec-vp9@l2-medium": {
     "time_ratio": {
      "lowlight_city_night": 1.3465695753716131,
      "crowd_mot17_09": 1.1318901073848495,
@@ -557,7 +557,7 @@
     },
     "nanocodec_sha256": "cbb302ba55833e4f43e76ea09f11a31d80725221c42463287690839484ea5aae"
    },
-   "nanocodec-vp9@vp9-svc+L2T3": {
+   "nanocodec-vp9@l2-medium+L2T3": {
     "time_ratio": {
      "lowlight_city_night": 1.2921557776770702,
      "crowd_mot17_09": 1.0853631689364416,
@@ -622,7 +622,7 @@
     },
     "nanocodec_sha256": "dead744d23768dc70a8877cef32e3a2b3e2027c22edff49407ee08afbebae495"
    },
-   "nanocodec-av1@av1-svc3-fast": {
+   "nanocodec-av1@l3-fast": {
     "time_ratio": {
      "lowlight_city_night": 0.7165775123997579,
      "crowd_mot17_09": 0.6500291949242943,
@@ -635,7 +635,7 @@
     },
     "nanocodec_sha256": "dead744d23768dc70a8877cef32e3a2b3e2027c22edff49407ee08afbebae495"
    },
-   "nanocodec-av1@av1-svc3": {
+   "nanocodec-av1@l3-medium": {
     "time_ratio": {
      "lowlight_city_night": 1.4496531308180893,
      "crowd_mot17_09": 1.1158797765431043,
@@ -648,7 +648,7 @@
     },
     "nanocodec_sha256": "dead744d23768dc70a8877cef32e3a2b3e2027c22edff49407ee08afbebae495"
    },
-   "nanocodec-av1@av1-svc3+L3T3": {
+   "nanocodec-av1@l3-medium+L3T3": {
     "time_ratio": {
      "lowlight_city_night": 1.421200043914007,
      "crowd_mot17_09": 1.079706725877121,

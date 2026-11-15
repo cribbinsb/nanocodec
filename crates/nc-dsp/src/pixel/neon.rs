@@ -672,7 +672,7 @@ unsafe fn hadamard_8x8_abs_sum(
 /// = 2 · max(|x|, |y|)`, so the stage, both absolute values and their sum
 /// become one pairwise maximum of the inputs' absolute values (at most
 /// 8160 before the last stage of an 8x8 tile). With the dot-product
-/// variance energy, h264-fast −0.2% (crowd) / −0.7% (bodycam) Jetson
+/// variance energy, H.264 Fast −0.2% (crowd) / −0.7% (bodycam) Jetson
 /// cycles. x86's last stage is `phaddw`, where this saves little.
 #[inline]
 #[target_feature(enable = "neon")]

@@ -55,7 +55,7 @@ function roundTrip(encoder, decoder, width, height, frames) {
 // Any even size is coded (padded to 8, cropped by the conformance window),
 // in both presets, across several CTUs.
 for (const [width, height] of [[320, 180], [66, 64], [64, 66], [136, 72]]) {
-  for (const preset of ['default', 'fast']) {
+  for (const preset of ['medium', 'fast']) {
     const encoder = new BrowserEncoder('vvc', width, height, 22, 30, 900, preset);
     const decoder = new BrowserDecoder('vvc');
     try {
@@ -66,16 +66,16 @@ for (const [width, height] of [[320, 180], [66, 64], [64, 66], [136, 72]]) {
   }
 }
 for (const [width, height] of [[65, 64], [64, 65]]) {
-  assert.throws(() => new BrowserEncoder('vvc', width, height, 22, 30, 900, 'default'), /multiples of 2/);
+  assert.throws(() => new BrowserEncoder('vvc', width, height, 22, 30, 900, 'medium'), /multiples of 2/);
 }
-assert.throws(() => new BrowserEncoder('vvc', 64, 64, MAX_QP + 1, 30, 900, 'default'), /quantizer|quantiser/i);
+assert.throws(() => new BrowserEncoder('vvc', 64, 64, MAX_QP + 1, 30, 900, 'medium'), /quantizer|quantiser/i);
 {
   const fresh = new BrowserDecoder('vvc');
   assert.throws(() => fresh.psnr(new Uint8Array(64 * 64 * 3 / 2)), /No decoded frame/);
   fresh.free();
 }
 
-const encoder = new BrowserEncoder('vvc', 128, 96, 27, 30, 900, 'default');
+const encoder = new BrowserEncoder('vvc', 128, 96, 27, 30, 900, 'medium');
 const decoder = new BrowserDecoder('vvc');
 try {
   {

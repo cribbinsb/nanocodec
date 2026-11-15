@@ -25,10 +25,10 @@ log=$data/tuning/overnight-$rotation.log
 claims=$data/tuning/overnight-$rotation-claims
 mkdir -p "$claims"
 cd "$root/eval"
-# codec preset k (CPU weight of L3's J: 0.6 Fast/Faster, 0.1 Default)
-queue=("av1 av1-fast 0.6" "hevc hevc-faster 0.6" "h264 default 0.1" "av1 default 0.1"
-       "hevc default 0.1" "av1 av1-faster 0.6" "h264 h264-faster 0.6" "av2 default 0.1"
-       "vp9 default 0.1")
+# codec preset k (CPU weight of L3's J: 0.6 Fast/Faster, 0.1 Medium, the Default)
+queue=("av1 fast 0.6" "hevc faster 0.6" "h264 medium 0.1" "av1 medium 0.1"
+       "hevc medium 0.1" "av1 faster 0.6" "h264 faster 0.6" "av2 medium 0.1"
+       "vp9 medium 0.1")
 
 scoped() { systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=0 "$@"; }
 

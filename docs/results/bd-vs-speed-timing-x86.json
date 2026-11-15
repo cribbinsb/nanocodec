@@ -314,7 +314,7 @@
     "bodycam_bc1": 18.31204765432099
    }
   },
-  "nanocodec-av1@av1-faster": {
+  "nanocodec-av1@faster": {
    "budget_fraction": {
     "lowlight_city_night": 0.9986919746919747,
     "crowd_mot17_09": 1.0010506666666668,
@@ -343,7 +343,7 @@
     }
    }
   },
-  "nanocodec-av1@av1-fast": {
+  "nanocodec-av1@fast": {
    "budget_fraction": {
     "lowlight_city_night": 1.004134532134532,
     "crowd_mot17_09": 1.0070746666666666,
@@ -401,7 +401,7 @@
     }
    }
   },
-  "nanocodec-av2@av2-fast": {
+  "nanocodec-av2@fast": {
    "budget_fraction": {
     "lowlight_city_night": 1.0206247086247087,
     "crowd_mot17_09": 0.9921333333333333,
@@ -459,7 +459,7 @@
     }
    }
   },
-  "nanocodec-h264@h264-faster": {
+  "nanocodec-h264@faster": {
    "budget_fraction": {
     "lowlight_city_night": 1.0527605727605727,
     "crowd_mot17_09": 1.0484773333333333,
@@ -488,7 +488,7 @@
     }
    }
   },
-  "nanocodec-h264@h264-fast": {
+  "nanocodec-h264@fast": {
    "budget_fraction": {
     "lowlight_city_night": 0.9577302697302698,
     "crowd_mot17_09": 1.0379813333333334,
@@ -546,7 +546,7 @@
     }
    }
   },
-  "nanocodec-hevc@hevc-fast": {
+  "nanocodec-hevc@fast": {
    "budget_fraction": {
     "lowlight_city_night": 0.9341671661671662,
     "crowd_mot17_09": 1.0498053333333333,
@@ -633,7 +633,7 @@
     }
    }
   },
-  "nanocodec-vp9@vp9-fast": {
+  "nanocodec-vp9@fast": {
    "budget_fraction": {
     "lowlight_city_night": 1.0138261738261738,
     "crowd_mot17_09": 1.0075173333333334,
@@ -691,7 +691,7 @@
     }
    }
   },
-  "nanocodec-vvc@vvc-fast": {
+  "nanocodec-vvc@fast": {
    "budget_fraction": {
     "lowlight_city_night": 1.010091242091242,
     "crowd_mot17_09": 1.026712,
@@ -720,7 +720,7 @@
     }
    }
   },
-  "nanocodec-hevc@hevc-faster": {
+  "nanocodec-hevc@faster": {
    "budget_fraction": {
     "lowlight_city_night": 1.0197269397269397,
     "crowd_mot17_09": 0.9393573333333334,
@@ -749,7 +749,7 @@
     }
    }
   },
-  "nanocodec-h264@h264-fastest": {
+  "nanocodec-h264@veryfast": {
    "budget_fraction": {
     "lowlight_city_night": 1.03202664002664,
     "crowd_mot17_09": 0.978448,
@@ -778,7 +778,7 @@
     }
    }
   },
-  "nanocodec-vp9@vp9-faster": {
+  "nanocodec-vp9@faster": {
    "budget_fraction": {
     "lowlight_city_night": 1.0013106893106893,
     "crowd_mot17_09": 0.9943226666666667,
@@ -807,7 +807,7 @@
     }
    }
   },
-  "nanocodec-vp9@vp9-fastest": {
+  "nanocodec-vp9@veryfast": {
    "budget_fraction": {
     "lowlight_city_night": 0.9938381618381619,
     "crowd_mot17_09": 1.00676,

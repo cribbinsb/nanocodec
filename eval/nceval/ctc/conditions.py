@@ -74,18 +74,17 @@ class CtcEncoder:
 
 
 _QINDEX_CODECS = (Codec.AV1, Codec.VP9, Codec.AV2)
-#: Our presets per codec: Default (the engine defaults) and Fast.
-_FAST_PRESET = {Codec.H264: "h264-fast", Codec.HEVC: "hevc-fast", Codec.VVC: "vvc-fast",
-                Codec.AV1: "av1-fast", Codec.VP9: "vp9-fast", Codec.AV2: "av2-fast"}
+#: Our presets per codec: Medium (the Default, the engine defaults) and Fast.
+_FAST_PRESET = "fast"
 
 
 def _ours() -> list[CtcEncoder]:
     encoders = []
     for default in nanocodec_encoders():
         scale = Scale.QINDEX if default.codec in _QINDEX_CODECS else Scale.QP
-        fast = nanocodec_with_preset(f"{default.name}@{_FAST_PRESET[default.codec]}")
+        fast = nanocodec_with_preset(f"{default.name}@{_FAST_PRESET}")
         if fast is None:
-            raise RuntimeError(f"preset {_FAST_PRESET[default.codec]} missing")
+            raise RuntimeError(f"preset {default.codec.value}/{_FAST_PRESET} missing")
         encoders += [CtcEncoder(default, Group.OURS, scale), CtcEncoder(fast, Group.OURS, scale)]
     return encoders
 

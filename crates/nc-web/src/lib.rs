@@ -167,58 +167,19 @@ fn js_error(error: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 
-/// The demo's encoder presets: "default" (no overrides), "fast" (each
-/// codec's Fast file, where one exists), "faster" (H.264, HEVC, AV1 and VP9), "fastest" (H.264 and VP9) and
-/// "svc" and "svc-fast" (AV1 and VP9: two spatial layers, `<codec>-svc` and `<codec>-svc-fast`), "svc3" and
-/// "svc3-fast" (AV1: three spatial layers, `av1-svc3` and `av1-svc3-fast`), the same
-/// files as the CLI's `--preset`.
-fn preset(codec: Codec, name: &str) -> Result<ParamOverrides, String> {
-    let mut params = ParamOverrides::default();
-    let text = match (name, codec) {
-        ("default", _) => return Ok(params),
-        ("fast", Codec::H264) => include_str!("../../../presets/h264-fast.toml"),
-        ("faster", Codec::H264) => include_str!("../../../presets/h264-faster.toml"),
-        ("fastest", Codec::H264) => include_str!("../../../presets/h264-fastest.toml"),
-        ("fast", Codec::Hevc) => include_str!("../../../presets/hevc-fast.toml"),
-        ("faster", Codec::Hevc) => include_str!("../../../presets/hevc-faster.toml"),
-        ("fast", Codec::Av1) => include_str!("../../../presets/av1-fast.toml"),
-        ("faster", Codec::Av1) => include_str!("../../../presets/av1-faster.toml"),
-        ("svc", Codec::Av1) => include_str!("../../../presets/av1-svc.toml"),
-        ("svc-fast", Codec::Av1) => include_str!("../../../presets/av1-svc-fast.toml"),
-        ("svc3", Codec::Av1) => include_str!("../../../presets/av1-svc3.toml"),
-        ("svc3-fast", Codec::Av1) => include_str!("../../../presets/av1-svc3-fast.toml"),
-        ("fast", Codec::Vp9) => include_str!("../../../presets/vp9-fast.toml"),
-        ("faster", Codec::Vp9) => include_str!("../../../presets/vp9-faster.toml"),
-        ("fastest", Codec::Vp9) => include_str!("../../../presets/vp9-fastest.toml"),
-        ("svc", Codec::Vp9) => include_str!("../../../presets/vp9-svc.toml"),
-        ("svc-fast", Codec::Vp9) => include_str!("../../../presets/vp9-svc-fast.toml"),
-        ("svc3", Codec::Vp9) => include_str!("../../../presets/vp9-svc3.toml"),
-        ("svc3-fast", Codec::Vp9) => include_str!("../../../presets/vp9-svc3-fast.toml"),
-        ("fast", Codec::Av2) => include_str!("../../../presets/av2-fast.toml"),
-        ("fast", Codec::Vvc) => include_str!("../../../presets/vvc-fast.toml"),
-        _ => return Err(format!("No {name} preset for this codec")),
-    };
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (name, value) = line.split_once('=').ok_or("invalid embedded preset")?;
-        params.set(
-            name.trim(),
-            value.trim().parse::<f32>().map_err(|e| e.to_string())?,
-        );
-    }
-    Ok(params)
-}
+/// The spatial layer count parameter a layered preset file sets.
+const SPATIAL_LAYERS_PARAM: &str = "spatial.layers";
 
-/// The encoder's parameters: the preset, then the still-camera noise handling
+/// The encoder's parameters: the preset (a rung of the speed ladder, for
+/// `spatial_layers` spatial layers, `nc_encoder::preset_params`, the CLI's
+/// `--preset` files), then the still-camera noise handling
 /// when `still_camera` is set (`nc_encoder::still_camera_params`), then the
 /// free-form `overrides` (`options::parse_overrides`), then film grain
 /// synthesis (AV1 only) at its default strength when `film_grain` is set.
 fn encoder_params(
     codec: Codec,
     preset_name: &str,
+    spatial_layers: u8,
     overrides: &str,
     film_grain: bool,
     still_camera: bool,
@@ -230,7 +191,15 @@ fn encoder_params(
             .collect::<Vec<_>>()
             .join("; ")
     })?;
-    let mut params = preset(codec, preset_name)?;
+    let mut params =
+        nc_encoder::preset_params(codec, spatial_layers, preset_name).map_err(|e| e.to_string())?;
+    // The demo has no `--scalability` path: its layers come from the rung's
+    // layered file alone.
+    if spatial_layers > 1 && params.get(SPATIAL_LAYERS_PARAM) != Some(f32::from(spatial_layers)) {
+        return Err(format!(
+            "No {spatial_layers}-layer {preset_name} preset for this codec"
+        ));
+    }
     if still_camera {
         params = params.overlaid_with(&nc_encoder::still_camera_params(codec));
     }
@@ -244,8 +213,11 @@ fn encoder_params(
 #[wasm_bindgen]
 impl BrowserEncoder {
     /// Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
-    /// `preset_name` is "default", "fast", (H.264, HEVC, AV1 and VP9) "faster" or
-    /// (H.264 and VP9) "fastest";
+    /// `preset_name` is a rung of the speed ladder: "medium" (the codec's
+    /// Default), "fast", "faster" (H.264, HEVC, AV1 and VP9) or "veryfast"
+    /// (H.264 and VP9); `spatial_layers` (optional, default 1) picks the
+    /// rung's file for two or three spatial layers (AV1 and VP9, at "medium"
+    /// and "fast");
     /// `overrides` (optional) holds `name=value` lines applied over the
     /// preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
     /// turns on film grain synthesis, which the decoder applies to its
@@ -273,6 +245,7 @@ impl BrowserEncoder {
         film_grain: bool,
         colour: Option<String>,
         still_camera: Option<bool>,
+        spatial_layers: Option<u8>,
     ) -> Result<Self, JsValue> {
         if width > 1920 || height > 1080 || width < 64 || height < 64 {
             return Err(js_error("Use dimensions between64x64 and1920x1080"));
@@ -301,6 +274,7 @@ impl BrowserEncoder {
             params: encoder_params(
                 codec,
                 preset_name,
+                spatial_layers.unwrap_or(1),
                 &overrides,
                 film_grain,
                 still_camera.unwrap_or(false),
@@ -1124,7 +1098,7 @@ mod preset_tests {
 
     #[test]
     fn av1_fast_uses_adaptive_chroma_and_residual_rejection() {
-        let fast = preset(Codec::Av1, "fast").unwrap();
+        let fast = nc_encoder::preset_params(Codec::Av1, 1, "fast").unwrap();
         for (name, expected) in [
             ("av1.chroma_delta_q", -24.0),
             ("av1.chroma_noise_scale", 2.0),
@@ -1138,13 +1112,17 @@ mod preset_tests {
                 .unwrap();
             assert_eq!(fast.value(spec), expected);
         }
-        assert!(preset(Codec::Av1, "default").unwrap().is_empty());
+        assert!(
+            encoder_params(Codec::Av1, "medium", 1, "", false, false)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn film_grain_is_av1_only() {
-        let fast = preset(Codec::Av1, "fast").unwrap();
-        let grain = encoder_params(Codec::Av1, "fast", "", true, false).unwrap();
+        let fast = nc_encoder::preset_params(Codec::Av1, 1, "fast").unwrap();
+        let grain = encoder_params(Codec::Av1, "fast", 1, "", true, false).unwrap();
         let enable = nc_av1::Av1Backend::PARAM_SPECS
             .iter()
             .flat_map(|specs| specs.iter())
@@ -1153,7 +1131,7 @@ mod preset_tests {
         assert_eq!(fast.value(enable), 0.0);
         assert_eq!(grain.value(enable), 1.0);
         for codec in [Codec::H264, Codec::Hevc, Codec::Vvc, Codec::Vp9, Codec::Av2] {
-            assert!(encoder_params(codec, "default", "", true, false).is_err());
+            assert!(encoder_params(codec, "medium", 1, "", true, false).is_err());
         }
     }
 
@@ -1166,8 +1144,15 @@ mod preset_tests {
                 .find(|s| s.name == name)
                 .unwrap()
         };
-        let params =
-            encoder_params(Codec::Av1, "fast", "av1.chroma_delta_q = -12", false, false).unwrap();
+        let params = encoder_params(
+            Codec::Av1,
+            "fast",
+            1,
+            "av1.chroma_delta_q = -12",
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(params.value(spec("av1.chroma_delta_q")), -12.0);
         assert_eq!(
             params.value(spec("av1.pre_tx_skip")),
@@ -1175,7 +1160,7 @@ mod preset_tests {
             "the rest of Fast stays"
         );
         let error =
-            encoder_params(Codec::Av1, "default", "\nav1.nope=1", false, false).unwrap_err();
+            encoder_params(Codec::Av1, "medium", 1, "\nav1.nope=1", false, false).unwrap_err();
         assert!(
             error.starts_with("parameter line 2: unknown parameter"),
             "{error}"
@@ -1184,8 +1169,15 @@ mod preset_tests {
 
     #[test]
     fn still_camera_lies_over_the_preset_under_overrides() {
-        let on =
-            encoder_params(Codec::Av1, "fast", "decision.noise_skip = 2", false, true).unwrap();
+        let on = encoder_params(
+            Codec::Av1,
+            "fast",
+            1,
+            "decision.noise_skip = 2",
+            false,
+            true,
+        )
+        .unwrap();
         let expected = nc_encoder::still_camera_params(Codec::Av1);
         assert_eq!(
             on.get("planner.noise_split"),
@@ -1193,39 +1185,25 @@ mod preset_tests {
         );
         assert_eq!(on.get("rate.skip_budget"), expected.get("rate.skip_budget"));
         assert_eq!(on.get("decision.noise_skip"), Some(2.0));
-        let off = encoder_params(Codec::Av1, "fast", "", false, false).unwrap();
-        assert_eq!(off, preset(Codec::Av1, "fast").unwrap());
+        let off = encoder_params(Codec::Av1, "fast", 1, "", false, false).unwrap();
+        assert_eq!(
+            off,
+            nc_encoder::preset_params(Codec::Av1, 1, "fast").unwrap()
+        );
     }
 
     #[test]
-    fn h264_has_fast_and_faster_presets() {
-        assert!(!preset(Codec::H264, "fast").unwrap().is_empty());
-        assert!(!preset(Codec::H264, "faster").unwrap().is_empty());
-        assert!(!preset(Codec::H264, "fastest").unwrap().is_empty());
-        assert!(preset(Codec::Hevc, "fastest").is_err());
-        assert!(!preset(Codec::Hevc, "faster").unwrap().is_empty());
-        assert!(!preset(Codec::Vp9, "faster").unwrap().is_empty());
-        assert!(!preset(Codec::Vp9, "fastest").unwrap().is_empty());
-        assert!(preset(Codec::Vvc, "faster").is_err());
-    }
-
-    #[test]
-    fn vvc_fast_is_the_cli_preset() {
-        let fast = preset(Codec::Vvc, "fast").unwrap();
-        for (name, expected) in [
-            ("vvc.inter_intra_dc_only", 1.0),
-            ("vvc.sao_skip_unchanged", 1.0),
-            ("vvc.isp", 0.0),
-        ] {
-            let spec = nc_vvc::VvcBackend::PARAM_SPECS
-                .iter()
-                .flat_map(|specs| specs.iter())
-                .find(|s| s.name == name)
-                .unwrap();
-            assert_eq!(fast.value(spec), expected);
-        }
-        assert!(preset(Codec::Vvc, "default").unwrap().is_empty());
-        assert!(preset(Codec::Vvc, "faster").is_err());
+    fn layers_come_from_the_rung_s_layered_file() {
+        let layers = |codec, preset, layers| {
+            encoder_params(codec, preset, layers, "", false, false)
+                .map(|p| p.get(SPATIAL_LAYERS_PARAM))
+        };
+        assert_eq!(layers(Codec::Av1, "fast", 3), Ok(Some(3.0)));
+        assert_eq!(layers(Codec::Vp9, "medium", 2), Ok(Some(2.0)));
+        assert!(layers(Codec::Av1, "faster", 2).is_err());
+        assert!(layers(Codec::H264, "medium", 2).is_err());
+        assert!(encoder_params(Codec::H264, "veryfast", 1, "", false, false).is_ok());
+        assert!(encoder_params(Codec::Hevc, "veryfast", 1, "", false, false).is_err());
     }
 }
 
@@ -1255,7 +1233,7 @@ mod input_tests {
         ] {
             let make = || {
                 BrowserEncoder::new(
-                    codec, width, height, qp, 30, 300, "fast", None, false, None, None,
+                    codec, width, height, qp, 30, 300, "fast", None, false, None, None, None,
                 )
                 .unwrap()
             };
@@ -1293,6 +1271,7 @@ mod input_tests {
                 "fast",
                 Some(overrides.to_owned()),
                 false,
+                None,
                 None,
                 None,
             )
@@ -1356,6 +1335,7 @@ mod input_tests {
             "fast",
             Some("spatial.layers=3\nhold.enable=0".to_owned()),
             false,
+            None,
             None,
             None,
         )
@@ -1453,11 +1433,12 @@ mod input_tests {
             140,
             30,
             30,
-            "svc3",
+            "medium",
             Some("spatial.inter_layer=2\nhold.enable=0".to_owned()),
             false,
             None,
             None,
+            Some(3),
         )
         .unwrap();
         let mut ksvc_extractors: Vec<nc_av1::Av1StreamExtractor> = (0..3u8)
@@ -1501,11 +1482,12 @@ mod input_tests {
             140,
             30,
             30,
-            "svc3",
+            "medium",
             Some("spatial.inter_layer=2\nhold.enable=0".to_owned()),
             false,
             None,
             None,
+            Some(3),
         )
         .unwrap();
         let mut op_decoders: Vec<BrowserDecoder> = (0..3u8)
@@ -1573,9 +1555,10 @@ mod input_tests {
                 qp,
                 30,
                 30,
-                "default",
+                "medium",
                 Some("layers.count=3\nlayers.adaptive=0\nhold.enable=0".to_owned()),
                 false,
+                None,
                 None,
                 None,
             )

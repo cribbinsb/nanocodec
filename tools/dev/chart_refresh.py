@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refresh the bitrate-vs-speed charts for the families one commit changes.
 
-    python3 tools/dev/chart_refresh.py COMMIT --families nanocodec-h264,nanocodec-h264@h264-fast \\
+    python3 tools/dev/chart_refresh.py COMMIT --families nanocodec-h264,nanocodec-h264@fast \\
         [--rescore] [--from STEP] [--workers 8] [--cpus 14,15] [--dry-run]
 
 Run it from your own worktree: it writes that tree's docs/results (the

@@ -4,7 +4,7 @@
 //! A hint never changes a result, only when the cache lines arrive, so there
 //! is nothing for a checkasm test to compare: the "scalar reference" is no
 //! hint at all. Hints are issued on aarch64 only, where they were measured
-//! (Cortex-A78, h264-fast: cycles about -0.5% crowd / -0.35% bodycam, mean
+//! (Cortex-A78, H.264 Fast: cycles about -0.5% crowd / -0.35% bodycam, mean
 //! of four runs, each -0.13..-0.77%, for +0.6% instructions). On x86-64 the same hints cost +0.5% instructions
 //! (callgrind) and their cycle effect could not be timed on the busy host,
 //! so they stay off there until it is.

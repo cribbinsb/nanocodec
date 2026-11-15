@@ -29,7 +29,7 @@ def test_first_source_with_the_curve_wins_and_presets_use_their_base(tmp_path):
                                              ("nanocodec-av1", "clip", 140, False)]), "ip10s-tl1")
     second = Source(database(tmp_path / "b", [("svtav1-m12", "clip", 30, True)]), "ip10s-tl1")
     assert stored_points([first, second], "svtav1-m12", "clip")[0] == second
-    source, points = stored_points([first, second], "nanocodec-av1@av1-fast", "clip")
+    source, points = stored_points([first, second], "nanocodec-av1@fast", "clip")
     assert source == first and [p[0] for p in points] == [100]  # failed points are not reused
     assert stored_points([first, second], "openh264-baseline", "clip") is None
     assert first.work == tmp_path / "a" / "work"

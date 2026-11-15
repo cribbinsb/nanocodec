@@ -99,8 +99,8 @@ const MAX_BLOCK_LOG2: u8 = LOG2_CTB as u8;
 /// (k 0.1) vs 1.0: TRAIN 18 clips -1.9%, VAL 11 clips -1.1%, held-out
 /// (`broad_independent_v1`, 13 clips, every class) -0.3%, no guard; 1.4
 /// gains more on the mean but trips worst-1% VMAF (+8% proxy-6:
-/// `static_cam22` +27%), 0.5 WORSE (+6%). hevc-fast (k 0.6): TRAIN -1.3%,
-/// VAL -1.1%; hevc-better: TRAIN -0.1%, VAL -0.6%. Both VALs sit on the
+/// `static_cam22` +27%), 0.5 WORSE (+6%). HEVC Fast (k 0.6): TRAIN -1.3%,
+/// VAL -1.1%; the old hevc-better preset: TRAIN -0.1%, VAL -0.6%. Both VALs sit on the
 /// worst-1% VMAF guard (+2.0 / +2.1%): the stronger cadence's coarser leaf
 /// windows (`lowlight_pp22_049`, `pan_bdd_00cef86b` +7%), with 8 of 11 clips
 /// better on the mean and no flicker or pulse change; adopted. Long GOP
@@ -727,7 +727,7 @@ nc_encoder::param_group! {
         // Staged 32-point columns on top of staged rows (needs the rows
         // lever on): relative coefficient error 1.0% against 0.73% for rows
         // alone (codec_txfm tests); the 2-D DC stays exact. Jetson
-        // (crowd 720p hevc-fast QP 47): staged32_bounded 2.69% -> 1.72% of
+        // (crowd 720p HEVC Fast QP 47): staged32_bounded 2.69% -> 1.72% of
         // cycles. Staged 16-point columns saved nothing there (6.46% ->
         // 6.56%), so they have no lever. Default off (byte-identical)
         // until screened.
@@ -736,7 +736,7 @@ nc_encoder::param_group! {
         // Skip the exact column pass's 8-column groups the bound proves
         // all quantise to zero, writing zero coefficients (levels unchanged;
         // sign hiding and the trellis see zeros there). Applies with staged
-        // rows (`fast_forward16/32`). Lowlight 360p hevc-fast: the upper
+        // rows (`fast_forward16/32`). Lowlight 360p HEVC Fast: the upper
         // eight columns of 57-85% of transformed 16x16 blocks qualify.
         // Default on: on vs off was byte-identical in 48/48 encodes (HEVC
         // Default and Fast, 8 clips, QP 32/40/47, 60f); P instructions at
@@ -746,7 +746,7 @@ nc_encoder::param_group! {
         // SVT-AV1's partial-frequency forward (`av1.partial_forward`) for
         // inter residuals: only the low quarter of the coefficients is
         // computed and coded; block-QP refinements keep every frequency
-        // (static_recovery.rs: hevc-faster's static half stayed 8 dB short
+        // (static_recovery.rs: HEVC Faster's static half stayed 8 dB short
         // after a starved key without that exception). Off in Default and
         // Fast.
         partial_forward: 0.0, [0.0, 2.0],
@@ -988,7 +988,7 @@ impl CodecBackend for HevcBackend {
         // +0.6% Jetson cycles. Adoption screen (k 0.1, dCPU +0.6%, pool draw
         // 2026-11-15): L1 J -0.93% [-1.28, -0.28] n 24, L2 -0.02% [-0.42,
         // +0.40] n 48, L3 (600 f, ladder) -0.56% [-0.85, -0.30] n 27 BETTER,
-        // no guard. hevc-fast, -faster and -better pin the old values.
+        // no guard. HEVC Fast and Faster pin the old values.
         ("decision.codec_subpel_seed_lambdas", 0.0),
         ("decision.skip_no_refine_lambdas", 0.0),
         ("decision.refine_cheap_min_lambdas", 0.0),
@@ -1011,7 +1011,7 @@ impl CodecBackend for HevcBackend {
         // 150 frames, one key); J ~ -0.1 at k 0.1 (2:1 weighted). Single-key
         // long GOPs at equal rate (YUV per third): airport 600 kbps
         // +0.04/+0.07/+0.03 dB, homes390 300 kbps +0.11/+0.26/+0.27,
-        // chirla 150 kbps +0.33/-0.16/-0.16. hevc-fast keeps it off.
+        // chirla 150 kbps +0.33/-0.16/-0.16. HEVC Fast keeps it off.
         ("quant.trellis_chroma", 0.0),
         // Directional P-frame intra estimate (`decision.intra_directional`,
         // engine `intra_estimate.rs`) with this backend's SATD fallback
@@ -1021,7 +1021,7 @@ impl CodecBackend for HevcBackend {
         // clips worse (lowlight_city_night +1.1%), no guard, periodic-key
         // pulse -0.04 dB. Fixed QP 60 f (QP 41-51): Riverbed -4.3% PSNR-YUV
         // / -3.4% VMAF, ParkJoy -1.0%, TreesAndGrass -0.3%. CPU: cost-clip P
-        // frames +1.8% mid / +1.4% hi, key frames 0. hevc-fast keeps it off
+        // frames +1.8% mid / +1.4% hi, key frames 0. HEVC Fast keeps it off
         // (its small P-frame intra CUs are DC only). docs/handoff/h264.md,
         // "P-frame intra: directional estimate".
         ("decision.intra_directional", 1.0),
@@ -1033,8 +1033,8 @@ impl CodecBackend for HevcBackend {
         // L3 of the study's draw -0.98% [-1.52, -0.49] (overfit gap +0.53);
         // re-checked at head 7fd52f29 on the disjoint L3 (79 clips,
         // single-point) J -0.89% [-1.43, -0.40], L2 (ladder) -0.60%, no
-        // guard; CPU x86 -2.0%, Jetson cycles -0.3%. hevc-fast, -faster
-        // and -better pin the previous values they do not set.
+        // guard; CPU x86 -2.0%, Jetson cycles -0.3%. HEVC Fast and Faster
+        // pin the previous values they do not set.
         ("hevc.inter_rounding", 109.0),
         ("hevc.intra_rounding", 209.0),
         ("planner.lambda_scale", 2.581_25),
@@ -1050,7 +1050,7 @@ impl CodecBackend for HevcBackend {
         // dCPU 2.2, the day's pool draw): L2 J -1.12% [-1.53, -0.75], L3
         // (full ladder) BETTER, J -1.01% [-1.34, -0.72] (n 126, L2+L3
         // pooled), no guard. docs/analysis/fixed-qp-gap-2026-11-14.md.
-        // hevc-fast, -faster and -better pin the old values.
+        // HEVC Fast and Faster pin the old values.
         ("hevc.merge_candidates", 4.0),
         ("planner.depth_removal_th_32_16", 0.0),
         ("planner.depth_removal_th_16_8", 0.0),
@@ -1064,7 +1064,7 @@ impl CodecBackend for HevcBackend {
         // window max 2.24 -> 2.28 x target. Re-codes on the 14 static long
         // points 10.5 -> 10.6 per 1000 frames; CPU x86 x1.0001, Jetson
         // cycles x1.0015. 150-frame levels inert (no periodic key).
-        // hevc-fast, -faster and -better pin it off.
+        // HEVC Fast and Faster pin it off.
         ("rate.prekey_quiet", 1.0),
     ];
 

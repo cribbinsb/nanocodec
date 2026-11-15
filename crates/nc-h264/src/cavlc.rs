@@ -6,7 +6,7 @@
 //! as four interleaved 4x4 blocks (§7.3.5.3.2).
 //!
 //! CAVLC codes are table lookups where CABAC renormalises per bin: about 6%
-//! less Jetson time for h264-fastest, at +10% bytes at QP 32 growing to
+//! less Jetson time for H.264 Veryfast, at +10% bytes at QP 32 growing to
 //! +19% at QP 44, so no preset uses it (`docs/handoff/h264-fastest.md`).
 //! Mode decision prices with the CABAC model either way.
 

@@ -76,17 +76,17 @@ from .stages import balanced_parts
 #: The neutral anchor every point is compared with (BD 0, speed 1).
 ANCHOR = "x264-medium"
 #: Our points: (family, chart label).
-OURS = (("nanocodec-h264", "H.264"), ("nanocodec-h264@h264-fast", "H.264 Fast"),
-        ("nanocodec-h264@h264-faster", "H.264 Faster"),
-        ("nanocodec-h264@h264-fastest", "H.264 Fastest"), ("nanocodec-hevc", "HEVC"),
-        ("nanocodec-hevc@hevc-fast", "HEVC Fast"), ("nanocodec-hevc@hevc-faster", "HEVC Faster"),
+OURS = (("nanocodec-h264", "H.264"), ("nanocodec-h264@fast", "H.264 Fast"),
+        ("nanocodec-h264@faster", "H.264 Faster"),
+        ("nanocodec-h264@veryfast", "H.264 Veryfast"), ("nanocodec-hevc", "HEVC"),
+        ("nanocodec-hevc@fast", "HEVC Fast"), ("nanocodec-hevc@faster", "HEVC Faster"),
         ("nanocodec-av1", "AV1"),
-        ("nanocodec-av1@av1-fast", "AV1 Fast"), ("nanocodec-av1@av1-faster", "AV1 Faster"),
+        ("nanocodec-av1@fast", "AV1 Fast"), ("nanocodec-av1@faster", "AV1 Faster"),
         ("nanocodec-vp9", "VP9"),
-        ("nanocodec-vp9@vp9-fast", "VP9 Fast"), ("nanocodec-vp9@vp9-faster", "VP9 Faster"),
-        ("nanocodec-vp9@vp9-fastest", "VP9 Fastest"), ("nanocodec-av2", "AV2"),
-        ("nanocodec-av2@av2-fast", "AV2 Fast"), ("nanocodec-vvc", "VVC"),
-        ("nanocodec-vvc@vvc-fast", "VVC Fast"))
+        ("nanocodec-vp9@fast", "VP9 Fast"), ("nanocodec-vp9@faster", "VP9 Faster"),
+        ("nanocodec-vp9@veryfast", "VP9 Veryfast"), ("nanocodec-av2", "AV2"),
+        ("nanocodec-av2@fast", "AV2 Fast"), ("nanocodec-vvc", "VVC"),
+        ("nanocodec-vvc@fast", "VVC Fast"))
 #: Reference encoders: (family, chart label). Families are cbr.anchor_families.
 REFERENCES = (("openh264-baseline", "openh264"),
               ("x264-ultrafast", "x264 ultrafast"), ("x264-veryfast", "x264 veryfast"),
@@ -172,28 +172,28 @@ OUTPUT_STEM = "bd-vs-speed"
 #: same real-use points, without the neutral anchor in between.
 SELECTED_PAIRS = (
     ("nanocodec-h264", "openh264-baseline"), ("nanocodec-h264", "x264-veryfast"),
-    ("nanocodec-h264", "x264-medium"), ("nanocodec-h264@h264-fast", "x264-veryfast"),
-    ("nanocodec-h264@h264-fast", "openh264-baseline"), ("nanocodec-h264@h264-fast", "nanocodec-h264"),
-    ("nanocodec-h264@h264-faster", "x264-ultrafast"), ("nanocodec-h264@h264-faster", "nanocodec-h264@h264-fast"),
-    ("nanocodec-h264@h264-fastest", "x264-ultrafast"),
-    ("nanocodec-h264@h264-fastest", "nanocodec-h264@h264-faster"),
-    ("nanocodec-hevc", "x265-medium"), ("nanocodec-hevc@hevc-fast", "x265-superfast"),
-    ("nanocodec-hevc", "svtav1-m12"), ("nanocodec-hevc@hevc-fast", "nanocodec-hevc"),
-    ("nanocodec-av1", "openh264-baseline"), ("nanocodec-av1@av1-fast", "openh264-baseline"),
+    ("nanocodec-h264", "x264-medium"), ("nanocodec-h264@fast", "x264-veryfast"),
+    ("nanocodec-h264@fast", "openh264-baseline"), ("nanocodec-h264@fast", "nanocodec-h264"),
+    ("nanocodec-h264@faster", "x264-ultrafast"), ("nanocodec-h264@faster", "nanocodec-h264@fast"),
+    ("nanocodec-h264@veryfast", "x264-ultrafast"),
+    ("nanocodec-h264@veryfast", "nanocodec-h264@faster"),
+    ("nanocodec-hevc", "x265-medium"), ("nanocodec-hevc@fast", "x265-superfast"),
+    ("nanocodec-hevc", "svtav1-m12"), ("nanocodec-hevc@fast", "nanocodec-hevc"),
+    ("nanocodec-av1", "openh264-baseline"), ("nanocodec-av1@fast", "openh264-baseline"),
     ("nanocodec-av1", "svtav1-m8"), ("nanocodec-av1", "svtav1-m12"),
-    ("nanocodec-av1@av1-fast", "svtav1-m12"), ("nanocodec-av1", "libaom-av1-cpu8"),
-    ("nanocodec-av1@av1-fast", "nanocodec-av1"),
-    ("nanocodec-av1@av1-faster", "svtav1-m12"), ("nanocodec-av1@av1-faster", "nanocodec-av1@av1-fast"),
-    ("nanocodec-hevc@hevc-faster", "svtav1-m13"), ("nanocodec-hevc@hevc-faster", "nanocodec-hevc@hevc-fast"),
-    ("nanocodec-vp9", "libvpx-vp9-cpu7"), ("nanocodec-vp9@vp9-fast", "libvpx-vp9-cpu9"),
-    ("nanocodec-vp9@vp9-fast", "nanocodec-vp9"),
-    ("nanocodec-vp9@vp9-faster", "libvpx-vp9-cpu9"), ("nanocodec-vp9@vp9-faster", "nanocodec-vp9@vp9-fast"),
-    ("nanocodec-vp9@vp9-fastest", "libvpx-vp9-cpu9"),
-    ("nanocodec-vp9@vp9-fastest", "nanocodec-vp9@vp9-faster"),
+    ("nanocodec-av1@fast", "svtav1-m12"), ("nanocodec-av1", "libaom-av1-cpu8"),
+    ("nanocodec-av1@fast", "nanocodec-av1"),
+    ("nanocodec-av1@faster", "svtav1-m12"), ("nanocodec-av1@faster", "nanocodec-av1@fast"),
+    ("nanocodec-hevc@faster", "svtav1-m13"), ("nanocodec-hevc@faster", "nanocodec-hevc@fast"),
+    ("nanocodec-vp9", "libvpx-vp9-cpu7"), ("nanocodec-vp9@fast", "libvpx-vp9-cpu9"),
+    ("nanocodec-vp9@fast", "nanocodec-vp9"),
+    ("nanocodec-vp9@faster", "libvpx-vp9-cpu9"), ("nanocodec-vp9@faster", "nanocodec-vp9@fast"),
+    ("nanocodec-vp9@veryfast", "libvpx-vp9-cpu9"),
+    ("nanocodec-vp9@veryfast", "nanocodec-vp9@faster"),
     ("nanocodec-av2", "svtav1-m8"), ("nanocodec-av2", "nanocodec-av1"),
-    ("nanocodec-av2@av2-fast", "nanocodec-av2"),
+    ("nanocodec-av2@fast", "nanocodec-av2"),
     ("nanocodec-vvc", "x265-medium"), ("nanocodec-vvc", "nanocodec-hevc"),
-    ("nanocodec-vvc@vvc-fast", "nanocodec-vvc"))
+    ("nanocodec-vvc@fast", "nanocodec-vvc"))
 
 
 @dataclass(frozen=True)

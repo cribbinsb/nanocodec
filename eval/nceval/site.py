@@ -33,6 +33,7 @@ from .chart import LOW_LADDER_KBPS
 from .clips import Clip
 from .codecs import Codec
 from .config import load_paths
+from .encoders.nanocodec import current_family_name, preset_cli_args
 from .realuse import DEFAULT_FRAMES, LADDER_KBPS
 
 REPO = Path(__file__).resolve().parents[2]
@@ -118,12 +119,27 @@ PROJECTS = {
 OPENH264_FAMILY = "openh264-baseline"
 OWN_PREFIX = "nanocodec-"
 TUNE_SEPARATOR = "~"
-DEFAULT_PRESET = "Default"
+#: Each codec's Default is the ladder's medium (no preset file): its preset
+#: name, and what its unsuffixed chart label ("H.264") gains on the site.
+DEFAULT_PRESET = "Medium"
+DEFAULT_LABEL = "Medium (default)"
+
+
+#: Chart labels dated results recorded before the preset rename (2026-11-15).
+OLD_LABEL_WORDS = {" Fastest": " Veryfast"}
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
+    """A results CSV, dated ones' pre-rename family names and labels in today's form."""
     with path.open(newline="") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    for row in rows:
+        if "family" in row:
+            row["family"] = current_family_name(row["family"])
+        if "label" in row:
+            for old, new in OLD_LABEL_WORDS.items():
+                row["label"] = row["label"].replace(old, new)
+    return rows
 
 
 def number(text: str | None) -> float | None:
@@ -151,10 +167,10 @@ def describe(family: str, label: str) -> dict:
     base, _, tune = family.partition(TUNE_SEPARATOR)
     if base.startswith(OWN_PREFIX):
         codec, _, preset = base.removeprefix(OWN_PREFIX).partition("@")
-        name = preset.removeprefix(f"{codec}-").capitalize() if preset else DEFAULT_PRESET
+        name = preset.capitalize() if preset else DEFAULT_PRESET
         return {"owner": "nanocodec", "codec": codec, "preset": name, "tune": "", "ours": True,
                 "version_key": "",
-                "label": f"nanocodec {label}" if preset else f"nanocodec {label} Default"}
+                "label": f"nanocodec {label}" if preset else f"nanocodec {label} {DEFAULT_LABEL}"}
     kind = anchor_kind(base)
     project, codec, version_key = PROJECTS[kind]
     preset = base.removeprefix(ANCHOR_PRESET_PREFIXES.get(kind, base))
@@ -172,8 +188,8 @@ def chart_family(family: str) -> Family:
     base, _, _ = family.partition(TUNE_SEPARATOR)
     if base.startswith(OWN_PREFIX):
         codec, _, preset = base.removeprefix(OWN_PREFIX).partition("@")
-        return Family(base, Codec(codec), Path(OWN_TOOL),
-                      ("--preset", preset) if preset else (), own=True)
+        return Family(base, Codec(codec), Path(OWN_TOOL), preset_cli_args(codec, preset),
+                      own=True)
     if base == OPENH264_FAMILY:
         return Family(family, Codec.H264, Path(OPENH264_TOOL), kind="openh264",
                       profile=family.partition(TUNE_SEPARATOR)[2])
@@ -226,7 +242,8 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
              "clips": clips, "source": [f"docs/results/{view.stem}.csv",
                                         f"docs/results/{view.stem}-x86.csv"],
              "builds": builds["builds"], "base_build": builds["base"],
-             "family_builds": builds["families"], "tools": builds["tools"],
+             "family_builds": {current_family_name(f): b for f, b in builds["families"].items()},
+             "tools": builds["tools"],
              "metrics": ["j", "psnr", "vmaf"], "values": values}, labels)
 
 
@@ -510,9 +527,9 @@ WASM_YARDSTICK_BUILD = "bcbc5601"
 OURS_WASM, FFMPEG_WASM = "ours-wasm", "ffmpeg.wasm"
 #: Each encode run's chart family, whose (native) point gives its quality.
 WASM_ENCODE_FAMILIES = {
-    "h264": "nanocodec-h264", "h264-fast": "nanocodec-h264@h264-fast",
-    "hevc-fast": "nanocodec-hevc@hevc-fast", "vp9": "nanocodec-vp9",
-    "av1-fast": "nanocodec-av1@av1-fast",
+    "h264": "nanocodec-h264", "h264-fast": "nanocodec-h264@fast",
+    "hevc-fast": "nanocodec-hevc@fast", "vp9": "nanocodec-vp9",
+    "av1-fast": "nanocodec-av1@fast",
     "x264 veryfast": "x264-veryfast", "x264 ultrafast": "x264-ultrafast",
 }
 #: The quality the encode chart shows: the held-out fresh clips against x264 --tune psnr.

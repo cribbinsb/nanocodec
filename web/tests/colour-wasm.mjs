@@ -17,7 +17,7 @@ for (let i = 0; i < planes.length; i++) { seed = (seed * 1103515245 + 12345) >>>
 const layout = Uint32Array.from([0, width, width * height, width / 2, width * height + chroma, width / 2]);
 for (const colour of Object.keys(DISPLAY_WEIGHTS)) {
   const source = new SourceFrame(width, height);
-  const encoder = new BrowserEncoder('vp9', width, height, 0, 30, 900, 'default', undefined, false, colour);
+  const encoder = new BrowserEncoder('vp9', width, height, 0, 30, 900, 'medium', undefined, false, colour);
   const decoder = new BrowserDecoder('vp9');
   try {
     source.from_planes(planes, 'I420', colour, width, height, layout);
@@ -30,7 +30,7 @@ for (const colour of Object.keys(DISPLAY_WEIGHTS)) {
     const wasmRgba = new Uint8Array(wasm.memory.buffer, offset, width * height * 4).slice();
     assert.deepEqual(new Uint8Array(i420ToRgba(planes, width, height, colour).buffer), wasmRgba, `${colour}: JS and WASM display conversions`);
     const other = colour === 'bt601' ? 'bt709' : 'bt601';
-    const wrong = new BrowserEncoder('vp9', width, height, 0, 30, 900, 'default', undefined, false, other);
+    const wrong = new BrowserEncoder('vp9', width, height, 0, 30, 900, 'medium', undefined, false, other);
     try { assert.throws(() => wrong.encode(source), /colour does not match/); } finally { wrong.free(); }
   } finally { source.free(); encoder.free(); decoder.free(); }
 }

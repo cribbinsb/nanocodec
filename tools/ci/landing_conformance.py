@@ -14,8 +14,8 @@ change) and on demand:
 default is checked this way before it lands (the shipped presets alone never
 switch it on).
 
-For every shipped preset of every codec (`default` plus the codec's
-presets/<codec>-*.toml) it encodes a few short streams of real content that
+For every shipped preset of every codec (`medium`, its Default, plus the
+codec's presets/<codec>/*.toml) it encodes a few short streams of real content that
 exercise the risky tools, then requires each to decode bit-exactly, frame
 by frame, against the encoder's reconstruction of the pictures shown, with
 both standard decoders and our own (nceval.conformance.gate_stream):
@@ -33,15 +33,15 @@ both standard decoders and our own (nceval.conformance.gate_stream):
     large    `main` on a few 720-line frames (largest blocks, long vectors)
     timed    capture timestamps with skipped captures (a live sender that cannot
              keep up, `--timestamps`), three temporal layers, keys every
-             TIMED_KEY_PERIOD nominal frames of capture time (default preset)
+             TIMED_KEY_PERIOD nominal frames of capture time (medium preset)
     switch   adaptive resolution (codecs with scaled references): one key, a
              starved rate that switches to half size, then a rate rise so the
              first high-quality frame after the switch codes detail and
              predicts from the one before it, still held at full size (its
              second reference, scaled MC)
 
-A spatial preset (two layers: presets/av1-svc*.toml, presets/vp9-svc*.toml)
-is checked as SVC instead: L2T1 and L2T3 at two rates on three clips, every
+A spatial preset (presets/<codec>/l2-*.toml, l3-*.toml: two or three layers)
+is checked as SVC instead (`--scalability LnTm --preset <speed>`): LnT1 and LnT3 at two rates on three clips, every
 operating point of each stream decoded by dav1d, aomdec and ours
 (gate_av1_operating_points), or for VP9 the full stream and the base-only
 stream after the superframe strip by vpxdec, ffmpeg and ours
@@ -79,6 +79,8 @@ from nceval.codecs import Codec  # noqa: E402
 from nceval.config import Paths, find_tool, load_paths  # noqa: E402
 from nceval.conformance import gate_operating_points, gate_stream  # noqa: E402
 from nceval.display import switched_format  # noqa: E402
+from nceval.encoders.nanocodec import (MEDIUM, preset_cli_args, preset_path,  # noqa: E402
+                                       shipped_presets)
 from nceval.framepipe import ProcessFailed  # noqa: E402
 from nceval.framestats import UNCODED_FRAME_TYPES  # noqa: E402
 from nceval.metrics import StreamSpec  # noqa: E402
@@ -223,21 +225,18 @@ class Case:
                     else ["--simulate-loss", "4:2"] if rate_tag == "s2loss"
                     else [])
             if mode == "480p30_720p5":
-                return ["--preset", self.preset, "--bitrate", kbps(bpp), *drop, *loss,
+                return [*self.preset_args("L2T1"), "--bitrate", kbps(bpp), *drop, *loss,
                         "--intra-period", str(SVC_720P5_KEY_PERIOD),
-                        "--scalability", "L2T1",
                         "--param", "spatial.base_scale=0.6666667",
                         "--param", "spatial.enhancement_interval=6"]
             if mode == "l3custom":
-                return ["--preset", self.preset, "--bitrate", kbps(bpp), *drop, *loss,
+                return [*self.preset_args("L3T2"), "--bitrate", kbps(bpp), *drop, *loss,
                         "--intra-period", str(SVC_KEY_PERIOD),
-                        "--scalability", "L3T2",
                         "--param", "spatial.s0_scale=0.3333333",
                         "--param", "spatial.s1_scale=0.6666667",
                         "--param", "layers.adaptive=0"]
-            return ["--preset", self.preset, "--bitrate", kbps(bpp), *drop, *loss,
+            return [*self.preset_args(mode.upper()), "--bitrate", kbps(bpp), *drop, *loss,
                     "--intra-period", str(SVC_KEY_PERIOD),
-                    "--scalability", mode.upper(),
                     "--param", "layers.adaptive=0"]
         one_key = ["--intra-period", str(shape.frames * 10)]
         flags = {
@@ -259,20 +258,22 @@ class Case:
             "fixedqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
                         "--intra-period", str(KEY_PERIOD)],
         }[self.kind]
-        return ["--preset", self.preset, *flags]
+        return [*preset_cli_args(self.codec, self.preset), *flags]
+
+    def preset_args(self, mode: str) -> tuple[str, ...]:
+        """The preset's options in scalability `mode` (a spatial preset's own
+        file at that mode; any other preset plus `--scalability mode`)."""
+        if spatial_layers(self.codec, self.preset) > 1:
+            return preset_cli_args(self.codec, self.preset, mode=mode)
+        return ("--scalability", mode, *preset_cli_args(self.codec, self.preset))
 
 
-def shipped_presets(codec: Codec) -> list[str]:
-    """`default` and the codec's own presets (presets/<codec>-*.toml)."""
-    return ["default", *sorted(p.stem for p in PRESETS_DIR.glob(f"{codec.value}-*.toml"))]
-
-
-def spatial_layers(preset: str) -> int:
-    """The spatial layer count a preset codes (presets/<codec>-svc*.toml: 2 or 3; 1 for
-    every other preset). A spatial preset's streams are checked at every operating
-    point (the svc- cases), not as single-layer streams."""
-    path = PRESETS_DIR / f"{preset}.toml"
-    if not path.is_file():
+def spatial_layers(codec: Codec, preset: str) -> int:
+    """The spatial layer count a preset codes (presets/<codec>/l2-*.toml, l3-*.toml:
+    2 or 3; 1 for every other preset). A spatial preset's streams are checked at
+    every operating point (the svc- cases), not as single-layer streams."""
+    path = preset_path(PRESETS_DIR, codec, preset)
+    if preset == MEDIUM or not path.is_file():
         return 1
     for line in path.read_text().splitlines():
         setting = line.split("#")[0].replace(" ", "")
@@ -284,50 +285,50 @@ def spatial_layers(preset: str) -> int:
 def cases(codecs: list[Codec]) -> list[Case]:
     kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp")
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
-            if spatial_layers(preset) == 1
+            if spatial_layers(codec, preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
-    base += [Case(codec, "default", "timed") for codec in codecs]
+    base += [Case(codec, MEDIUM, "timed") for codec in codecs]
     base += [Case(codec, preset, "switch") for codec in codecs
              if codec in ADAPTIVE_RESOLUTION_CODECS
-             for preset in shipped_presets(codec) if spatial_layers(preset) == 1]
-    # Spatial presets (av1-svc*, vp9-svc*): LnT1, LnT3, LnT1_KEY, and LnT3_KEY
+             for preset in shipped_presets(codec) if spatial_layers(codec, preset) == 1]
+    # Spatial presets (l2-*, l3-*): LnT1, LnT3, LnT1_KEY, and LnT3_KEY
     # at their own layer count n, every operating point.
     base += [Case(codec, preset, f"svc-l{layers}{mode}-{clip}-{rate}")
              for codec in codecs for preset in shipped_presets(codec)
-             if (layers := spatial_layers(preset)) > 1
+             if (layers := spatial_layers(codec, preset)) > 1
              for mode in ("t1", "t3", "t1_key", "t3_key")
              for clip in ("crowd", "pan", "lowlight")
              for rate in ("mid", "starved")]
     for svc_codec in (Codec.AV1, Codec.VP9):
         if svc_codec in codecs:
-            base += [Case(svc_codec, "default", "l1t2"),
-                     Case(svc_codec, "default", "l1t3")]
+            base += [Case(svc_codec, MEDIUM, "l1t2"),
+                     Case(svc_codec, MEDIUM, "l1t3")]
             # (L2T1..L2T3, L3T1..L3T3, L2T1_KEY..L3T3_KEY) x 3 clips x 2 rates +
             # (480p30 + 720p5) x 2 clips x 2 rates, custom 3-layer scales,
             # frame-dropping, and S1 / S2 loss repair cases.
-            base += [Case(svc_codec, "default", f"svc-{mode}-{clip}-{rate}")
+            base += [Case(svc_codec, MEDIUM, f"svc-{mode}-{clip}-{rate}")
                      for mode in ("l2t1", "l2t2", "l2t3",
                                   "l3t1", "l3t2", "l3t3",
                                   "l2t1_key", "l2t2_key", "l2t3_key",
                                   "l3t1_key", "l3t2_key", "l3t3_key")
                      for clip in ("crowd", "pan", "lowlight")
                      for rate in ("mid", "starved")]
-            base += [Case(svc_codec, "default", f"svc-480p30_720p5-{clip}-{rate}")
+            base += [Case(svc_codec, MEDIUM, f"svc-480p30_720p5-{clip}-{rate}")
                      for clip in ("crowd720p5", "pan720p5")
                      for rate in ("mid", "starved")]
-            base += [Case(svc_codec, "default", "svc-l2t2-pan-drop"),
-                     Case(svc_codec, "default", "svc-480p30_720p5-pan720p5-drop"),
-                     Case(svc_codec, "default", "svc-l2t2-crowd-s1loss"),
-                     Case(svc_codec, "default", "svc-480p30_720p5-crowd720p5-s1loss"),
-                     Case(svc_codec, "default", "svc-l3t2-pan-drop"),
-                     Case(svc_codec, "default", "svc-l3t2-crowd-s1loss"),
-                     Case(svc_codec, "default", "svc-l3t2-crowd-s2loss"),
-                     Case(svc_codec, "default", "svc-l2t2_key-pan-drop"),
-                     Case(svc_codec, "default", "svc-l2t2_key-crowd-s1loss"),
-                     Case(svc_codec, "default", "svc-l3t2_key-pan-drop"),
-                     Case(svc_codec, "default", "svc-l3t2_key-crowd-s1loss"),
-                     Case(svc_codec, "default", "svc-l3t2_key-crowd-s2loss"),
-                     Case(svc_codec, "default", "svc-l3custom-pan-mid")]
+            base += [Case(svc_codec, MEDIUM, "svc-l2t2-pan-drop"),
+                     Case(svc_codec, MEDIUM, "svc-480p30_720p5-pan720p5-drop"),
+                     Case(svc_codec, MEDIUM, "svc-l2t2-crowd-s1loss"),
+                     Case(svc_codec, MEDIUM, "svc-480p30_720p5-crowd720p5-s1loss"),
+                     Case(svc_codec, MEDIUM, "svc-l3t2-pan-drop"),
+                     Case(svc_codec, MEDIUM, "svc-l3t2-crowd-s1loss"),
+                     Case(svc_codec, MEDIUM, "svc-l3t2-crowd-s2loss"),
+                     Case(svc_codec, MEDIUM, "svc-l2t2_key-pan-drop"),
+                     Case(svc_codec, MEDIUM, "svc-l2t2_key-crowd-s1loss"),
+                     Case(svc_codec, MEDIUM, "svc-l3t2_key-pan-drop"),
+                     Case(svc_codec, MEDIUM, "svc-l3t2_key-crowd-s1loss"),
+                     Case(svc_codec, MEDIUM, "svc-l3t2_key-crowd-s2loss"),
+                     Case(svc_codec, MEDIUM, "svc-l3custom-pan-mid")]
     return base
 
 

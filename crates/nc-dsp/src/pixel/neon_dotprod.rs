@@ -16,7 +16,7 @@
 //! 64x64 −12.0% (38.2 → 35.4, 60.2 → 56.1, 185.9 → 181.2, 726 → 639 ns).
 //!
 //! Jetson (`nc-checkasm --bench`, ns): 33-position scan 225 → 179, grid
-//! update 250 → 224 (every row) and 168 → 157 (even rows); h264-fast
+//! update 250 → 224 (every row) and 168 → 157 (even rows); H.264 Fast
 //! crowd / bodycam −1.4% / −1.7% cycles (jperf, 5 rounds). The 4x4 quadrant SADs
 //! (`sad_quads_8x8_row`) were slower this way (the macroblock form 60 → 66
 //! ns; stores of whole result vectors feed scalar reads) and keep `uadalp`.

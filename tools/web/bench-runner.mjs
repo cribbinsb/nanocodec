@@ -147,7 +147,7 @@ async function encode(args) {
   let bytes = 0;
   for (let pass = 0; pass < +args.repeat; pass++) {
     const encoder = new module.BrowserEncoder(args.codec, width, height, CODECS[args.codec].quantizer.initial, fps, +args.keySeconds * fps,
-      args.fast ? 'fast' : 'default', undefined, false, planes ? 'bt709' : 'bt601');
+      args.fast ? 'fast' : 'medium', undefined, false, planes ? 'bt709' : 'bt601');
     encoder.set_rate_control(+args.kbps, +args.peakKbps, +args.bufferMs);
     const source = 'SourceFrame' in module ? new module.SourceFrame(width, height) : null;
     const times = [];

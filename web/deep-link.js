@@ -8,8 +8,9 @@
 // Results: ?codec=av1&preset=fast   the overview filtered to that codec and preset,
 //          with that preset's point selected.
 
-/** The demo's preset choices that the results charts have points for. */
-export const CHART_PRESETS = ['default', 'fast', 'faster', 'fastest'];
+/** The ladder presets (codecs.js PRESETS) that the results charts have points for. */
+export const CHART_PRESETS = ['medium', 'fast', 'faster', 'veryfast'];
+const DEFAULT_PRESET = 'medium';
 const SIZE_PATTERN = /^(\d+)x(\d+)$/;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const CODEC_PATTERN = /^[a-z0-9]+$/;
@@ -35,7 +36,7 @@ export function manifestEncoder(family) {
 }
 
 /** The demo's query string for these settings (all optional but codec). */
-export function demoQuery({ codec, preset = 'default', width, height, fps, kbps, stream, clip }) {
+export function demoQuery({ codec, preset = DEFAULT_PRESET, width, height, fps, kbps, stream, clip }) {
   const params = new URLSearchParams({ codec, preset });
   if (width && height) params.set('size', `${width}x${height}`);
   if (fps) params.set('fps', String(fps));
@@ -50,7 +51,7 @@ export function parseDemoQuery(search) {
   const params = new URLSearchParams(search);
   const codec = params.get('codec');
   if (!codec || !CODEC_PATTERN.test(codec)) return null;
-  const preset = params.get('preset') || 'default';
+  const preset = params.get('preset') || DEFAULT_PRESET;
   if (!CHART_PRESETS.includes(preset)) return null;
   const link = { codec, preset };
   const size = params.get('size')?.match(SIZE_PATTERN);
@@ -67,7 +68,7 @@ export function parseDemoQuery(search) {
 }
 
 /** The results overview's query string for a codec and preset (the demo's names). */
-export function resultsQuery({ codec, preset = 'default' }) {
+export function resultsQuery({ codec, preset = DEFAULT_PRESET }) {
   return `?${new URLSearchParams({ codec, preset })}`;
 }
 
@@ -75,12 +76,12 @@ export function resultsQuery({ codec, preset = 'default' }) {
 export function parseResultsQuery(search) {
   const params = new URLSearchParams(search);
   const codec = params.get('codec');
-  const preset = params.get('preset') || 'default';
+  const preset = params.get('preset') || DEFAULT_PRESET;
   if (!codec || !CODEC_PATTERN.test(codec) || !CHART_PRESETS.includes(preset)) return null;
   return { codec, preset };
 }
 
-/** The chart family of our encoder at a codec and preset (nceval names). */
+/** The chart family of our encoder at a codec and preset (nceval names: Medium is the bare codec). */
 export function chartFamily({ codec, preset }) {
-  return preset === 'default' ? `nanocodec-${codec}` : `nanocodec-${codec}@${codec}-${preset}`;
+  return preset === DEFAULT_PRESET ? `nanocodec-${codec}` : `nanocodec-${codec}@${preset}`;
 }

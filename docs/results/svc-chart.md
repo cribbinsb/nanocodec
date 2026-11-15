@@ -8,17 +8,17 @@ Two-layer AV1 and VP9 streams (360p base, operating point 1; 720p, operating poi
 
 | Encoder | BD-J op 0 | BD-PSNR-YUV | BD-VMAF v1 | per-clip IQR (BD-J) | 360p op BD-J | 360p op share of rate | fps (Jetson, 1 core) | fps (x86, 1 core) | x86 speed vs x264 medium | clips |
 |---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
-| **AV1 Default 720p (single layer)** | -53.0% | -57.3% | -57.7% | -55.7 … -43.0 |  |  | 41.1 | 92.4 | 1.37× | 8/8 |
-| **VP9 Default 720p (single layer)** | -50.1% | -54.4% | -53.6% | -53.8 … -39.6 |  |  | 34.4 | 89.7 | 1.33× | 8/8 |
-| **AV1 SVC L2T3** | -46.6% | -50.7% | -52.2% | -49.0 … -34.2 | -8.6% | 23% | 25.5 | 57.9 | 0.86× | 8/8 |
-| **AV1 SVC L2T1** | -44.9% | -49.6% | -50.1% | -50.0 … -33.3 | -6.5% | 22% | 24.0 | 54.8 | 0.81× | 8/8 |
-| **VP9 SVC L2T3** | -42.4% | -46.2% | -46.8% | -46.6 … -29.2 | -3.1% | 21% | 23.4 | 58.8 | 0.87× | 8/8 |
-| **AV1 SVC L3T3** | -41.7% | -45.9% | -48.0% | -43.3 … -28.9 | +17.5% | 28% | 23.3 | 54.3 | 0.80× | 8/8 |
-| **VP9 SVC L2T1** | -40.7% | -44.5% | -45.1% | -45.5 … -28.1 | -0.7% | 21% | 22.3 | 56.2 | 0.83× | 8/8 |
-| **AV1 SVC Fast L2T1** | -40.1% | -41.7% | -46.7% | -44.5 … -25.7 | +7.0% | 22% | 42.4 | 78.4 | 1.16× | 8/8 |
-| **AV1 SVC L3T1** | -39.6% | -44.3% | -45.8% | -44.0 … -28.0 | +20.5% | 27% | 22.3 | 51.9 | 0.77× | 8/8 |
-| **VP9 SVC Fast L2T1** | -35.2% | -37.9% | -40.5% | -39.0 … -23.7 | +16.4% | 23% | 33.7 | 74.2 | 1.10× | 8/8 |
-| **AV1 SVC Fast L3T1** | -33.7% | -35.5% | -40.6% | -37.0 … -21.3 | +37.2% | 27% | 39.9 | 75.4 | 1.12× | 8/8 |
+| **AV1 Medium 720p (single layer)** | -53.0% | -57.3% | -57.7% | -55.7 … -43.0 |  |  | 41.1 | 92.4 | 1.37× | 8/8 |
+| **VP9 Medium 720p (single layer)** | -50.1% | -54.4% | -53.6% | -53.8 … -39.6 |  |  | 34.4 | 89.7 | 1.33× | 8/8 |
+| **AV1 L2T3** | -46.6% | -50.7% | -52.2% | -49.0 … -34.2 | -8.6% | 23% | 25.5 | 57.9 | 0.86× | 8/8 |
+| **AV1 L2T1** | -44.9% | -49.6% | -50.1% | -50.0 … -33.3 | -6.5% | 22% | 24.0 | 54.8 | 0.81× | 8/8 |
+| **VP9 L2T3** | -42.4% | -46.2% | -46.8% | -46.6 … -29.2 | -3.1% | 21% | 23.4 | 58.8 | 0.87× | 8/8 |
+| **AV1 L3T3** | -41.7% | -45.9% | -48.0% | -43.3 … -28.9 | +17.5% | 28% | 23.3 | 54.3 | 0.80× | 8/8 |
+| **VP9 L2T1** | -40.7% | -44.5% | -45.1% | -45.5 … -28.1 | -0.7% | 21% | 22.3 | 56.2 | 0.83× | 8/8 |
+| **AV1 L2T1 Fast** | -40.1% | -41.7% | -46.7% | -44.5 … -25.7 | +7.0% | 22% | 42.4 | 78.4 | 1.16× | 8/8 |
+| **AV1 L3T1** | -39.6% | -44.3% | -45.8% | -44.0 … -28.0 | +20.5% | 27% | 22.3 | 51.9 | 0.77× | 8/8 |
+| **VP9 L2T1 Fast** | -35.2% | -37.9% | -40.5% | -39.0 … -23.7 | +16.4% | 23% | 33.7 | 74.2 | 1.10× | 8/8 |
+| **AV1 L3T1 Fast** | -33.7% | -35.5% | -40.6% | -37.0 … -21.3 | +37.2% | 27% | 39.9 | 75.4 | 1.12× | 8/8 |
 | **AV1 simulcast 720p+360p+180p** | -33.7% | -38.3% | -39.1% | -35.5 … -20.1 |  | 26% | 31.8* | 72.7 | 1.08× | 8/8 |
 | **AV1 simulcast 720p+360p** | -33.3% | -37.9% | -38.8% | -34.9 … -20.1 |  | 35% | 32.9* | 72.3 | 1.07× | 8/8 |
 | **VP9 simulcast 720p+360p** | -29.6% | -34.1% | -33.2% | -33.2 … -16.0 |  | 35% | 28.1* | 73.2 | 1.08× | 8/8 |
@@ -44,12 +44,12 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 
 | Encoder | base BD-J | base BD-PSNR-YUV | base BD-VMAF v1 | base share of total rate | mean base PSNR-YUV | mean base VMAF v1 | clips |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| AV1 SVC L2T3 | -8.6% | -7.4% | -9.9% | 23% | 31.96 dB | 55.5 | 8/8 |
-| AV1 SVC L2T1 | -6.5% | -7.0% | -6.3% | 22% | 31.82 dB | 55.0 | 8/8 |
-| AV1 SVC Fast L2T1 | +7.0% | +14.6% | +6.2% | 22% | 31.02 dB | 53.0 | 8/8 |
-| AV1 SVC L3T3 | +17.5% | +18.3% | +16.5% | 28% | 31.73 dB | 53.8 | 8/8 |
-| AV1 SVC L3T1 | +20.5% | +20.8% | +20.1% | 27% | 31.54 dB | 53.3 | 8/8 |
-| AV1 SVC Fast L3T1 | +37.2% | +48.3% | +37.4% | 27% | 30.72 dB | 51.0 | 8/8 |
+| AV1 L2T3 | -8.6% | -7.4% | -9.9% | 23% | 31.96 dB | 55.5 | 8/8 |
+| AV1 L2T1 | -6.5% | -7.0% | -6.3% | 22% | 31.82 dB | 55.0 | 8/8 |
+| AV1 L2T1 Fast | +7.0% | +14.6% | +6.2% | 22% | 31.02 dB | 53.0 | 8/8 |
+| AV1 L3T3 | +17.5% | +18.3% | +16.5% | 28% | 31.73 dB | 53.8 | 8/8 |
+| AV1 L3T1 | +20.5% | +20.8% | +20.1% | 27% | 31.54 dB | 53.3 | 8/8 |
+| AV1 L3T1 Fast | +37.2% | +48.3% | +37.4% | 27% | 30.72 dB | 51.0 | 8/8 |
 | libaom SVC L2T1 rt 10 | +42.6% | +48.2% | +51.4% | 32% | 32.55 dB | 63.3 | 8/8 |
 | libaom SVC L2T1 rt 8 | +47.4% | +53.3% | +56.0% | 31% | 32.47 dB | 63.6 | 8/8 |
 | libaom SVC L2T3 rt 10 | +59.7% | +62.9% | +69.2% | 30% | 32.13 dB | 61.7 | 8/8 |
@@ -58,13 +58,13 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 | libaom SVC L3T1 rt 8 | +87.5% | +92.0% | +105.1% | 32% | 31.99 dB | 59.1 | 8/8 |
 | libaom SVC L3T3 rt 8 | +118.0% | +121.2% | +133.6% | 32% | 31.33 dB | 56.6 | 8/8 |
 | libaom SVC L3T3 rt 10 | +121.5% | +122.7% | +139.0% | 32% | 31.35 dB | 56.5 | 8/8 |
-| AV1 Default, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.30 dB | 63.2 | |
-| VP9 SVC L2T3 | -3.1% | -3.2% | -1.4% | 21% | 31.57 dB | 53.3 | 8/8 |
-| VP9 SVC L2T1 | -0.7% | -1.1% | +0.8% | 21% | 31.36 dB | 52.9 | 8/8 |
-| VP9 SVC Fast L2T1 | +16.4% | +19.1% | +17.3% | 23% | 31.02 dB | 52.5 | 8/8 |
+| AV1 Medium, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.30 dB | 63.2 | |
+| VP9 L2T3 | -3.1% | -3.2% | -1.4% | 21% | 31.57 dB | 53.3 | 8/8 |
+| VP9 L2T1 | -0.7% | -1.1% | +0.8% | 21% | 31.36 dB | 52.9 | 8/8 |
+| VP9 L2T1 Fast | +16.4% | +19.1% | +17.3% | 23% | 31.02 dB | 52.5 | 8/8 |
 | libvpx SVC L2T1 rt 9 | +108.2% | +130.3% | +115.2% | 30% | 32.39 dB | 67.9 | 8/8 |
 | libvpx SVC L2T1 rt 7 | +114.8% | +131.7% | +119.2% | 31% | 32.41 dB | 68.2 | 7/8 |
-| VP9 Default, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.25 dB | 63.8 | |
+| VP9 Medium, 360p alone | +0.0% | +0.0% | +0.0% | 35% | 33.25 dB | 63.8 | |
 
 ## 180p operating point of three layers (operating point 2)
 
@@ -72,20 +72,20 @@ Speed: x264 medium's timed fps (the main chart's) over the point's median per-ro
 
 | Encoder | 180p BD-J | 180p BD-PSNR-YUV | 180p BD-VMAF v1 | 180p share of total rate | mean 180p PSNR-YUV | mean 180p VMAF v1 | clips |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| AV1 SVC L3T3 | +0.8% | +1.4% | +0.5% | 7% | 29.02 dB | 40.8 | 8/8 |
-| AV1 SVC L3T1 | +4.9% | +4.8% | +4.9% | 7% | 28.85 dB | 39.8 | 8/8 |
-| AV1 SVC Fast L3T1 | +12.4% | +17.2% | +11.1% | 7% | 28.23 dB | 37.6 | 8/8 |
+| AV1 L3T3 | +0.8% | +1.4% | +0.5% | 7% | 29.02 dB | 40.8 | 8/8 |
+| AV1 L3T1 | +4.9% | +4.8% | +4.9% | 7% | 28.85 dB | 39.8 | 8/8 |
+| AV1 L3T1 Fast | +12.4% | +17.2% | +11.1% | 7% | 28.23 dB | 37.6 | 8/8 |
 | libaom SVC L3T1 rt 8 | +38.1% | +57.8% | +30.4% | 8% | 29.23 dB | 51.9 | 8/8 |
 | libaom SVC L3T3 rt 8 | +42.2% | +60.1% | +34.6% | 8% | 29.07 dB | 50.9 | 8/8 |
 | libaom SVC L3T1 rt 10 | +42.2% | +64.1% | +34.1% | 8% | 29.07 dB | 51.4 | 8/8 |
 | libaom SVC L3T3 rt 10 | +48.3% | +68.2% | +40.5% | 8% | 28.93 dB | 50.4 | 8/8 |
-| AV1 Default, 180p alone | +0.0% | +0.0% | +0.0% | 9% | 30.05 dB | 46.6 | |
+| AV1 Medium, 180p alone | +0.0% | +0.0% | +0.0% | 9% | 30.05 dB | 46.6 | |
 
 ## Method
 
 - Every two-layer point targets the total rung with 35% for the base layer (our `spatial.base_rate_share` default; our encoder adapts it per frame, libaom and simulcast keep it); every three-layer point with 8% for 180p and 26% for 360p (our `spatial.s0_rate_share` / `spatial.s1_rate_share` defaults: caps our encoder passes unspent bits up from).
-- Three layers (AV1): `presets/av1-svc3.toml` (AV1 Default plus `spatial.layers = 3`, 2:1 steps) in L3T1 and L3T3 (`layers.adaptive=0`), `presets/av1-svc3-fast.toml` (av1-svc-fast's levers) in L3T1; libaom layering modes 6 (L3T1) and 9 (L3T3), its own 4:2:1 downscales; simulcast three independent AV1 Default streams. The 360p operating point is decoded at operating point 1 (dav1d), the 180p at operating point 2, each equal to the encoder's reconstruction of that layer (aomdec's for libaom).
-- Ours: `presets/av1-svc.toml` / `presets/vp9-svc.toml` (the codec's Default plus `spatial.layers = 2`), `--temporal-layers 1` (L2T1) or `3` (L2T3, with `layers.adaptive=0`), and `presets/av1-svc-fast.toml` / `presets/vp9-svc-fast.toml` (the codec's Fast levers, a 2x2-mean base downscale and a bilinear search proxy) in L2T1; CBR, 1 s buffer. Our temporal layers have no fixed rate split: the rate controller sets each temporal layer's quantizer step relative to the base from a tuned ladder (`layers.cbr_base_step_ratio`, `layers.cbr_middle_step_ratio`). Operating point 0 is scored from the encoder's reconstruction; the base layer is decoded at operating point 1 (AV1: dav1d; VP9: vpxdec on `nanocodec extract --base-only`'s stream) and must equal the encoder's base reconstruction.
+- Three layers (AV1): `presets/av1/l3-medium.toml` (AV1 Default plus `spatial.layers = 3`, 2:1 steps) in L3T1 and L3T3 (`layers.adaptive=0`), `presets/av1/l3-fast.toml` (l2-fast's levers) in L3T1; libaom layering modes 6 (L3T1) and 9 (L3T3), its own 4:2:1 downscales; simulcast three independent AV1 Default streams. The 360p operating point is decoded at operating point 1 (dav1d), the 180p at operating point 2, each equal to the encoder's reconstruction of that layer (aomdec's for libaom).
+- Ours: `presets/av1/l2-medium.toml` / `presets/vp9/l2-medium.toml` (the codec's Default plus `spatial.layers = 2`), `--temporal-layers 1` (L2T1) or `3` (L2T3, with `layers.adaptive=0`), and `presets/av1/l2-fast.toml` / `presets/vp9/l2-fast.toml` (the codec's Fast levers, a 2x2-mean base downscale and a bilinear search proxy) in L2T1; CBR, 1 s buffer. Our temporal layers have no fixed rate split: the rate controller sets each temporal layer's quantizer step relative to the base from a tuned ladder (`layers.cbr_base_step_ratio`, `layers.cbr_middle_step_ratio`). Operating point 0 is scored from the encoder's reconstruction; the base layer is decoded at operating point 1 (AV1: dav1d; VP9: vpxdec on `nanocodec extract --base-only`'s stream) and must equal the encoder's base reconstruction.
 - libaom: `examples/svc_encoder_rtc` of the pinned libaom (tools/anchors `aomsvc`), layering mode 5 (L2T1) or 7 (L2T3), CBR with its 1 s buffer (600 ms start/optimal), no lag, cyclic-refresh AQ (`-aq 1`, as WebRTC), no frame drops, one thread, its own 2:1 downscale; L2T3 and L3T3 temporal split 60/80/100 (cumulative, libaom's own test allocation). Decoded by dav1d (scored) and aomdec (equal hashes) at each operating point.
 - libvpx: `examples/vp9_spatial_svc_encoder` of the pinned libvpx v1.16.0 (tools/anchors `vpxsvc`), L2T1 only (`-sl 2 -r 1/2,1/1`; no temporal split), one-pass CBR (`--rc-end-usage=1`), no lag, cyclic-refresh AQ (`-aq 3`, as WebRTC's VP9), no frame drops, inter-layer prediction on, one thread, quantizer 2-63. Its layers are all shown frames, so the base-only stream is each superframe's first frame. Decoded by vpxdec (scored) and ffmpeg (equal hashes) at each operating point.
 - Simulcast: the codec's Default at 720p and, on the ffmpeg-Lanczos 360p downscale, at 360p, two independent streams with the rate summed per frame.
@@ -117,7 +117,7 @@ libaom `svc_encoder_rtc` v3.15.3 in its KEY mode (layering mode 10, L3T3, CBR, t
 
 <sub>Measured 2026-11-14 at the merge of feature/svc-key (build 463b5f14: every point and anchor in this section from that one build); not yet in the table and chart above.</sub>
 
-`presets/vp9-svc3.toml` (vp9-svc at three layers, 2:1 steps, shares 0.08 / 0.26; K-SVC 0.08 / 0.24) packs each unit as a VP9 superframe `[S0, S1, S2]` with per-layer probability contexts; lower layers, and in K-SVC the top layer too, are hidden frames shown with `show_existing_frame`. Same method as the AV1 K-SVC section: each view at its receiver's own rate against VP9 Default coded alone at that size, the chart's 8 clips (all 11 in brackets). The svc3 presets keep vp9-svc's values from before the VP9 Default CPU cut (88a246f4); the single-layer and size-alone anchors are today's VP9 Default.
+`presets/vp9/l3-medium.toml` (vp9-svc at three layers, 2:1 steps, shares 0.08 / 0.26; K-SVC 0.08 / 0.24) packs each unit as a VP9 superframe `[S0, S1, S2]` with per-layer probability contexts; lower layers, and in K-SVC the top layer too, are hidden frames shown with `show_existing_frame`. Same method as the AV1 K-SVC section: each view at its receiver's own rate against VP9 Default coded alone at that size, the chart's 8 clips (all 11 in brackets). The svc3 presets keep vp9-svc's values from before the VP9 Default CPU cut (88a246f4); the single-layer and size-alone anchors are today's VP9 Default.
 
 | View (BD-J) | L3T1_KEY | L3T3_KEY | full SVC L3T1 | full SVC L3T3 |
 |---|---:|---:|---:|---:|

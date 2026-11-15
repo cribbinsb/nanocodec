@@ -23,6 +23,7 @@ if [ $# -ne 3 ]; then
   sed -n "2,22p" "$0"; exit 2
 fi
 tree=$(realpath "$1"); target=$(realpath -m "$2"); out=$(realpath -m "$3")
+root=$(realpath "$(dirname "$0")/../..")  # this script's checkout: its eval/ lists the presets
 clips_dir=$HOME/nanocodec-data/clips/main
 read -r -a clips <<< "${PGO_CLIPS:-$clips_dir/crowd_mot20_02.yuv $clips_dir/lowlight_bdd_00c497ae.yuv $clips_dir/pan_jaad_0117.yuv $clips_dir/bodycam_airport.yuv}"
 frames=${PGO_FRAMES:-20}
@@ -45,25 +46,39 @@ RUSTFLAGS="$base_flags -Cprofile-generate=$work/profiles" CARGO_TARGET_DIR=$targ
   "$cargo" build --release -j"$jobs" -p nc-cli
 instrumented=$target/pgo-generate/release/nanocodec
 
-# Every codec with its shipped presets (presets/<codec>-*.toml) and its default.
-for codec in h264 hevc av1 vp9 av2 vvc; do
-  presets=(default)
-  for file in presets/"$codec"-*.toml; do
-    [ -e "$file" ] && presets+=("$(basename "$file" .toml)")
-  done
-  case $codec in h264) ext=264 ;; hevc) ext=hevc ;; vvc) ext=vvc ;; *) ext=ivf ;; esac
-  for preset in "${presets[@]}"; do
-    for clip in "${clips[@]}"; do
-      stream=$work/streams/$codec-$preset-$(basename "$clip" .yuv).$ext
-      preset_args=()
-      [ "$preset" = default ] || preset_args=(--preset "$preset")
-      "$instrumented" encode --codec "$codec" --input "$clip" --width 1280 --height 720 \
-        --fps 30 --frames "$frames" --intra-period 300 --bitrate 600 --buffer-ms 1000 \
-        "${preset_args[@]}" --output "$stream" > /dev/null
-      "$instrumented" decode --codec "$codec" --input "$stream" --frame-md5 /dev/null > /dev/null
+# Every codec's shipped presets (medium and presets/<codec>/*.toml), one line
+# each: codec, stem, then its CLI options (nceval.encoders.nanocodec). A tree
+# from before the 2026-11-15 preset rename keeps them flat as
+# presets/<codec>-*.toml, each its own --preset name.
+shipped_presets() {
+  if [ -d presets/h264 ]; then
+    python3 -c 'import sys; sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from nceval.encoders.nanocodec import preset_cli_args, shipped_presets
+for codec in ("h264", "hevc", "av1", "vp9", "av2", "vvc"):
+    for stem in shipped_presets(codec, Path("presets")):
+        print(codec, stem, *preset_cli_args(codec, stem, Path("presets")))' "$root/eval"
+    return
+  fi
+  for codec in h264 hevc av1 vp9 av2 vvc; do
+    echo "$codec default"
+    for file in presets/"$codec"-*.toml; do
+      [ -e "$file" ] && echo "$codec $(basename "$file" .toml) --preset $(basename "$file" .toml)"
     done
   done
-done
+}
+shipped_presets > "$work/presets.txt"
+while read -r codec preset preset_args; do
+  read -r -a preset_args <<< "$preset_args"
+  case $codec in h264) ext=264 ;; hevc) ext=hevc ;; vvc) ext=vvc ;; *) ext=ivf ;; esac
+  for clip in "${clips[@]}"; do
+    stream=$work/streams/$codec-$preset-$(basename "$clip" .yuv).$ext
+    "$instrumented" encode --codec "$codec" --input "$clip" --width 1280 --height 720 \
+      --fps 30 --frames "$frames" --intra-period 300 --bitrate 600 --buffer-ms 1000 \
+      "${preset_args[@]}" --output "$stream" > /dev/null
+    "$instrumented" decode --codec "$codec" --input "$stream" --frame-md5 /dev/null > /dev/null
+  done
+done < "$work/presets.txt"
 
 "$profdata" merge -o "$work/merged.profdata" "$work/profiles"
 RUSTFLAGS="$base_flags -Cprofile-use=$work/merged.profdata" CARGO_TARGET_DIR=$target \

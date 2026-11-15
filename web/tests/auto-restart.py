@@ -114,7 +114,7 @@ def main():
             burst_starts = page.evaluate('window.__starts') - before
             final = page.evaluate('window.__inits.slice(-2)')
             assert burst_starts == 1, f'{burst_starts} starts for one burst'
-            assert [(c['codec'], c['width'], c['fps'], c['preset']) for c in final] == [('hevc', 384, 10, 'default'), ('av1', 384, 10, 'fast')], final
+            assert [(c['codec'], c['width'], c['fps'], c['preset']) for c in final] == [('hevc', 384, 10, 'medium'), ('av1', 384, 10, 'fast')], final
             assert page.locator('#clip').input_value() == 'svt-waterfall'
             assert all(c['rendition'] == 'svt-waterfall-360p.mp4' for c in final), final
             assert not page.locator('#notice').is_visible(), page.locator('#notice').inner_text()

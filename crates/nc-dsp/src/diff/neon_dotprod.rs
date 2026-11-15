@@ -199,7 +199,7 @@ pub(super) unsafe fn variance_energy<const W: usize>(
 /// Whole-block sums of `src`'s own samples with two dot products per 16
 /// samples (sum against ones, squares against itself). As the psy AC
 /// energy (`nc_encoder::psy::ac_energy`, formerly a variance pass against
-/// zeros): h264-fast −0.4% (crowd) / −0.8% (bodycam) Jetson cycles. Only
+/// zeros): H.264 Fast −0.4% (crowd) / −0.8% (bodycam) Jetson cycles. Only
 /// 16/32/64 widths use this table entry, as for [`variance`].
 #[target_feature(enable = "neon,dotprod")]
 pub(super) unsafe fn block_sums<const W: usize>(

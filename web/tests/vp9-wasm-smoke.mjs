@@ -7,18 +7,18 @@ import { rgbaEncoder } from './rgba-source.mjs';
 const wasm = await init({ module_or_path: await readFile(new URL('../pkg/nc_web_bg.wasm', import.meta.url)) });
 const encodeRgba = rgbaEncoder(SourceFrame, wasm.memory);
 // Any even size codes (180 is not a multiple of 8); odd sizes do not.
-new BrowserEncoder('vp9', 322, 180, 0, 30, 900, 'default').free();
-assert.throws(() => new BrowserEncoder('vp9', 321, 180, 0, 30, 900, 'default'), /multiples of/);
+new BrowserEncoder('vp9', 322, 180, 0, 30, 900, 'medium').free();
+assert.throws(() => new BrowserEncoder('vp9', 321, 180, 0, 30, 900, 'medium'), /multiples of/);
 // Film grain synthesis is AV1-only; AV1 accepts it.
-assert.throws(() => new BrowserEncoder('vp9', 64, 64, 0, 30, 900, 'default', '', true), /only available for AV1/);
-new BrowserEncoder('av1', 64, 64, 180, 30, 900, 'default', '', true).free();
+assert.throws(() => new BrowserEncoder('vp9', 64, 64, 0, 30, 900, 'medium', '', true), /only available for AV1/);
+new BrowserEncoder('av1', 64, 64, 180, 30, 900, 'medium', '', true).free();
 // Parameter overrides (the demo's Advanced editor) are checked against the registry.
 assert.deepEqual(JSON.parse(check_parameters('vp9', '# ok\nrate.aq_strength=1')), []);
 assert.match(JSON.parse(check_parameters('vp9', 'nope.nothing=1'))[0].message, /unknown parameter/);
-assert.throws(() => new BrowserEncoder('vp9', 64, 64, 0, 30, 900, 'default', 'layers.count=9'), /parameter line 1/);
+assert.throws(() => new BrowserEncoder('vp9', 64, 64, 0, 30, 900, 'medium', 'layers.count=9'), /parameter line 1/);
 assert.ok(JSON.parse(parameter_registry('vp9')).some(p => p.name === 'rate.aq_strength' && p.doc));
 assert.equal(JSON.parse(codec_options('vp9')).filmGrain, false);
-const encoder = new BrowserEncoder('vp9', 64, 64, 0, 30, 900, 'default');
+const encoder = new BrowserEncoder('vp9', 64, 64, 0, 30, 900, 'medium');
 const decoder = new BrowserDecoder('vp9');
 try {
   for (let frame = 0; frame < 4; frame++) {
@@ -47,7 +47,7 @@ try {
 } finally { encoder.free(); decoder.free(); }
 
 // Lossless P frames above use TX4; separately exercise mixed-size lossy TX8.
-const lossy = new BrowserEncoder('vp9', 64, 64, 160, 30, 900, 'default');
+const lossy = new BrowserEncoder('vp9', 64, 64, 160, 30, 900, 'medium');
 const lossyDecoder = new BrowserDecoder('vp9');
 try {
   for (let frame = 0; frame < 6; frame++) {

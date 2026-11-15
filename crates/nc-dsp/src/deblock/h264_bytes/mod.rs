@@ -26,7 +26,7 @@
 //!
 //! Jetson (Cortex-A78AE): a fully filtered luma macroblock (bS 2, the
 //! checkasm bench) takes 342 ns, against 613 ns for the 16-bit kernels;
-//! h264-fast encodes −2.2% (crowd QP 39) and −3.4% (bodycam QP 45)
+//! H.264 Fast encodes −2.2% (crowd QP 39) and −3.4% (bodycam QP 45)
 //! cycles (jperf, 5 rounds), streams identical.
 
 #[cfg(target_arch = "aarch64")]

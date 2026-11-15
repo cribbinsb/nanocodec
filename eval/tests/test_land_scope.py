@@ -43,10 +43,12 @@ def test_each_path_class(graph, path, kind):
 
 
 def test_embedded_presets_select_the_crates_that_include_them(graph):
-    dirs, _, embedded = graph
-    kind, crates = land_scope.classify("presets/hevc-fast.toml", ROOT, dirs, embedded)
+    dirs, dependents, embedded = graph
+    kind, crates = land_scope.classify("presets/hevc/fast.toml", ROOT, dirs, embedded)
     assert kind == "included"
-    assert {"nc-cli", "nc-web", "nc-hevc"} <= crates
+    # nc-encoder's preset table embeds it (presets.rs); its front ends follow.
+    assert {"nc-encoder", "nc-hevc"} <= crates
+    assert {"nc-cli", "nc-web"} <= land_scope.closure(crates, dependents)
 
 
 def test_a_codec_change_reaches_its_front_ends_only(graph):
@@ -73,10 +75,10 @@ def test_eval_web_and_docs_changes_skip_the_conformance_check(graph):
 
 @pytest.mark.parametrize("paths, codecs", [
     (["crates/nc-vp9/src/lib.rs"], ["vp9"]),
-    (["crates/nc-vp9/src/lib.rs", "presets/av1-fast.toml"], ["av1", "vp9"]),
+    (["crates/nc-vp9/src/lib.rs", "presets/av1/fast.toml"], ["av1", "vp9"]),
     (["crates/nc-encoder/src/lib.rs"], ["all"]),
     (["crates/nc-cli/src/main.rs"], ["all"]),
-    (["presets/default.toml"], ["all"]),
+    (["presets/hevc/fast.toml"], ["hevc"]),
     (["eval/nceval/conformance.py"], ["all"]),
     (["crates/nc-web/src/lib.rs"], ["0"]),
 ])
@@ -84,7 +86,8 @@ def test_the_conformance_check_codes_only_the_changed_codecs(graph, paths, codec
     dirs, dependents, embedded = graph
     crates = set()
     for path in paths:
-        crates |= land_scope.classify(path, ROOT, dirs, embedded)[1]
+        if not path.startswith("presets/"):  # presets name their codec (plan_for_paths)
+            crates |= land_scope.classify(path, ROOT, dirs, embedded)[1]
     affected = land_scope.closure(crates, dependents)
     assert land_scope.conformance_codecs(paths, affected, False) == codecs
 
@@ -111,7 +114,7 @@ def test_only_a_change_to_the_page_runs_the_chromium_page_tests():
 def test_train_rank_puts_docs_first_and_page_changes_last():
     assert land_scope.rank(ROOT, ["docs/STATUS.md", "README.md"]) == 0
     assert land_scope.rank(ROOT, ["docs/STATUS.md", "crates/nc-vvc/src/lib.rs"]) == 1
-    assert land_scope.rank(ROOT, ["presets/av1-fast.toml"]) == 1
+    assert land_scope.rank(ROOT, ["presets/av1/fast.toml"]) == 1
     assert land_scope.rank(ROOT, ["web/app.js", "docs/handoff/browser-demo.md"]) == 2
     assert land_scope.rank(ROOT, ["crates/nc-web/src/lib.rs"]) == 2
     assert land_scope.rank(ROOT, []) == 1

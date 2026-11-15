@@ -240,7 +240,7 @@ def test_dominated_points_leave_only_that_metric_curve():
 
 
 def test_own_family_turns_a_preset_into_params(tmp_path):
-    family = realuse.own_family("nanocodec-hevc@hevc-fast", tmp_path / "nc")
+    family = realuse.own_family("nanocodec-hevc@fast", tmp_path / "nc")
     assert family.own and family.codec.value == "hevc" and not family.cqp
     assert family.extra[0] == "--param" and len(family.extra) % 2 == 0
 

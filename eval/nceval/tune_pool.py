@@ -73,8 +73,8 @@ both put the trial in TPE's "bad" density, but values keep its order
 among bad trials and leave the constraint model to the real guards. Only
 fidelity 2 and "ladder" trials enter the front.
 
-A spatial SVC preset (av1-svc, av1-svc-fast, vp9-svc, vp9-svc-fast: two
-layers) is tuned on the same objective, which for a two-layer stream is J of
+A spatial SVC preset (l2-medium, l2-fast of AV1 or
+VP9: two layers) is tuned on the same objective, which for a two-layer stream is J of
 its full-size output (operating point 0) at the total stream rate; every
 point also scores its base layer (operating point 1) at its own rate
 (nceval.cbr, nceval.svcbase), and the base layer's single-point J is a
@@ -105,7 +105,7 @@ Studies live in $NC_DATA_ROOT/tuning/<study>.sqlite (Optuna RDB storage;
 rerun the same `search` command to resume). Points are streamed and cached
 (no YUV files); CPU and GPU slots are machine-wide (nceval.slots).
 
-    python3 -m nceval.tune search --study av1-fast-1 --codec av1 --preset av1-fast \\
+    python3 -m nceval.tune search --study av1-fast-1 --codec av1 --preset fast \\
         --binary BIN --commit C --space tune_spaces/av1-fast.txt --trials 100
     python3 -m nceval.tune front --study av1-fast-1
     python3 -m nceval.tune finalists --study av1-fast-1      # search runs it at the end
@@ -138,7 +138,7 @@ from .cbr import DEFAULT_INTRA_PERIOD, Family
 from .clips import Clip, load_clipset
 from .codecs import Codec
 from .config import load_paths
-from .encoders.nanocodec import read_preset
+from .encoders.nanocodec import MEDIUM, preset_values
 from .fingerprint import measurement_fingerprint
 from .gatepolicy import EVALUATION_GATE, file_sha256
 from .tune import (QUANTIZERS, REPO_ROOT, TUNING_DIR, instruction_cost,
@@ -677,7 +677,7 @@ def create(args: argparse.Namespace) -> optuna.Study:
     specs = specs_of(binary, codec)
     presets = binary.parent / "presets"
     presets = presets if presets.is_dir() else REPO_ROOT / "presets"
-    preset = read_preset(presets / f"{args.preset}.toml") if args.preset != "default" else {}
+    preset = preset_values(presets, codec, args.preset)
     space = Path(args.space).read_text() if args.space else "\n".join(args.params.split(","))
     domains = read_space(space, specs, preset)
     key = pool.rotation_key(args.rotation)
@@ -827,7 +827,7 @@ def sensitivity(args: argparse.Namespace) -> None:
     specs = specs_of(binary, codec)
     presets = binary.parent / "presets"
     presets = presets if presets.is_dir() else REPO_ROOT / "presets"
-    preset = read_preset(presets / f"{args.preset}.toml") if args.preset != "default" else {}
+    preset = preset_values(presets, codec, args.preset)
     domains = read_space(Path(args.space).read_text(), specs, preset, SENSITIVITY_MAX_PARAMS)
     key = pool.rotation_key(args.rotation)
     clips = draw_sets(key, "none")[0][:STAGE_1_CLIPS]
@@ -1184,7 +1184,7 @@ def write_presets(args: argparse.Namespace) -> None:
         trial = study.trials[number]
         values = {**attrs["preset_values"], **trial.params}
         result = results.get(str(number))
-        path = out / f"{attrs['preset']}-{study.study_name}-t{number}.toml"
+        path = out / f"{attrs['codec']}-{attrs['preset']}-{study.study_name}-t{number}.toml"
         header = [f"# Candidate for {attrs['preset']} from tuning study {study.study_name}, "
                   f"trial {number} ({PROTOCOL}, rotation {attrs['rotation']}).",
                   f"# Trial clips vs {attrs['preset']}: J {trial_j(trial):+.2f}%, "
@@ -1251,7 +1251,7 @@ def add_commands(sub) -> None:
     s = sub.add_parser("search", help="run or resume a study (J_real vs CPU, pool clips)")
     s.add_argument("--study", required=True)
     s.add_argument("--codec", choices=[c.value for c in Codec])
-    s.add_argument("--preset", default="default", help="the preset tuned and measured against")
+    s.add_argument("--preset", default=MEDIUM, help="the preset tuned and measured against")
     s.add_argument("--binary", help="nanocodec binary, or a commit (built and cached)")
     s.add_argument("--commit", help="the binary's commit, for the Jetson build")
     space = s.add_mutually_exclusive_group()
@@ -1296,7 +1296,7 @@ def add_commands(sub) -> None:
     w.set_defaults(func=write_presets)
     v = sub.add_parser("sensitivity", help="one-at-a-time sweep: live parameters, safe ranges")
     v.add_argument("--codec", required=True, choices=[c.value for c in Codec])
-    v.add_argument("--preset", default="default")
+    v.add_argument("--preset", default=MEDIUM)
     v.add_argument("--binary", required=True)
     v.add_argument("--space", required=True, help="candidate parameters (space file)")
     v.add_argument("--rotation", help="pool rotation key (default: today, UTC)")

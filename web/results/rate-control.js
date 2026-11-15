@@ -18,7 +18,7 @@ const state = { metric: 'j' };
 function name(family) {
   if (LABELS[family]) return LABELS[family];
   const codec = family.replace(/^nanocodec-/, '');
-  return `nanocodec ${{ h264: 'H.264', hevc: 'HEVC', vvc: 'VVC', av1: 'AV1', vp9: 'VP9', av2: 'AV2' }[codec] || codec} Default`;
+  return `nanocodec ${{ h264: 'H.264', hevc: 'HEVC', vvc: 'VVC', av1: 'AV1', vp9: 'VP9', av2: 'AV2' }[codec] || codec} Medium (default)`;
 }
 
 function render(data, root) {

@@ -1109,7 +1109,7 @@ const PRUNED: (f32, f32, Variance) = (f32::INFINITY, f32::INFINITY, FORBIDDEN_ST
 /// candidate can still win; an improving candidate becomes the cached best
 /// and its pixels the backend's cached prediction.
 // Always inlined: as a call it costs H.264 about 0.3% of its instructions
-// (callgrind, h264-fast crowd 720p), more than its whole body.
+// (callgrind, H.264 Fast crowd 720p), more than its whole body.
 #[inline(always)]
 #[allow(
     clippy::inline_always,
@@ -1478,7 +1478,7 @@ pub(crate) fn leaf_area<B: CodecBackend>(block: &Block) -> usize {
 ///
 /// Not generic over the backend (only [`Measurer::new`] is): its methods
 /// stay shared, out-of-line functions, as before rectangular leaves. Generic,
-/// every method inlined into its single caller per backend and h264-fast
+/// every method inlined into its single caller per backend and H.264 Fast
 /// cost +0.5-0.8% Jetson cycles.
 pub(crate) struct Measurer<'a> {
     dsp: &'a Dsp,
@@ -1753,7 +1753,7 @@ impl<'a> Measurer<'a> {
     /// one over the same samples). Even-row distortion and forbidden
     /// vectors have no fused form and report no energy.
     // Out of line: inlined, the gate for measurers without energy grew
-    // `code_leaf` and cost h264-fast +0.6% Jetson cycles (bodycam) for
+    // `code_leaf` and cost H.264 Fast +0.6% Jetson cycles (bodycam) for
     // AV1's 0.03% host instructions.
     fn measure_with_energy(&self, mv: Mv) -> (Variance, Option<u64>) {
         debug_assert!(mv.is_full_pel());

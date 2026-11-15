@@ -139,7 +139,7 @@ impl PreAnalysis {
     /// callers use it only for blocks inside the analysed picture.
     #[must_use]
     // Always inlined into mode decision: as a call it cost H.264 ~0.1% of
-    // its instructions (callgrind, h264-fast crowd 720p).
+    // its instructions (callgrind, H.264 Fast crowd 720p).
     #[inline(always)]
     #[allow(
         clippy::inline_always,

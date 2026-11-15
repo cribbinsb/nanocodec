@@ -4,7 +4,7 @@
 //! nanocodec encode --codec av1|h264|hevc|vvc|vp9|av2 --input in.yuv --width W --height H
 //!                  --fps F --qp Q --frames N --output out.{ivf,264,hevc,vvc}
 //!                  [--recon recon.yuv] [--display-recon shown.yuv]
-//!                  [--block 8|16|32|64] [--intra-period N] [--key-qp-offset D] [--preset NAME] [--params FILE]
+//!                  [--block 8|16|32|64] [--intra-period N] [--key-qp-offset D] [--preset veryfast|faster|fast|medium] [--params FILE]
 //!                  [--param name=value]... [--film-grain [STRENGTH]] [--still-camera]
 //! nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]
 //!                  [--frame-md5 frames.md5] [--film-grain 0|1]   (AV1: 0 shows frames grain-free)
@@ -29,7 +29,9 @@
 //! picture's per-plane squared error against the reference (`sse_log.rs`).
 //! `--intra-period N` codes a key frame every N frames and inter frames in
 //! between; the default is a key frame every 10 seconds of video.
-//! Heuristic parameters: `--preset`, then `--params FILE`, then each
+//! Heuristic parameters: `--preset` (the speed ladder `veryfast`, `faster`,
+//! `fast`, `medium` = the codec's Default and the default; names relative to
+//! our own Default, not x264's speeds), then `--params FILE`, then each
 //! `--param name=value`, later settings winning (see `params.rs`).
 //! `--film-grain [STRENGTH]` (AV1 only) turns on film grain synthesis
 //! (`grain.enable`, and `grain.strength` when given), over those.
@@ -180,7 +182,12 @@ const USAGE: &str = concat!(
     "       [--timestamps in.txt] [--timestamps-out out.txt]\n",
     "       [--timing nominal|constant|variable] [--intra-refresh frames]\n",
     "       [--ltr-interval frames] [--simulate-loss frame]\n",
-    "       [--preset NAME] [--params FILE] [--param name=value]...\n",
+    "       [--preset veryfast|faster|fast|medium] [--params FILE] [--param name=value]...\n",
+    "                          (medium = the codec's Default, used when no preset is given;\n",
+    "                          not every codec has every rung, `nanocodec params --codec C`;\n",
+    "                          slow is reserved, not shipped yet; names are relative to our\n",
+    "                          Default, not x264's speeds; with --scalability L2*/L3* a rung\n",
+    "                          takes the codec's file tuned for that many layers)\n",
     "       [--film-grain [STRENGTH]]   (AV1 only)\n",
     "       [--still-camera]   (noise skip + skip-aware budget, AV1 also the noise split, over the\n",
     "                          preset: lowers the bitrate on still noisy scenes; off in every preset;\n",
@@ -473,8 +480,12 @@ fn encode_params(args: &[String], codec: Codec) -> Result<ParamOverrides, String
     } else {
         ParamOverrides::default()
     };
-    let mut params =
-        params::overrides_from_args_with_scalability(args, &named, parse_scalability(args)?)?;
+    let mut params = params::overrides_from_args_with_scalability(
+        args,
+        codec,
+        &named,
+        parse_scalability(args)?,
+    )?;
     // `--intra-refresh N` is `--param refresh.period=N`.
     if let Some(period) = params::flag_value(args, "--intra-refresh") {
         params.set("refresh.period", number(period, "--intra-refresh")? as f32);

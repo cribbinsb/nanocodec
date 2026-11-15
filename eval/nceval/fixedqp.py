@@ -2,7 +2,7 @@
 
     python3 -m nceval.fixedqp gap --binary BIN --families nanocodec-av1,svtav1-m12,... \\
         [--pairs nanocodec-av1:svtav1-m12,...] [--rotation KEY] [--level quick] [--clips N]
-    python3 -m nceval.fixedqp ab --codec av1 --binary BIN [--preset av1-fast] \\
+    python3 -m nceval.fixedqp ab --codec av1 --binary BIN [--preset fast] \\
         --param a.b=1 [--anchor-param ...] [--rotation KEY] [--level quick] [--clips N]
 
 Rate control costs our encoders 10-22 % BD-J against their own fixed QP
@@ -48,6 +48,7 @@ from .config import Paths, load_paths
 from .gatepolicy import EVALUATION_GATE
 from .levels import usable
 from .rc_cost import clip_terms
+from .encoders.nanocodec import preset_values
 from .realuse import LADDER_KBPS, PRESETS_DIR, Runner, own_family, param_args
 
 #: Rotation keys of this program's draws: never the day's adoption key.
@@ -297,9 +298,8 @@ def cost(args: argparse.Namespace) -> dict:
     tune.COST_CLIPS, geometric mean): the CPU column of the ablation table."""
     import tempfile
     from . import tune
-    from .tune import read_preset
     codec, binary = Codec(args.codec), Path(args.binary)
-    preset = read_preset(PRESETS_DIR / f"{args.preset}.toml") if args.preset else {}
+    preset = preset_values(PRESETS_DIR, codec, args.preset)
     sets = [("anchor", [])] + candidate_sets(args)
     if args.only:
         sets = [s for s in sets if s[0] == "anchor" or s[0] in args.only.split(",")]
@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("ab", "cost"):
         a = sub.choices[name]
         a.add_argument("--codec", required=True, choices=[c.value for c in Codec])
-        a.add_argument("--preset", help="the preset both sides start from (default: Default)")
+        a.add_argument("--preset", help="the ladder preset both sides start from (default: medium)")
         a.add_argument("--param", action="append", default=[], help="one candidate's name=value")
         a.add_argument("--sets", help="file of candidates, one per line: `label: a=1 b=2`")
     sub.choices["ab"].add_argument("--anchor-binary")

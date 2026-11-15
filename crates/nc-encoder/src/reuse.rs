@@ -18,7 +18,7 @@
 //!   moved forgets its history, a still cell that is dirty, unknown or
 //!   moved since its measurement is measured. Refined cells are measured
 //!   in the frame that refines them. Measuring every row with a still cell
-//!   on every frame cost H.264 `h264-faster` ~10% of its instructions and
+//!   on every frame cost H.264 `H.264 Faster` ~10% of its instructions and
 //!   ~8% of its Jetson cycles; now ~3% (`docs/handoff/rate-control.md`).
 //!
 //! - **Target.** A cell's long-run quality is the better of what it had
@@ -107,7 +107,7 @@ const DIRTY: u8 = 8;
 /// An inter frame tracks one row of cells in this many (refined cells at
 /// once; keys every cell). Noisy still content is re-coded with a small
 /// residual every frame, and an error fluctuates around a level: tracking
-/// every cell every frame cost ~5% of Jetson h264-faster cycles, and a
+/// every cell every frame cost ~5% of Jetson H.264 Faster cycles, and a
 /// degradation is now caught, and refined, at most this many frames late.
 const MEASURE_PERIOD: usize = 4;
 /// Independent noise realisations in a cell's frame-to-frame change (its

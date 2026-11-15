@@ -7,7 +7,7 @@
  "encode": [
   {
    "name": "h264-fast",
-   "family": "nanocodec-h264@h264-fast",
+   "family": "nanocodec-h264@fast",
    "label": "nanocodec H.264 Fast",
    "module": "ours-wasm",
    "ms": 11.01,
@@ -17,7 +17,7 @@
   {
    "name": "h264",
    "family": "nanocodec-h264",
-   "label": "nanocodec H.264 Default",
+   "label": "nanocodec H.264 Medium (default)",
    "module": "ours-wasm",
    "ms": 11.59,
    "fps": 86.3,
@@ -25,7 +25,7 @@
   },
   {
    "name": "hevc-fast",
-   "family": "nanocodec-hevc@hevc-fast",
+   "family": "nanocodec-hevc@fast",
    "label": "nanocodec HEVC Fast",
    "module": "ours-wasm",
    "ms": 18.29,
@@ -43,7 +43,7 @@
   },
   {
    "name": "av1-fast",
-   "family": "nanocodec-av1@av1-fast",
+   "family": "nanocodec-av1@fast",
    "label": "nanocodec AV1 Fast",
    "module": "ours-wasm",
    "ms": 22.62,
@@ -53,7 +53,7 @@
   {
    "name": "vp9",
    "family": "nanocodec-vp9",
-   "label": "nanocodec VP9 Default",
+   "label": "nanocodec VP9 Medium (default)",
    "module": "ours-wasm",
    "ms": 25.83,
    "fps": 38.7,

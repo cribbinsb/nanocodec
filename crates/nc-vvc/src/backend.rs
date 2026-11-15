@@ -639,7 +639,7 @@ impl CodecBackend for VvcBackend {
         // vvc-default-speed-2026-11-13, trial #2): mode-decision lambda 0.8 ->
         // 0.9125 and a coarser luma inter dead zone, 133 -> 95. Disjoint L3 at
         // head 0f2a708b (79 clips, single-point) J -0.27% [-0.57, +0.03], no
-        // guard; x86 instructions -3.2%, Jetson cycles -1.3%. vvc-fast pins
+        // guard; x86 instructions -3.2%, Jetson cycles -1.3%. VVC Fast pins
         // the old values.
         ("decision.lambda_scale", 0.9125),
         ("planner.lambda_scale", 4.0),
@@ -659,7 +659,7 @@ impl CodecBackend for VvcBackend {
         // -1.0%; λ x1.5 +0.8%, x2 +4.5%: VMAF loses first). CPU: x86 P
         // instructions +2.1%, Jetson cycles +1.2%. Adoption screen (k 0.1,
         // dCPU 2.1): L3 BETTER, J -0.19% [-0.48, +0.08] (n 126), no guard.
-        // docs/analysis/fixed-qp-gap-2026-11-14.md. vvc-fast pins it off.
+        // docs/analysis/fixed-qp-gap-2026-11-14.md. VVC Fast pins it off.
         ("vvc.unit_zero_rd", 0.5),
         ("vvc.unit_zero_rd_max_levels", 4.0),
         // Trellis quantisation of the coded luma blocks (`trellis.rs`; on by
@@ -792,7 +792,7 @@ impl CodecBackend for VvcBackend {
         // -0.2%, VMAF v1 +0.1%), 5/18 clips worse (static_meva_hospital
         // +0.9% / +1.9%), pulse +0.01 dB; VAL proxy-5 BETTER -1.0% (every
         // class better), pulse +0.05 dB. Cost-clip P frames +0.7%, key 0.
-        // vvc-fast keeps it off (not screened at k 0.6).
+        // VVC Fast keeps it off (not screened at k 0.6).
         ("decision.intra_directional", 1.0),
         ("decision.intra_directional_dc_ratio", 2.0),
     ];

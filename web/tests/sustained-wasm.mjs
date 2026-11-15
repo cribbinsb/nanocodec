@@ -10,7 +10,7 @@ const encodeRgba = rgbaEncoder(SourceFrame, wasm.memory);
 const count = 1200;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function open(codec, id, width = 72) {
-  return { codec, id, width, encoder: new BrowserEncoder(codec, width, 64, 160, 30, 900, 'default'), decoder: new BrowserDecoder(codec) };
+  return { codec, id, width, encoder: new BrowserEncoder(codec, width, 64, 160, 30, 900, 'medium'), decoder: new BrowserDecoder(codec) };
 }
 function close(s) { s.encoder.free(); s.decoder.free(); }
 function step(s, frame) {

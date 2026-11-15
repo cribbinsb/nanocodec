@@ -24,7 +24,7 @@ test('source frames follow the clip loop and frame rate', () => {
 });
 
 test('a report round-trips through its Markdown, with hashes and the optional streams', async () => {
-  const view = { letter: 'A', config: { source: 'live', codec: 'h264', preset: 'default', width: 64, height: 64, fps: 30, rateMode: 'cbr', targetKbps: 300 },
+  const view = { letter: 'A', config: { source: 'live', codec: 'h264', preset: 'medium', width: 64, height: 64, fps: 30, rateMode: 'cbr', targetKbps: 300 },
     streamId: null, streamBytes: null, shown: { metrics: { bitrate: '300' }, rateStatus: '', frameCount: '', badge: '', statistics: {} },
     window: { fps: 30, frames: [] }, interventions: [], log: [frame(0, true), frame(1)] };
   const page = { build: { commit: 'abc', dirty: false, profile: 'release', module: 'SIMD128 (pkg)' },

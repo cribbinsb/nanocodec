@@ -3,103 +3,42 @@
 //! settings win).
 //!
 //! A parameter file is a TOML subset: one `name = value` per line, `#`
-//! comments, blank lines. Presets are parameter files in the repository's
-//! `presets/` directory, built into the binary; `default` is the hand-tuned
-//! defaults (an empty file). Tuned presets are written by
-//! `eval/nceval/tune.py`.
+//! comments, blank lines. Presets are the codec-independent speed ladder
+//! (`veryfast`, `faster`, `fast`, `medium` = the codec's Default), built in
+//! by `nc_encoder::preset_params` (`presets.rs`); with `--scalability` they
+//! take the codec's layered file where it has one. Tuned presets are written
+//! by `eval/nceval/tune.py`.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use nc_av1::Av1Backend;
-use nc_encoder::{CodecBackend, InterLayerMode, ParamOverrides, ScalabilityMode, engine_specs};
+use nc_encoder::{
+    Codec, CodecBackend, InterLayerMode, ParamOverrides, ScalabilityMode, Speed, engine_specs,
+    preset_params, speeds,
+};
 use nc_h264::H264Backend;
 use nc_hevc::HevcBackend;
 
 /// The inter-layer prediction mode parameter a `--scalability` name sets.
 const INTER_LAYER_PARAM: &str = "spatial.inter_layer";
 
-/// Built-in presets: name and parameter-file text.
-const PRESETS: &[(&str, &str)] = &[
-    ("default", include_str!("../../../presets/default.toml")),
-    ("av1-fast", include_str!("../../../presets/av1-fast.toml")),
-    ("av1-svc", include_str!("../../../presets/av1-svc.toml")),
-    (
-        "av1-svc-fast",
-        include_str!("../../../presets/av1-svc-fast.toml"),
-    ),
-    ("av1-svc3", include_str!("../../../presets/av1-svc3.toml")),
-    (
-        "av1-svc3-fast",
-        include_str!("../../../presets/av1-svc3-fast.toml"),
-    ),
-    (
-        "av1-faster",
-        include_str!("../../../presets/av1-faster.toml"),
-    ),
-    ("hevc-fast", include_str!("../../../presets/hevc-fast.toml")),
-    (
-        "hevc-faster",
-        include_str!("../../../presets/hevc-faster.toml"),
-    ),
-    ("vp9-fast", include_str!("../../../presets/vp9-fast.toml")),
-    ("vp9-svc", include_str!("../../../presets/vp9-svc.toml")),
-    (
-        "vp9-svc-fast",
-        include_str!("../../../presets/vp9-svc-fast.toml"),
-    ),
-    ("vp9-svc3", include_str!("../../../presets/vp9-svc3.toml")),
-    (
-        "vp9-svc3-fast",
-        include_str!("../../../presets/vp9-svc3-fast.toml"),
-    ),
-    (
-        "vp9-faster",
-        include_str!("../../../presets/vp9-faster.toml"),
-    ),
-    (
-        "vp9-fastest",
-        include_str!("../../../presets/vp9-fastest.toml"),
-    ),
-    ("vvc-fast", include_str!("../../../presets/vvc-fast.toml")),
-    ("av2-fast", include_str!("../../../presets/av2-fast.toml")),
-    ("h264-fast", include_str!("../../../presets/h264-fast.toml")),
-    (
-        "h264-faster",
-        include_str!("../../../presets/h264-faster.toml"),
-    ),
-    (
-        "h264-fastest",
-        include_str!("../../../presets/h264-fastest.toml"),
-    ),
-    (
-        "h264-balanced",
-        include_str!("../../../presets/h264-balanced.toml"),
-    ),
-    (
-        "hevc-better",
-        include_str!("../../../presets/hevc-better.toml"),
-    ),
-];
-
-/// Build the overrides from `args`: `--preset NAME`, then `named` (the
-/// named settings such as `--still-camera`, `nc_encoder::still_camera_params`),
-/// `--params FILE`, optional `--scalability`, and any number of
-/// `--param name=value`, later settings winning.
+/// Build the overrides of a `codec` encode from `args`: `--preset NAME`
+/// (`medium` when absent; with `--scalability`, the rung's file for that many
+/// spatial layers), then `named` (the named settings such as
+/// `--still-camera`, `nc_encoder::still_camera_params`), `--params FILE`,
+/// optional `--scalability`, and any number of `--param name=value`, later
+/// settings winning.
 pub fn overrides_from_args_with_scalability(
     args: &[String],
+    codec: Codec,
     named: &ParamOverrides,
     scalability: Option<ScalabilityMode>,
 ) -> Result<ParamOverrides, String> {
-    let mut overrides = ParamOverrides::default();
-    if let Some(name) = flag_value(args, "--preset") {
-        let text = PRESETS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, t)| *t)
-            .ok_or_else(|| format!("unknown preset '{name}' (built in: {})", preset_names()))?;
-        apply_file_text(&mut overrides, text, &format!("preset {name}"))?;
-    }
+    let preset = flag_value(args, "--preset").unwrap_or_else(|| Speed::Medium.name().to_owned());
+    let spatial_layers = scalability.map_or(1, ScalabilityMode::spatial_layers);
+    let mut overrides =
+        preset_params(codec, spatial_layers, &preset).map_err(|e| format!("--preset: {e}"))?;
     overrides = overrides.overlaid_with(named);
     if let Some(path) = flag_value(args, "--params") {
         let text = crate::stdio::read_text(Path::new(&path))?;
@@ -138,22 +77,22 @@ pub fn overrides_from_args_with_scalability(
 }
 
 #[cfg(test)]
-pub fn overrides_from_args(args: &[String]) -> Result<ParamOverrides, String> {
-    overrides_from_args_with_scalability(args, &ParamOverrides::default(), None)
+pub fn overrides_from_args(args: &[String], codec: Codec) -> Result<ParamOverrides, String> {
+    overrides_from_args_with_scalability(args, codec, &ParamOverrides::default(), None)
 }
 
 /// `nanocodec params [--codec C]`: every parameter with its default, range
 /// and doc. With a codec, a default is the value that codec actually encodes
 /// with: its backend's `DEFAULT_PARAMS` layered over the engine defaults.
 pub fn listing(codec: Option<&str>) -> Result<String, String> {
-    let codec_defaults: &[(&str, f32)] = match codec {
-        None => &[],
-        Some("av1") => Av1Backend::DEFAULT_PARAMS,
-        Some("hevc") => HevcBackend::DEFAULT_PARAMS,
-        Some("vvc" | "h266") => nc_vvc::VvcBackend::DEFAULT_PARAMS,
-        Some("h264") => H264Backend::DEFAULT_PARAMS,
-        Some("vp9") => nc_vp9::Vp9Backend::DEFAULT_PARAMS,
-        Some("av2") => nc_av2::Av2Backend::DEFAULT_PARAMS,
+    let (codec_defaults, codec): (&[(&str, f32)], _) = match codec {
+        None => (&[], None),
+        Some("av1") => (Av1Backend::DEFAULT_PARAMS, Some(Codec::Av1)),
+        Some("hevc") => (HevcBackend::DEFAULT_PARAMS, Some(Codec::Hevc)),
+        Some("vvc" | "h266") => (nc_vvc::VvcBackend::DEFAULT_PARAMS, Some(Codec::Vvc)),
+        Some("h264") => (H264Backend::DEFAULT_PARAMS, Some(Codec::H264)),
+        Some("vp9") => (nc_vp9::Vp9Backend::DEFAULT_PARAMS, Some(Codec::Vp9)),
+        Some("av2") => (nc_av2::Av2Backend::DEFAULT_PARAMS, Some(Codec::Av2)),
         Some(other) => return Err(format!("unknown codec '{other}'")),
     };
     let mut out = String::from("# name  default  [min, max]  what raising it trades\n");
@@ -183,16 +122,17 @@ pub fn listing(codec: Option<&str>) -> Result<String, String> {
         out,
         "# nonbase.<name> = value: <name> on non-base inter frames only (engine decision.*, planner.*, analysis.*, and per-frame codec groups such as av1.*)"
     );
-    let _ = writeln!(out, "# presets: {}", preset_names());
+    let _ = writeln!(
+        out,
+        "# presets: {} (medium = the codec's Default; slow is reserved, not shipped yet)",
+        codec
+            .map_or(Speed::LADDER.to_vec(), speeds)
+            .iter()
+            .map(|s| s.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     Ok(out)
-}
-
-fn preset_names() -> String {
-    PRESETS
-        .iter()
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 pub(crate) fn flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -246,7 +186,7 @@ mod tests {
         };
         assert!(line(None).starts_with("decision.codec_subpel_seed_lambdas  0.03  "));
         assert!(line(Some("vp9")).starts_with("decision.codec_subpel_seed_lambdas  0  "));
-        assert!(line(Some("hevc")).starts_with("decision.codec_subpel_seed_lambdas  0  "));
+        assert!(line(Some("vvc")).starts_with("decision.codec_subpel_seed_lambdas  0.05  "));
         assert!(listing(Some("mpeg2")).is_err());
     }
 
@@ -254,20 +194,46 @@ mod tests {
     fn later_settings_win_and_files_parse() {
         let mut o = ParamOverrides::default();
         apply_file_text(&mut o, "# c\nplanner.lambda_scale = 3 # x\n\n", "t").unwrap();
-        let o2 = overrides_from_args(&args(&["--param", "planner.lambda_scale=4"])).unwrap();
+        let o2 =
+            overrides_from_args(&args(&["--param", "planner.lambda_scale=4"]), Codec::Av1).unwrap();
         assert_ne!(o, o2);
         assert!(
-            overrides_from_args(&args(&["--preset", "default"]))
+            overrides_from_args(&args(&["--preset", "medium"]), Codec::Av1)
                 .unwrap()
                 .is_empty()
         );
-        assert!(overrides_from_args(&args(&["--preset", "nope"])).is_err());
+        // The codec-prefixed names before the ladder (2026-11-15) are gone.
+        for old in ["default", "av1-fast", "nope"] {
+            assert!(overrides_from_args(&args(&["--preset", old]), Codec::Av1).is_err());
+        }
+    }
+    #[test]
+    fn scalability_takes_the_layered_file_of_the_rung() {
+        let layered = |mode: &str, preset: &str| {
+            overrides_from_args_with_scalability(
+                &args(&["--preset", preset]),
+                Codec::Vp9,
+                &ParamOverrides::default(),
+                ScalabilityMode::parse(mode),
+            )
+            .unwrap()
+        };
+        assert_eq!(layered("L3T1", "fast").get("spatial.layers"), Some(3.0));
+        assert_eq!(
+            layered("L2T3", "medium").get("spatial.base_rate_share"),
+            Some(0.3)
+        );
+        assert_eq!(
+            layered("L1T1", "fast"),
+            overrides_from_args(&args(&["--preset", "fast"]), Codec::Vp9).unwrap()
+        );
     }
     #[test]
     fn named_settings_lie_over_the_preset_and_under_params() {
         let named = nc_encoder::still_camera_params(nc_encoder::Codec::Av1);
         let o = overrides_from_args_with_scalability(
-            &args(&["--preset", "av1-fast", "--param", "decision.noise_skip=2"]),
+            &args(&["--preset", "fast", "--param", "decision.noise_skip=2"]),
+            Codec::Av1,
             &named,
             None,
         )
@@ -349,17 +315,15 @@ mod tests {
         // inherited cadence depth (2026-11-15).
         expected.set("structure.inherited_depth", 0.0);
         assert_eq!(
-            overrides_from_args(&args(&["--preset", "av1-fast"])).unwrap(),
+            overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected
         );
         expected.set("av1.chroma_delta_q", -12.0);
         assert_eq!(
-            overrides_from_args(&args(&[
-                "--preset",
-                "av1-fast",
-                "--param",
-                "av1.chroma_delta_q=-12"
-            ]))
+            overrides_from_args(
+                &args(&["--preset", "fast", "--param", "av1.chroma_delta_q=-12"]),
+                Codec::Av1
+            )
             .unwrap(),
             expected
         );

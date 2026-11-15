@@ -25,8 +25,8 @@
 <main>
   <h1>Spatial scalability (SVC)</h1>
   <p class="lede">One AV1 or VP9 stream carrying a lower-resolution base layer and the 720p picture, so a receiver
-    or relay can drop to the base without a second encode (<code>--preset av1-svc</code>, <code>vp9-svc</code>,
-    their <code>-fast</code> variants, and for three layers <code>av1-svc3</code>). Rate is the total stream rate;
+    or relay can drop to the base without a second encode (<code>--scalability L2T1 --preset medium</code> or <code>fast</code>,
+    and for three layers <code>--scalability L3T1</code>). Rate is the total stream rate;
     quality is the 720p output, against single-layer x264 medium (default tuning).</p>
   <div class="disclaimer">
     <strong>A small development set.</strong> These are development clips, not held-out ones. The libaom and

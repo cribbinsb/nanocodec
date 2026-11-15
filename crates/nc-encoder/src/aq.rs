@@ -190,7 +190,7 @@ impl BlockAq {
     /// Plan a frame whose only offsets are the reuse term's `reuse`: a few
     /// refined cells, so only their quantizer squares are pooled and
     /// written (the general path pooled and scanned every cell, ~2% of
-    /// Jetson h264-faster cycles on the frames that refine anything).
+    /// Jetson H.264 Faster cycles on the frames that refine anything).
     fn plan_reuse_only(&mut self, pre: &PreAnalysis, reuse: &[f64]) {
         if self.bit_weight.len() != reuse.len() {
             self.bit_weight.clear();

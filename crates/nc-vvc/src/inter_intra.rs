@@ -13,7 +13,7 @@
 //! 56-99% intra; on `crowd_mot17_09` and `bodycam_bc1` (300 kbps) no P picture
 //! reaches 30% intra, so the gate keeps the ranked search on about 1% / 4%
 //! of their intra area and the whole saving stays (diagnosis in
-//! docs/handoff/vvc.md, "vvc-fast").
+//! docs/handoff/vvc.md, "VVC Fast").
 use crate::intra::DirectionSearch;
 use nc_encoder::Block;
 

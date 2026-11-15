@@ -152,16 +152,19 @@ def scan_point(family, clip) -> dict:
             "fps": clip.fps}
 
 
-def plan_family(family):
+def plan_family(family, presets: pathlib.Path):
     """A chart family in the timing plan's form: ours by `--preset NAME`, so every
-    build encodes with its own compiled preset. The plan used to store the preset's
+    build encodes with its own compiled preset (`presets`, that build's presets
+    directory, decides its name: nanocodec.preset_cli_args). The plan used to store the preset's
     values as a frozen --param list from the scanning build, which went stale when a
     preset gained a value (2026-11-12: vp9-fast and av2-fast without
     planner.lambda_scale=2, timed as something other than the shipped preset)."""
+    from nceval.encoders.nanocodec import preset_cli_args
+
     if not family.own:
         return family
-    preset = family.name.partition("@")[2]
-    return replace(family, extra=("--preset", preset) if preset else ())
+    return replace(family, extra=preset_cli_args(family.codec, family.name.partition("@")[2],
+                                                 presets))
 
 
 def scan_grid(family) -> list[int]:
@@ -187,7 +190,7 @@ def scan(args: argparse.Namespace) -> None:
     from nceval.config import load_paths
     from nceval.realuse import main_clips
 
-    families = [plan_family(f) for f in chart_families(
+    families = [plan_family(f, pathlib.Path(args.presets_dir)) for f in chart_families(
         pathlib.Path(args.binary).resolve(), pathlib.Path(args.presets_dir),
         args.points.split(",") if args.points else None)]
     clips = [main_clips(load_paths())[name] for name in CLIPS]

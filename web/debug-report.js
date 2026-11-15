@@ -103,7 +103,7 @@ function viewLine(view) {
   const c = view.config;
   if (c.source === 'original') return `original, uncompressed · ${c.width}×${c.height} · ${c.fps} fps${c.rendition ? ` · shows ${c.rendition}` : ''}`;
   const what = view.config.source === 'reference' ? `pre-encoded \`${view.streamId}\``
-    : `live nanocodec ${c.codec} ${c.preset}${c.stillCamera ? ' + still-camera noise handling' : ''}`;
+    : `live nanocodec ${c.codec} ${c.preset}${c.spatialLayers > 1 ? ` · ${c.spatialLayers} spatial layers` : ''}${c.stillCamera ? ' + still-camera noise handling' : ''}`;
   return `${what} · ${c.width}×${c.height} · ${c.fps} fps · ${c.rateMode === 'cbr' ? `target ${c.targetKbps} kbps` : `fixed quantizer ${c.qp}`}${c.rendition ? ` · codes ${c.rendition}` : ''}`;
 }
 

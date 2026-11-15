@@ -1091,9 +1091,9 @@ param_group! {
             "inter-layer prediction mode: 1 = full SVC (every TU, AV1 §7.11.3.3); 2 = KEY / K-SVC (key TUs only, single-layer temporal on P-frames); 0 = independent layers",
         // Speed lever (svc-fast, 2026-11-12): the proxy is a search aid only
         // (the backend predicts from the base picture by AV1 §7.11.3.3), and
-        // the Lanczos-3 upscale was ~10% of an av1-svc-fast encode's instructions.
+        // the Lanczos-3 upscale was ~10% of an AV1 L2 Fast encode's instructions.
         // Speed lever (svc-fast, 2026-11-12): the Lanczos-3 base downscale was
-        // ~14% of an av1-svc-fast encode's instructions; the 2x2 mean is the
+        // ~14% of an AV1 L2 Fast encode's instructions; the 2x2 mean is the
         // analysis pyramid's SIMD kernel.
         base_box_downscale: 0.0, [0.0, 1.0],
             "1 makes the base layer's source with the 2x2 mean instead of Lanczos-3 (exact 2:1 base only): much cheaper, softer and more aliased base pictures",
@@ -1101,7 +1101,7 @@ param_group! {
             "1 builds the enhancement layer's search proxy of the upscaled base picture with a [1 3]/4 bilinear 2:1 upscale instead of Lanczos-3 (exact 2:1 base only): cheaper, slightly blurrier proxy for motion and mode search",
         enhancement_interval: 1.0, [1.0, 30.0],
             "code the enhancement spatial layer in every Nth temporal unit only (1 = every unit; 6 with a 30 fps base = a 5 fps enhancement): higher concentrates enhancement bits into fewer full-size frames",
-        // Speed / quality heuristic of VP9 spatial SVC (vp9-svc, 2026-11-12;
+        // Speed / quality heuristic of VP9 spatial SVC (VP9 L2 Medium, 2026-11-12;
         // on by default for VP9 only, through its DEFAULT_PARAMS): the
         // enhancement layer's inter frames predict from the upscaled base
         // picture, which already carries the low frequencies an intra block

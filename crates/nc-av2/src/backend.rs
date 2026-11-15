@@ -505,7 +505,7 @@ fn to_engine((row, col): (i32, i32)) -> Mv {
 /// vs 0.7, TRAIN 18 clips -1.6%, VAL 11 clips -1.0%, held-out
 /// (`broad_independent_v1`, 13 clips, every class) -2.3%, no guard;
 /// 900-frame single-key runs (chirla, crowd, pan) -0.04..+0.12 dB Y per
-/// third. `av2-fast` keeps 0.7 (its VAL lost on static, +4.5%).
+/// third. `AV2 Fast` keeps 0.7 (its VAL lost on static, +4.5%).
 ///
 /// Start-up lookahead first-key cap (`rate.first_key_lookahead`) 0.5
 /// buffers under camera motion, looser than AV1's 0.3 as for HEVC. `J_real`
@@ -518,7 +518,7 @@ const RATE_MODEL: nc_encoder::RateModel = nc_encoder::RateModel {
     // (`QUANT_TABLE_BITS`), leaving AV1's scale: eighths of a sample step,
     // AV1's `sample_step_scale`. At 1 the reuse term (`nc_encoder`
     // `reuse.rs`) took every step for 8x its size and judged two in five
-    // still cells of a starved key not refinable (`av2-fast` stayed 0.9 dB
+    // still cells of a starved key not refinable (`AV2 Fast` stayed 0.9 dB
     // short for good: `nc-cli/tests/static_recovery.rs`).
     ..nc_encoder::RateModel::AC_LOOKUP_QINDEX
 };
@@ -849,7 +849,7 @@ impl CodecBackend for Av2Backend {
         // re-checked at head 91ad0e87 on the study's rotation: disjoint L3
         // (79 clips, single-point) J -0.71% [-1.05, -0.40], L2 (ladder)
         // -1.00% [-1.41, -0.61], no guard. CPU x86 +0.6%, Jetson cycles
-        // +1.1%. av2-fast pins the previous planner lambda.
+        // +1.1%. AV2 Fast pins the previous planner lambda.
         ("av2.inter_chroma_rounding_delta_q7", 22.0),
         ("planner.lambda_scale", 2.581_25),
         ("av2.lambda_per_step_squared", 0.125),
@@ -921,7 +921,7 @@ impl CodecBackend for Av2Backend {
         // Adoption screen (k 0.1, dCPU +2.9%, pool draw 2026-11-15): L1 J
         // -1.22% [-1.72, -0.46] n 24, L2 -2.06% [-2.87, -1.31] n 48, L3
         // (600 f, ladder) -3.12% [-4.02, -2.29] n 27 BETTER, no guard.
-        // av2-fast pins the old values.
+        // AV2 Fast pins the old values.
         ("av2.parity_hiding", 1.0),
         ("planner.depth_removal_th_32_16", 0.0),
         ("planner.depth_removal_th_16_8", 0.0),

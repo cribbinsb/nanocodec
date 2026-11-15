@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Spatial SVC in headless Chromium: the demo's `svc` and `svc3` presets, their operating points.
+"""Spatial SVC in headless Chromium: the demo's two- and three-layer streams, their operating points.
 
 The browser module (web/pkg, tools/web/build.sh) encodes a short synthetic clip
-with the `svc` preset of each SVC codec (presets/av1-svc.toml, presets/vp9-svc.toml:
-a half-size base layer and the full-size layer) and AV1's `svc3` preset
-(presets/av1-svc3.toml: quarter-, half- and full-size layers). Three
+at the Medium preset with two spatial layers for each SVC codec (a half-size
+base layer and the full-size layer) and AV1 with three (quarter-, half- and
+full-size layers). Three
 BrowserDecoders decode it in the page, as the decode worker does
 (decode-worker.js): one at operating point 0 (full size), one at the lowest
 operating point (the base: AV1 drops the upper layers' OBUs, VP9 the
@@ -35,15 +35,16 @@ WIDTH, HEIGHT, FRAMES, FPS = 160, 96, 12, 30
 # and the switch back up taken at the key frame.
 DOWN_AT, KEY_AT = 4, 8
 
-#: The codecs with spatial SVC in the demo (web/codecs.js `svc`) and their IVF FourCC.
+#: The codecs with spatial SVC in the demo (web/codecs.js `spatialLayers`) and their IVF FourCC.
 CODECS = {"av1": b"AV01", "vp9": b"VP90"}
 #: The cases: (codec, demo preset, spatial layers).
-CASES = (("av1", "svc", 2), ("vp9", "svc", 2), ("av1", "svc3", 3))
+CASES = (("av1", "medium", 2), ("vp9", "medium", 2), ("av1", "medium", 3))
 
-PAGE_SCRIPT = '''async ([codec, preset, lowest, width, height, frames, downAt, keyAt]) => {
+PAGE_SCRIPT = '''async ([codec, preset, layers, width, height, frames, downAt, keyAt]) => {
+  const lowest = layers - 1;
   const module = await import('/pkg/nc_web.js');
   await module.default();
-  const encoder = new module.BrowserEncoder(codec, width, height, 180, 30, 900, preset);
+  const encoder = new module.BrowserEncoder(codec, width, height, 180, 30, 900, preset, undefined, false, undefined, undefined, layers);
   const full = new module.BrowserDecoder(codec), base = new module.BrowserDecoder(codec);
   const middle = new module.BrowserDecoder(codec);
   const switching = new module.BrowserDecoder(codec);
@@ -120,7 +121,7 @@ def main() -> None:
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{server.server_port}/index.html")
             outs = {(codec, preset, layers): page.evaluate(
-                PAGE_SCRIPT, [codec, preset, layers - 1, WIDTH, HEIGHT, FRAMES, DOWN_AT, KEY_AT])
+                PAGE_SCRIPT, [codec, preset, layers, WIDTH, HEIGHT, FRAMES, DOWN_AT, KEY_AT])
                 for codec, preset, layers in CASES}
             browser.close()
     finally:
@@ -132,7 +133,7 @@ def main() -> None:
 
 def check(binary: Path, codec: str, preset: str, layers: int, out: dict) -> None:
     """One case's pictures against the native decoder's."""
-    name, lowest = f"{codec.upper()} {preset}", layers - 1
+    name, lowest = f"{codec.upper()} {preset} L{layers}T1", layers - 1
     low_size = (WIDTH >> lowest, HEIGHT >> lowest)
     assert out["keys"][0] and out["keys"][KEY_AT], \
         f"{name}: the first frame and the requested one are keys"

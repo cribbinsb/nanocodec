@@ -57,8 +57,9 @@ FAMILY_PREFIX = "nanocodec-"
 #: introduction this flagged HEVC Default/Fast (2.29/1.80, 27%: Default runs
 #: 1.74x Fast's instructions, 1.50x slower on the Jetson, only 1.18x on x86).
 RATIO_TOLERANCE = 0.20
-#: A codec's presets from slowest to fastest (the family suffix after the codec).
-PRESET_ORDER = ("", "fast", "faster", "fastest")
+#: A codec's presets from slowest to fastest (the family's `@stem`; "" is
+#: medium, the Default): nceval.encoders.nanocodec.LADDER reversed.
+PRESET_ORDER = ("", "fast", "faster", "veryfast")
 #: The instruction check's clip and length (crowd: the timing set's middle clip).
 CALLGRIND_CLIP = "crowd_mot17_09"
 CALLGRIND_FRAMES = 30
@@ -75,9 +76,9 @@ def codec_of(family: str) -> str:
 
 
 def preset_rank(family: str) -> int:
-    """Position in PRESET_ORDER: nanocodec-av1 0, nanocodec-av1@av1-fast 1, ..."""
+    """Position in PRESET_ORDER: nanocodec-av1 0, nanocodec-av1@fast 1, ..."""
     preset = family.split("@")[1] if "@" in family else ""
-    return PRESET_ORDER.index(preset.removeprefix(f"{codec_of(family)}-"))
+    return PRESET_ORDER.index(preset)
 
 
 def fps_table() -> dict[str, tuple[float, float]]:
