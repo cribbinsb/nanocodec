@@ -88,6 +88,14 @@ lto = false
 codegen-units = 16
 incremental = true
 
+# The workspace tests (tools/ci/check.sh): the gate profile's optimised code with
+# debug assertions and overflow checks on, which catch a wrapped narrow (i16/u16)
+# coefficient or SAD. Its own profile, so the gate builds are not rebuilt.
+[profile.gate-test]
+inherits = "gate"
+debug-assertions = true
+overflow-checks = true
+
 # Benchmarks and checkasm want release code generation with debug info for
 # profiling.
 [profile.profiling]

@@ -426,7 +426,14 @@ class Refresh:
     def verify(self) -> None:
         """--retime's guard: each retimed family's streams at COMMIT equal its recorded
         build's (stream_check.py: the timing plan's fixed-QP streams and a CBR stream per
-        timing clip); then its timing build is recorded beside its quality build."""
+        timing clip); then its timing build is recorded beside its quality build.
+
+        First, a refreshed family whose streams did not change (its sources did, its
+        output did not: a speed change, a lever that lands off) becomes a retimed one:
+        its quality points stay valid on its recorded build and are not measured again.
+        A refresh after a one-codec change then measures that codec's families only
+        (2026-11-15: re-measuring all 18 took 49 min)."""
+        self.retime_unchanged()
         if not self.retimed:
             return
         new = self.build_dir(self.commit)
@@ -443,6 +450,24 @@ class Refresh:
         timed_on = self.record.setdefault("timed_on", {})
         timed_on.update({f: self.commit for f in self.retimed})
         self.save_record()
+
+    def retime_unchanged(self) -> None:
+        """Move each stale family whose streams at COMMIT equal its recorded build's
+        from the measured families to the retimed ones."""
+        new = self.build_dir(self.commit)
+        for family in list(self.stale):
+            old = self.build_dir(self.record["families"][family])
+            if self.args.dry_run or not (old / SCORING_BINARY).is_file():
+                continue
+            if stream_check.identical(family, (old / SCORING_BINARY, old / "presets"),
+                                      (new / SCORING_BINARY, new / "presets"),
+                                      REPO / PLAN_FILE):
+                self.say(f"  {family}: streams unchanged since {old.name}: "
+                         f"its quality points are kept, it is only timed")
+                self.stale.remove(family)
+                self.targets.remove(family)
+                self.retimed.append(family)
+        self.timed = self.targets + self.retimed
 
     def drop_unused_builds(self) -> None:
         for family in self.targets:  # measured and timed on one build again

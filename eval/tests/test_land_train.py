@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -69,14 +70,26 @@ def land_queued(toy, trees: list[Path]) -> list[subprocess.CompletedProcess]:
     """Run land.sh in every tree while a stand-in lander holds the lock, released once
     every one of them has queued its ticket (in order)."""
     tmp, _, env = toy
+    env = {**env, "NC_LAND_LOCK_TIMEOUT": str(int(QUEUE_TIMEOUT_SECONDS))}
     release = hold_lock(tmp)
     procs = []
-    for count, tree in enumerate(trees, 1):
-        procs.append(subprocess.Popen(["bash", "tools/dev/land.sh"], cwd=tree, env=env,
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
-        wait_for(lambda: len(list((tmp / "run/queue").glob("*.ticket"))) >= count)
-    release()
-    return [subprocess.CompletedProcess(p.args, p.wait(), p.stdout.read()) for p in procs]
+    try:
+        for count, tree in enumerate(trees, 1):
+            # Each lander in its own process group, killed whole if the test fails:
+            # failed runs left landers blocked on the lock for close to an hour.
+            procs.append(subprocess.Popen(["bash", "tools/dev/land.sh"], cwd=tree, env=env,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          text=True, start_new_session=True))
+            wait_for(lambda: len(list((tmp / "run/queue").glob("*.ticket"))) >= count)
+        release()
+        return [subprocess.CompletedProcess(p.args, p.wait(QUEUE_TIMEOUT_SECONDS),
+                                            p.stdout.read()) for p in procs]
+    finally:
+        release()
+        for proc in procs:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
 
 
 def hold_lock(tmp: Path):
@@ -85,7 +98,7 @@ def hold_lock(tmp: Path):
     holder = subprocess.Popen(["flock", str(tmp / "run/lock"), "bash", "-c",
                                f"until [ -e {flag} ]; do sleep 0.1; done"])
 
-    def release() -> None:
+    def release() -> None:  # idempotent: also called on a failed test's way out
         flag.touch()
         holder.wait()
     return release

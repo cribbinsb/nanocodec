@@ -71,7 +71,8 @@
 # default ~/nanocodec-data/worktrees/lander), NC_LAND_TARGET_DIR (its cargo
 # target dir, default ~/nanocodec-data/targets/lander), NC_LAND_LOCK (default ~/nanocodec-data/run/land.lock),
 # NC_LAND_QUEUE (default ~/nanocodec-data/run/land-queue), NC_LAND_TRAIN_MAX
-# (candidates per train, default 6; 1 lands one at a time), NC_LAND_FULL=1
+# (candidates per train, default 6; 1 lands one at a time), NC_LAND_LOCK_TIMEOUT
+# (seconds a lander waits for the lock; default no limit), NC_LAND_FULL=1
 # (run the full gate whatever changed), CARGO_BUILD_JOBS (default 8: warm
 # landings are short bursts), NC_LAND_PYTEST_WORKERS (eval pytest workers,
 # default 4: the suite runs beside the Rust checks).
@@ -161,7 +162,10 @@ main() {
     if ! flock -n 9; then
         printf '== queued; waiting for the landing lock (held by: %s)\n' \
             "$(cat "$lock.holder" 2>/dev/null || echo unknown)"
-        flock 9
+        # NC_LAND_LOCK_TIMEOUT (seconds; unset: no limit) bounds the wait, so a
+        # test's lander never outlives its test blocked here.
+        flock ${NC_LAND_LOCK_TIMEOUT:+-w "$NC_LAND_LOCK_TIMEOUT"} 9 ||
+            die "waited ${NC_LAND_LOCK_TIMEOUT}s for the landing lock: not landed"
     fi
     if [[ ! -e "$lander/.git" ]]; then
         printf '== creating the lander worktree %s (its first landing builds cold)\n' "$lander"
@@ -203,7 +207,8 @@ verify_target() {
     log=$queue/logs/verify-${head:0:9}.log
     scope=$(cd "$tree" && python3 tools/dev/land_scope.py "$base") || return 1
     printf '== verifying %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
-    (cd "$tree" && run_checks "$scope") >"$log" 2>&1 || status=$?
+    printf '== live: tail -f %s.parts/{python,rust,conformance}\n' "$log"
+    (cd "$tree" && NC_CHECK_PARTS=$log.parts run_checks "$scope") >"$log" 2>&1 || status=$?
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         rm -f "$failed"
@@ -331,6 +336,8 @@ ranked_tickets() {
 prune_logs() {
     local old
     while IFS= read -r old; do rm -f -- "$old"; done < <(find "$queue/logs" -type f -mtime +"$LOG_DAYS")
+    # the emptied per-group directories (LOG.parts) of old checks
+    while IFS= read -r old; do rmdir -- "$old"; done < <(find "$queue/logs" -mindepth 1 -type d -empty)
 }
 
 result() { printf '%s\n' "$2" >"$1.result"; }  # result TICKET TEXT
@@ -476,7 +483,7 @@ check_prefix() {
     printf '== checks on %s in %s (CARGO_TARGET_DIR=%s, %s jobs; log %s)\n' \
         "${1:0:9}" "$lander" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$3"
     status=0
-    (cd "$lander" && run_checks "$scope") 2>&1 | tee "$3" || status=$?
+    (cd "$lander" && NC_CHECK_PARTS=$3.parts run_checks "$scope") 2>&1 | tee "$3" || status=$?
     return "$status"
 }
 
@@ -502,7 +509,11 @@ run_checks() {
     while read -r key values; do plan[$key]=$values; done <<<"$1"
     if [[ "${NC_LAND_FULL:-0}" == 1 ]]; then plan[rust]=all plan[eval]=1 plan[web]=1 plan[page]=1 plan[conformance]=all plan[checkasm]=1; fi
     local -A pid=() failed=()
-    scratch=$(mktemp -d)
+    # Each group writes its own file as it runs: under NC_CHECK_PARTS (beside the
+    # check's log, so a running check can be followed: `tail -f LOG.parts/rust`),
+    # else a temporary directory. The log gets them whole at the end.
+    scratch=${NC_CHECK_PARTS:-$(mktemp -d)}
+    mkdir -p "$scratch"
     python_checks plan >"$scratch/python" 2>&1 &
     pid[python]=$!
     rust_checks plan >"$scratch/rust" 2>&1 &
@@ -517,7 +528,7 @@ run_checks() {
     # a failed group's output comes last, where a refused lander's tail shows it
     for group in "${groups[@]}"; do [[ -n "${failed[$group]:-}" ]] || print_group "$scratch" "$group"; done
     for group in "${groups[@]}"; do [[ -z "${failed[$group]:-}" ]] || print_group "$scratch" "$group" FAILED; done
-    rm -r -- "$scratch"
+    [[ -n "${NC_CHECK_PARTS:-}" ]] || rm -r -- "$scratch"
     return "$status"
 }
 
