@@ -1,0 +1,593 @@
+{
+ "source": [
+  "docs/results/decoder-speed-2026-11-13/xdec-final.json",
+  "docs/results/decoder-speed-2026-11-13/xdec-final2.json",
+  "docs/results/decoder-speed-2026-11-13/jdec-final.json",
+  "docs/results/decoder-speed-2026-11-13/frames.tsv"
+ ],
+ "build": "d007869b",
+ "rows": [
+  {
+   "codec": "h264",
+   "stream": "openh264 CABAC 1080p 3M",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 3.43,
+    "ref_ms": 3.62,
+    "ratio": 0.95,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 6.95,
+    "ref_ms": 8.47,
+    "ratio": 0.82,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 7.31,
+    "ratio": 2.13
+   }
+  },
+  {
+   "codec": "h264",
+   "stream": "ours 1080p 3M",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 3.12,
+    "ref_ms": 3.47,
+    "ratio": 0.9,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 6.71,
+    "ref_ms": 8.6,
+    "ratio": 0.78,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 6.23,
+    "ratio": 2.0
+   }
+  },
+  {
+   "codec": "h264",
+   "stream": "ours 720p crowd 600k",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 0.95,
+    "ref_ms": 1.08,
+    "ratio": 0.88,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 2.06,
+    "ref_ms": 2.69,
+    "ratio": 0.77,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 1.66,
+    "ratio": 1.75
+   }
+  },
+  {
+   "codec": "h264",
+   "stream": "x264 CABAC 1080p 3M",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 4.4,
+    "ref_ms": 4.38,
+    "ratio": 1.0,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 7.71,
+    "ref_ms": 9.11,
+    "ratio": 0.85,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 8.97,
+    "ratio": 2.04
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "Axis 1080p camera",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 3.5,
+    "ref_ms": 5.3,
+    "ratio": 0.66,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 5.87,
+    "ref_ms": 7.8,
+    "ratio": 0.75,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 5.53,
+    "ratio": 1.58
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "Axis 5MP camera",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": null,
+   "jetson": {
+    "ours_ms": 13.19,
+    "ref_ms": 16.52,
+    "ratio": 0.8,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": null
+  },
+  {
+   "codec": "hevc",
+   "stream": "Axis 720p camera",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 1.16,
+    "ref_ms": 1.66,
+    "ratio": 0.7,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 2.53,
+    "ref_ms": 3.37,
+    "ratio": 0.75,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 1.85,
+    "ratio": 1.6
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "Hanwha 4K camera",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": null,
+   "jetson": {
+    "ours_ms": 21.83,
+    "ref_ms": 28.07,
+    "ratio": 0.78,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": null
+  },
+  {
+   "codec": "hevc",
+   "stream": "Novatek 2460x1848",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 9.89,
+    "ref_ms": 13.37,
+    "ratio": 0.74,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 17.68,
+    "ref_ms": 21.33,
+    "ratio": 0.83,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 14.35,
+    "ratio": 1.45
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "ours 1080p 3M",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 5.19,
+    "ref_ms": 7.1,
+    "ratio": 0.73,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 12.45,
+    "ref_ms": 14.7,
+    "ratio": 0.85,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 9.27,
+    "ratio": 1.79
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "ours 720p 600k",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 1.31,
+    "ref_ms": 1.67,
+    "ratio": 0.78,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 3.0,
+    "ref_ms": 4.18,
+    "ratio": 0.72,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 2.08,
+    "ratio": 1.59
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "x265 1080p B",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 7.02,
+    "ref_ms": 7.47,
+    "ratio": 0.94,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 15.63,
+    "ref_ms": 16.99,
+    "ratio": 0.92,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 11.36,
+    "ratio": 1.62
+   }
+  },
+  {
+   "codec": "hevc",
+   "stream": "x265 4K B",
+   "reference": "FFmpeg",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 15.61,
+    "ref_ms": 27.39,
+    "ratio": 0.57,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 23.16,
+    "ref_ms": 30.17,
+    "ratio": 0.77,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 18.84,
+    "ratio": 1.21
+   }
+  },
+  {
+   "codec": "vvc",
+   "stream": "ours 1080p 3M",
+   "reference": "VVdeC",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 10.17,
+    "ref_ms": 21.63,
+    "ratio": 0.47,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 22.65,
+    "ref_ms": 32.52,
+    "ratio": 0.7,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 17.16,
+    "ratio": 1.69
+   }
+  },
+  {
+   "codec": "vvc",
+   "stream": "ours 720p crowd 600k",
+   "reference": "VVdeC",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 2.73,
+    "ref_ms": 7.01,
+    "ratio": 0.39,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 5.16,
+    "ref_ms": 8.14,
+    "ratio": 0.63,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 4.64,
+    "ratio": 1.7
+   }
+  },
+  {
+   "codec": "av1",
+   "stream": "SVT M10 1080p 3M",
+   "reference": "dav1d",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 5.33,
+    "ref_ms": 3.39,
+    "ratio": 1.57,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 13.02,
+    "ref_ms": 9.83,
+    "ratio": 1.32,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 8.28,
+    "ratio": 1.55
+   }
+  },
+  {
+   "codec": "av1",
+   "stream": "SVT p8 720p 1M",
+   "reference": "dav1d",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 2.78,
+    "ref_ms": 1.83,
+    "ratio": 1.52,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 7.21,
+    "ref_ms": 5.29,
+    "ratio": 1.36,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 4.44,
+    "ratio": 1.6
+   }
+  },
+  {
+   "codec": "av1",
+   "stream": "libaom good 720p 1M",
+   "reference": "dav1d",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 4.8,
+    "ref_ms": 3.04,
+    "ratio": 1.58,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 11.33,
+    "ref_ms": 7.91,
+    "ratio": 1.43,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 7.96,
+    "ratio": 1.66
+   }
+  },
+  {
+   "codec": "av1",
+   "stream": "ours 1080p 3M",
+   "reference": "dav1d",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 6.74,
+    "ref_ms": 5.33,
+    "ratio": 1.27,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 17.4,
+    "ref_ms": 14.54,
+    "ratio": 1.2,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 13.32,
+    "ratio": 1.98
+   }
+  },
+  {
+   "codec": "av1",
+   "stream": "ours 720p crowd 600k",
+   "reference": "dav1d",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 1.82,
+    "ref_ms": 1.62,
+    "ratio": 1.13,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 5.17,
+    "ref_ms": 4.75,
+    "ratio": 1.09,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 3.38,
+    "ratio": 1.85
+   }
+  },
+  {
+   "codec": "vp9",
+   "stream": "ours 1080p 3M",
+   "reference": "vpxdec",
+   "second_reference": "FFmpeg",
+   "x86": {
+    "ours_ms": 5.08,
+    "ref_ms": 3.83,
+    "ratio": 1.32,
+    "second_ms": 5.2,
+    "second_ratio": 0.98
+   },
+   "jetson": {
+    "ours_ms": 12.58,
+    "ref_ms": 10.62,
+    "ratio": 1.18,
+    "second_ms": 11.47,
+    "second_ratio": 1.1
+   },
+   "wasm": {
+    "ms": 9.55,
+    "ratio": 1.88
+   }
+  },
+  {
+   "codec": "vp9",
+   "stream": "ours 720p crowd 600k",
+   "reference": "vpxdec",
+   "second_reference": "FFmpeg",
+   "x86": {
+    "ours_ms": 1.43,
+    "ref_ms": 1.05,
+    "ratio": 1.36,
+    "second_ms": 1.36,
+    "second_ratio": 1.05
+   },
+   "jetson": {
+    "ours_ms": 3.4,
+    "ref_ms": 2.74,
+    "ratio": 1.24,
+    "second_ms": 3.19,
+    "second_ratio": 1.07
+   },
+   "wasm": {
+    "ms": 2.35,
+    "ratio": 1.65
+   }
+  },
+  {
+   "codec": "vp9",
+   "stream": "vpxenc 1080p 3M",
+   "reference": "vpxdec",
+   "second_reference": "FFmpeg",
+   "x86": {
+    "ours_ms": 5.98,
+    "ref_ms": 4.24,
+    "ratio": 1.41,
+    "second_ms": 6.11,
+    "second_ratio": 0.98
+   },
+   "jetson": {
+    "ours_ms": 13.36,
+    "ref_ms": 11.73,
+    "ratio": 1.14,
+    "second_ms": 12.48,
+    "second_ratio": 1.07
+   },
+   "wasm": {
+    "ms": 12.25,
+    "ratio": 2.05
+   }
+  },
+  {
+   "codec": "av2",
+   "stream": "ours 1080p 3M",
+   "reference": "avmdec",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 7.81,
+    "ref_ms": 23.55,
+    "ratio": 0.33,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 19.83,
+    "ref_ms": 62.31,
+    "ratio": 0.32,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 14.71,
+    "ratio": 1.88
+   }
+  },
+  {
+   "codec": "av2",
+   "stream": "ours 720p crowd 600k",
+   "reference": "avmdec",
+   "second_reference": null,
+   "x86": {
+    "ours_ms": 2.44,
+    "ref_ms": 6.28,
+    "ratio": 0.39,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "jetson": {
+    "ours_ms": 6.2,
+    "ref_ms": 19.88,
+    "ratio": 0.31,
+    "second_ms": null,
+    "second_ratio": null
+   },
+   "wasm": {
+    "ms": 4.13,
+    "ratio": 1.69
+   }
+  }
+ ]
+}

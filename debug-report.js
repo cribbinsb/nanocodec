@@ -12,7 +12,9 @@
 // unit, timings, PSNR as the page computed it), the bitrate window and its
 // formula, what changed the encoders mid-run, and the page's event log tail.
 // The coded access units since each view's last key frame are added only when
-// asked (`includeStreams`), base64, so the default report stays small.
+// asked (`includeStreams`), base64, so the default report stays small. An
+// Original view codes nothing: its frames are the source pictures it showed,
+// hashed, so the replay checks them against the regenerated source.
 import { frameAtTick, tickMs } from './timeline.js';
 
 /** The report's schema name and version: the replay tool refuses others. */
@@ -70,7 +72,7 @@ export async function buildReport(page, views, { includeStreams = false } = {}) 
     }
     const { log, streamBytes, ...described } = view;
     const entry = { ...described, ...(streamBytes ? { streamSha256: await sha256(streamBytes) } : {}), frames };
-    if (includeStreams) entry.stream = streamSinceKey(log);
+    if (includeStreams) entry.stream = view.config.source === 'original' ? { complete: false, note: 'the original is uncompressed: no coded stream' } : streamSinceKey(log);
     reported.push(entry);
   }
   return { schema: REPORT_SCHEMA, ...page, views: reported };
@@ -99,6 +101,7 @@ export function shownNumbers(element) {
 /** A short human summary line of a view. */
 function viewLine(view) {
   const c = view.config;
+  if (c.source === 'original') return `original, uncompressed · ${c.width}×${c.height} · ${c.fps} fps${c.rendition ? ` · shows ${c.rendition}` : ''}`;
   const what = view.config.source === 'reference' ? `pre-encoded \`${view.streamId}\``
     : `live nanocodec ${c.codec} ${c.preset}${c.stillCamera ? ' + still-camera noise handling' : ''}`;
   return `${what} · ${c.width}×${c.height} · ${c.fps} fps · ${c.rateMode === 'cbr' ? `target ${c.targetKbps} kbps` : `fixed quantizer ${c.qp}`}${c.rendition ? ` · codes ${c.rendition}` : ''}`;
@@ -129,7 +132,8 @@ export function formatReport(report) {
     '## State', '',
     `- ${state.playback} · tick ${state.tick} · clip time ${state.clipSeconds} s · loop ${state.loop}`,
     `- Session line: ${state.session}`,
-    `- Analysis: ${state.analysis.enabled ? `on · layers ${state.analysis.layers.join(', ')} · layout ${state.analysis.layout} · zoom ${state.analysis.zoom.scale}×` : 'off'}`, '',
+    `- Layout ${state.layout} · zoom ${state.zoom.scale}× at (${state.zoom.u.toFixed(3)}, ${state.zoom.v.toFixed(3)})`,
+    `- Analysis: ${state.analysis.enabled ? `on · layers ${state.analysis.layers.join(', ')}` : 'off'}`, '',
     '## Event log (most recent last)', '', '```', ...report.events, '```', '',
     '## Machine-readable state', '', JSON_FENCE, JSON.stringify(report, null, 1), '```', '',
   ];

@@ -47,11 +47,12 @@ import { ANALYSIS_MODULE_URL, MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
 import { errorMap, errorMapBuffers } from './error-map.js';
 import { tickAt } from './timeline.js';
+import { ViewSourceFrame } from './view-source-frame.js';
 // Started at once, awaited by 'init' (the message handler must exist synchronously).
 const codecModule = import(MODULE_URL);
 let module, decoder, wasm;
-// A pre-encoded view's converted source frame and its size (made on its first capture).
-let source = null, sourceSize = '';
+// A pre-encoded view's captured frames, placed at the view's size (view-source-frame.js).
+let viewSource = null;
 // The operating point to switch up to at the next key frame (null: none pending).
 let pendingOperatingPoint = null;
 // Analysis: 'off', 'on' or 'unsupported' (this codec's decoder records nothing).
@@ -156,26 +157,11 @@ function decodeFrame({ capture, packet, ...coded }) {
   }
   if (!coded.repeat) decoder.decode(packet);
   const decoded = performance.now();
-  if (capture) Object.assign(coded, convertCapture(capture));
+  if (capture) Object.assign(coded, viewSource.place(capture));
   const psnr = coded.source ? decoder.psnr(new Uint8Array(coded.source)) : null;
   return { ...coded, packet, psnr, width: decoder.width, height: decoder.height,
     streamWidth: decoder.stream_width, streamHeight: decoder.stream_height, spatialId: decoder.spatial_id,
     decodeMs: decoded - start, decodeStageMs: performance.now() - start };
-}
-/** A pre-encoded view's captured frame at the view's size: `{ source, colour }` as the encode worker sends them. */
-function convertCapture({ frame, width, height }) {
-  if (sourceSize !== `${width}x${height}`) {
-    source?.free();
-    source = new module.SourceFrame(width, height);
-    sourceSize = `${width}x${height}`;
-  }
-  if (frame.kind === 'planes') {
-    source.from_planes(new Uint8Array(frame.data), frame.format, frame.colour, frame.width, frame.height, Uint32Array.from(frame.layout));
-  } else {
-    source.from_rgba(new Uint8Array(frame.data));
-  }
-  const offset = source.packed();
-  return { source: new Uint8Array(wasm.memory.buffer, offset, source.packed_length).slice().buffer, colour: source.colour };
 }
 /**
  * Decode a message's coded frames (`coded`; the page's renderer format in
@@ -224,6 +210,7 @@ self.onmessage = async ({ data: message }) => {
       // The page posts the module it compiled once (wasm.js compiledModule).
       wasm = await module.default({ module_or_path: message.wasmModule });
       decoder = new module.BrowserDecoder(message.codec);
+      viewSource = new ViewSourceFrame(module, wasm);
       if (message.operatingPoint) decoder.set_operating_point(message.operatingPoint);
       if (message.analysis) { startAnalysis(); startMetrics(message.wasmModule); }
       message.port.onmessage = receivePacket;

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AV1 and VP9 spatial scalability against simulcast and the libaom and libvpx example SVC encoders.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec SVC results</title>
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="masthead">
+  <a class="brand" href="./"><b aria-hidden="true">▦</b>nano<span>codec</span> results</a>
+  <nav class="site-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="svc.html" aria-current="page">SVC</a>
+    <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
+    <a href="../">Demo</a>
+    <a href="https://github.com/cribbinsb/nanocodec">GitHub</a>
+  </nav>
+</header>
+<main>
+  <h1>Spatial scalability (SVC)</h1>
+  <p class="lede">One AV1 or VP9 stream carrying a lower-resolution base layer and the 720p picture, so a receiver
+    or relay can drop to the base without a second encode (<code>--preset av1-svc</code>, <code>vp9-svc</code>,
+    their <code>-fast</code> variants, and for three layers <code>av1-svc3</code>). Rate is the total stream rate;
+    quality is the 720p output, against single-layer x264 medium (default tuning).</p>
+  <div class="disclaimer">
+    <strong>A small development set.</strong> These are development clips, not held-out ones. The libaom and
+    libvpx rows use those projects' example SVC encoders (one thread, CBR, no frame drops), which demonstrate the
+    API and are not tuned products; other settings may do better. Speed is partly
+    estimated: on the PC most points were timed in pairs with x264 medium, the others are scaled by instruction
+    counts, and the Jetson column applies the PC's ratios to the Jetson's timed fps.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/svc-chart.md">Settings, the K-SVC modes and VP9 three-layer results</a>.
+  </div>
+  <div id="svc">
+    <div class="controls"></div>
+    <div class="chart-card">
+      <p class="chart-title">Bitrate saving of the 720p output against encode speed</p>
+      <p class="chart-sub">BD-J at the total rate, vs single-layer x264 medium · lower is fewer bits, right is faster</p>
+      <div class="chart"></div>
+      <div class="tooltip" role="tooltip" hidden></div>
+    </div>
+    <div class="svc-table"></div>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
+</footer>
+<script type="module" src="svc.js"></script>
+</body>
+</html>

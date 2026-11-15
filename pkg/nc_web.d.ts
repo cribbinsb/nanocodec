@@ -306,10 +306,16 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
+  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
+  readonly sourceframe_colour: (a: number) => [number, number];
+  readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+  readonly sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
+  readonly sourceframe_new: (a: number, b: number) => [number, number, number];
+  readonly sourceframe_packed: (a: number) => number;
+  readonly sourceframe_packed_length: (a: number) => number;
   readonly __wbg_browserdecoder_free: (a: number, b: number) => void;
   readonly __wbg_browserencoder_free: (a: number, b: number) => void;
   readonly __wbg_decodeoutcome_free: (a: number, b: number) => void;
-  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
   readonly browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
   readonly browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
@@ -344,12 +350,6 @@ export interface InitOutput {
   readonly decodeoutcome_reason: (a: number) => [number, number];
   readonly decodeoutcome_report_index: (a: number) => number;
   readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
-  readonly sourceframe_colour: (a: number) => [number, number];
-  readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
-  readonly sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
-  readonly sourceframe_new: (a: number, b: number) => [number, number, number];
-  readonly sourceframe_packed: (a: number) => number;
-  readonly sourceframe_packed_length: (a: number) => number;
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

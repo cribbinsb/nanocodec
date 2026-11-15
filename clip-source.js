@@ -8,14 +8,25 @@
 // Frames are asked for in presentation order and mostly one after another; a
 // request behind the decoder's position (a loop back to the start, a step) resets
 // the decoder at the last key frame at or before it.
+//
+// Feeding is driven by the decoder's outputs and bounded twice: at most
+// MAX_PENDING_SAMPLES in the decoder, and, beyond the frame waited for, at most
+// DECODE_AHEAD_FRAMES decoded or decoding. Feeding on a timer whatever the
+// decoder's backlog (as this file once did) queued the rest of the clip on a
+// slow machine: ~550 samples and as many unclosed 720p VideoFrames, and the
+// decoder then stalled for 1-9 s at a time (the demo's periodic pauses;
+// tests/clip-pauses.py).
 import { readMp4 } from './mp4.js';
 
 const MICROSECONDS_PER_SECOND = 1e6;
-// Samples fed per step while waiting for a frame: enough for B-frame reordering
-// without holding many decoded frames (a decoder stalls when too many are unclosed).
-const AHEAD_SAMPLES = 4;
-// How long to wait for the decoder's output before feeding more (ms).
-const OUTPUT_WAIT_MS = 10;
+// The most samples in the decoder at once: H.264's largest DPB (16 frames, Annex
+// A.3.1), so a conforming decoder outputs a frame before it holds this many. The
+// hosted clips (two B-frames) come out 2-3 samples behind the input.
+const MAX_PENDING_SAMPLES = 16;
+// Frames decoded (or decoding) ahead of the last one handed out, so the next
+// request is usually ready at once and the clip decoder overlaps the codecs: four
+// ticks of a 60 fps clip, of which the page shows every other frame.
+const DECODE_AHEAD_FRAMES = 8;
 
 export class ClipSource {
   /**
@@ -44,54 +55,82 @@ export class ClipSource {
     // Decoded frames by presentation index, waiting to be taken.
     this.ready = new Map();
     this.waiters = new Map();
-    this.next = 0;
-    // The last frame index handed out since the decoder (re)started.
-    this.lastTaken = -1;
     this.error = null;
-    // Whether the decoder was flushed after the last sample (its last frames are out).
-    this.flushed = false;
-    this.decoder = this.createDecoder();
+    this.decoder = this.createDecoder(0);
   }
-  createDecoder() {
+  /** A new decoder, fed from sample `next` on. */
+  createDecoder(next) {
+    // The next sample to feed, the samples fed whose frames have not come out,
+    // and the last frame index handed out since this decoder started.
+    this.next = next; this.pending = 0; this.lastTaken = -1;
+    // Whether the decoder was flushed after the last sample, and whether that
+    // flush is done (every frame it will give is out).
+    this.flushed = false; this.drained = false;
     const decoder = new VideoDecoder({
       output: frame => this.received(frame),
-      error: error => { this.error = error; for (const { reject } of this.waiters.values()) reject(error); this.waiters.clear(); },
+      error: error => { this.error = error; this.rejectWaiters(error); },
     });
     decoder.configure(this.config);
     return decoder;
   }
   received(frame) {
+    this.pending--;
     const index = Math.round(frame.timestamp * this.fps / MICROSECONDS_PER_SECOND);
     const waiter = this.waiters.get(index);
-    if (waiter) { this.waiters.delete(index); waiter.resolve(frame); } else this.ready.set(index, frame);
+    if (waiter) { this.waiters.delete(index); waiter.resolve(frame); }
+    // Frames before one already taken or waited for are not asked for before a restart.
+    else if (index <= this.lastTaken || [...this.waiters.keys()].some(wanted => wanted > index)) frame.close();
+    else this.ready.set(index, frame);
+    this.feed();
   }
   /** Frame `index` (0 to frameCount - 1) as a VideoFrame the caller owns and closes. */
   async frame(index) {
     if (this.error) throw this.error;
-    if (this.ready.has(index)) return this.take(index);
+    if (this.ready.has(index)) {
+      const frame = this.take(index);
+      this.feed();
+      return frame;
+    }
     const position = this.samples.findIndex(s => s.index === index);
     if (position < 0) throw new Error(`The clip has no frame ${index}`);
     // At or behind a frame already taken (a loop back, a step back): decode again
     // from a key frame. Later frames already fed are still on their way out.
     if (index <= this.lastTaken) this.restart(position);
-    const frame = new Promise((resolve, reject) => this.waiters.set(index, { resolve, reject })).then(f => this.handOut(index, f));
-    while (this.waiters.has(index)) {
-      if (this.next < this.samples.length) this.decodeAhead();
-      else if (this.flushed) throw new Error(`The decoder gave no frame ${index}`);
-      else { await this.decoder.flush(); this.flushed = true; }
-      await Promise.race([frame, new Promise(resolve => setTimeout(resolve, OUTPUT_WAIT_MS))]);
-      if (this.error) throw this.error;
-    }
-    return frame;
+    else this.discardBefore(index);
+    if (this.drained) throw new Error(`The decoder gave no frame ${index}`);
+    const frame = new Promise((resolve, reject) => this.waiters.set(index, { resolve, reject }));
+    this.feed();
+    return this.handOut(index, await frame);
   }
-  /** Feed the decoder the next few samples (reordered B-frames need some ahead). */
-  decodeAhead() {
-    for (const end = Math.min(this.samples.length, this.next + AHEAD_SAMPLES); this.next < end; this.next++) {
-      const sample = this.samples[this.next];
+  /**
+   * Feed the decoder while it has room (MAX_PENDING_SAMPLES) and, unless a frame
+   * is waited for, while fewer than DECODE_AHEAD_FRAMES are decoded or decoding;
+   * after the last sample, flush it so the frames it holds for reordering come out.
+   */
+  feed() {
+    while (this.next < this.samples.length && this.pending < MAX_PENDING_SAMPLES
+      && (this.waiters.size || this.ready.size + this.pending < DECODE_AHEAD_FRAMES)) {
+      const sample = this.samples[this.next++];
       this.decoder.decode(new EncodedVideoChunk({ type: sample.key ? 'key' : 'delta',
         timestamp: Math.round(sample.index * MICROSECONDS_PER_SECOND / this.fps),
         data: this.bytes.subarray(sample.offset, sample.offset + sample.size) }));
+      this.pending++;
     }
+    if (this.next === this.samples.length && !this.flushed) {
+      this.flushed = true;
+      const decoder = this.decoder;
+      // A restart closes the decoder, which rejects the flush: nothing to do then.
+      decoder.flush().then(() => {
+        if (decoder !== this.decoder) return;
+        this.drained = true;
+        this.rejectWaiters(null);
+      }, () => {});
+    }
+  }
+  /** Fail every waiting request: with `error`, or (null) as a frame the drained decoder never gave. */
+  rejectWaiters(error) {
+    for (const [index, { reject }] of this.waiters) reject(error ?? new Error(`The decoder gave no frame ${index}`));
+    this.waiters.clear();
   }
   take(index) {
     const frame = this.ready.get(index);
@@ -101,8 +140,12 @@ export class ClipSource {
   /** Hand frame `index` out; frames before it will not be asked for again before a restart. */
   handOut(index, frame) {
     this.lastTaken = index;
-    for (const [other, held] of this.ready) if (other < index) { held.close(); this.ready.delete(other); }
+    this.discardBefore(index);
     return frame;
+  }
+  /** Close the decoded frames before `index`. */
+  discardBefore(index) {
+    for (const [other, held] of this.ready) if (other < index) { held.close(); this.ready.delete(other); }
   }
   /** Restart decoding at the last key frame at or before sample `position`. */
   restart(position) {
@@ -111,10 +154,11 @@ export class ClipSource {
     this.decoder.close();
     for (const frame of this.ready.values()) frame.close();
     this.ready.clear();
-    this.decoder = this.createDecoder();
-    this.next = key; this.flushed = false; this.lastTaken = -1;
+    this.decoder = this.createDecoder(key);
   }
+  /** Release the decoder and its frames; a request still waiting fails (a stopped comparison's pump, app.js). */
   close() {
+    this.rejectWaiters(new Error('The clip source was closed'));
     for (const frame of this.ready.values()) frame.close();
     this.ready.clear();
     if (this.decoder.state !== 'closed') this.decoder.close();

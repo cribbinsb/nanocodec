@@ -1,10 +1,16 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_sourceframe_free: (a: number, b: number) => void;
+export const sourceframe_colour: (a: number) => [number, number];
+export const sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+export const sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
+export const sourceframe_new: (a: number, b: number) => [number, number, number];
+export const sourceframe_packed: (a: number) => number;
+export const sourceframe_packed_length: (a: number) => number;
 export const __wbg_browserdecoder_free: (a: number, b: number) => void;
 export const __wbg_browserencoder_free: (a: number, b: number) => void;
 export const __wbg_decodeoutcome_free: (a: number, b: number) => void;
-export const __wbg_sourceframe_free: (a: number, b: number) => void;
 export const browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
 export const browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
@@ -39,12 +45,6 @@ export const decodeoutcome_decoded: (a: number) => number;
 export const decodeoutcome_reason: (a: number) => [number, number];
 export const decodeoutcome_report_index: (a: number) => number;
 export const parameter_registry: (a: number, b: number) => [number, number, number, number];
-export const sourceframe_colour: (a: number) => [number, number];
-export const sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
-export const sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
-export const sourceframe_new: (a: number, b: number) => [number, number, number];
-export const sourceframe_packed: (a: number) => number;
-export const sourceframe_packed_length: (a: number) => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

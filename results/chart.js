@@ -1,0 +1,188 @@
+// A small dependency-free SVG scatter chart for the results pages: log-scale
+// speed across, BD-rate up (lower is better), per-clip spread as vertical bars,
+// a marker shape per project, direct labels where they fit, and a tooltip and a
+// selection per point (pointer, touch and keyboard). It draws what it is given;
+// the pages decide which points and values.
+
+const SVG = 'http://www.w3.org/2000/svg';
+const MARGIN = { top: 14, right: 18, bottom: 46, left: 56 };
+const LABEL_CHAR_PX = 6.4; // average label glyph width at the chart's label size
+const LABEL_HEIGHT = 13;
+const HIT_RADIUS = 14; // generous hit target around an 8-12 px marker
+const LOG_TICK_STEPS = [1, 2, 5];
+const LOG_NARROW_RATIO = 5;
+
+function svg(tag, attrs = {}) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== null && v !== undefined) node.setAttribute(k, v);
+  return node;
+}
+
+/** The path of a marker shape of radius r centred on (0, 0). */
+export function shapePath(shape, r) {
+  const t = r * 1.15;
+  switch (shape) {
+    case 'square': return `M${-r},${-r}h${2 * r}v${2 * r}h${-2 * r}z`;
+    case 'diamond': return `M0,${-t}L${t},0L0,${t}L${-t},0z`;
+    case 'triangle': return `M0,${-t}L${t},${t * 0.8}L${-t},${t * 0.8}z`;
+    case 'triangle-down': return `M0,${t}L${t},${-t * 0.8}L${-t},${-t * 0.8}z`;
+    case 'cross': {
+      const a = r * 0.42;
+      return `M${-r},${-r + a}L${-a},0L${-r},${r - a}L${-r + a},${r}L0,${a}L${r - a},${r}L${r},${r - a}L${a},0L${r},${-r + a}L${r - a},${-r}L0,${-a}L${-r + a},${-r}z`;
+    }
+    case 'plus': {
+      const a = r * 0.36;
+      return `M${-a},${-r}h${2 * a}v${r - a}h${r - a}v${2 * a}h${a - r}v${r - a}h${-2 * a}v${a - r}h${a - r}v${-2 * a}h${r - a}z`;
+    }
+    default: return `M${r},0A${r},${r} 0 1,1 ${-r},0A${r},${r} 0 1,1 ${r},0z`;
+  }
+}
+
+/** A small legend swatch of a marker. */
+export function swatch(shape, kind) {
+  const node = svg('svg', { viewBox: '-8 -8 16 16', 'aria-hidden': 'true' });
+  node.append(svg('path', { d: shapePath(shape, 6), class: `mark ${kind}` }));
+  return node;
+}
+
+function niceStep(span, target) {
+  const raw = span / target;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const unit = [1, 2, 2.5, 5, 10].find((m) => m * power >= raw) * power;
+  return unit;
+}
+
+function logTicks(lo, hi) {
+  const ticks = [];
+  // A narrow range (a few points) gets every integer multiple, so it keeps several ticks.
+  const steps = hi / lo < LOG_NARROW_RATIO ? [1, 2, 3, 4, 5, 6, 7, 8, 9] : LOG_TICK_STEPS;
+  for (let p = Math.floor(Math.log10(lo)); p <= Math.ceil(Math.log10(hi)); p++) {
+    for (const m of steps) {
+      const v = m * 10 ** p;
+      if (v >= lo && v <= hi) ticks.push(v);
+    }
+  }
+  return ticks;
+}
+
+/**
+ * Draw `points` into `container`:
+ *   points: [{id, x, y, iqr: [lo, hi] | null, kind: 'ours'|'ref'|'tuned', shape, label,
+ *             flagged, twin: id | null, priority}]
+ *   opts: {xLabel, yLabel, describe(point) -> Node (tooltip), onSelect(point), selected}
+ */
+export function drawScatter(container, points, opts) {
+  const width = Math.max(300, container.clientWidth);
+  const narrow = width < 560;
+  const height = Math.round(Math.min(640, Math.max(330, width * (narrow ? 1.3 : 0.6))));
+  const radius = narrow ? 5 : 6;
+  const plotW = width - MARGIN.left - MARGIN.right;
+  const plotH = height - MARGIN.top - MARGIN.bottom;
+
+  const xs = points.map((p) => p.x);
+  const ys = points.flatMap((p) => [p.y, ...(p.iqr || [])]).concat([0]);
+  const xLo = Math.min(...xs) * 0.82;
+  const xHi = Math.max(...xs) * 1.22;
+  const yStep = niceStep(Math.max(...ys) - Math.min(...ys), narrow ? 5 : 8);
+  const yLo = Math.floor(Math.min(...ys) / yStep) * yStep;
+  const yHi = Math.ceil(Math.max(...ys) / yStep) * yStep;
+  const sx = (v) => MARGIN.left + ((Math.log10(v) - Math.log10(xLo)) / (Math.log10(xHi) - Math.log10(xLo))) * plotW;
+  const sy = (v) => MARGIN.top + ((yHi - v) / (yHi - yLo)) * plotH;
+
+  const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, width, height, role: 'group', 'aria-label': opts.ariaLabel });
+  const grid = svg('g', { class: 'grid' });
+  for (let v = yLo; v <= yHi + 1e-9; v += yStep) {
+    grid.append(svg('line', { x1: MARGIN.left, x2: width - MARGIN.right, y1: sy(v), y2: sy(v) }));
+    const t = svg('text', { x: MARGIN.left - 8, y: sy(v) + 4, 'text-anchor': 'end' });
+    t.textContent = v === 0 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v)}%`;
+    grid.append(t);
+  }
+  for (const v of logTicks(xLo, xHi)) {
+    grid.append(svg('line', { x1: sx(v), x2: sx(v), y1: MARGIN.top, y2: height - MARGIN.bottom }));
+    const t = svg('text', { x: sx(v), y: height - MARGIN.bottom + 16, 'text-anchor': 'middle' });
+    t.textContent = String(v);
+    grid.append(t);
+  }
+  root.append(grid);
+  root.append(svg('line', { class: 'zero-line', x1: MARGIN.left, x2: width - MARGIN.right, y1: sy(0), y2: sy(0) }));
+  const xTitle = svg('text', { class: 'axis-title', x: MARGIN.left + plotW / 2, y: height - 8, 'text-anchor': 'middle' });
+  xTitle.textContent = opts.xLabel;
+  const yTitle = svg('text', { class: 'axis-title', transform: `translate(14 ${MARGIN.top + plotH / 2}) rotate(-90)`, 'text-anchor': 'middle' });
+  yTitle.textContent = opts.yLabel;
+  root.append(xTitle, yTitle);
+
+  const byId = new Map(points.map((p) => [p.id, p]));
+  const links = svg('g');
+  for (const p of points) {
+    const twin = p.twin && byId.get(p.twin);
+    if (twin) links.append(svg('line', { class: 'twin-link', x1: sx(p.x), y1: sy(p.y), x2: sx(twin.x), y2: sy(twin.y) }));
+  }
+  root.append(links);
+
+  const bars = svg('g');
+  for (const p of points) {
+    if (!p.iqr) continue;
+    bars.append(svg('line', { class: `iqr ${p.kind === 'ours' ? 'ours' : 'ref'}`, x1: sx(p.x), x2: sx(p.x), y1: sy(p.iqr[0]), y2: sy(p.iqr[1]) }));
+  }
+  root.append(bars);
+
+  // Labels: the highest-priority points first, each at the first free side.
+  const placed = points.map((p) => ({ x0: sx(p.x) - radius, x1: sx(p.x) + radius, y0: sy(p.y) - radius, y1: sy(p.y) + radius }));
+  // The zero line keeps its labels off it, so it stays readable.
+  placed.push({ x0: MARGIN.left, x1: width - MARGIN.right, y0: sy(0) - 2, y1: sy(0) + 2 });
+  const labels = svg('g');
+  const overlaps = (b) => placed.some((o) => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
+  for (const p of [...points].sort((a, b) => b.priority - a.priority)) {
+    const w = p.label.length * LABEL_CHAR_PX;
+    const cx = sx(p.x);
+    const cy = sy(p.y);
+    const gap = radius + 4;
+    const sides = [
+      { x: cx + gap, y: cy + 4, anchor: 'start', box: { x0: cx + gap, x1: cx + gap + w, y0: cy - 8, y1: cy + 5 } },
+      { x: cx - gap, y: cy + 4, anchor: 'end', box: { x0: cx - gap - w, x1: cx - gap, y0: cy - 8, y1: cy + 5 } },
+      { x: cx, y: cy - gap - 2, anchor: 'middle', box: { x0: cx - w / 2, x1: cx + w / 2, y0: cy - gap - LABEL_HEIGHT, y1: cy - gap } },
+      { x: cx, y: cy + gap + 10, anchor: 'middle', box: { x0: cx - w / 2, x1: cx + w / 2, y0: cy + gap, y1: cy + gap + LABEL_HEIGHT } },
+    ];
+    const inside = (b) => b.x0 >= 2 && b.x1 <= width - 2 && b.y0 >= 0 && b.y1 <= height - MARGIN.bottom;
+    const side = sides.find((s) => inside(s.box) && !overlaps(s.box));
+    if (!side) continue;
+    placed.push(side.box);
+    const t = svg('text', { class: `point-label ${p.kind === 'ours' ? 'ours' : ''}`, x: side.x, y: side.y, 'text-anchor': side.anchor });
+    t.textContent = p.label;
+    labels.append(t);
+  }
+  root.append(labels);
+
+  const marks = svg('g');
+  const tooltip = container.parentElement.querySelector('.tooltip');
+  const show = (p, node) => {
+    tooltip.replaceChildren(opts.describe(p));
+    tooltip.hidden = false;
+    const card = container.parentElement.getBoundingClientRect();
+    const box = node.getBoundingClientRect();
+    const left = Math.min(box.left - card.left + 16, card.width - tooltip.offsetWidth - 6);
+    const top = box.top - card.top - tooltip.offsetHeight - 10;
+    tooltip.style.left = `${Math.max(6, left)}px`;
+    tooltip.style.top = `${top < 4 ? box.bottom - card.top + 10 : top}px`;
+  };
+  const hide = () => { tooltip.hidden = true; };
+  for (const p of [...points].sort((a, b) => a.priority - b.priority)) {
+    const g = svg('g', { class: `point${opts.selected === p.id ? ' active' : ''}`, transform: `translate(${sx(p.x)} ${sy(p.y)})` });
+    const cls = `mark ${p.kind}${p.flagged ? ' flagged' : ''}${p.kind === 'tuned' ? ' ref' : ''}`;
+    g.append(svg('path', { d: shapePath(p.shape, p.kind === 'ours' ? radius + 0.5 : radius), class: cls }));
+    const hit = svg('circle', { r: HIT_RADIUS, class: 'hit', tabindex: 0, role: 'button', 'aria-label': p.aria });
+    hit.addEventListener('pointerenter', () => show(p, hit));
+    hit.addEventListener('pointerleave', hide);
+    hit.addEventListener('focus', () => show(p, hit));
+    hit.addEventListener('blur', hide);
+    hit.addEventListener('click', () => opts.onSelect(p));
+    hit.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); opts.onSelect(p); }
+    });
+    g.append(hit);
+    marks.append(g);
+  }
+  root.append(marks);
+  container.replaceChildren(root);
+  hide();
+}

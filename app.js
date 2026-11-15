@@ -2,6 +2,12 @@
 // two views (panel.js), the capture loop on the shared source timeline
 // (timeline.js, capture.js), and pause, frame stepping and the session line.
 //
+// The comparison always runs: it starts on page open and restarts by itself,
+// RESTART_DELAY_MS after the last of a burst of changes, whenever the source
+// or a view's setting changes (rate changes apply live, without a restart).
+// Each start supersedes the one before (`generation`), so a burst of changes
+// under load ends in one comparison with the final settings.
+//
 // Each view codes the ticks of its own frame rate and is given the source drawn
 // at its own resolution. Sample clips, files the browser can decode frame by
 // frame and the test scene are exact sources (exact-source.js): the page asks
@@ -19,9 +25,9 @@
 // from it.
 import { Panel } from './panel.js';
 import { Comparison } from './pipeline.js';
-import { Loupe } from './loupe.js';
+import { ViewZoom } from './view-zoom.js';
+import { Layout } from './layout.js';
 import { AnalysisController } from './analysis-view.js';
-import { drawScene } from './scene.js';
 import { FrameSource } from './capture.js';
 import { ViewSources } from './exact-source.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
@@ -35,11 +41,16 @@ import { SpeedHint } from './speed-hint.js';
 
 const $ = selector => document.querySelector(selector);
 const pauseButton = $('#pause'), stepButton = $('#step');
-const startButton = $('#start'), video = $('#input-video'), notice = $('#notice');
-// The still-camera noise handling for live encodes (nc-encoder still_camera.rs); on by default here.
-const stillCamera = $('#still-camera');
-const preview = $('#source-preview').getContext('2d');
-const PREVIEW_WIDTH = 160, PREVIEW_HEIGHT = 90;
+const video = $('#input-video'), notice = $('#notice');
+// A change restarts the comparison this long after the last change of a burst.
+const RESTART_DELAY_MS = 300;
+// The opening comparison: a pre-encoded x264 stream in A, and B matched to it
+// live (nanocodec H.264 Default at its size, frame rate and bitrate).
+const OPENING_STREAM = 'xiph-four-people-x264-medium-854x480-30fps-400k';
+// `?views=live` opens instead on two live views at the panels' defaults (H.264
+// and AV1, 854x480, 15 fps, 300 kbps) on DEFAULT_CLIP: the page tests that
+// measure live encoders start there.
+const LIVE_VIEWS = new URLSearchParams(location.search).get('views') === 'live';
 // How long to wait for a video that is not ready to show a frame (ms).
 const NOT_READY_RETRY_MS = 100;
 // Delivery within this fraction of the target frame rate counts as keeping up.
@@ -47,23 +58,21 @@ const KEEPING_UP = 0.95;
 // Delivery under this fraction of the slowest stage's own rate is not that stage's limit.
 const STAGE_BOUND = 0.8;
 // Said of a clip or file the browser cannot decode frame by frame (exact-source.js), so it is sampled while it plays.
-const APPROXIMATE = 'this browser/file cannot be read frame by frame: frames may be skipped and the numbers are approximate';
+const APPROXIMATE = 'sampled while it plays (this browser cannot read it frame by frame): numbers approximate';
 let kind = 'clip', clip = DEFAULT_CLIP, file = null, fileUrl = null, loadedSource = null, camera = null;
 let running = false, preparing = false, generation = 0, comparison = null, timer = 0, restartTimer = 0;
-let showOriginal = false, delivered = 0;
+let delivered = 0;
 let pendingRateChange = false;
-// The last comparison ended in a failure (not a Stop): a settings change starts a new one.
-let stoppedByFailure = false;
-// A settings change has scheduled a restart that has not begun yet (restartTimer).
+// A change has scheduled a restart that has not begun yet (restartTimer).
 let restartPending = false;
+// The comparison stopped (video ended, failure, hidden tab): the Pause button restarts it.
+let ended = false;
 // `pausing`: Pause was pressed; the views stop at the next tick they all code.
 let paused = false, pausing = false, pausedAt = 0, stepping = false;
 let nextDeadline = 0, firstDeliveredAt = 0, lastTick = -1;
 // Analysis was switched while comparing: no captures until the decoders have
 // moved to the other module (`switchDecoders`); `switchBusy` while they move.
 let switchWanted = false, switchBusy = false;
-// The original frame (largest view size) of the instant on screen, for the magnifier.
-let original = null;
 const frames = new FrameSource(video, error => { if (running || preparing) fail(error); });
 // The exact sources of the current clip, file or scene (exact-source.js
 // ViewSources: a clip's rendition for each view's height; null: sampled live),
@@ -87,18 +96,19 @@ const panels = ['A', 'B'].map((letter, i) => {
   }, display);
   return panel;
 });
-const loupe = new Loupe($('#loupe'), panels);
 const speedHint = new SpeedHint($('#speed-hint'), applyLighter);
+// Zoom and pan shared by both views (view-zoom.js); the analysis layers draw through it.
+const zoom = new ViewZoom(panels, { onChange: () => analysis.zoomChanged(), onTap: (panel, event) => analysis.tapped(panel, event) });
+const layout = new Layout($('#layout'), $('#versions'), () => zoom.show());
 // Coding-tool overlays and statistics (analysis-view.js); off until switched on.
-const analysis = new AnalysisController($('#analysis'), $('#versions'), panels, {
-  onEnabled: () => analysisSwitched(),
-  loupeActive: () => loupe.enabled,
+const analysis = new AnalysisController($('#analysis-toggle'), $('#analysis'), $('#versions'), panels, {
+  onEnabled: () => analysisSwitched(), zoom,
 });
 
 // What tools/web/build.sh wrote about the module build (commit, profile), for the debug report.
 const BUILD_INFO_URL = new URL('./pkg/build.json', import.meta.url);
-/** The page's whole state as a debug report (debug-report.js), downloaded as Markdown. */
-async function downloadReport() {
+/** The page's whole state as a debug report (debug-report.js), downloaded as Markdown; `includeStreams`: embed the coded streams. */
+async function downloadReport(includeStreams) {
   const build = await fetch(BUILD_INFO_URL).then(response => (response.ok ? response.json() : {}), () => ({}));
   const loopLength = exact?.loopLength ?? frames.loopLength;
   const text = selector => $(selector).textContent;
@@ -110,10 +120,10 @@ async function downloadReport() {
     state: { playback: paused ? 'paused' : running ? 'playing' : preparing ? 'starting' : 'stopped', tick: lastTick,
       clipSeconds: clipSeconds(lastTick, loopLength), loop: Number.isFinite(loopLength) ? Math.floor(lastTick / loopLength) : 0,
       session: text('#session-stats'), runtime: text('#runtime-label'), notice: notice.hidden ? null : notice.textContent,
-      viewNote: $('#view-note').hidden ? null : text('#view-note'),
-      delivered, analysis: analysis.debugState(), magnifier: loupe.enabled, showOriginal, stillCamera: stillCamera.checked },
+      viewNote: $('#view-note').hidden ? null : text('#view-note'), pipeline: comparison && delivered ? pipelineState() : null,
+      delivered, analysis: analysis.debugState(), layout: layout.value, zoom: zoom.debugState() },
     events: traceTail(),
-  }, panels.map(panel => panel.debugState()), { includeStreams: $('#debug-streams').checked });
+  }, panels.map(panel => panel.debugState()), { includeStreams });
   download(new Blob([formatReport(report)], { type: 'text/markdown' }), `nanocodec-debug-${report.page.time.replace(/[:.]/g, '-')}.md`);
 }
 /** A decoded clip's container facts (clip-source.js), for the debug report. */
@@ -147,14 +157,18 @@ async function sourceState(loopLength) {
 }
 function message(text = '') { notice.textContent = text; notice.hidden = !text; }
 function setPauseButton(label, pressed) { pauseButton.textContent = label; pauseButton.setAttribute('aria-pressed', String(pressed)); }
+/**
+ * End the comparison (its workers, and unless `keepSource` the camera and
+ * video). A restart already scheduled still runs.
+ */
 function stop(keepSource = false) {
-  ++generation; clearTimeout(timer); clearTimeout(restartTimer); stoppedByFailure = false; restartPending = false;
+  ++generation; clearTimeout(timer);
   switchWanted = false; switchBusy = false;
   comparison?.terminate(); comparison = null; speedHint.clear();
-  running = false; preparing = false; paused = false; pausing = false;
+  running = false; preparing = false; paused = false; pausing = false; ended = false;
   pauseButton.disabled = true; setPauseButton('Pause', false); stepButton.disabled = true;
   $("#keyframe").disabled = true;
-  document.body.classList.remove('running'); startButton.innerHTML = 'Start comparison <span aria-hidden="true">↗</span>';
+  document.body.classList.remove('running');
   $('#runtime-label').textContent = 'WASM encode + decode';
   if (!keepSource) {
     video.pause();
@@ -222,7 +236,7 @@ async function switchDecodersWhenIdle() {
     if (token !== generation) return;
     results.forEach((result, i) => {
       if (!result) return;
-      const replaced = panels[i].redisplay(result, showOriginal);
+      const replaced = panels[i].redisplay(result);
       if (replaced) comparison.recycle(i, replaced);
     });
   } catch (error) { if (token === generation) fail(error); return; }
@@ -252,7 +266,7 @@ async function pump(token) {
   try {
     while (mayCapture() && !comparison.full) {
       const tick = nextCodedTick(lastTick);
-      if (exact.ended(tick)) { stop(); $('#session-stats').textContent = `${delivered} frames compared · video ended`; return; }
+      if (exact.ended(tick)) { videoEnded(); return; }
       const due = clockOrigin + tickMs(tick), now = performance.now();
       if (due > now) { timer = setTimeout(() => pump(token), due - now); return; }
       clockOrigin = Math.max(clockOrigin, now - tickMs(tick + 1));
@@ -300,26 +314,38 @@ function fail(error) {
   const detail = error instanceof Error ? error.message : String(error);
   trace('fail', detail, restartPending ? '(restart pending)' : '');
   // Settings changed after the failing comparison started: their restart is still
-  // due (stop() cancels the timer), and it runs with the new settings.
-  if (restartPending) { start(); return; }
-  stop(); stoppedByFailure = true;
+  // due, and it runs with the new settings.
+  stop(true);
+  if (restartPending) return;
+  showEnded('Restart');
   message(detail); $('#session-stats').textContent = 'Comparison stopped';
+}
+/** The comparison has stopped by itself: the Pause button, as `label`, starts it again. */
+function showEnded(label) {
+  ended = true; pauseButton.disabled = false; setPauseButton(label, false);
+}
+/** A local file reached its end. */
+function videoEnded() {
+  stop(); showEnded('Play again');
+  $('#session-stats').textContent = `${delivered} frames compared · video ended`;
+}
+/** Start a new comparison RESTART_DELAY_MS after the last of a burst of calls (see the file comment). */
+function scheduleRestart(reason) {
+  trace('restart scheduled', reason);
+  clearTimeout(restartTimer);
+  restartPending = true;
+  restartTimer = setTimeout(() => { restartPending = false; trace('restart', reason); start(); }, RESTART_DELAY_MS);
 }
 /** A panel's setting changed: rate changes apply live, a new stream may switch the clip, others restart. */
 function settingsChanged(change, panel) {
-  trace('settings', change ?? 'restart', panel?.letter, running ? 'running' : preparing ? 'starting' : stoppedByFailure ? 'failed' : 'stopped');
-  if (change === 'rate' && running) { pendingRateChange = true; return; }
+  trace('settings', change ?? 'restart', panel?.letter, running ? 'running' : preparing ? 'starting' : 'stopped');
+  if (change === 'rate' && running) { pendingRateChange = true; describeViews(); return; }
   if (change === 'reference' && panel.reference && (kind !== 'clip' || panel.reference.clip !== clip.id)) {
     clip = clipById(panel.reference.clip); clipPicker.value = clip.id;
-    sourceChanged('clip'); start(); return;
+    sourceChanged('clip'); return;
   }
   describeViews();
-  // A comparison the visitor stopped waits for Start; one running, starting or
-  // stopped by a failure restarts with the new settings (start() reads them all).
-  if (!running && !preparing && !stoppedByFailure) { resetViews(); $("#session-stats").textContent = "Settings changed · start a new comparison"; return; }
-  clearTimeout(restartTimer);
-  restartPending = true;
-  restartTimer = setTimeout(() => { trace('restart'); stop(true); start(); }, 200);
+  scheduleRestart(change ?? 'settings');
 }
 /** "Match nanocodec to this stream": the other view becomes a live encode at the stream's settings. */
 function matchOther(panel, entry) {
@@ -337,17 +363,15 @@ function applyLighter(index, change) {
   if (change.preset) { panel.preset.value = change.preset; panel.preset.dispatchEvent(new Event('change')); return; }
   const { width, height } = panel.current;
   for (const other of panels) {
-    if (other.preEncoded || other.current.width !== width || other.current.height !== height) continue;
+    if (other.current.source !== 'live' || other.current.width !== width || other.current.height !== height) continue;
     other.resolution.value = `${change.width}x${change.height}`;
     other.resolution.dispatchEvent(new Event('change'));
   }
 }
-function resetViews() {
-  for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
-  original = null; loupe.frameShown(null);
-}
-/** Say when the views' numbers are not directly comparable. */
+/** Say what is compared (the header sentence), and when the views' numbers are not directly comparable. */
 function describeViews() {
+  const source = { clip: `the clip ${clip.title}`, scene: 'the test scene', camera: 'your webcam', file: file?.name ?? 'a video file' }[kind];
+  $('#summary').textContent = `Comparing ${panels[0].summary} in A with ${panels[1].summary} in B, on ${source}.`;
   const configs = panels.map(p => p.config()), notes = [];
   if ((configs[0].width !== configs[1].width || configs[0].height !== configs[1].height)) {
     notes.push('The views differ in resolution: each PSNR is against the source at that view’s own size, so the two are not directly comparable.');
@@ -415,7 +439,7 @@ async function prepareSource(token) {
   if (panels.some(p => p.current.entry)) video.currentTime = 0;
   try { await video.play(); } catch (error) {
     // Muted inline video may autoplay, but a browser can still refuse until the user interacts.
-    if (error.name === 'NotAllowedError') throw new Error('The browser blocked automatic playback. Press Start comparison to play the clip.');
+    if (error.name === 'NotAllowedError') throw new Error('The browser blocked automatic playback. Press Restart to play the video.');
     throw error;
   }
 }
@@ -431,16 +455,19 @@ function checkReferences() {
     if (kind === 'clip' && panel.followClip(clip.id)) continue;
     panel.goLive();
     message(`Version ${panel.letter} is live again: pre-encoded streams exist only for some sample clips${kind === 'clip' ? ', not this one' : ''}.`);
+    describeViews();
   }
 }
 async function start() {
+  clearTimeout(restartTimer); restartPending = false;
   stop(true); const token = generation;
-  trace('start', token, panels.map(p => `${p.letter}:${p.reference?.id ?? p.config().codec}`).join(' '));
-  preparing = true; message(); startButton.textContent = 'Cancel'; $('#session-stats').textContent = 'Loading codec workers…';
+  if (document.hidden) { trace('start deferred: the tab is hidden'); return; }
+  if (kind === 'file' && !file) { $('#session-stats').textContent = 'Choose a video file to compare'; return; }
+  trace('start', token, panels.map(p => `${p.letter}:${p.reference?.id ?? p.config().codec ?? p.config().source}`).join(' '));
+  preparing = true; message(); $('#session-stats').textContent = 'Loading codec workers…';
   checkReferences();
   for (const panel of panels) { panel.reset(panel.config()); panel.analysis.reset(); }
   describeViews();
-  original = null; loupe.frameShown(null);
   try {
     await prepareSource(token);
     if (token !== generation) return;
@@ -459,8 +486,7 @@ async function start() {
     // the exact path, the playing video's otherwise.
     const renditions = exact ? viewSourceUrls() : panels.map(() => clipUrl(clip, Math.max(...panels.map(p => p.current.height))));
     panels.forEach((panel, i) => {
-      panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null,
-        stillCamera: panel.current.source === 'live' && stillCamera.checked };
+      panel.current = { ...panel.current, timed: !exact, rendition: kind === 'clip' ? renditions[i].split('/').pop() : null };
     });
     comparison = new Comparison(panels, {
       onFrame: (results, originals, tick) => finishFrame(token, results, originals, tick),
@@ -471,7 +497,7 @@ async function start() {
     pendingRateChange = false;
     $("#keyframe").disabled = false; pauseButton.disabled = false;
     running = true; preparing = false; delivered = 0; firstDeliveredAt = 0; lastTick = -1; nextDeadline = clockOrigin = performance.now();
-    document.body.classList.add('running'); startButton.textContent = 'Stop comparison'; $('#runtime-label').textContent = 'Encoding + decoding live';
+    document.body.classList.add('running'); $('#runtime-label').textContent = 'Encoding + decoding live';
     scheduleFrame(token);
   } catch (error) { if (token === generation) fail(error); }
 }
@@ -491,7 +517,7 @@ function sendFrame(token) {
 function captureNext(token) {
   if (token !== generation || !running || paused || ((switchWanted || switchBusy) && !pausing)) return;
   if (kind !== 'scene' && video.readyState < 2) { nextDeadline = performance.now() + NOT_READY_RETRY_MS; scheduleFrame(token); return; }
-  if (kind === 'file' && video.ended) { stop(); $('#session-stats').textContent = `${delivered} frames compared · video ended`; return; }
+  if (kind === 'file' && video.ended) { videoEnded(); return; }
   nextDeadline = Math.max(nextDeadline + 1000 / SOURCE_FPS, performance.now());
   const tick = frames.nextTick(lastTick);
   if (tick !== null) capture(tick);
@@ -505,17 +531,10 @@ function capture(tick) {
   // No frame yet (a source or webcam just starting): try again on the next tick.
   if (shot) send(tick, [{ ...shot, views: coding.flatMap((c, i) => (c ? [i] : [])) }], coding);
 }
-/**
- * Show the picture of `tick` in the preview and send the views that code it
- * their pictures (`shots`: one per source, each with the `views` it is for).
- */
+/** Send the views that code `tick` their pictures (`shots`: one per source, each with the `views` it is for). */
 function send(tick, shots, coding = comparison.coding(tick)) {
   lastTick = tick;
-  const { element, width, height } = shots.reduce((a, b) => (b.width > a.width ? b : a));
   panels.forEach((panel, i) => { if (coding[i]) panel.sent(tick); });
-  const scale = Math.min(PREVIEW_WIDTH / width, PREVIEW_HEIGHT / height);
-  preview.fillStyle = '#000'; preview.fillRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-  preview.drawImage(element, (PREVIEW_WIDTH - width * scale) / 2, (PREVIEW_HEIGHT - height * scale) / 2, width * scale, height * scale);
   if (pendingRateChange) {
     panels.forEach((panel, i) => {
       if (panel.current.source !== 'live') return;
@@ -536,16 +555,13 @@ function finishFrame(token, results, originals, tick) {
       // A held frame 0 (start-up lookahead) is shown with the next result; a view
       // that does not code this tick keeps its picture.
       if (!results[i] || results[i].held) return;
-      const replaced = panel.frame(results[i], showOriginal, originals[i], tick);
+      const replaced = panel.frame(results[i], originals[i], tick);
       if (replaced) comparison.recycle(i, replaced);
+      zoom.frameShown(panel);
     });
   }
   catch (error) { fail(error); return; }
   switchDecodersWhenIdle();
-  // Frame 0 held for the start-up lookahead returns no source.
-  const shown = originals.filter(Boolean);
-  if (shown.length) original = shown.reduce((a, b) => (b.width > a.width ? b : a));
-  loupe.frameShown(original);
   // Delivery is counted in frames of the faster view, the rate the page aims for.
   const fastest = panels.reduce((a, b) => (b.current.fps > a.current.fps ? b : a));
   if (!results[panels.indexOf(fastest)]) { scheduleFrame(token); return; }
@@ -553,60 +569,70 @@ function finishFrame(token, results, originals, tick) {
   const now = paused ? pausedAt : performance.now();
   if (delivered === 1) firstDeliveredAt = now;
   const deliveryRate = delivered > 1 ? (delivered - 1) * 1000 / Math.max(now - firstDeliveredAt, 1) : 0;
-  $('#session-stats').textContent = exact
-    ? `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps${pace(deliveryRate)} · bitrate per second of source time`
-    : `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps delivered${limit(deliveryRate)} · bitrate per second of source time${
-      kind === 'camera' ? '' : ` · ${APPROXIMATE}`}`;
+  const session = $('#session-stats');
+  session.textContent = `${delivered} frames compared · ${deliveryRate.toFixed(1)} fps${exact ? pace(deliveryRate) : limit(deliveryRate)}${
+    exact || kind === 'camera' ? '' : ` · ${APPROXIMATE}`}`;
+  if (deliveryRate) session.title = stageLine(deliveryRate);
   speedHint.update(panels.map(panel => ({ letter: panel.letter, config: panel.current, encodeMs: panel.stageTimes().encode, frames: panel.count })),
     Boolean(exact));
   scheduleFrame(token);
 }
 /**
- * The busiest worker (encode and decode per view), which sets the delivered
- * rate once it falls below the fastest view's frame rate.
+ * Each view's workers and their mean ms per frame (encode; decode, or an
+ * Original view's placing of the source, with PSNR and display hand-off).
  */
-/** The busiest stage: { name, ms } over the encode and decode workers of both views. */
-function slowestStage() {
-  const stages = panels.flatMap(panel => {
+function stages() {
+  return panels.flatMap(panel => {
     const { encode, decode } = panel.stageTimes();
-    return [{ name: `encode ${panel.letter}`, ms: encode }, { name: `decode ${panel.letter}`, ms: decode }].filter(s => s.ms !== null);
+    const shown = panel.current.source === 'original' ? 'original' : 'decode';
+    return [{ name: `encode ${panel.letter}`, ms: encode }, { name: `${shown} ${panel.letter}`, ms: decode }].filter(s => s.ms !== null);
   });
-  return stages.reduce((a, b) => (b.ms > a.ms ? b : a));
 }
+/** The busiest stage, which sets the delivered rate once it falls below the fastest view's frame rate. */
+const slowestStage = () => stages().reduce((a, b) => (b.ms > a.ms ? b : a));
+const targetFps = () => Math.max(...panels.map(p => p.current.fps));
 /**
- * Exact sources: how fast the clip's time runs. Below real time nothing is
- * skipped, so the pictures and numbers are those of a machine that keeps up.
+ * Exact sources: how fast the clip's time runs, said only below real time.
+ * Nothing is skipped then, so the pictures and numbers are those of a machine that keeps up.
  */
 function pace(deliveryRate) {
-  if (!deliveryRate) return '';
-  const target = Math.max(...panels.map(p => p.current.fps)), speed = deliveryRate / target, slowest = slowestStage();
-  if (speed >= KEEPING_UP) return ` · real time, slowest ${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
-  return ` · running at ${speed.toFixed(2)}× real time (slowest ${slowest.name}, ${slowest.ms.toFixed(0)} ms): pictures and numbers are unaffected`;
+  const speed = deliveryRate / targetFps();
+  return deliveryRate && speed < KEEPING_UP ? ` · running at ${speed.toFixed(2)}× real time, so no frame is skipped` : '';
 }
+/** Live sources: said only when this machine delivers fewer frames than the views code. */
 function limit(deliveryRate) {
-  if (!deliveryRate) return '';
+  return deliveryRate && deliveryRate < KEEPING_UP * targetFps() ? ` · below ${targetFps()} fps: frames are skipped` : '';
+}
+/** The detail behind the session line (its tooltip, and the debug report): which worker limits delivery. */
+function stageLine(deliveryRate) {
   const slowest = slowestStage(), stage = `${slowest.name} (${slowest.ms.toFixed(0)} ms)`;
-  const target = Math.max(...panels.map(p => p.current.fps));
-  if (deliveryRate >= KEEPING_UP * target) return ` · keeping up, slowest ${stage}`;
+  if (deliveryRate >= KEEPING_UP * targetFps()) return `Keeping up · slowest ${stage}`;
   // Stages overlap (pipeline.js), so the slowest one allows 1000 / ms frames per
   // second; well below that, the views wait for source frames (capture takes every
   // presented frame on a coded tick, capture.js), e.g. a browser dropping frames.
-  if (deliveryRate < STAGE_BOUND * 1000 / slowest.ms) return ` · waiting for source frames (slowest stage ${stage})`;
-  return ` · limited by ${stage}`;
+  if (!exact && deliveryRate < STAGE_BOUND * 1000 / slowest.ms) return `Waiting for source frames · slowest stage ${stage}`;
+  return `Limited by ${stage}`;
 }
+/** The pipeline's speed for the debug report. */
+function pipelineState() {
+  const now = paused ? pausedAt : performance.now();
+  const deliveryRate = delivered > 1 ? (delivered - 1) * 1000 / Math.max(now - firstDeliveredAt, 1) : 0;
+  return { deliveredFps: deliveryRate, targetFps: targetFps(), stages: stages(), summary: deliveryRate ? stageLine(deliveryRate) : null };
+}
+/** The source changed (or the clip): stop at once, and restart on it (a video file once one is chosen). */
 function sourceChanged(next) {
-  stop(); kind = next; message(); resetViews();
+  stop(); kind = next; message();
   // Reference streams exist for the sample clips only.
   for (const panel of panels) panel.setClip(kind === 'clip' ? clip.id : null);
   exact?.close(); exact = null; exactFor = null;
-  preview.clearRect(0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
-  if (kind === "scene") drawScene(preview, PREVIEW_WIDTH, PREVIEW_HEIGHT, 0);
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
   const speed = clip.speed ? ` · plays ${clip.speed.toFixed(2)}× real time (retimed to 30 fps)` : '';
-  const names = { clip: `${clip.film} · ${clip.title}${speed}`, scene: 'Moving shapes, fine texture and a smooth gradient', camera: 'Webcam · camera access requested when you start', file: file?.name || 'Choose a local video file' };
+  const names = { clip: `${clip.film} · ${clip.title}${speed}`, scene: 'Moving shapes, fine texture and a smooth gradient', camera: 'Webcam', file: file?.name || 'Choose a local video file' };
   $('#source-name').textContent = names[kind];
   clipCredit.hidden = kind !== 'clip'; clipCredit.textContent = clip.credit; clipCredit.title = clip.notice ?? '';
-  $('#session-stats').textContent = 'Ready when you are';
+  $('#session-stats').textContent = 'Starting…';
+  describeViews();
+  scheduleRestart(`source ${kind}`);
 }
 for (const button of document.querySelectorAll('[data-source]')) button.addEventListener('click', () => { sourceChanged(button.dataset.source); if (kind === 'file') $('#file').click(); });
 const clipPicker = $('#clip'), clipCredit = $('#clip-credit');
@@ -615,41 +641,47 @@ for (const group of CLIP_GROUPS) {
   for (const { id, title } of CLIPS.filter(c => c.group === group)) optgroup.append(new Option(title, id, false, id === clip.id));
   clipPicker.append(optgroup);
 }
-clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); start(); });
-stillCamera.addEventListener('change', () => settingsChanged('still-camera'));
+clipPicker.addEventListener('change', () => { clip = clipById(clipPicker.value); sourceChanged('clip'); });
 $('#file').addEventListener('change', event => { const selected = event.target.files[0]; if (selected) { file = selected; sourceChanged('file'); } });
 $('#keyframe').addEventListener('click', () => {
   if (!running) return;
   comparison.requestKeyframes();
   for (const panel of panels) if (panel.current.source === 'live') panel.intervene('keyframe', lastTick + 1);
 });
-$('#debug-report').addEventListener('click', () => downloadReport().catch(error => message(`Debug report failed: ${error.message}`)));
+// Debug report: a dialog asks whether to embed the coded streams, then the report downloads.
+const debugDialog = $('#debug-dialog');
+$('#debug-report').addEventListener('click', () => debugDialog.showModal());
+// A choice in the More menu closes it.
+for (const item of document.querySelectorAll('.more-menu button')) item.addEventListener('click', () => { $('details.more').open = false; });
+debugDialog.addEventListener('close', () => {
+  if (debugDialog.returnValue !== 'download') return;
+  downloadReport($('#debug-streams').checked).catch(error => message(`Debug report failed: ${error.message}`));
+});
 // Page errors go to the event log the debug report keeps.
 window.addEventListener('error', event => trace('page error', event.message));
 window.addEventListener('unhandledrejection', event => trace('unhandled rejection', event.reason?.message ?? String(event.reason)));
-pauseButton.addEventListener('click', () => { if (paused) resume(); else pause(); });
+pauseButton.addEventListener('click', () => { if (ended) start(); else if (paused) resume(); else pause(); });
 stepButton.addEventListener('click', step);
-startButton.addEventListener('click', () => { if (running || preparing) stop(); else start(); });
-const originalButton = $('#original');
-function toggleOriginal(value) {
-  showOriginal = value; originalButton.setAttribute('aria-pressed', String(value));
-  for (const panel of panels) if (panel.shown) {
-    if (value) panel.renderer.showOriginal(panel.original?.image ?? null); else panel.renderer.showLatest();
-    panel.label(value);
-  }
-  loupe.frameShown(original);
-}
-originalButton.addEventListener('pointerdown', e => { originalButton.setPointerCapture(e.pointerId); toggleOriginal(true); });
-for (const event of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) originalButton.addEventListener(event, () => toggleOriginal(false));
-originalButton.addEventListener('keydown', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleOriginal(true); } });
-originalButton.addEventListener('keyup', () => toggleOriginal(false));
 video.addEventListener('error', () => { if (running) fail('The input video could not be read.'); });
 window.addEventListener('pagehide', () => { stop(); if (fileUrl) URL.revokeObjectURL(fileUrl); });
-document.addEventListener('visibilitychange', () => { if (document.hidden && (running || preparing)) { stop(); message('Comparison paused while this tab is hidden. Start again to resume.'); } });
-// Open on a playing sample clip. A page loaded in a background tab starts once it is shown.
-function autostart() {
-  if (document.hidden) document.addEventListener('visibilitychange', autostart, { once: true });
-  else start();
+// A hidden tab stops the comparison (and the camera); it restarts when shown again.
+// A start while hidden (page opened in a background tab) waits for that too.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (running || preparing) { stop(); trace('stopped: the tab is hidden'); } return; }
+  if (!running && !preparing && !ended) scheduleRestart('tab shown');
+});
+/** The opening comparison (see OPENING_STREAM), then the first start. */
+async function openPage() {
+  if (!LIVE_VIEWS) {
+    try {
+      await panels[0].showStream(OPENING_STREAM);
+      clip = clipById(panels[0].reference.clip); clipPicker.value = clip.id;
+      panels[1].match(matchingSettings(panels[0].reference));
+    } catch (error) {
+      trace('opening stream unavailable', error.message);
+      panels[0].goLive();
+    }
+  }
+  sourceChanged('clip');
 }
-sourceChanged('clip');
-autostart();
+openPage();

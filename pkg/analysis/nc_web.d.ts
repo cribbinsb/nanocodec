@@ -377,7 +377,6 @@ export interface InitOutput {
   readonly __wbg_browserdecoder_free: (a: number, b: number) => void;
   readonly __wbg_browserencoder_free: (a: number, b: number) => void;
   readonly __wbg_decodeoutcome_free: (a: number, b: number) => void;
-  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
   readonly browserdecoder_analysis_frame: (a: number) => number;
   readonly browserdecoder_analysis_halfwords: (a: number) => number;
   readonly browserdecoder_analysis_length: (a: number) => number;
@@ -422,6 +421,7 @@ export interface InitOutput {
   readonly decodeoutcome_report_index: (a: number) => number;
   readonly ms_ssim_luma: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
   readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
+  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
   readonly sourceframe_colour: (a: number) => [number, number];
   readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
   readonly sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];

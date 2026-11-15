@@ -1,0 +1,330 @@
+{
+ "source": [
+  "docs/results/rc-cost-2026-11-15.csv"
+ ],
+ "build_commit": "c323b045",
+ "ladder_kbps": "150/300/600/1200",
+ "frames": 150,
+ "rows": [
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium",
+   "j": -45.6,
+   "psnr": -48.3,
+   "vmaf": -50.5,
+   "ms_ssim": -34.7,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium",
+   "j": -37.7,
+   "psnr": -36.4,
+   "vmaf": -32.7,
+   "ms_ssim": -33.0,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium",
+   "j": -45.8,
+   "psnr": -46.0,
+   "vmaf": -50.1,
+   "ms_ssim": -37.5,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium",
+   "j": -35.1,
+   "psnr": -31.0,
+   "vmaf": -31.2,
+   "ms_ssim": -32.8,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium",
+   "j": -48.8,
+   "psnr": -47.4,
+   "vmaf": -55.4,
+   "ms_ssim": -39.7,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium",
+   "j": -41.7,
+   "psnr": -37.6,
+   "vmaf": -34.9,
+   "ms_ssim": -42.5,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium",
+   "j": -42.3,
+   "psnr": -45.1,
+   "vmaf": -44.7,
+   "ms_ssim": -35.2,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium",
+   "j": -33.3,
+   "psnr": -34.7,
+   "vmaf": -23.3,
+   "ms_ssim": -30.2,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium",
+   "j": -47.6,
+   "psnr": -49.9,
+   "vmaf": -53.4,
+   "ms_ssim": -34.8,
+   "clips": 7
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium",
+   "j": -39.1,
+   "psnr": -37.6,
+   "vmaf": -34.4,
+   "ms_ssim": -34.9,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium",
+   "j": -18.1,
+   "psnr": -22.7,
+   "vmaf": -25.1,
+   "ms_ssim": -9.4,
+   "clips": 8
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium",
+   "j": -0.4,
+   "psnr": -0.7,
+   "vmaf": 1.2,
+   "ms_ssim": 2.5,
+   "clips": 11
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium~psnr",
+   "j": -40.5,
+   "psnr": -43.3,
+   "vmaf": -36.2,
+   "ms_ssim": -36.4,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av1",
+   "anchor": "x264-medium~psnr",
+   "j": -34.7,
+   "psnr": -33.1,
+   "vmaf": -30.9,
+   "ms_ssim": -29.7,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium~psnr",
+   "j": -39.4,
+   "psnr": -37.4,
+   "vmaf": -37.3,
+   "ms_ssim": -38.5,
+   "clips": 10
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-hevc",
+   "anchor": "x264-medium~psnr",
+   "j": -31.8,
+   "psnr": -29.9,
+   "vmaf": -28.8,
+   "ms_ssim": -29.5,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium~psnr",
+   "j": -43.4,
+   "psnr": -40.9,
+   "vmaf": -41.5,
+   "ms_ssim": -41.7,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vvc",
+   "anchor": "x264-medium~psnr",
+   "j": -40.6,
+   "psnr": -36.5,
+   "vmaf": -36.0,
+   "ms_ssim": -39.8,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium~psnr",
+   "j": -39.9,
+   "psnr": -40.5,
+   "vmaf": -34.1,
+   "ms_ssim": -36.1,
+   "clips": 11
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-vp9",
+   "anchor": "x264-medium~psnr",
+   "j": -29.4,
+   "psnr": -33.4,
+   "vmaf": -20.5,
+   "ms_ssim": -26.6,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium~psnr",
+   "j": -42.1,
+   "psnr": -42.3,
+   "vmaf": -40.0,
+   "ms_ssim": -36.5,
+   "clips": 9
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-av2",
+   "anchor": "x264-medium~psnr",
+   "j": -37.9,
+   "psnr": -36.3,
+   "vmaf": -35.3,
+   "ms_ssim": -31.8,
+   "clips": 10
+  },
+  {
+   "line": "cbr_vs_cbr",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium~psnr",
+   "j": -14.4,
+   "psnr": -12.3,
+   "vmaf": -13.8,
+   "ms_ssim": -9.1,
+   "clips": 11
+  },
+  {
+   "line": "qp_vs_qp",
+   "test": "nanocodec-h264",
+   "anchor": "x264-medium~psnr",
+   "j": 1.9,
+   "psnr": 1.6,
+   "vmaf": 1.1,
+   "ms_ssim": 7.3,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-av1",
+   "anchor": "nanocodec-av1",
+   "j": 13.6,
+   "psnr": 8.5,
+   "vmaf": 11.5,
+   "ms_ssim": 12.0,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-hevc",
+   "anchor": "nanocodec-hevc",
+   "j": 21.1,
+   "psnr": 15.3,
+   "vmaf": 14.7,
+   "ms_ssim": 19.9,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-vvc",
+   "anchor": "nanocodec-vvc",
+   "j": 15.0,
+   "psnr": 11.2,
+   "vmaf": 9.7,
+   "ms_ssim": 14.7,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-vp9",
+   "anchor": "nanocodec-vp9",
+   "j": 14.6,
+   "psnr": 9.5,
+   "vmaf": 8.9,
+   "ms_ssim": 15.1,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-av2",
+   "anchor": "nanocodec-av2",
+   "j": 12.2,
+   "psnr": 7.7,
+   "vmaf": 6.4,
+   "ms_ssim": 13.8,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "nanocodec-h264",
+   "anchor": "nanocodec-h264",
+   "j": 10.9,
+   "psnr": 8.3,
+   "vmaf": 9.2,
+   "ms_ssim": 11.7,
+   "clips": 11
+  },
+  {
+   "line": "rc_cost",
+   "test": "x264-medium",
+   "anchor": "x264-medium",
+   "j": 70.5,
+   "psnr": 62.7,
+   "vmaf": 106.2,
+   "ms_ssim": 40.0,
+   "clips": 10
+  },
+  {
+   "line": "rc_cost",
+   "test": "x264-medium~psnr",
+   "anchor": "x264-medium~psnr",
+   "j": 48.6,
+   "psnr": 37.8,
+   "vmaf": 46.0,
+   "ms_ssim": 50.5,
+   "clips": 11
+  }
+ ]
+}

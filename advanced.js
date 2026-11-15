@@ -1,4 +1,6 @@
-// A panel's collapsed "Advanced" section: curated toggles for what the selected
+// A live panel's collapsed "Advanced" section: the panel's general encoder
+// settings (rate control, peak rate, buffer, key interval, still-camera noise
+// handling; panel.js owns them), then curated toggles for what the selected
 // codec supports (film grain, persistence AQ, temporal layers, second reference)
 // and a free-form `name=value` editor checked against the engine's parameter
 // registry (options.js). Its settings apply over the panel's preset.
@@ -13,8 +15,8 @@ const TIPS = {
 const escapeHtml = text => text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 export class Advanced {
-  /** `changed()` restarts the panel's encoder with the new settings. */
-  constructor(letter, codec, changed) {
+  /** `changed()` restarts the panel's encoder with the new settings; `general`: the panel's own controls, shown first. */
+  constructor(letter, codec, changed, general) {
     this.codec = codec; this.changed = changed;
     this.api = null; this.supported = null; this.registry = []; this.applied = '';
     this.element = document.createElement('details'); this.element.className = 'advanced';
@@ -32,6 +34,7 @@ export class Advanced {
       <p class="param-doc"></p>
       <textarea id="params-${letter}" class="param-text" rows="3" spellcheck="false" placeholder="e.g. rate.aq_strength=1"></textarea>
       <ul class="param-errors" aria-live="polite"></ul>`;
+    this.element.querySelector('summary').after(general);
     const $ = selector => this.element.querySelector(selector);
     this.filmGrain = $('.film-grain'); this.persist = $('.persist-aq'); this.layers = $('.layers'); this.secondRef = $('.second-ref');
     this.search = $('.param-search'); this.addButton = $('.param-add'); this.names = $('datalist'); this.doc = $('.param-doc');
