@@ -29,7 +29,9 @@ const state = {
 function viewId() {
   const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
   if (state.mode === 'qp') return `rc-qp-${zid}`;
-  if (state.clipset === 'dev') return zid === 'default' ? 'dev-default' : 'rc-cbr-psnr';
+  // The development chart is measured against the default-tuned zero line
+  // only; the tuned line there would be a different (rate-control) run.
+  if (state.clipset === 'dev') return 'dev-default';
   return `${state.clipset}-${zid}`;
 }
 
@@ -137,8 +139,14 @@ function viewNote(data, view) {
 }
 
 function render(data, root) {
+  if (state.mode === 'cbr' && state.clipset === 'dev') state.zero = 'x264-medium';
   const view = data.views.find((v) => v.id === viewId());
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
+  for (const b of root.querySelectorAll('[data-control="zero"] button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.value === state.zero));
+    b.disabled = state.mode === 'cbr' && state.clipset === 'dev' && b.dataset.value === TUNED_ZERO;
+    b.title = b.disabled ? 'The development chart is measured against x264 medium with its default tuning' : '';
+  }
   for (const [name, value] of [['clipset', state.mode === 'qp' ? 'dev' : state.clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
@@ -230,9 +238,9 @@ function controls(data, root) {
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
     ], state.clipset, (v) => { state.clipset = v; rerender(); }))),
-    control('Zero line', segmented('Zero line', [
+    control('Zero line', withData('zero', segmented('Zero line', [
       { value: TUNED_ZERO, label: 'x264 medium, --tune psnr' }, { value: 'x264-medium', label: 'x264 medium, default' },
-    ], state.zero, (v) => { state.zero = v; rerender(); })),
+    ], state.zero, (v) => { state.zero = v; rerender(); }))),
     control('Rate mode', segmented('Rate mode', [
       { value: 'cbr', label: 'CBR' }, { value: 'qp', label: 'Fixed QP' },
     ], state.mode, (v) => { state.mode = v; rerender(); })),
