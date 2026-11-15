@@ -74,3 +74,6 @@ structure.unified = 0
 # Pinned before VP9 Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
 persist.reuse_level_price = 0
+# The engine's depth removal before 2026-11-15, pinned so this preset's
+# streams do not move with the engine default.
+planner.depth_removal_th_16_8 = 50

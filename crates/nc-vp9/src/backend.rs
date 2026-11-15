@@ -468,50 +468,8 @@ impl HeldReference {
     }
 }
 
-/// Held reference pictures by DPB slot (`None`: the engine's pool picture is
-/// exact).
-#[derive(Debug, Default)]
-struct ReferenceStore {
-    slots: [Option<HeldReference>; MAX_REFERENCE_SLOTS],
-}
-
-impl ReferenceStore {
-    fn held(&self, slot: usize) -> Option<&HeldReference> {
-        self.slots[slot].as_ref()
-    }
-
-    fn commit_spatial(
-        &mut self,
-        refresh: SlotMask,
-        refresh_all: bool,
-        picture: Option<&HeldReference>,
-    ) {
-        for (slot, held) in self.slots.iter_mut().enumerate() {
-            if refresh_all || refresh.contains(slot) {
-                match picture {
-                    Some(pic) => {
-                        if let Some(existing) = held {
-                            existing.clone_from(pic);
-                        } else {
-                            *held = Some(pic.clone());
-                        }
-                    }
-                    None => *held = None,
-                }
-            }
-        }
-    }
-}
-
-/// Whether a frame of `frame` size may predict from a reference of
-/// `reference` size in VP9 (§7.2, frame size with refs semantics; libvpx
-/// `valid_ref_frame_size`): `2 * width >= ref_width` and
-/// `width <= 16 * ref_width`, and the same vertically. The reference is at
-/// most twice the frame's size and at least 1/16 of it.
-fn reference_scale_allowed(reference: (usize, usize), frame: (usize, usize)) -> bool {
-    let fits = |r: usize, f: usize| 2 * f >= r && f <= 16 * r;
-    fits(reference.0, frame.0) && fits(reference.1, frame.1)
-}
+/// The held reference pictures by slot (`None`: the engine's is exact).
+type ReferenceStore = nc_encoder::HeldSlots<HeldReference>;
 
 /// Disposable scratch slot refreshed by a hidden spatial layer picture (`S0`,
 /// `S1` of three, or `S_top` in K-SVC) whose temporal `refresh` mask is empty
@@ -930,7 +888,6 @@ impl CodecBackend for Vp9Backend {
         ("structure.inherited_depth", 1.0),
         ("persist.reuse_level_price", 1.0),
         ("decision.codec_subpel_seed_lambdas", 0.0),
-        ("quant.trellis_chroma", 0.0),
         ("planner.depth_removal_min_quantizer", 0.86),
         // AV2's error-gap chroma offset: chroma 3 qindex finer per dB that
         // the previous frame's chroma was cleaner than its luma beyond 10 dB
@@ -1116,7 +1073,7 @@ impl CodecBackend for Vp9Backend {
         }
         for pair in spatial.layer_sizes.windows(2) {
             let (low, high) = (pair[0], pair[1]);
-            if !reference_scale_allowed(low, high) {
+            if !nc_encoder::scaled_reference_allowed(low, high) {
                 return Err(ConfigError::SpatialScalability(
                     "VP9 spatial layer scale outside §7.2 reference limits (base at least 1/16 of the upper layer)",
                 ));
@@ -1190,7 +1147,7 @@ impl CodecBackend for Vp9Backend {
         let held =
             keep.then(|| HeldReference::new(Rc::new(recon.clone()), size.0, size.1, spatial_id));
         self.store
-            .commit_spatial(SlotMask(self.header.refresh), refresh_all, held.as_ref());
+            .commit(refresh_all, SlotMask(self.header.refresh), held.as_ref());
     }
 
     fn finish_spatial_tu(&mut self, data: &mut Vec<u8>, layer_lengths: &[usize]) {

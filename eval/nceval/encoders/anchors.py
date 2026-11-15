@@ -223,13 +223,16 @@ class LibvpxRealtime(EncoderAdapter):
         self.cpu_used = cpu_used
         self.name = f"vpx-vp9-rt-s{cpu_used}"
 
+    #: libvpx's encoding deadline (`--rt` or `--good`).
+    deadline = "--rt"
+
     def command(self, job: EncodeJob, paths: Paths) -> list[str]:
         self.check_job(job)
         clip = job.clip
         num, den = fps_fraction(clip.fps)
         q = str(job.quantizer)
         return [str(find_tool("vpxenc", paths)), "--codec=vp9", "--profile=0",
-                "--rt", "--passes=1", f"--cpu-used={self.cpu_used}",
+                self.deadline, "--passes=1", f"--cpu-used={self.cpu_used}",
                 "--lag-in-frames=0", "--auto-alt-ref=0", "--threads=1",
                 "--tile-columns=0", "--tile-rows=0", "--row-mt=0", "--aq-mode=0",
                 "--end-usage=q", f"--cq-level={q}", f"--min-q={q}", f"--max-q={q}",
@@ -239,6 +242,19 @@ class LibvpxRealtime(EncoderAdapter):
                 f"--width={clip.width}", f"--height={clip.height}", "--i420",
                 f"--fps={num}/{den}", f"--limit={job.frames}",
                 "--ivf", "-o", str(job.bitstream), str(clip.yuv)]
+
+
+class LibvpxGood(LibvpxRealtime):
+    """libvpx VP9 at its good-quality deadline (one pass, no lag): the slow
+    reference of the fixed-QP gap map, otherwise set up as LibvpxRealtime."""
+
+    deadline = "--good"
+
+    def __init__(self, cpu_used: int):
+        if not 0 <= cpu_used <= 5:
+            raise ValueError("libvpx good-quality speed must be in 0..5")
+        self.cpu_used = cpu_used
+        self.name = f"vpx-vp9-good-s{cpu_used}"
 
 
 class AvmLowDelay(EncoderAdapter):

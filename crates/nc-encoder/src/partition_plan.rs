@@ -874,16 +874,25 @@ mod tests {
 
     #[test]
     fn depth_removal_needs_small_improvements() {
+        // The engine default removes nothing; the Fast rungs' thresholds
+        // exercise the mechanism.
+        let fast = PlannerParams {
+            depth_removal_th_32_16: 25.0,
+            depth_removal_th_16_8: 50.0,
+            ..PlannerParams::default()
+        };
         // 32x32 barely worse than 16x16 and 8x8: remove.
         assert!(remove_below_32(
             [1000, 1002, 1004, 1100],
             100.0,
             30.0,
-            &PlannerParams::default()
+            &fast
         ));
         // 32x32 much worse than 16x16: keep the smaller sizes.
+        assert!(!remove_below_32([500, 600, 1500, 2000], 100.0, 30.0, &fast));
+        // At the engine default the barely-worse case keeps them too.
         assert!(!remove_below_32(
-            [500, 600, 1500, 2000],
+            [1000, 1002, 1004, 1100],
             100.0,
             30.0,
             &PlannerParams::default()

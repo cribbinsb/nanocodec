@@ -292,9 +292,16 @@ param_group! {
         /// `FoodMarket` 100 kbps MS-SSIM .769 → .773.
         high_8x8_cost_variance: 150_000.0, [5_000.0, 1_000_000.0],
             "8x8 cost spread above which blocks are capped at 32x32: lower caps more",
-        depth_removal_th_32_16: 25.0, [0.0, 200.0],
+        /// No depth removal by default (2026-11-15): the planner keeps the
+        /// 16x16 and 8x8 children it would drop. Adoption screens (k 0.1,
+        /// pool draw 2026-11-15, L3 600 f): HEVC -1.01% (with merge 4),
+        /// AV2 -3.12% (with parity hiding), AV1 -0.66% [-1.13, -0.24], VVC
+        /// +0.01% [-0.02, +0.05] (equal), VP9 -0.06% [-0.20, +0.08] (BETTER). AV1 tripped the periodic-key
+        /// pulse guard by 0.01 dB (+0.26 > +0.25), adopted on judgement. The Fast presets
+        /// pin the old 25 / 50.
+        depth_removal_th_32_16: 0.0, [0.0, 200.0],
             "depth removal 32→16 improvement threshold (‰): higher removes small blocks more",
-        depth_removal_th_16_8: 50.0, [0.0, 400.0],
+        depth_removal_th_16_8: 0.0, [0.0, 400.0],
             "depth removal 16→8 improvement threshold (‰): higher removes small blocks more",
         depth_removal_qp_scale: 2.0, [0.0, 8.0],
             "depth removal threshold multiplier: higher removes small blocks more",
@@ -1005,7 +1012,12 @@ param_group! {
             "trellis quantisation (0 off, 1 the winning block's coefficients after mode decision): 1 spends a rate-distortion search per coded transform block to round levels down or to zero where the bits are worth more",
         trellis_lambda_scale: 1.0, [0.25, 4.0],
             "multiple of the mode-decision λ the trellis trades bits at: higher drops more levels",
-        trellis_chroma: 0.25, [0.0, 4.0],
+        // 0 (chroma left to the plain quantiser) in every codec: H.264,
+        // HEVC, VVC and VP9 had adopted it; AV1 at 0.25 measured worse
+        // (pool levels of draw 2026-11-15, L3 J -0.46% [-0.90, -0.03] for 0,
+        // no guard) and AV2 is screened in the audit doc
+        // (docs/analysis/shared-vs-specific-audit-2026-11-15.md).
+        trellis_chroma: 0.0, [0.0, 4.0],
             "multiple of the trellis λ for chroma (0 leaves chroma to the plain quantiser): lower keeps more chroma levels",
         trellis_key: 1.0, [0.0, 1.0],
             "1 also trellises key frames (0: P frames only): 0 keeps the key frame every later frame predicts from at the plain quantiser's quality",

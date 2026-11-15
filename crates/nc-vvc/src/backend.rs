@@ -662,19 +662,11 @@ impl CodecBackend for VvcBackend {
         // docs/analysis/fixed-qp-gap-2026-11-14.md. VVC Fast pins it off.
         ("vvc.unit_zero_rd", 0.5),
         ("vvc.unit_zero_rd_max_levels", 4.0),
-        // Trellis quantisation of the coded luma blocks (`trellis.rs`; on by
-        // the engine default `quant.trellis`, HEVC Default's arm), at half its λ on key pictures: the full λ saved
-        // 5-15% of a key's bits at 0.2-0.4 dB less luma that rate control
-        // left unspent, so the copies after each key were the clip's worst
-        // frames (VAL worst-1% Y +2.6, a guard); no key trellis lost static
-        // (static_cam22 +6% J low at proxy-4). Staged J_real (k 0.1, dCPU
-        // +12.5%: host tune cost +23.0%, Jetson user time +7.2% at CBR 300,
-        // weighted 1:2): proxy-6 BETTER, J_real -3.0% (full -4.3%, low
-        // -4.3%; NEG -5.2%, worst-1% Y -0.9%), 0/6 clips worse.
-        // VAL (11 clips): BETTER, J_real -2.4% (full -3.7%, low -3.6%; NEG
-        // -5.0%, static -6.4%, worst-1% Y -1.1%), no guard. Long GOP: no
-        // drift (chirla +0.3..+0.55 dB). docs/handoff/vvc.md.
-        ("quant.trellis_chroma", 0.0),
+        // The engine's trellis (on, luma only) at half its λ on key pictures:
+        // the full λ saved 5-15% of a key's bits at 0.2-0.4 dB less luma that
+        // rate control left unspent, so the copies after each key were the
+        // clip's worst frames (VAL worst-1% Y +2.6, a guard). Evidence:
+        // docs/handoff/trellis.md "Adoption evidence per codec".
         ("vvc.trellis_key_lambda_scale", 0.5),
         // Intra sub-partitions of 16x16 and 32x32 intra CUs, searched on key
         // pictures (`isp.rs`). Staged J_real (k 0.1, dCPU +0.5%: x86 tune

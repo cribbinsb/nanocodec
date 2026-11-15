@@ -1838,19 +1838,6 @@ impl CodecBackend for H264Backend {
         // ±0.1 dB, no drift. HEVC 0.25 lost (proxy-4 +1.3%), so it is
         // H.264's only.
         ("decision.psy_strength", 0.25),
-        // Trellis quantisation of inter macroblocks' luma (`quant.*`, on and
-        // one survivor by the engine defaults; docs/handoff/trellis.md): J_real staged TRAIN (18
-        // clips) at k 0.1 BETTER, quality -2.0% (full -2.3%, low -1.7%),
-        // 0/18 clips worse, every class better (lowlight -3.5%, static -3.0%,
-        // pan -2.9%, crowd -2.8%, texture -1.1%, bodycam -0.7%), NEG -3.4%,
-        // VMAF v1 -2.5%, no guard; periodic-key pulse -0.01 dB. CPU: P frames
-        // +18.9% host (66.7 -> 79.3 M, QP32), Jetson +17.7% (crowd QP32): J
-        // -0.2 with 2:1 weighting, a marginal arm. Single-key long GOPs, YUV
-        // per third: airport 600 kbps +0.04/+0.02/+0.04 dB, homes390 300
-        // kbps +0.02/-0.05/0.00, chirla 150 kbps -0.24/-0.25/-0.08 at 2.7%
-        // less rate (CBR undershoot).
-        // Chroma AC keeps the plain quantiser.
-        ("quant.trellis_chroma", 0.0),
         // The Default's quality set (2026-11-10, docs/handoff/h264.md
         // "Default quality set"): CPU spent where J_real at k 0.1 pays,
         // toward Default = 1.4x H.264 Fast. Single levers, J_real proxy-6

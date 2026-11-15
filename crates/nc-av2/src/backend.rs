@@ -916,10 +916,9 @@ impl CodecBackend for Av2Backend {
         // Adoption screen (k 0.1, dCPU +2.9%, pool draw 2026-11-15): L1 J
         // -1.22% [-1.72, -0.46] n 24, L2 -2.06% [-2.87, -1.31] n 48, L3
         // (600 f, ladder) -3.12% [-4.02, -2.29] n 27 BETTER, no guard.
-        // AV2 Fast pins the old values.
+        // AV2 Fast pins the old values. No depth removal is now the engine
+        // default.
         ("av2.parity_hiding", 1.0),
-        ("planner.depth_removal_th_32_16", 0.0),
-        ("planner.depth_removal_th_16_8", 0.0),
     ];
 
     // AV1's motion-decision quality point is the engine default (see

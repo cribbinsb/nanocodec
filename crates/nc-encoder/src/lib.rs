@@ -46,6 +46,7 @@ mod decision;
 mod encoder;
 mod feedback;
 mod frame_role;
+mod held_slots;
 mod hold;
 mod inheritance;
 mod input;
@@ -116,6 +117,7 @@ pub use encoder::{
 };
 pub use feedback::ReferencedFrames;
 pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, NONBASE_PREFIX};
+pub use held_slots::{HeldSlots, scaled_reference_allowed};
 pub use hold::holds_frames;
 pub use intra_candidates::{
     AngleDeltaSearch, IntraModeSet, directions_by_orientation, shortlist_intra, with_neighbours,

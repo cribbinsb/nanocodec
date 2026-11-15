@@ -4,7 +4,7 @@
         [--label NAME] [--param k=v ...] [--conditions aom-ld] [--sequences A,B]
         [--kinds qp,cbr] [--x264 qp|cbr|psnr-qp|psnr-cbr] [--workers 4]
     python3 -m nceval.ctc compare --results DIR[,DIR...] [--points CSV[,CSV...]]
-        [--anchor x264-medium] [--paired-with ENCODER]
+        [--anchor x264-medium] [--paired-with ENCODER] [--stored-tests ENC,...] [--json OUT]
 
 `local` is the lens's iteration loop for encoder work: our encoders are fast,
 and the anchors' curves are already measured (the results page's
@@ -22,6 +22,10 @@ with three differences:
   points reached, and `--tune psnr`. That is how the gap between this lens
   and our chart is decomposed (docs/analysis/standards-lens-improvement-2026-11-14.md).
 
+Any other anchor of the condition (`--encoder x265-slow`) runs its staged
+fixed-QP jobs unchanged, so a curve the stored results lack can be added
+locally.
+
 Sources: raw I420 files named `<sequence>.yuv` in `--source-dir` with at
 least the condition's frames (`worker.py prepare`, or any download of the
 URLs in `sequences.py` cut to length).
@@ -36,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import subprocess
 import sys
 from dataclasses import replace
@@ -122,8 +127,10 @@ def local_jobs(args: argparse.Namespace, source_dir: Path) -> list[dict]:
     kinds = set(args.kinds.split(","))
     if args.encoder == X264:
         return [v for j in jobs if j["kind"] == "qp" for v in x264_variant(j, args.x264)]
-    if not args.encoder.startswith("nanocodec-"):
-        raise SystemExit(f"{args.encoder}: only our encoders and {X264} run locally")
+    if not args.encoder.startswith("nanocodec-"):  # another anchor: its staged jobs as they are
+        if args.param or args.label:
+            raise SystemExit(f"{args.encoder}: --param and --label are for our encoders")
+        return [j for j in jobs if j["kind"] == "qp"]
     return [own_variant(j, args.param, args.label) for j in jobs if j["kind"] in kinds]
 
 
@@ -202,7 +209,12 @@ def compare(args: argparse.Namespace) -> None:
     stored = [p for path in args.points.split(",") for p in stored_points(Path(path))]
     curves = Curves(measured + [p for p in stored if (p.condition, p.sequence, p.encoder, p.kind)
                                 not in replaced])
+    if args.stored_tests:  # stored curves reported beside the measured ones
+        conditions = sorted({t[0] for t in tests})
+        tests += [(c, *curve_key(spec, "qp")) for c in conditions
+                  for spec in args.stored_tests.split(",")]
     header = " | ".join(FIGURES)
+    rows = []
     for condition, encoder, kind in tests:
         bars = [curve_key(args.anchor, "qp")]
         if args.paired_with:
@@ -212,6 +224,11 @@ def compare(args: argparse.Namespace) -> None:
             cells = " | ".join("—" if v is None else f"{v:+.1f}" for v in means.values())
             print(f"{condition} | {encoder} {kind} vs {bar[0]} {bar[1]} | {cells} | n={n} "
                   f"| time {time:.2f}x   ({header})")
+            rows.append({"condition": condition, "test": encoder, "kind": kind,
+                         "anchor": bar[0], "anchor_kind": bar[1], "n": n,
+                         **{f: None if v is None else round(v, 2) for f, v in means.items()}})
+    if args.json:
+        Path(args.json).write_text(json.dumps(rows, indent=1) + "\n")
 
 
 def main_local(sub) -> None:
@@ -234,5 +251,7 @@ def main_local(sub) -> None:
     c.add_argument("--points", default=str(DEFAULT_POINTS))
     c.add_argument("--anchor", default=X264, help="ENCODER or ENCODER:KIND (default kind qp)")
     c.add_argument("--paired-with", help="ENCODER or ENCODER:KIND")
+    c.add_argument("--stored-tests", help="ENCODER[:KIND],...: stored curves to report too")
+    c.add_argument("--json", help="also write the rows here (one per test and bar)")
     c.set_defaults(handler=compare)
 

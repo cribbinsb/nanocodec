@@ -22,7 +22,6 @@ use std::rc::Rc;
 
 use nc_common::{Picture, Plane, PlaneIndex};
 use nc_dsp::av1_mc::scale::Av1ScaleSizes;
-use nc_encoder::{MAX_REFERENCE_SLOTS, SlotMask};
 
 /// A reference slot's normative picture and its size: `RefUpscaledWidth`
 /// and `RefFrameHeight` (§7.20), which may be smaller than the picture
@@ -74,80 +73,24 @@ impl HeldReference {
 }
 
 /// The held reference pictures by slot (`None`: the engine's is exact).
-#[derive(Debug, Default)]
-pub(crate) struct ReferenceStore {
-    slots: [Option<HeldReference>; MAX_REFERENCE_SLOTS],
-}
+pub(crate) type ReferenceStore = nc_encoder::HeldSlots<HeldReference>;
 
-impl ReferenceStore {
-    /// The picture slot `slot` predicts from, when it is held here.
-    pub(crate) fn held(&self, slot: usize) -> Option<&HeldReference> {
-        self.slots[slot].as_ref()
-    }
-
-    /// Before a coded-size switch: keep the engine's current pictures
-    /// (`references[slot]`, each `size`) of every slot not already held,
-    /// since the engine's copies become proxies. Slots held already keep
-    /// their picture: the engine's copy of those was a proxy before.
-    pub(crate) fn hold_engine_pictures(
-        &mut self,
-        references: &[Option<&Picture>],
-        (width, height): (usize, usize),
-    ) {
-        for (held, picture) in self.slots.iter_mut().zip(references) {
-            if let (None, Some(picture)) = (held.as_ref(), picture) {
-                *held = Some(HeldReference::new(
-                    Rc::new((*picture).clone()),
-                    width,
-                    height,
-                ));
-            }
+/// Before a coded-size switch: keep the engine's current pictures
+/// (`references[slot]`, each `size`) of every slot not already held, since
+/// the engine's copies become proxies. Slots held already keep their
+/// picture: the engine's copy of those was a proxy before.
+pub(crate) fn hold_engine_pictures(
+    store: &mut ReferenceStore,
+    references: &[Option<&Picture>],
+    (width, height): (usize, usize),
+) {
+    for (held, picture) in store.slots_mut().iter_mut().zip(references) {
+        if let (None, Some(picture)) = (held.as_ref(), picture) {
+            *held = Some(HeldReference::new(
+                Rc::new((*picture).clone()),
+                width,
+                height,
+            ));
         }
     }
-
-    /// A frame was committed: every slot it refreshes (all of them for a
-    /// key frame) now holds `picture`, or nothing when the engine's
-    /// reconstruction is the frame's normative picture.
-    pub(crate) fn commit(&mut self, key: bool, refresh: SlotMask, picture: Option<&HeldReference>) {
-        for (slot, held) in self.slots.iter_mut().enumerate() {
-            if key || refresh.contains(slot) {
-                *held = picture.cloned();
-            }
-        }
-    }
-
-    /// Spatial-SVC commit: lower layers (`S0`, and `S1` in 3-layer SVC) store
-    /// `picture` so the layer immediately above predicts normatively via
-    /// §7.11.3.3 scaled prediction, while the top layer stores `None` (its
-    /// engine pool holds exact pixels; intermediate layers bypass `store` on
-    /// their own unscaled temporal slots via `BackendSpatial::slot_layer`).
-    pub(crate) fn commit_spatial(
-        &mut self,
-        refresh: SlotMask,
-        refresh_all: bool,
-        picture: Option<&HeldReference>,
-    ) {
-        for (slot, held) in self.slots.iter_mut().enumerate() {
-            if refresh_all || refresh.contains(slot) {
-                match picture {
-                    Some(pic) => {
-                        if let Some(existing) = held {
-                            existing.clone_from(pic);
-                        } else {
-                            *held = Some(pic.clone());
-                        }
-                    }
-                    None => *held = None,
-                }
-            }
-        }
-    }
-}
-
-/// Whether a frame of `frame` size may predict from a reference of
-/// `reference` size: at most 2x smaller and 16x larger per dimension
-/// (§7.11.3.3 / §7.20 conformance requirements).
-pub(crate) fn reference_scale_allowed(reference: (usize, usize), frame: (usize, usize)) -> bool {
-    let fits = |r: usize, f: usize| 2 * f >= r && f <= 16 * r;
-    fits(reference.0, frame.0) && fits(reference.1, frame.1)
 }

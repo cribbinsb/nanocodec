@@ -1008,18 +1008,6 @@ impl CodecBackend for HevcBackend {
         // instructions; outside the near-free bar the engine default met
         // on AV1. `work/engine-cpu/screens/hevc-prune11.log`.
         ("decision.exact_rank_margin", 0.0),
-        // Trellis quantisation of the coded blocks (`quant.*`, on, key frames
-        // included and one survivor by the engine defaults;
-        // docs/handoff/trellis.md), luma only: J_real staged TRAIN (18 clips) BETTER, quality -2.4% full /
-        // -2.0% low (PSNR-YUV -2.1%, NEG -5.1%, VMAF v1 -4.2%, MS-SSIM 0.0%),
-        // 3/18 clips worse (bodycam_bc1 +2.7%), worst-1% PSNR-Y +1.9 (guard
-        // +2), no guard; periodic-key pulse +0.02 dB. CPU: P frames +15.6%
-        // host (crowd09 / bc1 QP36), key frames +52%; Jetson +23.2% (crowd
-        // 150 frames, one key); J ~ -0.1 at k 0.1 (2:1 weighted). Single-key
-        // long GOPs at equal rate (YUV per third): airport 600 kbps
-        // +0.04/+0.07/+0.03 dB, homes390 300 kbps +0.11/+0.26/+0.27,
-        // chirla 150 kbps +0.33/-0.16/-0.16. HEVC Fast keeps it off.
-        ("quant.trellis_chroma", 0.0),
         // Directional P-frame intra estimate (`decision.intra_directional`,
         // engine `intra_estimate.rs`) with this backend's SATD fallback
         // (`inter_fallback`), estimated only where DC intra costs under 2x
@@ -1057,10 +1045,9 @@ impl CodecBackend for HevcBackend {
         // dCPU 2.2, the day's pool draw): L2 J -1.12% [-1.53, -0.75], L3
         // (full ladder) BETTER, J -1.01% [-1.34, -0.72] (n 126, L2+L3
         // pooled), no guard. docs/analysis/fixed-qp-gap-2026-11-14.md.
-        // HEVC Fast and Faster pin the old values.
+        // HEVC Fast and Faster pin the old values. No depth removal is the
+        // engine default since 2026-11-15.
         ("hevc.merge_candidates", 4.0),
-        ("planner.depth_removal_th_32_16", 0.0),
-        ("planner.depth_removal_th_16_8", 0.0),
         // Quiet second before a scheduled key (`rate.prekey_quiet`, as the
         // H.264 Default since 6e1a695b): no cadence base boost and still
         // blocks held, so a still scene's key is not paid for by a

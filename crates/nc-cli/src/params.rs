@@ -314,6 +314,10 @@ mod tests {
         // Fast keeps the static-scaled cadence when the Default adopted the
         // inherited cadence depth (2026-11-15).
         expected.set("structure.inherited_depth", 0.0);
+        // Fast keeps the engine's old depth removal when the engine default
+        // dropped it (2026-11-15).
+        expected.set("planner.depth_removal_th_32_16", 25.0);
+        expected.set("planner.depth_removal_th_16_8", 50.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected

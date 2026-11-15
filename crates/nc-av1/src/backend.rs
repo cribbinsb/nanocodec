@@ -52,7 +52,7 @@ use crate::obu::{
 use crate::predict::{FilterIntraMode, IntraMode, dc_value};
 use crate::quant::QuantSteps;
 use crate::range_coder::{LiteralSlot, SpanSlot, SymbolWriter};
-use crate::reference_store::{HeldReference, ReferenceStore, reference_scale_allowed};
+use crate::reference_store::{HeldReference, ReferenceStore, hold_engine_pictures};
 use crate::restoration::{self, FrameRestoration, SearchSettings, WienerReferences};
 use crate::superres::{SUPERRES_DENOM_MAX, SUPERRES_NUM, Superres, downscaled_width};
 use crate::tables::{
@@ -1248,13 +1248,13 @@ impl CodecBackend for Av1Backend {
             .enumerate()
             .filter(|(_, picture)| picture.is_some())
             .map(|(slot, _)| self.store.held(slot).map_or(current, HeldReference::size))
-            .all(|reference| reference_scale_allowed(reference, (width, height)));
+            .all(|reference| nc_encoder::scaled_reference_allowed(reference, (width, height)));
         if !scalable {
             return Err(ConfigError::Resolution(
                 "AV1 scales a reference at most 2x down and 16x up (§7.11.3.3)",
             ));
         }
-        self.store.hold_engine_pictures(references, current);
+        hold_engine_pictures(&mut self.store, references, current);
         let (coded_width, coded_height) = coded_picture_size(width, height);
         let mi_cols = coded_width >> MI_LOG2;
         self.grids.width = width;
@@ -1311,7 +1311,7 @@ impl CodecBackend for Av1Backend {
         if !spatial
             .layer_sizes
             .windows(2)
-            .all(|w| reference_scale_allowed(w[0], w[1]))
+            .all(|w| nc_encoder::scaled_reference_allowed(w[0], w[1]))
         {
             return Err(ConfigError::SpatialScalability(
                 "AV1 spatial layer scale exceeds §7.11.3.3 limits",
@@ -1371,8 +1371,7 @@ impl CodecBackend for Av1Backend {
         });
         let held = (store_for_upper && (refresh_all || !refresh.is_empty()))
             .then(|| HeldReference::new(Rc::new(recon.clone()), size.0, size.1));
-        self.store
-            .commit_spatial(refresh, refresh_all, held.as_ref());
+        self.store.commit(refresh_all, refresh, held.as_ref());
     }
 
     /// Every reference names a slot (`ref_frame_idx`) and every frame its

@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from ..codecs import Codec
-from ..encoders.anchors import X264, X265, Kvazaar, LibaomRealtime, LibvpxRealtime, SvtAv1
+from ..encoders.anchors import (X264, X265, Kvazaar, LibaomRealtime, LibvpxGood, LibvpxRealtime,
+                               SvtAv1)
 from ..encoders.base import EncoderAdapter
 from ..encoders.nanocodec import nanocodec_encoders, nanocodec_with_preset
 from ..encoders.openh264 import BASELINE, Openh264
@@ -52,6 +53,7 @@ class Group(str, Enum):
     OURS = "ours"
     STANDARDS = "standards"   # reference software at CTC settings (exhaustive by design)
     PRACTICAL = "practical"   # real-time encoders, low delay, fixed QP, one thread
+    SLOW = "slow"             # the same formats' slow settings, low delay (fixed-QP headroom)
 
 
 @dataclass(frozen=True)
@@ -100,8 +102,14 @@ PRACTICAL = (CtcEncoder(X264("medium"), Group.PRACTICAL, Scale.QP),
              CtcEncoder(SvtAv1(10), Group.PRACTICAL, Scale.Q63),
              CtcEncoder(LibaomRealtime(8), Group.PRACTICAL, Scale.Q63),
              CtcEncoder(LibvpxRealtime(7), Group.PRACTICAL, Scale.Q63))
+#: The slow references of the fixed-QP gap map (docs/analysis/fixed-qp-gap-2026-11-14.md),
+#: in the same low-delay, one-thread, fixed-quantiser setup as PRACTICAL.
+SLOW = (CtcEncoder(X264("veryslow"), Group.SLOW, Scale.QP),
+        CtcEncoder(X265("slow"), Group.SLOW, Scale.QP),
+        CtcEncoder(SvtAv1(8), Group.SLOW, Scale.Q63),
+        CtcEncoder(LibvpxGood(2), Group.SLOW, Scale.Q63))
 OURS = tuple(_ours())
-ALL_ENCODERS = OURS + STANDARDS + PRACTICAL
+ALL_ENCODERS = OURS + STANDARDS + PRACTICAL + SLOW
 
 
 @dataclass(frozen=True)
