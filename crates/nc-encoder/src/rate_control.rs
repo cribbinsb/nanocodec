@@ -2546,7 +2546,7 @@ mod tests {
     #[test]
     fn an_inheriting_scenes_key_is_boosted_with_key_inherit() {
         let on = [("rate.key_still_boost", 6.), ("rate.key_inherit", 1.)];
-        let off = [("rate.key_still_boost", 6.)];
+        let off = [("rate.key_still_boost", 6.), ("rate.key_inherit", 0.)];
         // A crowd: a third of the blocks unchanged, but its frames inherit.
         assert!(
             inherited_key_quantizer(&on, 0.3, Some(1.))

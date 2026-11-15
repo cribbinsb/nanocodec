@@ -899,16 +899,6 @@ impl CodecBackend for Vp9Backend {
         // and crowd points 10.8 -> 15.7 per 1000 frames.
         // The other VP9 presets pin it off.
         ("rate.key_still_boost", 6.0),
-        // The still boost also follows the measured inheritance, its share
-        // sized by the key's lifetime (`rate.key_inherit`, full at keys every
-        // 10 s; as AV1). 600-frame L3 (keys every 10 s, 27 clips, draw
-        // 2026-11-15): J -1.19% [-1.65, -0.68], no guard, crowd -3.0%, static
-        // -0.7%, lowlight +0.1% (+0.66 dB periodic-key pulse without the
-        // lifetime). Pan and body-cam guard (9 long clips, 600 f): pan
-        // +0.18%, bodycam -0.13%. Single-key streams are unchanged. The
-        // other VP9 presets pin it off.
-        ("rate.key_inherit", 1.0),
-        ("rate.key_inherit_lifetime", 10.0),
         // The unified structure's reference plan (`structure.unified`,
         // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
         // (key, cadence base) also predict from the high-quality frame before
