@@ -117,26 +117,9 @@ pub fn quantize(coeffs: &mut [i32], qp: i32, log2: u8, intra: bool) {
 /// position and significance bits for almost no distortion gain; it is
 /// mostly noise). Returns whether any level remains.
 pub fn shave_isolated_ones(levels: &mut [i32], scan: &Scan, min_gap: usize) -> bool {
-    let positions = &scan.positions;
-    let Some(block_last) = previous_nonzero(levels, scan, positions.len()) else {
-        return false;
-    };
-    // `last` is dropped while it is an isolated ±1; the first level kept
-    // ends the block. The first non-zero level of the block is always kept.
-    let (mut last, mut keep) = (block_last, block_last);
-    while let Some(previous) = previous_nonzero(levels, scan, last) {
-        if levels[positions[last]].abs() == 1 && last - previous >= min_gap {
-            keep = previous;
-            last = previous;
-        } else {
-            break;
-        }
-    }
-    // Levels after the block's last non-zero one are already zero.
-    for &p in &positions[keep + 1..=block_last] {
-        levels[p] = 0;
-    }
-    true
+    nc_encoder::shave_isolated_ones(levels, &scan.positions, min_gap, |levels, end| {
+        previous_nonzero(levels, scan, end)
+    })
 }
 
 /// The highest scan index below `end` whose level is non-zero. Whole empty

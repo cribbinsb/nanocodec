@@ -716,17 +716,9 @@ pub(crate) fn shave_isolated_ones(
     min_gap: usize,
 ) -> bool {
     let positions = crate::scan::rect_positions(size.0, size.1);
-    let Some(mut last) = previous_nonzero(levels, size, coded, positions.len()) else {
-        return false;
-    };
-    while let Some(previous) = previous_nonzero(levels, size, coded, last) {
-        if levels[positions[last]].abs() != 1 || last - previous < min_gap {
-            break;
-        }
-        levels[positions[last]] = 0;
-        last = previous;
-    }
-    true
+    nc_encoder::shave_isolated_ones(levels, positions, min_gap, |levels, end| {
+        previous_nonzero(levels, size, coded, end)
+    })
 }
 
 /// The coefficient groups (by scan order index, one bit each) that may hold

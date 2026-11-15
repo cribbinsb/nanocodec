@@ -2264,7 +2264,7 @@ impl<B: CodecBackend> Encoder<B> {
         pictures: FramePictures<'_>,
         clean: bool,
         refined: bool,
-    ) -> Option<(PredictionMode, ReferenceChoice)> {
+    ) -> Option<LeafChoice> {
         let FramePictures {
             source,
             reference,
@@ -2280,7 +2280,7 @@ impl<B: CodecBackend> Encoder<B> {
                 .is_some_and(|s| s.coding_inter_layer_step.is_some());
             let mode = self.random_leaf_choice(node, inter_layer && secondary.is_some(), refresh);
             self.window = window;
-            return Some(mode);
+            return Some((mode.0, mode.1, None));
         }
         // The static skip proves a zero residual at the frame quantizer; a
         // block coded finer than the frame (`refined`) may well code one.
@@ -2305,7 +2305,7 @@ impl<B: CodecBackend> Encoder<B> {
             // A reliably still block (static for several frames, away from
             // motion; `still.*`): the zero vector, with no candidate or
             // intra trials.
-            Some((PredictionMode::Inter(Mv::ZERO), ReferenceChoice::Primary))
+            Some(ZERO_VECTOR_LEAF)
         } else {
             let skip_vector = self.backend.skip_vector(node);
             let search_mv =
@@ -2355,10 +2355,11 @@ impl<B: CodecBackend> Encoder<B> {
                 }
                 self.backend.sub_block_motion(node, &vectors[..count]);
             }
-            if let Some(mv) = choice.mode.intra_fallback() {
-                self.backend.intra_fallback(node, mv);
-            }
-            Some((choice.mode.prediction(), chosen))
+            Some((
+                choice.mode.prediction(),
+                chosen,
+                choice.mode.intra_fallback(),
+            ))
         };
         self.window = window;
         mode
@@ -2646,11 +2647,17 @@ impl<B: CodecBackend> Encoder<B> {
             .as_ref()
             .map_or(RefreshRegion::Dirty, |w| w.region(&node));
         let qp_offset = self.leaf_qp_offset(&node);
-        let (mode, chosen, selected_ref) = match inter {
-            None => (PredictionMode::IntraDc, ReferenceChoice::Primary, None),
+        let (mode, chosen, intra_fallback, selected_ref) = match inter {
+            None => (
+                PredictionMode::IntraDc,
+                ReferenceChoice::Primary,
+                None,
+                None,
+            ),
             Some(_) if region == RefreshRegion::Intra => (
                 PredictionMode::IntraDc,
                 ReferenceChoice::Primary,
+                None,
                 Some(reference),
             ),
             Some(frame) => {
@@ -2674,10 +2681,11 @@ impl<B: CodecBackend> Encoder<B> {
                 let decided =
                     self.decide_inter_leaf(&node, planned, frame, pictures, clean, qp_offset < 0);
                 if self.spatial.is_some() {
-                    self.observe_spatial_leaf_choice(leaf_area::<B>(&node), decided);
+                    let choice = decided.map(|(mode, chosen, _)| (mode, chosen));
+                    self.observe_spatial_leaf_choice(leaf_area::<B>(&node), choice);
                 }
                 self.frame_decision_params.lambda_scale = frame_lambda_scale;
-                let Some((mode, chosen)) = decided else {
+                let Some((mode, chosen, intra_fallback)) = decided else {
                     // A static skip: coded at the frame quantizer.
                     return;
                 };
@@ -2687,7 +2695,7 @@ impl<B: CodecBackend> Encoder<B> {
                         secondary.expect("only frames with a secondary reference choose it")
                     }
                 };
-                (mode, chosen, Some(picture))
+                (mode, chosen, intra_fallback, Some(picture))
             }
         };
         // Rate control's realised offset needs only the leaves coded off the
@@ -2704,6 +2712,7 @@ impl<B: CodecBackend> Encoder<B> {
             mode,
             reference: chosen,
             qp_offset,
+            intra_fallback,
         };
         if let ReferenceChoice::Compound { .. } = chosen {
             self.backend.encode_compound_block(
@@ -3047,6 +3056,18 @@ const LAYER_COUNT_PARAM: &str = "layers.count";
 /// mini-GOP: refining there is spent where nothing keeps it, and the T0
 /// after them would find the term believing it done (a starved key left
 /// static content 7.5 dB down, `crates/nc-cli/tests/static_recovery.rs`).
+/// An inter-frame leaf's decided mode, the reference it predicts from and,
+/// for intra that won only through the directional estimate, the inter
+/// vector it beat (`BlockDecision::intra_fallback`).
+type LeafChoice = (PredictionMode, ReferenceChoice, Option<Mv>);
+
+/// The zero vector on the primary reference, with no search.
+const ZERO_VECTOR_LEAF: LeafChoice = (
+    PredictionMode::Inter(Mv::ZERO),
+    ReferenceChoice::Primary,
+    None,
+);
+
 fn on_reuse_chain(key: bool, references: &FrameReferences) -> bool {
     key || references.position.layer == 0
 }

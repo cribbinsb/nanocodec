@@ -22,8 +22,8 @@ use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
     FrameType, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
     ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest,
-    ZeroLimits, copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
-    zero_vector_residual_is_zero,
+    TrellisSettings, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
+    residual_quantises_to_zero, zero_vector_residual_is_zero,
 };
 
 use crate::cdef::{self, CdefParams};
@@ -480,11 +480,6 @@ pub struct Av1Backend {
     /// The block [`CodecBackend::encode_block`] last coded as a copy of the
     /// reference's luma (zero motion, no luma residual), by position.
     luma_copy: Option<(usize, usize)>,
-    /// The block (x, y, log2 size) whose intra the engine chose only
-    /// through its directional estimate, and the inter vector it beat
-    /// (`CodecBackend::intra_fallback`), consumed by its `encode_block`
-    /// (`p_intra.rs`).
-    intra_fallback: Option<((usize, usize, u8), Mv)>,
     /// This frame's intra-refresh window (`CodecBackend::set_refresh`):
     /// the inter-frame intra search keeps DC on its dirty edge.
     refresh: Option<RefreshWindow>,
@@ -512,7 +507,6 @@ pub struct Av1Backend {
     restoration: RestorationState,
 }
 
-/// The registered trellis controls (`nc_encoder::QuantParams`).
 /// Loop restoration state of the stream and of the frame being coded.
 #[derive(Debug, Default)]
 struct RestorationState {
@@ -538,29 +532,6 @@ struct CdefFrameChoice {
     /// The per-superblock search runs in full instead of reusing earlier
     /// frames' selection.
     search: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TrellisSettings {
-    /// Multiple of the mode-decision λ.
-    lambda_scale: f32,
-    /// Further multiple for chroma; `None` leaves chroma unoptimised.
-    chroma_scale: Option<f32>,
-    /// Whether key frames are trellised too.
-    key_frames: bool,
-    /// Survivors per scan position.
-    max_states: usize,
-}
-
-impl TrellisSettings {
-    fn from_params(quant: &QuantParams) -> Option<Self> {
-        (quant.trellis >= 0.5).then(|| Self {
-            lambda_scale: quant.trellis_lambda_scale,
-            chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
-            key_frames: quant.trellis_key >= 0.5,
-            max_states: quant.trellis_states.round() as usize,
-        })
-    }
 }
 
 /// What the trellis needs to price one transform block's coefficients.
@@ -1190,7 +1161,6 @@ impl CodecBackend for Av1Backend {
             scratch: Scratch::new(),
             still_skipped: None,
             luma_copy: None,
-            intra_fallback: None,
             refresh: None,
             shave_min_zero_run: params.shave_min_zero_run.round() as usize,
             chroma_skip_sad_num: params.chroma_skip_sad_num.round() as u32,
@@ -1626,10 +1596,6 @@ impl CodecBackend for Av1Backend {
 
     fn set_refresh(&mut self, window: Option<&RefreshWindow>) {
         self.refresh = window.cloned();
-    }
-
-    fn intra_fallback(&mut self, block: &Block, mv: Mv) {
-        self.intra_fallback = Some(((block.x, block.y, block.log2_size()), mv));
     }
 
     fn set_noise_sigma(&mut self, sigma: f32) {
@@ -2228,7 +2194,13 @@ impl Av1Backend {
                 (None, self.choose_intra_mode(block, source, recon))
             }
             PredictionMode::IntraDc => {
-                match self.inter_frame_intra(block, source, reference, recon) {
+                match self.inter_frame_intra(
+                    block,
+                    decision.intra_fallback,
+                    source,
+                    reference,
+                    recon,
+                ) {
                     InterFrameIntra::Intra(luma) => (None, luma),
                     InterFrameIntra::Inter(mv, reference) => (Some((mv, reference)), LumaIntra::DC),
                 }
@@ -4485,7 +4457,7 @@ impl Av1Backend {
             }
         };
         let nonzero = if headroom {
-            apply_planned_dead_zone(levels, planned_min_level)
+            nc_encoder::apply_planned_dead_zone(levels, planned_min_level) as u32
         } else {
             nonzero
         };
@@ -4666,7 +4638,7 @@ impl Av1Backend {
     ) -> Option<TrellisBlock> {
         let settings = self
             .trellis
-            .filter(|t| t.key_frames || self.kind != FrameKind::Key)?;
+            .filter(|t| t.covers(self.kind == FrameKind::Key))?;
         let p = plane as usize;
         let plane_type = if plane == PlaneIndex::Y {
             PlaneType::Luma
@@ -4742,8 +4714,10 @@ impl Av1Backend {
         } else {
             self.chroma_rounding_q7
         };
-        let keep = 1.0 - rounding as f32 / ROUNDING_Q7_ONE;
-        (keep * self.lambda_scale.sqrt()).ceil() as i32
+        nc_encoder::planned_min_level(
+            1.0 - rounding as f32 / ROUNDING_Q7_ONE,
+            self.lambda_scale.sqrt(),
+        )
     }
 
     /// The largest orthonormal coefficients of `plane` that quantise to
@@ -5129,23 +5103,6 @@ enum PartitionSymbol {
     Implied,
 }
 
-/// End of block of freshly quantised `levels` holding `nonzero` nonzero
-/// values. Sparse AC blocks usually end near the start of the scan: the
-/// quantizer's exact count tells us when every nonzero was found; dense
-/// blocks keep the reverse scan's cheap high-EOB exit.
-/// Zero the levels below `min_level` in magnitude (the planned step's dead
-/// zone, see `planned_min_level`); returns how many remain non-zero.
-fn apply_planned_dead_zone(levels: &mut [i16], min_level: i32) -> u32 {
-    let mut nonzero = 0;
-    for level in levels.iter_mut() {
-        if i32::from(*level).abs() < min_level {
-            *level = 0;
-        }
-        nonzero += u32::from(*level != 0);
-    }
-    nonzero
-}
-
 /// Trellis quantisation (`quant.trellis`) of one transform block's forward
 /// coefficients `coeffs` into `levels`, priced with `cdfs` as they stand.
 /// Returns the number of nonzero levels.
@@ -5188,7 +5145,10 @@ fn trellis_quantize(
 
 /// End of block of `levels` with `nonzero` nonzero levels, quantised from
 /// a forward transform under `policy` (so zero past its
-/// [`ForwardPolicy::scan_len`]).
+/// [`ForwardPolicy::scan_len`]). Sparse AC blocks usually end near the
+/// start of the scan: the quantizer's exact count tells us when every
+/// nonzero was found; dense blocks keep the reverse scan's cheap high-EOB
+/// exit.
 fn quantized_eob(tx: TxSize, levels: &[i16], nonzero: u32, policy: ForwardPolicy) -> usize {
     if nonzero == 0 {
         0

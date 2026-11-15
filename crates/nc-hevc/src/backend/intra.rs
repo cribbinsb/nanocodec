@@ -218,7 +218,7 @@ impl HevcBackend {
 
     /// The inter vector, and its `reference`, that intra CU `block` beat
     /// only through the engine's directional estimate
-    /// (`CodecBackend::intra_fallback`), where it costs less than intra on
+    /// (`BlockDecision::intra_fallback`), where it costs less than intra on
     /// the reconstruction: the best luma mode's SATD + √λ·bits (as the mode
     /// search measures it, on the CU's first transform block) against the
     /// vector's on the same samples, as x264 compares them. A CU that would
@@ -227,12 +227,13 @@ impl HevcBackend {
     pub(super) fn inter_fallback<'r>(
         &mut self,
         block: &Block,
+        fallback: Option<Mv>,
         source: &Picture,
         reference: Option<&'r Picture>,
         recon: &Picture,
     ) -> Option<(Mv, &'r Picture)> {
-        let (at, mv) = self.intra_fallback.take()?;
-        let reference = reference.filter(|_| at == (block.x, block.y, block.log2_size()))?;
+        let mv = fallback?;
+        let reference = reference?;
         if self.inter_intra_dc_only(block) {
             return Some((mv, reference));
         }

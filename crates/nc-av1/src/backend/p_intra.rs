@@ -5,7 +5,7 @@
 //! directional intra estimate (`decision.intra_directional`,
 //! `nc_encoder::intra_estimate`) textured blocks reach intra because a
 //! direction predicts them, so DC alone wastes the decision. Blocks the
-//! engine marks (`CodecBackend::intra_fallback`), or every inter-frame
+//! engine marks (`BlockDecision::intra_fallback`), or every inter-frame
 //! intra block with `av1.inter_intra_search` 2, get a short search: the
 //! estimate's directions (DC, vertical, horizontal, D45, D135) plus smooth
 //! and Paeth, ranked by prediction SATD + √λ · mode bits, the best
@@ -75,14 +75,11 @@ impl Av1Backend {
     pub(super) fn inter_frame_intra<'r>(
         &mut self,
         block: &Block,
+        marked: Option<Mv>,
         source: &Picture,
         reference: Option<&'r Picture>,
         recon: &mut Picture,
     ) -> InterFrameIntra<'r> {
-        let marked = self
-            .intra_fallback
-            .take()
-            .and_then(|(at, mv)| (at == (block.x, block.y, block.log2_size())).then_some(mv));
         let searched = match InterIntraSearch::from_param(self.params.inter_intra_search) {
             InterIntraSearch::DcOnly => false,
             InterIntraSearch::Marked => marked.is_some(),

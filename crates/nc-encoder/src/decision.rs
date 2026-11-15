@@ -187,7 +187,7 @@ fn covers_all<B: CodecBackend, T>(
 /// The mode mode decision found for one block on an inter frame: the
 /// codec-facing [`PredictionMode`] and, for intra that won only through the
 /// directional estimate, the inter vector it beat
-/// ([`crate::CodecBackend::intra_fallback`]). Packed as a vector and a kind
+/// ([`crate::BlockDecision::intra_fallback`]). Packed as a vector and a kind
 /// (6 bytes, as `PredictionMode`) so the fallback costs the hot decision
 /// path nothing with the estimate off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

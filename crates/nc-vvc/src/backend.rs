@@ -385,10 +385,6 @@ pub struct VvcBackend {
     /// `mv_candidates`/`skip_vector`, cleared when any block is coded or a
     /// CTU starts): the engine prices many modes of one block on one grid.
     current: Option<(Block, crate::motion::Predictors)>,
-    /// The CU (x, y, log2 size) whose intra the engine chose only through
-    /// its directional estimate, and the inter vector it beat
-    /// (`CodecBackend::intra_fallback`), consumed by its `encode_block`.
-    intra_fallback: Option<((usize, usize, u8), Mv)>,
     /// The engine's exact luma prediction of its best candidate
     /// (`cache_exact_luma`), with its block, vector and reference index;
     /// reused by `encode_block` when the decision keeps that motion.
@@ -551,10 +547,6 @@ impl VvcParams {
 const VVC_LOOP_FILTER_REACH: usize = 16;
 
 impl CodecBackend for VvcBackend {
-    fn intra_fallback(&mut self, block: &Block, mv: Mv) {
-        self.intra_fallback = Some(((block.x, block.y, block.log2_size()), mv));
-    }
-
     const RECODE: bool = true;
     // Intra refresh: TMVP is off under it (`ph_temporal_mvp_enabled_flag`,
     // `temporal_mvp_enabled`).
@@ -895,7 +887,6 @@ impl CodecBackend for VvcBackend {
             alf: crate::alf::Decision::default(),
             alf_search: AlfSearch::new(&AlfSearchParams::from_overrides(&config.params)),
             current: None,
-            intra_fallback: None,
             cached_luma: None,
             cached_luma_samples: Vec::new(),
             inter_predictions: Default::default(),
@@ -1222,7 +1213,7 @@ impl CodecBackend for VvcBackend {
         self.begin_block_qp(decision.qp_offset);
         self.set_active_ref(ref_idx_of(decision.reference));
         let (mode, (intra_mode, chroma_mode, isp)) =
-            self.block_mode(block, decision.mode, source, reference, reconstruction);
+            self.block_mode(block, decision, source, reference, reconstruction);
         let motion = self.block_motion(block, mode, source, reference);
         // A sub-partitioned luma quantised to nothing is coded whole instead.
         let mut isp_luma = isp.and_then(|split| {
@@ -2030,18 +2021,19 @@ impl VvcBackend {
         }
     }
 
-    /// The prediction of leaf `block` the engine decided as `decided`
+    /// The prediction of leaf `block` the engine decided as `decision`
     /// (intra may fall back to inter, [`Self::inter_fallback`]) and its
     /// luma direction, chroma direction and intra sub-partitions (DC and
     /// none for inter).
     fn block_mode(
         &mut self,
         block: &Block,
-        decided: PredictionMode,
+        decision: &BlockDecision,
         source: &Picture,
         reference: Option<&Picture>,
         reconstruction: &Picture,
     ) -> (PredictionMode, (u8, u8, Option<crate::isp::Split>)) {
+        let (decided, fallback) = (decision.mode, decision.intra_fallback);
         // Under intra refresh, planar and angular prediction (and reference
         // filtering) read the top reference row up to twice the CU's width
         // (H.266 §8.4.5.2.8), dirty past the intra range's right edge; DC
@@ -2052,9 +2044,9 @@ impl VvcBackend {
             .as_ref()
             .is_some_and(|w| w.reads_dirty_above_right(block));
         let luma = (decided == PredictionMode::IntraDc && !dirty_above_right)
-            .then(|| self.luma_direction(block, source, reconstruction))
+            .then(|| self.luma_direction(block, fallback.is_some(), source, reconstruction))
             .flatten();
-        let mode = match self.inter_fallback(block, luma, source, reference) {
+        let mode = match self.inter_fallback(block, fallback, luma, source, reference) {
             Some(mv) => PredictionMode::Inter(mv),
             None => decided,
         };
@@ -2074,13 +2066,11 @@ impl VvcBackend {
     fn luma_direction(
         &mut self,
         block: &Block,
+        estimated: bool,
         source: &Picture,
         reconstruction: &Picture,
     ) -> Option<crate::intra::LumaChoice> {
         let search = if self.inter {
-            let estimated = self
-                .intra_fallback
-                .is_some_and(|(at, _)| at == (block.x, block.y, block.log2_size()));
             self.inter_intra_search.search(
                 block,
                 (self.geometry.coded_width, self.geometry.ctu_size()),
@@ -2106,7 +2096,7 @@ impl VvcBackend {
     }
 
     /// The inter vector to code intra leaf `block` with after all: the one
-    /// the engine's directional estimate beat (`CodecBackend::intra_fallback`)
+    /// the engine's directional estimate beat (`BlockDecision::intra_fallback`)
     /// where its luma rate-distortion cost (`inter_leaf_cost`) is below the
     /// intra direction's (`luma`, priced on the first transform unit and
     /// scaled to the CU's area). A CU whose search is DC only falls back
@@ -2114,12 +2104,13 @@ impl VvcBackend {
     fn inter_fallback(
         &mut self,
         block: &Block,
+        fallback: Option<Mv>,
         luma: Option<crate::intra::LumaChoice>,
         source: &Picture,
         reference: Option<&Picture>,
     ) -> Option<Mv> {
-        let (at, mv) = self.intra_fallback.take()?;
-        let reference = reference.filter(|_| at == (block.x, block.y, block.log2_size()))?;
+        let mv = fallback?;
+        let reference = reference?;
         let Some(crate::intra::LumaChoice {
             cost: intra_cost, ..
         }) = luma

@@ -497,12 +497,12 @@ impl MbQuantizers {
     /// (rounding 1/3 intra, 1/`inter_rounding_divisor` inter).
     #[must_use]
     pub fn with_planned_step(mut self, step_ratio: f32, inter_rounding_divisor: u8) -> Self {
-        let min_level = |divisor: u8| ((1.0 - 1.0 / f32::from(divisor)) * step_ratio).ceil() as i32;
+        let min_level =
+            |divisor: u8| nc_encoder::planned_min_level(1.0 - 1.0 / f32::from(divisor), step_ratio);
         self.planned_min_level = [
             min_level(INTRA_ROUNDING_DIVISOR),
             min_level(inter_rounding_divisor),
-        ]
-        .map(|level| level.max(NO_DEAD_ZONE));
+        ];
         self
     }
 
@@ -1222,18 +1222,14 @@ fn coefficient_cost_8x8(levels: &[i16; 64], nonzero: u32) -> u32 {
 /// [`eliminate_sparse_luma`] for 8x8 transform blocks, with the same
 /// per-8x8 and per-macroblock thresholds. `nonzero` holds each block's
 /// count of non-zero levels (from the quantiser).
-/// Zero the levels below `min_level` in magnitude (the planned step's dead
-/// zone, [`MbQuantizers::with_planned_step`]). Below the λ-headroom cap
-/// `min_level` is 1, which zeroes nothing, so the pass is skipped (it was
-/// ~1% of P-frame instructions, run over every coded block).
+/// [`nc_encoder::apply_planned_dead_zone`] (the planned step's dead zone,
+/// [`MbQuantizers::with_planned_step`]) where it can zero a level. Below
+/// the λ-headroom cap `min_level` is 1, which zeroes nothing, so the pass
+/// is skipped (it was ~1% of P-frame instructions, run over every coded
+/// block).
 fn apply_planned_dead_zone(levels: &mut [i16], min_level: i32) {
-    if min_level <= NO_DEAD_ZONE {
-        return;
-    }
-    for level in levels.iter_mut() {
-        if i32::from(level.unsigned_abs()) < min_level {
-            *level = 0;
-        }
+    if min_level > NO_DEAD_ZONE {
+        nc_encoder::apply_planned_dead_zone(levels, min_level);
     }
 }
 

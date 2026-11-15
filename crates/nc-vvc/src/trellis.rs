@@ -596,12 +596,9 @@ impl TrellisQuantizer {
 /// search's buffers.
 #[derive(Debug)]
 pub(crate) struct TrellisQuant {
-    /// Multiple of the mode-decision λ.
-    lambda_scale: f32,
-    /// Further multiple of chroma's λ; `None` leaves chroma unoptimised.
-    chroma_scale: Option<f32>,
-    /// Whether key (IDR) pictures are trellised too.
-    key_frames: bool,
+    /// The engine's trellis controls; `max_states` does not apply (the
+    /// model is exact for one survivor only).
+    settings: nc_encoder::TrellisSettings,
     /// Further multiple of λ on key pictures.
     key_scale: f32,
     /// [`BlockTrellis::round_up`].
@@ -615,11 +612,9 @@ impl TrellisQuant {
     /// the model is exact for one survivor only.
     /// `key_scale` further scales λ on key pictures.
     pub(crate) fn from_params(quant: &QuantParams, round_up: bool, key_scale: f32) -> Option<Self> {
-        (quant.trellis >= 0.5).then(|| Self {
+        nc_encoder::TrellisSettings::from_params(quant).map(|settings| Self {
             round_up,
-            lambda_scale: quant.trellis_lambda_scale,
-            chroma_scale: (quant.trellis_chroma > 0.).then_some(quant.trellis_chroma),
-            key_frames: quant.trellis_key >= 0.5,
+            settings,
             key_scale,
             search: TrellisQuantizer::default(),
         })
@@ -637,14 +632,14 @@ impl TrellisQuant {
     ) -> Option<crate::recon::Trellis<'a>> {
         let ch = usize::from(plane != nc_common::PlaneIndex::Y);
         let lambda = lambdas[ch];
-        if !inter && !self.key_frames {
+        if !self.settings.covers(!inter) {
             return None;
         }
         let picture_scale = if inter { 1. } else { self.key_scale };
         let scale = if ch == 0 {
-            self.lambda_scale * picture_scale
+            self.settings.lambda_scale * picture_scale
         } else {
-            self.lambda_scale * picture_scale * self.chroma_scale?
+            self.settings.lambda_scale * picture_scale * self.settings.chroma_scale?
         };
         Some(crate::recon::Trellis {
             search: &mut self.search,

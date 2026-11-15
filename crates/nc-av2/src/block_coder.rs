@@ -220,7 +220,12 @@ pub(crate) struct CoderOptions {
     pub trim: Option<TrimOptions>,
     /// Trellis quantisation of the coded transforms (`quant.trellis`), or
     /// `None` for none.
-    pub trellis: Option<TrellisOptions>,
+    /// The frame's trellis quantisation (`quant.*` engine params,
+    /// `docs/handoff/trellis.md`): the coded transforms' levels are chosen
+    /// together by distortion plus λ times their bits under the tile's
+    /// current probabilities ([`TrellisQuantizer`]); a chroma scale of
+    /// `None` leaves chroma to the plain quantiser (and trimming).
+    pub trellis: Option<nc_encoder::TrellisSettings>,
     /// Inter luma pre-transform skip, or `None` for none.
     pub pre_tx_skip: Option<PreTxSkip>,
     /// P-frame texture-aware zero test of large `DCT_DCT` transforms, at
@@ -244,21 +249,6 @@ pub(crate) enum TrialDistortion {
     /// From the transform coefficients ([`Output::Estimate`]); only the
     /// coding that is kept is reconstructed.
     Estimated,
-}
-
-/// The frame's trellis quantisation (`quant.*` engine params,
-/// `docs/handoff/trellis.md`): the coded transforms' levels are chosen
-/// together by distortion plus λ times their bits under the tile's current
-/// probabilities ([`TrellisQuantizer`]).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct TrellisOptions {
-    /// Multiple of the mode-decision λ.
-    pub lambda_scale: f32,
-    /// Further multiple for chroma, or `None` to leave chroma to the plain
-    /// quantiser (and trimming).
-    pub chroma_scale: Option<f32>,
-    /// Survivors per scan position.
-    pub max_states: usize,
 }
 
 /// The trellis of one frame: λ (sample SSE per bit) per plane kind.
@@ -3817,7 +3807,11 @@ fn is_quarter_sample((row, col): (i32, i32)) -> bool {
 /// scales with the chroma step squared, as x264 and HM scale chroma λ by
 /// the chroma QP offset (nc-av1's trellis, where the luma λ crushed chroma:
 /// −2.9 dB U on crowd).
-fn trellis_lambdas(options: TrellisOptions, lambda: f64, chroma_weight: f64) -> TrellisLambdas {
+fn trellis_lambdas(
+    options: nc_encoder::TrellisSettings,
+    lambda: f64,
+    chroma_weight: f64,
+) -> TrellisLambdas {
     let luma = lambda as f32 * options.lambda_scale;
     TrellisLambdas {
         luma,

@@ -220,25 +220,16 @@ pub(crate) fn dct_levels_are_zero(
 /// one): a level survives only if its coefficient reaches `(1 − 1/divisor)
 /// · √scale` coded steps. 1 (every level) at or below the planned step.
 pub(crate) fn planned_min_level(rounding: Rounding, lambda_scale: f32) -> i32 {
-    if lambda_scale <= 1.0 {
-        return 1;
-    }
     let keep = 1.0 - 1.0 / rounding.divisor() as f32;
-    ((keep * lambda_scale.sqrt()).ceil() as i32).max(1)
+    nc_encoder::planned_min_level(keep, lambda_scale.sqrt())
 }
 
 /// Zero the levels below `min_level` ([`planned_min_level`]), the ones a
-/// quantiser at the planned step past qindex 255 would zero. Returns
-/// whether any level is left.
+/// quantiser at the planned step past qindex 255 would zero
+/// ([`nc_encoder::apply_planned_dead_zone`]). Returns whether any level is
+/// left.
 pub(crate) fn apply_planned_dead_zone(tx: TxSize, min_level: i32, levels: &mut [i32]) -> bool {
-    let mut any = false;
-    for level in &mut levels[..tx.area()] {
-        if level.abs() < min_level {
-            *level = 0;
-        }
-        any |= *level != 0;
-    }
-    any
+    nc_encoder::apply_planned_dead_zone(&mut levels[..tx.area()], min_level) > 0
 }
 
 /// Quantize raster `coefficients` into `levels`; returns whether any level

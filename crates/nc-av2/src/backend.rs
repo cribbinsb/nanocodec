@@ -4,7 +4,7 @@
 use crate::block_coder::{
     self, BlockCoder, CdefMode, CoderOptions, DeltaSearch, EstimateModels, FilterSearch,
     FinishedTile, InterTxSearch, IntraSearch, LumaCandidates, PlaneRounding, SplitPolicy,
-    TrellisOptions, TrialDistortion,
+    TrialDistortion,
 };
 use crate::ccso::{CcsoParams, CcsoSource};
 use crate::cdef::{self, CdefParams};
@@ -153,28 +153,6 @@ fn key_qindex(qindex: u8, scale: f64) -> u8 {
         .map_or(qindex, |q| q as u8)
 }
 
-/// The registered trellis controls (`nc_encoder::QuantParams`,
-/// `docs/handoff/trellis.md`).
-#[derive(Debug, Clone, Copy)]
-struct TrellisSettings {
-    options: TrellisOptions,
-    /// Whether key frames are trellised too.
-    key_frames: bool,
-}
-
-impl TrellisSettings {
-    fn from_params(quant: &QuantParams) -> Option<Self> {
-        (quant.trellis >= 0.5).then(|| Self {
-            options: TrellisOptions {
-                lambda_scale: quant.trellis_lambda_scale,
-                chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
-                max_states: quant.trellis_states.round() as usize,
-            },
-            key_frames: quant.trellis_key >= 0.5,
-        })
-    }
-}
-
 /// Which frames and planes coefficient trimming touches (`av2.coeff_trim`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrimScope {
@@ -245,7 +223,7 @@ pub struct Av2Backend {
     coded_height: usize,
     params: ToolParams,
     /// `quant.trellis`: trellis quantisation of the coded transforms.
-    trellis: Option<TrellisSettings>,
+    trellis: Option<nc_encoder::TrellisSettings>,
     order_hint: u16,
     /// The last committed frame's display order hint (AVM
     /// `display_order_hint`: the order hint unwrapped, 0 at the key frame),
@@ -986,7 +964,9 @@ impl CodecBackend for Av2Backend {
             coded_width,
             coded_height,
             params: ToolParams::from_overrides(&config.params),
-            trellis: TrellisSettings::from_params(&QuantParams::from_overrides(&config.params)),
+            trellis: nc_encoder::TrellisSettings::from_params(&QuantParams::from_overrides(
+                &config.params,
+            )),
             order_hint: 0,
             display_order: 0,
             slot_display_orders: [0; REFERENCE_SLOTS as usize],
@@ -1325,10 +1305,7 @@ impl CodecBackend for Av2Backend {
                 min_nonzero: self.params.inter_tx_min_nonzero.round() as usize,
             },
             trim: self.trim_options(),
-            trellis: self
-                .trellis
-                .filter(|t| t.key_frames || !self.key)
-                .map(|t| t.options),
+            trellis: self.trellis.filter(|t| t.covers(self.key)),
             pre_tx_skip: (self.params.pre_tx_skip >= 0.5).then_some(PreTxSkip {
                 energy: self.params.pre_tx_skip_energy,
                 score: self.params.pre_tx_skip_score,

@@ -33,8 +33,9 @@ use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
     FrameType, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
-    ReferenceChoice, RefreshWindow, StaticSkipTest, ZeroLimits, copy_zero_vector_prediction,
-    long_term_slot, reference_slots, uses_long_term_slot, zero_vector_residual_is_zero,
+    ReferenceChoice, RefreshWindow, StaticSkipTest, TrellisSettings, ZeroLimits,
+    copy_zero_vector_prediction, long_term_slot, reference_slots, uses_long_term_slot,
+    zero_vector_residual_is_zero,
 };
 
 use crate::collocated::MotionStore;
@@ -241,7 +242,7 @@ impl FrameQuantization {
                         let zero_limit = largest_zero_coefficient(qp, log2, rounding);
                         let keep = 1.0 - rounding as f32 / ROUNDING_UNITS_PER_STEP;
                         TransformQuantization {
-                            planned_min_level: (keep * headroom_step).ceil().max(1.0) as i32,
+                            planned_min_level: nc_encoder::planned_min_level(keep, headroom_step),
                             column_zero_limit: (zero_limit as f32 * column_zero_scale) as u32,
                             quantizer: HevcQuantizer::with_rounding(qp as u8, log2, rounding),
                             zero_limit,
@@ -470,10 +471,6 @@ pub struct HevcBackend {
     /// (`hevc.key_intra_coarse`).
     key_intra: InterIntraSearch,
     early_merge: Option<EarlyMergeHint>,
-    /// The CU (x, y, log2 size) whose intra the engine chose only through
-    /// its directional estimate, and the inter vector it beat
-    /// (`CodecBackend::intra_fallback`), consumed by its `encode_block`.
-    intra_fallback: Option<((usize, usize, u8), Mv)>,
     /// `hevc.still_skip` and its limit scale (0 = off).
     still_skip_limit_scale: f32,
     /// The CU `try_static_skip` accepted: the next `encode_block` codes it
@@ -527,24 +524,14 @@ const QSTEP_UNIT_QP: i32 = 4;
 /// search's buffers.
 #[derive(Debug)]
 struct TrellisQuant {
-    /// Multiple of the mode-decision λ.
-    lambda_scale: f32,
-    /// Further multiple for chroma; `None` leaves chroma unoptimised.
-    chroma_scale: Option<f32>,
-    /// Whether key (IDR) slices are trellised too.
-    key_frames: bool,
-    /// Survivors per scan position.
-    max_states: usize,
+    settings: TrellisSettings,
     search: RefCell<TrellisQuantizer>,
 }
 
 impl TrellisQuant {
     fn from_params(quant: &QuantParams) -> Option<Self> {
-        (quant.trellis >= 0.5).then(|| Self {
-            lambda_scale: quant.trellis_lambda_scale,
-            chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
-            key_frames: quant.trellis_key >= 0.5,
-            max_states: quant.trellis_states.round() as usize,
+        TrellisSettings::from_params(quant).map(|settings| Self {
+            settings,
             search: RefCell::default(),
         })
     }
@@ -853,10 +840,6 @@ nc_encoder::param_group! {
 }
 
 impl CodecBackend for HevcBackend {
-    fn intra_fallback(&mut self, block: &Block, mv: Mv) {
-        self.intra_fallback = Some(((block.x, block.y, block.log2_size()), mv));
-    }
-
     // λ and the zero-residual bounds follow the planned step (`begin_frame`).
     // CBR 150 f, crowd_mot20_06 at 150 kbps: 315 -> 156 kbps.
     const SUPPORTS_LAMBDA_HEADROOM: bool = true;
@@ -1003,7 +986,18 @@ impl CodecBackend for HevcBackend {
         // The other HEVC presets pin it off.
         ("structure.inherited_depth", 1.0),
         ("decision.intra_gate_variance", 0.0),
-        ("decision.codec_subpel_seed_lambdas", 0.05),
+        // Sub-sample refinement without its early exits (seed residual,
+        // negligible skip residual, cheap-vector residual): each skips
+        // refining blocks whose residual looked small, where HEVC's exact
+        // 8-tap ranking still finds better quarter-sample vectors. Fixed QP
+        // (with exact_rank_margin 0, draw fixedqp-2026-11-14) J -0.4% for
+        // +0.6% Jetson cycles. Adoption screen (k 0.1, dCPU +0.6%, pool draw
+        // 2026-11-15): L1 J -0.93% [-1.28, -0.28] n 24, L2 -0.02% [-0.42,
+        // +0.40] n 48, L3 (600 f, ladder) -0.56% [-0.85, -0.30] n 27 BETTER,
+        // no guard. hevc-fast, -faster and -better pin the old values.
+        ("decision.codec_subpel_seed_lambdas", 0.0),
+        ("decision.skip_no_refine_lambdas", 0.0),
+        ("decision.refine_cheap_min_lambdas", 0.0),
         ("decision.subpel_move_bias", 1.1),
         ("decision.subpel_move_bias_nonzero", 1.1),
         ("decision.subpel_fractional_bias", 1.1),
@@ -1162,7 +1156,6 @@ impl CodecBackend for HevcBackend {
             inter_intra: InterIntraSearch::new(&params),
             key_intra: InterIntraSearch::key(&params),
             early_merge: None,
-            intra_fallback: None,
             still_skip_limit_scale: still_skip_limit_scale(&params),
             still_skipped: None,
             scratch: RefCell::default(),
@@ -1535,10 +1528,15 @@ impl CodecBackend for HevcBackend {
             mode if self.random.is_some() => {
                 self.encode_random_cu(block, mode, source, reference, recon);
             }
-            PredictionMode::IntraDc => match self.inter_fallback(block, source, reference, recon) {
-                Some((mv, reference)) => self.encode_inter_cu(block, mv, source, reference, recon),
-                None => self.encode_intra_cu(block, source, recon),
-            },
+            PredictionMode::IntraDc => {
+                let fallback = decision.intra_fallback;
+                match self.inter_fallback(block, fallback, source, reference, recon) {
+                    Some((mv, reference)) => {
+                        self.encode_inter_cu(block, mv, source, reference, recon);
+                    }
+                    None => self.encode_intra_cu(block, source, recon),
+                }
+            }
             PredictionMode::Inter(mv) => {
                 let reference = reference.expect("inter blocks need a reference picture");
                 self.encode_inter_cu(block, mv, source, reference, recon);
@@ -2268,7 +2266,9 @@ impl HevcBackend {
                 .dsp
                 .hevc_quantize_from(&coeffs[..n * n], quantizer, levels);
             if quantization.planned_min_level > 1 {
-                nonzero = apply_planned_dead_zone(levels, quantization.planned_min_level);
+                nonzero =
+                    nc_encoder::apply_planned_dead_zone(levels, quantization.planned_min_level)
+                        as u32;
             }
             // A lone level is the block's first and is never shaved;
             // skipping the shave there (most coded inter blocks: a DC)
@@ -2367,9 +2367,10 @@ impl HevcBackend {
         let trellis = self
             .trellis
             .as_ref()
-            .filter(|t| t.key_frames || self.slice != SliceKind::Intra)?;
+            .filter(|t| t.settings.covers(self.slice == SliceKind::Intra))?;
+        let settings = &trellis.settings;
         let scale = if plane == PlaneIndex::Y {
-            trellis.lambda_scale
+            settings.lambda_scale
         } else if self.info.chroma_policy.is_some() {
             // The policy weighs chroma error by the squared step ratio,
             // 2^((QPy - QPc)/3) (as HM): chroma λ is luma's over it.
@@ -2378,11 +2379,11 @@ impl HevcBackend {
                 .planes
                 .each_ref()
                 .map(|plane| plane.qp);
-            trellis.lambda_scale
-                * trellis.chroma_scale?
+            settings.lambda_scale
+                * settings.chroma_scale?
                 * 2f32.powf((chroma - luma) as f32 / QP_PER_LAMBDA_DOUBLING)
         } else {
-            trellis.lambda_scale * trellis.chroma_scale?
+            settings.lambda_scale * settings.chroma_scale?
         };
         Some((trellis, scale))
     }
@@ -2418,7 +2419,7 @@ impl HevcBackend {
             &mut model,
             coeffs,
             quantizer,
-            (lambda, trellis.max_states),
+            (lambda, trellis.settings.max_states),
             levels,
         )
     }
@@ -2735,20 +2736,6 @@ fn stream_info(config: &EncoderConfig, params: &HevcParams, fps: f64) -> StreamI
         block_qp: false,
         merge_candidates: params.merge_candidates.round() as usize,
     }
-}
-
-/// Zero the levels below `min_level` in magnitude (the planned step's dead
-/// zone past QP 51, `TransformQuantization::planned_min_level`); returns how
-/// many remain non-zero.
-fn apply_planned_dead_zone(levels: &mut [i32], min_level: i32) -> u32 {
-    let mut nonzero = 0;
-    for level in levels.iter_mut() {
-        if level.abs() < min_level {
-            *level = 0;
-        }
-        nonzero += u32::from(*level != 0);
-    }
-    nonzero
 }
 
 #[cfg(test)]

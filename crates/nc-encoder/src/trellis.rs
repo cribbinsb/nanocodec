@@ -28,6 +28,46 @@
 //! entropy tables. Backends apply it only to the coefficients of the block
 //! mode decision chose (as x264's `trellis 1`), so it costs one search per
 //! coded transform block.
+//!
+//! Which blocks are trellised and at what λ is one registered policy for
+//! every codec ([`TrellisSettings`], `quant.*`).
+
+use crate::params::QuantParams;
+
+/// The registered trellis controls (`quant.*`, docs/handoff/trellis.md) as
+/// every backend applies them; `None` from [`Self::from_params`] while
+/// `quant.trellis` is 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrellisSettings {
+    /// Multiple of the mode-decision λ (`quant.trellis_lambda_scale`).
+    pub lambda_scale: f32,
+    /// Further multiple of λ for chroma (`quant.trellis_chroma`); `None`
+    /// leaves chroma to the plain quantiser.
+    pub chroma_scale: Option<f32>,
+    /// Whether key frames are trellised too (`quant.trellis_key`).
+    pub key_frames: bool,
+    /// Survivors per scan position (`quant.trellis_states`).
+    pub max_states: usize,
+}
+
+impl TrellisSettings {
+    /// The trellis `quant` switches on, if any.
+    #[must_use]
+    pub fn from_params(quant: &QuantParams) -> Option<Self> {
+        (quant.trellis >= 0.5).then(|| Self {
+            lambda_scale: quant.trellis_lambda_scale,
+            chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
+            key_frames: quant.trellis_key >= 0.5,
+            max_states: quant.trellis_states.round() as usize,
+        })
+    }
+
+    /// Whether a frame that is a key frame (`key`) or not is trellised.
+    #[must_use]
+    pub fn covers(&self, key: bool) -> bool {
+        !key || self.key_frames
+    }
+}
 
 /// Largest nearest level for which zero is still a candidate. Larger
 /// coefficients are only ever rounded to the nearest level or one below it:

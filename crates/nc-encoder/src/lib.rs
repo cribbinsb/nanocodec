@@ -54,6 +54,7 @@ mod key_clock;
 mod key_plan;
 mod key_qp;
 mod layer;
+mod level_shave;
 mod ltr;
 mod mv;
 mod noise_skip;
@@ -63,6 +64,7 @@ mod partition;
 mod partition_plan;
 mod period_ledger;
 mod persistence;
+mod planned_dead_zone;
 mod pre_tx_skip;
 mod psy;
 mod qp_cadence;
@@ -119,6 +121,7 @@ pub use key_qp::{
     KEY_OFFSET_REFERENCE_PERIOD, fixed_qp_key_offset, offset_key_quantizer, scaled_quantizer,
 };
 pub use layer::LayerPosition;
+pub use level_shave::shave_isolated_ones;
 pub use ltr::{MAX_REFERENCE_AGE, long_term_requested, long_term_slot, reference_reach};
 pub use mv::{MV_UNITS_PER_SAMPLE, Mv};
 pub use nc_analysis::grain;
@@ -130,6 +133,7 @@ pub use params::{
     RefreshParams, SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
 };
 pub use partition::Block;
+pub use planned_dead_zone::{apply_planned_dead_zone, planned_min_level};
 pub use pre_tx_skip::{QuantizerBand, pre_tx_skip_score, pre_tx_skips};
 pub use psy::{ac_energy, psy_penalty};
 pub use random_decisions::DebugRng;
@@ -145,7 +149,7 @@ pub use structure::{FrameReferences, MAX_TEMPORAL_LAYERS, reference_slots};
 pub use timeline::MICROS_PER_SECOND;
 pub use trellis::{
     Candidates, CoeffRateModel, ForwardCoeffRateModel, ForwardTrellis, MAX_CANDIDATES, Trellis,
-    ZERO_CANDIDATE_MAX_LEVEL,
+    TrellisSettings, ZERO_CANDIDATE_MAX_LEVEL,
 };
 pub use zero_residual::{
     TextureScales, ZeroLimits, residual_quantises_to_zero, residual_quantises_to_zero_scaled,

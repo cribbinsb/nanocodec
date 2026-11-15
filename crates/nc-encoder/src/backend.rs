@@ -120,6 +120,12 @@ pub struct BlockDecision {
     /// codec's native units (QP; AV1 qindex). Backends signal it with their
     /// block-level syntax (H.264 `mb_qp_delta`); 0 codes at frame QP.
     pub qp_offset: i16,
+    /// For an intra mode that beat inter only through the engine's
+    /// directional intra estimate (`decision.intra_directional`), which
+    /// predicts from source samples: the inter vector (on the primary
+    /// reference) it beat. A codec whose own intra search, on the
+    /// reconstruction, finds that vector cheaper may code it instead.
+    pub intra_fallback: Option<Mv>,
 }
 
 impl BlockDecision {
@@ -130,6 +136,7 @@ impl BlockDecision {
             mode,
             reference: ReferenceChoice::Primary,
             qp_offset: 0,
+            intra_fallback: None,
         }
     }
 }
@@ -764,17 +771,6 @@ pub trait CodecBackend {
     /// instructions), so the engine skips it for codecs that ignore them.
     fn wants_sub_block_motion(&self) -> bool {
         false
-    }
-
-    /// The inter vector `mv` (on the primary reference) that intra beat in
-    /// `block` only through the engine's directional intra estimate
-    /// (`decision.intra_directional`), which predicts from source samples.
-    /// Called after that intra block's mode decision, before its
-    /// [`CodecBackend::encode_block`], and only for such blocks. A codec whose own intra search, on
-    /// the reconstruction, finds `mv` cheaper may code it instead; the
-    /// default ignores it.
-    fn intra_fallback(&mut self, block: &Block, mv: Mv) {
-        let _ = (block, mv);
     }
 
     /// Estimated bits to signal `mode` for `block` (mode and vector syntax

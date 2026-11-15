@@ -732,14 +732,7 @@ const TX_UNIT_LOG2: usize = 2;
 /// search's buffers.
 #[derive(Debug)]
 struct Vp9Trellis {
-    /// Multiple of the mode-decision λ.
-    lambda_scale: f32,
-    /// Further multiple for chroma; `None` leaves chroma unoptimised.
-    chroma_scale: Option<f32>,
-    /// Whether key frames are trellised too.
-    key_frames: bool,
-    /// Survivors per scan position.
-    max_states: usize,
+    settings: nc_encoder::TrellisSettings,
     search: coeff::trellis::TrellisQuantizer,
 }
 
@@ -769,17 +762,14 @@ impl Vp9Trellis {
             &mut rates,
             coefficients,
             steps,
-            (lambda, self.max_states),
+            (lambda, self.settings.max_states),
             levels,
         )
     }
 
     fn from_params(quant: &QuantParams) -> Option<Self> {
-        (quant.trellis >= 0.5).then(|| Self {
-            lambda_scale: quant.trellis_lambda_scale,
-            chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
-            key_frames: quant.trellis_key >= 0.5,
-            max_states: quant.trellis_states.round() as usize,
+        nc_encoder::TrellisSettings::from_params(quant).map(|settings| Self {
+            settings,
             search: coeff::trellis::TrellisQuantizer::default(),
         })
     }
@@ -2929,15 +2919,15 @@ impl Vp9Backend {
         let trellis = self
             .trellis
             .as_ref()
-            .filter(|t| !self.lossless && (t.key_frames || !self.header.key))?;
+            .filter(|t| !self.lossless && t.settings.covers(self.header.key))?;
         let scale = if plane == PlaneIndex::Y {
             1.0
         } else {
             let ratio =
                 self.block_steps(plane).ac as f32 / self.block_steps(PlaneIndex::Y).ac as f32;
-            trellis.chroma_scale? * ratio * ratio
+            trellis.settings.chroma_scale? * ratio * ratio
         };
-        Some(self.lambda() * trellis.lambda_scale * scale)
+        Some(self.lambda() * trellis.settings.lambda_scale * scale)
     }
 
     /// The rounding and planned minimum level (past qindex 255) of the

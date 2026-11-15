@@ -343,10 +343,6 @@ pub struct H264Backend {
     /// prediction, consumed by its `encode_block`.
     static_skip: Option<(usize, usize)>,
     static_pred: Box<Prediction>,
-    /// The macroblock (column, row) whose intra the engine chose only
-    /// through its directional estimate, and the inter vector it beat
-    /// (`CodecBackend::intra_fallback`), consumed by its `encode_block`.
-    intra_fallback: Option<((usize, usize), Mv)>,
     /// The prediction buffer of the macroblock being coded, reused: every
     /// mode writes all of it, and a fresh zeroed one per macroblock was a
     /// 384-byte memset (crowd QP 36: 1.2M of 689M instructions).
@@ -375,29 +371,21 @@ pub struct H264Backend {
 /// `Intra_4x4` luma (quantised while predicting) keep the plain quantiser.
 #[derive(Debug)]
 struct H264Trellis {
-    /// Multiple of the mode-decision λ.
-    lambda_scale: f32,
-    /// Further multiple of λ for chroma AC (`None`: chroma untouched),
-    /// before the squared chroma/luma step ratio.
-    chroma_scale: Option<f32>,
+    /// The engine's trellis controls; the chroma AC scale applies before
+    /// the squared chroma/luma step ratio, and key frames hold only intra
+    /// macroblocks.
+    settings: nc_encoder::TrellisSettings,
     /// `I_16x16` and `I_NxN` macroblocks too (`h264.trellis_i16x16`,
     /// `h264.trellis_i4x4`).
     intra: [bool; 2],
-    /// Key frames too (`quant.trellis_key`; only intra macroblocks there).
-    key_frames: bool,
-    /// Survivors per scan position.
-    max_states: usize,
     search: crate::residual::trellis::TrellisQuantizer,
 }
 
 impl H264Trellis {
     fn from_params(quant: &QuantParams, tuning: &H264Params) -> Option<Self> {
-        (quant.trellis >= 0.5).then(|| Self {
-            lambda_scale: quant.trellis_lambda_scale,
-            chroma_scale: (quant.trellis_chroma > 0.0).then_some(quant.trellis_chroma),
+        nc_encoder::TrellisSettings::from_params(quant).map(|settings| Self {
+            settings,
             intra: [tuning.trellis_i16x16 >= 0.5, tuning.trellis_i4x4 >= 0.5],
-            key_frames: quant.trellis_key >= 0.5,
-            max_states: quant.trellis_states.round() as usize,
             search: crate::residual::trellis::TrellisQuantizer::default(),
         })
     }
@@ -409,7 +397,7 @@ impl H264Trellis {
             ResidualKind::Intra16x16 => self.intra[0],
             ResidualKind::Intra4x4 | ResidualKind::Intra8x8 => self.intra[1],
         };
-        kind_covered && (slice != SliceKind::I || self.key_frames)
+        kind_covered && self.settings.covers(slice == SliceKind::I)
     }
 }
 
@@ -664,7 +652,8 @@ impl H264Backend {
         }
         let plan = match decision.mode {
             PredictionMode::IntraDc => {
-                self.intra_or_fallback(block, (source, reference, recon), pred)
+                let fallback = decision.intra_fallback;
+                self.intra_or_fallback(block, fallback, (source, reference, recon), pred)
             }
             PredictionMode::Inter(mv) => MbPlan::Inter(mv),
         };
@@ -688,7 +677,7 @@ impl H264Backend {
 
     /// The intra choice of macroblock `block` (pictures as in
     /// [`Self::code_macroblock`]), or its inter fallback
-    /// ([`CodecBackend::intra_fallback`]) where that costs less. The
+    /// (`fallback`, [`BlockDecision::intra_fallback`]) where that costs less. The
     /// engine's directional estimate chose intra from source samples; on
     /// the reconstruction intra may cost more than the inter vector it beat
     /// (x264 compares both by SATD). Under `intra_rd` the intra cost is not
@@ -696,14 +685,11 @@ impl H264Backend {
     fn intra_or_fallback(
         &mut self,
         block: &Block,
+        fallback: Option<Mv>,
         (source, reference, recon): (&Picture, Option<&Picture>, &mut Picture),
         pred: &mut Prediction,
     ) -> MbPlan {
         let position = Self::mb_index(block);
-        let fallback = self
-            .intra_fallback
-            .take()
-            .and_then(|(at, mv)| (at == position).then_some(mv));
         let (choice, intra_cost) = self.choose_intra(source, recon, position, pred);
         match fallback.zip(reference) {
             Some((mv, reference))
@@ -793,10 +779,9 @@ impl H264Backend {
             let coded = |m: Option<&MbInfo>, bx: usize, by: usize| {
                 cond_term_flag(m, true, |m| m.luma_block_coded(bx, by))
             };
-            let (lambda_scale, max_states) = self
-                .trellis
-                .as_ref()
-                .map_or((1.0, 1), |t| (t.lambda_scale, t.max_states));
+            let (lambda_scale, max_states) = self.trellis.as_ref().map_or((1.0, 1), |t| {
+                (t.settings.lambda_scale, t.settings.max_states)
+            });
             LumaTrellis {
                 settings: TrellisSettings {
                     bins,
@@ -1220,7 +1205,8 @@ impl H264Backend {
         let residual = &*self.residual;
         let kind = residual.kind;
         let luma = residual.cbp_luma != 0 && !kind.is_intra_nxn();
-        let chroma = trellis.chroma_scale.is_some() && residual.cbp_chroma == CBP_CHROMA_AC;
+        let chroma =
+            trellis.settings.chroma_scale.is_some() && residual.cbp_chroma == CBP_CHROMA_AC;
         if (luma || chroma)
             && trellis.covers(kind, self.slice)
             && self.lambda_scale <= 1.0
@@ -1243,6 +1229,7 @@ impl H264Backend {
         let trellis = self.trellis.as_mut().expect("gated by trellis_residual");
         let kind = self.residual.kind;
         let chroma = trellis
+            .settings
             .chroma_scale
             .filter(|_| self.residual.cbp_chroma == CBP_CHROMA_AC);
         let cabac = self.cabac.as_ref().expect("encode_block outside a frame");
@@ -1250,11 +1237,11 @@ impl H264Backend {
         let (col, row) = Self::mb_index(block);
         let nb = Neighbours::of(&self.mbs, self.params.mb_cols, col, row);
         let intra = !kind.is_inter();
-        let lambda = self.rd_lambda * trellis.lambda_scale;
+        let lambda = self.rd_lambda * trellis.settings.lambda_scale;
         let settings = |lambda| TrellisSettings {
             bins: &bins,
             lambda,
-            max_states: trellis.max_states,
+            max_states: trellis.settings.max_states,
         };
         if luma {
             let luma = LumaTrellis {
@@ -1399,8 +1386,8 @@ impl H264Backend {
         let luma = LumaTrellis {
             settings: TrellisSettings {
                 bins: &bins,
-                lambda: self.rd_lambda * trellis.lambda_scale,
-                max_states: trellis.max_states,
+                lambda: self.rd_lambda * trellis.settings.lambda_scale,
+                max_states: trellis.settings.max_states,
             },
             left_coded: std::array::from_fn(|by| {
                 cond_term_flag(nb.left, false, |m| m.luma_block_coded(3, by))
@@ -2062,7 +2049,6 @@ impl CodecBackend for H264Backend {
             alt_residual: None,
             static_skip: None,
             static_pred: Box::new(Prediction::ZERO),
-            intra_fallback: None,
             mb_pred: None,
             exact_luma: Cell::new(None),
             cabac_init_idc: 0,
@@ -2138,10 +2124,6 @@ impl CodecBackend for H264Backend {
 
     fn select_reference(&mut self, _block: &Block, reference: ReferenceChoice) {
         self.selected_ref = ref_idx_of(reference);
-    }
-
-    fn intra_fallback(&mut self, block: &Block, mv: Mv) {
-        self.intra_fallback = Some((Self::mb_index(block), mv));
     }
 
     /// `I_NxN` picks a direction per 8x8 (`Intra_8x8`) or 4x4 block; the

@@ -90,3 +90,7 @@ rate.fixed_qp_profile = 0
 rate.key_still_boost = 0
 # Pinned before HEVC Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
+# The Default's sub-sample refinement gates before 2026-11-15, pinned so this
+# preset's streams do not move with the Default.
+decision.skip_no_refine_lambdas = 0.25
+decision.refine_cheap_min_lambdas = 0.05
