@@ -27,7 +27,7 @@ delay, you may be in the right place:
   conformance streams we test, so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine
-  official 8-bit conformance streams and 129 of 138 short 8-bit streams we coded with VTM and VVenC to cover the
+  official 8-bit conformance streams and 130 of 138 short 8-bit streams we coded with VTM and VVenC to cover the
   Main 10 tools one by one (it is 8-bit only and still rejects pictures of several slices, subpictures,
   reference picture resampling and loop filters that may not cross a boundary, so it is not a compliant Main 10
   decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder

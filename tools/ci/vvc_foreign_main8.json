@@ -1345,6 +1345,36 @@
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-depquant.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --DepQuant=1"
  },
  {
+  "name": "vtm-ldp-gdr",
+  "encoder": "vtm",
+  "tools": "GDR",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "4215e7be9d47052f59ba46daecb39ad432f8147ed1ddd10beecfbaf40870c93a",
+  "frames": [
+   "306282473d2fc4f8faab9b58652bf513",
+   "c3da370c18c8b9268667f8ee8f5135c4",
+   "a30b852b623c090661745e8051d45ac3",
+   "b3c73a53ea41e9a585e31cd1b2db2ef4",
+   "1b35c0ffe0b1d56b74866747016df0d9",
+   "50e47814f70856cabb8a38807f6f1934",
+   "bc75351869c373d45eb7d22d0df8ac87",
+   "901b42df1dd44cfd006f4731a88f1cef",
+   "35102d8ba8ea0a2b86917f416525ebe3",
+   "d4c3df08b8ce0f8bd02d29391d423a64",
+   "d0103a364cc09269f2455b462cd2522c",
+   "48c1fba58548eb912f9a9f00436ef035",
+   "a313c8c06ce60a35fbdd967eea85bd16",
+   "82514c3db80c17df6c29abc1438b528d",
+   "bdf08a32e85982656da653bd5c176d13",
+   "7ec69e0be75014c52e4327636780b321",
+   "075fcb2b148f6b0e993a29557ebd5a28"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-gdr.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --GdrEnabled=1 --GdrPocStart=2 --GdrPeriod=8 --GdrInterval=4"
+ },
+ {
   "name": "vtm-ldp-ibc",
   "encoder": "vtm",
   "tools": "IBC",

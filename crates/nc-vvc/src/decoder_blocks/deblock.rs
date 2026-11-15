@@ -54,6 +54,7 @@ pub(crate) fn apply(
     }
     let stride = picture.width().div_ceil(4);
     let across_tiles = parameters.partitioning.filter_across_tiles;
+    let virtual_boundaries = &header.picture.boundaries;
     let blocks = edge_blocks(units);
     let grid = edge_grid(&blocks, stride, picture.height());
     for horizontal in [false, true] {
@@ -65,7 +66,12 @@ pub(crate) fn apply(
             for y in (0..picture.height()).step_by(4) {
                 for x in (0..picture.width()).step_by(4) {
                     let perpendicular = if horizontal { y } else { x };
-                    if perpendicular == 0 || (channel == 1 && !perpendicular.is_multiple_of(16)) {
+                    // No edge on a virtual boundary is filtered (§8.8.3.2).
+                    if perpendicular == 0
+                        || (channel == 1 && !perpendicular.is_multiple_of(16))
+                        || virtual_boundaries[usize::from(horizontal)]
+                            .contains(&(perpendicular as u32))
+                    {
                         continue;
                     }
                     let at = (y >> 2) * stride + (x >> 2);

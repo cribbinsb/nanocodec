@@ -307,8 +307,8 @@ fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Resul
     let unsupported = [
         (!h.picture.output, "VVC non-output picture"),
         (
-            h.picture.boundaries.iter().any(|v| !v.is_empty()),
-            "VVC virtual boundaries",
+            filtered && h.picture.boundaries.iter().any(|v| !v.is_empty()),
+            "VVC SAO or ALF at virtual boundaries",
         ),
         (s.ctu_log2 > 7, "VVC CTU size"),
         (s.tools.palette, "VVC palette mode"),
