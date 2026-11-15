@@ -477,3 +477,70 @@ Achieved rate over target (median): replay 0.988 / 0.981 / 0.982, startup 0.974 
   below. That is the next lever, and it needs no foresight. It needs a sample with pan and bodycam
   too (no 600-frame clips of theirs in this L3 draw), because on the 150-frame VAL window pan pays the
   other way (−4.7 / −5.0 / −1.7).
+
+### The inheritance-sized key (`rate.key_inherit`), the engine default (2026-11-15)
+
+**Lever.** The key still boost scales by the larger of:
+- the fixed-camera share (unchanged blocks from 0.8 to 1, as before);
+- `rate.key_inherit` × the measured inheritance (`inheritance.rs`: the cadence depth the loss asks for, mapped
+  from the probe floor 0.25 → 0 to full depth → 1).
+
+So a crowd's still background, which inherits a key though under 0.8 of its blocks are unchanged, gets the
+boost. Pan inherits nothing, so it does not. Unmeasured content (the first key, single-key streams) keeps the
+still-share boost.
+
+`rate.key_inherit_lifetime` (10 s) scales the inherited part by key period / lifetime. At keys every 2 s,
+the full share raised the periodic-key pulse by 0.64-0.85 dB. Scaled by lifetime, the pulse is 0.00 dB at
+the same J.
+
+**600-frame L3** (keys every 10 s, 27 clips, draw 2026-11-15; L1/L2 are inert by construction):
+
+| Codec | J (90% interval) | crowd / static / lowlight | pan / bodycam guard (9 long clips) |
+|---|---|---|---|
+| AV1 | −1.08 [−1.68, −0.47] | −3.0 / −0.8 / +0.6 | +0.12 / +0.11 |
+| VP9 | −1.19 [−1.65, −0.68] | −3.0 / −0.7 / +0.1 | +0.18 / −0.13 |
+| HEVC | −0.32 [−0.56, −0.07] | −0.8 / −0.5 / +0.3 | +0.13 / −0.23 |
+| VVC | −1.06 [−1.52, −0.58] | −2.5 / −0.8 / +0.1 | — |
+| AV2 | −0.87 [−1.40, −0.37] | −2.6 / −0.2 / +0.3 | — |
+
+Other arms on AV1: a flat half share (no lifetime) gave −0.57. The full share without the lifetime gave
+−1.08, but with the pulse guard at +0.85 dB.
+
+**Landed:**
+- the lever, ea9e790c;
+- AV1/VP9, 41d2f294; HEVC, 57389579;
+- the engine default with VVC and AV2, 77569017.
+
+H.264 has no inheritance depth yet, so it is inert there. The SVC presets pin it off, and the Fast presets
+have no still boost.
+
+### HEVC's larger rate-control cost (2026-11-15)
+
+HEVC's cost (+21.1, against +11-15 for the other codecs) is mostly key allocation: +16.1, against AV1 +8.9
+and H.264 +6.0. Its rate parameters had two outliers against the shared values:
+- **Key still boost 4** (pulse guard): moved to the shared 6 QP, a497b590. On top of the inheritance-sized
+  key: L1 +0.23, L2 −0.43, 600-frame L3 −0.73 [−1.15, −0.33], no guard (static −1.8, crowd −0.9). L1's
+  single-point ceiling guard was not confirmed by L2 or L3.
+- **Start-up base boost 6:** with 4 instead, bundled with key boost 6, L1 was +1.41 (drone guard) and L2
+  +0.35, so 6 is right for HEVC. Whether 6 is right for every codec: see below.
+
+Part of the gap is the anchor. HEVC's fixed-QP key is 15 QP below its P frames (`fixed_qp_key_offset`),
+and a key 3 QP coarser at fixed QP costs +1.3 [+0.3, +2.1] (`nceval.fixedqp ab`). The anchor is right,
+and CBR's key is what falls short of it.
+
+**Harness fix found on the way** (11668b8a): the point cache keys on the family's name, not its codec. An
+ad-hoc family named "default" read another codec's cached points, and a first HEVC guard silently
+returned AV1's. Own families must now name their codec.
+
+**Start-up base boost 6 for every codec?** It does not hold (draw 2026-11-15, `rate.cadence_startup_base_boost=6`
+on the codecs at 4):
+
+| Codec | L1 | L2 | Verdict |
+|---|---|---|---|
+| AV1 | **+2.56 [+1.57, +4.05]** | — | WORSE (static +5.2, crowd +4.5) |
+| VP9 | +0.06 | +0.12 [−1.02, +1.29] | neutral |
+| H.264 | −0.19 | −0.42 [−1.26, +0.60] | neutral |
+
+So no shared default: the start-up boost stays per codec (AV1, VP9, H.264 at 4; HEVC, VVC at 6; AV2 at 5).
+The codec reason is not known; it is the next candidate for the shared-vs-specific audit, not tuned further
+here (owner, 2026-11-15: tuning wound down).
