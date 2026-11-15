@@ -21,13 +21,17 @@
   "nanocodec-vp9@veryfast": "478e8249",
   "nanocodec-hevc@slow": "77e93089",
   "nanocodec-av1@slow": "77e93089",
-  "nanocodec-vvc@slow": "77e93089"
+  "nanocodec-vvc@slow": "77e93089",
+  "nanocodec-h264@slow": "bad14976",
+  "nanocodec-vp9@slow": "bad14976",
+  "nanocodec-av2@slow": "bad14976"
  },
  "builds": {
   "730e4e16": "730e4e16",
   "478e8249": "478e8249",
   "43079b05": "43079b05",
-  "77e93089": "77e93089"
+  "77e93089": "77e93089",
+  "bad14976": "bad14976"
  },
  "tools": {
   "x264": "0.165",
@@ -38,19 +42,26 @@
  },
  "x86_timing_note": "\n  Refresh of 2026-11-11: only our points were re-timed (the reference encoders' timings\n  are from the earlier session). The PC ran about 9% faster that night (paired x264 medium\n  73 vs 67.6 fps), so each of our per-clip times is scaled by the reference session's x264\n  medium time over its paired x264 medium time; speed ratios are unchanged and the raw\n  times are kept in `bd-vs-speed-timing-x86.json` (`raw_ms_per_frame`).",
  "timed_on": {
-  "nanocodec-av1@fast": "77e93089",
-  "nanocodec-av1@faster": "77e93089",
-  "nanocodec-av2@fast": "77e93089",
-  "nanocodec-h264@fast": "77e93089",
-  "nanocodec-h264@faster": "77e93089",
-  "nanocodec-h264@veryfast": "77e93089",
-  "nanocodec-hevc@fast": "77e93089",
-  "nanocodec-hevc@faster": "77e93089",
-  "nanocodec-vp9@fast": "77e93089",
-  "nanocodec-vp9@faster": "77e93089",
-  "nanocodec-vp9@veryfast": "77e93089",
-  "nanocodec-vvc@fast": "77e93089",
-  "nanocodec-h264": "77e93089",
-  "nanocodec-vvc": "77e93089"
+  "nanocodec-av1@fast": "bad14976",
+  "nanocodec-av1@faster": "bad14976",
+  "nanocodec-av2@fast": "bad14976",
+  "nanocodec-h264@fast": "bad14976",
+  "nanocodec-h264@faster": "bad14976",
+  "nanocodec-h264@veryfast": "bad14976",
+  "nanocodec-hevc@fast": "bad14976",
+  "nanocodec-hevc@faster": "bad14976",
+  "nanocodec-vp9@fast": "bad14976",
+  "nanocodec-vp9@faster": "bad14976",
+  "nanocodec-vp9@veryfast": "bad14976",
+  "nanocodec-vvc@fast": "bad14976",
+  "nanocodec-h264": "bad14976",
+  "nanocodec-vvc": "bad14976",
+  "nanocodec-av1": "bad14976",
+  "nanocodec-av1@slow": "bad14976",
+  "nanocodec-av2": "bad14976",
+  "nanocodec-hevc": "bad14976",
+  "nanocodec-hevc@slow": "bad14976",
+  "nanocodec-vp9": "bad14976",
+  "nanocodec-vvc@slow": "bad14976"
  }
 }

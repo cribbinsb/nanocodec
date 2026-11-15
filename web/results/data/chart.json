@@ -78,7 +78,11 @@
    "version_key": "libvpx",
    "label": "libvpx VP9 good 2",
    "cbr_command": null,
-   "timing": null,
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 54,
+    "command": "vpxenc --codec=vp9 --good --passes=1 --lag-in-frames=0 --error-resilient=0 --threads=1 --cpu-used=2 --end-usage=q --cq-level=54 --min-q=54 --max-q=54 --disable-warning-prompt --kf-min-dist=300 --kf-max-dist=300 --i420 --width=1280 --height=720 --fps=29970/1000 --limit=150 --ivf -o out.bin input.yuv"
+   },
    "timing_is_twin": false
   },
   "libvpx-vp9-cpu7": {
@@ -249,8 +253,12 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV2 Slow",
-   "cbr_command": null,
-   "timing": null,
+   "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset slow",
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 177,
+    "command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 29970/1000 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --qp 177 --preset slow"
+   },
    "timing_is_twin": false
   },
   "nanocodec-h264": {
@@ -309,8 +317,12 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Slow",
-   "cbr_command": null,
-   "timing": null,
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset slow",
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 45,
+    "command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 29970/1000 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --qp 45 --preset slow"
+   },
    "timing_is_twin": false
   },
   "nanocodec-h264@veryfast": {
@@ -449,8 +461,12 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Slow",
-   "cbr_command": null,
-   "timing": null,
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset slow",
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 206,
+    "command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 29970/1000 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --qp 206 --preset slow"
+   },
    "timing_is_twin": false
   },
   "nanocodec-vp9@veryfast": {
@@ -714,7 +730,11 @@
    "version_key": "x264",
    "label": "x264 veryslow",
    "cbr_command": null,
-   "timing": null,
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 45,
+    "command": "x264 --preset veryslow --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --qp 45 --input-res 1280x720 --fps 29970/1000 --frames 150 --threads 1 --output out.bin input.yuv"
+   },
    "timing_is_twin": false
   },
   "x265-medium": {
@@ -758,7 +778,11 @@
    "version_key": "x265",
    "label": "x265 slow",
    "cbr_command": null,
-   "timing": null,
+   "timing": {
+    "clip": "bodycam_bc1",
+    "qp": 42,
+    "command": "x265 --preset slow --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut --keyint 300 --min-keyint 300 --qp 42 --input-res 1280x720 --fps 29970/1000 --frames 150 --frame-threads 1 --pools none --no-wpp --input-depth 8 --input input.yuv --output out.bin"
+   },
    "timing_is_twin": false
   },
   "x265-superfast": {
@@ -2478,7 +2502,8 @@
     "730e4e16": "730e4e16",
     "478e8249": "478e8249",
     "43079b05": "43079b05",
-    "77e93089": "77e93089"
+    "77e93089": "77e93089",
+    "bad14976": "bad14976"
    },
    "base_build": "730e4e16",
    "family_builds": {
@@ -2502,7 +2527,10 @@
     "nanocodec-vp9@veryfast": "478e8249",
     "nanocodec-hevc@slow": "77e93089",
     "nanocodec-av1@slow": "77e93089",
-    "nanocodec-vvc@slow": "77e93089"
+    "nanocodec-vvc@slow": "77e93089",
+    "nanocodec-h264@slow": "bad14976",
+    "nanocodec-vp9@slow": "bad14976",
+    "nanocodec-av2@slow": "bad14976"
    },
    "tools": {
     "x264": "0.165",
@@ -2555,6 +2583,25 @@
      "chained": 0,
      "rate_invalid_points": 4
     },
+    "nanocodec-h264@slow": {
+     "j": -16.73,
+     "psnr": -18.92,
+     "vmaf": -15.86,
+     "ms_ssim": null,
+     "iqr": [
+      -36.09,
+      -1.52
+     ],
+     "clips_scored": 11,
+     "clips": 11,
+     "fps": {
+      "jetson": 44.58,
+      "x86": 99.4
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
     "nanocodec-h264": {
      "j": -15.84,
      "psnr": -17.09,
@@ -2567,8 +2614,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 68.98,
-      "x86": 141.24
+      "jetson": 69.54,
+      "x86": 151.51
      },
      "flagged": false,
      "chained": 0,
@@ -2586,8 +2633,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 111.03,
-      "x86": 208.29
+      "jetson": 113.06,
+      "x86": 226.85
      },
      "flagged": false,
      "chained": 0,
@@ -2605,8 +2652,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 131.7,
-      "x86": 246.54
+      "jetson": 132.6,
+      "x86": 263.56
      },
      "flagged": false,
      "chained": 0,
@@ -2624,8 +2671,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 153.67,
-      "x86": 286.9
+      "jetson": 155.53,
+      "x86": 307.24
      },
      "flagged": false,
      "chained": 0,
@@ -2643,8 +2690,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 28.12,
-      "x86": 77.96
+      "jetson": 28.13,
+      "x86": 71.63
      },
      "flagged": false,
      "chained": 0,
@@ -2662,8 +2709,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 45.71,
-      "x86": 116.15
+      "jetson": 45.79,
+      "x86": 111.21
      },
      "flagged": false,
      "chained": 0,
@@ -2681,8 +2728,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 77.31,
-      "x86": 159.19
+      "jetson": 77.68,
+      "x86": 180.29
      },
      "flagged": false,
      "chained": 0,
@@ -2700,8 +2747,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 96.86,
-      "x86": 195.36
+      "jetson": 96.95,
+      "x86": 212.7
      },
      "flagged": false,
      "chained": 0,
@@ -2719,8 +2766,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 26.97,
-      "x86": 74.81
+      "jetson": 26.9,
+      "x86": 69.03
      },
      "flagged": false,
      "chained": 0,
@@ -2738,8 +2785,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 41.83,
-      "x86": 103.75
+      "jetson": 41.59,
+      "x86": 104.61
      },
      "flagged": false,
      "chained": 0,
@@ -2757,8 +2804,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 66.25,
-      "x86": 152.22
+      "jetson": 66.87,
+      "x86": 162.03
      },
      "flagged": false,
      "chained": 0,
@@ -2776,8 +2823,27 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 80.15,
-      "x86": 165.34
+      "jetson": 80.49,
+      "x86": 188.88
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
+    "nanocodec-vp9@slow": {
+     "j": -42.62,
+     "psnr": -45.61,
+     "vmaf": -38.26,
+     "ms_ssim": null,
+     "iqr": [
+      -51.94,
+      -33.25
+     ],
+     "clips_scored": 11,
+     "clips": 11,
+     "fps": {
+      "jetson": 32.3,
+      "x86": 83.04
      },
      "flagged": false,
      "chained": 0,
@@ -2795,8 +2861,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 38.15,
-      "x86": 103.37
+      "jetson": 38.13,
+      "x86": 94.85
      },
      "flagged": false,
      "chained": 0,
@@ -2814,8 +2880,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 49.82,
-      "x86": 110.28
+      "jetson": 49.66,
+      "x86": 112.36
      },
      "flagged": false,
      "chained": 0,
@@ -2833,8 +2899,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 80.94,
-      "x86": 172.52
+      "jetson": 80.59,
+      "x86": 186.22
      },
      "flagged": false,
      "chained": 0,
@@ -2852,8 +2918,27 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 90.33,
-      "x86": 182.78
+      "jetson": 90.08,
+      "x86": 196.3
+     },
+     "flagged": false,
+     "chained": 0,
+     "rate_invalid_points": 0
+    },
+    "nanocodec-av2@slow": {
+     "j": -49.87,
+     "psnr": -51.88,
+     "vmaf": -50.03,
+     "ms_ssim": null,
+     "iqr": [
+      -54.91,
+      -43.51
+     ],
+     "clips_scored": 11,
+     "clips": 11,
+     "fps": {
+      "jetson": 19.02,
+      "x86": 47.62
      },
      "flagged": false,
      "chained": 0,
@@ -2871,8 +2956,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 31.9,
-      "x86": 88.81
+      "jetson": 31.85,
+      "x86": 91.07
      },
      "flagged": false,
      "chained": 0,
@@ -2890,8 +2975,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 43.79,
-      "x86": 104.84
+      "jetson": 44.13,
+      "x86": 114.19
      },
      "flagged": false,
      "chained": 0,
@@ -2909,8 +2994,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 22.53,
-      "x86": 59.49
+      "jetson": 22.68,
+      "x86": 57.43
      },
      "flagged": false,
      "chained": 0,
@@ -2928,8 +3013,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 27.48,
-      "x86": 67.85
+      "jetson": 27.6,
+      "x86": 70.98
      },
      "flagged": false,
      "chained": 0,
@@ -2947,8 +3032,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 47.81,
-      "x86": 112.78
+      "jetson": 48.12,
+      "x86": 114.02
      },
      "flagged": false,
      "chained": 0,
@@ -3382,8 +3467,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 41.8,
-      "x86": 103.8
+      "jetson": 41.6,
+      "x86": 104.6
      }
     },
     "nanocodec-av1@fast": {
@@ -3399,8 +3484,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 66.2,
-      "x86": 152.2
+      "jetson": 66.9,
+      "x86": 162.0
      }
     },
     "nanocodec-av1@slow": {
@@ -3416,8 +3501,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 27.0,
-      "x86": 74.8
+      "jetson": 26.9,
+      "x86": 69.0
      }
     },
     "nanocodec-av2": {
@@ -3433,8 +3518,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 31.9,
-      "x86": 88.8
+      "jetson": 31.8,
+      "x86": 91.1
      }
     },
     "nanocodec-av2@fast": {
@@ -3450,8 +3535,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 43.8,
-      "x86": 104.8
+      "jetson": 44.1,
+      "x86": 114.2
      }
     },
     "nanocodec-av2@slow": {
@@ -3467,8 +3552,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": null,
-      "x86": null
+      "jetson": 19.0,
+      "x86": 47.6
      }
     },
     "nanocodec-h264": {
@@ -3484,8 +3569,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 69.0,
-      "x86": 141.2
+      "jetson": 69.5,
+      "x86": 151.5
      }
     },
     "nanocodec-h264@fast": {
@@ -3501,8 +3586,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 111.0,
-      "x86": 208.3
+      "jetson": 113.1,
+      "x86": 226.8
      }
     },
     "nanocodec-h264@slow": {
@@ -3518,8 +3603,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": null,
-      "x86": null
+      "jetson": 44.6,
+      "x86": 99.4
      }
     },
     "nanocodec-hevc": {
@@ -3535,8 +3620,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 45.7,
-      "x86": 116.2
+      "jetson": 45.8,
+      "x86": 111.2
      }
     },
     "nanocodec-hevc@fast": {
@@ -3552,8 +3637,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 77.3,
-      "x86": 159.2
+      "jetson": 77.7,
+      "x86": 180.3
      }
     },
     "nanocodec-hevc@slow": {
@@ -3570,7 +3655,7 @@
      "rate_invalid_points": 0,
      "fps": {
       "jetson": 28.1,
-      "x86": 78.0
+      "x86": 71.6
      }
     },
     "nanocodec-vp9": {
@@ -3586,8 +3671,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 38.2,
-      "x86": 103.4
+      "jetson": 38.1,
+      "x86": 94.8
      }
     },
     "nanocodec-vp9@fast": {
@@ -3603,8 +3688,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 49.8,
-      "x86": 110.3
+      "jetson": 49.7,
+      "x86": 112.4
      }
     },
     "nanocodec-vp9@slow": {
@@ -3620,8 +3705,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": null,
-      "x86": null
+      "jetson": 32.3,
+      "x86": 83.0
      }
     },
     "nanocodec-vvc": {
@@ -3637,8 +3722,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 27.5,
-      "x86": 67.9
+      "jetson": 27.6,
+      "x86": 71.0
      }
     },
     "nanocodec-vvc@fast": {
@@ -3654,8 +3739,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 47.8,
-      "x86": 112.8
+      "jetson": 48.1,
+      "x86": 114.0
      }
     },
     "nanocodec-vvc@slow": {
@@ -3671,8 +3756,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": 22.5,
-      "x86": 59.5
+      "jetson": 22.7,
+      "x86": 57.4
      }
     },
     "openh264-baseline": {
@@ -3773,8 +3858,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": null,
-      "x86": null
+      "jetson": 2.4,
+      "x86": 6.1
      }
     },
     "libvpx-vp9-cpu7": {
@@ -3892,8 +3977,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": null,
-      "x86": null
+      "jetson": 5.4,
+      "x86": 12.1
      }
     },
     "x265-medium": {
@@ -3926,8 +4011,8 @@
      "chained": 0,
      "rate_invalid_points": 0,
      "fps": {
-      "jetson": null,
-      "x86": null
+      "jetson": 2.4,
+      "x86": 7.3
      }
     },
     "x265-superfast": {
