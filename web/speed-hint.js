@@ -31,7 +31,7 @@ import { RESOLUTIONS } from './view-settings.js';
  * is offered the rungs below it.
  */
 export const PRESET_COST = {
-  h264: { medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
+  h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
   hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
   av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.45 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },

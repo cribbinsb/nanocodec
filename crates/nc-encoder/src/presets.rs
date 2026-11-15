@@ -97,6 +97,7 @@ macro_rules! preset_file {
 /// codec's Default.
 #[rustfmt::skip] // one file per line reads as the table it is
 const PRESET_FILES: &[PresetFile] = &[
+    preset_file!(H264, 1, Slow, include_str!("../../../presets/h264/slow.toml")),
     preset_file!(H264, 1, Veryfast, include_str!("../../../presets/h264/veryfast.toml")),
     preset_file!(H264, 1, Faster, include_str!("../../../presets/h264/faster.toml")),
     preset_file!(H264, 1, Fast, include_str!("../../../presets/h264/fast.toml")),

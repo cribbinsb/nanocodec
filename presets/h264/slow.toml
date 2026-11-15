@@ -1,0 +1,18 @@
+# H.264 slow (`--preset slow`): RD refinement of every inter macroblock's
+# vectors in its cheaper form (`h264.rd_refine` 1, cross, one step;
+# docs/handoff/h264.md "RD refinement"), the RD 4x4/8x8 transform choice
+# and the residual RD check: the best point of the joint studies
+# slow-h264-2026-11-15 and slow-h264b-2026-11-15 at k 0.025, J -2.44% at
+# x86 x1.69 (Jetson x1.70 for the same set). The full refinement (square,
+# two steps) alone gave -2.23% at x1.95 (break-even k 0.024). L3 (600 f,
+# ladder, n=27): J -2.96% [-3.40, -2.55] at x1.70 Jetson cycles.
+# The shared bundle's second reference stays off: H.264 Default codes
+# temporal layers (layers.count 3), beside which H.264 cannot signal it, and
+# asking for it makes the engine code a flat stream.
+refs.second = 0
+refs.second_full = 0
+h264.rd_refine = 1
+h264.rd_refine_steps = 1
+h264.rd_refine_square = 0
+h264.transform_size_rd = 1
+h264.residual_rd_lambda = 0.315

@@ -278,6 +278,11 @@ fn h264_layered_streams_recover_at_the_next_base_frame() {
         include_str!("../../../presets/h264/fast.toml"),
         include_str!("../../../presets/h264/faster.toml"),
         include_str!("../../../presets/h264/veryfast.toml"),
+        // The slow rung: the shared bundle, then H.264's levers (nc_encoder::presets).
+        concat!(
+            include_str!("../../../presets/slow.toml"),
+            include_str!("../../../presets/h264/slow.toml")
+        ),
     ] {
         check::<nc_h264::H264Backend>(Codec::H264, preset, &LAYERED_RECOVERY);
     }

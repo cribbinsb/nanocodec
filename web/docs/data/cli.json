@@ -93,7 +93,7 @@
   {"name": "help", "about": "Print this help.", "groups": []}
  ],
  "presets": {
-  "h264": ["veryfast", "faster", "fast", "medium"],
+  "h264": ["veryfast", "faster", "fast", "medium", "slow"],
   "hevc": ["faster", "fast", "medium", "slow"],
   "vvc": ["fast", "medium", "slow"],
   "av1": ["faster", "fast", "medium", "slow"],
