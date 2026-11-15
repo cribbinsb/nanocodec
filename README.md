@@ -403,8 +403,8 @@ reference; 23-65 bits per inter frame, off by default); VP9 and AV2 cannot
 ## Checks
 
 ```sh
-cargo test -p nc-web
-cargo clippy -p nc-web --all-targets -- -D warnings
+cargo test -p nanocodec-web
+cargo clippy -p nanocodec-web --all-targets -- -D warnings
 node --test web/tests/*.test.js
 node web/tests/reference-streams-wasm.mjs   # after tools/web/build.sh
 ```

@@ -3,7 +3,7 @@
 //! control, decode every access unit with this crate's decoder, and print
 //! the mean luma PSNR. The project site's Rust API page shows this file.
 //!
-//!     cargo run --release -p nc-h264 --example encode_decode
+//!     cargo run --release -p nanocodec-h264 --example encode_decode
 
 use nc_common::{PlaneIndex, RawFrame};
 use nc_encoder::{

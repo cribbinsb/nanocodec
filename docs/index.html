@@ -34,8 +34,8 @@
     Rust; SIMD kernels are chosen at run time on each machine.</p>
 <pre><code>git clone https://github.com/cribbinsb/nanocodec.git
 cd nanocodec
-cargo build --release -p nc-cli          # the command line: target/release/nanocodec
-cargo build --release -p nc-capi         # the C library: target/release/libnanocodec.{a,so}</code></pre>
+cargo build --release -p nanocodec-cli          # the command line: target/release/nanocodec
+cargo build --release -p nanocodec-capi         # the C library: target/release/libnanocodec.{a,so}</code></pre>
   <div class="table-wrap"><table>
     <tr><th>Target</th><th>How</th><th>Kernels</th></tr>
     <tr><td>x86_64</td><td><code>cargo build --release</code></td><td>AVX2 and AVX-512 where the CPU has them, else scalar</td></tr>
