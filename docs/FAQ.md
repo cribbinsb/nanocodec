@@ -200,11 +200,10 @@ its output under the GPL; we distribute only the output streams, not the program
   conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams and 121 of 133 8-bit VTM and
   VVenC streams that exercise the Main 10 tools (`docs/handoff/vvc-foreign-corpus.md` lists what fails: several
   slices in a picture, subpictures, reference picture resampling and four smaller tools), so it is not a full
-  Main-profile decoder; the AV2 decoder decodes our own streams and 6 of 30
-  foreign test streams bit-exact (the six avmenc v1.0.0 key-frame-only streams coded with the fewest tools, of 12
-  dav2d 8-bit test streams and 18 avmenc streams); the other 24 need inter prediction from several references,
-  hidden and reordered frames, larger superblocks, extended partitions and the other AV2 tools outside our
-  subset. Details in the
+  Main-profile decoder; the AV2 decoder decodes our own streams and 9 of 30 foreign test streams bit-exact
+  (the nine avmenc v1.0.0 streams coded with the fewest tools, of 12 dav2d 8-bit test streams and 18 avmenc
+  streams); the other 21 need hidden and reordered frames, larger superblocks, extended partitions and the other
+  AV2 tools outside our subset. Details in the
   [detailed results](results/README.md#decoders).
 - **Speed gaps:** our AV1 and VP9 decoders are slower than dav1d and vpxdec single-threaded; SVT-AV1 M12/M13 and
   x264's fast presets encode faster than our Default presets; VVC Default runs below 30 fps at 720p on one Jetson

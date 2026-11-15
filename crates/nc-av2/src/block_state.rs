@@ -15,7 +15,7 @@ use crate::coeff::{self, TxSize};
 use crate::deblock::EdgeGrid;
 use crate::interp_filter;
 use crate::intra_modes::Mode;
-use crate::mv_refs::{ListConfig, ReferenceGrid};
+use crate::mv_refs::{ListConfig, MAX_REFERENCES, ReferenceGrid};
 use crate::prediction::InterpFilter;
 use nc_common::decode::{DecodeError, Result};
 
@@ -191,6 +191,33 @@ impl BlockState {
         }
     }
 
+    /// Contexts of the single-reference symbols of ranks
+    /// `0..references - 1` (AVM `av2_get_ref_pred_context`): how the
+    /// neighbours' references to each rank compare with theirs to later
+    /// ranks (`av2_collect_neighbors_ref_counts`; a skip-mode block names
+    /// rank 0 twice).
+    pub fn reference_contexts(
+        &self,
+        x: usize,
+        y: usize,
+        size: usize,
+        references: usize,
+    ) -> [u8; MAX_REFERENCES] {
+        let mut counts = [0_i8; MAX_REFERENCES];
+        for info in self.line_neighbours(x, y, size).into_iter().flatten() {
+            if info.is_inter {
+                counts[usize::from(info.reference)] += 1 + i8::from(info.skip_mode);
+            }
+        }
+        let mut later: i8 = counts[..references].iter().sum();
+        let mut contexts = [0; MAX_REFERENCES];
+        for (context, &count) in contexts.iter_mut().zip(&counts[..references]) {
+            later -= count;
+            *context = (count - later + 1).clamp(0, REFERENCE_CONTEXTS as i8 - 1) as u8;
+        }
+        contexts
+    }
+
     /// `skip_txfm` symbol context, in 0..3.
     pub fn skip_context(&self, x: usize, y: usize, size: usize) -> usize {
         self.line_neighbours(x, y, size)
@@ -339,8 +366,11 @@ impl BlockState {
     pub fn clear_coeff_contexts(&mut self, x: usize, y: usize, size: usize) {
         for (plane, contexts) in self.coefficients.iter_mut().enumerate() {
             let (px, py, side) = plane_area(plane, x, y, size);
-            contexts.above[px..px + side].fill(0);
-            contexts.left[py..py + side].fill(0);
+            // Clipped to the picture for a block crossing its edge.
+            let columns = contexts.above.len();
+            contexts.above[px..(px + side).min(columns)].fill(0);
+            let rows = contexts.left.len();
+            contexts.left[py..(py + side).min(rows)].fill(0);
         }
     }
 

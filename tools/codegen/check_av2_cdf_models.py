@@ -55,7 +55,7 @@ def specs():
         ('is_inter', [4], 2, 'default_intra_inter_cdf[a]'),
         # The first single-reference decision (rank 0 or not), the only
         # one with two references (av2_get_pred_cdf_single_ref).
-        ('single_ref', [3], 2, 'default_single_ref_cdf[a][0]'),
+        ('single_ref', [3, 6], 2, 'default_single_ref_cdf[a][b]'),
         ('inter_mode', [5], 3, 'default_inter_single_mode_cdf[a]'),
         ('drl', [3, 5], 2, 'default_drl_cdf[a][b]'),
         ('mv_set', [], 2, 'default_nmv_context.joint_shell_set_cdf'),

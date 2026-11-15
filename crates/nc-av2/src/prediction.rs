@@ -175,15 +175,19 @@ pub fn predict_into(
     let Some(size) = BlockSize::new(side, side).filter(|_| destination.height() == side) else {
         return Err(DecodeError::Unsupported("AV2 prediction block size"));
     };
+    // The block starts inside the picture; it may cross the right or
+    // bottom edge (other encoders' streams), where the window repeats the
+    // edge samples like any window reaching outside.
     if subsample > 1
-        || x > reference.width().saturating_sub(side)
-        || y > reference.height().saturating_sub(side)
-        || reference.width() < side
-        || reference.height() < side
+        || x >= reference.width()
+        || y >= reference.height()
         || [motion.0, motion.1]
             .iter()
-            .any(|&v| !(-MAX_COMPONENT..=MAX_COMPONENT).contains(&v) || v & 1 != 0)
+            .any(|&v| !(-MAX_COMPONENT..=MAX_COMPONENT).contains(&v))
     {
+        // Odd eighth-sample vectors are legal: a predictor projected from
+        // another reference keeps that precision when selected as is
+        // (dav2d `recon_b`: `mv_reduce_prec` only below quarter-sample).
         return Err(DecodeError::Malformed("AV2 inter prediction parameters"));
     }
     // AVM `dec_calc_subpel_params`: a plane position in 1/16 samples (luma
@@ -686,7 +690,6 @@ mod tests {
         for (x, y, motion, subsample) in [
             (8, 0, (0, 0), 0),
             (0, 8, (0, 0), 0),
-            (0, 0, (1, 0), 0),
             (0, 0, (i32::MIN, 0), 0),
             (0, 0, (0, 0), 2),
         ] {

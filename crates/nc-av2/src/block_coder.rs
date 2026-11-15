@@ -43,7 +43,32 @@ use nc_encoder::{DebugRng, IntraModeSet, residual_quantises_to_zero, with_neighb
 pub(crate) const IS_INTER: [[u16; 2]; 4] = [[31246, 0], [18387, 0], [22313, 0], [4972, 0]];
 /// AVM `default_single_ref_cdf[ctx][0]` (inverse): whether a block of a
 /// two-reference frame predicts from rank 0 (symbol 1) or rank 1 (0).
-pub(crate) const SINGLE_REF: [[u16; 2]; REFERENCE_CONTEXTS] = [[6299, 0], [19137, 0], [30169, 0]];
+pub(crate) const SINGLE_REF: [[[u16; 2]; 6]; REFERENCE_CONTEXTS] = [
+    [
+        [6299, 0],
+        [3898, 0],
+        [3106, 0],
+        [2901, 0],
+        [2996, 0],
+        [2992, 0],
+    ],
+    [
+        [19137, 0],
+        [14583, 0],
+        [12776, 0],
+        [14306, 0],
+        [15317, 0],
+        [21190, 0],
+    ],
+    [
+        [30169, 0],
+        [27565, 0],
+        [27583, 0],
+        [29097, 0],
+        [28814, 0],
+        [31135, 0],
+    ],
+];
 /// `skip_txfm` CDFs by context (AVM `default_skip_txfm_cdfs`): the
 /// skipped neighbours, plus [`SKIP_MODE_SKIP_CONTEXTS`] in a skip-mode block.
 pub(crate) const SKIP: [[u16; 2]; 6] = [
@@ -1106,7 +1131,7 @@ impl BlockCoder {
             bits += intra_modes::dc_bits(above, left);
         } else if self.state.motion.reference_count() > 1 {
             let context = self.state.single_reference_context(x, y, size);
-            bits += symbol_bits(&SINGLE_REF[context], usize::from(self.reference == 0));
+            bits += symbol_bits(&SINGLE_REF[context][0], usize::from(self.reference == 0));
         }
         bits
     }
@@ -3231,10 +3256,11 @@ impl BlockCoder {
                 // references, one symbol names rank 0 (1) or rank 1 (0).
                 if self.state.motion.reference_count() > 1 {
                     let context = self.state.single_reference_context(x, y, size);
-                    self.writer
-                        .model(usize::from(reference == 0), &SINGLE_REF[context], |m| {
-                            &mut m.single_ref[context]
-                        })?;
+                    self.writer.model(
+                        usize::from(reference == 0),
+                        &SINGLE_REF[context][0],
+                        |m| &mut m.single_ref[context][0],
+                    )?;
                 }
                 mv_refs::write_inter_mode(&mut self.writer, candidates.mode_context, mode)?;
                 if mode.has_drl() {

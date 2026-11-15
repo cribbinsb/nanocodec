@@ -71,9 +71,10 @@ const EIGHTHS: i32 = 8;
 const MAX_COMPONENT: i32 = 32766;
 /// AVM `MAX_REF_MV_STACK_SIZE`: entries of a reference list.
 pub const MAX_STACK: usize = 6;
-/// References a frame of the subset may name (`num_total_refs`): the
-/// previous picture and the second reference.
-pub const MAX_REFERENCES: usize = 2;
+/// References a frame may name (`num_total_refs`, AVM
+/// `INTER_REFS_PER_FRAME`). Our encoder names at most two: the previous
+/// picture and the second reference.
+pub const MAX_REFERENCES: usize = 7;
 /// AVM `MAX_FRAME_DISTANCE`: projection distances are clamped to it.
 const MAX_FRAME_DISTANCE: i32 = 31;
 /// AVM `div_mult`: 16384 / distance, for MV projection.
@@ -457,10 +458,10 @@ impl ReferenceGrid {
     }
 
     /// Name the frame's references by their distances from the current
-    /// picture in frames, in rank order (one or two, each at least 1).
-    /// Call before the first block.
+    /// picture in frames, in rank order (one to seven, each at least 1:
+    /// past pictures). Call before the first block.
     /// # Errors
-    /// Rejects a count outside 1..=2 and non-positive distances.
+    /// Rejects a count outside 1..=7 and non-positive distances.
     pub fn set_reference_distances(&mut self, distances: &[i32]) -> Result<()> {
         if !(1..=MAX_REFERENCES).contains(&distances.len()) || distances.iter().any(|&d| d < 1) {
             return Err(DecodeError::Unsupported("AV2 reference distances"));
@@ -683,7 +684,9 @@ impl ReferenceGrid {
         size: usize,
         reference: u8,
     ) -> Result<Candidates> {
-        self.check_block(x, y, size)?;
+        // The block may cross the picture's right or bottom edge: its
+        // neighbour positions outside the picture are simply unavailable.
+        self.check_origin(x, y, size)?;
         let (px, py, last) = (x as i32, y as i32, size as i32 - 1);
         self.check_neighbours_coded(px, py)?;
         // AVM `av2_find_mode_ctx` counts neighbours on the block's
@@ -863,8 +866,10 @@ impl ReferenceGrid {
         if vectors
             .iter()
             .flat_map(|&(row, col)| [row, col])
-            .any(|v| !(-MAX_COMPONENT..=MAX_COMPONENT).contains(&v) || v & 1 != 0)
+            .any(|v| !(-MAX_COMPONENT..=MAX_COMPONENT).contains(&v))
         {
+            // Odd eighth-sample components are legal: a projected
+            // predictor selected as is keeps them.
             return Err(DecodeError::Malformed("AV2 MV grid entry"));
         }
         let entry = Entry {
@@ -1193,8 +1198,11 @@ mod tests {
         }
         let mut grid = ReferenceGrid::new(16, 16, ListConfig::BASIC).unwrap();
         assert!(grid.candidates(8, 8, 8).is_err());
-        assert!(grid.candidates(0, 0, 32).is_err());
-        assert!(grid.commit(0, 0, 8, (1, 0), false).is_err());
+        // A block may cross the picture edge and code an odd eighth-sample
+        // vector (other encoders' streams); it may not start outside.
+        assert!(grid.candidates(0, 0, 32).is_ok());
+        assert!(grid.candidates(16, 0, 8).is_err());
+        assert!(grid.commit(0, 0, 8, (i32::MAX, 0), false).is_err());
         grid.commit(0, 0, 8, (0, 0), false).unwrap();
         assert!(grid.commit(0, 0, 8, (0, 0), false).is_err());
         assert!(grid.commit(0, 0, 16, (0, 0), false).is_err());

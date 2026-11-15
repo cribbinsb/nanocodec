@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::cdf_models::TileCdfs;
 use crate::frame_header::REFERENCE_SLOTS;
+use crate::general::references::{self, Current, MAX_REFERENCES, SlotInfo};
 use crate::tile_decoder::{self, TileParams};
 use crate::{frame_header, obu, sequence::SequenceHeader};
 use nc_common::{
@@ -11,28 +12,29 @@ use nc_common::{
     decode::{DecodeError, Result},
 };
 
-/// A reference slot's entropy context (shared by the slots one picture
-/// refreshes).
-type SlotContext = Option<Rc<TileCdfs>>;
-
-/// The decoder's reference slots as an inter frame reads them: pictures,
-/// CDFs and display order hints.
-type SlotView<'a> = (&'a [Option<Rc<Picture>>], &'a [SlotContext], &'a [u32]);
+/// One reference slot (`ref_frame_map` entry): a picture, which may fill
+/// several slots, with what later frames need of it.
+#[derive(Debug, Clone)]
+struct Slot {
+    picture: Rc<Picture>,
+    /// The picture's final CDFs, adaptation restarted (AVM
+    /// `frame_context`), for frames that inherit them; `None` where the
+    /// picture did not adapt.
+    context: Option<Rc<TileCdfs>>,
+    /// Display order (AVM `display_order_hint`, the order hint unwrapped:
+    /// 0 at the key frame), quantizer, frame type and layer, for
+    /// reference ranking and distances.
+    info: SlotInfo,
+}
 
 /// Decoder retaining sequence syntax and the eight reference slots.
 #[derive(Debug, Default)]
 pub struct Decoder {
     sequence: Option<SequenceHeader>,
-    /// Reference slots (`ref_frame_map`); one picture may fill several.
-    slots: [Option<Rc<Picture>>; REFERENCE_SLOTS as usize],
-    /// Each slot's picture's final CDFs, adaptation restarted (AVM
-    /// `frame_context`), for frames that inherit them; `None` where the
-    /// picture did not adapt.
-    contexts: [SlotContext; REFERENCE_SLOTS as usize],
-    /// Each slot's picture's display order hint (AVM `display_order_hint`,
-    /// the order hint unwrapped: 0 at the key frame), for reference
-    /// distances.
-    display_orders: [u32; REFERENCE_SLOTS as usize],
+    /// Reference slots (`ref_frame_map`).
+    slots: [Option<Slot>; REFERENCE_SLOTS as usize],
+    /// Frames decoded so far: the identity of the next one in its slots.
+    frames: u32,
     /// The last decoded picture, shown by [`Decoder::shown`].
     current: Option<Rc<Picture>>,
     /// [`Decoder::decode_ref`]'s copy of the last picture's conformance
@@ -94,11 +96,7 @@ impl Decoder {
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         let mut next_sequence = self.sequence;
         let mut remaining = packet;
-        let mut picture = None;
-        let mut refresh = 0;
-        let mut context = None;
-        let mut display_order = 0;
-        let mut key = false;
+        let mut decoded = None;
         while !remaining.is_empty() {
             let (unit, rest) = obu::parse(remaining)?;
             remaining = rest;
@@ -119,60 +117,58 @@ impl Decoder {
                 2 if unit.payload.is_empty() => {}
                 1 => next_sequence = Some(crate::sequence::parse(unit.payload)?),
                 4 | 7 => {
-                    if picture.is_some() {
+                    if decoded.is_some() {
                         return Err(DecodeError::Malformed("AV2 packet has multiple pictures"));
                     }
                     let sequence =
                         // No sequence header yet: the key frame was lost.
                         next_sequence.ok_or(DecodeError::MissingKey)?;
-                    let (decoded, models, refreshed) =
-                        if unit.header.obu_type == frame_header::CLOSED_LOOP_KEY {
-                            let (key_picture, models) =
-                                Self::decode_key(&sequence, unit.payload, &mut self.workspace)?;
-                            display_order = 0;
-                            key = true;
-                            (key_picture, models, KEY_SLOTS)
-                        } else {
-                            let (decoded, models, refreshed, order) = Self::decode_inter(
-                                (&self.slots, &self.contexts, &self.display_orders),
-                                &sequence,
-                                unit.payload,
-                                &mut self.workspace,
-                            )?;
-                            display_order = order;
-                            (decoded, models, refreshed)
-                        };
-                    picture = Some(decoded);
-                    refresh = refreshed;
+                    let frame = if unit.header.obu_type == frame_header::CLOSED_LOOP_KEY {
+                        Self::decode_key(&sequence, unit.payload, &mut self.workspace)?
+                    } else {
+                        Self::decode_inter(
+                            &self.slots,
+                            &sequence,
+                            (unit.payload, unit.header.temporal_id),
+                            &mut self.workspace,
+                        )?
+                    };
+                    decoded = Some(frame);
                     #[cfg(feature = "analysis")]
                     if let Some(s) = &mut self.workspace.stats {
                         s.finish();
                     }
-                    context = models.map(|mut models| {
-                        models.restart_adaptation();
-                        Rc::from(models)
-                    });
                 }
                 _ => return Err(DecodeError::Unsupported("AV2 OBU outside forward subset")),
             }
         }
-        let picture = picture.ok_or(DecodeError::Malformed("AV2 packet has no picture"))?;
+        let frame = decoded.ok_or(DecodeError::Malformed("AV2 packet has no picture"))?;
         self.sequence = next_sequence;
-        let picture = Rc::new(picture);
-        for (i, (slot, slot_context)) in self.slots.iter_mut().zip(&mut self.contexts).enumerate() {
-            let replaced = if refresh & (1 << i) != 0 {
-                slot_context.clone_from(&context);
-                self.display_orders[i] = display_order;
-                slot.replace(Rc::clone(&picture))
-            } else if key {
+        let picture = Rc::new(frame.picture);
+        let slot = Slot {
+            picture: Rc::clone(&picture),
+            context: frame.models.map(|mut models| {
+                models.restart_adaptation();
+                Rc::from(models)
+            }),
+            info: SlotInfo {
+                frame: self.frames,
+                size: (picture.width() as u32, picture.height() as u32),
+                ..frame.info
+            },
+        };
+        self.frames = self.frames.wrapping_add(1);
+        for (i, held) in self.slots.iter_mut().enumerate() {
+            let replaced = if frame.refresh & (1 << i) != 0 {
+                held.replace(slot.clone())
+            } else if !frame.info.inter {
                 // A key frame empties every slot it does not fill.
-                *slot_context = None;
-                slot.take()
+                held.take()
             } else {
                 None
             };
             if let Some(replaced) = replaced {
-                self.workspace.release(replaced);
+                self.workspace.release(replaced.picture);
             }
         }
         if let Some(previous) = self.current.replace(picture) {
@@ -190,13 +186,12 @@ impl Decoder {
         ShownPicture::window(picture, (0, 0), size)
     }
 
-    /// Decode the closed-loop key picture of `payload`, returning it with
-    /// its final CDFs when it adapts.
+    /// Decode the closed-loop key picture of `payload`.
     fn decode_key(
         sequence: &SequenceHeader,
         payload: &[u8],
         work: &mut tile_decoder::Workspace,
-    ) -> Result<(Picture, Option<Box<TileCdfs>>)> {
+    ) -> Result<DecodedFrame> {
         let (header, offset) = frame_header::parse_keyframe(sequence, payload)?;
         let params = TileParams {
             qindex: header.quantizer,
@@ -213,61 +208,94 @@ impl Decoder {
             reference_lists: sequence.reference_lists,
         };
         let (width, height) = (sequence.max_width as usize, sequence.max_height as usize);
-        tile_decoder::decode(
+        let (picture, models) = tile_decoder::decode(
             &payload[offset..],
             (width, height),
             params,
             None,
             None,
             work,
-        )
+        )?;
+        Ok(DecodedFrame {
+            picture,
+            models,
+            refresh: KEY_SLOTS,
+            info: SlotInfo {
+                frame: 0,
+                order: 0,
+                quantizer: header.quantizer,
+                inter: false,
+                temporal_layer: 0,
+                size: (0, 0),
+            },
+        })
     }
 
-    /// Decode the inter picture of `payload` from its reference slots (and,
-    /// with cross-frame context, the first one's CDFs), returning it with
-    /// its final CDFs, the slots it refreshes and its display order hint.
+    /// Decode the inter picture of `payload` (in temporal layer
+    /// `temporal_layer`) from the reference slots: those it names, or with
+    /// implicit references the distinct pictures ranked as AVM ranks them.
     fn decode_inter(
-        (slots, contexts, display_orders): SlotView<'_>,
+        slots: &[Option<Slot>],
         sequence: &SequenceHeader,
-        payload: &[u8],
+        (payload, temporal_layer): (&[u8], u8),
         work: &mut tile_decoder::Workspace,
-    ) -> Result<(Picture, Option<Box<TileCdfs>>, u8, u32)> {
+    ) -> Result<DecodedFrame> {
         let (header, offset) = frame_header::parse_inter(sequence, payload)?;
+        let infos: Vec<Option<SlotInfo>> = slots
+            .iter()
+            .map(|slot| slot.as_ref().map(|slot| slot.info))
+            .collect();
         let display_order = display_order_hint(
             header.order_hint,
             sequence.order_hint_bits,
-            slots
-                .iter()
-                .zip(display_orders)
-                .filter(|(slot, _)| slot.is_some())
-                .map(|(_, &order)| order),
+            infos.iter().flatten().map(|info| info.order),
         );
-        // Implicit references refresh every slot: any slot holds the reference.
-        let slot = header.reference.unwrap_or(0);
-        let picture_in = |slot: u8| {
+        let (width, height) = (sequence.max_width as usize, sequence.max_height as usize);
+        let (ranked, count) = match (header.reference, header.second_reference) {
+            (Some(first), Some(second)) => ([first, second, 0, 0, 0, 0, 0], 2),
+            (Some(first), None) => ([first; MAX_REFERENCES], 1),
+            (None, _) => references::rank(
+                &infos,
+                Current {
+                    order: display_order,
+                    temporal_layer,
+                    size: Some((width as u32, height as u32)),
+                },
+            ),
+        };
+        let held = |slot: u8| {
             slots[usize::from(slot)]
-                .as_deref()
+                .as_ref()
                 .ok_or(DecodeError::MissingKey)
         };
-        let reference = picture_in(slot)?;
-        let distance = |slot: u8| display_order.saturating_sub(display_orders[usize::from(slot)]);
-        let second = match header.second_reference {
-            Some(second) => {
-                let distances = [distance(slot), distance(second)]
-                    .map(|d| i32::try_from(d.min(MAX_RELATIVE_DISTANCE)).expect("small"));
-                Some(tile_decoder::SecondReference {
-                    picture: picture_in(second)?,
-                    distances,
-                })
+        let mut pictures = [None; MAX_REFERENCES];
+        let mut distances = [1; MAX_REFERENCES];
+        let mut ranked_infos = [None; MAX_REFERENCES];
+        for rank in 0..count.max(1) {
+            let slot = held(ranked[rank])?;
+            if slot.picture.width() != width || slot.picture.height() != height {
+                return Err(DecodeError::Unsupported(
+                    "AV2 changed sequence requires keyframe",
+                ));
             }
+            pictures[rank] = Some(&*slot.picture);
+            distances[rank] = references::order_difference(display_order, slot.info.order);
+            ranked_infos[rank] = Some(slot.info);
+        }
+        let count = count.max(1);
+        let primary = if !header.cross_frame_context {
+            None
+        } else if header.derived_primary {
+            references::context_sources(&ranked_infos[..count], header.quantizer, display_order).0
+        } else {
+            Some(0)
+        };
+        let inherited = match primary {
+            Some(rank) => Some(held(ranked[usize::from(rank)])?.context.as_deref().ok_or(
+                DecodeError::Malformed("AV2 inherited context did not adapt"),
+            )?),
             None => None,
         };
-        let (width, height) = (sequence.max_width as usize, sequence.max_height as usize);
-        if reference.width() != width || reference.height() != height {
-            return Err(DecodeError::Unsupported(
-                "AV2 changed sequence requires keyframe",
-            ));
-        }
         let params = TileParams {
             qindex: header.quantizer,
             quant_deltas: header.quant_deltas,
@@ -277,36 +305,37 @@ impl Decoder {
             ccso: header.ccso,
             tx_set: header.tx_set,
             tx_select: header.transform_select,
-            screen_content: false,
+            screen_content: header.screen_content,
             levels: header.levels,
             delta_q: header.delta_q,
             reference_lists: sequence.reference_lists,
-        };
-        let inherited = if header.cross_frame_context {
-            Some(
-                contexts[usize::from(slot)]
-                    .as_deref()
-                    .ok_or(DecodeError::Malformed(
-                        "AV2 inherited context did not adapt",
-                    ))?,
-            )
-        } else {
-            None
         };
         let (picture, models) = tile_decoder::decode(
             &payload[offset..],
             (width, height),
             params,
             Some(tile_decoder::InterReference {
-                picture: reference,
-                second,
+                pictures: &pictures[..count],
+                distances: &distances[..count],
                 filter: header.filter,
                 skip_mode: header.skip_mode,
             }),
             inherited,
             work,
         )?;
-        Ok((picture, models, header.refresh_flags, display_order))
+        Ok(DecodedFrame {
+            picture,
+            models,
+            refresh: header.refresh_flags,
+            info: SlotInfo {
+                frame: 0,
+                order: display_order,
+                quantizer: header.quantizer,
+                inter: true,
+                temporal_layer,
+                size: (0, 0),
+            },
+        })
     }
 
     /// Decode a packet and return an owned copy; use `decode_ref` to avoid the copy.
@@ -317,12 +346,20 @@ impl Decoder {
     }
 }
 
+/// A decoded frame with what its reference slots keep of it.
+struct DecodedFrame {
+    picture: Picture,
+    /// Final CDFs, when the frame adapted.
+    models: Option<Box<TileCdfs>>,
+    /// The slots it fills (`refresh_frame_flags`).
+    refresh: u8,
+    /// Its ranking information (the decoder sets `frame` and `size`).
+    info: SlotInfo,
+}
+
 /// The slots a closed-loop key frame fills: the first only (AVM
 /// `av2_frame_clears_multiple_inserted_in_one` empties the others).
 const KEY_SLOTS: u8 = 1;
-
-/// AVM `RELATIVE_DIST_BITS` 8: reference distances are clamped to 127.
-const MAX_RELATIVE_DISTANCE: u32 = 127;
 
 /// The display order hint of a frame with `order_hint` (`bits` wide) whose
 /// references' display order hints are `references` (AVM

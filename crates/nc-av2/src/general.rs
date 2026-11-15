@@ -9,5 +9,6 @@
 //! reimplemented in Rust. See `THIRD_PARTY.md`.
 
 pub mod bits;
+pub mod references;
 pub mod sequence;
 pub mod tiles;

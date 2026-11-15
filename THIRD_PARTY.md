@@ -624,8 +624,9 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
 - `crates/nc-av2/src/general/` (the general AV2 decoder for other encoders'
   8-bit 4:2:0 streams): `sequence.rs` and `tiles.rs` from `src/obu.c`
   (`parse_seq_hdr`, `parse_tile_info`, `calc_uniform_tiles`), `bits.rs` from
-  `src/getbits.c`. Where dav2d and AVM v1.0.0 differ (the layer dependency
-  maps of the sequence header), AVM is followed.
+  `src/getbits.c`, `references.rs` from `src/obu.c` (`get_ref_frames`,
+  `derive_pri_sec_ref`). Where dav2d and AVM v1.0.0 differ (the layer
+  dependency maps of the sequence header), AVM is followed.
 
 ## VVenC — BSD-3-Clause-Clear
 

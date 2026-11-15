@@ -79,33 +79,26 @@ enum Source {
     Inter,
 }
 
-/// An inter picture's reference (rank 0), any second reference, the
-/// frame's interpolation filter mode and whether blocks may code skip mode.
+/// An inter picture's references in rank order (`num_total_refs` of
+/// them, one to seven) with their distances from the current picture in
+/// frames (AVM `ref_frame_relative_dist`), the frame's interpolation
+/// filter mode and whether blocks may code skip mode.
 #[derive(Clone, Copy)]
 pub(crate) struct InterReference<'r> {
-    pub picture: &'r Picture,
-    pub second: Option<SecondReference<'r>>,
+    pub pictures: &'r [Option<&'r Picture>],
+    pub distances: &'r [i32],
     pub filter: FrameFilter,
     pub skip_mode: bool,
-}
-
-/// A frame's second reference (`num_total_refs` 2, rank 1), with both
-/// ranks' distances from the current picture in frames (AVM
-/// `ref_frame_relative_dist`).
-#[derive(Clone, Copy)]
-pub(crate) struct SecondReference<'r> {
-    pub picture: &'r Picture,
-    pub distances: [i32; 2],
 }
 
 impl<'r> InterReference<'r> {
     /// The picture of reference rank `rank`.
     fn picture_of(&self, rank: u8) -> Result<&'r Picture> {
-        match (rank, self.second) {
-            (0, _) => Ok(self.picture),
-            (1, Some(second)) => Ok(second.picture),
-            _ => Err(DecodeError::Malformed("AV2 reference rank")),
-        }
+        self.pictures
+            .get(usize::from(rank))
+            .copied()
+            .flatten()
+            .ok_or(DecodeError::Malformed("AV2 reference rank"))
     }
 }
 
@@ -214,15 +207,15 @@ fn prepare_references(state: &mut BlockState, reference: Option<InterReference<'
             "AV2 skip mode with switchable filters",
         ));
     }
-    let Some(second) = reference.second else {
+    if reference.pictures.len() < 2 {
         return Ok(());
-    };
+    }
     if reference.skip_mode {
         return Err(DecodeError::Unsupported(
             "AV2 skip mode with two references",
         ));
     }
-    state.motion.set_reference_distances(&second.distances)
+    state.motion.set_reference_distances(reference.distances)
 }
 
 /// Decode one tile of a key (`reference` is `None`) or inter picture and
@@ -526,7 +519,7 @@ impl TileDecoder<'_> {
         let candidates = self.state.motion.skip_candidates(x, y, size)?;
         let index = mv_refs::read_skip_drl(reader, candidates.max_drl_bits)?;
         let pair = candidates.pair(index);
-        self.predict_compound(reference.picture, (x, y), size, pair)?;
+        self.predict_compound(reference.picture_of(0)?, (x, y), size, pair)?;
         self.finish_inter(
             reader,
             (x, y),
@@ -754,21 +747,27 @@ impl TileDecoder<'_> {
         Ok(())
     }
 
-    /// Read the block's reference rank (AVM `read_single_ref`): rank 0
-    /// unless the frame has two references, where one symbol names rank 0
-    /// (1) or rank 1 (0).
+    /// Read the block's reference rank (AVM `read_single_ref`): for each
+    /// rank but the last, in order, one symbol says whether it is the one.
     fn read_reference(
         &self,
         reader: &mut Reader<'_>,
         (x, y): (usize, usize),
         size: usize,
     ) -> Result<u8> {
-        if self.state.motion.reference_count() < 2 {
+        let count = self.state.motion.reference_count();
+        if count < 2 {
             return Ok(0);
         }
-        let context = self.state.single_reference_context(x, y, size);
-        let symbol = reader.model(&SINGLE_REF[context], |m| &mut m.single_ref[context])?;
-        Ok(u8::from(symbol == 0))
+        let contexts = self.state.reference_contexts(x, y, size, count);
+        for (rank, &context) in contexts[..count - 1].iter().enumerate() {
+            let fixed = &SINGLE_REF[usize::from(context)][rank];
+            let symbol = reader.model(fixed, |m| &mut m.single_ref[usize::from(context)][rank])?;
+            if symbol == 1 {
+                return Ok(rank as u8);
+            }
+        }
+        Ok(count as u8 - 1)
     }
 
     /// Read the inter mode, DRL index and vector difference of a block on
@@ -835,6 +834,9 @@ impl TileDecoder<'_> {
         size: usize,
         mv: (i32, i32),
     ) -> Result<()> {
+        if x + size > self.recon.width() || y + size > self.recon.height() {
+            return self.predict_crossing(reference, filter, (x, y), size, mv);
+        }
         for (plane, index) in PlaneIndex::ALL.into_iter().enumerate() {
             let subsample = u8::from(plane != 0);
             let side = size >> subsample;
@@ -848,6 +850,43 @@ impl TileDecoder<'_> {
                 subsample,
                 &mut block_view(&mut self.recon, index, (px, py), side)?,
             )?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::predict`] for a block crossing the picture's right or bottom
+    /// edge (other encoders' streams): each plane is predicted whole aside
+    /// and the part inside the picture kept.
+    #[cold]
+    fn predict_crossing(
+        &mut self,
+        reference: &Picture,
+        filter: prediction::InterpFilter,
+        (x, y): (usize, usize),
+        size: usize,
+        mv: (i32, i32),
+    ) -> Result<()> {
+        for (plane, index) in PlaneIndex::ALL.into_iter().enumerate() {
+            let subsample = u8::from(plane != 0);
+            let side = size >> subsample;
+            let origin = plane_origin(plane, (x, y));
+            let view = self.recon.plane(index).view();
+            let edge = PictureEdge {
+                plane_size: (view.width(), view.height()),
+                side,
+            };
+            let visible = edge
+                .visible(origin)
+                .ok_or(DecodeError::Malformed("AV2 block outside the picture"))?;
+            let whole = self
+                .crossing
+                .get_mut(..side * side)
+                .ok_or(DecodeError::Malformed("AV2 block outside the picture"))?;
+            let mut block = PlaneViewMut::new(whole, side, side, side)
+                .ok_or(DecodeError::Malformed("AV2 block outside the picture"))?;
+            let source = reference.plane(index);
+            prediction::predict_into(&self.dsp, filter, source, origin, mv, subsample, &mut block)?;
+            store_part(&mut self.recon, index, origin, (side, visible), whole);
         }
         Ok(())
     }

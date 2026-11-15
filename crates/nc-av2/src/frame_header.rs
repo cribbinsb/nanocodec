@@ -298,10 +298,16 @@ pub struct InterHeader {
     pub tx_set: TxSetMode,
     /// Update tile-local CDFs.
     pub adaptive_cdf: bool,
-    /// Start from the reference picture's final CDFs (AVM
-    /// `cross_frame_context` forward, `primary_ref_frame` 0, the one
-    /// reference) instead of the defaults. Requires `adaptive_cdf`.
+    /// Start from a reference picture's final CDFs instead of the defaults
+    /// (AVM `cross_frame_context` forward): our encoder's frames name
+    /// their first reference (`primary_ref_frame` 0). Requires
+    /// `adaptive_cdf`.
     pub cross_frame_context: bool,
+    /// The frame leaves the choice of that reference to the decoder
+    /// (`signal_primary_ref_frame` 0: the reference nearest in quantizer
+    /// and order, [`crate::general::references::context_sources`]). Our
+    /// encoder never does.
+    pub derived_primary: bool,
     /// Reference slots this picture replaces (`refresh_frame_flags`). With
     /// implicit references all eight must refresh (255), so the slots hold
     /// one distinct picture.
@@ -321,6 +327,8 @@ pub struct InterHeader {
     pub ccso: CcsoParams,
     /// The frame's interpolation filter, or per-block switchable filters.
     pub filter: FrameFilter,
+    /// Screen-content tools are allowed, as [`KeyframeHeader::screen_content`].
+    pub screen_content: bool,
     /// Blocks may code skip mode (`skip_mode_flag`): the same-reference
     /// compound `NEAR_NEARMV` of the skip-mode list.
     pub skip_mode: bool,
@@ -367,10 +375,10 @@ fn validate_inter(seq: &SequenceHeader, frame: &InterHeader) -> Result<()> {
     }
     match (seq.layering.explicit_references, frame.reference) {
         (true, Some(slot)) if slot < REFERENCE_SLOTS => Ok(()),
-        (false, None) if frame.refresh_flags == REFRESH_ALL => Ok(()),
-        (false, None) => Err(DecodeError::Unsupported(
-            "AV2 implicit references require every slot to refresh",
-        )),
+        // Any refresh: the decoder ranks the slots as AVM does
+        // (`general::references::rank`). Our encoder refreshes every slot,
+        // which leaves one distinct reference.
+        (false, None) => Ok(()),
         _ => Err(DecodeError::Malformed(
             "AV2 reference slot signalling does not match the sequence",
         )),
@@ -395,15 +403,16 @@ fn write_primary_reference(bits: &mut BitWriter, cross_frame_context: bool) {
     bits.put_bits(primary_reference(cross_frame_context), PRIMARY_REF_BITS);
 }
 
-/// Read what [`write_primary_reference`] writes; returns whether the frame
-/// inherits its reference's CDFs.
-fn read_primary_reference(bits: &mut BitReader<'_>) -> Result<bool> {
-    fixed(bits, 1, 1, "AV2 inferred primary reference")?;
+/// Read what [`write_primary_reference`] writes, or the form that leaves
+/// the primary reference to the decoder; returns whether the frame
+/// inherits a reference's CDFs and whether the decoder chooses which.
+fn read_primary_reference(bits: &mut BitReader<'_>) -> Result<(bool, bool)> {
+    let signalled = bits.read_bit()?;
     let cross_frame_context = !bits.read_bit()?;
-    if bits.read_bits(PRIMARY_REF_BITS)? != primary_reference(cross_frame_context) {
+    if signalled && bits.read_bits(PRIMARY_REF_BITS)? != primary_reference(cross_frame_context) {
         return Err(DecodeError::Unsupported("AV2 primary reference context"));
     }
-    Ok(cross_frame_context)
+    Ok((cross_frame_context, !signalled))
 }
 
 /// Write a forward inter header referencing the sole previous reconstructed picture.
@@ -415,6 +424,17 @@ fn read_primary_reference(bits: &mut BitReader<'_>) -> Result<bool> {
 /// Rejects unsupported reference refresh, still sequences and invalid frame fields.
 pub fn write_inter(seq: &SequenceHeader, frame: InterHeader) -> Result<Vec<u8>> {
     validate_inter(seq, &frame)?;
+    // What the writer has no syntax for (the parser takes them from other
+    // encoders): implicit references with several distinct pictures in the
+    // slots, a primary reference left to the decoder, screen-content tools.
+    if (!seq.layering.explicit_references && frame.refresh_flags != REFRESH_ALL)
+        || frame.derived_primary
+        || frame.screen_content
+    {
+        return Err(DecodeError::Unsupported(
+            "AV2 implicit references require every slot to refresh",
+        ));
+    }
     let mut bits = BitWriter::new();
     bits.put_bit(true); // first tile group
     bits.put_uvlc(0); // no multi-frame header
@@ -630,6 +650,7 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
             levels: LevelCoding::Plain,
             adaptive_cdf: false,
             cross_frame_context: false,
+            derived_primary: false,
             refresh_flags: REFRESH_ALL,
             reference: seq.layering.explicit_references.then_some(0),
             second_reference: None,
@@ -637,6 +658,7 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
             cdef: CdefParams::OFF,
             ccso: CcsoParams::OFF,
             filter: FrameFilter::Fixed(InterpFilter::Regular),
+            screen_content: false,
             skip_mode: false,
             delta_q: None,
         },
@@ -653,13 +675,14 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
     fixed(&mut bits, 1, 1, "AV2 delayed picture output")?;
     fixed(&mut bits, 0, 1, "AV2 frame size override")?;
     let order_hint = bits.read_bits(u32::from(seq.order_hint_bits))? as u16;
-    let cross_frame_context = read_primary_reference(&mut bits)?;
+    let (cross_frame_context, derived_primary) = read_primary_reference(&mut bits)?;
     let refresh_flags = bits.read_bits(u32::from(REFERENCE_SLOTS))? as u8;
     let (reference, second_reference) = if seq.layering.explicit_references {
         read_reference_map(&mut bits)?
     } else {
         (None, None)
     };
+    let screen_content = read_screen_content(&mut bits, seq)?;
     fixed(&mut bits, 0, 1, "AV2 intra block copy")?;
     fixed(&mut bits, 1, 1, "AV2 non-quarter-pel motion")?;
     let filter = read_frame_filter(&mut bits)?;
@@ -693,6 +716,7 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
         tx_set,
         adaptive_cdf,
         cross_frame_context,
+        derived_primary,
         refresh_flags,
         reference,
         second_reference,
@@ -700,6 +724,7 @@ pub fn parse_inter(seq: &SequenceHeader, payload: &[u8]) -> Result<(InterHeader,
         cdef,
         ccso,
         filter,
+        screen_content,
         skip_mode,
         levels,
         delta_q,
@@ -864,10 +889,12 @@ mod tests {
                     second_reference: None,
                     adaptive_cdf,
                     cross_frame_context: false,
+                    derived_primary: false,
                     deblock: DeblockParams::from_qindex(quantizer),
                     cdef: CdefParams::OFF,
                     ccso: CcsoParams::OFF,
                     filter: FrameFilter::Fixed(InterpFilter::Regular),
+                    screen_content: false,
                     skip_mode: false,
                     delta_q: None,
                 };
@@ -922,6 +949,7 @@ mod tests {
                 levels: LevelCoding::Plain,
                 adaptive_cdf: true,
                 cross_frame_context: false,
+                derived_primary: false,
                 refresh_flags,
                 reference: Some(slot),
                 second_reference: None,
@@ -929,6 +957,7 @@ mod tests {
                 cdef: CdefParams::OFF,
                 ccso: CcsoParams::OFF,
                 filter: FrameFilter::Fixed(InterpFilter::Regular),
+                screen_content: false,
                 skip_mode: false,
                 delta_q: None,
             };
@@ -996,10 +1025,12 @@ mod tests {
             second_reference: None,
             adaptive_cdf: true,
             cross_frame_context: false,
+            derived_primary: false,
             deblock: DeblockParams::from_qindex(120),
             cdef: CdefParams::OFF,
             ccso: CcsoParams::OFF,
             filter: FrameFilter::Fixed(InterpFilter::Regular),
+            screen_content: false,
             skip_mode: false,
             delta_q: None,
         };
@@ -1130,6 +1161,7 @@ mod tests {
                     levels: LevelCoding::Plain,
                     adaptive_cdf: false,
                     cross_frame_context: false,
+                    derived_primary: false,
                     refresh_flags: 255,
                     reference: None,
                     second_reference: None,
@@ -1137,6 +1169,7 @@ mod tests {
                     cdef: CdefParams::OFF,
                     ccso: CcsoParams::OFF,
                     filter: FrameFilter::Fixed(InterpFilter::Regular),
+                    screen_content: false,
                     skip_mode: false,
                     delta_q: None,
                 };
@@ -1145,6 +1178,7 @@ mod tests {
                 let adaptive = InterHeader {
                     adaptive_cdf: true,
                     cross_frame_context: false,
+                    derived_primary: false,
                     ..frame
                 };
                 assert_eq!(

@@ -1465,10 +1465,12 @@ impl CodecBackend for Av2Backend {
                 second_reference: self.second_slot(),
                 adaptive_cdf,
                 cross_frame_context: self.inherits_context,
+                derived_primary: false,
                 deblock: self.deblock,
                 cdef: self.cdef,
                 ccso: self.ccso,
                 filter: self.frame_filter,
+                screen_content: false,
                 skip_mode: self.skip_mode_enabled(),
                 delta_q: self.frame_delta_q(),
             };
