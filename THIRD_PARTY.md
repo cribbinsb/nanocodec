@@ -634,7 +634,12 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   sub-exponential codes from `src/getbits.c`, `block.rs` and `block/`
   from `src/decode.c` (`dav2d_decode_tile_sbrow`, `decode_sb`,
   `decode_b`, `reset_context`), `src/env.h` (partition and intra
-  contexts) and `src/tables.c` (`dav2d_block_dimensions`). The general
+  contexts) and `src/tables.c` (`dav2d_block_dimensions`); `block/palette.rs`
+  from `src/recon_tmpl.c` (`read_pal_plane`, `copy_pal_block_y`),
+  `src/decode.c` (`read_pal_indices`) and `src/pal.c` (`pal_idx_finish`);
+  `block/quantizer_matrices.rs` is generated from `src/quantizer.c`
+  (`qm_tbl_32x16`, `qm_tbl_32x32_t`, `dav2d_init_predefined_qm_tables`) by
+  `tools/codegen/gen_av2_qm_tables.py`. The general
   decoder's CDF defaults (`general/cdfs/defaults.rs`) are AVM v1.0.0's
   (`av2/common/entropy_inits_modes.h`), extracted by
   `tools/codegen/gen_av2_general_cdfs.py`. Where dav2d and AVM v1.0.0

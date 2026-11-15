@@ -202,6 +202,9 @@ impl Tile<'_, '_> {
         transforms: LumaTransforms,
     ) -> Result<()> {
         let (row0, column0) = (record.row, record.column);
+        if modes.palette.size != 0 {
+            self.predict_palette(size, &modes.palette);
+        }
         let (bw4, bh4) = size.units();
         let (w4, h4) = (
             bw4.min(self.geometry.columns - column0),
@@ -303,7 +306,7 @@ impl Tile<'_, '_> {
             let end = (map_column + tw4 as usize).min(LUMA_MAP_SIDE);
             self.luma_type_map[line + map_column..line + end].fill(tx_type as u8);
         }
-        if record.intra && !record.intrabc {
+        if record.intra && !record.intrabc && modes.palette.size == 0 {
             self.predict_luma(record, modes, tx, (y_mode, angle), partition);
         }
         if let Some(residual) = residual

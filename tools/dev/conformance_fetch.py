@@ -1,30 +1,45 @@
 #!/usr/bin/env python3
-"""Fetch an official conformance suite's zips and extract each into its
-own directory, for tools/dev/conformance_manifest.py and
-tools/ci/conformance.py.
+"""Fetch an official conformance suite into one directory per stream, for
+tools/dev/conformance_manifest.py and tools/ci/conformance.py.
 
-The bitstreams are untrusted data: each zip is extracted (member paths
-checked) into ``<data>/streams/<zip name>/`` and nothing in them is
-executed. Zips already fetched or extracted are kept.
+Two kinds of suite:
+- a zip index (JCT-VC): each zip is extracted (member paths checked) into
+  ``<data>/streams/<zip name>/``;
+- a listed set (libaom, libvpx test data): each file named in a list with
+  its SHA-1 and its per-frame ``.md5`` is downloaded from the mirror,
+  checked against both SHA-1s and kept as ``<data>/streams/<name>/``;
+  Matroska/WebM vectors are rewrapped as IVF (tools/conformance/webm_to_ivf.py).
 
-Usage: conformance_fetch.py --suite hevc-v1 [--data DIR]
+The bitstreams are untrusted data: nothing in them is executed. Files
+already fetched or extracted are kept.
+
+Usage: conformance_fetch.py --suite hevc-v1|av1-libaom [--data DIR]
 """
 
 import argparse
+import hashlib
 import os
 import re
+import subprocess
 import sys
 import urllib.request
 import zipfile
 from pathlib import Path
 
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
+ROOT = Path(__file__).resolve().parents[2]
 ITU = "https://www.itu.int"
+AOM_TEST_DATA = "https://storage.googleapis.com/aom-test-data/"
+#: Container rewrap of Matroska/WebM vectors: suffix -> IVF fourcc.
+REWRAP = {".mkv": "AV01", ".webm": "VP90"}
 
-# suite -> (index page listing the zips, data directory).
+# suite -> ("zips", index page listing the zips, data directory) or
+#          ("listed", mirror, list of "sha1 md5-sha1 name" lines, data directory).
 SUITES = {
-    "hevc-v1": (ITU + "/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/",
+    "hevc-v1": ("zips", ITU + "/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/",
                 DATA / "conformance/hevc"),
+    "av1-libaom": ("listed", AOM_TEST_DATA, ROOT / "tools/conformance/av1_manifest.txt",
+                   DATA / "conformance/av1"),
 }
 
 
@@ -57,14 +72,48 @@ def extract(archive: Path, streams: Path) -> Path:
     return target
 
 
+def sha1(path: Path) -> str:
+    return hashlib.sha1(path.read_bytes()).hexdigest()
+
+
+def fetch_listed(mirror: str, listing: Path, data: Path) -> int:
+    """Each listed vector and its .md5 into ``streams/<stem>/``, SHA-1 checked."""
+    count = 0
+    for line in listing.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        digest, md5_digest, name = line.split()
+        stem = Path(name).stem
+        target = data / "streams" / stem
+        target.mkdir(parents=True, exist_ok=True)
+        for file, expected in ((name, digest), (name + ".md5", md5_digest)):
+            path = target / file
+            if not path.exists():
+                with urllib.request.urlopen(mirror + file, timeout=300) as response:
+                    path.write_bytes(response.read())
+            if sha1(path) != expected:
+                path.unlink()
+                raise ValueError(f"{file}: SHA-1 differs from {listing.name}")
+        suffix = Path(name).suffix
+        if suffix in REWRAP and not (target / f"{stem}.ivf").exists():
+            subprocess.run([sys.executable, "-I", str(ROOT / "tools/conformance/webm_to_ivf.py"),
+                            str(target / name), str(target / f"{stem}.ivf"), REWRAP[suffix]],
+                           check=True)
+        count += 1
+    return count
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--suite", choices=sorted(SUITES), required=True)
     parser.add_argument("--data", type=Path, help="override the suite's data directory")
     args = parser.parse_args()
-    index_url, data = SUITES[args.suite]
+    kind, *source, data = SUITES[args.suite]
     data = args.data or data
-    archives = download(index_url, data)
+    if kind == "listed":
+        print(f"{fetch_listed(*source, data)} streams in {data / 'streams'}")
+        return 0
+    archives = download(source[0], data)
     for archive in archives:
         extract(archive, data / "streams")
     print(f"{len(archives)} zips in {data / 'streams'}")

@@ -7,6 +7,8 @@
 //! reset at each superblock row of a tile. Each tool group adds the fields
 //! its contexts read here (docs/handoff/av2.md "The general block layer").
 
+use super::palette::MAX_COLORS;
+
 /// Units of the left edge: one 256x256 superblock.
 pub const LEFT_UNITS: usize = 64;
 
@@ -41,6 +43,11 @@ pub struct Edge {
     pub multi_mrl: Vec<u8>,
     /// The neighbour used data-driven intra prediction.
     pub dip: Vec<u8>,
+    /// The neighbour's luma palette size, 0 without one (dav2d `pal_sz`).
+    pub palette_size: Vec<u8>,
+    /// The neighbour's palette colours, valid only with a size (dav2d
+    /// `al_pal`).
+    pub palette: Vec<[u8; MAX_COLORS]>,
     /// The neighbour's chroma intra mode (per chroma 4x4 unit).
     pub uv_mode: Vec<u8>,
     /// The luma coefficient context of the transform covering the unit:
@@ -74,6 +81,8 @@ impl Edge {
             mrl: vec![0; units],
             multi_mrl: vec![0; units],
             dip: vec![0; units],
+            palette_size: vec![0; units],
+            palette: vec![[0; MAX_COLORS]; units],
             uv_mode: vec![0; units],
             luma_coefficients: vec![NO_COEFFICIENTS; units],
             chroma_coefficients: [vec![NO_COEFFICIENTS; units], vec![NO_COEFFICIENTS; units]],
@@ -97,6 +106,7 @@ impl Edge {
         self.mrl.fill(0);
         self.multi_mrl.fill(0);
         self.dip.fill(0);
+        self.palette_size.fill(0);
         self.uv_mode.fill(0);
         self.luma_coefficients.fill(NO_COEFFICIENTS);
         for plane in &mut self.chroma_coefficients {

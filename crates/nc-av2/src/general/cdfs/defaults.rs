@@ -2490,6 +2490,182 @@ pub(super) static PALETTE_Y: Initial<2> = Initial {
     inverse: [2723, 0],
     rates: [0, 1, 2],
 };
+pub(super) static PALETTE_SIZE: Initial<7> = Initial {
+    inverse: [23989, 17673, 11991, 7865, 4845, 2365, 0],
+    rates: [2, 3, 3],
+};
+pub(super) static PALETTE_IDENTITY: [Initial<3>; 4] = [
+    Initial {
+        inverse: [10253, 7017, 0],
+        rates: [1, 3, 4],
+    },
+    Initial {
+        inverse: [28754, 27535, 0],
+        rates: [1, 2, 3],
+    },
+    Initial {
+        inverse: [29220, 28605, 0],
+        rates: [1, 2, 5],
+    },
+    Initial {
+        inverse: [19769, 12, 0],
+        rates: [0, 2, 3],
+    },
+];
+pub(super) static PALETTE_INDEX2: [Initial<2>; 5] = [
+    Initial {
+        inverse: [4628, 0],
+        rates: [3, 4, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [24186, 0],
+        rates: [2, 2, 3],
+    },
+    Initial {
+        inverse: [5355, 0],
+        rates: [1, 2, 2],
+    },
+    Initial {
+        inverse: [2339, 0],
+        rates: [3, 4, 5],
+    },
+];
+pub(super) static PALETTE_INDEX3: [Initial<3>; 5] = [
+    Initial {
+        inverse: [7418, 3742, 0],
+        rates: [3, 4, 4],
+    },
+    Initial {
+        inverse: [21405, 7495, 0],
+        rates: [2, 2, 2],
+    },
+    Initial {
+        inverse: [25927, 4189, 0],
+        rates: [2, 3, 3],
+    },
+    Initial {
+        inverse: [11418, 6756, 0],
+        rates: [2, 2, 3],
+    },
+    Initial {
+        inverse: [2195, 1122, 0],
+        rates: [3, 4, 5],
+    },
+];
+pub(super) static PALETTE_INDEX4: [Initial<4>; 5] = [
+    Initial {
+        inverse: [9062, 5806, 3708, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [22792, 10252, 5386, 0],
+        rates: [3, 4, 4],
+    },
+    Initial {
+        inverse: [26077, 7308, 3534, 0],
+        rates: [3, 3, 4],
+    },
+    Initial {
+        inverse: [13859, 8843, 4365, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [2460, 1692, 950, 0],
+        rates: [4, 5, 6],
+    },
+];
+pub(super) static PALETTE_INDEX5: [Initial<5>; 5] = [
+    Initial {
+        inverse: [8652, 5811, 4282, 2827, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [23200, 12296, 8474, 3826, 0],
+        rates: [4, 3, 4],
+    },
+    Initial {
+        inverse: [27062, 7525, 4728, 2362, 0],
+        rates: [4, 4, 4],
+    },
+    Initial {
+        inverse: [12663, 9786, 5744, 3857, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [1871, 1426, 1002, 569, 0],
+        rates: [4, 5, 6],
+    },
+];
+pub(super) static PALETTE_INDEX6: [Initial<6>; 5] = [
+    Initial {
+        inverse: [11944, 8541, 6842, 5309, 3502, 0],
+        rates: [4, 4, 5],
+    },
+    Initial {
+        inverse: [24627, 13779, 11169, 6586, 4192, 0],
+        rates: [4, 4, 5],
+    },
+    Initial {
+        inverse: [27516, 8428, 6318, 4330, 2143, 0],
+        rates: [4, 4, 5],
+    },
+    Initial {
+        inverse: [13249, 10073, 7181, 5796, 4345, 0],
+        rates: [3, 3, 4],
+    },
+    Initial {
+        inverse: [2385, 1878, 1521, 1115, 618, 0],
+        rates: [4, 4, 6],
+    },
+];
+pub(super) static PALETTE_INDEX7: [Initial<7>; 5] = [
+    Initial {
+        inverse: [11140, 8256, 6895, 5714, 4637, 3229, 0],
+        rates: [4, 3, 5],
+    },
+    Initial {
+        inverse: [24740, 14504, 12155, 7344, 5656, 3862, 0],
+        rates: [4, 5, 5],
+    },
+    Initial {
+        inverse: [26279, 10526, 8307, 6374, 4418, 2258, 0],
+        rates: [4, 4, 5],
+    },
+    Initial {
+        inverse: [10720, 8339, 5778, 4824, 4351, 3194, 0],
+        rates: [4, 4, 4],
+    },
+    Initial {
+        inverse: [1967, 1563, 1296, 1040, 763, 463, 0],
+        rates: [4, 5, 6],
+    },
+];
+pub(super) static PALETTE_INDEX8: [Initial<8>; 5] = [
+    Initial {
+        inverse: [10297, 7685, 6784, 5875, 5114, 4018, 2865, 0],
+        rates: [4, 5, 6],
+    },
+    Initial {
+        inverse: [25226, 15711, 13617, 9218, 7309, 5702, 3964, 0],
+        rates: [4, 5, 5],
+    },
+    Initial {
+        inverse: [25186, 12331, 10040, 8146, 6253, 4189, 2136, 0],
+        rates: [4, 5, 5],
+    },
+    Initial {
+        inverse: [10666, 8624, 5852, 4617, 3922, 3556, 2615, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [2244, 1881, 1612, 1375, 1142, 857, 487, 0],
+        rates: [4, 5, 6],
+    },
+];
 pub(super) static DIP: [Initial<2>; 3] = [
     Initial {
         inverse: [20854, 0],
@@ -19916,8 +20092,8 @@ pub(super) static BASE_UV_LF: [[Initial<6>; 12]; 4] = [
 ];
 #[cfg(test)]
 pub(super) const TRACE_HASHES: [u64; 4] = [
-    14_988_873_844_558_824_832,
-    11_660_826_000_756_204_994,
-    2_810_529_003_467_769_880,
-    13_628_550_916_001_585_963,
+    10_379_652_267_492_201_218,
+    17_258_097_354_921_925_960,
+    15_049_992_993_784_921_726,
+    2_898_766_552_018_929_041,
 ];

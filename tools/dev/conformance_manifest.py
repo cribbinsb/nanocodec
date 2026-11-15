@@ -32,7 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci"))
 from conformance import SUITES as RUNNER_SUITES, Hashes  # noqa: E402
 
 DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
-BITSTREAM_SUFFIXES = (".bit", ".bin")
+BITSTREAM_SUFFIXES = (".bit", ".bin", ".ivf")
+#: Largest file read for the MD5s a suite ships.
+MAX_SHIPPED_MD5_BYTES = 1 << 20
 CHUNK = 1 << 20
 #: Seconds one reference decode may take.
 REFERENCE_TIMEOUT = 1800
@@ -143,6 +145,105 @@ def probe_vvc(path):
             "frame_bytes": (w * h + chroma_samples) * (2 if depth > 8 else 1)}
 
 
+AV1_PROFILES = {0: "Main", 1: "High", 2: "Professional"}
+AV1_OBU_SEQUENCE_HEADER = 1
+IVF_HEADER_BYTES = 32
+IVF_FRAME_HEADER_BYTES = 12
+
+
+def leb128(data, pos):
+    value = 0
+    for i in range(8):
+        byte = data[pos + i]
+        value |= (byte & 0x7F) << (7 * i)
+        if not byte & 0x80:
+            return value, pos + i + 1
+    raise ValueError("leb128 longer than 8 bytes")
+
+
+def av1_sequence_header(path):
+    """The payload of the first sequence header OBU of an IVF file."""
+    data = path.read_bytes()
+    pos = IVF_HEADER_BYTES
+    while pos + IVF_FRAME_HEADER_BYTES <= len(data):
+        size = int.from_bytes(data[pos:pos + 4], "little")
+        frame, pos = data[pos + IVF_FRAME_HEADER_BYTES:pos + IVF_FRAME_HEADER_BYTES + size], \
+            pos + IVF_FRAME_HEADER_BYTES + size
+        at = 0
+        while at < len(frame):
+            header = frame[at]
+            obu_type, extension, has_size = (header >> 3) & 15, (header >> 2) & 1, (header >> 1) & 1
+            at += 1 + extension
+            length, at = leb128(frame, at) if has_size else (len(frame) - at, at)
+            if obu_type == AV1_OBU_SEQUENCE_HEADER:
+                return frame[at:at + length]
+            at += length
+    return None
+
+
+def probe_av1(path):
+    """Profile, chroma format, depths and maximum frame size from the first
+    sequence header (AV1 §5.5), or None. The per-picture size assumes every
+    picture has the maximum size (streams that resize get whole-output
+    hashes only)."""
+    payload = av1_sequence_header(path)
+    if payload is None:
+        return None
+    r = Bits(payload)
+    profile, _still, reduced = r.u(3), r.u(1), r.u(1)
+    if reduced:
+        r.u(5)
+        decoder_model = initial_delay = False
+    else:
+        decoder_model, delay_bits = False, 0
+        if r.u(1):  # timing_info_present_flag
+            r.u(32), r.u(32)
+            if r.u(1):  # equal_picture_interval: uvlc
+                zeros = 0
+                while not r.u(1):
+                    zeros += 1
+                r.u(zeros)
+            decoder_model = bool(r.u(1))
+            if decoder_model:
+                delay_bits = r.u(5) + 1
+                r.u(32), r.u(5), r.u(5)
+        initial_delay = bool(r.u(1))
+        for _ in range(r.u(5) + 1):
+            r.u(12)
+            if r.u(5) > 7:
+                r.u(1)
+            if decoder_model and r.u(1):
+                r.u(delay_bits), r.u(delay_bits), r.u(1)
+            if initial_delay and r.u(1):
+                r.u(4)
+    width_bits, height_bits = r.u(4) + 1, r.u(4) + 1
+    width, height = r.u(width_bits) + 1, r.u(height_bits) + 1
+    if not reduced and r.u(1):  # frame_id_numbers_present_flag
+        r.u(4), r.u(3)
+    r.u(3)  # use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
+    if not reduced:
+        r.u(4)  # interintra, masked compound, warped motion, dual filter
+        order_hint = r.u(1)
+        if order_hint:
+            r.u(2)
+        force_screen = 2 if r.u(1) else r.u(1)
+        if force_screen and not r.u(1):
+            r.u(1)
+        if order_hint:
+            r.u(3)
+    r.u(3)  # superres, cdef, restoration
+    high = r.u(1)
+    depth = (12 if r.u(1) else 10) if profile == 2 and high else (10 if high else 8)
+    mono = 0 if profile == 1 else r.u(1)
+    sample_bytes = 2 if depth > 8 else 1
+    # Monochrome pictures are output with grey chroma planes too.
+    chroma = ((width + 1) // 2) * ((height + 1) // 2) * 2
+    return {"profile": AV1_PROFILES.get(profile, f"seq_profile {profile}"),
+            "chroma_format": "4:0:0" if mono else "4:2:0" if profile == 0 else "4:4:4 or 4:2:2",
+            "bit_depth": [depth, depth], "width": width, "height": height,
+            "frame_bytes": (width * height + chroma) * sample_bytes}
+
+
 # suite -> (probe, reference decoder command for (bitstream, output path)).
 SUITES = {
     "vvc-v1": (probe_vvc, lambda bitstream, out: [
@@ -150,6 +251,12 @@ SUITES = {
         "-o", str(out), "-d", "0"]),
     "hevc-v1": (probe_hevc, lambda bitstream, out: [
         str(DATA / "anchors/x86_64/bin/TAppDecoder"), "-b", str(bitstream), "-o", str(out), "-d", "0"]),
+    # aomdec --i420 writes each picture at its own depth (16-bit
+    # little-endian beyond 8 bits), monochrome with mid-grey chroma planes
+    # (what libaom's per-frame MD5s hash; --rawvideo would drop them), film
+    # grain applied.
+    "av1-libaom": (probe_av1, lambda bitstream, out: [
+        str(DATA / "anchors/x86_64/bin/aomdec"), "--i420", "-o", str(out), str(bitstream)]),
 }
 
 
@@ -162,7 +269,7 @@ def bitstream(directory):
 def shipped_md5s(directory):
     found = set()
     for p in directory.rglob("*"):
-        if p.is_file() and "md5" in p.name.lower() and p.stat().st_size < 4096:
+        if p.is_file() and "md5" in p.name.lower() and p.stat().st_size < MAX_SHIPPED_MD5_BYTES:
             found.update(re.findall(r"\b[0-9a-fA-F]{32}\b", p.read_text("latin-1")))
     return {m.lower() for m in found}
 
@@ -188,10 +295,14 @@ def reference_hashes(command, frame_bytes):
                                     stderr=subprocess.PIPE, check=False,
                                     timeout=REFERENCE_TIMEOUT).returncode
         finally:
-            # A decoder that failed before opening its output: release the reader.
-            if reader.is_alive():
-                with open(fifo, "wb"):
-                    pass
+            # A decoder that never opened its output leaves the reader
+            # waiting for a writer: open (and close) one without blocking.
+            # When the reader has already finished there is no reader, the
+            # open fails, and nothing is waiting.
+            try:
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
             reader.join()
     return hashes, status
 
@@ -212,11 +323,19 @@ def build_entry(suite, streams, directory):
     if status != 0 and not hashes.frames:
         print(f"skip {directory.name}: reference decoder failed ({status})", file=sys.stderr)
         return directory.name, None
+    frames = hashes.frames
+    agrees = (md5 in shipped or bool(frames) and set(frames) <= shipped) if shipped else None
+    if agrees is False and len(shipped) > 1 and len(frames) != len(shipped):
+        # Per-picture MD5s shipped for pictures whose size changes within
+        # the stream (libaom's resize vectors): the probe's one picture
+        # size does not split the output, so only the whole MD5 is kept.
+        info = {**info, "frame_bytes": None}
+        frames, agrees = [], None
     return directory.name, {
         "name": directory.name, "bitstream": str(path.relative_to(streams)), **info,
-        "md5": md5, "frames": len(hashes.frames), "frame_md5": hashes.frames,
+        "md5": md5, "frames": len(hashes.frames) if frames else None, "frame_md5": frames,
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "shipped_md5_agrees": (md5 in shipped) if shipped else None,
+        "shipped_md5_agrees": agrees,
         **({"reference_status": status} if status else {}),
     }
 

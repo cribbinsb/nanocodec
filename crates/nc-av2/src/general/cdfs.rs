@@ -93,6 +93,24 @@ pub struct Cdfs {
     pub multi_mrl: [Cdf<2>; 3],
     /// Whether a luma block uses a palette (AVM `default_palette_y_mode_cdf`).
     pub palette_y: Cdf<2>,
+    /// The luma palette size less two (AVM `default_palette_y_size_cdf`).
+    pub palette_size: Cdf<7>,
+    /// A palette index row: coded, one repeated index, or a copy of the row before (AVM `default_identity_row_cdf_y[a]`).
+    pub palette_identity: [Cdf<3>; 4],
+    /// A palette color index (palettes of 2 colors) (AVM `default_palette_y_color_index_cdf[0][a]`).
+    pub palette_index2: [Cdf<2>; 5],
+    /// A palette color index, 3 colors (AVM `default_palette_y_color_index_cdf[1][a]`).
+    pub palette_index3: [Cdf<3>; 5],
+    /// A palette color index, 4 colors (AVM `default_palette_y_color_index_cdf[2][a]`).
+    pub palette_index4: [Cdf<4>; 5],
+    /// A palette color index, 5 colors (AVM `default_palette_y_color_index_cdf[3][a]`).
+    pub palette_index5: [Cdf<5>; 5],
+    /// A palette color index, 6 colors (AVM `default_palette_y_color_index_cdf[4][a]`).
+    pub palette_index6: [Cdf<6>; 5],
+    /// A palette color index, 7 colors (AVM `default_palette_y_color_index_cdf[5][a]`).
+    pub palette_index7: [Cdf<7>; 5],
+    /// A palette color index, 8 colors (AVM `default_palette_y_color_index_cdf[6][a]`).
+    pub palette_index8: [Cdf<8>; 5],
     /// Whether a luma block uses data-driven intra prediction (AVM `default_intra_dip_cdf[a]`).
     pub dip: [Cdf<2>; 3],
     /// The data-driven intra prediction mode (AVM `default_intra_dip_mode_n6_cdf`).
@@ -236,6 +254,15 @@ impl Cdfs {
             mrl_index: defaults::MRL_INDEX.map(Initial::build),
             multi_mrl: defaults::MULTI_MRL.map(Initial::build),
             palette_y: defaults::PALETTE_Y.build(),
+            palette_size: defaults::PALETTE_SIZE.build(),
+            palette_identity: defaults::PALETTE_IDENTITY.map(Initial::build),
+            palette_index2: defaults::PALETTE_INDEX2.map(Initial::build),
+            palette_index3: defaults::PALETTE_INDEX3.map(Initial::build),
+            palette_index4: defaults::PALETTE_INDEX4.map(Initial::build),
+            palette_index5: defaults::PALETTE_INDEX5.map(Initial::build),
+            palette_index6: defaults::PALETTE_INDEX6.map(Initial::build),
+            palette_index7: defaults::PALETTE_INDEX7.map(Initial::build),
+            palette_index8: defaults::PALETTE_INDEX8.map(Initial::build),
             dip: defaults::DIP.map(Initial::build),
             dip_mode: defaults::DIP_MODE.build(),
             cfl: defaults::CFL.map(Initial::build),
@@ -376,6 +403,31 @@ impl Cdfs {
             v0.restart_adaptation();
         }
         self.palette_y.restart_adaptation();
+        self.palette_size.restart_adaptation();
+        for v0 in &mut self.palette_identity {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index2 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index3 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index4 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index5 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index6 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index7 {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.palette_index8 {
+            v0.restart_adaptation();
+        }
         for v0 in &mut self.dip {
             v0.restart_adaptation();
         }
@@ -658,6 +710,31 @@ mod tests {
                 trace(v0, &mut hash);
             }
             trace(&mut models.palette_y, &mut hash);
+            trace(&mut models.palette_size, &mut hash);
+            for v0 in &mut models.palette_identity {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index2 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index3 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index4 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index5 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index6 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index7 {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.palette_index8 {
+                trace(v0, &mut hash);
+            }
             for v0 in &mut models.dip {
                 trace(v0, &mut hash);
             }

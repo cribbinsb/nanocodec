@@ -260,6 +260,9 @@ const COEFFICIENT_MAX: u32 = 0x7fff;
 /// size context beyond 2).
 const DEQUANT_ROUNDING: u32 = 4;
 const DEQUANT_SHIFT: u32 = 3;
+/// Quantizer matrix weights are in units of 1/32 (32 is flat).
+const MATRIX_SHIFT: u32 = 5;
+const MATRIX_ROUNDING: u32 = 1 << (MATRIX_SHIFT - 1);
 const DEQUANT_SIZE_CONTEXT_FREE: usize = 2;
 /// Level contexts: the coded sum is capped at 63; the DC sign code sits
 /// in bits 6-7 (0 negative, 1 none, 2 positive).
@@ -413,6 +416,12 @@ impl Tile<'_, '_> {
             dequant_shift: u32::from(self.frame.tcq && !chroma && class == CLASS_2D && !lossless)
                 + DEQUANT_SHIFT
                 + tx.context().saturating_sub(DEQUANT_SIZE_CONTEXT_FREE) as u32,
+            // Identity, Walsh-Hadamard and one-dimensional classes are unweighted.
+            matrix: if class == CLASS_2D && tx_type != IDTX && tx_type != WHT_WHT {
+                self.quantizer_matrix(input.plane, tx)
+            } else {
+                None
+            },
         };
         if self.sequence.transform.fsc && (!input.intra || input.fsc) && tx_type == IDTX && !chroma
         {
@@ -689,6 +698,8 @@ struct LevelState {
     sum: u32,
     dc_sign: u8,
     dequant_shift: u32,
+    /// The quantizer matrix weighting each step (dav2d `qm_tbl`).
+    matrix: Option<&'static [u8]>,
 }
 
 /// The geometry of the level buffer and scan of one class.
@@ -1068,7 +1079,7 @@ impl Tile<'_, '_> {
             } else {
                 HF_MAX_BASE_RANGE
             };
-            let step = input.dequant[1];
+            let step = weighted(input.dequant[1], state.matrix, || scan[i as usize]);
             let value = if token >= max_base_range - tcq_on as i32 {
                 let remainder = self.high_range(*hr_average)?;
                 token += remainder << tcq_on;
@@ -1128,7 +1139,7 @@ impl Tile<'_, '_> {
             );
             sign
         };
-        let step = input.dequant[0];
+        let step = weighted(input.dequant[0], state.matrix, || 0);
         state.dc_sign = if sign { 0 } else { DC_SIGN_POSITIVE };
         let max_base_range = if chroma {
             CHROMA_LF_MAX_BASE_RANGE
@@ -1310,6 +1321,14 @@ impl Tile<'_, '_> {
         let value = (1 << length) + self.reader.literal(length)?;
         Ok(value - (1 << k))
     }
+}
+
+/// A dequantizer step weighted by a quantizer matrix's entry for the
+/// coefficient at `position` (dav2d `ac_dq`, `dc_dq`).
+fn weighted(step: u32, matrix: Option<&[u8]>, position: impl FnOnce() -> u16) -> u32 {
+    matrix.map_or(step, |matrix| {
+        (step * u32::from(matrix[usize::from(position())]) + MATRIX_ROUNDING) >> MATRIX_SHIFT
+    })
 }
 
 /// A dequantized magnitude with its sign, as dav2d's 16-bit store.

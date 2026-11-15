@@ -27,8 +27,10 @@ macro_rules! trace {
 mod coefficients;
 pub mod context;
 mod intra;
+mod palette;
 mod partition;
 pub mod pixels;
+mod quantizer_matrices;
 mod reconstruction;
 pub mod record;
 pub mod size;
@@ -50,6 +52,7 @@ use nc_common::decode::{DecodeError, Result};
 use pixels::Planes;
 use reconstruction::ChromaResiduals;
 use size::BlockSize;
+use transform::TxSize;
 
 /// Receives the block layer's trace lines, in dav2d's `DEBUG_BLOCK_INFO`
 /// format (one call per line, without the newline).
@@ -141,6 +144,10 @@ struct Tile<'a, 't> {
     u_has_coefficients: bool,
     /// The frame being reconstructed.
     planes: Planes,
+    /// The current palette block's index map, unpacked and packed (dav2d
+    /// `scratch.pal_idx_y`).
+    palette_map: Vec<u8>,
+    palette_indices: Vec<u8>,
     /// Intra prediction's edge buffer (dav2d `scratch.edge`).
     edge: Vec<u8>,
     trace: Option<BlockTrace<'t>>,
@@ -216,6 +223,8 @@ pub fn decode_tile(
         scans: Rc::new(Scans::new()),
         u_has_coefficients: false,
         planes: Planes::new(geometry.columns, geometry.rows, geometry.superblock_units),
+        palette_map: Vec::with_capacity(palette::MAX_SIDE * palette::MAX_SIDE),
+        palette_indices: Vec::with_capacity(palette::PACKED_INDICES),
         edge: vec![0; nc_dsp::av2_dec::ipred::EDGE_LEN],
         trace,
     };
@@ -340,6 +349,20 @@ fn delta_qindex(qindex: i32, delta: i32) -> i32 {
 }
 
 impl Tile<'_, '_> {
+    /// The quantizer matrix of a plane's transforms of size `tx`, when the
+    /// frame weights that plane (dav2d `f->qm[tx][plane]`: the first
+    /// set's levels; level 15 is flat).
+    fn quantizer_matrix(&self, plane: usize, tx: TxSize) -> Option<&'static [u8]> {
+        use quantizer_matrices::{MATRICES, MAX_SIDE_LOG2, OFFSETS};
+        let matrices = self.frame.quantizer.matrices?;
+        let level = [matrices.y, matrices.u, matrices.v][plane][0];
+        let tables = MATRICES.get(usize::from(level))?;
+        let (w, h) = (tx.w.min(MAX_SIDE_LOG2), tx.h.min(MAX_SIDE_LOG2));
+        let offset = usize::from(OFFSETS[usize::from(w)][usize::from(h)]);
+        let entries = 1 << (2 * UNIT_LOG2 + u32::from(w + h));
+        Some(&tables[usize::from(plane > 0)][offset..offset + entries])
+    }
+
     /// The DC and AC steps of each plane at superblock quantizer `qindex`
     /// (dav2d `init_quant_tables`, one segment).
     fn dequantizers(&self, qindex: u16) -> [[u32; 2]; 3] {

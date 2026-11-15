@@ -8,6 +8,7 @@
 //! the contexts later blocks read.
 use super::Tile;
 use super::context::{self, NO_DIRECTION};
+use super::palette::Palette;
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::syntax::Neighbour;
@@ -72,6 +73,8 @@ pub struct IntraModes {
     pub cfl_type: CflType,
     pub cfl_alpha: [i8; 2],
     pub mhccp_direction: u8,
+    /// The luma palette (size 0 without one).
+    pub palette: Palette,
     /// The luma directional mode index, [`NO_DIRECTION`] if none.
     pub direction: u8,
     /// Whether the above / left luma and chroma neighbours use a smooth
@@ -512,8 +515,9 @@ impl Tile<'_, '_> {
         Ok(())
     }
 
-    /// The palette flag (palettes themselves are not built yet) and
-    /// data-driven intra prediction of a DC luma block.
+    /// The palette (its colours; the index map comes after data-driven
+    /// intra prediction's syntax) and data-driven intra prediction of a DC
+    /// luma block.
     fn palette_and_dip(
         &mut self,
         depth: usize,
@@ -528,12 +532,14 @@ impl Tile<'_, '_> {
             && bw4 + bh4 >= PALETTE_MIN_UNIT_SUM
         {
             if self.bool(|m| &mut m.palette_y)? {
-                return Err(DecodeError::Unsupported("AV2 palettes"));
+                modes.palette = self.palette_colors(depth)?;
+            } else {
+                let range = self.reader.range();
+                trace!(self, depth, "Post-ypal[0]: r={range}");
             }
-            let range = self.reader.range();
-            trace!(self, depth, "Post-ypal[0]: r={range}");
         }
         if modes.y_mode == mode::DC
+            && modes.palette.size == 0
             && self.sequence.intra.dip
             && bw4.min(bh4) >= DIP_MIN_SIDE
             && bw4 * bh4 >= DIP_MIN_UNITS
@@ -555,6 +561,11 @@ impl Tile<'_, '_> {
                 dip >> DIP_TRANSPOSE_SHIFT,
                 (dip.saturating_sub(1)) & 7
             );
+        }
+        if modes.palette.size != 0 {
+            self.palette_index_map(size, usize::from(modes.palette.size))?;
+            let range = self.reader.range();
+            trace!(self, depth, "Post-y-pal-indices: r={range}");
         }
         Ok(())
     }
@@ -591,6 +602,7 @@ impl Tile<'_, '_> {
                 u8::from(modes.mrl_index != 0),
                 u8::from(modes.multi_mrl),
                 u8::from(modes.dip != 0),
+                modes.palette.size,
             ];
             for (edge, start, count) in [
                 (&mut self.contexts.above, column, bw4),
@@ -604,8 +616,12 @@ impl Tile<'_, '_> {
                     (&mut edge.mrl, values[3]),
                     (&mut edge.multi_mrl, values[4]),
                     (&mut edge.dip, values[5]),
+                    (&mut edge.palette_size, values[6]),
                 ] {
                     field[start..end].fill(value);
+                }
+                if modes.palette.size != 0 {
+                    edge.palette[start..end].fill(modes.palette.colors);
                 }
             }
             if self.sequence.partition.separate_trees && record.chroma.is_none() {

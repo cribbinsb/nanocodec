@@ -172,6 +172,10 @@ impl Tile<'_, '_> {
             ] {
                 field[start..end].fill(value);
             }
+            // Intra blocks record their palette with their modes.
+            if !record.intra || record.intrabc {
+                edge.palette_size[start..end].fill(0);
+            }
         }
     }
 

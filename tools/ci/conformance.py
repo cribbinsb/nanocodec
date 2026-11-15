@@ -41,6 +41,7 @@ DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
 SUITES = {
     "hevc-v1": ("hevc", ROOT / "tools/ci/hevc_conformance_v1.json", DATA / "conformance/hevc/streams"),
     "vvc-v1": ("vvc", ROOT / "tools/ci/vvc_conformance_v1.json", DATA / "conformance/vvc/streams"),
+    "av1-libaom": ("av1", ROOT / "tools/ci/av1_conformance_libaom.json", DATA / "conformance/av1/streams"),
 }
 
 CHUNK = 1 << 20
@@ -187,9 +188,14 @@ def main() -> int:
         for future in concurrent.futures.as_completed(futures):
             results[futures[future]["name"]] = future.result()
     passed = 0
+    by_depth = {}
+    depth_of = {e["name"]: max(e.get("bit_depth", [8, 8])) for e in entries}
     for name in sorted(results, key=str.lower):
         r = results[name]
         passed += r["status"] == "pass"
+        tally = by_depth.setdefault(depth_of[name], [0, 0])
+        tally[0] += r["status"] == "pass"
+        tally[1] += 1
         line = f"{r['status']:8} {name:40} {r['seconds']:7.2f}s"
         if r["status"] != "pass":
             if "first_wrong_picture" in r:
@@ -197,7 +203,8 @@ def main() -> int:
             if r["error"]:
                 line += "  " + r["error"]
         print(line)
-    print(f"{args.suite}: {passed}/{len(results)} streams match the reference decoder")
+    depths = ", ".join(f"{bits}-bit {n}/{m}" for bits, (n, m) in sorted(by_depth.items()))
+    print(f"{args.suite}: {passed}/{len(results)} streams match the reference decoder ({depths})")
     if args.json:
         args.json.write_text(json.dumps(results, indent=1, sort_keys=True) + "\n")
     return 0 if passed == len(results) else 1
