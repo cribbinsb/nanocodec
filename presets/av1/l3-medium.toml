@@ -29,5 +29,3 @@ structure.unified = 0
 # bodycam clips gain 9-12%, the others are unchanged.
 # Pinned before AV1 Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
-# Pinned before AV1 Default's inheritance-sized key boost (2026-11-15).
-rate.key_inherit = 0

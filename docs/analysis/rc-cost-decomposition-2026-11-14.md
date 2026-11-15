@@ -544,3 +544,35 @@ on the codecs at 4):
 So no shared default: the start-up boost stays per codec (AV1, VP9, H.264 at 4; HEVC, VVC at 6; AV2 at 5).
 The codec reason is not known; it is the next candidate for the shared-vs-specific audit, not tuned further
 here (owner, 2026-11-15: tuning wound down).
+
+### `rate.key_inherit` reverted and deleted (2026-11-15)
+
+The combined final-check 478e8249 → 556e6550 (600 f, keys every 10 s) tripped the periodic-key pulse guard:
+HEVC +1.61 dB and AV2 +0.68 dB, against a +0.25 limit. My pulse checks had used keys every 2 s, where the
+lifetime scaling cut the boost to a fifth; at 10 s it applied in full.
+
+Pulse bisect at keys every 10 s, 600 f, 5 long clips: the mean jump of each key's PSNR-Y over the P frames
+before it, in dB.
+
+| Codec | Off | On |
+|---|---|---|
+| HEVC | +0.14 | +1.84 (+2.53 with key boost 6) |
+| AV2 | +0.15 | +1.52 |
+| AV1 | −0.41 | +1.84 |
+| VVC | +0.38 | +2.72 |
+
+Reverted in c5238616, together with HEVC's key boost 6 (a497b590). The final-check 478e8249 → 1167f048 then
+read HEVC pulse +0.00 dB and AV2 −0.36 dB, with no guard.
+
+Capped versions (the inherited share at 0.15 or 0.30 of the boost, about 1 or 2 QP), keys every 10 s, the 5
+clips plus a pan clip, pulse change against off:
+
+| Share | HEVC mean / worst clip | AV1 mean / worst clip |
+|---|---|---|
+| 0.15 | +0.12 / +0.72 | +0.23 / +0.43 |
+| 0.30 | +0.48 / +0.72 | +0.59 / +1.06 |
+
+**Deleted.** A cap holds the mean pulse only at about 1/7 of the lever's strength, and the worst clip still
+pulses visibly (+0.72 dB at 0.15). The J gain came from the finer key itself (crowd −2.5..−3.0%), so it cannot
+be kept without the pulse. The lever, its lifetime and the preset pins are removed. The cache-name guard
+(11668b8a) stays.

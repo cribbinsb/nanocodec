@@ -59,7 +59,7 @@ const AVERAGE_WEIGHT: f64 = 0.1;
 /// where nothing inherited it, and the 12 frames after it ran 1.5 to
 /// 1.7 dB below the Default (HEVC, `pool_jaad_0110`, 150 kbps: the worst
 /// 4-frame window 22.06 against 22.92 dB).
-pub(crate) const MIN_DEPTH: f64 = 0.25;
+const MIN_DEPTH: f64 = 0.25;
 
 /// The tier of a coded frame, as the measure reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
