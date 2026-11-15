@@ -24,8 +24,9 @@ delay, you may be in the right place:
   format. The H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit) and VP9 (profile 0) decoders pass the
   conformance streams we test, so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
-  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). VVC decoding is partial and the AV2
-  decoder handles our own streams only.
+  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine
+  official 8-bit conformance streams (it is 8-bit only, so not a complete Main 10 decoder); the AV2 decoder
+  has only been tested on our own streams.
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
   1 s buffer); 720p at real-time speed on one Jetson Orin core for every format's `medium` preset except VVC,
   which runs just under it (VVC `fast` is above); figures in [Headline results](#headline-results).
