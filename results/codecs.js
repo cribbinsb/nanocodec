@@ -58,9 +58,6 @@ async function main() {
   try {
     const data = await loadData('chart');
     root.querySelector('.controls').append(
-      control('Zero line', segmented('Zero line', [
-        { value: TUNED_ZERO, label: 'x264 medium, --tune psnr' }, { value: 'x264-medium', label: 'x264 medium, default' },
-      ], state.zero, (v) => { state.zero = v; render(data, root); })),
       control('Metric', segmented('Metric', ['j', 'psnr', 'vmaf'].map((m) => ({ value: m, label: METRIC_SHORT[m] })),
         state.metric, (v) => { state.metric = v; render(data, root); })),
     );
