@@ -621,6 +621,19 @@ impl CodecBackend for VvcBackend {
         // -0.0% (instructions +0.7%). static_recovery passes. The other VVC
         // presets pin it off.
         ("structure.inherited_depth", 1.0),
+        // The unified structure's reference plan (`structure.unified`,
+        // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
+        // (key, cadence base) also predict from the high-quality frame before
+        // them where the cadence strength is 0.75 or more. Build ea7d2a93,
+        // pool levels of draw 2026-11-15 (before the depth above): L1 -0.73%
+        // [-1.46, +0.08]; L2 -0.73% [-1.17, -0.28]; L3 (ladder, 126 clips) J
+        // -0.76% [-1.17, -0.33], no guard (lowlight -2.0%, crowd -1.6%, static
+        // -1.0%, pan -0.4%, bodycam -0.3%). Jetson cycles, with the depth on
+        // in both arms: +0.6% (lowlight +0.7, crowd +1.5, bodycam -0.3),
+        // instructions +0.5%. Landing conformance with it on: every stream
+        // bit-exact in VVdeC, ffmpeg and ours. The other VVC presets pin it
+        // off.
+        ("structure.unified", 1.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         // Re-tuned 2026-11-13 as a CPU cut at equal quality (CPU-capped study
         // vvc-default-speed-2026-11-13, trial #2): mode-decision lambda 0.8 ->
@@ -823,7 +836,12 @@ impl CodecBackend for VvcBackend {
             crate::coding_tree::Partitioning::of_mode(params.mtt.round() as u8, ctu_log2);
         let geometry = headers::Geometry::new(config.width, config.height, ctu_log2)
             .with_partitioning(partitioning);
-        let second_reference = nc_encoder::uses_long_term_slot(&config.params);
+        // The reference picture lists hold a second reference in flat
+        // streams only (`references.rs`): beside temporal layers the engine
+        // refuses `refs.second` and its plan steps aside, so nothing is
+        // listed for the long-term slot.
+        let second_reference =
+            nc_encoder::uses_long_term_slot(&config.params) && config.temporal_layers == 1;
         let tools = params.tools().with_second_reference(second_reference);
         let trellis = crate::trellis::TrellisQuant::from_params(
             &nc_encoder::QuantParams::from_overrides(&config.params),

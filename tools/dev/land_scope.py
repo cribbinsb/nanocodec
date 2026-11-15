@@ -52,6 +52,10 @@ stdout, one `key value...` line per key, which land.sh reads:
                                      crate nc-web embeds (2026-11-15: ~14 min a
                                      verify, for codec changes the native tests and
                                      the conformance check already cover)
+    eval_skip <file>...              eval test files to leave out: the landing,
+                                     queue and scheduler tests (EVAL_SCOPED_TESTS),
+                                     slow and load-sensitive, run only when their
+                                     own code or test file changed
     checkasm 0 | 1                   run nc-checkasm's SIMD-vs-scalar check: only
                                      when nc-dsp, nc-common or nc-checkasm itself
                                      changed
@@ -109,6 +113,29 @@ CODEC_CRATES = {"nc-h264": "h264", "nc-hevc": "hevc", "nc-vvc": "vvc", "nc-av1":
 #: Crates that reach nc-cli without coding any stream (their changes cannot
 #: alter one): only the browser module, the C API and the kernel tests.
 NON_STREAM_CRATES = {"nc-web", "nc-capi", "nc-checkasm"}
+#: Eval test files that test the landing, queue and scheduling machinery, and
+#: the paths whose change runs each: at load 60 they timed out and refused
+#: unrelated landings (a VVC preset change, twice, 2026-11-15).
+EVAL_SCOPED_TESTS = {
+    "test_land_train.py": ("tools/dev/land.sh", "tools/dev/cargo-capped.sh"),
+    "test_land_guard.py": ("tools/dev/land_guard.py",),
+    "test_land_scope.py": ("tools/dev/land_scope.py", "tools/dev/check_docs.py"),
+    "test_streaming.py": ("eval/nceval/slots.py", "eval/nceval/framepipe.py",
+                          "eval/nceval/point.py"),
+    "test_cache_concurrency.py": ("eval/nceval/cachefile.py",),
+    "test_gpuserve.py": ("eval/nceval/gpuserve.py",),
+    "test_diskguard.py": ("eval/nceval/diskguard.py",),
+}
+
+
+def eval_skipped(changed, full):
+    """The scoped eval test files none of whose paths (nor the file) changed."""
+    if full:
+        return []
+    return sorted(test for test, paths in EVAL_SCOPED_TESTS.items()
+                  if f"eval/tests/{test}" not in changed and not set(paths) & set(changed))
+
+
 #: Crates whose direct change runs the SIMD-vs-scalar kernel check.
 KERNEL_CRATES = {"nc-common", "nc-dsp", "nc-checkasm"}
 #: Crates whose direct change runs the browser module's builds and node tests.
@@ -294,7 +321,8 @@ def plan_for_paths(root, changed):
     conformance = conformance_codecs(changed, affected, full)
     out = [("rust", rust), ("eval", [str(int(eval_tests))]), ("web", [str(int(web))]),
            ("page", [str(int(page or full))]), ("conformance", conformance),
-           ("checkasm", [str(int(checkasm))])]
+           ("checkasm", [str(int(checkasm))]),
+           ("eval_skip", eval_skipped(changed, full))]
     out += [(key, files) for key, files in lists.items()]
     return "\n".join(" ".join([key, *values]) for key, values in out)
 

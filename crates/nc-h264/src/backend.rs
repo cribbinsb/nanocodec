@@ -1780,6 +1780,12 @@ impl CodecBackend for H264Backend {
         ("h264.keyframe_qp_offset", 8.0),
     ];
 
+    /// The high-quality picture is the long-term one beside the layer
+    /// pattern's short-term pictures (`references.rs`, "Second reference"):
+    /// both list entries are placed with explicit commands (§8.2.4.3), and
+    /// every picture that carries it is a T0 picture or in a flat mini-GOP.
+    const SECOND_REFERENCE_WITH_LAYERS: bool = true;
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)

@@ -20,7 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPTS = ("tools/dev/land.sh", "tools/dev/cargo-capped.sh")
 #: The plan every candidate gets: the stub check.sh only (land_scope.py format).
 PLAN = "rust all\\neval 0\\nweb 0\\nconformance 0\\ndocs\\npython\\nshell\\ntoml\\nfuzz"
-QUEUE_TIMEOUT_SECONDS = 60
+QUEUE_TIMEOUT_SECONDS = 300
 
 
 def git(cwd: Path, *args: str) -> str:

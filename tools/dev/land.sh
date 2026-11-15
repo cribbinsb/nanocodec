@@ -538,7 +538,9 @@ python_checks() {
     fi
     if [[ "${p[eval]}" == 1 && $mode != fast ]]; then
         (cd eval && timed "eval tests (${pytest_parallel[*]:-serial})" \
-            python3 -m pytest -q -p no:cacheprovider "${pytest_parallel[@]}" tests) || return 1
+            python3 -m pytest -q -p no:cacheprovider "${pytest_parallel[@]}" tests \
+                $(for skipped in ${p[eval_skip]:-}; do printf -- '--ignore=tests/%s ' "$skipped"; done)) ||
+            return 1
     fi
 }
 

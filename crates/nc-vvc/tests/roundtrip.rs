@@ -489,6 +489,8 @@ fn second_reference_returns_to_the_key_and_decodes_exactly() {
     for second in [0., 1.] {
         let mut c = config(w, h, 30);
         c.intra_period = 1000;
+        // Against a stream without the Default's reference plan.
+        c.params.set("structure.unified", 0.0);
         c.params.set("refs.second", second);
         let mut encoder = Encoder::<VvcBackend>::new(c).unwrap();
         let mut decoder = Decoder::new();

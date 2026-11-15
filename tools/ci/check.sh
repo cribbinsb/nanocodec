@@ -69,7 +69,11 @@ step "clippy (host): ${crates:-workspace}"
 cargo clippy "${selection[@]}" --all-targets -- -D warnings
 
 step "tests: ${crates:-workspace}"
-cargo test "${selection[@]}" --quiet
+# The gate profile (optimised, no LTO), not the test profile: its library builds are
+# the ones checkasm, conformance and the browser module already build, and a
+# one-crate change re-tests in 30 s against 68 s at opt-level 1 (2026-11-15, -j8).
+# Debug assertions and overflow checks are off there; clippy and fuzzing keep them.
+cargo test "${selection[@]}" --profile gate --quiet
 
 # land.sh sets NC_CHECKASM=0 when no kernel crate changed (tools/dev/land_scope.py).
 if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then

@@ -102,3 +102,5 @@ rate.key_still_boost = 0
 rate.fixed_qp_profile = 0
 # Pinned before VVC Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
+# Pinned before VVC Default's reference plan (2026-11-15).
+structure.unified = 0
