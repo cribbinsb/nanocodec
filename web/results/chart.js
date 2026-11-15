@@ -122,7 +122,7 @@ export function drawScatter(container, points, opts) {
   }
   root.append(links);
 
-  // Pareto frontiers, under the marks: a step line per group.
+  // Pareto frontiers, under the marks: a line through each group's frontier points.
   const fronts = svg('g', { class: 'frontiers' });
   for (const f of opts.frontiers || []) {
     if (f.line.length > 1) {

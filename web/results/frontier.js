@@ -14,14 +14,9 @@ export function paretoFront(points) {
     .sort((a, b) => a.x - b.x || a.y - b.y);
 }
 
-/** The frontier as a step line, [[x, y], ...] slowest first: at each point it first
- * rises to the next point's value (the best a faster encoder reaches), then runs on
- * to that point. */
-export function stepLine(front) {
-  const line = [];
-  front.forEach((p, i) => {
-    if (i) line.push([front[i - 1].x, p.y]);
-    line.push([p.x, p.y]);
-  });
-  return line;
+/** The frontier as a line, [[x, y], ...] slowest first, straight from one frontier
+ * point to the next (a reading aid: presets are discrete, so the points between
+ * two frontier points are not themselves reachable). */
+export function frontierLine(front) {
+  return front.map((p) => [p.x, p.y]);
 }
