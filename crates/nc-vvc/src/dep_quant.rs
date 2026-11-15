@@ -88,7 +88,7 @@ fn candidates(state: u8, magnitude: f32) -> [u16; 3] {
 #[allow(clippy::too_many_arguments, reason = "one block's complete inputs")]
 pub(crate) fn quantize(
     search: &DepQuant<'_>,
-    coefficients: &[i32],
+    coefficients: &[i16],
     quantizer: &VvcQuantizer,
     qp: u32,
     levels: &mut [i32],
@@ -194,7 +194,7 @@ fn backtrack(
     cost: &[f32; STATES],
     unstarted: f32,
     scan: &[usize],
-    coefficients: &[i32],
+    coefficients: &[i16],
     levels: &mut [i32],
 ) -> bool {
     let Some(mut state) = (0..STATES)
@@ -254,7 +254,7 @@ mod tests {
         };
         let sides = (64, 64);
         let quantizer = VvcQuantizer::rect(0, 6, 6);
-        let mut coefficients = [0i32; MAX_SAMPLES];
+        let mut coefficients = [0i16; MAX_SAMPLES];
         coefficients[0] = 32640;
         let mut levels = [0i32; MAX_SAMPLES];
         assert!(quantize(

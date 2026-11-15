@@ -8,16 +8,17 @@
 use core::arch::aarch64::{
     int16x4_t, int16x8_t, int32x4_t, uint16x8_t, vaddl_s16, vaddq_s16, vaddq_s32, vaddv_u8,
     vandq_u8, vcombine_s16, vcombine_u8, vdupq_n_s32, vget_high_s16, vget_high_u8, vget_low_s16,
-    vget_low_u8, vld1q_s16, vld1q_s32, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_n_s16, vmlaq_n_s16,
-    vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_s32, vqshlq_s32, vreinterpretq_s16_s32,
+    vget_low_u8, vld1q_s16, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_n_s16, vmlaq_n_s16, vmovn_u16,
+    vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_s32, vqshlq_s32, vreinterpretq_s16_s32,
     vreinterpretq_s16_s64, vreinterpretq_s32_s16, vreinterpretq_s64_s16, vrshlq_s32, vrshrq_n_s32,
-    vshlq_n_s16, vshlq_n_s32, vst1_s16, vst1q_s16, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16,
-    vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64, vzip2q_s64,
+    vshlq_n_s16, vshlq_n_s32, vst1q_s16, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16, vtrn1q_s32,
+    vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64, vzip2q_s64,
 };
 
 use super::generic::{H264Forward8x8, HEVC_DEQUANT_LEVEL_LIMIT};
 use super::{H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer};
 use crate::simd::neon::I32x4;
+use crate::txfm::neon::Lanes;
 use crate::txfm::neon_forward::transpose;
 
 mod wide {
@@ -37,6 +38,7 @@ pub(crate) fn codec_txfm_fns() -> super::CodecTxfmFns {
     table.hevc_forward_bounded[2] = staged16_bounded;
     table.hevc_forward_bounded[3] = staged32_bounded;
     table.hevc_dequantize = hevc_dequantize;
+    table.vvc_dequantize = vvc_dequantize;
     table.h264_forward_8x8 = h264_forward_8x8;
     table.h264_forward_4x4 = h264_forward_4x4;
     table.h264_forward_quantize_mb = h264_forward_quantize_mb;
@@ -324,24 +326,46 @@ const DEQUANT_STEP: usize = 16;
 /// was latency-bound: each step was one serial 9-instruction chain behind
 /// four slice bounds checks. The ragged tail uses the generic kernel.
 #[target_feature(enable = "neon")]
-unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
+unsafe fn hevc_dequantize(levels: &[i16], q: &HevcQuantizer, out: &mut [i16]) {
+    // SAFETY: the caller's contract is forwarded.
+    unsafe { dequantize_levels(levels, q, out) }
+}
+
+/// [`hevc_dequantize`] of VVC's 32-bit levels.
+#[target_feature(enable = "neon")]
+unsafe fn vvc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
+    // SAFETY: the caller's contract is forwarded.
+    unsafe { dequantize_levels(levels, q, out) }
+}
+
+/// The HEVC scaling of levels stored as `L`, 16 per step, the generic
+/// kernel on the rest.
+#[target_feature(enable = "neon")]
+unsafe fn dequantize_levels<L: Lanes + super::generic::Element>(
+    levels: &[L],
+    q: &HevcQuantizer,
+    out: &mut [i16],
+) {
     let scaler = HevcScaler::new(q);
     let n = levels.len();
     let (src, _) = levels.as_chunks::<DEQUANT_STEP>();
     let (dst, _) = out[..n].as_chunks_mut::<DEQUANT_STEP>();
     for (s, d) in src.iter().zip(dst) {
-        for k in (0..DEQUANT_STEP).step_by(4) {
-            // SAFETY: `k + 4 <= 16` values of each chunk.
+        for k in (0..DEQUANT_STEP).step_by(8) {
+            // SAFETY: `k + 8 <= 16` values of each chunk.
             unsafe {
-                let value = scaler.value(vld1q_s32(s.as_ptr().add(k)));
-                vst1_s16(d.as_mut_ptr().add(k), value);
+                let (low, high) = L::load8(s.as_ptr().add(k));
+                vst1q_s16(
+                    d.as_mut_ptr().add(k),
+                    vcombine_s16(scaler.value(low), scaler.value(high)),
+                );
             }
         }
     }
     let done = src.len() * DEQUANT_STEP;
     // SAFETY: NEON is enabled for this function.
     unsafe {
-        super::generic::hevc_dequantize::<crate::simd::neon::I32x4>(
+        super::generic::hevc_dequantize::<crate::simd::neon::I32x4, L>(
             &levels[done..],
             q,
             &mut out[done..n],
@@ -400,7 +424,7 @@ unsafe fn staged16_bounded(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     use super::generic::{self as g, HevcFdct16};
@@ -421,7 +445,7 @@ unsafe fn staged32_bounded(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     use super::generic::{self as g, HevcFdct32};
@@ -511,8 +535,15 @@ mod tests {
                     let mut actual = expected.clone();
                     // SAFETY: NEON is mandatory on AArch64; outputs cover the levels.
                     unsafe {
-                        (reference.hevc_dequantize)(&levels, &q, &mut expected);
-                        hevc_dequantize(&levels, &q, &mut actual);
+                        (reference.vvc_dequantize)(&levels, &q, &mut expected);
+                        vvc_dequantize(&levels, &q, &mut actual);
+                    }
+                    assert_eq!(actual, expected, "qp {qp} log2 {log2} len {len}");
+                    let narrow: Vec<i16> = levels.iter().map(|&l| l as i16).collect();
+                    // SAFETY: as above.
+                    unsafe {
+                        (reference.hevc_dequantize)(&narrow, &q, &mut expected);
+                        hevc_dequantize(&narrow, &q, &mut actual);
                     }
                     assert_eq!(actual, expected, "qp {qp} log2 {log2} len {len}");
                 }
@@ -537,8 +568,8 @@ mod tests {
                 let mut actual = expected.clone();
                 // SAFETY: NEON is mandatory on AArch64; outputs cover the levels.
                 unsafe {
-                    (reference.hevc_dequantize)(&levels, &q, &mut expected);
-                    hevc_dequantize(&levels, &q, &mut actual);
+                    (reference.vvc_dequantize)(&levels, &q, &mut expected);
+                    vvc_dequantize(&levels, &q, &mut actual);
                 }
                 assert_eq!(actual, expected, "qp {qp} log2 {log2}");
             }

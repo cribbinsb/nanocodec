@@ -4,7 +4,7 @@
 //! `vvc_forward` (`VVenC` `TrQuant::xT`, BSD-3-Clause-Clear; `THIRD_PARTY.md`).
 //! Partial butterflies reduce products but retain odd-frequency dot products.
 
-use super::generic::{HevcFdct8, HevcFdct16, HevcFdct32, Line};
+use super::generic::{Element, HevcFdct8, HevcFdct16, HevcFdct32, Line};
 use crate::simd::I32Lanes;
 
 const MAX_SIDE: usize = 32;
@@ -16,9 +16,10 @@ const SINGLE_ROW_GAIN: i32 = 2 * BASIS_GAIN;
 /// Legal narrow shapes have one side 1/2, area 16..64 and long side 8/16/32.
 /// With 8-bit residuals, narrow row results are at most 32640 in magnitude;
 /// even the conservative long-pass bound 32*90*32640 fits i32. No clipping
-/// or change in rounding is needed, including for negative half-way values.
+/// or change in rounding is needed, including for negative half-way values;
+/// the outputs, at most 32640 (`vvc_forward` module docs), narrow exactly.
 #[inline(never)]
-pub(super) fn forward(width: usize, height: usize, input: &[i16], out: &mut [i32]) {
+pub(super) fn forward(width: usize, height: usize, input: &[i16], out: &mut [i16]) {
     super::vvc_forward::check(width, height, input.len(), out.len());
     assert!(width.min(height) <= 2);
     let area = width * height;
@@ -46,7 +47,7 @@ pub(super) fn forward(width: usize, height: usize, input: &[i16], out: &mut [i32
                 &mut y[..height],
             );
             for (r, &value) in y[..height].iter().enumerate() {
-                out[r * width + c] = value.round_shift(height.ilog2() + 6);
+                out[r * width + c] = i16::saturate(value.round_shift(height.ilog2() + 6));
             }
         }
     } else {
@@ -62,13 +63,15 @@ pub(super) fn forward(width: usize, height: usize, input: &[i16], out: &mut [i32
         }
         if height == 1 {
             // The sole column basis value 64, followed by shift 6, is identity.
-            out.copy_from_slice(&intermediate[..width]);
+            for (o, &value) in out.iter_mut().zip(&intermediate[..width]) {
+                *o = i16::saturate(value);
+            }
         } else {
             let (upper, lower) = out.split_at_mut(width);
             for c in 0..width {
                 let (a, b) = (intermediate[c], intermediate[width + c]);
-                upper[c] = (BASIS_GAIN * (a + b)).round_shift(7);
-                lower[c] = (BASIS_GAIN * (a - b)).round_shift(7);
+                upper[c] = i16::saturate((BASIS_GAIN * (a + b)).round_shift(7));
+                lower[c] = i16::saturate((BASIS_GAIN * (a - b)).round_shift(7));
             }
         }
     }

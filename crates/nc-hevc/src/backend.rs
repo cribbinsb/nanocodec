@@ -638,8 +638,8 @@ impl EarlyMergeHint {
 #[derive(Debug)]
 struct Scratch {
     residual: Box<[i16; MAX_COEFFS]>,
-    levels: Box<[i32; MAX_COEFFS]>,
-    coeffs: Box<[i32; MAX_COEFFS]>,
+    levels: Box<[i16; MAX_COEFFS]>,
+    coeffs: Box<[i16; MAX_COEFFS]>,
     scaled: Box<[i16; MAX_COEFFS]>,
     decoded: Box<[i16; MAX_COEFFS]>,
 }
@@ -2151,7 +2151,7 @@ impl HevcBackend {
         intra: bool,
         residual: &[i16],
         limit: u32,
-        out: &mut [i32],
+        out: &mut [i16],
     ) -> bool {
         let n = transform.side();
         // Intra residuals and block-QP refinements (the reuse term restoring
@@ -2315,21 +2315,14 @@ impl HevcBackend {
     /// Append a coded block's levels to the picture's level store; returns
     /// where they start.
     ///
-    /// Levels always fit 16 bits (§7.4.9.11): coefficients are at most
+    /// Levels are 16-bit throughout (§7.4.9.11): coefficients are at most
     /// 2^15 in magnitude (`nc_dsp::codec_txfm` ranges), the quantiser scale
     /// at most 2^15 and its shift at least 16 at 8 bits, so `|level| <=
-    /// 2^14`, and sign hiding moves a level by one. The narrowing is a
-    /// plain truncation so the copy vectorises: a checked conversion per
-    /// level (every coefficient of every coded block, mostly zeros) was
-    /// ~3% of HEVC Faster's P-frame instructions on lowlight.
-    fn store_levels(&self, levels: &[i32]) -> u32 {
-        debug_assert!(
-            levels.iter().all(|&level| i16::try_from(level).is_ok()),
-            "HEVC levels fit 16 bits (§7.4.9.11)"
-        );
+    /// 2^14`, and sign hiding and the trellis move a level by one.
+    fn store_levels(&self, levels: &[i16]) -> u32 {
         let mut store = self.level_store.borrow_mut();
         let start = u32::try_from(store.len()).expect("level store under 4 Gi entries");
-        store.extend(levels.iter().map(|&level| level as i16));
+        store.extend_from_slice(levels);
         start
     }
 
@@ -2387,10 +2380,10 @@ impl HevcBackend {
         &self,
         (trellis, lambda_scale): (&TrellisQuant, f32),
         plane: PlaneIndex,
-        coeffs: &[i32],
+        coeffs: &[i16],
         log2: u8,
         scan: ScanKind,
-        levels: &mut [i32],
+        levels: &mut [i16],
     ) -> u32 {
         let luma = plane == PlaneIndex::Y;
         let qp = self.frame_quantization.planes[usize::from(!luma)].qp;

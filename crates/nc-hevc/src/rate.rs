@@ -91,14 +91,14 @@ mod tests {
     fn estimate_tracks_the_coder() {
         let scans = Scans::new();
         let costs = BinCosts::new();
-        let mut levels = [0i32; 64];
+        let mut levels = [0i16; 64];
         let (mut coded_bits, mut estimate) = (0.0, 0.0);
         let mut writer = CabacWriter::new();
         let mut ctx_w = Contexts::for_slice(SliceKind::Intra, 32);
         let mut ctx_e = ctx_w.clone();
         for block in 0..200 {
             for (i, level) in levels.iter_mut().enumerate() {
-                let v = ((block * 7 + i * 13) % 11) as i32 - 5;
+                let v = ((block * 7 + i * 13) % 11) as i16 - 5;
                 *level = if i < 20 { v } else { 0 };
             }
             levels[0] = 3;

@@ -94,8 +94,9 @@ unsafe fn forward_4_raster(residual: &[i16], stride: usize, out: &mut [i16]) {
     unsafe { generic::forward_4_layout::<I32x4, true>(residual, stride, out) }
 }
 
-/// Quantiser storage loaded and stored as two four-lane 32-bit halves.
-trait Lanes: QuantStorage {
+/// Quantiser storage loaded and stored as two four-lane 32-bit halves
+/// (shared with the HEVC dequantiser, `codec_txfm::neon`).
+pub(crate) trait Lanes: QuantStorage {
     /// Eight values at `src`, sign-extended to 32 bits.
     ///
     /// # Safety

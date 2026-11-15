@@ -162,7 +162,7 @@ impl Dsp {
         let length = width * height;
         let scaling = super::vvc_inverse::scaling(size, qp, dependent);
         crate::vvc_mts::with_scratch(length, |scaled| {
-            self.hevc_dequantize(&levels[..length], &scaling, &mut scaled[..length]);
+            self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
             if (4..=32).contains(&width) && (4..=32).contains(&height) {
                 self.vvc_inverse_kinds(size, kinds, &scaled[..length], out);
             } else {

@@ -193,23 +193,34 @@ clips, CBR and QP); checkasm passes on AVX2, AVX-512 (SDE `-spr` and `-icx`), NE
   `packssdw`). The gain is memory (coefficients, levels and scaled values halve) and the 8x8 reconstruction
   in eight 16-bit lanes. A 4x4 row of i16 is 64 bits, so the quantiser's 128-bit loads would each span two
   row stores; rows are stored in pairs instead (the store-forwarding lesson above).
-- **HEVC/VVC (not landed; branch `feature/int-width-enc7-hevc`):** forward outputs i16 on every ISA (HEVC's
-  second pass clamps there; VVC's rectangular and MTS outputs are at most 32640, every basis row's L1 being
-  at most the DC row's 64 N), quantiser input i16, HEVC levels i16 (VVC levels i32), dequantiser generic over
-  the level storage. Exact (112/112 on x86 and NEON) and −0.2..−0.3 % Jetson instructions, but Jetson HEVC
-  Default cycles rose +0.2..+0.9 % in four rounds (VVC neutral). Loading the quantiser's two vectors
-  separately (the exact column pass stores 64 bits per 4-lane vector) only halved it. Pairing two column
-  groups per step for full 128-bit stores made it worse (+1.2..+1.8 % HEVC, +3 % H.264 instructions: the
-  driver's restructured loop lost its inlining). pcsample at 150 frames did not resolve the difference (file
-  read noise dominates). A NEON HEVC column pass that keeps eight 16-bit outputs per store (as
-  `txfm::neon_forward::hevc_columns` does for staged columns) is the next thing to try.
+- **HEVC/VVC (landed 2026-11-15):**
+  forward outputs i16 on every ISA, quantiser input i16, HEVC levels i16 (VVC levels i32), dequantiser
+  generic over the level storage. Streams byte-identical (HEVC and VVC Default, crowd 31 f, x86).
+  - **Where it lost (2026-11-15):** Jetson pcsample (bodycam/crowd 150 f, ~120k samples a side) put the
+    extra cycles in `hevc_quantize_from`, stalled on its 128-bit coefficient load: LLVM merges the
+    quantiser's two 64-bit loads into one, and the forward's column passes stored one 4-lane vector
+    (64 bits of i16) per row and column group, so the load spanned two stores and could not be
+    forwarded. The same held for the 4x4 rows in low-frequency mode and VVC's rectangular columns. On
+    x86 the loss was instructions: `scan::sub_block_coded`, no longer generic, stopped being inlined.
+  - **Fixed:** `columns_bounded` stores two column groups (or two 4x4 rows) per narrowing
+    128-bit store, the VVC rectangular column pass likewise, and `sub_block_coded` is `inline(always)`.
+  - **Result** (Jetson jperf min of 7 interleaved rounds, Default 30 f 720p CBR 600, crowd / lowlight /
+    bodycam; x86 callgrind, crowd 31 f):
+    - HEVC: Jetson cycles −0.01 / +0.22 / −0.21 % (the previous step −0.10 / −0.05 / −0.09 %),
+      instructions −0.87 / −0.69 / −1.03 %; x86 instructions −0.70 %.
+    - VVC: Jetson cycles still +0.26 / +0.44 / +0.21 % at −0.4 % instructions; x86 −0.22 %.
+  - **Landed with the VVC cycles accepted** (owner: the narrowest type is the norm; fixed forward). The
+    rest of VVC's loss is spread thin (`quantize_rect`,
+    `vvc_quantize_from`, the coefficient walk, libc copies), with no single stalled store left. Next to
+    check: the MTS forward's scalar i16 output loop and its 64-bit row-pass stores (`vvc_mts::generic`),
+    and the narrow-shape forward's scalar stores.
 - **AV2: not narrowed.** Every transform size shares the block's coefficient and level buffers, and the
   64x64 forward (about 32965) and 20-bit levels need 32 bits, so no buffer fits i16 as a whole.
 - **VP9 levels: not retried.** Jetson pcsample (Default, crowd 150 f): `code_residuals` 10.7 % (much inlined),
   NEON `quantize` 3.7 % (writes the levels), `coeff::cost` 3.1 %, trellis `level_rates` + `probs_at` 2.2 %,
   `add_residual` 1.0 %, `residual_of` 0.7 %, `token_bits` 0.4 %. The level traffic is a small part of these,
   so the bound on the gain is a few tenths of a percent, against two earlier attempts at +0.2..+1.1 %.
-- **Left for item 7:** HEVC/VVC (above); VP9 levels.
+- **Left for item 7:** VP9 levels; the VVC cycles (above).
   The trellis `Candidates.levels` stay wide (AV2 levels reach 2^20 − 1; the HEVC/VVC/H.264 trellis
   nearest levels are uncapped).
 

@@ -402,7 +402,8 @@ mod tests {
                 let (mut want, mut got) = (vec![0; n * n], vec![0; n * n]);
                 forward(log2, &residual, &mut want);
                 dsp.hevc_forward(t, &residual, n, &mut got);
-                assert_eq!(got, want, "forward {n}");
+                let widened = |v: &[i16]| v.iter().map(|&v| i32::from(v)).collect::<Vec<_>>();
+                assert_eq!(widened(&got), want, "forward {n}");
                 let rounding = if intra {
                     crate::quant::INTRA_ROUNDING_512THS
                 } else {
@@ -411,11 +412,10 @@ mod tests {
                 let q = HevcQuantizer::with_rounding(qp as u8, log2, rounding);
                 quantize(&mut want, qp, log2, intra);
                 dsp.hevc_quantize(&mut got, &q);
-                assert_eq!(got, want, "quantise {n} qp {qp}");
+                assert_eq!(widened(&got), want, "quantise {n} qp {qp}");
                 let (mut sw, mut sg) = (vec![0; n * n], vec![0; n * n]);
                 dequantize(&want, qp, log2, &mut sw);
                 dsp.hevc_dequantize(&got, &q, &mut sg);
-                let widened = |v: &[i16]| v.iter().map(|&v| i32::from(v)).collect::<Vec<_>>();
                 assert_eq!(widened(&sg), sw, "dequantise {n} qp {qp}");
                 let (mut rw, mut rg) = (vec![0; n * n], vec![0; n * n]);
                 inverse(log2, &sw, &mut rw);

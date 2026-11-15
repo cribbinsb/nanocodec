@@ -47,7 +47,7 @@ fn main() {
     }
     let source: Vec<u8> = (0..4096).map(|i| (i * 73 + i / 17) as u8).collect();
     let residual: Vec<i16> = source.iter().map(|&x| i16::from(x) - 128).collect();
-    let mut out = [0i32; 1024];
+    let mut out = [0i16; 1024];
     let edge: Vec<u8> = (0..32 * 24).map(|i| (100 + i % 32 / 8) as u8).collect();
     let mut pixels = edge.clone();
     let start = Instant::now();
@@ -295,7 +295,7 @@ fn vvc_rect(dsp: &Dsp, rounds: usize, width: usize, height: usize) {
     let residual: Vec<i16> = (0..=area)
         .map(|i| ((i * 37 + i / width * 101) % 511) as i16 - 255)
         .collect();
-    let mut output = vec![0_i32; area + 1];
+    let mut output = vec![0_i16; area + 1];
     let start = Instant::now();
     for _ in 0..rounds {
         dsp.vvc_forward_dct(

@@ -10,21 +10,24 @@
 /// `positions` maps scan index to raster index; `previous_nonzero(levels,
 /// end)` is the highest scan index below `end` with a nonzero level. The
 /// first nonzero level of the block is always kept. Returns whether any
-/// level remains.
-pub fn shave_isolated_ones(
-    levels: &mut [i32],
+/// level remains. Levels are stored as `L` (HEVC's `i16`, VVC's `i32`).
+pub fn shave_isolated_ones<L>(
+    levels: &mut [L],
     positions: &[usize],
     min_gap: usize,
-    mut previous_nonzero: impl FnMut(&[i32], usize) -> Option<usize>,
-) -> bool {
+    mut previous_nonzero: impl FnMut(&[L], usize) -> Option<usize>,
+) -> bool
+where
+    L: Copy + Default + Into<i32>,
+{
     let Some(mut last) = previous_nonzero(levels, positions.len()) else {
         return false;
     };
     while let Some(previous) = previous_nonzero(levels, last) {
-        if levels[positions[last]].abs() != 1 || last - previous < min_gap {
+        if levels[positions[last]].into().abs() != 1 || last - previous < min_gap {
             break;
         }
-        levels[positions[last]] = 0;
+        levels[positions[last]] = L::default();
         last = previous;
     }
     true

@@ -388,6 +388,17 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
     {
         *group = skip_limit > 0 && sums.iter().all(|&sum| sum as u64 <= skip_limit);
     }
+    // Narrow vectors (two or more per zero group) store two neighbouring
+    // column groups of a row at once, one narrowing 128-bit store of eight
+    // `i16` on NEON and SIMD128: the quantiser reads a row's coefficients
+    // eight at a time, and a load spanning two 64-bit stores cannot be
+    // forwarded from them (Jetson HEVC Default +0.5..+0.9 % cycles with one
+    // store per group).
+    if 2 * lanes <= ZERO_COLUMN_GROUP && 2 * lanes <= N {
+        let zero = |c0: usize| c0 >= kept || zero_group[c0 / ZERO_COLUMN_GROUP];
+        paired_columns::<V, C, O, N>(m, second, mode, kept, input_scale, zero, out);
+        return true;
+    }
     for c0 in (0..N).step_by(lanes) {
         let all_zero = if lanes <= ZERO_COLUMN_GROUP {
             zero_group[c0 / ZERO_COLUMN_GROUP]
@@ -397,11 +408,17 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
                 .all(|&zero| zero)
         };
         if c0 >= kept || all_zero {
+            if lanes == N {
+                // The whole block, in one fill (no row-sized stores).
+                out[..N * N].fill(O::default());
+                continue;
+            }
             for v in 0..N {
                 out[v * N + c0..v * N + c0 + lanes].fill(O::default());
             }
             continue;
         }
+        column_group::<V, C, N>(m, c0, second, mode, kept, input_scale, &mut x, &mut y);
         // Wide vectors may cover both a skipped and a live group. Compute
         // the live half with the same graph, then mask only the original
         // eight-column groups. Narrow ISAs compile away this extra work.
@@ -417,26 +434,15 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
             }
             active = V::load(&mask);
         }
-        for (r, lane) in x.iter_mut().enumerate() {
-            *lane = V::load(&m[r * N + c0..]);
-        }
-        if staged {
-            staged_hevc_pass(&x, &mut y, second, input_scale);
-        } else if mode.low_frequencies {
-            // Only the kept (low) vertical frequencies are stored below:
-            // computing just those halves the odd outputs' products.
-            C::apply_low(&x, &mut y);
-            second.apply(&mut y[..kept]);
-        } else {
-            C::apply(&x, &mut y);
-            second.apply(&mut y);
-        }
-        if lanes == N && kept == N && lanes <= ZERO_COLUMN_GROUP {
+        if lanes == N && lanes <= ZERO_COLUMN_GROUP {
             // One vector per row: consecutive rows are contiguous, so they
             // are stored in pairs (one narrowing 128-bit store of two
-            // 4-point rows of `i16`).
-            for (v, pair) in y.as_chunks::<2>().0.iter().enumerate() {
-                O::store_pair(pair[0], pair[1], &mut out[2 * v * N..]);
+            // 4-point rows of `i16`), the rows from `kept` on as zeros: the
+            // quantiser loads two rows at a time, which 64-bit row stores
+            // could not forward.
+            let row = |v: usize| if v < kept { y[v] } else { V::splat(0) };
+            for v in (0..N).step_by(2) {
+                O::store_pair(row(v), row(v + 1), &mut out[v * N..]);
             }
             continue;
         }
@@ -453,6 +459,85 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
         }
     }
     true
+}
+
+/// The column groups of [`columns_bounded`] two at a time, each row's pair
+/// in one store ([`Element::store_pair`]); `zero(c0)` says the group from
+/// column `c0` is zero.
+#[inline(always)]
+fn paired_columns<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
+    m: &[i32],
+    second: Pass,
+    mode: HevcForwardMode,
+    kept: usize,
+    input_scale: i32,
+    zero: impl Fn(usize) -> bool,
+    out: &mut [O],
+) {
+    let lanes = V::LANES;
+    let mut x = [V::splat(0); N];
+    let mut low = [V::splat(0); N];
+    let mut high = [V::splat(0); N];
+    for c0 in (0..N).step_by(2 * lanes) {
+        if zero(c0) {
+            for v in 0..N {
+                out[v * N + c0..v * N + c0 + 2 * lanes].fill(O::default());
+            }
+            continue;
+        }
+        column_group::<V, C, N>(m, c0, second, mode, kept, input_scale, &mut x, &mut low);
+        if zero(c0 + lanes) {
+            high = [V::splat(0); N];
+        } else {
+            column_group::<V, C, N>(
+                m,
+                c0 + lanes,
+                second,
+                mode,
+                kept,
+                input_scale,
+                &mut x,
+                &mut high,
+            );
+        }
+        for v in 0..kept {
+            O::store_pair(low[v], high[v], &mut out[v * N + c0..]);
+        }
+        for v in kept..N {
+            out[v * N + c0..v * N + c0 + 2 * lanes].fill(O::default());
+        }
+    }
+}
+
+/// The column pass of [`columns_bounded`] over the `V::LANES` columns from
+/// `c0` of `m`: the outputs of every row into `y` (those from `kept` on
+/// undefined in low-frequency mode).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn column_group<V: I32Lanes, C: Line<V>, const N: usize>(
+    m: &[i32],
+    c0: usize,
+    second: Pass,
+    mode: HevcForwardMode,
+    kept: usize,
+    input_scale: i32,
+    x: &mut [V; N],
+    y: &mut [V; N],
+) {
+    for (r, lane) in x.iter_mut().enumerate() {
+        *lane = V::load(&m[r * N + c0..]);
+    }
+    if mode.staging == HevcForwardStaging::RowsAndColumns {
+        staged_hevc_pass(x, y, second, input_scale);
+    } else if mode.low_frequencies {
+        // Only the kept (low) vertical frequencies are stored: computing
+        // just those halves the odd outputs' products.
+        C::apply_low(x, y);
+        second.apply(&mut y[..kept]);
+    } else {
+        C::apply(x, y);
+        second.apply(y);
+    }
 }
 
 /// Input scale of a staged row pass: residuals (`|r| <= 255`) times 4,
@@ -894,7 +979,7 @@ pub(crate) unsafe fn hevc_forward_bounded<
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     let (first, second) = hevc_forward_passes(LOG2);
@@ -924,7 +1009,7 @@ pub(crate) unsafe fn hevc_forward_bounded<
 pub(crate) unsafe fn hevc_forward_columns<V, T, const N: usize, const LOG2: u32>(
     m: &[i32],
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool
 where
@@ -950,7 +1035,7 @@ pub(crate) unsafe fn hevc_forward_neon_rows<
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     let staged_columns = mode.staging == HevcForwardStaging::RowsAndColumns;
@@ -999,7 +1084,7 @@ pub(crate) unsafe fn hevc_forward_simd128_rows<
     residual: &[i16],
     stride: usize,
     zero_limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     let mut m = [MaybeUninit::<i32>::uninit(); MAX_AREA];
@@ -1023,7 +1108,7 @@ pub(crate) unsafe fn hevc_forward_simd128_rows<
 /// Zeroes all but the low `N/2 x N/2` coefficients of a row-major block
 /// ([`HevcForwardMode::low_frequencies`]).
 #[cfg(target_arch = "aarch64")]
-fn keep_low_frequencies<const N: usize>(out: &mut [i32]) {
+fn keep_low_frequencies<const N: usize>(out: &mut [i16]) {
     for (v, row) in out[..N * N].as_chunks_mut::<N>().0.iter_mut().enumerate() {
         let from = if v < N / 2 { N / 2 } else { 0 };
         row[from..].fill(0);
@@ -1065,7 +1150,7 @@ pub(crate) const HEVC_INVERSE_PASSES: (Pass, Pass) = (
 pub(crate) unsafe fn hevc_forward<V: I32Lanes, T: Line<V>, const N: usize, const LOG2: u32>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     let (first, second) = hevc_forward_passes(LOG2);
     // SAFETY: forwarded contract.
@@ -1195,36 +1280,44 @@ pub(crate) fn hevc_dequant_product_limit(q: &HevcQuantizer) -> i32 {
 /// `l` is first clamped to `±2^16` and `l · m` to `±2^(16 + bd) >> per`,
 /// beyond which the result saturates either way.
 ///
+/// Levels are stored as `L` (the HEVC encoder's `i16`, VVC's `i32`); two
+/// vectors per step, from level 0 (one 128-bit load of eight `i16` levels
+/// and one narrowing 128-bit store on NEON and SIMD128).
+///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs).
 #[inline(always)]
-pub(crate) unsafe fn hevc_dequantize<V: I32Lanes>(
-    levels: &[i32],
+pub(crate) unsafe fn hevc_dequantize<V: I32Lanes, L: Element>(
+    levels: &[L],
     q: &HevcQuantizer,
     out: &mut [i16],
 ) {
-    let lanes = V::LANES;
+    let step = 2 * V::LANES;
+    let done = levels.len() / step * step;
+    for i in (0..done).step_by(step) {
+        let (low, high) = L::load_pair::<V>(&levels[i..]);
+        // The saturating store is the clamp to 16 bits.
+        V::store_sat16_pair(hevc_scale(low, q), hevc_scale(high, q), &mut out[i..]);
+    }
+    for i in done..levels.len() {
+        out[i] = i16::saturate(hevc_scale(levels[i].widen(), q));
+    }
+}
+
+/// One vector of [`hevc_dequantize`], before the clamp to 16 bits.
+#[inline(always)]
+fn hevc_scale<V: I32Lanes>(levels: V, q: &HevcQuantizer) -> V {
     let level_limit = HEVC_DEQUANT_LEVEL_LIMIT;
     let product_limit = hevc_dequant_product_limit(q);
-    let done = levels.len() / lanes * lanes;
-    for i in (0..done).step_by(lanes) {
-        let l = V::load(&levels[i..])
-            .max(V::splat(-level_limit))
-            .min(V::splat(level_limit));
-        let m = l
-            .mul_scalar(q.level_scale)
-            .max(V::splat(-product_limit))
-            .min(V::splat(product_limit));
-        // The saturating store is the clamp to 16 bits.
-        m.shl(q.per)
-            .round_shift(q.bd_shift)
-            .store_sat16(&mut out[i..]);
-    }
-    if done < levels.len() {
-        // SAFETY: the scalar lane type needs no ISA.
-        unsafe { hevc_dequantize::<i32>(&levels[done..], q, &mut out[done..]) };
-    }
+    levels
+        .max(V::splat(-level_limit))
+        .min(V::splat(level_limit))
+        .mul_scalar(q.level_scale)
+        .max(V::splat(-product_limit))
+        .min(V::splat(product_limit))
+        .shl(q.per)
+        .round_shift(q.bd_shift)
 }
 
 // ----------------------------------------------------------------- H.264
@@ -1798,36 +1891,48 @@ pub(crate) unsafe fn h264_forward_quantize_mb<F: H264Forward8x8, Q: I32Lanes>(
 
 // ------------------------------------------------------------ quantiser
 
-/// Quantise raw HEVC coefficients into a separate level buffer, preserving
-/// the originals needed by sign-data hiding without a preliminary copy.
-pub(crate) unsafe fn hevc_quantize_from<V: I32Lanes>(
-    coeffs: &[i32],
+/// Quantise raw 16-bit HEVC coefficients into a separate level buffer
+/// (levels stored as `O`: HEVC's `i16`, VVC's `i32`), preserving the
+/// originals needed by sign-data hiding without a preliminary copy. Two
+/// vectors per step from coefficient 0, as [`quantize`] (one 128-bit load
+/// of eight `i16`, matching the forward column pass's paired stores,
+/// `columns_bounded`).
+///
+/// # Safety
+///
+/// `V`'s ISA must be available (module docs).
+#[inline(always)]
+pub(crate) unsafe fn hevc_quantize_from<V: I32Lanes, O: Element>(
+    coeffs: &[i16],
     q: &HevcQuantizer,
-    out: &mut [i32],
+    out: &mut [O],
 ) -> u32 {
     let scale = V::splat(q.scale);
     let offset = V::splat(q.offset);
     let maximum = V::splat(super::HEVC_MAX_LEVEL);
-    let mut zeros = V::splat(0);
-    let done = coeffs.len() / V::LANES * V::LANES;
-    for (input, output) in coeffs[..done]
-        .chunks_exact(V::LANES)
-        .zip(out[..done].chunks_exact_mut(V::LANES))
-    {
-        let raw = V::load(input);
-        let level = raw
-            .abs()
+    let level = |raw: V| {
+        raw.abs()
             .mul(scale)
             .add(offset)
             .shr_logical(q.qbits)
             .min(maximum)
-            .with_sign_of(raw);
-        level.store(output);
-        zeros = count_zero_lanes(zeros, level);
+            .with_sign_of(raw)
+    };
+    let mut zeros = V::splat(0);
+    let step = 2 * V::LANES;
+    let done = coeffs.len() / step * step;
+    for (input, output) in coeffs[..done]
+        .chunks_exact(step)
+        .zip(out[..done].chunks_exact_mut(step))
+    {
+        let (low, high) = i16::load_pair::<V>(input);
+        let (low, high) = (level(low), level(high));
+        O::store_pair(low, high, output);
+        zeros = count_zero_lanes(count_zero_lanes(zeros, low), high);
     }
     let mut nonzero = vector_nonzero(done, zeros);
     for i in done..coeffs.len() {
-        let raw = coeffs[i];
+        let raw = i32::from(coeffs[i]);
         let magnitude = I32Lanes::shr_logical(
             raw.wrapping_abs()
                 .wrapping_mul(q.scale)
@@ -1835,7 +1940,7 @@ pub(crate) unsafe fn hevc_quantize_from<V: I32Lanes>(
             q.qbits,
         );
         let level = I32Lanes::with_sign_of(Ord::min(magnitude, super::HEVC_MAX_LEVEL), raw);
-        out[i] = level;
+        out[i] = O::saturate(level);
         nonzero += u32::from(level != 0);
     }
     nonzero
@@ -1870,9 +1975,9 @@ fn vector_nonzero<V: I32Lanes>(done: usize, zeros: V) -> u32 {
 /// largest multiplier over `2^qbits` stays below 8192 at qP 0.
 pub(crate) const H264_MAX_LEVEL: i32 = i16::MAX as i32;
 
-/// Dead-zone quantisation shared by HEVC (`i32` storage) and H.264 (`i16`)
-/// in place (`ScaleQuantizeFn`): each coefficient's level computed in 32
-/// bits, `S` only being the storage. Two vectors per step, from coefficient
+/// Dead-zone quantisation shared by HEVC and H.264 in place
+/// (`ScaleQuantizeFn`): each coefficient's level computed in 32 bits, `S`
+/// only being the storage (16-bit for both). Two vectors per step, from coefficient
 /// 0 (one 128-bit load and one narrowing 128-bit store of eight `i16` on
 /// NEON and SIMD128, matching the forward transforms' aligned stores).
 ///
@@ -1962,7 +2067,9 @@ macro_rules! codec_txfm_kernels {
                 hevc_inverse: [hevc_idst4, hevc_idct4, hevc_idct8, hevc_idct16, hevc_idct32],
                 hevc_inverse_add: [hevc_add_dst4, hevc_add_dct4, hevc_add_dct8, hevc_add_dct16, hevc_add_dct32],
                 hevc_dequantize,
+                vvc_dequantize,
                 hevc_quantize_from,
+                vvc_quantize_from,
                 hevc_forward_bounded: [hevc_forward4_bounded, hevc_forward8_bounded, hevc_forward16_bounded, hevc_forward32_bounded],
                 h264_forward_4x4,
                 h264_inverse_4x4,
@@ -1977,7 +2084,6 @@ macro_rules! codec_txfm_kernels {
                 h264_add_scaled_mb,
                 h264_forward_quantize_chroma,
                 quantize,
-                h264_quantize,
                 nonzero_mask,
             }
         }
@@ -2010,9 +2116,15 @@ macro_rules! codec_txfm_kernels {
         $crate::codec_txfm::generic::codec_txfm_kernels!(@bounded [$(#[$attr])*] hevc_forward32_bounded, $v8, $fdct32, 32, 5);
 
         $(#[$attr])*
-        unsafe fn hevc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
+        unsafe fn hevc_dequantize(levels: &[i16], q: &HevcQuantizer, out: &mut [i16]) {
             // SAFETY: see the module docs.
-            unsafe { g::hevc_dequantize::<$v>(levels, q, out) }
+            unsafe { g::hevc_dequantize::<$v, i16>(levels, q, out) }
+        }
+
+        $(#[$attr])*
+        unsafe fn vvc_dequantize(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
+            // SAFETY: see the module docs.
+            unsafe { g::hevc_dequantize::<$v, i32>(levels, q, out) }
         }
 
         $(#[$attr])*
@@ -2119,25 +2231,19 @@ macro_rules! codec_txfm_kernels {
         }
 
         $(#[$attr])*
-        unsafe fn hevc_quantize_from(coeffs: &[i32], q: &HevcQuantizer, out: &mut [i32]) -> u32 {
+        unsafe fn hevc_quantize_from(coeffs: &[i16], q: &HevcQuantizer, out: &mut [i16]) -> u32 {
             // SAFETY: see the module docs.
-            unsafe { g::hevc_quantize_from::<$v>(coeffs, q, out) }
+            unsafe { g::hevc_quantize_from::<$v, i16>(coeffs, q, out) }
+        }
+
+        $(#[$attr])*
+        unsafe fn vvc_quantize_from(coeffs: &[i16], q: &HevcQuantizer, out: &mut [i32]) -> u32 {
+            // SAFETY: see the module docs.
+            unsafe { g::hevc_quantize_from::<$v, i32>(coeffs, q, out) }
         }
 
         $(#[$attr])*
         unsafe fn quantize(
-            coeffs: &mut [i32],
-            mf: &[i32],
-            offset: i32,
-            qbits: u32,
-            max_level: i32,
-        ) -> u32 {
-            // SAFETY: see the module docs.
-            unsafe { g::quantize::<$v, i32>(coeffs, mf, offset, qbits, max_level) }
-        }
-
-        $(#[$attr])*
-        unsafe fn h264_quantize(
             coeffs: &mut [i16],
             mf: &[i32],
             offset: i32,
@@ -2161,7 +2267,7 @@ macro_rules! codec_txfm_kernels {
     };
     (@bounded [$(#[$attr:meta])*] $name:ident, $lanes:ty, $transform:ty, $n:literal, $log2:literal) => {
         $(#[$attr])*
-        unsafe fn $name(residual: &[i16], stride: usize, zero_limit: u32, out: &mut [i32], mode: $crate::codec_txfm::HevcForwardMode) -> bool {
+        unsafe fn $name(residual: &[i16], stride: usize, zero_limit: u32, out: &mut [i16], mode: $crate::codec_txfm::HevcForwardMode) -> bool {
             // SAFETY: see module docs.
             unsafe { g::hevc_forward_bounded::<$lanes, $transform, $n, $log2>(residual, stride, zero_limit, out, mode) }
         }
@@ -2169,7 +2275,7 @@ macro_rules! codec_txfm_kernels {
     (@hevc [$(#[$attr:meta])*]
      $forward:ident, $inverse:ident, $f:ty, $i:ty, $lanes:ty, $n:literal, $log2:literal) => {
         $(#[$attr])*
-        unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i32]) {
+        unsafe fn $forward(residual: &[i16], stride: usize, out: &mut [i16]) {
             // SAFETY: see the module docs.
             unsafe { g::hevc_forward::<$lanes, $f, $n, $log2>(residual, stride, out) }
         }

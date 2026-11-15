@@ -138,6 +138,7 @@ fn hevc_transforms_match_the_backend() {
                         (0..n * n).map(|_| rng.next(amplitude) as i16).collect();
                     let mut got = vec![0; n * n];
                     dsp.hevc_forward(t, &residual, n, &mut got);
+                    let got: Vec<i32> = got.into_iter().map(i32::from).collect();
                     assert_eq!(got, hevc_forward_ref(t, &residual), "{t:?} forward");
                 }
             }
@@ -164,15 +165,21 @@ fn hevc_quantisers_match_the_backend() {
                 let n = 1 << log2;
                 for intra in [false, true] {
                     let q = HevcQuantizer::new(qp, log2, intra);
-                    let coeffs: Vec<i32> = (0..n * n).map(|_| rng.next(32768)).collect();
+                    let mut coeffs: Vec<i16> = (0..n * n).map(|_| rng.next(32768) as i16).collect();
+                    coeffs[..3].copy_from_slice(&[i16::MIN, i16::MAX, -1]);
                     let mut got = coeffs.clone();
                     let nonzero = dsp.hevc_quantize(&mut got, &q);
-                    let mut separate = vec![i32::MIN; n * n + 3];
+                    let mut separate = vec![i16::MIN; n * n + 3];
                     let separate_nonzero = dsp.hevc_quantize_from(&coeffs, &q, &mut separate);
                     assert_eq!(&separate[..n * n], got);
-                    assert_eq!(&separate[n * n..], &[i32::MIN; 3]);
+                    assert_eq!(&separate[n * n..], &[i16::MIN; 3]);
                     assert_eq!(separate_nonzero, nonzero);
-                    let mut want = coeffs.clone();
+                    let mut wide = vec![i32::MIN; n * n];
+                    let vvc = crate::VvcQuantizer(q);
+                    assert_eq!(dsp.vvc_quantize_from(&coeffs, &vvc, &mut wide), nonzero);
+                    let got: Vec<i32> = got.into_iter().map(i32::from).collect();
+                    assert_eq!(wide, got);
+                    let mut want: Vec<i32> = coeffs.iter().map(|&c| i32::from(c)).collect();
                     hevc_quantize_ref(&mut want, i32::from(qp), log2, intra);
                     assert_eq!(got, want, "qp {qp} log2 {log2}");
                     assert_eq!(nonzero as usize, want.iter().filter(|&&l| l != 0).count());
@@ -181,12 +188,17 @@ fn hevc_quantisers_match_the_backend() {
                 for amplitude in [3, 4000, 70000, i32::MAX / 2] {
                     let levels: Vec<i32> = (0..n * n).map(|_| rng.next(amplitude)).collect();
                     let mut got = vec![0; n * n];
-                    dsp.hevc_dequantize(&levels, &q, &mut got);
-                    assert_eq!(
-                        got,
-                        hevc_dequantize_ref(&levels, i32::from(qp), log2),
-                        "qp {qp} log2 {log2} amplitude {amplitude}"
-                    );
+                    dsp.vvc_dequantize(&levels, &crate::VvcQuantizer(q), &mut got);
+                    let want = hevc_dequantize_ref(&levels, i32::from(qp), log2);
+                    assert_eq!(got, want, "qp {qp} log2 {log2} amplitude {amplitude}");
+                    let narrow: Vec<i16> = levels
+                        .iter()
+                        .map(|&l| super::generic::Element::saturate(l))
+                        .collect();
+                    dsp.hevc_dequantize(&narrow, &q, &mut got);
+                    let wide: Vec<i32> = narrow.iter().map(|&l| i32::from(l)).collect();
+                    let want = hevc_dequantize_ref(&wide, i32::from(qp), log2);
+                    assert_eq!(got, want, "i16 qp {qp} log2 {log2} amplitude {amplitude}");
                 }
             }
         }
@@ -861,12 +873,12 @@ fn hevc_forward_column_bound_preserves_raw_fallback() {
                 let mut raw = vec![0; n * n];
                 scalar.hevc_forward(t, &input, n, &mut raw);
                 for dsp in [&scalar, &best] {
-                    let mut got = vec![i32::MIN; n * n];
+                    let mut got = vec![i16::MIN; n * n];
                     if dsp.hevc_forward_unless_zero(t, &input, n, limit, &mut got) {
                         assert_eq!(got, raw, "log2 {log2} qp {qp} amplitude {amplitude}");
                     } else {
                         hits += 1;
-                        assert_eq!(got, vec![i32::MIN; n * n]);
+                        assert_eq!(got, vec![i16::MIN; n * n]);
                         let mut quantized = raw.clone();
                         assert_eq!(
                             dsp.hevc_quantize(&mut quantized, &q),
@@ -889,12 +901,13 @@ fn hevc_separate_quantisation_matches_in_place_at_all_qps() {
             for log2 in 2..=5 {
                 for rounding in [0, 85, 128, 171, 256] {
                     let q = HevcQuantizer::with_rounding(qp, log2, rounding);
-                    let mut coeffs: Vec<i32> =
-                        (0..1usize << (2 * log2)).map(|_| rng.next(32768)).collect();
+                    let mut coeffs: Vec<i16> = (0..1usize << (2 * log2))
+                        .map(|_| rng.next(32768) as i16)
+                        .collect();
                     coeffs[..5].copy_from_slice(&[-32768, 32767, 0, -1, 1]);
                     let mut expected = coeffs.clone();
                     let count = dsp.hevc_quantize(&mut expected, &q);
-                    let mut actual = vec![i32::MIN; coeffs.len()];
+                    let mut actual = vec![i16::MIN; coeffs.len()];
                     assert_eq!(dsp.hevc_quantize_from(&coeffs, &q, &mut actual), count);
                     assert_eq!(actual, expected, "QP{qp} log2{log2} rounding{rounding}");
                 }
@@ -948,7 +961,7 @@ fn hevc_staged_rows_bound_matches_full_approximation_and_isa() {
                     &mut expected,
                 );
                 for limit in [0, 1, 7, 31, 127, 511, 4095] {
-                    let mut reference = vec![i32::MIN; n * n];
+                    let mut reference = vec![i16::MIN; n * n];
                     let survives = scalar.hevc_forward_staged_unless_zero(
                         transform,
                         &input,
@@ -959,7 +972,7 @@ fn hevc_staged_rows_bound_matches_full_approximation_and_isa() {
                     );
                     let mut scalar_approx = None;
                     for dsp in [&scalar, &best] {
-                        let mut got = vec![i32::MIN; n * n + 3];
+                        let mut got = vec![i16::MIN; n * n + 3];
                         assert_eq!(
                             dsp.hevc_forward_staged_unless_zero(
                                 transform, &input, stride, limit, staging, &mut got
@@ -980,17 +993,20 @@ fn hevc_staged_rows_bound_matches_full_approximation_and_isa() {
                             }
                             assert_eq!(got[0], raw[0], "DC, n={n}");
                             assert_eq!(&got[..n * n], &expected);
-                            assert!(got[..n * n].iter().all(|&v| (-32768..=32767).contains(&v)));
                             if let Some(ref reference) = scalar_approx {
                                 assert_eq!(&got[..n * n], reference);
                             } else {
                                 scalar_approx = Some(got[..n * n].to_vec());
                             }
                         } else {
-                            assert!(expected.iter().all(|&v| v.unsigned_abs() <= limit));
-                            assert!(got[..n * n].iter().all(|&v| v == i32::MIN));
+                            assert!(
+                                expected
+                                    .iter()
+                                    .all(|&v| u32::from(v.unsigned_abs()) <= limit)
+                            );
+                            assert!(got[..n * n].iter().all(|&v| v == i16::MIN));
                         }
-                        assert!(got[n * n..].iter().all(|&v| v == i32::MIN));
+                        assert!(got[n * n..].iter().all(|&v| v == i16::MIN));
                     }
                 }
             }
@@ -1045,7 +1061,7 @@ fn hevc_zero_columns_only_zero_proven_coefficients() {
                             continue;
                         }
                         for (&g, &f) in got.iter().zip(&full) {
-                            assert!(g == f || (g == 0 && f.unsigned_abs() <= limit));
+                            assert!(g == f || (g == 0 && u32::from(f.unsigned_abs()) <= limit));
                         }
                         match &reference {
                             Some(reference) => assert_eq!(&got, reference),
@@ -1082,7 +1098,7 @@ fn hevc_staged_rows_report_small_coefficient_error() {
                         &mut approximate,
                     );
                     for (&a, &b) in exact.iter().zip(&approximate) {
-                        let delta = a - b;
+                        let delta = i32::from(a) - i32::from(b);
                         energy += i64::from(a) * i64::from(a);
                         error += i64::from(delta) * i64::from(delta);
                         max_error = max_error.max(delta.abs());
@@ -1203,7 +1219,7 @@ fn hevc_exact_zero_columns_match_the_exact_forward() {
                     );
                     if survives {
                         for (&g, &e) in got.iter().zip(&exact) {
-                            assert!(g == e || (g == 0 && e.unsigned_abs() <= limit));
+                            assert!(g == e || (g == 0 && u32::from(e.unsigned_abs()) <= limit));
                         }
                     }
                     outputs.push(got);
@@ -1260,7 +1276,7 @@ fn hevc_low_frequencies_keep_the_low_quarter() {
                                 // zero-column skip may have zeroed a
                                 // coefficient within the limit.
                                 assert!(if low {
-                                    g == f || (f == 0 && g.unsigned_abs() <= limit)
+                                    g == f || (f == 0 && u32::from(g.unsigned_abs()) <= limit)
                                 } else {
                                     g == 0
                                 });

@@ -41,8 +41,17 @@
 //! always meet:
 //! - forward transforms: residuals of 8-bit samples, `|r| <= 255` (HEVC
 //!   32x32 second pass: `32 · 90 · 45930 < 2^28`);
-//! - HEVC quantiser: `|c| <= 32768` (forward DCT output is clamped there);
 //! - inverse transforms: coefficients within 16 bits (dequantiser output).
+//!
+//! Coefficients and levels are stored in 16 bits (8-bit video; the
+//! arithmetic stays 32-bit and each result narrows once):
+//! - forward outputs: the HEVC second pass clamps to 16 bits, so its
+//!   saturating store is that clamp; the H.264 outputs are at most 9180
+//!   (4x4) and 16320 (8x8), the VVC rectangular and MTS ones at most 32640
+//!   (`forward_outputs_fit_i16` in the tests);
+//! - levels: at most 32767 (`HEVC_MAX_LEVEL`, HEVC/VVC `CoeffMax` at 8
+//!   bits; H.264 levels stay far below it). VVC's levels stay 32-bit for
+//!   its syntax and dependent quantisation.
 //!
 //! The HEVC dequantiser is exact for every `i32` level: levels beyond
 //! `±2^16` and products beyond the saturation threshold are clamped before
@@ -370,7 +379,7 @@ impl VvcQuantizer {
     /// (`|c| · scale / 2^qbits`): what an encoder's level adjustments (sign
     /// hiding parity, trellis) weigh their squared error in.
     #[must_use]
-    pub fn magnitude_in_steps(&self, coefficient: i32) -> f64 {
+    pub fn magnitude_in_steps(&self, coefficient: i16) -> f64 {
         let q = &self.0;
         (f64::from(coefficient.unsigned_abs()) * f64::from(q.scale)) / f64::from(1u32 << q.qbits)
     }
@@ -666,11 +675,11 @@ pub(crate) const DST4: [[i32; 4]; 4] = [
 ];
 
 /// Forward HEVC transform: residual (row-major at `stride`) to row-major
-/// coefficients (`n^2`).
-pub(crate) type HevcForwardFn = unsafe fn(residual: &[i16], stride: usize, out: &mut [i32]);
+/// coefficients (`n^2`), in 16 bits (the second pass clamps there).
+pub(crate) type HevcForwardFn = unsafe fn(residual: &[i16], stride: usize, out: &mut [i16]);
 /// Forward DCT, returning false if every coefficient provably quantizes to zero.
 pub(crate) type HevcForwardBoundedFn =
-    unsafe fn(&[i16], usize, u32, &mut [i32], HevcForwardMode) -> bool;
+    unsafe fn(&[i16], usize, u32, &mut [i16], HevcForwardMode) -> bool;
 
 /// Which passes of an encoder-side HEVC 16/32-point forward DCT run AV1's
 /// staged butterflies instead of HEVC's exact matrix (`generic::
@@ -789,8 +798,12 @@ pub(crate) type NonzeroMaskFn = unsafe fn(levels: &[i16]) -> u64;
 /// Most levels [`NonzeroMaskFn`] takes: one bit each in a `u64` (an 8x8
 /// block).
 pub(crate) const MAX_MASK_LEVELS: usize = 64;
-/// HEVC scaling (eq. 8-309) of `levels` into `out`.
-pub(crate) type HevcScaleFn = unsafe fn(levels: &[i32], q: &HevcQuantizer, out: &mut [i16]);
+/// HEVC scaling (eq. 8-309) of `levels` (stored as `L`) into `out`.
+pub(crate) type HevcScaleFn<L> = unsafe fn(levels: &[L], q: &HevcQuantizer, out: &mut [i16]);
+/// HEVC quantisation of 16-bit coefficients into levels stored as `L`
+/// (`generic::hevc_quantize_from`).
+pub(crate) type HevcQuantizeFromFn<L> =
+    unsafe fn(coeffs: &[i16], q: &HevcQuantizer, out: &mut [L]) -> u32;
 
 /// Fused HEVC inverse of 16-bit coefficients (the scaling process's range,
 /// §8.6.3), added into an 8-bit picture. The `(rows, columns)` extent
@@ -803,13 +816,20 @@ pub(crate) struct CodecTxfmFns {
     /// Indexed by [`HevcTransform`].
     pub hevc_forward: [HevcForwardFn; 5],
     /// Exact rectangular DCT-II, with independent row/column shifts.
-    pub vvc_forward_dct: unsafe fn(usize, usize, &[i16], &mut [i32]),
+    pub vvc_forward_dct: unsafe fn(usize, usize, &[i16], &mut [i16]),
     pub hevc_forward_bounded: [HevcForwardBoundedFn; 4],
     /// Indexed by [`HevcTransform`].
     pub hevc_inverse: [HevcInverseFn; 5],
     pub hevc_inverse_add: [HevcInverseAddFn; 5],
-    pub hevc_dequantize: HevcScaleFn,
-    pub hevc_quantize_from: unsafe fn(&[i32], &HevcQuantizer, &mut [i32]) -> u32,
+    /// HEVC scaling of the encoder's 16-bit levels.
+    pub hevc_dequantize: HevcScaleFn<i16>,
+    /// The same scaling of VVC's 32-bit levels (wider until their range
+    /// check in the decoder).
+    pub vvc_dequantize: HevcScaleFn<i32>,
+    /// HEVC quantisation into 16-bit levels.
+    pub hevc_quantize_from: HevcQuantizeFromFn<i16>,
+    /// The same quantisation into VVC's 32-bit levels.
+    pub vvc_quantize_from: HevcQuantizeFromFn<i32>,
     pub h264_forward_4x4: H264Forward4Fn,
     pub h264_inverse_4x4: H264Blocks4Fn,
     pub h264_hadamard_4x4: H264Blocks4Fn,
@@ -822,10 +842,9 @@ pub(crate) struct CodecTxfmFns {
     pub h264_add_scaled_8x8: H264AddScaled8Fn,
     pub h264_add_scaled_mb: H264AddScaledMbFn,
     pub h264_forward_quantize_chroma: H264ForwardQuantizeChromaFn,
-    /// The HEVC quantiser.
-    pub quantize: ScaleQuantizeFn<i32>,
-    /// The H.264 quantiser (16-bit coefficients and levels).
-    pub h264_quantize: ScaleQuantizeFn<i16>,
+    /// The H.264 and HEVC quantiser in place (16-bit coefficients and
+    /// levels).
+    pub quantize: ScaleQuantizeFn<i16>,
     /// The non-zero levels of a block as a bit mask (the H.264 CABAC
     /// residual writer finds its significance map from it).
     pub nonzero_mask: NonzeroMaskFn,

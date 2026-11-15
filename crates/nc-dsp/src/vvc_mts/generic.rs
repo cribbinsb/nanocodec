@@ -26,9 +26,10 @@ use crate::simd::{I16Pairs, I32Lanes};
 /// The most output vectors of one product row (32 outputs of 4 lanes).
 const MAX_VECTORS: usize = MAX_SIDE / 4;
 
-/// Storage of a product's rounded sums: the forward's 32-bit values, or
-/// the inverse's 16-bit ones (every inverse pass clips to 16 bits, so the
-/// saturating narrowing store is that clip).
+/// Storage of a product's rounded sums: the forward column pass's 32-bit
+/// scratch, or 16-bit values (every inverse pass clips to 16 bits, so the
+/// saturating narrowing store is that clip; the forward row pass fits 16
+/// bits, module docs).
 trait Sink: Copy {
     fn store<L: I32Lanes>(value: L, dst: &mut [Self]);
 }
@@ -172,7 +173,7 @@ pub(super) unsafe fn forward<S: I16Pairs, W: I16Pairs>(
     (width, height): (usize, usize),
     [horizontal, vertical]: [VvcTransformKind; 2],
     residual: &[i16],
-    out: &mut [i32],
+    out: &mut [i16],
     columns: &mut [i32],
 ) {
     let (cols, rows) = (horizontal.frequencies(width), vertical.frequencies(height));
@@ -182,7 +183,7 @@ pub(super) unsafe fn forward<S: I16Pairs, W: I16Pairs>(
     let transformed = out;
     // SAFETY: forwarded contract.
     unsafe {
-        product_by_width::<S, W, i32>(
+        product_by_width::<S, W, i16>(
             |y, x| residual[y * width + x],
             sample_pairs(horizontal, width),
             (height, width, cols),
@@ -198,7 +199,7 @@ pub(super) unsafe fn forward<S: I16Pairs, W: I16Pairs>(
     // SAFETY: as above.
     unsafe {
         product_by_width::<S, W, i32>(
-            |x, y| transformed[y * cols + x] as i16,
+            |x, y| transformed[y * cols + x],
             sample_pairs(vertical, height),
             (cols, height, rows),
             height.ilog2() + FORWARD_MATRIX_SHIFT,
@@ -211,7 +212,9 @@ pub(super) unsafe fn forward<S: I16Pairs, W: I16Pairs>(
     for (k, line) in out.chunks_exact_mut(width).enumerate() {
         if k < rows {
             for (x, value) in line[..cols].iter_mut().enumerate() {
-                *value = columns[x * rows + k];
+                // At most 32640 (module docs), so the clamp, as the scalar
+                // reference's, never acts.
+                *value = crate::simd::saturate_i16(columns[x * rows + k]);
             }
             line[cols..].fill(0);
         } else {
@@ -244,7 +247,7 @@ macro_rules! kernels {
             size: (usize, usize),
             kinds: [crate::VvcTransformKind; 2],
             residual: &[i16],
-            out: &mut [i32],
+            out: &mut [i16],
         ) {
             super::with_scratch(size.0 * size.1, |columns| {
                 // SAFETY: as `inverse`.

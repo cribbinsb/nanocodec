@@ -57,7 +57,7 @@ fn inverse_sized<const AREA: usize>(
 ) {
     let scaling = scaling((width, height), qp, dependent);
     let mut scaled = [0; AREA];
-    dsp.hevc_dequantize(
+    dsp.vvc_scale(
         &levels[..width * height],
         &scaling,
         &mut scaled[..width * height],
@@ -116,7 +116,7 @@ impl Dsp {
         // The existing HEVC scale includes a factor of sixteen; transform
         // skip's normative six-bit inverse scale therefore uses ten bits.
         scaling.bd_shift = 10;
-        self.hevc_dequantize(&accumulated[..length], &scaling, &mut out[..length]);
+        self.vvc_scale(&accumulated[..length], &scaling, &mut out[..length]);
     }
 }
 

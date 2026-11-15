@@ -186,7 +186,7 @@ fn forward_bound(log2_area: u32, abs_sum: u64) -> u64 {
 /// (zeroing them per call was 1.4% of a crowd P frame, x86 callgrind).
 pub(crate) struct QuantScratch {
     residual: [i16; MAX_SAMPLES],
-    coefficients: [i32; MAX_SAMPLES],
+    coefficients: [i16; MAX_SAMPLES],
     levels: [i32; MAX_SAMPLES],
 }
 
@@ -284,7 +284,7 @@ pub(crate) fn transform_levels<'a>(
     pred: &[u8],
     quant: Quant,
     scratch: &'a mut QuantScratch,
-) -> (&'a [i32], &'a [i32]) {
+) -> (&'a [i16], &'a [i32]) {
     let height = pred.len() / width;
     let samples = width * height;
     let source = source
@@ -593,7 +593,7 @@ fn forward_selected(
     selection: crate::mts::Selection,
     size: (usize, usize),
     residual: &[i16],
-    coefficients: &mut [i32],
+    coefficients: &mut [i16],
 ) {
     let kinds = selection.kinds(size);
     if kinds == [VvcTransformKind::Dct2; 2] && size.0 == size.1 {
@@ -628,7 +628,7 @@ const LARGER_LEVEL_BITS: f64 = 1.0;
 /// span's first or last level (that would move the span). `coefficients`
 /// are the transform coefficients before quantisation, raster order.
 pub(crate) fn hide_signs(
-    coefficients: &[i32],
+    coefficients: &[i16],
     levels: &mut [i32],
     (width, height): (usize, usize),
     coded: CodedGroups,

@@ -10,7 +10,7 @@ use crate::contexts::{
     CODED_SUB_BLOCK_CHROMA_OFFSET, Contexts, GREATER1_CHROMA_OFFSET, GREATER2_CHROMA_OFFSET,
     LAST_CHROMA_OFFSET, SIG_CHROMA_OFFSET,
 };
-use crate::scan::{Level, SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind, sub_block_coded};
+use crate::scan::{SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind, sub_block_coded};
 
 /// A sub-block hides a sign when its last and first non-zero levels are
 /// more than this many scan positions apart (`sbhThreshold`, §7.3.8.11).
@@ -38,11 +38,11 @@ const MIN_IN_GROUP: [u32; 10] = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
 
 /// Code the levels of one transform block. `levels` is row-major
 /// (`levels[y * size + x]`) and must contain at least one non-zero level.
-pub fn write_residual<L: Level>(
+pub fn write_residual(
     w: &mut impl BinSink,
     ctx: &mut Contexts,
     scan: &Scan,
-    levels: &[L],
+    levels: &[i16],
     luma: bool,
     sign_hiding: bool,
 ) {
@@ -68,7 +68,7 @@ pub fn write_residual<L: Level>(
     let last_scan_pos = first
         + scan.positions[first..first + SUB_BLOCK_COEFFS]
             .iter()
-            .rposition(|&p| levels[p] != L::default())
+            .rposition(|&p| levels[p] != 0)
             .expect("a coded sub-block has a non-zero level");
     let last_sub_block = last_scan_pos / SUB_BLOCK_COEFFS;
     let last_pos = scan.positions[last_scan_pos];
@@ -87,7 +87,7 @@ pub fn write_residual<L: Level>(
         let (mut last_nz, mut first_nz) = (None, 0);
 
         if scan_pos == last_scan_pos as isize {
-            let l: i32 = levels[last_pos].into();
+            let l = i32::from(levels[last_pos]);
             magnitudes[0] = l.unsigned_abs();
             count = 1;
             signs = u32::from(l < 0);
@@ -115,7 +115,7 @@ pub fn write_residual<L: Level>(
             let pattern = sig_pattern(&coded, sub_side, xs, ys);
             while scan_pos >= first as isize {
                 let p = scan.positions[scan_pos as usize];
-                let level: i32 = levels[p].into();
+                let level = i32::from(levels[p]);
                 // The DC of a coded, non-first sub-block is inferred to be
                 // significant if nothing else in it was (HEVC §7.4.9.11).
                 let inferred = scan_pos as usize == first && i > 0 && count == 0;

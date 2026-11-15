@@ -101,7 +101,7 @@ impl Dsp {
         assert!(levels.len() >= length && out.len() >= length);
         let mut scaled = [0; 4096];
         let scaling = super::vvc_inverse::scaling(size, qp, dependent);
-        self.hevc_dequantize(&levels[..length], &scaling, &mut scaled[..length]);
+        self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
         inverse(size, transform, &mut scaled[..length]);
         vvc_primary::inverse(size, [VvcTransformKind::Dct2; 2], &scaled[..length], out);
     }

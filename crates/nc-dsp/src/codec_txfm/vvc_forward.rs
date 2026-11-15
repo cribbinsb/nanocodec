@@ -11,6 +11,12 @@
 //! `log2(height) - 1`, which the row pass's gain of 128 reproduces. A
 //! plain matrix product (no butterflies): only rectangular blocks use it;
 //! squares keep the shared HEVC kernels.
+//!
+//! The coefficients fit 16 bits: every basis row's absolute sum is at most
+//! the DC row's `64 · N` (`basis_rows_are_dominated_by_dc` in the tests), so
+//! for `|r| <= 255` the rows give at most `64 · W · 255 >> (log2 W − 1) =
+//! 32640` and the columns at most `64 · H · 32640 >> (log2 H + 6) = 32640`;
+//! rounding to the nearest cannot pass an integer bound.
 use super::DCT32;
 
 /// Largest transform side.
@@ -23,7 +29,7 @@ const MAX_SIDE: usize = 32;
 ///
 /// If a side is not a power of two up to 32, the block has fewer than 16
 /// samples, or a slice is shorter than the block.
-pub(crate) fn forward(width: usize, height: usize, residual: &[i16], out: &mut [i32]) {
+pub(crate) fn forward(width: usize, height: usize, residual: &[i16], out: &mut [i16]) {
     check(width, height, residual.len(), out.len());
     let area = width * height;
     // Row-pass scratch sized to the block: zeroing a 32x32 buffer for
@@ -47,7 +53,7 @@ pub(crate) fn check(width: usize, height: usize, input_len: usize, output_len: u
 fn forward_sized<const AREA: usize>(
     (width, height): (usize, usize),
     residual: &[i16],
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
     let area = width * height;
     let mut rows = [0i32; AREA];
@@ -76,7 +82,8 @@ fn forward_sized<const AREA: usize>(
                 .zip(column)
                 .map(|(&b, &c)| i32::from(b) * c)
                 .sum();
-            out[k * width + x] = round_shift(sum, column_shift);
+            out[k * width + x] =
+                i16::try_from(round_shift(sum, column_shift)).expect("at most 32640 (module docs)");
         }
     }
 }
@@ -103,6 +110,19 @@ mod tests {
         (0..width * height)
             .map(|i| ((i * 37 + i / width * 11) % 511) as i16 - 255)
             .collect()
+    }
+
+    #[test]
+    fn basis_rows_are_dominated_by_dc() {
+        for side in [2, 4, 8, 16, 32] {
+            for k in 0..side {
+                let l1: i32 = DCT32[k * MAX_SIDE / side][..side]
+                    .iter()
+                    .map(|&b| i32::from(b).abs())
+                    .sum();
+                assert!(l1 <= 64 * side as i32, "{side}-point row {k}: {l1}");
+            }
+        }
     }
 
     #[test]

@@ -453,7 +453,7 @@ fn bench_hevc(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
             ("hevc_forward_dct", "hevc_inverse_dct")
         };
         let residual: Vec<i16> = src[..n * n].iter().map(|&v| i16::from(v) - 128).collect();
-        let mut coeffs = vec![0i32; n * n];
+        let mut coeffs = vec![0i16; n * n];
         push(
             forward_name,
             size,

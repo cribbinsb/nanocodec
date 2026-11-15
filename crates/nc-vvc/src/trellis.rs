@@ -547,7 +547,7 @@ impl TrellisQuantizer {
     pub(crate) fn quantize(
         &mut self,
         block: BlockTrellis<'_>,
-        coefficients: &[i32],
+        coefficients: &[i16],
         quantizer: &VvcQuantizer,
         qp: u32,
         levels: &mut [i32],
@@ -760,10 +760,10 @@ mod tests {
         let quantizer = VvcQuantizer::new(32, 3);
         // Coefficients of 1.4, 0.9 and 1.6 steps: zero is a candidate of each.
         let step = 1. / quantizer.magnitude_in_steps(1);
-        let mut coefficients = [0_i32; 64];
-        coefficients[0] = (1.4 * step) as i32;
-        coefficients[1] = -(0.9 * step) as i32;
-        coefficients[8] = (1.6 * step) as i32;
+        let mut coefficients = [0_i16; 64];
+        coefficients[0] = (1.4 * step) as i16;
+        coefficients[1] = -(0.9 * step) as i16;
+        coefficients[8] = (1.6 * step) as i16;
         let nearest: Vec<i32> = coefficients
             .iter()
             .map(|&c| {

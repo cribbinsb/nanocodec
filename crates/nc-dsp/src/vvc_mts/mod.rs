@@ -17,6 +17,8 @@
 //! largest absolute row sum of any basis, 2^(log2 N + 6), times 255, over
 //! the 2^(log2 N − 1) shift; tests below). So every product operand fits
 //! 16 bits and every sum 32, which the lane kernels (`generic`) rely on.
+//! The column pass is bounded the same way (at most 32640), so the forward
+//! stores its coefficients in 16 bits; the saturating store never acts.
 //!
 //! Kernels are `unsafe fn`s called only from [`crate::Dsp`], which checks
 //! the CPU, the block shape and the slice lengths.
@@ -193,7 +195,7 @@ fn nonzero_extent(coefficients: &[i16], width: usize, rows: usize, cols: usize) 
 /// `(size, kinds, coefficients, out)`: inverse of dequantised coefficients.
 pub(crate) type InverseFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i16]);
 /// `(size, kinds, residual, out)`: forward of a residual.
-pub(crate) type ForwardFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i32]);
+pub(crate) type ForwardFn = unsafe fn((usize, usize), [VvcTransformKind; 2], &[i16], &mut [i16]);
 
 /// One ISA's primary-transform kernels.
 #[derive(Debug, Clone, Copy)]
@@ -272,7 +274,7 @@ mod scalar {
         (width, height): (usize, usize),
         [horizontal, vertical]: [VvcTransformKind; 2],
         residual: &[i16],
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let (bh, bv) = (basis(horizontal, width), basis(vertical, height));
         let (fh, fv) = (horizontal.frequencies(width), vertical.frequencies(height));
@@ -291,7 +293,7 @@ mod scalar {
                     let sum = (0..height)
                         .map(|y| rows[y * width + x] * i32::from(bv[k][y]))
                         .sum();
-                    out[k * width + x] = round(sum, height.ilog2() + FORWARD_MATRIX_SHIFT);
+                    out[k * width + x] = clip16(round(sum, height.ilog2() + FORWARD_MATRIX_SHIFT));
                 }
             }
         });
@@ -377,7 +379,7 @@ impl Dsp {
         size: (usize, usize),
         kinds: [VvcTransformKind; 2],
         residual: &[i16],
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         assert!(supported(size, kinds));
         let area = size.0 * size.1;

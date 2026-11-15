@@ -61,7 +61,7 @@ pub(super) unsafe fn staged16_bounded(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     // SAFETY: the caller's contract is forwarded.
@@ -78,7 +78,7 @@ pub(super) unsafe fn staged32_bounded(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     // SAFETY: the caller's contract is forwarded.
@@ -96,7 +96,7 @@ unsafe fn forward_bounded<T: Line<I32x8>, const N: usize, const LOG2: u32>(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     if mode.staging == HevcForwardStaging::Exact {

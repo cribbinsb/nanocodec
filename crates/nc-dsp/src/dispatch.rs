@@ -3828,7 +3828,7 @@ impl Dsp {
         transform: HevcTransform,
         residual: &[i16],
         stride: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let n = transform.side();
         check_square_i16(n, residual.len(), stride);
@@ -3851,7 +3851,7 @@ impl Dsp {
         residual: &[i16],
         stride: usize,
         zero_limit: u32,
-        out: &mut [i32],
+        out: &mut [i16],
     ) -> bool {
         assert!(
             transform != HevcTransform::Dst4,
@@ -3889,7 +3889,7 @@ impl Dsp {
         stride: usize,
         zero_limit: u32,
         mode: HevcForwardMode,
-        out: &mut [i32],
+        out: &mut [i16],
     ) -> bool {
         let n = transform.side();
         assert!(matches!(n, 16 | 32), "staged passes require DCT16/32");
@@ -3966,10 +3966,9 @@ impl Dsp {
         unsafe { (self.codec_txfm.hevc_inverse[transform as usize])(coeffs, out) }
     }
 
-    /// HEVC (HM) quantisation of `coeffs` in place; returns the number of
-    /// non-zero levels. Coefficients must lie within `±32768` (forward
-    /// transform output does).
-    pub fn hevc_quantize(&self, coeffs: &mut [i32], q: &HevcQuantizer) -> u32 {
+    /// HEVC (HM) quantisation of 16-bit `coeffs` in place; returns the
+    /// number of non-zero levels (at most 32767 in magnitude).
+    pub fn hevc_quantize(&self, coeffs: &mut [i16], q: &HevcQuantizer) -> u32 {
         let mf = [q.scale; 16];
         // SAFETY: as for `hevc_forward`.
         unsafe {
@@ -3981,14 +3980,14 @@ impl Dsp {
         }
     }
 
-    /// HEVC quantisation into `out`, preserving raw `coeffs` for sign hiding.
-    /// Returns the number of non-zero levels. Coefficients must be within
-    /// the forward transform's signed 16-bit range.
+    /// HEVC quantisation of 16-bit `coeffs` into `out`, preserving raw
+    /// `coeffs` for sign hiding. Returns the number of non-zero levels (at
+    /// most 32767 in magnitude, `CoeffMax` at 8 bits).
     ///
     /// # Panics
     ///
     /// If `out` is shorter than `coeffs`.
-    pub fn hevc_quantize_from(&self, coeffs: &[i32], q: &HevcQuantizer, out: &mut [i32]) -> u32 {
+    pub fn hevc_quantize_from(&self, coeffs: &[i16], q: &HevcQuantizer, out: &mut [i16]) -> u32 {
         assert!(out.len() >= coeffs.len());
         // SAFETY: inputs have the same coefficient bounds as hevc_quantize.
         unsafe { (self.codec_txfm.hevc_quantize_from)(coeffs, q, out) }
@@ -4000,7 +3999,7 @@ impl Dsp {
     /// # Panics
     ///
     /// If `out` is shorter than `levels`.
-    pub fn hevc_dequantize(&self, levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
+    pub fn hevc_dequantize(&self, levels: &[i16], q: &HevcQuantizer, out: &mut [i16]) {
         assert!(
             out.len() >= levels.len(),
             "dequantise output shorter than input"
@@ -4009,9 +4008,9 @@ impl Dsp {
         unsafe { (self.codec_txfm.hevc_dequantize)(levels, q, out) }
     }
 
-    /// VVC independent quantization with nearest rounding. Coefficients must
-    /// be in the signed 16-bit forward-transform range. Returns nonzero count.
-    pub fn vvc_quantize(&self, coeffs: &mut [i32], q: &crate::VvcQuantizer) -> u32 {
+    /// VVC independent quantization with nearest rounding of 16-bit
+    /// coefficients in place. Returns nonzero count.
+    pub fn vvc_quantize(&self, coeffs: &mut [i16], q: &crate::VvcQuantizer) -> u32 {
         self.hevc_quantize(coeffs, &q.0)
     }
 
@@ -4023,11 +4022,13 @@ impl Dsp {
     /// If `out` is shorter than `coeffs`.
     pub fn vvc_quantize_from(
         &self,
-        coeffs: &[i32],
+        coeffs: &[i16],
         q: &crate::VvcQuantizer,
         out: &mut [i32],
     ) -> u32 {
-        self.hevc_quantize_from(coeffs, &q.0, out)
+        assert!(out.len() >= coeffs.len());
+        // SAFETY: as for `hevc_quantize_from`.
+        unsafe { (self.codec_txfm.vvc_quantize_from)(coeffs, &q.0, out) }
     }
 
     /// VVC inverse scaling, clamped to signed 16 bits. The shared HEVC
@@ -4035,7 +4036,17 @@ impl Dsp {
     /// # Panics
     /// If `out` is shorter than `levels`.
     pub fn vvc_dequantize(&self, levels: &[i32], q: &crate::VvcQuantizer, out: &mut [i16]) {
-        self.hevc_dequantize(levels, &q.0, out);
+        self.vvc_scale(levels, &q.0, out);
+    }
+
+    /// [`Self::hevc_dequantize`] of 32-bit levels (VVC's).
+    pub(crate) fn vvc_scale(&self, levels: &[i32], q: &HevcQuantizer, out: &mut [i16]) {
+        assert!(
+            out.len() >= levels.len(),
+            "dequantise output shorter than input"
+        );
+        // SAFETY: as for `hevc_forward`.
+        unsafe { (self.codec_txfm.vvc_dequantize)(levels, q, out) }
     }
 
     /// VVC 8-bit inverse scaling and rectangular DCT-II, using the shared
@@ -4064,7 +4075,7 @@ impl Dsp {
     /// # Panics
     /// If a side is not a power of two up to 32, the area is below 16,
     /// or a slice is shorter than the block.
-    pub fn vvc_forward_dct(&self, width: usize, height: usize, residual: &[i16], out: &mut [i32]) {
+    pub fn vvc_forward_dct(&self, width: usize, height: usize, residual: &[i16], out: &mut [i16]) {
         crate::codec_txfm::vvc_forward::check(width, height, residual.len(), out.len());
         // SAFETY: the validated block covers each exact transform pass;
         // the table matches this instance's ISA.
@@ -4156,13 +4167,7 @@ impl Dsp {
         let mf = &QUANT_MF_4X4_POS[q.rem];
         // SAFETY: as for `hevc_forward`.
         unsafe {
-            (self.codec_txfm.h264_quantize)(
-                blocks.as_flattened_mut(),
-                mf,
-                offset,
-                qbits,
-                H264_MAX_LEVEL,
-            )
+            (self.codec_txfm.quantize)(blocks.as_flattened_mut(), mf, offset, qbits, H264_MAX_LEVEL)
         }
     }
 
@@ -4178,9 +4183,7 @@ impl Dsp {
             1
         };
         // SAFETY: as for `hevc_forward`.
-        unsafe {
-            (self.codec_txfm.h264_quantize)(coeffs, &mf[..period], offset, qbits, H264_MAX_LEVEL)
-        }
+        unsafe { (self.codec_txfm.quantize)(coeffs, &mf[..period], offset, qbits, H264_MAX_LEVEL) }
     }
 
     /// Bit `i` set where `levels[i]` is non-zero.
@@ -4205,7 +4208,7 @@ impl Dsp {
         let (qbits, offset) = q.forward_terms(1);
         let mf = &QUANT_MF_8X8_POS[q.rem];
         // SAFETY: as for `hevc_forward`.
-        unsafe { (self.codec_txfm.h264_quantize)(coeffs, mf, offset, qbits, H264_MAX_LEVEL) }
+        unsafe { (self.codec_txfm.quantize)(coeffs, mf, offset, qbits, H264_MAX_LEVEL) }
     }
 
     /// Transform and quantise the four raster-order 8x8 blocks of a 16x16

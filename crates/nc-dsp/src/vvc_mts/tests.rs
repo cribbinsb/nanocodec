@@ -129,6 +129,7 @@ fn forward_matches_the_matrix_product() {
                 .collect();
             let mut actual = vec![7; size.0 * size.1];
             dsp.vvc_forward_primary(size, kinds, &residual, &mut actual);
+            let actual: Vec<i32> = actual.into_iter().map(i32::from).collect();
             assert_eq!(
                 actual,
                 forward_reference(size, kinds, &residual),

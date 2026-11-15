@@ -77,7 +77,7 @@ fn both(dsp: &Dsp, source: &[u8], prediction: &[u8]) -> (Vec<i32>, Vec<i32>) {
         HevcForwardMode::EXACT,
         &mut approximate
     ));
-    (approximate, exact)
+    (approximate.into_iter().map(i32::from).collect(), exact)
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn relative_errors(dsp: &Dsp, noise: u32) -> [[f64; 2]; 2] {
         for (i, &e) in exact.iter().enumerate() {
             let band = usize::from(i % CODED_SIDE + i / CODED_SIDE >= CODED_SIDE / 2);
             error[0][band] += f64::from((approximate[i] - e).abs());
-            error[1][band] += f64::from((raw[i] - e).abs());
+            error[1][band] += f64::from((i32::from(raw[i]) - e).abs());
             magnitude[band] += f64::from(e.abs());
         }
     }

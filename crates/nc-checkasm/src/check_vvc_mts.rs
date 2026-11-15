@@ -13,7 +13,7 @@ const KINDS: [VvcTransformKind; 3] = [
     VvcTransformKind::Dct8,
 ];
 /// Fills the outputs' tails: forward coefficients and inverse residuals.
-const GUARD: i32 = 0x1234_5678;
+const GUARD: i16 = 0x5678;
 const RESIDUAL_GUARD: i16 = 0x1234;
 /// Level patterns: full-range noise, extremes, low-frequency only.
 const PATTERNS: usize = 3;

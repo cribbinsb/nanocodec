@@ -15,7 +15,7 @@ use crate::headers::{LOG2_MAX_TB, SIGN_DATA_HIDING};
 use crate::predict::ModeCode;
 use crate::rate::BitEstimator;
 use crate::residual::write_residual;
-use crate::scan::{Level, ScanKind};
+use crate::scan::ScanKind;
 use crate::syntax::PlaneResidual;
 use crate::transform::{MAX_COEFFS, MAX_SIZE};
 
@@ -60,13 +60,7 @@ impl HevcBackend {
 
     /// Estimated bits of `residual_coding()` of the row-major `levels` (some
     /// non-zero) of a `2^log2` block in `scan` order.
-    pub(super) fn levels_bits<L: Level>(
-        &self,
-        levels: &[L],
-        log2: u8,
-        scan: ScanKind,
-        luma: bool,
-    ) -> f32 {
+    pub(super) fn levels_bits(&self, levels: &[i16], log2: u8, scan: ScanKind, luma: bool) -> f32 {
         let mut contexts = self.contexts.clone();
         let mut estimate = BitEstimator::new(&self.bin_costs);
         write_residual(

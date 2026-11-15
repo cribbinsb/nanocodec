@@ -170,14 +170,15 @@ pub(crate) fn kernel(isa: Isa) -> HalveFn {
 }
 
 /// Multiply each coefficient of the 32x32 block by [`REPAIR`] of its
-/// vertical and of its horizontal frequency.
-fn repair(coefficients: &mut [i32]) {
+/// vertical and of its horizontal frequency (in 32 bits; the factors are at
+/// most 1, so the result stays in 16 bits).
+fn repair(coefficients: &mut [i16]) {
     let round = 1 << (REPAIR_BITS - 1);
     let lines = coefficients.as_chunks_mut::<CODED_SIDE>().0;
     for (line, &vertical) in lines.iter_mut().zip(&REPAIR) {
         for (c, &horizontal) in line.iter_mut().zip(&REPAIR) {
-            let once = (*c * horizontal + round) >> REPAIR_BITS;
-            *c = (once * vertical + round) >> REPAIR_BITS;
+            let once = (i32::from(*c) * horizontal + round) >> REPAIR_BITS;
+            *c = ((once * vertical + round) >> REPAIR_BITS) as i16;
         }
     }
 }
@@ -246,7 +247,7 @@ impl Dsp {
         prediction: &PlaneView<'_>,
         zero_limit: u32,
         mode: HevcForwardMode,
-        out: &mut [i32],
+        out: &mut [i16],
     ) -> bool {
         for view in [source, prediction] {
             assert!(view.width() >= BLOCK_SIDE && view.height() >= BLOCK_SIDE);
@@ -291,7 +292,7 @@ impl Dsp {
         let scaling =
             crate::codec_txfm::vvc_inverse::scaling((BLOCK_SIDE, BLOCK_SIDE), qp, dependent);
         let mut scaled = [0; CODED_AREA];
-        self.hevc_dequantize(&levels[..CODED_AREA], &scaling, &mut scaled);
+        self.vvc_scale(&levels[..CODED_AREA], &scaling, &mut scaled);
         inverse(&scaled, &mut out[..BLOCK_AREA]);
     }
 }

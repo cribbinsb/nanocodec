@@ -106,7 +106,7 @@ pub fn quantize(coeffs: &mut [i32], qp: i32, log2: u8, intra: bool) {
 /// (SVT-AV1's `shave_coeff`: an isolated high-frequency ±1 costs its last
 /// position and significance bits for almost no distortion gain; it is
 /// mostly noise). Returns whether any level remains.
-pub fn shave_isolated_ones(levels: &mut [i32], scan: &Scan, min_gap: usize) -> bool {
+pub fn shave_isolated_ones(levels: &mut [i16], scan: &Scan, min_gap: usize) -> bool {
     nc_encoder::shave_isolated_ones(levels, &scan.positions, min_gap, |levels, end| {
         previous_nonzero(levels, scan, end)
     })
@@ -115,7 +115,7 @@ pub fn shave_isolated_ones(levels: &mut [i32], scan: &Scan, min_gap: usize) -> b
 /// The highest scan index below `end` whose level is non-zero. Whole empty
 /// sub-blocks are skipped by testing their four raster rows, which is much
 /// cheaper than visiting their sixteen scan positions one by one.
-fn previous_nonzero(levels: &[i32], scan: &Scan, end: usize) -> Option<usize> {
+fn previous_nonzero(levels: &[i16], scan: &Scan, end: usize) -> Option<usize> {
     let size = 1usize << scan.log2;
     let mut end = end;
     while end > 0 {
@@ -138,7 +138,7 @@ fn previous_nonzero(levels: &[i32], scan: &Scan, end: usize) -> Option<usize> {
 /// raising or lowering a level inside the sub-block's non-zero span by one,
 /// never zeroing the first or last level of the span (that would move the
 /// span). `coeffs` are the transform coefficients before quantisation.
-pub fn hide_signs(coeffs: &[i32], levels: &mut [i32], scan: &Scan, qp: i32) {
+pub fn hide_signs(coeffs: &[i16], levels: &mut [i16], scan: &Scan, qp: i32) {
     let (qbits, scale, _) = quant_params(qp, scan.log2, 0);
     // Unquantised magnitude in quantisation steps.
     let value =
@@ -161,7 +161,10 @@ pub fn hide_signs(coeffs: &[i32], levels: &mut [i32], scan: &Scan, qp: i32) {
         if last - first <= SIGN_HIDING_THRESHOLD {
             continue;
         }
-        let sum: u32 = span.iter().map(|&p| levels[p].unsigned_abs()).sum();
+        let sum: u32 = span
+            .iter()
+            .map(|&p| u32::from(levels[p].unsigned_abs()))
+            .sum();
         if (sum % 2 == 1) == (levels[span[first]] < 0) {
             continue;
         }
@@ -182,7 +185,8 @@ pub fn hide_signs(coeffs: &[i32], levels: &mut [i32], scan: &Scan, qp: i32) {
             }
         }
         let (_, p, delta) = best.expect("the span has at least one level");
-        let magnitude = levels[p].unsigned_abs() as i32 + delta;
+        // At most 2^14 + 1 (the backend's `store_levels`): fits 16 bits.
+        let magnitude = (i32::from(levels[p].unsigned_abs()) + delta) as i16;
         // A new level takes the coefficient's sign (positive for zero).
         let negative = if levels[p] != 0 {
             levels[p] < 0
@@ -256,16 +260,17 @@ mod tests {
         let scan = Scan::new(3, ScanKind::Diagonal);
         let mut seed = 0x0bad_5eed_1234_5678u64;
         for _ in 0..200 {
-            let coeffs: Vec<i32> = (0..64)
+            let coeffs: Vec<i16> = (0..64)
                 .map(|_| {
                     seed ^= seed << 13;
                     seed ^= seed >> 7;
                     seed ^= seed << 17;
-                    (seed % 4001) as i32 - 2000
+                    (seed % 4001) as i16 - 2000
                 })
                 .collect();
-            let mut levels = coeffs.clone();
-            quantize(&mut levels, 22, 3, false);
+            let mut wide: Vec<i32> = coeffs.iter().map(|&c| i32::from(c)).collect();
+            quantize(&mut wide, 22, 3, false);
+            let mut levels: Vec<i16> = wide.iter().map(|&l| l as i16).collect();
             hide_signs(&coeffs, &mut levels, &scan, 22);
             for span in scan.positions.as_chunks::<SUB_BLOCK_COEFFS>().0 {
                 let nz: Vec<usize> = (0..SUB_BLOCK_COEFFS)
@@ -274,7 +279,10 @@ mod tests {
                 if let (Some(&first), Some(&last)) = (nz.first(), nz.last())
                     && last - first > SIGN_HIDING_THRESHOLD
                 {
-                    let sum: u32 = span.iter().map(|&p| levels[p].unsigned_abs()).sum();
+                    let sum: u32 = span
+                        .iter()
+                        .map(|&p| u32::from(levels[p].unsigned_abs()))
+                        .sum();
                     assert_eq!(sum % 2 == 1, levels[span[first]] < 0);
                 }
             }

@@ -223,7 +223,7 @@ pub(crate) unsafe fn hevc_rows<const N: usize>(
 /// # Safety
 /// NEON is enabled; N is 16/32; `m` and `out` hold N * N values.
 #[target_feature(enable = "neon")]
-pub(crate) unsafe fn hevc_columns<const N: usize>(m: &[i32], pass_shift: u32, out: &mut [i32]) {
+pub(crate) unsafe fn hevc_columns<const N: usize>(m: &[i32], pass_shift: u32, out: &mut [i16]) {
     use crate::codec_txfm::generic::{STAGED_COLUMN_LIMIT, column_input_scale};
     assert!(matches!(N, 16 | 32));
     let (m, out) = (&m[..N * N], &mut out[..N * N]);
@@ -283,11 +283,13 @@ pub(crate) unsafe fn hevc_columns<const N: usize>(m: &[i32], pass_shift: u32, ou
                     ),
                 ]
             };
-            // SAFETY: two stores fill `dest`; the saturating narrow and
-            // widen clamp to 16 bits, as the exact pass does.
+            // SAFETY: one store fills `dest`; the saturating narrow clamps
+            // to 16 bits, as the exact pass does.
             unsafe {
-                vst1q_s32(dest.as_mut_ptr(), vmovl_s16(vqmovn_s32(halves[0])));
-                vst1q_s32(dest.as_mut_ptr().add(4), vmovl_s16(vqmovn_s32(halves[1])));
+                vst1q_s16(
+                    dest.as_mut_ptr(),
+                    vcombine_s16(vqmovn_s32(halves[0]), vqmovn_s32(halves[1])),
+                );
             }
         }
     }

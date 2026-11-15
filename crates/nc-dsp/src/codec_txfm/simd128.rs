@@ -50,7 +50,7 @@ unsafe fn staged16_bounded(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     use super::generic::{self as g, HevcFdct16};
@@ -73,7 +73,7 @@ unsafe fn staged32_bounded(
     residual: &[i16],
     stride: usize,
     limit: u32,
-    out: &mut [i32],
+    out: &mut [i16],
     mode: HevcForwardMode,
 ) -> bool {
     use super::generic::{self as g, HevcFdct32};

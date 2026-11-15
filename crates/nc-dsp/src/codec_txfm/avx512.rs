@@ -53,7 +53,7 @@ macro_rules! sizes {
             }
         }
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $f(src:&[i16],stride:usize,out:&mut [i32]) {
+        unsafe fn $f(src:&[i16],stride:usize,out:&mut [i16]) {
             // SAFETY: validated block and supported ISA from Dsp.
             unsafe { g::hevc_forward::<I32x16,$line,$n,$log>(src,stride,out); }
         }
@@ -63,7 +63,7 @@ macro_rules! sizes {
             unsafe { g::hevc_inverse_bounded::<I32x16,$inv,$n>(coeffs,out); }
         }
         #[target_feature(enable="avx512f,avx512bw,avx512vl")]
-        unsafe fn $b(src:&[i16],stride:usize,limit:u32,out:&mut [i32],mode:HevcForwardMode)->bool {
+        unsafe fn $b(src:&[i16],stride:usize,limit:u32,out:&mut [i16],mode:HevcForwardMode)->bool {
             // SAFETY: the retained 8-column prefix needs eight-lane stores.
             if $n==16 && mode.low_frequencies {
                 // SAFETY: same validated block and AVX2 is available.

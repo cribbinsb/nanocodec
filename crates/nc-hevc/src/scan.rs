@@ -8,14 +8,6 @@
 
 use crate::transform::{MAX_LOG2, MIN_LOG2};
 
-/// A quantised level as the residual coder reads it: `i32` while a block
-/// is coded, `i16` in the picture's level store (HEVC levels lie in
-/// -32768..=32767, §7.4.9.11).
-pub trait Level: Copy + Default + PartialEq + Into<i32> + core::ops::BitOrAssign {}
-
-impl Level for i16 {}
-impl Level for i32 {}
-
 /// Coefficients per 4x4 sub-block.
 pub const SUB_BLOCK_COEFFS: usize = 16;
 /// log2 of the sub-block side.
@@ -27,13 +19,16 @@ pub const SUB_BLOCK_LOG2: u8 = 2;
 /// the residual coder, sign hiding and shaving all ask it of every
 /// sub-block they visit. Exact; replacing the per-element row scans cut
 /// Fast instructions 2.2% per P frame and 2.8% per key frame (callgrind,
-/// crowd09 QP 47).
+/// crowd09 QP 47). Always inlined: as a call (once the `i32` level
+/// variant was gone, LLVM stopped inlining it) it cost HEVC Default
+/// +1.1 % instructions on x86.
 #[must_use]
-#[inline]
-pub fn sub_block_coded<L: Level>(levels: &[L], size: usize, (xs, ys): (usize, usize)) -> bool {
+#[allow(clippy::inline_always)] // measured: see the doc comment
+#[inline(always)]
+pub fn sub_block_coded(levels: &[i16], size: usize, (xs, ys): (usize, usize)) -> bool {
     let origin = 4 * (ys * size + xs);
     let block = &levels[origin..origin + 3 * size + 4];
-    let mut any = [L::default(); 4];
+    let mut any = [0; 4];
     for row in 0..4 {
         let values = block[row * size..row * size + 4]
             .first_chunk::<4>()
@@ -42,7 +37,7 @@ pub fn sub_block_coded<L: Level>(levels: &[L], size: usize, (xs, ys): (usize, us
             *a |= v;
         }
     }
-    any != [L::default(); 4]
+    any != [0; 4]
 }
 
 /// The up-right diagonal scan of a `size`-square array (HEVC §6.5.3):

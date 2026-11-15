@@ -3,7 +3,7 @@
 
 use nc_dsp::{
     Av2TxSize, Dsp, H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer,
-    HevcTransform,
+    HevcTransform, VvcQuantizer,
 };
 
 use nc_common::PlaneViewMut;
@@ -130,7 +130,7 @@ fn check_hevc_transform(
     let mode = rng.below(4);
     let input = residual((n - 1) * stride + n, stride, mode, rng);
     let forward = |dsp: &Dsp| {
-        let mut out = vec![0i32; n * n];
+        let mut out = vec![0i16; n * n];
         dsp.hevc_forward(transform, &input, stride, &mut out);
         out
     };
@@ -274,7 +274,7 @@ fn check_hevc_forward_modes(
     }
     let limit = LIMITS[rng.below(LIMITS.len())];
     let forward = |dsp: &Dsp| {
-        let mut out = vec![i32::MIN; n * n];
+        let mut out = vec![i16::MIN; n * n];
         let coded = dsp.hevc_forward_staged_unless_zero(
             transform,
             input,
@@ -338,22 +338,25 @@ fn check_hevc_quant(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     let intra = rng.below(2) == 0;
     let q = HevcQuantizer::new(qp, log2, intra);
     let n = 1usize << log2;
-    // Quantiser inputs: anything the forward transform can produce.
+    // Quantiser inputs: anything the forward transform can produce (the
+    // whole 16-bit range).
     let mode = rng.below(4);
-    let coeffs: Vec<i32> = coefficients(n * n, mode, rng)
-        .into_iter()
-        .map(|c| if mode == 1 && c < 0 { -32768 } else { c })
-        .collect();
+    let coeffs = coefficients16(n * n, mode, rng);
     let quantize = |dsp: &Dsp| {
         let mut levels = coeffs.clone();
         let nonzero = dsp.hevc_quantize(&mut levels, &q);
-        (levels, nonzero)
+        let mut from = vec![i16::MIN; n * n];
+        let from_nonzero = dsp.hevc_quantize_from(&coeffs, &q, &mut from);
+        let mut wide = vec![i32::MIN; n * n];
+        let wide_nonzero = dsp.vvc_quantize_from(&coeffs, &VvcQuantizer::new(qp, log2), &mut wide);
+        (levels, nonzero, from, from_nonzero, wide, wide_nonzero)
     };
     let same = quantize(candidate) == quantize(reference);
     record(report, isa, same, || {
         format!("hevc_quantize qp={qp} log2={log2} intra={intra} mode={mode}")
     });
-    // Levels of any i32 value: the dequantiser is exact for all of them.
+    // Levels of any i32 value (VVC's, before a decoder's range check): the
+    // dequantiser is exact for all of them; and every 16-bit level.
     let levels: Vec<i32> = (0..n * n)
         .map(|_| match rng.below(3) {
             0 => rng.below(2001) as i32 - 1000,
@@ -361,10 +364,13 @@ fn check_hevc_quant(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
             _ => rng.below(1 << 18) as i32 - (1 << 17),
         })
         .collect();
+    let levels16 = coefficients16(n * n, mode, rng);
     let dequantize = |dsp: &Dsp| {
         let mut out = vec![0i16; n * n];
-        dsp.hevc_dequantize(&levels, &q, &mut out);
-        out
+        dsp.vvc_dequantize(&levels, &VvcQuantizer::new(qp, log2), &mut out);
+        let mut out16 = vec![0i16; n * n];
+        dsp.hevc_dequantize(&levels16, &q, &mut out16);
+        (out, out16)
     };
     let same = dequantize(candidate) == dequantize(reference);
     record(report, isa, same, || {

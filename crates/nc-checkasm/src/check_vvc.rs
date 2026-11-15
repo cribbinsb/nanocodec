@@ -40,8 +40,9 @@ fn quant(candidate: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
                         if v < 0 { -a } else { a }
                     })
                     .collect();
-                let mut actual = raw.clone();
+                let mut actual: Vec<i16> = raw.iter().map(|&v| v as i16).collect();
                 let nonzero = candidate.vvc_quantize(&mut actual, &q);
+                let actual: Vec<i32> = actual.into_iter().map(i32::from).collect();
                 report.cases += 1;
                 if actual != expected
                     || nonzero as usize != expected.iter().filter(|&&v| v != 0).count()
@@ -169,7 +170,7 @@ fn deblock(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckRe
 /// Every supported shape, including narrow scalar fallbacks, exact-length
 /// input and guarded output. Only the public 8-bit residual range is used.
 fn rectangular_forward(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
-    const GUARD: i32 = 0x1357_2468;
+    const GUARD: i16 = 0x1357;
     for width in [1, 2, 4, 8, 16, 32] {
         for height in [1, 2, 4, 8, 16, 32] {
             let area = width * height;
