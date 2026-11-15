@@ -1639,6 +1639,13 @@ impl RateController {
         self.first_key_lookahead > 0.
     }
 
+    /// The start-up lookahead's share of unchanged blocks between the first
+    /// two frames: how still the scene is before any inter frame
+    /// (`key_still_offset`).
+    pub fn observe_startup_still(&mut self, still_share: f64) {
+        self.startup_still_share = still_share;
+    }
+
     /// Before the first frame: the peak camera displacement (luma samples)
     /// from the first to the second source frame. Camera motion caps the
     /// first GOP's key at `rate.first_key_lookahead` buffers, through
@@ -1648,13 +1655,6 @@ impl RateController {
     /// it. Under camera motion the picture is replaced within seconds and a
     /// smaller key (cap 0.2-0.3) won pan by 12-15% in a blanket screen,
     /// which lost crowd by 2-11% (`rate.key_cap_buffer`).
-    /// The start-up lookahead's share of unchanged blocks between the first
-    /// two frames: how still the scene is before any inter frame
-    /// (`key_still_offset`).
-    pub fn observe_startup_still(&mut self, still_share: f64) {
-        self.startup_still_share = still_share;
-    }
-
     pub fn observe_startup_motion(&mut self, peak_displacement: f64) {
         if self.stats.frames == 0 && peak_displacement >= STARTUP_CAMERA_MOTION {
             self.first_key_cap_buffer = self.first_key_lookahead;

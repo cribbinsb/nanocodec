@@ -21,5 +21,9 @@ av1.compound = 1
 rate.period_ceiling = 0
 # Pinned before AV1 Default's unified reference plan (2026-11-14).
 structure.unified = 0
-# Pinned before AV1 Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
+# Takes AV1 Default's key still boost (rate.key_still_boost 6) since spatial
+# rate control reads the start-up still share (2026-11-15). svc_chart, 11
+# natural VAL clips (chart's 8 in brackets), L3T1_KEY vs the pin: 720p view
+# +8.5% -> +5.1% (+10.8% -> +6.3%) vs single layer, 360p +3.6% -> +1.0%,
+# 180p +5.7% -> +4.4%, total vs simulcast -5.9% -> -9.0%; static and
+# bodycam clips gain 9-12%, the others are unchanged.

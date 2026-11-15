@@ -892,6 +892,16 @@ impl CodecBackend for Av2Backend {
         // on the 22 static and crowd points 13.0 -> 17.2 per 1000 frames.
         // Inert within one key period. The other AV2 presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
+        // times how still the scene is): its later frames inherit it. Pool levels,
+        // draw 2026-11-14: L1 -1.46% [-2.07, -0.31]; L2 -1.69% [-2.36, -1.03];
+        // 600-frame L3 (keys every 10 s) -1.69% [-2.36, -1.05], no guard; static
+        // -6.2%, crowd -0.5%, pan and lowlight unchanged; achieved/target max
+        // 1.000 -> 0.999; re-codes on the 22 static and crowd points 17.2 -> 20.4
+        // per 1000 frames. 6 QP: L3 -2.02% but the periodic-key pulse guard
+        // tripped (+0.46 dB).
+        // The other AV2 presets pin it off.
+        ("rate.key_still_boost", 4.0),
         // Depth removal at half the engine's threshold scale (SVT
         // `qp_scale_factor`): the scale grows with the headroom below the
         // top quantizer, and AV2's coarser qindex scale (step doubling every

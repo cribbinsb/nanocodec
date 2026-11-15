@@ -594,6 +594,15 @@ impl CodecBackend for VvcBackend {
         // and crowd points 4.9 -> 6.7 per 1000 frames.
         // Inert within one key period. The other VVC presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
+        // times how still the scene is): its later frames inherit it. Pool levels,
+        // draw 2026-11-14: L1 -1.67% [-2.18, -0.39]; L2 -2.78% [-3.62, -1.89];
+        // 600-frame L3 (keys every 10 s) -1.66% [-2.40, -1.04], no guard; static
+        // -6.1%, crowd -0.6%, pan and lowlight unchanged; achieved/target max
+        // 0.999 -> 0.999; re-codes on the 22 static and crowd points 6.7 -> 10.8
+        // per 1000 frames.
+        // The other VVC presets pin it off.
+        ("rate.key_still_boost", 6.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         // Re-tuned 2026-11-13 as a CPU cut at equal quality (CPU-capped study
         // vvc-default-speed-2026-11-13, trial #2): mode-decision lambda 0.8 ->

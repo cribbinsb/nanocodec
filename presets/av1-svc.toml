@@ -34,5 +34,7 @@ av1.pre_tx_skip_energy = 15.18
 rate.period_ceiling = 0
 # Pinned before AV1 Default's unified reference plan (2026-11-14).
 structure.unified = 0
-# Pinned before AV1 Default's key still boost (2026-11-14).
-rate.key_still_boost = 0
+# Takes AV1 Default's key still boost (rate.key_still_boost 6) since spatial
+# rate control reads the start-up still share (2026-11-15). svc_chart, the
+# chart's 8 clips, L2T1 720p view vs the pin: -2.6% BD-J (static_london_bus
+# -4.7%, bodycam_airport -10.5%, the others unchanged).

@@ -269,5 +269,30 @@ step, whole and crowd / pan / bodycam / lowlight / static:
   4x or more.
 - **Trailing mean:** it beats the replay on static (−11%, the drift cut short), not on moving content.
 
-**Next:** `rate.key_still_boost` is screened for HEVC, H.264, VVC, VP9 and AV2 through L1, L2 and the
-600-frame L3.
+### Key still boost in every Default
+
+The same lever, screened through L1 and L2 (150 frames) and the 600-frame L3 (draw 2026-11-14) for each codec:
+
+| Codec | Boost (QP) | L1 | L2 | 600-frame L3 | static / crowd (L3) | re-codes per 1000 (static + crowd) | guards |
+|---|---|---|---|---|---|---|---|
+| AV1 | 6 | −0.57 | −1.87 | −1.95 [−2.51, −1.41] | −7.1 / −0.7 | 11.0 → 15.8 | none |
+| H.264 | 6 | −0.70 | −1.95 | −1.58 [−2.19, −1.05] | −5.8 / −0.5 | 8.0 → 9.7 | none |
+| VVC | 6 | −1.67 | −2.78 | −1.66 [−2.40, −1.04] | −6.1 / −0.6 | 6.7 → 10.8 | none |
+| VP9 | 6 | −0.16 | −1.69 | −1.84 [−2.42, −1.30] | −6.8 / −0.6 | 10.8 → 15.7 | none |
+| HEVC | 4 | −1.64 | −1.02 | −0.42 [−0.90, −0.00] | −1.75 / +0.07 | 8.0 → 10.6 | none |
+| AV2 | 4 | −1.46 | −1.69 | −1.69 [−2.36, −1.05] | −6.2 / −0.5 | 17.2 → 20.4 | none |
+
+- **Pan and lowlight:** unchanged in every codec.
+- **Rate:** achieved/target max ≤ 1.000 (H.264 0.997).
+- **Why HEVC and AV2 run at 4:** at 6 they tripped the periodic-key pulse guard: HEVC +0.36 dB (L3 −0.90%),
+  AV2 +0.46 dB (L3 −2.02%).
+- **Bundle:** the other presets of each codec pin it off. The new Defaults equal the previous head with the
+  parameter set, and the pinned presets are byte-identical (42/42 streams).
+
+**AV1 key still final-check** (195d1297^ → 195d1297, full ladder, 600 frames, keys every 10 s, 31 clips):
+J −1.52% [−1.92, −1.09] BETTER, no guard.
+
+**Landed:**
+- The ceiling: HEVC 0e0da898, VVC 935b1726, VP9 d5cf4fe9, AV2 487dff46.
+- The key still boost: AV1 195d1297, H.264 61c3817e, VVC 39b54eab, VP9 7752ddef, HEVC c2346bf1, AV2 e17fce9d.
+- Final-checks of the other nine bundles: `~/nanocodec-data/work/rc-cost/fc-*.log`.

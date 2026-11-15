@@ -109,3 +109,5 @@ analysis.static_sad_per_pixel = 1
 rate.period_ceiling = 0
 # H.264 Default's fixed-QP profile (2026-11-15) stays off here: pinned, byte-identical.
 rate.fixed_qp_profile = 0
+# Pinned before H.264 Default's key still boost (2026-11-14).
+rate.key_still_boost = 0

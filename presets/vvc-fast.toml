@@ -96,3 +96,5 @@ rate.period_ceiling = 0
 # Default's per-unit keep/drop check (2026-11-14, fixed-qp program) stays off
 # here: pinned, byte-identical.
 vvc.unit_zero_rd = 0
+# Pinned before VVC Default's key still boost (2026-11-14).
+rate.key_still_boost = 0

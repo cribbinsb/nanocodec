@@ -891,6 +891,15 @@ impl CodecBackend for Vp9Backend {
         // on the 22 static and crowd points 5.5 -> 10.8 per 1000 frames.
         // Inert within one key period. The other VP9 presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
+        // times how still the scene is): its later frames inherit it. Pool levels,
+        // draw 2026-11-14: L1 -0.16% [-0.62, +0.10]; L2 -1.69% [-2.20, -1.16];
+        // 600-frame L3 (keys every 10 s) -1.84% [-2.42, -1.30], no guard; static
+        // -6.8%, crowd -0.6%, pan and lowlight unchanged; periodic-key pulse
+        // -0.26 dB; achieved/target max 1.000 -> 1.000; re-codes on the 22 static
+        // and crowd points 10.8 -> 15.7 per 1000 frames.
+        // The other VP9 presets pin it off.
+        ("rate.key_still_boost", 6.0),
         ("decision.codec_subpel_seed_lambdas", 0.0),
         ("quant.trellis", 1.0),
         ("quant.trellis_key", 1.0),

@@ -117,3 +117,5 @@ vp9.filter_level_scale = 1
 vp9.chroma_delta_q = -8
 # Pinned before VP9 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
+# Pinned before VP9 Default's key still boost (2026-11-14).
+rate.key_still_boost = 0

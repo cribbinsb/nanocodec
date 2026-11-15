@@ -1195,6 +1195,7 @@ impl<B: CodecBackend> Encoder<B> {
         ) {
             if let Some(rc) = self.layer.rate_control.as_mut() {
                 rc.observe_startup_motion(peak);
+                rc.observe_startup_still(f64::from(static_fraction));
             }
             self.spatial.as_mut().expect("spatial mode").startup_profile =
                 Some((peak * scale_x, static_fraction));
@@ -1405,7 +1406,7 @@ impl<B: CodecBackend> Encoder<B> {
             }
         }
         if layer_plan.layer_frame_index == 0
-            && let (Some((full_peak, _)), Some(rc)) = (
+            && let (Some((full_peak, still)), Some(rc)) = (
                 self.spatial.as_ref().and_then(|s| s.startup_profile),
                 self.layer.rate_control.as_mut(),
             )
@@ -1417,6 +1418,8 @@ impl<B: CodecBackend> Encoder<B> {
                 .max(1);
             let layer_peak = full_peak * (self.layer.width as f64 / full_w as f64);
             rc.observe_startup_motion(layer_peak);
+            // The still share is a fraction of blocks: the same at every layer.
+            rc.observe_startup_still(f64::from(still));
         }
         analyzer
     }

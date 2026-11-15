@@ -946,6 +946,16 @@ impl CodecBackend for HevcBackend {
         // achieved/target max 1.008 -> 1.000.)
         // Inert within one key period. The other HEVC presets pin it off.
         ("rate.period_ceiling", 1.0),
+        // A fixed camera's key coded finer (`rate.key_still_boost`, QP units
+        // times how still the scene is): its later frames inherit it. Pool levels,
+        // draw 2026-11-14: L1 -1.64% [-1.88, -0.28]; L2 -1.02% [-1.57, -0.52];
+        // 600-frame L3 (keys every 10 s) -0.42% [-0.90, -0.00], no guard; static
+        // -1.75%, crowd +0.07%, pan and lowlight unchanged; achieved/target max
+        // 0.993 -> 0.994; re-codes on the 22 static and crowd points 8.0 -> 10.6
+        // per 1000 frames. 6 QP: L3 -0.90% but the periodic-key pulse guard
+        // tripped (+0.36 dB).
+        // The other HEVC presets pin it off.
+        ("rate.key_still_boost", 4.0),
         ("decision.intra_gate_variance", 0.0),
         ("decision.codec_subpel_seed_lambdas", 0.05),
         ("decision.subpel_move_bias", 1.1),

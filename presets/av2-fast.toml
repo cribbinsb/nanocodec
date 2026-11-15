@@ -74,3 +74,5 @@ rate.cadence_scale = 0.7
 planner.lambda_scale = 2
 # Pinned before AV2 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
+# Pinned before AV2 Default's key still boost (2026-11-14).
+rate.key_still_boost = 0
