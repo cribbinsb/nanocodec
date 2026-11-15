@@ -41,6 +41,7 @@ from .clips import Clip
 from .codecs import Codec
 from .config import load_paths
 from .encoders.nanocodec import current_family_name, preset_cli_args
+from .publicnames import credit
 from .realuse import DEFAULT_FRAMES, LADDER_KBPS
 
 REPO = Path(__file__).resolve().parents[2]
@@ -98,7 +99,7 @@ CHART_VIEWS = (
               "bd-vs-speed-builds.json"),
 )
 CLIPSETS = {
-    "fresh": "Held-out, fresh: sources no clip set of ours had used",
+    "fresh": "Held-out, fresh: videos none of our tuning used",
     "heldout": "Held-out, all: the fresh clips plus an earlier held-out check",
     "dev": "Development: the clips we tune beside",
 }
@@ -328,31 +329,6 @@ CLIP_TABLES = (("fresh", "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-mediu
 EXCLUDED_CLIP = re.compile(r"^- \*\*([^*]+)\*\* \([^)]*\): (.*?)\.?$")
 
 
-def dataset_of(source: str) -> str:
-    """The collection a clip's source comes from, by name only (no path)."""
-    parts = Path(source).parts
-    for marker, depth in (("downloaded_datasets", 2), ("video", 1), ("tracking_original", 1)):
-        if marker in parts:
-            index = parts.index(marker) + depth
-            if index < len(parts) - 1:
-                return parts[index]
-    return parts[-2] if len(parts) > 1 else ""
-
-
-#: Folders of our video store that are not a collection: their clips are named by
-#: the source's own name where it says (MOT20-07), else as unattributed.
-STORE_FOLDERS = {"base", "mp4", "video"}
-
-
-def collection(clip) -> str:
-    """The source collection a clip came from, by name only (never a path)."""
-    name = Path(clip.dataset).name if clip.dataset else dataset_of(clip.family)
-    if name not in STORE_FOLDERS:
-        return name
-    stem = Path(clip.family).stem
-    return stem.split("-")[0] if stem.upper().startswith("MOT") else "unattributed (own store)"
-
-
 def clips_data() -> dict:
     """The clips behind each chart view (the clip sets the charts measured, the
     exclusions their markdown lists) and the fixed-QP chart's CTC sequences."""
@@ -366,7 +342,7 @@ def clips_data() -> dict:
             excluded = {m.group(1): m.group(2) for line in markdown.read_text().splitlines()
                         if (m := EXCLUDED_CLIP.match(line))}
         spec = str(load_paths().clips / file) if file else None
-        sets[clipset] = [{"name": c.name, "dataset": collection(c),
+        sets[clipset] = [{"name": c.name, "dataset": credit(c.family),
                           "width": c.width, "height": c.height, "fps": c.fps,
                           "start_frame": c.start_frame, "frames": DEFAULT_FRAMES,
                           "class": c.content_class, "scored": c.name not in excluded,
@@ -543,6 +519,7 @@ DECODER_NAMES = {"ffmpeg": "FFmpeg", "dav1d": "dav1d", "vpxdec": "vpxdec", "vvde
                  "avmdec": "avmdec"}
 SECOND_REFERENCE = {"vp9": "ffmpeg"}
 OURS_DECODER, WASM_DECODER = "ours", "wasm-head"
+
 #: The Jetson run names streams by file; these are the x86 run's labels for them.
 JETSON_STREAMS = {
     "crowd_mot17_09.600k": "ours 720p crowd 600k", "crowd1080.3000k.ours": "ours 1080p 3M",

@@ -85,3 +85,10 @@ def test_fixed_qp_speeds_are_the_chart_timing():
             assert fps == timing[family][platform], (family, platform, fps)
             if family in cbr and cbr[family]["fps"][platform]:  # the CBR chart's own point
                 assert abs(fps - cbr[family]["fps"][platform]) <= 0.1, (family, platform, fps)
+
+
+def test_no_local_path_is_published():
+    """The site's data and the demo's stream manifest name programs and files, never a
+    directory of the machine they were made on."""
+    for path in sorted(site.SITE_DATA.glob("*.json")) + [site.REPO / "web/streams-ref/manifest.json"]:
+        assert not re.search(r"/mldata|/home/|~/|anaconda", path.read_text()), path.name

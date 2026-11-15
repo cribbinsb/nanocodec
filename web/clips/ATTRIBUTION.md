@@ -140,7 +140,6 @@ only the needed frames were fetched.
 | `netflix-dinner-scene-*.mp4` | DinnerScene (*Chimera*) | `Chimera/` | 60–659 (10 s) | 22 / 24 |
 | `netflix-bar-scene-*.mp4` | BarScene (*Chimera*) | `Chimera/` | 60–659 (10 s) | 22 / 24 |
 | `netflix-crosswalk-*.mp4` | Crosswalk (*El Fuente*) | `ElFuente/` | 0–299 (all 300, 5.0 s) | 25 / 28 |
-| `netflix-food-market-*.mp4` | FoodMarket (*El Fuente*) | `ElFuente/` | 0–599 (all 600, 10 s) | 25 / 28 |
 | `netflix-tango-*.mp4` | Tango (*El Fuente*) | `ElFuente/` | 0–293 (all 294, 4.9 s) | 22 / 24 |
 | `netflix-boxing-practice-*.mp4` | BoxingPractice (*El Fuente*) | `ElFuente/` | 0–253 (all 254, 4.2 s) | 22 / 24 |
 | `netflix-dancers-*.mp4` | Dancers (*Chimera*) | `Chimera/` | 60–659 (10 s) | 22 / 24 |
@@ -232,26 +231,6 @@ License. To view a copy of this license, visit
 http://creativecommons.org/licenses/by-nc-nd/4.0/
 ```
 
-`netflix-food-market-*.mp4` (from <https://media.xiph.org/video/derf/ElFuente/Netflix_FoodMarket_Copyright.txt>):
-
-```text
-Digital Video Sequence "Food Market"
-Copyright (C)  NETFLIX INC.  2015
-
-4096x2160p, 10-bit, YCbCr 4:2:0, BT.709, 59.94 fps, 600 frames
-
-COPYRIGHT AND LICENSE INFORMATION
-December, 2015
-
-NETFLIX INC.
-100 Winchester Circle, Los Gatos, CA 95032, USA
-
-The video sequence provided above and all intellectual property rights therein
-remain the property of Netflix Inc. This video sequence is licensed under the
-Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International
-License. To view a copy of this license, visit
-http://creativecommons.org/licenses/by-nc-nd/4.0/
-```
 
 `netflix-tango-*.mp4` (from <https://media.xiph.org/video/derf/ElFuente/Netflix_Tango_Copyright.txt>):
 
@@ -370,18 +349,8 @@ openh264, x265, SVT-AV1, libaom, libvpx or NVENC; every command line is in
 letterboxing and frame-rate sampling (every 2nd or 3rd frame: 15, 10 fps). No SVT Multi Format
 sequence is used.
 
-**Netflix FoodMarket (the only Netflix sequence with pre-encoded streams; the project owner's
-decision).** Copyright (C) NETFLIX INC. 2015, *El Fuente*, "Food Market", Creative Commons
-Attribution-NonCommercial-NoDerivatives 4.0 International,
-<https://creativecommons.org/licenses/by-nc-nd/4.0/>. The `web/streams-ref/netflix-food-market-*.ivf`
-streams are encodes of the hosted excerpt (`netflix-food-market-720p.mp4`: 1280×676 letterboxed to
-1280×720, every second frame, 30 fps, 300 frames), made for non-commercial codec comparison; the picture
-is otherwise unchanged. Six of them (encoder "BWC SOC") were supplied by the project owner: the hardware
-encoder of a body-worn-camera SoC, fed an earlier RGB-converted copy of those frames; the others are
-x264, x265 and openh264 encodes made by `tools/web/make-reference-streams.py`. Each stream's manifest
-entry and the demo's panel carry this credit and licence. Rights holders: see
-[docs/LEGAL.md](https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md) for contact. No other
-Netflix sequence is re-encoded.
+**No Netflix sequence has pre-encoded streams** (CC BY-NC-ND 4.0: no derivatives). The FoodMarket
+excerpt and its streams were removed on 2026-11-15.
 
 Only material whose terms allow redistribution is shipped here; the project's
 main evaluation sets (`/mldata`) do not. Johnny and FourPeople are also in the

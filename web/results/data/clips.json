@@ -57,7 +57,7 @@
    },
    {
     "name": "ind_base_clip1",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 15.0,
@@ -69,7 +69,7 @@
    },
    {
     "name": "ind_base_clip2",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 15.0,
@@ -81,7 +81,7 @@
    },
    {
     "name": "ind_base_ukof_ld_indoor_light_ohcam_003",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 15.0,
@@ -93,7 +93,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c17a92_d4803287",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -105,7 +105,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c29c52_f9524f1e",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -117,7 +117,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c41a61_4ba25ad4",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -129,7 +129,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c4c672_26d36ad8",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -141,7 +141,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c50078_6298b9c1",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -153,7 +153,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c87627_b7f6f46c",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -165,7 +165,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ca8821_db8033d5",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -177,7 +177,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_ac055be6",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -189,7 +189,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_f8c69860",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -201,7 +201,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ce6f6d_50bbee62",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -213,7 +213,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -225,7 +225,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cef86b_d8d105b9",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -237,7 +237,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d0f034_6d666f7b",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -249,7 +249,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -261,7 +261,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_7d0a60bf",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -273,7 +273,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_a0b1a3e0",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -285,7 +285,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d5edb9_f0077df3",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -297,7 +297,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d77344_9fe25620",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -309,7 +309,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d79c0a_a2b85ca4",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -321,7 +321,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d84b1d_21e6fe01",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -333,7 +333,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8944b_e157478b",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -345,7 +345,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8d95a_74aa476a",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -357,7 +357,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_038310a2",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -369,7 +369,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_7d75bb18",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -705,7 +705,7 @@
    },
    {
     "name": "ind_chirla_chirla_seq_020_camera_2_2023_07_26_13_21_40",
-    "dataset": "chirla",
+    "dataset": "CHIRLA",
     "width": 1080,
     "height": 720,
     "fps": 30.0,
@@ -717,7 +717,7 @@
    },
    {
     "name": "ind_chirla_chirla_seq_026_camera_3_2023_12_05_12_12_13",
-    "dataset": "chirla",
+    "dataset": "CHIRLA",
     "width": 1080,
     "height": 720,
     "fps": 30.0,
@@ -729,7 +729,7 @@
    },
    {
     "name": "ind_jaad_video_0015",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -741,7 +741,7 @@
    },
    {
     "name": "ind_jaad_video_0018",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -753,7 +753,7 @@
    },
    {
     "name": "ind_jaad_video_0019",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -765,7 +765,7 @@
    },
    {
     "name": "ind_jaad_video_0023",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -777,7 +777,7 @@
    },
    {
     "name": "ind_jaad_video_0042",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -789,7 +789,7 @@
    },
    {
     "name": "ind_jaad_video_0051",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -801,7 +801,7 @@
    },
    {
     "name": "ind_jaad_video_0076",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -813,7 +813,7 @@
    },
    {
     "name": "ind_jaad_video_0102",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -825,7 +825,7 @@
    },
    {
     "name": "ind_jaad_video_0113",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -837,7 +837,7 @@
    },
    {
     "name": "ind_jaad_video_0115",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -849,7 +849,7 @@
    },
    {
     "name": "ind_jaad_video_0134",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -861,7 +861,7 @@
    },
    {
     "name": "ind_jaad_video_0145",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -873,7 +873,7 @@
    },
    {
     "name": "ind_jaad_video_0150",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -885,7 +885,7 @@
    },
    {
     "name": "ind_jaad_video_0151",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -897,7 +897,7 @@
    },
    {
     "name": "ind_jaad_video_0153",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -909,7 +909,7 @@
    },
    {
     "name": "ind_jaad_video_0182",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -921,7 +921,7 @@
    },
    {
     "name": "ind_jaad_video_0183",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -933,7 +933,7 @@
    },
    {
     "name": "ind_jaad_video_0197",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -945,7 +945,7 @@
    },
    {
     "name": "ind_jaad_video_0221",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -957,7 +957,7 @@
    },
    {
     "name": "ind_jaad_video_0232",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -969,7 +969,7 @@
    },
    {
     "name": "ind_jaad_video_0233",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -981,7 +981,7 @@
    },
    {
     "name": "ind_jaad_video_0276",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -993,7 +993,7 @@
    },
    {
     "name": "ind_jaad_video_0281",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -1005,7 +1005,7 @@
    },
    {
     "name": "ind_jaad_video_0298",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -1017,7 +1017,7 @@
    },
    {
     "name": "ind_jaad_video_0318",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -1029,7 +1029,7 @@
    },
    {
     "name": "ind_jaad_video_0332",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -1041,7 +1041,7 @@
    },
    {
     "name": "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 960,
     "height": 536,
     "fps": 30.0,
@@ -1053,7 +1053,7 @@
    },
    {
     "name": "ind_meva_2018_03_07_17_05_00_17_10_00_bus_g508",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 960,
     "height": 536,
     "fps": 30.0,
@@ -1065,7 +1065,7 @@
    },
    {
     "name": "ind_meva_2018_03_13_16_10_00_16_15_00_bus_g505",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 960,
     "height": 536,
     "fps": 30.0,
@@ -1077,7 +1077,7 @@
    },
    {
     "name": "ind_mot_mot17_05",
-    "dataset": "mot",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 640,
     "height": 480,
     "fps": 14.0,
@@ -1089,7 +1089,7 @@
    },
    {
     "name": "ind_mot_mot20_01",
-    "dataset": "mot",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1101,7 +1101,7 @@
    },
    {
     "name": "ind_mp4_london",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -1113,7 +1113,7 @@
    },
    {
     "name": "ind_mp4_pedestrians2",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1125,7 +1125,7 @@
    },
    {
     "name": "ind_mp4_waiting_area1",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1197,7 +1197,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00008",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1209,7 +1209,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00010",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1221,7 +1221,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00016",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -1233,7 +1233,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00019",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1245,7 +1245,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00020",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1257,7 +1257,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00026",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -1269,7 +1269,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00029",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1281,7 +1281,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00038",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1293,7 +1293,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00057",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1305,7 +1305,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00075",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1317,7 +1317,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00076",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1329,7 +1329,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00078",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -1341,7 +1341,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00079",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1353,7 +1353,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00088",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -1365,7 +1365,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00090",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1377,7 +1377,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00092",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1389,7 +1389,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00101",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -1401,7 +1401,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00106",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 536,
     "fps": 15.0,
@@ -1413,7 +1413,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00120",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -1425,7 +1425,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00127",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 640,
     "height": 360,
     "fps": 28.78,
@@ -1437,7 +1437,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00142",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -1449,7 +1449,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00156",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -1461,7 +1461,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00161",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1473,7 +1473,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00172",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1485,7 +1485,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00173",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1497,7 +1497,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00177",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1509,7 +1509,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00187",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1521,7 +1521,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00190",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1533,7 +1533,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00195",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1545,7 +1545,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00200",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1557,7 +1557,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00208",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1569,7 +1569,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00212",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1581,7 +1581,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00214",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 23.976,
@@ -1593,7 +1593,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00216",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1605,7 +1605,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00231",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -1617,7 +1617,7 @@
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_floorballtrain",
-    "dataset": "uvg_vcm",
+    "dataset": "UVG-VCM",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -1629,7 +1629,7 @@
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_highwayview",
-    "dataset": "uvg_vcm",
+    "dataset": "UVG-VCM",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -1641,7 +1641,7 @@
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_jobfair",
-    "dataset": "uvg_vcm",
+    "dataset": "UVG-VCM",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -1653,7 +1653,7 @@
    },
    {
     "name": "ind_video_mot20_07",
-    "dataset": "MOT20",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1667,7 +1667,7 @@
   "heldout": [
    {
     "name": "pool_aboda_video11",
-    "dataset": "aboda",
+    "dataset": "ABODA",
     "width": 640,
     "height": 480,
     "fps": 30.0,
@@ -1679,7 +1679,7 @@
    },
    {
     "name": "pool_barscene_pristine",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -1811,7 +1811,7 @@
    },
    {
     "name": "pool_boxingpractice",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -1823,7 +1823,7 @@
    },
    {
     "name": "pool_caucafall_walk_s9",
-    "dataset": "caucafall",
+    "dataset": "CAUCAFall",
     "width": 720,
     "height": 480,
     "fps": 20.0,
@@ -1835,7 +1835,7 @@
    },
    {
     "name": "pool_chad_1_093",
-    "dataset": "chad",
+    "dataset": "CHAD",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -1847,7 +1847,7 @@
    },
    {
     "name": "pool_chad_3_086",
-    "dataset": "chad",
+    "dataset": "CHAD",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -1859,7 +1859,7 @@
    },
    {
     "name": "pool_chad_4_109",
-    "dataset": "chad",
+    "dataset": "CHAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -1871,7 +1871,7 @@
    },
    {
     "name": "pool_crosswalk",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -1883,7 +1883,7 @@
    },
    {
     "name": "pool_crowd_MOT20_mot20_08",
-    "dataset": "MOT20",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 958,
     "height": 366,
     "fps": 25.0,
@@ -1907,7 +1907,7 @@
    },
    {
     "name": "pool_crowd_mot_mot17_04",
-    "dataset": "mot",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -1919,7 +1919,7 @@
    },
    {
     "name": "pool_crowd_person_uid_vid_00210",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -1931,7 +1931,7 @@
    },
    {
     "name": "pool_crowd_person_uid_vid_00222",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1943,7 +1943,7 @@
    },
    {
     "name": "pool_crowd_person_uid_vid_00224",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -1955,7 +1955,7 @@
    },
    {
     "name": "pool_dancers_pristine",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -2003,7 +2003,7 @@
    },
    {
     "name": "pool_ducks_take_off_pristine",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 1280,
     "height": 720,
     "fps": 25.0,
@@ -2015,7 +2015,7 @@
    },
    {
     "name": "pool_foodmarket_pristine",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -2027,7 +2027,7 @@
    },
    {
     "name": "pool_gmdcsa24_s1_adl05",
-    "dataset": "gmdcsa24",
+    "dataset": "GMDCSA-24",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2039,7 +2039,7 @@
    },
    {
     "name": "pool_in_to_tree_360p",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 640,
     "height": 360,
     "fps": 25.0,
@@ -2051,7 +2051,7 @@
    },
    {
     "name": "pool_jaad_0081",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2063,7 +2063,7 @@
    },
    {
     "name": "pool_jaad_0110",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2075,7 +2075,7 @@
    },
    {
     "name": "pool_jaad_0340",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2087,7 +2087,7 @@
    },
    {
     "name": "pool_kristen_sara_360p",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -2099,7 +2099,7 @@
    },
    {
     "name": "pool_lowlight_bdd100_bdd_00cee0e0_5e25daa7",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -2111,7 +2111,7 @@
    },
    {
     "name": "pool_lowlight_bdd100_bdd_00d8d95a_47d98291",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -2123,7 +2123,7 @@
    },
    {
     "name": "pool_lowlight_bdd100_bdd_00db9030_5102ed41",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -2147,7 +2147,7 @@
    },
    {
     "name": "pool_meva_bus_g506",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 644,
     "height": 360,
     "fps": 30.0,
@@ -2159,7 +2159,7 @@
    },
    {
     "name": "pool_meva_hospital_g301",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -2171,7 +2171,7 @@
    },
    {
     "name": "pool_meva_school_g336",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -2183,7 +2183,7 @@
    },
    {
     "name": "pool_midnight_sun_pristine",
-    "dataset": "svt",
+    "dataset": "SVT Open Content",
     "width": 1280,
     "height": 720,
     "fps": 25.0,
@@ -2195,7 +2195,7 @@
    },
    {
     "name": "pool_narrator_pristine",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -2207,7 +2207,7 @@
    },
    {
     "name": "pool_old_town_cross_360p",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 640,
     "height": 360,
     "fps": 25.0,
@@ -2267,7 +2267,7 @@
    },
    {
     "name": "pool_pan_bdd100_bdd_00ce8219_d0b5582e",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2279,7 +2279,7 @@
    },
    {
     "name": "pool_pan_bdd100_bdd_00d7268f_fd4487be",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2291,7 +2291,7 @@
    },
    {
     "name": "pool_pan_jaad_video_0128",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -2303,7 +2303,7 @@
    },
    {
     "name": "pool_pan_jaad_video_0194",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2315,7 +2315,7 @@
    },
    {
     "name": "pool_pan_jaad_video_0199",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2327,7 +2327,7 @@
    },
    {
     "name": "pool_pp22_uid_00001",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 24.0,
@@ -2339,7 +2339,7 @@
    },
    {
     "name": "pool_pp22_uid_00070",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 24.0,
@@ -2351,7 +2351,7 @@
    },
    {
     "name": "pool_smoke_sauna_360p",
-    "dataset": "svt",
+    "dataset": "SVT Open Content",
     "width": 640,
     "height": 360,
     "fps": 25.0,
@@ -2375,7 +2375,7 @@
    },
    {
     "name": "pool_static_bdd100_bdd_00dc5030_237e7f71",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2399,7 +2399,7 @@
    },
    {
     "name": "pool_static_chirla_chirla_seq_024_camera_7_2023",
-    "dataset": "chirla",
+    "dataset": "CHIRLA",
     "width": 540,
     "height": 360,
     "fps": 30.0,
@@ -2423,7 +2423,7 @@
    },
    {
     "name": "pool_tango_pristine",
-    "dataset": "xiph",
+    "dataset": "Netflix Open Content (El Fuente / Chimera), via Xiph.org",
     "width": 1280,
     "height": 676,
     "fps": 30.0,
@@ -2447,7 +2447,7 @@
    },
    {
     "name": "pool_vidyo1_pristine",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2459,7 +2459,7 @@
    },
    {
     "name": "pool_vidyo3_360p",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -2471,7 +2471,7 @@
    },
    {
     "name": "pool_vidyo4",
-    "dataset": "xiph",
+    "dataset": "Xiph.org test media (derf's collection)",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2483,7 +2483,7 @@
    },
    {
     "name": "pool_waterfall_360p",
-    "dataset": "svt",
+    "dataset": "SVT Open Content",
     "width": 640,
     "height": 360,
     "fps": 25.0,
@@ -2495,7 +2495,7 @@
    },
    {
     "name": "pool_wildtrack_cam1",
-    "dataset": "wildtrack",
+    "dataset": "WILDTRACK",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2507,7 +2507,7 @@
    },
    {
     "name": "pool_wildtrack_cam3",
-    "dataset": "wildtrack",
+    "dataset": "WILDTRACK",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2567,7 +2567,7 @@
    },
    {
     "name": "ind_base_clip1",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 15.0,
@@ -2579,7 +2579,7 @@
    },
    {
     "name": "ind_base_clip2",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 15.0,
@@ -2591,7 +2591,7 @@
    },
    {
     "name": "ind_base_ukof_ld_indoor_light_ohcam_003",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 15.0,
@@ -2603,7 +2603,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c17a92_d4803287",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2615,7 +2615,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c29c52_f9524f1e",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2627,7 +2627,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c41a61_4ba25ad4",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2639,7 +2639,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c4c672_26d36ad8",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2651,7 +2651,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c50078_6298b9c1",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2663,7 +2663,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c87627_b7f6f46c",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2675,7 +2675,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ca8821_db8033d5",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2687,7 +2687,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_ac055be6",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2699,7 +2699,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_f8c69860",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -2711,7 +2711,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ce6f6d_50bbee62",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2723,7 +2723,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -2735,7 +2735,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cef86b_d8d105b9",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2747,7 +2747,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d0f034_6d666f7b",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2759,7 +2759,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2771,7 +2771,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_7d0a60bf",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2783,7 +2783,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_a0b1a3e0",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2795,7 +2795,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d5edb9_f0077df3",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2807,7 +2807,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d77344_9fe25620",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2819,7 +2819,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d79c0a_a2b85ca4",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2831,7 +2831,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d84b1d_21e6fe01",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -2843,7 +2843,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8944b_e157478b",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2855,7 +2855,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8d95a_74aa476a",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -2867,7 +2867,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_038310a2",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -2879,7 +2879,7 @@
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_7d75bb18",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -3215,7 +3215,7 @@
    },
    {
     "name": "ind_chirla_chirla_seq_020_camera_2_2023_07_26_13_21_40",
-    "dataset": "chirla",
+    "dataset": "CHIRLA",
     "width": 1080,
     "height": 720,
     "fps": 30.0,
@@ -3227,7 +3227,7 @@
    },
    {
     "name": "ind_chirla_chirla_seq_026_camera_3_2023_12_05_12_12_13",
-    "dataset": "chirla",
+    "dataset": "CHIRLA",
     "width": 1080,
     "height": 720,
     "fps": 30.0,
@@ -3239,7 +3239,7 @@
    },
    {
     "name": "ind_jaad_video_0015",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3251,7 +3251,7 @@
    },
    {
     "name": "ind_jaad_video_0018",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3263,7 +3263,7 @@
    },
    {
     "name": "ind_jaad_video_0019",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3275,7 +3275,7 @@
    },
    {
     "name": "ind_jaad_video_0023",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3287,7 +3287,7 @@
    },
    {
     "name": "ind_jaad_video_0042",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3299,7 +3299,7 @@
    },
    {
     "name": "ind_jaad_video_0051",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3311,7 +3311,7 @@
    },
    {
     "name": "ind_jaad_video_0076",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3323,7 +3323,7 @@
    },
    {
     "name": "ind_jaad_video_0102",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3335,7 +3335,7 @@
    },
    {
     "name": "ind_jaad_video_0113",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3347,7 +3347,7 @@
    },
    {
     "name": "ind_jaad_video_0115",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3359,7 +3359,7 @@
    },
    {
     "name": "ind_jaad_video_0134",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3371,7 +3371,7 @@
    },
    {
     "name": "ind_jaad_video_0145",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3383,7 +3383,7 @@
    },
    {
     "name": "ind_jaad_video_0150",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3395,7 +3395,7 @@
    },
    {
     "name": "ind_jaad_video_0151",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3407,7 +3407,7 @@
    },
    {
     "name": "ind_jaad_video_0153",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3419,7 +3419,7 @@
    },
    {
     "name": "ind_jaad_video_0182",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3431,7 +3431,7 @@
    },
    {
     "name": "ind_jaad_video_0183",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3443,7 +3443,7 @@
    },
    {
     "name": "ind_jaad_video_0197",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3455,7 +3455,7 @@
    },
    {
     "name": "ind_jaad_video_0221",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3467,7 +3467,7 @@
    },
    {
     "name": "ind_jaad_video_0232",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3479,7 +3479,7 @@
    },
    {
     "name": "ind_jaad_video_0233",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3491,7 +3491,7 @@
    },
    {
     "name": "ind_jaad_video_0276",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3503,7 +3503,7 @@
    },
    {
     "name": "ind_jaad_video_0281",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3515,7 +3515,7 @@
    },
    {
     "name": "ind_jaad_video_0298",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3527,7 +3527,7 @@
    },
    {
     "name": "ind_jaad_video_0318",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3539,7 +3539,7 @@
    },
    {
     "name": "ind_jaad_video_0332",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 960,
     "height": 540,
     "fps": 30.0,
@@ -3551,7 +3551,7 @@
    },
    {
     "name": "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 960,
     "height": 536,
     "fps": 30.0,
@@ -3563,7 +3563,7 @@
    },
    {
     "name": "ind_meva_2018_03_07_17_05_00_17_10_00_bus_g508",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 960,
     "height": 536,
     "fps": 30.0,
@@ -3575,7 +3575,7 @@
    },
    {
     "name": "ind_meva_2018_03_13_16_10_00_16_15_00_bus_g505",
-    "dataset": "meva",
+    "dataset": "MEVA",
     "width": 960,
     "height": 536,
     "fps": 30.0,
@@ -3587,7 +3587,7 @@
    },
    {
     "name": "ind_mot_mot17_05",
-    "dataset": "mot",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 640,
     "height": 480,
     "fps": 14.0,
@@ -3599,7 +3599,7 @@
    },
    {
     "name": "ind_mot_mot20_01",
-    "dataset": "mot",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -3611,7 +3611,7 @@
    },
    {
     "name": "ind_mp4_london",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -3623,7 +3623,7 @@
    },
    {
     "name": "ind_mp4_pedestrians2",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -3635,7 +3635,7 @@
    },
    {
     "name": "ind_mp4_waiting_area1",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -3707,7 +3707,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00008",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3719,7 +3719,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00010",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3731,7 +3731,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00016",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -3743,7 +3743,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00019",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3755,7 +3755,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00020",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3767,7 +3767,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00026",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -3779,7 +3779,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00029",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3791,7 +3791,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00038",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3803,7 +3803,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00057",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3815,7 +3815,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00075",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3827,7 +3827,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00076",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3839,7 +3839,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00078",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -3851,7 +3851,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00079",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3863,7 +3863,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00088",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 23.976,
@@ -3875,7 +3875,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00090",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3887,7 +3887,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00092",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3899,7 +3899,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00101",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 24.0,
@@ -3911,7 +3911,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00106",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 536,
     "fps": 15.0,
@@ -3923,7 +3923,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00120",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 640,
     "height": 360,
     "fps": 29.97,
@@ -3935,7 +3935,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00127",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 640,
     "height": 360,
     "fps": 28.78,
@@ -3947,7 +3947,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00142",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 640,
     "height": 360,
     "fps": 30.0,
@@ -3959,7 +3959,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00156",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -3971,7 +3971,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00161",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -3983,7 +3983,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00172",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -3995,7 +3995,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00173",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4007,7 +4007,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00177",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4019,7 +4019,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00187",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4031,7 +4031,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00190",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4043,7 +4043,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00195",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4055,7 +4055,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00200",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4067,7 +4067,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00208",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4079,7 +4079,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00212",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -4091,7 +4091,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00214",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 23.976,
@@ -4103,7 +4103,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00216",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 960,
     "height": 540,
     "fps": 29.97,
@@ -4115,7 +4115,7 @@
    },
    {
     "name": "ind_personpath22_uid_vid_00231",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -4127,7 +4127,7 @@
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_floorballtrain",
-    "dataset": "uvg_vcm",
+    "dataset": "UVG-VCM",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -4139,7 +4139,7 @@
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_highwayview",
-    "dataset": "uvg_vcm",
+    "dataset": "UVG-VCM",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -4151,7 +4151,7 @@
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_jobfair",
-    "dataset": "uvg_vcm",
+    "dataset": "UVG-VCM",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -4163,7 +4163,7 @@
    },
    {
     "name": "ind_video_mot20_07",
-    "dataset": "MOT20",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 960,
     "height": 540,
     "fps": 25.0,
@@ -4201,7 +4201,7 @@
    },
    {
     "name": "static_london_bus",
-    "dataset": "unattributed (own store)",
+    "dataset": "own collection",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -4213,7 +4213,7 @@
    },
    {
     "name": "pan_bdd_00cef86b",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,
@@ -4225,7 +4225,7 @@
    },
    {
     "name": "pan_jaad_0101",
-    "dataset": "jaad",
+    "dataset": "JAAD",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -4237,7 +4237,7 @@
    },
    {
     "name": "crowd_pp22_051",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 24.0,
@@ -4249,7 +4249,7 @@
    },
    {
     "name": "crowd_mot20_06",
-    "dataset": "MOT20",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 1884,
     "height": 720,
     "fps": 25.0,
@@ -4273,7 +4273,7 @@
    },
    {
     "name": "handheld_mot17_10",
-    "dataset": "mot",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
     "width": 1280,
     "height": 720,
     "fps": 30.0,
@@ -4285,7 +4285,7 @@
    },
    {
     "name": "lowlight_pp22_049",
-    "dataset": "personpath22",
+    "dataset": "PersonPath22",
     "width": 1280,
     "height": 720,
     "fps": 24.0,
@@ -4297,7 +4297,7 @@
    },
    {
     "name": "lowlight_bdd_00ce95b0",
-    "dataset": "bdd100k_mot",
+    "dataset": "BDD100K MOT",
     "width": 1280,
     "height": 720,
     "fps": 29.97,

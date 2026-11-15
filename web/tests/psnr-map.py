@@ -20,7 +20,7 @@ MS_SSIM_TOLERANCE. A live view's packets
 must be byte-identical in the normal and slowed runs (exact sources: the
 machine's speed changes nothing).
 
-Scenarios: the BWC SOC FoodMarket 720p stream beside a matched live encode;
+Scenarios: a pre-encoded 720p stream (x264, Johnny) beside a matched live encode;
 a 640x360 pre-encoded stream beside a live 854x480 view (two renditions); a
 live 1280x720 view beside a live 640x360 one (two renditions).
 
@@ -129,8 +129,8 @@ def choose_stream(page, view: int, stream: str, clip: str):
     page.wait_for_function(f"document.querySelector('#clip').value === '{clip}'", timeout=30000)
 
 
-def match_bwc(page):
-    choose_stream(page, 0, 'netflix-food-market-bwc-soc-h264-1280x720-30fps-1000k', 'netflix-food-market')
+def match_720p(page):
+    choose_stream(page, 0, 'xiph-johnny-x264-medium-1280x720-30fps-300k', 'xiph-johnny')
     page.locator('.match').nth(0).click()
 
 
@@ -144,8 +144,8 @@ def live_720p_beside_360p(page):
 
 
 SCENARIOS = [
-    (Scenario('BWC SOC 720p stream beside a matched live encode', 'netflix-food-market',
-              (View(stream='netflix-food-market-bwc-soc-h264-1280x720-30fps-1000k'), View(codec='h264', width=1280, height=720, fps=30))), match_bwc),
+    (Scenario('720p stream beside a matched live encode', 'xiph-johnny',
+              (View(stream='xiph-johnny-x264-medium-1280x720-30fps-300k'), View(codec='h264', width=1280, height=720, fps=30))), match_720p),
     (Scenario('640x360 stream beside a live 854x480 view', 'xiph-johnny',
               (View(stream='xiph-johnny-openh264-640x360-15fps-150k'), View(codec='av1', width=854, height=480, fps=15))), reference_beside_480p),
     (Scenario('live 1280x720 beside live 640x360', 'netflix-bar-scene',

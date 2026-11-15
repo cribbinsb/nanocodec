@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """A pre-encoded view's PSNR on the page equals the offline value, frame by frame.
 
-Headless Chromium plays a pre-encoded stream (the BWC SOC H.264 1000k FoodMarket
-stream) in view A against a live view B, with the page's main thread stalled for
+Headless Chromium plays a pre-encoded stream (x264 medium, Johnny 720p 300k) in view A against a live view B, with the page's main thread stalled for
 30 ms every 170 ms (a busy page: analysis on, a slow machine). For every frame A
 shows, the page's PSNR-YUV must equal, within TOLERANCE_DB, the PSNR of the same
 stream frame against the demo's source frame of that tick, computed here from
@@ -28,7 +27,7 @@ from playwright.sync_api import sync_playwright
 
 WEB = Path(__file__).resolve().parents[1]
 REPO = WEB.parent
-STREAM = 'netflix-food-market-bwc-soc-h264-1280x720-30fps-1000k'
+STREAM = 'xiph-johnny-x264-medium-1280x720-30fps-300k'
 WIDTH, HEIGHT, FPS = 1280, 720, 30
 TOLERANCE_DB = 0.05
 MEASURE_S = 12
@@ -69,7 +68,7 @@ def page_psnr() -> list[tuple[int, float]]:
             page.locator('.view-source [data-view-source="reference"]').nth(0).click()
             page.wait_for_function("document.querySelectorAll('.stream-picker')[0].options.length > 10", timeout=30000)
             page.locator('.stream-picker').nth(0).select_option(STREAM)
-            page.wait_for_function("document.querySelector('#clip').value === 'netflix-food-market'", timeout=30000)
+            page.wait_for_function("document.querySelector('#clip').value === 'xiph-johnny'", timeout=30000)
             page.locator('.match').nth(0).click()
             # Match restarts the comparison; measure once the restarted one delivers.
             page.wait_for_function("+(document.querySelector('#session-stats').textContent.match(/(\\d+) frames compared/) || [0, 0])[1] >= 10", timeout=120000)
@@ -96,7 +95,7 @@ def offline_psnr() -> list[float]:
                               '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-'], capture_output=True, check=True).stdout
     with tempfile.TemporaryDirectory(dir=DATA / 'work') as scratch:
         source_path = Path(scratch) / 'source.yuv'
-        generator.write_source(generator.Entry('netflix-food-market', '', WIDTH, HEIGHT, FPS, 0), source_path)
+        generator.write_source(generator.Entry('xiph-johnny', '', WIDTH, HEIGHT, FPS, 0), source_path)
         source = np.fromfile(source_path, np.uint8).reshape(-1, frame_bytes)
     frames = np.frombuffer(decoded, np.uint8).reshape(-1, frame_bytes)
     planes = ((0, luma), (luma, luma + luma // 4), (luma + luma // 4, frame_bytes))

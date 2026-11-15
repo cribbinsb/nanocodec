@@ -147,8 +147,9 @@ class Entry:
 
 
 # Public-domain (Xiph), CC BY (Blender, SVT 2022) and CC BY-NC-SA (MOTChallenge,
-# whose notice travels in the manifest: NOTICES) clips, and Netflix FoodMarket only
-# (CC BY-NC-ND 4.0, by the owner's decision, with its notice). No SVT Multi Format.
+# whose notice travels in the manifest: NOTICES) clips. No Netflix clip (CC BY-NC-ND:
+# no streams are made from them; FoodMarket's were removed 2026-11-15) and no SVT
+# Multi Format.
 # Rates span a starved, a mid and a comfortable rung.
 GRID = [
     # Johnny 720p30 300 kbps: H.264 (x264, openh264), AV1 and VP9 at one rate.
@@ -217,11 +218,6 @@ GRID = [
     Entry("mot17-night-crowd", "x264-medium", 1280, 720, 30, 800),
     Entry("mot17-night-crowd", "openh264", 1280, 720, 30, 800),
     Entry("mot17-night-crowd", "vpx-rt9", 640, 360, 15, 250),
-    # Netflix FoodMarket (owner's decision for this clip only): software encoders at the
-    # supplied bodycam SoC streams' size, rate, bitrates and key interval (SUPPLIED: a key
-    # every 5 s, frames 0 and 150), so the comparison is like for like.
-    *(Entry("netflix-food-market", encoder, 1280, 720, 30, kbps, key_seconds=SUPPLIED_KEY_SECONDS)
-      for encoder in ("x264-medium", "openh264", "x265-medium") for kbps in (1000, 1500, 2000)),
 ]
 
 # Licence notices that travel with every stream of a clip (manifest `notice`, shown in
@@ -229,12 +225,7 @@ GRID = [
 MOT_NOTICE = ("MOTChallenge {set} ({authors}), CC BY-NC-SA 3.0, https://motchallenge.net. This stream re-encodes "
               "the demo's hosted excerpt (cut, scaled, retimed to 30 fps, re-encoded) for non-commercial codec "
               "comparison, and is offered under the same CC BY-NC-SA 3.0 licence.")
-NETFLIX_FOOD_MARKET_NOTICE = (
-    "Copyright (C) NETFLIX INC. 2015 · Netflix El Fuente \"Food Market\" · CC BY-NC-ND 4.0, "
-    "https://creativecommons.org/licenses/by-nc-nd/4.0/. This stream is an encode of the demo's hosted excerpt, "
-    "made for non-commercial codec comparison; the picture is otherwise unchanged.")
 NOTICES = {
-    "netflix-food-market": NETFLIX_FOOD_MARKET_NOTICE,
     "mot17-mall-walk": MOT_NOTICE.format(set="MOT17", authors="Milan et al."),
     "mot17-night-crowd": MOT_NOTICE.format(set="MOT17", authors="Milan et al."),
     "mot20-dense-crowd": MOT_NOTICE.format(set="MOT20", authors="Dendorfer et al."),
@@ -294,20 +285,8 @@ BWC_SOC = {
 SUPPLIED_SOURCE_NOTE = ("Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); "
                         "its PSNR against the frames the demo shows now is about {gap:.1f} dB lower than against its "
                         "own input.")
-SUPPLIED = [
-    Supplied("netflix-food-market", Codec.H264, 1280, 720, 30, 1000,
-             "9d0ce5b075f00bd771ac0b23b108579e6658f75bd702ad61193caef6e9cf621a", 0.37),
-    Supplied("netflix-food-market", Codec.H264, 1280, 720, 30, 1500,
-             "190157e0d217b916b2eec1c29f64d7f7c94af2383165956c9e0ab508f5ce2b49", 0.50),
-    Supplied("netflix-food-market", Codec.H264, 1280, 720, 30, 2000,
-             "dca953101d27dccee2031f28c0e7d790de1fd9e74668f69b29dfe8788e548408", 0.62),
-    Supplied("netflix-food-market", Codec.HEVC, 1280, 720, 30, 1000,
-             "11b015dc548c370f4152bc478cdb3e4f263e44e88abae3aff044cb0b2575b299", 0.36),
-    Supplied("netflix-food-market", Codec.HEVC, 1280, 720, 30, 1500,
-             "ec0cd6f874131a220e52cb19c20d0596a07e8e1fa231dd5c97ea4512902ddda0", 0.46),
-    Supplied("netflix-food-market", Codec.HEVC, 1280, 720, 30, 2000,
-             "aef5bc5d184de34da5b307f3de51065b2809cdd82c0e3abd6e03be789f229c61", 0.55),
-]
+#: None now: the FoodMarket streams were removed with that clip (owner, 2026-11-15).
+SUPPLIED: list[Supplied] = []
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -382,7 +361,8 @@ def version(encoder: Encoder, binary: str) -> dict:
     """The binary's own version string, the pinned source and (NVENC) the driver."""
     probes = {"x264": ["--version"], "x265": ["--version"], "SvtAv1EncApp": ["--version"],
               "ffmpeg": ["-hide_banner", "-version"], "aomenc": ["--help"], "vpxenc": ["--help"]}
-    info = {"binary": binary.replace(str(Path.home()), "~"), "source": pinned_source(encoder.pinned)}
+    # the program's name only: the manifest is published, a local path says nothing
+    info = {"binary": Path(binary).name, "source": pinned_source(encoder.pinned)}
     if encoder.tool in probes:
         r = subprocess.run([binary, *probes[encoder.tool]], capture_output=True, text=True)
         text = (r.stdout + r.stderr).splitlines()
@@ -589,8 +569,11 @@ def described(record: dict) -> dict:
 
 
 def display_arg(arg: str, yuv: Path, raw: Path) -> str:
-    """The command as recorded: scratch paths replaced by readable names."""
-    return arg.replace(str(yuv), "source.yuv").replace(str(raw), "stream.out").replace(str(Path.home()), "~")
+    """The command as recorded (and published with the demo): scratch paths replaced
+    by readable names, any other local path by its file name (the program run, a
+    preset file), never a directory of this machine."""
+    arg = arg.replace(str(yuv), "source.yuv").replace(str(raw), "stream.out")
+    return Path(arg).name if arg.startswith(str(Path.home())) else arg
 
 
 def write_table(manifest: dict) -> None:

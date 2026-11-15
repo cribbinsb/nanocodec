@@ -1,6 +1,6 @@
 {
  "clipsets": {
-  "fresh": "Held-out, fresh: sources no clip set of ours had used",
+  "fresh": "Held-out, fresh: videos none of our tuning used",
   "heldout": "Held-out, all: the fresh clips plus an earlier held-out check",
   "dev": "Development: the clips we tune beside"
  },

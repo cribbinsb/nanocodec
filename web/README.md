@@ -133,15 +133,11 @@ are needed: each worker has its own ordinary WASM memory.
   PSNR is against the same captured source frames as a live version's. **Match nanocodec to
   this stream** sets the other version live to the stream's size, frame rate,
   target (peak 2×), 1 s buffer and key interval, starting with the same codec (the
-  preset is yours). **BWC SOC**: six FoodMarket streams supplied by the owner from a
-  body-worn-camera SoC's hardware encoder (EVBR, a key frame every 5 s), shown as supplied, with no
-  command line, and with x264 medium / openh264 / x265 medium encodes at the same 1000 / 1500 /
-  2000 kbps and key interval beside them (each panel names its rate control). The 68 streams (every clip has 3 or more, several at one size and rate
+  preset is yours). The 53 streams (every clip has 3 or more, several at one size and rate
   across encoders; Xiph, Blender, SVT 2022 and MOTChallenge clips, the MOT streams under
-  CC BY-NC-SA 3.0 with that notice in their panel; of Netflix only FoodMarket, by the owner's decision,
-  with its CC BY-NC-ND notice) and their commands are listed in
+  CC BY-NC-SA 3.0 with that notice in their panel; none from Netflix clips) and their commands are listed in
   [`docs/results/reference-streams.md`](../docs/results/reference-streams.md);
-  `tools/web/make-reference-streams.py` regenerates them all (the supplied ones are pinned and checked) and that table.
+  `tools/web/make-reference-streams.py` regenerates them all and that table.
 - **Bitrate (default):** a live version starts at 300 kbps, with a peak rate of
   twice the target (Advanced; it follows the target until set itself) and a
   one-second buffer. Compare equal targets after startup has
