@@ -30,6 +30,8 @@
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+#[cfg(target_arch = "x86_64")]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -157,6 +159,8 @@ pub(crate) fn kernel(isa: Isa) -> QuantizeFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => avx2::quantize,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512::quantize,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::quantize,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
