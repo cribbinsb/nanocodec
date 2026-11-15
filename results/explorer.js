@@ -29,9 +29,6 @@ const state = {
 function viewId() {
   const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
   if (state.mode === 'qp') return `rc-qp-${zid}`;
-  // The development chart is measured against the default-tuned zero line
-  // only; the tuned line there would be a different (rate-control) run.
-  if (state.clipset === 'dev') return 'dev-default';
   return `${state.clipset}-${zid}`;
 }
 
@@ -139,9 +136,6 @@ function viewNote(data, view) {
 }
 
 function render(data, root) {
-  // One zero line: x264 medium --tune psnr. The development chart has only
-  // the default-tuned line until its next refresh adds the tuned one.
-  state.zero = state.mode === 'cbr' && state.clipset === 'dev' ? 'x264-medium' : TUNED_ZERO;
   const view = data.views.find((v) => v.id === viewId());
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
   for (const [name, value] of [['clipset', state.mode === 'qp' ? 'dev' : state.clipset], ['metric', state.metric]]) {

@@ -7,6 +7,8 @@
 const SVG = 'http://www.w3.org/2000/svg';
 const MARGIN = { top: 14, right: 18, bottom: 46, left: 56 };
 const LABEL_CHAR_PX = 6.4; // average label glyph width at the chart's label size
+// Label distances tried beyond the point's own side, in label heights.
+const LEADER_RINGS = [0, 1, 2, 3];
 const LABEL_HEIGHT = 13;
 const HIT_RADIUS = 14; // generous hit target around an 8-12 px marker
 const LOG_TICK_STEPS = [1, 2, 5];
@@ -136,17 +138,25 @@ export function drawScatter(container, points, opts) {
     const w = p.label.length * LABEL_CHAR_PX;
     const cx = sx(p.x);
     const cy = sy(p.y);
-    const gap = radius + 4;
-    const sides = [
+    // The four sides next to the point, then the same farther out on a leader line:
+    // a crowded cluster (the slow rungs beside the Defaults) used to drop labels.
+    const sidesAt = (gap) => [
       { x: cx + gap, y: cy + 4, anchor: 'start', box: { x0: cx + gap, x1: cx + gap + w, y0: cy - 8, y1: cy + 5 } },
       { x: cx - gap, y: cy + 4, anchor: 'end', box: { x0: cx - gap - w, x1: cx - gap, y0: cy - 8, y1: cy + 5 } },
       { x: cx, y: cy - gap - 2, anchor: 'middle', box: { x0: cx - w / 2, x1: cx + w / 2, y0: cy - gap - LABEL_HEIGHT, y1: cy - gap } },
       { x: cx, y: cy + gap + 10, anchor: 'middle', box: { x0: cx - w / 2, x1: cx + w / 2, y0: cy + gap, y1: cy + gap + LABEL_HEIGHT } },
     ];
+    const near = radius + 4;
+    const sides = LEADER_RINGS.flatMap((ring) => sidesAt(near + ring * LABEL_HEIGHT));
     const inside = (b) => b.x0 >= 2 && b.x1 <= width - 2 && b.y0 >= 0 && b.y1 <= height - MARGIN.bottom;
-    const side = sides.find((s) => inside(s.box) && !overlaps(s.box));
+    const side = sides.find((s) => inside(s.box) && !overlaps(s.box))
+      // our own points are always labelled, overlapping if nothing is free
+      || (p.kind === 'ours' ? sides.find((s) => inside(s.box)) : null);
     if (!side) continue;
     placed.push(side.box);
+    if (Math.hypot(side.x - cx, side.y - cy) > near + LABEL_HEIGHT) {
+      labels.append(svg('line', { class: 'leader', x1: cx, y1: cy, x2: side.x, y2: side.y - 4 }));
+    }
     const t = svg('text', { class: `point-label ${p.kind === 'ours' ? 'ours' : ''}`, x: side.x, y: side.y, 'text-anchor': side.anchor });
     t.textContent = p.label;
     labels.append(t);
