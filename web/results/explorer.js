@@ -14,6 +14,11 @@ import {
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
 const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'Ryzen 9 5950X core' };
+// The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
+const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
+const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
+// Fixed-QP speed: the lens run's own measurement, on the PC only.
+const QP_SPEED = 'frames per CPU second on the x86 PC (HM/VVenC from an earlier run)';
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
 // The demo's pre-encoded streams (for a reference point's demo link), loaded on first use.
@@ -27,6 +32,7 @@ const state = {
 };
 
 function viewId() {
+  if (state.mode === 'qp') return 'qp';
   const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
   return `${state.clipset}-${zid}`;
 }
@@ -59,7 +65,7 @@ function describe(data, view, family, v) {
   const version = versionOf(data, view, family);
   return el('div', {},
     el('strong', {}, p.label), version ? el('span', { class: 'dim' }, ` · ${version}`) : null,
-    el('div', {}, el('span', { class: 'value' }, pct(v[state.metric])), ` ${METRIC_SHORT[state.metric]} vs ${ZERO_NAMES[view.zero]}`),
+    el('div', {}, el('span', { class: 'value' }, pct(v[state.metric])), ` ${SHORT[state.metric]} vs ${ZERO_NAMES[view.zero]}`),
     v.iqr && v.iqr[0] !== null && family !== view.zero
       ? el('div', { class: 'dim' }, `per-clip interquartile range ${pct(v.iqr[0])} to ${pct(v.iqr[1])}`) : null,
     el('div', {}, `${fps(v.fps.jetson)} fps Jetson core · ${fps(v.fps.x86)} fps PC core`),
@@ -74,7 +80,7 @@ function detail(data, view, family) {
     ['Encoder', `${p.owner}${versionOf(data, view, family) ? `, ${versionOf(data, view, family)}` : ''}`],
     ['Codec', CODEC_NAMES[p.codec] || p.codec],
     ['Preset', p.preset + (p.tune ? `, --tune ${p.tune}` : '')],
-    ...view.metrics.map((m) => [METRIC_NAMES[m], pct(v[m])]),
+    ...view.metrics.map((m) => [NAMES[m], pct(v[m])]),
     v.iqr && v.iqr[0] !== null && family !== view.zero ? ['Per-clip spread (J)', `${pct(v.iqr[0])} to ${pct(v.iqr[1])} (interquartile)`] : null,
     v.clips_scored ? ['Clips scored', String(v.clips_scored)] : null,
     v.rate_invalid_points ? ['Rate-invalid points', `${v.rate_invalid_points} (kept on their curves)`] : null,
@@ -125,6 +131,9 @@ function fillDemoLink(data, family, root) {
 }
 
 function viewNote(data, view) {
+  if (view.rate_mode === 'qp') {
+    return `Fixed QP on the AOM common test conditions, low delay (${view.condition}): ${view.clips} sequences, every encoder at fixed quantizers, BD-rate against x264 medium at fixed QP; ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page). Build ${view.build_commit}. Speed: ${QP_SPEED}.`;
+  }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
   const base = view.builds[view.base_build] || view.base_build;
@@ -133,10 +142,12 @@ function viewNote(data, view) {
 
 function render(data, root) {
   const view = data.views.find((v) => v.id === viewId());
+  if (view.rate_mode === 'qp') state.platform = 'x86';  // the lens timed the PC only
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
   for (const [name, value] of [['clipset', state.clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
+      if (name === 'clipset') b.disabled = state.mode === 'qp';
       if (name === 'metric') {
         b.disabled = !view.metrics.includes(b.dataset.value);
         b.title = b.disabled ? 'Not in this run’s data (the held-out and development charts record J, PSNR-YUV and VMAF v1)' : '';
@@ -161,19 +172,32 @@ function render(data, root) {
   });
   const chart = root.querySelector('.chart');
   const title = root.querySelector('.chart-title');
-  title.textContent = `${METRIC_NAMES[state.metric]} vs ${ZERO_NAMES[view.zero]}, against single-thread encode speed`;
-  root.querySelector('.chart-sub').textContent = `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
+  const zero = view.rate_mode === 'qp' ? 'x264 medium at fixed QP' : ZERO_NAMES[view.zero];
+  title.textContent = `${NAMES[state.metric]} vs ${zero}, against single-thread encode speed`;
+  root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
+    ? `Fixed QP · AOM CTC low delay, build ${view.build_commit} · lower is fewer bits, right is faster`
+    : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
   if (!points.length) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
   } else {
     drawScatter(chart, points, {
-      xLabel: `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
-      yLabel: `${METRIC_SHORT[state.metric]} BD-rate (lower is better)`,
+      xLabel: view.rate_mode === 'qp' ? `${QP_SPEED} (log scale)` : `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
+      yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
       selected: state.selected,
       describe: (p) => describe(data, view, p.id, view.values[p.id]),
       onSelect: (p) => { state.selected = p.id; render(data, root); root.querySelector('.detail-slot').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); },
     });
+  }
+  // Encoders with a value but no speed on this machine (never timed here): listed, not dropped.
+  const untimed = Object.entries(view.values)
+    .filter(([f, v]) => data.points[f] && !v.fps?.[state.platform] && v[state.metric] !== null)
+    .map(([f, v]) => `${data.points[f].label} (${pct(v[state.metric])}${v.fps?.x86 ? `, ${fps(v.fps.x86)} fps on the PC in the lens run` : ''})`);
+  if (untimed.length) {
+    chart.append(el('p', { class: 'note off-scale' }, `Not timed on this machine, so not plotted: ${untimed.join('; ')}.`));
+  }
+  if (view.rate_mode === 'qp') {
+    chart.append(el('p', { class: 'note' }, el('a', { href: 'fixed-qp.html' }, 'All three fixed-QP columns, per encoder: the Fixed QP page.')));
   }
   const slot = root.querySelector('.detail-slot');
   const chosen = state.selected && view.values[state.selected];
@@ -184,7 +208,7 @@ function render(data, root) {
     .sort((a, b) => a.v[state.metric] - b.v[state.metric]);
   root.querySelector('.table-slot').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
-    ...view.metrics.map((m) => ({ label: METRIC_SHORT[m], num: true, cell: (r) => pct(r.v[m]) })),
+    ...view.metrics.map((m) => ({ label: SHORT[m], num: true, cell: (r) => pct(r.v[m]) })),
     { label: 'Clips', num: true, cell: (r) => (r.v.clips_scored ? String(r.v.clips_scored) : '–') },
     { label: 'fps Jetson', num: true, cell: (r) => fps(r.v.fps.jetson) },
     { label: 'fps PC', num: true, cell: (r) => fps(r.v.fps.x86) },
@@ -224,12 +248,11 @@ function controls(data, root) {
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
     ], state.clipset, (v) => { state.clipset = v; rerender(); }))),
-    // Fixed QP has its own page (the standards lens at the same build): one
-    // fixed-QP source, never an older Defaults-only run.
+    // Fixed QP: the standards lens at the chart's build, on the same axes.
     control('Rate mode', segmented('Rate mode', [
       { value: 'cbr', label: 'CBR' }, { value: 'qp', label: 'Fixed QP' },
-    ], 'cbr', (v) => { if (v === 'qp') window.location.href = 'fixed-qp.html'; })),
-    control('Metric', withData('metric', segmented('Metric', Object.keys(METRIC_SHORT).map((m) => ({ value: m, label: METRIC_SHORT[m] })),
+    ], state.mode, (v) => { state.mode = v; rerender(); })),
+    control('Metric', withData('metric', segmented('Metric', Object.keys(SHORT).map((m) => ({ value: m, label: SHORT[m] })),
       state.metric, (v) => { state.metric = v; rerender(); }))),
     control('Speed on', segmented('Platform', [
       { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'PC (x86)' },

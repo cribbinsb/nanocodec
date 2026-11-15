@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cbr import ANCHOR_PRESET_PREFIXES, ANCHOR_TOOLS, BUFFER_MS, Family, preset_anchor
-from .chart import LOW_LADDER_KBPS
+from .chart import LENS_REFERENCES, LOW_LADDER_KBPS, OURS
 from .clips import Clip
 from .codecs import Codec
 from .config import load_paths
@@ -127,8 +127,21 @@ PROJECTS = {
     "vpx": ("libvpx", "vp9", "libvpx"),
     "openh264": ("openh264", "h264", ""),
     "nvenc": ("NVIDIA NVENC", "", ""),
+    "vvenc": ("VVenC", "vvc", ""),
 }
 OPENH264_FAMILY = "openh264-baseline"
+#: The fixed-QP lens (written by its run into the site's data, nceval.ctc): the
+#: overview's Fixed QP chart plots one of its columns, against x264 medium at fixed QP.
+LENS_DATA = "fixed-qp-lens.json"
+LENS_COLUMN = "profile"
+#: Lens test names that are chart families under another name (the chart's timing
+#: is theirs); the rest are timed only by the lens run.
+LENS_FAMILIES = {"aom-rt-s10": "libaom-av1-cpu10", "aom-rt-s8": "libaom-av1-cpu8",
+                 "vpx-vp9-rt-s7": "libvpx-vp9-cpu7", "vpx-vp9-rt-s9": "libvpx-vp9-cpu9",
+                 "vpx-vp9-good-s2": "libvpx-vp9-cpu2~good", "vvenc-faster-ld": "vvenc-ld-faster"}
+#: Lens-only reference encoders the harness has no family for.
+LENS_ONLY = {"hm-ldp": {"owner": "HM", "codec": "hevc", "preset": "LDP", "tune": "",
+                        "ours": False, "version_key": "", "label": "HM (reference model), low delay P"}}
 OWN_PREFIX = "nanocodec-"
 TUNE_SEPARATOR = "~"
 #: Each codec's Default is the ladder's medium (no preset file): its preset
@@ -259,6 +272,33 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
              "metrics": ["j", "psnr", "vmaf"], "values": values}, labels)
 
 
+def fixed_qp_view() -> dict | None:
+    """The overview's Fixed QP chart: the lens (LENS_DATA, column LENS_COLUMN) against
+    x264 medium at fixed QP, at the lens run's own speed (frames per CPU second on
+    the x86 PC)."""
+    path = SITE_DATA / LENS_DATA
+    if not path.is_file():
+        return None
+    lens = json.loads(path.read_text())
+    values = {}
+    for row in lens["rows"]:
+        if row["column"] != LENS_COLUMN and row["test"].startswith(OWN_PREFIX):
+            continue
+        family = LENS_FAMILIES.get(row["test"], row["test"])
+        if family in values:
+            continue  # a reference encoder's rows are the same in every column
+        values[family] = {
+            "weighted": row["weighted"], "j": row["j"], "psnr": row["psnr_yuv"],
+            "vmaf": row["vmaf"], "ms_ssim": row["ms_ssim"], "iqr": None,
+            "clips_scored": row["n"], "clips": None, "flagged": False, "chained": 0,
+            "rate_invalid_points": 0, "fps": {"jetson": None, "x86": row["fps"]}}
+    return {"id": "qp", "clipset": "ctc", "zero": lens["rows"][0]["anchor"], "rate_mode": "qp",
+            "clips": max(v["clips_scored"] for v in values.values()),
+            "build_commit": lens["build_commit"], "condition": lens["condition"],
+            "column": LENS_COLUMN, "source": lens["source"],
+            "metrics": ["weighted", "j", "psnr", "vmaf", "ms_ssim"], "values": values}
+
+
 def latest_rc_cost() -> Path:
     return sorted(RESULTS.glob(RC_COST_GLOB))[-1]
 
@@ -269,13 +309,23 @@ def chart_data() -> dict:
         data, names = chart_view(view)
         views.append(data)
         labels.update({k: v for k, v in names.items() if k not in labels})
+    cbr_families = {f for v in views for f in v["values"]}
+    qp = fixed_qp_view()
+    if qp:
+        views.append(qp)
     plan = json.loads((RESULTS / TIMING_PLAN).read_text())
     timing = timing_commands(plan)
     families = sorted({f for v in views for f in v["values"]})
     points = {}
     for family in families:
-        info = describe(family, labels.get(family, family))
-        info["cbr_command"] = cbr_command(family)
+        if family in LENS_ONLY:
+            points[family] = {**LENS_ONLY[family], "cbr_command": None, "timing": None,
+                              "timing_is_twin": False}
+            continue
+        # a family only the fixed-QP lens has (no CBR chart row): the chart's own name
+        info = describe(family, labels.get(family)
+                        or dict(OURS + LENS_REFERENCES).get(family, family))
+        info["cbr_command"] = cbr_command(family) if family in cbr_families else None
         info["timing"] = timing.get(family) or timing.get(family.partition(TUNE_SEPARATOR)[0])
         info["timing_is_twin"] = family not in timing and info["timing"] is not None
         points[family] = info

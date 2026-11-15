@@ -14,6 +14,7 @@ reports it could not load its data, and on horizontal page scroll at phone width
 import functools
 import http.server
 import json
+from decimal import ROUND_HALF_UP, Decimal
 import re
 import sys
 import threading
@@ -53,6 +54,9 @@ def allowed_values(names: tuple[str, ...]) -> set[str]:
         if isinstance(x, (int, float)):
             for digits in (0, 1, 2, 3):
                 values.add(f"{abs(x):.{digits}f}")
+                # JavaScript's toFixed rounds an exact half up (1.25 -> 1.3), Python to even
+                values.add(str(Decimal(repr(abs(x))).quantize(Decimal(1).scaleb(-digits),
+                                                              ROUND_HALF_UP)))
             if x:
                 values.add(f"{abs(x):g}")
         elif isinstance(x, str):
@@ -99,7 +103,8 @@ def check_page(page, url: str, allowed: set[str], problems: list[str], label: st
                 problems.append(f"{label} [{state}]: figure {token!r} is not in the data")
 
     scan("default")
-    # The rate-mode switch links the CBR and fixed-QP pages: each is checked on its own.
+    # The fixed-QP page's rate-mode switch links back to the overview: each page is
+    # checked on its own (the overview's own Fixed QP mode is an in-page chart).
     groups = [g for g in page.query_selector_all("main .segmented")
               if not g.evaluate("g => Boolean(g.closest('.mode-switch'))")]
     for g, group in enumerate(groups):
@@ -109,7 +114,9 @@ def check_page(page, url: str, allowed: set[str], problems: list[str], label: st
             button.click()
             scan(f"control {g} option {b}")
     if page.query_selector("main .hit"):
-        page.click("main .hit")
+        # by keyboard: two points may sit close enough that one's target covers the other
+        page.focus("main .hit")
+        page.keyboard.press("Enter")
         scan("point selected")
     if page.query_selector("details.table-view"):
         page.click("details.table-view > summary")

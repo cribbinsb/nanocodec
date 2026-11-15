@@ -98,6 +98,10 @@ REFERENCES = (("openh264-baseline", "openh264"),
               ("svtav1-m12", "SVT-AV1 M12"), ("svtav1-m13", "SVT-AV1 M13"),
               ("libvpx-vp9-cpu7", "libvpx VP9 rt 7"), ("libvpx-vp9-cpu9", "libvpx VP9 rt 9"),
               ("libaom-av1-cpu8", "libaom rt 8"), ("libaom-av1-cpu10", "libaom rt 10"))
+#: Reference encoders only the fixed-QP lens runs (the site's Fixed QP chart).
+LENS_REFERENCES = (("x264-veryslow", "x264 veryslow"), ("x265-slow", "x265 slow"),
+                   ("libvpx-vp9-cpu2~good", "libvpx VP9 good 2"),
+                   ("vvenc-ld-faster", "VVenC faster"))
 #: Metric-tuned twins of the x264 and x265 references: each at the metric-oriented
 #: --tune its own documentation provides, every other chart setting unchanged
 #: (cbr.ANCHOR_PROFILES; x264 0.165 --tune psnr = --aq-mode 0 --no-psy, ssim =
