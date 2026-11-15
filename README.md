@@ -97,7 +97,7 @@ One preset ladder for every codec, chosen with `--codec X --preset NAME`:
 
 | Preset | Codecs | Preset file |
 |---|---|---|
-| `slow` | HEVC, AV1, VVC | `presets/slow.toml` (shared) then `presets/<codec>/slow.toml` |
+| `slow` | HEVC, AV1, VVC, VP9 | `presets/slow.toml` (shared) then `presets/<codec>/slow.toml` |
 | `medium` (the default when no `--preset` is given) | all six | built in (each codec's Default) |
 | `fast` | all six | `presets/<codec>/fast.toml` |
 | `faster` | H.264, HEVC, AV1, VP9 | `presets/<codec>/faster.toml` |

@@ -97,7 +97,7 @@
   "hevc": ["faster", "fast", "medium", "slow"],
   "vvc": ["fast", "medium", "slow"],
   "av1": ["faster", "fast", "medium", "slow"],
-  "vp9": ["veryfast", "faster", "fast", "medium"],
+  "vp9": ["veryfast", "faster", "fast", "medium", "slow"],
   "av2": ["fast", "medium"]
  }
 }

@@ -113,6 +113,7 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(Av1, 3, Fast, include_str!("../../../presets/av1/l3-fast.toml")),
     preset_file!(Av1, 3, Medium, include_str!("../../../presets/av1/l3-medium.toml")),
     preset_file!(Vp9, 1, Veryfast, include_str!("../../../presets/vp9/veryfast.toml")),
+    preset_file!(Vp9, 1, Slow, include_str!("../../../presets/vp9/slow.toml")),
     preset_file!(Vp9, 1, Faster, include_str!("../../../presets/vp9/faster.toml")),
     preset_file!(Vp9, 1, Fast, include_str!("../../../presets/vp9/fast.toml")),
     preset_file!(Vp9, 2, Fast, include_str!("../../../presets/vp9/l2-fast.toml")),

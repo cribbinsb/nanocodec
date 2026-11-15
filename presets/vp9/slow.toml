@@ -1,0 +1,13 @@
+# VP9 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
+# applied first) plus VP9's transform search on every block (the split
+# spread and the transform-size search without their level gates) and a
+# slightly fuller motion search (fewer one-position and HME skips): joint
+# study slow-vp9-2026-11-15 trial 4, J -1.53% at x86 x1.22 (the second
+# reference alone -1.30% at x1.09). Not taken: more trellis survivors
+# (VP9's trellis runs inside its transform-size search: 8 states took the
+# study's bundle to -1.87% at x86 x2.38, Jetson x2.28 alone).
+# L3 (600 f, n=27): J -1.48% [-2.00, -0.96] at x1.16 Jetson cycles.
+vp9.inter_tx_split_spread = 1
+vp9.tx_search_min_levels = 0
+analysis.one_position_sad_per_pixel = 1
+analysis.skip_hme_sad_per_pixel = 1

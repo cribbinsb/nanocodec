@@ -35,7 +35,7 @@ export const PRESET_COST = {
   hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
   av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.45 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },
-  vp9: { medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
+  vp9: { slow: 1.16, medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
   av2: { medium: 1 },
 };
 /**

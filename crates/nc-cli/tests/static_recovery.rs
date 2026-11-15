@@ -620,6 +620,11 @@ fn vp9_presets_recover() {
         include_str!("../../../presets/vp9/fast.toml"),
         include_str!("../../../presets/vp9/faster.toml"),
         include_str!("../../../presets/vp9/veryfast.toml"),
+        // The slow rung: the shared bundle, then VP9's levers (nc_encoder::presets).
+        concat!(
+            include_str!("../../../presets/slow.toml"),
+            include_str!("../../../presets/vp9/slow.toml")
+        ),
     ] {
         check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, preset, &FLAT_RECOVERY);
     }
