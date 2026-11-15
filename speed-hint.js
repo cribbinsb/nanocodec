@@ -26,10 +26,13 @@ import { RESOLUTIONS } from './view-settings.js';
  * per 640x360 area, two rounds each (2026-11-14; the machine was loaded, so the
  * ratios are good to about 15%). Spatially layered (SVC) streams are not estimated.
  * A preset without a cost (AV2 Fast, not measured yet) is never offered as lighter.
+ * Slow's cost is the native Jetson cycle ratio (docs/handoff/presets.md "Slow
+ * presets"; not measured in WASM yet), so a view coded at Slow that falls behind
+ * is offered the rungs below it.
  */
 export const PRESET_COST = {
   h264: { medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
-  hevc: { medium: 1, fast: 0.61, faster: 0.47 },
+  hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
   av1: { medium: 1, fast: 0.71, faster: 0.45 },
   vvc: { medium: 1, fast: 0.55 },
   vp9: { medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },

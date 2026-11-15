@@ -17,7 +17,7 @@
     {"flag": "--timestamps-out", "value": "FILE", "help": "The time of every coded frame."}]},
    {"title": "Codec and preset", "options": [
     {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Output format (`h266` is accepted for vvc). Required."},
-    {"flag": "--preset", "value": "veryfast|faster|fast|medium", "help": "A rung of the speed ladder; medium is the codec's Default and is used without --preset. Not every codec has every rung (`nanocodec params --codec C`); with --scalability L2*/L3* a rung takes the codec's file for that many layers."},
+    {"flag": "--preset", "value": "veryfast|faster|fast|medium|slow", "help": "A rung of the speed ladder; medium is the codec's Default and is used without --preset. Not every codec has every rung (`nanocodec params --codec C`); with --scalability L2*/L3* a rung takes the codec's file for that many layers."},
     {"flag": "--block", "value": "8|16|32|64", "help": "Fixed leaf block size where the codec's planner uses one (default 16; AV2 8, VVC 32)."}]},
    {"title": "Fixed QP", "options": [
     {"flag": "--qp", "value": "Q", "help": "Fixed quantiser in the codec's scale (H.264, HEVC: QP 0-51; VVC: QP 0-63; AV1, VP9, AV2: base_q_idx); with --bitrate, the starting quantiser only. One of --qp and --bitrate is required."},
@@ -94,7 +94,7 @@
  ],
  "presets": {
   "h264": ["veryfast", "faster", "fast", "medium"],
-  "hevc": ["faster", "fast", "medium"],
+  "hevc": ["faster", "fast", "medium", "slow"],
   "vvc": ["fast", "medium"],
   "av1": ["faster", "fast", "medium"],
   "vp9": ["veryfast", "faster", "fast", "medium"],
