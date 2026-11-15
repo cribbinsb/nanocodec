@@ -33,6 +33,7 @@ import { ViewSources } from './exact-source.js';
 import { CLIPS, CLIP_GROUPS, DEFAULT_CLIP, clipById, clipUrl } from './clips.js';
 import { SOURCE_FPS, nextCommonTick, tickMs } from './timeline.js';
 import { matchingSettings } from './view-settings.js';
+import { parseDemoQuery } from './deep-link.js';
 import { trace, traceTail } from './trace.js';
 import { buildReport, clipSeconds, formatReport, sha256 } from './debug-report.js';
 import { download } from './streams.js';
@@ -670,8 +671,34 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (running || preparing) { stop(); trace('stopped: the tab is hidden'); } return; }
   if (!running && !preparing && !ended) scheduleRestart('tab shown');
 });
-/** The opening comparison (see OPENING_STREAM), then the first start. */
+/**
+ * A results-page link (deep-link.js): view A shows the linked reference stream
+ * (view B matched to it) or the original source, and view B takes the linked
+ * nanocodec settings. False if the URL carries no link.
+ */
+async function openLink() {
+  const link = parseDemoQuery(location.search);
+  if (!link) return false;
+  trace('link', JSON.stringify(link));
+  if (link.clip && CLIPS.some(c => c.id === link.clip)) { clip = clipById(link.clip); clipPicker.value = clip.id; }
+  let shown = false;
+  if (link.stream) {
+    try {
+      await panels[0].showStream(link.stream);
+      clip = clipById(panels[0].reference.clip); clipPicker.value = clip.id;
+      panels[1].match(matchingSettings(panels[0].reference));
+      shown = true;
+    } catch (error) {
+      trace('linked stream unavailable', error.message);
+    }
+  }
+  if (!shown) panels[0].showOriginal();
+  panels[1].applyLink(link);
+  return true;
+}
+/** The opening comparison (a results link, else OPENING_STREAM), then the first start. */
 async function openPage() {
+  if (await openLink()) { sourceChanged('clip'); return; }
   if (!LIVE_VIEWS) {
     try {
       await panels[0].showStream(OPENING_STREAM);

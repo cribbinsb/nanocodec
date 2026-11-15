@@ -10,6 +10,18 @@ too: plain SVG charts and tables drawn from `web/results/data/*.json`, which
 edit the JSON by hand. `web/tests/results-pages.py` checks every figure they
 show against that data.
 
+The demo and the results pages share one header (`site-header.css`: Demo ·
+Results · Method · GitHub) and link to each other (`deep-link.js`, checked by
+`tests/deep-link.test.js` and `tests/deep-links.py`):
+
+- `?codec=av1&preset=fast&size=1280x720&fps=30&kbps=600` opens the demo with
+  view B live at those settings and view A on the original source; with
+  `&stream=ID` view A shows that pre-encoded stream and view B is matched to it
+  first. `clip=ID` picks the sample clip. A results chart point links here.
+- `results/?codec=av1&preset=fast` opens the results overview filtered to that
+  preset with its point selected. Each live view's "How does this preset
+  compare?" links here (SVC presets: the SVC page).
+
 Build and serve from the repository root:
 
 ```sh

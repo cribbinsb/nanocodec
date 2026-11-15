@@ -2,8 +2,11 @@
 // encoder and preset, with the clip set, zero line, rate mode, metric, platform,
 // codecs and presets selectable, a legend that toggles projects, a tooltip per
 // point, a detail panel with the exact command line, and the same view as a table.
+// A link ?codec=&preset= (deep-link.js) opens it filtered to that preset, selected;
+// a selected point links to the demo with its settings (or its encoder's stream).
 // Data: data/chart.json (python3 -m nceval.site, from docs/results).
 import { drawScatter, swatch } from './chart.js';
+import { chartFamily, demoQuery, manifestEncoder, parseResultsQuery } from '../deep-link.js';
 import {
   CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, ZERO_NAMES, control, el, fail, fps, loadData, pct,
   segmented, sources, table,
@@ -13,6 +16,9 @@ const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1'
 const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'Ryzen 9 5950X core' };
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
+// The demo's pre-encoded streams (for a reference point's demo link), loaded on first use.
+const MANIFEST_URL = '../streams-ref/manifest.json';
+let manifest = null;
 
 const state = {
   clipset: 'fresh', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson',
@@ -88,8 +94,36 @@ function detail(data, view, family) {
   }
   return el('section', { class: 'detail', 'aria-live': 'polite' },
     el('h3', {}, p.label),
+    el('p', { class: 'demo-link-slot' }),
     el('dl', {}, rows.flatMap(([k, val]) => [el('dt', {}, k), el('dd', {}, val)])),
     commands);
+}
+
+/** The demo link of a point: our preset at the example rung, or a reference encoder's
+ * pre-encoded stream (preferring the chart's size) beside nanocodec matched to it. */
+async function demoLink(data, family) {
+  const p = data.points[family];
+  const ex = data.example;
+  if (p.ours) {
+    const preset = p.preset.toLowerCase();
+    return { href: `../${demoQuery({ codec: p.codec, preset, width: ex.width, height: ex.height, fps: ex.fps, kbps: ex.kbps })}`,
+      text: `Try ${p.label} in the demo (${ex.width}×${ex.height}, ${ex.fps} fps, ${ex.kbps} kbps)` };
+  }
+  const encoder = manifestEncoder(family);
+  if (!encoder || !p.codec) return null;
+  manifest ??= await fetch(MANIFEST_URL).then((r) => (r.ok ? r.json() : { streams: [] }), () => ({ streams: [] }));
+  const streams = manifest.streams.filter((s) => s.encoder === encoder);
+  const stream = streams.find((s) => s.chartConfiguration && s.width === ex.width) ?? streams[0];
+  if (!stream) return null;
+  return { href: `../${demoQuery({ codec: p.codec, stream: stream.id })}`,
+    text: `See a ${stream.label} stream in the demo, beside nanocodec matched to it` };
+}
+
+function fillDemoLink(data, family, root) {
+  demoLink(data, family).then((link) => {
+    const slot = root.querySelector('.demo-link-slot');
+    if (slot && link && state.selected === family) slot.replaceChildren(el('a', { href: link.href, class: 'demo-link' }, link.text));
+  });
 }
 
 function viewNote(data, view) {
@@ -148,7 +182,9 @@ function render(data, root) {
     });
   }
   const slot = root.querySelector('.detail-slot');
-  slot.replaceChildren(state.selected && view.values[state.selected] ? detail(data, view, state.selected) : el('p', { class: 'note' }, 'Select a point (click, tap or Enter) for its versions, every metric and its exact command line.'));
+  const chosen = state.selected && view.values[state.selected];
+  slot.replaceChildren(chosen ? detail(data, view, state.selected) : el('p', { class: 'note' }, 'Select a point (click, tap or Enter) for its versions, every metric, its exact command line and a link to try it in the demo.'));
+  if (chosen) fillDemoLink(data, state.selected, root);
 
   const rows = entries.map(([family, v]) => ({ family, v, p: data.points[family] }))
     .sort((a, b) => a.v[state.metric] - b.v[state.metric]);
@@ -185,8 +221,10 @@ function controls(data, root) {
     state.codecs = new Set(e.target.value === ALL ? Object.keys(CODEC_NAMES) : [e.target.value]);
     rerender();
   } }, el('option', { value: ALL }, 'All codecs'), data.codec_order.map((c) => el('option', { value: c }, CODEC_NAMES[c])));
+  if (state.codecs.size === 1) codecSelect.value = [...state.codecs][0];
   const presetSelect = el('select', { 'aria-label': 'Preset', onchange: (e) => { state.preset = e.target.value; rerender(); } },
     el('option', { value: ALL }, 'All presets'), presets.map((p) => el('option', { value: p }, `${p} (ours)`)));
+  presetSelect.value = state.preset;
   const withData = (name, widget) => { widget.dataset.control = name; return widget; };
   root.querySelector('.controls').replaceChildren(
     control('Clip set', withData('clipset', segmented('Clip set', [
@@ -208,10 +246,23 @@ function controls(data, root) {
   );
 }
 
+/** A demo link (deep-link.js `resultsQuery`): filter to that codec and preset and select its point. */
+function applyLink(data) {
+  const link = parseResultsQuery(location.search);
+  if (!link || !data.codec_order.includes(link.codec)) return;
+  state.codecs = new Set([link.codec]);
+  const preset = link.preset[0].toUpperCase() + link.preset.slice(1);
+  if (Object.values(data.points).some((p) => p.ours && p.codec === link.codec && p.preset === preset)) {
+    state.preset = preset;
+    state.selected = chartFamily(link);
+  }
+}
+
 async function main() {
   const root = document.getElementById('explorer');
   try {
     const data = await loadData('chart');
+    applyLink(data);
     const owners = [...new Set(Object.values(data.points).map((p) => p.owner))].filter((o) => SHAPES[o]);
     owners.sort((a, b) => (a === 'nanocodec' ? -1 : b === 'nanocodec' ? 1 : a.localeCompare(b)));
     controls(data, root);

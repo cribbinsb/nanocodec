@@ -10,6 +10,7 @@ import { cliCommand, cliPreset } from './options.js';
 import { FRAME_RATES, tickAt, tickMs, tickStep } from './timeline.js';
 import { fetchStream, loadManifest, pickerGroups, referenceStream, streamTitle } from './reference.js';
 import { trace } from './trace.js';
+import { CHART_PRESETS, resultsQuery } from './deep-link.js';
 import { BITRATE_FORMULA, PSNR_FORMULA, shownNumbers } from './debug-report.js';
 import { BUFFER_CHOICES_MS, DEFAULT_FPS, DEFAULT_RESOLUTION, GOP_SECONDS, PEAK_TO_TARGET, RATE_LIMITS_KBPS, RESOLUTIONS } from './view-settings.js';
 
@@ -60,6 +61,7 @@ export class Panel {
       <div class="viewport"><canvas aria-label="Version ${letter} picture"></canvas><div class="empty-overlay"><div class="empty-symbol">◉</div><strong>The picture appears here</strong><span>Starting the comparison…</span></div><span class="frame-badge">STARTING</span></div>
       <div class="metrics"><div class="metric"><span>Bitrate</span><p><b data-metric="bitrate">—</b><small>kbps</small></p></div><div class="metric"><span>Encode</span><p><b data-metric="encode">—</b><small>ms</small></p></div><div class="metric"><span>Decode</span><p><b data-metric="decode">—</b><small>ms</small></p></div><div class="metric"><span>PSNR-YUV</span><p><b data-metric="psnr">—</b><small>dB</small></p></div></div>
       <div class="picture-options"><label class="compact-control live-only">Codec<select class="codec-picker" aria-label="Version ${letter} codec">${Object.entries(CODECS).map(([value, { label }]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label class="compact-control live-only">Preset<select class="preset">${options(PRESETS, 'default')}</select></label><label class="compact-control">Resolution<select class="resolution">${options(RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), DEFAULT_RESOLUTION.join('x'))}</select></label><label class="compact-control">Frame rate<select class="fps">${options(FRAME_RATES.map(fps => [fps, `${fps} fps`]), DEFAULT_FPS)}</select></label><label class="compact-control live-only target-option">Bitrate (kbps)${rateInput('target-rate', DEFAULT_TARGET_KBPS)}</label><div class="quality-option live-only" hidden><label class="quality-label" for="qp-${letter}">Fixed quality <output></output></label><input id="qp-${letter}" type="range" step="1"><div class="range-ends"><span>More detail · larger stream</span><span>Smaller stream</span></div></div></div>
+      <p class="compare-link live-only"><a href="results/">How does this preset compare?</a></p>
       <div class="reference-options" hidden><label class="compact-control">Stream (encoder · codec · size · rate · bitrate)<select class="stream-picker"></select></label><p class="reference-hint" hidden>This clip has no reference streams: the list shows other sample clips’ streams, and choosing one switches the page to that clip.</p><p class="reference-status" role="status"></p><button type="button" class="match">Match nanocodec to this stream</button><p class="match-note">Sets the other version to live nanocodec at this stream’s codec, size, frame rate and bitrate.</p><details class="reference-about"><summary>About this stream</summary><p class="reference-label"></p><dl class="reference-facts"></dl><p class="reference-version"></p></details></div>
       <p class="original-note" hidden>The source pictures at this size and frame rate, uncompressed: exactly what the encoders are given. Nothing is coded, so there is no bitrate or quality to show.</p>
       <p class="rate-status" aria-live="off">Target 300 kbps · waiting for frames</p><div class="history"><div class="history-label"><span>FRAME SIZE · LAST ${HISTORY_FRAMES} FRAMES</span><span class="history-max">—</span></div><canvas width="540" height="42" aria-label="Recent compressed frame sizes"></canvas></div>
@@ -91,7 +93,8 @@ export class Panel {
     this.operatingPoint = $('.operating-point');
     // Going back to the full layer asks the encoder for a key frame (pipeline.js).
     this.operatingPoint.addEventListener('change', () => this.intervene('operating-point', +this.badge.dataset.tick, { operatingPoint: +this.operatingPoint.value }));
-    this.preset.addEventListener('change', () => this.updateLayers());
+    this.compareLink = $('.compare-link a');
+    this.preset.addEventListener('change', () => { this.updateLayers(); this.updateCompareLink(); });
     this.reproduce = $('.reproduce'); this.canvas = $('.viewport canvas');
     this.viewport = $('.viewport'); this.useRenderer(display); this.badge = $('.frame-badge');
     this.chart = $('.history canvas'); this.downloadButton = $('.download');
@@ -306,6 +309,31 @@ export class Panel {
     this.peakSet = false;
     this.showRateMode();
   }
+  /**
+   * Apply a demo link's settings (deep-link.js `parseDemoQuery`) to this live view:
+   * codec, preset, size, frame rate and target bitrate, each only where the page offers it.
+   */
+  applyLink(link) {
+    this.sourceChoice = SOURCES.live; this.showSource();
+    if (link.codec in CODECS && this.codec.value !== link.codec) { this.codec.value = link.codec; this.updateCodec(); }
+    const preset = this.preset.querySelector(`option[value="${link.preset}"]`);
+    if (preset && !preset.disabled && !this.preset.disabled) { this.preset.value = link.preset; this.updateLayers(); this.updateCompareLink(); }
+    if (RESOLUTIONS.some(([w, h]) => w === link.width && h === link.height)) this.resolution.value = `${link.width}x${link.height}`;
+    if (FRAME_RATES.includes(link.fps)) this.fps.value = String(link.fps);
+    if (link.kbps >= RATE_LIMITS_KBPS.min && link.kbps <= RATE_LIMITS_KBPS.max) {
+      this.rateMode.value = 'cbr'; this.targetRate.value = String(link.kbps);
+      this.peakRate.value = String(Math.min(RATE_LIMITS_KBPS.max, link.kbps * PEAK_TO_TARGET)); this.peakSet = false;
+      this.showRateMode();
+    }
+  }
+  /** The link to this codec and preset on the results overview (SVC presets: the SVC page). */
+  updateCompareLink() {
+    const preset = this.preset.disabled ? 'default' : this.preset.value;
+    this.compareLink.href = CHART_PRESETS.includes(preset)
+      ? `results/${resultsQuery({ codec: this.codec.value, preset })}` : 'results/svc.html';
+  }
+  /** Show the original source in this view (a demo link's view A). */
+  showOriginal() { this.sourceChoice = SOURCES.original; this.showSource(); }
   /** A bitrate target, or the fixed quantizer's slider, by the rate control chosen under Advanced. */
   showRateMode() {
     const cbr = this.rateMode.value === 'cbr';
@@ -325,6 +353,7 @@ export class Panel {
       || (!svc && this.preset.value.startsWith('svc')) || (!svc3 && this.preset.value.startsWith('svc3'));
     if (this.preset.disabled || unavailable) this.preset.value = 'default';
     this.updateLayers();
+    this.updateCompareLink();
     this.qp.min = String(quantizer.min); this.qp.max = String(quantizer.max);
     this.qp.value = String(quantizer.initial); this.updateLabel();
   }
