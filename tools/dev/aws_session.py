@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime
 import fcntl
+import os
 import re
 import shlex
 import signal
@@ -123,7 +124,9 @@ class Session:
         self.spec = spec
         self.ec2 = boto3.client("ec2", region_name=spec.region)
         self.ssm = boto3.client("ssm", region_name=spec.region)
-        self.name = f"nanocodec-{spec.purpose}-{utc_now():%Y%m%d-%H%M%S}"
+        # The pid too: two sessions of one purpose started in the same second (the
+        # held-out chart's score parts, 2026-11-15) collided on the key pair name.
+        self.name = f"nanocodec-{spec.purpose}-{utc_now():%Y%m%d-%H%M%S}-{os.getpid()}"
         self.key_path = WORK_DIR / f"{self.name}.pem"
         self.known_hosts = WORK_DIR / f"{self.name}.known_hosts"
         self.key_name: str | None = None
