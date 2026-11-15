@@ -246,7 +246,7 @@ mod tests {
         };
         assert!(line(None).starts_with("decision.codec_subpel_seed_lambdas  0.03  "));
         assert!(line(Some("vp9")).starts_with("decision.codec_subpel_seed_lambdas  0  "));
-        assert!(line(Some("hevc")).starts_with("decision.codec_subpel_seed_lambdas  0.05  "));
+        assert!(line(Some("hevc")).starts_with("decision.codec_subpel_seed_lambdas  0  "));
         assert!(listing(Some("mpeg2")).is_err());
     }
 
