@@ -146,7 +146,7 @@ def run(port, preset, gpu=False, trace_out=None):
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK)
-        page.goto(f'http://127.0.0.1:{port}/')
+        page.goto(f'http://127.0.0.1:{port}/?views=live')
         running = f"document.querySelector('{STATS}').textContent.includes('frames compared')"
         page.wait_for_function(running, timeout=120000)
         if configure(page, preset):

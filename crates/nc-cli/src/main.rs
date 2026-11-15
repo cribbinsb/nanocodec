@@ -18,8 +18,9 @@
 //! Input is raw I420, or YV12/NV12 with `--input-format`. `--qp` is the codec's native quantiser (AV1/VP9:
 //! `base_q_idx`; H.264, HEVC: QP). `--fps` accepts `30`, `29.97` or `30000/1001`.
 //! AV1 and VP9 are written as IVF, H.264 and HEVC as raw Annex-B elementary streams.
-//! `--key-qp-offset D` codes key frames D quantiser steps finer than `--qp`
-//! (HEVC; an experiment knob, the backend picks a default otherwise).
+//! `--key-qp-offset D` codes fixed-QP key frames D steps of the codec's
+//! quantiser finer than `--qp` (QP, or `base_q_idx` for AV1/VP9/AV2; an
+//! experiment knob, the backend picks a default otherwise).
 //! `--recon` gets the reconstruction of every coded frame (what a decoder
 //! outputs); `--display-recon` one picture per input frame, what a decoder
 //! shows at that frame's time: a frame left uncoded (held as a repeat of the

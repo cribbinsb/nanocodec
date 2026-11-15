@@ -11,7 +11,7 @@
 // resolution: render size = stream size = canvas size) is scaled to the canvas
 // as players do, bilinearly with pixel centres aligned (nc-dsp `display`), each
 // plane on its own grid; both paths then show close but not identical pixels. `preserveDrawingBuffer` keeps the last frame readable,
-// so the magnifier can copy from the canvas whenever it draws.
+// so it can be read back (the page tests, a screenshot) whenever it draws.
 //
 // Fallbacks: no hardware WebGL2 -> WebGL1 -> CPU; GL set-up failure or a
 // context lost for longer than RESTORE_TIMEOUT_MS -> the owner's CPU fallback
@@ -29,10 +29,10 @@ export const FORMATS = { i420: 'i420', rgba: 'rgba' };
 // the CPU path.
 const FRAGMENT_SHADER = `
 precision highp float;
-uniform sampler2D u_y, u_cb, u_cr, u_rgba;
+uniform sampler2D u_y, u_cb, u_cr;
 uniform vec2 u_size, u_chroma_size, u_canvas, u_luma;
 uniform vec4 u_weights;
-uniform bool u_show_rgba, u_scaled;
+uniform bool u_scaled;
 float sample8(sampler2D plane, vec2 texel, vec2 size) {
   return floor(texture2D(plane, (texel + 0.5) / size).r * 255.0 + 0.5);
 }
@@ -48,7 +48,6 @@ float channel(float fixed8) { return clamp(floor(fixed8 / 256.0), 0.0, 255.0) / 
 void main() {
   // Pixel indices with row 0 at the top, as in the decoded picture.
   vec2 pixel = floor(vec2(gl_FragCoord.x, u_canvas.y - gl_FragCoord.y));
-  if (u_show_rgba) { gl_FragColor = texture2D(u_rgba, (pixel + 0.5) / u_size); return; }
   float luma, u, v;
   if (u_scaled) {
     luma = scaled8(u_y, pixel, u_size);
@@ -70,7 +69,7 @@ attribute vec2 a_position;
 void main() { gl_Position = vec4(a_position, 0.0, 1.0); }`;
 const COVER_TRIANGLE = new Float32Array([-1, -1, 3, -1, -1, 3]);
 const CONTEXT_OPTIONS = { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: true };
-const PLANE_UNITS = ['u_y', 'u_cb', 'u_cr'], RGBA_UNIT = 3;
+const PLANE_UNITS = ['u_y', 'u_cb', 'u_cr'];
 // How long a lost context may take to come back before the CPU path takes over.
 // Chromium restores about 1 s after a GPU process restart (headless Chromium
 // with SwiftShader lost its first contexts once, ~0.1 s after creation).
@@ -109,10 +108,9 @@ class CpuRenderer {
     const replaced = this.latest;
     this.latest = new ImageData(new Uint8ClampedArray(pixels.buffer), width, height);
     this.showLatest();
-    // The latest frame stays referenced for showLatest; the replaced one is free.
+    // The latest frame stays referenced; the replaced one is free.
     return replaced && replaced.data.buffer;
   }
-  showOriginal(image) { this.context.putImageData(image, 0, 0); }
   showLatest() {
     const image = this.latest, canvas = this.context.canvas;
     if (!image) return;
@@ -148,12 +146,12 @@ class GlRenderer {
       try { this.setUp(); this.lost = false; } catch { onLost(); }
     });
   }
-  /** Create the program, the covering triangle and the four textures (also after a restore). */
+  /** Create the program, the covering triangle and the three plane textures (also after a restore). */
   setUp() {
     const gl = this.gl;
     const program = linkProgram(gl, VERTEX_SHADER, FRAGMENT_SHADER);
     gl.useProgram(program);
-    this.uniforms = Object.fromEntries(['u_size', 'u_chroma_size', 'u_canvas', 'u_luma', 'u_weights', 'u_show_rgba', 'u_scaled']
+    this.uniforms = Object.fromEntries(['u_size', 'u_chroma_size', 'u_canvas', 'u_luma', 'u_weights', 'u_scaled']
       .map(name => [name, gl.getUniformLocation(program, name)]));
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, COVER_TRIANGLE, gl.STATIC_DRAW);
@@ -162,7 +160,7 @@ class GlRenderer {
     gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
     // Rows are packed without padding, and chroma rows may be odd-sized.
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    this.textures = [...PLANE_UNITS, 'u_rgba'].map((name, unit) => {
+    this.textures = PLANE_UNITS.map((name, unit) => {
       gl.uniform1i(gl.getUniformLocation(program, name), unit);
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
@@ -170,7 +168,6 @@ class GlRenderer {
       for (const parameter of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, parameter, gl.CLAMP_TO_EDGE);
       return { width: 0, height: 0 };
     });
-    this.hasFrame = false;
   }
   show({ format, pixels, width, height, colour }) {
     if (format !== this.format || this.lost) return pixels.buffer;
@@ -184,25 +181,9 @@ class GlRenderer {
     this.upload(2, chromaWidth, chromaHeight, pixels.subarray(lumaSize + chromaSize, lumaSize + 2 * chromaSize));
     gl.uniform2f(this.uniforms.u_size, width, height);
     gl.uniform2f(this.uniforms.u_chroma_size, chromaWidth, chromaHeight);
-    this.hasFrame = true;
-    this.draw(false);
+    this.draw();
     // The textures hold the frame now, so its buffer goes straight back.
     return pixels.buffer;
-  }
-  showOriginal(image) {
-    if (this.lost) return;
-    const gl = this.gl, slot = this.textures[RGBA_UNIT];
-    gl.activeTexture(gl.TEXTURE0 + RGBA_UNIT);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-    slot.width = image.width; slot.height = image.height;
-    gl.uniform2f(this.uniforms.u_size, image.width, image.height);
-    this.draw(true);
-  }
-  showLatest() {
-    if (this.lost || !this.hasFrame) return;
-    const luma = this.textures[0];
-    this.gl.uniform2f(this.uniforms.u_size, luma.width, luma.height);
-    this.draw(false);
   }
   /** Replace one plane texture's samples, reallocating only when its size changes. */
   upload(unit, width, height, samples) {
@@ -214,13 +195,12 @@ class GlRenderer {
       slot.width = width; slot.height = height;
     } else gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, format, gl.UNSIGNED_BYTE, samples);
   }
-  draw(showRgba) {
-    const gl = this.gl, luma = this.textures[showRgba ? RGBA_UNIT : 0];
+  draw() {
+    const gl = this.gl, luma = this.textures[0];
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.uniform2f(this.uniforms.u_canvas, gl.drawingBufferWidth, gl.drawingBufferHeight);
     const scaled = luma.width !== gl.drawingBufferWidth || luma.height !== gl.drawingBufferHeight;
-    gl.uniform1i(this.uniforms.u_scaled, scaled && !showRgba ? 1 : 0);
-    gl.uniform1i(this.uniforms.u_show_rgba, showRgba ? 1 : 0);
+    gl.uniform1i(this.uniforms.u_scaled, scaled ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

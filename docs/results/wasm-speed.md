@@ -2,7 +2,7 @@
 
 <sub>Updated 2026-11-10, builds f2f7a221 (H.264–AV2) and bcbc5601 (VVC)</sub>
 
-Data behind [README.md § In the browser](README.md#in-the-browser-webassembly); every row of
+Data behind the [results site's browser table](https://cribbinsb.github.io/nanocodec/results/speed.html#browser); every row of
 [wasm-speed.csv](wasm-speed.csv) is one stream (decode) or clip (encode) per module, best over rounds.
 
 **Setup.** AMD Ryzen 9 5950X, node v22.21.1 (V8, the engine in Chrome), one thread: the browser module has
@@ -244,8 +244,10 @@ relaxed-SIMD module from the same commit). Ours / ref < 1 means we are faster th
 - **WASM costs 1.2–2.1x native.** The median is about 1.7x, higher than the 1.4x of 2026-11-10, because the
   native AVX2 paths gained more than SIMD128 did.
 
-Per-run data: `~/nanocodec-data/work/dec-winddown/` (`xdec-final{,2}.json` x86, `jdec-final.json` Jetson,
-`streams.tsv`, `xdec.py`, `table.py`). The Jetson harness is `~/speed-audit/jdec2.py` on the board.
+Per-run data, checked in: [decoder-speed-2026-11-13/](decoder-speed-2026-11-13/) (`xdec-final{,2}.json` x86,
+`jdec-final.json` Jetson, `frames.tsv`); `python3 -m nceval.site` (eval/nceval/site.py, `decoder_data`) regenerates
+this table's figures for the [results site](https://cribbinsb.github.io/nanocodec/results/speed.html#decoders). The
+Jetson harness is `~/speed-audit/jdec2.py` on the board.
 
 ## Aggregates (frame-weighted over the three clips)
 

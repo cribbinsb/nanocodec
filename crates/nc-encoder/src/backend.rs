@@ -163,24 +163,6 @@ pub struct SpatialLayerFrame {
 
 /// A codec as seen by the engine.
 pub trait CodecBackend {
-    /// Whether the codec owns picture-level analysis and block traversal.
-    /// Such codecs still use shared GOP planning, rate control and reference
-    /// storage, but must not pay for a second unused motion/partition analysis.
-    const OWN_PICTURE_PIPELINE: bool = false;
-
-    /// Encode the whole picture for codecs opting into `OWN_PICTURE_PIPELINE`.
-    /// The engine supplies its planned quantizer/reference and owns feedback.
-    /// Other codecs use the ordinary block callbacks and never call this hook.
-    fn encode_picture(
-        &mut self,
-        _plan: &FramePlan,
-        _source: &Picture,
-        _reference: Option<&Picture>,
-        _recon: &mut Picture,
-    ) -> Vec<u8> {
-        unreachable!("picture pipeline requires an implementation")
-    }
-
     /// The backend's own tunable parameters (declared with
     /// [`param_group!`](crate::param_group), read from `config.params` in
     /// [`CodecBackend::new`]). Validated by the engine together with its own.
@@ -357,6 +339,13 @@ pub trait CodecBackend {
     fn set_refresh(&mut self, window: Option<&RefreshWindow>) {
         let _ = window;
     }
+
+    /// Whether intra refresh recovers this codec's decoders after a lost
+    /// frame: the backend keeps its choices inside the window's rules
+    /// ([`CodecBackend::set_refresh`]) and no other state a lost frame
+    /// changes reaches later frames. Opt-in: the engine refuses intra
+    /// refresh otherwise (`Encoder::set_intra_refresh`).
+    const INTRA_REFRESH: bool = false;
 
     /// Supply the existing analyzer's running sensor-noise estimate once per frame.
     /// Backends that do not use noise adaptation keep the default no-op.
@@ -887,17 +876,6 @@ pub trait CodecBackend {
     /// [`CodecBackend::commit_frame`]. Only then may rate control re-code a
     /// frame that would overflow the buffer (`rate.recode_overflow`).
     const RECODE: bool = false;
-
-    /// Whether [`Self::coded_bits`] reports the frame's size while it is
-    /// coded, which in-frame rate control (`inframe.rs`) needs.
-    const REPORTS_CODED_BITS: bool = false;
-
-    /// Bits of the frame being coded so far, from `begin_frame` on
-    /// (approximate where the entropy coder holds bits back or codes later);
-    /// `None` when the backend cannot tell before `end_frame`.
-    fn coded_bits(&mut self) -> Option<u64> {
-        None
-    }
 
     /// Commit the state later frames read (reference contexts, counters,
     /// the previous frame's syntax) once the unit `end_frame` returned is

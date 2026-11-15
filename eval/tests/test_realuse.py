@@ -329,3 +329,11 @@ def test_rate_validity_allows_buffer_debt_over_a_short_window():
     assert not realuse.rate_valid(breaks_buffer, five_seconds)
     loan = {"rate_error": 0.4, "loan_adjusted_rate_error": 0.05, "max_fullness": 1.0}
     assert realuse.rate_valid(loan, five_seconds)  # our key loan is excluded
+
+
+def test_an_own_family_must_name_its_codec():
+    """The point cache keys on the family's name, not its codec: a codec-free
+    own family name would share cached points across codecs."""
+    nameless = cbr.Family("default", cbr.Codec.HEVC, Path("nanocodec"), own=True)
+    with pytest.raises(ValueError, match="must name its codec"):
+        cbr.Bench.point_dir(None, nameless, None)

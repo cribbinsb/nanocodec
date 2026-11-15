@@ -13,6 +13,7 @@ Leaf module: imports nothing of nceval.
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import subprocess
 import sys
@@ -72,6 +73,29 @@ def verify_built(binary: Path, commit: str) -> dict:
         raise SystemExit(f"build of {commit} at {binary} is wrong: {problem}; "
                          f"refusing to use it")
     return info
+
+
+#: Prefix of a stream identity taken from a clean build's commit.
+COMMIT_IDENTITY_PREFIX = "nanocodec@"
+
+
+def stream_identity(binary: Path) -> str:
+    """What a nanocodec binary's streams are keyed on in the measurement caches.
+
+    A clean build of a commit codes the same streams whatever built it: the
+    release, PGO, gate (no LTO) and per-agent target-dir builds differ in bytes
+    but not in output (docs/PROCEDURES.md "Build and check"). Keying caches on
+    the binary's bytes made every agent re-encode the same integration head's
+    anchor curves with its own build. So a clean build is keyed on its commit;
+    a dirty or unstamped one keeps the SHA-256 of its bytes."""
+    info = info_of(binary)
+    if info["commit"] and not info["dirty"]:
+        return COMMIT_IDENTITY_PREFIX + info["commit"]
+    digest = hashlib.sha256()
+    with Path(binary).open("rb") as source:
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def info_of(binary: Path) -> dict:

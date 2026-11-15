@@ -1,7 +1,8 @@
 //! Bounded hostile-packet checks for the stateful native decoder.
 //! All fixtures are tiny in-memory pictures; no external decoder or fuzz runtime.
-use nc_av2::{obu, sequence, stream};
+use nc_av2::{Av2Backend, obu, sequence, stream};
 use nc_common::{Picture, PlaneIndex};
+use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides, StreamSignal};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn picture(side: usize, phase: usize) -> Picture {
@@ -38,19 +39,29 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(side: usize, quantizer: u8) -> Self {
-        Self::with_tx8(side, quantizer, false)
-    }
-
-    fn with_tx8(side: usize, quantizer: u8, tx8: bool) -> Self {
-        let mut encoder = stream::Encoder::default();
-        encoder.set_tx8(tx8);
-        let key = encoder.encode(&picture(side, 0), quantizer, false).unwrap();
-        let forward = encoder.encode(&picture(side, 1), quantizer, false).unwrap();
+    /// A key and a forward picture of the shared engine's AV2 stream
+    /// (`Av2Backend`, the only encode path), side `side` at `quantizer`.
+    fn new(side: usize, quantizer: u32) -> Self {
+        let config = EncoderConfig {
+            codec: Codec::Av2,
+            width: side,
+            height: side,
+            frame_rate: FrameRate { num: 30, den: 1 },
+            quantizer,
+            intra_period: 30,
+            temporal_layers: 1,
+            block_log2: 3,
+            key_qp_offset: None,
+            signal: StreamSignal::default(),
+            params: ParamOverrides::default().coding_every_frame(),
+        };
+        let mut encoder = Encoder::<Av2Backend>::new(config).unwrap();
+        let key = encoder.encode(&picture(side, 0)).data;
+        let forward = encoder.encode(&picture(side, 1)).data;
         Self {
-            key: key.packet,
-            forward: forward.packet,
-            expected: forward.reconstruction,
+            key,
+            forward,
+            expected: encoder.reconstruction().clone(),
         }
     }
 
@@ -73,9 +84,10 @@ impl Fixture {
     }
 }
 
+/// A larger picture, so the payload carries larger transforms and partitions.
 #[test]
-fn tx8_payload_errors_preserve_reference() {
-    let fixture = Fixture::with_tx8(16, 100, true);
+fn larger_block_payload_errors_preserve_reference() {
+    let fixture = Fixture::new(32, 100);
     let mut rejections = 0;
     for packet in [&fixture.key, &fixture.forward] {
         for length in 0..packet.len() {

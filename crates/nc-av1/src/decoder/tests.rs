@@ -200,6 +200,67 @@ fn intra_refresh_recovers_from_wrong_references() {
     }
     assert!(mismatched, "the corruption had no effect");
 }
+/// A diagonal texture panning left by 12 samples per frame and down by 2
+/// (as nc-vvc's `refresh_tests`): vectors point towards the dirty region,
+/// and directional intra predictions read above-right samples.
+fn refresh_texture(width: usize, height: usize, frame: usize) -> Picture {
+    let mut picture = Picture::new(width, height, 0).unwrap();
+    for plane in PlaneIndex::ALL {
+        let mut view = picture.plane_mut(plane).view_mut();
+        let scale = if plane == PlaneIndex::Y { 1 } else { 2 };
+        for y in 0..view.height() {
+            for (x, v) in view.row_mut(y).iter_mut().enumerate() {
+                let gx = x + 12 * frame / scale;
+                let gy = y + 2 * frame / scale;
+                let diagonal = (gx + gy) * 9 / scale;
+                *v = ((diagonal % 160) + (gx * gx * 3 + gy * 7) % 61 + plane as usize * 20) as u8;
+            }
+        }
+    }
+    picture
+}
+/// Intra refresh with the Default's parameters and large blocks: an intra
+/// block that ends before the range's right edge can still read
+/// above-right samples past it (twice its width), dirty after a loss.
+#[test]
+fn intra_refresh_recovers_with_large_blocks() {
+    const PERIOD: u32 = 3;
+    const CORRUPT_AFTER: u64 = 5;
+    let (width, height) = (256, 128);
+    let mut cfg = config(width, height, 120, 6);
+    for &(name, value) in <Av1Backend as nc_encoder::CodecBackend>::DEFAULT_PARAMS {
+        cfg.params.set(name, value);
+    }
+    cfg.intra_period = 4;
+    let mut encoder = Encoder::<Av1Backend>::new(cfg).unwrap();
+    encoder
+        .set_intra_refresh(Some(nc_encoder::IntraRefresh { period: PERIOD }))
+        .unwrap();
+    let mut dec = Decoder::new();
+    let mut mismatched = false;
+    for index in 0..20u64 {
+        let frame = encoder.encode(&refresh_texture(width, height, index as usize));
+        let pic = dec.decode(&frame.data).unwrap();
+        if index == CORRUPT_AFTER {
+            dec.corrupt_references(0);
+        }
+        let exact = PlaneIndex::ALL.iter().all(|&p| {
+            let (a, b) = (
+                pic.plane(p).view(),
+                encoder.reconstruction().plane(p).view(),
+            );
+            (0..a.height()).all(|y| a.row(y) == b.row(y))
+        });
+        if index > CORRUPT_AFTER + 2 * u64::from(PERIOD) {
+            assert!(exact, "frame {index} not recovered");
+        } else if index > CORRUPT_AFTER {
+            mismatched |= !exact;
+        } else {
+            assert!(exact, "frame {index}");
+        }
+    }
+    assert!(mismatched, "the corruption had no effect");
+}
 /// A long-term reference every 4 frames in `temporal_layers` fixed
 /// layers; the receiver loses `lost`, reports it, and decodes every
 /// other frame exactly, with no key frame after the first.

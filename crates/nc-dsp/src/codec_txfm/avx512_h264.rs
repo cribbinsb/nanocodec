@@ -25,7 +25,7 @@ fn transform<T: Line<I32x16>>(rows: [I32x16; 4], shift: u32) -> [I32x16; 4] {
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward(src: &[i16], stride: usize, blocks_wide: usize, out: &mut [[i32; 16]]) {
+unsafe fn forward(src: &[i16], stride: usize, blocks_wide: usize, out: &mut [[i16; 16]]) {
     let full = out.len() / 4 * 4;
     for first in (0..full).step_by(4) {
         let mut rows = [I32x16::splat(0); 4];
@@ -47,7 +47,7 @@ unsafe fn forward(src: &[i16], stride: usize, blocks_wide: usize, out: &mut [[i3
             .iter_mut()
             .zip(transform::<H264Fdct4>(rows, 0))
         {
-            value.store(block);
+            value.store_sat16(block);
         }
     }
     for (index, block) in out[full..].iter_mut().enumerate() {

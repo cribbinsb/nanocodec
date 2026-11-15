@@ -1,7 +1,8 @@
-//! Native AV2 encoder and matching emitted-subset decoder.
+//! The AV2 backend of the shared engine ([`Av2Backend`], the only encode
+//! path) and the matching emitted-subset decoder ([`Decoder`]).
 //!
 //! Supports 8-bit 4:2:0 I/P pictures, every intra mode except chroma-from-luma, lossless/lossy residuals,
-//! skip and optional quarter-pel motion. CLI and WASM use shared realtime controls.
+//! skip and quarter-pel motion.
 //! This is a bounded subset, not a general-purpose AV2 decoder; competitive
 //! compression and speed remain unmeasured.
 #![forbid(unsafe_code)]
@@ -23,13 +24,10 @@ mod tx_partition;
 pub mod tx_size;
 pub mod tx_type;
 
-pub mod dc_tile;
-
 pub mod coeff;
 mod coeff_tables;
 mod coeff_trim;
 pub mod interp_filter;
-pub mod intra;
 pub mod partition;
 
 mod backend;
@@ -45,11 +43,9 @@ mod tile_analysis;
 mod tile_decoder;
 pub use backend::Av2Backend;
 pub use stream::{Decoder, temporal_unit_layer};
-pub mod inter;
 mod intra_edges;
 pub mod intra_modes;
 pub mod motion;
 pub mod mv_refs;
 pub mod prediction;
-mod search;
 pub mod stream;

@@ -84,9 +84,23 @@ impl Pass {
     }
 }
 
-/// Input samples the drivers load: residuals (`i16`) or coefficients.
-pub(crate) trait Element: Copy {
+/// Values the drivers load (residuals, coefficients) and store
+/// (coefficients): `i16` or `i32`. The arithmetic is 32-bit either way; a
+/// 16-bit store saturates, which is exact wherever the stored range is
+/// proven to fit (8-bit H.264 forward outputs, levels and scaled values).
+pub(crate) trait Element: Copy + Default {
     fn load<V: I32Lanes>(src: &[Self]) -> V;
+    /// Store `V::LANES` values (saturated into 16 bits for `i16`).
+    fn store<V: I32Lanes>(lanes: V, dst: &mut [Self]);
+    /// [`Element::load`] of `2 * V::LANES` values: one 128-bit load of
+    /// eight `i16` on NEON and SIMD128 (`I32Lanes::load_i16_pair`).
+    fn load_pair<V: I32Lanes>(src: &[Self]) -> (V, V);
+    /// [`Element::store`] of two vectors: one narrowing 128-bit store of
+    /// eight `i16` on NEON and SIMD128 (`I32Lanes::store_sat16_pair`).
+    fn store_pair<V: I32Lanes>(low: V, high: V, dst: &mut [Self]);
+    fn widen(self) -> i32;
+    /// `value` saturated into `Self`.
+    fn saturate(value: i32) -> Self;
 }
 
 impl Element for i16 {
@@ -94,12 +108,53 @@ impl Element for i16 {
     fn load<V: I32Lanes>(src: &[Self]) -> V {
         V::load_i16(src)
     }
+    #[inline(always)]
+    fn store<V: I32Lanes>(lanes: V, dst: &mut [Self]) {
+        lanes.store_sat16(dst);
+    }
+    #[inline(always)]
+    fn load_pair<V: I32Lanes>(src: &[Self]) -> (V, V) {
+        V::load_i16_pair(src)
+    }
+    #[inline(always)]
+    fn store_pair<V: I32Lanes>(low: V, high: V, dst: &mut [Self]) {
+        V::store_sat16_pair(low, high, dst);
+    }
+    #[inline(always)]
+    fn widen(self) -> i32 {
+        i32::from(self)
+    }
+    #[inline(always)]
+    fn saturate(value: i32) -> Self {
+        value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    }
 }
 
 impl Element for i32 {
     #[inline(always)]
     fn load<V: I32Lanes>(src: &[Self]) -> V {
         V::load(src)
+    }
+    #[inline(always)]
+    fn store<V: I32Lanes>(lanes: V, dst: &mut [Self]) {
+        lanes.store(dst);
+    }
+    #[inline(always)]
+    fn load_pair<V: I32Lanes>(src: &[Self]) -> (V, V) {
+        (V::load(src), V::load(&src[V::LANES..]))
+    }
+    #[inline(always)]
+    fn store_pair<V: I32Lanes>(low: V, high: V, dst: &mut [Self]) {
+        low.store(dst);
+        high.store(&mut dst[V::LANES..]);
+    }
+    #[inline(always)]
+    fn widen(self) -> i32 {
+        self
+    }
+    #[inline(always)]
+    fn saturate(value: i32) -> Self {
+        value
     }
 }
 
@@ -134,21 +189,22 @@ pub(crate) fn as_uninit<T: Copy>(out: &mut [T]) -> &mut [MaybeUninit<T>] {
 ///
 /// `V`'s ISA must be available (module docs); `V::LANES <= N`.
 #[inline(always)]
-pub(crate) unsafe fn rows_then_columns<V, E, R, C, const N: usize>(
+pub(crate) unsafe fn rows_then_columns<V, E, R, C, O, const N: usize>(
     input: &[E],
     stride: usize,
     first: Pass,
     second: Pass,
-    out: &mut [i32],
+    out: &mut [O],
 ) where
     V: I32Lanes,
     E: Element,
     R: Line<V>,
     C: Line<V>,
+    O: Element,
 {
     // SAFETY: forwarded driver contract; no coefficient bound requested.
     unsafe {
-        rows_then_columns_bounded::<V, E, R, C, N>(
+        rows_then_columns_bounded::<V, E, R, C, O, N>(
             input,
             stride,
             first,
@@ -240,12 +296,12 @@ pub(crate) fn proven_zero<V: I32Lanes, const N: usize>(
 /// As `rows_then_columns`, optionally proving all coefficients quantize to
 /// zero after the first pass. False leaves out untouched.
 #[inline(always)]
-unsafe fn rows_then_columns_bounded<V, E, R, C, const N: usize>(
+unsafe fn rows_then_columns_bounded<V, E, R, C, O, const N: usize>(
     input: &[E],
     stride: usize,
     first: Pass,
     second: Pass,
-    out: &mut [i32],
+    out: &mut [O],
     zero_limit: Option<u32>,
     mode: HevcForwardMode,
 ) -> bool
@@ -254,6 +310,7 @@ where
     E: Element,
     R: Line<V>,
     C: Line<V>,
+    O: Element,
 {
     let lanes = V::LANES;
     let mut x = [V::splat(0); N];
@@ -287,7 +344,7 @@ where
     // SAFETY: rows r0..r0 + LANES of `m` were written for every r0.
     let m = unsafe { written(&m, N * N) };
     // SAFETY: every row of m was initialized above; ISA contract forwarded.
-    unsafe { columns_bounded::<V, C, N>(m, second, out, zero_limit, mode) }
+    unsafe { columns_bounded::<V, C, O, N>(m, second, out, zero_limit, mode) }
 }
 
 /// Columns per proven-zero group of `HevcForwardMode::zero_columns`: a
@@ -295,10 +352,10 @@ where
 const ZERO_COLUMN_GROUP: usize = 8;
 
 #[inline(always)]
-unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, const N: usize>(
+unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, O: Element, const N: usize>(
     m: &[i32],
     second: Pass,
-    out: &mut [i32],
+    out: &mut [O],
     zero_limit: Option<u32>,
     mode: HevcForwardMode,
 ) -> bool {
@@ -341,7 +398,7 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, const N: usize>(
         };
         if c0 >= kept || all_zero {
             for v in 0..N {
-                out[v * N + c0..v * N + c0 + lanes].fill(0);
+                out[v * N + c0..v * N + c0 + lanes].fill(O::default());
             }
             continue;
         }
@@ -374,17 +431,24 @@ unsafe fn columns_bounded<V: I32Lanes, C: Line<V>, const N: usize>(
             C::apply(&x, &mut y);
             second.apply(&mut y);
         }
+        if lanes == N && kept == N && lanes <= ZERO_COLUMN_GROUP {
+            // One vector per row: consecutive rows are contiguous, so they
+            // are stored in pairs (one narrowing 128-bit store of two
+            // 4-point rows of `i16`).
+            for (v, pair) in y.as_chunks::<2>().0.iter().enumerate() {
+                O::store_pair(pair[0], pair[1], &mut out[2 * v * N..]);
+            }
+            continue;
+        }
         for (v, lane) in y.iter().enumerate() {
             if v < kept {
                 if lanes > ZERO_COLUMN_GROUP {
-                    active
-                        .select(*lane, V::splat(0))
-                        .store(&mut out[v * N + c0..]);
+                    O::store(active.select(*lane, V::splat(0)), &mut out[v * N + c0..]);
                 } else {
-                    lane.store(&mut out[v * N + c0..]);
+                    O::store(*lane, &mut out[v * N + c0..]);
                 }
             } else {
-                out[v * N + c0..v * N + c0 + lanes].fill(0);
+                out[v * N + c0..v * N + c0 + lanes].fill(O::default());
             }
         }
     }
@@ -836,7 +900,7 @@ pub(crate) unsafe fn hevc_forward_bounded<
     let (first, second) = hevc_forward_passes(LOG2);
     // SAFETY: forwarded contract, using the HEVC DCT matrices and shifts.
     unsafe {
-        rows_then_columns_bounded::<V, i16, T, T, N>(
+        rows_then_columns_bounded::<V, i16, T, T, _, N>(
             residual,
             stride,
             first,
@@ -869,7 +933,7 @@ where
 {
     let (_, second) = hevc_forward_passes(LOG2);
     // SAFETY: forwarded contract.
-    unsafe { columns_bounded::<V, T, N>(m, second, out, Some(zero_limit), mode) }
+    unsafe { columns_bounded::<V, T, _, N>(m, second, out, Some(zero_limit), mode) }
 }
 
 /// Packed staged rows, followed by the 4-lane column pass (exact, or staged
@@ -899,7 +963,7 @@ pub(crate) unsafe fn hevc_forward_neon_rows<
     if !staged_columns {
         // SAFETY: initialized block, supported ISA and checked output.
         return unsafe {
-            columns_bounded::<crate::simd::neon::I32x4, T, N>(
+            columns_bounded::<crate::simd::neon::I32x4, T, _, N>(
                 m,
                 second,
                 out,
@@ -946,7 +1010,13 @@ pub(crate) unsafe fn hevc_forward_simd128_rows<
     let (_, second) = hevc_forward_passes(LOG2);
     // SAFETY: initialized block, supported ISA and checked output.
     unsafe {
-        columns_bounded::<crate::simd::simd128::I32x4, T, N>(m, second, out, Some(zero_limit), mode)
+        columns_bounded::<crate::simd::simd128::I32x4, T, _, N>(
+            m,
+            second,
+            out,
+            Some(zero_limit),
+            mode,
+        )
     }
 }
 
@@ -999,7 +1069,7 @@ pub(crate) unsafe fn hevc_forward<V: I32Lanes, T: Line<V>, const N: usize, const
 ) {
     let (first, second) = hevc_forward_passes(LOG2);
     // SAFETY: forwarded contract.
-    unsafe { rows_then_columns::<V, i16, T, T, N>(residual, stride, first, second, out) }
+    unsafe { rows_then_columns::<V, i16, T, T, _, N>(residual, stride, first, second, out) }
 }
 
 /// HEVC inverse transform `T` of side `N`.
@@ -1284,6 +1354,9 @@ const ROUND_6: Pass = Pass {
 };
 
 /// H.264 forward 4x4 of every block of a region, blocks in raster order.
+/// The coefficients are stored in 16 bits: for `|r| <= 255` (module docs)
+/// the largest is `6 · 6 · 255 = 9180` (row L1 norms 4 and 6), so the
+/// store's saturation never acts.
 ///
 /// # Safety
 ///
@@ -1293,13 +1366,13 @@ pub(crate) unsafe fn h264_forward_4x4<V: I32Lanes>(
     residual: &[i16],
     stride: usize,
     blocks_wide: usize,
-    out: &mut [[i32; 16]],
+    out: &mut [[i16; 16]],
 ) {
     for (b, block) in out.iter_mut().enumerate() {
         let origin = (b / blocks_wide) * 4 * stride + (b % blocks_wide) * 4;
         // SAFETY: forwarded contract.
         unsafe {
-            rows_then_columns::<V, i16, H264Fdct4, H264Fdct4, 4>(
+            rows_then_columns::<V, i16, H264Fdct4, H264Fdct4, _, 4>(
                 &residual[origin..],
                 stride,
                 NO_ROUNDING,
@@ -1323,7 +1396,7 @@ pub(crate) unsafe fn h264_blocks_4x4<V: I32Lanes, T: Line<V>>(
 ) {
     for (block, result) in input.iter().zip(out.iter_mut()) {
         // SAFETY: forwarded contract.
-        unsafe { rows_then_columns::<V, i32, T, T, 4>(block, 4, NO_ROUNDING, last, result) };
+        unsafe { rows_then_columns::<V, i32, T, T, _, 4>(block, 4, NO_ROUNDING, last, result) };
     }
 }
 
@@ -1349,7 +1422,10 @@ pub(crate) unsafe fn h264_hadamard_4x4<V: I32Lanes>(input: &[[i32; 16]], out: &m
     unsafe { h264_blocks_4x4::<V, H264Hadamard4>(input, NO_ROUNDING, out) }
 }
 
-/// H.264 forward 8x8: `(F · X · Fᵀ + 32) >> 6`.
+/// H.264 forward 8x8: `(F · X · Fᵀ + 32) >> 6`, stored in 16 bits. The
+/// largest output is the DC of a flat ±255 block, `64 · 64 · 255 / 64 =
+/// 16320` (the row L1 norms are at most 64), so the store's saturation
+/// never acts.
 ///
 /// # Safety
 ///
@@ -1358,11 +1434,11 @@ pub(crate) unsafe fn h264_hadamard_4x4<V: I32Lanes>(input: &[[i32; 16]], out: &m
 pub(crate) unsafe fn h264_forward_8x8<V: I32Lanes>(
     residual: &[i16],
     stride: usize,
-    out: &mut [i32; 64],
+    out: &mut [i16; 64],
 ) {
     // SAFETY: forwarded contract.
     unsafe {
-        rows_then_columns::<V, i16, H264Fdct8, H264Fdct8, 8>(
+        rows_then_columns::<V, i16, H264Fdct8, H264Fdct8, _, 8>(
             residual,
             stride,
             NO_ROUNDING,
@@ -1381,46 +1457,57 @@ pub(crate) unsafe fn h264_forward_8x8<V: I32Lanes>(
 pub(crate) unsafe fn h264_inverse_8x8<V: I32Lanes>(coeffs: &[i32; 64], out: &mut [i32; 64]) {
     // SAFETY: forwarded contract.
     unsafe {
-        rows_then_columns::<V, i32, H264Idct8, H264Idct8, 8>(coeffs, 8, NO_ROUNDING, ROUND_6, out);
+        rows_then_columns::<V, i32, H264Idct8, H264Idct8, _, 8>(
+            coeffs,
+            8,
+            NO_ROUNDING,
+            ROUND_6,
+            out,
+        );
     }
 }
 
 /// H.264 scaling: `l · ls[i % ls.len()]`, then `<< shift` (`shift >= 0`)
-/// or a rounding shift right by `-shift`.
+/// or a rounding shift right by `-shift`, computed in 32 bits and stored
+/// saturated into 16 bits. The saturation is our decoder's clamp of the
+/// scaled values (§8.5.12.1: a conforming stream keeps them within 16 bits),
+/// so the encoder's reconstruction stays our decoder's; it never acts on
+/// the levels of 8-bit residuals (`scaled_ac_fits_i16` in the tests).
+/// Vectors run from level 0, two at a time (one 128-bit load and one
+/// narrowing 128-bit store of eight levels on NEON and SIMD128).
 ///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs).
 #[inline(always)]
 pub(crate) unsafe fn h264_dequantize<V: I32Lanes>(
-    levels: &[i32],
+    levels: &[i16],
     ls: &[i32],
     shift: i32,
-    out: &mut [i32],
+    out: &mut [i16],
 ) {
-    let lanes = V::LANES;
+    let step = 2 * V::LANES;
     let period = ls.len();
-    let done = if period.is_multiple_of(lanes) {
-        levels.len() / lanes * lanes
+    let done = if period.is_multiple_of(step) {
+        levels.len() / step * step
     } else {
         0
     };
-    for i in (0..done).step_by(lanes) {
-        let d = V::load(&levels[i..]).mul(V::load(&ls[i % period..]));
-        let d = if shift >= 0 {
+    let scale = |l: V, ls: V| {
+        let d = l.mul(ls);
+        if shift >= 0 {
             d.shl(shift.unsigned_abs())
         } else {
             d.round_shift(shift.unsigned_abs())
-        };
-        d.store(&mut out[i..]);
+        }
+    };
+    for i in (0..done).step_by(step) {
+        let (low, high) = V::load_i16_pair(&levels[i..]);
+        let (ls_low, ls_high) = i32::load_pair::<V>(&ls[i % period..]);
+        V::store_sat16_pair(scale(low, ls_low), scale(high, ls_high), &mut out[i..]);
     }
     for i in done..levels.len() {
-        let d = levels[i].wrapping_mul(ls[i % period]);
-        out[i] = if shift >= 0 {
-            d << shift
-        } else {
-            I32Lanes::round_shift(d, shift.unsigned_abs())
-        };
+        out[i] = i16::saturate(scale_level(i32::from(levels[i]), ls[i % period], shift));
     }
 }
 
@@ -1464,8 +1551,8 @@ fn add_block<V: I32Lanes>(block: &[i32], n: usize, dst: &mut [u8], stride: usize
 /// `V`'s ISA must be available (module docs); `V::LANES <= 4`.
 #[inline(always)]
 pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes>(
-    levels: &[[i32; 16]],
-    dc: &[i32],
+    levels: &[[i16; 16]],
+    dc: &[i16],
     (ls, shift): (&[i32; 16], i32),
     blocks_wide: usize,
     dst: &mut [u8],
@@ -1477,20 +1564,26 @@ pub(crate) unsafe fn h264_add_inverse_4x4<V: I32Lanes>(
         let ac = block[1..].iter().fold(0, |any, &l| any | l);
         let dc_level = dc.get(b).copied();
         if ac == 0 {
-            let d = dc_level.unwrap_or_else(|| scale_level(block[0], ls[0], shift));
+            let d = dc_level
+                .unwrap_or_else(|| i16::saturate(scale_level(i32::from(block[0]), ls[0], shift)));
             if d != 0 {
-                add_constant::<V>(I32Lanes::round_shift(d, ROUND_6.shift), 4, dst, stride);
+                add_constant::<V>(
+                    I32Lanes::round_shift(i32::from(d), ROUND_6.shift),
+                    4,
+                    dst,
+                    stride,
+                );
             }
             continue;
         }
-        let mut scaled = [0i32; 16];
+        let mut scaled = [0i16; 16];
         // SAFETY: forwarded contract.
         unsafe {
             h264_dequantize::<V>(block, ls, shift, &mut scaled);
             if let Some(d) = dc_level {
                 scaled[0] = d;
             }
-            add_inverse_4x4::<V, i32>(&scaled, dst, stride);
+            add_inverse_4x4::<V, i16>(&scaled, dst, stride);
         }
     }
 }
@@ -1582,7 +1675,7 @@ unsafe fn add_inverse_4x4<V: I32Lanes, E: Element>(
     let mut residual = [0i32; 16];
     // SAFETY: forwarded contract.
     unsafe {
-        rows_then_columns::<V, E, H264Idct4, H264Idct4, 4>(
+        rows_then_columns::<V, E, H264Idct4, H264Idct4, _, 4>(
             scaled,
             4,
             NO_ROUNDING,
@@ -1593,60 +1686,9 @@ unsafe fn add_inverse_4x4<V: I32Lanes, E: Element>(
     add_block::<V>(&residual, 4, dst, stride);
 }
 
-/// H.264 residual reconstruction of an 8x8 block in place: `levels` scaled
-/// (§8.5.13.1 as [`h264_dequantize`] with `ls` and `shift`), inverse
-/// transformed (§8.5.13.2) and added to the 8x8 block of `dst`, which holds
-/// the prediction. Zero and DC-only blocks as in [`h264_add_inverse_4x4`].
-///
-/// # Safety
-///
-/// `V`'s ISA must be available (module docs); `V::LANES <= 8`.
+/// One level of [`h264_dequantize`], before its saturation.
 #[inline(always)]
-pub(crate) unsafe fn h264_add_inverse_8x8<V: I32Lanes>(
-    levels: &[i32; 64],
-    (ls, shift): (&[i32; 64], i32),
-    dst: &mut [u8],
-    stride: usize,
-) {
-    if levels[1..].iter().fold(0, |any, &l| any | l) == 0 {
-        let d = scale_level(levels[0], ls[0], shift);
-        if d != 0 {
-            add_constant::<V>(I32Lanes::round_shift(d, ROUND_6.shift), 8, dst, stride);
-        }
-        return;
-    }
-    let mut scaled = [0i32; 64];
-    // SAFETY: forwarded contract.
-    unsafe {
-        h264_dequantize::<V>(levels, ls, shift, &mut scaled);
-        add_inverse_8x8::<V>(&scaled, dst, stride);
-    }
-}
-
-/// Inverse transform the scaled 8x8 block (§8.5.13.2) and add it to `dst`.
-///
-/// # Safety
-///
-/// As [`h264_add_inverse_8x8`].
-#[inline(always)]
-unsafe fn add_inverse_8x8<V: I32Lanes>(scaled: &[i32; 64], dst: &mut [u8], stride: usize) {
-    let mut residual = [0i32; 64];
-    // SAFETY: forwarded contract.
-    unsafe {
-        rows_then_columns::<V, i32, H264Idct8, H264Idct8, 8>(
-            scaled,
-            8,
-            NO_ROUNDING,
-            ROUND_6,
-            &mut residual,
-        );
-    }
-    add_block::<V>(&residual, 8, dst, stride);
-}
-
-/// One level of [`h264_dequantize`].
-#[inline(always)]
-fn scale_level(level: i32, ls: i32, shift: i32) -> i32 {
+pub(crate) fn scale_level(level: i32, ls: i32, shift: i32) -> i32 {
     let d = level.wrapping_mul(ls);
     if shift >= 0 {
         d << shift
@@ -1672,11 +1714,13 @@ pub(crate) unsafe fn h264_forward_quantize_chroma<V4: I32Lanes, V: I32Lanes>(
     residual: &[i16],
     stride: usize,
     q: &H264Quantizer,
-    ac: &mut [[i32; 4 * 4]; 4],
-) -> ([i32; 4], u32) {
+    ac: &mut [[i16; 4 * 4]; 4],
+) -> ([i16; 4], u32) {
     // SAFETY: forwarded contract.
     unsafe { h264_forward_4x4::<V4>(residual, stride, 2, ac) };
-    let c: [i32; 4] = core::array::from_fn(|b| ac[b][0]);
+    // Each block's DC is at most 16 · 255 = 4080, so their 2x2 Hadamard
+    // is at most 16320 and the DC levels fit 16 bits.
+    let c: [i16; 4] = core::array::from_fn(|b| ac[b][0]);
     let mut dc = [
         c[0] + c[1] + c[2] + c[3],
         c[0] - c[1] + c[2] - c[3],
@@ -1686,13 +1730,14 @@ pub(crate) unsafe fn h264_forward_quantize_chroma<V4: I32Lanes, V: I32Lanes>(
     let (dc_qbits, dc_offset) = q.forward_terms(1);
     let mf = &QUANT_MF_4X4_POS[q.rem];
     // SAFETY: the scalar lane type needs no ISA.
-    unsafe { quantize::<i32>(&mut dc, &mf[..1], dc_offset, dc_qbits, i32::MAX) };
+    unsafe { quantize::<i32, i16>(&mut dc, &mf[..1], dc_offset, dc_qbits, H264_MAX_LEVEL) };
     for block in ac.iter_mut() {
         block[0] = 0;
     }
     let (qbits, offset) = q.forward_terms(0);
     // SAFETY: forwarded contract.
-    let nonzero = unsafe { quantize::<V>(ac.as_flattened_mut(), mf, offset, qbits, i32::MAX) };
+    let nonzero =
+        unsafe { quantize::<V, i16>(ac.as_flattened_mut(), mf, offset, qbits, H264_MAX_LEVEL) };
     (dc, nonzero)
 }
 
@@ -1704,7 +1749,7 @@ pub(crate) trait H264Forward8x8 {
     /// # Safety
     ///
     /// As [`h264_forward_8x8`], with the implementation's ISA available.
-    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i32; 64]);
+    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i16; 64]);
 }
 
 /// [`h264_forward_8x8`] on `V` lanes.
@@ -1712,7 +1757,7 @@ pub(crate) struct LanesForward8x8<V>(PhantomData<V>);
 
 impl<V: I32Lanes> H264Forward8x8 for LanesForward8x8<V> {
     #[inline(always)]
-    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i32; 64]) {
+    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i16; 64]) {
         // SAFETY: forwarded contract.
         unsafe { h264_forward_8x8::<V>(residual, stride, out) }
     }
@@ -1731,7 +1776,7 @@ pub(crate) unsafe fn h264_forward_quantize_mb<F: H264Forward8x8, Q: I32Lanes>(
     stride: usize,
     zero_mask: u8,
     q: &H264Quantizer,
-    out: &mut [[i32; 64]; 4],
+    out: &mut [[i16; 64]; 4],
 ) -> [u32; 4] {
     let (qbits, offset) = q.forward_terms(1);
     let mf = &QUANT_MF_8X8_POS[q.rem];
@@ -1745,7 +1790,7 @@ pub(crate) unsafe fn h264_forward_quantize_mb<F: H264Forward8x8, Q: I32Lanes>(
         // SAFETY: the caller covers all four quadrants and both ISAs.
         unsafe {
             F::forward(&residual[start..], stride, block);
-            counts[i] = quantize::<Q>(block, mf, offset, qbits, i32::MAX);
+            counts[i] = quantize::<Q, i16>(block, mf, offset, qbits, H264_MAX_LEVEL);
         }
     }
     counts
@@ -1819,49 +1864,62 @@ fn vector_nonzero<V: I32Lanes>(done: usize, zeros: V) -> u32 {
     done as u32 - zero_total as u32
 }
 
-/// Dead-zone quantisation shared by HEVC and H.264 (`ScaleQuantizeFn`).
+/// Largest H.264 level magnitude the quantisers emit: the 16-bit storage's
+/// limit. It never binds for 8-bit residuals: the largest coefficient
+/// (16320 for 8x8 and the halved Intra16x16 DC Hadamard, 32640) times the
+/// largest multiplier over `2^qbits` stays below 8192 at qP 0.
+pub(crate) const H264_MAX_LEVEL: i32 = i16::MAX as i32;
+
+/// Dead-zone quantisation shared by HEVC (`i32` storage) and H.264 (`i16`)
+/// in place (`ScaleQuantizeFn`): each coefficient's level computed in 32
+/// bits, `S` only being the storage. Two vectors per step, from coefficient
+/// 0 (one 128-bit load and one narrowing 128-bit store of eight `i16` on
+/// NEON and SIMD128, matching the forward transforms' aligned stores).
 ///
 /// # Safety
 ///
 /// `V`'s ISA must be available (module docs).
 #[inline(always)]
-pub(crate) unsafe fn quantize<V: I32Lanes>(
-    coeffs: &mut [i32],
+pub(crate) unsafe fn quantize<V: I32Lanes, S: Element>(
+    coeffs: &mut [S],
     mf: &[i32],
     offset: i32,
     qbits: u32,
     max_level: i32,
 ) -> u32 {
-    let lanes = V::LANES;
+    let step = 2 * V::LANES;
     let period = mf.len();
-    let done = if period.is_multiple_of(lanes) {
-        coeffs.len() / lanes * lanes
+    let done = if period.is_multiple_of(step) {
+        coeffs.len() / step * step
     } else {
         0
     };
     let offset_v = V::splat(offset);
     let max_v = V::splat(max_level);
     let mut zeros = V::splat(0);
+    let level = |v: V, m: V| {
+        v.abs()
+            .mul(m)
+            .add(offset_v)
+            .shr_logical(qbits)
+            .min(max_v)
+            .with_sign_of(v)
+    };
     // One period of coefficients at a time, zipped with the factors in
     // whole vectors: no per-vector index arithmetic or bounds checks (the
     // indexed form cost ~37 instructions per 8 coefficients).
     for block in coeffs[..done].chunks_exact_mut(period) {
-        for (c, m) in block.chunks_exact_mut(lanes).zip(mf.chunks_exact(lanes)) {
-            let v = V::load(c);
-            let magnitude = v
-                .abs()
-                .mul(V::load(m))
-                .add(offset_v)
-                .shr_logical(qbits)
-                .min(max_v);
-            let level = magnitude.with_sign_of(v);
-            level.store(c);
-            zeros = count_zero_lanes(zeros, level);
+        for (c, m) in block.chunks_exact_mut(step).zip(mf.chunks_exact(step)) {
+            let (low, high) = S::load_pair::<V>(c);
+            let (m_low, m_high) = i32::load_pair::<V>(m);
+            let (low, high) = (level(low, m_low), level(high, m_high));
+            S::store_pair(low, high, c);
+            zeros = count_zero_lanes(count_zero_lanes(zeros, low), high);
         }
     }
     let mut nonzero = vector_nonzero(done, zeros);
     for i in done..coeffs.len() {
-        let c = coeffs[i];
+        let c = coeffs[i].widen();
         let magnitude = I32Lanes::shr_logical(
             c.wrapping_abs()
                 .wrapping_mul(mf[i % period])
@@ -1869,7 +1927,7 @@ pub(crate) unsafe fn quantize<V: I32Lanes>(
             qbits,
         );
         let level = I32Lanes::with_sign_of(Ord::min(magnitude, max_level), c);
-        coeffs[i] = level;
+        coeffs[i] = S::saturate(level);
         nonzero += u32::from(level != 0);
     }
     nonzero
@@ -1877,7 +1935,7 @@ pub(crate) unsafe fn quantize<V: I32Lanes>(
 
 /// Bit `i` set where `levels[i]` is non-zero (at most 64 levels): the
 /// scalar reference of `CodecTxfmFns::nonzero_mask`.
-pub(crate) fn nonzero_mask(levels: &[i32]) -> u64 {
+pub(crate) fn nonzero_mask(levels: &[i16]) -> u64 {
     levels
         .iter()
         .enumerate()
@@ -1914,18 +1972,18 @@ macro_rules! codec_txfm_kernels {
                 h264_inverse_8x8,
                 h264_dequantize,
                 h264_add_inverse_4x4,
-                h264_add_inverse_8x8,
                 h264_add_scaled_4x4,
                 h264_add_scaled_8x8: $crate::codec_txfm::h264_inverse8::add_scaled_8x8,
                 h264_add_scaled_mb,
                 h264_forward_quantize_chroma,
                 quantize,
+                h264_quantize,
                 nonzero_mask,
             }
         }
 
         $(#[$attr])*
-        unsafe fn nonzero_mask(levels: &[i32]) -> u64 {
+        unsafe fn nonzero_mask(levels: &[i16]) -> u64 {
             g::nonzero_mask(levels)
         }
 
@@ -1962,7 +2020,7 @@ macro_rules! codec_txfm_kernels {
             residual: &[i16],
             stride: usize,
             blocks_wide: usize,
-            out: &mut [[i32; 16]],
+            out: &mut [[i16; 16]],
         ) {
             // SAFETY: see the module docs.
             unsafe { g::h264_forward_4x4::<$v4>(residual, stride, blocks_wide, out) }
@@ -1981,7 +2039,7 @@ macro_rules! codec_txfm_kernels {
         }
 
         $(#[$attr])*
-        unsafe fn h264_forward_8x8(residual: &[i16], stride: usize, out: &mut [i32; 64]) {
+        unsafe fn h264_forward_8x8(residual: &[i16], stride: usize, out: &mut [i16; 64]) {
             // SAFETY: see the module docs.
             unsafe { g::h264_forward_8x8::<$v8>(residual, stride, out) }
         }
@@ -1992,7 +2050,7 @@ macro_rules! codec_txfm_kernels {
             stride: usize,
             zero_mask: u8,
             q: &$crate::codec_txfm::H264Quantizer,
-            out: &mut [[i32; 64]; 4],
+            out: &mut [[i16; 64]; 4],
         ) -> [u32; 4] {
             // SAFETY: see the module docs.
             unsafe {
@@ -2010,8 +2068,8 @@ macro_rules! codec_txfm_kernels {
 
         $(#[$attr])*
         unsafe fn h264_add_inverse_4x4(
-            levels: &[[i32; 16]],
-            dc: &[i32],
+            levels: &[[i16; 16]],
+            dc: &[i16],
             scale: (&[i32; 16], i32),
             blocks_wide: usize,
             dst: &mut [u8],
@@ -2026,8 +2084,8 @@ macro_rules! codec_txfm_kernels {
             residual: &[i16],
             stride: usize,
             q: &$crate::codec_txfm::H264Quantizer,
-            ac: &mut [[i32; 16]; 4],
-        ) -> ([i32; 4], u32) {
+            ac: &mut [[i16; 16]; 4],
+        ) -> ([i16; 4], u32) {
             // SAFETY: see the module docs.
             unsafe { g::h264_forward_quantize_chroma::<$v4, $v>(residual, stride, q, ac) }
         }
@@ -2055,18 +2113,7 @@ macro_rules! codec_txfm_kernels {
         }
 
         $(#[$attr])*
-        unsafe fn h264_add_inverse_8x8(
-            levels: &[i32; 64],
-            scale: (&[i32; 64], i32),
-            dst: &mut [u8],
-            stride: usize,
-        ) {
-            // SAFETY: see the module docs.
-            unsafe { g::h264_add_inverse_8x8::<$v8>(levels, scale, dst, stride) }
-        }
-
-        $(#[$attr])*
-        unsafe fn h264_dequantize(levels: &[i32], ls: &[i32], shift: i32, out: &mut [i32]) {
+        unsafe fn h264_dequantize(levels: &[i16], ls: &[i32], shift: i32, out: &mut [i16]) {
             // SAFETY: see the module docs.
             unsafe { g::h264_dequantize::<$v>(levels, ls, shift, out) }
         }
@@ -2086,7 +2133,19 @@ macro_rules! codec_txfm_kernels {
             max_level: i32,
         ) -> u32 {
             // SAFETY: see the module docs.
-            unsafe { g::quantize::<$v>(coeffs, mf, offset, qbits, max_level) }
+            unsafe { g::quantize::<$v, i32>(coeffs, mf, offset, qbits, max_level) }
+        }
+
+        $(#[$attr])*
+        unsafe fn h264_quantize(
+            coeffs: &mut [i16],
+            mf: &[i32],
+            offset: i32,
+            qbits: u32,
+            max_level: i32,
+        ) -> u32 {
+            // SAFETY: see the module docs.
+            unsafe { g::quantize::<$v, i16>(coeffs, mf, offset, qbits, max_level) }
         }
     };
     ($(#[$attr:meta])*; $v4:ty, $v8:ty, $v:ty) => {

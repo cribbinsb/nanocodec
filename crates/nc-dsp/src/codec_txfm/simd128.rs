@@ -7,9 +7,7 @@
 
 use super::{HevcForwardMode, HevcForwardStaging};
 use crate::simd::simd128::I32x4;
-use core::arch::wasm32::{
-    i8x16_bitmask, i8x16_narrow_i16x8, i16x8_narrow_i32x4, i32x4_eq, i32x4_splat, v128_load,
-};
+use core::arch::wasm32::{i8x16_bitmask, i8x16_narrow_i16x8, i16x8_eq, i16x8_splat, v128_load};
 
 mod wide {
     use crate::simd::simd128::I32x4;
@@ -92,31 +90,29 @@ unsafe fn staged32_bounded(
 /// Levels tested per `bitmask`.
 const MASK_GROUP: usize = 16;
 
-/// `generic::nonzero_mask`: sixteen levels at a time are compared with
-/// zero; the all-ones/all-zeros lane results survive the two saturating
-/// narrows to bytes unchanged, and `i8x16.bitmask` gathers their signs
-/// (the scalar fold costs about four instructions per level).
+/// `generic::nonzero_mask`: sixteen levels at a time (two 128-bit loads)
+/// are compared with zero; the all-ones/all-zeros lane results survive the
+/// saturating narrow to bytes unchanged, and `i8x16.bitmask` gathers their
+/// signs (the scalar fold costs about four instructions per level).
 ///
 /// # Safety
 ///
 /// Kernel contract (`codec_txfm` module docs).
 #[target_feature(enable = "simd128")]
-unsafe fn nonzero_mask(levels: &[i32]) -> u64 {
+unsafe fn nonzero_mask(levels: &[i16]) -> u64 {
     let (groups, rest) = levels.as_chunks::<MASK_GROUP>();
-    let zero = i32x4_splat(0);
+    let zero = i16x8_splat(0);
     let mut zeros = 0;
     for (g, group) in groups.iter().enumerate() {
-        // SAFETY: each quarter of `group` holds 4 levels.
-        let [a, b, c, d] = unsafe {
+        // SAFETY: each half of `group` holds 8 levels.
+        let [low, high] = unsafe {
             [
                 v128_load(group[0..].as_ptr().cast()),
-                v128_load(group[4..].as_ptr().cast()),
                 v128_load(group[8..].as_ptr().cast()),
-                v128_load(group[12..].as_ptr().cast()),
             ]
         }
-        .map(|v| i32x4_eq(v, zero));
-        let bytes = i8x16_narrow_i16x8(i16x8_narrow_i32x4(a, b), i16x8_narrow_i32x4(c, d));
+        .map(|v| i16x8_eq(v, zero));
+        let bytes = i8x16_narrow_i16x8(low, high);
         zeros |= u64::from(i8x16_bitmask(bytes)) << (MASK_GROUP * g);
     }
     let whole = MASK_GROUP * groups.len();

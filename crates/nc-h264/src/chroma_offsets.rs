@@ -8,7 +8,7 @@
 //! PPS of its picture's QP (`pic_parameter_set_id`, §7.4.3). A lost frame
 //! never leaves a later one with the wrong PPS: they all arrive with the key.
 
-use nc_encoder::chroma_policy::{ChromaPolicy, closest_index};
+use nc_encoder::chroma_policy::ChromaPolicy;
 
 use crate::tables::chroma_qp;
 
@@ -16,8 +16,6 @@ use crate::tables::chroma_qp;
 const QP_RANGE: std::ops::RangeInclusive<u8> = 0..=51;
 /// `chroma_qp_index_offset` range (§7.4.2.2).
 const OFFSET_LIMIT: i32 = 12;
-/// QP steps per doubling of the quantiser step.
-const QP_PER_OCTAVE: f64 = 6.0;
 
 /// The distinct offsets the policy uses over every luma QP, one PPS each.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +61,9 @@ pub(crate) fn pps_id(parameter_set_id: u32, index: usize) -> u32 {
 /// The offset whose Table 8-15 chroma QP at luma `qp` is nearest the
 /// policy's chroma QP (ties to the smallest offset).
 fn policy_offset(policy: ChromaPolicy, qp: u8) -> i8 {
-    let step = |offset: i32| 2f64.powf(f64::from(chroma_qp(qp, offset as i8)) / QP_PER_OCTAVE);
-    let target = 2f64.powf(policy.chroma_q(f64::from(qp)) / QP_PER_OCTAVE);
-    closest_index(-OFFSET_LIMIT..=OFFSET_LIMIT, step, target) as i8
+    policy.closest_qp_offset(-OFFSET_LIMIT..=OFFSET_LIMIT, f64::from(qp), |offset| {
+        f64::from(chroma_qp(qp, offset as i8))
+    }) as i8
 }
 
 #[cfg(test)]

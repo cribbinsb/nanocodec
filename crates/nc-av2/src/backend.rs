@@ -148,10 +148,9 @@ fn key_qindex(qindex: u8, scale: f64) -> u8 {
     if qindex == 0 {
         return 0;
     }
-    let target = f64::from(crate::transform::quantizer_step_q3(qindex)) * scale;
-    (1..=qindex)
-        .find(|&q| f64::from(crate::transform::quantizer_step_q3(q)) >= target)
-        .unwrap_or(qindex)
+    let step = |q: u32| f64::from(crate::transform::quantizer_step_q3(q as u8));
+    nc_encoder::scaled_quantizer(1..=u32::from(qindex), step, u32::from(qindex), scale)
+        .map_or(qindex, |q| q as u8)
 }
 
 /// The registered trellis controls (`nc_encoder::QuantParams`,
@@ -269,6 +268,9 @@ pub struct Av2Backend {
     key: bool,
     /// Whether rate control chooses frame quantizers (no fixed-QP key boost).
     rate_control: bool,
+    /// `EncoderConfig::key_qp_offset` in qindex steps: replaces the
+    /// `av2.keyframe_step_permille` step factor for fixed-QP key frames.
+    key_qindex_offset: Option<i32>,
     coder: Option<BlockCoder>,
     /// The current frame's deblocking, chosen in `filter_frame`.
     deblock: DeblockParams,
@@ -795,6 +797,10 @@ impl CodecBackend for Av2Backend {
     /// `begin_frame` builds a fresh block coder from the plan (no CDF
     /// state crosses frames); `commit_frame` advances the order hint.
     const RECODE: bool = true;
+    // No intra refresh: inter frames load the entropy state their
+    // primary reference saved, which a lost frame changes, until a key
+    // (measured: avmdec decodes nothing after a dropped frame).
+    const INTRA_REFRESH: bool = false;
 
     /// Superblock quantizer deltas (`delta_q`, [`crate::delta_q`]): one
     /// qindex per 64x64 superblock, set by its first block.
@@ -856,7 +862,6 @@ impl CodecBackend for Av2Backend {
     const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
-        ("decision.exact_rank_margin", 1.1),
         ("decision.refine_cheap_vector", 0.0),
         ("av2.inter_rounding_q7", 36.0),
         // Tuned jointly (eval/nceval/tune_pool.py, study
@@ -871,10 +876,7 @@ impl CodecBackend for Av2Backend {
         ("planner.lambda_scale", 2.581_25),
         ("av2.lambda_per_step_squared", 0.125),
         ("av2.chroma_delta_q_coarse", -12.0),
-        ("quant.trellis", 1.0),
         ("quant.trellis_key", 0.0),
-        ("quant.trellis_states", 1.0),
-        ("quant.trellis_lambda_scale", 1.0),
         ("rate.first_key_boost_scale", 3.0),
         ("rate.recode_overflow_inter", 1.1),
         // Start-up QP cadence (period 8, base frames 5 QP finer before AV2's
@@ -908,6 +910,19 @@ impl CodecBackend for Av2Backend {
         // tripped (+0.46 dB).
         // The other AV2 presets pin it off.
         ("rate.key_still_boost", 4.0),
+        // The QP cadence at least as strong as the frames between measurably
+        // inherit the high-quality frame (`structure.inherited_depth`,
+        // `nc-encoder` `inheritance.rs`), beside the static share: it adds
+        // the cadence on moving content that inherits (pans, crowds) and
+        // leaves noise alone. Build 51b0ec30, pool levels of draw 2026-11-15:
+        // L1 -0.98% [-1.25, -0.53]; L2 -1.38% [-2.46, -0.54]; L3 (single
+        // point, 126 clips) J -0.91% [-1.76, -0.21], no guard (pan -2.2%,
+        // crowd -0.4%, lowlight -0.4%, static +0.1%, bodycam +0.7%, texture
+        // -3.7% on 4 clips, drone -0.4% on 3); 600-frame final (27 clips,
+        // keys every 10 s) J -0.51% [-0.76, -0.27], no guard. Jetson cycles
+        // -0.8% (instructions +0.3%). static_recovery passes. The other AV2
+        // presets pin it off.
+        ("structure.inherited_depth", 1.0),
         // Depth removal at half the engine's threshold scale (SVT
         // `qp_scale_factor`): the scale grows with the headroom below the
         // top quantizer, and AV2's coarser qindex scale (step doubling every
@@ -967,11 +982,6 @@ impl CodecBackend for Av2Backend {
         ordinary
             .validate(&[nc_encoder::engine_specs(), Self::PARAM_SPECS.to_vec()].concat())
             .map_err(ConfigError::Param)?;
-        if config.key_qp_offset.is_some() {
-            return Err(ConfigError::Unsupported(
-                "AV2 does not yet support key-QP overrides",
-            ));
-        }
         Ok(Self {
             coded_width,
             coded_height,
@@ -988,6 +998,7 @@ impl CodecBackend for Av2Backend {
             chroma_policy: nc_encoder::chroma_policy::ChromaPolicy::from_params(&config.params),
             key: true,
             rate_control: false,
+            key_qindex_offset: config.key_qp_offset,
             coder: None,
             deblock: DeblockParams::OFF,
             cdef: CdefParams::OFF,
@@ -1236,13 +1247,18 @@ impl CodecBackend for Av2Backend {
         let planned = plan.quantizer.min(MAX_QINDEX) as u8;
         // Fixed-QP key frames code at a finer step, as AV1's do: a static
         // scene keeps the key frame's detail for the whole GOP.
-        self.qindex = if self.key && !self.rate_control {
-            key_qindex(
+        // A lossless (qindex 0) stream keeps lossless keys, and a lossy key
+        // stays lossy (qindex 1 and up).
+        let fixed_key = self.key && !self.rate_control && planned != 0;
+        self.qindex = match self.key_qindex_offset {
+            Some(offset) if fixed_key => {
+                nc_encoder::offset_key_quantizer(u32::from(planned), offset, 1, MAX_QINDEX) as u8
+            }
+            _ if fixed_key => key_qindex(
                 planned,
                 f64::from(self.params.keyframe_step_permille) / PERMILLE,
-            )
-        } else {
-            planned
+            ),
+            _ => planned,
         };
         self.quant_deltas = self.frame_quant_deltas();
         self.frame_filter = self.choose_frame_filter();
@@ -1520,8 +1536,8 @@ fn policy_chroma_delta(
     let step = |delta: i32| {
         crate::block_coder::pixel_step((qindex as i32 + delta).clamp(0, MAX_QINDEX as i32) as u8)
     };
-    let target = policy.chroma_step(step(0));
-    nc_encoder::chroma_policy::closest_index(range, step, target)
+    // AV2's `pixel_step` is already in the policy's sample-step unit.
+    policy.closest_step_delta(range, 1.0, step)
 }
 
 #[cfg(test)]
@@ -1577,6 +1593,44 @@ mod tests {
             assert_eq!(bytes(&decoded), source);
         }
     }
+    /// Every quantizer (lossless to coarsest) and both entropy modes: a
+    /// packet the decoder rejects leaves its references untouched, so the
+    /// stream decodes on to the encoder's reconstruction across a forced key.
+    #[test]
+    fn rejected_packets_keep_the_reference_at_every_quantizer() {
+        for quantizer in [0, 1, 100, 200, 255] {
+            for cdf_adaptation in [0.0, 1.0] {
+                let mut config = config();
+                config.quantizer = quantizer;
+                config.params.set("av2.cdf_adaptation", cdf_adaptation);
+                let mut encoder = Encoder::<Av2Backend>::new(config).unwrap();
+                let mut decoder = crate::Decoder::default();
+                let mut source = Picture::new(16, 16, 0).unwrap();
+                for index in 0..7 {
+                    for plane in PlaneIndex::ALL {
+                        let mut view = source.plane_mut(plane).view_mut();
+                        for y in 0..view.height() {
+                            for (x, pixel) in view.row_mut(y).iter_mut().enumerate() {
+                                *pixel = ((y * 11 + x * 37 + (index / 2) * 23) % 256) as u8;
+                            }
+                        }
+                    }
+                    if index == 4 {
+                        encoder.request_keyframe();
+                    }
+                    let packet = encoder.encode(&source);
+                    assert!(decoder.decode_ref(&[0]).is_err());
+                    assert!(decoder.decode(&[]).is_err());
+                    let decoded = bytes(decoder.decode_ref(&packet.data).unwrap());
+                    assert_eq!(decoded, bytes(encoder.reconstruction()), "q {quantizer}");
+                    if quantizer == 0 {
+                        assert_eq!(decoded, bytes(&source));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn order_hint_wrap_and_forced_key_keep_reference_chain() {
         let mut config = config();

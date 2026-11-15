@@ -243,12 +243,12 @@ impl HevcBackend {
     /// An intra CU with random luma and chroma modes, partition (`PART_NxN`
     /// for 8x8 CUs) and transform tree.
     fn random_intra_cu(&mut self, block: &Block, source: &Picture, recon: &mut Picture) {
-        // Only DC avoids the above-right samples, dirty on intra refresh's
-        // dirty edge (see `choose_intra_luma`); such CUs stay unsplit.
+        // Only DC avoids the above-right samples, dirty past intra
+        // refresh's range (see `choose_intra_luma`); such CUs stay unsplit.
         let dirty_edge = self
             .refresh
             .as_ref()
-            .is_some_and(|w| w.on_dirty_edge(block));
+            .is_some_and(|w| w.reads_dirty_above_right(block));
         let quarters =
             !dirty_edge && block.log2_size() == LOG2_MIN_CB as u8 && self.rng().chance(NXN_CHANCE);
         let mut modes = [predict::DC; 4];

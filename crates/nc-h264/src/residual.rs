@@ -153,7 +153,7 @@ pub fn write_residual_block(
     cabac: &mut impl BinSink,
     dsp: &Dsp,
     cat: BlockCat,
-    levels: &[i32],
+    levels: &[i16],
     scan: &Scan,
     cbf_ctx_inc: usize,
 ) -> bool {
@@ -194,7 +194,7 @@ const COEFF_ABS_LEVEL_8X8_OFFSET: usize = 426;
 /// Write the significance map and levels of one 8x8 luma block
 /// (`ctxBlockCat` 5). `levels` are its 64 levels in raster order, at least
 /// one of them non-zero; they are coded in zig-zag order.
-pub fn write_luma_8x8_block(cabac: &mut impl BinSink, dsp: &Dsp, levels: &[i32; 64]) {
+pub fn write_luma_8x8_block(cabac: &mut impl BinSink, dsp: &Dsp, levels: &[i16; 64]) {
     let significant = SCAN_8X8.significance(dsp.nonzero_mask(levels));
     assert_ne!(significant, 0, "a coded 8x8 block has a non-zero level");
     let contexts = LevelContexts {
@@ -230,7 +230,7 @@ struct LevelContexts {
 /// then its levels in reverse scan order (§7.3.5.3.3, §9.3.3.1.3), with the
 /// ctxIdxInc of the flags by scan index.
 struct SignificanceAndLevels<'a, F, G> {
-    levels: &'a [i32],
+    levels: &'a [i16],
     scan: &'a Scan,
     significant: u64,
     contexts: LevelContexts,
@@ -272,7 +272,7 @@ impl<F: Fn(usize) -> usize, G: Fn(usize) -> usize> BinRun for SignificanceAndLev
             let i = (u64::BITS - 1 - rest.leading_zeros()) as usize;
             rest ^= 1 << i;
             let c = levels[scan.position(i)];
-            let abs_minus1 = c.unsigned_abs() - 1;
+            let abs_minus1 = u32::from(c.unsigned_abs()) - 1;
             let first_inc = if num_gt1 != 0 {
                 0
             } else {

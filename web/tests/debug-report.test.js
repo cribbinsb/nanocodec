@@ -30,7 +30,8 @@ test('a report round-trips through its Markdown, with hashes and the optional st
   const page = { build: { commit: 'abc', dirty: false, profile: 'release', module: 'SIMD128 (pkg)' },
     page: { url: 'http://x/', time: 't', userAgent: 'ua', hardwareConcurrency: 4 },
     source: { kind: 'clip', clip: 'c', fps: 30, loopLength: 300, path: 'exact', reproducible: true },
-    state: { playback: 'paused', tick: 1, clipSeconds: 0, loop: 0, session: 's', analysis: { enabled: false } }, events: ['1 start'] };
+    state: { playback: 'paused', tick: 1, clipSeconds: 0, loop: 0, session: 's', analysis: { enabled: false }, layout: 'side',
+      zoom: { scale: 2.5, u: 0.4, v: 0.5 } }, events: ['1 start'] };
   const report = await buildReport(page, [view], { includeStreams: true });
   assert.equal(report.schema, REPORT_SCHEMA);
   assert.equal(report.views[0].frames[0].sha256, 'ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc');
@@ -39,6 +40,23 @@ test('a report round-trips through its Markdown, with hashes and the optional st
   assert.equal(report.views[0].stream.units.length, 2);
   const markdown = formatReport(report);
   assert.match(markdown, /^# nanocodec debug report/);
+  assert.match(markdown, /- Layout side · zoom 2\.5× at \(0\.400, 0\.500\)/);
   assert.deepEqual(parseReport(markdown), JSON.parse(JSON.stringify(report)));
   assert.throws(() => parseReport(markdown.replaceAll(REPORT_SCHEMA, 'other/1')));
+});
+
+test('an Original view hashes the pictures it showed and has no coded stream to embed', async () => {
+  const picture = frame(0);
+  const view = { letter: 'B', config: { source: 'original', width: 64, height: 64, fps: 30, rendition: 'c-360p.mp4' },
+    streamId: null, streamBytes: null, shown: { metrics: { bitrate: 'n/a' }, rateStatus: '', frameCount: '', badge: '', statistics: {} },
+    window: { fps: 30, frames: [] }, interventions: [], log: [picture] };
+  const page = { build: { commit: 'abc', dirty: false, profile: 'release', module: 'SIMD128 (pkg)' },
+    page: { url: 'http://x/', time: 't', userAgent: 'ua', hardwareConcurrency: 4 },
+    source: { kind: 'clip', clip: 'c', fps: 30, loopLength: 300, path: 'exact', reproducible: true },
+    state: { playback: 'paused', tick: 0, clipSeconds: 0, loop: 0, session: 's', analysis: { enabled: false }, layout: 'stacked',
+      zoom: { scale: 1, u: 0.5, v: 0.5 } }, events: [] };
+  const report = await buildReport(page, [view], { includeStreams: true });
+  assert.equal(report.views[0].frames[0].sha256, 'ae4b3280e56e2faf83f414a6e3dabe9d5fbe18976544c05fed121accb85b53fc');
+  assert.deepEqual(report.views[0].stream, { complete: false, note: 'the original is uncompressed: no coded stream' });
+  assert.match(formatReport(report), /\*\*B\*\*: original, uncompressed · 64×64 · 30 fps · shows c-360p\.mp4/);
 });

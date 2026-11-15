@@ -314,6 +314,8 @@ fn bench_av2_lines(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64
 fn bench_vvc_alf(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64)) {
     const WIDTH: usize = 64;
     const SAMPLES: usize = 512;
+    // `gram_rows` is timed over four rows: block sizes are at least 4 high.
+    const ROWS: usize = 4;
     let data: Vec<Vec<u8>> = (0..7)
         .map(|r| {
             (0..WIDTH + 8)
@@ -396,9 +398,11 @@ fn bench_vvc_alf(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64))
     let mut sums = [0i64; 45];
     push(
         "gram_rows",
-        BlockSize::new(WIDTH, 1).expect("block"),
+        BlockSize::new(WIDTH, ROWS).expect("block"),
         time(|| {
-            dsp.gram_rows(&feature_rows, &mut sums);
+            for _ in 0..ROWS {
+                dsp.gram_rows(&feature_rows, &mut sums);
+            }
             sums[5] as u32
         }),
     );

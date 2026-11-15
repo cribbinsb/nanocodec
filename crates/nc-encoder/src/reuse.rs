@@ -118,22 +118,6 @@ const NOISE_REALISATIONS: f64 = 2.;
 /// the frame: two octaves of step put any residual of its error deep in the
 /// dead zone.
 const MAX_HOLD_OFFSET: f64 = 12.;
-/// Bits per sample per octave of a residual's error removed (rate-distortion
-/// of a Gaussian at high rate: `R = ½·log2(σ²/D)`).
-const RATE_PER_OCTAVE_OF_DISTORTION: f64 = 0.5;
-
-/// Bounds of one planned refinement ([`ReuseTerm::plan_refinement`]).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RefinementLimits {
-    /// Smallest estimated bits worth a refinement.
-    pub least: f64,
-    /// Estimated bits at which no more cells are added.
-    pub most: f64,
-    /// Most QP units a cell is coded finer than the frame.
-    pub max_offset: f64,
-    /// Fewest frames a cell's source has been still.
-    pub min_run: u8,
-}
 
 /// What the reuse term needs to know about the frame being planned.
 #[derive(Debug, Clone, Copy)]
@@ -486,73 +470,6 @@ impl ReuseTerm {
         self.candidates = candidates;
     }
 
-    /// Plan a refinement of `frame` (after [`Self::plan`]): still cells
-    /// reused for long (`R`: their still run, up to the next key) whose
-    /// reconstruction is worse than their price step `λ / (1 + R)` would
-    /// deliver, above their source's noise, get that price (at most
-    /// `limits.max_offset` QP finer), in order of forward value per
-    /// estimated bit (`R` times the error removed, over the bits that
-    /// remove it) until the estimated bits reach `limits.most`. The bits
-    /// of a cell are the rate of its residual at its step (half a bit per
-    /// sample per halving of its error, the high-rate rule), which the loan
-    /// scales by what refinements really cost. Returns the estimate, or 0
-    /// (and plans nothing more) when it would be below `limits.least`.
-    pub fn plan_refinement(&mut self, frame: &ReuseFrame<'_>, limits: RefinementLimits) -> f64 {
-        let runs = frame.still.runs.cells();
-        let pre = frame.pre.blocks.cells();
-        if frame.key || self.error.len() != runs.len() || pre.len() != runs.len() {
-            return 0.;
-        }
-        let mut chosen: Vec<(f64, usize, f64, f64)> = Vec::new();
-        for cell in 0..runs.len() {
-            let run = runs[cell];
-            if run < limits.min_run
-                || self.flags[cell] & (KNOWN | DIRTY) != KNOWN
-                || self.offsets[cell] != 0.
-            {
-                continue;
-            }
-            let reuse = frame.reuse(run) as f64;
-            let noise = source_change(pre[cell].sad_prev) / NOISE_REALISATIONS;
-            let offset = reuse_offset(reuse)
-                .max(offset_to(step_for_distortion(noise), frame.sample_step))
-                .max(-limits.max_offset);
-            if offset >= 0. || offset >= self.attempt[cell] - REUSE_QP_PER_OCTAVE {
-                continue;
-            }
-            let error = self.error[cell];
-            let distortion = expected_distortion(frame.sample_step * step_ratio(offset));
-            if error <= (distortion + noise) * SPREAD {
-                continue;
-            }
-            let bits = CELL_SAMPLES * RATE_PER_OCTAVE_OF_DISTORTION * (error / distortion).log2();
-            let value = reuse * (error - distortion) * CELL_SAMPLES;
-            chosen.push((value / bits, cell, offset, bits));
-        }
-        chosen.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
-        let mut estimate = 0.;
-        let taken = chosen
-            .iter()
-            .take_while(|&&(_, _, _, bits)| {
-                let fits = estimate < limits.most;
-                estimate += bits;
-                fits
-            })
-            .count();
-        if estimate < limits.least {
-            return 0.;
-        }
-        for &(_, cell, offset, _) in &chosen[..taken] {
-            self.offsets[cell] = offset;
-            self.offset_cells.push(cell);
-            if self.per_block {
-                self.flags[cell] |= REFINED;
-            }
-        }
-        self.any_offset = !self.offset_cells.is_empty();
-        estimate
-    }
-
     /// Hold the still cells of an ordinary frame of `frame` (after
     /// [`Self::plan`]) at the finest step they were coded at since their
     /// source settled (`held`): a cell still for `min_run` frames whose
@@ -563,30 +480,21 @@ impl ReuseTerm {
     /// whole picture unplanned: the bursts planned refinements replace (AV1
     /// `chirla` 93 kbps with the cadence flat: 10-14-budget frames at the
     /// level). A cell whose source moved forgets its held step.
-    ///
-    /// With `recover`, a cell is held only when its measured error is no
-    /// worse than what the frame's step would deliver: a cell left poor (a
-    /// starved key, a moved-and-settled block) is coded at the level and
-    /// recovers, where the held step alone kept it at its coarse coding.
-    pub fn hold_still(&mut self, frame: &ReuseFrame<'_>, min_run: u8, recover: bool) {
+    pub fn hold_still(&mut self, frame: &ReuseFrame<'_>, min_run: u8) {
         let runs = frame.still.runs.cells();
         if frame.key || self.held.len() != runs.len() {
             return;
         }
-        let level = expected_distortion(frame.sample_step) * SPREAD;
         for (cell, &run) in runs.iter().enumerate() {
             if run == 0 {
                 self.held[cell] = f64::INFINITY;
                 continue;
             }
             let held = self.held[cell];
-            let poor = recover
-                && (self.flags[cell] & (KNOWN | DIRTY) != KNOWN || self.error[cell] > level);
             if run < min_run
                 || self.offsets[cell] != 0.
                 || !held.is_finite()
                 || held <= frame.sample_step
-                || poor
             {
                 continue;
             }

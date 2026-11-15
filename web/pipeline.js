@@ -1,10 +1,12 @@
 // The page side of the comparison pipeline: a capture worker that converts
 // each captured picture for every view at that view's own size
 // (capture-worker.js), and per view either a live encode worker and a decode
-// worker joined by a MessageChannel (encode-worker.js, decode-worker.js), or,
+// worker joined by a MessageChannel (encode-worker.js, decode-worker.js); or,
 // for a pre-encoded reference stream, the decode worker alone, to which the
-// page passes the stream's packets with each captured frame. The page never
-// reads pixels back: it hands the capture worker a picture (capture.js).
+// page passes the stream's packets with each captured frame; or, for the
+// original source, a worker that only places the captured frame at the view's
+// size and shows it (original-worker.js). The page never reads pixels back: it
+// hands the capture worker a picture (capture.js).
 //
 // Frames are captured on the shared source timeline (timeline.js). Each view
 // codes only the ticks of its own frame rate and holds its last picture in
@@ -180,6 +182,26 @@ class LiveView extends View {
   }
 }
 
+/**
+ * The original source, uncompressed: the captured frames at the view's size, as
+ * an encoder is given them. Nothing is coded, so there is no decoder to switch
+ * for analysis.
+ */
+class OriginalView extends View {
+  constructor(panel, onMessage, onFailure) {
+    super(panel, [startWorker('./original-worker.js')], onMessage, onFailure);
+    this.analysing = false;
+  }
+  get analysisWanted() { return false; }
+  /** Start the worker; it takes its frames from `capturePort` itself. */
+  init(capturePort, { wasmModule }) {
+    const { width, height } = this.panel.current;
+    this.decoder.postMessage({ type: 'init', port: capturePort, wasmModule, width, height }, [capturePort]);
+    return this.ready;
+  }
+  codes(tick) { return codesTick(this.panel.current.step, tick); }
+}
+
 /** A pre-encoded reference stream (reference.js), decoded in the browser. */
 class ReferenceView extends View {
   constructor(panel, onMessage, onFailure) {
@@ -240,7 +262,7 @@ export class Comparison {
     // Capture id -> { tick, coding, results }, in capture order (Map keeps insertion order).
     this.inFlight = new Map();
     this.views = panels.map(panel => {
-      const ViewKind = panel.current.source === 'reference' ? ReferenceView : LiveView;
+      const ViewKind = { live: LiveView, reference: ReferenceView, original: OriginalView }[panel.current.source];
       return new ViewKind(panel, (view, data) => this.receive(view, data), error => this.fail(error));
     });
     this.capture = startWorker('./capture-worker.js');

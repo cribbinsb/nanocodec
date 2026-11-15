@@ -84,9 +84,10 @@ pub struct EncoderConfig {
     /// log2 of the luma size every leaf block is coded at (bring-up: one
     /// fixed size; frame edges may force smaller blocks).
     pub block_log2: u8,
-    /// How much finer than `quantizer` key frames are coded, in the codec's
-    /// quantiser scale; `None` lets the backend choose. An experiment knob
-    /// (backends that do not use it ignore it).
+    /// How much finer than `quantizer` key frames are coded at fixed QP, in
+    /// the codec's quantiser scale (QP, or `base_q_idx` for AV1/VP9/AV2;
+    /// `nc_encoder::offset_key_quantizer`); `None` lets the backend choose.
+    /// An experiment knob; rate control sizes key frames itself.
     pub key_qp_offset: Option<i32>,
     /// Informative stream signalling (colour, timing) for players; it never
     /// changes the coded pictures. The default keeps streams byte-identical

@@ -74,7 +74,7 @@ def run(port, slow):
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK % {'slow': 'true' if slow else 'false', 'stall': STALL_MS, 'every': STALL_EVERY_MS, 'delay': SLOW_MS})
-        page.goto(f'http://127.0.0.1:{port}/')
+        page.goto(f'http://127.0.0.1:{port}/?views=live')
         page.wait_for_function(f'window.__x.coded.every(v => v.length >= {FRAMES})', timeout=TIMEOUT_MS)
         # Paused, nothing more arrives and the panels' figures settle on the frames recorded.
         page.locator('#pause').click()

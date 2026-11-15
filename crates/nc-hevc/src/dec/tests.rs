@@ -586,6 +586,82 @@ mod round_trips {
         assert!(mismatched, "the corruption had no effect");
     }
 
+    /// A diagonal texture panning left by 12 samples per frame and down by 2
+    /// (as nc-vvc's `refresh_tests`): vectors point towards the dirty region,
+    /// and directional intra predictions read above-right samples.
+    fn refresh_texture(width: usize, height: usize, frame: usize) -> Picture {
+        let mut picture = Picture::new(width, height, 0).unwrap();
+        for plane in PlaneIndex::ALL {
+            let mut view = picture.plane_mut(plane).view_mut();
+            let scale = if plane == PlaneIndex::Y { 1 } else { 2 };
+            for y in 0..view.height() {
+                for (x, v) in view.row_mut(y).iter_mut().enumerate() {
+                    let gx = x + 12 * frame / scale;
+                    let gy = y + 2 * frame / scale;
+                    let diagonal = (gx + gy) * 9 / scale;
+                    *v = ((diagonal % 160) + (gx * gx * 3 + gy * 7) % 61 + plane as usize * 20)
+                        as u8;
+                }
+            }
+        }
+        picture
+    }
+
+    /// Intra refresh with the Default's parameters and large blocks: an intra
+    /// block that ends before the range's right edge can still read
+    /// above-right samples past it (twice its width), dirty after a loss.
+    #[test]
+    fn intra_refresh_recovers_with_large_blocks() {
+        const PERIOD: u32 = 3;
+        const CORRUPT_AFTER: u64 = 5;
+        let (width, height) = (256, 128);
+        let mut cfg = EncoderConfig {
+            codec: Codec::Hevc,
+            width,
+            height,
+            frame_rate: FrameRate { num: 30, den: 1 },
+            quantizer: 27,
+            intra_period: 4,
+            block_log2: 6,
+            key_qp_offset: None,
+            temporal_layers: 1,
+            signal: nc_encoder::StreamSignal::default(),
+            params: ParamOverrides::default(),
+        };
+        for &(name, value) in <HevcBackend as nc_encoder::CodecBackend>::DEFAULT_PARAMS {
+            cfg.params.set(name, value);
+        }
+        cfg.intra_period = 4;
+        let mut encoder = Encoder::<HevcBackend>::new(cfg).unwrap();
+        encoder
+            .set_intra_refresh(Some(nc_encoder::IntraRefresh { period: PERIOD }))
+            .unwrap();
+        let mut dec = Decoder::new();
+        let mut mismatched = false;
+        for index in 0..20u64 {
+            let frame = encoder.encode(&refresh_texture(width, height, index as usize));
+            let pic = dec.decode(&frame.data).unwrap();
+            if index == CORRUPT_AFTER {
+                dec.corrupt_references(0);
+            }
+            let exact = PlaneIndex::ALL.iter().all(|&p| {
+                let (a, b) = (
+                    pic.plane(p).view(),
+                    encoder.reconstruction().plane(p).view(),
+                );
+                (0..a.height()).all(|y| a.row(y) == b.row(y))
+            });
+            if index > CORRUPT_AFTER + 2 * u64::from(PERIOD) {
+                assert!(exact, "frame {index} not recovered");
+            } else if index > CORRUPT_AFTER {
+                mismatched |= !exact;
+            } else {
+                assert!(exact, "frame {index}");
+            }
+        }
+        assert!(mismatched, "the corruption had no effect");
+    }
+
     fn moving(width: usize, height: usize, frame: usize) -> Picture {
         let mut picture = Picture::new(width, height, 0).unwrap();
         for plane in PlaneIndex::ALL {
@@ -663,6 +739,47 @@ mod round_trips {
                 compare(a, b);
             }
         }
+    }
+
+    /// The recode contract with SAO's skipped-CTB class reuse
+    /// (`hevc.sao_skip_unchanged`, the Fast presets): a throw-away coding's
+    /// SAO classes never reach later frames. At QP 51 the identity trial
+    /// codes at QP 0, where the half that is still up to the search picture
+    /// (POC 4) is coded, not skipped; it moves after it, so the next
+    /// pictures reuse its classes.
+    #[test]
+    fn recoding_with_skipped_sao_classes_changes_nothing() {
+        const WIDTH: usize = 128;
+        const HEIGHT: usize = 64;
+        const STILL_UNTIL: usize = 4;
+        let half_static = |frame: usize| {
+            // Large jumps after the still part: nothing is skipped.
+            let mut picture = moving(WIDTH, HEIGHT, frame * 17);
+            if frame > STILL_UNTIL {
+                return picture;
+            }
+            let still = moving(WIDTH, HEIGHT, 0);
+            for plane in PlaneIndex::ALL {
+                let source = still.plane(plane).view();
+                let mut view = picture.plane_mut(plane).view_mut();
+                let half = view.width() / 2;
+                for y in 0..view.height() {
+                    view.row_mut(y)[..half].copy_from_slice(&source.row(y)[..half]);
+                }
+            }
+            picture
+        };
+        let coded = |identity: f32| {
+            let mut settings = super::browser_tests::config(WIDTH, HEIGHT, 51, false);
+            settings.params.set("hevc.sao_skip_unchanged", 1.);
+            settings.params.set("debug.recode_identity", identity);
+            settings.intra_period = 300;
+            let mut encoder = Encoder::<HevcBackend>::new(settings).unwrap();
+            (0..13)
+                .map(|frame| encoder.encode(&half_static(frame)).data)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(coded(0.), coded(1.));
     }
 
     /// `rate.recode_overflow`: frames that would overflow a small buffer

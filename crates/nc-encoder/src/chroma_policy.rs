@@ -57,6 +57,40 @@ impl ChromaPolicy {
     pub fn chroma_step(&self, luma_step: f64) -> f64 {
         chroma_step(luma_step, self.offset)
     }
+
+    /// How a codec with a fixed chroma QP table (H.264 Table 8-15, HEVC
+    /// Table 8-10) realises the policy at luma QP `luma_q`: the chroma QP
+    /// offset in `range` whose table chroma QP (`table_q`) is nearest the
+    /// policy's, compared as steps.
+    #[must_use]
+    pub fn closest_qp_offset(
+        &self,
+        range: std::ops::RangeInclusive<i32>,
+        luma_q: f64,
+        table_q: impl Fn(i32) -> f64,
+    ) -> i32 {
+        let target = 2f64.powf(self.chroma_q(luma_q) / Q_PER_OCTAVE);
+        closest_index(
+            range,
+            |offset| 2f64.powf(table_q(offset) / Q_PER_OCTAVE),
+            target,
+        )
+    }
+
+    /// How a codec with a qindex step table (AV1, VP9, AV2) realises the
+    /// policy: the chroma delta in `range` whose step (`step`, at delta 0 the
+    /// luma step) is nearest the policy's. `step_scale` is the table's step
+    /// over the H.264 sample step [`q_of_step`] works in (8 for AV1/VP9).
+    #[must_use]
+    pub fn closest_step_delta(
+        &self,
+        range: std::ops::RangeInclusive<i32>,
+        step_scale: f64,
+        step: impl Fn(i32) -> f64,
+    ) -> i32 {
+        let target = self.chroma_step(step(0) / step_scale) * step_scale;
+        closest_index(range, step, target)
+    }
 }
 
 /// Luma QP-equivalent up to which chroma uses luma's step.

@@ -426,8 +426,11 @@ pub struct Av1Backend {
     signal: nc_encoder::StreamSignal,
     /// Nominal frame rate (the sequence header's timing clock).
     frame_rate: nc_encoder::FrameRate,
-    /// The configured `base_q_idx` (inter frames).
     quantizer_mode: QuantizerMode,
+    /// `EncoderConfig::key_qp_offset` in `base_q_idx` steps: replaces the
+    /// `av1.keyframe_step_permille` step factor for fixed-QP key frames.
+    key_qindex_offset: Option<i32>,
+    /// The configured `base_q_idx` (inter frames).
     base_q_idx: u32,
     /// `base_q_idx` of the frame being coded.
     frame_q_idx: u32,
@@ -922,13 +925,9 @@ impl CodecBackend for Av1Backend {
     /// `begin_frame` starts from committed state (slot CDFs, CDEF memory,
     /// the previous frame's kind); `commit_frame` advances it.
     const RECODE: bool = true;
-    const REPORTS_CODED_BITS: bool = true;
-
-    /// The tile's bits so far (the frame header is written at
-    /// `end_frame` and not counted).
-    fn coded_bits(&mut self) -> Option<u64> {
-        Some(self.writer.coded_bits())
-    }
+    // Intra refresh: the inter-frame intra search keeps DC on the dirty
+    // edge; no temporal motion (`use_ref_frame_mvs` 0).
+    const INTRA_REFRESH: bool = true;
 
     /// The DC-aware intra test stays off for AV1: on VAL-150 (full gate) it
     /// loses VMAF v1 although PSNR gains. With every block also trying intra
@@ -1075,9 +1074,7 @@ impl CodecBackend for Av1Backend {
         ("rate.cadence_motion_gate", 1.0),
         ("decision.intra_test_dc", 0.0),
         ("planner.depth_removal_min_quantizer", 0.8),
-        ("quant.trellis", 1.0),
         ("quant.trellis_key", 0.0),
-        ("quant.trellis_states", 1.0),
         ("quant.trellis_lambda_scale", 0.6),
         ("av1.keyframe_directional", 1.0),
         ("av1.keyframe_angle_deltas", 1.0),
@@ -1148,6 +1145,7 @@ impl CodecBackend for Av1Backend {
             signal: config.signal,
             frame_rate: config.frame_rate,
             quantizer_mode: QuantizerMode::Fixed,
+            key_qindex_offset: config.key_qp_offset,
             base_q_idx: config.quantizer,
             frame_q_idx: config.quantizer,
             block_q_idx: config.quantizer,
@@ -1668,11 +1666,8 @@ impl CodecBackend for Av1Backend {
         };
         self.base_q_idx = plan.quantizer;
         let fixed_key = self.kind == FrameKind::Key && self.quantizer_mode == QuantizerMode::Fixed;
-        self.frame_q_idx = if fixed_key {
-            scaled_qindex(self.base_q_idx, self.key_step_scale())
-        } else {
-            self.base_q_idx
-        };
+        let (frame_q_idx, key_scale) = self.frame_qindex(fixed_key);
+        self.frame_q_idx = frame_q_idx;
         self.references = plan.references;
         // Either reference may be held: after a size switch the primary is
         // the new size while the second reference (`LAST2_FRAME`, the
@@ -1722,7 +1717,7 @@ impl CodecBackend for Av1Backend {
                 inter_q_idx,
                 self.frame_q_idx,
                 self.frame_chroma_delta_q,
-                self.key_step_scale(),
+                key_scale,
             );
         }
         if let Some(random) = self.random.as_mut() {
@@ -2813,6 +2808,32 @@ impl Av1Backend {
         CdefFrameChoice {
             per_superblock,
             search,
+        }
+    }
+
+    /// The frame's `base_q_idx`, and a key frame's luma step relative to the
+    /// inter step, which its chroma follows (`key_chroma_delta`). A
+    /// fixed-QP key frame is made finer by the configured offset
+    /// (`EncoderConfig::key_qp_offset`) or `av1.keyframe_step_permille`.
+    fn frame_qindex(&self, fixed_key: bool) -> (u32, f64) {
+        if !fixed_key {
+            return (self.base_q_idx, self.key_step_scale());
+        }
+        match self.key_qindex_offset {
+            Some(offset) => {
+                let key = nc_encoder::offset_key_quantizer(
+                    self.base_q_idx,
+                    offset,
+                    QINDEX_MIN,
+                    QINDEX_MAX,
+                );
+                let step = |q: u32| f64::from(AC_QLOOKUP[q as usize]);
+                (key, step(key) / step(self.base_q_idx))
+            }
+            None => (
+                scaled_qindex(self.base_q_idx, self.key_step_scale()),
+                self.key_step_scale(),
+            ),
         }
     }
 
@@ -5180,12 +5201,11 @@ fn quantized_eob(tx: TxSize, levels: &[i16], nonzero: u32, policy: ForwardPolicy
 /// below, `scale` times that of `base_q_idx` (SVT-AV1 / libaom
 /// `compute_qdelta`), never below the encoder's minimum.
 fn scaled_qindex(base_q_idx: u32, scale: f64) -> u32 {
-    let target = f64::from(AC_QLOOKUP[base_q_idx as usize]) * scale;
-    let found = AC_QLOOKUP
-        .iter()
-        .position(|&q| f64::from(q) >= target)
-        .unwrap_or(AC_QLOOKUP.len() - 1);
-    (found as u32).max(QINDEX_MIN)
+    let last = AC_QLOOKUP.len() as u32 - 1;
+    let step = |q: u32| f64::from(AC_QLOOKUP[q as usize]);
+    nc_encoder::scaled_quantizer(0..=last, step, base_q_idx, scale)
+        .unwrap_or(last)
+        .max(QINDEX_MIN)
 }
 
 /// Block size (log2) whose transform splits past the largest quantizer
@@ -5551,13 +5571,9 @@ fn key_chroma_delta(inter_q_idx: u32, key_q_idx: u32, inter_delta: i32, key_scal
 /// AV1 8-bit steps are 8x the H.264-style sample step).
 fn policy_chroma_delta(policy: nc_encoder::chroma_policy::ChromaPolicy, q_idx: u32) -> i32 {
     let ac = |q: i32| f64::from(QuantSteps::for_qindex(q.clamp(0, QINDEX_MAX as i32) as u32).ac);
-    let luma = ac(q_idx as i32);
-    let target = policy.chroma_step(luma / AV1_STEP_SCALE) * AV1_STEP_SCALE;
-    nc_encoder::chroma_policy::closest_index(
-        DELTA_Q_MIN..=DELTA_Q_MAX,
-        |d| ac(q_idx as i32 + d),
-        target,
-    )
+    policy.closest_step_delta(DELTA_Q_MIN..=DELTA_Q_MAX, AV1_STEP_SCALE, |d| {
+        ac(q_idx as i32 + d)
+    })
 }
 
 /// AV1 8-bit quantiser steps over the H.264-normalised sample step

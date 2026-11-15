@@ -379,13 +379,13 @@ impl HevcBackend {
         recon: &mut Picture,
     ) -> LumaChoice {
         // Planar and angular prediction (and reference smoothing) read the
-        // above-right samples, dirty on intra refresh's dirty edge; DC
-        // reads only the left and above ones (§8.4.4.2.5). Such CUs keep
-        // one unsplit DC prediction.
+        // above-right samples (2N wide in all, §8.4.4.2.2), dirty where they
+        // reach past intra refresh's range; DC reads only the left and above
+        // ones (§8.4.4.2.5). Such CUs keep one unsplit DC prediction.
         let dirty_edge = self
             .refresh
             .as_ref()
-            .is_some_and(|w| w.on_dirty_edge(block));
+            .is_some_and(|w| w.reads_dirty_above_right(block));
         // With the coarse P-frame intra search, P-frame intra CUs (mostly
         // brightness repairs and occlusions) keep one unsplit 2Nx2N
         // prediction too: the trials there cost P frames more than the

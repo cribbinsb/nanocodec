@@ -691,6 +691,9 @@ pub struct Vp9Backend {
     /// `encode_block`, its segment's inside.
     coding_q_idx: u8,
     quantizer_mode: QuantizerMode,
+    /// `EncoderConfig::key_qp_offset` in qindex steps: replaces the
+    /// `vp9.keyframe_step_permille` step factor for fixed-QP key frames.
+    key_qindex_offset: Option<i32>,
     header: FrameHeader,
     /// What every key frame signals (`config.signal.colour`).
     colour: ColourSpace,
@@ -814,6 +817,12 @@ impl CodecBackend for Vp9Backend {
     /// context, segment map and features, previous grid, last key);
     /// `commit_frame` adapts and advances it.
     const RECODE: bool = true;
+    // No intra refresh: backward-adapted frame contexts (VP9 §8.4.2) and
+    // `use_prev_frame_mvs` carry a lost frame's state into every later
+    // frame until a key, so a sweep cannot repair the picture (measured: a
+    // dropped frame leaves vpxdec refusing every later frame and FFmpeg at
+    // 12-15 dB for the rest of the stream).
+    const INTRA_REFRESH: bool = false;
 
     // Scaling λ alone reaches low targets here: crowd_mot20_06 CBR 150 kbps,
     // 150 f, headroom 2 octaves: 309 -> 159 kbps.
@@ -931,9 +940,6 @@ impl CodecBackend for Vp9Backend {
         ("structure.inherited_depth", 1.0),
         ("persist.reuse_level_price", 1.0),
         ("decision.codec_subpel_seed_lambdas", 0.0),
-        ("quant.trellis", 1.0),
-        ("quant.trellis_key", 1.0),
-        ("quant.trellis_states", 1.0),
         ("quant.trellis_chroma", 0.0),
         ("planner.depth_removal_min_quantizer", 0.86),
         // AV2's error-gap chroma offset: chroma 3 qindex finer per dB that
@@ -1002,11 +1008,6 @@ impl CodecBackend for Vp9Backend {
         if !(MIN_BLOCK_LOG2..=SUPERBLOCK_LOG2).contains(&config.block_log2) {
             return Err(ConfigError::BlockSize(config.block_log2));
         }
-        if config.key_qp_offset.is_some() {
-            return Err(ConfigError::Unsupported(
-                "VP9 sets its key-frame quantizer with vp9.keyframe_step_permille",
-            ));
-        }
         let qindex = config.quantizer as u8;
         Ok(Self {
             lambda_scale: 1.0,
@@ -1019,6 +1020,7 @@ impl CodecBackend for Vp9Backend {
             block_qp: None,
             coding_q_idx: qindex,
             quantizer_mode: QuantizerMode::Fixed,
+            key_qindex_offset: config.key_qp_offset,
             segment_state: SegmentFeatures::default(),
             header: FrameHeader {
                 key: true,
@@ -1462,16 +1464,20 @@ impl CodecBackend for Vp9Backend {
             .is_some_and(|sp| sp.current_layer.intra_only);
         let key = plan.frame_type == FrameType::Key && !spatial_intra_only;
         let base = plan.quantizer.min(QINDEX_MAX);
-        let qindex = if plan.frame_type == FrameType::Key
+        // A lossless (qindex 0) stream keeps lossless keys, and a lossy
+        // key stays lossy (qindex 1 and up).
+        let fixed_key = plan.frame_type == FrameType::Key
             && self.quantizer_mode == QuantizerMode::Fixed
-            && base != 0
-        {
-            scaled_qindex(
+            && base != 0;
+        let qindex = match self.key_qindex_offset {
+            Some(offset) if fixed_key => {
+                nc_encoder::offset_key_quantizer(base, offset, 1, QINDEX_MAX)
+            }
+            _ if fixed_key => scaled_qindex(
                 base,
                 f64::from(self.params.keyframe_step_permille) / KEY_STEP_SCALE_DENOMINATOR,
-            )
-        } else {
-            base
+            ),
+            _ => base,
         } as u8;
         self.lossless = qindex == 0;
         self.coding_q_idx = qindex;
@@ -2490,9 +2496,7 @@ impl Vp9Backend {
     fn own_chroma_weight(&self) -> f32 {
         let gain = self.params.chroma_weight_adapt;
         match self.grids.chroma_error_ratio.filter(|_| gain > 0.0) {
-            Some(ratio) => {
-                (f64::from(gain) * ratio).clamp(ADAPTIVE_WEIGHT_MIN, ADAPTIVE_WEIGHT_MAX) as f32
-            }
+            Some(ratio) => nc_encoder::adaptive_error_weight(gain, ratio) as f32,
             None => self.params.chroma_sse_weight,
         }
     }
@@ -3513,10 +3517,6 @@ fn trim_levels(
 
 /// VP9's delta range (`delta_q` is 4 bits and a sign, §6.2.9).
 const CHROMA_DELTA_LIMIT: i32 = 15;
-/// Bounds of the adaptive chroma weight (`vp9.chroma_weight_adapt`): the
-/// error ratio of a near-flat chroma plane must not drive it to extremes.
-const ADAPTIVE_WEIGHT_MIN: f64 = 0.25;
-const ADAPTIVE_WEIGHT_MAX: f64 = 16.0;
 /// VP9 8-bit steps over the H.264-normalised sample step (as AV1's).
 const VP9_STEP_SCALE: f64 = 8.0;
 
@@ -3587,9 +3587,7 @@ const DC_SUM_DIVISOR_32: i32 = 8;
 
 fn policy_chroma_delta(policy: nc_encoder::chroma_policy::ChromaPolicy, qindex: u8) -> i8 {
     let ac = |d: i32| f64::from(transform::Steps::new(qindex, 0, d as i8).ac);
-    let target = policy.chroma_step(ac(0) / VP9_STEP_SCALE) * VP9_STEP_SCALE;
-    nc_encoder::chroma_policy::closest_index(-CHROMA_DELTA_LIMIT..=CHROMA_DELTA_LIMIT, ac, target)
-        as i8
+    policy.closest_step_delta(-CHROMA_DELTA_LIMIT..=CHROMA_DELTA_LIMIT, VP9_STEP_SCALE, ac) as i8
 }
 
 /// The frame filter level from the quantizer (libvpx `LPF_PICK_FROM_Q`).
@@ -3610,12 +3608,11 @@ fn filter_level(qindex: u8, key: bool, scale: f32) -> u8 {
 /// times that of `qindex` (libvpx `vp9_compute_qdelta`), at least 1 so the
 /// frame stays lossy.
 fn scaled_qindex(qindex: u32, scale: f64) -> u32 {
-    let target = f64::from(AC_QUANT[qindex as usize]) * scale;
-    let found = AC_QUANT
-        .iter()
-        .position(|&q| f64::from(q) >= target)
-        .unwrap_or(AC_QUANT.len() - 1);
-    (found as u32).max(1)
+    let last = AC_QUANT.len() as u32 - 1;
+    let step = |q: u32| f64::from(AC_QUANT[q as usize]);
+    nc_encoder::scaled_quantizer(0..=last, step, qindex, scale)
+        .unwrap_or(last)
+        .max(1)
 }
 
 /// The cheapest inter mode signalling `mv`, with its bits (mode, plus the

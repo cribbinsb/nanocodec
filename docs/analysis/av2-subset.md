@@ -1,5 +1,9 @@
 # AV2 native basic subset
 
+> **History (2026-11-15):** the standalone AV2 encoder, examples and gates
+> this note describes were deleted; AV2 encodes only through `Av2Backend`
+> on the shared engine ([handoff/av2.md](../handoff/av2.md) I6).
+
 Status: experimental syntax implementation, 2026-11-08. Reference is AVM
 v1.0.0, commit `966a7d7cd6fcf60360caf5dc413b2aeeb65e144d`, under
 BSD-3-Clause-Clear plus the separate AOM patent terms in `docs/licenses/avm`.

@@ -60,7 +60,7 @@ from . import dav2d_crop, jm_split
 from .codecs import Codec
 from .config import Paths, find_anchor_tool, find_tool
 from .slots import cpu_slots
-from .gatepolicy import GateLevel, VerifiedStreams, file_sha256
+from .gatepolicy import GateLevel, VerifiedStreams, file_sha256, verified_root
 from .display import DisplaySink, switched_format
 from .framepipe import (FileSink, FrameSink, FrameStreamError, FrameHashSink, HeldFrameSink,
                         PipeOutput, ProcessSet, shown_frames)
@@ -610,11 +610,14 @@ def _pipe_i420_md5s(cmd: list[str], expected_dims: list[tuple[int, int]]) -> tup
 
 def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
                               operating_points: list[tuple[int, int]] | None, paths: Paths,
-                              own_decoder: Path | None = None) -> GateResult:
+                              own_decoder: Path | None = None,
+                              standard: bool = True) -> GateResult:
     """Verify every AV1 spatial/temporal operating point signalled in the
     stream's `OBU_SEQUENCE_HEADER` (plus `--alllayers 1` and `--all-layers` on
     multi-spatial points) bit-exact against `--layer-md5` across `dav1d`,
-    `aomdec`, and `nanocodec decode` with zero YUV files on disk."""
+    `aomdec`, and `nanocodec decode` with zero YUV files on disk.
+    `standard=False` skips the two standard decoders (the stream already passed
+    them: `OperatingPointCache`); ours still decodes every point."""
     try:
         idcs = av1_stream_operating_point_idcs(bitstream)
     except ValueError as err:
@@ -686,20 +689,21 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
             ext_shown_dims = [(w, h) for w, h, _ in extracted_shown]
             ext_shown_md5s = [m for _, _, m in extracted_shown]
 
-            for label, cmd in (
-                (f"dav1d op={op_idx} alllayers=0",
-                 [str(dav1d), "-q", "--filmgrain", "0", "--oppoint", str(op_idx),
-                  "--alllayers", "0", "--muxer", "yuv", "-i", str(bitstream), "-o", "-"]),
-                (f"aomdec op={op_idx}",
-                 [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
-                  f"--oppoint={op_idx}", "-o", "-", str(bitstream)]),
-            ):
-                err, got = _pipe_i420_md5s(cmd, shown_dims)
-                if err:
-                    return GateResult(False, f"{label}: {err}")
-                bad = first_mismatch(got, shown_md5s)
-                if bad is not None:
-                    return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
+            if standard:
+                for label, cmd in (
+                    (f"dav1d op={op_idx} alllayers=0",
+                     [str(dav1d), "-q", "--filmgrain", "0", "--oppoint", str(op_idx),
+                      "--alllayers", "0", "--muxer", "yuv", "-i", str(bitstream), "-o", "-"]),
+                    (f"aomdec op={op_idx}",
+                     [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
+                      f"--oppoint={op_idx}", "-o", "-", str(bitstream)]),
+                ):
+                    err, got = _pipe_i420_md5s(cmd, shown_dims)
+                    if err:
+                        return GateResult(False, f"{label}: {err}")
+                    bad = first_mismatch(got, shown_md5s)
+                    if bad is not None:
+                        return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
 
             if own_decoder is not None:
                 res = subprocess.run(
@@ -748,20 +752,21 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
                             False,
                             f"nanocodec extract av1 --base-only differs from op={op_idx}",
                         )
-                for label, cmd in (
-                    (f"dav1d extracted op={op_idx}",
-                     [str(dav1d), "-q", "--filmgrain", "0",
-                      "--alllayers", "0", "--muxer", "yuv", "-i", str(op_ivf), "-o", "-"]),
-                    (f"aomdec extracted op={op_idx}",
-                     [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
-                      "-o", "-", str(op_ivf)]),
-                ):
-                    err, got = _pipe_i420_md5s(cmd, ext_shown_dims)
-                    if err:
-                        return GateResult(False, f"{label}: {err}")
-                    bad = first_mismatch(got, ext_shown_md5s)
-                    if bad is not None:
-                        return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
+                if standard:
+                    for label, cmd in (
+                        (f"dav1d extracted op={op_idx}",
+                         [str(dav1d), "-q", "--filmgrain", "0",
+                          "--alllayers", "0", "--muxer", "yuv", "-i", str(op_ivf), "-o", "-"]),
+                        (f"aomdec extracted op={op_idx}",
+                         [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
+                          "-o", "-", str(op_ivf)]),
+                    ):
+                        err, got = _pipe_i420_md5s(cmd, ext_shown_dims)
+                        if err:
+                            return GateResult(False, f"{label}: {err}")
+                        bad = first_mismatch(got, ext_shown_md5s)
+                        if bad is not None:
+                            return GateResult(False, f"{label}: MD5 mismatch at frame {bad}")
                 for own_label, own_flags in (
                     (f"nanocodec extracted op={op_idx}", []),
                     (f"nanocodec extracted --operating-point {op_idx}",
@@ -821,20 +826,21 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
             if max_s > 0:
                 all_dims = [(w, h) for w, h, _ in all_layers]
                 all_md5s = [m for _, _, m in all_layers]
-                for label, cmd in (
-                    (f"dav1d op={op_idx} alllayers=1",
-                     [str(dav1d), "-q", "--filmgrain", "0", "--oppoint", str(op_idx),
-                      "--alllayers", "1", "--muxer", "yuv", "-i", str(bitstream), "-o", "-"]),
-                    (f"aomdec op={op_idx} all-layers",
-                     [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
-                      f"--oppoint={op_idx}", "--all-layers", "-o", "-", str(bitstream)]),
-                ):
-                    err, got = _pipe_i420_md5s(cmd, all_dims)
-                    if err:
-                        return GateResult(False, f"{label}: {err}")
-                    bad = first_mismatch(got, all_md5s)
-                    if bad is not None:
-                        return GateResult(False, f"{label}: MD5 mismatch at picture {bad}")
+                if standard:
+                    for label, cmd in (
+                        (f"dav1d op={op_idx} alllayers=1",
+                         [str(dav1d), "-q", "--filmgrain", "0", "--oppoint", str(op_idx),
+                          "--alllayers", "1", "--muxer", "yuv", "-i", str(bitstream), "-o", "-"]),
+                        (f"aomdec op={op_idx} all-layers",
+                         [str(aomdec), "--rawvideo", "--i420", "--skip-film-grain",
+                          f"--oppoint={op_idx}", "--all-layers", "-o", "-", str(bitstream)]),
+                    ):
+                        err, got = _pipe_i420_md5s(cmd, all_dims)
+                        if err:
+                            return GateResult(False, f"{label}: {err}")
+                        bad = first_mismatch(got, all_md5s)
+                        if bad is not None:
+                            return GateResult(False, f"{label}: MD5 mismatch at picture {bad}")
                 if own_decoder is not None:
                     res = subprocess.run(
                         [str(own_decoder), "decode", "--codec", "av1", "--film-grain", "0",
@@ -867,12 +873,14 @@ def gate_av1_operating_points(bitstream: Path, layer_md5: Path,
 
 
 def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
-                              own_decoder: Path | None = None) -> GateResult:
+                              own_decoder: Path | None = None,
+                              standard: bool = True) -> GateResult:
     """Verify every VP9 spatial/temporal operating point (full superframe stream,
     K-SVC and lower-layer stripped streams, and any temporal sub-operating points
     in `op_mask`, plus `nanocodec decode --operating-point 0..N-1` and
     `--all-layers 1` on the unstripped stream) bit-exact against `--layer-md5`
-    across `vpxdec`, `ffmpeg-decode`, and `nanocodec decode` with zero YUV files on disk."""
+    across `vpxdec`, `ffmpeg-decode`, and `nanocodec decode` with zero YUV files on disk.
+    `standard=False` skips the two standard decoders (`OperatingPointCache`)."""
     from .svcbase import VP9_SHOW_FRAME_BIT, ivf_frames, vp9_coded_layers
 
     tus: dict[int, list[tuple[int, int, int, int, str, int, int, str]]] = {}
@@ -1058,7 +1066,7 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                         and op_ivf.read_bytes() != bitstream.read_bytes()):
                     ivf_targets.insert(0, ("unstripped", bitstream, shown_dims, shown_md5s))
 
-            for tag, target_ivf, target_dims, target_md5s in ivf_targets:
+            for tag, target_ivf, target_dims, target_md5s in ivf_targets if standard else ():
                 for label, cmd in (
                     (f"vpxdec {tag}",
                      [str(vpxdec), "--codec=vp9", "--rawvideo", "--i420", "--threads=1",
@@ -1102,3 +1110,38 @@ def gate_vp9_operating_points(bitstream: Path, layer_md5: Path, paths: Paths,
                     )
 
     return GateResult(True, level=GateLevel.FULL.value)
+
+
+#: The standard decoders each operating-point gate runs (anchor tools are
+#: looked up with `find_anchor_tool`, the rest with `find_tool`).
+_OPERATING_POINT_DECODERS = {Codec.AV1: (("dav1d", True), ("aomdec", False)),
+                             Codec.VP9: (("vpxdec", False), ("ffmpeg-decode", True))}
+
+
+def gate_operating_points(codec: Codec, bitstream: Path, layer_md5: Path, paths: Paths,
+                          own_decoder: Path | None = None) -> GateResult:
+    """`gate_av1_operating_points` / `gate_vp9_operating_points` with the
+    verified-stream cache: a stream and layer table whose every operating point
+    already passed the same standard decoder binaries is decoded only by ours
+    (an unchanged encoder costs one decode per point instead of three). Without
+    it every spatial stream of the landing conformance check was decoded by
+    every decoder on every run, most of its time."""
+    tools = [(find_anchor_tool if anchor else find_tool)(name, paths)
+             for name, anchor in _OPERATING_POINT_DECODERS[codec]]
+    key = hashlib.sha256("|".join(
+        [codec.value, file_sha256(bitstream), file_sha256(layer_md5),
+         *(file_sha256(Path(tool)) for tool in tools)]).encode()).hexdigest()
+    marker = verified_root() / "operating-points" / codec.value / key[:2] / key
+    standard = not marker.is_file()
+    if codec is Codec.AV1:
+        gate = gate_av1_operating_points(bitstream, layer_md5, None, paths,
+                                         own_decoder=own_decoder, standard=standard)
+    else:
+        gate = gate_vp9_operating_points(bitstream, layer_md5, paths,
+                                         own_decoder=own_decoder, standard=standard)
+    if gate.passed and standard:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    elif gate.passed:
+        gate.level = GateLevel.CACHED.value
+    return gate

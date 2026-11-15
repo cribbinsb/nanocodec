@@ -1,0 +1,424 @@
+{
+ "source": [
+  "docs/results/wasm-speed.csv"
+ ],
+ "module": "relaxed",
+ "rows": [
+  {
+   "direction": "decode",
+   "codec": "av1",
+   "preset": null,
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 726.6,
+   "native_fps": 1117.2,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "av1",
+   "preset": null,
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 275.6,
+   "native_fps": 411.7,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "av2",
+   "preset": null,
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 677.4,
+   "native_fps": 1110.6,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "av2",
+   "preset": null,
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 223.8,
+   "native_fps": 399.2,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "h264",
+   "preset": null,
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 1774.1,
+   "native_fps": 2416.3,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "h264",
+   "preset": null,
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 650.2,
+   "native_fps": 878.6,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "hevc",
+   "preset": null,
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 1177.4,
+   "native_fps": 1597.5,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "hevc",
+   "preset": null,
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 428.4,
+   "native_fps": 588.6,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "vp9",
+   "preset": null,
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 942.2,
+   "native_fps": 1350.6,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "vp9",
+   "preset": null,
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 335.9,
+   "native_fps": 478.8,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "vvc",
+   "preset": null,
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "bcbc5601"
+   ],
+   "wasm_fps": 585.4,
+   "native_fps": 773.6,
+   "seed_caveat": false
+  },
+  {
+   "direction": "decode",
+   "codec": "vvc",
+   "preset": null,
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "bcbc5601"
+   ],
+   "wasm_fps": 214.3,
+   "native_fps": 251.1,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "av1",
+   "preset": "default",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 74.9,
+   "native_fps": 174.2,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "av1",
+   "preset": "default",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 26.1,
+   "native_fps": 61.7,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "av1",
+   "preset": "fast",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 160.3,
+   "native_fps": 433.8,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "av1",
+   "preset": "fast",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 46.2,
+   "native_fps": 137.0,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "av2",
+   "preset": "default",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 55.9,
+   "native_fps": 138.1,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "av2",
+   "preset": "default",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 18.3,
+   "native_fps": 50.3,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "h264",
+   "preset": "default",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 283.1,
+   "native_fps": 538.8,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "h264",
+   "preset": "default",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 89.1,
+   "native_fps": 179.5,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "h264",
+   "preset": "fast",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 333.3,
+   "native_fps": 688.3,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "h264",
+   "preset": "fast",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 96.3,
+   "native_fps": 224.3,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "hevc",
+   "preset": "default",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 149.7,
+   "native_fps": 254.2,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "hevc",
+   "preset": "default",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 46.9,
+   "native_fps": 85.9,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "hevc",
+   "preset": "fast",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 260.1,
+   "native_fps": 507.4,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "hevc",
+   "preset": "fast",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 71.9,
+   "native_fps": 155.4,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "vp9",
+   "preset": "default",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 70.2,
+   "native_fps": 172.9,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "vp9",
+   "preset": "default",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "f2f7a221"
+   ],
+   "wasm_fps": 24.4,
+   "native_fps": 63.2,
+   "seed_caveat": true
+  },
+  {
+   "direction": "encode",
+   "codec": "vvc",
+   "preset": "default",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "bcbc5601"
+   ],
+   "wasm_fps": 111.8,
+   "native_fps": 190.9,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "vvc",
+   "preset": "default",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "bcbc5601"
+   ],
+   "wasm_fps": 35.4,
+   "native_fps": 67.5,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "vvc",
+   "preset": "fast",
+   "res": "360p",
+   "clips": 3,
+   "builds": [
+    "bcbc5601"
+   ],
+   "wasm_fps": 169.6,
+   "native_fps": 298.7,
+   "seed_caveat": false
+  },
+  {
+   "direction": "encode",
+   "codec": "vvc",
+   "preset": "fast",
+   "res": "720p",
+   "clips": 3,
+   "builds": [
+    "bcbc5601"
+   ],
+   "wasm_fps": 49.8,
+   "native_fps": 104.1,
+   "seed_caveat": false
+  }
+ ]
+}

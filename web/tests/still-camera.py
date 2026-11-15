@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""The page's "Still-camera noise handling" toggle reaches the live encoders.
+"""Each live view's "Still-camera noise handling" toggle reaches its encoder.
 
-For the toggle on (the page's default) and off, the default comparison runs
-until FRAMES_BEFORE_PAUSE frames, pauses and saves the debug report. Checks:
+The toggle is in each live view's Advanced section, on by default, with its
+explanation as the tooltip. For the toggles on (the default) and off, two live
+views (`?views=live`) run until FRAMES_BEFORE_PAUSE frames, pause and save the
+debug report. Checks:
 
-- every live view's configuration in the report, and the page state, carry the
-  toggle's state, and the view's CLI command has `--still-camera` exactly when on;
+- every live view's configuration in the report carries its toggle's state, and
+  the view's CLI command has `--still-camera` exactly when on;
 - each encode worker was created with that state (its init message);
 - the report replays natively with zero mismatches (tools/web/replay-debug-report.py
   passes `--still-camera` when the view had it), so the WASM streams are the
@@ -50,8 +52,10 @@ def report(page, path: Path) -> dict:
     page.locator('#pause').click()
     page.wait_for_function("document.querySelector('#runtime-label').textContent === 'Paused'", timeout=30000)
     page.wait_for_timeout(1000)
+    page.locator('details.more > summary').click()
+    page.locator('#debug-report').click()
     with page.expect_download() as download:
-        page.locator('#debug-report').click()
+        page.locator('#debug-download').click()
     download.value.save_as(path)
     text = path.read_text()
     start = text.rfind('```json') + len('```json')
@@ -65,23 +69,23 @@ def run(port, on: bool, directory: Path) -> dict:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK)
-        page.goto(f'http://127.0.0.1:{port}/')
-        toggle = page.locator('#still-camera')
-        assert toggle.is_checked(), 'the toggle is on by default'
+        page.goto(f'http://127.0.0.1:{port}/?views=live')
+        for summary in page.locator('details.advanced > summary').all():
+            summary.click()
+        toggles = page.locator('.still-camera').all()
+        assert len(toggles) == 2 and all(t.is_checked() for t in toggles), 'the toggles are on by default'
+        assert all('sensor noise' in t.locator('xpath=..').get_attribute('title') for t in toggles)
         if not on:
             page.wait_for_function(f'{COMPARED} >= 1', timeout=120000)
-            toggle.set_checked(False)
+            for toggle in toggles:
+                toggle.set_checked(False)
             page.wait_for_timeout(500)
         state = report(page, directory / f'still-camera-{"on" if on else "off"}.md')
-        # The command is written when its details open.
-        for summary in page.locator('.reproduce summary').all():
-            summary.click()
         page.wait_for_function("[...document.querySelectorAll('.reproduce .cli')].every(c => c.textContent)", timeout=10000)
         commands = page.locator('.reproduce .cli').all_text_contents()
         inits = page.evaluate('window.__encoderInits')
         browser.close()
     assert not errors, errors
-    assert state['state']['stillCamera'] is on, state['state']
     live = [view for view in state['views'] if view['config']['source'] == 'live']
     assert live and all(view['config']['stillCamera'] is on for view in live), [v['config'] for v in state['views']]
     assert all(('--still-camera' in command) is on for command in commands), commands

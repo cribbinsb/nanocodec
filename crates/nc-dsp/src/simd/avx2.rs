@@ -604,6 +604,16 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn store_sat16_pair(low: Self, high: Self, dst: &mut [i16]) {
+        // SAFETY: these types run only inside AVX2 kernels (module docs);
+        // `dst` holds eight values.
+        unsafe {
+            let dst = &mut dst[..8];
+            _mm_storeu_si128(dst.as_mut_ptr().cast(), _mm_packs_epi32(low.0, high.0));
+        }
+    }
+
+    #[inline(always)]
     fn store_transposed_sat16(rows: &[Self], dst: &mut [MaybeUninit<i16>], dst_stride: usize) {
         /// Bytes of one 4-lane row of words: the second row's offset.
         const ROW_BYTES: i32 = 8;

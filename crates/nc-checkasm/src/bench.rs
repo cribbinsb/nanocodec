@@ -551,6 +551,10 @@ fn bench_hevc_inverse_add(
             ("hevc_add_full_picture", "hevc_split_full_picture"),
         ),
     ] {
+        // A corner wider than the transform (8 at 4x4) is not an extent.
+        if corner > n {
+            continue;
+        }
         let stored: Vec<i16> = (0..n * n)
             .map(|i| {
                 if i / n < corner && i % n < corner {
@@ -606,7 +610,7 @@ const DENSE_COEFFICIENT_SCALE: i16 = 32;
 fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSize, f64)) {
     let mb = BlockSize::new(16, 16).expect("valid");
     let residual: Vec<i16> = src[..256].iter().map(|&v| i16::from(v) - 128).collect();
-    let mut coeffs = [[0i32; 16]; 16];
+    let mut coeffs = [[0i16; 16]; 16];
     push(
         "h264_forward_4x4",
         mb,
@@ -625,7 +629,7 @@ fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
             dsp.h264_quantize_4x4(&mut levels, &q)
         }),
     );
-    let mut scaled = [[0i32; 16]; 16];
+    let mut scaled = [[0i16; 16]; 16];
     push(
         "h264_dequantize_4x4",
         mb,
@@ -634,6 +638,7 @@ fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
             scaled[0][0] as u32
         }),
     );
+    let scaled = scaled.map(|block| block.map(i32::from));
     let mut out = [[0i32; 16]; 16];
     push(
         "h264_inverse_4x4",
@@ -643,7 +648,7 @@ fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
             out[0][0] as u32
         }),
     );
-    let dc: [i32; 16] = core::array::from_fn(|i| coeffs[i][0]);
+    let dc: [i32; 16] = core::array::from_fn(|i| i32::from(coeffs[i][0]));
     let b4 = BlockSize::new(4, 4).expect("valid");
     push(
         "h264_hadamard_4x4",
@@ -651,7 +656,7 @@ fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
         time(|| dsp.h264_hadamard_4x4(&dc)[0] as u32),
     );
     let b8 = BlockSize::new(8, 8).expect("valid");
-    let mut c8 = [0i32; 64];
+    let mut c8 = [0i16; 64];
     push(
         "h264_forward_8x8",
         b8,
@@ -669,7 +674,7 @@ fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
             dsp.h264_quantize_8x8(&mut l8, &q)
         }),
     );
-    let mut d8 = [0i32; 64];
+    let mut d8 = [0i16; 64];
     let mut mb_levels = [[0; 64]; 4];
     push(
         "h264_forward_quantize_mb",
@@ -677,6 +682,7 @@ fn bench_h264(dsp: &Dsp, src: &[u8], push: &mut impl FnMut(&'static str, BlockSi
         time(|| dsp.h264_forward_quantize_mb(&residual, 16, 0, &q, &mut mb_levels)[0]),
     );
     dsp.h264_dequantize_8x8(&l8, &q, &mut d8);
+    let d8 = d8.map(i32::from);
     let mut o8 = [0i32; 64];
     push(
         "h264_inverse_8x8",

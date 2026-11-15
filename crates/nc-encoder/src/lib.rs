@@ -41,15 +41,11 @@ mod cdef_search;
 mod chroma_offset;
 pub mod chroma_policy;
 mod config;
-mod cyclic_cadence;
 mod decision;
 mod encoder;
 mod feedback;
-mod fixed_overhead;
 mod frame_role;
-mod held_quality;
 mod hold;
-mod inframe;
 mod inheritance;
 mod input;
 mod intra_candidates;
@@ -67,7 +63,6 @@ mod partition;
 mod partition_plan;
 mod period_ledger;
 mod persistence;
-mod planned_refinement;
 mod pre_tx_skip;
 mod psy;
 mod qp_cadence;
@@ -77,7 +72,6 @@ mod rate_control;
 mod rate_window;
 mod references;
 mod refinement_gain;
-mod refinement_loan;
 mod refresh;
 mod resolution;
 mod resolution_evidence;
@@ -92,6 +86,8 @@ mod source_scale;
 pub mod spatial;
 mod startup_lookahead;
 mod still_camera;
+mod still_plan;
+mod still_rate;
 mod still_skip;
 mod structure;
 pub mod symbol_cost;
@@ -106,7 +102,8 @@ pub use backend::{
 pub use cdef_model::{CDEF_MODEL_MAX_Q, cdef_strengths_from_q};
 pub use cdef_search::{StrengthSelection, select_strength_sets};
 pub use chroma_offset::{
-    coarse_chroma_extra, error_gap_offset, noise_attenuated_chroma_offset, plane_error_ratio,
+    adaptive_error_weight, coarse_chroma_extra, error_gap_offset, noise_attenuated_chroma_offset,
+    plane_error_ratio,
 };
 pub use config::{Codec, ConfigError, EncoderConfig, FrameRate, StreamSignal, TimingSignal};
 pub use encoder::{
@@ -119,7 +116,9 @@ pub use hold::holds_frames;
 pub use intra_candidates::{
     IntraModeSet, directions_by_orientation, shortlist_intra, with_neighbours,
 };
-pub use key_qp::{KEY_OFFSET_REFERENCE_PERIOD, fixed_qp_key_offset};
+pub use key_qp::{
+    KEY_OFFSET_REFERENCE_PERIOD, fixed_qp_key_offset, offset_key_quantizer, scaled_quantizer,
+};
 pub use layer::LayerPosition;
 pub use ltr::{MAX_REFERENCE_AGE, long_term_requested, long_term_slot, reference_reach};
 pub use mv::{MV_UNITS_PER_SAMPLE, Mv};
@@ -127,10 +126,9 @@ pub use nc_analysis::grain;
 pub use nc_analysis::link::{MAX_REFERENCE_SLOTS, ReferenceLink, SlotMask};
 pub use nc_common::{ColourDescription, ColourInfo};
 pub use params::{
-    AnalysisParams, ChromaParams, DebugParams, DecisionParams, InFrameParams, LayerParams,
-    LtrParams, ParamError, ParamOverrides, ParamSpec, PersistParams, PlannerParams, QuantParams,
-    RateParams, RefParams, RefreshParams, SceneParams, SpatialParams, StillParams, StructureParams,
-    engine_specs,
+    AnalysisParams, ChromaParams, DebugParams, DecisionParams, LayerParams, LtrParams, ParamError,
+    ParamOverrides, ParamSpec, PersistParams, PlannerParams, QuantParams, RateParams, RefParams,
+    RefreshParams, SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
 };
 pub use partition::Block;
 pub use pre_tx_skip::{QuantizerBand, pre_tx_skip_score, pre_tx_skips};

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Single-thread encode speed on Arm and x86, the browser build, decoders and hardware encoders for scale.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec speed</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="speed.html" aria-current="page">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="svc.html">SVC</a>
+    <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
+  </nav>
+</div>
+<main>
+  <h1>Speed</h1>
+  <p class="lede">Single-thread encode speed of every preset and reference on an Arm core and an x86 core, the
+    browser (WebAssembly) build, hardware encoders for scale, and how our decoders compare with the
+    established ones.</p>
+  <div id="speed">
+    <h2 id="encode">Encode, one core</h2>
+    <p class="prose">Encode CPU time per frame at 720p, one thread, at a fixed quantizer chosen for each encoder to
+      land near the chart's middle rung on three development clips; real-time CBR costs our encoders slightly more.
+      The Jetson core's clock is locked; the PC is a shared machine, so each PC run is paired with an x264 run in the
+      same round, and differences of a few percent there are noise.</p>
+    <p class="note platforms"></p>
+    <div class="encode"></div>
+    <h2 id="browser">In the browser (WebAssembly)</h2>
+    <p class="prose">Frames per second of the browser build on one PC core, single-threaded (the module has no
+      threads), under V8 (node, cross-checked in headless Chromium). Decode: our CBR streams, decode alone. Encode:
+      the demo's settings and its whole encode call (RGBA in). In brackets, the WebAssembly time over the native
+      build's on the same streams. Fast only where the demo offers it.</p>
+    <div class="wasm"></div>
+    <p class="note wasm-caveat"></p>
+    <h3 id="wasm-encode">Browser encode against ffmpeg.wasm</h3>
+    <p class="prose">Encode speed of our browser module and of the official single-thread ffmpeg.wasm
+      (x264), on one PC core in the same session: one 720p clip at the chart's middle rung. <strong>ffmpeg.wasm is
+      a generic build without SIMD</strong>, so it is a weak yardstick for what a SIMD port of x264 would reach;
+      no estimate of such a port is plotted. Quality is the chart's point for the same encoder and preset (the
+      held-out fresh clips against x264 --tune psnr, native builds); the browser runs were not scored themselves.
+      Lower is fewer bits, right is faster.</p>
+    <div class="chart-card">
+      <div class="chart wasm-encode-chart"></div>
+      <div class="tooltip" role="tooltip" hidden></div>
+    </div>
+    <div class="wasm-encode-table"></div>
+    <h2 id="decoders">Decoders against the established ones</h2>
+    <p class="prose">Our decoders' time per frame against FFmpeg (H.264, HEVC; also VP9 in brackets), dav1d
+      (AV1), vpxdec (VP9), VVdeC (VVC) and avmdec (AV2, a research reference decoder not built for speed) natively,
+      and in the browser against ffmpeg.wasm (no SIMD; it has no AV1, VVC or AV2 decoder), every
+      decoder with one thread, though the references are normally run multi-threaded and are faster that way.
+      Streams: ours, and third-party ones (x264, openh264, x265 with B-frames, IP cameras, SVT-AV1, libaom,
+      vpxenc). Below 1 means ours took less time. Every native output matched its reference decoder's. The PC was
+      loaded during this run: read its ratios as rough and its WebAssembly times as upper bounds; the Jetson
+      core was otherwise idle.</p>
+    <div class="controls decoder-controls"></div>
+    <p class="note decoder-note"></p>
+    <div class="chart-card"><div class="chart ratio-chart"></div></div>
+    <div class="decoders"></div>
+    <h2 id="hardware">Hardware encoders, for scale</h2>
+    <p class="prose">NVIDIA NVENC on an RTX 5090 GPU in the same low-delay CBR on the development clips. Its speed
+      is GPU wall-clock time with frames already in GPU memory, not CPU time, so it is not comparable with the
+      tables above; the zero line here is the default-tuned x264 medium.</p>
+    <div class="hardware"></div>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
+</footer>
+<script type="module" src="speed.js"></script>
+</body>
+</html>

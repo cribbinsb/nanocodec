@@ -172,7 +172,9 @@ clips, CBR and QP); checkasm passes on AVX2, AVX-512 (SDE `-spr` and `-icx`), NE
 | Commit | Change | Jetson cycles | Jetson instr. | x86 instr. |
 |---|---|---:|---:|---:|
 | 1a363676 | AV1/VP9 forward DCT family stores i16 (saturating, never triggers); AV1 quantiser i16 in and out, generic over its storage (AV2 keeps i32), vectors from coefficient 0 with a DC fix-up; AV1 levels i16; VP9 coefficients, quantiser input and largest magnitude i16; transpose kernels removed | AV1 −0.30 / −0.49 / −0.18 %; VP9 −0.72 / −1.03 / −0.63 % | AV1 −0.56 / −0.88 / −0.48 %; VP9 −0.67 / −0.50 / −0.69 % | AV1 −0.58 / −0.73 / −0.49 %; VP9 ≈ 0 |
-| (this commit set) | AV1 dequantised coefficients i16 (from coefficient 0, DC fix-up), coefficient gain on i16 (NEON 16-bit products), txfm inverse DCT input i16 on every ISA | AV1 −0.30 / −0.24 / −0.15 % (mean of 3) | AV1 −0.83 / −0.97 / −0.71 % | AV1 −0.85 / −1.07 / −0.76 % |
+| 0b860aef | AV1 dequantised coefficients i16 (from coefficient 0, DC fix-up), coefficient gain on i16 (NEON 16-bit products), txfm inverse DCT input i16 on every ISA | AV1 −0.30 / −0.24 / −0.15 % (mean of 3) | AV1 −0.83 / −0.97 / −0.71 % | AV1 −0.85 / −1.07 / −0.76 % |
+| (H.264 commit) | H.264 encoder forward 4x4/8x8, quantiser (shared, generic over its storage), levels, scaled values and `nonzero_mask` i16; the 8x8 reconstruction runs the decoder's 16-bit inverse | H.264 −0.31 / −0.04 / −0.13 % | H.264 +0.08 / +0.16 / +0.10 % | H.264 +0.06 / +0.38 / +0.21 % |
+| (pair commit) | H.264 4x4 coefficient rows narrow in pairs into full 128-bit stores (NEON 4x4 forward, generic one-vector rows); AVX2 4-lane narrowing pair store | with the H.264 commit, mean of 3: −0.04 / +0.14 / +0.13 % | +0.06 / +0.14 / +0.09 % | with the H.264 commit: +0.10 / +0.33 / +0.16 % |
 
 - **Store-to-load alignment mattered more than the width.** The first i16 quantiser started its vectors at
   coefficient 1, like the 32-bit one. Its 16-byte loads then straddled two of the forward's 16-byte stores,
@@ -186,8 +188,28 @@ clips, CBR and QP); checkasm passes on AVX2, AVX-512 (SDE `-spr` and `-icx`), NE
 - **WASM:** encode A/B under node (bench.py clips, 720p 600 kbps, best of 3 alternating rounds) did not
   resolve these changes. The unchanged H.264 control moved by −1 to −22 % between rounds at machine loads of
   40–60.
-- **Left for item 7:** H.264, HEVC/VVC and AV2 forward/quantiser/levels; VP9 levels (retry after
-  profiling `residual_of`, the token writer and the trellis).
+- **H.264 (item 7, 2026-11-15):** Jetson cycles are neutral (the round-to-round spread of the base is about
+  ±0.2 %), instructions +0.1 % on NEON and +0.1–0.4 % on x86: each narrowing store adds a pack (`sqxtn`,
+  `packssdw`). The gain is memory (coefficients, levels and scaled values halve) and the 8x8 reconstruction
+  in eight 16-bit lanes. A 4x4 row of i16 is 64 bits, so the quantiser's 128-bit loads would each span two
+  row stores; rows are stored in pairs instead (the store-forwarding lesson above).
+- **HEVC/VVC (not landed; branch `feature/int-width-enc7-hevc`):** forward outputs i16 on every ISA (HEVC's
+  second pass clamps there; VVC's rectangular and MTS outputs are at most 32640, every basis row's L1 being
+  at most the DC row's 64 N), quantiser input i16, HEVC levels i16 (VVC levels i32), dequantiser generic over
+  the level storage. Exact (112/112 on x86 and NEON) and −0.2..−0.3 % Jetson instructions, but Jetson HEVC
+  Default cycles rose +0.2..+0.9 % in four rounds (VVC neutral). Loading the quantiser's two vectors
+  separately (the exact column pass stores 64 bits per 4-lane vector) only halved it. Pairing two column
+  groups per step for full 128-bit stores made it worse (+1.2..+1.8 % HEVC, +3 % H.264 instructions: the
+  driver's restructured loop lost its inlining). pcsample at 150 frames did not resolve the difference (file
+  read noise dominates). A NEON HEVC column pass that keeps eight 16-bit outputs per store (as
+  `txfm::neon_forward::hevc_columns` does for staged columns) is the next thing to try.
+- **AV2: not narrowed.** Every transform size shares the block's coefficient and level buffers, and the
+  64x64 forward (about 32965) and 20-bit levels need 32 bits, so no buffer fits i16 as a whole.
+- **VP9 levels: not retried.** Jetson pcsample (Default, crowd 150 f): `code_residuals` 10.7 % (much inlined),
+  NEON `quantize` 3.7 % (writes the levels), `coeff::cost` 3.1 %, trellis `level_rates` + `probs_at` 2.2 %,
+  `add_residual` 1.0 %, `residual_of` 0.7 %, `token_bits` 0.4 %. The level traffic is a small part of these,
+  so the bound on the gain is a few tenths of a percent, against two earlier attempts at +0.2..+1.1 %.
+- **Left for item 7:** HEVC/VVC (above); VP9 levels.
   The trellis `Candidates.levels` stay wide (AV2 levels reach 2^20 − 1; the HEVC/VVC/H.264 trellis
   nearest levels are uncapped).
 

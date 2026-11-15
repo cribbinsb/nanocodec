@@ -46,6 +46,8 @@ const release = [], period = %(period)f;
 setInterval(() => { const post = release.shift(); if (post) post(); }, period);
 window.Worker = class extends Original {
   constructor(url, ...rest) { super(url, ...rest); const script = String(url).split('/').pop(); this.script = script;
+    // Each comparison (re)start makes its capture worker first: only the last one's frames count.
+    if (script === 'capture-worker.js') { window.__x = { coded: [[], []] }; decoders = 0; }
     if (script === 'decode-worker.js') this.view = decoders++ %% 2;
     this.addEventListener('message', e => { const d = e.data;
       if (!d || d.type !== 'frame' || script !== 'decode-worker.js' || d.held) return;
@@ -68,9 +70,12 @@ def run(port, share, still_camera=False):
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK % {'period': 1000 / (FPS * share)})
-        page.goto(f'http://127.0.0.1:{port}/')
-        page.locator('#still-camera').set_checked(still_camera)
-        page.locator('[data-source="camera"]').click()
+        page.goto(f'http://127.0.0.1:{port}/?views=live')
+        # The settings first (each restarts the clip comparison), then the webcam: one start on it.
+        for summary in page.locator('details.advanced > summary').all():
+            summary.click()
+        for toggle in page.locator('.still-camera').all():
+            toggle.set_checked(still_camera)
         for picker in page.locator('.resolution').all():
             picker.select_option('640x360')
         for picker in page.locator('.fps').all():
@@ -79,7 +84,7 @@ def run(port, share, still_camera=False):
             for box in page.locator(selector).all():
                 box.fill(str(kbps))
                 box.dispatch_event('change')
-        page.locator('#start').click()
+        page.locator('[data-source="camera"]').click()
         page.wait_for_function('window.__x.coded.every(v => v.length > 5)', timeout=120000)
         time.sleep(WARM_S + MEASURE_S)
         # Paused, the frames in flight complete and nothing more arrives: the counts settle.

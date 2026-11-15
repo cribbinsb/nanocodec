@@ -90,7 +90,7 @@ impl Av1Backend {
         } && !self
             .refresh
             .as_ref()
-            .is_some_and(|w| w.on_dirty_edge(block));
+            .is_some_and(|w| w.reads_dirty_above_right(block));
         if !searched {
             return InterFrameIntra::Intra(LumaIntra::DC);
         }

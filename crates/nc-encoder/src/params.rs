@@ -867,8 +867,6 @@ param_group! {
         // vs 1: AV1 -0.1%, H.264 -0.0%, HEVC -0.3%, no guard tripped; mean
         // |dPSNR| -0.03..-0.05 dB (bodycam -0.10..-0.16), bodycam worst-1%
         // -26..-31%. 0.25 reacts too slowly (AV1 J_real +1.1%).
-        fixed_overhead: 0.0, [0.0, 1.0],
-            "1 models an inter frame's bits as a fixed overhead plus content that scales with the step (`fixed_overhead.rs`), the overhead learnt from all but wholly unchanged frames; 0 scales the whole frame with the step: 1 keeps header bytes from reading as content on still scenes",
         level_hint_weight: 1.0, [0.02, 1.0],
             "rate control: weight of each inter frame's complexity hint in the running (geometric) mean the inter level is planned from; the frame's own size is still predicted from its own hint (1 = plan from the frame's own hint): lower keeps the level steady through frame-to-frame complexity noise, which the buffer absorbs as fixed QP would",
         level_step_scale: 0.5, [0.05, 2.0],
@@ -883,40 +881,14 @@ param_group! {
         // -5.2% / -5.7%, AV1 -3.4% / -3.7%; every clip gains in every codec.
         // The base frames' finer step raises the rate of a given --qp by
         // 2-12% at matched QP.
-        cadence_spatial: 0.0, [0.0, 1.0],
-            "1 gives the cadence's base boost to a rotating 1/period band of still blocks every frame instead of to whole base frames (`cyclic_cadence.rs`, needs `persist.reuse` and block QP; flat IPP only): smoother frame sizes on still content; 0 is the frame cadence",
         cadence_fixed_qp: 1.0, [0.0, 1.0],
             "1 also applies the cadence at fixed QP; 0 keeps fixed-QP frames flat (the cadence then only shapes rate control)",
         fixed_qp_profile: 0.0, [0.0, 1.0],
             "1 applies the codec's fixed-QP profile (`CodecBackend::FIXED_QP_PARAMS`: its static frame-level pattern for coding without rate control) beneath the caller's settings; the CLI sets it for --qp without --bitrate, a preset may pin 0",
-        hold_still: 0.0, [0.0, 1.0],
-            "1 holds still blocks of ordinary inter frames at the finest step they were coded at since their source settled (`ReuseTerm::hold_still`, needs `persist.reuse` and block QP; flat IPP only), so a level below the quality a still picture holds does not refine it unplanned (on by itself with `rate.refine`); 0 is off",
-        hold_recover: 0.0, [0.0, 1.0],
-            "with the hold (`rate.hold_still`, `rate.prekey_quiet`, `rate.refine`), 1 holds a still block only when its measured error is no worse than the frame's step delivers, so a block left poor (a starved key) is coded at the level and recovers; 0 holds every still block coded coarser than the level",
-        refine: 0.0, [0.0, 1.0],
-            "1 plans loan-funded refinements of persistent still blocks (`planned_refinement.rs`, needs `persist.reuse` and block QP; flat IPP only) and gives the steady-state cadence no base boost: their bits come on top of the frame's budget and are repaid over `rate.refine_payback`; 0 is off",
-        refine_budgets: 8.0, [0.5, 64.0],
-            "with `rate.refine`, the largest loan of one refinement in uniform frame budgets (target / fps): higher refines more blocks at once",
-        refine_min_budgets: 0.5, [0.0, 16.0],
-            "with `rate.refine`, the smallest estimated loan, in uniform frame budgets, worth a refinement: higher refines less often",
-        refine_interval: 1.0, [0.0, 30.0],
-            "with `rate.refine`, seconds between refinements at least: lower refines sooner after the last",
-        refine_horizon: 2.0, [0.0, 30.0],
-            "with `rate.refine`, seconds before the next scheduled key within which no refinement is planned (its blocks would be coded again too soon)",
-        refine_payback: 5.0, [0.5, 60.0],
-            "with `rate.refine`, seconds over which a refinement's loan is repaid by smaller inter budgets",
-        refine_max_offset: 12.0, [0.0, 30.0],
-            "with `rate.refine`, most QP units a refined block is coded finer than the frame",
-        refine_startup: 1.0, [0.0, 1.0],
-            "with `rate.refine`, 1 keeps the start-up cadence after each key (whole finer frames), 0 makes every inter frame flat so refinements do all the refining",
         key_still_boost: 0.0, [0.0, 18.0],
             "QP units finer a key frame is coded on a fixed camera (scaled by how still the scene is: the running unchanged-block share, or the start-up lookahead's for the first key, from 0.8 to 1), its loan repaid on schedule by the frames after it (0 = off): higher invests more in the picture a still scene's later frames inherit",
         key_hold_still: 0.0, [0.0, 4.0],
             "buffers a periodic key of a still scene (running unchanged-block share at least `rate.key_repay_still_from`) may take whatever the debt, planned at the quality the inter frames hold rather than by its repay phase or the debt correction (0 = off): the frames after it repay it",
-        held_quality: 0.0, [0.0, 1.0],
-            "1 prices a frame finer than the quality the still picture holds with the refinement it triggers (`held_quality.rs`), so the level stops where that fits the budget instead of drifting into a burst: 0 plans with the per-role model alone",
-        held_exponent: 1.0, [0.25, 3.0],
-            "with `rate.held_quality`, growth of a refinement's bits with the octaves it is finer than the held step: higher holds the level closer to the held step",
         period_ceiling: 0.0, [0.0, 1.0],
             "1 holds the target as a ceiling over every key period: an inter frame may take at most what the rest of the period can repay of the stream's spend above the target line (`period_ledger.rs`), and is re-coded coarser past it; 0 corrects debt through budgets only",
         prekey_quiet: 0.0, [0.0, 10.0],
@@ -1029,7 +1001,11 @@ param_group! {
     /// Trellis quantisation of the coded block (`trellis.rs`), in backends
     /// that provide a coefficient rate model.
     pub struct QuantParams ("quant") {
-        trellis: 0.0, [0.0, 1.0],
+        // On with one survivor in every codec's Default: each had adopted
+        // exactly this in its own `DEFAULT_PARAMS` (evidence there and in
+        // docs/handoff/trellis.md), so it is the shared default (CLAUDE.md
+        // "Shared first"); every Fast preset pins `quant.trellis` 0.
+        trellis: 1.0, [0.0, 1.0],
             "trellis quantisation (0 off, 1 the winning block's coefficients after mode decision): 1 spends a rate-distortion search per coded transform block to round levels down or to zero where the bits are worth more",
         trellis_lambda_scale: 1.0, [0.25, 4.0],
             "multiple of the mode-decision λ the trellis trades bits at: higher drops more levels",
@@ -1037,7 +1013,7 @@ param_group! {
             "multiple of the trellis λ for chroma (0 leaves chroma to the plain quantiser): lower keeps more chroma levels",
         trellis_key: 1.0, [0.0, 1.0],
             "1 also trellises key frames (0: P frames only): 0 keeps the key frame every later frame predicts from at the plain quantiser's quality",
-        trellis_states: 4.0, [1.0, 16.0],
+        trellis_states: 1.0, [1.0, 16.0],
             "entropy-context states kept per scan position: higher searches more level combinations",
     }
 }
@@ -1143,32 +1119,6 @@ param_group! {
 }
 
 param_group! {
-    /// In-frame rate control (`inframe.rs`): coarsening the rest of a frame
-    /// whose size, projected after each superblock row, passes its limit.
-    /// Off by default (both limits 0).
-    pub struct InFrameParams ("inframe") {
-        room: 0.0, [0.0, 1.0],
-            "in-frame rate control: steer each frame to end within this share of the room a re-code would enforce (`rate.recode_overflow`; 0 = no hard limit): higher re-codes more, lower coarsens more frames mid-way",
-        budgets: 0.0, [0.0, 64.0],
-            "in-frame rate control: soft limit of an inter frame in uncorrected frame budgets (target / frame rate; 0 = none): lower bounds static refinement bursts harder",
-        // AV1 Default, the audit's six still points, 600 f, room 0.9 on
-        // keys too: meva 97 kbps worst-1% PSNR-Y 29.14 -> 26.96 dB, chirla
-        // 47 kbps 28.81 -> 27.31 (a key coarsened mid-way leaves its lower
-        // rows coarse for the whole GOP; a re-code coarsens it evenly).
-        startup_only: 0.0, [0.0, 1.0],
-            "in-frame rate control: 1 applies the soft limit (`inframe.budgets`) only during the QP cadence's start-up after each key, where whole finer base frames remain under the cyclic spatial cadence (`rate.cadence_spatial`); 0 applies it to every inter frame",
-        keys: 0.0, [0.0, 1.0],
-            "in-frame rate control: 1 steers key frames by the re-code room too; 0 leaves keys to the whole-frame re-code",
-        max_offset: 12.0, [1.0, 24.0],
-            "in-frame rate control: largest coarsening of a row, in QP units",
-        row_step: 3.0, [0.5, 12.0],
-            "in-frame rate control: largest offset change between consecutive superblock rows, in QP units: lower is smoother across the frame, higher reacts faster",
-        exponent: 2.0, [0.5, 4.0],
-            "in-frame rate control: slope of bits against step assumed for the rows still to code: higher coarsens less per projected excess",
-    }
-}
-
-param_group! {
     /// Test-only modes (`random_decisions.rs`); never set in real encodes.
     pub struct DebugParams ("debug") {
         random_decisions: 0.0, [0.0, 16_777_215.0],
@@ -1187,7 +1137,6 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         AnalysisParams::SPECS,
         StillParams::SPECS,
         RateParams::SPECS,
-        InFrameParams::SPECS,
         PersistParams::SPECS,
         LayerParams::SPECS,
         SceneParams::SPECS,

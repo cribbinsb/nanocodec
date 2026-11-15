@@ -273,6 +273,9 @@ pub struct H264Backend {
     /// The configured QP, used for inter frames.
     rate_control_enabled: bool,
     base_qp: u8,
+    /// `EncoderConfig::key_qp_offset`: replaces `h264.keyframe_qp_offset`
+    /// for fixed-QP key frames when set.
+    key_qp_offset: Option<i32>,
     /// QP of the current frame (finer for key frames).
     qp: u8,
     /// Squared-error and SATD weights at `mb_qp`, scaled by `lambda_scale`.
@@ -1750,16 +1753,10 @@ impl CodecBackend for H264Backend {
     /// `begin_frame` reads only committed state (reference bookkeeping,
     /// `idr_pic_id`); `commit_frame` advances it.
     const RECODE: bool = true;
-    const REPORTS_CODED_BITS: bool = true;
-
-    /// The slice's bits so far: the CAVLC writer's, or the CABAC coder's.
-    fn coded_bits(&mut self) -> Option<u64> {
-        match (&self.cavlc, &self.cabac) {
-            (Some(cavlc), _) => Some(cavlc.bit_len()),
-            (None, Some(cabac)) => Some(cabac.bit_len()),
-            (None, None) => None,
-        }
-    }
+    // Intra refresh: dirty-edge macroblocks keep to DC (no above-right
+    // samples) and no syntax predicts across frames (P slices have no
+    // temporal direct).
+    const INTRA_REFRESH: bool = true;
 
     // λ past QP 51 also widens the zero-residual bounds and prunes residual
     // (`quantizers_at`, `residual_rd_multiplier`). CBR 150 f, headroom 2
@@ -1848,8 +1845,8 @@ impl CodecBackend for H264Backend {
         // ±0.1 dB, no drift. HEVC 0.25 lost (proxy-4 +1.3%), so it is
         // H.264's only.
         ("decision.psy_strength", 0.25),
-        // Trellis quantisation of inter macroblocks' luma (`quant.*`,
-        // docs/handoff/trellis.md), one survivor: J_real staged TRAIN (18
+        // Trellis quantisation of inter macroblocks' luma (`quant.*`, on and
+        // one survivor by the engine defaults; docs/handoff/trellis.md): J_real staged TRAIN (18
         // clips) at k 0.1 BETTER, quality -2.0% (full -2.3%, low -1.7%),
         // 0/18 clips worse, every class better (lowlight -3.5%, static -3.0%,
         // pan -2.9%, crowd -2.8%, texture -1.1%, bodycam -0.7%), NEG -3.4%,
@@ -1859,8 +1856,6 @@ impl CodecBackend for H264Backend {
         // per third: airport 600 kbps +0.04/+0.02/+0.04 dB, homes390 300
         // kbps +0.02/-0.05/0.00, chirla 150 kbps -0.24/-0.25/-0.08 at 2.7%
         // less rate (CBR undershoot).
-        ("quant.trellis", 1.0),
-        ("quant.trellis_states", 1.0),
         // Chroma AC keeps the plain quantiser.
         ("quant.trellis_chroma", 0.0),
         // The Default's quality set (2026-11-10, docs/handoff/h264.md
@@ -2019,6 +2014,7 @@ impl CodecBackend for H264Backend {
             params,
             rate_control_enabled: false,
             base_qp: qp,
+            key_qp_offset: config.key_qp_offset,
             qp,
             rd_lambda,
             satd_lambda,
@@ -2311,9 +2307,13 @@ impl CodecBackend for H264Backend {
         self.exact_luma.set(None);
         self.base_qp = plan.quantizer as u8;
         self.qp = match plan.frame_type {
-            FrameType::Key if !self.rate_control_enabled => self
-                .base_qp
-                .saturating_sub(self.tuning.keyframe_qp_offset.round() as u8),
+            FrameType::Key if !self.rate_control_enabled => nc_encoder::offset_key_quantizer(
+                u32::from(self.base_qp),
+                self.key_qp_offset
+                    .unwrap_or(self.tuning.keyframe_qp_offset.round() as i32),
+                0,
+                QP_MAX,
+            ) as u8,
             _ => self.base_qp,
         };
         self.mb_qp = self.qp;

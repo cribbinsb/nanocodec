@@ -35,7 +35,7 @@ def main():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={'width': 1400, 'height': 1000})
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.goto(f'http://127.0.0.1:{server.server_port}/')
+        page.goto(f'http://127.0.0.1:{server.server_port}/?views=live')
         page.wait_for_function(f'{COMPARED} >= 1', timeout=120000)
         # The default clip has no reference streams: the hint says so, and the first
         # stream offered (another clip's) switches the page to that clip.
@@ -51,7 +51,7 @@ def main():
         assert page.locator('.reference-hint').nth(1).is_hidden()
         # The reference view hides the codec picker and the live settings.
         assert page.locator('.codec-picker').nth(1).is_hidden()
-        assert page.locator('.options').nth(1).is_hidden()
+        assert page.locator('.picture-options').nth(1).is_hidden() and page.locator('details.advanced').nth(1).is_hidden()
         # Match: version A becomes live nanocodec at the stream's settings.
         codec = page.evaluate("document.querySelectorAll('.codec-picker')[1].value")
         assert page.locator('.match').nth(1).text_content() == 'Match nanocodec to this stream'

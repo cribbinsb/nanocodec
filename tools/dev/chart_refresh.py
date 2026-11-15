@@ -51,7 +51,9 @@ commit's `presets/`) and on the Jetson (`nanocodec`, release), each with a
                under jetson-timed.sh, which retries until the board is quiet),
                merged into bd-vs-speed-timing.json.
   render       nceval.chart render of both charts, every family on its build, and the
-               hardware encoders (NVENC, on this PC's GPU) beside them.
+               hardware encoders (NVENC, on this PC's GPU) beside them; then nceval.site
+               regenerates the results site's data (web/results/data) and the README's
+               headline facts from them.
   check        tools/dev/chart_sanity.py on the refreshed families' codecs: flags a
                preset whose x86/Jetson fps ratio is off its codec's other presets, or
                whose x86 speed contradicts its callgrind instruction count. Warnings,
@@ -629,6 +631,8 @@ class Refresh:
                     ["--timing-hardware", str(REPO / TIMING_HARDWARE_FILE)]),
                   "--meta", str(meta), "--out", str(REPO / RESULTS),
                   "--workers", str(self.args.workers)], "render.log", REPO / "eval", scope=True)
+        # The results site's data and the README's headline facts follow the new charts.
+        self.run(["python3", "-m", "nceval.site"], "site.log", REPO / "eval")
 
     def check(self) -> None:
         """chart_sanity.py on the refreshed families' codecs: flags printed, never fatal."""

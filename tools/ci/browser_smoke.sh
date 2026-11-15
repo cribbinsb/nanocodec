@@ -7,7 +7,8 @@
 # (web/tests/warmup-interrupt.py), source switches and webcam starts under CPU
 # throttling (web/tests/source-switch.py), a pre-encoded view's PSNR equal to the
 # offline value frame by frame on a busy page (web/tests/reference-psnr.py), a sample-clip
-# comparison byte-identical on a slowed page (web/tests/exact-source.py), a starved
+# comparison byte-identical on a slowed page (web/tests/exact-source.py), the heaviest
+# clip playing without long pauses (web/tests/clip-pauses.py), a starved
 # webcam holding its bitrate with counted skips (web/tests/live-skip.py), a one-CPU
 # machine offered a lighter size that speeds it up (web/tests/speed-hint.py), the analysis mode
 # (web/tests/analysis-smoke.py), its PSNR map and per-plane PSNR equal to an offline
@@ -16,8 +17,13 @@
 # clip file's decoded planes on three clips (web/tests/capture-identity.py; run
 # it without --clips for every clip) and spatial SVC's operating points against
 # the native decoder (web/tests/svc-operating-points.py), and the debug report reproduced
-# natively with zero mismatches (web/tests/debug-report.py), the still-camera toggle reaching the
-# live encoders on and off, each report replaying natively (web/tests/still-camera.py). nc-web embeds the encoder and every codec crate, so
+# natively with zero mismatches (web/tests/debug-report.py, through its dialog with and without the
+# coded streams), the still-camera toggle reaching the live encoders on and off, each report
+# replaying natively (web/tests/still-camera.py), an Original view's pixels equal to the source
+# frame and its report replaying (web/tests/original-view.py), the comparison restarting by itself
+# on every option and once per burst of changes under load (web/tests/auto-restart.py), and the
+# layout control with the shared zoom and pan in each layout, with and without analysis
+# (web/tests/view-layout.py). nc-web embeds the encoder and every codec crate, so
 # a change there can break the page (frame hold once stopped it: the
 # workers expected a packet per input). Called by check.sh (every run, --quick included, so
 # browser API changes cannot land unchecked) and by land.sh for a candidate
@@ -53,8 +59,13 @@ elif python3 -c 'import playwright' 2>/dev/null; then
     python3 web/tests/source-switch.py
     python3 web/tests/reference-psnr.py
     python3 web/tests/exact-source.py
+    python3 web/tests/clip-pauses.py
     python3 web/tests/live-skip.py
     python3 web/tests/speed-hint.py
+    # The results pages: every figure they show is in their data (web/results/).
+    python3 web/tests/results-pages.py
+    # The links between the results pages and the demo round-trip; one shared header.
+    python3 web/tests/deep-links.py
     # Analysis mode: the lazily loaded analysis module, overlay, statistics, zoom.
     python3 web/tests/analysis-smoke.py
     python3 web/tests/psnr-map.py
@@ -69,6 +80,9 @@ elif python3 -c 'import playwright' 2>/dev/null; then
     # The debug report reproduces natively with zero mismatches.
     NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/debug-report.py
     NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/still-camera.py
+    NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/original-view.py
+    python3 web/tests/auto-restart.py
+    python3 web/tests/view-layout.py
 else
     echo 'browser product smoke skipped: Playwright is not installed' >&2
 fi

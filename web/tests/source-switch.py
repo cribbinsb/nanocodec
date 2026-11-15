@@ -21,6 +21,8 @@ WEB = Path(__file__).resolve().parents[1]
 CPU_SLOWDOWN = 6
 ROUNDS = 3
 FRAME_TIMEOUT_MS = 90000
+# Past the page's restart delay: a switch's start has begun.
+RESTART_BEGUN_MS = 400
 # Both views have shown a frame since their last restart.
 BOTH_SHOWN = "[...document.querySelectorAll('.frame-badge')].every(b => b.dataset.tick !== undefined)"
 
@@ -50,10 +52,14 @@ def main():
             frames_shown()
 
             def start(source, wait=True):
-                page.locator(f'[data-source="{source}"]').click()  # stops the running comparison
-                page.locator('#start').click()
+                # Choosing a source stops the running comparison and starts on it after the
+                # restart delay (app.js RESTART_DELAY_MS, 300 ms); without waiting for frames,
+                # the next switch comes once that start has begun, before its first frame.
+                page.locator(f'[data-source="{source}"]').click()
                 if wait:
                     frames_shown()
+                else:
+                    page.wait_for_timeout(RESTART_BEGUN_MS)
 
             for _ in range(ROUNDS):
                 start('camera')

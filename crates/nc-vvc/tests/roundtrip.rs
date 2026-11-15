@@ -1,8 +1,8 @@
 //! Engine integration, bounded subset decoding and unsupported configurations.
 use nc_common::{Picture, PlaneIndex, yuv};
 use nc_encoder::{
-    Codec, CodecBackend, Encoder, EncoderConfig, FrameRate, FrameType, ParamOverrides,
-    RateControlConfig, StreamSignal,
+    Codec, Encoder, EncoderConfig, FrameRate, FrameType, ParamOverrides, RateControlConfig,
+    StreamSignal,
 };
 use nc_vvc::{Decoder, VvcBackend};
 
@@ -46,7 +46,6 @@ fn bytes(p: &Picture) -> Vec<u8> {
 
 #[test]
 fn shared_engine_roundtrips_crops_extremes_and_quantizers() {
-    assert!(!std::hint::black_box(VvcBackend::OWN_PICTURE_PIPELINE));
     for (w, h) in [(2, 2), (32, 32), (34, 66), (128, 96)] {
         for qp in [0, 1, 22, 37, 51, 63] {
             let mut encoder = Encoder::<VvcBackend>::new(config(w, h, qp)).unwrap();

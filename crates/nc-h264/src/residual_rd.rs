@@ -45,11 +45,11 @@ const QUADRANTS: usize = 4;
 /// quadrant is considered.
 pub fn prunable_quadrants(residual: &Residual, any_level: bool) -> u8 {
     // A branch-free fold (no early exit) vectorises: -1, 0, 1 map to 0..=2.
-    let sparse = |levels: &[i32]| {
+    let sparse = |levels: &[i16]| {
         any_level
             || levels
                 .iter()
-                .fold(0, |m, &l| m.max(l.wrapping_add(1) as u32))
+                .fold(0, |m, &l| m.max(l.wrapping_add(1) as u16))
                 <= 2
     };
     let mut quadrants = 0;

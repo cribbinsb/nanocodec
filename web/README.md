@@ -4,6 +4,24 @@ The page is static HTML/CSS/ES modules. `nc-web` supplies Rust encoders and
 independent Rust decoders compiled to `wasm32-unknown-unknown` with SIMD128.
 There is no upload endpoint, analytics, server-side encoding, or runtime CDN.
 
+The results pages (`web/results/`, linked from the demo's masthead) are static
+too: plain SVG charts and tables drawn from `web/results/data/*.json`, which
+`python3 -m nceval.site` (run from `eval/`) generates from `docs/results`; never
+edit the JSON by hand. `web/tests/results-pages.py` checks every figure they
+show against that data.
+
+The demo and the results pages share one header (`site-header.css`: Demo ·
+Results · Method · GitHub) and link to each other (`deep-link.js`, checked by
+`tests/deep-link.test.js` and `tests/deep-links.py`):
+
+- `?codec=av1&preset=fast&size=1280x720&fps=30&kbps=600` opens the demo with
+  view B live at those settings and view A on the original source; with
+  `&stream=ID` view A shows that pre-encoded stream and view B is matched to it
+  first. `clip=ID` picks the sample clip. A results chart point links here.
+- `results/?codec=av1&preset=fast` opens the results overview filtered to that
+  preset with its point selected. Each live view's "How does this preset
+  compare?" links here (SVC presets: the SVC page).
+
 Build and serve from the repository root:
 
 ```sh
@@ -27,12 +45,29 @@ are needed: each worker has its own ordinary WASM memory.
 
 ## Controls and behavior
 
-- **Sample clip / Test scene / Webcam / Video file:** the page opens comparing the
-  default sample clip at the default settings, with no click needed (the hidden
-  input video is muted and inline, which browsers allow to autoplay; if one still
-  refuses, the notice asks for Start). Picking another clip starts it at once.
-  Sample clips loop; local files stop at their end and must be playable by the
-  browser. The input is fitted into each version's resolution with letterboxing.
+- **The comparison always runs (`app.js`):** there is no Start or Stop. The page
+  opens comparing, with no click needed: A plays the pre-encoded x264 medium stream
+  of the Four People clip (854×480, 30 fps, 400 kbps) and B is live nanocodec H.264
+  Default matched to it (`OPENING_STREAM`); the header sentence says what is
+  compared, and follows every change. `?views=live` opens instead on two live views
+  (H.264 and AV1, 854×480, 15 fps, 300 kbps) on the Bar clip, as the page tests that
+  measure live encoders do. Any change to the source, the clip or a view's setting
+  restarts the comparison by itself 300 ms after the last change of a burst
+  (`RESTART_DELAY_MS`, one start per burst: `web/tests/auto-restart.py`); rate
+  changes apply live instead (below). A hidden tab stops the comparison and the
+  camera, and showing it again restarts. When a comparison stops by itself (a local
+  file's end, a failure), the Pause button becomes Play again / Restart.
+- **Top bar:** the source (Sample clip / Test scene / Webcam / Video file), the clip,
+  Pause, and **More**: Step one frame, Request keyframes, Debug report…. Choosing
+  the webcam asks for the camera at once; Video file opens the file chooser and
+  starts on the chosen file. Sample clips loop; local files stop at their end and
+  must be playable by the browser (if one refuses to autoplay, the notice says to
+  press Restart). The input is fitted into each version's resolution with letterboxing.
+- **Status line:** frames compared and delivered fps, plus "running at 0.6× real
+  time, so no frame is skipped" (a clip, slowed) or "below 30 fps: frames are
+  skipped" (a webcam) only when it applies. Its tooltip, and the debug report
+  (`state.pipeline`), name the busiest worker: "Limited by encode B (38 ms)" when
+  delivery is more than 5 % short of the target rate, else "Keeping up · slowest …".
 - **Sample clips** are excerpts of at least 10 s (or the whole source where it is
   shorter) in `web/clips/`, grouped in the picker as
   People / Motion / Hard texture / Animation: the public-domain JCT-VC/Vidyo
@@ -55,10 +90,20 @@ are needed: each worker has its own ordinary WASM memory.
   version's file. A resolution change that needs another file reloads it. Sources, segment times, changes and
   verbatim notices are in [`clips/ATTRIBUTION.md`](clips/ATTRIBUTION.md). Only add
   clips whose terms allow redistribution (never the evaluation sets in `/mldata`).
-- **Two versions:** choose H.264, HEVC, AV1, VVC, VP9 or AV2 independently, or a
-  pre-encoded stream (below). Each version has its own **resolution** (384×216 to
-  1280×720) and **frame rate** (30, 15, 10, 6 or 5 fps); both are shown at the same
-  on-screen size, so split views and the magnifier line up.
+- **Two versions:** each shows **nanocodec live** (H.264, HEVC, AV1, VVC, VP9 or AV2,
+  independently), a **Pre-encoded reference** stream (below), or the **Original
+  (uncompressed)** source. A live version shows only Codec, Preset, Resolution
+  (384×216 to 1280×720), Frame rate (30, 15, 10, 6 or 5 fps) and Bitrate (kbps);
+  everything else is under its collapsed Advanced section. Both are shown at the
+  same on-screen size, so the views and their zoom line up.
+- **Original (uncompressed)** (`original-worker.js`, pipeline.js `OriginalView`): the
+  source pictures at the version's own size and frame rate, placed exactly as a
+  live encoder is given them (`view-source-frame.js`, shared with the pre-encoded
+  view's decode worker) and shown without coding: no encoder or decoder, every
+  number n/a. `web/tests/original-view.py` checks the canvas equals the source frame
+  of its tick regenerated offline, pixel for pixel, and the debug report keeps the
+  SHA-256 of its last 10 pictures, which the replay checks against the regenerated
+  frames.
 - **One source timeline (`timeline.js`, `capture.js`):** every source is sampled on
   30 Hz ticks. A version at 30/N fps codes every Nth tick and holds its picture in
   between. A sample clip's frames map onto the ticks as a 30 Hz sampler sees them
@@ -72,9 +117,9 @@ are needed: each worker has its own ordinary WASM memory.
   its own resolution, so with different sizes the two are not directly comparable
   (the page says so under the session line); bitrate, timings and PSNR are each
   per version at its own frame rate.
-- **Pre-encoded streams (`reference.js`, `streams-ref/`):** each version's top has two
-  buttons, "nanocodec (live)" and "Reference encoder" (disabled, with the reason, for
-  the webcam, a file or the test scene: streams exist for the sample clips only). A
+- **Pre-encoded streams (`reference.js`, `streams-ref/`):** "Pre-encoded reference" at
+  a version's top (disabled, with the reason, for the webcam, a file or the test
+  scene: streams exist for the sample clips only). A
   reference stream is a clip coded offline by x264, openh264, x265,
   SVT-AV1, libaom, libvpx or NVENC in the chart configurations
   (`docs/results/bd-vs-speed.md`), fetched with progress when chosen and decoded here
@@ -97,8 +142,9 @@ are needed: each worker has its own ordinary WASM memory.
   with its CC BY-NC-ND notice) and their commands are listed in
   [`docs/results/reference-streams.md`](../docs/results/reference-streams.md);
   `tools/web/make-reference-streams.py` regenerates them all (the supplied ones are pinned and checked) and that table.
-- **Target bitrate (default):** both versions start at 300 kbps, with a 600 kbps
-  peak rate and a one-second buffer. Compare equal targets after startup has
+- **Bitrate (default):** a live version starts at 300 kbps, with a peak rate of
+  twice the target (Advanced; it follows the target until set itself) and a
+  one-second buffer. Compare equal targets after startup has
   settled; measured bitrate remains visible. The shared Rust controller chooses
   each frame's actual quantizer, including keyframes, from current-frame analysis
   and packet feedback. Buffer overruns are reported rather than hidden.
@@ -112,20 +158,23 @@ are needed: each worker has its own ordinary WASM memory.
   show the same instant. **Step** (while paused) moves both to the next common
   instant: a video seeks to that frame (the server must answer HTTP range
   requests, as static hosts do), the scene draws it; the webcam cannot step.
-  Webcam capture resumes from the live feed. Stop releases camera access.
-- **Keyframe interval:** choose 1, 2, 5, 10 or 30 seconds independently per version
+  Webcam capture resumes from the live feed. Step is in the More menu.
+- **Keyframe interval** (Advanced): choose 1, 2, 5, 10 or 30 seconds independently per version
   (converted to frames using that version's frame rate).
-- **Request keyframes:** refreshes both versions on their next input frame while
+- **Request keyframes** (More): refreshes both versions on their next input frame while
   retaining rate-control history.
-- **Fixed quantizer:** native fixed QP (0–51 for H.264/HEVC, 0–63 for VVC, 1–255 AV1
+- **Fixed quantizer** (Advanced, Rate control; the Bitrate field becomes a quality slider): native fixed QP (0–51 for H.264/HEVC, 0–63 for VVC, 1–255 AV1
   qindex; 0–255 VP9/AV2 qindex, where 0 is lossless). Lower values usually preserve more detail at a larger bitrate.
   QP numbers are not comparable between codecs. Lower QP generally means more data.
 - **Fast / Faster:** uses the checked-in `h264-fast`, `hevc-fast`, `av1-fast` or
   `vvc-fast` preset, and for H.264 also `h264-faster` (the same files as the
   CLI's `--preset`). These are explicit speed/quality tradeoffs. The page offers
   no Fast for VP9 and AV2.
-- **Advanced** (per version, collapsed by default): settings over the chosen
-  preset. Its toggles appear only where the codec supports them (the codec module
+- **Advanced** (per live version, collapsed by default): rate control, peak rate,
+  rate buffer, keyframe interval, the SVC preset's shown layer, **Still-camera noise
+  handling** (on by default; its tooltip explains it: nc-encoder `still_camera_params`,
+  the CLI's `--still-camera`, off in the engine's presets), then settings over the
+  chosen preset. Its codec toggles appear only where the codec supports them (the codec module
   says which, `codec_options`):
   - **Film grain** (AV1): the encoder's experimental film grain synthesis at its
     default strength (the CLI's `--film-grain`); the WASM decoder lays the grain over
@@ -144,24 +193,34 @@ are needed: each worker has its own ordinary WASM memory.
     and is not applied. The registry comes from the module (`parameter_registry`), so
     the page never keeps its own copy. Opening Advanced the first time loads the
     codec module on the page as well (the same file the workers use, from the cache).
-- **Settings · CLI command** (below each download): the effective preset and
-  overrides, and the equivalent `nanocodec encode …` line (same codec, size, frame
+- **CLI command** (one line under each view, with Copy; a pre-encoded view's is its
+  encoder's command, an Original view has none): the equivalent `nanocodec encode …`
+  line (same codec, size, frame
   rate, key interval, quantizer seed, rate settings, preset and overrides), to run on
   an I420 file of the source (for a sample clip, `ffmpeg`'s decode of it, scaled
   as the pipeline below describes when the size differs; add `--colour bt709` to
-  signal its colour as the page does).
+  signal its colour as the page does). The effective preset and overrides are
+  written under Advanced.
 - **Other live changes:** codec, quantizer, preset, Advanced settings, GOP, resolution, frame rate and source changes
   restart both pipelines on a keyframe and
   clears statistics/download buffers. Video files continue from their current
   playback position; the test scene restarts its deterministic animation.
-- **Hold to view original:** pointer or Space/Enter reveals the source in both
-  views, each at its own resolution. Release returns to independently decoded pixels.
-- **Magnifier:** switch it on below the views, then hover, or drag on touch, over
-  either view. The same region (mapped by normalized coordinates) is shown from A,
-  B and the original frame side by side at 2×/4×/8× (buttons or scroll wheel),
-  nearest-neighbour so blocking and ringing stay visible. Click or tap a view to
-  pin the region; Pause holds the frame. It only copies from the displayed
-  canvases on pointer moves and new frames, and does nothing while off.
+- **Zoom and pan (`view-zoom.js`), always on:** scroll or pinch on a picture to zoom
+  (about the pointer, up to 32×), drag to pan; with a picture focused, + and − zoom
+  and the arrow keys pan. Both views share one state in normalised picture
+  coordinates, so they always show the same region, and once a picture pixel covers
+  more than one screen pixel it is drawn nearest-neighbour, so blocking and ringing
+  stay visible. While zoomed each view shows a "2.4× · Reset" chip; the chip, a
+  double-click or Escape returns to the whole picture. At fit, scrolling down and
+  touch drags scroll the page. (This replaces the magnifier, whose side-by-side
+  panes of A, B and the original are now the views themselves, with Original as a
+  version choice; its "pin" kept the magnified region fixed while the pointer moved,
+  which the zoom does by itself.)
+- **Layout (`layout.js`):** side by side, stacked, A large or B large, with or
+  without analysis; remembered per viewer in localStorage (the page works the same
+  where storage is refused); without a remembered choice a narrow screen opens
+  stacked. `web/tests/view-layout.py` checks each layout, with and without analysis,
+  with the zoom and the debug report.
 - **Analysis** (`analysis.js`, `analysis-view.js`; off by default, and the page is
   unchanged while off): shows which coding tools each version's encoder used, from
   the decoder's own block records (nc-common `stream_stats`; H.264 and HEVC so far,
@@ -170,10 +229,10 @@ are needed: each worker has its own ordinary WASM memory.
   brighter), motion vectors, intra directions (P = planar, DC), and a QP or
   bits-per-pixel heat map on fixed scales so the two views compare. Each view gets
   a statistics table (this frame and the mean since analysis started, by area).
-  Layouts: side by side, stacked, or one view large; ⛶ puts a view fullscreen.
-  Zoom (scroll, pinch, the +/− buttons) and pan (drag) apply to both views; past 1:1
-  the pixels are unsmoothed and the overlay stays sharp. Hovering a block (or tapping
-  it) shows its record. The magnifier draws the overlay too. With analysis on, the
+  ⛶ puts a view fullscreen. The overlays draw through the views' zoom, so they stay
+  sharp and line up at any zoom (`web/tests/analysis-smoke.py` checks the hovered
+  block contains the picture point under the pointer, zoomed and panned). Hovering a
+  block (or tapping it) shows its record. With analysis on, the
   decode worker copies the records out of WASM memory each frame: see
   `docs/handoff/stream-analysis.md` for the decode cost. Switching analysis on or
   off does not restart: the comparison keeps its instant (paused stays paused,
@@ -198,9 +257,8 @@ are needed: each worker has its own ordinary WASM memory.
   once a second: not every frame, but always the paused one. The statistics show the
   latest score with its tick and the mean of the scored frames; `psnr-map.py`
   checks every score against `msssim.py` within 0.001.
-- **Stop:** ends both workers and releases camera tracks. Switching away from
-  the tab also stops capture; press Start to resume.
-- **Debug report** (`debug-report.js`): "Debug report ↓" saves the page's whole
+- **Debug report** (`debug-report.js`): More → "Debug report…" opens a dialog with
+  one choice, "Include the coded streams", then Download or Cancel. It saves the page's whole
   state as one Markdown file (readable sections, then a JSON block, schema
   `nanocodec-debug-report/1`): the build commit (`pkg/build.json`, written by
   `tools/web/build.sh`), browser, source (clip id and file SHA-256, exact or sampled
@@ -208,8 +266,10 @@ are needed: each worker has its own ordinary WASM memory.
   effective configuration, every number shown in its panel and statistics, its
   recent coded frames (tick, source frame, type, quantizer, bytes, SHA-256 of the
   access unit, timings, PSNR), the bitrate and PSNR windows with their formulas,
-  mid-run changes (rate, key frame requests) and the event log tail. "with
-  streams" adds the access units since each view's last key frame (base64).
+  mid-run changes (rate, key frame requests), the layout and zoom, and the event log
+  tail. "Include the coded streams" adds the access units since each view's last
+  key frame (base64), so the exact bitstream can be decoded offline: a much larger
+  file, and for a webcam it holds the camera's picture.
   `python3 tools/web/replay-debug-report.py REPORT.md [--nanocodec BIN]`
   regenerates a sample clip's source frames, re-encodes live views natively,
   checks every access unit's hash, decodes with ffmpeg and re-scores every
@@ -285,8 +345,8 @@ both versions have decoded a frame. While the queue is full no frame is captured
 slow pipeline lowers the delivered rate instead of adding latency. Delivered fps is
 therefore set by the slowest single worker, not by the sum of encode, decode and PSNR.
 Display buffers circulate between page and decode workers; the source frame the
-decode worker returns becomes the page's copy of the original (magnifier, "hold
-original").
+decode worker returns becomes the page's copy of the original (an analysis
+re-decode scores against it; an Original view shows its own).
 
 **Display (`renderer.js`).** With a hardware GPU each view draws with WebGL2
 (else WebGL1): `BrowserDecoder.i420_frame` packs the decoded planes without row
@@ -302,8 +362,7 @@ Otherwise (no WebGL, or only software GL such as SwiftShader, which
 draws it with `putImageData`. A GL context lost for more than 3 s, or a failed GL
 set-up, switches that view to the CPU path on a fresh canvas. `?display=webgl2`,
 `webgl` or `cpu` overrides the automatic choice (the chosen renderer is in each
-viewport's `data-display`). The GL canvas keeps its drawing buffer, so the
-magnifier and "hold to view original" (an RGBA texture) work on either path.
+viewport's `data-display`). The GL canvas keeps its drawing buffer, so the page tests can read it.
 `BrowserDecoder.decoded_i420` exposes raw decoded samples for conformance tests.
 No WebCodecs implementation or reference decoder is used in this path.
 

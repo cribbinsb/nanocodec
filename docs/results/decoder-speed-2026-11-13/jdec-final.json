@@ -1,0 +1,222 @@
+{
+ "cam150.axis-m5074-720p.hevc|hevc|ours": {
+  "t": 0.3798003336414695,
+  "rss": 10644
+ },
+ "cam150.axis-m5074-720p.hevc|hevc|ffmpeg": {
+  "t": 0.5048223352059722,
+  "rss": 17324
+ },
+ "cam150.axis-p1375e-1080p.hevc|hevc|ours": {
+  "t": 0.8801027406007051,
+  "rss": 25504
+ },
+ "cam150.axis-p1375e-1080p.hevc|hevc|ffmpeg": {
+  "t": 1.170705821365118,
+  "rss": 39328
+ },
+ "cam150.axis-p3267lv-5mp.hevc|hevc|ours": {
+  "t": 1.9786301841959357,
+  "rss": 26712
+ },
+ "cam150.axis-p3267lv-5mp.hevc|hevc|ffmpeg": {
+  "t": 2.4787416933104396,
+  "rss": 61452
+ },
+ "cam150.hanwha-qnvc9011r-4k.hevc|hevc|ours": {
+  "t": 3.2748610535636544,
+  "rss": 40572
+ },
+ "cam150.hanwha-qnvc9011r-4k.hevc|hevc|ffmpeg": {
+  "t": 4.20979169011116,
+  "rss": 79376
+ },
+ "crowd1080.3000k.ours.av1.ivf|av1|ours": {
+  "t": 2.6098792031407356,
+  "rss": 23740
+ },
+ "crowd1080.3000k.ours.av1.ivf|av1|dav1d": {
+  "t": 2.181054789572954,
+  "rss": 13184
+ },
+ "crowd1080.3000k.ours.av2.ivf|av2|ours": {
+  "t": 2.973824668675661,
+  "rss": 14280
+ },
+ "crowd1080.3000k.ours.av2.ivf|av2|avmdec": {
+  "t": 9.346353667788208,
+  "rss": 213136
+ },
+ "crowd1080.3000k.ours.h264.264|h264|ours": {
+  "t": 1.0072023440152407,
+  "rss": 17264
+ },
+ "crowd1080.3000k.ours.h264.264|h264|ffmpeg": {
+  "t": 1.2904815757647157,
+  "rss": 29804
+ },
+ "crowd1080.3000k.ours.hevc.hevc|hevc|ours": {
+  "t": 1.8679354842752218,
+  "rss": 14224
+ },
+ "crowd1080.3000k.ours.hevc.hevc|hevc|ffmpeg": {
+  "t": 2.205322857014835,
+  "rss": 28448
+ },
+ "crowd1080.3000k.ours.vp9.ivf|vp9|ours": {
+  "t": 1.8876548307016492,
+  "rss": 18764
+ },
+ "crowd1080.3000k.ours.vp9.ivf|vp9|ffmpeg": {
+  "t": 1.7198788030073047,
+  "rss": 23668
+ },
+ "crowd1080.3000k.ours.vp9.ivf|vp9|vpxdec": {
+  "t": 1.5930422376841307,
+  "rss": 16000
+ },
+ "crowd1080.3000k.ours.vvc.vvc|vvc|ours": {
+  "t": 3.39771466050297,
+  "rss": 20884
+ },
+ "crowd1080.3000k.ours.vvc.vvc|vvc|vvdec": {
+  "t": 4.877522775903344,
+  "rss": 129916
+ },
+ "crowd1080.3000k.ours.vvc.vvc|vvc|ffmpeg": {
+  "t": 8.435067113488913,
+  "rss": 76468
+ },
+ "crowd1080.3000k.svt.av1.ivf|av1|ours": {
+  "t": 1.9525538748130202,
+  "rss": 46492
+ },
+ "crowd1080.3000k.svt.av1.ivf|av1|dav1d": {
+  "t": 1.474059708416462,
+  "rss": 33532
+ },
+ "crowd1080.3000k.vpxenc.vp9.ivf|vp9|ours": {
+  "t": 2.004370329901576,
+  "rss": 26392
+ },
+ "crowd1080.3000k.vpxenc.vp9.ivf|vp9|ffmpeg": {
+  "t": 1.8717457288876176,
+  "rss": 25228
+ },
+ "crowd1080.3000k.vpxenc.vp9.ivf|vp9|vpxdec": {
+  "t": 1.759475840255618,
+  "rss": 23524
+ },
+ "crowd1080.3000k.x264.h264.264|h264|ours": {
+  "t": 1.1570855667814612,
+  "rss": 13480
+ },
+ "crowd1080.3000k.x264.h264.264|h264|ffmpeg": {
+  "t": 1.3665839955210686,
+  "rss": 22856
+ },
+ "crowd_mot17_09.600k.av1.ivf|av1|ours": {
+  "t": 0.7754606194794178,
+  "rss": 12520
+ },
+ "crowd_mot17_09.600k.av1.ivf|av1|dav1d": {
+  "t": 0.7122699916362762,
+  "rss": 10644
+ },
+ "crowd_mot17_09.600k.av2.ivf|av2|ours": {
+  "t": 0.9292853781953454,
+  "rss": 10644
+ },
+ "crowd_mot17_09.600k.av2.ivf|av2|avmdec": {
+  "t": 2.9820259576663375,
+  "rss": 133520
+ },
+ "crowd_mot17_09.600k.h264.264|h264|ours": {
+  "t": 0.3096268121153116,
+  "rss": 10644
+ },
+ "crowd_mot17_09.600k.h264.264|h264|ffmpeg": {
+  "t": 0.40289796981960535,
+  "rss": 16828
+ },
+ "crowd_mot17_09.600k.hevc.hevc|hevc|ours": {
+  "t": 0.45049830712378025,
+  "rss": 10644
+ },
+ "crowd_mot17_09.600k.hevc.hevc|hevc|ffmpeg": {
+  "t": 0.6273610815405846,
+  "rss": 16300
+ },
+ "crowd_mot17_09.600k.vp9.ivf|vp9|ours": {
+  "t": 0.5103235831484199,
+  "rss": 10792
+ },
+ "crowd_mot17_09.600k.vp9.ivf|vp9|ffmpeg": {
+  "t": 0.47905478440225124,
+  "rss": 12004
+ },
+ "crowd_mot17_09.600k.vp9.ivf|vp9|vpxdec": {
+  "t": 0.4105187710374594,
+  "rss": 10644
+ },
+ "crowd_mot17_09.600k.vvc.vvc|vvc|ours": {
+  "t": 0.7747307671234012,
+  "rss": 11104
+ },
+ "crowd_mot17_09.600k.vvc.vvc|vvc|vvdec": {
+  "t": 1.2205785308033228,
+  "rss": 62476
+ },
+ "crowd_mot17_09.600k.vvc.vvc|vvc|ffmpeg": {
+  "t": 2.004036800004542,
+  "rss": 44524
+ },
+ "aom720_good4_1000k.av1.ivf|av1|ours": {
+  "t": 0.45324111357331276,
+  "rss": 26220
+ },
+ "aom720_good4_1000k.av1.ivf|av1|dav1d": {
+  "t": 0.3163600107654929,
+  "rss": 16516
+ },
+ "novatek-bodycam-2460x1848-1s.hevc|hevc|ours": {
+  "t": 0.44210879877209663,
+  "rss": 23972
+ },
+ "novatek-bodycam-2460x1848-1s.hevc|hevc|ffmpeg": {
+  "t": 0.5331751387566328,
+  "rss": 39828
+ },
+ "openh264_cabac_1080p.3000k.264|h264|ours": {
+  "t": 1.0420795725658536,
+  "rss": 13284
+ },
+ "openh264_cabac_1080p.3000k.264|h264|ffmpeg": {
+  "t": 1.2705310182645917,
+  "rss": 20464
+ },
+ "svt720_p8_1000k.av1.ivf|av1|ours": {
+  "t": 1.080976739525795,
+  "rss": 26508
+ },
+ "svt720_p8_1000k.av1.ivf|av1|dav1d": {
+  "t": 0.7940831938758492,
+  "rss": 16124
+ },
+ "x265-1080p-b.hevc|hevc|ours": {
+  "t": 2.3443023692816496,
+  "rss": 28768
+ },
+ "x265-1080p-b.hevc|hevc|ffmpeg": {
+  "t": 2.547825923189521,
+  "rss": 44404
+ },
+ "x265-4k-b.hevc|hevc|ours": {
+  "t": 2.779172974638641,
+  "rss": 93408
+ },
+ "x265-4k-b.hevc|hevc|ffmpeg": {
+  "t": 3.6202851654961705,
+  "rss": 155084
+ }
+}

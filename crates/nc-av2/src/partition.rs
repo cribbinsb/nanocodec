@@ -18,16 +18,23 @@ const RECT: [u16; 28] = [
     13_438, 16_847, 6550, 8450,
 ];
 
+// Test fixtures: a uniform 8x8 DC-mode picture, the subset the partition
+// coders are checked against AVM's traces and round-tripped with.
+#[cfg(test)]
 const MODE_SET: &[u16] = &[3905, 1746, 1044, 0];
+#[cfg(test)]
 const Y_DC: &[u16] = &[17_593, 12_693, 11_040, 8670, 6363, 5113, 3908, 0];
+#[cfg(test)]
 const UV_DC: &[u16] = &[23_405, 11_811, 9903, 8015, 6357, 4785, 2340, 0];
+#[cfg(test)]
 const DPCM: &[u16] = &[16_384, 0];
 
 /// Write DC luma/chroma modes for a shared-tree chroma-reference block.
 /// All previously coded neighbors must also use non-directional modes.
 /// # Errors
 /// Propagates entropy coding errors.
-pub fn write_dc_modes(writer: &mut Writer, lossless: bool) -> Result<()> {
+#[cfg(test)]
+pub(crate) fn write_dc_modes(writer: &mut Writer, lossless: bool) -> Result<()> {
     if lossless {
         writer.model(0, DPCM, |m| &mut m.dpcm_y)?;
     }
@@ -42,7 +49,8 @@ pub fn write_dc_modes(writer: &mut Writer, lossless: bool) -> Result<()> {
 /// Read the restricted DC modes emitted by [`write_dc_modes`].
 /// # Errors
 /// Rejects non-DC modes, DPCM, or a truncated entropy stream.
-pub fn read_dc_modes(reader: &mut Reader<'_>, lossless: bool) -> Result<()> {
+#[cfg(test)]
+pub(crate) fn read_dc_modes(reader: &mut Reader<'_>, lossless: bool) -> Result<()> {
     if lossless {
         require(reader.model(DPCM, |m| &mut m.dpcm_y)?, 0)?;
     }
@@ -54,6 +62,7 @@ pub fn read_dc_modes(reader: &mut Reader<'_>, lossless: bool) -> Result<()> {
     require(reader.model(UV_DC, |m| &mut m.uv_mode[0])?, 0)
 }
 
+#[cfg(test)]
 fn require(actual: usize, symbol: usize) -> Result<()> {
     if actual != symbol {
         return Err(DecodeError::Malformed(
@@ -496,7 +505,8 @@ impl PartitionReader {
 /// writes modes and residuals in the callback, before the next partition node.
 /// # Errors
 /// Requires positive dimensions divisible by eight; propagates callback errors.
-pub fn write_8x8<W: SymbolSink>(
+#[cfg(test)]
+pub(crate) fn write_8x8<W: SymbolSink>(
     writer: &mut W,
     width: usize,
     height: usize,
@@ -512,6 +522,7 @@ pub fn write_8x8<W: SymbolSink>(
     Ok(())
 }
 
+#[cfg(test)]
 fn write_uniform<W: SymbolSink>(
     partitions: &mut PartitionWriter,
     writer: &mut W,
@@ -538,7 +549,8 @@ fn write_uniform<W: SymbolSink>(
 /// Read the partition subset emitted by [`write_8x8`].
 /// # Errors
 /// Rejects other partitions, invalid dimensions, and callback errors.
-pub fn read_8x8(
+#[cfg(test)]
+pub(crate) fn read_8x8(
     reader: &mut Reader<'_>,
     width: usize,
     height: usize,

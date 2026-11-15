@@ -108,8 +108,6 @@ impl InterpFilter {
     }
 }
 
-/// Filter of the native 8×8 picture coders (`inter`, `search`).
-pub const NATIVE_FILTER: InterpFilter = InterpFilter::Regular;
 /// Largest prediction side: 64×64 luma blocks.
 const MAX_SIDE: usize = 64;
 /// Largest reference window: the block plus the longest filter's extra taps.

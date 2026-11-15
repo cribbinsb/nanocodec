@@ -24,8 +24,9 @@
 //!   fewer block columns), its column boundaries spread evenly: a
 //!   sweep that finished early would start the next one early, coding more
 //!   intra area per frame than the period asks for.
-//! - intra blocks on the range's right edge must not read above-right
-//!   samples, which are dirty ([`RefreshWindow::on_dirty_edge`]);
+//! - intra blocks must not read above-right samples past the range's
+//!   right edge, which are dirty ([`RefreshWindow::reads_dirty_above_right`];
+//!   H.264's macroblocks: [`RefreshWindow::on_dirty_edge`]);
 //! - backends must not use motion predicted from the reference's motion
 //!   field (HEVC TMVP): after a loss the decoder's field differs, and so
 //!   would the vector a merge index selects.
@@ -134,9 +135,25 @@ impl RefreshWindow {
 
     /// Whether intra `block` ends at the intra range's right edge with dirty
     /// samples beyond it: it must not predict from above-right samples.
+    /// For H.264, whose intra predictions read at most 8 samples past the
+    /// macroblock (`Intra_8x8`, §8.3.2.2), so only the edge macroblock reads
+    /// dirty ones; codecs whose top reference row is twice the block's
+    /// width use [`RefreshWindow::reads_dirty_above_right`].
     #[must_use]
     pub fn on_dirty_edge(&self, block: &Block) -> bool {
         block.x + block.size() == self.intra.end && self.intra.end < self.width
+    }
+
+    /// Whether intra `block` (of any shape) has above-right samples in the
+    /// dirty region: codecs whose intra prediction reads a top reference
+    /// row twice the block's width (H.266 §8.4.5.2.8: `refW = 2 * nTbW`)
+    /// read dirty samples past the range's right edge also from blocks
+    /// that end before it.
+    #[must_use]
+    pub fn reads_dirty_above_right(&self, block: &Block) -> bool {
+        self.intra.end < self.width
+            && block.x < self.intra.end
+            && block.x + 2 * block.width() > self.intra.end
     }
 }
 
@@ -294,5 +311,10 @@ mod tests {
         ));
         assert!(window.allows(&block(256), Mv { x: 500, y: 0 }));
         assert!(window.on_dirty_edge(&block(240)));
+        // A 16-wide block ending 16 before the range's end (256) reads
+        // above-right samples up to it; one ending 8 before reads past it.
+        assert!(!window.reads_dirty_above_right(&block(224)));
+        assert!(window.reads_dirty_above_right(&block(232)));
+        assert!(window.reads_dirty_above_right(&block(240)));
     }
 }

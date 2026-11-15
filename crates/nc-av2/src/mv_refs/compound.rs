@@ -29,7 +29,6 @@ use super::{
 };
 use crate::entropy::{Reader, Writer};
 use nc_common::decode::Result;
-use nc_encoder::symbol_cost::symbol_bits;
 
 /// AVM `MAX_DR_STACK_SIZE`: derived pairs and single vectors kept (and
 /// the single-reference list's projected vectors).
@@ -82,14 +81,6 @@ pub fn read_skip_drl(reader: &mut Reader<'_>, max_drl_bits: u8) -> Result<usize>
         index += 1;
     }
     Ok(index)
-}
-
-/// Approximate bits of skip-mode DRL index `index`, for ranking.
-#[must_use]
-pub fn skip_drl_bits(max_drl_bits: u8, index: usize) -> f32 {
-    skip_drl_symbols(max_drl_bits, index)
-        .map(|(kind, symbol)| symbol_bits(&[SKIP_DRL[kind], 0], symbol))
-        .sum()
 }
 
 /// A block's skip-mode references.

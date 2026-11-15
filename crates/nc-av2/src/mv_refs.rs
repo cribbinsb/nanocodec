@@ -43,7 +43,7 @@ mod compound;
 
 use crate::entropy::{Reader, Writer};
 use compound::{DERIVED_CAPACITY, DERIVED_PRUNE_COMPARISONS, Pruned};
-pub use compound::{SKIP_MODE, SkipCandidates, read_skip_drl, skip_drl_bits, write_skip_drl};
+pub use compound::{SKIP_MODE, SkipCandidates, read_skip_drl, write_skip_drl};
 use nc_common::decode::{DecodeError, Result};
 use nc_encoder::symbol_cost::symbol_bits;
 
@@ -959,32 +959,6 @@ pub fn read_inter_mode(reader: &mut Reader<'_>, context: u8) -> Result<InterMode
     Ok(InterMode::ALL[symbol])
 }
 
-/// Code GLOBALMV (false) or NEWMV (true) with neighbor-derived context.
-/// # Errors
-/// Rejects invalid contexts and propagates entropy errors.
-pub fn write_mode(writer: &mut Writer, context: u8, is_new: bool) -> Result<()> {
-    write_inter_mode(
-        writer,
-        context,
-        if is_new {
-            InterMode::New
-        } else {
-            InterMode::Global
-        },
-    )
-}
-
-/// Decode GLOBALMV or NEWMV, rejecting NEARMV (not emitted by the picture encoder).
-/// # Errors
-/// Rejects invalid contexts, unsupported modes and entropy errors.
-pub fn read_mode(reader: &mut Reader<'_>, context: u8) -> Result<bool> {
-    match read_inter_mode(reader, context)? {
-        InterMode::Global => Ok(false),
-        InterMode::New => Ok(true),
-        InterMode::Near => Err(DecodeError::Unsupported("AV2 near motion mode")),
-    }
-}
-
 /// Approximate bits of the inter mode and DRL syntax, for mode ranking.
 #[must_use]
 pub fn mode_bits(candidates: Candidates, mode: InterMode, index: usize) -> f32 {
@@ -1171,14 +1145,14 @@ mod tests {
     fn mode_drl_entropy_and_invalid_state() {
         let mut writer = Writer::new();
         for mode_context in 0..5 {
-            for is_new in [false, true] {
+            for mode in [InterMode::Global, InterMode::New] {
                 let c = Candidates::new(
                     [(0, 0), (16, -16), (0, 0), (0, 0), (0, 0), (0, 0)],
                     2,
                     1,
                     mode_context,
                 );
-                write_mode(&mut writer, mode_context, is_new).unwrap();
+                write_inter_mode(&mut writer, mode_context, mode).unwrap();
                 for index in 0..2 {
                     write_drl(&mut writer, c, index).unwrap();
                 }
@@ -1187,14 +1161,14 @@ mod tests {
         let packet = writer.finish();
         let mut reader = Reader::new(&packet).unwrap();
         for mode_context in 0..5 {
-            for is_new in [false, true] {
+            for mode in [InterMode::Global, InterMode::New] {
                 let c = Candidates::new(
                     [(0, 0), (16, -16), (0, 0), (0, 0), (0, 0), (0, 0)],
                     2,
                     1,
                     mode_context,
                 );
-                assert_eq!(read_mode(&mut reader, mode_context).unwrap(), is_new);
+                assert_eq!(read_inter_mode(&mut reader, mode_context).unwrap(), mode);
                 for index in 0..2 {
                     assert_eq!(read_drl(&mut reader, c).unwrap(), index);
                 }

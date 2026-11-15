@@ -21,7 +21,6 @@ use crate::backend::{
     BlockDecision, CodecBackend, FramePlan, FrameType, PredictionMode, ReferenceChoice,
 };
 use crate::config::{Codec, ConfigError, EncoderConfig, FrameRate};
-use crate::cyclic_cadence::CyclicCadence;
 use crate::decision::{
     BlockSads, Choice, DecisionScratch, choose_compound_mode, choose_inter_mode,
     choose_secondary_mode, is_square_leaf, is_static, is_still, leaf_area, leaf_extent,
@@ -30,7 +29,6 @@ use crate::decision::{
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
-use crate::inframe::{InFrameControl, row_weights};
 use crate::inheritance::{Inheritance, Tier};
 use crate::input::write_raw;
 use crate::key_clock::KeyClock;
@@ -41,13 +39,12 @@ use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
 use crate::noise_skip::{NoiseMap, camera_is_still};
 use crate::params::RefParams;
 use crate::params::{
-    AnalysisParams, DebugParams, DecisionParams, InFrameParams, LayerParams, LtrParams,
-    ParamOverrides, PersistParams, PlannerParams, RateParams, RefreshParams, ResolutionParams,
-    SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
+    AnalysisParams, DebugParams, DecisionParams, LayerParams, LtrParams, ParamOverrides,
+    PersistParams, PlannerParams, RateParams, RefreshParams, ResolutionParams, SceneParams,
+    SpatialParams, StillParams, StructureParams, engine_specs,
 };
 use crate::partition::{Block, should_split};
 use crate::partition_plan::{LeafStats, NoiseTest, Partition, Planner};
-use crate::planned_refinement::StillPlan;
 use crate::qp_cadence::{
     CadenceRole, LayerLadder, MotionHint, QP_UNITS_PER_OCTAVE, QpCadence, nearest_quantizer,
     step_ratio,
@@ -56,7 +53,7 @@ use crate::quality_cap::residual_sigma;
 use crate::random_decisions::{DebugRng, RandomDecisions};
 use crate::rate_control::{
     Complexity, ForcedQuantizer, LayerShare, RateControlConfig, RateControlError, RateControlStats,
-    RateController, RateModel, cadence_scale, spatial_aware,
+    RateController, RateModel, cadence_scale,
 };
 use crate::references::ReferencePool;
 use crate::refinement_gain::luma_mse;
@@ -72,6 +69,7 @@ use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 use crate::source_scale::{SourceScaler, scale_source_picture};
 use crate::spatial::SpatialConfig;
 use crate::startup_lookahead::startup_scene_profile;
+use crate::still_plan::StillPlan;
 use crate::still_skip::StaticSkipTest;
 use crate::structure::{FrameReferences, MAX_TEMPORAL_LAYERS, MotionSignal, TemporalStructure};
 use crate::timeline::{FrameTime, Timeline};
@@ -248,18 +246,9 @@ pub struct Encoder<B: CodecBackend> {
     /// `(expected bits weight, offset in QP units)` of every block coded with AQ this frame:
     /// the realised offsets rate control normalizes its model with.
     block_offsets: Vec<(f64, f64)>,
-    /// In-frame rate control (`inframe.*`), for backends that code block
-    /// quantizers and report their bits mid-frame; `None` when off.
-    inframe: Option<InFrameControl>,
-    /// The cyclic spatial cadence (`rate.cadence_spatial`), for flat
-    /// single-layer streams with block quantizers and the reuse term.
-    cyclic: Option<CyclicCadence>,
-    /// Planned refinements and the hold of still blocks (`rate.refine`,
-    /// `rate.hold_still`, `rate.prekey_quiet`), for flat single-layer
-    /// streams with block quantizers and the reuse term.
+    /// The hold of still blocks before a scheduled key (`rate.prekey_quiet`),
+    /// for flat single-layer streams with block quantizers and the reuse term.
     still: StillPlan,
-    /// Scratch: the reuse term's and the band's offsets of every cell.
-    block_terms: Vec<f64>,
     /// Quantizer of the frame being coded (block offsets are relative to it).
     frame_quantizer: u32,
     force_keyframe: bool,
@@ -325,11 +314,6 @@ impl<B: CodecBackend> Encoder<B> {
         let spatial_cfg =
             SpatialConfig::from_encoder_config_max(&config, backend.max_spatial_layers())?;
         if let Some(ref scfg) = spatial_cfg {
-            if B::OWN_PICTURE_PIPELINE {
-                return Err(ConfigError::SpatialScalability(
-                    "not supported by picture-owning backends yet",
-                ));
-            }
             backend.configure_spatial(scfg)?;
         }
         let structure = temporal_structure(&config);
@@ -354,14 +338,6 @@ impl<B: CodecBackend> Encoder<B> {
         let cadence_fixed_qp = RateParams::from_overrides(&config.params).cadence_fixed_qp >= 0.5;
         let scene = SceneDetector::new(&SceneParams::from_overrides(&config.params));
         let use_aq = aq.is_some();
-        let cyclic = CyclicCadence::new(
-            RateParams::from_overrides(&config.params).cadence_spatial >= 0.5
-                && spatial_cfg.is_none()
-                && use_aq
-                && reuse.is_some(),
-            unflattened_cadence(&config, &backend),
-            qp_log2,
-        );
         let still = StillPlan::new(
             &RateParams::from_overrides(&config.params),
             f64::from(config.frame_rate.num) / f64::from(config.frame_rate.den),
@@ -375,11 +351,10 @@ impl<B: CodecBackend> Encoder<B> {
             let slots = pool_slots(&structure, &config, ltr.is_some() || second.is_some());
             let (references, padding) =
                 frame_buffers(&picture, (coded_width, coded_height), slots).map_err(bad_dims)?;
-            // Picture-owning codecs need shared motion costs only for opt-in cuts.
-            let analyzer = (backend.supports_inter()
-                && (!B::OWN_PICTURE_PIPELINE || scene.is_some()))
-            .then(|| source_analyzer(&picture, slots, structure.reads_repeats()))
-            .flatten();
+            let analyzer = backend
+                .supports_inter()
+                .then(|| source_analyzer(&picture, slots, structure.reads_repeats()))
+                .flatten();
             let input = analyzer
                 .is_none()
                 .then(|| Picture::new(width, height, 0))
@@ -437,9 +412,7 @@ impl<B: CodecBackend> Encoder<B> {
         let debug = DebugParams::from_overrides(&config.params);
         let random = RandomDecisions::from_seed(debug.random_decisions);
         let recode_identity = debug.recode_identity >= 0.5;
-        let inframe = InFrameControl::new(&InFrameParams::from_overrides(&config.params))
-            .filter(|_| B::SUPPORTS_BLOCK_QP && B::REPORTS_CODED_BITS);
-        enable_backend_options(&mut backend, random.as_ref(), use_aq || inframe.is_some());
+        enable_backend_options(&mut backend, random.as_ref(), use_aq);
         let encoder = Self {
             recode_identity,
             hold: FrameHold::new(&config),
@@ -466,10 +439,7 @@ impl<B: CodecBackend> Encoder<B> {
             lookahead: None,
             reuse_frame: None,
             block_offsets: Vec::new(),
-            inframe,
-            cyclic,
             still,
-            block_terms: Vec::new(),
             frame_quantizer: 0,
             force_keyframe: false,
             forced_quantizer: None,
@@ -662,8 +632,8 @@ impl<B: CodecBackend> Encoder<B> {
                         hint.spatial
                     });
                 }
-                // A refinement frame's level is planned as without its
-                // refined blocks, whose bits are its loan.
+                // A frame holding its still blocks is planned as without
+                // their offsets: the held blocks are copies.
                 if !self.still.without_offsets {
                     hint.block_qp_offset =
                         controller.effective_block_offset(aq.total_weight(), aq.offset_cells());
@@ -672,18 +642,6 @@ impl<B: CodecBackend> Encoder<B> {
             let mut quantizer = controller.select(rc_key, index, hint, references.position, share);
             if let Some(forced) = self.forced_quantizer.take() {
                 quantizer = controller.force(forced);
-            }
-            if let Some(inframe) = self.inframe.as_mut() {
-                let (room, uniform) = controller.inframe_bounds();
-                let sb_log2 = self.backend.superblock_log2();
-                let rows = self.layer.coded_height.div_ceil(1 << sb_log2);
-                let startup = self
-                    .layer
-                    .cadence
-                    .in_startup(index - self.layer.last_key_index);
-                let limit = inframe.frame_limit((rc_key, startup), room, uniform);
-                let weights = limit.map(|_| row_weights(pre, sb_log2, rows));
-                inframe.plan_frame(limit, weights.into_iter().flatten());
             }
             quantizer
         } else if frame_type == FrameType::Key || self.config.quantizer < self.quantizer_bounds().0
@@ -718,9 +676,7 @@ impl<B: CodecBackend> Encoder<B> {
             quantizer,
             references,
             lambda_scale,
-            block_qp: self.random.is_some()
-                || self.active_aq().is_some()
-                || self.inframe.as_ref().is_some_and(InFrameControl::steering),
+            block_qp: self.random.is_some() || self.active_aq().is_some(),
         }
     }
 
@@ -833,49 +789,6 @@ impl<B: CodecBackend> Encoder<B> {
         offset.max(0.)
     }
 
-    /// Plan the cyclic band of inter frame `index` (`cyclic_cadence.rs`)
-    /// into `block_terms`, beside the reuse term's offsets: whether any
-    /// cell has a band offset. Keys, layered frames and frames without a
-    /// still map plan none.
-    fn plan_band(
-        &mut self,
-        index: u64,
-        key: bool,
-        references: &FrameReferences,
-        analysis: &FrameAnalysis,
-        motion: Option<&MotionAnalysis>,
-    ) -> bool {
-        if key || !references.position.is_flat() || self.cyclic.is_none() {
-            return false;
-        }
-        let level_step = self.reuse_sample_step();
-        let distance = index - self.layer.last_key_index;
-        let hint = motion
-            .and_then(|m| cadence_motion_hint(m, references.reference.distance, self.layer.width));
-        let reuse = self
-            .layer
-            .reuse
-            .as_ref()
-            .filter(|_| self.reuse_frame.is_some())
-            .map(ReuseTerm::offsets);
-        let cyclic = self.cyclic.as_mut().expect("checked above");
-        cyclic.observe(&analysis.pre, motion);
-        let strength = cyclic.strength(f64::from(analysis.pre.static_fraction), hint);
-        let size = (analysis.pre.blocks.cols(), analysis.pre.blocks.rows());
-        let band = cyclic.plan(size, distance, level_step, strength);
-        if band.is_empty() {
-            return false;
-        }
-        self.block_terms.clear();
-        match reuse.filter(|r| r.len() == band.len()) {
-            Some(reuse) => self
-                .block_terms
-                .extend(reuse.iter().zip(band).map(|(r, b)| r + b)),
-            None => self.block_terms.extend_from_slice(band),
-        }
-        true
-    }
-
     /// The sample-unit step of native `quantizer`.
     fn sample_step(&self, quantizer: u32) -> f64 {
         let quantizer = (quantizer as usize).min(self.quantizer_steps.len() - 1);
@@ -929,16 +842,10 @@ impl<B: CodecBackend> Encoder<B> {
     ///
     /// # Errors
     ///
-    /// The dimensions the backend rejects (the encoder is unchanged), or a
-    /// backend that owns its picture pipeline (VP9, AV2: not supported).
+    /// The dimensions the backend rejects (the encoder is unchanged).
     pub fn set_resolution(&mut self, width: usize, height: usize) -> Result<(), ConfigError> {
         if (width, height) == (self.config.width, self.config.height) {
             return Ok(());
-        }
-        if B::OWN_PICTURE_PIPELINE {
-            return Err(ConfigError::Resolution(
-                "not yet with a picture-owning backend (VP9, AV2)",
-            ));
         }
         let mut next = Self::new(EncoderConfig {
             width,
@@ -1160,11 +1067,13 @@ impl<B: CodecBackend> Encoder<B> {
                     "the backend codes no inter frames",
                 ));
             }
-            // A picture-owning backend (VP9, AV2) never sees the refresh
-            // window, so the sweep would silently replace keys with nothing.
-            if B::OWN_PICTURE_PIPELINE {
+            // A backend that does not keep its own choices inside the
+            // window's rules (`CodecBackend::INTRA_REFRESH`) would let a
+            // decoder stay wrong after a loss: the sweep would silently
+            // replace keys with nothing.
+            if !B::INTRA_REFRESH {
                 return Err(ConfigError::IntraRefresh(
-                    "not yet with a picture-owning backend (VP9, AV2)",
+                    "the codec cannot recover by intra refresh (VP9, AV2)",
                 ));
             }
             if self.ltr.is_some() {
@@ -1583,21 +1492,14 @@ impl<B: CodecBackend> Encoder<B> {
                 term.plan(&frame);
                 term.set_reference(!key && follows);
                 let flat = references.position.is_flat() && follows;
-                let controller = self.layer.rate_control.as_mut();
-                self.still.plan(term, &frame, controller, (index, flat));
+                self.still.plan(term, &frame, flat);
             }
-            let band = self.plan_band(index, key, &references, analysis, motion);
-            let reuse = self
+            let offsets = self
                 .layer
                 .reuse
                 .as_ref()
                 .filter(|_| reuse_frame)
                 .map(ReuseTerm::offsets);
-            let offsets = if band {
-                Some(self.block_terms.as_slice())
-            } else {
-                reuse
-            };
             if let Some(aq) = self.layer.aq.as_mut() {
                 aq.plan(&analysis.pre, motion, offsets);
             } else if key {
@@ -1620,12 +1522,6 @@ impl<B: CodecBackend> Encoder<B> {
             key_reuse_offset,
         );
         self.frame_quantizer = plan.quantizer;
-        if key {
-            let step = self.sample_step(plan.quantizer);
-            if let Some(cyclic) = self.cyclic.as_mut() {
-                cyclic.key(step);
-            }
-        }
 
         // The coded source: the input itself, or a padded copy of it.
         let mut padding = self.layer.padding.take();
@@ -1802,17 +1698,13 @@ impl<B: CodecBackend> Encoder<B> {
             let size = (self.layer.width, self.layer.height);
             term.observe(&self.dsp, (coded_source, recon), size, coded);
         }
-        let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
-        if steering {
-            self.report_inframe_offset();
-        }
         if let Some(controller) = self.layer.rate_control.as_mut() {
             let planned_without_offsets = self.still.without_offsets;
             if let Some(aq) = self
                 .layer
                 .aq
                 .as_ref()
-                .filter(|aq| aq.active() && !steering && !planned_without_offsets)
+                .filter(|aq| aq.active() && !planned_without_offsets)
             {
                 let offsets = self.block_offsets.iter().copied();
                 let realised = controller.effective_block_offset(aq.total_weight(), offsets);
@@ -1872,9 +1764,6 @@ impl<B: CodecBackend> Encoder<B> {
         if self.recode_identity && codings == 1 {
             return Some(plan);
         }
-        if self.inframe.as_ref().is_some_and(InFrameControl::steering) {
-            self.report_inframe_offset();
-        }
         let planned = self.layer.rate_control.as_mut()?.recode_quantizer(bits)?;
         let (quantizer, lambda_scale) = self.coded_quantizer(planned);
         Some(FramePlan {
@@ -1882,18 +1771,6 @@ impl<B: CodecBackend> Encoder<B> {
             lambda_scale,
             ..plan
         })
-    }
-
-    /// Tell rate control how much coarser the rows in-frame control
-    /// coarsened made the coding just finished, before it learns from it.
-    fn report_inframe_offset(&mut self) {
-        let (Some(controller), Some(inframe)) =
-            (self.layer.rate_control.as_mut(), self.inframe.as_ref())
-        else {
-            return;
-        };
-        let (total, offsets) = inframe.realised();
-        controller.set_inframe_offset(controller.effective_block_offset(total, offsets));
     }
 
     /// Code one picture from `begin_frame` to `end_frame` (the partition
@@ -1918,96 +1795,74 @@ impl<B: CodecBackend> Encoder<B> {
         if let Some(screen) = self.layer.second.as_mut().and_then(|s| s.screen.as_mut()) {
             screen.begin_picture(plan.index, coded_size);
         }
-        let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
-        if steering && let Some(inframe) = self.inframe.as_mut() {
-            inframe.begin_frame(self.backend.coded_bits().unwrap_or(0));
-        }
-        if B::OWN_PICTURE_PIPELINE {
-            self.backend.encode_picture(
-                plan,
-                coded_source,
-                (plan.frame_type == FrameType::Inter).then_some(reference),
-                recon,
-            )
-        } else {
-            let sb_log2 = self.backend.superblock_log2();
-            let sb = 1usize << sb_log2;
-            for y in (0..self.layer.coded_height).step_by(sb) {
-                for x in (0..self.layer.coded_width).step_by(sb) {
-                    self.backend.begin_superblock(x, y);
-                    let sb = Block::square(x, y, sb_log2);
-                    // Inter frames choose their partition per superblock first
-                    // (VLPD0); key frames code the configured fixed size, or
-                    // with `planner.intra_plan` a planned one (`key_plan`). A
-                    // superblock that cannot be split (H.264 macroblocks) has
-                    // nothing to plan.
-                    let splittable = sb_log2 > self.backend.min_block_log2();
-                    // Intra refresh constrains leaves by region; rectangular
-                    // shapes stay out of it (`CodecBackend::partition_shapes`).
-                    let shapes = self.window.is_none();
-                    let decision = &self.frame_decision_params;
-                    let noise = (planner_params.noise_split >= 0.5 && decision.noise_skip > 0.)
-                        .then_some(NoiseTest {
-                            map: &self.layer.noise_map,
-                            scale: decision.noise_skip,
-                            chroma_ratio: decision.noise_skip_chroma_ratio,
-                            step: self.sample_step(self.frame_quantizer) as f32,
-                        });
-                    let planner = |motion, pre| Planner {
-                        dsp: &self.dsp,
-                        backend: &self.backend,
-                        source: coded_source,
-                        reference,
-                        motion,
-                        pre,
-                        noise,
-                        width: self.layer.coded_width,
-                        height: self.layer.coded_height,
-                        params: planner_params,
-                        shapes,
-                        lambda_headroom: plan.lambda_scale,
-                        leaf_bits: OnceCell::new(),
-                    };
-                    let key_mode =
-                        KeyPlanMode::resolve(self.planner_params.intra_plan, &self.backend);
-                    let plan = match inter {
-                        // Random decisions choose every split themselves.
-                        _ if self.random.is_some() => None,
-                        Some(frame) if splittable => {
-                            Some(planner(frame.motion, frame.pre).plan(sb))
+        let sb_log2 = self.backend.superblock_log2();
+        let sb = 1usize << sb_log2;
+        for y in (0..self.layer.coded_height).step_by(sb) {
+            for x in (0..self.layer.coded_width).step_by(sb) {
+                self.backend.begin_superblock(x, y);
+                let sb = Block::square(x, y, sb_log2);
+                // Inter frames choose their partition per superblock first
+                // (VLPD0); key frames code the configured fixed size, or
+                // with `planner.intra_plan` a planned one (`key_plan`). A
+                // superblock that cannot be split (H.264 macroblocks) has
+                // nothing to plan.
+                let splittable = sb_log2 > self.backend.min_block_log2();
+                // Intra refresh constrains leaves by region; rectangular
+                // shapes stay out of it (`CodecBackend::partition_shapes`).
+                let shapes = self.window.is_none();
+                let decision = &self.frame_decision_params;
+                let noise = (planner_params.noise_split >= 0.5 && decision.noise_skip > 0.)
+                    .then_some(NoiseTest {
+                        map: &self.layer.noise_map,
+                        scale: decision.noise_skip,
+                        chroma_ratio: decision.noise_skip_chroma_ratio,
+                        step: self.sample_step(self.frame_quantizer) as f32,
+                    });
+                let planner = |motion, pre| Planner {
+                    dsp: &self.dsp,
+                    backend: &self.backend,
+                    source: coded_source,
+                    reference,
+                    motion,
+                    pre,
+                    noise,
+                    width: self.layer.coded_width,
+                    height: self.layer.coded_height,
+                    params: planner_params,
+                    shapes,
+                    lambda_headroom: plan.lambda_scale,
+                    leaf_bits: OnceCell::new(),
+                };
+                let key_mode = KeyPlanMode::resolve(self.planner_params.intra_plan, &self.backend);
+                let plan = match inter {
+                    // Random decisions choose every split themselves.
+                    _ if self.random.is_some() => None,
+                    Some(frame) if splittable => Some(planner(frame.motion, frame.pre).plan(sb)),
+                    None if splittable && key_mode != KeyPlanMode::Fixed => Some(
+                        KeyPlanner {
+                            dsp: &self.dsp,
+                            backend: &mut self.backend,
+                            source: coded_source,
+                            width: self.layer.coded_width,
+                            height: self.layer.coded_height,
+                            params: planner_params,
+                            mode: key_mode,
                         }
-                        None if splittable && key_mode != KeyPlanMode::Fixed => Some(
-                            KeyPlanner {
-                                dsp: &self.dsp,
-                                backend: &mut self.backend,
-                                source: coded_source,
-                                width: self.layer.coded_width,
-                                height: self.layer.coded_height,
-                                params: planner_params,
-                                mode: key_mode,
-                            }
-                            .plan(sb),
-                        ),
-                        _ => None,
-                    };
-                    let pictures = FramePictures {
-                        source: coded_source,
-                        reference,
-                        secondary,
-                        recon: &mut *recon,
-                    };
-                    self.code_node(sb, plan.as_ref(), pictures, inter);
-                }
-                if steering && let Some(bits) = self.backend.coded_bits() {
-                    self.inframe
-                        .as_mut()
-                        .expect("steering implies in-frame control")
-                        .end_row(bits);
-                }
+                        .plan(sb),
+                    ),
+                    _ => None,
+                };
+                let pictures = FramePictures {
+                    source: coded_source,
+                    reference,
+                    secondary,
+                    recon: &mut *recon,
+                };
+                self.code_node(sb, plan.as_ref(), pictures, inter);
             }
-            self.backend.filter_frame(coded_source, recon);
-            self.backend.end_frame()
         }
+        self.backend.filter_frame(coded_source, recon);
+        self.backend.end_frame()
     }
 
     /// Whether inter frame `index` (analysed against `planned`'s reference)
@@ -2440,11 +2295,6 @@ impl<B: CodecBackend> Encoder<B> {
         }
         // The static skip proves a zero residual at the frame quantizer; a
         // block coded finer than the frame (`refined`) may well code one.
-        let band = refined
-            && self
-                .cyclic
-                .as_ref()
-                .is_some_and(|c| c.in_band((node.x, node.y)));
         let skip_allowed = !refined
             && refresh.is_none_or(|w| {
                 self.backend
@@ -2459,13 +2309,6 @@ impl<B: CodecBackend> Encoder<B> {
                 .expect("a backend accepting static skips has a skip vector");
             self.code_static_skip(node, skip, (source, reference), recon);
             None
-        } else if band && refresh.is_none_or(|w| w.allows(node, Mv::ZERO)) {
-            // A square of the cyclic band: static for several frames and
-            // re-coded only to refine it, so the zero vector with no search
-            // (what the references' cyclic refresh costs). Instructions,
-            // x86 callgrind, static_cam22 300 f 150 kbps: see
-            // `docs/analysis/within-frame-rate-control-2026-11-14.md`.
-            Some((PredictionMode::Inter(Mv::ZERO), ReferenceChoice::Primary))
         } else if self.frame_decision_params.static_zero_vector >= 0.5
             && frame.still.is_some_and(|still| is_still::<B>(still, node))
             && refresh.is_none_or(|w| w.allows(node, Mv::ZERO))
@@ -2892,11 +2735,7 @@ impl<B: CodecBackend> Encoder<B> {
             .window
             .as_ref()
             .map_or(RefreshRegion::Dirty, |w| w.region(&node));
-        let qp_offset = if inter.is_some() && self.band_within_noise(&node, (source, reference)) {
-            0
-        } else {
-            self.leaf_qp_offset(&node)
-        };
+        let qp_offset = self.leaf_qp_offset(&node);
         let (mode, chosen, selected_ref) = match inter {
             None => (PredictionMode::IntraDc, ReferenceChoice::Primary, None),
             Some(_) if region == RefreshRegion::Intra => (
@@ -2944,11 +2783,8 @@ impl<B: CodecBackend> Encoder<B> {
         // Rate control's realised offset needs only the leaves coded off the
         // frame quantizer (the others' ratio is 1; the frame's total weight
         // covers them): on a frame where the reuse term refines a few cells,
-        // a few leaves. A frame in-frame control steers keeps its planned
-        // block offset and reports the rows it coarsened instead
-        // (`Encoder::report_inframe_offset`).
-        let steering = self.inframe.as_ref().is_some_and(InFrameControl::steering);
-        if let Some(aq) = self.active_aq().filter(|_| qp_offset != 0 && !steering) {
+        // a few leaves.
+        if let Some(aq) = self.active_aq().filter(|_| qp_offset != 0) {
             let frame_step = self.quantizer_steps[self.frame_quantizer as usize];
             let coded = (i64::from(self.frame_quantizer) + i64::from(qp_offset)) as usize;
             let offset = QP_UNITS_PER_OCTAVE * (self.quantizer_steps[coded] / frame_step).log2();
@@ -2984,41 +2820,6 @@ impl<B: CodecBackend> Encoder<B> {
         {
             term.coded_block((node.x, node.y), leaf_extent::<B>(&node), (copy, step));
         }
-        if !copy && let Some(cyclic) = self.cyclic.as_mut() {
-            cyclic.coded((node.x, node.y), step);
-        }
-    }
-
-    /// Whether `node` lies in the cyclic band but its zero-vector residual
-    /// is already within the camera's noise (`noise_skip.rs`, while on):
-    /// refining it would code noise, so it is coded at the frame quantizer
-    /// and its square is settled (not offered again until coded coarser).
-    /// Without this, AV1 (whose backend often declines the noise skip on a
-    /// block planned finer) refined noise: synthetic noisy still at sigma
-    /// 2.9, band + noise skip 390 kbps / 37.33 dB against the clean scene
-    /// vs noise skip alone 265 kbps / 37.94 dB.
-    fn band_within_noise(&mut self, node: &Block, pictures: (&Picture, &Picture)) -> bool {
-        let params = &self.frame_decision_params;
-        if params.noise_skip <= 0.
-            || !self
-                .cyclic
-                .as_ref()
-                .is_some_and(|c| c.in_band((node.x, node.y)))
-        {
-            return false;
-        }
-        let within = self.layer.noise_map.explains(
-            &self.dsp,
-            node,
-            pictures,
-            params.noise_skip,
-            params.noise_skip_chroma_ratio,
-            self.sample_step(self.frame_quantizer) as f32,
-        );
-        if within && let Some(cyclic) = self.cyclic.as_mut() {
-            cyclic.settled((node.x, node.y));
-        }
-        within
     }
 
     fn leaf_qp_offset(&mut self, node: &Block) -> i16 {
@@ -3034,21 +2835,15 @@ impl<B: CodecBackend> Encoder<B> {
                 )
             });
         let qp_offset = random_qp.unwrap_or_else(|| {
-            let inframe = self
-                .inframe
-                .as_ref()
-                .filter(|c| c.steering())
-                .map_or(0., InFrameControl::offset_qp);
-            let aq = self.active_aq().map(|aq| aq.offset_qp(node));
-            if aq.is_none() && inframe == 0. {
+            let Some(aq) = self.active_aq().map(|aq| aq.offset_qp(node)) else {
                 return 0;
-            }
+            };
             let codec = self.config.codec;
             native_offset(
                 &self.quantizer_steps,
                 (min_quantizer(codec), max_quantizer(codec)),
                 self.frame_quantizer,
-                aq.unwrap_or(0.) + inframe,
+                aq,
             )
         });
         if qp_offset == 0 {
@@ -3641,16 +3436,7 @@ fn validated_params<B: CodecBackend>(
 }
 
 /// The QP cadence of `config`, scaled for `backend` (`RateModel::cadence_scale`).
-/// Flattened when the cyclic spatial cadence gives the boost to blocks
-/// (`rate_control::spatial_aware`).
 fn configured_cadence<B: CodecBackend>(config: &EncoderConfig, backend: &B) -> QpCadence {
-    let params = RateParams::from_overrides(&config.params);
-    spatial_aware(unflattened_cadence(config, backend), &params)
-}
-
-/// The configured QP cadence, scaled for `backend`, whichever of frames or
-/// blocks it applies to.
-fn unflattened_cadence<B: CodecBackend>(config: &EncoderConfig, backend: &B) -> QpCadence {
     let params = RateParams::from_overrides(&config.params);
     QpCadence::from_params(&params).scaled(cadence_scale(&params, &backend.rate_model()))
 }

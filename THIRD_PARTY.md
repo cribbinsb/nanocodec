@@ -535,8 +535,7 @@ Additional native AV2 modules reference the same pinned release:
 - `src/entropy.rs`: range normalization/termination, AV2 probability scaling,
   true bypass coding and trained-rate CDF updates from
   `avm_dsp/{entenc.c,entdec.c,entcode.c,prob.h}`, independently structured in Rust.
-- `src/coeff.rs` (with `src/coeff/`), `src/tx_size.rs`, `src/coeff_tables.rs`,
-  `src/dc_tile.rs` and `examples/gray_keyframe.rs`: TX4..TX64 coefficient
+- `src/coeff.rs` (with `src/coeff/`), `src/tx_size.rs` and `src/coeff_tables.rs`: TX4..TX64 coefficient
   contexts and scans, low/high-range coding and selected default probabilities
   from `av2/common/entropy_inits_{modes,coeffs}.h`, `av2/common/txb_common.h`,
   `av2/common/scan.c`, `av2/common/hr_coding.c`, `av2/encoder/encodetxb.c` and

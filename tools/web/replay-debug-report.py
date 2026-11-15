@@ -16,6 +16,9 @@ the page:
   --keyframe) and checks every
   reported access unit's hash and size: the WASM and native encoders are the
   same code, so the streams must be identical;
+- for an Original view (the uncompressed source shown as a version), checks
+  that each kept picture it showed is byte for byte the regenerated source
+  frame of its tick, and that it shows no bitrate, time or PSNR;
 - decodes the stream (the native one, a pre-encoded file, or a stream embedded
   in the report) with an independent decoder (ffmpeg; AV2 with nanocodec's
   own) and scores every reported frame against its source frame: the page's
@@ -198,6 +201,11 @@ def window_checks(view: dict) -> list[Check]:
     return checks
 
 
+def original_shown_checks(view: dict) -> list[Check]:
+    """An Original view codes nothing: every metric it shows is n/a."""
+    return [Check(view['letter'], f'shown {key}', text, 'n/a', text == 'n/a') for key, text in view['shown']['metrics'].items()]
+
+
 def unit_checks(letter: str, frames: list[dict], units: list[bytes], label: str) -> list[Check]:
     """Each reported coded frame (repeats code nothing) against the last of `units`, in order."""
     coded = [f for f in frames if not f['repeat']]
@@ -318,14 +326,16 @@ class Replay:
         return checks
 
     def view(self, view: dict) -> list[Check]:
-        checks = window_checks(view)
         config, letter, frames = view['config'], view['letter'], view['frames']
+        checks = original_shown_checks(view) if config['source'] == 'original' else window_checks(view)
         if self.make:
             # A view codes its own size's rendition, as the pre-encoded streams were made (clips.js clipUrl).
             own = self.make.clip_file(self.source['clip'], config['height']).name
             checks.append(Check(letter, 'source rendition', config['rendition'], own, config['rendition'] == own,
                                 '' if config['rendition'] == own else 'the view coded another rendition than one of its size'))
-        if config['source'] == 'reference':
+        if config['source'] == 'original':
+            checks += self.original(view)
+        elif config['source'] == 'reference':
             checks += self.reference(view)
         elif self.make and self.source['path'].startswith('exact'):
             checks += self.live(view)
@@ -335,6 +345,22 @@ class Replay:
             checks += self.embedded(view)
         if not frames:
             checks.append(Check(letter, 'frames', 0, '—', False, 'no coded frames in the report'))
+        return checks
+
+    def original(self, view: dict) -> list[Check]:
+        """Each picture an Original view showed (hashed in the report) is the source frame of its tick."""
+        letter, config = view['letter'], view['config']
+        source_of = self.source_of(config)
+        checks = []
+        for frame in view['frames']:
+            source = source_of(frame['tick'])
+            if source is None:
+                checks.append(Check(letter, f'tick {frame["tick"]} source picture', frame['sha256'][:12], '—', True,
+                                    self.source.get('reason') or 'the source cannot be regenerated'))
+                continue
+            digest = hashlib.sha256(source.tobytes()).hexdigest()
+            checks.append(Check(letter, f'tick {frame["tick"]} source picture', f'{frame["bytes"]} B {frame["sha256"][:12]}',
+                                f'{source.nbytes} B {digest[:12]}', digest == frame['sha256'] and source.nbytes == frame['bytes']))
         return checks
 
     def reference(self, view: dict) -> list[Check]:

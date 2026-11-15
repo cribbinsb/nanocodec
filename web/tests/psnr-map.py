@@ -161,7 +161,7 @@ def page_run(port: int, setup, slowed: bool) -> dict:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.add_init_script(HOOK.replace('EVERY', str(BLOCK_SAMPLE_EVERY)) + (STALL if slowed else ''))
-        page.goto(f'http://127.0.0.1:{port}/')
+        page.goto(f'http://127.0.0.1:{port}/?views=live')
         page.wait_for_function(f'{COMPARED} >= 1', timeout=120000)
         setup(page)
         page.wait_for_timeout(500)

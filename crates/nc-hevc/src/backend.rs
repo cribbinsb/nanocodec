@@ -414,8 +414,12 @@ pub struct HevcBackend {
     items: Vec<Item>,
     /// SAO decision of the current picture (made in `filter_frame`).
     sao: Option<PictureSao>,
-    /// Per-CTB SAO classes of the last SAO search frame, for reuse.
+    /// Per-CTB SAO classes of the last committed SAO search frame, for reuse.
     sao_classes: Vec<(Option<u8>, Option<u8>)>,
+    /// This picture's searched classes, which become `sao_classes` in
+    /// `commit_frame` (the recode contract: a re-coded or discarded coding
+    /// must not change what later pictures reuse).
+    pending_sao_classes: Option<Vec<(Option<u8>, Option<u8>)>>,
     grid: Grid,
     /// Each reference slot's motion: the collocated motion for TMVP.
     motion: MotionStore,
@@ -888,6 +892,9 @@ impl CodecBackend for HevcBackend {
     /// `begin_frame` derives the picture from its plan; the collocated
     /// motion and the slots' POCs are committed in `commit_frame`.
     const RECODE: bool = true;
+    // Intra refresh: dirty-edge CUs keep to DC and TMVP is off under it
+    // (`slice_temporal_mvp_enabled_flag`, HEVC §7.4.7.1).
+    const INTRA_REFRESH: bool = true;
 
     /// Shared decision values for HEVC:
     /// - `intra_gate_variance` 0: with the DC-aware intra test, trying intra
@@ -996,9 +1003,9 @@ impl CodecBackend for HevcBackend {
         // instructions; outside the near-free bar the engine default met
         // on AV1. `work/engine-cpu/screens/hevc-prune11.log`.
         ("decision.exact_rank_margin", 0.0),
-        // Trellis quantisation of the coded blocks (`quant.*`,
-        // docs/handoff/trellis.md), key frames included, one survivor, luma
-        // only: J_real staged TRAIN (18 clips) BETTER, quality -2.4% full /
+        // Trellis quantisation of the coded blocks (`quant.*`, on, key frames
+        // included and one survivor by the engine defaults;
+        // docs/handoff/trellis.md), luma only: J_real staged TRAIN (18 clips) BETTER, quality -2.4% full /
         // -2.0% low (PSNR-YUV -2.1%, NEG -5.1%, VMAF v1 -4.2%, MS-SSIM 0.0%),
         // 3/18 clips worse (bodycam_bc1 +2.7%), worst-1% PSNR-Y +1.9 (guard
         // +2), no guard; periodic-key pulse +0.02 dB. CPU: P frames +15.6%
@@ -1007,9 +1014,6 @@ impl CodecBackend for HevcBackend {
         // long GOPs at equal rate (YUV per third): airport 600 kbps
         // +0.04/+0.07/+0.03 dB, homes390 300 kbps +0.11/+0.26/+0.27,
         // chirla 150 kbps +0.33/-0.16/-0.16. hevc-fast keeps it off.
-        ("quant.trellis", 1.0),
-        ("quant.trellis_key", 1.0),
-        ("quant.trellis_states", 1.0),
         ("quant.trellis_chroma", 0.0),
         // Directional P-frame intra estimate (`decision.intra_directional`,
         // engine `intra_estimate.rs`) with this backend's SATD fallback
@@ -1102,6 +1106,7 @@ impl CodecBackend for HevcBackend {
             items: Vec::new(),
             sao: None,
             sao_classes: Vec::new(),
+            pending_sao_classes: None,
             grid: Grid::new(width, height),
             motion: MotionStore::new(
                 width,
@@ -1420,6 +1425,7 @@ impl CodecBackend for HevcBackend {
     }
 
     fn begin_frame(&mut self, plan: &FramePlan) {
+        self.pending_sao_classes = None;
         self.references = plan.references;
         self.active_ref = 0;
         self.frame_index = plan.index;
@@ -1444,7 +1450,8 @@ impl CodecBackend for HevcBackend {
         }
         self.qp = match plan.frame_type {
             FrameType::Key if !self.rate_control_enabled => {
-                (plan.quantizer as i32 - self.key_qp_offset).max(QP_MIN as i32)
+                nc_encoder::offset_key_quantizer(plan.quantizer, self.key_qp_offset, QP_MIN, QP_MAX)
+                    as i32
             }
             _ => plan.quantizer as i32,
         };
@@ -1583,7 +1590,7 @@ impl CodecBackend for HevcBackend {
                     }
                 }
             }
-            self.sao_classes = classes;
+            self.pending_sao_classes = Some(classes);
         }
         sao::apply(recon, &decision);
         self.sao = Some(decision);
@@ -1676,6 +1683,9 @@ impl CodecBackend for HevcBackend {
     }
 
     fn commit_frame(&mut self) {
+        if let Some(classes) = self.pending_sao_classes.take() {
+            self.sao_classes = classes;
+        }
         if self.slice == SliceKind::Intra && self.idr {
             self.sequence_sets = Some(self.sequence_set_bytes());
         }
@@ -2663,12 +2673,10 @@ const CHROMA_OFFSET_LIMIT: i32 = 12;
 /// luma QP `qp` is nearest the engine chroma policy's
 /// (`nc_encoder::chroma_policy`; HEVC QPs are its unit).
 fn policy_chroma_offset(policy: ChromaPolicy, qp: i32) -> i32 {
-    let target = policy.chroma_q(f64::from(qp));
-    let step = |offset: i32| 2f64.powf(f64::from(chroma_qp(qp + offset)) / 6.0);
-    nc_encoder::chroma_policy::closest_index(
+    policy.closest_qp_offset(
         -CHROMA_OFFSET_LIMIT..=CHROMA_OFFSET_LIMIT,
-        step,
-        2f64.powf(target / 6.0),
+        f64::from(qp),
+        |offset| f64::from(chroma_qp(qp + offset)),
     )
 }
 

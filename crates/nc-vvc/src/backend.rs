@@ -546,12 +546,19 @@ impl VvcParams {
     }
 }
 
+/// Luma samples VVC in-loop filtering spreads a sample's influence (see
+/// `CodecBackend::loop_filter_reach` below).
+const VVC_LOOP_FILTER_REACH: usize = 16;
+
 impl CodecBackend for VvcBackend {
     fn intra_fallback(&mut self, block: &Block, mv: Mv) {
         self.intra_fallback = Some(((block.x, block.y, block.log2_size()), mv));
     }
 
     const RECODE: bool = true;
+    // Intra refresh: TMVP is off under it (`ph_temporal_mvp_enabled_flag`,
+    // `temporal_mvp_enabled`).
+    const INTRA_REFRESH: bool = true;
     // Multi-type tree leaves (`vvc.mtt`) are rectangular.
     const RECTANGULAR_LEAVES: bool = true;
     // Depth removal (dropping blocks below 32x32 where the motion analysis
@@ -609,6 +616,19 @@ impl CodecBackend for VvcBackend {
         // per 1000 frames.
         // The other VVC presets pin it off.
         ("rate.key_still_boost", 6.0),
+        // The QP cadence at least as strong as the frames between measurably
+        // inherit the high-quality frame (`structure.inherited_depth`,
+        // `nc-encoder` `inheritance.rs`), beside the static share: it adds
+        // the cadence on moving content that inherits (pans, crowds) and
+        // leaves noise alone. Build 51b0ec30, pool levels of draw 2026-11-15:
+        // L1 -1.19% [-2.47, -0.37]; L2 -1.64% [-2.81, -0.66]; L3 (single
+        // point, 126 clips) J -1.24% [-2.19, -0.40], no guard (pan -3.4%,
+        // lowlight -0.4%, crowd -0.4%, static -0.2%, bodycam +0.8%, texture
+        // -4.1% on 4 clips, drone -0.9% on 3); 600-frame final (27 clips,
+        // keys every 10 s) J -0.62% [-0.95, -0.30], no guard. Jetson cycles
+        // -0.0% (instructions +0.7%). static_recovery passes. The other VVC
+        // presets pin it off.
+        ("structure.inherited_depth", 1.0),
         ("planner.depth_removal_min_quantizer", 0.8),
         // Re-tuned 2026-11-13 as a CPU cut at equal quality (CPU-capped study
         // vvc-default-speed-2026-11-13, trial #2): mode-decision lambda 0.8 ->
@@ -637,8 +657,8 @@ impl CodecBackend for VvcBackend {
         // docs/analysis/fixed-qp-gap-2026-11-14.md. vvc-fast pins it off.
         ("vvc.unit_zero_rd", 0.5),
         ("vvc.unit_zero_rd_max_levels", 4.0),
-        // Trellis quantisation of the coded luma blocks (`trellis.rs`; HEVC
-        // Default's arm), at half its λ on key pictures: the full λ saved
+        // Trellis quantisation of the coded luma blocks (`trellis.rs`; on by
+        // the engine default `quant.trellis`, HEVC Default's arm), at half its λ on key pictures: the full λ saved
         // 5-15% of a key's bits at 0.2-0.4 dB less luma that rate control
         // left unspent, so the copies after each key were the clip's worst
         // frames (VAL worst-1% Y +2.6, a guard); no key trellis lost static
@@ -649,7 +669,6 @@ impl CodecBackend for VvcBackend {
         // VAL (11 clips): BETTER, J_real -2.4% (full -3.7%, low -3.6%; NEG
         // -5.0%, static -6.4%, worst-1% Y -1.1%), no guard. Long GOP: no
         // drift (chirla +0.3..+0.55 dB). docs/handoff/vvc.md.
-        ("quant.trellis", 1.0),
         ("quant.trellis_chroma", 0.0),
         ("vvc.trellis_key_lambda_scale", 0.5),
         // Intra sub-partitions of 16x16 and 32x32 intra CUs, searched on key
@@ -911,8 +930,15 @@ impl CodecBackend for VvcBackend {
         let geometry = headers::Geometry::new(width, height, self.geometry.ctu_log2);
         (geometry.coded_width, geometry.coded_height)
     }
+    /// Deblocking's long luma filter modifies up to 7 samples beside an
+    /// edge between 32-sample blocks (§8.8.3), SAO's edge offset reads
+    /// one more (§8.8.4), and ALF then filters each sample over a 7x7
+    /// diamond (3 more, §8.8.5.2) with a class taken from a window reaching
+    /// 6 samples past its 4x4 block (§8.8.5.3): about 14 luma samples (12
+    /// for chroma: 3 deblocked, 1 SAO, 2 ALF chroma samples); 16 with
+    /// margin, as AV1. The default 8 covers deblocking and SAO only.
     fn loop_filter_reach(&self) -> usize {
-        nc_encoder::DEFAULT_LOOP_FILTER_REACH
+        VVC_LOOP_FILTER_REACH
     }
     fn supports_inter(&self) -> bool {
         true
@@ -1099,8 +1125,7 @@ impl CodecBackend for VvcBackend {
     }
     fn begin_frame(&mut self, plan: &FramePlan) {
         self.qp = if plan.frame_type == FrameType::Key && !self.rate_control {
-            (i64::from(plan.quantizer) - i64::from(self.key_qp_offset))
-                .clamp(0, i64::from(headers::MAX_QP)) as u32
+            nc_encoder::offset_key_quantizer(plan.quantizer, self.key_qp_offset, 0, headers::MAX_QP)
         } else {
             plan.quantizer
         };
@@ -2017,7 +2042,16 @@ impl VvcBackend {
         reference: Option<&Picture>,
         reconstruction: &Picture,
     ) -> (PredictionMode, (u8, u8, Option<crate::isp::Split>)) {
-        let luma = (decided == PredictionMode::IntraDc)
+        // Under intra refresh, planar and angular prediction (and reference
+        // filtering) read the top reference row up to twice the CU's width
+        // (H.266 §8.4.5.2.8), dirty past the intra range's right edge; DC
+        // reads only the top row over the CU's width and the left column
+        // (§8.4.5.2.12). Such CUs code DC, chroma derived from it, unsplit.
+        let dirty_above_right = self
+            .refresh
+            .as_ref()
+            .is_some_and(|w| w.reads_dirty_above_right(block));
+        let luma = (decided == PredictionMode::IntraDc && !dirty_above_right)
             .then(|| self.luma_direction(block, source, reconstruction))
             .flatten();
         let mode = match self.inter_fallback(block, luma, source, reference) {

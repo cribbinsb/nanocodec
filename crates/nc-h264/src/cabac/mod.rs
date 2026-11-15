@@ -302,15 +302,6 @@ impl CabacEncoder {
         }
     }
 
-    /// Bits of the slice so far (in-frame rate control): its header, the
-    /// slice data bytes written or held back for a carry, and the code bits
-    /// still waiting in `low` (§9.3.4.2).
-    pub fn bit_len(&self) -> u64 {
-        let bytes = self.out.bytes.len() as u64 + u64::from(self.out.outstanding);
-        let waiting = u64::try_from(self.registers.queue + QUEUE_START_OFFSET).unwrap_or(0);
-        self.out.header.bit_len() as u64 + 8 * bytes + waiting
-    }
-
     /// A [`BitCounter`] pricing bins with the current context states.
     pub fn bit_counter<'a>(&'a self, costs: &'a BinCosts) -> BitCounter<'a> {
         BitCounter::new(&self.contexts, costs)

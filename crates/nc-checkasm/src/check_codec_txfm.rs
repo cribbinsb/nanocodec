@@ -44,7 +44,7 @@ const MAX_MASK_LEVELS: usize = 64;
 /// tail), on random, extreme, small and sparse levels.
 fn check_nonzero_mask(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     let len = rng.below(MAX_MASK_LEVELS + 1);
-    let levels = coefficients(len, rng.below(4), rng);
+    let levels = coefficients16(len, rng.below(4), rng);
     let (got, want) = (
         candidate.nonzero_mask(&levels),
         reference.nonzero_mask(&levels),
@@ -385,6 +385,20 @@ fn blocks<const N: usize>(count: usize, mode: usize, rng: &mut Rng) -> Vec<[i32;
     flat.as_chunks::<N>().0.to_vec()
 }
 
+/// [`coefficients`] in 16-bit storage (every mode's values fit it).
+fn coefficients16(len: usize, mode: usize, rng: &mut Rng) -> Vec<i16> {
+    coefficients(len, mode, rng)
+        .into_iter()
+        .map(|c| i16::try_from(c).expect("16-bit coefficient"))
+        .collect()
+}
+
+/// [`blocks`] in 16-bit storage.
+fn blocks16<const N: usize>(count: usize, mode: usize, rng: &mut Rng) -> Vec<[i16; N]> {
+    let flat = coefficients16(count * N, mode, rng);
+    flat.as_chunks::<N>().0.to_vec()
+}
+
 fn check_h264_mb(
     candidate: &Dsp,
     reference: &Dsp,
@@ -430,7 +444,7 @@ fn check_h264(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut Chec
     let stride = 4 * bw + rng.below(MAX_EXTRA_STRIDE + 1);
     let input = residual((4 * bh - 1) * stride + 4 * bw, stride, mode, rng);
     let forward = |dsp: &Dsp| {
-        let mut out = vec![[0i32; 16]; bw * bh];
+        let mut out = vec![[0i16; 16]; bw * bh];
         dsp.h264_forward_4x4(&input, stride, bw, &mut out);
         out
     };
@@ -455,7 +469,7 @@ fn check_h264(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut Chec
     let input8 = residual(7 * stride8 + 8, stride8, mode, rng);
     let coeffs8 = blocks::<64>(1, mode, rng)[0];
     let eight = |dsp: &Dsp| {
-        let (mut f, mut i) = ([0i32; 64], [0i32; 64]);
+        let (mut f, mut i) = ([0i16; 64], [0i32; 64]);
         dsp.h264_forward_8x8(&input8, stride8, &mut f);
         dsp.h264_inverse_8x8(&coeffs8, &mut i);
         (f, i)
@@ -469,10 +483,10 @@ fn check_h264(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut Chec
     let intra = rng.below(2) == 0;
     let q = H264Quantizer::new(qp, intra);
     check_h264_mb(candidate, reference, qp, mode, rng, report);
-    // Quantiser inputs within transform output range (|c| <= 2^15).
-    let to_quantize = blocks::<16>(bw * bh, mode, rng);
-    let dc: Vec<i32> = coefficients(if rng.below(2) == 0 { 4 } else { 16 }, mode, rng);
-    let to_quantize8 = blocks::<64>(1, mode, rng)[0];
+    // Quantiser inputs over the whole 16-bit storage range.
+    let to_quantize = blocks16::<16>(bw * bh, mode, rng);
+    let dc = coefficients16(if rng.below(2) == 0 { 4 } else { 16 }, mode, rng);
+    let to_quantize8 = blocks16::<64>(1, mode, rng)[0];
     let quantize = |dsp: &Dsp| {
         let mut a = to_quantize.clone();
         let mut d = dc.clone();
@@ -490,14 +504,14 @@ fn check_h264(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut Chec
     });
 
     // Levels as a conformant stream carries them (scaled values fit 16 bits).
-    let levels = blocks::<16>(bw * bh, 2, rng);
-    let dc_levels = blocks::<16>(1, 2, rng)[0];
+    let levels = blocks16::<16>(bw * bh, 2, rng);
+    let dc_levels = blocks16::<16>(1, 2, rng)[0];
     let chroma_dc = [dc_levels[0], dc_levels[1], dc_levels[2], dc_levels[3]];
-    let levels8 = blocks::<64>(1, 2, rng)[0];
+    let levels8 = blocks16::<64>(1, 2, rng)[0];
     let dequantize = |dsp: &Dsp| {
-        let mut out = vec![[0i32; 16]; levels.len()];
+        let mut out = vec![[0i16; 16]; levels.len()];
         dsp.h264_dequantize_4x4(&levels, &q, &mut out);
-        let mut out8 = [0i32; 64];
+        let mut out8 = [0i16; 64];
         dsp.h264_dequantize_8x8(&levels8, &q, &mut out8);
         (
             out,
@@ -543,9 +557,9 @@ fn check_h264_add_inverse(
     let stride = 4 * bw.max(2) + rng.below(MAX_EXTRA_STRIDE + 1);
     let rows = 4 * bh.max(2);
     let pred: Vec<u8> = (0..stride * rows).map(|_| rng.below(256) as u8).collect();
-    let sparse = |block: &mut [i32], rng: &mut Rng| {
+    let sparse = |block: &mut [i16], rng: &mut Rng| {
         for level in block.iter_mut() {
-            *level = (*level).clamp(-max_level, max_level);
+            *level = i32::from(*level).clamp(-max_level, max_level) as i16;
         }
         match rng.below(3) {
             0 => block.fill(0),
@@ -553,16 +567,13 @@ fn check_h264_add_inverse(
             _ => {}
         }
     };
-    let mut levels = blocks::<16>(bw * bh, 2, rng);
+    let mut levels = blocks16::<16>(bw * bh, 2, rng);
     for block in &mut levels {
         sparse(block, rng);
     }
-    let dc: Vec<i32> = coefficients(bw * bh, 2, rng)
-        .into_iter()
-        .map(|d| d.clamp(-MAX_SCALED, MAX_SCALED - 1))
-        .collect();
+    let dc = coefficients16(bw * bh, 2, rng);
     let with_dc = rng.below(2) == 0;
-    let mut levels8 = blocks::<64>(1, 2, rng)[0];
+    let mut levels8 = blocks16::<64>(1, 2, rng)[0];
     sparse(&mut levels8, rng);
     let add = |dsp: &Dsp| {
         let mut four = pred.clone();

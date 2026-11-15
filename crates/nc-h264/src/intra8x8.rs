@@ -30,7 +30,7 @@ pub struct Intra8x8Result {
     /// `Intra8x8PredMode` per 8x8 block, raster.
     pub modes: [u8; 4],
     /// Levels per 8x8 block, raster within each.
-    pub levels: [[i32; AREA]; 4],
+    pub levels: [[i16; AREA]; 4],
     /// Sum of the chosen modes' SATD plus `lambda` times their bits.
     pub cost: f32,
 }
@@ -96,12 +96,12 @@ fn code_block(
     src: &PlaneView<'_>,
     pred: &[u8; AREA],
     quantizer: &H264Quantizer,
-) -> ([i32; AREA], [u8; AREA]) {
+) -> ([i16; AREA], [u8; AREA]) {
     let size = BlockSize::new(SIDE, SIDE).expect("8x8 is a kernel size");
     let pred_view = PlaneView::new(pred, SIDE, SIDE, SIDE).expect("prediction covers the block");
     let mut residual = [0i16; AREA];
     dsp.residual(size, src, &pred_view, &mut residual, SIDE);
-    let mut levels = [0i32; AREA];
+    let mut levels = [0i16; AREA];
     dsp.h264_forward_8x8(&residual, SIDE, &mut levels);
     let mut recon = *pred;
     if dsp.h264_quantize_8x8(&mut levels, quantizer) == 0 {

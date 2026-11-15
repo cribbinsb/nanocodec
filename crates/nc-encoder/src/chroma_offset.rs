@@ -15,6 +15,9 @@
 //!   (6:1:1) the marginal value of chroma SSE is about (4/6)·`MSE_Y/MSE_C`
 //!   of luma's, so chroma far cleaner than luma (crowd, pan: 12-18 dB) is
 //!   cheap to improve and chroma near luma's error (bodycam) is not.
+//! - [`adaptive_error_weight`]: the same ratio as chroma's squared-error
+//!   weight in block decisions (AV2, VP9), where a weight only reshuffles
+//!   decisions at the frame's chroma step.
 
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::{BlockSize, Dsp};
@@ -26,6 +29,10 @@ const ERROR_ROW_PERIOD: usize = 4;
 /// Largest change [`error_gap_offset`] makes, either way: the ratio of a
 /// near-flat chroma plane must not drive it to the ends of a delta range.
 const GAP_OFFSET_LIMIT: f32 = 16.0;
+/// Bounds of [`adaptive_error_weight`]: the error ratio of a near-flat
+/// chroma plane (or a lossless one) must not drive it to extremes.
+const ADAPTIVE_WEIGHT_MIN: f64 = 0.25;
+const ADAPTIVE_WEIGHT_MAX: f64 = 16.0;
 
 /// `base` (a chroma qindex offset, codec units) attenuated linearly to zero
 /// at noise sigma `scale`; a non-positive `scale` disables the adaptation.
@@ -65,6 +72,15 @@ pub fn error_gap_offset(error_ratio: Option<f64>, slope: f32, pivot_db: f32) -> 
         let gap_db = 10.0 * ratio.log10() as f32;
         (-slope * (gap_db - pivot_db)).clamp(-GAP_OFFSET_LIMIT, GAP_OFFSET_LIMIT)
     })
+}
+
+/// Chroma's squared-error weight against luma's for a frame whose last
+/// measured luma/chroma error ratio is `error_ratio`: the ratio times
+/// `gain` (PSNR-YUV values chroma error at about 4/6 of it), within
+/// [`ADAPTIVE_WEIGHT_MIN`]..[`ADAPTIVE_WEIGHT_MAX`].
+#[must_use]
+pub fn adaptive_error_weight(gain: f32, error_ratio: f64) -> f64 {
+    (f64::from(gain) * error_ratio).clamp(ADAPTIVE_WEIGHT_MIN, ADAPTIVE_WEIGHT_MAX)
 }
 
 /// `MSE_Y / MSE_C` of `recon` against `source` on a row subsample, or `None`

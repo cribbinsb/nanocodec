@@ -160,8 +160,6 @@ impl Mode {
     pub const VERTICAL: Self = Self::nominal(Direction::Vertical);
     /// Zero-delta horizontal prediction.
     pub const HORIZONTAL: Self = Self::nominal(Direction::Horizontal);
-    /// The four modes of the standalone picture coders.
-    pub const BASIC: [Self; 4] = [Self::Dc, Self::VERTICAL, Self::HORIZONTAL, Self::Paeth];
     /// Non-directional modes, in joint-mode order.
     pub const NON_DIRECTIONAL: [Self; NON_DIRECTIONAL] = [
         Self::Dc,
@@ -585,94 +583,6 @@ pub fn read_block(
     Ok((luma, chroma))
 }
 
-/// Side (log2) of the uniform blocks of the standalone picture coders.
-const SMALL_BLOCK_LOG2: u32 = 3;
-
-/// [`write_block`] for the standalone picture coders' 8×8 blocks, whose
-/// modes are [`Mode::BASIC`].
-/// # Errors
-/// As [`write_block`].
-pub fn write(
-    writer: &mut Writer,
-    lossless: bool,
-    above: Option<Mode>,
-    left: Option<Mode>,
-    luma: Mode,
-    chroma: Mode,
-) -> Result<()> {
-    let context = ModeContext {
-        above,
-        left,
-        block_log2: SMALL_BLOCK_LOG2,
-    };
-    write_block(writer, lossless, context, luma, chroma)
-}
-
-/// [`read_block`] for the standalone picture coders' 8×8 blocks.
-/// # Errors
-/// As [`read_block`], and rejects modes outside [`Mode::BASIC`].
-pub fn read(
-    reader: &mut Reader<'_>,
-    lossless: bool,
-    above: Option<Mode>,
-    left: Option<Mode>,
-) -> Result<(Mode, Mode)> {
-    let context = ModeContext {
-        above,
-        left,
-        block_log2: SMALL_BLOCK_LOG2,
-    };
-    let (luma, chroma) = read_block(reader, lossless, context)?;
-    if !Mode::BASIC.contains(&luma) || !Mode::BASIC.contains(&chroma) {
-        return Err(DecodeError::Unsupported(
-            "AV2 intra mode outside the standalone DC/V/H/Paeth subset",
-        ));
-    }
-    Ok((luma, chroma))
-}
-
-/// Predict one 4×4 transform of a standalone picture from already
-/// reconstructed samples (frame-edge availability only).
-/// Call after reconstructing each preceding transform, including inside an 8×8 block.
-/// # Panics
-/// Panics if the complete 4×4 block lies outside the plane or `mode` is not
-/// in [`Mode::BASIC`].
-#[must_use]
-pub fn predict4(plane: &nc_common::Plane, x: usize, y: usize, mode: Mode) -> [i32; 16] {
-    predict_basic::<16>(plane, x, y, mode, 4)
-}
-
-/// Predict an unsplit 8×8 transform of a standalone picture (see [`predict4`]).
-/// # Panics
-/// As [`predict4`].
-#[must_use]
-pub fn predict8(plane: &nc_common::Plane, x: usize, y: usize, mode: Mode) -> [i32; 64] {
-    predict_basic::<64>(plane, x, y, mode, 8)
-}
-
-fn predict_basic<const N: usize>(
-    plane: &nc_common::Plane,
-    x: usize,
-    y: usize,
-    mode: Mode,
-    size: usize,
-) -> [i32; N] {
-    use nc_dsp::intra_prediction::{IntraEdges, IntraMode};
-    debug_assert_eq!(size * size, N);
-    let kernel = match mode {
-        Mode::Dc => IntraMode::Dc,
-        Mode::Paeth => IntraMode::Paeth,
-        Mode::VERTICAL => IntraMode::Vertical,
-        Mode::HORIZONTAL => IntraMode::Horizontal,
-        _ => panic!("standalone coders predict DC/V/H/Paeth only"),
-    };
-    let mut samples = [0; N];
-    let mut view =
-        nc_common::PlaneViewMut::new(&mut samples, size, size, size).expect("square output block");
-    IntraEdges::new(plane, x, y, size).predict(kernel, &mut view);
-    samples.map(i32::from)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,78 +741,5 @@ mod tests {
                 .iter()
                 .any(|m| m.direction() == Some(Direction::D113))
         );
-    }
-
-    /// Symbols and CDFs of the standalone 8×8 coders' basic modes, hashed
-    /// against a trace of AVM's original writer.
-    const REFERENCE_TRACE: (u64, usize) = (12_253_148_367_770_241_149, 3200);
-    #[test]
-    fn basic_modes_match_original_avm_mode_trace() {
-        let neighbours = [
-            None,
-            Some(Mode::Dc),
-            Some(Mode::VERTICAL),
-            Some(Mode::HORIZONTAL),
-            Some(Mode::Paeth),
-        ];
-        let mut hash = 14_695_981_039_346_656_037u64;
-        let mut count = 0;
-        let mut symbol = |value: usize, cdf: &[u16]| {
-            hash = (hash ^ value as u64).wrapping_mul(1_099_511_628_211);
-            for &entry in cdf {
-                hash = (hash ^ u64::from(entry)).wrapping_mul(1_099_511_628_211);
-            }
-            count += 1;
-        };
-        for lossless in [false, true] {
-            for above in neighbours {
-                for left in neighbours {
-                    let context = ModeContext {
-                        above,
-                        left,
-                        block_log2: SMALL_BLOCK_LOG2,
-                    };
-                    let list = LumaList::new(context);
-                    for luma in Mode::BASIC {
-                        for chroma in Mode::BASIC {
-                            if lossless {
-                                symbol(0, &DPCM);
-                            }
-                            symbol(0, &MODE_SET);
-                            symbol(list.index(luma), &Y_MODE[context.y_context()]);
-                            if lossless {
-                                symbol(0, &DPCM);
-                            }
-                            let index = chroma_index(chroma, luma).unwrap();
-                            symbol(index, &UV_MODE[usize::from(luma.directional())]);
-                        }
-                    }
-                }
-            }
-        }
-        assert_eq!((hash, count), REFERENCE_TRACE);
-    }
-
-    const REFERENCE_PIXELS: u64 = 18_203_240_803_125_398_559;
-    #[test]
-    fn standalone_prediction_matches_original_avm_pixels() {
-        let mut plane = nc_common::Plane::new(16, 72, 0).unwrap();
-        let mut hash = 14_695_981_039_346_656_037u64;
-        for seed in 0..32 {
-            for y in 0..72 {
-                for x in 0..16 {
-                    plane.view_mut().row_mut(y)[x] =
-                        (x * 19 + y * 37 + x * y * 3 + seed * 13) as u8;
-                }
-            }
-            for (x, y) in [(0, 0), (4, 0), (0, 4), (4, 4), (4, 64)] {
-                for mode in Mode::BASIC {
-                    for pixel in predict4(&plane, x, y, mode) {
-                        hash = (hash ^ pixel as u64).wrapping_mul(1_099_511_628_211);
-                    }
-                }
-            }
-        }
-        assert_eq!(hash, REFERENCE_PIXELS);
     }
 }

@@ -20,9 +20,9 @@ use crate::av2_txfm::{self, Av2TxSize, Av2TxfmFns};
 use crate::block::BlockSize;
 use crate::cdef::{self, CdefArgs, CdefBlock, CdefFns, CdefSource};
 use crate::codec_txfm::{
-    self, CodecTxfmFns, H264Quantizer, HEVC_MAX_LEVEL, HevcForwardMode, HevcQuantizer,
-    HevcTransform, LEVEL_SCALE_4X4, LEVEL_SCALE_8X8, MAX_MASK_LEVELS, QUANT_MF_4X4_POS,
-    QUANT_MF_8X8_POS,
+    self, CodecTxfmFns, H264_MAX_LEVEL, H264Quantizer, HEVC_MAX_LEVEL, HevcForwardMode,
+    HevcQuantizer, HevcTransform, LEVEL_SCALE_4X4, LEVEL_SCALE_8X8, MAX_MASK_LEVELS,
+    QUANT_MF_4X4_POS, QUANT_MF_8X8_POS, h264_scale_level,
 };
 use crate::convert::{self, ConvertFns, DisplayMatrix};
 use crate::cpu::Isa;
@@ -38,6 +38,7 @@ use crate::mc::{self, ConvolveFn, Filter, McFns, SubBlockMotion};
 use crate::pixel::{self, GridBest, GridRows, PixelFns};
 use crate::sample::{self, Moments, SampleFns};
 use crate::sao::{self, Rect, SAO_EO_NEIGHBOURS, SaoFns, SaoStats};
+use crate::simd::saturate_i16;
 use crate::txfm::{self, Av1Quantizer, DctSize, TxfmFns};
 
 /// Pixel kernels for one ISA. Cheap to copy; create one per encoder or
@@ -4071,9 +4072,10 @@ impl Dsp {
     }
 
     /// H.264 forward 4x4 core transform (`Cf · X · Cfᵀ`, unscaled) of every
-    /// 4x4 block of a residual region (row-major at `stride`): `out` holds
-    /// the blocks in raster order, `blocks_wide` per row of blocks, each in
-    /// raster order (`row * 4 + column`).
+    /// 4x4 block of a residual region (row-major at `stride`, 8-bit
+    /// residuals): `out` holds the blocks in raster order, `blocks_wide` per
+    /// row of blocks, each in raster order (`row * 4 + column`), in 16 bits
+    /// (at most 9180).
     ///
     /// # Panics
     ///
@@ -4084,7 +4086,7 @@ impl Dsp {
         residual: &[i16],
         stride: usize,
         blocks_wide: usize,
-        out: &mut [[i32; 16]],
+        out: &mut [[i16; 16]],
     ) {
         assert!(
             blocks_wide > 0 && out.len().is_multiple_of(blocks_wide),
@@ -4126,13 +4128,14 @@ impl Dsp {
     }
 
     /// H.264 forward 8x8 transform, `(F · X · Fᵀ + 32) >> 6` with `F` 8
-    /// times the inverse basis (`codec_txfm` module docs), of the residual
-    /// at `residual` (row-major, `stride`); coefficients in raster order.
+    /// times the inverse basis (`codec_txfm` module docs), of the 8-bit
+    /// residual at `residual` (row-major, `stride`); coefficients in raster
+    /// order, in 16 bits (at most 16320).
     ///
     /// # Panics
     ///
     /// If `residual` does not cover 8 rows at `stride >= 8`.
-    pub fn h264_forward_8x8(&self, residual: &[i16], stride: usize, out: &mut [i32; 64]) {
+    pub fn h264_forward_8x8(&self, residual: &[i16], stride: usize, out: &mut [i16; 64]) {
         check_square_i16(8, residual.len(), stride);
         // SAFETY: as for `hevc_forward`.
         unsafe { (self.codec_txfm.h264_forward_8x8)(residual, stride, out) }
@@ -4148,18 +4151,25 @@ impl Dsp {
     /// Intra16x16 or chroma block's DC is quantised separately with
     /// [`Self::h264_quantize_dc`] and overwritten by the caller); returns
     /// the number of non-zero levels.
-    pub fn h264_quantize_4x4(&self, blocks: &mut [[i32; 16]], q: &H264Quantizer) -> u32 {
+    pub fn h264_quantize_4x4(&self, blocks: &mut [[i16; 16]], q: &H264Quantizer) -> u32 {
         let (qbits, offset) = q.forward_terms(0);
         let mf = &QUANT_MF_4X4_POS[q.rem];
         // SAFETY: as for `hevc_forward`.
         unsafe {
-            (self.codec_txfm.quantize)(blocks.as_flattened_mut(), mf, offset, qbits, i32::MAX)
+            (self.codec_txfm.h264_quantize)(
+                blocks.as_flattened_mut(),
+                mf,
+                offset,
+                qbits,
+                H264_MAX_LEVEL,
+            )
         }
     }
 
     /// H.264 quantisation of a Hadamard-transformed DC block in place (luma
-    /// after the caller's halving, or 2x2 chroma): one more bit than AC.
-    pub fn h264_quantize_dc(&self, coeffs: &mut [i32], q: &H264Quantizer) -> u32 {
+    /// after the caller's halving, at most 32640 for 8-bit residuals, or
+    /// 2x2 chroma): one more bit than AC.
+    pub fn h264_quantize_dc(&self, coeffs: &mut [i16], q: &H264Quantizer) -> u32 {
         let (qbits, offset) = q.forward_terms(1);
         let mf = [QUANT_MF_4X4_POS[q.rem][0]; 16];
         let period = if coeffs.len().is_multiple_of(16) {
@@ -4168,7 +4178,9 @@ impl Dsp {
             1
         };
         // SAFETY: as for `hevc_forward`.
-        unsafe { (self.codec_txfm.quantize)(coeffs, &mf[..period], offset, qbits, i32::MAX) }
+        unsafe {
+            (self.codec_txfm.h264_quantize)(coeffs, &mf[..period], offset, qbits, H264_MAX_LEVEL)
+        }
     }
 
     /// Bit `i` set where `levels[i]` is non-zero.
@@ -4177,7 +4189,7 @@ impl Dsp {
     ///
     /// If there are more than 64 levels.
     #[must_use]
-    pub fn nonzero_mask(&self, levels: &[i32]) -> u64 {
+    pub fn nonzero_mask(&self, levels: &[i16]) -> u64 {
         assert!(
             levels.len() <= MAX_MASK_LEVELS,
             "nonzero_mask of {} levels",
@@ -4189,11 +4201,11 @@ impl Dsp {
     }
 
     /// H.264 quantisation of an 8x8 block in place (`qbits = 16 + qP / 6`).
-    pub fn h264_quantize_8x8(&self, coeffs: &mut [i32; 64], q: &H264Quantizer) -> u32 {
+    pub fn h264_quantize_8x8(&self, coeffs: &mut [i16; 64], q: &H264Quantizer) -> u32 {
         let (qbits, offset) = q.forward_terms(1);
         let mf = &QUANT_MF_8X8_POS[q.rem];
         // SAFETY: as for `hevc_forward`.
-        unsafe { (self.codec_txfm.quantize)(coeffs, mf, offset, qbits, i32::MAX) }
+        unsafe { (self.codec_txfm.h264_quantize)(coeffs, mf, offset, qbits, H264_MAX_LEVEL) }
     }
 
     /// Transform and quantise the four raster-order 8x8 blocks of a 16x16
@@ -4209,7 +4221,7 @@ impl Dsp {
         stride: usize,
         zero_mask: u8,
         q: &H264Quantizer,
-        out: &mut [[i32; 64]; 4],
+        out: &mut [[i16; 64]; 4],
     ) -> [u32; 4] {
         check_square_i16(16, residual.len(), stride);
         // SAFETY: the complete macroblock is checked above, and dispatch
@@ -4232,8 +4244,8 @@ impl Dsp {
         residual: &[i16],
         stride: usize,
         q: &H264Quantizer,
-        ac: &mut [[i32; 16]; 4],
-    ) -> ([i32; 4], u32) {
+        ac: &mut [[i16; 16]; 4],
+    ) -> ([i16; 4], u32) {
         check_square_i16(8, residual.len(), stride);
         // SAFETY: the 8x8 block is checked above; the table matches a
         // supported ISA.
@@ -4241,17 +4253,18 @@ impl Dsp {
     }
 
     /// H.264 scaling of 4x4 blocks (§8.5.12.1, flat weights), every
-    /// position; Intra16x16 and chroma callers replace position 0 with the
-    /// separately scaled DC.
+    /// position, saturated into 16 bits as our decoder clamps them;
+    /// Intra16x16 and chroma callers replace position 0 with the separately
+    /// scaled DC.
     ///
     /// # Panics
     ///
     /// If `out` is shorter than `levels`.
     pub fn h264_dequantize_4x4(
         &self,
-        levels: &[[i32; 16]],
+        levels: &[[i16; 16]],
         q: &H264Quantizer,
-        out: &mut [[i32; 16]],
+        out: &mut [[i16; 16]],
     ) {
         assert!(out.len() >= levels.len(), "fewer output blocks than input");
         let shift = q.per as i32 - 4;
@@ -4266,22 +4279,22 @@ impl Dsp {
         }
     }
 
-    /// Intra16x16 luma DC: inverse Hadamard, then scaling (§8.5.10).
+    /// Intra16x16 luma DC: inverse Hadamard (in 32 bits: its sums exceed
+    /// 16), then scaling (§8.5.10), saturated into 16 bits as our decoder
+    /// clamps the scaled values.
     #[must_use]
-    pub fn h264_dequantize_luma_dc(&self, levels: &[i32; 16], q: &H264Quantizer) -> [i32; 16] {
-        let f = self.h264_hadamard_4x4(levels);
-        let ls = [LEVEL_SCALE_4X4[q.rem][0]; 16];
-        let mut out = [0; 16];
-        // SAFETY: as for `hevc_forward`.
-        unsafe { (self.codec_txfm.h264_dequantize)(&f, &ls, q.per as i32 - 6, &mut out) };
-        out
+    pub fn h264_dequantize_luma_dc(&self, levels: &[i16; 16], q: &H264Quantizer) -> [i16; 16] {
+        let f = self.h264_hadamard_4x4(&levels.map(i32::from));
+        let ls = LEVEL_SCALE_4X4[q.rem][0];
+        f.map(|v| saturate_i16(h264_scale_level(v, ls, q.per as i32 - 6)))
     }
 
     /// 4:2:0 chroma DC: inverse 2x2 transform, then scaling (§8.5.11.1–2,
-    /// eq. 8-330). Four values: plain scalar code on every ISA.
+    /// eq. 8-330), saturated into 16 bits as our decoder clamps the scaled
+    /// values. Four values: plain scalar code on every ISA.
     #[must_use]
-    pub fn h264_dequantize_chroma_dc(&self, levels: &[i32; 4], q: &H264Quantizer) -> [i32; 4] {
-        let c = levels;
+    pub fn h264_dequantize_chroma_dc(&self, levels: &[i16; 4], q: &H264Quantizer) -> [i16; 4] {
+        let c = levels.map(i32::from);
         let f = [
             c[0] + c[1] + c[2] + c[3],
             c[0] - c[1] + c[2] - c[3],
@@ -4289,7 +4302,7 @@ impl Dsp {
             c[0] - c[1] - c[2] + c[3],
         ];
         let scale = LEVEL_SCALE_4X4[q.rem][0];
-        f.map(|v| ((v * scale) << q.per) >> 5)
+        f.map(|v| saturate_i16(((v * scale) << q.per) >> 5))
     }
 
     /// H.264 reconstruction of the 4x4 blocks of a region in place: each
@@ -4310,8 +4323,8 @@ impl Dsp {
     /// shorter than `levels`, or `dst` does not cover the region.
     pub fn h264_add_inverse_4x4(
         &self,
-        levels: &[[i32; 16]],
-        dc: Option<&[i32]>,
+        levels: &[[i16; 16]],
+        dc: Option<&[i16]>,
         q: &H264Quantizer,
         blocks_wide: usize,
         dst: &mut PlaneViewMut<'_>,
@@ -4348,31 +4361,24 @@ impl Dsp {
     }
 
     /// H.264 reconstruction of an 8x8 block in place: `levels` scaled
-    /// (§8.5.13.1, flat weights), inverse transformed (§8.5.13.2) and added
-    /// to `dst`, which holds the prediction, clamped to 8 bits. As
-    /// [`Self::h264_dequantize_8x8`], [`Self::h264_inverse_8x8`] and
-    /// [`Self::add_residual`]; zero and DC-only blocks as in
-    /// [`Self::h264_add_inverse_4x4`].
+    /// (§8.5.13.1, flat weights) into 16 bits by
+    /// [`Self::h264_dequantize_8x8`], then inverse transformed (§8.5.13.2)
+    /// and added to `dst`, which holds the prediction, by the decoder's
+    /// 16-bit inverse [`Self::h264_add_scaled_8x8`] (zero and DC-only
+    /// blocks as there).
     ///
     /// # Panics
     ///
     /// If `dst` is smaller than 8x8.
     pub fn h264_add_inverse_8x8(
         &self,
-        levels: &[i32; 64],
+        levels: &[i16; 64],
         q: &H264Quantizer,
         dst: &mut PlaneViewMut<'_>,
     ) {
-        assert!(
-            dst.width() >= 8 && dst.height() >= 8,
-            "destination smaller than 8x8"
-        );
-        let stride = dst.stride();
-        let scale = (&LEVEL_SCALE_8X8[q.rem], q.per as i32 - 6);
-        // SAFETY: as for `h264_add_inverse_4x4`.
-        unsafe {
-            (self.codec_txfm.h264_add_inverse_8x8)(levels, scale, dst.data_mut(), stride);
-        }
+        let mut scaled = [0; 64];
+        self.h264_dequantize_8x8(levels, q, &mut scaled);
+        self.h264_add_scaled_8x8(&scaled, dst);
     }
 
     /// H.264 reconstruction of 4x4 blocks whose coefficients are already
@@ -4456,8 +4462,9 @@ impl Dsp {
         }
     }
 
-    /// H.264 scaling of an 8x8 block (§8.5.13.1, flat weights).
-    pub fn h264_dequantize_8x8(&self, levels: &[i32; 64], q: &H264Quantizer, out: &mut [i32; 64]) {
+    /// H.264 scaling of an 8x8 block (§8.5.13.1, flat weights), saturated
+    /// into 16 bits as our decoder clamps the scaled values.
+    pub fn h264_dequantize_8x8(&self, levels: &[i16; 64], q: &H264Quantizer, out: &mut [i16; 64]) {
         // SAFETY: as for `hevc_forward`.
         unsafe {
             (self.codec_txfm.h264_dequantize)(

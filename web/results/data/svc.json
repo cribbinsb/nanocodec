@@ -1,0 +1,507 @@
+{
+ "source": [
+  "docs/results/svc-chart.csv"
+ ],
+ "rows": [
+  {
+   "family": "x264-medium",
+   "label": "x264 medium (720p)",
+   "ours": false,
+   "j": 0.0,
+   "psnr": 0.0,
+   "vmaf": 0.0,
+   "iqr": [
+    0.0,
+    0.0
+   ],
+   "base_j": null,
+   "base_share": null,
+   "op180_j": null,
+   "fps": {
+    "jetson": 26.67,
+    "x86": 67.58
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1",
+   "label": "AV1 Default 720p (single layer)",
+   "ours": true,
+   "j": -52.98,
+   "psnr": -57.31,
+   "vmaf": -57.7,
+   "iqr": [
+    -55.71,
+    -42.99
+   ],
+   "base_j": null,
+   "base_share": null,
+   "op180_j": null,
+   "fps": {
+    "jetson": 41.11,
+    "x86": 92.38
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-vp9",
+   "label": "VP9 Default 720p (single layer)",
+   "ours": true,
+   "j": -50.14,
+   "psnr": -54.37,
+   "vmaf": -53.64,
+   "iqr": [
+    -53.85,
+    -39.64
+   ],
+   "base_j": null,
+   "base_share": null,
+   "op180_j": null,
+   "fps": {
+    "jetson": 34.37,
+    "x86": 89.73
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1@av1-svc",
+   "label": "AV1 SVC L2T1",
+   "ours": true,
+   "j": -44.93,
+   "psnr": -49.64,
+   "vmaf": -50.13,
+   "iqr": [
+    -50.0,
+    -33.33
+   ],
+   "base_j": -6.5,
+   "base_share": 0.222,
+   "op180_j": null,
+   "fps": {
+    "jetson": 23.97,
+    "x86": 54.78
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1@av1-svc+L2T3",
+   "label": "AV1 SVC L2T3",
+   "ours": true,
+   "j": -46.6,
+   "psnr": -50.7,
+   "vmaf": -52.23,
+   "iqr": [
+    -49.03,
+    -34.18
+   ],
+   "base_j": -8.57,
+   "base_share": 0.227,
+   "op180_j": null,
+   "fps": {
+    "jetson": 25.49,
+    "x86": 57.86
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1@av1-svc-fast",
+   "label": "AV1 SVC Fast L2T1",
+   "ours": true,
+   "j": -40.06,
+   "psnr": -41.71,
+   "vmaf": -46.7,
+   "iqr": [
+    -44.46,
+    -25.72
+   ],
+   "base_j": 6.98,
+   "base_share": 0.223,
+   "op180_j": null,
+   "fps": {
+    "jetson": 42.4,
+    "x86": 78.44
+   },
+   "clips": 8
+  },
+  {
+   "family": "simulcast-av1",
+   "label": "AV1 simulcast 720p+360p",
+   "ours": true,
+   "j": -33.31,
+   "psnr": -37.92,
+   "vmaf": -38.81,
+   "iqr": [
+    -34.93,
+    -20.13
+   ],
+   "base_j": null,
+   "base_share": 0.348,
+   "op180_j": null,
+   "fps": {
+    "jetson": 32.89,
+    "x86": 72.31
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu8-L2T1",
+   "label": "libaom SVC L2T1 rt 8",
+   "ours": false,
+   "j": -8.53,
+   "psnr": -12.54,
+   "vmaf": -10.08,
+   "iqr": [
+    -20.43,
+    8.57
+   ],
+   "base_j": 47.38,
+   "base_share": 0.314,
+   "op180_j": null,
+   "fps": {
+    "jetson": 24.0,
+    "x86": 54.2
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu10-L2T1",
+   "label": "libaom SVC L2T1 rt 10",
+   "ours": false,
+   "j": -8.7,
+   "psnr": -14.01,
+   "vmaf": -11.42,
+   "iqr": [
+    -17.88,
+    10.14
+   ],
+   "base_j": 42.64,
+   "base_share": 0.316,
+   "op180_j": null,
+   "fps": {
+    "jetson": 30.62,
+    "x86": 68.58
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu8-L2T3",
+   "label": "libaom SVC L2T3 rt 8",
+   "ours": false,
+   "j": 16.44,
+   "psnr": 14.41,
+   "vmaf": 12.07,
+   "iqr": [
+    -4.62,
+    37.58
+   ],
+   "base_j": 60.11,
+   "base_share": 0.306,
+   "op180_j": null,
+   "fps": {
+    "jetson": 26.05,
+    "x86": 59.35
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu10-L2T3",
+   "label": "libaom SVC L2T3 rt 10",
+   "ours": false,
+   "j": 18.14,
+   "psnr": 15.06,
+   "vmaf": 14.93,
+   "iqr": [
+    0.64,
+    36.02
+   ],
+   "base_j": 59.65,
+   "base_share": 0.303,
+   "op180_j": null,
+   "fps": {
+    "jetson": 32.83,
+    "x86": 77.08
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-vp9@vp9-svc",
+   "label": "VP9 SVC L2T1",
+   "ours": true,
+   "j": -40.68,
+   "psnr": -44.55,
+   "vmaf": -45.1,
+   "iqr": [
+    -45.51,
+    -28.07
+   ],
+   "base_j": -0.75,
+   "base_share": 0.208,
+   "op180_j": null,
+   "fps": {
+    "jetson": 22.33,
+    "x86": 56.23
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-vp9@vp9-svc+L2T3",
+   "label": "VP9 SVC L2T3",
+   "ours": true,
+   "j": -42.43,
+   "psnr": -46.16,
+   "vmaf": -46.84,
+   "iqr": [
+    -46.59,
+    -29.18
+   ],
+   "base_j": -3.13,
+   "base_share": 0.214,
+   "op180_j": null,
+   "fps": {
+    "jetson": 23.44,
+    "x86": 58.83
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-vp9@vp9-svc-fast",
+   "label": "VP9 SVC Fast L2T1",
+   "ours": true,
+   "j": -35.19,
+   "psnr": -37.92,
+   "vmaf": -40.52,
+   "iqr": [
+    -38.97,
+    -23.74
+   ],
+   "base_j": 16.43,
+   "base_share": 0.226,
+   "op180_j": null,
+   "fps": {
+    "jetson": 33.74,
+    "x86": 74.22
+   },
+   "clips": 8
+  },
+  {
+   "family": "simulcast-vp9",
+   "label": "VP9 simulcast 720p+360p",
+   "ours": true,
+   "j": -29.58,
+   "psnr": -34.12,
+   "vmaf": -33.17,
+   "iqr": [
+    -33.17,
+    -15.97
+   ],
+   "base_j": null,
+   "base_share": 0.347,
+   "op180_j": null,
+   "fps": {
+    "jetson": 28.07,
+    "x86": 73.24
+   },
+   "clips": 8
+  },
+  {
+   "family": "libvpx-svc-cpu7-L2T1",
+   "label": "libvpx SVC L2T1 rt 7",
+   "ours": false,
+   "j": 30.29,
+   "psnr": 31.3,
+   "vmaf": 20.61,
+   "iqr": [
+    18.21,
+    46.92
+   ],
+   "base_j": 114.76,
+   "base_share": 0.309,
+   "op180_j": null,
+   "fps": {
+    "jetson": 22.86,
+    "x86": 53.35
+   },
+   "clips": 8
+  },
+  {
+   "family": "libvpx-svc-cpu9-L2T1",
+   "label": "libvpx SVC L2T1 rt 9",
+   "ours": false,
+   "j": 27.44,
+   "psnr": 29.56,
+   "vmaf": 17.77,
+   "iqr": [
+    13.05,
+    36.03
+   ],
+   "base_j": 108.24,
+   "base_share": 0.304,
+   "op180_j": null,
+   "fps": {
+    "jetson": 37.56,
+    "x86": 72.39
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1@av1-svc3",
+   "label": "AV1 SVC L3T1",
+   "ours": true,
+   "j": -39.57,
+   "psnr": -44.31,
+   "vmaf": -45.79,
+   "iqr": [
+    -44.03,
+    -28.03
+   ],
+   "base_j": 20.51,
+   "base_share": 0.274,
+   "op180_j": 4.95,
+   "fps": {
+    "jetson": 22.31,
+    "x86": 51.87
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1@av1-svc3+L3T3",
+   "label": "AV1 SVC L3T3",
+   "ours": true,
+   "j": -41.66,
+   "psnr": -45.89,
+   "vmaf": -47.99,
+   "iqr": [
+    -43.34,
+    -28.9
+   ],
+   "base_j": 17.53,
+   "base_share": 0.28,
+   "op180_j": 0.81,
+   "fps": {
+    "jetson": 23.27,
+    "x86": 54.34
+   },
+   "clips": 8
+  },
+  {
+   "family": "nanocodec-av1@av1-svc3-fast",
+   "label": "AV1 SVC Fast L3T1",
+   "ours": true,
+   "j": -33.7,
+   "psnr": -35.45,
+   "vmaf": -40.62,
+   "iqr": [
+    -37.01,
+    -21.28
+   ],
+   "base_j": 37.21,
+   "base_share": 0.275,
+   "op180_j": 12.44,
+   "fps": {
+    "jetson": 39.87,
+    "x86": 75.43
+   },
+   "clips": 8
+  },
+  {
+   "family": "simulcast3-av1",
+   "label": "AV1 simulcast 720p+360p+180p",
+   "ours": true,
+   "j": -33.68,
+   "psnr": -38.29,
+   "vmaf": -39.08,
+   "iqr": [
+    -35.54,
+    -20.07
+   ],
+   "base_j": null,
+   "base_share": 0.258,
+   "op180_j": null,
+   "fps": {
+    "jetson": 31.75,
+    "x86": 72.7
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu8-L3T1",
+   "label": "libaom SVC L3T1 rt 8",
+   "ours": false,
+   "j": -1.69,
+   "psnr": -5.08,
+   "vmaf": -3.98,
+   "iqr": [
+    -15.39,
+    16.67
+   ],
+   "base_j": 87.51,
+   "base_share": 0.322,
+   "op180_j": 38.09,
+   "fps": {
+    "jetson": 20.34,
+    "x86": 46.19
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu10-L3T1",
+   "label": "libaom SVC L3T1 rt 10",
+   "ours": false,
+   "j": -6.68,
+   "psnr": -12.71,
+   "vmaf": -9.29,
+   "iqr": [
+    -15.41,
+    13.35
+   ],
+   "base_j": 80.3,
+   "base_share": 0.326,
+   "op180_j": 42.24,
+   "fps": {
+    "jetson": 27.57,
+    "x86": 64.5
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu8-L3T3",
+   "label": "libaom SVC L3T3 rt 8",
+   "ours": false,
+   "j": 19.07,
+   "psnr": 16.34,
+   "vmaf": 15.55,
+   "iqr": [
+    -1.28,
+    39.75
+   ],
+   "base_j": 118.03,
+   "base_share": 0.324,
+   "op180_j": 42.17,
+   "fps": {
+    "jetson": 24.13,
+    "x86": 53.26
+   },
+   "clips": 8
+  },
+  {
+   "family": "libaom-svc-cpu10-L3T3",
+   "label": "libaom SVC L3T3 rt 10",
+   "ours": false,
+   "j": 21.13,
+   "psnr": 17.53,
+   "vmaf": 17.25,
+   "iqr": [
+    2.41,
+    39.08
+   ],
+   "base_j": 121.53,
+   "base_share": 0.323,
+   "op180_j": 48.26,
+   "fps": {
+    "jetson": 30.17,
+    "x86": 65.88
+   },
+   "clips": 8
+  }
+ ]
+}

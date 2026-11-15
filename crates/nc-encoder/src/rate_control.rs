@@ -14,7 +14,6 @@
 //! make a requested rate unattainable; counters expose that fact. With
 //! [`RateControlConfig::frame_drop`] the encoder skips inter frames that would
 //! overflow the buffer even at the maximum quantizer ([`RateController::should_drop`]).
-use crate::fixed_overhead::FixedOverhead;
 use crate::layer::LayerPosition;
 use crate::params::RateParams;
 use crate::period_ledger::fixed_camera;
@@ -25,8 +24,8 @@ use crate::qp_cadence::{
 use crate::quality_cap::QualityFloor;
 use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
-use crate::refinement_loan::StillRate;
 use crate::skip_budget::{self, SkipBudget};
+use crate::still_rate::StillRate;
 use crate::{Codec, FrameRate};
 use std::fmt;
 
@@ -175,26 +174,9 @@ pub(crate) fn first_key_lookahead(params: &RateParams, model: &RateModel) -> f64
     }
 }
 /// The QP cadence rate control plans with: the configured one, scaled for
-/// the backend's `calibration` and flattened by [`spatial_aware`].
+/// the backend's `calibration`.
 fn rate_cadence(params: &RateParams, calibration: &RateModel) -> QpCadence {
-    spatial_aware(
-        QpCadence::from_params(params).scaled(cadence_scale(params, calibration)),
-        params,
-    )
-}
-
-/// `cadence`, flattened when the cyclic spatial cadence
-/// (`rate.cadence_spatial`) gives its boost to blocks instead of frames,
-/// or when planned refinements (`rate.refine`) refine still blocks instead
-/// of whole base frames (their start-up cadence too with `refine_startup` 0).
-pub(crate) fn spatial_aware(cadence: QpCadence, params: &RateParams) -> QpCadence {
-    if params.refine >= 0.5 && params.refine_startup < 0.5 {
-        cadence.flat()
-    } else if params.cadence_spatial >= 0.5 || params.refine >= 0.5 {
-        cadence.flattened()
-    } else {
-        cadence
-    }
+    QpCadence::from_params(params).scaled(cadence_scale(params, calibration))
 }
 
 /// The cadence scale in force: `rate.cadence_scale` when set, else the
@@ -498,13 +480,6 @@ const STARTUP_CAMERA_MOTION: f64 = 1.0;
 /// Range of the debt correction of a frame budget (`budget`): a buffer of
 /// debt quarters it, a buffer of credit doubles it at most.
 const MIN_BUDGET_CORRECTION: f64 = 0.25;
-/// Steps above the closed-form level that `inter_level_step` searches when
-/// it prices the refinement of the held still picture (`rate.held_quality`):
-/// eight times, three octaves, is beyond any held step the level drifted
-/// below in the audit's traces.
-const HELD_SEARCH_RANGE: f64 = 8.;
-/// Bisection steps of that search: 2^-20 of three octaves.
-const HELD_SEARCH_ITERATIONS: u32 = 20;
 /// Least of a held key's repayment phase, in uniform budgets, left to its
 /// inter frames when the key alone takes the whole phase (`boost_repaying`).
 const HELD_KEY_MIN_PHASE_SHARE: f64 = 1.;
@@ -660,10 +635,6 @@ pub(crate) struct RateController {
     /// Effective step ratio of the frame's block-level offsets (planned at
     /// `select`, replaced by the realised one before `feedback`); 1 without.
     block_ratio: f64,
-    /// Effective step ratio of the rows in-frame rate control coarsened
-    /// (`inframe.rs`; set before `feedback` or a re-code learns from a
-    /// coding, reset after `feedback`); 1 without.
-    inframe_ratio: f64,
     /// `rate.key_repay_seconds`: the moving-scene repay horizon and the
     /// debit term's horizon.
     key_repay_seconds: f64,
@@ -732,8 +703,6 @@ pub(crate) struct RateController {
     level_step_scale: f64,
     /// The complexity hint inter levels are planned from (`rate.level_hint_weight`).
     level_hint: LevelHint,
-    /// Inter frames' fixed overhead (`rate.fixed_overhead`).
-    overhead: FixedOverhead,
     last_peak: f64,
     last_key: bool,
     last_predicted: f64,
@@ -814,7 +783,6 @@ impl RateController {
             held_per_frame: 0.,
             held_spent: 0.,
             block_ratio: 1.,
-            inframe_ratio: 1.,
             key_repay_seconds: f64::from(params.key_repay_seconds),
             key_repay_still_seconds: f64::from(params.key_repay_still_seconds),
             key_repay_still_from: f64::from(params.key_repay_still_from),
@@ -847,7 +815,6 @@ impl RateController {
             last_budget: 1.,
             level_step_scale: f64::from(params.level_step_scale),
             level_hint: LevelHint::new(f64::from(params.level_hint_weight)),
-            overhead: FixedOverhead::new(params.fixed_overhead >= 0.5),
             last_peak: 1.,
             last_key: false,
             last_predicted: 1.,
@@ -1103,7 +1070,7 @@ impl RateController {
             let boost = self.key_boost();
             self.phase_inter_budget(boost) * boost
         } else {
-            (self.inter_budget() - self.still.repayment())
+            self.inter_budget()
                 .max(self.inter_budget() * MIN_BUDGET_CORRECTION)
                 * self.share.budget_scale
                 * skip_scale
@@ -1132,9 +1099,9 @@ impl RateController {
     fn excess(&self) -> f64 {
         self.fullness - self.settings.capacity / 2. - self.scheduled_debt()
     }
-    /// Debt repaid on schedule: the key's loan and a refinement's.
+    /// Debt repaid on schedule: the key's loan.
     fn scheduled_debt(&self) -> f64 {
-        self.scheduled_key_debt + self.still.outstanding()
+        self.scheduled_key_debt
     }
     /// The debit term, after a frame interval: the debt correction alone
     /// is proportional, and on content whose bits come in one-sided bursts
@@ -1277,52 +1244,19 @@ impl RateController {
         &self,
         hint: f64,
         budget: f64,
-        (strength, still): (f64, f64),
+        strength: f64,
         layer: LayerPosition,
         distance: u64,
     ) -> Option<f64> {
         let roles = self.cycle_roles(strength, layer, distance)?;
         let exponent = self.settings.config.rate_exponent;
         let frames = roles.len() as f64;
-        let ordinary = |step: f64| {
-            roles
-                .iter()
-                .map(|&(model, ratio)| model * hint / (step * ratio).powf(exponent))
-                .sum::<f64>()
-        };
         let weighted: f64 = roles
             .iter()
             .map(|&(model, ratio)| model * ratio.powf(-exponent))
             .sum();
-        // The frames' fixed overhead is not the content's to spend.
-        let budget = (budget - self.overhead.bits()).max(1.);
-        let closed = (weighted * hint / (frames * budget)).powf(1. / exponent);
-        let refine = |step: f64| {
-            roles
-                .iter()
-                .map(|&(_, ratio)| self.still.refine_bits(step * ratio, still))
-                .sum::<f64>()
-        };
-        if refine(closed) <= 0. {
-            return Some(closed);
-        }
-        // The refinement a finer level triggers is part of the plan: the
-        // coarsest step whose ordinary and refinement bits fit the cycle's
-        // budget (both fall as the step grows, so a bisection on log step).
-        let fits = |step: f64| ordinary(step) + refine(step) <= frames * budget;
-        let (mut lo, mut hi) = (closed.ln(), (closed * HELD_SEARCH_RANGE).ln());
-        if !fits(hi.exp()) {
-            return Some(hi.exp());
-        }
-        for _ in 0..HELD_SEARCH_ITERATIONS {
-            let mid = f64::midpoint(lo, hi);
-            if fits(mid.exp()) {
-                hi = mid;
-            } else {
-                lo = mid;
-            }
-        }
-        Some(hi.exp())
+        let budget = budget.max(1.);
+        Some((weighted * hint / (frames * budget)).powf(1. / exponent))
     }
 
     /// The per-role bits models and step ratios of the cadence cycle (or
@@ -1584,21 +1518,6 @@ impl RateController {
         )
     }
 
-    /// The frame just selected on `budget`: its plan is its ordinary budget
-    /// and prediction plus its refinement loan (0 on an ordinary frame).
-    /// A flat inter frame at quantizer `q` with `still` share also plans
-    /// the refinement of the held still picture it triggers
-    /// (`rate.held_quality`).
-    fn add_plan_extras(&mut self, (key, flat): (bool, bool), q: u32, still: f64, budget: f64) {
-        if !key && flat {
-            let step = self.steps[q as usize];
-            self.last_predicted += self.still.plan_held(step, still, self.last_predicted);
-        }
-        let loan = self.still.on_select(key, self.last_predicted, budget);
-        self.last_predicted += loan;
-        self.last_budget = budget + loan;
-    }
-
     /// `offset` with no base boost in the last `rate.prekey_quiet` before a
     /// scheduled periodic key: whatever a finer frame refines there the key
     /// codes again (AV1 Default, 600 f still points: 8-20% of the base
@@ -1608,23 +1527,6 @@ impl RateController {
         let to_key = (period > 0 && period != u64::from(u32::MAX))
             .then(|| period - (index - self.last_key_index) % period);
         self.still.quieted(to_key, offset)
-    }
-
-    /// The largest loan a refinement of the next inter frame may take: its
-    /// `rate.refine_budgets` uniform budgets, within the room the strict
-    /// buffer leaves beyond the frame's own budget (so a refinement that
-    /// costs its loan is never re-coded); 0 when off or below
-    /// `rate.refine_min_budgets`. With the smallest worthwhile loan.
-    pub(crate) fn refinement_room(&self) -> Option<(f64, f64)> {
-        let room = (self.strict_room(false) - self.budget(false)).max(0.);
-        self.still.room(self.uniform_budget(), room)
-    }
-
-    /// Plan the next inter frame as a refinement whose blocks were
-    /// estimated at `estimate` bits: its loan comes on top of its ordinary
-    /// budget (`RefinementLoan`).
-    pub(crate) fn plan_refinement(&mut self, estimate: f64) {
-        self.still.plan(estimate);
     }
 
     /// The floor of a frame at `offset` QP from the inter level: the quality
@@ -1753,7 +1655,6 @@ impl RateController {
         self.pixels = pixels as f64;
         self.relearn = [true; MODEL_CLASSES];
         self.level_hint.mean = None;
-        self.overhead.reset();
     }
 
     /// Largest change of the inter level from one frame to the next: the
@@ -1853,10 +1754,9 @@ impl RateController {
         let level_step = if key {
             self.model[KEY_MODEL].map(|m| (m * h / budget).powf(1. / exponent))
         } else {
-            let still = hint.static_fraction;
             let distance = index - self.last_key_index;
             let planned = self.level_hint.plan(h);
-            self.inter_level_step(planned, budget, (strength, still), layer, distance)
+            self.inter_level_step(planned, budget, strength, layer, distance)
         }
         .unwrap_or_else(|| self.bootstrap_step(key, hint, budget));
         // Block-level offsets change the frame's effective step: the frame
@@ -1923,7 +1823,7 @@ impl RateController {
         self.last_peak =
             self.settings.peak / self.frame_fps + (self.settings.capacity - self.occupancy);
         self.last_predicted = self.predicted_bits(q, budget);
-        self.add_plan_extras((key, layer.is_flat()), q, hint.static_fraction, budget);
+        self.last_budget = budget;
         let cadence_offset = if key || !layer.is_flat() {
             0.
         } else {
@@ -2007,15 +1907,6 @@ impl RateController {
         Some(quantizer)
     }
 
-    /// The bounds in-frame rate control (`inframe.rs`) steers the planned
-    /// frame by: the room `recode_quantizer` would enforce on it (infinite
-    /// when re-coding is off) and the uncorrected frame budget, which does
-    /// not shrink with the debt (bounds scaled by the corrected budget
-    /// starved the frames after a key: audit addendum, `rate.burst_cycles`).
-    pub(crate) fn inframe_bounds(&self) -> (f64, f64) {
-        (self.strict_room(self.last_key), self.uniform_budget())
-    }
-
     /// Frames between scheduled key frames from now on (`u32::MAX`: none,
     /// as with intra refresh), for the key budget's amortization.
     pub fn set_key_period(&mut self, period: u32) {
@@ -2081,10 +1972,7 @@ impl RateController {
             return None;
         };
         let s = self.settings;
-        Some(
-            self.overhead.bits()
-                + model * hint / self.steps[s.max as usize].powf(s.config.rate_exponent),
-        )
+        Some(model * hint / self.steps[s.max as usize].powf(s.config.rate_exponent))
     }
 
     /// The bits the current frame's model slot predicts at quantizer `q`
@@ -2092,19 +1980,8 @@ impl RateController {
     fn predicted_bits(&self, q: u32, fallback: f64) -> f64 {
         let exponent = self.settings.config.rate_exponent;
         self.model[self.current_slot].map_or(fallback, |m| {
-            self.slot_overhead(self.current_slot)
-                + m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
+            m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
         })
-    }
-
-    /// The fixed overhead of a frame of model slot `slot`: inter frames'
-    /// (`rate.fixed_overhead`), none for keys.
-    fn slot_overhead(&self, slot: usize) -> f64 {
-        if slot == KEY_MODEL {
-            0.
-        } else {
-            self.overhead.bits()
-        }
     }
 
     /// The single offset, in QP units, whose step gives a frame the same
@@ -2134,13 +2011,6 @@ impl RateController {
     /// (what the blocks were actually coded with), before `feedback`.
     pub fn set_realised_block_offset(&mut self, offset_qp: f64) {
         self.block_ratio = step_ratio(offset_qp);
-    }
-
-    /// The realised offset, in QP units, of the rows in-frame rate control
-    /// coarsened in the coding about to be learnt from (`feedback` or
-    /// `recode_quantizer`), on top of the block offsets.
-    pub(crate) fn set_inframe_offset(&mut self, offset_qp: f64) {
-        self.inframe_ratio = step_ratio(offset_qp);
     }
 
     /// Account for a dropped frame: its interval passes with no bits, so the
@@ -2197,9 +2067,9 @@ impl RateController {
     /// current quantizer.
     fn learn(&mut self, bits: u64) {
         let class = self.current_slot;
-        let content = (bits as f64 - self.slot_overhead(class)).max(1.);
+        let content = (bits as f64).max(1.);
         let value = content
-            * (self.steps[self.current as usize] * self.block_ratio * self.inframe_ratio)
+            * (self.steps[self.current as usize] * self.block_ratio)
                 .powf(self.settings.config.rate_exponent)
             / self.last_hint;
         let ratio = (bits as f64 / self.last_predicted.max(1.))
@@ -2226,23 +2096,7 @@ impl RateController {
         self.model_hint[class] = self.last_hint;
     }
     pub fn feedback(&mut self, bits: u64) {
-        // A refinement frame's bits are its ordinary plan plus the refined
-        // blocks: the role model learns from ordinary frames only, the loan
-        // its cost scale.
-        // A frame refining the held still picture neither: its bits beyond
-        // the per-role prediction are the refinement's.
-        if !self.still.refining() && !self.still.held_refining() {
-            self.learn(bits);
-        }
-        if !self.last_key {
-            let uniform = self.uniform_budget();
-            self.overhead
-                .observe(bits as f64, self.stats.plan.static_fraction, uniform);
-        }
-        self.still.settle(bits as f64);
-        let key_step = self.last_key.then(|| self.steps[self.current as usize]);
-        self.still.observe_held(bits as f64, key_step);
-        self.inframe_ratio = 1.;
+        self.learn(bits);
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);
         let p = self.inter_budget();

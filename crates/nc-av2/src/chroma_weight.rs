@@ -21,11 +21,6 @@
 use crate::block_coder::pixel_step;
 use crate::transform::PlaneQindex;
 
-/// Bounds of the adaptive weight: the error ratio of a near-flat chroma
-/// plane (or a lossless one) must not drive it to extremes.
-const ADAPTIVE_MIN: f64 = 0.25;
-const ADAPTIVE_MAX: f64 = 16.0;
-
 /// The weight's controls (registered parameters).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ChromaWeight {
@@ -53,9 +48,7 @@ impl ChromaWeight {
     pub(crate) fn of(self, qindex: PlaneQindex, error_ratio: Option<f64>) -> f64 {
         let scale = f64::from(self.scale);
         match error_ratio.filter(|_| self.adapt_gain > 0.0) {
-            Some(ratio) => {
-                scale * (f64::from(self.adapt_gain) * ratio).clamp(ADAPTIVE_MIN, ADAPTIVE_MAX)
-            }
+            Some(ratio) => scale * nc_encoder::adaptive_error_weight(self.adapt_gain, ratio),
             None if self.by_step => scale / chroma_step_ratio(qindex).powi(2),
             None => scale,
         }

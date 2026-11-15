@@ -20,8 +20,8 @@ use super::{HevcForwardMode, HevcForwardStaging};
 use crate::simd::avx2::I32x8;
 
 use core::arch::x86_64::{
-    _mm256_castsi256_ps, _mm256_cmpeq_epi32, _mm256_loadu_si256, _mm256_movemask_ps,
-    _mm256_setzero_si256,
+    _mm256_cmpeq_epi16, _mm256_loadu_si256, _mm256_movemask_epi8, _mm256_packs_epi16,
+    _mm256_permute4x64_epi64, _mm256_setzero_si256,
 };
 
 /// The AVX2 table.
@@ -115,20 +115,23 @@ unsafe fn forward_bounded<T: Line<I32x8>, const N: usize, const LOG2: u32>(
     unsafe { g::hevc_forward_columns::<I32x8, T, N, LOG2>(m, limit, out, mode) }
 }
 
-/// `generic::nonzero_mask`: eight levels at a time compared with zero, their
-/// lane signs gathered by one `movemask`.
+/// `generic::nonzero_mask`: sixteen levels at a time compared with zero,
+/// their lane flags packed to bytes (in 128-bit lane order, so the packs
+/// pair the low and high halves) and gathered by one `movemask`.
 #[target_feature(enable = "avx2")]
-unsafe fn nonzero_mask(levels: &[i32]) -> u64 {
-    const LANES: usize = 8;
-    const LANE_MASK: u64 = (1 << LANES) - 1;
+unsafe fn nonzero_mask(levels: &[i16]) -> u64 {
+    const LANES: usize = 16;
     let (groups, rest) = levels.as_chunks::<LANES>();
     let zero = _mm256_setzero_si256();
     let mut mask = 0;
     for (g, group) in groups.iter().enumerate() {
-        // SAFETY: AVX2 is enabled here; `group` holds 8 levels.
+        // SAFETY: AVX2 is enabled here; `group` holds 16 levels.
         let v = unsafe { _mm256_loadu_si256(group.as_ptr().cast()) };
-        let zeros = _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero)));
-        mask |= (!(zeros as u64) & LANE_MASK) << (LANES * g);
+        let zeros = _mm256_cmpeq_epi16(v, zero);
+        // Bytes 0..8 of each 128-bit half are that half's eight flags.
+        let packed = _mm256_permute4x64_epi64::<0b1000>(_mm256_packs_epi16(zeros, zeros));
+        let flags = _mm256_movemask_epi8(packed) as u32 & 0xffff;
+        mask |= u64::from(!flags & 0xffff) << (LANES * g);
     }
     if !rest.is_empty() {
         mask |= super::generic::nonzero_mask(rest) << (LANES * groups.len());

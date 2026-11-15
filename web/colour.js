@@ -1,8 +1,8 @@
 // The colour of the samples the demo codes and shows: which matrix and range
 // a captured frame's YUV planes use (capture-worker.js), the same 8.8
 // fixed-point YCbCr -> RGB conversion as nc-dsp's `DisplayMatrix` for the
-// WebGL shader (renderer.js) and for the original frame shown on demand
-// (`SourcePicture`), so all three display paths give the same pixels.
+// WebGL shader (renderer.js) and for an Original view's pictures on the CPU
+// path (`i420ToRgba`, original-worker.js), so all display paths give the same pixels.
 //
 // Names are those of nc-web `SourceFrame`: 'bt601' and 'bt709' (limited
 // range), 'bt601-full' and 'bt709-full'. RGBA input (the test scene, frames
@@ -63,17 +63,12 @@ export function i420ToRgba(i420, width, height, colour) {
 }
 
 /**
- * A view's source frame (the picture it coded), as the decode worker returns
- * it: packed I420 of the view size and its colour. The RGBA image (for
- * "hold original" and the magnifier) is converted only when first asked for.
+ * A view's source frame (the picture it coded), as its worker returns it:
+ * packed I420 of the view size and its colour (an analysis switch scores the
+ * re-decoded picture against it, pipeline.js).
  */
 export class SourcePicture {
   constructor(i420, width, height, colour) {
     this.i420 = i420; this.width = width; this.height = height; this.colour = colour;
-    this.converted = null;
-  }
-  get image() {
-    this.converted ??= new ImageData(i420ToRgba(this.i420, this.width, this.height, this.colour), this.width, this.height);
-    return this.converted;
   }
 }

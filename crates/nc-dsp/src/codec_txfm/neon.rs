@@ -6,13 +6,13 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::aarch64::{
-    int16x4_t, int16x8_t, int32x4_t, uint32x4_t, vaddl_s16, vaddq_s16, vaddq_s32, vaddv_u8,
-    vandq_u8, vcombine_u8, vcombine_u16, vdupq_n_s32, vget_high_s16, vget_high_u8, vget_low_s16,
+    int16x4_t, int16x8_t, int32x4_t, uint16x8_t, vaddl_s16, vaddq_s16, vaddq_s32, vaddv_u8,
+    vandq_u8, vcombine_s16, vcombine_u8, vdupq_n_s32, vget_high_s16, vget_high_u8, vget_low_s16,
     vget_low_u8, vld1q_s16, vld1q_s32, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_n_s16, vmlaq_n_s16,
-    vmovl_high_s16, vmovl_s16, vmovn_u16, vmovn_u32, vmull_n_s16, vmulq_n_s16, vmulq_s32,
-    vqmovn_s32, vqshlq_s32, vreinterpretq_s16_s32, vreinterpretq_s32_s16, vrshlq_s32, vrshrq_n_s32,
-    vshlq_n_s16, vshlq_n_s32, vst1_s16, vst1q_s32, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16,
-    vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s32,
+    vmovn_u16, vmull_n_s16, vmulq_n_s16, vmulq_s32, vqmovn_s32, vqshlq_s32, vreinterpretq_s16_s32,
+    vreinterpretq_s16_s64, vreinterpretq_s32_s16, vreinterpretq_s64_s16, vrshlq_s32, vrshrq_n_s32,
+    vshlq_n_s16, vshlq_n_s32, vst1_s16, vst1q_s16, vsubl_s16, vsubq_s16, vsubq_s32, vtrn1q_s16,
+    vtrn1q_s32, vtrn2q_s16, vtrn2q_s32, vtstq_s16, vzip1q_s64, vzip2q_s64,
 };
 
 use super::generic::{H264Forward8x8, HEVC_DEQUANT_LEVEL_LIMIT};
@@ -61,29 +61,22 @@ unsafe fn h264_add_scaled_8x8(coeffs: &[i16; 64], dst: &mut [u8], stride: usize)
 /// Lane bits of 16 byte flags (two bytes of mask).
 const BYTE_LANE_BITS: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
 
-/// `generic::nonzero_mask`: sixteen levels at a time are compared with
-/// zero, narrowed to byte flags, masked with their lane bits and summed per
-/// half (scalar: about four instructions per level).
+/// `generic::nonzero_mask`: sixteen levels at a time (two 128-bit loads)
+/// are compared with zero, narrowed to byte flags, masked with their lane
+/// bits and summed per half (scalar: about four instructions per level).
 #[target_feature(enable = "neon")]
-unsafe fn nonzero_mask(levels: &[i32]) -> u64 {
+unsafe fn nonzero_mask(levels: &[i16]) -> u64 {
     let (rows, rest) = levels.as_chunks::<16>();
     // SAFETY: NEON is enabled here; the table holds 16 bytes.
     let bits = unsafe { vld1q_u8(BYTE_LANE_BITS.as_ptr()) };
     let mut mask = 0;
     for (r, row) in rows.iter().enumerate() {
-        // SAFETY: NEON is enabled here; each quarter of `row` holds 4 levels.
-        let flags: [uint32x4_t; 4] = core::array::from_fn(|q| unsafe {
-            let v = vld1q_s32(row[4 * q..].as_ptr());
-            vtstq_s32(v, v)
+        // SAFETY: NEON is enabled here; each half of `row` holds 8 levels.
+        let flags: [uint16x8_t; 2] = core::array::from_fn(|h| unsafe {
+            let v = vld1q_s16(row[8 * h..].as_ptr());
+            vtstq_s16(v, v)
         });
-        let halves = [
-            vcombine_u16(vmovn_u32(flags[0]), vmovn_u32(flags[1])),
-            vcombine_u16(vmovn_u32(flags[2]), vmovn_u32(flags[3])),
-        ];
-        let bytes = vandq_u8(
-            vcombine_u8(vmovn_u16(halves[0]), vmovn_u16(halves[1])),
-            bits,
-        );
+        let bytes = vandq_u8(vcombine_u8(vmovn_u16(flags[0]), vmovn_u16(flags[1])), bits);
         let low = u64::from(vaddv_u8(vget_low_u8(bytes)));
         let high = u64::from(vaddv_u8(vget_high_u8(bytes)));
         mask |= (low | high << 8) << (16 * r);
@@ -100,7 +93,7 @@ unsafe fn nonzero_mask(levels: &[i32]) -> u64 {
 /// transposes; the column pass (outputs up to 64 times larger) widens to 32
 /// bits after its first butterfly ([`h264_fdct8_columns`]).
 #[target_feature(enable = "neon")]
-unsafe fn h264_forward_8x8(residual: &[i16], stride: usize, out: &mut [i32; 64]) {
+unsafe fn h264_forward_8x8(residual: &[i16], stride: usize, out: &mut [i16; 64]) {
     let rows: [int16x8_t; 8] = core::array::from_fn(|r| {
         let row = &residual[r * stride..][..8];
         // SAFETY: NEON is enabled here; `row` holds 8 values.
@@ -112,10 +105,13 @@ unsafe fn h264_forward_8x8(residual: &[i16], stride: usize, out: &mut [i32; 64])
         // is row r's coefficient j.
         let columns = transpose(rows);
         let coefficients = transpose(h264_fdct8_rows(columns));
-        for (u, lanes) in h264_fdct8_columns(coefficients).iter().enumerate() {
-            let [low, high] = lanes;
-            vst1q_s32(out[u * 8..][..4].as_mut_ptr(), *low);
-            vst1q_s32(out[u * 8 + 4..][..4].as_mut_ptr(), *high);
+        // Each row narrows (saturating; outputs are at most 16320) into one
+        // 128-bit store.
+        for (u, [low, high]) in h264_fdct8_columns(coefficients).into_iter().enumerate() {
+            vst1q_s16(
+                out[u * 8..][..8].as_mut_ptr(),
+                vcombine_s16(vqmovn_s32(low), vqmovn_s32(high)),
+            );
         }
     }
 }
@@ -219,7 +215,7 @@ unsafe fn h264_forward_4x4(
     residual: &[i16],
     stride: usize,
     blocks_wide: usize,
-    out: &mut [[i32; 16]],
+    out: &mut [[i16; 16]],
 ) {
     if !blocks_wide.is_multiple_of(2) {
         // SAFETY: NEON is enabled here; the caller's contract is forwarded.
@@ -239,16 +235,23 @@ unsafe fn h264_forward_4x4(
         // the second transpose puts each coefficient row in its lanes.
         let coefficients = transpose4(h264_fdct4(transpose4(h264_fdct4(rows))));
         let [left, right] = blocks;
-        for (u, &row) in coefficients.iter().enumerate() {
-            // SAFETY: NEON is enabled here; each destination holds 4 values.
+        // Two coefficient rows per 128-bit store: the quantiser loads eight
+        // coefficients at a time, and a load spanning two 64-bit stores
+        // cannot be forwarded from them.
+        for (u, pair) in coefficients.as_chunks::<2>().0.iter().enumerate() {
+            let (upper, lower) = (
+                vreinterpretq_s64_s16(pair[0]),
+                vreinterpretq_s64_s16(pair[1]),
+            );
+            // SAFETY: NEON is enabled here; each destination holds 8 values.
             unsafe {
-                vst1q_s32(
-                    left[BLOCK4 * u..][..BLOCK4].as_mut_ptr(),
-                    vmovl_s16(vget_low_s16(row)),
+                vst1q_s16(
+                    left[2 * BLOCK4 * u..][..2 * BLOCK4].as_mut_ptr(),
+                    vreinterpretq_s16_s64(vzip1q_s64(upper, lower)),
                 );
-                vst1q_s32(
-                    right[BLOCK4 * u..][..BLOCK4].as_mut_ptr(),
-                    vmovl_high_s16(row),
+                vst1q_s16(
+                    right[2 * BLOCK4 * u..][..2 * BLOCK4].as_mut_ptr(),
+                    vreinterpretq_s16_s64(vzip2q_s64(upper, lower)),
                 );
             }
         }
@@ -290,7 +293,7 @@ struct NarrowForward8x8;
 
 impl H264Forward8x8 for NarrowForward8x8 {
     #[inline(always)]
-    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i32; 64]) {
+    unsafe fn forward(residual: &[i16], stride: usize, out: &mut [i16; 64]) {
         // SAFETY: forwarded contract (NEON is always present on AArch64).
         unsafe { h264_forward_8x8(residual, stride, out) }
     }
@@ -303,7 +306,7 @@ unsafe fn h264_forward_quantize_mb(
     stride: usize,
     zero_mask: u8,
     q: &H264Quantizer,
-    out: &mut [[i32; 64]; 4],
+    out: &mut [[i16; 64]; 4],
 ) -> [u32; 4] {
     // SAFETY: NEON is enabled here and the caller's contract is forwarded.
     unsafe {

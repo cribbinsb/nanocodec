@@ -78,3 +78,5 @@ rate.period_ceiling = 0
 rate.key_still_boost = 0
 # AV2 Default's fixed-QP profile (2026-11-15) stays off here: pinned, byte-identical.
 rate.fixed_qp_profile = 0
+# Pinned before AV2 Default's inherited cadence depth (2026-11-15).
+structure.inherited_depth = 0

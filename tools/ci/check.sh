@@ -76,9 +76,10 @@ if selected nc-checkasm; then
     cargo run --profile gate --quiet -p nc-checkasm
 fi
 
-step "crate layering, integration-test modules"
+step "crate layering, integration-test modules, encode paths"
 python3 tools/ci/check_layering.py
 python3 tools/ci/check_test_modules.py
+python3 tools/ci/check_encode_paths.py
 
 # Runs in --quick too (land.sh), so browser API changes cannot land unchecked.
 if selected nc-web; then

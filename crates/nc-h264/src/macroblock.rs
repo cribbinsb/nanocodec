@@ -353,17 +353,17 @@ pub struct Residual {
     /// What the levels mean.
     pub kind: ResidualKind,
     /// `Intra16x16`: luma DC levels, raster over the 4x4 grid of blocks.
-    pub luma_dc: [i32; 16],
+    pub luma_dc: [i16; 16],
     /// Luma levels per 4x4 block (index `by * 4 + bx`); position 0 unused
     /// for `Intra16x16`, all zero for `Inter8x8`.
-    pub luma: [[i32; 16]; 16],
+    pub luma: [[i16; 16]; 16],
     /// `Inter8x8` and `Intra8x8`: luma levels per 8x8 block (raster
     /// quadrants), raster within the block; all zero otherwise.
-    pub luma_8x8: [[i32; 64]; 4],
+    pub luma_8x8: [[i16; 64]; 4],
     /// Chroma DC levels per component, raster over its 2x2 blocks.
-    pub chroma_dc: [[i32; 4]; 2],
+    pub chroma_dc: [[i16; 4]; 2],
     /// Chroma AC levels per component and 4x4 block (index `by * 2 + bx`).
-    pub chroma_ac: [[[i32; 16]; 4]; 2],
+    pub chroma_ac: [[[i16; 16]; 4]; 2],
     /// `CodedBlockPatternLuma`.
     pub cbp_luma: u8,
     /// `CodedBlockPatternChroma`.
@@ -595,9 +595,14 @@ pub fn transform_macroblock(
         ResidualKind::Intra16x16 => {
             // DC: 4x4 Hadamard over the blocks' DC terms, halved (reference
             // encoder convention), quantised with one more bit of precision.
+            // The Hadamard runs in 32 bits (up to 16 · 4080 = 65280 before
+            // the halving, which must follow it for the reference
+            // rounding); halved, it is at most 32640 and fits 16 bits.
             let luma = &mut out.luma;
-            let dc_in: [i32; 16] = core::array::from_fn(|blk| luma[blk][0]);
-            let mut dc = dsp.h264_hadamard_4x4(&dc_in).map(|v| v >> 1);
+            let dc_in: [i32; 16] = core::array::from_fn(|blk| i32::from(luma[blk][0]));
+            let mut dc = dsp
+                .h264_hadamard_4x4(&dc_in)
+                .map(|v| i16::try_from(v >> 1).expect("halved DC Hadamard of 8-bit residuals"));
             dsp.h264_quantize_dc(&mut dc, luma_q);
             apply_planned_dead_zone(&mut dc, min_level);
             out.luma_dc = dc;
@@ -867,9 +872,9 @@ fn chroma_pattern(out: &Residual) -> u8 {
 #[derive(Debug, Clone, Copy)]
 pub enum IntraNxnLevels<'a> {
     /// Per 4x4 block, raster.
-    Blocks4x4(&'a [[i32; 16]; 16]),
+    Blocks4x4(&'a [[i16; 16]; 16]),
     /// Per 8x8 block, raster.
-    Blocks8x8(&'a [[i32; 64]; 4]),
+    Blocks8x8(&'a [[i16; 64]; 4]),
 }
 
 /// The residual of an `I_NxN` macroblock whose luma was already coded block
@@ -1010,7 +1015,7 @@ pub fn reconstruct_macroblock(
 }
 
 /// The AC levels of a chroma component whose AC is not coded.
-const NO_CHROMA_AC: [[i32; 16]; 4] = [[0; 16]; 4];
+const NO_CHROMA_AC: [[i16; 16]; 4] = [[0; 16]; 4];
 
 /// Add the coded luma residual of `res` (not `I_NxN`) to the prediction in
 /// the macroblock `dst`.
@@ -1137,7 +1142,7 @@ const EXPENSIVE_COEFF_COST: u32 = 9;
 
 /// The elimination cost of one 4x4 block's levels (raster), skipping the
 /// first `first` scan positions.
-fn coefficient_cost(levels: &[i32; 16], first: usize) -> u32 {
+fn coefficient_cost(levels: &[i16; 16], first: usize) -> u32 {
     if all_zero(levels) {
         return 0;
     }
@@ -1158,7 +1163,7 @@ fn coefficient_cost(levels: &[i32; 16], first: usize) -> u32 {
 
 /// Drop cheap, sparse inter luma residual (per 8x8, then the whole
 /// macroblock) and return `CodedBlockPatternLuma`.
-fn eliminate_sparse_luma(levels: &mut [[i32; 16]; 16], limits: &Elimination) -> u8 {
+fn eliminate_sparse_luma(levels: &mut [[i16; 16]; 16], limits: &Elimination) -> u8 {
     let mut total = 0;
     for b8 in 0..4 {
         let blocks = blocks_of_8x8(b8);
@@ -1190,7 +1195,7 @@ const COEFF_COST_8X8_BY_RUN: [u32; 24] = [
 ];
 
 /// The elimination cost of one 8x8 block's levels (raster).
-fn coefficient_cost_8x8(levels: &[i32; 64], nonzero: u32) -> u32 {
+fn coefficient_cost_8x8(levels: &[i16; 64], nonzero: u32) -> u32 {
     // The quantiser counted the non-zero levels: the scan stops after the
     // last one instead of walking all 64 positions (most coded blocks hold
     // a handful of low-frequency levels).
@@ -1221,12 +1226,12 @@ fn coefficient_cost_8x8(levels: &[i32; 64], nonzero: u32) -> u32 {
 /// zone, [`MbQuantizers::with_planned_step`]). Below the λ-headroom cap
 /// `min_level` is 1, which zeroes nothing, so the pass is skipped (it was
 /// ~1% of P-frame instructions, run over every coded block).
-fn apply_planned_dead_zone(levels: &mut [i32], min_level: i32) {
+fn apply_planned_dead_zone(levels: &mut [i16], min_level: i32) {
     if min_level <= NO_DEAD_ZONE {
         return;
     }
     for level in levels.iter_mut() {
-        if level.abs() < min_level {
+        if i32::from(level.unsigned_abs()) < min_level {
             *level = 0;
         }
     }
@@ -1237,7 +1242,7 @@ fn apply_planned_dead_zone(levels: &mut [i32], min_level: i32) {
 const NO_DEAD_ZONE: i32 = 1;
 
 fn eliminate_sparse_luma_8x8(
-    levels: &mut [[i32; 64]; 4],
+    levels: &mut [[i16; 64]; 4],
     mut nonzero: [u32; 4],
     limits: &Elimination,
 ) -> u8 {
@@ -1264,7 +1269,7 @@ fn eliminate_sparse_luma_8x8(
 }
 
 /// Drop cheap, sparse inter chroma AC residual (both components together).
-fn eliminate_sparse_chroma_ac(ac: &mut [[[i32; 16]; 4]; 2], limits: &Elimination) {
+fn eliminate_sparse_chroma_ac(ac: &mut [[[i16; 16]; 4]; 2], limits: &Elimination) {
     let cost: u32 = ac
         .iter()
         .flatten()
@@ -1278,7 +1283,7 @@ fn eliminate_sparse_chroma_ac(ac: &mut [[[i32; 16]; 4]; 2], limits: &Elimination
 /// True if every level is zero. Written as an OR-reduction rather than
 /// `iter().any(..)` so it vectorises (no early exit per element); most
 /// blocks at video bitrates are all zero, so this is the common test.
-pub fn all_zero(levels: &[i32]) -> bool {
+pub fn all_zero(levels: &[i16]) -> bool {
     levels.iter().fold(0, |acc, &c| acc | c) == 0
 }
 

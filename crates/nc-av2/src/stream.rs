@@ -1,94 +1,15 @@
-//! Stateful forward AV2 pictures with transactional reference replacement.
+//! The AV2 decoder: stateful forward pictures with transactional reference
+//! replacement.
 use std::rc::Rc;
 
 use crate::cdf_models::TileCdfs;
 use crate::frame_header::REFERENCE_SLOTS;
 use crate::tile_decoder::{self, TileParams};
-use crate::{frame_header, inter, intra, obu, sequence::SequenceHeader};
+use crate::{frame_header, obu, sequence::SequenceHeader};
 use nc_common::{
     Picture, ShownPicture,
     decode::{DecodeError, Result},
 };
-
-/// Native encoder retaining the last reconstructed picture.
-#[derive(Debug)]
-pub struct Encoder {
-    motion: bool,
-    adaptive_cdf: bool,
-    tx8: bool,
-    reference: Option<Picture>,
-    order_hint: u16,
-}
-impl Default for Encoder {
-    fn default() -> Self {
-        Self {
-            motion: false,
-            adaptive_cdf: true,
-            tx8: true,
-            reference: None,
-            order_hint: 0,
-        }
-    }
-}
-
-impl Encoder {
-    /// Enable the native motion-search path for forward pictures.
-    #[must_use]
-    pub fn with_motion() -> Self {
-        Self {
-            motion: true,
-            ..Self::default()
-        }
-    }
-
-    /// Select tile-local probability updates for subsequent pictures.
-    pub fn set_cdf_adaptation(&mut self, enabled: bool) {
-        self.adaptive_cdf = enabled;
-    }
-
-    /// Select lossy 8×8 luma transforms for subsequent pictures; qindex zero
-    /// always retains the reversible 4×4 WHT. Default is true.
-    pub fn set_tx8(&mut self, enabled: bool) {
-        self.tx8 = enabled;
-    }
-
-    /// Encode a keyframe on startup, request or resolution change; otherwise forward.
-    /// # Errors
-    /// Rejects unsupported dimensions, syntax or picture allocation failures.
-    pub fn encode(
-        &mut self,
-        source: &Picture,
-        qindex: u8,
-        force_keyframe: bool,
-    ) -> Result<intra::EncodedFrame> {
-        let reference = self.reference.as_ref().filter(|r| {
-            !force_keyframe && (r.width(), r.height()) == (source.width(), source.height())
-        });
-        let encoded = if let Some(reference) = reference {
-            inter::encode_inter_with_options(
-                source,
-                reference,
-                qindex,
-                self.order_hint,
-                self.motion,
-                crate::search::SearchParams {
-                    cdf_adaptation: if self.adaptive_cdf { 1.0 } else { 0.0 },
-                    tx8: if self.tx8 { 1.0 } else { 0.0 },
-                    ..Default::default()
-                },
-            )?
-        } else {
-            intra::encode_keyframe_with_options(source, qindex, self.adaptive_cdf, self.tx8)?
-        };
-        self.order_hint = if reference.is_some() {
-            (self.order_hint + 1) & 255
-        } else {
-            1
-        };
-        self.reference = Some(encoded.reconstruction.clone());
-        Ok(encoded)
-    }
-}
 
 /// A reference slot's entropy context (shared by the slots one picture
 /// refreshes).
@@ -442,84 +363,4 @@ pub fn temporal_unit_layer(temporal_unit: &[u8]) -> Result<u8> {
         remaining = rest;
     }
     Err(DecodeError::Malformed("AV2 temporal unit without a frame"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nc_common::PlaneIndex;
-    #[test]
-    fn adaptive_fixed_switching_and_rejected_trials_preserve_reference() {
-        let mut source = Picture::new(16, 16, 0).unwrap();
-        let mut encoder = Encoder::with_motion();
-        let mut decoder = Decoder::default();
-        for index in 0..12 {
-            let qindex = [0, 100, 200][index % 3];
-            for plane in PlaneIndex::ALL {
-                let mut view = source.plane_mut(plane).view_mut();
-                for y in 0..view.height() {
-                    for (x, pixel) in view.row_mut(y).iter_mut().enumerate() {
-                        *pixel = ((x * 19 + y * 31 + index * 17) % 256) as u8;
-                    }
-                }
-            }
-            encoder.set_cdf_adaptation(index % 2 == 0);
-            encoder.set_tx8(index % 4 >= 2);
-            let encoded = encoder.encode(&source, qindex, index == 6).unwrap();
-            assert!(decoder.decode(&[]).is_err());
-            let decoded = decoder.decode_ref(&encoded.packet).unwrap();
-            for plane in PlaneIndex::ALL {
-                let actual = decoded.plane(plane).view();
-                let expected = encoded.reconstruction.plane(plane).view();
-                let original = source.plane(plane).view();
-                for y in 0..actual.height() {
-                    assert_eq!(actual.row(y), expected.row(y));
-                    if qindex == 0 {
-                        assert_eq!(actual.row(y), original.row(y));
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn forward_chain_and_failed_packet_preserve_reference() {
-        for (qindex, use_motion, tx8) in [0, 1, 100, 200, 255].into_iter().flat_map(|q| {
-            [
-                (q, false, false),
-                (q, true, false),
-                (q, false, true),
-                (q, true, true),
-            ]
-        }) {
-            let mut encoder = if use_motion {
-                Encoder::with_motion()
-            } else {
-                Encoder::default()
-            };
-            encoder.set_tx8(tx8);
-            let mut decoder = Decoder::default();
-            for index in 0..7 {
-                let mut source = Picture::new(16, 16, 0).unwrap();
-                for p in PlaneIndex::ALL {
-                    let mut view = source.plane_mut(p).view_mut();
-                    for row in 0..view.height() {
-                        for (col, pixel) in view.row_mut(row).iter_mut().enumerate() {
-                            *pixel = ((row * 11 + col * 37 + (index / 2) * 23) % 256) as u8;
-                        }
-                    }
-                }
-                let encoded = encoder.encode(&source, qindex, index == 4).unwrap();
-                assert!(decoder.decode_ref(&[0]).is_err());
-                let decoded = decoder.decode_ref(&encoded.packet).unwrap();
-                for p in PlaneIndex::ALL {
-                    let expected = encoded.reconstruction.plane(p).view();
-                    let actual = decoded.plane(p).view();
-                    for row in 0..expected.height() {
-                        assert_eq!(expected.row(row), actual.row(row));
-                    }
-                }
-            }
-        }
-    }
 }

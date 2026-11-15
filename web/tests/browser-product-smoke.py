@@ -60,7 +60,8 @@ try:
             console.log(`page: ${id}: ${document.getElementById(id).textContent}`)).observe(document.getElementById(id), { childList: true, characterData: true, subtree: true });
         });''')
         # A live view has an encode and a decode worker (pipeline.js), created in that
-        # order; a pre-encoded view has a decode worker only; one capture worker feeds
+        # order; a pre-encoded view has a decode worker only, an Original view an
+        # original worker in its place; one capture worker feeds
         # every view. The hook records the decoded frames, the encoder configs, which
         # worker posts what to the page, the frames in flight per view (sent to the capture
         # worker for a view that codes the tick, not yet back from the view's decoder; a
@@ -75,11 +76,11 @@ try:
             constructor(url,...args){super(url,...args);const script=String(url).split('/').pop();
               window.workerScripts.push(script);
               if(script==='encode-worker.js')views.push(this.view={sent:0,received:0,decoder:false});
-              else if(script==='decode-worker.js'){if(!views.length||views.at(-1).decoder)views.push({sent:0,received:0});this.view=views.at(-1);this.view.decoder=true;}
+              else if(script==='decode-worker.js'||script==='original-worker.js'){if(!views.length||views.at(-1).decoder)views.push({sent:0,received:0});this.view=views.at(-1);this.view.decoder=true;}
               this.addEventListener('message', e=>{
               const d=e.data;window.pagePosts.add(script+':'+d.type);if(d.held)window.heldFrames=(window.heldFrames||0)+1;
               if(d.type==='frame')this.view.received++;
-              if(d.pixels)window.workerFrames.push({view:views.indexOf(this.view),key:d.key,format:d.format,width:d.width,height:d.height,packet:d.packet.length,earlier:(d.earlier||[]).length,psnr:d.psnr});
+              if(d.pixels)window.workerFrames.push({view:views.indexOf(this.view),key:d.key,format:d.format,width:d.width,height:d.height,packet:d.packet?.length,earlier:(d.earlier||[]).length,psnr:d.psnr});
               window.repeatFrames=(window.repeatFrames||0)+Number(!!d.repeat)+(d.earlier||[]).filter(e=>e.repeat).length;
             });}
             postMessage(d,...rest){if(d.config)window.workerConfigs.push(d.config);
@@ -96,53 +97,74 @@ try:
           new PerformanceObserver(list => { for (const e of list.getEntries()) window.resourceNames.push(e.name); })
             .observe({ type: 'resource', buffered: true });''')
         page.goto(f'http://127.0.0.1:{server.server_port}/?display=webgl2')
-        # The page opens already comparing the default sample clip, without a user gesture.
-        # Each view has decoded two frames (the faster view can deliver several before
-        # the slower one's first, as frames are in flight).
+        # The page opens already comparing, without a user gesture: a pre-encoded x264
+        # stream in A and live nanocodec H.264 Default matched to it in B (app.js
+        # OPENING_STREAM), on that stream's clip. Each view has decoded two frames (the
+        # faster view can deliver several before the slower one's first, as frames are in flight).
         page.wait_for_function('[0, 1].every(v => window.workerFrames.filter(f => f.view === v).length >= 2)', timeout=60000)
         assert page.locator('#clip-credit').is_visible()
+        assert page.locator('#clip').input_value() == 'xiph-four-people'
+        assert page.locator('.stream-picker').nth(0).input_value() == 'xiph-four-people-x264-medium-854x480-30fps-400k'
+        summary = page.locator('#summary').inner_text()
+        assert summary.startswith('Comparing x264 medium, pre-encoded H.264') and 'nanocodec H.264 Default, encoding live (854×480, 30 fps, 400 kbps)' in summary, summary
+        # The top bar has the source, the clip and one Pause button; nothing to start or stop.
+        assert page.locator('#start').count() == 0 and page.locator('#original').count() == 0
+        assert page.locator('#step').is_hidden() and page.locator('#keyframe').is_hidden()
         # A sample clip is decoded frame by frame for the comparison (exact-source.js), not played.
         assert page.evaluate("document.querySelector('#input-video').paused")
-        # H.264 and AV1 under CBR hold frame 0 back for the start-up lookahead,
-        # then deliver it with frame 1.
-        assert page.evaluate('window.heldFrames') == 2
-        assert page.evaluate('window.workerFrames.filter(f => f.earlier).length') == 2
-        # Two workers per view and one capture worker; frames pass from capture to
-        # encoder to decoder over MessageChannels, so the encode workers post nothing
-        # but 'ready' and, once, the start-up warm-up's report (encode-warmup.js) to the page.
-        assert sorted(page.evaluate('window.workerScripts')) == ['capture-worker.js', 'decode-worker.js', 'decode-worker.js', 'encode-worker.js', 'encode-worker.js']
+        # Live H.264 under CBR holds frame 0 back for the start-up lookahead, then
+        # delivers it with frame 1; the pre-encoded view holds nothing.
+        assert page.evaluate('window.heldFrames') == 1
+        assert page.evaluate('window.workerFrames.filter(f => f.earlier).length') == 1
+        # A decode worker for the stream, an encode and a decode worker for the live
+        # view, one capture worker; frames pass from capture to encoder to decoder
+        # over MessageChannels, so the encode worker posts nothing but 'ready' and,
+        # once, the start-up warm-up's report (encode-warmup.js) to the page.
+        assert sorted(page.evaluate('window.workerScripts')) == ['capture-worker.js', 'decode-worker.js', 'decode-worker.js', 'encode-worker.js']
         assert set(page.evaluate("[...window.pagePosts].filter(p => p.startsWith('encode-worker.js:'))")) <= {'encode-worker.js:ready', 'encode-worker.js:warmed'}
         # PSNR comes from the decode worker for every frame.
         assert page.evaluate('window.workerFrames.every(f => f.psnr > 20)')
-        # The session line names the busiest worker.
-        # The session line says how fast the clip's time runs and names the busiest worker
-        # (web/tests/exact-source.py checks that nothing is skipped when it is slow).
-        page.wait_for_function(r"/\d+ fps · (real time, slowest (encode|decode) [AB] \(\d+ ms\)|running at [0-9.]+× real time \(slowest (encode|decode) [AB], \d+ ms\))/.test(document.querySelector('#session-stats').textContent)", timeout=10000)
+        # The session line is short: frames compared and fps, and "running at" only
+        # below real time (web/tests/exact-source.py checks nothing is skipped then);
+        # its tooltip names the busiest worker.
+        page.wait_for_function(r"/^\d+ frames compared · [0-9.]+ fps( · running at [0-9.]+× real time, so no frame is skipped)?$/.test(document.querySelector('#session-stats').textContent)"
+                               r" && /^(Keeping up · slowest|Limited by) (encode|decode) [AB] \(\d+ ms\)$/.test(document.querySelector('#session-stats').title)", timeout=10000)
         autostart_configs = page.evaluate('window.workerConfigs')
-        assert all(c['targetKbps'] == 300 and c['keyInterval'] == 30 * c['fps'] for c in autostart_configs)
+        assert [(c['codec'], c['width'], c['fps'], c['targetKbps'], c['peakKbps'], c['keyInterval'], c['preset']) for c in autostart_configs] == [('h264', 854, 30, 400, 800, 300, 'default')], autostart_configs
         # Headless Chromium on SwiftShader loses new GL contexts once and restores them ~1 s later.
         page.wait_for_function("[...document.querySelectorAll('.viewport canvas')].every(c => !c.getContext('webgl2').isContextLost())", timeout=10000)
-        # Magnifier: a tap on version B pins one region; every pane (A, B, original) gets pixels.
-        page.locator('.loupe-toggle').click()
-        page.locator('.viewport canvas').nth(1).click(position={'x': 100, 'y': 60})
-        assert page.locator('.loupe-pin').get_attribute('aria-pressed') == 'true'
-        page.wait_for_timeout(300)
-        assert page.evaluate("""[...document.querySelectorAll('.loupe-panes canvas')].every(c =>
-          c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some((v, i) => i % 4 === 3 && v))""")
+        # Zoom (view-zoom.js): scrolling up on B zooms both views together, unsmoothed,
+        # with a reset chip on each; Escape returns both to the whole picture.
+        page.locator('.viewport').nth(1).hover(position={'x': 100, 'y': 60})
+        for _ in range(6):
+            page.mouse.wheel(0, -100)
+        page.wait_for_function("[...document.querySelectorAll('.zoom-chip')].every(c => !c.hidden && /^[0-9.]+× · Reset$/.test(c.textContent))", timeout=5000)
+        transforms = page.evaluate("[...document.querySelectorAll('.viewport canvas')].map(c => c.style.transform)")
+        assert transforms[0] and transforms[0] == transforms[1], transforms
+        page.locator('.viewport').nth(1).focus()
+        page.keyboard.press('Escape')
+        page.wait_for_function("[...document.querySelectorAll('.zoom-chip')].every(c => c.hidden) && [...document.querySelectorAll('.viewport canvas')].every(c => !c.style.transform)", timeout=5000)
         # Both views draw I420 with WebGL2 (renderer.js).
         assert page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.dataset.display)") == ['webgl2', 'webgl2']
         assert page.evaluate("window.workerFrames.every(f => f.format === 'i420')")
-        page.locator('.loupe-toggle').click()
         # Clips come in 360p and 720p files (clips.js): the default 854x480 reads the 720p
         # one (scaled down), picking a clip restarts on it, and 640x360 switches to the 360p file.
         clip_files = "window.resourceNames.filter(n => n.includes('/clips/') && n.endsWith('.mp4'))"
-        assert page.evaluate(clip_files)[-1].endswith('/clips/netflix-bar-scene-720p.mp4')
+        assert page.evaluate(clip_files)[-1].endswith('/clips/xiph-four-people-720p.mp4')
         assert page.evaluate('window.workerFrames.every(f => f.width === 854 && f.height === 480)')
         # The masthead links to the project page.
         assert page.locator('.project-link').get_attribute('href') == 'https://github.com/cribbinsb/nanocodec'
-        # Only the default clip loads on page open: no other clip file was requested.
+        # Only the opening clip loads on page open: no other clip file was requested.
         fetched = page.evaluate("window.resourceNames.filter(n => n.includes('/clips/') && n.endsWith('.mp4'))")
-        assert all(n.endswith('/clips/netflix-bar-scene-720p.mp4') for n in fetched), fetched
+        assert all(n.endswith('/clips/xiph-four-people-720p.mp4') for n in fetched), fetched
+        # Two live views from here: A live H.264 at the panel defaults (854x480, 15 fps,
+        # 300 kbps), B AV1 at 15 fps and 300 kbps.
+        page.locator('.view-source [data-view-source="live"]').nth(0).click()
+        page.locator('.codec-picker').nth(1).select_option('av1')
+        page.locator('.fps').nth(1).select_option('15')
+        page.locator('.target-rate').nth(1).fill('300')
+        page.locator('.target-rate').nth(1).dispatch_event('change')
+        page.wait_for_function("window.workerConfigs.some(c => c.codec === 'av1' && c.fps === 15 && c.targetKbps === 300 && c.peakKbps === 600)", timeout=60000)
         missing = page.evaluate("""import('./clips.js').then(({ CLIPS, clipUrl }) => Promise.all(CLIPS.flatMap(c =>
           [360, 720].map(h => fetch(clipUrl(c, h), { method: 'HEAD' }).then(r => r.ok ? null : clipUrl(c, h)))))
           ).then(urls => urls.filter(Boolean))""")
@@ -191,8 +213,8 @@ try:
         search.fill('rate.aq_strength')
         search.dispatch_event('input')
         assert 'range 0 to 3' in page.locator('.param-doc').nth(1).inner_text()
-        # The effective settings and the equivalent CLI command.
-        page.locator('details.reproduce > summary').nth(1).click()
+        # The equivalent CLI command, always shown under the view; the effective settings under Advanced.
+        assert 'av1.chroma_delta_q=-12' in page.locator('.advanced .effective').nth(1).inner_text()
         page.wait_for_function("document.querySelectorAll('.reproduce .cli')[1].textContent.startsWith('nanocodec encode')")
         command = page.locator('.reproduce .cli').nth(1).inner_text()
         for part in ('nanocodec encode --codec av1', '--bitrate 300', '--param av1.chroma_delta_q=-12', '--film-grain', '--output stream.ivf'):
@@ -222,16 +244,18 @@ try:
         badge_ticks = "[...document.querySelectorAll('.frame-badge')].map(b => +b.dataset.tick)"
         page.wait_for_function(f"document.querySelectorAll('.frame-badge')[1].textContent.startsWith('PRE-ENCODED') && {badge_ticks}.every(t => t > 30)", timeout=60000)
         assert page.locator('#view-note').is_visible() and 'frame rate' in page.locator('#view-note').inner_text()
-        assert 'openh264-harness' in page.locator('.reference-cli').nth(1).inner_text()
-        assert 'openh264 v' in page.locator('.reference-version').nth(1).inner_text()
+        assert 'openh264-harness' in page.locator('.reproduce .cli').nth(1).inner_text()
+        assert page.locator('.reproduce-label').nth(1).inner_text() == 'Encoder command'
+        assert 'openh264 v' in page.locator('.reference-version').nth(1).text_content()
         assert page.locator('[data-metric="encode"]').nth(1).inner_text() == 'n/a'
         assert float(page.locator('[data-metric="psnr"]').nth(1).inner_text()) > 25
         fetched = page.evaluate("window.resourceNames.filter(n => n.includes('/streams-ref/') && n.endsWith('.ivf'))")
-        # Files are fetched only for streams a comparison started with: the one picked when
-        # the source switched (fetched only if its restart ran before the choice; that
-        # depends on timing) and the chosen one.
+        # Files are fetched only for streams a comparison started with: the opening one, the
+        # one picked when the source switched (fetched only if its restart ran before the
+        # choice; that depends on timing) and the chosen one.
         names = {n.split('/')[-1] for n in fetched}
-        assert f'{reference_id}.ivf' in names and names <= {f'{switched_to}.ivf', f'{reference_id}.ivf'}, fetched
+        opening = 'xiph-four-people-x264-medium-854x480-30fps-400k.ivf'
+        assert f'{reference_id}.ivf' in names and names <= {opening, f'{switched_to}.ivf', f'{reference_id}.ivf'}, fetched
         # Pause lands both views on the next instant both code (a 15 fps instant: an even
         # tick); Step moves both to the next one.
         page.locator('#pause').click()
@@ -239,8 +263,11 @@ try:
         page.wait_for_timeout(300)
         paused_ticks = page.evaluate(badge_ticks)
         assert paused_ticks[0] == paused_ticks[1] and paused_ticks[0] % 2 == 0, paused_ticks
+        # Step is in the More menu.
+        page.locator('details.more > summary').click()
         page.locator('#step').click()
         page.wait_for_function(f"{badge_ticks}.every(t => t === {paused_ticks[0] + 2})", timeout=30000)
+        assert not page.locator('details.more').evaluate('d => d.open'), 'a menu item closes the menu'
         page.locator('#pause').click()
         page.locator('.view-source [data-view-source="live"]').nth(1).click()
         # B restarts live (its frames resume) before the webcam run is configured.
@@ -250,8 +277,7 @@ try:
             page.locator(selector).nth(0).fill(kbps)
             page.locator(selector).nth(0).dispatch_event('change')
         assert not errors, errors
-        page.locator('#start').click()  # stop the clip before configuring the webcam run
-        page.evaluate('window.workerFrames.length = 0; window.workerConfigs.length = 0')
+        # Each of these changes restarts the clip comparison (a burst: one restart after the last).
         page.locator('.codec-picker').nth(0).select_option('vp9')
         page.locator('.codec-picker').nth(1).select_option('av2')
         for picker in page.locator('.resolution').all():
@@ -260,9 +286,11 @@ try:
             picker.select_option('10')
         for picker in page.locator('.gop').all():
             picker.select_option('30')
+        # Choosing the webcam starts it (camera access is asked for at once).
+        page.evaluate('window.workerFrames.length = 0; window.workerConfigs.length = 0')
         page.locator('[data-source="camera"]').click()
-        page.locator('#start').click()
-        page.wait_for_function('window.workerFrames.length >= 16', timeout=60000)
+        page.wait_for_function("window.workerConfigs.length === 2 && window.workerFrames.length >= 16", timeout=60000)
+        assert page.locator('#source-name').inner_text() == 'Webcam'
         assert not errors, errors
         assert page.locator('.rate-status').nth(0).inner_text().startswith('Target 300 kbps')
         page.locator('#pause').click()
@@ -278,6 +306,7 @@ try:
         assert page.evaluate('window.framesInFlight()') == 0
         # A key frame requested while paused is the next frame each view codes.
         before = page.evaluate('window.workerFrames.length')
+        page.locator('details.more > summary').click()
         page.locator('#keyframe').click()
         page.locator('#pause').click()
         first_after_key = f'''new Map(window.workerFrames.slice({before}).reverse().map(f => [f.view, f.key]))'''
@@ -308,30 +337,19 @@ try:
             streams.append({'codec':fourcc.decode(), 'frames':count, 'bytes':len(data)})
             download.delete()
         # VVC in both views (A Default, B Fast) on the built-in scene, drawn with WebGL2:
-        # stats, hold-original, magnifier and the Annex-B downloads.
-        page.locator('#start').click()  # stop the camera run
-        page.evaluate('window.workerFrames.length = 0')
+        # stats, zoom, the Annex-B downloads, and B as the Original.
         for picker in page.locator('.codec-picker').all():
             picker.select_option('vvc')
         page.locator('.preset').nth(1).select_option('fast')
         page.locator('[data-source="scene"]').click()
-        page.locator('#start').click()
-        page.wait_for_function('window.workerFrames.length >= 12', timeout=60000)
+        page.evaluate('window.workerFrames.length = 0')
+        page.wait_for_function("window.workerConfigs.slice(-2).every(c => c.codec === 'vvc') && window.workerFrames.length >= 12", timeout=60000)
         assert page.evaluate("window.workerFrames.every(f => f.format === 'i420' && f.width === 384 && f.height === 216)")
         assert [(c['codec'], c['preset']) for c in page.evaluate('window.workerConfigs')[-2:]] == [('vvc', 'default'), ('vvc', 'fast')]
         assert all(float(t) > 20 for t in page.locator('[data-metric="psnr"]').all_inner_texts())
         assert all(t.startswith('Target 300 kbps · QP') for t in page.locator('.rate-status').all_inner_texts())
-        page.locator('#original').focus()
-        page.keyboard.down(' ')
-        page.wait_for_function("[...document.querySelectorAll('.frame-badge')].every(b => b.textContent.startsWith('ORIGINAL SOURCE'))", timeout=10000)
-        page.keyboard.up(' ')
-        page.wait_for_function("[...document.querySelectorAll('.frame-badge')].every(b => b.textContent.startsWith('WASM DECODED'))", timeout=10000)
-        page.locator('.loupe-toggle').click()
-        page.locator('.viewport canvas').nth(0).click(position={'x': 100, 'y': 60})
-        page.wait_for_timeout(300)
-        assert page.evaluate("""[...document.querySelectorAll('.loupe-panes canvas')].every(c =>
-          c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some((v, i) => i % 4 === 3 && v))""")
-        page.locator('.loupe-toggle').click()
+        page.locator('.viewport').nth(0).dblclick(position={'x': 100, 'y': 60})  # at fit: nothing to reset
+        assert page.evaluate("[...document.querySelectorAll('.zoom-chip')].every(c => c.hidden)")
         page.locator('#pause').click()
         page.wait_for_timeout(500)
         for i in range(2):
@@ -349,6 +367,14 @@ try:
             streams.append({'codec':'VVC', 'frames':pictures, 'bytes':len(data)})
             download.delete()
         page.locator('#pause').click()
+        # B shows the original (an Original view: no encoder or decoder, web/tests/original-view.py
+        # checks its pixels), then goes live again.
+        page.locator('.view-source [data-view-source="original"]').nth(1).click()
+        page.wait_for_function("document.querySelectorAll('.frame-badge')[1].textContent.startsWith('ORIGINAL · UNCOMPRESSED')", timeout=60000)
+        assert 'original-worker.js' in page.evaluate('window.workerScripts')
+        assert page.locator('.version').nth(1).locator('.metrics').is_hidden()
+        page.locator('.view-source [data-view-source="live"]').nth(1).click()
+        page.wait_for_function("document.querySelectorAll('.frame-badge')[1].textContent.startsWith('WASM DECODED')", timeout=60000)
         for picker in page.locator('.resolution').all():
             picker.select_option('640x360')
         page.wait_for_function('window.workerFrames.some(x=>x.width===640 && x.height===360)', timeout=60000)
@@ -361,18 +387,17 @@ try:
                    # Frames the encoder held as repeats (frame hold): shown, with nothing coded.
                    'repeated_frames':page.evaluate('window.repeatFrames || 0'),
                    'pause_resume':True,'forced_keys':True,'live_cbr_change':True,'gop_seconds':30,
-                   'resolution_recreation':True,'pre_encoded_view':True,'pause_on_common_instant':True,'webgl2_display':True,'vvc_scene_hold_magnifier':True,'av1_film_grain':True,'advanced_overrides':True,'clip_variants':True}
+                   'resolution_recreation':True,'pre_encoded_view':True,'pause_on_common_instant':True,'webgl2_display':True,'vvc_scene_original_view':True,'zoom':True,'av1_film_grain':True,'advanced_overrides':True,'clip_variants':True}
         # A GL context that stays lost falls back to the CPU path on a fresh canvas (VVC in
         # both views here); the magnifier follows it.
         page.evaluate("document.querySelector('.viewport canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()")
         page.wait_for_function("document.querySelector('.viewport').dataset.display === 'cpu'")
         before = page.evaluate('window.workerFrames.length')
         page.wait_for_function(f"window.workerFrames.slice({before}).filter(f => f.format === 'rgba').length >= 2", timeout=60000)
-        page.locator('.loupe-toggle').click()
-        page.locator('.viewport').nth(0).click(position={'x': 100, 'y': 60})
-        page.wait_for_timeout(300)
-        assert page.evaluate("""[...document.querySelectorAll('.loupe-panes canvas')].every(c =>
-          c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some((v, i) => i % 4 === 3 && v))""")
+        # The zoom follows the new canvas.
+        page.locator('.viewport').nth(0).focus()
+        page.keyboard.press('+')
+        page.wait_for_function("[...document.querySelectorAll('.viewport canvas')].every(c => c.style.transform.includes('scale(1.5)'))", timeout=5000)
         assert not errors, errors
         context.close()
         browser.close()

@@ -250,13 +250,47 @@ def check_switch_cases(page, case):
     check_playing_switch(page, f'{case} playing', False)
 
 
+# Where a pointer at (x, y) on view 0 is in its picture, from the canvas as drawn
+# (its bounding box includes the zoom's CSS transform; the picture is fitted in it
+# with object-fit: contain), independently of view-zoom.js's mapping.
+PICTURE_POINT = '''([x, y]) => { const c = document.querySelector('.viewport canvas'), v = c.parentElement.getBoundingClientRect();
+  const r = c.getBoundingClientRect(), scale = r.width / v.width, fit = Math.min(v.width / c.width, v.height / c.height);
+  const fx = (v.width - c.width * fit) / 2, fy = (v.height - c.height * fit) / 2;
+  return [(x - r.left - fx * scale) / (fit * scale), (y - r.top - fy * scale) / (fit * scale)]; }'''
+
+
+def check_overlay_alignment(page):
+    """Zoomed and panned, the overlay lines up with the picture: the block the hover
+    record names (analysis.js describeBlock, from the overlay's own mapping) contains
+    the picture point under the pointer, measured from the drawn canvas."""
+    pause(page)
+    box = page.locator('.viewport').first.bounding_box()
+    page.mouse.move(box['x'] + box['width'] * 0.3, box['y'] + box['height'] * 0.35)
+    for _ in range(5):
+        page.mouse.wheel(0, -100)
+    page.wait_for_function("document.querySelector('.zoom-chip').textContent.startsWith('3')", timeout=5000)
+    transforms = page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.querySelector('canvas').style.transform)")
+    assert transforms[0] == transforms[1] and 'scale(3.05' in transforms[0], transforms
+    for fx, fy in ((0.5, 0.5), (0.2, 0.7), (0.8, 0.25)):
+        x, y = box['x'] + box['width'] * fx, box['y'] + box['height'] * fy
+        page.mouse.move(x, y)
+        page.wait_for_function("!document.querySelector('.analysis-tip').hidden", timeout=5000)
+        tip = page.locator('.analysis-tip').first.text_content()
+        found = re.search(r'(\d+)×(\d+) at \((\d+), (\d+)\)', tip)
+        assert found and 'QP' in tip, tip
+        w, h, bx, by = map(int, found.groups())
+        px, py = page.evaluate(PICTURE_POINT, [x, y])
+        assert bx <= px < bx + w and by <= py < by + h, (tip, px, py)
+    resume(page)
+
+
 def check_sampled_clip(browser, port):
     """Without WebCodecs the clip is sampled while it plays (capture.js): switching keeps the session there too."""
     page = browser.new_page(viewport={'width': 1400, 'height': 1000})
     page.on('pageerror', lambda error: errors.append(str(error)))
     watch(page)
     page.add_init_script(WORKER_HOOK + 'delete window.VideoDecoder;')
-    page.goto(f'http://127.0.0.1:{port}/?display=cpu')
+    page.goto(f'http://127.0.0.1:{port}/?views=live&display=cpu')
     wait_running(page)
     check_switch_cases(page, 'sampled clip live')
     page.close()
@@ -270,7 +304,7 @@ def check_psnr_map(browser, port):
     page.add_init_script(WORKER_HOOK)
     page.add_init_script(FRAME_HOOK)
     # Headless Chromium's software GL is refused by the automatic choice: ask for WebGL2.
-    page.goto(f'http://127.0.0.1:{port}/?display=webgl2')
+    page.goto(f'http://127.0.0.1:{port}/?views=live&display=webgl2')
     wait_running(page)
     pause(page)
     toggle_analysis(page, True)
@@ -313,7 +347,7 @@ try:
         page.on('pageerror', lambda error: errors.append(str(error)))
         watch(page)
         page.add_init_script(WORKER_HOOK)
-        page.goto(f'http://127.0.0.1:{server.server_port}/?display=cpu')
+        page.goto(f'http://127.0.0.1:{server.server_port}/?views=live&display=cpu')
         # The default comparison (A: H.264, B: AV1) runs; no analysis element exists yet.
         wait_running(page)
         assert page.evaluate("document.querySelectorAll('.analysis-layer, .analysis-stats').length") == 0
@@ -324,21 +358,16 @@ try:
         # On again for the overlay checks: statistics, difference line, zoom, hover.
         toggle_analysis(page, True)
         page.wait_for_function("document.querySelector('.analysis-difference').textContent.includes('mean by area')", timeout=10000)
-        page.locator('.analysis-zoom [data-zoom="in"]').click()
-        page.wait_for_timeout(100)
-        transforms = page.evaluate("[...document.querySelectorAll('.viewport')].map(v => v.querySelector('canvas').style.transform)")
-        assert all('scale(2)' in t for t in transforms), transforms
-        box = page.locator('.viewport').first.bounding_box()
-        page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
-        page.wait_for_function("!document.querySelector('.analysis-tip').hidden", timeout=5000)
-        assert 'QP' in page.locator('.analysis-tip').first.text_content()
+        check_overlay_alignment(page)
         # Every codec's views are analysed: an AV2 view fills its statistics too.
         since = len(EVENTS[page])
         page.locator('.codec-picker').nth(1).select_option('av2')
         wait_started(page, since, 'A:h264 B:av2')
         wait(page, "document.querySelectorAll('.analysis-stats')[1].textContent.includes('Prediction')", 'the AV2 view\'s statistics')
-        # Off: the overlay hides and the pictures are unzoomed.
+        # Off: the overlay hides; the zoom is the views' own and stays until reset.
         toggle_analysis(page, False)
+        assert page.evaluate("[...document.querySelectorAll('.viewport')].every(v => v.querySelector('canvas').style.transform)")
+        page.locator('.zoom-chip').first.click()
         assert page.evaluate("[...document.querySelectorAll('.viewport')].every(v => !v.querySelector('canvas').style.transform)")
         # Sample clip, B a pre-encoded stream (its decoder re-decodes from the stream's last key).
         page.locator('.view-source [data-view-source="reference"]').nth(1).click()
@@ -348,7 +377,6 @@ try:
         page.locator('.view-source [data-view-source="live"]').nth(1).click()
         # The webcam (Chromium's fake camera), two live encodes.
         page.locator('[data-source="camera"]').click()
-        page.locator('#start').click()
         wait_running(page)
         check_switch_cases(page, 'webcam live')
         check_sampled_clip(browser, server.server_port)

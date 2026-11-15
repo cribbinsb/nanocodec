@@ -46,12 +46,13 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .bdrate import bd_rate
-from .buildinfo import info_of
+from .buildinfo import info_of, stream_identity
 from .cachefile import entry_lock, get_or_create, read_json, sibling_temp, write_atomic
 from .cbr_stats import flicker, replay_buffer, weighted_yuv_per_frame, worst_quality
 from .clipframes import ClipFrames
@@ -443,8 +444,9 @@ class Bench:
     def tool_hash(self, family: Family) -> str:
         with self.lock:
             if family.tool not in self.tool_hashes:
-                self.tool_hashes[family.tool] = hashlib.sha256(
-                    family.tool.read_bytes()).hexdigest()
+                self.tool_hashes[family.tool] = (
+                    stream_identity(family.tool) if family.own
+                    else hashlib.sha256(family.tool.read_bytes()).hexdigest())
             return self.tool_hashes[family.tool]
 
     def identity(self, family: Family, clip: Clip, label: str, scored: bool = True) -> str:
@@ -483,6 +485,12 @@ class Bench:
         return f"{point.clip.name}/{point.family.name}/{point.label}-{identity}"
 
     def point_dir(self, family: Family, clip: Clip) -> Path:
+        # The cache keys on the family's name, not its codec (`identity`), so an
+        # own family named without its codec would share points across codecs.
+        if family.own and family.codec.value not in family.name:
+            raise ValueError(f"own family {family.name!r} must name its codec "
+                             f"{family.codec.value!r}: its cached points would be "
+                             f"shared with other codecs' families of that name")
         directory = self.work / clip.name / family.name
         directory.mkdir(parents=True, exist_ok=True)
         return directory
@@ -860,15 +868,17 @@ def anchor_families(paths: Paths, openh264_harness: Path, cqp: bool = False,
     return families + [preset_anchor(name, paths, cqp) for name in extra if name]
 
 
-def preset_anchor(name: str, paths: Paths, cqp: bool = False) -> Family:
+def preset_anchor(name: str, paths: Paths, cqp: bool = False,
+                  tool: Callable[[str, Paths], Path] | None = None) -> Family:
     """An x264 / x265 / SVT-AV1 family by name (`x264-medium`, `x265-ultrafast`,
     `svtav1-m8`): the program's real-time CBR (or fixed QP) at that preset; or an
-    NVENC family (NVENC_FAMILIES, CBR only)."""
+    NVENC family (NVENC_FAMILIES, CBR only). `tool` locates the program (default
+    anchor_tool; nceval.site only names it, to print commands)."""
     if name in NVENC_FAMILIES:
         return nvenc_family(name, paths)
     base, sep, profile = name.partition(PROFILE_SEPARATOR)
     if sep:  # `<family>~<profile>`: the family in one of its ANCHOR_PROFILES
-        family = preset_anchor(base, paths, cqp)
+        family = preset_anchor(base, paths, cqp, tool)
         if profile not in ANCHOR_PROFILES.get(family.kind, ()):
             raise ValueError(f"{name}: {family.kind} has no profile {profile!r}")
         return replace(family, name=name, profile=profile)
@@ -876,7 +886,7 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False) -> Family:
         if name.startswith(prefix) and len(name) > len(prefix):
             codec = ANCHOR_CODECS[kind]
             compares = (Codec.AV1, Codec.HEVC) if kind == "svt" else (codec,)
-            return Family(name, codec, anchor_tool(kind, paths), cqp=cqp, kind=kind,
+            return Family(name, codec, (tool or anchor_tool)(kind, paths), cqp=cqp, kind=kind,
                           compares=compares, preset=name.removeprefix(prefix))
     raise ValueError(f"unknown anchor family {name!r}: expected "
                      f"{', '.join(p + '<preset>' for p in ANCHOR_PRESET_PREFIXES.values())}")

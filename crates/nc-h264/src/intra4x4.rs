@@ -240,7 +240,7 @@ pub struct Intra4x4Result {
     /// `Intra4x4PredMode` per block, raster order (`by * 4 + bx`).
     pub modes: [u8; 16],
     /// Levels per block, raster order of blocks, raster within each block.
-    pub levels: [[i32; 16]; 16],
+    pub levels: [[i16; 16]; 16],
     /// Sum of the chosen modes' SATD plus `lambda` times their bits.
     pub cost: f32,
 }
@@ -276,7 +276,7 @@ pub struct ModeRd {
 impl Intra4x4Rdo<'_, '_> {
     /// `ctxIdxInc` of the `coded_block_flag` of block `(bx, by)`; `coded`
     /// holds the levels of the macroblock's blocks decided so far (raster).
-    fn cbf_ctx_inc(&self, (bx, by): (usize, usize), coded: &[[i32; 16]; 16]) -> usize {
+    fn cbf_ctx_inc(&self, (bx, by): (usize, usize), coded: &[[i16; 16]; 16]) -> usize {
         let coded = |bx: usize, by: usize| !all_zero(&coded[by * 4 + bx]);
         let a = if bx > 0 {
             coded(bx - 1, by)
@@ -296,9 +296,9 @@ impl Intra4x4Rdo<'_, '_> {
     fn quantize(
         &mut self,
         cbf_ctx_inc: usize,
-        coeffs: &[i32; 16],
+        coeffs: &[i16; 16],
         quantizer: &H264Quantizer,
-        levels: &mut [i32; 16],
+        levels: &mut [i16; 16],
     ) {
         let settings = self.luma.settings;
         let mut model = RateModel::new(
@@ -381,13 +381,13 @@ fn code_block(
     src: &PlaneView<'_>,
     pred: &[u8; 16],
     quantizer: &H264Quantizer,
-    requantize: impl FnOnce(&[i32; 16], &mut [i32; 16]),
-) -> ([i32; 16], [u8; 16]) {
+    requantize: impl FnOnce(&[i16; 16], &mut [i16; 16]),
+) -> ([i16; 16], [u8; 16]) {
     let block4 = BlockSize::new(4, 4).expect("4x4 is a kernel size");
     let pred_view = PlaneView::new(pred, 4, 4, 4).expect("prediction covers the block");
     let mut residual = [0i16; 16];
     dsp.residual(block4, src, &pred_view, &mut residual, 4);
-    let mut coeffs = [[0i32; 16]; 1];
+    let mut coeffs = [[0i16; 16]; 1];
     dsp.h264_forward_4x4(&residual, 4, 1, &mut coeffs);
     let transformed = coeffs[0];
     dsp.h264_quantize_4x4(&mut coeffs, quantizer);
@@ -459,7 +459,7 @@ pub(crate) fn code_intra_4x4_with(
     abort_above: f32,
 ) -> Option<Intra4x4Result> {
     let mut modes = [DC; 16];
-    let mut levels = [[0i32; 16]; 16];
+    let mut levels = [[0i16; 16]; 16];
     let mut cost = 0.0;
     for blk_idx in 0..16 {
         let (bx, by) = block_position(blk_idx);

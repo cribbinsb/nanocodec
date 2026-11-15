@@ -4,8 +4,8 @@
 //! many more inputs.
 
 use super::{
-    DCT32, DST4, H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer, HevcTransform,
-    QUANT_MF_8X8_POS,
+    DCT32, DST4, H264_MAX_LEVEL, H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer,
+    HevcTransform, LEVEL_SCALE_8X8, QUANT_MF_8X8_POS, h264_scale_level,
 };
 use crate::{Dsp, Isa};
 
@@ -348,7 +348,11 @@ fn h264_4x4_transforms_match_the_backend() {
             let input: [i32; 16] = core::array::from_fn(|i| {
                 i32::from(residual[(by * 4 + i / 4) * stride + bx * 4 + i % 4])
             });
-            assert_eq!(*block, h264_forward_4x4_ref(&input), "forward block {b}");
+            assert_eq!(
+                block.map(i32::from),
+                h264_forward_4x4_ref(&input),
+                "forward block {b}"
+            );
         }
         for amplitude in [1, 100, 30000] {
             let coeffs: Vec<[i32; 16]> = (0..6)
@@ -371,47 +375,56 @@ fn h264_quantisers_match_the_backend() {
         for qp in [0u8, 5, 12, 26, 33, 40, 51] {
             for intra in [false, true] {
                 let q = H264Quantizer::new(qp, intra);
-                let blocks: Vec<[i32; 16]> = (0..3)
-                    .map(|_| core::array::from_fn(|_| rng.next(9000)))
+                let blocks: Vec<[i16; 16]> = (0..3)
+                    .map(|_| core::array::from_fn(|_| rng.next(9180) as i16))
                     .collect();
                 let mut got = blocks.clone();
                 let nonzero = dsp.h264_quantize_4x4(&mut got, &q);
                 let mut count = 0;
                 for (g, b) in got.iter().zip(&blocks) {
-                    let want: [i32; 16] =
-                        core::array::from_fn(|p| h264_quantize_ref(b[p], p, qp, intra, false));
+                    let want: [i32; 16] = core::array::from_fn(|p| {
+                        h264_quantize_ref(i32::from(b[p]), p, qp, intra, false)
+                    });
                     count += want.iter().filter(|&&l| l != 0).count();
-                    assert_eq!(*g, want, "qp {qp}");
+                    assert_eq!(g.map(i32::from), want, "qp {qp}");
                 }
                 assert_eq!(nonzero as usize, count);
                 for len in [4, 16] {
-                    let dc: Vec<i32> = (0..len).map(|_| rng.next(32000)).collect();
+                    let mut dc: Vec<i16> = (0..len).map(|_| rng.next(32640) as i16).collect();
+                    dc[0] = 32640;
                     let mut got = dc.clone();
                     dsp.h264_quantize_dc(&mut got, &q);
                     let want: Vec<i32> = dc
                         .iter()
-                        .map(|&c| h264_quantize_ref(c, 0, qp, intra, true))
+                        .map(|&c| h264_quantize_ref(i32::from(c), 0, qp, intra, true))
                         .collect();
+                    let got: Vec<i32> = got.into_iter().map(i32::from).collect();
                     assert_eq!(got, want, "dc qp {qp} len {len}");
                 }
             }
             let q = H264Quantizer::new(qp, true);
-            let levels: Vec<[i32; 16]> = (0..3)
-                .map(|_| core::array::from_fn(|_| rng.next(200)))
+            let levels: Vec<[i16; 16]> = (0..3)
+                .map(|_| core::array::from_fn(|_| rng.next(200) as i16))
                 .collect();
             let mut out = vec![[0; 16]; 3];
             dsp.h264_dequantize_4x4(&levels, &q, &mut out);
             for (l, o) in levels.iter().zip(&out) {
-                assert_eq!(*o, h264_dequantize_ref(l, qp), "dequantise qp {qp}");
+                let want = h264_dequantize_ref(&l.map(i32::from), qp).map(saturate16);
+                assert_eq!(o.map(i32::from), want, "dequantise qp {qp}");
             }
-            let dc: [i32; 16] = core::array::from_fn(|_| rng.next(200));
+            let dc: [i16; 16] = core::array::from_fn(|_| rng.next(200) as i16);
             assert_eq!(
-                dsp.h264_dequantize_luma_dc(&dc, &q),
-                h264_dequantize_luma_dc_ref(&dc, qp),
+                dsp.h264_dequantize_luma_dc(&dc, &q).map(i32::from),
+                h264_dequantize_luma_dc_ref(&dc.map(i32::from), qp).map(saturate16),
                 "luma dc qp {qp}"
             );
         }
     }
+}
+
+/// `value` saturated into 16 bits, as the H.264 scaling stores it.
+fn saturate16(value: i32) -> i32 {
+    value.clamp(i32::from(i16::MIN), i32::from(i16::MAX))
 }
 
 /// `levels` with each block made, at random, empty, DC-only or left full:
@@ -449,8 +462,10 @@ fn h264_add_inverse_matches_dequantise_inverse_and_add() {
         for qp in [0u8, 7, 20, 26, 36, 45, 51] {
             let q = H264Quantizer::new(qp, false);
             for with_dc in [false, true] {
-                let levels = sparse_blocks::<16>(&mut rng, 16, 60);
-                let dc: Vec<i32> = (0..16).map(|_| rng.next(1) * rng.next(3000)).collect();
+                let levels = narrow(&sparse_blocks::<16>(&mut rng, 16, 60));
+                let dc: Vec<i16> = (0..16)
+                    .map(|_| (rng.next(1) * rng.next(3000)) as i16)
+                    .collect();
                 let pred = prediction(&mut rng);
                 let mut fused = pred.clone();
                 let mut view = PlaneViewMut::new(&mut fused, 16, 16, 16).unwrap();
@@ -462,6 +477,7 @@ fn h264_add_inverse_matches_dequantise_inverse_and_add() {
                         block[0] = d;
                     }
                 }
+                let scaled: Vec<[i32; 16]> = scaled.iter().map(|b| b.map(i32::from)).collect();
                 let mut residual = vec![[0; 16]; 16];
                 dsp.h264_inverse_4x4(&scaled, &mut residual);
                 for (b, block) in residual.iter().enumerate() {
@@ -476,14 +492,14 @@ fn h264_add_inverse_matches_dequantise_inverse_and_add() {
                     }
                 }
             }
-            for levels in sparse_blocks::<64>(&mut rng, 6, 60) {
+            for levels in conforming_8x8_levels(&mut rng, &q, 6) {
                 let pred = prediction(&mut rng);
                 let mut fused = pred.clone();
                 let mut view = PlaneViewMut::new(&mut fused, 16, 8, 8).unwrap();
                 dsp.h264_add_inverse_8x8(&levels, &q, &mut view);
                 let (mut scaled, mut residual) = ([0; 64], [0; 64]);
                 dsp.h264_dequantize_8x8(&levels, &q, &mut scaled);
-                dsp.h264_inverse_8x8(&scaled, &mut residual);
+                dsp.h264_inverse_8x8(&scaled.map(i32::from), &mut residual);
                 for (i, &r) in residual.iter().enumerate() {
                     let at = i / 8 * 16 + i % 8;
                     let want = (i32::from(pred[at]) + r).clamp(0, 255);
@@ -493,6 +509,31 @@ fn h264_add_inverse_matches_dequantise_inverse_and_add() {
             }
         }
     }
+}
+
+/// `count` sparse 8x8 level blocks whose scaled values keep every
+/// intermediate of the inverse within 16 bits (as conforming streams do,
+/// §8.5.13.2): dense blocks while the scaled amplitude allows, else at most
+/// two levels of ±1 (each intermediate at most 2 · 2.25 times a scaled value
+/// below 2^13).
+fn conforming_8x8_levels(rng: &mut Rng, q: &H264Quantizer, count: usize) -> Vec<[i16; 64]> {
+    let scale = h264_scale_level(
+        1,
+        LEVEL_SCALE_8X8[q.rem].into_iter().max().unwrap(),
+        q.per as i32 - 6,
+    );
+    let amplitude = CONFORMING_8X8_AMPLITUDE / scale;
+    (0..count)
+        .map(|_| {
+            if amplitude > 0 {
+                return narrow(&sparse_blocks::<64>(rng, 1, amplitude))[0];
+            }
+            let mut block = [0; 64];
+            block[0] = rng.next(1) as i16;
+            block[(rng.next(1000).unsigned_abs() % 63 + 1) as usize] = rng.next(1) as i16;
+            block
+        })
+        .collect()
 }
 
 /// The blocks narrowed to the decoder's 16-bit coefficient storage.
@@ -578,13 +619,14 @@ fn h264_forward_quantize_chroma_matches_the_separate_steps() {
                 let (dc, count) = dsp.h264_forward_quantize_chroma(&residual, 11, &q, &mut ac);
                 let mut want = [[0; 16]; 4];
                 dsp.h264_forward_4x4(&residual, 11, 2, &mut want);
-                let c: [i32; 4] = core::array::from_fn(|b| want[b][0]);
+                let c: [i32; 4] = core::array::from_fn(|b| i32::from(want[b][0]));
                 let mut want_dc = [
                     c[0] + c[1] + c[2] + c[3],
                     c[0] - c[1] + c[2] - c[3],
                     c[0] + c[1] - c[2] - c[3],
                     c[0] - c[1] - c[2] + c[3],
-                ];
+                ]
+                .map(|v| i16::try_from(v).unwrap());
                 dsp.h264_quantize_dc(&mut want_dc, &q);
                 dsp.h264_quantize_4x4(&mut want, &q);
                 for block in &mut want {
@@ -597,6 +639,47 @@ fn h264_forward_quantize_chroma_matches_the_separate_steps() {
             }
         }
     }
+}
+
+/// The H.264 16-bit storage is exact for 8-bit residuals: at every QP and
+/// rounding, the largest coefficient of each position (its basis rows' L1
+/// norms times 255: the sign pattern of the basis attains it) quantises
+/// below `H264_MAX_LEVEL` and scales back within 16 bits, 4x4 and 8x8, so
+/// neither the level cap nor the scaling's saturation ever acts.
+#[test]
+fn scaled_ac_fits_i16() {
+    const CF_L1: [i64; 4] = [4, 6, 4, 6];
+    let f_l1: [i64; 8] = F8.map(|row| row.iter().map(|v| v.abs()).sum());
+    let peak_4x4 = |pos: usize| CF_L1[pos / 4] * CF_L1[pos % 4] * 255;
+    let peak_8x8 = |pos: usize| (f_l1[pos / 8] * f_l1[pos % 8] * 255 + 32) >> 6;
+    let mut largest = (0, 0);
+    for qp in 0..=51u8 {
+        for divisor in 2..=16 {
+            let q = H264Quantizer::with_rounding_divisor(qp, divisor);
+            let (mf4, qbits4) = q.forward_scale_4x4();
+            let (mf8, qbits8) = q.forward_scale_8x8();
+            let (_, offset4) = q.forward_terms(0);
+            let (_, offset8) = q.forward_terms(1);
+            for pos in 0..16 {
+                let level = (peak_4x4(pos) * i64::from(mf4[pos]) + i64::from(offset4)) >> qbits4;
+                let mut levels = [0i16; 16];
+                levels[pos] = i16::try_from(level).unwrap();
+                let scaled = h264_dequantize_ref(&levels.map(i32::from), qp)[pos];
+                largest = (largest.0.max(level), largest.1.max(scaled));
+            }
+            for pos in 0..64 {
+                let level = (peak_8x8(pos) * i64::from(mf8[pos]) + i64::from(offset8)) >> qbits8;
+                let scaled = h264_scale_level(
+                    i32::try_from(level).unwrap(),
+                    LEVEL_SCALE_8X8[q.rem][pos],
+                    q.per as i32 - 6,
+                );
+                largest = (largest.0.max(level), largest.1.max(scaled));
+            }
+        }
+    }
+    assert!(largest.0 < i64::from(H264_MAX_LEVEL), "level {}", largest.0);
+    assert!(largest.1 <= i32::from(i16::MAX), "scaled {}", largest.1);
 }
 
 // ------------------------------------------------------------ H.264 8x8
@@ -656,7 +739,7 @@ fn h264_8x8_forward_is_the_matrix_product_and_round_trips() {
             let mut d = [0; 64];
             dsp.h264_dequantize_8x8(&levels, &q, &mut d);
             let mut back = [0; 64];
-            dsp.h264_inverse_8x8(&d, &mut back);
+            dsp.h264_inverse_8x8(&d.map(i32::from), &mut back);
             for (b, r) in back.iter().zip(&residual) {
                 assert!((b - i32::from(*r)).abs() <= 2, "{b} vs {r}");
             }
@@ -700,7 +783,7 @@ fn h264_zero_sad_thresholds_are_safe() {
                     block[pos] = (block[pos] + sign * amount).clamp(-255, 255);
                     left -= amount;
                 }
-                let coeffs = [h264_forward_4x4_ref(&block)];
+                let coeffs = [h264_forward_4x4_ref(&block).map(|c| i16::try_from(c).unwrap())];
                 for d in dsps() {
                     let mut c = coeffs;
                     d.h264_quantize_4x4(&mut c, &q);
@@ -708,7 +791,7 @@ fn h264_zero_sad_thresholds_are_safe() {
                 }
             }
             // Chroma DC: the 2x2 Hadamard of four DCs summing to the bound.
-            let dc_limit = q.zero_sad_threshold_chroma_dc() as i32;
+            let dc_limit = i16::try_from(q.zero_sad_threshold_chroma_dc()).unwrap();
             for d in dsps() {
                 let mut dc = [dc_limit, 0, 0, 0];
                 d.h264_quantize_dc(&mut dc, &q);

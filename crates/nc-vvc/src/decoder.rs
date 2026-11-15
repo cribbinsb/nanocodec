@@ -222,6 +222,19 @@ impl Decoder {
         self.colour
     }
 
+    /// Test hook: overwrite every reference picture with `value`, as a
+    /// decoder that lost a picture would hold wrong references.
+    #[cfg(test)]
+    pub(crate) fn corrupt_references(&mut self, value: u8) {
+        let retained = self.retained.iter_mut().map(|(_, picture)| picture);
+        for picture in self.reference.iter_mut().chain(retained) {
+            for plane in nc_common::PlaneIndex::ALL {
+                picture.plane_mut(plane).view_mut().fill(value);
+            }
+        }
+        self.reference_border_ready = false;
+    }
+
     /// Decode one Annex-B access unit containing exactly one IDR or P picture.
     /// # Errors
     /// Rejects truncated/malformed data and syntax outside the emitted subset.

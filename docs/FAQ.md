@@ -71,7 +71,7 @@ threads, lookahead or B-frames, where they will do better. Within that configura
 
 On the 135 fresh held-out clips against that anchor (commit 8b492382): AV1 Default −38.5%, HEVC −40.2%, VVC
 −44.7%, H.264 Default −19.0%, H.264 Fast −11.1%, H.264 Faster −3.2% (+0.0% on all held-out clips: not ahead), and
-our H.264 Fastest needs more bits (+4.7%; +9.2% on all) ([table](../README.md#quality-and-speed)). We would welcome
+our H.264 Fastest needs more bits (+4.7%; +9.2% on all) ([table](https://cribbinsb.github.io/nanocodec/results/codecs.html)). We would welcome
 better settings for any reference within the same constraints.
 
 **Why a composite metric ("BD-J")?** We tune on it, so we report it, but every table also gives the plain
@@ -98,7 +98,7 @@ key every 10 s, our savings against x264 `medium` are 6–10 points smaller than
 −40.8%, HEVC −48.3% → −40.9%, H.264 −29.8% → −19.8%), while the references move less or gain (SVT-AV1 M8 −43.8% →
 −41.1%, x265 `medium` −30.4% → −32.2%); SVT-AV1 M8 is then level with our AV1, HEVC and VP9 Defaults, at well
 under half their speed. Against x264 `medium --tune psnr` at 600 frames our Defaults are −31% to −37%, H.264
-−8.2%. The table is in the [README](../README.md#window-length).
+−8.2%. The table is in the [method page](https://cribbinsb.github.io/nanocodec/results/method.html#window).
 
 **Why these bitrates?** Our use case is low-bitrate streaming. Each clip's ladder is scaled to its pixel rate and
 capped at half its source's bitrate, because many sources are already compressed and coding above that measures
@@ -122,7 +122,7 @@ Default −45.3% vs −50.7%, HEVC −47.0% vs −49.6%, VVC −51.1% vs −54.4
 moved more (SVT-AV1 M12 `--rtc` −29.1% vs −34.9%, x265 `medium` −30.3% vs −40.7%). So the size of a saving depends
 on the clips, our position among the encoders tested held, and our H.264 does better on the held-out clips. The
 independent report (an earlier build) gives 95% bootstrap intervals, about ±2 points for these figures. The full
-table is in the [README](../README.md#quality-and-speed).
+table is on the [results pages](https://cribbinsb.github.io/nanocodec/results/).
 
 **Speed: how measured?** Encode CPU time per frame, one thread, at a fixed quantizer that lands each encoder near
 600 kbps on three clips; not timed in CBR mode. In CBR our encoders take a median about 2% more CPU (0–7% by
@@ -194,7 +194,7 @@ its output under the GPL; we distribute only the output streams, not the program
 - **Decoders:** H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit 4:2:0) and VP9 (profile 0) pass the
   conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams tested so far and is not
   a full Main-profile decoder; the AV2 decoder decodes our own streams only. Details in the
-  [README](../README.md#decoders).
+  [detailed results](results/README.md#decoders).
 - **Speed gaps:** our AV1 and VP9 decoders are slower than dav1d and vpxdec single-threaded; SVT-AV1 M12/M13 and
   x264's fast presets encode faster than our Default presets; VVC Default runs below 30 fps at 720p on one Jetson
   core.

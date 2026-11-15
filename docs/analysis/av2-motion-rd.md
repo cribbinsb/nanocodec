@@ -1,5 +1,9 @@
 # AV2 motion decision diagnostic
 
+> **History (2026-11-15):** the standalone AV2 encoder, examples and gates
+> this note describes were deleted; AV2 encodes only through `Av2Backend`
+> on the shared engine ([handoff/av2.md](../handoff/av2.md) I6).
+
 2026-11-08, final AVM v1.0.0 native subset. Production motion remains opt-in.
 The sections below record successive experiments; the final policy and valid
 measurements are summarized in the last section.

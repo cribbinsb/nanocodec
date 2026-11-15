@@ -49,8 +49,9 @@ stream after the superframe strip by vpxdec, ffmpeg and ours
 
 No picture width is a multiple of 8 (cropping in every codec). A stream
 whose bytes already passed both standard decoders (the verified-stream
-cache, nceval.gatepolicy) is only decoded by ours, so an unchanged encoder
-costs little. Each run codes into its own directory under the work
+cache, nceval.gatepolicy; for spatial streams every operating point,
+nceval.conformance.gate_operating_points) is only decoded by ours, so an
+unchanged encoder costs little. Each run codes into its own directory under the work
 directory, deleted when every stream passes; a failure keeps it and prints
 the command that reproduces each failing stream. The encoder binary comes
 from NC_NANOCODEC_BIN (default target/release).
@@ -76,11 +77,7 @@ sys.path.insert(0, str(REPO_ROOT / "eval"))
 
 from nceval.codecs import Codec  # noqa: E402
 from nceval.config import Paths, find_tool, load_paths  # noqa: E402
-from nceval.conformance import (  # noqa: E402
-    gate_av1_operating_points,
-    gate_stream,
-    gate_vp9_operating_points,
-)
+from nceval.conformance import gate_operating_points, gate_stream  # noqa: E402
 from nceval.display import switched_format  # noqa: E402
 from nceval.framepipe import ProcessFailed  # noqa: E402
 from nceval.framestats import UNCODED_FRAME_TYPES  # noqa: E402
@@ -416,10 +413,7 @@ def run_case(case: Case, clips: dict[Shape, Path], binary: Path, paths: Paths,
     if not result.gate.passed:
         return Outcome(case, False, result.gate.reason, repro)
     if layer_md5 is not None:
-        if case.codec is Codec.AV1:
-            op_gate = gate_av1_operating_points(stream, layer_md5, None, paths, own_decoder=binary)
-        else:
-            op_gate = gate_vp9_operating_points(stream, layer_md5, paths, own_decoder=binary)
+        op_gate = gate_operating_points(case.codec, stream, layer_md5, paths, own_decoder=binary)
         if not op_gate.passed:
             return Outcome(case, False, op_gate.reason, repro)
     if case.kind in ("l1t2", "l1t3"):

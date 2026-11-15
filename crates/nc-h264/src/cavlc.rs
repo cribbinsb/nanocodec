@@ -102,12 +102,6 @@ pub struct CavlcEncoder {
 }
 
 impl CavlcEncoder {
-    /// Bits of the slice so far, its header included (in-frame rate
-    /// control).
-    pub fn bit_len(&self) -> u64 {
-        self.out.bit_len() as u64
-    }
-
     /// Start a slice of `kind` after `header` (not aligned: CAVLC slice data
     /// follows the header directly) in a picture of `mb_count` macroblocks,
     /// `mb_cols` wide.
@@ -441,7 +435,7 @@ fn write_te(out: &mut BitWriter, value: u8, max: u8) {
 }
 
 /// The levels of a block (raster within the block) in `scan` order.
-fn scan_levels(raster: &[i32], scan: &Scan, out: &mut [i32]) {
+fn scan_levels(raster: &[i16], scan: &Scan, out: &mut [i16]) {
     for (i, level) in out.iter_mut().enumerate().take(scan.len()) {
         *level = raster[scan.position(i)];
     }
@@ -449,7 +443,7 @@ fn scan_levels(raster: &[i32], scan: &Scan, out: &mut [i32]) {
 
 /// The four 4x4 parts of an 8x8 block (raster within the block) for CAVLC:
 /// level `k` of part `i` is 8x8 scan position `4k + i` (§7.3.5.3.2).
-fn interleave_8x8(raster: &[i32; 64], parts: &mut [[i32; BLOCK_COEFFS]; PARTS_8X8]) {
+fn interleave_8x8(raster: &[i16; 64], parts: &mut [[i16; BLOCK_COEFFS]; PARTS_8X8]) {
     for scan_index in 0..SCAN_8X8.len() {
         parts[scan_index % PARTS_8X8][scan_index / PARTS_8X8] =
             raster[SCAN_8X8.position(scan_index)];
@@ -457,8 +451,9 @@ fn interleave_8x8(raster: &[i32; 64], parts: &mut [[i32; BLOCK_COEFFS]; PARTS_8X
 }
 
 /// `residual_block_cavlc()` of `coeffs` (scan order, `maxNumCoeff` long)
-/// with context `nc`; returns `TotalCoeff`.
-fn write_block(out: &mut BitWriter, coeffs: &[i32], nc: i32) -> u8 {
+/// with context `nc`; returns `TotalCoeff`. The levels widen to 32 bits
+/// here, for the level codes.
+fn write_block(out: &mut BitWriter, coeffs: &[i16], nc: i32) -> u8 {
     // Non-zero levels and the zeros below each, highest frequency first.
     let mut levels = [0i32; BLOCK_COEFFS];
     let mut runs = [0u8; BLOCK_COEFFS];
@@ -471,7 +466,7 @@ fn write_block(out: &mut BitWriter, coeffs: &[i32], nc: i32) -> u8 {
                 runs[total - 1] = zeros;
                 total_zeros += usize::from(zeros);
             }
-            levels[total] = level;
+            levels[total] = i32::from(level);
             total += 1;
             zeros = 0;
         } else if total > 0 {
@@ -644,8 +639,9 @@ mod tests {
     /// Reads back what [`write_block`] wrote, by the decoder's rules
     /// (§9.2), to check the level and run coding round-trips.
     fn round_trip(coeffs: &[i32], nc: i32) {
+        let narrow: Vec<i16> = coeffs.iter().map(|&c| i16::try_from(c).unwrap()).collect();
         let mut out = BitWriter::new();
-        let total = write_block(&mut out, coeffs, nc);
+        let total = write_block(&mut out, &narrow, nc);
         assert_eq!(
             usize::from(total),
             coeffs.iter().filter(|&&c| c != 0).count()

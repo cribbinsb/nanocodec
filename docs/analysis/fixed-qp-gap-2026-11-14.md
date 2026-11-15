@@ -70,8 +70,20 @@ Reading:
 - **MS-SSIM is our weakest metric against the x26x anchors** (HEVC +6.3 while PSNR is +1.3). VMAF is the
   weakest for H.264.
 
-Slow references (x264 veryslow, x265 slow, SVT M8, libvpx good cpu 2, VVenC faster LD): section 4 (being
-measured).
+**Against slow references** (same draw, our Defaults at variance-integration 7f1ecc82):
+
+| Ours (Default) | vs | J [90 % CI] | PSNR-YUV | VMAF v1 | MS-SSIM | n |
+|---|---|---|---:|---:|---:|---:|
+| H.264 | x264 veryslow psnr | +8.5 [+5.4, +11.5] | +6.9 | +10.3 | +11.5 | 22 |
+| HEVC | x265 slow psnr | +8.4 [+3.4, +14.9] | +8.3 | +10.3 | +12.3 | 23 |
+| AV1 | SVT-AV1 M8 rtc | +5.7 [+2.9, +9.3] | +4.2 | -3.8 | +18.3 | 23 |
+| AV2 | SVT-AV1 M8 rtc | +2.1 [-0.8, +5.0] | +1.4 | -8.0 | +15.9 | 22 |
+| VP9 | libvpx good cpu 2 | -15.7 [-20.1, -8.3] | -13.4 | -20.0 | -7.5 | 16 |
+
+Context against x264 medium psnr: x264 veryslow -3.7, x265 slow -27.4, SVT M8 -27.9, libvpx good
+cpu 2 -2.7. The headroom to the slow settings of the same formats is 6-9 % for H.264 and HEVC and 6 %
+for AV1. SVT M8's margin is almost all MS-SSIM (+18 % for us), which points at its psycho-visual and
+AQ choices rather than search: our VMAF is better.
 
 ## 2. Tool attribution (matched-QP ablations on our Defaults, first 16 clips of the draw)
 

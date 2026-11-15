@@ -84,7 +84,7 @@ from .fingerprint import measurement_fingerprint
 from .budget import (MAX_MINUTES, OverBudget, check as check_budget, estimate_minutes,
                      point_cpu_seconds)
 from .cachefile import identity_cached, read_json
-from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, file_sha256, gate_arguments,
+from .gatepolicy import (EVALUATION_GATE, GatePolicy, PointCheck, gate_arguments,
                          uniform_check)
 from .jreal import K_CPU
 from .stages import (ALL_FOUR, MARGIN_SIGMAS, METRICS, PART_FILL, STAGES, VAL_STAGES, Stage,
@@ -103,7 +103,7 @@ class Side:
     overrides: dict
 
     def key(self) -> list:
-        return [file_sha256(self.binary), sorted(self.overrides.items())]
+        return [buildinfo.stream_identity(self.binary), sorted(self.overrides.items())]
 
 
 def _cache_path(kind: str, codec: Codec, clip: tune.ClipRef, identity: dict) -> Path:

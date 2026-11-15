@@ -72,6 +72,7 @@ mod vvc_forward_simd;
 pub(crate) mod vvc_inverse;
 mod vvc_lfnst;
 pub(crate) mod vvc_primary;
+pub(crate) use generic::{H264_MAX_LEVEL, scale_level as h264_scale_level};
 pub use vvc_lfnst::VvcLfnst;
 pub use vvc_primary::VvcTransformKind;
 
@@ -713,18 +714,18 @@ pub(crate) type HevcInverseFn = unsafe fn(coeffs: &[i16], out: &mut [i16]);
 /// Forward H.264 4x4 transform of `out.len()` blocks, `blocks_wide` per row
 /// of blocks, from a residual region at `stride`.
 pub(crate) type H264Forward4Fn =
-    unsafe fn(residual: &[i16], stride: usize, blocks_wide: usize, out: &mut [[i32; 16]]);
+    unsafe fn(residual: &[i16], stride: usize, blocks_wide: usize, out: &mut [[i16; 16]]);
 /// A transform of each 4x4 block of `input` into `out` (same length).
 pub(crate) type H264Blocks4Fn = unsafe fn(input: &[[i32; 16]], out: &mut [[i32; 16]]);
 /// Forward H.264 8x8 transform of a residual at `stride`.
-pub(crate) type H264Forward8Fn = unsafe fn(residual: &[i16], stride: usize, out: &mut [i32; 64]);
+pub(crate) type H264Forward8Fn = unsafe fn(residual: &[i16], stride: usize, out: &mut [i16; 64]);
 /// Four 8x8 forward transforms and quantisation of one 16x16 macroblock.
 pub(crate) type H264ForwardQuantizeMbFn = unsafe fn(
     residual: &[i16],
     stride: usize,
     zero_mask: u8,
     q: &H264Quantizer,
-    out: &mut [[i32; 64]; 4],
+    out: &mut [[i16; 64]; 4],
 ) -> [u32; 4];
 /// Inverse H.264 8x8 transform.
 pub(crate) type H264Inverse8Fn = unsafe fn(coeffs: &[i32; 64], out: &mut [i32; 64]);
@@ -732,8 +733,8 @@ pub(crate) type H264Inverse8Fn = unsafe fn(coeffs: &[i32; 64], out: &mut [i32; 6
 /// optional pre-scaled DCs, inverse transform and the add to the prediction
 /// in `dst` (`generic::h264_add_inverse_4x4`).
 pub(crate) type H264AddInverse4Fn = unsafe fn(
-    levels: &[[i32; 16]],
-    dc: &[i32],
+    levels: &[[i16; 16]],
+    dc: &[i16],
     scale: (&[i32; 16], i32),
     blocks_wide: usize,
     dst: &mut [u8],
@@ -756,23 +757,21 @@ pub(crate) type H264ForwardQuantizeChromaFn = unsafe fn(
     residual: &[i16],
     stride: usize,
     q: &H264Quantizer,
-    ac: &mut [[i32; 16]; 4],
-) -> ([i32; 4], u32);
-/// H.264 reconstruction of an 8x8 block in place
-/// (`generic::h264_add_inverse_8x8`).
-pub(crate) type H264AddInverse8Fn =
-    unsafe fn(levels: &[i32; 64], scale: (&[i32; 64], i32), dst: &mut [u8], stride: usize);
+    ac: &mut [[i16; 16]; 4],
+) -> ([i16; 4], u32);
 /// Dead-zone quantisation in place: `level = (|c| · mf[i % mf.len()] +
-/// offset) >> qbits`, capped at `max_level`, signed like `c`. Returns the
-/// number of non-zero levels. `coeffs.len()` is a multiple of `mf.len()`.
-pub(crate) type ScaleQuantizeFn =
-    unsafe fn(coeffs: &mut [i32], mf: &[i32], offset: i32, qbits: u32, max_level: i32) -> u32;
+/// offset) >> qbits`, capped at `max_level`, signed like `c`, stored as
+/// `S` (`max_level` fits it). Returns the number of non-zero levels.
+/// `coeffs.len()` is a multiple of `mf.len()`.
+pub(crate) type ScaleQuantizeFn<S> =
+    unsafe fn(coeffs: &mut [S], mf: &[i32], offset: i32, qbits: u32, max_level: i32) -> u32;
 /// H.264 scaling: `d = l · ls[i % ls.len()]`, then shifted left by `shift`
-/// if `shift >= 0`, else rounding-shifted right by `-shift`.
-pub(crate) type H264ScaleFn = unsafe fn(levels: &[i32], ls: &[i32], shift: i32, out: &mut [i32]);
+/// if `shift >= 0`, else rounding-shifted right by `-shift`, saturated
+/// into 16 bits (`generic::h264_dequantize`).
+pub(crate) type H264ScaleFn = unsafe fn(levels: &[i16], ls: &[i32], shift: i32, out: &mut [i16]);
 /// Bit `i` set where `levels[i]` is non-zero; at most [`MAX_MASK_LEVELS`]
 /// levels.
-pub(crate) type NonzeroMaskFn = unsafe fn(levels: &[i32]) -> u64;
+pub(crate) type NonzeroMaskFn = unsafe fn(levels: &[i16]) -> u64;
 
 /// Most levels [`NonzeroMaskFn`] takes: one bit each in a `u64` (an 8x8
 /// block).
@@ -806,13 +805,14 @@ pub(crate) struct CodecTxfmFns {
     pub h264_inverse_8x8: H264Inverse8Fn,
     pub h264_dequantize: H264ScaleFn,
     pub h264_add_inverse_4x4: H264AddInverse4Fn,
-    pub h264_add_inverse_8x8: H264AddInverse8Fn,
     pub h264_add_scaled_4x4: H264AddScaled4Fn,
     pub h264_add_scaled_8x8: H264AddScaled8Fn,
     pub h264_add_scaled_mb: H264AddScaledMbFn,
     pub h264_forward_quantize_chroma: H264ForwardQuantizeChromaFn,
-    /// Shared by the HEVC and H.264 quantisers.
-    pub quantize: ScaleQuantizeFn,
+    /// The HEVC quantiser.
+    pub quantize: ScaleQuantizeFn<i32>,
+    /// The H.264 quantiser (16-bit coefficients and levels).
+    pub h264_quantize: ScaleQuantizeFn<i16>,
     /// The non-zero levels of a block as a bit mask (the H.264 CABAC
     /// residual writer finds its significance map from it).
     pub nonzero_mask: NonzeroMaskFn,

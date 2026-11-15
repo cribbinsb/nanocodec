@@ -4,6 +4,8 @@ Detailed results behind the [README](../../README.md) charts: how the comparison
 results on content we never tuned on, and the known weaknesses. Negative BD-rate always means fewer bits than the
 comparison encoder for the same quality.
 
+- [The results site](#the-results-site)
+- [Presets, decoders and conformance](#presets-decoders-and-conformance)
 - [Bitrate vs speed](#bitrate-vs-speed)
 - [Spatial scalability (SVC)](#spatial-scalability-svc)
 - [In the browser (WebAssembly)](#in-the-browser-webassembly)
@@ -14,6 +16,69 @@ comparison encoder for the same quality.
 - [Known weaknesses](#known-weaknesses)
 - [Method](#method)
 - [Caveats](#caveats)
+
+## The results site
+
+The interactive pages at **https://cribbinsb.github.io/nanocodec/results/** (source `web/results/`, published with
+the demo by `tools/web/publish.sh`) show the charts below with selectable clip set, zero line, rate mode, metric,
+platform, codec and preset. Every figure on them, and the README's headline facts, is generated from the files in
+this directory by `python3 -m nceval.site` (run from `eval/`; `tools/dev/chart_refresh.py` runs it after each
+render) into `web/results/data/*.json`; `eval/tests/test_site.py` checks that the generated files are current
+and that no page types a figure of its own, and `web/tests/results-pages.py` checks in Chromium that every
+figure each rendered page shows is in that page's data.
+
+## Presets, decoders and conformance
+
+Moved here from the front page on 2026-11-15 (figures as measured then).
+
+### Presets
+
+Each codec has a **Default** (quality point) and a **Fast** preset (speed point):
+`--preset h264-fast | hevc-fast | av1-fast | vp9-fast | av2-fast | vvc-fast`. Some codecs have further speed
+points: `h264-faster`, `h264-fastest`, `hevc-faster`, `av1-faster`, `vp9-faster`, `vp9-fastest`. Measured on the
+11 development clips (150 frames, one key frame; held-out figures for the same pairs are on the [fresh-clip page](bd-vs-speed-independent_fresh_2026-11-13.md#selected-pairs)) and one Jetson core (fps), against the reference encoders at the
+settings above:
+
+- H.264 Fast: 114 fps vs openh264 (realtime, medium complexity) 111 fps; BD-J −25.6% against openh264.
+- H.264 Faster: 134 fps; BD-J −8.5% vs x264 `medium` (+2.5% vs x264 `medium --tune psnr`, i.e. no saving) and
+  −39.7% vs x264 `ultrafast` (191 fps).
+- AV1 Faster: 81 fps vs SVT-AV1 M12 `--rtc` 71 fps; BD-J −7.4% against M12 (per-clip range −19.1% to +5.4%).
+- HEVC Faster: 98 fps vs SVT-AV1 M13 `--rtc` 79 fps (PC: 0.89x M13's time in the same rounds); BD-J −4.4%
+  against M13 (BD-PSNR-YUV +1.0%, i.e. no saving on PSNR alone).
+
+AV1 adds an optional, experimental **film grain** option on top of any preset (`--film-grain [STRENGTH]`, the C
+API's `film_grain`, a checkbox in the browser demo): decoders re-synthesize the texture coding smoothed away. It is
+off by default, since it lowers PSNR and VMAF and suits stochastic texture best.
+
+### Decoders
+
+Our own Rust decoders, natively and in WebAssembly. 8-bit only (no 10-bit), single-threaded.
+
+| Codec | What has been tested | Our decode time ÷ the reference's, x86 / Jetson |
+|---|---|---|
+| H.264 | Constrained High profile: 65/65 of the conformance streams we test in that profile, MD5-exact | FFmpeg: 0.88–1.00x / 0.77–0.85x |
+| HEVC | Main profile: 136/136 of the conformance streams we test, exact | FFmpeg: 0.57–0.94x / 0.72–0.92x |
+| AV1 | Main profile, 8-bit 4:2:0: 176/176 libaom test vectors | dav1d: 1.13–1.58x / 1.09–1.43x (dav1d faster) |
+| VP9 | Profile 0: 303/303 test vectors | vpxdec: 1.32–1.41x / 1.14–1.24x (vpxdec faster; FFmpeg: 0.98–1.10x) |
+| AV2 | Our own streams only, bit-exact with avmdec and dav2d | avmdec (AVM's research reference decoder, not built for speed): 0.33–0.39x / 0.31–0.32x |
+| VVC | 8-bit Main: 9/9 official 8-bit conformance streams (ITU-T H.266.1) tested so far; not a full Main-profile conformance claim | VVdeC: 0.39–0.47x / 0.63–0.70x |
+
+Ratios are single-threaded on the same streams (all references were run with one thread; they are normally run
+multi-threaded): ours at 720p and 1080p, plus third-party streams (x264, openh264, x265 with B-frames, IP cameras,
+SVT-AV1, libaom, vpxenc). Below 1 means ours took less time. The PC was a loaded Ryzen 9 5950X, so read x86 ratios
+as about ±10 %; the Jetson is one Orin Nano core. Measured 2026-11-13 at d007869b
+([table](wasm-speed.md#decoder-close-out-2026-11-13-dec-winddown)). Decoder robustness: see
+[FAQ: security](../FAQ.md#security-and-fuzzing).
+
+**Encoder conformance.** No custom syntax is used. Before a build's numbers are published, short streams from
+every shipped preset of every codec (temporal layers, holds, intra refresh, the main coding tools) are decoded
+by two standard decoders per codec (H.264: JM and FFmpeg; HEVC: HM and FFmpeg; AV1: aomdec and dav1d; VP9:
+vpxdec and FFmpeg; AV2: avmdec and dav2d; VVC: VVdeC and FFmpeg) and by ours, and must match the encoder's
+reconstruction frame by frame (hashes); a randomized syntax-stress test forces random legal coding decisions.
+The chart streams themselves are scored on the encoder's reconstruction; an independent check re-encoded 144
+chart points (every codec's Default, 11 clips) and decoded them with both standard decoders and ours: all were
+bit-exact with the reconstruction. On the 209 held-out clips every point of ours was scored from a standard
+decoder's output, which equalled the reconstruction frame by frame.
 
 ## Bitrate vs speed
 
@@ -90,7 +155,7 @@ savings against x264 `medium` are 6–10 points smaller (AV1 −47.1% → −40.
 references move less or gain (SVT-AV1 M8 −43.8% → −41.1%, x265 `medium` −30.4% → −32.2%), and SVT-AV1 M8 becomes
 level with our AV1, HEVC and VP9 Defaults at well under half their speed. Our rate is on target there (median
 0.988–0.989); 74–94 of 252 points per Default still peak above a strict 1 s buffer (x264 `medium` 10, SVT-AV1
-20–27). Full table: [README](../../README.md#window-length) and the
+20–27). Full table: [method page](https://cribbinsb.github.io/nanocodec/results/method.html#window) and the
 [independent report](independent-2026-11-13.md#update-2026-11-13-later-the-new-rate-control-and-a-20-s-window).
 
 ### Bitrate range

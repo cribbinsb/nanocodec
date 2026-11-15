@@ -73,6 +73,7 @@ GATE_PATTERNS = (
     "Cargo.toml", "Cargo.lock", "rustfmt.toml", "clippy.toml", ".rustfmt.toml",
     ".cargo/*", "rust-toolchain", "rust-toolchain.toml",
     "tools/ci/check.sh", "tools/ci/check_layering.py", "tools/ci/check_test_modules.py",
+    "tools/ci/check_encode_paths.py",
     "tools/ci/browser_smoke.sh",
     "tools/web/*",
     "tools/dev/land.sh", "tools/dev/land_scope.py", "tools/dev/land_guard.py",
