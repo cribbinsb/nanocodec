@@ -103,3 +103,12 @@ ratios. "Joint" is the study's trial J on its own clips.
 | VP9 | second ref + transform search on every block + fewer motion-search skips | -2.6 % (-2.2 fixed QP, -0.36, ~-0.1) | x1.10 | -1.53 % at x86 x1.22 (study slow-vp9-2026-11-15, trial 4); second ref alone -1.30 % at x1.09; + trellis 8 -1.87 % at x2.38 | x1.16 / x1.22 | **-1.48 % [-2.00, -0.96]** (600 f, single point, n 27, no guard) |
 | AV2 | second ref + TCQ on inter frames | -6.1 % (-1.46 CBR, TCQ -3.34 CBR sensitivity, motion search -0.62, switchable filters -1.2, MV bank -0.41, walk -0.37, DRL -0.32, ...) | x1.61 | TCQ alone -4.08 % at x86 x1.50 (study slow-av2-2026-11-15, trial 1); with the other candidates -3.97 % at x1.49; pruned TCQ -3.34 % at x1.35 | x1.37 / | **-4.25 % [-4.75, -3.76]** (600 f, single point, n 27; pulse guard +0.27 dB vs +0.25, judged) |
 | H.264 | RD refinement (cross, 1 step) + RD transform size + residual RD | -2.2 % (-1.5 fixed QP, -0.51, -0.19) | x1.84 | -2.44 % at x86 x1.69 (study slow-h264b-2026-11-15, trial 11, ladder); full refinement alone -2.23 % at x1.95 (break-even k 0.024) | x1.70 / x1.69 | **-2.96 % [-3.40, -2.55]** (600 f, ladder, n 27, no guard) |
+| AV1 (rebuild, not adopted) | second ref + pre-transform skip off + no depth removal + CDEF every third row + exact ranking | -4.3 % (-2.0 CBR, -2.27, -0.72, ~-0.8 sensitivity, part of -0.60) | x1.30 | -2.70 % at x86 x1.27 vs medium (study slow-av1-2026-11-15, trial 5) | x1.25 / x1.24 | against the landed AV1 slow (600 f, n 27): J +0.23 % [-0.39, +0.83] at 19 % less Jetson CPU, but the periodic-key pulse guard tripped (+0.29 dB, worst clip +0.75): WORSE, the landed AV1 slow stays |
+
+How the estimate held: the additive sum over-predicted every codec's joint
+J (VVC -2.8 vs -2.4, VP9 -2.6 vs -1.5, AV2 -6.1 vs -4.1, AV1 -4.3 vs -2.7),
+and the L3 confirmations then landed near or above the joint study's J (VVC
+-3.0, VP9 -1.5, AV2 -4.3, H.264 -3.0 against joint -2.4). Fixed-QP gains
+overlap (several quantisation levers; the second reference and search
+levers), and some levers only pay beside others (VVC's 8x8 CUs: +0.6 % alone,
+part of -2.4 % with the second reference).
