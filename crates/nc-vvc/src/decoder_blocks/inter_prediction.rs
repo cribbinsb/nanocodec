@@ -1,8 +1,67 @@
 //! General inter reconstruction through shared interpolation and weighted DSP kernels.
 use super::motion::Motion;
+use crate::decoder_headers::Weights;
 use crate::motion::Mv16;
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::{Dsp, Filter, HevcWeights};
+/// What inter prediction reads: both reference picture lists, and the
+/// slice's explicit weights when it predicts with them (H.266 §8.5.6.6.3).
+#[derive(Clone, Copy)]
+pub(crate) struct Sources<'a> {
+    pub pictures: [&'a [&'a Picture]; 2],
+    pub weights: Option<&'a Weights>,
+}
+
+#[cfg(test)]
+impl<'a> Sources<'a> {
+    /// References predicted from with the default weights.
+    pub(crate) fn unweighted(pictures: [&'a [&'a Picture]; 2]) -> Self {
+        Self {
+            pictures,
+            weights: None,
+        }
+    }
+}
+
+/// Fractional bits of the high-precision prediction samples of 8-bit
+/// pictures (`shift1 = 14 - BitDepth`).
+const PRECISION_BITS: u32 = 6;
+
+/// Explicit weighted prediction of a block from the given lists (§8.5.6.6.3),
+/// folded into the shared weighted kernel: the offsets join its rounding term.
+fn explicit(weights: &Weights, motion: Motion, component: usize) -> HevcWeights {
+    let shift = u32::from(weights.denominators[component]) + PRECISION_BITS;
+    let entry = |list: usize| {
+        motion.lists[list].map(|vector| {
+            // A reference past the signalled count keeps the default weight.
+            let [weight, offset] = weights.lists[list]
+                .get(usize::from(vector.reference))
+                .map_or([1 << weights.denominators[component], 0], |entry| {
+                    entry[component]
+                });
+            (weight, i32::from(offset))
+        })
+    };
+    match (entry(0), entry(1)) {
+        (Some((w0, o0)), Some((w1, o1))) => HevcWeights {
+            w0,
+            w1,
+            round: (o0 + o1 + 1) << shift,
+            shift: shift + 1,
+        },
+        (Some((weight, offset)), None) | (None, Some((weight, offset))) => {
+            let first = motion.lists[0].is_some();
+            HevcWeights {
+                w0: if first { weight } else { 0 },
+                w1: if first { 0 } else { weight },
+                round: (1 << (shift - 1)) + (offset << shift),
+                shift,
+            }
+        }
+        (None, None) => unreachable!("inter prediction has a reference"),
+    }
+}
+
 // Shared interpolation accepts blocks of at least four samples. Predicting a
 // padded chroma block preserves the requested samples and its filter support.
 fn inter_prediction(
@@ -44,7 +103,7 @@ fn inter_prediction(
 
 pub(super) fn predict(
     dsp: &Dsp,
-    references: [&[&Picture]; 2],
+    references: Sources<'_>,
     motion: Motion,
     (plane, affine): (PlaneIndex, bool),
     position: (usize, usize),
@@ -52,7 +111,9 @@ pub(super) fn predict(
     out: &mut [u8],
 ) {
     let luma = plane == PlaneIndex::Y;
-    if motion.lists.iter().flatten().count() == 1 && !(motion.half && luma) {
+    // Explicit weights apply to the high-precision samples, also of one list.
+    let weighted = references.weights.is_some() && motion.weight == 0;
+    if motion.lists.iter().flatten().count() == 1 && !(motion.half && luma) && !weighted {
         let (list, vector) = motion
             .lists
             .iter()
@@ -63,7 +124,7 @@ pub(super) fn predict(
             crate::inter::predict_with(
                 dsp,
                 Filter::VvcAffineLuma,
-                references[list][usize::from(vector.reference)].plane(plane),
+                references.pictures[list][usize::from(vector.reference)].plane(plane),
                 position,
                 size,
                 vector.vector,
@@ -73,7 +134,7 @@ pub(super) fn predict(
         }
         inter_prediction(
             dsp,
-            references[list][usize::from(vector.reference)].plane(plane),
+            references.pictures[list][usize::from(vector.reference)].plane(plane),
             position,
             size,
             vector.vector,
@@ -88,7 +149,7 @@ pub(super) fn predict(
         if let Some(vector) = vector {
             precision(
                 dsp,
-                references[list][usize::from(vector.reference)].plane(plane),
+                references.pictures[list][usize::from(vector.reference)].plane(plane),
                 position,
                 size,
                 vector.vector,
@@ -97,11 +158,21 @@ pub(super) fn predict(
             );
         }
     }
-    combine(dsp, motion, &samples[0], &samples[1], size, out);
+    combine(
+        dsp,
+        (motion, references.weights, plane),
+        &samples[0],
+        &samples[1],
+        size,
+        out,
+    );
 }
+/// Combine the high-precision predictions of a block's lists: explicit
+/// weights when the slice has them and the block's BCW index is the default,
+/// else the default or BCW average.
 pub(super) fn combine(
     dsp: &Dsp,
-    motion: Motion,
+    (motion, explicit_weights, plane): (Motion, Option<&Weights>, PlaneIndex),
     first: &[i16],
     second: &[i16],
     size: (usize, usize),
@@ -109,6 +180,9 @@ pub(super) fn combine(
 ) {
     let (w, h) = size;
     let weights = match motion.lists {
+        _ if explicit_weights.is_some() && motion.weight == 0 => {
+            explicit(explicit_weights.unwrap(), motion, plane as usize)
+        }
         [Some(_), None] => HevcWeights {
             w0: 1,
             w1: 0,
@@ -209,7 +283,7 @@ pub(super) fn precision_window(
 /// Affine uses the existing model's sub-block vectors and chroma diagonal mean.
 pub(super) fn predict_unit(
     dsp: &Dsp,
-    references: [&[&Picture]; 2],
+    references: Sources<'_>,
     unit: &super::Unit,
     plane: PlaneIndex,
     block: nc_encoder::Block,
@@ -268,7 +342,7 @@ pub(super) fn predict_unit(
 
 fn affine(
     dsp: &Dsp,
-    references: [&[&Picture]; 2],
+    references: Sources<'_>,
     unit: &super::Unit,
     motion: Motion,
     (plane, block): (PlaneIndex, nc_encoder::Block),
@@ -341,7 +415,7 @@ fn affine(
 
 fn geometric(
     dsp: &Dsp,
-    references: [&[&Picture]; 2],
+    references: Sources<'_>,
     unit: &super::Unit,
     (pair, split): ([Motion; 2], u8),
     (plane, block): (PlaneIndex, nc_encoder::Block),
@@ -360,7 +434,7 @@ fn geometric(
             .unwrap();
         precision(
             dsp,
-            references[list][usize::from(vector.reference)].plane(plane),
+            references.pictures[list][usize::from(vector.reference)].plane(plane),
             position,
             size,
             vector.vector,

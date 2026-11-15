@@ -62,7 +62,10 @@ fn official_predicted_syntax() {
                     s,
                     p.dimensions.map(|v| v as usize),
                     header.picture.joint_sign,
-                    [&references[0], &references[1]],
+                    crate::decoder_blocks::InterSources::unweighted([
+                        &references[0],
+                        &references[1],
+                    ]),
                     &dsp,
                     None,
                 )

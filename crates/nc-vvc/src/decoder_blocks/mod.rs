@@ -24,6 +24,7 @@ mod reconstruct;
 mod reshape;
 pub(crate) use reshape::model as reshape_model;
 mod references;
+pub(super) use inter_prediction::Sources as InterSources;
 pub(super) use reconstruct::reconstruct;
 mod affine_motion;
 mod amvp_syntax;
@@ -31,6 +32,7 @@ mod initialization;
 mod inter_models;
 mod inter_prediction;
 mod prof;
+mod quant_groups;
 mod refinement;
 pub(crate) use refinement::derive as derive_refinement;
 mod inter_syntax;
@@ -96,7 +98,18 @@ pub(super) struct Unit {
     mts: u8,
     luma_mode: u8,
     chroma_mode: u8,
+    /// Luma QP of the CU (`QpY`; a chroma-tree CU holds the luma QP its
+    /// chroma QPs derive from).
+    qp: u8,
+    /// CU chroma QP offsets (Cb, Cr, joint) from the PPS list.
+    chroma_offsets: [i8; 3],
     transforms: Vec<Transform>,
+}
+impl Unit {
+    /// The CU's luma QP and chroma QP offsets, as `transform::qp` takes them.
+    fn quant(&self) -> (u8, [i8; 3]) {
+        (self.qp, self.chroma_offsets)
+    }
 }
 struct Parser<'a> {
     sequence: &'a Sequence,
@@ -117,6 +130,7 @@ struct Parser<'a> {
     inter_models: inter_models::Models,
     transform_models: transform_syntax::Models,
     sbt_models: sbt::Models,
+    groups: quant_groups::QuantGroups,
 }
 
 /// Decode supported general I/P syntax before reconstruction. Unsupported tools
@@ -164,6 +178,16 @@ pub(super) fn parse_filtered(
         intra_models: intra_syntax::Models::new(qp, init_kind),
         transform_models: transform_syntax::Models::new(qp, init_kind),
         sbt_models: sbt::Models::new(qp, init_kind),
+        groups: quant_groups::QuantGroups::new(
+            [p.cu_qp_delta, h.cu_chroma_offsets],
+            [
+                h.picture.qp_subdiv[usize::from(inter)],
+                h.picture.chroma_subdiv[usize::from(inter)],
+            ],
+            &p.cu_chroma_offsets,
+            h.qp as u8,
+            init_kind,
+        ),
         constraint: initialization::bank([[25, 20], [25, 12], [35, 35]], [1, 0], qp, init_kind),
         ref_index: initialization::bank([[5, 35], [20, 35], [35, 35]], [0, 4], qp, init_kind),
         cclm: initialization::bank([[26, 27], [34, 27], [59, 27]], [4, 9], qp, init_kind),
@@ -227,24 +251,33 @@ pub(super) fn parse_filtered(
     })
 }
 fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Result<()> {
-    if h.kind != 2 && (s.tools.weighted.contains(&true) || s.tools.wraparound)
-        || !h.picture.output
-        || h.picture.gdr
-        || !s.tools.ladf.is_empty()
-        || h.picture.boundaries.iter().any(|v| !v.is_empty())
-        || s.ctu_log2 > 7
-        || s.tools.palette
-        || s.tools.ibc
-        || p.cu_qp_delta
-        || h.cu_chroma_offsets
-        || h.scaling
-        || s.entropy_sync
-        || !h.entry_offsets.is_empty()
-        || p.partitioning.tiles.iter().any(|v| v.len() != 1)
-    {
-        return Err(DecodeError::Unsupported("VVC general coding tools"));
+    // Each unsupported tool is named, so a corpus run reports what is missing.
+    let inter = h.kind != 2;
+    let unsupported = [
+        (
+            inter && s.tools.wraparound,
+            "VVC wrap-around motion compensation",
+        ),
+        (!h.picture.output, "VVC non-output picture"),
+        (
+            h.picture.boundaries.iter().any(|v| !v.is_empty()),
+            "VVC virtual boundaries",
+        ),
+        (s.ctu_log2 > 7, "VVC CTU size"),
+        (s.tools.palette, "VVC palette mode"),
+        (s.tools.ibc, "VVC intra block copy"),
+        (h.scaling, "VVC explicit scaling lists"),
+        (s.entropy_sync, "VVC wavefront entropy synchronisation"),
+        (!h.entry_offsets.is_empty(), "VVC slice entry points"),
+        (
+            p.partitioning.tiles.iter().any(|v| v.len() != 1),
+            "VVC multiple tiles",
+        ),
+    ];
+    match unsupported.iter().find(|(present, _)| *present) {
+        Some(&(_, tool)) => Err(DecodeError::Unsupported(tool)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 impl Parser<'_> {
@@ -252,12 +285,21 @@ impl Parser<'_> {
         if node.x >= self.dimensions[0] || node.y >= self.dimensions[1] {
             return Ok(());
         }
-        if !self.sequence.chroma || !self.sequence.dual_tree {
-            return self.tree(reader, node, 0, self.sequence.chroma, Constraint::Intra);
+        if !self.sequence.chroma {
+            return self.tree(reader, node, 0, false, Constraint::Intra);
+        }
+        if !self.sequence.dual_tree {
+            // A single tree starts unconstrained so that small luma blocks
+            // open a local dual tree (H.266 §7.4.12.4 modeTypeCondition).
+            return self.tree(reader, node, 0, true, Constraint::Any);
         }
         // Dual-tree chroma follows luma independently within each 64x64 region.
         if node.width > 64 {
-            for child in node.children(Split::Quad, true) {
+            // The joint 128-sample level starts groups for both trees.
+            for channel in 0..2 {
+                self.enter_group(node, channel);
+            }
+            for child in node.group_children(Split::Quad, true, self.max_subdiv()) {
                 self.intra_ctu(reader, child)?;
             }
         } else {
@@ -287,8 +329,12 @@ impl Parser<'_> {
         if node.width < 4 || node.height < 4 || node.qt_depth + node.mtt_depth > 16 {
             return Err(DecodeError::Malformed("VVC coding tree depth/size"));
         }
-        // A local chroma tree contains the unsplit parent of constrained luma children.
-        if channel == 1 && self.header.kind != 2 {
+        let dual = self.header.kind == 2 && self.sequence.chroma && self.sequence.dual_tree;
+        self.enter_group(node, channel);
+        // A local chroma tree contains the unsplit parent of constrained luma
+        // children (H.266 §6.4.1-6.4.3: no split of an intra-only chroma tree),
+        // in single-tree I slices as in P and B slices.
+        if channel == 1 && !dual {
             return self.unit(r, node, channel, false, Constraint::Intra);
         }
         let partition = &self.header.picture.partitions[if self.header.kind != 2 {
@@ -305,7 +351,7 @@ impl Parser<'_> {
             max_tt: 1 << partition.max_tt_log2,
             max_depth: partition.mtt_depth,
             chroma: channel != 0,
-            dual: self.header.kind == 2 && self.sequence.chroma && self.sequence.dual_tree,
+            dual,
             inter_only: constraint == Constraint::Inter,
         };
         let neighbours = [
@@ -322,7 +368,8 @@ impl Parser<'_> {
         let child_constraint = self.mode_constraint(r, node, split, combined, constraint)?;
         let separate_chroma =
             combined && constraint == Constraint::Any && child_constraint == Constraint::Intra;
-        for child in node.children(split, node.outside(self.dimensions)) {
+        let children = node.group_children(split, node.outside(self.dimensions), self.max_subdiv());
+        for child in children {
             self.tree(
                 r,
                 child,
@@ -362,7 +409,8 @@ impl Parser<'_> {
         if area >= 64 && !narrow {
             return Ok(parent);
         }
-        if area < 32 {
+        // H.266 §7.4.12.4 modeTypeCondition: an I slice infers intra without a flag.
+        if area < 32 || self.header.kind == 2 {
             return Ok(Constraint::Intra);
         }
         let context = usize::from(

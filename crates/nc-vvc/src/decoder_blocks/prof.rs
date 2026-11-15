@@ -3,12 +3,12 @@ use super::{
     inter_prediction::{combine, precision},
     motion::Motion,
 };
-use nc_common::{Picture, PlaneIndex};
+use nc_common::PlaneIndex;
 use nc_dsp::Dsp;
 
 pub(super) fn predict(
     dsp: &Dsp,
-    references: [&[&Picture]; 2],
+    references: super::inter_prediction::Sources<'_>,
     motion: Motion,
     fields: [Option<crate::affine::Field>; 2],
     position: (usize, usize),
@@ -19,7 +19,8 @@ pub(super) fn predict(
         let Some(vector) = motion.lists[list] else {
             continue;
         };
-        let reference = references[list][usize::from(vector.reference)].plane(PlaneIndex::Y);
+        let reference =
+            references.pictures[list][usize::from(vector.reference)].plane(PlaneIndex::Y);
         precision(
             dsp,
             reference,
@@ -44,5 +45,12 @@ pub(super) fn predict(
         );
         dsp.vvc_prof_refine(&padded, &corrections, &mut samples[list]);
     }
-    combine(dsp, motion, &samples[0], &samples[1], (4, 4), out);
+    combine(
+        dsp,
+        (motion, references.weights, PlaneIndex::Y),
+        &samples[0],
+        &samples[1],
+        (4, 4),
+        out,
+    );
 }

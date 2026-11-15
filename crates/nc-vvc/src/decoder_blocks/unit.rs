@@ -36,17 +36,21 @@ impl Parser<'_> {
             mts: 0,
             luma_mode: intra::PLANAR,
             chroma_mode: intra::PLANAR,
+            qp: 0,
+            chroma_offsets: [0; 3],
             transforms: super::transform_units::empty_units(
                 node,
                 channel,
                 self.sequence.max_transform_log2,
             )?,
         };
+        let luma_qp = self.begin_unit_qp(&mut unit);
         let intra = self.prediction(r, &mut unit, constraint)?;
         if unit.skip
             || (matches!(unit.inter, Some(Inter::Amvp { .. }))
                 && !r.bin(&mut self.contexts.root_cbf)?)
         {
+            self.end_unit_qp(&mut unit, luma_qp);
             self.finish_unit(unit);
             return Ok(());
         }
@@ -58,6 +62,7 @@ impl Parser<'_> {
         }
         self.sbt_mode(r, &mut unit)?;
         self.residuals(r, &mut unit)?;
+        self.end_unit_qp(&mut unit, luma_qp);
         self.transform_selection(r, &mut unit)?;
         self.finish_unit(unit);
         Ok(())

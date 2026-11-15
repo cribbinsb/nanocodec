@@ -51,7 +51,7 @@ fn official_intra_syntax() {
                     s,
                     p.dimensions.map(|v| v as usize),
                     header.picture.joint_sign,
-                    [&[], &[]],
+                    crate::decoder_blocks::InterSources::unweighted([&[], &[]]),
                     &nc_dsp::Dsp::new(),
                     None,
                 )

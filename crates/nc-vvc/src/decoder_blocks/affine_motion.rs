@@ -209,7 +209,11 @@ fn inherit(
 }
 
 impl<F: Fn(usize, usize) -> Option<Neighbour>> Candidates<'_, F> {
-    pub fn merge(&self, six: bool, maximum: u8) -> Vec<(Motion, [Option<Model>; 2])> {
+    /// The affine part of the subblock merge list (H.266 §8.5.5.2). With
+    /// affine prediction disabled in the SPS the list holds no inherited or
+    /// constructed candidate, only the zero-motion padding that follows an
+    /// unavailable `SbTMVP` candidate.
+    pub fn merge(&self, affine: bool, six: bool, maximum: u8) -> Vec<(Motion, [Option<Model>; 2])> {
         let (node, neighbours, ctu_log2, merge_log2) =
             (self.node, self.neighbours, self.ctu_log2, self.merge_log2);
         let references = self.references.map(<[i32]>::len);
@@ -224,7 +228,12 @@ impl<F: Fn(usize, usize) -> Option<Neighbour>> Candidates<'_, F> {
         let mut candidates = Vec::new();
         // Inherited affine candidates keep both directional slots even when
         // they refer to the same CU (H.266 §8.5.5.3).
-        for positions in [&corners.left[..], &corners.above[..]] {
+        let directions = if affine {
+            &[&corners.left[..], &corners.above[..]][..]
+        } else {
+            &[]
+        };
+        for &positions in directions {
             if let Some(n) = positions
                 .iter()
                 .find_map(|&(x, y)| eligible(x, y).filter(|n| n.models.iter().any(Option::is_some)))
@@ -267,7 +276,7 @@ impl<F: Fn(usize, usize) -> Option<Neighbour>> Candidates<'_, F> {
             &[0, 1][..],
             &[0, 2][..],
         ] {
-            if indices.len() == 3 && !six {
+            if !affine || (indices.len() == 3 && !six) {
                 continue;
             }
             candidates.extend(constructed(node, points, indices));
@@ -405,7 +414,7 @@ mod tests {
             merge_log2: 2,
             temporal: None,
         };
-        let list = candidates.merge(true, 5);
+        let list = candidates.merge(true, true, 5);
         // Two inherited slots followed by the LT/LB constructed model. Removing
         // the repeated inherited CU shifts the zero padding into slot two.
         for candidate in &list[..3] {

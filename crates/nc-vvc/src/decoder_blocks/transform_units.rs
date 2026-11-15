@@ -136,6 +136,7 @@ impl Parser<'_> {
                     || self.coded_flag(reader, unit, 0, false)?
             };
         }
+        self.unit_qp_syntax(reader, unit, cbf[0], cbf[1] || cbf[2])?;
         let mask = 2 * u8::from(cbf[1]) + u8::from(cbf[2]);
         if self.sequence.transforms.joint_cbcr
             && ((intra && mask != 0) || mask == 3)

@@ -61,7 +61,7 @@ Our own Rust decoders, natively and in WebAssembly. 8-bit only (no 10-bit), sing
 | AV1 | Main profile, 8-bit 4:2:0: 176/176 libaom test vectors | dav1d: 1.13–1.58x / 1.09–1.43x (dav1d faster) |
 | VP9 | Profile 0: 303/303 test vectors | vpxdec: 1.32–1.41x / 1.14–1.24x (vpxdec faster; FFmpeg: 0.98–1.10x) |
 | AV2 | Our own streams only, bit-exact with avmdec and dav2d. Other encoders' streams: 0/12 of dav2d's 8-bit test streams and 0/18 avmenc v1.0.0 streams (all-intra, low delay, random access, fewest tools) decode; each is rejected at the sequence header | avmdec (AVM's research reference decoder, not built for speed): 0.33–0.39x / 0.31–0.32x |
-| VVC | 8-bit Main: 9/9 official 8-bit conformance streams (ITU-T H.266.1) tested so far; not a full Main-profile conformance claim | VVdeC: 0.39–0.47x / 0.63–0.70x |
+| VVC | 8-bit Main: 9/9 official 8-bit conformance streams (ITU-T H.266.1); 87/116 8-bit VTM and VVenC tool-coverage streams (`docs/handoff/vvc-foreign-corpus.md`); not a full Main-profile conformance claim | VVdeC: 0.39–0.47x / 0.63–0.70x |
 
 Ratios are single-threaded on the same streams (all references were run with one thread; they are normally run
 multi-threaded): ours at 720p and 1080p, plus third-party streams (x264, openh264, x265 with B-frames, IP cameras,

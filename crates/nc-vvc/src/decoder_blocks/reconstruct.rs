@@ -14,7 +14,7 @@ pub(crate) fn reconstruct(
     sequence: &Sequence,
     dimensions: [usize; 2],
     joint_sign: bool,
-    references: [&[&Picture]; 2],
+    references: super::inter_prediction::Sources<'_>,
     dsp: &Dsp,
     reshape: Option<(&nc_dsp::VvcLmcs, bool)>,
 ) -> Result<Picture> {
@@ -124,7 +124,7 @@ fn predict(
     picture: &Picture,
     available: &Availability,
     sequence: &Sequence,
-    references: [&[&Picture]; 2],
+    references: super::inter_prediction::Sources<'_>,
     dsp: &Dsp,
 ) -> Vec<u8> {
     let plane = [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V][index];

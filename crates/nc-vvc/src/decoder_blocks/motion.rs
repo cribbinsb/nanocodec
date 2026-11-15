@@ -188,8 +188,9 @@ impl<F: Fn(usize, usize) -> Option<super::affine_motion::Neighbour>> Selection<'
                     unit.subblocks = cells;
                     Some(motion)
                 } else {
+                    let tools = &sequence.tools;
                     let list =
-                        affine.merge(sequence.tools.affine_six, sequence.tools.max_subblock_merge);
+                        affine.merge(tools.affine, tools.affine_six, tools.max_subblock_merge);
                     let (motion, models) = list[usize::from(index) - usize::from(available)];
                     unit.affine_models = models;
                     Some(motion)

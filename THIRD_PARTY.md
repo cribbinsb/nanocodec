@@ -859,6 +859,17 @@ distribution. Sources: https://vcgit.hhi.fraunhofer.de/jvet/HM,
 https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM,
 https://vcgit.hhi.fraunhofer.de/jvet/JM.
 
+The VVC decoder also follows VTM 24.0 (commit
+`ca331de230f27e0489df9d2fa6c006e2dcd2ed89`, BSD-3-Clause, copyright
+2010-2026 ITU/ISO/IEC) as the normative reference where VVdeC does not cover a
+tool or the two differ, reimplemented in Rust:
+`crates/nc-vvc/src/decoder_blocks/quant_groups.rs` (quantisation-group starts,
+`CU::predictQP`, `cu_qp_delta` and `cu_chroma_qp_offset` binarisation) and the
+weighted-prediction selection in `decoder_blocks/inter_prediction.rs`
+(`InterPrediction::xPredInterBi`). The VTM decoder is the reference of the
+foreign-stream corpus (`tools/dev/vvc_foreign_corpus.py`); it is run, not
+linked.
+
 ## AVX-512 motion-cost layouts — SVT-AV1 and libaom
 
 `crates/nc-dsp/src/pixel/avx512.rs` reimplements 64-byte SAD accumulation

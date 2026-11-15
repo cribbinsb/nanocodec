@@ -17,6 +17,7 @@ mod vui;
 mod weights;
 use nc_common::decode::{BitReader, DecodeError, Result};
 pub(super) use sps::Sequence;
+pub(super) use weights::Weights;
 
 pub(crate) struct Reader<'a>(BitReader<'a>);
 impl<'a> Reader<'a> {

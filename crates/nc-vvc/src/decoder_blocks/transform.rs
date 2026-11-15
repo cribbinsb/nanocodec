@@ -17,6 +17,7 @@ pub(crate) fn inverse_residuals(
             unit.chroma_mode
         };
         let direction = if unit.mip.is_some() { 0 } else { direction };
+        let quant = unit.quant();
         for transform in &mut unit.transforms {
             for (plane, levels) in transform
                 .levels
@@ -30,7 +31,7 @@ pub(crate) fn inverse_residuals(
                 } else {
                     transform.chroma_block.unwrap()
                 };
-                let qp = qp(transform.joint, plane, sequence, header);
+                let qp = qp(quant, transform.joint, plane, sequence, header);
                 let residual = &mut transform.residuals[plane];
                 residual.clear();
                 residual.resize(levels.len(), 0);
@@ -83,17 +84,26 @@ pub(crate) fn inverse_residuals(
     }
 }
 
-pub(super) fn qp(joint: u8, plane: usize, sequence: &Sequence, header: &SliceHeader) -> u8 {
+/// The quantisation parameter of one plane of a transform unit of `unit`
+/// (H.266 §8.7.1: `Qp′Y`, `Qp′Cb`, `Qp′Cr` or `Qp′CbCr`, 8-bit).
+pub(super) fn qp(
+    (luma, offsets): (u8, [i8; 3]),
+    joint: u8,
+    plane: usize,
+    sequence: &Sequence,
+    header: &SliceHeader,
+) -> u8 {
     (if plane == 0 {
-        header.qp
+        i32::from(luma)
     } else {
         // Joint mode 3 codes one Cb residual at the joint CbCr QP.
         // The other joint modes retain the coded component's QP.
         let index = if joint == 3 { 2 } else { plane - 1 };
         let tables = &sequence.transforms.qp_tables;
-        let mapped = tables[if tables.len() == 1 { 0 } else { index }][header.qp as usize];
+        let mapped = tables[if tables.len() == 1 { 0 } else { index }][usize::from(luma)];
         // SliceHeader stores the sum of PPS and slice offsets.
-        (i32::from(mapped) + i32::from(header.chroma_offsets[index])).clamp(0, 63)
+        (i32::from(mapped) + i32::from(header.chroma_offsets[index]) + i32::from(offsets[index]))
+            .clamp(0, 63)
     }) as u8
 }
 

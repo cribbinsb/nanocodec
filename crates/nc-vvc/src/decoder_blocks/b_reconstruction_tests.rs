@@ -72,7 +72,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                     s,
                     dimensions,
                     h.picture.joint_sign,
-                    [&pictures[0], &pictures[1]],
+                    crate::decoder_blocks::InterSources::unweighted([&pictures[0], &pictures[1]]),
                     &dsp,
                     None,
                 )

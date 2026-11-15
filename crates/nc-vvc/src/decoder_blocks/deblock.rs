@@ -35,6 +35,9 @@ fn edge_blocks(units: &[Unit]) -> Vec<EdgeBlock<'_>> {
         .collect()
 }
 
+/// Samples along an edge segment whose ends set the LADF luma level.
+const LADF_SEGMENT: usize = 4;
+
 pub(crate) fn apply(
     picture: &mut Picture,
     units: &[Unit],
@@ -90,17 +93,24 @@ pub(crate) fn apply(
                     }
                     let boundary = horizontal && y.is_multiple_of(1 << sequence.ctu_log2);
                     let qp = (i32::from(transform::qp(
+                        p.unit.quant(),
                         p.transform.joint,
                         plane as usize,
                         sequence,
                         header,
                     )) + i32::from(transform::qp(
+                        q.unit.quant(),
                         q.transform.joint,
                         plane as usize,
                         sequence,
                         header,
                     )) + 1)
                         >> 1;
+                    let qp = if channel == 0 {
+                        qp + ladf_offset(picture, &sequence.tools.ladf, (x, y), horizontal)
+                    } else {
+                        qp
+                    };
                     let [beta_offset, tc_offset] =
                         header.deblock.offsets[plane as usize].map(i32::from);
                     let beta = crate::filter::BETA[(qp + 2 * beta_offset).clamp(0, 63) as usize];
@@ -128,6 +138,37 @@ pub(crate) fn apply(
             }
         }
     }
+}
+
+/// Luma-adaptive deblocking QP offset of a four-sample edge segment (H.266
+/// §8.8.3.6.2): the interval holding the mean of the edge's corner samples.
+fn ladf_offset(
+    picture: &Picture,
+    intervals: &[(u16, i8)],
+    (x, y): (usize, usize),
+    horizontal: bool,
+) -> i32 {
+    let Some((&(_, lowest), upper)) = intervals.split_first() else {
+        return 0;
+    };
+    let luma = picture.plane(PlaneIndex::Y).view();
+    let level = [0, LADF_SEGMENT - 1]
+        .into_iter()
+        .map(|along| {
+            let (p, q) = if horizontal {
+                ((x + along, y - 1), (x + along, y))
+            } else {
+                ((x - 1, y + along), (x, y + along))
+            };
+            u16::from(luma.row(p.1)[p.0]) + u16::from(luma.row(q.1)[q.0])
+        })
+        .sum::<u16>()
+        >> 2;
+    upper
+        .iter()
+        .take_while(|&&(lower, _)| level > lower)
+        .last()
+        .map_or(i32::from(lowest), |&(_, offset)| i32::from(offset))
 }
 
 /// Interior segments use the shared in-place SIMD kernel. Narrow ISP

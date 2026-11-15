@@ -38,7 +38,7 @@ fn official_extended_intra_syntax() {
                         s,
                         p.dimensions.map(|v| v as usize),
                         header.picture.joint_sign,
-                        [&[], &[]],
+                        crate::decoder_blocks::InterSources::unweighted([&[], &[]]),
                         &dsp,
                         None,
                     )

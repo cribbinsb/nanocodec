@@ -25,6 +25,11 @@ pub(super) struct Node {
     pub parent: Split,
     pub child: usize,
     pub cclm_splits: [Split; 2],
+    /// `cbSubdiv` (§7.3.11.4): two per quadtree level, one per binary split.
+    pub subdiv: u8,
+    /// Whether this node may start a quantisation group: [QP delta, chroma
+    /// QP offset] (`qgOnY`, `qgOnC`).
+    pub groups: [bool; 2],
 }
 impl Node {
     pub fn root(x: usize, y: usize, side: usize) -> Self {
@@ -39,6 +44,8 @@ impl Node {
             parent: Split::None,
             child: 0,
             cclm_splits: [Split::None; 2],
+            subdiv: 0,
+            groups: [true; 2],
         }
     }
     pub fn outside(self, dimensions: [usize; 2]) -> bool {
@@ -102,6 +109,8 @@ impl Node {
                 } else {
                     self.cclm_splits
                 },
+                subdiv: self.subdiv,
+                groups: self.groups,
             })
             .collect()
     }

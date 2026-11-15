@@ -4,7 +4,23 @@ use super::{DecodeError, PictureParameters, Reader, Result, Sequence};
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Weights {
     pub denominators: [u8; 3],
+    /// Per list and reference index: `[weight, offset]` of Y, Cb and Cr.
     pub lists: [Vec<[[i16; 2]; 3]>; 2],
+    /// Per list and reference index: whether luma or chroma weights are
+    /// signalled (`luma_weight_lX_flag || chroma_weight_lX_flag`), which
+    /// switches BCW, BDOF and DMVR off for that reference.
+    pub signalled: [Vec<bool>; 2],
+}
+impl Weights {
+    /// Whether either reference of a bi-predicted block signals weights.
+    pub(crate) fn signalled(&self, references: [u8; 2]) -> bool {
+        (0..2).any(|list| {
+            self.signalled[list]
+                .get(usize::from(references[list]))
+                .copied()
+                .unwrap_or(false)
+        })
+    }
 }
 impl Weights {
     pub(super) fn parse(
@@ -21,8 +37,9 @@ impl Weights {
         };
         let denominators = [luma as u8, chroma as u8, chroma as u8];
         let mut lists = [Vec::new(), Vec::new()];
+        let mut signalled = [Vec::new(), Vec::new()];
         let mut total_flags = 0;
-        for (index, list) in lists.iter_mut().enumerate() {
+        for (index, (list, signalled)) in lists.iter_mut().zip(&mut signalled).enumerate() {
             let count = if index == 1 && (!p.weighted[1] || counts[1] == 0) {
                 0
             } else if p.location.weights_in_ph {
@@ -56,6 +73,7 @@ impl Weights {
                     }
                 }
                 list.push(components);
+                signalled.push(has_luma || has_chroma);
             }
         }
         if total_flags > 24 {
@@ -64,6 +82,7 @@ impl Weights {
         Ok(Self {
             denominators,
             lists,
+            signalled,
         })
     }
 }

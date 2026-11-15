@@ -65,7 +65,7 @@ fn official_general_intra_reconstruction() {
                     s,
                     p.dimensions.map(|v| v as usize),
                     header.picture.joint_sign,
-                    [&[], &[]],
+                    crate::decoder_blocks::InterSources::unweighted([&[], &[]]),
                     &dsp,
                     reshape.as_ref().map(|m| (m, header.picture.chroma_scale)),
                 )

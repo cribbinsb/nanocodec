@@ -69,7 +69,12 @@ pub(crate) fn derive(
             continue;
         };
         let distance = poc - pocs[0][usize::from(first.reference)];
+        // Signalled weights of either reference switch both refinements off
+        // (H.266 §8.5.1 dmvrFlag, §8.5.6.1 bdofFlag).
         if motion.weight != 0
+            || header
+                .weights
+                .signalled([first.reference, second.reference])
             || distance == 0
             || distance != pocs[1][usize::from(second.reference)] - poc
         {
@@ -163,7 +168,7 @@ pub(super) fn temporal(unit: &Unit, x: usize, y: usize) -> Option<Motion> {
 
 pub(super) fn predict(
     dsp: &Dsp,
-    references: [&[&Picture]; 2],
+    references: super::inter_prediction::Sources<'_>,
     unit: &Unit,
     plane: PlaneIndex,
     block: nc_encoder::Block,
@@ -190,7 +195,8 @@ pub(super) fn predict(
             for list in 0..2 {
                 let vector = motion.lists[list].unwrap();
                 let original = base.lists[list].unwrap().vector;
-                let reference = references[list][usize::from(vector.reference)].plane(plane);
+                let reference =
+                    references.pictures[list][usize::from(vector.reference)].plane(plane);
                 let at = (position.0 + x, position.1 + y);
                 let bits = 4 + chroma;
                 // Reference padding is needed only if refinement changes the
@@ -238,9 +244,10 @@ pub(super) fn predict(
             if bdof {
                 dsp.vvc_bdof((width, height), [&padded[0], &padded[1]], &mut pixels);
             } else {
+                // A refined block has no signalled weights (`derive`).
                 super::inter_prediction::combine(
                     dsp,
-                    motion,
+                    (motion, None, plane),
                     &samples[0],
                     &samples[1],
                     (width, height),

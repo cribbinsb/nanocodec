@@ -76,7 +76,14 @@ impl Parser<'_> {
             .flatten()
             .any(|p| p.mvd.iter().flatten().any(|&v| v != 0));
         let precision = self.precision(r, points > 1, nonzero)?;
-        let weight = if direction == 3 && self.sequence.tools.bcw && n.width * n.height >= 256 {
+        // `bcw_idx` is absent when either reference signals explicit weights
+        // (H.266 §7.3.11.7).
+        let references = lists.map(|list| list.map_or(0, |p| p.reference));
+        let weight = if direction == 3
+            && self.sequence.tools.bcw
+            && n.width * n.height >= 256
+            && !self.header.weights.signalled(references)
+        {
             self.bipred_weight(r)?
         } else {
             0
