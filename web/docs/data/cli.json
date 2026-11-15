@@ -1,0 +1,103 @@
+{
+ "commands": [
+  {"name": "encode", "about": "Encode raw video to a stream.", "groups": [
+   {"title": "Input", "options": [
+    {"flag": "--input", "value": "PATH", "help": "Raw 8-bit 4:2:0 frames, back to back; `-` reads stdin."},
+    {"flag": "--input-format", "value": "i420|yv12|nv12", "help": "Plane layout of the input (default i420)."},
+    {"flag": "--width", "value": "W", "help": "Frame width in pixels (even)."},
+    {"flag": "--height", "value": "H", "help": "Frame height in pixels (even)."},
+    {"flag": "--fps", "value": "F", "help": "Nominal frame rate: `30`, `29.97` or `30000/1001`."},
+    {"flag": "--frames", "value": "N", "help": "Number of input frames to code."},
+    {"flag": "--timestamps", "value": "FILE", "help": "Capture time of each frame (mkvmerge timestamp format v2); rate control budgets the real frame intervals."},
+    {"flag": "--resize", "value": "FRAME:WxH", "help": "The input's frames have this size from FRAME on (a key frame with new headers); repeatable."}]},
+   {"title": "Output", "options": [
+    {"flag": "--output", "value": "PATH", "help": "The stream: IVF for AV1, VP9 and AV2, Annex-B for H.264, HEVC and VVC; `-` writes stdout."},
+    {"flag": "--recon", "value": "PATH", "help": "The reconstruction of every coded frame (I420)."},
+    {"flag": "--display-recon", "value": "PATH", "help": "One picture per input frame, as a decoder shows it: a frame left uncoded repeats the last one."},
+    {"flag": "--timestamps-out", "value": "FILE", "help": "The time of every coded frame."}]},
+   {"title": "Codec and preset", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Output format (`h266` is accepted for vvc). Required."},
+    {"flag": "--preset", "value": "veryfast|faster|fast|medium", "help": "A rung of the speed ladder; medium is the codec's Default and is used without --preset. Not every codec has every rung (`nanocodec params --codec C`); with --scalability L2*/L3* a rung takes the codec's file for that many layers."},
+    {"flag": "--block", "value": "8|16|32|64", "help": "Fixed leaf block size where the codec's planner uses one (default 16; AV2 8, VVC 32)."}]},
+   {"title": "Fixed QP", "options": [
+    {"flag": "--qp", "value": "Q", "help": "Fixed quantiser in the codec's scale (H.264, HEVC: QP 0-51; VVC: QP 0-63; AV1, VP9, AV2: base_q_idx); with --bitrate, the starting quantiser only. One of --qp and --bitrate is required."},
+    {"flag": "--key-qp-offset", "value": "D", "help": "Code fixed-QP key frames D quantiser steps finer than --qp (default: the codec chooses)."}]},
+   {"title": "Rate control (CBR) and buffer", "options": [
+    {"flag": "--bitrate", "value": "KBPS", "help": "Real-time rate control at this target bitrate."},
+    {"flag": "--peak-bitrate", "value": "KBPS", "help": "Peak drain rate (default twice the target)."},
+    {"flag": "--buffer-ms", "value": "MS", "help": "Virtual decoder buffer duration (default 1000 ms)."},
+    {"flag": "--min-qp", "value": "Q", "help": "Lowest quantiser rate control may use."},
+    {"flag": "--max-qp", "value": "Q", "help": "Highest quantiser rate control may use."},
+    {"flag": "--max-qp-step", "value": "N", "help": "Largest quantiser change between inter frames (default 4 QP, 20 AV1 indices)."},
+    {"flag": "--frame-drop", "value": "", "help": "Skip an inter frame that would overflow the buffer even at the highest quantiser."},
+    {"flag": "--rate-change", "value": "FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]", "help": "Change the target (and peak, buffer) before frame FRAME, as a transport's bandwidth estimate would; repeatable."}]},
+   {"title": "Key frames and resilience", "options": [
+    {"flag": "--intra-period", "value": "N", "help": "A key frame every N frames (default: every 10 seconds of video)."},
+    {"flag": "--keyframe", "value": "FRAME", "help": "Code input frame FRAME as a key frame, as a receiver's request would; repeatable."},
+    {"flag": "--intra-refresh", "value": "FRAMES", "help": "Intra refresh sweep over this many frames in place of periodic key frames (`refresh.period`)."},
+    {"flag": "--ltr-interval", "value": "FRAMES", "help": "Mark a long-term reference every N frames, for loss recovery (`ltr.interval`)."},
+    {"flag": "--temporal-layers", "value": "1|2|3", "help": "Hierarchical-P temporal layers; the top layer is droppable. Not with --scalability."},
+    {"flag": "--scalability", "value": "LxTy[_KEY]", "help": "Scalability mode L1T1..L3T3: spatial layers (L2, L3: 2:1 steps) and temporal layers in one stream; `_KEY` codes K-SVC."}]},
+   {"title": "Content", "options": [
+    {"flag": "--still-camera", "value": "", "help": "Noise handling for a fixed camera over the preset: lowers the bitrate on still noisy scenes; off in every preset."},
+    {"flag": "--film-grain", "value": "[STRENGTH]", "help": "AV1 only: film grain synthesis, STRENGTH relative to the measured source noise."}]},
+   {"title": "Signalling", "options": [
+    {"flag": "--colour", "value": "bt709|bt601|bt601-625|P,T,M", "help": "Colour description to signal (ISO/IEC 23091-2 code points for P,T,M)."},
+    {"flag": "--range", "value": "full|limited", "help": "Sample range to signal."},
+    {"flag": "--timing", "value": "nominal|constant|variable", "help": "Header timing information (default nominal; variable with --timestamps)."}]},
+   {"title": "Parameters", "options": [
+    {"flag": "--params", "value": "FILE", "help": "A parameter file (one `name = value` per line, `#` comments), over the preset."},
+    {"flag": "--param", "value": "NAME=VALUE", "help": "One parameter, over the file; repeatable. `nanocodec params` lists them."}]},
+   {"title": "Diagnostics", "options": [
+    {"flag": "--rate-log", "value": "FILE", "help": "With --bitrate: one CSV row per frame of rate control's state."},
+    {"flag": "--sse-log", "value": "FILE", "help": "Per-plane squared error of every shown picture against --sse-reference (CSV)."},
+    {"flag": "--sse-reference", "value": "PATH", "help": "The reference frames for --sse-log."},
+    {"flag": "--layer-md5", "value": "FILE", "help": "CSV of each layer picture's size, bytes and MD5."},
+    {"flag": "--spatial-stats", "value": "FILE", "help": "JSON summary of per-layer bytes, rates and references."},
+    {"flag": "--qp-replay", "value": "FILE", "help": "With --bitrate: impose these quantisers on rate control's plan, by frame."},
+    {"flag": "--simulate-loss", "value": "FRAME[:LAYER]", "help": "Report frame FRAME (or spatial layer LAYER of it) lost; every other frame is acknowledged."}]}]},
+  {"name": "decode", "about": "Decode one of our streams with our own subset decoder.", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format. Required."},
+    {"flag": "--input", "value": "PATH", "help": "The stream (IVF or Annex-B); `-` reads stdin."},
+    {"flag": "--output", "value": "PATH", "help": "Decoded frames as raw I420; `-` writes stdout."},
+    {"flag": "--frame-md5", "value": "FILE", "help": "One MD5 line per shown frame."},
+    {"flag": "--discard", "value": "0|1", "help": "1: decode every frame and write nothing (for timing)."},
+    {"flag": "--film-grain", "value": "0|1", "help": "AV1: 0 shows frames without film grain."},
+    {"flag": "--operating-point", "value": "N", "help": "AV1 or VP9 operating point to decode."},
+    {"flag": "--all-layers", "value": "0|1", "help": "AV1 or VP9: 1 writes every spatial layer's picture."}]}]},
+  {"name": "extract", "about": "Keep a temporal or spatial sub-stream of a stream, without re-encoding.", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format. Required."},
+    {"flag": "--input", "value": "PATH", "help": "The stream."},
+    {"flag": "--output", "value": "PATH", "help": "The kept sub-stream."},
+    {"flag": "--temporal-layers", "value": "N", "help": "Temporal layers the stream was coded with."},
+    {"flag": "--max-layer", "value": "M", "help": "Keep temporal layers 0..M (below --temporal-layers)."},
+    {"flag": "--list", "value": "", "help": "List each access unit's temporal layer instead of extracting."},
+    {"flag": "--base-only", "value": "", "help": "AV1 or VP9: keep the spatial base layer."},
+    {"flag": "--operating-point", "value": "N", "help": "AV1 or VP9: keep this operating point."},
+    {"flag": "--layer-md5", "value": "FILE", "help": "VP9: the encoder's layer sidecar to split by."}]}]},
+  {"name": "session", "about": "Encoder and receiver stepped by commands on stdin (encode options, no --output).", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--display", "value": "PATH", "help": "One picture per input frame: what the viewer saw."},
+    {"flag": "--receiver", "value": "transport|bitstream", "help": "Decode only frames whose listed references arrived (transport, the default), or every arrived frame."},
+    {"flag": "--operating-point", "value": "N", "help": "AV1 operating point the receiver decodes."}]}]},
+  {"name": "params", "about": "List every tunable parameter with its default and range, and the presets.", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Show this codec's defaults and presets."}]}]},
+  {"name": "stat", "about": "Coding-tool statistics of a stream (analysis builds: --features analysis).", "groups": [
+   {"title": "Options", "options": [
+    {"flag": "--codec", "value": "av1|h264|hevc|vvc|vp9|av2", "help": "Stream format."},
+    {"flag": "--input", "value": "PATH", "help": "The stream."},
+    {"flag": "--json", "value": "FILE", "help": "Write the statistics as JSON."}]}]},
+  {"name": "help", "about": "Print this help.", "groups": []}
+ ],
+ "presets": {
+  "h264": ["veryfast", "faster", "fast", "medium"],
+  "hevc": ["faster", "fast", "medium"],
+  "vvc": ["fast", "medium"],
+  "av1": ["faster", "fast", "medium"],
+  "vp9": ["veryfast", "faster", "fast", "medium"],
+  "av2": ["fast", "medium"]
+ }
+}

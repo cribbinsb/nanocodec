@@ -2,7 +2,9 @@
 # C API check: build libnanocodec, compile crates/nc-capi/examples/encode.c
 # against include/nanocodec.h, and require its output to be byte-identical
 # with the CLI's for the same input and settings (NV12 and I420 input, fixed
-# QP and CBR, every codec); then decode it with ffmpeg as a smoke test.
+# QP and CBR, every codec); then decode it with ffmpeg as a smoke test. Also
+# build and run examples/roundtrip.c (the usage site's encode and decode loop)
+# for every codec the C API has.
 #
 #   tools/ci/capi_check.sh        (uses $CARGO_TARGET_DIR or target/)
 
@@ -18,6 +20,8 @@ trap 'rm -rf "$WORK"' EXIT
 cargo build --release --quiet -p nc-capi -p nc-cli
 cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include crates/nc-capi/examples/encode.c \
   "$TARGET/release/libnanocodec.a" -lpthread -ldl -lm -o "$WORK/encode"
+cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include crates/nc-capi/examples/roundtrip.c \
+  "$TARGET/release/libnanocodec.a" -lpthread -ldl -lm -o "$WORK/roundtrip"
 
 W=202 H=98 FRAMES=10
 ffmpeg -v error -y -f lavfi -i "testsrc2=s=${W}x${H}:r=30,scroll=horizontal=0.01" \
@@ -72,8 +76,12 @@ for codec in h264 hevc av1; do
     done
   done
 done
+for codec in h264 hevc av1 vp9; do
+  if result=$("$WORK/roundtrip" "$codec"); then status=PASS; else status=FAIL; failures=$((failures + 1)); fi
+  printf '%-5s roundtrip  %s  %s\n' "$codec" "$status" "$result"
+done
 if ((failures)); then
   echo "capi check: $failures failure(s)"
   exit 1
 fi
-echo "capi check: the C API reproduces the CLI's streams"
+echo "capi check: the C API reproduces the CLI's streams; the round trip decodes"

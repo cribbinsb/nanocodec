@@ -23,7 +23,8 @@
 # frame and its report replaying (web/tests/original-view.py), the comparison restarting by itself
 # on every option and once per burst of changes under load (web/tests/auto-restart.py), and the
 # layout control with the shared zoom and pan in each layout, with and without analysis
-# (web/tests/view-layout.py). nc-web embeds the encoder and every codec crate, so
+# (web/tests/view-layout.py), and the usage pages with their browser example
+# (web/tests/docs-pages.py). nc-web embeds the encoder and every codec crate, so
 # a change there can break the page (frame hold once stopped it: the
 # workers expected a packet per input). Called by check.sh (every run, --quick included, so
 # browser API changes cannot land unchecked) and by land.sh for a candidate
@@ -66,6 +67,8 @@ elif python3 -c 'import playwright' 2>/dev/null; then
     python3 web/tests/results-pages.py
     # The links between the results pages and the demo round-trip; one shared header.
     python3 web/tests/deep-links.py
+    # The usage pages render their generated parts; the standalone browser example decodes.
+    python3 web/tests/docs-pages.py
     # Analysis mode: the lazily loaded analysis module, overlay, statistics, zoom.
     python3 web/tests/analysis-smoke.py
     python3 web/tests/psnr-map.py

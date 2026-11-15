@@ -2,9 +2,8 @@
 //! modes and owns rate control and references; this backend writes AVM v1.0.0
 //! syntax through [`BlockCoder`] and packages each picture.
 use crate::block_coder::{
-    self, BlockCoder, CdefMode, CoderOptions, DeltaSearch, EstimateModels, FilterSearch,
-    FinishedTile, InterTxSearch, IntraSearch, LumaCandidates, PlaneRounding, SplitPolicy,
-    TrialDistortion,
+    self, BlockCoder, CdefMode, CoderOptions, EstimateModels, FilterSearch, FinishedTile,
+    InterTxSearch, IntraSearch, LumaCandidates, PlaneRounding, SplitPolicy, TrialDistortion,
 };
 use crate::ccso::{CcsoParams, CcsoSource};
 use crate::cdef::{self, CdefParams};
@@ -754,11 +753,7 @@ impl Av2Backend {
                 LumaCandidates::Shared(IntraModeSet::from_param(modes))
             },
             rd_candidates: rd_candidates.round() as usize,
-            delta_search: match delta_search.round() as u8 {
-                0 => DeltaSearch::Off,
-                1 => DeltaSearch::CoarseToFine,
-                _ => DeltaSearch::Exhaustive,
-            },
+            delta_search: nc_encoder::AngleDeltaSearch::from_param(delta_search),
             chroma_candidates: chroma_candidates.round() as usize,
             layouts_per_candidate: p.intra_layouts_per_candidate >= 0.5,
             zero_residual_exit: p.intra_zero_exit >= 0.5,

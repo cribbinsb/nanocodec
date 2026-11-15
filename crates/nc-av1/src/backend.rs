@@ -19,11 +19,11 @@ use std::rc::Rc;
 
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
-    Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
-    FrameType, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
-    ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest,
-    TrellisSettings, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
-    residual_quantises_to_zero, zero_vector_residual_is_zero,
+    AngleDeltaSearch, Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan,
+    FrameReferences, FrameType, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
+    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig,
+    SpatialLayerFrame, StaticSkipTest, TrellisSettings, ZeroLimits, copy_zero_vector_prediction,
+    directions_by_orientation, residual_quantises_to_zero, zero_vector_residual_is_zero,
 };
 
 use crate::cdef::{self, CdefParams};
@@ -3808,9 +3808,9 @@ impl Av1Backend {
         base: &[IntraMode],
     ) -> Vec<LumaIntra> {
         let directional = self.params.keyframe_directional >= 0.5;
-        let delta_search = self.params.keyframe_angle_deltas.round() as i32;
+        let delta_search = AngleDeltaSearch::from_param(self.params.keyframe_angle_deltas);
         let filter = self.codes_filter_intra(block, IntraMode::Dc);
-        if !directional && delta_search == 0 && !filter {
+        if !directional && delta_search == AngleDeltaSearch::Off && !filter {
             return Vec::new();
         }
         let mut ranked: Vec<(f32, LumaIntra)> = Vec::new();
@@ -3839,29 +3839,9 @@ impl Av1Backend {
                 },
             )
         };
-        match delta_search {
-            0 => {}
-            1 => {
-                // Delta costs are roughly convex (AV2 `DeltaSearch::
-                // CoarseToFine`): refine beside the better of −2, 0, +2.
-                let (lower, upper) = (try_delta(self, -2), try_delta(self, 2));
-                let refine: [i8; 2] = if lower < nominal_cost && lower <= upper {
-                    [-1, -3]
-                } else if upper < nominal_cost {
-                    [1, 3]
-                } else {
-                    [-1, 1]
-                };
-                for delta in refine {
-                    try_delta(self, delta);
-                }
-            }
-            _ => {
-                for delta in (-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA).filter(|&d| d != 0) {
-                    try_delta(self, delta);
-                }
-            }
-        }
+        delta_search.run(nominal_cost, MAX_ANGLE_DELTA, |delta| {
+            try_delta(self, delta)
+        });
         if filter {
             for mode in FilterIntraMode::ALL {
                 score(

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Every nanocodec command-line option, grouped, with worked examples for fixed QP, CBR, resilience and SVC.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec: command line</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="../results/site.css">
+  <link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Documentation pages">
+    <a href="index.html">Getting started</a>
+    <a href="cli.html" aria-current="page">Command line</a>
+    <a href="c-api.html">C API</a>
+    <a href="rust-api.html">Rust API</a>
+    <a href="browser.html">Browser</a>
+    <a href="presets.html">Presets</a>
+  </nav>
+</div>
+<main>
+  <h1>Command line</h1>
+  <p class="lede"><code>nanocodec</code> encodes raw 8-bit 4:2:0 video, decodes our streams, and extracts
+    temporal or spatial sub-streams. The examples below use the 640x360 test clip from
+    <a href="index.html#first-encode">Getting started</a>; the full option list is at the
+    <a href="#reference">end of this page</a>, the same list <code>nanocodec help</code> prints.</p>
+
+  <h2 id="fixed-qp">Fixed QP</h2>
+  <p>Without <code>--bitrate</code>, every frame is coded at <code>--qp</code> in the codec's own scale (QP for
+    H.264, HEVC and VVC; <code>base_q_idx</code> 0-255 for AV1, VP9 and AV2):</p>
+<pre class="run"><code>nanocodec encode --codec h264 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --qp 30 --output out.264</code></pre>
+
+  <h2 id="cbr">Real-time rate control (CBR) and buffer</h2>
+  <p><code>--bitrate</code> turns on the single-pass real-time rate control: no lookahead, a virtual decoder
+    buffer of <code>--buffer-ms</code> (1000 ms by default) and a peak of twice the target unless
+    <code>--peak-bitrate</code> says otherwise. The target is a ceiling: easy content may come in under it.
+    <code>--rate-change</code> changes the target mid-stream, as a transport's bandwidth estimate would;
+    <code>--rate-log</code> writes each frame's quantiser, size and buffer state:</p>
+<pre class="run"><code>nanocodec encode --codec hevc --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 400 --buffer-ms 500 --rate-change 75:200 --rate-log rate.csv --output out.hevc</code></pre>
+  <p>With <code>--timestamps</code> (one capture time per frame), rate control budgets each frame for its real
+    interval, so a camera that skips frames keeps its bitrate in time. <code>--frame-drop</code> lets it skip an
+    inter frame that would overflow the buffer even at the highest quantiser.</p>
+
+  <h2 id="resilience">Resilience: temporal layers, long-term references, key frames</h2>
+  <p>Three temporal layers (hierarchical P; the top layer can be dropped), a long-term reference every 30 frames
+    for loss recovery, and a key frame on request at frame 90, as a receiver's request would cause. By default
+    the encoder picks flat or layered coding per group of frames from the motion it sees
+    (<code>layers.adaptive</code>); <code>--param layers.adaptive=0</code> keeps the layers throughout:</p>
+<pre class="run"><code>nanocodec encode --codec h264 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 300 --temporal-layers 3 --param layers.adaptive=0 --ltr-interval 30 --keyframe 90 \
+  --output layered.264</code></pre>
+  <p>Keep only temporal layers 0 and 1 (half the frame rate), without re-encoding:</p>
+<pre class="run"><code>nanocodec extract --codec h264 --temporal-layers 3 --max-layer 1 --input layered.264 --output half-rate.264</code></pre>
+  <p>Intra refresh replaces periodic key frames with an intra column that sweeps the picture every
+    <code>--intra-refresh</code> frames, so a receiver that lost a frame recovers without a key-frame burst:</p>
+<pre class="run"><code>nanocodec encode --codec av1 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 300 --intra-refresh 30 --output refresh.ivf</code></pre>
+  <p>The <a href="c-api.html">C API</a> takes the same settings and adds the live calls: key-frame requests,
+    bitrate changes, and the receiver's acknowledgements and loss reports.</p>
+
+  <h2 id="svc">Spatial scalability (SVC)</h2>
+  <p>AV1 and VP9 code several spatial layers in one stream with <code>--scalability</code> (WebRTC mode names:
+    L2T1 is two spatial layers at 2:1 and one temporal layer; <code>_KEY</code> modes are K-SVC). A receiver
+    can decode the base layer alone:</p>
+<pre class="run"><code>nanocodec encode --codec av1 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 500 --scalability L2T1 --output svc.ivf
+nanocodec extract --codec av1 --base-only --input svc.ivf --output base.ivf
+nanocodec decode --codec av1 --input base.ivf --output base.yuv</code></pre>
+
+  <h2 id="still-camera">Still camera</h2>
+  <p><code>--still-camera</code> adds noise handling for a fixed camera over the preset. It lowers the bitrate on
+    still, noisy scenes and is off in every preset:</p>
+<pre class="run"><code>nanocodec encode --codec av1 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 300 --still-camera --output still.ivf</code></pre>
+
+  <h2 id="params">Presets, parameter files and <code>--param</code></h2>
+  <p>The encoder's heuristics are named parameters. They are applied in order, later settings winning: the
+    <a href="presets.html">preset</a>, then <code>--params FILE</code>, then each <code>--param NAME=VALUE</code>.
+    <code>nanocodec params --codec C</code> lists every parameter with the codec's default, its range and what
+    raising it trades. A parameter file has one <code>name = value</code> per line:</p>
+<pre class="file" data-name="my-params.toml"><code># my-params.toml
+planner.lambda_scale = 1.1</code></pre>
+<pre class="run"><code>nanocodec encode --codec h264 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 300 --preset fast --params my-params.toml --param scene.detect=0 --output tuned.264</code></pre>
+
+  <h2 id="decode">Decoding</h2>
+  <p>Our decoders handle the subset our encoders produce. Output is raw I420 (<code>-</code> writes stdout);
+    <code>--frame-md5</code> writes one MD5 per frame, and <code>--discard 1</code> decodes without writing, for
+    timing:</p>
+<pre class="run"><code>nanocodec decode --codec hevc --input out.hevc --output decoded.yuv
+nanocodec decode --codec h264 --input layered.264 --frame-md5 frames.md5</code></pre>
+
+  <h2 id="reference">All options</h2>
+  <p class="note">Generated from <code>crates/nc-cli/src/help.rs</code>, which a test keeps in step with the
+    options the parsers read.</p>
+  <div id="options"></div>
+</main>
+<footer>
+  <p>The option lists, preset names and example sources on these pages are generated from the code, and every
+    example is compiled and run by the project's tests. Something wrong or missing?
+    <a href="https://github.com/cribbinsb/nanocodec/issues">Open an issue</a>.</p>
+  <p><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a></p>
+</footer>
+<script type="module" src="docs.js"></script>
+</body>
+</html>

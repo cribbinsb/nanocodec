@@ -232,6 +232,23 @@ impl HevcQuantizer {
             bd_shift: BIT_DEPTH + u32::from(log2) - 5,
         }
     }
+
+    /// The forward quantiser's `(qbits, scale, offset)`: a coefficient's
+    /// level is `(|c| · scale + offset) >> qbits`, and `|c| · scale / 2^qbits`
+    /// its magnitude in steps (HM `quantScales`, `QUANT_SHIFT`).
+    #[must_use]
+    pub const fn forward_terms(&self) -> (u32, i32, i32) {
+        (self.qbits, self.scale, self.offset)
+    }
+
+    /// The largest coefficient magnitude this quantiser maps to level 0
+    /// (`|c| · scale + offset < 2^qbits`), the `zero_limit` of
+    /// [`crate::Dsp::hevc_forward_unless_zero`].
+    #[must_use]
+    pub fn largest_zero_coefficient(&self) -> u32 {
+        let limit = ((1i64 << self.qbits) - i64::from(self.offset) - 1) / i64::from(self.scale);
+        u32::try_from(limit.max(0)).unwrap_or(u32::MAX)
+    }
 }
 
 /// VVC independent quantization for 8-bit DCT-II blocks.
@@ -343,14 +360,10 @@ impl VvcQuantizer {
         quantizer
     }
 
-    /// The largest coefficient magnitude this quantiser maps to level 0
-    /// (`|c| · scale + offset < 2^qbits`), the `zero_limit` of
-    /// [`crate::Dsp::hevc_forward_unless_zero`].
+    /// [`HevcQuantizer::largest_zero_coefficient`].
     #[must_use]
     pub fn largest_zero_coefficient(&self) -> u32 {
-        let q = &self.0;
-        let limit = ((1i64 << q.qbits) - i64::from(q.offset) - 1) / i64::from(q.scale);
-        u32::try_from(limit.max(0)).unwrap_or(u32::MAX)
+        self.0.largest_zero_coefficient()
     }
 
     /// `coefficient`'s magnitude in quantiser steps before rounding

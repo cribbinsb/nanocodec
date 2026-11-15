@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="The nanocodec preset ladder (veryfast, faster, fast, medium), what the Default is, and tuning parameters.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec: presets</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="../results/site.css">
+  <link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Documentation pages">
+    <a href="index.html">Getting started</a>
+    <a href="cli.html">Command line</a>
+    <a href="c-api.html">C API</a>
+    <a href="rust-api.html">Rust API</a>
+    <a href="browser.html">Browser</a>
+    <a href="presets.html" aria-current="page">Presets</a>
+  </nav>
+</div>
+<main>
+  <h1>Presets and tuning</h1>
+  <p class="lede">A preset is a set of encoder parameters that trades compression for speed. The presets form one
+    ladder, the same names for every codec: <code>veryfast</code>, <code>faster</code>, <code>fast</code> and
+    <code>medium</code>, fastest first.</p>
+
+  <h2 id="default">What the Default is</h2>
+  <ul>
+    <li><strong><code>medium</code> is each codec's Default</strong>, and what an encode gets without
+      <code>--preset</code>: the codec's own parameter defaults, with no overrides. It is the quality point of the
+      ladder, tuned on low-delay real-time encodes for PSNR-YUV, VMAF and MS-SSIM in equal thirds.</li>
+    <li>The faster rungs switch off or narrow coding tools and searches, each one saving CPU for some compression.
+      How much, per codec and machine, is on the <a href="../results/speed.html">speed results</a>.</li>
+    <li>The names are relative to our own Default for each codec: our <code>veryfast</code> is not as fast as
+      x264's, nor our <code>medium</code> as slow as x264's. <code>slow</code> is reserved for a quality-first
+      rung that no codec has yet.</li>
+  </ul>
+
+  <h2 id="ladder">Which codec has which rung</h2>
+  <p>Not every codec has every rung. As <code>nanocodec params --codec C</code> lists them:</p>
+  <div class="presets"></div>
+  <p>With <code>--scalability L2...</code> or <code>L3...</code>, a rung uses the codec's parameter file tuned
+    for that many spatial layers where it has one.</p>
+
+  <h2 id="tuning">Tuning beyond a preset</h2>
+  <p>Every heuristic is a named parameter with a default and a range. Settings are applied in order, later ones
+    winning: the preset, <code>--still-camera</code>, <code>--params FILE</code>, <code>--scalability</code>,
+    then each <code>--param NAME=VALUE</code>:</p>
+<pre class="run"><code>nanocodec params --codec av1</code></pre>
+  <p>prints each parameter as <code>name default [min, max] what raising it trades</code>. The C API takes
+    parameters as <code>nc_param</code> entries, the browser module as <code>name=value</code> lines. The presets
+    themselves are parameter files in the repository's
+    <a href="https://github.com/cribbinsb/nanocodec/tree/main/presets"><code>presets/</code></a> directory.</p>
+</main>
+<footer>
+  <p>The option lists, preset names and example sources on these pages are generated from the code, and every
+    example is compiled and run by the project's tests. Something wrong or missing?
+    <a href="https://github.com/cribbinsb/nanocodec/issues">Open an issue</a>.</p>
+  <p><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a></p>
+</footer>
+<script type="module" src="docs.js"></script>
+</body>
+</html>

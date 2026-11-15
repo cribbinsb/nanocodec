@@ -14,20 +14,16 @@ use crate::residual::SIGN_HIDING_THRESHOLD;
 use crate::scan::{SUB_BLOCK_COEFFS, Scan, sub_block_coded};
 #[cfg(test)]
 use crate::transform::{COEFF_MAX, COEFF_MIN};
+use nc_dsp::HevcQuantizer;
 
 /// Bit depth of every sample (Main profile).
 const BIT_DEPTH: i32 = 8;
 #[cfg(test)]
 /// `levelScale` of HEVC §8.6.3, indexed by `qP % 6`.
 const LEVEL_SCALE: [i64; 6] = [40, 45, 51, 57, 64, 72];
-/// Forward scale matching `LEVEL_SCALE` (`quantScales` of HM): the product
-/// of the two is `2^20` within rounding.
-const QUANT_SCALE: [i64; 6] = [26214, 23302, 20560, 18396, 16384, 14564];
 #[cfg(test)]
 /// The flat scaling factor `m` when scaling lists are disabled (§8.6.3).
 const FLAT_SCALING_FACTOR: i64 = 16;
-/// Base shift of the forward quantiser (HM `QUANT_SHIFT`).
-const QUANT_SHIFT: i32 = 14;
 /// Dynamic range of transform coefficients (HM `MAX_TR_DYNAMIC_RANGE`).
 const TRANSFORM_RANGE: i32 = 15;
 /// Intra rounding offset, in 1/512 of a quantisation step (HM; the default
@@ -57,9 +53,7 @@ pub fn chroma_qp(luma_qp: i32) -> i32 {
 /// The largest coefficient magnitude that [`quantize`] maps to level 0.
 #[must_use]
 pub fn largest_zero_coefficient(qp: i32, log2: u8, rounding: i32) -> u64 {
-    let (qbits, scale, offset) = quant_params(qp, log2, rounding);
-    // Level 0 while c * scale + offset < 2^qbits.
-    (((1i64 << qbits) - offset - 1) / scale).max(0) as u64
+    u64::from(HevcQuantizer::with_rounding(qp as u8, log2, rounding).largest_zero_coefficient())
 }
 
 /// The largest orthonormal-DCT coefficient (residual sample units) that
@@ -74,16 +68,12 @@ pub fn orthonormal_zero_limit(qp: i32, rounding: i32) -> f32 {
     largest_zero_coefficient(qp, LOG2, rounding) as f32 / gain as f32
 }
 
-/// `(qbits, scale, rounding offset)` of the forward quantiser, for a
-/// rounding offset of `rounding` 512ths of a step.
+/// `(qbits, scale, rounding offset)` of the forward quantiser (nc-dsp's
+/// [`HevcQuantizer`]), for a rounding offset of `rounding` 512ths of a step.
 fn quant_params(qp: i32, log2: u8, rounding: i32) -> (i32, i64, i64) {
-    let transform_shift = TRANSFORM_RANGE - BIT_DEPTH - i32::from(log2);
-    let qbits = QUANT_SHIFT + qp / 6 + transform_shift;
-    (
-        qbits,
-        QUANT_SCALE[(qp % 6) as usize],
-        i64::from(rounding) << (qbits - 9),
-    )
+    let (qbits, scale, offset) =
+        HevcQuantizer::with_rounding(qp as u8, log2, rounding).forward_terms();
+    (qbits as i32, i64::from(scale), i64::from(offset))
 }
 
 /// `(qbits, scale)` of the forward quantiser at `qp` for a `2^log2` block:

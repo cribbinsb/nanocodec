@@ -1,10 +1,12 @@
-//! End-to-end CLI runs: decoding, rate control and film grain.
+//! End-to-end CLI runs: decoding, rate control, film grain and the usage
+//! pages' examples.
 //!
 //! One test binary for the crate (`autotests = false`, one `[[test]]` in
 //! Cargo.toml): a binary per file spent most of the test build linking.
 //! `tools/ci/check_test_modules.py` fails if a `tests/*.rs` file is not a
 //! module here, since Cargo would otherwise skip it silently.
 mod decode_cli;
+mod docs_examples;
 mod film_grain_cli;
 mod frame_hold;
 mod intra_refresh_cli;

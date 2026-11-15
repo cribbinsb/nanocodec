@@ -7,13 +7,9 @@
 #   tools/ci/check.sh --quick    skip the WASM checkasm run, the syntax stress test and
 #                                the H.264 conformance streams
 #                                (the VP9/AV2/VVC browser-module smoke tests always run)
-#   tools/ci/check.sh --fast [--crates ...]
-#                                formatting and clippy only (seconds to a
-#                                minute): what land.sh runs before landing; the
-#                                rest runs after, in `land.sh --verify`
 #   tools/ci/check.sh --quick --crates "nc-vvc nc-cli"
-#                                clippy and test only these crates (land.sh passes
-#                                the changed crates plus their dependents); host
+#                                clippy and test only these crates (land.sh --verify
+#                                passes the changed crates plus their dependents); host
 #                                checkasm runs only if nc-checkasm is listed and
 #                                the browser module only if nc-web is
 #
@@ -24,12 +20,10 @@ cd "$(dirname "$0")/../.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
 quick=false
-fast=false
 crates=""
 while (($#)); do
     case $1 in
         --quick) quick=true ;;
-        --fast) fast=true quick=true ;;
         --crates) crates=${2:?--crates needs a list}; shift ;;
         *) printf 'check.sh: unknown argument %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -55,15 +49,6 @@ target_dir=${CARGO_TARGET_DIR:-target}
 
 step "format"
 cargo fmt --all --check
-
-if $fast; then
-    # clippy, not `cargo check`: the same compile, and a lint failure otherwise
-    # lands and blocks the verified head for everyone (3537ac94, 2026-11-13).
-    step "clippy (host): ${crates:-workspace}"
-    cargo clippy "${selection[@]}" --all-targets --quiet -- -D warnings
-    step_done
-    exit 0
-fi
 
 step "clippy (host): ${crates:-workspace}"
 cargo clippy "${selection[@]}" --all-targets -- -D warnings

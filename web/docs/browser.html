@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Using the nanocodec WebAssembly module in a web page: build, browser support, the JavaScript API and a standalone example.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec: browser</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="../results/site.css">
+  <link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Documentation pages">
+    <a href="index.html">Getting started</a>
+    <a href="cli.html">Command line</a>
+    <a href="c-api.html">C API</a>
+    <a href="rust-api.html">Rust API</a>
+    <a href="browser.html" aria-current="page">Browser</a>
+    <a href="presets.html">Presets</a>
+  </nav>
+</div>
+<main>
+  <h1>Browser (WebAssembly)</h1>
+  <p class="lede">The <code>nc-web</code> crate compiles our encoders and decoders to WebAssembly with
+    <a href="https://rustwasm.github.io/wasm-bindgen/">wasm-bindgen</a>. The <a href="../">demo</a> runs on this
+    module; so can your page. Every codec the native build has is in it.</p>
+
+  <h2 id="build">Build the module</h2>
+<pre><code>rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.105 --locked
+tools/web/build.sh        # writes web/pkg/ and web/pkg/relaxed/</code></pre>
+  <p>Each directory holds <code>nc_web.js</code> (an ES module) and <code>nc_web_bg.wasm</code>. The two builds
+    give bit-identical output: <code>pkg/</code> uses SIMD128, <code>pkg/relaxed/</code> adds relaxed SIMD.
+    <code>web/wasm.js</code> picks the relaxed build where <code>WebAssembly.validate</code> accepts a
+    relaxed-SIMD probe, else the plain one.</p>
+
+  <h2 id="support">Browser support</h2>
+  <ul>
+    <li><strong>WebAssembly SIMD128 is required.</strong> Both modules are compiled with it, and an engine without
+      it rejects the module: <code>init()</code> fails. Chrome and Edge 91, Firefox 89 and Safari 16.4 were the
+      first versions with SIMD128.</li>
+    <li>Our tests run the module in headless Chromium only. Other engines are expected to work where they support
+      SIMD128, but we have not tested them.</li>
+    <li>The browser encoder accepts sizes from 64x64 to 1920x1080 and up to 60 fps. Encoding and decoding are
+      single-threaded per instance; the demo runs each encoder and decoder in its own Web Worker.</li>
+  </ul>
+
+  <h2 id="api">The JavaScript API</h2>
+  <ul>
+    <li><code>await init()</code>, the module's default export, loads and instantiates the WebAssembly file next
+      to <code>nc_web.js</code>. A page that starts several workers can compile the module once and pass the
+      <code>WebAssembly.Module</code> to each, as <code>web/wasm.js</code> does
+      (<code>init({ module_or_path })</code>).</li>
+    <li><code>new SourceFrame(width, height)</code> holds an input frame; fill it with
+      <code>from_rgba(rgba)</code> (canvas pixels) or <code>from_planes(...)</code> (a WebCodecs
+      <code>VideoFrame</code>'s YUV planes).</li>
+    <li><code>new BrowserEncoder(codec, width, height, qp, fps, keyInterval, preset, overrides, filmGrain, colour,
+      stillCamera, spatialLayers)</code> creates a fixed-QP encoder (overrides, colour, stillCamera and spatialLayers may be undefined; the preset is a
+      rung of the <a href="presets.html">ladder</a>); <code>set_rate_control(targetKbps, peakKbps, bufferMs)</code>
+      switches it to real-time rate control. <code>encode(source)</code> (or <code>encode_at(source,
+      timestampUs)</code> for a live source) returns the packet as a <code>Uint8Array</code>;
+      <code>repeat</code> is true when nothing was coded. <code>request_keyframe()</code> asks for a key frame.</li>
+    <li><code>new BrowserDecoder(codec)</code>; <code>decode_frame(packet, index, references)</code> returns an
+      outcome (<code>decoded</code>, or the freeze <code>reason</code>). <code>rgba_frame(colour)</code> and
+      <code>i420_frame()</code> return an offset into <code>memory.buffer</code> where the picture is.</li>
+    <li>A call into the module may grow its memory, which detaches earlier views of
+      <code>memory.buffer</code>: take the offset first, then make the view and copy from it at once.</li>
+  </ul>
+
+  <h2 id="example">Minimal standalone page</h2>
+  <p>Draws a moving picture on a canvas, encodes it with H.264 at 300 kbps, decodes every packet and draws the
+    decoded picture beside the source. It loads the demo's module from <code>../../pkg/</code>:
+    <a href="examples/browser-roundtrip.html">run it here</a>. To use it elsewhere, copy it next to a
+    <code>pkg/</code> directory from the build and change the import path; serve it over HTTP, as browsers do not
+    load modules from <code>file://</code> pages.</p>
+<pre class="listing"><code data-source="examples/browser-roundtrip.html">Loading…</code></pre>
+</main>
+<footer>
+  <p>The option lists, preset names and example sources on these pages are generated from the code, and every
+    example is compiled and run by the project's tests. Something wrong or missing?
+    <a href="https://github.com/cribbinsb/nanocodec/issues">Open an issue</a>.</p>
+  <p><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a></p>
+</footer>
+<script type="module" src="docs.js"></script>
+</body>
+</html>

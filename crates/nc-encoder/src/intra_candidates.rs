@@ -167,6 +167,63 @@ pub fn shortlist_intra<T: Copy + PartialEq>(
     selected
 }
 
+/// How the angle deltas of the best-ranked direction are searched (AV1,
+/// AV2: `angle_delta` around a nominal direction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AngleDeltaSearch {
+    /// Zero deltas only.
+    Off,
+    /// ±2 first, then ±1 and ±3 beside the better of −2, 0, +2: delta costs
+    /// are roughly convex.
+    CoarseToFine,
+    /// Every nonzero delta.
+    Exhaustive,
+}
+
+impl AngleDeltaSearch {
+    /// The search of a registered parameter: 0 off, 1 coarse to fine, 2 all.
+    #[must_use]
+    pub fn from_param(value: f32) -> Self {
+        match value.round() as i32 {
+            ..=0 => Self::Off,
+            1 => Self::CoarseToFine,
+            _ => Self::Exhaustive,
+        }
+    }
+
+    /// Cost the deltas this search tries around a direction whose zero delta
+    /// costs `nominal`, by `try_delta` (which also records each trial), up
+    /// to `max_delta` either way.
+    pub fn run<C: PartialOrd + Copy>(
+        self,
+        nominal: C,
+        max_delta: i8,
+        mut try_delta: impl FnMut(i8) -> C,
+    ) {
+        match self {
+            Self::Off => {}
+            Self::CoarseToFine => {
+                let (lower, upper) = (try_delta(-2), try_delta(2));
+                let refine: [i8; 2] = if lower < nominal && lower <= upper {
+                    [-1, -3]
+                } else if upper < nominal {
+                    [1, 3]
+                } else {
+                    [-1, 1]
+                };
+                for delta in refine {
+                    try_delta(delta);
+                }
+            }
+            Self::Exhaustive => {
+                for delta in (-max_delta..=max_delta).filter(|&d| d != 0) {
+                    try_delta(delta);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

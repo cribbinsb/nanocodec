@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Using nanocodec from Rust: the shared Encoder engine with a codec backend, and the codec's decoder.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec: Rust API</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="../results/site.css">
+  <link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Documentation pages">
+    <a href="index.html">Getting started</a>
+    <a href="cli.html">Command line</a>
+    <a href="c-api.html">C API</a>
+    <a href="rust-api.html" aria-current="page">Rust API</a>
+    <a href="browser.html">Browser</a>
+    <a href="presets.html">Presets</a>
+  </nav>
+</div>
+<main>
+  <h1>Rust API</h1>
+  <p class="lede">In Rust, an encoder is <code>nc_encoder::Encoder&lt;B&gt;</code>, the shared engine, driving one
+    codec's backend <code>B</code>: <code>nc_h264::H264Backend</code>, <code>nc_hevc::HevcBackend</code>,
+    <code>nc_vvc::VvcBackend</code>, <code>nc_av1::Av1Backend</code>, <code>nc_vp9::Vp9Backend</code> or
+    <code>nc_av2::Av2Backend</code>. Each codec crate also has its decoder (<code>nc_h264::Decoder</code>, ...).
+    The crates are not published on crates.io; depend on them by git or path.</p>
+<pre><code># Cargo.toml
+[dependencies]
+nc-common = { git = "https://github.com/cribbinsb/nanocodec" }
+nc-encoder = { git = "https://github.com/cribbinsb/nanocodec" }
+nc-h264 = { git = "https://github.com/cribbinsb/nanocodec" }</code></pre>
+
+  <h2 id="encoder">The encoder</h2>
+  <ul>
+    <li><code>Encoder::new(EncoderConfig)</code>: codec, size, frame rate, quantiser, key-frame interval, temporal
+      layers and the parameter overrides (<code>ParamOverrides</code>; empty is the codec's Default).</li>
+    <li><code>set_rate_control(RateControlConfig::new(bits_per_second))</code> turns on real-time rate control;
+      its fields set the peak, buffer, quantiser bounds and frame dropping.</li>
+    <li><code>encode_raw(&amp;RawFrame)</code> codes a borrowed I420, YV12 or NV12 frame with any strides
+      (<code>encode_raw_at</code> with a capture time); <code>encode(&amp;Picture)</code> takes an owned picture.
+      Each returns an <code>EncodedFrame</code>: the access unit or temporal unit, empty when the frame was
+      dropped or held, and its metadata (index, frame type, temporal layer, quantiser, references).</li>
+    <li>Live control: <code>request_keyframe</code>, <code>set_intra_refresh</code>,
+      <code>set_resolution</code>, <code>set_frame_rate</code>, and the receiver's <code>acknowledge</code> and
+      <code>report_loss</code>.</li>
+  </ul>
+  <p>This is the only way any of our front ends encodes: the command line, the C API and the browser module all
+    drive this <code>Encoder</code>.</p>
+
+  <h2 id="example">Minimal encode and decode loop</h2>
+  <p>H.264 at 300 kbps, decoded frame by frame. It is
+    <code>crates/nc-h264/examples/encode_decode.rs</code>, compiled by the workspace tests; run it with
+    <code>cargo run --release -p nc-h264 --example encode_decode</code>:</p>
+<pre class="listing"><code data-source="examples/encode_decode.rs">Loading…</code></pre>
+  <p>The API documentation of every crate: <code>cargo doc --open -p nc-encoder</code>.</p>
+</main>
+<footer>
+  <p>The option lists, preset names and example sources on these pages are generated from the code, and every
+    example is compiled and run by the project's tests. Something wrong or missing?
+    <a href="https://github.com/cribbinsb/nanocodec/issues">Open an issue</a>.</p>
+  <p><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a></p>
+</footer>
+<script type="module" src="docs.js"></script>
+</body>
+</html>

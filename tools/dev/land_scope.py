@@ -44,6 +44,8 @@ It prints that table for the candidate's files on stderr and the plan on
 stdout, one `key value...` line per key, which land.sh reads:
 
     rust   all | none | <crate>...   clippy/test selection (dependents included)
+    touched <crate>...               the crates the change touches directly (land.sh
+                                     runs their unit tests before landing)
     eval   0 | 1                     run the eval pytest suite
     web    0 | 1                     run the browser module smoke tests (the WASM
                                      builds and their node tests): only for web/**,
@@ -117,7 +119,7 @@ NON_STREAM_CRATES = {"nc-web", "nc-capi", "nc-checkasm"}
 #: the paths whose change runs each: at load 60 they timed out and refused
 #: unrelated landings (a VVC preset change, twice, 2026-11-15).
 EVAL_SCOPED_TESTS = {
-    "test_land_train.py": ("tools/dev/land.sh", "tools/dev/cargo-capped.sh"),
+    "test_land.py": ("tools/dev/land.sh", "tools/dev/cargo-capped.sh"),
     "test_land_guard.py": ("tools/dev/land_guard.py",),
     "test_land_scope.py": ("tools/dev/land_scope.py", "tools/dev/check_docs.py"),
     "test_streaming.py": ("eval/nceval/slots.py", "eval/nceval/framepipe.py",
@@ -337,27 +339,13 @@ def plan_for_paths(root, changed):
     out = [("rust", rust), ("eval", [str(int(eval_tests))]), ("web", [str(int(web))]),
            ("page", [str(int(page or full))]), ("conformance", conformance),
            ("checkasm", [str(int(checkasm))]),
-           ("eval_skip", eval_skipped(changed, full))]
+           ("eval_skip", eval_skipped(changed, full)),
+           ("touched", sorted(crates))]
     out += [(key, files) for key, files in lists.items()]
     return "\n".join(" ".join([key, *values]) for key, values in out)
 
 
-def rank(root, paths):
-    """The train position of a candidate that changes `paths` (land.sh
-    ranked_tickets): 0 docs only, 2 changes the page, 1 anything else."""
-    dirs, _ = workspace_graph(root)
-    embedded = embedded_files(root, dirs)
-    kinds = [classify(path, root, dirs, embedded)[0] for path in paths]
-    if paths and all(kind == "docs" for kind in kinds):
-        return 0
-    return 2 if any(changes_page(kind, path) for kind, path in zip(kinds, paths)) else 1
-
-
 def main():
-    if sys.argv[1:] == ["--rank"]:
-        root = Path(git("rev-parse", "--show-toplevel").strip())
-        print(rank(root, [line for line in sys.stdin.read().splitlines() if line]))
-        return
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     root = Path(git("rev-parse", "--show-toplevel").strip())

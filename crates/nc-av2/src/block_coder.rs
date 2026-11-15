@@ -404,7 +404,7 @@ pub(crate) struct IntraSearch {
     /// Intra mode pairs, best by prediction SATD, given full transform RD.
     pub rd_candidates: usize,
     /// How the best direction's angle deltas are searched.
-    pub delta_search: DeltaSearch,
+    pub delta_search: nc_encoder::AngleDeltaSearch,
     /// Leading entries of each chroma list ranked (13: all).
     pub chroma_candidates: usize,
     /// Every RD candidate tries every transform layout (else candidates
@@ -435,17 +435,6 @@ pub(crate) enum CdefMode {
     /// The strength search with per-filter-block indices
     /// ([`cdef::search_and_filter`]).
     Search(cdef::SearchOptions),
-}
-
-/// How the angle deltas of the best-ranked direction are searched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeltaSearch {
-    /// Zero deltas only.
-    Off,
-    /// ±2 first, then ±1 and ±3 beside the better of −2, 0, +2.
-    CoarseToFine,
-    /// All six nonzero deltas.
-    Exhaustive,
 }
 
 /// One coding of a block, boxed: trials pass codings around by value
@@ -1564,31 +1553,10 @@ impl BlockCoder {
                 ranked.push(cost);
                 cost.0
             };
-            match self.options.intra.delta_search {
-                DeltaSearch::Off => {}
-                DeltaSearch::CoarseToFine => {
-                    // Delta costs are roughly convex: refine beside the
-                    // better of −2, 0, +2 only.
-                    let (lower, upper) = (try_delta(self, -2), try_delta(self, 2));
-                    if lower < nominal && lower <= upper {
-                        try_delta(self, -1);
-                        try_delta(self, -3);
-                    } else if upper < nominal {
-                        try_delta(self, 1);
-                        try_delta(self, 3);
-                    } else {
-                        try_delta(self, -1);
-                        try_delta(self, 1);
-                    }
-                }
-                DeltaSearch::Exhaustive => {
-                    for delta in (-intra_modes::MAX_ANGLE_DELTA..=intra_modes::MAX_ANGLE_DELTA)
-                        .filter(|&d| d != 0)
-                    {
-                        try_delta(self, delta);
-                    }
-                }
-            }
+            let search = self.options.intra.delta_search;
+            search.run(nominal, intra_modes::MAX_ANGLE_DELTA, |delta| {
+                try_delta(self, delta)
+            });
             ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
         }
         ranked

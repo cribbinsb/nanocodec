@@ -118,7 +118,7 @@ pub use feedback::ReferencedFrames;
 pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, NONBASE_PREFIX};
 pub use hold::holds_frames;
 pub use intra_candidates::{
-    IntraModeSet, directions_by_orientation, shortlist_intra, with_neighbours,
+    AngleDeltaSearch, IntraModeSet, directions_by_orientation, shortlist_intra, with_neighbours,
 };
 pub use key_qp::{
     KEY_OFFSET_REFERENCE_PERIOD, fixed_qp_key_offset, offset_key_quantizer, scaled_quantizer,

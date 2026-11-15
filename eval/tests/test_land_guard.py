@@ -288,14 +288,15 @@ def test_dropping_part_of_an_upstream_commit_in_a_rewrite_passes(tmp_path):
 
 
 def overlaps(repo, old, new):
-    """Run land.sh's `overlaps` function in `repo` (exit 0 = overlap)."""
-    function = subprocess.run(["sed", "-n", "/^overlaps()/,/^}/p", str(LAND)], capture_output=True,
-                              text=True, check=True).stdout
-    return subprocess.run(["bash", "-c", function + f'\noverlaps "{old}" "{new}" HEAD'],
+    """Run land.sh's `touches_same_files` in `repo` (exit 0 = HEAD changes a file that
+    arrived between old and new)."""
+    function = subprocess.run(["sed", "-n", "/^touches_same_files()/,/^}/p", str(LAND)],
+                              capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["bash", "-c", function + f'\ntouches_same_files "{old}" "{new}"'],
                           cwd=repo).returncode == 0
 
 
-def test_land_retry_needs_full_checks_only_when_new_upstream_commits_overlap(tmp_path):
+def test_land_retry_rechecks_only_when_new_upstream_commits_overlap(tmp_path):
     repo = scenario(tmp_path)          # integration changed a.txt; the agent changes b.txt
     git(repo, "rebase", "-q", "integration")
     checked = git(repo, "rev-parse", "integration")
@@ -306,7 +307,7 @@ def test_land_retry_needs_full_checks_only_when_new_upstream_commits_overlap(tmp
     overlapping = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-q", "agent")
     git(repo, "rebase", "-q", disjoint)
-    assert not overlaps(repo, checked, disjoint)  # only c.txt arrived: build check suffices
+    assert not overlaps(repo, checked, disjoint)  # only c.txt arrived: no new check
     subprocess.run(["git", "-C", str(repo), "rebase", "-q", overlapping], capture_output=True)
     subprocess.run(["git", "-C", str(repo), "rebase", "--abort"], capture_output=True)
-    assert overlaps(repo, checked, overlapping)  # b.txt arrived: full checks again
+    assert overlaps(repo, checked, overlapping)  # b.txt arrived: check again

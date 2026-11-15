@@ -130,11 +130,9 @@ BUILD_TREE = DATA / "worktrees" / "chart-build"
 BUILD_TARGET = DATA / "targets" / "chart-build"
 SCORING_TREE = DATA / "worktrees" / "chart-build-gate"
 SCORING_TARGET = DATA / "targets" / "chart-build-gate"
-#: Gate builds the landing scripts keep warm (land.sh: the lander and the
-#: verifier): a clean one of COMMIT codes the same streams as our own scoring
+#: The gate build the landing verifier keeps warm (land.sh --verify): a clean one of COMMIT codes the same streams as our own scoring
 #: build, so it is copied instead of building one (7 min in a cold tree).
-GATE_DONORS = (DATA / "targets" / "verifier" / "gate" / "nanocodec",
-               DATA / "targets" / "lander" / "gate" / "nanocodec")
+GATE_DONORS = (DATA / "targets" / "verifier" / "gate" / "nanocodec",)
 SCORING_PROFILE = "gate"
 #: A build directory's binaries: the scoring build (scan, measure, render) and
 #: the timed plain release build (time-x86), what users build. It was a

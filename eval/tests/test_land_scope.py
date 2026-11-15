@@ -111,13 +111,12 @@ def test_only_a_change_to_the_page_runs_the_chromium_page_tests():
     assert not land_scope.changes_page("docs", "docs/PROCEDURES.md")
 
 
-def test_train_rank_puts_docs_first_and_page_changes_last():
-    assert land_scope.rank(ROOT, ["docs/STATUS.md", "README.md"]) == 0
-    assert land_scope.rank(ROOT, ["docs/STATUS.md", "crates/nc-vvc/src/lib.rs"]) == 1
-    assert land_scope.rank(ROOT, ["presets/av1/fast.toml"]) == 1
-    assert land_scope.rank(ROOT, ["web/app.js", "docs/handoff/browser-demo.md"]) == 2
-    assert land_scope.rank(ROOT, ["crates/nc-web/src/lib.rs"]) == 2
-    assert land_scope.rank(ROOT, []) == 1
+def test_the_plan_names_the_directly_touched_crates_for_their_unit_tests():
+    def touched(path):
+        out = land_scope.plan_for_paths(ROOT, [path])
+        return next(line.split()[1:] for line in out.splitlines() if line.split()[0] == "touched")
+    assert touched("crates/nc-vvc/src/lib.rs") == ["nc-vvc"]
+    assert touched("docs/STATUS.md") == []
 
 
 def test_a_kernel_change_reaches_every_crate_but_nc_common(graph):

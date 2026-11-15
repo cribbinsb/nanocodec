@@ -23,7 +23,7 @@ from playwright.sync_api import sync_playwright
 
 WEB = Path(__file__).resolve().parents[1]
 LINKED = {"codec": "av1", "preset": "fast"}
-SITE_SECTIONS = ["Demo", "Results", "Method", "GitHub"]
+SITE_SECTIONS = ["Demo", "Results", "Method", "Docs", "GitHub"]
 TIMEOUT_MS = 15000
 
 

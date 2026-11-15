@@ -1,17 +1,7 @@
 //! `nanocodec`: the command-line encoder and subset decoder.
 //!
-//! ```text
-//! nanocodec encode --codec av1|h264|hevc|vvc|vp9|av2 --input in.yuv --width W --height H
-//!                  --fps F --qp Q --frames N --output out.{ivf,264,hevc,vvc}
-//!                  [--recon recon.yuv] [--display-recon shown.yuv]
-//!                  [--block 8|16|32|64] [--intra-period N] [--key-qp-offset D] [--preset veryfast|faster|fast|medium] [--params FILE]
-//!                  [--param name=value]... [--film-grain [STRENGTH]] [--still-camera]
-//! nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]
-//!                  [--frame-md5 frames.md5] [--film-grain 0|1]   (AV1: 0 shows frames grain-free)
-//! nanocodec params      # list tunable parameters, defaults, ranges
-//! nanocodec --version   # version and the commit it was built from (-dirty: local changes)
-//! nanocodec session <encode options> --display shown.yuv [--receiver transport|bitstream]
-//! ```
+//! Commands and options: `help.rs` (`nanocodec help`), the one list the
+//! help and the project site's command-line page are generated from.
 //!
 //! `--bitrate kbps` enables realtime rate control; otherwise `--qp` is required.
 //! `--qp` with bitrate is an initial seed, and no longer fixes frame quantizers.
@@ -45,6 +35,7 @@ mod decode;
 mod display;
 mod extract;
 mod framing;
+mod help;
 mod input;
 mod md5;
 #[cfg(test)]
@@ -169,44 +160,6 @@ struct SimulatedLoss {
     spatial_id: Option<u8>,
 }
 
-const USAGE: &str = concat!(
-    "usage: nanocodec encode --codec av1|h264|hevc|vvc|vp9|av2 --input in.yuv --width W --height H\n",
-    "       [--input-format i420|yv12|nv12]\n",
-    "       --fps F (--qp Q | --bitrate kbps) --frames N --output out.{ivf,264,hevc,vvc}\n",
-    "       [--recon recon.yuv] [--display-recon shown.yuv]\n",
-    "       [--sse-log frames.csv --sse-reference ref.yuv]\n",
-    "       [--block 8|16|32|64] [--intra-period N]\n",
-    "       [--key-qp-offset D] [--temporal-layers 1|2|3]\n",
-    "       [--scalability L1T1|L1T2|L1T3|L2T1|L2T2|L2T3|L3T1|L3T2|L3T3]\n",
-    "       [--colour bt709|bt601|bt601-625|P,T,M] [--range full|limited]\n",
-    "       [--timestamps in.txt] [--timestamps-out out.txt]\n",
-    "       [--timing nominal|constant|variable] [--intra-refresh frames]\n",
-    "       [--ltr-interval frames] [--simulate-loss frame]\n",
-    "       [--preset veryfast|faster|fast|medium] [--params FILE] [--param name=value]...\n",
-    "                          (medium = the codec's Default, used when no preset is given;\n",
-    "                          not every codec has every rung, `nanocodec params --codec C`;\n",
-    "                          slow is reserved, not shipped yet; names are relative to our\n",
-    "                          Default, not x264's speeds; with --scalability L2*/L3* a rung\n",
-    "                          takes the codec's file tuned for that many layers)\n",
-    "       [--film-grain [STRENGTH]]   (AV1 only)\n",
-    "       [--still-camera]   (noise skip + skip-aware budget, AV1 also the noise split, over the\n",
-    "                          preset: lowers the bitrate on still noisy scenes; off in every preset;\n",
-    "                          AV1 may run a long still stream slightly over target)\n",
-    "       [--buffer-ms ms] [--peak-bitrate kbps] [--min-qp Q] [--max-qp Q]\n",
-    "       [--max-qp-step N] [--rate-log frames.csv] [--frame-drop]\n",
-    "       [--qp-replay quantizers.txt]   (with --bitrate: an oracle, see qp_replay.rs)\n",
-    "       [--rate-change FRAME:KBPS[:PEAK_KBPS[:BUFFER_MS]]]... [--resize FRAME:WxH]...\n",
-    "       [--keyframe FRAME]...\n",
-    "       nanocodec decode --codec av1|h264|hevc|vvc|vp9|av2 --input stream [--output decoded.yuv] [--discard 1]\n",
-    "                 [--frame-md5 frames.md5] [--film-grain 0|1] [--operating-point N]   (AV1)\n",
-    "       nanocodec extract --codec av1|av2|h264|hevc|vvc --temporal-layers N --max-layer M\n",
-    "                 --input stream (--output substream | --list)\n",
-    "       nanocodec params [--codec av1|h264|hevc|vvc|vp9|av2]\n",
-    "       nanocodec stat --codec h264|hevc|av1|vp9|vvc|av2 --input stream [--json stats.json]   (analysis builds)\n",
-    "       nanocodec session <encode options, no --output> --display shown.yuv\n",
-    "                 [--receiver transport|bitstream]   (commands on stdin, session.rs)"
-);
-
 /// `nanocodec --version`: the package version and the commit the binary was
 /// built from (`build.rs`; "-dirty": crates/ or presets/ had local changes).
 const VERSION: &str = concat!(
@@ -221,6 +174,13 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
         println!("{VERSION}");
+        return ExitCode::SUCCESS;
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("help" | "--help" | "-h")
+    ) {
+        print!("{}", help::text());
         return ExitCode::SUCCESS;
     }
     if args.first().map(String::as_str) == Some("params") {
@@ -277,7 +237,7 @@ fn main() -> ExitCode {
         };
     }
     if args.first().map(String::as_str) != Some("encode") {
-        eprintln!("{USAGE}");
+        eprint!("{}", help::text());
         return ExitCode::from(2);
     }
     match parse_encode(&args[1..]).and_then(|a| encode(&a)) {

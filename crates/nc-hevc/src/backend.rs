@@ -909,7 +909,14 @@ impl CodecBackend for HevcBackend {
     // matched QP (nceval.fixedqp, two pool draws of 15 clips): J -1.1%
     // [-2.1, +0.1] and -1.0% [-2.0, -0.2]; CPU unchanged.
     // docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
-    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[("rate.cadence_static_scaling", 0.0)];
+    // With it, the full mode decision against the unified plan's second
+    // reference (at full cadence strength every high-quality frame already
+    // carries it): two draws of 15-16 clips J -1.3% [-2.1, -0.6] and -1.7%
+    // [-3.0, -0.5]. The other HEVC presets pin the plan and the profile off.
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
+        ("rate.cadence_static_scaling", 0.0),
+        ("refs.second_full", 1.0),
+    ];
 
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // Start-up QP cadence (period 8, base frames 6 QP finer, for the
