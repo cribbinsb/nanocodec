@@ -27,15 +27,18 @@ vp9.lambda_per_step_squared = 0.09
 planner.lambda_scale = 3.1625
 vp9.filter_level_scale = 1
 vp9.chroma_delta_q = -8
-vp9.inter_intra_dc_only = 0
-# Pinned before VP9 Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
-# Pinned before VP9 Default's unified reference plan (2026-11-15).
-structure.unified = 0
-# Takes VP9 Default's key still boost (rate.key_still_boost 6; spatial rate
-# control reads the start-up still share since d7d6cfd7). svc_chart, the
-# chart's 8 clips, L2T1 720p view vs the pin: -1.9% BD-J (static_london_bus
-# -12.2%, bodycam_airport -3.6%, the others unchanged) (2026-11-15).
-# Pinned before VP9 Default's inherited cadence depth (2026-11-15).
-structure.inherited_depth = 0
-persist.reuse_level_price = 0
+# Mode 2 skips the 10-mode intra search on interior blocks of >=360p non-reset
+# inter frames while keeping directional intra on key/repair enhancement
+# pictures, refined blocks, sub-360p layers and blocks touching a frame edge
+# (11-clip [8] vs 0: L2T1 720p +21.7% -> +21.8% [+21.6% -> +21.8%], L2T1_KEY
+# 720p +2.5% -> +3.3% [+2.4% -> +2.2%], 360p +0.2% -> -0.2% [-1.6% -> -2.8%]).
+vp9.inter_intra_dc_only = 2
+# Takes VP9 Default's key still boost (rate.key_still_boost 6), key-period
+# ceiling (rate.period_ceiling 1) and unified second reference
+# (structure.unified 1; T1 only via SECOND_REFERENCE_WITH_LAYERS), plus the
+# engine's inherited cadence depth (structure.inherited_depth 1) with its
+# companion level-priced still refinement (persist.reuse_level_price 1):
+# 11-clip [8] BD-J L2T1 720p +23.0% -> +21.7% [+23.8% -> +21.6%], 360p +1.3%
+# -> -0.2%; L2T1_KEY 720p +3.9% -> +2.5% [+4.1% -> +2.4%], 360p +1.0% -> +0.2%.
+structure.inherited_depth = 1
+persist.reuse_level_price = 1

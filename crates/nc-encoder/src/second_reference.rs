@@ -42,9 +42,14 @@ const SECOND_WHERE_POSSIBLE: f32 = 1.5;
 /// itself is on: a long-term reference with feedback, intra refresh or
 /// spatial layers. The unified plan and `refs.second` 2 step aside for them.
 fn slot_taken(params: &ParamOverrides) -> bool {
+    layer_slot_taken(params) || SpatialParams::from_overrides(params).layers.round() > 1.0
+}
+
+/// Whether a feature that needs a spatial layer's own long-term slot is on:
+/// a long-term reference with feedback or intra refresh.
+fn layer_slot_taken(params: &ParamOverrides) -> bool {
     LtrParams::from_overrides(params).interval > 0.0
         || RefreshParams::from_overrides(params).period > 0.0
-        || SpatialParams::from_overrides(params).layers.round() > 1.0
 }
 
 /// Whether `refs.second` asks for the second reference on every frame and
@@ -102,6 +107,15 @@ impl TierPlan {
     pub(crate) fn new(params: &ParamOverrides) -> Option<Self> {
         let plan = StructureParams::from_overrides(params);
         (plan.unified >= 0.5 && !slot_taken(params)).then(|| Self {
+            min_depth: f64::from(plan.secondary_min_depth),
+        })
+    }
+
+    /// The plan `params` ask for on a spatial layer whose own DPB headroom
+    /// allocates an independent HQ slot (`spatial_hq_slot`).
+    pub(crate) fn new_for_spatial(params: &ParamOverrides) -> Option<Self> {
+        let plan = StructureParams::from_overrides(params);
+        (plan.unified >= 0.5 && !layer_slot_taken(params)).then(|| Self {
             min_depth: f64::from(plan.secondary_min_depth),
         })
     }
@@ -235,6 +249,19 @@ impl SecondReference {
     pub(crate) fn coded(&mut self, index: u64, references: &FrameReferences) {
         if references.refresh.contains(self.slot) {
             self.held = Some(index);
+        }
+    }
+
+    /// Restart `slot` on a spatial layer reset (key temporal unit or
+    /// enhancement repair): refreshes `slot` with this frame without
+    /// predicting from any prior frame held in `slot`.
+    pub(crate) fn reset(&mut self, index: u64, references: FrameReferences) -> FrameReferences {
+        let refresh = SlotMask(references.refresh.0 | SlotMask::only(self.slot).0);
+        self.held = Some(index);
+        FrameReferences {
+            refresh,
+            secondary: None,
+            ..references
         }
     }
 }

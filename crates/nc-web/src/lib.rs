@@ -511,6 +511,9 @@ pub struct BrowserDecoder {
     scaled_decoded: Option<Picture>,
     /// Frames decoded, for the transport's dependency signal (`decode_frame`).
     frames: ReceivedFrames,
+    /// Whether the most recent `decode` / `decode_frame` call produced a shown
+    /// picture (`false` when the selected operating point dropped the packet).
+    last_shown: bool,
     /// The latest picture's analysis records, packed for the page
     /// (`analysis_frame`), reused across frames.
     #[cfg(feature = "analysis")]
@@ -607,6 +610,7 @@ impl BrowserDecoder {
             reference: None,
             scaled_decoded: None,
             frames: ReceivedFrames::default(),
+            last_shown: false,
             #[cfg(feature = "analysis")]
             analysis: Vec::new(),
             #[cfg(feature = "analysis")]
@@ -889,21 +893,33 @@ impl BrowserDecoder {
         Ok(DecodeOutcome(outcome))
     }
 
+    /// Whether the latest [`Self::decode`] or [`Self::decode_frame`] call
+    /// produced a new shown picture (`false` when the selected operating point
+    /// dropped all frames in the packet, retaining the previous shown picture).
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn frame_shown(&self) -> bool {
+        self.last_shown
+    }
+
     /// One packet through this codec's decoder.
     fn decode_packet(&mut self, packet: &[u8]) -> Result<(), DecodeError> {
         if packet.len() > MAX_PACKET_BYTES {
+            self.last_shown = false;
             return Err(DecodeError::Unsupported(
                 "packet exceeds the 16 MiB browser limit",
             ));
         }
-        match &mut self.inner {
-            DecoderKind::H264(d) => d.decode_shown(packet),
-            DecoderKind::Hevc(d) => d.decode_shown(packet),
-            DecoderKind::Av1(d) => d.decode_shown(packet),
-            DecoderKind::Vp9(d) => d.decode_shown(packet),
-            DecoderKind::Av2(d) => d.decode_shown(packet),
-            DecoderKind::Vvc(d) => d.decode_shown(packet),
-        }
+        let shown = match &mut self.inner {
+            DecoderKind::H264(d) => d.decode_shown(packet).map(|()| true),
+            DecoderKind::Hevc(d) => d.decode_shown(packet).map(|()| true),
+            DecoderKind::Av1(d) => d.decode_and_show(packet),
+            DecoderKind::Vp9(d) => d.decode_and_show(packet),
+            DecoderKind::Av2(d) => d.decode_shown(packet).map(|()| true),
+            DecoderKind::Vvc(d) => d.decode_shown(packet).map(|()| true),
+        };
+        self.last_shown = matches!(shown, Ok(true));
+        shown.map(|_| ())
     }
 
     /// The latest decoded frame's visible samples.
@@ -1577,6 +1593,55 @@ mod input_tests {
                 }
             }
             assert_eq!(seen, vec![0, 2, 1, 2, 0]);
+        }
+    }
+
+    #[test]
+    fn browser_decoder_switches_svc3_operating_points_mid_stream() {
+        let (width, height) = (256, 128);
+        for codec in ["av1", "vp9"] {
+            let mut encoder = BrowserEncoder::new(
+                codec,
+                width,
+                height,
+                160,
+                30,
+                900,
+                "medium",
+                Some("hold.enable=0".to_owned()),
+                false,
+                None,
+                None,
+                Some(3),
+            )
+            .unwrap();
+            let mut decoder = BrowserDecoder::new(codec).unwrap();
+            for frame in 0..8 {
+                let rgba: Vec<u8> = (0..4 * width * height)
+                    .map(|i| (i * 11 + i / 13 + frame * 29) as u8)
+                    .collect();
+                let (source, _) = source_of(width, height, &rgba);
+                if frame == 2 {
+                    decoder.set_operating_point(1).unwrap();
+                } else if frame == 4 {
+                    decoder.set_operating_point(2).unwrap();
+                } else if frame == 6 {
+                    encoder.request_keyframe();
+                    decoder.set_operating_point(1).unwrap();
+                } else if frame == 7 {
+                    encoder.request_keyframe();
+                    decoder.set_operating_point(0).unwrap();
+                }
+                let packet = encoder.encode(&source).unwrap();
+                decoder.decode(&packet).unwrap();
+                assert!(decoder.frame_shown());
+                let expected = match frame {
+                    0 | 1 | 7 => (256, 128),
+                    2 | 3 | 6 => (128, 64),
+                    _ => (64, 32),
+                };
+                assert_eq!((decoder.width(), decoder.height()), expected);
+            }
         }
     }
 }

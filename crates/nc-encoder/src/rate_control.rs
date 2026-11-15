@@ -723,6 +723,9 @@ pub(crate) struct RateController {
     /// its budget scale and room apply to the frame plan only, its
     /// reallocated bits also to the frame's drain ([`Self::feedback`]).
     share: LayerShare,
+    /// Net bits transferred across spatial layers (+forfeited to upper layers,
+    /// -received via `share.reallocated_bits`) for [`Self::ledger_room`].
+    ledger_transferred_bits: f64,
     stats: RateControlStats,
     /// The skip-aware budget (`rate.skip_budget`).
     skip_budget: SkipBudget,
@@ -830,6 +833,7 @@ impl RateController {
             window_tolerance: f64::from(params.window_tolerance),
             window_keys: params.window_keys >= 0.5,
             share: LayerShare::WHOLE,
+            ledger_transferred_bits: 0.,
             stats: RateControlStats::start(q, config.target_bps),
             skip_budget: SkipBudget::new(params),
             frame_skip_scale: 1.,
@@ -1186,10 +1190,18 @@ impl RateController {
             return f64::INFINITY;
         }
         let target = self.settings.config.target_bps as f64;
-        let debt = self.stats.total_bits as f64 - target * self.elapsed;
+        let mut debt = self.stats.total_bits as f64 - target * self.elapsed;
+        let bonus = self.share.reallocated_bits.max(0.);
+        if self.ledger_transferred_bits != 0. || bonus > 0. {
+            debt += self.ledger_transferred_bits - bonus;
+        }
         let ceiling = self.recode_ceiling(true);
         let strict = if ceiling > 0. {
-            ceiling * self.settings.capacity - self.strict_occupancy
+            let mut s = ceiling * self.settings.capacity - self.strict_occupancy;
+            if bonus > 0. {
+                s += bonus;
+            }
+            s
         } else {
             f64::INFINITY
         };
@@ -1616,6 +1628,7 @@ impl RateController {
             return;
         }
         self.fullness += unspent_bits;
+        self.ledger_transferred_bits += unspent_bits;
         self.target_occupancy =
             (self.target_occupancy + unspent_bits).clamp(0.0, self.settings.capacity);
         self.strict_occupancy = (self.strict_occupancy + unspent_bits).max(0.0);
@@ -2104,6 +2117,7 @@ impl RateController {
             + skip_budget::forgiven(bits as f64, self.unscaled_budget, self.frame_skip_scale);
         if bonus > 0.0 {
             self.fullness -= bonus;
+            self.ledger_transferred_bits -= bonus;
         }
         // Every key, periodic or requested, borrows its planned budget and
         // the frames after it repay that on schedule; what it took beyond
@@ -3000,5 +3014,38 @@ mod tests {
         r.feedback(150_000);
         let room = r.strict_room(false);
         assert!((room - (330_000. - drain - 150_000.)).abs() < 1., "{room}");
+    }
+
+    #[test]
+    fn cross_layer_reallocated_bits_preserve_period_ledger_room() {
+        let mut lower = controller_with(100_000, &[("rate.period_ceiling", 1.)]);
+        let mut upper = controller_with(400_000, &[("rate.period_ceiling", 1.)]);
+        lower.period = 60;
+        upper.period = 60;
+        lower.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        lower.feedback(3_000);
+        upper.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        upper.feedback(12_000);
+        for i in 1..59 {
+            lower.select(false, i, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+            lower.feedback(333);
+            lower.forfeit_unspent_inter_bits(3_000.);
+            let share = LayerShare {
+                reallocated_bits: 3_000.,
+                ..LayerShare::WHOLE
+            };
+            upper.select(false, i, HINT, LayerPosition::FLAT, &share);
+            upper.feedback(13_333 + 3_000);
+        }
+        // On frame 59 (1 frame left in the 2 s period), upper spent its exact
+        // 400 kbps target plus the 3 kbit/frame forfeited by lower, so its
+        // cross-layer-adjusted ledger debt is ~0 rather than +174 kbit.
+        let share = LayerShare {
+            reallocated_bits: 3_000.,
+            ..LayerShare::WHOLE
+        };
+        upper.select(false, 59, HINT, LayerPosition::FLAT, &share);
+        let room = upper.ledger_room(false);
+        assert!(room > 12_000., "expected uncrushed ledger room, got {room}");
     }
 }

@@ -763,7 +763,7 @@ impl<B: CodecBackend> Encoder<B> {
     /// by its cadence role at strength `depth`, for the reuse term
     /// (`persist.reuse_level_price`; 0 when off, on keys, on layered frames
     /// and on frames the cadence does not coarsen).
-    fn reuse_role_offset(
+    pub(super) fn reuse_role_offset(
         &self,
         index: u64,
         key: bool,
@@ -1896,7 +1896,7 @@ impl<B: CodecBackend> Encoder<B> {
     /// `references` of frame `index` (a key frame if `key`, at the cadence
     /// strength `depth` if known) with the second reference, when it is on
     /// (`second_reference.rs`).
-    fn with_second(
+    pub(super) fn with_second(
         &self,
         index: u64,
         references: FrameReferences,
@@ -1915,7 +1915,11 @@ impl<B: CodecBackend> Encoder<B> {
     /// The QP cadence's strength (0..1) on the frame `analysis` describes:
     /// how much finer than its neighbours a high-quality frame is coded
     /// here, the depth the unified reference plan reads (`TierPlan`).
-    fn cadence_depth(&self, analysis: &FrameAnalysis, references: &FrameReferences) -> f64 {
+    pub(super) fn cadence_depth(
+        &self,
+        analysis: &FrameAnalysis,
+        references: &FrameReferences,
+    ) -> f64 {
         let motion = analysis
             .motion
             .as_ref()

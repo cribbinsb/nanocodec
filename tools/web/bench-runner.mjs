@@ -2,7 +2,7 @@
 // tools/web/bench.py. Loads the built browser module (web/pkg, SIMD128) under
 // node, single-threaded, and prints one JSON object on stdout.
 //
-//   node bench-runner.mjs decode --pkg DIR --codec C --stream FILE [--repeat N] [--hash]
+//   node bench-runner.mjs decode --pkg DIR --codec C --stream FILE [--operating-point N] [--repeat N] [--hash]
 //   node bench-runner.mjs encode --pkg DIR --codec C --yuv FILE --width W --height H
 //        --frames N --fps F --kbps R --peak-kbps P --buffer-ms B --key-seconds K [--fast] [--rgba-input] [--repeat N]
 //
@@ -69,41 +69,59 @@ async function decode(args) {
   const bytes = new Uint8Array(await readFile(args.stream));
   const packets = streamPackets(bytes, args.codec);
   const result = { mode: 'decode', codec: args.codec, stream: args.stream, wasm_sha256: wasmSha256 };
+  if (args.operatingPoint !== undefined) result.operating_point = +args.operatingPoint;
   if (args.hash) {
     const decoder = new module.BrowserDecoder(args.codec);
+    if (args.operatingPoint !== undefined) decoder.set_operating_point(+args.operatingPoint);
     const digest = createHash('sha256');
-    for (const packet of packets) { decoder.decode(packet); digest.update(decoder.decoded_i420()); }
+    let shownFrames = 0;
+    for (const packet of packets) {
+      decoder.decode(packet);
+      if (!('frame_shown' in decoder) || decoder.frame_shown) {
+        digest.update(decoder.decoded_i420());
+        shownFrames++;
+      }
+    }
     result.i420_sha256 = digest.digest('hex');
+    if (args.operatingPoint !== undefined) result.shown_frames = shownFrames;
     result.width = decoder.width; result.height = decoder.height;
     decoder.free();
   }
   const handoff = 'rgba_frame' in module.BrowserDecoder.prototype;
   const passes = [], decodeOnly = [];
+  let shownFrames = packets.length;
   for (let pass = 0; pass < +args.repeat; pass++) {
     const decoder = new module.BrowserDecoder(args.codec);
+    if (args.operatingPoint !== undefined) decoder.set_operating_point(+args.operatingPoint);
     const times = [], decodeTimes = [];
-    let canvas = null;
+    let canvas = null, shownCount = 0;
     for (const packet of packets) {
       const start = performance.now();
       decoder.decode(packet);
       const decoded = performance.now();
-      if (handoff) {
-        const length = decoder.width * decoder.height * 4;
-        // The colour argument (newer modules) is ignored by older ones.
-        const offset = decoder.rgba_frame('bt601'); // may grow (and detach) WASM memory
-        const view = new Uint8Array(module.wasmMemory().buffer, offset, length);
-        if (!canvas || canvas.length !== length) canvas = new Uint8Array(length);
-        canvas.set(view);
+      const shown = !('frame_shown' in decoder) || decoder.frame_shown;
+      if (shown) {
+        shownCount++;
+        if (handoff) {
+          const length = decoder.width * decoder.height * 4;
+          // The colour argument (newer modules) is ignored by older ones.
+          const offset = decoder.rgba_frame('bt601'); // may grow (and detach) WASM memory
+          const view = new Uint8Array(module.wasmMemory().buffer, offset, length);
+          if (!canvas || canvas.length !== length) canvas = new Uint8Array(length);
+          canvas.set(view);
+        }
       }
       const end = performance.now();
       times.push(end - start);
       decodeTimes.push(decoded - start);
     }
+    shownFrames = shownCount;
     decoder.free();
     passes.push(times);
     decodeOnly.push(decodeTimes);
   }
   if (!passes.length) return result; // --repeat 0: hash only
+  if (args.operatingPoint !== undefined) result.shown_frames = shownFrames;
   const best = summarize(passes, packets.length);
   if (handoff) {
     const totals = passes.map(p => p.reduce((a, b) => a + b, 0));

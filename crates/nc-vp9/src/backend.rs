@@ -164,6 +164,12 @@ const BLOCK_QP_LOG2: u8 = 6;
 /// +1.3% BD-J vs 180p coded alone (11 chart clips; 720p view +1.0 pp,
 /// svc-next merge review, 2026-11-14).
 const THREE_LAYER_S0_MIN_SEGMENT_OFFSET: u16 = 16;
+/// Minimum picture area (`640x360`) for `vp9.inter_intra_dc_only` mode 2:
+/// sub-`360p` layers (`320x180` `S0`, `<0.15%` of three-layer instructions)
+/// keep directional intra (`180p` pan borders otherwise lose `+5..+10%` BD-J;
+/// with mode 2, 11-clip `L3T1` `180p` stays `+2.3% -> +2.3%`, `L3T1_KEY`
+/// `+2.4% -> +2.5%`).
+const MIN_INTER_INTRA_DC_AREA: usize = 640 * 360;
 
 nc_encoder::param_group! {
     pub(crate) struct Vp9Params ("vp9") {
@@ -251,8 +257,14 @@ nc_encoder::param_group! {
             "inter blocks whose luma prediction error is below this energy (100 x SSE < energy x area x qindex) code no luma residual, without transforms: higher skips more",
         /// A speed lever (HEVC's and H.264's `inter_intra_dc_only`,
         /// default 0). Measured for VP9 Faster: docs/handoff/vp9-faster.md.
-        inter_intra_dc_only: 0.0, [0.0, 1.0],
-            "1 codes intra blocks of inter frames with DC luma and chroma prediction, without a mode search",
+        /// Mode 2 (VP9 L2 / L3 Medium) keeps directional intra on
+        /// key/repair enhancement pictures (`from_base_only` / `intra_only`),
+        /// refined blocks, sub-`360p` layers, and blocks touching a frame edge:
+        /// `L3T1_KEY` Callgrind `-3.6%` crowd / `-2.1%` bodycam (`-1.9%` 3-clip
+        /// mean), 11-clip `[8]` `720p` `+2.0% -> +2.9%` (`[+1.5% -> +1.6%]`),
+        /// `L3T1` `+33.0% -> +32.8%` (`[+32.9% -> +32.8%]`).
+        inter_intra_dc_only: 0.0, [0.0, 2.0],
+            "1 codes intra blocks of inter frames with DC luma and chroma prediction without a mode search; 2 restricts that shortcut to interior blocks of >=360p non-reset inter frames",
         /// A speed lever (libvpx's real-time intra blocks, which code one
         /// transform size; default 3: no cap). Measured for VP9 Faster:
         /// docs/handoff/vp9-faster.md.
@@ -517,9 +529,23 @@ struct BackendSpatial {
     /// The size of the picture in each reference slot (the decoder's
     /// `RefFrameWidth` / `RefFrameHeight`).
     slot_sizes: [Option<(usize, usize)>; MAX_REFERENCE_SLOTS],
+    /// Precomputed `EngineMv` scaled-reference phase offsets (`[primary, secondary]`)
+    /// for the current frame (`VP9 §8.5.2.3`).
+    scaled_mv_offsets: [EngineMv; 2],
 }
 
 impl BackendSpatial {
+    fn scaled_mv_offset(&self, choice: ReferenceChoice) -> EngineMv {
+        self.scaled_mv_offsets[usize::from(choice == ReferenceChoice::Secondary)]
+    }
+
+    fn to_vp9_mv(&self, choice: ReferenceChoice, mv: EngineMv) -> Mv {
+        let offset = self.scaled_mv_offset(choice);
+        to_vp9_mv(EngineMv {
+            x: mv.x.saturating_add(offset.x),
+            y: mv.y.saturating_add(offset.y),
+        })
+    }
     /// How the current layer's frame uses the four probability contexts
     /// (`frame_context_idx` $\in \{0, 1, 2\}$ = `spatial_id`, VP9 §6.2 / §7.2):
     /// - temporal layers above `0` read their layer's context without
@@ -1108,6 +1134,7 @@ impl CodecBackend for Vp9Backend {
             context_diverged: [false; MAX_SPATIAL_LAYERS],
             coded_context: FrameContext::default(),
             slot_sizes: [None; MAX_REFERENCE_SLOTS],
+            scaled_mv_offsets: [EngineMv { x: 0, y: 0 }; 2],
         }));
         Ok(())
     }
@@ -1367,7 +1394,12 @@ impl CodecBackend for Vp9Backend {
     fn mv_candidates(&mut self, block: &Block, out: &mut Vec<EngineMv>) {
         let refs = self.refs_for(block);
         for mv in [refs.nearest, refs.near] {
-            let engine = to_engine_mv(mv);
+            let mut engine = to_engine_mv(mv);
+            if let Some(sp) = &self.spatial {
+                let offset = sp.scaled_mv_offset(self.active_ref);
+                engine.x = engine.x.saturating_sub(offset.x);
+                engine.y = engine.y.saturating_sub(offset.y);
+            }
             if !out.contains(&engine) {
                 out.push(engine);
             }
@@ -1397,11 +1429,15 @@ impl CodecBackend for Vp9Backend {
                         refs: self.find_refs(block),
                         reference_bits: self.reference_bits(block),
                     });
+                let vp9_mv = match &self.spatial {
+                    None => to_vp9_mv(mv),
+                    Some(sp) => sp.to_vp9_mv(self.active_ref, mv),
+                };
                 cached.reference_bits
                     + cheapest_inter_mode(
                         &self.mode_costs,
                         &cached.refs,
-                        to_vp9_mv(mv),
+                        vp9_mv,
                         self.header.allow_hp,
                     )
                     .1
@@ -1480,6 +1516,13 @@ impl CodecBackend for Vp9Backend {
             [primary_slot, secondary_slot, primary_slot],
             segment_state,
         );
+        if self.spatial.is_some() {
+            let p_off = self.slot_scaled_mv_offset(usize::from(primary_slot));
+            let s_off = self.slot_scaled_mv_offset(usize::from(secondary_slot));
+            if let Some(sp) = self.spatial.as_mut() {
+                sp.scaled_mv_offsets = [p_off, s_off];
+            }
+        }
         self.grids.contexts.reset_frame();
         self.writer = TileRecorder::default();
         self.refs = None;
@@ -1790,6 +1833,50 @@ impl Vp9Backend {
             }
         }
         (None, own_size)
+    }
+
+    /// Quarter-sample (`EngineMv`) offset aligning the engine's centre-mapped
+    /// resampling proxy (`PlaneResampler`, `in = (out + 0.5) * r - 0.5`) with
+    /// VP9's top-left-mapped scaled reference (`VP9 §8.5.2.3`,
+    /// `in = (out + mv / 8) * r`; `libvpx` `vp9_pickmode.c` `(-4, -4)` at
+    /// `2:1`). Cached per frame in [`BackendSpatial::scaled_mv_offsets`] so
+    /// single-layer `mode_bits` never runs it.
+    /// Measured (11 VAL clips `[8 chart clips]`): `VP9 SVC L3T1` `720p`
+    /// `+36.2% -> +34.7%` (`[+37.6% -> +35.3%]`), `360p` `+25.2% -> +24.2%`;
+    /// `VP9 SVC L2T1` `720p` `+24.2% -> +23.0%` (`[+25.3% -> +23.8%]`).
+    fn slot_scaled_mv_offset(&self, slot: usize) -> EngineMv {
+        let Some(sp) = &self.spatial else {
+            return EngineMv { x: 0, y: 0 };
+        };
+        if sp.active_spatial_id == 0 {
+            return EngineMv { x: 0, y: 0 };
+        }
+        let Some(held) = self
+            .store
+            .held(slot)
+            .filter(|h| h.spatial_id != sp.active_spatial_id)
+        else {
+            return EngineMv { x: 0, y: 0 };
+        };
+        let (ref_w, ref_h) = held.size();
+        let (own_w, own_h) = (self.grids.width, self.grids.height);
+        if (ref_w, ref_h) == (own_w, own_h) {
+            return EngineMv { x: 0, y: 0 };
+        }
+        let delta = |ref_s: usize, own_s: usize| -> i16 {
+            let num = 2 * (ref_s as i64 - own_s as i64);
+            let half = ref_s as i64 / 2;
+            let rounded = if num >= 0 {
+                (num + half) / ref_s as i64
+            } else {
+                (num - half) / ref_s as i64
+            };
+            rounded as i16
+        };
+        EngineMv {
+            x: delta(ref_w, own_w),
+            y: delta(ref_h, own_h),
+        }
     }
 
     /// Quantizer steps of `plane` for the block being coded.
@@ -2220,6 +2307,30 @@ impl Vp9Backend {
         }
     }
 
+    /// Mode 2 of `vp9.inter_intra_dc_only` (`vp9-svc` / `vp9-svc3`): skips
+    /// directional intra search only on interior blocks of `>= 360p` non-reset,
+    /// unrefined inter pictures, preserving directional intra on key/repair
+    /// enhancement pictures (`coding_from_base_only` or `intra_only`, coded as
+    /// `INTER_FRAME` syntax), block-QP refinements, sub-`360p` layers
+    /// (`320x180`), and blocks touching any frame edge.
+    fn interior_spatial_inter_block(&self, block: &Block) -> bool {
+        if self.coding_from_base_only()
+            || self.refining_block()
+            || self
+                .spatial
+                .as_ref()
+                .is_some_and(|sp| sp.current_layer.intra_only)
+            || self.grids.width * self.grids.height < MIN_INTER_INTRA_DC_AREA
+        {
+            return false;
+        }
+        let size = block.size();
+        block.x > 0
+            && block.y > 0
+            && block.x + size < self.grids.width
+            && block.y + size < self.grids.height
+    }
+
     /// Luma and chroma modes of an intra block: of the ten modes, the one
     /// whose prediction costs least plus weighted mode bits (chroma
     /// conditioned on luma), measured as `vp9.intra_mode_estimate` says:
@@ -2233,9 +2344,12 @@ impl Vp9Backend {
         recon: &Picture,
     ) -> (IntraMode, IntraMode) {
         // Speed lever (`vp9.inter_intra_dc_only`): intra blocks of inter
-        // frames take DC without a search. Measured in
-        // docs/handoff/vp9-faster.md.
-        if !self.header.key && self.params.inter_intra_dc_only >= 0.5 {
+        // frames take DC without a search (`1.0` = all non-key frames in VP9
+        // Default; `2.0` = interior blocks of >=360p non-reset inter frames).
+        if !self.header.key
+            && self.params.inter_intra_dc_only >= 0.5
+            && (self.params.inter_intra_dc_only < 1.5 || self.interior_spatial_inter_block(block))
+        {
             return (IntraMode::Dc, IntraMode::Dc);
         }
         let (row, col) = (block.y >> MI_LOG2, block.x >> MI_LOG2);
@@ -3007,8 +3121,11 @@ impl Vp9Backend {
         let refs = self.refs_for(block);
         let (held_pic, ref_size) = self.active_reference();
         let ref_pic = held_pic.as_deref().unwrap_or(engine_ref);
-        let mv =
-            self.refine_high_precision(source, (ref_pic, ref_size), position, &refs, to_vp9_mv(mv));
+        let base_mv = match &self.spatial {
+            None => to_vp9_mv(mv),
+            Some(sp) => sp.to_vp9_mv(self.active_ref, mv),
+        };
+        let mv = self.refine_high_precision(source, (ref_pic, ref_size), position, &refs, base_mv);
         let allow_hp = self.header.allow_hp;
         let mode = match &mut self.random {
             Some(random) => random.inter_mode(&refs, mv),

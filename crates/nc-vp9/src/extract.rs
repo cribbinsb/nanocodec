@@ -255,6 +255,46 @@ impl Vp9StreamExtractor {
         })
     }
 
+    /// Change the target spatial view while preserving stream and kept DPB
+    /// slot tracking across mid-stream operating-point switches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::Unsupported`] if an `OperatingPoint` exceeds `2`.
+    pub fn set_target(&mut self, target: Vp9ExtractTarget) -> Result<()> {
+        if let Vp9ExtractTarget::OperatingPoint(op) = target
+            && op > MAX_VP9_OPERATING_POINT
+        {
+            return Err(DecodeError::Unsupported("VP9 operating point out of range"));
+        }
+        self.target = target;
+        Ok(())
+    }
+
+    /// Seed known spatial layer sizes and currently populated decoder DPB
+    /// slots when [`crate::Decoder`] enables extraction mid-stream after
+    /// decoding every layer from the key frame.
+    pub fn seed_decoder_state(
+        &mut self,
+        layer_sizes: &[(usize, usize)],
+        slot_sizes: [Option<(usize, usize)>; 8],
+    ) {
+        if !layer_sizes.is_empty() {
+            self.num_layers = Some(layer_sizes.len() as u8);
+            self.layer_sizes.clear();
+            self.layer_sizes.extend_from_slice(layer_sizes);
+        }
+        for (slot, size) in slot_sizes.into_iter().enumerate() {
+            if let Some(sz) = size {
+                let uid = self.next_uid;
+                self.next_uid += 1;
+                self.stream_uids[slot] = Some(uid);
+                self.kept_uids[slot] = Some(uid);
+                self.slot_sizes[slot] = Some(sz);
+            }
+        }
+    }
+
     /// Visible `(width, height)` per spatial layer observed on the latest key unit.
     #[must_use]
     pub fn layer_sizes(&self) -> &[(usize, usize)] {
@@ -505,5 +545,56 @@ mod tests {
         }
         assert!(access_unit_layer(&[0x82], 0).is_err());
         assert!(access_unit_layer(&[0x82], 4).is_err());
+    }
+
+    #[test]
+    fn mid_stream_operating_point_switches_preserve_dpb_tracking() {
+        let mut params = ParamOverrides::default();
+        params.set("spatial.layers", 3.0);
+        params.set("spatial.s0_scale", 0.25);
+        params.set("spatial.s1_scale", 0.5);
+        params.set("spatial.inter_layer", 1.0);
+        params.set("hold.enable", 0.0);
+        let mut enc = Encoder::<Vp9Backend>::new(EncoderConfig {
+            codec: Codec::Vp9,
+            width: 256,
+            height: 128,
+            frame_rate: FrameRate { num: 30, den: 1 },
+            quantizer: 130,
+            intra_period: 30,
+            temporal_layers: 1,
+            block_log2: 4,
+            key_qp_offset: None,
+            signal: StreamSignal::default(),
+            params,
+        })
+        .unwrap();
+        let mut dec = crate::Decoder::new();
+        let mut pic = Picture::new(256, 128, 0).unwrap();
+        for f in 0..8u8 {
+            let mut view = pic.plane_mut(PlaneIndex::Y).view_mut();
+            for y in 0..view.height() {
+                view.row_mut(y).fill(32u8.wrapping_add(f * 17));
+            }
+            if f == 2 {
+                dec.set_operating_point(1).unwrap();
+            } else if f == 4 {
+                dec.set_operating_point(2).unwrap();
+            } else if f == 6 {
+                enc.request_keyframe();
+                dec.set_operating_point(1).unwrap();
+            } else if f == 7 {
+                enc.request_keyframe();
+                dec.set_operating_point(0).unwrap();
+            }
+            let coded = enc.encode(&pic);
+            let shown = dec.decode(&coded.data).unwrap();
+            let expected = match f {
+                0 | 1 | 7 => (256, 128),
+                2 | 3 | 6 => (128, 64),
+                _ => (64, 32),
+            };
+            assert_eq!((shown.width(), shown.height()), expected);
+        }
     }
 }

@@ -17,15 +17,9 @@ spatial.s1_rate_share = 0.26
 spatial.inter_layer = 1
 spatial.enhancement_interval = 1
 av1.compound = 1
-# Pinned before AV1 Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
-# Pinned before AV1 Default's unified reference plan (2026-11-14).
-structure.unified = 0
-# Takes AV1 Default's key still boost (rate.key_still_boost 6) since spatial
-# rate control reads the start-up still share (2026-11-15). svc_chart, 11
-# natural VAL clips (chart's 8 in brackets), L3T1_KEY vs the pin: 720p view
-# +8.5% -> +5.1% (+10.8% -> +6.3%) vs single layer, 360p +3.6% -> +1.0%,
-# 180p +5.7% -> +4.4%, total vs simulcast -5.9% -> -9.0%; static and
-# bodycam clips gain 9-12%, the others are unchanged.
-# Pinned before AV1 Default's inherited cadence depth (2026-11-15).
-structure.inherited_depth = 0
+# Takes AV1 Default's key still boost (rate.key_still_boost 6), key-period
+# ceiling (rate.period_ceiling 1), unified second reference (structure.unified
+# 1, L3T1 S0 slot 6 and L3T1_KEY slots 1/6/7) and inherited cadence depth
+# (structure.inherited_depth 1): 11-clip [8] BD-J L3T1 720p +41.1% -> +39.2%
+# [+40.5% -> +38.0%], 180p +6.2% -> +5.5%; L3T1_KEY 720p +7.7% -> +6.3%
+# [+7.9% -> +5.7%], 360p +3.5% -> +2.5%, 180p +6.2% -> +5.7%.

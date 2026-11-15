@@ -170,7 +170,8 @@ impl Decoder {
     pub fn set_base_only(&mut self, base_only: bool) {
         self.base_only = base_only;
         if base_only {
-            self.extractor = Some(Vp9StreamExtractor::base_only());
+            self.select_extract_target(crate::extract::Vp9ExtractTarget::BaseOnly)
+                .expect("BaseOnly is always valid");
         } else {
             self.operating_point = 0;
             self.extractor = None;
@@ -196,7 +197,23 @@ impl Decoder {
         }
         self.base_only = false;
         self.operating_point = operating_point;
-        self.extractor = Some(Vp9StreamExtractor::new(operating_point)?);
+        self.select_extract_target(crate::extract::Vp9ExtractTarget::OperatingPoint(
+            operating_point,
+        ))
+    }
+
+    fn select_extract_target(&mut self, target: crate::extract::Vp9ExtractTarget) -> Result<()> {
+        if let Some(ext) = self.extractor.as_mut() {
+            ext.set_target(target)?;
+        } else {
+            let slot_sizes = self
+                .slots
+                .each_ref()
+                .map(|s| s.as_ref().map(|f| (f.width, f.height)));
+            let mut ext = Vp9StreamExtractor::with_target(target)?;
+            ext.seed_decoder_state(&self.layer_sizes, slot_sizes);
+            self.extractor = Some(ext);
+        }
         Ok(())
     }
 
@@ -344,9 +361,19 @@ impl Decoder {
     ///
     /// As [`Self::decode`].
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
+        self.decode_and_show(packet).map(|_| ())
+    }
+
+    /// [`Self::decode_shown`], returning whether `packet` showed a new frame
+    /// (`false` when the selected operating point dropped all frames in it).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::decode`].
+    pub fn decode_and_show(&mut self, packet: &[u8]) -> Result<bool> {
         let (frame, dropped) = self.decode_frames(packet)?;
         if dropped {
-            return Ok(());
+            return Ok(false);
         }
         let Some(frame) = frame else {
             self.release_shown();
@@ -360,7 +387,7 @@ impl Decoder {
         self.release_shown();
         self.last_spatial_id = Some(frame.spatial_id);
         self.shown = Some(frame);
-        Ok(())
+        Ok(true)
     }
 
     /// Decode one packet and keep the frame it shows, if any, until the

@@ -29,20 +29,22 @@ use crate::encoder::{
 };
 use crate::feedback::ReferencedFrames;
 use crate::hold::LastCoded;
+use crate::inheritance::Inheritance;
 use crate::noise_skip::NoiseMap;
-use crate::params::{LayerParams, RateParams, RefParams};
+use crate::params::{LayerParams, PersistParams, RateParams, RefParams, StructureParams};
 use crate::rate_control::{
     LayerShare, MAX_RECODES, RECODE_FIRST_EXPONENT, RateControlConfig, RateControlError,
     RateControlStats, RateController, RateModel, quantizer_for_step,
 };
 use crate::reuse::{ReuseFrame, ReuseTerm};
-use crate::second_reference::SecondReference;
+use crate::second_reference::{SecondReference, TierPlan};
 use crate::source_scale::PictureResampler;
 use crate::spatial::{
     BASE_SLOT_OFFSET, CombinedCbrBuffer, EnhancementClock, EnhancementIntra, InterLayerMode,
     LayerDropFacts, MAX_SPATIAL_LAYERS, ShareRequest, SpatialConfig, SpatialLayerPlan,
     SpatialStructure, SpatialUnitDrop, TemporalUnitPlan, decide_unit_drop_layers,
-    layer_slot_offset, layer_temporal_slots, spatial_pool_slots, split_rate_control,
+    layer_slot_offset, layer_temporal_slots, spatial_hq_slot, spatial_pool_slots,
+    split_rate_control,
 };
 use crate::startup_lookahead::startup_scene_profile;
 use crate::timeline::FrameTime;
@@ -241,9 +243,13 @@ fn spatial_layer_state<B: CodecBackend>(
     let aq = use_aq
         .then(|| BlockAq::new(&config.params, qp_log2, qp_offsets))
         .flatten();
-    let reuse = use_reuse.then(|| ReuseTerm::new(B::SUPPORTS_BLOCK_QP));
+    let persist = PersistParams::from_overrides(&config.params);
+    let reuse = use_reuse.then(|| {
+        ReuseTerm::new(B::SUPPORTS_BLOCK_QP).level_priced(persist.reuse_level_price >= 0.5)
+    });
     let last_visible_recon = Picture::new(w, h, 0).map_err(bad_dims)?;
     let layer_params = LayerParams::from_overrides(&config.params);
+    let structure_params = StructureParams::from_overrides(&config.params);
     let state = LayerState {
         width: w,
         height: h,
@@ -255,8 +261,7 @@ fn spatial_layer_state<B: CodecBackend>(
         input,
         rate_control: None,
         second,
-        // Spatial layers keep their own structures (`spatial.rs`).
-        inheritance: None,
+        inheritance: Inheritance::new(&layer_params, &structure_params),
         aq,
         reuse,
         reuse_last_frame: None,
@@ -309,6 +314,106 @@ struct UpperLayerDone {
     layer_quantizer: u32,
 }
 
+type SpatialLayerStates = (
+    Box<[Option<LayerState>]>,
+    [Option<Picture>; MAX_SPATIAL_LAYERS],
+    LayerState,
+);
+
+fn build_spatial_layer_states<B: CodecBackend>(
+    config: &EncoderConfig,
+    backend: &B,
+    spatial: &SpatialConfig,
+    s0_reads_repeats: bool,
+    flags: (bool, bool),
+) -> Result<SpatialLayerStates, ConfigError> {
+    let ref_params = RefParams::from_overrides(&config.params);
+    let tier_plan = TierPlan::new_for_spatial(&config.params)
+        .filter(|_| backend.supports_inter() && backend.supports_second_reference());
+    let enh_temporal_layers = if spatial.enhancement_interval == 1 {
+        spatial.temporal_layers
+    } else {
+        1
+    };
+    let mut pool_slots = spatial_pool_slots(spatial.layers, spatial.inter_layer);
+    if tier_plan.is_some() {
+        for sid in 0..spatial.layers {
+            let tl = if sid == 0 {
+                spatial.temporal_layers
+            } else {
+                enh_temporal_layers
+            };
+            if (tl == 1 || B::SECOND_REFERENCE_WITH_LAYERS)
+                && let Some(hq_slot) = spatial_hq_slot(
+                    spatial.layers,
+                    spatial.temporal_layers,
+                    spatial.inter_layer,
+                    sid,
+                )
+            {
+                pool_slots = pool_slots.max(hq_slot + 1);
+            }
+        }
+    }
+
+    let mut parked: Box<[Option<LayerState>]> = (0..MAX_SPATIAL_LAYERS)
+        .map(|_| None)
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let mut visible_recon: [Option<Picture>; MAX_SPATIAL_LAYERS] = [None, None, None];
+    let mut top_state = None;
+    for sid in 0..spatial.layers {
+        let s = usize::from(sid);
+        let tl = if sid == 0 {
+            spatial.temporal_layers
+        } else {
+            enh_temporal_layers
+        };
+        let second = if sid > 0 && spatial.inter_layer.active_on_inter_unit() {
+            Some(SecondReference::new(0, &ref_params))
+        } else if let Some(plan) = tier_plan.filter(|_| tl == 1 || B::SECOND_REFERENCE_WITH_LAYERS)
+            && let Some(hq_slot) = spatial_hq_slot(
+                spatial.layers,
+                spatial.temporal_layers,
+                spatial.inter_layer,
+                sid,
+            )
+        {
+            Some(SecondReference::new(hq_slot, &ref_params).with_plan(Some(plan)))
+        } else {
+            None
+        };
+        let (mut state, recon) = spatial_layer_state(
+            config,
+            backend,
+            spatial.layer_sizes[s],
+            pool_slots,
+            tl,
+            sid == 0 && s0_reads_repeats,
+            second,
+            flags,
+        )?;
+        if s > 0
+            && spatial.enhancement_interval == 1
+            && can_seed_cross_layer_hme(spatial.layer_sizes[s - 1], spatial.layer_sizes[s])
+            && let Some(a) = state.analyzer.as_mut()
+        {
+            a.set_external_hme_seeded(true);
+        }
+        visible_recon[s] = Some(recon);
+        if sid + 1 == spatial.layers {
+            top_state = Some(state);
+        } else {
+            parked[s] = Some(state);
+        }
+    }
+    Ok((
+        parked,
+        visible_recon,
+        top_state.expect("at least 2 spatial layers"),
+    ))
+}
+
 impl SpatialSession {
     pub(super) fn new<B: CodecBackend>(
         config: &EncoderConfig,
@@ -316,8 +421,6 @@ impl SpatialSession {
         spatial: SpatialConfig,
         flags: (bool, bool),
     ) -> Result<(Self, LayerState), ConfigError> {
-        let num_layers = usize::from(spatial.layers);
-        let pool_slots = spatial_pool_slots(spatial.layers, spatial.inter_layer);
         let multiple = 1usize << backend.min_block_log2();
         let bad_dims = |_| ConfigError::Dimensions {
             width: config.width,
@@ -333,53 +436,13 @@ impl SpatialSession {
             adaptive_rule,
         );
         let rate_params = RateParams::from_overrides(&config.params);
-        let ref_params = RefParams::from_overrides(&config.params);
-        let enh_temporal_layers = if spatial.enhancement_interval == 1 {
-            spatial.temporal_layers
-        } else {
-            1
-        };
-
-        let mut parked: Box<[Option<LayerState>]> = (0..MAX_SPATIAL_LAYERS)
-            .map(|_| None)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        let mut visible_recon: [Option<Picture>; MAX_SPATIAL_LAYERS] = [None, None, None];
-        let mut top_state = None;
-        for s in 0..num_layers {
-            let tl = if s == 0 {
-                spatial.temporal_layers
-            } else {
-                enh_temporal_layers
-            };
-            let reads_repeats = s == 0 && structure.reads_repeats();
-            let second = (s > 0 && spatial.inter_layer.active_on_inter_unit())
-                .then(|| SecondReference::new(0, &ref_params));
-            let (mut state, recon) = spatial_layer_state(
-                config,
-                backend,
-                spatial.layer_sizes[s],
-                pool_slots,
-                tl,
-                reads_repeats,
-                second,
-                flags,
-            )?;
-            if s > 0
-                && spatial.enhancement_interval == 1
-                && can_seed_cross_layer_hme(spatial.layer_sizes[s - 1], spatial.layer_sizes[s])
-                && let Some(a) = state.analyzer.as_mut()
-            {
-                a.set_external_hme_seeded(true);
-            }
-            visible_recon[s] = Some(recon);
-            if s + 1 == num_layers {
-                top_state = Some(state);
-            } else {
-                parked[s] = Some(state);
-            }
-        }
-        let top_state = top_state.expect("at least 2 spatial layers");
+        let (parked, visible_recon, top_state) = build_spatial_layer_states(
+            config,
+            backend,
+            &spatial,
+            structure.reads_repeats(),
+            flags,
+        )?;
 
         let full_source = Picture::new(config.width, config.height, 0).map_err(bad_dims)?;
         let (down_resamplers, up_resamplers) = build_step_resamplers(&spatial);
@@ -843,7 +906,7 @@ impl<B: CodecBackend> Encoder<B> {
             SpatialUnitDrop::KeepLayers(k) => k,
         };
 
-        let (s0_recon_buf, s0_analyzer, tu_plan, s1_interval_for_code) =
+        let (s0_recon_buf, s0_analyzer, mut tu_plan, s1_interval_for_code) =
             self.analyze_and_commit_s0(tu_index, scheduled_key, kept_layers);
         let mut prev_layer_hme = tu_plan.upper[0].as_ref().and_then(|s1| {
             let scfg = &self.spatial.as_ref().expect("spatial mode").config;
@@ -858,7 +921,7 @@ impl<B: CodecBackend> Encoder<B> {
         });
         let full_lookahead = self.lookahead.take();
         let (mut data, mut out_quantizer, s0_meta) = self.encode_s0_layer(
-            &tu_plan,
+            &mut tu_plan,
             s0_analyzer,
             s0_recon_buf,
             full_lookahead.as_ref(),
@@ -867,8 +930,11 @@ impl<B: CodecBackend> Encoder<B> {
         let mut layers = vec![s0_meta];
         let mut output_spatial_id = 0u8;
         let top_sid = self.spatial.as_ref().expect("spatial mode").config.layers - 1;
-        for (s, plan) in tu_plan.upper.iter().enumerate() {
-            let Some(plan) = plan else { break };
+        for s in 0..tu_plan.upper.len() {
+            let next_upper = tu_plan.upper.get(s + 1).copied().flatten();
+            let Some(plan) = tu_plan.upper[s].as_mut() else {
+                break;
+            };
             let sid = plan.spatial_id;
             // Lower layers' sources were downscaled into their analyzers up
             // front; the top layer's is written here unless the hold check
@@ -879,11 +945,10 @@ impl<B: CodecBackend> Encoder<B> {
             } else {
                 time.interval
             };
-            let next_upper = tu_plan.upper.get(s + 1).and_then(Option::as_ref);
             let (bytes, quantizer, meta, next_hme) = self.encode_upper_layer(
                 tu_plan.key_unit,
                 plan,
-                next_upper,
+                next_upper.as_ref(),
                 prev_layer_hme.as_ref(),
                 full_src,
                 source_written,
@@ -1029,6 +1094,14 @@ impl<B: CodecBackend> Encoder<B> {
 
         let (tu_plan, s1_interval_for_code) = {
             let spatial = self.spatial.as_mut().expect("spatial mode");
+            for sid in 0..num_layers {
+                let loss = spatial
+                    .layer(&self.layer, sid)
+                    .inheritance
+                    .as_ref()
+                    .and_then(|inh| inh.loss().map(|l| l as f32));
+                spatial.structure.observe_layer_inheritance(sid, loss);
+            }
             let s1_due_final = spatial.structure.layer_due(1, key_unit);
             let s1_interval = if !s1_due_final {
                 None
@@ -1072,11 +1145,60 @@ impl<B: CodecBackend> Encoder<B> {
         (s0_recon_buf, s0_analyzer, tu_plan, s1_interval_for_code)
     }
 
+    /// Apply `structure.unified` (`SecondReference::is_planned`) to the active
+    /// spatial layer's `layer_plan` after analysis, updating `last_key_index`,
+    /// `SpatialStructure`, and the layer `Analyzer`'s slot map.
+    fn apply_planned_spatial_second(
+        &mut self,
+        reset: bool,
+        layer_plan: &mut SpatialLayerPlan,
+        mut analyzer: Option<&mut Analyzer>,
+    ) {
+        let index = layer_plan.layer_frame_index;
+        if reset {
+            self.layer.last_key_index = index;
+        }
+        if !self
+            .layer
+            .second
+            .as_ref()
+            .is_some_and(SecondReference::is_planned)
+        {
+            return;
+        }
+        let prev_refresh = layer_plan.references.refresh;
+        let refs = if reset {
+            self.layer
+                .second
+                .as_mut()
+                .expect("planned second")
+                .reset(index, layer_plan.references)
+        } else {
+            let analysis = analyzer.as_deref().and_then(Analyzer::analysis);
+            let depth = analysis.map(|a| self.cadence_depth(a, &layer_plan.references));
+            let references = self.with_second(index, layer_plan.references, (false, depth));
+            if let Some(second) = self.layer.second.as_mut() {
+                second.coded(index, &references);
+            }
+            references
+        };
+        if refs.refresh != prev_refresh
+            && let Some(a) = analyzer.as_mut()
+        {
+            a.refresh_current(refs.refresh);
+        }
+        self.spatial
+            .as_mut()
+            .expect("spatial mode")
+            .structure
+            .update_layer_references(layer_plan, refs);
+    }
+
     /// Encode `S0` (the active layer), and commit its reference.
     fn encode_s0_layer(
         &mut self,
-        tu_plan: &TemporalUnitPlan,
-        s0_analyzer: Option<Analyzer>,
+        tu_plan: &mut TemporalUnitPlan,
+        mut s0_analyzer: Option<Analyzer>,
         mut s0_recon_buf: Picture,
         full_lookahead: Option<&Picture>,
         interval: Option<f64>,
@@ -1084,6 +1206,11 @@ impl<B: CodecBackend> Encoder<B> {
         if let Some(next_full) = full_lookahead {
             self.observe_s0_startup_lookahead(s0_analyzer.as_ref(), next_full);
         }
+        self.apply_planned_spatial_second(
+            tu_plan.key_unit,
+            &mut tu_plan.base,
+            s0_analyzer.as_mut(),
+        );
         {
             let spatial = self.spatial.as_mut().expect("spatial mode");
             spatial.coding_inter_layer_step = None;
@@ -1211,7 +1338,7 @@ impl<B: CodecBackend> Encoder<B> {
     fn encode_upper_layer(
         &mut self,
         key_unit: bool,
-        layer_plan: &SpatialLayerPlan,
+        layer_plan: &mut SpatialLayerPlan,
         next_upper: Option<&SpatialLayerPlan>,
         external_hme: Option<&Grid<Mv>>,
         full_src: &Picture,
@@ -1224,13 +1351,14 @@ impl<B: CodecBackend> Encoder<B> {
         let layer_reset = key_unit || layer_plan.enhancement_repair;
         let has_coded_upper = next_upper.is_some();
         let mut recon_buf = self.prepare_upper_layer_state(layer_plan, layer_interval);
-        let analyzer = self.analyze_upper_layer(
+        let mut analyzer = self.analyze_upper_layer(
             layer_plan,
             layer_reset,
             external_hme,
             full_src,
             source_already_written,
         );
+        self.apply_planned_spatial_second(layer_reset, layer_plan, analyzer.as_mut());
         let next_hme = next_upper.and_then(|upper| {
             let scfg = &self.spatial.as_ref().expect("spatial mode").config;
             next_layer_hme_seed(
@@ -1337,7 +1465,9 @@ impl<B: CodecBackend> Encoder<B> {
                     spatial.current_tu_carry_to_s2 = carry_s2;
                 }
             }
-            spatial.coding_inter_layer_step = layer_plan.references.secondary.map(|_| step);
+            spatial.coding_inter_layer_step = (layer_plan.predicts_from_lower
+                && layer_plan.references.secondary.is_some())
+            .then_some(step);
             spatial.step_ref_stats[step]
         };
         let nominal_inter_budget = (!layer_reset && has_coded_upper)
@@ -1701,14 +1831,14 @@ impl<B: CodecBackend> Encoder<B> {
         let Some(analysis) = analysis else {
             return (reuse_frame, 0.0);
         };
+        let depth = (!rc_key).then(|| self.cadence_depth(analysis, &layer_plan.references));
         let rframe = ReuseFrame {
             still: &analysis.still,
             pre: &analysis.pre,
             key: rc_key,
             horizon: self.spatial_frames_to_next_key(layer_plan.spatial_id),
             sample_step: self.reuse_sample_step(),
-            // Spatial layers run no QP cadence roles of their own here.
-            role_offset: 0.,
+            role_offset: self.reuse_role_offset(index, rc_key, &layer_plan.references, depth),
         };
         let step_dist = if layer_plan.spatial_id == 1 {
             let interval = self

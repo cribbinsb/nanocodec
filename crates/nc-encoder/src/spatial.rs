@@ -213,6 +213,47 @@ pub const INTER_LAYER_SCRATCH_MASK: SlotMask = SlotMask(1 << INTER_LAYER_SCRATCH
 /// Active reference-pool slots kept by two-layer full spatial SVC (`0..=4`).
 pub const SPATIAL_POOL_SLOTS: usize = spatial_pool_slots(2, InterLayerMode::On);
 
+/// Dedicated DPB slot for `S0`'s high-quality second reference (`structure.unified`) in 2-layer SVC.
+const TWO_LAYER_S0_HQ_SLOT: usize = 6;
+/// Dedicated DPB slot for `S1`'s high-quality second reference (`structure.unified`) in 2-layer K-SVC.
+const TWO_LAYER_S1_HQ_SLOT: usize = 7;
+/// Unused `S0` `T1` temporal slot repurposed as `S0`'s HQ slot in `L3T1_KEY` (`temporal_layers == 1`).
+const THREE_LAYER_T1_S0_KEY_HQ_SLOT: usize = 1;
+/// First free DPB slot above 3-layer temporal pairs (`0..=5`) when not taken by `T2` scratch.
+const THREE_LAYER_HQ_SLOT_A: usize = 6;
+/// Second free DPB slot above 3-layer temporal pairs (`0..=5`) when not taken by `T2` scratch.
+const THREE_LAYER_HQ_SLOT_B: usize = 7;
+
+/// Dedicated same-layer high-quality DPB slot (`0..8`) available to `spatial_id`
+/// for `structure.unified` without colliding with any layer's temporal hierarchy,
+/// disposable `T2` inter-layer scratch (`inter_layer_scratch_slot`), or hidden
+/// `T2` display scratch (`4..=5` in 2-layer, `6..=7` in 3-layer `T2`/`T3`).
+#[must_use]
+pub const fn spatial_hq_slot(
+    num_layers: u8,
+    temporal_layers: u8,
+    inter_layer: InterLayerMode,
+    spatial_id: u8,
+) -> Option<usize> {
+    if spatial_id >= num_layers || (spatial_id > 0 && inter_layer.active_on_inter_unit()) {
+        return None;
+    }
+    match (num_layers, spatial_id) {
+        (2, 0) => Some(TWO_LAYER_S0_HQ_SLOT),
+        (2, 1) => Some(TWO_LAYER_S1_HQ_SLOT),
+        (3, 0) if temporal_layers == 1 => {
+            if inter_layer.active_on_inter_unit() {
+                Some(THREE_LAYER_HQ_SLOT_A)
+            } else {
+                Some(THREE_LAYER_T1_S0_KEY_HQ_SLOT)
+            }
+        }
+        (3, 1) => Some(THREE_LAYER_HQ_SLOT_A),
+        (3, 2) => Some(THREE_LAYER_HQ_SLOT_B),
+        _ => None,
+    }
+}
+
 /// `operating_point_idc` spatial-layer mask for `S0` only (`AV1 §6.4.1`).
 const SPATIAL_LAYER_0_IDC: u16 = 0b0001 << 8;
 /// `operating_point_idc` spatial-layer mask for `S0 + S1` (`AV1 §6.4.1`).
@@ -1142,6 +1183,33 @@ impl SpatialStructure {
     pub fn observe_motion(&mut self, motion: crate::structure::MotionSignal) {
         for s in 0..usize::from(self.num_layers) {
             self.temporal[s].observe(motion);
+        }
+    }
+
+    /// Feed per-layer measured inheritance loss (`inheritance.rs`) into `spatial_id`.
+    pub fn observe_layer_inheritance(&mut self, spatial_id: u8, loss: Option<f32>) {
+        if let Some(t) = self.temporal.get_mut(usize::from(spatial_id)) {
+            t.observe_inheritance(loss);
+        }
+    }
+
+    /// Apply finalized `references` (such as a same-layer `structure.unified`
+    /// second reference) to `plan`, updating `slot_picture` for any newly added
+    /// refresh slots and refreshing `referenced_pictures`.
+    pub fn update_layer_references(&mut self, plan: &mut SpatialLayerPlan, refs: FrameReferences) {
+        let primary_pic = plan.referenced_pictures.iter().next();
+        let added_refresh = SlotMask(refs.refresh.0 & !plan.references.refresh.0);
+        plan.references = refs;
+        if !(plan.intra_only || plan.spatial_id == 0 && plan.frame_type == FrameType::Key) {
+            plan.referenced_pictures = ReferencedFrames::from_pair(
+                primary_pic,
+                refs.secondary.and_then(|sec| self.slot_picture[sec.slot]),
+            );
+        }
+        for (slot, held) in self.slot_picture.iter_mut().enumerate() {
+            if added_refresh.contains(slot) {
+                *held = Some(plan.picture_index);
+            }
         }
     }
 
@@ -3366,6 +3434,121 @@ mod tests {
                 100 + MOVING_STARTUP_KEY_MIN_LEAD,
                 100 + MOVING_STARTUP_KEY_MAX_LEAD
             ))
+        );
+    }
+
+    #[test]
+    fn spatial_hq_slots_stay_disjoint_from_temporal_and_scratch_slots() {
+        for (nl, tl, il) in [
+            (2u8, 1u8, InterLayerMode::On),
+            (2, 3, InterLayerMode::On),
+            (2, 1, InterLayerMode::KeyOnly),
+            (2, 3, InterLayerMode::KeyOnly),
+            (3, 1, InterLayerMode::On),
+            (3, 3, InterLayerMode::On),
+            (3, 1, InterLayerMode::KeyOnly),
+            (3, 3, InterLayerMode::KeyOnly),
+        ] {
+            let mut occupied = 0u8;
+            for s in 0..nl {
+                let temporal = if tl == 1 && s == 0 {
+                    1u8 << layer_slot_offset(s)
+                } else {
+                    layer_temporal_slots(s).0
+                };
+                occupied |= temporal;
+            }
+            if tl > 1 && il.active_on_inter_unit() {
+                for step in 0..(nl - 1) {
+                    occupied |= 1u8 << inter_layer_scratch_slot(nl, step);
+                }
+            }
+            if tl > 1 && nl == 2 {
+                occupied |= (1u8 << 4) | (1u8 << 5);
+            }
+            let mut hq_mask = 0u8;
+            for s in 0..nl {
+                if let Some(slot) = spatial_hq_slot(nl, tl, il, s) {
+                    assert!(slot < MAX_REFERENCE_SLOTS);
+                    let bit = 1u8 << slot;
+                    assert_eq!(
+                        occupied & bit,
+                        0,
+                        "HQ slot {slot} collides on nl={nl} tl={tl} il={il:?} s={s}"
+                    );
+                    assert_eq!(
+                        hq_mask & bit,
+                        0,
+                        "duplicate HQ slot {slot} on nl={nl} tl={tl} il={il:?}"
+                    );
+                    hq_mask |= bit;
+                }
+            }
+        }
+        assert_eq!(spatial_hq_slot(3, 3, InterLayerMode::On, 0), None);
+        assert_eq!(spatial_hq_slot(3, 1, InterLayerMode::KeyOnly, 0), Some(1));
+        assert_eq!(spatial_hq_slot(3, 1, InterLayerMode::KeyOnly, 1), Some(6));
+        assert_eq!(spatial_hq_slot(3, 1, InterLayerMode::KeyOnly, 2), Some(7));
+    }
+
+    #[test]
+    fn update_layer_references_preserves_primary_picture_index() {
+        let mut sched = SpatialStructure::with_layers(2, 1, 1, InterLayerMode::KeyOnly, None);
+        let hq_slot = spatial_hq_slot(2, 1, InterLayerMode::KeyOnly, 1).unwrap();
+
+        // Key TU 0: S0 pic 0, S1 pic 1 refreshes HQ slot.
+        let mut tu0 = sched.next_temporal_unit_layers(true, 2);
+        let s1_tu0 = tu0.upper[0].as_mut().unwrap();
+        let mut refs0 = s1_tu0.references;
+        refs0.refresh = SlotMask(refs0.refresh.0 | SlotMask::only(hq_slot).0);
+        sched.update_layer_references(s1_tu0, refs0);
+        assert_eq!(
+            s1_tu0.referenced_pictures.iter().collect::<Vec<_>>(),
+            vec![0]
+        );
+
+        // Inter TU 1: S1 pic 3 references S1 pic 1 (primary).
+        let tu1 = sched.next_temporal_unit_layers(false, 2);
+        assert_eq!(
+            tu1.upper[0]
+                .as_ref()
+                .unwrap()
+                .referenced_pictures
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+
+        // Inter TU 2: S1 pic 5 references S1 pic 3 (primary) + S1 pic 1 (HQ secondary), never itself (5).
+        let mut tu2 = sched.next_temporal_unit_layers(false, 2);
+        let s1_tu2 = tu2.upper[0].as_mut().unwrap();
+        let mut refs2 = s1_tu2.references;
+        refs2.secondary = Some(ReferenceLink {
+            slot: hq_slot,
+            distance: 2,
+        });
+        sched.update_layer_references(s1_tu2, refs2);
+        assert_eq!(
+            s1_tu2.referenced_pictures.iter().collect::<Vec<_>>(),
+            vec![3, 1]
+        );
+
+        // Full SVC: S0 key HQ-slot refresh must not overwrite S1's slot_picture.
+        let mut full = SpatialStructure::with_layers(2, 1, 1, InterLayerMode::On, None);
+        let s0_hq = spatial_hq_slot(2, 1, InterLayerMode::On, 0).unwrap();
+        let mut f_tu0 = full.next_temporal_unit_layers(true, 2);
+        let mut s0_refs = f_tu0.base.references;
+        s0_refs.refresh = SlotMask(s0_refs.refresh.0 | SlotMask::only(s0_hq).0);
+        full.update_layer_references(&mut f_tu0.base, s0_refs);
+        let f_tu1 = full.next_temporal_unit_layers(false, 2);
+        assert_eq!(
+            f_tu1.upper[0]
+                .as_ref()
+                .unwrap()
+                .referenced_pictures
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![1, 2]
         );
     }
 }

@@ -30,13 +30,9 @@ av1.chroma_delta_q = -34
 av1.chroma_noise_scale = 4.676
 av1.pre_tx_skip_score = 68.79
 av1.pre_tx_skip_energy = 15.18
-# Pinned before AV1 Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
-# Pinned before AV1 Default's unified reference plan (2026-11-14).
-structure.unified = 0
-# Takes AV1 Default's key still boost (rate.key_still_boost 6) since spatial
-# rate control reads the start-up still share (2026-11-15). svc_chart, the
-# chart's 8 clips, L2T1 720p view vs the pin: -2.6% BD-J (static_london_bus
-# -4.7%, bodycam_airport -10.5%, the others unchanged).
-# Pinned before AV1 Default's inherited cadence depth (2026-11-15).
-structure.inherited_depth = 0
+# Takes AV1 Default's key still boost (rate.key_still_boost 6), key-period
+# ceiling (rate.period_ceiling 1), unified second reference (structure.unified
+# 1, S0 slot 6 + K-SVC S1 slot 7) and inherited cadence depth
+# (structure.inherited_depth 1): 11-clip [8] BD-J L2T1 720p +27.6% -> +26.0%
+# [+25.4% -> +23.4%], 360p +1.1% -> +0.4%; L2T1_KEY 720p +7.2% -> +6.1%
+# [+6.7% -> +5.3%], 360p +0.8% -> -0.1%.

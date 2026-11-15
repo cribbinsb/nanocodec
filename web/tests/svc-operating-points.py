@@ -2,8 +2,8 @@
 """Spatial SVC in headless Chromium: the demo's two- and three-layer streams, their operating points.
 
 The browser module (web/pkg, tools/web/build.sh) encodes a short synthetic clip
-at the Medium preset with two spatial layers for each SVC codec (a half-size
-base layer and the full-size layer) and AV1 with three (quarter-, half- and
+at the Medium preset with two and with three spatial layers for each SVC
+codec (a half-size base layer and the full-size layer; quarter-, half- and
 full-size layers). Three
 BrowserDecoders decode it in the page, as the decode worker does
 (decode-worker.js): one at operating point 0 (full size), one at the lowest
@@ -38,7 +38,7 @@ DOWN_AT, KEY_AT = 4, 8
 #: The codecs with spatial SVC in the demo (web/codecs.js `spatialLayers`) and their IVF FourCC.
 CODECS = {"av1": b"AV01", "vp9": b"VP90"}
 #: The cases: (codec, demo preset, spatial layers).
-CASES = (("av1", "medium", 2), ("vp9", "medium", 2), ("av1", "medium", 3))
+CASES = (("av1", "medium", 2), ("vp9", "medium", 2), ("av1", "medium", 3), ("vp9", "medium", 3))
 
 PAGE_SCRIPT = '''async ([codec, preset, layers, width, height, frames, downAt, keyAt]) => {
   const lowest = layers - 1;
@@ -48,11 +48,12 @@ PAGE_SCRIPT = '''async ([codec, preset, layers, width, height, frames, downAt, k
   const full = new module.BrowserDecoder(codec), base = new module.BrowserDecoder(codec);
   const middle = new module.BrowserDecoder(codec);
   const switching = new module.BrowserDecoder(codec);
+  const stepSwitching = new module.BrowserDecoder(codec);
   base.set_operating_point(lowest);
   middle.set_operating_point(1);
-  const out = { packets: [], full: [], base: [], middle: [], switching: [], keys: [] };
+  const out = { packets: [], full: [], base: [], middle: [], switching: [], stepSwitching: [], keys: [] };
   const picture = d => ({ width: d.width, height: d.height, i420: Array.from(d.decoded_i420()) });
-  let pending = null;
+  let pending = null, stepPending = null;
   for (let frame = 0; frame < frames; frame++) {
     const rgba = new Uint8Array(width * height * 4);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -74,6 +75,13 @@ PAGE_SCRIPT = '''async ([codec, preset, layers, width, height, frames, downAt, k
     if (frame === downAt + 1) pending = 0;
     if (encoder.key && pending !== null) { switching.set_operating_point(pending); pending = null; }
     switching.decode(packet); out.switching.push(picture(switching));
+    if (lowest > 1) {
+      if (frame === 2) stepSwitching.set_operating_point(1);
+      if (frame === 5) stepSwitching.set_operating_point(2);
+      if (frame === 6) stepPending = 1;
+      if (encoder.key && stepPending !== null) { stepSwitching.set_operating_point(stepPending); stepPending = null; }
+      stepSwitching.decode(packet); out.stepSwitching.push(picture(stepSwitching));
+    }
   }
   return out;
 }'''
@@ -152,6 +160,10 @@ def check(binary: Path, codec: str, preset: str, layers: int, out: dict) -> None
     expected = full[:DOWN_AT] + base[DOWN_AT:KEY_AT] + full[KEY_AT:]
     assert md5s(out["switching"]) == expected, \
         f"{name}: switching decoder differs from the native decodes"
+    if lowest > 1:
+        step_expected = full[:2] + middle[2:5] + base[5:KEY_AT] + middle[KEY_AT:]
+        assert md5s(out["stepSwitching"]) == step_expected, \
+            f"{name}: 0->1->2->1 switching decoder differs from the native decodes"
     print(f"PASS {name} SVC in Chromium: op 0 ({WIDTH}x{HEIGHT}) to op {lowest} "
           f"({low_size[0]}x{low_size[1]}) equal the native decoder on {FRAMES} frames; "
           f"switched down at frame {DOWN_AT}, back up at the key at frame {KEY_AT}")

@@ -25,17 +25,21 @@ vp9.lambda_per_step_squared = 0.09
 planner.lambda_scale = 3.1625
 vp9.filter_level_scale = 1
 vp9.chroma_delta_q = -8
-vp9.inter_intra_dc_only = 0
-# Pinned before VP9 Default's key-period ceiling (2026-11-14).
-rate.period_ceiling = 0
-# Pinned before VP9 Default's unified reference plan (2026-11-15).
-structure.unified = 0
-# Takes VP9 Default's key still boost (rate.key_still_boost 6; spatial rate
-# control reads the start-up still share since d7d6cfd7). svc_chart, 11
-# natural VAL clips (chart's 8 in brackets), L3T1_KEY vs the pin: 720p view
-# +6.4% -> +3.3% (+6.9% -> +2.9%) vs single layer, 360p +5.0% -> +2.0%,
-# 180p +4.1% -> +2.2%, total vs simulcast -9.0% -> -11.8%; full SVC L3T1
-# 720p view +38.8% -> +36.6% (2026-11-15).
-# Pinned before VP9 Default's inherited cadence depth (2026-11-15).
-structure.inherited_depth = 0
-persist.reuse_level_price = 0
+# Mode 2 skips the 10-mode intra search on interior blocks of >=360p non-reset
+# inter frames while keeping directional intra on key/repair enhancement
+# pictures, refined blocks, sub-360p layers and blocks touching a frame edge
+# (L3T1_KEY Callgrind -3.6% crowd / -2.1% bodycam, -1.9% 3-clip mean; 11-clip
+# [8] vs 0: L3T1 720p +33.0% -> +32.8% [+32.9% -> +32.8%], 180p +2.3% -> +2.3%;
+# L3T1_KEY 720p +2.0% -> +2.9% [+1.5% -> +1.6%], 180p +2.4% -> +2.5%).
+vp9.inter_intra_dc_only = 2
+# Takes VP9 Default's key still boost (rate.key_still_boost 6), key-period
+# ceiling (rate.period_ceiling 1) and unified second reference
+# (structure.unified 1; T1 only via SECOND_REFERENCE_WITH_LAYERS, respecting
+# L3T3's 8-slot DPB limit), plus the engine's inherited cadence depth
+# (structure.inherited_depth 1) with its companion level-priced still
+# refinement (persist.reuse_level_price 1): 11-clip [8] BD-J L3T1 720p +34.7%
+# -> +33.0% [+35.3% -> +32.9%], 360p +24.2% -> +23.5%, 180p +2.9% -> +2.3%;
+# L3T1_KEY 720p +3.6% -> +2.0% [+3.5% -> +1.5%], 360p +2.3% -> +1.6%, 180p
+# +3.0% -> +2.4%.
+structure.inherited_depth = 1
+persist.reuse_level_price = 1
