@@ -5,6 +5,7 @@
 // A link ?codec=&preset= (deep-link.js) opens it filtered to that preset, selected;
 // a selected point links to the demo with its settings (or its encoder's stream).
 // Data: data/chart.json (python3 -m nceval.site, from docs/results).
+import { paretoFront, stepLine } from './frontier.js';
 import { drawScatter, swatch } from './chart.js';
 import { chartFamily, demoQuery, manifestEncoder, parseResultsQuery } from '../deep-link.js';
 import {
@@ -26,7 +27,7 @@ const MANIFEST_URL = '../streams-ref/manifest.json';
 let manifest = null;
 
 const state = {
-  clipset: 'fresh', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson',
+  clipset: 'fresh', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson', frontier: true,
   preset: ALL, codecs: new Set(Object.keys(CODEC_NAMES)), hiddenOwners: new Set(), tuned: false,
   selected: null,
 };
@@ -183,7 +184,14 @@ function render(data, root) {
   if (!points.length) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
   } else {
+    // Pareto frontiers of what is shown (filters, metric and machine applied; a
+    // point not yet timed is not in `points`): ours, and the references.
+    const frontiers = !state.frontier ? [] : ['ours', 'ref'].map((kind) => {
+      const front = paretoFront(points.filter((p) => (kind === 'ours') === (p.kind === 'ours')));
+      return { kind, line: stepLine(front), ids: new Set(front.map((p) => p.id)) };
+    });
     drawScatter(chart, points, {
+      frontiers,
       xLabel: `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
       yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
@@ -232,7 +240,10 @@ function legend(data, root, owners) {
     type: 'button', 'aria-pressed': String(state.tuned),
     title: 'The references’ metric-oriented tunings (x264/x265 --tune psnr or ssim, libvpx --tune ssim)',
     onclick: (e) => { state.tuned = !state.tuned; e.currentTarget.setAttribute('aria-pressed', String(state.tuned)); render(data, root); },
-  }, swatch('square', 'tuned'), 'metric-tuned variants'));
+  }, swatch('square', 'tuned'), 'metric-tuned variants'),
+  el('span', { class: 'frontier-key', title: 'A point is on its frontier when no other point of its group is both faster and lower (better) on this metric and machine' },
+    el('span', { class: 'frontier-swatch ours' }), 'our Pareto frontier ',
+    el('span', { class: 'frontier-swatch ref' }), 'the references’ (emphasised points are on it)'));
 }
 
 function controls(data, root) {
@@ -260,6 +271,9 @@ function controls(data, root) {
     control('Speed on', withData('platform', segmented('Platform', [
       { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'PC (x86)' },
     ], state.platform, (v) => { state.platform = v; rerender(); }))),
+    control('Pareto frontier', segmented('Pareto frontier', [
+      { value: 'on', label: 'On' }, { value: 'off', label: 'Off' },
+    ], state.frontier ? 'on' : 'off', (v) => { state.frontier = v === 'on'; rerender(); })),
     control('Codec', codecSelect),
     control('Preset', presetSelect),
   );
