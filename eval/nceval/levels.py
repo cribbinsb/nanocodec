@@ -52,7 +52,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import buildinfo, interval, jreal, pool, singlepoint
+from . import buildinfo, interval, jreal, levers, pool, singlepoint
 from .cbr import Family, clip_targets
 from .clips import Clip
 from .codecs import Codec
@@ -376,6 +376,9 @@ def main(argv: list[str] | None = None) -> None:
                       for c, r in report["codecs"].items()}, indent=1, default=str))
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=str) + "\n")
+    levers.record(levers.final_check_rows(json.loads(json.dumps(report, default=str)),
+                                          args.json or "nceval.levels final-check"),
+                  "nceval.levels final-check")
 
 
 if __name__ == "__main__":

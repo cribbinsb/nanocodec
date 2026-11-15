@@ -4,3 +4,5 @@ docs/results/*.md merge=union
 # Append-style lists every port or result adds to (attributions; status entries).
 THIRD_PARTY.md merge=union
 docs/STATUS.md merge=union
+# The lever ledger is append-only JSONL (nceval.levers): concurrent appends keep both.
+eval/results/levers.jsonl merge=union

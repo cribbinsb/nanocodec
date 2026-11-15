@@ -40,7 +40,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import buildinfo, interval, pool
+from . import buildinfo, interval, levers, pool
 from .cbr import CQP_SPAN_MARGIN, Bench, Family, clip_targets, curve_points, preset_anchor
 from .clips import Clip
 from .codecs import Codec
@@ -320,6 +320,19 @@ def cost(args: argparse.Namespace) -> dict:
     return {"codec": codec.value, "preset": args.preset, "costs": result}
 
 
+def record_levers(args: argparse.Namespace, result: dict) -> None:
+    """ab and cost results into the lever ledger (gap compares encoders, not levers)."""
+    source = args.json or f"nceval.fixedqp {args.command}"
+    if args.command == "ab":
+        levers.record(levers.fixedqp_ab_rows({**result, "frames": args.frames}, source),
+                      "nceval.fixedqp ab")
+    elif args.command == "cost":
+        labels = dict(candidate_sets(args))
+        commit = buildinfo.info_of(Path(args.binary)).get("commit")
+        levers.record(levers.fixedqp_cost_rows(result, labels, source, commit=commit),
+                      "nceval.fixedqp cost")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python3 -m nceval.fixedqp",
                                      description=__doc__.splitlines()[0])
@@ -351,6 +364,7 @@ def main(argv: list[str] | None = None) -> None:
     sub.choices["cost"].add_argument("--only", help="comma-separated candidate labels")
     args = parser.parse_args(argv)
     result = {"gap": gap, "ab": ab, "cost": cost}[args.command](args)
+    record_levers(args, result)
     if args.json:
         Path(args.json).write_text(json.dumps(result, indent=1) + "\n")
 

@@ -131,7 +131,7 @@ from pathlib import Path
 import numpy as np
 import optuna
 
-from . import interval, jetson, jreal, levels, pool, realuse, slots
+from . import interval, jetson, jreal, levels, levers, pool, realuse, slots
 from .singlepoint import (RESHAPE_PCT, RESHAPE_T, assign_rungs, balanced_j, base_constraint,
                           ceiling_constraint, rung_trend, single_points, worst_constraint)
 from .cbr import DEFAULT_INTRA_PERIOD, Family
@@ -561,7 +561,17 @@ class Study:
         print(f"trial {trial.number}: fidelity {fidelity}, J {j:+.2f}%, CPU x{cpu:.3f}, "
               f"rung trend {change:+.2f}% (t {t_value:+.1f}), "
               f"{time.monotonic() - started:.0f} s", flush=True)
+        self.record(trial, values, j, cpu)
         return j if self.cpu_max is not None else (j, cpu)
+
+    def record(self, trial: optuna.Trial, values: dict[str, float], j: float,
+               cpu: float) -> None:
+        """The trial into the lever ledger, against the study's preset point (trial 0)."""
+        start = {**self.preset, **self.study.trials[0].params}
+        row = levers.trial_row(self.study.user_attrs, trial.number, values, start, j, cpu,
+                               dict(trial.user_attrs), study_source(self.study))
+        if row["overrides"]:
+            levers.record([row], f"tune trial {trial.number}")
 
     def ladder_j(self, runner: realuse.Runner, test: Family) -> tuple[float, list[float]]:
         """Full-ladder J_real and guards on the first LADDER_CLIPS trial clips."""
@@ -823,7 +833,7 @@ def sensitivity(args: argparse.Namespace) -> None:
     trial clips (single-point J, x86 CPU); writes the table, the live parameters'
     study space file and the raw results (resumable)."""
     codec = Codec(args.codec)
-    binary, _ = levels.build(args.binary, load_paths(), "tune")
+    binary, commit = levels.build(args.binary, load_paths(), "tune")
     specs = specs_of(binary, codec)
     presets = binary.parent / "presets"
     presets = presets if presets.is_dir() else REPO_ROOT / "presets"
@@ -866,6 +876,10 @@ def sensitivity(args: argparse.Namespace) -> None:
         with lock:
             done[f"{name}={value!r}"] = result
             store.write_text(json.dumps(done, indent=1) + "\n")
+        levers.record(levers.sensitivity_rows(
+            codec.value, args.preset, {f"{name}={value!r}": result},
+            {name: preset.get(name, specs[name][0])}, str(store),
+            commit=commit or levers.binary_commit(binary), draw=key), "sensitivity")
         print(f"{name} = {value:g}: J {stats['mean']:+.2f}% [{stats['lo']:+.2f}, "
               f"{stats['hi']:+.2f}], CPU x{cpu:.3f}", flush=True)
     with ThreadPoolExecutor(PARALLEL_TRIALS) as executor:
@@ -986,8 +1000,15 @@ def run_finalists(study: optuna.Study, count: int, workers: int, k: float | None
             results[number] = {"j": trial_j(trial), **result,
                                **({"long_horizon": long_guard} if long_guard else {})}
         study.set_user_attr("finalists", results)
+    levers.record(levers.finalist_rows(study.user_attrs, results,
+                                       {t.number: t.params for t in study.trials}, start,
+                                       study_source(study)), "tune finalists")
     print_finalists(results)
     return results
+
+
+def study_source(study: optuna.Study) -> str:
+    return str(TUNING_DIR / f"{study.study_name}.sqlite")
 
 
 def rate_or_structure(name: str) -> bool:

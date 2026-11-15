@@ -55,37 +55,15 @@ node --no-warnings web/tests/reference-streams-wasm.mjs
 if [[ "${NC_PAGE_TESTS:-1}" == 0 ]]; then
     echo 'page tests in Chromium skipped: the page did not change (NC_PAGE_TESTS=0)' >&2
 elif python3 -c 'import playwright' 2>/dev/null; then
-    python3 web/tests/browser-product-smoke.py
-    python3 web/tests/warmup-interrupt.py
-    python3 web/tests/source-switch.py
-    python3 web/tests/reference-psnr.py
-    python3 web/tests/exact-source.py
-    python3 web/tests/clip-pauses.py
-    python3 web/tests/live-skip.py
-    python3 web/tests/speed-hint.py
-    # The results pages: every figure they show is in their data (web/results/).
-    python3 web/tests/results-pages.py
-    # The links between the results pages and the demo round-trip; one shared header.
-    python3 web/tests/deep-links.py
-    # The usage pages render their generated parts; the standalone browser example decodes.
-    python3 web/tests/docs-pages.py
-    # Analysis mode: the lazily loaded analysis module, overlay, statistics, zoom.
-    python3 web/tests/analysis-smoke.py
-    python3 web/tests/psnr-map.py
-    python3 web/tests/capture-identity.py --clips 3
-    # The SVC test compares against our native decoder: built here with the
-    # same profile as the browser module (NC_NANOCODEC_BIN overrides it).
-    if [[ -z "${NC_NANOCODEC_BIN:-}" ]]; then
-        cargo build --locked --profile "${WEB_PROFILE:-gate}" -p nc-cli -j "${BUILD_JOBS:-8}"
-        NC_NANOCODEC_BIN=${CARGO_TARGET_DIR:-target}/${WEB_PROFILE:-gate}/nanocodec
+    # Side by side, against the module built above, only the tests the changes
+    # since NC_WEB_TESTS_SINCE (land.sh sets it) can affect: tools/ci/web_tests.py.
+    # The native-replay tests compare against our native decoder, built here with
+    # the same profile as the browser module (NC_NANOCODEC_BIN overrides it).
+    if [[ -z "${NC_NANOCODEC_BIN:-}" ]] && python3 tools/ci/web_tests.py --needs-native; then
+        cargo build --frozen --profile "${WEB_PROFILE:-gate}" -p nc-cli -j "${BUILD_JOBS:-8}"
+        export NC_NANOCODEC_BIN=${CARGO_TARGET_DIR:-target}/${WEB_PROFILE:-gate}/nanocodec
     fi
-    NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/svc-operating-points.py
-    # The debug report reproduces natively with zero mismatches.
-    NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/debug-report.py
-    NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/still-camera.py
-    NC_NANOCODEC_BIN=$NC_NANOCODEC_BIN python3 web/tests/original-view.py
-    python3 web/tests/auto-restart.py
-    python3 web/tests/view-layout.py
+    python3 tools/ci/web_tests.py
 else
     echo 'browser product smoke skipped: Playwright is not installed' >&2
 fi

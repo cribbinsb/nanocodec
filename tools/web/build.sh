@@ -39,19 +39,26 @@ profile=${WEB_PROFILE:-web}
 # The two builds run side by side, each with half the jobs: most of a build's
 # wall time is its single-threaded LTO and code generation tail.
 jobs=$(( (${BUILD_JOBS:-2} + 1) / 2 ))
+# --frozen (--locked plus --offline): a build never touches the registry, so it
+# never waits on the package cache lock behind another agent's download; a new
+# dependency fails at once (run `cargo fetch` once).
 build() { # build TARGET_DIR FEATURES OUT_DIR
   RUSTFLAGS="$base_flags -C target-feature=$2" CARGO_TARGET_DIR=$1 \
-    cargo build --locked --profile "$profile" -p nc-web --target wasm32-unknown-unknown -j "$jobs" \
+    cargo build --frozen --profile "$profile" -p nc-web --target wasm32-unknown-unknown -j "$jobs" \
     --features analysis
   mkdir -p "$3"
   "$bindgen" "$1/wasm32-unknown-unknown/$profile/nc_web.wasm" --target web --out-dir "$3" --out-name nc_web
 }
 mkdir -p "$target_root"
+printf 'building the SIMD128 and relaxed modules (%s profile; logs %s/web-{simd128,relaxed}.log)\n' "$profile" "$target_root"
+began=$SECONDS
 build "$target_root" +simd128 "$pkg_dir" > "$target_root/web-simd128.log" 2>&1 & simd128=$!
 build "$target_root/relaxed-simd" +simd128,+relaxed-simd "$pkg_dir/relaxed" > "$target_root/web-relaxed.log" 2>&1 & relaxed=$!
 failed=0
 for name in simd128 relaxed; do
-  if ! wait "${!name}"; then
+  if wait "${!name}"; then
+    printf 'built the %s module (+%ds)\n' "$name" $((SECONDS - began))
+  else
     echo "The $name module failed to build ($target_root/web-$name.log):" >&2
     tail -n 40 "$target_root/web-$name.log" >&2
     failed=1

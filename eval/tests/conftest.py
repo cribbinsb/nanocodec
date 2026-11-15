@@ -12,3 +12,9 @@ from nceval import metrics
 @pytest.fixture(autouse=True)
 def cpu_metrics_backend(monkeypatch):
     monkeypatch.setenv(metrics.METRICS_BACKEND_ENV, metrics.LIBVMAF_CPU_BACKEND)
+
+
+@pytest.fixture(autouse=True)
+def private_lever_spool(monkeypatch, tmp_path):
+    """Tools append to the lever ledger's spool; tests never touch the machine's."""
+    monkeypatch.setenv("NC_LEVERS_SPOOL", str(tmp_path / "levers-spool.jsonl"))

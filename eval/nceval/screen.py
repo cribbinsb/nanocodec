@@ -76,7 +76,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import buildinfo, tune
+from . import buildinfo, levers, tune
 from .bdrate import bd_rate
 from .codecs import Codec
 from .config import load_paths
@@ -467,6 +467,8 @@ def main() -> None:
         write({"status": "error", "reason": f"{type(error).__name__}: {error}"})
         raise
     write({"status": "done", **result, "build_info": builds})
+    levers.record(levers.screen_rows({**result, "build_info": builds},
+                                     args.json or "nceval.screen"), "nceval.screen")
 
 
 if __name__ == "__main__":

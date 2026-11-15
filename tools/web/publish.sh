@@ -3,6 +3,10 @@
 # persistent worktree and target directory, then a wait for GitHub Pages to
 # build exactly the pushed commit (retried, as Pages builds are flaky).
 #
+# Run it from worktrees/demo-publish (the persistent publish tree, below), never
+# from an agent's worktree: the script that runs is the one in the tree it is
+# started from, and an agent's tree holds work in progress.
+#
 # Usage: tools/web/publish.sh [--build-only] [--smoke | --no-smoke] [message]
 #   --build-only  build (warm the cache) but do not publish
 #   --smoke       run the browser product smoke test before pushing
@@ -34,8 +38,13 @@ done
 
 # One publish at a time: two share the build worktree, and a second one
 # checking out its branch mid-build made the first publish the wrong page.
+# Each stage prints as it starts, with the seconds since the start: a publish
+# that once sat silent for 15 min (cargo waiting on the package cache lock, then
+# a cold build) now shows where it is.
+began=$SECONDS
+stage() { printf '== publish +%ds: %s\n' $((SECONDS - began)) "$*"; }
 exec 9>"$data/run/publish.lock"
-flock 9
+flock -n 9 || { stage "waiting for another publish (run/publish.lock)"; flock 9; }
 
 if [[ ! -e $tree/.git ]]; then
   git -C "$repo" worktree add --detach "$tree" "$branch"
@@ -44,13 +53,16 @@ git -C "$tree" checkout -q --detach "$branch"
 head=$(git -C "$tree" rev-parse --short=8 HEAD)
 
 cd "$tree"
+stage "building $head in $tree (target $target)"
 CARGO_TARGET_DIR=$target BUILD_JOBS=${BUILD_JOBS:-16} tools/web/build.sh
-[[ $build_only == 1 ]] && { echo "built $head (not published)"; exit 0; }
+[[ $build_only == 1 ]] && { stage "built $head (not published)"; exit 0; }
 
 if [[ $smoke == 1 ]]; then
+  stage "browser product smoke"
   python3 web/tests/browser-product-smoke.py
 fi
 
+stage "pushing to gh-pages"
 rsync -a --delete --exclude .git --exclude .nojekyll --exclude tests "$tree/web/" "$pages/"
 cd "$pages"
 git add -A
@@ -59,6 +71,7 @@ git push -q origin HEAD:gh-pages
 pushed=$(git rev-parse HEAD)
 
 # Wait for Pages to build this commit; re-request on failure.
+stage "waiting for GitHub Pages to build ${pushed:0:8}"
 status=waiting
 for attempt in 1 2 3 4; do
   for _ in $(seq 1 40); do
@@ -70,5 +83,5 @@ for attempt in 1 2 3 4; do
   [[ $status == built ]] && break
   gh api -X POST repos/cribbinsb/nanocodec/pages/builds >/dev/null
 done
-echo "published $head: pages $status"
+stage "published $head: pages $status"
 [[ $status == built ]]

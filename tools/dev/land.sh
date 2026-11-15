@@ -259,7 +259,8 @@ verify_target() {
     scope=$(cd "$tree" && python3 tools/dev/land_scope.py "$base") || return 1
     printf '== verifying %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
     printf '== live: tail -f %s.parts/{python,rust,conformance}\n' "$log"
-    (cd "$tree" && NC_CHECK_PARTS=$log.parts run_checks "$scope") >"$log" 2>&1 || status=$?
+    # NC_WEB_TESTS_SINCE: the page tests run only where these changes reach (tools/ci/web_tests.py).
+    (cd "$tree" && NC_CHECK_PARTS=$log.parts NC_WEB_TESTS_SINCE=$base run_checks "$scope") >"$log" 2>&1 || status=$?
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         rm -f "$failed"
