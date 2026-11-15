@@ -7,7 +7,7 @@ import {
 } from './common.js';
 
 const TUNED_ZERO = 'x264-medium~psnr';
-const PRESET_ORDER = ['Medium', 'Fast', 'Faster', 'Veryfast'];
+const PRESET_ORDER = ['Slow', 'Medium', 'Fast', 'Faster', 'Veryfast'];
 const state = { zero: TUNED_ZERO, metric: 'j' };
 
 function views(data) {
@@ -16,7 +16,7 @@ function views(data) {
   return [
     { title: 'Held-out, fresh', view: byId[`fresh-${zid}`] },
     { title: 'Held-out, all', view: byId[`heldout-${zid}`] },
-    { title: zid === 'default' ? 'Development' : 'Development (Defaults only)', view: byId[zid === 'default' ? 'dev-default' : 'rc-cbr-psnr'] },
+    { title: 'Development', view: byId[`dev-${zid}`] },
   ];
 }
 

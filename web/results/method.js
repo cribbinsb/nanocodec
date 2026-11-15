@@ -11,9 +11,9 @@ const state = { zero: 'x264-medium', metric: 'j' };
 function facts(chart, root) {
   const views = Object.fromEntries(chart.views.map((v) => [v.id, v]));
   const counts = {
-    fresh: `${views['fresh-psnr'].clips} clips scored against x264 --tune psnr (${views['fresh-default'].clips} against default-tuned x264)`,
-    heldout: `${views['heldout-psnr'].clips} clips scored against x264 --tune psnr (${views['heldout-default'].clips} against default-tuned x264)`,
-    dev: `${views['dev-default'].clips} clips scored against default-tuned x264`,
+    fresh: `${views['fresh-psnr'].clips} clips scored against x264 --tune psnr`,
+    heldout: `${views['heldout-psnr'].clips} clips scored against x264 --tune psnr`,
+    dev: `${views['dev-psnr'].clips} clips scored against x264 --tune psnr`,
   };
   root.querySelector('.clipsets').replaceChildren(...Object.entries(chart.clipsets).map(([id, text]) =>
     el('li', {}, el('strong', {}, text.split(':')[0]), `: ${text.split(':').slice(1).join(':').trim()}; ${counts[id]}.`)));
@@ -27,7 +27,7 @@ function facts(chart, root) {
     { label: 'Chart', cell: (v) => `${chart.clipsets[v.clipset].split(':')[0]}, zero line ${ZERO_NAMES[v.zero]}` },
     { label: 'nanocodec build', cell: (v) => v.builds[v.base_build] || v.base_build },
     { label: 'References', cell: (v) => Object.entries(v.tools).map(([k, ver]) => `${k} ${ver}`).join(', ') },
-  ], chartViews), el('p', { class: 'note' }, `Rate-control run (CBR and fixed QP): build ${views['rc-cbr-psnr'].build_commit}.`));
+  ], chartViews));
   const families = Object.keys(chart.points).filter((f) => chart.points[f].cbr_command)
     .sort((a, b) => Number(chart.points[b].ours) - Number(chart.points[a].ours) || chart.points[a].label.localeCompare(chart.points[b].label));
   root.querySelector('.commands').replaceChildren(

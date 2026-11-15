@@ -263,44 +263,12 @@ def latest_rc_cost() -> Path:
     return sorted(RESULTS.glob(RC_COST_GLOB))[-1]
 
 
-def rc_views(dev_fps: dict[str, dict]) -> list[dict]:
-    """The rate-control run on the development clips as chart views: CBR and fixed
-    QP against x264 medium in the same mode, Defaults only. Its speed is the
-    development chart's (the timing runs are fixed QP); the run's own build is named."""
-    path = latest_rc_cost()
-    rows = read_csv(path)
-    views = []
-    for mode, line in (("cbr", "cbr_vs_cbr"), ("qp", "qp_vs_qp")):
-        for zero, zid in ((TUNED_ZERO, "psnr"),):  # one zero line (owner, 2026-11-15)
-            values = {zero: {"j": 0.0, "psnr": 0.0, "vmaf": 0.0, "ms_ssim": 0.0, "iqr": None,
-                             "clips_scored": None, "clips": None, "fps": dev_fps.get(zero),
-                             "flagged": False, "chained": 0, "rate_invalid_points": 0}}
-            for r in rows:
-                if r["line"] != line or r["anchor"] != zero:
-                    continue
-                values[r["test"]] = {
-                    "j": number(r["bd_j"]), "psnr": number(r["bd_psnr_yuv"]),
-                    "vmaf": number(r["bd_vmaf_v1"]), "ms_ssim": number(r["bd_ms_ssim"]),
-                    "iqr": None, "clips_scored": int(r["clips"]), "clips": None,
-                    "fps": dev_fps.get(r["test"]), "flagged": False, "chained": 0,
-                    "rate_invalid_points": 0}
-            commit = rows[0]["binary_commit"][:8]
-            views.append({"id": f"rc-{mode}-{zid}", "clipset": "dev-rc", "zero": zero,
-                          "rate_mode": mode, "clips": None, "build_commit": commit,
-                          "ladder_kbps": rows[0]["ladder_kbps"], "frames": int(rows[0]["frames"]),
-                          "source": [f"docs/results/{path.name}"],
-                          "metrics": ["j", "psnr", "vmaf", "ms_ssim"], "values": values})
-    return views
-
-
 def chart_data() -> dict:
     views, labels = [], {}
     for view in CHART_VIEWS:
         data, names = chart_view(view)
         views.append(data)
         labels.update({k: v for k, v in names.items() if k not in labels})
-    dev = next(v for v in views if v["clipset"] == "dev")
-    views += rc_views({f: v["fps"] for f, v in dev["values"].items()})
     plan = json.loads((RESULTS / TIMING_PLAN).read_text())
     timing = timing_commands(plan)
     families = sorted({f for v in views for f in v["values"]})
