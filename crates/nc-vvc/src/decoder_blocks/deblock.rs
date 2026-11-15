@@ -106,52 +106,86 @@ pub(crate) fn apply(
                     {
                         continue;
                     }
-                    let boundary = horizontal && y.is_multiple_of(1 << sequence.ctu_log2);
-                    let qp = (i32::from(transform::qp(
-                        p.unit.quant(),
-                        p.transform.joint,
-                        plane as usize,
+                    filter_edge(
+                        picture,
+                        (p, q),
+                        plane,
+                        (x, y),
+                        horizontal,
+                        strength,
                         sequence,
                         header,
-                    )) + i32::from(transform::qp(
-                        q.unit.quant(),
-                        q.transform.joint,
-                        plane as usize,
-                        sequence,
-                        header,
-                    )) + 1)
-                        >> 1;
-                    let qp = if channel == 0 {
-                        qp + ladf_offset(picture, &sequence.tools.ladf, (x, y), horizontal)
-                    } else {
-                        qp
-                    };
-                    let [beta_offset, tc_offset] =
-                        header.deblock.offsets[plane as usize].map(i32::from);
-                    let beta = crate::filter::BETA[(qp + 2 * beta_offset).clamp(0, 63) as usize];
-                    let tc = (crate::filter::TC
-                        [(qp + 2 * (strength - 1) + 2 * tc_offset).clamp(0, 65) as usize]
-                        + 2)
-                        >> 2;
-                    if channel == 0 {
-                        let lengths = luma_lengths(p, q, perpendicular, horizontal, boundary);
-                        filter_luma(picture, dsp, (x, y), horizontal, beta, tc, lengths);
-                    } else {
-                        filter_chroma(
-                            picture,
-                            dsp,
-                            plane,
-                            (x / 2, y / 2),
-                            horizontal,
-                            beta,
-                            tc,
-                            sizes.iter().all(|&size| size >= 16),
-                            boundary,
-                        );
-                    }
+                        dsp,
+                    );
                 }
             }
         }
+    }
+}
+
+/// Filter one four-sample edge segment at (`x`, `y`) (luma samples) between
+/// blocks `p` and `q` of boundary strength `strength` (§8.8.3.6).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the edge's position, sides and slice"
+)]
+fn filter_edge(
+    picture: &mut Picture,
+    (p, q): (&EdgeBlock<'_>, &EdgeBlock<'_>),
+    plane: PlaneIndex,
+    (x, y): (usize, usize),
+    horizontal: bool,
+    strength: i32,
+    sequence: &Sequence,
+    header: &SliceHeader,
+    dsp: &Dsp,
+) {
+    let channel = usize::from(plane != PlaneIndex::Y);
+    let perpendicular = if horizontal { y } else { x };
+    let sizes = [p, q].map(|u| {
+        let (_, _, width, height) = u.bounds(channel);
+        if horizontal { height } else { width }
+    });
+    let boundary = horizontal && y.is_multiple_of(1 << sequence.ctu_log2);
+    let qp = (i32::from(transform::qp(
+        p.unit.quant(),
+        p.transform.joint,
+        plane as usize,
+        sequence,
+        header,
+    )) + i32::from(transform::qp(
+        q.unit.quant(),
+        q.transform.joint,
+        plane as usize,
+        sequence,
+        header,
+    )) + 1)
+        >> 1;
+    let qp = if channel == 0 {
+        qp + ladf_offset(picture, &sequence.tools.ladf, (x, y), horizontal)
+    } else {
+        qp
+    };
+    let [beta_offset, tc_offset] = header.deblock.offsets[plane as usize].map(i32::from);
+    let beta = crate::filter::BETA[(qp + 2 * beta_offset).clamp(0, 63) as usize];
+    let tc = (crate::filter::TC[(qp + 2 * (strength - 1) + 2 * tc_offset).clamp(0, 65) as usize]
+        + 2)
+        >> 2;
+    if channel == 0 {
+        let lengths = luma_lengths(p, q, perpendicular, horizontal, boundary);
+        filter_luma(picture, dsp, (x, y), horizontal, beta, tc, lengths);
+    } else {
+        filter_chroma(
+            picture,
+            dsp,
+            plane,
+            (x / 2, y / 2),
+            horizontal,
+            beta,
+            tc,
+            sizes.iter().all(|&size| size >= 16),
+            boundary,
+        );
     }
 }
 

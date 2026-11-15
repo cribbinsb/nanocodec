@@ -25,7 +25,7 @@ esac
 gcc -O2 -I"$svt/Source/API" -I"$svt/Source/Lib/Codec" $define \
     "$repo/tools/bench-svt/svt_bench.c" "$anchors/lib/libSvtAv1Enc.a" -lm -lpthread \
     -o "$out/svt_bench"
-PATH=$HOME/.cargo/bin:$PATH cargo build --release --quiet -p nanocodec-checkasm \
+PATH=$HOME/.cargo/bin:$PATH cargo build --release --quiet -p nc-checkasm \
     --manifest-path "$repo/Cargo.toml"
 
 # Alternate the two benches over several rounds; compare.py keeps each

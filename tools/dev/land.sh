@@ -22,7 +22,7 @@
 #      (`git update-ref NEW OLD`: atomic, it fails if anyone landed meanwhile).
 #      If the head moved, rebase again and retry; the checks re-run only when
 #      the commits that arrived touch a file the candidate changes.
-# Everything else (fmt, clippy, workspace tests, checkasm, the browser module,
+# Everything else (workspace-wide fmt and clippy, workspace tests, checkasm, the browser module,
 # the eval suite, landing conformance) runs in `land.sh --verify`. Only a
 # real stream mismatch there reverts a landing; other failures are fixed
 # forward.
@@ -216,6 +216,14 @@ pre_land_checks() {
     if ((${#checked[@]})); then
         timed "cargo check (gate) ${checked[*]}" cargo check --profile gate --quiet "${checked[@]}" ||
             die "cargo check failed: not landed"
+    fi
+    # Formatting and lints of the touched crates: seconds here, and each one
+    # left to the verifier stopped its stream check for hours (2026-11-15).
+    if ((${#tested[@]})); then
+        timed "fmt ${tested[*]}" cargo fmt --check "${tested[@]}" ||
+            die "cargo fmt --check failed (run cargo fmt): not landed"
+        timed "clippy (gate) ${tested[*]}" cargo clippy --profile gate --quiet --all-targets "${tested[@]}" -- -D warnings ||
+            die "clippy failed: not landed"
     fi
     if ((${#tested[@]})); then
         # `--lib` is an error for a package with no library (the CLI), so it

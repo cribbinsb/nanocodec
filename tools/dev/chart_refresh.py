@@ -706,6 +706,11 @@ class Refresh:
         wanted = set(STEPS[STEPS.index(start):])
         if self.args.metrics_only:
             wanted -= {"scan", "time-x86", "time-jetson"}
+        if "verify" not in wanted and self.stale:
+            # A resume past verify must still know which stale families' streams did
+            # not change, or it measures them again on the new build (2026-11-15: a
+            # held-out resume rented 13156 encodes and two scoring sessions for them).
+            self.retime_unchanged()
         with ThreadPoolExecutor(len(STEPS)) as pool:
             def launch(step: str, *after: Future, part_of: str = "") -> Future:
                 """`step` after `after`; skipped when it (or the step it is part of) is

@@ -88,3 +88,36 @@ def test_jetson_build_is_stamped_and_refused_unless_it_is_the_commit():
         command = refresh.jetson_build_command()
     assert f"NC_BUILD_COMMIT={full}" in command
     assert command.index(full + "$") < command.index("/COMMIT")  # checked before the marker
+
+
+def test_a_resumed_refresh_with_nothing_changed_launches_no_instance(tmp_path):
+    """A held-out refresh resumed past verify (`--from measure`) on a family whose
+    streams did not change measures nothing: no rented encode or scoring session
+    (2026-11-15: such a resume rented 13156 encodes, and a no-op check one more)."""
+    record = {"base": "bbbb2222", "families": {"nanocodec-h264": "bbbb2222"},
+              "builds": {"bbbb2222": "bbbb2222"}, "tools": {}, "x86_timing_note": ""}
+    builds = tmp_path / "builds.json"
+    builds.write_text(json.dumps(record))
+    for build in ("bbbb2222", chart_refresh.git("rev-parse", "--short=8", "HEAD")):
+        (tmp_path / build).mkdir()
+        (tmp_path / build / chart_refresh.SCORING_BINARY).write_text("")
+    args = argparse.Namespace(commit="HEAD", families="nanocodec-h264", retime="", workers=1,
+                              dry_run=False, cpus="9", clipset=str(tmp_path / "set.json"),
+                              seed=False, cloud_budget=10.0, metrics_only=True, rescore=False,
+                              part_jobs=1, time_anchors="")
+
+    def launch(*_args, **_kwargs):
+        raise AssertionError("a no-op refresh started a command that rents an instance")
+
+    with patch.object(chart_refresh, "builds_file", return_value=str(builds)), \
+         patch.object(chart_refresh, "WORK", tmp_path / "work"), \
+         patch.object(chart_refresh, "sources_equal", return_value=False), \
+         patch.object(chart_refresh.stream_check, "identical", return_value=True), \
+         patch.object(chart_refresh.Refresh, "build_dir", lambda _self, build: tmp_path / build), \
+         patch.object(chart_refresh.Refresh, "run", launch), \
+         patch.object(chart_refresh.Refresh, "render", lambda _self: None), \
+         patch.object(chart_refresh.Refresh, "check", lambda _self: None):
+        refresh = chart_refresh.Refresh(args)
+        assert refresh.targets == ["nanocodec-h264"]  # stale until its streams are checked
+        refresh.execute("measure")
+    assert refresh.targets == [] and refresh.retimed == ["nanocodec-h264"]

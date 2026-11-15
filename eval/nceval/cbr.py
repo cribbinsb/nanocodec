@@ -53,7 +53,6 @@ from pathlib import Path
 
 from .bdrate import bd_rate
 from .buildinfo import info_of, stream_identity
-from .encoders.nanocodec import OLD_FLAT_SUFFIX
 from .cachefile import entry_lock, get_or_create, read_json, sibling_temp, write_atomic
 from .cbr_stats import flicker, replay_buffer, weighted_yuv_per_frame, worst_quality
 from .clipframes import ClipFrames
@@ -493,21 +492,8 @@ class Bench:
         return f"{point.clip.name}/{point.family.name}/{point.label}-{identity}"
 
     def prebuilt_base(self, point: Point) -> Path:
-        """A prebuilt point's files: under its current key, else (ours, encoded before
-        2026-11-15) under its old binary-bytes identity and old family name, in
-        `prebuilt` or the held-out chart's first stream directory."""
-        base = self.prebuilt / self.prebuilt_key(point)
-        family = point.family
-        if Path(f"{base}.done").exists() or not family.own:
-            return base
-        legacy = hashlib.sha256(family.tool.read_bytes()).hexdigest()
-        identity = self.identity(family, point.clip, point.label, scored=False, tool_hash=legacy)
-        for root in (self.prebuilt, *LEGACY_PREBUILT_ROOTS):
-            for name in legacy_family_names(family.name):
-                old = root / point.clip.name / name / f"{point.label}-{identity}"
-                if Path(f"{old}.done").exists():
-                    return old
-        return base
+        """A prebuilt point's files, without their suffix."""
+        return self.prebuilt / self.prebuilt_key(point)
 
     def has_prebuilt(self, point: Point) -> bool:
         """Whether `prebuilt` holds the point's stream (or its refusal)."""
@@ -591,7 +577,7 @@ class Bench:
     def cached(self, point: Point) -> bool:
         """Whether `point` is already measured and reusable (for pricing a run)."""
         path = self.result_path(point)
-        return (self._reusable(point, path) or self._legacy_result(point, path)) is not None
+        return self._reusable(point, path) is not None
 
     def components(self, spec: StreamSpec) -> list:
         return real_metrics(spec) if self.metric_set == "real" else metric_components(spec)
@@ -608,7 +594,7 @@ class Bench:
         agents' screens sharing an anchor) encode it once (nceval.cachefile).
         """
         result_path = self.result_path(point)
-        cached = self._reusable(point, result_path) or self._legacy_result(point, result_path)
+        cached = self._reusable(point, result_path)
         if cached is not None:
             return cached
         with entry_lock(result_path):
@@ -618,24 +604,6 @@ class Bench:
             result = self._measure_uncached(point, result_path)
             write_atomic(result_path, json.dumps(result, indent=1))
             return result
-
-    def _legacy_result(self, point: Point, result_path: Path) -> dict | None:
-        """Our point as cached before 2026-11-15, copied to its current path: keyed on
-        the binary's bytes (before buildinfo.stream_identity) and filed under the
-        family's old preset name (before the ladder rename, encoders.nanocodec)."""
-        family = point.family
-        if not family.own:
-            return None
-        legacy = hashlib.sha256(family.tool.read_bytes()).hexdigest()
-        identity = self.identity(family, point.clip, point.label, tool_hash=legacy)
-        for name in legacy_family_names(family.name):
-            path = self.work / point.clip.name / name / f"{point.label}-{identity}.json"
-            cached = self._reusable(point, path)
-            if cached is not None:
-                result_path.parent.mkdir(parents=True, exist_ok=True)
-                write_atomic(result_path, json.dumps(cached, indent=1))
-                return cached
-        return None
 
     def _reusable(self, point: Point, result_path: Path) -> dict | None:
         """The cached result, unless missing, this run needs a stronger gate,
@@ -670,9 +638,9 @@ class Bench:
             spec = StreamSpec(clip.clean_reference or source, fmt, self.frames, clip.fps,
                               self.paths)
             rate_log = rate_csv if family.own and point.kbps else None
-            # A point the rented machine did not encode (a family kept on its build,
-            # a stream filed under an older key) is encoded here instead: slower
-            # than a lookup, but never a failed chart (coordinator, 2026-11-15).
+            # A point the rented machine did not encode (a family kept on its build)
+            # is encoded here instead: slower than a lookup, but never a failed
+            # chart (coordinator, 2026-11-15).
             prebuilt = self.prebuilt is not None and self.has_prebuilt(point)
             if prebuilt:
                 gate, measured = self._score_prebuilt(point, stream, rate_log, coded_times,
@@ -1240,18 +1208,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main(sys.argv[1:])
-
-
-#: Where the held-out chart's streams were kept before its per-clip-set directories.
-LEGACY_PREBUILT_ROOTS = (Path.home() / "nanocodec-data" / "work" / "independent" / "streams",)
-
-
-def legacy_family_names(name: str) -> list[str]:
-    """`name` and the name the family had before the preset ladder rename
-    (`nanocodec-av1@fast` was `nanocodec-av1@av1-fast`, `@veryfast` `@<codec>-fastest`)."""
-    base, _, stem = name.partition("@")
-    if not stem:
-        return [name]
-    codec = base.removeprefix("nanocodec-")
-    old = OLD_FLAT_SUFFIX.get(stem, stem)
-    return [name, f"{base}@{codec}-{old}"]

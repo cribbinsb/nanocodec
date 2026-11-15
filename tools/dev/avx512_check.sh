@@ -13,7 +13,7 @@ baseline=()
 [[ -z "${NC_AVX512_BASELINE:-}" ]] || baseline=(--baseline "$NC_AVX512_BASELINE")
 [[ -x "$sde" ]] || { echo "Missing Intel SDE: set NC_SDE (see docs/handoff/avx512.md)" >&2; exit 1; }
 # Each invocation is bounded separately; no emulated run exceeds 30 minutes.
-timeout 1200 cargo build -j "$jobs" --profile gate -p nanocodec-cli -p nanocodec-checkasm
+timeout 1200 cargo build -j "$jobs" --profile gate -p nanocodec-cli -p nc-checkasm
 binary=$CARGO_TARGET_DIR/gate/nanocodec
 checker=$CARGO_TARGET_DIR/gate/nc-checkasm
 timeout 600 "$checker" --isa avx2

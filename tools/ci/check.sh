@@ -63,7 +63,7 @@ cargo test "${selection[@]}" --profile gate-test --quiet
 # land.sh sets NC_CHECKASM=0 when no kernel crate changed (tools/dev/land_scope.py).
 if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
     step "checkasm (host SIMD vs scalar)"
-    cargo run --profile gate --quiet -p nanocodec-checkasm
+    cargo run --profile gate --quiet -p nc-checkasm
 fi
 
 step "crate layering, integration-test modules, encode paths"
@@ -87,7 +87,7 @@ if ! $quick; then
     export RUSTFLAGS="-C target-feature=+simd128"
     cargo clippy --workspace --all-targets --target wasm32-wasip1 -- -D warnings
     cargo build --release --quiet -p nanocodec-dsp --target wasm32-unknown-unknown
-    cargo build --release --quiet -p nanocodec-checkasm --target wasm32-wasip1
+    cargo build --release --quiet -p nc-checkasm --target wasm32-wasip1
     unset RUSTFLAGS
 
     step "checkasm (SIMD128 under node)"
@@ -96,7 +96,7 @@ if ! $quick; then
     # The browser's second module: relaxed SIMD must match scalar exactly too.
     step "checkasm (SIMD128 + relaxed SIMD under node)"
     RUSTFLAGS="-C target-feature=+simd128,+relaxed-simd" CARGO_TARGET_DIR="$target_dir/relaxed-simd" \
-        cargo build --release --quiet -p nanocodec-checkasm --target wasm32-wasip1
+        cargo build --release --quiet -p nc-checkasm --target wasm32-wasip1
     node --no-warnings tools/ci/wasi-run.mjs "$target_dir"/relaxed-simd/wasm32-wasip1/release/nc-checkasm.wasm
 
     # The decoder analysis builds (`nanocodec stat`, the demo's analysis
