@@ -13,7 +13,19 @@ from ..codecs import Codec
 from ..config import Paths, find_tool
 from .base import EncodeJob, EncoderAdapter, fps_fraction
 
-PRESETS_DIR = Path(__file__).resolve().parents[3] / "presets"
+#: The shipped presets, repository-relative: in the crate that embeds them.
+PRESETS_PATH = "crates/nc-encoder/presets"
+#: Where they were before 2026-11-15 (commits older builds are made from).
+OLD_PRESETS_PATH = "presets"
+PRESETS_DIR = Path(__file__).resolve().parents[3] / PRESETS_PATH
+
+
+def presets_in(tree: Path) -> Path:
+    """The presets directory of a checked-out tree of any commit."""
+    new = tree / PRESETS_PATH
+    return new if new.is_dir() else tree / OLD_PRESETS_PATH
+
+
 #: The per-codec preset directories (presets/<codec>/).
 CODEC_DIRS = frozenset(codec.value for codec in Codec)
 #: The codec-independent speed ladder, fastest first. `medium` is each codec's

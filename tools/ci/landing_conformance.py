@@ -94,7 +94,7 @@ from nceval.point import run_point  # noqa: E402
 from nceval.yuv import SwitchedFormat, YuvFormat  # noqa: E402
 
 CODECS = (Codec.H264, Codec.HEVC, Codec.VVC, Codec.AV1, Codec.VP9, Codec.AV2)
-PRESETS_DIR = REPO_ROOT / "presets"
+PRESETS_DIR = REPO_ROOT / "crates/nc-encoder/presets"
 MAX_WORKERS = 8
 DEFAULT_WORKERS = 4
 FPS = 30

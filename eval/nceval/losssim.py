@@ -49,7 +49,7 @@ from .slots import cpu_slots, gpu_slots
 from .encoders.nanocodec import preset_values
 from .yuv import YuvFormat
 
-PRESETS_DIR = Path(__file__).resolve().parents[2] / "presets"
+PRESETS_DIR = Path(__file__).resolve().parents[2] / "crates/nc-encoder/presets"
 #: Seconds between periodic key frames (the live-stream setting).
 INTRA_PERIOD_SECONDS = 10
 #: VMAF points below the settled quality that still count as a good picture.

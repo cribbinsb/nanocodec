@@ -215,7 +215,7 @@ def main() -> None:
         require_equal('hybrid inverse', numbers('\n'.join(rows[1::2])),
                       rust_array('hybrid.rs', 'inverse_expected'))
 
-    print('All original-C goldens match. Run cargo test -p nc-vp9 to verify Rust against them.')
+    print('All original-C goldens match. Run cargo test -p nanocodec-vp9 to verify Rust against them.')
 
 
 if __name__ == '__main__':

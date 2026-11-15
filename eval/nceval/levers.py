@@ -223,7 +223,7 @@ def codec_defaults(binary: Path | str | None, codec: str) -> dict[str, float] | 
 
 def presets_of(binary: Path | str | None) -> Path:
     directory = Path(binary).parent / "presets" if binary else None
-    return directory if directory and directory.is_dir() else REPO_ROOT / "presets"
+    return directory if directory and directory.is_dir() else REPO_ROOT / "crates/nc-encoder/presets"
 
 
 def name_base(codec: str, anchor: dict[str, float], presets: Path) -> tuple[str, dict]:
@@ -548,7 +548,7 @@ def current_values(codec: str, base: str, binary: Path | None) -> dict[str, floa
     if defaults is None:
         return None
     try:
-        preset = preset_values(REPO_ROOT / "presets", codec, base)
+        preset = preset_values(REPO_ROOT / "crates/nc-encoder/presets", codec, base)
     except (OSError, ValueError, KeyError):
         return None
     return {**defaults, **preset}

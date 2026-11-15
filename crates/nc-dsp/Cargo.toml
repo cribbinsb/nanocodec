@@ -1,11 +1,18 @@
 [package]
-name = "nc-dsp"
-description = "nanocodec pixel kernels: scalar reference + AVX2 / NEON / SIMD128, with runtime dispatch"
+name = "nanocodec-dsp"
+description = "nanocodec pixel kernels: scalar reference plus AVX2 / AVX-512 / NEON / WASM SIMD128 versions, with runtime dispatch"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nanocodec-dsp"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+name = "nc_dsp"
 
 [dependencies]
 nc-common.workspace = true

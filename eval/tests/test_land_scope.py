@@ -29,7 +29,7 @@ def graph():
     ("tools/ci/vp9_conformance.sh", "shell"),
     ("web/app.js", "web"),
     ("fuzz/fuzz_targets/h264.rs", "fuzz"),
-    ("presets/candidates/av1-x.toml", "presets"),
+    ("crates/nc-encoder/presets/candidates/av1-x.toml", "presets"),
     ("Cargo.lock", "gate"),
     ("tools/ci/check.sh", "gate"),
     ("tools/web/build.sh", "gate"),
@@ -44,19 +44,20 @@ def test_each_path_class(graph, path, kind):
 
 def test_embedded_presets_select_the_crates_that_include_them(graph):
     dirs, dependents, embedded = graph
-    kind, crates = land_scope.classify("presets/hevc/fast.toml", ROOT, dirs, embedded)
+    kind, crates = land_scope.classify("crates/nc-encoder/presets/hevc/fast.toml", ROOT, dirs, embedded)
     assert kind == "included"
     # nc-encoder's preset table embeds it (presets.rs); its front ends follow.
-    assert {"nc-encoder", "nc-hevc"} <= crates
-    assert {"nc-cli", "nc-web"} <= land_scope.closure(crates, dependents)
+    assert crates == {"nanocodec-encoder"}
+    assert {"nanocodec-hevc", "nanocodec-cli", "nanocodec-web"} <= land_scope.closure(crates, dependents)
 
 
 def test_a_codec_change_reaches_its_front_ends_only(graph):
     _, dependents, _ = graph
-    assert land_scope.closure({"nc-vvc"}, dependents) == {"nc-vvc", "nc-cli", "nc-web"}
+    assert land_scope.closure({"nanocodec-vvc"}, dependents) == {
+        "nanocodec-vvc", "nanocodec-cli", "nanocodec-web", "nanocodec"}
 
 
-@pytest.mark.parametrize("crate", ["nc-dsp", "nc-encoder", "nc-hevc", "nc-cli"])
+@pytest.mark.parametrize("crate", ["nanocodec-dsp", "nanocodec-encoder", "nanocodec-hevc", "nanocodec-cli"])
 def test_a_change_that_can_alter_a_stream_runs_the_conformance_check(graph, crate):
     _, dependents, _ = graph
     affected = land_scope.closure({crate}, dependents)
@@ -68,17 +69,17 @@ def test_eval_web_and_docs_changes_skip_the_conformance_check(graph):
     assert not land_scope.needs_conformance(["eval/nceval/tune.py", "docs/STATUS.md"],
                                             set(), False)
     assert not land_scope.needs_conformance(["crates/nc-web/src/lib.rs"],
-                                            land_scope.closure({"nc-web"}, dependents), False)
+                                            land_scope.closure({"nanocodec-web"}, dependents), False)
     assert land_scope.needs_conformance(["eval/nceval/conformance.py"], set(), False)
     assert land_scope.needs_conformance(["Cargo.lock"], set(), True)
 
 
 @pytest.mark.parametrize("paths, codecs", [
     (["crates/nc-vp9/src/lib.rs"], ["vp9"]),
-    (["crates/nc-vp9/src/lib.rs", "presets/av1/fast.toml"], ["av1", "vp9"]),
+    (["crates/nc-vp9/src/lib.rs", "crates/nc-encoder/presets/av1/fast.toml"], ["av1", "vp9"]),
     (["crates/nc-encoder/src/lib.rs"], ["all"]),
     (["crates/nc-cli/src/main.rs"], ["all"]),
-    (["presets/hevc/fast.toml"], ["hevc"]),
+    (["crates/nc-encoder/presets/hevc/fast.toml"], ["hevc"]),
     (["eval/nceval/conformance.py"], ["all"]),
     (["crates/nc-web/src/lib.rs"], ["0"]),
 ])
@@ -86,7 +87,7 @@ def test_the_conformance_check_codes_only_the_changed_codecs(graph, paths, codec
     dirs, dependents, embedded = graph
     crates = set()
     for path in paths:
-        if not path.startswith("presets/"):  # presets name their codec (plan_for_paths)
+        if not path.startswith("crates/nc-encoder/presets/"):  # presets name their codec (plan_for_paths)
             crates |= land_scope.classify(path, ROOT, dirs, embedded)[1]
     affected = land_scope.closure(crates, dependents)
     assert land_scope.conformance_codecs(paths, affected, False) == codecs
@@ -115,13 +116,13 @@ def test_the_plan_names_the_directly_touched_crates_for_their_unit_tests():
     def touched(path):
         out = land_scope.plan_for_paths(ROOT, [path])
         return next(line.split()[1:] for line in out.splitlines() if line.split()[0] == "touched")
-    assert touched("crates/nc-vvc/src/lib.rs") == ["nc-vvc"]
+    assert touched("crates/nc-vvc/src/lib.rs") == ["nanocodec-vvc"]
     assert touched("docs/STATUS.md") == []
 
 
 def test_a_kernel_change_reaches_every_crate_but_nc_common(graph):
     dirs, dependents, _ = graph
-    assert land_scope.closure({"nc-dsp"}, dependents) == set(dirs) - {"nc-common"}
+    assert land_scope.closure({"nanocodec-dsp"}, dependents) == set(dirs) - {"nanocodec-common"}
 
 
 def test_docs_check_finds_broken_links_and_bad_svg(tmp_path):

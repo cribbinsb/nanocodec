@@ -57,7 +57,7 @@ from .cbr import Family, clip_targets
 from .clips import Clip
 from .codecs import Codec
 from .config import Paths, load_paths
-from .encoders.nanocodec import preset_values
+from .encoders.nanocodec import PRESETS_DIR, PRESETS_PATH, presets_in, preset_values
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .realuse import (DEFAULT_FRAMES, DEFAULT_WORKERS, LADDER_KBPS, Runner, Track,
                       add_periodic_pulse, compare, format_stage, one_per_class, param_args,
@@ -212,6 +212,7 @@ def measure_level(runner: Runner, families: tuple[Family, Family], clips: list[C
 # --- final-check: two builds on the day's L3 -------------------------------------------
 
 #: What decides whether two commits' arms can differ: the encoder's sources and presets.
+# (`presets`: where the preset files were before they moved into crates/nc-encoder.)
 CODE_INPUTS = ("crates", "presets")
 
 
@@ -245,7 +246,7 @@ def build(spec: str, paths: Paths, role: str) -> tuple[Path, str]:
         buildinfo.verify_built(built, commit)
         presets = binary.parent / "presets"
         shutil.rmtree(presets, ignore_errors=True)
-        shutil.copytree(tree / "presets", presets)
+        shutil.copytree(presets_in(tree), presets)
         partial = binary.with_name(binary.name + ".partial")
         shutil.copy2(built, partial)
         partial.rename(binary)  # present means complete
@@ -255,7 +256,7 @@ def build(spec: str, paths: Paths, role: str) -> tuple[Path, str]:
 
 def cargo_build(tree: Path, target: Path) -> Path:
     """The release CLI of `tree`, built into `target`."""
-    subprocess.run(["cargo", "build", "--release", "-j8", "-p", "nc-cli"], cwd=tree,
+    subprocess.run(["cargo", "build", "--release", "-j8", "--bin", "nanocodec"], cwd=tree,
                    env={**os.environ, "CARGO_TARGET_DIR": str(target),
                         "PATH": f"{Path.home() / '.cargo/bin'}:{os.environ['PATH']}"},
                    check=True)
@@ -281,8 +282,7 @@ def same_code(old_commit: str, new_commit: str) -> bool:
     if not (old_commit and new_commit):
         return False
     repo = Path(__file__).resolve().parents[2]
-    return all(git(repo, "rev-parse", f"{old_commit}:{part}")
-               == git(repo, "rev-parse", f"{new_commit}:{part}") for part in CODE_INPUTS)
+    return not git(repo, "diff", "--name-only", old_commit, new_commit, "--", *CODE_INPUTS)
 
 
 def final_estimator(choice: str, old_commit: str, new_commit: str) -> str:
@@ -293,9 +293,9 @@ def final_estimator(choice: str, old_commit: str, new_commit: str) -> str:
     if not (old_commit and new_commit):
         return LADDER
     repo = Path(__file__).resolve().parents[2]
-    same = git(repo, "rev-parse", f"{old_commit}:crates") == \
-        git(repo, "rev-parse", f"{new_commit}:crates")
-    return SINGLE if same else LADDER
+    changed = git(repo, "diff", "--name-only", old_commit, new_commit, "--", "crates",
+                  f":(exclude){PRESETS_PATH}")
+    return LADDER if changed else SINGLE
 
 
 def no_change_reason(old: tuple[Path, str], new: tuple[Path, str]) -> str | None:
@@ -316,7 +316,7 @@ def preset_args(binary: Path, codec: Codec, preset: str | None) -> list[str]:
     """--param pairs of `codec`'s `preset` from the build's own presets (repo's for a bare binary)."""
     directory = binary.parent / "presets"
     if not directory.is_dir():
-        directory = Path(__file__).resolve().parents[2] / "presets"
+        directory = PRESETS_DIR
     values = preset_values(directory, codec, preset)
     return [f"{k}={v:g}" for k, v in sorted(values.items())]
 

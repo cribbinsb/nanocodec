@@ -1,16 +1,23 @@
 [package]
-name = "nc-vvc"
-description = "H.266/VVC shared-engine backend and subset decoder"
+name = "nanocodec-vvc"
+description = "nanocodec H.266/VVC encoder backend for the shared engine, and a VVC decoder for the streams it emits"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nanocodec-vvc"
+keywords = ["video", "codec", "encoder", "decoder", "vvc"]
+categories.workspace = true
 autotests = false
 
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[lib]
+name = "nc_vvc"
 
 [dependencies]
 nc-common.workspace = true

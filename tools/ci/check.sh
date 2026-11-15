@@ -63,7 +63,7 @@ cargo test "${selection[@]}" --profile gate-test --quiet
 # land.sh sets NC_CHECKASM=0 when no kernel crate changed (tools/dev/land_scope.py).
 if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
     step "checkasm (host SIMD vs scalar)"
-    cargo run --profile gate --quiet -p nc-checkasm
+    cargo run --profile gate --quiet -p nanocodec-checkasm
 fi
 
 step "crate layering, integration-test modules, encode paths"
@@ -80,14 +80,14 @@ fi
 
 if ! $quick; then
     step "syntax stress (random legal decisions vs JM/HM/aomdec/dav1d/ffmpeg)"
-    cargo build --release --quiet -p nc-cli
+    cargo build --release --quiet -p nanocodec-cli
     NC_NANOCODEC_BIN="$target_dir/release" python3 tools/ci/syntax_stress.py --quick
 
     step "clippy + build (wasm32, SIMD128)"
     export RUSTFLAGS="-C target-feature=+simd128"
     cargo clippy --workspace --all-targets --target wasm32-wasip1 -- -D warnings
-    cargo build --release --quiet -p nc-dsp --target wasm32-unknown-unknown
-    cargo build --release --quiet -p nc-checkasm --target wasm32-wasip1
+    cargo build --release --quiet -p nanocodec-dsp --target wasm32-unknown-unknown
+    cargo build --release --quiet -p nanocodec-checkasm --target wasm32-wasip1
     unset RUSTFLAGS
 
     step "checkasm (SIMD128 under node)"
@@ -96,15 +96,15 @@ if ! $quick; then
     # The browser's second module: relaxed SIMD must match scalar exactly too.
     step "checkasm (SIMD128 + relaxed SIMD under node)"
     RUSTFLAGS="-C target-feature=+simd128,+relaxed-simd" CARGO_TARGET_DIR="$target_dir/relaxed-simd" \
-        cargo build --release --quiet -p nc-checkasm --target wasm32-wasip1
+        cargo build --release --quiet -p nanocodec-checkasm --target wasm32-wasip1
     node --no-warnings tools/ci/wasi-run.mjs "$target_dir"/relaxed-simd/wasm32-wasip1/release/nc-checkasm.wasm
 
     # The decoder analysis builds (`nanocodec stat`, the demo's analysis
     # module): off in every normal build, so only the full run keeps them
     # compiling and tested (docs/handoff/stream-analysis.md).
     step "analysis feature (clippy + tests)"
-    cargo clippy -p nc-cli -p nc-web --features analysis --all-targets -- -D warnings
-    cargo test -p nc-common -p nc-hevc -p nc-h264 -p nc-av1 -p nc-vp9 -p nc-vvc -p nc-av2 -p nc-cli --features analysis --quiet
+    cargo clippy -p nanocodec-cli -p nanocodec-web --features analysis --all-targets -- -D warnings
+    cargo test -p nanocodec-common -p nanocodec-hevc -p nanocodec-h264 -p nanocodec-av1 -p nanocodec-vp9 -p nanocodec-vvc -p nanocodec-av2 -p nanocodec-cli --features analysis --quiet
 
     step "clippy (aarch64 cross-check)"
     cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings

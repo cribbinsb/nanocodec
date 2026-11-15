@@ -1,0 +1,38 @@
+[package]
+name = "nanocodec"
+description = "Real-time, low-latency video encoders and matching decoders for H.264, HEVC, VVC, AV1, VP9 and AV2 on one shared engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nanocodec"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+nc-common.workspace = true
+nc-encoder.workspace = true
+nc-h264 = { workspace = true, optional = true }
+nc-hevc = { workspace = true, optional = true }
+nc-vvc = { workspace = true, optional = true }
+nc-av1 = { workspace = true, optional = true }
+nc-vp9 = { workspace = true, optional = true }
+nc-av2 = { workspace = true, optional = true }
+
+[features]
+# One feature per codec: its encoder backend and its decoder.
+default = ["h264", "hevc", "vvc", "av1", "vp9", "av2"]
+h264 = ["dep:nc-h264"]
+hevc = ["dep:nc-hevc"]
+vvc = ["dep:nc-vvc"]
+av1 = ["dep:nc-av1"]
+vp9 = ["dep:nc-vp9"]
+av2 = ["dep:nc-av2"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true

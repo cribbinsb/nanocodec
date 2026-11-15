@@ -21,20 +21,21 @@ import subprocess
 import sys
 
 LAYERS = {
-    "nc-common": 0,
-    "nc-dsp": 1,
-    "nc-analysis": 2,
-    "nc-encoder": 3,
-    "nc-h264": 4,
-    "nc-hevc": 4,
-    "nc-vvc": 4,
-    "nc-av1": 4,
-    "nc-vp9": 4,
-    "nc-av2": 4,
-    "nc-capi": 5,
-    "nc-cli": 5,
-    "nc-web": 5,
+    "nanocodec-common": 0,
+    "nanocodec-dsp": 1,
+    "nanocodec-analysis": 2,
+    "nanocodec-encoder": 3,
+    "nanocodec-h264": 4,
+    "nanocodec-hevc": 4,
+    "nanocodec-vvc": 4,
+    "nanocodec-av1": 4,
+    "nanocodec-vp9": 4,
+    "nanocodec-av2": 4,
+    "nanocodec-capi": 5,
+    "nanocodec-cli": 5,
+    "nanocodec-web": 5,
     "nc-checkasm": 5,
+    "nanocodec": 5,
 }
 
 

@@ -44,7 +44,7 @@ jobs=$(( (${BUILD_JOBS:-2} + 1) / 2 ))
 # dependency fails at once (run `cargo fetch` once).
 build() { # build TARGET_DIR FEATURES OUT_DIR
   RUSTFLAGS="$base_flags -C target-feature=$2" CARGO_TARGET_DIR=$1 \
-    cargo build --frozen --profile "$profile" -p nc-web --target wasm32-unknown-unknown -j "$jobs" \
+    cargo build --frozen --profile "$profile" -p nanocodec-web --target wasm32-unknown-unknown -j "$jobs" \
     --features analysis
   mkdir -p "$3"
   "$bindgen" "$1/wasm32-unknown-unknown/$profile/nc_web.wasm" --target web --out-dir "$3" --out-name nc_web

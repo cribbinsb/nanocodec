@@ -686,7 +686,7 @@ def create(args: argparse.Namespace) -> optuna.Study:
     binary, commit = levels.build(args.binary, load_paths(), "tune")
     specs = specs_of(binary, codec)
     presets = binary.parent / "presets"
-    presets = presets if presets.is_dir() else REPO_ROOT / "presets"
+    presets = presets if presets.is_dir() else REPO_ROOT / "crates/nc-encoder/presets"
     preset = preset_values(presets, codec, args.preset)
     space = Path(args.space).read_text() if args.space else "\n".join(args.params.split(","))
     domains = read_space(space, specs, preset)
@@ -836,7 +836,7 @@ def sensitivity(args: argparse.Namespace) -> None:
     binary, commit = levels.build(args.binary, load_paths(), "tune")
     specs = specs_of(binary, codec)
     presets = binary.parent / "presets"
-    presets = presets if presets.is_dir() else REPO_ROOT / "presets"
+    presets = presets if presets.is_dir() else REPO_ROOT / "crates/nc-encoder/presets"
     preset = preset_values(presets, codec, args.preset)
     domains = read_space(Path(args.space).read_text(), specs, preset, SENSITIVITY_MAX_PARAMS)
     key = pool.rotation_key(args.rotation)
@@ -1197,7 +1197,7 @@ def write_presets(args: argparse.Namespace) -> None:
     results = attrs.get("finalists", {})
     numbers = ([int(n) for n in args.trials.split(",")] if args.trials
                else sorted(int(n) for n, r in results.items() if r["passed"]))
-    out = Path(args.out) if args.out else REPO_ROOT / "presets" / "candidates"
+    out = Path(args.out) if args.out else REPO_ROOT / "crates/nc-encoder/presets" / "candidates"
     out.mkdir(parents=True, exist_ok=True)
     report_dir = TUNING_DIR / study.study_name
     report_dir.mkdir(parents=True, exist_ok=True)

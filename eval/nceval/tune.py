@@ -1674,7 +1674,7 @@ def write_presets(args: argparse.Namespace) -> None:
         number, _, name = spec.partition(":")
         trial = study.trials[int(number)]
         # Candidates stay under presets/candidates/ until validated on VAL.
-        path = REPO_ROOT / "presets" / "candidates" / f"{args.codec}-{name or 'trial' + number}.toml"
+        path = REPO_ROOT / "crates/nc-encoder/presets" / "candidates" / f"{args.codec}-{name or 'trial' + number}.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
         lines = [f"# {args.codec} candidate from tuning study {args.study}, trial {number}.",
                  f"# Train proxy vs defaults: " + ", ".join(

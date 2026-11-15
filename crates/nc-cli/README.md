@@ -1,6 +1,6 @@
 # Native encoder and decoder
 
-Build with `cargo build --release -p nc-cli`. The executable is `target/release/nanocodec`.
+Build with `cargo build --release -p nanocodec-cli`. The executable is `target/release/nanocodec`.
 
 Encode raw 8-bit I420 and optionally save the encoder reconstruction:
 
@@ -115,3 +115,15 @@ source (as HEVC's); the final leaf direction search uses `vvc.angular_candidates
 VVC chroma selection compares all five ordinary candidates using reconstructed
 distortion and estimated bits. `--param vvc.chroma_search=0` retains derived-only
 chroma for comparisons; the default is `1`. CCLM is not implemented.
+
+Install from crates.io, once published: `cargo install nanocodec-cli`.
+
+- Repository: <https://github.com/cribbinsb/nanocodec>
+- Documentation and results: <https://cribbinsb.github.io/nanocodec/>
+
+## Licence and patents
+
+BSD-3-Clause (`LICENSE`). Code reimplemented from other permissively
+licensed projects is credited in `THIRD_PARTY.md`. The licence grants no
+patent rights: H.264, HEVC and VVC are covered by patents, and using these
+codecs may need licences from their holders.

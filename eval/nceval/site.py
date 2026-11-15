@@ -777,7 +777,7 @@ def stale(files: dict[Path, str]) -> list[Path]:
 #: Paths (repository-relative prefixes) the generated files are computed from:
 #: the result files, the harness code that names families and command lines,
 #: the presets, the README and the example sources.
-INPUTS = ("docs/results/", "eval/nceval/", "presets/", "README.md", "web/results/data/",
+INPUTS = ("docs/results/", "eval/nceval/", "crates/nc-encoder/presets/", "README.md", "web/results/data/",
           "web/docs/examples/", *DOCS_SOURCES.values())
 
 

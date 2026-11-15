@@ -4,7 +4,7 @@
 //! `NC_GIT_COMMIT` is `git rev-parse HEAD` of the source tree, or the
 //! `NC_BUILD_COMMIT` environment variable for a tree without git (a `git
 //! archive` export), else "unknown". `NC_GIT_DIRTY` is "-dirty" when tracked
-//! files under crates/ or presets/ differ from that commit.
+//! files under crates/ differ from that commit.
 
 use std::path::Path;
 use std::process::Command;
@@ -24,9 +24,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-env-changed=NC_BUILD_COMMIT");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for watched in ["crates", "presets"] {
-        println!("cargo:rerun-if-changed={}", root.join(watched).display());
-    }
+    println!("cargo:rerun-if-changed={}", root.join("crates").display());
     let git_path = |name: &str| {
         git(
             &root,
@@ -51,7 +49,6 @@ fn main() {
             "--untracked-files=no",
             "--",
             "crates",
-            "presets",
         ],
     )
     .is_some_and(|status| !status.is_empty());

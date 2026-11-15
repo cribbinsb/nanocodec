@@ -54,6 +54,11 @@ SSH_USER = "ubuntu"
 #: Max spot price we bid, relative to the current lowest AZ price: high enough
 #: not to be outbid within a session, low enough to bound the cost.
 MAX_PRICE_FACTOR = 1.5
+#: The account's spot quota is full (EC2 error code): instances still shutting down count.
+QUOTA_FULL = "MaxSpotInstanceCountExceeded"
+#: How long a launch waits for the quota to free: a terminating metal instance takes
+#: a minute or two to stop counting.
+QUOTA_RETRIES, QUOTA_WAIT_S = 6, 30
 #: Running costs beside the instance (eu-north-1 list prices, USD).
 GP3_USD_PER_GB_MONTH = 0.0836
 PUBLIC_IPV4_USD_PER_HOUR = 0.005
@@ -223,10 +228,36 @@ class Session:
         return image_id, image["RootDeviceName"]
 
     def launch(self, zones: dict[str, float], max_price: float) -> None:
-        from botocore.exceptions import ClientError
         image_id, root_device = self.ami()
         # The hard lifetime comes first: it holds even if this process dies.
         user_data = f"#!/bin/bash\nshutdown -h +{self.spec.lifetime_minutes}\n"
+        for attempt in range(QUOTA_RETRIES + 1):
+            if self.try_zones(zones, max_price, image_id, root_device, user_data):
+                break
+            # The spot quota counts instances still shutting down (a session that just
+            # ended): one launched right after it is refused for a minute or two
+            # (2026-11-15: the second scoring session of a held-out refresh).
+            say(f"spot instance quota full; retry {attempt + 1}/{QUOTA_RETRIES} in "
+                f"{QUOTA_WAIT_S} s")
+            time.sleep(QUOTA_WAIT_S)
+        else:
+            raise RuntimeError(f"the spot instance quota stayed full for "
+                               f"{QUOTA_RETRIES * QUOTA_WAIT_S} s")
+        if self.instance_id is None:
+            raise RuntimeError(f"no zone could launch {self.spec.instance_type}")
+        say(f"launched {self.instance_id} in {self.zone} (spot ${self.price:.4f}/h)")
+        self.ec2.get_waiter("instance_running").wait(
+            InstanceIds=[self.instance_id], WaiterConfig={"Delay": 10, "MaxAttempts": 90})
+        instance = self.describe()
+        self.host = instance["PublicIpAddress"]
+        self.launched = instance["LaunchTime"]
+        say(f"{self.instance_id} running at {self.host}")
+
+    def try_zones(self, zones: dict[str, float], max_price: float, image_id: str,
+                  root_device: str, user_data: str) -> bool:
+        """Launch in the cheapest zone with capacity; False when the account's spot
+        quota is full (worth waiting for), True otherwise (launched, or no zone could)."""
+        from botocore.exceptions import ClientError
         for zone in zones:  # cheapest first; a zone without capacity is skipped
             subnets = self.ec2.describe_subnets(Filters=[
                 {"Name": "availability-zone", "Values": [zone]},
@@ -255,20 +286,14 @@ class Session:
                             "Unsupported", "InsufficientCapacity"):
                     say(f"{zone}: {code}, trying the next zone")
                     continue
+                if code == QUOTA_FULL:
+                    return False
                 raise
             self.instance_id = reply["Instances"][0]["InstanceId"]
             self.spot_request = reply["Instances"][0].get("SpotInstanceRequestId")
             self.zone, self.price = zone, zones[zone]
-            break
-        if self.instance_id is None:
-            raise RuntimeError(f"no zone could launch {self.spec.instance_type}")
-        say(f"launched {self.instance_id} in {self.zone} (spot ${self.price:.4f}/h)")
-        self.ec2.get_waiter("instance_running").wait(
-            InstanceIds=[self.instance_id], WaiterConfig={"Delay": 10, "MaxAttempts": 90})
-        instance = self.describe()
-        self.host = instance["PublicIpAddress"]
-        self.launched = instance["LaunchTime"]
-        say(f"{self.instance_id} running at {self.host}")
+            return True
+        return True
 
     def describe(self) -> dict | None:
         reply = self.ec2.describe_instances(InstanceIds=[self.instance_id])

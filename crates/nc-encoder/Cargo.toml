@@ -1,11 +1,20 @@
 [package]
-name = "nc-encoder"
-description = "nanocodec shared encoder engine: configuration, frame loop, block partition walk, mode decision, the CodecBackend trait"
+name = "nanocodec-encoder"
+description = "nanocodec shared encoder engine: configuration, presets, frame loop, mode decision, rate control, the CodecBackend trait"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nanocodec-encoder"
+keywords.workspace = true
+categories.workspace = true
+# Tuning candidates are harness inputs, not built in.
+exclude = ["presets/candidates/"]
+
+[lib]
+name = "nc_encoder"
 
 [dependencies]
 nc-common.workspace = true

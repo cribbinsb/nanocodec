@@ -1,13 +1,18 @@
 [package]
-name = "nc-web"
+name = "nanocodec-web"
 description = "Browser WASM bindings for nanocodec encode and decode"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nanocodec-web"
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
+name = "nc_web"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

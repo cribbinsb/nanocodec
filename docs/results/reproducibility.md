@@ -59,7 +59,7 @@ Steps:
 
 ```sh
 git clone https://github.com/cribbinsb/nanocodec && cd nanocodec
-cargo build --profile gate -p nc-cli                      # target/gate/nanocodec
+cargo build --profile gate -p nanocodec-cli                      # target/gate/nanocodec
 tools/anchors/build_anchors.sh python x264 svtav1 libaom dav1d jm hm vmaf ffmpeg
 # the 11 VAL clips: obtain each source in eval/clipset/main.json, then cut them (raw YUV)
 python3 eval/clipset/extract.py eval/clipset/main.json      # -> $NC_DATA_ROOT/clips/main/*.yuv
@@ -146,7 +146,7 @@ here vs −23.0% on the chart).
 
 ```sh
 git clone https://github.com/cribbinsb/nanocodec && cd nanocodec
-cargo build --release -p nc-cli                                  # ~6 min on 4 cores
+cargo build --release -p nanocodec-cli                                  # ~6 min on 4 cores
 tools/anchors/build_anchors.sh --prefix ANCHORS --jobs 4 python x264 svtav1 libaom dav1d jm vmaf ffmpeg
 mkdir -p build && cp target/release/nanocodec build/ && cp -r presets build/
 export NC_DATA_ROOT=$PWD/../ncdata NC_ANCHORS=ANCHORS NC_METRICS_BACKEND=libvmaf-cpu \

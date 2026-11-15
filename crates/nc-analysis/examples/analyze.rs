@@ -1,7 +1,7 @@
 //! Run the analysis pipeline over a raw I420 clip and report per-stage time.
 //!
 //! ```text
-//! cargo run --release -p nc-analysis --example analyze -- \
+//! cargo run --release -p nanocodec-analysis --example analyze -- \
 //!     clip.yuv WIDTH HEIGHT [--frames N] [--verbose]
 //! ```
 //!

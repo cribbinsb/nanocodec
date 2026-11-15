@@ -15,137 +15,151 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "nc-analysis"
+name = "nanocodec"
 version = "0.1.0"
 dependencies = [
- "nc-common",
- "nc-dsp",
+ "nanocodec-av1",
+ "nanocodec-av2",
+ "nanocodec-common",
+ "nanocodec-encoder",
+ "nanocodec-h264",
+ "nanocodec-hevc",
+ "nanocodec-vp9",
+ "nanocodec-vvc",
 ]
 
 [[package]]
-name = "nc-av1"
+name = "nanocodec-analysis"
 version = "0.1.0"
 dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
+ "nanocodec-common",
+ "nanocodec-dsp",
 ]
 
 [[package]]
-name = "nc-av2"
+name = "nanocodec-av1"
 version = "0.1.0"
 dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
 ]
 
 [[package]]
-name = "nc-capi"
+name = "nanocodec-av2"
 version = "0.1.0"
 dependencies = [
- "nc-av1",
- "nc-common",
- "nc-encoder",
- "nc-h264",
- "nc-hevc",
- "nc-vp9",
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-capi"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-av1",
+ "nanocodec-common",
+ "nanocodec-encoder",
+ "nanocodec-h264",
+ "nanocodec-hevc",
+ "nanocodec-vp9",
+]
+
+[[package]]
+name = "nanocodec-cli"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-av1",
+ "nanocodec-av2",
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+ "nanocodec-h264",
+ "nanocodec-hevc",
+ "nanocodec-vp9",
+ "nanocodec-vvc",
+]
+
+[[package]]
+name = "nanocodec-common"
+version = "0.1.0"
+
+[[package]]
+name = "nanocodec-dsp"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+]
+
+[[package]]
+name = "nanocodec-encoder"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-analysis",
+ "nanocodec-common",
+ "nanocodec-dsp",
+]
+
+[[package]]
+name = "nanocodec-h264"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-hevc"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-vp9"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-vvc"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-web"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-av1",
+ "nanocodec-av2",
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+ "nanocodec-h264",
+ "nanocodec-hevc",
+ "nanocodec-vp9",
+ "nanocodec-vvc",
+ "wasm-bindgen",
 ]
 
 [[package]]
 name = "nc-checkasm"
 version = "0.1.0"
 dependencies = [
- "nc-av1",
- "nc-common",
- "nc-dsp",
-]
-
-[[package]]
-name = "nc-cli"
-version = "0.1.0"
-dependencies = [
- "nc-av1",
- "nc-av2",
- "nc-common",
- "nc-dsp",
- "nc-encoder",
- "nc-h264",
- "nc-hevc",
- "nc-vp9",
- "nc-vvc",
-]
-
-[[package]]
-name = "nc-common"
-version = "0.1.0"
-
-[[package]]
-name = "nc-dsp"
-version = "0.1.0"
-dependencies = [
- "nc-common",
-]
-
-[[package]]
-name = "nc-encoder"
-version = "0.1.0"
-dependencies = [
- "nc-analysis",
- "nc-common",
- "nc-dsp",
-]
-
-[[package]]
-name = "nc-h264"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-hevc"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-vp9"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-vvc"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-web"
-version = "0.1.0"
-dependencies = [
- "nc-av1",
- "nc-av2",
- "nc-common",
- "nc-dsp",
- "nc-encoder",
- "nc-h264",
- "nc-hevc",
- "nc-vp9",
- "nc-vvc",
- "wasm-bindgen",
+ "nanocodec-av1",
+ "nanocodec-common",
+ "nanocodec-dsp",
 ]
 
 [[package]]

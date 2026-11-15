@@ -19,9 +19,9 @@ exactly what landing would change. Each changed path falls in one class
                                                             <name> and every crate
                                                             that depends on it
     included   any file a crate embeds with include_str!/   as crate, for the
-               include_bytes! (presets/<codec>/*.toml)      embedding crates; plus
+               include_bytes!; the shipped presets        embedding crates; plus
                                                             eval tests for presets/
-    presets    presets/** not embedded (candidates/)        TOML parse + eval tests
+    presets    preset files not embedded (candidates/)        TOML parse + eval tests
     eval       eval/**                                      eval tests
     web        web/**                                       browser module smoke tests
     fuzz       fuzz/**                                      rustfmt --check of the files
@@ -107,14 +107,15 @@ CONFORMANCE_FILES = (
     "eval/nceval/dav2d_crop.py",
 )
 # The crate every stream is encoded by: a change it depends on can alter streams.
-ENCODER_CRATE = "nc-cli"
+ENCODER_CRATE = "nanocodec-cli"
 #: Codec crates, by the codec name tools/ci/landing_conformance.py --codecs takes:
 #: a change reaching only some of them needs only their streams checked.
-CODEC_CRATES = {"nc-h264": "h264", "nc-hevc": "hevc", "nc-vvc": "vvc", "nc-av1": "av1",
-                "nc-vp9": "vp9", "nc-av2": "av2"}
+CODEC_CRATES = {"nanocodec-h264": "h264", "nanocodec-hevc": "hevc", "nanocodec-vvc": "vvc", "nanocodec-av1": "av1",
+                "nanocodec-vp9": "vp9", "nanocodec-av2": "av2"}
 #: Crates that reach nc-cli without coding any stream (their changes cannot
-#: alter one): only the browser module, the C API and the kernel tests.
-NON_STREAM_CRATES = {"nc-web", "nc-capi", "nc-checkasm"}
+#: alter one): only the browser module, the C API, the kernel tests and the
+#: front-door crate (re-exports).
+NON_STREAM_CRATES = {"nanocodec-web", "nanocodec-capi", "nc-checkasm", "nanocodec"}
 #: Eval test files that test the landing, queue and scheduling machinery, and
 #: the paths whose change runs each: at load 60 they timed out and refused
 #: unrelated landings (a VVC preset change, twice, 2026-11-15).
@@ -139,14 +140,17 @@ def eval_skipped(changed, full):
 
 
 #: Crates whose direct change runs the SIMD-vs-scalar kernel check.
-KERNEL_CRATES = {"nc-common", "nc-dsp", "nc-checkasm"}
+KERNEL_CRATES = {"nanocodec-common", "nanocodec-dsp", "nc-checkasm"}
 #: Crates whose direct change runs the browser module's builds and node tests.
-BROWSER_CRATES = {"nc-web", "nc-common", "nc-dsp"}
+BROWSER_CRATES = {"nanocodec-web", "nanocodec-common", "nanocodec-dsp"}
 #: The browser module's own crate: a change here is a change to the page's API.
 PAGE_CRATE_DIR = "crates/nc-web/"
 
 DOC_SUFFIXES = {".md", ".svg", ".json", ".csv", ".txt", ".png", ".jpg", ".webp"}
 DOC_NAMES = {"LICENSE", ".gitignore", ".gitattributes"}
+#: The preset files: in the crate that embeds the shipped ones (its table).
+PRESETS_DIR = "crates/nc-encoder/presets"
+PRESETS_CRATE = "nanocodec-encoder"
 INCLUDE_RE = re.compile(r'include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)')
 
 
@@ -207,6 +211,9 @@ def classify(path, root, dirs, embedded):
     """(class, crates) for one changed path; crates are the directly affected ones."""
     if any(fnmatch.fnmatchcase(path, pattern) for pattern in GATE_PATTERNS):
         return "gate", set()
+    if path.startswith(PRESETS_DIR + "/"):
+        # A shipped preset reaches the crate that embeds it; a candidate no crate.
+        return ("included", {PRESETS_CRATE}) if shipped_preset(path) else ("presets", set())
     for crate, crate_dir in dirs.items():
         if path.startswith(crate_dir + "/"):
             return "crate", {crate}
@@ -214,8 +221,6 @@ def classify(path, root, dirs, embedded):
         return "included", embedded[path]
     suffix = Path(path).suffix
     top = path.split("/", 1)[0]
-    if top == "presets":
-        return "presets", set()
     if top == "eval":
         return "eval", set()
     if top == "web":
@@ -253,12 +258,11 @@ def conformance_codecs(changed, affected, full):
             return ["all"]  # shared code: every codec's streams
         codecs.add(CODEC_CRATES[crate])
     for path in changed:
-        parts = path.split("/")
-        if parts[0] == "presets" and path.endswith(".toml") and len(parts) <= 3:
-            if len(parts) == 2:
-                return ["all"]  # a top-level presets/*.toml: every codec
-            if parts[1] in CODEC_CRATES.values():
-                codecs.add(parts[1])  # presets/<codec>/<stem>.toml (not presets/candidates/)
+        named = preset_codecs(path) if path.endswith(".toml") else None
+        if named == ["all"]:
+            return ["all"]
+        if named:
+            codecs.update(named)
         elif path.startswith(f"crates/{ENCODER_CRATE}/"):
             return ["all"]
     return sorted(codecs) or ["all"]
@@ -270,11 +274,21 @@ def needs_conformance(changed, affected, full):
             or any(shipped_preset(p) for p in changed))
 
 
+def preset_codecs(path):
+    """The codecs a shipped preset file codes: ["all"] for a shared bundle
+    (PRESETS_DIR/<rung>.toml), its codec for PRESETS_DIR/<codec>/<stem>.toml,
+    None for any other path (candidates/ among them)."""
+    if not path.startswith(PRESETS_DIR + "/"):
+        return None
+    parts = path[len(PRESETS_DIR) + 1:].split("/")
+    if len(parts) == 1:
+        return ["all"]
+    return [parts[0]] if len(parts) == 2 and parts[0] in CODEC_CRATES.values() else None
+
+
 def shipped_preset(path):
-    """Whether `path` is a shipped preset file, presets/<codec>/<stem>.toml."""
-    parts = path.split("/")
-    return len(parts) == 3 and parts[0] == "presets" and parts[1] in CODEC_CRATES.values() \
-        and path.endswith(".toml")
+    """Whether `path` is a shipped preset file (a codec's, or a shared bundle)."""
+    return path.endswith(".toml") and preset_codecs(path) is not None
 
 
 def plan(root, base):
@@ -296,11 +310,11 @@ def plan_for_paths(root, changed):
         kind, direct = classify(path, root, dirs, embedded)
         rows.append((kind, path))
         crates |= direct
-        if not (kind == "included" and path.startswith("presets/")):
+        if not (kind == "included" and path.startswith(PRESETS_DIR + "/")):
             code_crates |= direct
         if kind in ("gate", "unknown"):
             full = True
-        elif kind in ("eval", "presets") or (kind == "included" and path.startswith("presets/")):
+        elif kind in ("eval", "presets") or (kind == "included" and path.startswith(PRESETS_DIR + "/")):
             eval_tests = True
         elif kind == "web":
             web = True

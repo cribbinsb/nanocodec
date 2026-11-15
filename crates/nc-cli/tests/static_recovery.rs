@@ -109,7 +109,7 @@ fn static_psnr(source: &Picture, recon: &Picture) -> f64 {
 /// is a requested key coded at the starved target, the rest at the normal.
 fn encode<B: CodecBackend>(
     codec: Codec,
-    preset: &str,
+    preset: &ParamOverrides,
     (starve, reuse): (bool, bool),
     frames: usize,
 ) -> Vec<f64> {
@@ -124,7 +124,7 @@ fn encode<B: CodecBackend>(
         Codec::Vvc => 5,
         _ => 4,
     };
-    let mut params = preset_params(preset);
+    let mut params = preset.clone();
     params.set("persist.reuse", if reuse { 1. } else { 0. });
     let mut encoder = Encoder::<B>::new(EncoderConfig {
         codec,
@@ -157,25 +157,26 @@ fn encode<B: CodecBackend>(
         .collect()
 }
 
-/// The overrides of a parameter file in the CLI's preset format (`name =
-/// value` lines, `#` comments).
-fn preset_params(text: &str) -> ParamOverrides {
+/// A shipped preset's parameters: the rung `name` of `codec` for
+/// `spatial_layers` spatial layers (`nc_encoder::presets`).
+fn shipped(codec: Codec, spatial_layers: u8, name: &str) -> ParamOverrides {
+    nc_encoder::preset_params(codec, spatial_layers, name).unwrap()
+}
+
+/// A flat stream (the codec defaults give H.264 adaptive layers).
+fn flat() -> ParamOverrides {
     let mut params = ParamOverrides::default();
-    for line in text
-        .lines()
-        .map(|l| l.split('#').next().unwrap_or("").trim())
-    {
-        if let Some((name, value)) = line.split_once('=') {
-            params.set(name.trim(), value.trim().parse().unwrap());
-        }
-    }
+    params.set("layers.count", 1.0);
     params
 }
 
-/// The codec defaults (H.264: adaptive layers).
-const DEFAULT: &str = "";
-/// A flat stream.
-const FLAT: &str = "layers.count = 1";
+/// `preset` as key-picture SVC: upper layers predict from the layer below
+/// on key units only.
+fn key_svc(preset: &ParamOverrides) -> ParamOverrides {
+    let mut params = preset.clone();
+    params.set("spatial.inter_layer", 2.0);
+    params
+}
 
 /// How soon, and how close to the undisturbed stream, a stream recovers.
 struct Recovery {
@@ -219,7 +220,7 @@ const VP9_SVC_RECOVERY: Recovery = Recovery {
 
 /// The full check: the starved key degrades the static half, without the
 /// reuse term its copies stay degraded, and with it they recover.
-fn check<B: CodecBackend>(codec: Codec, preset: &str, recovery: &Recovery) {
+fn check<B: CodecBackend>(codec: Codec, preset: &ParamOverrides, recovery: &Recovery) {
     let steady = encode::<B>(codec, preset, (false, true), FRAMES);
     let starved = encode::<B>(codec, preset, (true, true), FRAMES);
     let stuck = encode::<B>(codec, preset, (true, false), FRAMES);
@@ -240,7 +241,7 @@ fn check<B: CodecBackend>(codec: Codec, preset: &str, recovery: &Recovery) {
 /// after the recovery. The premise that without the term the copies stay
 /// degraded is the codec's [`check`]; leaving it out here, and the rest of
 /// the run, keeps the preset sweep under 1 s of test time.
-fn check_preset<B: CodecBackend>(codec: Codec, preset: &str, recovery: &Recovery) {
+fn check_preset<B: CodecBackend>(codec: Codec, preset: &ParamOverrides, recovery: &Recovery) {
     let frames = STARVED_KEY + recovery.frames + STAYS_RECOVERED_FRAMES;
     let steady = encode::<B>(codec, preset, (false, true), frames);
     let starved = encode::<B>(codec, preset, (true, true), frames);
@@ -268,23 +269,20 @@ fn assert_recovers(codec: Codec, (steady, starved): (&[f64], &[f64]), recovery: 
 
 #[test]
 fn h264_static_content_recovers_from_a_starved_key() {
-    check::<nc_h264::H264Backend>(Codec::H264, FLAT, &FLAT_RECOVERY);
+    check::<nc_h264::H264Backend>(Codec::H264, &flat(), &FLAT_RECOVERY);
 }
 
 #[test]
 fn h264_layered_streams_recover_at_the_next_base_frame() {
     for preset in [
-        DEFAULT,
-        include_str!("../../../presets/h264/fast.toml"),
-        include_str!("../../../presets/h264/faster.toml"),
-        include_str!("../../../presets/h264/veryfast.toml"),
+        ParamOverrides::default(),
+        shipped(Codec::H264, 1, "fast"),
+        shipped(Codec::H264, 1, "faster"),
+        shipped(Codec::H264, 1, "veryfast"),
         // The slow rung: the shared bundle, then H.264's levers (nc_encoder::presets).
-        concat!(
-            include_str!("../../../presets/slow.toml"),
-            include_str!("../../../presets/h264/slow.toml")
-        ),
+        shipped(Codec::H264, 1, "slow"),
     ] {
-        check::<nc_h264::H264Backend>(Codec::H264, preset, &LAYERED_RECOVERY);
+        check::<nc_h264::H264Backend>(Codec::H264, &preset, &LAYERED_RECOVERY);
     }
 }
 
@@ -296,18 +294,15 @@ fn av1_static_content_recovers_from_a_starved_key() {
     // high-quality frame later ones may predict from: at every depth, they
     // must not keep the poor picture alive.
     for preset in [
-        DEFAULT,
-        include_str!("../../../presets/av1/fast.toml"),
+        ParamOverrides::default(),
+        shipped(Codec::Av1, 1, "fast"),
         // The slow rung: the shared bundle, then AV1's levers (nc_encoder::presets).
-        concat!(
-            include_str!("../../../presets/slow.toml"),
-            include_str!("../../../presets/av1/slow.toml")
-        ),
+        shipped(Codec::Av1, 1, "slow"),
         "av1.restoration = 1",
         "structure.unified = 1",
         "structure.unified = 1\nstructure.secondary_min_depth = 0\nrefs.second_full = 1",
     ] {
-        check::<nc_av1::Av1Backend>(Codec::Av1, preset, &FLAT_RECOVERY);
+        check::<nc_av1::Av1Backend>(Codec::Av1, &preset, &FLAT_RECOVERY);
     }
 }
 
@@ -319,11 +314,11 @@ fn av1_static_content_recovers_from_a_starved_key() {
 #[test]
 fn av1_svc_presets_recover() {
     for preset in [
-        include_str!("../../../presets/av1/l2-medium.toml"),
-        include_str!("../../../presets/av1/l2-fast.toml"),
+        shipped(Codec::Av1, 2, "medium"),
+        shipped(Codec::Av1, 2, "fast"),
     ] {
-        check_preset::<nc_av1::Av1Backend>(Codec::Av1, preset, &SVC_RECOVERY);
-        let ksvc = format!("{preset}\nspatial.inter_layer = 2\n");
+        check_preset::<nc_av1::Av1Backend>(Codec::Av1, &preset, &SVC_RECOVERY);
+        let ksvc = key_svc(&preset);
         check_preset::<nc_av1::Av1Backend>(Codec::Av1, &ksvc, &SVC_RECOVERY);
     }
 }
@@ -385,7 +380,7 @@ const THREE_LAYER_KSVC_SCALE: usize = 2;
 
 fn run_three_layer_recovery<B: CodecBackend>(
     codec: Codec,
-    preset: &str,
+    preset: &ParamOverrides,
     box_downscale: bool,
     scale: usize,
     (starve, reuse): (bool, bool),
@@ -398,7 +393,7 @@ fn run_three_layer_recovery<B: CodecBackend>(
     let dsp = nc_dsp::Dsp::new();
     let mut lanczos = nc_dsp::PlaneResampler::new((w, h), (w / 2, h / 2));
     let mut s1_ref = Picture::new(w / 2, h / 2, 0).unwrap();
-    let mut params = preset_params(preset);
+    let mut params = preset.clone();
     params.set("spatial.layers", 3.0);
     params.set("persist.reuse", if reuse { 1.0 } else { 0.0 });
     let mut encoder = Encoder::<B>::new(EncoderConfig {
@@ -457,14 +452,14 @@ fn run_three_layer_recovery<B: CodecBackend>(
 fn check_three_layer_preset<B: CodecBackend>(
     codec: Codec,
     name: &str,
-    preset: &str,
+    preset: &ParamOverrides,
     box_downscale: bool,
     ksvc_scale: usize,
     (s1_recovery, s2_recovery): (&Recovery, &Recovery),
 ) {
     const MIN_REUSE_GAIN_DB: f64 = 3.0;
     let frames = STARVED_KEY + s1_recovery.frames + STAYS_RECOVERED_FRAMES;
-    let run = |cfg: &str, scale: usize, flags: (bool, bool)| {
+    let run = |cfg: &ParamOverrides, scale: usize, flags: (bool, bool)| {
         run_three_layer_recovery::<B>(codec, cfg, box_downscale, scale, flags, frames)
     };
     let (steady_s1, steady_s2) = run(preset, 1, (false, true));
@@ -499,7 +494,7 @@ fn check_three_layer_preset<B: CodecBackend>(
     assert_recovers(codec, (&steady_s1, &starved_s1), s1_recovery);
     assert_recovers(codec, (&steady_s2, &starved_s2), s2_recovery);
 
-    let ksvc_preset = format!("{preset}\nspatial.inter_layer = 2\n");
+    let ksvc_preset = key_svc(preset);
     let (k_steady_s1, k_steady_s2) = run(&ksvc_preset, ksvc_scale, (false, true));
     let (k_starved_s1, k_starved_s2) = run(&ksvc_preset, ksvc_scale, (true, true));
     assert_recovers(codec, (&k_steady_s1, &k_starved_s1), s1_recovery);
@@ -520,21 +515,13 @@ fn av1_three_layer_svc_recovers_every_upper_layer() {
         shortfall_db: THREE_LAYER_S2_RECOVERED_DB,
     };
     for (name, preset, box_downscale) in [
-        (
-            "AV1 L3 Medium",
-            include_str!("../../../presets/av1/l3-medium.toml"),
-            false,
-        ),
-        (
-            "AV1 L3 Fast",
-            include_str!("../../../presets/av1/l3-fast.toml"),
-            true,
-        ),
+        ("AV1 L3 Medium", shipped(Codec::Av1, 3, "medium"), false),
+        ("AV1 L3 Fast", shipped(Codec::Av1, 3, "fast"), true),
     ] {
         check_three_layer_preset::<nc_av1::Av1Backend>(
             Codec::Av1,
             name,
-            preset,
+            &preset,
             box_downscale,
             THREE_LAYER_KSVC_SCALE,
             (&s1_recovery, &s2_recovery),
@@ -548,11 +535,11 @@ fn av1_three_layer_svc_recovers_every_upper_layer() {
 #[test]
 fn vp9_svc_presets_recover() {
     for preset in [
-        include_str!("../../../presets/vp9/l2-medium.toml"),
-        include_str!("../../../presets/vp9/l2-fast.toml"),
+        shipped(Codec::Vp9, 2, "medium"),
+        shipped(Codec::Vp9, 2, "fast"),
     ] {
-        check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, preset, &VP9_SVC_RECOVERY);
-        let ksvc = format!("{preset}\nspatial.inter_layer = 2\n");
+        check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, &preset, &VP9_SVC_RECOVERY);
+        let ksvc = key_svc(&preset);
         check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, &ksvc, &VP9_SVC_RECOVERY);
     }
 }
@@ -571,21 +558,13 @@ fn vp9_three_layer_svc_recovers_every_upper_layer() {
         shortfall_db: VP9_THREE_LAYER_S2_RECOVERED_DB,
     };
     for (name, preset, box_downscale) in [
-        (
-            "VP9 L3 Medium",
-            include_str!("../../../presets/vp9/l3-medium.toml"),
-            false,
-        ),
-        (
-            "VP9 L3 Fast",
-            include_str!("../../../presets/vp9/l3-fast.toml"),
-            true,
-        ),
+        ("VP9 L3 Medium", shipped(Codec::Vp9, 3, "medium"), false),
+        ("VP9 L3 Fast", shipped(Codec::Vp9, 3, "fast"), true),
     ] {
         check_three_layer_preset::<nc_vp9::Vp9Backend>(
             Codec::Vp9,
             name,
-            preset,
+            &preset,
             box_downscale,
             THREE_LAYER_KSVC_SCALE,
             (&s1_recovery, &s2_recovery),
@@ -597,7 +576,7 @@ fn vp9_three_layer_svc_recovers_every_upper_layer() {
 fn av1_layered_streams_recover_at_the_next_base_frame() {
     check::<nc_av1::Av1Backend>(
         Codec::Av1,
-        include_str!("../../../presets/av1/faster.toml"),
+        shipped(Codec::Av1, 1, "faster"),
         &LAYERED_RECOVERY,
     );
 }
@@ -605,62 +584,50 @@ fn av1_layered_streams_recover_at_the_next_base_frame() {
 #[test]
 fn hevc_presets_recover() {
     for preset in [
-        DEFAULT,
-        include_str!("../../../presets/hevc/fast.toml"),
-        include_str!("../../../presets/hevc/faster.toml"),
+        ParamOverrides::default(),
+        shipped(Codec::Hevc, 1, "fast"),
+        shipped(Codec::Hevc, 1, "faster"),
         // The slow rung: the shared bundle, then HEVC's deltas (nc_encoder::presets).
-        concat!(
-            include_str!("../../../presets/slow.toml"),
-            include_str!("../../../presets/hevc/slow.toml")
-        ),
+        shipped(Codec::Hevc, 1, "slow"),
     ] {
-        check_preset::<nc_hevc::HevcBackend>(Codec::Hevc, preset, &FLAT_RECOVERY);
+        check_preset::<nc_hevc::HevcBackend>(Codec::Hevc, &preset, &FLAT_RECOVERY);
     }
 }
 
 #[test]
 fn vp9_presets_recover() {
     for preset in [
-        DEFAULT,
-        include_str!("../../../presets/vp9/fast.toml"),
-        include_str!("../../../presets/vp9/faster.toml"),
-        include_str!("../../../presets/vp9/veryfast.toml"),
+        ParamOverrides::default(),
+        shipped(Codec::Vp9, 1, "fast"),
+        shipped(Codec::Vp9, 1, "faster"),
+        shipped(Codec::Vp9, 1, "veryfast"),
         // The slow rung: the shared bundle, then VP9's levers (nc_encoder::presets).
-        concat!(
-            include_str!("../../../presets/slow.toml"),
-            include_str!("../../../presets/vp9/slow.toml")
-        ),
+        shipped(Codec::Vp9, 1, "slow"),
     ] {
-        check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, preset, &FLAT_RECOVERY);
+        check_preset::<nc_vp9::Vp9Backend>(Codec::Vp9, &preset, &FLAT_RECOVERY);
     }
 }
 
 #[test]
 fn vvc_presets_recover() {
     for preset in [
-        DEFAULT,
-        include_str!("../../../presets/vvc/fast.toml"),
+        ParamOverrides::default(),
+        shipped(Codec::Vvc, 1, "fast"),
         // The slow rung: the shared bundle, then VVC's levers (nc_encoder::presets).
-        concat!(
-            include_str!("../../../presets/slow.toml"),
-            include_str!("../../../presets/vvc/slow.toml")
-        ),
+        shipped(Codec::Vvc, 1, "slow"),
     ] {
-        check_preset::<nc_vvc::VvcBackend>(Codec::Vvc, preset, &FLAT_RECOVERY);
+        check_preset::<nc_vvc::VvcBackend>(Codec::Vvc, &preset, &FLAT_RECOVERY);
     }
 }
 
 #[test]
 fn av2_presets_recover() {
     for preset in [
-        DEFAULT,
-        include_str!("../../../presets/av2/fast.toml"),
+        ParamOverrides::default(),
+        shipped(Codec::Av2, 1, "fast"),
         // The slow rung: the shared bundle, then AV2's levers (nc_encoder::presets).
-        concat!(
-            include_str!("../../../presets/slow.toml"),
-            include_str!("../../../presets/av2/slow.toml")
-        ),
+        shipped(Codec::Av2, 1, "slow"),
     ] {
-        check_preset::<nc_av2::Av2Backend>(Codec::Av2, preset, &FLAT_RECOVERY);
+        check_preset::<nc_av2::Av2Backend>(Codec::Av2, &preset, &FLAT_RECOVERY);
     }
 }

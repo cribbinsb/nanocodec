@@ -19,6 +19,6 @@ if [[ ! -d $root/streams || ! -d $root/supplementary ]]; then
     exit 0
 fi
 target_dir=${CARGO_TARGET_DIR:-target}
-cargo build --release --quiet -j "${BUILD_JOBS:-8}" -p nc-cli
+cargo build --release --quiet -j "${BUILD_JOBS:-8}" -p nanocodec-cli
 python3 -I tools/ci/h264_conformance.py --bin "$target_dir/release" --root "$root" \
     --jobs "${JOBS:-4}" "$@"

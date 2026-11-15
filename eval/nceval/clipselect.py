@@ -66,7 +66,7 @@ def measure(args: argparse.Namespace) -> None:
     codec = Codec(args.codec)
     binary, _ = levels.build(args.binary, load_paths(), "tune")
     presets = binary.parent / "presets"
-    presets = presets if presets.is_dir() else REPO_ROOT / "presets"
+    presets = presets if presets.is_dir() else REPO_ROOT / "crates/nc-encoder/presets"
     preset = preset_values(presets, codec, args.preset)
     domains = read_space(Path(args.space).read_text(), specs_of(binary, codec), preset)
     by_family = {}

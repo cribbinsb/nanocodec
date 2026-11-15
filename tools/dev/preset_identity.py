@@ -112,7 +112,7 @@ def main() -> int:
 
     jobs = []  # (name, old arguments, new arguments)
     for codec in a.codecs.split(","):
-        for stem in presets(codec, REPO / "presets"):
+        for stem in presets(codec, REPO / "crates/nc-encoder/presets"):
             old_args = old_preset_args(codec, stem) if a.old_names else preset_args(stem)
             old = commands(codec, old_args, a.frames)
             new = commands(codec, preset_args(stem), a.frames)

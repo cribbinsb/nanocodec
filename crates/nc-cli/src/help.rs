@@ -649,7 +649,7 @@ mod tests {
         let actual = std::fs::read_to_string(&path).unwrap_or_default();
         assert!(
             actual == expected,
-            "{} is out of date: NC_BLESS=1 cargo test -p nc-cli --bin nanocodec help::",
+            "{} is out of date: NC_BLESS=1 cargo test -p nanocodec-cli --bin nanocodec help::",
             path.display()
         );
     }

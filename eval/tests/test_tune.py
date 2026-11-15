@@ -371,7 +371,7 @@ class TuningGuards(unittest.TestCase):
              patch.object(tune, "REPO_ROOT", Path(tmp)), \
              patch.object(tune.optuna, "load_study", return_value=study):
             tune.write_presets(argparse.Namespace(study="exploratory", trials="0:tradeoff", codec="av1"))
-            text = (Path(tmp) / "presets/candidates/av1-tradeoff.toml").read_text()
+            text = (Path(tmp) / "crates/nc-encoder/presets/candidates/av1-tradeoff.toml").read_text()
             self.assertIn("Strict clean-noise no-loss passed: False", text)
             self.assertIn("noise constrained in study: False", text)
             self.assertIn('"best": -0.01', text)

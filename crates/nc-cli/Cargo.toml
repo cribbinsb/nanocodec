@@ -1,16 +1,23 @@
 [package]
-name = "nc-cli"
-description = "nanocodec command-line encoder"
+name = "nanocodec-cli"
+description = "nanocodec command-line encoder and decoder (the `nanocodec` binary)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://cribbinsb.github.io/nanocodec/docs/cli.html"
+keywords.workspace = true
+categories.workspace = true
 autotests = false
 
 [[bin]]
 name = "nanocodec"
 path = "src/main.rs"
+# The front-door library crate is also `nanocodec`: a binary has no API to
+# document, and two `nanocodec` pages would overwrite each other.
+doc = false
 
 [[test]]
 name = "integration"

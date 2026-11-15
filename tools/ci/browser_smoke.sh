@@ -60,7 +60,7 @@ elif python3 -c 'import playwright' 2>/dev/null; then
     # The native-replay tests compare against our native decoder, built here with
     # the same profile as the browser module (NC_NANOCODEC_BIN overrides it).
     if [[ -z "${NC_NANOCODEC_BIN:-}" ]] && python3 tools/ci/web_tests.py --needs-native; then
-        cargo build --frozen --profile "${WEB_PROFILE:-gate}" -p nc-cli -j "${BUILD_JOBS:-8}"
+        cargo build --frozen --profile "${WEB_PROFILE:-gate}" -p nanocodec-cli -j "${BUILD_JOBS:-8}"
         export NC_NANOCODEC_BIN=${CARGO_TARGET_DIR:-target}/${WEB_PROFILE:-gate}/nanocodec
     fi
     python3 tools/ci/web_tests.py

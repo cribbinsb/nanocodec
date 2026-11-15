@@ -101,6 +101,12 @@ target/release/nanocodec decode --codec av1 --input video.ivf --output decoded.y
 cover building for x86_64, aarch64 and wasm32, every command-line option, the C API, the Rust API, the browser
 module and the presets; more CLI detail: [crates/nc-cli/README.md](crates/nc-cli/README.md).
 
+## Use from Rust
+
+Once published on crates.io: `cargo add nanocodec`. Each codec is a cargo feature (`h264`, `hevc`, `vvc`, `av1`,
+`vp9`, `av2`; all on by default), and the crate documentation has an encode and decode example. The command-line
+tool is `cargo install nanocodec-cli`. The crates are published with `tools/release/publish_crates.sh`.
+
 ## Presets
 
 One preset ladder for every codec, chosen with `--codec X --preset NAME`:

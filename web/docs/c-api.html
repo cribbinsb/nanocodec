@@ -29,7 +29,7 @@
     thrown or aborted across the interface. An encoder or decoder is not thread-safe: use one per thread.</p>
 
   <h2 id="build">Build and link</h2>
-<pre><code>cargo build --release -p nc-capi
+<pre><code>cargo build --release -p nanocodec-capi
 # static: target/release/libnanocodec.a (also needs -lpthread -ldl -lm)
 cc -std=c99 -I crates/nc-capi/include app.c target/release/libnanocodec.a -lpthread -ldl -lm -o app
 # shared: target/release/libnanocodec.so

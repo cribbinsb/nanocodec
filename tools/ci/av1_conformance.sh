@@ -50,7 +50,7 @@ if [ "$FETCH" = 1 ]; then
   done < <(grep -v '^#' "$MANIFEST")
 fi
 
-[ -x "$NANOCODEC" ] || { echo "missing $NANOCODEC (cargo build --release -p nc-cli)"; exit 1; }
+[ -x "$NANOCODEC" ] || { echo "missing $NANOCODEC (cargo build --release -p nanocodec-cli)"; exit 1; }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 

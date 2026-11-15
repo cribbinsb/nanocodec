@@ -2,7 +2,7 @@
 //! a raw I420 clip, against a long-horizon oracle.
 //!
 //! ```text
-//! cargo run --release -p nc-analysis --example still_probe -- \
+//! cargo run --release -p nanocodec-analysis --example still_probe -- \
 //!     clip.yuv WIDTH HEIGHT [--frames N]
 //! ```
 //!

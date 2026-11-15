@@ -3,97 +3,97 @@
 version = 4
 
 [[package]]
-name = "nc-analysis"
+name = "nanocodec-analysis"
 version = "0.1.0"
 dependencies = [
- "nc-common",
- "nc-dsp",
+ "nanocodec-common",
+ "nanocodec-dsp",
 ]
 
 [[package]]
-name = "nc-av1"
+name = "nanocodec-av1"
 version = "0.1.0"
 dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
 ]
 
 [[package]]
-name = "nc-av2"
+name = "nanocodec-av2"
 version = "0.1.0"
 dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
 ]
 
 [[package]]
-name = "nc-common"
+name = "nanocodec-common"
 version = "0.1.0"
 
 [[package]]
-name = "nc-dsp"
+name = "nanocodec-dsp"
 version = "0.1.0"
 dependencies = [
- "nc-common",
+ "nanocodec-common",
 ]
 
 [[package]]
-name = "nc-encoder"
+name = "nanocodec-encoder"
 version = "0.1.0"
 dependencies = [
- "nc-analysis",
- "nc-common",
- "nc-dsp",
+ "nanocodec-analysis",
+ "nanocodec-common",
+ "nanocodec-dsp",
+]
+
+[[package]]
+name = "nanocodec-h264"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-hevc"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-vp9"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
+]
+
+[[package]]
+name = "nanocodec-vvc"
+version = "0.1.0"
+dependencies = [
+ "nanocodec-common",
+ "nanocodec-dsp",
+ "nanocodec-encoder",
 ]
 
 [[package]]
 name = "nc-fuzz-replay"
 version = "0.0.0"
 dependencies = [
- "nc-av1",
- "nc-av2",
- "nc-common",
- "nc-encoder",
- "nc-h264",
- "nc-hevc",
- "nc-vp9",
- "nc-vvc",
-]
-
-[[package]]
-name = "nc-h264"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-hevc"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-vp9"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
-]
-
-[[package]]
-name = "nc-vvc"
-version = "0.1.0"
-dependencies = [
- "nc-common",
- "nc-dsp",
- "nc-encoder",
+ "nanocodec-av1",
+ "nanocodec-av2",
+ "nanocodec-common",
+ "nanocodec-encoder",
+ "nanocodec-h264",
+ "nanocodec-hevc",
+ "nanocodec-vp9",
+ "nanocodec-vvc",
 ]

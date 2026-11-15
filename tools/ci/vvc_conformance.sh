@@ -5,7 +5,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 export PATH="$HOME/.cargo/bin:$PATH"
 if [[ -z ${NANOCODEC:-} ]]; then
-    (cd "$REPO" && cargo build --release --quiet -j4 -p nc-cli)
+    (cd "$REPO" && cargo build --release --quiet -j4 -p nanocodec-cli)
     NANOCODEC=${CARGO_TARGET_DIR:-$REPO/target}/release/nanocodec
 fi
 exec python3 -I "$REPO/tools/ci/vvc_conformance.py" --bin "$NANOCODEC" \

@@ -250,7 +250,7 @@ mod tests {
         let mut expected = ParamOverrides::default();
         apply_file_text(
             &mut expected,
-            include_str!("../../../presets/candidates/av1-joint-fast.toml"),
+            include_str!("../tests/data/av1-joint-fast.toml"),
             "historical AV1 fast",
         )
         .unwrap();

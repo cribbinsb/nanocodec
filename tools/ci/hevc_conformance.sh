@@ -19,7 +19,7 @@ if [[ ! -d $STREAMS ]]; then
     exit 2
 fi
 if [[ -z ${NANOCODEC:-} ]]; then
-    (cd "$REPO" && cargo build --release --quiet -p nc-cli)
+    (cd "$REPO" && cargo build --release --quiet -p nanocodec-cli)
     NANOCODEC=${CARGO_TARGET_DIR:-$REPO/target}/release/nanocodec
 fi
 exec python3 -I "$REPO/tools/ci/hevc_conformance.py" --bin "$NANOCODEC" \

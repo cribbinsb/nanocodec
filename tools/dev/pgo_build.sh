@@ -43,7 +43,7 @@ mkdir -p "$work/profiles" "$work/streams"
 base_flags=${RUSTFLAGS:-}
 cd "$tree"
 RUSTFLAGS="$base_flags -Cprofile-generate=$work/profiles" CARGO_TARGET_DIR=$target/pgo-generate \
-  "$cargo" build --release -j"$jobs" -p nc-cli
+  "$cargo" build --release -j"$jobs" --bin nanocodec
 instrumented=$target/pgo-generate/release/nanocodec
 
 # Every codec's shipped presets (medium and presets/<codec>/*.toml), one line
@@ -51,13 +51,15 @@ instrumented=$target/pgo-generate/release/nanocodec
 # from before the 2026-11-15 preset rename keeps them flat as
 # presets/<codec>-*.toml, each its own --preset name.
 shipped_presets() {
-  if [ -d presets/h264 ]; then
+  presets=crates/nc-encoder/presets
+  [ -d "$presets" ] || presets=presets  # a tree from before they moved into the crate
+  if [ -d "$presets/h264" ]; then
     python3 -c 'import sys; sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 from nceval.encoders.nanocodec import preset_cli_args, shipped_presets
 for codec in ("h264", "hevc", "av1", "vp9", "av2", "vvc"):
-    for stem in shipped_presets(codec, Path("presets")):
-        print(codec, stem, *preset_cli_args(codec, stem, Path("presets")))' "$root/eval"
+    for stem in shipped_presets(codec, Path(sys.argv[2])):
+        print(codec, stem, *preset_cli_args(codec, stem, Path(sys.argv[2])))' "$root/eval" "$presets"
     return
   fi
   for codec in h264 hevc av1 vp9 av2 vvc; do
@@ -82,7 +84,7 @@ done < "$work/presets.txt"
 
 "$profdata" merge -o "$work/merged.profdata" "$work/profiles"
 RUSTFLAGS="$base_flags -Cprofile-use=$work/merged.profdata" CARGO_TARGET_DIR=$target \
-  "$cargo" build --release -j"$jobs" -p nc-cli
+  "$cargo" build --release -j"$jobs" --bin nanocodec
 if [ "$out" != "$target/release/nanocodec" ]; then
   mkdir -p "$(dirname "$out")"
   cp "$target/release/nanocodec" "$out"

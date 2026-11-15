@@ -17,7 +17,7 @@ TARGET=${CARGO_TARGET_DIR:-$REPO/target}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-cargo build --release --quiet -p nc-capi -p nc-cli
+cargo build --release --quiet -p nanocodec-capi -p nanocodec-cli
 cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include crates/nc-capi/examples/encode.c \
   "$TARGET/release/libnanocodec.a" -lpthread -ldl -lm -o "$WORK/encode"
 cc -std=c99 -Wall -Wextra -Werror -I crates/nc-capi/include crates/nc-capi/examples/roundtrip.c \

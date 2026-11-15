@@ -40,7 +40,9 @@ SCRATCH = "nanocodec-data/work/tune-jetson"
 #: they include) and the embedded presets. The whole repository (docs, web, eval
 #: data) was 231 MB an archive against 15 MB, sent, unpacked and checksummed on
 #: the board for every build.
-BUILD_INPUTS = ("Cargo.toml", "Cargo.lock", "rustfmt.toml", "crates", "presets")
+BUILD_INPUTS = ("Cargo.toml", "Cargo.lock", "rustfmt.toml", "crates")
+#: Where the presets were before they moved into crates/nc-encoder (older commits).
+OLD_PRESETS = "presets"
 #: 720p, 150-frame copies of nceval.tune.COST_CLIPS (tools/dev/offpath_ab.sh uses them too).
 CLIP_DIR = "nanocodec-data/work/adopted-fast-reference-native"
 CLIPS = {"crowd_mot17_09": 30.0, "bodycam_bc1": 29.97, "static_cam22": 25.0}
@@ -77,13 +79,16 @@ def build_command(commit: str) -> str:
                    f"false; }}; }}")
     inner = (f"rsync -rc --delete {stage}/ {SOURCE}/ && cd {SOURCE} && "
              f"nice -n 19 env PATH=$HOME/.cargo/bin:$PATH NC_BUILD_COMMIT={full} "
-             f"cargo build --release -j{BUILD_JOBS} -p nc-cli --target-dir ~/{TARGET} && "
+             f"cargo build --release -j{BUILD_JOBS} --bin nanocodec --target-dir ~/{TARGET} && "
              f"{stamp_check} && mkdir -p ~/{build} && cp {built} ~/{build}/ && "
              f"echo {commit} > ~/{build}/{COMPLETE_MARKER}")
     remote = (f"rm -rf {stage} && mkdir -p {stage} {SOURCE} && tar -x -C {stage} && "
               f"~/nanocodec-data/jetson-build.sh flock {SOURCE}.lock "
               f"bash -c {shlex.quote(inner)}; status=$?; rm -rf {stage}; exit $status")
-    return (f"git -C {shlex.quote(str(REPO))} archive {commit} {' '.join(BUILD_INPUTS)} | "
+    old = subprocess.run(["git", "-C", str(REPO), "cat-file", "-e", f"{commit}:{OLD_PRESETS}"],
+                         capture_output=True).returncode == 0
+    inputs = (*BUILD_INPUTS, OLD_PRESETS) if old else BUILD_INPUTS
+    return (f"git -C {shlex.quote(str(REPO))} archive {commit} {' '.join(inputs)} | "
             f"ssh -o BatchMode=yes {require('NC_JETSON')} {shlex.quote(remote)}")
 
 
@@ -107,7 +112,7 @@ def ensure_build(commit: str) -> str:
 
 def same_build_inputs(a: str, b: str) -> bool:
     """Whether commits `a` and `b` have identical BUILD_INPUTS (a commit unknown here: no)."""
-    return subprocess.run(["git", "-C", str(REPO), "diff", "--quiet", a, b, "--", *BUILD_INPUTS],
+    return subprocess.run(["git", "-C", str(REPO), "diff", "--quiet", a, b, "--", *BUILD_INPUTS, OLD_PRESETS],
                           capture_output=True).returncode == 0
 
 

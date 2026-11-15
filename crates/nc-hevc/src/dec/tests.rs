@@ -881,14 +881,7 @@ mod browser_tests {
     use crate::HevcBackend;
     use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides};
     fn fast_parameters() -> ParamOverrides {
-        let mut p = ParamOverrides::default();
-        for line in include_str!("../../../../presets/hevc/fast.toml").lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            if let Some((key, value)) = line.split_once('=') {
-                p.set(key.trim(), value.trim().parse().unwrap());
-            }
-        }
-        p
+        nc_encoder::preset_params(Codec::Hevc, 1, "fast").unwrap()
     }
     pub(super) fn config(width: usize, height: usize, qp: u32, fast: bool) -> EncoderConfig {
         EncoderConfig {

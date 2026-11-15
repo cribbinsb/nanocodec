@@ -13,14 +13,14 @@ members = ["."]
 
 [dependencies]
 libfuzzer-sys = "0.4"
-nc-common = { path = "../crates/nc-common" }
-nc-h264 = { path = "../crates/nc-h264" }
-nc-hevc = { path = "../crates/nc-hevc" }
-nc-vvc = { path = "../crates/nc-vvc" }
-nc-av1 = { path = "../crates/nc-av1" }
-nc-vp9 = { path = "../crates/nc-vp9" }
-nc-av2 = { path = "../crates/nc-av2" }
-nc-encoder = { path = "../crates/nc-encoder" }
+nc-common = { package = "nanocodec-common", path = "../crates/nc-common" }
+nc-h264 = { package = "nanocodec-h264", path = "../crates/nc-h264" }
+nc-hevc = { package = "nanocodec-hevc", path = "../crates/nc-hevc" }
+nc-vvc = { package = "nanocodec-vvc", path = "../crates/nc-vvc" }
+nc-av1 = { package = "nanocodec-av1", path = "../crates/nc-av1" }
+nc-vp9 = { package = "nanocodec-vp9", path = "../crates/nc-vp9" }
+nc-av2 = { package = "nanocodec-av2", path = "../crates/nc-av2" }
+nc-encoder = { package = "nanocodec-encoder", path = "../crates/nc-encoder" }
 
 [[bin]]
 name = "decode_h264"

@@ -1,15 +1,24 @@
 [package]
-name = "nc-capi"
-description = "C ABI for embedding the nanocodec encoder (staticlib/cdylib + include/nanocodec.h)"
+name = "nanocodec-capi"
+description = "C ABI for embedding the nanocodec encoders and decoders (staticlib/cdylib + include/nanocodec.h)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://cribbinsb.github.io/nanocodec/docs/c-api.html"
+keywords.workspace = true
+categories.workspace = true
 
+# The C library is `libnanocodec`. No rlib and no rustdoc: Rust code uses the
+# `nanocodec` crate, whose library has the same name (two `libnanocodec.rlib`
+# or two `nanocodec` doc pages in one build overwrite each other). The API
+# documentation is the header, include/nanocodec.h.
 [lib]
 name = "nanocodec"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["staticlib", "cdylib"]
+doc = false
 
 [dependencies]
 nc-common.workspace = true

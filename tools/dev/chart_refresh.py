@@ -167,8 +167,12 @@ TIMING_X86_FILE = f"{RESULTS}/bd-vs-speed-timing-x86.json"
 #: adds them, measured on this PC's GPU, beside the chart.
 TIMING_HARDWARE_FILE = f"{RESULTS}/bd-vs-speed-timing-nvenc.json"
 #: The paths whose change can change an encoder build's output.
-BINARY_INPUTS = ("crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo")
-BUILD_INPUTS = (*BINARY_INPUTS, "presets")
+#: The shipped presets (in the crate that embeds them) and, in commits before
+#: 2026-11-15, where they were. A chart point takes its preset's values from
+#: the build directory's copy, so a preset change alone needs no new binary.
+PRESETS_PATH, OLD_PRESETS_PATH = "crates/nc-encoder/presets", "presets"
+BINARY_INPUTS = ("crates", f":(exclude){PRESETS_PATH}", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo")
+BUILD_INPUTS = (*BINARY_INPUTS, PRESETS_PATH, OLD_PRESETS_PATH)
 #: Written last into a finished build directory (on both machines).
 COMPLETE_MARKER = "COMMIT"
 STEPS = ("build", "verify", "delete", "scan", "measure", "time-x86", "time-jetson", "render",
@@ -329,7 +333,7 @@ class Refresh:
                 self.run(["git", "worktree", "add", "--detach", str(tree), self.commit], log)
             self.run(["git", "checkout", "-q", "--detach", self.commit], log, tree)
             built = target / profile / "nanocodec"
-            self.run(["cargo", "build", "--profile", profile, "-j8", "-p", "nc-cli"], log,
+            self.run(["cargo", "build", "--profile", profile, "-j8", "--bin", "nanocodec"], log,
                      tree, env=env)
             if not self.args.dry_run:  # placed while locked: another refresh may rebuild next
                 verify_build(built, self.commit)
@@ -345,9 +349,13 @@ class Refresh:
         presets = target / "presets"
         shutil.rmtree(presets, ignore_errors=True)
         presets.mkdir(parents=True)
-        archive = subprocess.run(["git", "-C", str(REPO), "archive", self.commit, "presets"],
+        moved = subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
+                                f"{self.commit}:{PRESETS_PATH}"], capture_output=True)
+        source = PRESETS_PATH if moved.returncode == 0 else OLD_PRESETS_PATH
+        archive = subprocess.run(["git", "-C", str(REPO), "archive", self.commit, source],
                                  check=True, capture_output=True).stdout
-        subprocess.run(["tar", "-x", "--strip-components=1", "-C", str(presets)], input=archive,
+        subprocess.run(["tar", "-x", f"--strip-components={source.count('/') + 1}", "-C",
+                        str(presets)], input=archive,
                        check=True)
         (target / COMPLETE_MARKER).write_text(self.commit + "\n")
 
@@ -836,8 +844,9 @@ def speed_inputs(family: str) -> tuple[str, ...]:
     rung = family.split("@")[1] if "@" in family else DEFAULT_RUNG
     codec = chart_sanity.codec_of(family)
     return (*(f"crates/{c}" for c in (*SHARED_SPEED_CRATES, f"nc-{codec}")),
+            f":(exclude){PRESETS_PATH}",
             "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
-            f"presets/{codec}/{rung}.toml")
+            *(f"{presets}/{codec}/{rung}.toml" for presets in (PRESETS_PATH, OLD_PRESETS_PATH)))
 
 
 def sources_equal(old: str, new: str, inputs: tuple[str, ...] = BUILD_INPUTS) -> bool:

@@ -9,7 +9,7 @@
 # ffmpeg for H.264; and nanocodec's own decoder.
 #
 # Needs the pinned decoders from tools/anchors/build_anchors.sh and a release
-# build of nanocodec (cargo build --release -p nc-cli).
+# build of nanocodec (cargo build --release -p nanocodec-cli).
 
 set -euo pipefail
 

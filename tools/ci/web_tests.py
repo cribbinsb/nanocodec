@@ -46,7 +46,7 @@ FAILURE_TAIL = 40
 
 #: Changed paths (prefixes) that can affect every test.
 SHARED = (
-    "crates/", "Cargo.toml", "Cargo.lock", "presets/", "tools/web/build.sh",
+    "crates/", "Cargo.toml", "Cargo.lock", "tools/web/build.sh",
     "tools/ci/browser_smoke.sh", "tools/ci/web_tests.py",
     "web/wasm.js", "web/site-header.css", "web/index.html",
 )

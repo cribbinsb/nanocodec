@@ -80,7 +80,7 @@ export PATH=$HOME/.cargo/bin:$PATH
 for side in off on; do
   ((x86)) || break
   (cd "$work/$side-tree" &&
-    nice -n 19 cargo build --release -j4 -p nc-cli --target-dir "$targets/$side" 2>&1 | tail -1)
+    nice -n 19 cargo build --release -j4 --bin nanocodec --target-dir "$targets/$side" 2>&1 | tail -1)
 done
 
 encode_args() { # CODEC
