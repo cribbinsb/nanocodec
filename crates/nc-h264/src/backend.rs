@@ -16,8 +16,8 @@ use nc_dsp::{BlockSize, Dsp};
 use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameType, Mv,
-    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, StaticSkipTest, holds_frames,
-    long_term_slot, reference_slots, uses_long_term_slot,
+    PredictionMode, QuantParams, RdWalk, ReferenceChoice, RefreshWindow, StaticSkipTest,
+    holds_frames, long_term_slot, rd_refine_vector, reference_slots, uses_long_term_slot,
 };
 
 use crate::cabac::{BinCosts, BinSink, CabacEncoder, MbPart, SliceKind};
@@ -41,7 +41,7 @@ use crate::params::{
     Entropy, StreamParams, idr_slice_header, p_slice_header, picture_parameter_set,
     sequence_parameter_set,
 };
-use crate::partition::{SplitSearch, choose_partition, mvd_bits};
+use crate::partition::{Motion, SplitSearch, choose_partition, mvd_bits};
 use crate::predict::ChromaMode;
 use crate::references::{NAL_REF_IDC_IDR, ReferenceTracker};
 use crate::residual::trellis::TrellisQuantizer;
@@ -230,6 +230,32 @@ nc_encoder::param_group! {
         /// CABAC model (its contexts at their slice-initial state).
         cavlc: 0.0, [0.0, 1.0],
             "1 codes the slice data with CAVLC instead of CABAC: faster entropy coding, more bits",
+        /// x264's `subme` 8/9: inter macroblocks decided by their coded cost
+        /// (squared error of all three planes after quantisation plus λ
+        /// times the macroblock's CABAC bits) instead of SATD + λ·vector
+        /// bits. 1 walks each partition's final vector to its best
+        /// quarter-sample neighbour (`nc_encoder::rd_refine_vector`); 2 first
+        /// picks between 16x16 and the best split shape the SATD search
+        /// ranked (no further gain: J -2.9% vs -3.0%). Fixed QP, quick pool
+        /// level (n=23) vs the Default, with x86 P-frame instructions:
+        /// square, 2 steps, no SATD gate J -3.0% at +287%; the defaults
+        /// below (square, 2 steps, gate 1.0) -2.5% [-3.6, -2.0] at +96%;
+        /// gate 17/16 -2.8% at +172%; cross, 1 step, gate 1.0 -1.5% at +51%.
+        /// Off: k* about 0.03 at best, below medium's k. A slow-rung
+        /// candidate (docs/handoff/h264.md, "RD refinement").
+        rd_refine: 0.0, [0.0, 2.0],
+            "rate-distortion inter refinement (rounded): 0 off, 1 quarter-sample RD on the final vectors, 2 also 16x16 vs best split by RD; higher is slower, better compression",
+        rd_refine_steps: 2.0, [1.0, 3.0],
+            "with rd_refine, quarter-sample moves per vector at most (rounded): higher is slower",
+        rd_refine_square: 1.0, [0.0, 1.0],
+            "with rd_refine, 1 tries all eight quarter-sample neighbours per move, 0 the four in its row and column: 0 is faster",
+        /// x264's `refine_qpel_rd` gate (`SATD_THRESH`, 17/16 there): a
+        /// neighbour is coded and priced only when its luma SATD is within
+        /// this multiple of the best vector's so far; the SATD needs only
+        /// the luma prediction, which the coded cost computes first anyway.
+        /// 1.0 keeps most of 17/16's gain at about half its work (above).
+        rd_refine_satd_margin: 1.0, [0.0, 4.0],
+            "with rd_refine, a neighbour is priced only if its luma SATD is at most this multiple of the best so far (0: always): lower is faster",
     }
 }
 
@@ -347,6 +373,8 @@ pub struct H264Backend {
     /// mode writes all of it, and a fresh zeroed one per macroblock was a
     /// 384-byte memset (crowd QP 36: 1.2M of 689M instructions).
     mb_pred: Option<Box<Prediction>>,
+    /// Trial predictions of `h264.rd_refine`, reused across macroblocks.
+    rd_pred: Option<Box<Prediction>>,
     /// The exact 16x16 luma prediction of the engine's winning fractional
     /// candidate (`h264.exact_ranking`), taken when that macroblock is coded.
     exact_luma: Cell<Option<ExactLuma>>,
@@ -619,8 +647,9 @@ impl H264Backend {
     }
 
     /// How macroblock `block` is predicted (into `pred`) for the engine's
-    /// `decision`, and which residual parts may be skipped; pictures and
-    /// `sub_vectors` as in [`Self::code_macroblock`].
+    /// `decision`, which residual parts may be skipped, and for inter the
+    /// partitioning that competed with the chosen one ([`Self::choose_inter`]);
+    /// pictures and `sub_vectors` as in [`Self::code_macroblock`].
     fn choose_macroblock(
         &mut self,
         block: &Block,
@@ -628,9 +657,9 @@ impl H264Backend {
         (source, reference, recon): (&Picture, Option<&Picture>, &mut Picture),
         sub_vectors: Option<[Mv; 4]>,
         pred: &mut Prediction,
-    ) -> (MbChoice, ResidualSkip) {
+    ) -> (MbChoice, ResidualSkip, Option<Motion>) {
         if self.random.is_some() {
-            return self.random_choice(
+            let (choice, zero) = self.random_choice(
                 block,
                 decision.mode,
                 source,
@@ -639,6 +668,7 @@ impl H264Backend {
                 sub_vectors,
                 pred,
             );
+            return (choice, zero, None);
         }
         let plan = match decision.mode {
             PredictionMode::IntraDc => {
@@ -648,7 +678,7 @@ impl H264Backend {
             PredictionMode::Inter(mv) => MbPlan::Inter(mv),
         };
         match plan {
-            MbPlan::Intra(choice) => (choice, ResidualSkip::NONE),
+            MbPlan::Intra(choice) => (choice, ResidualSkip::NONE, None),
             MbPlan::Inter(mv) => {
                 let reference = reference.expect("inter blocks need a reference picture");
                 let predicted = self.predicted_vectors(block); // still cached
@@ -921,8 +951,10 @@ impl H264Backend {
     }
 
     /// The motion partitioning and prediction of the inter macroblock at
-    /// `(x, y)` whose engine-chosen vector is `mv`, and which parts of its
-    /// residual the configured SAD thresholds permit skipping.
+    /// `(x, y)` whose engine-chosen vector is `mv`, which parts of its
+    /// residual the configured SAD thresholds permit skipping, and the
+    /// partitioning the split search ranked next (16x16 when a split won,
+    /// else the best split; `None` when no split was ranked).
     /// `sub_vectors` are the motion search's 8x8 vectors of the macroblock.
     fn choose_inter(
         &self,
@@ -933,7 +965,7 @@ impl H264Backend {
         sub_vectors: Option<[Mv; 4]>,
         predicted: PredictedVectors,
         pred: &mut Prediction,
-    ) -> (MbChoice, ResidualSkip) {
+    ) -> (MbChoice, ResidualSkip, Option<Motion>) {
         let unsplit = MbChoice::Inter {
             partition: MbPartition::P16x16,
             mvs: [mv; 4],
@@ -954,13 +986,13 @@ impl H264Backend {
         // skip vector passing all residual thresholds needs no partition search.
         // With threshold scales above 1 this is a deliberate speed/quality tradeoff.
         if zero16.all() && Some(mv) == predicted.skip {
-            return (unsplit, zero16);
+            return (unsplit, zero16, None);
         }
         if self.tuning.partition_search < 0.5 {
-            return (unsplit, zero16);
+            return (unsplit, zero16, None);
         }
         let sub_vectors = sub_vectors.unwrap_or([mv; 4]);
-        let (partition, mvs) = choose_partition(
+        let ((partition, mvs), best_split) = choose_partition(
             &self.dsp,
             &self.mc,
             source,
@@ -984,12 +1016,257 @@ impl H264Backend {
                 refine_mv16: self.tuning.split_refine_mv16 >= 0.5,
             },
         );
+        let best_split = best_split.filter(|(_, mvs)| self.refresh_allows_quadrants(x, mvs));
         if partition == MbPartition::P16x16 || !self.refresh_allows_quadrants(x, &mvs) {
-            return (unsplit, zero16);
+            return (unsplit, zero16, best_split);
         }
         predict_inter(&self.mc, reference, x, y, &mvs, pred);
         let zero = inter_residual_skip(&self.dsp, source, pred, x, y, &self.quantizers);
-        (MbChoice::Inter { partition, mvs }, zero)
+        let unsplit_motion = (MbPartition::P16x16, [mv; 4]);
+        (
+            MbChoice::Inter { partition, mvs },
+            zero,
+            Some(unsplit_motion),
+        )
+    }
+
+    /// `h264.rd_refine` (rounded) where it applies: not under random
+    /// syntax, nor past the λ-headroom cap, where the planned dead zone
+    /// decides levels.
+    fn rd_refine_level(&self) -> u8 {
+        if self.random.is_some() || self.lambda_scale > 1.0 {
+            0
+        } else {
+            self.tuning.rd_refine.round() as u8
+        }
+    }
+
+    /// [`Self::rd_refine_inter`] of an inter `choice` where `h264.rd_refine`
+    /// applies; other choices are returned as they are.
+    fn rd_refine_choice(
+        &mut self,
+        block: &Block,
+        (choice, zero, alternative): (MbChoice, ResidualSkip, Option<Motion>),
+        (source, reference): (&Picture, Option<&Picture>),
+        pred: &mut Prediction,
+        recon: &mut Picture,
+    ) -> (MbChoice, ResidualSkip) {
+        let level = self.rd_refine_level();
+        match (&choice, reference) {
+            (&MbChoice::Inter { partition, mvs }, Some(reference)) if level > 0 => {
+                let ((partition, mvs), zero) = self.rd_refine_inter(
+                    block,
+                    ((partition, mvs), zero),
+                    alternative,
+                    (source, reference),
+                    pred,
+                    recon,
+                    level,
+                );
+                (MbChoice::Inter { partition, mvs }, zero)
+            }
+            _ => (choice, zero),
+        }
+    }
+
+    /// `h264.rd_refine`: the inter macroblock `block` chosen as `motion`
+    /// (prediction in `pred`, residual skips `zero`) decided again by coded
+    /// cost ([`Self::coded_motion_cost`]): at level 2 against `alternative`
+    /// (the partitioning the SATD search ranked next), then each partition's
+    /// vector walked to its best quarter-sample neighbour. A `P_Skip`
+    /// macroblock stays: it is the cheapest coding there is. Leaves `pred`
+    /// and the returned skips for the winner, and `recon` holding some
+    /// trial reconstruction (the caller reconstructs the winner).
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn rd_refine_inter(
+        &mut self,
+        block: &Block,
+        (motion, zero): (Motion, ResidualSkip),
+        alternative: Option<Motion>,
+        (source, reference): (&Picture, &Picture),
+        pred: &mut Prediction,
+        recon: &mut Picture,
+        level: u8,
+    ) -> (Motion, ResidualSkip) {
+        let (partition, mvs) = motion;
+        if partition == MbPartition::P16x16 && zero.all() && Some(mvs[0]) == self.skip_mv_of(block)
+        {
+            return (motion, zero);
+        }
+        let walk = RdWalk {
+            square: self.tuning.rd_refine_square >= 0.5,
+            steps: self.tuning.rd_refine_steps.round() as usize,
+        };
+        let margin = self.tuning.rd_refine_satd_margin;
+        let satd_limit = |satd: f32| {
+            if margin > 0.0 {
+                satd * margin
+            } else {
+                f32::INFINITY
+            }
+        };
+        // A 16x16 macroblock none of whose neighbours passes the SATD gate
+        // keeps its vector without being coded: the walk could not move.
+        // (Cross, 1 step, gate 17/16: P-frame instructions +88% -> +85%.)
+        if partition == MbPartition::P16x16 && level < 2 && margin > 0.0 {
+            let limit = satd_limit(self.luma_satd(block, source, &pred.luma));
+            let mut luma = [0u8; MB_SIZE * MB_SIZE];
+            let plane = reference.plane(PlaneIndex::Y);
+            let passes = |mv: Mv| {
+                self.mc.luma_16x16(plane, block.x, block.y, mv, &mut luma);
+                self.luma_satd(block, source, &luma) <= limit
+            };
+            if !walk.neighbours(mvs[0]).any(passes) {
+                return (motion, zero);
+            }
+        }
+        let mut trial = self
+            .rd_pred
+            .take()
+            .unwrap_or_else(|| Box::new(Prediction::ZERO));
+        let pictures = (source, reference);
+        let mut coded = |this: &mut Self, motion, satd_limit| {
+            this.coded_motion_cost(block, motion, pictures, (&mut trial, recon), satd_limit)
+        };
+        let (start_satd, start_cost) = coded(self, motion, f32::INFINITY);
+        let mut best = (motion, start_cost.expect("no SATD limit"), start_satd);
+        if let Some(other) = alternative.filter(|_| level >= 2) {
+            let (satd, cost) = coded(self, other, f32::INFINITY);
+            let cost = cost.expect("no SATD limit");
+            if cost < best.1 {
+                best = (other, cost, satd);
+            }
+        }
+        let ((partition, mut mvs), mut cost, mut best_satd) = best;
+        for part in 0..partition.count() {
+            let quadrants = partition_quadrants(partition, part);
+            let start = mvs[quadrants.clone().next().expect("a partition has quadrants")];
+            let with = |mut mvs: [Mv; 4], mv: Mv| {
+                for q in quadrants.clone() {
+                    mvs[q] = mv;
+                }
+                mvs
+            };
+            // The walk keeps the lowest cost it is given, so the lowest seen
+            // here is its best vector, whose SATD sets the gate.
+            let mut lowest = cost;
+            let (mv, refined) = rd_refine_vector(start, cost, walk, |mv| {
+                let candidate = with(mvs, mv);
+                if !self.refresh_allows_quadrants(block.x, &candidate) {
+                    return None;
+                }
+                let (satd, cost) = coded(self, (partition, candidate), satd_limit(best_satd));
+                let cost = cost?;
+                if cost < lowest {
+                    (lowest, best_satd) = (cost, satd);
+                }
+                Some(cost)
+            });
+            mvs = with(mvs, mv);
+            cost = refined;
+        }
+        drop(coded);
+        self.rd_pred = Some(trial);
+        let chosen = (partition, mvs);
+        if chosen == motion {
+            return (motion, zero);
+        }
+        predict_inter(&self.mc, reference, block.x, block.y, &mvs, pred);
+        let zero = inter_residual_skip(&self.dsp, source, pred, block.x, block.y, &self.quantizers);
+        (chosen, zero)
+    }
+
+    /// The luma SATD of macroblock `block` predicted by `luma`.
+    fn luma_satd(&self, block: &Block, source: &Picture, luma: &[u8; MB_SIZE * MB_SIZE]) -> f32 {
+        let src = source
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, MB_SIZE, MB_SIZE)
+            .expect("macroblock inside the picture");
+        let luma =
+            PlaneView::new(luma, MB_SIZE, MB_SIZE, MB_SIZE).expect("buffer covers the block");
+        let size = BlockSize::new(MB_SIZE, MB_SIZE).expect("16x16 is a kernel size");
+        self.dsp.satd(size, &src, &luma) as f32
+    }
+
+    /// The luma SATD of inter macroblock `block` as `(partition, mvs)`,
+    /// and its coded cost unless that SATD exceeds `satd_limit`: squared
+    /// error of all three planes after transform and quantisation (no
+    /// trellis) plus λ times its CABAC bits at the slice's contexts as they
+    /// stand, `P_Skip` where it qualifies. Predicts into `trial` and
+    /// reconstructs into `recon`; uses `self.alt_residual`.
+    fn coded_motion_cost(
+        &mut self,
+        block: &Block,
+        (partition, mvs): Motion,
+        (source, reference): (&Picture, &Picture),
+        (trial, recon): (&mut Prediction, &mut Picture),
+        satd_limit: f32,
+    ) -> (f32, Option<f32>) {
+        let (x, y) = (block.x, block.y);
+        // A 16x16 prediction's chroma waits for the gate.
+        let unsplit = partition == MbPartition::P16x16;
+        if unsplit {
+            self.mc.luma_16x16(
+                reference.plane(PlaneIndex::Y),
+                x,
+                y,
+                mvs[0],
+                &mut trial.luma,
+            );
+        } else {
+            predict_inter(&self.mc, reference, x, y, &mvs, trial);
+        }
+        let satd = self.luma_satd(block, source, &trial.luma);
+        if satd > satd_limit {
+            return (satd, None);
+        }
+        if unsplit {
+            predict_inter_chroma(&self.mc, reference, x, y, mvs[0], trial);
+        }
+        let zero = inter_residual_skip(&self.dsp, source, trial, x, y, &self.quantizers);
+        let mut residual = self
+            .alt_residual
+            .take()
+            .unwrap_or_else(|| Box::new(Residual::empty(ResidualKind::Inter)));
+        if zero.all() {
+            residual.reset(ResidualKind::Inter);
+        } else {
+            transform_macroblock(
+                &self.dsp,
+                source,
+                trial,
+                x,
+                y,
+                inter_residual_kind(zero),
+                &self.quantizers,
+                zero,
+                &mut residual,
+            );
+        }
+        if residual.is_empty() {
+            write_prediction(recon, trial, x, y);
+        } else {
+            reconstruct_macroblock(&self.dsp, recon, trial, x, y, &residual, &self.quantizers);
+        }
+        let distortion = macroblock_sse(&self.dsp, source, recon, (x, y));
+        let coded = if partition == MbPartition::P16x16
+            && Some(mvs[0]) == self.skip_mv_of(block)
+            && residual.is_empty()
+        {
+            CodedMb::Skip(mvs[0])
+        } else {
+            CodedMb::Inter {
+                partition,
+                mvs,
+                ref_idx: self.coded_ref_idx(),
+                mvp: self.known_mvp(block),
+                residual: &residual,
+            }
+        };
+        let cost = distortion + self.rd_lambda * self.mb_bits(block, &coded);
+        self.alt_residual = Some(residual);
+        (satd, Some(cost))
     }
 
     /// Whether intra refresh allows each 8x8 quadrant's vector of the
@@ -1095,12 +1372,19 @@ impl H264Backend {
             .mb_pred
             .take()
             .unwrap_or_else(|| Box::new(Prediction::ZERO));
-        let (choice, zero) = self.choose_macroblock(
+        let (choice, zero, alternative) = self.choose_macroblock(
             block,
             &decision,
             (source, reference, &mut *recon),
             sub_vectors,
             &mut pred,
+        );
+        let (choice, zero) = self.rd_refine_choice(
+            block,
+            (choice, zero, alternative),
+            (source, reference),
+            &mut pred,
+            recon,
         );
         self.transform_residual(&choice, zero, source, &pred, (x, y));
         self.trellis_residual(block, source, &pred);
@@ -2033,6 +2317,7 @@ impl CodecBackend for H264Backend {
             static_skip: None,
             static_pred: Box::new(Prediction::ZERO),
             mb_pred: None,
+            rd_pred: None,
             exact_luma: Cell::new(None),
             cabac_init_idc: 0,
             deblock: DeblockControl::DEFAULT,
@@ -2498,6 +2783,21 @@ fn cond_term_flag(m: Option<&MbInfo>, current_intra: bool, flag: impl Fn(&MbInfo
 /// always-8x8 -8.1% (always-4x4 +1.6%), so the two SATDs (about 5M
 /// instructions per 720p frame) buy nothing. Proven-zero luma is coded empty
 /// (the 4x4 kind, no levels).
+/// The 8x8 quadrants (raster) of partition `part` of `partition`.
+fn partition_quadrants(partition: MbPartition, part: usize) -> impl Iterator<Item = usize> + Clone {
+    let (x8, y8, w8, h8) = partition.rect(part);
+    (y8..y8 + h8).flat_map(move |qy| (x8..x8 + w8).map(move |qx| qy * 2 + qx))
+}
+
+/// The squared error of `recon` against `source` over the macroblock at
+/// `(x, y)`, luma and both 4:2:0 chroma blocks.
+fn macroblock_sse(dsp: &Dsp, source: &Picture, recon: &Picture, (x, y): (usize, usize)) -> f32 {
+    let chroma = |plane| {
+        nc_encoder::block_sse(dsp, (source, recon), plane, (x / 2, y / 2, MB_SIZE / 2)) as f32
+    };
+    luma_sse(dsp, source, recon, (x, y)) + chroma(PlaneIndex::U) + chroma(PlaneIndex::V)
+}
+
 fn inter_residual_kind(zero: ResidualSkip) -> ResidualKind {
     if zero.luma {
         ResidualKind::Inter

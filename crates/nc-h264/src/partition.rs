@@ -144,7 +144,9 @@ impl QuadrantCosts<'_> {
 /// Choose the partitioning of the inter macroblock at `origin` whose
 /// engine-chosen vector is `mv16`, given the search vectors of its four
 /// quadrants (`sub_vectors`, raster) and the 16x16 predicted vector `pred`.
-/// Returns the shape and the vector of each quadrant.
+/// Returns the shape and the vector of each quadrant, and the split shape
+/// that ranked best (`None` where the search exited before ranking any),
+/// for a rate-distortion decision between the two (`h264.rd_refine` 2).
 pub fn choose_partition(
     dsp: &Dsp,
     mc: &McKernels,
@@ -156,8 +158,8 @@ pub fn choose_partition(
     pred: Mv,
     lambda: f32,
     search: SplitSearch,
-) -> (MbPartition, [Mv; 4]) {
-    let unsplit = (MbPartition::P16x16, [mv16; 4]);
+) -> (Motion, Option<Motion>) {
+    let unsplit = ((MbPartition::P16x16, [mv16; 4]), None);
     let uniform = search.uniform_qpel.is_some_and(|limit| {
         sub_vectors
             .iter()
@@ -250,12 +252,15 @@ pub fn choose_partition(
         }
         *option = (shape, mvs, total);
     }
-    let (shape, mvs, _) = options
-        .into_iter()
-        .min_by(|a, b| a.2.total_cmp(&b.2))
-        .expect("four options");
-    (shape, mvs)
+    let by_cost =
+        |a: &&(MbPartition, [Mv; 4], f32), b: &&(MbPartition, [Mv; 4], f32)| a.2.total_cmp(&b.2);
+    let &(shape, mvs, _) = options.iter().min_by(by_cost).expect("four options");
+    let &(split, split_mvs, _) = options[1..].iter().min_by(by_cost).expect("three splits");
+    ((shape, mvs), Some((split, split_mvs)))
 }
+
+/// A macroblock's motion partitioning and the vector of each 8x8 quadrant.
+pub type Motion = (MbPartition, [Mv; 4]);
 
 /// The quadrant SATDs of the macroblock's existing 16x16 prediction
 /// `luma16` (vector `mv16`): a cache seeded with them, and their total.
