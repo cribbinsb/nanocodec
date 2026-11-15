@@ -70,8 +70,9 @@
     <h2 id="machines">Machines</h2>
     <ul class="machines"></ul>
     <p>Speed is measured at a fixed quantizer near the middle rung on three development clips, which a CBR
-      encode costs our encoders slightly more than; the PC is shared and loaded, so differences of a few
-      percent there are noise.</p>
+      encode costs our encoders slightly more than. The x86 machine is a rented AMD EPYC 9R45 (Zen 5; its SIMD extensions are listed under Machines),
+      timing one encode pair at a time on a core of its own (its repeatability is in the
+      <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/README.md">results notes</a>).</p>
     <h2 id="versions">Builds and versions</h2>
     <div class="versions"></div>
     <h2 id="commands">Command lines</h2>
