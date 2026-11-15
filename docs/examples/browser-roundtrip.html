@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nanocodec browser example</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 16px; background: Canvas; color: CanvasText; }
+    canvas { width: 320px; max-width: 45%; border: 1px solid GrayText; }
+  </style>
+</head>
+<body>
+<!-- Minimal encode and decode loop with the nanocodec WebAssembly module:
+     draw a moving picture on a canvas, encode it with H.264 at 300 kbps,
+     decode every packet and draw the decoded picture beside the source.
+     The module path is the demo's (web/pkg/, built by tools/web/build.sh);
+     the project site's browser page shows this file and
+     web/tests/docs-pages.py runs it. -->
+<p id="status">Loading…</p>
+<canvas id="source" width="320" height="180"></canvas>
+<canvas id="decoded" width="320" height="180"></canvas>
+<script type="module">
+import init, { BrowserEncoder, BrowserDecoder, SourceFrame } from '../../pkg/nc_web.js';
+
+const WIDTH = 320, HEIGHT = 180, FPS = 30, FRAMES = 60, KBPS = 300;
+const status = document.getElementById('status');
+const sourceCanvas = document.getElementById('source').getContext('2d', { willReadFrequently: true });
+const decodedCanvas = document.getElementById('decoded').getContext('2d');
+
+/** A moving gradient with a frame counter. */
+function draw(index) {
+  const gradient = sourceCanvas.createLinearGradient(index * 4 % WIDTH, 0, WIDTH, HEIGHT);
+  gradient.addColorStop(0, '#226b51');
+  gradient.addColorStop(1, '#f5f5f0');
+  sourceCanvas.fillStyle = gradient;
+  sourceCanvas.fillRect(0, 0, WIDTH, HEIGHT);
+  sourceCanvas.fillStyle = '#000';
+  sourceCanvas.font = '32px sans-serif';
+  sourceCanvas.fillText(`frame ${index}`, 20 + index % 100, 100);
+}
+
+try {
+  // The module fails to compile in an engine without WebAssembly SIMD128.
+  const wasm = await init();
+  // codec, width, height, starting QP, fps, key interval, preset, overrides,
+  // film grain, colour, still camera.
+  const encoder = new BrowserEncoder('h264', WIDTH, HEIGHT, 32, FPS, 10 * FPS, 'fast', '', false,
+    'bt601', false);
+  encoder.set_rate_control(KBPS, 2 * KBPS, 1000); // target, peak (kbps), buffer (ms)
+  const decoder = new BrowserDecoder('h264');
+  const source = new SourceFrame(WIDTH, HEIGHT);
+  let bytes = 0, decoded = 0, psnr = 0;
+  for (let index = 0; index < FRAMES; index++) {
+    draw(index);
+    source.from_rgba(sourceCanvas.getImageData(0, 0, WIDTH, HEIGHT).data);
+    const packet = encoder.encode(source);
+    if (encoder.repeat) continue; // held or dropped: nothing to send
+    bytes += packet.length;
+    const outcome = decoder.decode_frame(packet, index, []);
+    if (!outcome.decoded) throw new Error(`frame ${index}: ${outcome.reason}`);
+    decoded++;
+    // A call into the module may grow its memory, which detaches older views
+    // of it: take each offset first, then view the memory and copy at once.
+    const packed = source.packed();
+    const original = new Uint8Array(wasm.memory.buffer, packed, source.packed_length).slice();
+    psnr += decoder.psnr(original);
+    const offset = decoder.rgba_frame('bt601');
+    const rgba = new Uint8ClampedArray(wasm.memory.buffer, offset, WIDTH * HEIGHT * 4);
+    decodedCanvas.putImageData(new ImageData(rgba.slice(), WIDTH, HEIGHT), 0, 0);
+  }
+  status.textContent = `${decoded} of ${FRAMES} frames decoded, ${bytes} bytes, ` +
+    `mean PSNR-YUV ${(psnr / decoded).toFixed(1)} dB`;
+  status.dataset.decoded = String(decoded);
+} catch (error) {
+  status.textContent = `Failed: ${error}`;
+  status.dataset.error = String(error);
+}
+</script>
+</body>
+</html>

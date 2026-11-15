@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Build nanocodec from source for x86_64, aarch64 or wasm32 and code a first clip on the command line.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec: getting started</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="../results/site.css">
+  <link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Documentation pages">
+    <a href="index.html" aria-current="page">Getting started</a>
+    <a href="cli.html">Command line</a>
+    <a href="c-api.html">C API</a>
+    <a href="rust-api.html">Rust API</a>
+    <a href="browser.html">Browser</a>
+    <a href="presets.html">Presets</a>
+  </nav>
+</div>
+<main>
+  <h1>Getting started</h1>
+  <p class="lede">Build nanocodec from source, then code and decode a first clip on the command line. The other
+    pages cover the <a href="cli.html">command line</a>, the <a href="c-api.html">C API</a>, the
+    <a href="rust-api.html">Rust API</a>, the <a href="browser.html">browser module</a> and the
+    <a href="presets.html">presets</a>.</p>
+
+  <h2 id="build">Build</h2>
+  <p>You need Rust 1.90 or later (<a href="https://rustup.rs">rustup</a>) and git. The workspace builds on stable
+    Rust; SIMD kernels are chosen at run time on each machine.</p>
+<pre><code>git clone https://github.com/cribbinsb/nanocodec.git
+cd nanocodec
+cargo build --release -p nc-cli          # the command line: target/release/nanocodec
+cargo build --release -p nc-capi         # the C library: target/release/libnanocodec.{a,so}</code></pre>
+  <div class="table-wrap"><table>
+    <tr><th>Target</th><th>How</th><th>Kernels</th></tr>
+    <tr><td>x86_64</td><td><code>cargo build --release</code></td><td>AVX2 and AVX-512 where the CPU has them, else scalar</td></tr>
+    <tr><td>aarch64</td><td><code>cargo build --release</code> on the device (tested on a Jetson Orin Nano), or
+      <code>--target aarch64-unknown-linux-gnu</code> with a cross linker</td><td>NEON</td></tr>
+    <tr><td>wasm32</td><td><code>rustup target add wasm32-unknown-unknown</code>, then
+      <code>tools/web/build.sh</code> (needs <code>wasm-bindgen-cli</code> 0.2.105); see <a href="browser.html">Browser</a></td>
+      <td>SIMD128 (required), relaxed SIMD where available</td></tr>
+  </table></div>
+
+  <h2 id="first-encode">First encode and decode</h2>
+  <p>The encoder reads raw 8-bit 4:2:0 frames (I420 by default). Any raw clip works; this makes a 5-second test
+    clip with ffmpeg:</p>
+<pre><code>ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 -frames:v 150 -pix_fmt yuv420p in.yuv</code></pre>
+  <p>Encode it to AV1 at 300 kbps with the real-time rate control, keeping the encoder's reconstruction:</p>
+<pre class="run"><code>nanocodec encode --codec av1 --input in.yuv --width 640 --height 360 --fps 30 --frames 150 \
+  --bitrate 300 --output out.ivf --recon recon.yuv</code></pre>
+  <p>Decode it with our decoder. Its output is the same frames as the reconstruction, byte for byte:</p>
+<pre class="run"><code>nanocodec decode --codec av1 --input out.ivf --output decoded.yuv
+cmp recon.yuv decoded.yuv</code></pre>
+  <p>The streams are standard: AV1, VP9 and AV2 are written as IVF files, H.264, HEVC and VVC as Annex-B
+    elementary streams, which other players and decoders read too (for example
+    <code>ffplay out.ivf</code>, or <code>ffmpeg -i out.264</code>).</p>
+
+  <h2 id="next">Next</h2>
+  <ul>
+    <li><a href="cli.html">Command line</a>: every option, and worked examples for fixed QP, CBR, temporal layers,
+      long-term references, intra refresh and SVC.</li>
+    <li><a href="presets.html">Presets</a>: the speed ladder and what the Default is.</li>
+    <li><code>nanocodec help</code> prints the same option list as the command-line page;
+      <code>nanocodec params</code> lists every tunable parameter.</li>
+  </ul>
+</main>
+<footer>
+  <p>The option lists, preset names and example sources on these pages are generated from the code, and every
+    example is compiled and run by the project's tests. Something wrong or missing?
+    <a href="https://github.com/cribbinsb/nanocodec/issues">Open an issue</a>.</p>
+  <p><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a></p>
+</footer>
+<script type="module" src="docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="The nanocodec C API: building and linking libnanocodec, the header, and a minimal encode and decode loop.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec: C API</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="../results/site.css">
+  <link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="../results/">Results</a><a href="../results/method.html">Method</a><a href="./" aria-current="page">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Documentation pages">
+    <a href="index.html">Getting started</a>
+    <a href="cli.html">Command line</a>
+    <a href="c-api.html" aria-current="page">C API</a>
+    <a href="rust-api.html">Rust API</a>
+    <a href="browser.html">Browser</a>
+    <a href="presets.html">Presets</a>
+  </nav>
+</div>
+<main>
+  <h1>C API</h1>
+  <p class="lede">The <code>nc-capi</code> crate builds nanocodec as a C library: an encoder for H.264, HEVC, AV1
+    and VP9, and our decoders for the same four. Every function returns an <code>nc_status</code>; nothing is
+    thrown or aborted across the interface. An encoder or decoder is not thread-safe: use one per thread.</p>
+
+  <h2 id="build">Build and link</h2>
+<pre><code>cargo build --release -p nc-capi
+# static: target/release/libnanocodec.a (also needs -lpthread -ldl -lm)
+cc -std=c99 -I crates/nc-capi/include app.c target/release/libnanocodec.a -lpthread -ldl -lm -o app
+# shared: target/release/libnanocodec.so
+cc -std=c99 -I crates/nc-capi/include app.c -L target/release -lnanocodec -lm -o app
+LD_LIBRARY_PATH=target/release ./app</code></pre>
+  <p>The header, <code>crates/nc-capi/include/nanocodec.h</code>, mirrors the Rust definitions in
+    <code>crates/nc-capi/src/ffi.rs</code>; <code>tools/ci/capi_check.sh</code> compiles the examples against it
+    and requires the C API's streams to be byte-identical to the command line's.</p>
+
+  <h2 id="lifecycle">Life cycle</h2>
+  <ol>
+    <li><code>nc_encoder_config_default</code> fills a configuration for a codec and size (30 fps, a key frame
+      every 300 frames, fixed quantiser); set <code>target_kbps</code> for rate control, and the resilience
+      fields (<code>temporal_layers</code>, <code>ltr_interval</code>, <code>intra_refresh_period</code>) as
+      needed.</li>
+    <li><code>nc_encoder_create</code>, with optional <code>nc_param</code> overrides (the names
+      <code>nanocodec params</code> lists). The C API has no preset argument: a preset's parameters can be passed
+      as <code>nc_param</code> entries.</li>
+    <li><code>nc_encoder_encode</code> per frame (I420, YV12 or NV12, any strides). The packet is borrowed until
+      the next call; size 0 means the frame was dropped or held and nothing is sent. The encoder never buffers
+      frames.</li>
+    <li>Between frames: <code>nc_encoder_request_keyframe</code>, <code>nc_encoder_set_rate</code>,
+      <code>nc_encoder_set_intra_refresh</code>, <code>nc_encoder_set_resolution</code>, and the receiver's
+      feedback, <code>nc_encoder_acknowledge</code> and <code>nc_encoder_report_loss</code>.</li>
+    <li>On the receiving side, <code>nc_decoder_decode</code> gives each packet one outcome: decoded, or frozen on
+      the last picture with the reason and the frame to report lost.</li>
+  </ol>
+
+  <h2 id="example">Minimal encode and decode loop</h2>
+  <p>This program codes a synthetic picture at 300 kbps, decodes every packet and prints the mean luma PSNR. It
+    is <code>crates/nc-capi/examples/roundtrip.c</code>, built and run for all four codecs by
+    <code>tools/ci/capi_check.sh</code>:</p>
+<pre class="listing"><code data-source="examples/roundtrip.c">Loading…</code></pre>
+  <p>A file-to-file encoder with the optional start-up lookahead is
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/crates/nc-capi/examples/encode.c"><code>examples/encode.c</code></a>.</p>
+
+  <h2 id="header">The header</h2>
+<pre class="listing"><code data-source="examples/nanocodec.h">Loading…</code></pre>
+</main>
+<footer>
+  <p>The option lists, preset names and example sources on these pages are generated from the code, and every
+    example is compiled and run by the project's tests. Something wrong or missing?
+    <a href="https://github.com/cribbinsb/nanocodec/issues">Open an issue</a>.</p>
+  <p><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a></p>
+</footer>
+<script type="module" src="docs.js"></script>
+</body>
+</html>

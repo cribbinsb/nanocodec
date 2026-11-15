@@ -1,6 +1,6 @@
-/* The header every page shares (the demo, index.html, and the results pages,
-   results/*.html): the logo and the site's sections, Demo · Results · Method ·
-   GitHub. Colours are tokens so a page's theme (results/site.css: dark mode)
+/* The header every page shares (the demo, index.html, the results pages,
+   results/*.html, and the usage pages, docs/*.html): the logo and the site's
+   sections, Demo · Results · Method · Docs · GitHub. Colours are tokens so a page's theme (results/site.css: dark mode)
    can restate them; the values are the demo's. */
 :root {
   --header-page: #f5f5f0;
