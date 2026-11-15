@@ -132,7 +132,8 @@ function fillDemoLink(data, family, root) {
 
 function viewNote(data, view) {
   if (view.rate_mode === 'qp') {
-    return `Fixed QP on the AOM common test conditions, low delay (${view.condition}): ${view.clips} sequences, every encoder at fixed quantizers, BD-rate against x264 medium at fixed QP; ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page). Build ${view.build_commit}. Speed: ${QP_SPEED}.`;
+    const dev = data.views.find((v) => v.id === 'dev-psnr');
+    return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), build ${view.build_commit}. Speed: single-thread encode fps at 720p, fixed QP, on the timing cores of the ${PLATFORM_LABELS[state.platform].replace(' core', '')} (${data.platforms[state.platform]}), from the chart timing at build ${dev.builds[dev.base_build] || dev.base_build}; an encoder without that timing is listed under the chart.`;
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;

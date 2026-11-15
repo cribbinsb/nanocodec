@@ -67,3 +67,21 @@ def test_command_lines_are_the_harness_settings():
     assert svt.startswith("SvtAv1EncApp --rtc 1 --preset 12") and "--lp 1" in svt
     ours = chart["points"]["nanocodec-h264@fast"]["cbr_command"]
     assert ours.startswith("nanocodec encode --codec h264") and ours.endswith("--preset fast")
+
+
+def test_fixed_qp_speeds_are_the_chart_timing():
+    """Every plotted fixed-QP point sits at the chart's own single-thread timing of its
+    family (the records the CBR chart uses), never at the lens run's fps."""
+    timing = site.timing_fps()
+    chart = json.loads((site.SITE_DATA / "chart.json").read_text())
+    view = next((v for v in chart["views"] if v["id"] == "qp"), None)
+    if view is None:
+        return
+    cbr = next(v for v in chart["views"] if v["id"] == "dev-psnr")["values"]
+    for family, value in view["values"].items():
+        for platform, fps in value["fps"].items():
+            if fps is None:
+                continue
+            assert fps == timing[family][platform], (family, platform, fps)
+            if family in cbr and cbr[family]["fps"][platform]:  # the CBR chart's own point
+                assert abs(fps - cbr[family]["fps"][platform]) <= 0.1, (family, platform, fps)
