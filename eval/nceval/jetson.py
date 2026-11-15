@@ -92,10 +92,23 @@ def ensure_build(commit: str) -> str:
     its 8-character abbreviation as chart refresh names its builds."""
     commit = commit[:SHORT_COMMIT]
     build = f"{BUILDS_ROOT}/{commit}"
-    if ssh(f"cat ~/{build}/{COMPLETE_MARKER} 2>/dev/null || true").strip() != commit:
+    built = ssh(f"cd ~/{BUILDS_ROOT} 2>/dev/null && cat */{COMPLETE_MARKER} || true").split()
+    if commit in built:
+        return f"~/{build}/nanocodec"
+    donor = next((other for other in built if same_build_inputs(other, commit)), None)
+    if donor is not None:  # nothing it reads changed: its binary, without a build
+        ssh(f"mkdir -p ~/{build} && cp ~/{BUILDS_ROOT}/{donor}/nanocodec ~/{build}/ && "
+            f"echo {commit} > ~/{build}/{COMPLETE_MARKER}")
+    else:
         subprocess.run(["bash", "-o", "pipefail", "-c", build_command(commit)], check=True,
                        capture_output=True)
     return f"~/{build}/nanocodec"
+
+
+def same_build_inputs(a: str, b: str) -> bool:
+    """Whether commits `a` and `b` have identical BUILD_INPUTS (a commit unknown here: no)."""
+    return subprocess.run(["git", "-C", str(REPO), "diff", "--quiet", a, b, "--", *BUILD_INPUTS],
+                          capture_output=True).returncode == 0
 
 
 def encode_args(codec: Codec, clip: str, quantizer: int) -> str:

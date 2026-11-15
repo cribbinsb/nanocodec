@@ -12,7 +12,7 @@ rotated rounds, the median per-round time ratio kept (the same pairing as
 `time-host`), each (point, clip) pair on its own physical core.
 
 Uploaded (one tar stream, a few hundred MB): our chart timing build (the x86
-PGO build, chart_refresh's `nanocodec-timed-pgo`, of the build the chart's
+release build, chart_refresh's `nanocodec-timed-release`, of the build the chart's
 build record names), the reference encoders the points name (from
 ~/nanocodec-data/anchors/x86_64/bin), anchor_chart_timing.py, the chart's
 timing plan, and the three timing clips cut to the chart length (150 frames)
@@ -54,7 +54,7 @@ PLAN_FILE = REPO / "docs/results/bd-vs-speed-plan.json"
 BUILDS_FILE = REPO / "docs/results/bd-vs-speed-builds.json"
 LOCAL_TIMING_FILE = REPO / "docs/results/bd-vs-speed-timing-x86.json"
 BUILDS_ROOT = DATA / "charts/builds"
-TIMED_BINARY = "nanocodec-timed-pgo"
+TIMED_BINARY = "nanocodec-timed-release"
 X86_TOOLS = DATA / "anchors/x86_64/bin"
 CLIP_CACHE = WORK_DIR / "cache"
 #: Known bare-metal timing boxes: (region, AMI architecture).
@@ -343,7 +343,7 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--rounds", type=int, default=act.HOST_ROUNDS)
     parser.add_argument("--binary", type=Path, help="our build for the instance's architecture "
-                        "(default: the chart build's x86 PGO binary)")
+                        "(default: the chart build's x86 release binary)")
     parser.add_argument("--tools-dir", type=Path,
                         help=f"reference encoders (default for x86: {X86_TOOLS})")
     parser.add_argument("--expect-version", help="our binary's `--version` line (default: "

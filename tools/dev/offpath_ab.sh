@@ -115,15 +115,20 @@ done
 
 if ((jetson)); then
   remote=nanocodec-scratch/offpath-ab/$short
-  ssh "$JETSON" "rm -rf ~/$remote"
-  # One target dir per side: tar keeps the files' mtimes, so a shared one
-  # would take the second tree as already built.
+  ssh "$JETSON" "rm -rf ~/$remote && mkdir -p ~/$remote"
+  # Each side is a commit (the --head off side committed in its own tree), built
+  # once per commit in the board's persistent incremental tree and kept
+  # (nceval.jetson.ensure_build, shared with chart refresh and the tuner): two
+  # cold -j3 builds a run were most of its wall time.
   for side in off on; do
-    (cd "$work/$side-tree" && { git ls-files; ls presets/*.toml; } | sort -u | tar --verbatim-files-from -T - -c) |
-      ssh "$JETSON" "rm -rf ~/$remote/src && mkdir -p ~/$remote/src && tar -x -C ~/$remote/src"
-    ssh "$JETSON" "cd ~/$remote/src && ~/nanocodec-data/jetson-build.sh nice -n 19 \
-      ~/.cargo/bin/cargo build --release -j3 -p nc-cli --target-dir ~/$remote/tgt-$side 2>&1 | tail -1 \
-      && cp ~/$remote/tgt-$side/release/nanocodec ~/$remote/$side && rm -rf ~/$remote/src"
+    if [[ $side == off ]] && ((at_head)); then
+      git -C "$work/off-tree" add -A
+      git -C "$work/off-tree" -c user.name=offpath -c user.email=offpath@nanocodec \
+        commit -qm "offpath_ab: HEAD without $short" --no-verify
+    fi
+    side_commit=$(git -C "$work/$side-tree" rev-parse HEAD)
+    binary=$(cd "$repo/eval" && python3 -c "from nceval import jetson; print(jetson.ensure_build('$side_commit'))")
+    ssh "$JETSON" "cp $binary ~/$remote/$side"
   done
   scp -q "$repo/tools/dev/jperf.py" "$JETSON:$remote/jperf.py"
   echo "== Jetson jperf (min of $rounds), $FRAMES f crowd 720p CBR 600, Default"

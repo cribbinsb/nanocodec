@@ -108,6 +108,7 @@ main() {
         shift
         with=("$@")
     fi
+    own_target=${CARGO_TARGET_DIR:-$data_root/targets/$(basename "$PWD")}
     # Agents' own CARGO_TARGET_DIR is deliberately ignored: the warm lander
     # target is the point.
     export CARGO_TARGET_DIR=${NC_LAND_TARGET_DIR:-$data_root/targets/lander}
@@ -133,6 +134,18 @@ main() {
 
     mkdir -p "$queue/logs" "$(dirname "$lock")"
     prune_logs
+    if [[ $mode == full ]]; then
+        # The full checks run here, in the agent's own tree and target, before
+        # queueing: under the landing lock they held every other lander for
+        # 10-15 min (2026-11-15: six landers queued behind one full train).
+        # The train then runs the fast checks on its combined head.
+        printf '== full checks on %s before queueing (target %s)\n' "${sha:0:9}" "$own_target"
+        local scope
+        scope=$(python3 tools/dev/land_scope.py "$target") || die "land_scope failed"
+        CARGO_TARGET_DIR=$own_target NC_BUILD_RESERVED=0 run_checks "$scope" ||
+            die "full checks failed: not queued"
+        mode=fast
+    fi
     ticket=$queue/$(date +%s%N)-$$
     printf '%s %s %d\n' "$branch" "$sha" $$ >"$ticket.ticket"
     local other index=0
@@ -477,14 +490,12 @@ timed() {
 }
 
 # The checks the plan in $1 (land_scope.py output) asks for, on the lander
-# worktree's HEAD (run from inside it). Two independent groups run side by
+# worktree's HEAD (run from inside it). Three independent groups run side by
 # side, each with its own output buffered and printed whole: the cheap checks
 # and the eval suite (Python only, no cargo); the Rust checks (check.sh, the
-# browser smoke for a web-only change, then the conformance check, whose
-# gate build shares the lander target with check.sh's: built in parallel in
-# a second target dir it would compile the encoder twice, on a machine whose
-# landings are already compile-bound). Fails if either group fails, after
-# both have finished.
+# browser smoke for a web-only change); the conformance check, in the same
+# target dir (cargo's lock serialises its gate build with check.sh's, so the
+# encoder is compiled once). Fails if any group fails, after all have finished.
 run_checks() {
     local -A plan=()
     local key values root=$PWD scratch status=0 group
@@ -494,12 +505,18 @@ run_checks() {
     scratch=$(mktemp -d)
     python_checks plan >"$scratch/python" 2>&1 &
     pid[python]=$!
-    { rust_checks plan && conformance_check plan; } >"$scratch/rust" 2>&1 &
+    rust_checks plan >"$scratch/rust" 2>&1 &
     pid[rust]=$!
-    for group in python rust; do wait "${pid[$group]}" || { failed[$group]=1 status=1; }; done
+    # Conformance beside check.sh, not after it (2026-11-15: 8-13 min serial on
+    # 10-15 min of check.sh). Same target dir: cargo's lock serialises the two
+    # groups' builds, so nothing is compiled twice; the encodes overlap the tests.
+    conformance_check plan >"$scratch/conformance" 2>&1 &
+    pid[conformance]=$!
+    local -a groups=(python rust conformance)
+    for group in "${groups[@]}"; do wait "${pid[$group]}" || { failed[$group]=1 status=1; }; done
     # a failed group's output comes last, where a refused lander's tail shows it
-    for group in python rust; do [[ -n "${failed[$group]:-}" ]] || print_group "$scratch" "$group"; done
-    for group in python rust; do [[ -z "${failed[$group]:-}" ]] || print_group "$scratch" "$group" FAILED; done
+    for group in "${groups[@]}"; do [[ -n "${failed[$group]:-}" ]] || print_group "$scratch" "$group"; done
+    for group in "${groups[@]}"; do [[ -z "${failed[$group]:-}" ]] || print_group "$scratch" "$group" FAILED; done
     rm -r -- "$scratch"
     return "$status"
 }

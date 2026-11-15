@@ -50,7 +50,7 @@ All three runs use the same harness (`eval/nceval`, Python 3.12, stdlib + numpy/
 | What | Value |
 |---|---|
 | Commit | the build recorded for `nanocodec-av1` in `docs/results/bd-vs-speed-builds.json` (e122b42b). The current verified head e1c3d232 (encoder sources equal cba4292f) gives the same BD-J on the same clips: −50.9 [−56.5, −45.3] |
-| Toolchain | rustc 1.99.1 (stable), `cargo build --profile gate` for scoring (release codegen without LTO; streams are byte-identical to the release and PGO builds) |
+| Toolchain | rustc 1.99.1 (stable), `cargo build --profile gate` for scoring (release codegen without LTO; streams are byte-identical to the release and PGO builds). x86 speed is timed on the plain release build since 2026-11-15 (a profile-guided build before): x86 times from then on are 1.4-3.2 % higher for the same code |
 | Anchor | x264 0.165 (stable branch, b35605a), `--preset medium --tune zerolatency --bframes 0 --rc-lookahead 0 --no-scenecut`, ABR with a 1 s VBV, `--threads 1` |
 | Clips | the 11 natural VAL clips of `eval/clipset/main.json` (`split: val`): sources and start times are in that file |
 | Hardware | quality does not depend on hardware (bit-exact streams). Speed was measured on a Ryzen 9 5950X and a Jetson Orin Nano; it is not part of this number |

@@ -9,15 +9,15 @@ charts, their plan, timing and build record), which you then commit and land.
 Every chart family is measured on its own build, recorded in
 docs/results/bd-vs-speed-builds.json (family -> build id; build id ->
 description); a build lives in BUILDS_ROOT/<id>/ on the PC (`nanocodec`, the
-scoring build; `nanocodec-timed-pgo`, the profile-guided release build x86
-timing uses (tools/dev/pgo_build.sh); the
+scoring build; `nanocodec-timed-release`, the plain release build x86
+timing uses; the
 commit's `presets/`) and on the Jetson (`nanocodec`, release), each with a
 `COMMIT` file written last (a build without it is incomplete). The steps
 (`--from` resumes at one; the steps before it are skipped):
 
   build        COMMIT built for x86 in the tool's own worktrees and target dirs:
                the scoring build (`gate` profile, incremental: seconds to a minute)
-               first, the timed release build (fat LTO and PGO, minutes) in the
+               first, the timed release build (fat LTO, minutes) in the
                background, and for the Jetson, also in the background (git archive
                over ssh into a persistent source tree, under jetson-build.sh;
                only changed files get new times, so cargo rebuilds incrementally).
@@ -137,14 +137,12 @@ GATE_DONORS = (DATA / "targets" / "verifier" / "gate" / "nanocodec",
                DATA / "targets" / "lander" / "gate" / "nanocodec")
 SCORING_PROFILE = "gate"
 #: A build directory's binaries: the scoring build (scan, measure, render) and
-#: the timed profile-guided release build (time-x86, tools/dev/pgo_build.sh;
-#: named apart from the earlier plain `nanocodec-timed`, so a build without it
-#: is rebuilt and never lends its binaries). The Jetson's `nanocodec` is a
-#: plain release build.
+#: the timed plain release build (time-x86), what users build. It was a
+#: profile-guided build until 2026-11-15 (`nanocodec-timed-pgo`: 1.4-3.2 % less
+#: CPU, ~25 min a refresh); the new name keeps a build without it from lending
+#: its binaries. The Jetson's `nanocodec` is a plain release build too.
 SCORING_BINARY = "nanocodec"
-TIMED_BINARY = "nanocodec-timed-pgo"
-#: The profile-guided release build script (PROCEDURES "Build and check").
-PGO_BUILD = REPO / "tools" / "dev" / "pgo_build.sh"
+TIMED_BINARY = "nanocodec-timed-release"
 WORK = DATA / "work" / "chart-refresh"
 JETSON_WORK = "nanocodec-data/work/chart-refresh"
 RESULTS = "docs/results"
@@ -306,16 +304,15 @@ class Refresh:
             return
         donor = self.binary_donor()
         if donor is None:
-            self.cargo_build(BUILD_TREE, BUILD_TARGET, "release", timed, pgo=True)
+            self.cargo_build(BUILD_TREE, BUILD_TARGET, "release", timed)
         elif not self.args.dry_run:
             place(self.build_dir(donor) / TIMED_BINARY, timed)
 
-    def cargo_build(self, tree: Path, target: Path, profile: str, destination: Path,
-                    pgo: bool = False) -> None:
+    def cargo_build(self, tree: Path, target: Path, profile: str, destination: Path) -> None:
         """COMMIT checked out in `tree` (its own worktree: unchanged files keep their
-        times, so the build is incremental), built with `profile` (with `pgo`, the
-        release build through PGO_BUILD), its binary placed at `destination`."""
-        log = f"build-{profile}{'-pgo' if pgo else ''}.log"
+        times, so the build is incremental), built with `profile`, its binary placed
+        at `destination`."""
+        log = f"build-{profile}.log"
         env = {"CARGO_TARGET_DIR": str(target),
                "PATH": f"{Path.home() / '.cargo/bin'}:{os.environ['PATH']}"}
         with build_tree_lock(tree):
@@ -323,12 +320,8 @@ class Refresh:
                 self.run(["git", "worktree", "add", "--detach", str(tree), self.commit], log)
             self.run(["git", "checkout", "-q", "--detach", self.commit], log, tree)
             built = target / profile / "nanocodec"
-            if pgo:
-                self.run(["bash", str(PGO_BUILD), str(tree), str(target), str(built)], log, tree,
-                         env=env)
-            else:
-                self.run(["cargo", "build", "--profile", profile, "-j8", "-p", "nc-cli"], log,
-                         tree, env=env)
+            self.run(["cargo", "build", "--profile", profile, "-j8", "-p", "nc-cli"], log,
+                     tree, env=env)
             if not self.args.dry_run:  # placed while locked: another refresh may rebuild next
                 verify_build(built, self.commit)
                 place(built, destination)

@@ -46,8 +46,9 @@ BUILDS_FILE = RESULTS / "bd-vs-speed-builds.json"
 X86_TIMING_FILE = RESULTS / "bd-vs-speed-timing-x86.json"
 BUILDS_ROOT = Path.home() / "nanocodec-data/charts/builds"
 #: Binaries of a build directory, preferred first: the x86 timed build, then the
-#: scoring build (same streams; only the instruction mix of LTO/PGO differs).
-TIMED_BINARIES = ("nanocodec-timed-pgo", "nanocodec")
+#: scoring build (same streams; only the instruction mix of LTO differs). The
+#: profile-guided name is for builds timed before 2026-11-15.
+TIMED_BINARIES = ("nanocodec-timed-release", "nanocodec-timed-pgo", "nanocodec")
 FAMILY_PREFIX = "nanocodec-"
 #: Adjacent presets' x86/Jetson fps ratios may differ this much (relative). The
 #: ratio drifts along a codec's presets (HEVC Default 2.29 vs Faster 1.74 at
