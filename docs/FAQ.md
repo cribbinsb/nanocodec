@@ -192,11 +192,14 @@ its output under the GPL; we distribute only the output streams, not the program
 ## What is not done
 
 - **Single-threaded** encode and decode; no slices or tiles beyond one per frame.
-- **8-bit 4:2:0 only.** No 10-bit, no 4:4:4, no HDR.
+- **8-bit 4:2:0 encoders.** The encoders code 8-bit 4:2:0 only (no 10-bit, no 4:4:4, no HDR). The HEVC
+  decoder also decodes Main 10 (10-bit 4:2:0, natively; the browser build shows 8-bit only); the other
+  decoders are 8-bit.
 - **Subset encoders:** forward prediction only (no B-frames), no lookahead, CBR and fixed-QP only, one tile/slice;
   several tools of the newer standards are unused (for example compound prediction and loop restoration in
   AV1/AV2).
-- **Decoders:** H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit 4:2:0) and VP9 (profile 0) pass the
+- **Decoders:** H.264 (Constrained High), HEVC (Main and Main 10: 147/147 JCT-VC HEVC_v1 streams of those
+  profiles, 11 of them Main 10, MD5-exact against HM), AV1 (Main, 8-bit 4:2:0) and VP9 (profile 0) pass the
   conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams and 133 of 138 8-bit VTM and
   VVenC streams that exercise the Main 10 tools, pictures of several slices and subpictures among them
   (`docs/handoff/vvc-foreign-corpus.md` lists what fails: reference picture resampling, and SAO/ALF at tile,

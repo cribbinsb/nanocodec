@@ -11,21 +11,23 @@
 //! edge filters apply to luma only. The encoder never sets
 //! `strong_intra_smoothing_enabled_flag`; the decoder's
 //! [`predict_smoothed_into`] honours it.
+//!
+//! Written once over the sample type (`u8` for the encoder and 8-bit
+//! streams, `u16` for Main 10; `docs/handoff/high-bit-depth.md`): the depth
+//! enters only the missing-reference value, the strong smoothing threshold
+//! and the edge filters' clip.
 
-use nc_common::PlaneViewMut;
-use nc_dsp::{Dsp, HevcPlanarEdges};
-
-/// Reference value when no neighbour is available: `1 << (BitDepth − 1)`.
-const NO_NEIGHBOURS: u8 = 128;
+use nc_common::{BitDepth, Plane, PlaneViewMut};
+use nc_dsp::{DepthKernels, Dsp, HevcPlanarEdges, Pixel};
 /// Largest intra transform block side.
 const MAX_SIZE: usize = crate::transform::MAX_SIZE;
 /// Reference samples of the largest block.
 const MAX_REFS: usize = 4 * MAX_SIZE + 1;
 /// Strong smoothing applies to luma blocks of this side only (§8.4.4.2.3).
 const STRONG_SMOOTHING_SIZE: usize = 32;
-/// `1 << (BitDepthY - 5)`: the largest deviation from a straight line of
-/// either reference edge that still allows strong smoothing (8-bit).
-const STRONG_SMOOTHING_THRESHOLD: i32 = 1 << 3;
+/// Strong smoothing allows reference edges within `1 << (BitDepthY −
+/// STRONG_SMOOTHING_BITS)` of a straight line (§8.4.4.2.3).
+const STRONG_SMOOTHING_BITS: u32 = 5;
 /// DC and pure horizontal / vertical edge filters apply below this size.
 const EDGE_FILTER_MAX_SIZE: usize = 32;
 
@@ -70,17 +72,17 @@ const INV_ANGLE: [i32; 15] = [
 
 /// The reference samples of one transform block.
 #[derive(Debug, Clone)]
-pub struct Refs {
+pub struct Refs<T: Pixel = u8> {
     n: usize,
-    samples: [u8; MAX_REFS],
+    samples: [T; MAX_REFS],
 }
 
-impl Default for Refs {
+impl<T: Pixel> Default for Refs<T> {
     /// Storage for [`Refs::gather_into`].
     fn default() -> Self {
         Self {
             n: 0,
-            samples: [0; MAX_REFS],
+            samples: [T::default(); MAX_REFS],
         }
     }
 }
@@ -108,7 +110,7 @@ impl Refs {
     /// asked once for the runs beside the block's own rows (left) and
     /// once for those above its own columns.
     pub fn gather(
-        plane: &nc_common::Plane,
+        plane: &Plane,
         (x, y): (usize, usize),
         n: usize,
         unit: usize,
@@ -116,20 +118,24 @@ impl Refs {
         available: impl Fn(usize, usize) -> bool,
     ) -> Self {
         let mut refs = Self::default();
-        refs.gather_into(plane, (x, y), n, unit, sides, available);
+        refs.gather_into(plane, (x, y), n, unit, sides, BitDepth::EIGHT, available);
         refs
     }
+}
 
-    /// [`Self::gather`] into `self`, reusing its storage: no sample is
-    /// cleared first, as every one of the `4n + 1` is written (gathered or
-    /// substituted).
+impl<T: Pixel> Refs<T> {
+    /// [`Refs::gather`] at any depth, into `self`, reusing its storage: no
+    /// sample is cleared first, as every one of the `4n + 1` is written
+    /// (gathered or substituted with `1 << (depth − 1)`).
+    #[allow(clippy::too_many_arguments)]
     pub fn gather_into(
         &mut self,
-        plane: &nc_common::Plane,
+        plane: &Plane<T>,
         (x, y): (usize, usize),
         n: usize,
         unit: usize,
         sides: Sides,
+        depth: BitDepth,
         available: impl Fn(usize, usize) -> bool,
     ) {
         let view = plane.view();
@@ -207,7 +213,7 @@ impl Refs {
             }
         };
         if known == 0 {
-            samples[..count].fill(NO_NEIGHBOURS);
+            samples[..count].fill(T::from_i32(depth.mid()));
             return;
         }
         // §8.4.4.2.2: the bottom-most reference takes the first available
@@ -223,12 +229,12 @@ impl Refs {
 
     /// `p[-1][y]` for `y` in `-1..2n`.
     fn left(&self, y: isize) -> i32 {
-        i32::from(self.samples[(2 * self.n as isize - 1 - y) as usize])
+        self.samples[(2 * self.n as isize - 1 - y) as usize].to_i32()
     }
 
     /// `p[x][-1]` for `x` in `-1..2n`.
     fn top(&self, x: isize) -> i32 {
-        i32::from(self.samples[(2 * self.n as isize + 1 + x) as usize])
+        self.samples[(2 * self.n as isize + 1 + x) as usize].to_i32()
     }
 
     /// The [1 2 1] filtered references (§8.4.4.2.3, end samples unchanged).
@@ -239,26 +245,24 @@ impl Refs {
             .iter_mut()
             .zip(self.samples[..count].windows(3))
         {
-            let [a, b, c] = [w[0], w[1], w[2]].map(u32::from);
-            *dst = ((a + 2 * b + c + 2) >> 2) as u8;
+            let [a, b, c] = [w[0], w[1], w[2]].map(T::to_i32);
+            *dst = T::from_i32((a + 2 * b + c + 2) >> 2);
         }
         Self { n: self.n, samples }
     }
-}
 
-impl Refs {
     /// The bilinear references of `strong_intra_smoothing_enabled_flag`
     /// (§8.4.4.2.3, equations 8-50 to 8-54) when both edges are close to
     /// straight lines, `None` otherwise.
-    fn strongly_smoothed(&self) -> Option<Self> {
+    fn strongly_smoothed(&self, depth: BitDepth) -> Option<Self> {
         let n = self.n;
         if n != STRONG_SMOOTHING_SIZE {
             return None;
         }
         let corner = self.top(-1);
         let (top_end, left_end) = (self.top(2 * n as isize - 1), self.left(2 * n as isize - 1));
-        let straight =
-            |end: i32, middle: i32| (corner + end - 2 * middle).abs() < STRONG_SMOOTHING_THRESHOLD;
+        let threshold = 1 << (depth.bits() - STRONG_SMOOTHING_BITS);
+        let straight = |end: i32, middle: i32| (corner + end - 2 * middle).abs() < threshold;
         if !straight(top_end, self.top(n as isize - 1))
             || !straight(left_end, self.left(n as isize - 1))
         {
@@ -272,8 +276,8 @@ impl Refs {
             // interpolated between the corner and their far end.
             let left = ((span - k) * corner + k * left_end + n as i32) >> 6;
             let top = ((span - k) * corner + k * top_end + n as i32) >> 6;
-            samples[2 * n - 1 - i] = left as u8;
-            samples[2 * n + 1 + i] = top as u8;
+            samples[2 * n - 1 - i] = T::from_i32(left);
+            samples[2 * n + 1 + i] = T::from_i32(top);
         }
         Some(Self { n, samples })
     }
@@ -310,23 +314,23 @@ pub fn predict(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, out: &mut [u8]) {
 /// can compare against a transposed source instead of transposing every
 /// candidate.
 pub fn predict_oriented(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, out: &mut [u8]) -> bool {
-    oriented(dsp, refs, mode, luma, false, out)
+    oriented(dsp.at(BitDepth::EIGHT), refs, mode, luma, false, out)
 }
 
 /// [`predict`] with `strong_intra_smoothing_enabled_flag` = `strong`, straight
 /// into the picture: `scratch` (at least `n²` samples) takes the kernel's
 /// output, which `dst` (the `n`x`n` block) receives row by row, transposed
 /// for the horizontal modes in the same pass.
-pub fn predict_smoothed_into(
-    dsp: &Dsp,
-    refs: &Refs,
+pub fn predict_smoothed_into<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    refs: &Refs<T>,
     (mode, luma, strong): (u8, bool, bool),
-    scratch: &mut [u8],
-    dst: &mut PlaneViewMut<'_>,
+    scratch: &mut [T],
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     let n = refs.n;
     let block = &mut scratch[..n * n];
-    if oriented(dsp, refs, mode, luma, strong, block) {
+    if oriented(kernels, refs, mode, luma, strong, block) {
         for row in 0..n {
             for (col, d) in dst.row_mut(row)[..n].iter_mut().enumerate() {
                 *d = block[col * n + row];
@@ -334,33 +338,25 @@ pub fn predict_smoothed_into(
         }
     } else {
         for (row, line) in block.chunks_exact(n).enumerate() {
-            copy_row(line, &mut dst.row_mut(row)[..n]);
+            nc_common::copy_row(&mut dst.row_mut(row)[..n], line);
         }
     }
 }
 
-/// Copy one block row: by its size, so that the copy compiles to vector
-/// moves rather than a call (or WASM `memory.copy`).
-fn copy_row(src: &[u8], dst: &mut [u8]) {
-    fn fixed<const N: usize>(src: &[u8], dst: &mut [u8]) {
-        dst[..N].copy_from_slice(&src[..N]);
-    }
-    match src.len() {
-        4 => fixed::<4>(src, dst),
-        8 => fixed::<8>(src, dst),
-        16 => fixed::<16>(src, dst),
-        32 => fixed::<32>(src, dst),
-        _ => dst.copy_from_slice(src),
-    }
-}
-
-/// [`predict_oriented`] with optional strong smoothing.
-fn oriented(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, strong: bool, out: &mut [u8]) -> bool {
+/// [`predict_oriented`] at any depth, with optional strong smoothing.
+fn oriented<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    refs: &Refs<T>,
+    mode: u8,
+    luma: bool,
+    strong: bool,
+    out: &mut [T],
+) -> bool {
     let n = refs.n;
     let filtered;
     let p = if luma && needs_filter(mode, n) {
         filtered = strong
-            .then(|| refs.strongly_smoothed())
+            .then(|| refs.strongly_smoothed(kernels.depth()))
             .flatten()
             .unwrap_or_else(|| refs.filtered());
         &filtered
@@ -370,14 +366,14 @@ fn oriented(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, strong: bool, out: &mu
     let out = &mut out[..n * n];
     match mode {
         PLANAR => {
-            planar(dsp, p, n, out);
+            planar(kernels, p, n, out);
             false
         }
         DC => {
             dc(p, n, luma, out);
             false
         }
-        _ => angular(dsp, p, mode, n, luma, out),
+        _ => angular(kernels, p, mode, n, luma, out),
     }
 }
 
@@ -391,40 +387,47 @@ fn transpose_in_place(block: &mut [u8], n: usize) {
 }
 
 /// §8.4.4.2.4, by the planar kernel.
-fn planar(dsp: &Dsp, p: &Refs, n: usize, out: &mut [u8]) {
-    let mut above = [0u8; MAX_SIZE];
-    let mut left = [0u8; MAX_SIZE];
+fn planar<T: Pixel>(kernels: DepthKernels<'_>, p: &Refs<T>, n: usize, out: &mut [T]) {
+    let mut above = [T::default(); MAX_SIZE];
+    let mut left = [T::default(); MAX_SIZE];
     for i in 0..n {
-        above[i] = p.top(i as isize) as u8;
-        left[i] = p.left(i as isize) as u8;
+        above[i] = T::from_i32(p.top(i as isize));
+        left[i] = T::from_i32(p.left(i as isize));
     }
     let edges = HevcPlanarEdges {
         above: &above[..n],
         left: &left[..n],
-        top_right: p.top(n as isize) as u8,
-        bottom_left: p.left(n as isize) as u8,
+        top_right: T::from_i32(p.top(n as isize)),
+        bottom_left: T::from_i32(p.left(n as isize)),
     };
-    dsp.hevc_intra_planar(&edges, n, out);
+    kernels.hevc_intra_planar(&edges, n, out);
 }
 
 /// §8.4.4.2.5 (DC), with the luma edge filter for blocks below 32x32.
-fn dc(p: &Refs, n: usize, luma: bool, out: &mut [u8]) {
+fn dc<T: Pixel>(p: &Refs<T>, n: usize, luma: bool, out: &mut [T]) {
     let sum: i32 = (0..n as isize).map(|i| p.top(i) + p.left(i)).sum();
     let log2 = n.trailing_zeros();
     let dc = (sum + n as i32) >> (log2 + 1);
-    out.fill(dc as u8);
+    out.fill(T::from_i32(dc));
     if luma && n < EDGE_FILTER_MAX_SIZE {
-        out[0] = ((p.left(0) + 2 * dc + p.top(0) + 2) >> 2) as u8;
+        out[0] = T::from_i32((p.left(0) + 2 * dc + p.top(0) + 2) >> 2);
         for i in 1..n {
-            out[i] = ((p.top(i as isize) + 3 * dc + 2) >> 2) as u8;
-            out[i * n] = ((p.left(i as isize) + 3 * dc + 2) >> 2) as u8;
+            out[i] = T::from_i32((p.top(i as isize) + 3 * dc + 2) >> 2);
+            out[i * n] = T::from_i32((p.left(i as isize) + 3 * dc + 2) >> 2);
         }
     }
 }
 
 /// §8.4.4.2.6 (angular modes 2..=34), in line order: returns `true` (the
 /// block is transposed) for horizontal modes.
-fn angular(dsp: &Dsp, p: &Refs, mode: u8, n: usize, luma: bool, out: &mut [u8]) -> bool {
+fn angular<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    p: &Refs<T>,
+    mode: u8,
+    n: usize,
+    luma: bool,
+    out: &mut [T],
+) -> bool {
     let angle = ANGLE[usize::from(mode) - 2];
     let vertical = mode >= 18;
     // The main reference ("ref[]" of the specification), indexed from -n.
@@ -432,10 +435,10 @@ fn angular(dsp: &Dsp, p: &Refs, mode: u8, n: usize, luma: bool, out: &mut [u8]) 
     // left column; a negative angle extends it with the other side.
     let main = |i: isize| if vertical { p.top(i) } else { p.left(i) };
     let side = |i: isize| if vertical { p.left(i) } else { p.top(i) };
-    let mut buf = [0u8; 3 * MAX_SIZE + 1];
+    let mut buf = [T::default(); 3 * MAX_SIZE + 1];
     let origin = n; // buf[origin + i] is ref[i]
     for i in 0..=n {
-        buf[origin + i] = main(i as isize - 1) as u8;
+        buf[origin + i] = T::from_i32(main(i as isize - 1));
     }
     let reach = (n as i32 * angle) >> 5;
     if angle < 0 {
@@ -443,17 +446,17 @@ fn angular(dsp: &Dsp, p: &Refs, mode: u8, n: usize, luma: bool, out: &mut [u8]) 
             let inv = INV_ANGLE[usize::from(mode) - 11];
             for i in reach..=-1 {
                 buf[(origin as i32 + i) as usize] =
-                    side((((i * inv + 128) >> 8) - 1) as isize) as u8;
+                    T::from_i32(side((((i * inv + 128) >> 8) - 1) as isize));
             }
         }
     } else {
         for i in n + 1..=2 * n {
-            buf[origin + i] = main(i as isize - 1) as u8;
+            buf[origin + i] = T::from_i32(main(i as isize - 1));
         }
     }
     // Project one line at a time: rows for vertical modes, columns for
     // horizontal ones (written as rows, i.e. transposed).
-    dsp.hevc_intra_angular(&buf[..=3 * n], n, angle, out);
+    kernels.hevc_intra_angular(&buf[..=3 * n], n, angle, out);
     // Pure vertical / horizontal luma: smooth the first column (vertical) or
     // row (horizontal) towards the side references; in line order both are
     // the first sample of every line.
@@ -461,7 +464,7 @@ fn angular(dsp: &Dsp, p: &Refs, mode: u8, n: usize, luma: bool, out: &mut [u8]) 
         let corner = p.top(-1);
         for (k, line) in out.chunks_exact_mut(n).enumerate() {
             let sample = main(0) + ((side(k as isize) - corner) >> 1);
-            line[0] = sample.clamp(0, 255) as u8;
+            line[0] = kernels.depth().clip_to(sample);
         }
     }
     !vertical
@@ -559,7 +562,7 @@ mod tests {
         let mut out = [0u8; 64];
         for mode in 0..MODES {
             predict(&Dsp::new(), &refs, mode, true, &mut out);
-            assert!(out.iter().all(|&v| v == NO_NEIGHBOURS), "mode {mode}");
+            assert!(out.iter().all(|&v| v == 128), "mode {mode}");
         }
     }
 

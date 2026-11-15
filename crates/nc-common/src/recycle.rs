@@ -10,18 +10,25 @@
 use crate::error::Result;
 use crate::picture::{Picture, PlaneIndex};
 use crate::plane::ROW_ALIGNMENT;
+use crate::sample::Sample;
 
 /// Most pictures kept: a reconstruction, an output and two returned by the
 /// caller cover one frame in flight; more would only hold memory.
 const MAX_SPARE_PICTURES: usize = 4;
 
 /// Released pictures kept for reuse by later frames.
-#[derive(Debug, Default)]
-pub struct PictureRecycler {
-    spare: Vec<Picture>,
+#[derive(Debug)]
+pub struct PictureRecycler<T: Sample = u8> {
+    spare: Vec<Picture<T>>,
 }
 
-impl PictureRecycler {
+impl<T: Sample> Default for PictureRecycler<T> {
+    fn default() -> Self {
+        Self { spare: Vec::new() }
+    }
+}
+
+impl<T: Sample> PictureRecycler<T> {
     /// A `width` x `height` picture with `luma_border` (as [`Picture::new`]):
     /// a released one of exactly that geometry if available, its samples
     /// stale, else a new zeroed one.
@@ -29,7 +36,7 @@ impl PictureRecycler {
     /// # Errors
     ///
     /// As [`Picture::new`].
-    pub fn take(&mut self, width: usize, height: usize, luma_border: usize) -> Result<Picture> {
+    pub fn take(&mut self, width: usize, height: usize, luma_border: usize) -> Result<Picture<T>> {
         match self
             .spare
             .iter()
@@ -42,7 +49,7 @@ impl PictureRecycler {
 
     /// Keep `picture` for a later [`PictureRecycler::take`] (dropped when
     /// enough are kept already).
-    pub fn give(&mut self, picture: Picture) {
+    pub fn give(&mut self, picture: Picture<T>) {
         if self.spare.len() < MAX_SPARE_PICTURES {
             self.spare.push(picture);
         }
@@ -51,11 +58,16 @@ impl PictureRecycler {
 
 /// Whether `picture` is what `Picture::new(width, height, luma_border)`
 /// would allocate (same size and padding, so the same strides).
-fn has_geometry(picture: &Picture, width: usize, height: usize, luma_border: usize) -> bool {
+fn has_geometry<T: Sample>(
+    picture: &Picture<T>,
+    width: usize,
+    height: usize,
+    luma_border: usize,
+) -> bool {
     let luma = picture.plane(PlaneIndex::Y);
     (picture.width(), picture.height()) == (width, height)
         && luma.border_y() == luma_border
-        && luma.border_x() == luma_border.next_multiple_of(ROW_ALIGNMENT)
+        && luma.border_x() == luma_border.next_multiple_of(ROW_ALIGNMENT / T::BYTES)
 }
 
 #[cfg(test)]
@@ -64,7 +76,7 @@ mod tests {
 
     #[test]
     fn reuses_only_matching_geometry() {
-        let mut recycler = PictureRecycler::default();
+        let mut recycler = PictureRecycler::<u8>::default();
         let mut picture = recycler.take(16, 8, 4).unwrap();
         picture.plane_mut(PlaneIndex::Y).view_mut().row_mut(0)[0] = 7;
         recycler.give(picture);
@@ -95,7 +107,7 @@ mod tests {
 
     #[test]
     fn keeps_a_bounded_number() {
-        let mut recycler = PictureRecycler::default();
+        let mut recycler = PictureRecycler::<u8>::default();
         for _ in 0..2 * MAX_SPARE_PICTURES {
             recycler.give(Picture::new(8, 8, 0).unwrap());
         }

@@ -18,7 +18,7 @@
 //! column), and a picture's remaining bands are filtered when it ends.
 
 use nc_common::decode::DecodeError;
-use nc_dsp::Dsp;
+use nc_dsp::{Dsp, Pixel};
 
 use super::params::Pps;
 use super::picture::PictureState;
@@ -26,9 +26,9 @@ use super::{deblock, sao};
 
 /// Working memory of the in-loop filters, kept between pictures.
 #[derive(Debug, Default)]
-pub(super) struct LoopFilter {
+pub(super) struct LoopFilter<T: Pixel> {
     /// Working memory of SAO.
-    sao: sao::Work,
+    sao: sao::Work<T>,
 }
 
 /// How far a picture's decoding and filtering have come.
@@ -74,10 +74,10 @@ impl Progress {
     }
 }
 
-impl LoopFilter {
+impl<T: Pixel> LoopFilter<T> {
     /// Filter every band whose inputs are final; with `end`, the picture is
     /// complete and every remaining band is filtered.
-    pub fn advance(&mut self, dsp: &Dsp, pps: &Pps, pic: &mut PictureState, end: bool) {
+    pub fn advance(&mut self, dsp: &Dsp, pps: &Pps, pic: &mut PictureState<T>, end: bool) {
         let layout = pic.layout.clone();
         let rows = layout.ctb_h;
         let ctb = 1usize << layout.log2_ctb;

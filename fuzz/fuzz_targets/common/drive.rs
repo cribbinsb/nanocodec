@@ -67,7 +67,7 @@ pub fn hevc(data: &[u8]) {
         Mode::Cli | Mode::CliAllLayers => {
             let drain = |decoder: &mut nc_hevc::Decoder| {
                 while let Some(frame) = decoder.next_output() {
-                    super::read_window(&frame.picture, frame.origin, frame.size);
+                    super::read_decoded(&frame);
                 }
             };
             let result = framing::read_nal_units(&mut &data[..], |nal| {

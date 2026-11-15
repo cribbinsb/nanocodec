@@ -12,8 +12,8 @@
 use nc_common::decode::{BitReader, DecodeError};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{Picture, PlaneIndex};
-use nc_dsp::Dsp;
+use nc_common::{BitDepth, BitDepths, Picture, PlaneIndex};
+use nc_dsp::{Dsp, Pixel};
 use nc_encoder::Mv;
 
 use super::cabac::Engine;
@@ -21,7 +21,7 @@ use super::ctx::{self, Contexts};
 use super::loop_filter::LoopFilter;
 use super::mc::{self, Source};
 use super::mvpred::{Collocated, Predictor, Pu};
-use super::params::{FLAT_SCALE, Pps, ScalingLists, Sps};
+use super::params::{FLAT_SCALE, MAX_QP, Pps, ScalingLists, Sps, qp_bd_offset};
 use super::picture::{BlockInfo, Edges, GRID_LOG2, PictureState, PuMotion, flag};
 use super::sao;
 use super::slice::{SliceHeader, SliceSegment, SliceType};
@@ -31,7 +31,7 @@ use super::slice::{SliceHeader, SliceSegment, SliceType};
 #[cfg(feature = "analysis")]
 mod analysis;
 use crate::predict::{self, Refs, Sides};
-use crate::quant::chroma_qp;
+use crate::quant::{MAX_CHROMA_QPI, chroma_qp_table};
 use crate::scan::{ScanKind, Scans};
 
 /// `levelScale` (§8.6.3).
@@ -40,14 +40,20 @@ const LEVEL_SCALE: [i64; 6] = [40, 45, 51, 57, 64, 72];
 const MAX_COEFFS: usize = 32 * 32;
 /// `cu_qp_delta_abs` prefix length before the Exp-Golomb suffix.
 const QP_DELTA_PREFIX: u32 = 5;
-/// `CuQpDeltaVal` range for 8-bit video (§7.4.9.14).
-const QP_DELTA_RANGE: std::ops::RangeInclusive<i32> = -26..=25;
-/// QP values wrap modulo this (equation 8-283).
-const QP_WRAP: i32 = 52;
+/// `CuQpDeltaVal` lies in `−(26 + QpBdOffsetY / 2)..=25 + QpBdOffsetY / 2`
+/// (§7.4.9.14).
+const QP_DELTA_BELOW: i32 = 26;
+const QP_DELTA_ABOVE: i32 = 25;
+/// QP values wrap modulo this plus `QpBdOffsetY` (equation 8-283).
+const QP_WRAP: i32 = MAX_QP + 1;
 /// Transform-skip residuals are scaled up by 7 bits (§8.6.4.2, v1).
 const TRANSFORM_SKIP_SHIFT: u32 = 7;
-/// `bdShift = 20 − BitDepth` after the transform (or transform skip).
-const RESIDUAL_SHIFT: u32 = 12;
+/// `bdShift = RESIDUAL_BITS − BitDepth` after the transform (or transform
+/// skip, §8.6.2).
+const RESIDUAL_BITS: u32 = 20;
+/// `bdShift = BitDepth + Log2(nTbS) − SCALING_SHIFT_BELOW` of the scaling
+/// process (§8.6.3: `+ 10 − 15`).
+const SCALING_SHIFT_BELOW: u32 = 5;
 
 /// `PartMode` (Table 7-10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,21 +99,23 @@ impl Part {
 }
 
 /// Everything about a slice that its segments' data needs.
-pub(super) struct SliceContext<'a> {
+pub(super) struct SliceContext<'a, T: Pixel> {
     pub sps: &'a Sps,
     pub pps: &'a Pps,
     pub header: &'a SliceHeader,
     /// The slice's index in the picture, plus one.
     pub slice: u16,
-    pub refs: [Vec<&'a Picture>; 2],
+    pub refs: [Vec<&'a Picture<T>>; 2],
     pub col: Option<Collocated<'a>>,
     pub poc: i32,
     pub no_backward_pred: bool,
     pub dsp: &'a Dsp,
     pub scans: &'a Scans,
+    /// The SPS's depths as the instance sees them (`BitDepths::of`).
+    pub depths: BitDepths,
 }
 
-impl SliceContext<'_> {
+impl<T: Pixel> SliceContext<'_, T> {
     fn scaling(&self) -> Option<&ScalingLists> {
         self.pps.scaling.as_ref().or(self.sps.scaling.as_ref())
     }
@@ -187,28 +195,28 @@ struct TuNode {
 /// blocks: only the coded positions are set (and scaled in place) and
 /// cleared again.
 #[derive(Debug)]
-pub(super) struct Scratch {
+pub(super) struct Scratch<T: Pixel> {
     /// Parsed, then scaled, levels: 16 bits by §7.4.9.11 (`CoeffMinY` to
     /// `CoeffMaxY`) and §8.6.3 (the scaled values' clamp).
     levels: Vec<i16>,
     positions: Vec<u16>,
     residual: Vec<i16>,
-    pred: Vec<u8>,
+    pred: Vec<T>,
     /// Intra reference samples, refilled per block.
-    refs: Refs,
+    refs: Refs<T>,
     buffers: mc::Buffers,
     /// Where analysis records go, when they are being collected.
     #[cfg(feature = "analysis")]
     pub stats: Option<StreamStats>,
 }
 
-impl Default for Scratch {
+impl<T: Pixel> Default for Scratch<T> {
     fn default() -> Self {
         Self {
             levels: vec![0; MAX_COEFFS],
             positions: Vec::with_capacity(MAX_COEFFS),
             residual: vec![0; MAX_COEFFS],
-            pred: vec![0; MAX_COEFFS],
+            pred: vec![T::default(); MAX_COEFFS],
             refs: Refs::default(),
             buffers: mc::Buffers::default(),
             #[cfg(feature = "analysis")]
@@ -218,12 +226,12 @@ impl Default for Scratch {
 }
 
 /// Decode one slice segment's data into the picture.
-pub(super) fn decode_segment(
-    cx: &SliceContext<'_>,
-    pic: &mut PictureState,
+pub(super) fn decode_segment<T: Pixel>(
+    cx: &SliceContext<'_, T>,
+    pic: &mut PictureState<T>,
     carry: &mut Carry,
-    scratch: &mut Scratch,
-    filter: &mut LoopFilter,
+    scratch: &mut Scratch<T>,
+    filter: &mut LoopFilter<T>,
     data: &[u8],
     segment: &SliceSegment,
 ) -> Result<(), DecodeError> {
@@ -242,23 +250,23 @@ pub(super) fn decode_segment(
     d.run(carry, data, segment)
 }
 
-struct SegmentDecoder<'c, 'a> {
-    cx: &'c SliceContext<'a>,
-    pic: &'c mut PictureState,
+struct SegmentDecoder<'c, 'a, T: Pixel> {
+    cx: &'c SliceContext<'a, T>,
+    pic: &'c mut PictureState<T>,
     /// In-loop filtering of the CTB rows this segment completes.
-    filter: &'c mut LoopFilter,
+    filter: &'c mut LoopFilter<T>,
     ctx: Contexts,
     qg: QuantGroup,
     last_qp: i32,
     /// `QpY` of the current coding unit.
     qp: i32,
-    s: &'c mut Scratch,
+    s: &'c mut Scratch<T>,
     /// What the current units' analysis records collect.
     #[cfg(feature = "analysis")]
     analysis: analysis::Analysis,
 }
 
-impl SegmentDecoder<'_, '_> {
+impl<T: Pixel> SegmentDecoder<'_, '_, T> {
     fn run(
         &mut self,
         carry: &mut Carry,
@@ -502,8 +510,12 @@ impl SegmentDecoder<'_, '_> {
         self.qp = self.qg.pred;
     }
 
+    /// `QpY` (eq. 8-283): `((qPY_PRED + CuQpDeltaVal + 52 + 2 ·
+    /// QpBdOffsetY) % (52 + QpBdOffsetY)) − QpBdOffsetY`.
     fn update_qp(&mut self) {
-        self.qp = (self.qg.pred + self.qg.delta + QP_WRAP).rem_euclid(QP_WRAP);
+        let offset = qp_bd_offset(self.cx.depths.luma);
+        let wrap = QP_WRAP + offset;
+        self.qp = (self.qg.pred + self.qg.delta + offset).rem_euclid(wrap) - offset;
     }
 
     /// `coding_unit()` (§7.3.8.5).
@@ -682,11 +694,13 @@ impl SegmentDecoder<'_, '_> {
             } else {
                 (cu.x / 2, cu.y / 2)
             };
+            // `recSamples = pcm_sample << (BitDepth − PcmBitDepth)` (eq. 8-7).
+            let depth = self.cx.depths.plane(c).bits();
             let mut view = self.pic.samples.plane_mut(plane).view_mut();
             for row in 0..n {
                 let line = &mut view.row_mut(py + row)[px..px + n];
                 for s in line {
-                    *s = (r.read_bits(bits)? << (8 - bits)) as u8;
+                    *s = T::from_i32((r.read_bits(bits)? << (depth - bits)) as i32);
                 }
             }
         }
@@ -850,7 +864,7 @@ impl SegmentDecoder<'_, '_> {
         Ok(merge)
     }
 
-    fn predictor(&self) -> Predictor<'_> {
+    fn predictor(&self) -> Predictor<'_, T> {
         let cx = self.cx;
         let header = cx.header;
         Predictor {
@@ -947,7 +961,7 @@ impl SegmentDecoder<'_, '_> {
         let header = self.cx.header;
         let weighted = header.weights.as_ref();
         // At most one source per list, kept on the stack.
-        let mut sources: [Option<Source<'_>>; 2] = [None, None];
+        let mut sources: [Option<Source<'_, T>>; 2] = [None, None];
         let mut count = 0;
         for list in 0..2 {
             if !motion.uses(list) {
@@ -973,6 +987,7 @@ impl SegmentDecoder<'_, '_> {
         let denominators = weighted.map_or([0; 2], |w| w.log2_denom);
         mc::predict(
             self.cx.dsp,
+            self.cx.depths,
             &mut self.s.buffers,
             &mut self.pic.samples,
             (x, y),
@@ -1143,7 +1158,8 @@ impl SegmentDecoder<'_, '_> {
         if delta != 0 && e.bypass() {
             delta = -delta;
         }
-        if !QP_DELTA_RANGE.contains(&delta) {
+        let half_offset = qp_bd_offset(self.cx.depths.luma) / 2;
+        if !(-(QP_DELTA_BELOW + half_offset)..=QP_DELTA_ABOVE + half_offset).contains(&delta) {
             return Err(DecodeError::Malformed("CuQpDeltaVal"));
         }
         self.qg.delta = delta;
@@ -1187,7 +1203,7 @@ impl SegmentDecoder<'_, '_> {
         };
         self.s.positions.clear();
         let count = n * n;
-        let skip = super::residual::read(
+        let skip = super::residual::read::<T>(
             e,
             &mut self.ctx,
             scan,
@@ -1234,6 +1250,7 @@ impl SegmentDecoder<'_, '_> {
         } else {
             self.scale_levels(log2, c, intra)
         };
+        let depth = self.cx.depths.plane(c);
         let mut dst = self
             .pic
             .samples
@@ -1245,44 +1262,43 @@ impl SegmentDecoder<'_, '_> {
                 crate::transform::kind(log2, intra && c == 0).expect("transform sizes 4..32");
             self.cx
                 .dsp
+                .at(depth)
                 .hevc_inverse_add(kind, &self.s.levels[..count], extent, &mut dst);
             return;
         }
         let residual = &mut self.s.residual[..count];
-        if cu.bypass {
-            residual.copy_from_slice(&self.s.levels[..count]);
-        } else {
-            for (r, &level) in residual.iter_mut().zip(&self.s.levels[..count]) {
-                // |r| <= (2^15 · 2^7 + 2^11) >> 12 = 1024.
-                *r = (((i32::from(level) << TRANSFORM_SKIP_SHIFT) + (1 << (RESIDUAL_SHIFT - 1)))
-                    >> RESIDUAL_SHIFT) as i16;
-            }
-        }
-        for (row, line) in residual.chunks_exact(n).enumerate() {
-            for (s, &r) in dst.row_mut(row).iter_mut().zip(line) {
-                *s = (i32::from(*s) + i32::from(r)).clamp(0, 255) as u8;
-            }
-        }
+        untransformed(
+            &self.s.levels[..count],
+            residual,
+            cu.bypass,
+            &mut dst,
+            depth,
+        );
     }
 
     /// Scale the parsed levels in place (§8.6.3, `scaling_list_enabled`
     /// factors or the flat 16), visiting only the coded positions. Returns
     /// the rows and columns that hold them, for the inverse transform.
     fn scale_levels(&mut self, log2: u8, c: usize, intra: bool) -> (usize, usize) {
+        let depths = self.cx.depths;
+        // `qP` is `Qp′Y` or `Qp′Cb` / `Qp′Cr` (§8.6.1): the QP plus the
+        // component's `QpBdOffset`.
         let qp = if c == 0 {
-            self.qp
+            self.qp + qp_bd_offset(depths.luma)
         } else {
             let offset = if c == 1 {
                 self.cx.pps.cb_qp_offset + self.cx.header.cb_qp_offset
             } else {
                 self.cx.pps.cr_qp_offset + self.cx.header.cr_qp_offset
             };
-            chroma_qp(self.qp + offset)
+            let chroma_offset = qp_bd_offset(depths.chroma);
+            let qpi = (self.qp + offset).clamp(-chroma_offset, MAX_CHROMA_QPI);
+            chroma_qp_table(qpi) + chroma_offset
         };
         let matrix = if intra { 0 } else { 3 } + c;
         let factors = self.cx.scaling().map(|s| s.factors(log2, matrix));
         // bdShift = BitDepth + log2(nTbS) + 10 − 15 (§8.6.3).
-        let shift = u32::from(log2) + 3;
+        let shift = depths.plane(c).bits() + u32::from(log2) - SCALING_SHIFT_BELOW;
         let scale = LEVEL_SCALE[(qp % 6) as usize] << (qp / 6);
         let (mut rows, mut columns) = (0, 0);
         for &p in &self.s.positions {
@@ -1311,12 +1327,14 @@ impl SegmentDecoder<'_, '_> {
         } else {
             Sides::Uniform
         };
+        let depth = self.cx.depths.plane(c);
         self.s.refs.gather_into(
             pic.samples.plane(plane),
             (x, y),
             n,
             4 >> shift,
             sides,
+            depth,
             |xn, yn| {
                 let nb = ((xn << shift) as isize, (yn << shift) as isize);
                 pic.available(cur, nb, self.cx.slice)
@@ -1333,11 +1351,44 @@ impl SegmentDecoder<'_, '_> {
             .region_mut(x as isize, y as isize, n, n)
             .expect("intra block inside the picture");
         predict::predict_smoothed_into(
-            self.cx.dsp,
+            self.cx.dsp.at(depth),
             &self.s.refs,
             (mode, c == 0, strong),
             &mut self.s.pred,
             &mut view,
         );
+    }
+}
+
+/// Reconstruct a transform-skip (`bypass` false) or lossless block: its
+/// residual from `levels` into `residual`, added to `dst` with `Clip1` to
+/// `depth`. Both are rare; transformed blocks add inside the inverse
+/// transform kernel. Kept out of line: inlined into the block decoder it
+/// pushed the residual parser out of it (+1 % decode instructions,
+/// callgrind on a 720p stream of ours, 2026-11-15).
+#[cold]
+#[inline(never)]
+fn untransformed<T: Pixel>(
+    levels: &[i16],
+    residual: &mut [i16],
+    bypass: bool,
+    dst: &mut nc_common::PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
+    if bypass {
+        residual.copy_from_slice(levels);
+    } else {
+        let shift = RESIDUAL_BITS - depth.bits();
+        for (r, &level) in residual.iter_mut().zip(levels) {
+            // |r| <= (2^15 · 2^7 + 2^9) >> 10 = 4096 at 10 bits (1024 at 8).
+            *r =
+                (((i32::from(level) << TRANSFORM_SKIP_SHIFT) + (1 << (shift - 1))) >> shift) as i16;
+        }
+    }
+    let n = dst.width();
+    for (row, line) in residual.chunks_exact(n).enumerate() {
+        for (s, &r) in dst.row_mut(row).iter_mut().zip(line) {
+            *s = depth.clip_to(s.to_i32() + i32::from(r));
+        }
     }
 }

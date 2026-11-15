@@ -1,9 +1,12 @@
-//! Borrowed rectangular windows into 8-bit sample data.
+//! Borrowed rectangular windows into sample data (`u8`, or `u16` for more
+//! than 8 bits; see [`crate::sample`]).
 //!
-//! A view is `height` rows of `width` samples, `stride` bytes apart, starting
+//! A view is `height` rows of `width` samples, `stride` samples apart, starting
 //! at `data[0]`. The constructor checks once that the slice covers every row,
 //! so code taking a view (including SIMD kernels) can rely on
 //! `data.len() >= (height - 1) * stride + width` without re-checking.
+
+use crate::sample::Sample;
 
 /// Copy one block row: `dst.copy_from_slice(src)`, with the block widths
 /// (4 to 64 samples) as fixed-size copies.
@@ -21,23 +24,23 @@
     reason = "called per block row from other crates; out of line it cost ~37 instructions per call, more than the memcpy it replaces (callgrind)"
 )]
 #[inline(always)]
-pub fn copy_row(dst: &mut [u8], src: &[u8]) {
-    fn fixed<const N: usize>(dst: &mut [u8], src: &[u8]) {
-        let src: &[u8; N] = src.try_into().expect("copy_row: source length");
-        let dst: &mut [u8; N] = dst.try_into().expect("copy_row: lengths differ");
+pub fn copy_row<T: Sample>(dst: &mut [T], src: &[T]) {
+    fn fixed<T: Sample, const N: usize>(dst: &mut [T], src: &[T]) {
+        let src: &[T; N] = src.try_into().expect("copy_row: source length");
+        let dst: &mut [T; N] = dst.try_into().expect("copy_row: lengths differ");
         *dst = *src;
     }
     match src.len() {
-        4 => fixed::<4>(dst, src),
-        8 => fixed::<8>(dst, src),
-        16 => fixed::<16>(dst, src),
-        32 => fixed::<32>(dst, src),
-        64 => fixed::<64>(dst, src),
+        4 => fixed::<T, 4>(dst, src),
+        8 => fixed::<T, 8>(dst, src),
+        16 => fixed::<T, 16>(dst, src),
+        32 => fixed::<T, 32>(dst, src),
+        64 => fixed::<T, 64>(dst, src),
         _ => dst.copy_from_slice(src),
     }
 }
 
-/// Bytes a `width` x `height` window with the given stride occupies.
+/// Samples a `width` x `height` window with the given stride occupies.
 #[allow(
     clippy::inline_always,
     reason = "called per kernel invocation; out of line it measured ~65 instructions per call (callgrind)"
@@ -64,14 +67,14 @@ fn checked_required_len(width: usize, height: usize, stride: usize) -> Option<us
 
 /// An immutable window into sample data.
 #[derive(Debug, Clone, Copy)]
-pub struct PlaneView<'a> {
-    data: &'a [u8],
+pub struct PlaneView<'a, T: Sample = u8> {
+    data: &'a [T],
     stride: usize,
     width: usize,
     height: usize,
 }
 
-impl<'a> PlaneView<'a> {
+impl<'a, T: Sample> PlaneView<'a, T> {
     /// A view over `data`, or `None` if the geometry overflows, `data` is too
     /// short, or `stride < width`.
     #[must_use]
@@ -80,7 +83,7 @@ impl<'a> PlaneView<'a> {
         reason = "called per kernel invocation; out of line it measured ~65 instructions per call (callgrind)"
     )]
     #[inline(always)]
-    pub fn new(data: &'a [u8], stride: usize, width: usize, height: usize) -> Option<Self> {
+    pub fn new(data: &'a [T], stride: usize, width: usize, height: usize) -> Option<Self> {
         let valid = stride >= width && data.len() >= checked_required_len(width, height, stride)?;
         valid.then_some(Self {
             data,
@@ -102,16 +105,16 @@ impl<'a> PlaneView<'a> {
         self.height
     }
 
-    /// Distance between the starts of consecutive rows, in bytes.
+    /// Distance between the starts of consecutive rows, in samples.
     #[must_use]
     pub fn stride(&self) -> usize {
         self.stride
     }
 
     /// The underlying data, starting at the view's top-left sample. It covers
-    /// at least `(height - 1) * stride + width` bytes.
+    /// at least `(height - 1) * stride + width` samples.
     #[must_use]
-    pub fn data(&self) -> &'a [u8] {
+    pub fn data(&self) -> &'a [T] {
         self.data
     }
 
@@ -120,7 +123,7 @@ impl<'a> PlaneView<'a> {
     // samples on low-light content); inlining lets the bounds check fold.
     #[must_use]
     #[inline]
-    pub fn row(&self, y: usize) -> &'a [u8] {
+    pub fn row(&self, y: usize) -> &'a [T] {
         assert!(
             y < self.height,
             "row {y} outside view of height {}",
@@ -131,7 +134,7 @@ impl<'a> PlaneView<'a> {
     }
 
     /// All rows, top to bottom.
-    pub fn rows(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
+    pub fn rows(&self) -> impl Iterator<Item = &'a [T]> + '_ {
         (0..self.height).map(|y| self.row(y))
     }
 
@@ -149,14 +152,14 @@ impl<'a> PlaneView<'a> {
 
 /// A mutable window into sample data.
 #[derive(Debug)]
-pub struct PlaneViewMut<'a> {
-    data: &'a mut [u8],
+pub struct PlaneViewMut<'a, T: Sample = u8> {
+    data: &'a mut [T],
     stride: usize,
     width: usize,
     height: usize,
 }
 
-impl<'a> PlaneViewMut<'a> {
+impl<'a, T: Sample> PlaneViewMut<'a, T> {
     /// A view over `data`, or `None` if the geometry overflows, `data` is too
     /// short, or `stride < width`.
     #[must_use]
@@ -165,7 +168,7 @@ impl<'a> PlaneViewMut<'a> {
         reason = "called per kernel invocation; out of line it measured ~65 instructions per call (callgrind)"
     )]
     #[inline(always)]
-    pub fn new(data: &'a mut [u8], stride: usize, width: usize, height: usize) -> Option<Self> {
+    pub fn new(data: &'a mut [T], stride: usize, width: usize, height: usize) -> Option<Self> {
         let valid = stride >= width && data.len() >= checked_required_len(width, height, stride)?;
         valid.then_some(Self {
             data,
@@ -187,23 +190,23 @@ impl<'a> PlaneViewMut<'a> {
         self.height
     }
 
-    /// Distance between the starts of consecutive rows, in bytes.
+    /// Distance between the starts of consecutive rows, in samples.
     #[must_use]
     pub fn stride(&self) -> usize {
         self.stride
     }
 
     /// The underlying data, starting at the view's top-left sample. It covers
-    /// at least `(height - 1) * stride + width` bytes; bytes between rows
+    /// at least `(height - 1) * stride + width` samples; samples between rows
     /// belong to the view's owner and must not be changed.
     #[must_use]
-    pub fn data_mut(&mut self) -> &mut [u8] {
+    pub fn data_mut(&mut self) -> &mut [T] {
         self.data
     }
 
     /// A read-only view of the same window.
     #[must_use]
-    pub fn as_view(&self) -> PlaneView<'_> {
+    pub fn as_view(&self) -> PlaneView<'_, T> {
         PlaneView {
             data: self.data,
             stride: self.stride,
@@ -214,7 +217,7 @@ impl<'a> PlaneViewMut<'a> {
 
     /// Row `y` (exactly `width` samples), writable.
     #[inline]
-    pub fn row_mut(&mut self, y: usize) -> &mut [u8] {
+    pub fn row_mut(&mut self, y: usize) -> &mut [T] {
         assert!(
             y < self.height,
             "row {y} outside view of height {}",
@@ -225,7 +228,7 @@ impl<'a> PlaneViewMut<'a> {
     }
 
     /// Set every sample in the window to `value`.
-    pub fn fill(&mut self, value: u8) {
+    pub fn fill(&mut self, value: T) {
         for y in 0..self.height {
             self.row_mut(y).fill(value);
         }
@@ -240,7 +243,7 @@ impl<'a> PlaneViewMut<'a> {
         y: usize,
         width: usize,
         height: usize,
-    ) -> Option<PlaneViewMut<'_>> {
+    ) -> Option<PlaneViewMut<'_, T>> {
         if x + width > self.width || y + height > self.height {
             return None;
         }
@@ -249,7 +252,7 @@ impl<'a> PlaneViewMut<'a> {
     }
 
     /// Copy `src` into this window. Both must have the same size.
-    pub fn copy_from(&mut self, src: &PlaneView<'_>) {
+    pub fn copy_from(&mut self, src: &PlaneView<'_, T>) {
         assert_eq!(
             (self.width, self.height),
             (src.width(), src.height()),
@@ -278,7 +281,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "lengths differ")]
     fn copy_row_rejects_mismatched_lengths() {
-        copy_row(&mut [0u8; 7], &[0u8; 8]);
+        copy_row::<u8>(&mut [0u8; 7], &[0u8; 8]);
     }
 
     #[test]
@@ -287,7 +290,7 @@ mod tests {
         assert!(PlaneView::new(&data, 8, 4, 3).is_some()); // needs 2*8+4 = 20
         assert!(PlaneView::new(&data, 8, 5, 3).is_none()); // needs 21
         assert!(PlaneView::new(&data, 3, 4, 1).is_none()); // stride < width
-        assert!(PlaneView::new(&[], 0, 0, 0).is_some());
+        assert!(PlaneView::<u8>::new(&[], 0, 0, 0).is_some());
     }
 
     #[test]
@@ -311,12 +314,12 @@ mod tests {
     #[test]
     fn empty_views_preserve_geometry_semantics() {
         for (width, height) in [(0, usize::MAX), (usize::MAX, 0)] {
-            assert!(PlaneView::new(&[], usize::MAX, width, height).is_some());
-            assert!(PlaneViewMut::new(&mut [], usize::MAX, width, height).is_some());
+            assert!(PlaneView::<u8>::new(&[], usize::MAX, width, height).is_some());
+            assert!(PlaneViewMut::<u8>::new(&mut [], usize::MAX, width, height).is_some());
         }
         // An empty height does not waive the stride constraint.
-        assert!(PlaneView::new(&[], 0, 1, 0).is_none());
-        assert!(PlaneViewMut::new(&mut [], 0, 1, 0).is_none());
+        assert!(PlaneView::<u8>::new(&[], 0, 1, 0).is_none());
+        assert!(PlaneViewMut::<u8>::new(&mut [], 0, 1, 0).is_none());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Native streaming decode of IVF (AV1, VP9, AV2) and Annex-B output (any
-//! HEVC Main-profile or H.264 Constrained High stream, pictures in output
-//! order), to raw I420 (`--output`) and/or one MD5 line per shown frame
+//! HEVC Main / Main 10 or H.264 Constrained High stream, pictures in output
+//! order), to raw I420 (`--output`; pictures of more than 8 bits as 16-bit
+//! little-endian samples, `yuv420p10le`) and/or one MD5 line per shown frame
 //! (`--frame-md5`, the form of the libvpx test vectors' `.md5`), or neither
 //! (`--discard 1`: decode every frame and write nothing, to time the decoder
 //! alone as reference decoders do with `vpxdec --noblit` or `dav1d --muxer
@@ -13,7 +14,7 @@ use std::io::{BufRead, IoSlice, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nc_common::{Picture, PlaneIndex, ShownPicture, decode::DecodeError};
+use nc_common::{DecodedPicture, Picture, PlaneIndex, ShownPicture, decode::DecodeError};
 use nc_encoder::Codec;
 
 use crate::framing::{ivf_fourcc, read_ivf, read_nal_units};
@@ -204,6 +205,10 @@ enum Samples<'a> {
     },
     /// The visible window the decoder shows until its next call (no copy).
     View(ShownPicture<'a>),
+    /// A picture of more than 8 bits, packed as raw 16-bit little-endian
+    /// planes (one copy per frame: written and hashed as bytes, the way
+    /// HM and ffmpeg write `yuv420p10le`).
+    Packed(Vec<u8>),
 }
 
 impl<'a> Shown<'a> {
@@ -240,17 +245,29 @@ impl<'a> Shown<'a> {
         }
     }
 
-    /// An HEVC picture in output order, shown from the decoder's own picture.
-    fn hevc(frame: nc_hevc::OutputPicture) -> Self {
-        Self {
-            planes: 3,
-            width: frame.size.0,
-            height: frame.size.1,
-            samples: Samples::Shared {
+    /// An HEVC picture in output order: an 8-bit one shown from the
+    /// decoder's own picture, a deeper one packed.
+    fn hevc(frame: DecodedPicture) -> Result<Self, String> {
+        let (width, height) = frame.size();
+        let samples = match frame {
+            DecodedPicture::Eight(frame) => Samples::Shared {
                 picture: frame.picture,
                 origin: frame.origin,
             },
-        }
+            DecodedPicture::High(_) => {
+                let mut bytes = Vec::new();
+                frame
+                    .write_yuv(&mut bytes, 3)
+                    .map_err(|error| error.to_string())?;
+                Samples::Packed(bytes)
+            }
+        };
+        Ok(Self {
+            planes: 3,
+            width,
+            height,
+            samples,
+        })
     }
 
     /// The owned picture, to give back to its decoder for reuse; a shared
@@ -258,7 +275,10 @@ impl<'a> Shown<'a> {
     fn into_owned(self) -> Option<Picture> {
         match self.samples {
             Samples::Owned(picture) => Some(picture),
-            Samples::Borrowed(_) | Samples::Shared { .. } | Samples::View(_) => None,
+            Samples::Borrowed(_)
+            | Samples::Shared { .. }
+            | Samples::View(_)
+            | Samples::Packed(_) => None,
         }
     }
 
@@ -266,8 +286,10 @@ impl<'a> Shown<'a> {
     /// or a copy of a decoder's (for callers that keep it past the
     /// decoder's next call).
     pub(crate) fn to_picture(&self) -> Result<Cow<'_, Picture>, String> {
-        if let Samples::Owned(picture) = &self.samples {
-            return Ok(Cow::Borrowed(picture));
+        match &self.samples {
+            Samples::Owned(picture) => return Ok(Cow::Borrowed(picture)),
+            Samples::Packed(_) => return Err("8-bit copy of a picture of more than 8 bits".into()),
+            _ => {}
         }
         let mut copy = Picture::new(self.width, self.height, 0).map_err(|e| e.to_string())?;
         for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
@@ -281,11 +303,15 @@ impl<'a> Shown<'a> {
         Ok(Cow::Owned(copy))
     }
 
-    /// Every visible row, planes in order (raw I420 or monochrome luma).
+    /// Every visible row, planes in order (raw I420 or monochrome luma);
+    /// a packed picture as one slice of all its bytes.
     fn visit_rows<'s, E>(
         &'s self,
         mut visit: impl FnMut(&'s [u8]) -> Result<(), E>,
     ) -> Result<(), E> {
+        if let Samples::Packed(bytes) = &self.samples {
+            return visit(bytes);
+        }
         for plane in PlaneIndex::ALL.into_iter().take(self.planes) {
             self.plane_rows(plane, |_, row| visit(row))?;
         }
@@ -308,6 +334,7 @@ impl<'a> Shown<'a> {
                 let view = shown.plane(plane);
                 return (0..view.height()).try_for_each(|y| visit(y, view.row(y)));
             }
+            Samples::Packed(_) => unreachable!("packed pictures are visited whole"),
         };
         let view = picture.plane(plane).view();
         for y in 0..h {
@@ -533,7 +560,7 @@ fn decode_stream_with_op<R: BufRead>(
                 while let Some(picture) = hevc.next_output() {
                     shown += 1;
                     // Dropped after writing, the buffer returns to the decoder.
-                    output(&Shown::hevc(picture))?;
+                    output(&Shown::hevc(picture)?)?;
                 }
                 Ok(())
             };

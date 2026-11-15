@@ -1,4 +1,5 @@
-//! An owned plane of 8-bit samples with aligned rows and a padded border.
+//! An owned plane of samples (`u8`, or `u16` for more than 8 bits; see
+//! [`crate::sample`]) with aligned rows and a padded border.
 //!
 //! Motion compensation reads blocks that hang off the picture edge, and
 //! sub-pixel filters read a few samples beyond every block. Rather than
@@ -7,7 +8,7 @@
 //! sample, which is exactly the edge behaviour all three codecs specify for
 //! out-of-picture references.
 //!
-//! Memory layout (one allocation, `stride` bytes per row):
+//! Memory layout (one allocation, `stride` samples per row):
 //!
 //! ```text
 //!   <- pad_x -> <------ width ------> <- pad_x (+ alignment slack) ->
@@ -20,11 +21,12 @@
 //!   +----------------------------------------------------------------+
 //! ```
 //!
-//! `pad_x` is the requested border rounded up to [`ROW_ALIGNMENT`], so the
-//! first visible sample of every row is aligned.
+//! `pad_x` is the requested border rounded up to [`ROW_ALIGNMENT`] bytes, so
+//! the first visible sample of every row is aligned.
 
 use crate::aligned::AlignedBuf;
 use crate::error::{Error, Result};
+use crate::sample::Sample;
 use crate::view::{PlaneView, PlaneViewMut, required_len};
 
 /// Alignment of the first visible sample of every row, in bytes. One cache
@@ -41,11 +43,11 @@ const MAX_AREA: usize = 1 << 28;
 /// How [`Plane::extend_borders_with`] stores the border samples. The
 /// samples are the same whatever the stores; only how they reach memory
 /// differs (`nc_dsp::Dsp` streams them past the cache where that pays).
-pub trait BorderStores {
-    /// Set every byte of `dst` to `value`.
-    fn fill(&self, dst: &mut [u8], value: u8);
+pub trait BorderStores<T: Sample = u8> {
+    /// Set every sample of `dst` to `value`.
+    fn fill(&self, dst: &mut [T], value: T);
     /// Copy `src` into `dst` (both the same length).
-    fn copy(&self, dst: &mut [u8], src: &[u8]);
+    fn copy(&self, dst: &mut [T], src: &[T]);
     /// Called once after the last store of an extension (e.g. to order
     /// weakly ordered stores before the plane is shared).
     fn finish(&self) {}
@@ -55,20 +57,20 @@ pub trait BorderStores {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CachedStores;
 
-impl BorderStores for CachedStores {
-    fn fill(&self, dst: &mut [u8], value: u8) {
+impl<T: Sample> BorderStores<T> for CachedStores {
+    fn fill(&self, dst: &mut [T], value: T) {
         dst.fill(value);
     }
 
-    fn copy(&self, dst: &mut [u8], src: &[u8]) {
+    fn copy(&self, dst: &mut [T], src: &[T]) {
         dst.copy_from_slice(src);
     }
 }
 
-/// An owned plane of 8-bit samples. See the module documentation for layout.
+/// An owned plane of samples. See the module documentation for layout.
 #[derive(Debug, Clone)]
-pub struct Plane {
-    buf: AlignedBuf,
+pub struct Plane<T: Sample = u8> {
+    buf: AlignedBuf<T>,
     width: usize,
     height: usize,
     stride: usize,
@@ -76,7 +78,7 @@ pub struct Plane {
     pad_y: usize,
 }
 
-impl Plane {
+impl<T: Sample> Plane<T> {
     /// A zeroed `width` x `height` plane with at least `border` samples of
     /// padding on every side.
     ///
@@ -99,9 +101,9 @@ impl Plane {
                 reason: "plane dimension or border too large",
             });
         }
-        let pad_x = border.next_multiple_of(ROW_ALIGNMENT);
+        let pad_x = border.next_multiple_of(ROW_ALIGNMENT / T::BYTES);
         let pad_y = border;
-        let stride = conflict_free_stride(width + 2 * pad_x);
+        let stride = conflict_free_stride::<T>(width + 2 * pad_x);
         let rows = height + 2 * pad_y;
         if stride.checked_mul(rows).is_none_or(|area| area > MAX_AREA) {
             return Err(Error::InvalidDimensions {
@@ -132,7 +134,7 @@ impl Plane {
         self.height
     }
 
-    /// Bytes between the starts of consecutive rows.
+    /// Samples between the starts of consecutive rows.
     #[must_use]
     pub fn stride(&self) -> usize {
         self.stride
@@ -155,14 +157,14 @@ impl Plane {
     // ~66 instructions per call (callgrind, HEVC code_residual).
     #[must_use]
     #[inline]
-    pub fn view(&self) -> PlaneView<'_> {
+    pub fn view(&self) -> PlaneView<'_, T> {
         self.region(0, 0, self.width, self.height)
             .expect("the visible area is always inside the plane")
     }
 
     /// The visible area, writable.
     #[inline]
-    pub fn view_mut(&mut self) -> PlaneViewMut<'_> {
+    pub fn view_mut(&mut self) -> PlaneViewMut<'_, T> {
         let (width, height) = (self.width, self.height);
         self.region_mut(0, 0, width, height)
             .expect("the visible area is always inside the plane")
@@ -173,7 +175,7 @@ impl Plane {
     /// (`border_x`, `border_y`). Motion searches index candidate blocks in
     /// this view directly instead of creating one view per candidate.
     #[must_use]
-    pub fn padded_view(&self) -> PlaneView<'_> {
+    pub fn padded_view(&self) -> PlaneView<'_, T> {
         let (width, height) = (self.width + 2 * self.pad_x, self.height + 2 * self.pad_y);
         self.region(
             -(self.pad_x as isize),
@@ -193,7 +195,13 @@ impl Plane {
         reason = "called per kernel invocation; out of line it measured ~65 instructions per call (callgrind)"
     )]
     #[inline(always)]
-    pub fn region(&self, x: isize, y: isize, width: usize, height: usize) -> Option<PlaneView<'_>> {
+    pub fn region(
+        &self,
+        x: isize,
+        y: isize,
+        width: usize,
+        height: usize,
+    ) -> Option<PlaneView<'_, T>> {
         let start = self.offset_of(x, y, width, height)?;
         let len = required_len(width, height, self.stride);
         PlaneView::new(
@@ -216,7 +224,7 @@ impl Plane {
         y: isize,
         width: usize,
         height: usize,
-    ) -> Option<PlaneViewMut<'_>> {
+    ) -> Option<PlaneViewMut<'_, T>> {
         let start = self.offset_of(x, y, width, height)?;
         let len = required_len(width, height, self.stride);
         let stride = self.stride;
@@ -235,7 +243,7 @@ impl Plane {
     /// leaves the padded area.
     #[must_use]
     #[inline]
-    pub fn samples_at(&self, x: isize, y: isize, width: usize, height: usize) -> Option<&[u8]> {
+    pub fn samples_at(&self, x: isize, y: isize, width: usize, height: usize) -> Option<&[T]> {
         let start = self.offset_of(x, y, width, height)?;
         Some(&self.buf.as_slice()[start..])
     }
@@ -248,7 +256,7 @@ impl Plane {
         y: isize,
         width: usize,
         height: usize,
-    ) -> Option<&mut [u8]> {
+    ) -> Option<&mut [T]> {
         let start = self.offset_of(x, y, width, height)?;
         Some(&mut self.buf.as_mut_slice()[start..])
     }
@@ -262,7 +270,7 @@ impl Plane {
     }
 
     /// [`Self::extend_borders`], writing the border through `stores`.
-    pub fn extend_borders_with(&mut self, stores: &impl BorderStores) {
+    pub fn extend_borders_with(&mut self, stores: &impl BorderStores<T>) {
         self.extend_border_rows_with(0..self.height, stores);
     }
 
@@ -283,7 +291,7 @@ impl Plane {
     pub fn extend_border_rows_with(
         &mut self,
         rows: core::ops::Range<usize>,
-        stores: &impl BorderStores,
+        stores: &impl BorderStores<T>,
     ) {
         assert!(rows.end <= self.height, "rows beyond the plane");
         if rows.is_empty() {
@@ -319,7 +327,7 @@ impl Plane {
         stores.finish();
     }
 
-    /// Byte offset of visible coordinate (`x`, `y`), if a `width` x `height`
+    /// Sample offset of visible coordinate (`x`, `y`), if a `width` x `height`
     /// window there stays inside the padded area.
     #[allow(
         clippy::inline_always,
@@ -334,17 +342,18 @@ impl Plane {
     }
 }
 
-/// The row stride for `row_bytes`: a multiple of [`ROW_ALIGNMENT`] that is
-/// an odd number of alignment units. A stride that is a multiple of a large
+/// The row stride (in samples of `T`) for rows of `row_samples`: a multiple
+/// of [`ROW_ALIGNMENT`] bytes that is an odd number of alignment units. A stride that is a multiple of a large
 /// power of two (1920 + 2 * 64 = 2048) maps the rows of a block column onto
 /// a few L1 sets, so the 16-21 rows a motion-compensation window or a
 /// deblocking edge touch evict each other (callgrind, H.264 1080p decode:
 /// 2.5x the D1 misses of ffmpeg). An odd multiple spreads consecutive rows
 /// over every set, for at most one alignment unit more per row.
-fn conflict_free_stride(row_bytes: usize) -> usize {
-    let stride = row_bytes.next_multiple_of(ROW_ALIGNMENT);
-    if (stride / ROW_ALIGNMENT).is_multiple_of(2) {
-        stride + ROW_ALIGNMENT
+fn conflict_free_stride<T: Sample>(row_samples: usize) -> usize {
+    let unit = ROW_ALIGNMENT / T::BYTES;
+    let stride = row_samples.next_multiple_of(unit);
+    if (stride / unit).is_multiple_of(2) {
+        stride + unit
     } else {
         stride
     }
@@ -356,7 +365,7 @@ mod tests {
 
     #[test]
     fn visible_rows_are_aligned() {
-        let plane = Plane::new(1280, 720, 40).unwrap();
+        let plane = Plane::<u8>::new(1280, 720, 40).unwrap();
         assert_eq!(plane.stride() % ROW_ALIGNMENT, 0);
         assert!(plane.border_x() >= 40);
         let view = plane.view();
@@ -368,23 +377,26 @@ mod tests {
     #[test]
     fn strides_are_odd_multiples_of_the_alignment() {
         for width in [64, 1280, 1920, 3840] {
-            let plane = Plane::new(width, 16, 64).unwrap();
+            let plane = Plane::<u8>::new(width, 16, 64).unwrap();
             assert_eq!(plane.stride() % (2 * ROW_ALIGNMENT), ROW_ALIGNMENT);
+            let wide = Plane::<u16>::new(width, 16, 64).unwrap();
+            assert_eq!((2 * wide.stride()) % (2 * ROW_ALIGNMENT), ROW_ALIGNMENT);
+            assert_eq!(wide.view().row(1).as_ptr() as usize % ROW_ALIGNMENT, 0);
         }
     }
 
     #[test]
     fn rejects_bad_dimensions() {
-        assert!(Plane::new(0, 10, 8).is_err());
-        assert!(Plane::new(10, 1 << 20, 8).is_err());
+        assert!(Plane::<u8>::new(0, 10, 8).is_err());
+        assert!(Plane::<u8>::new(10, 1 << 20, 8).is_err());
         // The largest VP9 test vector (20400 wide); area bounds the rest.
-        assert!(Plane::new(20_400, 120, 0).is_ok());
-        assert!(Plane::new(1 << 16, 1 << 16, 0).is_err());
+        assert!(Plane::<u8>::new(20_400, 120, 0).is_ok());
+        assert!(Plane::<u8>::new(1 << 16, 1 << 16, 0).is_err());
     }
 
     #[test]
     fn region_reaches_into_border_but_not_beyond() {
-        let plane = Plane::new(16, 8, 8).unwrap();
+        let plane = Plane::<u8>::new(16, 8, 8).unwrap();
         let bx = plane.border_x() as isize;
         let by = plane.border_y() as isize;
         assert!(plane.region(-bx, -by, 4, 4).is_some());
@@ -396,7 +408,7 @@ mod tests {
 
     #[test]
     fn extend_borders_replicates_edges() {
-        let mut plane = Plane::new(4, 3, 4).unwrap();
+        let mut plane = Plane::<u8>::new(4, 3, 4).unwrap();
         {
             let mut v = plane.view_mut();
             for y in 0..3 {
@@ -420,7 +432,7 @@ mod tests {
     #[test]
     fn banded_extension_equals_whole_extension() {
         let filled = || {
-            let mut plane = Plane::new(6, 7, 4).unwrap();
+            let mut plane = Plane::<u8>::new(6, 7, 4).unwrap();
             let mut v = plane.view_mut();
             for y in 0..7 {
                 for (x, s) in v.row_mut(y).iter_mut().enumerate() {

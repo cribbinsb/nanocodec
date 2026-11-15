@@ -2,6 +2,7 @@
 //! the encoder reconstruction), robustness and real-use stream tests.
 
 use super::*;
+use nc_common::PlaneIndex;
 
 mod round_trips {
     use super::*;

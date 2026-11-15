@@ -7,19 +7,20 @@
 //! the borrow checker keeps callers from holding the views past it.
 
 use crate::picture::{Picture, PlaneIndex};
+use crate::sample::Sample;
 use crate::view::PlaneView;
 
 /// The visible samples of one decoded 4:2:0 picture: three plane views of
 /// even luma size, borrowed from the decoder (or picture) that owns them.
 #[derive(Debug, Clone, Copy)]
-pub struct ShownPicture<'a> {
-    planes: [PlaneView<'a>; 3],
+pub struct ShownPicture<'a, T: Sample = u8> {
+    planes: [PlaneView<'a, T>; 3],
 }
 
-impl<'a> ShownPicture<'a> {
+impl<'a, T: Sample> ShownPicture<'a, T> {
     /// Every visible sample of `picture`.
     #[must_use]
-    pub fn whole(picture: &'a Picture) -> Self {
+    pub fn whole(picture: &'a Picture<T>) -> Self {
         Self {
             planes: PlaneIndex::ALL.map(|plane| picture.plane(plane).view()),
         }
@@ -30,7 +31,7 @@ impl<'a> ShownPicture<'a> {
     /// window does not fit.
     #[must_use]
     pub fn window(
-        picture: &'a Picture,
+        picture: &'a Picture<T>,
         (left, top): (usize, usize),
         (width, height): (usize, usize),
     ) -> Option<Self> {
@@ -72,11 +73,11 @@ impl<'a> ShownPicture<'a> {
 
     /// One plane's visible samples.
     #[must_use]
-    pub fn plane(&self, index: PlaneIndex) -> PlaneView<'a> {
+    pub fn plane(&self, index: PlaneIndex) -> PlaneView<'a, T> {
         self.planes[index as usize]
     }
 
-    /// Bytes of one tightly packed I420 frame of this size.
+    /// Samples of one tightly packed I420 frame of this size.
     #[must_use]
     pub fn packed_frame_len(&self) -> usize {
         self.planes.iter().map(|p| p.width() * p.height()).sum()
@@ -87,7 +88,7 @@ impl<'a> ShownPicture<'a> {
     ///
     /// # Panics
     /// If `target`'s size differs.
-    pub fn copy_to(&self, target: &mut Picture) {
+    pub fn copy_to(&self, target: &mut Picture<T>) {
         assert_eq!(
             (target.width(), target.height()),
             (self.width(), self.height()),
@@ -107,7 +108,7 @@ mod tests {
     use super::*;
 
     fn numbered(width: usize, height: usize) -> Picture {
-        let mut picture = Picture::new(width, height, 8).unwrap();
+        let mut picture = Picture::<u8>::new(width, height, 8).unwrap();
         for plane in PlaneIndex::ALL {
             let mut view = picture.plane_mut(plane).view_mut();
             for y in 0..view.height() {
@@ -127,7 +128,7 @@ mod tests {
         assert_eq!(shown.plane(PlaneIndex::Y).row(0), [18, 19, 20, 21]);
         assert_eq!(shown.plane(PlaneIndex::U).row(0), [64 + 9, 64 + 10]);
         assert_eq!(shown.packed_frame_len(), 8 + 2 + 2);
-        let mut copy = Picture::new(4, 2, 0).unwrap();
+        let mut copy = Picture::<u8>::new(4, 2, 0).unwrap();
         shown.copy_to(&mut copy);
         assert_eq!(copy.plane(PlaneIndex::V).view().row(0), [128 + 9, 128 + 10]);
     }

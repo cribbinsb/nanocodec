@@ -31,7 +31,8 @@ on small edge devices and decodes it anywhere, especially in a web page.
   from the encoder's choices within the standard.
 - **WASM decode is the primary browser path.** Our own decoders compile to
   WebAssembly (SIMD128), so a page plays our streams with no dependence on
-  the browser's codecs. WebCodecs is an optional extra. 8-bit 4:2:0 only.
+  the browser's codecs. WebCodecs is an optional extra. 8-bit 4:2:0 only
+  (the decoders' high-bit-depth output is not shown in the browser yet).
 - **Noise is removed, not reproduced.** Sensor noise is unwanted at these
   rates: a clean picture is the better result. Film-grain synthesis is an
   experiment only (AV1 `grain.enable`, off); the
@@ -101,14 +102,18 @@ ABI of `nc-capi`; every other crate has `#![forbid(unsafe_code)]`.
 
 ## 4. Pictures and views (`nc-common`)
 
-- `Plane` owns one plane of 8-bit samples.
+- `Plane<T>` owns one plane of samples: `T = u8` (the default, everything
+  8-bit), or `u16` for decoded streams deeper than 8 bits. Code that touches
+  samples is generic over `nc_common::Sample` and compiled once per type, so
+  the 8-bit instance is the code it was before; the stream's depth is a
+  runtime `BitDepth` (`docs/handoff/high-bit-depth.md`).
   - **Rows:** the first visible sample of every row is 64-byte aligned
     (`ROW_ALIGNMENT`), and `stride` is a multiple of 64.
   - **Border:** a padded border lets motion compensation and sub-pel filters
     read outside the picture without clamping; `extend_borders()` fills it by
     edge replication, the out-of-picture rule of every codec here.
-  - Alignment comes from over-allocating a `Vec<u8>`; no `unsafe`.
-- `Picture` is three planes in 8-bit 4:2:0; chroma gets half the luma border.
+  - Alignment comes from over-allocating a `Vec<T>`; no `unsafe`.
+- `Picture<T>` is three planes in 4:2:0; chroma gets half the luma border.
 - `PlaneView` / `PlaneViewMut` are borrowed rectangular windows. The
   constructor checks once that the slice covers every row
   (`len ≥ (h − 1) · stride + w`); SIMD kernels build on that invariant.
@@ -316,7 +321,7 @@ layers, long-term references, intra-leaf costs).
 | Codec | Profile and tools (encoder) | Decoder |
 |---|---|---|
 | H.264 (`nc-h264`) | High, CABAC; 16x16 to 8x8 inter partitions, intra 4x4/16x16, 8x8 transform; quarter-sample MC; trellis; deblocking | 8-bit High conformance suite |
-| HEVC (`nc-hevc`) | Main; CTU 64, 2Nx2N CUs 8–64 (NxN intra at 8x8), angular intra, merge/AMVP/TMVP, transform trees to 4x4 with DST; deblocking + SAO edge offset | full Main / Main Still Picture, MD5-exact on the JCT-VC Main set |
+| HEVC (`nc-hevc`) | Main; CTU 64, 2Nx2N CUs 8–64 (NxN intra at 8x8), angular intra, merge/AMVP/TMVP, transform trees to 4x4 with DST; deblocking + SAO edge offset | full Main / Main 10 / Main Still Picture, MD5-exact on the JCT-VC HEVC_v1 Main and Main 10 streams (147) |
 | AV1 (`nc-av1`) | Main 8-bit 4:2:0; SB64 with square and rectangular partitions; directional intra with angle deltas, filter intra, CfL; single-reference inter plus LTR slot; adaptive CDFs; trellis on P frames; deblocking + CDEF | toward full Main conformance (libaom vectors, see our internal notes (not published)) |
 | VP9 (`nc-vp9`) | Profile 0; 64x64 to 8x8 partitions, DC intra, single-reference inter, transforms to 32x32, deblocking | any conforming Profile 0 stream |
 | AV2 (`nc-av2`) | 8-bit 4:2:0 I/P; intra modes except CfL, skip, quarter-pel motion | our emitted subset |
@@ -387,10 +392,12 @@ node (SIMD128), since CI here only cross-checks aarch64.
 - Each codec crate carries its decoder. They share the normative helpers and
   `nc-dsp` kernels with the encoder's reconstruction path, so a decoder is
   essentially entropy decoding plus code the encoder already has.
-- The goal is standard profile compliance (8-bit only) without slowing the
-  decode of our own streams. Status: the profiles and conformance streams
+- The goal is standard profile compliance (decoders: 8-bit, and Main 10
+  where it is done; owner 2026-11-15) without slowing the decode of our own
+  streams. High bit depth is one generic source per codec, compiled for
+  `u8` and `u16` samples (`docs/handoff/high-bit-depth.md`). Status: the profiles and conformance streams
   tested so far are listed in the README's Decoders table (H.264 Constrained
-  High, HEVC Main, AV1 Main 8-bit 4:2:0, VP9 profile 0; VVC 9 official 8-bit
+  High, HEVC Main and Main 10, AV1 Main 8-bit 4:2:0, VP9 profile 0; VVC 9 official 8-bit
   streams; AV2 our own streams only). A decoder that meets syntax it does not
   support is meant to reject the stream rather than guess.
 - Before a build's numbers are published, short streams of every shipped

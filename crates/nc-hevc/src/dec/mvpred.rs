@@ -10,6 +10,8 @@
 
 use nc_encoder::Mv;
 
+use nc_dsp::Pixel;
+
 use super::picture::{Motion, PictureState, PuMotion, RefPic, flag};
 use crate::collocated::scale_mv;
 
@@ -57,8 +59,8 @@ pub(super) struct Collocated<'a> {
 }
 
 /// What motion prediction of one slice needs.
-pub(super) struct Predictor<'a> {
-    pub pic: &'a PictureState,
+pub(super) struct Predictor<'a, T: Pixel> {
+    pub pic: &'a PictureState<T>,
     pub slice: u16,
     pub lists: &'a [Vec<RefPic>; 2],
     pub poc: i32,
@@ -72,7 +74,7 @@ pub(super) struct Predictor<'a> {
     pub num_ref_idx: [usize; 2],
 }
 
-impl Predictor<'_> {
+impl<T: Pixel> Predictor<'_, T> {
     /// Prediction block availability (§6.4.2) of the block at `(xn, yn)`,
     /// and its motion when available and not intra.
     fn neighbour(&self, pu: &Pu, xn: isize, yn: isize) -> Option<PuMotion> {

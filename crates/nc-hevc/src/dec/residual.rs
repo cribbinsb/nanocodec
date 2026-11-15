@@ -15,6 +15,7 @@ use super::ctx::{self, Contexts};
 use crate::residual::{SIGN_HIDING_THRESHOLD, neighbour_coded, sig_ctx_inc, sig_pattern};
 use crate::scan::{SUB_BLOCK_COEFFS, Scan, ScanKind};
 use nc_common::decode::DecodeError;
+use nc_dsp::Pixel;
 
 /// Smallest value of each `last_sig_coeff_x/y_prefix` group: the last
 /// position before its suffix is added (§7.4.9.11).
@@ -136,7 +137,13 @@ pub(super) struct Options {
 /// Parse one transform block's levels into `levels` (raster, all zero on
 /// entry) and list the non-zero positions in `positions`. Returns
 /// `transform_skip_flag`.
-pub(super) fn read(
+///
+/// The parser is generic over the sample type `T` only so that each
+/// instance of the block decoder (`u8`, `u16`) calls its own copy: with one
+/// copy and two call sites LLVM stopped inlining it into the 8-bit block
+/// decoder, +0.85 % decode instructions on a 720p stream of ours
+/// (callgrind, 2026-11-15).
+pub(super) fn read<T: Pixel>(
     engine: &mut Engine<'_>,
     ctx: &mut Contexts,
     scan: &Scan,
@@ -148,13 +155,13 @@ pub(super) fn read(
     // range, window and counters then stay in registers through the
     // block's bins instead of going through memory at each one.
     let mut local = engine.clone();
-    let skip = read_levels(&mut local, ctx, scan, options, levels, positions)?;
+    let skip = read_levels::<T>(&mut local, ctx, scan, options, levels, positions)?;
     *engine = local;
     Ok(skip)
 }
 
 /// [`read`] on the local engine.
-fn read_levels(
+fn read_levels<T: Pixel>(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
     scan: &Scan,
@@ -167,7 +174,7 @@ fn read_levels(
         && scan.log2 == TRANSFORM_SKIP_LOG2
         && e.bin(ctx.at(ctx::TRANSFORM_SKIP, usize::from(!luma)));
     let side = 1usize << (scan.log2 - 2);
-    let last = last_position(e, ctx, scan, luma)?;
+    let last = last_position::<T>(e, ctx, scan, luma)?;
     let last_group = last / SUB_BLOCK_COEFFS;
     let sig_cases =
         &SIG_TABLE[scan.kind as usize][sig_class(scan.log2, scan.kind)][usize::from(luma)];
@@ -221,7 +228,7 @@ fn read_levels(
         let hidden =
             options.sign_hiding && usize::from(found[0] - found[count - 1]) > SIGN_HIDING_THRESHOLD;
         let first = group * SUB_BLOCK_COEFFS;
-        sub_block_levels(
+        sub_block_levels::<T, _>(
             e,
             ctx,
             found,
@@ -241,7 +248,11 @@ fn read_levels(
 }
 
 /// `last_sig_coeff_{x,y}_{prefix,suffix}` as a scan position.
-fn last_position(
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "one copy per decoder instance, see `read`"
+)]
+fn last_position<T: Pixel>(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
     scan: &Scan,
@@ -288,7 +299,11 @@ fn last_position(
 
 /// `coeff_abs_level_remaining` with Rice parameter `rice` (§9.3.3.11): a
 /// unary prefix, then the suffix bits in one bypass read.
-fn remaining(e: &mut Engine<'_>, rice: u32) -> Result<u32, DecodeError> {
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "one copy per decoder instance, see `read`"
+)]
+fn remaining<T: Pixel>(e: &mut Engine<'_>, rice: u32) -> Result<u32, DecodeError> {
     let prefix = e.bypass_unary(RICE_PREFIX + MAX_SUFFIX + 1);
     if prefix > RICE_PREFIX + MAX_SUFFIX {
         return Err(DecodeError::Malformed("coefficient remainder prefix"));
@@ -308,7 +323,7 @@ fn remaining(e: &mut Engine<'_>, rice: u32) -> Result<u32, DecodeError> {
 /// `found` within the sub-block, highest first): greater-1/2 flags, signs,
 /// remainders.
 #[allow(clippy::too_many_arguments)]
-fn sub_block_levels(
+fn sub_block_levels<T: Pixel, F: FnMut(u8, i32)>(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
     found: &[u8],
@@ -316,7 +331,7 @@ fn sub_block_levels(
     luma: bool,
     hidden: bool,
     greater1_state: &mut usize,
-    mut store: impl FnMut(u8, i32),
+    mut store: F,
 ) -> Result<(), DecodeError> {
     // ctxSet (§9.3.4.2.6): 2 for luma sub-blocks other than the first,
     // plus one when the previous sub-block ended with a greater-1 flag.
@@ -355,7 +370,7 @@ fn sub_block_levels(
                 2
             };
             if *m == threshold {
-                *m += remaining(e, rice)?;
+                *m += remaining::<T>(e, rice)?;
                 if *m > 3 << rice {
                     rice = (rice + 1).min(MAX_RICE);
                 }

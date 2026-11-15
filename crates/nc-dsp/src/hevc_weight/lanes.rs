@@ -3,6 +3,8 @@
 //! then 8 lanes, then 4, then the scalar reference for the last samples of
 //! each row (chroma blocks may be 2 or 6 wide).
 
+use nc_common::BitDepth;
+
 use super::HevcWeights;
 use super::reference;
 use crate::simd::I16Lanes;
@@ -45,7 +47,7 @@ fn row<W: I16Lanes, V: I16Lanes, H: I16Lanes>(
         chunk::<H>(weights, a, b, dst, x);
         x += H::LANES;
     }
-    reference::row(weights, &a[x..w], &b[x..w], &mut dst[x..]);
+    reference::row(weights, &a[x..w], &b[x..w], &mut dst[x..], BitDepth::EIGHT);
 }
 
 /// The kernel ([`super::WeightFn`]).

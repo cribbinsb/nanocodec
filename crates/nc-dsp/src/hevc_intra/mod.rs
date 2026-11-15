@@ -47,16 +47,17 @@ pub(crate) type AngularFn = unsafe fn(refs: &[u8], n: usize, angle: i32, out: &m
 pub(crate) type PlanarFn = unsafe fn(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]);
 
 /// The references planar prediction reads (§8.4.4.2.4).
+/// Samples are `u8`, or `u16` for more than 8 bits.
 #[derive(Debug, Clone, Copy)]
-pub struct PlanarEdges<'a> {
+pub struct PlanarEdges<'a, T: nc_common::Sample = u8> {
     /// `p[x][−1]` for `x` in `0..n`.
-    pub above: &'a [u8],
+    pub above: &'a [T],
     /// `p[−1][y]` for `y` in `0..n`.
-    pub left: &'a [u8],
+    pub left: &'a [T],
     /// `p[n][−1]`.
-    pub top_right: u8,
+    pub top_right: T,
     /// `p[−1][n]`.
-    pub bottom_left: u8,
+    pub bottom_left: T,
 }
 
 /// One ISA's HEVC intra kernels.

@@ -23,8 +23,9 @@ delay, you may be in the right place:
   decoder; the same rate control, analysis and mode decision drive all six.
 - **Decoders that run in any browser:** all six decoders compile to WebAssembly (SIMD128), so a web page can
   play H.264, HEVC, VVC, AV1, VP9 and AV2 streams without WebCodecs, a plug-in or a native decoder for the
-  format. The H.264 (Constrained High), HEVC (Main), AV1 (Main, 8-bit) and VP9 (profile 0) decoders pass the
-  conformance streams we test, so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
+  format. The H.264 (Constrained High), HEVC (Main and Main 10), AV1 (Main, 8-bit) and VP9 (profile 0) decoders
+  pass the conformance streams we test (HEVC: 147/147 Main, Main Still Picture and Main 10 streams of the
+  JCT-VC HEVC_v1 set; the browser build shows 8-bit streams only), so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine
   official 8-bit conformance streams and 133 of 138 short 8-bit streams we coded with VTM and VVenC to cover the

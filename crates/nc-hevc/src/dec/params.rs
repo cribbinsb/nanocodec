@@ -2,14 +2,15 @@
 //! §7.3.2.2, §7.3.2.3), their short-term reference picture sets (§7.3.7,
 //! §7.4.8) and scaling lists (§7.3.4, §7.4.5).
 //!
-//! The decoder supports what the Main and Main Still Picture profiles allow
-//! (A.3.2, A.3.5): 8-bit 4:2:0 and no range, multilayer, 3D or SCC
-//! extension tools; anything else is rejected as unsupported. The VPS
-//! carries nothing single-layer decoding needs and is not parsed.
+//! The decoder supports what the Main, Main 10 and Main Still Picture
+//! profiles allow (A.3.2, A.3.3, A.3.5): 4:2:0 at 8 to 10 bits (luma and
+//! chroma may differ) and no range, multilayer, 3D or SCC extension tools;
+//! anything else is rejected as unsupported. The VPS carries nothing
+//! single-layer decoding needs and is not parsed.
 
-use nc_common::ColourInfo;
 use nc_common::colour::read_video_signal_type;
 use nc_common::decode::{BitReader, DecodeError};
+use nc_common::{BitDepth, BitDepths, ColourInfo};
 
 use crate::scan::up_right_diagonal;
 
@@ -37,6 +38,20 @@ const MAX_TILE_ROWS: u32 = 22;
 /// Largest log2 size difference in the SPS block-size syntax: the 64x64 CTB
 /// over the 8x8 minimum coding block (§7.4.3.2.1).
 const MAX_LOG2_DIFF: u32 = 3;
+/// The deepest samples decoded: Main 10 (A.3.3: `bit_depth_*_minus8` <= 2).
+pub(super) const MAX_BIT_DEPTH: u32 = 10;
+/// `QpBdOffset` per bit above 8 (eq. 7-4, 7-6).
+const QP_BD_OFFSET_PER_BIT: i32 = 6;
+/// `QpBdOffset` at [`MAX_BIT_DEPTH`].
+pub(super) const MAX_QP_BD_OFFSET: i32 = QP_BD_OFFSET_PER_BIT * (MAX_BIT_DEPTH as i32 - 8);
+/// Largest `QpY` (§7.4.9.14: `−QpBdOffsetY..=51`).
+pub(super) const MAX_QP: i32 = 51;
+
+/// `QpBdOffsetY` / `QpBdOffsetC` of a component at `depth` (eq. 7-4, 7-6).
+pub(super) fn qp_bd_offset(depth: BitDepth) -> i32 {
+    QP_BD_OFFSET_PER_BIT * depth.above_eight() as i32
+}
+
 /// Largest `delta_poc_s*_minus1` / `abs_delta_rps_minus1` (§7.4.8).
 const MAX_DELTA_POC_MINUS1: u32 = (1 << 15) - 1;
 /// `aspect_ratio_idc` that carries an explicit sample aspect ratio.
@@ -232,6 +247,8 @@ pub(super) struct Sps {
     pub height: usize,
     /// Conformance window in luma samples: left, right, top, bottom.
     pub crop: [usize; 4],
+    /// `BitDepthY`, `BitDepthC`.
+    pub depths: BitDepths,
     pub log2_max_poc_lsb: u32,
     /// Per sub-layer: `sps_max_dec_pic_buffering_minus1 + 1`,
     /// `sps_max_num_reorder_pics`, `SpsMaxLatencyPictures` (`None`: no limit).
@@ -310,9 +327,18 @@ impl Sps {
         if crop[0] + crop[1] >= width as usize || crop[2] + crop[3] >= height as usize {
             return Err(DecodeError::Malformed("conformance window"));
         }
-        if r.read_ue()? != 0 || r.read_ue()? != 0 {
-            return Err(DecodeError::Unsupported("bit depth other than 8"));
-        }
+        let mut depth = || -> Result<BitDepth, DecodeError> {
+            // bit_depth_luma_minus8 / bit_depth_chroma_minus8.
+            let bits = r.read_ue()?.saturating_add(8);
+            if bits > MAX_BIT_DEPTH {
+                return Err(DecodeError::Unsupported("bit depth above 10"));
+            }
+            Ok(BitDepth::new(bits).expect("8..=10 bits"))
+        };
+        let depths = BitDepths {
+            luma: depth()?,
+            chroma: depth()?,
+        };
         // §7.4.3.2.1: log2_max_pic_order_cnt_lsb_minus4 is in 0..=12.
         let log2_max_poc_lsb = r.read_ue_max(12, "log2_max_pic_order_cnt_lsb_minus4")? + 4;
         let all_layers = r.read_bit()?;
@@ -379,7 +405,10 @@ impl Sps {
                     MAX_LOG2_DIFF,
                     "log2_diff_max_min_pcm_luma_coding_block_size",
                 )?;
-            if bit_depth_luma > 8 || bit_depth_chroma > 8 || log2_max > 5.min(log2_ctb) {
+            if bit_depth_luma > depths.luma.bits()
+                || bit_depth_chroma > depths.chroma.bits()
+                || log2_max > 5.min(log2_ctb)
+            {
                 return Err(DecodeError::Malformed("PCM parameters"));
             }
             Some(Pcm {
@@ -430,6 +459,7 @@ impl Sps {
                 width: width as usize,
                 height: height as usize,
                 crop,
+                depths,
                 log2_max_poc_lsb,
                 dpb,
                 log2_min_cb: log2_min_cb as u8,
@@ -733,8 +763,10 @@ impl Pps {
         if l0 > MAX_DPB - 1 || l1 > MAX_DPB - 1 {
             return Err(DecodeError::Malformed("num_ref_idx_default_active"));
         }
+        // The lower limit depends on the SPS's depth (`−(26 + QpBdOffsetY)`,
+        // §7.4.3.3.1): checked against it in each slice's QP.
         let init_qp = 26 + r.read_se()?;
-        if !(0..=51).contains(&init_qp) {
+        if !(-MAX_QP_BD_OFFSET..=MAX_QP).contains(&init_qp) {
             return Err(DecodeError::Malformed("init_qp_minus26"));
         }
         let constrained_intra_pred = r.read_bit()?;

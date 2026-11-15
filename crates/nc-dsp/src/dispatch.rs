@@ -95,6 +95,8 @@ pub struct Dsp {
     av1_mask_blend: crate::av1_mc::mask_kernels::MaskBlendFn,
     pub(crate) vvc_mts: crate::vvc_mts::Kernels,
     pub(crate) vvc_tx64: crate::vvc_tx64::HalveFn,
+    /// The `u16` kernels of [`Dsp::at`] (`crate::high_depth`).
+    pub(crate) high: crate::high_depth::HighFns,
 }
 
 impl Default for Dsp {
@@ -229,6 +231,7 @@ impl Dsp {
             av1_mask_blend: crate::av1_mc::mask_kernels::kernel(isa),
             vvc_mts: crate::vvc_mts::kernels(isa),
             vvc_tx64: crate::vvc_tx64::kernel(isa),
+            high: crate::high_depth::HighFns::for_isa(isa),
         })
     }
 
@@ -2786,15 +2789,22 @@ impl Dsp {
         tc: [u8; 2],
         beta: u8,
     ) {
-        let edge = hevc_edge(
-            dst,
-            (x, y),
-            vertical,
-            HEVC_LINES,
-            [tc[0], tc[1], 0, 0],
-            beta,
-        );
-        // SAFETY: the table matches this CPU; `hevc_edge` checked that
+        self.hevc_deblock_luma_edge_i16(dst, (x, y), vertical, tc.map(i16::from), i16::from(beta));
+    }
+
+    /// [`Self::hevc_deblock_luma_edge`] with the thresholds as the kernels
+    /// take them (`Dsp::at`'s 8-bit route, without a narrowing per edge).
+    #[inline]
+    pub(crate) fn hevc_deblock_luma_edge_i16(
+        &self,
+        dst: &mut PlaneViewMut<'_>,
+        at: (usize, usize),
+        vertical: bool,
+        tc: [i16; 2],
+        beta: i16,
+    ) {
+        let edge = hevc_edge_at(dst, at, vertical, HEVC_LINES, [tc[0], tc[1], 0, 0], beta);
+        // SAFETY: the table matches this CPU; `hevc_edge_at` checked that
         // every sample the lines read lies inside `dst`.
         unsafe { (self.deblock.hevc_luma)(dst.data_mut(), &edge) }
     }
@@ -2815,11 +2825,24 @@ impl Dsp {
         lines: usize,
         tc: [u8; 4],
     ) {
+        self.hevc_deblock_chroma_edge_i16(dst, (x, y), vertical, lines, tc.map(i16::from));
+    }
+
+    /// [`Self::hevc_deblock_chroma_edge`] with `tC` as the kernels take it.
+    #[inline]
+    pub(crate) fn hevc_deblock_chroma_edge_i16(
+        &self,
+        dst: &mut PlaneViewMut<'_>,
+        at: (usize, usize),
+        vertical: bool,
+        lines: usize,
+        tc: [i16; 4],
+    ) {
         assert!(
             lines == HEVC_LINES || lines == HEVC_LINES / 2,
             "HEVC chroma edges are 4 or 8 lines"
         );
-        let edge = hevc_edge(dst, (x, y), vertical, lines, tc, 0);
+        let edge = hevc_edge_at(dst, at, vertical, lines, tc, 0);
         // SAFETY: as for `hevc_deblock_luma_edge`.
         unsafe { (self.deblock.hevc_chroma)(dst.data_mut(), &edge) }
     }
@@ -4603,7 +4626,7 @@ fn sample_buffers_cover(
         && frac_y < filter.positions()
 }
 
-fn check_covers_i16(size: BlockSize, len: usize, stride: usize, what: &str) {
+pub(crate) fn check_covers_i16(size: BlockSize, len: usize, stride: usize, what: &str) {
     let (w, h) = (size.width(), size.height());
     assert!(
         stride >= w && len >= (h - 1) * stride + w,
@@ -4622,7 +4645,11 @@ fn pair<'a>((src, rf): (&PlaneView<'a>, &PlaneView<'a>)) -> crate::pixel::BlockP
     reason = "per-call bounds check; out of line it showed as a separate hot function in callgrind"
 )]
 #[inline(always)]
-fn check_covers(size: BlockSize, view: &PlaneView<'_>, what: &str) {
+pub(crate) fn check_covers<T: nc_common::Sample>(
+    size: BlockSize,
+    view: &PlaneView<'_, T>,
+    what: &str,
+) {
     assert!(
         view.width() >= size.width() && view.height() >= size.height(),
         "{what} view {}x{} is smaller than the {}x{} block",
@@ -4737,13 +4764,16 @@ fn h264_chroma_edge(
 
 /// Check an HEVC edge of `lines` lines (reading p3..q3) against `dst` and
 /// resolve it to kernel form.
-fn hevc_edge(
-    dst: &PlaneViewMut<'_>,
+/// The kernel description of an HEVC deblocking edge of any sample type,
+/// with thresholds already scaled to the depth.
+#[inline]
+pub(crate) fn hevc_edge_at<T: nc_common::Sample>(
+    dst: &PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     vertical: bool,
     lines: usize,
-    tc: [u8; 4],
-    beta: u8,
+    tc: [i16; 4],
+    beta: i16,
 ) -> HevcEdge {
     let (w, h) = (dst.width(), dst.height());
     let inside = if vertical {
@@ -4763,14 +4793,14 @@ fn hevc_edge(
         across,
         along,
         lines,
-        tc: tc.map(i16::from),
-        beta: i16::from(beta),
+        tc,
+        beta,
     }
 }
 
 /// Check an SAO rectangle against class `class`'s neighbours in a
 /// `width` x `height` plane.
-fn sao_rect(
+pub(crate) fn sao_rect(
     class: u8,
     width: usize,
     height: usize,
@@ -4796,7 +4826,7 @@ fn sao_rect(
 }
 
 /// Index offsets of class `class`'s two neighbours at row stride `stride`.
-fn sao_offsets(class: u8, stride: usize) -> (isize, isize) {
+pub(crate) fn sao_offsets(class: u8, stride: usize) -> (isize, isize) {
     let [(ax, ay), (bx, by)] = SAO_EO_NEIGHBOURS[usize::from(class)];
     let stride = stride as isize;
     (ay * stride + ax, by * stride + bx)

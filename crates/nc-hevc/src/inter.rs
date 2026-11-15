@@ -7,6 +7,10 @@
 //! arithmetic is nc-dsp's [`Dsp::predict`] kernel (`Filter::HevcLuma`,
 //! `Filter::HevcChroma`); this module only places the reference window.
 //!
+//! Written once over the sample type (`u8`: the encoder and 8-bit streams;
+//! `u16`: Main 10), with the kernels at the stream's depth
+//! ([`DepthKernels`]).
+//!
 //! Reference samples outside the picture are clamped to its edge (the
 //! `Clip3` in equations 8-228 and 8-229). Reference planes have borders
 //! extended by edge replication, which is the same thing, so a window that
@@ -14,8 +18,8 @@
 //! vector pointing far outside the picture) is gathered with explicit
 //! clamping first.
 
-use nc_common::{Plane, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, Filter};
+use nc_common::{BitDepth, Plane, PlaneView, PlaneViewMut};
+use nc_dsp::{BlockSize, DepthKernels, Dsp, Filter, Pixel};
 use nc_encoder::Mv;
 
 /// Predict the `w`x`h` luma block at `(x, y)` from `reference` displaced by
@@ -63,38 +67,46 @@ fn predict(
     out: &mut [u8],
 ) {
     let mut dst = PlaneViewMut::new(out, w, w, h).expect("output covers the block");
-    predict_view(dsp, filter, frac_bits, reference, (x, y), mv, &mut dst);
+    predict_view(
+        dsp.at(BitDepth::EIGHT),
+        filter,
+        frac_bits,
+        reference,
+        (x, y),
+        mv,
+        &mut dst,
+    );
 }
 
 /// Predict a block of luma (`chroma` false) or chroma straight into `dst`
 /// (its size is the block's, a power of two from 4 to 64 per side), as
 /// [`predict_luma`] / [`predict_chroma`] do into a buffer.
-pub fn predict_into(
-    dsp: &Dsp,
-    reference: &Plane,
+pub fn predict_into<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     mv: Mv,
     chroma: bool,
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     let (filter, frac_bits) = if chroma {
         (Filter::HevcChroma, 3)
     } else {
         (Filter::HevcLuma, 2)
     };
-    predict_view(dsp, filter, frac_bits, reference, (x, y), mv, dst);
+    predict_view(kernels, filter, frac_bits, reference, (x, y), mv, dst);
 }
 
 /// Place the reference window of the block at `(x, y)` and run the kernel
 /// into `dst`.
-fn predict_view(
-    dsp: &Dsp,
+fn predict_view<T: Pixel>(
+    kernels: DepthKernels<'_>,
     filter: Filter,
     frac_bits: u32,
-    reference: &Plane,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     mv: Mv,
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     let (w, h) = (dst.width(), dst.height());
     let size = BlockSize::new(w, h).expect("prediction blocks are 4..64 square");
@@ -105,8 +117,8 @@ fn predict_view(
         (x, y),
         (w, h),
         mv,
-        |window, (fx, fy)| {
-            dsp.predict(filter, size, window, fx, fy, dst);
+        |window, frac| {
+            kernels.predict(filter, size, window, frac, dst);
         },
     );
 }
@@ -115,9 +127,9 @@ fn predict_view(
 /// `w`x`h` luma (`chroma` false) or chroma block at `(x, y)` displaced by
 /// `mv`, row-major at stride `w` in `out` (grown as needed; at least the
 /// block rounded up to kernel sizes), for weighted sample prediction.
-pub fn predict_samples(
-    dsp: &Dsp,
-    reference: &Plane,
+pub fn predict_samples<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv,
@@ -145,7 +157,7 @@ pub fn predict_samples(
         (kw, kh),
         mv,
         |window, frac| {
-            dsp.predict_compound(filter, size, window, frac, out, kw);
+            kernels.predict_compound(filter, size, window, frac, out, kw);
         },
     );
     if kw != w {
@@ -161,14 +173,14 @@ pub fn predict_samples(
 /// prediction from `reference` displaced by `mv`, averaged with the first
 /// list's centred prediction `first` ([`predict_samples`], stride the
 /// block width).
-pub fn predict_bi_into(
-    dsp: &Dsp,
-    reference: &Plane,
+pub fn predict_bi_into<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     mv: Mv,
     chroma: bool,
     first: &[i16],
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     let (filter, frac_bits) = if chroma {
         (Filter::HevcChroma, 3)
@@ -185,7 +197,7 @@ pub fn predict_bi_into(
         (w, h),
         mv,
         |window, frac| {
-            dsp.hevc_predict_bi(filter, size, window, frac, (first, w), dst);
+            kernels.hevc_predict_bi(filter, size, window, frac, (first, w), dst);
         },
     );
 }
@@ -198,14 +210,14 @@ fn kernel_side(n: usize) -> usize {
 /// Run `f` on the reference window of the `w`x`h` block at `(x, y)`
 /// displaced by `mv` (`frac_bits` fractional bits), with the vector's
 /// sub-sample offsets.
-fn with_window(
+fn with_window<T: Pixel>(
     filter: Filter,
     frac_bits: u32,
-    reference: &Plane,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv,
-    run: impl FnOnce(&PlaneView<'_>, (usize, usize)),
+    run: impl FnOnce(&PlaneView<'_, T>, (usize, usize)),
 ) {
     let (int_x, frac_x) = split(i32::from(mv.x), frac_bits);
     let (int_y, frac_y) = split(i32::from(mv.y), frac_bits);
@@ -215,7 +227,7 @@ fn with_window(
     if let Some(window) = reference.region(wx as isize, wy as isize, ww, wh) {
         run(&window, (frac_x, frac_y));
     } else {
-        let mut storage = [0; MAX_WINDOW];
+        let mut storage = [T::default(); MAX_WINDOW];
         let samples = gather(reference, (wx, wy), (ww, wh), &mut storage);
         let window = PlaneView::new(samples, ww, ww, wh).expect("gathered window");
         run(&window, (frac_x, frac_y));
@@ -230,12 +242,12 @@ fn split(v: i32, frac_bits: u32) -> (i32, usize) {
 
 /// The `w`x`h` reference window at `(x, y)` with coordinates clamped to the
 /// picture (§8.5.3.3.3.1, equations 8-228/8-229).
-fn gather<'a>(
-    reference: &Plane,
+fn gather<'a, T: Pixel>(
+    reference: &Plane<T>,
     (x, y): (i32, i32),
     (w, h): (usize, usize),
-    window: &'a mut [u8; MAX_WINDOW],
-) -> &'a [u8] {
+    window: &'a mut [T; MAX_WINDOW],
+) -> &'a [T] {
     let view = reference.view();
     let max_x = reference.width() as i32 - 1;
     let max_y = reference.height() as i32 - 1;

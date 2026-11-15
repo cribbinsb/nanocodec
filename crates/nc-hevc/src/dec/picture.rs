@@ -16,7 +16,8 @@ use nc_common::decode::DecodeError;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use nc_common::{Picture, PictureRecycler};
+use nc_common::{BitDepths, Picture, PictureRecycler};
+use nc_dsp::Pixel;
 use nc_encoder::Mv;
 
 use super::loop_filter::Progress;
@@ -276,8 +277,10 @@ fn tile_grid(
 
 /// Everything decoded into one picture before it enters the DPB.
 #[derive(Debug)]
-pub(super) struct PictureState {
-    pub samples: Picture,
+pub(super) struct PictureState<T: Pixel> {
+    pub samples: Picture<T>,
+    /// The SPS's `BitDepthY` and `BitDepthC`.
+    pub depths: BitDepths,
     pub width: usize,
     pub height: usize,
     /// Shared by the pictures of one SPS/PPS pair.
@@ -303,11 +306,11 @@ pub(super) struct PictureState {
 /// Buffers of pictures that left the DPB, reused by new pictures so that
 /// decoding a stream does not allocate (and clear) memory per picture.
 /// Sample buffers are not cleared: decoding writes every sample.
-#[derive(Debug, Default)]
-pub(super) struct Pool {
-    pictures: PictureRecycler,
+#[derive(Debug)]
+pub(super) struct Pool<T: Pixel> {
+    pictures: PictureRecycler<T>,
     /// Pictures that left the DPB while output still held them.
-    shared: Vec<Arc<Picture>>,
+    shared: Vec<Arc<Picture<T>>>,
     /// TMVP motion fields of pictures that left the DPB.
     fields: Vec<Vec<PuMotion>>,
     /// The per-picture index map and motion table.
@@ -339,10 +342,26 @@ fn reuse<T: Clone>(spare: Option<Vec<T>>, len: usize, value: T) -> Vec<T> {
     v
 }
 
-impl Pool {
+impl<T: Pixel> Default for Pool<T> {
+    fn default() -> Self {
+        Self {
+            pictures: PictureRecycler::default(),
+            shared: Vec::new(),
+            fields: Vec::new(),
+            motion: None,
+            pus: None,
+            slice_of: Vec::new(),
+            info: Vec::new(),
+            sao: Vec::new(),
+            edges: None,
+        }
+    }
+}
+
+impl<T: Pixel> Pool<T> {
     /// A `width` x `height` picture with the decoder's border, contents
     /// unspecified.
-    pub fn picture(&mut self, width: usize, height: usize) -> Result<Picture, DecodeError> {
+    pub fn picture(&mut self, width: usize, height: usize) -> Result<Picture<T>, DecodeError> {
         // Pictures the caller has since released from output.
         let mut i = 0;
         while i < self.shared.len() {
@@ -359,7 +378,7 @@ impl Pool {
 
     /// Take back the buffers of a picture leaving the DPB; samples still
     /// shared with output are reused once released.
-    pub fn recycle(&mut self, samples: Arc<Picture>, motion: Motion) {
+    pub fn recycle(&mut self, samples: Arc<Picture<T>>, motion: Motion) {
         match Arc::try_unwrap(samples) {
             Ok(picture) => self.pictures.give(picture),
             Err(shared) => self.shared.push(shared),
@@ -372,8 +391,8 @@ impl Pool {
     }
 }
 
-impl PictureState {
-    pub fn new(sps: &Sps, layout: Rc<Layout>, pool: &mut Pool) -> Result<Self, DecodeError> {
+impl<T: Pixel> PictureState<T> {
+    pub fn new(sps: &Sps, layout: Rc<Layout>, pool: &mut Pool<T>) -> Result<Self, DecodeError> {
         let stride = sps.width >> GRID_LOG2;
         let blocks = stride * (sps.height >> GRID_LOG2);
         let ctbs = layout.ctb_w * layout.ctb_h;
@@ -381,6 +400,7 @@ impl PictureState {
         let rows = layout.ctb_h;
         Ok(Self {
             samples: pool.picture(sps.width, sps.height)?,
+            depths: sps.depths.of::<T>(),
             width: sps.width,
             height: sps.height,
             layout,
@@ -402,7 +422,7 @@ impl PictureState {
 
     /// The samples, and everything else read-only (the in-loop filters
     /// read block state while writing samples).
-    pub fn split(&mut self) -> (&mut Picture, Blocks<'_>) {
+    pub fn split(&mut self) -> (&mut Picture<T>, Blocks<'_>) {
         (
             &mut self.samples,
             Blocks {
@@ -576,7 +596,7 @@ impl PictureState {
 
     /// The decoded picture's motion, as TMVP of later pictures reads it;
     /// the parsing state goes back to `pool`.
-    pub fn into_motion(self, pool: &mut Pool) -> (Picture, Motion) {
+    pub fn into_motion(self, pool: &mut Pool<T>) -> (Picture<T>, Motion) {
         // TMVP reads the 4x4 block at the top left of each 16x16 grid
         // cell: sample those, so the DPB keeps one entry per cell.
         let step = 1 << (TMVP_GRID_LOG2 - u32::from(GRID_LOG2));

@@ -41,8 +41,18 @@ pub const INTER_ROUNDING_512THS: i32 = 128;
 /// `ChromaArrayType == 1` (HEVC Table 8-10).
 #[must_use]
 pub fn chroma_qp(luma_qp: i32) -> i32 {
+    chroma_qp_table(luma_qp.clamp(0, MAX_CHROMA_QPI))
+}
+
+/// The largest `qPi` of Table 8-10 (the clip of eq. 8-257).
+pub const MAX_CHROMA_QPI: i32 = 57;
+
+/// `QpC` of Table 8-10 for any `qPi`, unclipped: below 30 it is `qPi`
+/// itself, negative at high bit depth (`qPi >= −QpBdOffsetC`) and in the
+/// deblocking filter's average (§8.7.2.5.5, which does not clip `qPi`).
+#[must_use]
+pub fn chroma_qp_table(qpi: i32) -> i32 {
     const TABLE_30_TO_43: [i32; 14] = [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37];
-    let qpi = luma_qp.clamp(0, 57);
     match qpi {
         ..30 => qpi,
         30..=43 => TABLE_30_TO_43[(qpi - 30) as usize],

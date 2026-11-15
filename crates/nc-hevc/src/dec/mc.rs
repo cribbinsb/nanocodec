@@ -8,26 +8,32 @@
 //! Bi-prediction, explicit weights and 2- or 6-sample chroma sides take the
 //! 14-bit samples of each list (`crate::inter::predict_samples`) and
 //! combine them with the weighted prediction kernel.
+//!
+//! Written once over the sample type (`docs/handoff/high-bit-depth.md`):
+//! each plane's kernels run at that plane's depth, which sets the
+//! weighted-prediction shifts (`shift1 = 14 − BitDepth`, `shift2 = 15 −
+//! BitDepth`) and scales the explicit offsets (`o << (BitDepth − 8)`,
+//! eq. 8-252 with `high_precision_offsets_enabled_flag` 0).
 
 #![allow(
     clippy::many_single_char_names,
     reason = "H.265 sample and block variables keep their specification names (x, y, w, h, n)"
 )]
 
-use nc_common::{Picture, Plane, PlaneIndex};
-use nc_dsp::{BlockSize, Dsp, HevcWeights};
+use nc_common::{BitDepth, BitDepths, Picture, Plane, PlaneIndex};
+use nc_dsp::{BlockSize, DepthKernels, Dsp, HevcWeights, Pixel};
 use nc_encoder::Mv;
 
 use super::slice::Weight;
 
-/// `shift1 = 14 − bitDepth` of weighted prediction, `shift2 = 15 − bitDepth`.
-const UNI_SHIFT: u32 = 6;
-const BI_SHIFT: u32 = 7;
+/// Precision of the prediction samples weighted prediction combines
+/// (`predSamplesLX`, 14 bits at every depth): `shift1 = 14 − BitDepth`.
+const PREDICTION_BITS: u32 = 14;
 
 /// One list's contribution to a prediction block.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Source<'a> {
-    pub picture: &'a Picture,
+pub(super) struct Source<'a, T: Pixel> {
+    pub picture: &'a Picture<T>,
     pub mv: Mv,
     /// Explicit weights, `None` for default weighted prediction.
     pub weight: Option<Weight>,
@@ -46,23 +52,26 @@ pub(super) struct Buffers {
 
 /// Predict the `w`x`h` luma block at `(x, y)` and its chroma into `dst`
 /// from one or two sources.
-pub(super) fn predict(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn predict<T: Pixel>(
     dsp: &Dsp,
+    depths: BitDepths,
     buffers: &mut Buffers,
-    dst: &mut Picture,
+    dst: &mut Picture<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
-    sources: &[Source<'_>],
+    sources: &[Source<'_, T>],
     denominators: Denominators,
 ) {
     let explicit = sources.iter().any(|s| s.weight.is_some());
     for (c, plane) in PlaneIndex::ALL.into_iter().enumerate() {
+        let kernels = dsp.at(depths.plane(c));
         let shift = usize::from(c > 0);
         let (px, py, pw, ph) = (x >> shift, y >> shift, w >> shift, h >> shift);
         if sources.len() == 1
             && !explicit
             && fast_uni(
-                dsp,
+                kernels,
                 sources[0].picture.plane(plane),
                 dst.plane_mut(plane),
                 (px, py),
@@ -78,7 +87,7 @@ pub(super) fn predict(
             // list's prediction goes straight into the average.
             let first = &mut buffers.preds[0];
             crate::inter::predict_samples(
-                dsp,
+                kernels,
                 sources[0].picture.plane(plane),
                 (px, py),
                 (pw, ph),
@@ -91,7 +100,7 @@ pub(super) fn predict(
                 .region_mut(px as isize, py as isize, pw, ph)
                 .expect("prediction block inside the picture");
             crate::inter::predict_bi_into(
-                dsp,
+                kernels,
                 sources[1].picture.plane(plane),
                 (px, py),
                 sources[1].mv,
@@ -103,7 +112,7 @@ pub(super) fn predict(
         }
         for (pred, source) in buffers.preds.iter_mut().zip(sources) {
             crate::inter::predict_samples(
-                dsp,
+                kernels,
                 source.picture.plane(plane),
                 (px, py),
                 (pw, ph),
@@ -114,12 +123,17 @@ pub(super) fn predict(
         }
         let [first, second] = &buffers.preds;
         let second = if sources.len() == 2 { second } else { first };
-        let weights = combination(sources, c, denominators[usize::from(c > 0)]);
+        let weights = combination(
+            sources,
+            c,
+            denominators[usize::from(c > 0)],
+            kernels.depth(),
+        );
         let mut view = dst
             .plane_mut(plane)
             .region_mut(px as isize, py as isize, pw, ph)
             .expect("prediction block inside the picture");
-        dsp.hevc_weighted_prediction_centered(
+        kernels.hevc_weighted_prediction_centered(
             weights,
             &first[..pw * ph],
             &second[..pw * ph],
@@ -130,36 +144,39 @@ pub(super) fn predict(
 
 /// The weighted sample prediction of component `c` (§8.5.3.3.4) as one
 /// `clamp((a·w0 + b·w1 + round) >> shift)` (the `hevc_weight` kernel's
-/// form): default or explicit (equations 8-252, 8-253), one or two lists.
-fn combination(sources: &[Source<'_>], c: usize, denominator: u32) -> HevcWeights {
+/// form): default or explicit (equations 8-252, 8-253), one or two lists,
+/// at `depth`.
+fn combination<T: Pixel>(
+    sources: &[Source<'_, T>],
+    c: usize,
+    denominator: u32,
+    depth: BitDepth,
+) -> HevcWeights {
     let bi = sources.len() == 2;
     let explicit = sources.iter().any(|s| s.weight.is_some());
+    // `shift1 = 14 − bitDepth` (uni), `shift2 = 15 − bitDepth` (bi).
+    let uni_shift = PREDICTION_BITS - depth.bits();
     if !explicit {
-        return if bi {
-            HevcWeights {
-                w0: 1,
-                w1: 1,
-                round: 1 << (BI_SHIFT - 1),
-                shift: BI_SHIFT,
-            }
-        } else {
-            HevcWeights {
-                w0: 1,
-                w1: 0,
-                round: 1 << (UNI_SHIFT - 1),
-                shift: UNI_SHIFT,
-            }
+        let shift = uni_shift + u32::from(bi);
+        return HevcWeights {
+            w0: 1,
+            w1: i16::from(bi),
+            round: 1 << (shift - 1),
+            shift,
         };
     }
-    let log2wd = denominator + UNI_SHIFT;
+    let log2wd = denominator + uni_shift;
     let [w0, w1] = [0, 1].map(|i| sources.get(i).and_then(|s| s.weight).unwrap_or_default());
     // Weights lie in −128..=255 (§7.4.7.3).
     let weight = |w: &Weight| w.weight[c] as i16;
+    // Offsets are coded at 8-bit scale (eq. 8-252, 8-253: `o0 = offset <<
+    // (BitDepth − 8)`).
+    let offset = |w: &Weight| w.offset[c] << depth.above_eight();
     if bi {
         HevcWeights {
             w0: weight(&w0),
             w1: weight(&w1),
-            round: (w0.offset[c] + w1.offset[c] + 1) << log2wd,
+            round: (offset(&w0) + offset(&w1) + 1) << log2wd,
             shift: log2wd + 1,
         }
     } else {
@@ -167,7 +184,7 @@ fn combination(sources: &[Source<'_>], c: usize, denominator: u32) -> HevcWeight
         HevcWeights {
             w0: weight(&w0),
             w1: 0,
-            round: (1 << (log2wd - 1)) + (w0.offset[c] << log2wd),
+            round: (1 << (log2wd - 1)) + (offset(&w0) << log2wd),
             shift: log2wd,
         }
     }
@@ -177,10 +194,10 @@ fn combination(sources: &[Source<'_>], c: usize, denominator: u32) -> HevcWeight
 /// split into power-of-two pieces of at least 4 samples (interpolation is
 /// separable per sample, so pieces predict exactly as the whole block).
 /// Returns whether it ran.
-fn fast_uni(
-    dsp: &Dsp,
-    reference: &Plane,
-    dst: &mut Plane,
+fn fast_uni<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: &Plane<T>,
+    dst: &mut Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv,
@@ -201,7 +218,7 @@ fn fast_uni(
         let mut view = dst
             .region_mut(x as isize, y as isize, w, h)
             .expect("prediction block inside the picture");
-        crate::inter::predict_into(dsp, reference, (x, y), mv, chroma, &mut view);
+        crate::inter::predict_into(kernels, reference, (x, y), mv, chroma, &mut view);
         return true;
     }
     let mut oy = 0;
@@ -212,7 +229,7 @@ fn fast_uni(
             let mut view = dst
                 .region_mut(bx as isize, by as isize, pw, ph)
                 .expect("prediction block inside the picture");
-            crate::inter::predict_into(dsp, reference, (bx, by), mv, chroma, &mut view);
+            crate::inter::predict_into(kernels, reference, (bx, by), mv, chroma, &mut view);
             ox += pw;
         }
         oy += ph;
@@ -237,7 +254,7 @@ mod tests {
     #[test]
     fn extreme_half_sample_bi_prediction_saturates() {
         let (x, y) = (16usize, 16usize);
-        let mut reference = Picture::new(64, 64, 32).unwrap();
+        let mut reference = Picture::<u8>::new(64, 64, 32).unwrap();
         {
             let mut view = reference.plane_mut(PlaneIndex::Y).view_mut();
             for r in 0..64 {
@@ -266,6 +283,7 @@ mod tests {
         let dsp = Dsp::new();
         predict(
             &dsp,
+            BitDepths::EIGHT,
             &mut Buffers::default(),
             &mut dst,
             (x, y),

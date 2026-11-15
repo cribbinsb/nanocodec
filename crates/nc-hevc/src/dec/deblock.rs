@@ -14,19 +14,24 @@
 //! vertical edges were filtered with their own band. Decisions and sample
 //! filtering are nc-dsp kernels; exempt samples are restored after the
 //! kernel ran.
+//!
+//! At high bit depth `QpY` reaches down to `−QpBdOffsetY` and `β`, `tC`
+//! scale by `2^(BitDepth − 8)` (eq. 8-330, 8-332, 8-353); the tables below
+//! are built per slice at the picture's depths.
 
 #![allow(
     clippy::many_single_char_names,
     reason = "H.265 sample and block variables keep their specification names (x, y, w, h, n)"
 )]
 
-use nc_common::{Picture, PlaneViewMut};
-use nc_dsp::Dsp;
+use nc_common::{BitDepths, Picture, PlaneViewMut};
+use nc_dsp::{DepthKernels, Dsp, Pixel};
 
+use super::params::qp_bd_offset;
 use super::picture::{
     BlockInfo, Blocks, EDGE_GRID, GRID_LOG2, PictureState, PuMotion, RefPic, flag,
 };
-use crate::quant::chroma_qp;
+use crate::quant::chroma_qp_table;
 
 /// Luma lines of an edge piece: one kernel call (two 4-line segments).
 const LUMA_LINES: usize = EDGE_GRID;
@@ -58,9 +63,9 @@ const TC: [u8; 54] = [
 /// are the rows above it (see the module docs). `chroma_offsets` are
 /// `pps_cb_qp_offset` and `pps_cr_qp_offset`; `tiles_cross` is
 /// `loop_filter_across_tiles_enabled_flag`.
-pub(super) fn deblock_band(
+pub(super) fn deblock_band<T: Pixel>(
     dsp: &Dsp,
-    pic: &mut PictureState,
+    pic: &mut PictureState<T>,
     chroma_offsets: [i32; 2],
     tiles_cross: bool,
     row: usize,
@@ -68,12 +73,14 @@ pub(super) fn deblock_band(
     if pic.slices.iter().all(|s| s.deblock_disabled) {
         return;
     }
+    let depths = pic.depths;
     let (samples, blocks) = pic.split();
     let tables: Vec<SliceTables> = blocks
         .slices
         .iter()
-        .map(|s| SliceTables::new(s.beta_offset_div2, s.tc_offset_div2, chroma_offsets))
+        .map(|s| SliceTables::new(s.beta_offset_div2, s.tc_offset_div2, chroma_offsets, depths))
         .collect();
+    let kernels = [dsp.at(depths.luma), dsp.at(depths.chroma)];
     // One slice with deblocking on and no tile restriction (every stream
     // nanocodec writes): no per-segment slice or tile checks are needed.
     let uniform = blocks.slices.len() == 1
@@ -90,38 +97,59 @@ pub(super) fn deblock_band(
             tiles_cross,
             uniform,
         };
-        filter_pieces(dsp, samples, &blocks, &tables, filter, pieces);
+        filter_pieces(kernels, samples, &blocks, &tables, filter, pieces);
     }
 }
 
-/// QP range of `QpL` (the average of two luma QPs).
-const QP_COUNT: usize = 52;
+/// `QpY` range of 8-bit video.
+const EIGHT_BIT_QPS: usize = 52;
+/// Range of `QpL` (the average of two luma QPs) at the deepest supported
+/// depth: `−QpBdOffsetY..=51`.
+const QP_COUNT: usize = EIGHT_BIT_QPS + super::params::MAX_QP_BD_OFFSET as usize;
 
-/// One slice's filter parameters by `QpL` (§8.7.2.5.3, §8.7.2.5.5): `β`,
-/// luma `tC` for bS 1 and 2, and chroma `tC` (bS 2) for Cb and Cr.
+/// One slice's filter parameters by `QpL + QpBdOffsetY` (§8.7.2.5.3,
+/// §8.7.2.5.5), scaled to the depths: `β`, luma `tC` for bS 1 and 2, and
+/// chroma `tC` (bS 2) for Cb and Cr.
 struct SliceTables {
-    beta: [u8; QP_COUNT],
-    tc: [[u8; QP_COUNT]; 2],
-    tc_chroma: [[u8; QP_COUNT]; 2],
+    /// `QpBdOffsetY`: the table index of `QpL` 0.
+    qp_offset: i32,
+    beta: [i16; QP_COUNT],
+    tc: [[i16; QP_COUNT]; 2],
+    tc_chroma: [[i16; QP_COUNT]; 2],
 }
 
 impl SliceTables {
-    fn new(beta_offset_div2: i32, tc_offset_div2: i32, chroma_offsets: [i32; 2]) -> Self {
-        let at = |table: &[u8], q: i32| table[q.clamp(0, table.len() as i32 - 1) as usize];
+    fn new(
+        beta_offset_div2: i32,
+        tc_offset_div2: i32,
+        chroma_offsets: [i32; 2],
+        depths: BitDepths,
+    ) -> Self {
+        let qp_offset = qp_bd_offset(depths.luma);
+        // Table entries at `Clip3(0, max, q)`, scaled by `2^(BitDepth − 8)`.
+        let at = |table: &[u8], q: i32, scale: u32| {
+            i16::from(table[q.clamp(0, table.len() as i32 - 1) as usize]) << scale
+        };
+        let (luma, chroma) = (depths.luma.above_eight(), depths.chroma.above_eight());
+        let qp = |index: usize| index as i32 - qp_offset;
         Self {
-            beta: std::array::from_fn(|qp| at(&BETA, qp as i32 + 2 * beta_offset_div2)),
+            qp_offset,
+            beta: std::array::from_fn(|i| at(&BETA, qp(i) + 2 * beta_offset_div2, luma)),
             tc: std::array::from_fn(|b| {
-                std::array::from_fn(|qp| at(&TC, qp as i32 + 2 * b as i32 + 2 * tc_offset_div2))
+                std::array::from_fn(|i| at(&TC, qp(i) + 2 * b as i32 + 2 * tc_offset_div2, luma))
             }),
             tc_chroma: std::array::from_fn(|c| {
-                std::array::from_fn(|qp| {
-                    at(
-                        &TC,
-                        chroma_qp(qp as i32 + chroma_offsets[c]) + 2 + 2 * tc_offset_div2,
-                    )
+                std::array::from_fn(|i| {
+                    let qpc = chroma_qp_table(qp(i) + chroma_offsets[c]);
+                    at(&TC, qpc + 2 + 2 * tc_offset_div2, chroma)
                 })
             }),
         }
+    }
+
+    /// The table index of `QpL`.
+    fn index(&self, qp: i32) -> usize {
+        (qp + self.qp_offset) as usize
     }
 }
 
@@ -257,13 +285,13 @@ fn motion_differs(
 }
 
 /// Samples of the exempt side(s) of an edge, to restore after filtering.
-struct Saved {
-    samples: Vec<(usize, usize, u8)>,
+struct Saved<T: Pixel> {
+    samples: Vec<(usize, usize, T)>,
 }
 
-impl Saved {
+impl<T: Pixel> Saved<T> {
     fn take(
-        view: &PlaneViewMut<'_>,
+        view: &PlaneViewMut<'_, T>,
         (x, y): (usize, usize),
         vertical: bool,
         lines: usize,
@@ -294,7 +322,7 @@ impl Saved {
         Self { samples }
     }
 
-    fn restore(self, view: &mut PlaneViewMut<'_>) {
+    fn restore(self, view: &mut PlaneViewMut<'_, T>) {
         for (x, y, v) in self.samples {
             view.row_mut(y)[x] = v;
         }
@@ -310,9 +338,9 @@ fn exempt(b: BlockInfo) -> bool {
 /// lines and, on the chroma grid with an intra side, its four chroma lines
 /// of each chroma plane. Pieces are 8 samples apart and the filters change
 /// at most 3 samples on either side, so their order does not matter.
-fn filter_pieces(
-    dsp: &Dsp,
-    samples: &mut Picture,
+fn filter_pieces<T: Pixel>(
+    [luma_kernels, chroma_kernels]: [DepthKernels<'_>; 2],
+    samples: &mut Picture<T>,
     b: &Blocks<'_>,
     tables: &[SliceTables],
     filter: Filter,
@@ -350,7 +378,7 @@ fn filter_pieces(
         // of exemptions serve the piece.
         let (x, y) = ((q0 % b.stride) << GRID_LOG2, (q0 / b.stride) << GRID_LOG2);
         let t = &tables[usize::from(q.slice - 1)];
-        let qp = usize::from((p.qp as u8 + q.qp as u8 + 1) >> 1);
+        let qp = t.index((i32::from(p.qp) + i32::from(q.qp) + 1) >> 1);
         let exempt_sides = [exempt(p), exempt(q)];
         let tc = s.map(|v| {
             if v == 0 {
@@ -360,7 +388,7 @@ fn filter_pieces(
             }
         });
         filter_luma(
-            dsp,
+            luma_kernels,
             &mut luma,
             (x, y),
             vertical,
@@ -376,7 +404,7 @@ fn filter_pieces(
             let at = (x / 2, y / 2);
             if exempt_sides.contains(&true) {
                 for (view, tc) in chroma.iter_mut().zip(tc) {
-                    filter_chroma(dsp, view, at, vertical, tc, exempt_sides);
+                    filter_chroma(chroma_kernels, view, at, vertical, tc, exempt_sides);
                 }
             } else {
                 // Pieces of one edge are mostly listed one after another:
@@ -385,13 +413,13 @@ fn filter_pieces(
                     .as_mut()
                     .is_some_and(|run| run.join(at, vertical, tc));
                 if !joined && let Some(run) = pending.replace(ChromaRun::new(at, tc)) {
-                    run.filter(dsp, &mut chroma, vertical);
+                    run.filter(chroma_kernels, &mut chroma, vertical);
                 }
             }
         }
     }
     if let Some(run) = pending {
-        run.filter(dsp, &mut chroma, vertical);
+        run.filter(chroma_kernels, &mut chroma, vertical);
     }
 }
 
@@ -401,12 +429,12 @@ struct ChromaRun {
     /// First q sample (chroma).
     at: (usize, usize),
     /// Per plane, `tC` of each two-line segment.
-    tc: [[u8; 4]; 2],
+    tc: [[i16; 4]; 2],
     lines: usize,
 }
 
 impl ChromaRun {
-    fn new(at: (usize, usize), tc: [[u8; 2]; 2]) -> Self {
+    fn new(at: (usize, usize), tc: [[i16; 2]; 2]) -> Self {
         Self {
             at,
             tc: tc.map(|t| [t[0], t[1], 0, 0]),
@@ -415,7 +443,7 @@ impl ChromaRun {
     }
 
     /// Append the piece at `at` if it continues this one-piece run.
-    fn join(&mut self, at: (usize, usize), vertical: bool, tc: [[u8; 2]; 2]) -> bool {
+    fn join(&mut self, at: (usize, usize), vertical: bool, tc: [[i16; 2]; 2]) -> bool {
         let next = if vertical {
             (self.at.0, self.at.1 + CHROMA_LINES)
         } else {
@@ -431,11 +459,16 @@ impl ChromaRun {
         true
     }
 
-    fn filter(self, dsp: &Dsp, views: &mut [PlaneViewMut<'_>; 2], vertical: bool) {
+    fn filter<T: Pixel>(
+        self,
+        kernels: DepthKernels<'_>,
+        views: &mut [PlaneViewMut<'_, T>; 2],
+        vertical: bool,
+    ) {
         for (view, tc) in views.iter_mut().zip(self.tc) {
             // tC 0 (low QP) leaves the samples unchanged.
             if tc != [0; 4] {
-                dsp.hevc_deblock_chroma_edge(view, self.at, vertical, self.lines, tc);
+                kernels.hevc_deblock_chroma_edge(view, self.at, vertical, self.lines, tc);
             }
         }
     }
@@ -443,17 +476,17 @@ impl ChromaRun {
 
 /// Eight luma lines across the edge whose first q sample is `(x, y)`,
 /// restoring the samples of exempt sides.
-fn filter_luma(
-    dsp: &Dsp,
-    view: &mut PlaneViewMut<'_>,
+fn filter_luma<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    view: &mut PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     vertical: bool,
-    (tc, beta): ([u8; 2], u8),
+    (tc, beta): ([i16; 2], i16),
     exempt_sides: [bool; 2],
 ) {
     let saved = (exempt_sides[0] || exempt_sides[1])
         .then(|| Saved::take(view, (x, y), vertical, LUMA_LINES, exempt_sides));
-    dsp.hevc_deblock_luma_edge(view, (x, y), vertical, tc, beta);
+    kernels.hevc_deblock_luma_edge(view, (x, y), vertical, tc, beta);
     if let Some(saved) = saved {
         saved.restore(view);
     }
@@ -461,12 +494,12 @@ fn filter_luma(
 
 /// Four chroma lines (two segments, `tc` each) across the edge whose first
 /// q sample is chroma `(x, y)`, restoring the samples of exempt sides.
-fn filter_chroma(
-    dsp: &Dsp,
-    view: &mut PlaneViewMut<'_>,
+fn filter_chroma<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    view: &mut PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     vertical: bool,
-    tc: [u8; 2],
+    tc: [i16; 2],
     exempt_sides: [bool; 2],
 ) {
     if tc == [0, 0] {
@@ -475,7 +508,7 @@ fn filter_chroma(
     }
     let saved = (exempt_sides[0] || exempt_sides[1])
         .then(|| Saved::take(view, (x, y), vertical, CHROMA_LINES, exempt_sides));
-    dsp.hevc_deblock_chroma_edge(view, (x, y), vertical, CHROMA_LINES, [tc[0], tc[1], 0, 0]);
+    kernels.hevc_deblock_chroma_edge(view, (x, y), vertical, CHROMA_LINES, [tc[0], tc[1], 0, 0]);
     if let Some(saved) = saved {
         saved.restore(view);
     }

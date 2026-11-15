@@ -1,16 +1,30 @@
 //! Sample adaptive offset: the CTB syntax (H.265 §7.3.8.3, semantics
 //! §7.4.9.3) and the filter (§8.7.3), one CTB row at a time, with slice,
 //! tile and picture boundary rules and the PCM / lossless exemptions.
+//!
+//! At high bit depth offsets reach `(1 << (Min(BitDepth, 10) − 5)) − 1`
+//! and scale by `2^(BitDepth − Min(BitDepth, 10))` (§7.4.9.3.2); bands
+//! are `2^(BitDepth − 5)` values wide (the kernels').
 
-use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{Dsp, SAO_EO_NEIGHBOURS};
+use nc_common::{BitDepth, BitDepths, Picture, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_dsp::{DepthKernels, Dsp, Pixel, SAO_EO_NEIGHBOURS};
 
 use super::cabac::Engine;
 use super::ctx::{self, Contexts};
 use super::picture::{Blocks, GRID_LOG2, PictureState, flag};
 
-/// `sao_offset_abs` maximum for 8-bit video: `(1 << (Min(bitDepth, 10) − 5)) − 1`.
-const MAX_OFFSET: u32 = 7;
+/// `sao_offset_abs` is coded with `Min(BitDepth, OFFSET_DEPTH_LIMIT) − 5`
+/// bits of range (§7.4.9.3.2); deeper samples scale the offsets instead.
+const OFFSET_DEPTH_LIMIT: u32 = 10;
+/// `SaoOffsetVal` magnitude bits below the depth (`cMax = (1 << (depth −
+/// 5)) − 1`).
+const OFFSET_RANGE_BITS: u32 = 5;
+
+/// `cMax` of `sao_offset_abs` and the `SaoOffsetVal` scale at `depth`.
+fn offset_limits(depth: BitDepth) -> (u32, u32) {
+    let coded = depth.bits().min(OFFSET_DEPTH_LIMIT);
+    ((1 << (coded - OFFSET_RANGE_BITS)) - 1, depth.bits() - coded)
+}
 /// `sao_band_position` bits.
 const BAND_POSITION_BITS: u32 = 5;
 /// `sao_eo_class` bits.
@@ -29,11 +43,12 @@ pub(super) enum Kind {
     Edge(u8),
 }
 
-/// One component's SAO: kind and `SaoOffsetVal[1..=4]`.
+/// One component's SAO: kind and `SaoOffsetVal[1..=4]` (scaled to the
+/// depth).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Component {
     pub kind: Kind,
-    pub offsets: [i8; 4],
+    pub offsets: [i16; 4],
 }
 
 /// The SAO parameters of a CTB, per component.
@@ -92,13 +107,14 @@ pub(super) fn kind_index(kind: Kind) -> u8 {
     not(feature = "analysis"),
     allow(clippy::semicolon_if_nothing_returned)
 )]
-pub(super) fn parse(
+pub(super) fn parse<T: Pixel>(
     e: &mut Engine<'_>,
     ctx: &mut Contexts,
-    pic: &mut PictureState,
+    pic: &mut PictureState<T>,
     ctb: usize,
     n: Neighbours,
 ) -> Signalled {
+    let depths = pic.depths;
     if let Some(left) = n.left
         && e.bin(ctx.at(ctx::SAO_MERGE, 0))
     {
@@ -129,13 +145,14 @@ pub(super) fn parse(
         if kind == Kind::Off {
             continue;
         }
-        let mut magnitudes = [0i8; 4];
+        let (max_offset, scale) = offset_limits(depths.plane(c));
+        let mut magnitudes = [0i16; 4];
         for m in &mut magnitudes {
             let mut v = 0;
-            while v < MAX_OFFSET && e.bypass() {
+            while v < max_offset && e.bypass() {
                 v += 1;
             }
-            *m = v as i8;
+            *m = (v << scale) as i16;
         }
         let mut component = Component {
             kind,
@@ -172,13 +189,22 @@ pub(super) fn parse(
 /// Working memory of SAO, kept between bands: the deblocked samples the
 /// band's edge offsets classify from, and each plane's last line before
 /// SAO for the band below.
-#[derive(Debug, Default)]
-pub(super) struct Work {
+#[derive(Debug)]
+pub(super) struct Work<T: Pixel> {
     /// The band's rows plus one above and one below, at band coordinates
     /// (row 0 is the line above the band).
-    band: Option<Picture>,
+    band: Option<Picture<T>>,
     /// Each plane's last line of the previous band, before its SAO.
-    last: [Vec<u8>; 3],
+    last: [Vec<T>; 3],
+}
+
+impl<T: Pixel> Default for Work<T> {
+    fn default() -> Self {
+        Self {
+            band: None,
+            last: Default::default(),
+        }
+    }
 }
 
 /// Apply SAO to CTB row `row` of the deblocked picture (§8.7.3), whose
@@ -188,13 +214,14 @@ pub(super) struct Work {
 /// (kept from before the band above changed it) are first copied into a
 /// band-sized buffer, which stays in cache. Band offsets read only the
 /// sample itself and run in place.
-pub(super) fn apply_band(
+pub(super) fn apply_band<T: Pixel>(
     dsp: &Dsp,
-    pic: &mut PictureState,
+    pic: &mut PictureState<T>,
     tiles_cross: bool,
-    work: &mut Work,
+    work: &mut Work<T>,
     row: usize,
 ) {
+    let depths: BitDepths = pic.depths;
     let layout = pic.layout.clone();
     let usage = |r: usize| {
         let mut used = [false; 3];
@@ -291,7 +318,8 @@ pub(super) fn apply_band(
                 allowed: &allowed,
                 any_exempt,
             };
-            filter_ctb(dsp, &ctx, samples, (buffer, windows[c]), params[c]);
+            let kernels = dsp.at(depths.plane(c));
+            filter_ctb(kernels, &ctx, samples, (buffer, windows[c]), params[c]);
         }
     }
 }
@@ -357,11 +385,11 @@ struct CtbContext<'a, 'b> {
 }
 
 /// SAO of one component of one CTB.
-fn filter_ctb(
-    dsp: &Dsp,
+fn filter_ctb<T: Pixel>(
+    kernels: DepthKernels<'_>,
     cx: &CtbContext<'_, '_>,
-    samples: &mut Picture,
-    (buffer, window): (&Picture, Window),
+    samples: &mut Picture<T>,
+    (buffer, window): (&Picture<T>, Window),
     component: Component,
 ) {
     let b = cx.blocks;
@@ -394,7 +422,7 @@ fn filter_ctb(
     };
     match component.kind {
         Kind::Off => {}
-        Kind::Band(position) => dsp.sao_band_apply_masked(
+        Kind::Band(position) => kernels.sao_band_apply_masked(
             position,
             component.offsets,
             &mut samples.plane_mut(cx.plane).view_mut(),
@@ -436,9 +464,14 @@ fn filter_ctb(
                     x1.min(pw - right),
                     y1.min(ph - bottom) - window.top,
                 );
-                dsp.sao_edge_apply(class, component.offsets, &src, &mut dst, rect);
+                kernels.sao_edge_apply(class, component.offsets, &src, &mut dst, rect);
             } else {
-                edge_checked(&src, &mut dst, local, &exempt, class, offsets, cx.allowed);
+                let rule = EdgeRule {
+                    class,
+                    offsets,
+                    depth: kernels.depth(),
+                };
+                edge_checked(&src, &mut dst, local, &exempt, rule, cx.allowed);
             }
         }
     }
@@ -456,16 +489,27 @@ struct Area {
     ph: usize,
 }
 
+/// An edge offset's class, `SaoOffsetVal`s and clip.
+#[derive(Debug, Clone, Copy)]
+struct EdgeRule {
+    class: u8,
+    offsets: [i32; 4],
+    depth: BitDepth,
+}
+
 /// Edge offset of a CTB whose neighbours are restricted by slice or tile
 /// boundaries or that holds exempt (PCM, lossless) samples: each sample on
 /// the CTB border checks its neighbours.
-fn edge_checked(
-    src: &PlaneView<'_>,
-    dst: &mut PlaneViewMut<'_>,
+fn edge_checked<T: Pixel>(
+    src: &PlaneView<'_, T>,
+    dst: &mut PlaneViewMut<'_, T>,
     area: Area,
     exempt: &[bool],
-    class: u8,
-    offsets: [i32; 4],
+    EdgeRule {
+        class,
+        offsets,
+        depth,
+    }: EdgeRule,
     allowed: &[[bool; 3]; 3],
 ) {
     let Area {
@@ -511,12 +555,12 @@ fn edge_checked(
             if border && !(ok(xa, y as isize + ay) && ok(xb, y as isize + by)) {
                 continue;
             }
-            let s = i32::from(row[x]);
-            let a = i32::from(row_a[xa as usize]);
-            let b = i32::from(row_b[xb as usize]);
+            let s = row[x].to_i32();
+            let a = row_a[xa as usize].to_i32();
+            let b = row_b[xb as usize].to_i32();
             let edge = EDGE_REMAP[(2 + (s - a).signum() + (s - b).signum()) as usize];
             if edge != 0 {
-                out[x] = (s + offsets[edge - 1]).clamp(0, 255) as u8;
+                out[x] = depth.clip_to(s + offsets[edge - 1]);
             }
         }
     }

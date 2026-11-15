@@ -1,4 +1,7 @@
-//! Raw I420 frame I/O: tightly packed Y, then U, then V, 8 bits per sample.
+//! Raw I420 frame I/O: tightly packed Y, then U, then V, 8 bits per sample
+//! (`yuv420p`); decoded pictures of more than 8 bits are written as 16-bit
+//! little-endian samples at their own depth (`yuv420p10le` for 10-bit, as
+//! HM and ffmpeg write them).
 //!
 //! This is the format of every evaluation clip (see `eval/`) and of the
 //! decoders' reconstruction output, so reading and writing it exactly
@@ -8,6 +11,8 @@ use std::io::{self, Read, Write};
 
 use crate::error::{Error, Result};
 use crate::picture::{Picture, PlaneIndex};
+use crate::sample::Sample;
+use crate::view::PlaneView;
 
 /// Read the next frame into `picture`. Returns `Ok(false)` at a clean end of
 /// input (no bytes left) and an error if the input ends mid-frame.
@@ -40,15 +45,34 @@ pub fn read_frame<R: Read>(reader: &mut R, picture: &mut Picture) -> Result<bool
     Ok(true)
 }
 
-/// Write the visible area of `picture` as one packed I420 frame.
+/// Write the visible area of `picture` as one packed I420 frame (16-bit
+/// little-endian samples for `Picture<u16>`).
 ///
 /// # Errors
 ///
 /// [`Error::Io`] if the writer fails.
-pub fn write_frame<W: Write>(writer: &mut W, picture: &Picture) -> Result<()> {
-    for index in PlaneIndex::ALL {
-        for row in picture.plane(index).view().rows() {
-            writer.write_all(row)?;
+pub fn write_frame<W: Write, T: Sample>(writer: &mut W, picture: &Picture<T>) -> Result<()> {
+    write_planes(
+        writer,
+        PlaneIndex::ALL.map(|index| picture.plane(index).view()),
+    )
+}
+
+/// Write the rows of `planes`, in order, as packed samples (bytes for `u8`,
+/// 16-bit little-endian for `u16`): a whole frame, or a monochrome picture's
+/// luma alone.
+///
+/// # Errors
+///
+/// [`Error::Io`] if the writer fails.
+pub fn write_planes<'a, W: Write, T: Sample>(
+    writer: &mut W,
+    planes: impl IntoIterator<Item = PlaneView<'a, T>>,
+) -> Result<()> {
+    let mut scratch = Vec::new();
+    for plane in planes {
+        for row in plane.rows() {
+            writer.write_all(T::le_bytes(row, &mut scratch))?;
         }
     }
     Ok(())
@@ -72,7 +96,7 @@ fn read_up_to<R: Read>(reader: &mut R, buf: &mut [u8]) -> io::Result<usize> {
 mod tests {
     use super::{read_frame, write_frame};
     use crate::error::Error;
-    use crate::picture::Picture;
+    use crate::picture::{Picture, PlaneIndex};
 
     fn packed_frame(width: usize, height: usize, seed: u8) -> Vec<u8> {
         (0..width * height * 3 / 2)
@@ -87,7 +111,7 @@ mod tests {
         input.extend(packed_frame(w, h, 2));
         let mut reader = input.as_slice();
 
-        let mut pic = Picture::new(w, h, 8).unwrap();
+        let mut pic = Picture::<u8>::new(w, h, 8).unwrap();
         let mut output = Vec::new();
         while read_frame(&mut reader, &mut pic).unwrap() {
             write_frame(&mut output, &pic).unwrap();
@@ -99,7 +123,7 @@ mod tests {
     fn partial_frame_is_an_error() {
         let input = packed_frame(4, 4, 0);
         let mut reader = &input[..input.len() - 1];
-        let mut pic = Picture::new(4, 4, 0).unwrap();
+        let mut pic = Picture::<u8>::new(4, 4, 0).unwrap();
         match read_frame(&mut reader, &mut pic) {
             Err(Error::TruncatedFrame { expected, got }) => {
                 assert_eq!((expected, got), (24, 23));
@@ -109,9 +133,19 @@ mod tests {
     }
 
     #[test]
+    fn deep_pictures_are_written_little_endian() {
+        let mut pic = Picture::<u16>::new(2, 2, 0).unwrap();
+        pic.plane_mut(PlaneIndex::Y).view_mut().fill(0x3ff);
+        pic.plane_mut(PlaneIndex::V).view_mut().fill(0x102);
+        let mut out = Vec::new();
+        write_frame(&mut out, &pic).unwrap();
+        assert_eq!(out, [0xff, 3, 0xff, 3, 0xff, 3, 0xff, 3, 0, 0, 2, 1]);
+    }
+
+    #[test]
     fn empty_input_is_clean_end() {
         let mut reader: &[u8] = &[];
-        let mut pic = Picture::new(4, 4, 0).unwrap();
+        let mut pic = Picture::<u8>::new(4, 4, 0).unwrap();
         assert!(!read_frame(&mut reader, &mut pic).unwrap());
     }
 }

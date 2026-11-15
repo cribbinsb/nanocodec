@@ -42,6 +42,7 @@ mod gram;
 mod h264_intra;
 mod hevc_intra;
 mod hevc_weight;
+mod high_depth;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -82,6 +83,7 @@ pub use h264_intra::{
 };
 pub use hevc_intra::PlanarEdges as HevcPlanarEdges;
 pub use hevc_weight::HevcWeights;
+pub use high_depth::{DepthKernels, Pixel};
 pub use vp9_deblock::{Vp9FilterLimits, Vp9FilterWidth, vp9_filter_edge};
 pub use vp9_intra::{Vp9IntraEdges, Vp9IntraMode};
 pub use vp9_mc::{

@@ -5,7 +5,6 @@
 
 use nc_common::stream_stats::{StreamStats, facts};
 
-use super::Current;
 use super::params::{Pps, Sps};
 use super::slice::{SliceHeader, SliceSegment, SliceType};
 
@@ -49,12 +48,12 @@ const SLICE_BYTES: &str = "slice_bytes";
 /// picture (`picture_start`), its slice header (not for a dependent segment) and its size.
 pub(super) fn segment(
     s: &mut StreamStats,
-    picture_start: Option<&Current>,
+    picture_start: Option<(&Sps, &Pps)>,
     segment: &SliceSegment,
     bytes: usize,
 ) {
-    if let Some(current) = picture_start {
-        picture(s, &current.sps, &current.pps);
+    if let Some((sps, pps)) = picture_start {
+        picture(s, sps, pps);
     }
     if let Some(h) = &segment.header {
         slice(s, h);

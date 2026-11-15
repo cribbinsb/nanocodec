@@ -58,5 +58,6 @@ mod transform;
 
 pub use backend::HevcBackend;
 
-pub use dec::{Decoder, OutputPicture};
+pub use dec::Decoder;
 pub use headers::access_unit_layer;
+pub use nc_common::{DecodedPicture, OutputPicture};

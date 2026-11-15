@@ -2,6 +2,8 @@
 //! it: AV1 always runs both passes (an identity filter folds away exactly);
 //! HEVC and H.264 follow their equations case by case.
 
+use nc_common::{BitDepth, Sample};
+
 use super::{
     Av1Family, BiFn, CompoundFns, H264_TAPS, HevcChromaTaps, HevcLumaTaps, McFns, PrepFn, Regular,
     SeparableTaps, Sharp, Smooth, TAPS, VvcAffineLumaTaps, VvcChromaTaps, VvcLumaTaps,
@@ -186,11 +188,8 @@ fn clip_u8(value: i32) -> u8 {
     value.clamp(0, 255) as u8
 }
 
-/// HEVC uni-prediction rounding of a 14-bit sample (§8.5.3.3.4.2, 8-bit).
-fn hevc_round(value: i32) -> u8 {
-    clip_u8((value + 32) >> 6)
-}
-
+/// The uni-prediction kernel of separable table `T` (HEVC luma and chroma,
+/// VVC): the 8-bit instance of [`separable_at`].
 fn separable<T: SeparableTaps<N>, const N: usize, const W: usize>(
     src: &[u8],
     ss: usize,
@@ -200,38 +199,48 @@ fn separable<T: SeparableTaps<N>, const N: usize, const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
-    hevc_separable::<W, N>(
-        src,
-        ss,
-        dst,
-        ds,
-        h,
-        &T::TABLE[frac_x],
-        &T::TABLE[frac_y],
-        frac_x,
-        frac_y,
-    );
+    separable_at::<u8, T, N, W>(src, ss, dst, ds, h, (frac_x, frac_y), BitDepth::EIGHT);
 }
 
-/// HEVC §8.5.3.3.3 at 8-bit depth (`shift1 = 0`, `shift2 = 6`) followed by
-/// uni-prediction rounding.
-fn hevc_separable<const W: usize, const N: usize>(
-    src: &[u8],
+/// HEVC §8.5.3.3.3 at `depth` followed by uni-prediction rounding
+/// (§8.5.3.3.4.2: `(predSamples + offset1) >> shift1`, `shift1 = 14 −
+/// BitDepth`), for samples of any type.
+pub(crate) fn separable_at<S: Sample, T: SeparableTaps<N>, const N: usize, const W: usize>(
+    src: &[S],
     ss: usize,
-    dst: &mut [u8],
+    dst: &mut [S],
     ds: usize,
     h: usize,
-    fx: &[i16; N],
-    fy: &[i16; N],
-    frac_x: usize,
-    frac_y: usize,
+    (frac_x, frac_y): (usize, usize),
+    depth: BitDepth,
 ) {
+    let (fx, fy) = (&T::TABLE[frac_x], &T::TABLE[frac_y]);
+    let shift = PREDICTION_BITS - depth.bits();
     for r in 0..h {
         for c in 0..W {
-            let value = hevc_sample(src, ss, (r, c), (fx, fy), (frac_x, frac_y));
-            dst[r * ds + c] = hevc_round(value);
+            let value = separable_sample(src, ss, (r, c), (fx, fy), (frac_x, frac_y), depth);
+            dst[r * ds + c] = depth.clip_to((value + (1 << (shift - 1))) >> shift);
         }
     }
+}
+
+/// Precision of `predSamplesLX` (§8.5.3.3.3: 14 bits at every depth).
+const PREDICTION_BITS: u32 = 14;
+/// `shift2` of §8.5.3.3.3.1: the second pass of a 2-D interpolation.
+const SECOND_PASS_SHIFT: u32 = 6;
+/// The largest `shift1`: `Min(4, BitDepth − 8)`.
+const MAX_FIRST_PASS_SHIFT: u32 = 4;
+/// The smallest `shift3`: `Max(2, 14 − BitDepth)`.
+const MIN_WHOLE_SAMPLE_SHIFT: u32 = 2;
+
+/// `shift1` (the first pass's) and `shift3` (whole samples') of
+/// §8.5.3.3.3.1 at `depth`; 0 and 6 at 8 bits.
+fn interpolation_shifts(depth: BitDepth) -> (u32, u32) {
+    let above = depth.above_eight();
+    (
+        above.min(MAX_FIRST_PASS_SHIFT),
+        (PREDICTION_BITS - depth.bits()).max(MIN_WHOLE_SAMPLE_SHIFT),
+    )
 }
 
 /// The HEVC compound-precision kernels (luma, chroma) by width class: the
@@ -276,10 +285,7 @@ pub(crate) fn hevc_bi_fns() -> [[BiFn; 5]; 2] {
     ]
 }
 
-/// HEVC default bi-prediction (eq. 8-251, 8-bit: `shift2 = 7`,
-/// `offset2 = 64`): [`hevc_prep`] of the second list, then
-/// `clamp((first + second + 64) >> 7)` with both predictions restored from
-/// their centring.
+/// HEVC default bi-prediction, 8-bit: [`hevc_bi_at`].
 #[allow(clippy::too_many_arguments)]
 fn hevc_bi<T: SeparableTaps<N>, const N: usize, const W: usize>(
     src: &[u8],
@@ -292,19 +298,46 @@ fn hevc_bi<T: SeparableTaps<N>, const N: usize, const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
+    hevc_bi_at::<u8, T, N, W>(
+        src,
+        ss,
+        (first, fs),
+        dst,
+        ds,
+        h,
+        (frac_x, frac_y),
+        BitDepth::EIGHT,
+    );
+}
+
+/// HEVC default bi-prediction (eq. 8-251: `shift2 = 15 − BitDepth`,
+/// `offset2 = 1 << (shift2 − 1)`): [`hevc_prep_at`] of the second list, then
+/// `Clip1((first + second + offset2) >> shift2)` with both predictions
+/// restored from their centring.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hevc_bi_at<S: Sample, T: SeparableTaps<N>, const N: usize, const W: usize>(
+    src: &[S],
+    ss: usize,
+    (first, fs): (&[i16], usize),
+    dst: &mut [S],
+    ds: usize,
+    h: usize,
+    frac: (usize, usize),
+    depth: BitDepth,
+) {
     let mut second = [[0i16; W]; MAX_PREP_ROWS];
-    hevc_prep::<T, N, W>(src, ss, second.as_flattened_mut(), W, h, frac_x, frac_y);
+    hevc_prep_at::<S, T, N, W>(src, ss, second.as_flattened_mut(), W, h, frac, depth);
     let offset = i32::from(super::HEVC_PREP_OFFSET);
+    let shift = PREDICTION_BITS + 1 - depth.bits();
     for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
         for (c, o) in out[..W].iter_mut().enumerate() {
             let sum = i32::from(first[r * fs + c]) + i32::from(second[r][c]) + 2 * offset;
-            *o = clip_u8((sum + 64) >> 7);
+            *o = depth.clip_to((sum + (1 << (shift - 1))) >> shift);
         }
     }
 }
 
-/// HEVC `predSamplesLX` (§8.5.3.3.3, 8-bit), centered by 8192: samples before
-/// weighted sample prediction, for bi-prediction and explicit weights.
+/// HEVC `predSamplesLX`, 8-bit: [`hevc_prep_at`].
 fn hevc_prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
     src: &[u8],
     ss: usize,
@@ -314,7 +347,24 @@ fn hevc_prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
+    hevc_prep_at::<u8, T, N, W>(src, ss, dst, ds, h, (frac_x, frac_y), BitDepth::EIGHT);
+}
+
+/// HEVC `predSamplesLX` (§8.5.3.3.3) at `depth`, centered by 8192: samples
+/// before weighted sample prediction, for bi-prediction and explicit
+/// weights. The 14-bit precision is the same at every depth (`shift1`
+/// scales the first pass down), so the range proof below holds for all.
+pub(crate) fn hevc_prep_at<S: Sample, T: SeparableTaps<N>, const N: usize, const W: usize>(
+    src: &[S],
+    ss: usize,
+    dst: &mut [i16],
+    ds: usize,
+    h: usize,
+    (frac_x, frac_y): (usize, usize),
+    depth: BitDepth,
+) {
     let (fx, fy) = (&T::TABLE[frac_x], &T::TABLE[frac_y]);
+    let (shift1, shift3) = interpolation_shifts(depth);
     let centre = N / 2 - 1;
     // Unbiased 2-D overshoot can reach 33150. Center before narrowing.
     match (frac_x, frac_y) {
@@ -322,7 +372,7 @@ fn hevc_prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
                 let line = &src[(r + centre) * ss + centre..];
                 for (o, &s) in out[..W].iter_mut().zip(line) {
-                    *o = center_hevc_sample(i32::from(s) << 6);
+                    *o = center_hevc_sample(s.to_i32() << shift3);
                 }
             }
         }
@@ -330,18 +380,17 @@ fn hevc_prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
                 let line = &src[(r + centre) * ss..];
                 for (c, o) in out[..W].iter_mut().enumerate() {
-                    *o = center_hevc_sample(taps_dot(
-                        fx,
-                        line[c..c + N].iter().map(|&s| i32::from(s)),
-                    ));
+                    *o = center_hevc_sample(
+                        taps_dot(fx, line[c..c + N].iter().map(|&s| s.to_i32())) >> shift1,
+                    );
                 }
             }
         }
         (0, _) => {
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
                 for (c, o) in out[..W].iter_mut().enumerate() {
-                    let column = (0..N).map(|t| i32::from(src[(r + t) * ss + c + centre]));
-                    *o = center_hevc_sample(taps_dot(fy, column));
+                    let column = (0..N).map(|t| src[(r + t) * ss + c + centre].to_i32());
+                    *o = center_hevc_sample(taps_dot(fy, column) >> shift1);
                 }
             }
         }
@@ -350,13 +399,13 @@ fn hevc_prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
             for (r, row) in rows[..h + N - 1].iter_mut().enumerate() {
                 let line = &src[r * ss..];
                 for (c, sum) in row.iter_mut().enumerate() {
-                    *sum = taps_dot(fx, line[c..c + N].iter().map(|&s| i32::from(s)));
+                    *sum = taps_dot(fx, line[c..c + N].iter().map(|&s| s.to_i32())) >> shift1;
                 }
             }
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
                 for (c, o) in out[..W].iter_mut().enumerate() {
                     *o = center_hevc_sample(
-                        taps_dot(fy, rows[r..r + N].iter().map(|row| row[c])) >> 6,
+                        taps_dot(fy, rows[r..r + N].iter().map(|row| row[c])) >> SECOND_PASS_SHIFT,
                     );
                 }
             }
@@ -385,31 +434,43 @@ fn taps_dot<const N: usize>(taps: &[i16; N], samples: impl Iterator<Item = i32>)
 const MAX_PREP_ROWS: usize = 64 + 7;
 
 /// One 14-bit HEVC prediction sample at block position `(r, c)` of the
-/// window `src` (equations 8-228 to 8-240 with `shift1 = 0`, `shift2 = 6`,
-/// `shift3 = 6`).
-fn hevc_sample<const N: usize>(
-    src: &[u8],
+/// window `src` (equations 8-228 to 8-240 at `depth`: `shift1 = Min(4,
+/// BitDepth − 8)`, `shift2 = 6`, `shift3 = Max(2, 14 − BitDepth)`).
+fn separable_sample<S: Sample, const N: usize>(
+    src: &[S],
     ss: usize,
     (r, c): (usize, usize),
     (fx, fy): (&[i16; N], &[i16; N]),
     (frac_x, frac_y): (usize, usize),
+    depth: BitDepth,
 ) -> i32 {
     let centre = N / 2 - 1;
-    let px = |r: usize, c: usize| i32::from(src[r * ss + c]);
+    let (shift1, shift3) = interpolation_shifts(depth);
+    let px = |r: usize, c: usize| src[r * ss + c].to_i32();
     let tap = |taps: &[i16; N], t: usize| i32::from(taps[t]);
     match (frac_x, frac_y) {
         // A whole-sample position: s << shift3.
-        (0, 0) => px(r + centre, c + centre) << 6,
-        (_, 0) => (0..N).map(|t| tap(fx, t) * px(r + centre, c + t)).sum(),
-        (0, _) => (0..N).map(|t| tap(fy, t) * px(r + t, c + centre)).sum(),
+        (0, 0) => px(r + centre, c + centre) << shift3,
+        (_, 0) => {
+            (0..N)
+                .map(|t| tap(fx, t) * px(r + centre, c + t))
+                .sum::<i32>()
+                >> shift1
+        }
+        (0, _) => {
+            (0..N)
+                .map(|t| tap(fy, t) * px(r + t, c + centre))
+                .sum::<i32>()
+                >> shift1
+        }
         _ => {
             let column: i32 = (0..N)
                 .map(|t| {
                     let row: i32 = (0..N).map(|u| tap(fx, u) * px(r + t, c + u)).sum();
-                    tap(fy, t) * row
+                    tap(fy, t) * (row >> shift1)
                 })
                 .sum();
-            column >> 6
+            column >> SECOND_PASS_SHIFT
         }
     }
 }

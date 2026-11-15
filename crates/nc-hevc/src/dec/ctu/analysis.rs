@@ -83,7 +83,7 @@ fn bits_since(e: &Engine<'_>, start: usize) -> u32 {
     (e.bits_consumed() - start) as u32
 }
 
-impl SegmentDecoder<'_, '_> {
+impl<T: nc_dsp::Pixel> SegmentDecoder<'_, '_, T> {
     fn stats(&mut self) -> Option<&mut StreamStats> {
         self.s.stats.as_mut()
     }

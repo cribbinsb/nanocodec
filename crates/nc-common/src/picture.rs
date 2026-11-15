@@ -1,7 +1,9 @@
-//! A picture: the three planes of one 8-bit 4:2:0 (I420) frame.
+//! A picture: the three planes of one 4:2:0 (I420) frame, of 8-bit samples
+//! or (`Picture<u16>`) deeper ones.
 
 use crate::error::{Error, Result};
 use crate::plane::{BorderStores, Plane};
+use crate::sample::Sample;
 
 /// Chroma subsampling. Only 4:2:0 is supported (`docs/ARCHITECTURE.md` §1: 8-bit 4:2:0 only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,13 +28,15 @@ impl PlaneIndex {
     pub const ALL: [PlaneIndex; 3] = [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V];
 }
 
-/// One 8-bit 4:2:0 frame. Chroma planes get half the luma border.
+/// One 4:2:0 frame of samples `T` (`u8`, or `u16` for more than 8 bits;
+/// the stream's depth travels beside it, see [`crate::BitDepths`]). Chroma
+/// planes get half the luma border.
 #[derive(Debug, Clone)]
-pub struct Picture {
-    planes: [Plane; 3],
+pub struct Picture<T: Sample = u8> {
+    planes: [Plane<T>; 3],
 }
 
-impl Picture {
+impl<T: Sample> Picture<T> {
     /// A zeroed `width` x `height` I420 picture with at least `luma_border`
     /// samples of luma padding (and half that for chroma).
     ///
@@ -92,21 +96,22 @@ impl Picture {
 
     /// One plane.
     #[must_use]
-    pub fn plane(&self, index: PlaneIndex) -> &Plane {
+    pub fn plane(&self, index: PlaneIndex) -> &Plane<T> {
         &self.planes[index as usize]
     }
 
     /// One plane, writable.
-    pub fn plane_mut(&mut self, index: PlaneIndex) -> &mut Plane {
+    pub fn plane_mut(&mut self, index: PlaneIndex) -> &mut Plane<T> {
         &mut self.planes[index as usize]
     }
 
     /// All three planes in storage order (Y, U, V), writable at once.
-    pub fn planes_mut(&mut self) -> &mut [Plane; 3] {
+    pub fn planes_mut(&mut self) -> &mut [Plane<T>; 3] {
         &mut self.planes
     }
 
-    /// Bytes of one tightly packed I420 frame of this size.
+    /// Samples of one tightly packed I420 frame of this size (bytes for
+    /// `u8`; twice that in a 16-bit file).
     #[must_use]
     pub fn packed_frame_len(&self) -> usize {
         self.planes.iter().map(|p| p.width() * p.height()).sum()
@@ -120,7 +125,7 @@ impl Picture {
     }
 
     /// [`Self::extend_borders`], writing the borders through `stores`.
-    pub fn extend_borders_with(&mut self, stores: &impl BorderStores) {
+    pub fn extend_borders_with(&mut self, stores: &impl BorderStores<T>) {
         for plane in &mut self.planes {
             plane.extend_borders_with(stores);
         }
@@ -162,7 +167,7 @@ mod tests {
 
     #[test]
     fn replicate_beyond_copies_the_last_column_and_row() {
-        let mut pic = Picture::new(8, 8, 0).unwrap();
+        let mut pic = Picture::<u8>::new(8, 8, 0).unwrap();
         let mut y = pic.plane_mut(PlaneIndex::Y).view_mut();
         for row in 0..8 {
             for (col, s) in y.row_mut(row).iter_mut().enumerate() {
@@ -177,7 +182,7 @@ mod tests {
 
     #[test]
     fn plane_sizes_follow_420() {
-        let pic = Picture::new(1280, 720, 64).unwrap();
+        let pic = Picture::<u8>::new(1280, 720, 64).unwrap();
         let u = pic.plane(PlaneIndex::U);
         assert_eq!((u.width(), u.height()), (640, 360));
         assert!(u.border_y() >= 32);
@@ -186,7 +191,7 @@ mod tests {
 
     #[test]
     fn odd_dimensions_are_rejected() {
-        assert!(Picture::new(1281, 720, 0).is_err());
-        assert!(Picture::new(1280, 721, 0).is_err());
+        assert!(Picture::<u8>::new(1281, 720, 0).is_err());
+        assert!(Picture::<u16>::new(1280, 721, 0).is_err());
     }
 }

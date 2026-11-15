@@ -52,12 +52,13 @@ off by default, since it lowers PSNR and VMAF and suits stochastic texture best.
 
 ### Decoders
 
-Our own Rust decoders, natively and in WebAssembly. 8-bit only (no 10-bit), single-threaded.
+Our own Rust decoders, natively and in WebAssembly, single-threaded. 8-bit, except HEVC, which also decodes
+Main 10 natively (10-bit output as 16-bit little-endian samples; the WebAssembly build shows 8-bit streams only).
 
 | Codec | What has been tested | Our decode time ÷ the reference's, x86 / Jetson |
 |---|---|---|
 | H.264 | Constrained High profile: 65/65 of the conformance streams we test in that profile, MD5-exact | FFmpeg: 0.88–1.00x / 0.77–0.85x |
-| HEVC | Main profile: 136/136 of the conformance streams we test, exact | FFmpeg: 0.57–0.94x / 0.72–0.92x |
+| HEVC | Main, Main Still Picture and Main 10: 147/147 JCT-VC HEVC_v1 conformance streams of those profiles (136 8-bit, 11 Main 10), MD5-exact against HM; speeds measured on 8-bit streams | FFmpeg: 0.57–0.94x / 0.72–0.92x |
 | AV1 | Main profile, 8-bit 4:2:0: 176/176 libaom test vectors | dav1d: 1.13–1.58x / 1.09–1.43x (dav1d faster) |
 | VP9 | Profile 0: 303/303 test vectors | vpxdec: 1.32–1.41x / 1.14–1.24x (vpxdec faster; FFmpeg: 0.98–1.10x) |
 | AV2 | Our own streams, bit-exact with avmdec and dav2d, and 9 of 30 foreign test streams bit-exact: of 12 dav2d 8-bit test streams and 18 avmenc v1.0.0 streams (all-intra, low delay, random access, fewest tools), the nine fewest-tools avmenc streams (single pictures, all key frames, one key frame with low-delay inter frames). Remaining: hidden and reordered frames, 128/256 superblocks, extended partitions, and the intra, inter, transform and loop-filter tools outside our subset ([list](../handoff/av2.md#other-encoders-streams-branch-featureav2-dec-2026-11-15)) | avmdec (AVM's research reference decoder, not built for speed): 0.33–0.39x / 0.31–0.32x |

@@ -16,7 +16,7 @@
 
 use std::hint::black_box;
 
-use nc_common::{Picture, PlaneIndex, ShownPicture};
+use nc_common::{DecodedPicture, Picture, PlaneIndex, Sample, ShownPicture};
 
 pub mod drive;
 
@@ -115,9 +115,22 @@ pub fn read_shown(shown: Option<ShownPicture<'_>>) {
     black_box(sum);
 }
 
+/// Read a decoder's output picture of either sample type, as the CLI
+/// writes it.
+pub fn read_decoded(decoded: &DecodedPicture) {
+    match decoded {
+        DecodedPicture::Eight(p) => read_window(&p.picture, p.origin, p.size),
+        DecodedPicture::High(p) => read_window(&p.picture, p.origin, p.size),
+    }
+}
+
 /// Read the `size` luma window at `origin` of `picture` (and its chroma),
 /// exactly as the CLI writes a decoder's shared or borrowed picture.
-pub fn read_window(picture: &Picture, (x0, y0): (usize, usize), (width, height): (usize, usize)) {
+pub fn read_window<T: Sample>(
+    picture: &Picture<T>,
+    (x0, y0): (usize, usize),
+    (width, height): (usize, usize),
+) {
     let mut sum = 0u64;
     for plane in PlaneIndex::ALL {
         let ss = usize::from(plane != PlaneIndex::Y);
@@ -126,7 +139,11 @@ pub fn read_window(picture: &Picture, (x0, y0): (usize, usize), (width, height):
         for y in 0..h {
             let row = view.row(y + (y0 >> ss));
             let row = &row[x0 >> ss..(x0 >> ss) + w];
-            sum = sum.wrapping_add(row.iter().map(|&s| u64::from(s)).sum::<u64>());
+            sum = sum.wrapping_add(
+                row.iter()
+                    .map(|&s| u64::from(s.to_i32() as u32))
+                    .sum::<u64>(),
+            );
         }
     }
     black_box(sum);

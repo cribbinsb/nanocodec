@@ -3,7 +3,9 @@
 
 use nc_common::decode::{BitReader, DecodeError};
 
-use super::params::{MAX_DPB, MAX_PPS, Pps, ShortTermSet, Sps, deblock_offsets, short_term_set};
+use super::params::{
+    MAX_DPB, MAX_PPS, MAX_QP, Pps, ShortTermSet, Sps, deblock_offsets, qp_bd_offset, short_term_set,
+};
 
 /// NAL unit types (Table 7-1).
 pub(super) mod nal {
@@ -320,8 +322,9 @@ fn independent(
             .filter(|&n| n >= 1)
             .ok_or(DecodeError::Malformed("five_minus_max_num_merge_cand"))?;
     }
+    // SliceQpY lies in −QpBdOffsetY..=51 (§7.4.7.1).
     let qp = pps.init_qp + r.read_se()?;
-    if !(0..=51).contains(&qp) {
+    if !(-qp_bd_offset(sps.depths.luma)..=MAX_QP).contains(&qp) {
         return Err(DecodeError::Malformed("slice_qp_delta"));
     }
     let (mut cb_qp_offset, mut cr_qp_offset) = (0, 0);
