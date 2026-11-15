@@ -22,7 +22,7 @@ function render(data, root) {
     { label: 'Start frame', num: true, cell: (c) => String(c.start_frame) },
     { label: 'Frames', num: true, cell: (c) => String(c.frames) },
     { label: 'Class', cell: (c) => c.class },
-    { label: 'Scored', cell: (c) => (c.scored ? 'yes' : 'left out') },
+    { label: 'Scoring', cell: (c) => (c.scored ? 'scored' : `left out${c.left_out_reason ? `: ${c.left_out_reason}` : ''}`) },
   ], clips, (c) => (c.scored ? '' : 'dim')), sources(data.source));
 }
 

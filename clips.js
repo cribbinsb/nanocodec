@@ -70,7 +70,6 @@ export const CLIPS = [
   blender('tos-canal', 'Canal walk · motion', 'Motion', 'Tears of Steel'),
   mot('mot17-mall-walk', 'Mall walk · moving camera', 'Motion', 'MOT17-11', MOT17_AUTHORS),
   netflix('netflix-crosswalk', 'Crosswalk · street crowd', 'Motion', 'El Fuente'),
-  netflix('netflix-food-market', 'Food market · handheld', 'Motion', 'El Fuente'),
   netflix('netflix-tango', 'Tango · dance hall crowd', 'Motion', 'El Fuente'),
   netflix('netflix-boxing-practice', 'Boxing practice · fast moves', 'Motion', 'El Fuente'),
   netflix('netflix-dancers', 'Dancers · dark stage', 'Motion', 'Chimera'),
