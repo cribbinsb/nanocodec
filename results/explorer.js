@@ -158,7 +158,9 @@ function render(data, root) {
       }
     }
   }
-  root.querySelector('.view-note').textContent = viewNote(data, view);
+  const note = root.querySelector('.view-note');
+  note.textContent = `${viewNote(data, view)} `;
+  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' ? 'ctc' : view.clipset}` }, 'The clips.'));
 
   const entries = visible(data, view);
   const points = entries.map(([family, v]) => {
