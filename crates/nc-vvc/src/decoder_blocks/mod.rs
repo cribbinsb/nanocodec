@@ -28,6 +28,8 @@ pub(super) use reconstruct::reconstruct;
 #[cfg(test)]
 use reconstruct::reconstructed;
 mod affine_motion;
+mod boundaries;
+pub(crate) use boundaries::Closures;
 mod amvp_syntax;
 mod initialization;
 mod inter_models;
@@ -184,7 +186,7 @@ pub(super) fn parse_filtered(
     slice: u16,
     filters: &mut [filter_syntax::CtuFilters],
 ) -> Result<Vec<Unit>> {
-    validate_tools(s, p, h)?;
+    validate_tools(s, h)?;
     let dimensions = p.dimensions.map(|v| v as usize);
     let inter = h.kind != 2;
     let scan = layout::scan(&h.ctus, &p.partitioning.tiles, s.ctu_log2);
@@ -320,34 +322,12 @@ fn initialization_of(h: &SliceHeader) -> (u32, u8) {
     (h.qp as u32, kind)
 }
 
-fn validate_tools(s: &Sequence, p: &PictureParameters, h: &SliceHeader) -> Result<()> {
+fn validate_tools(s: &Sequence, h: &SliceHeader) -> Result<()> {
     // Each unsupported tool is named, so a corpus run reports what is missing.
-    let tiles = p.partitioning.tiles.count() > 1;
-    let slices = !matches!(&p.partitioning.slices,
-        crate::decoder_headers::SliceLayout::Rectangular { slices, .. } if slices.len() == 1);
-    let subpictures =
-        s.subpictures.layout.len() > 1 && s.subpictures.layout.iter().any(|s| !s.filter_across);
-    let filtered = h.sao.contains(&true) || h.alf.enabled.contains(&true);
     let unsupported = [
         (!h.picture.output, "VVC non-output picture"),
-        (
-            filtered && h.picture.boundaries.iter().any(|v| !v.is_empty()),
-            "VVC SAO or ALF at virtual boundaries",
-        ),
         (s.ctu_log2 > 7, "VVC CTU size"),
         (s.tools.palette, "VVC palette mode"),
-        (
-            tiles && filtered && !p.partitioning.filter_across_tiles,
-            "VVC SAO or ALF without filtering across tiles",
-        ),
-        (
-            slices && filtered && !p.partitioning.filter_across_slices,
-            "VVC SAO or ALF without filtering across slices",
-        ),
-        (
-            subpictures && filtered,
-            "VVC SAO or ALF without filtering across subpictures",
-        ),
     ];
     match unsupported.iter().find(|(present, _)| *present) {
         Some(&(_, tool)) => Err(DecodeError::Unsupported(tool)),

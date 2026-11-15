@@ -1,5 +1,5 @@
 //! General picture filter application through the codec's existing SAO/ALF engines.
-use super::{Sequence, filter_syntax::CtuFilters};
+use super::{Sequence, boundaries::Closures, filter_syntax::CtuFilters};
 use crate::{
     alf::{Analysis, ClippedFilters, CtbFilter},
     alf_aps::SignalledFilters,
@@ -11,10 +11,12 @@ use nc_common::{
 };
 use nc_dsp::Dsp;
 
+/// SAO, then ALF, of a decoded picture: each CTB as its syntax says, not
+/// reading across what `closures` closes.
 pub(crate) fn apply(
     picture: &mut Picture,
     filters: &[CtuFilters],
-    sequence: &Sequence,
+    (sequence, closures): (&Sequence, &Closures),
     banks: &[Option<Box<Adaptation>>; 8],
     dsp: &Dsp,
 ) -> Result<()> {
@@ -24,7 +26,13 @@ pub(crate) fn apply(
         .any(|f| f.edge.classes.iter().any(Option::is_some))
     {
         let edge: Vec<_> = filters.iter().map(|f| f.edge).collect();
-        crate::sao::apply(dsp, picture, &edge, ctu);
+        let limits = crate::sao::Limits {
+            neighbours: (0..filters.len())
+                .map(|ctb| Some(closures.neighbours(ctb)).filter(|cells| *cells != [[true; 3]; 3]))
+                .collect(),
+            cuts: closures.cuts(0),
+        };
+        crate::sao::apply_limited(dsp, picture, &edge, ctu, &limits);
     }
     let columns = picture.width().div_ceil(ctu);
     for (index, filter) in filters.iter().enumerate() {
@@ -48,18 +56,56 @@ pub(crate) fn apply(
         .iter()
         .any(|f| f.alf[1..].iter().any(Option::is_some) || f.cross != [0; 2])
     {
-        super::chroma_alf::apply(picture, filters, ctu, banks, dsp)?;
+        super::chroma_alf::apply(picture, filters, (ctu, closures), banks, dsp)?;
     }
     if !filters.iter().any(|f| f.alf[0].is_some()) {
         return Ok(());
     }
-    let analysis = Analysis::new(dsp, picture, ctu, |i| filters[i].alf[0].is_some());
+    // CTBs at closed edges or virtual boundaries are analysed region by
+    // region; the others as part of the picture. Every analysis copies the
+    // pre-ALF samples before any is filtered.
+    let regions: Vec<_> = filters
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.alf[0].is_some())
+        .filter_map(|(ctb, f)| Some((*f, closures.alf_regions(ctb)?)))
+        .flat_map(|(f, regions)| regions.into_iter().map(move |region| (f, region)))
+        .map(|(f, region)| (f, Analysis::region(dsp, picture, ctu, &region)))
+        .collect();
+    let whole: Vec<CtuFilters> = filters
+        .iter()
+        .enumerate()
+        .map(|(ctb, f)| {
+            let mut f = *f;
+            if f.alf[0].is_some() && closures.alf_regions(ctb).is_some() {
+                f.alf[0] = None;
+                f.banks.luma = None;
+            }
+            f
+        })
+        .collect();
+    let analysis = Analysis::new(dsp, picture, ctu, |i| whole[i].alf[0].is_some());
+    filter_luma(&analysis, picture, &whole, banks)?;
+    for (filter, analysis) in &regions {
+        filter_luma(analysis, picture, std::slice::from_ref(filter), banks)?;
+    }
+    Ok(())
+}
+
+/// Luma ALF with `analysis` of the CTBs `filters` names (the picture's in
+/// raster order, or one region's).
+fn filter_luma(
+    analysis: &Analysis<'_>,
+    picture: &mut Picture,
+    filters: &[CtuFilters],
+    banks: &[Option<Box<Adaptation>>; 8],
+) -> Result<()> {
     let fixed: Vec<_> = filters
         .iter()
         .map(|f| f.alf[0].filter(|&i| i < 16).map(CtbFilter::Fixed))
         .collect();
     analysis.apply(picture, &fixed, None);
-    // Every bank sees the pre-ALF samples retained by the shared analysis.
+    // Every bank sees the pre-ALF samples retained by the analysis.
     let mut ids: Vec<u8> = filters.iter().filter_map(|f| f.banks.luma).collect();
     ids.sort_unstable();
     ids.dedup();

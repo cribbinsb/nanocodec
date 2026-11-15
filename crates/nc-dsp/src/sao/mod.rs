@@ -19,7 +19,9 @@
 mod bytes;
 #[allow(unsafe_code)]
 pub(crate) mod generic;
+mod restricted;
 pub(crate) mod scalar;
+pub use restricted::{SaoCtb, SaoLimits, sao_edge_restricted};
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]

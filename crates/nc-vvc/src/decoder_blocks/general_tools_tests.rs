@@ -88,7 +88,11 @@ fn official_general_intra_reconstruction() {
                     &dsp,
                 );
                 compare(&picture, "NC_DBF ", 0);
-                apply_filters(&mut picture, &filters, s, &banks, &dsp).unwrap();
+                let owners = vec![Some(0); filters.len()];
+                let size = (picture.width(), picture.height());
+                let headers = std::slice::from_ref(&header);
+                let closures = Closures::new((s, p), headers, &owners, size);
+                apply_filters(&mut picture, &filters, (s, &closures), &banks, &dsp).unwrap();
                 compare(&picture, "NC_FINAL ", 0);
                 assert_picture(&name, &picture, s.chroma);
                 return;

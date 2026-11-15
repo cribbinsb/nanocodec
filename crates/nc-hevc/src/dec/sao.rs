@@ -6,8 +6,8 @@
 //! and scale by `2^(BitDepth − Min(BitDepth, 10))` (§7.4.9.3.2); bands
 //! are `2^(BitDepth − 5)` values wide (the kernels').
 
-use nc_common::{BitDepth, BitDepths, Picture, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{DepthKernels, Dsp, Pixel, SAO_EO_NEIGHBOURS};
+use nc_common::{BitDepth, BitDepths, Picture, PlaneIndex};
+use nc_dsp::{DepthKernels, Dsp, Pixel, SAO_EO_NEIGHBOURS, SaoCtb, SaoLimits, sao_edge_restricted};
 
 use super::cabac::Engine;
 use super::ctx::{self, Contexts};
@@ -29,8 +29,6 @@ fn offset_limits(depth: BitDepth) -> (u32, u32) {
 const BAND_POSITION_BITS: u32 = 5;
 /// `sao_eo_class` bits.
 const EO_CLASS_BITS: u32 = 2;
-/// `edgeIdx` remapping of §8.7.3.2: 0, 1, 2 become 1, 2, 0.
-const EDGE_REMAP: [usize; 5] = [1, 2, 0, 3, 4];
 
 /// `SaoTypeIdx` and its parameters for one component of a CTB.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -410,15 +408,14 @@ fn filter_ctb<T: Pixel>(
             exempt.clear();
         }
     }
-    let offsets = component.offsets.map(i32::from);
-    let area = Area {
+    let area = SaoCtb {
         x0,
         y0,
         x1,
         y1,
         size,
-        pw,
-        ph,
+        width: pw,
+        height: ph,
     };
     match component.kind {
         Kind::Off => {}
@@ -441,10 +438,10 @@ fn filter_ctb<T: Pixel>(
                 .plane_mut(cx.plane)
                 .region_mut(0, window.top as isize, pw, lines)
                 .expect("window inside the plane");
-            let local = Area {
+            let local = SaoCtb {
                 y0: y0 - window.top,
                 y1: y1 - window.top,
-                ph: ph.min(window.end) - window.top,
+                height: ph.min(window.end) - window.top,
                 ..area
             };
             // The window ends at the picture's top and bottom rows only
@@ -466,101 +463,13 @@ fn filter_ctb<T: Pixel>(
                 );
                 kernels.sao_edge_apply(class, component.offsets, &src, &mut dst, rect);
             } else {
-                let rule = EdgeRule {
-                    class,
-                    offsets,
-                    depth: kernels.depth(),
+                let limits = SaoLimits {
+                    ctbs: *cx.allowed,
+                    cuts: [&[], &[]],
+                    exempt: &exempt,
                 };
-                edge_checked(&src, &mut dst, local, &exempt, rule, cx.allowed);
-            }
-        }
-    }
-}
-
-/// One CTB's samples of a plane and the plane's size.
-#[derive(Debug, Clone, Copy)]
-struct Area {
-    x0: usize,
-    y0: usize,
-    x1: usize,
-    y1: usize,
-    size: usize,
-    pw: usize,
-    ph: usize,
-}
-
-/// An edge offset's class, `SaoOffsetVal`s and clip.
-#[derive(Debug, Clone, Copy)]
-struct EdgeRule {
-    class: u8,
-    offsets: [i32; 4],
-    depth: BitDepth,
-}
-
-/// Edge offset of a CTB whose neighbours are restricted by slice or tile
-/// boundaries or that holds exempt (PCM, lossless) samples: each sample on
-/// the CTB border checks its neighbours.
-fn edge_checked<T: Pixel>(
-    src: &PlaneView<'_, T>,
-    dst: &mut PlaneViewMut<'_, T>,
-    area: Area,
-    exempt: &[bool],
-    EdgeRule {
-        class,
-        offsets,
-        depth,
-    }: EdgeRule,
-    allowed: &[[bool; 3]; 3],
-) {
-    let Area {
-        x0,
-        y0,
-        x1,
-        y1,
-        size,
-        pw,
-        ph,
-    } = area;
-    let any_exempt = !exempt.is_empty();
-    let [(ax, ay), (bx, by)] = SAO_EO_NEIGHBOURS[usize::from(class)];
-    let region = |v: isize, lo: usize, hi: usize| -> usize {
-        if v < lo as isize {
-            0
-        } else if v >= hi as isize {
-            2
-        } else {
-            1
-        }
-    };
-    let row_at = |v: isize| src.row(v.clamp(0, ph as isize - 1) as usize);
-    for y in y0..y1 {
-        // Only samples on the CTB's border can have a neighbour
-        // outside it; interior ones skip the checks.
-        let border_row = y == y0 || y + 1 == y1;
-        let (row_a, row, row_b) = (row_at(y as isize + ay), src.row(y), row_at(y as isize + by));
-        let out = dst.row_mut(y);
-        for x in x0..x1 {
-            if any_exempt && exempt[(y - y0) * (x1 - x0) + x - x0] {
-                continue;
-            }
-            let (xa, xb) = (x as isize + ax, x as isize + bx);
-            let border = border_row || x == x0 || x + 1 == x1;
-            let ok = |xn: isize, yn: isize| {
-                xn >= 0
-                    && yn >= 0
-                    && (xn as usize) < pw
-                    && (yn as usize) < ph
-                    && allowed[region(yn, y0, y0 + size)][region(xn, x0, x0 + size)]
-            };
-            if border && !(ok(xa, y as isize + ay) && ok(xb, y as isize + by)) {
-                continue;
-            }
-            let s = row[x].to_i32();
-            let a = row_a[xa as usize].to_i32();
-            let b = row_b[xb as usize].to_i32();
-            let edge = EDGE_REMAP[(2 + (s - a).signum() + (s - b).signum()) as usize];
-            if edge != 0 {
-                out[x] = depth.clip_to(s + offsets[edge - 1]);
+                let rule = (class, component.offsets, kernels.depth());
+                sao_edge_restricted(&src, &mut dst, local, rule, &limits);
             }
         }
     }

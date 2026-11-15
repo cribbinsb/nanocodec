@@ -164,6 +164,10 @@ const STATS_COLUMN_STEP: usize = VVC_ALF_SAMPLE_STEP;
 /// decision read.
 pub(crate) struct Analysis<'a> {
     dsp: &'a Dsp,
+    /// The top-left luma sample analysed: the picture's, or a region's.
+    origin: (usize, usize),
+    /// The region analysed and filtered, when not the whole picture.
+    region: Option<Ctb>,
     width: usize,
     height: usize,
     stride: usize,
@@ -199,6 +203,8 @@ impl<'a> Analysis<'a> {
         let block_columns = width.div_ceil(BLOCK);
         let mut analysis = Self {
             dsp,
+            origin: (0, 0),
+            region: None,
             width,
             height,
             stride,
@@ -211,10 +217,50 @@ impl<'a> Analysis<'a> {
         analysis
     }
 
-    /// Padded row `y`, starting [`PAD`] samples left of the picture.
+    /// Analyse one region of the luma of `picture`, every sample around it
+    /// read where `region` says (§8.8.5.2 clip positions): what a CTB or
+    /// part of one bordered by edges the filter may not cross reads.
+    pub(crate) fn region(dsp: &'a Dsp, picture: &Picture, ctu: usize, region: &Region) -> Self {
+        let view = picture.plane(PlaneIndex::Y).view();
+        let (x0, y0, width, height) = region.rect;
+        let stride = width + 2 * PAD;
+        let mut samples = Vec::with_capacity(stride * (height + 2 * PAD));
+        for y in -(PAD as isize)..(height + PAD) as isize {
+            for x in -(PAD as isize)..(width + PAD) as isize {
+                let (sx, sy) = region.source(
+                    (x0 as isize + x, y0 as isize + y),
+                    (view.width(), view.height()),
+                );
+                samples.push(view.row(sy)[sx]);
+            }
+        }
+        let mut analysis = Self {
+            dsp,
+            origin: (x0, y0),
+            region: Some(region.rect),
+            width,
+            height,
+            stride,
+            samples,
+            ctu,
+            block_columns: width.div_ceil(BLOCK),
+            classes: Vec::new(),
+        };
+        analysis.classes = analysis.classify(|_| true);
+        analysis
+    }
+
+    /// Padded row `y` (picture coordinates), starting [`PAD`] samples left
+    /// of the analysed area.
     fn row(&self, y: isize) -> &[u8] {
-        let start = (y + PAD as isize) as usize * self.stride;
+        let start = (y - self.origin.1 as isize + PAD as isize) as usize * self.stride;
         &self.samples[start..start + self.stride]
+    }
+
+    /// The index in a padded row of the sample `reach` columns left of
+    /// picture column `x`.
+    fn column(&self, x: usize, reach: usize) -> usize {
+        x - self.origin.0 + PAD - reach
     }
 
     /// The row position within its CTU row relative to the virtual boundary.
@@ -273,14 +319,14 @@ impl<'a> Analysis<'a> {
                 let grid_rows = 2 * block_rows.start..2 * block_rows.end + 2;
                 grid.resize(groups * grid_rows.len(), [0; 4]);
                 for (j, row) in grid_rows.clone().zip(grid.chunks_exact_mut(groups)) {
-                    self.laplacian_row(2 * j as isize - 2, blocks.start, row);
+                    self.laplacian_row((self.origin.1 + 2 * j) as isize - 2, blocks.start, row);
                 }
                 column_sums.resize(groups, [0; 4]);
                 for by in block_rows.clone() {
                     let y = by * BLOCK;
                     // Laplacian rows y − 2 .. y + 4; next to the virtual
                     // boundary the three on the block's side.
-                    let rows = match self.boundary_row(y) {
+                    let rows = match self.boundary_row(self.origin.1 + y) {
                         -4 => 0..3,
                         0 => 1..4,
                         _ => 0..4,
@@ -315,6 +361,7 @@ impl<'a> Analysis<'a> {
 
 impl Analysis<'_> {
     fn class(&self, x: usize, y: usize) -> Class {
+        let (x, y) = (x - self.origin.0, y - self.origin.1);
         let [index, transpose] = self.classes[y / BLOCK * self.block_columns + x / BLOCK];
         Class { index, transpose }
     }
@@ -358,7 +405,7 @@ impl Analysis<'_> {
                 *c = set[usize::from(class.index)][usize::from(class.transpose)];
             }
             let taps: [_; BLOCK] = std::array::from_fn(|r| self.tap_rows(y + r));
-            let rows = taps.map(|(rows, _)| rows.map(|row| &row[x0 + PAD - VVC_ALF_REACH..]));
+            let rows = taps.map(|(rows, _)| rows.map(|row| &row[self.column(x0, VVC_ALF_REACH)..]));
             let shifts = taps.map(|(_, shift)| shift);
             let mut lines = output.data_mut()[y * stride..]
                 .chunks_mut(stride)
@@ -397,29 +444,38 @@ impl Analysis<'_> {
     /// The runs of horizontally adjacent CTBs whose `items` (raster order)
     /// are equal, as rectangles with their item: one filter call per row of
     /// a run rather than of each CTB.
-    fn runs<'i, T: PartialEq + Copy>(&self, items: &'i [T]) -> impl Iterator<Item = (Ctb, T)> + 'i {
+    /// A region's analysis has one item, its region's.
+    fn runs<'i, T: PartialEq + Copy>(
+        &self,
+        items: &'i [T],
+    ) -> Box<dyn Iterator<Item = (Ctb, T)> + 'i> {
+        if let Some(region) = self.region {
+            return Box::new(items.first().map(|&item| (region, item)).into_iter());
+        }
         let (ctu, width, height) = (self.ctu, self.width, self.height);
         let columns = width.div_ceil(ctu);
-        items
-            .chunks(columns)
-            .enumerate()
-            .flat_map(move |(row, items)| {
-                let y0 = row * ctu;
-                let mut first = 0;
-                std::iter::from_fn(move || {
-                    (first < items.len()).then(|| {
-                        let item = items[first];
-                        let end = items[first..]
-                            .iter()
-                            .position(|&i| i != item)
-                            .map_or(items.len(), |n| first + n);
-                        let x0 = first * ctu;
-                        let run = (x0, y0, (end * ctu).min(width) - x0, ctu.min(height - y0));
-                        first = end;
-                        (run, item)
+        Box::new(
+            items
+                .chunks(columns)
+                .enumerate()
+                .flat_map(move |(row, items)| {
+                    let y0 = row * ctu;
+                    let mut first = 0;
+                    std::iter::from_fn(move || {
+                        (first < items.len()).then(|| {
+                            let item = items[first];
+                            let end = items[first..]
+                                .iter()
+                                .position(|&i| i != item)
+                                .map_or(items.len(), |n| first + n);
+                            let x0 = first * ctu;
+                            let run = (x0, y0, (end * ctu).min(width) - x0, ctu.min(height - y0));
+                            first = end;
+                            (run, item)
+                        })
                     })
-                })
-            })
+                }),
+        )
     }
 
     /// Choose each CTB's filters (or none) by luma squared error against
@@ -713,7 +769,7 @@ impl Analysis<'_> {
                     // Past `count` any class does: those samples are unused.
                     self.class(start + i.min(count - 1) * STATS_COLUMN_STEP, y)
                 });
-                let windows = taps.map(|row| &row[start + PAD - VVC_ALF_REACH..]);
+                let windows = taps.map(|row| &row[self.column(start, VVC_ALF_REACH)..]);
                 // Tap sums (at most 510) in the order of the untransposed
                 // coefficients, then the error.
                 self.dsp.vvc_alf_samples(
@@ -844,7 +900,59 @@ impl FilterPlan {
 }
 
 /// A CTB as a luma rectangle (x, y, width, height).
-type Ctb = (usize, usize, usize, usize);
+pub(crate) type Ctb = (usize, usize, usize, usize);
+
+/// A rectangle the ALF filters as a unit, and where the samples around it
+/// it reads come from (H.266 §8.8.5.2 `clipLeftPos` .. `clipBottomPos`): a
+/// CTB, or the part of one between virtual boundaries. Beyond a closed edge
+/// (a picture, slice, tile or subpicture edge the loop filters may not
+/// cross, or a virtual boundary) the rectangle's edge samples are repeated,
+/// as VTM pads its ALF block buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Region {
+    /// The rectangle (x, y, width, height) in samples of its plane.
+    pub rect: Ctb,
+    /// Whether the left, top, right and bottom edges are closed.
+    pub closed: [bool; 4],
+    /// Whether the top-left and bottom-right corners are closed although
+    /// both their edges are open (a raster-scan slice's step): the samples
+    /// above and left, or below and right, repeat the rectangle's column.
+    pub corners: [bool; 2],
+}
+
+impl Region {
+    /// The sample read for position `(x, y)` of a plane of `size`.
+    pub(crate) fn source(&self, (x, y): (isize, isize), size: (usize, usize)) -> (usize, usize) {
+        let (x0, y0, w, h) = self.rect;
+        let [x0, y0] = [x0, y0].map(|v| v as isize);
+        let (x1, y1) = (x0 + w as isize - 1, y0 + h as isize - 1);
+        let [width, height] = [size.0, size.1].map(|v| v as isize - 1);
+        let pick = |closed: bool, edge: isize, picture: isize| if closed { edge } else { picture };
+        let y = y.clamp(
+            pick(self.closed[1], y0, 0),
+            pick(self.closed[3], y1, height),
+        );
+        let mut left = pick(self.closed[0], x0, 0);
+        let mut right = pick(self.closed[2], x1, width);
+        if self.corners[0] && y < y0 {
+            left = left.max(x0);
+        }
+        if self.corners[1] && y > y1 {
+            right = right.min(x1);
+        }
+        (x.clamp(left, right) as usize, y as usize)
+    }
+
+    /// The same region in a plane subsampled by two both ways (4:2:0
+    /// chroma).
+    pub(crate) fn halved(&self) -> Self {
+        let (x, y, w, h) = self.rect;
+        Self {
+            rect: (x / 2, y / 2, w / 2, h / 2),
+            ..*self
+        }
+    }
+}
 
 /// A filter set's coefficients by class and transpose index.
 type SetCoefficients = [[[i16; TAPS]; 4]; CLASSES];

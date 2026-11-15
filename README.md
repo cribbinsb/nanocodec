@@ -28,10 +28,9 @@ delay, you may be in the right place:
   JCT-VC HEVC_v1 set; the browser build shows 8-bit streams only), so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine
-  official 8-bit conformance streams and 133 of 138 short 8-bit streams we coded with VTM and VVenC to cover the
+  official 8-bit conformance streams and 136 of 138 short 8-bit streams we coded with VTM and VVenC to cover the
   Main 10 tools one by one, pictures of several slices and subpictures among them (it is 8-bit only and still
-  rejects reference picture resampling and SAO/ALF that may not cross a boundary, so it is not a compliant
-  Main 10 decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
+  rejects reference picture resampling, so it is not a compliant Main 10 decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
   decodes our own streams and 9 of 30 foreign test streams bit-exact (streams of the reference encoder with
   the fewest tools; the rest use tools outside our subset).
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a

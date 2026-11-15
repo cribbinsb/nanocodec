@@ -127,7 +127,7 @@ pub use pixel::{GRID_BLOCKS, GRID_LARGE_BLOCKS, GRID_SMALL_BLOCKS, GridBest, Gri
 pub use prefetch::prefetch_block;
 pub use resample::PlaneResampler;
 pub use sample::Moments;
-pub use sao::{SAO_EO_NEIGHBOURS, SaoStats};
+pub use sao::{SAO_EO_NEIGHBOURS, SaoCtb, SaoLimits, SaoStats, sao_edge_restricted};
 pub use txfm::low_keep as av1_low_keep;
 pub use txfm::{Av1Quantizer, DctSize};
 pub use vp9_loop_filter::{VP9_EDGE_LINES, Vp9EdgeFilter};

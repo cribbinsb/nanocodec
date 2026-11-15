@@ -220,10 +220,16 @@ impl Decoder {
         );
         #[cfg(test)]
         blocks::compare_trace(&picture, "NC_DBF ", poc);
+        let closures = blocks::Closures::new(
+            (sequence, parameters),
+            &headers,
+            &owners,
+            (picture.width(), picture.height()),
+        );
         blocks::apply_filters(
             &mut picture,
             &filters,
-            sequence,
+            (sequence, &closures),
             &self.adaptation[0],
             &self.dsp,
         )?;

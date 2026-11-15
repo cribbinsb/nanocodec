@@ -200,10 +200,10 @@ its output under the GPL; we distribute only the output streams, not the program
   AV1/AV2).
 - **Decoders:** H.264 (Constrained High), HEVC (Main and Main 10: 147/147 JCT-VC HEVC_v1 streams of those
   profiles, 11 of them Main 10, MD5-exact against HM), AV1 (Main, 8-bit 4:2:0) and VP9 (profile 0) pass the
-  conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams and 133 of 138 8-bit VTM and
-  VVenC streams that exercise the Main 10 tools, pictures of several slices and subpictures among them
-  (`docs/handoff/vvc-foreign-corpus.md` lists what fails: reference picture resampling, and SAO/ALF at tile,
-  slice and virtual boundaries they may not cross), so it is not a full Main-profile decoder; the AV2 decoder decodes our own streams and 9 of 30 foreign test streams bit-exact
+  conformance streams we test in those profiles; VVC passes the 9 official 8-bit streams and 136 of 138 8-bit VTM and
+  VVenC streams that exercise the Main 10 tools, pictures of several slices, subpictures and loop filters
+  closed at slice, tile and virtual boundaries among them (`docs/handoff/vvc-foreign-corpus.md`; the two
+  that fail use reference picture resampling), so it is not a full Main-profile decoder; the AV2 decoder decodes our own streams and 9 of 30 foreign test streams bit-exact
   (the nine avmenc v1.0.0 streams coded with the fewest tools, of 12 dav2d 8-bit test streams and 18 avmenc
   streams); the other 21 need hidden and reordered frames, larger superblocks, extended partitions and the other
   AV2 tools outside our subset. Details in the

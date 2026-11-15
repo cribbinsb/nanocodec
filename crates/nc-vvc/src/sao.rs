@@ -264,8 +264,31 @@ fn change(stats: &CtuStats, params: &CtuSao) -> f32 {
 }
 /// Apply `params`, one per `ctu`-sample CTU in raster order.
 pub(crate) fn apply(dsp: &Dsp, picture: &mut Picture, params: &[CtuSao], ctu: usize) {
+    apply_limited(dsp, picture, params, ctu, &Limits::default());
+}
+
+/// What a decoded picture's edge offsets may not compare across (H.266
+/// §8.8.4.2): CTBs at closed slice, tile or subpicture edges, and virtual
+/// boundaries.
+#[derive(Default)]
+pub(crate) struct Limits {
+    /// Per CTB (raster order), which of the 3x3 CTBs around it may be
+    /// read; empty or `None` when all may.
+    pub neighbours: Vec<Option<[[bool; 3]; 3]>>,
+    /// The virtual boundaries' luma columns, then rows.
+    pub cuts: [Vec<usize>; 2],
+}
+
+/// [`apply`] within `limits`.
+pub(crate) fn apply_limited(
+    dsp: &Dsp,
+    picture: &mut Picture,
+    params: &[CtuSao],
+    ctu: usize,
+    limits: &Limits,
+) {
     for plane in PlaneIndex::ALL {
-        apply_plane(dsp, picture, plane, params, ctu);
+        apply_plane(dsp, picture, plane, params, ctu, limits);
     }
 }
 
@@ -274,8 +297,19 @@ pub(crate) fn apply(dsp: &Dsp, picture: &mut Picture, params: &[CtuSao], ctu: us
 /// into a band buffer before it is filtered, and the row above comes from
 /// the band before: no copy of the whole picture, and none at all for rows
 /// whose CTUs leave the plane alone.
-fn apply_plane(dsp: &Dsp, picture: &mut Picture, plane: PlaneIndex, params: &[CtuSao], ctu: usize) {
+fn apply_plane(
+    dsp: &Dsp,
+    picture: &mut Picture,
+    plane: PlaneIndex,
+    params: &[CtuSao],
+    ctu: usize,
+    limits: &Limits,
+) {
     let channel = usize::from(plane != PlaneIndex::Y);
+    let cuts = limits
+        .cuts
+        .each_ref()
+        .map(|positions| positions.iter().map(|&p| p >> channel).collect::<Vec<_>>());
     let (width, height) = plane_size(picture, plane);
     let band_rows = ctu >> channel;
     let columns = picture.width().div_ceil(ctu);
@@ -309,10 +343,50 @@ fn apply_plane(dsp: &Dsp, picture: &mut Picture, plane: PlaneIndex, params: &[Ct
             .plane_mut(plane)
             .region_mut(0, first as isize, width, rows)
             .expect("the band lies inside the plane");
+        // The virtual boundary rows in the band's coordinates.
+        let band_cuts: Vec<usize> = cuts[1]
+            .iter()
+            .filter(|&&p| p > first)
+            .map(|&p| p - first)
+            .collect();
         for (column, sao) in ctus.iter().enumerate() {
             let Some(class) = sao.classes[channel] else {
                 continue;
             };
+            let side = ctu >> channel;
+            let (x, y) = (column * side, row * side);
+            let near = |positions: &[usize], start: usize, end: usize| {
+                positions.iter().any(|&p| start <= p && p <= end)
+            };
+            let restricted = limits
+                .neighbours
+                .get(row * columns + column)
+                .copied()
+                .flatten()
+                .or_else(|| {
+                    (near(&cuts[0], x, x + side) || near(&cuts[1], y, y + side))
+                        .then_some([[true; 3]; 3])
+                });
+            if let Some(ctbs) = restricted {
+                let area = nc_dsp::SaoCtb {
+                    x0: x,
+                    y0: y - first,
+                    x1: (x + side).min(width),
+                    y1: (y + side).min(height) - first,
+                    size: side,
+                    width,
+                    height: rows,
+                };
+                let limits = nc_dsp::SaoLimits {
+                    ctbs,
+                    cuts: [&cuts[0], &band_cuts],
+                    exempt: &[],
+                };
+                let offsets = sao.offsets[plane as usize].map(i16::from);
+                let parameters = (class, offsets, nc_common::BitDepth::EIGHT);
+                nc_dsp::sao_edge_restricted(&input, &mut output, area, parameters, &limits);
+                continue;
+            }
             let (x0, y0, x1, y1) = bounds(
                 (width, height),
                 channel,
