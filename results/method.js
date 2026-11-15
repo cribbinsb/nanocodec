@@ -27,7 +27,9 @@ function facts(chart, root) {
     { label: 'Chart', cell: (v) => `${chart.clipsets[v.clipset].split(':')[0]}, zero line ${ZERO_NAMES[v.zero]}` },
     { label: 'nanocodec build', cell: (v) => v.builds[v.base_build] || v.base_build },
     { label: 'References', cell: (v) => Object.entries(v.tools).map(([k, ver]) => `${k} ${ver}`).join(', ') },
-  ], chartViews));
+  ], chartViews), el('p', { class: 'note' }, 'Also: ',
+    Object.entries(chart.other_tools).map(([k, ver]) => `${k} ${ver}`).join(', '),
+    ' (openh264 on every chart, HM and VVenC on the fixed-QP lens).'));
   const families = Object.keys(chart.points).filter((f) => chart.points[f].cbr_command)
     .sort((a, b) => Number(chart.points[b].ours) - Number(chart.points[a].ours) || chart.points[a].label.localeCompare(chart.points[b].label));
   root.querySelector('.commands').replaceChildren(

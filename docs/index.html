@@ -57,8 +57,10 @@ cargo build --release -p nanocodec-capi         # the C library: target/release/
 <pre class="run"><code>nanocodec decode --codec av1 --input out.ivf --output decoded.yuv
 cmp recon.yuv decoded.yuv</code></pre>
   <p>The streams are standard: AV1, VP9 and AV2 are written as IVF files, H.264, HEVC and VVC as Annex-B
-    elementary streams, which other players and decoders read too (for example
-    <code>ffplay out.ivf</code>, or <code>ffmpeg -i out.264</code>).</p>
+    elementary streams, which other players and decoders read too. FFmpeg (and so <code>ffplay</code>) reads
+    the H.264, HEVC, VVC, AV1 and VP9 streams (<code>ffplay out.ivf</code>, <code>ffmpeg -i out.264</code>), not
+    AV2: use AVM's <code>avmdec</code> or ours. AV2 is not a finished standard: it is a draft, and we track its
+    reference software AVM at v1.0.0, so its syntax may still change.</p>
 
   <h2 id="next">Next</h2>
   <ul>

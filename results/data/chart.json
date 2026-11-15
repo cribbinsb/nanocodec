@@ -3637,6 +3637,46 @@
    "source": [
     "docs/results/fixed-qp-lens-2026-11-15.csv"
    ],
+   "lens_names": {
+    "aom-rt-s10": "libaom-av1-cpu10",
+    "aom-rt-s8": "libaom-av1-cpu8",
+    "hm-ldp": "hm-ldp",
+    "nanocodec-av1": "nanocodec-av1",
+    "nanocodec-av1@fast": "nanocodec-av1@fast",
+    "nanocodec-av1@slow": "nanocodec-av1@slow",
+    "nanocodec-av2": "nanocodec-av2",
+    "nanocodec-av2@fast": "nanocodec-av2@fast",
+    "nanocodec-av2@slow": "nanocodec-av2@slow",
+    "nanocodec-h264": "nanocodec-h264",
+    "nanocodec-h264@fast": "nanocodec-h264@fast",
+    "nanocodec-h264@slow": "nanocodec-h264@slow",
+    "nanocodec-hevc": "nanocodec-hevc",
+    "nanocodec-hevc@fast": "nanocodec-hevc@fast",
+    "nanocodec-hevc@slow": "nanocodec-hevc@slow",
+    "nanocodec-vp9": "nanocodec-vp9",
+    "nanocodec-vp9@fast": "nanocodec-vp9@fast",
+    "nanocodec-vp9@slow": "nanocodec-vp9@slow",
+    "nanocodec-vvc": "nanocodec-vvc",
+    "nanocodec-vvc@fast": "nanocodec-vvc@fast",
+    "nanocodec-vvc@slow": "nanocodec-vvc@slow",
+    "openh264-baseline": "openh264-baseline",
+    "svtav1-m10": "svtav1-m10",
+    "svtav1-m12": "svtav1-m12",
+    "svtav1-m13": "svtav1-m13",
+    "svtav1-m8": "svtav1-m8",
+    "vpx-vp9-good-s2": "libvpx-vp9-cpu2~good",
+    "vpx-vp9-rt-s7": "libvpx-vp9-cpu7",
+    "vpx-vp9-rt-s9": "libvpx-vp9-cpu9",
+    "vvenc-faster-ld": "vvenc-ld-faster",
+    "x264-medium": "x264-medium",
+    "x264-ultrafast": "x264-ultrafast",
+    "x264-veryfast": "x264-veryfast",
+    "x264-veryslow": "x264-veryslow",
+    "x265-medium": "x265-medium",
+    "x265-slow": "x265-slow",
+    "x265-superfast": "x265-superfast",
+    "x265-ultrafast": "x265-ultrafast"
+   },
    "metrics": [
     "weighted",
     "j",
@@ -4313,5 +4353,10 @@
   "fps": 30.0
  },
  "timing_rung_kbps": 600,
- "timing_frames": 150
+ "timing_frames": 150,
+ "other_tools": {
+  "openh264": "v2.7.0",
+  "HM": "19.0",
+  "VVenC": "1.14.0"
+ }
 }

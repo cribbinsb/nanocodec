@@ -138,8 +138,20 @@ function viewNote(data, view) {
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
-  const base = view.builds[view.base_build] || view.base_build;
-  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours at ${base}; references ${refs}. Speed: ${data.platforms[state.platform]}.`;
+  return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. Speed: ${data.platforms[state.platform]}.`;
+}
+
+/** Which build each of our families on a view was measured at, grouped by build (a
+ * chart's points come from several builds: each family is re-measured when it changes). */
+function oursBuilds(data, view) {
+  const byBuild = new Map();
+  for (const [family, build] of Object.entries(view.family_builds)) {
+    if (!family.startsWith('nanocodec-')) continue;
+    const label = (data.points[family]?.label || family).replace(/^nanocodec /, '');
+    byBuild.set(build, [...(byBuild.get(build) || []), label]);
+  }
+  return [...byBuild.entries()].sort((a, b) => b[1].length - a[1].length)
+    .map(([build, labels]) => `${labels.join(', ')} at ${view.builds[build] || build}`).join('; ');
 }
 
 function render(data, root) {

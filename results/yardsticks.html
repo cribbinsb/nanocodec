@@ -40,7 +40,7 @@
           <tr><td>AV1 decode</td><td>dav1d (VideoLAN)</td></tr>
           <tr><td>VP9 decode</td><td>vpxdec (libvpx) and FFmpeg's VP9 decoder</td></tr>
           <tr><td>VVC decode</td><td>VVdeC (Fraunhofer HHI)</td></tr>
-          <tr><td>AV2 decode</td><td>avmdec, the research reference decoder (not built for speed), and dav2d</td></tr>
+          <tr><td>AV2 decode</td><td>avmdec, the research reference decoder (not built for speed)</td></tr>
           <tr><td>WebAssembly decode and encode</td><td>the official single-thread ffmpeg.wasm (a weak yardstick: a generic build without hand-written SIMD, and no AV1 or VVC decoder)</td></tr>
           <tr><td>Colour conversion and the demo's display path</td><td>libyuv</td></tr>
           <tr><td>Time to the first packet, memory</td><td>the same reference encoders and decoders, measured the same way</td></tr>
@@ -60,7 +60,7 @@
     <h2>Read the measurements</h2>
     <ul>
       <li><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/competitor-yardsticks.md">Speed claims against independent yardsticks</a>: every claim, its yardstick, the measurements and the worst gaps.</li>
-      <li><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/wasm-speed.md#decoder-close-out-2026-11-13-dec-winddown">Decoder close-out</a>: our decoders against FFmpeg, dav1d, vpxdec, VVdeC and avmdec on the PC and the Jetson.</li>
+      <li><a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/results/wasm-speed.md">Decoder speed</a>: our decoders against FFmpeg, dav1d, vpxdec, VVdeC and avmdec on the PC and the Jetson.</li>
       <li><a href="speed.html">Speed</a>: the encode, browser, decoder and hardware tables, generated from the repository's data.</li>
     </ul>
     <p>We thank the FFmpeg, dav1d, libvpx, VVdeC, AVM, libyuv, x264, x265, SVT-AV1, libaom and openh264 projects:

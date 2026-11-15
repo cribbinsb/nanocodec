@@ -22,7 +22,7 @@ function modeSwitch(root) {
   ], 'qp', (value) => { if (value === 'cbr') window.location.href = './'; })));
 }
 
-function render(data, root) {
+function render(data, names, root) {
   const tests = [...new Set(data.rows.map((r) => r.test))];
   const find = (test, column) => data.rows.find((r) => r.test === test && r.column === column);
   const ours = (t) => t.startsWith('nanocodec-');
@@ -31,7 +31,7 @@ function render(data, root) {
   root.querySelector('.lens-table').replaceChildren(
     el('p', { class: 'note' }, `${METRICS[state.metric]}, BD-rate against ${data.rows[0].anchor}; negative is fewer bits. Sequences in brackets.`),
     table([
-      { label: 'Encoder', cell: (t) => [el('span', { class: `swatch ${ours(t) ? 'ours' : 'ref'}` }), t] },
+      { label: 'Encoder', cell: (t) => [el('span', { class: `swatch ${ours(t) ? 'ours' : 'ref'}` }), names(t)] },
       ...Object.entries(COLUMNS).map(([column, label]) => ({
         label, num: true,
         cell: (t) => {
@@ -48,8 +48,13 @@ async function main() {
   modeSwitch(document.querySelector('.mode-switch'));
   const root = document.getElementById('fixed-qp');
   let data;
+  let names;
   try {
     data = await loadData('fixed-qp-lens');
+    // display names: the overview's, through its fixed-QP view's lens-test map
+    const chart = await loadData('chart');
+    const lens = chart.views.find((v) => v.id === 'qp')?.lens_names || {};
+    names = (t) => chart.points[lens[t] || t]?.label || t;
   } catch (error) {
     root.querySelector('.run').textContent = 'The fixed-QP lens has not been published for this build yet.';
     return;
@@ -58,8 +63,8 @@ async function main() {
     root.querySelector('.run').textContent = `Build ${data.build_commit}; condition ${data.condition}.`;
     root.querySelector('.controls').append(control('Metric', segmented('Metric',
       Object.keys(METRICS).map((value) => ({ value, label: value === 'weighted' ? 'Weighted' : METRICS[value].split(' (')[0] })),
-      state.metric, (v) => { state.metric = v; render(data, root); })));
-    render(data, root);
+      state.metric, (v) => { state.metric = v; render(data, names, root); })));
+    render(data, names, root);
   } catch (error) {
     fail(root, error);
   }
