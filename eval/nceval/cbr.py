@@ -147,6 +147,11 @@ PROFILE_THREADS = "4"
 METRIC_TUNES = ("psnr", "ssim")
 #: A profiled anchor family's name: `<family>~<profile>` (x264-medium~psnr).
 PROFILE_SEPARATOR = "~"
+#: x264 / x265 options after the profile (`x264-veryslow~psnr+ref=1+subme=7`),
+#: appended to the preset's: ablations that attribute a slow preset's lead to its
+#: tools (docs/analysis/fixed-qp-gap-2026-11-14.md). A bare name is a flag (`+no-rect`).
+OPTION_SEPARATOR = "+"
+OPTION_KINDS = ("x264", "x265")
 ANCHOR_TOOLS = {"svt": "SvtAv1EncApp", "x264": "x264", "x265": "x265", "vpx": "vpxenc",
                 "aom": "aomenc", "vvenc": "vvencFFapp", "avm": "avmenc"}
 ANCHOR_CODECS = {"svt": Codec.AV1, "x264": Codec.H264, "x265": Codec.HEVC, "vpx": Codec.VP9,
@@ -303,11 +308,11 @@ class Family:
         if self.kind == "x264":
             threads = PROFILE_THREADS if self.profile == "threads4" else "1"
             return [str(self.tool), "--preset", self.anchor_preset, *common, "--threads", threads,
-                    "--output", str(out), str(clip.yuv)]
+                    *self.extra, "--output", str(out), str(clip.yuv)]
         threads = ["--pools", PROFILE_THREADS, "--wpp"] if self.profile == "threads4" else \
             ["--pools", "none", "--no-wpp"]
         return [str(self.tool), "--preset", self.anchor_preset, *common, "--frame-threads", "1",
-                *threads, "--input-depth", "8",
+                *threads, *self.extra, "--input-depth", "8",
                 "--input", str(clip.yuv), "--output", str(out)]
 
     def _libvpx_aom_command(self, clip: Clip, frames: int, intra: int, out: Path,
@@ -877,11 +882,14 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False,
     if name in NVENC_FAMILIES:
         return nvenc_family(name, paths)
     base, sep, profile = name.partition(PROFILE_SEPARATOR)
-    if sep:  # `<family>~<profile>`: the family in one of its ANCHOR_PROFILES
+    if sep:  # `<family>~<profile>[+option=value...]`: in one of its ANCHOR_PROFILES
         family = preset_anchor(base, paths, cqp, tool)
+        profile, *options = profile.split(OPTION_SEPARATOR)
         if profile not in ANCHOR_PROFILES.get(family.kind, ()):
             raise ValueError(f"{name}: {family.kind} has no profile {profile!r}")
-        return replace(family, name=name, profile=profile)
+        if options and family.kind not in OPTION_KINDS:
+            raise ValueError(f"{name}: only {', '.join(OPTION_KINDS)} take +option=value")
+        return replace(family, name=name, profile=profile, extra=option_args(options))
     for kind, prefix in ANCHOR_PRESET_PREFIXES.items():
         if name.startswith(prefix) and len(name) > len(prefix):
             codec = ANCHOR_CODECS[kind]
@@ -890,6 +898,15 @@ def preset_anchor(name: str, paths: Paths, cqp: bool = False,
                           compares=compares, preset=name.removeprefix(prefix))
     raise ValueError(f"unknown anchor family {name!r}: expected "
                      f"{', '.join(p + '<preset>' for p in ANCHOR_PRESET_PREFIXES.values())}")
+
+
+def option_args(options: list[str]) -> tuple[str, ...]:
+    """`ref=1` -> `--ref 1`; `no-rect` -> `--no-rect`."""
+    args: list[str] = []
+    for option in options:
+        key, sep, value = option.partition("=")
+        args += [f"--{key}", value] if sep else [f"--{key}"]
+    return tuple(args)
 
 
 def anchor_tool(kind: str, paths: Paths) -> Path:

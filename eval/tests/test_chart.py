@@ -27,6 +27,16 @@ def test_preset_anchor_names_pick_the_program_and_preset(tmp_path):
     assert svt.kind == "svt" and svt.anchor_preset == "8" and svt.codec is cbr.Codec.AV1
 
 
+def test_profiled_anchor_options_become_program_arguments():
+    with patch.object(cbr, "find_tool", side_effect=lambda name, paths: Path("/" + name)):
+        x264 = cbr.preset_anchor("x264-veryslow~psnr+ref=1+subme=7", None)
+        x265 = cbr.preset_anchor("x265-slow~psnr+no-rect", None)
+        with pytest.raises(ValueError):
+            cbr.preset_anchor("svtav1-m8~hier+preset=4", None)
+    assert x264.profile == "psnr" and x264.extra == ("--ref", "1", "--subme", "7")
+    assert x265.profile == "psnr" and x265.extra == ("--no-rect",)
+
+
 def test_default_presets_keep_their_cache_identity(tmp_path):
     clip_file = tmp_path / "c.yuv"
     clip_file.write_bytes(b"\0" * 16)

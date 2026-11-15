@@ -963,6 +963,19 @@ impl CodecBackend for Av1Backend {
     /// frame references a higher layer.
     const SECOND_REFERENCE_WITH_LAYERS: bool = true;
 
+    // The fixed-QP profile (`--qp`): every high-quality frame of the unified
+    // plan carries the second reference (no cadence-strength gate), with the
+    // full mode decision against it, a static reference pattern as the
+    // standards' test conditions use. Fixed QP, matched QP (nceval.fixedqp,
+    // 16 pool clips): draw fixedqp-2026-11-15 J -1.9% [-2.9, -0.9], draw
+    // fixedqp-2026-11-15-second -2.4% [-4.2, -0.8]; each half alone -0.3 to
+    // -1.2%. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
+    // The other AV1 presets pin the plan off, so the profile is inert there.
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
+        ("structure.secondary_min_depth", 0.0),
+        ("refs.second_full", 1.0),
+    ];
+
     const DEFAULT_PARAMS: &'static [(&'static str, f32)] = &[
         // A coarser inter rounding offset (48 -> 41, AV1 Fast's value): a CPU
         // cut at equal quality (study av1-default-md-2026-11-13 trial #1,
