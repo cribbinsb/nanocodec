@@ -606,7 +606,7 @@ Full notices: [LICENSE](docs/licenses/avm/LICENSE) and
 [separate patent license](docs/licenses/avm/PATENTS). The Clear BSD software
 license does not itself provide a patent grant.
 
-## dav2d — BSD-2-Clause (external reference only)
+## dav2d — BSD-2-Clause
 
 Copyright © 2018–2026, VideoLAN and dav2d authors.
 Source: https://code.videolan.org/videolan/dav2d,
@@ -615,8 +615,17 @@ commit `237229ebfefd4eb8e0e25ad9636803bb93bae0c6`.
 The independent AV2 conformance executable is built with scalar 8-bit support.
 Its copyright and separate patent documents were inspected at this exact pin:
 [COPYING](docs/licenses/dav2d/COPYING), [PATENTS](docs/licenses/dav2d/PATENTS).
-No dav2d implementation is linked into nanocodec. Actual emitted-subset picture
+No dav2d code is linked into nanocodec. Actual emitted-subset picture
 checks, rather than draft-era README wording, determine compatibility with AVM.
+
+Reimplemented in Rust from dav2d (licence text checked at the pin above,
+2026-11-15), each module naming its source in its doc comment:
+
+- `crates/nc-av2/src/general/` (the general AV2 decoder for other encoders'
+  8-bit 4:2:0 streams): `sequence.rs` and `tiles.rs` from `src/obu.c`
+  (`parse_seq_hdr`, `parse_tile_info`, `calc_uniform_tiles`), `bits.rs` from
+  `src/getbits.c`. Where dav2d and AVM v1.0.0 differ (the layer dependency
+  maps of the sequence header), AVM is followed.
 
 ## VVenC — BSD-3-Clause-Clear
 

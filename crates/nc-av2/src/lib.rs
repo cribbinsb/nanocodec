@@ -17,6 +17,7 @@ pub mod deblock;
 mod delta_q;
 pub mod entropy;
 pub mod frame_header;
+pub mod general;
 pub mod sequence;
 
 pub mod transform;

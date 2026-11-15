@@ -133,6 +133,50 @@ pub fn parse(data: &[u8]) -> Result<(Obu<'_>, &[u8])> {
     ))
 }
 
+/// Whether an OBU of `obu_type` carries coded picture data (AVM
+/// `is_single_tile_vcl_obu` / `is_multi_tile_vcl_obu`): key and tile-group
+/// OBUs, show-existing-frame, TIP, bridge and RAS frames.
+const fn is_picture_type(obu_type: u8) -> bool {
+    matches!(obu_type, 4..=7 | 10..=14 | 19 | 21)
+}
+
+/// OBU types that may follow a temporal unit's pictures: metadata and
+/// padding.
+const fn is_suffix_type(obu_type: u8) -> bool {
+    matches!(obu_type, 8 | 9 | 25)
+}
+
+/// Split a raw OBU stream (size-prefixed OBUs back to back, as `avmenc
+/// --obu` writes them) into temporal units: a unit starts at a temporal
+/// delimiter, or at the first non-picture OBU after a unit's pictures (AVM
+/// `obudec.c` `obudec_read_temporal_unit`).
+/// # Errors
+/// Rejects truncated or invalid OBUs.
+pub fn temporal_units(data: &[u8]) -> Result<Vec<&[u8]>> {
+    let mut units = Vec::new();
+    let mut start = 0;
+    let mut has_picture = false;
+    let mut remaining = data;
+    while !remaining.is_empty() {
+        let position = data.len() - remaining.len();
+        let (unit, rest) = parse(remaining)?;
+        let obu_type = unit.header.obu_type;
+        let starts_unit = obu_type == TEMPORAL_DELIMITER
+            || (has_picture && !is_picture_type(obu_type) && !is_suffix_type(obu_type));
+        if starts_unit && position > start {
+            units.push(&data[start..position]);
+            start = position;
+            has_picture = false;
+        }
+        has_picture |= is_picture_type(obu_type);
+        remaining = rest;
+    }
+    if start < data.len() {
+        units.push(&data[start..]);
+    }
+    Ok(units)
+}
+
 /// Append a minimally length-prefixed OBU. Invalid arguments leave output intact.
 /// # Errors
 /// Rejects out-of-range header fields and payloads too large for a 32-bit size.
@@ -194,6 +238,19 @@ mod tests {
         write(td.header, td.payload, &mut written).unwrap();
         write(sequence.header, sequence.payload, &mut written).unwrap();
         assert_eq!(written, bytes);
+    }
+
+    #[test]
+    fn raw_streams_split_at_delimiters_and_after_pictures() {
+        // TD, sequence, key | TD, tile group | sequence (no TD), key.
+        let stream = [1, 8, 2, 4, 0, 2, 16, 0, 1, 8, 2, 28, 0, 2, 4, 0, 2, 16, 0];
+        let units = temporal_units(&stream).unwrap();
+        assert_eq!(units.len(), 3);
+        assert_eq!(units[0], &stream[..8]);
+        assert_eq!(units[1], &stream[8..13]);
+        assert_eq!(units[2], &stream[13..]);
+        assert!(temporal_units(&stream[..stream.len() - 1]).is_err());
+        assert_eq!(temporal_units(&[]).unwrap().len(), 0);
     }
 
     #[test]

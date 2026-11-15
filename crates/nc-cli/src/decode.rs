@@ -9,7 +9,7 @@
 //! Container framing (`framing.rs`) is bounded independently of the codec
 //! parsers.
 use std::borrow::Cow;
-use std::io::{BufRead, IoSlice, Write};
+use std::io::{BufRead, IoSlice, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -489,6 +489,9 @@ fn decode_stream_with_op<R: BufRead>(
         .map_err(|e| e.to_string())?;
     let mut shown = 0;
     match codec {
+        Codec::Av2 if !starts_with_ivf_signature(input)? => {
+            decode_av2_obu_stream(&mut decoder, input, &mut shown, output)?;
+        }
         Codec::Av1 | Codec::Vp9 | Codec::Av2 => {
             decode_ivf_stream(&mut decoder, codec, all_layers, input, &mut shown, output)?;
         }
@@ -569,6 +572,42 @@ fn decode_stream_with_op<R: BufRead>(
     }
     Ok(shown)
 }
+
+/// The four bytes that open an IVF file.
+const IVF_SIGNATURE: &[u8] = b"DKIF";
+
+/// Whether `input` begins with the IVF signature (nothing is consumed).
+fn starts_with_ivf_signature<R: BufRead>(input: &mut R) -> Result<bool, String> {
+    let head = input.fill_buf().map_err(|e| e.to_string())?;
+    Ok(head.starts_with(IVF_SIGNATURE))
+}
+
+/// Decode a raw AV2 OBU stream (size-prefixed OBUs back to back, AVM's
+/// `--obu` output), one temporal unit at a time.
+fn decode_av2_obu_stream<R: BufRead>(
+    decoder: &mut Decoder,
+    input: &mut R,
+    shown: &mut u64,
+    output: &mut impl FnMut(&Shown) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut stream = Vec::new();
+    input
+        .by_ref()
+        .take(MAX_OBU_STREAM_BYTES)
+        .read_to_end(&mut stream)
+        .map_err(|e| e.to_string())?;
+    for unit in nc_av2::obu::temporal_units(&stream).map_err(|e| e.to_string())? {
+        if let Some(frame) = decoder.decode(unit).map_err(|e| e.to_string())? {
+            *shown += 1;
+            output(&frame)?;
+        }
+    }
+    Ok(())
+}
+
+/// Most bytes of a raw OBU stream read into memory (IVF is streamed packet
+/// by packet; a raw stream has no packet framing to stream by).
+const MAX_OBU_STREAM_BYTES: u64 = 1 << 31;
 
 fn decode_ivf_stream<R: BufRead>(
     decoder: &mut Decoder,
