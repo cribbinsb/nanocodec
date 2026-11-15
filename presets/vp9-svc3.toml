@@ -36,3 +36,6 @@ structure.unified = 0
 # +6.4% -> +3.3% (+6.9% -> +2.9%) vs single layer, 360p +5.0% -> +2.0%,
 # 180p +4.1% -> +2.2%, total vs simulcast -9.0% -> -11.8%; full SVC L3T1
 # 720p view +38.8% -> +36.6% (2026-11-15).
+# Pinned before VP9 Default's inherited cadence depth (2026-11-15).
+structure.inherited_depth = 0
+persist.reuse_level_price = 0

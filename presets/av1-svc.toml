@@ -38,3 +38,5 @@ structure.unified = 0
 # rate control reads the start-up still share (2026-11-15). svc_chart, the
 # chart's 8 clips, L2T1 720p view vs the pin: -2.6% BD-J (static_london_bus
 # -4.7%, bodycam_airport -10.5%, the others unchanged).
+# Pinned before AV1 Default's inherited cadence depth (2026-11-15).
+structure.inherited_depth = 0

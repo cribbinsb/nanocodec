@@ -912,6 +912,24 @@ impl CodecBackend for Vp9Backend {
         // every stream bit-exact in vpxdec, ffmpeg and ours. The other VP9
         // presets pin it off.
         ("structure.unified", 1.0),
+        // The QP cadence at least as strong as the frames between measurably
+        // inherit the high-quality frame (`structure.inherited_depth`,
+        // `nc-encoder` `inheritance.rs`), beside the static share, with
+        // still-block refinements priced against the inter level
+        // (`persist.reuse_level_price`, `reuse.rs`): the frame after a key
+        // is a cadence leaf, and with the stronger cadence alone the starved
+        // key's still half recovered 0.85 dB short (`static_recovery`: 38.6
+        // against 39.4 dB; with both 43.9 against 40.0). Build 51b0ec30,
+        // pool levels of draw 2026-11-15, both together: L1 -1.62% [-2.78,
+        // -0.68]; L2 -1.57% [-2.61, -0.71]; L3 (single point, 126 clips) J
+        // -1.21% [-2.03, -0.53], no guard (pan -3.5%, crowd -0.9%, lowlight
+        // -0.6%, static -0.4%, bodycam +0.9%, texture -3.6% on 4 clips,
+        // drone -0.5% on 3); 600-frame final (27 clips, keys every 10 s) J
+        // -0.56% [-0.95, -0.16], no guard (lowlight -1.3%, crowd -0.7%,
+        // static +0.2%). Jetson cycles +0.5% (instructions +0.7%). The other
+        // VP9 presets pin both off.
+        ("structure.inherited_depth", 1.0),
+        ("persist.reuse_level_price", 1.0),
         ("decision.codec_subpel_seed_lambdas", 0.0),
         ("quant.trellis", 1.0),
         ("quant.trellis_key", 1.0),

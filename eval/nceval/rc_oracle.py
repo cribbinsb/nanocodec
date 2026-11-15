@@ -1,6 +1,7 @@
 """Decompose what CBR rate control costs against fixed QP, by replaying quantizer sequences.
 
-    python3 -m nceval.rc_oracle --binary BIN --codec av1 [--clips val|quick|adopt] --json OUT
+    python3 -m nceval.rc_oracle --binary BIN --codec av1 [--clips val|quick|adopt|final] [--workers N]
+        [--frames 600 --key-seconds 10] [--per-class N] [--variants replay,startup,...] --json OUT
 
 `nceval.rc_cost` measures the whole cost: an encoder's CBR curve against its
 own fixed-QP curve (BD-J). This tool splits it. Every CBR point is encoded
@@ -13,13 +14,17 @@ the controller's choices taken out:
   CBR re-coded, which the replay codes once at their final quantizer);
 - `trailing`: each inter frame's level replaced by the mean of the second
   up to it (what a causal controller could do: smoothing without foresight);
+- `startup`: the levels of the first second after each key replaced by the
+  mean level of the rest of that key's period, the rest as logged: what the
+  start-up descent after a key costs, apart from the steady-state drift;
 - `smooth`: each inter frame's level replaced by its centred one-second
   mean in the step domain (the cadence and layer offsets kept): what the
   level's frame-to-frame jitter costs, including the size model's misses;
 - `flat`: every inter level at the sequence's mean step (start-up transient,
   content-driven drift and jitter all gone), the key as logged;
 - `flat_key`: `flat` with the key at the fixed-QP key's step ratio to the
-  inter level (`key_qp.rs`; H.264 `keyframe_qp_offset`; AV1 `keyframe_step_permille`).
+  inter level (`key_qp.rs`; H.264 `keyframe_qp_offset` of its fixed-QP profile; AV1
+  `keyframe_step_permille`).
 
 The chain CBR -> replay -> smooth -> flat -> flat_key -> fixed QP adds up to
 the whole cost; what is left between `flat_key` and fixed QP is what the
@@ -29,8 +34,11 @@ controller statistics from the logs (size-model error per frame role,
 level jitter, key share, re-codes) come with each class.
 
 `--clips`: `val` the natural VAL clips (rc_cost's set), or a pool level of
-the day's draw (`quick`, `adopt`; not adoption evidence here, only a
-broader sample per class). Every point is cached by the shared engine.
+the day's draw (`quick`, `adopt`, `final`; not adoption evidence here, only a
+broader sample per class), at most `--per-class` clips of each class.
+`--frames` and `--key-seconds` set the window (default: 150 frames, one key;
+the product window is 600 frames with keys every 10 s, as L3's long window).
+Every point is cached by the shared engine.
 """
 
 from __future__ import annotations
@@ -48,14 +56,16 @@ from . import jreal, levels, pool
 from .cbr import Family, Point, measure_all
 from .codecs import Codec
 from .config import load_paths
-from .gatepolicy import EVALUATION_GATE
+from .gatepolicy import EVALUATION_GATE, uniform_check
 from .rc_cost import clip_terms
 from .realuse import DEFAULT_FRAMES, LADDER_KBPS, Runner, natural_val, own_family
 
 WORKERS = 8
-VARIANTS = ("replay", "trailing", "smooth", "flat", "flat_key")
+VARIANTS = ("replay", "trailing", "startup", "smooth", "flat", "flat_key")
 #: Frames of the centred mean of `smooth`: one second at 30 fps.
 SMOOTH_FRAMES = 31
+#: The start-up window after each key that `startup` flattens, in seconds.
+STARTUP_SECONDS = 1.0
 #: AV1/VP9/AV2 AC quantizer step per qindex (8-bit; AV1 §7.12.2 `Ac_Qlookup[0]`).
 AC_QLOOKUP = (
     4, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
@@ -77,11 +87,12 @@ AC_QLOOKUP = (
 EXTRAPOLATION_UNITS = 8
 #: Planned quantizers past the codec's largest (the λ headroom) this tool maps.
 HEADROOM_UNITS = 200
-#: Fixed-QP key step relative to the configured quantizer, per codec: H.264
-#: `h264.keyframe_qp_offset` 6 QP; HEVC `key_qp.rs` 12 QP at a 60-frame
+#: Fixed-QP key step relative to the configured quantizer, per codec (the
+#: fixed-QP profile's, `CodecBackend::FIXED_QP_PARAMS`): H.264
+#: `h264.keyframe_qp_offset` 8 QP; HEVC `key_qp.rs` 12 QP at a 60-frame
 #: period +3 QP per factor of 5 (at most +3: one key in 150 frames); AV1
 #: `av1.keyframe_step_permille` 240.
-FIXED_KEY_STEP_RATIO = {Codec.H264: 2 ** (-6 / 6), Codec.HEVC: 2 ** (-15 / 6), Codec.AV1: 0.24}
+FIXED_KEY_STEP_RATIO = {Codec.H264: 2 ** (-8 / 6), Codec.HEVC: 2 ** (-15 / 6), Codec.AV1: 0.24}
 
 
 def step_table(codec: Codec) -> list[float]:
@@ -108,7 +119,21 @@ def coded(rows: list[dict]) -> list[dict]:
     return [r for r in rows if r["type"] in ("Key", "Inter")]
 
 
-def schedules(rows: list[dict], codec: Codec) -> dict[str, list[str]]:
+def startup_levels(rows: list[dict], log_level: dict[int, float], fps: float) -> dict[int, float]:
+    """`startup`'s level per inter frame of a start-up window: the mean (log step)
+    of the logged levels after the window up to the next key."""
+    window = round(STARTUP_SECONDS * fps)
+    keys = [i for i, r in enumerate(rows) if r["type"] == "Key"] + [len(rows)]
+    levels_: dict[int, float] = {}
+    for key, end in zip(keys, keys[1:]):
+        steady = [log_level[i] for i in range(key + window + 1, end) if i in log_level]
+        if steady:
+            mean = math.exp(statistics.fmean(steady))
+            levels_.update({i: mean for i in range(key + 1, key + window + 1) if i in log_level})
+    return levels_
+
+
+def schedules(rows: list[dict], codec: Codec, fps: float) -> dict[str, list[str]]:
     """Each variant's `--qp-replay` lines (one per input frame)."""
     steps = step_table(codec)
     low = 1 if codec in (Codec.AV1, Codec.VP9, Codec.AV2) else 0
@@ -135,10 +160,12 @@ def schedules(rows: list[dict], codec: Codec) -> dict[str, list[str]]:
 
     key_flat = flat_level * FIXED_KEY_STEP_RATIO.get(codec, 1.0)
     every = range(len(rows))
+    startup = startup_levels(rows, log_level, fps)
     return {
         "replay": [line(i, None, None) for i in every],
         "trailing": [line(i, smooth(i, 2 * half, 0) if i in log_level else None, None)
                      for i in every],
+        "startup": [line(i, startup.get(i), None) for i in every],
         "smooth": [line(i, smooth(i, half, half) if i in log_level else None, None)
                    for i in every],
         "flat": [line(i, flat_level, None) for i in every],
@@ -170,12 +197,21 @@ def log_stats(rows: list[dict]) -> dict:
     }
 
 
-def clip_list(spec: str, paths) -> list:
+def clip_list(spec: str, paths, frames: int, per_class: int | None) -> list:
     if spec == "val":
-        return natural_val(paths)
-    draw = pool.draw(pool.load_pool(paths, levels.usable), pool.rotation_key(None),
-                     DEFAULT_FRAMES)
-    return draw.levels[spec]
+        clips = natural_val(paths)
+    else:
+        draw = pool.draw(pool.load_pool(paths, levels.usable), pool.rotation_key(None),
+                         DEFAULT_FRAMES)
+        clips = draw.levels[spec]
+    if frames > DEFAULT_FRAMES:
+        clips = levels.long_clips(clips, frames)
+    if per_class is None:
+        return clips
+    kept: dict[str, list] = {}
+    for clip in clips:
+        kept.setdefault(clip.content_class, []).append(clip)
+    return [c for group in kept.values() for c in group[:per_class]]
 
 
 def bd_rows(curves: dict, clips: list, anchor: str, test: str) -> dict:
@@ -198,13 +234,35 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--clips", default="val")
     parser.add_argument("--work", required=True, help="schedule files and rate logs")
     parser.add_argument("--json", required=True)
+    parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
+    parser.add_argument("--key-seconds", type=float, default=None,
+                        help="periodic keys (default: one key)")
+    parser.add_argument("--per-class", type=int, default=None)
+    parser.add_argument("--variants", default=",".join(VARIANTS))
     args = parser.parse_args(argv)
+    variants = args.variants.split(",")
     paths, codec = load_paths(), Codec(args.codec)
     base = replace(own_family(f"nanocodec-{codec.value}", Path(args.binary)), cqp=True)
-    clips = clip_list(args.clips, paths)
-    runner = Runner(paths, EVALUATION_GATE, WORKERS, over_budget=True)
-    bench = runner.bench(DEFAULT_FRAMES)
-    cbr, cqp = measure_all(bench, [base], clips, WORKERS, EVALUATION_GATE, LADDER_KBPS)
+    clips = clip_list(args.clips, paths, args.frames, args.per_class)
+    runner = Runner(paths, EVALUATION_GATE, args.workers, over_budget=True)
+    benches = {}
+
+    def bench_of(clip) -> "Bench":
+        """The clip's bench: its window and, with `--key-seconds`, its key period."""
+        intra = round(args.key_seconds * clip.fps) if args.key_seconds else None
+        frames = min(args.frames, clip.frames)
+        if (frames, intra) not in benches:
+            benches[(frames, intra)] = (runner.bench(frames, intra) if intra
+                                        else runner.bench(frames))
+        return benches[(frames, intra)]
+    cbr, cqp = {}, {}
+    for group in {id(bench_of(c)): [d for d in clips if bench_of(d) is bench_of(c)]
+                  for c in clips}.values():
+        group_cbr, group_cqp = measure_all(bench_of(group[0]), [base], group, args.workers,
+                                           EVALUATION_GATE, LADDER_KBPS)
+        cbr |= group_cbr
+        cqp |= group_cqp
     print(f"measured CBR and fixed QP: {len(cbr)} + {len(cqp)} points", flush=True)
     work = Path(args.work) / codec.value
     work.mkdir(parents=True, exist_ok=True)
@@ -215,22 +273,27 @@ def main(argv: list[str] | None = None) -> None:
         log = work / f"{clip}-{kbps}.rate.csv"
         if not log.exists():
             stream = work / f"{clip}-{kbps}.bin"
-            bench.encode(Point(base, by_name[clip], kbps=kbps), stream, log)
+            bench_of(by_name[clip]).encode(Point(base, by_name[clip], kbps=kbps), stream, log)
             stream.unlink()
         return read_log(log)
 
-    with ThreadPoolExecutor(WORKERS) as threads:
+    with ThreadPoolExecutor(args.workers) as threads:
         logs = dict(zip(cbr, threads.map(logged, cbr)))
     jobs, owners = [], []
     for key, rows in logs.items():
         _, clip, kbps = key
-        for variant, lines in schedules(rows, codec).items():
+        clip_variants = schedules(rows, codec, by_name[clip].fps)
+        for variant in variants:
+            lines = clip_variants[variant]
             text = "\n".join(lines) + "\n"
             path = work / f"{clip}-{kbps}-{variant}-{hashlib.sha256(text.encode()).hexdigest()[:12]}.txt"
             path.write_text(text)
             family = replace(base, name=f"{base.name}~oracle-{variant}", variant=True, cqp=False,
                              extra=base.extra + ("--qp-replay", str(path)))
-            jobs.append((bench, Point(family, by_name[clip], kbps=kbps)))
+            # Scored like every evaluation point (our reconstruction, no decode):
+            # conformance is the landing check's.
+            jobs.append((bench_of(by_name[clip]), Point(family, by_name[clip], kbps=kbps,
+                                      check=uniform_check(EVALUATION_GATE))))
             owners.append((variant, clip))
     results = runner.run_jobs(jobs)
     curves: dict = {}
@@ -242,14 +305,16 @@ def main(argv: list[str] | None = None) -> None:
         if result is not None:
             curves.setdefault((variant, clip), []).append(result)
     curves = {k: sorted(v, key=lambda p: p["kbps"]) for k, v in curves.items()}
-    chain = ("qp", "flat_key", "flat", "smooth", "replay", "cbr")
-    extra = {"replay->trailing": bd_rows(curves, clips, "replay", "trailing"),
-             "smooth->trailing": bd_rows(curves, clips, "smooth", "trailing")}
+    measured = {"qp", "cbr", *variants}
+    chain = [v for v in ("qp", "flat_key", "flat", "smooth", "replay", "cbr") if v in measured]
+    pairs = list(zip(chain, chain[1:])) + [
+        pair for pair in (("replay", "trailing"), ("smooth", "trailing"), ("replay", "startup"))
+        if set(pair) <= measured]
     report = {"codec": codec.value, "clips": args.clips, "binary": str(args.binary),
+              "frames": args.frames, "key_seconds": args.key_seconds,
               "total": bd_rows(curves, clips, "qp", "cbr"),
               "vs_qp": {v: bd_rows(curves, clips, "qp", v) for v in chain[1:]},
-              "steps": {f"{b}->{a}": bd_rows(curves, clips, b, a)
-                        for b, a in zip(chain, chain[1:])} | extra}
+              "steps": {f"{b}->{a}": bd_rows(curves, clips, b, a) for b, a in pairs}}
     stats: dict = {}
     for (_, clip, kbps), rows in logs.items():
         cls = by_name[clip].content_class

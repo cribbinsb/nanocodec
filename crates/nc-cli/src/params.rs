@@ -345,6 +345,9 @@ mod tests {
         // Fast keeps its keys' budget sizing when the Default adopted the
         // key still boost (2026-11-14).
         expected.set("rate.key_still_boost", 0.0);
+        // Fast keeps the static-scaled cadence when the Default adopted the
+        // inherited cadence depth (2026-11-15).
+        expected.set("structure.inherited_depth", 0.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "av1-fast"])).unwrap(),
             expected

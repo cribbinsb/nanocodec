@@ -342,3 +342,138 @@ stream configured so that it never layers.
 | VVC | −1.03 [−1.61, −0.50] (935b1726) | −1.58 [−2.04, −1.14] (39b54eab) |
 | VP9 | −1.51 [−2.51, −0.66] (d5cf4fe9) | −1.49 [−1.92, −1.07] (7752ddef) |
 | AV2 | −0.82 [−1.38, −0.33] (487dff46) | −1.19 [−1.60, −0.79] (e17fce9d) |
+
+## Re-measure at c323b045 (2026-11-15)
+
+Taken after the key-period ceiling, the key still boost, `rate.prekey_quiet` (H.264, HEVC), the unified
+reference plan (AV1, VP9, HEVC) and the fixed-QP profiles had landed. Setup as above (`nceval.rc_cost`,
+VAL, 11 clips, 150 frames, one key, 150-1200 kbps); `docs/results/rc-cost-2026-11-15.csv`.
+
+**The fixed-QP side now uses each codec's fixed-QP profile** (`rate.fixed_qp_profile`, set by `--qp`):
+- H.264: leaf +2, cadence scale 1, base λ ×0.8, key 8 QP finer;
+- HEVC, VVC, AV2: the cadence at fixed strength;
+- AV1, VP9: no profile (the anchor is unchanged).
+
+Where a profile improved the anchor, part of the change below is the anchor's, not rate control's.
+`rc_oracle`'s `flat_key` now uses H.264's profile key (−8 QP).
+
+| Default | CBR vs own fixed QP, BD-J (2026-11-14) | fixed-QP anchor |
+|---|---:|---|
+| AV1 | **+13.6** (+16.0) | no profile |
+| HEVC | **+21.1** (+21.5) | profile |
+| VVC | **+15.0** (+17.1) | profile |
+| VP9 | **+14.6** (+16.4) | no profile |
+| AV2 | **+12.2** (+13.2) | profile |
+| H.264 | **+10.9** (+10.7) | profile |
+
+**Decomposition** (`rc_oracle`, same build). Each cell is the whole-set BD-J, then crowd / pan / bodycam /
+lowlight / static:
+
+| Step | AV1 | HEVC | H.264 |
+|---|---|---|---|
+| **Whole cost** | **+13.6** · +6.4 / −1.4 / −1.3 / −0.3 / +64.6 | **+21.1** · +9.6 / +0.6 / +5.7 / −1.1 / +90.6 | **+10.9** · +0.7 / −1.3 / +1.7 / −2.1 / +55.5 |
+| re-codes | 0.0 | 0.0 | 0.0 |
+| fast jitter | +2.3 · +0.7 / +4.0 / +1.9 / +0.7 / +4.0 | +0.9 · −0.7 / +2.9 / +2.4 / +0.1 / −0.1 | +2.7 · +0.7 / +1.5 / +4.9 / +0.6 / +5.9 |
+| slow drift | **+4.5** · +0.7 / −1.2 / −0.4 / +0.8 / **+22.4** | **+7.3** · +2.1 / −0.7 / +1.1 / +0.2 / **+33.7** | **+4.9** · +1.0 / −0.4 / −0.4 / +0.7 / **+23.5** |
+| key allocation | +8.9 · +3.8 / −4.7 / −3.3 / −1.7 / +50.6 | +16.1 · +6.7 / −5.0 / −0.9 / −1.2 / +81.2 | +6.0 · +3.7 / −1.7 / +0.1 / −1.3 / +29.0 |
+| the rest | 0.0 | +1.5 | −1.0 |
+| trailing mean vs replay | −1.0 · static −4.5 | −3.1 · static −12.6, bodycam −2.0 | −2.5 · static −5.2, bodycam −3.9 |
+
+Achieved rate over target (median): replay 0.985 / 0.978 / 0.982, flat 0.954 / 0.919 / 0.951.
+
+- **Key allocation is still the largest part, on still scenes** (static +51 / +81 / +29). The key still
+  boost halved AV1's (+65 → +51). HEVC's runs at 4 QP, against a fixed-QP key 15 QP finer than its P frames.
+- **Slow drift is a third of the whole cost** (4.5 / 7.3 / 4.9 of 13.6 / 21.1 / 10.9), almost all on still
+  scenes. It is the next lever (section below).
+- **The size model on still scenes:** inter frames are still missed by 4x or more 10-15% of the time
+  (log2 SD 1.2-1.4). Moving content stays within 1.3-1.6x.
+- **Measuring the oracle arms:** they are now scored like every other evaluation point (our reconstruction,
+  no decode). On this head, AV1 Default's CBR stream `crowd_mot20_06` at 175 kbps fails the standard
+  decoders' bit-exact check at frame 72, inside the adaptive-resolution path; with
+  `resolution.adaptive=0` it passes. Reported to the coordinator.
+
+### What slow drift is on a still scene
+
+AV1 Default, `static_london_bus`, 300 kbps (bytes per frame against a budget of about 1000):
+- **Descent.** Between bursts, frames cost 30-200 bytes at any level coarser than the quality the picture
+  holds. The size model reads that as room and walks the level down at its full limit (10 qindex per frame).
+- **Burst.** A cadence base frame (−4.2 to −5.6 QP units) then lands below the held quality and refines the
+  whole picture at once: 6-40 kbytes, 6-40 budgets.
+- **Climb.** The burst's debt is about a buffer. The proportional correction drops to its floor, and the
+  level climbs back 60-120 qindex within half a second.
+
+The cycle repeats every 8-16 frames, and the level swings 110-230. HEVC behaves the same at 2 QP per frame
+(level 33-52). The `flat` arm's constant level keeps the cadence, so its base frames should still refine (its replay
+logs were not kept to confirm it). If so, what it removes is the half-second climbs, in which whatever did
+change is coded coarse. That points at the repayment of a burst, not at the descent. The descent is what
+`rate.held_quality` stopped, and that lost still-scene quality (`docs/handoff/tuning.md`).
+
+### Three causal levers against the drift, none adopted (2026-11-15)
+
+Each one was built as a registered parameter (off) on c323b045 and screened on the pool draw 2026-11-15.
+The code is not kept: none came near a gain, and each is a few lines to rebuild from the description.
+
+| Lever | What it changes | Six still points: AV1, 600 f, key every 10 s, mean Δ PSNR-Y / rate | Pool screen |
+|---|---|---|---|
+| `rate.held_quality=1` (landed, off; the earlier attempt) | prices the refinement into the plan, so the level stops before it | −0.15 dB (−0.44..+0.04) / +0.2% (on the old base: down to −0.69) | not re-screened |
+| `rate.empty_level_step=0.25` | after a near-empty frame (≤ ¼ budget), the level may go below the key's and every later inter level only at ¼ of its step limit | +0.01 dB (−0.22..+0.35) / −0.4% | AV1 L1 **+0.94%** [0.00, +2.78]; static **+6.6%**; rate guard (1.07% over target) |
+| `rate.burst_loan=8` | an unplanned inter frame over 8 budgets has its overrun scheduled as a loan repaid over 5 s (the refinement loan), so the level does not jump after a burst | 0.00 dB (−0.19..+0.29) / −1.1% | AV1 L1 0.00% [−0.88, +1.10]; rate guard (**1.74%** over target, anchor 0.36%) |
+| `rate.level_smoothing=0.25` | the inter level step is a running geometric mean of the solved steps (the causal counterpart of the oracle's `trailing` arm) | — | L1: HEVC −0.25%, H.264 +0.08% (drone +3.5 guard), AV1 +0.14%. HEVC L2 +0.02% [−0.51, +0.50] (static −1.7, pan −1.1, others +0.1..+0.6) |
+
+What this says:
+- **Slowing the descent loses what the coordinator predicted:** the still-scene refinements (static +6.6%).
+- **Spreading the burst's repayment** (burst loan) gains no quality and spends past the target. The
+  proportional correction already repays a burst about as fast as the target allows. A longer schedule
+  only carries the debt out of the 150-frame window.
+- **A closed-loop level filter does not reproduce the open-loop trailing arm's gain**
+  (HEVC −3.1% replayed, +0.02% at L2). The oracle replays a level sequence against budgets that did not
+  react to it. A real filter delays the controller's own response, so the correction pushes harder.
+- **The baseline has moved.** At 600 frames with keys every 10 s, the six still points now run at
+  0.92-0.99 of target (they were 0.98-1.04 before the ceiling). On that window there is little drift
+  left to take. The 150-frame single-key window of `rc_cost` charges the start-up descent and
+  the first bursts in full.
+
+**Conclusion.** Slow drift is still a third of the 150-frame cost (AV1 +4.5, HEVC +7.3, H.264 +4.9),
+but no causal controller change tried reaches it, and the two that touch the burst cycle cost quality or
+rate. What is left of it looks like foresight: the `flat` arm knows the clip's mean level from frame 1.
+Next: measure the drift step on the 600-frame long window (keys every 10 s) before more controller work,
+because the 150-frame window may overstate it. Key allocation (+8.9 / +16.1 / +6.0, static +29..+81) is
+still the largest part. For HEVC, a stronger still-key boost is capped by the periodic-key pulse guard
+(boost 6: +0.36 dB).
+
+### The product window: start-up descent against steady-state drift (2026-11-15)
+
+`rc_oracle --clips final --frames 600 --key-seconds 10 --per-class 2 --variants replay,startup,flat,flat_key`
+at c323b045, on the 2026-11-15 draw. Only static, crowd and lowlight have 600-frame clips in L3. Clips:
+- static: chirla cam 7, aboda video 11;
+- crowd: pedestrians, uvg volleyball;
+- lowlight: bdd night, bdd100 00cee0e0.
+
+That is 6 clips (5 scored for HEVC), so the class columns are indicative only. The new `startup` arm
+flattens only the first second after each key, to the mean level of the rest of that key's period. Its
+gain over the replay is what the start-up descent costs. Without a `smooth` arm, flat → replay holds
+the drift and the jitter together.
+
+| Step (BD-J · crowd / lowlight / static) | AV1 | HEVC | H.264 |
+|---|---|---|---|
+| **Whole cost** | **+23.4** · +22.3 / −0.3 / +48.2 | **+13.9** · +21.1 / +1.0 / +19.5 | **+26.9** · +11.9 / +1.2 / +67.6 |
+| drift + jitter (flat → replay) | +8.1 · −3.8 / +1.4 / **+26.8** | +12.0 · −7.1 / +2.6 / **+40.6** | +13.1 · −3.2 / +2.1 / **+40.5** |
+| of it, start-up descent (startup vs replay) | −0.1 · +3.8 / −0.3 / **−3.9** | −0.8 · +6.7 / +0.1 / **−9.2** | −1.0 · +2.0 / −0.2 / **−4.7** |
+| key allocation (flat_key → flat) | +15.3 · **+24.7** / −2.3 / +23.4 | +15.0 · **+28.7** / −2.8 / +19.0 | +8.0 · **+14.6** / −0.8 / +10.3 |
+| the rest | +0.3 | +1.0 | +3.2 |
+
+Achieved rate over target (median): replay 0.988 / 0.981 / 0.982, startup 0.974 / 0.982 / 0.974.
+
+- **Start-up descent is a minor part.** It is 10-23% of the static drift (−3.9 of +26.8, −9.2 of +40.6,
+  −4.7 of +40.5). It also has the wrong sign on crowd (+2.0..+6.7): there the descent after a key pays.
+  A start-up level choice would win at most a few percent on still scenes and give part of it back on
+  crowd. **The drift line stops here.**
+- **The steady-state drift is the still-scene burst cycle** described above. None of the three causal
+  levers reached it.
+- **Key allocation on crowd** is the largest single part on the product window: +25 / +29 / +15, with
+  CBR's key 49 qindex (AV1), 9 QP (HEVC) or 6 QP (H.264) finer than the level. Fixed QP's key is finer
+  still, and with keys every 10 s its quality carries over the crowd's still background. The key still
+  boost does not act there: it starts at a running unchanged share of 0.8, which crowd scenes stay
+  below. That is the next lever, and it needs no foresight. It needs a sample with pan and bodycam
+  too (no 600-frame clips of theirs in this L3 draw), because on the 150-frame VAL window pan pays the
+  other way (−4.7 / −5.0 / −1.7).

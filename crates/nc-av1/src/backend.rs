@@ -1047,6 +1047,20 @@ impl CodecBackend for Av1Backend {
         // BETTER, no guard. docs/handoff/unified-structure.md section 11. The
         // other AV1 presets pin it off.
         ("structure.unified", 1.0),
+        // The QP cadence at least as strong as the frames between measurably
+        // inherit the high-quality frame (`structure.inherited_depth`,
+        // `nc-encoder` `inheritance.rs`), beside the static share: it adds
+        // the cadence on moving content that inherits (pans, crowds) and
+        // leaves noise alone. Build 51b0ec30, pool levels of draw 2026-11-15:
+        // L1 -1.93% [-3.32, -0.84]; L2 -1.57% [-2.65, -0.66]; L3 (single
+        // point, 126 clips) J -1.17% [-2.01, -0.48], no guard (pan -3.0%,
+        // crowd -0.6%, static -0.4%, lowlight -0.3%, bodycam +0.4%, texture
+        // -4.2% on 4 clips, drone -0.2% on 3); 600-frame final (27 clips,
+        // keys every 10 s) J -0.95% [-1.53, -0.46], no guard (lowlight
+        // -1.5%, static -1.1%, crowd -0.3%; worst clip +1.0%). Jetson cycles
+        // +0.1% (instructions +1.0%). static_recovery passes. The other AV1
+        // presets pin it off.
+        ("structure.inherited_depth", 1.0),
         // Start-up QP cadence (period 8, base frames 4 QP finer, for the
         // first 100 frames after a key, then the engine's period 4 / -3 / +1)
         // and the cadence motion gate (`qp_cadence.rs`; docs/handoff/vvc.md,
