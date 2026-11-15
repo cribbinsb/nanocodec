@@ -71,7 +71,8 @@ function logTicks(lo, hi) {
  * Draw `points` into `container`:
  *   points: [{id, x, y, iqr: [lo, hi] | null, kind: 'ours'|'ref'|'tuned', shape, label,
  *             flagged, twin: id | null, priority}]
- *   opts: {xLabel, yLabel, describe(point) -> Node (tooltip), onSelect(point), selected}
+ *   opts: {xLabel, yLabel, describe(point) -> Node (tooltip), onSelect(point), selected,
+ *          frontiers: [{kind: 'ours'|'ref', line: [[x, y], ...], ids: Set}] (Pareto, frontier.js)}
  */
 export function drawScatter(container, points, opts) {
   const width = Math.max(300, container.clientWidth);
@@ -120,6 +121,16 @@ export function drawScatter(container, points, opts) {
     if (twin) links.append(svg('line', { class: 'twin-link', x1: sx(p.x), y1: sy(p.y), x2: sx(twin.x), y2: sy(twin.y) }));
   }
   root.append(links);
+
+  // Pareto frontiers, under the marks: a step line per group.
+  const fronts = svg('g', { class: 'frontiers' });
+  for (const f of opts.frontiers || []) {
+    if (f.line.length > 1) {
+      fronts.append(svg('polyline', { class: `frontier ${f.kind}`, points: f.line.map(([x, y]) => `${sx(x)},${sy(y)}`).join(' ') }));
+    }
+  }
+  root.append(fronts);
+  const onFront = new Set((opts.frontiers || []).flatMap((f) => [...f.ids]));
 
   const bars = svg('g');
   for (const p of points) {
@@ -178,7 +189,7 @@ export function drawScatter(container, points, opts) {
   const hide = () => { tooltip.hidden = true; };
   for (const p of [...points].sort((a, b) => a.priority - b.priority)) {
     const g = svg('g', { class: `point${opts.selected === p.id ? ' active' : ''}`, transform: `translate(${sx(p.x)} ${sy(p.y)})` });
-    const cls = `mark ${p.kind}${p.flagged ? ' flagged' : ''}${p.kind === 'tuned' ? ' ref' : ''}`;
+    const cls = `mark ${p.kind}${p.flagged ? ' flagged' : ''}${p.kind === 'tuned' ? ' ref' : ''}${onFront.has(p.id) ? ' on-front' : ''}`;
     g.append(svg('path', { d: shapePath(p.shape, p.kind === 'ours' ? radius + 0.5 : radius), class: cls }));
     const hit = svg('circle', { r: HIT_RADIUS, class: 'hit', tabindex: 0, role: 'button', 'aria-label': p.aria });
     hit.addEventListener('pointerenter', () => show(p, hit));

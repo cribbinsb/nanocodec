@@ -131,6 +131,14 @@ select { font: inherit; font-size: 13px; color: var(--ink); background: var(--su
 .chart .iqr { stroke-width: 2; opacity: 0.45; }
 .chart .mark { stroke: var(--surface); stroke-width: 2; }
 .chart .mark.ours { fill: var(--ours); }
+.chart .frontier { fill: none; stroke-width: 1.6; stroke-dasharray: 5 3; opacity: 0.8; }
+.chart .frontier.ours { stroke: var(--ours); }
+.chart .frontier.ref { stroke: var(--ref); }
+.chart .mark.on-front { stroke: var(--ink); stroke-width: 1.6; }
+.frontier-key { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85em; }
+.frontier-swatch { display: inline-block; width: 18px; border-top: 2px dashed; }
+.frontier-swatch.ours { border-color: var(--ours); }
+.frontier-swatch.ref { border-color: var(--ref); }
 .chart .mark.ref { fill: var(--ref); }
 .chart .mark.tuned { fill: var(--ref-soft); stroke: var(--ref); stroke-width: 1.5; }
 .chart .mark.flagged { fill: var(--surface); stroke-width: 2; }
