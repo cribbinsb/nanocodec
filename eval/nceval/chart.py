@@ -78,9 +78,10 @@ ANCHOR = "x264-medium"
 #: Our points: (family, chart label).
 OURS = (("nanocodec-h264", "H.264"), ("nanocodec-h264@fast", "H.264 Fast"),
         ("nanocodec-h264@faster", "H.264 Faster"),
-        ("nanocodec-h264@veryfast", "H.264 Veryfast"), ("nanocodec-hevc", "HEVC"),
+        ("nanocodec-h264@veryfast", "H.264 Veryfast"), ("nanocodec-hevc@slow", "HEVC Slow"),
+        ("nanocodec-hevc", "HEVC"),
         ("nanocodec-hevc@fast", "HEVC Fast"), ("nanocodec-hevc@faster", "HEVC Faster"),
-        ("nanocodec-av1", "AV1"),
+        ("nanocodec-av1@slow", "AV1 Slow"), ("nanocodec-av1", "AV1"),
         ("nanocodec-av1@fast", "AV1 Fast"), ("nanocodec-av1@faster", "AV1 Faster"),
         ("nanocodec-vp9", "VP9"),
         ("nanocodec-vp9@fast", "VP9 Fast"), ("nanocodec-vp9@faster", "VP9 Faster"),

@@ -103,6 +103,7 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(Hevc, 1, Slow, include_str!("../../../presets/hevc/slow.toml")),
     preset_file!(Hevc, 1, Faster, include_str!("../../../presets/hevc/faster.toml")),
     preset_file!(Hevc, 1, Fast, include_str!("../../../presets/hevc/fast.toml")),
+    preset_file!(Vvc, 1, Slow, include_str!("../../../presets/vvc/slow.toml")),
     preset_file!(Vvc, 1, Fast, include_str!("../../../presets/vvc/fast.toml")),
     preset_file!(Av1, 1, Slow, include_str!("../../../presets/av1/slow.toml")),
     preset_file!(Av1, 1, Faster, include_str!("../../../presets/av1/faster.toml")),
@@ -286,7 +287,7 @@ mod tests {
         let missing = preset_params(Codec::Vvc, 1, "veryfast").unwrap_err();
         assert_eq!(
             missing.to_string(),
-            "vvc has no 'veryfast' preset (its presets: fast, medium)"
+            "vvc has no 'veryfast' preset (its presets: fast, medium, slow)"
         );
         assert_eq!(
             speeds(Codec::Hevc),

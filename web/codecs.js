@@ -20,7 +20,7 @@ export const CODECS = {
   h264: { label: 'H.264', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, presets: ['medium', 'fast', 'faster', 'veryfast'], spatialLayers: [], annexB: '264' },
   hevc: { label: 'HEVC', quantizer: { name: 'QP', min: 0, max: 51, initial: 32 }, presets: ['medium', 'slow', 'fast', 'faster'], spatialLayers: [], annexB: 'hevc' },
   av1: { label: 'AV1', quantizer: { name: 'qindex', min: 1, max: 255, initial: 180 }, presets: ['medium', 'slow', 'fast', 'faster'], spatialLayers: [2, 3], ivf: 'AV01' },
-  vvc: { label: 'VVC', quantizer: { name: 'QP', min: 0, max: 63, initial: 32 }, presets: ['medium', 'fast'], spatialLayers: [], annexB: 'vvc' },
+  vvc: { label: 'VVC', quantizer: { name: 'QP', min: 0, max: 63, initial: 32 }, presets: ['medium', 'slow', 'fast'], spatialLayers: [], annexB: 'vvc' },
   vp9: { label: 'VP9', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, presets: ['medium', 'fast', 'faster', 'veryfast'], spatialLayers: [2], ivf: 'VP90' },
   av2: { label: 'AV2', quantizer: { name: 'qindex', min: 0, max: 255, initial: 180 }, presets: ['medium'], spatialLayers: [], ivf: 'AV02' },
 };

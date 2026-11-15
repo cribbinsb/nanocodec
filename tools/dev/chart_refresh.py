@@ -453,9 +453,8 @@ class Refresh:
                 changed.append(family)
         if changed:
             raise SystemExit(f"streams changed, give them in --families: {','.join(changed)}")
-        timed_on = self.record.setdefault("timed_on", {})
-        timed_on.update({f: self.commit for f in self.retimed})
-        self.save_record()
+        # Recorded once they are timed (`render`): a refresh stopped before its
+        # timing must not read as already timed on COMMIT when resumed.
 
     def retime_unchanged(self) -> None:
         """Move each stale family whose streams at COMMIT equal its recorded build's
@@ -645,6 +644,9 @@ class Refresh:
             ssh(f"rm -rf {JETSON_WORK}/timing")
 
     def render(self) -> None:
+        if self.retimed and not self.args.metrics_only:
+            self.record.setdefault("timed_on", {}).update({f: self.commit for f in self.retimed})
+            self.save_record()
         meta = WORK / "meta.json"
         if not self.args.dry_run:
             meta.write_text(json.dumps(self.meta(), indent=1) + "\n")

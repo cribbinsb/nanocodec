@@ -100,8 +100,8 @@
 <text x="656.5" y="455.4" text-anchor="end" fill="#0b0b0b" font-weight="600">H.264 Fast</text>
 <g><title>H.264 Faster: BD-J -3.2%, BD-PSNR -7.9%, BD-VMAF v1 +0.4%, 265.7 fps, 3.93× x264 medium</title><circle cx="715.0" cy="452.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <text x="725.0" y="456.0" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Faster</text>
-<g><title>H.264 Fastest: BD-J +4.7%, BD-PSNR -0.7%, BD-VMAF v1 +7.8%, 311.8 fps, 4.61× x264 medium</title><circle cx="753.6" cy="410.8" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<text x="763.6" y="414.8" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Fastest</text>
+<g><title>H.264 Veryfast: BD-J +4.7%, BD-PSNR -0.7%, BD-VMAF v1 +7.8%, 311.8 fps, 4.61× x264 medium</title><circle cx="753.6" cy="410.8" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<text x="763.6" y="414.8" text-anchor="start" fill="#0b0b0b" font-weight="600">H.264 Veryfast</text>
 <g><title>HEVC: BD-J -40.2%, BD-PSNR -40.3%, BD-VMAF v1 -39.0%, 121.0 fps, 1.79× x264 medium</title><circle cx="525.6" cy="645.1" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <text x="535.6" y="663.1" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC</text>
 <g><title>HEVC Fast: BD-J -32.1%, BD-PSNR -32.3%, BD-VMAF v1 -30.0%, 175.8 fps, 2.60× x264 medium</title><circle cx="615.6" cy="602.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
@@ -126,9 +126,9 @@
 <g><title>VP9 Faster: BD-J -27.7%, BD-PSNR -27.1%, BD-VMAF v1 -25.1%, 180.9 fps, 2.68× x264 medium</title><circle cx="622.4" cy="579.6" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="622.4" y1="587.6" x2="654.4" y2="627.6" stroke="#52514e" stroke-width="0.75"/>
 <text x="654.4" y="639.6" text-anchor="start" fill="#0b0b0b" font-weight="600">VP9 Faster</text>
-<g><title>VP9 Fastest: BD-J -20.2%, BD-PSNR -19.6%, BD-VMAF v1 -19.9%, 192.4 fps, 2.85× x264 medium</title><circle cx="637.2" cy="540.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<g><title>VP9 Veryfast: BD-J -20.2%, BD-PSNR -19.6%, BD-VMAF v1 -19.9%, 192.4 fps, 2.85× x264 medium</title><circle cx="637.2" cy="540.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="637.2" y1="532.9" x2="613.2" y2="505.9" stroke="#52514e" stroke-width="0.75"/>
-<text x="613.2" y="502.9" text-anchor="end" fill="#0b0b0b" font-weight="600">VP9 Fastest</text>
+<text x="613.2" y="502.9" text-anchor="end" fill="#0b0b0b" font-weight="600">VP9 Veryfast</text>
 <g><title>AV2: BD-J -42.8%, BD-PSNR -46.1%, BD-VMAF v1 -41.3%, 85.5 fps, 1.27× x264 medium</title><circle cx="442.0" cy="658.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="442.0" y1="666.9" x2="458.0" y2="678.9" stroke="#52514e" stroke-width="0.75"/>
 <text x="458.0" y="690.9" text-anchor="start" fill="#0b0b0b" font-weight="600">AV2</text>

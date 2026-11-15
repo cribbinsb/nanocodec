@@ -627,7 +627,15 @@ fn vp9_presets_recover() {
 
 #[test]
 fn vvc_presets_recover() {
-    for preset in [DEFAULT, include_str!("../../../presets/vvc/fast.toml")] {
+    for preset in [
+        DEFAULT,
+        include_str!("../../../presets/vvc/fast.toml"),
+        // The slow rung: the shared bundle, then VVC's levers (nc_encoder::presets).
+        concat!(
+            include_str!("../../../presets/slow.toml"),
+            include_str!("../../../presets/vvc/slow.toml")
+        ),
+    ] {
         check_preset::<nc_vvc::VvcBackend>(Codec::Vvc, preset, &FLAT_RECOVERY);
     }
 }

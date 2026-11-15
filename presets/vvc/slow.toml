@@ -1,0 +1,13 @@
+# VVC slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
+# applied first) plus 8x8 inter CUs (`planner.inter_min_log2` 3) and ISP
+# only where its residual gate passes (`vvc.isp_residual_gate` 1). Alone,
+# 8x8 inter CUs lose at CBR (study trial J +0.60%), but beside the second
+# reference the three gain more than the reference alone (joint study
+# slow-vvc-2026-11-15: -2.37% at x86 x1.37 against -1.73% at x1.16).
+# VVC's search is saturated: trellis states, the refinement exits, maximal
+# motion search, full P intra and no depth removal each move fixed-QP J by
+# under 0.1% (docs/analysis/fixed-qp-gap-2026-11-14.md), so they stay at
+# Default. Affine (-0.69%) is refused beside the second reference.
+# L3 (600 f, ladder, n=27): J -3.00% [-3.77, -2.19] at x1.22 Jetson cycles.
+planner.inter_min_log2 = 3
+vvc.isp_residual_gate = 1

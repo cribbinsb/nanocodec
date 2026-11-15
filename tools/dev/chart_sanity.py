@@ -58,8 +58,9 @@ FAMILY_PREFIX = "nanocodec-"
 #: 1.74x Fast's instructions, 1.50x slower on the Jetson, only 1.18x on x86).
 RATIO_TOLERANCE = 0.20
 #: A codec's presets from slowest to fastest (the family's `@stem`; "" is
-#: medium, the Default): nceval.encoders.nanocodec.LADDER reversed.
-PRESET_ORDER = ("", "fast", "faster", "veryfast")
+#: medium, the Default), with slow (the quality-first rung) before it:
+#: nceval.encoders.nanocodec.LADDER reversed.
+PRESET_ORDER = ("slow", "", "fast", "faster", "veryfast")
 #: The instruction check's clip and length (crowd: the timing set's middle clip).
 CALLGRIND_CLIP = "crowd_mot17_09"
 CALLGRIND_FRAMES = 30

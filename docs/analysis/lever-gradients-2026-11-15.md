@@ -84,11 +84,19 @@ is a Medium candidate for its own CBR screen.
 
 ## Slow bundles: predicted and measured
 
-Predicted J is the sum of the passing levers' J (the additive estimate, no
-overlap discount); predicted CPU the product of their ratios. Measured J is the
-L3 confirmation against Medium on the day's draw, at k 0.
+Method (owner, 2026-11-15): the replay at k 0.025 gives each codec's
+candidate set (the ledger, `python3 -m nceval.levers replay --codec C --k
+0.025`, adds the CBR sensitivity rows the fixed-QP table lacks); a short joint
+study over just those candidates (`nceval.tune search`, on/off and graded
+values, seeded with the replay's best single moves and their combinations,
+about 25 minutes, 32 pool clips at one rung) captures their interactions; its
+best point by J + 0.025·dCPU gets one L3 confirmation against Medium on the
+600-frame window (keys every 10 s, single point). Predicted J is the sum of
+the candidates' J (no overlap discount); predicted CPU the product of their
+ratios. "Joint" is the study's trial J on its own clips.
 
-| Codec | Bundle | Predicted J | Predicted CPU | Measured CPU (Jetson cycles / x86) | Measured L3 J |
-|---|---|---|---|---|---|
-| HEVC | (screened before this method) | | | x1.74 / x1.69 | **-5.59 % [-6.48, -4.71]** (n 78, L2 -4.61 %) |
-| AV1 | (screened before this method; carries `residual_rd_max_mv` 64, a fixed-QP loser) | | | x1.60 / x1.65 | **-2.07 % [-2.63, -1.55]** (n 78, ladder; L2 -2.47 %) |
+| Codec | Bundle | Predicted J | Predicted CPU | Joint (study trial) | Measured CPU (Jetson cycles / x86) | Measured L3 J |
+|---|---|---|---|---|---|---|
+| HEVC | (screened before this method) | | | | x1.74 / x1.69 | **-5.59 % [-6.48, -4.71]** (n 78, L2 -4.61 %) |
+| AV1 | (screened before this method; carries `residual_rd_max_mv` 64, a fixed-QP loser) | | | | x1.60 / x1.65 | **-2.07 % [-2.63, -1.55]** (n 78, ladder; L2 -2.47 %) |
+| VVC | second ref + 8x8 inter CUs + ISP residual gate | -2.82 % (-1.91 CBR, -0.64, -0.27) | x1.24 | -2.37 % at x86 x1.37 (study slow-vvc-2026-11-15, trial 4); second ref alone -1.73 %, 8x8 alone +0.60 % | x1.22 (bundle without the ISP gate x1.214) / x1.37 | **-3.00 % [-3.77, -2.19]** (600 f, ladder, n 27, no guard) |

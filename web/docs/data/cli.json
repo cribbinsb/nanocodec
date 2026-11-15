@@ -95,7 +95,7 @@
  "presets": {
   "h264": ["veryfast", "faster", "fast", "medium"],
   "hevc": ["faster", "fast", "medium", "slow"],
-  "vvc": ["fast", "medium"],
+  "vvc": ["fast", "medium", "slow"],
   "av1": ["faster", "fast", "medium", "slow"],
   "vp9": ["veryfast", "faster", "fast", "medium"],
   "av2": ["fast", "medium"]
