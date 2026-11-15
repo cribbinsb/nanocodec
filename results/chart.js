@@ -186,3 +186,57 @@ export function drawScatter(container, points, opts) {
   container.replaceChildren(root);
   hide();
 }
+
+const BAR = { height: 18, gap: 6, right: 56, top: 24, bottom: 30 };
+
+/**
+ * Horizontal bars of time ratios (ours ÷ reference) on a log scale around 1:
+ * rows [{label, ratio, tip}], a bar from 1 to each ratio, its value at the end,
+ * the tip as the bar's tooltip. Rows without a ratio are listed as missing.
+ */
+export function drawRatioBars(container, rows, { axisLabel, missingText }) {
+  const width = Math.max(300, container.clientWidth);
+  const longest = Math.max(...rows.map((r) => r.label.length)) * LABEL_CHAR_PX + 16;
+  const labelWidth = Math.min(longest, width * (width < 560 ? 0.5 : 0.4));
+  const height = BAR.top + rows.length * (BAR.height + BAR.gap) + BAR.bottom;
+  const ratios = rows.map((r) => r.ratio).filter((r) => r !== null);
+  const lo = Math.min(0.5, ...ratios) * 0.9;
+  const hi = Math.max(2, ...ratios) * 1.1;
+  const plotW = width - labelWidth - BAR.right;
+  const sx = (v) => labelWidth + ((Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * plotW;
+  const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': axisLabel });
+  const grid = svg('g', { class: 'grid' });
+  for (const v of [0.25, 0.5, 1, 2, 4].filter((t) => t >= lo && t <= hi)) {
+    grid.append(svg('line', { x1: sx(v), x2: sx(v), y1: BAR.top - 6, y2: height - BAR.bottom }));
+    const t = svg('text', { x: sx(v), y: height - BAR.bottom + 16, 'text-anchor': 'middle' });
+    t.textContent = `${v}×`;
+    grid.append(t);
+  }
+  root.append(grid);
+  const title = svg('text', { class: 'axis-title', x: width / 2, y: 14, 'text-anchor': 'middle' });
+  title.textContent = axisLabel;
+  root.append(title);
+  rows.forEach((r, i) => {
+    const y = BAR.top + i * (BAR.height + BAR.gap);
+    const name = svg('text', { class: 'point-label', x: labelWidth - 8, y: y + BAR.height * 0.7, 'text-anchor': 'end' });
+    const fits = Math.floor((labelWidth - 16) / LABEL_CHAR_PX);
+    name.textContent = r.label.length > fits ? `${r.label.slice(0, fits - 1)}…` : r.label;
+    root.append(name);
+    if (r.ratio === null) {
+      const t = svg('text', { x: sx(1) + 6, y: y + BAR.height * 0.7 });
+      t.textContent = missingText;
+      root.append(t);
+      return;
+    }
+    const x0 = Math.min(sx(1), sx(r.ratio));
+    const bar = svg('rect', { class: `mark ${r.ratio <= 1 ? 'ours' : 'ref'}`, x: x0, y, width: Math.max(2, Math.abs(sx(r.ratio) - sx(1))), height: BAR.height, rx: 3, tabindex: 0 });
+    const tip = svg('title');
+    tip.textContent = r.tip;
+    bar.append(tip);
+    const value = svg('text', { class: 'point-label', x: Math.max(sx(1), sx(r.ratio)) + 6, y: y + BAR.height * 0.7 });
+    value.textContent = r.ratio.toFixed(2);
+    root.append(bar, value);
+  });
+  root.append(svg('line', { class: 'zero-line', x1: sx(1), x2: sx(1), y1: BAR.top - 6, y2: height - BAR.bottom }));
+  container.replaceChildren(root);
+}

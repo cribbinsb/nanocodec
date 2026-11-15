@@ -42,14 +42,30 @@
       build's on the same streams. Fast only where the demo offers it.</p>
     <div class="wasm"></div>
     <p class="note wasm-caveat"></p>
+    <h3 id="wasm-encode">Browser encode against ffmpeg.wasm</h3>
+    <p class="prose">Encode speed of our browser module and of the official single-thread ffmpeg.wasm
+      (x264), on one PC core in the same session: one 720p clip at the chart's middle rung. <strong>ffmpeg.wasm is
+      a generic build without SIMD</strong>, so it is a weak yardstick for what a SIMD port of x264 would reach;
+      no estimate of such a port is plotted. Quality is the chart's point for the same encoder and preset (the
+      held-out fresh clips against x264 --tune psnr, native builds); the browser runs were not scored themselves.
+      Lower is fewer bits, right is faster.</p>
+    <div class="chart-card">
+      <div class="chart wasm-encode-chart"></div>
+      <div class="tooltip" role="tooltip" hidden></div>
+    </div>
+    <div class="wasm-encode-table"></div>
     <h2 id="decoders">Decoders against the established ones</h2>
     <p class="prose">Our decoders' time per frame against FFmpeg (H.264, HEVC; also VP9 in brackets), dav1d
-      (AV1), vpxdec (VP9), VVdeC (VVC) and avmdec (AV2, a research reference decoder not built for speed), every
+      (AV1), vpxdec (VP9), VVdeC (VVC) and avmdec (AV2, a research reference decoder not built for speed) natively,
+      and in the browser against ffmpeg.wasm (no SIMD; it has no AV1, VVC or AV2 decoder), every
       decoder with one thread, though the references are normally run multi-threaded and are faster that way.
       Streams: ours, and third-party ones (x264, openh264, x265 with B-frames, IP cameras, SVT-AV1, libaom,
       vpxenc). Below 1 means ours took less time. Every native output matched its reference decoder's. The PC was
       loaded during this run: read its ratios as rough and its WebAssembly times as upper bounds; the Jetson
       core was otherwise idle.</p>
+    <div class="controls decoder-controls"></div>
+    <p class="note decoder-note"></p>
+    <div class="chart-card"><div class="chart ratio-chart"></div></div>
     <div class="decoders"></div>
     <h2 id="hardware">Hardware encoders, for scale</h2>
     <p class="prose">NVIDIA NVENC on an RTX 5090 GPU in the same low-delay CBR on the development clips. Its speed

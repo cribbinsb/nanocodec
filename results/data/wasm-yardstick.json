@@ -1,0 +1,116 @@
+{
+ "source": [
+  "docs/results/wasm-yardstick-2026-11-12/wasm.json"
+ ],
+ "build": "bcbc5601",
+ "quality_view": "fresh-psnr",
+ "encode": [
+  {
+   "name": "h264-fast",
+   "family": "nanocodec-h264@h264-fast",
+   "label": "nanocodec H.264 Fast",
+   "module": "ours-wasm",
+   "ms": 11.01,
+   "fps": 90.8,
+   "j": -11.14
+  },
+  {
+   "name": "h264",
+   "family": "nanocodec-h264",
+   "label": "nanocodec H.264 Default",
+   "module": "ours-wasm",
+   "ms": 11.59,
+   "fps": 86.3,
+   "j": -18.96
+  },
+  {
+   "name": "hevc-fast",
+   "family": "nanocodec-hevc@hevc-fast",
+   "label": "nanocodec HEVC Fast",
+   "module": "ours-wasm",
+   "ms": 18.29,
+   "fps": 54.7,
+   "j": -32.11
+  },
+  {
+   "name": "x264 ultrafast",
+   "family": "x264-ultrafast",
+   "label": "x264 ultrafast",
+   "module": "ffmpeg.wasm",
+   "ms": 18.57,
+   "fps": 53.9,
+   "j": 48.49
+  },
+  {
+   "name": "av1-fast",
+   "family": "nanocodec-av1@av1-fast",
+   "label": "nanocodec AV1 Fast",
+   "module": "ours-wasm",
+   "ms": 22.62,
+   "fps": 44.2,
+   "j": -32.57
+  },
+  {
+   "name": "vp9",
+   "family": "nanocodec-vp9",
+   "label": "nanocodec VP9 Default",
+   "module": "ours-wasm",
+   "ms": 25.83,
+   "fps": 38.7,
+   "j": -38.27
+  },
+  {
+   "name": "x264 veryfast",
+   "family": "x264-veryfast",
+   "label": "x264 veryfast",
+   "module": "ffmpeg.wasm",
+   "ms": 46.52,
+   "fps": 21.5,
+   "j": 13.43
+  }
+ ],
+ "decode": [
+  {
+   "codec": "h264",
+   "stream": "ours 720p crowd 600k",
+   "ours_ms": 2.57,
+   "ref_ms": 3.65,
+   "ratio": 0.7
+  },
+  {
+   "codec": "h264",
+   "stream": "x264 CABAC 1080p 3M",
+   "ours_ms": 9.4,
+   "ref_ms": 11.11,
+   "ratio": 0.85
+  },
+  {
+   "codec": "hevc",
+   "stream": "Axis 720p camera",
+   "ours_ms": 2.35,
+   "ref_ms": 2.67,
+   "ratio": 0.88
+  },
+  {
+   "codec": "hevc",
+   "stream": "ours 1080p 3M",
+   "ours_ms": 14.13,
+   "ref_ms": 18.49,
+   "ratio": 0.76
+  },
+  {
+   "codec": "hevc",
+   "stream": "ours 720p crowd 600k",
+   "ours_ms": 3.66,
+   "ref_ms": 5.1,
+   "ratio": 0.72
+  },
+  {
+   "codec": "vp9",
+   "stream": "vpxenc 1080p 3M",
+   "ours_ms": 14.85,
+   "ref_ms": 21.21,
+   "ratio": 0.7
+  }
+ ]
+}
