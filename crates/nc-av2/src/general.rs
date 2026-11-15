@@ -10,6 +10,8 @@
 //! reimplemented in Rust. See `THIRD_PARTY.md`.
 
 pub mod bits;
+pub mod block;
+pub mod cdfs;
 pub mod decoder;
 pub mod frame_header;
 pub mod output;

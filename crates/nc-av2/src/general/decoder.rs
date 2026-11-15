@@ -12,6 +12,8 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use super::block::{self, BlockTrace};
+use super::cdfs::Cdfs;
 use super::frame_header::{
     self, Context, FrameHeader, FrameType, MAX_SLOTS, Parsed, ShowExisting, SlotHeader, obu_type,
 };
@@ -90,6 +92,25 @@ pub struct Decoder {
     retired: Vec<Rc<Picture>>,
     /// Buffers reused from picture to picture.
     workspace: tile_decoder::Workspace,
+    /// Where the general block layer's trace goes, if anywhere.
+    block_trace: TraceSink,
+}
+
+/// A block-trace sink ([`Decoder::trace_blocks`]).
+#[derive(Default)]
+struct TraceSink(Option<BlockSink>);
+
+/// A boxed block-trace receiver.
+pub type BlockSink = Box<dyn FnMut(std::fmt::Arguments<'_>)>;
+
+impl std::fmt::Debug for TraceSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "TraceSink(on)"
+        } else {
+            "TraceSink(off)"
+        })
+    }
 }
 
 impl Decoder {
@@ -365,8 +386,14 @@ impl Decoder {
             .state
             .subset_sequence
             .clone()
-            .ok_or(DecodeError::MissingKey)??;
-        let params = subset::tile_params(&subset_sequence, &header)?;
+            .ok_or(DecodeError::MissingKey)?;
+        // Our encoder's frames take the subset tile decoder; every other
+        // frame the general block layer.
+        let Ok(params) =
+            subset_sequence.and_then(|sequence| subset::tile_params(&sequence, &header))
+        else {
+            return self.decode_general(&header, tiles);
+        };
         let size = (header.width as usize, header.height as usize);
         let (picture, models) = if header.is_intra() {
             tile_decoder::decode(tiles, size, params, None, None, &mut self.workspace)?
@@ -442,6 +469,33 @@ impl Decoder {
             }
         }
         Ok(())
+    }
+
+    /// Decode a frame through the general block layer. It parses blocks
+    /// up to the first tool not built yet, which it names; it does not yet
+    /// reconstruct pictures.
+    fn decode_general(&mut self, header: &FrameHeader, tiles: &[u8]) -> Result<()> {
+        if header.primary_reference.is_some() && !header.no_cross_frame_context {
+            return Err(DecodeError::Unsupported(
+                "AV2 inherited CDFs in the general block layer",
+            ));
+        }
+        let sequence = self.state.sequence.clone().ok_or(DecodeError::MissingKey)?;
+        let cdfs = Box::new(Cdfs::new(header.quantizer.base));
+        let trace = self.block_trace.0.as_mut().map(|sink| {
+            let sink: BlockTrace<'_> = &mut **sink;
+            sink
+        });
+        block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
+        Err(DecodeError::Unsupported(
+            "AV2 reconstruction in the general block layer",
+        ))
+    }
+
+    /// Send the general block layer's trace (dav2d's `DEBUG_BLOCK_INFO`
+    /// lines, `tools/dev/av2_foreign/block_trace.py`) to `sink`.
+    pub fn trace_blocks(&mut self, sink: BlockSink) {
+        self.block_trace = TraceSink(Some(sink));
     }
 
     /// Queue a picture of display order `order` for output, with the

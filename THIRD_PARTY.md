@@ -631,7 +631,13 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   the non-separable Wiener dictionary and tap ranges, `dav2d_div_recip`
   and `dav2d_ccso_quant_sz` from `src/tables.c`), `output.rs` from
   `src/lib.c` (`dav2d_queue_output`, `queue_flush`), `bits.rs`'s
-  sub-exponential codes from `src/getbits.c`. Where dav2d and AVM v1.0.0
+  sub-exponential codes from `src/getbits.c`, `block.rs` and `block/`
+  from `src/decode.c` (`dav2d_decode_tile_sbrow`, `decode_sb`,
+  `decode_b`, `reset_context`), `src/env.h` (partition and intra
+  contexts) and `src/tables.c` (`dav2d_block_dimensions`). The general
+  decoder's CDF defaults (`general/cdfs/defaults.rs`) are AVM v1.0.0's
+  (`av2/common/entropy_inits_modes.h`), extracted by
+  `tools/codegen/gen_av2_general_cdfs.py`. Where dav2d and AVM v1.0.0
   differ (the layer dependency maps of the sequence header; a repeated
   output order, which AVM rejects and dav2d drops), AVM is followed.
 

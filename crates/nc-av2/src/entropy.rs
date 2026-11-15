@@ -656,6 +656,13 @@ impl<'a> Reader<'a> {
         self.consumed
     }
 
+    /// The arithmetic decoder's range (block traces print it, as dav2d's
+    /// `DEBUG_BLOCK_INFO` prints `rng`).
+    #[must_use]
+    pub(crate) fn range(&self) -> u32 {
+        self.range
+    }
+
     /// Start one tile. At most 15 implicit zero bits may follow its final byte.
     /// # Errors
     /// Rejects empty input.
