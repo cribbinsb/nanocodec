@@ -82,8 +82,10 @@ and Alliance for Open Media experts who wrote the standards. x264, x265, FFmpeg,
 openh264 and NVENC are our comparison points, and with JM, HM, VVdeC, dav1d, dav2d and aomdec, the independent
 decoders that check our streams. Module-by-module credits: [THIRD_PARTY.md](THIRD_PARTY.md).
 
-The code was written and is maintained by AI coding agents (mostly Anthropic's Claude, also OpenAI's Codex and Google's Gemini)
-under the direction of one person; how it is checked is in the [FAQ](docs/FAQ.md#ai-authorship).
+The code was written and is maintained by AI coding agents (mostly Anthropic's Claude, also OpenAI's Codex and
+Google's Gemini) under the direction of one person. All of it was written in ten days, from the first commit on
+6 November 2026 to 15 November 2026: about 3,300 commits and about 350,000 lines of Rust, tests and tables
+included, in the development history. How it is checked is in the [FAQ](docs/FAQ.md#ai-authorship).
 
 ## Quick start
 
