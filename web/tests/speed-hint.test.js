@@ -33,13 +33,18 @@ test('a spatially layered stream gets size choices only', () => {
   assert.deepEqual(options.map(o => Object.keys(o.change)), [['width', 'height']]);
 });
 
-test('every estimated preset is one the page offers for the codec, lighter than Medium', () => {
+test('every estimated preset is one the page offers for the codec, lighter than Medium (Slow heavier)', () => {
   for (const [codec, { presets }] of Object.entries(CODECS)) {
     const costs = PRESET_COST[codec];
     assert.equal(costs.medium, 1, codec);
     for (const [preset, cost] of Object.entries(costs).filter(([name]) => name !== 'medium')) {
       assert.ok(presets.includes(preset), `${codec} ${preset}`);
-      assert.ok(cost > 0 && cost < 1, `${codec} ${preset}`);
+      assert.ok(preset === 'slow' ? cost > 1 : cost > 0 && cost < 1, `${codec} ${preset}`);
     }
   }
+});
+
+test('a view coded at Slow that falls behind is offered Medium', () => {
+  const choices = lighterChoices({ codec: 'hevc', preset: 'slow', width: 1280, height: 720, fps: 30 }, 40);
+  assert.ok(choices.some(choice => choice.change.preset === 'medium'), JSON.stringify(choices));
 });

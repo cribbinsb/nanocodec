@@ -14,6 +14,8 @@ from ..config import Paths, find_tool
 from .base import EncodeJob, EncoderAdapter, fps_fraction
 
 PRESETS_DIR = Path(__file__).resolve().parents[3] / "presets"
+#: The per-codec preset directories (presets/<codec>/).
+CODEC_DIRS = frozenset(codec.value for codec in Codec)
 #: The codec-independent speed ladder, fastest first. `medium` is each codec's
 #: Default (the engine defaults): it has no file and is what no `@stem` means.
 LADDER = ("veryfast", "faster", "fast", "medium")
@@ -82,8 +84,11 @@ class Nanocodec(EncoderAdapter):
 
 
 def read_preset(path: Path) -> dict[str, float]:
-    """A parameter file: `name = value` lines, `#` comments."""
-    overrides = {}
+    """A parameter file: `name = value` lines, `#` comments. A codec's rung file
+    (presets/<codec>/<rung>.toml) lies over the rung's shared bundle
+    (presets/<rung>.toml) where there is one, as nc_encoder::presets applies it."""
+    shared = path.parent.parent / path.name
+    overrides = read_preset(shared) if path.parent.name in CODEC_DIRS and shared.is_file() else {}
     for line in path.read_text().splitlines():
         line = line.split("#")[0].strip()
         if line:

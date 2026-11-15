@@ -4,7 +4,10 @@
 //! defaults, no overrides) and what an encode gets without a preset; every
 //! other rung is a parameter file in the repository's `presets/<codec>/`
 //! directory, built in here. `slow` is the quality-first rung: more
-//! compression for more CPU, still real time and low delay.
+//! compression for more CPU, still real time and low delay. Its shared
+//! engine bundle (`presets/slow.toml`: second reference, trellis, refinement)
+//! is applied before the codec's file, which holds only the codec's own
+//! deltas; a codec offers the rung by having that file.
 //!
 //! The names are relative to our own Default for each codec: `veryfast` here is
 //! not as fast as x264's `veryfast`, nor `medium` as slow as x264's `medium`.
@@ -117,6 +120,13 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(Av2, 1, Fast, include_str!("../../../presets/av2/fast.toml")),
 ];
 
+/// The parameters every codec's file at a rung starts from (`presets/<rung>.toml`),
+/// applied before it: the levers that are the shared engine's, not syntax.
+#[rustfmt::skip] // one file per line reads as the table it is
+const SHARED_FILES: &[(Speed, &str)] = &[
+    (Speed::Slow, include_str!("../../../presets/slow.toml")),
+];
+
 /// Why a preset cannot be applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PresetError {
@@ -208,7 +218,11 @@ pub fn preset_params(
         None if speed == Speed::Medium => "",
         None => return Err(PresetError::NotOffered { codec, speed }),
     };
-    parse_file(text)
+    let shared = SHARED_FILES
+        .iter()
+        .find(|(rung, _)| *rung == speed)
+        .map_or("", |(_, text)| text);
+    Ok(parse_file(shared)?.overlaid_with(&parse_file(text)?))
 }
 
 /// A parameter file: one `name = value` per line, `#` comments, blank lines.
@@ -236,6 +250,15 @@ mod tests {
             let params = parse_file(file.text).unwrap();
             assert!(!params.is_empty(), "{:?} {}", file.codec, file.speed.name());
         }
+    }
+
+    #[test]
+    fn slow_is_the_shared_bundle_under_the_codec_file() {
+        let shared = parse_file(SHARED_FILES[0].1).unwrap();
+        let hevc = preset_params(Codec::Hevc, 1, "slow").unwrap();
+        assert_eq!(hevc.get("refs.second"), Some(1.0));
+        assert_eq!(hevc.get("hevc.merge_candidates"), Some(5.0));
+        assert_eq!(hevc.overlaid_with(&shared), hevc);
     }
 
     #[test]
