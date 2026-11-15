@@ -293,6 +293,11 @@ fn av1_static_content_recovers_from_a_starved_key() {
     for preset in [
         DEFAULT,
         include_str!("../../../presets/av1/fast.toml"),
+        // The slow rung: the shared bundle, then AV1's levers (nc_encoder::presets).
+        concat!(
+            include_str!("../../../presets/slow.toml"),
+            include_str!("../../../presets/av1/slow.toml")
+        ),
         "av1.restoration = 1",
         "structure.unified = 1",
         "structure.unified = 1\nstructure.secondary_min_depth = 0\nrefs.second_full = 1",

@@ -1,0 +1,22 @@
+# AV1 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
+# applied first) plus AV1's levers: four trellis survivors, the sub-sample
+# refinement without its early exits, the luma residual RD check on every
+# vector, every transform-split trial, CDEF searched on every row, key CfL,
+# the inter-frame intra search for every block with more candidates, and
+# more key intra candidates. Screened as one bundle: L3 J -2.07%
+# [-2.63, -1.55] at x1.6 Jetson cycles (docs/handoff/presets.md "Slow
+# presets"); docs/analysis/lever-gradients-2026-11-15.md lists the levers
+# a re-built bundle takes.
+quant.trellis_states = 4
+decision.exact_rank_margin = 0
+decision.seed_refine_ratio = 0
+decision.codec_subpel_seed_lambdas = 0
+decision.skip_no_refine_lambdas = 0
+decision.refine_cheap_min_lambdas = 0
+av1.residual_rd_max_mv = 64
+av1.inter_tx_split_energy = 0
+av1.cdef_search_row_step = 1
+av1.keyframe_cfl = 1
+av1.inter_intra_search = 2
+av1.inter_intra_rd_candidates = 4
+av1.keyframe_intra_rd_candidates = 6

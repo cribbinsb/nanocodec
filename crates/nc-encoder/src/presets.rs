@@ -5,9 +5,9 @@
 //! other rung is a parameter file in the repository's `presets/<codec>/`
 //! directory, built in here. `slow` is the quality-first rung: more
 //! compression for more CPU, still real time and low delay. Its shared
-//! engine bundle (`presets/slow.toml`: second reference, trellis, refinement)
-//! is applied before the codec's file, which holds only the codec's own
-//! deltas; a codec offers the rung by having that file.
+//! engine bundle (`presets/slow.toml`: the second reference on every frame)
+//! is applied before the codec's file, which adds the levers that pay for
+//! that codec; a codec offers the rung by having that file.
 //!
 //! The names are relative to our own Default for each codec: `veryfast` here is
 //! not as fast as x264's `veryfast`, nor `medium` as slow as x264's `medium`.
@@ -104,6 +104,7 @@ const PRESET_FILES: &[PresetFile] = &[
     preset_file!(Hevc, 1, Faster, include_str!("../../../presets/hevc/faster.toml")),
     preset_file!(Hevc, 1, Fast, include_str!("../../../presets/hevc/fast.toml")),
     preset_file!(Vvc, 1, Fast, include_str!("../../../presets/vvc/fast.toml")),
+    preset_file!(Av1, 1, Slow, include_str!("../../../presets/av1/slow.toml")),
     preset_file!(Av1, 1, Faster, include_str!("../../../presets/av1/faster.toml")),
     preset_file!(Av1, 1, Fast, include_str!("../../../presets/av1/fast.toml")),
     preset_file!(Av1, 2, Fast, include_str!("../../../presets/av1/l2-fast.toml")),

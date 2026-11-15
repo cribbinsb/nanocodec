@@ -1,26 +1,15 @@
 # The shared slow bundle: what every codec's `slow` rung starts from, applied
 # by the engine (nc_encoder::presets) before the codec's
-# presets/<codec>/slow.toml, which adds only its syntax-specific deltas.
-# Default plus the work Default limits for speed in the shared engine; still
-# real time and low delay (P frames only, no lookahead). Measurements:
-# docs/handoff/presets.md "Slow presets".
+# presets/<codec>/slow.toml, which adds the levers that pass for that codec.
+# A lever is in slow when its measured J gain pays for its CPU at k 0.025
+# (docs/analysis/lever-gradients-2026-11-15.md); this file holds the one
+# that passes for every codec that can signal it.
 #
 # The last high-quality frame (key or cadence base) as a second reference on
 # every frame with the full mode decision, not only on the high-quality
-# frames the unified plan offers it on (HEVC Default: second ref every frame
-# L3 -1.65% at +24.8% Jetson cycles, docs/handoff/hevc.md; AV1 -2.00% at +22%,
-# docs/handoff/tuning.md).
+# frames the unified plan offers it on. CBR L3 against each Default: HEVC
+# -1.65% at +24.8% Jetson cycles, AV1 -2.00% at +22%, VVC -1.91% at +13.7%,
+# AV2 -1.46% at +11.9%; VP9 fixed QP -2.2% at +8.3%.
 structure.unified = 0
 refs.second = 1
 refs.second_full = 1
-# Four trellis survivors per scan position (Default keeps one) and the
-# engine's chroma trellis lambda.
-quant.trellis_states = 4
-quant.trellis_chroma = 0.25
-# Sub-sample refinement without its early exits: exact ranking of every
-# candidate, both seeds refined, no residual gates.
-decision.exact_rank_margin = 0
-decision.seed_refine_ratio = 0
-decision.codec_subpel_seed_lambdas = 0
-decision.skip_no_refine_lambdas = 0
-decision.refine_cheap_min_lambdas = 0

@@ -1,10 +1,12 @@
 # HEVC slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
-# applied first) plus HEVC's own approximations and gates, which are HEVC
-# syntax and tools: exact staged transforms and pre-transform zero bound, SAO
+# applied first) plus HEVC's levers: four trellis survivors with the chroma
+# trellis, exact staged transforms and pre-transform zero bound, SAO
 # statistics on every row, the full angular P-frame intra search (HEVC's 35
 # modes; Default keeps planar, DC, H/V and the MPMs), the inter/intra
 # transform-split and NxN gates open, and the fifth merge candidate
-# (MaxNumMergeCand 5, HEVC §7.4.7.1).
+# (MaxNumMergeCand 5, HEVC §7.4.7.1). Screened as one bundle: L3 J -5.59%.
+quant.trellis_states = 4
+quant.trellis_chroma = 0.25
 hevc.fast_forward16 = 0
 hevc.fast_forward32 = 0
 hevc.pre_transform_zero_scale = 1
