@@ -53,6 +53,7 @@ from pathlib import Path
 
 from .bdrate import bd_rate
 from .buildinfo import info_of, stream_identity
+from .encoders.nanocodec import OLD_FLAT_SUFFIX
 from .cachefile import entry_lock, get_or_create, read_json, sibling_temp, write_atomic
 from .cbr_stats import flicker, replay_buffer, weighted_yuv_per_frame, worst_quality
 from .clipframes import ClipFrames
@@ -455,14 +456,15 @@ class Bench:
                     else hashlib.sha256(family.tool.read_bytes()).hexdigest())
             return self.tool_hashes[family.tool]
 
-    def identity(self, family: Family, clip: Clip, label: str, scored: bool = True) -> str:
+    def identity(self, family: Family, clip: Clip, label: str, scored: bool = True,
+                 tool_hash: str | None = None) -> str:
         """Cache key: binary content, settings and input; never file paths.
 
         Scored points also key on the metric protocol (nceval's measurement
         fingerprint), so results from a changed VMAF protocol are never
         compared with older ones; rate probes carry no metrics.
         """
-        parts = [self.tool_hash(family), family.extra, clip.name, clip.yuv.stat().st_size,
+        parts = [tool_hash or self.tool_hash(family), family.extra, clip.name, clip.yuv.stat().st_size,
                  self.frames, self.intra, label, BUFFER_MS, SVT_BUFFER_LEVEL_MS]
         if clip.start_frame:  # clips measured from frame 0 keep their identities
             parts.append(f"start={clip.start_frame}")
@@ -580,7 +582,7 @@ class Bench:
         agents' screens sharing an anchor) encode it once (nceval.cachefile).
         """
         result_path = self.result_path(point)
-        cached = self._reusable(point, result_path)
+        cached = self._reusable(point, result_path) or self._legacy_result(point, result_path)
         if cached is not None:
             return cached
         with entry_lock(result_path):
@@ -590,6 +592,24 @@ class Bench:
             result = self._measure_uncached(point, result_path)
             write_atomic(result_path, json.dumps(result, indent=1))
             return result
+
+    def _legacy_result(self, point: Point, result_path: Path) -> dict | None:
+        """Our point as cached before 2026-11-15, copied to its current path: keyed on
+        the binary's bytes (before buildinfo.stream_identity) and filed under the
+        family's old preset name (before the ladder rename, encoders.nanocodec)."""
+        family = point.family
+        if not family.own:
+            return None
+        legacy = hashlib.sha256(family.tool.read_bytes()).hexdigest()
+        identity = self.identity(family, point.clip, point.label, tool_hash=legacy)
+        for name in legacy_family_names(family.name):
+            path = self.work / point.clip.name / name / f"{point.label}-{identity}.json"
+            cached = self._reusable(point, path)
+            if cached is not None:
+                result_path.parent.mkdir(parents=True, exist_ok=True)
+                write_atomic(result_path, json.dumps(cached, indent=1))
+                return cached
+        return None
 
     def _reusable(self, point: Point, result_path: Path) -> dict | None:
         """The cached result, unless missing, this run needs a stronger gate,
@@ -1190,3 +1210,14 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main(sys.argv[1:])
+
+
+def legacy_family_names(name: str) -> list[str]:
+    """`name` and the name the family had before the preset ladder rename
+    (`nanocodec-av1@fast` was `nanocodec-av1@av1-fast`, `@veryfast` `@<codec>-fastest`)."""
+    base, _, stem = name.partition("@")
+    if not stem:
+        return [name]
+    codec = base.removeprefix("nanocodec-")
+    old = OLD_FLAT_SUFFIX.get(stem, stem)
+    return [name, f"{base}@{codec}-{old}"]
