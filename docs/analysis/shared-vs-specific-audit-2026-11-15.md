@@ -290,3 +290,53 @@ Progress is recorded below as it lands.
 | 11-15 | #18 CDEF strength adjustment, #22 reference index | AV1's and AV2's encoder copies of `adjust_strength` call nc-dsp's existing `cdef_adjust_strength`; `ReferenceChoice::single_index` replaces H.264/HEVC/VVC `ref_idx_of` and AV2 `reference_rank`; exact. |
 | 11-15 | #12 filter search cadence | not shared: the common part is one test (`key || index % interval == 0`); sharing the mechanism means one engine interval parameter for HEVC SAO (hard-coded 4), VVC SAO (4) and AV1 CDEF (1), a stream-changing unification left with tuning winding down. |
 | 11-15 | #14 | not shared: HEVC/VVC `QuantGroup` and AV1/AV2 `block_qindex` are each codec's delta-QP syntax state, which belongs in the codec crate. |
+
+## 9. Final status (2026-11-15)
+
+Work stopped here at the coordinator's request; tuning is winding down.
+
+**Done** (landed on `variance-integration`; exact ones proved with
+`tools/dev/preset_identity.py`, every codec's Default and every preset):
+
+- #27, #28: AV2's standalone encoder and the engine's `OWN_PICTURE_PIPELINE`
+  hook deleted; `tools/ci/check_encode_paths.py` keeps one encode path per
+  codec.
+- #1 (quant part): `quant.trellis` 1 and `quant.trellis_states` 1 are engine
+  defaults.
+- #2 `TrellisSettings`, #4 planned dead zone, #5 `scaled_quantizer`, #6 shave
+  (HEVC, VVC), #7 HEVC quantiser from nc-dsp, #8 `HeldSlots` and
+  `scaled_reference_allowed`, #9 chroma policy mapping, #10 adaptive chroma
+  weight, #11 `BlockDecision::intra_fallback`, #13 `quadrant_sse`, #15
+  `block_sse`, #17 `AngleDeltaSearch`, #18 CDEF strength adjustment from
+  nc-dsp, #22 `ReferenceChoice::single_index`: all exact.
+- §4.1 `quant.trellis_chroma`: shared default 0 (stream-changing, L3 better
+  for AV1 and AV2, no guard at L2/L3).
+- VVC intra refresh (§6.4, §6.5): verified fixed upstream (4f0d8f05,
+  044e52a5); §6.1-§6.3 were fixed by the coordinator's audit-fixes work.
+
+**Decided not to share** (reasons in §8's table):
+
+- #3 trellis wrapper: the shared part is already `Trellis`; what remains per
+  codec is its own candidate and write-back arithmetic.
+- #12 filter search cadence: one shared test; a real unification needs one
+  engine interval parameter (HEVC SAO 4 hard-coded, VVC SAO 4, AV1 CDEF 1),
+  which is stream-changing.
+- #14 quantisation-group QP state: each codec's delta-QP syntax.
+- #16 still skip, #19 early merge: codec state around shared tests, and the
+  levers are off by default.
+- #6 for VP9 and AV1: their trailing-one rules behave differently.
+
+**Open** (no clear case while tuning winds down; each needs one L3 screen):
+
+- #20 inter-frame intra tiers, #21 transform-split early exits (small,
+  off-by-one conventions differ), #23 one SAO edge-offset search (HEVC vs
+  VVC's RD offsets), #24/#25 the λ forms (one `λ = k·step²` model, k 0.09 vs
+  0.135, and four chroma-λ arithmetics), #26 residual-drop RD.
+- The per-codec parameter spreads in §4.1 marked T. Among them
+  `rate.cadence_startup_base_boost` is 4 (H.264, AV1, VP9), 5 (AV2) and 6
+  (HEVC, VVC), with no known codec reason: the start-up cadence is the
+  engine's (`qp_cadence.rs`) and the values come from per-codec screens. It
+  is the clearest candidate for one shared value, left to the rate-control
+  owners with the other `rate.*` consensus defaults (§4.1 "S" rows:
+  `rate.cadence_motion_gate` 1, `rate.cadence_startup_period` 8,
+  `rate.period_ceiling` 1, `rate.key_still_boost` 6 in four codecs).

@@ -1,4 +1,4 @@
-"""The results site's data and the README's headline facts are generated, current and figure-checked.
+"""The results site's data and the README's headline facts are generated (by land.sh) and figure-checked.
 
 The browser side (every figure a rendered page shows is in that page's data) is
 web/tests/results-pages.py; these are the checks that need no browser.
@@ -18,9 +18,9 @@ METHOD_CONSTANTS = {"30 fps", "95%"}
 NAMES = re.compile(r"Ryzen 9 5950X|x264|H\.264|AV1|VP9|AV2|720p")
 
 
-def test_generated_files_are_current():
-    stale = site.stale(site.outputs())
-    assert not stale, f"run python3 -m nceval.site: {[str(p) for p in stale]}"
+def test_the_generated_files_are_regenerated_only_when_an_input_changed():
+    assert site.inputs_changed("HEAD") is False
+    assert site.INPUTS and all(not p.startswith("/") for p in site.INPUTS)
 
 
 def test_readme_figures_are_only_in_the_generated_block():

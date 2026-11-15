@@ -5,15 +5,17 @@ web/docs/examples/, so a page shows the compiled and tested code itself.
 
     python3 -m nceval.site            # write web/results/data/*.json and the README block
     python3 -m nceval.site --check    # exit 1 (listing the files) if any is out of date
+    python3 -m nceval.site --changed-since REF   # write only if an input changed since REF
 
 Every figure the results pages (web/results/*.html) and the README's headline
 block show comes from here, and everything here comes from the checked-in
 result files that the measuring tools write (nceval.chart, nceval.rc_cost,
 nceval.svc_chart, tools/dev/independent_report.py, tools/web/bench.py): no
 figure is typed by hand. The pages render the JSON in the browser; the README
-block is rewritten between its markers. eval/tests/test_site.py checks that both
-are up to date and that no page carries a figure of its own. Run it after any
-results refresh (tools/dev/chart_refresh.py does, after its render step).
+block is rewritten between its markers. tools/dev/land.sh regenerates them
+(--changed-since) whenever a landing changes an input (INPUTS), so they are
+never stale on the integration branch; eval/tests/test_site.py checks that no
+page carries a figure of its own.
 
 The JSON keeps the source files' precision; the pages choose the display
 rounding. Command lines are the harness's own (cbr.Family.command for the CBR
@@ -27,6 +29,7 @@ import argparse
 import csv
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -693,11 +696,29 @@ def stale(files: dict[Path, str]) -> list[Path]:
     return [p for p, text in files.items() if not p.is_file() or p.read_text() != text]
 
 
+#: Paths (repository-relative prefixes) the generated files are computed from:
+#: the result files, the harness code that names families and command lines,
+#: the presets, the README and the example sources.
+INPUTS = ("docs/results/", "eval/nceval/", "presets/", "README.md", "web/results/data/",
+          "web/docs/examples/", *DOCS_SOURCES.values())
+
+
+def inputs_changed(ref: str) -> bool:
+    """Whether a path in INPUTS differs between ref and the work tree's HEAD."""
+    changed = subprocess.run(["git", "diff", "--name-only", "--no-renames", ref, "HEAD"], cwd=REPO,
+                             check=True, capture_output=True, text=True).stdout.split()
+    return any(path.startswith(INPUTS) for path in changed)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true",
                         help="exit 1 if a generated file is out of date; write nothing")
+    parser.add_argument("--changed-since", metavar="REF",
+                        help="do nothing unless an input (INPUTS) changed since REF")
     args = parser.parse_args(argv)
+    if args.changed_since and not inputs_changed(args.changed_since):
+        return
     files = outputs()
     out_of_date = stale(files)
     if args.check:

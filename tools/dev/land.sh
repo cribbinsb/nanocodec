@@ -3,8 +3,9 @@
 # (docs/PROCEDURES.md "Landing").
 #
 #   tools/dev/land.sh [branch]     run from the agent's own worktree, on that branch
-#   tools/dev/land.sh --verify     the full checks of everything landed since the
-#                                  last verified head (the coordinator runs it)
+#   tools/dev/land.sh --verify [streams|tests]
+#                                  the post-landing checks (the coordinator runs
+#                                  them; verify_target below)
 #
 # Land first, verify beside (owner, 2026-11-13). There is no landing lock, no
 # queue and no train (owner, 2026-11-15: on that day the queue cost agents
@@ -77,7 +78,7 @@ main() {
     python3 -c 'import xdist' 2>/dev/null || pytest_parallel=()  # serial without pytest-xdist
     mkdir -p "$logs"
     prune_logs
-    if [[ "${1:-}" == --verify ]]; then verify_target; exit $?; fi
+    if [[ "${1:-}" == --verify ]]; then verify_target "${2:-}"; exit $?; fi
 
     branch=$(git rev-parse --abbrev-ref HEAD)
     [[ $# -eq 0 || "$1" == "$branch" ]] ||
@@ -89,12 +90,14 @@ main() {
     local began=$SECONDS base checked_base="" attempt
     for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         base=$(git rev-parse "refs/heads/$target")
+        drop_site_commit
         git rebase --quiet "$base" || { git rebase --abort 2>/dev/null || true
             die "rebase conflict with $target: rebase, resolve it, then run land.sh again"; }
         if [[ "$(git rev-parse HEAD)" == "$base" ]]; then
             printf '== nothing to land: %s is already on %s\n' "$branch" "$target"
             exit 0
         fi
+        regenerate_site "$base"
         if [[ -z "$checked_base" ]]; then
             printf '== land %s on %s %s\n' "$branch" "$target" "${base:0:9}"
             guard_warning "$base"
@@ -162,6 +165,34 @@ guard_warning() {
     git -c core.hooksPath=/dev/null commit --quiet --amend --no-edit \
         --trailer "Land-warning: $(grep -m1 -o 'undoes [0-9]* upstream change(s)\|did not finish.*' <<<"$found" ||
             echo 'revert guard flagged this commit') (tools/dev/land_guard.py)"
+}
+
+#: Author of the commits land.sh makes on a lander's branch (regenerated files).
+SITE_AUTHOR="land.sh <land.sh@nanocodec>"
+SITE_SUBJECT="site: regenerate the generated results data (python3 -m nceval.site)"
+#: What eval/nceval/site.py writes.
+SITE_OUTPUTS=(web/results/data web/docs/examples README.md)
+
+# The generated site data and README block (eval/nceval/site.py), rewritten
+# and committed on top of the branch when the branch changes one of their
+# inputs since base $1: they are generated at landing, never left stale for
+# the verifier to find (2026-11-15: a stale chart.json failed a 56-min verify).
+# A failure to generate only warns.
+regenerate_site() {
+    [[ -f eval/nceval/site.py ]] || return 0
+    (cd eval && timed "site data" python3 -m nceval.site --changed-since "$1" >/dev/null) || {
+        printf '== WARNING: python3 -m nceval.site failed: generated files not refreshed\n'; return 0; }
+    git add -A -- "${SITE_OUTPUTS[@]}"
+    git diff --cached --quiet && return 0
+    git -c core.hooksPath=/dev/null commit --quiet --author="$SITE_AUTHOR" -m "$SITE_SUBJECT"
+    printf '== generated files refreshed: %s\n' "$(git log --oneline -1 HEAD)"
+}
+
+# Before rebasing again: drop the previous attempt's regeneration commit (it is
+# made again on the new head, instead of conflicting with someone else's).
+drop_site_commit() {
+    [[ "$(git log -1 --format='%an <%ae>%n%s' HEAD)" == "$SITE_AUTHOR"$'\n'"$SITE_SUBJECT" ]] || return 0
+    git reset --quiet --hard HEAD~1
 }
 
 # What cannot wait (header, step 2), on HEAD against base $1.
@@ -234,44 +265,111 @@ sync_integration_tree() {
         "$tree" "$STALE_SEARCH_DEPTH" "$target" | tee -a "$logs/integration-sync.log"
 }
 
-# `land.sh --verify`: the full checks (tests, clippy, checkasm, the browser
-# module, the eval suite, landing conformance) for everything landed since the
-# last verified head, in its own worktree and target directory. On success it
-# records the head in run/verified-head (the coordinator mirrors and publishes
-# only verified heads); on failure it writes run/verify-failed (head, base,
-# log) and exits non-zero: fix forward, or revert a stream mismatch, then run
-# it again. One verifier at a time.
+# `land.sh --verify [streams|tests]` (default both, in that order): checks of
+# everything landed since the last head each part verified, in its own worktree
+# and target dir, so neither holds up landing nor the other part.
+#   streams: the landing conformance check alone (minutes). Success records the
+#     head in run/verified-streams-head (mirrors and publishing use it);
+#     failure writes run/verify-failed (head, base, log): a stream mismatch,
+#     the only failure that reverts a landing.
+#   tests: fmt, clippy, workspace tests, checkasm, the browser module, the eval
+#     suite (tens of minutes). Success records run/verified-head and empties
+#     run/fix-forward; failure appends `head base log` to run/fix-forward: its
+#     owner fixes forward, nothing is reverted (2026-11-15: the two failed
+#     verifies that day were a stale generated file and a renamed label).
+# A part already running elsewhere is skipped (the next call covers its heads).
 verify_target() {
-    local state=$data_root/run/verified-head failed=$data_root/run/verify-failed
-    local tree=${NC_VERIFIER_TREE:-$data_root/worktrees/verifier} head base log scope status=0
-    exec 8>>"$data_root/run/verify.lock"
-    flock -n 8 || { printf '== a verifier is already running\n'; return 0; }
+    local status=0
+    case ${1:-both} in
+        streams) verify_streams || status=$? ;;
+        tests) verify_tests || status=$? ;;
+        both) verify_streams || status=$?; verify_tests || status=$? ;;
+        *) die "usage: land.sh --verify [streams|tests]" ;;
+    esac
+    return "$status"
+}
+
+verify_streams() {
+    local state=$data_root/run/verified-streams-head failed=$data_root/run/verify-failed
+    local head base log scope tree status=0
+    exec 8>>"$data_root/run/verify-streams.lock"
+    flock -n 8 || { printf '== a streams verifier is already running\n'; return 0; }
     head=$(git rev-parse "$target")
-    base=$(cat "$state" 2>/dev/null || git rev-parse "$target~1")
+    base=$(cat "$state" 2>/dev/null || cat "$data_root/run/verified-head" 2>/dev/null || git rev-parse "$target~1")
     if [[ "$head" == "$base" ]]; then
-        printf '== verified: %s %s (nothing new)\n' "$target" "${head:0:9}"
+        printf '== streams verified: %s %s (nothing new)\n' "$target" "${head:0:9}"
         return 0
     fi
-    [[ -e "$tree/.git" ]] || git worktree add --quiet --detach "$tree" "$target"
-    git -C "$tree" checkout --quiet --force --detach "$head"
-    export CARGO_TARGET_DIR=${NC_VERIFY_TARGET_DIR:-$data_root/targets/verifier}
-    log=$logs/verify-${head:0:9}.log
+    verifier_tree "${NC_VERIFIER_STREAMS_TREE:-$data_root/worktrees/verifier-streams}" "$head"
+    log=$logs/verify-streams-${head:0:9}.log
     scope=$(cd "$tree" && python3 tools/dev/land_scope.py "$base") || return 1
-    printf '== verifying %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
-    printf '== live: tail -f %s.parts/{python,rust,conformance}\n' "$log"
-    # NC_WEB_TESTS_SINCE: the page tests run only where these changes reach (tools/ci/web_tests.py).
-    (cd "$tree" && NC_CHECK_PARTS=$log.parts NC_WEB_TESTS_SINCE=$base run_checks "$scope") >"$log" 2>&1 || status=$?
+    printf '== verifying streams %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
+    (cd "$tree" && CARGO_TARGET_DIR=${NC_VERIFY_STREAMS_TARGET_DIR:-$data_root/targets/verifier-streams} \
+        timed "streams" conformance_check_plan "$scope") >"$log" 2>&1 || status=$?
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
         rm -f "$failed"
-        printf '== verified: %s %s\n' "$target" "${head:0:9}"
+        printf '== streams verified: %s %s\n' "$target" "${head:0:9}"
     else
         printf '%s %s %s\n' "$head" "$base" "$log" >"$failed"
-        printf '== VERIFY FAILED at %s (since %s): the last %d lines of %s\n' \
-            "${head:0:9}" "${base:0:9}" "$FAILURE_TAIL" "$log" >&2
-        tail -n "$FAILURE_TAIL" "$log" >&2
+        report_failure "STREAMS FAILED (revert or fix at once)" "$head" "$base" "$log"
     fi
     return "$status"
+}
+
+verify_tests() {
+    local state=$data_root/run/verified-head list=$data_root/run/fix-forward
+    local head base log scope tree status=0
+    exec 9>>"$data_root/run/verify.lock"
+    flock -n 9 || { printf '== a tests verifier is already running\n'; return 0; }
+    head=$(git rev-parse "$target")
+    base=$(cat "$state" 2>/dev/null || git rev-parse "$target~1")
+    if [[ "$head" == "$base" ]]; then
+        printf '== tests verified: %s %s (nothing new)\n' "$target" "${head:0:9}"
+        return 0
+    fi
+    verifier_tree "${NC_VERIFIER_TREE:-$data_root/worktrees/verifier}" "$head"
+    log=$logs/verify-${head:0:9}.log
+    # the conformance check is the streams part's
+    scope=$(cd "$tree" && python3 tools/dev/land_scope.py "$base") || return 1
+    scope=$(sed 's/^conformance .*/conformance 0/' <<<"$scope")
+    printf '== verifying tests %s %s..%s (log %s)\n' "$target" "${base:0:9}" "${head:0:9}" "$log"
+    printf '== live: tail -f %s.parts/{python,rust}\n' "$log"
+    # NC_WEB_TESTS_SINCE: the page tests run only where these changes reach (tools/ci/web_tests.py).
+    (cd "$tree" && CARGO_TARGET_DIR=${NC_VERIFY_TARGET_DIR:-$data_root/targets/verifier} \
+        NC_CHECK_PARTS=$log.parts NC_WEB_TESTS_SINCE=$base run_checks "$scope") \
+        >"$log" 2>&1 || status=$?
+    if ((status == 0)); then
+        printf '%s\n' "$head" >"$state"
+        rm -f "$list"
+        printf '== tests verified: %s %s\n' "$target" "${head:0:9}"
+    else
+        printf '%s %s %s\n' "$head" "$base" "$log" >>"$list"
+        report_failure "TESTS FAILED (fix forward; listed in $list)" "$head" "$base" "$log"
+    fi
+    return "$status"
+}
+
+# `verifier_tree DIR HEAD`: the verifier worktree DIR (created on first use) at
+# HEAD; sets the caller's $tree.
+verifier_tree() {
+    tree=$1
+    [[ -e "$tree/.git" ]] || git worktree add --quiet --detach "$tree" "$target"
+    git -C "$tree" checkout --quiet --force --detach "$2"
+}
+
+report_failure() {  # report_failure WHAT HEAD BASE LOG
+    printf '== %s at %s (since %s): the last %d lines of %s\n' \
+        "$1" "${2:0:9}" "${3:0:9}" "$FAILURE_TAIL" "$4" >&2
+    tail -n "$FAILURE_TAIL" "$4" >&2
+}
+
+# The conformance check for the plan in $1 (land_scope.py output).
+conformance_check_plan() {
+    local -A plan=()
+    local key values
+    while read -r key values; do plan[$key]=$values; done <<<"$1"
+    conformance_check plan
 }
 
 # Every check the plan in $1 (land_scope.py output) asks for, on the current
