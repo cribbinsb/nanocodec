@@ -12,7 +12,7 @@
    "module": "ours-wasm",
    "ms": 11.01,
    "fps": 90.8,
-   "j": -11.14
+   "j": -11.65
   },
   {
    "name": "h264",
@@ -21,7 +21,7 @@
    "module": "ours-wasm",
    "ms": 11.59,
    "fps": 86.3,
-   "j": -18.96
+   "j": -20.59
   },
   {
    "name": "hevc-fast",
@@ -30,7 +30,7 @@
    "module": "ours-wasm",
    "ms": 18.29,
    "fps": 54.7,
-   "j": -32.11
+   "j": -32.5
   },
   {
    "name": "x264 ultrafast",
@@ -39,7 +39,7 @@
    "module": "ffmpeg.wasm",
    "ms": 18.57,
    "fps": 53.9,
-   "j": 48.49
+   "j": 46.37
   },
   {
    "name": "av1-fast",
@@ -48,7 +48,7 @@
    "module": "ours-wasm",
    "ms": 22.62,
    "fps": 44.2,
-   "j": -32.57
+   "j": -33.01
   },
   {
    "name": "vp9",
@@ -57,7 +57,7 @@
    "module": "ours-wasm",
    "ms": 25.83,
    "fps": 38.7,
-   "j": -38.27
+   "j": -39.94
   },
   {
    "name": "x264 veryfast",
@@ -66,7 +66,7 @@
    "module": "ffmpeg.wasm",
    "ms": 46.52,
    "fps": 21.5,
-   "j": 13.43
+   "j": 12.26
   }
  ],
  "decode": [

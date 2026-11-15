@@ -1,27 +1,34 @@
 {
  "base": "8b492382",
  "families": {
-  "nanocodec-h264": "8b492382",
+  "nanocodec-h264": "bad14976",
   "nanocodec-h264@fast": "8b492382",
   "nanocodec-h264@faster": "8b492382",
-  "nanocodec-h264@veryfast": "8b492382",
-  "nanocodec-hevc": "8b492382",
+  "nanocodec-h264@veryfast": "bad14976",
+  "nanocodec-hevc": "bad14976",
   "nanocodec-hevc@fast": "8b492382",
   "nanocodec-hevc@faster": "8b492382",
-  "nanocodec-av1": "8b492382",
+  "nanocodec-av1": "bad14976",
   "nanocodec-av1@fast": "8b492382",
   "nanocodec-av1@faster": "8b492382",
-  "nanocodec-vp9": "8b492382",
+  "nanocodec-vp9": "bad14976",
   "nanocodec-vp9@fast": "8b492382",
   "nanocodec-vp9@faster": "8b492382",
   "nanocodec-vp9@veryfast": "8b492382",
-  "nanocodec-av2": "8b492382",
+  "nanocodec-av2": "bad14976",
   "nanocodec-av2@fast": "8b492382",
-  "nanocodec-vvc": "8b492382",
-  "nanocodec-vvc@fast": "8b492382"
+  "nanocodec-vvc": "bad14976",
+  "nanocodec-vvc@fast": "8b492382",
+  "nanocodec-h264@slow": "bad14976",
+  "nanocodec-hevc@slow": "bad14976",
+  "nanocodec-av1@slow": "bad14976",
+  "nanocodec-vp9@slow": "bad14976",
+  "nanocodec-av2@slow": "bad14976",
+  "nanocodec-vvc@slow": "bad14976"
  },
  "builds": {
-  "8b492382": "8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753)"
+  "8b492382": "8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753)",
+  "bad14976": "bad14976"
  },
  "tools": {
   "x264": "0.165",
