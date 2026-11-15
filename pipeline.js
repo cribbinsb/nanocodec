@@ -20,9 +20,9 @@
 // rate show the same tick. The page captures nothing while the queue is full
 // (`full`), which bounds the added latency.
 //
-// Switching analysis on or off (analysis-view.js) changes only the decoders'
-// module (`switchDecoders`): once no capture is in flight, each view starts a
-// decode worker on the other build and has it decode the view's stream again
+// Switching analysis on or off (analysis-view.js) changes only the decoders
+// (`switchDecoders`): once no capture is in flight, each view starts a
+// decode worker with analysis records on or off and has it decode the view's stream again
 // from its last key frame up to the picture on screen, so the new decoder holds
 // the same references and shows the same picture (the bitstream is unchanged).
 // Live encoders keep running and are given the new decoder's port. A live view
@@ -31,7 +31,7 @@
 import { codesTick, tickAt, tickMs } from './timeline.js';
 import { framesToDecode, streamFrameAtTick } from './reference.js';
 import { SourcePicture } from './colour.js';
-import { compiledAnalysisModule, compiledModule } from './wasm.js';
+import { compiledModule } from './wasm.js';
 
 /**
  * Frames captured but not yet decoded by both views: one per stage (capture
@@ -70,21 +70,21 @@ class View {
   get analysisWanted() { return Boolean(this.panel.analysis?.enabled); }
   /**
    * Start the decode worker on `port`, where packets will arrive, with the
-   * compiled codec module: the analysis build when the view's analysis is on
+   * compiled codec module, recording analysis when the view's analysis is on
    * (analysis-view.js). `warmUp`: run the decoder's start-up warm-up (warmup.js).
    */
-  initDecoder(port, { wasmModule, analysisModule }, warmUp = true) {
+  initDecoder(port, wasmModule, warmUp = true) {
     this.analysing = this.analysisWanted;
     this.decoder.postMessage({ type: 'init', codec: this.panel.current.codec, port, analysis: this.analysing, warmUp,
-      wasmModule: this.analysing ? analysisModule : wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
+      wasmModule, operatingPoint: +(this.panel.operatingPoint?.value ?? 0) }, [port]);
   }
   /**
-   * Replace the decode worker with one on the module analysis now wants, and
+   * Replace the decode worker with one recording analysis as the view now wants, and
    * have it decode `replayFrames()` again; resolves to the result of the last of
    * them (the picture on screen, decode-worker.js 'replayed'), or null when the
    * view has shown nothing yet. Only while no capture is in flight.
    */
-  async switchDecoder(modules) {
+  async switchDecoder(wasmModule) {
     const old = this.decoder, worker = startWorker('./decode-worker.js');
     const channel = new MessageChannel();
     const replayed = new Promise((resolve, reject) => {
@@ -97,7 +97,7 @@ class View {
     });
     const analysing = this.analysing;
     this.decoder = worker;
-    this.initDecoder(channel.port1, modules, false);
+    this.initDecoder(channel.port1, wasmModule, false);
     let result;
     try { result = await replayed; } catch (error) {
       worker.terminate(); this.decoder = old; this.analysing = analysing;
@@ -146,10 +146,10 @@ class LiveView extends View {
     });
   }
   /** Start both workers; the encoder takes its frames from `capturePort`. Resolves once both are ready. */
-  init(capturePort, modules) {
+  init(capturePort, wasmModule) {
     const channel = new MessageChannel();
-    this.initDecoder(channel.port1, modules);
-    this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort, wasmModule: modules.wasmModule },
+    this.initDecoder(channel.port1, wasmModule);
+    this.encoder.postMessage({ type: 'init', config: this.panel.current, port: channel.port2, capturePort, wasmModule },
       [channel.port2, capturePort]);
     return this.ready;
   }
@@ -194,7 +194,7 @@ class OriginalView extends View {
   }
   get analysisWanted() { return false; }
   /** Start the worker; it takes its frames from `capturePort` itself. */
-  init(capturePort, { wasmModule }) {
+  init(capturePort, wasmModule) {
     const { width, height } = this.panel.current;
     this.decoder.postMessage({ type: 'init', port: capturePort, wasmModule, width, height }, [capturePort]);
     return this.ready;
@@ -212,9 +212,9 @@ class ReferenceView extends View {
     this.last = null;
   }
   /** Start the decoder; source frames arrive on `capturePort` and go on with the stream's packets. */
-  init(capturePort, modules) {
+  init(capturePort, wasmModule) {
     const channel = new MessageChannel();
-    this.initDecoder(channel.port1, modules);
+    this.initDecoder(channel.port1, wasmModule);
     this.port = channel.port2;
     this.capturePort = capturePort;
     capturePort.onmessage = ({ data }) => this.submit(data);
@@ -277,9 +277,8 @@ export class Comparison {
       const ports = this.views.map(() => new MessageChannel());
       const views = this.views.map(({ panel }, i) => ({ width: panel.current.width, height: panel.current.height, port: ports[i].port1 }));
       this.capture.postMessage({ type: 'init', views }, ports.map(p => p.port1));
-      const analysis = this.views.some(({ panel }) => panel.analysis?.enabled);
-      Promise.all([compiledModule(), analysis ? compiledAnalysisModule() : null])
-        .then(([wasmModule, analysisModule]) => Promise.all(this.views.map((view, i) => view.init(ports[i].port2, { wasmModule, analysisModule }))))
+      compiledModule()
+        .then(wasmModule => Promise.all(this.views.map((view, i) => view.init(ports[i].port2, wasmModule))))
         .then(() => {
           clearTimeout(timeout);
           this.startFailed = null;
@@ -302,8 +301,8 @@ export class Comparison {
    * or nothing shown yet).
    */
   async switchDecoders() {
-    const [wasmModule, analysisModule] = await Promise.all([compiledModule(), this.views.some(v => v.analysisWanted) ? compiledAnalysisModule() : null]);
-    return Promise.all(this.views.map(view => (view.analysing === view.analysisWanted ? null : view.switchDecoder({ wasmModule, analysisModule }))));
+    const wasmModule = await compiledModule();
+    return Promise.all(this.views.map(view => (view.analysing === view.analysisWanted ? null : view.switchDecoder(wasmModule))));
   }
   /** Which views code `tick`. */
   coding(tick) { return this.views.map(view => view.codes(tick)); }

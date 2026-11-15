@@ -236,11 +236,11 @@ are needed: each worker has its own ordinary WASM memory.
   decode worker copies the records out of WASM memory each frame: see
   `docs/handoff/stream-analysis.md` for the decode cost. Switching analysis on or
   off does not restart: the comparison keeps its instant (paused stays paused,
-  playing continues) while each view's decoder moves to the other module and
+  playing continues) while each view gets a decoder recording or not, which
   decodes the view's stream again from its last key frame to the picture on
   screen (live encoders keep running; a live view keeps the packets since its
   last key frame for this, up to 64 MiB, past which the switch restarts).
-  **PSNR map** (`error-map.js`; nc-web `error_map`, analysis build only): each
+  **PSNR map** (`error-map.js`; nc-web `error_map`): each
   block of a fixed grid (16×16 luma, 8×8 from 4× zoom; the same blocks for every
   codec, unlike each codec's own partition) coloured by its PSNR against the exact
   source frame the view coded, on a fixed scale (red 20 dB or less, blue 50 dB or

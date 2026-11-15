@@ -1,6 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
+ * MS-SSIM of two `width` x `height` luma planes (rows without padding), as
+ * the evaluation scores it (`nc_dsp::ms_ssim`); `None` for a plane too
+ * small for five scales. The demo's metrics worker calls it with a source
+ * luma and `BrowserDecoder::scored_luma`. Only in the analysis build.
+ * # Errors
+ * Rejects planes whose length is not `width * height`.
+ */
+export function ms_ssim_luma(reference: Uint8Array, distorted: Uint8Array, width: number, height: number): number | undefined;
+/**
  * `codec`'s registered parameters, as a JSON array of `{name, default,
  * min, max, doc}` (defaults are the codec's own).
  * # Errors
@@ -52,6 +61,17 @@ export class BrowserDecoder {
    */
   rgba_frame(colour: string): number;
   /**
+   * Copy the luma of the latest decoded frame at the size the last `psnr`
+   * call compared (a smaller spatial layer upscaled, as there) into a
+   * reused buffer and return its byte offset in WASM memory
+   * (`error_map_width * error_map_height` bytes, read as for
+   * `rgba_frame`): the distorted plane `ms_ssim_luma` scores in the
+   * metrics worker. Only in the analysis build.
+   * # Errors
+   * Rejects calls made before `psnr` has scored a decoded frame.
+   */
+  scored_luma(): number;
+  /**
    * Decode coded frame `index` and report its outcome, never throwing
    * for stream problems. `references` is the transport's dependency
    * signal (the frames it predicts from; over RTP, the AV1 dependency
@@ -69,6 +89,21 @@ export class BrowserDecoder {
    * Rejects calls made before a frame has been decoded.
    */
   decoded_i420(): Uint8Array;
+  /**
+   * Switch coding-tool analysis on (from the next decoded picture) or
+   * off; returns whether this codec's decoder supports it (every
+   * codec). Only in the analysis build of the module; every
+   * picture's block records are then kept for `analysis_frame`.
+   */
+  set_analysis(on: boolean): boolean;
+  /**
+   * Pack the latest decoded picture's analysis records
+   * (`nc_common::stream_stats::pack_records`: `analysis_halfwords` `i16`
+   * values per record) into a reused buffer and return its byte offset
+   * in WASM memory, read as for `rgba_frame`; `analysis_length` is the
+   * number of `i16` values. Without analysis the buffer is empty.
+   */
+  analysis_frame(): number;
   /**
    * Select the operating point (`0..=31` on AV1, `0..=2` on VP9; default `0`)
    * before or between packets.
@@ -104,6 +139,19 @@ export class BrowserDecoder {
    */
   decode(packet: Uint8Array): void;
   /**
+   * The squared error of the latest decoded frame against the source frame
+   * the last `psnr` call scored it against, per block of the PSNR map's
+   * fixed grid (`error_map::block_sse`: luma blocks row by row, then Cb,
+   * then Cr), at the size `psnr` compared (`error_map_width` x
+   * `error_map_height`: a smaller spatial layer is upscaled to the stream
+   * size, as there). Returns the byte offset of the `u32` sums in WASM
+   * memory, read as for `rgba_frame`; `error_map_length` is their count.
+   * Only in the analysis build of the module.
+   * # Errors
+   * Rejects calls made before `psnr` has scored a decoded frame.
+   */
+  error_map(): number;
+  /**
    * The `spatial_id` (`0..=3`) of the latest shown AV1 or VP9 frame (`0` on
    * single-layer streams and other codecs).
    */
@@ -118,6 +166,26 @@ export class BrowserDecoder {
    * current frame height on other codecs).
    */
   readonly stream_height: number;
+  /**
+   * The number of `i16` values `analysis_frame` packed.
+   */
+  readonly analysis_length: number;
+  /**
+   * Width of the picture `error_map` measured (the source's).
+   */
+  readonly error_map_width: number;
+  /**
+   * Height of the picture `error_map` measured (the source's).
+   */
+  readonly error_map_height: number;
+  /**
+   * The number of `u32` sums `error_map` wrote.
+   */
+  readonly error_map_length: number;
+  /**
+   * `i16` values per packed analysis record.
+   */
+  readonly analysis_halfwords: number;
   /**
    * Visible width of the latest decoded frame, or zero before the first frame.
    */
@@ -306,24 +374,27 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
-  readonly sourceframe_colour: (a: number) => [number, number];
-  readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
-  readonly sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
-  readonly sourceframe_new: (a: number, b: number) => [number, number, number];
-  readonly sourceframe_packed: (a: number) => number;
-  readonly sourceframe_packed_length: (a: number) => number;
   readonly __wbg_browserdecoder_free: (a: number, b: number) => void;
   readonly __wbg_browserencoder_free: (a: number, b: number) => void;
   readonly __wbg_decodeoutcome_free: (a: number, b: number) => void;
+  readonly __wbg_sourceframe_free: (a: number, b: number) => void;
+  readonly browserdecoder_analysis_frame: (a: number) => number;
+  readonly browserdecoder_analysis_halfwords: (a: number) => number;
+  readonly browserdecoder_analysis_length: (a: number) => number;
   readonly browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
   readonly browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
+  readonly browserdecoder_error_map: (a: number) => [number, number, number];
+  readonly browserdecoder_error_map_height: (a: number) => number;
+  readonly browserdecoder_error_map_length: (a: number) => number;
+  readonly browserdecoder_error_map_width: (a: number) => number;
   readonly browserdecoder_height: (a: number) => number;
   readonly browserdecoder_i420_frame: (a: number) => [number, number, number];
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];
   readonly browserdecoder_psnr: (a: number, b: number, c: number) => [number, number, number];
   readonly browserdecoder_rgba_frame: (a: number, b: number, c: number) => [number, number, number];
+  readonly browserdecoder_scored_luma: (a: number) => [number, number, number];
+  readonly browserdecoder_set_analysis: (a: number, b: number) => number;
   readonly browserdecoder_set_operating_point: (a: number, b: number) => [number, number];
   readonly browserdecoder_spatial_id: (a: number) => number;
   readonly browserdecoder_stream_height: (a: number) => number;
@@ -349,11 +420,18 @@ export interface InitOutput {
   readonly decodeoutcome_decoded: (a: number) => number;
   readonly decodeoutcome_reason: (a: number) => [number, number];
   readonly decodeoutcome_report_index: (a: number) => number;
+  readonly ms_ssim_luma: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
   readonly parameter_registry: (a: number, b: number) => [number, number, number, number];
+  readonly sourceframe_colour: (a: number) => [number, number];
+  readonly sourceframe_from_planes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+  readonly sourceframe_from_rgba: (a: number, b: number, c: number) => [number, number];
+  readonly sourceframe_new: (a: number, b: number) => [number, number, number];
+  readonly sourceframe_packed: (a: number) => number;
+  readonly sourceframe_packed_length: (a: number) => number;
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
-  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __externref_table_dealloc: (a: number) => void;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
   readonly __wbindgen_start: () => void;
 }

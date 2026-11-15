@@ -1,7 +1,7 @@
 // The PSNR map of analysis mode: error per block of a decoded picture against
 // the exact source frame its view coded, in dB on a fixed scale.
 //
-// The decode worker gets from the analysis build of the decoder (nc-web
+// The decode worker gets from the decoder (nc-web
 // `BrowserDecoder.error_map`, nc-dsp's SSE kernel) the sum of squared errors of
 // every block of a fixed grid: MAP_BLOCK x MAP_BLOCK luma samples and the
 // co-located half-size chroma blocks (one grid for all codecs, so two views

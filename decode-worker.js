@@ -28,12 +28,12 @@
 // asks the encoder for (pipeline.js) and switches just before decoding it.
 // A smaller base picture is shown scaled to the stream size (nc-web).
 //
-// Analysis (analysis-view.js): a view with analysis on gets the analysis build
-// of the module (wasm.js), whose decoder keeps each picture's block records
+// Analysis (analysis-view.js): a view with analysis on gets a decode worker
+// whose decoder keeps each picture's block records
 // (BrowserDecoder.set_analysis), and every shown frame carries them as one
 // packed Int16Array buffer (`analysis`), with `analysisState` 'on', or
 // 'unsupported' for codecs whose decoder has none yet. Switching analysis
-// replaces this worker with one on the other build (pipeline.js
+// replaces this worker with one recording or not (pipeline.js
 // `switchDecoders`): the page posts it a 'replay' of the stream from its last
 // key frame to the picture on screen, decoded here at once and answered with
 // that picture ('replayed', as a 'frame'). With analysis on, a shown frame
@@ -43,7 +43,7 @@
 // turned into dB here, off the page's thread. MS-SSIM is scored by a metrics
 // worker this worker starts (metrics-worker.js): the newest shown frame
 // whenever it is free, sent to the page as 'ms-ssim' with its tick.
-import { ANALYSIS_MODULE_URL, MODULE_URL } from './wasm.js';
+import { MODULE_URL } from './wasm.js';
 import { warmUp } from './warmup.js';
 import { errorMap, errorMapBuffers } from './error-map.js';
 import { tickAt } from './timeline.js';
@@ -77,7 +77,7 @@ function decodedPixels(format, colour) {
   pixels.set(view);
   return pixels;
 }
-/** Switch on the analysis build's recording (the normal build has none). */
+/** Switch on the decoder's analysis records. */
 function startAnalysis() {
   analysisState = decoder.set_analysis(true) ? 'on' : 'unsupported';
 }
@@ -100,7 +100,7 @@ let metrics = null, metricsBusy = false, nextScore = null;
 const SCORE_INTERVAL_MS = 1000;
 // When the last score started, and the timer for the next slot (0: none).
 let lastScoreAt = -Infinity, scoreTimer = 0;
-/** Start the metrics worker on the analysis module (`wasmModule`, compiled by the page). */
+/** Start the metrics worker on the codec module (`wasmModule`, compiled by the page). */
 function startMetrics(wasmModule) {
   metrics = new Worker(new URL('./metrics-worker.js', import.meta.url), { type: 'module' });
   metrics.onmessage = ({ data }) => {
@@ -206,7 +206,7 @@ function receivePacket({ data: message }) {
 self.onmessage = async ({ data: message }) => {
   try {
     if (message.type === 'init') {
-      module = message.analysis ? await import(ANALYSIS_MODULE_URL) : await codecModule;
+      module = await codecModule;
       // The page posts the module it compiled once (wasm.js compiledModule).
       wasm = await module.default({ module_or_path: message.wasmModule });
       decoder = new module.BrowserDecoder(message.codec);
