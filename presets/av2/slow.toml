@@ -1,0 +1,11 @@
+# AV2 slow (`--preset slow`): the shared slow bundle (presets/slow.toml,
+# applied first) plus trellis-coded quantisation on inter frames (AV2 TCQ,
+# `enable_tcq`, `av2.tcq` 2): the joint study's best point
+# (slow-av2-2026-11-15: TCQ alone J -4.08% at x86 x1.50; TCQ with path
+# pruning, -3.34% at x1.35, or with the other replay candidates, -3.97% at
+# x1.49, scored no better at k 0.025). The second reference passed L3 on its
+# own (J -1.46% at +11.9% Jetson cycles). L3 (600 f, n=27): J -4.25%
+# [-4.75, -3.76] at x1.37 Jetson cycles; the periodic-key pulse guard read
+# +0.27 dB against +0.25 (TCQ codes the P frames finer, the keys unchanged;
+# judged acceptable at this gain, as HEVC Default's +0.26/+0.27).
+av2.tcq = 2

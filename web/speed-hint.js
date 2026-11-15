@@ -36,7 +36,7 @@ export const PRESET_COST = {
   av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.45 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },
   vp9: { slow: 1.16, medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
-  av2: { medium: 1 },
+  av2: { slow: 1.37, medium: 1 },
 };
 /**
  * Encode time scales with picture area to this power. Less than linear: the

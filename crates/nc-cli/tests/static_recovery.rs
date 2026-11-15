@@ -647,7 +647,15 @@ fn vvc_presets_recover() {
 
 #[test]
 fn av2_presets_recover() {
-    for preset in [DEFAULT, include_str!("../../../presets/av2/fast.toml")] {
+    for preset in [
+        DEFAULT,
+        include_str!("../../../presets/av2/fast.toml"),
+        // The slow rung: the shared bundle, then AV2's levers (nc_encoder::presets).
+        concat!(
+            include_str!("../../../presets/slow.toml"),
+            include_str!("../../../presets/av2/slow.toml")
+        ),
+    ] {
         check_preset::<nc_av2::Av2Backend>(Codec::Av2, preset, &FLAT_RECOVERY);
     }
 }
