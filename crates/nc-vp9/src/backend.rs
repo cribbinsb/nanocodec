@@ -970,6 +970,19 @@ impl CodecBackend for Vp9Backend {
         ("vp9.inter_intra_dc_only", 1.0),
     ];
 
+    // The fixed-QP profile (`--qp`): every high-quality frame of the unified
+    // plan carries the second reference (no cadence-strength gate), with the
+    // full mode decision against it, a static reference pattern as the
+    // standards' test conditions use. Fixed QP, matched QP (nceval.fixedqp,
+    // 16 pool clips): draw fixedqp-2026-11-15 J -1.5% [-2.4, -0.7], draw
+    // fixedqp-2026-11-15-second -1.4% [-2.6, -0.3]; each half alone -0.2 to
+    // -1.0%. docs/analysis/fixed-qp-gap-2026-11-14.md "fixed-QP profile".
+    // The other VP9 presets pin the plan off, so the profile is inert there.
+    const FIXED_QP_PARAMS: &'static [(&'static str, f32)] = &[
+        ("structure.secondary_min_depth", 0.0),
+        ("refs.second_full", 1.0),
+    ];
+
     fn new(config: &EncoderConfig) -> Result<Self, ConfigError> {
         if config.codec != Codec::Vp9 {
             return Err(ConfigError::Unsupported("VP9 backend requires VP9 codec"));
