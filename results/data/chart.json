@@ -124,11 +124,11 @@
   "nanocodec-av1": {
    "owner": "nanocodec",
    "codec": "av1",
-   "preset": "Medium",
+   "preset": "Default",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec AV1 Medium (default)",
+   "label": "nanocodec AV1 Default",
    "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -145,7 +145,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV1 Fast",
-   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
+   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset av1-fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 211,
@@ -161,7 +161,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV1 Faster",
-   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
+   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset av1-faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 206,
@@ -172,11 +172,11 @@
   "nanocodec-av2": {
    "owner": "nanocodec",
    "codec": "av2",
-   "preset": "Medium",
+   "preset": "Default",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec AV2 Medium (default)",
+   "label": "nanocodec AV2 Default",
    "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -193,7 +193,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV2 Fast",
-   "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
+   "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset av2-fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 168,
@@ -204,11 +204,11 @@
   "nanocodec-h264": {
    "owner": "nanocodec",
    "codec": "h264",
-   "preset": "Medium",
+   "preset": "Default",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec H.264 Medium (default)",
+   "label": "nanocodec H.264 Default",
    "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -225,7 +225,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Fast",
-   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset h264-fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 46,
@@ -241,7 +241,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Faster",
-   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset h264-faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 45,
@@ -252,12 +252,12 @@
   "nanocodec-h264@veryfast": {
    "owner": "nanocodec",
    "codec": "h264",
-   "preset": "Veryfast",
+   "preset": "Fastest",
    "tune": "",
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Veryfast",
-   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset veryfast",
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset h264-fastest",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 44,
@@ -268,11 +268,11 @@
   "nanocodec-hevc": {
    "owner": "nanocodec",
    "codec": "hevc",
-   "preset": "Medium",
+   "preset": "Default",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec HEVC Medium (default)",
+   "label": "nanocodec HEVC Default",
    "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -289,7 +289,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec HEVC Fast",
-   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
+   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset hevc-fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 45,
@@ -305,7 +305,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec HEVC Faster",
-   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
+   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset hevc-faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 44,
@@ -316,16 +316,16 @@
   "nanocodec-vp9": {
    "owner": "nanocodec",
    "codec": "vp9",
-   "preset": "Medium",
+   "preset": "Default",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec VP9 Medium (default)",
+   "label": "nanocodec VP9 Default",
    "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
-    "qp": 205,
-    "command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 29970/1000 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --qp 205"
+    "qp": 206,
+    "command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 29970/1000 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --qp 206"
    },
    "timing_is_twin": false
   },
@@ -337,7 +337,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Fast",
-   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vp9-fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 205,
@@ -353,7 +353,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Faster",
-   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vp9-faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 213,
@@ -364,12 +364,12 @@
   "nanocodec-vp9@veryfast": {
    "owner": "nanocodec",
    "codec": "vp9",
-   "preset": "Veryfast",
+   "preset": "Fastest",
    "tune": "",
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Veryfast",
-   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset veryfast",
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vp9-fastest",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 219,
@@ -380,11 +380,11 @@
   "nanocodec-vvc": {
    "owner": "nanocodec",
    "codec": "vvc",
-   "preset": "Medium",
+   "preset": "Default",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec VVC Medium (default)",
+   "label": "nanocodec VVC Default",
    "cbr_command": "nanocodec encode --codec vvc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -401,7 +401,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VVC Fast",
-   "cbr_command": "nanocodec encode --codec vvc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
+   "cbr_command": "nanocodec encode --codec vvc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vvc-fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 44,
@@ -3931,22 +3931,23 @@
    ],
    "builds": {
     "730e4e16": "730e4e16",
-    "478e8249": "478e8249"
+    "478e8249": "478e8249",
+    "43079b05": "43079b05"
    },
    "base_build": "730e4e16",
    "family_builds": {
-    "nanocodec-h264": "478e8249",
+    "nanocodec-h264": "43079b05",
     "nanocodec-h264@fast": "478e8249",
     "nanocodec-h264@faster": "478e8249",
-    "nanocodec-hevc": "478e8249",
+    "nanocodec-hevc": "43079b05",
     "nanocodec-hevc@fast": "478e8249",
-    "nanocodec-av1": "478e8249",
+    "nanocodec-av1": "43079b05",
     "nanocodec-av1@fast": "478e8249",
-    "nanocodec-vp9": "478e8249",
+    "nanocodec-vp9": "43079b05",
     "nanocodec-vp9@fast": "478e8249",
-    "nanocodec-av2": "478e8249",
+    "nanocodec-av2": "43079b05",
     "nanocodec-av2@fast": "478e8249",
-    "nanocodec-vvc": "478e8249",
+    "nanocodec-vvc": "43079b05",
     "nanocodec-vvc@fast": "478e8249",
     "nanocodec-av1@faster": "478e8249",
     "nanocodec-hevc@faster": "478e8249",
@@ -3987,19 +3988,19 @@
      "rate_invalid_points": 4
     },
     "nanocodec-h264": {
-     "j": -25.33,
-     "psnr": -27.01,
-     "vmaf": -32.79,
+     "j": -25.42,
+     "psnr": -27.14,
+     "vmaf": -32.87,
      "ms_ssim": null,
      "iqr": [
-      -49.24,
-      -13.95
+      -49.09,
+      -14.01
      ],
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 70.81,
-      "x86": 154.51
+      "jetson": 69.8,
+      "x86": 151.36
      },
      "flagged": false,
      "chained": 0,
@@ -4017,8 +4018,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 111.97,
-      "x86": 217.03
+      "jetson": 112.41,
+      "x86": 221.12
      },
      "flagged": false,
      "chained": 0,
@@ -4036,8 +4037,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 134.61,
-      "x86": 256.65
+      "jetson": 133.05,
+      "x86": 253.45
      },
      "flagged": false,
      "chained": 0,
@@ -4055,27 +4056,27 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 155.4,
-      "x86": 299.57
+      "jetson": 154.45,
+      "x86": 293.89
      },
      "flagged": false,
      "chained": 0,
      "rate_invalid_points": 0
     },
     "nanocodec-hevc": {
-     "j": -50.81,
-     "psnr": -51.4,
-     "vmaf": -56.95,
+     "j": -50.98,
+     "psnr": -51.6,
+     "vmaf": -57.15,
      "ms_ssim": null,
      "iqr": [
-      -56.08,
-      -43.72
+      -56.38,
+      -43.95
      ],
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 49.77,
-      "x86": 120.37
+      "jetson": 47.1,
+      "x86": 119.41
      },
      "flagged": false,
      "chained": 0,
@@ -4093,8 +4094,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 77.25,
-      "x86": 176.09
+      "jetson": 77.45,
+      "x86": 170.28
      },
      "flagged": false,
      "chained": 0,
@@ -4112,8 +4113,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 96.75,
-      "x86": 204.31
+      "jetson": 97.69,
+      "x86": 192.04
      },
      "flagged": false,
      "chained": 0,
@@ -4131,8 +4132,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 43.26,
-      "x86": 117.22
+      "jetson": 42.39,
+      "x86": 109.71
      },
      "flagged": false,
      "chained": 0,
@@ -4150,8 +4151,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 67.04,
-      "x86": 158.85
+      "jetson": 66.82,
+      "x86": 160.06
      },
      "flagged": false,
      "chained": 0,
@@ -4169,8 +4170,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 81.44,
-      "x86": 181.44
+      "jetson": 80.64,
+      "x86": 179.06
      },
      "flagged": false,
      "chained": 0,
@@ -4188,8 +4189,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 38.27,
-      "x86": 102.16
+      "jetson": 38.22,
+      "x86": 99.87
      },
      "flagged": false,
      "chained": 0,
@@ -4207,8 +4208,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 49.78,
-      "x86": 117.78
+      "jetson": 49.83,
+      "x86": 119.7
      },
      "flagged": false,
      "chained": 0,
@@ -4226,8 +4227,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 80.1,
-      "x86": 191.6
+      "jetson": 80.56,
+      "x86": 184.7
      },
      "flagged": false,
      "chained": 0,
@@ -4245,8 +4246,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 89.15,
-      "x86": 215.59
+      "jetson": 90.02,
+      "x86": 200.54
      },
      "flagged": false,
      "chained": 0,
@@ -4254,18 +4255,18 @@
     },
     "nanocodec-av2": {
      "j": -54.75,
-     "psnr": -58.48,
-     "vmaf": -60.5,
+     "psnr": -58.58,
+     "vmaf": -60.57,
      "ms_ssim": null,
      "iqr": [
-      -61.48,
-      -46.22
+      -59.31,
+      -47.11
      ],
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 33.35,
-      "x86": 88.37
+      "jetson": 32.42,
+      "x86": 90.23
      },
      "flagged": false,
      "chained": 0,
@@ -4283,27 +4284,27 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 43.78,
-      "x86": 106.35
+      "jetson": 44.26,
+      "x86": 115.2
      },
      "flagged": false,
      "chained": 0,
      "rate_invalid_points": 0
     },
     "nanocodec-vvc": {
-     "j": -55.34,
-     "psnr": -56.07,
-     "vmaf": -61.07,
+     "j": -55.68,
+     "psnr": -56.45,
+     "vmaf": -61.16,
      "ms_ssim": null,
      "iqr": [
-      -61.38,
-      -46.67
+      -61.42,
+      -47.57
      ],
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 28.07,
-      "x86": 77.11
+      "jetson": 27.68,
+      "x86": 70.63
      },
      "flagged": false,
      "chained": 0,
@@ -4321,8 +4322,8 @@
      "clips_scored": 11,
      "clips": 11,
      "fps": {
-      "jetson": 48.11,
-      "x86": 117.13
+      "jetson": 47.87,
+      "x86": 125.25
      },
      "flagged": false,
      "chained": 0,
@@ -4716,8 +4717,8 @@
      "clips_scored": 7,
      "clips": null,
      "fps": {
-      "jetson": 43.26,
-      "x86": 117.22
+      "jetson": 42.39,
+      "x86": 109.71
      },
      "flagged": false,
      "chained": 0,
@@ -4732,8 +4733,8 @@
      "clips_scored": 9,
      "clips": null,
      "fps": {
-      "jetson": 49.77,
-      "x86": 120.37
+      "jetson": 47.1,
+      "x86": 119.41
      },
      "flagged": false,
      "chained": 0,
@@ -4748,8 +4749,8 @@
      "clips_scored": 7,
      "clips": null,
      "fps": {
-      "jetson": 28.07,
-      "x86": 77.11
+      "jetson": 27.68,
+      "x86": 70.63
      },
      "flagged": false,
      "chained": 0,
@@ -4764,8 +4765,8 @@
      "clips_scored": 7,
      "clips": null,
      "fps": {
-      "jetson": 38.27,
-      "x86": 102.16
+      "jetson": 38.22,
+      "x86": 99.87
      },
      "flagged": false,
      "chained": 0,
@@ -4780,8 +4781,8 @@
      "clips_scored": 7,
      "clips": null,
      "fps": {
-      "jetson": 33.35,
-      "x86": 88.37
+      "jetson": 32.42,
+      "x86": 90.23
      },
      "flagged": false,
      "chained": 0,
@@ -4796,8 +4797,8 @@
      "clips_scored": 8,
      "clips": null,
      "fps": {
-      "jetson": 70.81,
-      "x86": 154.51
+      "jetson": 69.8,
+      "x86": 151.36
      },
      "flagged": false,
      "chained": 0,
@@ -4849,8 +4850,8 @@
      "clips_scored": 9,
      "clips": null,
      "fps": {
-      "jetson": 43.26,
-      "x86": 117.22
+      "jetson": 42.39,
+      "x86": 109.71
      },
      "flagged": false,
      "chained": 0,
@@ -4865,8 +4866,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 49.77,
-      "x86": 120.37
+      "jetson": 47.1,
+      "x86": 119.41
      },
      "flagged": false,
      "chained": 0,
@@ -4881,8 +4882,8 @@
      "clips_scored": 9,
      "clips": null,
      "fps": {
-      "jetson": 28.07,
-      "x86": 77.11
+      "jetson": 27.68,
+      "x86": 70.63
      },
      "flagged": false,
      "chained": 0,
@@ -4897,8 +4898,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 38.27,
-      "x86": 102.16
+      "jetson": 38.22,
+      "x86": 99.87
      },
      "flagged": false,
      "chained": 0,
@@ -4913,8 +4914,8 @@
      "clips_scored": 9,
      "clips": null,
      "fps": {
-      "jetson": 33.35,
-      "x86": 88.37
+      "jetson": 32.42,
+      "x86": 90.23
      },
      "flagged": false,
      "chained": 0,
@@ -4929,8 +4930,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 70.81,
-      "x86": 154.51
+      "jetson": 69.8,
+      "x86": 151.36
      },
      "flagged": false,
      "chained": 0,
@@ -4982,8 +4983,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 43.26,
-      "x86": 117.22
+      "jetson": 42.39,
+      "x86": 109.71
      },
      "flagged": false,
      "chained": 0,
@@ -4998,8 +4999,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 49.77,
-      "x86": 120.37
+      "jetson": 47.1,
+      "x86": 119.41
      },
      "flagged": false,
      "chained": 0,
@@ -5014,8 +5015,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 28.07,
-      "x86": 77.11
+      "jetson": 27.68,
+      "x86": 70.63
      },
      "flagged": false,
      "chained": 0,
@@ -5030,8 +5031,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 38.27,
-      "x86": 102.16
+      "jetson": 38.22,
+      "x86": 99.87
      },
      "flagged": false,
      "chained": 0,
@@ -5046,8 +5047,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 33.35,
-      "x86": 88.37
+      "jetson": 32.42,
+      "x86": 90.23
      },
      "flagged": false,
      "chained": 0,
@@ -5062,8 +5063,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 70.81,
-      "x86": 154.51
+      "jetson": 69.8,
+      "x86": 151.36
      },
      "flagged": false,
      "chained": 0,
@@ -5115,8 +5116,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 43.26,
-      "x86": 117.22
+      "jetson": 42.39,
+      "x86": 109.71
      },
      "flagged": false,
      "chained": 0,
@@ -5131,8 +5132,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 49.77,
-      "x86": 120.37
+      "jetson": 47.1,
+      "x86": 119.41
      },
      "flagged": false,
      "chained": 0,
@@ -5147,8 +5148,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 28.07,
-      "x86": 77.11
+      "jetson": 27.68,
+      "x86": 70.63
      },
      "flagged": false,
      "chained": 0,
@@ -5163,8 +5164,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 38.27,
-      "x86": 102.16
+      "jetson": 38.22,
+      "x86": 99.87
      },
      "flagged": false,
      "chained": 0,
@@ -5179,8 +5180,8 @@
      "clips_scored": 10,
      "clips": null,
      "fps": {
-      "jetson": 33.35,
-      "x86": 88.37
+      "jetson": 32.42,
+      "x86": 90.23
      },
      "flagged": false,
      "chained": 0,
@@ -5195,8 +5196,8 @@
      "clips_scored": 11,
      "clips": null,
      "fps": {
-      "jetson": 70.81,
-      "x86": 154.51
+      "jetson": 69.8,
+      "x86": 151.36
      },
      "flagged": false,
      "chained": 0,
