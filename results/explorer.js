@@ -28,7 +28,6 @@ const state = {
 
 function viewId() {
   const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
-  if (state.mode === 'qp') return `rc-qp-${zid}`;
   return `${state.clipset}-${zid}`;
 }
 
@@ -128,9 +127,6 @@ function fillDemoLink(data, family, root) {
 function viewNote(data, view) {
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
-  if (view.clipset === 'dev-rc') {
-    return `${view.rate_mode === 'qp' ? 'Fixed QP against x264 medium at fixed QP' : 'CBR against x264 medium in CBR'}: a separate run on the development clips (ladder ${view.ladder_kbps} kbps, ${view.frames} frames, one key frame), our Default presets and x264 ${tools.x264} only, at build ${view.build_commit}. Speed is the development chart's timing record. MS-SSIM is available for this run only.`;
-  }
   const base = view.builds[view.base_build] || view.base_build;
   return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours at ${base}; references ${refs}. Speed: ${data.platforms[state.platform]}.`;
 }
@@ -138,10 +134,9 @@ function viewNote(data, view) {
 function render(data, root) {
   const view = data.views.find((v) => v.id === viewId());
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
-  for (const [name, value] of [['clipset', state.mode === 'qp' ? 'dev' : state.clipset], ['metric', state.metric]]) {
+  for (const [name, value] of [['clipset', state.clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
-      if (name === 'clipset') b.disabled = state.mode === 'qp' && b.dataset.value !== 'dev';
       if (name === 'metric') {
         b.disabled = !view.metrics.includes(b.dataset.value);
         b.title = b.disabled ? 'Not in this run’s data (the held-out and development charts record J, PSNR-YUV and VMAF v1)' : '';
@@ -167,7 +162,7 @@ function render(data, root) {
   const chart = root.querySelector('.chart');
   const title = root.querySelector('.chart-title');
   title.textContent = `${METRIC_NAMES[state.metric]} vs ${ZERO_NAMES[view.zero]}, against single-thread encode speed`;
-  root.querySelector('.chart-sub').textContent = `${view.rate_mode === 'qp' ? 'Fixed QP' : 'Real-time CBR'} · ${view.clipset === 'dev-rc' ? 'development clips, Defaults' : data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
+  root.querySelector('.chart-sub').textContent = `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
   if (!points.length) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
   } else {
@@ -229,9 +224,11 @@ function controls(data, root) {
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
     ], state.clipset, (v) => { state.clipset = v; rerender(); }))),
+    // Fixed QP has its own page (the standards lens at the same build): one
+    // fixed-QP source, never an older Defaults-only run.
     control('Rate mode', segmented('Rate mode', [
       { value: 'cbr', label: 'CBR' }, { value: 'qp', label: 'Fixed QP' },
-    ], state.mode, (v) => { state.mode = v; rerender(); })),
+    ], 'cbr', (v) => { if (v === 'qp') window.location.href = 'fixed-qp.html'; })),
     control('Metric', withData('metric', segmented('Metric', Object.keys(METRIC_SHORT).map((m) => ({ value: m, label: METRIC_SHORT[m] })),
       state.metric, (v) => { state.metric = v; rerender(); }))),
     control('Speed on', segmented('Platform', [
