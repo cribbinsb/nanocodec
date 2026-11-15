@@ -30,6 +30,7 @@ import csv
 import json
 import re
 import subprocess
+from statistics import geometric_mean
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -272,14 +273,30 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
              "metrics": ["j", "psnr", "vmaf"], "values": values}, labels)
 
 
+def timing_fps() -> dict[str, dict[str, float]]:
+    """Each timed family's single-thread fps on both machines, as the chart computes
+    it (1000 / the geometric mean of its per-clip ms per frame); only families timed
+    on both."""
+    per_platform = {}
+    for platform, file in TIMING_FILES.items():
+        points = json.loads((RESULTS / file).read_text())["points"]
+        per_platform[platform] = {
+            f: round(1000 / geometric_mean(list(e["ms_per_frame"].values())), 1)
+            for f, e in points.items() if e.get("ms_per_frame")}
+    return {f: {p: per_platform[p][f] for p in per_platform}
+            for f in set.intersection(*(set(v) for v in per_platform.values()))}
+
+
 def fixed_qp_view() -> dict | None:
     """The overview's Fixed QP chart: the lens (LENS_DATA, column LENS_COLUMN) against
-    x264 medium at fixed QP, at the lens run's own speed (frames per CPU second on
-    the x86 PC)."""
+    x264 medium at fixed QP, at each encoder's single-thread speed from the chart's
+    timing (measured at fixed QP, on both machines); an encoder the chart has not
+    timed has no speed (the site lists it under the chart)."""
     path = SITE_DATA / LENS_DATA
     if not path.is_file():
         return None
     lens = json.loads(path.read_text())
+    timed = timing_fps()
     values = {}
     for row in lens["rows"]:
         if row["column"] != LENS_COLUMN and row["test"].startswith(OWN_PREFIX):
@@ -291,7 +308,9 @@ def fixed_qp_view() -> dict | None:
             "weighted": row["weighted"], "j": row["j"], "psnr": row["psnr_yuv"],
             "vmaf": row["vmaf"], "ms_ssim": row["ms_ssim"], "iqr": None,
             "clips_scored": row["n"], "clips": None, "flagged": False, "chained": 0,
-            "rate_invalid_points": 0, "fps": {"jetson": None, "x86": row["fps"]}}
+            "rate_invalid_points": 0,
+            # never the lens run's own fps: not a timing (other runs, shared load)
+            "fps": timed.get(family) or {"jetson": None, "x86": None}}
     return {"id": "qp", "clipset": "ctc", "zero": lens["rows"][0]["anchor"], "rate_mode": "qp",
             "clips": max(v["clips_scored"] for v in values.values()),
             "build_commit": lens["build_commit"], "condition": lens["condition"],

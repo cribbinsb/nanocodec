@@ -18,7 +18,7 @@ const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'Ryzen 9 5950X c
 const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
 const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
 // Fixed-QP speed: the lens run's own measurement, on the PC only.
-const QP_SPEED = 'frames per CPU second on the x86 PC (HM/VVenC from an earlier run)';
+const QP_SPEED = 'the chart\'s single-thread timing at fixed QP (720p), on the machine selected';
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
 // The demo's pre-encoded streams (for a reference point's demo link), loaded on first use.
@@ -142,12 +142,9 @@ function viewNote(data, view) {
 
 function render(data, root) {
   const view = data.views.find((v) => v.id === viewId());
-  if (view.rate_mode === 'qp') state.platform = 'x86';  // the lens timed the PC only
   if (!view.metrics.includes(state.metric)) state.metric = 'j';
   for (const b of root.querySelectorAll('[data-control="platform"] button')) {
     b.setAttribute('aria-pressed', String(b.dataset.value === state.platform));
-    b.disabled = view.rate_mode === 'qp' && b.dataset.value !== 'x86';
-    b.title = b.disabled ? 'The fixed-QP run was timed on the PC only' : '';
   }
   for (const [name, value] of [['clipset', state.clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
@@ -186,7 +183,7 @@ function render(data, root) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
   } else {
     drawScatter(chart, points, {
-      xLabel: view.rate_mode === 'qp' ? `${QP_SPEED} (log scale)` : `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
+      xLabel: `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
       yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
       selected: state.selected,
@@ -197,9 +194,9 @@ function render(data, root) {
   // Encoders with a value but no speed on this machine (never timed here): listed, not dropped.
   const untimed = Object.entries(view.values)
     .filter(([f, v]) => data.points[f] && !v.fps?.[state.platform] && v[state.metric] !== null)
-    .map(([f, v]) => `${data.points[f].label} (${pct(v[state.metric])}${v.fps?.x86 ? `, ${fps(v.fps.x86)} fps on the PC in the lens run` : ''})`);
+    .map(([f, v]) => `${data.points[f].label} (${pct(v[state.metric])})`);
   if (untimed.length) {
-    chart.append(el('p', { class: 'note off-scale' }, `Not timed on this machine, so not plotted: ${untimed.join('; ')}.`));
+    chart.append(el('p', { class: 'note off-scale' }, `Not yet timed, so not plotted: ${untimed.join('; ')}.`));
   }
   if (view.rate_mode === 'qp') {
     chart.append(el('p', { class: 'note' }, el('a', { href: 'fixed-qp.html' }, 'All three fixed-QP columns, per encoder: the Fixed QP page.')));
