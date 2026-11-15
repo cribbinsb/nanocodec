@@ -401,8 +401,8 @@ pub struct Av1Backend {
     /// Reference slots whose normative picture is not the engine's
     /// reconstruction (superres, coded-size switches).
     store: ReferenceStore,
-    /// This inter frame's reference is held in `store` (set per frame: the
-    /// hot paths test one flag).
+    /// One of this inter frame's references (primary or secondary) is held
+    /// in `store` (set per frame: the hot paths test one flag).
     reference_held: bool,
     steps: QuantSteps,
     /// Chroma steps (`frame_q_idx + chroma_delta_q`).
@@ -1660,8 +1660,18 @@ impl CodecBackend for Av1Backend {
             self.base_q_idx
         };
         self.references = plan.references;
+        // Either reference may be held: after a size switch the primary is
+        // the new size while the second reference (`LAST2_FRAME`, the
+        // long-term slot) can still be a picture coded before it, which
+        // blocks must predict scaled from (§7.11.3.3), not from the
+        // engine's resampled proxy.
+        let held = |slot: usize| self.store.held(slot).is_some();
         self.reference_held = self.kind == FrameKind::Inter
-            && self.store.held(self.references.reference.slot).is_some();
+            && (held(self.references.reference.slot)
+                || self
+                    .references
+                    .secondary
+                    .is_some_and(|link| held(link.slot)));
         // With real temporal layers the base frames are the T0 frames.
         self.is_base_frame = if plan.references.position.is_flat() {
             plan.index.is_multiple_of(self.base_period)

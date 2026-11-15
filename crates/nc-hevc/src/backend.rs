@@ -969,6 +969,22 @@ impl CodecBackend for HevcBackend {
         // every stream bit-exact in HM, ffmpeg and ours. The other HEVC
         // presets pin it off.
         ("structure.unified", 1.0),
+        // The QP cadence at least as strong as the frames between measurably
+        // inherit the high-quality frame (`structure.inherited_depth`,
+        // `nc-encoder` `inheritance.rs`), beside the static share: it adds
+        // the cadence on moving content that inherits (pans, crowds) and
+        // leaves noise alone. Build 51b0ec30, pool levels of draw 2026-11-15:
+        // L1 -1.19% [-2.86, -0.02]; L2 -1.86% [-3.54, -0.48]; L3 (single
+        // point, 126 clips) J -1.33% [-2.74, -0.18], no guard (pan -3.4%,
+        // crowd -0.9%, lowlight -0.3%, static +0.1%, bodycam +0.3%, texture
+        // -7.1% on 4 clips, drone +1.7% on 3); 600-frame final (27 clips,
+        // keys every 10 s) J -0.49% [-0.74, -0.23], no guard. Jetson cycles
+        // -0.7% (instructions +0.4%). static_recovery passes; long single key
+        // (900 f): no drift, PSNR-Y per third +0.00 to +0.19 dB. A first
+        // version that gave unmeasured content the full cadence tripped the
+        // worst-1% guards on pans (`docs/handoff/unified-structure.md` 13.4).
+        // The other HEVC presets pin it off.
+        ("structure.inherited_depth", 1.0),
         ("decision.intra_gate_variance", 0.0),
         ("decision.codec_subpel_seed_lambdas", 0.05),
         ("decision.subpel_move_bias", 1.1),

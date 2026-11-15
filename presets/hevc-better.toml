@@ -35,3 +35,5 @@ structure.unified = 0
 rate.fixed_qp_profile = 0
 # Pinned before HEVC Default's key still boost (2026-11-14).
 rate.key_still_boost = 0
+# Pinned before HEVC Default's inherited cadence depth (2026-11-15).
+structure.inherited_depth = 0

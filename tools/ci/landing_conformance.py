@@ -34,6 +34,11 @@ both standard decoders and our own (nceval.conformance.gate_stream):
     timed    capture timestamps with skipped captures (a live sender that cannot
              keep up, `--timestamps`), three temporal layers, keys every
              TIMED_KEY_PERIOD nominal frames of capture time (default preset)
+    switch   adaptive resolution (codecs with scaled references): one key, a
+             starved rate that switches to half size, then a rate rise so the
+             first high-quality frame after the switch codes detail and
+             predicts from the one before it, still held at full size (its
+             second reference, scaled MC)
 
 A spatial preset (two layers: presets/av1-svc*.toml, presets/vp9-svc*.toml)
 is checked as SVC instead: L2T1 and L2T3 at two rates on three clips, every
@@ -114,6 +119,8 @@ class Shape:
 SMALL = Shape(330, 186, 30, "clips/main/crowd_mot17_09.yuv", (1280, 720), (400, 260), 12, 8)
 # 720 lines of a 1884-wide clip, 1282 wide.
 LARGE = Shape(1282, 720, 6, "clips/main/crowd_mot20_06.yuv", (1884, 720), (300, 0))
+# Unaligned in both dimensions, and so is its half size (235x131 rounds up to 236x132).
+SWITCH = Shape(470, 262, 41, "clips/main/crowd_mot20_06.yuv", (1884, 720), (300, 200))
 # Direct 1280x720 slices read in place from clips/main/ (no extra YUV files on disk).
 SVC_PAN = Shape(1280, 720, 16, "clips/main/pan_jaad_0101.yuv", (1280, 720), (0, 0))
 SVC_LOWLIGHT = Shape(1280, 720, 16, "clips/main/lowlight_city_night.yuv", (1280, 720), (0, 0))
@@ -158,6 +165,23 @@ SVC_RATE_BPP = {
 }
 # Codecs without intra refresh (docs/handoff/vp9-av2.md).
 NO_INTRA_REFRESH = (Codec.VP9, Codec.AV2)
+# Codecs with adaptive resolution (scaled references; docs/handoff/adaptive-resolution.md).
+ADAPTIVE_RESOLUTION_CODECS = (Codec.AV1,)
+# Switch case: the starved rate, and the frame from which a rate rise lets the
+# high-quality frame after the switch (the cadence's base frame SWITCH_RISE_FRAME
+# + 7 at the start-up period of 8) code detail.
+SWITCH_START_BPP, SWITCH_RISE_BPP = 0.005, 0.026
+SWITCH_RISE_FRAME = 33
+# Policy and cadence settings that make the short case reach that frame: decide
+# on a short window, stay at half size, accept the half size on any evidence, and
+# give every high-quality frame a clearly finer quantizer and the second reference.
+SWITCH_PARAMS = (
+    "resolution.window_seconds=0.1",
+    "resolution.dwell_seconds=1",
+    "resolution.down_floor_ratio=2",
+    "structure.secondary_min_depth=0",
+    "rate.cadence_startup_base_boost=12",
+)
 
 
 @dataclass(frozen=True)
@@ -171,7 +195,7 @@ class Case:
         if self.kind.startswith("svc-"):
             clip_tag = self.kind.split("-")[2]
             return SPATIAL_SHAPES[clip_tag]
-        return LARGE if self.kind == "large" else SMALL
+        return {"large": LARGE, "switch": SWITCH}.get(self.kind, SMALL)
 
     @property
     def rate_controlled(self) -> bool:
@@ -232,6 +256,9 @@ class Case:
             "refresh": ["--bitrate", kbps(MID_BPP), "--intra-refresh", str(REFRESH_PERIOD)],
             "timed": ["--bitrate", kbps(MID_BPP), "--intra-period", str(TIMED_KEY_PERIOD),
                       "--temporal-layers", "3"],
+            "switch": ["--bitrate", kbps(SWITCH_START_BPP), *one_key, "--rate-change",
+                       f"{SWITCH_RISE_FRAME}:{kbps(SWITCH_RISE_BPP)}",
+                       *(arg for pair in SWITCH_PARAMS for arg in ("--param", pair))],
             "fixedqp": ["--qp", str(FIXED_QP["qindex" if self.codec in QINDEX_CODECS else "qp"]),
                         "--intra-period", str(KEY_PERIOD)],
         }[self.kind]
@@ -263,6 +290,9 @@ def cases(codecs: list[Codec]) -> list[Case]:
             if spatial_layers(preset) == 1
             for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
     base += [Case(codec, "default", "timed") for codec in codecs]
+    base += [Case(codec, preset, "switch") for codec in codecs
+             if codec in ADAPTIVE_RESOLUTION_CODECS
+             for preset in shipped_presets(codec) if spatial_layers(preset) == 1]
     # Spatial presets (av1-svc*, vp9-svc*): LnT1, LnT3, LnT1_KEY, and LnT3_KEY
     # at their own layer count n, every operating point.
     base += [Case(codec, preset, f"svc-l{layers}{mode}-{clip}-{rate}")

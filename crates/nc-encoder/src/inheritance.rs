@@ -53,7 +53,12 @@ const MIN_QP_GAP: f64 = 1.;
 const AVERAGE_WEIGHT: f64 = 0.1;
 /// Least depth the measure allows: with no quantizer gap between the tiers
 /// nothing more could be measured, and a scene that starts to inherit
-/// again (the noise stops) would never get its cadence back.
+/// again (the noise stops) would never get its cadence back. Unmeasured
+/// content gets it too, as a probe: starting at the full depth instead
+/// spent the first start-up base frame of a starved pan at -7.2 QP units
+/// where nothing inherited it, and the 12 frames after it ran 1.5 to
+/// 1.7 dB below the Default (HEVC, `pool_jaad_0110`, 150 kbps: the worst
+/// 4-frame window 22.06 against 22.92 dB).
 const MIN_DEPTH: f64 = 0.25;
 
 /// The tier of a coded frame, as the measure reads it.
@@ -157,12 +162,11 @@ impl Inheritance {
     }
 
     /// The least cadence strength (0..1) the loss asks for, or `None` when
-    /// the depth does not follow it. Unmeasured content gets the full depth:
-    /// the measure needs the tiers apart, and full strength everywhere
-    /// already beat the static-share scaling on the Gate A clips (-0.67%).
+    /// the depth does not follow it. Unmeasured content gets the probe
+    /// depth ([`MIN_DEPTH`]): enough to set the tiers apart and measure it.
     pub(crate) fn depth(&self) -> Option<f64> {
         self.depth_rule
-            .map(|rule| self.loss.map_or(1., |loss| rule.depth(loss)))
+            .map(|rule| self.loss.map_or(MIN_DEPTH, |loss| rule.depth(loss)))
     }
 }
 
@@ -223,9 +227,9 @@ mod tests {
     }
 
     #[test]
-    fn depth_is_full_until_measured_and_falls_with_the_loss() {
+    fn depth_probes_until_measured_then_falls_with_the_loss() {
         let mut m = measure(true);
-        assert_eq!(m.depth(), Some(1.));
+        assert_eq!(m.depth(), Some(MIN_DEPTH));
         run(&mut m, 1, 0.4);
         assert_eq!(m.depth(), Some(1.));
         let mut noisy = measure(true);
