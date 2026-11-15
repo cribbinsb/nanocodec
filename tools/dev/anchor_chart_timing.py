@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import queue
@@ -80,10 +81,18 @@ JETSON_PLATFORM = "Jetson Orin Nano, Cortex-A78AE core 3 at 1.728 GHz, one threa
 CORE_KHZ = "1728000"
 ROUNDS = 3
 QUIET_LOAD = 1.5  # jetson-timed.sh's own refusal threshold
-#: Host timing: rounds per clip (the median per-round ratio is kept) and its
-#: platform note. 5 rounds mis-timed points at load ~35 (2026-11-12: AV1 Fast level
-#: with AV1 Faster), so 11.
+#: Host timing: most rounds per clip (the median per-round ratio is kept) and its
+#: platform note. 5 fixed rounds mis-timed points at load ~35 (2026-11-12: AV1 Fast
+#: level with AV1 Faster), so a pair runs up to 11.
 HOST_ROUNDS = 11
+#: A pair stops after HOST_MIN_ROUNDS once the 95 % interval of its mean log time
+#: ratio to the anchor is within +-HOST_TARGET_HALF_WIDTH. Stored sessions
+#: (2026-11-15, 246 pairs): per-round ratio sd 2.2 % median (CI +-1.9 % at 5
+#: rounds), 7.7 % at p90, so most pairs stop at 5 and the noisy ones run on.
+HOST_MIN_ROUNDS = 5
+HOST_TARGET_HALF_WIDTH = 0.02
+#: z of a two-sided 95 % interval.
+Z95 = 1.96
 #: Host timing's second anchor, timed in the same rounds: the real-time reference our
 #: fast presets are compared with, as a direct same-session time ratio.
 SECOND_ANCHOR = "svtav1-m13"
@@ -337,6 +346,8 @@ def host_time_clip(plan: dict, name: str, clip: str, tools: dict[str, str],
             shift = round_index % len(roles)
             for role in roles[shift:] + roles[:shift]:
                 samples[role].append(pinned_cpu_ms_per_frame(cmds[role], cpu, envs[role]))
+            if ratio_settled(samples["point"], samples["anchor"]):
+                break
     return {"ms_per_frame": {r: statistics.median(v) for r, v in samples.items()},
             "time_ratio": {labels[r]: statistics.median(p / a for p, a in
                                                         zip(samples["point"], samples[r]))
@@ -344,6 +355,15 @@ def host_time_clip(plan: dict, name: str, clip: str, tools: dict[str, str],
             "samples": samples, "streams": streams, "cpu": cpu,
             "budget_fraction": streams["point"]["bytes"]
             / plan["points"][name][clip]["target_bytes"]}
+
+
+def ratio_settled(point: list[float], anchor: list[float]) -> bool:
+    """Whether the per-round point/anchor time ratios are tight enough to stop
+    (HOST_MIN_ROUNDS, HOST_TARGET_HALF_WIDTH)."""
+    if len(point) < HOST_MIN_ROUNDS:
+        return False
+    logs = [math.log(p / a) for p, a in zip(point, anchor)]
+    return Z95 * statistics.stdev(logs) / math.sqrt(len(logs)) <= HOST_TARGET_HALF_WIDTH
 
 
 def time_host(args: argparse.Namespace) -> None:
@@ -510,7 +530,8 @@ def main(argv: list[str]) -> None:
                    help="reserved timing CPUs (host-timed.sh), one per physical core")
     h.add_argument("--out-dir", required=True)
     h.add_argument("--rounds", type=int, default=HOST_ROUNDS,
-                   help=f"interleaved rounds per clip, minimum taken (default {HOST_ROUNDS}; "
+                   help=f"most interleaved rounds per clip (default {HOST_ROUNDS}; a pair stops "
+                        f"earlier once its ratio settles, ratio_settled; "
                         "more on a loaded PC)")
     c = sub.add_parser("time-cloud")
     c.add_argument("--plan", required=True)

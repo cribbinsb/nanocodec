@@ -942,10 +942,14 @@ impl CodecBackend for HevcBackend {
         // 600-frame L3 (keys every 10 s) -0.42% [-0.90, -0.00], no guard; static
         // -1.75%, crowd +0.07%, pan and lowlight unchanged; achieved/target max
         // 0.993 -> 0.994; re-codes on the 22 static and crowd points 8.0 -> 10.6
-        // per 1000 frames. 6 QP: L3 -0.90% but the periodic-key pulse guard
-        // tripped (+0.36 dB).
+        // per 1000 frames. 6 QP (the other Defaults' value) tripped the
+        // periodic-key pulse guard then (+0.36 dB); on top of the
+        // inheritance-sized key (`rate.key_inherit`), draw 2026-11-15: L1
+        // +0.23% [-0.69, +1.47] (ceiling guard 1.13% over target, single
+        // point), L2 -0.43% [-0.96, +0.12], 600-frame L3 -0.73% [-1.15,
+        // -0.33], no guard, static -1.8%, crowd -0.9%, lowlight +0.5%.
         // The other HEVC presets pin it off.
-        ("rate.key_still_boost", 4.0),
+        ("rate.key_still_boost", 6.0),
         // The unified structure's reference plan (`structure.unified`,
         // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
         // (key, cadence base) also predict from the high-quality frame before
