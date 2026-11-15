@@ -97,7 +97,7 @@ nc_encoder::param_group! {
         max_drl_bits: 1.0, [1.0, 5.0], "DRL size: P-frame blocks may select among max_drl_bits + 1 predicted vectors (def_max_drl_bits; spatial neighbours, the reference MV bank, global motion and row/column combinations, AVM setup_ref_mv_list); rounded",
         cross_frame_cdf: 1.0, [0.0, 1.0], "inter frames start entropy coding from their reference picture's final CDFs (cross_frame_context, primary_ref_frame 0; only inter pictures pass theirs on) instead of the defaults; needs av2.cdf_adaptation. Default 1 (vs 0, no CPU): J_real TRAIN proxy-6 -3.4% BETTER (full -3.1% / low -3.7%, every clip better), VAL -2.6% BETTER (full -2.3% / low -3.0%; PSNR-YUV -2.6%, NEG -1.8%, MS-SSIM -2.4%; worst-1% Y -2.7%, NEG -3.1%; static_otw_homes390 +3.0% alone), no guard, periodic-key pulse -0.14 dB; long GOP (one key, 600 f) YUV +0.07..+0.19 dB per 200 frames, no drift",
         ref_mv_bank: 0.0, [0.0, 1.0], "reference MV bank (enable_refmvbank): open DRL entries take the superblock row's recent vectors",
-        parity_hiding: 0.0, [0.0, 1.0], "the sequence enables parity hiding and lossy frames use it (allow_parity_hiding): luma transforms other than IDTX with more than four positions and at least four nonzero levels after DC leave the DC level's parity to the sum of those levels; the encoder fixes a disagreeing parity by the one-level move of least squared error plus lambda times approximate rate. Default 0: J_real TRAIN -0.3% BETTER (quality -0.4%, dCPU +1.1%: key frames +5-6%, P +1%) but VAL +0.1% WORSE (static +0.8%)",
+        parity_hiding: 0.0, [0.0, 1.0], "the sequence enables parity hiding and lossy frames use it (allow_parity_hiding): luma transforms other than IDTX with more than four positions and at least four nonzero levels after DC leave the DC level's parity to the sum of those levels; the encoder fixes a disagreeing parity by the one-level move of least squared error plus lambda times approximate rate. Off by default; AV2 Default sets 1 (DEFAULT_PARAMS). Earlier: J_real TRAIN -0.3% BETTER (quality -0.4%, dCPU +1.1%: key frames +5-6%, P +1%) but VAL +0.1% WORSE (static +0.8%)",
         tcq: 0.0, [0.0, 2.0], "trellis-coded quantisation of lossy luma (enable_tcq per frame, tcq_mode): 0 off, 1 every lossy frame, 2 inter frames only; the luma levels of each transform are chosen by an 8-state Viterbi search over the two interleaved quantizers (distortion plus lambda times rate), and frames using it never hide parities. Default 0: with 2, J_real TRAIN proxy-6 quality full -2.9% / low -2.3%; P-frame instructions (crowd 720p CBR 600, 11 f) +44% (+74% before the search was reworked), Jetson 60 f crowd/bodycam instructions +33%/+42%, cycles +37%/+50%; J +1.8% at k 0.1 (see av2.tcq_prune_bits); key frames cost +239% with 1",
         tcq_prune_bits: 0.0, [0.0, 32.0], "TCQ search (av2.tcq) path pruning: at each position the paths whose cost trails the cheapest by more than this many bits (times lambda) are dropped; 0 keeps every state (exact Viterbi). Higher keeps more of TCQ's gain for more CPU. Luma at equal rate, crowd/pan/lowlight 60 f CBR vs TCQ off: exact +0.15/+0.23/+0.18 dB, 8 +0.13/+0.23/+0.17, 5 +0.12/+0.20/+0.16, 3 +0.12/+0.13/+0.10. P-frame instructions vs TCQ off (crowd 720p CBR 600, 11 f): exact +44%, 8 +39%, 5 +32%, 3 +25%. At 5, J_real proxy-6 quality full -2.8% / low -2.2%, J +1.0% at k 0.1 with dCPU 35%; Jetson 60 f crowd/bodycam instructions +23%/+28% but cycles +37%/+47% (pruning saves instructions, not branchy cycles)",
         skip_mode: 0.0, [0.0, 1.0], "inter frames with one fixed filter enable skip mode (skip_mode_flag): a block may code the same-reference compound NEAR_NEARMV of its skip-mode list (two neighbouring vectors averaged, MULTITAP_SHARP) with one flag and a DRL index, chosen where it predicts more cheaply than the single-reference choice by error plus signalling",
@@ -914,6 +914,17 @@ impl CodecBackend for Av2Backend {
         // off below a quantizer gate instead (0.5..1) lost the static class
         // guard on `static_otw_homes390` at low rates.
         ("planner.depth_removal_qp_scale", 1.0),
+        // Parity hiding (`av2.parity_hiding`) and no depth removal: the
+        // planner keeps the 16x16 and 8x8 children it would drop, and DC
+        // parities ride on the level sums. Fixed QP (draws fixedqp-2026-11-15
+        // and -second) J -1.7% / -2.2%; CPU +2.0% x86, +3.3% Jetson cycles.
+        // Adoption screen (k 0.1, dCPU +2.9%, pool draw 2026-11-15): L1 J
+        // -1.22% [-1.72, -0.46] n 24, L2 -2.06% [-2.87, -1.31] n 48, L3
+        // (600 f, ladder) -3.12% [-4.02, -2.29] n 27 BETTER, no guard.
+        // av2-fast pins the old values.
+        ("av2.parity_hiding", 1.0),
+        ("planner.depth_removal_th_32_16", 0.0),
+        ("planner.depth_removal_th_16_8", 0.0),
     ];
 
     // AV1's motion-decision quality point is the engine default (see
