@@ -1,30 +1,28 @@
 {
  "base": "730e4e16",
  "families": {
-  "nanocodec-h264": "0cdb619d",
-  "nanocodec-h264@h264-fast": "0cdb619d",
-  "nanocodec-h264@h264-faster": "0cdb619d",
-  "nanocodec-hevc": "0cdb619d",
-  "nanocodec-hevc@hevc-fast": "0cdb619d",
-  "nanocodec-av1": "f29b5933",
-  "nanocodec-av1@av1-fast": "0cdb619d",
-  "nanocodec-vp9": "cb9d0b87",
-  "nanocodec-vp9@vp9-fast": "0cdb619d",
-  "nanocodec-av2": "0cdb619d",
-  "nanocodec-av2@av2-fast": "0cdb619d",
-  "nanocodec-vvc": "0cdb619d",
-  "nanocodec-vvc@vvc-fast": "0cdb619d",
-  "nanocodec-av1@av1-faster": "0cdb619d",
-  "nanocodec-hevc@hevc-faster": "0cdb619d",
-  "nanocodec-h264@h264-fastest": "cb9d0b87",
-  "nanocodec-vp9@vp9-faster": "0cdb619d",
-  "nanocodec-vp9@vp9-fastest": "0cdb619d"
+  "nanocodec-h264": "478e8249",
+  "nanocodec-h264@h264-fast": "478e8249",
+  "nanocodec-h264@h264-faster": "478e8249",
+  "nanocodec-hevc": "478e8249",
+  "nanocodec-hevc@hevc-fast": "478e8249",
+  "nanocodec-av1": "478e8249",
+  "nanocodec-av1@av1-fast": "478e8249",
+  "nanocodec-vp9": "478e8249",
+  "nanocodec-vp9@vp9-fast": "478e8249",
+  "nanocodec-av2": "478e8249",
+  "nanocodec-av2@av2-fast": "478e8249",
+  "nanocodec-vvc": "478e8249",
+  "nanocodec-vvc@vvc-fast": "478e8249",
+  "nanocodec-av1@av1-faster": "478e8249",
+  "nanocodec-hevc@hevc-faster": "478e8249",
+  "nanocodec-h264@h264-fastest": "478e8249",
+  "nanocodec-vp9@vp9-faster": "478e8249",
+  "nanocodec-vp9@vp9-fastest": "478e8249"
  },
  "builds": {
   "730e4e16": "730e4e16",
-  "0cdb619d": "0cdb619d",
-  "f29b5933": "f29b5933",
-  "cb9d0b87": "cb9d0b87"
+  "478e8249": "478e8249"
  },
  "tools": {
   "x264": "0.165",
@@ -34,7 +32,5 @@
   "libaom": "v3.15.3"
  },
  "x86_timing_note": "\n  Refresh of 2026-11-11: only our points were re-timed (the reference encoders' timings\n  are from the earlier session). The PC ran about 9% faster that night (paired x264 medium\n  73 vs 67.6 fps), so each of our per-clip times is scaled by the reference session's x264\n  medium time over its paired x264 medium time; speed ratios are unchanged and the raw\n  times are kept in `bd-vs-speed-timing-x86.json` (`raw_ms_per_frame`).",
- "timed_on": {
-  "nanocodec-av1@av1-fast": "f29b5933"
- }
+ "timed_on": {}
 }
