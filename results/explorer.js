@@ -5,7 +5,7 @@
 // A link ?codec=&preset= (deep-link.js) opens it filtered to that preset, selected;
 // a selected point links to the demo with its settings (or its encoder's stream).
 // Data: data/chart.json (python3 -m nceval.site, from docs/results).
-import { paretoFront, stepLine } from './frontier.js';
+import { paretoFront, frontierLine } from './frontier.js';
 import { drawScatter, swatch } from './chart.js';
 import { chartFamily, demoQuery, manifestEncoder, parseResultsQuery } from '../deep-link.js';
 import {
@@ -188,7 +188,7 @@ function render(data, root) {
     // point not yet timed is not in `points`): ours, and the references.
     const frontiers = !state.frontier ? [] : ['ours', 'ref'].map((kind) => {
       const front = paretoFront(points.filter((p) => (kind === 'ours') === (p.kind === 'ours')));
-      return { kind, line: stepLine(front), ids: new Set(front.map((p) => p.id)) };
+      return { kind, line: frontierLine(front), ids: new Set(front.map((p) => p.id)) };
     });
     drawScatter(chart, points, {
       frontiers,
