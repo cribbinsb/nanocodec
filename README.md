@@ -19,8 +19,8 @@ delay, you may be in the right place:
 - **Six formats, one engine:** H.264, HEVC, VVC (H.266), AV1, VP9 and AV2 encoders, each with its own
   decoder; the same rate control, analysis and mode decision drive all six.
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
-  1 s buffer); the Default presets encode 720p at 28–74 fps on one Jetson Orin core and 72–176 fps on one PC
-  core, the Fast presets faster still ([results](https://cribbinsb.github.io/nanocodec/results/)).
+  1 s buffer); 720p in real time on one Jetson Orin core, the Fast presets faster still (figures in
+  [Headline results](#headline-results)).
 - **Real-time VVC and AV2:** real-time encoders and decoders for VVC (H.266) and AV2 (draft, tracking the AOM
   reference AVM), natively and in the browser; reference VVC/AV2 encoders are far from real time.
 - **Optimised for x86, Arm and WebAssembly:** hand-written SIMD kernels for AVX2 / AVX-512, NEON and WASM
