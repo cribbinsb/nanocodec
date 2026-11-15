@@ -31,6 +31,7 @@ export const browserencoder_quantizer: (a: number) => number;
 export const browserencoder_repeat: (a: number) => number;
 export const browserencoder_request_keyframe: (a: number) => void;
 export const browserencoder_set_rate_control: (a: number, b: number, c: number, d: number) => [number, number];
+export const browserencoder_temporal_layer: (a: number) => number;
 export const browserencoder_wants_look_ahead: (a: number) => number;
 export const check_parameters: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const codec_options: (a: number, b: number) => [number, number, number, number];

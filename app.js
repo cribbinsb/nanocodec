@@ -237,6 +237,12 @@ async function switchDecodersWhenIdle() {
 /**
  * Exact sources: send every tick a view codes, in order, while the pipeline has
  * room (a completed frame calls this again through scheduleFrame).
+ *
+ * One pump reads the sources at a time (a clip source decodes one request at a
+ * time). A pump of a stopped comparison can still be waiting for a picture when
+ * the next comparison starts, whose pump then returns at once: with nothing in
+ * flight no completed frame would call it again, so the stale pump, once its
+ * picture is in, starts the current comparison's pump.
  */
 async function pump(token) {
   if (pumping) return;
@@ -254,7 +260,10 @@ async function pump(token) {
       if (!mayCapture()) { closeShots(shots); return; }
       send(tick, shots);
     }
-  } catch (error) { if (token === generation) fail(error); } finally { pumping = false; }
+  } catch (error) { if (token === generation) fail(error); } finally {
+    pumping = false;
+    if (token !== generation) scheduleFrame(generation);
+  }
 }
 /** The first tick after `after` that some view codes. */
 function nextCodedTick(after) {

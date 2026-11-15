@@ -483,6 +483,14 @@ export class BrowserEncoder {
         }
     }
     /**
+     * Temporal layer (`0..=2`) of the last encoded packet (`0` on flat streams).
+     * @returns {number}
+     */
+    get temporal_layer() {
+        const ret = wasm.browserencoder_temporal_layer(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * Fraction of the configured bitrate buffer currently occupied.
      * @returns {number}
      */

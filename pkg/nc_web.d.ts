@@ -190,6 +190,10 @@ export class BrowserEncoder {
    */
   encode_at(source: SourceFrame, timestamp_us: number): Uint8Array;
   /**
+   * Temporal layer (`0..=2`) of the last encoded packet (`0` on flat streams).
+   */
+  readonly temporal_layer: number;
+  /**
    * Fraction of the configured bitrate buffer currently occupied.
    */
   readonly buffer_fullness: number;
@@ -332,6 +336,7 @@ export interface InitOutput {
   readonly browserencoder_repeat: (a: number) => number;
   readonly browserencoder_request_keyframe: (a: number) => void;
   readonly browserencoder_set_rate_control: (a: number, b: number, c: number, d: number) => [number, number];
+  readonly browserencoder_temporal_layer: (a: number) => number;
   readonly browserencoder_wants_look_ahead: (a: number) => number;
   readonly check_parameters: (a: number, b: number, c: number, d: number) => [number, number, number, number];
   readonly codec_options: (a: number, b: number) => [number, number, number, number];
