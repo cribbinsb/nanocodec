@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="nanocodec and reference encoders at fixed QP on the AOM low-delay test conditions, against x264 medium.">
+  <link rel="icon" href="../icon.svg" type="image/svg+xml">
+  <title>nanocodec fixed QP</title>
+  <link rel="stylesheet" href="../site-header.css">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="site-header"><a class="brand" href="../"><span class="brand-mark" aria-hidden="true">▦</span> nano<span>codec</span></a><nav class="site-sections" aria-label="Site"><a href="../">Demo</a><a href="./" aria-current="page">Results</a><a href="method.html">Method</a><a href="../docs/">Docs</a><a class="project-link" href="https://github.com/cribbinsb/nanocodec">GitHub <span aria-hidden="true">↗</span></a></nav></header>
+<div class="results-bar">
+  <nav class="results-nav" aria-label="Results pages">
+    <a href="./">Overview</a>
+    <a href="codecs.html">By codec</a>
+    <a href="speed.html">Speed</a>
+    <a href="rate-control.html">Rate control</a>
+    <a href="fixed-qp.html" aria-current="page">Fixed QP</a>
+    <a href="svc.html">SVC</a>
+    <a href="method.html">Method</a>
+    <a href="yardsticks.html">Yardsticks</a>
+  </nav>
+</div>
+<main>
+  <h1>Fixed QP: the standards lens</h1>
+  <p class="lede">The charts elsewhere measure real-time CBR, where each encoder's rate control is part of the
+    result. Here every encoder codes at fixed quantizers on the AOM common test conditions in low delay, so the
+    figures compare coding tools alone, the way codec standards are compared.</p>
+  <div class="controls mode-switch"></div>
+  <div id="fixed-qp">
+    <div class="controls"></div>
+    <p class="note run"></p>
+    <div class="lens-table"></div>
+    <h2>Columns</h2>
+    <ul class="prose">
+      <li><strong>Strict:</strong> ours on the fully static pattern of the test conditions: a fixed-strength QP
+        cadence, no adaptive layers and a fixed rule for the second reference.</li>
+      <li><strong>Profile:</strong> ours with its fixed-QP profile (<code>rate.fixed_qp_profile</code>): the
+        frame-level pattern it uses when coding without rate control.</li>
+      <li><strong>CBR settings:</strong> ours exactly as in CBR, only the quantizer fixed (profile off).</li>
+      <li>The reference encoders have one setting, so their value is the same in every column.</li>
+    </ul>
+  </div>
+</main>
+<footer>
+  <p>nanocodec is built on the work of SVT-AV1, libaom, dav1d, libvpx, openh264, kvazaar, VVenC / VVdeC, AVM, the
+    JM / HM / VTM reference software and the standards' authors; x264, x265, FFmpeg, SVT-AV1, libaom, libvpx and
+    openh264 are its comparison points. With thanks to all of them.
+    <a href="https://github.com/cribbinsb/nanocodec/blob/main/docs/LEGAL.md">Credits, licences, patents and disclaimers</a>.</p>
+</footer>
+<script type="module" src="fixed-qp.js"></script>
+</body>
+</html>

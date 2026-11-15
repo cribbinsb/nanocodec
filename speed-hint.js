@@ -31,12 +31,12 @@ import { RESOLUTIONS } from './view-settings.js';
  * is offered the rungs below it.
  */
 export const PRESET_COST = {
-  h264: { medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
+  h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
   hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
-  av1: { medium: 1, fast: 0.71, faster: 0.45 },
-  vvc: { medium: 1, fast: 0.55 },
-  vp9: { medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
-  av2: { medium: 1 },
+  av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.45 },
+  vvc: { slow: 1.22, medium: 1, fast: 0.55 },
+  vp9: { slow: 1.16, medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
+  av2: { slow: 1.37, medium: 1 },
 };
 /**
  * Encode time scales with picture area to this power. Less than linear: the

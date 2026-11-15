@@ -124,11 +124,11 @@
   "nanocodec-av1": {
    "owner": "nanocodec",
    "codec": "av1",
-   "preset": "Default",
+   "preset": "Medium",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec AV1 Default",
+   "label": "nanocodec AV1 Medium (default)",
    "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -145,7 +145,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV1 Fast",
-   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset av1-fast",
+   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 211,
@@ -161,7 +161,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV1 Faster",
-   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset av1-faster",
+   "cbr_command": "nanocodec encode --codec av1 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 206,
@@ -172,11 +172,11 @@
   "nanocodec-av2": {
    "owner": "nanocodec",
    "codec": "av2",
-   "preset": "Default",
+   "preset": "Medium",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec AV2 Default",
+   "label": "nanocodec AV2 Medium (default)",
    "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -193,7 +193,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec AV2 Fast",
-   "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset av2-fast",
+   "cbr_command": "nanocodec encode --codec av2 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 168,
@@ -204,11 +204,11 @@
   "nanocodec-h264": {
    "owner": "nanocodec",
    "codec": "h264",
-   "preset": "Default",
+   "preset": "Medium",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec H.264 Default",
+   "label": "nanocodec H.264 Medium (default)",
    "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -225,7 +225,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Fast",
-   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset h264-fast",
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 46,
@@ -241,7 +241,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Faster",
-   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset h264-faster",
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 45,
@@ -252,12 +252,12 @@
   "nanocodec-h264@veryfast": {
    "owner": "nanocodec",
    "codec": "h264",
-   "preset": "Fastest",
+   "preset": "Veryfast",
    "tune": "",
    "ours": true,
    "version_key": "",
    "label": "nanocodec H.264 Veryfast",
-   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset h264-fastest",
+   "cbr_command": "nanocodec encode --codec h264 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset veryfast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 44,
@@ -268,11 +268,11 @@
   "nanocodec-hevc": {
    "owner": "nanocodec",
    "codec": "hevc",
-   "preset": "Default",
+   "preset": "Medium",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec HEVC Default",
+   "label": "nanocodec HEVC Medium (default)",
    "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -289,7 +289,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec HEVC Fast",
-   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset hevc-fast",
+   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 45,
@@ -305,7 +305,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec HEVC Faster",
-   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset hevc-faster",
+   "cbr_command": "nanocodec encode --codec hevc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 44,
@@ -316,11 +316,11 @@
   "nanocodec-vp9": {
    "owner": "nanocodec",
    "codec": "vp9",
-   "preset": "Default",
+   "preset": "Medium",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec VP9 Default",
+   "label": "nanocodec VP9 Medium (default)",
    "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -337,7 +337,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Fast",
-   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vp9-fast",
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 205,
@@ -353,7 +353,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Faster",
-   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vp9-faster",
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset faster",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 213,
@@ -364,12 +364,12 @@
   "nanocodec-vp9@veryfast": {
    "owner": "nanocodec",
    "codec": "vp9",
-   "preset": "Fastest",
+   "preset": "Veryfast",
    "tune": "",
    "ours": true,
    "version_key": "",
    "label": "nanocodec VP9 Veryfast",
-   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vp9-fastest",
+   "cbr_command": "nanocodec encode --codec vp9 --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset veryfast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 219,
@@ -380,11 +380,11 @@
   "nanocodec-vvc": {
    "owner": "nanocodec",
    "codec": "vvc",
-   "preset": "Default",
+   "preset": "Medium",
    "tune": "",
    "ours": true,
    "version_key": "",
-   "label": "nanocodec VVC Default",
+   "label": "nanocodec VVC Medium (default)",
    "cbr_command": "nanocodec encode --codec vvc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000",
    "timing": {
     "clip": "bodycam_bc1",
@@ -401,7 +401,7 @@
    "ours": true,
    "version_key": "",
    "label": "nanocodec VVC Fast",
-   "cbr_command": "nanocodec encode --codec vvc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset vvc-fast",
+   "cbr_command": "nanocodec encode --codec vvc --input input.yuv --width 1280 --height 720 --fps 30/1 --frames 150 --intra-period 300 --temporal-layers 1 --output out.bin --bitrate 600 --buffer-ms 1000 --preset fast",
    "timing": {
     "clip": "bodycam_bc1",
     "qp": 44,
