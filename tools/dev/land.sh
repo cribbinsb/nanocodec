@@ -500,7 +500,7 @@ run_checks() {
     local -A plan=()
     local key values root=$PWD scratch status=0 group
     while read -r key values; do plan[$key]=$values; done <<<"$1"
-    if [[ "${NC_LAND_FULL:-0}" == 1 ]]; then plan[rust]=all plan[eval]=1 plan[web]=1 plan[page]=1 plan[conformance]=all; fi
+    if [[ "${NC_LAND_FULL:-0}" == 1 ]]; then plan[rust]=all plan[eval]=1 plan[web]=1 plan[page]=1 plan[conformance]=all plan[checkasm]=1; fi
     local -A pid=() failed=()
     scratch=$(mktemp -d)
     python_checks plan >"$scratch/python" 2>&1 &
@@ -550,7 +550,7 @@ rust_checks() {
     # machine: they failed four unrelated trains on 2026-11-13) run only when the
     # page itself changed; other changes get the module's node tests, and
     # tools/web/publish.sh runs the page tests before any build goes live.
-    export NC_PAGE_TESTS=${p[page]:-1}
+    export NC_PAGE_TESTS=${p[page]:-1} NC_BROWSER_TESTS=${p[web]:-1} NC_CHECKASM=${p[checkasm]:-1}
     local depth=--quick
     [[ $mode != fast ]] || depth=--fast
     case ${p[rust]} in
@@ -559,7 +559,7 @@ rust_checks() {
         *) timed check.sh tools/ci/check.sh "$depth" --crates "${p[rust]}" || return 1 ;;
     esac
     [[ $mode != fast ]] || return 0
-    if [[ "${p[web]}" == 1 && "${p[rust]}" != all && " ${p[rust]} " != *" nc-web "* ]]; then
+    if [[ "${p[web]}" == 1 && "${p[rust]}" != all && " ${p[rust]} " != *" nc-web "* ]]; then  # web/ only
         timed "browser module and product smoke (web/ changed)" tools/ci/browser_smoke.sh || return 1
     fi
 }

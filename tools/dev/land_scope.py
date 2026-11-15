@@ -45,7 +45,16 @@ stdout, one `key value...` line per key, which land.sh reads:
 
     rust   all | none | <crate>...   clippy/test selection (dependents included)
     eval   0 | 1                     run the eval pytest suite
-    web    0 | 1                     run the browser module smoke tests
+    web    0 | 1                     run the browser module smoke tests (the WASM
+                                     builds and their node tests): only for web/**,
+                                     crates/nc-web/** or a change to the kernels
+                                     (nc-dsp, nc-common: SIMD128), not for every
+                                     crate nc-web embeds (2026-11-15: ~14 min a
+                                     verify, for codec changes the native tests and
+                                     the conformance check already cover)
+    checkasm 0 | 1                   run nc-checkasm's SIMD-vs-scalar check: only
+                                     when nc-dsp, nc-common or nc-checkasm itself
+                                     changed
     page   0 | 1                     also run the page tests in headless Chromium
                                      (the page itself changed: web/** or
                                      crates/nc-web/**; a codec or engine change
@@ -100,6 +109,10 @@ CODEC_CRATES = {"nc-h264": "h264", "nc-hevc": "hevc", "nc-vvc": "vvc", "nc-av1":
 #: Crates that reach nc-cli without coding any stream (their changes cannot
 #: alter one): only the browser module, the C API and the kernel tests.
 NON_STREAM_CRATES = {"nc-web", "nc-capi", "nc-checkasm"}
+#: Crates whose direct change runs the SIMD-vs-scalar kernel check.
+KERNEL_CRATES = {"nc-common", "nc-dsp", "nc-checkasm"}
+#: Crates whose direct change runs the browser module's builds and node tests.
+BROWSER_CRATES = {"nc-web", "nc-common", "nc-dsp"}
 #: The browser module's own crate: a change here is a change to the page's API.
 PAGE_CRATE_DIR = "crates/nc-web/"
 
@@ -228,6 +241,11 @@ def needs_conformance(changed, affected, full):
 
 def plan(root, base):
     changed = [line for line in git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if line]
+    return plan_for_paths(root, changed)
+
+
+def plan_for_paths(root, changed):
+    """The plan (module docstring) for the changed paths `changed`."""
     present = {p for p in changed if (root / p).exists()}
     dirs, dependents = workspace_graph(root)
     embedded = embedded_files(root, dirs)
@@ -267,14 +285,16 @@ def plan(root, base):
         eval_tests = eval_tests or full
     else:
         rust = sorted(affected) or ["none"]
-    # The browser module embeds these crates: a change to any of them can break it.
-    web = web or full or "nc-web" in affected
+    # The browser module's own crate and the kernels it runs (SIMD128).
+    web = web or full or bool(crates & BROWSER_CRATES)
+    checkasm = full or bool(crates & KERNEL_CRATES)
 
     for kind, path in rows:
         print(f"  {kind:<9} {path}", file=sys.stderr)
     conformance = conformance_codecs(changed, affected, full)
     out = [("rust", rust), ("eval", [str(int(eval_tests))]), ("web", [str(int(web))]),
-           ("page", [str(int(page or full))]), ("conformance", conformance)]
+           ("page", [str(int(page or full))]), ("conformance", conformance),
+           ("checkasm", [str(int(checkasm))])]
     out += [(key, files) for key, files in lists.items()]
     return "\n".join(" ".join([key, *values]) for key, values in out)
 

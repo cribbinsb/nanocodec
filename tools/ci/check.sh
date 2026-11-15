@@ -71,7 +71,8 @@ cargo clippy "${selection[@]}" --all-targets -- -D warnings
 step "tests: ${crates:-workspace}"
 cargo test "${selection[@]}" --quiet
 
-if selected nc-checkasm; then
+# land.sh sets NC_CHECKASM=0 when no kernel crate changed (tools/dev/land_scope.py).
+if selected nc-checkasm && [[ "${NC_CHECKASM:-1}" == 1 ]]; then
     step "checkasm (host SIMD vs scalar)"
     cargo run --profile gate --quiet -p nc-checkasm
 fi
@@ -82,7 +83,8 @@ python3 tools/ci/check_test_modules.py
 python3 tools/ci/check_encode_paths.py
 
 # Runs in --quick too (land.sh), so browser API changes cannot land unchecked.
-if selected nc-web; then
+# land.sh sets NC_BROWSER_TESTS=0 unless web/, nc-web or the kernels changed.
+if selected nc-web && [[ "${NC_BROWSER_TESTS:-1}" == 1 ]]; then
     step "browser module (VP9/AV2/VVC WASM smoke tests under node, product smoke in Chromium)"
     tools/ci/browser_smoke.sh
 fi

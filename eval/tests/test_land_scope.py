@@ -89,6 +89,17 @@ def test_the_conformance_check_codes_only_the_changed_codecs(graph, paths, codec
     assert land_scope.conformance_codecs(paths, affected, False) == codecs
 
 
+def test_browser_module_and_checkasm_run_only_for_their_own_crates():
+    def plan_of(path):
+        out = land_scope.plan_for_paths(ROOT, [path])
+        return dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+    codec = plan_of("crates/nc-vp9/src/lib.rs")
+    assert codec["web"] == "0" and codec["checkasm"] == "0"
+    kernels = plan_of("crates/nc-dsp/src/lib.rs")
+    assert kernels["web"] == "1" and kernels["checkasm"] == "1"
+    assert plan_of("crates/nc-web/src/lib.rs")["web"] == "1"
+
+
 def test_only_a_change_to_the_page_runs_the_chromium_page_tests():
     assert land_scope.changes_page("web", "web/app.js")
     assert land_scope.changes_page("crate", "crates/nc-web/src/lib.rs")
