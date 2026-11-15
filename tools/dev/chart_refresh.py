@@ -652,17 +652,25 @@ class Refresh:
             meta.write_text(json.dumps(self.meta(), indent=1) + "\n")
         clipset = (["--clipset", str(Path(self.args.clipset).resolve()),
                     "--prebuilt", str(self.streams())] if self.args.clipset else [])
-        anchor = ["--anchor", self.args.anchor] if getattr(self.args, "anchor", None) else []
-        if self.args.clipset:
-            title = f"Bitrate vs encode speed, held-out clips ({Path(self.args.clipset).stem})"
-            anchor += ["--title", title + (f", zero line {self.args.anchor}" if anchor else "")]
-        self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset, *anchor,
-                  "--timing", str(REPO / TIMING_FILE), "--timing-x86", str(REPO / TIMING_X86_FILE),
-                  # NVENC runs only on this PC's GPU: never on a rented clip set's streams
-                  *([] if self.args.clipset else
-                    ["--timing-hardware", str(REPO / TIMING_HARDWARE_FILE)]),
-                  "--meta", str(meta), "--out", str(REPO / RESULTS),
-                  "--workers", str(self.args.workers)], "render.log", REPO / "eval", scope=True)
+        # The main chart is rendered against both zero lines the site offers (the
+        # held-out ones get the tuned line from refresh_heldout): without it the
+        # site's Development + tuned-x264 view fell back to an older Defaults-only run.
+        anchors = ([self.args.anchor] if getattr(self.args, "anchor", None) else
+                   [None] if self.args.clipset else [None, HELDOUT_TUNED_ANCHOR])
+        for zero in anchors:
+            anchor = ["--anchor", zero] if zero else []
+            if self.args.clipset:
+                title = f"Bitrate vs encode speed, held-out clips ({Path(self.args.clipset).stem})"
+                anchor += ["--title", title + (f", zero line {zero}" if zero else "")]
+            self.run(["python3", "-m", "nceval.chart", "render", *self.chart_args(), *clipset,
+                      *anchor, "--timing", str(REPO / TIMING_FILE),
+                      "--timing-x86", str(REPO / TIMING_X86_FILE),
+                      # NVENC runs only on this PC's GPU: never on a rented clip set's streams
+                      *([] if self.args.clipset else
+                        ["--timing-hardware", str(REPO / TIMING_HARDWARE_FILE)]),
+                      "--meta", str(meta), "--out", str(REPO / RESULTS),
+                      "--workers", str(self.args.workers)], "render.log", REPO / "eval",
+                     scope=True)
         # The results site's data and the README's headline facts follow the new charts.
         self.run(["python3", "-m", "nceval.site"], "site.log", REPO / "eval")
 

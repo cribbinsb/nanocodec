@@ -85,18 +85,16 @@ class ChartView:
     builds: str
 
 
+#: One zero line on the site (owner, 2026-11-15): x264 medium --tune psnr.
 CHART_VIEWS = (
     ChartView("fresh-psnr", "fresh", TUNED_ZERO,
               "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr",
               "bd-vs-speed-independent_fresh_2026-11-13-builds.json"),
-    ChartView("fresh-default", "fresh", DEFAULT_ZERO, "bd-vs-speed-independent_fresh_2026-11-13",
-              "bd-vs-speed-independent_fresh_2026-11-13-builds.json"),
     ChartView("heldout-psnr", "heldout", TUNED_ZERO,
               "bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr",
               "bd-vs-speed-independent_2026-11-13-builds.json"),
-    ChartView("heldout-default", "heldout", DEFAULT_ZERO, "bd-vs-speed-independent_2026-11-13",
-              "bd-vs-speed-independent_2026-11-13-builds.json"),
-    ChartView("dev-default", "dev", DEFAULT_ZERO, "bd-vs-speed", "bd-vs-speed-builds.json"),
+    ChartView("dev-psnr", "dev", TUNED_ZERO, "bd-vs-speed-vs-x264-medium-psnr",
+              "bd-vs-speed-builds.json"),
 )
 CLIPSETS = {
     "fresh": "Held-out, fresh: sources no clip set of ours had used",
@@ -273,7 +271,7 @@ def rc_views(dev_fps: dict[str, dict]) -> list[dict]:
     rows = read_csv(path)
     views = []
     for mode, line in (("cbr", "cbr_vs_cbr"), ("qp", "qp_vs_qp")):
-        for zero, zid in ((DEFAULT_ZERO, "default"), (TUNED_ZERO, "psnr")):
+        for zero, zid in ((TUNED_ZERO, "psnr"),):  # one zero line (owner, 2026-11-15)
             values = {zero: {"j": 0.0, "psnr": 0.0, "vmaf": 0.0, "ms_ssim": 0.0, "iqr": None,
                              "clips_scored": None, "clips": None, "fps": dev_fps.get(zero),
                              "flagged": False, "chained": 0, "rate_invalid_points": 0}}
