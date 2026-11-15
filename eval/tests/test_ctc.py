@@ -152,3 +152,15 @@ def test_lean_points_have_the_weighted_and_j_figures(tmp_path):
     quality = report.quality_of(record)
     assert {"Y", "U", "V", "PSNR-YUV", "MS-SSIM", "VMAF-v1"} <= set(quality)
     assert "VMAF" not in quality
+
+
+def test_local_run_that_expands_to_no_jobs_names_the_encoder(fake_paths, monkeypatch):
+    monkeypatch.setattr(local, "load_paths", lambda: fake_paths)
+    with pytest.raises(SystemExit, match="nanocodec-av1@nosuchrung"):
+        local.local_jobs(_local_args(encoder="nanocodec-av1@nosuchrung"), Path("/src"))
+
+
+def test_every_lens_rung_of_ours_has_jobs(fake_paths, monkeypatch):
+    monkeypatch.setattr(local, "load_paths", lambda: fake_paths)
+    for rung in ("", "@fast", "@slow"):
+        assert local.local_jobs(_local_args(encoder=f"nanocodec-av1{rung}"), Path("/src"))

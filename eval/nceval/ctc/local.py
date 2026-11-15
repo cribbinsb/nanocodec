@@ -115,6 +115,17 @@ def x264_variant(job: dict, mode: str) -> list[dict]:
 
 
 def local_jobs(args: argparse.Namespace, source_dir: Path) -> list[dict]:
+    """The jobs of one local run; an encoder, kind or sequence that expands to none is an error
+    (a misspelt rung or anchor once ran as an empty, "finished" run)."""
+    jobs = _local_jobs(args, source_dir)
+    if not jobs:
+        raise SystemExit(f"{args.encoder} (kinds {args.kinds}, conditions {args.conditions}, "
+                         f"sequences {args.sequences or 'all'}): no jobs; the lens's encoders "
+                         "are nceval.ctc.conditions.ALL_ENCODERS")
+    return jobs
+
+
+def _local_jobs(args: argparse.Namespace, source_dir: Path) -> list[dict]:
     jobs = []
     for name in args.conditions.split(","):
         condition = CONDITIONS[name]
@@ -194,6 +205,15 @@ def mean_figures(curves: Curves, condition: str, anchor: tuple[str, str],
     return means, len(per_sequence), mean(times) if times else float("nan")
 
 
+def encode_fps(curves: Curves, condition: str, test: tuple[str, str]) -> float | None:
+    """Frames per CPU second over every point of the curve (user time where it was coded)."""
+    frames = CONDITIONS[condition].frames
+    points = [p for s in CONDITIONS[condition].sequences
+              for p in curves.get(condition, s.name, *test)]
+    seconds = sum(p.user_s for p in points)
+    return round(frames * len(points) / seconds, 3) if seconds > 0 else None
+
+
 def curve_key(spec: str, kind: str) -> tuple[str, str]:
     """`ENCODER` or `ENCODER:KIND` as a curve's (encoder, kind), `kind` by default."""
     encoder, _, named = spec.partition(":")
@@ -215,6 +235,10 @@ def compare(args: argparse.Namespace) -> None:
                   for spec in args.stored_tests.split(",")]
     header = " | ".join(FIGURES)
     rows = []
+    known = {(c, e, k) for c, _, e, k in curves.groups}
+    absent = [f"{e} {k}" for c, e, k in tests if (c, e, k) not in known]
+    if absent:
+        raise SystemExit(f"no points for: {', '.join(absent)}")
     for condition, encoder, kind in tests:
         bars = [curve_key(args.anchor, "qp")]
         if args.paired_with:
@@ -226,6 +250,7 @@ def compare(args: argparse.Namespace) -> None:
                   f"| time {time:.2f}x   ({header})")
             rows.append({"condition": condition, "test": encoder, "kind": kind,
                          "anchor": bar[0], "anchor_kind": bar[1], "n": n,
+                         "fps": encode_fps(curves, condition, (encoder, kind)),
                          **{f: None if v is None else round(v, 2) for f, v in means.items()}})
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=1) + "\n")

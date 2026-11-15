@@ -76,18 +76,20 @@ class CtcEncoder:
 
 
 _QINDEX_CODECS = (Codec.AV1, Codec.VP9, Codec.AV2)
-#: Our presets per codec: Medium (the Default, the engine defaults) and Fast.
-_FAST_PRESET = "fast"
+#: Our presets per codec beside Medium (the Default, the engine defaults).
+_RUNGS = ("fast", "slow")
 
 
 def _ours() -> list[CtcEncoder]:
     encoders = []
     for default in nanocodec_encoders():
         scale = Scale.QINDEX if default.codec in _QINDEX_CODECS else Scale.QP
-        fast = nanocodec_with_preset(f"{default.name}@{_FAST_PRESET}")
-        if fast is None:
-            raise RuntimeError(f"preset {default.codec.value}/{_FAST_PRESET} missing")
-        encoders += [CtcEncoder(default, Group.OURS, scale), CtcEncoder(fast, Group.OURS, scale)]
+        encoders.append(CtcEncoder(default, Group.OURS, scale))
+        for rung in _RUNGS:
+            encoder = nanocodec_with_preset(f"{default.name}@{rung}")
+            if encoder is None:
+                raise RuntimeError(f"preset {default.codec.value}/{rung} missing")
+            encoders.append(CtcEncoder(encoder, Group.OURS, scale))
     return encoders
 
 
@@ -108,8 +110,18 @@ SLOW = (CtcEncoder(X264("veryslow"), Group.SLOW, Scale.QP),
         CtcEncoder(X265("slow"), Group.SLOW, Scale.QP),
         CtcEncoder(SvtAv1(8), Group.SLOW, Scale.Q63),
         CtcEncoder(LibvpxGood(2), Group.SLOW, Scale.Q63))
+#: The rest of the CBR chart's reference speed range, so the fixed-QP view covers each
+#: reference encoder from its fastest to its slowest setting.
+SPEED_RANGE = (CtcEncoder(X264("ultrafast"), Group.PRACTICAL, Scale.QP),
+               CtcEncoder(X264("veryfast"), Group.PRACTICAL, Scale.QP),
+               CtcEncoder(X265("ultrafast"), Group.PRACTICAL, Scale.QP),
+               CtcEncoder(X265("superfast"), Group.PRACTICAL, Scale.QP),
+               CtcEncoder(SvtAv1(12), Group.PRACTICAL, Scale.Q63),
+               CtcEncoder(SvtAv1(13), Group.PRACTICAL, Scale.Q63),
+               CtcEncoder(LibaomRealtime(10), Group.PRACTICAL, Scale.Q63),
+               CtcEncoder(LibvpxRealtime(9), Group.PRACTICAL, Scale.Q63))
 OURS = tuple(_ours())
-ALL_ENCODERS = OURS + STANDARDS + PRACTICAL + SLOW
+ALL_ENCODERS = OURS + STANDARDS + PRACTICAL + SLOW + SPEED_RANGE
 
 
 @dataclass(frozen=True)
