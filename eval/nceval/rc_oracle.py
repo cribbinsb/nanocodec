@@ -17,6 +17,11 @@ the controller's choices taken out:
 - `startup`: the levels of the first second after each key replaced by the
   mean level of the rest of that key's period, the rest as logged: what the
   start-up descent after a key costs, apart from the steady-state drift;
+- `plateau2`, `plateau4`: the levels as logged for the first 2 (4) seconds
+  after each key, then held at the mean level of that window's last second
+  until the next key: causal, what stopping the refinement cycle once the
+  picture has recovered from its key would do (the stream then runs under
+  its target);
 - `smooth`: each inter frame's level replaced by its centred one-second
   mean in the step domain (the cadence and layer offsets kept): what the
   level's frame-to-frame jitter costs, including the size model's misses;
@@ -62,6 +67,8 @@ from .realuse import DEFAULT_FRAMES, LADDER_KBPS, Runner, natural_val, own_famil
 
 WORKERS = 8
 VARIANTS = ("replay", "trailing", "startup", "smooth", "flat", "flat_key")
+#: Seconds after each key that the opt-in `plateau` variants keep as logged.
+PLATEAU_SECONDS = {"plateau2": 2.0, "plateau4": 4.0}
 #: Frames of the centred mean of `smooth`: one second at 30 fps.
 SMOOTH_FRAMES = 31
 #: The start-up window after each key that `startup` flattens, in seconds.
@@ -133,6 +140,22 @@ def startup_levels(rows: list[dict], log_level: dict[int, float], fps: float) ->
     return levels_
 
 
+def plateau_levels(rows: list[dict], log_level: dict[int, float], fps: float,
+                   seconds: float) -> dict[int, float]:
+    """A `plateau` variant's level per inter frame later than `seconds` after its
+    key: the mean (log step) of the logged levels of the last second before that."""
+    window, second = round(seconds * fps), round(fps)
+    keys = [i for i, r in enumerate(rows) if r["type"] == "Key"] + [len(rows)]
+    levels_: dict[int, float] = {}
+    for key, end in zip(keys, keys[1:]):
+        last = [log_level[i] for i in range(key + window - second + 1, key + window + 1)
+                if i in log_level]
+        if last:
+            mean = math.exp(statistics.fmean(last))
+            levels_.update({i: mean for i in range(key + window + 1, end) if i in log_level})
+    return levels_
+
+
 def schedules(rows: list[dict], codec: Codec, fps: float) -> dict[str, list[str]]:
     """Each variant's `--qp-replay` lines (one per input frame)."""
     steps = step_table(codec)
@@ -161,7 +184,10 @@ def schedules(rows: list[dict], codec: Codec, fps: float) -> dict[str, list[str]
     key_flat = flat_level * FIXED_KEY_STEP_RATIO.get(codec, 1.0)
     every = range(len(rows))
     startup = startup_levels(rows, log_level, fps)
+    plateaus = {name: plateau_levels(rows, log_level, fps, seconds)
+                for name, seconds in PLATEAU_SECONDS.items()}
     return {
+        **{name: [line(i, held.get(i), None) for i in every] for name, held in plateaus.items()},
         "replay": [line(i, None, None) for i in every],
         "trailing": [line(i, smooth(i, 2 * half, 0) if i in log_level else None, None)
                      for i in every],
@@ -308,7 +334,8 @@ def main(argv: list[str] | None = None) -> None:
     measured = {"qp", "cbr", *variants}
     chain = [v for v in ("qp", "flat_key", "flat", "smooth", "replay", "cbr") if v in measured]
     pairs = list(zip(chain, chain[1:])) + [
-        pair for pair in (("replay", "trailing"), ("smooth", "trailing"), ("replay", "startup"))
+        pair for pair in (("replay", "trailing"), ("smooth", "trailing"), ("replay", "startup"),
+                          *(("replay", name) for name in PLATEAU_SECONDS))
         if set(pair) <= measured]
     report = {"codec": codec.value, "clips": args.clips, "binary": str(args.binary),
               "frames": args.frames, "key_seconds": args.key_seconds,
@@ -328,6 +355,12 @@ def main(argv: list[str] | None = None) -> None:
         if result is not None:
             rates.setdefault(variant, []).append(result["kbps"] / result["target_kbps"])
     report["rate_over_target"] = {v: statistics.median(r) for v, r in rates.items()}
+    # Per point: what each variant achieved, and whether its buffer stayed legal.
+    report["points"] = [
+        {"variant": variant, "clip": clip, "class": by_name[clip].content_class,
+         **{k: result.get(k) for k in ("target_kbps", "kbps", "psnr_yuv", "vmaf_v1", "ms_ssim",
+                                       "max_fullness", "max_window_ratio")}}
+        for (variant, clip), result in zip(owners, results) if result is not None]
     Path(args.json).write_text(json.dumps(report, indent=1))
     print(json.dumps({k: report[k] for k in ("total", "vs_qp", "steps")}, indent=1))
     print(json.dumps(report["log_stats"], indent=1))
