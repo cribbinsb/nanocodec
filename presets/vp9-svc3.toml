@@ -39,3 +39,5 @@ structure.unified = 0
 # Pinned before VP9 Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
 persist.reuse_level_price = 0
+# Pinned before VP9 Default's inheritance-sized key boost (2026-11-15).
+rate.key_inherit = 0

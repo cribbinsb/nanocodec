@@ -14,6 +14,7 @@
 //! make a requested rate unattainable; counters expose that fact. With
 //! [`RateControlConfig::frame_drop`] the encoder skips inter frames that would
 //! overflow the buffer even at the maximum quantizer ([`RateController::should_drop`]).
+use crate::inheritance;
 use crate::layer::LayerPosition;
 use crate::params::RateParams;
 use crate::period_ledger::fixed_camera;
@@ -668,6 +669,11 @@ pub(crate) struct RateController {
     /// share (for the first key), and the boost the key being coded took
     /// (`key_still_offset`; 0 for inter frames and unboosted keys).
     key_still_boost: f64,
+    /// `rate.key_inherit`: the share of the boost the measured inheritance
+    /// can give (0: none).
+    key_inherit: f64,
+    /// `rate.key_inherit_lifetime` in seconds (0: off).
+    key_inherit_lifetime: f64,
     startup_still_share: f64,
     key_still_applied: f64,
     /// `rate.recode_overflow`: the buffer fullness re-codes keep frames
@@ -796,6 +802,8 @@ impl RateController {
             first_key_lookahead: first_key_lookahead(params, &calibration),
             first_key_cap_buffer: 0.,
             key_still_boost: f64::from(params.key_still_boost),
+            key_inherit: f64::from(params.key_inherit),
+            key_inherit_lifetime: f64::from(params.key_inherit_lifetime),
             startup_still_share: 0.,
             key_still_applied: 0.,
             recode_ceiling: f64::from(params.recode_overflow),
@@ -1355,7 +1363,40 @@ impl RateController {
         } else {
             self.still_share
         };
-        self.key_still_boost * fixed_camera(share)
+        self.key_still_boost * fixed_camera(share).max(self.inherited_key_weight())
+    }
+
+    /// How much of the key the later frames inherit, by the measured
+    /// inheritance (`rate.key_inherit`): the cadence depth the loss asks
+    /// for, 0 at the probe floor (unmeasured, or losing what the
+    /// high-quality frames add) to `rate.key_inherit` at full depth. The
+    /// unchanged share says only how much of the picture is copied: on
+    /// crowd scenes (0.5-0.8 unchanged) the still background inherits a
+    /// key, and on the 600-frame window with keys every 10 s replaying
+    /// fixed QP's finer key gained crowd 25% (AV1), 29% (HEVC), 15% (H.264)
+    /// BD-J, while pan, which inherits nothing, paid for it on the
+    /// 150-frame window (`docs/analysis/rc-cost-decomposition-2026-11-14.md`,
+    /// 2026-11-15).
+    ///
+    /// With `rate.key_inherit_lifetime` the weight also scales with the key
+    /// period: a key inherited for 2 s pays back a fifth of one inherited
+    /// for 10 s, and at keys every 2 s the full weight raised the
+    /// periodic-key pulse by 0.85 dB (AV1 Default L3, draw 2026-11-15).
+    fn inherited_key_weight(&self) -> f64 {
+        self.cadence_depth.map_or(0., |depth| {
+            let inherits =
+                ((depth - inheritance::MIN_DEPTH) / (1. - inheritance::MIN_DEPTH)).clamp(0., 1.);
+            self.key_inherit * self.key_lifetime_share() * inherits
+        })
+    }
+
+    /// The share (0..1) of `rate.key_inherit_lifetime` the key period
+    /// lasts: 1 when off or without periodic keys.
+    fn key_lifetime_share(&self) -> f64 {
+        if self.key_inherit_lifetime <= 0. || self.period == 0 || self.period == u32::MAX {
+            return 1.;
+        }
+        (f64::from(self.period) / self.frame_fps / self.key_inherit_lifetime).min(1.)
     }
 
     /// The repayment-phase boost whose phase repays a key of `bits`: a held
@@ -2473,7 +2514,13 @@ mod tests {
     /// The quantizer of the periodic key after 59 inter frames whose
     /// unchanged-block share is `still`, at `rate.key_still_boost` `boost`.
     fn periodic_key_quantizer(boost: f32, still: f64) -> u32 {
-        let mut r = controller_with(500_000, &[("rate.key_still_boost", boost)]);
+        inherited_key_quantizer(&[("rate.key_still_boost", boost)], still, None)
+    }
+    /// As [`periodic_key_quantizer`] with `overrides` and the cadence depth
+    /// the measured inheritance asks for (`depth`).
+    fn inherited_key_quantizer(overrides: &[(&str, f32)], still: f64, depth: Option<f64>) -> u32 {
+        let mut r = controller_with(500_000, overrides);
+        r.set_cadence_depth(depth);
         let hint = Complexity {
             static_fraction: still,
             ..HINT
@@ -2495,6 +2542,35 @@ mod tests {
             periodic_key_quantizer(6., 0.3),
             periodic_key_quantizer(0., 0.3)
         );
+    }
+    #[test]
+    fn an_inheriting_scenes_key_is_boosted_with_key_inherit() {
+        let on = [("rate.key_still_boost", 6.), ("rate.key_inherit", 1.)];
+        let off = [("rate.key_still_boost", 6.)];
+        // A crowd: a third of the blocks unchanged, but its frames inherit.
+        assert!(
+            inherited_key_quantizer(&on, 0.3, Some(1.))
+                < inherited_key_quantizer(&off, 0.3, Some(1.))
+        );
+        // A pan inherits nothing: the depth sits at its probe floor.
+        let floor = Some(inheritance::MIN_DEPTH);
+        assert_eq!(
+            inherited_key_quantizer(&on, 0.3, floor),
+            inherited_key_quantizer(&off, 0.3, floor)
+        );
+    }
+    #[test]
+    fn the_inherited_boost_scales_with_the_key_lifetime() {
+        let mut r = controller_with(
+            500_000,
+            &[("rate.key_inherit", 1.), ("rate.key_inherit_lifetime", 10.)],
+        );
+        r.set_cadence_depth(Some(1.));
+        r.set_key_period(u32::MAX);
+        assert_eq!(r.inherited_key_weight(), 1.);
+        // Keys every 2 s at 30 fps: a fifth of the lifetime.
+        r.set_key_period(60);
+        assert!((r.inherited_key_weight() - 0.2).abs() < 1e-9);
     }
     #[test]
     fn a_forced_quantizer_is_coded_as_given_and_never_recoded() {

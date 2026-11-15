@@ -1030,6 +1030,18 @@ impl CodecBackend for Av1Backend {
         // -2.63% but the periodic-key pulse guard trips (+0.52 dB). The other
         // AV1 presets pin it off.
         ("rate.key_still_boost", 6.0),
+        // The still boost also follows the measured inheritance, its share
+        // sized by the key's lifetime (`rate.key_inherit`, full at keys every
+        // 10 s): a crowd's still background inherits a key though under 0.8
+        // of its blocks are unchanged. 600-frame L3 (keys every 10 s, 27
+        // clips, draw 2026-11-15): J -1.08% [-1.68, -0.47], no guard, crowd
+        // -3.0%, static -0.8%, lowlight +0.6%, periodic-key pulse 0.00 dB
+        // (+0.85 dB without the lifetime). Pan and body-cam guard (9 long
+        // clips, 600 f): pan +0.12%, bodycam +0.11%. Single-key streams are
+        // unchanged (their only key is unmeasured). The other AV1 presets
+        // pin it off.
+        ("rate.key_inherit", 1.0),
+        ("rate.key_inherit_lifetime", 10.0),
         // The unified structure's reference plan (`structure.unified`,
         // `nc-encoder` `second_reference.rs` `TierPlan`): high-quality frames
         // (key, cadence base) also predict from the high-quality frame before
