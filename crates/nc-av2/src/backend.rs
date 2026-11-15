@@ -1439,6 +1439,7 @@ impl CodecBackend for Av2Backend {
                     order_hint: 0,
                     quantizer: self.qindex,
                     quant_deltas: self.quant_deltas,
+                    screen_content: false,
                     transform_select: self.qindex != 0,
                     tx_set: self.tx_set,
                     levels: self.level_coding(),

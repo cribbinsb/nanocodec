@@ -5,6 +5,7 @@
 //! Cargo.toml): a binary per file spent most of the test build linking.
 //! `tools/ci/check_test_modules.py` fails if a `tests/*.rs` file is not a
 //! module here, since Cargo would otherwise skip it silently.
+mod av2_foreign;
 mod decode_cli;
 mod docs_examples;
 mod film_grain_cli;

@@ -18,6 +18,7 @@ fn main() {
                 parity_hiding: false,
                 tcq: nc_av2::sequence::TcqFrames::Off,
                 ccso: false,
+                variants: nc_av2::sequence::Variants::OURS,
                 reference_lists: nc_av2::mv_refs::ListConfig::BASIC,
             };
             let payload = write(&header).expect("valid fixture");

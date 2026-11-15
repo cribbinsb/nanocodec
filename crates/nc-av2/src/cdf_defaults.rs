@@ -9182,6 +9182,10 @@ pub(super) const DPCM_UV: Initial<2> = Initial {
     inverse: [16384, 0],
     rates: [2, 3, 4],
 };
+pub(super) const PALETTE_Y: Initial<2> = Initial {
+    inverse: [2723, 0],
+    rates: [0, 1, 2],
+};
 pub(super) const LOSSLESS_SIZE: [[Initial<2>; 2]; 4] = [
     [
         Initial {
@@ -13986,8 +13990,8 @@ pub(super) const BASE_LF_TCQ: [[[Initial<6>; 33]; 5]; 4] = [
 ];
 #[cfg(test)]
 pub(super) const TRACE_HASHES: [u64; 4] = [
-    8_503_839_295_564_221_736,
-    15_866_578_611_065_964_434,
-    3_512_761_540_360_319_826,
-    3_286_060_502_137_083_323,
+    9_884_595_506_822_861_751,
+    9_968_508_457_482_920_933,
+    6_738_175_467_862_863_429,
+    11_063_761_228_747_236_384,
 ];

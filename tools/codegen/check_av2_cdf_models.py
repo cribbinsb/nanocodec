@@ -44,6 +44,8 @@ def specs():
         ('uv_mode', [2], 8, 'default_uv_mode_cdf[a]'),
         ('dpcm_y', [], 2, 'default_dpcm_cdf'),
         ('dpcm_uv', [], 2, 'default_dpcm_uv_cdf'),
+        # Screen-content frames: whether a DC block uses a palette.
+        ('palette_y', [], 2, 'default_palette_y_mode_cdf'),
         ('lossless_size', [4, 2], 2, 'default_lossless_tx_size_cdf[a][b]'),
         ('lossless_inter_tx', [], 2, 'default_lossless_inter_tx_type_cdf'),
         # Contexts 3..5 are skip-mode blocks' (av2_get_skip_txfm_context).

@@ -490,6 +490,21 @@ impl ReferenceGrid {
         Ok(())
     }
 
+    /// Validate a square block of side `size` that starts at `(x, y)`
+    /// inside the picture and may cross its right or bottom edge.
+    fn check_origin(&self, x: usize, y: usize, size: usize) -> Result<()> {
+        if !size.is_power_of_two()
+            || !(CELL..=MAX_BLOCK).contains(&size)
+            || !x.is_multiple_of(size)
+            || !y.is_multiple_of(size)
+            || x >= self.width
+            || y >= self.height
+        {
+            return Err(DecodeError::Malformed("AV2 MV grid block position"));
+        }
+        Ok(())
+    }
+
     fn cell(&self, x: i32, y: i32) -> Cell {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return Cell::Uncoded;
@@ -875,10 +890,12 @@ impl ReferenceGrid {
     fn fill(&mut self, x: usize, y: usize, size: usize, motion: Option<Entry>) -> Result<()> {
         self.last.set(None);
         self.last_skip.set(None);
-        self.check_block(x, y, size)?;
+        self.check_origin(x, y, size)?;
         let stride = self.width / CELL;
-        let cells = (y / CELL..(y + size) / CELL)
-            .flat_map(|row| (x / CELL..(x + size) / CELL).map(move |col| row * stride + col));
+        // The cells inside the picture (a block may cross its edge).
+        let (right, bottom) = ((x + size).min(self.width), (y + size).min(self.height));
+        let cells = (y / CELL..bottom / CELL)
+            .flat_map(|row| (x / CELL..right / CELL).map(move |col| row * stride + col));
         if cells
             .clone()
             .any(|index| self.cells[index] != Cell::Uncoded)

@@ -203,6 +203,7 @@ fn hostile_framing_layers_dimensions_and_post_picture_errors_are_transactional()
             parity_hiding: false,
             tcq: nc_av2::sequence::TcqFrames::Off,
             ccso: false,
+            variants: nc_av2::sequence::Variants::OURS,
             reference_lists: nc_av2::mv_refs::ListConfig::BASIC,
         };
         obu::write(

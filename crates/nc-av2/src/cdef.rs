@@ -185,6 +185,10 @@ pub struct CdefParams {
     damping: u8,
     count: u8,
     sets: [StrengthSet; MAX_SETS],
+    /// Blocks whose transforms are all skipped are filtered too, and code
+    /// the strength index (`cdef_on_skip_txfm_frame_enable`). Our encoder
+    /// never sets it.
+    on_skipped: bool,
 }
 
 impl CdefParams {
@@ -194,6 +198,7 @@ impl CdefParams {
         damping: MIN_DAMPING,
         count: 1,
         sets: [StrengthSet::OFF; MAX_SETS],
+        on_skipped: false,
     };
 
     /// One strength set with luma damping `damping` (3..=6; chroma uses one
@@ -246,6 +251,13 @@ impl CdefParams {
         }
     }
 
+    /// Whether a block with `skip` (every transform skipped) is left out
+    /// of filtering and of index coding.
+    #[must_use]
+    pub fn passes_over(self, skip: bool) -> bool {
+        skip && !self.on_skipped
+    }
+
     /// Whether blocks code a strength index (two or more sets).
     #[must_use]
     pub fn codes_indices(self) -> bool {
@@ -289,27 +301,36 @@ impl CdefParams {
         }
     }
 
-    /// Read `setup_cdef`'s syntax (see [`Self::write`]).
+    /// Read `setup_cdef`'s syntax (see [`Self::write`]); `on_skipped` is
+    /// the sequence's `cdef_on_skip_txfm`, `None` when each frame says
+    /// (single pictures always do).
     ///
     /// # Errors
     ///
-    /// Rejects truncation and syntax outside the subset (CDEF on skipped
-    /// transforms).
-    pub fn read(bits: &mut BitReader<'_>, single_picture: bool) -> Result<Self> {
+    /// Rejects truncation and strengths out of range.
+    pub fn read(
+        bits: &mut BitReader<'_>,
+        single_picture: bool,
+        on_skipped: Option<bool>,
+    ) -> Result<Self> {
         if !single_picture && !bits.read_bit()? {
             return Ok(Self::OFF);
         }
         let damping = bits.read_bits(DAMPING_BITS)? as u8 + MIN_DAMPING;
         let count = bits.read_bits(STRENGTH_COUNT_BITS)? as usize + 1;
-        if single_picture && bits.read_bit()? {
-            return Err(DecodeError::Unsupported("AV2 CDEF on skipped transforms"));
-        }
+        let on_skipped = match on_skipped {
+            Some(on_skipped) => on_skipped,
+            None => bits.read_bit()?,
+        };
         let mut sets = [StrengthSet::OFF; MAX_SETS];
         for set in &mut sets[..count] {
             set.luma = Strength::read(bits)?;
             set.chroma = Strength::read(bits)?;
         }
-        let params = Self::with_sets(damping, &sets[..count])?;
+        let params = Self {
+            on_skipped,
+            ..Self::with_sets(damping, &sets[..count])?
+        };
         // A single picture's one zero set is how it codes "off".
         Ok(
             if single_picture && !params.filters() && damping == MIN_DAMPING && count == 1 {
@@ -361,10 +382,10 @@ impl StrengthIndices {
     }
 
     /// Whether the coding block at (`x`, `y`) codes its filter block's
-    /// index: it is the first non-skipped one (`read_cdef`, with CDEF on
-    /// skipped transforms disabled).
-    pub(crate) fn codes_index(&self, x: usize, y: usize, skip: bool) -> bool {
-        !skip && self.get(x, y).is_none()
+    /// index: it is the first one CDEF does not pass over (`read_cdef`;
+    /// `passed_over`: [`CdefParams::passes_over`] of its skip flag).
+    pub(crate) fn codes_index(&self, x: usize, y: usize, passed_over: bool) -> bool {
+        !passed_over && self.get(x, y).is_none()
     }
 
     /// Top-left luma samples of the filter blocks that have an index, in
@@ -472,7 +493,7 @@ pub(crate) fn read_index(
     skip: bool,
     defaults: Option<&mut TileCdfs>,
 ) -> Result<()> {
-    if !params.is_on() || !indices.codes_index(x, y, skip) {
+    if !params.is_on() || !indices.codes_index(x, y, params.passes_over(skip)) {
         return Ok(());
     }
     let count = params.sets().len();
@@ -597,7 +618,7 @@ pub(crate) fn filter_picture(
         for y in rows.clone().step_by(UNIT) {
             for x in (0..width).step_by(UNIT) {
                 if let Some(set) = indices.get(x, y)
-                    && !state.skips_transform(x, y)
+                    && !params.passes_over(state.skips_transform(x, y))
                 {
                     units.push(CdefUnit { x, y, set });
                 }
@@ -1171,7 +1192,12 @@ mod tests {
                 bits.byte_align_zero();
                 let bytes = bits.into_bytes();
                 let mut reader = BitReader::new(&bytes);
-                let read = CdefParams::read(&mut reader, single_picture).unwrap();
+                let read = CdefParams::read(
+                    &mut reader,
+                    single_picture,
+                    (!single_picture).then_some(false),
+                )
+                .unwrap();
                 let expected = if single_picture && !params.filters() {
                     CdefParams::OFF
                 } else {
@@ -1206,7 +1232,7 @@ mod tests {
             params.write(&mut bits, false);
             bits.byte_align_zero();
             let bytes = bits.into_bytes();
-            let read = CdefParams::read(&mut BitReader::new(&bytes), false).unwrap();
+            let read = CdefParams::read(&mut BitReader::new(&bytes), false, Some(false)).unwrap();
             assert_eq!(read, params);
             assert_eq!(read.sets(), &sets(count)[..]);
         }

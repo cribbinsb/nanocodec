@@ -143,8 +143,7 @@ pub(crate) fn predict(
     let view = recon.view();
     let (x, y) = target.tx;
     let side = target.side;
-    let n_top = if y > 0 { side } else { 0 };
-    let n_left = if x > 0 { side } else { 0 };
+    let (n_top, n_left) = neighbour_counts((x, y), side, (view.width(), view.height()));
     let needs = Needs::of(mode);
     let above_ref = |i: usize| view.row(y - 1)[x + i];
     let left_ref = |i: usize| view.row(y + i)[x - 1];
@@ -239,6 +238,21 @@ pub(crate) fn predict(
         },
     };
     dsp.av2_intra_predict(edges, predictor, side, output);
+}
+
+/// How many samples above and left of the `side`-wide transform at
+/// (`x`, `y`) exist in a plane of `plane_size`: none at the picture's top
+/// or left; a transform crossing the right or bottom edge has neighbours
+/// only inside the picture and repeats the last one (AVM `n_top_px` /
+/// `n_left_px` from `mb_to_right_edge` / `mb_to_bottom_edge`).
+fn neighbour_counts(
+    (x, y): (usize, usize),
+    side: usize,
+    plane_size: (usize, usize),
+) -> (usize, usize) {
+    let n_top = if y > 0 { side.min(plane_size.0 - x) } else { 0 };
+    let n_left = if x > 0 { side.min(plane_size.1 - y) } else { 0 };
+    (n_top, n_left)
 }
 
 /// Available above-right samples of `target` (AVM `has_top_right`), zero

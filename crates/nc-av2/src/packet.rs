@@ -65,6 +65,7 @@ pub fn sequence_header(
         },
         reference_lists,
         ccso,
+        variants: sequence::Variants::OURS,
     }
 }
 

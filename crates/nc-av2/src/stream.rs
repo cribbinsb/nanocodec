@@ -198,9 +198,6 @@ impl Decoder {
         work: &mut tile_decoder::Workspace,
     ) -> Result<(Picture, Option<Box<TileCdfs>>)> {
         let (header, offset) = frame_header::parse_keyframe(sequence, payload)?;
-        if header.transform_select != (header.quantizer != 0) {
-            return Err(DecodeError::Unsupported("AV2 key transform configuration"));
-        }
         let params = TileParams {
             qindex: header.quantizer,
             quant_deltas: header.quant_deltas,
@@ -209,6 +206,8 @@ impl Decoder {
             cdef: header.cdef,
             ccso: header.ccso,
             tx_set: header.tx_set,
+            tx_select: header.transform_select,
+            screen_content: header.screen_content,
             levels: header.levels,
             delta_q: header.delta_q,
             reference_lists: sequence.reference_lists,
@@ -269,11 +268,6 @@ impl Decoder {
                 "AV2 changed sequence requires keyframe",
             ));
         }
-        if header.transform_select != (header.quantizer != 0) {
-            return Err(DecodeError::Unsupported(
-                "AV2 forward transform configuration",
-            ));
-        }
         let params = TileParams {
             qindex: header.quantizer,
             quant_deltas: header.quant_deltas,
@@ -282,6 +276,8 @@ impl Decoder {
             cdef: header.cdef,
             ccso: header.ccso,
             tx_set: header.tx_set,
+            tx_select: header.transform_select,
+            screen_content: false,
             levels: header.levels,
             delta_q: header.delta_q,
             reference_lists: sequence.reference_lists,

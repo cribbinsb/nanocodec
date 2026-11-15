@@ -163,6 +163,15 @@ fn shipped(codec: Codec, spatial_layers: u8, name: &str) -> ParamOverrides {
     nc_encoder::preset_params(codec, spatial_layers, name).unwrap()
 }
 
+/// Parameters from `(name, value)` pairs.
+fn overrides(pairs: &[(&str, f32)]) -> ParamOverrides {
+    let mut params = ParamOverrides::default();
+    for &(name, value) in pairs {
+        params.set(name, value);
+    }
+    params
+}
+
 /// A flat stream (the codec defaults give H.264 adaptive layers).
 fn flat() -> ParamOverrides {
     let mut params = ParamOverrides::default();
@@ -298,9 +307,13 @@ fn av1_static_content_recovers_from_a_starved_key() {
         shipped(Codec::Av1, 1, "fast"),
         // The slow rung: the shared bundle, then AV1's levers (nc_encoder::presets).
         shipped(Codec::Av1, 1, "slow"),
-        "av1.restoration = 1",
-        "structure.unified = 1",
-        "structure.unified = 1\nstructure.secondary_min_depth = 0\nrefs.second_full = 1",
+        overrides(&[("av1.restoration", 1.0)]),
+        overrides(&[("structure.unified", 1.0)]),
+        overrides(&[
+            ("structure.unified", 1.0),
+            ("structure.secondary_min_depth", 0.0),
+            ("refs.second_full", 1.0),
+        ]),
     ] {
         check::<nc_av1::Av1Backend>(Codec::Av1, &preset, &FLAT_RECOVERY);
     }
@@ -576,7 +589,7 @@ fn vp9_three_layer_svc_recovers_every_upper_layer() {
 fn av1_layered_streams_recover_at_the_next_base_frame() {
     check::<nc_av1::Av1Backend>(
         Codec::Av1,
-        shipped(Codec::Av1, 1, "faster"),
+        &shipped(Codec::Av1, 1, "faster"),
         &LAYERED_RECOVERY,
     );
 }

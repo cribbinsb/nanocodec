@@ -148,7 +148,8 @@ impl DeblockParams {
     /// # Errors
     ///
     /// Propagates truncation.
-    pub fn read(bits: &mut BitReader<'_>) -> Result<Self> {
+    pub fn read(bits: &mut BitReader<'_>, delta_bits: u8) -> Result<Self> {
+        let delta_bits = u32::from(delta_bits);
         let mut params = Self::OFF;
         let luma = [bits.read_bit()?, bits.read_bit()?];
         let chroma = if luma.contains(&true) {
@@ -161,7 +162,7 @@ impl DeblockParams {
             if on {
                 let implied = params.implied_delta(channel);
                 let delta = if bits.read_bit()? {
-                    bits.read_bits(DELTA_BITS)? as i8 - DELTA_OFFSET
+                    bits.read_bits(delta_bits)? as i8 - (1 << (delta_bits - 1))
                 } else {
                     implied
                 };
@@ -219,7 +220,10 @@ mod tests {
                         writer.byte_align_zero();
                         let bytes = writer.into_bytes();
                         let mut reader = BitReader::new(&bytes);
-                        assert_eq!(DeblockParams::read(&mut reader).unwrap(), params);
+                        assert_eq!(
+                            DeblockParams::read(&mut reader, DELTA_BITS as u8).unwrap(),
+                            params
+                        );
                     }
                 }
             }

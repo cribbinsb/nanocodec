@@ -274,15 +274,24 @@ impl BlockState {
         let units = tx.units();
         let (ux, uy) = (x / CONTEXT_UNIT, y / CONTEXT_UNIT);
         // Contexts start at zero at the picture's top and left edges.
+        // A transform crossing the picture edge reads zeros beyond it
+        // (copies built only then: our encoder's transforms never cross).
+        let (padded_above, padded_left);
         let above = if y == 0 {
             &OUTSIDE[..]
+        } else if let Some(inside) = contexts.above.get(ux..ux + units) {
+            inside
         } else {
-            &contexts.above[ux..ux + units]
+            padded_above = zero_padded(&contexts.above[ux..]);
+            &padded_above[..units]
         };
         let left = if x == 0 {
             &OUTSIDE[..]
+        } else if let Some(inside) = contexts.left.get(uy..uy + units) {
+            inside
         } else {
-            &contexts.left[uy..uy + units]
+            padded_left = zero_padded(&contexts.left[uy..]);
+            &padded_left[..units]
         };
         coeff::Context::derive(
             plane as u8,
@@ -317,8 +326,12 @@ impl BlockState {
     ) {
         let units = tx.units();
         let contexts = &mut self.coefficients[plane];
-        contexts.above[x / CONTEXT_UNIT..x / CONTEXT_UNIT + units].fill(value);
-        contexts.left[y / CONTEXT_UNIT..y / CONTEXT_UNIT + units].fill(value);
+        // Clipped to the picture for a transform crossing its edge.
+        let (ux, uy) = (x / CONTEXT_UNIT, y / CONTEXT_UNIT);
+        let columns = contexts.above.len();
+        contexts.above[ux..(ux + units).min(columns)].fill(value);
+        let rows = contexts.left.len();
+        contexts.left[uy..(uy + units).min(rows)].fill(value);
     }
 
     /// Zero the entropy contexts of every plane over the block of side
@@ -370,6 +383,15 @@ impl BlockState {
         }
         Ok(())
     }
+}
+
+/// `inside` (the contexts of a transform up to the picture edge it
+/// crosses) followed by zeros.
+#[cold]
+fn zero_padded(inside: &[u8]) -> [u8; MAX_TX_UNITS] {
+    let mut padded = [0; MAX_TX_UNITS];
+    padded[..inside.len()].copy_from_slice(inside);
+    padded
 }
 
 /// Context units along one side of the largest (64×64 luma) block.

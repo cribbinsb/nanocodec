@@ -5,6 +5,8 @@
 //! Reference license: BSD-3-Clause-Clear plus separate AOM patent terms (see
 //! `docs/licenses/avm`). This module codes sequence configuration, not pictures.
 
+use crate::general::sequence::SegmentFeatures;
+use crate::general::tiles::{self, TileGeometry};
 use crate::mv_refs::ListConfig;
 use nc_common::BitWriter;
 use nc_common::decode::{BitReader, DecodeError, Result};
@@ -55,6 +57,57 @@ pub struct SequenceHeader {
     /// Lossy frames may filter with CCSO (`enable_ccso`; units of
     /// [`crate::ccso::UNIT`], not matched to superblocks).
     pub ccso: bool,
+    /// Fields our encoder writes one value of and other encoders vary.
+    pub variants: Variants,
+}
+
+/// Sequence fields our encoder always writes [`Variants::OURS`] for; the
+/// decoder accepts the values of other encoders listed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Variants {
+    /// Bits of a frame's deblocking offsets (`df_par_bits_minus2 + 2`),
+    /// 2..=5.
+    pub deblock_delta_bits: u8,
+    /// Whether CDEF filters blocks whose transforms are all skipped
+    /// (`cdef_on_skip_txfm`); `None` when each frame says. Single pictures
+    /// do not code it (each frame says): see
+    /// [`SequenceHeader::cdef_on_skipped`].
+    pub cdef_on_skipped: Option<bool>,
+    /// Compound pairs of one reference frames may list
+    /// (`num_same_ref_compound`, 0..=3; video sequences).
+    pub same_reference_compounds: u8,
+    /// Whether frames allow screen-content tools
+    /// (`force_screen_content_tools`) and, with them, force whole-sample
+    /// vectors (`force_integer_mv`); each `None` when every frame says, as
+    /// in single pictures (which do not code them).
+    pub screen_content: Option<bool>,
+    /// See `screen_content`.
+    pub integer_mv: Option<bool>,
+    /// The sequence carries a tile layout (`seq_tile_info_present_flag`,
+    /// of one tile: others are rejected); frames reuse it.
+    pub tiles: Option<SequenceTiles>,
+}
+
+/// How frames use the sequence's (one-tile) layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceTiles {
+    /// Every frame uses it and codes no layout.
+    Fixed,
+    /// Each frame says whether it does (`allow_tile_info_change`).
+    PerFrame,
+}
+
+impl Variants {
+    /// What our encoder writes (single pictures infer `cdef_on_skipped`
+    /// per frame whatever this says).
+    pub const OURS: Self = Self {
+        deblock_delta_bits: 2,
+        cdef_on_skipped: Some(false),
+        same_reference_compounds: 0,
+        screen_content: Some(false),
+        integer_mv: None,
+        tiles: None,
+    };
 }
 
 /// Which lossy frames code their luma with trellis-coded quantisation
@@ -128,6 +181,29 @@ impl CropWindow {
 const CHROMA_SUBSAMPLING: u32 = 2;
 
 impl SequenceHeader {
+    /// Whether CDEF filters blocks whose transforms are all skipped;
+    /// `None` when each frame says (always so in single pictures).
+    #[must_use]
+    pub fn cdef_on_skipped(self) -> Option<bool> {
+        if self.single_picture {
+            None
+        } else {
+            self.variants.cdef_on_skipped
+        }
+    }
+
+    /// Whether frames allow screen-content tools and force whole-sample
+    /// vectors; each `None` when every frame says (always so in single
+    /// pictures).
+    #[must_use]
+    pub fn screen_content(self) -> (Option<bool>, Option<bool>) {
+        if self.single_picture {
+            (None, None)
+        } else {
+            (self.variants.screen_content, self.variants.integer_mv)
+        }
+    }
+
     /// The decoded picture size after the conformance window.
     #[must_use]
     pub fn visible_size(self) -> (usize, usize) {
@@ -201,6 +277,7 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
             parity_hiding: false,
             tcq: TcqFrames::Off,
             ccso: false,
+            variants: Variants::OURS,
             reference_lists: ListConfig::BASIC,
         },
     )?;
@@ -225,6 +302,21 @@ pub fn parse(payload: &[u8]) -> Result<SequenceHeader> {
 enum Syntax<'a> {
     Write(BitWriter),
     Read(BitReader<'a>),
+}
+
+impl<'a> Syntax<'a> {
+    /// One flag whose value the encoder writes as `ours`; `Some(reader)`
+    /// when a stream being read sets it otherwise, to read what follows
+    /// (syntax our encoder never writes).
+    fn other_encoders(&mut self, ours: bool) -> Result<Option<&mut BitReader<'a>>> {
+        match self {
+            Self::Write(writer) => {
+                writer.put_bit(ours);
+                Ok(None)
+            }
+            Self::Read(reader) => Ok((reader.read_bit()? != ours).then_some(reader)),
+        }
+    }
 }
 
 impl Syntax<'_> {
@@ -329,26 +421,33 @@ fn sequence(s: &mut Syntax<'_>, h: SequenceHeader) -> Result<SequenceHeader> {
     }
     partition(s)?;
     s.off("AV2 extended segmentation")?;
-    s.off("AV2 sequence segmentation data")?;
+    segmentation_data(s)?;
     intra(s)?;
-    let (order_hint_bits, explicit_references, reference_lists) = inter(
+    let (order_hint_bits, explicit_references, reference_lists, same_reference_compounds) = inter(
         s,
         single,
-        h.order_hint_bits,
+        (h.order_hint_bits, h.variants.same_reference_compounds),
         h.layering.explicit_references,
         h.reference_lists,
     )?;
-    if !single {
-        s.off("AV2 adaptive screen-content tools")?;
-        s.off("AV2 screen-content tools")?;
-    }
+    let (screen_content, integer_mv) = if single {
+        (h.variants.screen_content, h.variants.integer_mv)
+    } else {
+        screen_content(s, (h.variants.screen_content, h.variants.integer_mv))?
+    };
     let (chroma_delta_q, dc_delta_q, parity_hiding, tcq) = transform(
         s,
         single,
         (h.chroma_delta_q, h.dc_delta_q, h.parity_hiding, h.tcq),
     )?;
-    let ccso = filters(s, single, h.ccso)?;
-    s.off("AV2 sequence tile configuration")?; // tile layout is in frame syntax
+    let (ccso, variants) = filters(s, single, h.ccso, h.variants)?;
+    let variants = Variants {
+        same_reference_compounds,
+        screen_content,
+        integer_mv,
+        tiles: sequence_tiles(s, h.variants.tiles, (max_width, max_height, level))?,
+        ..variants
+    };
     s.off("AV2 film grain")?;
     s.off("AV2 sequence extension")?;
     Ok(SequenceHeader {
@@ -369,8 +468,89 @@ fn sequence(s: &mut Syntax<'_>, h: SequenceHeader) -> Result<SequenceHeader> {
         parity_hiding,
         tcq,
         ccso,
+        variants,
     })
 }
+
+/// `seg_info_present_flag` and the sequence's segment features: read and
+/// dropped (frames of the subset never enable segmentation, so they never
+/// refer to them).
+fn segmentation_data(s: &mut Syntax<'_>) -> Result<()> {
+    if let Some(reader) = s.other_encoders(false)? {
+        reader.read_bit()?; // seg_info_adaptive_flag
+        SegmentFeatures::parse(reader, BASE_SEGMENTS)?;
+    }
+    Ok(())
+}
+
+/// Segments without `enable_ext_seg`.
+const BASE_SEGMENTS: usize = 8;
+
+/// `force_screen_content_tools` of a video sequence and, with the tools
+/// possible, `force_integer_mv` (per frame without them): each "adaptive",
+/// else on or off.
+fn screen_content(
+    s: &mut Syntax<'_>,
+    (tools, integer_mv): (Option<bool>, Option<bool>),
+) -> Result<(Option<bool>, Option<bool>)> {
+    let tools = optional_flag(s, tools)?;
+    let integer_mv = if tools == Some(false) {
+        None
+    } else {
+        optional_flag(s, integer_mv)?
+    };
+    Ok((tools, integer_mv))
+}
+
+/// A three-way sequence choice: a flag for "each frame says" (`None`),
+/// else the fixed value.
+fn optional_flag(s: &mut Syntax<'_>, value: Option<bool>) -> Result<Option<bool>> {
+    if s.field(u32::from(value.is_none()), 1)? != 0 {
+        return Ok(None);
+    }
+    Ok(Some(s.field(u32::from(value == Some(true)), 1)? != 0))
+}
+
+/// `seq_tile_info_present_flag` with the sequence's tile layout, accepted
+/// when it is one tile.
+fn sequence_tiles(
+    s: &mut Syntax<'_>,
+    ours: Option<SequenceTiles>,
+    (max_width, max_height, level): (u32, u32, u8),
+) -> Result<Option<SequenceTiles>> {
+    let Syntax::Read(reader) = s else {
+        if ours.is_some() {
+            return Err(DecodeError::Unsupported(
+                "AV2 writing a sequence tile layout",
+            ));
+        }
+        s.off("AV2 sequence tile configuration")?;
+        return Ok(None);
+    };
+    if !reader.read_bit()? {
+        return Ok(None);
+    }
+    let use_of = if reader.read_bit()? {
+        SequenceTiles::PerFrame
+    } else {
+        SequenceTiles::Fixed
+    };
+    let geometry = TileGeometry {
+        size: (max_width, max_height),
+        superblock_log2: SUPERBLOCK_LOG2,
+        sequence_superblock_log2: SUPERBLOCK_LOG2,
+        level,
+        high_tier: false,
+    };
+    let layout = tiles::parse(reader, geometry)?;
+    if (layout.columns(), layout.rows()) != (1, 1) {
+        return Err(DecodeError::Unsupported("AV2 multiple tiles"));
+    }
+    Ok(Some(use_of))
+}
+
+/// log2 of the subset's 64×64 superblocks.
+const SUPERBLOCK_LOG2: u8 = 6;
 
 /// AVM `av2_write_conformance_window` / `av2_read_conformance_window`.
 fn conformance_window(s: &mut Syntax<'_>, crop: CropWindow) -> Result<CropWindow> {
@@ -416,14 +596,15 @@ fn intra(s: &mut Syntax<'_>) -> Result<()> {
 }
 
 /// The inter tool group; returns the order-hint width,
-/// `enable_explicit_ref_frame_map` and the reference-list configuration.
+/// `enable_explicit_ref_frame_map`, the reference-list configuration and
+/// `num_same_ref_compound`.
 fn inter(
     s: &mut Syntax<'_>,
     single: bool,
-    order_hint_bits: u8,
+    (order_hint_bits, same_reference_compounds): (u8, u8),
     explicit_references: bool,
     lists: ListConfig,
-) -> Result<(u8, bool, ListConfig)> {
+) -> Result<(u8, bool, ListConfig, u8)> {
     let order_hint_bits = if single {
         0
     } else {
@@ -456,8 +637,9 @@ fn inter(
     }
     s.fixed(0, 1, "AV2 IBC DRL count above one")?; // quniform(3, 0) = 0
     s.off("AV2 per-frame IBC DRL count")?;
+    let mut same_reference = 0;
     if !single {
-        s.fixed(0, 2, "AV2 same-reference compound")?;
+        same_reference = s.field(u32::from(same_reference_compounds), 2)? as u8;
         s.off("AV2 temporal interpolated prediction")?;
         s.off("AV2 motion trajectories")?;
     }
@@ -487,7 +669,7 @@ fn inter(
         max_drl_bits,
         ref_mv_bank,
     };
-    Ok((order_hint_bits, explicit, lists.validate()?))
+    Ok((order_hint_bits, explicit, lists.validate()?, same_reference))
 }
 
 /// AVM `MIN_MAX_DRL_BITS`, and the number of `def_max_drl_bits` values
@@ -560,8 +742,14 @@ fn tcq_frames(s: &mut Syntax<'_>, single: bool, tcq: TcqFrames) -> Result<TcqFra
     }
 }
 
-/// The loop-filter tools; returns `enable_ccso`.
-fn filters(s: &mut Syntax<'_>, single: bool, ccso: bool) -> Result<bool> {
+/// The loop-filter tools; returns `enable_ccso` and the fields other
+/// encoders vary.
+fn filters(
+    s: &mut Syntax<'_>,
+    single: bool,
+    ccso: bool,
+    variants: Variants,
+) -> Result<(bool, Variants)> {
     s.off("AV2 disabled tile-boundary filtering")?;
     s.fixed(1, 1, "AV2 sequence without CDEF")?; // frames choose CDEF themselves
     s.off("AV2 guided directional filter")?;
@@ -570,15 +758,33 @@ fn filters(s: &mut Syntax<'_>, single: bool, ccso: bool) -> Result<bool> {
     if ccso {
         s.off("AV2 CCSO units matched to superblocks")?;
     }
-    if !single {
-        // CDEF_ON_SKIP_TXFM_DISABLED: blocks with skipped transforms stay
-        // unfiltered, as in AV1.
-        s.off("AV2 always-on CDEF for skipped transforms")?;
-        s.fixed(1, 1, "AV2 adaptive CDEF for skipped transforms")?;
-    }
-    s.fixed(0, 2, "AV2 deblocking parameter width above two")?;
-    Ok(ccso)
+    let cdef_on_skipped = if single {
+        // Inferred per frame; the field keeps the caller's value.
+        variants.cdef_on_skipped
+    } else if s.field(u32::from(variants.cdef_on_skipped == Some(true)), 1)? != 0 {
+        Some(true)
+    } else if s.field(u32::from(variants.cdef_on_skipped == Some(false)), 1)? != 0 {
+        Some(false)
+    } else {
+        None
+    };
+    let deblock_delta_bits = s.field(
+        u32::from(variants.deblock_delta_bits - MIN_DEBLOCK_DELTA_BITS),
+        2,
+    )? as u8
+        + MIN_DEBLOCK_DELTA_BITS;
+    Ok((
+        ccso,
+        Variants {
+            deblock_delta_bits,
+            cdef_on_skipped,
+            ..variants
+        },
+    ))
 }
+
+/// `df_par_bits_minus2` codes the excess over two bits.
+const MIN_DEBLOCK_DELTA_BITS: u8 = 2;
 
 #[cfg(test)]
 mod tests {
@@ -602,6 +808,7 @@ mod tests {
                     parity_hiding: false,
                     tcq: TcqFrames::Off,
                     ccso: false,
+                    variants: Variants::OURS,
                     reference_lists: crate::mv_refs::ListConfig::BASIC,
                 };
                 let payload = write(&h).unwrap();
@@ -641,6 +848,7 @@ mod tests {
             parity_hiding: false,
             tcq: TcqFrames::Off,
             ccso: false,
+            variants: Variants::OURS,
             reference_lists: crate::mv_refs::ListConfig::BASIC,
         };
         assert_eq!(parse(&write(&h).unwrap()).unwrap(), h);
@@ -684,6 +892,7 @@ mod tests {
                     parity_hiding: false,
                     tcq: TcqFrames::Off,
                     ccso: false,
+                    variants: Variants::OURS,
                     reference_lists: crate::mv_refs::ListConfig::BASIC,
                 };
                 assert_eq!(parse(&write(&h).unwrap()).unwrap(), h);
@@ -711,6 +920,7 @@ mod tests {
                     parity_hiding: false,
                     tcq: TcqFrames::Off,
                     ccso: false,
+                    variants: Variants::OURS,
                     reference_lists: crate::mv_refs::ListConfig::BASIC,
                 };
                 let hex = vectors.next().unwrap();
@@ -741,6 +951,7 @@ mod tests {
             parity_hiding: false,
             tcq: TcqFrames::Off,
             ccso: false,
+            variants: Variants::OURS,
             reference_lists: crate::mv_refs::ListConfig::BASIC,
         };
         for bad in [

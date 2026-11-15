@@ -28,7 +28,8 @@ delay, you may be in the right place:
   official 8-bit conformance streams and 87 of 116 short 8-bit streams we coded with VTM and VVenC to cover the
   Main 10 tools one by one (it is 8-bit only and still rejects, among others, intra block copy, multiple slices
   and tiles, so it is not a compliant Main 10 decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
-  decodes our own streams only (it rejects the reference encoder's streams, which use tools outside our subset).
+  decodes our own streams and 6 of 30 foreign test streams bit-exact (key-frame-only streams of the reference
+  encoder with the fewest tools; the rest use tools outside our subset).
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
   1 s buffer); 720p at real-time speed on one Jetson Orin core for every format's `medium` preset except VVC,
   which runs just under it (VVC `fast` is above); figures in [Headline results](#headline-results).

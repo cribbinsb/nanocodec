@@ -218,7 +218,15 @@ pre_land_checks() {
             die "cargo check failed: not landed"
     fi
     if ((${#tested[@]})); then
-        timed "unit tests ${tested[*]}" cargo test --profile gate --quiet --lib --bins "${tested[@]}" ||
+        # `--lib` is an error for a package with no library (the CLI), so it
+        # is passed only when every touched package has one.
+        local lib=--lib
+        for key in ${plan[touched]:-}; do
+            cargo metadata --no-deps --format-version 1 --offline 2>/dev/null |
+                python3 -c 'import json,sys; p=[x for x in json.load(sys.stdin)["packages"] if x["name"]==sys.argv[1]]; sys.exit(0 if p and any("lib" in t["kind"] for t in p[0]["targets"]) else 1)' "$key" ||
+                lib=
+        done
+        timed "unit tests ${tested[*]}" cargo test --profile gate --quiet $lib --bins "${tested[@]}" ||
             die "unit tests failed: not landed"
     fi
     if [[ $mode == full ]]; then

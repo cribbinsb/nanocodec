@@ -114,6 +114,8 @@ pub struct TileCdfs {
     pub dpcm_y: Cdf<2>,
     /// AVM `default_dpcm_uv_cdf` (q selected at construction; a/b are array axes).
     pub dpcm_uv: Cdf<2>,
+    /// AVM `default_palette_y_mode_cdf` (q selected at construction; a/b are array axes).
+    pub palette_y: Cdf<2>,
     /// AVM `default_lossless_tx_size_cdf[a][b]` (q selected at construction; a/b are array axes).
     pub lossless_size: [[Cdf<2>; 2]; 4],
     /// AVM `default_lossless_inter_tx_type_cdf` (q selected at construction; a/b are array axes).
@@ -248,6 +250,7 @@ impl TileCdfs {
             uv_mode: defaults::UV_MODE.map(Initial::build),
             dpcm_y: defaults::DPCM_Y.build(),
             dpcm_uv: defaults::DPCM_UV.build(),
+            palette_y: defaults::PALETTE_Y.build(),
             lossless_size: defaults::LOSSLESS_SIZE.map(|value| value.map(Initial::build)),
             lossless_inter_tx: defaults::LOSSLESS_INTER_TX.build(),
             block_skip: defaults::BLOCK_SKIP.map(Initial::build),
@@ -428,6 +431,7 @@ impl TileCdfs {
         }
         self.dpcm_y.restart_adaptation();
         self.dpcm_uv.restart_adaptation();
+        self.palette_y.restart_adaptation();
         for v0 in &mut self.lossless_size {
             for v1 in v0 {
                 v1.restart_adaptation();
@@ -648,6 +652,7 @@ mod tests {
             }
             trace(&mut models.dpcm_y, &mut hash);
             trace(&mut models.dpcm_uv, &mut hash);
+            trace(&mut models.palette_y, &mut hash);
             for v0 in &mut models.lossless_size {
                 for v1 in v0 {
                     trace(v1, &mut hash);

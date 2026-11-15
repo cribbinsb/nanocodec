@@ -34,6 +34,10 @@ use nc_common::{Picture, PictureRecycler, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::intra_prediction::av2::Av2IntraEdges;
 use nc_dsp::{BlockSize, Dsp, Residual16};
 
+/// Default probability that a DC block has no palette (AVM
+/// `default_palette_y_mode_cdf`), for tiles that do not adapt.
+const PALETTE_Y: [u16; 2] = [2723, 0];
+
 /// Most samples of one plane block (64×64 luma).
 const MAX_PLANE_AREA: usize = 64 * 64;
 
@@ -52,6 +56,12 @@ pub(crate) struct TileParams {
     pub ccso: CcsoParams,
     /// The frame's reduced transform set.
     pub tx_set: TxSetMode,
+    /// DC blocks code a palette flag (`allow_screen_content_tools`).
+    pub screen_content: bool,
+    /// Lossy blocks code their luma transform partition (`TX_MODE_SELECT`);
+    /// otherwise every block uses its largest transform
+    /// (`TX_MODE_LARGEST`, which our encoder never writes).
+    pub tx_select: bool,
     /// The sequence's motion-vector reference lists.
     pub reference_lists: ListConfig,
     /// How lossy luma levels are coded (parity hiding, TCQ).
@@ -110,6 +120,8 @@ struct TileDecoder<'r> {
     /// The superblock quantizer deltas' state ([`crate::delta_q`]).
     superblock_qindex: SuperblockQindex,
     tx_set: TxSetMode,
+    tx_select: bool,
+    screen_content: bool,
     level_coding: LevelCoding,
     reference: Option<InterReference<'r>>,
     /// Fixed probabilities of the per-block filter symbol.
@@ -123,6 +135,9 @@ struct TileDecoder<'r> {
     levels: Vec<i32>,
     residual: Vec<i16>,
     tx_prediction: Vec<u8>,
+    /// The whole reconstruction of a transform that crosses the picture
+    /// edge (empty until one does: our encoder's blocks never cross).
+    crossing: Vec<u8>,
     /// Intra edge arrays, reused across predictions.
     edges: Av2IntraEdges,
     cdef: CdefParams,
@@ -241,6 +256,8 @@ pub(crate) fn decode(
         quant_deltas: params.quant_deltas,
         superblock_qindex: SuperblockQindex::new(params.qindex, params.delta_q),
         tx_set: params.tx_set,
+        tx_select: params.tx_select,
+        screen_content: params.screen_content,
         level_coding: params.levels,
         reference,
         filter_symbols: FilterSymbols::new(),
@@ -254,6 +271,11 @@ pub(crate) fn decode(
         levels: vec![0; TxSize::Tx64.coded_len()],
         residual: vec![0; MAX_PLANE_AREA],
         tx_prediction: vec![0; MAX_PLANE_AREA],
+        crossing: if width % SUPERBLOCK == 0 && height % SUPERBLOCK == 0 {
+            Vec::new()
+        } else {
+            vec![0; MAX_PLANE_AREA]
+        },
         edges: Av2IntraEdges::new(),
         cdef: params.cdef,
         cdef_indices: StrengthIndices::new(width, height),
@@ -281,11 +303,6 @@ pub(crate) fn decode(
             decoder.state.motion.begin_superblock(x, y)?;
             decoder.superblock_qindex.start_superblock();
             partitions.read_superblock(&mut reader, x, y, &mut |reader, x, y, size| {
-                if x + size > width || y + size > height {
-                    return Err(DecodeError::Unsupported(
-                        "AV2 block crossing the picture edge",
-                    ));
-                }
                 decoder.block(reader, (x, y), size)
             })?;
         }
@@ -358,6 +375,22 @@ impl TileDecoder<'_> {
         }
     }
 
+    /// Whether a lossy block of side `1 << block_log2` splits its luma
+    /// transform four ways: read in frames that select transform sizes,
+    /// never in frames of largest transforms.
+    fn read_tx_split(
+        &self,
+        reader: &mut Reader<'_>,
+        block_log2: u32,
+        is_inter: bool,
+    ) -> Result<bool> {
+        if self.tx_select {
+            tx_partition::read(reader, block_log2, is_inter)
+        } else {
+            Ok(false)
+        }
+    }
+
     /// `read_cdef`, after the block's skip flag (intra blocks never skip),
     /// then `read_ccso`, then the superblock quantizer delta
     /// (`read_delta_q_params`), which sets the qindex the block dequantizes
@@ -403,12 +436,20 @@ impl TileDecoder<'_> {
                 block_log2,
             },
         )?;
+        // `read_palette_mode_info`: every block of the subset (8×8 to
+        // 64×64) may use a palette when its luma mode is DC.
+        if self.screen_content
+            && luma == Mode::Dc
+            && reader.model(&PALETTE_Y, |m| &mut m.palette_y)? != 0
+        {
+            return Err(DecodeError::Unsupported("AV2 palette"));
+        }
         let layout = if self.lossless() {
             Layout::lossless(block_log2)
         } else {
-            Layout::lossy(block_log2, tx_partition::read(reader, block_log2, false)?)
+            Layout::lossy(block_log2, self.read_tx_split(reader, block_log2, false)?)
         };
-        self.residual_planes(
+        self.residual(
             reader,
             layout,
             (x, y),
@@ -527,9 +568,9 @@ impl TileDecoder<'_> {
                 }
                 Layout::lossless(block_log2)
             } else {
-                Layout::lossy(block_log2, tx_partition::read(reader, block_log2, true)?)
+                Layout::lossy(block_log2, self.read_tx_split(reader, block_log2, true)?)
             };
-            self.residual_planes(reader, layout, (x, y), Source::Inter, true)?;
+            self.residual(reader, layout, (x, y), Source::Inter, true)?;
             #[cfg(feature = "analysis")]
             {
                 analysis_layout = Some(layout);
@@ -580,7 +621,28 @@ impl TileDecoder<'_> {
 
     /// Read, reconstruct and store every transform of the block in coding
     /// order, updating the entropy contexts.
-    fn residual_planes(
+    fn residual(
+        &mut self,
+        reader: &mut Reader<'_>,
+        layout: Layout,
+        (x, y): (usize, usize),
+        source: Source,
+        is_inter: bool,
+    ) -> Result<()> {
+        // Our encoder's blocks lie inside the picture; other encoders'
+        // may cross its right or bottom edge.
+        let side = 1 << layout.block_log2;
+        if x + side > self.recon.width() || y + side > self.recon.height() {
+            self.residual_planes::<true>(reader, layout, (x, y), source, is_inter)
+        } else {
+            self.residual_planes::<false>(reader, layout, (x, y), source, is_inter)
+        }
+    }
+
+    /// [`Self::residual`] for a block that crosses the picture edge
+    /// (`CROSSING`) or lies inside it (compiled without the edge handling:
+    /// that cost our own streams 0.9% of their decode instructions).
+    fn residual_planes<const CROSSING: bool>(
         &mut self,
         reader: &mut Reader<'_>,
         layout: Layout,
@@ -592,29 +654,31 @@ impl TileDecoder<'_> {
         for (plane, index) in PlaneIndex::ALL.into_iter().enumerate() {
             let tx = layout.tx(plane);
             let area = tx.width() * tx.width();
+            let whole = (tx.width(), tx.width());
+            let edge = CROSSING.then(|| PictureEdge::of(&self.recon, plane, layout));
             for position in layout.positions(plane, (x, y)) {
+                let inside = edge.as_ref().map_or(Some(whole), |e| e.visible(position));
+                let Some(visible) = inside else { continue };
                 let predicted = &mut self.tx_prediction[..area];
-                match source {
-                    Source::Intra { luma, chroma } => {
-                        let target = IntraTarget {
-                            plane,
-                            block: (x, y),
-                            block_size: 1 << layout.block_log2,
-                            tx: position,
-                            side: tx.width(),
-                        };
-                        intra_edges::predict(
-                            self.recon.plane(index),
-                            &self.state,
-                            target,
-                            if plane == 0 { luma } else { chroma },
-                            &self.dsp,
-                            &mut self.edges,
-                            predicted,
-                        );
-                    }
-                    // Loaded below, only when a residual is added to it.
-                    Source::Inter => {}
+                if let Source::Intra { luma, chroma } = source {
+                    // Inter prediction is loaded below, only when a
+                    // residual is added to it.
+                    let target = IntraTarget {
+                        plane,
+                        block: (x, y),
+                        block_size: 1 << layout.block_log2,
+                        tx: position,
+                        side: tx.width(),
+                    };
+                    intra_edges::predict(
+                        self.recon.plane(index),
+                        &self.state,
+                        target,
+                        if plane == 0 { luma } else { chroma },
+                        &self.dsp,
+                        &mut self.edges,
+                        predicted,
+                    );
                 }
                 let levels = &mut self.levels[..tx.coded_len()];
                 let context = self.state.coeff_context(
@@ -636,48 +700,50 @@ impl TileDecoder<'_> {
                 let coded = levels.iter().any(|&c| c != 0);
                 if coded {
                     if let Source::Inter = source {
-                        load(&self.recon, index, position, tx.width(), predicted);
+                        load(
+                            &self.recon,
+                            index,
+                            position,
+                            (tx.width(), visible),
+                            predicted,
+                        );
                     }
-                    let residual = &mut self.residual[..area];
-                    let dequantizer = if self.level_coding == LevelCoding::Tcq && plane == 0 {
-                        Dequantizer::Tcq
-                    } else {
-                        Dequantizer::Plain
-                    };
-                    let qindex = self.plane_qindex.of(index);
-                    let eob = coeff::end_of_block(&levels[..tx.coded_len()], tx);
-                    let output = if let Some(constant) = transform::dc_only_residual(
+                    let output = inverse(
+                        &self.dsp,
                         (tx, tx_type),
-                        (levels, eob, dequantizer),
-                        qindex,
-                    ) {
-                        Residual16::Constant(constant)
-                    } else {
-                        transform::reconstruct_with(
-                            &self.dsp,
-                            (tx, tx_type),
-                            (levels, eob, dequantizer),
-                            qindex,
-                            residual,
-                        )?;
-                        Residual16::Samples(residual)
-                    };
+                        (levels, self.level_coding == LevelCoding::Tcq && plane == 0),
+                        self.plane_qindex.of(index),
+                        &mut self.residual[..area],
+                    )?;
+                    // Into the picture, or for a transform crossing the
+                    // picture edge aside, of which the part inside is kept.
                     let side = tx.width();
+                    let crossing = CROSSING && visible != whole;
                     let prediction = PlaneView::new(predicted, side, side, side).unwrap();
                     let mut plane = self.recon.plane_mut(index).view_mut();
-                    let mut destination = plane
-                        .sub_view_mut(position.0, position.1, side, side)
-                        .unwrap();
-                    self.dsp.reconstruct_i16(
-                        BlockSize::new(side, side).unwrap(),
-                        &prediction,
-                        output,
-                        &mut destination,
-                    );
+                    let mut destination = if crossing {
+                        PlaneViewMut::new(&mut self.crossing[..area], side, side, side)
+                    } else {
+                        plane.sub_view_mut(position.0, position.1, side, side)
+                    }
+                    .unwrap();
+                    let size = BlockSize::new(side, side).unwrap();
+                    self.dsp
+                        .reconstruct_i16(size, &prediction, output, &mut destination);
+                    if crossing {
+                        let whole = &self.crossing[..area];
+                        store_part(&mut self.recon, index, position, (side, visible), whole);
+                    }
                 } else if let Source::Intra { .. } = source {
                     // No coefficients: the reconstruction is the prediction
                     // (a zero residual added and clipped changes nothing).
-                    store(&mut self.recon, index, position, tx.width(), predicted);
+                    store_part(
+                        &mut self.recon,
+                        index,
+                        position,
+                        (tx.width(), visible),
+                        predicted,
+                    );
                 }
                 self.state.update_coeff_context(plane, position, tx, levels);
                 if plane == 1 {
@@ -800,11 +866,112 @@ fn block_view(
         .ok_or(DecodeError::Malformed("AV2 block outside the picture"))
 }
 
-/// Copy the `side`×`side` block of `plane` of `picture` at (`x`, `y`) into
-/// the raster `out` (the inverse of [`store`]).
-fn load(picture: &Picture, plane: PlaneIndex, (x, y): (usize, usize), side: usize, out: &mut [u8]) {
+/// The residual of a coded transform from its `levels` (trellis-coded
+/// when `tcq`): a constant for a DC-only one, else samples in `residual`.
+#[allow(
+    clippy::inline_always,
+    reason = "one call per coded transform from each instance of `residual_planes`; out of line it measured 0.3% of our own streams' decode instructions (callgrind)"
+)]
+#[inline(always)]
+fn inverse<'a>(
+    dsp: &Dsp,
+    (tx, tx_type): (TxSize, crate::tx_type::TxType),
+    (levels, tcq): (&mut [i32], bool),
+    qindex: crate::transform::Qindices,
+    residual: &'a mut [i16],
+) -> Result<Residual16<'a>> {
+    let dequantizer = if tcq {
+        Dequantizer::Tcq
+    } else {
+        Dequantizer::Plain
+    };
+    let eob = coeff::end_of_block(&levels[..tx.coded_len()], tx);
+    if let Some(constant) =
+        transform::dc_only_residual((tx, tx_type), (levels, eob, dequantizer), qindex)
+    {
+        return Ok(Residual16::Constant(constant));
+    }
+    transform::reconstruct_with(
+        dsp,
+        (tx, tx_type),
+        (levels, eob, dequantizer),
+        qindex,
+        residual,
+    )?;
+    Ok(Residual16::Samples(residual))
+}
+
+/// How the transforms of one plane of a block that crosses the picture's
+/// right or bottom edge meet it: those that start outside are not coded,
+/// and of one that crosses only the part inside is kept (AVM
+/// `av2_foreach_transformed_block_in_plane`'s `max_blocks_*`).
+struct PictureEdge {
+    /// The plane's width and height.
+    plane_size: (usize, usize),
+    /// Side of the plane's transforms.
+    side: usize,
+}
+
+impl PictureEdge {
+    fn of(picture: &Picture, plane: usize, layout: Layout) -> Self {
+        let view = picture.plane(PlaneIndex::ALL[plane]).view();
+        Self {
+            plane_size: (view.width(), view.height()),
+            side: layout.tx(plane).width(),
+        }
+    }
+
+    /// The columns and rows of the transform at `position` that lie inside
+    /// the picture; `None` when it starts outside.
+    fn visible(&self, position: (usize, usize)) -> Option<(usize, usize)> {
+        let (width, height) = self.plane_size;
+        (position.0 < width && position.1 < height).then(|| {
+            (
+                self.side.min(width - position.0),
+                self.side.min(height - position.1),
+            )
+        })
+    }
+}
+
+/// Store the top-left `visible` columns and rows of the `side`-wide raster
+/// `samples` at (`x`, `y`) of `plane` (all of it, or the part inside the
+/// picture of a transform crossing its edge).
+fn store_part(
+    picture: &mut Picture,
+    plane: PlaneIndex,
+    (x, y): (usize, usize),
+    (side, visible): (usize, (usize, usize)),
+    samples: &[u8],
+) {
+    if visible == (side, side) {
+        return store(picture, plane, (x, y), side, samples);
+    }
+    let mut view = picture.plane_mut(plane).view_mut();
+    for (row, values) in samples.chunks_exact(side).take(visible.1).enumerate() {
+        nc_common::copy_row(
+            &mut view.row_mut(y + row)[x..x + visible.0],
+            &values[..visible.0],
+        );
+    }
+}
+
+/// Copy the top-left `visible` columns and rows of the block of `plane` of
+/// `picture` at (`x`, `y`) into the `side`-wide raster `out` (the inverse
+/// of [`store_part`]; samples outside the picture keep their values).
+#[inline]
+fn load(
+    picture: &Picture,
+    plane: PlaneIndex,
+    (x, y): (usize, usize),
+    (side, visible): (usize, (usize, usize)),
+    out: &mut [u8],
+) {
     let view = picture.plane(plane).view();
-    for (row, values) in out.chunks_exact_mut(side).enumerate() {
-        nc_common::copy_row(values, &view.row(y + row)[x..x + side]);
+    for (row, values) in out.chunks_exact_mut(side).take(visible.1).enumerate() {
+        nc_common::copy_row(
+            &mut values[..visible.0],
+            &view.row(y + row)[x..x + visible.0],
+        );
     }
 }

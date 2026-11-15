@@ -11,7 +11,7 @@ use crate::coeff::LevelCoding;
 use crate::deblock::DeblockParams;
 use crate::interp_filter::FrameFilter;
 use crate::prediction::InterpFilter;
-use crate::sequence::{SequenceHeader, TcqFrames};
+use crate::sequence::{SequenceHeader, SequenceTiles, TcqFrames};
 use crate::transform::{MAX_DELTA_Q, MIN_DELTA_Q, QuantDeltas};
 use crate::tx_type::{self, TxSetMode};
 use nc_common::BitWriter;
@@ -38,6 +38,9 @@ pub struct KeyframeHeader {
     /// (`chroma_delta_q` for chroma AC, `dc_delta_q` for both DC offsets),
     /// and all zero when lossless.
     pub quant_deltas: QuantDeltas,
+    /// Screen-content tools are allowed (`allow_screen_content_tools`): DC
+    /// blocks code a palette flag. Our encoder never sets it.
+    pub screen_content: bool,
     /// Signal per-block transform-size selection; false uses largest transforms.
     /// Must be false for lossless frames, where 4x4 is inferred.
     pub transform_select: bool,
@@ -195,6 +198,7 @@ pub fn parse_keyframe(seq: &SequenceHeader, payload: &[u8]) -> Result<(KeyframeH
             order_hint: 0,
             quantizer: 0,
             quant_deltas: QuantDeltas::NONE,
+            screen_content: false,
             transform_select: false,
             tx_set: TxSetMode::IntraDct,
             levels: LevelCoding::Plain,
@@ -214,13 +218,13 @@ pub fn parse_keyframe(seq: &SequenceHeader, payload: &[u8]) -> Result<(KeyframeH
         return Err(DecodeError::Malformed("AV2 frame sequence id mismatch"));
     }
     let order_hint = if seq.single_picture {
-        fixed(&mut bits, 0, 1, "AV2 screen-content tools")?;
         0
     } else {
         fixed(&mut bits, 1, 1, "AV2 delayed picture output")?;
         fixed(&mut bits, 0, 1, "AV2 frame size override")?;
         bits.read_bits(u32::from(seq.order_hint_bits))? as u16
     };
+    let screen_content = read_screen_content(&mut bits, seq)?;
     fixed(&mut bits, 0, 1, "AV2 intra block copy")?;
     let adaptive_cdf = !bits.read_bit()?;
     read_single_tile(&mut bits, seq)?;
@@ -247,6 +251,7 @@ pub fn parse_keyframe(seq: &SequenceHeader, payload: &[u8]) -> Result<(KeyframeH
             order_hint,
             quantizer,
             quant_deltas,
+            screen_content,
             transform_select,
             tx_set,
             adaptive_cdf,
@@ -332,6 +337,7 @@ fn validate_inter(seq: &SequenceHeader, frame: &InterHeader) -> Result<()> {
             order_hint: frame.order_hint,
             quantizer: frame.quantizer,
             quant_deltas: frame.quant_deltas,
+            screen_content: false,
             transform_select: frame.transform_select,
             tx_set: frame.tx_set,
             levels: frame.levels,
@@ -463,9 +469,31 @@ pub fn write_inter(seq: &SequenceHeader, frame: InterHeader) -> Result<Vec<u8>> 
     Ok(bits.into_bytes())
 }
 
+/// `allow_screen_content_tools` where the sequence leaves it to the frame,
+/// then with the tools the frame's `force_integer_mv` likewise (read and
+/// dropped: no syntax of the subset depends on it).
+fn read_screen_content(bits: &mut BitReader<'_>, seq: &SequenceHeader) -> Result<bool> {
+    let (tools, integer_mv) = seq.screen_content();
+    let tools = match tools {
+        Some(tools) => tools,
+        None => bits.read_bit()?,
+    };
+    if tools && integer_mv.is_none() {
+        bits.read_bit()?;
+    }
+    Ok(tools)
+}
+
 /// The tile layout of our frames: uniform spacing, one tile (no
-/// `log2_tile_cols` / `log2_tile_rows` increment bits).
+/// `log2_tile_cols` / `log2_tile_rows` increment bits). A frame of a
+/// sequence that carries its (one-tile) layout reuses that, always or by
+/// a flag (AVM `read_tile_info`; reuse is always allowed for one tile).
 fn read_single_tile(bits: &mut BitReader<'_>, seq: &SequenceHeader) -> Result<()> {
+    match seq.variants.tiles {
+        Some(SequenceTiles::Fixed) => return Ok(()),
+        Some(SequenceTiles::PerFrame) if bits.read_bit()? => return Ok(()),
+        _ => {}
+    }
     fixed(bits, 1, 1, "AV2 non-uniform tile spacing")?;
     if seq.max_width > 64 {
         fixed(bits, 0, 1, "AV2 multiple tile columns")?;
@@ -511,8 +539,8 @@ fn read_lossy_tools(
         None
     };
     let levels = read_level_coding(bits, seq)?;
-    let deblock = DeblockParams::read(bits)?;
-    let cdef = CdefParams::read(bits, single)?;
+    let deblock = DeblockParams::read(bits, seq.variants.deblock_delta_bits)?;
+    let cdef = CdefParams::read(bits, single, seq.cdef_on_skipped())?;
     let ccso = if seq.ccso {
         CcsoParams::read(bits, single, intra)?
     } else {
@@ -800,6 +828,7 @@ mod tests {
             parity_hiding: false,
             tcq: TcqFrames::Off,
             ccso: false,
+            variants: crate::sequence::Variants::OURS,
             reference_lists: crate::mv_refs::ListConfig::BASIC,
         };
         for quantizer in [0, 90, 191, 255] {
@@ -808,6 +837,7 @@ mod tests {
                     order_hint: 0,
                     quantizer,
                     quant_deltas: QuantDeltas::NONE,
+                    screen_content: false,
                     transform_select: quantizer != 0,
                     tx_set: TxSetMode::IntraDct,
                     levels: LevelCoding::Plain,
@@ -879,6 +909,7 @@ mod tests {
             parity_hiding: false,
             tcq: TcqFrames::Off,
             ccso: false,
+            variants: crate::sequence::Variants::OURS,
             reference_lists: crate::mv_refs::ListConfig::BASIC,
         };
         for (refresh_flags, slot) in [(0, 0), (1, 0), (0b0110, 7), (REFRESH_ALL, 3)] {
@@ -927,6 +958,7 @@ mod tests {
             parity_hiding: false,
             tcq: TcqFrames::Off,
             ccso: false,
+            variants: crate::sequence::Variants::OURS,
             reference_lists: crate::mv_refs::ListConfig::BASIC,
         };
         let sequence = SequenceHeader {
@@ -942,6 +974,7 @@ mod tests {
             order_hint: 0,
             quantizer: 120,
             quant_deltas: QuantDeltas::NONE,
+            screen_content: false,
             transform_select: true,
             tx_set: TxSetMode::IntraDct,
             levels: LevelCoding::Plain,
@@ -1049,6 +1082,7 @@ mod tests {
                 luma_dc: -1,
                 ..QuantDeltas::NONE
             },
+            screen_content: false,
             transform_select: false,
             deblock: DeblockParams::OFF,
             ..key
@@ -1083,6 +1117,7 @@ mod tests {
                 parity_hiding: false,
                 tcq: TcqFrames::Off,
                 ccso: false,
+                variants: crate::sequence::Variants::OURS,
                 reference_lists: crate::mv_refs::ListConfig::BASIC,
             };
             for quantizer in [0, 1, 100, 255] {
@@ -1155,6 +1190,7 @@ mod tests {
                     parity_hiding: false,
                     tcq: TcqFrames::Off,
                     ccso: false,
+                    variants: crate::sequence::Variants::OURS,
                     reference_lists: crate::mv_refs::ListConfig::BASIC,
                 };
                 for quantizer in [0, 1, 100, 255] {
@@ -1162,6 +1198,7 @@ mod tests {
                         order_hint: if single_picture { 0 } else { 254 },
                         quantizer,
                         quant_deltas: QuantDeltas::NONE,
+                        screen_content: false,
                         transform_select: false,
                         tx_set: TxSetMode::IntraDct,
                         levels: LevelCoding::Plain,
