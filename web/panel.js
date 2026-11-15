@@ -258,9 +258,12 @@ export class Panel {
       button.setAttribute('aria-pressed', String(selected)); button.classList.toggle('selected', selected);
     }
   }
-  /** Pick the first stream of `clip` if the selected one is of another clip; false if there is none. */
+  /** Pick the first stream of `clip` if the selected one is of another clip; false if there is none (known once the list has loaded). */
   followClip(clip) {
     if (!this.preEncoded || this.reference?.clip === clip) return true;
+    // The stream list is still loading (a slow network or machine): keep the choice,
+    // sourceChanged picks a stream once it arrives and restarts on it.
+    if (!this.streams.length) return true;
     const entry = this.streams.find(s => s.clip === clip);
     if (entry) this.choose(entry);
     return Boolean(entry);
