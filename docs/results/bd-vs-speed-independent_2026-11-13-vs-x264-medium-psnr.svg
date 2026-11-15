@@ -241,5 +241,5 @@
 <text x="88" y="822" fill="#0b0b0b">reference at its metric-oriented tuning (dashed: to its default)</text>
 <text x="70" y="844" fill="#52514e">Bars: interquartile range of per-clip BD. Every point is averaged over the same clips (see the table for excluded clips). Hollow: flagged.</text>
 <text x="1120" y="862" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-15, build 8b492382 (encoder sources = 0cdb619d; rate control 62788659 + 71cad753) (H.264, H.264 Veryfast, HEVC, AV1, VP9, AV2, VVC, H.264 Slow, HEVC Slow, AV1 Slow, VP9 Slow, AV2 Slow,</text>
-<text x="1120" y="874" font-size="10" text-anchor="end" fill="#52514e">VVC Slow: bad14976)</text>
+<text x="1120" y="874" font-size="10" text-anchor="end" fill="#52514e">VVC Slow: bad14976); AV1 Fast, AV1 Faster, AV2 Fast, H.264 Fast, H.264 Faster, HEVC Fast, HEVC Faster, VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast timed on bad14976 (same streams)</text>
 </svg>

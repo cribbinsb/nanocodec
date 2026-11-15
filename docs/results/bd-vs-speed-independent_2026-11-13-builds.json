@@ -36,5 +36,18 @@
   "svt": "v4.3.0",
   "libvpx": "v1.16.0",
   "libaom": "v3.15.3"
+ },
+ "timed_on": {
+  "nanocodec-av1@fast": "bad14976",
+  "nanocodec-av1@faster": "bad14976",
+  "nanocodec-av2@fast": "bad14976",
+  "nanocodec-h264@fast": "bad14976",
+  "nanocodec-h264@faster": "bad14976",
+  "nanocodec-hevc@fast": "bad14976",
+  "nanocodec-hevc@faster": "bad14976",
+  "nanocodec-vp9@fast": "bad14976",
+  "nanocodec-vp9@faster": "bad14976",
+  "nanocodec-vp9@veryfast": "bad14976",
+  "nanocodec-vvc@fast": "bad14976"
  }
 }

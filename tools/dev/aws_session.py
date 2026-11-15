@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime
 import fcntl
+import json
 import os
 import re
 import shlex
@@ -54,6 +55,8 @@ SSH_USER = "ubuntu"
 #: Max spot price we bid, relative to the current lowest AZ price: high enough
 #: not to be outbid within a session, low enough to bound the cost.
 MAX_PRICE_FACTOR = 1.5
+#: The AWS Pricing API's endpoint region (it serves every region's prices).
+PRICING_REGION = "us-east-1"
 #: The account's spot quota is full (EC2 error code): instances still shutting down count.
 QUOTA_FULL = "MaxSpotInstanceCountExceeded"
 #: How long a launch waits for the quota to free: a terminating metal instance takes
@@ -90,6 +93,9 @@ class SessionSpec:
     budget_usd: float = 5.0
     root_gb: int = 12
     arch: str = "amd64"  # "amd64" or "arm64" (the AMI's)
+    #: Spot (cheap, may be reclaimed) or on demand (for a job an interruption would
+    #: waste, such as timing: c8a spot in eu-west-1 was reclaimed 4 times on 2026-11-15).
+    on_demand: bool = False
     tags: dict[str, str] = field(default_factory=dict)
     #: ExpectedEnd = launch + lifetime + this margin (the cleanup's slack; the
     #: instance itself stops at the lifetime).
@@ -152,11 +158,12 @@ class Session:
         self._previous_handlers = {sig: signal.signal(sig, _raise_exit)
                                    for sig in (signal.SIGTERM, signal.SIGHUP)}
         try:
-            zones = self.zone_prices()
-            max_price = min(zones.values()) * MAX_PRICE_FACTOR
+            zones = self.on_demand_zones() if self.spec.on_demand else self.zone_prices()
+            max_price = min(zones.values()) * (1 if self.spec.on_demand else MAX_PRICE_FACTOR)
             cap = self.cost(max_price, self.spec.lifetime_minutes / 60)
-            say(f"{self.spec.instance_type} in {self.spec.region}: spot from "
-                f"${min(zones.values()):.4f}/h, bid cap ${max_price:.4f}/h, worst case ${cap:.2f} "
+            market = "on demand" if self.spec.on_demand else "spot"
+            say(f"{self.spec.instance_type} in {self.spec.region}: {market} from "
+                f"${min(zones.values()):.4f}/h, cap ${max_price:.4f}/h, worst case ${cap:.2f} "
                 f"for the {self.spec.lifetime_minutes}-minute lifetime")
             if cap > self.spec.budget_usd:
                 raise BudgetExceeded(f"worst case ${cap:.2f} exceeds the session budget "
@@ -186,6 +193,29 @@ class Session:
                 "ExpectedEnd": iso(self.expected_end), "Name": self.name, **self.spec.tags}
         return [{"ResourceType": resource,
                  "Tags": [{"Key": k, "Value": v} for k, v in tags.items()]}]
+
+    def on_demand_zones(self) -> dict[str, float]:
+        """The on-demand price (AWS Pricing API, Linux, shared tenancy) in every zone
+        of the region that offers the type."""
+        import boto3
+
+        pricing = boto3.client("pricing", region_name=PRICING_REGION)
+        filters = {"instanceType": self.spec.instance_type, "regionCode": self.spec.region,
+                   "operatingSystem": "Linux", "tenancy": "Shared", "preInstalledSw": "NA",
+                   "capacitystatus": "Used"}
+        products = pricing.get_products(ServiceCode="AmazonEC2", Filters=[
+            {"Type": "TERM_MATCH", "Field": k, "Value": v} for k, v in filters.items()])
+        prices = [float(dim["pricePerUnit"]["USD"]) for item in products["PriceList"]
+                  for term in json.loads(item)["terms"]["OnDemand"].values()
+                  for dim in term["priceDimensions"].values()]
+        if not prices:
+            raise RuntimeError(f"no on-demand price for {self.spec.instance_type} in "
+                               f"{self.spec.region}")
+        zones = [o["Location"] for o in self.ec2.describe_instance_type_offerings(
+            LocationType="availability-zone",
+            Filters=[{"Name": "instance-type", "Values": [self.spec.instance_type]}])[
+                "InstanceTypeOfferings"]]
+        return {zone: max(prices) for zone in sorted(zones)}
 
     def zone_prices(self) -> dict[str, float]:
         history = self.ec2.describe_spot_price_history(
@@ -269,9 +299,10 @@ class Session:
                     ImageId=image_id, InstanceType=self.spec.instance_type, MinCount=1,
                     MaxCount=1, KeyName=self.key_name, UserData=user_data,
                     InstanceInitiatedShutdownBehavior="terminate",
-                    InstanceMarketOptions={"MarketType": "spot", "SpotOptions": {
-                        "SpotInstanceType": "one-time", "MaxPrice": f"{max_price:.4f}",
-                        "InstanceInterruptionBehavior": "terminate"}},
+                    **({} if self.spec.on_demand else {"InstanceMarketOptions": {
+                        "MarketType": "spot", "SpotOptions": {
+                            "SpotInstanceType": "one-time", "MaxPrice": f"{max_price:.4f}",
+                            "InstanceInterruptionBehavior": "terminate"}}}),
                     BlockDeviceMappings=[{"DeviceName": root_device, "Ebs": {
                         "VolumeSize": self.spec.root_gb, "VolumeType": "gp3",
                         "DeleteOnTermination": True}}],
@@ -279,7 +310,8 @@ class Session:
                                         "Groups": [self.group_id],
                                         "AssociatePublicIpAddress": True}],
                     TagSpecifications=[*self.tags("instance"), *self.tags("volume"),
-                                       *self.tags("spot-instances-request")])
+                                       *([] if self.spec.on_demand
+                                         else self.tags("spot-instances-request"))])
             except ClientError as error:
                 code = error.response["Error"]["Code"]
                 if code in ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow",
@@ -469,6 +501,13 @@ class Session:
             probe = self.ssh(f"cat {log}.status 2>/dev/null; echo ---; tail -n +{shown + 1} {log}",
                              check=False, quiet=True)
             if probe.returncode != 0:
+                instance = self.describe() or {}
+                state = instance.get("State", {}).get("Name", "gone")
+                if state != "running":
+                    # a spot interruption: polling on would wait out the whole timeout
+                    # (2026-11-15: 3 min of retries until stopped by hand)
+                    reason = instance.get("StateReason", {}).get("Message", "")
+                    raise RemoteFailure(f"the instance is {state}: {reason}", tail)
                 say("poll failed (retrying)")
                 continue
             status, _, new = probe.stdout.partition("---\n")

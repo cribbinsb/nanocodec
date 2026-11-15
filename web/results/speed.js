@@ -15,12 +15,12 @@ function encode(chart, root) {
     .filter(([family]) => !chart.points[family].tune || family === view.zero)
     .map(([family, v]) => ({ family, p: chart.points[family], v }))
     .sort((a, b) => b.v.fps.jetson - a.v.fps.jetson);
-  root.querySelector('.platforms').textContent = `Jetson: ${chart.platforms.jetson}. PC: ${chart.platforms.x86}.`;
+  root.querySelector('.platforms').textContent = `Jetson: ${chart.platforms.jetson}. x86: ${chart.platforms.x86}.`;
   root.querySelector('.encode').replaceChildren(table([
     { label: 'Encoder', cell: (r) => [el('span', { class: `swatch ${r.p.ours ? 'ours' : 'ref'}` }), r.p.label] },
     { label: 'Codec', cell: (r) => CODEC_NAMES[r.p.codec] },
     { label: 'fps, Jetson core', num: true, cell: (r) => fps(r.v.fps.jetson) },
-    { label: 'fps, PC core', num: true, cell: (r) => fps(r.v.fps.x86) },
+    { label: 'fps, x86 core', num: true, cell: (r) => fps(r.v.fps.x86) },
   ], rows, (r) => (r.p.ours ? 'ours' : '')), sources(view.source));
 }
 

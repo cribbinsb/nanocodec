@@ -39,14 +39,13 @@ commit's `presets/`) and on the Jetson (`nanocodec`, release), each with a
                (anchor_chart_timing.py scan) in docs/results/bd-vs-speed-plan.json.
   measure      nceval.chart measure of the refreshed families, in parts that fit the
                30-minute budget; the last part adds the low rungs.
-  time-x86     anchor_chart_timing.py time-host under tools/dev/host-timed.sh, on
-               the PC's reserved timing CPUs (one per physical core), merged into
-               bd-vs-speed-timing-x86.json on the stored session's footing: each
-               per-clip time is the median per-round time ratio to x264-medium
-               (run back to back with it) times the stored x264-medium time (the
-               boosting cores' clock moves with load, between and within sessions;
-               the raw times are kept in raw_ms_per_frame, and the same-session
-               ratio to SVT-AV1 M13 in same_session_time_ratio).
+  time-x86     tools/dev/aws_timing.py on the x86 timing machine (a rented Zen 5,
+               aws_timing.TIMING_MACHINE; 2026-11-15, the PC before), each pair on
+               its own core, merged into bd-vs-speed-timing-x86.json on the stored
+               session's footing: each per-clip time is the median per-round time
+               ratio to x264-medium (run back to back with it) times the stored
+               x264-medium time (the raw times are kept in raw_ms_per_frame, and the
+               same-session ratio to SVT-AV1 M13 in same_session_time_ratio).
   time-jetson  the same streams timed on the Jetson (anchor_chart_timing.py time
                under jetson-timed.sh, which retries until the board is quiet),
                merged into bd-vs-speed-timing.json.
@@ -72,14 +71,14 @@ removed.
 Independent steps overlap, so the wall time is the measure (or the Jetson's
 lock wait), not the sum:
 
-  x86 scoring build -> delete -> measure -> time-x86 -------.
-                              `-> scan ----'                |-> render
+  x86 scoring build -> delete -> measure ---------------------.
+                              `-> scan -> time-x86 ---------|-> render
   x86 release build (background) -----'                     |
   Jetson build (background) -> (after scan) time-jetson ----'   render -> check
 
-time-x86 waits for measure: our own measure beside it skewed even the
-anchor-paired x86 times. It times a point's clips side by side on the --cpus;
-time-jetson times only the point, against the stored anchor time.
+time-x86 runs beside measure: it times on a rented machine, so this PC's load does
+not reach it (on the PC it had to wait for measure). time-jetson times only the
+point, against the stored anchor time.
 
 Each step prints its wall time; a failed step names the `--from` to resume at.
 
@@ -177,8 +176,6 @@ BUILD_INPUTS = (*BINARY_INPUTS, PRESETS_PATH, OLD_PRESETS_PATH)
 COMPLETE_MARKER = "COMMIT"
 STEPS = ("build", "verify", "delete", "scan", "measure", "time-x86", "time-jetson", "render",
          "check")
-#: Runs a command on the PC's reserved timing cores, one timing job at a time.
-HOST_TIMED = REPO / "tools/dev/host-timed.sh"
 MEMORY_SCOPE = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
                 "-p", "MemorySwapMax=0"]
 ANCHOR = "x264-medium"
@@ -606,17 +603,18 @@ class Refresh:
         build = self.build_dir(self.commit)
         if not self.args.dry_run and not (build / TIMED_BINARY).is_file():
             raise SystemExit(f"no release build of {self.commit}: resume with --from build")
-        out = WORK / f"host-{self.commit}"
+        out = WORK / f"x86-{self.commit}"
         if out.exists() and not self.args.dry_run:
             shutil.rmtree(out)  # a re-run times afresh
-        self.run([str(HOST_TIMED), "python3", "../tools/dev/anchor_chart_timing.py", "time-host",
-                  "--plan", str(REPO / PLAN_FILE), "--binary", str(build / TIMED_BINARY),
-                  "--presets-dir", str(build / "presets"), "--points", ",".join(self.timed),
-                  "--cpus", self.args.cpus, "--rounds", str(self.args.x86_rounds),
-                  "--out-dir", str(out)],
-                 "time-x86.log", REPO / "eval", env={"PYTHONPATH": "."})
+        # every timed point is on COMMIT's build; one repeat (the 2026-11-15 probe's
+        # repeats agreed within 0.4%)
+        self.run(["python3", "tools/dev/aws_timing.py", "--points", ",".join(self.timed),
+                  "--binary", str(build / TIMED_BINARY), "--repeats", "1",
+                  "--rounds", str(self.args.x86_rounds), "--purpose", "chart-refresh-x86-timing",
+                  "--out", str(out)], "time-x86.log")
         if not self.args.dry_run:
-            merge_timing(REPO / TIMING_X86_FILE, sorted(out.glob("t-*.json")), rescale=True)
+            merge_timing(REPO / TIMING_X86_FILE, sorted((out / "repeat-1").glob("t-*.json")),
+                         rescale=True)
             shutil.rmtree(out)
 
     def time_jetson(self) -> None:
@@ -725,9 +723,7 @@ class Refresh:
             delete = launch("delete", verify)
             measure = launch("measure", delete)
             scan = launch("scan", delete)
-            # After measure: our own measure load beside it skewed even the anchor-paired
-            # x86 times (2026-11-11: AV1 Faster 107 instead of 156 fps).
-            time_x86 = launch("time-x86", scan, timed_build, measure)
+            time_x86 = launch("time-x86", scan, timed_build)
             time_jetson = launch("time-jetson", scan, jetson_build)
             render = launch("render", measure, time_x86, time_jetson)
             check = launch("check", render)
@@ -952,11 +948,8 @@ def main() -> None:
                    help="resume at this step")
     p.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                    help="measure workers (at most 8)")
-    p.add_argument("--cpus", default="14,15",
-                   help="reserved timing CPUs for x86 timing, one per physical core")
     p.add_argument("--x86-rounds", type=int, default=HOST_ROUNDS,
-                   help=f"interleaved x86 timing rounds per clip (default {HOST_ROUNDS}; "
-                        "more on a loaded PC)")
+                   help=f"interleaved x86 timing rounds per clip (default {HOST_ROUNDS})")
     p.add_argument("--anchor", help="render (only) against another zero line, e.g. "
                    "x264-medium~psnr: nceval.chart render --anchor (outputs get a -vs- suffix)")
     p.add_argument("--clipset", help="refresh the chart on this clip set (the held-out chart) "

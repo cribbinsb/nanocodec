@@ -57,10 +57,27 @@ BUILDS_ROOT = DATA / "charts/builds"
 TIMED_BINARY = "nanocodec-timed-release"
 X86_TOOLS = DATA / "anchors/x86_64/bin"
 CLIP_CACHE = WORK_DIR / "cache"
-#: Known bare-metal timing boxes: (region, AMI architecture).
-INSTANCES = {"c7i.metal-24xl": ("eu-north-1", "amd64"),  # Sapphire Rapids, AVX-512
-             "c8a.metal-24xl": ("eu-west-1", "amd64"),  # Zen 5, AVX-512
+#: Known timing boxes: (region, AMI architecture). The AMD 7th/8th-generation sizes
+#: have no SMT (a vCPU is a physical core), so even a .large is alone on its cores.
+INSTANCES = {"c7i.metal-24xl": ("eu-north-1", "amd64"),  # Sapphire Rapids, AVX-512 full width
+             "c7a.large": ("eu-north-1", "amd64"),  # Zen 4 (AVX-512 on 256-bit units), 2 cores
+             "c7a.metal-48xl": ("eu-north-1", "amd64"),  # Zen 4, bare metal
+             "c8a.large": ("eu-west-1", "amd64"),  # Zen 5, AVX-512 full width, 2 cores
+             "c8a.4xlarge": ("eu-west-1", "amd64"),  # Zen 5, 16 cores: the x86 timing machine
+             "c8a.metal-24xl": ("eu-west-1", "amd64"),  # Zen 5, bare metal
              "c8g.metal-24xl": ("eu-north-1", "arm64")}  # Graviton4, Neoverse V2
+#: The x86 timing machine (2026-11-15 probe, 5 repeats of H.264 against x264 medium: the
+#: time ratio's largest deviation from the median was 0.2% on c8a.large, 0.7% on
+#: c7a.large, 0.9% on c7a.metal-48xl, 0.3% on c7i.metal-24xl): Zen 5, the newest x86
+#: core offered, full-width AVX-512, alone on its two cores (no SMT), one pair at a time.
+#: Not a bigger VM with pairs side by side: on c8a.4xlarge (14 at once) two repeats of
+#: the chart differed by 1.5% at the median and up to 8.6%.
+TIMING_MACHINE = "c8a.large"
+#: Cores left to the system before the timed ones: two on a big box (time-cloud's
+#: default), one on a 2-core .large (its other core times the pairs one after another).
+#: The first timed core is also the quiet core of the kernel benchmarks and profiles.
+SYSTEM_CORES = {"large": 1}
+DEFAULT_SYSTEM_CORES = 2
 #: The chart's reference points timed beside ours by default.
 DEFAULT_REFERENCES = ("svtav1-m13", "svtav1-m12", "x264-ultrafast", "x264-veryfast",
                       "x264-medium", "openh264-baseline")
@@ -69,9 +86,6 @@ AVX2_VARIANT = f"{act.SECOND_ANCHOR}@asm-avx2"
 #: forcing"): the same binary and stream, against its default (AVX-512) tier.
 ISA_VARIANT_SUFFIX = "@isa-avx2"
 ISA_VARIANT_ENV = {"NC_DSP_ISA": "avx2"}
-#: The machine's quiet core for the single-threaded kernel benchmarks and profiles
-#: (cores 0-1 are left to the system, as in time-cloud).
-QUIET_CPU = 2
 #: Chart clips each profiled point is recorded on.
 PERF_CLIPS = 2
 REMOTE_DIR = "timing"
@@ -160,13 +174,22 @@ def slowest_first(points: list[str]) -> list[str]:
     return sorted(points, key=load, reverse=True)
 
 
-def default_binary() -> Path:
-    builds = json.loads(BUILDS_FILE.read_text())
-    ids = set(builds["families"].values())
-    if len(ids) != 1:
-        raise SystemExit(f"the chart's families are on several builds {sorted(ids)}: "
-                         "pass --binary")
-    return BUILDS_ROOT / ids.pop() / TIMED_BINARY
+def chart_binaries(plan: dict) -> dict[str, Path]:
+    """Each of our families' timing binary as the chart's build record has it (its
+    `timed_on` build, else its quality build), staged as `nanocodec-<build>`: the
+    plan's commands are pointed at it (a variant runs its family's binary)."""
+    record = json.loads(BUILDS_FILE.read_text())
+    timed_on = record.get("timed_on", {})
+    staged = {}
+    for name, clips in plan["points"].items():
+        if not name.startswith("nanocodec"):
+            continue
+        family = name.split(ISA_VARIANT_SUFFIX)[0].split(CBR_VARIANT_SUFFIX)[0]
+        build = timed_on.get(family, record["families"][family])
+        staged[f"nanocodec-{build}"] = BUILDS_ROOT / build / TIMED_BINARY
+        for entry in clips.values():
+            entry["argv"] = [f"{{BIN}}/nanocodec-{build}", *entry["argv"][1:]]
+    return staged
 
 
 def clip_archive(clip: str, frame_bytes: int) -> Path:
@@ -186,13 +209,13 @@ def clip_archive(clip: str, frame_bytes: int) -> Path:
     return archive
 
 
-def stage(stage_dir: Path, plan: dict, binary: Path, tools_dir: Path) -> None:
+def stage(stage_dir: Path, plan: dict, ours: dict[str, Path], tools_dir: Path) -> None:
     (stage_dir / "bin").mkdir(parents=True)
     (stage_dir / "clips").mkdir()
     names = {e["argv"][0].removeprefix("{BIN}/") for p in plan["points"].values()
              for e in p.values()}
     for name in names:
-        source = binary if name == "nanocodec" else tools_dir / name
+        source = ours.get(name, tools_dir / name)
         (stage_dir / "bin" / name).symlink_to(source.resolve())
     width, height = map(int, plan["points"][plan["anchor"]][act.CLIPS[0]]["argv"][
         plan["points"][plan["anchor"]][act.CLIPS[0]]["argv"].index("--input-res") + 1]
@@ -216,8 +239,38 @@ def unstage(stage_dir: Path) -> None:
     stage_dir.rmdir()
 
 
-def remote_commands(points: list[str], repeats: int, rounds: int, version: str,
-                    plan: dict, checkasm: bool, perf_points: list[str]) -> list[RemoteJob]:
+#: The SIMD extensions the site records with an x86 timing machine (/proc/cpuinfo names).
+ISA_FLAGS = ("avx2", "avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512ifma",
+             "avx512vbmi", "avx512_vbmi2", "avx512_bf16")
+#: nc-dsp's AVX-512 tier needs these (nc_dsp::cpu, avx512_supported); else AVX2.
+OUR_AVX512_FLAGS = ("avx512f", "avx512bw", "avx512vl")
+
+
+def isa_command() -> str:
+    """Remote shell writing the platform note: the CPU model, its SIMD extensions
+    (ISA_FLAGS) and the tier our encoder dispatches to; isa.txt keeps x264's and
+    x265's and SVT-AV1's own capability lines (the references choose for themselves;
+    libaom, libvpx and openh264 print none)."""
+    flags = "|".join(ISA_FLAGS)
+    ours = " && ".join(f"grep -qw {f} out/flags.txt" for f in OUR_AVX512_FLAGS)
+    return ("tr ' ' '\\n' < <(grep -m1 '^flags' /proc/cpuinfo) | "
+            f"grep -xE '{flags}' > out/flags.txt; "
+            f"tier=$({ours} && echo avx512 || echo avx2); "
+            "head -c 6144 /dev/zero > out/blank.yuv; "  # one 64x64 I420 frame
+            "bin/x264 --input-res 64x64 --frames 1 -o /dev/null out/blank.yuv 2>&1 "
+            "| grep -i 'cpu capabilities' > out/isa.txt; "
+            "[ ! -x bin/x265 ] || bin/x265 --input out/blank.yuv --input-res 64x64 --fps 30 "
+            "--frames 1 -o /dev/null 2>&1 | grep -i 'cpu capabilities' >> out/isa.txt; "
+            "timeout 60 bin/SvtAv1EncApp -w 64 -h 64 -n 1 -i out/blank.yuv -b /dev/null 2>&1 "
+            "| grep -iE 'asm|cpu' >> out/isa.txt; "
+            "echo \"$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            " (SIMD: $(paste -sd, out/flags.txt | sed 's/,/, /g'); nanocodec dispatches to "
+            "its $tier tier)\" | tee out/platform.txt; rm -f out/blank.yuv")
+
+
+def remote_commands(points: list[str], repeats: int, rounds: int, versions: dict[str, str],
+                    plan: dict, checkasm: bool, perf_points: list[str],
+                    system_cores: int = DEFAULT_SYSTEM_CORES) -> list[RemoteJob]:
     """The remote stages, fail-fast first: readiness checks (minutes), a pipe-cleaner
     (one of our points, its AVX2-tier variant and the AVX2 M13, one round), the kernel
     benchmarks when asked for (before the timing, on a quiet machine), one job per
@@ -226,15 +279,16 @@ def remote_commands(points: list[str], repeats: int, rounds: int, version: str,
     prepare = (cd + "command -v zstd >/dev/null && "
                "for c in clips/*.zst; do zstd -d -q --rm \"$c\"; done && "
                "ls -l clips && ! ldd bin/* | grep 'not found' && "
-               f"test \"$(bin/nanocodec --version)\" = {shlex.quote(version)} && "
+               + "".join(f"test \"$(bin/{name} --version)\" = {shlex.quote(version)} && "
+                         for name, version in versions.items()) +
                "bin/x264 --version | head -1 && bin/SvtAv1EncApp --version | head -1 && "
-               "lscpu > out/lscpu.txt && "
-               "grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs | tee out/platform.txt")
+               "lscpu > out/lscpu.txt && " + isa_command())
     platform = '"$(cat out/platform.txt), one thread pinned to one physical core"'
 
     def timing(label: str, names: list[str], timed_rounds: int) -> str:
         return (cd + f"python3 anchor_chart_timing.py time-cloud --plan plan.json --bin-dir bin "
                 f"--clips-dir clips --points {','.join(names)} --rounds {timed_rounds} "
+                f"--skip-cores {system_cores} "
                 f"--platform {platform} --work-dir scratch --out-dir out/{label} && "
                 f"test ! -e out/{label}/errors.json")
 
@@ -246,7 +300,7 @@ def remote_commands(points: list[str], repeats: int, rounds: int, version: str,
             RemoteJob("pipe-cleaner", timing("pipe-cleaner", cleaner, 1), PREPARE_MINUTES)]
     if checkasm:
         jobs.append(RemoteJob("checkasm", cd + " && ".join(
-            f"taskset -c {QUIET_CPU} bin/nc-checkasm --bench --isa {isa} "
+            f"taskset -c {system_cores} bin/nc-checkasm --bench --isa {isa} "
             f"| tee out/checkasm-{isa}.txt" for isa in ("avx2", "avx512")), CHECKASM_MINUTES,
             stall_minutes=CHECKASM_MINUTES))
     for repeat in range(1, repeats + 1):
@@ -255,11 +309,12 @@ def remote_commands(points: list[str], repeats: int, rounds: int, version: str,
         jobs.append(RemoteJob(f"repeat-{repeat}", timing(f"repeat-{repeat}", points, rounds),
                               REPEAT_TIMEOUT_MINUTES, MAX_FAILED_PAIRS))
     if perf_points:  # last: a profiling problem never costs the timing
-        jobs.append(RemoteJob("perf", perf_command(plan, perf_points), PERF_MINUTES))
+        jobs.append(RemoteJob("perf", perf_command(plan, perf_points, system_cores),
+                              PERF_MINUTES))
     return jobs
 
 
-def perf_command(plan: dict, names: list[str]) -> str:
+def perf_command(plan: dict, names: list[str], cpu: int) -> str:
     """perf (installed for the running kernel) recording each point on the first
     PERF_CLIPS chart clips with call graphs, on the default tier; per recording the
     self-cycles table by symbol (the encoder's own symbols resolve there) and the
@@ -276,7 +331,7 @@ def perf_command(plan: dict, names: list[str]) -> str:
                     "scratch/perf.bin" if a == "{OUTPUT}" else a
                     for i, a in enumerate(plan["points"][name][clip]["argv"])]
             steps += [f"mkdir -p scratch && sudo perf record -q -g -o scratch/{label}.data -- "
-                      f"taskset -c {QUIET_CPU} {shlex.join(argv)}",
+                      f"taskset -c {cpu} {shlex.join(argv)}",
                       f"sudo perf report -i scratch/{label}.data --no-children --sort symbol "
                       f"--stdio --percent-limit 0.1 > out/{label}.txt",
                       f"echo {label}: $(grep -m1 'Event count' out/{label}.txt)"]
@@ -335,7 +390,7 @@ def print_summary(summary: dict, repeats: int) -> None:
 
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--instance-type", default="c7i.metal-24xl", choices=sorted(INSTANCES))
+    parser.add_argument("--instance-type", default=TIMING_MACHINE, choices=sorted(INSTANCES))
     parser.add_argument("--region", help="another region than the instance type's default "
                         "(spot capacity and prices move; stay within check.sh's regions)")
     parser.add_argument("--points", help="comma-separated plan points (default: our chart "
@@ -343,7 +398,7 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--rounds", type=int, default=act.HOST_ROUNDS)
     parser.add_argument("--binary", type=Path, help="our build for the instance's architecture "
-                        "(default: the chart build's x86 release binary)")
+                        "(default: each family's x86 release build from the chart's record)")
     parser.add_argument("--tools-dir", type=Path,
                         help=f"reference encoders (default for x86: {X86_TOOLS})")
     parser.add_argument("--expect-version", help="our binary's `--version` line (default: "
@@ -387,18 +442,21 @@ def main(argv: list[str]) -> None:
     out = args.out or WORK_DIR / f"timing-{args.instance_type}-{stamp}"
     # sessions run side by side: one staging directory each
     stage_dir = WORK_DIR / f"stage-{args.instance_type}-{stamp}-{os.getpid()}"
-    binary = args.binary or default_binary()
-    # the remote readiness check compares our binary's version stamp with this one
-    version = args.expect_version or subprocess.run(
-        [str(binary), "--version"], capture_output=True, text=True, check=True).stdout.strip()
-    stage(stage_dir, plan, binary, args.tools_dir or X86_TOOLS)
+    ours = {"nanocodec": args.binary} if args.binary else chart_binaries(plan)
+    # the remote readiness check compares each binary's version stamp with these
+    versions = {name: args.expect_version or subprocess.run(
+        [str(path), "--version"], capture_output=True, text=True, check=True).stdout.strip()
+        for name, path in ours.items()}
+    stage(stage_dir, plan, ours, args.tools_dir or X86_TOOLS)
     if args.checkasm:
         (stage_dir / "bin/nc-checkasm").symlink_to(args.checkasm.resolve())
     try:
         (stage_dir / "out").mkdir()
-        jobs = remote_commands(points, args.repeats, args.rounds, version, plan,
+        jobs = remote_commands(points, args.repeats, args.rounds, versions, plan,
                                bool(args.checkasm),
-                               args.perf.split(",") if args.perf else [])
+                               args.perf.split(",") if args.perf else [],
+                               SYSTEM_CORES.get(args.instance_type.split(".")[1],
+                                                DEFAULT_SYSTEM_CORES))
         if args.dry_run:
             subprocess.run(["du", "-shL", str(stage_dir)], check=True)
             for job in jobs:
@@ -406,7 +464,10 @@ def main(argv: list[str]) -> None:
             return
         spec = SessionSpec(region=region, instance_type=args.instance_type, arch=arch,
                            purpose=args.purpose,
-                           lifetime_minutes=args.lifetime, budget_usd=args.budget)
+                           lifetime_minutes=args.lifetime, budget_usd=args.budget,
+                           # on demand: a reclaimed spot box loses the timing (four c8a.large
+                           # spot sessions were reclaimed within 6 min, 2026-11-15)
+                           on_demand=True)
         started = time.monotonic()
         with Session(spec) as session:
             session.upload(stage_dir, f"~/{REMOTE_DIR}")

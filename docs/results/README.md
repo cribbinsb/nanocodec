@@ -97,12 +97,12 @@ numbers.
 
 ![Bitrate saving vs encode speed, one Jetson Orin Nano core](bd-vs-speed.svg)
 
-![Bitrate saving vs encode speed, one Ryzen 9 5950X core](bd-vs-speed-x86.svg)
+![Bitrate saving vs encode speed, one AMD EPYC 9R45 (Zen 5) core](bd-vs-speed-x86.svg)
 
 **How to read the charts:** up is fewer bits for the same quality (class-balanced BD-rate against x264 `medium`,
 lower is better; bars are the per-clip interquartile range), right is faster (single-thread encode frames per
-second at 720p). Top: one Arm Cortex-A78AE core (NVIDIA Jetson Orin Nano); bottom: one x86-64 core (AMD Ryzen 9
-5950X). Every encoder, ours and the references, runs its own real-time CBR on the same ladder (150–1200 kbps at
+second at 720p). Top: one Arm Cortex-A78AE core (NVIDIA Jetson Orin Nano); bottom: one x86-64 core (AMD EPYC 9R45, Zen 5,
+on AWS c8a.large since 2026-11-15; a Ryzen 9 5950X before). Every encoder, ours and the references, runs its own real-time CBR on the same ladder (150–1200 kbps at
 720p30, the 11 natural camera clips of our VAL set, which were also used to rank candidate changes during
 development; see the held-out check below); quality is the mean of PSNR-YUV, VMAF v1 and MS-SSIM.
 
@@ -242,9 +242,9 @@ Details: [bd-vs-speed.md](bd-vs-speed.md#hardware-encoders), data:
 Faster presets; VP9, AV2 and VVC with their Fast presets) was rebuilt, measured and timed at a33c299d, after the
 planner speed-ups, the H.264 and HEVC/AV2 cadence changes, the H.264 layer gate and the CLI PSNR change. Quality is
 PSNR-YUV, VMAF v1 and MS-SSIM in equal thirds, MS-SSIM on every frame. Reference encoders' points and timings are
-from the earlier sessions. Jetson fps were timed under the board lock against the stored anchor. PC fps: timed on the
-reserved timing cores while the PC was loaded (1-min load ~30–36), scaled to the reference session's x264 `medium`
-times ([bd-vs-speed.md](bd-vs-speed.md#method)); treat PC differences of a few percent as noise.
+from the earlier sessions. Jetson fps were timed under the board lock against the stored anchor. x86 fps: timed on a
+rented AMD EPYC 9R45 (Zen 5, AWS c8a.large, one pair at a time), scaled to the reference session's x264 `medium`
+times ([bd-vs-speed.md](bd-vs-speed.md#method)); repeats agreed within 0.4%, separate machines within 1.3%.
 
 The full table for every encoder and preset, the head-to-head pairs measured on the same points and the exact
 command lines are in **[bd-vs-speed.md](bd-vs-speed.md)** (data:
@@ -538,7 +538,8 @@ axis: each encoder runs at a fixed quantizer chosen to land it at about 600 kbps
 x264 `medium` is the geometric mean of the per-clip time ratios.
 - **Jetson** Orin Nano: one Cortex-A78AE core, clock locked at 1.728 GHz; median of three rotated rounds after a
   warm-up, the anchor timed in the same lock window (or reused across windows, since it repeats within ~0.3 ms/frame).
-- **PC** Ryzen 9 5950X (AVX2), a shared machine: each run pinned to one core and paired with an x264 `medium` run on
+- **x86** AMD EPYC 9R45 (Zen 5, AVX-512; AWS c8a.large, alone on its cores, since 2026-11-15; a shared Ryzen 9
+  5950X before): each run pinned to one core and paired with an x264 `medium` run on
   the same core back to back with an x264 `medium` run and an SVT-AV1 M13 run, eleven rounds in rotated order after a
   warm-up; per clip the median of the per-round time ratios to x264 `medium`, times the stored x264 `medium` time.
   The ratio to M13 from the same rounds is kept as a direct comparison (`same_session_time_ratio` in

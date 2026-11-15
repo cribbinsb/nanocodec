@@ -33,8 +33,8 @@
     <h2 id="encode">Encode, one core</h2>
     <p class="prose">Encode CPU time per frame at 720p, one thread, at a fixed quantizer chosen for each encoder to
       land near the chart's middle rung on three development clips; real-time CBR costs our encoders slightly more.
-      The Jetson core's clock is locked; the PC is a shared machine, so each PC run is paired with an x264 run in the
-      same round, and differences of a few percent there are noise.</p>
+      The Jetson core's clock is locked; on x86 (a rented AMD EPYC 9R45, Zen 5) each run is paired with an x264 run in
+      the same round, one pair at a time.</p>
     <p class="note platforms"></p>
     <div class="encode"></div>
     <h2 id="browser">In the browser (WebAssembly)</h2>

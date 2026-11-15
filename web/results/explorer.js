@@ -14,11 +14,10 @@ import {
 } from './common.js';
 
 const SHAPES = { nanocodec: 'circle', x264: 'square', x265: 'diamond', 'SVT-AV1': 'triangle', openh264: 'triangle-down', libvpx: 'cross', libaom: 'plus' };
-const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'Ryzen 9 5950X core' };
+const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (Zen 5) core' };
 // The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
 const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
 const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
-// Fixed-QP speed: the lens run's own measurement, on the PC only.
 const QP_SPEED = 'the chart\'s single-thread timing at fixed QP (720p), on the machine selected';
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
@@ -283,7 +282,7 @@ function controls(data, root) {
     control('Metric', withData('metric', segmented('Metric', Object.keys(SHORT).map((m) => ({ value: m, label: SHORT[m] })),
       state.metric, (v) => { state.metric = v; rerender(); }))),
     control('Speed on', withData('platform', segmented('Platform', [
-      { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'PC (x86)' },
+      { value: 'jetson', label: 'Jetson (Arm)' }, { value: 'x86', label: 'x86 (Zen 5)' },
     ], state.platform, (v) => { state.platform = v; rerender(); }))),
     control('Pareto frontier', segmented('Pareto frontier', [
       { value: 'on', label: 'On' }, { value: 'off', label: 'Off' },

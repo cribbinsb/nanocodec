@@ -753,7 +753,7 @@ def readme_block(chart: dict) -> str:
         f"({pct([held[d]['j'] for d in defaults])} on all {held_view['clips']}).",
         f"- **Speed:** {fps_range([fresh[d]['fps']['jetson'] for d in defaults])} fps at 720p on "
         f"one Jetson Orin Nano core, {fps_range([fresh[d]['fps']['x86'] for d in defaults])} on "
-        f"one Ryzen 9 5950X core (that x264: {zero['fps']['jetson']:.0f} and "
+        f"one AMD EPYC 9R45 (Zen 5) core (that x264: {zero['fps']['jetson']:.0f} and "
         f"{zero['fps']['x86']:.0f}).",
         f"- **Where we are behind:** {' and '.join(behind)} ([details]({CODECS_PAGE})).",
     ]
