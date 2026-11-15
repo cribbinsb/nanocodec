@@ -318,6 +318,69 @@ def fixed_qp_view() -> dict | None:
             "metrics": ["weighted", "j", "psnr", "vmaf", "ms_ssim"], "values": values}
 
 
+#: The chart views' clip sets: (site clip-set id, chart markdown that lists its
+#: excluded clips, the clip set the chart measured; None: the development clips).
+CLIP_TABLES = (("fresh", "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-medium-psnr",
+                "independent_fresh_2026-11-13.json"),
+               ("heldout", "bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr",
+                "independent_2026-11-13.json"),
+               ("dev", "bd-vs-speed-vs-x264-medium-psnr", None))
+EXCLUDED_CLIP = re.compile(r"^- \*\*([^*]+)\*\* \(")
+
+
+def dataset_of(source: str) -> str:
+    """The collection a clip's source comes from, by name only (no path)."""
+    parts = Path(source).parts
+    for marker, depth in (("downloaded_datasets", 2), ("video", 1), ("tracking_original", 1)):
+        if marker in parts:
+            index = parts.index(marker) + depth
+            if index < len(parts) - 1:
+                return parts[index]
+    return parts[-2] if len(parts) > 1 else ""
+
+
+#: Folders of our video store that are not a collection: their clips are named by
+#: the source's own name where it says (MOT20-07), else as unattributed.
+STORE_FOLDERS = {"base", "mp4", "video"}
+
+
+def collection(clip) -> str:
+    """The source collection a clip came from, by name only (never a path)."""
+    name = Path(clip.dataset).name if clip.dataset else dataset_of(clip.family)
+    if name not in STORE_FOLDERS:
+        return name
+    stem = Path(clip.family).stem
+    return stem.split("-")[0] if stem.upper().startswith("MOT") else "unattributed (own store)"
+
+
+def clips_data() -> dict:
+    """The clips behind each chart view (the clip sets the charts measured, the
+    exclusions their markdown lists) and the fixed-QP chart's CTC sequences."""
+    from .chart import chart_clips
+    from .ctc.conditions import AOM_LD
+    sets = {}
+    for clipset, stem, file in CLIP_TABLES:
+        excluded = set()
+        markdown = RESULTS / f"{stem}.md"
+        if markdown.is_file():
+            excluded = {m.group(1) for line in markdown.read_text().splitlines()
+                        if (m := EXCLUDED_CLIP.match(line))}
+        spec = str(load_paths().clips / file) if file else None
+        sets[clipset] = [{"name": c.name, "dataset": collection(c),
+                          "width": c.width, "height": c.height, "fps": c.fps,
+                          "start_frame": c.start_frame, "frames": DEFAULT_FRAMES,
+                          "class": c.content_class, "scored": c.name not in excluded}
+                         for c in chart_clips(spec)]
+    sets["ctc"] = [{"name": q.name, "dataset": f"AOM CTC v8, class {q.sequence_class}",
+                    "width": q.width, "height": q.height, "fps": round(q.fps_num / q.fps_den, 3),
+                    "start_frame": 0, "frames": AOM_LD.frames, "class": q.sequence_class,
+                    "scored": True} for q in AOM_LD.sequences]
+    return {"source": [*(f"docs/results/{stem}.md" for _, stem, _ in CLIP_TABLES),
+                       "eval/nceval/ctc/sequences.py"], "sets": sets,
+            "counts": {k: {"clips": len(v), "scored": sum(c["scored"] for c in v),
+                           "left_out": sum(not c["scored"] for c in v)} for k, v in sets.items()}}
+
+
 def latest_rc_cost() -> Path:
     return sorted(RESULTS.glob(RC_COST_GLOB))[-1]
 
@@ -715,7 +778,8 @@ def with_readme_block(text: str, block: str) -> str:
 def outputs() -> dict[Path, str]:
     """Every generated file and its content."""
     chart = chart_data()
-    data = {"chart.json": chart, "hardware.json": hardware_data(), "rc-cost.json": rc_cost_data(),
+    data = {"chart.json": chart, "clips.json": clips_data(),
+            "hardware.json": hardware_data(), "rc-cost.json": rc_cost_data(),
             "wasm-yardstick.json": wasm_yardstick_data(chart),
             "svc.json": svc_data(), "wasm.json": wasm_data(), "window.json": window_data(),
             "decoders.json": decoder_data()}
