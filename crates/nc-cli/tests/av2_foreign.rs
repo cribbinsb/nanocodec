@@ -17,7 +17,11 @@ const STREAM_DIRS: [&str; 2] = ["streams", "vectors/dav2d-test-data/avm"];
 
 fn corpus() -> Option<PathBuf> {
     let root = std::env::var_os("NC_AV2_FOREIGN").map_or_else(
-        || Path::new(&std::env::var_os("HOME")?).join("nanocodec-data/work/av2-foreign").into(),
+        || {
+            Path::new(&std::env::var_os("HOME")?)
+                .join("nanocodec-data/work/av2-foreign")
+                .into()
+        },
         |root| Some(PathBuf::from(root)),
     )?;
     root.is_dir().then_some(root)
@@ -49,6 +53,10 @@ fn foreign_streams_decode_to_the_reference_hashes() {
             String::from_utf8_lossy(&output.stderr)
         );
         let hashes = String::from_utf8(output.stdout).unwrap();
-        assert_eq!(hashes.split_whitespace().collect::<Vec<_>>(), expected, "{name}");
+        assert_eq!(
+            hashes.split_whitespace().collect::<Vec<_>>(),
+            expected,
+            "{name}"
+        );
     }
 }

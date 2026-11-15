@@ -132,6 +132,11 @@ PROJECTS = {
     "vvenc": ("VVenC", "vvc", ""),
 }
 OPENH264_FAMILY = "openh264-baseline"
+#: Versions of the references outside a chart build record's `tools`: openh264 as
+#: pinned (tools/anchors/versions.env, OPENH264_REF), HM and VVenC as the fixed-QP
+#: lens ran them (`TAppEncoder` and `vvencFFapp` print these).
+VERSIONS_FILE = REPO / "tools/anchors/versions.env"
+LENS_TOOL_VERSIONS = {"HM": "19.0", "VVenC": "1.14.0"}
 #: The fixed-QP lens (written by its run into the site's data, nceval.ctc): the
 #: overview's Fixed QP chart plots one of its columns, against x264 medium at fixed QP.
 LENS_DATA = "fixed-qp-lens.json"
@@ -316,6 +321,8 @@ def fixed_qp_view() -> dict | None:
             "clips": max(v["clips_scored"] for v in values.values()),
             "build_commit": lens["build_commit"], "condition": lens["condition"],
             "column": LENS_COLUMN, "source": lens["source"],
+            "lens_names": {row["test"]: LENS_FAMILIES.get(row["test"], row["test"])
+                           for row in lens["rows"]},
             "metrics": ["weighted", "j", "psnr", "vmaf", "ms_ssim"], "values": values}
 
 
@@ -398,7 +405,15 @@ def chart_data() -> dict:
         "example": {"kbps": EXAMPLE_KBPS, "width": EXAMPLE_CLIP.width,
                     "height": EXAMPLE_CLIP.height, "fps": EXAMPLE_CLIP.fps},
         "timing_rung_kbps": plan["rung_kbps"], "timing_frames": plan["frames"],
+        "other_tools": other_tool_versions(),
     }
+
+
+def other_tool_versions() -> dict[str, str]:
+    """openh264, HM and VVenC versions (VERSIONS_FILE, LENS_TOOL_VERSIONS)."""
+    pinned = dict(line.split("=", 1) for line in VERSIONS_FILE.read_text().splitlines()
+                  if line and not line.startswith("#") and "=" in line)
+    return {"openh264": pinned["OPENH264_REF"], **LENS_TOOL_VERSIONS}
 
 
 # --- the other pages' tables ------------------------------------------------------------------

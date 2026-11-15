@@ -27,10 +27,6 @@ frame. The per-frame MD5s go to hashes.json, which the WASM decoder test
 (web/tests/reference-streams-wasm.mjs) checks. H.264/HEVC access units are
 stored as IVF frames (FourCC H264/HEVC) so the page reads one container.
 
-Streams made elsewhere (SUPPLIED: the owner's bodycam SoC encodes) cannot be
-regenerated: their files are pinned by hash in SUPPLIED, checked by the same
-decoders, and described from their provenance (no command line).
-
 Usage: tools/web/make-reference-streams.py --nanocodec BIN [--only NAME...]
 A run remakes only entries that are new or out of date (source file, command or
 stream file changed); the rest keep their manifest records and checks.
@@ -82,8 +78,6 @@ VARIANT_HEIGHTS = tuple(int(h) for h in re.search(r"const VARIANT_HEIGHTS = \[([
                                                   (WEB / "clips.js").read_text()).group(1).split(","))
 # The chart's key interval (eval/nceval/cbr.py DEFAULT_INTRA_PERIOD): 10 s.
 KEY_INTERVAL_SECONDS = 10
-# The supplied bodycam SoC streams' key interval (SUPPLIED): frames 0 and 150 of 300 at 30 fps.
-SUPPLIED_KEY_SECONDS = 5
 IVF_HEADER = struct.Struct("<4sHH4sHHIII4x")
 IVF_FRAME = struct.Struct("<IQ")
 IVF_FOURCC = {Codec.H264: b"H264", Codec.HEVC: b"HEVC", Codec.AV1: b"AV01", Codec.VP9: b"VP90"}
@@ -135,11 +129,10 @@ class Entry:
     height: int
     fps: int
     kbps: int
-    key_seconds: int = KEY_INTERVAL_SECONDS  # another interval only to match a supplied stream's
 
     @property
     def key_interval(self) -> int:
-        return self.key_seconds * self.fps
+        return KEY_INTERVAL_SECONDS * self.fps
 
     @property
     def name(self) -> str:
@@ -243,50 +236,6 @@ RATE_CONTROL = {
     "nvenc": "CBR, peak at the target, 1 s buffer",
 }
 
-
-@dataclass(frozen=True)
-class Supplied:
-    """A stream made outside this repository and supplied as an IVF file in
-    web/streams-ref/: nothing here can regenerate it, so the file is pinned by its
-    hash, decoded and checked like the others, and described from its provenance."""
-    clip: str
-    codec: Codec
-    width: int
-    height: int
-    fps: int
-    kbps: int  # the supplier's target
-    sha256: str
-    # PSNR-YUV (6:1:1, mean over frames) against the frames the encoder was given,
-    # minus the same against the demo's current source frames, in dB.
-    psnr_gap_db: float
-
-    @property
-    def name(self) -> str:
-        return f"{self.clip}-bwc-soc-{PAGE_CODEC[self.codec]}-{self.width}x{self.height}-{self.fps}fps-{self.kbps}k"
-
-
-# The owner's bodycam SoC streams of FoodMarket (v2, 2026-11-14; README supplied with them):
-# the SoC's hardware encoder at the camera's recording settings with a fix to how its rate
-# control picks the first key frame's quantiser (v1 had a fixed QP 26 key at every rate),
-# EVBR rate control, a key frame every 5 s, P frames only, H.264 High / HEVC Main. Their
-# PSNR-Y against the demo's former source frames (BT.601 via RGB, make-reference-streams.py
-# before e41b52fa) equals the README's to 0.01 dB, so they were fed those frames again,
-# not the current ones; the gap was measured against both (docs/handoff/browser-demo.md).
-BWC_SOC = {
-    "label": "BWC SOC",
-    "provenance": "Supplied by the project owner: the hardware encoder of a production body-worn-camera SoC at the "
-                  "camera's recording settings, with a fix to how its rate control picks the first key frame's "
-                  "quantiser (P frames only, a key frame every 5 s). Not made by any tool in this repository; vendor "
-                  "and model are not named.",
-    "version": "hardware encoder of a production body-worn-camera SoC (vendor and model not named)",
-    "rateControl": "the camera's EVBR recording rate control (not CBR)",
-    "command": "not available (hardware encoder)",
-}
-SUPPLIED_SOURCE_NOTE = ("Encoded from an earlier RGB-converted copy of the demo's frames (limited-range BT.601 via RGB); "
-                        "its PSNR against the frames the demo shows now is about {gap:.1f} dB lower than against its "
-                        "own input.")
-#: None now: the FoodMarket streams were removed with that clip (owner, 2026-11-15).
-SUPPLIED: list[Supplied] = []
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -502,67 +451,9 @@ def make(entry: Entry, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]
     return record, hashes
 
 
-def key_frames(packets: list[bytes], codec: Codec) -> list[int]:
-    """The access units that hold an IDR (H.264 NAL type 5) or IRAP picture (HEVC 16-23)."""
-    def keyed(unit: bytes) -> bool:
-        for m in re.finditer(b"\x00\x00\x01", unit):
-            header = unit[m.end()]
-            if (codec == Codec.H264 and header & 0x1F == 5) or (codec == Codec.HEVC and 16 <= (header >> 1) & 0x3F <= 23):
-                return True
-        return False
-    return [index for index, unit in enumerate(packets) if keyed(unit)]
-
-
-def key_interval(item: Supplied, keys: list[int], frames: int) -> int:
-    """A supplied stream's key interval: its key frames must start the stream and be
-    evenly spaced, as the page's matching key interval assumes."""
-    interval = keys[1] - keys[0] if len(keys) > 1 else frames
-    if keys != list(range(0, frames, interval)):
-        raise RuntimeError(f"{item.name}: key frames at {keys} are not evenly spaced from frame 0")
-    return interval
-
-
-def check_supplied(item: Supplied, nanocodec: Path, scratch: Path) -> tuple[dict, list[str]]:
-    """Decode-check a supplied stream (reference and native decoders agree on every
-    frame) and describe it."""
-    target = OUT / f"{item.name}.ivf"
-    if not target.exists() or sha256(target) != item.sha256:
-        raise RuntimeError(f"{target}: missing or not the supplied file (sha256 {item.sha256})")
-    packets = ivf_packets(target.read_bytes())
-    annex_b = scratch / f"{item.name}.raw"
-    annex_b.write_bytes(b"".join(packets))
-    try:
-        hashes = verify(annex_b, item.codec, item, nanocodec, scratch)
-    finally:
-        annex_b.unlink()
-    source = clip_file(item.clip, item.height)
-    _, _, clip_fps, clip_frames = probe(source)
-    frames, keys = len(packets), key_frames(packets, item.codec)
-    interval = key_interval(item, keys, frames)
-    record = {
-        "id": item.name, "file": target.name, "clip": item.clip, "codec": PAGE_CODEC[item.codec],
-        "encoder": "bwc-soc", "label": BWC_SOC["label"], "chartConfiguration": False, "supplied": True,
-        "width": item.width, "height": item.height, "fps": item.fps, "frames": frames,
-        "loopTicks": round(clip_frames * SOURCE_FPS / clip_fps), "keyFrames": len(keys),
-        "keyInterval": interval,
-        "targetKbps": item.kbps, "actualKbps": round(sum(map(len, packets)) * 8 / (frames / item.fps) / 1000, 1),
-        "bufferMs": BUFFER_MS, "bytes": target.stat().st_size, "sha256": item.sha256,
-        "sourceFile": f"clips/{source.name}", "sourceSha256": sha256(source),
-        "sourcePixels": "an earlier RGB-converted copy (limited-range BT.601 via RGB)",
-        "sourceNote": SUPPLIED_SOURCE_NOTE.format(gap=item.psnr_gap_db),
-        "provenance": BWC_SOC["provenance"], "rateControl": BWC_SOC["rateControl"],
-        "command": BWC_SOC["command"], "version": {"version": BWC_SOC["version"], "source": {}},
-        **PIXEL_FORMATS["yuv420p"],
-        **({"notice": NOTICES[item.clip]} if item.clip in NOTICES else {}),
-    }
-    return record, hashes
-
-
 def described(record: dict) -> dict:
     """A generated record with the descriptive fields that follow from its encoder
     (refreshed on every run, as they need no re-encode)."""
-    if record.get("supplied"):
-        return record
     encoder = ENCODERS[record["encoder"]]
     return {**record, "label": encoder.label, "rateControl": RATE_CONTROL[family(encoder).kind],
             "keyFrames": -(-record["frames"] // record["keyInterval"])}
@@ -579,7 +470,7 @@ def display_arg(arg: str, yuv: Path, raw: Path) -> str:
 def write_table(manifest: dict) -> None:
     """The streams, their encoders' versions and exact commands, as a results page."""
     def note(r: dict) -> str:
-        return " (supplied; hardware encoder)" if r.get("supplied") else "" if r["chartConfiguration"] else " (not a chart configuration)"
+        return "" if r["chartConfiguration"] else " (not a chart configuration)"
     rows = [f"| {r['clip']} | {r['label']}{note(r)} | {r['codec']} | {r.get('rateControl', '')} | "
             f"{r['width']}x{r['height']} | {r['fps']} | {r['targetKbps']} | {r['actualKbps']} | {r['bytes'] / 1024:.0f} |"
             for r in manifest["streams"]]
@@ -656,19 +547,6 @@ def main() -> None:
             print(f"{entry.name}: {record['actualKbps']} kbps, {record['bytes']} bytes", flush=True)
             records.append(record)
             hashes[entry.name] = frame_md5
-        for item in SUPPLIED:
-            kept = old.get(item.name)
-            current = (kept and kept["sha256"] == item.sha256 and (OUT / kept["file"]).exists()
-                       and sha256(OUT / kept["file"]) == item.sha256
-                       and kept.get("sourceSha256") == sha256(clip_file(item.clip, item.height)))
-            if kept and (item.name not in args.only if args.only else current):
-                records.append(kept)
-                hashes[item.name] = old_hashes[item.name]
-                continue
-            record, frame_md5 = check_supplied(item, args.nanocodec, Path(scratch))
-            print(f"{item.name}: supplied, {record['actualKbps']} kbps, {record['keyFrames']} key frame(s)", flush=True)
-            records.append(record)
-            hashes[item.name] = frame_md5
     records = [described(r) for r in records]
     manifest = {"generator": "tools/web/make-reference-streams.py", "sourceFps": SOURCE_FPS, "streams": records}
     manifest_path.write_text(json.dumps(manifest, indent=1) + "\n")

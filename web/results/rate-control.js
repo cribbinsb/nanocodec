@@ -47,9 +47,9 @@ function render(data, root) {
   root.querySelector('.findings').replaceChildren(
     el('li', {}, el('strong', {}, 'Rate-control cost: '),
       `ours ${pct(Math.min(...ours.map(cost)))} to ${pct(Math.max(...ours.map(cost)))} (${m}) against our own fixed QP; x264 medium ${pct(cost(PSNR_ZERO))} with --tune psnr and ${pct(cost(DEFAULT_ZERO))} at its default tuning.`),
-    el('li', {}, el('strong', {}, 'H.264 Default at fixed QP: '),
+    el('li', {}, el('strong', {}, 'H.264 Medium (default) at fixed QP: '),
       `${pct(qp(h264, PSNR_ZERO))} against --tune psnr and ${pct(qp(h264, DEFAULT_ZERO))} against the default tuning, against ${pct(cbr(h264, PSNR_ZERO))} and ${pct(cbr(h264, DEFAULT_ZERO))} in CBR.`),
-    el('li', {}, el('strong', {}, 'Newer-format Defaults at fixed QP: '),
+    el('li', {}, el('strong', {}, 'Newer-format Medium (default) presets at fixed QP: '),
       `${range(newer.map((t) => qp(t, PSNR_ZERO)))} against x264 --tune psnr, against ${range(newer.map((t) => cbr(t, PSNR_ZERO)))} in CBR.`),
   );
 }

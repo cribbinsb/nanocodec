@@ -28,7 +28,7 @@
   <h1>Coding efficiency and rate control</h1>
   <p class="lede">A CBR-against-CBR comparison mixes two things: how well each encoder codes, and how much its
     real-time rate control costs it. This run measures them apart, on the development clips: each encoder's CBR
-    curve and a fixed-QP curve over the same rates, for our Default presets and for x264 medium at both tunings.</p>
+    curve and a fixed-QP curve over the same rates, for our Medium (default) presets and for x264 medium at both tunings.</p>
   <div class="disclaimer">
     <strong>Development clips, one build.</strong> These are the clips we tune beside, not the held-out set, and
     the run has no low rungs. A clip counts only where the curves overlap reliably: the number of such clips is
@@ -41,8 +41,6 @@
     <div class="rc-table"></div>
     <h2>What this shows</h2>
     <ul class="prose findings"></ul>
-    <p class="prose">The same run is on the <a href="./">overview chart</a>: set the clip set to Development and
-      switch the rate mode between CBR and fixed QP.</p>
   </div>
 </main>
 <footer>

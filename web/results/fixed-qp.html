@@ -27,8 +27,9 @@
 <main>
   <h1>Fixed QP: the standards lens</h1>
   <p class="lede">The charts elsewhere measure real-time CBR, where each encoder's rate control is part of the
-    result. Here every encoder codes at fixed quantizers on the AOM common test conditions in low delay, so the
-    figures compare coding tools alone, the way codec standards are compared.</p>
+    result. Here every encoder codes at fixed quantizers on 12 sequences of the AOM common test conditions in low
+    delay, against x264 medium. Rate control is taken out, but each encoder's own searches and decisions are
+    not: this compares encoders, not the coding tools of their formats.</p>
   <div class="controls mode-switch"></div>
   <div id="fixed-qp">
     <div class="controls"></div>

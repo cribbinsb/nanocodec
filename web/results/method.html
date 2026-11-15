@@ -56,6 +56,10 @@
     <ul>
       <li><strong>Low delay, real time:</strong> every encoder in its own real-time rate control at the same
         targets, forward prediction only (no B-frames, no lookahead), one key frame, one thread, <span class="buffer"></span>.</li>
+      <li><strong>openh264</strong> runs through our harness (<code>tools/openh264-harness</code>, a small C
+        program over its API, as its own command-line tool cannot set every parameter): Constrained Baseline with
+        CAVLC, medium complexity, camera real-time usage, adaptive quantization off, scene-change detection off,
+        frame skipping off, one thread.</li>
       <li><strong>8-bit 4:2:0 only.</strong> No 10-bit, no other chroma formats.</li>
       <li><strong>Ours do not code repeated frames</strong> that would not change the picture (holds); the
         references code every frame. Holds are rare on these clips.</li>
