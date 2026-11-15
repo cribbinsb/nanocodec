@@ -1,11 +1,11 @@
 // Fixed QP on the standards lens (fixed-qp.html): every encoder at fixed quantizers on
-// the AOM low-delay common test conditions, against x264 medium, in the Strict and
-// Profile columns. Data: data/fixed-qp-lens.json (the fixed-QP lens run; rows
+// the AOM low-delay common test conditions, against x264 medium, in the Strict,
+// Profile and CBR-settings columns (fixed-qp.html says what each is). Data: data/fixed-qp-lens.json (the fixed-QP lens run; rows
 // {test, column, anchor, weighted, j, psnr_yuv, vmaf, ms_ssim, n}), backed by a
 // docs/results CSV.
 import { control, el, fail, loadData, pct, segmented, sources, table } from './common.js';
 
-const COLUMNS = { strict: 'Strict', profile: 'Profile' };
+const COLUMNS = { strict: 'Strict', profile: 'Profile', cbr_settings: 'CBR settings' };
 const METRICS = {
   weighted: 'Weighted (0.92 Y + 0.04 Cb + 0.04 Cr PSNR)',
   j: 'J (PSNR-YUV, VMAF v1, MS-SSIM)',
@@ -26,7 +26,7 @@ function render(data, root) {
   const tests = [...new Set(data.rows.map((r) => r.test))];
   const find = (test, column) => data.rows.find((r) => r.test === test && r.column === column);
   const ours = (t) => t.startsWith('nanocodec-');
-  const key = (t) => (find(t, 'strict') || find(t, 'profile'))[state.metric];
+  const key = (t) => Object.keys(COLUMNS).map((c) => find(t, c)).find(Boolean)[state.metric];
   tests.sort((a, b) => (ours(b) - ours(a)) || (key(a) - key(b)));
   root.querySelector('.lens-table').replaceChildren(
     el('p', { class: 'note' }, `${METRICS[state.metric]}, BD-rate against ${data.rows[0].anchor}; negative is fewer bits. Sequences in brackets.`),
@@ -35,7 +35,8 @@ function render(data, root) {
       ...Object.entries(COLUMNS).map(([column, label]) => ({
         label, num: true,
         cell: (t) => {
-          const r = find(t, column);
+          // a reference encoder has one setting: the same value in every column
+          const r = find(t, column) || (ours(t) ? null : data.rows.find((x) => x.test === t));
           return r && r[state.metric] != null ? `${pct(r[state.metric])} (${r.n})` : '';
         },
       })),

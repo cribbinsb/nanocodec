@@ -35,9 +35,12 @@
     <div class="lens-table"></div>
     <h2>Columns</h2>
     <ul class="prose">
-      <li><strong>Strict:</strong> each encoder exactly as in CBR, only the quantizer fixed.</li>
-      <li><strong>Profile:</strong> each encoder with its own fixed-QP profile (our <code>rate.fixed_qp_profile</code>,
-        the anchors' own fixed-QP settings).</li>
+      <li><strong>Strict:</strong> ours on the fully static pattern of the test conditions: a fixed-strength QP
+        cadence, no adaptive layers and a fixed rule for the second reference.</li>
+      <li><strong>Profile:</strong> ours with its fixed-QP profile (<code>rate.fixed_qp_profile</code>): the
+        frame-level pattern it uses when coding without rate control.</li>
+      <li><strong>CBR settings:</strong> ours exactly as in CBR, only the quantizer fixed (profile off).</li>
+      <li>The reference encoders have one setting, so their value is the same in every column.</li>
     </ul>
   </div>
 </main>
