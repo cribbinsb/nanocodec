@@ -9,14 +9,16 @@ use nc_common::{BitDepth, Sample};
 use super::HevcWeights;
 
 /// One output sample.
-#[inline]
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
 pub(crate) fn sample<T: Sample>(weights: &HevcWeights, a: i16, b: i16, depth: BitDepth) -> T {
     let v = i32::from(a) * i32::from(weights.w0) + i32::from(b) * i32::from(weights.w1);
     depth.clip_to((v + weights.round) >> weights.shift)
 }
 
 /// Weighted prediction of one row segment.
-#[inline]
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
 pub(crate) fn row<T: Sample>(
     weights: &HevcWeights,
     a: &[i16],
@@ -29,8 +31,11 @@ pub(crate) fn row<T: Sample>(
     }
 }
 
-/// The scalar kernel at any depth ([`super::WeightFn`] with the depth).
-#[allow(clippy::too_many_arguments)]
+/// The scalar kernel at any depth ([`super::WeightFn`] with the depth);
+/// always inlined, so a vector ISA's instance (`crate::high_depth`)
+/// compiles it with its target features.
+#[allow(clippy::too_many_arguments, clippy::inline_always)]
+#[inline(always)]
 pub(crate) fn weight_at<T: Sample>(
     weights: &HevcWeights,
     a: &[i16],

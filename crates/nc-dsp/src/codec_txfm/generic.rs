@@ -1230,12 +1230,29 @@ pub(crate) unsafe fn hevc_inverse_extent<V: I32Lanes, T: BoundedLine, const N: u
     out: &mut [i16],
     extent: (usize, usize),
 ) {
+    // SAFETY: forwarded contract.
+    unsafe { hevc_inverse_extent_passes::<V, T, N>(coeffs, out, extent, HEVC_INVERSE_PASSES) }
+}
+
+/// [`hevc_inverse_extent`] with its two passes given: the high-bit-depth
+/// inverse's second shift is `20 − BitDepth` (`crate::high_depth`). The
+/// output store saturates to 16 bits either way.
+///
+/// # Safety
+/// As [`hevc_inverse_extent`]; `extent` covers every nonzero coefficient.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[inline(always)]
+pub(crate) unsafe fn hevc_inverse_extent_passes<V: I32Lanes, T: BoundedLine, const N: usize>(
+    coeffs: &[i16],
+    out: &mut [i16],
+    extent: (usize, usize),
+    (first, second): (Pass, Pass),
+) {
     let (rows, columns) = extent;
     if rows == 0 {
         out[..N * N].fill(0);
         return;
     }
-    let (first, second) = HEVC_INVERSE_PASSES;
     let lanes = V::LANES;
     let columns = columns.div_ceil(lanes) * lanes;
     let mut x = [V::splat(0); N];

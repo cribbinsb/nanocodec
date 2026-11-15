@@ -125,6 +125,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_av1_warp::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av1_mask::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_hevc_weight::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_high_depth::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_memory::check(&candidate, &reference, &mut report);
     // Compiled-in baseline SIMD, the same whatever `isa` (cheap to repeat).
     crate::check_av1_symbol::check(iterations, &mut rng, &mut report);

@@ -49,6 +49,7 @@ mod check_h264_intra;
 mod check_hevc_intra;
 mod check_hevc_put32;
 mod check_hevc_weight;
+mod check_high_depth;
 mod check_raster_dct;
 #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
 mod check_relaxed_dot;

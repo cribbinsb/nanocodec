@@ -205,21 +205,24 @@ fn separable<T: SeparableTaps<N>, const N: usize, const W: usize>(
 /// HEVC §8.5.3.3.3 at `depth` followed by uni-prediction rounding
 /// (§8.5.3.3.4.2: `(predSamples + offset1) >> shift1`, `shift1 = 14 −
 /// BitDepth`), for samples of any type.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
 pub(crate) fn separable_at<S: Sample, T: SeparableTaps<N>, const N: usize, const W: usize>(
     src: &[S],
     ss: usize,
     dst: &mut [S],
     ds: usize,
     h: usize,
-    (frac_x, frac_y): (usize, usize),
+    frac: (usize, usize),
     depth: BitDepth,
 ) {
-    let (fx, fy) = (&T::TABLE[frac_x], &T::TABLE[frac_y]);
+    let mut pred = [[0i16; W]; MAX_PREP_ROWS];
+    hevc_prep_at::<S, T, N, W>(src, ss, pred.as_flattened_mut(), W, h, frac, depth);
+    let offset = i32::from(super::HEVC_PREP_OFFSET);
     let shift = PREDICTION_BITS - depth.bits();
-    for r in 0..h {
-        for c in 0..W {
-            let value = separable_sample(src, ss, (r, c), (fx, fy), (frac_x, frac_y), depth);
-            dst[r * ds + c] = depth.clip_to((value + (1 << (shift - 1))) >> shift);
+    for (out, row) in dst.chunks_mut(ds).take(h).zip(&pred) {
+        for (o, &v) in out[..W].iter_mut().zip(row) {
+            *o = depth.clip_to((i32::from(v) + offset + (1 << (shift - 1))) >> shift);
         }
     }
 }
@@ -314,7 +317,8 @@ fn hevc_bi<T: SeparableTaps<N>, const N: usize, const W: usize>(
 /// `offset2 = 1 << (shift2 − 1)`): [`hevc_prep_at`] of the second list, then
 /// `Clip1((first + second + offset2) >> shift2)` with both predictions
 /// restored from their centring.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::inline_always)]
+#[inline(always)]
 pub(crate) fn hevc_bi_at<S: Sample, T: SeparableTaps<N>, const N: usize, const W: usize>(
     src: &[S],
     ss: usize,
@@ -354,6 +358,13 @@ fn hevc_prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
 /// before weighted sample prediction, for bi-prediction and explicit
 /// weights. The 14-bit precision is the same at every depth (`shift1`
 /// scales the first pass down), so the range proof below holds for all.
+///
+/// Written tap by tap over whole rows (`W` sums per row), so a vector ISA
+/// can compile it into lane-parallel multiply-adds
+/// (`crate::high_depth`'s vector tiers instantiate it under their target
+/// features); the sums are the same as tap-inner order.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
 pub(crate) fn hevc_prep_at<S: Sample, T: SeparableTaps<N>, const N: usize, const W: usize>(
     src: &[S],
     ss: usize,
@@ -378,38 +389,67 @@ pub(crate) fn hevc_prep_at<S: Sample, T: SeparableTaps<N>, const N: usize, const
         }
         (_, 0) => {
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
-                let line = &src[(r + centre) * ss..];
-                for (c, o) in out[..W].iter_mut().enumerate() {
-                    *o = center_hevc_sample(
-                        taps_dot(fx, line[c..c + N].iter().map(|&s| s.to_i32())) >> shift1,
-                    );
-                }
+                let base = (r + centre) * ss;
+                let sums = taps_rows::<N, W>(fx, |t, o| widen(&src[base + t..], o));
+                store_centred(out, sums, shift1);
             }
         }
         (0, _) => {
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
-                for (c, o) in out[..W].iter_mut().enumerate() {
-                    let column = (0..N).map(|t| src[(r + t) * ss + c + centre].to_i32());
-                    *o = center_hevc_sample(taps_dot(fy, column) >> shift1);
-                }
+                let sums = taps_rows::<N, W>(fy, |t, o| widen(&src[(r + t) * ss + centre..], o));
+                store_centred(out, sums, shift1);
             }
         }
         _ => {
             let mut rows = [[0i32; W]; MAX_PREP_ROWS];
             for (r, row) in rows[..h + N - 1].iter_mut().enumerate() {
-                let line = &src[r * ss..];
-                for (c, sum) in row.iter_mut().enumerate() {
-                    *sum = taps_dot(fx, line[c..c + N].iter().map(|&s| s.to_i32())) >> shift1;
+                let sums = taps_rows::<N, W>(fx, |t, o| widen(&src[r * ss + t..], o));
+                for (d, v) in row.iter_mut().zip(sums) {
+                    *d = v >> shift1;
                 }
             }
             for (r, out) in dst.chunks_mut(ds).take(h).enumerate() {
-                for (c, o) in out[..W].iter_mut().enumerate() {
-                    *o = center_hevc_sample(
-                        taps_dot(fy, rows[r..r + N].iter().map(|row| row[c])) >> SECOND_PASS_SHIFT,
-                    );
-                }
+                let sums = taps_rows::<N, W>(fy, |t, o| *o = rows[r + t]);
+                store_centred(out, sums, SECOND_PASS_SHIFT);
             }
         }
+    }
+}
+
+/// `taps` applied to `N` rows (or columns) of `W` samples, `line(t, out)`
+/// writing the `t`-th as i32: one multiply-add per tap over the whole row.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+fn taps_rows<const N: usize, const W: usize>(
+    taps: &[i16; N],
+    line: impl Fn(usize, &mut [i32; W]),
+) -> [i32; W] {
+    let mut acc = [0i32; W];
+    let mut samples = [0i32; W];
+    for (t, &tap) in taps.iter().enumerate() {
+        line(t, &mut samples);
+        for (a, &v) in acc.iter_mut().zip(&samples) {
+            *a += i32::from(tap) * v;
+        }
+    }
+    acc
+}
+
+/// `W` samples widened to i32.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+fn widen<S: Sample, const W: usize>(row: &[S], out: &mut [i32; W]) {
+    for (o, &v) in out.iter_mut().zip(&row[..W]) {
+        *o = v.to_i32();
+    }
+}
+
+/// `sums >> shift`, centred, into the first `W` of `out`.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+fn store_centred<const W: usize>(out: &mut [i16], sums: [i32; W], shift: u32) {
+    for (o, v) in out[..W].iter_mut().zip(sums) {
+        *o = center_hevc_sample(v >> shift);
     }
 }
 
@@ -421,59 +461,9 @@ fn center_hevc_sample(sample: i32) -> i16 {
     centered as i16
 }
 
-/// The filter `taps` applied to `samples`.
-fn taps_dot<const N: usize>(taps: &[i16; N], samples: impl Iterator<Item = i32>) -> i32 {
-    taps.iter()
-        .zip(samples)
-        .map(|(&t, s)| i32::from(t) * s)
-        .sum()
-}
-
 /// Rows of horizontal sums a 2-D prep needs at most: a 64-row block and
 /// the 8-tap filter's 7 extra rows.
 const MAX_PREP_ROWS: usize = 64 + 7;
-
-/// One 14-bit HEVC prediction sample at block position `(r, c)` of the
-/// window `src` (equations 8-228 to 8-240 at `depth`: `shift1 = Min(4,
-/// BitDepth − 8)`, `shift2 = 6`, `shift3 = Max(2, 14 − BitDepth)`).
-fn separable_sample<S: Sample, const N: usize>(
-    src: &[S],
-    ss: usize,
-    (r, c): (usize, usize),
-    (fx, fy): (&[i16; N], &[i16; N]),
-    (frac_x, frac_y): (usize, usize),
-    depth: BitDepth,
-) -> i32 {
-    let centre = N / 2 - 1;
-    let (shift1, shift3) = interpolation_shifts(depth);
-    let px = |r: usize, c: usize| src[r * ss + c].to_i32();
-    let tap = |taps: &[i16; N], t: usize| i32::from(taps[t]);
-    match (frac_x, frac_y) {
-        // A whole-sample position: s << shift3.
-        (0, 0) => px(r + centre, c + centre) << shift3,
-        (_, 0) => {
-            (0..N)
-                .map(|t| tap(fx, t) * px(r + centre, c + t))
-                .sum::<i32>()
-                >> shift1
-        }
-        (0, _) => {
-            (0..N)
-                .map(|t| tap(fy, t) * px(r + t, c + centre))
-                .sum::<i32>()
-                >> shift1
-        }
-        _ => {
-            let column: i32 = (0..N)
-                .map(|t| {
-                    let row: i32 = (0..N).map(|u| tap(fx, u) * px(r + t, c + u)).sum();
-                    tap(fy, t) * (row >> shift1)
-                })
-                .sum();
-            column >> SECOND_PASS_SHIFT
-        }
-    }
-}
 
 /// H.264 luma (§8.4.2.2.1): `src` starts 2 up and 2 left of the block.
 fn h264_luma<const W: usize>(

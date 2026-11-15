@@ -25,6 +25,7 @@
 #![allow(unsafe_code)]
 
 mod inverse;
+mod vector;
 
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
@@ -34,9 +35,7 @@ use crate::deblock::{HEVC_LINES, HevcEdge};
 use crate::dispatch::{check_covers, check_covers_i16, hevc_edge_at, sao_offsets, sao_rect};
 use crate::hevc_intra::PlanarEdges;
 use crate::hevc_weight::HevcWeights;
-use crate::mc::{
-    Filter, HevcChromaTaps, HevcLumaTaps, VvcAffineLumaTaps, VvcChromaTaps, VvcLumaTaps,
-};
+use crate::mc::Filter;
 use crate::sao::Rect;
 use crate::{Dsp, Isa};
 
@@ -57,8 +56,9 @@ pub(crate) type Weight16Fn =
 pub(crate) type Angular16Fn = unsafe fn(&[u16], usize, i32, &mut [u16]);
 /// HEVC planar intra (`crate::hevc_intra::PlanarFn` at `u16`).
 pub(crate) type Planar16Fn = unsafe fn(&PlanarEdges<'_, u16>, usize, &mut [u16]);
-/// HEVC inverse transform to the residual at a depth (`20 − BitDepth`).
-pub(crate) type Inverse16Fn = unsafe fn(&[i16], &mut [i16], BitDepth);
+/// HEVC inverse transform to the residual at a depth (`20 − BitDepth`);
+/// the extent (rows, columns) covers every nonzero coefficient.
+pub(crate) type Inverse16Fn = unsafe fn(&[i16], &mut [i16], (usize, usize), BitDepth);
 /// Add an `n`x`n` residual to the samples at a stride, clipping to the depth.
 pub(crate) type AddResidual16Fn = unsafe fn(&[i16], usize, &mut [u16], usize, BitDepth);
 /// HEVC deblocking of one edge (`crate::deblock::HevcEdgeFn` with the depth).
@@ -98,50 +98,116 @@ pub(crate) struct HighFns {
     pub sao_band: SaoBand16Fn,
 }
 
-/// The kernels of one filter family by width class.
+/// The kernels of one filter family by width class (`$kernel` generic
+/// over the taps, the tap count and the width).
 macro_rules! by_width {
-    ($kernel:ident, $taps:ty, $n:literal) => {
+    ($($kernel:ident)::+, $taps:ty, $n:literal) => {
         [
-            $kernel::<u16, $taps, $n, 4>,
-            $kernel::<u16, $taps, $n, 8>,
-            $kernel::<u16, $taps, $n, 16>,
-            $kernel::<u16, $taps, $n, 32>,
-            $kernel::<u16, $taps, $n, 64>,
+            $($kernel)::+::<$taps, $n, 4>,
+            $($kernel)::+::<$taps, $n, 8>,
+            $($kernel)::+::<$taps, $n, 16>,
+            $($kernel)::+::<$taps, $n, 32>,
+            $($kernel)::+::<$taps, $n, 64>,
         ]
     };
 }
 
+/// One kernel for every family, in [`family`] order.
+macro_rules! families {
+    ($($kernel:ident)::+) => {
+        [
+            $crate::high_depth::by_width!($($kernel)::+, $crate::mc::HevcLumaTaps, 8),
+            $crate::high_depth::by_width!($($kernel)::+, $crate::mc::HevcChromaTaps, 4),
+            $crate::high_depth::by_width!($($kernel)::+, $crate::mc::VvcLumaTaps, 8),
+            $crate::high_depth::by_width!($($kernel)::+, $crate::mc::VvcAffineLumaTaps, 8),
+            $crate::high_depth::by_width!($($kernel)::+, $crate::mc::VvcChromaTaps, 4),
+        ]
+    };
+}
+pub(crate) use {by_width, families};
+
+/// The scalar `u16` instances of the MC references, by taps and width.
+mod scalar {
+    use nc_common::BitDepth;
+
+    use crate::mc::SeparableTaps;
+    use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
+
+    pub(super) fn predict<T: SeparableTaps<N>, const N: usize, const W: usize>(
+        src: &[u16],
+        ss: usize,
+        dst: &mut [u16],
+        ds: usize,
+        h: usize,
+        frac: (usize, usize),
+        depth: BitDepth,
+    ) {
+        separable_at::<u16, T, N, W>(src, ss, dst, ds, h, frac, depth);
+    }
+
+    pub(super) fn prep<T: SeparableTaps<N>, const N: usize, const W: usize>(
+        src: &[u16],
+        ss: usize,
+        dst: &mut [i16],
+        ds: usize,
+        h: usize,
+        frac: (usize, usize),
+        depth: BitDepth,
+    ) {
+        hevc_prep_at::<u16, T, N, W>(src, ss, dst, ds, h, frac, depth);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn bi<T: SeparableTaps<N>, const N: usize, const W: usize>(
+        src: &[u16],
+        ss: usize,
+        first: (&[i16], usize),
+        dst: &mut [u16],
+        ds: usize,
+        h: usize,
+        frac: (usize, usize),
+        depth: BitDepth,
+    ) {
+        hevc_bi_at::<u16, T, N, W>(src, ss, first, dst, ds, h, frac, depth);
+    }
+}
+
 impl HighFns {
-    /// The table for `isa`: the scalar references everywhere for now (no
-    /// ISA has a `u16` kernel yet; see the module docs for adding one).
-    pub(crate) fn for_isa(_isa: Isa) -> Self {
-        use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
-        /// One kernel for every family, in [`family`] order.
-        macro_rules! families {
-            ($kernel:ident) => {
-                [
-                    by_width!($kernel, HevcLumaTaps, 8),
-                    by_width!($kernel, HevcChromaTaps, 4),
-                    by_width!($kernel, VvcLumaTaps, 8),
-                    by_width!($kernel, VvcAffineLumaTaps, 8),
-                    by_width!($kernel, VvcChromaTaps, 4),
-                ]
-            };
-        }
-        Self {
-            predict: families!(separable_at),
-            prep: families!(hevc_prep_at),
-            bi: families!(hevc_bi_at),
+    /// The table for `isa`: the scalar references, and the ISA's vector
+    /// kernels where one exists (see the module docs for adding one).
+    pub(crate) fn for_isa(isa: Isa) -> Self {
+        let mut table = Self {
+            predict: families!(scalar::predict),
+            prep: families!(scalar::prep),
+            bi: families!(scalar::bi),
             hevc_weight: crate::hevc_weight::reference::weight_at::<u16>,
             hevc_angular: crate::hevc_intra::reference::angular::<u16>,
             hevc_planar: crate::hevc_intra::reference::planar::<u16>,
-            hevc_inverse: inverse::SCALAR,
+            hevc_inverse: inverse::kernels(isa),
             add_residual: add_residual::<u16>,
             hevc_deblock_luma: crate::deblock::scalar::hevc_luma_edge_at::<u16>,
             hevc_deblock_chroma: crate::deblock::scalar::hevc_chroma_edge_at::<u16>,
             sao_apply: crate::sao::scalar::apply_at::<u16>,
             sao_band: crate::sao::scalar::band_at::<u16>,
+        };
+        match isa {
+            #[cfg(target_arch = "x86_64")]
+            Isa::Avx2 | Isa::Avx512 => {
+                table.predict = vector::avx2::PREDICT;
+                table.prep = vector::avx2::PREP;
+                table.bi = vector::avx2::BI;
+                table.hevc_weight = vector::avx2::WEIGHT;
+            }
+            #[cfg(target_arch = "aarch64")]
+            Isa::Neon => {
+                table.predict = vector::neon::PREDICT;
+                table.prep = vector::neon::PREP;
+                table.bi = vector::neon::BI;
+                table.hevc_weight = vector::neon::WEIGHT;
+            }
+            _ => {}
         }
+        table
     }
 }
 
@@ -649,7 +715,12 @@ impl Pixel for u16 {
         // destination view covers `n` rows of `n` (checked above); the table
         // matches a supported ISA.
         unsafe {
-            (kernels.dsp.high.hevc_inverse[transform as usize])(coeffs, residual, kernels.depth);
+            (kernels.dsp.high.hevc_inverse[transform as usize])(
+                coeffs,
+                residual,
+                (rows, columns),
+                kernels.depth,
+            );
             (kernels.dsp.high.add_residual)(residual, n, dst.data_mut(), stride, kernels.depth);
         }
     }
