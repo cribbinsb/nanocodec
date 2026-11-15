@@ -733,7 +733,8 @@ def readme_block(chart: dict) -> str:
                 and f in fresh]
     newer = [f for f in defaults if pts[f]["codec"] in NEWER_FORMATS]
     not_ahead = [f for f, p in pts.items() if p["ours"] and f in fresh
-                 and max(fresh[f]["j"], held[f]["j"]) > -NOT_AHEAD_POINTS]
+                 # a family only the fresh chart has yet (a new rung) is judged on it alone
+                 and max(fresh[f]["j"], held.get(f, fresh[f])["j"]) > -NOT_AHEAD_POINTS]
     slowest_newer = max(fresh[f]["fps"]["jetson"] for f in newer)
     faster_refs = sorted((f for f, p in pts.items() if not p["ours"] and not p["tune"]
                           and f in fresh and fresh[f]["fps"]["jetson"] > slowest_newer),
