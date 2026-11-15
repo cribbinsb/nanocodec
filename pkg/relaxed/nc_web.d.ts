@@ -157,6 +157,12 @@ export class BrowserDecoder {
    */
   readonly spatial_id: number;
   /**
+   * Whether the latest [`Self::decode`] or [`Self::decode_frame`] call
+   * produced a new shown picture (`false` when the selected operating point
+   * dropped all frames in the packet, retaining the previous shown picture).
+   */
+  readonly frame_shown: boolean;
+  /**
    * Maximum visible width of the stream (`max_frame_width` on AV1, or the
    * current frame width on other codecs).
    */
@@ -391,6 +397,7 @@ export interface InitOutput {
   readonly browserdecoder_error_map_height: (a: number) => number;
   readonly browserdecoder_error_map_length: (a: number) => number;
   readonly browserdecoder_error_map_width: (a: number) => number;
+  readonly browserdecoder_frame_shown: (a: number) => number;
   readonly browserdecoder_height: (a: number) => number;
   readonly browserdecoder_i420_frame: (a: number) => [number, number, number];
   readonly browserdecoder_new: (a: number, b: number) => [number, number, number];

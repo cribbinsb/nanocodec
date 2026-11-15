@@ -327,6 +327,16 @@ export class BrowserDecoder {
         return ret;
     }
     /**
+     * Whether the latest [`Self::decode`] or [`Self::decode_frame`] call
+     * produced a new shown picture (`false` when the selected operating point
+     * dropped all frames in the packet, retaining the previous shown picture).
+     * @returns {boolean}
+     */
+    get frame_shown() {
+        const ret = wasm.browserdecoder_frame_shown(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Copy the luma of the latest decoded frame at the size the last `psnr`
      * call compared (a smaller spatial layer upscaled, as there) into a
      * reused buffer and return its byte offset in WASM memory

@@ -15,6 +15,7 @@ export const browserdecoder_error_map: (a: number) => [number, number, number];
 export const browserdecoder_error_map_height: (a: number) => number;
 export const browserdecoder_error_map_length: (a: number) => number;
 export const browserdecoder_error_map_width: (a: number) => number;
+export const browserdecoder_frame_shown: (a: number) => number;
 export const browserdecoder_height: (a: number) => number;
 export const browserdecoder_i420_frame: (a: number) => [number, number, number];
 export const browserdecoder_new: (a: number, b: number) => [number, number, number];

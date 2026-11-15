@@ -139,10 +139,16 @@ class LiveView extends View {
     // bytes; null past MAX_REPLAY_BYTES until the next key frame.
     this.sinceKey = [];
     this.sinceKeyBytes = 0;
-    // The shown SVC layer changes on the fly: only the decode worker hears of it.
+    this.lastOperatingPoint = +(panel.operatingPoint?.value ?? 0);
+    // The shown SVC layer changes on the fly: only the decode worker hears of it;
+    // stepping up to a larger spatial layer (smaller operating-point index, e.g.
+    // 2 -> 1 or 1 -> 0) asks the encoder for a key frame.
     panel.operatingPoint?.addEventListener('change', () => {
-      this.decoder.postMessage({ type: 'operating-point', operatingPoint: +panel.operatingPoint.value });
-      if (+panel.operatingPoint.value === 0) this.encoder.postMessage({ type: 'keyframe' });
+      const next = +panel.operatingPoint.value;
+      const goingUp = next < this.lastOperatingPoint;
+      this.lastOperatingPoint = next;
+      this.decoder.postMessage({ type: 'operating-point', operatingPoint: next });
+      if (goingUp) this.encoder.postMessage({ type: 'keyframe' });
     });
   }
   /** Start both workers; the encoder takes its frames from `capturePort`. Resolves once both are ready. */

@@ -53,8 +53,8 @@ const codecModule = import(MODULE_URL);
 let module, decoder, wasm;
 // A pre-encoded view's captured frames, placed at the view's size (view-source-frame.js).
 let viewSource = null;
-// The operating point to switch up to at the next key frame (null: none pending).
-let pendingOperatingPoint = null;
+// The active operating point and any operating point waiting for the next key frame.
+let currentOperatingPoint = 0, pendingOperatingPoint = null;
 // Analysis: 'off', 'on' or 'unsupported' (this codec's decoder records nothing).
 let analysisState = 'off';
 // The colour frames are shown in: the latest source's (colour.js).
@@ -152,14 +152,16 @@ function blockErrors(result) {
 function decodeFrame({ capture, packet, ...coded }) {
   const start = performance.now();
   if (coded.key && pendingOperatingPoint !== null) {
+    currentOperatingPoint = pendingOperatingPoint;
     decoder.set_operating_point(pendingOperatingPoint);
     pendingOperatingPoint = null;
   }
   if (!coded.repeat) decoder.decode(packet);
   const decoded = performance.now();
-  if (capture) Object.assign(coded, viewSource.place(capture));
-  const psnr = coded.source ? decoder.psnr(new Uint8Array(coded.source)) : null;
-  return { ...coded, packet, psnr, width: decoder.width, height: decoder.height,
+  const shown = coded.repeat || !('frame_shown' in decoder) || decoder.frame_shown;
+  if (shown && capture) Object.assign(coded, viewSource.place(capture));
+  const psnr = shown && coded.source && decoder.width > 0 ? decoder.psnr(new Uint8Array(coded.source)) : null;
+  return { ...coded, packet, psnr, shown, width: decoder.width, height: decoder.height,
     streamWidth: decoder.stream_width, streamHeight: decoder.stream_height, spatialId: decoder.spatial_id,
     decodeMs: decoded - start, decodeStageMs: performance.now() - start };
 }
@@ -173,6 +175,11 @@ function decodeAndPost(type, message) {
   // pre-encoded stream skipped, or a replay; the last is shown, the `earlier` ones counted.
   const decoded = message.coded.map(decodeFrame);
   const result = decoded.at(-1), earlier = decoded.slice(0, -1);
+  if (!result.shown && decoder.width === 0) {
+    const transfer = decoded.flatMap(d => [d.packet.buffer, d.source]).filter(Boolean);
+    self.postMessage({ type, id: message.id, held: true }, transfer);
+    return;
+  }
   const displayStart = performance.now();
   const format = message.display === 'i420' ? 'i420' : 'rgba';
   // The last colour seen (frames decoded only for their references carry none).
@@ -211,7 +218,9 @@ self.onmessage = async ({ data: message }) => {
       wasm = await module.default({ module_or_path: message.wasmModule });
       decoder = new module.BrowserDecoder(message.codec);
       viewSource = new ViewSourceFrame(module, wasm);
-      if (message.operatingPoint) decoder.set_operating_point(message.operatingPoint);
+      currentOperatingPoint = message.operatingPoint || 0;
+      pendingOperatingPoint = null;
+      if (currentOperatingPoint) decoder.set_operating_point(currentOperatingPoint);
       if (message.analysis) { startAnalysis(); startMetrics(message.wasmModule); }
       message.port.onmessage = receivePacket;
       self.postMessage({ type: 'ready' });
@@ -222,9 +231,10 @@ self.onmessage = async ({ data: message }) => {
           .catch(error => console.warn('decoder warm-up failed:', error));
       }
     } else if (message.type === 'operating-point') {
-      // Down to the base at once; up to the full size at the next key frame.
-      if (message.operatingPoint > 0) {
+      // Down to a smaller spatial layer at once; up to a larger one at the next key frame.
+      if (message.operatingPoint >= currentOperatingPoint) {
         pendingOperatingPoint = null;
+        currentOperatingPoint = message.operatingPoint;
         decoder.set_operating_point(message.operatingPoint);
       } else {
         pendingOperatingPoint = message.operatingPoint;
