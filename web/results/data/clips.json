@@ -16,7 +16,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_antare_bwc_intruder_removed_fixed_01",
@@ -27,7 +28,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_antare_bwc_knife_drawn_fixed_06",
@@ -38,7 +40,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_antare_bwc_refused_entry_fixed_03",
@@ -49,7 +52,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_base_clip1",
@@ -60,7 +64,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_base_clip2",
@@ -71,7 +76,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_base_ukof_ld_indoor_light_ohcam_003",
@@ -82,7 +88,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c17a92_d4803287",
@@ -93,7 +100,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c29c52_f9524f1e",
@@ -104,7 +112,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c41a61_4ba25ad4",
@@ -115,7 +124,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c4c672_26d36ad8",
@@ -126,7 +136,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c50078_6298b9c1",
@@ -137,7 +148,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c87627_b7f6f46c",
@@ -148,7 +160,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ca8821_db8033d5",
@@ -159,7 +172,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_ac055be6",
@@ -170,7 +184,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_f8c69860",
@@ -181,7 +196,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ce6f6d_50bbee62",
@@ -192,7 +208,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
@@ -203,7 +220,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cef86b_d8d105b9",
@@ -214,7 +232,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d0f034_6d666f7b",
@@ -225,7 +244,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
@@ -236,7 +256,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_7d0a60bf",
@@ -247,7 +268,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_a0b1a3e0",
@@ -258,7 +280,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d5edb9_f0077df3",
@@ -269,7 +292,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d77344_9fe25620",
@@ -280,7 +304,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d79c0a_a2b85ca4",
@@ -291,7 +316,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d84b1d_21e6fe01",
@@ -302,7 +328,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8944b_e157478b",
@@ -313,7 +340,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8d95a_74aa476a",
@@ -324,7 +352,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_038310a2",
@@ -335,7 +364,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_7d75bb18",
@@ -346,7 +376,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video190",
@@ -357,7 +388,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for libaom rt 8, libaom rt 10"
    },
    {
     "name": "ind_bwc_videotext_video219",
@@ -368,7 +400,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video28",
@@ -379,7 +412,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video283",
@@ -390,7 +424,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video289",
@@ -401,7 +436,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video295",
@@ -412,7 +448,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video317",
@@ -423,7 +460,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video321",
@@ -434,7 +472,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video33",
@@ -445,7 +484,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video345",
@@ -456,7 +496,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video347",
@@ -467,7 +508,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video354",
@@ -478,7 +520,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video47",
@@ -489,7 +532,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video58",
@@ -500,7 +544,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video61",
@@ -511,7 +556,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video88",
@@ -522,7 +568,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_inof_ld_out_light_ffcam_002",
@@ -533,7 +580,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_uid_vid_00047",
@@ -544,7 +592,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_uid_vid_00054",
@@ -555,7 +604,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_ukof_hd_indoor_light_ohcam_002_under100mb",
@@ -566,7 +616,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_ukof_ld_indoor_light_ohcam_009",
@@ -577,7 +628,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_ukof_ld_indoor_light_ohcam_011",
@@ -588,7 +640,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_april25_inof_ld_in_light_ffcam_002",
@@ -599,7 +652,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_april25_inof_ld_outld_light_ffcam_001",
@@ -610,7 +664,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_april25_inof_md_out_light_ffcam_003",
@@ -621,7 +676,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_ukof_hd_indoor_light_ohcam_001",
@@ -632,7 +688,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_ukof_ld_indoor_light_ohcam_007",
@@ -643,7 +700,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_chirla_chirla_seq_020_camera_2_2023_07_26_13_21_40",
@@ -654,7 +712,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_chirla_chirla_seq_026_camera_3_2023_12_05_12_12_13",
@@ -665,7 +724,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0015",
@@ -676,7 +736,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0018",
@@ -687,7 +748,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0019",
@@ -698,7 +760,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0023",
@@ -709,7 +772,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0042",
@@ -720,7 +784,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0051",
@@ -731,7 +796,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0076",
@@ -742,7 +808,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0102",
@@ -753,7 +820,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0113",
@@ -764,7 +832,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0115",
@@ -775,7 +844,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0134",
@@ -786,7 +856,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0145",
@@ -797,7 +868,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0150",
@@ -808,7 +880,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0151",
@@ -819,7 +892,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0153",
@@ -830,7 +904,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0182",
@@ -841,7 +916,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0183",
@@ -852,7 +928,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0197",
@@ -863,7 +940,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0221",
@@ -874,7 +952,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0232",
@@ -885,7 +964,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0233",
@@ -896,7 +976,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0276",
@@ -907,7 +988,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0281",
@@ -918,7 +1000,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0298",
@@ -929,7 +1012,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0318",
@@ -940,7 +1024,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0332",
@@ -951,7 +1036,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
@@ -962,7 +1048,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_meva_2018_03_07_17_05_00_17_10_00_bus_g508",
@@ -973,7 +1060,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_meva_2018_03_13_16_10_00_16_15_00_bus_g505",
@@ -984,7 +1072,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mot_mot17_05",
@@ -995,7 +1084,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mot_mot20_01",
@@ -1006,7 +1096,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mp4_london",
@@ -1017,7 +1108,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mp4_pedestrians2",
@@ -1028,7 +1120,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mp4_waiting_area1",
@@ -1039,7 +1132,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00120",
@@ -1050,7 +1144,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00310",
@@ -1061,7 +1156,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00394",
@@ -1072,7 +1168,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00401",
@@ -1083,7 +1180,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00558",
@@ -1094,7 +1192,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00008",
@@ -1105,7 +1204,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00010",
@@ -1116,7 +1216,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00016",
@@ -1127,7 +1228,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00019",
@@ -1138,7 +1240,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00020",
@@ -1149,7 +1252,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00026",
@@ -1160,7 +1264,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00029",
@@ -1171,7 +1276,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00038",
@@ -1182,7 +1288,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00057",
@@ -1193,7 +1300,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00075",
@@ -1204,7 +1312,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00076",
@@ -1215,7 +1324,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00078",
@@ -1226,7 +1336,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00079",
@@ -1237,7 +1348,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00088",
@@ -1248,7 +1360,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00090",
@@ -1259,7 +1372,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00092",
@@ -1270,7 +1384,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00101",
@@ -1281,7 +1396,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00106",
@@ -1292,7 +1408,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00120",
@@ -1303,7 +1420,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00127",
@@ -1314,7 +1432,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00142",
@@ -1325,7 +1444,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00156",
@@ -1336,7 +1456,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00161",
@@ -1347,7 +1468,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00172",
@@ -1358,7 +1480,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00173",
@@ -1369,7 +1492,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00177",
@@ -1380,7 +1504,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00187",
@@ -1391,7 +1516,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00190",
@@ -1402,7 +1528,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for H.264, HEVC, AV1 Fast, VP9, VVC, VVC Fast"
    },
    {
     "name": "ind_personpath22_uid_vid_00195",
@@ -1413,7 +1540,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00200",
@@ -1424,7 +1552,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00208",
@@ -1435,7 +1564,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00212",
@@ -1446,7 +1576,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for HEVC, HEVC Fast, HEVC Faster, AV1, AV1 Fast, AV1 Faster, VP9, VP9 Fast, VP9 Faster, VP9 Veryfast, AV2, AV2 Fast, VVC, VVC Fast, SVT-AV1 M8, SVT-AV1 M10"
    },
    {
     "name": "ind_personpath22_uid_vid_00214",
@@ -1457,7 +1588,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00216",
@@ -1468,7 +1600,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00231",
@@ -1479,7 +1612,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_floorballtrain",
@@ -1490,7 +1624,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_highwayview",
@@ -1501,7 +1636,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_jobfair",
@@ -1512,7 +1648,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_video_mot20_07",
@@ -1523,7 +1660,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    }
   ],
   "heldout": [
@@ -1536,7 +1674,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_barscene_pristine",
@@ -1547,7 +1686,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_antare_antare_test",
@@ -1558,7 +1698,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_antare_pub_garden",
@@ -1569,7 +1710,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_antare_refused_entry_bwc_02",
@@ -1580,7 +1722,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_bwc_video118",
@@ -1591,7 +1734,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_cart_shouting_12",
@@ -1602,7 +1746,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_knife_drawn_04",
@@ -1613,7 +1758,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_knife_drawn_05",
@@ -1624,7 +1770,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_oxford_street",
@@ -1635,7 +1782,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_queue_scuffle_06",
@@ -1646,7 +1794,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_bodycam_shoplifting_10",
@@ -1657,7 +1806,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_boxingpractice",
@@ -1668,7 +1818,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_caucafall_walk_s9",
@@ -1679,7 +1830,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_chad_1_093",
@@ -1690,7 +1842,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_chad_3_086",
@@ -1701,7 +1854,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_chad_4_109",
@@ -1712,7 +1866,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crosswalk",
@@ -1723,7 +1878,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crowd_MOT20_mot20_08",
@@ -1734,7 +1890,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crowd_cevo_ukof_hd_indoor_light_ohcam_0",
@@ -1745,7 +1902,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crowd_mot_mot17_04",
@@ -1756,7 +1914,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crowd_person_uid_vid_00210",
@@ -1767,7 +1926,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crowd_person_uid_vid_00222",
@@ -1778,7 +1938,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_crowd_person_uid_vid_00224",
@@ -1789,7 +1950,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_dancers_pristine",
@@ -1800,7 +1962,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_drone_rounda_roundabouthd_c001",
@@ -1811,7 +1974,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "drone",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_drone_rounda_roundabouthd_c002",
@@ -1822,7 +1986,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "drone",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_drone_rounda_roundabouthd_c004",
@@ -1833,7 +1998,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "drone",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_ducks_take_off_pristine",
@@ -1844,7 +2010,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "texture",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for SVT-AV1 M8, SVT-AV1 M10, libvpx VP9 rt 9"
    },
    {
     "name": "pool_foodmarket_pristine",
@@ -1855,7 +2022,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_gmdcsa24_s1_adl05",
@@ -1866,7 +2034,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_in_to_tree_360p",
@@ -1877,7 +2046,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_jaad_0081",
@@ -1888,7 +2058,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_jaad_0110",
@@ -1899,7 +2070,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_jaad_0340",
@@ -1910,7 +2082,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_kristen_sara_360p",
@@ -1921,7 +2094,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_lowlight_bdd100_bdd_00cee0e0_5e25daa7",
@@ -1932,7 +2106,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_lowlight_bdd100_bdd_00d8d95a_47d98291",
@@ -1943,7 +2118,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_lowlight_bdd100_bdd_00db9030_5102ed41",
@@ -1954,7 +2130,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_lowlight_cevo_inof_md_indoor_night_ohcam_0",
@@ -1965,7 +2142,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_meva_bus_g506",
@@ -1976,7 +2154,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_meva_hospital_g301",
@@ -1987,7 +2166,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_meva_school_g336",
@@ -1998,7 +2178,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_midnight_sun_pristine",
@@ -2009,7 +2190,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "texture",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_narrator_pristine",
@@ -2020,7 +2202,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_old_town_cross_360p",
@@ -2031,7 +2214,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_otw_homes_00004",
@@ -2042,7 +2226,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_otw_homes_00015",
@@ -2053,7 +2238,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_otw_homes_00168",
@@ -2064,7 +2250,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_otw_lots_064",
@@ -2075,7 +2262,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pan_bdd100_bdd_00ce8219_d0b5582e",
@@ -2086,7 +2274,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pan_bdd100_bdd_00d7268f_fd4487be",
@@ -2097,7 +2286,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pan_jaad_video_0128",
@@ -2108,7 +2298,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pan_jaad_video_0194",
@@ -2119,7 +2310,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pan_jaad_video_0199",
@@ -2130,7 +2322,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pp22_uid_00001",
@@ -2141,7 +2334,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_pp22_uid_00070",
@@ -2152,7 +2346,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_smoke_sauna_360p",
@@ -2163,7 +2358,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_static_antare_cart_shouting_fixed_10",
@@ -2174,7 +2370,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_static_bdd100_bdd_00dc5030_237e7f71",
@@ -2185,7 +2382,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_static_cevo_ukof_ld_indoor_light_ohcam_0",
@@ -2196,7 +2394,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_static_chirla_chirla_seq_024_camera_7_2023",
@@ -2207,7 +2406,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_static_otw_homes_00323",
@@ -2218,7 +2418,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_tango_pristine",
@@ -2229,7 +2430,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_towncentre",
@@ -2240,7 +2442,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_vidyo1_pristine",
@@ -2251,7 +2454,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_vidyo3_360p",
@@ -2262,7 +2466,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_vidyo4",
@@ -2273,7 +2478,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_waterfall_360p",
@@ -2284,7 +2490,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "texture",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_wildtrack_cam1",
@@ -2295,7 +2502,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pool_wildtrack_cam3",
@@ -2306,7 +2514,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_answer_suite_sounds_mot20_04_esc50",
@@ -2317,7 +2526,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_antare_bwc_intruder_removed_fixed_01",
@@ -2328,7 +2538,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_antare_bwc_knife_drawn_fixed_06",
@@ -2339,7 +2550,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_antare_bwc_refused_entry_fixed_03",
@@ -2350,7 +2562,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_base_clip1",
@@ -2361,7 +2574,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_base_clip2",
@@ -2372,7 +2586,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_base_ukof_ld_indoor_light_ohcam_003",
@@ -2383,7 +2598,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c17a92_d4803287",
@@ -2394,7 +2610,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c29c52_f9524f1e",
@@ -2405,7 +2622,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c41a61_4ba25ad4",
@@ -2416,7 +2634,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c4c672_26d36ad8",
@@ -2427,7 +2646,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c50078_6298b9c1",
@@ -2438,7 +2658,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00c87627_b7f6f46c",
@@ -2449,7 +2670,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ca8821_db8033d5",
@@ -2460,7 +2682,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_ac055be6",
@@ -2471,7 +2694,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ccf2e8_f8c69860",
@@ -2482,7 +2706,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00ce6f6d_50bbee62",
@@ -2493,7 +2718,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
@@ -2504,7 +2730,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00cef86b_d8d105b9",
@@ -2515,7 +2742,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d0f034_6d666f7b",
@@ -2526,7 +2754,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
@@ -2537,7 +2766,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_7d0a60bf",
@@ -2548,7 +2778,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d4b6b7_a0b1a3e0",
@@ -2559,7 +2790,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d5edb9_f0077df3",
@@ -2570,7 +2802,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d77344_9fe25620",
@@ -2581,7 +2814,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d79c0a_a2b85ca4",
@@ -2592,7 +2826,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d84b1d_21e6fe01",
@@ -2603,7 +2838,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8944b_e157478b",
@@ -2614,7 +2850,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d8d95a_74aa476a",
@@ -2625,7 +2862,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_038310a2",
@@ -2636,7 +2874,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bdd100k_mot_bdd_00d9e313_7d75bb18",
@@ -2647,7 +2886,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video190",
@@ -2658,7 +2898,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for libaom rt 8, libaom rt 10"
    },
    {
     "name": "ind_bwc_videotext_video219",
@@ -2669,7 +2910,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video28",
@@ -2680,7 +2922,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video283",
@@ -2691,7 +2934,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video289",
@@ -2702,7 +2946,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video295",
@@ -2713,7 +2958,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video317",
@@ -2724,7 +2970,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video321",
@@ -2735,7 +2982,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video33",
@@ -2746,7 +2994,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video345",
@@ -2757,7 +3006,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video347",
@@ -2768,7 +3018,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video354",
@@ -2779,7 +3030,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video47",
@@ -2790,7 +3042,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video58",
@@ -2801,7 +3054,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video61",
@@ -2812,7 +3066,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_bwc_videotext_video88",
@@ -2823,7 +3078,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_inof_ld_out_light_ffcam_002",
@@ -2834,7 +3090,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_uid_vid_00047",
@@ -2845,7 +3102,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_uid_vid_00054",
@@ -2856,7 +3114,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_ukof_hd_indoor_light_ohcam_002_under100mb",
@@ -2867,7 +3126,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_ukof_ld_indoor_light_ohcam_009",
@@ -2878,7 +3138,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cctv_ukof_ld_indoor_light_ohcam_011",
@@ -2889,7 +3150,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_april25_inof_ld_in_light_ffcam_002",
@@ -2900,7 +3162,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_april25_inof_ld_outld_light_ffcam_001",
@@ -2911,7 +3174,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_april25_inof_md_out_light_ffcam_003",
@@ -2922,7 +3186,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_ukof_hd_indoor_light_ohcam_001",
@@ -2933,7 +3198,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_cevo_ukof_ld_indoor_light_ohcam_007",
@@ -2944,7 +3210,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_chirla_chirla_seq_020_camera_2_2023_07_26_13_21_40",
@@ -2955,7 +3222,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_chirla_chirla_seq_026_camera_3_2023_12_05_12_12_13",
@@ -2966,7 +3234,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0015",
@@ -2977,7 +3246,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0018",
@@ -2988,7 +3258,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0019",
@@ -2999,7 +3270,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0023",
@@ -3010,7 +3282,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0042",
@@ -3021,7 +3294,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0051",
@@ -3032,7 +3306,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0076",
@@ -3043,7 +3318,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0102",
@@ -3054,7 +3330,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0113",
@@ -3065,7 +3342,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0115",
@@ -3076,7 +3354,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0134",
@@ -3087,7 +3366,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0145",
@@ -3098,7 +3378,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0150",
@@ -3109,7 +3390,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0151",
@@ -3120,7 +3402,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0153",
@@ -3131,7 +3414,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0182",
@@ -3142,7 +3426,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0183",
@@ -3153,7 +3438,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0197",
@@ -3164,7 +3450,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0221",
@@ -3175,7 +3462,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0232",
@@ -3186,7 +3474,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0233",
@@ -3197,7 +3486,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0276",
@@ -3208,7 +3498,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0281",
@@ -3219,7 +3510,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0298",
@@ -3230,7 +3522,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0318",
@@ -3241,7 +3534,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_jaad_video_0332",
@@ -3252,7 +3546,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_meva_2018_03_07_17_00_00_17_05_00_bus_g508",
@@ -3263,7 +3558,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_meva_2018_03_07_17_05_00_17_10_00_bus_g508",
@@ -3274,7 +3570,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_meva_2018_03_13_16_10_00_16_15_00_bus_g505",
@@ -3285,7 +3582,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mot_mot17_05",
@@ -3296,7 +3594,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mot_mot20_01",
@@ -3307,7 +3606,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mp4_london",
@@ -3318,7 +3618,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mp4_pedestrians2",
@@ -3329,7 +3630,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_mp4_waiting_area1",
@@ -3340,7 +3642,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00120",
@@ -3351,7 +3654,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00310",
@@ -3362,7 +3666,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00394",
@@ -3373,7 +3678,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00401",
@@ -3384,7 +3690,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_otw_homes_00558",
@@ -3395,7 +3702,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00008",
@@ -3406,7 +3714,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00010",
@@ -3417,7 +3726,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00016",
@@ -3428,7 +3738,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00019",
@@ -3439,7 +3750,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00020",
@@ -3450,7 +3762,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00026",
@@ -3461,7 +3774,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00029",
@@ -3472,7 +3786,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00038",
@@ -3483,7 +3798,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00057",
@@ -3494,7 +3810,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00075",
@@ -3505,7 +3822,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00076",
@@ -3516,7 +3834,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00078",
@@ -3527,7 +3846,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00079",
@@ -3538,7 +3858,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00088",
@@ -3549,7 +3870,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00090",
@@ -3560,7 +3882,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00092",
@@ -3571,7 +3894,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00101",
@@ -3582,7 +3906,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00106",
@@ -3593,7 +3918,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00120",
@@ -3604,7 +3930,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00127",
@@ -3615,7 +3942,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00142",
@@ -3626,7 +3954,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00156",
@@ -3637,7 +3966,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00161",
@@ -3648,7 +3978,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00172",
@@ -3659,7 +3990,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00173",
@@ -3670,7 +4002,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00177",
@@ -3681,7 +4014,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00187",
@@ -3692,7 +4026,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00190",
@@ -3703,7 +4038,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for H.264, HEVC, AV1 Fast, VP9, VVC, VVC Fast"
    },
    {
     "name": "ind_personpath22_uid_vid_00195",
@@ -3714,7 +4050,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00200",
@@ -3725,7 +4062,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00208",
@@ -3736,7 +4074,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00212",
@@ -3747,7 +4086,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": false
+    "scored": false,
+    "left_out_reason": "no reliable overlap for HEVC, HEVC Fast, HEVC Faster, AV1, AV1 Fast, AV1 Faster, VP9, VP9 Fast, VP9 Faster, VP9 Veryfast, AV2, AV2 Fast, VVC, VVC Fast, SVT-AV1 M8, SVT-AV1 M10"
    },
    {
     "name": "ind_personpath22_uid_vid_00214",
@@ -3758,7 +4098,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00216",
@@ -3769,7 +4110,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_personpath22_uid_vid_00231",
@@ -3780,7 +4122,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_floorballtrain",
@@ -3791,7 +4134,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_highwayview",
@@ -3802,7 +4146,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_uvg_vcm_uvgvcm_jobfair",
@@ -3813,7 +4158,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ind_video_mot20_07",
@@ -3824,7 +4170,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    }
   ],
   "dev": [
@@ -3837,7 +4184,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "static_cam29",
@@ -3848,7 +4196,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "static_london_bus",
@@ -3859,7 +4208,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "static",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pan_bdd_00cef86b",
@@ -3870,7 +4220,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "pan_jaad_0101",
@@ -3881,7 +4232,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "pan",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "crowd_pp22_051",
@@ -3892,7 +4244,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "crowd_mot20_06",
@@ -3903,7 +4256,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "crowd",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "bodycam_airport",
@@ -3914,7 +4268,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "handheld_mot17_10",
@@ -3925,7 +4280,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "bodycam",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "lowlight_pp22_049",
@@ -3936,7 +4292,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "lowlight_bdd_00ce95b0",
@@ -3947,7 +4304,8 @@
     "start_frame": 0,
     "frames": 150,
     "class": "lowlight",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    }
   ],
   "ctc": [
@@ -3960,7 +4318,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A3",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "KristenAndSara_1280x720_60",
@@ -3971,7 +4330,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A3",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "ControlledBurn_1280x720p30_420",
@@ -3982,7 +4342,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A3",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "WestWindEasy_1280x720p30_420",
@@ -3993,7 +4354,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A3",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "BlueSky_360p25_v2",
@@ -4004,7 +4366,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A4",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "Stockholm_640x360_5994",
@@ -4015,7 +4378,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A4",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "RedKayak_360_2997",
@@ -4026,7 +4390,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A4",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "SnowMountain_640x360_2997",
@@ -4037,7 +4402,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A4",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "SpeedBag_640x360_2997",
@@ -4048,7 +4414,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A4",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "TouchdownPass_640x360_2997",
@@ -4059,7 +4426,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A4",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "FourPeople_480x270_60",
@@ -4070,7 +4438,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A5",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    },
    {
     "name": "Vertical_Bayshore_270x480_2997",
@@ -4081,7 +4450,8 @@
     "start_frame": 0,
     "frames": 130,
     "class": "A5",
-    "scored": true
+    "scored": true,
+    "left_out_reason": null
    }
   ]
  },

@@ -512,7 +512,10 @@ class Bench:
     def has_prebuilt(self, point: Point) -> bool:
         """Whether `prebuilt` holds the point's stream (or its refusal)."""
         base = self.prebuilt_base(point)
-        return Path(f"{base}.done").exists() or Path(f"{base}.failed").exists()
+        suffix = point.family.codec.bitstream_suffix
+        # .done without its stream: scored once, the stream deleted since; encode here
+        return (Path(f"{base}.done").exists() and Path(f"{base}{suffix}").exists()) \
+            or Path(f"{base}.failed").exists()
 
     def point_dir(self, family: Family, clip: Clip) -> Path:
         # The cache keys on the family's name, not its codec (`identity`), so an

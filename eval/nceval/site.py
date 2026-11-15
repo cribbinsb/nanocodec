@@ -325,7 +325,7 @@ CLIP_TABLES = (("fresh", "bd-vs-speed-independent_fresh_2026-11-13-vs-x264-mediu
                ("heldout", "bd-vs-speed-independent_2026-11-13-vs-x264-medium-psnr",
                 "independent_2026-11-13.json"),
                ("dev", "bd-vs-speed-vs-x264-medium-psnr", None))
-EXCLUDED_CLIP = re.compile(r"^- \*\*([^*]+)\*\* \(")
+EXCLUDED_CLIP = re.compile(r"^- \*\*([^*]+)\*\* \([^)]*\): (.*?)\.?$")
 
 
 def dataset_of(source: str) -> str:
@@ -360,21 +360,22 @@ def clips_data() -> dict:
     from .ctc.conditions import AOM_LD
     sets = {}
     for clipset, stem, file in CLIP_TABLES:
-        excluded = set()
+        excluded = {}
         markdown = RESULTS / f"{stem}.md"
         if markdown.is_file():
-            excluded = {m.group(1) for line in markdown.read_text().splitlines()
+            excluded = {m.group(1): m.group(2) for line in markdown.read_text().splitlines()
                         if (m := EXCLUDED_CLIP.match(line))}
         spec = str(load_paths().clips / file) if file else None
         sets[clipset] = [{"name": c.name, "dataset": collection(c),
                           "width": c.width, "height": c.height, "fps": c.fps,
                           "start_frame": c.start_frame, "frames": DEFAULT_FRAMES,
-                          "class": c.content_class, "scored": c.name not in excluded}
+                          "class": c.content_class, "scored": c.name not in excluded,
+                          "left_out_reason": excluded.get(c.name)}
                          for c in chart_clips(spec)]
     sets["ctc"] = [{"name": q.name, "dataset": f"AOM CTC v8, class {q.sequence_class}",
                     "width": q.width, "height": q.height, "fps": round(q.fps_num / q.fps_den, 3),
                     "start_frame": 0, "frames": AOM_LD.frames, "class": q.sequence_class,
-                    "scored": True} for q in AOM_LD.sequences]
+                    "scored": True, "left_out_reason": None} for q in AOM_LD.sequences]
     return {"source": [*(f"docs/results/{stem}.md" for _, stem, _ in CLIP_TABLES),
                        "eval/nceval/ctc/sequences.py"], "sets": sets,
             "counts": {k: {"clips": len(v), "scored": sum(c["scored"] for c in v),
@@ -753,7 +754,7 @@ def readme_block(chart: dict) -> str:
         behind.append(f"the speed of {count} reference settings against our newer formats")
     facts = [
         f"- **Bits:** in real-time, low-delay CBR (same targets, 1 s buffer, no B-frames or "
-        f"lookahead, one thread), our Defaults need {pct([fresh[d]['j'] for d in defaults])} "
+        f"lookahead, one thread), our default (`medium`) presets need {pct([fresh[d]['j'] for d in defaults])} "
         f"fewer bits for the same quality than x264 {fresh_view['tools']['x264']} "
         f"`medium --tune zerolatency,psnr` on {fresh_view['clips']} fresh held-out clips "
         f"({pct([held[d]['j'] for d in defaults])} on all {held_view['clips']}).",
