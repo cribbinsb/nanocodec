@@ -679,8 +679,11 @@ export class BrowserEncoder {
     }
     /**
      * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
-     * `preset_name` is "default", "fast", (H.264, HEVC, AV1 and VP9) "faster" or
-     * (H.264 and VP9) "fastest";
+     * `preset_name` is a rung of the speed ladder: "medium" (the codec's
+     * Default), "fast", "faster" (H.264, HEVC, AV1 and VP9) or "veryfast"
+     * (H.264 and VP9); `spatial_layers` (optional, default 1) picks the
+     * rung's file for two or three spatial layers (AV1 and VP9, at "medium"
+     * and "fast");
      * `overrides` (optional) holds `name=value` lines applied over the
      * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
      * turns on film grain synthesis, which the decoder applies to its
@@ -705,8 +708,9 @@ export class BrowserEncoder {
      * @param {boolean} film_grain
      * @param {string | null} [colour]
      * @param {boolean | null} [still_camera]
+     * @param {number | null} [spatial_layers]
      */
-    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain, colour, still_camera) {
+    constructor(codec, width, height, qp, fps, key_interval, preset_name, overrides, film_grain, colour, still_camera, spatial_layers) {
         const ptr0 = passStringToWasm0(codec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(preset_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -715,7 +719,7 @@ export class BrowserEncoder {
         var len2 = WASM_VECTOR_LEN;
         var ptr3 = isLikeNone(colour) ? 0 : passStringToWasm0(colour, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         var len3 = WASM_VECTOR_LEN;
-        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain, ptr3, len3, isLikeNone(still_camera) ? 0xFFFFFF : still_camera ? 1 : 0);
+        const ret = wasm.browserencoder_new(ptr0, len0, width, height, qp, fps, key_interval, ptr1, len1, ptr2, len2, film_grain, ptr3, len3, isLikeNone(still_camera) ? 0xFFFFFF : still_camera ? 1 : 0, isLikeNone(spatial_layers) ? 0xFFFFFF : spatial_layers);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

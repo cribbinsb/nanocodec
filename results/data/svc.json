@@ -25,7 +25,7 @@
   },
   {
    "family": "nanocodec-av1",
-   "label": "AV1 Default 720p (single layer)",
+   "label": "AV1 Medium 720p (single layer)",
    "ours": true,
    "j": -52.98,
    "psnr": -57.31,
@@ -45,7 +45,7 @@
   },
   {
    "family": "nanocodec-vp9",
-   "label": "VP9 Default 720p (single layer)",
+   "label": "VP9 Medium 720p (single layer)",
    "ours": true,
    "j": -50.14,
    "psnr": -54.37,
@@ -64,8 +64,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-av1@av1-svc",
-   "label": "AV1 SVC L2T1",
+   "family": "nanocodec-av1@l2-medium",
+   "label": "AV1 L2T1",
    "ours": true,
    "j": -44.93,
    "psnr": -49.64,
@@ -84,8 +84,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-av1@av1-svc+L2T3",
-   "label": "AV1 SVC L2T3",
+   "family": "nanocodec-av1@l2-medium+L2T3",
+   "label": "AV1 L2T3",
    "ours": true,
    "j": -46.6,
    "psnr": -50.7,
@@ -104,8 +104,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-av1@av1-svc-fast",
-   "label": "AV1 SVC Fast L2T1",
+   "family": "nanocodec-av1@l2-fast",
+   "label": "AV1 L2T1 Fast",
    "ours": true,
    "j": -40.06,
    "psnr": -41.71,
@@ -224,8 +224,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-vp9@vp9-svc",
-   "label": "VP9 SVC L2T1",
+   "family": "nanocodec-vp9@l2-medium",
+   "label": "VP9 L2T1",
    "ours": true,
    "j": -40.68,
    "psnr": -44.55,
@@ -244,8 +244,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-vp9@vp9-svc+L2T3",
-   "label": "VP9 SVC L2T3",
+   "family": "nanocodec-vp9@l2-medium+L2T3",
+   "label": "VP9 L2T3",
    "ours": true,
    "j": -42.43,
    "psnr": -46.16,
@@ -264,8 +264,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-vp9@vp9-svc-fast",
-   "label": "VP9 SVC Fast L2T1",
+   "family": "nanocodec-vp9@l2-fast",
+   "label": "VP9 L2T1 Fast",
    "ours": true,
    "j": -35.19,
    "psnr": -37.92,
@@ -344,8 +344,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-av1@av1-svc3",
-   "label": "AV1 SVC L3T1",
+   "family": "nanocodec-av1@l3-medium",
+   "label": "AV1 L3T1",
    "ours": true,
    "j": -39.57,
    "psnr": -44.31,
@@ -364,8 +364,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-av1@av1-svc3+L3T3",
-   "label": "AV1 SVC L3T3",
+   "family": "nanocodec-av1@l3-medium+L3T3",
+   "label": "AV1 L3T3",
    "ours": true,
    "j": -41.66,
    "psnr": -45.89,
@@ -384,8 +384,8 @@
    "clips": 8
   },
   {
-   "family": "nanocodec-av1@av1-svc3-fast",
-   "label": "AV1 SVC Fast L3T1",
+   "family": "nanocodec-av1@l3-fast",
+   "label": "AV1 L3T1 Fast",
    "ours": true,
    "j": -33.7,
    "psnr": -35.45,

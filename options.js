@@ -4,7 +4,7 @@
 // (name, range, default, description) and the check of free-form overrides.
 // The module loads on the page only once an Advanced section is first opened.
 import { MODULE_URL, compiledModule } from './wasm.js';
-import { streamExtension } from './codecs.js';
+import { DEFAULT_PRESET, streamExtension } from './codecs.js';
 
 let loading = null;
 
@@ -37,16 +37,14 @@ export const PERSISTENCE_AQ = ['persist.strength=2'];
 export const SECOND_REFERENCE = ['refs.second=1'];
 export const layerCount = count => (count > 1 ? [`layers.count=${count}`] : []);
 
-/** The CLI's `--preset` for the page's preset choice, or null for Default (nc-web `preset`). */
-export function cliPreset(codec, preset) {
-  if (preset === 'fast') return `${codec}-fast`;
-  if (preset === 'faster') return `${codec}-faster`;
-  if (preset === 'fastest') return `${codec}-fastest`;
-  if (preset === 'svc') return `${codec}-svc`;
-  if (preset === 'svc-fast') return `${codec}-svc-fast`;
-  if (preset === 'svc3') return `${codec}-svc3`;
-  if (preset === 'svc3-fast') return `${codec}-svc3-fast`;
-  return null;
+/** The CLI's `--preset` for a ladder preset, or null for Medium (the CLI's default). */
+export function cliPreset(preset) {
+  return preset === DEFAULT_PRESET ? null : preset;
+}
+
+/** The CLI's `--scalability` mode for a spatial layer count (L2T1, L3T1), or null for one layer. */
+export function cliScalability(spatialLayers) {
+  return spatialLayers > 1 ? `L${spatialLayers}T1` : null;
 }
 
 /** The settings lines of an override text: comments and blank lines dropped. */
@@ -57,7 +55,7 @@ export function settingLines(text) {
 
 /**
  * The `nanocodec encode` command with the settings of `config` (as Panel.config returns it)
- * for `frames` frames: codec, size, rate, key interval, quantizer seed, preset, overrides,
+ * for `frames` frames: codec, size, rate, key interval, quantizer seed, preset, spatial layers, overrides,
  * film grain and the still-camera noise handling.
  */
 export function cliCommand(config, frames) {
@@ -65,8 +63,9 @@ export function cliCommand(config, frames) {
     `--width ${config.width}`, `--height ${config.height}`, `--fps ${config.fps}`, `--frames ${frames}`,
     `--intra-period ${config.keyInterval}`, `--qp ${config.qp}`];
   if (config.rateMode === 'cbr') args.push(`--bitrate ${config.targetKbps}`, `--peak-bitrate ${config.peakKbps}`, `--buffer-ms ${config.bufferMs}`);
-  const preset = cliPreset(config.codec, config.preset);
+  const preset = cliPreset(config.preset), scalability = cliScalability(config.spatialLayers);
   if (preset) args.push(`--preset ${preset}`);
+  if (scalability) args.push(`--scalability ${scalability}`);
   for (const setting of settingLines(config.overrides)) args.push(`--param ${setting}`);
   if (config.filmGrain) args.push('--film-grain');
   if (config.stillCamera) args.push('--still-camera');

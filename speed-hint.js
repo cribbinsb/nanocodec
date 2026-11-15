@@ -17,22 +17,23 @@
 // view's settings and, on few cores, share them (one CPU, 720p30 H.264 vs AV1:
 // 640x360 was estimated to encode at 44 fps and the comparison then delivered
 // 26 fps). The note shows only what was measured.
-import { CODECS } from './codecs.js';
+import { CODECS, PRESETS } from './codecs.js';
 import { RESOLUTIONS } from './view-settings.js';
 
 /**
- * Each preset's encode time relative to Default, per codec: the WASM module in
+ * Each preset's encode time relative to Medium (the Default), per codec: the WASM module in
  * Node, 60 frames of mot17-mall-walk at 640x360 and at 1280x720, CBR at 300 kbps
  * per 640x360 area, two rounds each (2026-11-14; the machine was loaded, so the
- * ratios are good to about 15%). Spatial SVC presets are not estimated.
+ * ratios are good to about 15%). Spatially layered (SVC) streams are not estimated.
+ * A preset without a cost (AV2 Fast, not measured yet) is never offered as lighter.
  */
 export const PRESET_COST = {
-  h264: { default: 1, fast: 0.53, faster: 0.49, fastest: 0.45 },
-  hevc: { default: 1, fast: 0.61, faster: 0.47 },
-  av1: { default: 1, fast: 0.71, faster: 0.45 },
-  vvc: { default: 1, fast: 0.55 },
-  vp9: { default: 1, fast: 0.7, faster: 0.5, fastest: 0.45 },
-  av2: { default: 1 },
+  h264: { medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
+  hevc: { medium: 1, fast: 0.61, faster: 0.47 },
+  av1: { medium: 1, fast: 0.71, faster: 0.45 },
+  vvc: { medium: 1, fast: 0.55 },
+  vp9: { medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
+  av2: { medium: 1 },
 };
 /**
  * Encode time scales with picture area to this power. Less than linear: the
@@ -50,7 +51,7 @@ const SLOW_SHARE = 0.95;
 export const MIN_FRAMES = 30;
 /** How often the note is recomputed while frames arrive. */
 const UPDATE_INTERVAL_MS = 1000;
-const PRESET_LABELS = { default: 'Default', fast: 'Fast', faster: 'Faster', fastest: 'Fastest' };
+const PRESET_LABELS = Object.fromEntries(PRESETS);
 
 const area = (width, height) => width * height;
 
@@ -58,14 +59,15 @@ const area = (width, height) => width * height;
  * The lighter choices for a live view `config` that encodes at `encodeMs` per
  * frame, each `{ label, change }` (`change`: `{ preset }` or `{ width, height }`). An
  * option is the heaviest that fits the frame interval, else the lightest there is;
- * none when nothing lighter exists.
+ * none when nothing lighter exists. A layered stream gets size choices only: its
+ * presets are not estimated, and the lighter ones code a single layer.
  */
-export function lighterChoices({ codec, preset, width, height, fps }, encodeMs) {
+export function lighterChoices({ codec, preset, spatialLayers = 1, width, height, fps }, encodeMs) {
   const costs = PRESET_COST[codec], budget = FIT_SHARE * 1000 / fps, options = [];
   const atPreset = name => encodeMs * costs[name] / costs[preset];
   const atSize = (w, h) => encodeMs * (area(w, h) / area(width, height)) ** SIZE_COST_EXPONENT;
-  if (preset in costs) {
-    const lighter = Object.keys(costs).filter(name => (name === 'default' || CODECS[codec][name]) && costs[name] < costs[preset])
+  if (spatialLayers === 1 && preset in costs) {
+    const lighter = Object.keys(costs).filter(name => CODECS[codec].presets.includes(name) && costs[name] < costs[preset])
       .sort((a, b) => costs[b] - costs[a]);
     const pick = lighter.find(name => atPreset(name) <= budget) ?? lighter.at(-1);
     if (pick) options.push({ label: `Lighter: ${PRESET_LABELS[pick]}`, change: { preset: pick } });

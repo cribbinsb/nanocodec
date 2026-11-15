@@ -159,9 +159,9 @@ function render(data, root) {
       id: family, x: v.fps[state.platform], y: v[state.metric],
       iqr: state.metric === 'j' && v.iqr && v.iqr[0] !== null && family !== view.zero ? v.iqr : null,
       kind: p.ours ? 'ours' : (p.tune && family !== view.zero ? 'tuned' : 'ref'),
-      shape: SHAPES[p.owner] || 'circle', label: p.label.replace(/^nanocodec /, '').replace(/ Default$/, ''),
+      shape: SHAPES[p.owner] || 'circle', label: p.label.replace(/^nanocodec /, '').replace(/ Medium \(default\)$/, ''),
       flagged: v.flagged, twin: p.tune && view.values[base] && family !== view.zero ? base : null,
-      priority: (p.ours ? 2 : 1) + (p.preset === 'Default' ? 1 : 0),
+      priority: (p.ours ? 2 : 1) + (p.preset === 'Medium' ? 1 : 0),
       aria: `${p.label}: ${pct(v[state.metric])}, ${fps(v.fps[state.platform])} fps`,
     };
   });

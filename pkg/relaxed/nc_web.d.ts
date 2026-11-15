@@ -224,8 +224,11 @@ export class BrowserEncoder {
   disable_rate_control(): void;
   /**
    * Create a fixed-quantizer encoder. Dimensions and buffering are bounded.
-   * `preset_name` is "default", "fast", (H.264, HEVC, AV1 and VP9) "faster" or
-   * (H.264 and VP9) "fastest";
+   * `preset_name` is a rung of the speed ladder: "medium" (the codec's
+   * Default), "fast", "faster" (H.264, HEVC, AV1 and VP9) or "veryfast"
+   * (H.264 and VP9); `spatial_layers` (optional, default 1) picks the
+   * rung's file for two or three spatial layers (AV1 and VP9, at "medium"
+   * and "fast");
    * `overrides` (optional) holds `name=value` lines applied over the
    * preset ([`check_parameters`] reports bad ones); `film_grain` (AV1 only)
    * turns on film grain synthesis, which the decoder applies to its
@@ -240,7 +243,7 @@ export class BrowserEncoder {
    * Rejects invalid codecs, presets, overrides, configurations, film
    * grain outside AV1, unknown colours, or dimensions above1080p.
    */
-  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean, colour?: string | null, still_camera?: boolean | null);
+  constructor(codec: string, width: number, height: number, qp: number, fps: number, key_interval: number, preset_name: string, overrides: string | null | undefined, film_grain: boolean, colour?: string | null, still_camera?: boolean | null, spatial_layers?: number | null);
   /**
    * Encode one source frame as an access unit / AV1 temporal unit:
    * empty when the input repeated the picture ([`BrowserEncoder::repeat`]).
@@ -408,7 +411,7 @@ export interface InitOutput {
   readonly browserencoder_encode_at: (a: number, b: number, c: number) => [number, number, number, number];
   readonly browserencoder_key: (a: number) => number;
   readonly browserencoder_look_ahead: (a: number, b: number) => [number, number];
-  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => [number, number, number];
+  readonly browserencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
   readonly browserencoder_quantizer: (a: number) => number;
   readonly browserencoder_repeat: (a: number) => number;
   readonly browserencoder_request_keyframe: (a: number) => void;
