@@ -1,5 +1,7 @@
 # nanocodec
 
+[![crates.io](https://img.shields.io/crates/v/nanocodec.svg)](https://crates.io/crates/nanocodec) [![docs.rs](https://img.shields.io/docsrs/nanocodec)](https://docs.rs/nanocodec) [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+
 An experimental, real-time, low-delay video encoder for live camera footage, with matching decoders, written in
 Rust. One shared engine drives six formats: **H.264, HEVC, VVC (H.266), AV1, VP9 and AV2**. It aims at streaming
 from small edge devices (cameras, bodycams, drones, robots) at low bitrate to the cloud or a browser, where our
