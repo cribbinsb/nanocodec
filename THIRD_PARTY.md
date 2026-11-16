@@ -271,6 +271,18 @@ The pinned source LICENSE.md states:
 > OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 > SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+### Low-bit-depth forward AVX-512 layout — BSD-2-Clause
+
+The encoder's `txfm/avx512_forward.rs` uses the register layout of
+SVT-AV1 v4.3.0 `Source/Lib/ASM_AVX512/lowbd_fwd_txfm2d_avx512.c` as a
+reference: thirty-two word lanes, packed rotations and a 32x32 unpack/lane
+transpose. That source credits Copyright 2026 Meta Platforms, Inc. and
+affiliates, under BSD-2-Clause and the AOM Patent License 1.0. nanocodec
+retains its existing libaom butterfly graphs, range checks and rounding;
+only the Rust ISA adapter/layout is added. Full notices: [BSD-2-Clause](docs/licenses/svt-av1-forward/LICENSE-BSD2.md)
+and [AOM Patent License](docs/licenses/svt-av1-forward/PATENTS.md).
+
+
 ## Thor — BSD-2-Clause
 
 Copyright (c) 2015, Cisco Systems. All rights reserved.
@@ -503,6 +515,7 @@ Used in `crates/nc-dsp`:
   `ARGBToYRow_AVX2` / `ARGBToUVRow_AVX2` (byte-weight `pmaddubsw` and
   horizontal adds on packed pixels, no planar transpose), with our exact
   weights and exact 2x2 means.
+
 
 ## wasm-bindgen — MIT OR Apache-2.0
 

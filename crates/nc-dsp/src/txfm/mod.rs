@@ -96,6 +96,10 @@ mod avx512_quant;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
+pub(crate) mod avx512_forward;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
 pub(crate) mod avx2_forward;
 
 #[cfg(target_arch = "aarch64")]

@@ -1,20 +1,26 @@
-//! AVX-512 instantiations of the shared AV1/VP9 DCT graphs. Sixteen lanes
-//! serve 16/32/64-point passes. An eight-coefficient sparse prefix retains
-//! AVX2, so no pass reads or writes beyond its retained square.
+//! ICL forward32 uses guarded word lanes (including the low16 square).
+//! Sixteen/64-point and inverse graphs retain the original wide lanes.
+//! Sparse eight-coefficient prefixes retain AVX2. Forward32 table entries
+//! point directly to ISA kernels, avoiding an extra tail-jump wrapper.
 use super::{TxfmFns, generic};
 use crate::simd::{avx2::I32x8, avx512::I32x16};
 
 pub(crate) fn install(table: &mut TxfmFns) {
     super::avx512_quant::install(table);
-    table.forward_dct[2..].copy_from_slice(&[forward_16, forward_32]);
+    table.forward_dct[2..]
+        .copy_from_slice(&[forward_16, super::avx512_forward::forward32::<false>]);
     table.inverse_dct_add[2..].copy_from_slice(&[inverse_16, inverse_32]);
     table.forward_dct_64 = forward_64;
     table.inverse_dct_add_64 = inverse_64;
     table.inverse_dct_add_sparse[1..].copy_from_slice(&[inverse_32_sparse, inverse_64_sparse]);
-    table.forward_dct_raster[2..].copy_from_slice(&[forward_16_raster, forward_32_raster]);
-    table.forward_dct_low[1..].copy_from_slice(&[Some(forward_32_low), Some(forward_64_low)]);
-    table.forward_dct_raster_low[1] = Some(forward_32_low_raster);
-    table.forward_dct_raster_bounded = [forward_16_bounded, forward_32_bounded];
+    table.forward_dct_raster[2..]
+        .copy_from_slice(&[forward_16_raster, super::avx512_forward::forward32::<true>]);
+    table.forward_dct_low[1..].copy_from_slice(&[
+        Some(super::avx512_forward::low32::<false>),
+        Some(forward_64_low),
+    ]);
+    table.forward_dct_raster_low[1] = Some(super::avx512_forward::low32::<true>);
+    table.forward_dct_raster_bounded = [forward_16_bounded, super::avx512_forward::bounded32];
 }
 
 macro_rules! sizes {
@@ -41,8 +47,19 @@ macro_rules! sizes {
         }
     )*};
 }
-sizes!(forward_16,inverse_16,forward_16_layout,forward_16_raster,forward_16_bounded;
-       forward_32,inverse_32,forward_32_layout,forward_32_raster,forward_32_bounded);
+sizes!(
+    forward_16,
+    inverse_16,
+    forward_16_layout,
+    forward_16_raster,
+    forward_16_bounded
+);
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+unsafe fn inverse_32(coeffs: &[i16], dst: &mut [u8], stride: usize) {
+    // SAFETY: supported ISA and validated buffers from Dsp.
+    unsafe { generic::inverse_32::<I32x16>(coeffs, dst, stride) }
+}
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
 unsafe fn forward_64(src: &[i16], stride: usize, out: &mut [i16]) {
@@ -69,20 +86,6 @@ macro_rules! sparse {
 }
 sparse!(inverse_32_sparse;inverse_64_sparse);
 
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward_32_low(src: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: supported ISA; sixteen retained outputs match the lane count.
-    unsafe {
-        generic::forward_32_low::<I32x16, 16, false>(src, stride, out);
-    }
-}
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn forward_32_low_raster(src: &[i16], stride: usize, out: &mut [i16]) {
-    // SAFETY: supported ISA; sixteen retained outputs match the lane count.
-    unsafe {
-        generic::forward_32_low::<I32x16, 16, true>(src, stride, out);
-    }
-}
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
 unsafe fn forward_64_low(src: &[i16], stride: usize, out: &mut [i16]) {
     // SAFETY: supported ISA; sixteen retained outputs match the lane count.

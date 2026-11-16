@@ -45,8 +45,8 @@ implementation for all six codecs; they are the largest share everywhere.
 
 | Variant | Module (lines) | Tiers | Technique, layout | Hot | Arithmetic vs family | Verdict |
 |---|---|---|---|---|---|---|
-| AV1 DCT 4-64 (+ raster, low, bounded) | `txfm/dct.rs` (5351, with inverse), `txfm/generic.rs`, `avx2.rs`, `avx512.rs`, `neon_forward.rs`, `simd128.rs` | S A2 A5 N W | butterfly graph generic over lane type; i32 lanes x86/wasm, i16 lanes on NEON behind an L1 guard | AV1 6.4 / 5.4; VP9 9.6 / 9.7 (VP9 DCT_DCT runs it) | libaom `fwd_txfm2d`: 12/13-bit cosines, stage shifts, saturate | **Base engine** for the cosine family; already shared by AV1, VP9 (DCT_DCT) and the HEVC/VVC staged approximation |
-| HEVC/VVC staged rows | `txfm/avx2_forward.rs` (260), `neon_forward.rs` `hevc_rows`, `simd128_forward.rs` | S A2 N W (A5 inh.) | AV1 `fdct16/32` graph on i16 lanes (madd + mulhrs) | HEVC 3.6 / 5.3; VVC 4.8 / 4.7 | AV1 graph scaled by 181/2 (approximate forward, allowed) | Already shared |
+| AV1 DCT 4-64 (+ raster, low, bounded) | `txfm/dct.rs` (5351, with inverse), `txfm/generic.rs`, `avx2.rs`, `avx512.rs`, `avx512_forward.rs`, `neon_forward.rs`, `simd128.rs` | S A2 A5 N W | shared butterfly graph; ICL full32/low16-square and NEON use guarded i16 rows with wide fallback; ICL16 retains its original dword graph | AV1 6.4 / 5.4; VP9 9.6 / 9.7 (VP9 DCT_DCT runs it) | libaom `fwd_txfm2d`: 12/13-bit cosines, stage shifts, saturate | **Base engine** for the cosine family; already shared by AV1, VP9 (DCT_DCT) and the HEVC/VVC staged approximation |
+| HEVC/VVC staged rows | `txfm/avx2_forward.rs`, `avx512_forward.rs`, `neon_forward.rs` `hevc_rows`, `simd128_forward.rs` | S A2 A5 N W | shared AV1 `fdct16/32` graph on i16 lanes (madd + mulhrs); ICL32 carries 32 rows per ZMM | HEVC 3.6 / 5.3; VVC 4.8 / 4.7 | AV1 graph scaled by 181/2 (approximate forward, allowed) | Already shared; sixteen rows keep their natural sixteen-word layout |
 | HEVC DCT 4-32, DST4 | `codec_txfm/generic.rs:713-1166`, `avx2_paired.rs` (124), `avx512.rs` | S A2 A5 N W | partial butterfly; odd half as i16-pair `pmaddwd` dot products | HEVC/VVC `staged*_bounded`, `hevc_fdct32`: ~1-1.5 | integer 64/83/36 matrix, shifts log2-1 / log2+6, clamp16 | **Merge with AV2 DCT** (same algorithm, different matrix) |
 | VVC rectangular DCT-II | `codec_txfm/vvc_forward*.rs` (431) | S A2 N W | HEVC line graphs | in VVC codec_txfm 7.0 / 6.4 | identical to HEVC (nested basis) | Already shared with HEVC |
 | VVC 64 forward | `vvc_tx64/` (351) | S, SIMD only for the 2x2 halve | 2x2 mean, HEVC 32-point, cosine repair | small | approximation glue | Keep (glue) |
@@ -57,6 +57,23 @@ implementation for all six codecs; they are the largest share everywhere.
 | VP9 4x4 DCT/ADST | `nc-vp9/src/hybrid.rs` (235) | S | i32 | small | libvpx | Keep (small) |
 | H.264 4x4, 8x8, DC Hadamard | `codec_txfm/generic.rs:1343-1567`, `avx512_h264.rs`, `neon.rs` | S A2 A5 N W | `Line` driver on i32 lanes (NEON i16) | H.264 ~3-4 | integer 1/2 basis, `+32>>6` | Keep: different basis, already on the shared `Line` driver |
 | Reversible WHT4 | `reversible_wht4.rs` (65) | S | lifting | lossless only | identical | Already shared (VP9, AV1, AV2) |
+
+ICL forward extension (Astra, 2026-11-16): `txfm/avx512_forward.rs` supplies
+32-word columns to the shared full32 and low16-square graphs. Full32 uses
+a register transpose; low16-square transposes only the retained 16x32
+rectangle through the existing sixteen-word adapter. The existing L1 limit
+of 32000 admits packed rows; larger rows keep the exact wide graph in cold
+helpers. Original 16-point kernels and the shared SIMD facade are retained.
+HEVC/VVC staged32 shares the word graph, existing scale and exact DC.
+Layout reference: SVT-AV1 v4.3.0, BSD-2 + AOM patent license
+(`THIRD_PARTY.md`). Dependent VNNI accumulation in dense HEVC lines and the
+provisional intra widening were rejected after measured losses.
+The selected bundle improves Zen 5 throughput by 1.41% AV1 Default,
+1.49% AV1 Fast, 4.29% VP9, 1.30% HEVC and 2.68% VVC on three public CTC
+clips; AV1 Faster/Veryfast are unresolved. The unchanged-kernel H.264
+control is 0.96% slower, also recorded. These are fixed-public-clip timings,
+not general content-population estimates. Full verification, trial history,
+limitations and ns/call: `docs/handoff/astra-avx512-encode.md`.
 
 ## 2. Inverse transforms (encode-loop reconstruction)
 

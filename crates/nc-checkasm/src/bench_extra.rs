@@ -1,7 +1,10 @@
 //! Dispatch entries omitted by the original transform/pixel benchmarks.
 
 use nc_common::{PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, GridBest, GridRows, HevcQuantizer, HevcTransform};
+use nc_dsp::{
+    BlockSize, Dsp, GridBest, GridRows, HevcForwardMode, HevcForwardStaging, HevcQuantizer,
+    HevcTransform,
+};
 
 use crate::bench::time;
 
@@ -113,6 +116,30 @@ fn bench_bounded(dsp: &Dsp, source: &[u8], push: &mut impl FnMut(&'static str, B
                 ))
             }),
         );
+        if matches!(side, 16 | 32) {
+            for (name, staging) in [
+                ("hevc_forward_staged_rows", HevcForwardStaging::Rows),
+                (
+                    "hevc_forward_staged_both",
+                    HevcForwardStaging::RowsAndColumns,
+                ),
+            ] {
+                push(
+                    name,
+                    block,
+                    time(|| {
+                        u32::from(dsp.hevc_forward_staged_unless_zero(
+                            transform,
+                            &residual,
+                            side,
+                            0,
+                            HevcForwardMode::staged(staging),
+                            &mut coefficients,
+                        ))
+                    }),
+                );
+            }
+        }
         let q = HevcQuantizer::new(QP, transform.log2(), false);
         let mut levels = coefficients.clone();
         push(

@@ -40,9 +40,10 @@ const OUTPUT_SCALE: i32 = 181;
 /// Bits of the Q15 multiplier of `vpmulhrsw`.
 const Q15_BITS: u32 = 15;
 
-/// Sixteen lines' samples or butterfly values in 16-bit lanes.
+/// Sixteen lines' samples or butterfly values in 16-bit lanes. Also used
+/// by the guarded AV1 low16 row pass inside the ICL adapter.
 #[derive(Clone, Copy)]
-struct Column(__m256i);
+pub(super) struct Column(pub(super) __m256i);
 
 impl ForwardLanes for Column {
     #[inline(always)]
@@ -103,7 +104,7 @@ const HIGH_HALVES: i32 = 0x31;
 /// 128-bit half, and the halves are finally exchanged across rows 0-7 and
 /// 8-15.
 #[inline(always)]
-fn transpose16(rows: [__m256i; LANES]) -> [__m256i; LANES] {
+pub(super) fn transpose16(rows: [__m256i; LANES]) -> [__m256i; LANES] {
     // SAFETY: called only from the AVX2 kernel below.
     unsafe {
         // `words[2p + h]`: rows 2p, 2p + 1 interleaved, columns 4h..4h + 4

@@ -94,15 +94,34 @@ pub fn bench_av1_runs(isas: &[Isa]) -> Vec<BenchResult> {
     results
 }
 
-/// Time every kernel for each ISA in `isas` that is supported here.
+/// Time the encoder forward-transform and intra families only, with the
+/// same samples and timing procedure used by the full suite.
 #[must_use]
-pub fn bench(isas: &[Isa]) -> Vec<BenchResult> {
+pub fn bench_encoder_wide(isas: &[Isa]) -> Vec<BenchResult> {
+    let (source, _) = samples();
+    let mut out = Vec::new();
+    for &isa in isas {
+        if let Some(dsp) = Dsp::with_isa(isa) {
+            crate::bench_encoder_wide::bench(&dsp, isa, &source, &mut out);
+        }
+    }
+    out
+}
+
+/// Deterministic samples shared by the full and focused timings.
+fn samples() -> (Vec<u8>, Vec<u8>) {
     let mut rng = Rng::new(0x5EED);
     let mut src = vec![0u8; STRIDE * ROWS];
     let mut rf = vec![0u8; STRIDE * ROWS];
     rng.fill(&mut src);
     rng.fill(&mut rf);
+    (src, rf)
+}
 
+/// Time every kernel for each ISA in `isas` that is supported here.
+#[must_use]
+pub fn bench(isas: &[Isa]) -> Vec<BenchResult> {
+    let (src, rf) = samples();
     let mut results = Vec::new();
     for &isa in isas {
         let Some(dsp) = Dsp::with_isa(isa) else {

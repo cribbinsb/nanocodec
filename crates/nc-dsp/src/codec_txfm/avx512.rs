@@ -1,7 +1,7 @@
-//! HEVC/VVC 16/32-point transforms on the shared drivers. Compact forward
-//! lines reuse AVX2's packed matrix weights and range proof (see
-//! `avx2_paired`); inverses retain the shared sparse butterflies. Staged rows
-//! keep the existing packed AVX2 graph, followed by sixteen-lane columns.
+//! HEVC/VVC transforms on the shared drivers. Compact forward lines pair
+//! signed-word values with independent multiply/adds; inverses retain sparse
+//! butterflies. Staged 32-point rows use thirty-two word lanes; 16-point rows
+//! retain their natural sixteen-word layout, followed by wide exact columns.
 
 use super::generic::{self as g, Line};
 use super::{CodecTxfmFns, HevcForwardMode, HevcForwardStaging};
@@ -31,6 +31,7 @@ unsafe fn forward<const N: usize>(x: &[I32x16], y: &mut [I32x16], outputs: usize
         let weights = &super::avx2_paired::FORWARD[k * 32 / N];
         let mut sum = I32x16::splat(0);
         for (pair, &weight) in pairs[..N / 2].iter().zip(weights) {
+            // Zen 5: the dependent VNNI accumulator lost 8-10% here.
             sum = sum.add(pair.dot(weight));
         }
         *out = sum;
@@ -76,7 +77,10 @@ macro_rules! sizes {
             }
             let mut scratch=[MaybeUninit::<i32>::uninit();$n*$n];
             // SAFETY: AVX2 is included in this ISA; rows initialize scratch.
-            unsafe { crate::txfm::avx2_forward::hevc_rows::<$n>(src,stride,&mut scratch); }
+            unsafe {
+                if $n == 32 { crate::txfm::avx512_forward::hevc_rows32(src,stride,&mut scratch); }
+                else { crate::txfm::avx2_forward::hevc_rows::<$n>(src,stride,&mut scratch); }
+            }
             // SAFETY: the complete intermediate was written above.
             let rows=unsafe { g::written(&scratch,$n*$n) };
             // SAFETY: shared column driver, same validated block contract.
