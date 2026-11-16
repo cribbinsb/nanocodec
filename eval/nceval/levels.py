@@ -299,17 +299,23 @@ def final_estimator(choice: str, old_commit: str, new_commit: str) -> str:
     return LADDER if changed else SINGLE
 
 
-def no_change_reason(old: tuple[Path, str], new: tuple[Path, str]) -> str | None:
+def no_change_reason(old: tuple[Path, str], new: tuple[Path, str],
+                     presets_differ: bool = False) -> str | None:
     """Why the two arms cannot differ (None: they can); SystemExit when the arms'
-    binaries are byte-identical although their code differs (a stale build)."""
+    binaries are byte-identical although their code differs (a stale build).
+    Byte-identical binaries are a legitimate preset-only comparison when the
+    arms' resolved preset files differ (`presets_differ`): one binary, two
+    presets/ dirs (an agent once appended a NUL byte to a copy to get past this)."""
     (old_binary, old_commit), (new_binary, new_commit) = old, new
     if same_code(old_commit, new_commit):
         return f"no code change: {old_commit[:12]} and {new_commit[:12]} have identical " \
                f"{' and '.join(f'{p}/' for p in CODE_INPUTS)}"
-    if filecmp.cmp(old_binary, new_binary, shallow=False):
+    if filecmp.cmp(old_binary, new_binary, shallow=False) and not presets_differ:
         raise SystemExit(f"old {old_binary} and new {new_binary} are byte-identical, but "
-                         f"their code differs (or is unknown): one is a stale build; "
-                         f"refusing to compare them")
+                         f"their code differs (or is unknown) and so do not their presets: "
+                         f"one is a stale build; refusing to compare them (a preset-only "
+                         f"comparison: a non-medium --preset and a different presets/ beside "
+                         f"each binary)")
     return None
 
 
@@ -409,15 +415,17 @@ def final_check(args: argparse.Namespace) -> dict:
     estimator = final_estimator(args.estimator, old_commit, new_commit)
     report["estimator"] = estimator
     print(f"L3 estimator: {estimator}", flush=True)
-    unchanged = no_change_reason(*arms)
-    if unchanged:
-        print(unchanged, flush=True)
-        report["no_change"] = unchanged
-        return report
     old_presets = new_presets = None
     if args.preset and args.preset != MEDIUM:  # medium (the Default) reads no preset file
         old_presets, new_presets = presets_of(old, paths), presets_of(new, paths)
         report["presets"] = {"old": str(old_presets), "new": str(new_presets)}
+    presets_differ = old_presets is not None and not same_tree(old_presets, new_presets)
+    unchanged = no_change_reason(*arms, presets_differ=presets_differ)
+    if unchanged:
+        print(unchanged, flush=True)
+        report["no_change"] = unchanged
+        return report
+    if old_presets is not None:
         note = check_presets((old, old_presets), (new, new_presets), args.allow_same_presets)
         if note:
             print(note, flush=True)

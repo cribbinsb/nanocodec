@@ -295,6 +295,15 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - **Next:** lens and c8a-time the Faster/Veryfast rungs at fixed QP, then add them to the lens
     and site if they compete.
 
+- **Faster/Veryfast rungs at fixed QP** (c8a chart-path time, box lens; chart fps scaled from
+  M13 = 445): AV1 Faster about 355 fps, Weighted +14.5 / J −5.5; HEVC Faster 402, +17.4 / +4.8;
+  VP9 Faster 320, +12.8 / −3.5; VP9 Veryfast 334; H.264 Faster 448, +46.6 / +29.2; H.264
+  Veryfast 524. **All are dominated by M12 (417 fps, −1.5 / −10.4)**, so adding them to the
+  chart would not help. The M12/M13 band is a real gap. Closest: AV1 Faster needs about +17 %
+  speed and about −5 J.
+- **Next:** budget and gates on an AV1 Faster base aimed at M12. A joint tune on the Fast base
+  is running (CBR J against CPU, lens check at acceptance).
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

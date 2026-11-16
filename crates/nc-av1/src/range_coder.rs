@@ -32,8 +32,12 @@ const PROB_SHIFT: u32 = 6;
 const MIN_PROB: u32 = 4;
 /// Probability of a literal bit being 1, as used by `L(1)` (AV1 §8.2.3).
 const HALF: u32 = PROB_TOP / 2;
-/// Reserved interval marker: real alphabets have at most sixteen symbols.
+/// Reserved `remaining` marking an omitted literal: real alphabets have at
+/// most sixteen symbols.
 const OMITTED_INTERVAL: u16 = u16::MAX;
+/// Reserved `remaining` marking a logged two-symbol code
+/// ([`Interval::binary`]).
+const BINARY_INTERVAL: u16 = u16::MAX - 1;
 /// `cnt` of a fresh encoder: it crosses zero once a byte plus a carry bit
 /// have accumulated in `low`.
 const CNT_START: i32 = -9;
@@ -127,11 +131,17 @@ impl SymbolSink for SpanWriter<'_> {
     }
 }
 
-/// One frozen probability interval, before range normalization.
+/// One logged symbol, frozen before range normalization: an interval of a
+/// multi-symbol alphabet, or a two-symbol code (`remaining` is
+/// [`BINARY_INTERVAL`]), which the replay takes by the cheaper binary path.
 #[derive(Debug, Clone, Copy)]
 struct Interval {
+    /// Upper edge of the interval (inverse CDF); for a two-symbol code,
+    /// the inverse CDF of symbol 0.
     fl: u16,
+    /// Lower edge; for a two-symbol code, the bit.
     fh: u16,
+    /// Symbols above this one, or a marker.
     remaining: u16,
 }
 
@@ -153,21 +163,20 @@ impl Interval {
         }
     }
 
+    /// `bit` of a two-symbol alphabet whose inverse CDF starts at `f`.
+    #[inline]
+    fn binary(bit: bool, f: u16) -> Self {
+        Self {
+            fl: f,
+            fh: u16::from(bit),
+            remaining: BINARY_INTERVAL,
+        }
+    }
+
+    /// An equiprobable bit, `L(1)`.
     #[inline]
     fn literal(bit: bool) -> Self {
-        if bit {
-            Self {
-                fl: HALF as u16,
-                fh: 0,
-                remaining: 0,
-            }
-        } else {
-            Self {
-                fl: PROB_TOP as u16,
-                fh: HALF as u16,
-                remaining: 1,
-            }
-        }
+        Self::binary(bit, HALF as u16)
     }
 }
 
@@ -467,9 +476,12 @@ impl SymbolWriter {
     #[inline(always)]
     pub fn write_symbol<const N: usize>(&mut self, s: usize, cdf: &mut Cdf<N>, nsyms: usize) {
         if self.deferred {
-            self.recording
-                .intervals
-                .push(Interval::symbol(s, &cdf.icdf, nsyms));
+            let interval = if N == 2 {
+                Interval::binary(s != 0, cdf.icdf[0])
+            } else {
+                Interval::symbol(s, &cdf.icdf, nsyms)
+            };
+            self.recording.intervals.push(interval);
         } else if N == 2 {
             debug_assert_eq!(nsyms, 2);
             self.coder.encode_bool(s != 0, u32::from(cdf.icdf[0]));
@@ -539,11 +551,15 @@ impl SymbolWriter {
 }
 
 impl RangeEncoder {
-    /// Code a run of logged intervals, skipping omitted literals.
+    /// Code a run of logged symbols, skipping omitted literals.
     fn encode_run(&mut self, intervals: &[Interval]) {
         for &interval in intervals {
-            if interval.remaining != OMITTED_INTERVAL {
-                self.encode(interval);
+            match interval.remaining {
+                OMITTED_INTERVAL => {}
+                BINARY_INTERVAL => {
+                    self.encode_bool(interval.fh != 0, u32::from(interval.fl));
+                }
+                _ => self.encode(interval),
             }
         }
     }

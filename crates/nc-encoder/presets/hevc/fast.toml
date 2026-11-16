@@ -1,3 +1,15 @@
+# 2026-11-16 re-point (fixed-QP goal, docs/analysis/zen5-fixed-qp-goal.md):
+# the Default's depth removal (thresholds 0) and inter transform tree, plus
+# Faster's settings that are harmless or cheap in CBR (a pool L1 split of
+# Faster's groups against Fast, J quality only: inter rounding 85 -0.52%,
+# SAO chroma off +0.06%, partial forward + zero scales +2.65%; motion
+# +7.36%, max transform 16 +2.06%, planner +2.00%, coarse key intra +1.18%
+# stay off). Against the previous Fast: x86 instructions at CBR 600 kbit/s
+# +2.2% crowd09 / +1.3% bodycam_bc1 / -0.2% lowlight_city_night; pool L3
+# (2026-11-16 draw, 78 clips, k 0.6, dCPU +1.1%) J -1.31% [-2.17, -0.48]
+# BETTER, no guard at L3 (L2 texture class quality +4.7 over its guard);
+# fixed-QP lens (12 AOM CTC sequences) Weighted / J against x264 medium
+# -3.1 / -11.9, from +7.9 / -4.2.
 # Chroma QP offset -6 (-9 was tried and reverted: full TRAIN J only -0.26,
 # lowlight/bodycam losses, and bodycam_airport spends +29% bits at matched
 # QP so its curve leaves the legal rate range). -3 vs 0: TRAIN proxy-6 (150f) PSNR-YUV / VMAF v1 BD
@@ -29,9 +41,8 @@
 # This is a disclosed speed/quality tradeoff, not a no-loss or parity claim.
 # Evidence: work/overnight/hevc-packed-prezero-agent/control-val/summary.json
 # and native/three-pairs.json. Continuous TRAIN tuning continues; not an optimum.
-# The quality-point Default codes inter transform trees by RD; Fast keeps
-# one transform per CU.
-hevc.inter_tu_split = 0
+# Inter transform trees by RD as the Default (2026-11-16 re-point, top of file).
+hevc.inter_tu_split = 1
 # P-frame intra CUs coded DC-only, no coarse mode search, and exact-rank
 # pruning 1.1 (2026-11-09; toolset survey, docs/handoff/preset-toolsets.md):
 # P instructions -3.4% (QP 36) / -4.8% (QP 42) vs the previous Fast;
@@ -49,7 +60,10 @@ hevc.tu16_chroma_concentration = 0.5
 hevc.sao_stats_row_step = 4
 hevc.fast_forward16 = 1
 hevc.fast_forward32 = 1
-hevc.pre_transform_zero_scale = 2.0
+hevc.pre_transform_zero_scale = 3
+nonbase.hevc.pre_transform_zero_scale = 4
+hevc.partial_forward = 1
+hevc.sao_chroma = 0
 decision.codec_subpel_seed_lambdas = 0.05
 # Default's cheap-vector refinement and integer probe (+11% instructions)
 # stay off on the speed point.
@@ -93,16 +107,18 @@ rate.cadence_startup_base_boost = 5
 # quality 0.0% at +0.7% x86 CPU (Jetson instructions +1.3% / +2.7%).
 decision.intra_directional = 0
 # The Default's jointly tuned rounding, planner and TU16 chroma values
-# (2026-11-12) are not screened for this preset: it keeps the previous values.
-hevc.inter_rounding = 128
+# (2026-11-12) are not screened for this preset; inter rounding is Faster's
+# 85 (2026-11-16 re-point, top of file).
+hevc.inter_rounding = 85
 hevc.intra_rounding = 171
 planner.lambda_scale = 2
 planner.split_rate_factor = 2
-# Default's four merge candidates and no depth removal (2026-11-14, fixed-qp
-# program) stay off here: pinned, byte-identical.
+# Default's four merge candidates (2026-11-14, fixed-qp program) stay off
+# here; its depth removal thresholds (0, no removal) are taken (2026-11-16
+# re-point, top of file).
 hevc.merge_candidates = 2
-planner.depth_removal_th_32_16 = 25
-planner.depth_removal_th_16_8 = 50
+planner.depth_removal_th_32_16 = 0
+planner.depth_removal_th_16_8 = 0
 # The quiet second before a key (`rate.prekey_quiet`, HEVC Default since
 # 2026-11-14) stays off here: pinned, byte-identical.
 rate.prekey_quiet = 0

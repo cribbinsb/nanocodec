@@ -130,3 +130,23 @@ def test_different_presets_pass_the_check(tmp_path):
     new = stamped(tmp_path / "new" / "nanocodec", NEW + "-dirty")
     arms = ((old, preset_dir(old.parent, "1")), (new, preset_dir(new.parent, "2")))
     assert levels.check_presets(*arms, allow_same=False) is None
+
+
+def test_one_binary_with_two_different_preset_dirs_is_a_preset_only_comparison(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(levels, "same_code", lambda old, new: False)
+    old = stamped(tmp_path / "old" / "nanocodec", OLD + "-dirty")
+    new = stamped(tmp_path / "new" / "nanocodec", OLD + "-dirty")  # byte-identical copy
+    old_presets, new_presets = preset_dir(old.parent, "1"), preset_dir(new.parent, "2")
+    differ = not levels.same_tree(old_presets, new_presets)
+    assert levels.no_change_reason((old, ""), (new, ""), presets_differ=differ) is None
+    assert levels.check_presets((old, old_presets), (new, new_presets), allow_same=False) is None
+
+
+def test_one_binary_with_identical_preset_dirs_is_still_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(levels, "same_code", lambda old, new: False)
+    old = stamped(tmp_path / "old" / "nanocodec", OLD + "-dirty")
+    new = stamped(tmp_path / "new" / "nanocodec", OLD + "-dirty")
+    differ = not levels.same_tree(preset_dir(old.parent, "1"), preset_dir(new.parent, "1"))
+    with pytest.raises(SystemExit, match="byte-identical"):
+        levels.no_change_reason((old, ""), (new, ""), presets_differ=differ)
