@@ -353,7 +353,7 @@ the merges above; hot shares are section 0's.
 | HEVC/VVC/AV1/AV2 intra runs of 16 (`intra_runs` `step16`) | 128-bit | intra | 32-wide runs are 256-bit |
 | `constant_add` | 128-bit bytes | small | 32/64-wide blocks could take 256-bit |
 | H.264 inverse 8x8 add (`codec_txfm/avx2.rs` `I16x8`) | I16x8 | H.264 | |
-| Variance 4/8 wide (`diff/avx2.rs`) | I16x4 / I16x8 | all codecs | Tried 2026-11-16: two or four rows per 256-bit vector (rows gathered by scalar loads and inserts) cost more instructions: AV1 +1.0 %, HEVC +0.6 %, VVC +0.1 % (callgrind, release); not landed. A packed form needs memory-operand row inserts (`movhps`, `pinsrd`) to pay; the larger lever is fewer calls (the diagnosis' batches of four 16x16) |
+| Variance 4/8 wide (`diff/x86_narrow.rs`) | 16 word lanes AVX2 (2/4 rows), 32 ICL (4/8 rows) | all codecs | SVT packed-byte source/prediction pairs, one `pmaddubsw` difference, bounded i16 sums and paired square products; ICL VNNI square accumulation. Variance, energy and block sums share one graph. The earlier scalar-gather widening trial remains rejected; this port uses memory-operand row loads/inserts. Residual and narrow sub-pixel paths keep their existing layout. |
 | AV1/HEVC/VVC MC put (`mc/av1_avx2.rs`) | 256-bit; 512-bit rows of 32 at widths 32 and 64 (2026-11-16) | AV1 2-3, HEVC 9, VVC 5 | Ice Lake (box, `nc-checkasm --bench`, ns/call AVX2 -> AVX-512): AV1 2-D 32x32 257 -> 187, 64x64 959 -> 688; HEVC luma 2-D 32x32 300 -> 224 (the old AVX-512 path took 410), 64x64 1149 -> 829 (old 1555); horizontal-only 3-9 % |
 | Sub-pixel variance 16 wide | already one row per 256-bit vector (AVX2 `I16x16`) and two rows per 512-bit vector (AVX-512) | | nothing 128-bit to widen at 16 (2026-11-16 check) |
 

@@ -1004,6 +1004,19 @@ layout studied in SVT-AV1 v4.3.0 `variance_avx512.c` (Intel 2021,
 BSD-2-Clause and AOM Patent License), with bounds derived from our 64x64
 block contract.
 
+The narrow statistics graph (`crates/nc-dsp/src/diff/x86_narrow.rs`), shared
+by AVX2 and AVX512ICL for 4/8-wide variance, prediction energy and block
+sums, reimplements the packed low-eight-byte row layout, source/reference
+interleaving with `pmaddubsw` weights (1,-1), bounded narrow sums and
+interleaved sum/SSE reduction from SVT-AV1 v4.3.0
+`Source/Lib/ASM_AVX2/variance_avx2.c` (`variance8_kernel_avx2`,
+`variance_final_from_32bit_sum_avx2`, Copyright 2016 Alliance for Open Media)
+and `Source/Lib/ASM_AVX512/variance_avx512.c` (`variance_kernel_avx512`,
+Copyright 2021 Intel), BSD-2-Clause and AOM Patent License (the libaom notices
+above). Four-wide row packing, exact-size tails, optional prediction/source
+statistics and the ICL VNNI square-accumulation adapter follow our block
+contracts; the scalar reference and NEON/SIMD128 implementations remain independent.
+
 `crates/nc-dsp/src/sample/avx512.rs` also reviews that file's full-width
 load and widened sum layout. Its pair sums derive from our AVX2 code;
 moments reduce four independent blocks in registers. No external code was copied.

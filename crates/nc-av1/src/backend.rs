@@ -799,6 +799,13 @@ nc_encoder::param_group! {
         /// that walks the coefficient CDFs in the Fast preset.
         coeff_rate_linear: 0.0, [0.0, 1.0],
             "1 prices the P-frame residual-drop check's coefficients with SVT's linear end-of-block estimate instead of the live CDFs: faster, coarser rate",
+        /// SVT M11+ real time prices coefficients with the linear model on
+        /// every frame, intra frames included (`rate_est_level` 0,
+        /// `enc_mode_config.c`); here it replaces the live-CDF walk of the
+        /// key frame's intra mode and partition RD (`residual_rd_cost`),
+        /// most of a Faster key frame's planning instructions.
+        key_coeff_rate_linear: 0.0, [0.0, 1.0],
+            "1 prices key-frame intra and partition trials' coefficients with SVT's linear end-of-block estimate instead of the live CDFs: faster key frames, coarser rate",
         cdf_update: 1.0, [0.0, 1.0],
             "1 adapts every CDF per coded symbol within the frame; 0 codes the frame with disable_cdf_update (AV1 §5.9.2): symbols are priced and coded with the CDFs the frame loaded, which it passes on unchanged (faster encode and decode, less adapted probabilities)",
         /// Frame ids (`obu.rs`): off by default, so streams without loss
@@ -3215,10 +3222,13 @@ impl Av1Backend {
             PlaneType::Chroma
         };
         let ctx = TxbContext::derive(plane_type, true, &[], &[]);
-        let bits = self
-            .cdfs
-            .coeff
-            .cost(tx, plane_type, is_inter, intra_mode, ctx, levels, eob);
+        let bits = if self.kind == FrameKind::Key && self.params.key_coeff_rate_linear >= 0.5 {
+            self.cdfs.coeff.linear_bits(tx, ctx, eob)
+        } else {
+            self.cdfs
+                .coeff
+                .cost(tx, plane_type, is_inter, intra_mode, ctx, levels, eob)
+        };
         // Only the levels the EOB leaves room for can be nonzero: the others
         // dequantise to zero and add nothing to the gain.
         let dequant_area = if eob == 1 {

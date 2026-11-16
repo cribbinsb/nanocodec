@@ -528,6 +528,31 @@ engine default is still 1.1 pending L3 on VVC and AV2.
     [-12.73, -10.82] for +18.0 % CPU (about -0.9 % at k 0.6), L1 -1.27 % [-3.44, +0.58],
     331 fps; f-c3n is the better J per CPU and the faster point, so it is the one landed.
 
+- **AV1 key frames: where the excess is, and a linear key rate** (`feature/av1-lowlight`,
+  2026-11-16). Lowlight key frame at qindex 184, old Faster: ours 525M Ir against M12a's 378M.
+  Ours: the key planner's leaf costs are 287M, and 239M of that is `residual_rd_cost`, whose live
+  coefficient-rate walk (`CoeffCdfs::cost`) is 149M. Coding is 171M and CDEF 19M. M12a: CDEF
+  115M, entropy coding 88M, mode decision about 140M. SVT M11+ real time prices coefficients with
+  its linear end-of-block model on every frame, key frames included (`rate_est_level` 0). New
+  parameter `av1.key_coeff_rate_linear` (default 0, streams unchanged) does the same for our key
+  planner and intra trials. Key frame, lowlight q184: Faster 526M -> 356M, Fast 597M -> 383M,
+  Default 1807M -> 1021M.
+
+  | base | chart path, c8a fps | x86 Ir, CBR 600, 90 f | fixed-QP lens Weighted / J |
+  |---|---|---|---|
+  | Faster (f-c3n) | 342.6 -> 350.3 (+2.2 %) | -1.7 % | (old Faster) +14.5 / -5.5 -> +14.1 / -5.3 |
+  | Fast | 254.4 -> 257.9 (+1.4 %) | -2.0 % | -11.0 / -19.6 -> -13.1 / -20.6 |
+  | Default | 171.4 -> 181.7 (+6.0 %) | -5.5 % | -17.9 / -26.0 -> -18.3 / -25.4 |
+
+  CBR on Faster: L1 J +0.46 % [-0.44, +1.51] (with its dCPU) and the static-class quality guard
+  (+5.2 %; one chirla clip +18 %). Final-check (600 f, keys every 10 s): quality J **+1.04 %
+  [+0.57, +1.50] WORSE**. Static keys get worse (dKey1 +0.21 dB, dKeyN +0.18 dB on static; worst
+  periodic pulse +1.28 dB against the 0.50 guard). The other classes' pulses improve by about
+  0.2-0.3 dB. At k 0.6 the -1.7 % CPU about cancels the quality loss. Not landed on Faster. The
+  linear model ignores level magnitudes, which matter on fine-quantizer static keys. Next:
+  linear pricing only for sparse blocks (SVT `coeff_rate_est_lvl` 2: linear below an end-of-block
+  threshold, the full walk above), measured on Default first, where the gain is largest.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

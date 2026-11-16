@@ -49,6 +49,10 @@ pub(crate) mod avx2;
 #[allow(unsafe_code)]
 pub(crate) mod avx512;
 
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+pub(crate) mod x86_narrow;
+
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;

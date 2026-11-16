@@ -4,11 +4,12 @@
 //! differences use paired widening multiplies. Our block contract bounds
 //! each narrow lane by 2*64*255=32640, including 64-wide blocks.
 //!
-//! Blocks narrower than a vector pack whole rows into it (two rows of 16,
-//! four of 8), as libaom's AVX2 `variance16xh`/`variance8xh` pack two rows
-//! of 8 into one register: a half-empty 512-bit vector was slower than AVX2
-//! on Zen 5 and Sapphire Rapids (0.65–0.84x, docs/handoff/avx512.md). Every
+//! Sixteen-wide blocks pack two rows into a vector: a half-empty 512-bit
+//! vector was slower than AVX2 on Zen 5 and Sapphire Rapids (0.65–0.84x, docs/handoff/avx512.md). Every
 //! block height is a multiple of four, so packed rows never leave the block.
+//!
+//! Widths 4 and 8 use the shared packed-byte graph in `x86_narrow` (SVT
+//! byte-pair differences and ICL VNNI squares), including four-row tails.
 //!
 //! Sub-pixel variance at widths 32 and 64 runs the shared bilinear graph
 //! (`generic::sub_pixel_variance`) on 32 word lanes; width 16 packs two rows
@@ -16,36 +17,54 @@
 //! that use it.
 
 use super::generic::{self, covers};
+use super::x86_narrow::{self, IclRows};
 use super::{DiffFns, Variance, VarianceEnergy, bilinear_taps};
 use crate::simd::avx512_i16::I16x32;
 use core::arch::x86_64::{
     __m512i, _mm_loadu_si128, _mm256_castsi128_si256, _mm256_inserti128_si256,
-    _mm256_maskz_loadu_epi8, _mm256_set_epi64x, _mm512_add_epi16, _mm512_add_epi32,
-    _mm512_cvtepu8_epi16, _mm512_madd_epi16, _mm512_mulhrs_epi16, _mm512_reduce_add_epi32,
-    _mm512_set1_epi16, _mm512_setzero_si512, _mm512_shuffle_i64x2, _mm512_sub_epi16,
+    _mm256_maskz_loadu_epi8, _mm512_add_epi16, _mm512_add_epi32, _mm512_cvtepu8_epi16,
+    _mm512_madd_epi16, _mm512_mulhrs_epi16, _mm512_reduce_add_epi32, _mm512_set1_epi16,
+    _mm512_setzero_si512, _mm512_shuffle_i64x2, _mm512_sub_epi16,
 };
 
 /// Word lanes per vector.
 const LANES: usize = 32;
 
 pub(crate) fn install(table: &mut DiffFns) {
-    table.variance[1..].copy_from_slice(&[
-        variance::<8>,
-        variance::<16>,
-        variance::<32>,
-        variance::<64>,
-    ]);
-    table.variance_energy[1..].copy_from_slice(&[
-        energy::<8>,
-        energy::<16>,
-        energy::<32>,
-        energy::<64>,
-    ]);
+    table.variance[..2].copy_from_slice(&[narrow_variance::<4>, narrow_variance::<8>]);
+    table.variance[2..].copy_from_slice(&[variance::<16>, variance::<32>, variance::<64>]);
+    table.variance_energy[..2].copy_from_slice(&[narrow_energy::<4>, narrow_energy::<8>]);
+    table.variance_energy[2..].copy_from_slice(&[energy::<16>, energy::<32>, energy::<64>]);
+    table.block_sums[..2].copy_from_slice(&[block_sums::<4>, block_sums::<8>]);
     table.sub_pixel_variance[2..].copy_from_slice(&[
         sub_pixel_variance_w16,
         sub_pixel_variance_wide::<32>,
         sub_pixel_variance_wide::<64>,
     ]);
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2")]
+unsafe fn narrow_variance<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    pred: &[u8],
+    ps: usize,
+    h: usize,
+) -> Variance {
+    // SAFETY: the dispatcher forwards the validated block and ICL contracts.
+    unsafe { x86_narrow::variance::<IclRows, W>(src, ss, pred, ps, h) }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2")]
+unsafe fn narrow_energy<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    pred: &[u8],
+    ps: usize,
+    h: usize,
+) -> VarianceEnergy {
+    // SAFETY: the dispatcher forwards the validated block and ICL contracts.
+    unsafe { x86_narrow::variance_energy::<IclRows, W>(src, ss, pred, ps, h) }
 }
 
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
@@ -72,13 +91,19 @@ unsafe fn energy<const W: usize>(
     unsafe { accumulate::<W, true>(src, ss, pred, ps, h) }
 }
 
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512dq,avx512vnni,avx2")]
+unsafe fn block_sums<const W: usize>(src: &[u8], ss: usize, h: usize) -> Variance {
+    // SAFETY: the dispatcher forwards the validated source and ICL contracts.
+    unsafe { x86_narrow::block_sums::<IclRows, W>(src, ss, h) }
+}
+
 /// Rows of a `W`-wide block packed into one vector (1 from width 32 up).
 const fn rows_per_vector(w: usize) -> usize {
     if w >= LANES { 1 } else { LANES / w }
 }
 
 /// Samples `x..x + 32` of row `y` (`W` >= 32, masked to `W`), or rows
-/// `y..y + 32 / W` side by side (`W` 8 or 16), widened to words.
+/// `y..y + 32 / W` side by side (`W` 16), widened to words.
 ///
 /// # Safety
 ///
@@ -88,14 +113,10 @@ unsafe fn load_rows<const W: usize>(data: &[u8], stride: usize, y: usize, x: usi
     let at = |r: usize| data.as_ptr().wrapping_add(r * stride + x);
     // SAFETY: the caller guarantees every row read is inside `data`.
     let bytes = unsafe {
-        match W {
-            8 => {
-                let row = |r: usize| at(r).cast::<i64>().read_unaligned();
-                _mm256_set_epi64x(row(y + 3), row(y + 2), row(y + 1), row(y))
-            }
-            16 => return load_pair(data, stride, y, y + 1, x),
-            _ => _mm256_maskz_loadu_epi8(u32::MAX >> (LANES - W.min(LANES)), at(y).cast()),
+        if W == 16 {
+            return load_pair(data, stride, y, y + 1, x);
         }
+        _mm256_maskz_loadu_epi8(u32::MAX >> (LANES - W.min(LANES)), at(y).cast())
     };
     _mm512_cvtepu8_epi16(bytes)
 }

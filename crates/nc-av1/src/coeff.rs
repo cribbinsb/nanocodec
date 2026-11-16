@@ -536,6 +536,17 @@ impl CoeffCdfs {
             + self.skip_rate_delta(tx, ctx)
     }
 
+    /// [`Self::eob_linear_bits`] as a whole block's bits: the all-zero
+    /// skip flag's rate, plus the linear estimate where `eob` is not 0.
+    pub fn linear_bits(&self, tx: TxSize, ctx: TxbContext, eob: usize) -> f32 {
+        let none = self.txb_skip[tx.index()][ctx.skip].bits(1);
+        if eob == 0 {
+            none
+        } else {
+            none + self.eob_linear_bits(tx, ctx, eob)
+        }
+    }
+
     /// Current nonzero-vs-zero transform skip-flag rate, in literal bits.
     pub fn skip_rate_delta(&self, tx: TxSize, ctx: TxbContext) -> f32 {
         self.txb_skip[tx.index()][ctx.skip].bits(0) - self.txb_skip[tx.index()][ctx.skip].bits(1)

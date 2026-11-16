@@ -55,6 +55,7 @@ mod check_raster_dct;
 mod check_relaxed_dot;
 mod check_scan_stats;
 mod check_sub_blocks;
+mod check_variance_narrow;
 mod check_vp9_filter;
 mod check_vp9_intra;
 mod check_vp9_inverse;

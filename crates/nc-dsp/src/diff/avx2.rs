@@ -1,5 +1,6 @@
 //! AVX2 residual and variance kernels: the generic kernels on 16 lanes (8
-//! for 8-wide blocks, 4 for 4-wide ones).
+//! for 8-wide blocks, 4 for 4-wide ones). Narrow variance/energy/block sums
+//! instead share SVT-style packed-byte row statistics in `x86_narrow`.
 //!
 //! Kernel contract: see the `diff` module docs.
 
@@ -9,8 +10,9 @@ use core::arch::x86_64::{
     _mm256_storeu_si256, _mm256_sub_epi8, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
 };
 
-use super::generic;
+use super::x86_narrow::Avx2Rows;
 use super::{DiffFns, Prediction, ResidualRows, Variance, VarianceEnergy};
+use super::{generic, x86_narrow};
 use crate::simd::avx2::{I16x4, I16x8, I16x16};
 
 /// The residual table.
@@ -75,7 +77,7 @@ pub(crate) unsafe fn diff_fns() -> DiffFns {
 
 /// Defines the four kernels of one width on one lane type.
 macro_rules! width_kernels {
-    ($lanes:ty, $width:literal, $residual:ident, $add:ident, $variance:ident, $energy:ident, $subpel:ident) => {
+    ($lanes:ty, $stats:ident, $stats_lanes:ty, $width:literal, $residual:ident, $add:ident, $variance:ident, $energy:ident, $subpel:ident) => {
         #[target_feature(enable = "avx2")]
         unsafe fn $residual<const SUM_ABS: bool>(
             src: &[u8],
@@ -123,7 +125,9 @@ macro_rules! width_kernels {
             h: usize,
         ) -> Variance {
             // SAFETY: AVX2 is enabled for this function.
-            unsafe { generic::variance::<$lanes, $width>(src, src_stride, pred, pred_stride, h) }
+            unsafe {
+                $stats::variance::<$stats_lanes, $width>(src, src_stride, pred, pred_stride, h)
+            }
         }
 
         #[target_feature(enable = "avx2")]
@@ -136,7 +140,13 @@ macro_rules! width_kernels {
         ) -> VarianceEnergy {
             // SAFETY: AVX2 is enabled for this function.
             unsafe {
-                generic::variance_energy::<$lanes, $width>(src, src_stride, pred, pred_stride, h)
+                $stats::variance_energy::<$stats_lanes, $width>(
+                    src,
+                    src_stride,
+                    pred,
+                    pred_stride,
+                    h,
+                )
             }
         }
 
@@ -162,6 +172,8 @@ macro_rules! width_kernels {
 
 width_kernels!(
     I16x4,
+    x86_narrow,
+    Avx2Rows,
     4,
     residual_w4,
     reconstruct_w4,
@@ -171,6 +183,8 @@ width_kernels!(
 );
 width_kernels!(
     I16x8,
+    x86_narrow,
+    Avx2Rows,
     8,
     residual_w8,
     reconstruct_w8,
@@ -179,6 +193,8 @@ width_kernels!(
     sub_pixel_variance_w8
 );
 width_kernels!(
+    I16x16,
+    generic,
     I16x16,
     16,
     residual_w16,
@@ -189,6 +205,8 @@ width_kernels!(
 );
 width_kernels!(
     I16x16,
+    generic,
+    I16x16,
     32,
     residual_w32,
     reconstruct_w32,
@@ -197,6 +215,8 @@ width_kernels!(
     sub_pixel_variance_w32
 );
 width_kernels!(
+    I16x16,
+    generic,
     I16x16,
     64,
     residual_w64,
@@ -208,20 +228,20 @@ width_kernels!(
 
 /// Defines one width's block-sums kernel on a lane type.
 macro_rules! block_sums_kernel {
-    ($lanes:ty, $width:literal, $name:ident) => {
+    ($stats:ident, $lanes:ty, $width:literal, $name:ident) => {
         #[target_feature(enable = "avx2")]
         unsafe fn $name(src: &[u8], src_stride: usize, h: usize) -> Variance {
             // SAFETY: AVX2 is enabled for this function.
-            unsafe { generic::block_sums::<$lanes, $width>(src, src_stride, h) }
+            unsafe { $stats::block_sums::<$lanes, $width>(src, src_stride, h) }
         }
     };
 }
 
-block_sums_kernel!(I16x4, 4, block_sums_w4);
-block_sums_kernel!(I16x8, 8, block_sums_w8);
-block_sums_kernel!(I16x16, 16, block_sums_w16);
-block_sums_kernel!(I16x16, 32, block_sums_w32);
-block_sums_kernel!(I16x16, 64, block_sums_w64);
+block_sums_kernel!(x86_narrow, Avx2Rows, 4, block_sums_w4);
+block_sums_kernel!(x86_narrow, Avx2Rows, 8, block_sums_w8);
+block_sums_kernel!(generic, I16x16, 16, block_sums_w16);
+block_sums_kernel!(generic, I16x16, 32, block_sums_w32);
+block_sums_kernel!(generic, I16x16, 64, block_sums_w64);
 
 /// Blocks measured per iteration of [`sse_8x8_row`]: one 32-byte row load
 /// covers four 8x8 blocks.

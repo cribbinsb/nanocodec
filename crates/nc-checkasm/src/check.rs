@@ -94,6 +94,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     );
     crate::check_vp9_filter::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vp9_line::check(&candidate, &reference, &mut rng.clone(), &mut report);
+    crate::check_variance_narrow::check(&candidate, &reference, &mut report);
     crate::check_cdef_interior::check(&candidate, &reference, &mut report);
     crate::check_hevc_put32::check(&candidate, &reference, &mut report);
     crate::check_display::check(&candidate, &reference, iterations, &mut rng, &mut report);
