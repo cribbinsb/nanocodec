@@ -33,6 +33,7 @@
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
+use super::butterfly::{self, DctBasis, odd_matrix};
 use super::{
     DCT32, DST4, H264Quantizer, HevcForwardMode, HevcForwardStaging, HevcQuantizer,
     QUANT_MF_4X4_POS, QUANT_MF_8X8_POS,
@@ -680,198 +681,104 @@ pub(crate) unsafe fn columns_then_rows<V, T, const N: usize>(
 
 // ------------------------------------------------------------------ HEVC
 
-/// Four weights share one NEON constant-vector load (`I32Lanes::mul_add4`).
-/// The half-basis comes from the canonical table, with no arithmetic changes.
-const HEVC_DOT_GROUP: usize = 4;
-const HEVC_ODD_INPUTS: usize = DCT32.len() / 2;
-const HEVC_ODD_WEIGHTS: [[[i32; HEVC_DOT_GROUP]; HEVC_ODD_INPUTS / HEVC_DOT_GROUP]; DCT32.len()] = {
-    let mut weights = [[[0; HEVC_DOT_GROUP]; HEVC_ODD_INPUTS / HEVC_DOT_GROUP]; DCT32.len()];
-    let mut row = 0;
-    while row < DCT32.len() {
-        let mut i = 0;
-        while i < HEVC_ODD_INPUTS {
-            weights[row][i / HEVC_DOT_GROUP][i % HEVC_DOT_GROUP] = DCT32[row][i] as i32;
-            i += 1;
-        }
-        row += 1;
-    }
-    weights
-};
+/// HEVC's basis ([`DCT32`], up to 32 points) for the partial butterflies
+/// shared with AV2 ([`butterfly`]).
+struct HevcBasis;
 
-/// The odd outputs of an `N = 2H`-point HEVC forward DCT from the
-/// differences `o[i] = x[i] − x[N−1−i]`: `y[k] = Σ basis(k, i) · o[i]` for
-/// odd `k`. Plain constant-bound loops over arrays, which the compiler
-/// unrolls completely (iterator adaptors here were left as loops and cost
-/// a third of the 32-point transform).
+impl DctBasis for HevcBasis {
+    const DC: i32 = DCT32[0][0] as i32;
+    const ODD2: [[i32; 1]; 1] = odd_matrix::<1, { DCT32.len() }>(&DCT32);
+    const ODD4: [[i32; 2]; 2] = odd_matrix::<2, { DCT32.len() }>(&DCT32);
+    const ODD8: [[i32; 4]; 4] = odd_matrix::<4, { DCT32.len() }>(&DCT32);
+    const ODD16: [[i32; 8]; 8] = odd_matrix::<8, { DCT32.len() }>(&DCT32);
+    const ODD32: [[i32; 16]; 16] = odd_matrix::<16, { DCT32.len() }>(&DCT32);
+    const ODD64: Option<[[i32; 32]; 32]> = None;
+}
+
+/// The `N`-point HEVC forward DCT of `x` into `y`, of which only
+/// `y[..outputs]` are required.
+#[inline(always)]
+fn hevc_fdct<V: I32Lanes, const N: usize>(x: &[V], y: &mut [V], outputs: usize) {
+    let y: &mut [V; N] = (&mut y[..N]).try_into().unwrap();
+    butterfly::forward_dct::<HevcBasis, V, N>(x[..N].try_into().unwrap(), y, outputs);
+}
+
+/// The `N`-point HEVC inverse DCT of `c` into `y`, where `c[k]` is zero for
+/// every `k >= active`.
 ///
-/// Only the first `outputs` odd outputs (`k < 2 · outputs`) are computed.
-#[allow(
-    clippy::needless_range_loop,
-    reason = "constant indexed loops preserve forward-transform unrolling"
-)]
+/// `active` is rounded up to a constant bound (1, 2, 4, 8, 16 or `N`; the
+/// extra inputs are zero, so the result is unchanged): with a constant the
+/// levels' loops unroll and the zero inputs' products fold away at compile
+/// time. A runtime bound cost the sparse NEON inverses 8-19 % (Jetson,
+/// `nc-checkasm --bench`, 8x8 to 32x32 `low4`, `split_dc`).
 #[inline(always)]
-fn hevc_odd_forward<V: I32Lanes, const H: usize>(o: &[V; H], y: &mut [V], outputs: usize) {
-    // Current callers have H=4,8,16. Keep the small/tail cases exact too.
-    assert!(H > 0 && H <= HEVC_ODD_INPUTS);
-    // Row `k` of the N-point matrix is row `k · 32 / N` of DCT32.
-    let row_step = DCT32.len() / (2 * H);
-    for j in 0..outputs {
-        let k = 2 * j + 1;
-        if H == HEVC_ODD_INPUTS {
-            let basis = &HEVC_ODD_WEIGHTS[k * row_step];
-            let mut acc = V::splat(0);
-            for group in 0..H / HEVC_DOT_GROUP {
-                let i = group * HEVC_DOT_GROUP;
-                // Same wrapping sums, in input order. NEON loads four weights
-                // once rather than loading and broadcasting each signed byte.
-                acc = acc.mul_add4([o[i], o[i + 1], o[i + 2], o[i + 3]], &basis[group]);
-            }
-            y[k] = acc;
-        } else {
-            // Grouping shorter dots slightly slows the 16-point NEON kernel;
-            // retain its original constant-folded products and accumulation.
-            let basis = &DCT32[k * row_step];
-            let mut acc = o[0].mul_scalar(basis[0].into());
-            for i in 1..H {
-                acc = acc.add(o[i].mul_scalar(basis[i].into()));
-            }
-            y[k] = acc;
-        }
+fn hevc_idct<V: I32Lanes, const N: usize>(c: &[V], y: &mut [V], active: usize) {
+    let c: &[V; N] = c[..N].try_into().unwrap();
+    let y: &mut [V; N] = (&mut y[..N]).try_into().unwrap();
+    let inverse = butterfly::inverse_dct::<HevcBasis, V, N>;
+    match active {
+        ..=1 => inverse(c, 1, y),
+        2 => inverse(c, 2, y),
+        3..=4 => inverse(c, 4, y),
+        5..=8 if N > 8 => inverse(c, 8, y),
+        9..=16 if N > 16 => inverse(c, 16, y),
+        _ => inverse(c, N, y),
     }
 }
 
-/// HEVC 4-point forward DCT.
-#[inline(always)]
-fn hevc_fdct4<V: I32Lanes>(x: &[V], y: &mut [V]) {
-    let (e0, e1) = (x[0].add(x[3]), x[1].add(x[2]));
-    let (o0, o1) = (x[0].sub(x[3]), x[1].sub(x[2]));
-    y[0] = e0.add(e1).shl(6);
-    y[2] = e0.sub(e1).shl(6);
-    y[1] = o0.mul_scalar(83).add(o1.mul_scalar(36));
-    y[3] = o0.mul_scalar(36).sub(o1.mul_scalar(83));
-}
-
-/// HEVC 4-point inverse DCT.
-#[inline(always)]
-fn hevc_idct4<V: I32Lanes>(c: &[V], y: &mut [V]) {
-    let e0 = c[0].add(c[2]).shl(6);
-    let e1 = c[0].sub(c[2]).shl(6);
-    let o0 = c[1].mul_scalar(83).add(c[3].mul_scalar(36));
-    let o1 = c[1].mul_scalar(36).sub(c[3].mul_scalar(83));
-    y[0] = e0.add(o0);
-    y[1] = e1.add(o1);
-    y[2] = e1.sub(o1);
-    y[3] = e0.sub(o0);
-}
-
-/// Defines the `$n`-point HEVC DCTs by even/odd decomposition ("partial
-/// butterfly"): the even outputs are the half-size DCT of `x[i] + x[N−1−i]`,
-/// the odd outputs a matrix product with the differences; inversely, the
-/// even coefficients give `E` through the half-size inverse, the odd ones
-/// `O`, and `y[i] = E[i] + O[i]`, `y[N−1−i] = E[i] − O[i]`. Exact integer
-/// arithmetic, so the result is the matrix product.
-macro_rules! hevc_dct_level {
-    ($fdct:ident, $idct:ident, $n:literal, $log2:literal, $half_f:ident, $half_i:ident) => {
-        #[inline(always)]
-        fn $fdct<V: I32Lanes>(x: &[V], y: &mut [V]) {
-            hevc_fdct_split!(x, y, $n, $half_f, $n / 2);
-        }
-
-        #[inline(always)]
-        fn $idct<V: I32Lanes>(c: &[V], y: &mut [V]) {
-            const H: usize = $n / 2;
-            let mut even_in = [V::splat(0); H];
-            for (j, e) in even_in.iter_mut().enumerate() {
-                *e = c[2 * j];
-            }
-            let mut even = [V::splat(0); H];
-            $half_i(&even_in, &mut even);
-            for i in 0..H {
-                let mut odd = V::splat(0);
-                for k in 0..H {
-                    let basis = i32::from(DCT32[(2 * k + 1) << (5 - $log2)][i]);
-                    odd = odd.add(c[2 * k + 1].mul_scalar(basis));
-                }
-                y[i] = even[i].add(odd);
-                y[$n - 1 - i] = even[i].sub(odd);
-            }
-        }
-    };
-}
-
-/// One even/odd level of an `$n`-point forward DCT on `$x` into `$y`: the
-/// even outputs are `$half` (the half-size forward, called directly so it
-/// inlines) of the sums, and the first `$odd_outputs` odd outputs come from
-/// the differences.
-macro_rules! hevc_fdct_split {
-    ($x:expr, $y:expr, $n:literal, $half:ident, $odd_outputs:expr) => {{
-        const H: usize = $n / 2;
-        let (x, y) = ($x, $y);
-        let mut even = [V::splat(0); H];
-        let mut odd = [V::splat(0); H];
-        for i in 0..H {
-            even[i] = x[i].add(x[$n - 1 - i]);
-            odd[i] = x[i].sub(x[$n - 1 - i]);
-        }
-        let mut even_out = [V::splat(0); H];
-        $half(&even, &mut even_out);
-        for (j, &e) in even_out.iter().enumerate() {
-            y[2 * j] = e;
-        }
-        hevc_odd_forward::<V, H>(&odd, y, $odd_outputs);
-    }};
-}
-
-hevc_dct_level!(hevc_fdct8, hevc_idct8, 8, 3, hevc_fdct4, hevc_idct4);
-hevc_dct_level!(hevc_fdct16, hevc_idct16, 16, 4, hevc_fdct8, hevc_idct8);
-hevc_dct_level!(hevc_fdct32, hevc_idct32, 32, 5, hevc_fdct16, hevc_idct16);
-
-/// The low half (`y[0..8]`) of the 16-point forward DCT: the 8-point DCT
-/// of the sums and four of the eight odd rows.
-#[inline(always)]
-fn hevc_fdct16_low<V: I32Lanes>(x: &[V], y: &mut [V]) {
-    hevc_fdct_split!(x, y, 16, hevc_fdct8, 4);
-}
-
-/// The low half (`y[0..16]`) of the 32-point forward DCT, as
-/// [`hevc_fdct16_low`] one level up.
-#[inline(always)]
-fn hevc_fdct32_low<V: I32Lanes>(x: &[V], y: &mut [V]) {
-    hevc_fdct_split!(x, y, 32, hevc_fdct16_low, 8);
-}
-
-/// A forward and an inverse HEVC 1-D transform.
-macro_rules! hevc_lines {
-    ($($forward:ident, $inverse:ident, $f:ident, $f_low:ident, $i:ident);*) => {$(
+/// A forward and an inverse HEVC 1-D DCT of `$n` points. The 4- and 8-point
+/// forwards compute every output for the low half too: no low-frequency
+/// mode uses them.
+macro_rules! hevc_dct_lines {
+    ($($forward:ident, $inverse:ident, $n:literal, $low:expr);*) => {$(
         pub(crate) struct $forward;
         impl<V: I32Lanes> Line<V> for $forward {
             #[inline(always)]
             fn apply(x: &[V], y: &mut [V]) {
-                $f(x, y);
+                hevc_fdct::<V, $n>(x, y, $n);
             }
 
             #[inline(always)]
             fn apply_low(x: &[V], y: &mut [V]) {
-                $f_low(x, y);
+                hevc_fdct::<V, $n>(x, y, $low);
             }
         }
         pub(crate) struct $inverse;
         impl<V: I32Lanes> Line<V> for $inverse {
             #[inline(always)]
             fn apply(x: &[V], y: &mut [V]) {
-                $i(x, y);
+                hevc_idct::<V, $n>(x, y, $n);
+            }
+        }
+        impl BoundedLine for $inverse {
+            #[inline(always)]
+            fn apply_bounded<V: I32Lanes>(c: &[V], y: &mut [V], active: usize) {
+                hevc_idct::<V, $n>(c, y, active);
             }
         }
     )*};
 }
 
-// The 4- and 8-point forwards and the DST compute every output for the low
-// half too: no low-frequency mode uses them.
-hevc_lines!(HevcFdct4, HevcIdct4, hevc_fdct4, hevc_fdct4, hevc_idct4;
-            HevcFdct8, HevcIdct8, hevc_fdct8, hevc_fdct8, hevc_idct8;
-            HevcFdct16, HevcIdct16, hevc_fdct16, hevc_fdct16_low, hevc_idct16;
-            HevcFdct32, HevcIdct32, hevc_fdct32, hevc_fdct32_low, hevc_idct32;
-            HevcFdst4, HevcIdst4, hevc_fdst4, hevc_fdst4, hevc_idst4);
+hevc_dct_lines!(HevcFdct4, HevcIdct4, 4, 4;
+                HevcFdct8, HevcIdct8, 8, 8;
+                HevcFdct16, HevcIdct16, 16, 8;
+                HevcFdct32, HevcIdct32, 32, 16);
+
+/// The 4-point DST as a forward and an inverse line.
+pub(crate) struct HevcFdst4;
+impl<V: I32Lanes> Line<V> for HevcFdst4 {
+    #[inline(always)]
+    fn apply(x: &[V], y: &mut [V]) {
+        hevc_fdst4(x, y);
+    }
+}
+pub(crate) struct HevcIdst4;
+impl<V: I32Lanes> Line<V> for HevcIdst4 {
+    #[inline(always)]
+    fn apply(x: &[V], y: &mut [V]) {
+        hevc_idst4(x, y);
+    }
+}
 
 /// An inverse line transform that may skip trailing zero coefficients
 /// (the generic bounded inverses below serve AVX2 and NEON; SIMD128 has its
@@ -882,58 +789,6 @@ pub(crate) trait BoundedLine {
     fn apply_bounded<V: I32Lanes>(c: &[V], y: &mut [V], active: usize);
 }
 
-/// The 4-point inverse with a zero bound: too small to gain from it.
-#[inline(always)]
-fn hevc_idct4_bounded<V: I32Lanes>(c: &[V], y: &mut [V], _active: usize) {
-    hevc_idct4(c, y);
-}
-
-/// As `hevc_dct_level`'s inverses, with coefficients from `active` on known
-/// to be zero: the even half gets the bound `ceil(active / 2)`, the odd
-/// products stop at `floor(active / 2)`. Same integer sums without zero
-/// terms, so the result is unchanged.
-macro_rules! hevc_idct_bounded_level {
-    ($name:ident, $line:ident, $n:literal, $log2:literal, $half:ident) => {
-        #[inline(always)]
-        fn $name<V: I32Lanes>(c: &[V], y: &mut [V], active: usize) {
-            const H: usize = $n / 2;
-            let mut even_in = [V::splat(0); H];
-            for (j, e) in even_in.iter_mut().enumerate() {
-                *e = c[2 * j];
-            }
-            let mut even = [V::splat(0); H];
-            $half(&even_in, &mut even, active.div_ceil(2));
-            let odd_active = (active / 2).min(H);
-            for i in 0..H {
-                let mut odd = V::splat(0);
-                for k in 0..odd_active {
-                    let basis = i32::from(DCT32[(2 * k + 1) << (5 - $log2)][i]);
-                    odd = odd.add(c[2 * k + 1].mul_scalar(basis));
-                }
-                y[i] = even[i].add(odd);
-                y[$n - 1 - i] = even[i].sub(odd);
-            }
-        }
-
-        impl BoundedLine for $line {
-            #[inline(always)]
-            fn apply_bounded<V: I32Lanes>(c: &[V], y: &mut [V], active: usize) {
-                $name(c, y, active);
-            }
-        }
-    };
-}
-
-hevc_idct_bounded_level!(hevc_idct8_bounded, HevcIdct8, 8, 3, hevc_idct4_bounded);
-hevc_idct_bounded_level!(hevc_idct16_bounded, HevcIdct16, 16, 4, hevc_idct8_bounded);
-hevc_idct_bounded_level!(hevc_idct32_bounded, HevcIdct32, 32, 5, hevc_idct16_bounded);
-
-impl BoundedLine for HevcIdct4 {
-    #[inline(always)]
-    fn apply_bounded<V: I32Lanes>(c: &[V], y: &mut [V], _active: usize) {
-        hevc_idct4(c, y);
-    }
-}
 impl BoundedLine for HevcIdst4 {
     #[inline(always)]
     fn apply_bounded<V: I32Lanes>(c: &[V], y: &mut [V], _active: usize) {
@@ -2349,41 +2204,46 @@ macro_rules! hevc_bounded_inverse_kernels {
 pub(crate) use hevc_bounded_inverse_kernels;
 
 #[cfg(test)]
-mod forward_dot_tests {
-    use super::{DCT32, hevc_odd_forward};
+mod butterfly_tests {
+    use super::{DCT32, hevc_fdct, hevc_idct};
 
-    /// Scalar checkasm shares this graph, so retain an independent matrix
-    /// oracle for grouping, cutoffs, and the wrapping arithmetic contract.
-    fn check<const H: usize>() {
+    /// Scalar checkasm shares this graph, so keep an independent matrix
+    /// oracle for the HEVC basis, the output and input cutoffs, and the
+    /// wrapping arithmetic contract.
+    fn check<const N: usize>() {
         let values = [0, 1, -1, 32640, -32640, i32::MIN, i32::MAX, 65535];
+        // Entry (k, j) of the N-point matrix (H.265 eq. 8-319 onwards).
+        let basis = |k: usize, j: usize| i32::from(DCT32[k * (32 / N)][j]);
         for rotation in 0..values.len() {
-            let input = core::array::from_fn::<_, H, _>(|i| values[(i + rotation) % values.len()]);
-            for outputs in 0..=H {
-                let mut expected = [191; 32];
-                for j in 0..outputs {
-                    let k = 2 * j + 1;
-                    expected[k] = input
-                        .iter()
-                        .zip(&DCT32[k * (32 / (2 * H))])
-                        .fold(0i32, |sum, (&x, &weight)| {
-                            sum.wrapping_add(x.wrapping_mul(i32::from(weight)))
-                        });
+            let x: [i32; N] = core::array::from_fn(|i| values[(i + rotation) % values.len()]);
+            for limit in 1..=N {
+                let mut expected = [191; N];
+                for (k, e) in expected.iter_mut().enumerate().take(limit) {
+                    *e = (0..N).fold(0i32, |s, j| s.wrapping_add(x[j].wrapping_mul(basis(k, j))));
                 }
-                let mut got = [191; 32];
-                hevc_odd_forward::<i32, H>(&input, &mut got, outputs);
-                assert_eq!(got, expected, "H={H} outputs={outputs} rotation={rotation}");
+                let mut got = [191; N];
+                hevc_fdct::<i32, N>(&x, &mut got, limit);
+                assert_eq!(
+                    got[..limit],
+                    expected[..limit],
+                    "forward N={N} outputs={limit}"
+                );
+                let c: [i32; N] = core::array::from_fn(|k| if k < limit { x[k] } else { 0 });
+                let expected: [i32; N] = core::array::from_fn(|j| {
+                    (0..N).fold(0i32, |s, k| s.wrapping_add(c[k].wrapping_mul(basis(k, j))))
+                });
+                let mut got = [0; N];
+                hevc_idct::<i32, N>(&c, &mut got, limit);
+                assert_eq!(got, expected, "inverse N={N} inputs={limit}");
             }
         }
     }
 
     #[test]
-    fn grouped_odd_outputs_match_independent_matrix() {
-        check::<1>();
-        check::<2>();
-        check::<3>();
+    fn butterflies_match_the_hevc_matrix() {
         check::<4>();
-        check::<5>();
         check::<8>();
         check::<16>();
+        check::<32>();
     }
 }

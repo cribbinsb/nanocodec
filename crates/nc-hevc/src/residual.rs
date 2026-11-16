@@ -10,7 +10,7 @@ use crate::contexts::{
     CODED_SUB_BLOCK_CHROMA_OFFSET, Contexts, GREATER1_CHROMA_OFFSET, GREATER2_CHROMA_OFFSET,
     LAST_CHROMA_OFFSET, SIG_CHROMA_OFFSET,
 };
-use crate::scan::{SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind, sub_block_coded};
+use crate::scan::{CodedSubBlocks, SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind};
 
 /// A sub-block hides a sign when its last and first non-zero levels are
 /// more than this many scan positions apart (`sbhThreshold`, §7.3.8.11).
@@ -132,12 +132,13 @@ pub(crate) fn sig_contexts(
 }
 
 /// Code the levels of one transform block. `levels` is row-major
-/// (`levels[y * size + x]`) and must contain at least one non-zero level.
+/// (`levels[y * size + x]`), must contain at least one non-zero level, and
+/// `sub_blocks` are its coded sub-blocks ([`CodedSubBlocks::of`]).
 pub fn write_residual(
     w: &mut impl BinSink,
     ctx: &mut Contexts,
     scan: &Scan,
-    levels: &[i16],
+    (levels, sub_blocks): (&[i16], CodedSubBlocks),
     luma: bool,
     sign_hiding: bool,
 ) {
@@ -145,19 +146,15 @@ pub fn write_residual(
     let size = 1usize << log2;
     let sub_side = size >> SUB_BLOCK_LOG2;
 
-    // Coded flags of each 4x4 sub-block, raster order of sub-blocks.
-    // Each 4x4 sub-block is tested in raster order (four contiguous rows);
-    // the last level is then searched for only inside the last coded one.
+    // Coded flags of each 4x4 sub-block, raster order of sub-blocks; the
+    // last level is searched for only inside the last coded one.
     let mut coded = [false; MAX_SUB_BLOCKS];
-    for ys in 0..sub_side {
-        for xs in 0..sub_side {
-            coded[ys * sub_side + xs] = sub_block_coded(levels, size, (xs, ys));
-        }
+    for i in sub_blocks.iter() {
+        let (xs, ys) = scan.sub_blocks[i];
+        coded[ys * sub_side + xs] = true;
     }
-    let last_coded = scan
-        .sub_blocks
-        .iter()
-        .rposition(|&(xs, ys)| coded[ys * sub_side + xs])
+    let last_coded = sub_blocks
+        .last()
         .expect("write_residual needs a non-zero level");
     let first = last_coded * SUB_BLOCK_COEFFS;
     let last_scan_pos = first

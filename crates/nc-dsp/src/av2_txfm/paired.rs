@@ -24,17 +24,22 @@
 
 use core::mem::MaybeUninit;
 
-use super::generic::{
-    CornerBound, ODD2, ODD4, ODD8, ODD16, ODD32, RESIDUAL_MAX, RESIDUAL_MIN, corner_bound,
-    live_odd_inputs,
-};
+use super::generic::{Av2Basis, CornerBound, RESIDUAL_MAX, RESIDUAL_MIN, corner_bound};
 use super::{DC_WEIGHT, MAX_CODED_SIDE};
+use crate::codec_txfm::butterfly::{DctBasis, live_odd_inputs};
 use crate::codec_txfm::generic::written;
 use crate::simd::WordPairLanes;
 use crate::txfm::generic::store_pass_sat16;
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) use forward_pass::forward;
+
+/// Each level's odd matrix (`codec_txfm::butterfly`).
+const ODD2: [[i32; 1]; 1] = Av2Basis::ODD2;
+const ODD4: [[i32; 2]; 2] = Av2Basis::ODD4;
+const ODD8: [[i32; 4]; 4] = Av2Basis::ODD8;
+const ODD16: [[i32; 8]; 8] = Av2Basis::ODD16;
+const ODD32: [[i32; 16]; 16] = Av2Basis::ODD32;
 
 /// Coded coefficients of the largest transform.
 const MAX_CODED_AREA: usize = MAX_CODED_SIDE * MAX_CODED_SIDE;
@@ -127,7 +132,7 @@ fn inverse_level<V: WordPairLanes, const H: usize>(
     }
 }
 
-/// `generic::inverse_dct` on paired levels, inputs from `inputs` on zero.
+/// `butterfly::inverse_dct` on paired levels, inputs from `inputs` on zero.
 #[inline(always)]
 fn inverse_dct<V: WordPairLanes, const N: usize>(c: &[V; N], inputs: usize, y: &mut [V; N]) {
     y[0] = c[0].mul_scalar(DC_WEIGHT);
@@ -240,9 +245,13 @@ unsafe fn inverse_within<V: WordPairLanes, const C: usize>(
 mod forward_pass {
     use core::mem::MaybeUninit;
 
-    use super::super::generic::{ODD2, ODD4, ODD8, ODD16, ODD32, ODD64};
+    use super::super::generic::Av2Basis;
     use super::super::{DC_WEIGHT, MAX_CODED_SIDE, MAX_POINTS};
-    use super::{NO_PAIRS, pack, pair_up, paired_dot};
+    use super::{NO_PAIRS, ODD2, ODD4, ODD8, ODD16, ODD32, pack, pair_up, paired_dot};
+    use crate::codec_txfm::butterfly::DctBasis;
+
+    /// The 64-point level's odd matrix.
+    const ODD64: [[i32; 32]; 32] = Av2Basis::ODD64.unwrap();
     use crate::codec_txfm::generic::{as_uninit, written};
     use crate::simd::WordPairLanes;
     use crate::txfm::generic::store_pass;
@@ -305,7 +314,7 @@ mod forward_pass {
         }
     }
 
-    /// `generic::forward_dct`, paired when `PAIRED`.
+    /// `butterfly::forward_dct`, paired when `PAIRED`.
     #[inline(always)]
     fn forward_dct<V: WordPairLanes, const N: usize, const PAIRED: bool>(
         x: &[V; N],

@@ -21,7 +21,7 @@ use crate::predict::{CHROMA_DM, ModeCode};
 use crate::quant_group::QuantGroup;
 use crate::residual::write_residual;
 use crate::sao::{self, PictureSao};
-use crate::scan::{ScanKind, Scans};
+use crate::scan::{CodedSubBlocks, ScanKind, Scans};
 
 /// `cu_qp_delta_abs` prefix: truncated unary bins before the Exp-Golomb
 /// suffix (§9.3.3.10).
@@ -42,19 +42,60 @@ pub struct PlaneResidual {
     pub log2: u8,
     /// Coefficient scan order (`scanIdx`).
     pub scan: ScanKind,
-    /// Start of the block's row-major levels in the picture's level store
-    /// (`side²` entries; meaningful only when coded).
+    /// The block's entry in the picture's [`LevelStore`] (meaningful only
+    /// when coded).
     pub levels: u32,
     /// Any level is non-zero (`cbf`).
     pub coded: bool,
 }
 
 impl PlaneResidual {
-    /// The block's levels in `store`.
+    /// The block's levels in `store`, with its coded sub-blocks (as
+    /// [`crate::residual::write_residual`] takes them).
     #[must_use]
-    pub fn levels(self, store: &[i16]) -> &[i16] {
-        let start = self.levels as usize;
-        &store[start..start + (1 << (2 * self.log2))]
+    pub fn coded_levels(self, store: &LevelStore) -> (&[i16], CodedSubBlocks) {
+        store.get(self.levels, self.log2)
+    }
+}
+
+/// The levels of every coded transform block of a picture, appended in
+/// coding order, each with its coded sub-blocks (found once, when the
+/// levels are final). Stored as `i16` (every HEVC level fits): the store is
+/// written per coded block and read back by the slice writer a frame's
+/// coding later, so its size is memory traffic. Cleared per picture, so
+/// there is no per-block allocation; a block's entry stays out of
+/// [`PlaneResidual`], which transform units copy around.
+#[derive(Debug, Default)]
+pub struct LevelStore {
+    levels: Vec<i16>,
+    /// Where each block's levels start, and its coded sub-blocks.
+    blocks: Vec<(u32, CodedSubBlocks)>,
+}
+
+impl LevelStore {
+    /// Forget every block (a new picture).
+    pub fn clear(&mut self) {
+        self.levels.clear();
+        self.blocks.clear();
+    }
+
+    /// Append a coded block's row-major `levels` and its coded
+    /// `sub_blocks`; returns the block's entry.
+    pub fn push(&mut self, levels: &[i16], sub_blocks: CodedSubBlocks) -> u32 {
+        let start = u32::try_from(self.levels.len()).expect("level store under 4 Gi entries");
+        let entry = u32::try_from(self.blocks.len()).expect("under 4 Gi coded blocks");
+        self.levels.extend_from_slice(levels);
+        self.blocks.push((start, sub_blocks));
+        entry
+    }
+
+    /// The levels and coded sub-blocks of the `2^log2`-square block at
+    /// `entry`.
+    #[must_use]
+    pub fn get(&self, entry: u32, log2: u8) -> (&[i16], CodedSubBlocks) {
+        let (start, sub_blocks) = self.blocks[entry as usize];
+        let start = start as usize;
+        (&self.levels[start..start + (1 << (2 * log2))], sub_blocks)
     }
 }
 
@@ -286,7 +327,7 @@ pub enum Item {
 #[must_use]
 pub fn write_slice_data(
     items: &[Item],
-    (levels, units): (&[i16], &[TransformUnit]),
+    (levels, units): (&LevelStore, &[TransformUnit]),
     slice: SliceKind,
     qp: i32,
     block_qp: bool,
@@ -400,7 +441,7 @@ struct CuQp<'g> {
 struct Tables<'a> {
     transform: TransformSyntax<'a>,
     /// The picture's level store.
-    levels: &'a [i16],
+    levels: &'a LevelStore,
     /// The picture's transform unit store.
     units: &'a [TransformUnit],
     /// `MaxNumMergeCand` of the slice: `merge_idx`'s cMax + 1.
@@ -704,7 +745,7 @@ fn write_tu_residuals(
                     w,
                     ctx,
                     tables.transform.scans.get(residual.log2, residual.scan),
-                    residual.levels(tables.levels),
+                    residual.coded_levels(tables.levels),
                     luma,
                     SIGN_DATA_HIDING,
                 );

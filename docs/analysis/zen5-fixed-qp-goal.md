@@ -492,6 +492,20 @@ on the landed Fast (ca8429a43, with rate.prekey_quiet from 86d268d54):
   that clip). Details: `docs/handoff/hevc.md`, "HEVC speed agent 2".
 - **HEVC exact 916c569eb:** per P frame -0.15 % Johnny, -1.11 % WestWindEasy (box callgrind, Fast QP 37).
 
+- **AV1 Faster = f-c3n with `rate.prekey_quiet` 1** (`feature/av1-fc3n`, 2026-11-16; the
+  rate-control fix 86d268d54 un-starves f-c3's still-scene key). Against the previous Faster:
+  - final-check (600 f, keys every 10 s, 27 clips, ladder): quality J **-9.78 % [-10.64,
+    -9.01]**, every class better, key pulses -0.20 dB (first) / -0.14 dB (periodic); guard: one
+    more rung of pool_meva_hospital_g301 overshoots (> 10 %), as in f-c3; that clip's periodic key
+    pulse improves 0.66 dB.
+  - x86 callgrind, CBR 600 kbit/s, 90 f: +14.0 % (crowd +11.3, bodycam +14.4, lowlight +16.4),
+    so J at k 0.6 about -1.4 %; CBR L1 with that dCPU: J -0.77 % [-2.98, +1.07].
+  - Zen 5 chart path (c8a.large, QPs matched to the chart bytes, 2 repeats): Faster 376 fps,
+    **f-c3n 340**, f-c3 331, SVT M12 427 (`~/nanocodec-data/work/av1-lowlight/fc/t1`).
+  - f-c3 (f-c3n plus pre-transform skip energy 30 and no skip bias): quality J -11.74 %
+    [-12.73, -10.82] for +18.0 % CPU (about -0.9 % at k 0.6), L1 -1.27 % [-3.44, +0.58],
+    331 fps; f-c3n is the better J per CPU and the faster point, so it is the one landed.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

@@ -11,7 +11,7 @@
 //! tunable, `hevc.intra_rounding` / `hevc.inter_rounding`).
 
 use crate::residual::SIGN_HIDING_THRESHOLD;
-use crate::scan::{SUB_BLOCK_COEFFS, Scan, sub_block_coded};
+use crate::scan::{CodedSubBlocks, SUB_BLOCK_COEFFS, Scan, sub_block_coded};
 #[cfg(test)]
 use crate::transform::{COEFF_MAX, COEFF_MIN};
 use nc_dsp::HevcQuantizer;
@@ -147,20 +147,20 @@ fn previous_nonzero(levels: &[i16], scan: &Scan, end: usize) -> Option<usize> {
 /// is applied (the HM "sign bit hiding" adjustment, distortion only):
 /// raising or lowering a level inside the sub-block's non-zero span by one,
 /// never zeroing the first or last level of the span (that would move the
-/// span). `coeffs` are the transform coefficients before quantisation.
-pub fn hide_signs(coeffs: &[i16], levels: &mut [i16], scan: &Scan, qp: i32) {
+/// span), so `sub_blocks` (the coded sub-blocks) stay as they are. `coeffs`
+/// are the transform coefficients before quantisation.
+pub fn hide_signs(
+    coeffs: &[i16],
+    (levels, sub_blocks): (&mut [i16], CodedSubBlocks),
+    scan: &Scan,
+    qp: i32,
+) {
     let (qbits, scale, _) = quant_params(qp, scan.log2, 0);
     // Unquantised magnitude in quantisation steps.
     let value =
         |p: usize| (i64::from(coeffs[p].unsigned_abs()) * scale) as f64 / (1i64 << qbits) as f64;
-    let size = 1usize << scan.log2;
     let spans = scan.positions.as_chunks::<SUB_BLOCK_COEFFS>().0;
-    for (span, &(xs, ys)) in spans.iter().zip(&scan.sub_blocks) {
-        // Most sub-blocks of a coded block are empty: test the 4x4 in raster
-        // order (four contiguous rows) before walking it in scan order.
-        if !sub_block_coded(levels, size, (xs, ys)) {
-            continue;
-        }
+    for span in sub_blocks.iter().map(|i| &spans[i]) {
         let nonzero = |n: &usize| levels[span[*n]] != 0;
         let (Some(first), Some(last)) = (
             (0..SUB_BLOCK_COEFFS).find(nonzero),
@@ -281,7 +281,8 @@ mod tests {
             let mut wide: Vec<i32> = coeffs.iter().map(|&c| i32::from(c)).collect();
             quantize(&mut wide, 22, 3, false);
             let mut levels: Vec<i16> = wide.iter().map(|&l| l as i16).collect();
-            hide_signs(&coeffs, &mut levels, &scan, 22);
+            let sub_blocks = CodedSubBlocks::of(&levels, &scan);
+            hide_signs(&coeffs, (&mut levels, sub_blocks), &scan, 22);
             for span in scan.positions.as_chunks::<SUB_BLOCK_COEFFS>().0 {
                 let nz: Vec<usize> = (0..SUB_BLOCK_COEFFS)
                     .filter(|&n| levels[span[n]] != 0)

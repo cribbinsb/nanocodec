@@ -201,37 +201,39 @@ kernels only.
 | 9 | HEVC/VVC short luma deblock and the chroma delta core | HEVC 1.7, VVC 2-3 | luma short filters landed (see log); chroma core stays separate (section 6) |
 | 10 | VVC/HEVC planar (landed), H.264/VP9 diagonal rows, AV2 Paeth onto AV1 | small | planar landed; rest planned |
 
-## Handover state (2026-11-16 13:20, after `b7ae5102c`)
+## Handover state (2026-11-16 14:35, after `882703533`)
 
 Landed from the third brief: item 6 luma (`b7ae5102c`, HEVC/VVC short luma
 filters in `deblock/short_luma.rs`); the chroma delta core stays separate
-(section 6 row). Item 8 has a parked first step (below); item 7 is not
+(section 6 row). Item 8 step 1 landed (below); item 7 is not
 started.
 
-- **Item 8, step 1 (parked on `feature/kernel-share-butterfly-wip`,
-  `003e3b73a`, not landed).** AV2's level engine (`odd_matrix`, `dot`,
+- **Item 8, step 1 (landed).** AV2's level engine (`odd_matrix`, `dot`,
   `inverse_level`, `forward_level`, `inverse_dct`, `forward_dct`) moved to
   `codec_txfm/butterfly.rs`, generic over a `DctBasis` (DC weight and each
   level's odd matrix; `Av2Basis` from `DCT_BASIS`, `HevcBasis` from
   `DCT32`). HEVC's `hevc_idct*`, `*_bounded`, `hevc_fdct*`, `*_low` and
   `hevc_odd_forward` (about 330 lines) became `hevc_fdct` / `hevc_idct`
   calls; a unit test checks them against the HEVC matrix.
-  - Exact: the unit tests pass; checkasm scalar, AVX2, AVX-512 (box), NEON
-    (Jetson) and SIMD128 (node) ok. vvc-v1 is unchanged against the base
-    (224/226; the same two 10-bit field streams, FIELD_A_4 and FIELD_B_2,
-    mismatch at base). Not yet run: preset_identity, callgrind.
-  - Blocker, NEON (Jetson `nc-checkasm --bench --isa neon`, min of two
-    runs, against `b7ae5102c`): sparse inverses slower, add_low4 8x8
-    +12.9 %, 16x16 +13.8 %, 32x32 +5.4 %, split_dc 16x16 +9.8 %; full
-    inverses faster (32x32 -5.5 to -6.5 %), forward 16x16 -5.3 %, forward
-    32x32 +1.2 %, AV2 within ±2 %. Rounding the runtime input bound to
-    constants (1, 2, 4, 8, 16, N; in the parked commit) cut the losses from
-    up to +19 % to the figures above.
-  - Not yet tested: whether the cause is the engine's `quad_rounded`
-    padding (a level with 2 live odd inputs runs 4 products per output,
-    where HEVC's loop ran 2). Next test: drop the padding (or apply it
-    only from 4 live inputs) and re-bench HEVC and AV2 on the Jetson; then
-    preset_identity HEVC/VVC/AV2 and callgrind HEVC/VVC/AV2 Default.
+  - The NEON regression of the parked commit (sparse inverses +10 to
+    +14 %) was the engine's `quad_rounded` padding: a level with 1 or 2
+    live odd inputs ran 2 or 4 products per output. Without it (Jetson
+    `nc-checkasm --bench --isa neon`, min of two interleaved runs against
+    `98b609f22`): add_low4 8x8 -2.1 %, 16x16 -11.2 %, 32x32 -8.2 %;
+    split_dc 16x16 -3.5 %, 32x32 -8.4 %; full inverses 8x8 -6.9 %, 32x32
+    -5.0 %; forward 16x16 -5.1 %. Slower: 4x4 forward +4.0 % (+1.1 ns),
+    4x4 inverse +2.3 %, add_low4/full 4x4 +4.1 % (+2 ns), forward 32x32
+    +1.3 %. AV2 within noise (-0.8 to +1.0 %; the 4x4 forward +2.3 % in
+    both variants, a kernel the change does not touch).
+  - Whole program, Jetson (`jperf`, crowd 720p, 30 frames, chart QPs,
+    cycles, min of 3): HEVC encode +0.09 % (instructions -0.22 %), VVC
+    -0.76 %, AV2 -0.56 %; HEVC decode (60 frames, QP 36, min of 5)
+    -0.54 %. x86 callgrind in the merge log. Streams identical
+    (`preset_identity` HEVC/VVC/AV2, 90/90); hevc-v1 147/147.
+  - Method trap: syncing a source tree to the Jetson with `rsync -a` (or
+    `git archive`) keeps old mtimes, so cargo does not rebuild and every
+    "variant" is the same binary. Sync with `rsync -rlp --checksum`
+    (changed files get the current time) and compare the binaries' hashes.
   - Later steps: the paired i16 engines (HEVC `avx2_paired.rs` and
     `simd128_inverse`, AV2 `paired.rs`) onto one basis-parameterised pass.
 - **Item 7, VP9 inverse into `narrow_inverse`.** Not started. Differences
@@ -244,6 +246,26 @@ started.
   separate non-adding `transform` entry point and `dc_add`. VP9 already has
   EOB-sparse DCT corners (`dct_add` with `K`); the gain left is 16-lane
   AVX2.
+  - Read 2026-11-16 (not started; no code): the lane types cannot be
+    shared, only the driver. AV1's `Narrow` is exact only inside the L1
+    guard: it narrows with a saturating pack (`packs_epi32`) and pre-adds
+    equal-weight pairs in 16 bits before `pmulhrsw`; VP9 must wrap like
+    libvpx's `WRAPLOW` for every input (truncating pack after masking, and
+    `(a + b) * cospi_16_64` in 32 bits), with 14-bit cosines (`COSINE`),
+    where AV1's lanes hard-code 12. So VP9 keeps its `Lanes`/`Products`
+    types and implements `NarrowLanes` (loads, `store_groups`, `transpose`,
+    `add_to_pixels`, const `round_shift`; a norm type with an always-true
+    `within_limit`). The driver needs a codec parameter for: the load
+    (AV1 column-major lanes load directly; VP9 row-major needs `load_tile`'s
+    transpose), the row shift (AV1 1/2, VP9 none), the column shift (AV1 4,
+    VP9 5/6), the guard and wide fallback (AV1 only), the 2:1 prescale (AV1
+    only) and the 1-D kernels (VP9 `corner_dct` with `Sparse` and its
+    `adst`). `dc_add` and the non-adding `transform` stay VP9's.
+  - Expected gain: x86 only (a 16-lane AVX2 VP9 type, new, with the
+    wrapping `pmaddwd` products of `packed/avx2.rs` on 256-bit halves);
+    NEON and SIMD128 stay at 8 lanes, so the Jetson gains nothing but the
+    shared loops. Measure VP9 decode share first (Jetson and x86) to size
+    it before writing the 16-lane type.
 
 Earlier plan notes (2026-11-16 12:10):
 
@@ -273,7 +295,7 @@ Earlier plan notes (2026-11-16 12:10):
   `WRAPLOW` wrap vs AV1's per-stage clamp, guarded by `l1_limit`), the
   14-bit cosine table, and the shifts (VP9 5/6). Gains: 16-lane AVX2 and
   the EOB-sparse graphs for VP9.
-- **Item 8, one partial-butterfly engine for HEVC and AV2.** Step 1 parked (above).
+- **Item 8, one partial-butterfly engine for HEVC and AV2.** Step 1 landed (above).
   The sources are `codec_txfm/generic.rs:713-1287` (HEVC DCT and inverse)
   and `av2_txfm/generic.rs`, `paired.rs`. The differences are the basis
   table (35 vs 36), pass order (AV2 columns first), shifts and clamps. AV2
@@ -307,6 +329,7 @@ Method notes for the next agent:
 | MC AVX-512 rows, VVC last significant on the shared kernel, one reconstruction kernel, plane SSE on `sse_8x8_row` (vs `6fabd2d77`; an AVX2 run, so the AVX-512 rows do not count here) | 0.00 | 0.00 | -1.12 | +0.06 | +0.01 | -0.84 |
 
 | HEVC/VVC short luma filters in `deblock/short_luma.rs` (vs `7b3c81724`) | | +0.01 | -0.06 | | | |
+| HEVC 1-D DCTs on the AV2 partial-butterfly engine, no quad padding (vs `98b609f22`) | | -0.08 | -0.24 | | | -0.01 |
 
 Streams byte-identical at every step (`preset_identity`, all six codecs;
 the AVX-512 rows also AVX2 against AVX-512 on the Ice Lake box).

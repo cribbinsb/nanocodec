@@ -20,7 +20,7 @@ use nc_encoder::Block;
 use super::{HevcBackend, Scratch, transform_units};
 use crate::headers::LOG2_MIN_CB;
 use crate::predict::{self, ModeCode};
-use crate::scan::ScanKind;
+use crate::scan::{CodedSubBlocks, ScanKind};
 
 /// The forward transform's coefficients are `2^(7 − log2 n)` times the
 /// orthonormal ones (HM scaling, 8-bit: `15 − BitDepth − log2 n`).
@@ -92,7 +92,8 @@ impl HevcBackend {
                 .sum::<u64>()
         } else {
             let scan = ScanKind::for_intra(predict::DC, log2, true);
-            bits += self.levels_bits(&levels[..area], log2, scan, true);
+            let sub_blocks = CodedSubBlocks::of(&levels[..area], self.scans.get(log2, scan));
+            bits += self.levels_bits((&levels[..area], sub_blocks), log2, scan, true);
             self.dsp
                 .hevc_dequantize(&levels[..area], quantizer, &mut scaled[..area]);
             coeffs[..area]

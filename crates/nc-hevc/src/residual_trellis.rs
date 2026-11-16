@@ -482,6 +482,7 @@ mod tests {
     use super::*;
     use crate::rate::BitEstimator;
     use crate::residual::write_residual;
+    use crate::scan::CodedSubBlocks;
 
     /// Summed level rates equal `write_residual`'s estimate (signs not
     /// hidden), up to the adaptation between bins of one element.
@@ -527,7 +528,7 @@ mod tests {
                         &mut estimate,
                         &mut contexts.clone(),
                         &scan,
-                        &levels,
+                        (&levels, CodedSubBlocks::of(&levels, &scan)),
                         luma,
                         false,
                     );

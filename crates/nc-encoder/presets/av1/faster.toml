@@ -56,31 +56,14 @@ av1.inter_intra_search = 0
 # 32x32 and 64x64 residuals keep their low frequencies in coding too
 # (quality -0.4% / time -2.3%).
 av1.partial_forward = 2
-# Exact-filter candidates ranked against a tighter margin (+0.5 / -1.3%).
-decision.exact_rank_margin = 0.9
 # More blocks skip luma before the transform (+2.3 / -4.3%).
 av1.pre_tx_skip_energy = 100
-# The full-pel window stops at its centre below 2 SAD/pixel (+0.9 / -1.5%).
-analysis.window_exit_sad_per_pixel = 2
-# Sub-pel refinement skipped below 0.5 lambda of seed residual
-# (Fast 0.1; 0.3 alone: +2.2 / -3.3%).
-decision.codec_subpel_seed_lambdas = 0.5
+# Sub-pel refinement skipped below Fast's 0.1 lambda of seed residual.
+decision.codec_subpel_seed_lambdas = 0.1
 # CDEF distortion sampled on every 8th row (+0.5 / -0.7%).
 av1.cdef_search_row_step = 8
-# Chroma transforms skipped below a sampled-SAD threshold of 7/8 (Fast
-# 5/8). 10/8 cost av1-faster J_real 6.3% on VAL (PSNR-YUV 11.6, VMAF v1
-# 14.5: both include chroma) for 3.2% Jetson time; 7/8 keeps most of the
-# time (see the rebuild below).
-av1.chroma_skip_sad_num = 7
-# One NEARMV candidate (+1.2 / -1.6%).
-av1.near_count = 1
 # The per-superblock CDEF choice searched on every 4th frame (+2.0 / -2.0%).
 av1.cdef_local_search_period = 4
-# A 4x1 full-pel window (+3.6 / -3.3%).
-analysis.window_half_width = 2
-analysis.window_half_height = 0
-# SVT's linear end-of-block rate in the residual-drop check (+0.7 / -0.7%).
-av1.coeff_rate_linear = 1
 # Depth removal twice as eager (+2.4 / -1.4%).
 planner.depth_removal_qp_scale = 4
 #
@@ -129,3 +112,20 @@ structure.inherited_depth = 0
 # streams do not move with the engine default.
 planner.depth_removal_th_32_16 = 25
 planner.depth_removal_th_16_8 = 50
+
+# f-c3n (2026-11-16, zen5 goal record): Faster with its cheap-but-costly
+# groups back at Fast's values (sub-pel seed lambda, exact-rank margin,
+# full-pel window and its exit, chroma skip threshold, NEARMV count, the
+# linear residual-drop rate), and Fast's
+# quiet run-up before a scheduled key, which keeps the
+# still-scene key from starving. Against the previous Faster (2026-11-16):
+# final-check (600 f, keys every 10 s, 27 clips) quality J -9.78 %
+# [-10.64, -9.01], key pulses -0.20 / -0.14 dB; x86 callgrind at 600 kbps
+# +14.0 % (crowd +11.3, bodycam +14.4, lowlight +16.4), so J at k 0.6
+# about -1.4 %; CBR L1 J -0.77 % [-2.98, +1.07] with that dCPU; Zen 5
+# chart path (c8a.large) 376 -> 340 fps (SVT M12 427). The f-c3 variant
+# (also pre-transform skip energy 30, skip bias off): quality J -11.74 %
+# for +18.0 % CPU (about -0.9 % at k 0.6), 331 fps. One rate guard in
+# both: one more rung of pool_meva_hospital_g301 overshoots (> 10 %); its
+# key pulse improves 0.66 dB.
+rate.prekey_quiet = 1

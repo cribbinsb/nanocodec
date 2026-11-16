@@ -57,6 +57,7 @@
 //! `±2^16` and products beyond the saturation threshold are clamped before
 //! the shift, where they would saturate anyway.
 
+pub(crate) mod butterfly;
 pub(crate) mod generic;
 #[allow(unsafe_code)]
 pub(crate) mod h264_inverse8;

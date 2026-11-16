@@ -64,10 +64,10 @@ use crate::quant::{
 use crate::rate::BinCosts;
 use crate::residual_trellis::{BlockQuantizer, RateModel, TrellisQuantizer};
 use crate::sao::{self, PictureSao, SEARCH_INTERVAL};
-use crate::scan::{ScanKind, Scans};
+use crate::scan::{CodedSubBlocks, Scan, ScanKind, Scans};
 use crate::syntax::{
-    CuKind, CuRecord, Item, MAX_TUS, MVD_EG_ORDER, PlaneResidual, TransformSyntax, TransformUnit,
-    TransformUnits, TuRange, split_ctx_inc, split_flag_present, write_slice_data,
+    CuKind, CuRecord, Item, LevelStore, MAX_TUS, MVD_EG_ORDER, PlaneResidual, TransformSyntax,
+    TransformUnit, TransformUnits, TuRange, split_ctx_inc, split_flag_present, write_slice_data,
 };
 use crate::transform::{MAX_COEFFS, forward_bound, inverse_dc};
 
@@ -469,12 +469,8 @@ pub struct HevcBackend {
     /// Transform-block scratch (allocated once; only the `n * n` prefix a
     /// block uses is touched, so no per-block clearing of 32x32 buffers).
     scratch: RefCell<Scratch>,
-    /// Levels of every coded transform block of the picture, appended in
-    /// coding order (cleared per picture, so no per-block allocation).
-    /// Stored as `i16` (every HEVC level fits): the store is written per
-    /// coded block and read back by the slice writer a frame's coding later,
-    /// so its size is memory traffic.
-    level_store: RefCell<Vec<i16>>,
+    /// Levels of every coded transform block of the picture.
+    level_store: RefCell<LevelStore>,
     /// Transform units of every recorded CU of the picture, in coding order
     /// (each CU's [`TuRange`] points here; cleared per picture).
     tu_store: Vec<TransformUnit>,
@@ -2319,8 +2315,7 @@ impl HevcBackend {
             return PlaneResidual {
                 log2,
                 scan,
-                levels: 0,
-                coded: false,
+                ..PlaneResidual::default()
             };
         }
         let qp = self.frame_quantization.planes[usize::from(plane != PlaneIndex::Y)].qp;
@@ -2350,45 +2345,40 @@ impl HevcBackend {
             quantization.column_zero_limit,
             &mut coeffs[..n * n],
         );
-        let mut nonzero = 0;
-        let coded = if transformed {
-            nonzero = self
-                .dsp
-                .hevc_quantize_from(&coeffs[..n * n], quantizer, levels);
-            if quantization.planned_min_level > 1 {
-                nonzero =
-                    nc_encoder::apply_planned_dead_zone(levels, quantization.planned_min_level)
-                        as u32;
-            }
-            // A lone level is the block's first and is never shaved;
-            // skipping the shave there (most coded inter blocks: a DC)
-            // saves its search for the last level through every empty
-            // sub-block. Exact: HEVC Faster x86 instructions -0.6% (callgrind,
-            // chart clips, CBR 600).
-            let kept = nonzero > 0
-                && (self.shave_gap == 0
-                    || nonzero == 1
-                    || shave_isolated_ones(levels, self.scans.get(log2, scan), self.shave_gap));
-            let trellis = (quantisation == Quantisation::Final)
-                .then(|| self.trellis_for(plane))
-                .flatten();
-            if kept && let Some(trellis) = trellis {
-                nonzero =
-                    self.trellis_quantize(trellis, plane, &coeffs[..n * n], log2, scan, levels);
-            }
-            nonzero > 0
+        let nonzero = if transformed {
+            self.quantise_levels(
+                plane,
+                (&coeffs[..n * n], levels),
+                quantization,
+                self.scans.get(log2, scan),
+                quantisation,
+            )
         } else {
-            false
+            0
         };
+        let coded = nonzero > 0;
         // Parity adjustment never zeroes or creates a coded block, so an
         // all-zero block (most transformed inter blocks) skips it.
         // A lone DC has no sign-hiding span and, under a DCT, reconstructs
         // to a constant (the DST's first basis is not flat).
         // Exact shortcut: bodycam/crowd P instructions fall 3.79%/0.99%
         // at QP28/39, with unchanged streams and reconstruction.
-        let dc_only = nonzero == 1 && levels[0] != 0 && transform != HevcTransform::Dst4;
+        let lone_dc = nonzero == 1 && levels[0] != 0;
+        let dc_only = lone_dc && transform != HevcTransform::Dst4;
+        let sub_blocks = if lone_dc {
+            CodedSubBlocks::FIRST
+        } else if coded {
+            CodedSubBlocks::of(levels, self.scans.get(log2, scan))
+        } else {
+            CodedSubBlocks::default()
+        };
         if coded && SIGN_DATA_HIDING && !dc_only {
-            hide_signs(&coeffs[..n * n], levels, self.scans.get(log2, scan), qp);
+            hide_signs(
+                &coeffs[..n * n],
+                (levels, sub_blocks),
+                self.scans.get(log2, scan),
+                qp,
+            );
         }
 
         let mut out = recon.plane_mut(plane).view_mut();
@@ -2408,13 +2398,53 @@ impl HevcBackend {
         } else if predicted != Predicted::InterInPlace {
             copy_square(&mut out, (x, y), n, pred, pred_stride);
         }
-        let start = if coded { self.store_levels(levels) } else { 0 };
+        let entry = coded.then(|| self.store_levels(levels, sub_blocks));
         PlaneResidual {
             log2,
             scan,
-            levels: start,
+            levels: entry.unwrap_or(0),
             coded,
         }
+    }
+
+    /// Quantise a transformed block's `coeffs` into `levels` (the dead
+    /// zone, shaving and, for final blocks, the trellis); returns the
+    /// number of non-zero levels, or an upper bound once shaving dropped
+    /// some (0 exactly when every level is zero).
+    fn quantise_levels(
+        &self,
+        plane: PlaneIndex,
+        (coeffs, levels): (&[i16], &mut [i16]),
+        quantization: &TransformQuantization,
+        scan: &Scan,
+        quantisation: Quantisation,
+    ) -> u32 {
+        let mut nonzero = self
+            .dsp
+            .hevc_quantize_from(coeffs, &quantization.quantizer, levels);
+        if quantization.planned_min_level > 1 {
+            nonzero =
+                nc_encoder::apply_planned_dead_zone(levels, quantization.planned_min_level) as u32;
+        }
+        // A lone level is the block's first and is never shaved;
+        // skipping the shave there (most coded inter blocks: a DC)
+        // saves its search for the last level through every empty
+        // sub-block. Exact: HEVC Faster x86 instructions -0.6% (callgrind,
+        // chart clips, CBR 600).
+        let kept = nonzero > 0
+            && (self.shave_gap == 0
+                || nonzero == 1
+                || shave_isolated_ones(levels, scan, self.shave_gap));
+        if !kept {
+            return 0;
+        }
+        let trellis = (quantisation == Quantisation::Final)
+            .then(|| self.trellis_for(plane))
+            .flatten();
+        if let Some(trellis) = trellis {
+            nonzero = self.trellis_quantize(trellis, plane, coeffs, scan.log2, scan.kind, levels);
+        }
+        nonzero
     }
 
     /// The decoded residual of a coded block's `levels` (`scaled` and
@@ -2440,18 +2470,15 @@ impl HevcBackend {
         Residual16::Samples(decoded)
     }
 
-    /// Append a coded block's levels to the picture's level store; returns
-    /// where they start.
+    /// Append a coded block's levels and coded sub-blocks to the picture's
+    /// level store; returns the block's entry.
     ///
     /// Levels are 16-bit throughout (§7.4.9.11): coefficients are at most
     /// 2^15 in magnitude (`nc_dsp::codec_txfm` ranges), the quantiser scale
     /// at most 2^15 and its shift at least 16 at 8 bits, so `|level| <=
     /// 2^14`, and sign hiding and the trellis move a level by one.
-    fn store_levels(&self, levels: &[i16]) -> u32 {
-        let mut store = self.level_store.borrow_mut();
-        let start = u32::try_from(store.len()).expect("level store under 4 Gi entries");
-        store.extend_from_slice(levels);
-        start
+    fn store_levels(&self, levels: &[i16], sub_blocks: CodedSubBlocks) -> u32 {
+        self.level_store.borrow_mut().push(levels, sub_blocks)
     }
 
     /// `slice_sao_luma_flag` and `slice_sao_chroma_flag` of the current
