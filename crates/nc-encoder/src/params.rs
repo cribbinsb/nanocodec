@@ -111,6 +111,11 @@ impl ParamOverrides {
         self.0.insert(name.to_owned(), value);
     }
 
+    /// Drop the override of `name`, if any: `name` takes its default again.
+    pub fn remove(&mut self, name: &str) {
+        self.0.remove(name);
+    }
+
     /// Whether `name` has an explicit override in this map.
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {

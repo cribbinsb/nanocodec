@@ -346,6 +346,27 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
     - t33 (light-pipeline binary, plain switch): homes 600 pulse delta against old Fast +3.88 →
       +0.38 dB, london_bus 600 +2.00 → +0.70, hospital 600 +2.74 → +1.57.
 
+## AV1 Fast: the Default's cheap quality groups (feature/light-pipeline, 2026-11-16)
+
+Lever-group ablation of Fast against the Default (each group of Fast's values put back to
+the Default's, box fixed-QP lens and c8a fixed-QP timing; docs/handoff/light-pipeline.md).
+Five groups were above the Fast -> Default line: CDEF settings, sub-pel move biases,
+cheap-vector and seed refinement, pre-transform skip energy/model/RD, deblocking. Together
+on the landed Fast (ca8429a43, with rate.prekey_quiet from 86d268d54):
+
+| point | c8a fps (4 CTC seq.) | chart-path time vs Fast | lens Weighted / J |
+|---|---:|---:|---:|
+| previous Fast | 249 | 1.00 | -6.5 / -17.1 |
+| new Fast | 226 | 1.104 | -11.0 / -19.7 |
+| SVT M10 | 215 | 1.175 | -14.2 / -19.5 |
+
+- New Fast beats M10 on fixed-QP J at higher speed; M10 keeps 3.2 Weighted points.
+- CBR quality vs the previous Fast (draw 2026-11-16, dCPU 0): L3 -3.31% [-4.15, -2.31],
+  n=78, against a Fast -> Default line of about -2.0% at x1.104 (Default -11.98% at x1.61).
+- Final-check (600 f, keys every 10 s): J -3.25% [-4.02, -2.53], no guards. Without the
+  prekey_quiet fix the same bundle failed the pulse guard (+0.84 dB); without deblocking the
+  static class failed (+3.7%).
+
 ## Assigned 2026-11-16 09:10
 
 - **`feature/av1-av2-speed`:** re-point AV1 Fast (depth + full forward), then gate the three

@@ -223,17 +223,6 @@ fn scale(r_hi: u32, f: u32) -> u32 {
     (r_hi * (f >> PROB_SHIFT)) >> (7 - PROB_SHIFT)
 }
 
-/// Add one to the number whose last byte ends `out` (a carry out of `low`).
-fn propagate_carry(out: &mut [u8]) {
-    for byte in out.iter_mut().rev() {
-        let (sum, overflow) = byte.overflowing_add(1);
-        *byte = sum;
-        if !overflow {
-            return;
-        }
-    }
-}
-
 /// The arithmetic core: interval state and the bytes it has finished.
 #[derive(Debug)]
 struct RangeEncoder {
@@ -312,7 +301,7 @@ impl RangeEncoder {
         let kept_bits = (self.cnt + WINDOW_SPARE - ready_bits) as u32;
         let output = low >> kept_bits;
         if output & (1 << ready_bits) != 0 {
-            propagate_carry(&mut self.out);
+            nc_common::propagate_carry(&mut self.out);
         }
         // The carry bit falls off the top of the shifted window.
         let window = (output << (64 - ready_bits)).to_be_bytes();
@@ -339,7 +328,7 @@ impl RangeEncoder {
             let shift = (c + 16) as u32;
             let value = end >> shift;
             if value & 0x100 != 0 {
-                propagate_carry(&mut self.out);
+                nc_common::propagate_carry(&mut self.out);
             }
             self.out.push(value as u8);
             end &= (1 << shift) - 1;

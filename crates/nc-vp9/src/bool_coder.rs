@@ -6,12 +6,29 @@
 
 use nc_common::decode::{DecodeError, Result};
 
+/// `pending` of a fresh writer (libvpx `count`): its first byte is complete
+/// once 24 more bits have been shifted in.
+const PENDING_START: i32 = -24;
+/// Bits `low` holds beyond `pending` (libvpx's 32-bit `lowvalue`).
+const WRITER_WINDOW_BITS: i32 = 32;
+/// Pending bits after which whole bytes are flushed: up to four bytes leave
+/// `low` at once, and `low` (at most 62 bits with its carry) never
+/// overflows.
+const FLUSH_PENDING: i32 = 24;
+
 /// Boolean arithmetic encoder with VP9's initial zero marker and final padding.
+///
+/// libvpx's `vpx_writer` arithmetic with a 64-bit `low`: where libvpx moves
+/// each byte out as soon as it is complete (`count >= 0`), this keeps
+/// completed bytes in `low` until a few have gathered, then writes them
+/// together from an out-of-line flush and adds any carry into the bytes
+/// already written (as `nc_av1::range_coder` does). The bytes are the same.
 #[derive(Debug, Clone)]
 pub struct BoolWriter {
     bytes: Vec<u8>,
-    low: u32,
+    low: u64,
     range: u32,
+    /// libvpx `count`: `low` holds `pending + 32` bits (and a carry above).
     pending: i32,
 }
 
@@ -29,45 +46,52 @@ impl BoolWriter {
             bytes: Vec::new(),
             low: 0,
             range: 255,
-            pending: -24,
+            pending: PENDING_START,
         };
         writer.write(false, 128);
         writer
     }
 
     /// Encode a bit with an eight-bit probability of zero (0..255).
+    #[inline]
     pub fn write(&mut self, bit: bool, probability: u8) {
         let split = 1 + (((self.range - 1) * u32::from(probability)) >> 8);
         if bit {
-            self.low += split;
+            self.low += u64::from(split);
             self.range -= split;
         } else {
             self.range = split;
         }
-        let mut shift = self.range.leading_zeros() as i32 - 24;
+        let shift = self.range.leading_zeros() - 24;
         self.range <<= shift;
-        self.pending += shift;
-        if self.pending >= 0 {
-            let offset = shift - self.pending;
-            if self.low.wrapping_shl((offset - 1) as u32) & 0x8000_0000 != 0 {
-                // Carry through any run of FF bytes. The initial zero marker
-                // ensures there is a preceding byte in which the carry fits.
-                let mut index = self.bytes.len();
-                loop {
-                    index = index.checked_sub(1).expect("initial marker absorbs carry");
-                    if self.bytes[index] != 255 {
-                        self.bytes[index] += 1;
-                        break;
-                    }
-                    self.bytes[index] = 0;
-                }
-            }
-            self.bytes.push((self.low >> (24 - offset)) as u8);
-            self.low = self.low.wrapping_shl(offset as u32) & 0x00ff_ffff;
-            shift = self.pending;
-            self.pending -= 8;
+        let pending = self.pending + shift as i32;
+        if pending >= FLUSH_PENDING {
+            self.flush(shift, pending);
+        } else {
+            self.low <<= shift;
+            self.pending = pending;
         }
-        self.low = self.low.wrapping_shl(shift as u32);
+    }
+
+    /// Shift `low` by `shift` (making `pending` bits pending) and write the
+    /// whole bytes libvpx would have written by now, carrying into the
+    /// bytes already written.
+    #[cold]
+    #[inline(never)]
+    fn flush(&mut self, shift: u32, pending: i32) {
+        let shifted = self.low << shift;
+        let bits = (pending + WRITER_WINDOW_BITS) as u32;
+        let ready_bytes = (pending / 8 + 1) as u32;
+        let kept = bits - 8 * ready_bytes;
+        if (shifted >> bits) & 1 != 0 {
+            nc_common::propagate_carry(&mut self.bytes);
+        }
+        let ready = (shifted >> kept) << (64 - 8 * ready_bytes);
+        let len = self.bytes.len();
+        self.bytes.extend_from_slice(&ready.to_be_bytes());
+        self.bytes.truncate(len + ready_bytes as usize);
+        self.low = shifted & ((1 << kept) - 1);
+        self.pending = pending - 8 * ready_bytes as i32;
     }
 
     /// Finalize the partition; also prevent collision with a superframe marker.
@@ -75,6 +99,9 @@ impl BoolWriter {
     pub fn finish(mut self) -> Vec<u8> {
         for _ in 0..32 {
             self.write(false, 128);
+        }
+        if self.pending >= 0 {
+            self.flush(0, self.pending);
         }
         if self.bytes.last().is_some_and(|byte| byte & 0xe0 == 0xc0) {
             self.bytes.push(0);
@@ -96,6 +123,7 @@ pub(crate) trait BitSink {
 }
 
 impl BitSink for BoolWriter {
+    #[inline]
     fn write(&mut self, bit: bool, prob: u8) {
         BoolWriter::write(self, bit, prob);
     }

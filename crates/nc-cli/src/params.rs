@@ -259,24 +259,7 @@ mod tests {
         expected.set("decision.codec_subpel_seed_lambdas", 0.1);
         expected.set("decision.codec_fullpel_probe", 1.0);
         expected.set("decision.codec_fullpel_probe_min_lambdas", 0.0094);
-        // Modeled strong-luma CDEF cap (scale 3), adopted after TRAIN and follow-up VAL.
-        expected.set("av1.cdef_per_superblock", 1.0);
-        expected.set("av1.cdef_local_strong_luma", 1.0);
-        expected.set("av1.cdef_local_strong_primary", 15.0);
-        expected.set("av1.cdef_local_strong_variance_min", 0.0);
-        expected.set("av1.cdef_local_noise_full_search_sigma", 1.0);
-        expected.set("av1.cdef_local_strong_model_scale", 3.0);
-        // Fast keeps the fixed RD guess when Default adopted the zero-residual test.
-        expected.set("av1.pre_tx_skip_model", 0.0);
-        // Fast keeps the engine motion search when the quality-first
-        // Default dropped the margins and added the cheap refinement.
-        expected.set("decision.subpel_move_bias", 1.1);
-        expected.set("decision.subpel_move_bias_nonzero", 1.1);
-        expected.set("decision.subpel_fractional_bias", 1.1);
-        expected.set("decision.refine_cheap_vector", 0.0);
         expected.set("av1.inter_tx_split", 0.0);
-        // Fast keeps deblocking off when the Default adopted it.
-        expected.set("av1.loop_filter", 0.0);
         // Fast keeps the plain quantiser when the Default adopted the trellis.
         expected.set("quant.trellis", 0.0);
         // Fast keeps the plain key-frame intra set when the Default adopted
@@ -295,9 +278,6 @@ mod tests {
         expected.set("av1.inter_rounding_q7", 41.0);
         // Fast's key frames are DC-only, as SVT M12 (L3 2026-11-13).
         expected.set("av1.keyframe_intra_modes", 0.0);
-        // Fast keeps both sub-sample seeds refined when the Default adopted
-        // the seed gate (2026-11-14).
-        expected.set("decision.seed_refine_ratio", 0.0);
         // Fast keeps budget-only debt correction when the Default adopted the
         // key-period ceiling (2026-11-14).
         expected.set("rate.period_ceiling", 0.0);
@@ -314,6 +294,11 @@ mod tests {
         // Fast takes the Default's depth (no removal) and the full forward
         // transform since the fixed-QP re-point (2026-11-16): no
         // planner.depth_removal_* or av1.partial_forward override.
+        // Fast takes the Default's CDEF settings, sub-pel move biases,
+        // cheap-vector and seed refinement, pre-transform skip energy, model
+        // and RD, and deblocking (light pipeline, 2026-11-16): no overrides.
+        expected.remove("av1.pre_tx_skip_energy");
+        expected.remove("av1.pre_tx_skip_rd");
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected
