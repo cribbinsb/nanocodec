@@ -8,15 +8,15 @@
 # Jetson, CBR 600 kbps rung, chart clips: see the handoff for fps and BD.
 #
 # Everything in av1-fast, listed so the streams do not move with it.
-decision.subpel_move_bias = 1.1
-decision.subpel_move_bias_nonzero = 1.1
-decision.subpel_fractional_bias = 1.1
-decision.refine_cheap_vector = 0
+light.decision.subpel_move_bias = 1.1
+light.decision.subpel_move_bias_nonzero = 1.1
+light.decision.subpel_fractional_bias = 1.1
+light.decision.refine_cheap_vector = 0
 av1.inter_tx_split = 0
 av1.pre_tx_luma_dominant = 1
 av1.pre_tx_skip = 1
-av1.pre_tx_skip_model = 0
-av1.pre_tx_skip_rd = 100
+light.av1.pre_tx_skip_model = 0
+light.av1.pre_tx_skip_rd = 100
 av1.pre_tx_skip_score = 70
 av1.residual_rd_max_mv = 8
 av1.transform_rd_gain_scale = 1.25
@@ -37,7 +37,7 @@ av1.cdef_local_strong_variance_min = 0
 av1.cdef_local_noise_full_search_sigma = 0
 av1.cdef_local_strong_model_scale = 3
 av1.loop_filter = 0
-planner.depth_removal_min_quantizer = 0
+light.planner.depth_removal_min_quantizer = 0
 quant.trellis = 0
 av1.keyframe_directional = 0
 av1.keyframe_angle_deltas = 0
@@ -55,9 +55,9 @@ av1.inter_intra_search = 0
 # time, in the order of quality lost per time saved:
 # 32x32 and 64x64 residuals keep their low frequencies in coding too
 # (quality -0.4% / time -2.3%).
-av1.partial_forward = 2
+light.av1.partial_forward = 2
 # More blocks skip luma before the transform (+2.3 / -4.3%).
-av1.pre_tx_skip_energy = 100
+light.av1.pre_tx_skip_energy = 100
 # Sub-pel refinement skipped below Fast's 0.1 lambda of seed residual.
 decision.codec_subpel_seed_lambdas = 0.1
 # CDEF distortion sampled on every 8th row (+0.5 / -0.7%).
@@ -65,7 +65,7 @@ av1.cdef_search_row_step = 8
 # The per-superblock CDEF choice searched on every 4th frame (+2.0 / -2.0%).
 av1.cdef_local_search_period = 4
 # Depth removal twice as eager (+2.4 / -1.4%).
-planner.depth_removal_qp_scale = 4
+light.planner.depth_removal_qp_scale = 4
 #
 # Rebuild (2026-11-11, J_real vs the first av1-faster, k 0, 150 f; VAL-proxy-5
 # + lowlight_bdd_00ce95b0 / proxy-6): chroma skip 10 -> 7, seed gate 0.3 ->
@@ -91,7 +91,7 @@ av1.inter_rounding_q7 = 32
 # every frame above noise sigma 1): `av1.cdef_local_noise_full_search_sigma`
 # is 0 in the av1-fast block above.
 # Biased residual skip on blocks below 0.25 lambda per sample (default 0.0625).
-av1.skip_bias_energy = 0.25
+light.av1.skip_bias_energy = 0.25
 #
 # Not used (measured in the handoff): temporal layers (gated: no chart
 # speed, worst-1% guard; fixed L1T3: bodycam guard), frame-level CDEF
@@ -99,7 +99,7 @@ av1.skip_bias_energy = 0.25
 # probes off, `persist.reuse` 0 (-3.0% time for 0 quality, but it is the
 # static-recovery fix: tests/static_recovery.rs).
 # Pinned before AV1 Default's seed refinement gate (2026-11-14).
-decision.seed_refine_ratio = 0
+light.decision.seed_refine_ratio = 0
 # Pinned before AV1 Default's key-period ceiling (2026-11-14).
 rate.period_ceiling = 0
 # Pinned before AV1 Default's unified reference plan (2026-11-14).
@@ -110,8 +110,8 @@ rate.key_still_boost = 0
 structure.inherited_depth = 0
 # The engine's depth removal before 2026-11-15, pinned so this preset's
 # streams do not move with the engine default.
-planner.depth_removal_th_32_16 = 25
-planner.depth_removal_th_16_8 = 50
+light.planner.depth_removal_th_32_16 = 25
+light.planner.depth_removal_th_16_8 = 50
 
 # f-c3n (2026-11-16, zen5 goal record): Faster with its cheap-but-costly
 # groups back at Fast's values (sub-pel seed lambda, exact-rank margin,
@@ -136,3 +136,33 @@ rate.prekey_quiet = 1
 # move with the Default (key CfL alone was +45-52 % of a lowlight key frame).
 decision.exact_rank_margin = 1.1
 av1.keyframe_cfl = 0
+
+# Effort by frame role, "base-only" (2026-11-16, docs/handoff/light-pipeline.md
+# "Faster base-only"): keys and base frames code with Fast's per-block tools
+# (below); non-base frames keep Faster's, the `light.*` values above. The
+# base frames are the references the frames between them predict from, so
+# their finer coding is spent once and paid back by every frame after.
+# Against the previous Faster: c8a chart path x1.094 time (313.7 fps); lens
+# Weighted / J -5.7 / -18.3 (the Faster -> Fast line at that time -1.5 /
+# -15.2); CBR final-check (600 f, keys every 10 s) J -8.27 % [-9.60, -6.90]
+# (line -3.38). Adopted over the periodic-key pulse guard (+1.11 dB,
+# london_bus): the P frames before a key gain 0.6-2.5 dB and the frames
+# after it are never worse in PSNR-Y; the key itself is 0.3-0.7 dB worse
+# at 3 of 10 rung points, with 6-12 % fewer bits (its plan is rate
+# control's: docs/handoff/rate-control.md).
+decision.subpel_move_bias = 1
+decision.subpel_move_bias_nonzero = 1
+decision.subpel_fractional_bias = 1
+decision.refine_cheap_vector = 1
+av1.pre_tx_skip_model = 1
+av1.pre_tx_skip_rd = 50
+av1.partial_forward = 0
+av1.pre_tx_skip_energy = 15
+planner.depth_removal_min_quantizer = 0.8
+planner.depth_removal_qp_scale = 2
+planner.depth_removal_th_32_16 = 0
+planner.depth_removal_th_16_8 = 0
+av1.skip_bias_energy = 0.0625
+decision.seed_refine_ratio = 1.1
+effort.regular_fraction = 0
+effort.light_nonbase_only = 1

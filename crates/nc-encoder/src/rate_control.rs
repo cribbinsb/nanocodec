@@ -516,6 +516,10 @@ const DEBIT_MAX_BUFFERS: f64 = 0.25;
 const STILL_AVERAGE_SECONDS: f64 = 1.0;
 /// Smallest change of the first key's horizon worth re-planning for.
 const REPLAN_MIN_SECONDS: f64 = 1e-6;
+/// PSNR change per octave of quantizer step where distortion goes with the
+/// step squared (20 log10 2): how far a key's step must move to gain the dB
+/// its inter frames stand above the last key (`quality_matched_ratio`).
+const DB_PER_STEP_OCTAVE: f64 = 6.02;
 /// Model slot of key frames; inter roles follow at `INTER_MODEL + role`.
 const KEY_MODEL: usize = 0;
 const INTER_MODEL: usize = 1;
@@ -665,6 +669,10 @@ pub(crate) struct RateController {
     key_cap_gop: f64,
     /// `rate.key_level_mean`: share of `level_mean_offset` a key takes.
     key_level_mean: f64,
+    /// `rate.key_quality_match`: share of `quality_matched_ratio` a key takes.
+    key_quality_match: f64,
+    /// Step of the last key frame coded (`quality_matched_ratio`).
+    last_key_step: Option<f64>,
     /// `rate.key_reserve`: share of the next key's empty-buffer room the
     /// inter frames before it keep free (`key_reserve_room`).
     key_reserve: f64,
@@ -817,6 +825,8 @@ impl RateController {
             key_cap_buffer: f64::from(params.key_cap_buffer),
             key_cap_gop: f64::from(params.key_cap_gop),
             key_level_mean: f64::from(params.key_level_mean),
+            key_quality_match: f64::from(params.key_quality_match),
+            last_key_step: None,
             key_reserve: f64::from(params.key_reserve),
             frames_to_key: None,
             first_key_lookahead: first_key_lookahead(params, &calibration),
@@ -1389,7 +1399,9 @@ impl RateController {
     /// around it requires, coarsened only where its bits would not fit
     /// `key_allowance`. The quality requirement is the inter level's step
     /// (moved `rate.key_level_mean` of the way to its mini-GOP's mean,
-    /// `level_mean_offset`), the λ of the
+    /// `level_mean_offset`, and with `rate.key_quality_match` toward the
+    /// step that matches the inter frames' measured quality,
+    /// `quality_matched_ratio`), the λ of the
     /// frames that will predict from the key, made finer
     /// where later frames reuse it by the reuse term (`reuse.rs`: per block
     /// where the codec codes block quantizers, else `reuse_offset` for the
@@ -1411,6 +1423,10 @@ impl RateController {
         };
         let level_step = self.steps[level as usize]
             * step_ratio(self.key_level_mean * self.last_level_mean_offset + reuse_offset);
+        let level_step = level_step
+            * self
+                .quality_matched_ratio(level_step)
+                .powf(self.key_quality_match);
         let allowance_step = self.model[KEY_MODEL].map_or(0., |m| {
             (m * hint / self.key_allowance()).powf(1. / self.settings.config.rate_exponent)
                 / self.block_ratio
@@ -1421,6 +1437,25 @@ impl RateController {
             return level_step.max(allowance_step);
         }
         (level_step.min(budget_step) * finer).max(allowance_step)
+    }
+
+    /// Ratio (at most 1) from `level_step` to the step at which the key
+    /// being planned would code as well as the inter frames before it: the
+    /// last key's step made finer by the dB its inter frames now stand
+    /// above it, at [`DB_PER_STEP_OCTAVE`]. The last key calibrates the
+    /// content's intra quality per step; 1 before a key and its inter
+    /// frames are measured, or where the inter level already asks as much.
+    /// AV1 Faster base-only, `pool_static_london_bus_540p` 389k, 600 f: the
+    /// first key q154 32.48 dB, the inter frames 34.76 dB, so q139 against
+    /// the inter level's q153 (Faster: 145 against 146, its key at 146
+    /// coded 33.71 against 33.88 aimed).
+    fn quality_matched_ratio(&self, level_step: f64) -> f64 {
+        let (Some(key_step), Some(gain)) = (self.last_key_step, self.key_quality.inter_gain_db())
+        else {
+            return 1.;
+        };
+        let matched = key_step * (-gain / DB_PER_STEP_OCTAVE).exp2();
+        (matched / level_step).min(1.)
     }
 
     /// QP units finer the key being planned is coded on a fixed camera
@@ -1573,7 +1608,9 @@ impl RateController {
     /// Whether the encoder should report each inter frame's luma distortion
     /// (`observe_distortion`).
     pub fn wants_distortion(&self) -> bool {
-        (self.refinement.enabled() && !self.last_key) || self.still.quiets()
+        (self.refinement.enabled() && !self.last_key)
+            || self.still.quiets()
+            || self.key_quality_match > 0.
     }
 
     /// The share (0..=1) of the frame just coded that the noise skip took,
@@ -2294,6 +2331,7 @@ impl RateController {
         // TRAIN proxy: an undershooting first key no longer handed its
         // unspent budget to the frames after it.)
         if self.last_key {
+            self.last_key_step = Some(self.steps[self.current as usize]);
             self.frames_since_key = 0;
             self.still.observe_key(bits as f64);
             if self.holds_still_key() {
@@ -3014,6 +3052,29 @@ mod tests {
             (layered / flat - step_ratio(mean)).abs() < 1e-9,
             "{flat} {layered}"
         );
+    }
+
+    #[test]
+    fn key_quality_match_plans_a_key_at_its_inter_frames_quality() {
+        let mut r = controller(300_000);
+        let level = r.steps[40];
+        assert_eq!(r.quality_matched_ratio(level), 1., "nothing measured");
+        // The last key at step 20 coded MSE 64; its inter frames since
+        // reach a quarter of that (6.02 dB): a key at step 10 would match.
+        r.last_key_step = Some(20.);
+        r.key_quality.observe(true, 64.);
+        r.key_quality.observe(false, 16.);
+        let matched = 20. * (-10. * 4f64.log10() / DB_PER_STEP_OCTAVE).exp2();
+        assert!((r.quality_matched_ratio(40.) - matched / 40.).abs() < 1e-9);
+        // Only ever finer: an inter level already finer is kept.
+        assert_eq!(r.quality_matched_ratio(5.), 1.);
+        // Off by default: the key's level step is the inter level's.
+        r.last_inter_quantizer = Some(40);
+        let coarse_budget = r.steps[51];
+        let off = r.key_step(coarse_budget, 0., 1.);
+        r.key_quality_match = 1.;
+        let on = r.key_step(coarse_budget, 0., 1.);
+        assert!(on < off, "{on} {off}");
     }
 
     #[test]

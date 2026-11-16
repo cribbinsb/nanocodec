@@ -132,6 +132,12 @@ impl KeyQuality {
         }
     }
 
+    /// dB the inter frames' running PSNR-Y stands above the last key's
+    /// (negative below), once both are measured.
+    pub fn inter_gain_db(&self) -> Option<f64> {
+        Some(self.inter_db? - self.key_db?)
+    }
+
     /// A frame was coded at luma MSE `mse`.
     pub fn observe(&mut self, key: bool, mse: f64) {
         let db = psnr(mse);

@@ -799,6 +799,14 @@ param_group! {
         // over 10 s GOPs their finer keys pay back, so 0 stays the default.
         key_level_mean: 0.0, [0.0, 1.0],
             "rate control: share of the layer ladder's mean offset a layered stream's key is planned against (0: T0's level, its finest frame; 1: the mini-GOP's mean step): higher codes layered keys coarser, closer to their P frames",
+        // A key planned at the inter level's quantizer is only as good as
+        // the inter frames where both code alike. Where the inter frames
+        // reach more at that quantizer (finer-coded base frames, a still
+        // scene refining past the last key), the key lands below them. AV1
+        // Faster base-only, `pool_static_london_bus_540p` 389k: level 153
+        // against Faster's 146, key 0.73 dB below Faster's.
+        key_quality_match: 0.0, [0.0, 1.0],
+            "rate control: share of the way a key's quality requirement moves from the inter level's step to the step that would bring the last key up to the inter frames' running PSNR-Y (6.02 dB per octave of step), where that is finer (0 = off); the buffers still bound it",
         // The key's room is the physical buffer's, so the run-up keeps it
         // rather than the key borrowing: AV1 Fast base-only on
         // `pool_external_meva_admin_720p_536p` (194k, keys every 300) lost
