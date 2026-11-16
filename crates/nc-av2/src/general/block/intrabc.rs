@@ -16,6 +16,7 @@ use super::intra::{IntraModes, mode};
 use super::motion::{DEFAULT_LEFT_EXTRA, Motion, Mv};
 use super::record::BlockRecord;
 use super::size::BlockSize;
+use super::transform::LumaTransforms;
 use nc_common::decode::{DecodeError, Result};
 use nc_dsp::av2_dec::{ipred, mc};
 
@@ -88,8 +89,13 @@ struct BlockCopy {
 
 impl Tile<'_, '_> {
     /// An intra block-copy block: its syntax, transform partition,
-    /// vector, prediction, residual and contexts.
-    pub(super) fn intrabc_block(&mut self, depth: usize, record: &BlockRecord) -> Result<()> {
+    /// vector, prediction, residual and contexts; its luma transform
+    /// layout for the loop filters.
+    pub(super) fn intrabc_block(
+        &mut self,
+        depth: usize,
+        record: &BlockRecord,
+    ) -> Result<LumaTransforms> {
         let size = record
             .luma
             .ok_or(DecodeError::Malformed("AV2 block copy without luma"))?;
@@ -105,7 +111,7 @@ impl Tile<'_, '_> {
         };
         self.reconstruct(depth, record, &modes, transforms)?;
         self.record_intra_contexts(record, &modes, u8::from(copy.morph));
-        Ok(())
+        Ok(transforms)
     }
 
     /// The vector syntax (dav2d `decode_b`, `else if (b->intrabc)`).

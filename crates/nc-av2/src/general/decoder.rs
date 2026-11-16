@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use super::block::{self, BlockTrace};
 use super::cdfs::Cdfs;
+use super::filters;
 use super::frame_header::{
     self, Context, FrameHeader, FrameType, MAX_SLOTS, Parsed, ShowExisting, SlotHeader, obu_type,
 };
@@ -26,6 +27,9 @@ use crate::obu;
 use crate::tile_decoder::{self, InterReference};
 use nc_common::decode::{BitReader, DecodeError, Result};
 use nc_common::{Picture, ShownPicture};
+
+/// TIP frame mode in which the whole frame is the TIP prediction.
+const TIP_FRAME_MODE: u8 = 2;
 
 /// OBU types other than frames that the decoder reads or skips (AV2 §6.2).
 mod other_obu {
@@ -46,7 +50,16 @@ struct SlotData {
     picture: Rc<Picture>,
     /// The frame's final CDFs, adaptation restarted (AVM `frame_context`),
     /// for frames that start from them; `None` where it did not adapt.
-    context: Option<Rc<TileCdfs>>,
+    context: Option<FrameContext>,
+}
+
+/// A frame's final models, of the block layer that decoded it.
+#[derive(Debug, Clone)]
+enum FrameContext {
+    /// The subset tile decoder's.
+    Subset(Rc<TileCdfs>),
+    /// The general block layer's.
+    General(Rc<Cdfs>),
 }
 
 /// One picture in the output queue.
@@ -395,8 +408,13 @@ impl Decoder {
         let Ok(params) =
             subset_sequence.and_then(|sequence| subset::tile_params(&sequence, &header))
         else {
-            let picture = self.decode_general(&header, tiles)?;
-            return self.finish_frame(header, picture, None);
+            let (picture, mut models) = self.decode_general(&header, tiles)?;
+            // The tile's final models, counts scaled back, are what later
+            // frames inherit (dav2d `dav2d_decode_frame_update_cdf`; one
+            // tile: no averaging).
+            models.restart_adaptation();
+            let context = FrameContext::General(Rc::from(models));
+            return self.finish_frame(header, picture, Some(context));
         };
         let size = (header.width as usize, header.height as usize);
         let (picture, models) = if header.is_intra() {
@@ -423,9 +441,19 @@ impl Decoder {
                     let data = self.state.data[slot]
                         .as_ref()
                         .ok_or(DecodeError::MissingKey)?;
-                    Some(data.context.as_deref().ok_or(DecodeError::Malformed(
-                        "AV2 inherited context did not adapt",
-                    ))?)
+                    match &data.context {
+                        Some(FrameContext::Subset(models)) => Some(&**models),
+                        Some(FrameContext::General(_)) => {
+                            return Err(DecodeError::Unsupported(
+                                "AV2 subset frames inheriting a general frame's CDFs",
+                            ));
+                        }
+                        None => {
+                            return Err(DecodeError::Malformed(
+                                "AV2 inherited context did not adapt",
+                            ));
+                        }
+                    }
                 }
                 _ => None,
             };
@@ -449,7 +477,7 @@ impl Decoder {
         }
         let models = models.map(|mut models| {
             models.restart_adaptation();
-            Rc::from(models)
+            FrameContext::Subset(Rc::from(models))
         });
         self.finish_frame(header, picture, models)
     }
@@ -460,7 +488,7 @@ impl Decoder {
         &mut self,
         header: FrameHeader,
         picture: Picture,
-        context: Option<Rc<TileCdfs>>,
+        context: Option<FrameContext>,
     ) -> Result<()> {
         let picture = Rc::new(picture);
         if header.show_immediate {
@@ -484,29 +512,40 @@ impl Decoder {
         Ok(())
     }
 
-    /// Decode a frame through the general block layer: the reconstruction
-    /// before the loop filters, or the first tool not built yet.
-    fn decode_general(&mut self, header: &FrameHeader, tiles: &[u8]) -> Result<Picture> {
-        if header.primary_reference.is_some() && !header.no_cross_frame_context {
-            return Err(DecodeError::Unsupported(
-                "AV2 inherited CDFs in the general block layer",
-            ));
-        }
+    /// Decode a frame through the general block layer: the filtered
+    /// picture and the tile's final models, or the first tool not built
+    /// yet.
+    fn decode_general(
+        &mut self,
+        header: &FrameHeader,
+        tiles: &[u8],
+    ) -> Result<(Picture, Box<Cdfs>)> {
         let sequence = self.state.sequence.clone().ok_or(DecodeError::MissingKey)?;
-        let cdfs = Box::new(Cdfs::new(header.quantizer.base));
+        let cdfs = self.initial_models(header, &sequence)?;
         let trace = self.block_trace.0.as_mut().map(|sink| {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
         });
-        let decoded = block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
-        let deblock = &header.deblock;
-        let deblocked = deblock.level_y.iter().any(|&on| on) || deblock.level_u || deblock.level_v;
-        if !self.unfiltered
-            && (deblocked || header.cdef.is_some() || header.ccso.enabled || header.gdf.mode != 0)
-        {
-            return Err(DecodeError::Unsupported(
-                "AV2 loop filters in the general block layer",
-            ));
+        let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
+        if !self.unfiltered {
+            if header
+                .restoration
+                .planes
+                .iter()
+                .any(|plane| plane.kind != 0)
+            {
+                return Err(DecodeError::Unsupported(
+                    "AV2 loop restoration filters in the general decoder",
+                ));
+            }
+            let (dsp, ..) = self.workspace.filter_parts();
+            filters::deblock::filter(
+                &mut decoded.planes,
+                &mut decoded.filters,
+                header,
+                &sequence,
+                dsp,
+            );
         }
         let (width, height) = (header.width as usize, header.height as usize);
         let mut picture = self.workspace.pictures.take(width, height, 0)?;
@@ -522,7 +561,72 @@ impl Decoder {
                 view.row_mut(y)[..w].copy_from_slice(&row[..w]);
             }
         }
-        Ok(picture)
+        if !self.unfiltered {
+            // GDF reads deblocked rows next to its stripes.
+            let deblocked = (header.gdf.mode != 0).then(|| picture.clone());
+            let (dsp, cdef_scratch, ccso_source) = self.workspace.filter_parts();
+            filters::cdef_and_ccso(
+                &mut picture,
+                &decoded.filters,
+                (header, sequence.single_picture),
+                dsp,
+                (cdef_scratch, ccso_source),
+            )?;
+            if let Some(deblocked) = &deblocked {
+                let distances = self.reference_distances(header);
+                let params = filters::gdf::params(header, &distances);
+                filters::gdf::filter(&mut picture, deblocked, &decoded.filters, (header, params));
+            }
+        }
+        Ok((picture, decoded.cdfs))
+    }
+
+    /// The models a general frame starts from (dav2d
+    /// `dav2d_decode_frame_init`'s entropy setup): the defaults at its
+    /// quantizer, or its primary reference's final models.
+    fn initial_models(&self, header: &FrameHeader, sequence: &SequenceHeader) -> Result<Box<Cdfs>> {
+        let Some(rank) = header
+            .primary_reference
+            .filter(|_| !header.no_cross_frame_context)
+        else {
+            return Ok(Box::new(Cdfs::new(header.quantizer.base)));
+        };
+        // dav2d `use_pri_sec_cdf`: the mean of two references' models.
+        let averaged = header.secondary_reference.is_some()
+            && header.frame_type == FrameType::Inter
+            && sequence.transform.average_cdf
+            && !sequence.transform.average_cdf_type
+            && header.tip.mode != TIP_FRAME_MODE;
+        if averaged {
+            return Err(DecodeError::Unsupported(
+                "AV2 averaged CDFs of two references",
+            ));
+        }
+        let slot = usize::from(header.references[usize::from(rank)]);
+        let data = self.state.data[slot]
+            .as_ref()
+            .ok_or(DecodeError::MissingKey)?;
+        match &data.context {
+            Some(FrameContext::General(models)) => Ok(Box::new((**models).clone())),
+            Some(FrameContext::Subset(_)) => Err(DecodeError::Unsupported(
+                "AV2 general frames inheriting a subset frame's CDFs",
+            )),
+            None => Err(DecodeError::Malformed(
+                "AV2 inherited context did not adapt",
+            )),
+        }
+    }
+
+    /// Each reference rank's display-order distance from the frame (dav2d
+    /// `absrefdist`).
+    fn reference_distances(&self, header: &FrameHeader) -> Vec<u32> {
+        (0..usize::from(header.reference_count))
+            .filter_map(|rank| {
+                let slot = usize::from(header.references[rank]);
+                let held = self.state.headers[slot].as_ref()?;
+                Some(references::order_difference(header.order, held.header.order).unsigned_abs())
+            })
+            .collect()
     }
 
     /// Diagnosis: output general-path frames before their loop filters

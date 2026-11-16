@@ -3558,10 +3558,11 @@ impl BlockCoder {
                 if search {
                     cdef::random_indices(random, params, &mut self.cdef_indices);
                 }
+                let blocks = (&self.state, &self.cdef_indices);
+                let passes_over = params.passes_over(true);
                 cdef::filter_picture(
                     recon,
-                    &self.state,
-                    &self.cdef_indices,
+                    |x, y| cdef::skipped_or_set(blocks, passes_over, (x, y)),
                     params,
                     dsp,
                     scratch.unsearched_source(),
@@ -3620,7 +3621,10 @@ impl BlockCoder {
                 self.chroma_weight,
             )
         };
-        ccso::filter_picture(recon, deblocked, &self.ccso_params, &self.ccso_flags);
+        let flags = &self.ccso_flags;
+        ccso::filter_picture(recon, deblocked, &self.ccso_params, |plane, x, y| {
+            flags.get(plane, x, y)
+        });
         self.ccso_params
     }
 

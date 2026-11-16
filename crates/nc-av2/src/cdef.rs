@@ -602,16 +602,15 @@ pub(crate) struct PictureFilterScratch {
     units: Vec<CdefUnit>,
 }
 
-/// Filter the finished (deblocked) picture in place with `params`, using
-/// the block skip flags recorded in `state` and the filter blocks' strength
-/// sets in `indices`: nc-dsp's shared band driver (`Dsp::cdef_filter_band`,
-/// the AV1 decoder's), one row of filter blocks at a time, over the units
-/// of [`filtered_units`] (the same selection, directions found by the
-/// driver).
+/// Filter the finished (deblocked) picture in place with `params`:
+/// nc-dsp's shared band driver (`Dsp::cdef_filter_band`, the AV1
+/// decoder's), one row of filter blocks at a time. `unit_set` gives the
+/// strength set of the 8×8 unit at a luma position, or `None` where the
+/// unit is left alone ([`skipped_or_set`] for our block layer: the
+/// selection of [`filtered_units`], directions found by the driver).
 pub(crate) fn filter_picture(
     picture: &mut Picture,
-    state: &BlockState,
-    indices: &StrengthIndices,
+    unit_set: impl Fn(usize, usize) -> Option<u8>,
     params: CdefParams,
     dsp: &Dsp,
     scratch: &mut PictureFilterScratch,
@@ -638,15 +637,27 @@ pub(crate) fn filter_picture(
         units.clear();
         for y in rows.clone().step_by(UNIT) {
             for x in (0..width).step_by(UNIT) {
-                if let Some(set) = indices.get(x, y)
-                    && !params.passes_over(state.skips_transform(x, y))
-                {
+                if let Some(set) = unit_set(x, y) {
                     units.push(CdefUnit { x, y, set });
                 }
             }
         }
         dsp.cdef_filter_band(lines, picture, rows, units, &sets);
     }
+}
+
+/// The strength set of the unit at (`x`, `y`) in our block layer: its
+/// filter block's set, unless all its transforms skipped and the frame
+/// passes over such units (`passes_over_skipped`,
+/// [`CdefParams::passes_over`]).
+#[inline]
+pub(crate) fn skipped_or_set(
+    (state, indices): (&BlockState, &StrengthIndices),
+    passes_over_skipped: bool,
+    (x, y): (usize, usize),
+) -> Option<u8> {
+    let set = indices.get(x, y)?;
+    (!passes_over_skipped || !state.skips_transform(x, y)).then_some(set)
 }
 
 /// [`apply`] after a search, from the unfiltered planes it copied.

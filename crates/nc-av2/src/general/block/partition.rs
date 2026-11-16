@@ -58,9 +58,10 @@ impl Tile<'_, '_> {
             let mut direction = 0;
             self.superblock(depth, luma, None, &mut direction)?;
             // With a 64x64 root, the chroma restoration units are read here,
-            // between the trees (dav2d `read_sb_restoration(t, 1, 3)`); the
-            // tile rejects restoration until the loop-filter group reads
-            // units.
+            // between the trees (dav2d `read_sb_restoration(t, 1, 3)`).
+            if self.separate_root_trees() {
+                self.restoration_units(1..3)?;
+            }
             return self.superblock(depth, None, chroma, &mut direction);
         }
         let range = self.reader.range();

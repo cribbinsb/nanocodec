@@ -48,13 +48,13 @@ const TAP_K_SAVING: u32 = 3;
 const LUMA_LEVELS: usize = 3;
 /// Taps coded at each refinement level (dav2d `dav2d_subset_masks_y`,
 /// `_uv`).
-const LUMA_TAP_MASKS: [u32; 4] = [0x3f, 0xfc3, 0xfff, 0xffff];
-const CHROMA_TAP_MASKS: [u32; 3] = [0x3f, 0x3ff, 0x3ffff];
+pub(crate) const LUMA_TAP_MASKS: [u32; 4] = [0x3f, 0xfc3, 0xfff, 0xffff];
+pub(crate) const CHROMA_TAP_MASKS: [u32; 3] = [0x3f, 0x3ff, 0x3ffff];
 /// First tap that the asymmetric chroma code pairs with the next.
 const FIRST_PAIRED_TAP: usize = 6;
 /// Bit width and minimum of each tap (dav2d `dav2d_ns_wiener_coef_range_y`,
 /// `_uv`).
-const LUMA_TAP_RANGE: [(u8, i8); LUMA_TAPS] = [
+pub(crate) const LUMA_TAP_RANGE: [(u8, i8); LUMA_TAPS] = [
     (6, -24),
     (6, -24),
     (5, -14),
@@ -72,7 +72,7 @@ const LUMA_TAP_RANGE: [(u8, i8); LUMA_TAPS] = [
     (4, -8),
     (4, -8),
 ];
-const CHROMA_TAP_RANGE: [(u8, i8); MAX_TAPS] = [
+pub(crate) const CHROMA_TAP_RANGE: [(u8, i8); MAX_TAPS] = [
     (6, -24),
     (6, -24),
     (5, -14),

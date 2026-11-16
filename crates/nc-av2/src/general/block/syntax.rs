@@ -7,6 +7,7 @@
 //! `Unsupported` until it is built).
 use super::record::BlockRecord;
 use super::size::BlockSize;
+use super::transform::LumaTransforms;
 use super::{Tile, UNITS64_LOG2, context, samples};
 use crate::general::frame_header::filters::Cdef;
 use nc_common::decode::{DecodeError, Result};
@@ -104,6 +105,7 @@ impl Tile<'_, '_> {
         if has_luma {
             self.ccso_flags(depth)?;
             self.delta_q(depth, size, skip_txfm)?;
+            self.record_qindex();
         }
         let record = BlockRecord {
             luma,
@@ -118,21 +120,22 @@ impl Tile<'_, '_> {
             skip_txfm,
             qindex: self.qindex,
         };
-        if intrabc {
-            self.intrabc_block(depth, &record)?;
+        let transforms = if intrabc {
+            self.intrabc_block(depth, &record)?
         } else if intra {
-            self.intra_block(depth, &record)?;
+            self.intra_block(depth, &record)?
         } else {
-            self.inter_block(depth, &record)?;
-        }
+            self.inter_block(depth, &record)?
+        };
         self.record_contexts(&record);
+        self.record_filters(&record, transforms);
         Ok(())
     }
 
     /// An inter block's references, motion, prediction and residual (the
     /// inter and residual groups).
     #[allow(clippy::unused_self, reason = "the tool group fills it in")]
-    fn inter_block(&mut self, _depth: usize, _record: &BlockRecord) -> Result<()> {
+    fn inter_block(&mut self, _depth: usize, _record: &BlockRecord) -> Result<LumaTransforms> {
         Err(DecodeError::Unsupported(
             "AV2 inter blocks (general block layer)",
         ))
@@ -373,7 +376,7 @@ impl Tile<'_, '_> {
         } else {
             self.frame.gdf.mode != 0
         };
-        self.splat_filter_flag(unit64, |tile, index| tile.gdf_flags[index] = flag);
+        self.splat_filter_flag(unit64, |tile, index| tile.filters.gdf_flags[index] = flag);
         Ok(())
     }
 
@@ -405,7 +408,7 @@ impl Tile<'_, '_> {
             return Ok(());
         }
         let index = self.filter_block(self.row, self.column);
-        if self.cdef_index[index].is_some() {
+        if self.filters.cdef_index[index].is_some() {
             return Ok(());
         }
         let value = if cdef.strengths == 1 {
@@ -424,7 +427,7 @@ impl Tile<'_, '_> {
                 );
                 if row < self.geometry.rows && column < self.geometry.columns {
                     let block = self.filter_block(row, column);
-                    self.cdef_index[block] = Some(value);
+                    self.filters.cdef_index[block] = Some(value);
                 }
             }
         }
@@ -439,13 +442,13 @@ impl Tile<'_, '_> {
         let left = if self.column < self.bounds.column_start + unit {
             None
         } else {
-            Some(self.cdef_index[index - 1])
+            Some(self.filters.cdef_index[index - 1])
         };
         // Above only inside the superblock.
         let top = if (self.row & !(unit - 1)) & (self.geometry.superblock_units - 1) == 0 {
             None
         } else {
-            Some(self.cdef_index[index - stride])
+            Some(self.filters.cdef_index[index - stride])
         };
         let zero = |value: Option<Option<u8>>| usize::from(value == Some(Some(0)));
         // Coded (Some(Some)) neighbours on both sides, else the one coded.
@@ -498,7 +501,7 @@ impl Tile<'_, '_> {
                 false
             } else {
                 let index = self.filter_block(self.row, self.column - (1 << UNITS64_LOG2));
-                self.ccso_flags[index][plane]
+                self.filters.ccso_flags[index][plane]
             };
             let context = usize::from(left) * 2;
             let flag = self.bool(|m| &mut m.ccso[plane][context])?;
@@ -510,7 +513,9 @@ impl Tile<'_, '_> {
                 "Post-ccso[pl={name},ctx={context},{}]: r={range}",
                 u8::from(flag)
             );
-            self.splat_filter_flag(unit64, |tile, index| tile.ccso_flags[index][plane] = flag);
+            self.splat_filter_flag(unit64, |tile, index| {
+                tile.filters.ccso_flags[index][plane] = flag;
+            });
         }
         Ok(())
     }

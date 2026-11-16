@@ -2304,6 +2304,42 @@ pub(super) static DELTA_Q: Initial<8> = Initial {
     inverse: [16174, 9443, 6344, 4543, 3410, 2669, 2155, 0],
     rates: [1, 3, 4],
 };
+pub(super) static RST_SWITCHABLE: [Initial<2>; 2] = [
+    Initial {
+        inverse: [7226, 0],
+        rates: [0, 1, 2],
+    },
+    Initial {
+        inverse: [7218, 0],
+        rates: [1, 1, 2],
+    },
+];
+pub(super) static RST_NS_WIENER: Initial<2> = Initial {
+    inverse: [23717, 0],
+    rates: [1, 2, 2],
+};
+pub(super) static RST_PC_WIENER: Initial<2> = Initial {
+    inverse: [19969, 0],
+    rates: [1, 3, 4],
+};
+pub(super) static WIENER_NS_LEN: [Initial<2>; 2] = [
+    Initial {
+        inverse: [27870, 0],
+        rates: [0, 2, 3],
+    },
+    Initial {
+        inverse: [26680, 0],
+        rates: [1, 3, 3],
+    },
+];
+pub(super) static WIENER_NS_SYM: Initial<2> = Initial {
+    inverse: [3482, 0],
+    rates: [0, 4, 4],
+};
+pub(super) static WIENER_NS_CF: Initial<4> = Initial {
+    inverse: [16211, 8416, 3091, 0],
+    rates: [3, 3, 4],
+};
 pub(super) static DPCM_Y: Initial<2> = Initial {
     inverse: [16384, 0],
     rates: [2, 3, 4],
@@ -20582,8 +20618,8 @@ pub(super) static BASE_UV_LF: [[Initial<6>; 12]; 4] = [
 ];
 #[cfg(test)]
 pub(super) const TRACE_HASHES: [u64; 4] = [
-    4_918_115_764_347_111_380,
-    623_023_119_275_646_174,
-    14_444_355_718_213_519_188,
-    10_293_510_550_590_516_135,
+    10_068_296_880_890_879_720,
+    10_685_887_036_500_098_026,
+    13_897_801_963_488_728_720,
+    5_557_501_987_910_685_603,
 ];

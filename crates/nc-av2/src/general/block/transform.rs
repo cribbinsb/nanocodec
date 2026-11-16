@@ -20,7 +20,9 @@ const LOSSLESS_MAX_LOG2: u8 = 3;
 /// A transform size: log2 of its width and height in 4x4 units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxSize {
+    /// log2 of the width in 4x4 units.
     pub w: u8,
+    /// log2 of the height.
     pub h: u8,
 }
 
@@ -155,14 +157,18 @@ pub enum TxPartition {
     None,
     /// Four quarters.
     Split,
-    /// Two of half height, two of half width.
+    /// Two of half height.
     Horizontal,
+    /// Two of half width.
     Vertical,
-    /// Four of quarter height or width.
+    /// Four of quarter height.
     Horizontal4,
+    /// Four of quarter width.
     Vertical4,
-    /// Two quarters, a half, two quarters (the half across the middle).
+    /// Two quarters, a half, two quarters (the half across the middle),
+    /// stacked.
     Horizontal5,
+    /// The same side by side.
     Vertical5,
 }
 
@@ -212,7 +218,10 @@ pub enum LumaTransforms {
     /// A lossy block's partition.
     Partition(TxPartition),
     /// A lossless block: 4x4 transforms, or its largest lossless one.
-    Lossless { large: bool },
+    Lossless {
+        /// The block's largest lossless transform instead of 4x4.
+        large: bool,
+    },
 }
 
 impl LumaTransforms {

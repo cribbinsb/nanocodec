@@ -6,8 +6,8 @@
 //!
 //! This module goes with the subset path (docs/handoff/av2.md "Two decode
 //! paths, and when one goes").
-use super::frame_header::{FrameHeader, FrameType, filter_mode, filters};
-use crate::ccso::{CcsoParams, PlaneFilter};
+use super::frame_header::{FrameHeader, FrameType, filter_mode};
+use crate::ccso::CcsoParams;
 use crate::cdef::CdefParams;
 use crate::coeff::LevelCoding;
 use crate::deblock::DeblockParams;
@@ -21,12 +21,6 @@ use nc_common::decode::{DecodeError, Result};
 
 /// Quarter-sample motion vectors (`mv_precision` 2), the subset's only.
 const QUARTER_SAMPLE: u8 = 2;
-/// Planes of 4:2:0.
-const PLANES: usize = 3;
-/// Edge classes per axis in the general header's CCSO offset layout.
-const CCSO_CLASS_STRIDE: usize = 4;
-/// Bands per class in that layout.
-const CCSO_BAND_STRIDE: usize = 8;
 
 /// The subset tile decoder's parameters for a frame, or the first tool of
 /// the frame it lacks.
@@ -149,48 +143,18 @@ fn deblock(header: &FrameHeader) -> DeblockParams {
 }
 
 fn cdef(header: &FrameHeader, single_picture: bool) -> Result<CdefParams> {
-    let Some(cdef) = header.cdef else {
-        return Ok(CdefParams::OFF);
-    };
-    let sets: Vec<(u8, u8)> = (0..usize::from(cdef.strengths))
-        .map(|set| (cdef.y_strength[set], cdef.uv_strength[set]))
-        .collect();
-    CdefParams::decoded(cdef.damping, &sets, cdef.on_skipped, single_picture)
+    super::filters::cdef_params(header, single_picture)
 }
 
+/// The frame's CCSO; the subset has no filter reuse.
 fn ccso(header: &FrameHeader) -> Result<CcsoParams> {
-    if !header.ccso.enabled {
-        return Ok(CcsoParams::OFF);
-    }
-    let mut planes = [None; PLANES];
-    for (plane, coded) in planes.iter_mut().zip(&header.ccso.planes) {
-        if coded.enabled {
-            *plane = Some(ccso_plane(coded)?);
-        }
-    }
-    CcsoParams::new(planes)
-}
-
-fn ccso_plane(coded: &filters::CcsoPlane) -> Result<PlaneFilter> {
-    if coded.reuse || coded.block_reuse {
+    if header
+        .ccso
+        .planes
+        .iter()
+        .any(|plane| plane.enabled && (plane.reuse || plane.block_reuse))
+    {
         return Err(DecodeError::Unsupported("AV2 CCSO filter reuse"));
     }
-    let mut filter = PlaneFilter::zero(
-        coded.band_only,
-        coded.scale_index,
-        coded.quant_index,
-        coded.filter_support,
-        coded.edge_classifier,
-        coded.max_band_log2,
-    );
-    for class0 in 0..filter.intervals() {
-        for class1 in 0..filter.intervals() {
-            for band in 0..filter.bands() {
-                let code =
-                    coded.offsets[(class0 * CCSO_CLASS_STRIDE + class1) * CCSO_BAND_STRIDE + band];
-                filter.set_offset(filter.entry(band, class0, class1), code);
-            }
-        }
-    }
-    Ok(filter)
+    super::filters::ccso_params(header)
 }

@@ -85,10 +85,14 @@ impl Tile<'_, '_> {
         let size = record.luma.or(record.chroma).unwrap_or(BlockSize::B4x4);
         let (bw4, bh4) = size.units();
         if bw4.max(bh4) > PIECE_UNITS {
-            return self.reconstruct_pieces(depth, record, modes, transforms);
+            self.reconstruct_pieces(depth, record, modes, transforms)?;
+            // The pieces move the current position; the block's siblings
+            // start from the block's.
+            (self.row, self.column) = (record.row, record.column);
+            return Ok(());
         }
         let stages = [record.chroma; 2];
-        self.reconstruct_piece(depth, record, modes, transforms, stages)
+        self.reconstruct_piece(depth, (record, size), modes, transforms, stages)
     }
 
     /// A block above 64x64 in 64x64 pieces (128x128 for 256 sides): luma
@@ -153,7 +157,7 @@ impl Tile<'_, '_> {
                 piece_record.chroma = chroma_piece;
                 (piece_record.row, piece_record.column) = (row, column);
                 (piece_record.chroma_row, piece_record.chroma_column) = (chroma_row, chroma_column);
-                self.reconstruct_piece(depth, &piece_record, modes, transforms, stages)?;
+                self.reconstruct_piece(depth, (&piece_record, size), modes, transforms, stages)?;
                 if interleaved {
                     chroma_column += step;
                 } else if x & 1 == 1 {
@@ -173,18 +177,19 @@ impl Tile<'_, '_> {
         Ok(())
     }
 
-    /// One piece of at most 64x64: luma transforms, then chroma in its
-    /// stages (coefficients, reconstruction).
+    /// One piece of at most 64x64 of a block of size `whole`: luma
+    /// transforms, then chroma in its stages (coefficients,
+    /// reconstruction).
     fn reconstruct_piece(
         &mut self,
         depth: usize,
-        record: &BlockRecord,
+        (record, whole): (&BlockRecord, BlockSize),
         modes: &IntraModes,
         transforms: LumaTransforms,
         stages: [Option<BlockSize>; 2],
     ) -> Result<()> {
         if let Some(size) = record.luma {
-            self.luma_transforms(depth, record, size, modes, transforms)?;
+            self.luma_transforms(depth, record, (size, whole), modes, transforms)?;
         }
         if let Some(chroma) = stages[0].or(stages[1]) {
             self.chroma(depth, record, chroma, modes, stages)?;
@@ -199,7 +204,7 @@ impl Tile<'_, '_> {
         &mut self,
         depth: usize,
         record: &BlockRecord,
-        size: BlockSize,
+        (size, whole): (BlockSize, BlockSize),
         modes: &IntraModes,
         transforms: LumaTransforms,
     ) -> Result<()> {
@@ -235,18 +240,18 @@ impl Tile<'_, '_> {
         }
         for (y, x, tx) in parts {
             (self.row, self.column) = (row0 + y, column0 + x);
-            self.luma_transform(depth, record, modes, tx, partition)?;
+            self.luma_transform(depth, (record, whole), modes, tx, partition)?;
         }
         (self.row, self.column) = (row0, column0);
         Ok(())
     }
 
-    /// One luma transform: prediction, coefficients, inverse transforms
-    /// (dav2d `recon_b_luma_tx`).
+    /// One luma transform of a block of size `whole`: prediction,
+    /// coefficients, inverse transforms (dav2d `recon_b_luma_tx`).
     fn luma_transform(
         &mut self,
         depth: usize,
-        record: &BlockRecord,
+        (record, whole): (&BlockRecord, BlockSize),
         modes: &IntraModes,
         tx: TxSize,
         partition: TxPartition,
@@ -261,7 +266,9 @@ impl Tile<'_, '_> {
             let input = TransformInput {
                 plane: 0,
                 tx,
-                block: record.luma.unwrap_or(BlockSize::B4x4),
+                // The whole block's size, not its 64x64 piece's (dav2d
+                // `get_skip_ctx` takes the block's).
+                block: whole,
                 intra: record.intra && !record.intrabc,
                 fsc: modes.fsc,
                 luma_fsc: modes.fsc,

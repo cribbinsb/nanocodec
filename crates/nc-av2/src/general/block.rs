@@ -28,6 +28,7 @@ mod coefficients;
 pub mod context;
 mod intra;
 mod intrabc;
+mod loop_filters;
 pub mod motion;
 mod palette;
 mod partition;
@@ -35,15 +36,17 @@ pub mod pixels;
 mod quantizer_matrices;
 mod reconstruction;
 pub mod record;
+mod restoration;
 pub mod size;
 mod syntax;
-mod transform;
+pub mod transform;
 
 use std::fmt;
 
 use std::rc::Rc;
 
 use super::cdfs::Cdfs;
+use super::filters::{FilterMaps, UNITS64_LOG2};
 use super::frame_header::{FrameHeader, FrameType};
 use super::sequence::SequenceHeader;
 use crate::entropy::{Cdf, Reader};
@@ -63,9 +66,6 @@ pub type BlockTrace<'t> = &'t mut dyn FnMut(fmt::Arguments<'_>);
 
 /// Luma samples per 4x4 unit, as a shift.
 const UNIT_LOG2: u32 = 2;
-/// 4x4 units per 64x64 block, as a shift (filter blocks and the CDEF
-/// index map are counted in 64x64 blocks).
-const UNITS64_LOG2: u32 = 4;
 
 /// Coefficients of one transform (at most 32x32 are coded).
 const COEFFICIENTS: usize = 32 * 32;
@@ -121,13 +121,13 @@ struct Tile<'a, 't> {
     sdp_cfl_disallowed: bool,
     /// The running superblock quantizer (dav2d `last_qidx`).
     qindex: u16,
-    /// Per 64x64 filter block of the frame, the CDEF strength set read
-    /// (`None` until a block reads it; for the loop-filter group).
-    cdef_index: Vec<Option<u8>>,
-    /// Per 64x64 filter block and plane, the CCSO flag read; and the GDF
-    /// flag (for the loop-filter group).
-    ccso_flags: Vec<[bool; 3]>,
-    gdf_flags: Vec<bool>,
+    /// What the loop filters need of the blocks: per 64x64 filter block
+    /// the quantizer, CDEF set, CCSO and GDF flags; the deblocking edges;
+    /// the units with a luma residual.
+    filters: FilterMaps,
+    /// The non-separable Wiener filters the tile's restoration units
+    /// coded last.
+    restoration_banks: restoration::Banks,
     /// The dequantizer steps (DC, AC) per plane at `qindex` (dav2d
     /// `ts->dq`).
     dequant: [[u32; 2]; 3],
@@ -165,11 +165,13 @@ struct Tile<'a, 't> {
 }
 
 /// A decoded tile: the reconstructed planes (padded to whole
-/// superblocks) and the final models.
+/// superblocks), what the loop filters need, and the final models.
 #[derive(Debug)]
 pub struct DecodedTile {
     /// The reconstruction before loop filters.
     pub planes: Planes,
+    /// The loop filters' maps.
+    pub filters: FilterMaps,
     /// The models after the tile.
     pub cdfs: Box<Cdfs>,
 }
@@ -196,8 +198,6 @@ pub fn decode_tile(
         root,
         superblock_units: root.units().0,
     };
-    let blocks64 = |count: u32| (count as usize).div_ceil(1 << UNITS64_LOG2);
-    let filter_blocks = blocks64(geometry.columns) * blocks64(geometry.rows);
     let size = data.len();
     let mut tile = Tile {
         frame,
@@ -220,9 +220,8 @@ pub fn decode_tile(
         intra_region: false,
         sdp_cfl_disallowed: false,
         qindex: frame.quantizer.base,
-        cdef_index: vec![None; filter_blocks],
-        ccso_flags: vec![[false; 3]; filter_blocks],
-        gdf_flags: vec![false; filter_blocks],
+        filters: FilterMaps::new(geometry.columns, geometry.rows, frame.quantizer.base),
+        restoration_banks: restoration::Banks::new(),
         dequant: [[0; 2]; 3],
         coded: [[0; 64]; 2],
         luma_direction_map: [context::NO_DIRECTION; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
@@ -258,6 +257,7 @@ pub fn decode_tile(
     tile.decode(size)?;
     Ok(DecodedTile {
         planes: tile.planes,
+        filters: tile.filters,
         cdfs: tile.cdfs,
     })
 }
@@ -275,15 +275,6 @@ impl Tile<'_, '_> {
             self.bounds.column_start,
             self.bounds.column_end
         );
-        if self
-            .frame
-            .restoration
-            .planes
-            .iter()
-            .any(|plane| plane.kind != 0)
-        {
-            return Err(DecodeError::Unsupported("AV2 loop restoration units"));
-        }
         let intra_frame = self.frame.is_intra();
         self.contexts.above.reset(intra_frame);
         let step = self.geometry.superblock_units;
@@ -305,6 +296,10 @@ impl Tile<'_, '_> {
                     motion.start_superblock(row, column, refill);
                 }
                 let root = self.geometry.root;
+                // With separate trees from a 64x64 root, the chroma units
+                // come between the trees (`partition`).
+                let planes = if self.separate_root_trees() { 1 } else { 3 };
+                self.restoration_units(0..planes)?;
                 let mut direction = 0;
                 self.superblock(1, Some(root), Some(root), &mut direction)?;
                 if let Some(motion) = &mut self.motion {
@@ -354,6 +349,14 @@ impl Tile<'_, '_> {
         })
     }
 
+    /// Whether a key or intra-only frame splits each 64x64 superblock into
+    /// its luma and chroma trees at the root (dav2d `sdp_root_split`).
+    fn separate_root_trees(&self) -> bool {
+        self.geometry.root == BlockSize::B64x64
+            && self.sequence.partition.separate_trees
+            && self.intra_frame()
+    }
+
     /// Whether the frame is key or intra-only.
     fn intra_frame(&self) -> bool {
         matches!(self.frame.frame_type, FrameType::Key | FrameType::Intra)
@@ -361,8 +364,7 @@ impl Tile<'_, '_> {
 
     /// The index of the 64x64 filter block holding unit (`row`, `column`).
     fn filter_block(&self, row: u32, column: u32) -> usize {
-        let stride = (self.geometry.columns as usize).div_ceil(1 << UNITS64_LOG2);
-        (row >> UNITS64_LOG2) as usize * stride + (column >> UNITS64_LOG2) as usize
+        self.filters.filter_block(row, column)
     }
 }
 
@@ -390,7 +392,7 @@ fn dequantizer_step(qindex: i32) -> u32 {
 
 /// A plane quantizer index from the luma AC index and a delta (dav2d
 /// `clip_qidx`): lossless stays lossless unless the delta is positive.
-fn delta_qindex(qindex: i32, delta: i32) -> i32 {
+pub(crate) fn delta_qindex(qindex: i32, delta: i32) -> i32 {
     const MAX: i32 = 255;
     if qindex == 0 && delta <= 0 {
         0

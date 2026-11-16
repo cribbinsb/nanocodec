@@ -606,13 +606,13 @@ impl CcsoSource {
     }
 }
 
-/// Filter `picture` (after CDEF) with `params`, in every unit whose flag is
-/// set, classifying on `source` (`ccso_frame`).
+/// Filter `picture` (after CDEF) with `params` wherever `flag` (plane,
+/// luma column, luma row) is set, classifying on `source` (`ccso_frame`).
 pub fn filter_picture(
     picture: &mut Picture,
     source: &CcsoSource,
     params: &CcsoParams,
-    flags: &UnitFlags,
+    flag: impl Fn(PlaneIndex, usize, usize) -> bool,
 ) {
     for plane in PlaneIndex::ALL {
         let Some(filter) = params.plane(plane) else {
@@ -626,7 +626,7 @@ pub fn filter_picture(
             let row = view.row_mut(y);
             for (x, sample) in row.iter_mut().enumerate() {
                 let (lx, ly) = (x << shift, y << shift);
-                if !flags.get(plane, lx, ly) {
+                if !flag(plane, lx, ly) {
                     continue;
                 }
                 let offset = i32::from(lut[source.lut_index(&classifier, lx, ly)]);

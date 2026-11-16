@@ -186,8 +186,13 @@ fn fsc_size_context(size: BlockSize) -> usize {
 }
 
 impl Tile<'_, '_> {
-    /// An intra block: modes, transform partition, reconstruction, contexts.
-    pub(super) fn intra_block(&mut self, depth: usize, record: &BlockRecord) -> Result<()> {
+    /// An intra block: modes, transform partition, reconstruction, contexts;
+    /// its luma transform layout for the loop filters.
+    pub(super) fn intra_block(
+        &mut self,
+        depth: usize,
+        record: &BlockRecord,
+    ) -> Result<LumaTransforms> {
         let size = record
             .luma
             .or(record.chroma)
@@ -238,7 +243,7 @@ impl Tile<'_, '_> {
                 store.update_bank(record.row, record.column, size);
             }
         }
-        Ok(())
+        Ok(transforms)
     }
 
     /// Whether the frame (its one segment) is lossless.

@@ -2541,6 +2541,11 @@ impl Dsp {
     ///
     /// If the segments extend past the plane, or a filtered segment reads
     /// outside it (as [`Dsp::av2_deblock_edge`]).
+    // A hint to inline into each picture filter (the encoder's and
+    // decoders'): once the general decoder called it too, our own decode's
+    // deblocking took 2.2M more instructions without it, 1.2M with it (of
+    // 726M, 60 frames of 360p); `#[inline(always)]` cost more.
+    #[inline]
     pub fn av2_deblock_line(
         &self,
         dst: &mut PlaneViewMut<'_>,

@@ -183,6 +183,14 @@ impl Default for Workspace {
 }
 
 impl Workspace {
+    /// The decoder's kernels and the loop filters' scratch: CDEF's line
+    /// buffers and CCSO's deblocked luma.
+    pub(crate) fn filter_parts(
+        &mut self,
+    ) -> (&Dsp, &mut cdef::PictureFilterScratch, &mut CcsoSource) {
+        (&self.dsp, &mut self.cdef_source, &mut self.ccso_source)
+    }
+
     /// Keep a picture nothing else holds for a later reconstruction.
     pub(crate) fn release(&mut self, picture: std::rc::Rc<Picture>) {
         if let Ok(picture) = std::rc::Rc::try_unwrap(picture) {
@@ -313,10 +321,11 @@ pub(crate) fn decode(
         work.ccso_source
             .fill_from(&decoder.recon.plane(PlaneIndex::Y).view());
     }
+    let blocks = (&decoder.state, &decoder.cdef_indices);
+    let passes_over = params.cdef.passes_over(true);
     cdef::filter_picture(
         &mut decoder.recon,
-        &decoder.state,
-        &decoder.cdef_indices,
+        |x, y| cdef::skipped_or_set(blocks, passes_over, (x, y)),
         params.cdef,
         &decoder.dsp,
         &mut work.cdef_source,
@@ -326,7 +335,7 @@ pub(crate) fn decode(
             &mut decoder.recon,
             &work.ccso_source,
             &params.ccso,
-            &decoder.ccso_flags,
+            |plane, x, y| decoder.ccso_flags.get(plane, x, y),
         );
     }
     Ok((decoder.recon, reader.into_models()))

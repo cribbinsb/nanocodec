@@ -12,7 +12,7 @@
 //! filter is nc-dsp's `av2_deblock_edge`.
 
 mod edges;
-mod thresholds;
+pub(crate) mod thresholds;
 
 pub(crate) use edges::{BlockEdges, EdgeGrid, EdgeMap, filter_picture};
 

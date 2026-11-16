@@ -21,7 +21,8 @@ pub fn uniform(bits: &mut BitReader<'_>, count: u32) -> Result<u32> {
 
 /// `value` coded relative to `reference` in `0..count` (AV2 §4.11
 /// `inverse_recenter`).
-fn inverse_recenter(reference: u32, value: u32) -> u32 {
+#[must_use]
+pub fn inverse_recenter(reference: u32, value: u32) -> u32 {
     if value > reference << 1 {
         value
     } else if value & 1 == 0 {

@@ -8,6 +8,7 @@
 //! its contexts read here (docs/handoff/av2.md "The general block layer").
 
 use super::palette::MAX_COLORS;
+use crate::general::filters::edges::{RESET_CHROMA_CONTEXT, RESET_LUMA_CONTEXT};
 
 /// Units of the left edge: one 256x256 superblock.
 pub const LEFT_UNITS: usize = 64;
@@ -59,6 +60,12 @@ pub struct Edge {
     pub luma_coefficients: Vec<u8>,
     /// The same per chroma 4x4 unit, for U and V (dav2d `ccoef`).
     pub chroma_coefficients: [Vec<u8>; 2],
+    /// The deblocking level of the transform touching this edge of the
+    /// unit, luma and (per chroma 4x4 unit) chroma (dav2d `tx_lpf_y`,
+    /// `tx_lpf_uv`; [`crate::general::filters::edges`]).
+    pub deblock_luma: Vec<u8>,
+    /// See `deblock_luma`.
+    pub deblock_chroma: Vec<u8>,
 }
 
 /// [`Edge::direction`] of a block without a directional luma mode.
@@ -90,6 +97,8 @@ impl Edge {
             uv_mode: vec![0; units],
             luma_coefficients: vec![NO_COEFFICIENTS; units],
             chroma_coefficients: [vec![NO_COEFFICIENTS; units], vec![NO_COEFFICIENTS; units]],
+            deblock_luma: vec![RESET_LUMA_CONTEXT; units],
+            deblock_chroma: vec![RESET_CHROMA_CONTEXT; units],
         }
     }
 
@@ -117,6 +126,8 @@ impl Edge {
         for plane in &mut self.chroma_coefficients {
             plane.fill(NO_COEFFICIENTS);
         }
+        self.deblock_luma.fill(RESET_LUMA_CONTEXT);
+        self.deblock_chroma.fill(RESET_CHROMA_CONTEXT);
     }
 }
 

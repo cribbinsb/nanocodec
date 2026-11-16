@@ -668,6 +668,16 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
 - `crates/nc-dsp/src/av2_dec/mc.rs` (intra block copy's bilinear
   prediction and block-adaptive scaling): from `src/mc_tmpl.c`
   (`put_bilin_c`, `morph_c`).
+- The general decoder's in-loop filters: `crates/nc-av2/src/general/filters/`
+  (`edges.rs` from `src/lf_mask.c`, `deblock.rs` from
+  `src/db_apply_tmpl.c` and `src/deblock_tmpl.c`'s threshold set-up,
+  `stripes.rs` and `gdf.rs` from `src/lr_apply_tmpl.c`),
+  `crates/nc-av2/src/general/block/loop_filters.rs` and `restoration.rs`
+  from `src/decode.c` (`decode_b`'s mask updates, `read_sb_restoration`,
+  `read_restoration_info`, `read_wiener_filter`), and
+  `crates/nc-dsp/src/av2_dec/gdf.rs` from `src/looprestoration_tmpl.c`
+  (`gdf_prep_c`, `gdf_add_c`); `gdf_tables.rs` is generated from
+  `src/gdf_tables.c` by `tools/codegen/gen_av2_gdf_tables.py`.
 
 ## VVenC — BSD-3-Clause-Clear
 

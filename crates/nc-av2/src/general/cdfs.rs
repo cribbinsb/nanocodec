@@ -71,6 +71,18 @@ pub struct Cdfs {
     pub ccso: [[Cdf<2>; 4]; 3],
     /// A superblock quantizer delta (the last symbol escapes) (AVM `default_delta_q_cdf`).
     pub delta_q: Cdf<8>,
+    /// A switchable unit: off (step 0), then PC-Wiener rather than NS-Wiener (step 1) (AVM `default_switchable_flex_restore_cdf[a][0]`).
+    pub rst_switchable: [Cdf<2>; 2],
+    /// Whether a non-separable Wiener unit is filtered (AVM `default_wienerns_restore_cdf`).
+    pub rst_ns_wiener: Cdf<2>,
+    /// Whether a PC-Wiener unit is filtered (AVM `default_pc_wiener_restore_cdf`).
+    pub rst_pc_wiener: Cdf<2>,
+    /// Whether a unit filter codes more taps (luma, chroma) (AVM `default_wienerns_length_cdf[a]`).
+    pub wiener_ns_len: [Cdf<2>; 2],
+    /// Whether a chroma unit filter pairs its outer taps (AVM `default_wienerns_uv_sym_cdf`).
+    pub wiener_ns_sym: Cdf<2>,
+    /// The group of a unit filter tap (four-part code) (AVM `default_wienerns_4part_cdf[0]`).
+    pub wiener_ns_cf: Cdf<4>,
     /// Whether a lossless luma block is DPCM coded (AVM `default_dpcm_cdf`).
     pub dpcm_y: Cdf<2>,
     /// The direction of luma DPCM (horizontal) (AVM `default_dpcm_vert_horz_cdf`).
@@ -283,6 +295,12 @@ impl Cdfs {
             cdef_index8: defaults::CDEF_INDEX8.build(),
             ccso: defaults::CCSO.map(|value| value.map(Initial::build)),
             delta_q: defaults::DELTA_Q.build(),
+            rst_switchable: defaults::RST_SWITCHABLE.map(Initial::build),
+            rst_ns_wiener: defaults::RST_NS_WIENER.build(),
+            rst_pc_wiener: defaults::RST_PC_WIENER.build(),
+            wiener_ns_len: defaults::WIENER_NS_LEN.map(Initial::build),
+            wiener_ns_sym: defaults::WIENER_NS_SYM.build(),
+            wiener_ns_cf: defaults::WIENER_NS_CF.build(),
             dpcm_y: defaults::DPCM_Y.build(),
             dpcm_dir_y: defaults::DPCM_DIR_Y.build(),
             dpcm_uv: defaults::DPCM_UV.build(),
@@ -445,6 +463,16 @@ impl Cdfs {
             }
         }
         self.delta_q.restart_adaptation();
+        for v0 in &mut self.rst_switchable {
+            v0.restart_adaptation();
+        }
+        self.rst_ns_wiener.restart_adaptation();
+        self.rst_pc_wiener.restart_adaptation();
+        for v0 in &mut self.wiener_ns_len {
+            v0.restart_adaptation();
+        }
+        self.wiener_ns_sym.restart_adaptation();
+        self.wiener_ns_cf.restart_adaptation();
         self.dpcm_y.restart_adaptation();
         self.dpcm_dir_y.restart_adaptation();
         self.dpcm_uv.restart_adaptation();
@@ -808,6 +836,16 @@ mod tests {
                 }
             }
             trace(&mut models.delta_q, &mut hash);
+            for v0 in &mut models.rst_switchable {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.rst_ns_wiener, &mut hash);
+            trace(&mut models.rst_pc_wiener, &mut hash);
+            for v0 in &mut models.wiener_ns_len {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.wiener_ns_sym, &mut hash);
+            trace(&mut models.wiener_ns_cf, &mut hash);
             trace(&mut models.dpcm_y, &mut hash);
             trace(&mut models.dpcm_dir_y, &mut hash);
             trace(&mut models.dpcm_uv, &mut hash);

@@ -2,7 +2,8 @@
 //! inverse transforms of every size and type with the secondary and
 //! cross-chroma transforms ([`itx`], [`stx`]), every intra predictor
 //! with its edge preparation ([`ipred`]), and the motion compensation
-//! intra block copy uses ([`mc`]), for 8-bit 4:2:0.
+//! intra block copy uses ([`mc`]), and the guided detail filter
+//! ([`gdf`]), for 8-bit 4:2:0.
 //!
 //! Ported from dav2d (commit 237229e; Copyright © 2018-2026 `VideoLAN` and
 //! dav2d authors, BSD-2-Clause, see `docs/licenses/dav2d`), which is
@@ -11,6 +12,8 @@
 //! Our own streams' subset keeps its own SIMD kernels ([`crate::Dsp`]); these
 //! serve only the paths other encoders' streams take, so they are scalar.
 
+pub mod gdf;
+pub mod gdf_tables;
 pub mod ipred;
 pub mod itx;
 mod itx_1d;
