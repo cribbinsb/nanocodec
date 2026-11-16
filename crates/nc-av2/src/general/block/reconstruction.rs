@@ -326,6 +326,8 @@ impl Tile<'_, '_> {
             && let Some(eob) = residual.eob
         {
             self.add_luma_residual(record, modes, (tx, y_mode), residual, eob);
+            self.filters
+                .mark_residual((self.row, self.column), (w as u32, h as u32));
         }
         self.mark_coded(
             0,

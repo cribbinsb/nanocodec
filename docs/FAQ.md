@@ -209,7 +209,7 @@ its output under the GPL; we distribute only the output streams, not the program
   that fail use reference picture resampling), so it is not a full Main-profile decoder; the AV2 decoder decodes our own streams and 14 of 30 foreign test streams bit-exact
   (of 12 dav2d 8-bit test streams and 18 avmenc v1.0.0 streams: the nine avmenc streams coded with the fewest
   tools, the three all-intra avmenc streams with every default tool, and two dav2d single pictures); the other
-  16 need inter blocks beyond our subset, loop restoration filters or segment ids. Details in the
+  16 need inter blocks beyond our subset or segment ids. Details in the
   [detailed results](results/README.md#decoders).
 - **Speed gaps:** our AV1 and VP9 decoders are slower than dav1d and vpxdec single-threaded; SVT-AV1 M12/M13 and
   x264's fast presets encode faster than our Default presets; VVC Default runs below 30 fps at 720p on one Jetson

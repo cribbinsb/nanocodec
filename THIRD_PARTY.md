@@ -677,7 +677,14 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   `read_restoration_info`, `read_wiener_filter`), and
   `crates/nc-dsp/src/av2_dec/gdf.rs` from `src/looprestoration_tmpl.c`
   (`gdf_prep_c`, `gdf_add_c`); `gdf_tables.rs` is generated from
-  `src/gdf_tables.c` by `tools/codegen/gen_av2_gdf_tables.py`.
+  `src/gdf_tables.c` by `tools/codegen/gen_av2_gdf_tables.py`;
+  `filters/restoration.rs` from `src/lr_apply_tmpl.c`, and
+  `crates/nc-dsp/src/av2_dec/wiener.rs` from `src/looprestoration_tmpl.c`
+  (`ns_wiener_single_y_c`, `wiener_multi`, `wiener_uv_luma_c`,
+  `wiener_uv_chroma_c`) and `src/looprestoration.h`
+  (`setup_wiener_qval_approx_data`); `wiener_tables.rs` is generated from
+  `src/wiener_tables.c` and `src/tables.c` by
+  `tools/codegen/gen_av2_wiener_tables.py`.
 
 ## VVenC — BSD-3-Clause-Clear
 

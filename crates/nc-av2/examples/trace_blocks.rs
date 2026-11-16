@@ -2,10 +2,13 @@
 //! layer's trace in dav2d's `DEBUG_BLOCK_INFO` format, then the first
 //! error: what `tools/dev/av2_foreign/block_trace.py` holds against dav2d.
 //!
-//! `cargo run -p nanocodec-av2 --example trace_blocks -- FILE [UNFILTERED.yuv]`
+//! `cargo run -p nanocodec-av2 --example trace_blocks -- FILE [OUT.yuv
+//! [--filtered] [--invisible]]`
 //!
-//! With a second path, it also writes every output picture before the loop
-//! filters (I420), to hold against dav2d `--inloopfilters none`.
+//! With a second path, it also writes every output picture (I420): before
+//! the loop filters, to hold against dav2d `--inloopfilters none`, or
+//! after them with `--filtered`; `--invisible` adds the frames not shown
+//! when decoded (dav2d `--outputinvisible 1`).
 use std::io::Write;
 
 /// IVF file and frame header sizes.
@@ -36,9 +39,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("usage: trace_blocks FILE")?;
     let file = std::fs::read(path)?;
     let mut decoder = nc_av2::Decoder::default();
+    let flags: Vec<String> = std::env::args().skip(3).collect();
     let mut unfiltered = match std::env::args().nth(2) {
         Some(path) => {
-            decoder.skip_loop_filters();
+            if !flags.iter().any(|flag| flag == "--filtered") {
+                decoder.skip_loop_filters();
+            }
+            if flags.iter().any(|flag| flag == "--invisible") {
+                decoder.output_invisible_frames();
+            }
             Some(std::fs::File::create(path)?)
         }
         None => None,

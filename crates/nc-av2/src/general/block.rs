@@ -376,7 +376,7 @@ fn samples(units: u32) -> u32 {
 /// The dequantizer step of a quantizer index (dav2d `dav2d_dq_lookup`):
 /// 64 for lossless, else a 24-entry mantissa table doubling every 24
 /// indices.
-fn dequantizer_step(qindex: i32) -> u32 {
+pub(crate) fn dequantizer_step(qindex: i32) -> u32 {
     const LOSSLESS_STEP: u32 = 64;
     const OCTAVE: i32 = 24;
     const MANTISSAS: [u32; 24] = [

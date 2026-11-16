@@ -15,6 +15,7 @@ use std::rc::Rc;
 use super::block::{self, BlockTrace};
 use super::cdfs::Cdfs;
 use super::filters;
+use super::frame_header::restoration::kind;
 use super::frame_header::{
     self, Context, FrameHeader, FrameType, MAX_SLOTS, Parsed, ShowExisting, SlotHeader, obu_type,
 };
@@ -110,6 +111,9 @@ pub struct Decoder {
     /// Diagnosis: general-path frames skip their loop filters (as dav2d's
     /// `--inloopfilters none`), to hold the reconstruction against it.
     unfiltered: bool,
+    /// Diagnosis: frames not shown when decoded are output then too (as
+    /// dav2d's `--outputinvisible 1`).
+    invisible: bool,
 }
 
 /// A block-trace sink ([`Decoder::trace_blocks`]).
@@ -493,6 +497,10 @@ impl Decoder {
         let picture = Rc::new(picture);
         if header.show_immediate {
             self.queue_output(&picture, header.order)?;
+        } else if self.invisible {
+            self.output.push_back(Output {
+                picture: Rc::clone(&picture),
+            });
         }
         let refresh = header.refresh;
         let held = SlotHeader {
@@ -528,16 +536,6 @@ impl Decoder {
         });
         let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
         if !self.unfiltered {
-            if header
-                .restoration
-                .planes
-                .iter()
-                .any(|plane| plane.kind != 0)
-            {
-                return Err(DecodeError::Unsupported(
-                    "AV2 loop restoration filters in the general decoder",
-                ));
-            }
             let (dsp, ..) = self.workspace.filter_parts();
             filters::deblock::filter(
                 &mut decoded.planes,
@@ -562,8 +560,15 @@ impl Decoder {
             }
         }
         if !self.unfiltered {
-            // GDF reads deblocked rows next to its stripes.
-            let deblocked = (header.gdf.mode != 0).then(|| picture.clone());
+            // Restoration and GDF read deblocked rows next to their
+            // stripes.
+            let restored = header.gdf.mode != 0
+                || header
+                    .restoration
+                    .planes
+                    .iter()
+                    .any(|plane| plane.kind != kind::NONE);
+            let deblocked = restored.then(|| picture.clone());
             let (dsp, cdef_scratch, ccso_source) = self.workspace.filter_parts();
             filters::cdef_and_ccso(
                 &mut picture,
@@ -573,9 +578,25 @@ impl Decoder {
                 (cdef_scratch, ccso_source),
             )?;
             if let Some(deblocked) = &deblocked {
-                let distances = self.reference_distances(header);
-                let params = filters::gdf::params(header, &distances);
-                filters::gdf::filter(&mut picture, deblocked, &decoded.filters, (header, params));
+                let source = picture.clone();
+                let downsample = sequence.intra.cfl_downsample_filter;
+                let maps = &decoded.filters;
+                filters::restoration::filter(
+                    &mut picture,
+                    (&source, deblocked),
+                    maps,
+                    (header, downsample),
+                );
+                if header.gdf.mode != 0 {
+                    let distances = self.reference_distances(header);
+                    let params = filters::gdf::params(header, &distances);
+                    filters::gdf::filter(
+                        &mut picture,
+                        (&source, deblocked),
+                        maps,
+                        (header, params),
+                    );
+                }
             }
         }
         Ok((picture, decoded.cdfs))
@@ -633,6 +654,13 @@ impl Decoder {
     /// (dav2d `--inloopfilters none`), which are then not applied.
     pub fn skip_loop_filters(&mut self) {
         self.unfiltered = true;
+    }
+
+    /// Diagnosis: also output each frame not shown when decoded, when it
+    /// is decoded (dav2d `--outputinvisible 1`), to hold hidden frames
+    /// against dav2d.
+    pub fn output_invisible_frames(&mut self) {
+        self.invisible = true;
     }
 
     /// Send the general block layer's trace (dav2d's `DEBUG_BLOCK_INFO`

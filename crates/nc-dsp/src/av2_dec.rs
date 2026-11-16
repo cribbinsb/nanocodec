@@ -21,3 +21,5 @@ mod itx_kernels;
 pub mod mc;
 pub mod stx;
 pub mod stx_tables;
+pub mod wiener;
+pub mod wiener_tables;

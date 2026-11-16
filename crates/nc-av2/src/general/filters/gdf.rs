@@ -49,16 +49,16 @@ pub fn params(header: &FrameHeader, distances: &[u32]) -> &'static GdfParams {
     }
 }
 
-/// Filter the luma of `picture` (after CDEF and CCSO) where the block
-/// layer set GDF flags; `deblocked` is the frame before CDEF.
+/// Correct the luma of `picture` (after the Wiener filters, if any) where
+/// the block layer set GDF flags, from `source` (the frame after CDEF and
+/// CCSO, before restoration) and `deblocked` (the frame before CDEF).
 pub fn filter(
     picture: &mut Picture,
-    deblocked: &Picture,
+    (source, deblocked): (&Picture, &Picture),
     maps: &FilterMaps,
     (header, params): (&FrameHeader, &GdfParams),
 ) {
-    let source = picture.plane(PlaneIndex::Y).clone();
-    let source = source.view();
+    let source = source.plane(PlaneIndex::Y).view();
     let deblocked = deblocked.plane(PlaneIndex::Y).view();
     let (width, height) = (source.width(), source.height());
     let scale = i32::from(header.gdf.scale);

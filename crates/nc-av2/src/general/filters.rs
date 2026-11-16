@@ -14,6 +14,7 @@
 pub mod deblock;
 pub mod edges;
 pub mod gdf;
+pub mod restoration;
 pub mod stripes;
 
 use edges::EdgeMap;
@@ -62,6 +63,9 @@ pub struct FilterMaps {
     /// Per luma 4x4 unit (row-major, `luma_edges.columns` across): the
     /// unit's block codes a luma residual (dav2d `noskip_mask`).
     pub coded: Vec<bool>,
+    /// Per luma 4x4 unit: the unit's transform has coefficients (dav2d
+    /// `lr_noskip_mask`).
+    pub residual: Vec<bool>,
     /// Per plane and filter block: the restoration unit whose top-left
     /// luma position the block holds (dav2d `lr_mask`).
     pub restoration: [Vec<Option<RestorationUnit>>; PLANES],
@@ -96,6 +100,7 @@ impl FilterMaps {
             luma_edges: EdgeMap::new(columns, rows),
             chroma_edges: EdgeMap::new(columns / 2, rows / 2),
             coded: vec![false; columns * rows],
+            residual: vec![false; columns * rows],
             restoration: std::array::from_fn(|_| vec![None; filter_blocks]),
         }
     }
@@ -108,12 +113,24 @@ impl FilterMaps {
 
     /// Mark the luma units of a block with a residual (`columns`, `rows`:
     /// its extent in units, clipped to the frame).
-    pub fn mark_coded(&mut self, (row, column): (u32, u32), (columns, rows): (u32, u32)) {
+    pub fn mark_coded(&mut self, at: (u32, u32), extent: (u32, u32)) {
         let stride = self.luma_edges.columns;
-        for y in row..row + rows {
-            let start = y as usize * stride + column as usize;
-            self.coded[start..start + columns as usize].fill(true);
-        }
+        fill(&mut self.coded, stride, at, extent);
+    }
+
+    /// Mark the luma units of a transform with coefficients (extent as
+    /// [`Self::mark_coded`]).
+    pub fn mark_residual(&mut self, at: (u32, u32), extent: (u32, u32)) {
+        let stride = self.luma_edges.columns;
+        fill(&mut self.residual, stride, at, extent);
+    }
+}
+
+/// Set a rectangle of a per-unit flag map.
+fn fill(map: &mut [bool], stride: usize, (row, column): (u32, u32), (columns, rows): (u32, u32)) {
+    for y in row..row + rows {
+        let start = y as usize * stride + column as usize;
+        map[start..start + columns as usize].fill(true);
     }
 }
 

@@ -32,8 +32,8 @@ delay, you may be in the right place:
   Main 10 tools one by one, pictures of several slices and subpictures among them (it is 8-bit only and still
   rejects reference picture resampling, so it is not a compliant Main 10 decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
   decodes our own streams and 14 of 30 foreign test streams bit-exact (all-intra streams and those of the
-  reference encoder with the fewest tools; the rest need inter tools, loop restoration and segmentation
-  outside our subset).
+  reference encoder with the fewest tools; the rest need inter tools and segmentation outside our
+  subset).
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
   1 s buffer); 720p at real-time speed on one Jetson Orin core for every format's `medium` preset except VVC,
   which runs just under it (VVC `fast` is above); figures in [Headline results](#headline-results).
