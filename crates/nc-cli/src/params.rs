@@ -298,6 +298,11 @@ mod tests {
         // and RD, and deblocking (light pipeline, 2026-11-16): no overrides.
         expected.remove("av1.pre_tx_skip_energy");
         expected.remove("av1.pre_tx_skip_rd");
+        // Fast keeps the rank margin, CDEF search rows and key-frame CfL it
+        // was screened with when the Default adopted Slow's (2026-11-16).
+        expected.set("decision.exact_rank_margin", 1.1);
+        expected.set("av1.cdef_search_row_step", 4.0);
+        expected.set("av1.keyframe_cfl", 0.0);
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected

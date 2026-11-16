@@ -437,10 +437,14 @@ param_group! {
         // docs/handoff/engine-cpu.md.
         max_cheap_vectors: 16.0, [1.0, 16.0],
             "most codec-predicted (NEAREST/NEAR, merge) vectors ranked per block, in the codec's order (16 = all): lower is faster, misses cheap predictors",
-        // Default 1.1 (2026-11-09): J_real (CBR ladder) AV1 proxy-6 150f
-        // J-full +0.1% / J-low -0.1%, no guard, -6.5% P instructions: BETTER.
-        // HEVC, AV2 and H.264 pin 0 (their screens at the backend).
-        exact_rank_margin: 1.1, [0.0, 4.0],
+        // Default 0 (off, 2026-11-16): it was 1.1 for its -6.5% AV1 P
+        // instructions, but H.264 and HEVC already pinned 0 (proxy screens
+        // at 1.1: J +0.2% / +0.4%), AV1 Default moved to 0 (79d53ba8b:
+        // final-check J -0.30%). VVC: L3 -0.43%, final-check -0.28% (one
+        // clip's key pulse +0.68 dB); AV2: L3 +0.12% (ambiguous),
+        // final-check -0.19%, no guards. VP9 never reaches the exact ranking
+        // (no `luma_filter`). Fast presets and VVC/AV2 Slow pin a margin.
+        exact_rank_margin: 0.0, [0.0, 4.0],
             "exact-filter ranking: skip a sub-sample candidate's exact prediction when its bilinear cost exceeds this multiple of the best exact cost so far (0 = never): lower is faster",
         new_rate_scale: 1.0, [0.0, 1.0],
             "multiple of a NEW vector's mode+MV bits in the ranking (SVT `approx_inter_rate` prices NEW cheaply): lower picks NEW more",

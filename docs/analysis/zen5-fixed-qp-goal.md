@@ -389,8 +389,20 @@ and keyframe_cfl 1 were above the Default -> Slow line; landed in AV1 DEFAULT_PA
 -0.30 % [-0.49, -0.11], no guards. Default with trellis off (+8 % speed) or also Fast's key
 intra set (+15 %) lose in CBR (L1 +1.14 % / +3.93 %): no Default re-mix reaches M10's
 speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC and VP9
-+0.00 % (already 0 or inert), VVC -0.17 % [-0.61, +0.20], AV2 -0.53 % [-0.77, -0.03]; the
-engine default is still 1.1 pending L3 on VVC and AV2.
++0.00 % (already 0 or inert), VVC -0.17 % [-0.61, +0.20], AV2 -0.53 % [-0.77, -0.03].
+
+- **Engine default 0 (feature/rank-margin, 2026-11-16).** Quality-only levels (dCPU 0,
+  draw 2026-11-16): VVC L3 -0.43 % [-0.74, -0.15] n 78 BETTER; AV2 L3 +0.12 % [-0.19,
+  +0.46] AMBIGUOUS (ceiling guard 0.65 % over target against 0.35 % + 0.25). Final-check
+  (600 f, keys every 10 s, ladder, n 28): VVC -0.28 % [-0.51, -0.09], periodic-key pulse
+  guard +0.68 dB on one clip (pool_external_meva_admin_720p_536p, the clip HEVC's merge
+  attempt also failed on; balanced dKeyN +0.00 dB); AV2 -0.19 % [-0.48, +0.05], no guards.
+  Adopted as the shared default (equal or better on both; shared-first). VP9 is inert: it
+  has no `luma_filter`, so it never reaches the exact ranking (identity confirms). Preset
+  identity: only VVC and AV2 Default change; VVC and AV2 Slow pin 1.1 (not screened at 0).
+- **Jetson, AV1 Default 79d53ba8b against its parent** (jperf, core 3, min of 3, CBR 600,
+  150 f, crowd / bodycam / static 720p): cycles +4.53 / +4.96 / +5.04 %, geometric mean
+  **x1.048**; instructions +6.86 / +6.70 / +5.54 % (x1.064). x86 c8a time was +2.4 %.
 
 ## Assigned 2026-11-16 09:10
 

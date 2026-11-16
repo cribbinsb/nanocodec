@@ -1172,16 +1172,14 @@ impl CodecBackend for Av1Backend {
         // near zero), FoodMarket unswitched; at 300 kbps nothing switches
         // (streams identical). docs/handoff/adaptive-resolution.md.
         ("resolution.adaptive", 1.0),
-        // Three of AV1 Slow's cheap groups (group ablation of Default against
-        // Slow, docs/handoff/light-pipeline.md): no rank margin on the exact
-        // candidate ranking, a CDEF search on every row, key-frame CfL.
-        // Fixed-QP lens (12 AOM CTC sequences vs x264 medium) Weighted / J
-        // -17.9 / -26.0 -> -18.9 / -26.7 at 2.4 % more c8a time; CBR quality
-        // L1 -0.80 % [-1.15, -0.54] (ladder); final-check (600 f, keys every
-        // 10 s) J -0.30 % [-0.49, -0.11] BETTER, no guards. The rank margin is
-        // a shared parameter: the engine-wide screen of 0 is pending (an AV1
-        // measurement, not a syntax reason, until it is done).
-        ("decision.exact_rank_margin", 0.0),
+        // Two of AV1 Slow's cheap groups (group ablation of Default against
+        // Slow, docs/handoff/light-pipeline.md; the third, no exact-rank
+        // margin, is now the engine default): a CDEF search on every row,
+        // key-frame CfL. With the margin, fixed-QP lens (12 AOM CTC
+        // sequences vs x264 medium) Weighted / J -17.9 / -26.0 -> -18.9 /
+        // -26.7 at 2.4 % more c8a time; CBR quality L1 -0.80 % [-1.15,
+        // -0.54] (ladder); final-check (600 f, keys every 10 s) J -0.30 %
+        // [-0.49, -0.11] BETTER, no guards.
         ("av1.cdef_search_row_step", 1.0),
         ("av1.keyframe_cfl", 1.0),
     ];

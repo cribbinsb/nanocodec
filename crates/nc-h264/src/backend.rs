@@ -2123,10 +2123,6 @@ impl CodecBackend for H264Backend {
         // The legacy sub-sample move biases (the engine defaults moved to
         // AV1's quality point).
         ("decision.subpel_fractional_bias", 1.1),
-        // Exact-rank pruning off: at 1.1 it saves only 0.3% of P
-        // instructions (few sub-sample candidates) for J_real proxy-4
-        // +0.2% / +0.2%.
-        ("decision.exact_rank_margin", 0.0),
         // Psychovisual term (`nc_encoder::psy`): J_real full TRAIN (18 clips,
         // CBR ladder) quality -1.1% (full -0.8%, low -1.4%; NEG -1.7%,
         // MS-SSIM -1.0%, PSNR-YUV +0.1%; pan -1.7/-3.3%), no guards, for

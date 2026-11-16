@@ -121,3 +121,11 @@ structure.inherited_depth = 0
 # guards (static class +0.8%, VMAF v1 +3.8%, PSNR -6.8%). Without deblocking
 # the static class lost 3.7% (guard), so deblocking stays.
 
+
+# The AV1 Default's 2026-11-16 bundle (79d53ba8b: no exact-rank margin, CDEF
+# searched on every row, key-frame CfL) was measured on the Default only;
+# pinned to the values this preset was screened with, so its streams do not
+# move with the Default (key CfL alone was +45-52 % of a lowlight key frame).
+decision.exact_rank_margin = 1.1
+av1.cdef_search_row_step = 4
+av1.keyframe_cfl = 0

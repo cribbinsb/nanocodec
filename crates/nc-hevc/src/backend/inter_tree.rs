@@ -131,25 +131,34 @@ impl HevcBackend {
         // bounds and quantiser dropped it) is never split: four smaller
         // transforms would code what the whole one judged noise. Split
         // gate: an evenly spread residual gains little from four smaller
-        // transforms. The gates are evaluated cheapest first, and the
-        // spread only for coded nodes (most are not): P instructions of
-        // the split fell from +10.2% / +7.5% to +3.9% / +2.1% (crowd09 /
-        // bodycam_bc1, QP 42, spread 2).
-        let try_split = flag_present
-            && node.log2_size() > MIN_INTER_TU_LOG2
-            && tu.luma.coded
-            && self.luma_residual_spread(cu, &node, source) >= self.tools.inter_tu_split_spread;
+        // transforms. Detail gate: a leaf already cheap per sample (below
+        // `inter_tu_split_min_cost` λ) gains little from a split. The gates
+        // are evaluated cheapest first, and the spread only for coded nodes
+        // (most are not): P instructions of the split fell from +10.2% /
+        // +7.5% to +3.9% / +2.1% (crowd09 / bodycam_bc1, QP 42, spread 2).
+        // Inside a trial the leaf's cost is needed anyway, so the detail
+        // gate goes before the spread there. Exact; per P frame HEVC Fast
+        // instructions -0.11 % / -0.25 % (callgrind, `WestWindEasy` / `Johnny`, QP 37).
+        let splittable = flag_present && node.log2_size() > MIN_INTER_TU_LOG2 && tu.luma.coded;
+        let spread =
+            || self.luma_residual_spread(cu, &node, source) >= self.tools.inter_tu_split_spread;
         let flag_bits = |split| self.split_transform_bits(node.log2_size(), flag_present, split);
-        let leaf_cost = if costed || try_split {
+        let leaf_cost = || {
             self.inter_luma_cost(&tu, depth, source, recon) + self.rd_lambda() * flag_bits(false)
-        } else {
-            0.0
         };
-        // Detail gate: a leaf already cheap per sample (below
-        // `inter_tu_split_min_cost` λ) gains little from a split.
         let samples = (node.size() * node.size()) as f32;
-        let detailed = leaf_cost >= self.tools.inter_tu_split_min_cost * self.rd_lambda() * samples;
-        if !(try_split && detailed) {
+        let detailed =
+            |cost: f32| cost >= self.tools.inter_tu_split_min_cost * self.rd_lambda() * samples;
+        let (leaf_cost, split) = if costed {
+            let cost = leaf_cost();
+            (cost, splittable && detailed(cost) && spread())
+        } else if splittable && spread() {
+            let cost = leaf_cost();
+            (cost, detailed(cost))
+        } else {
+            (0.0, false)
+        };
+        if !split {
             tus.push(tu);
             return leaf_cost;
         }

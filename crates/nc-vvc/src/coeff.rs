@@ -711,6 +711,7 @@ fn walk<B: Bins>(
     let mut state = 0u8;
     let log2 = width.ilog2();
     let dependent = c.dependent;
+    let mut c = c.channel(ch);
     let step = |state: &mut u8, level: u32| {
         if dependent {
             *state = next_state(*state, level);
@@ -725,7 +726,7 @@ fn walk<B: Bins>(
                 || (gp / columns + 1 < rows && significant >> (gp + columns) & 1 != 0),
         );
         let present = !B::READS && scan[first..=end].iter().any(|&p| source[p] != 0);
-        if g != 0 && g != last / GROUP_SIZE && !io.bin(&mut c.group[ch][ctx], present)? {
+        if g != 0 && g != last / GROUP_SIZE && !io.bin(&mut c.group[ctx], present)? {
             continue;
         }
         significant |= 1 << gp;
@@ -749,7 +750,7 @@ fn walk<B: Bins>(
                 true
             } else {
                 budget -= 1;
-                io.bin(c.significance(ch, state, sig_ctx), source[p] != 0)?
+                io.bin(c.significance(state, sig_ctx), source[p] != 0)?
             };
             if !sig {
                 step(&mut state, 0);
@@ -761,9 +762,9 @@ fn walk<B: Bins>(
             let abs = source[p].unsigned_abs();
             budget -= 1;
             let mut level = 1;
-            if io.bin(&mut c.gt1[ch][level_ctx], abs > 1)? {
-                let parity = io.bin(&mut c.parity[ch][level_ctx], abs & 1 != 0)?;
-                let gt2 = io.bin(&mut c.gt2[ch][level_ctx], abs > 3)?;
+            if io.bin(&mut c.gt1[level_ctx], abs > 1)? {
+                let parity = io.bin(&mut c.parity[level_ctx], abs & 1 != 0)?;
+                let gt2 = io.bin(&mut c.gt2[level_ctx], abs > 3)?;
                 budget -= 2;
                 level = 2 + u32::from(parity) + 2 * u32::from(gt2);
             }

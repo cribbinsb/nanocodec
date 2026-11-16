@@ -11,3 +11,7 @@
 # L3 (600 f, ladder, n=27): J -3.00% [-3.77, -2.19] at x1.22 Jetson cycles.
 planner.inter_min_log2 = 3
 vvc.isp_residual_gate = 1
+# The exact-rank margin stays at the old engine default 1.1 here: the
+# engine default moved to 0 for VVC/AV2 Default (L3 screened), and this
+# preset has not been screened with 0.
+decision.exact_rank_margin = 1.1

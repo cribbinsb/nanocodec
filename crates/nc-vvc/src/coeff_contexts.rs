@@ -196,22 +196,49 @@ impl CoeffContexts {
 }
 impl CoeffContexts {
     /// The `sig_coeff_flag` context `index` of channel `ch` in quantiser
-    /// state `state` (always 0 without dependent quantisation).
-    #[inline]
-    pub(crate) fn significance(&mut self, ch: usize, state: u8, index: usize) -> &mut Context {
-        match state {
-            0 | 1 => &mut self.sig[ch][index],
-            _ => &mut self.dependent_sig[usize::from(state) - 2][ch][index],
-        }
-    }
-
-    /// [`Self::significance`] as it stands, for pricing.
+    /// state `state` (always 0 without dependent quantisation), as it
+    /// stands, for pricing.
     #[inline]
     pub(crate) fn sig_context(&self, ch: usize, state: u8, index: usize) -> Context {
         match state {
             0 | 1 => self.sig[ch][index],
             _ => self.dependent_sig[usize::from(state) - 2][ch][index],
         }
+    }
+}
+
+/// One channel's coefficient contexts, borrowed once per transform block so
+/// that its bins index only within the channel's sets.
+pub(crate) struct ChannelContexts<'a> {
+    pub group: &'a mut [Context; GROUP_CONTEXTS],
+    /// The `sig_coeff_flag` sets of quantiser states 0 and 1, 2, and 3.
+    sig: [&'a mut [Context; SIG_CONTEXTS]; 3],
+    pub gt1: &'a mut [Context; LEVEL_CONTEXTS],
+    pub parity: &'a mut [Context; LEVEL_CONTEXTS],
+    pub gt2: &'a mut [Context; LEVEL_CONTEXTS],
+}
+
+impl CoeffContexts {
+    /// Channel `ch`'s contexts.
+    pub(crate) fn channel(&mut self, ch: usize) -> ChannelContexts<'_> {
+        let [state_two, state_three] = &mut self.dependent_sig;
+        ChannelContexts {
+            group: &mut self.group[ch],
+            sig: [&mut self.sig[ch], &mut state_two[ch], &mut state_three[ch]],
+            gt1: &mut self.gt1[ch],
+            parity: &mut self.parity[ch],
+            gt2: &mut self.gt2[ch],
+        }
+    }
+}
+
+impl ChannelContexts<'_> {
+    /// The `sig_coeff_flag` context `index` in quantiser state `state`
+    /// (always 0 without dependent quantisation; states 2 and 3 offset by
+    /// `Max(0, QState − 1)` sets, §9.3.4.2.8).
+    #[inline]
+    pub(crate) fn significance(&mut self, state: u8, index: usize) -> &mut Context {
+        &mut self.sig[usize::from(state.saturating_sub(1))][index]
     }
 }
 

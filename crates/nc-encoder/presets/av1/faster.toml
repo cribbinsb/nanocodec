@@ -129,3 +129,10 @@ planner.depth_removal_th_16_8 = 50
 # both: one more rung of pool_meva_hospital_g301 overshoots (> 10 %); its
 # key pulse improves 0.66 dB.
 rate.prekey_quiet = 1
+
+# The AV1 Default's 2026-11-16 bundle (79d53ba8b: no exact-rank margin, CDEF
+# searched on every row, key-frame CfL) was measured on the Default only;
+# pinned to the values this preset was screened with, so its streams do not
+# move with the Default (key CfL alone was +45-52 % of a lowlight key frame).
+decision.exact_rank_margin = 1.1
+av1.keyframe_cfl = 0

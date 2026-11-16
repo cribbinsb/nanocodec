@@ -1064,11 +1064,6 @@ impl CodecBackend for HevcBackend {
         ("decision.subpel_move_bias_nonzero", 1.1),
         ("decision.subpel_fractional_bias", 1.1),
         ("planner.depth_removal_min_quantizer", 0.86),
-        // Exact-rank pruning off: at 1.1, J_real proxy-6 (150f) J-full
-        // +0.4% / J-low +0.1% (all 6 clips slightly worse) for -3.8% P
-        // instructions; outside the near-free bar the engine default met
-        // on AV1. `work/engine-cpu/screens/hevc-prune11.log`.
-        ("decision.exact_rank_margin", 0.0),
         // Directional P-frame intra estimate (`decision.intra_directional`,
         // engine `intra_estimate.rs`) with this backend's SATD fallback
         // (`inter_fallback`), estimated only where DC intra costs under 2x

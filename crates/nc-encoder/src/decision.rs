@@ -1073,7 +1073,7 @@ fn rank_with_stats(
 /// Skips a sub-sample candidate's exact (codec-filter) prediction, about
 /// 3K instructions for a 16x16 AV1 block, when its bilinear cost is already
 /// above `margin` times the best exact cost so far
-/// (`decision.exact_rank_margin`; 1.1 by default, 0 turns it off). The bilinear distortion
+/// (`decision.exact_rank_margin`; 0, off, by default; Fast presets set it). The bilinear distortion
 /// estimates the exact one closely, so a candidate far behind on it rarely
 /// wins; measured effect at the parameter.
 struct ExactPrune<'a> {
