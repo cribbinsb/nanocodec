@@ -933,7 +933,7 @@ fn inverse<'a>(
     } else {
         Dequantizer::Plain
     };
-    let eob = coeff::end_of_block(&levels[..tx.coded_len()], tx);
+    let eob = coeff::end_of_block(dsp, &levels[..tx.coded_len()], tx);
     if let Some(constant) =
         transform::dc_only_residual((tx, tx_type), (levels, eob, dequantizer), qindex)
     {

@@ -56,7 +56,7 @@ fn round_trip(adaptive: bool, qindex: u8, cases: &[(TxSize, Context, Vec<i32>)])
         writer.enable_adaptation(qindex);
     }
     for (tx, ctx, block) in cases {
-        write(&mut writer, block, *tx, *ctx, qindex).unwrap();
+        write(&nc_dsp::Dsp::new(), &mut writer, block, *tx, *ctx, qindex).unwrap();
     }
     let packet = writer.finish();
     let mut reader = Reader::new(&packet).unwrap();
@@ -139,17 +139,67 @@ fn rejects_unsupported_combinations() {
     let mut writer = Writer::new();
     let ctx = Context::default();
     let block = vec![0; TxSize::Tx8.coded_len()];
-    assert!(write(&mut writer, &block, TxSize::Tx8, ctx, 0).is_err());
-    assert!(write(&mut writer, &block[..16], TxSize::Tx8, ctx, 9).is_err());
+    assert!(
+        write(
+            &nc_dsp::Dsp::new(),
+            &mut writer,
+            &block,
+            TxSize::Tx8,
+            ctx,
+            0
+        )
+        .is_err()
+    );
+    assert!(
+        write(
+            &nc_dsp::Dsp::new(),
+            &mut writer,
+            &block[..16],
+            TxSize::Tx8,
+            ctx,
+            9
+        )
+        .is_err()
+    );
     let chroma = Context {
         plane: PLANE_U,
         ..ctx
     };
-    assert!(write(&mut writer, &vec![0; 1024], TxSize::Tx64, chroma, 9).is_err());
+    assert!(
+        write(
+            &nc_dsp::Dsp::new(),
+            &mut writer,
+            &vec![0; 1024],
+            TxSize::Tx64,
+            chroma,
+            9
+        )
+        .is_err()
+    );
     let too_large = [i32::try_from(MAX_LEVEL).unwrap() + 1; 16];
-    assert!(write(&mut writer, &too_large, TxSize::Tx4, ctx, 9).is_err());
+    assert!(
+        write(
+            &nc_dsp::Dsp::new(),
+            &mut writer,
+            &too_large,
+            TxSize::Tx4,
+            ctx,
+            9
+        )
+        .is_err()
+    );
     let bad = Context { skip: 10, ..ctx };
-    assert!(write(&mut writer, &block, TxSize::Tx8, bad, 9).is_err());
+    assert!(
+        write(
+            &nc_dsp::Dsp::new(),
+            &mut writer,
+            &block,
+            TxSize::Tx8,
+            bad,
+            9
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -258,7 +308,15 @@ fn written_entropy_context_matches_the_block() {
                 }
             }
             let mut w = Writer::new();
-            let written = write_typed(&mut w, &levels, TxSize::Tx8, ctx, 120, Kind::DCT_ONLY);
+            let written = write_typed(
+                &nc_dsp::Dsp::new(),
+                &mut w,
+                &levels,
+                TxSize::Tx8,
+                ctx,
+                120,
+                Kind::DCT_ONLY,
+            );
             assert_eq!(written.unwrap(), entropy_context(&levels), "{levels:?}");
         }
     }
@@ -285,7 +343,7 @@ fn typed_luma_blocks_round_trip_in_every_set() {
                     for _ in 0..12 {
                         let ctx = contexts(&mut rng, PLANE_Y, is_inter);
                         let block = random_block(&mut rng, tx);
-                        let eob = levels::end_of_block(&block, tx);
+                        let eob = levels::end_of_block(&nc_dsp::Dsp::new(), &block, tx);
                         let types = set.luma_types(tx, is_inter);
                         let tx_type = if eob == 0 || !(is_inter || eob > 1) || types.is_empty() {
                             TxType::DctDct
@@ -306,7 +364,16 @@ fn typed_luma_blocks_round_trip_in_every_set() {
                     tx_type: *tx_type,
                     levels: coding,
                 };
-                write_typed(&mut writer, block, *tx, *ctx, 100, kind).unwrap();
+                write_typed(
+                    &nc_dsp::Dsp::new(),
+                    &mut writer,
+                    block,
+                    *tx,
+                    *ctx,
+                    100,
+                    kind,
+                )
+                .unwrap();
             }
             let packet = writer.finish();
             let mut reader = Reader::new(&packet).unwrap();
@@ -354,9 +421,29 @@ fn full_set_rejects_types_outside_the_subset() {
         (intra, TxType::AdstAdst),
         (chroma, TxType::AdstAdst),
     ] {
-        assert!(write_typed(&mut writer, &block, TxSize::Tx8, ctx, 100, full(tx_type)).is_err());
+        assert!(
+            write_typed(
+                &nc_dsp::Dsp::new(),
+                &mut writer,
+                &block,
+                TxSize::Tx8,
+                ctx,
+                100,
+                full(tx_type)
+            )
+            .is_err()
+        );
     }
     for tx_type in [TxType::FlipadstAdst, TxType::Idtx, TxType::DctDct] {
-        write_typed(&mut writer, &block, TxSize::Tx8, inter, 100, full(tx_type)).unwrap();
+        write_typed(
+            &nc_dsp::Dsp::new(),
+            &mut writer,
+            &block,
+            TxSize::Tx8,
+            inter,
+            100,
+            full(tx_type),
+        )
+        .unwrap();
     }
 }

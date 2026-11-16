@@ -40,7 +40,7 @@
 <text x="902.5" y="756" text-anchor="middle" fill="#52514e">200</text>
 <text x="520.0" y="776" text-anchor="middle" fill="#0b0b0b">single-thread encode fps, 720p, one Jetson Orin Nano core (log scale; faster →)</text>
 <text transform="translate(18,390.0) rotate(-90)" text-anchor="middle" fill="#0b0b0b">BD-rate vs x264 medium (J composite; lower is better)</text>
-<polyline points="891.2,194.0 841.7,420.5 807.8,441.1 768.0,478.1 733.5,583.9 691.2,585.9 689.4,597.1 681.0,618.2 645.9,628.7 568.5,632.0 559.4,653.0 536.5,664.6 472.2,674.3 438.6,676.9 392.9,679.0 351.6,680.3" fill="none" stroke="#52514e" stroke-width="1.5" stroke-dasharray="5 4"/>
+<polyline points="891.2,194.0 841.7,420.5 807.8,441.1 768.0,478.1 733.5,583.9 691.2,585.9 689.4,597.1 679.3,615.3 645.9,628.7 568.5,632.0 559.4,653.0 536.5,664.6 472.2,674.3 438.6,676.9 392.9,679.0 351.6,680.3" fill="none" stroke="#52514e" stroke-width="1.5" stroke-dasharray="5 4"/>
 <line x1="430.6" y1="392.7" x2="430.6" y2="442.9" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
 <line x1="245.6" y1="591.0" x2="245.6" y2="597.5" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
 <line x1="148.8" y1="600.4" x2="148.8" y2="617.6" stroke="#eb6834" stroke-width="1.2" stroke-dasharray="3 3"/>
@@ -53,7 +53,7 @@
 <line x1="841.7" x2="841.7" y1="583.4" y2="338.8" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="443.4" x2="443.4" y1="687.4" y2="618.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="559.4" x2="559.4" y1="680.5" y2="617.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
-<line x1="681.0" x2="681.0" y1="644.3" y2="581.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
+<line x1="679.3" x2="679.3" y1="639.2" y2="583.2" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="733.5" x2="733.5" y1="627.5" y2="545.0" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="431.7" x2="431.7" y1="708.0" y2="619.1" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
 <line x1="536.5" x2="536.5" y1="709.4" y2="617.6" stroke="#2a78d6" stroke-opacity="0.45" stroke-width="2"/>
@@ -106,9 +106,9 @@
 <g><title>HEVC: BD-J -51.0%, BD-PSNR -51.6%, BD-VMAF v1 -57.2%, 46.2 fps, 1.73× x264 medium</title><circle cx="559.4" cy="653.0" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="559.4" y1="661.0" x2="559.4" y2="689.0" stroke="#52514e" stroke-width="0.75"/>
 <text x="559.4" y="701.0" text-anchor="middle" fill="#0b0b0b" font-weight="600">HEVC</text>
-<g><title>HEVC Fast: BD-J -44.2%, BD-PSNR -44.2%, BD-VMAF v1 -51.1%, 77.7 fps, 2.91× x264 medium</title><circle cx="681.0" cy="618.2" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
-<line x1="681.0" y1="610.2" x2="649.0" y2="569.2" stroke="#52514e" stroke-width="0.75"/>
-<text x="649.0" y="566.2" text-anchor="end" fill="#0b0b0b" font-weight="600">HEVC Fast</text>
+<g><title>HEVC Fast: BD-J -43.6%, BD-PSNR -43.3%, BD-VMAF v1 -48.7%, 77.1 fps, 2.89× x264 medium</title><circle cx="679.3" cy="615.3" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
+<line x1="679.3" y1="607.3" x2="647.3" y2="566.3" stroke="#52514e" stroke-width="0.75"/>
+<text x="647.3" y="563.3" text-anchor="end" fill="#0b0b0b" font-weight="600">HEVC Fast</text>
 <g><title>HEVC Faster: BD-J -37.5%, BD-PSNR -35.6%, BD-VMAF v1 -43.2%, 97.2 fps, 3.64× x264 medium</title><circle cx="733.5" cy="583.9" r="6" fill="#2a78d6" stroke="#2a78d6" stroke-width="2"/></g>
 <line x1="733.5" y1="591.9" x2="757.5" y2="617.9" stroke="#52514e" stroke-width="0.75"/>
 <text x="757.5" y="629.9" text-anchor="start" fill="#0b0b0b" font-weight="600">HEVC Faster</text>
@@ -219,7 +219,7 @@
 <polygon points="76,825 83,812 69,812" fill="#f7c4a8" stroke="#eb6834" stroke-width="2"/>
 <text x="88" y="822" fill="#0b0b0b">reference at its metric-oriented tuning (dashed: to its default)</text>
 <text x="70" y="844" fill="#52514e">Bars: interquartile range of per-clip BD. Every point is averaged over the same clips (see the table for excluded clips). Hollow: flagged.</text>
-<text x="1120" y="862" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-16, build 730e4e16 (H.264, VVC: 43079b05; H.264 Fast, H.264 Faster, HEVC Fast, AV1 Fast, VP9 Fast, AV2 Fast, VVC Fast, AV1 Faster, HEVC Faster, H.264 Veryfast, VP9 Faster, VP9 Veryfast: 478e8249;</text>
-<text x="1120" y="874" font-size="10" text-anchor="end" fill="#52514e">HEVC, AV1, VP9, AV2, HEVC Slow, AV1 Slow, VVC Slow: 77e93089; H.264 Slow, VP9 Slow, AV2 Slow: bad14976); AV1 Fast, AV1 Faster, AV2 Fast, H.264 Fast, H.264 Faster, H.264 Veryfast, HEVC Fast, HEVC Faster, VP9 Fast,</text>
-<text x="1120" y="886" font-size="10" text-anchor="end" fill="#52514e">VP9 Faster, VP9 Veryfast, VVC Fast, H.264, VVC, AV1, AV1 Slow, AV2, HEVC, HEVC Slow, VP9, VVC Slow, AV2 Slow, H.264 Slow, VP9 Slow timed on 1139f610 (same streams)</text>
+<text x="1120" y="862" font-size="10" text-anchor="end" fill="#52514e">Updated 2026-11-16, build 730e4e16 (H.264, VVC: 43079b05; H.264 Fast, H.264 Faster, AV1 Fast, VP9 Fast, AV2 Fast, VVC Fast, AV1 Faster, HEVC Faster, H.264 Veryfast, VP9 Faster, VP9 Veryfast: 478e8249;</text>
+<text x="1120" y="874" font-size="10" text-anchor="end" fill="#52514e">HEVC Fast: 6c208433; HEVC, AV1, VP9, AV2, HEVC Slow, AV1 Slow, VVC Slow: 77e93089; H.264 Slow, VP9 Slow, AV2 Slow: bad14976); AV1 Fast, AV1 Faster, AV2 Fast, H.264 Fast, H.264 Faster, H.264 Veryfast, HEVC Faster,</text>
+<text x="1120" y="886" font-size="10" text-anchor="end" fill="#52514e">VP9 Fast, VP9 Faster, VP9 Veryfast, VVC Fast, H.264, VVC, AV1, AV1 Slow, AV2, HEVC, HEVC Slow, VP9, VVC Slow, AV2 Slow, H.264 Slow, VP9 Slow timed on 1139f610 (same streams)</text>
 </svg>

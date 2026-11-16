@@ -128,6 +128,42 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   setup), AV1/AV2 −0.5 to −0.7 % (CDEF search, intra edges), H.264/HEVC intra cleanups. Not yet
   re-timed on Zen 5.
 
+## HEVC Fast re-point (feature/hevc-h264-speed, landed 6c208433e, 2026-11-16)
+
+- **What:** the Default's depth removal (thresholds 0) and inter transform tree, plus Faster's
+  CBR-harmless settings (inter rounding 85, SAO chroma off, partial forward with zero scales
+  3 / 4). A pool L1 split of Faster's groups against Fast (quality J): rounding -0.52 %, SAO
+  chroma +0.06 %, partial forward +2.65 % (for -6 % CPU); left out motion +7.36 %, max
+  transform 16 +2.06 %, planner pair +2.00 %, coarse key intra +1.18 %.
+- **CBR pool screen against the previous Fast** (k 0.6, x86 dCPU +1.1 % at 600 kbit/s): L3 J
+  -1.31 % [-2.17, -0.48] BETTER, no guard.
+- **final-check** (600 f, keys every 10 s, 28 long clips): J -2.93 % [-5.36, -0.53]; the long
+  periodic-key pulse guard is at its limit on one clip (pool_external_bdd_night_new_720p_360p
+  +0.504 dB against +0.50; balanced -0.22 dB, crowd -0.99 dB), so the tool says WORSE. Kept on
+  CLAUDE.md's guard rule (a guard missed by hundredths while the score improves).
+  Looked at (old and new Fast, CBR 212 kbit/s = the clip's rung 2, 600 f, keys every 10 s):
+  every frame around the key at 300 is better with the new Fast (P frames 296-299 +1.2 to
+  +1.7 dB, the key +0.65 dB, frames 301-304 +0.9 to +1.5 dB); the key now sits 0.54 dB below
+  its predecessors where it sat 0.24 dB above, because the P frames gained more than the key.
+  The key and its predecessor show no visible artefact in either build.
+- **Charts (refresh at 6c208433e; Zen 5 c8a timing):** CBR chart J against x264 medium -44.16 %
+  at 315.5 fps -> **-43.61 % at 308.9 fps**. Fixed-QP lens (box, 12 AOM CTC sequences)
+  Weighted / J against x264 medium +7.9 / -4.2 -> **-3.1 / -11.9**, at the same chart speed.
+- **Against the frontier, Zen 5 fps:**
+
+| point | fixed QP Weighted | CBR J | fps | line between neighbours at that fps |
+|---|---:|---:|---:|---|
+| HEVC Default | -14.9 | -50.98 | 171.7 | |
+| **HEVC Fast (new)** | **-3.1** | **-43.61** | **308.9** | HEVC Default-Faster: fixed QP +5.3, CBR -42.5 (above both); SVT M10-M12: fixed QP -8.6 (below), CBR -38.5 (above) |
+| HEVC Fast (old) | +7.9 | -44.16 | 315.5 | HEVC Default-Faster: fixed QP +6.3 (below), CBR -42.1 (above) |
+| HEVC Faster | +17.4 | -37.45 | 390.8 | |
+| SVT-AV1 M10 | -14.2 | -41.30 | 228.9 | |
+| SVT-AV1 M12 | -1.5 | -34.91 | 408.7 | |
+
+  So at fixed QP the new Fast moves from below our own Default-Faster line to well above it,
+  but stays under the SVT M10-M12 line (5.5 points short at its speed); in CBR it keeps its
+  place above both lines, 0.55 points lower than before at 2 % less speed.
+
 ## AV1 Fast re-point and quantizer gates (feature/av1-av2-speed, 2026-11-16)
 
 - **Gates landed** (6d4d2c636; streams identical at the defaults).
@@ -196,6 +232,23 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
     not known.
   - Re-landed on judgement (coordinator): no frame gets worse, the deeper dip is the better P
     frames, and the Default already has these settings.
+- **Ruled out after the re-land:**
+  - Gates at 0.78 on the new Fast: final-check J +1.10 % [+0.81, +1.40], WORSE, with
+    `bd_worst_vmaf_v1` +3.47. The 150-frame screen had called it equal.
+  - The energy half of the partial-transform gate: the partial forward transform where the
+    residual is under e squared steps per sample, wired per transform so a trial and its coding
+    decide alike. On the lens against the new Fast, at 0.99× box time:
+
+    | e | Weighted vs new Fast | vs x264 |
+    |---|---:|---:|
+    | 0.25 | +1.4 % | −5.1 |
+    | 0.5 | +3.3 % | −3.2 |
+    | 1 | +5.1 % | −2.5 |
+    | 2 | +6.0 % | −1.1 |
+
+    BlueSky and SnowMountain lose 13–35 %: smooth blocks with weak residuals still need their
+    high frequencies, and the approximation saves almost no time there. Not landed. Patch:
+    `~/nanocodec-data/work/av1-av2-speed/energy-gate-rejected.patch`.
 - **Follow-up (rate control, to assign):** on still scenes, spend less on late-period P frames
   so the key dip stays bounded.
 

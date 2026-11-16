@@ -392,14 +392,14 @@
   },
   "nanocodec-hevc@fast": {
    "budget_fraction": {
-    "lowlight_city_night": 0.9341671661671662,
-    "crowd_mot17_09": 1.0498053333333333,
-    "bodycam_bc1": 0.9671928071928072
+    "lowlight_city_night": 0.9787945387945388,
+    "crowd_mot17_09": 0.9484933333333333,
+    "bodycam_bc1": 1.021940725940726
    },
    "ms_per_frame": {
-    "lowlight_city_night": 10.406113333333332,
-    "crowd_mot17_09": 12.371853333333338,
-    "bodycam_bc1": 16.572439999999986
+    "lowlight_city_night": 10.932253333333335,
+    "crowd_mot17_09": 12.114166666666671,
+    "bodycam_bc1": 16.462240000000012
    },
    "anchor_ms_per_frame": {
     "lowlight_city_night": 29.26032839506173,

@@ -8,6 +8,7 @@
 //! and `get_lp2tx_ctx`. Neighbours outside the block read as zero, like
 //! AVM's padded level buffers.
 use super::{PLANE_V, PLANE_Y, TxSize};
+use nc_dsp::Dsp;
 
 /// Largest low-range increment: one four-symbol model (AVM `COEFF_BASE_RANGE`).
 pub(super) const MAX_LOW_RANGE: u32 = 3;
@@ -117,90 +118,48 @@ const fn diagonal_scan<const N: usize>(tx: TxSize) -> [u16; N] {
     scan
 }
 
-/// Scan index of each raster position (the inverse of the scan order).
-const fn inverse_scan<const N: usize>(scan: &[u16; N]) -> [u16; N] {
-    let mut inverse = [0; N];
-    let mut index = 0;
-    while index < N {
-        inverse[scan[index] as usize] = index as u16;
-        index += 1;
-    }
-    inverse
-}
+/// End-of-block tables of the scans (`nc_dsp::eob_table`).
+const EOB4: [u16; 16] = nc_dsp::eob_table(&SCAN4);
+const EOB8: [u16; 64] = nc_dsp::eob_table(&SCAN8);
+const EOB16: [u16; 256] = nc_dsp::eob_table(&SCAN16);
+const EOB32: [u16; 1024] = nc_dsp::eob_table(&SCAN32);
 
-const INVERSE_SCAN4: [u16; 16] = inverse_scan(&SCAN4);
-const INVERSE_SCAN8: [u16; 64] = inverse_scan(&SCAN8);
-const INVERSE_SCAN16: [u16; 256] = inverse_scan(&SCAN16);
-const INVERSE_SCAN32: [u16; 1024] = inverse_scan(&SCAN32);
+fn eob_table_of(tx: TxSize) -> &'static [u16] {
+    match tx {
+        TxSize::Tx4 => &EOB4,
+        TxSize::Tx8 => &EOB8,
+        TxSize::Tx16 => &EOB16,
+        TxSize::Tx32 | TxSize::Tx64 => &EOB32,
+    }
+}
 
 /// End of block of raster `coefficients` (the coded region of `tx`): one
 /// past the scan index of the last nonzero coefficient, zero if there is
-/// none. One branch-free pass in raster order, which vectorizes, instead
-/// of a backward walk through the scan that reads every position of a
-/// sparse block in scattered order.
-pub(super) fn end_of_block(coefficients: &[i32], tx: TxSize) -> usize {
-    let inverse = inverse_scan_of(tx);
-    // Signed 16-bit lanes (scan positions are below 1024): the baseline
-    // x86-64 SIMD has a signed 16-bit maximum, so the loop vectorizes.
-    let end = coefficients
-        .iter()
-        .zip(inverse)
-        .fold(0i16, |end, (&c, &index)| {
-            end.max(if c == 0 { 0 } else { index as i16 + 1 })
-        });
-    end as usize
+/// none (nc-dsp's shared end-of-block kernel).
+pub(super) fn end_of_block(dsp: &Dsp, coefficients: &[i32], tx: TxSize) -> usize {
+    end_and_magnitude_bits(dsp, coefficients, tx).0
 }
 
-/// Largest nonzero count [`quantized_end_of_block`] finds by walking the
-/// scan from its start; denser blocks take the raster pass.
-const SPARSE_WALK_MAX_NONZERO: u32 = 8;
-
-/// [`end_of_block`] of `coefficients` holding exactly `nonzero` nonzero
-/// values. Most quantized blocks are all zero, DC only or end near the
-/// start of the scan: the count says when every nonzero has been passed.
-pub(super) fn quantized_end_of_block(coefficients: &[i32], tx: TxSize, nonzero: u32) -> usize {
+/// [`end_of_block`] of quantizer output `coefficients` holding exactly
+/// `nonzero` nonzero values: an all-zero or DC-only block needs no pass.
+pub(super) fn quantized_end_of_block(
+    dsp: &Dsp,
+    coefficients: &[i32],
+    tx: TxSize,
+    nonzero: u32,
+) -> usize {
     match nonzero {
         0 => 0,
         1 if coefficients[0] != 0 => 1,
-        n if n <= SPARSE_WALK_MAX_NONZERO => {
-            let mut remaining = n;
-            scan(tx)
-                .iter()
-                .position(|&pos| {
-                    remaining -= u32::from(coefficients[usize::from(pos)] != 0);
-                    remaining == 0
-                })
-                .expect("the count matches the coefficients")
-                + 1
-        }
-        _ => end_of_block(coefficients, tx),
+        _ => end_of_block(dsp, coefficients, tx),
     }
 }
 
 /// [`end_of_block`] and the OR of all magnitudes (which exceeds a limit of
-/// all-ones bits exactly when one magnitude does), in one raster pass.
-pub(super) fn end_and_magnitude_bits(coefficients: &[i32], tx: TxSize) -> (usize, u32) {
-    let inverse = inverse_scan_of(tx);
-    let (end, bits) =
-        coefficients
-            .iter()
-            .zip(inverse)
-            .fold((0i16, 0u32), |(end, bits), (&c, &index)| {
-                (
-                    end.max(if c == 0 { 0 } else { index as i16 + 1 }),
-                    bits | c.unsigned_abs(),
-                )
-            });
-    (end as usize, bits)
-}
-
-fn inverse_scan_of(tx: TxSize) -> &'static [u16] {
-    match tx {
-        TxSize::Tx4 => &INVERSE_SCAN4,
-        TxSize::Tx8 => &INVERSE_SCAN8,
-        TxSize::Tx16 => &INVERSE_SCAN16,
-        TxSize::Tx32 | TxSize::Tx64 => &INVERSE_SCAN32,
-    }
+/// all-ones bits exactly when one magnitude does), in one pass.
+pub(super) fn end_and_magnitude_bits(dsp: &Dsp, coefficients: &[i32], tx: TxSize) -> (usize, u32) {
+    let table = eob_table_of(tx);
+    dsp.end_of_block_wide(&coefficients[..table.len()], table)
 }
 
 /// Scan order of a transform's coded region.
@@ -580,10 +539,13 @@ mod tests {
         for tx in TxSize::ALL {
             let scan = scan(tx);
             let mut coefficients = vec![0; tx.coded_len()];
-            assert_eq!(end_of_block(&coefficients, tx), 0);
+            assert_eq!(end_of_block(&nc_dsp::Dsp::new(), &coefficients, tx), 0);
             for (index, &pos) in scan.iter().enumerate().step_by(7) {
                 coefficients[usize::from(pos)] = if index % 2 == 0 { 3 } else { -1 };
-                assert_eq!(end_of_block(&coefficients, tx), index + 1);
+                assert_eq!(
+                    end_of_block(&nc_dsp::Dsp::new(), &coefficients, tx),
+                    index + 1
+                );
             }
         }
     }

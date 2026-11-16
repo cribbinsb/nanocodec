@@ -101,7 +101,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 plane, block_log2, tx, is_inter, &above, &left, u_coded,
                             )?;
                             let block = coefficients(&mut rng, tx);
-                            coeff::write(&mut writer, &block, tx, ctx, qindex)?;
+                            coeff::write(
+                                &nc_dsp::Dsp::new(),
+                                &mut writer,
+                                &block,
+                                tx,
+                                ctx,
+                                qindex,
+                            )?;
                             if plane == 1 {
                                 u_coded = block.iter().any(|&c| c != 0);
                             }

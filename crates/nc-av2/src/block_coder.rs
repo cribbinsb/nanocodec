@@ -736,7 +736,7 @@ impl Quantizer {
         let nonzero = transform::quantize(&self.dsp, tx, coefficients, (qindex, rounding), levels);
         // The plain end of block (from the quantizer's count, or one raster
         // pass); the trellis and trimming start from it and return theirs.
-        let plain_eob = coeff::quantized_end_of_block(levels, tx, nonzero);
+        let plain_eob = coeff::quantized_end_of_block(&self.dsp, levels, tx, nonzero);
         // TCQ luma takes the rate source; the trellis, trimming and parity
         // hiding see plain levels only.
         let (tcq_rate, rate) = match tcq {
@@ -2904,7 +2904,15 @@ impl BlockCoder {
     ) -> Result<f64> {
         let kind = self.coding_kind(tx_type);
         self.writer.start_estimate();
-        let written = coeff::write_typed(&mut self.writer, levels, tx, context, self.qindex, kind);
+        let written = coeff::write_typed(
+            &self.quantizer.dsp,
+            &mut self.writer,
+            levels,
+            tx,
+            context,
+            self.qindex,
+            kind,
+        );
         let bits = self.writer.finish_estimate();
         written.map(|_| bits * self.lambda() + distortion as f64)
     }

@@ -775,7 +775,7 @@ pub fn reconstruct(
     qindex: impl Into<Qindices>,
     residual: &mut [i16],
 ) -> Result<()> {
-    let eob = crate::coeff::end_of_block(&levels[..transform.0.coded_len()], transform.0);
+    let eob = crate::coeff::end_of_block(dsp, &levels[..transform.0.coded_len()], transform.0);
     reconstruct_with(
         dsp,
         transform,

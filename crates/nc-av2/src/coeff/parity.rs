@@ -225,7 +225,7 @@ mod tests {
                 *c = ((seed >> 16) % 2001) as i32 - 1000;
             }
             let mut levels: Vec<i32> = coefficients.iter().map(|c| c / 200).collect();
-            let eob = super::super::end_of_block(&levels, tx);
+            let eob = super::super::end_of_block(&nc_dsp::Dsp::new(), &levels, tx);
             let eob = conform(
                 (&mut levels, &coefficients),
                 tx,
@@ -233,7 +233,10 @@ mod tests {
                 10.0,
                 (100, 100),
             );
-            assert_eq!(eob, super::super::end_of_block(&levels, tx));
+            assert_eq!(
+                eob,
+                super::super::end_of_block(&nc_dsp::Dsp::new(), &levels, tx)
+            );
             let mut tally = Tally::default();
             for &level in &levels[1..] {
                 tally.add(level.unsigned_abs());

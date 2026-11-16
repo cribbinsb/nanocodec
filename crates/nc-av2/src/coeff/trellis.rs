@@ -123,7 +123,7 @@ impl TrellisQuantizer {
         (levels, eob): (&mut [i32], usize),
     ) -> usize {
         let (tx, steps) = (block.tx, block.steps);
-        debug_assert_eq!(eob, super::end_of_block(levels, tx));
+        debug_assert_eq!(eob, super::end_of_block(&nc_dsp::Dsp::new(), levels, tx));
         if eob == 0 {
             return 0;
         }
@@ -675,14 +675,14 @@ mod tests {
         kind: Kind,
     ) -> f32 {
         writer.start_estimate();
-        write_typed(writer, levels, tx, ctx, qindex, kind).unwrap();
+        write_typed(&nc_dsp::Dsp::new(), writer, levels, tx, ctx, qindex, kind).unwrap();
         writer.finish_estimate() as f32
     }
 
     /// The model's rate of `levels`: the end of block, then each level in
     /// reverse scan order from the state the levels after it leave.
     fn model_bits(model: &mut RateModel<'_>, levels: &[i32], tx: TxSize) -> f32 {
-        let eob = super::super::end_of_block(levels, tx);
+        let eob = super::super::end_of_block(&nc_dsp::Dsp::new(), levels, tx);
         if eob == 0 {
             return model.empty_rate();
         }
@@ -836,7 +836,7 @@ mod tests {
             steps: Qindices::uniform(qindex),
             kind,
         };
-        let eob = super::super::end_of_block(&levels, tx);
+        let eob = super::super::end_of_block(&nc_dsp::Dsp::new(), &levels, tx);
         search.quantize(
             &mut writer,
             block,
@@ -847,7 +847,7 @@ mod tests {
         // Position 17 is past the plain end of block: never searched.
         assert_eq!((levels[0], levels[9], levels[17]), (1, -1, 0));
         let mut levels = plain(&coefficients);
-        let eob = super::super::end_of_block(&levels, tx);
+        let eob = super::super::end_of_block(&nc_dsp::Dsp::new(), &levels, tx);
         let huge_lambda = 1.0e9;
         search.quantize(
             &mut writer,

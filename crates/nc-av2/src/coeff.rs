@@ -38,6 +38,7 @@ use crate::entropy::{Reader, Writer};
 use levels::{LevelMap, Neighbours, ScanPosition};
 use models::BaseFamily;
 use nc_common::decode::{DecodeError, Result};
+use nc_dsp::Dsp;
 use symbols::{FrozenPricer, SymbolCoder};
 
 /// Largest coefficient magnitude: AVM rejects levels needing more than 20 bits.
@@ -112,13 +113,14 @@ impl Kind {
 /// # Errors
 /// As [`write_typed`].
 pub fn write(
+    dsp: &Dsp,
     w: &mut Writer,
     coefficients: &[i32],
     tx: TxSize,
     ctx: Context,
     qindex: u8,
 ) -> Result<()> {
-    write_typed(w, coefficients, tx, ctx, qindex, Kind::DCT_ONLY).map(|_| ())
+    write_typed(dsp, w, coefficients, tx, ctx, qindex, Kind::DCT_ONLY).map(|_| ())
 }
 
 /// Write one transform block, including its all-zero flag.
@@ -134,6 +136,7 @@ pub fn write(
 /// block cannot signal (outside the set, or non-DCT where `DCT_DCT` is
 /// inferred: chroma, TX64, DC-only intra blocks).
 pub fn write_typed(
+    dsp: &Dsp,
     w: &mut Writer,
     coefficients: &[i32],
     tx: TxSize,
@@ -141,7 +144,7 @@ pub fn write_typed(
     qindex: u8,
     kind: Kind,
 ) -> Result<u8> {
-    let stats = LevelStats::of(coefficients, tx)?;
+    let stats = LevelStats::of(dsp, coefficients, tx)?;
     write_typed_with_stats(w, coefficients, stats, tx, ctx, qindex, kind)
 }
 
@@ -161,9 +164,16 @@ impl LevelStats {
 
     /// The statistics of `levels` (laid out as for [`write()`]) of `tx`.
     /// # Errors
-    /// Rejects magnitudes above 20 bits.
-    pub(crate) fn of(levels: &[i32], tx: TxSize) -> Result<Self> {
-        let (eob, bits) = levels::end_and_magnitude_bits(levels, tx);
+    /// Rejects a slice other than the coded region, and magnitudes above
+    /// 20 bits.
+    pub(crate) fn of(dsp: &Dsp, levels: &[i32], tx: TxSize) -> Result<Self> {
+        // The end-of-block kernel takes exactly the coded region.
+        if levels.len() != tx.coded_len() {
+            return Err(DecodeError::Malformed(
+                "AV2 coefficient block size mismatch",
+            ));
+        }
+        let (eob, bits) = levels::end_and_magnitude_bits(dsp, levels, tx);
         if bits > MAX_LEVEL {
             return Err(DecodeError::Malformed("AV2 coefficient exceeds 20 bits"));
         }
@@ -175,7 +185,11 @@ impl LevelStats {
     /// trellis and trimming only lower or keep them), so no pass checks the
     /// limit; debug builds check both.
     pub(crate) fn quantized(levels: &[i32], tx: TxSize, eob: usize) -> Self {
-        debug_assert_eq!(Self::of(levels, tx).ok(), Some(Self { eob: eob as u16 }));
+        // Debug builds only: a fresh dispatch table for the check.
+        debug_assert_eq!(
+            Self::of(&Dsp::new(), levels, tx).ok(),
+            Some(Self { eob: eob as u16 })
+        );
         Self { eob: eob as u16 }
     }
 
@@ -197,7 +211,10 @@ pub(crate) fn write_typed_with_stats(
     qindex: u8,
     kind: Kind,
 ) -> Result<u8> {
-    debug_assert_eq!(LevelStats::of(coefficients, tx).ok(), Some(stats));
+    debug_assert_eq!(
+        LevelStats::of(&Dsp::new(), coefficients, tx).ok(),
+        Some(stats)
+    );
     if !w.estimates_frozen_now() {
         return write_with(w, coefficients, stats, tx, ctx, qindex, kind);
     }
@@ -325,16 +342,15 @@ pub fn scan(tx: TxSize) -> &'static [u16] {
 /// One past the scan index of the last nonzero level of `levels` (laid out
 /// as for [`write()`]), or 0 for an all-zero block: one raster pass.
 #[must_use]
-pub fn end_of_block(levels: &[i32], tx: TxSize) -> usize {
-    levels::end_of_block(levels, tx)
+pub fn end_of_block(dsp: &Dsp, levels: &[i32], tx: TxSize) -> usize {
+    levels::end_of_block(dsp, levels, tx)
 }
 
 /// [`end_of_block`] of quantizer output `levels` with `nonzero` nonzero
-/// levels: none, the DC alone, or a few found by a walk from the start of
-/// the scan, without the raster pass (as nc-av1's `quantized_eob`).
+/// levels: none and the DC alone need no pass (as nc-av1's `quantized_eob`).
 #[must_use]
-pub fn quantized_end_of_block(levels: &[i32], tx: TxSize, nonzero: u32) -> usize {
-    levels::quantized_end_of_block(levels, tx, nonzero)
+pub fn quantized_end_of_block(dsp: &Dsp, levels: &[i32], tx: TxSize, nonzero: u32) -> usize {
+    levels::quantized_end_of_block(dsp, levels, tx, nonzero)
 }
 
 /// Coefficient CDF quantizer category (AVM `get_q_ctx` in `entropy.c`).
