@@ -45,6 +45,9 @@ mod other_obu {
     pub const PADDING: u8 = 25;
 }
 
+/// A frame's CCSO flags per 64x64 filter block and plane.
+type CcsoFlags = Rc<Vec<[bool; 3]>>;
+
 /// What a reference slot holds beyond the frame's header.
 #[derive(Debug, Clone)]
 struct SlotData {
@@ -52,6 +55,9 @@ struct SlotData {
     /// The frame's final CDFs, adaptation restarted (AVM `frame_context`),
     /// for frames that start from them; `None` where it did not adapt.
     context: Option<FrameContext>,
+    /// The frame's CCSO flags per 64x64 block and plane, for frames that
+    /// reuse them (dav2d `ccsomap`); `None` without CCSO.
+    ccso_flags: Option<CcsoFlags>,
 }
 
 /// A frame's final models, of the block layer that decoded it.
@@ -412,13 +418,13 @@ impl Decoder {
         let Ok(params) =
             subset_sequence.and_then(|sequence| subset::tile_params(&sequence, &header))
         else {
-            let (picture, mut models) = self.decode_general(&header, tiles)?;
+            let (picture, mut models, ccso_flags) = self.decode_general(&header, tiles)?;
             // The tile's final models, counts scaled back, are what later
             // frames inherit (dav2d `dav2d_decode_frame_update_cdf`; one
             // tile: no averaging).
             models.restart_adaptation();
             let context = FrameContext::General(Rc::from(models));
-            return self.finish_frame(header, picture, Some(context));
+            return self.finish_frame(header, picture, Some(context), ccso_flags);
         };
         let size = (header.width as usize, header.height as usize);
         let (picture, models) = if header.is_intra() {
@@ -483,7 +489,7 @@ impl Decoder {
             models.restart_adaptation();
             FrameContext::Subset(Rc::from(models))
         });
-        self.finish_frame(header, picture, models)
+        self.finish_frame(header, picture, models, None)
     }
 
     /// Queue a decoded frame for output when shown and keep it in the slots
@@ -493,6 +499,7 @@ impl Decoder {
         header: FrameHeader,
         picture: Picture,
         context: Option<FrameContext>,
+        ccso_flags: Option<CcsoFlags>,
     ) -> Result<()> {
         let picture = Rc::new(picture);
         if header.show_immediate {
@@ -508,7 +515,11 @@ impl Decoder {
             frame: self.state.frames,
         };
         self.state.frames = self.state.frames.wrapping_add(1);
-        let data = SlotData { picture, context };
+        let data = SlotData {
+            picture,
+            context,
+            ccso_flags,
+        };
         for slot in 0..MAX_SLOTS {
             if refresh & (1 << slot) != 0 {
                 self.state.headers[slot] = Some(held.clone());
@@ -527,14 +538,22 @@ impl Decoder {
         &mut self,
         header: &FrameHeader,
         tiles: &[u8],
-    ) -> Result<(Picture, Box<Cdfs>)> {
+    ) -> Result<(Picture, Box<Cdfs>, Option<CcsoFlags>)> {
         let sequence = self.state.sequence.clone().ok_or(DecodeError::MissingKey)?;
         let cdfs = self.initial_models(header, &sequence)?;
+        let reused = self.reused_ccso_flags(header)?;
         let trace = self.block_trace.0.as_mut().map(|sink| {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
         });
-        let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, trace)?;
+        let reused = reused
+            .each_ref()
+            .map(|flags| flags.as_deref().map(Vec::as_slice));
+        let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, reused, trace)?;
+        let ccso_flags = header
+            .ccso
+            .enabled
+            .then(|| Rc::new(decoded.filters.ccso_flags.clone()));
         if !self.unfiltered {
             let (dsp, ..) = self.workspace.filter_parts();
             filters::deblock::filter(
@@ -599,7 +618,7 @@ impl Decoder {
                 }
             }
         }
-        Ok((picture, decoded.cdfs))
+        Ok((picture, decoded.cdfs, ccso_flags))
     }
 
     /// The models a general frame starts from (dav2d
@@ -612,17 +631,26 @@ impl Decoder {
         else {
             return Ok(Box::new(Cdfs::new(header.quantizer.base)));
         };
-        // dav2d `use_pri_sec_cdf`: the mean of two references' models.
+        // dav2d `use_pri_sec_cdf`: the primary's models with the
+        // secondary's weighed in at one eighth.
         let averaged = header.secondary_reference.is_some()
             && header.frame_type == FrameType::Inter
             && sequence.transform.average_cdf
             && !sequence.transform.average_cdf_type
             && header.tip.mode != TIP_FRAME_MODE;
+        let mut models = self.general_models(header, rank)?;
         if averaged {
-            return Err(DecodeError::Unsupported(
-                "AV2 averaged CDFs of two references",
-            ));
+            let secondary = header
+                .secondary_reference
+                .ok_or(DecodeError::Malformed("AV2 secondary reference"))?;
+            models.average_with(&*self.general_models(header, secondary)?);
         }
+        Ok(models)
+    }
+
+    /// The final models of the frame at reference rank `rank`, which the
+    /// general block layer decoded.
+    fn general_models(&self, header: &FrameHeader, rank: u8) -> Result<Box<Cdfs>> {
         let slot = usize::from(header.references[usize::from(rank)]);
         let data = self.state.data[slot]
             .as_ref()
@@ -636,6 +664,29 @@ impl Decoder {
                 "AV2 inherited context did not adapt",
             )),
         }
+    }
+
+    /// The CCSO flags each plane that reuses them takes from its
+    /// reference (dav2d `prev_ccsomap`).
+    fn reused_ccso_flags(&self, header: &FrameHeader) -> Result<[Option<CcsoFlags>; 3]> {
+        let mut reused = [None, None, None];
+        if !header.ccso.enabled {
+            return Ok(reused);
+        }
+        for (plane, coded) in header.ccso.planes.iter().enumerate() {
+            if !coded.block_reuse {
+                continue;
+            }
+            let slot = usize::from(header.references[usize::from(coded.reference)]);
+            let flags = self.state.data[slot]
+                .as_ref()
+                .and_then(|data| data.ccso_flags.clone())
+                .ok_or(DecodeError::Malformed(
+                    "AV2 CCSO flags reused from a frame without CCSO",
+                ))?;
+            reused[plane] = Some(flags);
+        }
+        Ok(reused)
     }
 
     /// Each reference rank's display-order distance from the frame (dav2d

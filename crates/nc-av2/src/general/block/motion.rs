@@ -59,24 +59,45 @@ const BANK_MIN_AVAILABLE: u8 = 4;
 /// the row above.
 const BANK_REFILL_MAX: u32 = 4;
 
-/// A motion vector in eighth samples (dav2d `mv`).
+/// A motion vector in eighth samples (dav2d `mv`). 32-bit components:
+/// projected and predicted vectors are clamped to +-0xffff, 17 bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Mv {
     /// Down, in eighth samples.
-    pub y: i16,
+    pub y: i32,
     /// Right, in eighth samples.
-    pub x: i16,
+    pub x: i32,
 }
 
 impl Mv {
+    /// Scaled by `num / den` display-order distances (dav2d
+    /// `dav2d_mv_projection`): `den` below 32, `num` within +-31.
+    #[must_use]
+    pub fn project(self, num: i32, den: i32) -> Self {
+        /// `2^14 / den` (dav2d `div_mult`).
+        const RECIPROCALS: [i32; 32] = [
+            0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170,
+            1092, 1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
+        ];
+        const SHIFT: u32 = 14;
+        const LIMIT: i64 = 0xffff;
+        let factor = i64::from(num * RECIPROCALS[den as usize]);
+        let scale = |v: i32| {
+            let product = i64::from(v) * factor;
+            ((product + (1 << (SHIFT - 1)) - i64::from(product < 0)) >> SHIFT).clamp(-LIMIT, LIMIT)
+                as i32
+        };
+        Self {
+            y: scale(self.y),
+            x: scale(self.x),
+        }
+    }
+
     /// Rounded to whole samples (dav2d `fix_int_mv_precision`): to the
     /// nearest, halves toward zero.
     #[must_use]
     pub fn to_integer(self) -> Self {
-        let round = |v: i16| {
-            let v = i32::from(v);
-            ((v + i32::from(v < 0) + 3) & !7) as i16
-        };
+        let round = |v: i32| (v + i32::from(v < 0) + 3) & !7;
         Self {
             y: round(self.y),
             x: round(self.x),
@@ -385,21 +406,21 @@ impl MotionStore {
         let (min_x, max_x) = bound(column, bw4, g.columns);
         let (min_y, max_y) = bound(row, bh4, g.rows);
         for candidate in &mut list.list[..list.count] {
-            candidate.mv.y = i32::from(candidate.mv.y).clamp(min_y, max_y) as i16;
-            candidate.mv.x = i32::from(candidate.mv.x).clamp(min_x, max_x) as i16;
+            candidate.mv.y = candidate.mv.y.clamp(min_y, max_y);
+            candidate.mv.x = candidate.mv.x.clamp(min_x, max_x);
         }
         // The default vectors: a superblock up, a superblock (and 256
         // samples) left, the block's height up, its width left.
         let superblock = 1_i32 << g.superblock_log2;
-        let unit = |units: u32| -(units as i32 * VECTOR_UNITS_PER_UNIT) as i16;
+        let unit = |units: u32| -(units as i32 * VECTOR_UNITS_PER_UNIT);
         let defaults = [
             Mv {
-                y: -(superblock << VECTOR_FRACTION_BITS) as i16,
+                y: -(superblock << VECTOR_FRACTION_BITS),
                 x: 0,
             },
             Mv {
                 y: 0,
-                x: -((superblock + DEFAULT_LEFT_EXTRA) << VECTOR_FRACTION_BITS) as i16,
+                x: -((superblock + DEFAULT_LEFT_EXTRA) << VECTOR_FRACTION_BITS),
             },
             Mv { y: unit(bh4), x: 0 },
             Mv { y: 0, x: unit(bw4) },
@@ -560,8 +581,8 @@ impl MotionStore {
                 continue;
             }
             // The whole-sample position, rounded toward zero.
-            let whole = |v: i16| {
-                let magnitude = i32::from(v.unsigned_abs() >> VECTOR_FRACTION_BITS);
+            let whole = |v: i32| {
+                let magnitude = (v.unsigned_abs() >> VECTOR_FRACTION_BITS) as i32;
                 if v < 0 { -magnitude } else { magnitude }
             };
             let x = samples(column) + whole(mv.x);

@@ -12,6 +12,7 @@
 //! edge samples.
 use super::Tile;
 use super::context::NO_DIRECTION;
+use super::inter_syntax::ShellModels;
 use super::intra::{IntraModes, mode};
 use super::motion::{DEFAULT_LEFT_EXTRA, Motion, Mv};
 use super::record::BlockRecord;
@@ -26,22 +27,18 @@ const VECTOR_FRACTION_BITS: u32 = 3;
 /// samples.
 const PRECISION_INTEGER: u32 = 3;
 const PRECISION_QUARTER: u32 = 5;
-/// The finest precision (eighth samples): residuals are scaled up to it.
-const PRECISION_EIGHTH: u32 = 6;
 /// Shell classes: the lower half holds `(9 + precision) / 2 + 1`. (The
 /// flag that splits the eighth-sample precision's last two classes,
 /// `mv_prec + class == 21`, is out of block copies' reach.)
 const CLASS_BASE: u32 = 9;
-/// Classes 0 and 1 code their offset in one flag, class 2 in a truncated
-/// unary of up to three.
-const CLASS_TWO: u32 = 2;
-const CLASS_TWO_MAX_OFFSET: u32 = 3;
-/// Column-index contexts stop at class 3.
-const MAX_COLUMN_CONTEXT: u32 = 3;
-/// Pair-index steps: the second flag needs a shell index of 4, the
-/// uniform remainder of 6.
-const PAIR_SECOND_MIN: u32 = 4;
-const PAIR_REMAINDER_MIN: u32 = 6;
+/// The block copy vectors' shell models (AVM's `ndvc`).
+const BLOCK_COPY_SHELL: ShellModels = ShellModels {
+    offset_low: |m, class| &mut m.dv_offset_low[class],
+    offset_class2: |m| &mut m.dv_offset_class2,
+    offset_high: |m, bit| &mut m.dv_offset_high[bit],
+    column_greater: |m, step| &mut m.dv_column_greater[step],
+    column_index: |m, context| &mut m.dv_column_index[context],
+};
 /// The block-adaptive scale (`morph_pred`): unscaled is 256 (8 fraction
 /// bits); without edges the offset is -128.
 const MORPH_UNIT: i32 = 256;
@@ -204,55 +201,7 @@ impl Tile<'_, '_> {
         } else {
             self.symbol(|m| &mut m.dv_class_low_quarter)? as u32
         };
-        let offset = match class {
-            0 | 1 => u32::from(self.bool(|m| &mut m.dv_offset_low[class as usize])?),
-            CLASS_TWO => {
-                let mut offset = u32::from(self.bool(|m| &mut m.dv_offset_class2)?);
-                while offset != 0 && offset < CLASS_TWO_MAX_OFFSET && self.bypass()? {
-                    offset += 1;
-                }
-                offset
-            }
-            _ => {
-                let mut offset = 0;
-                for bit in 0..class {
-                    offset |= u32::from(self.bool(|m| &mut m.dv_offset_high[bit as usize])?) << bit;
-                }
-                offset
-            }
-        };
-        let index = if class == 0 {
-            offset
-        } else {
-            offset + (1 << class)
-        };
-        if index == 0 {
-            return Ok(Mv::default());
-        }
-        let mut pair = 0;
-        if index >= 2 && self.bool(|m| &mut m.dv_column_greater[0])? {
-            pair = 1;
-            if index >= PAIR_SECOND_MIN && self.bool(|m| &mut m.dv_column_greater[1])? {
-                pair = 2;
-                if index >= PAIR_REMAINDER_MIN {
-                    pair += self.uniform((index >> 1) - 1)?;
-                }
-            }
-        }
-        let shift = PRECISION_EIGHTH - precision;
-        let component = |value: u32| (value << shift) as i16;
-        if pair * 2 == index {
-            let value = component(pair);
-            return Ok(Mv { y: value, x: value });
-        }
-        let context = class.min(MAX_COLUMN_CONTEXT) as usize;
-        let row_smaller = self.bool(|m| &mut m.dv_column_index[context])?;
-        let (small, large) = (component(pair), component(index - pair));
-        Ok(if row_smaller {
-            Mv { y: small, x: large }
-        } else {
-            Mv { y: large, x: small }
-        })
+        self.shell_vector(class, precision, &BLOCK_COPY_SHELL)
     }
 
     /// The block's vector: the listed predictor (or a default when it is
@@ -299,9 +248,9 @@ impl Tile<'_, '_> {
             let superblock = 1_i32 << self.frame.superblock_log2;
             let first_row = record.row < self.bounds.row_start + self.geometry.superblock_units;
             if first_row {
-                mv.x = -((superblock + DEFAULT_LEFT_EXTRA) << VECTOR_FRACTION_BITS) as i16;
+                mv.x = -((superblock + DEFAULT_LEFT_EXTRA) << VECTOR_FRACTION_BITS);
             } else {
-                mv.y = -(superblock << VECTOR_FRACTION_BITS) as i16;
+                mv.y = -(superblock << VECTOR_FRACTION_BITS);
             }
         }
         if !copy.predictor_only {
@@ -374,9 +323,9 @@ impl Tile<'_, '_> {
         }
         let shift = VECTOR_FRACTION_BITS + subsampled;
         let phase_mask = (1 << shift) - 1;
-        let phase = |v: i16| (i32::from(v) & phase_mask) << (PHASE_BITS - shift);
-        let origin = |units: u32, v: i16| {
-            (((units << UNIT_LOG2) >> subsampled) as isize) + (isize::from(v) >> shift)
+        let phase = |v: i32| (v & phase_mask) << (PHASE_BITS - shift);
+        let origin = |units: u32, v: i32| {
+            (((units << UNIT_LOG2) >> subsampled) as isize) + ((v >> shift) as isize)
         };
         let (x, y) = (origin(column, mv.x), origin(row, mv.y));
         let visible = (
@@ -418,10 +367,7 @@ impl Tile<'_, '_> {
         let (row, column) = (record.row, record.column);
         let b = self.bounds;
         let samples = |units: u32| (units << UNIT_LOG2) as i32;
-        let whole = |v: i16| {
-            let v = i32::from(v);
-            (v + 3 + i32::from(v >= 0)) >> VECTOR_FRACTION_BITS
-        };
+        let whole = |v: i32| (v + 3 + i32::from(v >= 0)) >> VECTOR_FRACTION_BITS;
         let (ref_x, ref_y) = (samples(column) + whole(mv.x), samples(row) + whole(mv.y));
         let w4 = bw4.min(self.geometry.columns - column);
         let h4 = bh4.min(self.geometry.rows - row);

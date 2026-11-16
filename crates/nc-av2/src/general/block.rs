@@ -26,6 +26,10 @@ macro_rules! trace {
 
 mod coefficients;
 pub mod context;
+pub mod frame_refs;
+mod inter;
+pub mod inter_record;
+mod inter_syntax;
 mod intra;
 mod intrabc;
 mod loop_filters;
@@ -51,7 +55,8 @@ use super::frame_header::{FrameHeader, FrameType};
 use super::sequence::SequenceHeader;
 use crate::entropy::{Cdf, Reader};
 use coefficients::{LEVELS, Scans};
-use context::Contexts;
+use context::{AboveCache, Contexts};
+use frame_refs::FrameReferences;
 use intra::LUMA_MAP_SIDE;
 use motion::{MotionStore, StoreGeometry};
 use nc_common::decode::{DecodeError, Result};
@@ -161,6 +166,17 @@ struct Tile<'a, 't> {
     motion: Option<MotionStore>,
     /// A block copy's source window (dav2d `scratch.emu_edge`).
     window: Vec<u8>,
+    /// What inter blocks know of the frame's references.
+    references: FrameReferences,
+    /// Per plane, a reference's CCSO flags per 64x64 filter block, where
+    /// the frame reuses them.
+    reused_ccso: [Option<&'a [[bool; 3]]>; 3],
+    /// The above references and motion modes at the current superblock's
+    /// start (inter frames).
+    above_cache: AboveCache,
+    /// The tile holds inter blocks, which are parsed but not yet
+    /// predicted.
+    has_inter_blocks: bool,
     trace: Option<BlockTrace<'t>>,
 }
 
@@ -185,6 +201,7 @@ pub fn decode_tile(
     frame: &FrameHeader,
     cdfs: Box<Cdfs>,
     data: &[u8],
+    reused_ccso: [Option<&[[bool; 3]]>; 3],
     trace: Option<BlockTrace<'_>>,
 ) -> Result<DecodedTile> {
     if frame.tiles.columns() * frame.tiles.rows() != 1 {
@@ -251,10 +268,19 @@ pub fn decode_tile(
             )
         }),
         window: vec![0; BLOCK_COPY_WINDOW],
+        references: FrameReferences::new(sequence, frame),
+        reused_ccso,
+        above_cache: AboveCache::default(),
+        has_inter_blocks: false,
         trace,
     };
     tile.dequant = tile.dequantizers(tile.qindex);
     tile.decode(size)?;
+    if tile.has_inter_blocks {
+        return Err(DecodeError::Unsupported(
+            "AV2 inter prediction (general block layer)",
+        ));
+    }
     Ok(DecodedTile {
         planes: tile.planes,
         filters: tile.filters,
@@ -295,6 +321,9 @@ impl Tile<'_, '_> {
                 if let Some(motion) = &mut self.motion {
                     motion.start_superblock(row, column, refill);
                 }
+                if !intra_frame {
+                    self.cache_above(row, column);
+                }
                 let root = self.geometry.root;
                 // With separate trees from a 64x64 root, the chroma units
                 // come between the trees (`partition`).
@@ -310,6 +339,23 @@ impl Tile<'_, '_> {
             row += step;
         }
         Ok(())
+    }
+
+    /// Copy the above references (and, below the tile's first row, motion
+    /// modes) of the 256-wide column holding the superblock at (`row`,
+    /// `column`) ([`AboveCache`]).
+    fn cache_above(&mut self, row: u32, column: u32) {
+        let start = (column as usize) & !(context::LEFT_UNITS - 1);
+        let range = start..start + context::LEFT_UNITS;
+        for side in 0..2 {
+            self.above_cache.reference[side]
+                .copy_from_slice(&self.contexts.above.reference[side][range.clone()]);
+        }
+        if row > self.bounds.row_start {
+            self.above_cache
+                .motion_mode
+                .copy_from_slice(&self.contexts.above.motion_mode[range]);
+        }
     }
 
     /// Read a binary symbol with the model `select` picks.

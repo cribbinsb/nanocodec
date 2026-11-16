@@ -405,14 +405,22 @@ impl Tile<'_, '_> {
                     .residuals
                     .resize((cbw4ss * cbh4.div_ceil(2)) as usize, [None; 2]);
                 let (row0, column0) = (self.row, self.column);
+                // The luma type at each chroma transform, or, where the
+                // chroma block covers several luma blocks, the current
+                // luma block's (dav2d `recon_b`'s `y_txtp`).
+                let follows_luma = record.luma == Some(chroma);
                 for plane in 0..2 {
                     for y in (0..ch4ss).step_by(uth4 as usize) {
                         for x in (0..cw4ss).step_by(utw4 as usize) {
                             let i = (y * cbw4ss + x) as usize;
                             (self.row, self.column) = (row0 + (y << 1), column0 + (x << 1));
-                            let luma_map = (self.row as usize & (LUMA_MAP_SIDE - 1))
-                                * LUMA_MAP_SIDE
-                                + (self.column as usize & (LUMA_MAP_SIDE - 1));
+                            let (map_row, map_column) = if follows_luma {
+                                (self.row, self.column)
+                            } else {
+                                (row0, column0)
+                            };
+                            let luma_map = (map_row as usize & (LUMA_MAP_SIDE - 1)) * LUMA_MAP_SIDE
+                                + (map_column as usize & (LUMA_MAP_SIDE - 1));
                             let input = TransformInput {
                                 plane: plane + 1,
                                 tx: uvtx,

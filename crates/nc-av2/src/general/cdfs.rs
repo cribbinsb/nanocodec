@@ -167,6 +167,146 @@ pub struct Cdfs {
     pub dv_column_greater: [Cdf<2>; 2],
     /// Which component is the smaller one (AVM `default_nmv_context.col_mv_index_cdf[a]`).
     pub dv_column_index: [Cdf<2>; 4],
+    /// Whether an inter block predicts from the TIP frame (AVM `default_tip_cdf[a]`).
+    pub tip: [Cdf<2>; 3],
+    /// Whether a TIP block codes a vector residual (AVM `default_tip_pred_mode_cdf`).
+    pub tip_mode: Cdf<2>,
+    /// A TIP block's DRL index bit (AVM `default_tip_drl_cdf[a]`).
+    pub tip_drl: [Cdf<2>; 3],
+    /// A skip-mode block's DRL index bit (AVM `default_skip_drl_cdf[a]`).
+    pub skip_mode_drl: [Cdf<2>; 3],
+    /// Whether an inter block has two references (AVM `default_comp_inter_cdf[a]`).
+    pub comp: [Cdf<2>; 5],
+    /// Whether a single reference is the rank tried (context, rank) (AVM `default_single_ref_cdf[a][b]`).
+    pub single_ref: [[Cdf<2>; 6]; 3],
+    /// Whether a compound block's first reference is the rank tried (AVM `default_comp_ref0_cdf[a][b]`).
+    pub comp0_ref: [[Cdf<2>; 6]; 3],
+    /// Whether its second is (context, same direction as the first, rank) (AVM `default_comp_ref1_cdf[a][b][c]`).
+    pub comp1_ref: [[[Cdf<2>; 6]; 2]; 3],
+    /// Whether a single-reference block warps (AVM `default_inter_warp_mode_cdf[a]`).
+    pub warp: [Cdf<2>; 5],
+    /// Whether a warp block is WARPMV, not WARPNEWMV (AVM `default_is_warpmv_or_warp_newmv_cdf`).
+    pub warp_newmv: Cdf<2>,
+    /// A single-reference mode (NEAR, GLOBAL, NEW) (AVM `default_inter_single_mode_cdf[a]`).
+    pub inter_mode: [Cdf<3>; 5],
+    /// Whether a residual is adaptive (mode, context) (AVM `default_amvd_mode_cdf[a][b]`).
+    pub amvd: [[Cdf<2>; 3]; 9],
+    /// Block-adaptive weighted prediction (luma, chroma) (AVM `default_bawp_cdf[a]`).
+    pub bawp: [Cdf<2>; 2],
+    /// Whether the weight is explicit (AVM `default_explicit_bawp_cdf[a]`).
+    pub bawp_explicit: [Cdf<2>; 3],
+    /// The explicit weight's scale (AVM `default_explicit_bawp_scale_cdf`).
+    pub bawp_explicit_scale: Cdf<2>,
+    /// Whether a warp extends a neighbour's model (AVM `default_warp_extend_cdf[a]`).
+    pub warp_extend: [Cdf<2>; 3],
+    /// Whether a warp is fitted to the neighbours (AVM `default_warp_causal_cdf[a]`).
+    pub warp_causal: [Cdf<2>; 4],
+    /// Whether a block blends an intra prediction (AVM `default_interintra_cdf[a]`).
+    pub inter_intra: [Cdf<2>; 4],
+    /// The inter-intra mode (AVM `default_interintra_mode_cdf[a]`).
+    pub inter_intra_mode: [Cdf<4>; 4],
+    /// Whether inter-intra uses a wedge (AVM `default_wedge_interintra_cdf`).
+    pub inter_intra_wedge: Cdf<2>,
+    /// Whether a WARPMV block blends an intra prediction (AVM `default_warp_interintra_cdf[a]`).
+    pub warp_inter_intra: [Cdf<2>; 4],
+    /// A wedge angle's quadrant (AVM `default_wedge_quad_cdf`).
+    pub wedge_quad: Cdf<4>,
+    /// The angle in the quadrant (AVM `default_wedge_angle_cdf[a]`).
+    pub wedge_angle: [Cdf<5>; 4],
+    /// A wedge's distance (AVM `default_wedge_dist_cdf`).
+    pub wedge_dist: Cdf<4>,
+    /// A wedge's distance at angles without the centre (AVM `default_wedge_dist_cdf2`).
+    pub wedge_dist2: Cdf<3>,
+    /// The joint residual scale, adaptive (AVM `default_jmvd_amvd_scale_mode_cdf`).
+    pub jmvd_amvd_scale: Cdf<3>,
+    /// The joint residual scale (AVM `default_jmvd_scale_mode_cdf`).
+    pub jmvd_scale: Cdf<5>,
+    /// A DRL index bit (bit, mode context) (AVM `default_drl_cdf[a][b]`).
+    pub drl: [[Cdf<2>; 5]; 3],
+    /// Whether a residual takes the frame's precision (AVM `default_pb_mv_most_probable_precision_cdf[a]`).
+    pub mv_precision_default: [Cdf<2>; 3],
+    /// The residual precision otherwise (AVM `default_pb_mv_precision_cdf[a][b]`).
+    pub mv_precision: [[Cdf<3>; 3]; 2],
+    /// Whether the warp model index passes 0 (AVM `default_warp_ref_idx0_cdf[0]`).
+    pub warp_ref0: Cdf<2>,
+    /// Whether it passes 1 (AVM `default_warp_ref_idx1_cdf[0]`).
+    pub warp_ref1: Cdf<2>,
+    /// Whether it passes 2 (AVM `default_warp_ref_idx2_cdf[0]`).
+    pub warp_ref2: Cdf<2>,
+    /// Whether a WARPMV block codes a residual (AVM `default_warpmv_with_mvd_flag_cdf`).
+    pub warpmv_with_mvd: Cdf<2>,
+    /// Whether warp deltas are coarse (block size, ours to AVM's) (AVM `default_warp_precision_idx_cdf[(const int[]){18, 17, 16, 15, 14, 13, 12, 11, 24, 28, 0, 10, 9, 8, 22, 26, 23, 7, 6, 5, 20, 27, 21, 4, 3, 2, 0, 25, 19, 1, 0}[a]]`).
+    pub warp_delta_precision: [Cdf<2>; 31],
+    /// A warp delta parameter magnitude (AVM `default_warp_delta_param_cdf[a]`).
+    pub warp_delta: [Cdf<8>; 2],
+    /// Its continuation (AVM `default_warp_delta_param_high_cdf[a]`).
+    pub warp_delta_high: [Cdf<8>; 2],
+    /// A warp delta's sign (AVM `default_warp_param_sign_cdf`).
+    pub warp_delta_sign: Cdf<2>,
+    /// A compound mode of one reference twice (AVM `default_inter_compound_mode_same_refs_cdf[a]`).
+    pub comp_mode_same_refs: [Cdf<4>; 5],
+    /// Whether a compound mode is `JOINT_NEWMV` (AVM `default_inter_compound_mode_is_joint_cdf[a]`).
+    pub comp_mode_joint: [Cdf<2>; 2],
+    /// A compound mode otherwise (AVM `default_inter_compound_mode_non_joint_type_cdf[a]`).
+    pub comp_mode: [Cdf<5>; 5],
+    /// Whether a compound mode is refined by optical flow (AVM `default_use_optflow_cdf[a]`).
+    pub opfl: [Cdf<2>; 2],
+    /// Whether a compound block refines its vectors (by mode) (AVM `default_refinemv_flag_cdf[a + 1]`).
+    pub refine_mv: [Cdf<2>; 11],
+    /// Whether a compound blend is masked (AVM `default_comp_group_idx_cdfs[a]`).
+    pub comp_type_masked: [Cdf<2>; 12],
+    /// Whether the mask is the difference, not a wedge (AVM `default_compound_type_cdf`).
+    pub comp_type_weighted: Cdf<2>,
+    /// A compound weight index bit (AVM `default_cwp_idx_cdf[0][a]`).
+    pub cwp: [Cdf<2>; 4],
+    /// A block's interpolation filter (AVM `default_switchable_interp_cdf[a]`).
+    pub interp_filter: [Cdf<3>; 8],
+    /// Which adaptive residual components are nonzero (AVM `default_nmv_context.amvd_joints_cdf`).
+    pub amvd_joint: Cdf<4>,
+    /// An adaptive residual magnitude (y, x) (AVM `default_nmv_context.comps[a].amvd_indices_cdf`).
+    pub amvd_index: [Cdf<8>; 2],
+    /// Whether the shell class is in the upper half (AVM `default_nmv_context.joint_shell_set_cdf`).
+    pub mv_shell_set: Cdf<2>,
+    /// A vector residual's shell class, lower half, precision 0 (AVM `default_nmv_context.joint_shell_class_cdf_0[0]`).
+    pub mv_class_low0: Cdf<5>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[0]`).
+    pub mv_class_high0: Cdf<6>,
+    /// A vector residual's shell class, lower half, precision 1 (AVM `default_nmv_context.joint_shell_class_cdf_0[1]`).
+    pub mv_class_low1: Cdf<6>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[1]`).
+    pub mv_class_high1: Cdf<6>,
+    /// A vector residual's shell class, lower half, precision 2 (AVM `default_nmv_context.joint_shell_class_cdf_0[2]`).
+    pub mv_class_low2: Cdf<6>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[2]`).
+    pub mv_class_high2: Cdf<7>,
+    /// A vector residual's shell class, lower half, precision 3 (AVM `default_nmv_context.joint_shell_class_cdf_0[3]`).
+    pub mv_class_low3: Cdf<7>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[3]`).
+    pub mv_class_high3: Cdf<7>,
+    /// A vector residual's shell class, lower half, precision 4 (AVM `default_nmv_context.joint_shell_class_cdf_0[4]`).
+    pub mv_class_low4: Cdf<7>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[4]`).
+    pub mv_class_high4: Cdf<8>,
+    /// A vector residual's shell class, lower half, precision 5 (AVM `default_nmv_context.joint_shell_class_cdf_0[5]`).
+    pub mv_class_low5: Cdf<8>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[5]`).
+    pub mv_class_high5: Cdf<8>,
+    /// A vector residual's shell class, lower half, precision 6 (AVM `default_nmv_context.joint_shell_class_cdf_0[6]`).
+    pub mv_class_low6: Cdf<8>,
+    /// The same, upper half (AVM `default_nmv_context.joint_shell_class_cdf_1[6]`).
+    pub mv_class_high6: Cdf<8>,
+    /// Which of the last two shell classes, at eighth samples (AVM `default_nmv_context.joint_shell_last_two_classes_cdf`).
+    pub mv_shell_last: Cdf<2>,
+    /// The shell offset of class 0 or 1 (AVM `default_nmv_context.shell_offset_low_class_cdf[a]`).
+    pub mv_offset_low: [Cdf<2>; 2],
+    /// Whether the class 2 offset is above 0 (AVM `default_nmv_context.shell_offset_class2_cdf`).
+    pub mv_offset_class2: Cdf<2>,
+    /// A bit of a higher offset (AVM `default_nmv_context.shell_offset_other_class_cdf[0][a]`).
+    pub mv_offset_high: [Cdf<2>; 16],
+    /// Whether the smaller component steps up (AVM `default_nmv_context.col_mv_greater_flags_cdf[a]`).
+    pub mv_column_greater: [Cdf<2>; 2],
+    /// Which component is the smaller one (AVM `default_nmv_context.col_mv_index_cdf[a]`).
+    pub mv_column_index: [Cdf<2>; 4],
     /// Whether a lossless block uses its largest transform (size group, inter) (AVM `default_lossless_tx_size_cdf[a][b]`).
     pub lossless_tx_size: [[Cdf<2>; 2]; 4],
     /// Whether a block splits its transform (forward skip coding, inter, size) (AVM `default_txfm_do_partition_cdf[a][b][c]`).
@@ -343,6 +483,77 @@ impl Cdfs {
             dv_offset_high: defaults::DV_OFFSET_HIGH.map(Initial::build),
             dv_column_greater: defaults::DV_COLUMN_GREATER.map(Initial::build),
             dv_column_index: defaults::DV_COLUMN_INDEX.map(Initial::build),
+            tip: defaults::TIP.map(Initial::build),
+            tip_mode: defaults::TIP_MODE.build(),
+            tip_drl: defaults::TIP_DRL.map(Initial::build),
+            skip_mode_drl: defaults::SKIP_MODE_DRL.map(Initial::build),
+            comp: defaults::COMP.map(Initial::build),
+            single_ref: defaults::SINGLE_REF.map(|value| value.map(Initial::build)),
+            comp0_ref: defaults::COMP0_REF.map(|value| value.map(Initial::build)),
+            comp1_ref: defaults::COMP1_REF
+                .map(|value| value.map(|value| value.map(Initial::build))),
+            warp: defaults::WARP.map(Initial::build),
+            warp_newmv: defaults::WARP_NEWMV.build(),
+            inter_mode: defaults::INTER_MODE.map(Initial::build),
+            amvd: defaults::AMVD.map(|value| value.map(Initial::build)),
+            bawp: defaults::BAWP.map(Initial::build),
+            bawp_explicit: defaults::BAWP_EXPLICIT.map(Initial::build),
+            bawp_explicit_scale: defaults::BAWP_EXPLICIT_SCALE.build(),
+            warp_extend: defaults::WARP_EXTEND.map(Initial::build),
+            warp_causal: defaults::WARP_CAUSAL.map(Initial::build),
+            inter_intra: defaults::INTER_INTRA.map(Initial::build),
+            inter_intra_mode: defaults::INTER_INTRA_MODE.map(Initial::build),
+            inter_intra_wedge: defaults::INTER_INTRA_WEDGE.build(),
+            warp_inter_intra: defaults::WARP_INTER_INTRA.map(Initial::build),
+            wedge_quad: defaults::WEDGE_QUAD.build(),
+            wedge_angle: defaults::WEDGE_ANGLE.map(Initial::build),
+            wedge_dist: defaults::WEDGE_DIST.build(),
+            wedge_dist2: defaults::WEDGE_DIST2.build(),
+            jmvd_amvd_scale: defaults::JMVD_AMVD_SCALE.build(),
+            jmvd_scale: defaults::JMVD_SCALE.build(),
+            drl: defaults::DRL.map(|value| value.map(Initial::build)),
+            mv_precision_default: defaults::MV_PRECISION_DEFAULT.map(Initial::build),
+            mv_precision: defaults::MV_PRECISION.map(|value| value.map(Initial::build)),
+            warp_ref0: defaults::WARP_REF0.build(),
+            warp_ref1: defaults::WARP_REF1.build(),
+            warp_ref2: defaults::WARP_REF2.build(),
+            warpmv_with_mvd: defaults::WARPMV_WITH_MVD.build(),
+            warp_delta_precision: defaults::WARP_DELTA_PRECISION.map(Initial::build),
+            warp_delta: defaults::WARP_DELTA.map(Initial::build),
+            warp_delta_high: defaults::WARP_DELTA_HIGH.map(Initial::build),
+            warp_delta_sign: defaults::WARP_DELTA_SIGN.build(),
+            comp_mode_same_refs: defaults::COMP_MODE_SAME_REFS.map(Initial::build),
+            comp_mode_joint: defaults::COMP_MODE_JOINT.map(Initial::build),
+            comp_mode: defaults::COMP_MODE.map(Initial::build),
+            opfl: defaults::OPFL.map(Initial::build),
+            refine_mv: defaults::REFINE_MV.map(Initial::build),
+            comp_type_masked: defaults::COMP_TYPE_MASKED.map(Initial::build),
+            comp_type_weighted: defaults::COMP_TYPE_WEIGHTED.build(),
+            cwp: defaults::CWP.map(Initial::build),
+            interp_filter: defaults::INTERP_FILTER.map(Initial::build),
+            amvd_joint: defaults::AMVD_JOINT.build(),
+            amvd_index: defaults::AMVD_INDEX.map(Initial::build),
+            mv_shell_set: defaults::MV_SHELL_SET.build(),
+            mv_class_low0: defaults::MV_CLASS_LOW0.build(),
+            mv_class_high0: defaults::MV_CLASS_HIGH0.build(),
+            mv_class_low1: defaults::MV_CLASS_LOW1.build(),
+            mv_class_high1: defaults::MV_CLASS_HIGH1.build(),
+            mv_class_low2: defaults::MV_CLASS_LOW2.build(),
+            mv_class_high2: defaults::MV_CLASS_HIGH2.build(),
+            mv_class_low3: defaults::MV_CLASS_LOW3.build(),
+            mv_class_high3: defaults::MV_CLASS_HIGH3.build(),
+            mv_class_low4: defaults::MV_CLASS_LOW4.build(),
+            mv_class_high4: defaults::MV_CLASS_HIGH4.build(),
+            mv_class_low5: defaults::MV_CLASS_LOW5.build(),
+            mv_class_high5: defaults::MV_CLASS_HIGH5.build(),
+            mv_class_low6: defaults::MV_CLASS_LOW6.build(),
+            mv_class_high6: defaults::MV_CLASS_HIGH6.build(),
+            mv_shell_last: defaults::MV_SHELL_LAST.build(),
+            mv_offset_low: defaults::MV_OFFSET_LOW.map(Initial::build),
+            mv_offset_class2: defaults::MV_OFFSET_CLASS2.build(),
+            mv_offset_high: defaults::MV_OFFSET_HIGH.map(Initial::build),
+            mv_column_greater: defaults::MV_COLUMN_GREATER.map(Initial::build),
+            mv_column_index: defaults::MV_COLUMN_INDEX.map(Initial::build),
             lossless_tx_size: defaults::LOSSLESS_TX_SIZE.map(|value| value.map(Initial::build)),
             tx_split: defaults::TX_SPLIT.map(|value| value.map(|value| value.map(Initial::build))),
             tx_part_1d: defaults::TX_PART_1D
@@ -563,6 +774,164 @@ impl Cdfs {
         for v0 in &mut self.dv_column_index {
             v0.restart_adaptation();
         }
+        for v0 in &mut self.tip {
+            v0.restart_adaptation();
+        }
+        self.tip_mode.restart_adaptation();
+        for v0 in &mut self.tip_drl {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.skip_mode_drl {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.comp {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.single_ref {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.comp0_ref {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.comp1_ref {
+            for v1 in v0 {
+                for v2 in v1 {
+                    v2.restart_adaptation();
+                }
+            }
+        }
+        for v0 in &mut self.warp {
+            v0.restart_adaptation();
+        }
+        self.warp_newmv.restart_adaptation();
+        for v0 in &mut self.inter_mode {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.amvd {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.bawp {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.bawp_explicit {
+            v0.restart_adaptation();
+        }
+        self.bawp_explicit_scale.restart_adaptation();
+        for v0 in &mut self.warp_extend {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.warp_causal {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.inter_intra {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.inter_intra_mode {
+            v0.restart_adaptation();
+        }
+        self.inter_intra_wedge.restart_adaptation();
+        for v0 in &mut self.warp_inter_intra {
+            v0.restart_adaptation();
+        }
+        self.wedge_quad.restart_adaptation();
+        for v0 in &mut self.wedge_angle {
+            v0.restart_adaptation();
+        }
+        self.wedge_dist.restart_adaptation();
+        self.wedge_dist2.restart_adaptation();
+        self.jmvd_amvd_scale.restart_adaptation();
+        self.jmvd_scale.restart_adaptation();
+        for v0 in &mut self.drl {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        for v0 in &mut self.mv_precision_default {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.mv_precision {
+            for v1 in v0 {
+                v1.restart_adaptation();
+            }
+        }
+        self.warp_ref0.restart_adaptation();
+        self.warp_ref1.restart_adaptation();
+        self.warp_ref2.restart_adaptation();
+        self.warpmv_with_mvd.restart_adaptation();
+        for v0 in &mut self.warp_delta_precision {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.warp_delta {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.warp_delta_high {
+            v0.restart_adaptation();
+        }
+        self.warp_delta_sign.restart_adaptation();
+        for v0 in &mut self.comp_mode_same_refs {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.comp_mode_joint {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.comp_mode {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.opfl {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.refine_mv {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.comp_type_masked {
+            v0.restart_adaptation();
+        }
+        self.comp_type_weighted.restart_adaptation();
+        for v0 in &mut self.cwp {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.interp_filter {
+            v0.restart_adaptation();
+        }
+        self.amvd_joint.restart_adaptation();
+        for v0 in &mut self.amvd_index {
+            v0.restart_adaptation();
+        }
+        self.mv_shell_set.restart_adaptation();
+        self.mv_class_low0.restart_adaptation();
+        self.mv_class_high0.restart_adaptation();
+        self.mv_class_low1.restart_adaptation();
+        self.mv_class_high1.restart_adaptation();
+        self.mv_class_low2.restart_adaptation();
+        self.mv_class_high2.restart_adaptation();
+        self.mv_class_low3.restart_adaptation();
+        self.mv_class_high3.restart_adaptation();
+        self.mv_class_low4.restart_adaptation();
+        self.mv_class_high4.restart_adaptation();
+        self.mv_class_low5.restart_adaptation();
+        self.mv_class_high5.restart_adaptation();
+        self.mv_class_low6.restart_adaptation();
+        self.mv_class_high6.restart_adaptation();
+        self.mv_shell_last.restart_adaptation();
+        for v0 in &mut self.mv_offset_low {
+            v0.restart_adaptation();
+        }
+        self.mv_offset_class2.restart_adaptation();
+        for v0 in &mut self.mv_offset_high {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.mv_column_greater {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.mv_column_index {
+            v0.restart_adaptation();
+        }
         for v0 in &mut self.lossless_tx_size {
             for v1 in v0 {
                 v1.restart_adaptation();
@@ -758,6 +1127,612 @@ impl Cdfs {
             v0.restart_adaptation();
         }
     }
+    /// Weigh in a second reference's final models at one eighth (AVM
+    /// `av2_avg_cdf_symbols`, dav2d `dav2d_cdf_pri_sec_average`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "generated: one loop per model family"
+    )]
+    pub fn average_with(&mut self, other: &Self) {
+        for (v0, w0) in self.part_split.iter_mut().zip(&other.part_split) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.part_square.iter_mut().zip(&other.part_square) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.part_dir.iter_mut().zip(&other.part_dir) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.part_ext.iter_mut().zip(&other.part_ext) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.part_4way.iter_mut().zip(&other.part_4way) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.region_type.iter_mut().zip(&other.region_type) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.skip_mode.iter_mut().zip(&other.skip_mode) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.is_inter.iter_mut().zip(&other.is_inter) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.intrabc.iter_mut().zip(&other.intrabc) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.skip_txfm.iter_mut().zip(&other.skip_txfm) {
+            v0.average_with(w0);
+        }
+        self.gdf.average_with(&other.gdf);
+        for (v0, w0) in self.cdef_index0.iter_mut().zip(&other.cdef_index0) {
+            v0.average_with(w0);
+        }
+        self.cdef_index3.average_with(&other.cdef_index3);
+        self.cdef_index4.average_with(&other.cdef_index4);
+        self.cdef_index5.average_with(&other.cdef_index5);
+        self.cdef_index6.average_with(&other.cdef_index6);
+        self.cdef_index7.average_with(&other.cdef_index7);
+        self.cdef_index8.average_with(&other.cdef_index8);
+        for (v0, w0) in self.ccso.iter_mut().zip(&other.ccso) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        self.delta_q.average_with(&other.delta_q);
+        for (v0, w0) in self.rst_switchable.iter_mut().zip(&other.rst_switchable) {
+            v0.average_with(w0);
+        }
+        self.rst_ns_wiener.average_with(&other.rst_ns_wiener);
+        self.rst_pc_wiener.average_with(&other.rst_pc_wiener);
+        for (v0, w0) in self.wiener_ns_len.iter_mut().zip(&other.wiener_ns_len) {
+            v0.average_with(w0);
+        }
+        self.wiener_ns_sym.average_with(&other.wiener_ns_sym);
+        self.wiener_ns_cf.average_with(&other.wiener_ns_cf);
+        self.dpcm_y.average_with(&other.dpcm_y);
+        self.dpcm_dir_y.average_with(&other.dpcm_dir_y);
+        self.dpcm_uv.average_with(&other.dpcm_uv);
+        self.dpcm_dir_uv.average_with(&other.dpcm_dir_uv);
+        self.y_mode_set.average_with(&other.y_mode_set);
+        for (v0, w0) in self.y_mode_index.iter_mut().zip(&other.y_mode_index) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.y_mode_offset.iter_mut().zip(&other.y_mode_offset) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.fsc.iter_mut().zip(&other.fsc) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.mrl_index.iter_mut().zip(&other.mrl_index) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.multi_mrl.iter_mut().zip(&other.multi_mrl) {
+            v0.average_with(w0);
+        }
+        self.palette_y.average_with(&other.palette_y);
+        self.palette_size.average_with(&other.palette_size);
+        for (v0, w0) in self
+            .palette_identity
+            .iter_mut()
+            .zip(&other.palette_identity)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index2.iter_mut().zip(&other.palette_index2) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index3.iter_mut().zip(&other.palette_index3) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index4.iter_mut().zip(&other.palette_index4) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index5.iter_mut().zip(&other.palette_index5) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index6.iter_mut().zip(&other.palette_index6) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index7.iter_mut().zip(&other.palette_index7) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.palette_index8.iter_mut().zip(&other.palette_index8) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.dip.iter_mut().zip(&other.dip) {
+            v0.average_with(w0);
+        }
+        self.dip_mode.average_with(&other.dip_mode);
+        for (v0, w0) in self.cfl.iter_mut().zip(&other.cfl) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.uv_mode.iter_mut().zip(&other.uv_mode) {
+            v0.average_with(w0);
+        }
+        self.mhccp.average_with(&other.mhccp);
+        for (v0, w0) in self.mhccp_direction.iter_mut().zip(&other.mhccp_direction) {
+            v0.average_with(w0);
+        }
+        self.cfl_type.average_with(&other.cfl_type);
+        self.cfl_sign.average_with(&other.cfl_sign);
+        for (v0, w0) in self.cfl_alpha.iter_mut().zip(&other.cfl_alpha) {
+            v0.average_with(w0);
+        }
+        self.intrabc_mode.average_with(&other.intrabc_mode);
+        self.intrabc_precision
+            .average_with(&other.intrabc_precision);
+        for (v0, w0) in self.morph_pred.iter_mut().zip(&other.morph_pred) {
+            v0.average_with(w0);
+        }
+        self.dv_shell_set.average_with(&other.dv_shell_set);
+        self.dv_class_low_integer
+            .average_with(&other.dv_class_low_integer);
+        self.dv_class_low_quarter
+            .average_with(&other.dv_class_low_quarter);
+        self.dv_class_high_integer
+            .average_with(&other.dv_class_high_integer);
+        self.dv_class_high_quarter
+            .average_with(&other.dv_class_high_quarter);
+        for (v0, w0) in self.dv_offset_low.iter_mut().zip(&other.dv_offset_low) {
+            v0.average_with(w0);
+        }
+        self.dv_offset_class2.average_with(&other.dv_offset_class2);
+        for (v0, w0) in self.dv_offset_high.iter_mut().zip(&other.dv_offset_high) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .dv_column_greater
+            .iter_mut()
+            .zip(&other.dv_column_greater)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.dv_column_index.iter_mut().zip(&other.dv_column_index) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.tip.iter_mut().zip(&other.tip) {
+            v0.average_with(w0);
+        }
+        self.tip_mode.average_with(&other.tip_mode);
+        for (v0, w0) in self.tip_drl.iter_mut().zip(&other.tip_drl) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.skip_mode_drl.iter_mut().zip(&other.skip_mode_drl) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.comp.iter_mut().zip(&other.comp) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.single_ref.iter_mut().zip(&other.single_ref) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.comp0_ref.iter_mut().zip(&other.comp0_ref) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.comp1_ref.iter_mut().zip(&other.comp1_ref) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.warp.iter_mut().zip(&other.warp) {
+            v0.average_with(w0);
+        }
+        self.warp_newmv.average_with(&other.warp_newmv);
+        for (v0, w0) in self.inter_mode.iter_mut().zip(&other.inter_mode) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.amvd.iter_mut().zip(&other.amvd) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.bawp.iter_mut().zip(&other.bawp) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.bawp_explicit.iter_mut().zip(&other.bawp_explicit) {
+            v0.average_with(w0);
+        }
+        self.bawp_explicit_scale
+            .average_with(&other.bawp_explicit_scale);
+        for (v0, w0) in self.warp_extend.iter_mut().zip(&other.warp_extend) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.warp_causal.iter_mut().zip(&other.warp_causal) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.inter_intra.iter_mut().zip(&other.inter_intra) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .inter_intra_mode
+            .iter_mut()
+            .zip(&other.inter_intra_mode)
+        {
+            v0.average_with(w0);
+        }
+        self.inter_intra_wedge
+            .average_with(&other.inter_intra_wedge);
+        for (v0, w0) in self
+            .warp_inter_intra
+            .iter_mut()
+            .zip(&other.warp_inter_intra)
+        {
+            v0.average_with(w0);
+        }
+        self.wedge_quad.average_with(&other.wedge_quad);
+        for (v0, w0) in self.wedge_angle.iter_mut().zip(&other.wedge_angle) {
+            v0.average_with(w0);
+        }
+        self.wedge_dist.average_with(&other.wedge_dist);
+        self.wedge_dist2.average_with(&other.wedge_dist2);
+        self.jmvd_amvd_scale.average_with(&other.jmvd_amvd_scale);
+        self.jmvd_scale.average_with(&other.jmvd_scale);
+        for (v0, w0) in self.drl.iter_mut().zip(&other.drl) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self
+            .mv_precision_default
+            .iter_mut()
+            .zip(&other.mv_precision_default)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.mv_precision.iter_mut().zip(&other.mv_precision) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        self.warp_ref0.average_with(&other.warp_ref0);
+        self.warp_ref1.average_with(&other.warp_ref1);
+        self.warp_ref2.average_with(&other.warp_ref2);
+        self.warpmv_with_mvd.average_with(&other.warpmv_with_mvd);
+        for (v0, w0) in self
+            .warp_delta_precision
+            .iter_mut()
+            .zip(&other.warp_delta_precision)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.warp_delta.iter_mut().zip(&other.warp_delta) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.warp_delta_high.iter_mut().zip(&other.warp_delta_high) {
+            v0.average_with(w0);
+        }
+        self.warp_delta_sign.average_with(&other.warp_delta_sign);
+        for (v0, w0) in self
+            .comp_mode_same_refs
+            .iter_mut()
+            .zip(&other.comp_mode_same_refs)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.comp_mode_joint.iter_mut().zip(&other.comp_mode_joint) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.comp_mode.iter_mut().zip(&other.comp_mode) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.opfl.iter_mut().zip(&other.opfl) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.refine_mv.iter_mut().zip(&other.refine_mv) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .comp_type_masked
+            .iter_mut()
+            .zip(&other.comp_type_masked)
+        {
+            v0.average_with(w0);
+        }
+        self.comp_type_weighted
+            .average_with(&other.comp_type_weighted);
+        for (v0, w0) in self.cwp.iter_mut().zip(&other.cwp) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.interp_filter.iter_mut().zip(&other.interp_filter) {
+            v0.average_with(w0);
+        }
+        self.amvd_joint.average_with(&other.amvd_joint);
+        for (v0, w0) in self.amvd_index.iter_mut().zip(&other.amvd_index) {
+            v0.average_with(w0);
+        }
+        self.mv_shell_set.average_with(&other.mv_shell_set);
+        self.mv_class_low0.average_with(&other.mv_class_low0);
+        self.mv_class_high0.average_with(&other.mv_class_high0);
+        self.mv_class_low1.average_with(&other.mv_class_low1);
+        self.mv_class_high1.average_with(&other.mv_class_high1);
+        self.mv_class_low2.average_with(&other.mv_class_low2);
+        self.mv_class_high2.average_with(&other.mv_class_high2);
+        self.mv_class_low3.average_with(&other.mv_class_low3);
+        self.mv_class_high3.average_with(&other.mv_class_high3);
+        self.mv_class_low4.average_with(&other.mv_class_low4);
+        self.mv_class_high4.average_with(&other.mv_class_high4);
+        self.mv_class_low5.average_with(&other.mv_class_low5);
+        self.mv_class_high5.average_with(&other.mv_class_high5);
+        self.mv_class_low6.average_with(&other.mv_class_low6);
+        self.mv_class_high6.average_with(&other.mv_class_high6);
+        self.mv_shell_last.average_with(&other.mv_shell_last);
+        for (v0, w0) in self.mv_offset_low.iter_mut().zip(&other.mv_offset_low) {
+            v0.average_with(w0);
+        }
+        self.mv_offset_class2.average_with(&other.mv_offset_class2);
+        for (v0, w0) in self.mv_offset_high.iter_mut().zip(&other.mv_offset_high) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .mv_column_greater
+            .iter_mut()
+            .zip(&other.mv_column_greater)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.mv_column_index.iter_mut().zip(&other.mv_column_index) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .lossless_tx_size
+            .iter_mut()
+            .zip(&other.lossless_tx_size)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.tx_split.iter_mut().zip(&other.tx_split) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.tx_part_1d.iter_mut().zip(&other.tx_part_1d) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.tx_part_2d.iter_mut().zip(&other.tx_part_2d) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self
+            .tx_part_2d_reduced
+            .iter_mut()
+            .zip(&other.tx_part_2d_reduced)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        self.tx_type_lossless.average_with(&other.tx_type_lossless);
+        for (v0, w0) in self
+            .tx_type_long32_dct
+            .iter_mut()
+            .zip(&other.tx_type_long32_dct)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .tx_type_intra_short
+            .iter_mut()
+            .zip(&other.tx_type_intra_short)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.tx_type_intra.iter_mut().zip(&other.tx_type_intra) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .tx_type_intra_reduced
+            .iter_mut()
+            .zip(&other.tx_type_intra_reduced)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .tx_type_inter_short
+            .iter_mut()
+            .zip(&other.tx_type_inter_short)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_set
+            .iter_mut()
+            .zip(&other.tx_type_inter_set)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_index
+            .iter_mut()
+            .zip(&other.tx_type_inter_index)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_offset1
+            .iter_mut()
+            .zip(&other.tx_type_inter_offset1)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .tx_type_inter_offset2
+            .iter_mut()
+            .zip(&other.tx_type_inter_offset2)
+        {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self
+            .tx_type_inter_dct_idtx
+            .iter_mut()
+            .zip(&other.tx_type_inter_dct_idtx)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self
+            .tx_type_inter_dct_idtx_iddct
+            .iter_mut()
+            .zip(&other.tx_type_inter_dct_idtx_iddct)
+        {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.stx.iter_mut().zip(&other.stx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        self.stx_set_adst.average_with(&other.stx_set_adst);
+        self.stx_set.average_with(&other.stx_set);
+        self.cctx.average_with(&other.cctx);
+        for (v0, w0) in self.txb_skip.iter_mut().zip(&other.txb_skip) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.txb_skip_v.iter_mut().zip(&other.txb_skip_v) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob16.iter_mut().zip(&other.eob16) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob32.iter_mut().zip(&other.eob32) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob64.iter_mut().zip(&other.eob64) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob128.iter_mut().zip(&other.eob128) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob256.iter_mut().zip(&other.eob256) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob512.iter_mut().zip(&other.eob512) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob1024.iter_mut().zip(&other.eob1024) {
+            v0.average_with(w0);
+        }
+        self.eob_extra.average_with(&other.eob_extra);
+        for (v0, w0) in self.eob_base_hf.iter_mut().zip(&other.eob_base_hf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.base_hf.iter_mut().zip(&other.base_hf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.range_hf.iter_mut().zip(&other.range_hf) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob_base_lf.iter_mut().zip(&other.eob_base_lf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.base_lf.iter_mut().zip(&other.base_lf) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.range_lf.iter_mut().zip(&other.range_lf) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.parity_dc.iter_mut().zip(&other.parity_dc) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.dc_sign.iter_mut().zip(&other.dc_sign) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                for (v2, w2) in v1.iter_mut().zip(w1) {
+                    v2.average_with(w2);
+                }
+            }
+        }
+        for (v0, w0) in self.bob_base.iter_mut().zip(&other.bob_base) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.range_idtx.iter_mut().zip(&other.range_idtx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.base_idtx.iter_mut().zip(&other.base_idtx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.sign_idtx.iter_mut().zip(&other.sign_idtx) {
+            for (v1, w1) in v0.iter_mut().zip(w0) {
+                v1.average_with(w1);
+            }
+        }
+        for (v0, w0) in self.eob_base_uv_hf.iter_mut().zip(&other.eob_base_uv_hf) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.base_uv_hf.iter_mut().zip(&other.base_uv_hf) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.range_uv_hf.iter_mut().zip(&other.range_uv_hf) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.eob_base_uv_lf.iter_mut().zip(&other.eob_base_uv_lf) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.base_uv_lf.iter_mut().zip(&other.base_uv_lf) {
+            v0.average_with(w0);
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -934,6 +1909,164 @@ mod tests {
                 trace(v0, &mut hash);
             }
             for v0 in &mut models.dv_column_index {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.tip {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.tip_mode, &mut hash);
+            for v0 in &mut models.tip_drl {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.skip_mode_drl {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.comp {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.single_ref {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.comp0_ref {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.comp1_ref {
+                for v1 in v0 {
+                    for v2 in v1 {
+                        trace(v2, &mut hash);
+                    }
+                }
+            }
+            for v0 in &mut models.warp {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.warp_newmv, &mut hash);
+            for v0 in &mut models.inter_mode {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.amvd {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.bawp {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.bawp_explicit {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.bawp_explicit_scale, &mut hash);
+            for v0 in &mut models.warp_extend {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.warp_causal {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.inter_intra {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.inter_intra_mode {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.inter_intra_wedge, &mut hash);
+            for v0 in &mut models.warp_inter_intra {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.wedge_quad, &mut hash);
+            for v0 in &mut models.wedge_angle {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.wedge_dist, &mut hash);
+            trace(&mut models.wedge_dist2, &mut hash);
+            trace(&mut models.jmvd_amvd_scale, &mut hash);
+            trace(&mut models.jmvd_scale, &mut hash);
+            for v0 in &mut models.drl {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            for v0 in &mut models.mv_precision_default {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.mv_precision {
+                for v1 in v0 {
+                    trace(v1, &mut hash);
+                }
+            }
+            trace(&mut models.warp_ref0, &mut hash);
+            trace(&mut models.warp_ref1, &mut hash);
+            trace(&mut models.warp_ref2, &mut hash);
+            trace(&mut models.warpmv_with_mvd, &mut hash);
+            for v0 in &mut models.warp_delta_precision {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.warp_delta {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.warp_delta_high {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.warp_delta_sign, &mut hash);
+            for v0 in &mut models.comp_mode_same_refs {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.comp_mode_joint {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.comp_mode {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.opfl {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.refine_mv {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.comp_type_masked {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.comp_type_weighted, &mut hash);
+            for v0 in &mut models.cwp {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.interp_filter {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.amvd_joint, &mut hash);
+            for v0 in &mut models.amvd_index {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.mv_shell_set, &mut hash);
+            trace(&mut models.mv_class_low0, &mut hash);
+            trace(&mut models.mv_class_high0, &mut hash);
+            trace(&mut models.mv_class_low1, &mut hash);
+            trace(&mut models.mv_class_high1, &mut hash);
+            trace(&mut models.mv_class_low2, &mut hash);
+            trace(&mut models.mv_class_high2, &mut hash);
+            trace(&mut models.mv_class_low3, &mut hash);
+            trace(&mut models.mv_class_high3, &mut hash);
+            trace(&mut models.mv_class_low4, &mut hash);
+            trace(&mut models.mv_class_high4, &mut hash);
+            trace(&mut models.mv_class_low5, &mut hash);
+            trace(&mut models.mv_class_high5, &mut hash);
+            trace(&mut models.mv_class_low6, &mut hash);
+            trace(&mut models.mv_class_high6, &mut hash);
+            trace(&mut models.mv_shell_last, &mut hash);
+            for v0 in &mut models.mv_offset_low {
+                trace(v0, &mut hash);
+            }
+            trace(&mut models.mv_offset_class2, &mut hash);
+            for v0 in &mut models.mv_offset_high {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.mv_column_greater {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.mv_column_index {
                 trace(v0, &mut hash);
             }
             for v0 in &mut models.lossless_tx_size {

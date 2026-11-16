@@ -7,7 +7,6 @@
 //! `Unsupported` until it is built).
 use super::record::BlockRecord;
 use super::size::BlockSize;
-use super::transform::LumaTransforms;
 use super::{Tile, UNITS64_LOG2, context, samples};
 use crate::general::frame_header::filters::Cdef;
 use nc_common::decode::{DecodeError, Result};
@@ -36,11 +35,12 @@ pub(super) enum Neighbour {
     Left(usize),
 }
 
-/// Up to two context neighbours and how many count.
+/// Up to two context neighbours and how many count (dav2d `nx`, `xoff`,
+/// `idx`).
 #[derive(Debug, Clone, Copy)]
-struct Neighbours {
-    at: [Option<Neighbour>; 2],
-    count: usize,
+pub(super) struct Neighbours {
+    pub at: [Option<Neighbour>; 2],
+    pub count: usize,
 }
 
 impl Tile<'_, '_> {
@@ -125,20 +125,11 @@ impl Tile<'_, '_> {
         } else if intra {
             self.intra_block(depth, &record)?
         } else {
-            self.inter_block(depth, &record)?
+            self.inter_block(depth, &record, neighbours)?
         };
         self.record_contexts(&record);
         self.record_filters(&record, transforms);
         Ok(())
-    }
-
-    /// An inter block's references, motion, prediction and residual (the
-    /// inter and residual groups).
-    #[allow(clippy::unused_self, reason = "the tool group fills it in")]
-    fn inter_block(&mut self, _depth: usize, _record: &BlockRecord) -> Result<LumaTransforms> {
-        Err(DecodeError::Unsupported(
-            "AV2 inter blocks (general block layer)",
-        ))
     }
 
     /// Record the block's common flags in the above and left contexts over
@@ -172,6 +163,21 @@ impl Tile<'_, '_> {
             // Intra blocks record their palette with their modes.
             if !record.intra || record.intrabc {
                 edge.palette_size[start..end].fill(0);
+            }
+            // Inter blocks record their motion (`inter_block`); intra ones
+            // in inter frames clear it.
+            if record.intra && !self.frame.is_intra() {
+                for field in [
+                    &mut edge.amvd,
+                    &mut edge.mv_precision,
+                    &mut edge.motion_mode,
+                    &mut edge.comp_type,
+                ] {
+                    field[start..end].fill(0);
+                }
+                for side in &mut edge.reference {
+                    side[start..end].fill(context::NO_REFERENCE_BITS);
+                }
             }
         }
     }
@@ -495,7 +501,14 @@ impl Tile<'_, '_> {
                 continue;
             }
             if coded.block_reuse {
-                return Err(DecodeError::Unsupported("AV2 CCSO block flags reuse"));
+                let index = self.filter_block(self.row, self.column);
+                let flag = self.reused_ccso[plane]
+                    .and_then(|flags| flags.get(index))
+                    .ok_or(DecodeError::Malformed("AV2 CCSO flags of another size"))?[plane];
+                self.splat_filter_flag(unit64, |tile, index| {
+                    tile.filters.ccso_flags[index][plane] = flag;
+                });
+                continue;
             }
             let left = if self.column == self.bounds.column_start {
                 false

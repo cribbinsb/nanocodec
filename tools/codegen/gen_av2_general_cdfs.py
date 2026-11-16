@@ -146,6 +146,99 @@ SPECS = [
      'whether the smaller component steps further up the shell'),
     ('dv_column_index', [4], 2, 'default_nmv_context.col_mv_index_cdf[a]', '',
      'which component is the smaller one'),
+    # Inter blocks (docs/handoff/av2.md "The general block layer": the inter group).
+    ('tip', [3], 2, 'default_tip_cdf[a]', '', 'whether an inter block predicts from the TIP frame'),
+    ('tip_mode', [], 2, 'default_tip_pred_mode_cdf', '', 'whether a TIP block codes a vector residual'),
+    ('tip_drl', [3], 2, 'default_tip_drl_cdf[a]', '', 'a TIP block\'s DRL index bit'),
+    ('skip_mode_drl', [3], 2, 'default_skip_drl_cdf[a]', '', 'a skip-mode block\'s DRL index bit'),
+    ('comp', [5], 2, 'default_comp_inter_cdf[a]', '', 'whether an inter block has two references'),
+    ('single_ref', [3, 6], 2, 'default_single_ref_cdf[a][b]', '',
+     'whether a single reference is the rank tried (context, rank)'),
+    ('comp0_ref', [3, 6], 2, 'default_comp_ref0_cdf[a][b]', '',
+     'whether a compound block\'s first reference is the rank tried'),
+    ('comp1_ref', [3, 2, 6], 2, 'default_comp_ref1_cdf[a][b][c]', '',
+     'whether its second is (context, same direction as the first, rank)'),
+    ('warp', [5], 2, 'default_inter_warp_mode_cdf[a]', '', 'whether a single-reference block warps'),
+    ('warp_newmv', [], 2, 'default_is_warpmv_or_warp_newmv_cdf', '', 'whether a warp block is WARPMV, not WARPNEWMV'),
+    ('inter_mode', [5], 3, 'default_inter_single_mode_cdf[a]', '', 'a single-reference mode (NEAR, GLOBAL, NEW)'),
+    ('amvd', [9, 3], 2, 'default_amvd_mode_cdf[a][b]', '', 'whether a residual is adaptive (mode, context)'),
+    ('bawp', [2], 2, 'default_bawp_cdf[a]', '', 'block-adaptive weighted prediction (luma, chroma)'),
+    ('bawp_explicit', [3], 2, 'default_explicit_bawp_cdf[a]', '', 'whether the weight is explicit'),
+    ('bawp_explicit_scale', [], 2, 'default_explicit_bawp_scale_cdf', '', 'the explicit weight\'s scale'),
+    ('warp_extend', [3], 2, 'default_warp_extend_cdf[a]', '', 'whether a warp extends a neighbour\'s model'),
+    ('warp_causal', [4], 2, 'default_warp_causal_cdf[a]', '', 'whether a warp is fitted to the neighbours'),
+    ('inter_intra', [4], 2, 'default_interintra_cdf[a]', '', 'whether a block blends an intra prediction'),
+    ('inter_intra_mode', [4], 4, 'default_interintra_mode_cdf[a]', '', 'the inter-intra mode'),
+    ('inter_intra_wedge', [], 2, 'default_wedge_interintra_cdf', '', 'whether inter-intra uses a wedge'),
+    ('warp_inter_intra', [4], 2, 'default_warp_interintra_cdf[a]', '', 'whether a WARPMV block blends an intra prediction'),
+    ('wedge_quad', [], 4, 'default_wedge_quad_cdf', '', 'a wedge angle\'s quadrant'),
+    ('wedge_angle', [4], 5, 'default_wedge_angle_cdf[a]', '', 'the angle in the quadrant'),
+    ('wedge_dist', [], 4, 'default_wedge_dist_cdf', '', 'a wedge\'s distance'),
+    ('wedge_dist2', [], 3, 'default_wedge_dist_cdf2', '', 'a wedge\'s distance at angles without the centre'),
+    ('jmvd_amvd_scale', [], 3, 'default_jmvd_amvd_scale_mode_cdf', '', 'the joint residual scale, adaptive'),
+    ('jmvd_scale', [], 5, 'default_jmvd_scale_mode_cdf', '', 'the joint residual scale'),
+    ('drl', [3, 5], 2, 'default_drl_cdf[a][b]', '', 'a DRL index bit (bit, mode context)'),
+    ('mv_precision_default', [3], 2, 'default_pb_mv_most_probable_precision_cdf[a]', '',
+     'whether a residual takes the frame\'s precision'),
+    ('mv_precision', [2, 3], 3, 'default_pb_mv_precision_cdf[a][b]', '', 'the residual precision otherwise'),
+    ('warp_ref0', [], 2, 'default_warp_ref_idx0_cdf[0]', '', 'whether the warp model index passes 0'),
+    ('warp_ref1', [], 2, 'default_warp_ref_idx1_cdf[0]', '', 'whether it passes 1'),
+    ('warp_ref2', [], 2, 'default_warp_ref_idx2_cdf[0]', '', 'whether it passes 2'),
+    ('warpmv_with_mvd', [], 2, 'default_warpmv_with_mvd_flag_cdf', '', 'whether a WARPMV block codes a residual'),
+    ('warp_delta_precision', [31], 2, 'default_warp_precision_idx_cdf[(const int[]){18, 17, 16, 15, 14, 13, 12, 11, 24, 28, 0, 10, 9, 8, 22, 26, 23, 7, 6, 5, 20, 27, 21, 4, 3, 2, 0, 25, 19, 1, 0}[a]]', '',
+     'whether warp deltas are coarse (block size, ours to AVM\'s)'),
+    ('warp_delta', [2], 8, 'default_warp_delta_param_cdf[a]', '', 'a warp delta parameter magnitude'),
+    ('warp_delta_high', [2], 8, 'default_warp_delta_param_high_cdf[a]', '', 'its continuation'),
+    ('warp_delta_sign', [], 2, 'default_warp_param_sign_cdf', '', 'a warp delta\'s sign'),
+    ('comp_mode_same_refs', [5], 4, 'default_inter_compound_mode_same_refs_cdf[a]', '',
+     'a compound mode of one reference twice'),
+    ('comp_mode_joint', [2], 2, 'default_inter_compound_mode_is_joint_cdf[a]', '', 'whether a compound mode is `JOINT_NEWMV`'),
+    ('comp_mode', [5], 5, 'default_inter_compound_mode_non_joint_type_cdf[a]', '', 'a compound mode otherwise'),
+    ('opfl', [2], 2, 'default_use_optflow_cdf[a]', '', 'whether a compound mode is refined by optical flow'),
+    ('refine_mv', [11], 2, 'default_refinemv_flag_cdf[a + 1]', '', 'whether a compound block refines its vectors (by mode)'),
+    ('comp_type_masked', [12], 2, 'default_comp_group_idx_cdfs[a]', '', 'whether a compound blend is masked'),
+    ('comp_type_weighted', [], 2, 'default_compound_type_cdf', '', 'whether the mask is the difference, not a wedge'),
+    ('cwp', [4], 2, 'default_cwp_idx_cdf[0][a]', '', 'a compound weight index bit'),
+    ('interp_filter', [8], 3, 'default_switchable_interp_cdf[a]', '', 'a block\'s interpolation filter'),
+    ('amvd_joint', [], 4, 'default_nmv_context.amvd_joints_cdf', '', 'which adaptive residual components are nonzero'),
+    ('amvd_index', [2], 8, 'default_nmv_context.comps[a].amvd_indices_cdf', '', 'an adaptive residual magnitude (y, x)'),
+    # Inter vector residuals: AVM's `nmvc` models (from `default_nmv_context`), per precision.
+    ('mv_shell_set', [], 2, 'default_nmv_context.joint_shell_set_cdf', '', 'whether the shell class is in the upper half'),
+    ('mv_class_low0', [], 5, 'default_nmv_context.joint_shell_class_cdf_0[0]', 'r',
+     'a vector residual\'s shell class, lower half, precision 0'),
+    ('mv_class_high0', [], 6, 'default_nmv_context.joint_shell_class_cdf_1[0]', 'r',
+     'the same, upper half'),
+    ('mv_class_low1', [], 6, 'default_nmv_context.joint_shell_class_cdf_0[1]', 'r',
+     'a vector residual\'s shell class, lower half, precision 1'),
+    ('mv_class_high1', [], 6, 'default_nmv_context.joint_shell_class_cdf_1[1]', 'r',
+     'the same, upper half'),
+    ('mv_class_low2', [], 6, 'default_nmv_context.joint_shell_class_cdf_0[2]', 'r',
+     'a vector residual\'s shell class, lower half, precision 2'),
+    ('mv_class_high2', [], 7, 'default_nmv_context.joint_shell_class_cdf_1[2]', 'r',
+     'the same, upper half'),
+    ('mv_class_low3', [], 7, 'default_nmv_context.joint_shell_class_cdf_0[3]', 'r',
+     'a vector residual\'s shell class, lower half, precision 3'),
+    ('mv_class_high3', [], 7, 'default_nmv_context.joint_shell_class_cdf_1[3]', 'r',
+     'the same, upper half'),
+    ('mv_class_low4', [], 7, 'default_nmv_context.joint_shell_class_cdf_0[4]', 'r',
+     'a vector residual\'s shell class, lower half, precision 4'),
+    ('mv_class_high4', [], 8, 'default_nmv_context.joint_shell_class_cdf_1[4]', 'r',
+     'the same, upper half'),
+    ('mv_class_low5', [], 8, 'default_nmv_context.joint_shell_class_cdf_0[5]', 'r',
+     'a vector residual\'s shell class, lower half, precision 5'),
+    ('mv_class_high5', [], 8, 'default_nmv_context.joint_shell_class_cdf_1[5]', 'r',
+     'the same, upper half'),
+    ('mv_class_low6', [], 8, 'default_nmv_context.joint_shell_class_cdf_0[6]', 'r',
+     'a vector residual\'s shell class, lower half, precision 6'),
+    ('mv_class_high6', [], 8, 'default_nmv_context.joint_shell_class_cdf_1[6]', 'r',
+     'the same, upper half'),
+    ('mv_shell_last', [], 2, 'default_nmv_context.joint_shell_last_two_classes_cdf', '',
+     'which of the last two shell classes, at eighth samples'),
+    ('mv_offset_low', [2], 2, 'default_nmv_context.shell_offset_low_class_cdf[a]', '', 'the shell offset of class 0 or 1'),
+    ('mv_offset_class2', [], 2, 'default_nmv_context.shell_offset_class2_cdf', '', 'whether the class 2 offset is above 0'),
+    ('mv_offset_high', [16], 2, 'default_nmv_context.shell_offset_other_class_cdf[0][a]', '', 'a bit of a higher offset'),
+    ('mv_column_greater', [2], 2, 'default_nmv_context.col_mv_greater_flags_cdf[a]', '', 'whether the smaller component steps up'),
+    ('mv_column_index', [4], 2, 'default_nmv_context.col_mv_index_cdf[a]', '', 'which component is the smaller one'),
     # The residual (docs/handoff/av2.md "The general block layer": the residual group).
     ('lossless_tx_size', [4, 2], 2, 'default_lossless_tx_size_cdf[a][b]', '',
      'whether a lossless block uses its largest transform (size group, inter)'),
@@ -320,6 +413,21 @@ def generate(defaults, hashes):
             lines.extend('}' for _ in dims)
         return lines
 
+    def visit_pair(action):
+        lines = []
+        for name, dims, *_ in SPECS:
+            left, right = f'self.{name}', f'other.{name}'
+            if not dims:
+                lines.append(action(left, f'&{right}'))
+                continue
+            for depth in range(len(dims)):
+                source = f'&{right}' if depth == 0 else right
+                lines.append(f'for (v{depth}, w{depth}) in {left}.iter_mut().zip({source}) {{')
+                left, right = f'v{depth}', f'w{depth}'
+            lines.append(action(left, right))
+            lines.extend('}' for _ in dims)
+        return lines
+
     model = ['//! The general AV2 decoder\'s probability models: every AVM v1.0.0 default',
              '//! its syntax reads so far, with AVM\'s adaptation rates (generated by',
              '//! `tools/codegen/gen_av2_general_cdfs.py`, which tool agents extend).',
@@ -350,6 +458,11 @@ def generate(defaults, hashes):
               '#[allow(clippy::too_many_lines, reason = "generated: one loop per model family")]',
               'pub fn restart_adaptation(&mut self) {']
     model += visit('self', lambda e: f'{e}.restart_adaptation();')
+    model += ['}', '/// Weigh in a second reference\'s final models at one eighth (AVM',
+              '/// `av2_avg_cdf_symbols`, dav2d `dav2d_cdf_pri_sec_average`).',
+              '#[allow(clippy::too_many_lines, reason = "generated: one loop per model family")]',
+              'pub fn average_with(&mut self, other: &Self) {']
+    model += visit_pair(lambda a, b: f'{a}.average_with({b});')
     model += ['} }', '#[cfg(test)] mod tests { use super::*; use crate::entropy::Writer;',
               'fn trace<const N: usize>(cdf: &mut Cdf<N>, hash: &mut u64) { let mut writer = Writer::new();',
               'for step in 0..65 { writer.symbol((step * 7 + step / 3) % N, cdf).unwrap();',

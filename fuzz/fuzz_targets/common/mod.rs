@@ -109,7 +109,11 @@ pub fn read_shown<T: Sample>(shown: Option<ShownPicture<'_, T>>) {
     let mut sum = 0u64;
     for plane in PlaneIndex::ALL {
         for row in shown.plane(plane).rows() {
-            sum = sum.wrapping_add(row.iter().map(|&s| u64::from(s.to_i32() as u32)).sum::<u64>());
+            sum = sum.wrapping_add(
+                row.iter()
+                    .map(|&s| u64::from(s.to_i32() as u32))
+                    .sum::<u64>(),
+            );
         }
     }
     black_box(sum);

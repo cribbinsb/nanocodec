@@ -33,9 +33,23 @@ pub struct Edge {
     pub morph_pred: Vec<u8>,
     /// The neighbour's segment id was predicted.
     pub segment_predicted: Vec<u8>,
-    /// The neighbour's luma intra mode (dav2d `IntraPredMode`; DC for
-    /// inter blocks).
+    /// The neighbour's luma intra mode (dav2d `IntraPredMode`), or an
+    /// inter block's mode (dav2d `InterPredMode` numbering).
     pub mode: Vec<u8>,
+    /// The neighbour's references as `i8` bits ([`NO_REFERENCE_BITS`] for
+    /// intra and none; dav2d `ref`).
+    pub reference: [Vec<u8>; 2],
+    /// The neighbour's compound blend (dav2d `CompInterType`).
+    pub comp_type: Vec<u8>,
+    /// The neighbour's interpolation filter ([`NO_FILTER`] unset).
+    pub filter: Vec<u8>,
+    /// The neighbour's motion mode (dav2d `MotionMode`).
+    pub motion_mode: Vec<u8>,
+    /// The neighbour coded an adaptive residual.
+    pub amvd: Vec<u8>,
+    /// The neighbour's residual precision choice (dav2d `mvprec`: 0
+    /// none, 1 the frame's, 2 reduced).
+    pub mv_precision: Vec<u8>,
     /// The neighbour's directional luma mode index (0..56: direction and
     /// angle delta), [`NO_DIRECTION`] when not directional.
     pub direction: Vec<u8>,
@@ -68,6 +82,14 @@ pub struct Edge {
     pub deblock_chroma: Vec<u8>,
 }
 
+/// [`Edge::reference`] of intra blocks: -1 as a byte.
+pub const NO_REFERENCE_BITS: u8 = 0xff;
+/// [`Edge::filter`] before an inter block sets it (dav2d
+/// `DAV2D_N_SWITCHABLE_FILTERS`).
+pub const NO_FILTER: u8 = 3;
+/// [`Edge::mode`] at the start of inter frames (dav2d `NEARMV`).
+const INTER_FRAME_MODE: u8 = 13;
+
 /// [`Edge::direction`] of a block without a directional luma mode.
 pub const NO_DIRECTION: u8 = 0xff;
 /// [`Edge::luma_coefficients`] of a transform without coefficients (a
@@ -87,6 +109,15 @@ impl Edge {
             morph_pred: vec![0; units],
             segment_predicted: vec![0; units],
             mode: vec![0; units],
+            reference: [
+                vec![NO_REFERENCE_BITS; units],
+                vec![NO_REFERENCE_BITS; units],
+            ],
+            comp_type: vec![0; units],
+            filter: vec![NO_FILTER; units],
+            motion_mode: vec![0; units],
+            amvd: vec![0; units],
+            mv_precision: vec![0; units],
             direction: vec![NO_DIRECTION; units],
             fsc: vec![0; units],
             mrl: vec![0; units],
@@ -114,7 +145,15 @@ impl Edge {
         self.intrabc.fill(0);
         self.morph_pred.fill(0);
         self.segment_predicted.fill(0);
-        self.mode.fill(0);
+        self.mode
+            .fill(if intra_frame { 0 } else { INTER_FRAME_MODE });
+        if !intra_frame {
+            for side in &mut self.reference {
+                side.fill(NO_REFERENCE_BITS);
+            }
+            self.comp_type.fill(0);
+        }
+        self.filter.fill(NO_FILTER);
         self.direction.fill(NO_DIRECTION);
         self.fsc.fill(0);
         self.mrl.fill(0);
@@ -149,6 +188,28 @@ impl Contexts {
         Self {
             above: Edge::new(columns.next_multiple_of(LEFT_UNITS)),
             left: Edge::new(LEFT_UNITS),
+        }
+    }
+}
+
+/// The above edge's references and motion modes over one 256-wide
+/// column of units, copied at each superblock of an inter frame: warp
+/// contexts at a superblock's top read them at 8x8 resolution, which may
+/// reach units the block to the left has rewritten since (dav2d
+/// `SBEdgeCtx`, AVM #1091).
+#[derive(Debug, Clone)]
+pub struct AboveCache {
+    /// See [`Edge::reference`].
+    pub reference: [[u8; LEFT_UNITS]; 2],
+    /// See [`Edge::motion_mode`].
+    pub motion_mode: [u8; LEFT_UNITS],
+}
+
+impl Default for AboveCache {
+    fn default() -> Self {
+        Self {
+            reference: [[NO_REFERENCE_BITS; LEFT_UNITS]; 2],
+            motion_mode: [0; LEFT_UNITS],
         }
     }
 }

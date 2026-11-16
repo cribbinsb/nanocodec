@@ -140,6 +140,19 @@ impl<const N: usize> Cdf<N> {
         self.count = (self.count * INHERITED_COUNT_NUMERATOR) >> INHERITED_COUNT_SHIFT;
     }
 
+    /// Weigh in `other` at one eighth: probabilities and symbol counts
+    /// alike (AVM `av2_avg_cdf_symbols`, dav2d `dav2d_cdf_pri_sec_average`
+    /// on the inverse values and the count).
+    pub fn average_with(&mut self, other: &Self) {
+        const PRIMARY_WEIGHT: u32 = 7;
+        const SHIFT: u32 = 3;
+        let mix = |a: u32, b: u32| (a * PRIMARY_WEIGHT + b + (1 << (SHIFT - 1))) >> SHIFT;
+        for (value, &second) in self.inverse[..N - 1].iter_mut().zip(&other.inverse) {
+            *value = mix(u32::from(*value), u32::from(second)) as u16;
+        }
+        self.count = mix(u32::from(self.count), u32::from(other.count)) as u8;
+    }
+
     /// Current inverse probabilities, including the final zero boundary.
     #[must_use]
     pub const fn inverse(&self) -> &[u16; N] {
