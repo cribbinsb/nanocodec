@@ -35,6 +35,9 @@
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 mod avx2;
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 mod neon;
@@ -247,6 +250,12 @@ pub(crate) struct Kernels {
     pub samples: SamplesFn,
     pub gram: GramFn,
     pub dot: DotFn,
+}
+
+/// Override only the wide linear row; other ALF operations inherit AVX2.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn install_avx512(kernels: &mut Kernels) {
+    kernels.filter_block_row = avx512::filter_block_row;
 }
 
 pub(crate) fn kernels(isa: Isa) -> Kernels {

@@ -99,4 +99,5 @@ pub(crate) fn bench(dsp: &Dsp, isa: Isa, source: &[u8], out: &mut Vec<BenchResul
         }
     }
     crate::bench_av1_intra::bench_av1_intra(dsp, source, &mut push);
+    crate::bench_filters::bench_vvc_alf(dsp, &mut push);
 }

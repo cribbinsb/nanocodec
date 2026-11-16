@@ -311,7 +311,7 @@ fn bench_av2_lines(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64
 /// VVC ALF on a 64x4 block row of a CTB (four filter rows; two Laplacian
 /// grid rows, reported as 64x4 too), and the statistics of 512 samples
 /// (a 64x64 CTB sampled every 2 rows and 4 columns, reported as 64x8).
-fn bench_vvc_alf(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64)) {
+pub(crate) fn bench_vvc_alf(dsp: &Dsp, push: &mut impl FnMut(&'static str, BlockSize, f64)) {
     const WIDTH: usize = 64;
     const SAMPLES: usize = 512;
     // `gram_rows` is timed over four rows: block sizes are at least 4 high.

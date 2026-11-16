@@ -266,6 +266,7 @@ impl Dsp {
         av2_txfm::avx512::install(&mut dsp.av2_txfm);
         dsp.end_of_block = crate::end_of_block::kernel(Isa::Avx512);
         dsp.av1_lr = crate::av1_restoration::kernels::kernels(Isa::Avx512);
+        crate::vvc_alf::install_avx512(&mut dsp.vvc_alf);
         dsp.high.install_avx512();
         Some(dsp)
     }

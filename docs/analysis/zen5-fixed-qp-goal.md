@@ -630,7 +630,11 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
     -2.78), final-check -2.44 % [-2.98, -1.91] (line -2.85), pulse +1.86 dB
     (pool_external_meva_admin_720p_536p, J +11.2 %: its second key is starved, 93k against 158k
     bits at 194k, 2.6 dB worse, and the next 90 frames are 1.8-2.8 dB worse). Below the line on
-    both charts: **out**.
+    both charts: **out**. With `rate.key_reserve` (engine default since 3652eedf8) the CBR
+    final-check is -2.90 % [-3.43, -2.41], no guard (meva_admin J +11.2 -> -4.2 %): on the CBR
+    line by c8a time (-2.85), below it by callgrind instructions (x1.476 of Fast under CBR,
+    Default x1.935: line -4.91); lens unchanged. Still **out** (docs/handoff/rate-control.md
+    "Key reserve").
   - **On Faster** (regular = Fast's 14 differing per-block values): 313.7 fps (x1.094 of Faster's
     time; Fast x1.336); lens W / J -5.7 / -18.3 (line -1.5 / -15.2); CBR L1 -7.84 % (line -3.22),
     final-check -8.27 % [-9.60, -6.90] (line -3.38). Above the line on both charts, but the pulse
@@ -639,7 +643,23 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
     0.73 dB worse (294k against 327k bits) and its next frames about 0.6 dB worse until about K+30.
     Not a clean judgement case: **held, blocked on key funding** (the same family as the
     rate-control agent's layered-key work). Re-screen it once keys after a better-coded run-up get
-    their bits.
+    their bits. 2026-11-16 (rc-keyfollow): neither the key reserve (london_bus key not starved,
+    byte-identical) nor a key planned against a mean of recent levels (london_bus pulse +1.11 ->
+    +0.91, J -8.17 %) clears the guard: `pool_fit_static_meva_school330_540p` (+1.07) and
+    `pool_chad_4_109` (+1.06) were over it all along, behind london_bus as the worst clip. Still
+    held; what binds those two keys is not measured yet.
+    2026-11-16 judgement (faster-baseonly; frame by frame on the final-check's own cached points,
+    600 f, keys at 0 and 300, all rungs of the three clips; docs/handoff/light-pipeline.md
+    "Faster base-only: the pulse judgement"): **not adopted, still held**. The three clips' pulse
+    readings come from the long-window ladder pass, not the 2 s pass. The second key is
+    absolutely worse than Faster's at 3 of 10 rung points (london_bus 389k -0.73 dB Y / -1.6
+    VMAF, chad_4 300k -0.28 / -1.6, meva_school 97k -0.41 / -2.8), each with 6-12 % fewer key
+    bits; elsewhere it is within ±0.3 dB. Frames after the key are never worse in PSNR-Y (K+1..29
+    -0.06 to +0.57 dB, K+30..89 +0.05 to +1.14), while VMAF there moves -1.6 to +1.6. The chad
+    and meva keys are allowance-bound in both arms with an empty buffer before the key. Faster's
+    key overshoots its predicted size by more (+13 % / +25 % against +7.5 % / +12 %), and that is
+    where its extra key bits come from. The candidate's first key, coded with Fast's tools, costs
+    4 % / 12 % more at the same qindex, and its second key is planned 2-6 qindex coarser.
 
 ## Next decision points
 

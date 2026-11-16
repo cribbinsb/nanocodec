@@ -390,8 +390,7 @@ def final_check_rows(report: dict, source: str, kind: str = "live",
     id). Without them every such check on one commit had the same id and
     all but the first were dropped as duplicates (2026-11-16)."""
     rows = []
-    change = f"build {str(report.get('old_commit') or report.get('old'))[:9]}->" \
-             f"{str(report.get('new_commit') or report.get('new'))[:9]}"
+    change = f"build {arm_label(report, 'old')}->{arm_label(report, 'new')}"
     for codec, result in (report.get("codecs") or {}).items():
         overrides, tag = preset_change(report, codec)
         common = dict(codec=codec, base=report.get("preset") or MEDIUM, overrides=overrides,
@@ -402,6 +401,23 @@ def final_check_rows(report: dict, source: str, kind: str = "live",
             row["id"] = row_id(row)
             rows.append(row)
     return rows
+
+
+def arm_label(report: dict, arm: str) -> str:
+    """A final-check arm's name in the change label: its commit, or for a
+    binary arm its build stamp's commit (`-dirty` for local changes) and a
+    hash of its path. Binary arms used to be named by the first nine
+    characters of their path, so every check of two binaries under one
+    work directory had one id and all but the first were dropped as
+    duplicates (2026-11-16: the rate.key_reserve engine-default checks)."""
+    commit = report.get(f"{arm}_commit")
+    if commit:
+        return str(commit)[:9]
+    binary = str(report.get(arm) or "")
+    stamp = (report.get("build_info") or {}).get(arm) or {}
+    built = str(stamp.get("commit") or "")[:9] + ("-dirty" if stamp.get("dirty") else "")
+    digest = hashlib.sha256(binary.encode()).hexdigest()[:8]
+    return f"{built or 'binary'}@{digest}"
 
 
 def preset_change(report: dict, codec: str) -> tuple[dict[str, float], str]:

@@ -75,6 +75,14 @@ control is 0.96% slower, also recorded. These are fixed-public-clip timings,
 not general content-population estimates. Full verification, trial history,
 limitations and ns/call: `docs/handoff/astra-avx512-encode.md`.
 
+ICL linear ALF (Astra, 2026-11-16): the existing paired-tap layout now
+carries 32 pixels, reusing coefficient broadcasts across four rows and
+retaining AVX2 tails. Quiet Zen 5 64x4 row: 119.12 ->64.76 ns; VVC Default
+throughput +0.62% on the same public three-clip pair. Other codec controls
+and the H.264 timing loss are preserved; SDE ICL H.264 executed work differs
+by only +0.0016%, with identical hot encoder/DSP self-counts. See
+`docs/handoff/astra-icl-alf.md` for limits, checks and evidence.
+
 ## 2. Inverse transforms (encode-loop reconstruction)
 
 | Variant | Module (lines) | Tiers | Technique | Hot | Arithmetic | Verdict |
@@ -154,7 +162,7 @@ crates, scalar.
 | AV2 | `deblock/av2*.rs` (1448) | S A2 A5(ICL/GFNI) N W (lpf_bytes) | eight segment decision lanes; A5 batches four ramp rows | AV2 2.8 / 2.5 | different algorithm (ramps up to 8 per side) | Keep; already on `lpf_bytes` |
 | CDEF | `cdef/` (3497) | S A2 A5 N W | byte constraints; AVX2 paired MAC/Q15 rounding, ICL register tables/GFNI/VNNI | AV1 4.9 / 6.7, AV2 5.3 / 7.2 | AV1 §7.15 = AV2 8-bit | Already shared; NEON `block4_pair` added (2026-11-16, as SIMD128's: two interior 4x4 blocks per call) |
 | SAO | `sao/` (1680) | S A2 A5 N W | byte apply; NEON byte stats | HEVC 2.6 / 2.4, VVC 1.1 / 1.2 | HEVC §8.7.3 = H.266 §8.8.4 | Already shared; spread NEON byte stats |
-| VVC ALF | `vvc_alf/` (2988) | S A2 N(+dot) W | i16 `pmaddwd` | VVC 4.7 / 7.1 | 7x7 diamond with clipping | Keep; `vvc_alf_gram` duplicates `gram::gram_rows` (merge) |
+| VVC ALF | `vvc_alf/` | S A2 A5(linear row) N(+dot) W | i16 paired `pmaddwd`, ICL 32 independent pixels; other statistics inherit A2 | VVC 4.7 / 7.1 | 7x7 diamond with clipping | Keep; `vvc_alf_gram` duplicates `gram::gram_rows` (merge) |
 | AV1 LR (Wiener, SGR) | `av1_restoration/` (3423) | S A2 N W | dav1d Wiener port | ~0 at Default | separable, no clip | Keep |
 
 AVX-512 implementation (Astra, 2026-11-16): AV1/AV2/VP9 share the grouped

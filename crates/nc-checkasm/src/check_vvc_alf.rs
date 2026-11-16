@@ -1,7 +1,7 @@
-//! The VVC ALF kernels (`Dsp::vvc_alf_filter_block_row`, `vvc_alf_laplacians`,
-//! `vvc_alf_gram`) against the scalar reference: every width remainder,
-//! both rounding shifts, extreme samples and coefficients (saturation of
-//! the filtered value), and statistics at the documented value bounds.
+//! VVC ALF kernels against the scalar reference: short outputs, vector
+//! boundaries and mixed scalar/AVX2 tails; boundary/interior shifts plus
+//! contract extrema; extreme samples and coefficients (output saturation);
+//! and statistics at their documented value bounds.
 use crate::{check::CheckReport, rng::Rng};
 use nc_dsp::{
     Dsp, VVC_ALF_BLOCK, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN, VVC_ALF_GRAM_MAX_MAGNITUDE,
@@ -9,8 +9,10 @@ use nc_dsp::{
     VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAPS,
 };
 
-/// Widths up to two 64-sample CTBs plus every remainder of the vector steps.
-const WIDTHS: [usize; 12] = [1, 3, 4, 7, 8, 12, 16, 20, 31, 64, 68, 128];
+/// Widths up to two CTBs, including both sides of the 16/32-lane boundaries.
+const WIDTHS: [usize; 21] = [
+    1, 3, 4, 7, 8, 12, 16, 20, 31, 32, 33, 47, 48, 63, 64, 65, 68, 79, 95, 96, 128,
+];
 
 /// A row of `len` samples: noise, extremes, or a flat area with an edge.
 fn row(rng: &mut Rng, pattern: usize, len: usize) -> Vec<u8> {
@@ -153,7 +155,12 @@ fn filter(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckRep
             let coefficients: Vec<[i16; VVC_ALF_TAPS]> = (0..width.div_ceil(4))
                 .map(|_| std::array::from_fn(|_| rng.below(2 * limit) as i16 - limit as i16))
                 .collect();
-            for shifts in [[7; VVC_ALF_BLOCK], [10, 7, 7, 10]] {
+            for shifts in [
+                [7; VVC_ALF_BLOCK],
+                [10, 7, 7, 10],
+                [1, 16, 7, 10],
+                [16, 1, 15, 2],
+            ] {
                 let run = |dsp: &Dsp| {
                     let mut out: [Vec<u8>; VVC_ALF_BLOCK] = std::array::from_fn(|_| vec![0; width]);
                     dsp.vvc_alf_filter_block_row(

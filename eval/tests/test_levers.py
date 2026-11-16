@@ -92,3 +92,15 @@ def test_preset_only_final_checks_on_one_commit_keep_distinct_ids(tmp_path):
     # A setting only removed still changes the id.
     [row_c] = levers.final_check_rows(preset_final_check(old, presets("c", "")), "c.json")
     assert row_c["overrides"] == {} and row_c["id"] != row_a["id"]
+
+
+def test_binary_final_checks_are_named_by_build_and_path():
+    report = preset_final_check("/x", "/x")
+    del report["presets"], report["preset"]
+    report.update(old_commit="", new_commit="", old="/w/run/head/nanocodec",
+                  build_info={"old": {"commit": "cb6a3b5fa070", "dirty": False},
+                              "new": {"commit": "cb6a3b5fa070", "dirty": True}})
+    [row_a] = levers.final_check_rows(dict(report, new="/w/run/a/nanocodec"), "a.json")
+    [row_b] = levers.final_check_rows(dict(report, new="/w/run/b/nanocodec"), "b.json")
+    assert row_a["change"].startswith("build cb6a3b5fa@") and "cb6a3b5fa-dirty@" in row_a["change"]
+    assert row_a["id"] != row_b["id"]

@@ -9,8 +9,9 @@
 # final-check (600 f, keys every 10 s, 27 clips) quality J +10.42%
 # [+9.35, +11.54], periodic-key pulse +0.29 dB balanced; fixed-QP lens J /
 # Weighted against x264 medium -13.5 / +2.1 -> -7.0 / +8.4.
-# Fixed three temporal layers on every stream (below, with the key planned
-# against its mini-GOP's mean step): see "Fixed layers" at the end.
+# Three temporal layers on every stream except shaking cameras (below, with
+# the key planned against its mini-GOP's mean step): see "Fixed layers" and
+# "Shaking cameras flat" at the end.
 #
 # AV1 Faster's settings, pinned so this preset does not move with it (its
 # probe threshold is left out: the levers below make it inert).
@@ -90,7 +91,7 @@ decision.codec_fullpel_probe = 0
 planner.intra_plan = 1
 #
 # Fixed layers. Three temporal layers on every stream, not Faster's gated
-# ones (whose gates are then inert, so not pinned): -6.7% c8a chart-path time
+# ones: -6.7% c8a chart-path time
 # and -8.4% Jetson cycles. Alone they deepened the periodic-key pulse (+0.86
 # dB balanced; the layered key was planned at T0's level); the key planned
 # against the mini-GOP's mean step (`rate.key_level_mean`) removes that.
@@ -101,5 +102,21 @@ planner.intra_plan = 1
 # pulse -0.93 dB balanced (worst clip +1.19 dB). Chart clips: x86
 # instructions -10.1%. Taken for speed: it moves Veryfast from between
 # SVT M12 and M13 to about M13's speed at better J (docs/handoff/av1-veryfast.md).
-layers.adaptive = 0
 rate.key_level_mean = 1
+#
+# Shaking cameras flat (2026-11-16): fixed layers cost the bodycam class
+# +14.7% quality on the pool (the shaking cameras Faster's jitter gate
+# keeps flat, `AdaptiveRule::max_camera_jitter`). Layers stay adaptive with only the camera-jitter gate
+# (Faster's other gates off, the camera-motion gate opened to 64 so that a
+# steadily moving camera stays layered). A jitter limit of 8 keeps the
+# chart bodycam (30 fps) layered and turns the pool's shaking 10 fps
+# bodycams flat; 2 (Faster's) kept the chart bodycam flat and lost the
+# speed. Against fixed layers: x86 instructions +0.5% on the chart clips
+# (150 f, Veryfast's chart QPs), about +1.4% on the pool (class-balanced;
+# bodycams +5.2%); pool L3 (78 clips, k 0.6) J -1.77% [-3.14, -0.39] at
+# dCPU +0.5%, -1.23% [-2.60, +0.15] at +1.4%, quality -2.07% balanced
+# (bodycam -8.4%); final-check (600 f, keys every 10 s, 28 clips) quality
+# J -0.14% [-0.37, +0.10].
+layers.adaptive_max_camera_motion = 64
+layers.adaptive_max_compensable = 1
+layers.adaptive_max_camera_jitter = 8

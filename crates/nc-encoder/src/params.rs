@@ -622,7 +622,7 @@ param_group! {
         // (docs/handoff/hierarchical-p.md); only read with --temporal-layers > 1.
         adaptive: 1.0, [0.0, 1.0],
             "1 chooses flat or the full --temporal-layers pattern per mini-GOP from camera and scene motion (switching at T0 frames); 0 keeps the configured structure",
-        adaptive_max_camera_motion: 2.0, [0.0, 16.0],
+        adaptive_max_camera_motion: 2.0, [0.0, 64.0],
             "adaptive: largest camera motion (luma samples/frame) still layered: higher layers more moving-camera content",
         adaptive_max_compensable: 0.68, [0.0, 1.0],
             "adaptive: largest compensable share of the frame difference still layered: higher layers more scene motion",
