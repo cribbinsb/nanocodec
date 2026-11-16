@@ -1,4 +1,4 @@
-//! In-loop deblocking of a decoded frame with every Profile 0 feature:
+//! In-loop deblocking of a decoded frame (any depth) with every feature:
 //! per-segment levels, reference/mode deltas, rectangular and sub-8x8
 //! blocks (VP9 §8.8). The edges are libvpx's per-superblock bit masks
 //! (`vp9_loopfilter.c` `vp9_build_mask`, `vp9_adjust_mask`,
@@ -17,7 +17,7 @@
 //! blocks filter only their outer edges; a block of level 0 filters none.
 
 use nc_common::{Picture, PlaneViewMut};
-use nc_dsp::{Vp9FilterLimits as Limits, Vp9FilterWidth as Width};
+use nc_dsp::{DepthKernels, Pixel, Vp9FilterLimits as Limits, Vp9FilterWidth as Width};
 
 use super::block::{BlockInfo, BlockSize, INTRA_FRAME, PredMode};
 use super::fill::fill_run;
@@ -512,10 +512,10 @@ impl Deblocker {
 
     /// Deblock the superblock row starting at 8x8 unit row `mi_row` in
     /// place; its blocks must all be decoded.
-    pub(super) fn filter_row(
+    pub(super) fn filter_row<T: Pixel>(
         &self,
-        dsp: &nc_dsp::Dsp,
-        recon: &mut Picture,
+        kernels: DepthKernels<'_>,
+        recon: &mut Picture<T>,
         masks: &Masks,
         mi_row: usize,
     ) {
@@ -538,18 +538,18 @@ impl Deblocker {
             let origin = (mi_col * MI_SIZE, mi_row * MI_SIZE);
             let top = mi_row == 0;
             let ctx = FilterContext {
-                dsp,
+                kernels,
                 limits: &self.limits,
                 origin,
                 levels: &mask.levels,
             };
             let [vertical, horizontal] = mask.luma(top);
-            ctx.plane::<true, 0>(&mut y, &vertical);
-            ctx.plane::<false, 0>(&mut y, &horizontal);
+            ctx.plane::<T, true, 0>(&mut y, &vertical);
+            ctx.plane::<T, false, 0>(&mut y, &horizontal);
             let [vertical, horizontal] = mask.chroma(top, last_chroma_row);
             for plane in [&mut u, &mut v] {
-                ctx.plane::<true, 1>(plane, &vertical);
-                ctx.plane::<false, 1>(plane, &horizontal);
+                ctx.plane::<T, true, 1>(plane, &vertical);
+                ctx.plane::<T, false, 1>(plane, &horizontal);
             }
         }
     }
@@ -557,7 +557,7 @@ impl Deblocker {
 
 /// What filtering one superblock needs besides its masks.
 struct FilterContext<'a> {
-    dsp: &'a nc_dsp::Dsp,
+    kernels: DepthKernels<'a>,
     limits: &'a [Limits],
     /// The superblock's luma top-left sample.
     origin: (usize, usize),
@@ -574,9 +574,9 @@ impl FilterContext<'_> {
     /// each, read from the masks (`same_level`) rather than unit by unit, and
     /// the internal 4x4 edges follow their units' outer edges, as in
     /// libvpx's per-row passes.
-    fn plane<const VERTICAL: bool, const SS: usize>(
+    fn plane<T: Pixel, const VERTICAL: bool, const SS: usize>(
         &self,
-        view: &mut PlaneViewMut<'_>,
+        view: &mut PlaneViewMut<'_, T>,
         edges: &EdgeMasks,
     ) {
         let side = SB_MI >> SS;
@@ -615,16 +615,16 @@ impl FilterContext<'_> {
                     } else {
                         (x0 + along, y0 + across)
                     };
-                    self.edge::<VERTICAL>(view, (x, y), units * MI_SIZE, width, level);
+                    self.edge::<T, VERTICAL>(view, (x, y), units * MI_SIZE, width, level);
                 }
             }
         }
     }
 
     /// Filter `lines` lines of the edge at plane sample `(x, y)`.
-    fn edge<const VERTICAL: bool>(
+    fn edge<T: Pixel, const VERTICAL: bool>(
         &self,
-        view: &mut PlaneViewMut<'_>,
+        view: &mut PlaneViewMut<'_, T>,
         (x, y): (usize, usize),
         lines: usize,
         width: Width,
@@ -633,11 +633,9 @@ impl FilterContext<'_> {
         let limits = self.limits[usize::from(level)];
         let stride = view.stride();
         let (step, along) = if VERTICAL { (1, stride) } else { (stride, 1) };
-        self.dsp.vp9_filter_edge(
+        self.kernels.vp9_filter_edge(
             view.data_mut(),
-            y * stride + x,
-            step,
-            along,
+            (y * stride + x, step, along),
             lines,
             width,
             limits,

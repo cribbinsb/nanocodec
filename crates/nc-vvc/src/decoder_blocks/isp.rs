@@ -4,18 +4,23 @@ use super::{
     references::{Availability, References},
 };
 use crate::isp::{Split, edges_for_part};
-use nc_common::{Picture, PlaneIndex};
-use nc_dsp::Dsp;
+use nc_common::{BitDepth, Picture, PlaneIndex};
+use nc_dsp::{DepthKernels, Pixel};
 use nc_encoder::Block;
 
-pub(super) struct Prediction {
+pub(super) struct Prediction<T> {
     cu: Block,
     split: Split,
     references: References,
-    cached: Option<(Block, Vec<u8>)>,
+    cached: Option<(Block, Vec<T>)>,
 }
-impl Prediction {
-    pub fn prepare(unit: &Unit, picture: &Picture, available: &Availability) -> Option<Self> {
+impl<T: Pixel> Prediction<T> {
+    pub fn prepare(
+        unit: &Unit,
+        picture: &Picture<T>,
+        available: &Availability,
+        depth: BitDepth,
+    ) -> Option<Self> {
         let split = unit.isp?;
         let node = unit.node;
         let cu = Block::rect(
@@ -30,7 +35,7 @@ impl Prediction {
             references: References::gather(
                 picture,
                 available,
-                PlaneIndex::Y,
+                (PlaneIndex::Y, depth),
                 (node.x, node.y, node.width, node.height),
                 false,
             ),
@@ -41,10 +46,10 @@ impl Prediction {
         &mut self,
         block: Block,
         direction: u8,
-        picture: &Picture,
+        picture: &Picture<T>,
         available: &Availability,
-        dsp: &Dsp,
-    ) -> Vec<u8> {
+        dsp: DepthKernels<'_>,
+    ) -> Vec<T> {
         // H.266 prediction regions are at least four samples wide, even when
         // the residual is split into one/two-wide vertical transform blocks.
         let region = Block::rect(
@@ -85,7 +90,7 @@ impl Prediction {
                 &previous,
                 other_available,
             );
-            let mut prediction = vec![0; region.area()];
+            let mut prediction = vec![T::default(); region.area()];
             dsp.vvc_intra_predict_isp(
                 (self.cu.width(), self.cu.height()),
                 (region.width(), region.height()),

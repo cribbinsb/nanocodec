@@ -21,6 +21,8 @@
     reason = "the predictors must inline into each ISA entry point to vectorise"
 )]
 
+use nc_common::BitDepth;
+
 use super::{MAX_SIDE, Vp9IntraEdges, Vp9IntraMode, avg2, avg3, dc_value};
 
 /// Longest border: D153's `2s` interleaved left averages plus `s − 2`.
@@ -31,7 +33,7 @@ const MAX_BORDER: usize = 3 * MAX_SIDE;
 pub(super) fn predict(mode: Vp9IntraMode, side: usize, n: &Vp9IntraEdges, out: &mut [u8]) {
     let out = &mut out[..side * side];
     match mode {
-        Vp9IntraMode::Dc => out.fill(dc_value(side, n)),
+        Vp9IntraMode::Dc => out.fill(dc_value(side, n, BitDepth::EIGHT)),
         Vp9IntraMode::V => {
             for row in out.chunks_exact_mut(side) {
                 row.copy_from_slice(&n.above[1..=side]);

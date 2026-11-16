@@ -8,10 +8,8 @@ use super::transform::{self, LumaTransforms, TxSize};
 use super::{Tile, context};
 use crate::general::filters::UNITS64_LOG2;
 use crate::general::filters::edges::{self, BlockEdges, NO_SUB_PU};
-
-/// TIP frame mode whose sub-PU edges keep their thresholds (dav2d
-/// `ds_subpu_mask` 0 when `tip.frame_mode == 2`).
-const TIP_FRAME_MODE: u8 = 2;
+// Sub-PU edges of TIP frames keep their thresholds (dav2d `ds_subpu_mask`).
+use crate::general::frame_header::TIP_FRAME_MODE;
 
 impl Tile<'_, '_> {
     /// Record a decoded block for the loop filters; `transforms` is its
@@ -50,9 +48,12 @@ impl Tile<'_, '_> {
             tx,
             partition,
             // Intra and block-copy blocks have no sub-PU edges (dav2d
-            // `subpu_flt_lvl`); inter blocks' levels come with the inter
-            // group.
-            sub_pu: NO_SUB_PU,
+            // `subpu_flt_lvl`).
+            sub_pu: if record.intra {
+                NO_SUB_PU
+            } else {
+                self.sub_pu_level
+            },
             scaled_sub_pu: self.frame.tip.mode != TIP_FRAME_MODE,
         };
         if let Some(size) = record.luma {

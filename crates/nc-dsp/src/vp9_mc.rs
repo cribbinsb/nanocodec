@@ -7,7 +7,10 @@
 //! dispatch.
 //!
 //! Scalar reference; SIMD versions belong beside it with a bit-exactness
-//! test in nc-checkasm.
+//! test in nc-checkasm. Deeper samples run the same reference with each
+//! pass clipped to the depth (`vpx_highbd_convolve8_c`).
+
+use nc_common::{BitDepth, Sample};
 
 /// Filter taps.
 pub const VP9_TAPS: usize = 8;
@@ -117,12 +120,18 @@ impl Vp9Filter {
 }
 
 pub(crate) fn filter(samples: &[u8], taps: &[i16; VP9_TAPS], step: usize) -> u8 {
+    filter_at(samples, taps, step, BitDepth::EIGHT)
+}
+
+/// One filtered sample of `depth`: the taps `step` apart, rounded and clipped.
+#[inline]
+fn filter_at<T: Sample>(samples: &[T], taps: &[i16; VP9_TAPS], step: usize, depth: BitDepth) -> T {
     let sum: i32 = taps
         .iter()
         .enumerate()
-        .map(|(k, &t)| i32::from(t) * i32::from(samples[k * step]))
+        .map(|(k, &t)| i32::from(t) * samples[k * step].to_i32())
         .sum();
-    ((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS).clamp(0, 255) as u8
+    depth.clip_to((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS)
 }
 
 /// Predict a `width`x`height` block (each at most 64) at sub-sample phase
@@ -160,13 +169,33 @@ pub(crate) fn vp9_convolve_into(
     filter_kind: Vp9Filter,
     window: &[u8],
     stride: usize,
-    (frac_x, frac_y): (usize, usize),
-    (width, height): (usize, usize),
+    phase: (usize, usize),
+    size: (usize, usize),
     dst: &mut [u8],
     dst_stride: usize,
     average: bool,
 ) {
-    const MAX: usize = 64 + VP9_TAPS - 1;
+    vp9_convolve_into_at(
+        filter_kind,
+        (window, stride),
+        phase,
+        size,
+        (dst, dst_stride),
+        average,
+        BitDepth::EIGHT,
+    );
+}
+
+/// [`vp9_convolve_into`] on samples of `depth`.
+pub(crate) fn vp9_convolve_into_at<T: Sample>(
+    filter_kind: Vp9Filter,
+    (window, stride): (&[T], usize),
+    (frac_x, frac_y): (usize, usize),
+    (width, height): (usize, usize),
+    (dst, dst_stride): (&mut [T], usize),
+    average: bool,
+    depth: BitDepth,
+) {
     assert!(width <= 64 && height <= 64);
     let kernel = filter_kind.kernel();
     let centre = VP9_TAPS_BEFORE * stride + VP9_TAPS_BEFORE;
@@ -190,7 +219,7 @@ pub(crate) fn vp9_convolve_into(
                 for x in 0..width {
                     store(
                         &mut dst[y * dst_stride + x],
-                        filter(&line[x..], &kernel[frac_x], 1),
+                        filter_at(&line[x..], &kernel[frac_x], 1, depth),
                         average,
                     );
                 }
@@ -202,28 +231,37 @@ pub(crate) fn vp9_convolve_into(
                     let column = &window[VP9_TAPS_BEFORE + x + y * stride..];
                     store(
                         &mut dst[y * dst_stride + x],
-                        filter(column, &kernel[frac_y], stride),
+                        filter_at(column, &kernel[frac_y], stride, depth),
                         average,
                     );
                 }
             }
         }
         _ => {
-            let mut temp = [0u8; MAX * 64];
-            // Horizontal pass over every window row the vertical filter reads.
-            for row in 0..height + VP9_TAPS - 1 {
+            // The horizontal pass's rows in a ring of the vertical filter's
+            // eight taps (a whole-block buffer, zeroed per call, was a third
+            // of a 10-bit decode).
+            let mut ring = [[T::default(); 64]; VP9_TAPS];
+            let horizontal = |row: usize, ring: &mut [[T; 64]; VP9_TAPS]| {
                 let line = &window[row * stride..];
-                for x in 0..width {
-                    temp[row * width + x] = filter(&line[x..], &kernel[frac_x], 1);
+                for (x, out) in ring[row % VP9_TAPS][..width].iter_mut().enumerate() {
+                    *out = filter_at(&line[x..], &kernel[frac_x], 1, depth);
                 }
+            };
+            for row in 0..VP9_TAPS - 1 {
+                horizontal(row, &mut ring);
             }
+            let taps = &kernel[frac_y];
             for y in 0..height {
+                horizontal(y + VP9_TAPS - 1, &mut ring);
                 for x in 0..width {
-                    store(
-                        &mut dst[y * dst_stride + x],
-                        filter(&temp[y * width + x..], &kernel[frac_y], width),
-                        average,
-                    );
+                    let sum: i32 = taps
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &t)| i32::from(t) * ring[(y + k) % VP9_TAPS][x].to_i32())
+                        .sum();
+                    let value = depth.clip_to((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS);
+                    store(&mut dst[y * dst_stride + x], value, average);
                 }
             }
         }
@@ -232,9 +270,9 @@ pub(crate) fn vp9_convolve_into(
 
 /// VP9 averages the two already clipped predictions with upward rounding.
 #[inline]
-fn store(dst: &mut u8, pixel: u8, average: bool) {
+fn store<T: Sample>(dst: &mut T, pixel: T, average: bool) {
     *dst = if average {
-        ((u16::from(*dst) + u16::from(pixel) + 1) >> 1) as u8
+        T::from_i32((dst.to_i32() + pixel.to_i32() + 1) >> 1)
     } else {
         pixel
     };
@@ -260,10 +298,33 @@ pub fn vp9_convolve_scaled(
     filter_kind: Vp9Filter,
     window: &[u8],
     stride: usize,
-    (x0_q4, x_step): (usize, usize),
-    (y0_q4, y_step): (usize, usize),
+    x: (usize, usize),
+    y: (usize, usize),
     (width, height): (usize, usize),
     dst: &mut [u8],
+) {
+    vp9_convolve_scaled_at(
+        filter_kind,
+        (window, stride),
+        (x, y),
+        (width, height),
+        (dst, width),
+        false,
+        BitDepth::EIGHT,
+    );
+}
+
+/// [`vp9_convolve_scaled`] on samples of `depth`, into rows `dst_stride`
+/// apart, written or averaged with what is there (`vpx_highbd_convolve8_c`
+/// with its steps, `vpx_highbd_convolve8_avg_c`).
+pub(crate) fn vp9_convolve_scaled_at<T: Sample>(
+    filter_kind: Vp9Filter,
+    (window, stride): (&[T], usize),
+    ((x0_q4, x_step), (y0_q4, y_step)): ((usize, usize), (usize, usize)),
+    (width, height): (usize, usize),
+    (dst, dst_stride): (&mut [T], usize),
+    average: bool,
+    depth: BitDepth,
 ) {
     const SUBPEL_BITS: usize = 4;
     const SUBPEL_MASK: usize = VP9_POSITIONS - 1;
@@ -276,20 +337,26 @@ pub fn vp9_convolve_scaled(
     assert!(x0_q4 < VP9_POSITIONS && y0_q4 < VP9_POSITIONS);
     let kernel = filter_kind.kernel();
     let rows = (((height - 1) * y_step + y0_q4) >> SUBPEL_BITS) + VP9_TAPS;
-    let mut temp_buf = [0u8; MAX_SCALED_ROWS * 64];
+    let mut temp_buf = [T::default(); MAX_SCALED_ROWS * 64];
     let temp = &mut temp_buf[..rows * width];
     for (row, line) in temp.chunks_exact_mut(width).enumerate() {
         let source = &window[row * stride..];
         for (x, out) in line.iter_mut().enumerate() {
             let q4 = x0_q4 + x * x_step;
-            *out = filter(&source[q4 >> SUBPEL_BITS..], &kernel[q4 & SUBPEL_MASK], 1);
+            *out = filter_at(
+                &source[q4 >> SUBPEL_BITS..],
+                &kernel[q4 & SUBPEL_MASK],
+                1,
+                depth,
+            );
         }
     }
     for y in 0..height {
         let q4 = y0_q4 + y * y_step;
         let taps = &kernel[q4 & SUBPEL_MASK];
         for x in 0..width {
-            dst[y * width + x] = filter(&temp[(q4 >> SUBPEL_BITS) * width + x..], taps, width);
+            let value = filter_at(&temp[(q4 >> SUBPEL_BITS) * width + x..], taps, width, depth);
+            store(&mut dst[y * dst_stride + x], value, average);
         }
     }
 }

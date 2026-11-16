@@ -65,6 +65,8 @@ def main():
     text += declaration("BANDS_8X8_PLUS", "[u8; 1024]", array(entropy, "vp9_coefband_trans_8x8plus"))
     text += declaration("PARETO", "[[u8; 8]; 255]", array(entropy, "vp9_pareto8_full"))
     text += declaration("CATEGORY6", "[u8; 14]", array(entropy, "vp9_cat6_prob"))
+    text += "/// `vp9_cat6_prob_high12`: category 6 extra bits at 12 bits (10 bits: the last 16).\n"
+    text += declaration("CATEGORY6_HIGH12", "[u8; 18]", array(entropy, "vp9_cat6_prob_high12"))
     text += declaration("KF_PARTITION", "[[u8; 3]; 16]", array(modes, "vp9_kf_partition_probs"))
     text += declaration("PARTITION", "[[u8; 3]; 16]", array(modes, "default_partition_probs"))
     text += declaration("KF_Y_MODE", "[[[u8; 9]; 10]; 10]", array(modes, "vp9_kf_y_mode_prob"))
@@ -81,6 +83,11 @@ def main():
     text += "pub(crate) const BIT_COST: [f32; 256] = [" + ", ".join(f"{c:.7}" for c in costs) + "];\n"
     text += declaration("DC_QUANT", "[i32; 256]", array(quant, "dc_qlookup"))
     text += declaration("AC_QUANT", "[i32; 256]", array(quant, "ac_qlookup"))
+    text += "/// Quantizer steps of 10- and 12-bit streams (profiles 2 and 3).\n"
+    for depth in (10, 12):
+        for kind in ("dc", "ac"):
+            text += declaration(f"{kind.upper()}_QUANT_{depth}", "[i32; 256]",
+                                array(quant, f"{kind}_qlookup_{depth}"))
     target = Path(__file__).resolve().parents[2] / "crates/nc-vp9/src/tables.rs"
     target.write_text(text)
     subprocess.run([str(Path.home() / ".cargo/bin/rustfmt"), str(target)], check=True)

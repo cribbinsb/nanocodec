@@ -56,7 +56,7 @@ const WARP_DELTA_STEP: i8 = 2;
 const WEIGHT_FLAGS: usize = 4;
 const WEIGHTS: [[i8; 5]; 2] = [[8, 12, 4, 10, 6], [8, 12, 4, 20, -4]];
 /// TIP blocks' global weights (dav2d `dav2d_tip_wts`).
-const TIP_WEIGHTS: [i8; 8] = [8, 6, 10, 4, 12, 2, 14, 16];
+pub(super) const TIP_WEIGHTS: [i8; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 /// Blocks whose larger side is at most this many units may use wedges.
 const WEDGE_MAX_UNITS: u32 = 16;
 /// The switchable filters (regular, smooth, sharp): a context neighbour

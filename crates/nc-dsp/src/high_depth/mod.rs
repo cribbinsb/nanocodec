@@ -27,6 +27,7 @@
 pub(crate) mod av1;
 mod inverse;
 mod vector;
+pub(crate) mod vp9;
 mod vvc_filter;
 mod vvc_recon;
 
@@ -356,7 +357,9 @@ pub(crate) fn add_residual<T: Sample>(
 /// keeps its routing in a supertrait beside it: `vvc_filter::VvcFilterPixel`,
 /// [`VvcReconPixel`]).
 #[allow(clippy::too_many_arguments)]
-pub trait Pixel: Sample + vvc_filter::VvcFilterPixel + VvcReconPixel + av1::Av1Pixel {
+pub trait Pixel:
+    Sample + vvc_filter::VvcFilterPixel + VvcReconPixel + av1::Av1Pixel + vp9::Vp9Pixel
+{
     #[doc(hidden)]
     fn predict(
         kernels: DepthKernels<'_>,
@@ -1351,6 +1354,31 @@ impl DepthKernels<'_> {
         T::vvc_bdof(self, size, inputs, out);
     }
 
+    /// [`Dsp::vvc_dmvr`]: the search reads the 10-bit bilinear output of
+    /// [`Self::vvc_dmvr_bilinear`], the same at every depth.
+    ///
+    /// # Panics
+    /// As [`Dsp::vvc_dmvr`].
+    #[must_use]
+    pub fn vvc_dmvr(self, size: (usize, usize), inputs: [&[i16]; 2]) -> ([i32; 2], bool) {
+        self.dsp.vvc_dmvr(size, inputs)
+    }
+
+    /// [`Dsp::vvc_prof_refine`]: 14-bit samples in and out at every depth up
+    /// to 12 (`dILimit = 1 << Max(13, BitDepth + 1)` is 8192, H.266
+    /// §8.5.6.4).
+    ///
+    /// # Panics
+    /// As [`Dsp::vvc_prof_refine`].
+    pub fn vvc_prof_refine(
+        self,
+        samples: &[i16; 36],
+        corrections: &[[i8; 2]; 16],
+        out: &mut [i16; 16],
+    ) {
+        self.dsp.vvc_prof_refine(samples, corrections, out);
+    }
+
     /// [`Dsp::hevc_weighted_prediction_centered`] at this depth (the codec
     /// folds `14 − BitDepth` into `weights.shift`; the clip is this depth's).
     ///
@@ -1465,5 +1493,7 @@ impl DepthKernels<'_> {
 mod av1_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vp9_tests;
 #[cfg(test)]
 mod vvc_tests;

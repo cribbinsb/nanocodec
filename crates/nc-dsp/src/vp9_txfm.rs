@@ -3,6 +3,13 @@
 //! wrapping differ), and the 8/16-point ADST generated from libvpx (`adst`).
 //! Checked against libvpx v1.16.0 forward/inverse C (BSD-3-Clause) by nc-vp9's
 //! independent golden vectors. AV1 retains its clamp policy and SIMD dispatch.
+//!
+//! The inverse runs at either depth class ([`InverseDepth`]): libvpx's 8-bit
+//! decoder wraps every stage to 16 bits (`WRAPLOW`), its high-bit-depth
+//! one (`vpx_highbd_idct*`, `vpx_highbd_iadst*`, the same statements) keeps
+//! 32-bit stages with 64-bit products (`HIGHBD_WRAPLOW`).
+use nc_common::{BitDepth, Sample};
+
 use crate::txfm::{dct, inverse_lanes::InverseLanes};
 
 mod adst;
@@ -27,8 +34,59 @@ const COSINE: [i32; 64] = {
 /// Cosine precision of every VP9 rotation.
 const COS_BIT: u32 = 14;
 
+/// The stage arithmetic of the inverse at one depth class.
+pub(crate) trait InverseDepth {
+    /// DCT lanes on the shared butterfly graphs.
+    type Lane: InverseLanes;
+    /// `WRAPLOW` (16 bits) or `HIGHBD_WRAPLOW` (32 bits) of a stage value.
+    fn wrap(value: i64) -> i64;
+    /// A coefficient or stage value as a lane.
+    fn lane(value: i32) -> Self::Lane;
+    /// A lane's value.
+    fn value(lane: Self::Lane) -> i32;
+}
+
+/// libvpx's 8-bit decoder: 16-bit stages.
+pub(crate) enum Eight {}
+
+/// libvpx's high-bit-depth decoder: 32-bit stages, 64-bit products.
+pub(crate) enum High {}
+
+impl InverseDepth for Eight {
+    type Lane = Wrapped;
+    #[inline]
+    fn wrap(value: i64) -> i64 {
+        i64::from(value as i16)
+    }
+    #[inline]
+    fn lane(value: i32) -> Wrapped {
+        Wrapped(value)
+    }
+    #[inline]
+    fn value(lane: Wrapped) -> i32 {
+        lane.0
+    }
+}
+
+impl InverseDepth for High {
+    type Lane = Wide;
+    #[inline]
+    fn wrap(value: i64) -> i64 {
+        i64::from(value as i32)
+    }
+    #[inline]
+    fn lane(value: i32) -> Wide {
+        Wide(value)
+    }
+    #[inline]
+    fn value(lane: Wide) -> i32 {
+        lane.0
+    }
+}
+
+/// A DCT stage of the 8-bit decoder: products rounded and wrapped to 16 bits.
 #[derive(Clone, Copy)]
-struct Wrapped(i32);
+pub(crate) struct Wrapped(i32);
 impl InverseLanes for Wrapped {
     fn splat(value: i32) -> Self {
         Self(value)
@@ -50,6 +108,35 @@ impl InverseLanes for Wrapped {
     }
     fn clamp16(self) -> Self {
         Self(i32::from(self.0 as i16))
+    }
+}
+
+/// A DCT stage of the high-bit-depth decoder: 64-bit products, 32-bit
+/// stages (`HIGHBD_WRAPLOW` truncates; valid streams never reach it).
+#[derive(Clone, Copy)]
+pub(crate) struct Wide(i32);
+impl InverseLanes for Wide {
+    fn splat(value: i32) -> Self {
+        Self(value)
+    }
+    fn add(self, other: Self) -> Self {
+        Self(self.0.wrapping_add(other.0))
+    }
+    fn sub(self, other: Self) -> Self {
+        Self(self.0.wrapping_sub(other.0))
+    }
+    fn half_btf(w0: i32, a: Self, w1: i32, b: Self, bit: u32) -> Self {
+        let value =
+            (i64::from(w0) * i64::from(a.0) + i64::from(w1) * i64::from(b.0) + (1 << (bit - 1)))
+                >> bit;
+        Self(value as i32)
+    }
+    fn mul_round(w: i32, a: Self, bit: u32) -> Self {
+        Self::half_btf(w, a, 0, Self(0), bit)
+    }
+    /// The 8-bit stage wrap does not apply above 8 bits.
+    fn clamp16(self) -> Self {
+        self
     }
 }
 
@@ -95,28 +182,28 @@ fn forward_line<const N: usize>(pass: Vp9Pass, line: &[i32; N]) -> [i32; N] {
     out
 }
 
-/// One 1-D inverse pass of `N` points with VP9's 16-bit stage wrap.
-fn inverse_line<const N: usize>(pass: Vp9Pass, line: &[i16; N]) -> [i16; N] {
+/// One 1-D inverse pass of `N` points with the depth's stage wrap.
+fn inverse_line<const N: usize, D: InverseDepth>(pass: Vp9Pass, line: &[i32; N]) -> [i32; N] {
     let mut out = [0; N];
     match pass {
         Vp9Pass::Dct => {
-            let wrapped: [Wrapped; N] = std::array::from_fn(|i| Wrapped(i32::from(line[i])));
-            let mut result = [Wrapped(0); N];
+            let lanes: [D::Lane; N] = std::array::from_fn(|i| D::lane(line[i]));
+            let mut result = [D::lane(0); N];
             match N {
                 8 => dct::idct8(
-                    wrapped.first_chunk().unwrap(),
+                    lanes.first_chunk().unwrap(),
                     result.first_chunk_mut().unwrap(),
                     &COSINE,
                     COS_BIT,
                 ),
                 16 => dct::idct16(
-                    wrapped.first_chunk().unwrap(),
+                    lanes.first_chunk().unwrap(),
                     result.first_chunk_mut().unwrap(),
                     &COSINE,
                     COS_BIT,
                 ),
                 32 => dct::idct32(
-                    wrapped.first_chunk().unwrap(),
+                    lanes.first_chunk().unwrap(),
                     result.first_chunk_mut().unwrap(),
                     &COSINE,
                     COS_BIT,
@@ -124,12 +211,12 @@ fn inverse_line<const N: usize>(pass: Vp9Pass, line: &[i16; N]) -> [i16; N] {
                 _ => unreachable!("VP9 has no {N}-point DCT here"),
             }
             // Every DCT output leaves the graph through `half_btf` or
-            // `clamp16`, so it already fits 16 bits.
-            out = std::array::from_fn(|i| result[i].0 as i16);
+            // `clamp16`, so it is already wrapped.
+            out = std::array::from_fn(|i| D::value(result[i]));
         }
         Vp9Pass::Adst => match N {
-            8 => adst::iadst8(line.first_chunk().unwrap(), out.first_chunk_mut().unwrap()),
-            16 => adst::iadst16(line.first_chunk().unwrap(), out.first_chunk_mut().unwrap()),
+            8 => adst::iadst8::<D>(line.first_chunk().unwrap(), out.first_chunk_mut().unwrap()),
+            16 => adst::iadst16::<D>(line.first_chunk().unwrap(), out.first_chunk_mut().unwrap()),
             _ => unreachable!("VP9 has no {N}-point ADST"),
         },
     }
@@ -164,23 +251,23 @@ fn forward<const N: usize>(
 }
 
 /// Inverse transform: rows then columns, then the normative rounding shift
-/// (the result, at most 2^15 >> 5 in magnitude, fits 16 bits).
-fn inverse<const N: usize>(
-    columns: Vp9Pass,
-    rows: Vp9Pass,
-    input: &[i16],
-    output: &mut [i16],
+/// (at 8 bits the result, at most 2^15 >> 5 in magnitude, fits 16 bits).
+fn inverse<const N: usize, D: InverseDepth, C: Copy + Into<i32>>(
+    (columns, rows): (Vp9Pass, Vp9Pass),
+    input: &[C],
+    output: &mut [i32],
     shift: u32,
 ) {
-    let mut temp = [[0i16; N]; N];
+    let mut temp = [[0i32; N]; N];
     for (y, row) in temp.iter_mut().enumerate() {
-        *row = inverse_line(rows, input[y * N..][..N].try_into().unwrap());
+        let line: [i32; N] = std::array::from_fn(|x| input[y * N + x].into());
+        *row = inverse_line::<N, D>(rows, &line);
     }
     for x in 0..N {
-        let line: [i16; N] = std::array::from_fn(|y| temp[y][x]);
-        let transformed = inverse_line(columns, &line);
+        let line: [i32; N] = std::array::from_fn(|y| temp[y][x]);
+        let transformed = inverse_line::<N, D>(columns, &line);
         for y in 0..N {
-            output[y * N + x] = ((i32::from(transformed[y]) + (1 << (shift - 1))) >> shift) as i16;
+            output[y * N + x] = (transformed[y] + (1 << (shift - 1))) >> shift;
         }
     }
 }
@@ -240,10 +327,27 @@ pub fn vp9_inverse_transform(
     input: &[i16],
     output: &mut [i16],
 ) {
+    let side = 1 << log2;
+    let mut residual = [0; 32 * 32];
+    let residual = &mut residual[..side * side];
+    inverse_at::<Eight, i16>(log2, (columns, rows), input, residual);
+    for (out, &value) in output.iter_mut().zip(residual.iter()) {
+        *out = value as i16;
+    }
+}
+
+/// The `N`x`N` inverse (`N = 1 << log2` in 8..=32) at the depth class
+/// `D`, into `output` as 32-bit residuals.
+fn inverse_at<D: InverseDepth, C: Copy + Into<i32>>(
+    log2: u8,
+    passes: (Vp9Pass, Vp9Pass),
+    input: &[C],
+    output: &mut [i32],
+) {
     match log2 {
-        3 => inverse::<8>(columns, rows, input, output, 5),
-        4 => inverse::<16>(columns, rows, input, output, 6),
-        5 => inverse::<32>(columns, rows, input, output, 6),
+        3 => inverse::<8, D, C>(passes, input, output, 5),
+        4 => inverse::<16, D, C>(passes, input, output, 6),
+        5 => inverse::<32, D, C>(passes, input, output, 6),
         _ => panic!("VP9 transform size 1 << {log2} outside 8..=32"),
     }
 }
@@ -266,10 +370,64 @@ pub fn vp9_inverse_add(
     let side = 1 << log2;
     let mut residual = [0; 32 * 32];
     let residual = &mut residual[..side * side];
-    vp9_inverse_transform(log2, columns, rows, input, residual);
+    inverse_at::<Eight, i16>(log2, (columns, rows), input, residual);
+    add_clipped((dst, dst_stride), side, residual, BitDepth::EIGHT);
+}
+
+/// The inverse of any size (4x4 to 32x32) of samples deeper than 8 bits:
+/// 32-bit coefficients, libvpx's high-bit-depth stages
+/// (`vp9_highbd_iht{4x4,8x8,16x16}_*_add_c`, `vpx_highbd_idct32x32_*_add_c`),
+/// added to the block at the start of `dst` and clipped to `depth`
+/// (`highbd_clip_pixel_add`). libvpx zeroes a 1-D input of magnitude 2^25
+/// or more (`detect_invalid_highbd_input`); valid streams never have one,
+/// and here such input only wraps.
+pub(crate) fn vp9_inverse_add_high<T: Sample>(
+    log2: u8,
+    (columns, rows): (Vp9Pass, Vp9Pass),
+    input: &[i32],
+    (dst, dst_stride): (&mut [T], usize),
+    depth: BitDepth,
+) {
+    let passes = (columns, rows);
+    let dst = (dst, dst_stride);
+    // A residual of the block's own size: zeroing a 32x32 one per block
+    // was a sixth of a 10-bit decode.
+    match log2 {
+        2 => {
+            let mut residual = [[0; 4]; 4];
+            inverse4::<High, i32>(passes, input, 4, residual.as_flattened_mut());
+            add_clipped(dst, 4, residual.as_flattened(), depth);
+        }
+        3 => add_high::<8, T>(passes, input, dst, 5, depth),
+        4 => add_high::<16, T>(passes, input, dst, 6, depth),
+        _ => add_high::<32, T>(passes, input, dst, 6, depth),
+    }
+}
+
+/// The `N`x`N` high-bit-depth inverse with final shift `shift`, added.
+fn add_high<const N: usize, T: Sample>(
+    passes: (Vp9Pass, Vp9Pass),
+    input: &[i32],
+    dst: (&mut [T], usize),
+    shift: u32,
+    depth: BitDepth,
+) {
+    let mut residual = [[0; N]; N];
+    inverse::<N, High, i32>(passes, input, residual.as_flattened_mut(), shift);
+    add_clipped(dst, N, residual.as_flattened(), depth);
+}
+
+/// Add `residual` (`side` per row) to the block at the start of `dst`,
+/// clipped to `depth`.
+fn add_clipped<T: Sample>(
+    (dst, dst_stride): (&mut [T], usize),
+    side: usize,
+    residual: &[i32],
+    depth: BitDepth,
+) {
     for (row, values) in dst.chunks_mut(dst_stride).zip(residual.chunks_exact(side)) {
         for (sample, &value) in row[..side].iter_mut().zip(values.iter()) {
-            *sample = (i32::from(*sample) + i32::from(value)).clamp(0, 255) as u8;
+            *sample = depth.clip_to(sample.to_i32() + value);
         }
     }
 }
@@ -286,51 +444,76 @@ const SIN4: i32 = 15212;
 const SHIFT4: u32 = 4;
 
 /// `dct_const_round_shift`.
-fn round14(value: i32) -> i32 {
+fn round14(value: i64) -> i64 {
     (value + (1 << 13)) >> 14
 }
 
-/// `WRAPLOW`: VP9 keeps 16 bits between stages.
-fn wrap(value: i32) -> i16 {
-    value as i16
-}
-
-/// `idct4_c`. On 16-bit inputs every sum fits i32: the largest,
-/// `(a + c) * COS16`, is below 2^16 * 2^14.
-fn idct4(line: [i16; 4]) -> [i16; 4] {
-    let [a, b, c, d] = line.map(i32::from);
-    let even0 = i32::from(wrap(round14((a + c) * COS16)));
-    let even1 = i32::from(wrap(round14((a - c) * COS16)));
-    let odd0 = i32::from(wrap(round14(b * COS24 - d * COS8)));
-    let odd1 = i32::from(wrap(round14(b * COS8 + d * COS24)));
+/// `idct4_c` / `vpx_highbd_idct4_c`, stages wrapped by `D`.
+fn idct4<D: InverseDepth>(line: [i32; 4]) -> [i32; 4] {
+    let [a, b, c, d] = line.map(i64::from);
+    let wrap = D::wrap;
+    let even0 = wrap(round14((a + c) * i64::from(COS16)));
+    let even1 = wrap(round14((a - c) * i64::from(COS16)));
+    let odd0 = wrap(round14(b * i64::from(COS24) - d * i64::from(COS8)));
+    let odd1 = wrap(round14(b * i64::from(COS8) + d * i64::from(COS24)));
     [
         wrap(even0 + odd1),
         wrap(even1 + odd0),
         wrap(even1 - odd0),
         wrap(even0 - odd1),
     ]
+    .map(|v| v as i32)
 }
 
-/// `iadst4_c`. On 16-bit inputs every sum fits i32: the largest weighs
-/// four inputs by at most `SIN1 + SIN2 + SIN3 + SIN4` = 43801 < 2^16.
-fn iadst4(line: [i16; 4]) -> [i16; 4] {
-    let [a, b, c, d] = line.map(i32::from);
-    let difference = i32::from(wrap(a - c + d));
-    let first = SIN1 * a + SIN4 * c + SIN2 * d;
-    let second = SIN2 * a - SIN1 * c - SIN4 * d;
-    let middle = SIN3 * b;
+/// `iadst4_c` / `vpx_highbd_iadst4_c`, stages wrapped by `D`.
+fn iadst4<D: InverseDepth>(line: [i32; 4]) -> [i32; 4] {
+    let [a, b, c, d] = line.map(i64::from);
+    let wrap = D::wrap;
+    let (sin1, sin2, sin3, sin4) = (
+        i64::from(SIN1),
+        i64::from(SIN2),
+        i64::from(SIN3),
+        i64::from(SIN4),
+    );
+    let difference = wrap(a - c + d);
+    let first = sin1 * a + sin4 * c + sin2 * d;
+    let second = sin2 * a - sin1 * c - sin4 * d;
+    let middle = sin3 * b;
     [
         wrap(round14(first + middle)),
         wrap(round14(second + middle)),
-        wrap(round14(SIN3 * difference)),
+        wrap(round14(sin3 * difference)),
         wrap(round14(first + second - middle)),
     ]
+    .map(|v| v as i32)
 }
 
-fn line4(pass: Vp9Pass, line: [i16; 4]) -> [i16; 4] {
+fn line4<D: InverseDepth>(pass: Vp9Pass, line: [i32; 4]) -> [i32; 4] {
     match pass {
-        Vp9Pass::Dct => idct4(line),
-        Vp9Pass::Adst => iadst4(line),
+        Vp9Pass::Dct => idct4::<D>(line),
+        Vp9Pass::Adst => iadst4::<D>(line),
+    }
+}
+
+/// The 4x4 inverse of raster `input` into residuals, rows from
+/// `nonzero_rows` on being zero (`vp9_iht4x4_16_add_c` before the add).
+fn inverse4<D: InverseDepth, C: Copy + Into<i32>>(
+    (columns, rows): (Vp9Pass, Vp9Pass),
+    input: &[C],
+    nonzero_rows: usize,
+    residual: &mut [i32],
+) {
+    const SIDE: usize = 4;
+    let round = |value: i32| (value + (1 << (SHIFT4 - 1))) >> SHIFT4;
+    let mut temp = [[0i32; SIDE]; SIDE];
+    for (y, row) in temp.iter_mut().enumerate().take(nonzero_rows.min(SIDE)) {
+        *row = line4::<D>(rows, std::array::from_fn(|x| input[y * SIDE + x].into()));
+    }
+    for x in 0..SIDE {
+        let column = line4::<D>(columns, std::array::from_fn(|y| temp[y][x]));
+        for (y, value) in column.into_iter().enumerate() {
+            residual[y * SIDE + x] = round(value);
+        }
     }
 }
 
@@ -348,11 +531,12 @@ pub(crate) fn vp9_inverse4_add(
     dst_stride: usize,
 ) {
     const SIDE: usize = 4;
-    let round = |value: i32| (value + (1 << (SHIFT4 - 1))) >> SHIFT4;
     if (nonzero_rows, nonzero_columns) == (1, 1) && (columns, rows) == (Vp9Pass::Dct, Vp9Pass::Dct)
     {
-        let row = i32::from(wrap(round14(i32::from(input[0]) * COS16)));
-        let value = round(i32::from(wrap(round14(row * COS16))));
+        let round = |value: i64| (value + (1 << (SHIFT4 - 1))) >> SHIFT4;
+        let wrap = Eight::wrap;
+        let row = wrap(round14(i64::from(input[0]) * i64::from(COS16)));
+        let value = round(wrap(round14(row * i64::from(COS16)))) as i32;
         for line in dst.chunks_mut(dst_stride).take(SIDE) {
             for sample in &mut line[..SIDE] {
                 *sample = (i32::from(*sample) + value).clamp(0, 255) as u8;
@@ -360,22 +544,9 @@ pub(crate) fn vp9_inverse4_add(
         }
         return;
     }
-    let mut temp = [[0i16; SIDE]; SIDE];
-    for (y, row) in temp.iter_mut().enumerate().take(nonzero_rows.min(SIDE)) {
-        *row = line4(rows, std::array::from_fn(|x| input[y * SIDE + x]));
-    }
-    let mut out = [[0i32; SIDE]; SIDE];
-    for x in 0..SIDE {
-        let column = line4(columns, std::array::from_fn(|y| temp[y][x]));
-        for (y, value) in column.into_iter().enumerate() {
-            out[y][x] = round(i32::from(value));
-        }
-    }
-    for (line, values) in dst.chunks_mut(dst_stride).zip(out) {
-        for (sample, value) in line[..SIDE].iter_mut().zip(values) {
-            *sample = (i32::from(*sample) + value).clamp(0, 255) as u8;
-        }
-    }
+    let mut residual = [0; SIDE * SIDE];
+    inverse4::<Eight, i16>((columns, rows), input, nonzero_rows, &mut residual);
+    add_clipped((dst, dst_stride), SIDE, &residual, BitDepth::EIGHT);
 }
 
 /// VP9 8×8 forward DCT (see [`vp9_forward_transform`]).

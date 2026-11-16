@@ -20,3 +20,4 @@ pub mod references;
 pub mod sequence;
 mod subset;
 pub mod tiles;
+pub mod warp;

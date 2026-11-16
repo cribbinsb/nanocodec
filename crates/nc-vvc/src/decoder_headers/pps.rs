@@ -74,7 +74,7 @@ impl PictureParameters {
             return Err(DecodeError::Malformed("VVC PPS weighted prediction"));
         }
         let wraparound = wraparound(&mut r, s, dimensions[0])?;
-        let initial_qp = 26 + r.se(-26, 37, "VVC PPS initial QP")?;
+        let initial_qp = 26 + r.se(-26 - s.qp_bd_offset(), 37, "VVC PPS initial QP")?;
         let cu_qp_delta = r.flag()?;
         let chroma_offsets_present = r.flag()?;
         if chroma_offsets_present && !s.chroma {

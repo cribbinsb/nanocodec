@@ -8,7 +8,6 @@
 
 use nc_common::{Picture, PlaneIndex, PlaneView};
 
-use crate::coeff::Extent;
 use crate::inter_pred::{self, BlockPosition};
 use crate::intra_pred::{self, Edges};
 use crate::transform::{self, Steps, TxSize, TxType};
@@ -314,43 +313,6 @@ impl ResidualBuffers {
         }
         self.residual_of(block.tx, ty, lossless, levels, steps);
         add_block(recon, block, &self.residual[..area]);
-    }
-
-    /// The decoder's [`Self::add_residual`]: `coefficients` are already
-    /// dequantized and `extent` bounds them (its end of block is at least
-    /// 1). 8x8 and larger blocks invert and add in one fused kernel, which
-    /// picks its DC-only or zero-corner variant from the extent.
-    pub(crate) fn add_coefficients(
-        &mut self,
-        recon: &mut Picture,
-        block: &TxBlock,
-        (ty, lossless): (TxType, bool),
-        coefficients: &[i16],
-        extent: Extent,
-    ) {
-        let area = block.tx.area();
-        if block.tx == TxSize::Tx4 || lossless {
-            transform::inverse(
-                &self.dsp,
-                block.tx,
-                ty,
-                lossless,
-                &coefficients[..area],
-                &mut self.residual,
-            );
-            add_block(recon, block, &self.residual[..area]);
-            return;
-        }
-        let mut view = recon.plane_mut(block.plane).view_mut();
-        let stride = view.stride();
-        let dst = &mut view.data_mut()[block.y * stride + block.x..];
-        self.dsp.vp9_inverse_add(
-            block.tx.log2(),
-            transform::passes(ty),
-            &coefficients[..area],
-            (extent.rows, extent.columns),
-            (dst, stride),
-        );
     }
 }
 

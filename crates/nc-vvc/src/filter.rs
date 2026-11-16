@@ -337,7 +337,7 @@ fn narrow_luma_edge(
         } else {
             (x, y + segment)
         };
-        let lines = gather::<SEGMENT, 8>(picture, PlaneIndex::Y, sx, sy, horizontal);
+        let lines = gather::<u8, SEGMENT, 8>(picture, PlaneIndex::Y, sx, sy, horizontal);
         // p3..q3 in the middle of the kernel's p7..q7 rows; the outer
         // samples are never read at reach 1.
         let mut rows = lines.map(|line| {
@@ -353,15 +353,15 @@ fn narrow_luma_edge(
 
 /// The `L` lines of `W` samples across the edge at `(x, y)`, line by line.
 /// Each picture row is fetched once (a horizontal edge's lines are columns).
-pub(crate) fn gather<const L: usize, const W: usize>(
-    picture: &Picture,
+pub(crate) fn gather<T: nc_common::Sample, const L: usize, const W: usize>(
+    picture: &Picture<T>,
     plane: PlaneIndex,
     x: usize,
     y: usize,
     horizontal: bool,
-) -> [[u8; W]; L] {
+) -> [[T; W]; L] {
     let view = picture.plane(plane).view();
-    let mut samples = [[0; W]; L];
+    let mut samples = [[T::default(); W]; L];
     if horizontal {
         for i in 0..W {
             let row = &view.row(y + i - W / 2)[x..x + L];
@@ -378,13 +378,13 @@ pub(crate) fn gather<const L: usize, const W: usize>(
 }
 
 /// Write back what [`gather`] read.
-pub(crate) fn store<const L: usize, const W: usize>(
-    picture: &mut Picture,
+pub(crate) fn store<T: nc_common::Sample, const L: usize, const W: usize>(
+    picture: &mut Picture<T>,
     plane: PlaneIndex,
     x: usize,
     y: usize,
     horizontal: bool,
-    samples: &[[u8; W]; L],
+    samples: &[[T; W]; L],
 ) {
     let mut view = picture.plane_mut(plane).view_mut();
     if horizontal {

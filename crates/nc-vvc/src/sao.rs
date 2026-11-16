@@ -4,10 +4,10 @@
 //! offsets are not emitted.
 use crate::{coeff::Bins, contexts::Contexts};
 use nc_common::{
-    Picture, PlaneIndex, PlaneView,
+    BitDepth, Picture, PlaneIndex, PlaneView, Sample,
     decode::{DecodeError, Result},
 };
-use nc_dsp::{Dsp, SaoStats};
+use nc_dsp::{DepthKernels, Dsp, Pixel, SaoStats};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CtuSao {
@@ -34,7 +34,7 @@ fn bounds(
     )
 }
 /// The width and height of `plane` of `picture`.
-fn plane_size(picture: &Picture, plane: PlaneIndex) -> (usize, usize) {
+fn plane_size<T: Sample>(picture: &Picture<T>, plane: PlaneIndex) -> (usize, usize) {
     let plane = picture.plane(plane);
     (plane.width(), plane.height())
 }
@@ -264,7 +264,13 @@ fn change(stats: &CtuStats, params: &CtuSao) -> f32 {
 }
 /// Apply `params`, one per `ctu`-sample CTU in raster order.
 pub(crate) fn apply(dsp: &Dsp, picture: &mut Picture, params: &[CtuSao], ctu: usize) {
-    apply_limited(dsp, picture, params, ctu, &Limits::default());
+    apply_limited(
+        dsp.at(BitDepth::EIGHT),
+        picture,
+        params,
+        ctu,
+        &Limits::default(),
+    );
 }
 
 /// What a decoded picture's edge offsets may not compare across (H.266
@@ -279,10 +285,12 @@ pub(crate) struct Limits {
     pub cuts: [Vec<usize>; 2],
 }
 
-/// [`apply`] within `limits`.
-pub(crate) fn apply_limited(
-    dsp: &Dsp,
-    picture: &mut Picture,
+/// [`apply`] within `limits`, to samples of any depth (the general
+/// decoder's): up to 10 bits `SaoOffsetVal` is the coded offset (H.266
+/// §7.4.9.3.2: its shift `BitDepth − Min(BitDepth, 10)` is zero).
+pub(crate) fn apply_limited<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    picture: &mut Picture<T>,
     params: &[CtuSao],
     ctu: usize,
     limits: &Limits,
@@ -297,9 +305,9 @@ pub(crate) fn apply_limited(
 /// into a band buffer before it is filtered, and the row above comes from
 /// the band before: no copy of the whole picture, and none at all for rows
 /// whose CTUs leave the plane alone.
-fn apply_plane(
-    dsp: &Dsp,
-    picture: &mut Picture,
+fn apply_plane<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    picture: &mut Picture<T>,
     plane: PlaneIndex,
     params: &[CtuSao],
     ctu: usize,
@@ -314,9 +322,9 @@ fn apply_plane(
     let band_rows = ctu >> channel;
     let columns = picture.width().div_ceil(ctu);
     // The band's rows with the one above and the one below it.
-    let mut band = vec![0; width * (band_rows + 2)];
+    let mut band = vec![T::default(); width * (band_rows + 2)];
     // The deblocked last row of the band before, if that band was filtered.
-    let mut above = vec![0; width];
+    let mut above = vec![T::default(); width];
     let mut above_filtered = false;
     for (row, ctus) in params.chunks(columns).enumerate() {
         if ctus.iter().all(|sao| sao.classes[channel].is_none()) {
@@ -383,7 +391,7 @@ fn apply_plane(
                     exempt: &[],
                 };
                 let offsets = sao.offsets[plane as usize].map(i16::from);
-                let parameters = (class, offsets, nc_common::BitDepth::EIGHT);
+                let parameters = (class, offsets, dsp.depth());
                 nc_dsp::sao_edge_restricted(&input, &mut output, area, parameters, &limits);
                 continue;
             }
@@ -396,7 +404,7 @@ fn apply_plane(
             );
             dsp.sao_edge_apply(
                 class,
-                sao.offsets[plane as usize],
+                sao.offsets[plane as usize].map(i16::from),
                 &input,
                 &mut output,
                 (x0, y0 - first, x1, y1 - first),

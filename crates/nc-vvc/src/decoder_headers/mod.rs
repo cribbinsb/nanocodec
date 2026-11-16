@@ -20,7 +20,7 @@ mod tools;
 mod vui;
 mod weights;
 use nc_common::decode::{BitReader, DecodeError, Result};
-pub(super) use sps::Sequence;
+pub(super) use sps::{Sequence, qp_bd_offset};
 pub(super) use weights::Weights;
 
 #[derive(Clone)]

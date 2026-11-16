@@ -275,13 +275,15 @@ pub fn unescape_rbsp(data: &[u8]) -> Result<Vec<u8>> {
     let mut result = Vec::with_capacity(data.len());
     // Copy the runs between `00 00 03` sequences whole. Counting zeros
     // restarts after each removed 03, so the next search starts there.
+    // A NAL unit may end in `00 00 03`: the 03 appended after a final
+    // `cabac_zero_word` (H.264 §7.4.1, H.265 §7.4.2, H.266 §7.4.2).
     let mut start = 0;
     while let Some(found) = data[start..]
         .windows(3)
         .position(|w| w == EMULATION_PREVENTION)
     {
         let three = start + found + 2;
-        if data.get(three + 1).is_none_or(|&next| next > 3) {
+        if data.get(three + 1).is_some_and(|&next| next > 3) {
             return Err(DecodeError::Malformed(
                 "invalid emulation-prevention sequence",
             ));
@@ -355,7 +357,7 @@ mod tests {
             unescape_rbsp(&[0, 0, 3, 0, 0, 3, 3]).unwrap(),
             [0, 0, 0, 0, 3]
         );
-        assert!(unescape_rbsp(&[0, 0, 3]).is_err());
+        assert_eq!(unescape_rbsp(&[1, 0, 0, 3]).unwrap(), [1, 0, 0]);
         assert!(unescape_rbsp(&[0, 0, 3, 4]).is_err());
     }
 }

@@ -642,9 +642,17 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   `tools/codegen/gen_av2_qm_tables.py`. The general
   `decode_b`, `reset_context`, `read_mv_residual`, `recon_b`'s intra block
   copy vector), `src/recon_tmpl.c` (`recon_b`, `decode_coefs`, `mc`,
-  `bawp`), `src/refmvs.c` (`block/motion.rs`: the spatial motion store,
-  MV bank and intra block copy candidate list), `src/env.h` (partition
-  and intra contexts, `fix_int_mv_precision`) and `src/tables.c`
+  `bawp`), `src/refmvs.c` (`block/motion.rs` and `block/motion/`: the
+  spatial motion store, the MV and warp banks, `dav2d_refmvs_find`, the
+  frame's projection set-up `dav2d_refmvs_init_frame`, `load_tmvs` with the
+  trajectories, the TIP field filters, the splats and the vector
+  quantizing), `src/decode.c` (`block/motion_resolution.rs`,
+  `block/warp_motion.rs`: `recon_b`'s motion resolution, `splat_*_mv`,
+  `derive_warpmv`, `extend_warpmv`), `src/warpmv.c` (`general/warp.rs`:
+  `dav2d_get_shear_params`, `dav2d_set_affine_mv2d`,
+  `dav2d_find_affine_int`, the divisor reciprocals), `src/env.h`
+  (partition and intra contexts, `fix_int_mv_precision`, `mv_reduce_prec`,
+  `get_warpmv_2d`, `get_gmv_2d`, `warp_type`) and `src/tables.c`
   (`dav2d_block_dimensions`). The general
   decoder's CDF defaults (`general/cdfs/defaults.rs`) are AVM v1.0.0's
   (`av2/common/entropy_inits_modes.h`), extracted by

@@ -1,16 +1,17 @@
 //! Decoder nonlinear luma banks using the shared ALF classifier and boundary rows.
 use super::{Analysis, BLOCK, CtbAlf, CtbFilter, TAPS, VVC_ALF_REACH, VVC_ALF_TRANSPOSES};
 use nc_common::{Picture, PlaneIndex};
+use nc_dsp::Pixel;
 
 pub(crate) struct ClippedFilters {
     pub classes: [u8; 25],
     pub coefficients: Vec<[i16; TAPS]>,
     pub limits: Vec<[i16; TAPS]>,
 }
-impl Analysis<'_> {
+impl<T: Pixel> Analysis<'_, T> {
     pub(crate) fn apply_clipped(
         &self,
-        picture: &mut Picture,
+        picture: &mut Picture<T>,
         decisions: &[CtbAlf],
         bank: &ClippedFilters,
     ) {
@@ -34,7 +35,7 @@ impl Analysis<'_> {
                 }
                 let (rows, shift) = self.tap_rows(y);
                 let rows = rows.map(|r| &r[self.column(x0, VVC_ALF_REACH)..]);
-                self.dsp.vvc_alf_filter_clipped_row(
+                self.kernels().vvc_alf_filter_clipped_row(
                     &rows,
                     &coefficients[..blocks],
                     &limits[..blocks],

@@ -1,19 +1,45 @@
 //! Scalar reference VP9 intra predictors: libvpx's per-sample definitions
 //! (`vpx_dsp/intrapred.c`), transcribed from `nc-vp9`'s original
-//! predictors. The oracle of [`super::rows`].
+//! predictors. The oracle of [`super::rows`], and the predictor of deeper
+//! samples: libvpx's `highbd_*_predictor`s are the same arithmetic, with
+//! only the no-edge DC value (`128 << (bd − 8)`) and the `TM` clip at the
+//! depth.
 
-use super::{MAX_SIDE, Vp9IntraEdges, Vp9IntraMode, avg2, avg3, dc_value};
+use nc_common::{BitDepth, Sample};
+
+use super::{MAX_SIDE, Vp9IntraEdges, Vp9IntraMode, dc_value};
 
 /// Above sample `i` of `edges`, where -1 is the above-left corner.
-fn a(edges: &Vp9IntraEdges, i: isize) -> u8 {
+fn a<T: Sample>(edges: &Vp9IntraEdges<T>, i: isize) -> T {
     edges.above[(i + 1) as usize]
 }
 
-/// Predict into `out` (row stride `side`).
+/// The rounded 2-tap average.
+fn avg2<T: Sample>(a: T, b: T) -> T {
+    T::from_i32((a.to_i32() + b.to_i32() + 1) >> 1)
+}
+
+/// The rounded [1, 2, 1] average.
+fn avg3<T: Sample>(a: T, b: T, c: T) -> T {
+    T::from_i32((a.to_i32() + 2 * b.to_i32() + c.to_i32() + 2) >> 2)
+}
+
+/// Predict 8-bit samples into `out` (row stride `side`).
 pub(super) fn predict(mode: Vp9IntraMode, side: usize, n: &Vp9IntraEdges, out: &mut [u8]) {
+    predict_at(mode, side, n, out, BitDepth::EIGHT);
+}
+
+/// Predict samples of `depth` into `out` (row stride `side`).
+pub(crate) fn predict_at<T: Sample>(
+    mode: Vp9IntraMode,
+    side: usize,
+    n: &Vp9IntraEdges<T>,
+    out: &mut [T],
+    depth: BitDepth,
+) {
     let out = &mut out[..side * side];
     match mode {
-        Vp9IntraMode::Dc => out.fill(dc_value(side, n)),
+        Vp9IntraMode::Dc => out.fill(dc_value(side, n, depth)),
         Vp9IntraMode::V => {
             for row in out.chunks_exact_mut(side) {
                 row.copy_from_slice(&n.above[1..=side]);
@@ -27,9 +53,8 @@ pub(super) fn predict(mode: Vp9IntraMode, side: usize, n: &Vp9IntraEdges, out: &
         Vp9IntraMode::Tm => {
             for (r, row) in out.chunks_exact_mut(side).enumerate() {
                 for (c, sample) in row.iter_mut().enumerate() {
-                    let value =
-                        i32::from(n.left[r]) + i32::from(a(n, c as isize)) - i32::from(a(n, -1));
-                    *sample = value.clamp(0, 255) as u8;
+                    let value = n.left[r].to_i32() + a(n, c as isize).to_i32() - a(n, -1).to_i32();
+                    *sample = depth.clip_to(value);
                 }
             }
         }
@@ -45,9 +70,9 @@ pub(super) fn predict(mode: Vp9IntraMode, side: usize, n: &Vp9IntraEdges, out: &
 }
 
 /// `d45_predictor`: diagonals of the smoothed row, the last sample repeated.
-fn d45(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
+fn d45<T: Sample>(n: &Vp9IntraEdges<T>, side: usize, out: &mut [T]) {
     let above_right = n.above[side];
-    let mut first = [0u8; MAX_SIDE];
+    let mut first = [T::default(); MAX_SIDE];
     for (c, sample) in first[..side - 1].iter_mut().enumerate() {
         let c = c as isize;
         *sample = avg3(a(n, c), a(n, c + 1), a(n, c + 2));
@@ -65,7 +90,7 @@ fn d45(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
 }
 
 /// `vpx_d45_predictor_4x4_c`: reads the full above-right.
-fn d45_4x4(n: &Vp9IntraEdges, out: &mut [u8]) {
+fn d45_4x4<T: Sample>(n: &Vp9IntraEdges<T>, out: &mut [T]) {
     for (r, row) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         for (c, sample) in row.iter_mut().enumerate() {
             let i = (r + c) as isize;
@@ -80,7 +105,7 @@ fn d45_4x4(n: &Vp9IntraEdges, out: &mut [u8]) {
 
 /// `d63_predictor`: alternating 2- and 3-tap rows shifted by one every two
 /// rows, padded with the last above sample.
-fn d63(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
+fn d63<T: Sample>(n: &Vp9IntraEdges<T>, side: usize, out: &mut [T]) {
     let last = n.above[side];
     for (r, row) in out.chunks_exact_mut(side).enumerate() {
         let shift = r >> 1;
@@ -101,7 +126,7 @@ fn d63(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
 }
 
 /// `vpx_d63_predictor_4x4_c`: continues the averages into the above-right.
-fn d63_4x4(n: &Vp9IntraEdges, out: &mut [u8]) {
+fn d63_4x4<T: Sample>(n: &Vp9IntraEdges<T>, out: &mut [T]) {
     for (r, row) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         for (c, sample) in row.iter_mut().enumerate() {
             let i = (c + (r >> 1)) as isize;
@@ -116,7 +141,7 @@ fn d63_4x4(n: &Vp9IntraEdges, out: &mut [u8]) {
 
 /// `d117_predictor`: rows 0/1 from the row above, column 0 from the left;
 /// every other sample repeats the one two rows up and one column left.
-fn d117(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
+fn d117<T: Sample>(n: &Vp9IntraEdges<T>, side: usize, out: &mut [T]) {
     let l = |i: usize| n.left[i];
     for c in 0..side {
         let i = c as isize;
@@ -139,9 +164,9 @@ fn d117(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
 }
 
 /// `d135_predictor`: every row is the outer border shifted by one.
-fn d135(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
+fn d135<T: Sample>(n: &Vp9IntraEdges<T>, side: usize, out: &mut [T]) {
     let l = |i: usize| n.left[i];
-    let mut border = [0u8; 2 * MAX_SIDE - 1];
+    let mut border = [T::default(); 2 * MAX_SIDE - 1];
     for (i, sample) in border[..side - 2].iter_mut().enumerate() {
         *sample = avg3(l(side - 3 - i), l(side - 2 - i), l(side - 1 - i));
     }
@@ -159,7 +184,7 @@ fn d135(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
 
 /// `d153_predictor`: columns 0/1 from the left, row 0 from above; every
 /// other sample repeats the one a row up and two columns left.
-fn d153(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
+fn d153<T: Sample>(n: &Vp9IntraEdges<T>, side: usize, out: &mut [T]) {
     let l = |i: usize| n.left[i];
     out[0] = avg2(a(n, -1), l(0));
     for r in 1..side {
@@ -184,7 +209,7 @@ fn d153(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
 /// `d207_predictor`: columns 0/1 from the left, the bottom row the last
 /// left sample; every other sample repeats the one a row down and two
 /// columns left.
-fn d207(n: &Vp9IntraEdges, side: usize, out: &mut [u8]) {
+fn d207<T: Sample>(n: &Vp9IntraEdges<T>, side: usize, out: &mut [T]) {
     let l = |i: usize| n.left[i];
     let last = l(side - 1);
     for r in 0..side - 1 {

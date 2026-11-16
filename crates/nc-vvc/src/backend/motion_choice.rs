@@ -376,7 +376,14 @@ fn vector_prediction(frame: &Frame<'_>, mv: Mv16, prediction: &mut Vec<u8>) {
     let luma = frame.reference.plane(PlaneIndex::Y);
     let size = (cu.width(), cu.height());
     let mut out = inter::packed(prediction, size);
-    inter::predict_luma(frame.dsp, luma, (cu.x, cu.y), size, mv, &mut out);
+    inter::predict_luma(
+        frame.dsp.at(nc_common::BitDepth::EIGHT),
+        luma,
+        (cu.x, cu.y),
+        size,
+        mv,
+        &mut out,
+    );
 }
 
 /// Keep `item` in `best` if it costs less than what `best` holds; whether

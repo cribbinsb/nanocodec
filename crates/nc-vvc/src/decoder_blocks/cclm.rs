@@ -1,16 +1,18 @@
 //! H.266 CCLM template selection and luma gathering; arithmetic uses shared DSP.
 use super::{Sequence, Unit, references::Availability};
-use nc_common::{Picture, PlaneIndex};
+use nc_common::{BitDepth, Picture, PlaneIndex, Sample};
 use nc_dsp::{vvc_cclm_downsample, vvc_cclm_downsample_collocated, vvc_cclm_predict};
 
-pub(super) fn predict(
-    picture: &Picture,
+/// CCLM prediction (H.266 §8.4.5.2.14) of chroma `plane` of `block` at
+/// `depth`.
+pub(super) fn predict<T: Sample>(
+    picture: &Picture<T>,
     available: &Availability,
     sequence: &Sequence,
     unit: &Unit,
     block: nc_encoder::Block,
-    plane: PlaneIndex,
-    out: &mut [u8],
+    (plane, depth): (PlaneIndex, BitDepth),
+    out: &mut [T],
 ) {
     let n = block;
     let (x, y, width, height) = (n.x / 2, n.y / 2, n.width() / 2, n.height() / 2);
@@ -99,5 +101,5 @@ pub(super) fn predict(
     let values: Vec<_> = (0..height)
         .flat_map(|dy| (0..width).map(move |dx| downsample(dx as isize, dy as isize)))
         .collect();
-    vvc_cclm_predict(&values, &pairs, out);
+    vvc_cclm_predict(&values, &pairs, out, depth);
 }

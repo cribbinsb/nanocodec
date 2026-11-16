@@ -1,7 +1,7 @@
 //! H.266 general dual-tree intra edge control; all filtering uses shared DSP.
 use super::{PictureParameters, Sequence, SliceHeader, Transform, Unit, transform};
-use nc_common::{Picture, PlaneIndex};
-use nc_dsp::Dsp;
+use nc_common::{Picture, PlaneIndex, Sample};
+use nc_dsp::{DepthKernels, Pixel, vvc_deblock_beta, vvc_deblock_tc};
 
 struct EdgeBlock<'a> {
     unit: &'a Unit,
@@ -38,16 +38,20 @@ fn edge_blocks(units: &[Unit]) -> Vec<EdgeBlock<'_>> {
 /// Vector difference (1/16 sample units) from which an edge is filtered.
 const HALF_SAMPLE: i32 = 8;
 
+/// The grid of the subblock edges deblocking filters inside an affine or
+/// `SbTMVP` CU (H.266 §8.8.3.4: 8 luma samples).
+const SUBBLOCK_EDGE_GRID: usize = 8;
+
 /// Samples along an edge segment whose ends set the LADF luma level.
 const LADF_SEGMENT: usize = 4;
 
-pub(crate) fn apply(
-    picture: &mut Picture,
+pub(crate) fn apply<T: Pixel>(
+    picture: &mut Picture<T>,
     units: &[Unit],
     sequence: &Sequence,
     parameters: &PictureParameters,
     headers: &[SliceHeader],
-    dsp: &Dsp,
+    dsp: DepthKernels<'_>,
 ) {
     if headers.iter().all(|h| h.deblock.disabled) {
         return;
@@ -88,7 +92,7 @@ pub(crate) fn apply(
                     if !(transform_edge
                         || (channel == 0
                             && affine
-                            && (perpendicular - cu_origin).is_multiple_of(8)))
+                            && (perpendicular - cu_origin).is_multiple_of(SUBBLOCK_EDGE_GRID)))
                     {
                         continue;
                     }
@@ -135,8 +139,8 @@ pub(crate) fn apply(
     clippy::too_many_arguments,
     reason = "the edge's position, sides and slice"
 )]
-fn filter_edge(
-    picture: &mut Picture,
+fn filter_edge<T: Pixel>(
+    picture: &mut Picture<T>,
     (p, q): (&EdgeBlock<'_>, &EdgeBlock<'_>),
     plane: PlaneIndex,
     (x, y): (usize, usize),
@@ -144,7 +148,7 @@ fn filter_edge(
     strength: i32,
     sequence: &Sequence,
     (p_header, header): (&SliceHeader, &SliceHeader),
-    dsp: &Dsp,
+    dsp: DepthKernels<'_>,
 ) {
     let channel = usize::from(plane != PlaneIndex::Y);
     let perpendicular = if horizontal { y } else { x };
@@ -153,6 +157,8 @@ fn filter_edge(
         if horizontal { height } else { width }
     });
     let boundary = horizontal && y.is_multiple_of(1 << sequence.ctu_log2);
+    // The mean of the sides' QPs (`QpY`, or the chroma QPs; §8.8.3.6.1,
+    // §8.8.3.6.3): each side's `Qp′` less `QpBdOffset`.
     let qp = (i32::from(transform::qp(
         p.unit.quant(),
         p.transform.joint,
@@ -167,16 +173,23 @@ fn filter_edge(
         header,
     )) + 1)
         >> 1;
+    let depth = nc_common::BitDepth::of::<T>(dsp.depth());
+    let qp = qp - crate::decoder_headers::qp_bd_offset(depth);
     let qp = if channel == 0 {
         qp + ladf_offset(picture, &sequence.tools.ladf, (x, y), horizontal)
     } else {
         qp
     };
     let [beta_offset, tc_offset] = header.deblock.offsets[plane as usize].map(i32::from);
-    let beta = crate::filter::BETA[(qp + 2 * beta_offset).clamp(0, 63) as usize];
-    let tc = (crate::filter::TC[(qp + 2 * (strength - 1) + 2 * tc_offset).clamp(0, 65) as usize]
-        + 2)
-        >> 2;
+    // β′ and tC′ of Table 43 scaled to the depth (§8.8.3.6.2).
+    let beta = vvc_deblock_beta(
+        crate::filter::BETA[(qp + 2 * beta_offset).clamp(0, 63) as usize],
+        depth,
+    );
+    let tc = vvc_deblock_tc(
+        crate::filter::TC[(qp + 2 * (strength - 1) + 2 * tc_offset).clamp(0, 65) as usize],
+        depth,
+    );
     if channel == 0 {
         let lengths = luma_lengths(p, q, perpendicular, horizontal, boundary);
         filter_luma(picture, dsp, (x, y), horizontal, beta, tc, lengths);
@@ -220,8 +233,8 @@ fn open_edge(
 
 /// Luma-adaptive deblocking QP offset of a four-sample edge segment (H.266
 /// §8.8.3.6.2): the interval holding the mean of the edge's corner samples.
-fn ladf_offset(
-    picture: &Picture,
+fn ladf_offset<T: Sample>(
+    picture: &Picture<T>,
     intervals: &[(u16, i8)],
     (x, y): (usize, usize),
     horizontal: bool,
@@ -238,22 +251,22 @@ fn ladf_offset(
             } else {
                 ((x - 1, y + along), (x, y + along))
             };
-            u16::from(luma.row(p.1)[p.0]) + u16::from(luma.row(q.1)[q.0])
+            luma.row(p.1)[p.0].to_i32() + luma.row(q.1)[q.0].to_i32()
         })
-        .sum::<u16>()
+        .sum::<i32>()
         >> 2;
     upper
         .iter()
-        .take_while(|&&(lower, _)| level > lower)
+        .take_while(|&&(lower, _)| level > i32::from(lower))
         .last()
         .map_or(i32::from(lowest), |&(_, offset)| i32::from(offset))
 }
 
 /// Interior segments use the shared in-place SIMD kernel. Narrow ISP
 /// boundaries retain clamped access for taps outside the visible picture.
-fn filter_luma(
-    picture: &mut Picture,
-    dsp: &Dsp,
+fn filter_luma<T: Pixel>(
+    picture: &mut Picture<T>,
+    dsp: DepthKernels<'_>,
     at: (usize, usize),
     horizontal: bool,
     beta: i32,
@@ -279,7 +292,7 @@ fn filter_luma(
             lengths,
         );
     } else {
-        let mut edge = gather::<4, 16>(picture, PlaneIndex::Y, at, horizontal);
+        let mut edge = gather::<T, 4, 16>(picture, PlaneIndex::Y, at, horizontal);
         dsp.vvc_deblock_luma(&mut edge, beta, tc, lengths);
         store(picture, PlaneIndex::Y, at, horizontal, &edge);
     }
@@ -287,9 +300,9 @@ fn filter_luma(
 
 /// Chroma uses the same partial-line plane access as HEVC; two lines
 /// correspond to one four-line luma segment in 4:2:0.
-fn filter_chroma(
-    picture: &mut Picture,
-    dsp: &Dsp,
+fn filter_chroma<T: Pixel>(
+    picture: &mut Picture<T>,
+    dsp: DepthKernels<'_>,
     plane: PlaneIndex,
     at: (usize, usize),
     horizontal: bool,
@@ -310,7 +323,7 @@ fn filter_chroma(
     if inside {
         dsp.vvc_deblock_chroma_edge(&mut view, at, !horizontal, LINES, beta, tc, large, boundary);
     } else {
-        let mut edge = gather::<LINES, { 2 * REACH }>(picture, plane, at, horizontal);
+        let mut edge = gather::<T, LINES, { 2 * REACH }>(picture, plane, at, horizontal);
         dsp.vvc_deblock_chroma(&mut edge, beta, tc, large, boundary);
         store(picture, plane, at, horizontal, &edge);
     }
@@ -330,12 +343,12 @@ fn position(
         (x as isize + offset, (y + line) as isize)
     }
 }
-fn gather<const L: usize, const W: usize>(
-    picture: &Picture,
+fn gather<T: Sample, const L: usize, const W: usize>(
+    picture: &Picture<T>,
     plane: PlaneIndex,
     origin: (usize, usize),
     horizontal: bool,
-) -> [[u8; W]; L] {
+) -> [[T; W]; L] {
     let view = picture.plane(plane).view();
     let (x, y) = origin;
     let inside = if horizontal {
@@ -356,12 +369,12 @@ fn gather<const L: usize, const W: usize>(
         })
     })
 }
-fn store<const L: usize, const W: usize>(
-    picture: &mut Picture,
+fn store<T: Sample, const L: usize, const W: usize>(
+    picture: &mut Picture<T>,
     plane: PlaneIndex,
     origin: (usize, usize),
     horizontal: bool,
-    edge: &[[u8; W]; L],
+    edge: &[[T; W]; L],
 ) {
     let mut view = picture.plane_mut(plane).view_mut();
     let (x, y) = origin;
@@ -415,13 +428,21 @@ fn strength(
         return 1;
     }
     // H.266 §8.8.3.5: a transform-only boundary can gain strength from
-    // residuals, but motion is compared only at CU or coding-subblock edges.
-    // In particular, geometric motion changes inside a CU do not create one.
-    if std::ptr::eq(p.unit, q.unit)
-        && q.unit.affine_models.iter().all(Option::is_none)
-        && q.unit.subblocks.is_empty()
-    {
-        return 0;
+    // residuals, but motion is compared only at CU or coding-subblock edges
+    // (subblock edges on the 8-sample grid, §8.8.3.4). In particular,
+    // geometric motion changes inside a CU do not create one, nor do SBT
+    // edges inside an affine CU off that grid.
+    if std::ptr::eq(p.unit, q.unit) {
+        let subblocks =
+            q.unit.affine_models.iter().any(Option::is_some) || !q.unit.subblocks.is_empty();
+        let (position, origin) = if horizontal {
+            (y, q.unit.node.y)
+        } else {
+            (x, q.unit.node.x)
+        };
+        if !subblocks || !(position - origin).is_multiple_of(SUBBLOCK_EDGE_GRID) {
+            return 0;
+        }
     }
     // IBC CUs compare block vectors; an IBC CU beside a motion-compensated
     // one is a prediction-mode change (§8.8.3.5).
@@ -578,7 +599,7 @@ mod sample_tests {
         for horizontal in [false, true] {
             for y in (0..height).step_by(2) {
                 for x in (0..width).step_by(2) {
-                    let actual = gather::<L, W>(&picture, plane, (x, y), horizontal);
+                    let actual = gather::<u8, L, W>(&picture, plane, (x, y), horizontal);
                     let view = picture.plane(plane).view();
                     let expected: [[u8; W]; L] = std::array::from_fn(|line| {
                         std::array::from_fn(|tap| {

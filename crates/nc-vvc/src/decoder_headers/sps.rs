@@ -1,5 +1,6 @@
-//! H.266 §7.3.2.4 single-layer, 8-bit Main sequence parameter sets.
-//! Geometry, DPB and coding tools are parsed before any picture allocation.
+//! H.266 §7.3.2.4 single-layer Main 10 sequence parameter sets (8 to 10
+//! bits). Geometry, DPB and coding tools are parsed before any picture
+//! allocation.
 use super::{
     DecodeError, Reader, Result,
     ptl::Profile,
@@ -7,7 +8,13 @@ use super::{
     tools::{Tools, Transforms},
     vui,
 };
-use nc_common::ColourInfo;
+use nc_common::{BitDepth, ColourInfo};
+
+/// The deepest samples of the Main 10 profiles (H.266 A.3.1:
+/// `sps_bitdepth_minus8` in 0..=2).
+const MAX_BIT_DEPTH: u32 = 10;
+/// `QpBdOffset = 6 · sps_bitdepth_minus8` (H.266 §7.4.3.4).
+const QP_BD_OFFSET_STEP: i32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Partition {
@@ -54,6 +61,8 @@ pub(crate) struct Sequence {
     pub dimensions: [u32; 2],
     pub crop: [u32; 4],
     pub subpictures: Subpictures,
+    /// `BitDepth` of luma and chroma (one `sps_bitdepth_minus8`).
+    pub depth: BitDepth,
     pub gdr: bool,
     pub resampling: bool,
     pub resolution_change: bool,
@@ -101,7 +110,7 @@ impl Sequence {
         let gdr = r.flag()?;
         let resampling = r.flag()?;
         let resolution_change = resampling && r.flag()?;
-        let (dimensions, crop, subpictures) = geometry(&mut r, chroma, ctu_log2 as u8)?;
+        let (dimensions, crop, subpictures, depth) = geometry(&mut r, chroma, ctu_log2 as u8)?;
         let entropy_sync = r.flag()?;
         let entry_offsets = r.flag()?;
         let (poc_bits, poc_msb_bits) = poc_widths(&mut r)?;
@@ -125,15 +134,19 @@ impl Sequence {
         };
         let inter = Partition::parse(&mut r, min_cb, ctu_log2, false)?;
         let max_transform_log2 = 5 + u8::from(ctu_log2 > 5 && r.flag()?);
-        let transforms = Transforms::parse(&mut r, chroma)?;
-        let tools = Tools::parse(&mut r, chroma, ctu_log2, poc_bits, dimensions, &transforms)?;
+        let transforms = Transforms::parse(&mut r, chroma, qp_bd_offset(depth))?;
+        let tools = Tools::parse(
+            &mut r,
+            (chroma, depth),
+            ctu_log2,
+            poc_bits,
+            dimensions,
+            &transforms,
+        )?;
         if r.flag()? {
             vui::hrd(&mut r, max_layer)?;
         }
-        let field_pictures = r.flag()?;
-        if field_pictures && profile.frame_only {
-            return Err(DecodeError::Malformed("VVC field/frame constraint"));
-        }
+        let field_pictures = field_pictures(&mut r, &profile)?;
         let colour = if r.flag()? {
             vui::parse(&mut r)?
         } else {
@@ -149,6 +162,7 @@ impl Sequence {
             dimensions,
             crop,
             subpictures,
+            depth,
             gdr,
             resampling,
             resolution_change,
@@ -170,6 +184,34 @@ impl Sequence {
             colour,
         })
     }
+
+    /// `QpBdOffset` (H.266 §7.4.3.4): the QP range below zero at this depth.
+    pub fn qp_bd_offset(&self) -> i32 {
+        qp_bd_offset(self.depth)
+    }
+}
+
+/// `QpBdOffset` of samples of `depth` (H.266 §7.4.3.4).
+pub(crate) fn qp_bd_offset(depth: BitDepth) -> i32 {
+    QP_BD_OFFSET_STEP * depth.above_eight() as i32
+}
+
+/// `sps_field_seq_flag`, which a frame-only profile forbids.
+fn field_pictures(r: &mut Reader<'_>, profile: &Profile) -> Result<bool> {
+    let field = r.flag()?;
+    if field && profile.frame_only {
+        return Err(DecodeError::Malformed("VVC field/frame constraint"));
+    }
+    Ok(field)
+}
+
+/// `sps_bitdepth_minus8` (H.266 §7.3.2.4): 8 to 10 bits.
+fn bit_depth(r: &mut Reader<'_>) -> Result<BitDepth> {
+    let bits = r.ue(8, "VVC bit depth")? + 8;
+    if bits > MAX_BIT_DEPTH {
+        return Err(DecodeError::Unsupported("VVC bit depth above 10"));
+    }
+    Ok(BitDepth::new(bits).expect("8 to 10 bits"))
 }
 
 /// `sps_log2_max_pic_order_cnt_lsb_minus4 + 4` and, with
@@ -214,11 +256,12 @@ fn dpb(r: &mut Reader<'_>, max_layer: usize) -> Result<Vec<[u32; 3]>> {
 /// `Sqrt(MaxLumaPs · 8)` with `MaxLumaPs` 35 651 584 (H.266 A.4.1, Table A.1).
 const MAX_PICTURE_SIDE: u32 = 16_888;
 
+/// The picture size, conformance window, subpictures and bit depth.
 fn geometry(
     r: &mut Reader<'_>,
     chroma: bool,
     ctu_log2: u8,
-) -> Result<([u32; 2], [u32; 4], Subpictures)> {
+) -> Result<([u32; 2], [u32; 4], Subpictures, BitDepth)> {
     let dimensions = [
         r.ue(MAX_PICTURE_SIDE, "VVC maximum width")?,
         r.ue(MAX_PICTURE_SIDE, "VVC maximum height")?,
@@ -242,12 +285,7 @@ fn geometry(
     }
     let grid = dimensions.map(|size| size.div_ceil(1 << ctu_log2));
     let subpictures = Subpictures::parse(r, grid, dimensions, ctu_log2)?;
-    if r.ue(8, "VVC bit depth")? != 0 {
-        return Err(DecodeError::Unsupported(
-            "VVC decoder requires 8-bit samples",
-        ));
-    }
-    Ok((dimensions, crop, subpictures))
+    Ok((dimensions, crop, subpictures, bit_depth(r)?))
 }
 
 #[cfg(test)]
@@ -281,7 +319,7 @@ mod tests {
             assert!(!s.dual_tree);
             assert_eq!(s.partitions[0].mtt_depth, 0);
             for qp in 0..64 {
-                assert_eq!(u32::from(s.transforms.qp_tables[0][qp]), map.map(qp as u32));
+                assert_eq!(s.transforms.qp_tables[0].map(qp) as u32, map.map(qp as u32));
             }
             for end in 0..bytes.len() {
                 assert!(Sequence::parse(&bytes[..end]).is_err());
@@ -314,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_ten_bit_before_parsing_coding_tools() {
+    fn rejects_twelve_bit_before_parsing_coding_tools() {
         let mut w = nc_common::BitWriter::new();
         w.put_bits(0, 8); // SPS/VPS ids.
         w.put_bits(0, 3);
@@ -335,13 +373,11 @@ mod tests {
         w.put_ue(32);
         w.put_bit(false);
         w.put_bit(false);
-        w.put_ue(2);
+        w.put_ue(4);
         w.trailing_bits();
         assert!(matches!(
             Sequence::parse(&w.into_bytes()),
-            Err(DecodeError::Unsupported(
-                "VVC decoder requires 8-bit samples"
-            ))
+            Err(DecodeError::Unsupported("VVC bit depth above 10"))
         ));
     }
 

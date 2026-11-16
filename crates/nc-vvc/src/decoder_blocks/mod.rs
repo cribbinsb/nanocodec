@@ -105,9 +105,9 @@ pub(super) struct Unit {
     mts: u8,
     luma_mode: u8,
     chroma_mode: u8,
-    /// Luma QP of the CU (`QpY`; a chroma-tree CU holds the luma QP its
-    /// chroma QPs derive from).
-    qp: u8,
+    /// Luma QP of the CU (`QpY`, `−QpBdOffset ..= 63`; a chroma-tree CU
+    /// holds the luma QP its chroma QPs derive from).
+    qp: i8,
     /// CU chroma QP offsets (Cb, Cr, joint) from the PPS list.
     chroma_offsets: [i8; 3],
     /// Index of the CU's tile: neighbours in another tile are unavailable.
@@ -119,7 +119,7 @@ pub(super) struct Unit {
 }
 impl Unit {
     /// The CU's luma QP and chroma QP offsets, as `transform::qp` takes them.
-    fn quant(&self) -> (u8, [i8; 3]) {
+    fn quant(&self) -> (i8, [i8; 3]) {
         (self.qp, self.chroma_offsets)
     }
     /// Whether this is an IBC CU (known from its syntax, before its vector
@@ -186,7 +186,7 @@ pub(super) fn parse_filtered(
     slice: u16,
     filters: &mut [filter_syntax::CtuFilters],
 ) -> Result<Vec<Unit>> {
-    validate_tools(s, h)?;
+    validate_tools(s)?;
     let dimensions = p.dimensions.map(|v| v as usize);
     let inter = h.kind != 2;
     let scan = layout::scan(&h.ctus, &p.partitioning.tiles, s.ctu_log2);
@@ -238,7 +238,7 @@ pub(super) fn parse_filtered(
             &mut parser.contexts,
             h,
             neighbours,
-            filter_counts,
+            (filter_counts, s.depth),
         )?;
         if inter {
             parser.tree(
@@ -292,7 +292,7 @@ impl<'a> Parser<'a> {
                     h.picture.chroma_subdiv[usize::from(inter)],
                 ],
                 &p.cu_chroma_offsets,
-                h.qp as u8,
+                (h.qp as i8, s.qp_bd_offset() as i8),
                 init_kind,
             ),
             constraint: initialization::bank([[25, 20], [25, 12], [35, 35]], [1, 0], qp, init_kind),
@@ -307,25 +307,30 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Slice QP and initialisation type of the context variables (§9.3.2.2).
+    /// Slice QP and initialisation type of the context variables.
     fn initialization(&self) -> (u32, u8) {
         initialization_of(self.header)
     }
 }
 
+/// Slice QP and initialisation type of the context variables (§9.3.2.2:
+/// the QP is `Clip3(0, 63, SliceQpY)`, as `SliceQpY` may be negative above
+/// 8 bits).
 fn initialization_of(h: &SliceHeader) -> (u32, u8) {
     let kind = if h.cabac_init && h.kind != 2 {
         1 - h.kind
     } else {
         h.kind
     };
-    (h.qp as u32, kind)
+    (h.qp.clamp(0, MAX_CONTEXT_QP) as u32, kind)
 }
 
-fn validate_tools(s: &Sequence, h: &SliceHeader) -> Result<()> {
+/// The largest QP of context initialisation (§9.3.2.2).
+const MAX_CONTEXT_QP: i32 = 63;
+
+fn validate_tools(s: &Sequence) -> Result<()> {
     // Each unsupported tool is named, so a corpus run reports what is missing.
     let unsupported = [
-        (!h.picture.output, "VVC non-output picture"),
         (s.ctu_log2 > 7, "VVC CTU size"),
         (s.tools.palette, "VVC palette mode"),
     ];

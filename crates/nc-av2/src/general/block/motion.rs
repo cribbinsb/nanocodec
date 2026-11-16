@@ -1,209 +1,106 @@
-//! The motion of the blocks decoded so far, per 4x4 unit, the reference
-//! MV bank, and the candidate list of an intra block copy vector (dav2d
-//! `refmvs.h` `refmvs_tile`; `refmvs.c` `dav2d_refmvs_find`,
-//! `dav2d_refmvs_tile_sbrow_init`, `dav2d_refmvs_reset_sb`, the above-row
-//! backup of `dav2d_refmvs_save_tmvs`, `dav2d_refmvs_bank_update`,
-//! `dav2d_refmvs_bank_add`, `splat_mv_c`; dav2d commit 237229e, BSD-2-Clause,
-//! see `docs/licenses/dav2d`).
+//! The motion of the blocks decoded so far: per 4x4 unit of a tile's
+//! last superblocks, the 8x8 row above the current superblock row, the
+//! MV and warp banks, and the frame's temporal fields (dav2d `refmvs.h`
+//! `refmvs_block`, `refmvs_tile`; `refmvs.c` `dav2d_refmvs_tile_sbrow_init`,
+//! `dav2d_refmvs_reset_sb`, `dav2d_refmvs_save_tmvs`, `splat_mv_c`,
+//! `splat_warpmv_c`, `splat_comp_warpmv_c`, `splat_comp_wedgemv_c`;
+//! `decode.c` `splat_oneref_mv`, `splat_tworef_mv`, `splat_intrabc_mv`,
+//! `splat_intraref`; dav2d commit 237229e, BSD-2-Clause, see
+//! `docs/licenses/dav2d`).
 //!
-//! Minimal for intra block copy, and built to be extended by the inter
-//! group: a unit is intra or a block copy ([`Motion`]: add the inter
-//! variant with its references and vectors); the bank holds only its
-//! class of block-copy vectors (dav2d class 8 with the reference pair
-//! "none": add the other classes); the list ([`MotionStore::block_copy_candidates`])
-//! is `dav2d_refmvs_find` for the "none" pair, whose spatial candidates
-//! are block copies only (add the reference matching, temporal, derived
-//! and global candidates). The temporal store (`rp`) is not kept: general
-//! frames keep no motion field for later frames yet.
+//! The parts: [`vector`] (vector types, quantizing, projection), [`bank`]
+//! (MV and warp banks), [`frame`] (the frame's distances and projection
+//! list, its temporal field), [`temporal`] and [`tip`] (the projected
+//! field), [`candidates`] (a block's candidate list, dav2d
+//! `dav2d_refmvs_find`).
+pub mod bank;
+pub mod candidates;
+pub mod frame;
+pub mod temporal;
+pub mod tip;
+pub mod vector;
+
 use super::size::BlockSize;
+use crate::general::warp::WarpModel;
+use bank::{MvBank, WarpBank};
+use frame::{FrameMotion, TIP_FRAME_MODE, merge_pair};
+use vector::{MAX_COMPONENT, QuantizedMv, RefPair, TIP_REFERENCE, TemporalMv};
+
+pub use candidates::{Candidate, Candidates, DEFAULT_LEFT_EXTRA};
+pub use vector::Mv;
 
 /// The units kept: 64 rows (a 256x256 superblock row) by 128 columns
 /// (two of its superblocks: the current one and the one to its left),
 /// indexed modulo their extent (dav2d `rt->r`).
 const RING_ROWS: u32 = 64;
 const RING_COLUMNS: u32 = 128;
-/// Eighth-sample vector units per sample, as a shift.
-const VECTOR_FRACTION_BITS: u32 = 3;
-/// Candidate positions per 4x4 unit in vector units: the clip margin of a
-/// candidate is 4 units past the block (dav2d `minx` .. `maxy`).
-const CLIP_MARGIN_UNITS: i32 = 4;
-const VECTOR_UNITS_PER_UNIT: i32 = 32;
-/// The list holds up to six candidates.
-const MAX_CANDIDATES: usize = 6;
-/// Duplicate checks stop once this many comparisons were made (dav2d
-/// `iter_cntr` against `max_iter`).
-const MAX_COMPARISONS: u32 = 16;
-/// DRL reordering of the nearest candidates: always, or when no temporal
-/// candidate is high priority and four or more are nearest
-/// (`enable_drl_reorder`).
-const DRL_REORDER_ALWAYS: u8 = 2;
-const DRL_REORDER_CONSTRAINED: u8 = 1;
-const REORDER_MIN_ALWAYS: usize = 2;
-const REORDER_MIN_CONSTRAINED: usize = 4;
-/// Blocks this many units or less on a side read their above-right and
-/// below-left neighbours.
-const CORNER_MAX_UNITS: u32 = 16;
-/// The block copy's default vectors look this far left past a
-/// superblock's width, in samples.
-pub const DEFAULT_LEFT_EXTRA: i32 = 256;
-/// Bank entries per class.
-const BANK_ENTRIES: u8 = 4;
-const BANK_MASK: u8 = BANK_ENTRIES - 1;
-/// The bank stops taking vectors after this many per superblock, or per
-/// bank unit (dav2d `hits`), and starts each superblock with room for at
-/// least this many.
-const BANK_MAX_SUPERBLOCK_HITS: u8 = 64;
-const BANK_MAX_UNIT_HITS: u8 = 16;
-const BANK_MIN_AVAILABLE: u8 = 4;
-/// At a superblock's start the bank takes at most this many vectors from
-/// the row above.
-const BANK_REFILL_MAX: u32 = 4;
+/// Of a block's units only the bottom row and the right-most three
+/// columns are ever read by later blocks (dav2d writes only those).
+const READ_COLUMNS: u32 = 3;
+/// At a superblock's start the banks take at most this many blocks'
+/// motion from the row above.
+const REFILL_MAX: u32 = 4;
+/// Warp matrices' translation is in Q16 / 4 for the 8x8 vectors of a
+/// warp splat; their vectors round from Q11.
+const WARP_SPLAT_TRANSLATION_SHIFT: u32 = 2;
+const WARP_SPLAT_SHIFT: u32 = 11;
+/// The unit diagonal of a warp matrix.
+const UNITY: i32 = crate::general::warp::UNITY;
 
-/// A motion vector in eighth samples (dav2d `mv`). 32-bit components:
-/// projected and predicted vectors are clamped to +-0xffff, 17 bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Mv {
-    /// Down, in eighth samples.
-    pub y: i32,
-    /// Right, in eighth samples.
-    pub x: i32,
-}
-
-impl Mv {
-    /// Scaled by `num / den` display-order distances (dav2d
-    /// `dav2d_mv_projection`): `den` below 32, `num` within +-31.
-    #[must_use]
-    pub fn project(self, num: i32, den: i32) -> Self {
-        /// `2^14 / den` (dav2d `div_mult`).
-        const RECIPROCALS: [i32; 32] = [
-            0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170,
-            1092, 1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
-        ];
-        const SHIFT: u32 = 14;
-        const LIMIT: i64 = 0xffff;
-        let factor = i64::from(num * RECIPROCALS[den as usize]);
-        let scale = |v: i32| {
-            let product = i64::from(v) * factor;
-            ((product + (1 << (SHIFT - 1)) - i64::from(product < 0)) >> SHIFT).clamp(-LIMIT, LIMIT)
-                as i32
-        };
-        Self {
-            y: scale(self.y),
-            x: scale(self.x),
-        }
-    }
-
-    /// Rounded to whole samples (dav2d `fix_int_mv_precision`): to the
-    /// nearest, halves toward zero.
-    #[must_use]
-    pub fn to_integer(self) -> Self {
-        let round = |v: i32| (v + i32::from(v < 0) + 3) & !7;
-        Self {
-            y: round(self.y),
-            x: round(self.x),
-        }
-    }
-}
-
-/// What a 4x4 unit was predicted from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Motion {
-    /// Intra prediction, or not decoded yet (dav2d `INVALID_MV` with no
-    /// reference).
-    Intra,
-    /// Intra block copy with its vector (no reference).
-    BlockCopy(Mv),
-}
-
-/// One 4x4 unit's record (dav2d `refmvs_block`'s part block copies read).
+/// One 4x4 unit's record (dav2d `refmvs_block`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MotionUnit {
-    /// What it was predicted from.
-    pub motion: Motion,
+    /// The vectors ([`Mv::INVALID`] first for intra or not decoded; the
+    /// second for one reference). A warped block's are its model's
+    /// vectors at the unit's 8x8 block.
+    pub mv: [Mv; 2],
+    /// The references ([`RefPair::NONE`] for intra and block copies).
+    pub refs: RefPair,
     /// The size of the block the unit belongs to.
     pub size: BlockSize,
+    /// Global motion (dav2d `mf` bit 0).
+    pub global: bool,
+    /// A warped block (`mf` bit 1): `warp_mv` and `matrix` hold.
+    pub warped: bool,
+    /// The compound weight index (`mf >> 2`).
+    pub cwp: i8,
+    /// The block's top-left in 4x4 units (dav2d `by4`, `bx4`).
+    pub row: u32,
+    /// See `row`.
+    pub column: u32,
+    /// A warped block's own vectors (dav2d `lmv`).
+    pub warp_mv: [Mv; 2],
+    /// A warped block's matrix (dav2d `m`).
+    pub matrix: [i32; 6],
 }
 
-/// A unit nothing has written yet (dav2d's zeroed allocation: its size
-/// is never read before a block writes it).
+impl MotionUnit {
+    /// Intra, or not decoded yet.
+    #[must_use]
+    pub fn is_intra(&self) -> bool {
+        self.mv[0] == Mv::INVALID
+    }
+
+    /// The vectors the bank takes (a warped block's own).
+    #[must_use]
+    pub fn bank_mv(&self) -> [Mv; 2] {
+        if self.warped { self.warp_mv } else { self.mv }
+    }
+}
+
+/// A unit nothing has written yet.
 const EMPTY: MotionUnit = MotionUnit {
-    motion: Motion::Intra,
+    mv: [Mv::INVALID; 2],
+    refs: RefPair::NONE,
     size: BlockSize::B256x256,
+    global: false,
+    warped: false,
+    cwp: 0,
+    row: 0,
+    column: 0,
+    warp_mv: [Mv::INVALID; 2],
+    matrix: [0; 6],
 };
-
-/// One candidate of the list: its vector and weight.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Candidate {
-    /// The vector.
-    pub mv: Mv,
-    /// How strongly the neighbours suggest it (the list's reorder key).
-    pub weight: u16,
-}
-
-/// The candidate list of a block (dav2d `mvstack`, zero beyond `count`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Candidates {
-    /// The candidates in order.
-    pub list: [Candidate; MAX_CANDIDATES],
-    /// How many were found.
-    pub count: usize,
-}
-
-/// The reference MV bank's class of block-copy vectors: a ring of four
-/// with the most recent last, and the limits on how many a superblock
-/// adds (dav2d `rt->bank`, class 8).
-#[derive(Debug, Clone, Copy, Default)]
-struct Bank {
-    vectors: [Mv; BANK_ENTRIES as usize],
-    size: u8,
-    index: u8,
-    /// Vectors added in this superblock, and in this bank unit.
-    superblock_hits: u8,
-    unit_hits: u8,
-    /// How many more vectors the superblock may add.
-    available: u8,
-}
-
-impl Bank {
-    /// Add a vector, or move an equal one to the most recent place (dav2d
-    /// `refmvs_bank_add`).
-    fn insert(&mut self, mv: Mv) {
-        self.superblock_hits += 1;
-        let found = (0..self.size)
-            .find(|&n| self.vectors[usize::from(self.index.wrapping_add(n) & BANK_MASK)] == mv);
-        if let Some(n) = found {
-            let to = if self.size == BANK_ENTRIES {
-                self.index.wrapping_sub(1) & BANK_MASK
-            } else {
-                self.size - 1
-            };
-            let mut from = self.index.wrapping_add(n) & BANK_MASK;
-            let moved = self.vectors[usize::from(from)];
-            while from != to {
-                let next = (from + 1) & BANK_MASK;
-                self.vectors[usize::from(from)] = self.vectors[usize::from(next)];
-                from = next;
-            }
-            self.vectors[usize::from(to)] = moved;
-            return;
-        }
-        let target = if self.size == BANK_ENTRIES {
-            let target = self.index & BANK_MASK;
-            self.index = self.index.wrapping_add(1);
-            target
-        } else {
-            self.size += 1;
-            self.size - 1
-        };
-        self.vectors[usize::from(target)] = mv;
-    }
-
-    /// The vectors from the most recent back.
-    fn recent(&self) -> impl Iterator<Item = Mv> + '_ {
-        let start = self.size.wrapping_add(self.index).wrapping_sub(1);
-        (0..self.size).map(move |n| self.vectors[usize::from(start.wrapping_sub(n) & BANK_MASK)])
-    }
-}
 
 /// Where the store's frame and tile lie, in 4x4 units.
 #[derive(Debug, Clone, Copy)]
@@ -225,13 +122,53 @@ pub struct StoreGeometry {
 }
 
 impl StoreGeometry {
-    fn superblock_units(&self) -> u32 {
+    /// The superblock side in units (dav2d `sbsz`).
+    #[must_use]
+    pub fn superblock_units(&self) -> u32 {
         1 << (self.superblock_log2 - 2)
     }
 }
 
+/// How a compound block's wedge splits its 8x8 units between the two
+/// predictions (dav2d `WEDGE_TMVP`): per unit, 0 or 1 for the side that
+/// dominates, 2 for mixed; and the wedge sign.
+#[derive(Debug, Clone, Copy)]
+pub struct WedgeSides<'a> {
+    /// Row-major, `bw4 / 2` per row.
+    pub sides: &'a [u8],
+    /// `wedge_sign`.
+    pub sign: bool,
+}
+
+/// What an inter block leaves for later blocks and frames.
+#[derive(Debug, Clone, Copy)]
+pub struct InterMotion<'a> {
+    /// Top-left in 4x4 units.
+    pub row: u32,
+    /// See `row`.
+    pub column: u32,
+    /// The block size.
+    pub size: BlockSize,
+    /// Its references.
+    pub refs: RefPair,
+    /// Its final vectors.
+    pub mv: [Mv; 2],
+    /// Global motion mode (`GLOBALMV`, `GLOBALMV_GLOBALMV`).
+    pub global_mode: bool,
+    /// The warp matrices of a warped block (`motion_mode` above
+    /// inter-intra), one per reference.
+    pub warps: Option<[[i32; 6]; 2]>,
+    /// The compound weight index (`cwp_idx`).
+    pub cwp: i8,
+    /// A wedge compound's split.
+    pub wedge: Option<WedgeSides<'a>>,
+    /// A compound block keeps temporal vectors (not refined by optical
+    /// flow and MV refinement together).
+    pub keep_temporal: bool,
+}
+
 /// The motion of one tile (dav2d `refmvs_tile` with the frame's above row
-/// `rf->ra`).
+/// `rf->ra`), and the frame's motion state.
 #[derive(Debug, Clone)]
 pub struct MotionStore {
     geometry: StoreGeometry,
@@ -241,55 +178,92 @@ pub struct MotionStore {
     /// current superblock's top-left before its left neighbour replaced it.
     above: Vec<MotionUnit>,
     above_left: MotionUnit,
-    /// The bank, when the sequence has one (`enable_refmvbank`).
-    bank: Option<Bank>,
+    /// The MV bank, when the sequence has one.
+    bank: Option<MvBank>,
+    warps: WarpBank,
+    /// The frame's part.
+    pub frame: FrameMotion,
 }
 
 impl MotionStore {
-    /// A store for a tile; `bank` when the sequence uses the MV bank.
+    /// A store for a tile of a frame.
     #[must_use]
-    pub fn new(geometry: StoreGeometry, bank: bool) -> Self {
+    pub fn new(geometry: StoreGeometry, frame: FrameMotion) -> Self {
         Self {
             geometry,
             units: vec![EMPTY; (RING_ROWS * RING_COLUMNS) as usize],
-            above: vec![EMPTY; geometry.columns.div_ceil(2) as usize],
+            above: vec![EMPTY; frame.stride.max(geometry.columns.div_ceil(2) as usize)],
             above_left: EMPTY,
-            bank: bank.then(Bank::default),
+            bank: frame.params.bank.then(MvBank::default),
+            warps: WarpBank::default(),
+            frame,
         }
+    }
+
+    /// The tile's geometry.
+    #[must_use]
+    pub fn geometry(&self) -> &StoreGeometry {
+        &self.geometry
     }
 
     fn index(row: u32, column: u32) -> usize {
         ((row % RING_ROWS) * RING_COLUMNS + column % RING_COLUMNS) as usize
     }
 
-    fn unit(&self, row: u32, column: u32) -> MotionUnit {
-        self.units[Self::index(row, column)]
+    /// The unit at (`row`, `column`) of the current or previous
+    /// superblocks.
+    #[must_use]
+    pub fn unit(&self, row: u32, column: u32) -> &MotionUnit {
+        &self.units[Self::index(row, column)]
     }
 
-    /// At each superblock row of the tile: the bank starts empty (dav2d
-    /// `dav2d_refmvs_tile_sbrow_init`).
-    pub fn start_row(&mut self) {
+    /// The unit above the current superblock row at 8x8 column `x8`.
+    #[must_use]
+    pub fn above(&self, x8: u32) -> &MotionUnit {
+        &self.above[x8 as usize]
+    }
+
+    /// The unit that was above the current superblock's top-left.
+    #[must_use]
+    pub fn above_left(&self) -> &MotionUnit {
+        &self.above_left
+    }
+
+    /// At each superblock row of the tile: the banks start empty, and the
+    /// row's temporal field is projected when the frame uses motion fields
+    /// (dav2d `dav2d_refmvs_tile_sbrow_init`, `dav2d_refmvs_load_tmvs`).
+    pub fn start_row(&mut self, row: u32) {
         if let Some(bank) = &mut self.bank {
-            *bank = Bank::default();
+            bank.clear();
+        }
+        self.warps.clear();
+        if self.frame.params.use_motion_fields {
+            let start8 = (row >> 1) as usize;
+            let end8 = start8 + (self.geometry.superblock_units() >> 1) as usize;
+            self.frame.load(start8, end8);
         }
     }
 
-    /// At each superblock: its units are not decoded yet, the bank's
-    /// limits restart, and in inter frames below the tile's first row
-    /// (`refill`) the bank takes up to four vectors from the row above
-    /// (dav2d `dav2d_refmvs_reset_sb`).
-    pub fn start_superblock(&mut self, row: u32, column: u32, refill: bool) {
+    /// At each superblock: its units are not decoded yet, the banks'
+    /// limits restart, and in inter frames below the tile's first row the
+    /// banks take up to four blocks' motion from the row above (dav2d
+    /// `dav2d_refmvs_reset_sb`).
+    pub fn start_superblock(&mut self, row: u32, column: u32) {
         let side = self.geometry.superblock_units();
         for y in row..row + side {
             for x in column..column + side {
-                self.units[Self::index(y, x)].motion = Motion::Intra;
+                let unit = &mut self.units[Self::index(y, x)];
+                unit.mv[0] = Mv::INVALID;
+                unit.refs = RefPair::NONE;
             }
         }
-        let Some(bank) = &mut self.bank else {
-            return;
-        };
-        (bank.superblock_hits, bank.unit_hits, bank.available) = (0, 0, 0);
-        if !refill {
+        if let Some(bank) = &mut self.bank {
+            bank.start_superblock();
+        }
+        self.warps.start_superblock();
+        let params = &self.frame.params;
+        if row == self.geometry.row_start || params.intra_frame || params.tip_mode == TIP_FRAME_MODE
+        {
             return;
         }
         let end = (column + side).min(self.geometry.column_end);
@@ -297,18 +271,24 @@ impl MotionStore {
         while x < end {
             let above = self.above[(x >> 1) as usize];
             x += above.size.units().0;
-            if let Motion::BlockCopy(mv) = above.motion {
-                bank.insert(mv);
-                hits += 1;
-                if hits == BANK_REFILL_MAX {
-                    break;
-                }
+            if above.is_intra() {
+                continue;
+            }
+            if let Some(bank) = &mut self.bank {
+                bank.insert(above.refs, above.bank_mv(), above.cwp);
+            }
+            if above.warped {
+                self.warps.insert(&above.matrix, above.refs.get(0) as usize);
+            }
+            hits += 1;
+            if hits == REFILL_MAX {
+                break;
             }
         }
     }
 
     /// After each superblock: keep its bottom row (at 8x8 resolution) for
-    /// the superblock row below (dav2d `dav2d_refmvs_save_tmvs`'s backup).
+    /// the superblock row below (dav2d `dav2d_refmvs_save_tmvs`).
     pub fn end_superblock(&mut self, row: u32, column: u32) {
         let side = self.geometry.superblock_units();
         // Superblock positions and sides are even in 4x4 units.
@@ -318,404 +298,365 @@ impl MotionStore {
         let source_row = (row_end8 - 1) * 2 + 1;
         self.above_left = self.above[(column_end8 - 1) as usize];
         for x8 in column8..column_end8 {
-            self.above[x8 as usize] = self.unit(source_row, x8 * 2);
+            self.above[x8 as usize] = *self.unit(source_row, x8 * 2);
         }
     }
 
-    /// Record a block's motion over its units (dav2d `splat_mv_c`).
-    pub fn splat(&mut self, row: u32, column: u32, size: BlockSize, motion: Motion) {
-        let (bw4, bh4) = size.units();
-        let unit = MotionUnit { motion, size };
-        for y in row..row + bh4 {
-            let start = Self::index(y, column);
-            self.units[start..start + bw4 as usize].fill(unit);
+    /// Write a block's units where later blocks read them: the bottom row
+    /// and the right-most three columns; `unit` gives the record at each
+    /// unit offset (dav2d's splat footprint).
+    fn write_units(
+        &mut self,
+        row: u32,
+        column: u32,
+        (bw4, bh4): (u32, u32),
+        unit: impl Fn(u32, u32) -> MotionUnit,
+    ) {
+        for y in 0..bh4 {
+            let first = if y + 1 == bh4 {
+                0
+            } else {
+                bw4.saturating_sub(READ_COLUMNS)
+            };
+            for x in first..bw4 {
+                self.units[Self::index(row + y, column + x)] = unit(x, y);
+            }
         }
     }
 
-    /// The bank's limits at a block (dav2d `dav2d_refmvs_bank_update`):
-    /// each superblock, and each bank unit of it (a 2, 4 or 8 unit square
-    /// by superblock size), makes room for a vector per bank unit the
-    /// block covers.
+    /// Write the block's 8x8 units of the frame's temporal field;
+    /// `entry` gives each one's vectors and references.
+    fn write_temporal(
+        &mut self,
+        row: u32,
+        column: u32,
+        (bw4, bh4): (u32, u32),
+        entry: impl Fn(u32, u32) -> ([QuantizedMv; 2], RefPair),
+    ) {
+        let Some(field) = &mut self.frame.field else {
+            return;
+        };
+        let (row8, column8) = ((row >> 1) as usize, (column >> 1) as usize);
+        for y in 0..bh4.div_ceil(2) {
+            for x in 0..bw4.div_ceil(2) {
+                let at = (row8 + y as usize) * field.stride + column8 + x as usize;
+                let (mvs, refs) = entry(x, y);
+                field.mvs[at] = mvs;
+                field.refs[at] = refs;
+            }
+        }
+    }
+
+    /// The record every unit of a block shares.
+    fn base_unit(row: u32, column: u32, size: BlockSize, refs: RefPair, mv: [Mv; 2]) -> MotionUnit {
+        MotionUnit {
+            mv,
+            refs,
+            size,
+            row,
+            column,
+            ..EMPTY
+        }
+    }
+
+    /// Record an intra block of an inter frame or a frame allowing block
+    /// copies (dav2d `splat_intraref`), with the bank's limits.
+    pub fn record_intra(&mut self, row: u32, column: u32, size: BlockSize) {
+        let unit = Self::base_unit(row, column, size, RefPair::NONE, [Mv::INVALID; 2]);
+        self.write_units(row, column, size.units(), |_, _| unit);
+        self.write_temporal(row, column, size.units(), |_, _| {
+            ([QuantizedMv::INVALID; 2], RefPair::NONE)
+        });
+        self.update_bank(row, column, size);
+    }
+
+    /// Record a block copy and offer its vector to the bank (dav2d
+    /// `splat_intrabc_mv`).
+    pub fn record_block_copy(&mut self, row: u32, column: u32, size: BlockSize, mv: Mv) {
+        let unit = Self::base_unit(row, column, size, RefPair::NONE, [mv, Mv::INVALID]);
+        self.write_units(row, column, size.units(), |_, _| unit);
+        self.write_temporal(row, column, size.units(), |_, _| {
+            ([QuantizedMv::INVALID; 2], RefPair::NONE)
+        });
+        self.add_to_bank(row, column, size, RefPair::NONE, [mv, Mv::INVALID], 0);
+    }
+
+    /// The bank's limits at a block (dav2d `dav2d_refmvs_bank_update`).
     pub fn update_bank(&mut self, row: u32, column: u32, size: BlockSize) {
         let side = self.geometry.superblock_units();
-        let shift = u32::from(self.geometry.superblock_log2) - 5;
-        let Some(bank) = &mut self.bank else {
-            return;
-        };
-        let (bw4, bh4) = size.units();
-        let room = ((bw4 >> shift).max(1) * (bh4 >> shift).max(1)) as u8;
-        if (row | column) & (side - 1) == 0 {
-            bank.unit_hits = 0;
-            bank.available = room.max(BANK_MIN_AVAILABLE);
-        } else if (row | column) & ((1 << shift) - 1) == 0 {
-            bank.unit_hits = 0;
-            bank.available += room;
+        // Bank units are 2, 4 or 8 units square by superblock size.
+        let unit_log2 = u32::from(self.geometry.superblock_log2) - 5;
+        if let Some(bank) = &mut self.bank {
+            bank.update((row, column), size.units(), side, unit_log2);
         }
     }
 
-    /// Offer a block copy's vector to the bank (dav2d
-    /// `dav2d_refmvs_bank_add`).
-    pub fn add_to_bank(&mut self, row: u32, column: u32, size: BlockSize, mv: Mv) {
+    /// Offer a block's vectors to the bank (dav2d `dav2d_refmvs_bank_add`).
+    pub fn add_to_bank(
+        &mut self,
+        row: u32,
+        column: u32,
+        size: BlockSize,
+        refs: RefPair,
+        mv: [Mv; 2],
+        cwp: i8,
+    ) {
         self.update_bank(row, column, size);
-        let Some(bank) = &mut self.bank else {
-            return;
-        };
-        if bank.superblock_hits >= BANK_MAX_SUPERBLOCK_HITS
-            || bank.unit_hits >= BANK_MAX_UNIT_HITS
-            || bank.available == 0
-        {
-            return;
+        if let Some(bank) = &mut self.bank {
+            bank.offer(refs, mv, cwp);
         }
-        bank.unit_hits += 1;
-        bank.available -= 1;
-        bank.insert(mv);
     }
 
-    /// The candidate list of a block copy at (`row`, `column`): spatial
-    /// block-copy neighbours, reordered by weight, then the bank's
-    /// vectors, clipped near the frame, then the default vectors (dav2d
-    /// `dav2d_refmvs_find` with the reference pair "none"); up to
-    /// `1 + max_drl_bits` are listed, and `drl_reorder` is the
-    /// sequence's `enable_drl_reorder`.
+    /// Offer a warped block's model of reference `rank` to the warp bank
+    /// (dav2d `dav2d_refmvs_warp_add`); false once the superblock's limit
+    /// is reached.
+    pub fn add_warp(&mut self, matrix: &[i32; 6], rank: usize) -> bool {
+        self.warps.insert(matrix, rank)
+    }
+
+    /// Whether the temporal field keeps the pair (`r0`, `r1`) swapped
+    /// (dav2d `ref_flip` bit `r0 * 8 + r1`).
     #[must_use]
-    pub fn block_copy_candidates(
-        &self,
-        (row, column): (u32, u32),
-        size: BlockSize,
-        drl_reorder: u8,
-        max_drl_bits: u8,
-    ) -> Candidates {
-        let mut list = CandidateList::default();
-        let nearest = self.spatial_candidates(&mut list, (row, column), size);
-        if (drl_reorder == DRL_REORDER_ALWAYS && nearest >= REORDER_MIN_ALWAYS)
-            || (drl_reorder == DRL_REORDER_CONSTRAINED && nearest >= REORDER_MIN_CONSTRAINED)
-        {
-            list.promote_heaviest(nearest);
-        }
-        let limit = 1 + usize::from(max_drl_bits);
-        self.bank_candidates(&mut list, (row, column), size, limit);
-        let (bw4, bh4) = size.units();
-        let g = &self.geometry;
-        let bound = |position: u32, extent: u32, frame: u32| {
-            let position = position as i32;
-            (
-                -(position + extent as i32 + CLIP_MARGIN_UNITS) * VECTOR_UNITS_PER_UNIT,
-                (frame as i32 - position + CLIP_MARGIN_UNITS) * VECTOR_UNITS_PER_UNIT,
-            )
+    pub fn reference_flip(&self, r0: usize, r1: usize) -> bool {
+        self.frame.flip >> (r0 * 8 + r1) & 1 != 0
+    }
+
+    /// The projected TIP field at 8x8 unit (`row8`, `column8`) of the
+    /// frame, zero where empty (dav2d `rp_proj` reads of `tip_pred`).
+    #[must_use]
+    pub fn tip_vector(&self, row8: u32, column8: u32) -> TemporalMv {
+        self.frame
+            .projected(row8 as usize, column8 as usize)
+            .0
+            .or_zero()
+    }
+
+    /// A TIP field vector scaled to TIP reference `side` (dav2d
+    /// `scale_tmv(tmv, rf.tip.sf[side])`).
+    #[must_use]
+    pub fn tip_scaled(&self, v: TemporalMv, side: usize) -> Mv {
+        vector::scale_temporal(v, self.frame.tip.factors[side])
+    }
+
+    /// Record a TIP-predicted block's vectors in the temporal field
+    /// (dav2d `update_temporal`): `references` and `mvs` in block order,
+    /// kept swapped when `swap`; nothing when the sequence keeps no
+    /// fields.
+    pub fn update_temporal(
+        &mut self,
+        (row8, column8): (u32, u32),
+        (w8, h8): (u32, u32),
+        references: [i8; 2],
+        mvs: [Mv; 2],
+        swap: bool,
+    ) {
+        let Some(field) = &mut self.frame.field else {
+            return;
         };
-        let (min_x, max_x) = bound(column, bw4, g.columns);
-        let (min_y, max_y) = bound(row, bh4, g.rows);
-        for candidate in &mut list.list[..list.count] {
-            candidate.mv.y = candidate.mv.y.clamp(min_y, max_y);
-            candidate.mv.x = candidate.mv.x.clamp(min_x, max_x);
-        }
-        // The default vectors: a superblock up, a superblock (and 256
-        // samples) left, the block's height up, its width left.
-        let superblock = 1_i32 << g.superblock_log2;
-        let unit = |units: u32| -(units as i32 * VECTOR_UNITS_PER_UNIT);
-        let defaults = [
-            Mv {
-                y: -(superblock << VECTOR_FRACTION_BITS),
-                x: 0,
-            },
-            Mv {
-                y: 0,
-                x: -((superblock + DEFAULT_LEFT_EXTRA) << VECTOR_FRACTION_BITS),
-            },
-            Mv { y: unit(bh4), x: 0 },
-            Mv { y: 0, x: unit(bw4) },
-        ];
-        for mv in defaults {
-            if list.count >= limit {
-                break;
-            }
-            list.list[list.count] = Candidate { mv, weight: 0 };
-            list.count += 1;
-        }
-        Candidates {
-            list: list.list,
-            count: list.count,
+        let s = usize::from(swap);
+        field.record(
+            (row8 as usize, column8 as usize),
+            (w8 as usize, h8 as usize),
+            RefPair([references[s], references[1 - s]]),
+            [mvs[s], mvs[1 - s]],
+        );
+    }
+
+    /// The global model of reference `rank` when blocks may warp by it
+    /// (dav2d `gmv_warp_allowed`).
+    #[must_use]
+    pub fn global_warp(&self, rank: usize) -> Option<WarpModel> {
+        self.frame.global_warp_allowed[rank].then_some(self.frame.global[rank])
+    }
+
+    /// Record an inter block (dav2d `splat_oneref_mv`, `splat_tworef_mv`).
+    pub fn record_inter(&mut self, block: &InterMotion<'_>) {
+        if block.refs.is_compound() {
+            self.record_compound(block);
+        } else {
+            self.record_single(block);
         }
     }
 
-    /// The spatial candidates in dav2d's order: bottom-most left,
-    /// right-most above, top-most left, left-most above, below-left,
-    /// above-right, above-left, then two further left; returns how many
-    /// came before the further ones (the nearest).
-    fn spatial_candidates(
-        &self,
-        list: &mut CandidateList,
-        (row, column): (u32, u32),
-        size: BlockSize,
-    ) -> usize {
-        let g = &self.geometry;
-        let side = g.superblock_units();
+    /// Whether a block warps by a reference's global motion (a global
+    /// mode with a non-translation model, not whole-sample, 8x8 or more).
+    fn warps_globally(&self, block: &InterMotion<'_>, rank: i8) -> bool {
+        let (bw4, bh4) = block.size.units();
+        block.global_mode
+            && !self.frame.params.force_integer_mv
+            && bw4.min(bh4) > 1
+            && self
+                .frame
+                .global_model(rank)
+                .is_some_and(|model| model.kind > crate::general::warp::kind::TRANSLATION)
+    }
+
+    fn record_single(&mut self, block: &InterMotion<'_>) {
+        let (row, column, size) = (block.row, block.column, block.size);
         let (bw4, bh4) = size.units();
-        let w4 = bw4.min(g.column_end - column);
-        let h4 = bh4.min(g.row_end - row);
-        let have_left = column > g.column_start;
-        let bottom_left_unit =
-            (have_left && bh4 == h4).then(|| self.unit(row + bh4 - 1, column - 1));
-        let above = self.above_neighbours((row, column), (bw4, w4));
-        if let Some(unit) = bottom_left_unit {
-            list.add_spatial(unit, 1);
-        }
-        if let Some((unit, position)) = above.right_most {
-            list.add_spatial(unit, u16::from(position >= 0));
-        }
-        let top_left_unit = (have_left && bh4 > 1).then(|| self.unit(row, column - 1));
-        if let Some(unit) = top_left_unit {
-            list.add_spatial(unit, 1);
-        }
-        if let Some(unit) = above.left_most {
-            list.add_spatial(unit, u16::from(above.offset == 0));
-        }
-        let below = row + bh4;
-        if have_left && bh4 <= CORNER_MAX_UNITS && below & (side - 1) != 0 && below < g.row_end {
-            list.add_spatial(self.unit(below, column - 1), 1);
-        }
-        if let Some(unit) = above.top_right {
-            list.add_spatial(unit, 1);
-        }
-        if let Some(unit) = above.top_left {
-            list.add_spatial(unit, 0);
-        }
-        let nearest = list.count;
-        if have_left {
-            // Two and three units further left, where a different block
-            // lies there.
-            let step = 3 - (column & u32::from(bw4 == 1));
-            if column >= g.column_start + step {
-                let further = column - step;
-                let differs = |unit: MotionUnit, near: MotionUnit| {
-                    unit.size.units().0 < step || near.size != unit.size
-                };
-                for (near, unit_row) in [(bottom_left_unit, row + bh4 - 1), (top_left_unit, row)] {
-                    if let Some(near) = near {
-                        let unit = self.unit(unit_row, further);
-                        if differs(unit, near) {
-                            list.add_spatial(unit, 0);
-                        }
-                    }
-                }
+        let reference = block.refs.get(0);
+        let refs = RefPair::single(reference);
+        let mut unit = Self::base_unit(row, column, size, refs, [block.mv[0], Mv::INVALID]);
+        unit.global = block.global_mode && bw4.min(bh4) > 1;
+        // TIP blocks' temporal vectors are their prediction's.
+        let temporal = reference != TIP_REFERENCE;
+        let both = RefPair::both(reference);
+        if let Some(warps) = block.warps {
+            unit.global = false;
+            unit.warped = true;
+            unit.warp_mv = [block.mv[0], Mv::INVALID];
+            unit.matrix = warps[0];
+            // Whole-sample frames keep the block's own vector in the field.
+            let field_matrix = (!self.frame.params.force_integer_mv).then_some(warps[0]);
+            self.splat_warp(&unit, &warps[0], |mv| [mv, Mv::INVALID]);
+            if temporal {
+                self.write_temporal(row, column, (bw4, bh4), |x, y| {
+                    let mv = field_matrix
+                        .map_or(block.mv[0], |m| warp_vector(&m, (row, column), (x, y)));
+                    single_entry(mv, both)
+                });
             }
-        }
-        nearest
-    }
-
-    /// The above neighbours of a block `bw4` units wide (`w4` inside the
-    /// tile): in the row above within the superblock, or at a superblock's
-    /// top from the 8x8 backup row.
-    fn above_neighbours(&self, (row, column): (u32, u32), (bw4, w4): (u32, u32)) -> Above {
-        let g = &self.geometry;
-        let side = g.superblock_units();
-        let mut above = Above::default();
-        if row <= g.row_start {
-            return above;
-        }
-        let have_left = column > g.column_start;
-        if row & (side - 1) == 0 {
-            let offset = column & 1;
-            let width = (bw4 + 1) & !1;
-            let at = |x8: u32| self.above[x8 as usize];
-            above.offset = offset;
-            if (column - offset) as i32 - 2 >= g.column_start as i32 {
-                let unit = if column & (side - 2) != 0 {
-                    at((column >> 1) - 1)
-                } else {
-                    self.above_left
-                };
-                above.top_left = Some(unit);
-            }
-            if bw4 > 2 {
-                above.left_most = Some(at(column >> 1));
-            }
-            if bw4 == w4 {
-                let position = width as i32 - 2 - offset as i32;
-                above.right_most = Some((at((column >> 1) + (width >> 1) - 1), position));
-            }
-            if column - offset + width < g.column_end && bw4 <= CORNER_MAX_UNITS {
-                above.top_right = Some(at((column >> 1) + (width >> 1)));
+        } else if self.warps_globally(block, reference) {
+            let matrix = self.frame.global[reference as usize].matrix;
+            self.write_units(row, column, (bw4, bh4), |_, _| unit);
+            if temporal {
+                self.write_temporal(row, column, (bw4, bh4), |x, y| {
+                    single_entry(warp_vector(&matrix, (row, column), (x, y)), both)
+                });
             }
         } else {
-            if have_left {
-                above.top_left = Some(self.unit(row - 1, column - 1));
-            }
-            if bw4 > 1 {
-                above.left_most = Some(self.unit(row - 1, column));
-            }
-            if bw4 == w4 {
-                above.right_most = Some((self.unit(row - 1, column + bw4 - 1), bw4 as i32 - 1));
-            }
-            let right = column + bw4;
-            if right & (side - 1) != 0 && right < g.column_end && bw4 <= CORNER_MAX_UNITS {
-                // Not decoded yet when still marked intra-or-undecoded:
-                // only block copies count anyway.
-                above.top_right =
-                    Some(self.unit(row - 1, right)).filter(|unit| unit.motion != Motion::Intra);
+            self.write_units(row, column, (bw4, bh4), |_, _| unit);
+            if temporal {
+                let entry = single_entry(block.mv[0], both);
+                self.write_temporal(row, column, (bw4, bh4), |_, _| entry);
             }
         }
-        above
     }
 
-    /// The bank's vectors, most recent first, that are not listed and
-    /// point into the frame, up to `limit` candidates.
-    fn bank_candidates(
-        &self,
-        list: &mut CandidateList,
-        (row, column): (u32, u32),
-        size: BlockSize,
-        limit: usize,
+    /// Write a warped block's units, each with the vectors `vectors` makes
+    /// of its 8x8 block's model vector.
+    fn splat_warp(
+        &mut self,
+        unit: &MotionUnit,
+        matrix: &[i32; 6],
+        vectors: impl Fn(Mv) -> [Mv; 2],
     ) {
-        let Some(bank) = &self.bank else {
-            return;
-        };
+        let (row, column) = (unit.row, unit.column);
+        self.write_units(row, column, unit.size.units(), |x, y| {
+            let mv = warp_vector(matrix, (row, column), (x >> 1, y >> 1));
+            MotionUnit {
+                mv: vectors(mv),
+                ..*unit
+            }
+        });
+    }
+
+    fn record_compound(&mut self, block: &InterMotion<'_>) {
+        let (row, column, size) = (block.row, block.column, block.size);
         let (bw4, bh4) = size.units();
-        let g = &self.geometry;
-        let samples = |units: u32| (units << 2) as i32;
-        for mv in bank.recent() {
-            if list.count >= limit {
-                break;
-            }
-            if list.find(mv).is_some() {
-                continue;
-            }
-            // The whole-sample position, rounded toward zero.
-            let whole = |v: i32| {
-                let magnitude = (v.unsigned_abs() >> VECTOR_FRACTION_BITS) as i32;
-                if v < 0 { -magnitude } else { magnitude }
-            };
-            let x = samples(column) + whole(mv.x);
-            let y = samples(row) + whole(mv.y);
-            if x <= -samples(bw4)
-                || y <= -samples(bh4)
-                || x >= samples(g.columns)
-                || y >= samples(g.rows)
-            {
-                continue;
-            }
-            list.push(Candidate { mv, weight: 0 });
-        }
-    }
-}
-
-/// The above neighbours of a block (dav2d `tl`, `lmt`, `rmt`, `tr`) and
-/// the column offset at a superblock's top (`x_off`); the right-most one
-/// with its position relative to the block (its weight is 1 when not
-/// negative).
-#[derive(Debug, Clone, Copy, Default)]
-struct Above {
-    top_left: Option<MotionUnit>,
-    left_most: Option<MotionUnit>,
-    right_most: Option<(MotionUnit, i32)>,
-    top_right: Option<MotionUnit>,
-    offset: u32,
-}
-
-/// The list being built, with dav2d's count of duplicate comparisons.
-#[derive(Debug, Clone, Copy, Default)]
-struct CandidateList {
-    list: [Candidate; MAX_CANDIDATES],
-    count: usize,
-    comparisons: u32,
-}
-
-impl CandidateList {
-    /// The index of an equal vector, while comparisons remain (dav2d
-    /// `iter_cntr`: each search costs the positions it looked at).
-    fn find(&mut self, mv: Mv) -> Option<usize> {
-        if self.comparisons >= MAX_COMPARISONS {
-            return None;
-        }
-        let found = self.list[..self.count].iter().position(|c| c.mv == mv);
-        self.comparisons += found.map_or(self.count, |m| m + 1) as u32;
-        found
-    }
-
-    fn push(&mut self, candidate: Candidate) {
-        if self.count < MAX_CANDIDATES {
-            self.list[self.count] = candidate;
-            self.count += 1;
-        }
-    }
-
-    /// A spatial neighbour: a block copy's vector adds its weight to an
-    /// equal candidate or joins the list (dav2d `add_spatial_candidate`,
-    /// `add_candidate_sngl`).
-    fn add_spatial(&mut self, unit: MotionUnit, weight: u16) {
-        if self.count >= MAX_CANDIDATES {
-            return;
-        }
-        let Motion::BlockCopy(mv) = unit.motion else {
-            return;
+        let refs = block.refs;
+        let swap = self.frame.flipped(refs);
+        let s = usize::from(swap);
+        let mut field_refs = RefPair::NONE;
+        field_refs.0[s] = refs.get(0);
+        field_refs.0[1 - s] = refs.get(1);
+        let mut unit = Self::base_unit(row, column, size, refs, block.mv);
+        unit.cwp = block.cwp;
+        let keep = block.keep_temporal;
+        let wedge = block.wedge;
+        let wedge_swap = wedge.map_or(0, |w| usize::from(w.sign ^ swap));
+        let side = |x: u32, y: u32| wedge.map(|w| w.sides[(y * (bw4 >> 1) + x) as usize]);
+        let global_pair =
+            self.warps_globally(block, refs.get(0)) || self.warps_globally(block, refs.get(1));
+        let matrices = if let Some(warps) = block.warps {
+            unit.warped = true;
+            unit.warp_mv = block.mv;
+            unit.matrix = warps[0];
+            let m = warps;
+            self.write_units(row, column, (bw4, bh4), |x, y| MotionUnit {
+                mv: [
+                    warp_vector(&m[0], (row, column), (x >> 1, y >> 1)),
+                    warp_vector(&m[1], (row, column), (x >> 1, y >> 1)),
+                ],
+                ..unit
+            });
+            Some(warps)
+        } else if global_pair && block.global_mode {
+            unit.global = true;
+            self.write_units(row, column, (bw4, bh4), |_, _| unit);
+            let global = &self.frame.global;
+            Some([
+                global[refs.get(0) as usize].matrix,
+                global[refs.get(1) as usize].matrix,
+            ])
+        } else {
+            unit.global = block.global_mode && bw4.min(bh4) > 1;
+            self.write_units(row, column, (bw4, bh4), |_, _| unit);
+            None
         };
-        match self.find(mv) {
-            Some(m) => self.list[m].weight += weight,
-            None => self.push(Candidate { mv, weight }),
+        if !keep {
+            return;
         }
-    }
-
-    /// Swap the heaviest of the first `nearest` (the first of equals) to
-    /// the front.
-    fn promote_heaviest(&mut self, nearest: usize) {
-        let mut heaviest = 0;
-        for n in 1..nearest {
-            if self.list[n].weight > self.list[heaviest].weight {
-                heaviest = n;
+        if let Some([first, second]) = matrices {
+            self.write_temporal(row, column, (bw4, bh4), |x, y| {
+                let mut mvs = [QuantizedMv::INVALID; 2];
+                mvs[s] = QuantizedMv::quantize(warp_vector(&first, (row, column), (x, y)));
+                mvs[1 - s] = QuantizedMv::quantize(warp_vector(&second, (row, column), (x, y)));
+                if let Some(d) = side(x, y).filter(|&d| d != 2) {
+                    mvs[usize::from(d) ^ wedge_swap] = QuantizedMv::INVALID;
+                }
+                merge_pair(mvs, field_refs)
+            });
+            return;
+        }
+        let quantized = [
+            QuantizedMv::quantize(block.mv[s]),
+            QuantizedMv::quantize(block.mv[1 - s]),
+        ];
+        let merged = merge_pair(quantized, field_refs);
+        self.write_temporal(row, column, (bw4, bh4), |x, y| match side(x, y) {
+            Some(d) if d != 2 => {
+                let keep = 1 - (usize::from(d) ^ wedge_swap);
+                let mv = quantized[keep];
+                if mv.is_valid() {
+                    ([mv; 2], RefPair::both(field_refs.get(keep)))
+                } else {
+                    ([mv; 2], RefPair::NONE)
+                }
             }
-        }
-        self.list.swap(0, heaviest);
+            _ => merged,
+        });
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A one-reference field entry (a vector out of range keeps none).
+fn single_entry(mv: Mv, both: RefPair) -> ([QuantizedMv; 2], RefPair) {
+    let q = QuantizedMv::quantize(mv);
+    ([q; 2], if q.is_valid() { both } else { RefPair::NONE })
+}
 
-    fn geometry() -> StoreGeometry {
-        StoreGeometry {
-            columns: 32,
-            rows: 32,
-            superblock_log2: 6,
-            column_start: 0,
-            column_end: 32,
-            row_start: 0,
-            row_end: 32,
-        }
-    }
-
-    /// A block with nothing coded beside it gets the four defaults.
-    #[test]
-    fn defaults_alone() {
-        let store = MotionStore::new(geometry(), true);
-        let list = store.block_copy_candidates((0, 0), BlockSize::B16x16, 2, 3);
-        let mvs: Vec<_> = list.list[..list.count]
-            .iter()
-            .map(|c| (c.mv.y, c.mv.x))
-            .collect();
-        assert_eq!(mvs, [(-512, 0), (0, -2560), (-128, 0), (0, -128)]);
-    }
-
-    /// The left neighbour's copy comes first; the bank adds a different
-    /// one; equal vectors are not repeated.
-    #[test]
-    fn neighbour_then_bank() {
-        let mut store = MotionStore::new(geometry(), true);
-        let left = Mv { y: -64, x: -8 };
-        store.splat(4, 0, BlockSize::B16x16, Motion::BlockCopy(left));
-        store.add_to_bank(4, 0, BlockSize::B16x16, left);
-        store.add_to_bank(0, 0, BlockSize::B16x16, Mv { y: -96, x: 0 });
-        let list = store.block_copy_candidates((4, 4), BlockSize::B16x16, 2, 3);
-        let mvs: Vec<_> = list.list[..list.count]
-            .iter()
-            .map(|c| (c.mv.y, c.mv.x))
-            .collect();
-        assert_eq!(mvs, [(-64, -8), (-96, 0), (-512, 0), (0, -2560)]);
-    }
-
-    #[test]
-    fn integer_rounding() {
-        let mv = Mv { y: -12, x: 13 }.to_integer();
-        assert_eq!((mv.y, mv.x), (-8, 16));
+/// A warp model's vector at 8x8 unit (`x8`, `y8`) of the block at
+/// (`row`, `column`) (dav2d `splat_warpmv_c`'s running sums).
+fn warp_vector(m: &[i32; 6], (row, column): (u32, u32), (x8, y8): (u32, u32)) -> Mv {
+    let (bx, by) = (
+        column as i32 + 1 + 2 * x8 as i32,
+        row as i32 + 1 + 2 * y8 as i32,
+    );
+    let mvx = (m[2] - UNITY)
+        .wrapping_mul(bx)
+        .wrapping_add(m[3].wrapping_mul(by))
+        .wrapping_add(m[0] >> WARP_SPLAT_TRANSLATION_SHIFT);
+    let mvy = m[4]
+        .wrapping_mul(bx)
+        .wrapping_add(m[1] >> WARP_SPLAT_TRANSLATION_SHIFT)
+        .wrapping_add((m[5] - UNITY).wrapping_mul(by));
+    let round = |v: i32| {
+        let magnitude =
+            ((v.unsigned_abs() + (1 << (WARP_SPLAT_SHIFT - 1))) >> WARP_SPLAT_SHIFT) as i32;
+        (if v < 0 { -magnitude } else { magnitude }).clamp(-MAX_COMPONENT, MAX_COMPONENT)
+    };
+    Mv {
+        y: round(mvy),
+        x: round(mvx),
     }
 }

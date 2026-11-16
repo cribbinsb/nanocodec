@@ -199,3 +199,32 @@ pub struct InterRecord {
     /// The interpolation filter (dav2d `Dav2dFilterMode`).
     pub filter: u8,
 }
+
+impl Default for InterRecord {
+    /// A single-reference NEAR block of reference 0 with nothing else
+    /// coded.
+    fn default() -> Self {
+        Self {
+            references: [0, NO_REFERENCE],
+            mode: InterMode::Near,
+            drl: [0; 2],
+            residual: [Mv::default(); 2],
+            precision: [0; 2],
+            amvd: false,
+            motion_mode: MotionMode::Translation,
+            warp_reference: 0,
+            warp_with_residual: false,
+            warp_delta: [0; 4],
+            warp_inter_intra: false,
+            inter_intra_mode: 0,
+            wedge_index: -1,
+            wedge_sign: false,
+            mask_sign: false,
+            compound: CompoundType::None,
+            weight: EQUAL_WEIGHT,
+            refine_mv: 0,
+            bawp: [0; 2],
+            filter: 0,
+        }
+    }
+}

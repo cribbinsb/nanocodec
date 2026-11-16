@@ -44,7 +44,13 @@ fn official_intra_syntax() {
                     }
                 }
                 blocks += fingerprint_levels(&mut coefficients, &units);
-                inverse_residuals(&mut units, s, &header, None, &nc_dsp::Dsp::new());
+                inverse_residuals(
+                    &mut units,
+                    s,
+                    &header,
+                    None,
+                    nc_dsp::Dsp::new().at(nc_common::BitDepth::EIGHT),
+                );
                 fingerprint_residuals(&mut residuals, &units);
                 let reconstructed = reconstructed(
                     &units,

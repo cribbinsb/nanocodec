@@ -1,13 +1,16 @@
 //! LMCS model selection from bounded adaptation sets; sample mapping lives in DSP.
 use super::{DecodeError, Result, Sequence, SliceHeader};
 use crate::decoder_headers::{Adaptation, AdaptationData};
-use nc_dsp::VvcLmcs;
+use nc_common::{Picture, PlaneIndex};
+use nc_dsp::{Pixel, VvcLmcs};
 
-pub(crate) fn model(
-    _sequence: &Sequence,
+/// The LMCS model of slice `header` at the sequence's depth (H.266
+/// §7.4.3.19: the bins split `0 ..= (1 << BitDepth) − 1`).
+pub(crate) fn model<T: Pixel>(
+    sequence: &Sequence,
     header: &SliceHeader,
     banks: &[Option<Box<Adaptation>>; 8],
-) -> Result<Option<VvcLmcs>> {
+) -> Result<Option<VvcLmcs<T>>> {
     if !header.lmcs {
         return Ok(None);
     }
@@ -22,10 +25,11 @@ pub(crate) fn model(
     else {
         return Err(DecodeError::Malformed("VVC missing LMCS APS"));
     };
-    VvcLmcs::new(
+    VvcLmcs::new_at(
         parameters.bins,
         parameters.width_delta,
         parameters.chroma_offset,
+        sequence.depth.of::<T>(),
     )
     .map(Some)
     .ok_or(DecodeError::Malformed("VVC LMCS model bounds"))
@@ -33,8 +37,8 @@ pub(crate) fn model(
 
 /// VPDU scales are derived once from already reconstructed luma neighbours.
 /// In a dual tree, the luma CU containing the VPDU origin defines that origin.
-pub(super) struct ChromaScale<'a> {
-    model: &'a VvcLmcs,
+pub(super) struct ChromaScale<'a, T: Pixel> {
+    model: &'a VvcLmcs<T>,
     side: usize,
     columns: usize,
     /// The origin of the luma CU at each VPDU's origin, for the VPDUs of
@@ -42,9 +46,9 @@ pub(super) struct ChromaScale<'a> {
     origins: Vec<Option<(usize, usize)>>,
     scales: Vec<Option<i32>>,
 }
-impl<'a> ChromaScale<'a> {
+impl<'a, T: Pixel> ChromaScale<'a, T> {
     pub fn new(
-        model: &'a VvcLmcs,
+        model: &'a VvcLmcs<T>,
         units: &[super::Unit],
         dimensions: [usize; 2],
         ctu_log2: u8,
@@ -72,7 +76,7 @@ impl<'a> ChromaScale<'a> {
     pub fn get(
         &mut self,
         position: (usize, usize),
-        picture: &nc_common::Picture,
+        picture: &Picture<T>,
         available: &super::references::Availability,
     ) -> i32 {
         let index = position.1 / self.side * self.columns + position.0 / self.side;
@@ -82,23 +86,26 @@ impl<'a> ChromaScale<'a> {
         // Every chroma block lies in a VPDU whose origin a luma CU of its
         // slice covers; without one, no neighbour is available.
         let (x, y) = self.origins[index].unwrap_or((0, 0));
-        let view = picture.plane(nc_common::PlaneIndex::Y).view();
+        let view = picture.plane(PlaneIndex::Y).view();
         let mut sum = 0u32;
         let mut count = 0u32;
         if available.has(0, x as isize - 1, y as isize) {
             for dy in 0..self.side {
-                sum += u32::from(view.row((y + dy).min(view.height() - 1))[x - 1]);
+                sum += view.row((y + dy).min(view.height() - 1))[x - 1].to_i32() as u32;
             }
             count += self.side as u32;
         }
         if available.has(0, x as isize, y as isize - 1) {
             for dx in 0..self.side {
-                sum += u32::from(view.row(y - 1)[(x + dx).min(view.width() - 1)]);
+                sum += view.row(y - 1)[(x + dx).min(view.width() - 1)].to_i32() as u32;
             }
             count += self.side as u32;
         }
-        let average = (sum + count / 2).checked_div(count).unwrap_or(128) as u8;
-        let scale = self.model.chroma_scale(average);
+        // Without neighbours, the mid-grey of the depth (§8.7.5.3).
+        let average = (sum + count / 2)
+            .checked_div(count)
+            .map_or(self.model.depth().mid(), |mean| mean as i32);
+        let scale = self.model.chroma_scale(T::from_i32(average));
         self.scales[index] = Some(scale);
         scale
     }

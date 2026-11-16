@@ -28,7 +28,11 @@ mod neon;
 #[allow(unsafe_code)]
 mod simd128;
 
+use nc_common::BitDepth;
+
 use crate::Isa;
+
+pub(crate) use reference::predict_at;
 
 /// Largest transform side.
 pub(crate) const MAX_SIDE: usize = 32;
@@ -77,17 +81,18 @@ impl Vp9IntraMode {
 /// The edges of one transform block: `above[0]` is the above-left sample,
 /// `above[1..=2 · side]` the row above extended to twice the side,
 /// `left[..side]` the left column, with unavailable samples already set to
-/// VP9's fixed values. `has_above`/`has_left` select the DC average.
+/// VP9's fixed values (127 and 129 at 8 bits, `mid − 1` and `mid + 1` at
+/// any depth). `has_above`/`has_left` select the DC average.
 ///
 /// Contract: for sides above 4 the above-right samples repeat the last
 /// above one (`above[side + 1..=2 · side] == above[side]`), as VP9's
 /// `have_right` rule makes them; [`rows`] relies on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Vp9IntraEdges {
+pub struct Vp9IntraEdges<T = u8> {
     /// Above-left, then the row above (twice the side).
-    pub above: [u8; 2 * MAX_SIDE + 1],
+    pub above: [T; 2 * MAX_SIDE + 1],
     /// The left column.
-    pub left: [u8; MAX_SIDE],
+    pub left: [T; MAX_SIDE],
     /// The row above is available.
     pub has_above: bool,
     /// The left column is available.
@@ -124,18 +129,16 @@ fn avg3(a: u8, b: u8, c: u8) -> u8 {
     ((u16::from(a) + 2 * u16::from(b) + u16::from(c) + 2) >> 2) as u8
 }
 
-/// The DC value: the rounded mean of the available edges, 128 if none
-/// (`dc_pred[left][top]`); shared by both forms.
-fn dc_value(side: usize, edges: &Vp9IntraEdges) -> u8 {
-    /// DC of a block with no available edges.
-    const NO_EDGES: u8 = 128;
-    let sum = |edge: &[u8]| edge.iter().map(|&s| u32::from(s)).sum::<u32>();
+/// The DC value: the rounded mean of the available edges, `mid` (128 at 8
+/// bits) if none (`dc_pred[left][top]`); shared by both forms.
+fn dc_value<T: nc_common::Sample>(side: usize, edges: &Vp9IntraEdges<T>, depth: BitDepth) -> T {
+    let sum = |edge: &[T]| edge.iter().map(|&s| s.to_i32() as u32).sum::<u32>();
     let (above, left) = (&edges.above[1..=side], &edges.left[..side]);
     let (total, count) = match (edges.has_above, edges.has_left) {
         (true, true) => (sum(above) + sum(left), 2 * side as u32),
         (true, false) => (sum(above), side as u32),
         (false, true) => (sum(left), side as u32),
-        (false, false) => return NO_EDGES,
+        (false, false) => return T::from_i32(depth.mid()),
     };
-    ((total + count / 2) / count) as u8
+    T::from_i32(((total + count / 2) / count) as i32)
 }

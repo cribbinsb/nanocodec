@@ -4,20 +4,20 @@ use super::{
     references::{Availability, References},
 };
 use nc_common::{Picture, PlaneIndex};
-use nc_dsp::{Dsp, VvcIntraMode};
+use nc_dsp::{DepthKernels, Pixel, VvcIntraMode};
 
 /// Reconstruct the CUs `units` of one slice into `picture` (before the
 /// loop filters). Neighbours in other slices are unavailable, so each slice
 /// reconstructs on its own.
-pub(crate) fn reconstruct(
-    picture: &mut Picture,
+pub(crate) fn reconstruct<T: Pixel>(
+    picture: &mut Picture<T>,
     units: &[Unit],
     sequence: &Sequence,
     dimensions: [usize; 2],
     joint_sign: bool,
-    references: super::inter_prediction::Sources<'_>,
-    dsp: &Dsp,
-    reshape: Option<(&nc_dsp::VvcLmcs, bool)>,
+    references: super::inter_prediction::Sources<'_, T>,
+    dsp: DepthKernels<'_>,
+    reshape: Option<(&nc_dsp::VvcLmcs<T>, bool)>,
 ) {
     let mut available = Availability::new(
         dimensions,
@@ -28,7 +28,7 @@ pub(crate) fn reconstruct(
     });
     for unit in units {
         available.enter(unit);
-        let mut isp = super::isp::Prediction::prepare(unit, picture, &available);
+        let mut isp = super::isp::Prediction::prepare(unit, picture, &available, dsp.depth());
         let ciip = super::ciip::prepare(unit, picture, &available, dsp);
         for (transform_index, transform) in unit.transforms.iter().enumerate() {
             let mut mixed = [Vec::new(), Vec::new()];
@@ -119,16 +119,16 @@ pub(crate) fn reconstruct(
     }
 }
 
-fn predict(
+fn predict<T: Pixel>(
     unit: &Unit,
     block: nc_encoder::Block,
     index: usize,
-    picture: &Picture,
+    picture: &Picture<T>,
     available: &Availability,
     sequence: &Sequence,
-    references: super::inter_prediction::Sources<'_>,
-    dsp: &Dsp,
-) -> Vec<u8> {
+    references: super::inter_prediction::Sources<'_, T>,
+    dsp: DepthKernels<'_>,
+) -> Vec<T> {
     let plane = [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V][index];
     let shift = usize::from(index != 0);
     let node = block;
@@ -143,7 +143,7 @@ fn predict(
     } else {
         unit.chroma_mode
     };
-    let mut prediction = vec![0; width * height];
+    let mut prediction = vec![T::default(); width * height];
     if unit.motion.is_some() {
         super::inter_prediction::predict_unit(dsp, references, unit, plane, block, &mut prediction);
     } else if let Some(vector) = unit.block_vector {
@@ -159,7 +159,7 @@ fn predict(
             picture,
             available,
             (x, y, width, height),
-            unit.reference_line,
+            (unit.reference_line, dsp.depth()),
         );
         dsp.vvc_mrl_predict(
             (width, height),
@@ -171,25 +171,14 @@ fn predict(
             &mut prediction,
         );
     } else if unit.bdpcm[shift] != 0 || (index == 0 && unit.mip.is_some()) {
-        let refs = References::gather(picture, available, plane, (x, y, width, height), false);
-        if unit.bdpcm[shift] != 0 {
-            dsp.vvc_bdpcm_predict(
-                (width, height),
-                unit.bdpcm[shift] == 2,
-                &refs.top,
-                &refs.left,
-                &mut prediction,
-            );
-        } else if let Some((mode, transpose)) = unit.mip {
-            dsp.vvc_mip_predict(
-                (width, height),
-                mode,
-                transpose,
-                &refs.top,
-                &refs.left,
-                &mut prediction,
-            );
-        }
+        predict_from_edges(
+            unit,
+            (picture, available),
+            (plane, shift),
+            (x, y, width, height),
+            dsp,
+            &mut prediction,
+        );
     } else if direction >= 67 {
         cclm::predict(
             picture,
@@ -197,12 +186,18 @@ fn predict(
             sequence,
             unit,
             block,
-            plane,
+            (plane, dsp.depth()),
             &mut prediction,
         );
     } else {
         let smooth = index == 0 && nc_dsp::vvc_intra_filter_references((width, height), direction);
-        let refs = References::gather(picture, available, plane, (x, y, width, height), smooth);
+        let refs = References::gather(
+            picture,
+            available,
+            (plane, dsp.depth()),
+            (x, y, width, height),
+            smooth,
+        );
         let mode = match direction {
             0 => VvcIntraMode::Planar,
             1 => VvcIntraMode::Dc,
@@ -223,6 +218,43 @@ fn predict(
     prediction
 }
 
+/// BDPCM (H.266 §8.4.5.2.12) or MIP (§8.4.5.2.2) prediction of `plane`
+/// (channel `shift`) of `unit`'s block at `rect` from its unfiltered edges.
+fn predict_from_edges<T: Pixel>(
+    unit: &Unit,
+    (picture, available): (&Picture<T>, &Availability),
+    (plane, shift): (PlaneIndex, usize),
+    (x, y, width, height): (usize, usize, usize, usize),
+    dsp: DepthKernels<'_>,
+    prediction: &mut [T],
+) {
+    let refs = References::gather(
+        picture,
+        available,
+        (plane, dsp.depth()),
+        (x, y, width, height),
+        false,
+    );
+    if unit.bdpcm[shift] != 0 {
+        dsp.vvc_bdpcm_predict(
+            (width, height),
+            unit.bdpcm[shift] == 2,
+            &refs.top,
+            &refs.left,
+            prediction,
+        );
+    } else if let Some((mode, transpose)) = unit.mip {
+        dsp.vvc_mip_predict(
+            (width, height),
+            mode,
+            transpose,
+            &refs.top,
+            &refs.left,
+            prediction,
+        );
+    }
+}
+
 /// [`reconstruct`] of a one-slice picture into a new picture.
 #[cfg(test)]
 pub(crate) fn reconstructed(
@@ -231,7 +263,7 @@ pub(crate) fn reconstructed(
     dimensions: [usize; 2],
     joint_sign: bool,
     references: super::inter_prediction::Sources<'_>,
-    dsp: &Dsp,
+    dsp: &nc_dsp::Dsp,
     reshape: Option<(&nc_dsp::VvcLmcs, bool)>,
 ) -> nc_common::decode::Result<Picture> {
     let mut picture = Picture::new(dimensions[0], dimensions[1], 0)
@@ -243,7 +275,7 @@ pub(crate) fn reconstructed(
         dimensions,
         joint_sign,
         references,
-        dsp,
+        dsp.at(nc_common::BitDepth::EIGHT),
         reshape,
     );
     Ok(picture)

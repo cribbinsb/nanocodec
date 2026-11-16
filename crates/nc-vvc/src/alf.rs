@@ -18,11 +18,11 @@ pub(crate) use clipped::ClippedFilters;
 
 use crate::alf_aps::{CLASSES, Gram, SignalledFilters, Units};
 use crate::{coeff::Bins, contexts::Contexts};
-use nc_common::{Picture, PlaneIndex, PlaneView, decode::Result};
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, decode::Result};
 use nc_dsp::{
-    Dsp, Moments, VVC_ALF_BLOCK as BLOCK, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN, VVC_ALF_REACH,
-    VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAPS as TAPS,
-    VVC_ALF_TRANSPOSES, vvc_alf_gram_index,
+    DepthKernels, Dsp, Moments, Pixel, VVC_ALF_BLOCK as BLOCK, VVC_ALF_DOT_LANES,
+    VVC_ALF_GRAM_ALIGN, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES,
+    VVC_ALF_TAPS as TAPS, VVC_ALF_TRANSPOSES, vvc_alf_gram_index,
 };
 
 /// Fixed filter sets a CTB may choose (`alf_luma_fixed_filter_idx`, 4 bypass bits).
@@ -161,9 +161,13 @@ const STATS_COLUMN_STEP: usize = VVC_ALF_SAMPLE_STEP;
 
 /// The deblocked, SAO-filtered luma of a picture, edge-padded, and the
 /// class of each of its 4x4 blocks: what filtering and the encoder's
-/// decision read.
-pub(crate) struct Analysis<'a> {
+/// decision read. Samples of any depth up to 10 bits (the general
+/// decoder's; the encoder's are 8-bit).
+pub(crate) struct Analysis<'a, T = u8> {
     dsp: &'a Dsp,
+    /// The samples' depth (the `AlfClip` values and the classification's
+    /// activity shift, H.266 §7.4.3.18, §8.8.5.3).
+    depth: BitDepth,
     /// The top-left luma sample analysed: the picture's, or a region's.
     origin: (usize, usize),
     /// The region analysed and filtered, when not the whole picture.
@@ -171,20 +175,20 @@ pub(crate) struct Analysis<'a> {
     width: usize,
     height: usize,
     stride: usize,
-    samples: Vec<u8>,
+    samples: Vec<T>,
     ctu: usize,
     block_columns: usize,
     /// Each 4x4 block's `[class index, transpose index]`, raster order.
     classes: Vec<[u8; 2]>,
 }
 
-impl<'a> Analysis<'a> {
-    /// Analyse the luma of `picture` (`ctu`-sample CTUs): classify the
-    /// blocks of the CTBs (raster index) `wanted` names: those that may be
-    /// filtered (encoder) or are (decoder).
+impl<'a, T: Pixel> Analysis<'a, T> {
+    /// Analyse the luma of `picture` (`ctu`-sample CTUs, samples of
+    /// `depth`): classify the blocks of the CTBs (raster index) `wanted`
+    /// names: those that may be filtered (encoder) or are (decoder).
     pub(crate) fn new(
-        dsp: &'a Dsp,
-        picture: &Picture,
+        (dsp, depth): (&'a Dsp, BitDepth),
+        picture: &Picture<T>,
         ctu: usize,
         wanted: impl Fn(usize) -> bool,
     ) -> Self {
@@ -203,6 +207,7 @@ impl<'a> Analysis<'a> {
         let block_columns = width.div_ceil(BLOCK);
         let mut analysis = Self {
             dsp,
+            depth,
             origin: (0, 0),
             region: None,
             width,
@@ -220,7 +225,12 @@ impl<'a> Analysis<'a> {
     /// Analyse one region of the luma of `picture`, every sample around it
     /// read where `region` says (§8.8.5.2 clip positions): what a CTB or
     /// part of one bordered by edges the filter may not cross reads.
-    pub(crate) fn region(dsp: &'a Dsp, picture: &Picture, ctu: usize, region: &Region) -> Self {
+    pub(crate) fn region(
+        (dsp, depth): (&'a Dsp, BitDepth),
+        picture: &Picture<T>,
+        ctu: usize,
+        region: &Region,
+    ) -> Self {
         let view = picture.plane(PlaneIndex::Y).view();
         let (x0, y0, width, height) = region.rect;
         let stride = width + 2 * PAD;
@@ -236,6 +246,7 @@ impl<'a> Analysis<'a> {
         }
         let mut analysis = Self {
             dsp,
+            depth,
             origin: (x0, y0),
             region: Some(region.rect),
             width,
@@ -250,9 +261,14 @@ impl<'a> Analysis<'a> {
         analysis
     }
 
+    /// The kernels at the samples' depth.
+    fn kernels(&self) -> DepthKernels<'a> {
+        self.dsp.at(self.depth.of::<T>())
+    }
+
     /// Padded row `y` (picture coordinates), starting [`PAD`] samples left
     /// of the analysed area.
-    fn row(&self, y: isize) -> &[u8] {
+    fn row(&self, y: isize) -> &[T] {
         let start = (y - self.origin.1 as isize + PAD as isize) as usize * self.stride;
         &self.samples[start..start + self.stride]
     }
@@ -285,7 +301,7 @@ impl<'a> Analysis<'a> {
             });
             &row[PAD + first_block * BLOCK - LAPLACIAN_LEAD..]
         };
-        self.dsp
+        self.kernels()
             .vvc_alf_laplacians(&[row(-1), row(0), row(1), row(2)], out);
     }
 
@@ -347,7 +363,7 @@ impl<'a> Analysis<'a> {
                         }
                     }
                     let start = by * self.block_columns;
-                    self.dsp.vvc_alf_classify(
+                    self.kernels().vvc_alf_classify::<T>(
                         &column_sums,
                         boundary,
                         &mut classes[start + blocks.start..start + blocks.end],
@@ -359,7 +375,7 @@ impl<'a> Analysis<'a> {
     }
 }
 
-impl Analysis<'_> {
+impl<T: Pixel> Analysis<'_, T> {
     fn class(&self, x: usize, y: usize) -> Class {
         let (x, y) = (x - self.origin.0, y - self.origin.1);
         let [index, transpose] = self.classes[y / BLOCK * self.block_columns + x / BLOCK];
@@ -377,7 +393,7 @@ impl Analysis<'_> {
     }
 
     /// The tap rows of row `y` (for dy -3..=3) and its rounding shift.
-    fn tap_rows(&self, y: usize) -> ([&[u8]; 7], u32) {
+    fn tap_rows(&self, y: usize) -> ([&[T]; 7], u32) {
         let reach = self.reach(y);
         let rows =
             std::array::from_fn(|i| self.row(y as isize + (i as isize - 3).clamp(-reach, reach)));
@@ -392,7 +408,7 @@ impl Analysis<'_> {
         (x0, y0, w, h): Ctb,
         set: &SetCoefficients,
         coefficients: &mut [[i16; TAPS]],
-        output: &mut nc_common::PlaneViewMut<'_>,
+        output: &mut nc_common::PlaneViewMut<'_, T>,
     ) {
         let coefficients = &mut coefficients[..w.div_ceil(BLOCK)];
         let stride = output.stride();
@@ -410,9 +426,9 @@ impl Analysis<'_> {
             let mut lines = output.data_mut()[y * stride..]
                 .chunks_mut(stride)
                 .map(|line| &mut line[x0..x0 + w]);
-            let mut out: [&mut [u8]; BLOCK] =
+            let mut out: [&mut [T]; BLOCK] =
                 std::array::from_fn(|_| lines.next().expect("four rows in the picture"));
-            self.dsp
+            self.kernels()
                 .vvc_alf_filter_block_row(&rows, coefficients, &shifts, &mut out);
         }
     }
@@ -421,7 +437,7 @@ impl Analysis<'_> {
     /// `signalled` is the slice's APS bank, if it has one.
     pub(crate) fn apply(
         &self,
-        picture: &mut Picture,
+        picture: &mut Picture<T>,
         decisions: &[CtbAlf],
         signalled: Option<&SignalledFilters>,
     ) {
@@ -445,10 +461,10 @@ impl Analysis<'_> {
     /// are equal, as rectangles with their item: one filter call per row of
     /// a run rather than of each CTB.
     /// A region's analysis has one item, its region's.
-    fn runs<'i, T: PartialEq + Copy>(
+    fn runs<'i, I: PartialEq + Copy>(
         &self,
-        items: &'i [T],
-    ) -> Box<dyn Iterator<Item = (Ctb, T)> + 'i> {
+        items: &'i [I],
+    ) -> Box<dyn Iterator<Item = (Ctb, I)> + 'i> {
         if let Some(region) = self.region {
             return Box::new(items.first().map(|&item| (region, item)).into_iter());
         }
@@ -477,7 +493,9 @@ impl Analysis<'_> {
                 }),
         )
     }
+}
 
+impl Analysis<'_> {
     /// Choose each CTB's filters (or none) by luma squared error against
     /// `source` plus `lambda` times the signalling bits, and with
     /// `options.signalled` whether the slice signals an APS bank (derived

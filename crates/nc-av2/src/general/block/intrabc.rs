@@ -3,7 +3,7 @@
 //! `bytefn(dav2d_recon_b)`, `mc`, `bawp`; AVM `read_intrabc_info`): the
 //! vector's syntax (predictor or residual, DRL index, precision, the
 //! block-adaptive scale flag), the predictor list
-//! ([`super::motion::MotionStore::block_copy_candidates`]), the bilinear
+//! ([`super::motion::MotionStore::find`] for the pair "none"), the bilinear
 //! copy from the frame being decoded, then the residual as an inter
 //! block's (inter transform types, no intra prediction).
 //!
@@ -14,7 +14,8 @@ use super::Tile;
 use super::context::NO_DIRECTION;
 use super::inter_syntax::ShellModels;
 use super::intra::{IntraModes, mode};
-use super::motion::{DEFAULT_LEFT_EXTRA, Motion, Mv};
+use super::motion::vector::RefPair;
+use super::motion::{DEFAULT_LEFT_EXTRA, Mv};
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::transform::LumaTransforms;
@@ -214,16 +215,15 @@ impl Tile<'_, '_> {
         size: BlockSize,
         copy: &BlockCopy,
     ) -> Result<Mv> {
-        let max_drl_bits = self.frame.intra_block_copy.map_or(0, |c| c.max_drl_bits);
-        let drl_reorder = self.sequence.references.drl_reorder;
         let store = self.motion.as_ref().ok_or(DecodeError::Malformed(
             "AV2 block copy without a motion store",
         ))?;
-        let candidates = store.block_copy_candidates(
-            (record.row, record.column),
+        let candidates = store.find(
+            RefPair::NONE,
             size,
-            drl_reorder,
-            max_drl_bits,
+            false,
+            (record.row, record.column),
+            false,
         );
         trace!(self, depth, "find_mv_refs(intra)");
         for (n, candidate) in candidates.list[..candidates.count].iter().enumerate() {
@@ -232,8 +232,8 @@ impl Tile<'_, '_> {
                 depth + 1,
                 "mv[{n}/{}]: y={},x={},w={}",
                 candidates.count,
-                candidate.mv.y,
-                candidate.mv.x,
+                candidate.mv[0].y,
+                candidate.mv[0].x,
                 candidate.weight
             );
         }
@@ -241,7 +241,7 @@ impl Tile<'_, '_> {
             .list
             .get(copy.drl_index)
             .ok_or(DecodeError::Malformed("AV2 block copy DRL index"))?
-            .mv;
+            .mv[0];
         if mv == Mv::default() {
             // AVM forces a nonzero predictor: a superblock up, or left
             // (and 256 samples further) in a tile's first superblock row.
@@ -261,12 +261,8 @@ impl Tile<'_, '_> {
             mv.x = mv.x.wrapping_add(copy.residual.x);
         }
         trace!(self, depth, "final 2dmv: y={},x={}", mv.y, mv.x);
-        let bank = self.sequence.references.mv_bank;
         if let Some(store) = &mut self.motion {
-            store.splat(record.row, record.column, size, Motion::BlockCopy(mv));
-            if bank {
-                store.add_to_bank(record.row, record.column, size, mv);
-            }
+            store.record_block_copy(record.row, record.column, size, mv);
         }
         Ok(mv)
     }

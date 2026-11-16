@@ -160,7 +160,9 @@ impl AlfSearch {
         let previous_on = reuse.filter(|_| self.reuse_on_only).map(|held| &held.on);
         let is_skipped =
             |ctb: usize| skipped.is_some_and(|s| s[ctb]) || previous_on.is_some_and(|on| !on[ctb]);
-        let analysis = Analysis::new(dsp, recon, ctu, |ctb| !is_skipped(ctb));
+        let analysis = Analysis::new((dsp, nc_common::BitDepth::EIGHT), recon, ctu, |ctb| {
+            !is_skipped(ctb)
+        });
         let decision = analysis.decide(
             source,
             lambda * self.lambda_scale,

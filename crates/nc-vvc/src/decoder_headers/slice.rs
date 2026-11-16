@@ -82,7 +82,7 @@ impl SliceHeader {
         let qp = if let Some(qp) = picture.qp {
             qp
         } else {
-            p.initial_qp + r.se(-p.initial_qp, 63 - p.initial_qp, "VVC slice QP")?
+            super::picture::slice_qp(&mut r, s, p)?
         };
         let chroma_offsets = chroma_offsets(&mut r, s, p)?;
         let cu_chroma_offsets = !p.cu_chroma_offsets.is_empty() && r.flag()?;

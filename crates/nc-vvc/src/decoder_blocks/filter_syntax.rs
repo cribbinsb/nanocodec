@@ -5,6 +5,7 @@ use crate::{
     decoder_headers::{Adaptation, AdaptationData},
     sao::CtuSao,
 };
+use nc_common::BitDepth;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CtuFilters {
@@ -105,11 +106,18 @@ impl Models {
         contexts: &mut Contexts,
         header: &SliceHeader,
         neighbours: [Option<CtuFilters>; 2],
-        counts: Counts,
+        (counts, depth): (Counts, BitDepth),
     ) -> Result<CtuFilters> {
         let mut filters = CtuFilters::default();
         if header.sao.contains(&true) {
-            read_sao(reader, contexts, header.sao, neighbours, &mut filters)?;
+            let largest = sao_largest_offset(depth);
+            read_sao(
+                reader,
+                contexts,
+                (header.sao, largest),
+                neighbours,
+                &mut filters,
+            )?;
         }
         for plane in 0..3 {
             if !header.alf.enabled[plane] {
@@ -181,10 +189,23 @@ fn truncated(reader: &mut Reader<'_>, count: u32) -> Result<u32> {
         2 * value + u32::from(reader.bypass()?) - threshold
     })
 }
+/// The bits of `sao_offset_abs`'s cMax above 5 (H.266 §7.4.9.3.2: cMax is
+/// `(1 << (Min(BitDepth, 10) − 5)) − 1`).
+const SAO_OFFSET_BITS_BASE: u32 = 5;
+/// The depth beyond which SAO offsets are scaled instead of growing.
+const SAO_OFFSET_MAX_DEPTH: u32 = 10;
+
+/// cMax of `sao_offset_abs` at `depth` (7 at 8 bits, 31 at 10). Up to 10
+/// bits `SaoOffsetVal` is the offset itself (its shift `BitDepth −
+/// Min(BitDepth, 10)` is zero).
+fn sao_largest_offset(depth: BitDepth) -> i8 {
+    ((1 << (depth.bits().min(SAO_OFFSET_MAX_DEPTH) - SAO_OFFSET_BITS_BASE)) - 1) as i8
+}
+
 fn read_sao(
     reader: &mut Reader<'_>,
     contexts: &mut Contexts,
-    enabled: [bool; 2],
+    (enabled, largest): ([bool; 2], i8),
     neighbours: [Option<CtuFilters>; 2],
     filters: &mut CtuFilters,
 ) -> Result<()> {
@@ -209,7 +230,7 @@ fn read_sao(
         }
         let mut offsets = [0i8; 4];
         for offset in &mut offsets {
-            while *offset < 7 && reader.bypass()? {
+            while *offset < largest && reader.bypass()? {
                 *offset += 1;
             }
         }

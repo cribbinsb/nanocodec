@@ -9,7 +9,8 @@
 //! (`mvref.rs`) and reconstruction (`recon.rs`) extend it.
 
 use nc_common::decode::{DecodeError, Result};
-use nc_common::{Picture, PictureRecycler};
+use nc_common::{BitDepth, Picture, PictureRecycler};
+use nc_dsp::Pixel;
 
 use super::block::{BlockInfo, BlockSize, MvRef, Partition, REFS_PER_FRAME};
 use super::fill::fill_run;
@@ -19,7 +20,6 @@ use super::recon::{InterScratch, REFERENCE_BORDER, Reference};
 use crate::bool_coder::BoolReader;
 use crate::coeff::TokenCache;
 use crate::probs::{Counts, FrameContext};
-use crate::recon::ResidualBuffers;
 use crate::segmentation::MAX_SEGMENTS;
 use crate::tables;
 use crate::transform::Steps;
@@ -35,17 +35,19 @@ const SB_4X4: usize = 16;
 const TILE_SIZE_BYTES: usize = 4;
 
 /// The inputs one frame decodes from.
-pub(super) struct FrameInputs<'a> {
+pub(super) struct FrameInputs<'a, T: Pixel> {
     pub header: &'a FrameHeader,
     pub compressed: CompressedHeader,
     pub context: &'a FrameContext,
     /// LAST, GOLDEN and ALTREF (inter frames).
-    pub references: [Option<Reference<'a>>; REFS_PER_FRAME],
+    pub references: [Option<Reference<'a, T>>; REFS_PER_FRAME],
     /// The previous frame's vectors (`use_prev_frame_mvs`).
     pub previous_mvs: Option<&'a [MvRef]>,
     /// `last_frame_seg_map`.
     pub last_segment_map: &'a [u8],
     pub dsp: &'a nc_dsp::Dsp,
+    /// The frame's bit depth (8 in the `u8` instance).
+    pub depth: BitDepth,
 }
 
 /// One tile's column range and its left contexts.
@@ -58,11 +60,11 @@ pub(super) struct Tile {
 }
 
 /// The state and output of decoding one frame.
-pub(super) struct FrameDecoder<'a> {
-    pub inputs: FrameInputs<'a>,
+pub(super) struct FrameDecoder<'a, T: Pixel> {
+    pub inputs: FrameInputs<'a, T>,
     pub mi_cols: usize,
     pub mi_rows: usize,
-    pub recon: Picture,
+    pub recon: Picture<T>,
     /// Every decoded block; `grid` holds each 8x8 unit's block index.
     pub blocks: Vec<BlockInfo>,
     pub grid: Vec<u32>,
@@ -72,7 +74,7 @@ pub(super) struct FrameDecoder<'a> {
     /// Above coefficient contexts per plane (4x4 units, superblock-aligned).
     pub above_nonzero: [Vec<u8>; 3],
     pub above_partition: Vec<u8>,
-    pub scratch: Box<BlockScratch>,
+    pub scratch: Box<BlockScratch<T>>,
     /// Quantizer steps per segment, luma and chroma (libvpx `seg_dequant`):
     /// resolved once per frame instead of per transform block.
     pub steps: [[Steps; 2]; MAX_SEGMENTS],
@@ -85,7 +87,7 @@ pub(super) struct FrameDecoder<'a> {
 /// clearing it for every frame cost about 2 % of decoding (720p: the
 /// inter-prediction window, the vector and block grids, the growing block
 /// list), while no frame depends on its contents.
-pub(super) struct BlockScratch {
+pub(super) struct BlockScratch<T: Pixel> {
     /// The block list, grid and vector buffers of the next frame. Every
     /// grid and vector cell is written by the block covering it before any
     /// read (neighbours and later frames read decoded blocks only), so a
@@ -94,15 +96,14 @@ pub(super) struct BlockScratch {
     pub grid: Vec<u32>,
     pub mvs: Vec<MvRef>,
     pub filter_masks: Masks,
-    /// Dequantized coefficients of one transform block (16-bit, §8.6.2),
-    /// zero between blocks (and so between frames).
-    pub coefficients: [i16; 32 * 32],
+    /// Dequantized coefficients of one transform block (16-bit at 8 bits,
+    /// §8.6.2), zero between blocks (and so between frames).
+    pub coefficients: [T::Vp9Coefficient; 32 * 32],
     pub token_cache: TokenCache,
-    pub buffers: Box<ResidualBuffers>,
-    pub inter: InterScratch,
+    pub inter: InterScratch<T>,
     /// One transform block's intra prediction (zeroing a fresh one per
     /// block cost 0.3 % of decoding).
-    pub intra: [u8; 32 * 32],
+    pub intra: [T; 32 * 32],
     /// Where the frame's analysis records go, when they are collected.
     #[cfg(feature = "analysis")]
     pub stats: Option<nc_common::stream_stats::StreamStats>,
@@ -111,24 +112,23 @@ pub(super) struct BlockScratch {
     pub analysis: super::analysis::BlockScratch,
 }
 
-impl std::fmt::Debug for BlockScratch {
+impl<T: Pixel> std::fmt::Debug for BlockScratch<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlockScratch").finish_non_exhaustive()
     }
 }
 
-impl BlockScratch {
-    pub(super) fn new(dsp: &nc_dsp::Dsp) -> Box<Self> {
+impl<T: Pixel> BlockScratch<T> {
+    pub(super) fn new() -> Box<Self> {
         Box::new(Self {
             blocks: Vec::new(),
             grid: Vec::new(),
             mvs: Vec::new(),
             filter_masks: Masks::default(),
-            coefficients: [0; 32 * 32],
+            coefficients: [T::Vp9Coefficient::default(); 32 * 32],
             token_cache: TokenCache::new(),
-            buffers: ResidualBuffers::new(dsp),
             inter: InterScratch::new(),
-            intra: [0; 32 * 32],
+            intra: [T::default(); 32 * 32],
             #[cfg(feature = "analysis")]
             stats: None,
             #[cfg(feature = "analysis")]
@@ -137,21 +137,21 @@ impl BlockScratch {
     }
 }
 
-/// The quantizer steps of every segment's luma and chroma.
-fn segment_steps(header: &FrameHeader) -> [[Steps; 2]; MAX_SEGMENTS] {
+/// The quantizer steps of every segment's luma and chroma at `depth`.
+fn segment_steps(header: &FrameHeader, depth: BitDepth) -> [[Steps; 2]; MAX_SEGMENTS] {
     let quantizer = &header.quantizer;
     core::array::from_fn(|segment| {
         let q = header.segmentation.qindex(segment as u8, quantizer.base);
         [
-            Steps::new(q, quantizer.y_dc_delta, 0),
-            Steps::new(q, quantizer.uv_dc_delta, quantizer.uv_ac_delta),
+            Steps::at(q, (quantizer.y_dc_delta, 0), depth),
+            Steps::at(q, (quantizer.uv_dc_delta, quantizer.uv_ac_delta), depth),
         ]
     })
 }
 
 /// What a decoded frame leaves for later frames.
-pub(super) struct FrameOutput {
-    pub recon: Picture,
+pub(super) struct FrameOutput<T: Pixel> {
+    pub recon: Picture<T>,
     pub mvs: Vec<MvRef>,
     pub segment_map: Vec<u8>,
     pub counts: Counts,
@@ -160,15 +160,15 @@ pub(super) struct FrameOutput {
 /// Unit index of a new grid cell (never read: neighbours are decoded).
 const NO_BLOCK: u32 = u32::MAX;
 
-impl<'a> FrameDecoder<'a> {
+impl<'a, T: Pixel> FrameDecoder<'a, T> {
     /// A decoder for one frame, its reconstruction from `pictures` (a
     /// released picture is reused without clearing when its size fits).
     pub(super) fn new(
-        inputs: FrameInputs<'a>,
-        pictures: &mut PictureRecycler,
-        mut scratch: Box<BlockScratch>,
+        inputs: FrameInputs<'a, T>,
+        pictures: &mut PictureRecycler<T>,
+        mut scratch: Box<BlockScratch<T>>,
     ) -> Result<Self> {
-        let header = inputs.header;
+        let (header, depth) = (inputs.header, inputs.depth);
         let mi_cols = header.width.div_ceil(MI_SIZE);
         let mi_rows = header.height.div_ceil(MI_SIZE);
         // Planes cover whole superblocks: blocks and transforms that pass
@@ -211,7 +211,7 @@ impl<'a> FrameDecoder<'a> {
             above_nonzero: [vec![0; units], vec![0; units / 2], vec![0; units / 2]],
             above_partition: vec![0; sb_cols * SB_MI],
             scratch,
-            steps: segment_steps(header),
+            steps: segment_steps(header, depth),
             filter_levels: Levels::new(&header.loop_filter, &header.segmentation),
             filter_masks,
         })
@@ -219,7 +219,7 @@ impl<'a> FrameDecoder<'a> {
 
     /// The frame's output, and its working memory (block list, grids and
     /// deblocking units back in the scratch) for the next frame.
-    pub(super) fn finish(self) -> (FrameOutput, Box<BlockScratch>) {
+    pub(super) fn finish(self) -> (FrameOutput<T>, Box<BlockScratch<T>>) {
         let mut scratch = self.scratch;
         (scratch.blocks, scratch.grid) = (self.blocks, self.grid);
         scratch.filter_masks = self.filter_masks;
@@ -279,7 +279,7 @@ impl<'a> FrameDecoder<'a> {
                 if mi_row >= SB_MI {
                     let above = mi_row - SB_MI;
                     deblocker.filter_row(
-                        self.inputs.dsp,
+                        self.inputs.dsp.at(self.inputs.depth),
                         &mut self.recon,
                         &self.filter_masks,
                         above,
@@ -292,7 +292,7 @@ impl<'a> FrameDecoder<'a> {
         }
         let last_row = (self.mi_rows - 1) & !(SB_MI - 1);
         deblocker.filter_row(
-            self.inputs.dsp,
+            self.inputs.dsp.at(self.inputs.depth),
             &mut self.recon,
             &self.filter_masks,
             last_row,
@@ -529,8 +529,8 @@ struct PlaneGeometry {
 }
 
 impl BlockPosition {
-    fn new(
-        frame: &FrameDecoder<'_>,
+    fn new<T: Pixel>(
+        frame: &FrameDecoder<'_, T>,
         tile: &Tile,
         mi_row: usize,
         mi_col: usize,

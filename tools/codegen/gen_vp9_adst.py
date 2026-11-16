@@ -7,9 +7,10 @@ The normative inverse (`iadst8_c`, `iadst16_c`, vpx_dsp/inv_txfm.c) and the
 encoder's forward (`fadst8`, `fadst16`, vp9/encoder/vp9_dct.c) are
 straight-line integer code; this script rewrites each statement into Rust
 (`wrap` for WRAPLOW, `round_shift` for the 14-bit rounding) so the
-arithmetic stays exactly the reference's: the inverse in wrapping i32 on
-i16 inputs (libvpx's own `int` stage sums), the forward in i64. libvpx is
-BSD-3-Clause.
+arithmetic stays exactly the reference's: the inverse in i64 with the
+depth's `wrap` (`InverseDepth`: 16 bits for libvpx's 8-bit decoder, 32
+bits for `vpx_highbd_iadst*_c`, whose statements are the same), the forward
+in i64. libvpx is BSD-3-Clause.
 """
 import re
 import subprocess
@@ -50,14 +51,14 @@ def translate(lines: list[str], n: int, inverse: bool) -> str:
         if stmt.startswith("memset") or stmt.startswith("return"):
             continue
         stmt = stmt.replace("{", "").replace("}", "").strip()
-        widen = "Wrapping(i32::from(input[\\2]))" if inverse else "i64::from(input[\\2])"
+        widen = "Wrapping(i64::from(input[\\2]))" if inverse else "i64::from(input[\\2])"
         stmt = re.sub(r"tran_high_t\s+(x\d+)\s*=\s*input\[(\d+)\]",
                       r"let mut \1 = " + widen, stmt)
         stmt = re.sub(r"cospi_(\d+)_64", r"COS[\1]" if inverse else r"C[\1]", stmt)
         stmt = stmt.replace("(int)", "").replace("(tran_low_t)", "")
         stmt = stmt.replace("WRAPLOW", "wrap").replace("dct_const_round_shift", "round_shift")
         stmt = stmt.replace("fdct_round_shift", "round_shift")
-        narrow = r"output[\1] = (\2).0 as i16" if inverse else r"output[\1] = (\2) as i32"
+        narrow = r"output[\1] = (\2).0 as i32" if inverse else r"output[\1] = (\2) as i32"
         stmt = re.sub(r"output\[(\d+)\]\s*=\s*(.*)", narrow, stmt)
         if not stmt:
             continue
@@ -80,17 +81,19 @@ def main():
 //! `fadst8`/`fadst16` (`vp9/encoder/vp9_dct.c`); BSD-3-Clause, Copyright (c)
 //! 2010 The `WebM` Project authors, see `THIRD_PARTY.md`. Do not edit by hand.
 //!
-//! The inverse wraps every stage to 16 bits (`WRAPLOW`, the 8-bit decoder's
-//! `int16_t` storage); the forward keeps full precision. The inverse's sums
-//! of products are wrapping i32, as libvpx's `int` stage variables: each is
-//! consumed only through `wrap` or `wrap(round_shift(..))`, and a sum taken
-//! modulo 2^32, shifted right by 14 and truncated to 16 bits equals the
-//! exact one (the discarded multiple, 2^18, is itself a multiple of 2^16).
+//! The inverse wraps every stage as its depth does (`InverseDepth::wrap`:
+//! `WRAPLOW`, 16 bits, in the 8-bit decoder; `HIGHBD_WRAPLOW`, 32 bits,
+//! above); the forward keeps full precision. Sums of products are exact
+//! i64 (`tran_high_t`): at 8 bits libvpx's `int` sums may wrap modulo 2^32,
+//! but each is consumed only through `wrap` or `wrap(round_shift(..))`, and
+//! a sum taken modulo 2^32, shifted right by 14 and truncated to 16 bits
+//! equals the exact one (the discarded multiple, 2^18, is itself a multiple
+//! of 2^16).
 
 #![allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::similar_names)]
 #![allow(unused_assignments, unused_parens, clippy::identity_op, clippy::neg_multiply)]
 
-use super::VP9_COSPI_64 as C_TABLE;
+use super::{InverseDepth, VP9_COSPI_64 as C_TABLE};
 use std::num::Wrapping;
 
 const C: [i64; 32] = {
@@ -103,15 +106,15 @@ const C: [i64; 32] = {
     c
 };
 
-/// A stage value of the inverse: wrapping i32.
-type Stage = Wrapping<i32>;
+/// A stage value of the inverse (`tran_high_t`).
+type Stage = Wrapping<i64>;
 
 /// The cosines as [`Stage`] values, for the inverse.
 const COS: [Stage; 32] = {
     let mut c = [Wrapping(0); 32];
     let mut k = 0;
     while k < 32 {
-        c[k] = Wrapping(C_TABLE[k]);
+        c[k] = Wrapping(C_TABLE[k] as i64);
         k += 1;
     }
     c
@@ -125,13 +128,14 @@ fn round_shift(value: i64) -> i64 {
 '''
     for path, signature, name, n, inverse in FUNCTIONS:
         code = translate(body((source / path).read_text(), signature), n, inverse)
-        wrap = ("/// `WRAPLOW`: truncate to 16 bits.\nfn wrap(value: Stage) -> Stage {\n    Wrapping(i32::from(value.0 as i16))\n}\n"
-                "/// 14-bit rounding (`dct_const_round_shift`) modulo 2^32.\nfn round_shift(value: Stage) -> Stage {\n    (value + Wrapping(1 << 13)) >> 14\n}\n"
+        wrap = ("/// `WRAPLOW` at the depth.\nfn wrap<D: InverseDepth>(value: Stage) -> Stage {\n    Wrapping(D::wrap(value.0))\n}\n"
+                "/// 14-bit rounding (`dct_const_round_shift`).\nfn round_shift(value: Stage) -> Stage {\n    (value + Wrapping(1 << 13)) >> 14\n}\n"
+                "let wrap = wrap::<D>;\n"
                 if inverse else "")
         doc = "Normative inverse" if inverse else "Encoder forward"
         text += f"/// {doc} {n}-point ADST (libvpx `{signature.split()[-1]}`).\n"
-        io = "i16" if inverse else "i32"
-        text += f"pub(super) fn {name}(input: &[{io}; {n}], output: &mut [{io}; {n}]) {{\n"
+        generic = "<D: InverseDepth>" if inverse else ""
+        text += f"pub(super) fn {name}{generic}(input: &[i32; {n}], output: &mut [i32; {n}]) {{\n"
         if wrap:
             text += "    " + wrap.replace("\n", "\n    ").rstrip() + "\n"
         text += code + "\n}\n\n"

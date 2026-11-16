@@ -466,7 +466,9 @@ fn class(sums: [u32; 4], boundary: bool, depth: BitDepth) -> [u8; 2] {
     } else {
         (diagonal1, diagonal0, 2)
     };
-    let diagonal_wins = d1 * hv0 > hv1 * d0;
+    // At 10 bits the block sums reach 2^17, so the cross products need 64
+    // bits (at 8 bits they stay below 2^30).
+    let diagonal_wins = u64::from(d1) * u64::from(hv0) > u64::from(hv1) * u64::from(d0);
     let (strong, weak, main, secondary) = if diagonal_wins {
         (d1, d0, d_direction, hv_direction)
     } else {
@@ -679,6 +681,16 @@ fn laplacians_from(rows: &[&[u8]; 4], out: &mut [[u16; 4]], start: usize) {
 mod tests {
     use super::*;
     use crate::Dsp;
+
+    /// 10-bit block sums whose direction products exceed 32 bits: the
+    /// diagonal (131072 · 40000) beats the vertical (60000 · 20000), which a
+    /// wrapped 32-bit product would reverse.
+    #[test]
+    fn ten_bit_direction_products_do_not_wrap() {
+        let [index, _] = class([60_000, 40_000, 131_072, 20_000], false, BitDepth::TEN);
+        // A strong diagonal: the third group of activity classes.
+        assert_eq!(index / ACTIVITY_CLASSES, 2);
+    }
 
     fn noise(seed: u32, len: usize) -> Vec<u8> {
         let mut state = seed;

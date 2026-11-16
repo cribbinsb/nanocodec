@@ -1,19 +1,22 @@
 //! Independent official P-picture syntax checks, enabled after corpus download.
 use super::*;
 use std::fmt::Write;
-#[test]
-#[ignore = "requires downloaded official VVC corpus"]
-fn official_predicted_syntax() {
+/// The bytes of official conformance stream `name` (`NC_VVC_CORPUS`, by
+/// default the downloaded corpus).
+fn official_stream(name: &str) -> Vec<u8> {
     let root = std::env::var("NC_VVC_CORPUS").unwrap_or_else(|_| {
         format!(
             "{}/nanocodec-data/conformance/vvc/streams",
             std::env::var("HOME").unwrap()
         )
     });
-    let bytes = std::fs::read(format!(
-        "{root}/CodingToolsSets_B_2/CodingToolsSets_B_2.bit"
-    ))
-    .unwrap();
+    std::fs::read(format!("{root}/{name}/{name}.bit")).unwrap()
+}
+
+#[test]
+#[ignore = "requires downloaded official VVC corpus"]
+fn official_predicted_syntax() {
+    let bytes = official_stream("CodingToolsSets_B_2");
     let (mut sequence, mut picture) = (None, None);
     let mut frames = 0;
     let mut dpb = crate::decoder_dpb::References::default();
@@ -53,12 +56,15 @@ fn official_predicted_syntax() {
                 )
                 .unwrap();
                 record_units(&mut trace, &units, frames);
-                let (_, pocs) = dpb.prepare(previous.take(), s, &header, kind, 1).unwrap();
+                let (_, pocs) = dpb
+                    .prepare(previous.take(), s, &header, (kind, false), 1, None)
+                    .unwrap();
                 let pictures = pocs.each_ref().map(|list| dpb.pictures(list));
                 let sources =
                     crate::decoder_blocks::InterSources::unweighted([&pictures[0], &pictures[1]]);
                 let dsp = nc_dsp::Dsp::new();
-                inverse_residuals(&mut units, s, &header, None, &dsp);
+                let kernels = dsp.at(nc_common::BitDepth::EIGHT);
+                inverse_residuals(&mut units, s, &header, None, kernels);
                 let mut reconstructed = reconstructed(
                     &units,
                     s,
@@ -71,7 +77,7 @@ fn official_predicted_syntax() {
                 .unwrap();
                 compare_blocks(&reconstructed, &units, frames);
                 let headers = std::slice::from_ref(&header);
-                deblock(&mut reconstructed, &units, s, p, headers, &dsp);
+                deblock(&mut reconstructed, &units, s, p, headers, kernels);
                 compare_filtered(&reconstructed, frames);
                 assert_picture(&reconstructed, frames);
                 previous = Some(reconstructed);

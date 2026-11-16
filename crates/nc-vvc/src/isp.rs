@@ -161,12 +161,12 @@ pub(crate) fn code_luma_flag_count(
 }
 
 /// Reference continuation shared by subset and general ISP reconstruction.
-pub(crate) fn edges_for_part(
+pub(crate) fn edges_for_part<T: nc_common::Sample>(
     (top, left, corner): (&[i32], &[i32], i32),
     cu: &Block,
     part: &Block,
     split: Split,
-    previous: &[u8],
+    previous: &[T],
     other_available: bool,
 ) -> (Vec<i32>, Vec<i32>, i32) {
     let (ref_w, ref_h) = (cu.width() + part.width(), cu.height() + part.height());
@@ -181,8 +181,8 @@ pub(crate) fn edges_for_part(
     // decoded) its last sample repeated (§8.4.5.2.8 substitution).
     let line: Vec<i32> = previous
         .iter()
-        .map(|&v| i32::from(v))
-        .chain(std::iter::repeat(i32::from(previous[previous.len() - 1])))
+        .map(|&v| v.to_i32())
+        .chain(std::iter::repeat(previous[previous.len() - 1].to_i32()))
         .take(line_length)
         .collect();
     // The CU's other edge from this sub-partition's offset, its corner the

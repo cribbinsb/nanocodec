@@ -1,19 +1,23 @@
 //! Bounded decoder for our H.266 intra/inter subset; rejects unsupported tools.
 //!
-//! Canonical parameter sets retain the own-stream fast path. General 8-bit Main
-//! headers use bounded syntax parsing; unsupported reconstruction fails explicitly.
+//! Canonical parameter sets retain the own-stream fast path (8-bit). General
+//! Main 10 streams (8 to 10 bits) use bounded syntax parsing and the general
+//! decoding process at the sequence's sample type (`general::Instance`);
+//! unsupported reconstruction fails explicitly.
 use crate::quant_group::{QpMap, QuantGroup};
 use crate::{
     chroma_qp::ChromaQpTable, coding_tree, contexts::Contexts, decoder_cabac::Reader,
     decoder_syntax, headers, motion::MotionGrid, recon,
 };
 use nc_common::{
-    Picture, PictureRecycler, PlaneIndex, ShownPicture,
+    DecodedPicture, Picture, PictureRecycler, PlaneIndex, ShownPicture,
     decode::{BitReader, DecodeError, Result, annex_b_units, unescape_rbsp},
 };
 use nc_dsp::Dsp;
+use std::collections::VecDeque;
 
 mod general;
+use general::{Instance, with_general};
 
 // Four luma samples cover the 8-tap interpolation footprint (two for chroma).
 // Shared Plane border extension lets inter prediction borrow edge windows rather
@@ -32,6 +36,13 @@ const PPS_IDS: usize = 64;
 const SPS_PREFIX_BITS: usize = 48;
 const SPS_BITS_BEFORE_CTU_SIZE: usize = 13;
 
+/// `nal_unit_type` of end of sequence and end of bitstream NAL units (H.266
+/// Table 5): the next IRAP picture starts a new coded video sequence.
+const EOS_NUT: u8 = 21;
+const EOB_NUT: u8 = 22;
+/// `nal_unit_type` of video parameter sets.
+const VPS_NUT: u8 = 14;
+
 /// What [`Decoder::push_unit`] made of one NAL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pushed {
@@ -43,7 +54,15 @@ enum Pushed {
     Queued,
 }
 
-/// Decoder for this crate's VVC streams.
+/// The error of 8-bit-only calls on a deeper stream.
+const EIGHT_BIT_ONLY: DecodeError = DecodeError::Unsupported(
+    "decoding-order output of more than 8 bits (use push_nal and next_output)",
+);
+
+/// Decoder for this crate's VVC streams and general Main 10 streams. Our own
+/// streams' pictures show in decoding order; general streams' come out in
+/// display order from [`Decoder::next_output`], 8-bit ones as `u8` samples
+/// and deeper ones as `u16` ([`DecodedPicture`]).
 #[derive(Debug, Default)]
 pub struct Decoder {
     geometry: Option<headers::Geometry>,
@@ -59,8 +78,8 @@ pub struct Decoder {
     /// decoded, of the latest picture (the next one's collocated motion);
     /// `None` until a picture of the SPS's geometry starts.
     motion: Option<MotionGrid>,
-    /// The latest decoded picture (coded size): the next P picture's
-    /// reference, and what [`Self::shown`] shows.
+    /// Our own streams' latest decoded picture (coded size): the next P
+    /// picture's reference, and what [`Self::shown`] shows.
     reference: Option<Picture>,
     reference_border_ready: bool,
     /// The other pictures the latest picture's RPL0 keeps in the DPB
@@ -88,9 +107,11 @@ pub struct Decoder {
     /// The active SPS and PPS (§7.4.2.4.2), of the current picture.
     general_sequence: Option<Box<crate::decoder_headers::Sequence>>,
     general_picture: Option<Box<crate::decoder_headers::PictureParameters>>,
-    general_references: Option<Box<crate::decoder_dpb::References>>,
-    /// A general picture whose slices are still arriving.
-    assembly: Option<Box<general::Assembly>>,
+    /// The general decoding process of the current sequence.
+    instance: Instance,
+    /// General pictures output before the sequence changed sample type,
+    /// ahead of the current instance's.
+    earlier: VecDeque<DecodedPicture>,
     /// Coding-tool analysis, collected only when enabled.
     #[cfg(feature = "analysis")]
     stats: Option<nc_common::stream_stats::StreamStats>,
@@ -128,17 +149,16 @@ impl Decoder {
 
     /// Feed one NAL without its Annex-B start code. Metadata emits no picture.
     ///
-    /// General pictures are output once their last slice arrives, reordered
-    /// using the SPS DPB limits. Call `next_output` after each NAL and after
-    /// `flush` to drain additional pictures. Unsupported coding tools fail
-    /// explicitly.
+    /// Our own streams' pictures are returned as they complete. General
+    /// pictures are output once their last slice arrives, reordered using
+    /// the SPS DPB limits, by [`Self::next_output`]: call it after each NAL
+    /// and after `flush`. Unsupported coding tools fail explicitly.
     /// # Errors
     /// Rejects malformed metadata, oversized pending headers and unsupported NALs.
     pub fn push_nal(&mut self, nal: &[u8]) -> Result<Option<Picture>> {
         match self.push_unit(nal)? {
-            Pushed::Nothing => Ok(None),
             Pushed::Shown => self.output().map(Some),
-            Pushed::Queued => Ok(self.next_output()),
+            Pushed::Nothing | Pushed::Queued => Ok(None),
         }
     }
 
@@ -171,6 +191,10 @@ impl Decoder {
         ) {
             return super::decoder_metadata::validate(kind, &unescape_rbsp(&nal[2..])?)
                 .map(|()| Pushed::Nothing);
+        }
+        if matches!(kind, EOS_NUT | EOB_NUT) {
+            self.end_sequence();
+            return Ok(Pushed::Nothing);
         }
         if !matches!(
             kind,
@@ -205,22 +229,19 @@ impl Decoder {
         if !result? {
             return Ok(Pushed::Nothing);
         }
-        if self.general_references.is_none() {
+        if !self.general {
             return Ok(Pushed::Shown);
         }
-        let picture = self.output()?;
-        if let Some(references) = &mut self.general_references {
-            references.queue_output(picture);
-        }
+        with_general!(&mut self.instance, general => general.queue_output())?;
         Ok(Pushed::Queued)
     }
 
-    /// Take another picture released by the streaming decoder, in display order.
-    #[must_use]
-    pub fn next_output(&mut self) -> Option<Picture> {
-        self.general_references
-            .as_mut()
-            .and_then(|r| r.next_output())
+    /// Take another general picture released by the streaming decoder, in
+    /// display order.
+    pub fn next_output(&mut self) -> Option<DecodedPicture> {
+        self.earlier
+            .pop_front()
+            .or_else(|| self.instance.next_output())
     }
 
     /// Complete a NAL stream and release delayed pictures through `next_output`.
@@ -228,13 +249,23 @@ impl Decoder {
     /// Rejects parameter sets left without a following picture.
     pub fn flush(&mut self) -> Result<()> {
         if self.pending.is_empty() {
-            if let Some(references) = &mut self.general_references {
-                references.flush_output();
-            }
+            with_general!(&mut self.instance, general => general.flush_output());
             Ok(())
         } else {
             Err(DecodeError::Malformed("VVC headers without a picture"))
         }
+    }
+
+    /// Bit depths of the active general sequence (`None` before one, and
+    /// for our own streams, which are 8-bit).
+    #[must_use]
+    pub fn depths(&self) -> Option<nc_common::BitDepths> {
+        self.general_sequence
+            .as_ref()
+            .map(|s| nc_common::BitDepths {
+                luma: s.depth,
+                chroma: s.depth,
+            })
     }
 
     /// Colour description carried by the most recently accepted SPS.
@@ -271,15 +302,17 @@ impl Decoder {
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         // A packet that cannot even be split shows nothing either.
         self.shown = false;
-        if self.decode_units(annex_b_units(packet)?)? {
-            Ok(())
-        } else {
-            self.assembly = None;
-            Err(DecodeError::Malformed("VVC access unit without all slices"))
+        if !self.decode_units(annex_b_units(packet)?)? {
+            with_general!(&mut self.instance, general => general.abandon());
+            return Err(DecodeError::Malformed("VVC access unit without all slices"));
+        }
+        match self.instance {
+            Instance::High(_) => Err(EIGHT_BIT_ONLY),
+            Instance::Eight(_) => Ok(()),
         }
     }
 
-    /// Whether the active 8-bit sequence codes only the luma plane.
+    /// Whether the active general sequence codes only the luma plane.
     #[must_use]
     pub fn is_monochrome(&self) -> bool {
         self.general_sequence.as_ref().is_some_and(|s| !s.chroma)
@@ -289,17 +322,16 @@ impl Decoder {
     /// last successful [`Self::decode_shown`] decoded.
     #[must_use]
     pub fn shown(&self) -> Option<ShownPicture<'_>> {
-        let picture = self.reference.as_ref().filter(|_| self.shown)?;
-        if let Some(parameters) = &self.general_picture {
-            let crop_unit = if self.is_monochrome() { 1 } else { 2 };
-            let [left, right, top, bottom] = parameters.crop.map(|v| crop_unit * v as usize);
-            let [width, height] = parameters.dimensions.map(|v| v as usize);
-            return ShownPicture::window(
-                picture,
-                (left, top),
-                (width - left - right, height - top - bottom),
-            );
+        if !self.shown {
+            return None;
         }
+        if self.general {
+            return match &self.instance {
+                Instance::Eight(general) => general.shown(),
+                Instance::High(_) => None,
+            };
+        }
+        let picture = self.reference.as_ref()?;
         let geometry = self.geometry?;
         ShownPicture::window(picture, (0, 0), (geometry.width, geometry.height))
     }
@@ -328,7 +360,7 @@ impl Decoder {
                 self.general_sequence = None;
                 self.general_sequences = Default::default();
                 self.pps_rbsp.clear();
-                self.general_references = None;
+                self.instance = Instance::default();
             }
             self.colour = info.colour;
             self.chroma_qp = Some(info.chroma_qp);
@@ -489,14 +521,27 @@ impl Decoder {
             .ok_or(DecodeError::Malformed("VVC PPS references missing SPS"))?;
         let parameters = crate::decoder_headers::PictureParameters::parse(rbsp, sequence)?;
         if self.general_sequence.as_deref() != Some(sequence) {
-            self.general_references = None;
-            self.reference = None;
-            self.next_poc = None;
+            let depth = sequence.depth;
             self.colour = sequence.colour;
             self.general_sequence = Some(Box::new(sequence.clone()));
+            self.start_sequence(depth);
         }
         self.general_picture = Some(Box::new(parameters));
         Ok(())
+    }
+
+    /// A new coded video sequence of samples of `depth` starts (a different
+    /// SPS): the pictures the last one still holds for output go out first,
+    /// then its references are dropped and decoding continues in a fresh
+    /// process of the sequence's sample type.
+    fn start_sequence(&mut self, depth: nc_common::BitDepth) {
+        with_general!(&mut self.instance, general => general.flush_output());
+        while let Some(picture) = self.instance.next_output() {
+            self.earlier.push_back(picture);
+        }
+        self.instance = Instance::for_depth(depth);
+        self.reference = None;
+        self.next_poc = None;
     }
 
     /// The PPS id of the picture a slice NAL starts: its embedded picture
@@ -531,30 +576,40 @@ impl Decoder {
     }
 
     /// A general slice NAL (activating its PPS when it starts a picture);
-    /// the picture when it completes one.
-    fn general_slice(
-        &mut self,
-        rbsp: &[u8],
-        kind: u8,
-        temporal_id: u8,
-    ) -> Result<Option<OwnPicture>> {
-        if self.assembly.is_none() {
+    /// `true` when it completes its picture.
+    fn general_slice(&mut self, rbsp: &[u8], kind: u8, temporal_id: u8) -> Result<bool> {
+        if !self.assembling() {
             self.activate(self.slice_pps_id(rbsp)?)?;
         }
-        // Access-unit decoding exposes the decoded reference; the streaming
-        // API applies display ordering after cropping the output copy.
-        Ok(self
-            .decode_general(rbsp, kind, temporal_id)?
-            .map(|decoded| OwnPicture {
-                picture: decoded,
-                poc: 0,
-                listed: Vec::new(),
-            }))
+        let mut active = general::Active {
+            sequence: self.general_sequence.as_deref().unwrap(),
+            parameters: self.general_picture.as_deref().unwrap(),
+            picture_header: self.picture_header.as_deref(),
+            adaptation: &self.adaptation,
+            dsp: &self.dsp,
+            #[cfg(feature = "analysis")]
+            stats: self.stats.as_mut(),
+        };
+        with_general!(
+            &mut self.instance,
+            general => general.decode_slice(&mut active, rbsp, kind, temporal_id)
+        )
+    }
+
+    /// An end of sequence (or bitstream) NAL unit (H.266 §7.4.3.10).
+    fn end_sequence(&mut self) {
+        with_general!(&mut self.instance, general => general.end_sequence());
+    }
+
+    /// Whether a general picture's slices are still arriving.
+    fn assembling(&self) -> bool {
+        with_general!(&self.instance, general => general.assembling())
     }
 
     fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<bool> {
         self.shown = false;
         let mut picture = None;
+        let mut general_done = false;
         for unit in units {
             if unit.len() < 2 {
                 return Err(DecodeError::Truncated);
@@ -565,8 +620,8 @@ impl Decoder {
             let rbsp = unescape_rbsp(&unit[2..])?;
             let kind = unit[1] >> 3;
             // Only slices and APSs may come between the slices of a picture.
-            if self.assembly.is_some() && !matches!(kind, 0..=3 | 7..=10 | 17 | 18 | 23 | 24 | 25) {
-                self.assembly = None;
+            if self.assembling() && !matches!(kind, 0..=3 | 7..=10 | 17 | 18 | 23 | 24 | 25) {
+                with_general!(&mut self.instance, general => general.abandon());
                 return Err(DecodeError::Malformed("VVC picture with missing slices"));
             }
             match kind {
@@ -578,13 +633,16 @@ impl Decoder {
                 | super::decoder_metadata::FILLER) => {
                     super::decoder_metadata::validate(kind, &rbsp)?;
                 }
+                EOS_NUT | EOB_NUT => self.end_sequence(),
+                // Single-layer streams need nothing from a VPS (§7.4.3.3).
+                VPS_NUT if picture.is_none() => {}
                 headers::SPS_NUT if picture.is_none() => {
                     self.accept_sps(&rbsp)?;
                 }
                 headers::PPS_NUT if picture.is_none() => {
                     self.accept_pps(&rbsp)?;
                 }
-                19 if self.general && self.assembly.is_none() => {
+                19 if self.general && !self.assembling() => {
                     self.accept_picture_header(&rbsp)?;
                 }
                 headers::PREFIX_APS_NUT if picture.is_none() && !self.general => {
@@ -597,12 +655,12 @@ impl Decoder {
                     self.adaptation[kind][id] = Some(Box::new(parameters));
                 }
                 kind @ (0..=3 | 7..=10) if self.general => {
-                    if picture.is_some() {
+                    if general_done {
                         return Err(DecodeError::Unsupported(
                             "VVC multiple pictures per access unit",
                         ));
                     }
-                    picture = self.general_slice(&rbsp, kind, unit[1] & 7)?;
+                    general_done = self.general_slice(&rbsp, kind, unit[1] & 7)?;
                 }
                 kind @ (headers::IDR_N_LP | headers::TRAIL_NUT)
                     if picture.is_none() && self.pps_block_qp.is_some() =>
@@ -619,7 +677,13 @@ impl Decoder {
                 }
             }
         }
-        if picture.is_none() && self.assembly.is_some() {
+        if general_done {
+            self.shown = true;
+            return Ok(true);
+        }
+        // A general picture still assembling, or none (skipped RASL
+        // pictures), completes nothing.
+        if picture.is_none() && (self.general || self.assembling()) {
             return Ok(false);
         }
         let OwnPicture {
@@ -930,11 +994,10 @@ fn decode_slice(
     crate::filter::apply(dsp, &mut picture, motion, &deblock_qp);
     crate::sao::apply(dsp, &mut picture, &sao, ctu);
     if alf_decisions.iter().any(Option::is_some) {
-        crate::alf::Analysis::new(dsp, &picture, ctu, |ctb| alf_decisions[ctb].is_some()).apply(
-            &mut picture,
-            &alf_decisions,
-            bank,
-        );
+        crate::alf::Analysis::new((dsp, nc_common::BitDepth::EIGHT), &picture, ctu, |ctb| {
+            alf_decisions[ctb].is_some()
+        })
+        .apply(&mut picture, &alf_decisions, bank);
     }
     Ok(OwnPicture::new(picture, poc, listed))
 }

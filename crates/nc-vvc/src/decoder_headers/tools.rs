@@ -1,5 +1,26 @@
 //! H.266 SPS coding-tool flags and their conditionally present parameters.
 use super::{DecodeError, Reader, Result, rpl};
+use nc_common::BitDepth;
+
+/// The largest QP (`QpY`, chroma QPs) at every depth (H.266 §7.4.3.4).
+const MAX_QP: i32 = 63;
+/// The deepest `QpBdOffset` of the Main 10 profiles (10 bits): the chroma
+/// QP tables hold `−QP_TABLE_LOW ..= 63`.
+pub(crate) const QP_TABLE_LOW: i32 = 12;
+/// Entries of a chroma QP table.
+const QP_TABLE_SIZE: usize = (QP_TABLE_LOW + MAX_QP + 1) as usize;
+
+/// One `ChromaQpTable[i]` of H.266 §7.4.3.4, indexed by luma QP from
+/// `−QpBdOffset` to 63.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChromaQpMapping([i8; QP_TABLE_SIZE]);
+
+impl ChromaQpMapping {
+    /// The chroma QP of luma QP `qp` (`−QpBdOffset ..= 63`).
+    pub fn map(&self, qp: i32) -> i32 {
+        i32::from(self.0[(qp + QP_TABLE_LOW) as usize])
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Transforms {
@@ -8,10 +29,12 @@ pub(crate) struct Transforms {
     pub mts: [bool; 3],
     pub lfnst: bool,
     pub joint_cbcr: bool,
-    pub qp_tables: Vec<[u8; 64]>,
+    pub qp_tables: Vec<ChromaQpMapping>,
 }
 impl Transforms {
-    pub fn parse(r: &mut Reader<'_>, chroma: bool) -> Result<Self> {
+    /// `qp_bd_offset`: `QpBdOffset` of the sequence (the chroma QP tables'
+    /// lower end).
+    pub fn parse(r: &mut Reader<'_>, chroma: bool, qp_bd_offset: i32) -> Result<Self> {
         let skip_log2 = if r.flag()? {
             Some(r.ue(3, "VVC transform skip size")? as u8 + 2)
         } else {
@@ -35,7 +58,9 @@ impl Transforms {
         } else {
             2
         };
-        let qp_tables = (0..count).map(|_| qp_table(r)).collect::<Result<_>>()?;
+        let qp_tables = (0..count)
+            .map(|_| qp_table(r, qp_bd_offset))
+            .collect::<Result<_>>()?;
         Ok(Self {
             skip_log2,
             bdpcm,
@@ -47,30 +72,40 @@ impl Transforms {
     }
 }
 
-fn qp_table(r: &mut Reader<'_>) -> Result<[u8; 64]> {
-    let start = r.se(-26, 36, "VVC chroma QP start")? + 26;
-    let count = r.ue((62 - start) as u32, "VVC chroma QP points")? + 1;
-    let mut table = std::array::from_fn(|qp| qp as u8);
-    let (mut input, mut output) = (start as usize, start);
+/// One chroma QP mapping table (H.266 §7.3.2.4, §7.4.3.4): pivot points
+/// from `qpInVal[0] = sps_qp_table_start_minus26 + 26`, linear between them,
+/// slope one beyond them, every value clipped to `−QpBdOffset ..= 63`.
+fn qp_table(r: &mut Reader<'_>, qp_bd_offset: i32) -> Result<ChromaQpMapping> {
+    let start = r.se(-26 - qp_bd_offset, 36, "VVC chroma QP start")? + 26;
+    let count = r.ue((MAX_QP - 1 - start) as u32, "VVC chroma QP points")? + 1;
+    let clip = |qp: i32| qp.clamp(-qp_bd_offset, MAX_QP);
+    let mut table = [0i32; QP_TABLE_SIZE];
+    let index = |qp: i32| (qp + QP_TABLE_LOW) as usize;
+    let (mut input, mut output) = (start, start);
+    table[index(start)] = start;
     for _ in 0..count {
-        let step = r.ue(63, "VVC chroma QP input delta")? as usize;
+        let step = r.ue(MAX_QP as u32, "VVC chroma QP input delta")? as i32;
         let delta = (r.ue(127, "VVC chroma QP output delta")? ^ step as u32) as i32;
         let next = input + step + 1;
-        if next > 63 || output + delta > 63 {
+        if next > MAX_QP || output + delta > MAX_QP {
             return Err(DecodeError::Malformed("VVC chroma QP endpoints"));
         }
-        for (offset, value) in table[input + 1..=next].iter_mut().enumerate() {
-            *value = (output
-                + (delta * (offset + 1) as i32 + (step as i32 + 1) / 2) / (step as i32 + 1))
-                as u8;
+        // Truncating division from the table's value at the pivot, as the
+        // specification writes it.
+        let base = table[index(input)];
+        for offset in 1..=step + 1 {
+            table[index(input + offset)] = base + (delta * offset + (step + 1) / 2) / (step + 1);
         }
         input = next;
         output += delta;
     }
-    for (offset, value) in table[input + 1..].iter_mut().enumerate() {
-        *value = (output + offset as i32 + 1).min(63) as u8;
+    for qp in (-qp_bd_offset..start).rev() {
+        table[index(qp)] = clip(table[index(qp + 1)] - 1);
     }
-    Ok(table)
+    for qp in input + 1..=MAX_QP {
+        table[index(qp)] = clip(table[index(qp - 1)] + 1);
+    }
+    Ok(ChromaQpMapping(table.map(|qp| clip(qp) as i8)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -130,7 +165,7 @@ pub(crate) struct Tools {
 impl Tools {
     pub fn parse(
         r: &mut Reader<'_>,
-        chroma: bool,
+        (chroma, depth): (bool, BitDepth),
         ctu_log2: u32,
         poc_bits: u32,
         dimensions: [u32; 2],
@@ -207,7 +242,7 @@ impl Tools {
         if t.ibc {
             t.max_ibc_merge = 6 - r.ue(5, "VVC IBC merge candidates")? as u8;
         }
-        t.parse_ladf(r)?;
+        t.parse_ladf(r, depth)?;
         t.scaling_list = r.flag()?;
         t.scaling_lfnst_disabled = t.scaling_list && transforms.lfnst && r.flag()?;
         t.dependent_quant = r.flag()?;
@@ -232,15 +267,18 @@ impl Tools {
         }
         Ok(t)
     }
-    fn parse_ladf(&mut self, r: &mut Reader<'_>) -> Result<()> {
+    /// The LADF intervals (H.266 §7.3.2.4): lower bounds are sample levels
+    /// of `depth` (`sps_ladf_delta_threshold_minus1` up to `2^BitDepth − 3`).
+    fn parse_ladf(&mut self, r: &mut Reader<'_>, depth: BitDepth) -> Result<()> {
         if r.flag()? {
             let count = r.bits(2)? + 2;
             self.ladf.push((0, r.se(-63, 63, "VVC LADF offset")? as i8));
             let mut lower = 0;
+            let largest = depth.max() as u16;
             for _ in 1..count {
                 let offset = r.se(-63, 63, "VVC LADF offset")? as i8;
-                lower += r.ue(253, "VVC LADF threshold")? as u16 + 1;
-                if lower > 255 {
+                lower += r.ue(u32::from(largest) - 2, "VVC LADF threshold")? as u16 + 1;
+                if lower > largest {
                     return Err(DecodeError::Malformed("VVC LADF interval"));
                 }
                 self.ladf.push((lower, offset));

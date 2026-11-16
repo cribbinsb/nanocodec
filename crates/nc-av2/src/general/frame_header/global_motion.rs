@@ -7,22 +7,9 @@ use crate::general::bits::{signed_subexp, uniform};
 use crate::general::references::MAX_REFERENCES;
 use nc_common::decode::Result;
 
-/// Warp model types (dav2d `Dav2dWarpedMotionType`).
-pub mod kind {
-    /// No motion.
-    pub const IDENTITY: u8 = 0;
-    /// Translation only.
-    pub const TRANSLATION: u8 = 1;
-    /// Rotation and zoom.
-    pub const ROT_ZOOM: u8 = 2;
-    /// Affine.
-    pub const AFFINE: u8 = 3;
-}
+pub use crate::general::warp::{IDENTITY, kind};
+use crate::general::warp::{UNITY, resolve_divisor};
 
-/// The unit of the diagonal matrix entries (1.0 in Q16).
-const UNITY: i32 = 1 << 16;
-/// The identity matrix (translation, then the 2×2 part row by row).
-pub const IDENTITY: [i32; 6] = [0, 0, UNITY, 0, 0, UNITY];
 /// Coded steps of the non-translation entries (Q16 / 64) and of the
 /// translation (Q16 / 8192), with their code ranges.
 const ALPHA_STEP: i32 = 64;
@@ -35,22 +22,8 @@ const TRANSLATION_RANGE: u32 = 0x4000;
 const TRANSLATION_CLAMP: i64 = 0x07ff_e000;
 const TRANSLATION_SOURCE_CLAMP: i64 = 0x0040_0000;
 const ALPHA_CLAMP: i64 = 0x7fc0;
-/// Reciprocal table of the distance division (dav2d `dav2d_div_recip`):
-/// `2^9 * 2^7 / (2^7 + f)` rounded.
-const DIVISOR_RECIPROCALS: [u16; 129] = [
-    512, 508, 504, 500, 496, 493, 489, 485, 482, 478, 475, 471, 468, 465, 462, 458, 455, 452, 449,
-    446, 443, 440, 437, 434, 431, 428, 426, 423, 420, 417, 415, 412, 410, 407, 405, 402, 400, 397,
-    395, 392, 390, 388, 386, 383, 381, 379, 377, 374, 372, 370, 368, 366, 364, 362, 360, 358, 356,
-    354, 352, 350, 349, 347, 345, 343, 341, 340, 338, 336, 334, 333, 331, 329, 328, 326, 324, 323,
-    321, 320, 318, 317, 315, 314, 312, 311, 309, 308, 306, 305, 303, 302, 301, 299, 298, 297, 295,
-    294, 293, 291, 290, 289, 287, 286, 285, 284, 282, 281, 280, 279, 278, 277, 275, 274, 273, 272,
-    271, 270, 269, 267, 266, 265, 264, 263, 262, 261, 260, 259, 258, 257, 256,
-];
-/// Bits of the reciprocal's mantissa index, and the precision added.
-const DIVISOR_INDEX_BITS: u32 = 7;
-const DIVISOR_PRECISION: u32 = 9;
 /// A reciprocal at or above this is halved (keeps products in range).
-const DIVISOR_HALVING: i32 = 512;
+const DIVISOR_HALVING: i64 = 512;
 
 /// One reference's warp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,30 +141,15 @@ pub(super) fn parse(parser: &mut Parser<'_, '_, '_, '_>, header: &mut FrameHeade
     Ok(())
 }
 
-/// `1 / divisor` as a multiplier and shift (dav2d
-/// `dav2d_resolve_divisor_32`).
-fn reciprocal(divisor: u32) -> (i64, u32) {
-    let shift = divisor.ilog2();
-    let excess = divisor - (1 << shift);
-    let index = if shift > DIVISOR_INDEX_BITS {
-        (excess + (1 << (shift - DIVISOR_INDEX_BITS - 1))) >> (shift - DIVISOR_INDEX_BITS)
-    } else {
-        excess << (DIVISOR_INDEX_BITS - shift)
-    };
-    (
-        i64::from(DIVISOR_RECIPROCALS[index as usize]),
-        shift + DIVISOR_PRECISION,
-    )
-}
-
 /// The base model scaled from its own distance to the current one, the
 /// translation rounded to its coded step (dav2d `rescale_matrix`).
 fn rescale(base: &[i32; 6], from: i32, to: i32) -> [i32; 6] {
     if from == 0 {
         return IDENTITY;
     }
-    let (mut inverse, mut shift) = reciprocal(from.unsigned_abs());
-    if inverse >= i64::from(DIVISOR_HALVING) {
+    let (inverse, mut shift) = resolve_divisor(u64::from(from.unsigned_abs()));
+    let mut inverse = i64::from(inverse);
+    if inverse >= DIVISOR_HALVING {
         inverse >>= 1;
         shift -= 1;
     }

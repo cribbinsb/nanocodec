@@ -321,6 +321,9 @@ impl Tile<'_, '_> {
         let mut kind = TxType(residual.tx_type & tx_type::TYPE_MASK);
         if self.lossless() && record.intra && !record.intrabc && modes.dpcm[0] {
             kind = kind.with_dpcm(dpcm(modes.y_mode));
+        } else if self.sequence.transform.inter_ddt && !record.intra {
+            // (Flipped) ADST becomes the (flipped) DDT in inter blocks.
+            kind = kind.with_inter_ddt(size);
         }
         let offset = self.planes.offset(0, self.row, self.column);
         let stride = self.planes.stride[0];
@@ -679,6 +682,8 @@ impl Tile<'_, '_> {
             let mut kind = TxType(residual.tx_type & tx_type::TYPE_MASK);
             if dpcm_block {
                 kind = kind.with_dpcm(dpcm(modes.uv_mode));
+            } else if self.sequence.transform.inter_ddt && !record.intra {
+                kind = kind.with_inter_ddt(size);
             }
             let offset = self.planes.offset(plane + 1, row, column);
             let stride = self.planes.stride[plane + 1];

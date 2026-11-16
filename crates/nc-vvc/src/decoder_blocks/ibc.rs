@@ -215,12 +215,12 @@ pub(super) fn inside(
 /// Copy a block's prediction from the picture's reconstruction so far
 /// (before the loop filters), displaced by the block vector; chroma uses the
 /// halved vector (§8.6.3).
-pub(super) fn predict(
-    picture: &Picture,
+pub(super) fn predict<T: nc_common::Sample>(
+    picture: &Picture<T>,
     plane: PlaneIndex,
     vector: Mv16,
     (x, y, width, height): (usize, usize, usize, usize),
-    out: &mut [u8],
+    out: &mut [T],
 ) {
     let shift = FRACTION_BITS + u32::from(plane != PlaneIndex::Y);
     // Motion derivation accepted the vector (`inside`), so the region exists.

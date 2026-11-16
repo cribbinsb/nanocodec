@@ -83,7 +83,7 @@ fn side(log2_4x4: u8) -> u16 {
     (SUB_BLOCK << log2_4x4) as u16
 }
 
-impl FrameDecoder<'_> {
+impl<T: nc_dsp::Pixel> FrameDecoder<'_, T> {
     /// The records of a decoded block; `bits` it cost, `coded` whether it
     /// has residual.
     pub(super) fn block_records(

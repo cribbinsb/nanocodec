@@ -8,7 +8,7 @@ use nc_common::decode::DecodeError;
 
 /// `cu_qp_delta_abs` prefix: truncated unary up to this value, then EG0.
 const DELTA_PREFIX_MAX: u32 = 5;
-/// Luma QP values wrap modulo this (8-bit: `QpBdOffset` is 0).
+/// Luma QP values wrap modulo this plus `QpBdOffset` (H.266 §8.7.1).
 const QP_RANGE: i32 = 64;
 /// Longest Exp-Golomb prefix accepted for a QP delta: any conforming value
 /// (at most 32 after the prefix) fits well inside it.
@@ -23,7 +23,7 @@ pub(super) struct QuantGroups {
     offsets: Vec<[i8; 3]>,
     /// QP of the latest luma CU in decoding order (`qPY_PREV`), then of the
     /// current one.
-    qp: u8,
+    qp: i8,
     /// A group started and its QP has not been predicted yet.
     start: bool,
     delta_coded: bool,
@@ -31,7 +31,9 @@ pub(super) struct QuantGroups {
     offset_coded: [bool; 2],
     /// Index + 1 into `offsets` in force (0: no CU offset).
     offset_index: u8,
-    slice_qp: u8,
+    slice_qp: i8,
+    /// `QpBdOffset`: luma QPs range from its negative to 63.
+    qp_bd_offset: i8,
     models: Models,
 }
 
@@ -49,10 +51,10 @@ impl QuantGroups {
         enabled: [bool; 2],
         max_subdiv: [u8; 2],
         offsets: &[[i8; 3]],
-        slice_qp: u8,
+        (slice_qp, qp_bd_offset): (i8, i8),
         init_kind: u8,
     ) -> Self {
-        let qp = u32::from(slice_qp);
+        let qp = slice_qp.max(0) as u32;
         Self {
             enabled,
             max_subdiv,
@@ -63,6 +65,7 @@ impl QuantGroups {
             offset_coded: [false; 2],
             offset_index: 0,
             slice_qp,
+            qp_bd_offset,
             models: Models {
                 delta: bank([[35, 35]; 3], [8, 8], qp, init_kind),
                 offset_flag: bank([[35]; 3], [8], qp, init_kind),
@@ -125,7 +128,7 @@ impl Parser<'_> {
     /// QP state at the start of a CU: predicts the group's QP at its first
     /// CU, and gives a chroma-tree CU the QP of the luma CU at its centre.
     /// Returns the luma QP to restore after a chroma-tree CU.
-    pub(super) fn begin_unit_qp(&mut self, unit: &mut Unit) -> Option<u8> {
+    pub(super) fn begin_unit_qp(&mut self, unit: &mut Unit) -> Option<i8> {
         if self.groups.start {
             self.groups.start = false;
             self.groups.qp = self.predicted_qp(unit.node);
@@ -145,7 +148,7 @@ impl Parser<'_> {
     /// Record the CU's final QP and chroma offsets once its residual syntax
     /// is read (a delta or offset coded in a transform unit applies to the
     /// whole CU).
-    pub(super) fn end_unit_qp(&mut self, unit: &mut Unit, saved: Option<u8>) {
+    pub(super) fn end_unit_qp(&mut self, unit: &mut Unit, saved: Option<i8>) {
         unit.qp = self.groups.qp;
         unit.chroma_offsets = match self.groups.offset_index {
             0 => [0; 3],
@@ -157,7 +160,7 @@ impl Parser<'_> {
     }
 
     /// §8.7.1 `qPY_PRED` for the group whose first CU is `node`.
-    fn predicted_qp(&self, node: Node) -> u8 {
+    fn predicted_qp(&self, node: Node) -> i8 {
         let mask = (1usize << self.sequence.ctu_log2) - 1;
         let previous = self.groups.qp;
         let at = |x: usize, y: usize| self.neighbour(x, y, 0).map(|unit| unit.qp);
@@ -176,7 +179,7 @@ impl Parser<'_> {
             at(node.x.wrapping_sub(1), node.y)
         }
         .unwrap_or(previous);
-        ((u16::from(a) + u16::from(b) + 1) >> 1) as u8
+        ((i16::from(a) + i16::from(b) + 1) >> 1) as i8
     }
 
     /// The QP delta and chroma offset syntax of one transform unit, after its
@@ -198,7 +201,11 @@ impl Parser<'_> {
         {
             let delta = self.qp_delta(r)?;
             let g = &mut self.groups;
-            g.qp = (i32::from(g.qp) + delta).rem_euclid(QP_RANGE) as u8;
+            // QpY = ((qPY_PRED + CuQpDeltaVal + 64 + 2 · QpBdOffset) %
+            // (64 + QpBdOffset)) − QpBdOffset (§8.7.1).
+            let offset = i32::from(g.qp_bd_offset);
+            g.qp =
+                ((i32::from(g.qp) + delta + offset).rem_euclid(QP_RANGE + offset) - offset) as i8;
             g.delta_coded = true;
         }
         if (!separate || unit.channel == 1)

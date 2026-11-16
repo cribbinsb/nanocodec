@@ -195,6 +195,9 @@ pub struct Tip {
     pub references: [u8; 2],
 }
 
+/// TIP frame mode in which the whole frame is the TIP prediction.
+pub const TIP_FRAME_MODE: u8 = 2;
+
 /// dav2d's interpolation filter numbers (`Dav2dFilterMode`).
 pub mod filter_mode {
     /// `DAV2D_FILTER_8TAP_REGULAR`.
@@ -203,6 +206,8 @@ pub mod filter_mode {
     pub const SMOOTH: u8 = 1;
     /// `DAV2D_FILTER_8TAP_SHARP`.
     pub const SHARP: u8 = 2;
+    /// `DAV2D_FILTER_BILINEAR` (refinement searches).
+    pub const BILINEAR: u8 = 3;
     /// `DAV2D_FILTER_SWITCHABLE`.
     pub const SWITCHABLE: u8 = 4;
 }

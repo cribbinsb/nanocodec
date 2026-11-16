@@ -105,8 +105,8 @@ pub fn vvc(data: &[u8]) {
         }
         Mode::Cli | Mode::CliAllLayers => {
             let drain = |decoder: &mut nc_vvc::Decoder| {
-                while let Some(picture) = decoder.next_output() {
-                    super::read_picture(&picture);
+                while let Some(frame) = decoder.next_output() {
+                    super::read_decoded(&frame);
                 }
             };
             let result = framing::read_nal_units(&mut &data[..], |nal| {
@@ -216,8 +216,14 @@ pub fn vp9(data: &[u8]) {
                     .decode_kept(frame.packet)
                     .map_err(|e| e.to_string())?
                 {
-                    let (picture, size) = decoder.shown_frame().expect("a kept frame is shown");
-                    super::read_window(picture, (0, 0), size);
+                    match decoder.shown_vp9_frame().expect("a kept frame is shown") {
+                        nc_vp9::ShownVp9Frame::Eight(picture, size) => {
+                            super::read_window(picture, (0, 0), size);
+                        }
+                        nc_vp9::ShownVp9Frame::High(picture, size, _) => {
+                            super::read_window(picture, (0, 0), size);
+                        }
+                    }
                 }
                 Ok(())
             });

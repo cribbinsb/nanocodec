@@ -4,15 +4,15 @@ use super::{
     motion::Motion,
 };
 use nc_common::PlaneIndex;
-use nc_dsp::Dsp;
+use nc_dsp::{DepthKernels, Pixel};
 
-pub(super) fn predict(
-    dsp: &Dsp,
-    references: super::inter_prediction::Sources<'_>,
+pub(super) fn predict<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    references: super::inter_prediction::Sources<'_, T>,
     motion: Motion,
     fields: [Option<crate::affine::Field>; 2],
     position: (usize, usize),
-    out: &mut [u8; 16],
+    out: &mut [T; 16],
 ) {
     let mut samples = [[0i16; 16]; 2];
     for list in 0..2 {
@@ -36,7 +36,7 @@ pub(super) fn predict(
         };
         let mut padded = [0; 36];
         super::refinement::padding(
-            reference,
+            (reference, dsp.depth()),
             position,
             (4, 4),
             vector.vector,

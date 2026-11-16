@@ -7,6 +7,8 @@
 //! context (0..=2 nonzero neighbours). The encoder dequantizes; the
 //! decoder's [`read`] dequantizes as it reads, as libvpx does.
 
+use nc_dsp::Av1Coefficient;
+
 use crate::bool_coder::{BitSink, BoolReader};
 use crate::probs::{BandCounts, Counts, EOB_MODEL_TOKEN, FrameContext};
 use crate::recorder::{TileRecorder, coef_slot};
@@ -50,6 +52,33 @@ const EXTRA: [&[u8]; 9] = [
     &[180, 157, 141, 134, 130],
     &tables::CATEGORY6,
 ];
+
+/// The extra-bit probabilities of each token category at one bit depth.
+pub(crate) type Categories = [&'static [u8]; 9];
+
+/// [`EXTRA`] with category 6 as 10-bit streams code it: 16 extra bits.
+const EXTRA_10: Categories = {
+    let mut extra = EXTRA;
+    extra[8] = tables::CATEGORY6_HIGH12.split_at(2).1;
+    extra
+};
+
+/// [`EXTRA`] with category 6 as 12-bit streams code it: 18 extra bits.
+const EXTRA_12: Categories = {
+    let mut extra = EXTRA;
+    extra[8] = &tables::CATEGORY6_HIGH12;
+    extra
+};
+
+/// The token categories of `depth` (`cat6_prob` and `cat6_bits` of
+/// `decode_coefs`: category 6 carries `14 + BitDepth − 8` extra bits).
+pub(crate) fn categories(depth: nc_common::BitDepth) -> &'static Categories {
+    match depth.bits() {
+        10 => &EXTRA_10,
+        12 => &EXTRA_12,
+        _ => &EXTRA,
+    }
+}
 
 /// Plane type of the probability model (`PLANE_TYPES`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +321,7 @@ fn write_magnitude(emit: &mut impl FnMut(bool, u8), value: i32, pivot: u8) {
 }
 
 #[inline]
-fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8) -> i32 {
+fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8, categories: &Categories) -> i32 {
     let probs = &tables::PARETO[usize::from(pivot) - 1];
     let mut node = 0;
     let token = loop {
@@ -304,7 +333,7 @@ fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8) -> i32 {
         node = child as usize;
     };
     let mut offset = 0;
-    for &probability in EXTRA[token] {
+    for &probability in categories[token] {
         offset = (offset << 1) | i32::from(reader.read(probability));
     }
     BASE[token] + offset
@@ -484,12 +513,28 @@ impl TokenCache {
 }
 
 /// The decoder's dequantizer of one transform block (`dqv`, `dq_shift`):
-/// a coefficient is `(|level| * step) >> shift` with the level's sign.
+/// a coefficient is `(|level| * step) >> shift` with the level's sign;
+/// the levels' token categories are those of the stream's depth.
 #[derive(Clone, Copy)]
 pub(crate) struct Dequantizer {
     pub dc: i32,
     pub ac: i32,
     pub shift: u32,
+    pub categories: &'static Categories,
+}
+
+/// A dequantized coefficient (`i16` at 8 bits, `i32` deeper): the product
+/// is taken in 64 bits (a 12-bit level has 18 extra bits) and stored
+/// truncated, as libvpx's `(int)` and `tran_low_t` do; a valid stream's
+/// value fits (§8.6.2).
+#[inline]
+fn dequantize<C: Av1Coefficient>(magnitude: i32, step: i32, shift: u32, negative: bool) -> C {
+    let value = ((i64::from(magnitude) * i64::from(step)) >> shift) as i32;
+    C::from_i32(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
 }
 
 /// Where a block's coded coefficients lie.
@@ -530,9 +575,9 @@ impl ReadSetup {
     }
 
     /// Clear only scan positions visited by the preceding transform block.
-    pub(crate) fn clear(&self, coefficients: &mut [i16], eob: usize) {
+    pub(crate) fn clear<C: Av1Coefficient>(&self, coefficients: &mut [C], eob: usize) {
         for &position in &self.order.scan[..eob] {
-            coefficients[usize::from(position)] = 0;
+            coefficients[usize::from(position)] = C::default();
         }
     }
 }
@@ -540,9 +585,9 @@ impl ReadSetup {
 /// Read a block's levels and store them dequantized, in raster order,
 /// into `coefficients`, which must be zero on entry (the caller clears
 /// what it read with [`clear`]); returns where they lie.
-pub(crate) fn read(
+pub(crate) fn read<C: Av1Coefficient>(
     reader: &mut BoolReader<'_>,
-    coefficients: &mut [i16],
+    coefficients: &mut [C],
     cache: &mut TokenCache,
     model: Model,
     coder: &mut Coder<'_>,
@@ -560,9 +605,9 @@ pub(crate) fn read(
     reason = "keep the token loop with its caller so prepared plane invariants can stay in registers"
 )]
 #[inline(always)]
-pub(crate) fn read_prepared(
+pub(crate) fn read_prepared<C: Av1Coefficient>(
     reader: &mut BoolReader<'_>,
-    coefficients: &mut [i16],
+    coefficients: &mut [C],
     cache: &mut TokenCache,
     setup: &ReadSetup,
     coder: &mut Coder<'_>,
@@ -582,9 +627,9 @@ pub(crate) fn read_prepared(
     reason = "inlined into `read`, the local reader copy stays in registers"
 )]
 #[inline(always)]
-fn read_tokens(
+fn read_tokens<C: Av1Coefficient>(
     reader: &mut BoolReader<'_>,
-    coefficients: &mut [i16],
+    coefficients: &mut [C],
     cache: &mut TokenCache,
     setup: &ReadSetup,
     coder: &mut Coder<'_>,
@@ -633,21 +678,18 @@ fn read_tokens(
         if needs_eob {
             let more = reader.read(probs[2]);
             counts.tokens[1 + usize::from(more)] += 1;
-            // At most `MAX_LEVEL`: the largest category's 14 extra bits.
+            // At most the largest category's 14 (8-bit) to 18 (12-bit)
+            // extra bits.
             let magnitude = if more {
-                read_magnitude(reader, probs[2])
+                read_magnitude(reader, probs[2], dequantizer.categories)
             } else {
                 1
             };
-            // The product stays 32-bit. §8.6.2 makes a valid stream's
-            // dequantized value fit 16 bits (libvpx's 8-bit `dqcoeff` is
-            // `int16_t`); a corrupt one wraps, as every inverse treated it.
-            let value = ((magnitude * step) >> dequantizer.shift) as i16;
-            coefficients[position] = if reader.read(128) {
-                value.wrapping_neg()
-            } else {
-                value
-            };
+            // §8.6.2 makes a valid stream's dequantized value fit 8 +
+            // `BitDepth` bits (libvpx's 8-bit `dqcoeff` is `int16_t`); a
+            // corrupt one wraps, as every inverse treated it.
+            let negative = reader.read(128);
+            coefficients[position] = dequantize(magnitude, step, dequantizer.shift, negative);
             cache[position] = energy(magnitude);
             rows = rows.max((position >> *row_shift) + 1);
             columns = columns.max((position & *column_mask) + 1);
@@ -665,9 +707,9 @@ fn read_tokens(
 }
 
 /// Zero the coefficients [`read`] may have set for an end of block `eob`.
-pub(crate) fn clear(coefficients: &mut [i16], model: Model, eob: usize) {
+pub(crate) fn clear<C: Av1Coefficient>(coefficients: &mut [C], model: Model, eob: usize) {
     for &position in &scan_order(model.tx, model.ty).scan[..eob] {
-        coefficients[usize::from(position)] = 0;
+        coefficients[usize::from(position)] = C::default();
     }
 }
 
@@ -740,7 +782,7 @@ mod tests {
                             [0; crate::segmentation::TREE_PROBS],
                         );
                         let mut reader = BoolReader::new(&packet).unwrap();
-                        let mut decoded = vec![0; area];
+                        let mut decoded = vec![0i16; area];
                         let mut cache = TokenCache::new();
                         for (levels, eob) in cases.iter().zip(eobs) {
                             let mut coder = Coder::new(model, &context, &mut counts);
@@ -756,6 +798,7 @@ mod tests {
                                         dc: 1,
                                         ac: 1,
                                         shift: 0,
+                                        categories: categories(nc_common::BitDepth::EIGHT),
                                     },
                                 ),
                             );

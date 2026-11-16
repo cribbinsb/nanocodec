@@ -1,14 +1,16 @@
 //! H.266 decoder QP derivation and rectangular inverse residuals via shared DSP:
 //! each coded plane's levels to its 16-bit residual (`Transform::residuals`).
 use super::{Sequence, SliceHeader, Unit};
-use nc_dsp::{Dsp, VvcLfnst, VvcTransformKind};
+use nc_dsp::{DepthKernels, VvcLfnst, VvcTransformKind};
 
+/// Each coded plane's levels to its residual, at the kernels' depth (the
+/// transforms' QP is `Qp′`, H.266 §8.7.3).
 pub(crate) fn inverse_residuals(
     units: &mut [Unit],
     sequence: &Sequence,
     header: &SliceHeader,
     lists: Option<&crate::decoder_headers::ScalingLists>,
-    dsp: &Dsp,
+    dsp: DepthKernels<'_>,
 ) {
     let mut factors = Vec::new();
     for unit in units {
@@ -77,7 +79,7 @@ struct Scaling<'a> {
 /// plane of a transform block that does not skip the transform;
 /// `luma_kinds` are the CU's luma primary transforms.
 fn inverse_transform(
-    dsp: &Dsp,
+    dsp: DepthKernels<'_>,
     unit: &Unit,
     sequence: &Sequence,
     (plane, size, luma_kinds): (usize, (usize, usize), [VvcTransformKind; 2]),
@@ -133,27 +135,33 @@ fn inverse_transform(
 }
 
 /// The quantisation parameter of one plane of a transform unit of `unit`
-/// (H.266 §8.7.1: `Qp′Y`, `Qp′Cb`, `Qp′Cr` or `Qp′CbCr`, 8-bit).
+/// (H.266 §8.7.1: `Qp′Y`, `Qp′Cb`, `Qp′Cr` or `Qp′CbCr`, each the QP plus
+/// `QpBdOffset`, so `0 ..= 63 + QpBdOffset`).
 pub(super) fn qp(
-    (luma, offsets): (u8, [i8; 3]),
+    (luma, offsets): (i8, [i8; 3]),
     joint: u8,
     plane: usize,
     sequence: &Sequence,
     header: &SliceHeader,
 ) -> u8 {
-    (if plane == 0 {
+    let qp_bd_offset = sequence.qp_bd_offset();
+    let qp = if plane == 0 {
         i32::from(luma)
     } else {
         // Joint mode 3 codes one Cb residual at the joint CbCr QP.
         // The other joint modes retain the coded component's QP.
         let index = if joint == 3 { 2 } else { plane - 1 };
         let tables = &sequence.transforms.qp_tables;
-        let mapped = tables[if tables.len() == 1 { 0 } else { index }][usize::from(luma)];
+        let mapped = tables[if tables.len() == 1 { 0 } else { index }].map(i32::from(luma));
         // SliceHeader stores the sum of PPS and slice offsets.
-        (i32::from(mapped) + i32::from(header.chroma_offsets[index]) + i32::from(offsets[index]))
-            .clamp(0, 63)
-    }) as u8
+        (mapped + i32::from(header.chroma_offsets[index]) + i32::from(offsets[index]))
+            .clamp(-qp_bd_offset, MAX_QP)
+    };
+    (qp + qp_bd_offset) as u8
 }
+
+/// The largest QP (`QpY`, chroma QPs) at every depth (H.266 §7.4.3.4).
+const MAX_QP: i32 = 63;
 
 fn primary_kinds(unit: &Unit, sequence: &Sequence) -> [VvcTransformKind; 2] {
     use VvcTransformKind::{Dct2, Dct8, Dst7};

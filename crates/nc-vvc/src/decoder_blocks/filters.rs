@@ -6,20 +6,21 @@ use crate::{
     decoder_headers::{Adaptation, AdaptationData},
 };
 use nc_common::{
-    Picture, PlaneIndex,
+    BitDepth, Picture, PlaneIndex,
     decode::{DecodeError, Result},
 };
-use nc_dsp::Dsp;
+use nc_dsp::{Dsp, Pixel, vvc_alf_clip_value};
 
 /// SAO, then ALF, of a decoded picture: each CTB as its syntax says, not
 /// reading across what `closures` closes.
-pub(crate) fn apply(
-    picture: &mut Picture,
+pub(crate) fn apply<T: Pixel>(
+    picture: &mut Picture<T>,
     filters: &[CtuFilters],
     (sequence, closures): (&Sequence, &Closures),
     banks: &[Option<Box<Adaptation>>; 8],
-    dsp: &Dsp,
+    (dsp, depth): (&Dsp, BitDepth),
 ) -> Result<()> {
+    let kernels = dsp.at(depth.of::<T>());
     let ctu = 1 << sequence.ctu_log2;
     if filters
         .iter()
@@ -32,7 +33,7 @@ pub(crate) fn apply(
                 .collect(),
             cuts: closures.cuts(0),
         };
-        crate::sao::apply_limited(dsp, picture, &edge, ctu, &limits);
+        crate::sao::apply_limited(kernels, picture, &edge, ctu, &limits);
     }
     let columns = picture.width().div_ceil(ctu);
     for (index, filter) in filters.iter().enumerate() {
@@ -48,7 +49,8 @@ pub(crate) fn apply(
                     (x + (ctu >> shift)).min(view.width()),
                     (y + (ctu >> shift)).min(view.height()),
                 );
-                dsp.sao_band_apply(*band, filter.edge.offsets[plane], &mut view, area);
+                let offsets = filter.edge.offsets[plane].map(i16::from);
+                kernels.sao_band_apply_masked(*band, offsets, &mut view, area, &[]);
             }
         }
     }
@@ -56,7 +58,7 @@ pub(crate) fn apply(
         .iter()
         .any(|f| f.alf[1..].iter().any(Option::is_some) || f.cross != [0; 2])
     {
-        super::chroma_alf::apply(picture, filters, (ctu, closures), banks, dsp)?;
+        super::chroma_alf::apply(picture, filters, (ctu, closures), banks, kernels)?;
     }
     if !filters.iter().any(|f| f.alf[0].is_some()) {
         return Ok(());
@@ -70,7 +72,7 @@ pub(crate) fn apply(
         .filter(|(_, f)| f.alf[0].is_some())
         .filter_map(|(ctb, f)| Some((*f, closures.alf_regions(ctb)?)))
         .flat_map(|(f, regions)| regions.into_iter().map(move |region| (f, region)))
-        .map(|(f, region)| (f, Analysis::region(dsp, picture, ctu, &region)))
+        .map(|(f, region)| (f, Analysis::region((dsp, depth), picture, ctu, &region)))
         .collect();
     let whole: Vec<CtuFilters> = filters
         .iter()
@@ -84,21 +86,27 @@ pub(crate) fn apply(
             f
         })
         .collect();
-    let analysis = Analysis::new(dsp, picture, ctu, |i| whole[i].alf[0].is_some());
-    filter_luma(&analysis, picture, &whole, banks)?;
+    let analysis = Analysis::new((dsp, depth), picture, ctu, |i| whole[i].alf[0].is_some());
+    let depth = depth.of::<T>();
+    filter_luma(&analysis, picture, &whole, (banks, depth))?;
     for (filter, analysis) in &regions {
-        filter_luma(analysis, picture, std::slice::from_ref(filter), banks)?;
+        filter_luma(
+            analysis,
+            picture,
+            std::slice::from_ref(filter),
+            (banks, depth),
+        )?;
     }
     Ok(())
 }
 
 /// Luma ALF with `analysis` of the CTBs `filters` names (the picture's in
 /// raster order, or one region's).
-fn filter_luma(
-    analysis: &Analysis<'_>,
-    picture: &mut Picture,
+fn filter_luma<T: Pixel>(
+    analysis: &Analysis<'_, T>,
+    picture: &mut Picture<T>,
     filters: &[CtuFilters],
-    banks: &[Option<Box<Adaptation>>; 8],
+    (banks, depth): (&[Option<Box<Adaptation>>; 8], BitDepth),
 ) -> Result<()> {
     let fixed: Vec<_> = filters
         .iter()
@@ -122,7 +130,7 @@ fn filter_luma(
                 limits: alf
                     .luma
                     .iter()
-                    .map(|f| f.clip.map(|c| [256, 32, 8, 2][usize::from(c)]))
+                    .map(|f| f.clip.map(|c| vvc_alf_clip_value(usize::from(c), depth)))
                     .collect(),
             };
             analysis.apply_clipped(picture, &decisions, &bank);

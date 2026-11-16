@@ -12,12 +12,14 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use super::block::motion::frame::{ReferenceMotion, TemporalField};
 use super::block::{self, BlockTrace};
 use super::cdfs::Cdfs;
 use super::filters;
 use super::frame_header::restoration::kind;
 use super::frame_header::{
-    self, Context, FrameHeader, FrameType, MAX_SLOTS, Parsed, ShowExisting, SlotHeader, obu_type,
+    self, Context, FrameHeader, FrameType, MAX_SLOTS, Parsed, ShowExisting, SlotHeader,
+    TIP_FRAME_MODE, obu_type,
 };
 use super::output::{OutputOrder, Release};
 use super::references::{self, MAX_REFERENCES};
@@ -28,9 +30,7 @@ use crate::obu;
 use crate::tile_decoder::{self, InterReference};
 use nc_common::decode::{BitReader, DecodeError, Result};
 use nc_common::{Picture, ShownPicture};
-
-/// TIP frame mode in which the whole frame is the TIP prediction.
-const TIP_FRAME_MODE: u8 = 2;
+use nc_dsp::av2_dec::wedge::InterMasks;
 
 /// OBU types other than frames that the decoder reads or skips (AV2 §6.2).
 mod other_obu {
@@ -48,6 +48,14 @@ mod other_obu {
 /// A frame's CCSO flags per 64x64 filter block and plane.
 type CcsoFlags = Rc<Vec<[bool; 3]>>;
 
+/// What a general-path frame leaves in its slots beside its picture and
+/// models.
+#[derive(Debug, Default)]
+struct SlotExtras {
+    ccso_flags: Option<CcsoFlags>,
+    motion_field: Option<Rc<TemporalField>>,
+}
+
 /// What a reference slot holds beyond the frame's header.
 #[derive(Debug, Clone)]
 struct SlotData {
@@ -58,6 +66,9 @@ struct SlotData {
     /// The frame's CCSO flags per 64x64 block and plane, for frames that
     /// reuse them (dav2d `ccsomap`); `None` without CCSO.
     ccso_flags: Option<CcsoFlags>,
+    /// The frame's temporal motion field (general-path inter frames of
+    /// sequences with motion fields), projected by later frames.
+    motion_field: Option<Rc<TemporalField>>,
 }
 
 /// A frame's final models, of the block layer that decoded it.
@@ -120,6 +131,8 @@ pub struct Decoder {
     /// Diagnosis: frames not shown when decoded are output then too (as
     /// dav2d's `--outputinvisible 1`).
     invisible: bool,
+    /// The wedge and inter-intra masks, built at the first general frame.
+    masks: std::cell::OnceCell<InterMasks>,
 }
 
 /// A block-trace sink ([`Decoder::trace_blocks`]).
@@ -372,7 +385,12 @@ impl Decoder {
             Parsed::Frame(header) => {
                 if obu_type::is_header_only(kind) {
                     bits.trailing_bits()?;
-                    return Err(DecodeError::Unsupported("AV2 TIP and bridge frames"));
+                    // A TIP frame is predicted whole from its TIP
+                    // references; it has no tile data.
+                    if header.tip.mode != TIP_FRAME_MODE {
+                        return Err(DecodeError::Unsupported("AV2 bridge frames"));
+                    }
+                    return self.decode_frame(*header, &[]);
                 }
                 bits.align_zero()?;
                 let tiles = bits.remaining_bytes()?;
@@ -418,13 +436,13 @@ impl Decoder {
         let Ok(params) =
             subset_sequence.and_then(|sequence| subset::tile_params(&sequence, &header))
         else {
-            let (picture, mut models, ccso_flags) = self.decode_general(&header, tiles)?;
+            let (picture, mut models, extras) = self.decode_general(&header, tiles)?;
             // The tile's final models, counts scaled back, are what later
             // frames inherit (dav2d `dav2d_decode_frame_update_cdf`; one
             // tile: no averaging).
             models.restart_adaptation();
             let context = FrameContext::General(Rc::from(models));
-            return self.finish_frame(header, picture, Some(context), ccso_flags);
+            return self.finish_frame(header, picture, Some(context), extras);
         };
         let size = (header.width as usize, header.height as usize);
         let (picture, models) = if header.is_intra() {
@@ -489,7 +507,7 @@ impl Decoder {
             models.restart_adaptation();
             FrameContext::Subset(Rc::from(models))
         });
-        self.finish_frame(header, picture, models, None)
+        self.finish_frame(header, picture, models, SlotExtras::default())
     }
 
     /// Queue a decoded frame for output when shown and keep it in the slots
@@ -499,7 +517,7 @@ impl Decoder {
         header: FrameHeader,
         picture: Picture,
         context: Option<FrameContext>,
-        ccso_flags: Option<CcsoFlags>,
+        extras: SlotExtras,
     ) -> Result<()> {
         let picture = Rc::new(picture);
         if header.show_immediate {
@@ -518,7 +536,8 @@ impl Decoder {
         let data = SlotData {
             picture,
             context,
-            ccso_flags,
+            ccso_flags: extras.ccso_flags,
+            motion_field: extras.motion_field,
         };
         for slot in 0..MAX_SLOTS {
             if refresh & (1 << slot) != 0 {
@@ -538,18 +557,34 @@ impl Decoder {
         &mut self,
         header: &FrameHeader,
         tiles: &[u8],
-    ) -> Result<(Picture, Box<Cdfs>, Option<CcsoFlags>)> {
+    ) -> Result<(Picture, Box<Cdfs>, SlotExtras)> {
         let sequence = self.state.sequence.clone().ok_or(DecodeError::MissingKey)?;
         let cdfs = self.initial_models(header, &sequence)?;
         let reused = self.reused_ccso_flags(header)?;
+        let motion = self.reference_motion(header);
         let trace = self.block_trace.0.as_mut().map(|sink| {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
         });
-        let reused = reused
+        let reused_ccso = reused
             .each_ref()
             .map(|flags| flags.as_deref().map(Vec::as_slice));
-        let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, reused, trace)?;
+        let references = std::array::from_fn(|rank| {
+            (!header.is_intra() && rank < usize::from(header.reference_count))
+                .then(|| {
+                    let slot = usize::from(header.references[rank]);
+                    self.state.data[slot].as_ref().map(|data| &*data.picture)
+                })
+                .flatten()
+        });
+        let masks = self.masks.get_or_init(InterMasks::new);
+        let inputs = block::FrameInputs {
+            reused_ccso,
+            references,
+            masks,
+            motion: &motion,
+        };
+        let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, inputs, trace)?;
         let ccso_flags = header
             .ccso
             .enabled
@@ -618,7 +653,11 @@ impl Decoder {
                 }
             }
         }
-        Ok((picture, decoded.cdfs, ccso_flags))
+        let extras = SlotExtras {
+            ccso_flags,
+            motion_field: decoded.motion_field.map(Rc::new),
+        };
+        Ok((picture, decoded.cdfs, extras))
     }
 
     /// The models a general frame starts from (dav2d
@@ -699,6 +738,35 @@ impl Decoder {
                 Some(references::order_difference(header.order, held.header.order).unsigned_abs())
             })
             .collect()
+    }
+
+    /// What each reference rank of an inter frame brings to its motion
+    /// prediction: display orders and the temporal field, when it kept
+    /// one of the frame's size (dav2d `dav2d_submit_frame`'s `ref_mvs`,
+    /// `refrefpoc`, `refcnt`).
+    fn reference_motion(&self, header: &FrameHeader) -> [ReferenceMotion; MAX_REFERENCES] {
+        let mut motion: [ReferenceMotion; MAX_REFERENCES] = Default::default();
+        if header.is_intra() {
+            return motion;
+        }
+        let units = |size: u32| size.div_ceil(8);
+        for (rank, reference) in motion.iter_mut().enumerate() {
+            let slot = usize::from(header.references[rank]);
+            let (Some(held), Some(data)) = (&self.state.headers[slot], &self.state.data[slot])
+            else {
+                continue;
+            };
+            let held = &held.header;
+            reference.order = held.order;
+            reference.reference_orders = held.reference_orders;
+            reference.reference_count = held.reference_count;
+            let same_size = (units(held.width), units(held.height))
+                == (units(header.width), units(header.height));
+            if header.use_motion_fields && same_size {
+                reference.field.clone_from(&data.motion_field);
+            }
+        }
+        motion
     }
 
     /// Diagnosis: output general-path frames before their loop filters

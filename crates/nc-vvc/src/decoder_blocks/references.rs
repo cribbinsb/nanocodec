@@ -1,5 +1,5 @@
 //! General intra availability, reference substitution and smoothing (§8.4.5.2).
-use nc_common::{Picture, PlaneIndex};
+use nc_common::{BitDepth, Picture, PlaneIndex, Sample};
 
 pub(super) struct Availability {
     dimensions: [usize; 2],
@@ -80,19 +80,22 @@ pub(super) struct References {
     pub left: Vec<i32>,
     pub corner: i32,
 }
+/// The intra reference samples (§8.4.5.2.8): when no neighbour is
+/// available every one is the mid-grey `1 << (BitDepth − 1)`, else each
+/// unavailable one copies the last available one before it.
 impl References {
-    pub fn gather_mrl(
-        picture: &Picture,
+    pub fn gather_mrl<T: Sample>(
+        picture: &Picture<T>,
         available: &Availability,
         (x, y, width, height): (usize, usize, usize, usize),
-        line: u8,
+        (line, depth): (u8, BitDepth),
     ) -> Self {
         let offset = isize::from(line);
         let view = picture.plane(PlaneIndex::Y).view();
         let sample = |px: isize, py: isize| {
             available
                 .has(0, px, py)
-                .then(|| i32::from(view.row(py as usize)[px as usize]))
+                .then(|| view.row(py as usize)[px as usize].to_i32())
         };
         let (top_length, left_length) = (
             2 * width + usize::from(line),
@@ -112,7 +115,7 @@ impl References {
                 y as isize - offset - 1,
             ));
         }
-        let mut last = chain.iter().find_map(|&v| v).unwrap_or(128);
+        let mut last = chain.iter().find_map(|&v| v).unwrap_or(depth.mid());
         let samples: Vec<_> = chain
             .into_iter()
             .map(|v| {
@@ -126,10 +129,10 @@ impl References {
             corner: samples[left_length],
         }
     }
-    pub fn gather(
-        picture: &Picture,
+    pub fn gather<T: Sample>(
+        picture: &Picture<T>,
         available: &Availability,
-        plane: PlaneIndex,
+        (plane, depth): (PlaneIndex, BitDepth),
         (x, y, width, height): (usize, usize, usize, usize),
         smooth: bool,
     ) -> Self {
@@ -138,7 +141,7 @@ impl References {
         let sample = |px: isize, py: isize| {
             available
                 .has(channel, px, py)
-                .then(|| i32::from(view.row(py as usize)[px as usize]))
+                .then(|| view.row(py as usize)[px as usize].to_i32())
         };
         let mut chain = Vec::with_capacity(2 * (width + height) + 1);
         for dy in (0..2 * height).rev() {
@@ -148,7 +151,7 @@ impl References {
         for dx in 0..2 * width {
             chain.push(sample((x + dx) as isize, y as isize - 1));
         }
-        let mut last = chain.iter().find_map(|&v| v).unwrap_or(128);
+        let mut last = chain.iter().find_map(|&v| v).unwrap_or(depth.mid());
         let mut raw: Vec<_> = chain
             .into_iter()
             .map(|v| {

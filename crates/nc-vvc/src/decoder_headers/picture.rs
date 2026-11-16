@@ -186,7 +186,7 @@ impl PictureHeader {
             super::weights::Weights::default()
         };
         let qp = if p.location.qp_in_ph {
-            Some(p.initial_qp + r.se(-p.initial_qp, 63 - p.initial_qp, "VVC PH QP")?)
+            Some(slice_qp(r, s, p)?)
         } else {
             None
         };
@@ -350,6 +350,20 @@ impl Motion {
         })
     }
 }
+
+/// `SliceQpY` from `ph_qp_delta` or `sh_qp_delta` (H.266 §7.4.3.8,
+/// §7.4.8: `−QpBdOffset ..= 63`).
+pub(super) fn slice_qp(r: &mut Reader<'_>, s: &Sequence, p: &PictureParameters) -> Result<i32> {
+    let delta = r.se(
+        -s.qp_bd_offset() - p.initial_qp,
+        MAX_QP - p.initial_qp,
+        "VVC slice QP",
+    )?;
+    Ok(p.initial_qp + delta)
+}
+
+/// The largest QP (`SliceQpY`).
+const MAX_QP: i32 = 63;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PictureOrder {

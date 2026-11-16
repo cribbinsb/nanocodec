@@ -61,7 +61,8 @@ fn official_general_intra_reconstruction() {
                     }
                 }
                 let dsp = nc_dsp::Dsp::new();
-                inverse_residuals(&mut units, s, &header, None, &dsp);
+                let eight = nc_common::BitDepth::EIGHT;
+                inverse_residuals(&mut units, s, &header, None, dsp.at(eight));
                 let mut picture = reconstructed(
                     &units,
                     s,
@@ -79,20 +80,20 @@ fn official_general_intra_reconstruction() {
                         &mut picture.plane_mut(nc_common::PlaneIndex::Y).view_mut(),
                     );
                 }
-                deblock(
-                    &mut picture,
-                    &units,
-                    s,
-                    p,
-                    std::slice::from_ref(&header),
-                    &dsp,
-                );
+                let headers = std::slice::from_ref(&header);
+                deblock(&mut picture, &units, s, p, headers, dsp.at(eight));
                 compare(&picture, "NC_DBF ", 0);
                 let owners = vec![Some(0); filters.len()];
                 let size = (picture.width(), picture.height());
-                let headers = std::slice::from_ref(&header);
                 let closures = Closures::new((s, p), headers, &owners, size);
-                apply_filters(&mut picture, &filters, (s, &closures), &banks, &dsp).unwrap();
+                apply_filters(
+                    &mut picture,
+                    &filters,
+                    (s, &closures),
+                    &banks,
+                    (&dsp, eight),
+                )
+                .unwrap();
                 compare(&picture, "NC_FINAL ", 0);
                 assert_picture(&name, &picture, s.chroma);
                 return;
@@ -102,7 +103,11 @@ fn official_general_intra_reconstruction() {
     }
     panic!("no picture");
 }
-pub(crate) fn compare(picture: &nc_common::Picture, prefix: &str, poc: i32) {
+pub(crate) fn compare<T: nc_common::Sample>(
+    picture: &nc_common::Picture<T>,
+    prefix: &str,
+    poc: i32,
+) {
     let Ok(path) = std::env::var("NC_VVC_GENERAL_RECO_TRACE") else {
         return;
     };
@@ -128,7 +133,8 @@ pub(crate) fn compare(picture: &nc_common::Picture, prefix: &str, poc: i32) {
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
         for row in *y..y + height {
             for &pixel in &view.row(row)[*x..x + width] {
-                hash = (hash ^ u64::from(pixel)).wrapping_mul(0x0100_0000_01b3);
+                let value: u32 = pixel.into();
+                hash = (hash ^ u64::from(value)).wrapping_mul(0x0100_0000_01b3);
             }
         }
         assert_eq!(

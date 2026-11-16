@@ -28,12 +28,14 @@ mod coefficients;
 pub mod context;
 pub mod frame_refs;
 mod inter;
+mod inter_pred;
 pub mod inter_record;
 mod inter_syntax;
 mod intra;
 mod intrabc;
 mod loop_filters;
 pub mod motion;
+mod motion_resolution;
 mod palette;
 mod partition;
 pub mod pixels;
@@ -44,6 +46,7 @@ mod restoration;
 pub mod size;
 mod syntax;
 pub mod transform;
+mod warp_motion;
 
 use std::fmt;
 
@@ -51,15 +54,21 @@ use std::rc::Rc;
 
 use super::cdfs::Cdfs;
 use super::filters::{FilterMaps, UNITS64_LOG2};
-use super::frame_header::{FrameHeader, FrameType};
+use super::frame_header::{FrameHeader, FrameType, TIP_FRAME_MODE};
+use super::references::MAX_REFERENCES;
 use super::sequence::SequenceHeader;
 use crate::entropy::{Cdf, Reader};
 use coefficients::{LEVELS, Scans};
 use context::{AboveCache, Contexts};
 use frame_refs::FrameReferences;
+use inter_pred::{InterPrediction, InterScratch};
 use intra::LUMA_MAP_SIDE;
+use motion::frame::{FrameMotion, ReferenceMotion, TemporalField};
+use motion::vector::REFERENCES;
 use motion::{MotionStore, StoreGeometry};
+use nc_common::Picture;
 use nc_common::decode::{DecodeError, Result};
+use nc_dsp::av2_dec::wedge::InterMasks;
 use pixels::Planes;
 use reconstruction::ChromaResiduals;
 use size::BlockSize;
@@ -72,6 +81,8 @@ pub type BlockTrace<'t> = &'t mut dyn FnMut(fmt::Arguments<'_>);
 /// Luma samples per 4x4 unit, as a shift.
 const UNIT_LOG2: u32 = 2;
 
+/// The data of a tile without symbols (TIP frames).
+const NO_SYMBOLS: &[u8] = &[0];
 /// Coefficients of one transform (at most 32x32 are coded).
 const COEFFICIENTS: usize = 32 * 32;
 /// A block copy's source window: up to 64x64 samples and a column and a
@@ -171,12 +182,19 @@ struct Tile<'a, 't> {
     /// Per plane, a reference's CCSO flags per 64x64 filter block, where
     /// the frame reuses them.
     reused_ccso: [Option<&'a [[bool; 3]]>; 3],
+    /// The pictures of the reference ranks.
+    reference_pictures: [Option<&'a Picture>; MAX_REFERENCES],
+    /// The wedge and inter-intra masks.
+    masks: &'a InterMasks,
+    /// The inter block being reconstructed.
+    inter_prediction: Option<InterPrediction>,
+    /// Inter prediction's scratch.
+    inter_scratch: InterScratch,
+    /// The current inter block's sub-PU deblocking level.
+    sub_pu_level: u8,
     /// The above references and motion modes at the current superblock's
     /// start (inter frames).
     above_cache: AboveCache,
-    /// The tile holds inter blocks, which are parsed but not yet
-    /// predicted.
-    has_inter_blocks: bool,
     trace: Option<BlockTrace<'t>>,
 }
 
@@ -190,6 +208,23 @@ pub struct DecodedTile {
     pub filters: FilterMaps,
     /// The models after the tile.
     pub cdfs: Box<Cdfs>,
+    /// The frame's temporal motion field, kept with the picture for later
+    /// frames (inter frames of sequences with motion fields).
+    pub motion_field: Option<TemporalField>,
+}
+
+/// What a frame's tile reads beyond its headers and data.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameInputs<'a> {
+    /// Per plane, a reference's CCSO flags per 64x64 filter block, where
+    /// the frame reuses them.
+    pub reused_ccso: [Option<&'a [[bool; 3]]>; 3],
+    /// The pictures of the reference ranks (inter frames).
+    pub references: [Option<&'a Picture>; MAX_REFERENCES],
+    /// The wedge and inter-intra masks.
+    pub masks: &'a InterMasks,
+    /// The references' motion: display orders and temporal fields.
+    pub motion: &'a [ReferenceMotion; REFERENCES],
 }
 
 /// Decode the one tile of a frame through the general block layer.
@@ -201,7 +236,7 @@ pub fn decode_tile(
     frame: &FrameHeader,
     cdfs: Box<Cdfs>,
     data: &[u8],
-    reused_ccso: [Option<&[[bool; 3]]>; 3],
+    inputs: FrameInputs<'_>,
     trace: Option<BlockTrace<'_>>,
 ) -> Result<DecodedTile> {
     if frame.tiles.columns() * frame.tiles.rows() != 1 {
@@ -219,7 +254,12 @@ pub fn decode_tile(
     let mut tile = Tile {
         frame,
         sequence,
-        reader: Reader::new(data)?,
+        // TIP frames code no symbols: their reader is never read.
+        reader: Reader::new(if frame.tip.mode == TIP_FRAME_MODE {
+            NO_SYMBOLS
+        } else {
+            data
+        })?,
         cdfs,
         adapt: !frame.disable_cdf_update,
         contexts: Contexts::new(geometry.columns as usize),
@@ -264,27 +304,31 @@ pub fn decode_tile(
                     row_start: 0,
                     row_end: geometry.rows,
                 },
-                sequence.references.mv_bank,
+                FrameMotion::new(sequence, frame, inputs.motion),
             )
         }),
         window: vec![0; BLOCK_COPY_WINDOW],
         references: FrameReferences::new(sequence, frame),
-        reused_ccso,
+        reused_ccso: inputs.reused_ccso,
+        reference_pictures: inputs.references,
+        masks: inputs.masks,
+        inter_prediction: None,
+        inter_scratch: InterScratch::default(),
+        sub_pu_level: super::filters::edges::NO_SUB_PU,
         above_cache: AboveCache::default(),
-        has_inter_blocks: false,
         trace,
     };
     tile.dequant = tile.dequantizers(tile.qindex);
     tile.decode(size)?;
-    if tile.has_inter_blocks {
-        return Err(DecodeError::Unsupported(
-            "AV2 inter prediction (general block layer)",
-        ));
-    }
+    let motion_field = tile
+        .motion
+        .filter(|_| !frame.is_intra())
+        .and_then(|motion| motion.frame.into_field());
     Ok(DecodedTile {
         planes: tile.planes,
         filters: tile.filters,
         cdfs: tile.cdfs,
+        motion_field,
     })
 }
 
@@ -292,26 +336,26 @@ impl Tile<'_, '_> {
     /// Every superblock of the tile in raster order.
     fn decode(&mut self, size: usize) -> Result<()> {
         let range = self.reader.range();
-        trace!(
-            self,
-            0,
-            "decode_tile[tilerow=0/col=0,y={}-{},x={}-{},size={size}]: r={range}",
-            self.bounds.row_start,
-            self.bounds.row_end,
-            self.bounds.column_start,
-            self.bounds.column_end
-        );
+        // dav2d traces no tile of a TIP frame (it has no symbols).
+        if self.frame.tip.mode != TIP_FRAME_MODE {
+            trace!(
+                self,
+                0,
+                "decode_tile[tilerow=0/col=0,y={}-{},x={}-{},size={size}]: r={range}",
+                self.bounds.row_start,
+                self.bounds.row_end,
+                self.bounds.column_start,
+                self.bounds.column_end
+            );
+        }
         let intra_frame = self.frame.is_intra();
         self.contexts.above.reset(intra_frame);
         let step = self.geometry.superblock_units;
         let mut row = self.bounds.row_start;
         while row < self.bounds.row_end {
             self.contexts.left.reset(intra_frame);
-            // Inter frames' superblocks below the tile's first row seed the
-            // MV bank from the row above (dav2d `dav2d_refmvs_reset_sb`).
-            let refill = !intra_frame && row != self.bounds.row_start && self.frame.tip.mode != 2;
             if let Some(motion) = &mut self.motion {
-                motion.start_row();
+                motion.start_row(row);
             }
             let mut column = self.bounds.column_start;
             while column < self.bounds.column_end {
@@ -319,18 +363,22 @@ impl Tile<'_, '_> {
                 self.sdp_cfl_disallowed = false;
                 self.coded = [[0; 64]; 2];
                 if let Some(motion) = &mut self.motion {
-                    motion.start_superblock(row, column, refill);
+                    motion.start_superblock(row, column);
                 }
                 if !intra_frame {
                     self.cache_above(row, column);
                 }
                 let root = self.geometry.root;
-                // With separate trees from a 64x64 root, the chroma units
-                // come between the trees (`partition`).
-                let planes = if self.separate_root_trees() { 1 } else { 3 };
-                self.restoration_units(0..planes)?;
-                let mut direction = 0;
-                self.superblock(1, Some(root), Some(root), &mut direction)?;
+                if self.frame.tip.mode == TIP_FRAME_MODE {
+                    self.tip_superblock()?;
+                } else {
+                    // With separate trees from a 64x64 root, the chroma
+                    // units come between the trees (`partition`).
+                    let planes = if self.separate_root_trees() { 1 } else { 3 };
+                    self.restoration_units(0..planes)?;
+                    let mut direction = 0;
+                    self.superblock(1, Some(root), Some(root), &mut direction)?;
+                }
                 if let Some(motion) = &mut self.motion {
                     motion.end_superblock(row, column);
                 }
@@ -411,6 +459,13 @@ impl Tile<'_, '_> {
     /// The index of the 64x64 filter block holding unit (`row`, `column`).
     fn filter_block(&self, row: u32, column: u32) -> usize {
         self.filters.filter_block(row, column)
+    }
+}
+
+impl<'a> Tile<'a, '_> {
+    /// The picture of reference rank `rank`.
+    fn reference_picture(&self, rank: usize) -> &'a Picture {
+        self.reference_pictures[rank].expect("inter blocks name decoded references")
     }
 }
 

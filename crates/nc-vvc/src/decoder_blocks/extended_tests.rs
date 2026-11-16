@@ -32,7 +32,13 @@ fn official_extended_intra_syntax() {
                         units.iter().filter(|u| u.mip.is_some()).count()
                     );
                     let dsp = nc_dsp::Dsp::new();
-                    inverse_residuals(&mut units, s, &header, None, &dsp);
+                    inverse_residuals(
+                        &mut units,
+                        s,
+                        &header,
+                        None,
+                        dsp.at(nc_common::BitDepth::EIGHT),
+                    );
                     let mut decoded = reconstructed(
                         &units,
                         s,
@@ -52,7 +58,7 @@ fn official_extended_intra_syntax() {
                         s,
                         p,
                         std::slice::from_ref(&header),
-                        &dsp,
+                        dsp.at(nc_common::BitDepth::EIGHT),
                     );
                     let mut hash = 0xcbf2_9ce4_8422_2325u64;
                     for plane in nc_common::PlaneIndex::ALL {

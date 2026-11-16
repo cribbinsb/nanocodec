@@ -1,5 +1,6 @@
 //! Native VP9 Profile 0 encoder backend for the shared engine, and a
-//! VP9 Profile 0 decoder for any conforming stream (`decoder/`).
+//! VP9 decoder for any conforming profile 0 or profile 2 stream (8-, 10-
+//! and 12-bit 4:2:0; `decoder/`).
 //!
 //! The engine plans partitions (64x64 superblocks down to 8x8) and picks
 //! each block's prediction; this crate writes VP9 syntax: DC intra,
@@ -15,7 +16,7 @@ mod decoder;
 mod extract;
 pub mod stream;
 pub mod superframe;
-pub use decoder::{DecodedFrame, Decoder};
+pub use decoder::{DecodedFrame, Decoder, ShownVp9Frame};
 pub use extract::{
     ExtractedVp9Packet, MAX_VP9_OPERATING_POINT, Vp9ExtractTarget, Vp9StreamExtractor,
     access_unit_layer,

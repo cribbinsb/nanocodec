@@ -1,29 +1,45 @@
-//! Bounded reference retention and POC derivation for general VVC I/P pictures.
+//! Bounded reference retention and POC derivation for general VVC pictures
+//! of samples `T` (8-bit `u8`, deeper `u16`).
 use crate::decoder_headers::{ReferenceEntry, Sequence, SliceHeader};
 use nc_common::{
-    Picture,
+    Picture, Sample,
     decode::{DecodeError, Result},
 };
 
-#[derive(Debug, Default)]
-pub(crate) struct References {
-    pictures: Vec<(i32, Picture)>,
+#[derive(Debug)]
+pub(crate) struct References<T: Sample = u8> {
+    pictures: Vec<(i32, Picture<T>)>,
     current: Option<i32>,
     previous_tid0: Option<i32>,
-    pending_output: Vec<(i32, Picture)>,
-    ready_output: std::collections::VecDeque<Picture>,
+    pending_output: Vec<(i32, Picture<T>)>,
+    ready_output: std::collections::VecDeque<Picture<T>>,
     output_enabled: bool,
     reorder: usize,
     motion: Vec<crate::decoder_blocks::MotionField>,
 }
-impl References {
+impl<T: Sample> Default for References<T> {
+    fn default() -> Self {
+        Self {
+            pictures: Vec::new(),
+            current: None,
+            previous_tid0: None,
+            pending_output: Vec::new(),
+            ready_output: std::collections::VecDeque::new(),
+            output_enabled: false,
+            reorder: 0,
+            motion: Vec::new(),
+        }
+    }
+}
+impl<T: Sample> References<T> {
     pub fn prepare(
         &mut self,
-        previous: Option<Picture>,
+        previous: Option<Picture<T>>,
         sequence: &Sequence,
         header: &SliceHeader,
-        kind: u8,
+        (kind, starts_sequence): (u8, bool),
         temporal_id: u8,
+        filler: Option<&Picture<T>>,
     ) -> Result<(i32, [Vec<i32>; 2])> {
         if let (Some(poc), Some(mut picture)) = (self.current, previous) {
             // Plane regions include alignment padding even with a zero border.
@@ -38,7 +54,10 @@ impl References {
                 self.flush_output();
             }
         }
-        if matches!(kind, 7 | 8) {
+        // An IDR picture, or an IRAP picture that starts a sequence
+        // (`NoOutputBeforeRecoveryFlag`), marks every reference unused
+        // (H.266 §8.3.2) and restarts the POC (§8.3.1).
+        if matches!(kind, 7 | 8) || starts_sequence {
             self.pictures.clear();
             self.motion.clear();
             self.current = None;
@@ -70,6 +89,15 @@ impl References {
         // The first slice's lists mark the other pictures unused (§8.3.3).
         self.pictures
             .retain(|(poc, _)| retained.iter().any(|list| list.contains(poc)));
+        // While recovering from a GDR picture that started the sequence,
+        // listed pictures the DPB lacks are generated (§8.3.4).
+        if let Some(filler) = filler {
+            for &listed in retained.iter().flatten() {
+                if !self.pictures.iter().any(|(stored, _)| *stored == listed) {
+                    self.pictures.push((listed, filler.clone()));
+                }
+            }
+        }
         // Inactive RPL entries may become collocated references in a later
         // picture, so retain their motion alongside their decoded samples.
         self.motion
@@ -110,7 +138,13 @@ impl References {
         Ok(lists)
     }
 
-    pub fn queue_output(&mut self, picture: Picture) {
+    /// The current picture is not output (a picture recovering from a GDR
+    /// picture that started the sequence, §8.1.1 `PictureOutputFlag`).
+    pub fn withhold_output(&mut self) {
+        self.output_enabled = false;
+    }
+
+    pub fn queue_output(&mut self, picture: Picture<T>) {
         if self.output_enabled {
             self.pending_output.push((self.current.unwrap(), picture));
         }
@@ -129,7 +163,7 @@ impl References {
         self.ready_output
             .push_back(self.pending_output.remove(index).1);
     }
-    pub fn next_output(&mut self) -> Option<Picture> {
+    pub fn next_output(&mut self) -> Option<Picture<T>> {
         self.ready_output.pop_front()
     }
     pub fn flush_output(&mut self) {
@@ -157,7 +191,7 @@ impl References {
             field, poc, lists, header, ctu_log2,
         ))
     }
-    pub fn pictures(&self, pocs: &[i32]) -> Vec<&Picture> {
+    pub fn pictures(&self, pocs: &[i32]) -> Vec<&Picture<T>> {
         pocs.iter()
             .map(|poc| {
                 &self
@@ -194,7 +228,7 @@ mod tests {
     use super::*;
     #[test]
     fn streaming_b_pictures_are_bumped_in_display_order_and_flushed() {
-        let mut references = References {
+        let mut references = References::<u8> {
             output_enabled: true,
             reorder: 1,
             ..References::default()

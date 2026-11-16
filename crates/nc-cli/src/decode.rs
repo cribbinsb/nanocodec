@@ -256,6 +256,34 @@ impl<'a> Shown<'a> {
         }
     }
 
+    /// A VP9 frame of either depth, of any parity: 8-bit written straight
+    /// from the decoder's picture, deeper packed.
+    fn vp9(shown: nc_vp9::ShownVp9Frame<'a>) -> Self {
+        let (samples, (width, height)) = match shown {
+            nc_vp9::ShownVp9Frame::Eight(picture, size) => (Samples::Borrowed(picture), size),
+            nc_vp9::ShownVp9Frame::High(picture, (width, height), _) => {
+                let planes = PlaneIndex::ALL.map(|plane| {
+                    let ss = usize::from(plane != PlaneIndex::Y);
+                    picture
+                        .plane(plane)
+                        .view()
+                        .sub_view(0, 0, (width + ss) >> ss, (height + ss) >> ss)
+                        .expect("the visible size lies inside the picture")
+                });
+                let mut bytes = Vec::new();
+                nc_common::yuv::write_planes(&mut bytes, planes)
+                    .expect("writing to memory cannot fail");
+                (Samples::Packed(bytes), (width, height))
+            }
+        };
+        Self {
+            planes: 3,
+            width,
+            height,
+            samples,
+        }
+    }
+
     /// An H.264 frame, shown from the decoder's own picture.
     fn h264(frame: nc_h264::DecodedFrame) -> Self {
         Self {
@@ -269,9 +297,14 @@ impl<'a> Shown<'a> {
         }
     }
 
-    /// An HEVC picture in output order: an 8-bit one shown from the
-    /// decoder's own picture, a deeper one packed.
+    /// An HEVC picture in output order (all three planes).
     fn hevc(frame: DecodedPicture) -> Result<Self, String> {
+        Self::decoded(frame, 3)
+    }
+
+    /// A picture in output order, its first `planes` planes: an 8-bit one
+    /// shown from the decoder's own picture, a deeper one packed.
+    fn decoded(frame: DecodedPicture, planes: usize) -> Result<Self, String> {
         let (width, height) = frame.size();
         let samples = match frame {
             DecodedPicture::Eight(frame) => Samples::Shared {
@@ -281,16 +314,16 @@ impl<'a> Shown<'a> {
             DecodedPicture::High(_) => {
                 let mut bytes = Vec::new();
                 frame
-                    .write_yuv(&mut bytes, 3)
+                    .write_yuv(&mut bytes, planes)
                     .map_err(|error| error.to_string())?;
                 Samples::Packed(bytes)
             }
         };
         Ok(Self {
-            planes: 3,
+            planes,
+            samples,
             width,
             height,
-            samples,
         })
     }
 
@@ -444,18 +477,13 @@ impl Decoder {
                 Ok(Some(Shown::frame(shown)))
             }
             Self::Vp9(decoder) => {
-                // Written straight from the decoder's picture.
+                // 8-bit frames written straight from the decoder's picture,
+                // deeper ones packed.
                 if !decoder.decode_kept(packet)? {
                     return Ok(None);
                 }
-                let (picture, (width, height)) =
-                    decoder.shown_frame().expect("a kept frame is shown");
-                Ok(Some(Shown {
-                    planes: 3,
-                    samples: Samples::Borrowed(picture),
-                    width,
-                    height,
-                }))
+                let shown = decoder.shown_vp9_frame().expect("a kept frame is shown");
+                Ok(Some(Shown::vp9(shown)))
             }
             Self::Av2(decoder) => {
                 // Written straight from the decoder's picture. A unit may
@@ -627,25 +655,22 @@ fn decode_stream_with_op<R: BufRead>(
                 output(&frame)
             };
             let planes = |vvc: &nc_vvc::Decoder| if vvc.is_monochrome() { 1 } else { 3 };
-            let whole = |picture: Picture, planes: usize| Shown {
-                planes,
-                ..Shown::whole(picture)
-            };
             read_nal_units(input, |nal| {
                 // Our own streams show in decoding order, written straight
-                // from the decoder's picture; general streams are reordered.
+                // from the decoder's picture; general streams are reordered
+                // (deeper than 8 bits: 16-bit little-endian samples).
                 if vvc.push_nal_shown(nal).map_err(|error| error.to_string())? {
                     let picture = vvc.shown().expect("a decoded picture is shown");
                     write(Shown::view(picture, planes(vvc)))?;
                 }
                 while let Some(picture) = vvc.next_output() {
-                    write(whole(picture, planes(vvc)))?;
+                    write(Shown::decoded(picture, planes(vvc))?)?;
                 }
                 Ok(())
             })?;
             vvc.flush().map_err(|error| error.to_string())?;
             while let Some(picture) = vvc.next_output() {
-                write(whole(picture, planes(vvc)))?;
+                write(Shown::decoded(picture, planes(vvc))?)?;
             }
         }
     }

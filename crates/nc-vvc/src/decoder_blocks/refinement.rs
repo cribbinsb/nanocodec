@@ -2,14 +2,17 @@
 //! Spatial motion remains unrefined; only temporal storage receives DMVR (§8.5.3).
 use super::{Inter, SliceHeader, Unit, motion::Motion};
 use crate::motion::Mv16;
-use nc_common::{Picture, Plane, PlaneIndex, PlaneView};
-use nc_dsp::Dsp;
+use nc_common::{BitDepth, Picture, Plane, PlaneIndex, PlaneView, Sample};
+use nc_dsp::{DepthKernels, Pixel};
 
 const REGION_SIDE: usize = 16;
 const SEARCH_BORDER: usize = 2;
 const SEARCH_SIDE: usize = REGION_SIDE + 2 * SEARCH_BORDER;
 const BILINEAR_SIDE: usize = SEARCH_SIDE + 1;
 const OPTICAL_SIDE: usize = REGION_SIDE + 2;
+/// Bits of the high-precision samples BDOF and PROF pad with whole
+/// reference samples (H.266 §8.5.6.3.1: `shift3 = Max(2, 14 − BitDepth)`).
+const PRECISION: u32 = 14;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Region {
@@ -37,9 +40,9 @@ impl Edges {
     /// Whether a window of `size` samples at `origin` reads only what the
     /// plane holds there, its replicated border included: only those may
     /// be borrowed directly instead of fetched sample by sample.
-    pub(super) fn direct(
+    pub(super) fn direct<T: Sample>(
         self,
-        reference: &Plane,
+        reference: &Plane<T>,
         origin: (i32, i32),
         size: (usize, usize),
     ) -> bool {
@@ -69,7 +72,7 @@ pub(super) struct Fetch {
     rows: (i32, i32),
 }
 impl Fetch {
-    pub fn new(reference: &Plane, bounds: Option<Bounds>, edges: Edges) -> Self {
+    pub fn new<T: Sample>(reference: &Plane<T>, bounds: Option<Bounds>, edges: Edges) -> Self {
         let (width, height) = (reference.width() as i32, reference.height() as i32);
         let (columns, rows) = match edges.area {
             Some([left, top, right, bottom]) => ((left, right), (top, bottom)),
@@ -108,13 +111,13 @@ impl Fetch {
     }
 }
 
-pub(crate) fn derive(
+pub(crate) fn derive<T: Pixel>(
     units: &mut [Unit],
     header: &SliceHeader,
     poc: i32,
     pocs: [&[i32]; 2],
-    (pictures, edges): ([&[&Picture]; 2], Edges),
-    dsp: &Dsp,
+    (pictures, edges): ([&[&Picture<T>]; 2], Edges),
+    dsp: DepthKernels<'_>,
 ) {
     if header.picture.motion.bdof_disabled && header.picture.motion.dmvr_disabled {
         return;
@@ -122,7 +125,7 @@ pub(crate) fn derive(
     // All search windows are at most 20×20. Reuse bounded workspaces across
     // regions; each interpolation overwrites its complete active rectangle.
     let mut inputs = [[0i16; SEARCH_SIDE * SEARCH_SIDE]; 2];
-    let mut pixels = [0u8; BILINEAR_SIDE * BILINEAR_SIDE];
+    let mut pixels = [T::default(); BILINEAR_SIDE * BILINEAR_SIDE];
     for unit in units {
         let n = unit.node;
         if n.width < 8
@@ -184,13 +187,13 @@ pub(crate) fn derive(
     }
 }
 
-fn bilinear(
-    dsp: &Dsp,
-    reference: &Plane,
+fn bilinear<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    reference: &Plane<T>,
     position: (usize, usize),
     size: (usize, usize),
     (vector, edges): (Mv16, Edges),
-    scratch: &mut [u8; BILINEAR_SIDE * BILINEAR_SIDE],
+    scratch: &mut [T; BILINEAR_SIDE * BILINEAR_SIDE],
     out: &mut [i16],
 ) {
     let origin = (
@@ -242,13 +245,13 @@ pub(super) fn temporal(unit: &Unit, x: usize, y: usize) -> Option<Motion> {
     Some(refined(motion, region.delta))
 }
 
-pub(super) fn predict(
-    dsp: &Dsp,
-    references: super::inter_prediction::Sources<'_>,
+pub(super) fn predict<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    references: super::inter_prediction::Sources<'_, T>,
     unit: &Unit,
     plane: PlaneIndex,
     block: nc_encoder::Block,
-    out: &mut [u8],
+    out: &mut [T],
 ) {
     let chroma = usize::from(plane != PlaneIndex::Y);
     let position = (block.x >> chroma, block.y >> chroma);
@@ -259,7 +262,7 @@ pub(super) fn predict(
     // Keep both predictions, their optical-flow borders and output reusable.
     let mut samples = [[0i16; REGION_SIDE * REGION_SIDE]; 2];
     let mut padded = [[0i16; OPTICAL_SIDE * OPTICAL_SIDE]; 2];
-    let mut pixels = [0u8; REGION_SIDE * REGION_SIDE];
+    let mut pixels = [T::default(); REGION_SIDE * REGION_SIDE];
     for y in (0..size.1).step_by(step) {
         for x in (0..size.0).step_by(step) {
             let (width, height) = (step.min(size.0 - x), step.min(size.1 - y));
@@ -307,7 +310,7 @@ pub(super) fn predict(
                 );
                 if bdof {
                     padding(
-                        reference,
+                        (reference, dsp.depth()),
                         at,
                         (width, height),
                         vector.vector,
@@ -338,8 +341,11 @@ pub(super) fn predict(
     }
 }
 
-pub(super) fn padding(
-    reference: &Plane,
+/// The `(width + 2) x (height + 2)` high-precision samples BDOF or PROF
+/// read: `interior`, bordered by the whole reference samples at the nearest
+/// integer positions, scaled to the precision of samples of `depth`.
+pub(super) fn padding<T: Pixel>(
+    (reference, depth): (&Plane<T>, BitDepth),
     position: (usize, usize),
     size: (usize, usize),
     vector: Mv16,
@@ -355,6 +361,7 @@ pub(super) fn padding(
     );
     let view = reference.view();
     let fetch = Fetch::new(reference, bounds, edges);
+    let shift = PRECISION - BitDepth::of::<T>(depth).bits();
     assert_eq!(samples.len(), stride * (height + 2));
     for (y, row) in samples.chunks_exact_mut(stride).enumerate() {
         let source = view.row(fetch.row(origin.1 + y as i32 - 1));
@@ -362,7 +369,7 @@ pub(super) fn padding(
             if y > 0 && y <= height && x > 0 && x <= width {
                 *value = interior[(y - 1) * width + x - 1];
             } else {
-                *value = i16::from(source[fetch.column(origin.0 + x as i32 - 1)]) << 6;
+                *value = (source[fetch.column(origin.0 + x as i32 - 1)].to_i32() << shift) as i16;
             }
         }
     }

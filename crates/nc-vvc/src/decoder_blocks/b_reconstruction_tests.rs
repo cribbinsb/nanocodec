@@ -50,7 +50,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 let dimensions = p.dimensions.map(|v| v as usize);
                 let mut units = parse(&rbsp, s, p, &h).unwrap();
                 let (poc, lists) = references
-                    .prepare(previous.take(), s, &h, kind, nal[1] & 7)
+                    .prepare(previous.take(), s, &h, (kind, false), nal[1] & 7, None)
                     .unwrap();
                 derive_motion(
                     &mut units,
@@ -70,7 +70,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                     poc,
                     vec![lists.clone()],
                 ));
-                inverse_residuals(&mut units, s, &h, None, &dsp);
+                inverse_residuals(&mut units, s, &h, None, dsp.at(nc_common::BitDepth::EIGHT));
                 let pictures = lists.each_ref().map(|list| references.pictures(list));
                 let mut picture = reconstructed(
                     &units,
@@ -85,7 +85,14 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 if poc != 0 {
                     compare_regions(&picture, poc);
                 }
-                deblock(&mut picture, &units, s, p, std::slice::from_ref(&h), &dsp);
+                deblock(
+                    &mut picture,
+                    &units,
+                    s,
+                    p,
+                    std::slice::from_ref(&h),
+                    dsp.at(nc_common::BitDepth::EIGHT),
+                );
                 if poc != 0 {
                     compare_filtered(&picture, poc);
                 }

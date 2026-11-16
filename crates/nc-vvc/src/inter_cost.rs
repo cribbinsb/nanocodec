@@ -33,7 +33,14 @@ pub(crate) fn luma_cost(
     let luma = reference.plane(PlaneIndex::Y);
     let mv = crate::motion::Mv16::from_quarter(mv);
     let mut out = inter::packed(&mut prediction, (w, h));
-    inter::predict_luma(dsp, luma, (cu.x, cu.y), (w, h), mv, &mut out);
+    inter::predict_luma(
+        dsp.at(nc_common::BitDepth::EIGHT),
+        luma,
+        (cu.x, cu.y),
+        (w, h),
+        mv,
+        &mut out,
+    );
     residual_cost(
         dsp,
         source,

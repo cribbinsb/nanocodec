@@ -30,7 +30,7 @@ fn read_intra_mode(reader: &mut BoolReader<'_>, probs: &[u8]) -> IntraMode {
     IntraMode::from_index(tree::read(reader, tree::INTRA_MODE, probs))
 }
 
-impl FrameDecoder<'_> {
+impl<T: nc_dsp::Pixel> FrameDecoder<'_, T> {
     fn above_info(&self, position: &BlockPosition) -> Option<&BlockInfo> {
         position.above.map(|i| &self.blocks[i as usize])
     }

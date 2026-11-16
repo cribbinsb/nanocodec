@@ -8,7 +8,6 @@
 //! the contexts later blocks read.
 use super::Tile;
 use super::context::{self, NO_DIRECTION};
-use super::motion::Motion;
 use super::palette::Palette;
 use super::record::BlockRecord;
 use super::size::BlockSize;
@@ -238,10 +237,7 @@ impl Tile<'_, '_> {
         if let (Some(size), Some(store)) = (record.luma, &mut self.motion) {
             // Later block copies' lists see no vector here (dav2d
             // `splat_intraref`).
-            store.splat(record.row, record.column, size, Motion::Intra);
-            if self.sequence.references.mv_bank {
-                store.update_bank(record.row, record.column, size);
-            }
+            store.record_intra(record.row, record.column, size);
         }
         Ok(transforms)
     }

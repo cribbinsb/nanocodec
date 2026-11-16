@@ -8,7 +8,7 @@
 //! already in quantized units.
 
 use crate::hybrid;
-use crate::tables::{AC_QUANT, DC_QUANT};
+use crate::tables::{AC_QUANT, AC_QUANT_10, AC_QUANT_12, DC_QUANT, DC_QUANT_10, DC_QUANT_12};
 
 pub(crate) use hybrid::Transform as TxType;
 
@@ -63,10 +63,25 @@ impl Steps {
     /// Steps at `qindex` with the frame's DC/AC deltas (VP9 §8.6.1:
     /// `dc_q(qindex + delta)`, clamped to the table).
     pub(crate) fn new(qindex: u8, dc_delta: i8, ac_delta: i8) -> Self {
+        Self::at(qindex, (dc_delta, ac_delta), nc_common::BitDepth::EIGHT)
+    }
+
+    /// [`Self::new`] for samples of `depth` (`vp9_dc_quant`, `vp9_ac_quant`:
+    /// 10- and 12-bit streams have their own tables).
+    pub(crate) fn at(
+        qindex: u8,
+        (dc_delta, ac_delta): (i8, i8),
+        depth: nc_common::BitDepth,
+    ) -> Self {
         let at = |delta: i8| (i32::from(qindex) + i32::from(delta)).clamp(0, 255) as usize;
+        let (dc, ac) = match depth.bits() {
+            10 => (&DC_QUANT_10, &AC_QUANT_10),
+            12 => (&DC_QUANT_12, &AC_QUANT_12),
+            _ => (&DC_QUANT, &AC_QUANT),
+        };
         Self {
-            dc: DC_QUANT[at(dc_delta)],
-            ac: AC_QUANT[at(ac_delta)],
+            dc: dc[at(dc_delta)],
+            ac: ac[at(ac_delta)],
         }
     }
 

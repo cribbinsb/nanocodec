@@ -23,16 +23,16 @@ delay, you may be in the right place:
   decoder; the same rate control, analysis and mode decision drive all six.
 - **Decoders that run in any browser:** all six decoders compile to WebAssembly (SIMD128), so a web page can
   play H.264, HEVC, VVC, AV1, VP9 and AV2 streams without WebCodecs, a plug-in or a native decoder for the
-  format. The H.264 (Constrained High), HEVC (Main and Main 10), AV1 (Main, 8- and 10-bit) and VP9 (profile 0)
-  decoders pass the conformance streams we test (HEVC: 147/147 Main, Main Still Picture and Main 10 streams of the
-  JCT-VC HEVC_v1 set; AV1: 242/242 libaom test vectors, 66 of them 10-bit; VP9: 303/303 libvpx profile 0 vectors, profile 2 (10/12-bit)
-  in progress; the browser build shows 8-bit streams
+  format. The H.264 (Constrained High), HEVC (Main and Main 10), AV1 (Main, 8- and 10-bit) and VP9 (profiles 0 and 2, 8- to
+  12-bit) decoders pass the conformance streams we test (HEVC: 147/147 Main, Main Still Picture and Main 10 streams of the
+  JCT-VC HEVC_v1 set; AV1: 242/242 libaom test vectors, 66 of them 10-bit; VP9: 305/305 libvpx profile 0 and 2 vectors, 2 of them 10/12-bit;
+  the browser build shows 8-bit streams
   only), so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
-  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine
-  official 8-bit conformance streams and 136 of 138 short 8-bit streams we coded with VTM and VVenC to cover the
-  Main 10 tools one by one, pictures of several slices and subpictures among them (it is 8-bit only and still
-  rejects reference picture resampling, so it is not a compliant Main 10 decoder; [what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
+  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes 218 of
+  the 226 official Main 10 conformance streams (8- and 10-bit; it still lacks reference picture resampling,
+  field output and long-term references, so it is not a compliant Main 10 decoder) and 136 of 138 short 8-bit
+  streams we coded with VTM and VVenC to cover the Main 10 tools one by one ([what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
   decodes our own streams and 14 of 30 foreign test streams bit-exact (all-intra streams and those of the
   reference encoder with the fewest tools; the rest need inter tools and segmentation outside our
   subset).

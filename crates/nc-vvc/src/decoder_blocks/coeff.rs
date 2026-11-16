@@ -169,6 +169,12 @@ fn last_suffix(r: &mut Reader<'_>, group: usize) -> Result<usize> {
             0
         })
 }
+/// A side of the coefficients a block may code: at most 32, and 16 of 32
+/// when the MTS or SBT zero-out applies (H.266 §7.3.11.11).
+fn zero_out_side(side: usize, zero_out: bool) -> usize {
+    if zero_out { side.min(16) } else { side.min(32) }
+}
+
 fn last_position(
     r: &mut Reader<'_>,
     models: &mut Models,
@@ -183,14 +189,14 @@ fn last_position(
         &mut models.common.last_x[channel],
         width,
         channel,
-        if zero_out { width.min(16) } else { width },
+        zero_out_side(width, zero_out),
     )?;
     let gy = last_prefix(
         r,
         &mut models.common.last_y[channel],
         height,
         channel,
-        if zero_out { height.min(16) } else { height },
+        zero_out_side(height, zero_out),
     )?;
     let x = last_suffix(r, gx)?;
     let y = last_suffix(r, gy)?;
@@ -322,7 +328,10 @@ fn read_general(
         adjustment: vec![0; width * height],
         negative: vec![false; width * height],
         state: 0,
-        budget: width.min(32) * height.min(32) * 28 / 16,
+        // Context-coded bins: 7/4 per coefficient of the area left after
+        // the zero-out (H.266 §7.3.11.11 `remCcbs` from `log2ZoTbWidth`,
+        // `log2ZoTbHeight`; SBT and MTS keep 16 of 32).
+        budget: zero_out_side(width, zero_out) * zero_out_side(height, zero_out) * 28 / 16,
         width,
         height,
         channel,

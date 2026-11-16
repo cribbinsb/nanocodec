@@ -4,13 +4,13 @@ use super::{
     references::{Availability, References},
 };
 use nc_common::{Picture, PlaneIndex, PlaneViewMut};
-use nc_dsp::{Dsp, HevcWeights, VvcIntraMode};
-pub(super) fn prepare(
+use nc_dsp::{DepthKernels, HevcWeights, Pixel, VvcIntraMode};
+pub(super) fn prepare<T: Pixel>(
     unit: &Unit,
-    picture: &Picture,
+    picture: &Picture<T>,
     available: &Availability,
-    dsp: &Dsp,
-) -> [Vec<u8>; 3] {
+    dsp: DepthKernels<'_>,
+) -> [Vec<T>; 3] {
     if !matches!(unit.inter, Some(Inter::Ciip(_))) {
         return std::array::from_fn(|_| Vec::new());
     }
@@ -30,11 +30,11 @@ pub(super) fn prepare(
         let edges = References::gather(
             picture,
             available,
-            PlaneIndex::ALL[plane],
+            (PlaneIndex::ALL[plane], dsp.depth()),
             (x, y, w, h),
             filtered,
         );
-        let mut prediction = vec![0; w * h];
+        let mut prediction = vec![T::default(); w * h];
         dsp.vvc_intra_predict_rect(
             (w, h),
             VvcIntraMode::Planar,
@@ -46,13 +46,16 @@ pub(super) fn prepare(
         prediction
     })
 }
-pub(super) fn blend(
+/// Blend the inter `prediction` of `plane` of `block` with the CU's
+/// planar `intra` prediction (H.266 §8.5.6.7: `(w · intra + (4 − w) ·
+/// inter + 2) >> 2`, the same at every depth).
+pub(super) fn blend<T: Pixel>(
     unit: &Unit,
     block: nc_encoder::Block,
     plane: usize,
-    intra: &[u8],
-    prediction: &mut [u8],
-    dsp: &Dsp,
+    intra: &[T],
+    prediction: &mut [T],
+    dsp: DepthKernels<'_>,
 ) {
     if intra.is_empty() {
         return;
@@ -68,11 +71,13 @@ pub(super) fn blend(
         .flat_map(|row| {
             intra[row * stride + x..row * stride + x + w]
                 .iter()
-                .copied()
-                .map(i16::from)
+                .map(|&sample| sample.to_i32() as i16)
         })
         .collect();
-    let inter: Vec<_> = prediction.iter().copied().map(i16::from).collect();
+    let inter: Vec<_> = prediction
+        .iter()
+        .map(|&sample| sample.to_i32() as i16)
+        .collect();
     let weight = i16::from(unit.ciip_weight);
     let weights = HevcWeights {
         w0: 4 - weight,

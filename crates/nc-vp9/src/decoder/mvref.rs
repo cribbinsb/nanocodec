@@ -44,7 +44,7 @@ impl List {
     }
 }
 
-impl FrameDecoder<'_> {
+impl<T: nc_dsp::Pixel> FrameDecoder<'_, T> {
     /// Block indices at the candidate positions, `None` outside the frame
     /// or the tile's columns (`is_inside`).
     pub(super) fn candidates<'s>(

@@ -7,9 +7,13 @@
 //! HEVC's, so those vectors use the HEVC kernels; finer ones (merged from
 //! an affine neighbour) use the VVC tables. The alternate half-sample
 //! filter is not enabled.
+//!
+//! The one-vector helpers are generic over the sample type (the general
+//! decoder's Main 10 pictures, H.266 §8.5.6.3.2 at any depth); the encoder
+//! and our own streams call them at `u8`.
 use crate::motion::{Motion, Mv16};
-use nc_common::{Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, Filter};
+use nc_common::{BitDepth, Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut, Sample};
+use nc_dsp::{BlockSize, DepthKernels, Dsp, Filter, Pixel};
 use nc_encoder::Block;
 
 /// Fractional bits of a luma vector.
@@ -20,7 +24,7 @@ const CHROMA_FRAC_BITS: u32 = 5;
 const HEVC_PHASE_STEP: i32 = 4;
 
 /// A `w`x`h` block's prediction buffer, row-major, as a view to predict into.
-pub(crate) fn packed(out: &mut [u8], (w, h): (usize, usize)) -> PlaneViewMut<'_> {
+pub(crate) fn packed<T: Sample>(out: &mut [T], (w, h): (usize, usize)) -> PlaneViewMut<'_, T> {
     PlaneViewMut::new(out, w, w, h).expect("the prediction buffer covers the block")
 }
 
@@ -64,12 +68,13 @@ pub(crate) fn predict_cu_view(
     let (x, y) = (cu.x >> shift, cu.y >> shift);
     let (w, h) = (cu.width() >> shift, cu.height() >> shift);
     let reference = reference.plane(plane);
+    let kernels = dsp.at(BitDepth::EIGHT);
     match motion {
         Motion::Vector(mv) if plane == PlaneIndex::Y => {
-            predict_luma(dsp, reference, (x, y), (w, h), *mv, prediction);
+            predict_luma(kernels, reference, (x, y), (w, h), *mv, prediction);
         }
         Motion::Vector(mv) => {
-            predict_chroma(dsp, reference, (x, y), (w, h), *mv, prediction);
+            predict_chroma(kernels, reference, (x, y), (w, h), *mv, prediction);
         }
         Motion::Affine(model) => {
             let field = model.field(cu.width(), cu.height());
@@ -80,13 +85,13 @@ pub(crate) fn predict_cu_view(
 
 /// Predict the `w`x`h` luma block at `(x, y)` from `reference` displaced by
 /// `mv` into `out`.
-pub(crate) fn predict_luma(
-    dsp: &Dsp,
-    reference: &Plane,
+pub(crate) fn predict_luma<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv16,
-    out: &mut PlaneViewMut<'_>,
+    out: &mut PlaneViewMut<'_, T>,
 ) {
     let filter = if on_hevc_grid(mv) {
         Filter::HevcLuma
@@ -98,13 +103,13 @@ pub(crate) fn predict_luma(
 
 /// Predict the `w`x`h` chroma block at chroma position `(x, y)` displaced
 /// by the luma vector `mv` (§8.5.6.3.4: 1/32 chroma samples for 4:2:0).
-pub(crate) fn predict_chroma(
-    dsp: &Dsp,
-    reference: &Plane,
+pub(crate) fn predict_chroma<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv16,
-    out: &mut PlaneViewMut<'_>,
+    out: &mut PlaneViewMut<'_, T>,
 ) {
     let filter = if on_hevc_grid(mv) {
         Filter::HevcChroma
@@ -115,7 +120,8 @@ pub(crate) fn predict_chroma(
 }
 
 /// Whether `mv` lies on the HEVC filters' phase grid (quarter luma,
-/// eighth chroma samples): both are four phases of the VVC tables.
+/// eighth chroma samples): both are four phases of the VVC tables, with the
+/// same shifts at every depth (HEVC §8.5.3.3.3, H.266 §8.5.6.3.2).
 fn on_hevc_grid(mv: Mv16) -> bool {
     mv.x % HEVC_PHASE_STEP == 0 && mv.y % HEVC_PHASE_STEP == 0
 }
@@ -123,24 +129,24 @@ fn on_hevc_grid(mv: Mv16) -> bool {
 /// Predict the `w`x`h` block at `(x, y)` of `reference` displaced by `mv`
 /// with `filter`, whose positions set the vector's fractional bits (an
 /// HEVC filter reads `mv` at its coarser phases).
-pub(crate) fn predict_with(
-    dsp: &Dsp,
+pub(crate) fn predict_with<T: Pixel>(
+    dsp: DepthKernels<'_>,
     filter: Filter,
-    reference: &Plane,
+    reference: &Plane<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Mv16,
-    out: &mut PlaneViewMut<'_>,
+    out: &mut PlaneViewMut<'_, T>,
 ) {
-    let ((wx, wy), (frac_x, frac_y)) = window_of(filter, (x, y), mv);
+    let ((wx, wy), frac) = window_of(filter, (x, y), mv);
     let (ww, wh) = (w + filter.taps() - 1, h + filter.taps() - 1);
     let size = BlockSize::new(w, h).expect("prediction blocks are 4..64 a side");
     if let Some(window) = reference.region(wx as isize, wy as isize, ww, wh) {
-        dsp.predict(filter, size, &window, frac_x, frac_y, out);
+        dsp.predict(filter, size, &window, frac, out);
     } else {
         let samples = gather(reference, wx, wy, ww, wh);
         let window = PlaneView::new(&samples, ww, ww, wh).expect("gathered window");
-        dsp.predict(filter, size, &window, frac_x, frac_y, out);
+        dsp.predict(filter, size, &window, frac, out);
     }
 }
 
@@ -210,7 +216,7 @@ pub(crate) fn predict_sub_blocks(
         for (i, &mv) in vectors.iter().enumerate() {
             let (col, row) = (side * (i % per_row), side * (i / per_row));
             predict_with(
-                dsp,
+                dsp.at(BitDepth::EIGHT),
                 filter,
                 reference,
                 (x + col, y + row),
@@ -248,9 +254,9 @@ fn split(v: i32, frac_bits: u32) -> (i32, usize) {
 /// The `w`x`h` reference window at `(x, y)` with coordinates clamped to the
 /// coded picture edges (H.266 §8.5.6.3.2), through the shared
 /// [`nc_dsp::emulate_edges`].
-fn gather(reference: &Plane, x: i32, y: i32, w: usize, h: usize) -> Vec<u8> {
+fn gather<T: Sample>(reference: &Plane<T>, x: i32, y: i32, w: usize, h: usize) -> Vec<T> {
     let view = reference.view();
-    let mut window = vec![0u8; w * h];
+    let mut window = vec![T::default(); w * h];
     nc_dsp::emulate_edges(
         (view.data(), view.stride()),
         (reference.width(), reference.height()),

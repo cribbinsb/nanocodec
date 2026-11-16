@@ -7,7 +7,7 @@ use nc_common::{
     Picture, PlaneIndex,
     decode::{DecodeError, Result},
 };
-use nc_dsp::Dsp;
+use nc_dsp::{DepthKernels, Pixel, vvc_alf_clip_value};
 
 /// The luma regions CTB `index` is filtered in: the parts `closures` names,
 /// or the whole CTB.
@@ -23,12 +23,12 @@ fn regions(closures: &Closures, index: usize, ctu: usize, size: (usize, usize)) 
     })
 }
 
-pub(super) fn apply(
-    picture: &mut Picture,
+pub(super) fn apply<T: Pixel>(
+    picture: &mut Picture<T>,
     filters: &[CtuFilters],
     (ctu, closures): (usize, &Closures),
     banks: &[Option<Box<Adaptation>>; 8],
-    dsp: &Dsp,
+    dsp: DepthKernels<'_>,
 ) -> Result<()> {
     let size = (picture.width(), picture.height());
     let side = ctu / 2;
@@ -36,7 +36,7 @@ pub(super) fn apply(
         let source = picture.plane(PlaneIndex::ALL[plane]).clone();
         let input = source.view();
         let mut output = picture.plane_mut(PlaneIndex::ALL[plane]).view_mut();
-        let mut padded: [Vec<u8>; 7] = std::array::from_fn(|_| vec![0; side + 6]);
+        let mut padded: [Vec<T>; 7] = std::array::from_fn(|_| vec![T::default(); side + 6]);
         for (index, filter) in filters.iter().enumerate() {
             let (Some(alternative), Some(id)) = (filter.alf[plane], filter.banks.chroma) else {
                 continue;
@@ -45,7 +45,9 @@ pub(super) fn apply(
                 .chroma
                 .get(usize::from(alternative))
                 .ok_or(DecodeError::Malformed("VVC chroma ALF alternative"))?;
-            let limits = selected.clip.map(|c| [256, 32, 8, 2][usize::from(c)]);
+            let limits = selected
+                .clip
+                .map(|c| vvc_alf_clip_value(usize::from(c), dsp.depth()));
             for region in regions(closures, index, ctu, size) {
                 let region = region.halved();
                 let (x0, y0, width, height) = region.rect;
@@ -81,12 +83,12 @@ pub(super) fn apply(
     cross(picture, filters, (ctu, closures), banks, dsp)
 }
 
-fn cross(
-    picture: &mut Picture,
+fn cross<T: Pixel>(
+    picture: &mut Picture<T>,
     filters: &[CtuFilters],
     (ctu, closures): (usize, &Closures),
     banks: &[Option<Box<Adaptation>>; 8],
-    dsp: &Dsp,
+    dsp: DepthKernels<'_>,
 ) -> Result<()> {
     if !filters.iter().any(|f| f.cross != [0; 2]) {
         return Ok(());
@@ -95,7 +97,7 @@ fn cross(
     let luma = picture.plane(PlaneIndex::Y).clone();
     let input = luma.view();
     let size = (input.width(), input.height());
-    let mut padded: [Vec<u8>; 4] = std::array::from_fn(|_| vec![0; ctu + 2]);
+    let mut padded: [Vec<T>; 4] = std::array::from_fn(|_| vec![T::default(); ctu + 2]);
     for plane in 0..2 {
         let mut output = picture.plane_mut(PlaneIndex::ALL[plane + 1]).view_mut();
         for (index, filter) in filters.iter().enumerate() {

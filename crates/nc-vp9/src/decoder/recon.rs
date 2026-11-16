@@ -8,9 +8,10 @@
 //! `THIRD_PARTY.md`).
 
 use nc_common::decode::{DecodeError, Result};
-use nc_common::{Picture, Plane, PlaneIndex, PlaneView};
+use nc_common::{BitDepth, Picture, Plane, PlaneIndex, PlaneView, Sample};
 use nc_dsp::{
-    VP9_MAX_SCALED_STEP, VP9_TAPS, VP9_TAPS_BEFORE, Vp9Filter, Vp9IntraEdges, Vp9IntraMode,
+    Av1Coefficient, DepthKernels, Pixel, VP9_MAX_SCALED_STEP, VP9_TAPS, VP9_TAPS_BEFORE, Vp9Filter,
+    Vp9IntraEdges, Vp9IntraMode,
 };
 
 use super::block::{BlockInfo, REFS_PER_FRAME};
@@ -18,7 +19,7 @@ use super::frame::{BlockPosition, FrameDecoder, Tile};
 use super::header::valid_reference_size;
 use crate::bool_coder::BoolReader;
 use crate::coeff::{self, Coder, Dequantizer, Extent, Model, PlaneType};
-use crate::recon::{ResidualBuffers, TxBlock, tx_type};
+use crate::recon::{TxBlock, tx_type};
 use crate::transform::{Steps, TxSize, TxType};
 use crate::types::{IntraMode, MI_SIZE, Mv};
 
@@ -34,9 +35,9 @@ const INTERP_EXTEND: i32 = 4;
 const MAX_SIDE: usize = 64;
 /// Largest reference window: a 64-sample block at the largest step.
 const MAX_WINDOW: usize = (((MAX_SIDE - 1) * VP9_MAX_SCALED_STEP + 15) >> 4) + VP9_TAPS;
-/// Unavailable above samples (127) and left samples (129).
-const BASE_ABOVE: u8 = 127;
-const BASE_LEFT: u8 = 129;
+/// Unavailable above samples are one below mid-grey (127 at 8 bits), left
+/// samples one above (129; `base ∓ 1` in `build_intra_predictors_high`).
+const BASE_OFFSET: i32 = 1;
 /// Largest transform side.
 const MAX_TX_SIDE: usize = 32;
 
@@ -71,20 +72,20 @@ impl Scale {
 
 /// A reference picture as one frame sees it.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Reference<'a> {
+pub(super) struct Reference<'a, T: Sample> {
     /// Each plane, resolved once per frame.
-    planes: [ReferencePlane<'a>; 3],
+    planes: [ReferencePlane<'a, T>; 3],
     scale: Scaling,
 }
 
 /// One plane of a reference, resolved once per frame: windows inside its
 /// padded area are read in place (one range check per prediction).
 #[derive(Debug, Clone, Copy)]
-struct ReferencePlane<'a> {
+struct ReferencePlane<'a, T: Sample> {
     /// The whole padded area.
-    padded: PlaneView<'a>,
+    padded: PlaneView<'a, T>,
     /// The visible area, for windows that leave the padded one.
-    visible: PlaneView<'a>,
+    visible: PlaneView<'a, T>,
     /// Padding columns and rows before the visible area.
     border: (usize, usize),
     /// Visible size of the reference plane (`y_crop_width`,
@@ -92,14 +93,14 @@ struct ReferencePlane<'a> {
     crop: (usize, usize),
 }
 
-impl ReferencePlane<'_> {
+impl<T: Sample> ReferencePlane<'_, T> {
     /// The `span` window at `corner` (visible coordinates), as samples
     /// `stride` apart, if it lies inside the padded area.
     fn padded_window(
         &self,
         (left, top): (i32, i32),
         (w, h): (usize, usize),
-    ) -> Option<(&[u8], usize)> {
+    ) -> Option<(&[T], usize)> {
         let col = usize::try_from(left as isize + self.border.0 as isize).ok()?;
         let row = usize::try_from(top as isize + self.border.1 as isize).ok()?;
         let padded = &self.padded;
@@ -117,8 +118,8 @@ impl ReferencePlane<'_> {
         &'w self,
         corner: (i32, i32),
         span: (usize, usize),
-        window: &'w mut [u8],
-    ) -> (&'w [u8], usize) {
+        window: &'w mut [T],
+    ) -> (&'w [T], usize) {
         if let Some(padded) = self.padded_window(corner, span) {
             return padded;
         }
@@ -133,10 +134,10 @@ impl ReferencePlane<'_> {
     }
 }
 
-impl<'a> Reference<'a> {
+impl<'a, T: Sample> Reference<'a, T> {
     /// `vp9_setup_scale_factors_for_frame` for a frame of `frame` size.
     pub(super) fn new(
-        picture: &'a Picture,
+        picture: &'a Picture<T>,
         (width, height): (usize, usize),
         frame: (usize, usize),
     ) -> Self {
@@ -183,17 +184,17 @@ enum Scaling {
 
 /// Scratch of inter prediction ([`predict_from`]), reused across blocks.
 #[derive(Debug)]
-pub(super) struct InterScratch {
+pub(super) struct InterScratch<T> {
     /// A reference window rebuilt with clamped edges.
-    window: Vec<u8>,
+    window: Vec<T>,
     /// The scaled prediction's working memory.
     scaled: nc_dsp::Vp9ScaledScratch,
 }
 
-impl InterScratch {
+impl<T: Sample> InterScratch<T> {
     pub(super) fn new() -> Self {
         Self {
-            window: vec![0; MAX_WINDOW * (MAX_WINDOW + VP9_TAPS - 1)],
+            window: vec![T::default(); MAX_WINDOW * (MAX_WINDOW + VP9_TAPS - 1)],
             scaled: nc_dsp::Vp9ScaledScratch::default(),
         }
     }
@@ -213,43 +214,30 @@ struct PredictionBlock {
 
 /// Where a prediction goes: picture samples `stride` apart, written or
 /// averaged with what is there.
-struct Target<'a> {
-    block: &'a mut [u8],
+struct Target<'a, T> {
+    block: &'a mut [T],
     stride: usize,
     average: bool,
 }
 
-impl Target<'_> {
+impl<T: Pixel> Target<'_, T> {
     /// Interpolate into the target (see [`nc_dsp::Dsp::vp9_convolve_into`]).
     fn convolve(
         self,
-        dsp: &nc_dsp::Dsp,
+        kernels: DepthKernels<'_>,
         kind: Vp9Filter,
-        (window, window_stride): (&[u8], usize),
+        window: (&[T], usize),
         phase: (usize, usize),
         size: (usize, usize),
     ) {
-        if self.average {
-            dsp.vp9_convolve_avg_into(
-                kind,
-                window,
-                window_stride,
-                phase,
-                size,
-                self.block,
-                self.stride,
-            );
-        } else {
-            dsp.vp9_convolve_into(
-                kind,
-                window,
-                window_stride,
-                phase,
-                size,
-                self.block,
-                self.stride,
-            );
-        }
+        kernels.vp9_convolve(
+            kind,
+            window,
+            phase,
+            size,
+            (self.block, self.stride),
+            self.average,
+        );
     }
 }
 
@@ -262,20 +250,26 @@ impl Target<'_> {
     reason = "one call per prediction; keeps the block loop's invariants in registers"
 )]
 #[inline(always)]
-fn predict_unscaled(
-    dsp: &nc_dsp::Dsp,
-    plane: &ReferencePlane<'_>,
+fn predict_unscaled<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    plane: &ReferencePlane<'_, T>,
     kind: Vp9Filter,
     (x16, y16): (i32, i32),
     (w, h): (usize, usize),
-    window: &mut [u8],
-    target: Target<'_>,
+    window: &mut [T],
+    target: Target<'_, T>,
 ) {
     let span = (w + VP9_TAPS - 1, h + VP9_TAPS - 1);
     let before = VP9_TAPS_BEFORE as i32;
     let corner = ((x16 >> SUBPEL_BITS) - before, (y16 >> SUBPEL_BITS) - before);
     let phase = ((x16 & SUBPEL_MASK) as usize, (y16 & SUBPEL_MASK) as usize);
-    target.convolve(dsp, kind, plane.window(corner, span, window), phase, (w, h));
+    target.convolve(
+        kernels,
+        kind,
+        plane.window(corner, span, window),
+        phase,
+        (w, h),
+    );
 }
 
 /// The prediction of a block of 8x8 or more from references of the frame's
@@ -286,12 +280,12 @@ fn predict_unscaled(
     reason = "one call per block; out of line, the plane loop measured slower (x86 +0.9 %)"
 )]
 #[inline(always)]
-fn predict_whole_block(
-    dsp: &nc_dsp::Dsp,
-    planes: &mut [Plane; 3],
-    (references, kind): (&[Option<&Reference<'_>>; 2], Vp9Filter),
+fn predict_whole_block<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    planes: &mut [Plane<T>; 3],
+    (references, kind): (&[Option<&Reference<'_, T>>; 2], Vp9Filter),
     (info, position): (&BlockInfo, &BlockPosition),
-    window: &mut [u8],
+    window: &mut [T],
 ) {
     for (plane, picture_plane) in PlaneIndex::ALL.into_iter().zip(planes) {
         let ss = usize::from(plane != PlaneIndex::Y);
@@ -316,17 +310,17 @@ fn predict_whole_block(
             // Positions in 1/16 plane samples.
             let at = (x * 16 + mv.col * unit, y * 16 + mv.row * unit);
             let plane_ref = &reference.planes[plane as usize];
-            predict_unscaled(dsp, plane_ref, kind, at, size, window, target);
+            predict_unscaled(kernels, plane_ref, kind, at, size, window, target);
         }
     }
 }
 
 /// A block's references (the second for compound blocks), each checked once
 /// per block to be present and of a valid size.
-fn block_references<'r>(
-    frame_references: &'r [Option<Reference<'r>>; REFS_PER_FRAME],
+fn block_references<'r, T: Sample>(
+    frame_references: &'r [Option<Reference<'r, T>>; REFS_PER_FRAME],
     info: &BlockInfo,
-) -> Result<[Option<&'r Reference<'r>>; 2]> {
+) -> Result<[Option<&'r Reference<'r, T>>; 2]> {
     let refs = 1 + usize::from(info.is_compound());
     let mut references = [None; 2];
     for (slot, &frame) in references.iter_mut().zip(&info.ref_frame).take(refs) {
@@ -344,17 +338,17 @@ fn block_references<'r>(
 /// `dec_build_inter_predictors` from a reference of another size into
 /// `target`. Out of line: only spatial layers and size changes use it.
 #[inline(never)]
-fn predict_scaled(
-    dsp: &nc_dsp::Dsp,
-    (scale, plane, kind): (&Scale, &ReferencePlane<'_>, Vp9Filter),
+fn predict_scaled<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    (scale, plane, kind): (&Scale, &ReferencePlane<'_, T>, Vp9Filter),
     position: &BlockPosition,
     request: &PredictionBlock,
-    scratch: &mut InterScratch,
+    scratch: &mut InterScratch<T>,
     Target {
         block,
         stride,
         average,
-    }: Target<'_>,
+    }: Target<'_, T>,
 ) {
     let ss = u32::from(request.plane != PlaneIndex::Y);
     let (w, h) = request.size;
@@ -369,11 +363,10 @@ fn predict_scaled(
     );
     let before = VP9_TAPS_BEFORE as i32;
     let corner = ((x >> SUBPEL_BITS) - before, (y >> SUBPEL_BITS) - 2 * before);
-    dsp.vp9_convolve_scaled_into(
+    kernels.vp9_convolve_scaled(
         kind,
         plane.window(corner, span, &mut scratch.window),
-        (x_phase, xs),
-        (y_phase, ys),
+        ((x_phase, xs), (y_phase, ys)),
         (w, h),
         (block, stride),
         average,
@@ -393,7 +386,10 @@ pub(super) const REFERENCE_BORDER: usize = 32;
 /// a reference: every sample beyond the visible area, in the block-aligned
 /// area and in the border, becomes a copy of the nearest visible sample,
 /// as the reference reads clamped coordinates (VP9 §8.5.2.4).
-pub(super) fn extend_reference(picture: &mut Picture, (width, height): (usize, usize)) {
+pub(super) fn extend_reference<T: Sample>(
+    picture: &mut Picture<T>,
+    (width, height): (usize, usize),
+) {
     for (index, plane) in picture.planes_mut().iter_mut().enumerate() {
         let ss = usize::from(index > 0);
         let (keep_w, keep_h) = ((width + ss) >> ss, (height + ss) >> ss);
@@ -413,7 +409,13 @@ pub(super) fn extend_reference(picture: &mut Picture, (width, height): (usize, u
     }
 }
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
+    /// The frame's depth as this instance sees it: the constant 8 in the
+    /// `u8` instance ([`BitDepth::of`]), so depth arithmetic folds away.
+    fn depth(&self) -> BitDepth {
+        self.inputs.depth.of::<T>()
+    }
+
     /// `dec_build_inter_predictors_sb`: every plane of an inter block.
     /// References, the filter and each plane's destination are resolved
     /// once per block; a block of 8x8 or more makes one prediction per
@@ -426,7 +428,7 @@ impl FrameDecoder<'_> {
         let references = block_references(&self.inputs.references, info)?;
         let kind = kernel(info.filter);
         let sub8x8 = info.size.is_sub8x8();
-        let dsp = self.inputs.dsp;
+        let kernels = self.inputs.dsp.at(self.depth());
         let scratch = &mut self.scratch.inter;
         let unscaled = references
             .iter()
@@ -434,7 +436,7 @@ impl FrameDecoder<'_> {
             .all(|reference| matches!(reference.scale, Scaling::None));
         if !sub8x8 && unscaled {
             predict_whole_block(
-                dsp,
+                kernels,
                 self.recon.planes_mut(),
                 (&references, kind),
                 (info, position),
@@ -487,7 +489,7 @@ impl FrameDecoder<'_> {
                                 let unit = 1 << (1 - ss);
                                 let at = (x * 16 + mv.col * unit, y * 16 + mv.row * unit);
                                 predict_unscaled(
-                                    dsp,
+                                    kernels,
                                     plane_ref,
                                     kind,
                                     at,
@@ -506,7 +508,7 @@ impl FrameDecoder<'_> {
                                     mv,
                                 };
                                 predict_scaled(
-                                    dsp,
+                                    kernels,
                                     (scale, plane_ref, kind),
                                     position,
                                     &request,
@@ -615,12 +617,14 @@ impl FrameDecoder<'_> {
         let left_mask = (16 >> ss) - 1;
         let steps = self.steps(info.segment_id, plane);
         let model = Model::of(PLANES[plane], tx, ty, true);
+        let depth = self.depth();
         let setup = coeff::ReadSetup::new(
             model,
             Dequantizer {
                 dc: steps.dc,
                 ac: steps.ac,
                 shift: tx.dequant_shift(),
+                categories: coeff::categories(depth),
             },
         );
         let mut coder = Coder::new(model, self.inputs.context, &mut self.counts);
@@ -658,8 +662,7 @@ impl FrameDecoder<'_> {
                         block_side: 0,
                     };
                     add_residual(
-                        self.inputs.dsp,
-                        &mut scratch.buffers,
+                        self.inputs.dsp.at(depth),
                         &mut self.recon,
                         &block,
                         (ty, lossless),
@@ -691,10 +694,12 @@ impl FrameDecoder<'_> {
         ty: TxType,
     ) -> bool {
         let steps = self.steps(info.segment_id, plane);
+        let depth = self.depth();
         let dequantizer = Dequantizer {
             dc: steps.dc,
             ac: steps.ac,
             shift: tx.dequant_shift(),
+            categories: coeff::categories(depth),
         };
         let ss = usize::from(plane > 0);
         let (bx, by) = position.plane_4x4(ss);
@@ -740,8 +745,7 @@ impl FrameDecoder<'_> {
             };
             let lossless = self.inputs.header.quantizer.lossless();
             add_residual(
-                self.inputs.dsp,
-                &mut self.scratch.buffers,
+                self.inputs.dsp.at(depth),
                 &mut self.recon,
                 &block,
                 (ty, lossless),
@@ -781,9 +785,14 @@ impl FrameDecoder<'_> {
             .samples_at(x as isize - 1, y as isize - 1, above_width + 1, side + 1)
             .expect("intra blocks lie inside the plane");
         let base = stride + 1;
+        let depth = self.depth();
+        let (base_above, base_left) = (
+            T::from_i32(depth.mid() - BASE_OFFSET),
+            T::from_i32(depth.mid() + BASE_OFFSET),
+        );
         let mut edges = Vp9IntraEdges {
-            above: [BASE_ABOVE; 2 * MAX_TX_SIDE + 1],
-            left: [BASE_LEFT; MAX_TX_SIDE],
+            above: [base_above; 2 * MAX_TX_SIDE + 1],
+            left: [base_left; MAX_TX_SIDE],
             has_above: available.top,
             has_left: available.left,
         };
@@ -802,10 +811,10 @@ impl FrameDecoder<'_> {
             if inside == count {
                 // Inside the frame (almost always): fixed-size copies.
                 match side {
-                    4 => above_edge::<4>(&mut edges.above, above, count),
-                    8 => above_edge::<8>(&mut edges.above, above, count),
-                    16 => above_edge::<16>(&mut edges.above, above, count),
-                    _ => above_edge::<32>(&mut edges.above, above, count),
+                    4 => above_edge::<T, 4>(&mut edges.above, above, count),
+                    8 => above_edge::<T, 8>(&mut edges.above, above, count),
+                    16 => above_edge::<T, 16>(&mut edges.above, above, count),
+                    _ => above_edge::<T, 32>(&mut edges.above, above, count),
                 }
             } else {
                 edges.above[1..=inside].copy_from_slice(&above[..inside]);
@@ -813,7 +822,7 @@ impl FrameDecoder<'_> {
                 let last_above = edges.above[side];
                 edges.above[1 + count..=2 * side].fill(last_above);
             }
-            edges.above[0] = if available.left { region[0] } else { BASE_LEFT };
+            edges.above[0] = if available.left { region[0] } else { base_left };
         }
         if available.left {
             // Rows past the aligned frame height repeat its last one.
@@ -823,7 +832,7 @@ impl FrameDecoder<'_> {
             }
         }
         let prediction = &mut self.scratch.intra[..side * side];
-        self.inputs.dsp.vp9_intra_predict(
+        self.inputs.dsp.at(depth).vp9_intra_predict(
             Vp9IntraMode::ALL[mode as usize],
             side,
             &edges,
@@ -831,10 +840,10 @@ impl FrameDecoder<'_> {
         );
         let (block, stride) = block_samples(&mut self.recon, PLANES[plane], (x, y), (side, side));
         match side {
-            4 => store_rows::<4>(prediction, block, stride),
-            8 => store_rows::<8>(prediction, block, stride),
-            16 => store_rows::<16>(prediction, block, stride),
-            _ => store_rows::<32>(prediction, block, stride),
+            4 => store_rows::<T, 4>(prediction, block, stride),
+            8 => store_rows::<T, 8>(prediction, block, stride),
+            16 => store_rows::<T, 16>(prediction, block, stride),
+            _ => store_rows::<T, 32>(prediction, block, stride),
         }
     }
 }
@@ -843,7 +852,11 @@ impl FrameDecoder<'_> {
 /// `2 * S` with the above-right ones) lie in `row`: copied, and the rest of
 /// the `2 * S` repeating the last above sample. Constant sizes keep these
 /// inline moves (runtime ones were a `memcpy` and a `memset` call).
-fn above_edge<const S: usize>(above: &mut [u8; 2 * MAX_TX_SIDE + 1], row: &[u8], count: usize) {
+fn above_edge<T: Copy, const S: usize>(
+    above: &mut [T; 2 * MAX_TX_SIDE + 1],
+    row: &[T],
+    count: usize,
+) {
     let (near, far) = above[1..=2 * S].split_at_mut(S);
     near.copy_from_slice(&row[..S]);
     if count == 2 * S {
@@ -856,7 +869,7 @@ fn above_edge<const S: usize>(above: &mut [u8; 2 * MAX_TX_SIDE + 1], row: &[u8],
 /// Copy packed `S`-wide rows into the block at the start of `block` (rows
 /// `stride` apart). A constant width keeps each row inline vector moves (a
 /// runtime width became a `memcpy` call per row).
-fn store_rows<const S: usize>(packed: &[u8], block: &mut [u8], stride: usize) {
+fn store_rows<T: Copy, const S: usize>(packed: &[T], block: &mut [T], stride: usize) {
     for (line, row) in packed
         .as_chunks::<S>()
         .0
@@ -873,38 +886,64 @@ const PLANES: [PlaneIndex; 3] = PlaneIndex::ALL;
 /// under `block` with the fused kernels (4x4: libvpx's DC-only and zero-row
 /// shortcuts, `vpx_idct4x4_1_add`, `vp9_iht4x4_16_add`; the shared residual
 /// path's 4x4 inverse wrote a residual block and added it in a second loop).
-/// Lossless (WHT) blocks keep the shared path.
-fn add_residual(
-    dsp: &nc_dsp::Dsp,
-    buffers: &mut ResidualBuffers,
-    recon: &mut Picture,
+fn add_residual<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    recon: &mut Picture<T>,
     block: &TxBlock,
     (ty, lossless): (TxType, bool),
-    coefficients: &[i16],
+    coefficients: &[T::Vp9Coefficient],
     extent: Extent,
 ) {
+    let side = block.tx.side();
+    let samples = block_samples(recon, block.plane, (block.x, block.y), (side, side));
     if lossless {
-        buffers.add_coefficients(recon, block, (ty, lossless), coefficients, extent);
+        add_lossless(&coefficients[..WHT_AREA], samples, kernels.depth());
         return;
     }
-    let side = block.tx.side();
-    dsp.vp9_inverse_add(
+    kernels.vp9_inverse_add(
         block.tx.log2(),
         crate::transform::passes(ty),
         &coefficients[..block.tx.area()],
         (extent.rows, extent.columns),
-        block_samples(recon, block.plane, (block.x, block.y), (side, side)),
+        samples,
     );
+}
+
+/// Coefficients of a lossless (4x4 WHT) block.
+const WHT_AREA: usize = 16;
+/// `UNIT_QUANT_SHIFT`: lossless coefficients are dequantized at 4x.
+const UNIT_QUANT_SHIFT: u32 = 2;
+
+/// A lossless block (`vpx_iwht4x4_16_add`, `vpx_highbd_iwht4x4_16_add`):
+/// the reversible WHT of the levels added to the block at the start of
+/// `dst`, clipped to `depth`. The residual is held as a coefficient of the
+/// depth (`tran_low_t`: 16 bits at 8 bits), so a corrupt stream's wraps as
+/// libvpx's does; a valid one's fits.
+#[cold]
+fn add_lossless<T: Sample, C: Av1Coefficient>(
+    coefficients: &[C],
+    (dst, stride): (&mut [T], usize),
+    depth: BitDepth,
+) {
+    let levels: [i32; WHT_AREA] =
+        std::array::from_fn(|i| coefficients[i].to_i32() >> UNIT_QUANT_SHIFT);
+    let residual = nc_dsp::reversible_wht4::inverse(&levels);
+    for (row, values) in dst.chunks_mut(stride).zip(residual.as_chunks::<4>().0) {
+        for (sample, &value) in row[..4].iter_mut().zip(values) {
+            let value = C::from_i32(value).to_i32();
+            *sample = depth.clip_to(sample.to_i32() + value);
+        }
+    }
 }
 
 /// The samples of `plane` from `(x, y)` on, rows `stride` apart, for a
 /// `w` x `h` block: one offset check per block instead of a plane view.
-fn block_samples(
-    picture: &mut Picture,
+fn block_samples<T: Sample>(
+    picture: &mut Picture<T>,
     plane: PlaneIndex,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
-) -> (&mut [u8], usize) {
+) -> (&mut [T], usize) {
     let plane = picture.plane_mut(plane);
     let stride = plane.stride();
     let samples = plane

@@ -1,7 +1,12 @@
-//! VP9 Profile 0 decoder (8-bit 4:2:0): every conforming stream, not only
-//! the subset nanocodec emits (VP9 bitstream specification v0.6; structure
-//! after libvpx `vp9_decoder.c`, `vp9_dx_iface.c` and `vp9_decodeframe.c`,
-//! BSD-3-Clause, see `THIRD_PARTY.md`).
+//! VP9 profile 0 and 2 decoder (8-, 10- and 12-bit 4:2:0): every
+//! conforming stream, not only the subset nanocodec emits (VP9 bitstream
+//! specification v0.6; structure after libvpx `vp9_decoder.c`,
+//! `vp9_dx_iface.c` and `vp9_decodeframe.c`, BSD-3-Clause, see
+//! `THIRD_PARTY.md`).
+//!
+//! The decoding process is [`Core`], generic over the sample type (`u8`
+//! for 8-bit streams, `u16` deeper: `docs/handoff/high-bit-depth.md`); the
+//! public [`Decoder`] (`instance.rs`) holds the core of the stream's depth.
 //!
 //! A packet holds one frame or a superframe (several frames and an index).
 //! The decoder keeps what frames share: eight reference slots, four
@@ -11,7 +16,8 @@
 //!
 //! Modules: `header` (uncompressed and compressed headers), `frame` (tiles
 //! and partitions), `modes` and `mvref` (mode info and candidate vectors),
-//! `recon` (prediction and residuals), `loopfilter`.
+//! `recon` (prediction and residuals), `loopfilter`, `instance` (the public
+//! decoder).
 
 // The analysis records (feature `analysis`); every hook is compiled out
 // without it.
@@ -21,6 +27,7 @@ mod block;
 mod fill;
 mod frame;
 mod header;
+mod instance;
 mod loopfilter;
 mod modes;
 mod mvref;
@@ -31,7 +38,8 @@ use std::sync::Arc;
 use nc_common::decode::{DecodeError, Result};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{Picture, PictureRecycler, PlaneIndex, ShownPicture};
+use nc_common::{BitDepth, Picture, PictureRecycler, PlaneIndex, Sample, ShownPicture};
+use nc_dsp::Pixel;
 
 use self::block::{MvRef, REFS_PER_FRAME};
 use self::frame::{BlockScratch, FrameDecoder, FrameInputs, FrameOutput};
@@ -39,6 +47,7 @@ use self::header::{
     FRAME_CONTEXTS, FrameHeader, HeaderState, LoopFilter, SLOTS, Segmentation, TxMode,
     read_compressed,
 };
+pub use self::instance::{Decoder, ShownVp9Frame};
 use self::recon::{Reference, extend_reference};
 use crate::extract::{MAX_VP9_OPERATING_POINT, Vp9StreamExtractor};
 use crate::probs::{Adaptation, FrameContext};
@@ -56,9 +65,9 @@ const SHOW_EXISTING_BYTES: usize = 1;
 /// The picture's planes cover the visible size rounded up to even (4:2:0
 /// chroma covers `(w + 1) / 2`).
 #[derive(Debug, Clone)]
-pub struct DecodedFrame {
+pub struct DecodedFrame<T: Sample = u8> {
     /// The picture, `width` and `height` rounded up to even.
-    pub picture: Picture,
+    pub picture: Picture<T>,
     /// Visible luma width.
     pub width: usize,
     /// Visible luma height.
@@ -67,12 +76,13 @@ pub struct DecodedFrame {
     pub spatial_id: u8,
 }
 
-/// A reference slot's picture and visible size.
+/// A reference slot's picture, visible size and depth.
 #[derive(Debug)]
-struct StoredFrame {
-    picture: Picture,
+struct StoredFrame<T: Sample> {
+    picture: Picture<T>,
     width: usize,
     height: usize,
+    depth: BitDepth,
     spatial_id: u8,
 }
 
@@ -85,10 +95,16 @@ struct LastFrame {
     key: bool,
 }
 
-/// Stateful VP9 decoder.
+/// The decoding process of one sample type: everything a stream's frames
+/// share (eight reference slots, four probability contexts, loop-filter
+/// deltas, segmentation, the previous frame's vectors) and its spatial
+/// layer settings.
 #[derive(Debug)]
-pub struct Decoder {
-    slots: [Option<Arc<StoredFrame>>; SLOTS],
+pub(super) struct Core<T: Pixel> {
+    slots: [Option<Arc<StoredFrame<T>>>; SLOTS],
+    /// The stream's depth: that of the last key or intra-only frame (8 in
+    /// the `u8` instance).
+    depth: BitDepth,
     contexts: Box<[FrameContext; FRAME_CONTEXTS]>,
     loop_filter: LoopFilter,
     segmentation: Segmentation,
@@ -103,12 +119,12 @@ pub struct Decoder {
     /// non-reference reconstructions, outputs the caller returns through
     /// [`Decoder::recycle`]), reused by later frames: a fresh zeroed picture
     /// per frame cost about 4% of decoding.
-    pictures: PictureRecycler,
+    pictures: PictureRecycler<T>,
     /// The frame the last successful [`Decoder::decode_shown`] showed.
-    shown: Option<Arc<StoredFrame>>,
+    shown: Option<Arc<StoredFrame<T>>>,
     /// Block working memory between frames (taken by the frame being
     /// decoded; lost, and rebuilt, only when a frame fails).
-    scratch: Option<Box<BlockScratch>>,
+    scratch: Option<Box<BlockScratch<T>>>,
     /// When `true`, multi-frame Annex B superframes are stripped to their
     /// lowest spatial layer (`S0`) via [`Vp9StreamExtractor`] before decoding.
     base_only: bool,
@@ -130,10 +146,11 @@ pub struct Decoder {
     stats: Option<StreamStats>,
 }
 
-impl Default for Decoder {
+impl<T: Pixel> Default for Core<T> {
     fn default() -> Self {
         Self {
             slots: Default::default(),
+            depth: BitDepth::EIGHT,
             contexts: Box::new(std::array::from_fn(|_| FrameContext::default())),
             loop_filter: LoopFilter::default(),
             segmentation: Segmentation::default(),
@@ -157,17 +174,42 @@ impl Default for Decoder {
     }
 }
 
-impl Decoder {
-    /// A decoder awaiting a key frame.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+impl<T: Pixel> Core<T> {
+    /// A core of the other sample type that continues `previous` at a key
+    /// or intra-only frame of another depth: its layer settings, analysis
+    /// and kernels carry over; its pictures and frame state do not (a frame
+    /// that changes the depth resets them, as references of another depth
+    /// cannot predict).
+    pub(super) fn succeed<U: Pixel>(previous: Core<U>) -> Self {
+        Self {
+            base_only: previous.base_only,
+            operating_point: previous.operating_point,
+            extractor: previous.extractor,
+            layer_sizes: previous.layer_sizes,
+            last_spatial_id: previous.last_spatial_id,
+            max_size: previous.max_size,
+            dsp: previous.dsp,
+            #[cfg(feature = "analysis")]
+            stats: previous.stats,
+            ..Self::default()
+        }
+    }
+
+    /// Whether frames of `depth` decode in this instance (`u8`: 8 bits,
+    /// `u16`: deeper).
+    pub(super) fn holds(depth: BitDepth) -> bool {
+        (depth == BitDepth::EIGHT) == (T::MAX_BIT_DEPTH == u8::MAX_BIT_DEPTH)
+    }
+
+    /// The stream's current depth.
+    pub(super) fn depth(&self) -> BitDepth {
+        self.depth.of::<T>()
     }
 
     /// Enable or disable base-only mode (`S0`). When enabled, enhancement
     /// frames in Annex B superframes are stripped via [`Vp9StreamExtractor`]
     /// and only the lowest spatial layer (`S0`) is decoded and displayed.
-    pub fn set_base_only(&mut self, base_only: bool) {
+    pub(super) fn set_base_only(&mut self, base_only: bool) {
         self.base_only = base_only;
         if base_only {
             self.select_extract_target(crate::extract::Vp9ExtractTarget::BaseOnly)
@@ -180,7 +222,7 @@ impl Decoder {
 
     /// Whether base-only mode is active.
     #[must_use]
-    pub fn base_only(&self) -> bool {
+    pub(super) fn base_only(&self) -> bool {
         self.base_only
     }
 
@@ -191,7 +233,7 @@ impl Decoder {
     /// # Errors
     ///
     /// Returns [`DecodeError::Unsupported`] if `operating_point > 2`.
-    pub fn set_operating_point(&mut self, operating_point: u8) -> Result<()> {
+    pub(super) fn set_operating_point(&mut self, operating_point: u8) -> Result<()> {
         if operating_point > MAX_VP9_OPERATING_POINT {
             return Err(DecodeError::Unsupported("VP9 operating point out of range"));
         }
@@ -219,14 +261,14 @@ impl Decoder {
 
     /// Active spatial operating point (`0` by default).
     #[must_use]
-    pub fn operating_point(&self) -> u8 {
+    pub(super) fn operating_point(&self) -> u8 {
         self.operating_point
     }
 
     /// `spatial_id` (`0` on single-layer or base-layer TUs, `1` on enhancement
     /// TUs) of the latest shown frame.
     #[must_use]
-    pub fn shown_spatial_id(&self) -> Option<u8> {
+    pub(super) fn shown_spatial_id(&self) -> Option<u8> {
         self.last_spatial_id
     }
 
@@ -234,7 +276,7 @@ impl Decoder {
     /// enhancement frames inspected before stripping when [`Self::base_only`]
     /// is active).
     #[must_use]
-    pub fn max_frame_size(&self) -> Option<(usize, usize)> {
+    pub(super) fn max_frame_size(&self) -> Option<(usize, usize)> {
         self.max_size
     }
 
@@ -245,7 +287,7 @@ impl Decoder {
     ///
     /// Truncated or malformed data, a profile other than 0, or a frame
     /// whose references are missing.
-    pub fn decode_packet(&mut self, packet: &[u8]) -> Result<Option<DecodedFrame>> {
+    pub(super) fn decode_packet(&mut self, packet: &[u8]) -> Result<Option<DecodedFrame<T>>> {
         let (frame, dropped) = self.decode_frames(packet)?;
         if dropped {
             return Ok(None);
@@ -267,7 +309,7 @@ impl Decoder {
     /// # Errors
     ///
     /// As [`Self::decode`].
-    pub fn decode_with_layer(&mut self, packet: &[u8]) -> Result<Option<(Picture, u8)>> {
+    pub(super) fn decode_with_layer(&mut self, packet: &[u8]) -> Result<Option<(Picture<T>, u8)>> {
         let Some(frame) = self.decode_packet(packet)? else {
             return Ok(None);
         };
@@ -284,7 +326,7 @@ impl Decoder {
     /// # Errors
     ///
     /// As [`Self::decode_with_layer`].
-    pub fn decode_optional(&mut self, packet: &[u8]) -> Result<Option<Picture>> {
+    pub(super) fn decode_optional(&mut self, packet: &[u8]) -> Result<Option<Picture<T>>> {
         self.decode_with_layer(packet)
             .map(|opt| opt.map(|(pic, _)| pic))
     }
@@ -296,7 +338,7 @@ impl Decoder {
     /// # Errors
     ///
     /// As [`Self::decode_packet`].
-    pub fn decode_all_layers(&mut self, packet: &[u8]) -> Result<Vec<DecodedFrame>> {
+    pub(super) fn decode_all_layers(&mut self, packet: &[u8]) -> Result<Vec<DecodedFrame<T>>> {
         let extracted;
         let packet = if let Some(ext) = self.extractor.as_mut() {
             let opt = ext.extract_packet(packet)?;
@@ -318,7 +360,7 @@ impl Decoder {
             let (stored, _) = self.decode_frame_layer(raw, idx as u8, true)?;
             // A unit's hidden layer is shown again by the
             // `show_existing_frame` after it: one layer picture.
-            let repeated = |s: &Arc<StoredFrame>| {
+            let repeated = |s: &Arc<StoredFrame<T>>| {
                 last_stored
                     .as_ref()
                     .is_some_and(|last| Arc::ptr_eq(last, s))
@@ -343,7 +385,7 @@ impl Decoder {
     ///
     /// As [`Self::decode_packet`], and a packet that shows nothing or a
     /// frame of odd size.
-    pub fn decode(&mut self, packet: &[u8]) -> Result<Picture> {
+    pub(super) fn decode(&mut self, packet: &[u8]) -> Result<Picture<T>> {
         let frame = self
             .decode_packet(packet)?
             .ok_or(DecodeError::Unsupported("VP9 packet without a shown frame"))?;
@@ -360,7 +402,7 @@ impl Decoder {
     /// # Errors
     ///
     /// As [`Self::decode`].
-    pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
+    pub(super) fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         self.decode_and_show(packet).map(|_| ())
     }
 
@@ -370,7 +412,7 @@ impl Decoder {
     /// # Errors
     ///
     /// As [`Self::decode`].
-    pub fn decode_and_show(&mut self, packet: &[u8]) -> Result<bool> {
+    pub(super) fn decode_and_show(&mut self, packet: &[u8]) -> Result<bool> {
         let (frame, dropped) = self.decode_frames(packet)?;
         if dropped {
             return Ok(false);
@@ -397,7 +439,7 @@ impl Decoder {
     /// # Errors
     ///
     /// As [`Self::decode_packet`].
-    pub fn decode_kept(&mut self, packet: &[u8]) -> Result<bool> {
+    pub(super) fn decode_kept(&mut self, packet: &[u8]) -> Result<bool> {
         let (frame, dropped) = self.decode_frames(packet)?;
         if dropped {
             return Ok(false);
@@ -411,7 +453,7 @@ impl Decoder {
     /// The decoder's own picture of the frame the last [`Self::decode_kept`]
     /// showed and its visible size (any parity; the picture is larger).
     #[must_use]
-    pub fn shown_frame(&self) -> Option<(&Picture, (usize, usize))> {
+    pub(super) fn shown_frame(&self) -> Option<(&Picture<T>, (usize, usize))> {
         let frame = self.shown.as_ref()?;
         Some((&frame.picture, (frame.width, frame.height)))
     }
@@ -419,7 +461,7 @@ impl Decoder {
     /// The visible samples of the frame the last successful
     /// [`Self::decode_shown`] showed.
     #[must_use]
-    pub fn shown(&self) -> Option<ShownPicture<'_>> {
+    pub(super) fn shown(&self) -> Option<ShownPicture<'_, T>> {
         let frame = self.shown.as_ref()?;
         ShownPicture::window(&frame.picture, (0, 0), (frame.width, frame.height))
     }
@@ -475,7 +517,7 @@ impl Decoder {
     }
 
     /// Decode the frames of one packet; returns `(shown_frame, dropped_by_op)`.
-    fn decode_frames(&mut self, packet: &[u8]) -> Result<(Option<Arc<StoredFrame>>, bool)> {
+    fn decode_frames(&mut self, packet: &[u8]) -> Result<(Option<Arc<StoredFrame<T>>>, bool)> {
         let extracted;
         let packet = if let Some(ext) = self.extractor.as_mut() {
             let opt = ext.extract_packet(packet)?;
@@ -490,7 +532,7 @@ impl Decoder {
             packet
         };
         let mut shown = None;
-        let mut show = |decoder: &mut Self, frame: Option<Arc<StoredFrame>>| {
+        let mut show = |decoder: &mut Self, frame: Option<Arc<StoredFrame<T>>>| {
             if let Some(previous) = std::mem::replace(&mut shown, frame) {
                 decoder.release(previous);
             }
@@ -526,7 +568,7 @@ impl Decoder {
 
     /// Drop a hold on `frame`, keeping its picture for reuse when nothing
     /// else (a reference slot) holds it.
-    fn release(&mut self, frame: Arc<StoredFrame>) {
+    fn release(&mut self, frame: Arc<StoredFrame<T>>) {
         if let Ok(frame) = Arc::try_unwrap(frame) {
             self.pictures.give(frame.picture);
         }
@@ -535,7 +577,7 @@ impl Decoder {
     /// Return a picture [`Self::decode`] or [`Self::decode_packet`] produced
     /// once the caller is done with it, so a later frame reuses its buffer
     /// instead of allocating.
-    pub fn recycle(&mut self, picture: Picture) {
+    pub(super) fn recycle(&mut self, picture: Picture<T>) {
         self.pictures.give(picture);
     }
 
@@ -573,10 +615,10 @@ impl Decoder {
         &mut self,
         header: &FrameHeader,
         contexts: Box<[FrameContext; FRAME_CONTEXTS]>,
-        (recon, mvs, segment_map): (Picture, Vec<MvRef>, Vec<u8>),
+        (recon, mvs, segment_map): (Picture<T>, Vec<MvRef>, Vec<u8>),
         size_changed: bool,
         spatial_id: u8,
-    ) -> Arc<StoredFrame> {
+    ) -> Arc<StoredFrame<T>> {
         let (width, height) = (header.width, header.height);
         self.record_max_size(width, height);
         self.contexts = contexts;
@@ -605,10 +647,14 @@ impl Decoder {
             .iter()
             .position(|&sz| sz == (width, height))
             .map_or(spatial_id, |i| i as u8);
+        if let Some(depth) = header.bit_depth {
+            self.depth = depth;
+        }
         let stored = Arc::new(StoredFrame {
             picture: recon,
             width,
             height,
+            depth: self.depth(),
             spatial_id: resolved_spatial_id,
         });
         for (slot, entry) in self.slots.iter_mut().enumerate() {
@@ -626,7 +672,7 @@ impl Decoder {
     /// and per-frame tallies unless [`StreamStats::records_only`]) from the
     /// next frame on. Decoding is unchanged.
     #[cfg(feature = "analysis")]
-    pub fn collect_stats(&mut self, stats: StreamStats) {
+    pub(super) fn collect_stats(&mut self, stats: StreamStats) {
         self.stats = Some(stats);
     }
 
@@ -634,13 +680,13 @@ impl Decoder {
     /// last decoded frame and the tallies of every completed one.
     #[cfg(feature = "analysis")]
     #[must_use]
-    pub fn stats(&self) -> Option<&StreamStats> {
+    pub(super) fn stats(&self) -> Option<&StreamStats> {
         self.stats.as_ref()
     }
 
     /// Complete the analysis and hand it over; collection stops.
     #[cfg(feature = "analysis")]
-    pub fn take_stats(&mut self) -> Option<StreamStats> {
+    pub(super) fn take_stats(&mut self) -> Option<StreamStats> {
         let mut stats = self.stats.take()?;
         stats.finish();
         Some(stats)
@@ -651,10 +697,10 @@ impl Decoder {
     #[cfg(feature = "analysis")]
     fn with_stats(
         &mut self,
-        mut scratch: Box<BlockScratch>,
+        mut scratch: Box<BlockScratch<T>>,
         header: &FrameHeader,
         bytes: usize,
-    ) -> Box<BlockScratch> {
+    ) -> Box<BlockScratch<T>> {
         if let Some(mut stats) = self.stats.take() {
             analysis::frame_facts(&mut stats, header, bytes);
             scratch.stats = Some(stats);
@@ -672,10 +718,20 @@ impl Decoder {
     }
 
     /// The block working memory of the last frame, or a new one.
-    fn take_scratch(&mut self) -> Box<BlockScratch> {
-        self.scratch
-            .take()
-            .unwrap_or_else(|| BlockScratch::new(&self.dsp))
+    fn take_scratch(&mut self) -> Box<BlockScratch<T>> {
+        self.scratch.take().unwrap_or_else(BlockScratch::new)
+    }
+
+    /// The depth `header`'s frame decodes at: the one it signals, else the
+    /// stream's.
+    fn frame_depth(&self, header: &FrameHeader) -> Result<BitDepth> {
+        if header.bit_depth.is_some_and(|depth| !Self::holds(depth)) {
+            // The public decoder switches instances before such a frame.
+            return Err(DecodeError::Unsupported(
+                "VP9 bit depth of another decoder instance",
+            ));
+        }
+        Ok(header.bit_depth.unwrap_or(self.depth).of::<T>())
     }
 
     /// Decode one frame; returns it if shown (or when `force_return` is set for
@@ -685,8 +741,9 @@ impl Decoder {
         data: &[u8],
         spatial_id: u8,
         force_return: bool,
-    ) -> Result<(Option<Arc<StoredFrame>>, usize)> {
+    ) -> Result<(Option<Arc<StoredFrame<T>>>, usize)> {
         let header = FrameHeader::parse(data, &self.header_state())?;
+        let depth = self.frame_depth(&header)?;
         if let Some(slot) = header.show_existing {
             let frame = self.slots[slot]
                 .as_ref()
@@ -728,7 +785,7 @@ impl Decoder {
             && !self.intra_only
             && self.last.is_some_and(|l| l.show_frame && !l.key)
             && self.previous_mvs.len() == mi_units;
-        let references = frame_references(&self.slots, &header)?;
+        let references = frame_references(&self.slots, &header, depth)?;
         let inputs = FrameInputs {
             header: &header,
             compressed,
@@ -737,6 +794,7 @@ impl Decoder {
             previous_mvs: use_previous_mvs.then_some(self.previous_mvs.as_slice()),
             last_segment_map,
             dsp: &self.dsp,
+            depth,
         };
         let mut frame = FrameDecoder::new(inputs, &mut self.pictures, scratch)?;
         frame.decode_tiles(&data[compressed_end..])?;
@@ -790,7 +848,10 @@ impl Decoder {
 
 /// The visible part of a stored frame, its planes rounded up to even, in a
 /// picture from `pictures` (every sample is copied, so stale ones are fine).
-fn visible(frame: &StoredFrame, pictures: &mut PictureRecycler) -> Result<DecodedFrame> {
+fn visible<T: Sample>(
+    frame: &StoredFrame<T>,
+    pictures: &mut PictureRecycler<T>,
+) -> Result<DecodedFrame<T>> {
     let (width, height) = (
         frame.width.next_multiple_of(2),
         frame.height.next_multiple_of(2),
@@ -817,14 +878,20 @@ fn visible(frame: &StoredFrame, pictures: &mut PictureRecycler) -> Result<Decode
 
 /// The references of an inter `header`'s frame (none for intra frames),
 /// each scaled to the frame's size (`vp9_setup_scale_factors_for_frame`).
-fn frame_references<'a>(
-    slots: &'a [Option<Arc<StoredFrame>>; SLOTS],
+fn frame_references<'a, T: Sample>(
+    slots: &'a [Option<Arc<StoredFrame<T>>>; SLOTS],
     header: &FrameHeader,
-) -> Result<[Option<Reference<'a>>; REFS_PER_FRAME]> {
+    depth: BitDepth,
+) -> Result<[Option<Reference<'a, T>>; REFS_PER_FRAME]> {
     let mut references = [None; REFS_PER_FRAME];
     if !header.is_intra() {
         for (reference, &slot) in references.iter_mut().zip(&header.ref_slots) {
             let stored = slots[slot].as_ref().ok_or(DecodeError::MissingReference)?;
+            if stored.depth != depth {
+                // `vp9_setup_scale_factors_for_frame` callers reject a
+                // reference of another colour format.
+                return Err(DecodeError::Malformed("VP9 reference of another bit depth"));
+            }
             *reference = Some(Reference::new(
                 &stored.picture,
                 (stored.width, stored.height),

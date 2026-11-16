@@ -95,6 +95,14 @@ fn official_geometric_transform_edge_deblocking() {
     decode_named_prefix("8b420_A_2", 3, Some(0x3989_a3af_3b20_6f41));
 }
 
+/// The samples of an 8-bit output picture (its whole picture is visible).
+fn eight_bit(picture: nc_common::DecodedPicture) -> nc_common::Picture {
+    match picture {
+        nc_common::DecodedPicture::Eight(output) => std::sync::Arc::unwrap_or_clone(output.picture),
+        nc_common::DecodedPicture::High(_) => panic!("8-bit stream"),
+    }
+}
+
 fn decode_prefix(limit: usize, reference_hash: Option<u64>) {
     let name = std::env::var("NC_VVC_GENERAL_STREAM").unwrap_or_else(|_| "8b400_B_2".into());
     decode_named_prefix(&name, limit, reference_hash);
@@ -116,7 +124,7 @@ fn decode_named_prefix(name: &str, limit: usize, reference_hash: Option<u64>) {
             pictures.push(picture);
         }
         while let Some(picture) = decoder.next_output() {
-            pictures.push(picture);
+            pictures.push(eight_bit(picture));
         }
         if matches!(nal[1] >> 3, 0..=3 | 7..=10) {
             count += 1;
@@ -127,7 +135,7 @@ fn decode_named_prefix(name: &str, limit: usize, reference_hash: Option<u64>) {
     }
     decoder.flush().unwrap();
     while let Some(picture) = decoder.next_output() {
-        pictures.push(picture);
+        pictures.push(eight_bit(picture));
     }
     assert_eq!(pictures.len(), limit);
     let mut hash = 0xcbf2_9ce4_8422_2325u64;

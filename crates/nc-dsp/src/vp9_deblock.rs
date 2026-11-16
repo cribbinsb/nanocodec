@@ -4,7 +4,11 @@
 //! mode info stay in nc-vp9.
 //!
 //! Scalar reference; SIMD versions belong beside it with a bit-exactness
-//! test in nc-checkasm.
+//! test in nc-checkasm. Deeper samples run the same reference with the
+//! thresholds, the flatness bound and `filter4`'s signed range scaled by
+//! `BitDepth − 8` (`vpx_highbd_lpf_*`, `signed_char_clamp_high`).
+
+use nc_common::{BitDepth, Sample};
 
 /// Per-level thresholds (`loop_filter_thresh`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +47,19 @@ impl Vp9FilterLimits {
     }
 }
 
+impl Vp9FilterLimits {
+    /// The thresholds scaled to samples of `depth` (`limit16`, `blimit16`,
+    /// `thresh16` of libvpx's high-bit-depth masks).
+    fn at(self, depth: BitDepth) -> Self {
+        let shift = depth.above_eight();
+        Self {
+            inside: self.inside << shift,
+            boundary: self.boundary << shift,
+            variance: self.variance << shift,
+        }
+    }
+}
+
 /// Filter width of one edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vp9FilterWidth {
@@ -64,22 +81,25 @@ fn filter_mask(p: &[i32; 8], q: &[i32; 8], limits: Vp9FilterLimits) -> bool {
 }
 
 /// Filter a line that passed [`filter_mask`], choosing the filter with
-/// `flat_mask4` / `flat_mask5` over taps `p[0..8]` (p7..p0) and `q[0..8]`
-/// (q0..q7); returns how many samples each side may have changed.
+/// `flat_mask4` / `flat_mask5` (flat: every step at most `1 << (BitDepth −
+/// 8)`) over taps `p[0..8]` (p7..p0) and `q[0..8]` (q0..q7); returns how
+/// many samples each side may have changed.
 fn filter_samples(
     p: &mut [i32; 8],
     q: &mut [i32; 8],
     width: Vp9FilterWidth,
     limits: Vp9FilterLimits,
+    depth: BitDepth,
 ) -> usize {
     let (p0, q0) = (p[7], q[0]);
+    let flatness = 1 << depth.above_eight();
     let flat = width != Vp9FilterWidth::Four
-        && p[4..7].iter().all(|&s| (s - p0).abs() <= 1)
-        && q[1..4].iter().all(|&s| (s - q0).abs() <= 1);
+        && p[4..7].iter().all(|&s| (s - p0).abs() <= flatness)
+        && q[1..4].iter().all(|&s| (s - q0).abs() <= flatness);
     let flat2 = width == Vp9FilterWidth::Sixteen
         && flat
-        && p[..4].iter().all(|&s| (s - p0).abs() <= 1)
-        && q[4..].iter().all(|&s| (s - q0).abs() <= 1);
+        && p[..4].iter().all(|&s| (s - p0).abs() <= flatness)
+        && q[4..].iter().all(|&s| (s - q0).abs() <= flatness);
     if flat2 {
         filter16(p, q);
         7
@@ -87,7 +107,7 @@ fn filter_samples(
         filter8(p, q);
         3
     } else {
-        filter4(p, q, limits);
+        filter4(p, q, limits, depth);
         2
     }
 }
@@ -123,21 +143,23 @@ fn filter8(p: &mut [i32; 8], q: &mut [i32; 8]) {
     q[2] = (p0 + q0 + q1 + 2 * q2 + 3 * q3 + 4) >> 3;
 }
 
-/// The narrow filter on p1..q1 (`filter4`), in signed-char arithmetic.
-fn filter4(p: &mut [i32; 8], q: &mut [i32; 8], limits: Vp9FilterLimits) {
-    let clamp = |v: i32| v.clamp(-128, 127);
+/// The narrow filter on p1..q1 (`filter4`), in signed-char arithmetic
+/// scaled to the depth (`highbd_filter4`: the range `±128 << (BitDepth − 8)`).
+fn filter4(p: &mut [i32; 8], q: &mut [i32; 8], limits: Vp9FilterLimits, depth: BitDepth) {
+    let half = 128 << depth.above_eight();
+    let clamp = |v: i32| v.clamp(-half, half - 1);
     let (p1, p0, q0, q1) = (p[6], p[7], q[0], q[1]);
     let high_variance = (p1 - p0).abs() > limits.variance || (q1 - q0).abs() > limits.variance;
     let outer = if high_variance { clamp(p1 - q1) } else { 0 };
     let filter = clamp(outer + 3 * (q0 - p0));
     let filter1 = clamp(filter + 4) >> 3;
     let filter2 = clamp(filter + 3) >> 3;
-    q[0] = (q0 - filter1).clamp(0, 255);
-    p[7] = (p0 + filter2).clamp(0, 255);
+    q[0] = depth.clip(q0 - filter1);
+    p[7] = depth.clip(p0 + filter2);
     if !high_variance {
         let adjust = (filter1 + 1) >> 1;
-        q[1] = (q1 - adjust).clamp(0, 255);
-        p[6] = (p1 + adjust).clamp(0, 255);
+        q[1] = depth.clip(q1 - adjust);
+        p[6] = depth.clip(p1 + adjust);
     }
 }
 
@@ -158,6 +180,27 @@ pub fn vp9_filter_edge(
     width: Vp9FilterWidth,
     limits: Vp9FilterLimits,
 ) {
+    vp9_filter_edge_at(
+        data,
+        (edge, step, along),
+        lines,
+        width,
+        limits,
+        BitDepth::EIGHT,
+    );
+}
+
+/// [`vp9_filter_edge`] on samples of `depth`, with `limits` as at 8 bits
+/// (scaled here).
+pub(crate) fn vp9_filter_edge_at<T: Sample>(
+    data: &mut [T],
+    (edge, step, along): (usize, usize, usize),
+    lines: usize,
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+    depth: BitDepth,
+) {
+    let limits = limits.at(depth);
     let outer = if width == Vp9FilterWidth::Sixteen {
         8
     } else {
@@ -168,20 +211,20 @@ pub fn vp9_filter_edge(
         let mut p = [0; 8];
         let mut q = [0; 8];
         for k in 0..4 {
-            p[7 - k] = i32::from(data[q0 - (k + 1) * step]);
-            q[k] = i32::from(data[q0 + k * step]);
+            p[7 - k] = data[q0 - (k + 1) * step].to_i32();
+            q[k] = data[q0 + k * step].to_i32();
         }
         if !filter_mask(&p, &q, limits) {
             continue;
         }
         for k in 4..outer {
-            p[7 - k] = i32::from(data[q0 - (k + 1) * step]);
-            q[k] = i32::from(data[q0 + k * step]);
+            p[7 - k] = data[q0 - (k + 1) * step].to_i32();
+            q[k] = data[q0 + k * step].to_i32();
         }
-        let written = filter_samples(&mut p, &mut q, width, limits);
+        let written = filter_samples(&mut p, &mut q, width, limits, depth);
         for k in 0..written {
-            data[q0 - (k + 1) * step] = p[7 - k] as u8;
-            data[q0 + k * step] = q[k] as u8;
+            data[q0 - (k + 1) * step] = T::from_i32(p[7 - k]);
+            data[q0 + k * step] = T::from_i32(q[k]);
         }
     }
 }

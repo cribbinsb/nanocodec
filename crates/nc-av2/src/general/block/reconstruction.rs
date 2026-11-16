@@ -189,6 +189,9 @@ impl Tile<'_, '_> {
         stages: [Option<BlockSize>; 2],
     ) -> Result<()> {
         if let Some(size) = record.luma {
+            if let Some(prediction) = self.inter_prediction {
+                self.predict_inter_luma(&prediction, size);
+            }
             self.luma_transforms(depth, record, (size, whole), modes, transforms)?;
         }
         if let Some(chroma) = stages[0].or(stages[1]) {
@@ -476,6 +479,12 @@ impl Tile<'_, '_> {
             }
         }
         let (cbx4, cby4) = ((cbx & 63) as usize >> 1, (cby & 63) as usize >> 1);
+        if let Some(prediction) = self.inter_prediction.filter(|_| !sdp_active) {
+            let (row, column) = (self.chroma_row, self.chroma_column);
+            (self.chroma_row, self.chroma_column) = (cby, cbx);
+            self.predict_inter_chroma(&prediction, chroma, record.luma);
+            (self.chroma_row, self.chroma_column) = (row, column);
+        }
         if skip {
             self.mark_coded(1, cby4, cbx4, cw4ss, ch4ss);
             return Ok(());
