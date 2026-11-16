@@ -174,6 +174,9 @@ BINARY_INPUTS = ("crates", f":(exclude){PRESETS_PATH}", "Cargo.toml", "Cargo.loc
 BUILD_INPUTS = (*BINARY_INPUTS, PRESETS_PATH, OLD_PRESETS_PATH)
 #: Written last into a finished build directory (on both machines).
 COMPLETE_MARKER = "COMMIT"
+#: x86 timing machines side by side (aws_timing.TIMING_MACHINE, one pair at a time on
+#: each): a whole-chart re-time takes about 10 min instead of 40.
+X86_SESSIONS = 4
 STEPS = ("build", "verify", "delete", "scan", "measure", "time-x86", "time-jetson", "render",
          "check")
 MEMORY_SCOPE = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
@@ -495,9 +498,11 @@ class Refresh:
     def drop_unused_builds(self) -> None:
         for family in self.targets:  # measured and timed on one build again
             self.record.get("timed_on", {}).pop(family, None)
-        used = (set(self.record["families"].values()) | {self.record["base"]}
-                | set(self.record.get("timed_on", {}).values()) | other_records_builds(
-                    self.builds_file))
+        # COMMIT stays while this refresh times on it: a retime-only refresh records its
+        # families on it only at render (2026-11-16: it was removed before the timing)
+        used = ({self.commit} if self.timed else set()) | set(self.record["families"].values()) \
+            | {self.record["base"]} | set(self.record.get("timed_on", {}).values()) \
+            | other_records_builds(self.builds_file)
         for build in sorted(set(self.record["builds"]) - used):
             print(f"  build {build} is no longer used: removed on both machines")
             del self.record["builds"][build]
@@ -603,19 +608,29 @@ class Refresh:
         build = self.build_dir(self.commit)
         if not self.args.dry_run and not (build / TIMED_BINARY).is_file():
             raise SystemExit(f"no release build of {self.commit}: resume with --from build")
-        out = WORK / f"x86-{self.commit}"
-        if out.exists() and not self.args.dry_run:
-            shutil.rmtree(out)  # a re-run times afresh
         # every timed point is on COMMIT's build; one repeat (the 2026-11-15 probe's
-        # repeats agreed within 0.4%)
-        self.run(["python3", "tools/dev/aws_timing.py", "--points", ",".join(self.timed),
-                  "--binary", str(build / TIMED_BINARY), "--repeats", "1",
-                  "--rounds", str(self.args.x86_rounds), "--purpose", "chart-refresh-x86-timing",
-                  "--out", str(out)], "time-x86.log")
+        # repeats agreed within 0.4%), the points split over X86_SESSIONS machines side
+        # by side, each timing one pair at a time (machines agreed within 1.3%)
+        parts = [self.timed[i::X86_SESSIONS] for i in range(X86_SESSIONS)]
+        outs = [WORK / f"x86-{self.commit}-{i + 1}" for i, part in enumerate(parts) if part]
+        for out in outs:
+            if out.exists() and not self.args.dry_run:
+                shutil.rmtree(out)  # a re-run times afresh
+        with ThreadPoolExecutor(len(outs)) as pool:
+            for job in [pool.submit(self.run, [
+                    "python3", "tools/dev/aws_timing.py", "--points", ",".join(part),
+                    "--binary", str(build / TIMED_BINARY), "--repeats", "1",
+                    "--rounds", str(self.args.x86_rounds),
+                    "--purpose", "chart-refresh-x86-timing", "--out", str(out)],
+                    f"time-x86-{out.name.rsplit('-', 1)[1]}.log")
+                    for part, out in zip([p for p in parts if p], outs)]:
+                job.result()
         if not self.args.dry_run:
-            merge_timing(REPO / TIMING_X86_FILE, sorted((out / "repeat-1").glob("t-*.json")),
+            merge_timing(REPO / TIMING_X86_FILE,
+                         sorted(r for out in outs for r in (out / "repeat-1").glob("t-*.json")),
                          rescale=True)
-            shutil.rmtree(out)
+            for out in outs:
+                shutil.rmtree(out)
 
     def time_jetson(self) -> None:
         if not self.timed:
