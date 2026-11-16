@@ -158,7 +158,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
 /// tails, flat2 rejection and exact final-row allocations.
 fn check_av1_groups(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     for vertical in [false, true] {
-        for lines in [4, 8, 12, 16, 20, 28, 32, 48, 64] {
+        for lines in [4, 8, 12, 16, 20, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64] {
             let (width, height) = if vertical { (16, lines) } else { (lines, 16) };
             let (x, y) = if vertical { (8, 0) } else { (0, 8) };
             for padding in [0, 5] {
@@ -169,7 +169,7 @@ fn check_av1_groups(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
                     Av1FilterLength::Eight,
                     Av1FilterLength::Fourteen,
                 ] {
-                    for pattern in 0..8 {
+                    for pattern in 0..12 {
                         let mut input = vec![0; stride * (height - 1) + width];
                         for (i, sample) in input.iter_mut().enumerate() {
                             let (row, column) = (i / stride, i % stride);
@@ -226,6 +226,13 @@ fn check_av1_groups(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
 
 fn group_sample(pattern: usize, along: usize, across: usize, rng: &mut Rng) -> u8 {
     match pattern {
+        8..=11 => {
+            if along / 8 % 4 == pattern - 8 {
+                128
+            } else {
+                rng.byte()
+            }
+        }
         0 => 128,
         1 => rng.byte(),
         2 => {

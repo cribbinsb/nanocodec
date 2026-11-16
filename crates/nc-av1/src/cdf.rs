@@ -11,6 +11,15 @@
 //!
 //! CDFs are stored in libaom's inverse convention (`32768 − cdf`, last
 //! symbol's entry 0), as the default tables are.
+//!
+//! The decoder keeps its own set ([`crate::decoder_range::Cdf`],
+//! `decoder::cdf::Cdfs`) on purpose, not a shared generic one: this
+//! [`Cdf`] carries the symbol-cost cache rate estimation prices from, which
+//! the decoder never reads, while the decoder's compact CDFs keep its
+//! tile state small (the WASM decoder is the primary browser path) and its
+//! set holds every symbol of the streams it accepts (all transform sizes,
+//! high-precision vectors). What is identical is shared: the default
+//! tables, [`ResetCounters`] and the adaptation rule.
 
 use crate::coeff::CoeffCdfs;
 use crate::mvcoding::MvCdfs;

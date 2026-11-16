@@ -22,20 +22,6 @@ use nc_dsp::{DepthKernels, Pixel};
 
 use super::frame_header::{FrameSize, LrType, Restoration};
 
-/// Width and height of plane `plane` of a `width`x`height` 4:2:0 frame.
-fn plane_size(plane: PlaneIndex, (width, height): (usize, usize)) -> (usize, usize) {
-    if plane == PlaneIndex::Y {
-        (width, height)
-    } else {
-        (width.div_ceil(2), height.div_ceil(2))
-    }
-}
-
-/// Whether `plane` is subsampled.
-fn subsampled(plane: PlaneIndex) -> bool {
-    plane != PlaneIndex::Y
-}
-
 /// The view of the top-left `width`x`height` samples of one plane, which
 /// may extend into its border.
 fn plane_view<T: Pixel>(
@@ -53,8 +39,8 @@ fn plane_view<T: Pixel>(
 fn superres(size: &FrameSize) -> Option<[Av1Superres; 3]> {
     (size.width != size.upscaled_width).then(|| {
         PlaneIndex::ALL.map(|plane| {
-            let (down, _) = plane_size(plane, (size.width, size.height));
-            let (up, _) = plane_size(plane, (size.upscaled_width, size.height));
+            let (down, _) = plane.size_in((size.width, size.height));
+            let (up, _) = plane.size_in((size.upscaled_width, size.height));
             Av1Superres::new(down, up)
         })
     })
@@ -62,7 +48,7 @@ fn superres(size: &FrameSize) -> Option<[Av1Superres; 3]> {
 
 /// Width of the samples superres reads in each plane: `MiCols * 4` luma.
 fn readable_width(plane: PlaneIndex, size: &FrameSize) -> usize {
-    (size.mi_cols() * 4) >> u32::from(subsampled(plane))
+    (size.mi_cols() * 4) >> u32::from(plane.is_subsampled())
 }
 
 /// The deblocked rows around each internal stripe edge of each plane.
@@ -83,7 +69,7 @@ impl<T: Pixel> StripeBoundaries<T> {
         let scalers = superres(size);
         let mut planes = Vec::with_capacity(PlaneIndex::ALL.len());
         for (index, plane) in PlaneIndex::ALL.into_iter().enumerate() {
-            let (coded, rows) = plane_size(plane, (size.width, size.height));
+            let (coded, rows) = plane.size_in((size.width, size.height));
             let width = if scalers.is_some() {
                 readable_width(plane, size)
             } else {
@@ -93,7 +79,7 @@ impl<T: Pixel> StripeBoundaries<T> {
             let scaler = scalers.as_ref().map(|s| &s[index]);
             planes.push(Av1StripeBoundaries::save_at(
                 &deblocked,
-                subsampled(plane),
+                plane.is_subsampled(),
                 scaler,
                 depth,
             ));
@@ -113,7 +99,7 @@ pub(crate) fn superres_upscale<T: Pixel>(
 ) -> Result<(), DecodeError> {
     let scalers = superres(size).ok_or(DecodeError::Malformed("AV1 superres without scaling"))?;
     for (plane, scaler) in PlaneIndex::ALL.into_iter().zip(&scalers) {
-        let (_, rows) = plane_size(plane, (size.width, size.height));
+        let (_, rows) = plane.size_in((size.width, size.height));
         let source = plane_view(coded, plane, (readable_width(plane, size), rows))?;
         let mut dst = upscaled
             .plane_mut(plane)
@@ -150,7 +136,7 @@ impl RestorationUnits {
             if !units.enabled[index] {
                 continue;
             }
-            let (width, height) = plane_size(plane, (size.upscaled_width, size.height));
+            let (width, height) = plane.size_in((size.upscaled_width, size.height));
             units.columns[index] = av1_lr_unit_count(lr.unit_size[index], width);
             units.rows[index] = av1_lr_unit_count(lr.unit_size[index], height);
             units.filters[index] =
@@ -190,7 +176,7 @@ pub(crate) fn apply<T: Pixel>(
         if !units.enabled[index] {
             continue;
         }
-        let (width, height) = plane_size(plane, (size.upscaled_width, size.height));
+        let (width, height) = plane.size_in((size.upscaled_width, size.height));
         let mut view = frame
             .plane_mut(plane)
             .region_mut(0, 0, width, height)
@@ -204,7 +190,7 @@ pub(crate) fn apply<T: Pixel>(
         kernels.av1_loop_restoration(
             &restoration,
             &mut view,
-            (&boundaries.planes[index], subsampled(plane)),
+            (&boundaries.planes[index], plane.is_subsampled()),
             scratch,
         );
     }

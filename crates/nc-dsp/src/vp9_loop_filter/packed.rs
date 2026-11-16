@@ -1,11 +1,16 @@
 //! VP9 edge-filter schedule over shared packed-byte groups
 //! (`crate::lpf_bytes`): masks, flat decisions and the 8/16 smoothing.
+//! VP9 smooths p7..q7 with 15 taps, whereas AV1's outer filter uses
+//! p6..q6 with 13 taps. This schedule keeps those outer equations while
+//! sharing byte operations, the narrow filter, grouped IO and ISA adapters.
 #![allow(clippy::inline_always)]
 use crate::deblock::av1_packed::{BasicTile, Tile};
 use crate::lpf_bytes::{Bytes, INNER, LANES, Words, difference, narrow, select, within};
 use crate::{Vp9FilterLimits, Vp9FilterWidth};
 #[cfg(target_arch = "x86_64")]
 pub(super) mod avx2;
+#[cfg(target_arch = "x86_64")]
+pub(super) mod avx512;
 #[cfg(target_arch = "aarch64")]
 pub(super) mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -159,6 +164,21 @@ unsafe fn run<B: Bytes, const WIDTH: usize>(
     width: Vp9FilterWidth,
     limits: Vp9FilterLimits,
 ) {
+    // SAFETY: validated caller and ISA contract, preserved by the entry wrapper.
+    unsafe {
+        run_body::<B, WIDTH>(data, edge, step, along, lines, width, limits);
+    }
+}
+#[inline(always)]
+unsafe fn run_body<B: Bytes, const WIDTH: usize>(
+    data: &mut [u8],
+    edge: usize,
+    step: usize,
+    along: usize,
+    lines: usize,
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+) {
     // Unusual thresholds/geometry retain the oracle's complete public semantics.
     let reach = if width == Vp9FilterWidth::Sixteen {
         8
@@ -209,7 +229,7 @@ unsafe fn run_paired<const WIDTH: usize>(
     width: Vp9FilterWidth,
     limits: Vp9FilterLimits,
 ) {
-    use crate::deblock::av1_tile::PairedTile;
+    use crate::deblock::av1_tile::GroupedTile;
     #[cfg(target_arch = "aarch64")]
     use crate::lpf_bytes::{neon::B, neon_wide::B as Wide};
     #[cfg(target_arch = "wasm32")]
@@ -225,7 +245,7 @@ unsafe fn run_paired<const WIDTH: usize>(
     for first in (0..full).step_by(PAIRED_LINES) {
         // SAFETY: caller validates both complete eight-line tiles; the lane ISA is enabled.
         unsafe {
-            group::<Wide, PairedTile<Wide>, PAIRED_LINES, WIDTH>(
+            group::<Wide, GroupedTile<Wide>, PAIRED_LINES, WIDTH>(
                 data,
                 edge + first * along,
                 step,
@@ -247,5 +267,74 @@ unsafe fn run_paired<const WIDTH: usize>(
                 limits,
             );
         }
+    }
+}
+
+/// Four eight-line groups share the same VP9 equations and grouped tile IO
+/// as AV1. All shorter groups and unusual geometry retain the narrow path.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+#[inline(never)]
+unsafe fn run_wide<const WIDTH: usize>(
+    data: &mut [u8],
+    edge: usize,
+    step: usize,
+    along: usize,
+    lines: usize,
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+) {
+    use crate::deblock::av1_tile::GroupedTile;
+    use crate::lpf_bytes::avx512::B as Wide;
+    const GROUP_LINES: usize = 4 * LANES;
+    let reach = if WIDTH == 16 { LANES } else { INNER };
+    let independent = (along == 1 && step >= lines) || (step == 1 && along >= 2 * reach);
+    if limits.boundary >= 255 || !independent {
+        crate::vp9_deblock::vp9_filter_edge(data, edge, step, along, lines, width, limits);
+        return;
+    }
+    let full = lines / GROUP_LINES * GROUP_LINES;
+    // SAFETY: dispatch validates every group and this entry enables its ISA.
+    unsafe {
+        for first in (0..full).step_by(GROUP_LINES) {
+            group::<Wide, GroupedTile<Wide>, GROUP_LINES, WIDTH>(
+                data,
+                edge + first * along,
+                step,
+                along,
+                limits,
+            );
+        }
+        if full != lines {
+            run_gfni::<WIDTH>(
+                data,
+                edge + full * along,
+                step,
+                along,
+                lines - full,
+                width,
+                limits,
+            );
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+#[inline(never)]
+unsafe fn run_gfni<const WIDTH: usize>(
+    data: &mut [u8],
+    edge: usize,
+    step: usize,
+    along: usize,
+    lines: usize,
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+) {
+    // SAFETY: validated footprint; this entry enables GFNI for short groups too.
+    unsafe {
+        run_body::<crate::lpf_bytes::gfni::Narrow, WIDTH>(
+            data, edge, step, along, lines, width, limits,
+        );
     }
 }

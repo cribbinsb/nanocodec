@@ -9,6 +9,10 @@
 pub(crate) mod avx2;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod avx2_wide;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod avx512;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod gfni;
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon;
 #[cfg(target_arch = "aarch64")]
@@ -106,6 +110,41 @@ pub(crate) trait PairedBytes: Bytes {
     unsafe fn store_pair(self, first: *mut u8, second: *mut u8);
 }
 
+/// Independent eight-byte groups, each in the low half of a 128-bit lane.
+/// This keeps the same transpose and widening for paired and four-group ISAs.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) trait GroupedBytes: Bytes {
+    const GROUPS: usize;
+    /// Each group starts `distance` bytes after the preceding one; all spans
+    /// contain eight readable/writable bytes and the ISA must be enabled.
+    unsafe fn load_groups(first: *const u8, distance: usize) -> Self;
+    unsafe fn store_groups(self, first: *mut u8, distance: usize);
+}
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+impl<B: PairedBytes> GroupedBytes for B {
+    const GROUPS: usize = 2;
+    #[inline(always)]
+    unsafe fn load_groups(first: *const u8, distance: usize) -> Self {
+        // SAFETY: caller validates both eight-byte groups and the ISA.
+        unsafe { Self::load_pair(first, first.add(distance)) }
+    }
+    #[inline(always)]
+    unsafe fn store_groups(self, first: *mut u8, distance: usize) {
+        // SAFETY: caller validates both eight-byte groups and the ISA.
+        unsafe {
+            self.store_pair(first, first.add(distance));
+        }
+    }
+}
+
 /// A small word table split into byte planes, for register lookups by width.
 /// Unused entries are zero; packing constants here avoids rebuilding vectors
 /// inside each edge's decision/ramp kernel.
@@ -183,6 +222,31 @@ pub(crate) trait QuadBytes: Bytes<W: MaskWords> {
     ///
     /// Both point to four readable bytes; the ISA is enabled.
     unsafe fn load_halves(low: *const u8, high: *const u8) -> Self;
+    /// Apply the two eight-tap ramps to four independent rows. Each side
+    /// supplies eight writable bytes per row, at `along` spacing; ISA enabled.
+    /// Wide backends batch the rows using the same grouped byte layout.
+    #[inline(always)]
+    unsafe fn ramp_lines4(
+        negative: *mut u8,
+        positive: *mut u8,
+        along: usize,
+        steps: [i16; 4],
+        factors_negative: &[i16; LANES],
+        factors_positive: &[i16; LANES],
+    ) {
+        let neg = Self::W::load(factors_negative);
+        let pos = Self::W::load(factors_positive);
+        // SAFETY: caller validates all four rows on both sides and the ISA.
+        unsafe {
+            for (line, step) in steps.into_iter().enumerate() {
+                let step = Self::W::splat(step);
+                let p = negative.add(line * along);
+                let q = positive.add(line * along);
+                Self::narrow(Self::load(p).widen().add(step.mul_q15_round(neg))).store(p);
+                Self::narrow(Self::load(q).widen().sub(step.mul_q15_round(pos))).store(q);
+            }
+        }
+    }
 }
 
 #[inline(always)]

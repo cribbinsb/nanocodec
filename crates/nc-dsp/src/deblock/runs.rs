@@ -183,13 +183,15 @@ trait Av1Kernel<B: crate::lpf_bytes::Bytes> {
     target_arch = "aarch64",
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
-struct WideKernel<W>(core::marker::PhantomData<W>);
+struct WideKernel<W, const LINES: usize = 16>(core::marker::PhantomData<W>);
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
-impl<B: crate::lpf_bytes::Bytes, W: crate::lpf_bytes::PairedBytes> Av1Kernel<B> for WideKernel<W> {
+impl<B: crate::lpf_bytes::Bytes, W: crate::lpf_bytes::GroupedBytes, const LINES: usize> Av1Kernel<B>
+    for WideKernel<W, LINES>
+{
     #[allow(clippy::inline_always)]
     #[inline(always)]
     unsafe fn filter(
@@ -203,7 +205,7 @@ impl<B: crate::lpf_bytes::Bytes, W: crate::lpf_bytes::PairedBytes> Av1Kernel<B> 
     ) {
         // SAFETY: caller validates the footprint and enables both lane types' ISA.
         unsafe {
-            super::av1_packed::filter_wide::<W, super::av1_tile::PairedTile<W>>(
+            super::av1_packed::filter_wide::<W, super::av1_tile::GroupedTile<W>, LINES>(
                 data, base, across, along, lines, filter, tail,
             );
         }
@@ -407,6 +409,20 @@ isa_runs!(
     crate::lpf_bytes::simd128::B,
     WideKernel<crate::lpf_bytes::simd128_wide::B>
 );
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+pub(crate) unsafe fn avx512(data: &mut [u8], plane: Plane, runs: &[EdgeRun<Av1EdgeFilter>]) {
+    // SAFETY: traversal validates every run; this entry enables both lane ISAs.
+    unsafe {
+        av1_packed::<crate::lpf_bytes::gfni::Narrow, WideKernel<crate::lpf_bytes::avx512::B, 32>>(
+            data,
+            plane,
+            runs,
+            super::avx512::av1_edge,
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -200,6 +200,18 @@ impl Classifier<'_> {
         light_classes(&proxies, self.effort)
     }
 
+    /// The mean benefit proxy of the frame's motion-search superblocks
+    /// (`filter_effort.rs`).
+    pub fn frame_proxy(&self) -> f32 {
+        let grid = &self.motion.sb;
+        let (cols, rows) = (grid.cols(), grid.rows());
+        let sum: f32 = (0..rows)
+            .flat_map(|row| (0..cols).map(move |col| (col, row)))
+            .map(|(col, row)| self.cell_proxy(col, row))
+            .sum();
+        sum / (cols * rows).max(1) as f32
+    }
+
     /// The benefit proxy of superblock `sb`: the highest of the motion
     /// search's superblocks it covers (or the one that contains it).
     fn proxy(&self, sb: &Block) -> f32 {

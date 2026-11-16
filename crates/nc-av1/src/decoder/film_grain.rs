@@ -54,15 +54,6 @@ fn chroma_points<const N: usize>(
     points
 }
 
-/// Width and height of `plane` of a `width` x `height` 4:2:0 frame.
-fn plane_size(plane: PlaneIndex, (width, height): (usize, usize)) -> (usize, usize) {
-    if plane == PlaneIndex::Y {
-        (width, height)
-    } else {
-        (width.div_ceil(2), height.div_ceil(2))
-    }
-}
-
 /// The writable top-left `width` x `height` samples of `plane`.
 fn writable<T: Pixel>(
     plane: &mut Plane<T>,
@@ -80,7 +71,7 @@ pub(crate) fn apply<T: Pixel>(
     (width, height): (usize, usize),
     output: &mut Picture<T>,
 ) -> Result<(), DecodeError> {
-    let size = |plane: PlaneIndex| plane_size(plane, (width, height));
+    let size = |plane: PlaneIndex| plane.size_in((width, height));
     let views = PlaneIndex::ALL.map(|plane| {
         let (plane_w, plane_h) = size(plane);
         input.plane(plane).region(0, 0, plane_w, plane_h)

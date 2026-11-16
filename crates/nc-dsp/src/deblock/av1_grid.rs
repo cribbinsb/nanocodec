@@ -106,6 +106,19 @@ pub(crate) fn scalar(plane: &mut [u8], grid: &Grid<'_>) {
 #[allow(clippy::inline_always)]
 #[inline(always)]
 unsafe fn packed<B: crate::lpf_bytes::Bytes>(plane: &mut [u8], grid: &Grid<'_>) {
+    // SAFETY: caller validates the grid and enables B's ISA.
+    unsafe {
+        packed_with(plane, grid, super::av1_packed::filter_edge::<B>);
+    }
+}
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+unsafe fn packed_with(plane: &mut [u8], grid: &Grid<'_>, kernel: super::Av1EdgeFn) {
     use super::line::Descriptors;
     if grid.rows.is_empty() || grid.columns == 0 {
         return;
@@ -128,13 +141,14 @@ unsafe fn packed<B: crate::lpf_bytes::Bytes>(plane: &mut [u8], grid: &Grid<'_>) 
             // SAFETY: Grid::new validated every active footprint and the
             // descriptor strides; final picture rows are clipped by `end`.
             unsafe {
-                super::av1_line::packed_descriptors::<B>(
+                super::av1_line::packed_descriptors_with(
                     plane,
                     start * grid.plane_stride + x4 * AV1_EDGE_LINES,
                     1,
                     grid.plane_stride,
                     end - start,
                     descriptors,
+                    kernel,
                 );
             }
         }
@@ -148,13 +162,14 @@ unsafe fn packed<B: crate::lpf_bytes::Bytes>(plane: &mut [u8], grid: &Grid<'_>) 
             // SAFETY: Grid::new validated all active edges on this row;
             // width clips the final unit, and rows retain increasing order.
             unsafe {
-                super::av1_line::packed_descriptors::<B>(
+                super::av1_line::packed_descriptors_with(
                     plane,
                     y4 * AV1_EDGE_LINES * grid.plane_stride,
                     grid.plane_stride,
                     1,
                     grid.width,
                     descriptors,
+                    kernel,
                 );
             }
         }
@@ -179,6 +194,14 @@ pub(crate) unsafe fn simd128(plane: &mut [u8], grid: &Grid<'_>) {
     unsafe { packed::<crate::lpf_bytes::simd128::B>(plane, grid) }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+pub(crate) unsafe fn avx512(plane: &mut [u8], grid: &Grid<'_>) {
+    // SAFETY: validated grid; this entry enables the edge kernel's ISA.
+    unsafe {
+        packed_with(plane, grid, super::avx512::av1_edge);
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::{Av1EdgeFilter, Av1FilterLength, Dsp, Isa};

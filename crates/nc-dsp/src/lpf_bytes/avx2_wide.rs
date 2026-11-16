@@ -13,7 +13,7 @@ use core::arch::x86_64::{
     _mm256_sub_epi16, _mm256_subs_epi8, _mm256_subs_epu8, _mm256_unpacklo_epi8, _mm256_xor_si256,
 };
 #[derive(Clone, Copy)]
-pub(crate) struct B(__m256i);
+pub(crate) struct B(pub(super) __m256i);
 #[derive(Clone, Copy)]
 pub(crate) struct W(__m256i);
 impl Bytes for B {

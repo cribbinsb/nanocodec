@@ -4,6 +4,11 @@
 //! vector. The scalar `choose_width` cascade, the clamped edge steps and
 //! the ramps of `deblock::av2` run for every segment at once.
 //!
+//! AV2 uses curvature decisions and asymmetric Q15 ramps, rather than AV1/VP9
+//! flat box filters. Those codec equations remain distinct; byte operations
+//! and grouped lane IO belong to the shared loop-filter family. Vertical
+//! ramps may batch four sample rows independently of the eight decision lanes.
+//!
 //! Gathering: the decision reads only each segment's first and last
 //! lines, the steps and the ramps all four. Samples are loaded straight
 //! into position vectors:
@@ -222,12 +227,13 @@ impl<B: QuadBytes> Chunk<B> for Rows {
 /// points to the chunk's first q0 sample in a plane that holds
 /// [`AV2_DECIDE_REACH`] samples on each side of q0 on each of the chunk's
 /// lines, `along` apart.
-struct Columns {
+struct Columns<R> {
+    ramps: core::marker::PhantomData<R>,
     q0: *mut u8,
     along: usize,
 }
 
-impl Columns {
+impl<R> Columns<R> {
     /// The sample `position` across the edge on line `line` of segment `s`.
     #[inline(always)]
     fn at(&self, s: usize, line: usize, position: isize) -> *mut u8 {
@@ -269,7 +275,7 @@ impl Columns {
     }
 }
 
-impl<B: QuadBytes> Chunk<B> for Columns {
+impl<B: QuadBytes, R: QuadBytes> Chunk<B> for Columns<R> {
     #[inline(always)]
     fn ends(&self, first: [isize; 2]) -> Ends<W<B>> {
         Ends {
@@ -312,19 +318,17 @@ impl<B: QuadBytes> Chunk<B> for Columns {
             }
             // Window position k on the p side is sample p(7 − k); on the q
             // side, sample q(k).
-            let factors_neg = W::<B>::load(&Q15_RAMP_FACTORS_REVERSED[neg]);
-            let factors_pos = W::<B>::load(&Q15_RAMP_FACTORS[pos]);
-            for (line, steps) in steps_by_line.iter().enumerate() {
-                let step = W::<B>::splat(steps[s]);
-                let (p_side, q_side) = (self.at(s, line, -ramp), self.at(s, line, 0));
-                // SAFETY: both windows lie within the reach (`at`); the
-                // kernel's ISA is enabled.
-                unsafe {
-                    let moved = B::load(p_side).widen().add(step.mul_q15_round(factors_neg));
-                    B::narrow(moved).store(p_side);
-                    let moved = B::load(q_side).widen().sub(step.mul_q15_round(factors_pos));
-                    B::narrow(moved).store(q_side);
-                }
+            // SAFETY: `at` validates four rows of eight taps on both sides;
+            // the entry enables B's ISA. The grouped adapter batches these rows.
+            unsafe {
+                R::ramp_lines4(
+                    self.at(s, 0, -ramp),
+                    self.at(s, 0, 0),
+                    self.along,
+                    core::array::from_fn(|line| steps_by_line[line][s]),
+                    &Q15_RAMP_FACTORS_REVERSED[neg],
+                    &Q15_RAMP_FACTORS[pos],
+                );
             }
         }
     }
@@ -643,6 +647,20 @@ pub(crate) unsafe fn horizontal<B: QuadBytes>(plane: &mut [u8], segments: &Av2Se
 /// If a line lacks [`AV2_DECIDE_REACH`] samples on either side of the edge.
 #[inline(always)]
 pub(crate) unsafe fn vertical<B: QuadBytes>(plane: &mut [u8], segments: &Av2Segments) {
+    // SAFETY: caller enables B's ISA; the shared entry validates the footprint.
+    unsafe {
+        vertical_with::<B, B>(plane, segments);
+    }
+}
+
+/// Gather/decide on B's segment lanes and update four sample rows using R.
+/// This separates independent SIMD axes without duplicating AV2 equations.
+/// Caller enables both ISAs; footprint assertions match `vertical`.
+#[inline(always)]
+pub(crate) unsafe fn vertical_with<B: QuadBytes, R: QuadBytes>(
+    plane: &mut [u8],
+    segments: &Av2Segments,
+) {
     let last_line = (AV2_DECIDE_SEGMENTS * AV2_EDGE_LINES - 1) * segments.along;
     assert!(
         segments.across == 1
@@ -654,7 +672,8 @@ pub(crate) unsafe fn vertical<B: QuadBytes>(plane: &mut [u8], segments: &Av2Segm
     let q0 = unsafe { plane.as_mut_ptr().add(segments.q0) };
     // The assertion establishes the invariant of `Columns`.
     filter::<B, _>(
-        &mut Columns {
+        &mut Columns::<R> {
+            ramps: core::marker::PhantomData,
             q0,
             along: segments.along,
         },

@@ -35,6 +35,8 @@ pub(crate) fn kernel(isa: Isa) -> FilterFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => packed::avx2::filter,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => packed::avx512::filter,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => packed::neon::filter,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]

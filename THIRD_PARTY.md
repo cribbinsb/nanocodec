@@ -347,6 +347,20 @@ constrained signed byte differences, paired `pmaddubsw` tap weighting, and
 exact word rounding. It uses eight independent rows per vector with the
 existing scalar CDEF equations and oracle.
 
+The shared four-group loop-filter lanes (`crates/nc-dsp/src/lpf_bytes/avx512.rs`,
+`deblock/avx512.rs` and `vp9_loop_filter/packed/avx512.rs`) use the grouped
+transpose/widen/filter layout of dav1d 1.5.4 `src/x86/loopfilter_avx512.asm`
+(8-bit) and `src/x86/loopfilter16_avx512.asm` (high bit depth) as design
+references, reimplemented with Rust intrinsics and our shared scalar equations.
+Copyright © 2018, 2022 VideoLAN and dav1d authors; Copyright © 2018, 2022
+Two Orioles, LLC. BSD-2-Clause; full notice above and in
+[docs/licenses/dav1d/COPYING](docs/licenses/dav1d/COPYING).
+GFNI affine byte shifts (`lpf_bytes/gfni.rs`, for short and paired groups too)
+follow the same reference: direct unsigned shifts and sign-extending matrices
+replace word widening. The loop-filter tier requires AVX-512 plus GFNI;
+CPUs without GFNI retain AVX2. VBMI is not required. The shared byte/word
+arithmetic serves AV1, VP9 and AV2's distinct ramp equations.
+
 AV1 loop restoration (`crates/nc-dsp/src/av1_restoration/`: `mod.rs`,
 `wiener.rs`, `self_guided.rs`, `sgr_lanes.rs`, `avx2.rs`, `neon.rs`,
 `simd128.rs`) ports dav1d 1.5.4 `src/lr_apply_tmpl.c`,

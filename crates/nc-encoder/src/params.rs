@@ -995,6 +995,23 @@ param_group! {
 }
 
 param_group! {
+    /// Frame-level loop-filter effort (`filter_effort.rs`): which inter
+    /// frames are deblocked and which search their CDEF strengths, from the
+    /// frame's own motion statistics. Every default leaves the codec's own
+    /// filter settings in charge.
+    pub struct FilterParams ("filter") {
+        deblock_skip_share: 1.0, [0.0, 1.0],
+            "a non-base inter frame is not deblocked when the previous frame coded at least this share of its area without residual (SVT: 0.75; 1: never): lower skips the deblocking pass on more static frames",
+        deblock_skip_proxy: 0.0, [0.0, 8.0],
+            "an inter frame whose mean benefit proxy (best 16x16 motion-search SAD plus weighted spread, per sample, in quantizer steps) is below this is not deblocked (0: never): higher skips the deblocking pass on more well-predicted frames",
+        cdef_reuse_proxy: 0.0, [0.0, 8.0],
+            "a non-base inter frame whose mean benefit proxy is below this reuses the previous CDEF strengths without a search (0: never): higher skips the CDEF search on more well-predicted frames",
+        cdef_max_reuse: 7.0, [1.0, 64.0],
+            "most consecutive frames the CDEF reuse test lets reuse CDEF strengths before one searches again: higher searches less often on long static stretches",
+    }
+}
+
+param_group! {
     /// Per-superblock effort class (`effort_class.rs`): which inter
     /// superblocks are coded with the `light.*` settings.
     pub struct EffortParams ("effort") {
@@ -1164,6 +1181,7 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         StructureParams::SPECS,
         QuantParams::SPECS,
         EffortParams::SPECS,
+        FilterParams::SPECS,
         crate::work_gate::GateParams::SPECS,
         ChromaParams::SPECS,
         ResolutionParams::SPECS,

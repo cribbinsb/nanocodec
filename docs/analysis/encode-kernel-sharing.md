@@ -127,18 +127,25 @@ crates, scalar.
 
 | Variant | Module (lines) | Tiers | Technique | Hot | Arithmetic | Verdict |
 |---|---|---|---|---|---|---|
-| AV1 edge (deblock family: Astra is adding the AVX-512 tier to `av1_edge`, `av2_chunk`, `lpf_bytes`; results to be added here by Astra) | `deblock/av1.rs` (628 scalar), `av1_packed.rs` (486), `lpf_bytes/` | S A2 N W (A5 inh.) | u8 lanes, 8 lines per vector, libvpx byte masks, widen only flat lanes | AV1 3.8 / 3.7 | filter4/6/8/14, hev/mask/flat/flat2 (AV1 §7.14.6) | **Merge with VP9** |
-| VP9 edge | `vp9_deblock.rs` (250 scalar), `vp9_loop_filter/` (620) | S A2 (8-line) N W (16-line paired) | same `lpf_bytes` lanes and `narrow`; `masks` and `group` copied from `av1_packed` | VP9 3.5 / 3.7 | filter4/8 identical to AV1; filter16 = 15-tap p7..q7 vs AV1 13-tap filter14 | **Merge with AV1**: parameter = wide filter rule (taps, outer, centre, flat2 span) |
-| AV1 paired 16-line (`*_wide`) | `lpf_bytes/*_wide.rs`, `deblock/{runs,av1_grid,av1_line,av1_tile}.rs` | S A2 N W | two 8-byte groups, dav1d 8x16 transpose | decoder only | same | **Technique to spread** to the AV1/VP9 encoder path |
+| AV1 edge | `deblock/av1.rs` (628 scalar), `av1_packed.rs` (486), `lpf_bytes/` | S A2 A5(ICL/GFNI) N W | u8 lanes, 8/16/32 independent lines, libvpx byte masks, widen only flat lanes | AV1 3.8 / 3.7 | filter4/6/8/14, hev/mask/flat/flat2 (AV1 §7.14.6) | **Merge with VP9** |
+| VP9 edge | `vp9_deblock.rs` (250 scalar), `vp9_loop_filter/` (620) | S A2 (8-line) A5(ICL/GFNI, 32-line) N W (16-line paired) | same `lpf_bytes` lanes and `narrow`; `masks` and `group` copied from `av1_packed` | VP9 3.5 / 3.7 | filter4/8 identical to AV1; filter16 = 15-tap p7..q7 vs AV1 13-tap filter14 | **Merge with AV1**: parameter = wide filter rule (taps, outer, centre, flat2 span) |
+| AV1/VP9 grouped byte lanes | `lpf_bytes/{*_wide,gfni,avx512}.rs`, `deblock/{runs,av1_grid,av1_line,av1_tile}.rs` | S A2 A5(ICL/GFNI) N W | paired/four 8-byte groups, shared transpose and tile IO | encoder and decoder | same | Shared AVX-512 layout for AV1/VP9; GFNI covers short tails |
 | H.264 luma + chroma pair | `deblock/h264_bytes/` (1480), `h264_mb.rs` | S A2 N W | 16 u8 lanes, one per line | H.264 2.8 / 3.7 | §8.7 bS, alpha/beta, tC0; strong filter unclipped | Keep; fold `H264Bytes` into `lpf_bytes::Bytes` |
 | HEVC luma | `deblock/hevc.rs` (373), `samples.rs` | S A2 N W (I16x8) | i16, 8 lines, 8x8 transpose | HEVC 1.6 / 1.8 | §8.7.2.5 strong (2tC clip) / weak | **Merge with VVC short filter** (strong clip vector parameter) |
 | VVC luma | `vvc_deblock/inplace.rs` (601), `mod.rs` | S A2 N W (I16x8) | i16, transposes to p7..q7 | VVC 1.7 / 2.6 | long 7/5/3 (§8.8.3) + short filter with (3-i)tC clip; weak/decisions = HEVC | Keep the long filter; **short path merges with HEVC** |
 | HEVC / VVC / H.264 chroma weak | `hevc_chroma.rs`, `vvc_deblock/chroma_edge.rs:161`, `h264_bytes/mod.rs:100` | S A2 N W | | small | all `Clip3(+-t, (4(q0-p0)+p1-q1+4)>>3)` | **One chroma delta core**, gating per codec |
-| AV2 | `deblock/av2*.rs` (1448) | S A2 N W (lpf_bytes) | one lane per segment | AV2 2.8 / 2.5 | different algorithm (ramps up to 8 per side) | Keep; already on `lpf_bytes` |
+| AV2 | `deblock/av2*.rs` (1448) | S A2 A5(ICL/GFNI) N W (lpf_bytes) | eight segment decision lanes; A5 batches four ramp rows | AV2 2.8 / 2.5 | different algorithm (ramps up to 8 per side) | Keep; already on `lpf_bytes` |
 | CDEF | `cdef/` (3497) | S A2 A5 N W | byte `pmaddubsw` interior | AV1 4.9 / 6.7, AV2 5.3 / 7.2 | AV1 §7.15 = AV2 8-bit | Already shared; NEON lacks `block4_pair` |
 | SAO | `sao/` (1680) | S A2 A5 N W | byte apply; NEON byte stats | HEVC 2.6 / 2.4, VVC 1.1 / 1.2 | HEVC §8.7.3 = H.266 §8.8.4 | Already shared; spread NEON byte stats |
 | VVC ALF | `vvc_alf/` (2988) | S A2 N(+dot) W | i16 `pmaddwd` | VVC 4.7 / 7.1 | 7x7 diamond with clipping | Keep; `vvc_alf_gram` duplicates `gram::gram_rows` (merge) |
 | AV1 LR (Wiener, SGR) | `av1_restoration/` (3423) | S A2 N W | dav1d Wiener port | ~0 at Default | separable, no clip | Keep |
+
+AVX-512 implementation (Astra, 2026-11-16): AV1/AV2/VP9 share the grouped
+`lpf_bytes` backend and tile IO. The owner requires the full Ice Lake/GFNI
+feature contract globally, with older AVX-512 CPUs selecting AVX2. Equations
+and all existing ISA tiers remain. Measurements and validation:
+[`astra-avx512-deblock`](../handoff/astra-avx512-deblock.md). The separate
+AV1/VP9 outer-filter equation unification remains the sharing agent's work.
 
 ## 7. Metrics and reconstruction
 

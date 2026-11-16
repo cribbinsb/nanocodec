@@ -195,6 +195,13 @@ impl ModeInfoGrid {
         }
     }
 
+    /// The share of the cells coded with `skip` set.
+    #[must_use]
+    pub fn skip_share(&self) -> f32 {
+        let skipped = self.cells.iter().filter(|cell| cell.skip).count();
+        skipped as f32 / self.cells.len().max(1) as f32
+    }
+
     /// Reset every cell (start of a frame: no information crosses frames).
     pub fn clear(&mut self) {
         self.cells.fill(ModeInfo::default());

@@ -352,14 +352,14 @@ pub(crate) unsafe fn filter_edge<B: Bytes>(
     }
 }
 
-/// Sixteen independent lines share the same arithmetic as the ordinary
+/// Grouped independent lines share the same arithmetic as the ordinary
 /// eight-line kernel. Short remainders retain the established narrow path.
 ///
 /// # Safety
 /// Both lane implementations' ISA must be enabled; normative footprints must
 /// be valid, and `lines` must be a multiple of four.
 #[inline(always)]
-pub(crate) unsafe fn filter_wide<B: Bytes, T: Tile<B>>(
+pub(crate) unsafe fn filter_wide<B: Bytes, T: Tile<B>, const WIDE_LINES: usize>(
     plane: &mut [u8],
     q0: usize,
     across: usize,
@@ -368,7 +368,6 @@ pub(crate) unsafe fn filter_wide<B: Bytes, T: Tile<B>>(
     filter: Av1EdgeFilter,
     tail: super::Av1EdgeFn,
 ) {
-    const WIDE_LINES: usize = 16;
     let reach = tile_reach(filter.length);
     let fits = q0 >= reach * across
         && lines
@@ -380,7 +379,7 @@ pub(crate) unsafe fn filter_wide<B: Bytes, T: Tile<B>>(
     }
     let full = lines / WIDE_LINES * WIDE_LINES;
     for first in (0..full).step_by(WIDE_LINES) {
-        // SAFETY: fits covers all sixteen lines; caller enables the ISA.
+        // SAFETY: fits covers the complete wide group; caller enables the ISA.
         unsafe {
             by_length::<B, T, WIDE_LINES>(plane, q0 + first * along, across, along, filter);
         }

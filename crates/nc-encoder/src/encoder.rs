@@ -27,6 +27,7 @@ use crate::decision::{
 };
 use crate::effort_class::{Classifier, LIGHT_PREFIX, LightOverlay, LightParams};
 use crate::feedback::{LossFeedback, ReferencedFrames};
+use crate::filter_effort::{CdefEffort, FilterEffort, FrameActivity};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
 use crate::inheritance::{Inheritance, Tier};
@@ -39,9 +40,9 @@ use crate::mv::{MV_UNITS_PER_SAMPLE, Mv};
 use crate::noise_skip::{NoiseMap, camera_is_still};
 use crate::params::RefParams;
 use crate::params::{
-    AnalysisParams, DebugParams, DecisionParams, LayerParams, LtrParams, ParamOverrides,
-    PersistParams, PlannerParams, RateParams, RefreshParams, ResolutionParams, SceneParams,
-    SpatialParams, StillParams, StructureParams, engine_specs,
+    AnalysisParams, DebugParams, DecisionParams, EffortParams, FilterParams, LayerParams,
+    LtrParams, ParamOverrides, PersistParams, PlannerParams, RateParams, RefreshParams,
+    ResolutionParams, SceneParams, SpatialParams, StillParams, StructureParams, engine_specs,
 };
 use crate::partition::{Block, should_split};
 use crate::partition_plan::{LeafStats, NoiseTest, Partition, Planner};
@@ -286,6 +287,16 @@ pub struct Encoder<B: CodecBackend> {
     /// The light superblocks' engine parameters as adjusted for the frame
     /// being coded; `None` when it may have no light superblocks.
     frame_light: Option<LightParams>,
+    /// The benefit proxy's settings (`effort.*`), for the frame-level
+    /// filter decision as well as the superblock classes.
+    effort_params: EffortParams,
+    /// Frame-level loop-filter effort (`filter.*`, `filter_effort.rs`).
+    filter_params: FilterParams,
+    /// The last coded frame's skipped share of its area, from its backend.
+    previous_skip_share: Option<f32>,
+    /// Consecutive frames, up to the last, whose CDEF search the filter
+    /// effort skipped.
+    cdef_reused: u32,
     /// `debug.recode_identity`: every frame is coded twice (recode test).
     recode_identity: bool,
     /// `debug.random_decisions`: random legal decisions replace the normal
@@ -317,6 +328,8 @@ impl<B: CodecBackend> Encoder<B> {
         let (effort_overlay, light_overlay) = validated_params::<B>(&config.params)?;
         let planner_params = PlannerParams::from_overrides(&config.params);
         let decision_params = DecisionParams::from_overrides(&config.params);
+        let effort_params = EffortParams::from_overrides(&config.params);
+        let filter_params = FilterParams::from_overrides(&config.params);
         let mut backend = B::new(&config)?;
         check_temporal_layers(&config, &backend)?;
         let spatial_cfg =
@@ -463,6 +476,10 @@ impl<B: CodecBackend> Encoder<B> {
             effort_overlay,
             light_overlay,
             frame_light: None,
+            effort_params,
+            filter_params,
+            previous_skip_share: None,
+            cdef_reused: 0,
             random,
             spatial,
         };
@@ -1194,6 +1211,37 @@ impl<B: CodecBackend> Encoder<B> {
         self.backend.set_light_params(Some(&overrides));
     }
 
+    /// Before coding a frame of `role`, the backend's loop-filter effort
+    /// (`filter_effort.rs`): decided from `motion` on inter frames, the
+    /// full filters on key frames.
+    fn apply_filter_effort(&mut self, role: FrameRole, motion: Option<&MotionAnalysis>) {
+        let effort = match motion {
+            Some(motion) => {
+                let proxy = Classifier {
+                    motion,
+                    effort: &self.effort_params,
+                    step: self.sample_step(self.frame_quantizer) as f32,
+                    width: self.layer.coded_width,
+                    height: self.layer.coded_height,
+                }
+                .frame_proxy();
+                let activity = FrameActivity {
+                    role,
+                    proxy: Some(proxy),
+                    previous_skip_share: self.previous_skip_share,
+                    cdef_reused: self.cdef_reused,
+                };
+                crate::filter_effort::decide(&self.filter_params, activity)
+            }
+            None => FilterEffort::FULL,
+        };
+        self.cdef_reused = match effort.cdef {
+            CdefEffort::Reuse => self.cdef_reused + 1,
+            CdefEffort::Search => 0,
+        };
+        self.backend.set_filter_effort(effort);
+    }
+
     /// The decision and planner parameters as adjusted for one frame.
     fn frame_params(
         &self,
@@ -1585,6 +1633,7 @@ impl<B: CodecBackend> Encoder<B> {
         self.frame_decision_params = decision_params;
         self.apply_backend_role(role);
         self.apply_light_role(index, &references, role, analysis);
+        self.apply_filter_effort(role, motion.filter(|_| frame_type == FrameType::Inter));
         if decision_params.noise_skip > 0.
             && let (Some(pre), Some(motion)) = (pre, motion)
         {
@@ -1644,6 +1693,7 @@ impl<B: CodecBackend> Encoder<B> {
             data = self.code_picture(&plan, pictures, inter.as_ref(), &planner_params);
         }
         self.backend.commit_frame();
+        self.previous_skip_share = self.backend.coded_skip_share();
         self.finish_coded_frame_feedback(
             index,
             key,

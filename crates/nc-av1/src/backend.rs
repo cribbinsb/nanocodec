@@ -19,12 +19,12 @@ use std::rc::Rc;
 
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
-    AngleDeltaSearch, Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan,
-    FrameReferences, FrameType, GateParams, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
-    PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig,
-    SpatialLayerFrame, StaticSkipTest, TrellisSettings, WorkGate, ZeroLimits,
-    copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
-    zero_vector_residual_is_zero,
+    AngleDeltaSearch, Block, BlockDecision, CdefEffort, CodecBackend, ConfigError, EncoderConfig,
+    FilterEffort, FramePlan, FrameReferences, FrameType, GateParams, IntraModeSet,
+    MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams, ReferenceChoice,
+    RefreshWindow, SlotMask, SpatialConfig, SpatialLayerFrame, StaticSkipTest, TrellisSettings,
+    WorkGate, ZeroLimits, copy_zero_vector_prediction, directions_by_orientation,
+    residual_quantises_to_zero, zero_vector_residual_is_zero,
 };
 
 use crate::cdef::{self, CdefParams};
@@ -517,6 +517,8 @@ pub struct Av1Backend {
     /// While the frame has light superblocks (`set_light_params`), the
     /// per-block settings not in use.
     alternate: Option<Alternate>,
+    /// The engine's loop-filter decision for this frame (`filter_effort.rs`).
+    filter_effort: FilterEffort,
     /// The engine's quantizer gates on the partial forward transform and
     /// the transform-split trial (`gate.*`).
     gates: GateParams,
@@ -939,6 +941,8 @@ impl CodecBackend for Av1Backend {
         "av1.inter_intra_search",
         "quant.trellis",
         "quant.trellis_lambda_scale",
+        "gate.partial_transform_min_quantizer",
+        "gate.tx_split_skip_min_quantizer",
     ];
 
     fn block_qp_grid(&self) -> (u8, usize) {
@@ -1230,6 +1234,7 @@ impl CodecBackend for Av1Backend {
             random: None,
             trellis: TrellisSettings::from_params(&QuantParams::from_overrides(&config.params)),
             alternate: None,
+            filter_effort: FilterEffort::FULL,
             gates: GateParams::from_overrides(&config.params),
             grain: GrainState::new(GrainParams::from_overrides(&config.params)),
             active_ref: ReferenceChoice::Primary,
@@ -1692,6 +1697,14 @@ impl CodecBackend for Av1Backend {
                 light_in_use: false,
             }
         });
+    }
+
+    fn set_filter_effort(&mut self, effort: FilterEffort) {
+        self.filter_effort = effort;
+    }
+
+    fn coded_skip_share(&self) -> Option<f32> {
+        Some(self.grids.mode_info.skip_share())
     }
 
     fn use_light_params(&mut self, light: bool) {
@@ -2548,7 +2561,8 @@ impl Av1Backend {
     /// test picks random levels where the filter is on, so
     /// `av1.loop_filter = 0` keeps testing streams without it.
     fn frame_loop_filter(&mut self) -> LoopFilterParams {
-        if self.params.loop_filter < 0.5 {
+        let skipped = self.kind == FrameKind::Inter && !self.filter_effort.deblock;
+        if self.params.loop_filter < 0.5 || (skipped && self.random.is_none()) {
             return LoopFilterParams::OFF;
         }
         if let Some(random) = self.random.as_mut() {
@@ -2886,8 +2900,11 @@ impl Av1Backend {
                         && self.kind == FrameKind::Inter)));
         let local_period = self.params.cdef_local_search_period.round() as u64;
         let noise_limit = self.params.cdef_local_noise_full_search_sigma;
+        // The engine's filter effort may keep the strengths chosen last
+        // instead of the periodic search (`filter_effort.rs`).
+        let reuse = self.filter_effort.cdef == CdefEffort::Reuse;
         let search = self.kind == FrameKind::Key
-            || index.is_multiple_of(local_period.max(1))
+            || (index.is_multiple_of(local_period.max(1)) && !reuse)
             || previous_was_key
             || (noise_limit > 0.0 && self.noise_sigma >= noise_limit)
             || self.grids.cdef_memory.cached_selection.is_empty();

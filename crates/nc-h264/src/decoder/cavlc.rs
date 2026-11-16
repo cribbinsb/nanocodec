@@ -11,6 +11,7 @@ use super::slice::SliceType;
 use super::syntax::{Block4x4, Coeffs, MbSyntax};
 use super::vlc::VlcTable;
 use super::{DecodeError, Result};
+use crate::cavlc::predicted_nc;
 use crate::tables::cavlc::{
     CODED_BLOCK_PATTERN_400, CODED_BLOCK_PATTERN_420, COEFF_TOKEN, RUN_BEFORE, TOTAL_ZEROS,
     TOTAL_ZEROS_CHROMA_DC,
@@ -301,15 +302,6 @@ pub(crate) fn block_for_tests(bytes: &[u8], nc: i32, max_coeffs: usize) -> Vec<i
         levels[scan] = level;
     }
     levels
-}
-
-/// `nC` from the neighbouring blocks' counts (§9.2.1).
-fn predicted_nc(left: Option<u8>, above: Option<u8>) -> i32 {
-    match (left, above) {
-        (Some(a), Some(b)) => (i32::from(a) + i32::from(b) + 1) >> 1,
-        (Some(n), None) | (None, Some(n)) => i32::from(n),
-        (None, None) => 0,
-    }
 }
 
 /// `nC` of the luma 4x4 block (`x4`, `y4`) of `cur`.

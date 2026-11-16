@@ -90,8 +90,6 @@ av1.cdef_local_strong_model_scale = 3
 # Deblocking stays off in Fast when the Default adopted it (J_real TRAIN
 # quality -5.1%, but +9.0% Fast instructions: J_real about 0 at k 0.6).
 av1.loop_filter = 0
-# Default's depth removal threshold (+5-10% instructions) stays off.
-planner.depth_removal_min_quantizer = 0
 # Trellis quantisation is a Default quality arm (+15% P-frame instructions
 # for J_real quality -2.2% at k 0.1); Fast keeps the plain quantiser.
 quant.trellis = 0
@@ -109,15 +107,6 @@ av1.keyframe_filter_intra = 0
 # +1.9% x86 CPU (Jetson instructions +5.9% / +2.6%), stopped.
 decision.intra_directional = 0
 av1.inter_intra_search = 0
-# Low-frequency forward for 32x32 and 64x64 residuals in coding too (as
-# HEVC Fast's fast_forward16/32; av1-faster agent, 2026-11-11, owner
-# decision). Proxy-6 150 f vs the previous Fast, k 0: J_real -1.0% (PSNR-YUV
-# +1.1, VMAF v1 -1.7, MS-SSIM -2.8), Jetson -2.3% time. Worst-1% PSNR-Y
-# +2.2% sits just over the 2.0 guard: it comes from the first frames after the
-# key on pan_jaad_0117 (-0.5 dB on frame 1 at 600 kbps, worst 4-frame window
-# itself unchanged or better), and the frame shows no artefact (softer fine
-# texture only); the other metrics improve.
-av1.partial_forward = 2
 # P-frame rounding offset 41/128 (code default 48): a wider encoder-side
 # deadzone drops more small P-frame coefficients. Sensitivity sweep
 # (16 clips) J -2.20 % at x0.981 x86 CPU; parameter-only L3 final-check on
@@ -142,7 +131,16 @@ structure.unified = 0
 rate.key_still_boost = 0
 # Pinned before AV1 Default's inherited cadence depth (2026-11-15).
 structure.inherited_depth = 0
-# The engine's depth removal before 2026-11-15, pinned so this preset's
-# streams do not move with the engine default.
-planner.depth_removal_th_32_16 = 25
-planner.depth_removal_th_16_8 = 50
+# Fixed-QP re-point (2026-11-16, docs/analysis/zen5-fixed-qp-goal.md): the
+# Default's depth (no removal) and the full forward transform. The pinned
+# 25/50 depth removal at every quantizer and av1.partial_forward 2 together
+# cost 3-4 dB PSNR-Y at qindex 110 (content-adaptive-cost-2026-11-16.md
+# §2.2). Fixed-QP lens (12 AOM CTC sequences, Weighted vs x264 medium):
+# +1.6 -> -6.5. CBR pool levels vs the previous Fast (draw 2026-11-16):
+# L1 J -4.36% [-6.43, -2.61], L2 -2.95% [-4.05, -1.86], L3 -3.95%
+# [-4.59, -3.25] BETTER, n=78. The L1/L2 texture quality guard (+3.35 >
+# +3.00) comes from one clip, pool_ducks_take_off_pristine (VMAF and
+# MS-SSIM worse, PSNR +0.04 dB), and clears at L3: adopted on judgement.
+# c8a (one core), 600 kbps CBR on crowd and lowlight: 325.9 -> 297.4 fps
+# (-8.7%); fixed QP on four CTC sequences: 311 -> 255 fps (SVT M12 355,
+# M10 216).

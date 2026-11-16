@@ -76,22 +76,45 @@ pub(super) unsafe fn packed_descriptors<B: crate::lpf_bytes::Bytes>(
     lines: usize,
     descriptors: super::line::Descriptors<'_, Av1EdgeFilter>,
 ) {
+    // SAFETY: caller validates all descriptors and enables B's ISA.
+    unsafe {
+        packed_descriptors_with(
+            plane,
+            q0,
+            across,
+            along,
+            lines,
+            descriptors,
+            super::av1_packed::filter_edge::<B>,
+        );
+    }
+}
+
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(super) unsafe fn packed_descriptors_with(
+    plane: &mut [u8],
+    q0: usize,
+    across: usize,
+    along: usize,
+    lines: usize,
+    descriptors: super::line::Descriptors<'_, Av1EdgeFilter>,
+    kernel: super::Av1EdgeFn,
+) {
     for (first, count, filter) in descriptors.runs() {
         let start = first * AV1_EDGE_LINES;
         let count = (count * AV1_EDGE_LINES).min(lines - start);
         let full = count / AV1_EDGE_LINES * AV1_EDGE_LINES;
         if full != 0 {
             // SAFETY: validated active footprints, complete four-line groups,
-            // and the caller enabled B's ISA. Along-edge lines are independent.
+            // and the caller enabled the kernel's ISA. Along-edge lines are independent.
             unsafe {
-                super::av1_packed::filter_edge::<B>(
-                    plane,
-                    q0 + start * along,
-                    across,
-                    along,
-                    full,
-                    filter,
-                );
+                kernel(plane, q0 + start * along, across, along, full, filter);
             }
         }
         if full != count {
@@ -145,6 +168,33 @@ pub(crate) unsafe fn simd128(
 ) {
     // SAFETY: dispatch validates the footprint and the build enables SIMD128.
     unsafe { packed::<crate::lpf_bytes::simd128::B>(plane, q0, across, along, segments) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+pub(crate) unsafe fn avx512(
+    plane: &mut [u8],
+    q0: usize,
+    across: usize,
+    along: usize,
+    segments: &[Option<Av1EdgeFilter>],
+) {
+    // SAFETY: caller validates descriptors; this entry enables the kernel's ISA.
+    unsafe {
+        packed_descriptors_with(
+            plane,
+            q0,
+            across,
+            along,
+            segments.len() * AV1_EDGE_LINES,
+            super::line::Descriptors {
+                entries: segments,
+                stride: 1,
+                count: segments.len(),
+            },
+            super::avx512::av1_edge,
+        );
+    }
 }
 
 #[cfg(test)]

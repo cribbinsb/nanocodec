@@ -416,8 +416,9 @@ impl CavlcEncoder {
     }
 }
 
-/// `nC` from the counts of the available neighbouring blocks (§9.2.1).
-fn predicted_nc(left: Option<u8>, above: Option<u8>) -> i32 {
+/// `nC` from the counts of the available neighbouring blocks (§9.2.1);
+/// the decoder's CAVLC parser uses it too.
+pub(crate) fn predicted_nc(left: Option<u8>, above: Option<u8>) -> i32 {
     match (left, above) {
         (Some(a), Some(b)) => (i32::from(a) + i32::from(b) + 1) >> 1,
         (Some(n), None) | (None, Some(n)) => i32::from(n),

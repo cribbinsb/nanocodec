@@ -414,6 +414,21 @@ pub trait CodecBackend {
         let _ = light;
     }
 
+    /// The engine's loop-filter decision for the next frame
+    /// (`filter_effort.rs`), before [`CodecBackend::begin_frame`]: whether
+    /// to deblock and whether to search CDEF strengths. Backends without
+    /// such a mapping keep their own filters (the default no-op).
+    fn set_filter_effort(&mut self, effort: crate::FilterEffort) {
+        let _ = effort;
+    }
+
+    /// The share of the last coded frame's area coded with no residual
+    /// (skip), read after [`CodecBackend::end_frame`]; `None` where the
+    /// backend does not count it.
+    fn coded_skip_share(&self) -> Option<f32> {
+        None
+    }
+
     /// log2 of the top-level coding unit: AV1 superblock, HEVC CTU, H.264
     /// macroblock. The engine walks the frame in units of this size.
     fn superblock_log2(&self) -> u8;

@@ -155,23 +155,9 @@ pub(crate) struct FrameRestoration {
     planes: [PlaneUnits; 3],
 }
 
-/// Whether `plane` is subsampled (4:2:0).
-fn subsampled(plane: PlaneIndex) -> bool {
-    plane != PlaneIndex::Y
-}
-
-/// Size of `plane` of a `width`x`height` frame.
-fn plane_size(plane: PlaneIndex, (width, height): (usize, usize)) -> (usize, usize) {
-    if subsampled(plane) {
-        (width.div_ceil(2), height.div_ceil(2))
-    } else {
-        (width, height)
-    }
-}
-
 /// The visible `width`x`height` frame's view of `plane` of `picture`.
 fn visible(picture: &Picture, plane: PlaneIndex, size: (usize, usize)) -> PlaneView<'_> {
-    let (w, h) = plane_size(plane, size);
+    let (w, h) = plane.size_in(size);
     picture
         .plane(plane)
         .region(0, 0, w, h)
@@ -199,7 +185,7 @@ impl FrameRestoration {
                 continue;
             }
             let units = &self.planes[index];
-            let (w, h) = plane_size(plane, size);
+            let (w, h) = plane.size_in(size);
             let mut view = recon
                 .plane_mut(plane)
                 .region_mut(0, 0, w, h)
@@ -214,7 +200,7 @@ impl FrameRestoration {
                 dsp,
                 &mut view,
                 &boundaries[index],
-                subsampled(plane),
+                plane.is_subsampled(),
                 scratch,
             );
         }
@@ -236,7 +222,7 @@ impl FrameRestoration {
                 continue;
             }
             let units = &self.planes[index];
-            let shift = u32::from(subsampled(plane));
+            let shift = u32::from(plane.is_subsampled());
             let side = SUPERBLOCK_SIZE >> shift;
             // Units whose first sample lies in the superblock's
             // `side` x `side` plane samples from (x, y).
@@ -906,7 +892,7 @@ pub(crate) fn search(
                 dsp,
                 Window { reach },
                 (&visible(source, plane, size), &visible(recon, plane, size)),
-                (cell, subsampled(plane)),
+                (cell, plane.is_subsampled()),
                 settings.row_step.max(1),
             );
             let energy: f64 = stats
@@ -929,7 +915,7 @@ pub(crate) fn search(
         };
         let mut cost = 0.0;
         for (index, stats, energy) in &stats {
-            let plane_size = plane_size(PlaneIndex::ALL[*index], size);
+            let plane_size = PlaneIndex::ALL[*index].size_in(size);
             match choose_plane(stats, *index, unit_size, plane_size, settings, use_wiener) {
                 Some((units, plane_cost)) if plane_cost < *energy => {
                     frame.params.wiener[*index] = true;
@@ -953,7 +939,11 @@ pub(crate) fn stripe_boundaries(
     size: (usize, usize),
 ) -> [Av1StripeBoundaries; 3] {
     PlaneIndex::ALL.map(|plane| {
-        Av1StripeBoundaries::save(&visible(deblocked, plane, size), subsampled(plane), None)
+        Av1StripeBoundaries::save(
+            &visible(deblocked, plane, size),
+            plane.is_subsampled(),
+            None,
+        )
     })
 }
 
@@ -1063,7 +1053,7 @@ mod tests {
                     planes: Default::default(),
                 };
                 for plane in PlaneIndex::ALL {
-                    let (w, h) = plane_size(plane, size);
+                    let (w, h) = plane.size_in(size);
                     let (columns, rows) = (
                         av1_lr_unit_count(unit_size, w),
                         av1_lr_unit_count(unit_size, h),

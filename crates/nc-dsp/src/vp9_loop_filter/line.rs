@@ -12,6 +12,8 @@ pub(crate) fn kernel(isa: Isa) -> LineFn {
     match isa {
         #[cfg(target_arch = "x86_64")]
         Isa::Avx2 => avx2,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => avx512,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -105,6 +107,30 @@ unsafe fn avx2(
             lines,
             segments,
             super::packed::avx2::filter,
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,gfni")]
+unsafe fn avx512(
+    data: &mut [u8],
+    edge: usize,
+    across: usize,
+    along: usize,
+    lines: usize,
+    segments: &[Option<Vp9EdgeFilter>],
+) {
+    // SAFETY: forwarded validated footprint, AVX-512 enabled here.
+    unsafe {
+        merged(
+            data,
+            edge,
+            across,
+            along,
+            lines,
+            segments,
+            super::packed::avx512::filter,
         );
     }
 }

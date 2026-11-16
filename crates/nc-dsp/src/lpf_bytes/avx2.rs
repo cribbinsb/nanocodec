@@ -16,7 +16,7 @@ use core::arch::x86_64::{
     _mm_unpacklo_epi64,
 };
 #[derive(Clone, Copy)]
-pub(crate) struct B(__m128i);
+pub(crate) struct B(pub(super) __m128i);
 #[derive(Clone, Copy)]
 pub(crate) struct W(__m128i);
 impl Bytes for B {

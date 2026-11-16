@@ -104,6 +104,57 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   setup), AV1/AV2 −0.5 to −0.7 % (CDEF search, intra edges), H.264/HEVC intra cleanups. Not yet
   re-timed on Zen 5.
 
+## AV1 Fast re-point and quantizer gates (feature/av1-av2-speed, 2026-11-16)
+
+- **Gates landed** (6d4d2c636, streams identical at the defaults):
+  - `nc_encoder::{GateInput, GateParams, WorkGate}`. A cheap path is taken from a relative
+    quantizer up (`min_quantizer`, 0 finest, 1 coarsest), or below that where the error per
+    sample is under `max_energy` squared quantizer steps. The energy half is in the type only;
+    it has no registered parameter yet.
+  - Registered parameters: `gate.partial_transform_min_quantizer` (default 0) and
+    `gate.tx_split_skip_min_quantizer` (default 1.1).
+  - Depth removal already had its quantizer gate: `planner.depth_removal_min_quantizer`.
+  - AV1 reads the gates per block. They swap with the light-superblock settings.
+- **Fixed-QP lens** (the 12 AOM CTC sequences, Weighted against x264 medium; box runs,
+  `~/nanocodec-data/work/av1-av2-speed/lens`):
+
+  | Point | Weighted |
+  |---|---:|
+  | Fast before | +1.6 |
+  | Fast + Default depth + full forward ("step 1") | −6.5 |
+  | Gates at 0.78, no transform split | −6.2 |
+  | Gates at 0.74 | −5.8 |
+  | Gates at 0.82 | −6.2 |
+  | Gates at 0.86 | −6.6 |
+  | Gates at 0.78 + split trial below 0.70 | −7.9 |
+  | Gates at 0.82 + split trial below 0.70 | −7.9 |
+
+  "Gates at q" means depth removal 25/50 and the partial forward only from relative quantizer
+  q. On this lens the quantizer gate gives the same efficiency as removing the levers outright.
+
+- **c8a timing** (one core, median of 3 rounds after a warm-up, plain release at 6d4d2c636):
+  - Fixed QP: four CTC sequences, qindex 160 and 210, 130 frames.
+  - CBR: 600 kbps, crowd and lowlight, 150 frames.
+
+  | Point | fps fixed QP | fps CBR 600 |
+  |---|---:|---:|
+  | AV1 Fast before | 311 | 326 |
+  | Step 1 | 255 | 297 |
+  | Gates 0.78 | 262 | 306 |
+  | Gates 0.78 + split below 0.70 | 233 | 290 |
+  | AV1 Default | 153 | 180 |
+  | SVT M12 | 355 | — |
+  | SVT M10 | 216 | — |
+
+- **CBR pool levels against the previous Fast** (draw 2026-11-16):
+  - Step 1: L1 −4.36 %, L2 −2.95 %, L3 J −3.95 % [−4.59, −3.25] BETTER, no guard at L3.
+  - Gates 0.78 + split below 0.70: L3 J −3.97 % [−4.77, −3.16] BETTER. It missed two guards: rate
+    overshoot on 5 more rungs than the anchor (static clips, split trials at fine quantizers), and
+    flicker +0.07 dB against 0.05.
+- **Landed: step 1 as AV1 Fast.**
+- **Next:** screen the gated points against the new Fast: gates 0.78 without split (CBR +3 % fps
+  over step 1 at −6.2), and a split gate that does not overshoot.
+
 ## Assigned 2026-11-16 09:10
 
 - **`feature/av1-av2-speed`:** re-point AV1 Fast (depth + full forward), then gate the three

@@ -26,6 +26,23 @@ pub enum PlaneIndex {
 impl PlaneIndex {
     /// All planes in storage order.
     pub const ALL: [PlaneIndex; 3] = [PlaneIndex::Y, PlaneIndex::U, PlaneIndex::V];
+
+    /// Whether the plane is chroma, subsampled 2:1 both ways in 4:2:0.
+    #[must_use]
+    pub const fn is_subsampled(self) -> bool {
+        !matches!(self, Self::Y)
+    }
+
+    /// Width and height of this plane of a 4:2:0 picture whose luma is
+    /// `width` x `height` (odd luma sizes round chroma up).
+    #[must_use]
+    pub const fn size_in(self, (width, height): (usize, usize)) -> (usize, usize) {
+        if self.is_subsampled() {
+            (width.div_ceil(2), height.div_ceil(2))
+        } else {
+            (width, height)
+        }
+    }
 }
 
 /// One 4:2:0 frame of samples `T` (`u8`, or `u16` for more than 8 bits;

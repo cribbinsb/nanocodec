@@ -1752,8 +1752,11 @@ impl<B: CodecBackend> Encoder<B> {
         noise_sigma: f32,
     ) -> SpatialLayerFrame {
         self.apply_backend_role(role);
-        // Spatial layers code every superblock with the frame's settings.
+        // Spatial layers code every superblock with the frame's settings,
+        // and filter every frame fully.
         self.frame_light = None;
+        self.backend
+            .set_filter_effort(crate::filter_effort::FilterEffort::FULL);
         self.backend.set_noise_sigma(noise_sigma);
         self.window = None;
         self.backend.set_refresh(None);

@@ -3,6 +3,12 @@
 //! reads, as a tile starts with it and a reference slot keeps it. Unlike
 //! the encoder's [`crate::cdf::CdfContext`] it holds the coefficient CDFs
 //! of every transform size.
+//!
+//! It is a separate set on purpose, not one generic over the CDF type: the
+//! encoder's CDFs carry a symbol-cost cache the decoder never reads, and
+//! the decoder's compact CDFs keep tile state small for the WASM decoder,
+//! the primary browser path. The default tables and [`ResetCounters`] are
+//! shared.
 use super::coefficients::CoefficientCdfs;
 use crate::cdf::ResetCounters;
 use crate::decoder_range::{Cdf, DecoderDefaults};

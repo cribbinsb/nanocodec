@@ -40,6 +40,7 @@ pub(crate) fn check_filters(
     check_hevc_chroma_footprint(candidate, reference, report);
     check_hevc_strong_boundaries(candidate, reference, report);
     check_hevc_segment_masks(candidate, reference, report);
+    check_av2_chunk_boundaries(candidate, reference, &mut rng.clone(), report);
     for _ in 0..iterations * 8 {
         check_cdef(candidate, reference, rng, report);
         check_cdef_blocks(candidate, reference, rng, report);
@@ -953,6 +954,83 @@ fn check_hevc_segment_masks(candidate: &Dsp, reference: &Dsp, report: &mut Check
                                 "hevc segment masks vertical {vertical} patterns {first}/{second} tc {tc:?} beta {beta}"
                             )
                         });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Chunk tails, masks and independent ramp rows on exact, padded final rows.
+/// Unequal row steps exercise all four AVX-512 groups and signed Q15 rounding.
+fn check_av2_chunk_boundaries(
+    candidate: &Dsp,
+    reference: &Dsp,
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    const ACROSS: usize = 24;
+    const EDGE: usize = ACROSS / 2;
+    for vertical in [false, true] {
+        for count in [7, 8, 9, 12, 15, 16, 17] {
+            let lines = count * AV2_EDGE_LINES;
+            let (width, height) = if vertical {
+                (ACROSS, lines)
+            } else {
+                (lines, ACROSS)
+            };
+            for padding in [0, 5] {
+                let stride = width + padding;
+                for (negative, positive) in [(4, 4), (6, 18), (10, 14), (14, 8), (18, 4), (18, 18)]
+                {
+                    for pattern in 0..5 {
+                        let mut input = vec![0; 1 + stride * (height - 1) + width];
+                        for (i, sample) in input[1..].iter_mut().enumerate() {
+                            let (x, y) = (i % stride, i / stride);
+                            let (across, along) = if vertical { (x, y) } else { (y, x) };
+                            let step = [-8, 3, 12, -1][along % AV2_EDGE_LINES];
+                            *sample = match pattern {
+                                0 => 128,
+                                1 => (128_i16 + if across >= EDGE { step } else { 0 }) as u8,
+                                2 if (along / AV2_EDGE_LINES).is_multiple_of(2) => rng.byte(),
+                                3 => {
+                                    if (across + along).is_multiple_of(2) {
+                                        0
+                                    } else {
+                                        255
+                                    }
+                                }
+                                _ => 120 + rng.below(4) as u8 + u8::from(across >= EDGE) * 8,
+                            };
+                        }
+                        for mask in 0..3 {
+                            let filters: Vec<_> = (0..count)
+                                .map(|segment| {
+                                    (mask == 0 || (mask == 1 && segment % 2 == 0)).then_some(
+                                        Av2EdgeFilter {
+                                            length_neg: negative,
+                                            length_pos: positive,
+                                            q_threshold: [1, 50, 127, 727][segment % 4],
+                                            side_threshold: [1, 50, 200, 400][segment % 4],
+                                        },
+                                    )
+                                })
+                                .collect();
+                            let mut outputs = [input.clone(), input.clone()];
+                            for (dsp, output) in
+                                [reference, candidate].into_iter().zip(&mut outputs)
+                            {
+                                let mut dst =
+                                    PlaneViewMut::new(&mut output[1..], stride, width, height)
+                                        .expect("plane");
+                                dsp.av2_deblock_line(&mut dst, EDGE, vertical, &filters);
+                            }
+                            record(report, candidate.isa(), outputs[0] == outputs[1], || {
+                                format!(
+                                    "av2 chunk boundary vertical {vertical} count {count} padding {padding} lengths {negative}/{positive} pattern {pattern} mask {mask}"
+                                )
+                            });
+                        }
                     }
                 }
             }

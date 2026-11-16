@@ -23,7 +23,7 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     check_lines(candidate, reference, &mut rng.clone(), report);
     for length in LENGTHS {
         for vertical in [false, true] {
-            for lines in [4, 8, 12, 16, 64] {
+            for lines in [4, 8, 12, 16, 32, 36, 40, 44, 48, 52, 56, 60, 64] {
                 // Edge positions: the smallest legal offset, a tight far side,
                 // and a roomy interior position.
                 let reach = length.reach();

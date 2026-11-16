@@ -3,13 +3,14 @@
 use crate::{check::CheckReport, check_codec::record, rng::Rng};
 use nc_dsp::{Dsp, Vp9FilterLimits, Vp9FilterWidth};
 
-const STRIDE: usize = 67;
-const SIDE: usize = 64;
+const STRIDE: usize = 99;
+const SIDE: usize = 96;
 const ORIGIN: usize = 16 * STRIDE + 16;
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     exact_footprints(candidate, reference, report);
     lazy_outer_taps(candidate, reference, report);
+    lazy_wide_outer_taps(candidate, reference, report);
     for pattern in 0..14 {
         let mut input = vec![0; STRIDE * SIDE + 2];
         for (i, pixel) in input.iter_mut().enumerate() {
@@ -50,7 +51,9 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
             Vp9FilterWidth::Sixteen,
         ] {
             for (step, along) in [(STRIDE, 1), (1, STRIDE), (1, 1), (2, 3)] {
-                for lines in [0, 1, 4, 7, 8, 9, 15, 16, 17, 24, 31, 32] {
+                for lines in [
+                    0, 1, 4, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33, 40, 47, 48, 63, 64,
+                ] {
                     for (level, sharpness) in [0, 1, 15, 16, 31, 32, 47, 63, 83, 84, 255]
                         .into_iter()
                         .flat_map(|level| [0, 3, 7].map(move |sharpness| (level, sharpness)))
@@ -99,8 +102,8 @@ fn exact_footprints(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) 
         } else {
             4
         };
-        for (step, along) in [(31, 1), (1, 31)] {
-            for lines in [8, 16, 24, 32] {
+        for (step, along) in [(67, 1), (1, 67)] {
+            for lines in [8, 16, 24, 31, 32, 33, 40, 48, 63, 64] {
                 if step != 1 && lines > step {
                     continue;
                 }
@@ -166,4 +169,36 @@ fn lazy_outer_taps(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
     record(report, candidate.isa(), expected == actual, || {
         "VP9 rejected outer taps unavailable".into()
     });
+}
+
+/// Rejected four-group tiles must not read outer taps. Only p3..q3 exists,
+/// even for width16; the scalar oracle also promises this rejection case.
+fn lazy_wide_outer_taps(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
+    for lines in [8, 32, 33, 64] {
+        let stride = lines + 3;
+        let input: Vec<u8> = (0usize..1 + 7 * stride + lines)
+            .map(|i| {
+                if (i.saturating_sub(1) / stride).is_multiple_of(2) {
+                    0
+                } else {
+                    255
+                }
+            })
+            .collect();
+        let mut outputs = [input.clone(), input];
+        for (dsp, output) in [reference, candidate].into_iter().zip(&mut outputs) {
+            dsp.vp9_filter_edge(
+                &mut output[1..],
+                4 * stride,
+                stride,
+                1,
+                lines,
+                Vp9FilterWidth::Sixteen,
+                Vp9FilterLimits::new(63),
+            );
+        }
+        record(report, candidate.isa(), outputs[0] == outputs[1], || {
+            format!("VP9 rejected wide outer taps unavailable lines {lines}")
+        });
+    }
 }

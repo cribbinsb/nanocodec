@@ -1,6 +1,7 @@
 //! Instruction-set selection.
 //!
-//! x86-64 detects AVX2 and the AVX-512 "Ice Lake" feature set at run time. `AArch64` always has NEON. WebAssembly has
+//! x86-64 detects AVX2 and the AVX-512 Ice Lake feature set at run time.
+//! `AArch64` always has NEON. WebAssembly has
 //! no run-time detection: SIMD128 is available exactly when the crate was
 //! compiled with `-C target-feature=+simd128`.
 
@@ -83,6 +84,8 @@ fn avx2_supported() -> bool {
 #[cfg(target_arch = "x86_64")]
 fn avx512_supported() -> bool {
     use std::arch::is_x86_feature_detected as has;
+    // Include the BMI requirements inherited by dav1d's AVX2 CPU flag;
+    // Rust's AVX-512 detection also checks OS ZMM/opmask state.
     avx2_supported()
         && has!("avx512f")
         && has!("avx512cd")
@@ -98,6 +101,8 @@ fn avx512_supported() -> bool {
         && has!("gfni")
         && has!("vaes")
         && has!("vpclmulqdq")
+        && has!("bmi1")
+        && has!("bmi2")
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -135,6 +140,19 @@ mod tests {
         }
         for isa in Isa::ALL {
             assert_eq!(crate::Dsp::with_isa(isa).is_some(), isa.is_supported());
+        }
+    }
+
+    /// Run under SDE SKX as well as native: the older AVX-512 combination
+    /// must choose AVX2 globally, rather than install mixed feature contracts.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn older_avx512_cpus_select_avx2() {
+        if std::arch::is_x86_feature_detected!("avx512f")
+            && !std::arch::is_x86_feature_detected!("gfni")
+        {
+            assert_eq!(Isa::best(), Isa::Avx2);
+            assert!(crate::Dsp::with_isa(Isa::Avx512).is_none());
         }
     }
 

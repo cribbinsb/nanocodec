@@ -46,6 +46,7 @@ mod decision;
 mod effort_class;
 mod encoder;
 mod feedback;
+mod filter_effort;
 mod frame_role;
 mod held_slots;
 mod hold;
@@ -120,6 +121,7 @@ pub use encoder::{
     validate_params,
 };
 pub use feedback::ReferencedFrames;
+pub use filter_effort::{CdefEffort, FilterEffort};
 pub use frame_role::{FRAME_PARAM_SPECS, FrameRole, NONBASE_PREFIX};
 pub use held_slots::{HeldSlots, scaled_reference_allowed};
 pub use hold::holds_frames;
