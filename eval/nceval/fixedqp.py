@@ -4,6 +4,8 @@
         [--pairs nanocodec-av1:svtav1-m12,...] [--rotation KEY] [--level quick] [--clips N]
     python3 -m nceval.fixedqp ab --codec av1 --binary BIN [--preset fast] \\
         --param a.b=1 [--anchor-param ...] [--rotation KEY] [--level quick] [--clips N]
+    python3 -m nceval.fixedqp gap ... --clipset CHART_CLIPSET.json --clips 12
+    python3 -m nceval.fixedqp site --gap A.json [--gap B.json] [--build COMMIT] --json OUT
 
 Rate control costs our encoders 10-22 % BD-J against their own fixed QP
 (nceval.rc_cost); this module measures the other half, each codec's pure coding
@@ -13,6 +15,10 @@ Clips come from the pool draw (nceval.pool) of a rotation key, by default
 `fixedqp-<UTC date>`: stratified and family-disjoint like the screens' levels,
 but a different draw from the day's adoption levels, so ranking ideas here does
 not spend the clips that later judge them. Nothing here picks clips by name.
+For the results site, `gap --clipset` instead takes --clips clips of a chart
+clip set (the CBR chart's held-out set) by a fixed rule (held_out_clips), and
+`site` turns such runs into the site's held-out Fixed QP data
+(nceval.site.FRESH_QP_DATA; its speed: tools/dev/fixedqp_timing.py plan-pool).
 
 Every family is coded at fixed QP (our `--qp`, one key frame; anchors in their
 fixed-quantiser modes, AQ off) at CURVE_POINTS quantizers per clip spanning the
@@ -33,6 +39,7 @@ encodes are made only when a goal rate needs them.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from concurrent.futures import ThreadPoolExecutor
@@ -44,7 +51,7 @@ from . import buildinfo, interval, levers, pool
 from .cbr import CQP_SPAN_MARGIN, Bench, Family, clip_targets, curve_points, preset_anchor
 from .clips import Clip
 from .codecs import Codec
-from .config import Paths, load_paths
+from .config import Paths, find_tool, load_paths
 from .gatepolicy import EVALUATION_GATE
 from .levels import usable
 from .rc_cost import clip_terms
@@ -58,6 +65,7 @@ CURVE_POINTS = 4
 FRAMES = 150
 WORKERS = 8
 OWN_PREFIX = "nanocodec-"
+OPENH264 = "openh264-baseline"
 #: The J terms and the per-metric BD-rates reported for each pair.
 TERMS = ("full", "low", "psnr_yuv", "vmaf_v1", "ms_ssim")
 
@@ -74,10 +82,32 @@ def draw_clips(paths: Paths, rotation: str, level: str, count: int | None,
     return clips[:count] if count else clips
 
 
+def held_out_clips(spec: str, count: int, frames: int = FRAMES) -> list[Clip]:
+    """`count` clips of a chart clip set (nceval.chart.chart_clips, e.g. the CBR chart's
+    held-out set) by a fixed rule, not by hand: classes taken in turn, largest class
+    first, and within a class in the order of a hash of the clip's name."""
+    from .chart import chart_clips
+    by_class: dict[str, list[Clip]] = {}
+    for clip in chart_clips(spec):
+        by_class.setdefault(clip.content_class, []).append(clip)
+    queues = [sorted(c, key=lambda clip: hashlib.sha256(clip.name.encode()).hexdigest())
+              for _, c in sorted(by_class.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+    chosen = []
+    while len(chosen) < count and any(queues):
+        for queue in queues:
+            if queue and len(chosen) < count:
+                chosen.append(queue.pop(0))
+    return [replace(c, frames=min(c.frames, frames)) for c in chosen]
+
+
 def family_of(name: str, binary: Path, paths: Paths) -> Family:
-    """`nanocodec-<codec>[@preset]` (ours) or an anchor family name (cbr.preset_anchor)."""
+    """`nanocodec-<codec>[@preset]` (ours), openh264 (the lens's settings at fixed QP) or
+    an anchor family name (cbr.preset_anchor)."""
     if name.startswith(OWN_PREFIX):
         return own_family(name, binary)
+    if name == OPENH264:
+        return Family(name, Codec.H264, find_tool("openh264-harness", paths), cqp=True,
+                      kind="openh264")
     return preset_anchor(name, paths, cqp=True)
 
 
@@ -216,9 +246,14 @@ def gap(args: argparse.Namespace) -> dict:
     paths, binary = load_paths(), Path(args.binary)
     names = args.families.split(",")
     families = [family_of(n, binary, paths) for n in names]
-    clips = draw_clips(paths, args.rotation, args.level, args.clips, args.frames)
-    print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
-          f"{len(families)} families", flush=True)
+    if args.clipset:
+        clips = held_out_clips(args.clipset, args.clips, args.frames)
+        print(f"clip set {args.clipset}: {len(clips)} clips; {len(families)} families",
+              flush=True)
+    else:
+        clips = draw_clips(paths, args.rotation, args.level, args.clips, args.frames)
+        print(f"draw {args.rotation} {args.level}: {len(clips)} clips; "
+              f"{len(families)} families", flush=True)
     curves = measure(Benches(paths, args.frames), families, clips, workers=args.workers)
     pairs = [tuple(p.split(":")) for p in args.pairs.split(",")] if args.pairs else []
     results = {}
@@ -227,13 +262,16 @@ def gap(args: argparse.Namespace) -> dict:
         results[f"{test} vs {anchor}"] = {"summary": summary(rows), "per_clip": rows}
         print(describe(f"{test} vs {anchor}", results[f"{test} vs {anchor}"]["summary"]),
               flush=True)
-    return {"rotation": args.rotation, "level": args.level, "frames": args.frames,
+    return {"rotation": None if args.clipset else args.rotation, "clipset": args.clipset,
+            "level": None if args.clipset else args.level, "frames": args.frames,
             "clips": [{"clip": c.name, "start_frame": c.start_frame, "class": c.content_class}
                       for c in clips],
             "binary_commit": buildinfo.info_of(binary).get("commit"),
             "pairs": results,
             "rates": {f"{f}|{c}": [round(p["kbps"], 1) for p in pts]
-                      for (f, c), pts in curves.items()}}
+                      for (f, c), pts in curves.items()},
+            "quantizers": {f"{f}|{c}": [int(p["label"].removeprefix("qp")) for p in pts]
+                           for (f, c), pts in curves.items()}}
 
 
 def candidate_sets(args: argparse.Namespace) -> list[tuple[str, list[str]]]:
@@ -333,6 +371,36 @@ def record_levers(args: argparse.Namespace, result: dict) -> None:
                       "nceval.fixedqp cost")
 
 
+def site_record(args: argparse.Namespace) -> dict:
+    """The results site's second Fixed QP view (nceval.site FRESH_QP_DATA) from `gap
+    --clipset` results sharing one clip set and anchor: each family's BD-rates against
+    the anchor, its interval and clip count, and the clips."""
+    from .chart import chart_clips
+    results = [json.loads(Path(f).read_text()) for f in args.gap]
+    clipset = results[0]["clipset"]
+    if not clipset or any(r["clipset"] != clipset for r in results):
+        raise SystemExit("the gap results must share one --clipset")
+    sizes = {c.name: (c.width, c.height) for c in chart_clips(clipset)}
+    families, anchors = {}, set()
+    for result in results:
+        for pair, value in result["pairs"].items():
+            test, _, anchor = pair.partition(" vs ")
+            anchors.add(anchor)
+            row = value["summary"]
+            families[test] = {"j": round(row["j"], 2), "lo": round(row["lo"], 2),
+                              "hi": round(row["hi"], 2), "n": row["n"],
+                              **{m: None if row[m] is None else round(row[m], 2)
+                                 for m in TERMS[2:]}}
+    if len(anchors) != 1:
+        raise SystemExit(f"one anchor expected, got {sorted(anchors)}")
+    commits = {r["binary_commit"] for r in results} - {None}
+    return {"clipset": Path(clipset).name, "anchor": anchors.pop(), "frames": results[0]["frames"],
+            "points": CURVE_POINTS, "build_commit": args.build or ",".join(sorted(commits)),
+            "clips": [{**c, "width": sizes[c["clip"]][0], "height": sizes[c["clip"]][1]}
+                      for c in results[0]["clips"]],
+            "families": dict(sorted(families.items()))}
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python3 -m nceval.fixedqp",
                                      description=__doc__.splitlines()[0])
@@ -353,6 +421,8 @@ def main(argv: list[str] | None = None) -> None:
     g.add_argument("--families", required=True,
                    help="nanocodec-<codec>[@preset] and anchor family names (cbr)")
     g.add_argument("--pairs", help="anchor:test,... to report")
+    g.add_argument("--clipset", help="a chart clip set (JSON spec) instead of the pool draw: "
+                   "--clips of its clips, by held_out_clips' rule")
     for name in ("ab", "cost"):
         a = sub.choices[name]
         a.add_argument("--codec", required=True, choices=[c.value for c in Codec])
@@ -362,9 +432,14 @@ def main(argv: list[str] | None = None) -> None:
     sub.choices["ab"].add_argument("--anchor-binary")
     sub.choices["ab"].add_argument("--anchor-param", action="append", default=[])
     sub.choices["cost"].add_argument("--only", help="comma-separated candidate labels")
+    r = sub.add_parser("site", help="the site's held-out Fixed QP data from gap --clipset runs")
+    r.add_argument("--gap", action="append", required=True)
+    r.add_argument("--build", help="the commit our binary's code is (default: its stamp)")
+    r.add_argument("--json", required=True)
     args = parser.parse_args(argv)
-    result = {"gap": gap, "ab": ab, "cost": cost}[args.command](args)
-    record_levers(args, result)
+    result = {"gap": gap, "ab": ab, "cost": cost, "site": site_record}[args.command](args)
+    if args.command != "site":
+        record_levers(args, result)
     if args.json:
         Path(args.json).write_text(json.dumps(result, indent=1) + "\n")
 

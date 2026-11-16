@@ -30,7 +30,6 @@ import csv
 import json
 import re
 import subprocess
-from statistics import geometric_mean
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,6 +140,14 @@ LENS_TOOL_VERSIONS = {"HM": "19.0", "VVenC": "1.14.0"}
 #: overview's Fixed QP chart plots one of its columns, against x264 medium at fixed QP.
 LENS_DATA = "fixed-qp-lens.json"
 LENS_COLUMN = "profile"
+#: The Fixed QP chart's speed: every lens encoder timed on the lens's own encodes
+#: (tools/dev/fixedqp_timing.py), per machine; a machine without a record has no speed.
+LENS_TIMING_FILES = {"jetson": "fixed-qp-timing-jetson.json", "x86": "fixed-qp-timing-x86.json"}
+#: The second Fixed QP view: our held-out clips (nceval.fixedqp gap --clipset, x264
+#: medium as the zero), quality and its own timing on the same encodes.
+FRESH_QP_DATA = "fixed-qp-fresh-2026-11-16.json"
+FRESH_QP_TIMING_FILES = {"jetson": "fixed-qp-fresh-timing-jetson.json",
+                         "x86": "fixed-qp-fresh-timing-x86.json"}
 #: Lens test names that are chart families under another name (the chart's timing
 #: is theirs); the rest are timed only by the lens run.
 LENS_FAMILIES = {"aom-rt-s10": "libaom-av1-cpu10", "aom-rt-s8": "libaom-av1-cpu8",
@@ -279,30 +286,42 @@ def chart_view(view: ChartView) -> tuple[dict, dict[str, str]]:
              "metrics": ["j", "psnr", "vmaf"], "values": values}, labels)
 
 
-def timing_fps() -> dict[str, dict[str, float]]:
-    """Each timed family's single-thread fps on both machines, as the chart computes
-    it (1000 / the geometric mean of its per-clip ms per frame); only families timed
-    on both."""
-    per_platform = {}
-    for platform, file in TIMING_FILES.items():
-        points = json.loads((RESULTS / file).read_text())["points"]
-        per_platform[platform] = {
-            f: round(1000 / geometric_mean(list(e["ms_per_frame"].values())), 1)
-            for f, e in points.items() if e.get("ms_per_frame")}
-    return {f: {p: per_platform[p][f] for p in per_platform}
-            for f in set.intersection(*(set(v) for v in per_platform.values()))}
+def timing_records(files: dict[str, str]) -> dict[str, dict]:
+    """Each machine's fixed-QP timing record (tools/dev/fixedqp_timing.py) that exists."""
+    return {platform: json.loads((RESULTS / file).read_text())
+            for platform, file in files.items() if (RESULTS / file).is_file()}
+
+
+def lens_timing() -> dict[str, dict]:
+    return timing_records(LENS_TIMING_FILES)
+
+
+def speed_notes(timing: dict[str, dict]) -> dict[str, dict]:
+    """What each machine's timing record covers, for the chart's caption."""
+    return {platform: {"platform": record["platform"], "sequences": len(record["sequences"]),
+                       "frames": record["frames"],
+                       "quantizers": max(record["quantizers_timed"].values()),
+                       "build": record["build"]}
+            for platform, record in timing.items()}
+
+
+def size_range(sizes: list[tuple[int, int]]) -> str:
+    """'1280×720 to 480×270': the largest and smallest frame by pixel count."""
+    big, small = max(sizes, key=lambda s: s[0] * s[1]), min(sizes, key=lambda s: s[0] * s[1])
+    return f"{big[0]}×{big[1]} to {small[0]}×{small[1]}"
 
 
 def fixed_qp_view() -> dict | None:
     """The overview's Fixed QP chart: the lens (LENS_DATA, column LENS_COLUMN) against
-    x264 medium at fixed QP, at each encoder's single-thread speed from the chart's
-    timing (measured at fixed QP, on both machines); an encoder the chart has not
-    timed has no speed (the site lists it under the chart)."""
+    x264 medium at fixed QP, at each encoder's single-thread speed on the lens's own
+    encodes (LENS_TIMING_FILES: the same sequences and quantizers); an encoder not
+    timed on a machine has no speed there (the site lists it under the chart)."""
+    from .ctc.conditions import AOM_LD, POINTS
     path = SITE_DATA / LENS_DATA
     if not path.is_file():
         return None
     lens = json.loads(path.read_text())
-    timed = timing_fps()
+    timing = lens_timing()
     values = {}
     for row in lens["rows"]:
         if row["column"] != LENS_COLUMN and row["test"].startswith(OWN_PREFIX):
@@ -316,14 +335,54 @@ def fixed_qp_view() -> dict | None:
             "clips_scored": row["n"], "clips": None, "flagged": False, "chained": 0,
             "rate_invalid_points": 0,
             # never the lens run's own fps: not a timing (other runs, shared load)
-            "fps": timed.get(family) or {"jetson": None, "x86": None}}
+            "fps": {platform: (timing[platform]["points"].get(row["test"]) or {}).get("fps")
+                    if platform in timing else None for platform in LENS_TIMING_FILES}}
     return {"id": "qp", "clipset": "ctc", "zero": lens["rows"][0]["anchor"], "rate_mode": "qp",
             "clips": max(v["clips_scored"] for v in values.values()),
             "build_commit": lens["build_commit"], "condition": lens["condition"],
-            "column": LENS_COLUMN, "source": lens["source"],
+            "column": LENS_COLUMN,
+            "source": [*lens["source"], *(f"docs/results/{LENS_TIMING_FILES[p]}" for p in timing)],
+            "speed": speed_notes(timing), "frames": AOM_LD.frames,
+            "points": len(next(iter(POINTS.values()))),
+            "size_range": size_range([(q.width, q.height) for q in AOM_LD.sequences]),
             "lens_names": {row["test"]: LENS_FAMILIES.get(row["test"], row["test"])
                            for row in lens["rows"]},
             "metrics": ["weighted", "j", "psnr", "vmaf", "ms_ssim"], "values": values}
+
+
+def fresh_qp_view() -> dict | None:
+    """The second Fixed QP chart: every encoder at fixed QP on held-out clips
+    (FRESH_QP_DATA) against x264 medium, at its speed on the same encodes
+    (FRESH_QP_TIMING_FILES)."""
+    path = RESULTS / FRESH_QP_DATA
+    if not path.is_file():
+        return None
+    run = json.loads(path.read_text())
+    timing = timing_records(FRESH_QP_TIMING_FILES)
+    values = {}
+    for family, row in run["families"].items():
+        values[family] = {
+            "weighted": None, "j": row["j"], "psnr": row["psnr_yuv"], "vmaf": row["vmaf_v1"],
+            "ms_ssim": row["ms_ssim"], "iqr": [row["lo"], row["hi"]] if row["n"] > 1 else None,
+            "clips_scored": row["n"], "clips": len(run["clips"]), "flagged": False,
+            "chained": 0, "rate_invalid_points": 0,
+            "fps": {platform: (timing[platform]["points"].get(family) or {}).get("fps")
+                    if platform in timing else None for platform in FRESH_QP_TIMING_FILES}}
+    values[run["anchor"]] = {**{k: 0.0 for k in ("j", "psnr", "vmaf", "ms_ssim")},
+                             "weighted": None, "iqr": None, "clips_scored": len(run["clips"]),
+                             "clips": len(run["clips"]), "flagged": False, "chained": 0,
+                             "rate_invalid_points": 0,
+                             "fps": {platform: (timing[platform]["points"].get(run["anchor"])
+                                                or {}).get("fps") if platform in timing
+                                     else None for platform in FRESH_QP_TIMING_FILES}}
+    return {"id": "qp-fresh", "clipset": "fresh", "zero": run["anchor"], "rate_mode": "qp",
+            "clips": len(run["clips"]), "frames": run["frames"], "points": run["points"],
+            "build_commit": run["build_commit"], "condition": "held-out, fresh",
+            "source": [f"docs/results/{FRESH_QP_DATA}",
+                       *(f"docs/results/{FRESH_QP_TIMING_FILES[p]}" for p in timing)],
+            "speed": speed_notes(timing),
+            "size_range": size_range([(c["width"], c["height"]) for c in run["clips"]]),
+            "lens_names": {}, "metrics": ["j", "psnr", "vmaf", "ms_ssim"], "values": values}
 
 
 #: The chart views' clip sets: (site clip-set id, chart markdown that lists its
@@ -355,6 +414,10 @@ def clips_data() -> dict:
                           "class": c.content_class, "scored": c.name not in excluded,
                           "left_out_reason": excluded.get(c.name)}
                          for c in chart_clips(spec)]
+    fresh = RESULTS / FRESH_QP_DATA
+    if fresh.is_file():
+        sets["qp-fresh"] = [c for c in sets["fresh"] if c["name"] in {
+            clip["clip"] for clip in json.loads(fresh.read_text())["clips"]}]
     sets["ctc"] = [{"name": q.name, "dataset": f"AOM CTC v8, class {q.sequence_class}",
                     "width": q.width, "height": q.height, "fps": round(q.fps_num / q.fps_den, 3),
                     "start_frame": 0, "frames": AOM_LD.frames, "class": q.sequence_class,
@@ -376,9 +439,7 @@ def chart_data() -> dict:
         views.append(data)
         labels.update({k: v for k, v in names.items() if k not in labels})
     cbr_families = {f for v in views for f in v["values"]}
-    qp = fixed_qp_view()
-    if qp:
-        views.append(qp)
+    views += [v for v in (fixed_qp_view(), fresh_qp_view()) if v]
     plan = json.loads((RESULTS / TIMING_PLAN).read_text())
     timing = timing_commands(plan)
     families = sorted({f for v in views for f in v["values"]})

@@ -7,6 +7,7 @@ const SETS = {
   heldout: 'Held-out, all',
   dev: 'Development',
   ctc: 'AOM CTC low delay (Fixed QP)',
+  'qp-fresh': 'Held-out, fresh: the Fixed QP sample',
 };
 const state = { set: new URLSearchParams(window.location.search).get('set') || 'fresh' };
 

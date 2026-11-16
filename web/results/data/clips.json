@@ -4308,6 +4308,152 @@
     "left_out_reason": null
    }
   ],
+  "qp-fresh": [
+   {
+    "name": "ind_bdd100k_mot_bdd_00cea101_06f21d5e",
+    "dataset": "BDD100K MOT",
+    "width": 640,
+    "height": 360,
+    "fps": 29.97,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "lowlight",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_bdd100k_mot_bdd_00d1bafa_1b47b41c",
+    "dataset": "BDD100K MOT",
+    "width": 1280,
+    "height": 720,
+    "fps": 29.97,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "pan",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_bwc_videotext_video317",
+    "dataset": "bwc-videotext",
+    "width": 424,
+    "height": 240,
+    "fps": 30.0,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "bodycam",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_cctv_uid_vid_00054",
+    "dataset": "cctv",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "crowd",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_jaad_video_0151",
+    "dataset": "JAAD",
+    "width": 960,
+    "height": 540,
+    "fps": 30.0,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "pan",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_jaad_video_0318",
+    "dataset": "JAAD",
+    "width": 960,
+    "height": 540,
+    "fps": 30.0,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "pan",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_mot_mot17_05",
+    "dataset": "MOTChallenge (MOT17 / MOT20)",
+    "width": 640,
+    "height": 480,
+    "fps": 14.0,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "bodycam",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_mp4_london",
+    "dataset": "own collection",
+    "width": 1280,
+    "height": 720,
+    "fps": 29.97,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "static",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_otw_homes_00310",
+    "dataset": "otw",
+    "width": 404,
+    "height": 720,
+    "fps": 30.0,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "static",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00026",
+    "dataset": "PersonPath22",
+    "width": 960,
+    "height": 540,
+    "fps": 23.976,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "lowlight",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00090",
+    "dataset": "PersonPath22",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "crowd",
+    "scored": true,
+    "left_out_reason": null
+   },
+   {
+    "name": "ind_personpath22_uid_vid_00177",
+    "dataset": "PersonPath22",
+    "width": 960,
+    "height": 540,
+    "fps": 29.97,
+    "start_frame": 0,
+    "frames": 150,
+    "class": "crowd",
+    "scored": true,
+    "left_out_reason": null
+   }
+  ],
   "ctc": [
    {
     "name": "Johnny_1280x720_60",
@@ -4469,6 +4615,11 @@
   "dev": {
    "clips": 11,
    "scored": 11,
+   "left_out": 0
+  },
+  "qp-fresh": {
+   "clips": 12,
+   "scored": 12,
    "left_out": 0
   },
   "ctc": {

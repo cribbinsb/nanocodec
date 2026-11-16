@@ -51,6 +51,17 @@ with its source.
    - **AV1 coefficient writer and range coder:** 1540M instructions against M10's 761M for the
      same bytes.
 
+7. **The chart's speed axis is now timed on the lens's own encodes** (2026-11-16,
+   [fixed-qp-speed-2026-11-16.md](../results/fixed-qp-speed-2026-11-16.md), build b11b2f83).
+   - Facts 1 and 4 used the CBR chart's timing on 3 private clips. The axis is now the same 12 CTC sequences and 6
+     quantizers the BD comes from, on c8a.large.
+   - Weighted, fps: M13 +4.1 at 984; AV1 Faster +2.1 at 901; M12 -1.5 at 899; AV1 Fast -11.0 at 524; M10 -14.2 at
+     519; AV2 -25.2 at 306; AV1 -18.9 at 304; M8 -30.3 at 169.
+   - AV1 Faster and AV1 Fast now run level with M12 and M10. They are 3.6 and 3.2 Weighted points behind them, and on
+     J level or ahead (-13.5 against -10.4; -19.6 against -19.5).
+   - A second view on 12 held-out clips (J only) puts HEVC Faster ahead of M12 and AV1 Faster, HEVC Fast and AV1 Fast
+     ahead of M10. Nothing of ours is ahead of M13 in any view on x86.
+
 ## Ruled out (measured; do not repeat)
 
 All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx512.md`.

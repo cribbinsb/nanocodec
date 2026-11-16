@@ -76,8 +76,11 @@ class CtcEncoder:
 
 
 _QINDEX_CODECS = (Codec.AV1, Codec.VP9, Codec.AV2)
-#: Our presets per codec beside Medium (the Default, the engine defaults).
+#: Our presets per codec beside Medium (the Default, the engine defaults): every codec
+#: has these ...
 _RUNGS = ("fast", "slow")
+#: ... and these where its ladder has them (the CBR chart's faster points).
+_OPTIONAL_RUNGS = ("veryfast", "faster")
 
 
 def _ours() -> list[CtcEncoder]:
@@ -90,6 +93,10 @@ def _ours() -> list[CtcEncoder]:
             if encoder is None:
                 raise RuntimeError(f"preset {default.codec.value}/{rung} missing")
             encoders.append(CtcEncoder(encoder, Group.OURS, scale))
+        for rung in _OPTIONAL_RUNGS:
+            encoder = nanocodec_with_preset(f"{default.name}@{rung}")
+            if encoder is not None:
+                encoders.append(CtcEncoder(encoder, Group.OURS, scale))
     return encoders
 
 
