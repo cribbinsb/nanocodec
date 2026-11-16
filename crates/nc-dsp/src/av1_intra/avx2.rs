@@ -54,6 +54,12 @@ pub(crate) unsafe fn predict_angle(edges: &IntraEdges, angle: u16, dst: &mut Pla
     edges.predict_angle_with::<Avx2Directional>(angle, dst);
 }
 
+/// AVX2 8-bit directional interpolation run (for rectangular blocks too).
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn run_u8(window: &[u8], weight: usize, out: &mut [u8]) {
+    <Avx2Directional as DirectionalKernels>::run(window, weight, out);
+}
+
 /// One row's terms of a smooth prediction in u16 lanes (every value is at
 /// most `255 · 256`, so wrapping 16-bit arithmetic is exact):
 /// `v = wy · top + (256 − wy) · bottom` and `h = 256 · right + wx · (left

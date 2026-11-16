@@ -15,7 +15,6 @@ use crate::tables::{
 use nc_common::decode::DecodeError;
 use nc_common::{Picture, PlaneIndex, PlaneViewMut};
 use nc_dsp::Pixel;
-use nc_dsp::intra_prediction::av1_block::cfl::CflAc;
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 
 /// Blocks of at most this side (log2) may use `CfL` and filter intra.
@@ -198,19 +197,6 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             return Ok(());
         }
         let cfl = tx.plane != PlaneIndex::Y && modes.uv == UV_CFL_PRED;
-        let ac = cfl.then(|| {
-            let luma = self.recon.plane(PlaneIndex::Y);
-            let view = luma
-                .region(2 * x as isize, 2 * y as isize, 2 * w, 2 * h)
-                .expect("chroma blocks lie inside the coded frame");
-            CflAc::from_luma(
-                &view,
-                luma_extent.0.min(2 * w),
-                luma_extent.1.min(2 * h),
-                w,
-                h,
-            )
-        });
         let filter = if tx.plane == PlaneIndex::Y {
             modes.luma.filter
         } else {
@@ -238,6 +224,28 @@ impl<T: Pixel> FrameDecoder<'_, T> {
             tx.avail,
             self.depth(),
         );
+        if cfl {
+            let alpha = modes.alpha[tx.plane as usize - 1];
+            if alpha != 0 {
+                let dc = edges.dc_value();
+                let kernels = self.kernels();
+                let [y_plane, uv_planes @ ..] = self.recon.planes_mut();
+                let view = y_plane
+                    .region(2 * x as isize, 2 * y as isize, 2 * w, 2 * h)
+                    .expect("chroma blocks lie inside the coded frame");
+                let mut dst = uv_planes[tx.plane as usize - 1]
+                    .region_mut(x as isize, y as isize, w, h)
+                    .ok_or(DecodeError::Malformed("AV1 intra rectangle"))?;
+                kernels.av1_cfl_predict(
+                    &view,
+                    (luma_extent.0.min(2 * w), luma_extent.1.min(2 * h)),
+                    dc,
+                    i32::from(alpha),
+                    &mut dst,
+                );
+                return Ok(());
+            }
+        }
         let kind = if cfl {
             IntraKind::Dc
         } else if tx.plane == PlaneIndex::Y {
@@ -250,10 +258,6 @@ impl<T: Pixel> FrameDecoder<'_, T> {
         let kernels = self.kernels();
         let mut dst = self.destination(tx)?;
         kernels.av1_intra_predict_block(&edges, kind, &mut dst);
-        if let Some(ac) = ac {
-            let alpha = modes.alpha[tx.plane as usize - 1];
-            ac.predict(i32::from(alpha), &mut dst, kernels.depth());
-        }
         Ok(())
     }
 

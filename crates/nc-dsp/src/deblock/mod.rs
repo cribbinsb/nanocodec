@@ -27,6 +27,8 @@ pub(crate) mod av1;
 #[allow(unsafe_code)]
 pub(crate) mod av1_grid;
 #[allow(unsafe_code)]
+pub(crate) mod av1_high;
+#[allow(unsafe_code)]
 pub(crate) mod av1_line;
 #[cfg(any(
     target_arch = "x86_64",

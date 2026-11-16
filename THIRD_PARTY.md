@@ -447,6 +447,41 @@ Ideas only, no code: `crates/nc-dsp/src/constant_add/` adds a DC-only
 residual to 8-bit samples as a saturating byte add and subtract, as the DC
 paths of dav1d 1.5.4's `src/x86/itx_avx2.asm` do.
 
+High-bit-depth (`u16`, 10- and 12-bit) and shared `u8`/`u16` AV1 SIMD
+(`crates/nc-dsp/`), reimplemented in Rust over our lane types from dav1d
+1.5.4 (BSD-2-Clause, VideoLAN and dav1d authors, Two Orioles LLC, Martin
+Storsjo, Janne Grunau):
+- `src/cdef/`: shared `CdefSink` interior/edge/dual-chroma filtering and
+  `u16` direction search (`src/cdef_tmpl.c`, `src/x86/cdef16_avx2.asm`,
+  `src/x86/cdef16_avx512.asm`, `src/arm/64/cdef16.S`).
+- `src/av1_mc/high_mc.rs` and `src/av1_mc/high_blend.rs`: `u16` unscaled and
+  scaled 8-tap / bilinear interpolation, 8x8 affine warp, saturating `adds_i16`
+  compound average, and shared `u8`/`u16` distance, difference-weighted mask,
+  wedge/mask, inter-intra and OBMC blends (`src/mc_tmpl.c`,
+  `src/x86/mc16_avx2.asm`, `src/x86/mc16_avx512.asm`, `src/arm/64/mc16.S`).
+- `src/av1_inverse/high_simd.rs` and `src/av1_inverse/generic.rs`: 10- and
+  12-bit SIMD inverse transforms (`I32Lanes`), DC-only `eob == 1` fast paths
+  and EOB-bounded row/column sub-band pruning (`src/itx_tmpl.c`,
+  `src/x86/itx16_avx2.asm`, `src/x86/itx16_avx512.asm`, `src/arm/64/itx16.S`).
+- `src/av1_restoration/high_lr.rs` and `src/av1_restoration/sgr_lanes.rs`:
+  10- and 12-bit 5/7-tap Wiener stripe convolution and shared 8-/16-lane
+  self-guided restoration (`src/looprestoration_tmpl.c`,
+  `src/x86/looprestoration16_avx2.asm`,
+  `src/x86/looprestoration16_avx512.asm`, `src/arm/64/looprestoration16.S`).
+- `src/deblock/av1_high.rs`: batched 4/6/8/14-tap `u16` loop filter with
+  8x8 vertical-edge register transpose and modular `u16` 14-tap smoothing
+  (`src/lpf_tmpl.c`, `src/x86/loopfilter16_avx2.asm`,
+  `src/x86/loopfilter16_avx512.asm`, `src/arm/64/loopfilter16.S`).
+- `src/av1_intra/high.rs`: `u16` directional/transpose/filter-intra patches
+  and shared `u8`/`u16` Paeth, 1-pass `pmaddwd` smooth and one-pass `CfL`
+  (`pmulhrsw`/`sqrdmulh`) predictors (`src/ipred_tmpl.c`,
+  `src/x86/ipred16_avx2.asm`, `src/x86/ipred16_avx512.asm`,
+  `src/arm/64/ipred16.S`).
+- `src/av1_film_grain/high_simd.rs`: 10- and 12-bit interpolated Q15 lookup,
+  luma/chroma row synthesis and overlap blending (`src/fg_apply_tmpl.c`,
+  `src/x86/filmgrain16_avx2.asm`, `src/x86/filmgrain16_avx512.asm`,
+  `src/arm/64/filmgrain16.S`).
+
 ## libyuv — BSD-3-Clause
 
 Copyright 2011 The LibYuv Project Authors. All rights reserved.

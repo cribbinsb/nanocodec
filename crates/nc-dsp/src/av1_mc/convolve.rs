@@ -12,7 +12,9 @@
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use super::filter::{AV1_FILTER_TAPS, AV1_SUBPEL_POSITIONS, Av1Filter, Av1Filters};
-use super::{INTER_ROUND0, INTER_ROUND1_COMPOUND, INTER_ROUND1_FINAL, av1_compound_bias, round2};
+#[cfg(test)]
+use super::{INTER_ROUND0, INTER_ROUND1_FINAL};
+use super::{INTER_ROUND1_COMPOUND, av1_compound_bias, inter_round0, inter_round1_final, round2};
 use crate::{BlockSize, Dsp, Filter, Isa};
 
 /// `SCALE_SUBPEL_BITS`: positions and steps are in 1/1024 samples.
@@ -113,7 +115,7 @@ fn block_inter_prediction<T: Sample>(
     window: &PlaneView<'_, T>,
     (w, h): (usize, usize),
     (x, y): (Av1McAxis, Av1McAxis),
-    round1: u32,
+    (round0, round1): (u32, u32),
     mut store: impl FnMut(usize, usize, i32),
 ) {
     check_prediction(window, (w, h), (x, y));
@@ -133,8 +135,8 @@ fn block_inter_prediction<T: Sample>(
                     .zip(&source[start..start + AV1_FILTER_TAPS])
                     .map(|(&t, &s)| i32::from(t) * s.to_i32())
                     .sum();
-                // Within i16 (the doc comment's bound).
-                *out = round2(sum, INTER_ROUND0) as i16;
+                // Within i16 (the doc comment's bound; InterRound0 = 5 at 12 bpc).
+                *out = round2(sum, round0) as i16;
             }
         }
         for r in 0..h {
@@ -176,7 +178,7 @@ pub(crate) fn predict_scalar<T: Sample>(
         window,
         (w, h),
         (x, y),
-        INTER_ROUND1_FINAL,
+        (inter_round0(depth), inter_round1_final(depth)),
         |r, c, v| {
             dst.row_mut(r)[c] = depth.clip_to(v);
         },
@@ -185,7 +187,7 @@ pub(crate) fn predict_scalar<T: Sample>(
 
 /// [`Dsp::av1_predict_compound`] by the scalar reference passes, at any
 /// depth: the compound value less [`av1_compound_bias`] (0 at 8 bits), so
-/// that it fits `i16` at 10 bits too.
+/// that it fits `i16` at 10/12 bits too.
 #[inline(never)]
 pub(crate) fn predict_compound_scalar<T: Sample>(
     filters: Av1Filters,
@@ -202,7 +204,7 @@ pub(crate) fn predict_compound_scalar<T: Sample>(
         window,
         (w, h),
         (x, y),
-        INTER_ROUND1_COMPOUND,
+        (inter_round0(depth), INTER_ROUND1_COMPOUND),
         |r, c, v| {
             dst[r * dst_stride + c] = (v - bias) as i16;
         },
@@ -214,21 +216,17 @@ pub(crate) fn predict_compound_scalar<T: Sample>(
 const UNSCALED_ROWS: usize = KERNEL_EDGE + AV1_FILTER_TAPS - 1;
 
 /// The §7.11.3.4 passes of an unscaled `W`-wide block of at most 64 rows
-/// at fixed phases, for samples of any type up to 10 bits: the taps `fx`
+/// at fixed phases, for samples of any type up to 12 bits: the taps `fx`
 /// across every row of the window (`h + 7` rows of `W + 7` samples from
-/// `src` at stride `ss`), rounded by `InterRound0` into 16 bits (at 10
-/// bits within `−7161..=23529`, the [`block_inter_prediction`] bound), then
-/// `fy` down, rounded by `round1`, handed to `out(row, sums)`. The same
-/// arithmetic as [`block_inter_prediction`], written as whole-row
-/// multiply-adds so that the ISA instances vectorise it
-/// (`high_depth::vector`).
+/// `src` at stride `ss`), rounded by `round0` into 16 bits, then
+/// `fy` down, rounded by `round1`, handed to `out(row, sums)`.
 #[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
 #[inline(always)]
 pub(crate) fn unscaled_passes<S: Sample, const W: usize>(
     (src, ss): (&[S], usize),
     h: usize,
     (fx, fy): (&[i16; AV1_FILTER_TAPS], &[i16; AV1_FILTER_TAPS]),
-    round1: u32,
+    (round0, round1): (u32, u32),
     mut out: impl FnMut(usize, &[i32; W]),
 ) {
     let mut intermediate = [[0i16; W]; UNSCALED_ROWS];
@@ -246,7 +244,7 @@ pub(crate) fn unscaled_passes<S: Sample, const W: usize>(
             }
         }
         for (value, sum) in line.iter_mut().zip(sums) {
-            *value = round2(sum, INTER_ROUND0) as i16;
+            *value = round2(sum, round0) as i16;
         }
     }
     for r in 0..h {
@@ -275,7 +273,8 @@ pub(crate) fn unscaled_put_at<S: Sample, const W: usize>(
     taps: (&[i16; AV1_FILTER_TAPS], &[i16; AV1_FILTER_TAPS]),
     depth: BitDepth,
 ) {
-    unscaled_passes::<S, W>(src, h, taps, INTER_ROUND1_FINAL, |r, sums| {
+    let rounds = (inter_round0(depth), inter_round1_final(depth));
+    unscaled_passes::<S, W>(src, h, taps, rounds, |r, sums| {
         for (sample, &sum) in dst[r * ds..][..W].iter_mut().zip(sums) {
             *sample = depth.clip_to(sum);
         }
@@ -294,7 +293,8 @@ pub(crate) fn unscaled_prep_at<S: Sample, const W: usize>(
     depth: BitDepth,
 ) {
     let bias = av1_compound_bias(depth);
-    unscaled_passes::<S, W>(src, h, taps, INTER_ROUND1_COMPOUND, |r, sums| {
+    let rounds = (inter_round0(depth), INTER_ROUND1_COMPOUND);
+    unscaled_passes::<S, W>(src, h, taps, rounds, |r, sums| {
         for (value, &sum) in dst[r * ds..][..W].iter_mut().zip(sums) {
             *value = (sum - bias) as i16;
         }
@@ -899,7 +899,7 @@ mod tests {
                         &window,
                         (w, h),
                         (x, y),
-                        INTER_ROUND1_FINAL,
+                        (INTER_ROUND0, INTER_ROUND1_FINAL),
                         |r, c, v| {
                             reference[r * w + c] = BitDepth::EIGHT.clip_to(v);
                         },
@@ -932,7 +932,7 @@ mod tests {
                     &window,
                     (w, h),
                     axes,
-                    INTER_ROUND1_FINAL,
+                    (INTER_ROUND0, INTER_ROUND1_FINAL),
                     |r, c, v| {
                         reference[r * w + c] = BitDepth::EIGHT.clip_to(v);
                     },

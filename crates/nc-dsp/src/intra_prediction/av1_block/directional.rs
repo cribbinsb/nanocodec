@@ -7,7 +7,9 @@ use nc_common::{PlaneViewMut, Sample};
 use super::edge::{self, LINE_LEN, LINE_ORIGIN};
 use super::{BlockEdges, EdgeFilterCtx};
 use crate::intra_prediction::IntraEdges;
-use crate::intra_prediction::directional::{DERIVATIVE, interpolate_run};
+use crate::intra_prediction::directional::DERIVATIVE;
+#[cfg(test)]
+use crate::intra_prediction::directional::interpolate_run;
 
 /// Angle of pure vertical prediction (degrees).
 const VERTICAL: u16 = 90;
@@ -41,7 +43,14 @@ impl<T: Sample> Line<T> {
     /// `base + k + 1` at `position`'s weight while `base + k < max_base`,
     /// and is sample `max_base` from there on (as [`Self::interpolate`]
     /// and the zones' clamp, sample by sample).
-    fn run(&self, base: i32, max_base: i32, position: i32, out: &mut [T]) {
+    fn run(
+        &self,
+        base: i32,
+        max_base: i32,
+        position: i32,
+        out: &mut [T],
+        run_fn: &impl Fn(&[T], usize, &mut [T]),
+    ) {
         debug_assert_eq!(self.upsample, 0);
         let inside = usize::try_from(max_base.saturating_sub(base))
             .unwrap_or(0)
@@ -50,7 +59,7 @@ impl<T: Sample> Line<T> {
         let (interpolated, clamped) = out.split_at_mut(inside);
         if inside > 0 {
             let first = (LINE_ORIGIN as i32 + base) as usize;
-            interpolate_run(&self.samples[first..=first + inside], weight, interpolated);
+            run_fn(&self.samples[first..=first + inside], weight, interpolated);
         }
         if !clamped.is_empty() {
             clamped.fill(T::from_i32(self.at(max_base)));
@@ -68,11 +77,23 @@ impl<T: Sample> Line<T> {
 
 /// Predict `dst` from `edges` at `angle` degrees, filtering and upsampling
 /// the edges first when `edge_filter` is set.
+#[cfg(test)]
 pub(super) fn predict<T: Sample>(
     edges: &BlockEdges<T>,
     angle: u16,
     edge_filter: Option<EdgeFilterCtx>,
     dst: &mut PlaneViewMut<'_, T>,
+) {
+    predict_with_run(edges, angle, edge_filter, dst, interpolate_run);
+}
+
+/// Predict `dst` from `edges` at `angle` degrees with caller-supplied `run_fn`.
+pub(crate) fn predict_with_run<T: Sample>(
+    edges: &BlockEdges<T>,
+    angle: u16,
+    edge_filter: Option<EdgeFilterCtx>,
+    dst: &mut PlaneViewMut<'_, T>,
+    run_fn: impl Fn(&[T], usize, &mut [T]),
 ) {
     assert!(angle > 0 && angle < MAX_ANGLE, "directional angle {angle}");
     let (w, h) = (edges.width, edges.height);
@@ -86,15 +107,23 @@ pub(super) fn predict<T: Sample>(
             dst.row_mut(r)[..w].copy_from_slice(&above.samples[LINE_ORIGIN..LINE_ORIGIN + w]);
         }),
         HORIZONTAL => (0..h).for_each(|r| dst.row_mut(r)[..w].fill(left.samples[LINE_ORIGIN + r])),
-        a if a < VERTICAL => zone1(&above, DERIVATIVE[usize::from(a)], w, h, dst),
+        a if a < VERTICAL => zone1(&above, DERIVATIVE[usize::from(a)], w, h, dst, &run_fn),
         a if a < HORIZONTAL => zone2(
             &above,
             &left,
             DERIVATIVE[usize::from(HORIZONTAL - a)],
             DERIVATIVE[usize::from(a - VERTICAL)],
             dst,
+            &run_fn,
         ),
-        a => zone3(&left, DERIVATIVE[usize::from(MAX_ANGLE - a)], w, h, dst),
+        a => zone3(
+            &left,
+            DERIVATIVE[usize::from(MAX_ANGLE - a)],
+            w,
+            h,
+            dst,
+            &run_fn,
+        ),
     }
 }
 
@@ -195,7 +224,14 @@ fn prepare_edges<T: Sample>(
 /// Angles below 90: from the above row only; positions past its last
 /// sample repeat it. At full resolution each row is one run at one weight
 /// (samples `base..` up to `max_base`, then that sample repeated).
-fn zone1<T: Sample>(above: &Line<T>, dx: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_, T>) {
+fn zone1<T: Sample>(
+    above: &Line<T>,
+    dx: i32,
+    w: usize,
+    h: usize,
+    dst: &mut PlaneViewMut<'_, T>,
+    run_fn: &impl Fn(&[T], usize, &mut [T]),
+) {
     if above.upsample != 0 {
         return zone1_samples(above, dx, w, h, dst);
     }
@@ -207,6 +243,7 @@ fn zone1<T: Sample>(above: &Line<T>, dx: i32, w: usize, h: usize, dst: &mut Plan
             max_base,
             position,
             &mut dst.row_mut(r)[..w],
+            run_fn,
         );
     }
 }
@@ -246,6 +283,7 @@ fn zone2<T: Sample>(
     dx: i32,
     dy: i32,
     dst: &mut PlaneViewMut<'_, T>,
+    run_fn: &impl Fn(&[T], usize, &mut [T]),
 ) {
     if above.upsample != 0 {
         return zone2_samples(above, left, dx, dy, dst);
@@ -265,7 +303,7 @@ fn zone2<T: Sample>(
         }
         if split < w {
             let x = ((split as i32) << POSITION_BITS) - (r as i32 + 1) * dx;
-            above.run(x >> POSITION_BITS, i32::MAX, x, &mut row[split..]);
+            above.run(x >> POSITION_BITS, i32::MAX, x, &mut row[split..], run_fn);
         }
     }
 }
@@ -309,7 +347,14 @@ fn zone2_sample<T: Sample>(
 /// Angles above 180: from the left column only; positions past its last
 /// sample repeat it. At full resolution each column is one run (zone 1 on
 /// the left column), written down the column.
-fn zone3<T: Sample>(left: &Line<T>, dy: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_, T>) {
+fn zone3<T: Sample>(
+    left: &Line<T>,
+    dy: i32,
+    w: usize,
+    h: usize,
+    dst: &mut PlaneViewMut<'_, T>,
+    run_fn: &impl Fn(&[T], usize, &mut [T]),
+) {
     if left.upsample != 0 {
         return zone3_samples(left, dy, w, h, dst);
     }
@@ -324,6 +369,7 @@ fn zone3<T: Sample>(left: &Line<T>, dy: i32, w: usize, h: usize, dst: &mut Plane
             max_base,
             position,
             &mut column[..h],
+            run_fn,
         );
         for (r, &sample) in column[..h].iter().enumerate() {
             data[r * stride + c] = sample;
@@ -407,18 +453,25 @@ mod tests {
                 match angle {
                     a if a < VERTICAL => {
                         let dx = DERIVATIVE[usize::from(a)];
-                        zone1(&above, dx, w, h, &mut runs.view_mut());
+                        zone1(&above, dx, w, h, &mut runs.view_mut(), &interpolate_run);
                         zone1_samples(&above, dx, w, h, &mut samples.view_mut());
                     }
                     a if a < HORIZONTAL => {
                         let dx = DERIVATIVE[usize::from(HORIZONTAL - a)];
                         let dy = DERIVATIVE[usize::from(a - VERTICAL)];
-                        zone2(&above, &left, dx, dy, &mut runs.view_mut());
+                        zone2(
+                            &above,
+                            &left,
+                            dx,
+                            dy,
+                            &mut runs.view_mut(),
+                            &interpolate_run,
+                        );
                         zone2_samples(&above, &left, dx, dy, &mut samples.view_mut());
                     }
                     a => {
                         let dy = DERIVATIVE[usize::from(MAX_ANGLE - a)];
-                        zone3(&left, dy, w, h, &mut runs.view_mut());
+                        zone3(&left, dy, w, h, &mut runs.view_mut(), &interpolate_run);
                         zone3_samples(&left, dy, w, h, &mut samples.view_mut());
                     }
                 }

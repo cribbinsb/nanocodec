@@ -468,21 +468,33 @@ fn fourteen_batch(
         let out = if side == 0 { &mut *np } else { &mut *nq };
         for l in 0..BATCH {
             let (p6, p5, p4, p3, p2, p1, p0) = (
-                near[6][l], near[5][l], near[4][l], near[3][l], near[2][l], near[1][l], near[0][l],
+                i32::from(near[6][l]),
+                i32::from(near[5][l]),
+                i32::from(near[4][l]),
+                i32::from(near[3][l]),
+                i32::from(near[2][l]),
+                i32::from(near[1][l]),
+                i32::from(near[0][l]),
             );
             let (q0, q1, q2, q3, q4, q5) = (
-                far[0][l], far[1][l], far[2][l], far[3][l], far[4][l], far[5][l],
+                i32::from(far[0][l]),
+                i32::from(far[1][l]),
+                i32::from(far[2][l]),
+                i32::from(far[3][l]),
+                i32::from(far[4][l]),
+                i32::from(far[5][l]),
             );
             let s = select[l];
             let new = [
-                (p6 + p5 + p4 + p3 + p2 + p1 * 2 + p0 * 2 + q0 * 2 + q1 + q2 + q3 + q4 + q5 + 8)
-                    >> 4,
-                (p6 * 2 + p5 + p4 + p3 + p2 * 2 + p1 * 2 + p0 * 2 + q0 + q1 + q2 + q3 + q4 + 8)
-                    >> 4,
-                (p6 * 3 + p5 + p4 + p3 * 2 + p2 * 2 + p1 * 2 + p0 + q0 + q1 + q2 + q3 + 8) >> 4,
-                (p6 * 4 + p5 + p4 * 2 + p3 * 2 + p2 * 2 + p1 + p0 + q0 + q1 + q2 + 8) >> 4,
-                (p6 * 5 + p5 * 2 + p4 * 2 + p3 * 2 + p2 + p1 + p0 + q0 + q1 + 8) >> 4,
-                (p6 * 7 + p5 * 2 + p4 * 2 + p3 + p2 + p1 + p0 + q0 + 8) >> 4,
+                ((p6 + p5 + p4 + p3 + p2 + p1 * 2 + p0 * 2 + q0 * 2 + q1 + q2 + q3 + q4 + q5 + 8)
+                    >> 4) as i16,
+                ((p6 * 2 + p5 + p4 + p3 + p2 * 2 + p1 * 2 + p0 * 2 + q0 + q1 + q2 + q3 + q4 + 8)
+                    >> 4) as i16,
+                ((p6 * 3 + p5 + p4 + p3 * 2 + p2 * 2 + p1 * 2 + p0 + q0 + q1 + q2 + q3 + 8) >> 4)
+                    as i16,
+                ((p6 * 4 + p5 + p4 * 2 + p3 * 2 + p2 * 2 + p1 + p0 + q0 + q1 + q2 + 8) >> 4) as i16,
+                ((p6 * 5 + p5 * 2 + p4 * 2 + p3 * 2 + p2 + p1 + p0 + q0 + q1 + 8) >> 4) as i16,
+                ((p6 * 7 + p5 * 2 + p4 * 2 + p3 + p2 + p1 + p0 + q0 + 8) >> 4) as i16,
             ];
             for (i, &v) in new.iter().enumerate() {
                 out[i][l] = blend(out[i][l], v, s);

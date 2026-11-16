@@ -20,6 +20,7 @@
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+pub(crate) mod high_lr;
 pub(crate) mod kernels;
 #[cfg(target_arch = "aarch64")]
 mod neon;
@@ -304,6 +305,20 @@ impl Av1LoopRestoration<'_> {
         depth: BitDepth,
     ) {
         self.apply_with(&DeepKernels { depth }, plane, boundaries, sub_y, scratch);
+    }
+
+    /// [`Self::apply`] to `u16` samples at `depth` (`10` or `12`), using
+    /// `dsp`'s high-bit-depth SIMD kernels.
+    pub(crate) fn apply_u16(
+        &self,
+        dsp: &Dsp,
+        plane: &mut PlaneViewMut<'_, u16>,
+        (boundaries, sub_y): (&Av1StripeBoundaries<u16>, bool),
+        scratch: &mut Av1LrScratch<u16>,
+        depth: BitDepth,
+    ) {
+        let bound = dsp.high.av1_lr.at(depth);
+        self.apply_with(&bound, plane, boundaries, sub_y, scratch);
     }
 
     /// [`Self::apply`] with `kernels`.

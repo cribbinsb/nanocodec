@@ -10,7 +10,7 @@
 
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
-use super::{INTER_POST_ROUND, av1_compound_bias, round2};
+use super::{av1_compound_bias, inter_post_round, round2};
 use crate::Dsp;
 
 /// Bits of a blend mask weight (`AOM_BLEND_A64_ROUND_BITS`): weights run
@@ -83,7 +83,7 @@ pub struct Av1Mask<'a> {
 impl Av1Mask<'_> {
     /// The weights of plane row `row`, columns `0..out.len()` (as
     /// [`Self::weight`], a row at a time).
-    fn weights_row(&self, row: usize, out: &mut [i16]) {
+    pub(crate) fn weights_row(&self, row: usize, out: &mut [i16]) {
         let line = |r: usize| &self.data[r * self.stride..];
         let n = out.len();
         match (self.sub_x, self.sub_y) {
@@ -178,11 +178,9 @@ pub fn av1_blend_average_at<T: Sample>(
     depth: BitDepth,
 ) {
     let bias = 2 * av1_compound_bias(depth);
+    let shift = 1 + inter_post_round(depth);
     fill(dst, size, |r, c| {
-        depth.clip_to(round2(
-            p0.at(r, c) + p1.at(r, c) + bias,
-            1 + INTER_POST_ROUND,
-        ))
+        depth.clip_to(round2(p0.at(r, c) + p1.at(r, c) + bias, shift))
     });
 }
 
@@ -240,11 +238,9 @@ pub fn av1_blend_distance_at<T: Sample>(
     let (w0, w1) = (i32::from(w0), i32::from(w1));
     // The weights sum to 16.
     let bias = (w0 + w1) * av1_compound_bias(depth);
+    let shift = DISTANCE_BITS + inter_post_round(depth);
     fill(dst, size, |r, c| {
-        depth.clip_to(round2(
-            w0 * p0.at(r, c) + w1 * p1.at(r, c) + bias,
-            DISTANCE_BITS + INTER_POST_ROUND,
-        ))
+        depth.clip_to(round2(w0 * p0.at(r, c) + w1 * p1.at(r, c) + bias, shift))
     });
 }
 
@@ -288,7 +284,7 @@ pub fn av1_blend_mask_at<T: Sample>(
 }
 
 /// The masked blend a row at a time, `row` blending one.
-fn blend_mask_rows<T: Sample>(
+pub(crate) fn blend_mask_rows<T: Sample>(
     p0: Av1CompoundPred<'_>,
     p1: Av1CompoundPred<'_>,
     mask: Av1Mask<'_>,
@@ -364,7 +360,7 @@ pub enum Av1ObmcEdge {
 
 /// The OBMC weights of the block's own prediction for an overlap of
 /// `length` samples (`get_obmc_mask`).
-fn obmc_mask(length: usize) -> &'static [u8] {
+pub(crate) fn obmc_mask(length: usize) -> &'static [u8] {
     match length {
         1 => &[AV1_MASK_MAX],
         2 => &OBMC_MASK_2,

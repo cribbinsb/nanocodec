@@ -1,15 +1,95 @@
 //! The CDEF block filter written once over [`I16FilterLanes`]: `ROWS` block
-//! rows per vector (one 8-sample or two 4- or 8-sample rows). All arithmetic
-//! fits 16 bits: padded differences wrap harmlessly (module docs), and the
-//! weighted sum of constrained differences is at most
-//! `4 * 15 * 2 + 2 * 15 * 2 + 3 * 4 * 4`.
+//! rows per vector (1, 2, or 4 rows of 4 or 8 samples). All arithmetic fits
+//! signed 16-bit lanes up to 12 bits per component:
 //!
-//! The direction is a const parameter, so every tap is a constant row and
-//! column of the block's window. Validate the complete source/destination
-//! footprints once, then load exact-length spans with the shared lane API.
+//! - padded differences (`0x8000 - x`) wrap to magnitudes `>= 28,673`, whose
+//!   shifted value always exceeds `threshold <= 240`, so `sub_sat_u16` yields
+//!   zero (`cdef` module docs);
+//! - the weighted sum of constrained differences is at most
+//!   `12 * 240 + 12 * 64 = 3,648` at 12 bits (`<= 32,767`);
+//! - `0x8000` loses both unsigned `min_u16` and signed `max` in clipping.
+//!
+//! Attribution: the 16-bit lane layout (`ROWS = 2` for 8x8 and `ROWS = 4` for
+//! 4x4 on 256-bit vectors; `ROWS = 4` for 8x8 and dual 4x4 on 512-bit vectors)
+//! follows dav1d's `cdef_filter_{4x4,8x8}_16bpc` (`src/x86/cdef16_avx2.asm`,
+//! `src/x86/cdef16_avx512.asm`, `src/arm/64/cdef16.S`, BSD-2-Clause; see
+//! `THIRD_PARTY.md`).
 
 use super::{CDEF_PADDING, CdefArgs, DIRECTIONS, SEC_TAPS};
 use crate::simd::I16FilterLanes;
+
+/// Destination sample store for the generic 16-bit CDEF filter (`u8` or `u16`).
+pub(crate) trait CdefSink: Copy {
+    /// Store `ROWS` filtered block rows of `width` samples starting at `first`
+    /// with row stride `stride` (in `Self` elements).
+    ///
+    /// # Safety
+    ///
+    /// `first` must be valid for writing `ROWS` rows of `width` elements separated
+    /// by `stride` elements, and the caller's SIMD target feature must be active.
+    unsafe fn store_rows<V: I16FilterLanes, const ROWS: usize>(
+        y: V,
+        first: *mut Self,
+        stride: usize,
+        width: usize,
+    );
+}
+
+impl CdefSink for u8 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    unsafe fn store_rows<V: I16FilterLanes, const ROWS: usize>(
+        y: V,
+        first: *mut Self,
+        stride: usize,
+        width: usize,
+    ) {
+        debug_assert!(ROWS == 1 || ROWS == 2);
+        // SAFETY: forwarded from `filter` after validating the destination footprint.
+        unsafe {
+            if ROWS == 1 {
+                y.store_u8_sat_at(first);
+            } else {
+                let lo = core::slice::from_raw_parts_mut(first, width);
+                let hi = core::slice::from_raw_parts_mut(first.add(stride), width);
+                y.store_u8_sat_halves(lo, hi);
+            }
+        }
+    }
+}
+
+impl CdefSink for u16 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    unsafe fn store_rows<V: I16FilterLanes, const ROWS: usize>(
+        y: V,
+        first: *mut Self,
+        stride: usize,
+        width: usize,
+    ) {
+        let first = first.cast::<i16>();
+        // SAFETY: forwarded from `filter` after validating the destination footprint;
+        // `ROWS` disjoint rows never alias.
+        unsafe {
+            match ROWS {
+                1 => y.store(core::slice::from_raw_parts_mut(first, width)),
+                2 => {
+                    let lo = core::slice::from_raw_parts_mut(first, width);
+                    let hi = core::slice::from_raw_parts_mut(first.add(stride), width);
+                    y.store_halves(lo, hi);
+                }
+                4 => {
+                    let r0 = core::slice::from_raw_parts_mut(first, width);
+                    let r1 = core::slice::from_raw_parts_mut(first.add(stride), width);
+                    let r2 = core::slice::from_raw_parts_mut(first.add(2 * stride), width);
+                    let r3 = core::slice::from_raw_parts_mut(first.add(3 * stride), width);
+                    y.store_quarters([r0, r1, r2, r3]);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
 
 /// A block's source window: `S` rows of `S` samples, the block plus
 /// [`CDEF_PADDING`] on every side.
@@ -31,15 +111,22 @@ fn load<V: I16FilterLanes, const ROWS: usize, const S: usize>(
     debug_assert!(row + ROWS <= S && col + width <= S);
     // SAFETY: filter's loop and constant direction offsets keep these ROWS
     // rows and width columns within the complete window checked once below.
-    // Exact-length slices let the ISA's existing loads omit redundant checks.
     unsafe {
         let first = window.samples.as_ptr().add(row * window.stride + col);
-        let lo = core::slice::from_raw_parts(first, width);
-        if ROWS == 1 {
-            V::load(lo)
-        } else {
-            let hi = core::slice::from_raw_parts(first.add(window.stride), width);
-            V::load_halves(lo, hi)
+        let r0 = core::slice::from_raw_parts(first, width);
+        match ROWS {
+            1 => V::load(r0),
+            2 => {
+                let r1 = core::slice::from_raw_parts(first.add(window.stride), width);
+                V::load_halves(r0, r1)
+            }
+            4 => {
+                let r1 = core::slice::from_raw_parts(first.add(window.stride), width);
+                let r2 = core::slice::from_raw_parts(first.add(2 * window.stride), width);
+                let r3 = core::slice::from_raw_parts(first.add(3 * window.stride), width);
+                V::load_quarters([r0, r1, r2, r3])
+            }
+            _ => unreachable!(),
         }
     }
 }
@@ -49,7 +136,7 @@ fn load<V: I16FilterLanes, const ROWS: usize, const S: usize>(
 /// padded taps contribute zero (module docs).
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn constrain<V: I16FilterLanes>(diff: V, threshold: V, shift: u32) -> V {
+pub(super) fn constrain<V: I16FilterLanes>(diff: V, threshold: V, shift: u32) -> V {
     let magnitude = diff.abs();
     magnitude
         .min_u16(threshold.sub_sat_u16(magnitude.sra(shift)))
@@ -59,16 +146,16 @@ fn constrain<V: I16FilterLanes>(diff: V, threshold: V, shift: u32) -> V {
 /// The clipping range of a row: the minimum and maximum of every tap that
 /// is not padding (the centre sample included).
 #[derive(Clone, Copy)]
-struct Range<V> {
-    lo: V,
-    hi: V,
+pub(super) struct Range<V> {
+    pub(super) lo: V,
+    pub(super) hi: V,
 }
 
 impl<V: I16FilterLanes> Range<V> {
     /// Widen by tap `p`; padding loses both comparisons (module docs).
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn take(&mut self, p: V) {
+    pub(super) fn take(&mut self, p: V) {
         self.lo = self.lo.min_u16(p);
         self.hi = self.hi.max(p);
     }
@@ -108,8 +195,9 @@ fn tap_pair<V: I16FilterLanes, const ROWS: usize, const S: usize>(
 /// `cdef` docs). `origin` indexes the block's top-left sample in `src`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(crate) unsafe fn filter<
+unsafe fn filter<
     V: I16FilterLanes,
+    Dst: CdefSink,
     const ROWS: usize,
     const S: usize,
     const DIR: usize,
@@ -120,7 +208,7 @@ pub(crate) unsafe fn filter<
     stride: usize,
     origin: usize,
     args: &CdefArgs,
-    dst: &mut [u8],
+    dst: &mut [Dst],
     dst_stride: usize,
 ) {
     let n = S - 2 * CDEF_PADDING;
@@ -185,19 +273,12 @@ pub(crate) unsafe fn filter<
         // SAFETY: the destination footprint was checked once; each vector
         // writes ROWS disjoint rows of n pixels and never touches padding.
         unsafe {
-            let first = dst.as_mut_ptr().add(r * dst_stride);
-            if ROWS == 1 {
-                y.store_u8_sat_at(first);
-            } else {
-                let lo = core::slice::from_raw_parts_mut(first, n);
-                let hi = core::slice::from_raw_parts_mut(first.add(dst_stride), n);
-                y.store_u8_sat_halves(lo, hi);
-            }
+            Dst::store_rows::<V, ROWS>(y, dst.as_mut_ptr().add(r * dst_stride), dst_stride, n);
         }
     }
 }
 
-/// [`filter`] for the block's direction `args.dir`.
+/// 8-bit [`filter`] for the block's direction `args.dir`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
 pub(crate) unsafe fn filter_any_dir<V: I16FilterLanes, const ROWS: usize, const S: usize>(
@@ -208,26 +289,65 @@ pub(crate) unsafe fn filter_any_dir<V: I16FilterLanes, const ROWS: usize, const 
     dst: &mut [u8],
     dst_stride: usize,
 ) {
+    // SAFETY: forwards the caller's slice and SIMD contracts.
+    unsafe { filter_any_dir_sink::<V, u8, ROWS, S>(src, stride, origin, args, dst, dst_stride) }
+}
+
+/// High-bit-depth (`u16`) [`filter`] for the block's direction `args.dir`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) unsafe fn filter_any_dir_u16<V: I16FilterLanes, const ROWS: usize, const S: usize>(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: forwards the caller's slice and SIMD contracts.
+    unsafe { filter_any_dir_sink::<V, u16, ROWS, S>(src, stride, origin, args, dst, dst_stride) }
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+unsafe fn filter_any_dir_sink<
+    V: I16FilterLanes,
+    Dst: CdefSink,
+    const ROWS: usize,
+    const S: usize,
+>(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [Dst],
+    dst_stride: usize,
+) {
     // Select active taps once per block. Const cases eliminate per-tap
-    // clipping masks and inner-loop branches visible in the ARM profile.
-    // Five paired native joint-fast runs: crowd CPU -1.324%, bodycam +0.194%;
-    // output is identical. The specialized NEON block8 grows10.5KiB to22.7KiB.
-    // The arithmetic and clipping rules are unchanged; zero strengths are
-    // still accepted by checkasm even though callers normally omit them.
+    // clipping masks and inner-loop branches.
     // SAFETY: each case forwards the caller's slice and SIMD contracts.
     unsafe {
         match (args.pri != 0, args.sec != 0) {
             (true, true) => {
-                filter_dirs::<V, ROWS, S, true, true>(src, stride, origin, args, dst, dst_stride);
+                filter_dirs::<V, Dst, ROWS, S, true, true>(
+                    src, stride, origin, args, dst, dst_stride,
+                );
             }
             (true, false) => {
-                filter_dirs::<V, ROWS, S, true, false>(src, stride, origin, args, dst, dst_stride);
+                filter_dirs::<V, Dst, ROWS, S, true, false>(
+                    src, stride, origin, args, dst, dst_stride,
+                );
             }
             (false, true) => {
-                filter_dirs::<V, ROWS, S, false, true>(src, stride, origin, args, dst, dst_stride);
+                filter_dirs::<V, Dst, ROWS, S, false, true>(
+                    src, stride, origin, args, dst, dst_stride,
+                );
             }
             (false, false) => {
-                filter_dirs::<V, ROWS, S, false, false>(src, stride, origin, args, dst, dst_stride);
+                filter_dirs::<V, Dst, ROWS, S, false, false>(
+                    src, stride, origin, args, dst, dst_stride,
+                );
             }
         }
     }
@@ -237,6 +357,7 @@ pub(crate) unsafe fn filter_any_dir<V: I16FilterLanes, const ROWS: usize, const 
 #[inline(always)]
 unsafe fn filter_dirs<
     V: I16FilterLanes,
+    Dst: CdefSink,
     const ROWS: usize,
     const S: usize,
     const USE_PRI: bool,
@@ -246,7 +367,7 @@ unsafe fn filter_dirs<
     stride: usize,
     origin: usize,
     args: &CdefArgs,
-    dst: &mut [u8],
+    dst: &mut [Dst],
     dst_stride: usize,
 ) {
     // Direct calls, not function pointers: each body must inline into the
@@ -254,28 +375,28 @@ unsafe fn filter_dirs<
     // SAFETY: every arm forwards the caller's contract unchanged.
     unsafe {
         match args.dir {
-            0 => filter::<V, ROWS, S, 0, USE_PRI, USE_SEC>(
+            0 => filter::<V, Dst, ROWS, S, 0, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            1 => filter::<V, ROWS, S, 1, USE_PRI, USE_SEC>(
+            1 => filter::<V, Dst, ROWS, S, 1, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            2 => filter::<V, ROWS, S, 2, USE_PRI, USE_SEC>(
+            2 => filter::<V, Dst, ROWS, S, 2, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            3 => filter::<V, ROWS, S, 3, USE_PRI, USE_SEC>(
+            3 => filter::<V, Dst, ROWS, S, 3, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            4 => filter::<V, ROWS, S, 4, USE_PRI, USE_SEC>(
+            4 => filter::<V, Dst, ROWS, S, 4, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            5 => filter::<V, ROWS, S, 5, USE_PRI, USE_SEC>(
+            5 => filter::<V, Dst, ROWS, S, 5, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            6 => filter::<V, ROWS, S, 6, USE_PRI, USE_SEC>(
+            6 => filter::<V, Dst, ROWS, S, 6, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
-            _ => filter::<V, ROWS, S, 7, USE_PRI, USE_SEC>(
+            _ => filter::<V, Dst, ROWS, S, 7, USE_PRI, USE_SEC>(
                 src, stride, origin, args, dst, dst_stride,
             ),
         }

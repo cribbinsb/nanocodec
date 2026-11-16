@@ -95,12 +95,21 @@ pub(crate) fn kernel(isa: Isa) -> WarpFn {
     }
 }
 
-/// Scalar reference (AV1 §7.11.3.5, the spec's two loops), at any depth
-/// (`InterRound0` is 3 up to 10 bits).
+/// Scalar reference (AV1 §7.11.3.5, the spec's two loops), 8/10-bit.
 pub(crate) fn warp8x8_scalar<T: Sample>(
-    (window, stride): (&[T], usize),
+    window: (&[T], usize),
     phases: &WarpPhases,
     round1: u32,
+    out: &mut WarpOut,
+) {
+    warp8x8_scalar_at(window, phases, (INTER_ROUND0, round1), out);
+}
+
+/// Scalar reference at any depth (`rounds = (InterRound0, InterRound1)`).
+pub(crate) fn warp8x8_scalar_at<T: Sample>(
+    (window, stride): (&[T], usize),
+    phases: &WarpPhases,
+    (round0, round1): (u32, u32),
     out: &mut WarpOut,
 ) {
     let mut intermediate = [[0i32; WARP_BLOCK]; WINDOW_SIDE];
@@ -113,7 +122,7 @@ pub(crate) fn warp8x8_scalar<T: Sample>(
                 .zip(&source[c..c + TAPS])
                 .map(|(&t, &s)| i32::from(t) * s.to_i32())
                 .sum();
-            *value = round2(sum, INTER_ROUND0);
+            *value = round2(sum, round0);
         }
     }
     for r in 0..WARP_BLOCK {

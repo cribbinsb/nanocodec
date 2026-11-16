@@ -263,6 +263,8 @@ impl Dsp {
         crate::av1_inverse::avx512::install(&mut dsp.av1_inverse);
         av2_txfm::avx512::install(&mut dsp.av2_txfm);
         dsp.end_of_block = crate::end_of_block::kernel(Isa::Avx512);
+        dsp.av1_lr = crate::av1_restoration::kernels::kernels(Isa::Avx512);
+        dsp.high.install_avx512();
         Some(dsp)
     }
 
@@ -378,11 +380,18 @@ impl Dsp {
         dst: &mut nc_common::PlaneViewMut<'_>,
     ) {
         use crate::intra_prediction::av1_block::Square;
-        edges.predict_with(
+        let intra = &self.high.av1_intra;
+        edges.predict_full(
             |square, prediction, dst| match prediction {
                 Square::Angle(angle) => self.av1_intra_predict_angle(square, angle, dst),
                 Square::Mode(mode) => self.av1_intra_predict(square, mode, dst),
             },
+            // SAFETY: `self.high` matches this CPU's supported ISA.
+            |e, dst| unsafe { (intra.paeth_u8)(e, dst) },
+            // SAFETY: `self.high` matches this CPU's supported ISA.
+            |e, k, dst| unsafe { (intra.smooth_u8)(e, k, dst) },
+            // SAFETY: `self.high` matches this CPU's supported ISA.
+            |win, weight, out| unsafe { (intra.run_u8)(win, weight, out) },
             kind,
             dst,
         );
@@ -3409,6 +3418,12 @@ impl Dsp {
             unsafe { (self.av1_inverse.dc)(tx, coeffs[0], dst.data_mut(), stride) };
             return;
         }
+        if kind == Av1TxType::Idtx && eob == 1 {
+            let res = crate::av1_inverse::generic::idtx_dc_residual(tx, coeffs[0], BitDepth::EIGHT);
+            let p0 = &mut dst.data_mut()[0];
+            *p0 = (i32::from(*p0) + res).clamp(0, 255) as u8;
+            return;
+        }
         // Preserve the tuned square kernels, especially the guarded narrow
         // NEON/SIMD128 graphs. Replacing them with the generic sparse graph
         // is not uniformly faster (AVX2 8x8 measured +11% instructions).
@@ -3518,6 +3533,16 @@ impl Dsp {
             // SAFETY: supported ISA and validated destination; DC is clamped
             // identically to the full graph before either transform pass.
             unsafe { (self.av1_inverse.dc)(tx, i32::from(coeffs[0]), dst.data_mut(), stride) };
+            return;
+        }
+        if kind == Av1TxType::Idtx && eob == 1 {
+            let res = crate::av1_inverse::generic::idtx_dc_residual(
+                tx,
+                i32::from(coeffs[0]),
+                BitDepth::EIGHT,
+            );
+            let p0 = &mut dst.data_mut()[0];
+            *p0 = (i32::from(*p0) + res).clamp(0, 255) as u8;
             return;
         }
         // A square DCT_DCT passes the side of its nonzero low square (the

@@ -2,6 +2,7 @@
 //! 8-bit with the ISA's row kernels ([`Dsp`]), deeper samples with the scalar ones
 //! ([`DeepRows`]), one driver for both ([`GrainRows`]), AV1's and AV2's block layouts
 //! ([`GrainBlocks`]).
+use super::high_simd::HighGrainScaling;
 use super::kernels::{blend_at, chroma_at, luma_at};
 use super::{
     AR_PADDING, AV2_SMALL_BLOCK, Av1FilmGrainParams, Av1GrainScaling, BLOCK, Grain, GrainBlocks,
@@ -12,10 +13,14 @@ use crate::Dsp;
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 /// The row kernels the synthesis driver calls, on samples `T` with grain
-/// stored as `G`: [`Dsp`]'s 8-bit table, or [`DeepRows`] at a depth.
+/// stored as `G`: [`Dsp`]'s 8-bit table, [`HighRows`] (`u16` SIMD), or [`DeepRows`].
 trait GrainRows<T, G> {
+    /// Per-plane scaling lookup table prepared once per frame.
+    type Scaling: Clone;
     /// The samples' depth.
     fn depth(&self) -> BitDepth;
+    /// Prepare the plane's scaling lookup table once per frame.
+    fn prepare_scaling(&self, lut: &[u8; 256], shift: u8) -> Self::Scaling;
     /// Blend the overlap row `old` into `new`.
     fn blend_row(&self, old: &[G], new: &mut [G], weights: [i16; 2]);
     /// Luma grain of one row, clipped to `bounds`.
@@ -23,7 +28,7 @@ trait GrainRows<T, G> {
         &self,
         source: &[T],
         grain: &[G],
-        scaling: &Av1GrainScaling,
+        scaling: &Self::Scaling,
         bounds: [i32; 2],
         out: &mut [T],
     );
@@ -34,7 +39,7 @@ trait GrainRows<T, G> {
         source: &[T],
         luma: &[T],
         grain: &[G],
-        scaling: &Av1GrainScaling,
+        scaling: &Self::Scaling,
         bounds: [i32; 2],
         coefficients: [i16; 3],
         out: &mut [T],
@@ -42,8 +47,12 @@ trait GrainRows<T, G> {
 }
 
 impl GrainRows<u8, i8> for Dsp {
+    type Scaling = Av1GrainScaling;
     fn depth(&self) -> BitDepth {
         BitDepth::EIGHT
+    }
+    fn prepare_scaling(&self, lut: &[u8; 256], shift: u8) -> Self::Scaling {
+        Av1GrainScaling::new(lut, shift)
     }
     fn blend_row(&self, old: &[i8], new: &mut [i8], weights: [i16; 2]) {
         self.av1_grain_blend_row(old, new, weights);
@@ -73,12 +82,57 @@ impl GrainRows<u8, i8> for Dsp {
     }
 }
 
+/// High-bit-depth (`u16`) SIMD row kernels at `depth`.
+struct HighRows<'a>(&'a Dsp, BitDepth);
+
+impl GrainRows<u16, i16> for HighRows<'_> {
+    type Scaling = Box<HighGrainScaling>;
+    fn depth(&self) -> BitDepth {
+        self.1
+    }
+    fn prepare_scaling(&self, lut: &[u8; 256], shift: u8) -> Self::Scaling {
+        HighGrainScaling::new(lut, shift, self.1)
+    }
+    fn blend_row(&self, old: &[i16], new: &mut [i16], weights: [i16; 2]) {
+        self.0
+            .av1_grain_high_blend_row(old, new, weights, grain_range(self.1));
+    }
+    fn luma_row(
+        &self,
+        source: &[u16],
+        grain: &[i16],
+        scaling: &Self::Scaling,
+        bounds: [i32; 2],
+        out: &mut [u16],
+    ) {
+        self.0
+            .av1_grain_high_luma_row(source, grain, scaling, bounds, out);
+    }
+    fn chroma_row(
+        &self,
+        source: &[u16],
+        luma: &[u16],
+        grain: &[i16],
+        scaling: &Self::Scaling,
+        bounds: [i32; 2],
+        coefficients: [i16; 3],
+        out: &mut [u16],
+    ) {
+        self.0
+            .av1_grain_high_chroma_row(source, luma, grain, scaling, bounds, coefficients, out);
+    }
+}
+
 /// The scalar row kernels at a depth above 8 bits.
 struct DeepRows(BitDepth);
 
 impl<T: Sample> GrainRows<T, i16> for DeepRows {
+    type Scaling = Av1GrainScaling;
     fn depth(&self) -> BitDepth {
         self.0
+    }
+    fn prepare_scaling(&self, lut: &[u8; 256], shift: u8) -> Self::Scaling {
+        Av1GrainScaling::new(lut, shift)
     }
     fn blend_row(&self, old: &[i16], new: &mut [i16], weights: [i16; 2]) {
         blend_at(old, new, weights, grain_range(self.0));
@@ -175,11 +229,30 @@ impl Dsp {
         let grain = (params, GrainBlocks::Av1);
         add_film_grain(&DeepRows(depth), grain, &templates, (input, size), output);
     }
+
+    /// High-bit-depth (`u16`) film grain synthesis with this ISA's row kernels.
+    pub(crate) fn av1_add_film_grain_u16(
+        &self,
+        params: &Av1FilmGrainParams,
+        input: [&PlaneView<'_, u16>; 3],
+        size: (usize, usize),
+        output: [&mut PlaneViewMut<'_, u16>; 3],
+        depth: BitDepth,
+    ) {
+        let templates = templates_at::<i16>(params, depth);
+        add_film_grain(
+            &HighRows(self, depth),
+            (params, GrainBlocks::Av1),
+            &templates,
+            (input, size),
+            output,
+        );
+    }
 }
 
 /// Film grain of every plane with `rows`, laid out as `blocks`.
-fn add_film_grain<T: Sample, G: Grain>(
-    rows: &impl GrainRows<T, G>,
+fn add_film_grain<T: Sample, G: Grain, R: GrainRows<T, G>>(
+    rows: &R,
     (params, blocks): (&Av1FilmGrainParams, GrainBlocks),
     templates: &[Template<G>; 3],
     (input, size): ([&PlaneView<'_, T>; 3], (usize, usize)),
@@ -187,13 +260,13 @@ fn add_film_grain<T: Sample, G: Grain>(
 ) {
     let shift = params.grain_scaling_minus_8 + 8;
     let luma_lut = scaling_lut(&params.y_points);
-    let luma = Av1GrainScaling::new(&luma_lut, shift);
+    let luma = rows.prepare_scaling(&luma_lut, shift);
     let chroma = if params.chroma_scaling_from_luma {
         [luma.clone(), luma.clone()]
     } else {
         [
-            Av1GrainScaling::new(&scaling_lut(&params.cb_points), shift),
-            Av1GrainScaling::new(&scaling_lut(&params.cr_points), shift),
+            rows.prepare_scaling(&scaling_lut(&params.cb_points), shift),
+            rows.prepare_scaling(&scaling_lut(&params.cr_points), shift),
         ]
     };
     for (plane, destination) in output.into_iter().enumerate() {
@@ -214,13 +287,13 @@ fn add_film_grain<T: Sample, G: Grain>(
     }
 }
 
-fn synthesize_plane<T: Sample, G: Grain>(
-    rows: &impl GrainRows<T, G>,
+fn synthesize_plane<T: Sample, G: Grain, R: GrainRows<T, G>>(
+    rows: &R,
     (params, blocks): (&Av1FilmGrainParams, GrainBlocks),
     template: &Template<G>,
     plane: usize,
     (input, output): ([&PlaneView<'_, T>; 3], &mut PlaneViewMut<'_, T>),
-    scaling: &Av1GrainScaling,
+    scaling: &R::Scaling,
     (width, height): (usize, usize),
 ) {
     let sub = usize::from(plane != 0);

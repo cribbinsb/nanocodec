@@ -50,6 +50,12 @@ pub(crate) unsafe fn predict_angle(edges: &IntraEdges, angle: u16, dst: &mut Pla
     edges.predict_angle_with::<NeonDirectional>(angle, dst);
 }
 
+/// NEON 8-bit directional interpolation run (for rectangular blocks too).
+#[target_feature(enable = "neon")]
+pub(crate) unsafe fn run_u8(window: &[u8], weight: usize, out: &mut [u8]) {
+    <NeonDirectional as DirectionalKernels>::run(window, weight, out);
+}
+
 /// One row's constants of a smooth prediction: the row weight `wy` and
 /// `256 − wy`, and the left, bottom-left and top-right samples.
 #[derive(Clone, Copy)]

@@ -11,8 +11,13 @@
 //! Unlike dav1d's in-place ABI, our unfiltered source includes the halo, so
 //! the table needs no left/top merge or unavailable-edge mask. Exact eight-
 //! byte row loads also work at a minimally sized plane's final row.
+//!
+//! The 10/12-bit (`u16`) blocks ([`install_high`]) use the shared 16-bit
+//! lane graph (`cdef::generic`) at 32 lanes instead.
 
-use super::{CDEF_PADDING, CdefArgs, CdefFns, DIRECTIONS, SEC_TAPS};
+use super::{CDEF_PADDING, CdefArgs, CdefFns, DIRECTIONS, HighCdefFns, SEC_TAPS, generic};
+use crate::simd::I16Lanes;
+use crate::simd::avx512_i16::I16x32;
 use crate::simd::gfni::shift_matrix;
 use core::arch::x86_64::{
     __m128i, __m512i, _MM_CMPINT_NLE, _mm512_add_epi8, _mm512_add_epi32, _mm512_and_si512,
@@ -264,6 +269,214 @@ unsafe fn block4_pair(
                 out,
                 dst_stride,
             );
+        }
+    }
+}
+
+/// Install AVX-512 high-bit-depth (`u16`) CDEF kernels over the AVX2 table:
+/// four-row 8x8 luma passes (`I16x32`, two passes per 8x8 block) and single-pass
+/// dual U+V 4x4 interior chroma blocks (adapted from dav1d's
+/// `src/x86/cdef16_avx512.asm`, BSD-2-Clause; see `THIRD_PARTY.md`).
+pub(crate) fn install_high(fns: &mut HighCdefFns) {
+    fns.edge[1] = block8_edge_u16;
+    fns.interior[1] = block8_interior_u16;
+    fns.interior_pair4 = Some(block4_pair_u16);
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+unsafe fn block8_edge_u16(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: AVX-512F/BW/VL is enabled (dispatch contract).
+    unsafe {
+        generic::filter_any_dir_u16::<I16x32, 4, 12>(src, stride, origin, args, dst, dst_stride);
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+unsafe fn block8_interior_u16(
+    src: &[u16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: AVX-512F/BW/VL is enabled; valid 10/12-bit `u16` samples
+    // (`0..=4095`) fit positive `i16`.
+    unsafe {
+        let src_i16 = core::slice::from_raw_parts(src.as_ptr().cast::<i16>(), src.len());
+        block8_edge_u16(src_i16, stride, origin, args, dst, dst_stride);
+    }
+}
+
+const CHROMA_SIDE: usize = 4;
+const CHROMA_EXTENT: usize = CHROMA_SIDE + 2 * CDEF_PADDING;
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+#[inline]
+unsafe fn load_uv_pair4(
+    win_u: &[u16],
+    win_v: &[u16],
+    stride: usize,
+    row: usize,
+    col: usize,
+) -> I16x32 {
+    debug_assert!(row + CHROMA_SIDE <= CHROMA_EXTENT && col + CHROMA_SIDE <= CHROMA_EXTENT);
+    let rows = |win: &[u16]| -> [&[i16]; 4] {
+        // SAFETY: `win` covers all 8 rows of 8 samples (`7 * stride + 8`).
+        unsafe {
+            let base = win.as_ptr().add(row * stride + col).cast::<i16>();
+            [
+                core::slice::from_raw_parts(base, CHROMA_SIDE),
+                core::slice::from_raw_parts(base.add(stride), CHROMA_SIDE),
+                core::slice::from_raw_parts(base.add(2 * stride), CHROMA_SIDE),
+                core::slice::from_raw_parts(base.add(3 * stride), CHROMA_SIDE),
+            ]
+        }
+    };
+    // SAFETY: AVX-512F/BW/VL enabled and row slices hold 4 words each.
+    unsafe { I16x32::load_pair4(rows(win_u), rows(win_v)) }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+#[inline]
+unsafe fn tap_pair_uv(
+    win: (&[u16], &[u16], usize),
+    (dr, dc): (isize, isize),
+    x: I16x32,
+    strength: I16x32,
+    shift: u32,
+    range: Option<&mut generic::Range<I16x32>>,
+) -> I16x32 {
+    let at = |r: isize, c: isize| {
+        (
+            CDEF_PADDING.wrapping_add_signed(r),
+            CDEF_PADDING.wrapping_add_signed(c),
+        )
+    };
+    let (r0, c0) = at(dr, dc);
+    let (r1, c1) = at(-dr, -dc);
+    // SAFETY: `dr, dc` lie in `-2..=2`, inside the validated 8x8 windows.
+    let (p0, p1) = unsafe {
+        (
+            load_uv_pair4(win.0, win.1, win.2, r0, c0),
+            load_uv_pair4(win.0, win.1, win.2, r1, c1),
+        )
+    };
+    if let Some(range) = range {
+        range.take(p0);
+        range.take(p1);
+    }
+    generic::constrain(p0.sub(x), strength, shift).add(generic::constrain(
+        p1.sub(x),
+        strength,
+        shift,
+    ))
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+#[inline]
+unsafe fn filter_pair4<const USE_PRI: bool, const USE_SEC: bool>(
+    src: [&[u16]; 2],
+    stride: usize,
+    origins: [usize; 2],
+    args: &CdefArgs,
+    dst: [*mut u16; 2],
+    dst_stride: usize,
+) {
+    let window = |i: usize| {
+        let top = origins[i]
+            .checked_sub(CDEF_PADDING * stride + CDEF_PADDING)
+            .expect("interior chroma source");
+        &src[i][top..][..(CHROMA_EXTENT - 1) * stride + CHROMA_EXTENT]
+    };
+    let win = (window(0), window(1), stride);
+    let clip = USE_PRI && USE_SEC;
+    let dir = args.dir & 7;
+    let pri_dir = DIRECTIONS[dir];
+    let sec_dirs = [DIRECTIONS[(dir + 2) & 7], DIRECTIONS[(dir + 6) & 7]];
+    // SAFETY: windows cover all taps; `dst[0]` and `dst[1]` point to disjoint
+    // 4x4 blocks in U and V planes validated by the band driver.
+    unsafe {
+        let x = load_uv_pair4(win.0, win.1, stride, CDEF_PADDING, CDEF_PADDING);
+        let mut range = generic::Range { lo: x, hi: x };
+        let mut sum = I16x32::splat(0);
+        if USE_PRI {
+            let pri = I16x32::splat(args.pri);
+            for (&step, &weight) in pri_dir.iter().zip(&args.pri_taps) {
+                let taps = tap_pair_uv(
+                    win,
+                    step,
+                    x,
+                    pri,
+                    args.pri_shift,
+                    clip.then_some(&mut range),
+                );
+                sum = sum.add(taps.mul(I16x32::splat(weight)));
+            }
+        }
+        if USE_SEC {
+            let sec = I16x32::splat(args.sec);
+            let mut sec_sum = [I16x32::splat(0); 2];
+            for (k, sec_k) in sec_sum.iter_mut().enumerate() {
+                for dirs in &sec_dirs {
+                    *sec_k = sec_k.add(tap_pair_uv(
+                        win,
+                        dirs[k],
+                        x,
+                        sec,
+                        args.sec_shift,
+                        clip.then_some(&mut range),
+                    ));
+                }
+            }
+            sum = sum.add(sec_sum[0].add(sec_sum[0])).add(sec_sum[1]);
+        }
+        let mut y = x.add(sum.add(I16x32::splat(8)).add(sum.sra(15)).sra(4));
+        if clip {
+            y = y.max(range.lo).min(range.hi);
+        }
+        let rows_mut = |base: *mut u16| -> [&mut [i16]; 4] {
+            let base = base.cast::<i16>();
+            [
+                core::slice::from_raw_parts_mut(base, CHROMA_SIDE),
+                core::slice::from_raw_parts_mut(base.add(dst_stride), CHROMA_SIDE),
+                core::slice::from_raw_parts_mut(base.add(2 * dst_stride), CHROMA_SIDE),
+                core::slice::from_raw_parts_mut(base.add(3 * dst_stride), CHROMA_SIDE),
+            ]
+        };
+        y.store_pair4(rows_mut(dst[0]), rows_mut(dst[1]));
+    }
+}
+
+#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+unsafe fn block4_pair_u16(
+    src: [&[u16]; 2],
+    stride: usize,
+    origins: [usize; 2],
+    args: &CdefArgs,
+    dst: [*mut u16; 2],
+    dst_stride: usize,
+) {
+    // SAFETY: forwards the caller's AVX-512 and slice contracts.
+    unsafe {
+        match (args.pri != 0, args.sec != 0) {
+            (true, true) => filter_pair4::<true, true>(src, stride, origins, args, dst, dst_stride),
+            (true, false) => {
+                filter_pair4::<true, false>(src, stride, origins, args, dst, dst_stride);
+            }
+            (false, true) => {
+                filter_pair4::<false, true>(src, stride, origins, args, dst, dst_stride);
+            }
+            (false, false) => {
+                filter_pair4::<false, false>(src, stride, origins, args, dst, dst_stride);
+            }
         }
     }
 }

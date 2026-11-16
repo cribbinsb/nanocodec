@@ -28,7 +28,7 @@ const MAX_INTRA_SIZE: usize = 64;
 const EDGE_LEN: usize = 2 * MAX_INTRA_SIZE;
 /// Smooth weights have eight fractional bits (AV1 §7.11.2).
 pub(crate) const SMOOTH_SHIFT: u32 = 8;
-const SMOOTH_SCALE: u32 = 1 << SMOOTH_SHIFT;
+pub(crate) const SMOOTH_SCALE: u32 = 1 << SMOOTH_SHIFT;
 
 /// The DC prediction value of the `size`×`size` block at `(x, y)` of
 /// `plane`, from the already-reconstructed row above and column to the

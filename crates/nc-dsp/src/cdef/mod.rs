@@ -219,6 +219,66 @@ pub(crate) type CdefPairFn8 = unsafe fn(
 /// direction (0..=7) and the directional contrast (`var`).
 pub(crate) type FindDirFn = unsafe fn(src: &[u8], stride: usize) -> (u8, i32);
 
+/// High-bit-depth (`u16`) direction search on an 8x8 luma block (`bits_above`
+/// bits over 8).
+pub(crate) type FindDir16Fn = unsafe fn(src: &[u16], stride: usize, bits_above: u32) -> (u8, i32);
+
+/// High-bit-depth (`u16`) CDEF kernel reading a padded `i16` window (edge blocks).
+pub(crate) type CdefEdge16Fn = unsafe fn(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+);
+
+/// High-bit-depth (`u16`) CDEF kernel reading an unpadded `u16` plane (interior blocks).
+pub(crate) type CdefInterior16Fn = unsafe fn(
+    src: &[u16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+);
+
+/// High-bit-depth (`u16`) dual 4x4 interior kernel (U and V blocks of one 8x8 unit).
+pub(crate) type CdefPair16Fn = unsafe fn(
+    src: [&[u16]; 2],
+    stride: usize,
+    origins: [usize; 2],
+    args: &CdefArgs,
+    dst: [*mut u16; 2],
+    dst_stride: usize,
+);
+
+/// High-bit-depth (`u16`) CDEF kernels of one ISA.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HighCdefFns {
+    /// Direction search of 8x8 luma blocks.
+    pub find_dir: FindDir16Fn,
+    /// Padded-window edge kernels for `[4x4, 8x8]`.
+    pub edge: [CdefEdge16Fn; 2],
+    /// Interior kernels for `[4x4, 8x8]`.
+    pub interior: [CdefInterior16Fn; 2],
+    /// Dual U+V 4x4 interior kernel where vectors hold 32 `i16` lanes.
+    pub interior_pair4: Option<CdefPair16Fn>,
+}
+
+impl HighCdefFns {
+    /// Plain scalar reference table.
+    pub const SCALAR: Self = Self {
+        find_dir: scalar::find_dir_u16,
+        edge: [scalar::block4_edge_u16, scalar::block8_edge_u16],
+        interior: [
+            scalar::interior_rows::<u16, 4>,
+            scalar::interior_rows::<u16, 8>,
+        ],
+        interior_pair4: None,
+    };
+}
+
 /// The CDEF kernels of one ISA.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CdefFns {

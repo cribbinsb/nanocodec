@@ -20,6 +20,7 @@
 //! (`av1_add_film_grain`; BSD-2-Clause, see `THIRD_PARTY.md`).
 
 mod gaussian;
+pub(crate) mod high_simd;
 pub(crate) mod kernels;
 mod synthesis;
 

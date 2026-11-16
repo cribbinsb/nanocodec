@@ -255,6 +255,35 @@ fn block4(
     filter(4, src, stride, origin, args, dst, dst_stride);
 }
 
+/// Scalar `u16` direction search wrapper for [`super::HighCdefFns::SCALAR`].
+pub(crate) fn find_dir_u16(src: &[u16], stride: usize, bits_above: u32) -> (u8, i32) {
+    find_dir_at(src, stride, bits_above)
+}
+
+/// Scalar `u16` 4x4 padded-window block wrapper.
+pub(crate) fn block4_edge_u16(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    filter(4, src, stride, origin, args, dst, dst_stride);
+}
+
+/// Scalar `u16` 8x8 padded-window block wrapper.
+pub(crate) fn block8_edge_u16(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    filter(8, src, stride, origin, args, dst, dst_stride);
+}
+
 /// The 8-bit references: the same filter on the unpadded plane, for blocks
 /// whose taps all lie inside it (so no tap is unavailable and the clipping
 /// range takes every tap).

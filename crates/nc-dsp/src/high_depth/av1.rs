@@ -18,17 +18,15 @@ use nc_common::{Picture, PlaneView, PlaneViewMut, Sample};
 
 use super::{Av1Taps, DepthKernels};
 use crate::av1_film_grain::Av1FilmGrainParams;
-use crate::av1_mc::blend::{Av1CompoundPred, Av1Mask, av1_blend_average_at, av1_blend_mask_at};
-use crate::av1_mc::convolve::{
-    Av1McAxis, KERNEL_EDGE, check_prediction, predict_compound_scalar, predict_scalar,
-};
-use crate::av1_mc::filter::{AV1_FILTER_TAPS, Av1Filters};
-use crate::av1_mc::warp::{
-    Av1Shear, av1_warp, av1_warp_at, av1_warp_compound, av1_warp_compound_at,
-};
+use crate::av1_mc::blend::{Av1CompoundPred, Av1Mask, Av1ObmcEdge};
+use crate::av1_mc::convolve::{Av1McAxis, KERNEL_EDGE, check_prediction};
+use crate::av1_mc::filter::{AV1_FILTER_TAPS, AV1_SUBPEL_POSITIONS, Av1Filters};
+use crate::av1_mc::inter_round0;
+use crate::av1_mc::warp::{Av1Shear, av1_warp, av1_warp_compound, warp_compound, warp_final};
+use crate::av1_mc::warp_kernels::{WarpOut, WarpPhases};
 use crate::av1_restoration::{Av1LoopRestoration, Av1LrScratch, Av1StripeBoundaries};
 use crate::cdef::band::{CdefLines, CdefSets, CdefUnit};
-use crate::deblock::runs::{EdgeRun, Plane as RunPlane, av1_scalar_at};
+use crate::deblock::runs::{EdgeRun, Plane as RunPlane};
 use crate::intra_prediction::av1_block::{BlockEdges, IntraKind};
 use crate::intra_prediction::filter::FilterIntraMode;
 use crate::{Av1EdgeFilter, Av1TxSize, Av1TxType, BlockSize};
@@ -102,6 +100,15 @@ pub trait Av1Pixel: Sample {
         dst: &mut PlaneViewMut<'_, Self>,
     );
     #[doc(hidden)]
+    fn av1_cfl_predict(
+        kernels: DepthKernels<'_>,
+        luma: &PlaneView<'_, Self>,
+        luma_extent: (usize, usize),
+        dc: Self,
+        alpha_q3: i32,
+        dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
     fn av1_put_samples(
         kernels: DepthKernels<'_>,
         filters: Av1Filters,
@@ -149,6 +156,30 @@ pub trait Av1Pixel: Sample {
         kernels: DepthKernels<'_>,
         predictions: (Av1CompoundPred<'_>, Av1CompoundPred<'_>),
         mask: Av1Mask<'_>,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
+    fn av1_blend_distance(
+        kernels: DepthKernels<'_>,
+        predictions: (Av1CompoundPred<'_>, Av1CompoundPred<'_>),
+        weights: [u8; 2],
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
+    fn av1_blend_interintra(
+        kernels: DepthKernels<'_>,
+        intra: &PlaneView<'_, Self>,
+        mask: Av1Mask<'_>,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
+    fn av1_obmc_blend(
+        kernels: DepthKernels<'_>,
+        obmc: &PlaneView<'_, Self>,
+        edge: Av1ObmcEdge,
         size: (usize, usize),
         dst: &mut PlaneViewMut<'_, Self>,
     );
@@ -209,6 +240,7 @@ pub trait Av1Pixel: Sample {
 /// An unscaled prediction the `u16` kernel table covers: its taps, the
 /// width class of its tiles and their size (blocks of 128 tile into 64;
 /// sides of 4 to 128 samples, powers of two).
+#[derive(Clone, Copy)]
 struct Unscaled {
     taps: Av1Taps<'static>,
     class: usize,
@@ -247,8 +279,98 @@ impl Unscaled {
 
 /// The smallest kernel side.
 const KERNEL_MIN_SIDE: usize = 4;
-/// Side of a luma CDEF block (chroma: 4).
-const CDEF_LUMA_SIZE: usize = 8;
+const NARROW_PADDED_MAX: usize = 16;
+const NARROW_WINDOW: usize = (NARROW_PADDED_MAX + AV1_FILTER_TAPS - 1).pow(2);
+const NARROW_BLOCK: usize = NARROW_PADDED_MAX * NARROW_PADDED_MAX;
+
+#[cold]
+#[inline(never)]
+fn put_samples_u16_general(
+    kernels: DepthKernels<'_>,
+    filters: Av1Filters,
+    (src, src_stride): (&[u16], usize),
+    (w, h): (usize, usize),
+    fracs: (usize, usize),
+    (dst, dst_stride): (&mut [u16], usize),
+) {
+    let span = (w + AV1_FILTER_TAPS - 1, h + AV1_FILTER_TAPS - 1);
+    let window =
+        PlaneView::new(src, src_stride, span.0, span.1).expect("window covers its samples");
+    let mut dst = PlaneViewMut::new(dst, dst_stride, w, h).expect("destination covers the block");
+    let axes = (Av1McAxis::unscaled(fracs.0), Av1McAxis::unscaled(fracs.1));
+    u16::av1_predict(kernels, filters, &window, (w, h), axes, &mut dst);
+}
+
+#[cold]
+#[inline(never)]
+fn prep_samples_u16_general(
+    kernels: DepthKernels<'_>,
+    filters: Av1Filters,
+    (src, src_stride): (&[u16], usize),
+    (w, h): (usize, usize),
+    fracs: (usize, usize),
+    dst: (&mut [i16], usize),
+) {
+    let span = (w + AV1_FILTER_TAPS - 1, h + AV1_FILTER_TAPS - 1);
+    let window =
+        PlaneView::new(src, src_stride, span.0, span.1).expect("window covers its samples");
+    let axes = (Av1McAxis::unscaled(fracs.0), Av1McAxis::unscaled(fracs.1));
+    u16::av1_predict_compound(kernels, filters, &window, (w, h), axes, dst);
+}
+
+fn narrow_unscaled_u16(
+    filters: Av1Filters,
+    (w, h): (usize, usize),
+    axes: (Av1McAxis, Av1McAxis),
+) -> Option<Unscaled> {
+    if w.min(h) != 2 || !w.is_power_of_two() || !h.is_power_of_two() {
+        return None;
+    }
+    let padded = (w.max(KERNEL_MIN_SIDE), h.max(KERNEL_MIN_SIDE));
+    if padded.0.max(padded.1) > NARROW_PADDED_MAX {
+        return None;
+    }
+    let (phase_x, phase_y) = (axes.0.unscaled_phase()?, axes.1.unscaled_phase()?);
+    Some(Unscaled {
+        taps: (&filters.x.kernel(w)[phase_x], &filters.y.kernel(h)[phase_y]),
+        class: (padded.0.trailing_zeros() - KERNEL_MIN_SIDE.trailing_zeros()) as usize,
+        tile: padded,
+    })
+}
+
+fn put_narrow_u16(
+    kernels: DepthKernels<'_>,
+    case: Unscaled,
+    window: &PlaneView<'_, u16>,
+    (w, h): (usize, usize),
+    dst: &mut PlaneViewMut<'_, u16>,
+) {
+    let (pw, ph) = case.tile;
+    let span_w = pw + AV1_FILTER_TAPS - 1;
+    let mut samples = [0u16; NARROW_WINDOW];
+    for (r, row) in samples
+        .chunks_exact_mut(span_w)
+        .take(h + AV1_FILTER_TAPS - 1)
+        .enumerate()
+    {
+        row[..w + AV1_FILTER_TAPS - 1].copy_from_slice(&window.row(r)[..w + AV1_FILTER_TAPS - 1]);
+    }
+    let mut block = [0u16; NARROW_BLOCK];
+    let kernel = kernels.dsp.high.av1_mc.put[case.class];
+    // SAFETY: `samples` covers `(ph + 7) * span_w` and `block` covers `ph * pw`.
+    unsafe {
+        kernel(
+            (&samples, span_w),
+            (&mut block, pw),
+            ph,
+            case.taps,
+            kernels.depth,
+        );
+    }
+    for r in 0..h {
+        dst.row_mut(r)[..w].copy_from_slice(&block[r * pw..r * pw + w]);
+    }
+}
 
 impl Av1Pixel for u8 {
     type Coefficient = i16;
@@ -288,6 +410,27 @@ impl Av1Pixel for u8 {
         dst: &mut PlaneViewMut<'_, u8>,
     ) {
         kernels.dsp.av1_intra_predict_filter_block(edges, mode, dst);
+    }
+
+    fn av1_cfl_predict(
+        kernels: DepthKernels<'_>,
+        luma: &PlaneView<'_, u8>,
+        luma_extent: (usize, usize),
+        dc: u8,
+        alpha_q3: i32,
+        dst: &mut PlaneViewMut<'_, u8>,
+    ) {
+        // SAFETY: `high` matches this CPU; `cfl_u8` validates views and extents.
+        unsafe {
+            (kernels.dsp.high.av1_intra.cfl_u8)(
+                luma,
+                luma_extent,
+                dc,
+                alpha_q3,
+                dst,
+                kernels.depth,
+            );
+        }
     }
 
     #[inline]
@@ -371,7 +514,48 @@ impl Av1Pixel for u8 {
         size: (usize, usize),
         dst: &mut PlaneViewMut<'_, u8>,
     ) {
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        // SAFETY: `high` matches this CPU; kernel validates `p0`, `p1`, `mask`, and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.blend.mask_u8)(p0, p1, mask, size, dst, kernels.depth);
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         crate::av1_mc::blend::av1_blend_mask(kernels.dsp, p0, p1, mask, size, dst);
+    }
+
+    fn av1_blend_distance(
+        kernels: DepthKernels<'_>,
+        (p0, p1): (Av1CompoundPred<'_>, Av1CompoundPred<'_>),
+        weights: [u8; 2],
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, u8>,
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `p0`, `p1`, and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.blend.distance_u8)(p0, p1, weights, size, dst, kernels.depth);
+        }
+    }
+
+    fn av1_blend_interintra(
+        kernels: DepthKernels<'_>,
+        intra: &PlaneView<'_, u8>,
+        mask: Av1Mask<'_>,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, u8>,
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `intra`, `mask`, and `dst`.
+        unsafe { (kernels.dsp.high.av1_mc.blend.interintra_u8)(intra, mask, size, dst) };
+    }
+
+    fn av1_obmc_blend(
+        kernels: DepthKernels<'_>,
+        obmc: &PlaneView<'_, u8>,
+        edge: Av1ObmcEdge,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, u8>,
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `obmc` and `dst`.
+        unsafe { (kernels.dsp.high.av1_mc.blend.obmc_u8)(obmc, edge, size, dst) };
     }
 
     fn av1_warp(
@@ -471,22 +655,90 @@ impl Av1Pixel for u16 {
         eob: usize,
         dst: &mut PlaneViewMut<'_, u16>,
     ) {
+        assert!(kind.fits(tx), "{kind:?} is not defined for {tx:?}");
+        let (width, height) = (tx.width(), tx.height());
         assert!(
-            dst.width() >= tx.width() && dst.height() >= tx.height(),
+            coeffs.len() >= tx.coded_area(),
+            "{} coefficients for a {width}x{height} transform",
+            coeffs.len()
+        );
+        assert!(
+            dst.width() >= width && dst.height() >= height,
             "inverse destination smaller than {tx:?}"
         );
         if eob == 0 {
             return;
         }
+        let depth = kernels.depth;
         let stride = dst.stride();
-        crate::av1_inverse::high::inverse_add_at(
-            tx,
-            kind,
-            coeffs,
-            dst.data_mut(),
-            stride,
-            kernels.depth,
-        );
+        if eob == 1 {
+            if kind == Av1TxType::DctDct {
+                let res = crate::av1_inverse::generic::dc_residual_high(tx, coeffs[0], depth);
+                // SAFETY: `high` matches this CPU; destination validated above.
+                unsafe {
+                    (kernels.dsp.high.av1_inverse.dc)(
+                        res,
+                        width,
+                        height,
+                        dst.data_mut(),
+                        stride,
+                        depth,
+                    );
+                }
+                return;
+            }
+            if kind == Av1TxType::Idtx {
+                let res = crate::av1_inverse::generic::idtx_dc_residual(tx, coeffs[0], depth);
+                let p0 = &mut dst.data_mut()[0];
+                *p0 = depth.clip_to(i32::from(*p0) + res);
+                return;
+            }
+        }
+        let nonzero_rows = if eob >= tx.coded_area() {
+            tx.coded_height()
+        } else {
+            crate::av1_inverse::av1_inverse_nonzero_rows(tx, kind, eob)
+        };
+        let index = tx.index().expect("valid size (checked by fits)");
+        let (vertical, horizontal) = kind.kernels();
+        match depth.bits() {
+            10 => {
+                // SAFETY: `high` matches this CPU; lengths validated above.
+                unsafe {
+                    (kernels.dsp.high.av1_inverse.add_10[index])(
+                        vertical,
+                        horizontal,
+                        coeffs,
+                        nonzero_rows,
+                        dst.data_mut(),
+                        stride,
+                        depth,
+                    );
+                }
+            }
+            12 => {
+                // SAFETY: `high` matches this CPU; lengths validated above.
+                unsafe {
+                    (kernels.dsp.high.av1_inverse.add_12[index])(
+                        vertical,
+                        horizontal,
+                        coeffs,
+                        nonzero_rows,
+                        dst.data_mut(),
+                        stride,
+                        depth,
+                    );
+                }
+            }
+            _ => crate::av1_inverse::high::inverse_add_at(
+                tx,
+                kind,
+                coeffs,
+                dst.data_mut(),
+                stride,
+                depth,
+            ),
+        }
     }
 
     fn av1_inverse_wht_add(
@@ -502,53 +754,148 @@ impl Av1Pixel for u16 {
     }
 
     fn av1_intra_predict_block(
-        _kernels: DepthKernels<'_>,
+        kernels: DepthKernels<'_>,
         edges: &BlockEdges<u16>,
         kind: IntraKind,
         dst: &mut PlaneViewMut<'_, u16>,
     ) {
-        edges.predict(kind, dst);
+        use crate::intra_prediction::IntraMode;
+        use crate::intra_prediction::av1_block::Square;
+        let intra = &kernels.dsp.high.av1_intra;
+        edges.predict_full(
+            |square, prediction, dst| match prediction {
+                Square::Angle(angle) => {
+                    // SAFETY: `high` matches this CPU; `directional` validates angle and `dst`.
+                    unsafe { (intra.directional)(square, angle, dst) };
+                }
+                Square::Mode(IntraMode::Paeth) => {
+                    // SAFETY: `high` matches this CPU; `paeth_u16` validates `dst`.
+                    unsafe { (intra.paeth_u16)(edges, dst) };
+                }
+                Square::Mode(
+                    IntraMode::Smooth | IntraMode::SmoothVertical | IntraMode::SmoothHorizontal,
+                ) => {
+                    // SAFETY: `high` matches this CPU; `smooth_u16` validates `dst`.
+                    unsafe { (intra.smooth_u16)(edges, kind, dst) };
+                }
+                Square::Mode(mode) => square.predict(mode, dst),
+            },
+            // SAFETY: `high` matches this CPU.
+            |e, dst| unsafe { (intra.paeth_u16)(e, dst) },
+            // SAFETY: `high` matches this CPU.
+            |e, k, dst| unsafe { (intra.smooth_u16)(e, k, dst) },
+            // SAFETY: `high` matches this CPU.
+            |win, weight, out| unsafe { (intra.run_u16)(win, weight, out) },
+            kind,
+            dst,
+        );
     }
 
     fn av1_intra_predict_filter_block(
-        _kernels: DepthKernels<'_>,
+        kernels: DepthKernels<'_>,
         edges: &BlockEdges<u16>,
         mode: FilterIntraMode,
         dst: &mut PlaneViewMut<'_, u16>,
     ) {
-        edges.predict_filter(mode, dst);
+        let patches = kernels.dsp.high.av1_intra.filter_patches;
+        let depth = kernels.depth;
+        edges.predict_filter_with(
+            // SAFETY: `high` matches this CPU; `predict_filter_with` checks block sides.
+            |grid, width, height, mode| unsafe { patches(grid, width, height, mode, depth) },
+            mode,
+            dst,
+        );
     }
 
+    fn av1_cfl_predict(
+        kernels: DepthKernels<'_>,
+        luma: &PlaneView<'_, u16>,
+        luma_extent: (usize, usize),
+        dc: u16,
+        alpha_q3: i32,
+        dst: &mut PlaneViewMut<'_, u16>,
+    ) {
+        // SAFETY: `high` matches this CPU; `cfl_u16` validates views and extents.
+        unsafe {
+            (kernels.dsp.high.av1_intra.cfl_u16)(
+                luma,
+                luma_extent,
+                dc,
+                alpha_q3,
+                dst,
+                kernels.depth,
+            );
+        }
+    }
+
+    #[inline]
     fn av1_put_samples(
         kernels: DepthKernels<'_>,
         filters: Av1Filters,
         (src, src_stride): (&[u16], usize),
         (w, h): (usize, usize),
-        fracs: (usize, usize),
+        (fx, fy): (usize, usize),
         (dst, dst_stride): (&mut [u16], usize),
     ) {
-        let span = (w + AV1_FILTER_TAPS - 1, h + AV1_FILTER_TAPS - 1);
-        let window =
-            PlaneView::new(src, src_stride, span.0, span.1).expect("window covers its samples");
-        let mut dst =
-            PlaneViewMut::new(dst, dst_stride, w, h).expect("destination covers the block");
-        let axes = (Av1McAxis::unscaled(fracs.0), Av1McAxis::unscaled(fracs.1));
-        Self::av1_predict(kernels, filters, &window, (w, h), axes, &mut dst);
+        if w.is_power_of_two()
+            && h.is_power_of_two()
+            && (KERNEL_MIN_SIDE..=KERNEL_EDGE).contains(&w)
+            && (KERNEL_MIN_SIDE..=KERNEL_EDGE).contains(&h)
+            && fx < AV1_SUBPEL_POSITIONS
+            && fy < AV1_SUBPEL_POSITIONS
+            && src_stride >= w + AV1_FILTER_TAPS - 1
+            && dst_stride >= w
+        {
+            let class = (w.trailing_zeros() - KERNEL_MIN_SIDE.trailing_zeros()) as usize;
+            let taps = (&filters.x.kernel(w)[fx], &filters.y.kernel(h)[fy]);
+            let kernel = kernels.dsp.high.av1_mc.put[class];
+            // SAFETY: `high` matches this CPU; `kernel` validates `src` and `dst` lengths.
+            unsafe { kernel((src, src_stride), (dst, dst_stride), h, taps, kernels.depth) };
+            return;
+        }
+        put_samples_u16_general(
+            kernels,
+            filters,
+            (src, src_stride),
+            (w, h),
+            (fx, fy),
+            (dst, dst_stride),
+        );
     }
 
+    #[inline]
     fn av1_prep_samples(
         kernels: DepthKernels<'_>,
         filters: Av1Filters,
         (src, src_stride): (&[u16], usize),
         (w, h): (usize, usize),
-        fracs: (usize, usize),
-        dst: (&mut [i16], usize),
+        (fx, fy): (usize, usize),
+        (dst, dst_stride): (&mut [i16], usize),
     ) {
-        let span = (w + AV1_FILTER_TAPS - 1, h + AV1_FILTER_TAPS - 1);
-        let window =
-            PlaneView::new(src, src_stride, span.0, span.1).expect("window covers its samples");
-        let axes = (Av1McAxis::unscaled(fracs.0), Av1McAxis::unscaled(fracs.1));
-        Self::av1_predict_compound(kernels, filters, &window, (w, h), axes, dst);
+        if w.is_power_of_two()
+            && h.is_power_of_two()
+            && (KERNEL_MIN_SIDE..=KERNEL_EDGE).contains(&w)
+            && (KERNEL_MIN_SIDE..=KERNEL_EDGE).contains(&h)
+            && fx < AV1_SUBPEL_POSITIONS
+            && fy < AV1_SUBPEL_POSITIONS
+            && src_stride >= w + AV1_FILTER_TAPS - 1
+            && dst_stride >= w
+        {
+            let class = (w.trailing_zeros() - KERNEL_MIN_SIDE.trailing_zeros()) as usize;
+            let taps = (&filters.x.kernel(w)[fx], &filters.y.kernel(h)[fy]);
+            let kernel = kernels.dsp.high.av1_mc.prep[class];
+            // SAFETY: `high` matches this CPU; `kernel` validates `src` and `dst` lengths.
+            unsafe { kernel((src, src_stride), (dst, dst_stride), h, taps, kernels.depth) };
+            return;
+        }
+        prep_samples_u16_general(
+            kernels,
+            filters,
+            (src, src_stride),
+            (w, h),
+            (fx, fy),
+            (dst, dst_stride),
+        );
     }
 
     fn av1_predict(
@@ -559,23 +906,34 @@ impl Av1Pixel for u16 {
         axes: (Av1McAxis, Av1McAxis),
         dst: &mut PlaneViewMut<'_, u16>,
     ) {
-        let Some(case) = Unscaled::of(filters, size, axes) else {
-            return predict_scalar(filters, window, size, axes, dst, kernels.depth);
-        };
-        check_prediction(window, size, axes);
-        assert!(
-            dst.width() >= size.0 && dst.height() >= size.1,
-            "AV1 prediction destination too small"
-        );
-        let (ws, ds) = (window.stride(), dst.stride());
-        let kernel = kernels.dsp.high.av1_put[case.class];
-        for (left, top) in case.corners(size) {
-            let src = &window.data()[top * ws + left..];
-            let out = &mut dst.data_mut()[top * ds + left..];
-            // SAFETY: the table matches a supported ISA; the window covers
-            // every tile's taps and the destination every tile (checked
-            // above; the kernel indexes its slices).
-            unsafe { kernel((src, ws), (out, ds), case.tile.1, case.taps, kernels.depth) };
+        if let Some(case) = Unscaled::of(filters, size, axes) {
+            check_prediction(window, size, axes);
+            assert!(
+                dst.width() >= size.0 && dst.height() >= size.1,
+                "AV1 prediction destination too small"
+            );
+            let (ws, ds) = (window.stride(), dst.stride());
+            let kernel = kernels.dsp.high.av1_mc.put[case.class];
+            for (left, top) in case.corners(size) {
+                let src = &window.data()[top * ws + left..];
+                let out = &mut dst.data_mut()[top * ds + left..];
+                // SAFETY: `high` matches this CPU; window and destination cover every tile.
+                unsafe { kernel((src, ws), (out, ds), case.tile.1, case.taps, kernels.depth) };
+            }
+            return;
+        }
+        if let Some(padded) = narrow_unscaled_u16(filters, size, axes) {
+            check_prediction(window, size, axes);
+            assert!(
+                dst.width() >= size.0 && dst.height() >= size.1,
+                "AV1 prediction destination too small"
+            );
+            put_narrow_u16(kernels, padded, window, size, dst);
+            return;
+        }
+        // SAFETY: `high` matches this CPU; `scaled_put` validates window and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.scaled_put)(filters, window, size, axes, dst, kernels.depth);
         }
     }
 
@@ -591,32 +949,35 @@ impl Av1Pixel for u16 {
             stride >= w && dst.len() >= (h - 1) * stride + w,
             "AV1 compound prediction buffer too small for {w}x{h}"
         );
-        let Some(case) = Unscaled::of(filters, (w, h), axes) else {
-            return predict_compound_scalar(
+        if let Some(case) = Unscaled::of(filters, (w, h), axes) {
+            check_prediction(window, (w, h), axes);
+            let ws = window.stride();
+            let kernel = kernels.dsp.high.av1_mc.prep[case.class];
+            for (left, top) in case.corners((w, h)) {
+                let src = &window.data()[top * ws + left..];
+                // SAFETY: as for `av1_predict`.
+                unsafe {
+                    kernel(
+                        (src, ws),
+                        (&mut dst[top * stride + left..], stride),
+                        case.tile.1,
+                        case.taps,
+                        kernels.depth,
+                    );
+                }
+            }
+            return;
+        }
+        // SAFETY: `high` matches this CPU; `scaled_prep` validates window and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.scaled_prep)(
                 filters,
                 window,
                 (w, h),
                 axes,
-                dst,
-                stride,
+                (dst, stride),
                 kernels.depth,
             );
-        };
-        check_prediction(window, (w, h), axes);
-        let ws = window.stride();
-        let kernel = kernels.dsp.high.av1_prep[case.class];
-        for (left, top) in case.corners((w, h)) {
-            let src = &window.data()[top * ws + left..];
-            // SAFETY: as for `av1_predict`.
-            unsafe {
-                kernel(
-                    (src, ws),
-                    (&mut dst[top * stride + left..], stride),
-                    case.tile.1,
-                    case.taps,
-                    kernels.depth,
-                );
-            }
         }
     }
 
@@ -630,7 +991,16 @@ impl Av1Pixel for u16 {
             data,
             stride: size.0,
         };
-        av1_blend_average_at(prediction(p0), prediction(p1), size, dst, kernels.depth);
+        // SAFETY: `high` matches this CPU; kernel validates `p0`, `p1`, and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.blend.average)(
+                prediction(p0),
+                prediction(p1),
+                size,
+                dst,
+                kernels.depth,
+            );
+        }
     }
 
     fn av1_blend_mask(
@@ -640,7 +1010,45 @@ impl Av1Pixel for u16 {
         size: (usize, usize),
         dst: &mut PlaneViewMut<'_, u16>,
     ) {
-        av1_blend_mask_at(p0, p1, mask, size, dst, kernels.depth);
+        // SAFETY: `high` matches this CPU; kernel validates `p0`, `p1`, `mask`, and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.blend.mask)(p0, p1, mask, size, dst, kernels.depth);
+        }
+    }
+
+    fn av1_blend_distance(
+        kernels: DepthKernels<'_>,
+        (p0, p1): (Av1CompoundPred<'_>, Av1CompoundPred<'_>),
+        weights: [u8; 2],
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, u16>,
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `p0`, `p1`, and `dst`.
+        unsafe {
+            (kernels.dsp.high.av1_mc.blend.distance)(p0, p1, weights, size, dst, kernels.depth);
+        }
+    }
+
+    fn av1_blend_interintra(
+        kernels: DepthKernels<'_>,
+        intra: &PlaneView<'_, u16>,
+        mask: Av1Mask<'_>,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, u16>,
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `intra`, `mask`, and `dst`.
+        unsafe { (kernels.dsp.high.av1_mc.blend.interintra)(intra, mask, size, dst) };
+    }
+
+    fn av1_obmc_blend(
+        kernels: DepthKernels<'_>,
+        obmc: &PlaneView<'_, u16>,
+        edge: Av1ObmcEdge,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, u16>,
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `obmc` and `dst`.
+        unsafe { (kernels.dsp.high.av1_mc.blend.obmc)(obmc, edge, size, dst) };
     }
 
     fn av1_warp(
@@ -652,10 +1060,16 @@ impl Av1Pixel for u16 {
         sub: (bool, bool),
         dst: &mut PlaneViewMut<'_, u16>,
     ) {
-        av1_warp_at(
+        let r0 = inter_round0(kernels.depth);
+        let warp_fn = kernels.dsp.high.av1_mc.warp8x8;
+        let kernel = |w: (&[u16], usize), phases: &WarpPhases, r1: u32, out: &mut WarpOut| {
+            // SAFETY: `high` matches this CPU; `warp` passes a validated 15x16 window.
+            unsafe { warp_fn(w, phases, (r0, r1), out) };
+        };
+        warp_final(
+            &kernel,
             reference,
-            model,
-            shear,
+            (model, shear),
             position,
             size,
             sub,
@@ -673,10 +1087,16 @@ impl Av1Pixel for u16 {
         sub: (bool, bool),
         dst: (&mut [i16], usize),
     ) {
-        av1_warp_compound_at(
+        let r0 = inter_round0(kernels.depth);
+        let warp_fn = kernels.dsp.high.av1_mc.warp8x8;
+        let kernel = |w: (&[u16], usize), phases: &WarpPhases, r1: u32, out: &mut WarpOut| {
+            // SAFETY: `high` matches this CPU; `warp` passes a validated 15x16 window.
+            unsafe { warp_fn(w, phases, (r0, r1), out) };
+        };
+        warp_compound(
+            &kernel,
             reference,
-            model,
-            shear,
+            (model, shear),
             position,
             size,
             sub,
@@ -697,7 +1117,10 @@ impl Av1Pixel for u16 {
             stride: dst.stride(),
             vertical,
         };
-        av1_scalar_at(dst.data_mut(), plane, runs, kernels.depth);
+        // SAFETY: `high` matches this CPU; `ValidatedRuns` validates every run's footprint.
+        unsafe {
+            (kernels.dsp.high.av1_deblock_runs)(dst.data_mut(), plane, runs, kernels.depth);
+        }
     }
 
     fn cdef_filter_band(
@@ -708,23 +1131,9 @@ impl Av1Pixel for u16 {
         units: &[CdefUnit],
         sets: &CdefSets,
     ) {
-        let interior = |size: usize,
-                        (src, stride, origin): (&[u16], usize, usize),
-                        args: &crate::cdef::CdefArgs,
-                        (dst, dst_stride): (&mut [u16], usize)| {
-            let kernel = kernels.dsp.high.cdef_interior[usize::from(size == CDEF_LUMA_SIZE)];
-            // SAFETY: the table matches a supported ISA; the band driver
-            // passes interior blocks only, whose taps lie in `src`, and the
-            // kernel indexes its slices.
-            unsafe { kernel(src, stride, origin, args, dst, dst_stride) }
-        };
-        crate::cdef::band::cdef_filter_band_at(
-            (lines, picture),
-            rows,
-            units,
-            (sets, kernels.depth),
-            &interior,
-        );
+        kernels
+            .dsp
+            .cdef_filter_band_u16(lines, picture, rows, units, (sets, kernels.depth));
     }
 
     fn av1_loop_restoration(
@@ -734,7 +1143,7 @@ impl Av1Pixel for u16 {
         boundaries: (&Av1StripeBoundaries<u16>, bool),
         scratch: &mut Av1LrScratch<u16>,
     ) {
-        restoration.apply_at(plane, boundaries, scratch, kernels.depth);
+        restoration.apply_u16(kernels.dsp, plane, boundaries, scratch, kernels.depth);
     }
 
     fn av1_add_film_grain(
@@ -746,7 +1155,7 @@ impl Av1Pixel for u16 {
     ) {
         kernels
             .dsp
-            .av1_add_film_grain_at(params, input, size, output, kernels.depth);
+            .av1_add_film_grain_u16(params, input, size, output, kernels.depth);
     }
 }
 
@@ -796,6 +1205,18 @@ impl DepthKernels<'_> {
         dst: &mut PlaneViewMut<'_, T>,
     ) {
         T::av1_intra_predict_filter_block(self, edges, mode, dst);
+    }
+
+    /// One-pass AV1 Chroma-from-Luma (`CfL`, §7.11.5) prediction at this depth.
+    pub fn av1_cfl_predict<T: Av1Pixel>(
+        self,
+        luma: &PlaneView<'_, T>,
+        luma_extent: (usize, usize),
+        dc: T,
+        alpha_q3: i32,
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
+        T::av1_cfl_predict(self, luma, luma_extent, dc, alpha_q3, dst);
     }
 
     /// [`Dsp::av1_put_samples`](crate::Dsp::av1_put_samples) at this depth.
@@ -873,6 +1294,53 @@ impl DepthKernels<'_> {
         dst: &mut PlaneViewMut<'_, T>,
     ) {
         T::av1_blend_mask(self, predictions, mask, size, dst);
+    }
+
+    /// [`av1_blend_distance`] at this depth.
+    pub fn av1_blend_distance<T: Av1Pixel>(
+        self,
+        predictions: (Av1CompoundPred<'_>, Av1CompoundPred<'_>),
+        weights: [u8; 2],
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
+        T::av1_blend_distance(self, predictions, weights, size, dst);
+    }
+
+    /// [`av1_difference_weight_mask`](crate::av1_mc::mask::av1_difference_weight_mask) at this depth.
+    pub fn av1_difference_weight_mask(
+        self,
+        (p0, p1): (Av1CompoundPred<'_>, Av1CompoundPred<'_>),
+        inverse: bool,
+        size: (usize, usize),
+        mask: &mut [u8],
+    ) {
+        // SAFETY: `high` matches this CPU; kernel validates `p0`, `p1`, and `mask`.
+        unsafe {
+            (self.dsp.high.av1_mc.blend.diff_mask)(p0, p1, inverse, size, mask, self.depth);
+        }
+    }
+
+    /// [`av1_blend_interintra`] at this depth.
+    pub fn av1_blend_interintra<T: Av1Pixel>(
+        self,
+        intra: &PlaneView<'_, T>,
+        mask: Av1Mask<'_>,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
+        T::av1_blend_interintra(self, intra, mask, size, dst);
+    }
+
+    /// [`av1_obmc_blend`] at this depth.
+    pub fn av1_obmc_blend<T: Av1Pixel>(
+        self,
+        obmc: &PlaneView<'_, T>,
+        edge: Av1ObmcEdge,
+        size: (usize, usize),
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
+        T::av1_obmc_blend(self, obmc, edge, size, dst);
     }
 
     /// [`av1_warp`] at this depth.

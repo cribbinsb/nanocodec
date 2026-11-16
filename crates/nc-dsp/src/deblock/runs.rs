@@ -60,7 +60,7 @@ impl Plane {
         );
     }
 
-    fn address<F>(&self, run: &EdgeRun<F>) -> (usize, usize, usize) {
+    pub(super) fn address<F>(&self, run: &EdgeRun<F>) -> (usize, usize, usize) {
         let base = run
             .y
             .checked_mul(self.stride)
@@ -82,7 +82,7 @@ pub(crate) type HevcChromaRunsFn = unsafe fn(&mut [u8], Plane, &[EdgeRun<HevcChr
 /// A sparse traversal whose iterator body contains only scalar validation.
 /// Keeping SIMD in the consuming loop preserves the caller's target features;
 /// an apply closure previously outlined the intrinsics into scalar functions.
-struct ValidatedRuns<'a, F, R> {
+pub(super) struct ValidatedRuns<'a, F, R> {
     plane: Plane,
     runs: &'a [EdgeRun<F>],
     merge: bool,
@@ -93,7 +93,13 @@ struct ValidatedRuns<'a, F, R> {
 
 impl<'a, F, R> ValidatedRuns<'a, F, R> {
     #[inline]
-    fn new(plane: Plane, runs: &'a [EdgeRun<F>], merge: bool, unit: usize, reach: R) -> Self {
+    pub(super) fn new(
+        plane: Plane,
+        runs: &'a [EdgeRun<F>],
+        merge: bool,
+        unit: usize,
+        reach: R,
+    ) -> Self {
         Self {
             plane,
             runs,

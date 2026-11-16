@@ -351,91 +351,119 @@ impl Dsp {
     }
 }
 
-/// [`Dsp::cdef_filter_band`] of a picture of samples deeper than 8
-/// bits (`depth`), with the scalar kernels: strengths scaled by
-/// `1 << (BitDepth − 8)` and the damping by `BitDepth − 8` bits, the
-/// direction searched on samples shifted down to 8 bits, the luma
-/// primary strength adjusted after scaling (libaom
-/// `av1_cdef_filter_fb`, dav1d `cdef_brow` at 16 bpc). Blocks whose
-/// taps lie inside the plane go to `interior` (`cdef::scalar::
-/// interior_rows`' contract with the block side first); the others
-/// read a padded 16-bit window of their unfiltered samples.
+/// [`Dsp::cdef_filter_band`] of a high-bit-depth (`u16`, 10 or 12 bpc)
+/// picture at `depth`, dispatched through `self.high.cdef`:
 ///
-/// # Panics
-///
-/// As [`Dsp::cdef_filter_band`].
-pub(crate) fn cdef_filter_band_at<T: Sample>(
-    (lines, picture): (&mut CdefLines<T>, &mut Picture<T>),
-    rows: Range<usize>,
-    units: &[CdefUnit],
-    (sets, depth): (&CdefSets, BitDepth),
-    interior: &impl Fn(usize, (&[T], usize, usize), &CdefArgs, (&mut [T], usize)),
-) {
-    let bits = depth.above_eight();
-    let [luma_plane, u_plane, v_plane] = picture.planes_mut();
-    let [luma_lines, u_lines, v_lines] = &mut lines.planes;
-    if sets.filters() {
-        luma_lines.drop_rows_before(rows.start.saturating_sub(CDEF_PADDING));
-        luma_lines.fill_rows_to(&luma_plane.view(), rows.end + CDEF_PADDING);
-        let chroma_rows = (rows.start / 2, rows.end.div_ceil(2));
-        for (source, plane) in [(&mut *u_lines, &*u_plane), (&mut *v_lines, &*v_plane)] {
-            source.drop_rows_before(chroma_rows.0.saturating_sub(CDEF_PADDING));
-            source.fill_rows_to(&plane.view(), chroma_rows.1 + CDEF_PADDING);
+/// - strengths scaled by `1 << (BitDepth − 8)` and damping by `BitDepth − 8`
+///   bits (libaom `av1_cdef_filter_fb`, dav1d `cdef_brow` at 16 bpc);
+/// - direction searched on samples shifted down to 8 bits via `find_dir`;
+/// - interior blocks filtered directly from the `u16` line buffer (and dual
+///   U+V 4x4 chroma blocks paired in one 512-bit pass where available);
+/// - frame-edge blocks filtered from a padded `i16` window (`0x8000` padding)
+///   via the SIMD `edge` kernels.
+impl Dsp {
+    pub(crate) fn cdef_filter_band_u16(
+        &self,
+        lines: &mut CdefLines<u16>,
+        picture: &mut Picture<u16>,
+        rows: Range<usize>,
+        units: &[CdefUnit],
+        (sets, depth): (&CdefSets, BitDepth),
+    ) {
+        let bits = depth.above_eight();
+        let fns = &self.high.cdef;
+        let filters_chroma = sets.sets().iter().any(|set| set.filters_chroma());
+        let [luma_plane, u_plane, v_plane] = picture.planes_mut();
+        let [luma_lines, u_lines, v_lines] = &mut lines.planes;
+        if sets.filters() {
+            luma_lines.drop_rows_before(rows.start.saturating_sub(CDEF_PADDING));
+            luma_lines.fill_rows_to(&luma_plane.view(), rows.end + CDEF_PADDING);
         }
-    }
-    let mut planes = [
-        luma_plane.view_mut(),
-        u_plane.view_mut(),
-        v_plane.view_mut(),
-    ];
-    let (width, height) = (luma_lines.width(), luma_lines.height());
-    for unit in units {
+        if filters_chroma {
+            let chroma_rows = (rows.start / 2, rows.end.div_ceil(2));
+            for (source, plane) in [(&mut *u_lines, &*u_plane), (&mut *v_lines, &*v_plane)] {
+                source.drop_rows_before(chroma_rows.0.saturating_sub(CDEF_PADDING));
+                source.fill_rows_to(&plane.view(), chroma_rows.1 + CDEF_PADDING);
+            }
+        }
+        let mut luma = luma_plane.view_mut();
+        let mut chroma = [u_plane.view_mut(), v_plane.view_mut()];
         assert!(
-            rows.contains(&unit.y) && unit.x + LUMA_SIZE <= width && unit.y + LUMA_SIZE <= height,
-            "CDEF unit outside the band being filtered"
+            u_lines.width() == v_lines.width()
+                && chroma[0].stride() == chroma[1].stride()
+                && chroma
+                    .iter()
+                    .all(|p| p.width() >= u_lines.width() && p.height() >= u_lines.height()),
+            "CDEF chroma planes differ"
         );
-        let set = sets.sets()[usize::from(unit.set)];
-        let (dir, var) = if set.needs_direction() {
-            let start = luma_lines.index(unit.x, unit.y);
-            super::scalar::find_dir_at(&luma_lines.samples()[start..], width, bits)
-        } else {
-            (0, 0)
-        };
         let scale = |strength: u8| u16::from(strength) << bits;
-        if set.filters_luma() {
-            let primary = if set.luma_primary == 0 {
-                0
-            } else {
-                cdef_adjust_strength_wide(scale(set.luma_primary), var)
-            };
-            if primary | u16::from(set.luma_secondary) != 0 {
-                let dir = if set.luma_primary == 0 { 0 } else { dir };
-                let args = CdefArgs::scaled(
-                    primary,
-                    scale(set.luma_secondary),
-                    dir,
-                    (sets.damping, bits),
-                );
-                filter_block(
-                    (LUMA_SIZE, interior),
-                    luma_lines,
-                    (unit.x, unit.y),
-                    &args,
-                    &mut planes[0],
+        let unused = CdefArgs::new(0, 0, 0, sets.damping);
+        let mut chroma_args = [unused; CDEF_MAX_SETS];
+        if filters_chroma {
+            for (out, set) in chroma_args.iter_mut().zip(sets.sets()) {
+                *out = CdefArgs::scaled(
+                    scale(set.chroma_primary),
+                    scale(set.chroma_secondary),
+                    0,
+                    (sets.damping.saturating_sub(1), bits),
                 );
             }
         }
-        if set.filters_chroma() {
-            let dir = if set.chroma_primary == 0 { 0 } else { dir };
-            let args = CdefArgs::scaled(
-                scale(set.chroma_primary),
-                scale(set.chroma_secondary),
-                dir,
-                (sets.damping.saturating_sub(1), bits),
+        let (width, height) = (luma_lines.width(), luma_lines.height());
+        for unit in units {
+            assert!(
+                rows.contains(&unit.y)
+                    && unit.x + LUMA_SIZE <= width
+                    && unit.y + LUMA_SIZE <= height,
+                "CDEF unit outside the band being filtered"
             );
-            let (x, y) = (unit.x / 2, unit.y / 2);
-            for (source, plane) in [&*u_lines, &*v_lines].into_iter().zip(&mut planes[1..]) {
-                filter_block((CHROMA_SIZE, interior), source, (x, y), &args, plane);
+            let index = usize::from(unit.set);
+            let set = sets.sets()[index];
+            let (dir, var) = if set.needs_direction() {
+                assert!(
+                    unit.y + LUMA_SIZE <= luma_lines.filled_rows(),
+                    "CDEF unit outside the picture"
+                );
+                let start = luma_lines.index(unit.x, unit.y);
+                // SAFETY: `self.high` matches this CPU; `luma_lines` holds the
+                // 8x8 unit starting at `start` with stride `width`.
+                unsafe { (fns.find_dir)(&luma_lines.samples()[start..], width, bits) }
+            } else {
+                (0, 0)
+            };
+            if set.filters_luma() {
+                let primary = if set.luma_primary == 0 {
+                    0
+                } else {
+                    cdef_adjust_strength_wide(scale(set.luma_primary), var)
+                };
+                if primary | u16::from(set.luma_secondary) != 0 {
+                    let dir = if set.luma_primary == 0 { 0 } else { dir };
+                    let args = CdefArgs::scaled(
+                        primary,
+                        scale(set.luma_secondary),
+                        dir,
+                        (sets.damping, bits),
+                    );
+                    filter_block_u16(
+                        fns,
+                        LUMA_SIZE,
+                        luma_lines,
+                        (unit.x, unit.y),
+                        &args,
+                        &mut luma,
+                    );
+                }
+            }
+            if set.filters_chroma() {
+                let dir = if set.chroma_primary == 0 { 0 } else { dir };
+                filter_chroma_u16(
+                    fns,
+                    &chroma_args[index].with_dir(dir),
+                    [u_lines, v_lines],
+                    (unit.x / 2, unit.y / 2),
+                    &mut chroma,
+                );
             }
         }
     }
@@ -460,49 +488,88 @@ fn cdef_adjust_strength_wide(strength: u16, var: i32) -> u16 {
     ((u32::from(strength) * (BASE_SCALE + class) + 8) >> 4) as u16
 }
 
-/// The filter of the `size` block at (`x`, `y`) of `src` into `dst`: by
-/// `interior` on the line buffer itself where every tap lies inside the
-/// plane, else the scalar filter from a padded 16-bit window.
-fn filter_block<T: Sample>(
-    (size, interior): (
-        usize,
-        &impl Fn(usize, (&[T], usize, usize), &CdefArgs, (&mut [T], usize)),
-    ),
-    src: &CdefSource<T>,
+fn filter_chroma_u16(
+    fns: &super::HighCdefFns,
+    args: &CdefArgs,
+    lines: [&CdefSource<u16>; 2],
+    (x, y): (usize, usize),
+    planes: &mut [PlaneViewMut<'_, u16>; 2],
+) {
+    let source = lines[0];
+    match fns.interior_pair4 {
+        Some(pair) if is_interior(source, (x, y), CHROMA_SIZE) => {
+            assert!(
+                y + CHROMA_SIZE + CDEF_PADDING <= source.filled_rows()
+                    && y + CHROMA_SIZE + CDEF_PADDING <= lines[1].filled_rows(),
+                "CDEF chroma block reads source rows not copied yet"
+            );
+            let [u, v] = planes;
+            let stride = u.stride();
+            let block = y * stride + x..(y + CHROMA_SIZE - 1) * stride + x + CHROMA_SIZE;
+            let dst = [
+                u.data_mut()[block.clone()].as_mut_ptr(),
+                v.data_mut()[block].as_mut_ptr(),
+            ];
+            // SAFETY: `fns` matches this CPU; both U and V blocks are interior
+            // and their destinations are disjoint 4x4 regions validated above.
+            unsafe {
+                pair(
+                    [source.samples(), lines[1].samples()],
+                    source.width(),
+                    [source.index(x, y), lines[1].index(x, y)],
+                    args,
+                    dst,
+                    stride,
+                );
+            }
+        }
+        _ => {
+            for (src, plane) in lines.into_iter().zip(planes.iter_mut()) {
+                filter_block_u16(fns, CHROMA_SIZE, src, (x, y), args, plane);
+            }
+        }
+    }
+}
+
+fn filter_block_u16(
+    fns: &super::HighCdefFns,
+    size: usize,
+    src: &CdefSource<u16>,
     (x, y): (usize, usize),
     args: &CdefArgs,
-    dst: &mut PlaneViewMut<'_, T>,
+    dst: &mut PlaneViewMut<'_, u16>,
 ) {
     assert!(
         x + size <= src.width() && y + size <= src.height(),
         "CDEF block outside the plane"
     );
+    let idx = usize::from(size == LUMA_SIZE);
     let stride = dst.stride();
+    let out = &mut dst.data_mut()[y * stride + x..];
     if is_interior(src, (x, y), size) {
         assert!(
             y + size + CDEF_PADDING <= src.filled_rows(),
             "CDEF block reads source rows not copied yet"
         );
-        let out = &mut dst.data_mut()[y * stride + x..];
-        interior(
-            size,
-            (src.samples(), src.width(), src.index(x, y)),
-            args,
-            (out, stride),
-        );
+        let origin = src.index(x, y);
+        // SAFETY: `fns` matches this CPU; all taps of this interior block lie
+        // inside `src` and `out` covers `size` rows (validated by kernels).
+        unsafe { (fns.interior[idx])(src.samples(), src.width(), origin, args, out, stride) };
         return;
     }
     let side = size + 2 * CDEF_PADDING;
     let window = src.padded_window(x, y, size);
-    super::scalar::filter(
-        size,
-        &window,
-        side,
-        CDEF_PADDING * side + CDEF_PADDING,
-        args,
-        &mut dst.data_mut()[y * stride + x..],
-        stride,
-    );
+    // SAFETY: `fns` matches this CPU; `window` covers `side`x`side` padded words.
+    unsafe {
+        (fns.edge[idx])(
+            &window,
+            side,
+            CDEF_PADDING * side + CDEF_PADDING,
+            args,
+            out,
+            stride,
+        );
+    }
 }
 
 /// Whether every tap of the `size` block at (`x`, `y`) lies inside the

@@ -69,9 +69,18 @@ pub(super) fn h_row(src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
     h_row_at(src, taps, out, n, BitDepth::EIGHT);
 }
 
-/// [`h_row`] at any depth up to 10 bits: the intermediate clamp is
-/// `−2^(BitDepth + 3) ..= 2^(BitDepth + 5) − 1 − 2^(BitDepth + 3)` (libaom
-/// `WIENER_CLAMP_LIMIT` with its offset), within 16 bits.
+/// `(InterRound0, InterRound1, ROUND_BIAS)` at `depth` (AV1 §7.17.4:
+/// `InterRound0 = 5` at 12-bit, `3` at 8/10-bit).
+pub(super) const fn wiener_rounds(depth: BitDepth) -> (u32, u32, i32) {
+    let r0 = if depth.bits() == 12 { 5 } else { ROUND0 };
+    let r1 = 2 * FILTER_BITS - r0;
+    let bias = 1 << (r1 - 1 - FILTER_BITS);
+    (r0, r1, bias)
+}
+
+/// [`h_row`] at any depth (8, 10, or 12 bits): the intermediate clamp is
+/// `-2^(BitDepth + 6 - InterRound0) ..= 3 * 2^(BitDepth + 6 - InterRound0) - 1`,
+/// which fits `i16` at every AV1 bit depth (`-8192..=24575` at both 10 and 12 bits).
 pub(super) fn h_row_at<T: Sample>(
     src: &[T],
     taps: WienerTaps,
@@ -79,18 +88,19 @@ pub(super) fn h_row_at<T: Sample>(
     n: usize,
     depth: BitDepth,
 ) {
-    let bits = depth.above_eight();
+    let (r0, _, bias) = wiener_rounds(depth);
+    let clip_bits = depth.bits() + FILTER_BITS - r0 - (8 + FILTER_BITS - ROUND0);
     let (low, high) = (
-        H_MIN << bits,
-        ((H_MAX - H_MIN + 1) << bits) - 1 + (H_MIN << bits),
+        H_MIN << clip_bits,
+        ((H_MAX - H_MIN + 1) << clip_bits) - 1 + (H_MIN << clip_bits),
     );
     let [c0, c1, c2, centre] = taps.map(i32::from);
     let centre = centre + (1 << FILTER_BITS);
     for (x, out) in out[..n].iter_mut().enumerate() {
         let p = |k: usize| src[x + k].to_i32();
         let sum = c0 * (p(0) + p(6)) + c1 * (p(1) + p(5)) + c2 * (p(2) + p(4)) + centre * p(3);
-        let rounded = (sum + (1 << (ROUND0 - 1))) >> ROUND0;
-        *out = (rounded.clamp(low, high) + ROUND_BIAS) as i16;
+        let rounded = (sum + (1 << (r0 - 1))) >> r0;
+        *out = (rounded.clamp(low, high) + bias) as i16;
     }
 }
 
@@ -107,11 +117,12 @@ pub(super) fn v_row_at<T: Sample>(
     dst: &mut [T],
     depth: BitDepth,
 ) {
+    let (_, r1, _) = wiener_rounds(depth);
     let [c0, c1, c2, centre] = taps.map(i32::from);
     for (x, dst) in dst.iter_mut().enumerate() {
         let r = |k: usize| i32::from(rows[k][x]);
         let sum = c0 * (r(0) + r(6)) + c1 * (r(1) + r(5)) + c2 * (r(2) + r(4)) + centre * r(3);
-        *dst = depth.clip_to(sum >> ROUND1);
+        *dst = depth.clip_to(sum >> r1);
     }
 }
 

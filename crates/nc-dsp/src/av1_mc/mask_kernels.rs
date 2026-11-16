@@ -15,7 +15,7 @@
 use super::blend::{AV1_MASK_BITS, AV1_MASK_MAX};
 use nc_common::{BitDepth, Sample};
 
-use super::{INTER_POST_ROUND, av1_compound_bias, round2};
+use super::{INTER_POST_ROUND, av1_compound_bias, inter_post_round, round2};
 use crate::Isa;
 use crate::simd::{I16Pairs, I16x8Shuffles, I32Lanes};
 
@@ -57,10 +57,11 @@ pub(crate) fn blend_row_at<T: Sample>(
 ) {
     let max = i32::from(AV1_MASK_MAX);
     let bias = max * av1_compound_bias(depth);
+    let shift = AV1_MASK_BITS + inter_post_round(depth);
     for (j, out) in dst.iter_mut().enumerate() {
         let m = i32::from(weights[j]);
         let sum = m * i32::from(p0[j]) + (max - m) * i32::from(p1[j]) + bias;
-        *out = depth.clip_to(round2(sum, BLEND_SHIFT));
+        *out = depth.clip_to(round2(sum, shift));
     }
 }
 

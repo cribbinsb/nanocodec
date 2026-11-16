@@ -195,13 +195,29 @@ fn inverse_add<T: Sample, const ROW: u32, const COL: u32, const W: usize, const 
     tx: Av1TxSize,
     kind: Av1TxType,
     coeffs: &[i32],
-    (dst, stride): (&mut [T], usize),
+    dst: (&mut [T], usize),
     depth: BitDepth,
 ) {
     assert!(kind.fits(tx), "{kind:?} is not defined for {tx:?}");
+    inverse_add_kernels::<T, ROW, COL, W, H>(tx, kind.kernels(), coeffs, dst, depth);
+}
+
+/// Scalar 64-bit inverse transform given pre-resolved `(vertical, horizontal)` kernels.
+pub(crate) fn inverse_add_kernels<
+    T: Sample,
+    const ROW: u32,
+    const COL: u32,
+    const W: usize,
+    const H: usize,
+>(
+    tx: Av1TxSize,
+    (vertical, horizontal): (Kernel1d, Kernel1d),
+    coeffs: &[i32],
+    (dst, stride): (&mut [T], usize),
+    depth: BitDepth,
+) {
     let (coded_w, coded_h) = (tx.coded_width(), tx.coded_height());
     let coeffs = &coeffs[..coded_w * coded_h];
-    let (vertical, horizontal) = kind.kernels();
     let row_shift = tx.row_shift();
 
     // Row pass: row r's outputs at `rows[r]`; rows beyond the coded height

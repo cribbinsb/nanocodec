@@ -9,8 +9,8 @@
 
 use nc_common::BitDepth;
 
-use super::INTER_POST_ROUND;
 use super::blend::{AV1_MASK_MAX, Av1CompoundPred};
+use super::inter_post_round;
 use super::round2;
 
 /// Wedge shapes per block size (`WEDGE_TYPES`).
@@ -270,7 +270,7 @@ pub fn av1_difference_weight_mask_at(
     mask: &mut [u8],
     depth: BitDepth,
 ) {
-    let shift = depth.above_eight() + INTER_POST_ROUND;
+    let shift = depth.above_eight() + inter_post_round(depth);
     let max = i32::from(AV1_MASK_MAX);
     for (r, row) in mask[..w * h].chunks_exact_mut(w).enumerate() {
         let first = &p0.data[r * p0.stride..][..w];

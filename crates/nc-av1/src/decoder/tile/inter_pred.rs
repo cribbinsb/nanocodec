@@ -26,15 +26,10 @@ use crate::backend::Av1Mv;
 use crate::scaled_reference::scaled_window;
 use nc_common::decode::DecodeError;
 use nc_common::{Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::av1_mc::blend::{
-    Av1CompoundPred, Av1Mask, Av1ObmcEdge, av1_blend_distance_at, av1_blend_interintra,
-    av1_distance_weights, av1_obmc_blend,
-};
+use nc_dsp::av1_mc::blend::{Av1CompoundPred, Av1Mask, Av1ObmcEdge, av1_distance_weights};
 use nc_dsp::av1_mc::convolve::Av1McAxis;
 use nc_dsp::av1_mc::filter::{AV1_FILTER_BEFORE, AV1_FILTER_TAPS, Av1Filters};
-use nc_dsp::av1_mc::mask::{
-    Av1InterIntraMode, Av1WedgeMasks, av1_difference_weight_mask_at, av1_interintra_smooth_mask,
-};
+use nc_dsp::av1_mc::mask::{Av1InterIntraMode, Av1WedgeMasks, av1_interintra_smooth_mask};
 use nc_dsp::av1_mc::scale::Av1ScaleSizes;
 use nc_dsp::av1_mc::warp::{Av1Shear, av1_setup_shear};
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, IntraKind};
@@ -552,7 +547,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                         offsets[modes.refs[0] as usize],
                         offsets[modes.refs[1] as usize],
                     );
-                    av1_blend_distance_at(p0, p1, weights, size, &mut dst, kernels.depth());
+                    kernels.av1_blend_distance((p0, p1), weights, size, &mut dst);
                 }
                 CompoundType::Wedge { index, sign } => {
                     let wedges = scratch.wedges.get_or_insert_with(Default::default);
@@ -571,13 +566,11 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                     if !sub {
                         scratch.mask.clear();
                         scratch.mask.resize(luma.0 * luma.1, 0);
-                        av1_difference_weight_mask_at(
-                            p0,
-                            p1,
+                        kernels.av1_difference_weight_mask(
+                            (p0, p1),
                             inverse,
                             luma,
                             &mut scratch.mask,
-                            kernels.depth(),
                         );
                     }
                     let mask = Av1Mask {
@@ -787,11 +780,12 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 edge_filter: None,
             },
         };
+        let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
         scratch.block.clear();
         scratch.block.resize(w * h, T::default());
         let mut intra = PlaneViewMut::new(&mut scratch.block, w, w, h).expect("block buffer");
-        edges.predict(kind, &mut intra);
+        kernels.av1_intra_predict_block(&edges, kind, &mut intra);
         let sub = plane != PlaneIndex::Y;
         let mask = if let Some(index) = interintra.wedge {
             debug_assert!(wedge_used(block.size));
@@ -822,7 +816,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .plane_mut(plane)
             .region_mut(x as isize, y as isize, w, h)
             .ok_or(DecodeError::Malformed("AV1 prediction rectangle"))?;
-        av1_blend_interintra(&intra, mask, (w, h), &mut dst);
+        kernels.av1_blend_interintra(&intra, mask, (w, h), &mut dst);
         Ok(())
     }
 
@@ -919,7 +913,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
             .plane_mut(plane)
             .region_mut(px as isize, py as isize, ow, oh)
             .ok_or(DecodeError::Malformed("AV1 prediction rectangle"))?;
-        av1_obmc_blend(&prediction, edge, (ow, oh), &mut dst);
+        kernels.av1_obmc_blend(&prediction, edge, (ow, oh), &mut dst);
         Ok(())
     }
 }

@@ -20,6 +20,7 @@
 use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::kernels::RowKernels;
+use super::sgr_lanes::{FilteredScratch, LaneRow};
 use super::{AV1_LR_BORDER, AV1_LR_OVERREAD, Av1SgrProj};
 
 /// `SGRPROJ_RST_BITS`: extra precision of the filtered samples.
@@ -172,8 +173,8 @@ pub(super) fn box_ab_at<const N: usize>(
 /// · one_by_x(n) + 2^11) >> 12` (`n` = 9 or 25), so `A · Src + B ≤ 65344`
 /// over every `A`; the weights (32 or 16) are removed by the shift (9 or
 /// 8), so `0 ≤ v ≤ 4084 < 2^13`, as in dav1d's 8bpc `int16_t` rows.
-fn filtered<T: Sample>(weighted_a: i32, weighted_b: i32, source: T, shift: u32) -> i16 {
-    ((weighted_a * source.to_i32() + weighted_b + (1 << (shift - 1))) >> shift) as i16
+fn filtered<T: Sample, F: LaneRow>(weighted_a: i32, weighted_b: i32, source: T, shift: u32) -> F {
+    F::from_i32((weighted_a * source.to_i32() + weighted_b + (1 << (shift - 1))) >> shift)
 }
 
 /// `A` in 32 bits, for the weighted sums.
@@ -184,11 +185,11 @@ fn wide(v: &[i16], j: usize) -> i32 {
 /// Scalar reference of a radius-2 output row between two box rows
 /// (`above`, `below`): weights 6 straight across, 5 diagonally. Box
 /// columns are offset by one: column `j` reads index `j + 1`.
-pub(super) fn filter_between<T: Sample>(
+pub(super) fn filter_between<T: Sample, F: LaneRow>(
     a: [&[i16]; 2],
     b: [&[i32]; 2],
     src: &[T],
-    out: &mut [i16],
+    out: &mut [F],
     n: usize,
 ) {
     let weigh_a = |v: [&[i16]; 2], j: usize| {
@@ -205,7 +206,13 @@ pub(super) fn filter_between<T: Sample>(
 
 /// Scalar reference of a radius-2 output row on a box row: weights 6 at
 /// the centre, 5 left and right.
-pub(super) fn filter_on<T: Sample>(a: &[i16], b: &[i32], src: &[T], out: &mut [i16], n: usize) {
+pub(super) fn filter_on<T: Sample, F: LaneRow>(
+    a: &[i16],
+    b: &[i32],
+    src: &[T],
+    out: &mut [F],
+    n: usize,
+) {
     let weigh_a = |v: &[i16], j: usize| wide(v, j + 1) * 6 + (wide(v, j) + wide(v, j + 2)) * 5;
     let weigh_b = |v: &[i32], j: usize| v[j + 1] * 6 + (v[j] + v[j + 2]) * 5;
     for j in 0..n {
@@ -215,11 +222,11 @@ pub(super) fn filter_on<T: Sample>(a: &[i16], b: &[i32], src: &[T], out: &mut [i
 
 /// Scalar reference of a radius-1 output row from the box rows above, on
 /// and below: weights 4 on the cross, 3 on the diagonals.
-pub(super) fn filter_around<T: Sample>(
+pub(super) fn filter_around<T: Sample, F: LaneRow>(
     a: [&[i16]; 3],
     b: [&[i32]; 3],
     src: &[T],
-    out: &mut [i16],
+    out: &mut [F],
     n: usize,
 ) {
     let weigh_a = |v: [&[i16]; 3], j: usize| {
@@ -248,16 +255,16 @@ pub(super) fn blend(src: &[u8], filtered: [&[i16]; 2], weights: [i32; 2], dst: &
 }
 
 /// [`blend`] at any depth.
-pub(super) fn blend_at<T: Sample>(
+pub(super) fn blend_at<T: Sample, F: LaneRow>(
     src: &[T],
-    filtered: [&[i16]; 2],
+    filtered: [&[F]; 2],
     weights: [i32; 2],
     dst: &mut [T],
     depth: BitDepth,
 ) {
     for (j, dst) in dst.iter_mut().enumerate() {
         let u = src[j].to_i32() << SOURCE_SHIFT;
-        let [f0, f1] = filtered.map(|row| i32::from(row[j]));
+        let [f0, f1] = filtered.map(|row| row[j].to_i32());
         let v = (u << PRJ_BITS) + weights[0] * (f0 - u) + weights[1] * (f1 - u);
         *dst = depth.clip_to((v + (1 << (BLEND_SHIFT - 1))) >> BLEND_SHIFT);
     }
@@ -319,7 +326,7 @@ impl PassRings {
 pub(super) struct SgrScratch {
     radius2: PassRings,
     radius1: PassRings,
-    filtered: [Vec<i16>; 2],
+    filtered: FilteredScratch,
 }
 
 /// The window rows of one region and what the kernels read of them.
@@ -409,8 +416,8 @@ fn radius1_box_row<T: Sample>(
 /// region with [`AV1_LR_BORDER`] source samples on every side, rows
 /// `stride` apart, each readable [`AV1_LR_OVERREAD`] samples past its end;
 /// the result goes to `dst` at `(x, y)`.
-pub(super) fn self_guided<T: Sample>(
-    kernels: &impl RowKernels<T>,
+pub(super) fn self_guided<T: Sample, K: RowKernels<T>>(
+    kernels: &K,
     params: Av1SgrProj,
     (window, stride): (&[T], usize),
     (w, h): (usize, usize),
@@ -424,14 +431,14 @@ pub(super) fn self_guided<T: Sample>(
     // radius 1 the rows above, on and below.
     scratch.radius2.reset(2, 2, len);
     scratch.radius1.reset(1, 3, len);
-    for filtered in &mut scratch.filtered {
-        super::grow(filtered, w + AV1_LR_OVERREAD);
-    }
     let SgrScratch {
         radius2,
         radius1,
-        filtered: [flt0, flt1],
+        filtered,
     } = scratch;
+    let [flt0, flt1] = <K::Filtered as LaneRow>::scratch_vecs(filtered);
+    let flt0 = super::grow(flt0, w + AV1_LR_OVERREAD);
+    let flt1 = super::grow(flt1, w + AV1_LR_OVERREAD);
     if r0 > 0 {
         // Box rows -1, 1, 3, ... (every other row, §7.17.3), row `i` in
         // slot `(i + 1) / 2`.

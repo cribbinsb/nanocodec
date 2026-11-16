@@ -88,11 +88,6 @@ pub(crate) type Av1Taps<'t> = (&'t [i16; 8], &'t [i16; 8]);
 /// destination and stride, height (at most 64), taps, depth.
 pub(crate) type Av1Put16Fn =
     for<'t> unsafe fn((&[u16], usize), (&mut [u16], usize), usize, Av1Taps<'t>, BitDepth);
-/// CDEF of a block whose taps lie inside the plane
-/// (`cdef::scalar::interior_rows`): source, stride, origin, arguments,
-/// destination and stride.
-pub(crate) type CdefInterior16Fn =
-    unsafe fn(&[u16], usize, usize, &crate::cdef::CdefArgs, &mut [u16], usize);
 /// VP9 prediction of a block of one width class (`vp9_mc::rows_at`):
 /// window and stride, destination and stride, height (at most 64), the
 /// phases' taps, averaging, depth.
@@ -174,12 +169,20 @@ pub(crate) struct HighFns {
     /// VVC deblocking and ALF (`vvc_filter`).
     pub vvc_filter: vvc_filter::VvcFilterFns,
     pub vvc_recon: vvc_recon::VvcReconFns,
-    /// Unscaled AV1 prediction by width class.
-    pub av1_put: [Av1Put16Fn; WIDTH_CLASSES],
-    /// Unscaled AV1 compound prediction by width class.
-    pub av1_prep: [Av1Prep16Fn; WIDTH_CLASSES],
-    /// CDEF of interior 4x4 and 8x8 blocks.
-    pub cdef_interior: [CdefInterior16Fn; 2],
+    /// High-bit-depth AV1 motion compensation, warp, and compound blends.
+    pub av1_mc: crate::av1_mc::high_mc::HighAv1McFns,
+    /// High-bit-depth AV1 inverse transforms (10- and 12-bit).
+    pub av1_inverse: crate::av1_inverse::high_simd::HighAv1InverseFns,
+    /// High-bit-depth AV1 loop restoration (Wiener and Self-Guided).
+    pub av1_lr: crate::av1_restoration::high_lr::HighLrFns,
+    /// High-bit-depth AV1 loop filter (deblocking) runs.
+    pub av1_deblock_runs: crate::deblock::av1_high::Av1Runs16Fn,
+    /// High-bit-depth and shared rectangular AV1 intra + `CfL` kernels.
+    pub av1_intra: crate::av1_intra::high::HighAv1IntraFns,
+    /// High-bit-depth AV1 film grain row kernels.
+    pub av1_grain: crate::av1_film_grain::high_simd::HighAv1GrainFns,
+    /// High-bit-depth CDEF kernels (direction search, interior, edge, dual chroma).
+    pub cdef: crate::cdef::HighCdefFns,
     /// H.264 MC and deblocking.
     pub h264: h264::H264Fns,
     /// VP9 prediction (written or averaged) by width class.
@@ -201,7 +204,6 @@ macro_rules! av1_widths {
         ]
     };
 }
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) use av1_widths;
 
 /// The kernels of one filter family by width class (`$kernel` generic
@@ -239,20 +241,8 @@ pub(crate) use families;
 mod scalar {
     use nc_common::BitDepth;
 
-    use super::Av1Taps;
-    use crate::av1_mc::convolve::{unscaled_prep_at, unscaled_put_at};
     use crate::mc::SeparableTaps;
     use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
-
-    pub(super) fn av1_put<const W: usize>(
-        src: (&[u16], usize),
-        dst: (&mut [u16], usize),
-        h: usize,
-        taps: Av1Taps<'_>,
-        depth: BitDepth,
-    ) {
-        unscaled_put_at::<u16, W>(src, dst, h, taps, depth);
-    }
 
     pub(super) fn vp9_mc<const W: usize>(
         window: (&[u16], usize),
@@ -263,16 +253,6 @@ mod scalar {
         depth: BitDepth,
     ) {
         crate::vp9_mc::rows_at::<u16, W>(window, dst, h, taps, average, depth);
-    }
-
-    pub(super) fn av1_prep<const W: usize>(
-        src: (&[u16], usize),
-        dst: (&mut [i16], usize),
-        h: usize,
-        taps: Av1Taps<'_>,
-        depth: BitDepth,
-    ) {
-        unscaled_prep_at::<u16, W>(src, dst, h, taps, depth);
     }
 
     pub(super) fn predict<T: SeparableTaps<N>, const N: usize, const W: usize>(
@@ -315,6 +295,19 @@ mod scalar {
 }
 
 impl HighFns {
+    /// Replace the inherited AVX2 kernels that have an AVX-512 version
+    /// (`Dsp::avx512` starts from the AVX2 table, as for every other table).
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn install_avx512(&mut self) {
+        crate::cdef::avx512::install_high(&mut self.cdef);
+        self.av1_mc = crate::av1_mc::high_mc::HighAv1McFns::for_isa(Isa::Avx512);
+        self.av1_inverse = crate::av1_inverse::high_simd::HighAv1InverseFns::for_isa(Isa::Avx512);
+        self.av1_lr = crate::av1_restoration::high_lr::HighLrFns::for_isa(Isa::Avx512);
+        self.av1_deblock_runs = crate::deblock::av1_high::av1_runs(Isa::Avx512);
+        self.av1_intra = crate::av1_intra::high::HighAv1IntraFns::for_isa(Isa::Avx512);
+        self.av1_grain = crate::av1_film_grain::high_simd::HighAv1GrainFns::for_isa(Isa::Avx512);
+    }
+
     /// The table for `isa`: the scalar references, and the ISA's vector
     /// kernels where one exists (see the module docs for adding one).
     pub(crate) fn for_isa(isa: Isa) -> Self {
@@ -344,26 +337,25 @@ impl HighFns {
             vvc_bdof: crate::vvc_bdof::scalar_at::<u16>,
             vvc_filter: vvc_filter::VvcFilterFns::SCALAR,
             vvc_recon: vvc_recon::VvcReconFns::SCALAR,
-            av1_put: av1_widths!(scalar::av1_put),
-            av1_prep: av1_widths!(scalar::av1_prep),
+            av1_mc: crate::av1_mc::high_mc::HighAv1McFns::for_isa(isa),
+            av1_inverse: crate::av1_inverse::high_simd::HighAv1InverseFns::for_isa(isa),
+            av1_lr: crate::av1_restoration::high_lr::HighLrFns::for_isa(isa),
+            av1_deblock_runs: crate::deblock::av1_high::av1_runs(isa),
+            av1_intra: crate::av1_intra::high::HighAv1IntraFns::for_isa(isa),
+            av1_grain: crate::av1_film_grain::high_simd::HighAv1GrainFns::for_isa(isa),
             vp9_mc: av1_widths!(scalar::vp9_mc),
             vp9_filter: crate::vp9_deblock::filter_lines_at::<u16>,
-            cdef_interior: [
-                crate::cdef::scalar::interior_rows::<u16, 4>,
-                crate::cdef::scalar::interior_rows::<u16, 8>,
-            ],
+            cdef: crate::cdef::HighCdefFns::SCALAR,
             h264: h264::H264Fns::SCALAR,
         };
         match isa {
             #[cfg(target_arch = "x86_64")]
-            Isa::Avx2 | Isa::Avx512 => {
+            Isa::Avx2 => {
                 table.predict = vector::avx2::PREDICT;
                 table.prep = vector::avx2::PREP;
                 table.bi = vector::avx2::BI;
                 table.hevc_weight = vector::avx2::WEIGHT;
-                table.av1_put = vector::avx2::AV1_PUT;
-                table.av1_prep = vector::avx2::AV1_PREP;
-                table.cdef_interior = vector::avx2::CDEF_INTERIOR;
+                table.cdef = crate::cdef::avx2::HIGH_FNS;
                 table.vp9_mc = vector::avx2::VP9_MC;
                 table.vp9_filter = vector::avx2::vp9_filter;
             }
@@ -373,9 +365,7 @@ impl HighFns {
                 table.prep = vector::neon::PREP;
                 table.bi = vector::neon::BI;
                 table.hevc_weight = vector::neon::WEIGHT;
-                table.av1_put = vector::neon::AV1_PUT;
-                table.av1_prep = vector::neon::AV1_PREP;
-                table.cdef_interior = vector::neon::CDEF_INTERIOR;
+                table.cdef = crate::cdef::neon::HIGH_FNS;
                 table.vp9_mc = vector::neon::VP9_MC;
                 table.vp9_filter = vector::neon::vp9_filter;
             }

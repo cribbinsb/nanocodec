@@ -150,6 +150,22 @@ pub(crate) trait I32Lanes: Copy {
     }
     /// `dst[i] = clamp(dst[i] + lane i, 0, 255)` for the first `LANES` bytes.
     fn add_to_u8(self, dst: &mut [u8]);
+    /// `dst[i] = clamp(dst[i] + lane i, 0, max_val)` for the first `LANES`
+    /// `u16` samples (`0 <= max_val <= 65535`).
+    #[inline]
+    #[cfg_attr(
+        not(any(target_arch = "x86_64", target_arch = "aarch64")),
+        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+    )]
+    fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
+        const MAX_LANES: usize = 16;
+        assert!(Self::LANES <= MAX_LANES);
+        let mut wide = [0i32; MAX_LANES];
+        self.store(&mut wide);
+        for (sample, &delta) in dst[..Self::LANES].iter_mut().zip(&wide) {
+            *sample = (i32::from(*sample) + delta).clamp(0, max_val) as u16;
+        }
+    }
     /// Store the `LANES` x `LANES` tile formed by `rows` (`rows.len() ==
     /// LANES`), transposed: lane `c` of `rows[r]` goes to
     /// `dst[c * dst_stride + r]`. `dst` may be uninitialised; every element
@@ -210,6 +226,8 @@ pub(crate) trait I32Lanes: Copy {
 /// arithmetic), with a matching 32-bit accumulator.
 /// Entries of an [`I16Lanes::lookup`] table: 256 and one of padding.
 pub(crate) const LOOKUP_TABLE: usize = 257;
+/// Entries of an [`I16Lanes::lookup_u12`] table: 4096 and one of padding.
+pub(crate) const HIGH_LOOKUP_TABLE: usize = 4097;
 /// Lanes of the widest [`I16Lanes`] vector (AVX-512).
 const MAX_I16_LANES: usize = 32;
 
@@ -266,6 +284,21 @@ pub(crate) trait I16Lanes: Copy {
     fn mul_q15_round(self, other: Self) -> Self;
     /// Lane-wise arithmetic right shift by `bits <= 15`.
     fn sra(self, bits: u32) -> Self;
+    /// Lane-wise logical right shift of unsigned 16-bit lanes by `bits <= 15`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    #[cfg_attr(
+        not(any(target_arch = "x86_64", target_arch = "aarch64")),
+        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+    )]
+    fn srl(self, bits: u32) -> Self {
+        let mut lanes = [0i16; MAX_I16_LANES];
+        self.store(&mut lanes);
+        for lane in &mut lanes[..Self::LANES] {
+            *lane = ((*lane as u16) >> bits) as i16;
+        }
+        Self::load(&lanes)
+    }
     /// Clamp every lane to `0..=255`.
     fn clamp_u8(self) -> Self;
     /// Store `clamp(lane, 0, 255)` into the first `LANES` bytes of `dst`.
@@ -301,6 +334,41 @@ pub(crate) trait I16Lanes: Copy {
         let mut lanes = [0i16; 32];
         for (lane, &index) in lanes.iter_mut().zip(&indices[..Self::LANES]) {
             *lane = table[usize::from(index)];
+        }
+        Self::load(&lanes)
+    }
+    /// Lane `i` is `table[clamp(self[i], 0, 4095)]` (a 4096-entry lookup for
+    /// 10- and 12-bit film grain, padded by one entry so 32-bit gathers stay
+    /// inside).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    #[cfg_attr(
+        not(any(target_arch = "x86_64", target_arch = "aarch64")),
+        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+    )]
+    fn lookup_u12(self, table: &[i16; HIGH_LOOKUP_TABLE]) -> Self {
+        let mut lanes = [0i16; MAX_I16_LANES];
+        self.max(Self::splat(0))
+            .min(Self::splat(4095))
+            .store(&mut lanes);
+        for lane in &mut lanes[..Self::LANES] {
+            *lane = table[(*lane as usize) & 4095];
+        }
+        Self::load(&lanes)
+    }
+    /// Lane `i` is `(pairs[2 * i] + pairs[2 * i + 1] + 1) >> 1` for `LANES`
+    /// `u16` pairs whose samples fit in `0..=16383`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    #[cfg_attr(
+        not(any(target_arch = "x86_64", target_arch = "aarch64")),
+        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+    )]
+    fn pair_avg_u16(pairs: &[u16]) -> Self {
+        let mut lanes = [0i16; MAX_I16_LANES];
+        let (chunks, _) = pairs[..2 * Self::LANES].as_chunks::<2>();
+        for (lane, &[a, b]) in lanes.iter_mut().zip(chunks) {
+            *lane = ((u32::from(a) + u32::from(b) + 1) >> 1) as i16;
         }
         Self::load(&lanes)
     }
@@ -378,6 +446,39 @@ pub(crate) trait I16Lanes: Copy {
     fn acc_mul_add2(acc: Self::Acc, a: Self, ca: i16, b: Self, cb: i16) -> Self::Acc {
         Self::acc_mul_add(Self::acc_mul_add(acc, a, ca), b, cb)
     }
+    /// `widen(a) * widen(wa) + widen(b) * widen(wb)` per lane in [`Self::Acc`]
+    /// layout, ready for [`Self::acc_round_shift_narrow`].
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    #[cfg_attr(
+        not(any(target_arch = "x86_64", target_arch = "aarch64")),
+        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+    )]
+    fn acc_vec_mul_add2(a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        let (mut ab, mut wab, mut bb, mut wbb) = (
+            [0i16; MAX_I16_LANES],
+            [0i16; MAX_I16_LANES],
+            [0i16; MAX_I16_LANES],
+            [0i16; MAX_I16_LANES],
+        );
+        a.store(&mut ab);
+        wa.store(&mut wab);
+        b.store(&mut bb);
+        wb.store(&mut wbb);
+        let mut acc = Self::acc_zero();
+        for i in 0..Self::LANES {
+            let mut unit = [0i16; MAX_I16_LANES];
+            unit[i] = 1;
+            let basis = Self::load(&unit);
+            let p = i32::from(ab[i]) * i32::from(wab[i]) + i32::from(bb[i]) * i32::from(wbb[i]);
+            let hi = (p >> 15) as i16;
+            let lo = (p - (i32::from(hi) << 15)) as i16;
+            acc = Self::acc_mul_add(acc, basis.mul(Self::splat(lo)), 1);
+            acc = Self::acc_mul_add(acc, basis, hi);
+            acc = Self::acc_mul_add(acc, basis.mul(Self::splat(hi)), i16::MAX);
+        }
+        acc
+    }
     /// `acc + widen(a)`; only the total ([`Self::acc_sum`]) is meaningful.
     fn acc_add(acc: Self::Acc, a: Self) -> Self::Acc;
     /// `acc + widen(a)^2`; only the total ([`Self::acc_sum`]) is meaningful.
@@ -402,6 +503,38 @@ pub(crate) trait I16FilterLanes: I16Lanes {
     /// Store `clamp(lane, 0, 255)` of lanes `0..LANES / 2` into the start of
     /// `lo`, and of the others into the start of `hi`.
     fn store_u8_sat_halves(self, lo: &mut [u8], hi: &mut [u8]);
+    /// Store lanes `0..LANES / 2` into `lo` and `LANES / 2..LANES` into `hi`.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn store_halves(self, lo: &mut [i16], hi: &mut [i16]) {
+        let half = Self::LANES / 2;
+        let mut buf = [0i16; MAX_I16_LANES];
+        self.store(&mut buf);
+        lo[..half].copy_from_slice(&buf[..half]);
+        hi[..half].copy_from_slice(&buf[half..Self::LANES]);
+    }
+    /// Quarter-vector row load (`LANES / 4` lanes from each of four rows).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn load_quarters(rows: [&[i16]; 4]) -> Self {
+        let q = Self::LANES / 4;
+        let mut buf = [0i16; MAX_I16_LANES];
+        for (i, row) in rows.into_iter().enumerate() {
+            buf[i * q..(i + 1) * q].copy_from_slice(&row[..q]);
+        }
+        Self::load(&buf)
+    }
+    /// Quarter-vector row store (`LANES / 4` lanes into each of four rows).
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    fn store_quarters(self, rows: [&mut [i16]; 4]) {
+        let q = Self::LANES / 4;
+        let mut buf = [0i16; MAX_I16_LANES];
+        self.store(&mut buf);
+        for (i, row) in rows.into_iter().enumerate() {
+            row[..q].copy_from_slice(&buf[i * q..(i + 1) * q]);
+        }
+    }
     /// Lane-wise minimum, comparing the lanes as unsigned 16-bit values.
     fn min_u16(self, other: Self) -> Self;
     /// Lane-wise `max(self - other, 0)`, on the lanes as unsigned 16-bit
@@ -416,6 +549,18 @@ pub(crate) trait I16FilterLanes: I16Lanes {
     /// `if_set` in the lanes where the mask `self` is −1, `if_clear` where
     /// it is 0 (`self` from [`Self::gt_mask`], [`Self::eq_mask`], [`Self::and`]).
     fn blend(self, if_set: Self, if_clear: Self) -> Self;
+    /// Whether any lane in `self` is non-zero.
+    #[inline(always)]
+    #[allow(clippy::inline_always)]
+    #[cfg_attr(
+        not(any(target_arch = "x86_64", target_arch = "aarch64")),
+        allow(dead_code, reason = "u16 SIMD kernels target x86_64 and aarch64")
+    )]
+    fn any_nonzero(self) -> bool {
+        let mut buf = [0i16; MAX_I16_LANES];
+        self.store(&mut buf);
+        buf[..Self::LANES].iter().any(|&v| v != 0)
+    }
 }
 
 /// Byte-shuffle pattern entry that yields a zero byte (the CDEF direction

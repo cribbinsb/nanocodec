@@ -11,12 +11,13 @@ use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storeu_si128, _mm256_loadu_si256,
     _mm256_storeu_si256, _mm512_abs_epi32, _mm512_add_epi32, _mm512_cmpeq_epi32_mask,
     _mm512_cmpgt_epi32_mask, _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask,
-    _mm512_cvtepi16_epi32, _mm512_cvtepu8_epi32, _mm512_cvtsepi32_epi16, _mm512_cvtusepi32_epi8,
-    _mm512_loadu_si512, _mm512_mask_blend_epi32, _mm512_mask_sub_epi32, _mm512_maskz_set1_epi32,
-    _mm512_max_epi32, _mm512_min_epi32, _mm512_mullo_epi32, _mm512_or_si512, _mm512_set1_epi32,
-    _mm512_setzero_si512, _mm512_shuffle_i32x4, _mm512_sll_epi32, _mm512_sra_epi32,
-    _mm512_srl_epi32, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_unpackhi_epi32,
-    _mm512_unpackhi_epi64, _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
+    _mm512_cvtepi16_epi32, _mm512_cvtepu8_epi32, _mm512_cvtepu16_epi32, _mm512_cvtsepi32_epi16,
+    _mm512_cvtusepi32_epi8, _mm512_cvtusepi32_epi16, _mm512_loadu_si512, _mm512_mask_blend_epi32,
+    _mm512_mask_sub_epi32, _mm512_maskz_set1_epi32, _mm512_max_epi32, _mm512_min_epi32,
+    _mm512_mullo_epi32, _mm512_or_si512, _mm512_set1_epi32, _mm512_setzero_si512,
+    _mm512_shuffle_i32x4, _mm512_sll_epi32, _mm512_sra_epi32, _mm512_srl_epi32,
+    _mm512_storeu_si512, _mm512_sub_epi32, _mm512_unpackhi_epi32, _mm512_unpackhi_epi64,
+    _mm512_unpacklo_epi32, _mm512_unpacklo_epi64,
 };
 use core::mem::MaybeUninit;
 
@@ -242,6 +243,20 @@ impl I32Lanes for I32x16 {
             let pred = _mm512_cvtepu8_epi32(_mm_loadu_si128(dst.as_ptr().cast()));
             let sum = _mm512_max_epi32(_mm512_setzero_si512(), _mm512_add_epi32(pred, self.0));
             _mm_storeu_si128(dst.as_mut_ptr().cast(), _mm512_cvtusepi32_epi8(sum));
+        }
+    }
+
+    #[inline(always)]
+    fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
+        let dst = &mut dst[..16];
+        // SAFETY: AVX-512F/BW/VL enabled; `dst` holds 16 `u16` samples.
+        unsafe {
+            let pred = _mm512_cvtepu16_epi32(_mm256_loadu_si256(dst.as_ptr().cast()));
+            let sum = _mm512_min_epi32(
+                _mm512_max_epi32(_mm512_add_epi32(pred, self.0), _mm512_setzero_si512()),
+                _mm512_set1_epi32(max_val),
+            );
+            _mm256_storeu_si256(dst.as_mut_ptr().cast(), _mm512_cvtusepi32_epi16(sum));
         }
     }
 

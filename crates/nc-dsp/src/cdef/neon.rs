@@ -1,11 +1,11 @@
 //! NEON CDEF kernels: the generic 16-bit filter on 8 lanes (one row of an 8x8
-//! luma block or two rows of a 4x4 chroma block per vector.
+//! luma block or two rows of a 4x4 chroma block per vector).
 
-use super::{CdefArgs, CdefFns, direction, generic, narrow};
+use super::{CdefArgs, CdefFns, HighCdefFns, direction, generic, narrow};
 use crate::simd::neon::I16x8;
 use crate::simd::neon_u8::U8x16;
 
-/// The NEON table (NEON is always present on `AArch64`).
+/// The NEON 8-bit table (NEON is always present on `AArch64`).
 pub(crate) fn cdef_fns() -> CdefFns {
     CdefFns {
         find_dir,
@@ -17,10 +17,24 @@ pub(crate) fn cdef_fns() -> CdefFns {
     }
 }
 
+/// The NEON high-bit-depth (`u16`) table.
+pub(crate) const HIGH_FNS: HighCdefFns = HighCdefFns {
+    find_dir: find_dir_u16,
+    edge: [block4_edge_u16, block8_edge_u16],
+    interior: [block4_interior_u16, block8_interior_u16],
+    interior_pair4: None,
+};
+
 #[target_feature(enable = "neon")]
 unsafe fn find_dir(src: &[u8], stride: usize) -> (u8, i32) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
     unsafe { direction::find_dir::<I16x8>(src, stride) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn find_dir_u16(src: &[u16], stride: usize, bits_above: u32) -> (u8, i32) {
+    // SAFETY: NEON is enabled for this function (dispatch contract).
+    unsafe { direction::find_dir_u16::<I16x8>(src, stride, bits_above) }
 }
 
 #[target_feature(enable = "neon")]
@@ -47,6 +61,70 @@ unsafe fn block4(
 ) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
     unsafe { generic::filter_any_dir::<I16x8, 2, 8>(src, stride, origin, args, dst, dst_stride) }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn block8_edge_u16(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: NEON is enabled for this function (dispatch contract).
+    unsafe {
+        generic::filter_any_dir_u16::<I16x8, 1, 12>(src, stride, origin, args, dst, dst_stride);
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn block4_edge_u16(
+    src: &[i16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: NEON is enabled for this function (dispatch contract).
+    unsafe {
+        generic::filter_any_dir_u16::<I16x8, 2, 8>(src, stride, origin, args, dst, dst_stride);
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn block8_interior_u16(
+    src: &[u16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: NEON is enabled; valid 10/12-bit `u16` samples (`0..=4095`) fit
+    // positive `i16`.
+    unsafe {
+        let src_i16 = core::slice::from_raw_parts(src.as_ptr().cast::<i16>(), src.len());
+        block8_edge_u16(src_i16, stride, origin, args, dst, dst_stride);
+    }
+}
+
+#[target_feature(enable = "neon")]
+unsafe fn block4_interior_u16(
+    src: &[u16],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [u16],
+    dst_stride: usize,
+) {
+    // SAFETY: NEON is enabled; valid 10/12-bit `u16` samples (`0..=4095`) fit
+    // positive `i16`.
+    unsafe {
+        let src_i16 = core::slice::from_raw_parts(src.as_ptr().cast::<i16>(), src.len());
+        block4_edge_u16(src_i16, stride, origin, args, dst, dst_stride);
+    }
 }
 
 #[target_feature(enable = "neon")]

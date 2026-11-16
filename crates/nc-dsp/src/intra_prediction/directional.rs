@@ -288,17 +288,14 @@ fn projected_run<T: Sample, K: DirectionalKernels<T>, const N: usize>(
     );
 }
 
-/// `Round2(a · (32 − weight) + b · weight, 5)` in 16 bits (the sum is at
-/// most `255 · 32 + 16` at 8 bits, `1023 · 32 + 16` at 10), which lets
-/// runs vectorise on 16-bit lanes.
+/// `Round2(a · (32 − weight) + b · weight, 5)` (`4095 · 32 + 16 = 131_056` at
+/// 12 bits, so `u32` avoids `u16` overflow).
 #[inline(always)]
 fn interpolate<T: Sample>(a: T, b: T, weight: usize) -> T {
-    let far = weight as u16;
-    let near = WEIGHT_SCALE as u16 - far;
-    let (a, b) = (a.to_i32() as u16, b.to_i32() as u16);
-    T::from_i32(i32::from(
-        (a * near + b * far + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS,
-    ))
+    let far = weight as u32;
+    let near = WEIGHT_SCALE as u32 - far;
+    let (a, b) = (a.to_i32() as u32, b.to_i32() as u32);
+    T::from_i32(((a * near + b * far + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS) as i32)
 }
 
 /// Scalar [`DirectionalKernels::run`].

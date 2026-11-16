@@ -35,6 +35,8 @@
 pub mod blend;
 pub mod convolve;
 pub mod filter;
+pub(crate) mod high_blend;
+pub(crate) mod high_mc;
 pub mod mask;
 pub(crate) mod mask_kernels;
 pub mod scale;
@@ -48,15 +50,33 @@ mod warp_neon;
 
 /// `FILTER_BITS`: precision of every interpolation and warp filter tap.
 pub(crate) const FILTER_BITS: u32 = 7;
-/// `InterRound0`: rounding of the horizontal filter pass (8-bit).
+/// `InterRound0`: rounding of the horizontal filter pass (8/10-bit).
 pub(crate) const INTER_ROUND0: u32 = 3;
-/// `InterRound1` of non-compound prediction (8-bit): the output is pixels.
+/// `InterRound1` of non-compound prediction (8/10-bit): the output is pixels.
 pub(crate) const INTER_ROUND1_FINAL: u32 = 2 * FILTER_BITS - INTER_ROUND0;
 /// `InterRound1` of compound prediction (`COMPOUND_ROUND1_BITS`).
 pub(crate) const INTER_ROUND1_COMPOUND: u32 = 7;
-/// `InterPostRound` of compound prediction: the extra precision of a
-/// compound prediction over pixels, removed when the two are blended.
+/// `InterPostRound` of compound prediction (8/10-bit): the extra precision of
+/// a compound prediction over pixels, removed when the two are blended.
 pub(crate) const INTER_POST_ROUND: u32 = 2 * FILTER_BITS - INTER_ROUND0 - INTER_ROUND1_COMPOUND;
+
+/// `InterRound0` at `depth` (AV1 §7.11.3.4: 5 at 12 bits, 3 otherwise).
+#[inline]
+pub(crate) const fn inter_round0(depth: nc_common::BitDepth) -> u32 {
+    if depth.bits() == 12 { 5 } else { INTER_ROUND0 }
+}
+
+/// `InterRound1` for single-reference prediction at `depth` (AV1 §7.11.3.4).
+#[inline]
+pub(crate) const fn inter_round1_final(depth: nc_common::BitDepth) -> u32 {
+    2 * FILTER_BITS - inter_round0(depth)
+}
+
+/// `InterPostRound` at `depth` (AV1 §7.11.3.4: 2 at 12 bits, 4 otherwise).
+#[inline]
+pub(crate) const fn inter_post_round(depth: nc_common::BitDepth) -> u32 {
+    2 * FILTER_BITS - inter_round0(depth) - INTER_ROUND1_COMPOUND
+}
 /// Largest 8-bit sample value.
 pub(crate) const PIXEL_MAX: i32 = 255;
 

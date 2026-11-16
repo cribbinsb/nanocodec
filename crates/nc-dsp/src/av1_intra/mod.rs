@@ -24,6 +24,7 @@ use crate::intra_prediction::filter::{self, FilterGrid, FilterIntraMode};
 use crate::intra_prediction::{IntraEdges, IntraMode};
 
 pub(crate) mod generic;
+pub(crate) mod high;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]

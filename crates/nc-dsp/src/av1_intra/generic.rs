@@ -107,7 +107,7 @@ pub(crate) unsafe fn store_transposed<B: Bytes>(
 /// most both others, else `top` where `to_top ≤ to_corner`, else `corner`
 /// (the scalar `paeth`'s order of ties).
 #[inline(always)]
-fn paeth_select<V: I16FilterLanes>(
+pub(super) fn paeth_select<V: I16FilterLanes>(
     (left, top, corner): (V, V, V),
     (to_left, to_top, to_corner): (V, V, V),
 ) -> V {
@@ -120,7 +120,7 @@ fn paeth_select<V: I16FilterLanes>(
 /// Paeth's distances from `left + top − corner` to each candidate:
 /// `|top − corner|`, `|left − corner|`, `|left + top − 2 · corner|`.
 #[inline(always)]
-fn paeth_distances<V: I16FilterLanes>(left: V, top: V, corner: V) -> (V, V, V) {
+pub(super) fn paeth_distances<V: I16FilterLanes>(left: V, top: V, corner: V) -> (V, V, V) {
     (
         top.sub(corner).abs(),
         left.sub(corner).abs(),

@@ -21,15 +21,15 @@
 //! squares, weighted by `840 / length`.
 
 use core::arch::x86_64::{
-    __m256i, _mm_add_epi16, _mm_cvtsi128_si32, _mm_hadd_epi16, _mm_loadu_si128, _mm_max_epi32,
-    _mm_minpos_epu16, _mm_packs_epi32, _mm_set_epi64x, _mm_shuffle_epi32, _mm_srli_epi32,
-    _mm_sub_epi32, _mm256_add_epi16, _mm256_add_epi32, _mm256_broadcastsi128_si256,
-    _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_hadd_epi16,
-    _mm256_hadd_epi32, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_mullo_epi32,
-    _mm256_permute2x128_si256, _mm256_permutevar8x32_epi32, _mm256_set_m128i, _mm256_set1_epi16,
-    _mm256_set1_epi32, _mm256_setr_epi32, _mm256_shuffle_epi8, _mm256_shufflelo_epi16,
-    _mm256_slli_si256, _mm256_srli_si256, _mm256_storeu_si256, _mm256_sub_epi16,
-    _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
+    __m128i, __m256i, _mm_add_epi16, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_hadd_epi16,
+    _mm_loadu_si128, _mm_max_epi32, _mm_minpos_epu16, _mm_packs_epi32, _mm_set_epi64x,
+    _mm_shuffle_epi32, _mm_srli_epi32, _mm_sub_epi32, _mm256_add_epi16, _mm256_add_epi32,
+    _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_cvtepu8_epi16,
+    _mm256_extracti128_si256, _mm256_hadd_epi16, _mm256_hadd_epi32, _mm256_loadu_si256,
+    _mm256_madd_epi16, _mm256_mullo_epi32, _mm256_permute2x128_si256, _mm256_permutevar8x32_epi32,
+    _mm256_set_m128i, _mm256_set1_epi16, _mm256_set1_epi32, _mm256_setr_epi32, _mm256_shuffle_epi8,
+    _mm256_shufflelo_epi16, _mm256_slli_si256, _mm256_srl_epi16, _mm256_srli_si256,
+    _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
 };
 
 /// Block side.
@@ -138,6 +138,33 @@ pub(crate) unsafe fn find_dir(src: &[u8], stride: usize) -> (u8, i32) {
         let bytes = _mm_set_epi64x(row(N - 1 - k), row(k));
         _mm256_sub_epi16(_mm256_cvtepu8_epi16(bytes), centre)
     });
+    // SAFETY: AVX2 is enabled for this function.
+    unsafe { find_dir_rows(first) }
+}
+
+/// High-bit-depth (`u16`) `cdef_find_dir` (dav1d `cdef_dir_16bpc_avx2`,
+/// `src/x86/cdef16_avx2.asm`): shifts each sample down by `bits_above` to 8
+/// bits, centres on zero, and runs the shared 8-bit AVX2 search.
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn find_dir_u16(src: &[u16], stride: usize, bits_above: u32) -> (u8, i32) {
+    let block = &src[..(N - 1) * stride + N];
+    let row = |i: usize| -> __m128i {
+        // SAFETY: row `i < 8` holds 8 `u16` words inside the checked 8x8 footprint.
+        unsafe { _mm_loadu_si128(block.as_ptr().add(i * stride).cast()) }
+    };
+    let shift = _mm_cvtsi32_si128(bits_above as i32);
+    let centre = _mm256_set1_epi16(CENTRE);
+    let first: [__m256i; N / 2] = core::array::from_fn(|k| {
+        let words = _mm256_set_m128i(row(N - 1 - k), row(k));
+        _mm256_sub_epi16(_mm256_srl_epi16(words, shift), centre)
+    });
+    // SAFETY: AVX2 is enabled for this function.
+    unsafe { find_dir_rows(first) }
+}
+
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn find_dir_rows(first: [__m256i; N / 2]) -> (u8, i32) {
     let reg: [__m256i; N] = core::array::from_fn(|k| {
         if k < N / 2 {
             first[k]

@@ -12,18 +12,19 @@ use core::arch::aarch64::{
     vaddq_s16, vaddq_s32, vaddvq_u32, vaddw_s16, vandq_s16, vbsl_s16, vbslq_s16, vbslq_s32,
     vceqq_s16, vceqq_s32, vceqzq_s32, vcgtq_s16, vcgtq_s32, vcltz_s16, vcltzq_s16, vcombine_s16,
     vcombine_s32, vcreate_u8, vdup_n_s16, vdup_n_u8, vdupq_n_s16, vdupq_n_s32, veorq_s32,
-    vextq_s16, vget_high_s32, vget_lane_u32, vget_low_s16, vget_low_s32, vget_low_u16, vld1_s16,
-    vld1_u8, vld1q_s16, vld1q_s32, vld1q_u8, vmax_s16, vmaxq_s16, vmaxq_s32, vmin_s16, vminq_s16,
-    vminq_s32, vminq_u16, vmlal_high_n_s16, vmlal_high_s16, vmlal_n_s16, vmlal_s16, vmlal_u8,
-    vmlaq_laneq_s32, vmlaq_n_s32, vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16,
-    vmull_high_s16, vmull_s16, vmull_u8, vmulq_n_s32, vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16,
-    vorrq_s32, vpadalq_s16, vpaddq_s32, vqadd_s16, vqaddq_s16, vqmovn_high_s32, vqmovn_s32,
-    vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulh_s16, vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8,
+    vextq_s16, vget_high_s16, vget_high_s32, vget_lane_u32, vget_low_s16, vget_low_s32,
+    vget_low_u16, vld1_s16, vld1_u8, vld1_u16, vld1q_s16, vld1q_s32, vld1q_u8, vmax_s16, vmaxq_s16,
+    vmaxq_s32, vmaxvq_u16, vmin_s16, vminq_s16, vminq_s32, vminq_u16, vmlal_high_n_s16,
+    vmlal_high_s16, vmlal_n_s16, vmlal_s16, vmlal_u8, vmlaq_laneq_s32, vmlaq_n_s32, vmovl_high_s16,
+    vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16, vmull_high_s16, vmull_s16, vmull_u8, vmulq_n_s32,
+    vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16, vorrq_s32, vpadalq_s16, vpaddq_s32, vqadd_s16,
+    vqaddq_s16, vqmovn_high_s32, vqmovn_s32, vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulh_s16,
+    vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8, vreinterpret_s16_u16, vreinterpret_u16_s16,
     vreinterpret_u32_u8, vreinterpretq_s16_s32, vreinterpretq_s16_u8, vreinterpretq_s16_u16,
     vreinterpretq_s32_u32, vreinterpretq_u8_s16, vreinterpretq_u16_s16, vreinterpretq_u32_s32,
-    vrshlq_s32, vshl_s16, vshlq_s16, vshlq_s32, vshlq_u32, vshrq_n_s32, vshrq_n_u32, vst1_s16,
-    vst1_u8, vst1q_s16, vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32, vtrnq_s32, vzip1q_s16,
-    vzip2q_s16,
+    vrshlq_s32, vshl_s16, vshl_u16, vshlq_s16, vshlq_s32, vshlq_u16, vshlq_u32, vshrq_n_s32,
+    vshrq_n_u32, vst1_s16, vst1_u8, vst1_u16, vst1q_s16, vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32,
+    vtrnq_s32, vzip1q_s16, vzip2q_s16,
 };
 
 use core::mem::MaybeUninit;
@@ -215,6 +216,17 @@ impl I32Lanes for I32x4 {
     }
 
     #[inline(always)]
+    fn add_to_u16(self, dst: &mut [u16], max_val: i32) {
+        let dst = &mut dst[..4];
+        // SAFETY: NEON kernels only; `dst` holds 4 `u16` samples.
+        unsafe {
+            let pred = vreinterpretq_s32_u32(vmovl_u16(vld1_u16(dst.as_ptr())));
+            let sum = vminq_s32(vaddq_s32(self.0, pred), vdupq_n_s32(max_val));
+            vst1_u16(dst.as_mut_ptr(), vqmovun_s32(sum));
+        }
+    }
+
+    #[inline(always)]
     fn store_transposed(rows: &[Self], dst: &mut [MaybeUninit<i32>], dst_stride: usize) {
         for (r, value) in transpose_i32x4(rows).into_iter().enumerate() {
             let dst = &mut dst[r * dst_stride..][..Self::LANES];
@@ -398,6 +410,17 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn pair_avg_u16(pairs: &[u16]) -> Self {
+        use core::arch::aarch64::{vld2q_u16, vrhaddq_u16};
+        let pairs = &pairs[..16];
+        // SAFETY: NEON kernels only; `pairs` holds 16 `u16` elements.
+        unsafe {
+            let deint = vld2q_u16(pairs.as_ptr());
+            Self(vreinterpretq_s16_u16(vrhaddq_u16(deint.0, deint.1)))
+        }
+    }
+
+    #[inline(always)]
     fn store(self, dst: &mut [i16]) {
         let dst = &mut dst[..8];
         // SAFETY: NEON kernels only; `dst` holds 8 values.
@@ -438,6 +461,17 @@ impl I16Lanes for I16x8 {
     fn sra(self, bits: u32) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe { Self(vshlq_s16(self.0, vdupq_n_s16(-(bits as i16)))) }
+    }
+
+    #[inline(always)]
+    fn srl(self, bits: u32) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe {
+            Self(vreinterpretq_s16_u16(vshlq_u16(
+                vreinterpretq_u16_s16(self.0),
+                vdupq_n_s16(-(bits as i16)),
+            )))
+        }
     }
 
     #[inline(always)]
@@ -486,6 +520,21 @@ impl I16Lanes for I16x8 {
             [
                 vmlal_n_s16(acc[0], vget_low_s16(a.0), coeff),
                 vmlal_high_n_s16(acc[1], a.0, coeff),
+            ]
+        }
+    }
+
+    #[inline(always)]
+    fn acc_vec_mul_add2(a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe {
+            [
+                vmlal_s16(
+                    vmull_s16(vget_low_s16(a.0), vget_low_s16(wa.0)),
+                    vget_low_s16(b.0),
+                    vget_low_s16(wb.0),
+                ),
+                vmlal_high_s16(vmull_high_s16(a.0, wa.0), b.0, wb.0),
             ]
         }
     }
@@ -639,6 +688,17 @@ impl I16Lanes for I16x4 {
     }
 
     #[inline(always)]
+    fn srl(self, bits: u32) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe {
+            Self(vreinterpret_s16_u16(vshl_u16(
+                vreinterpret_u16_s16(self.0),
+                vdup_n_s16(-(bits as i16)),
+            )))
+        }
+    }
+
+    #[inline(always)]
     fn clamp_u8(self) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe { Self(vmax_s16(vmin_s16(self.0, vdup_n_s16(255)), vdup_n_s16(0))) }
@@ -665,6 +725,12 @@ impl I16Lanes for I16x4 {
     fn acc_mul_add(acc: Self::Acc, a: Self, coeff: i16) -> Self::Acc {
         // SAFETY: NEON kernels only (module docs).
         unsafe { vmlal_n_s16(acc, a.0, coeff) }
+    }
+
+    #[inline(always)]
+    fn acc_vec_mul_add2(a: Self, wa: Self, b: Self, wb: Self) -> Self::Acc {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { vmlal_s16(vmull_s16(a.0, wa.0), b.0, wb.0) }
     }
 
     #[inline(always)]
@@ -722,6 +788,16 @@ impl I16FilterLanes for I16x8 {
     }
 
     #[inline(always)]
+    fn store_halves(self, lo: &mut [i16], hi: &mut [i16]) {
+        let (lo, hi) = (&mut lo[..4], &mut hi[..4]);
+        // SAFETY: NEON kernels only; `lo` and `hi` hold 4 words each.
+        unsafe {
+            vst1_s16(lo.as_mut_ptr(), vget_low_s16(self.0));
+            vst1_s16(hi.as_mut_ptr(), vget_high_s16(self.0));
+        }
+    }
+
+    #[inline(always)]
     fn min_u16(self, other: Self) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe {
@@ -771,6 +847,12 @@ impl I16FilterLanes for I16x8 {
                 if_clear.0,
             ))
         }
+    }
+
+    #[inline(always)]
+    fn any_nonzero(self) -> bool {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { vmaxvq_u16(vreinterpretq_u16_s16(self.0)) != 0 }
     }
 }
 

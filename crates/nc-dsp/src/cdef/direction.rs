@@ -129,6 +129,37 @@ pub(crate) unsafe fn find_dir<V: I16x8Shuffles>(src: &[u8], stride: usize) -> (u
         // lanes read exactly one row, avoiding repeated suffix-slice checks.
         *row = unsafe { V::load_u8_at(block.as_ptr().add(i * stride)) }.sub(V::splat(128));
     }
+    find_dir_rows(rows)
+}
+
+/// High-bit-depth (`u16`, up to 12 bits) `cdef_find_dir`: shifts each sample
+/// down by `bits_above` to 8 bits, centres on zero, and runs [`find_dir_rows`].
+#[cfg_attr(
+    all(target_arch = "wasm32", target_feature = "simd128"),
+    allow(dead_code, reason = "high-bit-depth SIMD currently targets NEON")
+)]
+#[allow(clippy::inline_always)]
+#[inline(always)]
+pub(crate) unsafe fn find_dir_u16<V: I16x8Shuffles>(
+    src: &[u16],
+    stride: usize,
+    bits_above: u32,
+) -> (u8, i32) {
+    let block = &src[..(N - 1) * stride + N];
+    let centre = V::splat(128);
+    let mut rows = [V::splat(0); N];
+    for (i, row) in rows.iter_mut().enumerate() {
+        // SAFETY: row `i < 8` holds 8 `u16` samples (`0..=4095`, positive as
+        // `i16`) within the checked 8x8 footprint.
+        let line = unsafe { core::slice::from_raw_parts(block.as_ptr().add(i * stride).cast(), N) };
+        *row = V::load(line).sra(bits_above).sub(centre);
+    }
+    find_dir_rows(rows)
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn find_dir_rows<V: I16x8Shuffles>(rows: [V; N]) -> (u8, i32) {
     // A quarter turn counter-clockwise: rotated row i is column 7 - i.
     let mut rotated = transpose(rows);
     rotated.reverse();

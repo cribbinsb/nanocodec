@@ -96,11 +96,13 @@ pub(crate) const SCALAR: Kernels = Kernels {
     blend,
 };
 
-/// The kernels of `isa` (AVX-512 tables inherit AVX2's).
+/// The kernels of `isa` (AVX-512 inherits AVX2 Wiener and upgrades SGR to 16 lanes).
 pub(crate) fn kernels(isa: Isa) -> Kernels {
     match isa {
         #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 | Isa::Avx512 => super::avx2::KERNELS,
+        Isa::Avx2 => super::avx2::KERNELS,
+        #[cfg(target_arch = "x86_64")]
+        Isa::Avx512 => super::high_lr::avx512_u8_kernels(super::avx2::KERNELS),
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => super::neon::KERNELS,
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -110,10 +112,15 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
 }
 
 /// The row kernels the Wiener and self-guided drivers call, on samples
-/// `T`: an ISA's 8-bit table ([`Kernels`]) or the scalar references at a
+/// `T`: an ISA's 8-bit table ([`Kernels`]), an ISA's 16-bit table
+/// ([`super::high_lr::HighLrBound`]), or the scalar references at a
 /// depth ([`DeepKernels`]). The methods check the kernel contract as
 /// [`Kernels`]' do.
 pub(crate) trait RowKernels<T: Sample> {
+    /// Element type of the self-guided filtered scratch rows (`i16` for 8-bit,
+    /// `i32` for high bit depth).
+    type Filtered: super::sgr_lanes::LaneRow;
+
     /// A complete Wiener stripe, when the kernels have one (else `false`).
     fn wiener_stripe(
         &self,
@@ -160,25 +167,32 @@ pub(crate) trait RowKernels<T: Sample> {
         a: [&[i16]; 2],
         b: [&[i32]; 2],
         src: &[T],
-        out: &mut [i16],
+        out: &mut [Self::Filtered],
         n: usize,
     );
     /// [`Kernels::sgr_filter_on`].
-    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[T], out: &mut [i16], n: usize);
+    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[T], out: &mut [Self::Filtered], n: usize);
     /// [`Kernels::sgr_filter_around`].
     fn sgr_filter_around(
         &self,
         a: [&[i16]; 3],
         b: [&[i32]; 3],
         src: &[T],
-        out: &mut [i16],
+        out: &mut [Self::Filtered],
         n: usize,
     );
     /// [`Kernels::sgr_blend`].
-    fn sgr_blend(&self, src: &[T], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [T]);
+    fn sgr_blend(
+        &self,
+        src: &[T],
+        filtered: [&[Self::Filtered]; 2],
+        weights: [i32; 2],
+        dst: &mut [T],
+    );
 }
 
 impl RowKernels<u8> for Kernels {
+    type Filtered = i16;
     fn wiener_stripe(
         &self,
         taps: (WienerTaps, WienerTaps),
@@ -261,6 +275,8 @@ pub(crate) struct DeepKernels {
 }
 
 impl<T: Sample> RowKernels<T> for DeepKernels {
+    type Filtered = i32;
+
     fn wiener_stripe(
         &self,
         _taps: (WienerTaps, WienerTaps),
@@ -316,12 +332,12 @@ impl<T: Sample> RowKernels<T> for DeepKernels {
         a: [&[i16]; 2],
         b: [&[i32]; 2],
         src: &[T],
-        out: &mut [i16],
+        out: &mut [i32],
         n: usize,
     ) {
         filter_between(a, b, src, out, n);
     }
-    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[T], out: &mut [i16], n: usize) {
+    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[T], out: &mut [i32], n: usize) {
         filter_on(a, b, src, out, n);
     }
     fn sgr_filter_around(
@@ -329,12 +345,12 @@ impl<T: Sample> RowKernels<T> for DeepKernels {
         a: [&[i16]; 3],
         b: [&[i32]; 3],
         src: &[T],
-        out: &mut [i16],
+        out: &mut [i32],
         n: usize,
     ) {
         filter_around(a, b, src, out, n);
     }
-    fn sgr_blend(&self, src: &[T], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [T]) {
+    fn sgr_blend(&self, src: &[T], filtered: [&[i32]; 2], weights: [i32; 2], dst: &mut [T]) {
         blend_at(src, filtered, weights, dst, self.depth);
     }
 }

@@ -218,6 +218,24 @@ impl<T: Sample> BlockEdges<T> {
         edges
     }
 
+    /// The block's DC prediction value (§7.11.2.5).
+    #[must_use]
+    pub fn dc_value(&self) -> T {
+        if self.width == self.height {
+            self.square.dc
+        } else {
+            self.dc()
+        }
+    }
+
+    pub(crate) const fn shape(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    pub(crate) const fn edges(&self) -> (&[T; EDGE_LEN], &[T; EDGE_LEN], T) {
+        (&self.square.above, &self.square.left, self.square.corner)
+    }
+
     /// Fill the block with `kind`'s prediction.
     ///
     /// # Panics
@@ -244,6 +262,37 @@ impl<T: Sample> BlockEdges<T> {
         kind: IntraKind,
         dst: &mut PlaneViewMut<'_, T>,
     ) {
+        self.predict_full(
+            square,
+            Self::paeth_scalar,
+            Self::smooth,
+            crate::intra_prediction::directional::interpolate_run,
+            kind,
+            dst,
+        );
+    }
+
+    pub(crate) fn paeth_scalar(&self, dst: &mut PlaneViewMut<'_, T>) {
+        let (w, h) = (self.width, self.height);
+        let (above, left) = (&self.square.above, &self.square.left);
+        for (r, &l) in left[..h].iter().enumerate() {
+            for (pixel, &a) in dst.row_mut(r)[..w].iter_mut().zip(&above[..w]) {
+                *pixel = paeth(l, a, self.square.corner);
+            }
+        }
+    }
+
+    /// [`Self::predict_with`] with custom rectangular Paeth, Smooth, and
+    /// directional run kernels.
+    pub(crate) fn predict_full(
+        &self,
+        square: impl FnOnce(&IntraEdges<T>, Square, &mut PlaneViewMut<'_, T>),
+        rect_paeth: impl FnOnce(&Self, &mut PlaneViewMut<'_, T>),
+        rect_smooth: impl FnOnce(&Self, IntraKind, &mut PlaneViewMut<'_, T>),
+        rect_run: impl Fn(&[T], usize, &mut [T]),
+        kind: IntraKind,
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
         let (w, h) = (self.width, self.height);
         assert!(
             dst.width() == w && dst.height() == h,
@@ -255,10 +304,6 @@ impl<T: Sample> BlockEdges<T> {
                     angle,
                     edge_filter: None,
                 } => return square(&self.square, Square::Angle(angle), dst),
-                // Filtered edges at full resolution suit the square kernels
-                // too (their SIMD runs, not the per-sample zones below),
-                // from the side where the runs pay for preparing the edges
-                // twice.
                 IntraKind::Directional {
                     angle,
                     edge_filter: Some(ctx),
@@ -272,20 +317,13 @@ impl<T: Sample> BlockEdges<T> {
             }
         }
         match kind {
-            IntraKind::Dc => dst.fill(self.dc()),
-            IntraKind::Paeth => {
-                let (above, left) = (&self.square.above, &self.square.left);
-                for (r, &l) in left[..h].iter().enumerate() {
-                    for (pixel, &a) in dst.row_mut(r)[..w].iter_mut().zip(&above[..w]) {
-                        *pixel = paeth(l, a, self.square.corner);
-                    }
-                }
-            }
+            IntraKind::Dc => dst.fill(self.dc_value()),
+            IntraKind::Paeth => rect_paeth(self, dst),
             IntraKind::Smooth | IntraKind::SmoothVertical | IntraKind::SmoothHorizontal => {
-                self.smooth(kind, dst);
+                rect_smooth(self, kind, dst);
             }
             IntraKind::Directional { angle, edge_filter } => {
-                directional::predict(self, angle, edge_filter, dst);
+                directional::predict_with_run(self, angle, edge_filter, dst, rect_run);
             }
         }
     }
@@ -336,7 +374,7 @@ impl<T: Sample> BlockEdges<T> {
 
     /// The three smooth predictors (§7.11.2.6) with the width's weights
     /// across and the height's down.
-    fn smooth(&self, kind: IntraKind, dst: &mut PlaneViewMut<'_, T>) {
+    pub(crate) fn smooth(&self, kind: IntraKind, dst: &mut PlaneViewMut<'_, T>) {
         let (w, h) = (self.width, self.height);
         let (above, left) = (&self.square.above, &self.square.left);
         let weights_x = smooth_weights(w);

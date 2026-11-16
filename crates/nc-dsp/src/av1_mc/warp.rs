@@ -13,10 +13,13 @@
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use super::warp_kernels::{
-    WARP_BLOCK, WINDOW_LEN, WINDOW_SIDE, WINDOW_STRIDE, WarpOut, WarpPhases, warp8x8_scalar,
+    WARP_BLOCK, WINDOW_LEN, WINDOW_SIDE, WINDOW_STRIDE, WarpOut, WarpPhases, warp8x8_scalar_at,
     window_span,
 };
-use super::{INTER_ROUND1_COMPOUND, INTER_ROUND1_FINAL, av1_compound_bias, round2, round2_signed};
+use super::{
+    INTER_ROUND1_COMPOUND, av1_compound_bias, inter_round0, inter_round1_final, round2,
+    round2_signed,
+};
 use crate::Dsp;
 
 /// `WARPEDMODEL_PREC_BITS`: precision of the warp model.
@@ -714,8 +717,12 @@ pub fn av1_warp_at<T: Sample>(
     dst: &mut PlaneViewMut<'_, T>,
     depth: BitDepth,
 ) {
+    let r0 = inter_round0(depth);
+    let kernel = |w: (&[T], usize), phases: &WarpPhases, r1, out: &mut WarpOut| {
+        warp8x8_scalar_at(w, phases, (r0, r1), out);
+    };
     warp_final(
-        &warp8x8_scalar::<T>,
+        &kernel,
         reference,
         (model, shear),
         position,
@@ -728,7 +735,7 @@ pub fn av1_warp_at<T: Sample>(
 
 /// The final-precision warp with `kernel`, clipped to `depth`.
 #[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
-fn warp_final<T: Sample>(
+pub(crate) fn warp_final<T: Sample>(
     kernel: &impl Fn((&[T], usize), &WarpPhases, u32, &mut WarpOut),
     reference: &PlaneView<'_, T>,
     (model, shear): (&[i32; 6], Av1Shear),
@@ -750,7 +757,7 @@ fn warp_final<T: Sample>(
         position,
         (w, h),
         sub,
-        INTER_ROUND1_FINAL,
+        inter_round1_final(depth),
         |r, c, values| {
             let line = &mut dst.row_mut(r)[c..c + values.len()];
             for (out, &v) in line.iter_mut().zip(values) {
@@ -811,8 +818,12 @@ pub fn av1_warp_compound_at<T: Sample>(
     dst: (&mut [i16], usize),
     depth: BitDepth,
 ) {
+    let r0 = inter_round0(depth);
+    let kernel = |w: (&[T], usize), phases: &WarpPhases, r1, out: &mut WarpOut| {
+        warp8x8_scalar_at(w, phases, (r0, r1), out);
+    };
     warp_compound(
-        &warp8x8_scalar::<T>,
+        &kernel,
         reference,
         (model, shear),
         position,
@@ -825,7 +836,7 @@ pub fn av1_warp_compound_at<T: Sample>(
 
 /// The compound-precision warp with `kernel`.
 #[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
-fn warp_compound<T: Sample>(
+pub(crate) fn warp_compound<T: Sample>(
     kernel: &impl Fn((&[T], usize), &WarpPhases, u32, &mut WarpOut),
     reference: &PlaneView<'_, T>,
     (model, shear): (&[i32; 6], Av1Shear),

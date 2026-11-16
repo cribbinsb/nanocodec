@@ -375,3 +375,16 @@ the merges above; hot shares are section 0's.
 - **VVC long deblock filters, ALF, LFNST, MTS tables; AV1 filter intra, smooth,
   LR:** single-codec tools.
 - **CDEF, SAO, SAD/SATD/variance:** already one implementation each.
+- **AV1 10/12-bit (`u16`) decode families** (Gemini, integrated 2026-11-16):
+  `av1_mc::high_mc`/`high_blend`, `av1_inverse::high_simd`,
+  `av1_restoration::high_lr`, `deblock::av1_high`, `av1_intra::high`,
+  `av1_film_grain::high_simd`, the `u16` CDEF blocks. Each is one family over
+  the shared lane traits (`I16Lanes`, `I16FilterLanes`, `I32Lanes`) on AVX2,
+  AVX-512 and NEON, as dav1d's 16 bpc code is separate from its 8 bpc code:
+  word lanes with `i32` products where the byte kernels pack bytes (MC: no
+  tap halving, 12-bit `InterRound0` 5; deblock: `u16` samples where AV1's
+  8-bit filter is on `lpf_bytes`; inverse: 10/12-bit stage ranges on the AV1
+  generic graph). CDEF, the inverse graph and SGR (`sgr_lanes`) are shared
+  with 8 bits; the saturating add is the shared `I16Lanes::add_sat`. VP9's
+  `u16` MC and deblocking stay separate (per-pass clip, 15-tap filter).
+  No SIMD128 tier yet: on wasm32 the `u16` tables are the scalar references.

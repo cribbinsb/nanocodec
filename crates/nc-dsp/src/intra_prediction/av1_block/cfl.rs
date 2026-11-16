@@ -122,3 +122,27 @@ fn round_signed(x: i32, bits: u32) -> i32 {
 const fn is_side(n: usize) -> bool {
     n.is_power_of_two() && n >= 4 && n <= CFL_MAX_SIDE
 }
+
+/// Scalar one-pass `CfL` prediction (`dc + Round2Signed(alpha_q3 * ac, 6)`),
+/// matching [`CflAc::from_luma`] + [`CflAc::predict`].
+pub(crate) fn cfl_predict_scalar<T: Sample>(
+    luma: &PlaneView<'_, T>,
+    (luma_width, luma_height): (usize, usize),
+    dc: T,
+    alpha_q3: i32,
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
+    let (width, height) = (dst.width(), dst.height());
+    if alpha_q3 == 0 {
+        assert!(
+            is_side(width) && is_side(height),
+            "CfL block {width}x{height}"
+        );
+        dst.fill(dc);
+        return;
+    }
+    let ac = CflAc::from_luma(luma, luma_width, luma_height, width, height);
+    dst.fill(dc);
+    ac.predict(alpha_q3, dst, depth);
+}

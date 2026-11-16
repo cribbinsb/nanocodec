@@ -19,11 +19,12 @@ use core::arch::aarch64::{
     int32x4_t, uint16x8_t, vaddq_s16, vaddq_s32, vceqq_s32, vcombine_s16, vcombine_u8,
     vcombine_u16, vcvtq_f32_s32, vcvtq_s32_f32, vdivq_f32, vdupq_n_s16, vdupq_n_s32, vextq_s16,
     vget_high_u8, vget_high_u16, vget_low_s16, vget_low_u8, vget_low_u16, vld1_u8, vld1q_s16,
-    vld1q_s32, vld1q_u8, vmaxq_s32, vminq_s32, vmlal_high_n_s16, vmlal_n_s16, vmlaq_n_s16,
-    vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmull_high_n_s16, vmull_n_s16, vmulq_n_s16,
-    vmulq_s32, vqaddq_s16, vqmovn_s32, vqmovn_u16, vqmovun_s16, vqshrun_n_s32,
-    vreinterpretq_s16_u16, vreinterpretq_s32_u32, vreinterpretq_u32_s32, vshlq_n_s16, vshlq_n_s32,
-    vshrq_n_s16, vshrq_n_s32, vshrq_n_u32, vst1_u8, vst1q_s16, vst1q_s32, vst1q_u8, vsubq_s32,
+    vld1q_s32, vld1q_u8, vld1q_u16, vmaxq_s32, vminq_s32, vmlal_high_n_s16, vmlal_n_s16,
+    vmlaq_n_s16, vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmull_high_n_s16, vmull_n_s16,
+    vmulq_n_s16, vmulq_s32, vqaddq_s16, vqmovn_s32, vqmovn_u16, vqmovun_s16, vqmovun_s32,
+    vqshrun_n_s32, vreinterpretq_s16_u16, vreinterpretq_s32_u32, vreinterpretq_u32_s32,
+    vshlq_n_s16, vshlq_n_s32, vshrq_n_s16, vshrq_n_s32, vshrq_n_u32, vst1_u8, vst1q_s16, vst1q_s32,
+    vst1q_u8, vst1q_u16, vsubq_s32,
 };
 
 use super::kernels::{Kernels, WIENER_ROWS};
@@ -151,7 +152,7 @@ unsafe fn wiener_v(rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8
 
 /// Eight `i32` lanes for the self-guided kernels.
 #[derive(Clone, Copy)]
-struct Lanes(int32x4_t, int32x4_t);
+pub(super) struct Lanes(int32x4_t, int32x4_t);
 
 impl Lanes {
     /// `f` on both halves.
@@ -204,6 +205,18 @@ impl SgrLanes for Lanes {
         }
     }
     #[inline(always)]
+    fn load_u16(src: &[u16]) -> Self {
+        let src = &src[..8];
+        // SAFETY: see the impl comment.
+        unsafe {
+            let words = vld1q_u16(src.as_ptr());
+            Self(
+                vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(words))),
+                vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(words))),
+            )
+        }
+    }
+    #[inline(always)]
     fn store(self, dst: &mut [i32]) {
         let dst = &mut dst[..8];
         // SAFETY: see the impl comment.
@@ -230,6 +243,19 @@ impl SgrLanes for Lanes {
         unsafe {
             let words = vcombine_s16(vqmovn_s32(self.0), vqmovn_s32(self.1));
             vst1_u8(dst.as_mut_ptr(), vqmovun_s16(words));
+        }
+    }
+    #[inline(always)]
+    fn store_u16_clip(self, max_val: i32, dst: &mut [u16]) {
+        let dst = &mut dst[..8];
+        // SAFETY: see the impl comment; `vqmovun_s32` clamps negatives to 0.
+        unsafe {
+            let cap = vdupq_n_s32(max_val);
+            let words = vcombine_u16(
+                vqmovun_s32(vminq_s32(self.0, cap)),
+                vqmovun_s32(vminq_s32(self.1, cap)),
+            );
+            vst1q_u16(dst.as_mut_ptr(), words);
         }
     }
     #[inline(always)]
