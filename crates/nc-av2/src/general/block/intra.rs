@@ -242,9 +242,10 @@ impl Tile<'_, '_> {
         Ok(transforms)
     }
 
-    /// Whether the frame (its one segment) is lossless.
+    /// Whether the current block's segment is lossless (dav2d
+    /// `segmentation.lossless[b->seg_id]`).
     pub(super) fn lossless(&self) -> bool {
-        self.frame.lossless.segments & 1 != 0
+        self.frame.lossless.segments >> self.segment & 1 != 0
     }
 
     /// A neighbour's value of a field, or 0 when absent.

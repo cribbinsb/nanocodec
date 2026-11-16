@@ -164,7 +164,11 @@ impl Tile<'_, '_> {
         let tip = self.tip_flag(depth, record, neighbours)?;
         let compound = if record.skip_mode {
             true
-        } else if !tip && self.frame.reference_select && bw4 * bh4 >= 4 {
+        } else if !tip
+            && !self.segment_forces_global()
+            && self.frame.reference_select
+            && bw4 * bh4 >= 4
+        {
             let context = self.compound_context(neighbours);
             self.bool(|m| &mut m.comp[context])?
         } else {
@@ -1032,7 +1036,10 @@ impl Tile<'_, '_> {
         let size = record.luma.unwrap_or(BlockSize::B4x4);
         let (bw4, bh4) = size.units();
         inter.compound = CompoundType::None;
-        if tip {
+        let forced_global = self.segment_forces_global();
+        if forced_global {
+            inter.references[0] = 0;
+        } else if tip {
             inter.references[0] = TIP_FRAME;
             inter.weight = TIP_WEIGHTS[usize::from(self.frame.tip.global_weight)];
         } else {
@@ -1055,13 +1062,17 @@ impl Tile<'_, '_> {
             }
             inter.references[0] = rank as Reference;
         }
-        let range = self.reader.range();
-        trace!(
-            self,
-            depth, "Post-ref[{},-1]: r={range}", inter.references[0]
-        );
+        if !forced_global {
+            let range = self.reader.range();
+            trace!(
+                self,
+                depth, "Post-ref[{},-1]: r={range}", inter.references[0]
+            );
+        }
         let context = self.reference_mode_context(size, inter.references, false);
-        if tip {
+        if forced_global {
+            inter.mode = InterMode::Global;
+        } else if tip {
             let new = self.bool(|m| &mut m.tip_mode)?;
             inter.mode = if new { InterMode::New } else { InterMode::Near };
             let range = self.reader.range();

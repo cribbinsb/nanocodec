@@ -5,14 +5,14 @@
 //! reconstruction uses too).
 //!
 //! An edge's thresholds come from the quantizer of the 64x64 filter block
-//! on each side (the mean of the two when both filter, dav2d
-//! `setup_thr_sb_*`), offset per channel by the frame header; sub-PU edges
-//! divide them by eight. Its maximum width comes from its level
-//! ([`super::edges`]); edges on the top row of each 64-row band leave the
-//! rows above shorter (luma at most 6 samples, chroma 2).
+//! on each side with the side's segment delta (the mean of the two when
+//! both filter, dav2d `setup_thr_sb_*`), offset per channel by the frame
+//! header; sub-PU edges divide them by eight. Its maximum width comes from
+//! its level ([`super::edges`]); edges on the top row of each 64-row band
+//! leave the rows above shorter (luma at most 6 samples, chroma 2). A side
+//! in a lossless segment is left unchanged.
 //!
-//! Not yet: lossless sides (segmentation, which the block layer rejects)
-//! and the tile-boundary level fix-ups (several tiles, rejected too).
+//! Not yet: the tile-boundary level fix-ups (several tiles, rejected).
 
 use nc_common::PlaneViewMut;
 use nc_dsp::{AV2_EDGE_LINES, Av2EdgeFilter, Dsp};
@@ -20,10 +20,11 @@ use nc_dsp::{AV2_EDGE_LINES, Av2EdgeFilter, Dsp};
 use super::FilterMaps;
 use super::edges::{Direction, EdgeMap, LEVELS, MAX_LUMA_LEVEL, SUB_PU};
 use crate::deblock::thresholds::{q_threshold, side_threshold};
-use crate::general::block::delta_qindex;
 use crate::general::block::pixels::Planes;
+use crate::general::block::segmentation::SegmentMap;
+use crate::general::block::{delta_qindex, segment_qindex};
 use crate::general::frame_header::FrameHeader;
-use crate::general::sequence::SequenceHeader;
+use crate::general::sequence::{MAX_SEGMENTS, SequenceHeader};
 
 /// Filter length (dav2d `max_width` × 2 + 2) by luma and chroma level.
 const LUMA_LENGTHS: [u8; 4] = [4, 8, 14, 18];
@@ -52,10 +53,36 @@ struct Channel<'a> {
     plane: usize,
     edges: &'a EdgeMap,
     chroma: bool,
-    /// Per filter block, by direction.
+    /// Per filter block and segment ([`Segments::count`] per block), by
+    /// direction.
     thresholds: [Vec<Thresholds>; 2],
     /// Which directions the frame filters.
     directions: [bool; 2],
+    /// The segment of each of the plane's 4x4 units.
+    segments: Segments<'a>,
+}
+
+/// A plane's segments as the filter reads them.
+#[derive(Clone, Copy)]
+struct Segments<'a> {
+    /// The segment per unit, in frames with segmentation.
+    map: Option<&'a SegmentMap>,
+    /// Segments with thresholds per filter block.
+    count: usize,
+    /// The lossless segments, as a bit mask.
+    lossless: u16,
+}
+
+impl Segments<'_> {
+    /// The segment of unit (`column`, `row`).
+    fn at(self, column: usize, row: usize) -> usize {
+        self.map.map_or(0, |map| usize::from(map.get(row, column)))
+    }
+
+    /// Whether `segment` is lossless.
+    fn lossless(self, segment: usize) -> bool {
+        self.lossless >> segment & 1 != 0
+    }
 }
 
 /// Deblock the reconstruction `planes` (padded to whole superblocks) of a
@@ -74,22 +101,40 @@ pub fn filter(
         return;
     }
     crop_bottom(&mut maps.luma_edges);
+    let count = if header.segmentation.is_some() {
+        MAX_SEGMENTS
+    } else {
+        1
+    };
+    // Each filter block's luma AC quantizer per segment (dav2d
+    // `init_deblock_thr_lut_*`).
+    let segment_qindices = || {
+        maps.qindex.iter().flat_map(move |&qindex| {
+            (0..count).map(move |segment| segment_qindex(header, qindex, segment))
+        })
+    };
     let luma = |direction: usize| {
         let offset = DELTA_SCALE * i32::from(deblock.delta_q_y[direction]);
-        maps.qindex
-            .iter()
-            .map(|&qindex| thresholds(i32::from(qindex) + offset))
+        segment_qindices()
+            .map(|qindex| thresholds(qindex + offset))
             .collect()
     };
     let chroma = |ac: i8, delta: i8| -> Vec<Thresholds> {
         let base = i32::from(ac) + i32::from(sequence.quant.base_uv_ac_delta);
-        maps.qindex
-            .iter()
-            .map(|&qindex| {
-                let qindex = delta_qindex(i32::from(qindex), base);
+        segment_qindices()
+            .map(|qindex| {
+                let qindex = delta_qindex(qindex, base);
                 thresholds(qindex + DELTA_SCALE * i32::from(delta))
             })
             .collect()
+    };
+    let segments = |chroma: bool| Segments {
+        map: maps
+            .segments
+            .as_ref()
+            .map(|maps| if chroma { &maps.chroma } else { &maps.luma }),
+        count,
+        lossless: header.lossless.segments,
     };
     let quantizer = &header.quantizer;
     let u = chroma(quantizer.u_ac, deblock.delta_q_u);
@@ -100,6 +145,7 @@ pub fn filter(
             chroma: false,
             thresholds: [luma(0), luma(1)],
             directions: deblock.level_y,
+            segments: segments(false),
         },
         Channel {
             plane: 1,
@@ -107,6 +153,7 @@ pub fn filter(
             chroma: true,
             thresholds: [u.clone(), u],
             directions: [deblock.level_u; 2],
+            segments: segments(true),
         },
         Channel {
             plane: 2,
@@ -117,6 +164,7 @@ pub fn filter(
                 chroma(quantizer.v_ac, deblock.delta_q_v),
             ],
             directions: [deblock.level_v; 2],
+            segments: segments(true),
         },
     ];
     for channel in &channels {
@@ -175,8 +223,18 @@ fn filter_direction(
         to_block(row) * blocks_across + to_block(column)
     };
     let thresholds = &channel.thresholds[direction as usize];
+    let segments = channel.segments;
+    let side = |column: usize, row: usize| {
+        let segment = segments.at(column, row);
+        (
+            thresholds[block(column, row) * segments.count + segment],
+            segments.lossless(segment),
+        )
+    };
     let band = BAND_UNITS >> shift;
     let mut filters = vec![None; along];
+    // Segments with a lossless side, filtered after the rest of the line.
+    let mut keeping = Vec::new();
     // The frame's left and top borders are not edges.
     for line in 1..lines {
         let mut any = false;
@@ -196,10 +254,9 @@ fn filter_direction(
             } else {
                 (column, row - 1)
             };
-            let (mut q, mut side) = combine(
-                thresholds[block(p_column, p_row)],
-                thresholds[block(column, row)],
-            );
+            let (p, keep_p) = side(p_column, p_row);
+            let (q, keep_q) = side(column, row);
+            let (mut q, mut side) = combine(p, q);
             if set & SUB_PU != 0 {
                 q >>= SUB_PU_SHIFT;
                 side >>= SUB_PU_SHIFT;
@@ -220,16 +277,32 @@ fn filter_direction(
             } else {
                 length_pos
             };
-            *filter = Some(Av2EdgeFilter {
+            let edge = Av2EdgeFilter {
                 length_neg,
                 length_pos,
                 q_threshold: q,
                 side_threshold: side,
-            });
-            any = true;
+            };
+            if keep_p || keep_q {
+                keeping.push((position, edge, (keep_p, keep_q)));
+            } else {
+                *filter = Some(edge);
+                any = true;
+            }
         }
+        let coordinate = line * AV2_EDGE_LINES;
         if any {
-            dsp.av2_deblock_line(view, line * AV2_EDGE_LINES, vertical, &filters);
+            dsp.av2_deblock_line(view, coordinate, vertical, &filters);
+        }
+        // Segments of one edge line share no sample: their order is free.
+        for (position, edge, keep) in keeping.drain(..) {
+            let along = position * AV2_EDGE_LINES;
+            let at = if vertical {
+                (coordinate, along)
+            } else {
+                (along, coordinate)
+            };
+            dsp.av2_deblock_edge_keeping(view, at, vertical, edge, keep);
         }
     }
 }

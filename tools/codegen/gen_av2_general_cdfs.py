@@ -66,6 +66,15 @@ SPECS = [
      'whether a CCSO block of a plane is filtered'),
     ('delta_q', [], 8, 'default_delta_q_cdf', '',
      'a superblock quantizer delta (the last symbol escapes)'),
+    # Segment ids (dav2d `seg_pred`, `seg_id_ext`, `seg_id`).
+    ('seg_pred', [3], 2, 'default_segment_pred_cdf[a]', '',
+     'whether a block takes its segment id from the primary reference\'s map'),
+    ('seg_id_ext', [3], 2, 'default_seg_id_ext_flag_cdf[a]', '',
+     'whether a segment id difference is in the upper eight (sixteen segments)'),
+    ('seg_id', [3], 8, 'default_spatial_pred_seg_tree_cdf[a]', '',
+     'a segment id difference from the spatial prediction, lower eight'),
+    ('seg_id_upper', [3], 8, 'default_spatial_pred_seg_tree_cdf1[a]', '',
+     'a segment id difference from the spatial prediction, upper eight'),
     # Loop restoration units (docs/handoff/av2.md: the loop-filter group).
     ('rst_switchable', [2], 2, 'default_switchable_flex_restore_cdf[a][0]', '',
      'a switchable unit: off (step 0), then PC-Wiener rather than NS-Wiener (step 1)'),

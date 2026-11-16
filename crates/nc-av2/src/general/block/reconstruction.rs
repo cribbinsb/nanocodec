@@ -190,6 +190,8 @@ impl Tile<'_, '_> {
     ) -> Result<()> {
         if let Some(size) = record.luma {
             if let Some(prediction) = self.inter_prediction {
+                // Pieces of large blocks predict at their own position.
+                (self.row, self.column) = (record.row, record.column);
                 self.predict_inter_luma(&prediction, size);
             }
             self.luma_transforms(depth, record, (size, whole), modes, transforms)?;
@@ -279,7 +281,7 @@ impl Tile<'_, '_> {
                 uv_mode: modes.uv_mode,
                 u_has_coefficients: false,
                 luma_type: 0,
-                dequant: self.dequant[0],
+                dequant: self.dequantizer(0),
             };
             let above = self.contexts.above.luma_coefficients[column..].to_vec();
             let left_edge = self.contexts.left.luma_coefficients[left..].to_vec();
@@ -435,7 +437,7 @@ impl Tile<'_, '_> {
                                 uv_mode,
                                 u_has_coefficients: self.u_has_coefficients,
                                 luma_type: u16::from(self.luma_type_map[luma_map]),
-                                dequant: self.dequant[plane + 1],
+                                dequant: self.dequantizer(plane + 1),
                             };
                             let (a, l) = (above + x as usize, left + y as usize);
                             let above_edge =

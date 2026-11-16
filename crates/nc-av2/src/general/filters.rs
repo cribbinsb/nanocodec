@@ -9,7 +9,14 @@
 //!
 //! The block layer fills [`FilterMaps`] as it decodes: the deblocking edges
 //! ([`edges`]), each 64x64 filter block's quantizer, CDEF set and CCSO and
-//! GDF flags, and which 4x4 units code a luma residual.
+//! GDF flags, which 4x4 units code a luma residual, and each unit's
+//! segment.
+//!
+//! Every filter leaves the 4x4 units of lossless segments as decoded
+//! (dav2d's `lossless_mask_y`/`_uv`): deblocking moves no lossless side,
+//! CCSO skips their samples, and CDEF (by 8x8 luma unit), restoration and
+//! GDF read only copies of the picture made before them, so their lossless
+//! units are put back from that copy afterwards ([`keep_lossless`]).
 
 pub mod deblock;
 pub mod edges;
@@ -22,6 +29,7 @@ use nc_common::decode::Result;
 use nc_common::{Picture, PlaneIndex};
 use nc_dsp::Dsp;
 
+use super::block::segmentation::SegmentMaps;
 use super::frame_header::FrameHeader;
 use super::frame_header::filters::CcsoPlane;
 use super::frame_header::restoration::{MAX_CLASSES, Taps};
@@ -37,6 +45,11 @@ const UNIT_LOG2: u32 = 2;
 const CCSO_CLASS_STRIDE: usize = 4;
 /// Bands per class in that layout.
 const CCSO_BAND_STRIDE: usize = 8;
+
+/// Side of the luma units CDEF filters or leaves alone.
+const CDEF_LUMA_UNIT: usize = 8;
+/// Side of the 4x4 units restoration and GDF leave alone.
+pub(crate) const LOSSLESS_UNIT: usize = 1 << UNIT_LOG2;
 
 /// Luma 4x4 units per 64x64 filter block, as a shift.
 pub const UNITS64_LOG2: u32 = 4;
@@ -69,6 +82,9 @@ pub struct FilterMaps {
     /// Per plane and filter block: the restoration unit whose top-left
     /// luma position the block holds (dav2d `lr_mask`).
     pub restoration: [Vec<Option<RestorationUnit>>; PLANES],
+    /// The segment of each luma and chroma 4x4 unit, in frames with
+    /// segmentation.
+    pub segments: Option<SegmentMaps>,
 }
 
 /// One loop restoration unit: its type (`restoration::kind`) and, for a
@@ -102,6 +118,7 @@ impl FilterMaps {
             coded: vec![false; columns * rows],
             residual: vec![false; columns * rows],
             restoration: std::array::from_fn(|_| vec![None; filter_blocks]),
+            segments: None,
         }
     }
 
@@ -116,6 +133,21 @@ impl FilterMaps {
     pub fn mark_coded(&mut self, at: (u32, u32), extent: (u32, u32)) {
         let stride = self.luma_edges.columns;
         fill(&mut self.coded, stride, at, extent);
+    }
+
+    /// Whether the 4x4 unit (`row`, `column`) of a luma or chroma plane is
+    /// in a lossless segment of `header`.
+    #[must_use]
+    pub fn lossless(
+        &self,
+        header: &FrameHeader,
+        chroma: bool,
+        (row, column): (usize, usize),
+    ) -> bool {
+        self.segments.as_ref().is_some_and(|maps| {
+            let map = if chroma { &maps.chroma } else { &maps.luma };
+            header.lossless.segments >> map.get(row, column) & 1 != 0
+        })
     }
 
     /// Mark the luma units of a transform with coefficients (extent as
@@ -204,6 +236,8 @@ pub(crate) fn cdef_and_ccso(
     if ccso.is_on() {
         ccso_source.fill_from(&picture.plane(PlaneIndex::Y).view());
     }
+    let lossless = header.lossless.segments != 0;
+    let deblocked = lossless.then(|| picture.clone());
     let unit = |sample: usize| (sample >> UNIT_LOG2) as u32;
     let stride = maps.luma_edges.columns;
     let unit_set = |x: usize, y: usize| {
@@ -219,10 +253,52 @@ pub(crate) fn cdef_and_ccso(
         (coded || !cdef.passes_over(true)).then_some(set)
     };
     cdef::filter_picture(picture, unit_set, cdef, dsp, cdef_scratch);
+    if let Some(deblocked) = &deblocked {
+        keep_lossless(picture, deblocked, maps, header, CDEF_LUMA_UNIT);
+    }
     if ccso.is_on() {
         ccso::filter_picture(picture, ccso_source, &ccso, |plane, x, y| {
+            let chroma = plane != PlaneIndex::Y;
+            // (x, y) is in luma samples: the plane's unit is a shift less.
+            let at = |luma: usize| luma >> (UNIT_LOG2 + u32::from(chroma));
             maps.ccso_flags[maps.filter_block(unit(y), unit(x))][plane as usize]
+                && !(lossless && maps.lossless(header, chroma, (at(y), at(x))))
         });
     }
     Ok(())
+}
+
+/// Put back into `picture`, from `before` (the picture before a filter
+/// that reads only such a copy), every lossless 4x4 unit of a frame with
+/// lossless segments; in luma, every `luma_unit`-sided unit holding one
+/// (CDEF leaves whole 8x8 luma units alone, dav2d `y_lossless`).
+pub(crate) fn keep_lossless(
+    picture: &mut Picture,
+    before: &Picture,
+    maps: &FilterMaps,
+    header: &FrameHeader,
+    luma_unit: usize,
+) {
+    const UNIT: usize = 1 << UNIT_LOG2;
+    for plane in PlaneIndex::ALL {
+        let chroma = plane != PlaneIndex::Y;
+        let side = if chroma { UNIT } else { luma_unit };
+        let source = before.plane(plane).view();
+        let mut output = picture.plane_mut(plane).view_mut();
+        let (width, height) = (output.width(), output.height());
+        for top in (0..height).step_by(side) {
+            for left in (0..width).step_by(side) {
+                let units = |start: usize, end: usize| (start / UNIT)..end.div_ceil(UNIT);
+                let (bottom, right) = ((top + side).min(height), (left + side).min(width));
+                let lossless = units(top, bottom).any(|row| {
+                    units(left, right).any(|column| maps.lossless(header, chroma, (row, column)))
+                });
+                if lossless {
+                    for y in top..bottom {
+                        output.row_mut(y)[left..right].copy_from_slice(&source.row(y)[left..right]);
+                    }
+                }
+            }
+        }
+    }
 }

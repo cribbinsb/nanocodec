@@ -13,6 +13,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::block::motion::frame::{ReferenceMotion, TemporalField};
+use super::block::segmentation::SegmentMap;
 use super::block::{self, BlockTrace};
 use super::cdfs::Cdfs;
 use super::filters;
@@ -47,6 +48,8 @@ mod other_obu {
 
 /// A frame's CCSO flags per 64x64 filter block and plane.
 type CcsoFlags = Rc<Vec<[bool; 3]>>;
+/// A frame's segment ids per luma 4x4 unit.
+type Segments = Rc<SegmentMap>;
 
 /// What a general-path frame leaves in its slots beside its picture and
 /// models.
@@ -54,6 +57,7 @@ type CcsoFlags = Rc<Vec<[bool; 3]>>;
 struct SlotExtras {
     ccso_flags: Option<CcsoFlags>,
     motion_field: Option<Rc<TemporalField>>,
+    segments: Option<Segments>,
 }
 
 /// What a reference slot holds beyond the frame's header.
@@ -69,6 +73,9 @@ struct SlotData {
     /// The frame's temporal motion field (general-path inter frames of
     /// sequences with motion fields), projected by later frames.
     motion_field: Option<Rc<TemporalField>>,
+    /// The segment map later frames predict from (dav2d `refs[].segmap`):
+    /// `None` without segmentation.
+    segments: Option<Segments>,
 }
 
 /// A frame's final models, of the block layer that decoded it.
@@ -439,8 +446,11 @@ impl Decoder {
             let (picture, mut models, extras) = self.decode_general(&header, tiles)?;
             // The tile's final models, counts scaled back, are what later
             // frames inherit (dav2d `dav2d_decode_frame_update_cdf`; one
-            // tile: no averaging).
-            models.restart_adaptation();
+            // tile: no averaging). A TIP frame reads no symbols and passes
+            // on the models it started from as they are (dav2d `in_cdf`).
+            if header.tip.mode != TIP_FRAME_MODE {
+                models.restart_adaptation();
+            }
             let context = FrameContext::General(Rc::from(models));
             return self.finish_frame(header, picture, Some(context), extras);
         };
@@ -538,6 +548,7 @@ impl Decoder {
             context,
             ccso_flags: extras.ccso_flags,
             motion_field: extras.motion_field,
+            segments: extras.segments,
         };
         for slot in 0..MAX_SLOTS {
             if refresh & (1 << slot) != 0 {
@@ -562,6 +573,7 @@ impl Decoder {
         let cdfs = self.initial_models(header, &sequence)?;
         let reused = self.reused_ccso_flags(header)?;
         let motion = self.reference_motion(header);
+        let previous_segments = self.previous_segments(header);
         let trace = self.block_trace.0.as_mut().map(|sink| {
             let sink: BlockTrace<'_> = &mut **sink;
             sink
@@ -583,12 +595,22 @@ impl Decoder {
             references,
             masks,
             motion: &motion,
+            previous_segments: previous_segments.as_deref(),
         };
         let mut decoded = block::decode_tile(&sequence, header, cdfs, tiles, inputs, trace)?;
         let ccso_flags = header
             .ccso
             .enabled
             .then(|| Rc::new(decoded.filters.ccso_flags.clone()));
+        // A frame that does not update its map keeps its reference's.
+        let segments = header.segmentation.and_then(|segmentation| {
+            let maps = decoded.filters.segments.as_ref()?;
+            if segmentation.update_map {
+                Some(Rc::new(maps.luma.clone()))
+            } else {
+                previous_segments.filter(|previous| previous.same_size(&maps.luma))
+            }
+        });
         if !self.unfiltered {
             let (dsp, ..) = self.workspace.filter_parts();
             filters::deblock::filter(
@@ -632,32 +654,55 @@ impl Decoder {
                 (cdef_scratch, ccso_source),
             )?;
             if let Some(deblocked) = &deblocked {
-                let source = picture.clone();
                 let downsample = sequence.intra.cfl_downsample_filter;
-                let maps = &decoded.filters;
-                filters::restoration::filter(
+                self.restore(
                     &mut picture,
-                    (&source, deblocked),
-                    maps,
+                    deblocked,
+                    &decoded.filters,
                     (header, downsample),
                 );
-                if header.gdf.mode != 0 {
-                    let distances = self.reference_distances(header);
-                    let params = filters::gdf::params(header, &distances);
-                    filters::gdf::filter(
-                        &mut picture,
-                        (&source, deblocked),
-                        maps,
-                        (header, params),
-                    );
-                }
             }
         }
         let extras = SlotExtras {
             ccso_flags,
             motion_field: decoded.motion_field.map(Rc::new),
+            segments,
         };
         Ok((picture, decoded.cdfs, extras))
+    }
+
+    /// Loop restoration, then GDF, of the picture after CDEF and CCSO
+    /// (both read a copy of it, and `deblocked` rows next to their
+    /// stripes); lossless units are put back from that copy.
+    fn restore(
+        &self,
+        picture: &mut Picture,
+        deblocked: &Picture,
+        maps: &filters::FilterMaps,
+        (header, downsample): (&FrameHeader, u8),
+    ) {
+        let source = picture.clone();
+        filters::restoration::filter(picture, (&source, deblocked), maps, (header, downsample));
+        if header.gdf.mode != 0 {
+            let distances = self.reference_distances(header);
+            let params = filters::gdf::params(header, &distances);
+            filters::gdf::filter(picture, (&source, deblocked), maps, (header, params));
+        }
+        if header.lossless.segments != 0 {
+            filters::keep_lossless(picture, &source, maps, header, filters::LOSSLESS_UNIT);
+        }
+    }
+
+    /// The primary reference's segment map, where the frame predicts
+    /// segment ids from it (dav2d `prev_segmap`).
+    fn previous_segments(&self, header: &FrameHeader) -> Option<Segments> {
+        let segmentation = header.segmentation?;
+        if segmentation.update_map && !segmentation.temporal_update {
+            return None;
+        }
+        let rank = header.primary_reference?;
+        let slot = usize::from(header.references[usize::from(rank)]);
+        self.state.data[slot].as_ref()?.segments.clone()
     }
 
     /// The models a general frame starts from (dav2d

@@ -43,6 +43,7 @@ mod quantizer_matrices;
 mod reconstruction;
 pub mod record;
 mod restoration;
+pub mod segmentation;
 pub mod size;
 mod syntax;
 pub mod transform;
@@ -56,7 +57,7 @@ use super::cdfs::Cdfs;
 use super::filters::{FilterMaps, UNITS64_LOG2};
 use super::frame_header::{FrameHeader, FrameType, TIP_FRAME_MODE};
 use super::references::MAX_REFERENCES;
-use super::sequence::SequenceHeader;
+use super::sequence::{MAX_SEGMENTS, SequenceHeader};
 use crate::entropy::{Cdf, Reader};
 use coefficients::{LEVELS, Scans};
 use context::{AboveCache, Contexts};
@@ -71,6 +72,7 @@ use nc_common::decode::{DecodeError, Result};
 use nc_dsp::av2_dec::wedge::InterMasks;
 use pixels::Planes;
 use reconstruction::ChromaResiduals;
+use segmentation::{SegmentMap, SegmentMaps};
 use size::BlockSize;
 use transform::TxSize;
 
@@ -88,6 +90,9 @@ const COEFFICIENTS: usize = 32 * 32;
 /// A block copy's source window: up to 64x64 samples and a column and a
 /// row more for the bilinear filter.
 const BLOCK_COPY_WINDOW: usize = 65 * 65;
+
+/// The dequantizer steps (DC, AC) of each plane.
+type Dequantizers = [[u32; 2]; 3];
 
 /// What the block layer needs of the frame, in 4x4 units.
 #[derive(Debug, Clone, Copy)]
@@ -144,9 +149,16 @@ struct Tile<'a, 't> {
     /// The non-separable Wiener filters the tile's restoration units
     /// coded last.
     restoration_banks: restoration::Banks,
-    /// The dequantizer steps (DC, AC) per plane at `qindex` (dav2d
-    /// `ts->dq`).
-    dequant: [[u32; 2]; 3],
+    /// The dequantizer steps (DC, AC) per segment and plane at `qindex`
+    /// (dav2d `ts->dq`).
+    dequant: [Dequantizers; MAX_SEGMENTS],
+    /// The current block's segment id, and whether it was predicted from
+    /// the reference's map (dav2d `seg_id`, `seg_pred`).
+    segment: u8,
+    segment_predicted: bool,
+    /// The primary reference's segment map, when the frame predicts from
+    /// it (dav2d `prev_segmap`).
+    previous_segments: Option<&'a SegmentMap>,
     /// Per superblock row of 4x4 units (luma, chroma), the units already
     /// coded (dav2d `is_coded`), for above-right and below-left edges.
     coded: [[u64; 64]; 2],
@@ -225,6 +237,9 @@ pub struct FrameInputs<'a> {
     pub masks: &'a InterMasks,
     /// The references' motion: display orders and temporal fields.
     pub motion: &'a [ReferenceMotion; REFERENCES],
+    /// The primary reference's segment map, where the frame predicts
+    /// segment ids from it (dav2d `prev_segmap`).
+    pub previous_segments: Option<&'a SegmentMap>,
 }
 
 /// Decode the one tile of a frame through the general block layer.
@@ -251,6 +266,10 @@ pub fn decode_tile(
         superblock_units: root.units().0,
     };
     let size = data.len();
+    let mut filters = FilterMaps::new(geometry.columns, geometry.rows, frame.quantizer.base);
+    filters.segments = SegmentMaps::of_frame(frame, (geometry.columns, geometry.rows));
+    let previous_segments =
+        SegmentMaps::predicting(filters.segments.as_ref(), inputs.previous_segments);
     let mut tile = Tile {
         frame,
         sequence,
@@ -277,9 +296,12 @@ pub fn decode_tile(
         intra_region: false,
         sdp_cfl_disallowed: false,
         qindex: frame.quantizer.base,
-        filters: FilterMaps::new(geometry.columns, geometry.rows, frame.quantizer.base),
+        filters,
         restoration_banks: restoration::Banks::new(),
-        dequant: [[0; 2]; 3],
+        dequant: [[[0; 2]; 3]; MAX_SEGMENTS],
+        segment: 0,
+        segment_predicted: false,
+        previous_segments,
         coded: [[0; 64]; 2],
         luma_direction_map: [context::NO_DIRECTION; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
         luma_fsc_map: [0; LUMA_MAP_SIDE * LUMA_MAP_SIDE],
@@ -491,6 +513,17 @@ pub(crate) fn dequantizer_step(qindex: i32) -> u32 {
     MANTISSAS[(index % OCTAVE) as usize] << (index / OCTAVE)
 }
 
+/// A segment's luma AC quantizer index at superblock quantizer `qindex`:
+/// with its segmentation quantizer delta (dav2d `init_quant_tables`,
+/// `init_deblock_thr_lut_*`).
+pub(crate) fn segment_qindex(frame: &FrameHeader, qindex: u16, segment: usize) -> i32 {
+    const MAX: i32 = 255;
+    let qindex = i32::from(qindex);
+    frame.segmentation.map_or(qindex, |segmentation| {
+        (qindex + i32::from(segmentation.features.delta_q[segment])).clamp(0, MAX)
+    })
+}
+
 /// A plane quantizer index from the luma AC index and a delta (dav2d
 /// `clip_qidx`): lossless stays lossless unless the delta is positive.
 pub(crate) fn delta_qindex(qindex: i32, delta: i32) -> i32 {
@@ -517,12 +550,26 @@ impl Tile<'_, '_> {
         Some(&tables[usize::from(plane > 0)][offset..offset + entries])
     }
 
-    /// The DC and AC steps of each plane at superblock quantizer `qindex`
-    /// (dav2d `init_quant_tables`, one segment).
-    fn dequantizers(&self, qindex: u16) -> [[u32; 2]; 3] {
+    /// The DC and AC steps of each segment's planes at superblock
+    /// quantizer `qindex` (dav2d `init_quant_tables`): each segment's
+    /// quantizer delta applies first.
+    fn dequantizers(&self, qindex: u16) -> [Dequantizers; MAX_SEGMENTS] {
+        let mut steps = [[[0; 2]; 3]; MAX_SEGMENTS];
+        for (segment, steps) in steps.iter_mut().enumerate() {
+            *steps = self.plane_dequantizers(segment_qindex(self.frame, qindex, segment));
+        }
+        steps
+    }
+
+    /// The DC and AC steps of the current block's `plane`.
+    fn dequantizer(&self, plane: usize) -> [u32; 2] {
+        self.dequant[usize::from(self.segment)][plane]
+    }
+
+    /// The DC and AC steps of each plane at luma AC quantizer `yac`.
+    fn plane_dequantizers(&self, yac: i32) -> Dequantizers {
         let quantizer = &self.frame.quantizer;
         let base = &self.sequence.quant;
-        let yac = i32::from(qindex);
         let step = |delta: i32| dequantizer_step(delta_qindex(yac, delta));
         [
             [

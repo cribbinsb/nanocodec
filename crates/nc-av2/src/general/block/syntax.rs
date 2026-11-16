@@ -1,10 +1,10 @@
 //! One coding block's syntax up to its tool group (dav2d `decode_b`, AVM
-//! `read_intra_frame_mode_info` / `read_inter_frame_mode_info`): skip
-//! mode, intra or inter, intra block copy, the residual skip flag, the
-//! loop-filter block flags (GDF, the CDEF strength set, CCSO) and the
-//! superblock quantizer delta; then the block goes to the intra, intra
-//! block copy ([`super::intrabc`]) or inter group (which answers
-//! `Unsupported` until it is built).
+//! `read_intra_frame_mode_info` / `read_inter_frame_mode_info`): the
+//! segment id ([`super::segmentation`]), skip mode, intra or inter, intra
+//! block copy, the residual skip flag, the loop-filter block flags (GDF,
+//! the CDEF strength set, CCSO) and the superblock quantizer delta; then
+//! the block goes to the intra, intra block copy ([`super::intrabc`]) or
+//! inter group.
 use super::record::BlockRecord;
 use super::size::BlockSize;
 use super::{Tile, UNITS64_LOG2, context, samples};
@@ -71,10 +71,8 @@ impl Tile<'_, '_> {
             samples(bw4),
             samples(bh4)
         );
-        if self.frame.segmentation.is_some() {
-            return Err(DecodeError::Unsupported("AV2 segment ids"));
-        }
         let has_luma = luma.is_some();
+        let segment_after_skip = self.segment_before_skip(depth, size, has_luma)?;
         let neighbours = self.context_neighbours(size);
         let skip_mode = self.skip_mode(depth, size, neighbours)?;
         let intra = if skip_mode {
@@ -98,6 +96,9 @@ impl Tile<'_, '_> {
         };
         let intrabc = has_luma && self.intrabc(depth, size, intra)?;
         let skip_txfm = self.skip_txfm(depth, (intra, intrabc, skip_mode), neighbours)?;
+        if segment_after_skip {
+            self.segment_after_skip(depth, size, skip_txfm)?;
+        }
         if has_luma {
             self.gdf_flag(depth)?;
         }
@@ -128,6 +129,7 @@ impl Tile<'_, '_> {
             self.inter_block(depth, &record, neighbours)?
         };
         self.record_contexts(&record);
+        self.record_segment(luma, chroma);
         self.record_filters(&record, transforms);
         Ok(())
     }
@@ -146,6 +148,7 @@ impl Tile<'_, '_> {
             u8::from(record.skip_mode),
             u8::from(record.intra),
             u8::from(record.intrabc),
+            u8::from(self.segment_predicted),
         ];
         for (edge, start, count) in [
             (&mut self.contexts.above, column, bw4),
@@ -157,6 +160,7 @@ impl Tile<'_, '_> {
                 (&mut edge.skip_mode, flags[1]),
                 (&mut edge.intra, flags[2]),
                 (&mut edge.intrabc, flags[3]),
+                (&mut edge.segment_predicted, flags[4]),
             ] {
                 field[start..end].fill(value);
             }
@@ -243,7 +247,11 @@ impl Tile<'_, '_> {
     /// `skip_mode` of a block in a skip-mode frame.
     fn skip_mode(&mut self, depth: usize, size: BlockSize, neighbours: Neighbours) -> Result<bool> {
         let (bw4, bh4) = size.units();
-        if !self.frame.skip_mode || bw4 * bh4 < SKIP_MODE_MIN_UNITS || self.intra_region {
+        if !self.frame.skip_mode
+            || bw4 * bh4 < SKIP_MODE_MIN_UNITS
+            || self.intra_region
+            || self.segment_forces_global()
+        {
             return Ok(false);
         }
         let context = self.neighbour_sum(neighbours, |edge| &edge.skip_mode);
@@ -334,14 +342,18 @@ impl Tile<'_, '_> {
         at
     }
 
-    /// `skip_txfm`: implied zero for intra blocks (their residual skip is
-    /// per transform), read for inter and block-copy blocks.
+    /// `skip_txfm`: implied one in a skipping segment and zero for intra
+    /// blocks (their residual skip is per transform), read for inter and
+    /// block-copy blocks.
     fn skip_txfm(
         &mut self,
         depth: usize,
         (intra, intrabc, skip_mode): (bool, bool, bool),
         neighbours: Neighbours,
     ) -> Result<bool> {
+        if self.segment_skips() {
+            return Ok(true);
+        }
         if intra && !intrabc {
             return Ok(false);
         }

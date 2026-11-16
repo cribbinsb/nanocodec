@@ -71,6 +71,14 @@ pub struct Cdfs {
     pub ccso: [[Cdf<2>; 4]; 3],
     /// A superblock quantizer delta (the last symbol escapes) (AVM `default_delta_q_cdf`).
     pub delta_q: Cdf<8>,
+    /// Whether a block takes its segment id from the primary reference's map (AVM `default_segment_pred_cdf[a]`).
+    pub seg_pred: [Cdf<2>; 3],
+    /// Whether a segment id difference is in the upper eight (sixteen segments) (AVM `default_seg_id_ext_flag_cdf[a]`).
+    pub seg_id_ext: [Cdf<2>; 3],
+    /// A segment id difference from the spatial prediction, lower eight (AVM `default_spatial_pred_seg_tree_cdf[a]`).
+    pub seg_id: [Cdf<8>; 3],
+    /// A segment id difference from the spatial prediction, upper eight (AVM `default_spatial_pred_seg_tree_cdf1[a]`).
+    pub seg_id_upper: [Cdf<8>; 3],
     /// A switchable unit: off (step 0), then PC-Wiener rather than NS-Wiener (step 1) (AVM `default_switchable_flex_restore_cdf[a][0]`).
     pub rst_switchable: [Cdf<2>; 2],
     /// Whether a non-separable Wiener unit is filtered (AVM `default_wienerns_restore_cdf`).
@@ -435,6 +443,10 @@ impl Cdfs {
             cdef_index8: defaults::CDEF_INDEX8.build(),
             ccso: defaults::CCSO.map(|value| value.map(Initial::build)),
             delta_q: defaults::DELTA_Q.build(),
+            seg_pred: defaults::SEG_PRED.map(Initial::build),
+            seg_id_ext: defaults::SEG_ID_EXT.map(Initial::build),
+            seg_id: defaults::SEG_ID.map(Initial::build),
+            seg_id_upper: defaults::SEG_ID_UPPER.map(Initial::build),
             rst_switchable: defaults::RST_SWITCHABLE.map(Initial::build),
             rst_ns_wiener: defaults::RST_NS_WIENER.build(),
             rst_pc_wiener: defaults::RST_PC_WIENER.build(),
@@ -674,6 +686,18 @@ impl Cdfs {
             }
         }
         self.delta_q.restart_adaptation();
+        for v0 in &mut self.seg_pred {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.seg_id_ext {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.seg_id {
+            v0.restart_adaptation();
+        }
+        for v0 in &mut self.seg_id_upper {
+            v0.restart_adaptation();
+        }
         for v0 in &mut self.rst_switchable {
             v0.restart_adaptation();
         }
@@ -1188,6 +1212,18 @@ impl Cdfs {
             }
         }
         self.delta_q.average_with(&other.delta_q);
+        for (v0, w0) in self.seg_pred.iter_mut().zip(&other.seg_pred) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.seg_id_ext.iter_mut().zip(&other.seg_id_ext) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.seg_id.iter_mut().zip(&other.seg_id) {
+            v0.average_with(w0);
+        }
+        for (v0, w0) in self.seg_id_upper.iter_mut().zip(&other.seg_id_upper) {
+            v0.average_with(w0);
+        }
         for (v0, w0) in self.rst_switchable.iter_mut().zip(&other.rst_switchable) {
             v0.average_with(w0);
         }
@@ -1811,6 +1847,18 @@ mod tests {
                 }
             }
             trace(&mut models.delta_q, &mut hash);
+            for v0 in &mut models.seg_pred {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.seg_id_ext {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.seg_id {
+                trace(v0, &mut hash);
+            }
+            for v0 in &mut models.seg_id_upper {
+                trace(v0, &mut hash);
+            }
             for v0 in &mut models.rst_switchable {
                 trace(v0, &mut hash);
             }

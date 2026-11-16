@@ -2304,6 +2304,62 @@ pub(super) static DELTA_Q: Initial<8> = Initial {
     inverse: [16174, 9443, 6344, 4543, 3410, 2669, 2155, 0],
     rates: [1, 3, 4],
 };
+pub(super) static SEG_PRED: [Initial<2>; 3] = [
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+];
+pub(super) static SEG_ID_EXT: [Initial<2>; 3] = [
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+    Initial {
+        inverse: [16384, 0],
+        rates: [2, 3, 4],
+    },
+];
+pub(super) static SEG_ID: [Initial<8>; 3] = [
+    Initial {
+        inverse: [27146, 24875, 16675, 14535, 4959, 4395, 235, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [18494, 14538, 10211, 7833, 2788, 1917, 424, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [5241, 4281, 4045, 3878, 371, 121, 89, 0],
+        rates: [3, 4, 5],
+    },
+];
+pub(super) static SEG_ID_UPPER: [Initial<8>; 3] = [
+    Initial {
+        inverse: [28672, 24576, 20480, 16384, 12288, 8192, 4096, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [28672, 24576, 20480, 16384, 12288, 8192, 4096, 0],
+        rates: [3, 4, 5],
+    },
+    Initial {
+        inverse: [28672, 24576, 20480, 16384, 12288, 8192, 4096, 0],
+        rates: [3, 4, 5],
+    },
+];
 pub(super) static RST_SWITCHABLE: [Initial<2>; 2] = [
     Initial {
         inverse: [7226, 0],
@@ -22022,8 +22078,8 @@ pub(super) static BASE_UV_LF: [[Initial<6>; 12]; 4] = [
 ];
 #[cfg(test)]
 pub(super) const TRACE_HASHES: [u64; 4] = [
-    8_613_668_601_051_947_759,
-    13_871_958_619_497_091_297,
-    9_846_029_086_977_989_199,
-    9_165_991_358_864_502_560,
+    17_280_092_718_850_142_547,
+    16_838_104_601_746_122_269,
+    8_056_214_079_482_028_747,
+    7_054_915_965_873_467_180,
 ];

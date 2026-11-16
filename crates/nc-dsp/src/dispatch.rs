@@ -2476,26 +2476,46 @@ impl Dsp {
         vertical: bool,
         filter: Av2EdgeFilter,
     ) {
-        let (reach_p, reach_q) = filter.reach();
-        let stride = dst.stride();
-        let (across, along) = if vertical { (1, stride) } else { (stride, 1) };
-        let (edge, extent, lines_end, lines_extent) = if vertical {
-            (x, dst.width(), y + AV2_EDGE_LINES, dst.height())
-        } else {
-            (y, dst.height(), x + AV2_EDGE_LINES, dst.width())
-        };
-        assert!(
-            edge >= reach_p && edge + reach_q <= extent && lines_end <= lines_extent,
-            "AV2 deblocking edge at ({x}, {y}) reads outside the plane"
-        );
+        let (q0, across, along) = av2_edge_steps(dst, (x, y), vertical, filter);
         let plane = dst.data_mut();
-        if let Some(ramps) =
-            deblock::av2::segment_ramps(plane, y * stride + x, across, along, filter)
-        {
+        if let Some(ramps) = deblock::av2::segment_ramps(plane, q0, across, along, filter) {
             // SAFETY: the table matches a supported ISA (checked in
             // `with_isa`); the kernel indexes the plane, and the reach check
-            // above covers every sample the ramps move.
+            // in `av2_edge_steps` covers every sample the ramps move.
             unsafe { (self.deblock.av2_ramps)(plane, &ramps) };
+        }
+    }
+
+    /// [`Dsp::av2_deblock_edge`] leaving the p side (`keep.0`) and/or the q
+    /// side (`keep.1`) unchanged, as AV2 leaves a lossless block's side
+    /// (dav2d `deblock`'s `neg_lossless`, `pos_lossless`); the decision
+    /// still reads both sides. Scalar on every ISA: only frames with
+    /// lossless segments take it.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dsp::av2_deblock_edge`].
+    pub fn av2_deblock_edge_keeping(
+        &self,
+        dst: &mut PlaneViewMut<'_>,
+        (x, y): (usize, usize),
+        vertical: bool,
+        filter: Av2EdgeFilter,
+        keep: (bool, bool),
+    ) {
+        let (q0, across, along) = av2_edge_steps(dst, (x, y), vertical, filter);
+        let plane = dst.data_mut();
+        if let Some(mut ramps) = deblock::av2::segment_ramps(plane, q0, across, along, filter) {
+            // A zero scaled step moves no sample of its side.
+            for (neg, pos) in &mut ramps.scaled {
+                if keep.0 {
+                    *neg = 0;
+                }
+                if keep.1 {
+                    *pos = 0;
+                }
+            }
+            deblock::av2::apply_ramps(plane, &ramps);
         }
     }
 
@@ -4862,6 +4882,34 @@ pub(crate) fn sao_offsets(class: u8, stride: usize) -> (isize, isize) {
     (ay * stride + ax, by * stride + bx)
 }
 
+/// The first q0 index of the AV2 edge segment at (`x`, `y`) of `dst` and
+/// its steps across and along the edge.
+///
+/// # Panics
+///
+/// If a sample `filter` reads ([`Av2EdgeFilter::reach`]) lies outside the
+/// plane.
+fn av2_edge_steps(
+    dst: &PlaneViewMut<'_>,
+    (x, y): (usize, usize),
+    vertical: bool,
+    filter: Av2EdgeFilter,
+) -> (usize, usize, usize) {
+    let (reach_p, reach_q) = filter.reach();
+    let stride = dst.stride();
+    let (across, along) = if vertical { (1, stride) } else { (stride, 1) };
+    let (edge, extent, lines_end, lines_extent) = if vertical {
+        (x, dst.width(), y + AV2_EDGE_LINES, dst.height())
+    } else {
+        (y, dst.height(), x + AV2_EDGE_LINES, dst.width())
+    };
+    assert!(
+        edge >= reach_p && edge + reach_q <= extent && lines_end <= lines_extent,
+        "AV2 deblocking edge at ({x}, {y}) reads outside the plane"
+    );
+    (y * stride + x, across, along)
+}
+
 #[cfg(test)]
 mod tests {
     use nc_common::PlaneView;
@@ -4899,6 +4947,52 @@ mod tests {
     #[should_panic(expected = "deblocking edge reads outside the plane")]
     fn h264_horizontal_edge_rejects_overflowing_y() {
         resolve_h264_edge((4, usize::MAX - 1), false);
+    }
+
+    #[test]
+    fn av2_edges_keep_the_sides_asked() {
+        const SIDE: usize = 32;
+        const EDGE: usize = 16;
+        // A step across column EDGE with a gentle slope: filtered on both
+        // sides.
+        let source: Vec<u8> = (0..SIDE * SIDE)
+            .map(|i| {
+                let x = i % SIDE;
+                (if x < EDGE { 60 } else { 90 } + x) as u8
+            })
+            .collect();
+        let filter = crate::Av2EdgeFilter {
+            length_neg: 8,
+            length_pos: 8,
+            q_threshold: 40,
+            side_threshold: 40,
+        };
+        let dsp = Dsp::new();
+        let run = |keep: Option<(bool, bool)>| {
+            let mut data = source.clone();
+            let mut view = nc_common::PlaneViewMut::new(&mut data, SIDE, SIDE, SIDE).unwrap();
+            match keep {
+                Some(keep) => {
+                    dsp.av2_deblock_edge_keeping(&mut view, (EDGE, 4), true, filter, keep);
+                }
+                None => dsp.av2_deblock_edge(&mut view, (EDGE, 4), true, filter),
+            }
+            data
+        };
+        let full = run(None);
+        assert_ne!(full, source);
+        assert_eq!(run(Some((false, false))), full);
+        assert_eq!(run(Some((true, true))), source);
+        let p_kept = run(Some((true, false)));
+        let q_kept = run(Some((false, true)));
+        for i in 0..SIDE * SIDE {
+            let (p, q) = if i % SIDE < EDGE {
+                (source[i], full[i])
+            } else {
+                (full[i], source[i])
+            };
+            assert_eq!((p_kept[i], q_kept[i]), (p, q), "sample {i}");
+        }
     }
 
     #[test]
