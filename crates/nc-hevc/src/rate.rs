@@ -83,7 +83,7 @@ mod tests {
     use crate::cabac::CabacWriter;
     use crate::contexts::{Contexts, SliceKind};
     use crate::residual::write_residual;
-    use crate::scan::{CodedSubBlocks, ScanKind, Scans};
+    use crate::scan::{ScanKind, Scans, coded_sub_blocks};
 
     /// The estimate of a long residual sequence tracks the bits the
     /// arithmetic coder actually spends on it.
@@ -103,7 +103,7 @@ mod tests {
             }
             levels[0] = 3;
             let scan = scans.get(3, ScanKind::Diagonal);
-            let coded = (&levels[..], CodedSubBlocks::of(&levels, scan));
+            let coded = (&levels[..], coded_sub_blocks(&levels, scan));
             write_residual(&mut writer, &mut ctx_w, scan, coded, true, true);
             let mut e = BitEstimator::new(&costs);
             write_residual(&mut e, &mut ctx_e, scan, coded, true, true);

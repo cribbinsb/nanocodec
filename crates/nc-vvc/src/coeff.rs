@@ -292,38 +292,46 @@ const PASS_ONE_MASK: u32 = (1 << NONZERO_SHIFT) - 1;
 /// whose padding, and every position not coded, stays zero. The grid is
 /// sized to the block like [`Levels`] (36 bytes to clear for a 4x4) and
 /// written once per coded position, rather than rebuilt from the source for
-/// every coefficient group. Rice parameters, needed only by levels above
-/// four and by bypass-coded positions, read the source itself.
-struct SourceLevels<'a, const AREA: usize> {
+/// every coefficient group. Its row stride is fixed per grid size (`SIDE`,
+/// the block's longer coded side, plus [`PAD`]), so a template's five
+/// offsets are constants inside one bounds-checked span. Rice parameters,
+/// needed only by levels above four and by bypass-coded positions, read the
+/// source itself.
+struct SourceLevels<'a, const SIDE: usize, const AREA: usize> {
     source: &'a [i32],
     width: usize,
     height: usize,
     log2: u32,
-    stride: usize,
     /// First-pass magnitudes and nonzero flags, packed ([`NONZERO_SHIFT`]).
     first_pass: [u8; AREA],
 }
 
-impl<'a, const AREA: usize> SourceLevels<'a, AREA> {
+impl<'a, const SIDE: usize, const AREA: usize> SourceLevels<'a, SIDE, AREA> {
+    /// The grid's row stride.
+    const STRIDE: usize = SIDE + PAD;
+    /// The span from a position to its farthest [`TEMPLATE`] neighbour,
+    /// inclusive: [`PAD`] rows down.
+    const REACH: usize = PAD * Self::STRIDE + 1;
+
     fn new(source: &'a [i32], width: usize, height: usize) -> Self {
-        debug_assert!((width + PAD) * (height + PAD) <= AREA);
+        const { assert!(AREA == padded_area(SIDE)) };
+        debug_assert!(width <= SIDE && height <= SIDE);
         Self {
             source,
             width,
             height,
             log2: width.ilog2(),
-            stride: width + PAD,
             first_pass: [0; AREA],
         }
     }
 
     /// The grid index of raster position `pos` of the block.
     fn index(&self, pos: usize) -> usize {
-        (pos >> self.log2) * self.stride + (pos & (self.width - 1))
+        (pos >> self.log2) * Self::STRIDE + (pos & (self.width - 1))
     }
 }
 
-impl<const AREA: usize> LevelValues for SourceLevels<'_, AREA> {
+impl<const SIDE: usize, const AREA: usize> LevelValues for SourceLevels<'_, SIDE, AREA> {
     fn get(&self, pos: usize) -> i32 {
         self.source[pos].unsigned_abs() as i32
     }
@@ -347,11 +355,11 @@ impl<const AREA: usize> LevelValues for SourceLevels<'_, AREA> {
     }
 
     fn pass_one_template(&self, pos: usize) -> (u32, u32) {
-        let index = self.index(pos);
+        let reach = &self.first_pass[self.index(pos)..][..Self::REACH];
         // At most 5 x 5 below the shift, 5 above it: no carry between them.
         let packed: u32 = TEMPLATE
             .iter()
-            .map(|&(dx, dy)| u32::from(self.first_pass[index + dy * self.stride + dx]))
+            .map(|&(dx, dy)| u32::from(reach[dy * Self::STRIDE + dx]))
             .sum();
         (packed & PASS_ONE_MASK, packed >> NONZERO_SHIFT)
     }
@@ -617,10 +625,18 @@ fn walk_sized<B: Bins>(
     if B::PRICES && levels.is_none() {
         // Coded sides are powers of two up to `MAX_SIDE`.
         return match coded.0.max(coded.1) {
-            1..=4 => walk_source::<{ padded_area(4) }, _>(io, c, (source, last), coded, block),
-            5..=8 => walk_source::<{ padded_area(8) }, _>(io, c, (source, last), coded, block),
-            9..=16 => walk_source::<{ padded_area(16) }, _>(io, c, (source, last), coded, block),
-            _ => walk_source::<{ padded_area(MAX_SIDE) }, _>(io, c, (source, last), coded, block),
+            1..=4 => walk_source::<4, { padded_area(4) }, _>(io, c, (source, last), coded, block),
+            5..=8 => walk_source::<8, { padded_area(8) }, _>(io, c, (source, last), coded, block),
+            9..=16 => {
+                walk_source::<16, { padded_area(16) }, _>(io, c, (source, last), coded, block)
+            }
+            _ => walk_source::<MAX_SIDE, { padded_area(MAX_SIDE) }, _>(
+                io,
+                c,
+                (source, last),
+                coded,
+                block,
+            ),
         };
     }
     match coded.0.max(coded.1) {
@@ -660,14 +676,14 @@ fn walk_grid<const AREA: usize, B: Bins>(
 }
 
 /// The pricing walk over the encoder's own levels ([`SourceLevels`]).
-fn walk_source<const AREA: usize, B: Bins>(
+fn walk_source<const SIDE: usize, const AREA: usize, B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
     source: (&[i32], usize),
     coded: (usize, usize),
     block: (usize, (usize, usize)),
 ) -> Result<()> {
-    let mut values = SourceLevels::<AREA>::new(source.0, coded.0, coded.1);
+    let mut values = SourceLevels::<SIDE, AREA>::new(source.0, coded.0, coded.1);
     walk(io, c, source, coded, block, &mut values)
 }
 
@@ -714,7 +730,6 @@ fn walk<B: Bins>(
         }
         significant |= 1 << gp;
         let mut nonzero = GroupPositions::default();
-        let mut regular = GroupPositions::default();
         let mut bypass = GroupPositions::default();
         for sp in (first..=end).rev() {
             let p = scan[sp];
@@ -754,10 +769,10 @@ fn walk<B: Bins>(
             }
             values.set(p, level as i32);
             step(&mut state, level);
-            regular.push(p);
             nonzero.push(sp);
         }
-        for p in regular.as_slice().iter().map(|&p| usize::from(p)) {
+        // The nonzero levels so far are exactly the context-coded ones.
+        for p in nonzero.as_slice().iter().map(|&sp| scan[usize::from(sp)]) {
             if values.get(p) >= 4 {
                 let rice_parameter = rice(values, p, 4);
                 let rem = remainder(

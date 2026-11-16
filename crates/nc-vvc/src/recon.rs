@@ -4,6 +4,7 @@
 //! (BSD-3-Clause-Clear; see `THIRD_PARTY.md`). Codec control is safe Rust; arithmetic uses shared DSP dispatch.
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::{BlockSize, HevcForwardMode, HevcForwardStaging, VvcQuantizer, VvcTransformKind};
+use nc_encoder::CodedGroups;
 
 /// Samples of the largest coded region (a 32x32 block's, a 64x64 one's).
 const MAX_SAMPLES: usize = crate::transform_tree::MAX_TB_SAMPLES;
@@ -537,7 +538,7 @@ fn choose_levels(
     if dsp.vvc_quantize_from(coefficients, quantizer, levels) == 0 {
         return false;
     }
-    let mut coded = CodedGroups::of(levels, size);
+    let mut coded = coded_groups(levels, size);
     if quant.shave_gap > 0 && !shave_isolated_ones(levels, size, coded, quant.shave_gap) {
         return false;
     }
@@ -713,87 +714,63 @@ pub(crate) fn shave_isolated_ones(
     })
 }
 
-/// The coefficient groups (by scan order index, one bit each) that may hold
-/// a nonzero level. Built once per block from each group's contiguous
-/// raster rows, which is much cheaper than walking scan positions; a set bit
-/// may go stale when a level is zeroed (walks then simply find nothing).
-#[derive(Clone, Copy)]
-pub(crate) struct CodedGroups(u64);
-
 /// The side of a coefficient group of a block at least 4 a side, and the
 /// widest coded block.
 const GROUP_SIDE: usize = 4;
 const MAX_SIDE: usize = 32;
 
-impl CodedGroups {
-    pub(crate) fn of(levels: &[i32], (width, height): (usize, usize)) -> Self {
-        if width < GROUP_SIDE || height < GROUP_SIDE {
-            return Self::of_narrow(levels, (width, height));
-        }
-        let columns = width / GROUP_SIDE;
-        // Each band of four rows ORs its rows together (contiguous, so it
-        // vectorises, with no early exit to defeat that), then each group of
-        // the band tests its four columns; the raster group bits are then put
-        // in coding order.
-        let mut raster = 0u64;
-        for (band, rows) in levels[..width * height]
-            .chunks_exact(GROUP_SIDE * width)
-            .enumerate()
-        {
-            let mut any = [0i32; MAX_SIDE];
-            for row in rows.chunks_exact(width) {
-                for (any, &level) in any.iter_mut().zip(row) {
-                    *any |= level;
-                }
+/// The coefficient groups ([`CodedGroups`]) that may hold a nonzero level
+/// of the raster `levels` of a `width` x `height` block. Built once per
+/// block from each group's contiguous raster rows, which is much cheaper
+/// than walking scan positions; a set bit may go stale when a level is
+/// zeroed (walks then simply find nothing).
+pub(crate) fn coded_groups(levels: &[i32], (width, height): (usize, usize)) -> CodedGroups {
+    if width < GROUP_SIDE || height < GROUP_SIDE {
+        return coded_groups_narrow(levels, (width, height));
+    }
+    let columns = width / GROUP_SIDE;
+    // Each band of four rows ORs its rows together (contiguous, so it
+    // vectorises, with no early exit to defeat that), then each group of
+    // the band tests its four columns; the raster group bits are then put
+    // in coding order.
+    let mut raster = 0u64;
+    for (band, rows) in levels[..width * height]
+        .chunks_exact(GROUP_SIDE * width)
+        .enumerate()
+    {
+        let mut any = [0i32; MAX_SIDE];
+        for row in rows.chunks_exact(width) {
+            for (any, &level) in any.iter_mut().zip(row) {
+                *any |= level;
             }
-            for (column, group) in any[..width].as_chunks::<GROUP_SIDE>().0.iter().enumerate() {
-                let coded = group.iter().fold(0, |a, &v| a | v) != 0;
-                raster |= u64::from(coded) << (band * columns + column);
-            }
         }
-        let mask = crate::scan::rect_groups(width, height)
-            .iter()
-            .enumerate()
-            .fold(0, |mask, (index, &group)| {
-                mask | (raster >> group & 1) << index
-            });
-        Self(mask)
+        for (column, group) in any[..width].as_chunks::<GROUP_SIDE>().0.iter().enumerate() {
+            let coded = group.iter().fold(0, |a, &v| a | v) != 0;
+            raster |= u64::from(coded) << (band * columns + column);
+        }
     }
+    let mask = crate::scan::rect_groups(width, height)
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (index, &group)| {
+            mask | (raster >> group & 1) << index
+        });
+    CodedGroups::from_scan_mask(mask)
+}
 
-    /// [`Self::of`] for the one- or two-sample-wide blocks of intra
-    /// sub-partitions, from the scan (few and small).
-    fn of_narrow(levels: &[i32], (width, height): (usize, usize)) -> Self {
-        let positions = crate::scan::rect_positions(width, height);
-        let mask = positions
-            .as_chunks::<{ crate::scan::GROUP_SIZE }>()
-            .0
-            .iter()
-            .enumerate()
-            .fold(0, |mask, (index, group)| {
-                mask | u64::from(group.iter().any(|&p| levels[p] != 0)) << index
-            });
-        Self(mask)
-    }
-
-    /// The groups whose bits are set in `mask`, one per group in coding
-    /// (scan) order.
-    pub(crate) fn from_scan_mask(mask: u64) -> Self {
-        Self(mask)
-    }
-
-    fn contains(self, index: usize) -> bool {
-        self.0 >> index & 1 != 0
-    }
-
-    /// The highest group index below `end` (a group index) that may be coded.
-    fn last_below(self, end: usize) -> Option<usize> {
-        let below = if end >= 64 {
-            self.0
-        } else {
-            self.0 & ((1 << end) - 1)
-        };
-        (below != 0).then(|| 63 - below.leading_zeros() as usize)
-    }
+/// [`coded_groups`] for the one- or two-sample-wide blocks of intra
+/// sub-partitions, from the scan (few and small).
+fn coded_groups_narrow(levels: &[i32], (width, height): (usize, usize)) -> CodedGroups {
+    let positions = crate::scan::rect_positions(width, height);
+    let mask = positions
+        .as_chunks::<{ crate::scan::GROUP_SIZE }>()
+        .0
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (index, group)| {
+            mask | u64::from(group.iter().any(|&p| levels[p] != 0)) << index
+        });
+    CodedGroups::from_scan_mask(mask)
 }
 
 /// The highest scan index below `end` whose level is nonzero; groups not in
@@ -1167,7 +1144,7 @@ fn add_rect_sized<const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{CodedGroups, dc_residual, shave_isolated_ones};
+    use super::{coded_groups, dc_residual, shave_isolated_ones};
     use nc_dsp::{HevcTransform, VvcQuantizer};
 
     /// The DC-only shortcut equals the full inverse scaling and transform
@@ -1233,7 +1210,7 @@ mod tests {
                         }
                     })
                     .collect();
-                let coded = CodedGroups::of(&levels, (width, height));
+                let coded = coded_groups(&levels, (width, height));
                 for (index, &group) in groups.iter().enumerate() {
                     let (x, y) = (group % (width / gw) * gw, group / (width / gw) * gh);
                     let nonzero = (y..y + gh)
@@ -1251,7 +1228,7 @@ mod tests {
         levels[positions[0]] = 3;
         levels[positions[20]] = -1;
         levels[positions[40]] = 1;
-        let coded = CodedGroups::of(&levels, (8, 8));
+        let coded = coded_groups(&levels, (8, 8));
         assert!(shave_isolated_ones(&mut levels, (8, 8), coded, 8));
         assert_eq!(levels.iter().filter(|&&v| v != 0).count(), 1);
         assert_eq!(levels[positions[0]], 3);
@@ -1262,13 +1239,13 @@ mod tests {
         levels[positions[5]] = 2;
         levels[positions[30]] = 1;
         levels[positions[33]] = -1;
-        let coded = CodedGroups::of(&levels, (8, 8));
+        let coded = coded_groups(&levels, (8, 8));
         assert!(shave_isolated_ones(&mut levels, (8, 8), coded, 8));
         assert_eq!(levels.iter().filter(|&&v| v != 0).count(), 4);
 
         let mut lone = [0i32; 64];
         lone[positions[63]] = 1;
-        let coded = CodedGroups::of(&lone, (8, 8));
+        let coded = coded_groups(&lone, (8, 8));
         assert!(shave_isolated_ones(&mut lone, (8, 8), coded, 8));
         assert_eq!(lone[positions[63]], 1);
     }

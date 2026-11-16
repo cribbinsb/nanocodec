@@ -553,6 +553,35 @@ engine default is still 1.1 pending L3 on VVC and AV2.
   linear pricing only for sparse blocks (SVT `coeff_rate_est_lvl` 2: linear below an end-of-block
   threshold, the full walk above), measured on Default first, where the gain is largest.
 
+- **Where the linear key rate loses, and sparse-only pricing** (`feature/av1-lowlight`,
+  2026-11-16).
+  - Static clip pool_external_meva_admin_720p_536p, Faster, CBR 300 kbit/s, 600 f, key every
+    300 (rate log and display recon). The first key has the same q141 and the same bytes (29.6 KB)
+    with and without the linear rate, but 0.23 dB lower PSNR-Y (34.74 -> 34.51): the model costs
+    key efficiency at equal rate. The second key moves with rate control's state: budget 86 kbit
+    against 33 kbit, q152 against q171, 34.35 against 32.01 dB, after a 17.8 KB inter frame two
+    frames earlier. The pulse loss is that efficiency loss, amplified by the budget the run-up
+    leaves.
+  - `av1.key_linear_rate_eob_share` (replaces `av1.key_coeff_rate_linear`, default 0): linear only
+    below that share of a block's coefficients, the CDF walk above (SVT `coeff_rate_est_lvl` 2).
+    Default, one key at fixed q, bytes / PSNR-Y against share 0; lowlight key-frame Ir:
+
+    | share | admin (q150) | lowlight (q150) | crowd (q170) | bodycam (q170) | lowlight key Ir |
+    |---|---|---|---|---|---:|
+    | 0 | 82672 / 43.013 | 192394 / 43.192 | 80123 / 42.242 | 50453 / 43.885 | 2077M |
+    | 0.03 | +0.1 % / -0.00 | -0.0 % / -0.01 | -0.4 % / -0.05 | +0.5 % / -0.00 | 2068M |
+    | 0.1 | +0.4 % / -0.05 | +0.1 % / -0.01 | +0.2 % / -0.08 | +1.0 % / -0.07 | 2028M |
+    | 0.25 | +0.9 % / -0.08 | +0.4 % / -0.01 | +2.6 % / -0.08 | +2.9 % / -0.08 | 1951M (-6 %) |
+    | 1 | +16.6 % / -0.17 | +10.8 % / -0.27 | +10.2 % / -0.20 | +7.1 % / -0.15 | 1229M (-41 %) |
+
+    Almost all of the time is in dense blocks, which is exactly where the linear model misprices,
+    because it ignores level magnitudes. Sparse-only pricing saves little; full pricing costs
+    7-17 % of the key's bytes at fine key quantizers. A threshold on end-of-block share (block
+    density) is the energy dependence; it does not give a useful trade. Not screened. The open
+    route is a magnitude-aware cheap estimate for dense blocks (end of block plus a per-level
+    log-magnitude term, fitted to the walk), or an exact speed-up of the walk itself (2,560 Ir per
+    call).
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

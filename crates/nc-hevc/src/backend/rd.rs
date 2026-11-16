@@ -10,12 +10,14 @@
 use nc_common::{Picture, PlaneIndex, PlaneView};
 
 use super::HevcBackend;
+use nc_encoder::CodedGroups;
+
 use crate::cabac::Context;
 use crate::headers::{LOG2_MAX_TB, SIGN_DATA_HIDING};
 use crate::predict::ModeCode;
 use crate::rate::BitEstimator;
 use crate::residual::write_residual;
-use crate::scan::{CodedSubBlocks, ScanKind};
+use crate::scan::ScanKind;
 use crate::syntax::PlaneResidual;
 use crate::transform::{MAX_COEFFS, MAX_SIZE};
 
@@ -68,7 +70,7 @@ impl HevcBackend {
     /// sub-blocks.
     pub(super) fn levels_bits(
         &self,
-        levels: (&[i16], CodedSubBlocks),
+        levels: (&[i16], CodedGroups),
         log2: u8,
         scan: ScanKind,
         luma: bool,

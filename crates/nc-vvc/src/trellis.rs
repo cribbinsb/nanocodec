@@ -34,8 +34,8 @@ use crate::coeff::{
     remainder_bits, rice_parameter, template_contexts,
 };
 use crate::coeff_contexts::CoeffContexts;
-use crate::recon::CodedGroups;
 use crate::scan::GROUP_SIZE;
+use nc_encoder::CodedGroups;
 
 /// Side of the largest transform block.
 const MAX_SIDE: usize = 32;

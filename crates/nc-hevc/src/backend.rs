@@ -33,9 +33,9 @@ use nc_dsp::{
 };
 use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
-    Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
-    FrameType, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode, QuantParams,
-    ReferenceChoice, RefreshWindow, StaticSkipTest, TrellisSettings, ZeroLimits,
+    Block, BlockDecision, CodecBackend, CodedGroups, ConfigError, EncoderConfig, FramePlan,
+    FrameReferences, FrameType, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits, PredictionMode,
+    QuantParams, ReferenceChoice, RefreshWindow, StaticSkipTest, TrellisSettings, ZeroLimits,
     copy_zero_vector_prediction, long_term_slot, reference_slots, uses_long_term_slot,
     zero_vector_residual_is_zero,
 };
@@ -64,7 +64,7 @@ use crate::quant::{
 use crate::rate::BinCosts;
 use crate::residual_trellis::{BlockQuantizer, RateModel, TrellisQuantizer};
 use crate::sao::{self, PictureSao, SEARCH_INTERVAL};
-use crate::scan::{CodedSubBlocks, Scan, ScanKind, Scans};
+use crate::scan::{Scan, ScanKind, Scans, coded_sub_blocks};
 use crate::syntax::{
     CuKind, CuRecord, Item, LevelStore, MAX_TUS, MVD_EG_ORDER, PlaneResidual, TransformSyntax,
     TransformUnit, TransformUnits, TuRange, split_ctx_inc, split_flag_present, write_slice_data,
@@ -2342,7 +2342,7 @@ impl HevcBackend {
                 quantisation,
             )
         } else {
-            (0, CodedSubBlocks::default())
+            (0, CodedGroups::default())
         };
         let coded = nonzero > 0;
         // Parity adjustment never zeroes or creates a coded block, so an
@@ -2398,7 +2398,7 @@ impl HevcBackend {
         quantization: &TransformQuantization,
         scan: &Scan,
         quantisation: Quantisation,
-    ) -> (u32, CodedSubBlocks) {
+    ) -> (u32, CodedGroups) {
         let mut nonzero = self
             .dsp
             .hevc_quantize_from(coeffs, &quantization.quantizer, levels);
@@ -2407,9 +2407,9 @@ impl HevcBackend {
                 nc_encoder::apply_planned_dead_zone(levels, quantization.planned_min_level) as u32;
         }
         if nonzero == 0 {
-            return (0, CodedSubBlocks::default());
+            return (0, CodedGroups::default());
         }
-        let mut sub_blocks = coded_sub_blocks(levels, nonzero, scan);
+        let mut sub_blocks = quantised_sub_blocks(levels, nonzero, scan);
         // A lone level is the block's first and is never shaved;
         // skipping the shave there (most coded inter blocks: a DC)
         // saves its search for the last level. Exact: HEVC Faster x86
@@ -2422,7 +2422,7 @@ impl HevcBackend {
             .flatten();
         if let Some(trellis) = trellis {
             nonzero = self.trellis_quantize(trellis, plane, coeffs, scan.log2, scan.kind, levels);
-            sub_blocks = coded_sub_blocks(levels, nonzero, scan);
+            sub_blocks = quantised_sub_blocks(levels, nonzero, scan);
         }
         (nonzero, sub_blocks)
     }
@@ -2457,7 +2457,7 @@ impl HevcBackend {
     /// 2^15 in magnitude (`nc_dsp::codec_txfm` ranges), the quantiser scale
     /// at most 2^15 and its shift at least 16 at 8 bits, so `|level| <=
     /// 2^14`, and sign hiding and the trellis move a level by one.
-    fn store_levels(&self, levels: &[i16], sub_blocks: CodedSubBlocks) -> u32 {
+    fn store_levels(&self, levels: &[i16], sub_blocks: CodedGroups) -> u32 {
         self.level_store.borrow_mut().push(levels, sub_blocks)
     }
 
@@ -2594,11 +2594,11 @@ fn copy_square(
 
 /// The coded sub-blocks of `levels` holding `nonzero` non-zero levels: a
 /// lone DC (most coded inter blocks) without a scan.
-fn coded_sub_blocks(levels: &[i16], nonzero: u32, scan: &Scan) -> CodedSubBlocks {
+fn quantised_sub_blocks(levels: &[i16], nonzero: u32, scan: &Scan) -> CodedGroups {
     match nonzero {
-        0 => CodedSubBlocks::default(),
-        1 if levels[0] != 0 => CodedSubBlocks::FIRST,
-        _ => CodedSubBlocks::of(levels, scan),
+        0 => CodedGroups::default(),
+        1 if levels[0] != 0 => CodedGroups::FIRST,
+        _ => coded_sub_blocks(levels, scan),
     }
 }
 

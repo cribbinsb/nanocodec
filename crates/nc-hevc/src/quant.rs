@@ -10,8 +10,10 @@
 //! 171/512 of a step for intra blocks and 128/512 for inter blocks (both
 //! tunable, `hevc.intra_rounding` / `hevc.inter_rounding`).
 
+use nc_encoder::CodedGroups;
+
 use crate::residual::SIGN_HIDING_THRESHOLD;
-use crate::scan::{CodedSubBlocks, SUB_BLOCK_COEFFS, Scan};
+use crate::scan::{SUB_BLOCK_COEFFS, Scan, trim_sub_blocks};
 #[cfg(test)]
 use crate::transform::{COEFF_MAX, COEFF_MIN};
 use nc_dsp::HevcQuantizer;
@@ -125,16 +127,16 @@ pub fn quantize(coeffs: &mut [i32], qp: i32, log2: u8, intra: bool) {
 pub fn shave_isolated_ones(
     levels: &mut [i16],
     scan: &Scan,
-    sub_blocks: CodedSubBlocks,
+    sub_blocks: CodedGroups,
     min_gap: usize,
-) -> CodedSubBlocks {
+) -> CodedGroups {
     // A shaved level may empty its sub-block, leaving a stale bit; the walk
     // only moves down and then finds nothing there, and the stale bits (all
     // above the last remaining level) are trimmed after it.
     nc_encoder::shave_isolated_ones(levels, &scan.positions, min_gap, |levels, end| {
         previous_nonzero(levels, scan, sub_blocks, end)
     });
-    sub_blocks.trimmed(levels, scan)
+    trim_sub_blocks(sub_blocks, levels, scan)
 }
 
 /// The highest scan index below `end` whose level is non-zero, searched in
@@ -142,7 +144,7 @@ pub fn shave_isolated_ones(
 fn previous_nonzero(
     levels: &[i16],
     scan: &Scan,
-    sub_blocks: CodedSubBlocks,
+    sub_blocks: CodedGroups,
     end: usize,
 ) -> Option<usize> {
     let mut end = end;
@@ -171,7 +173,7 @@ fn previous_nonzero(
 /// are the transform coefficients before quantisation.
 pub fn hide_signs(
     coeffs: &[i16],
-    (levels, sub_blocks): (&mut [i16], CodedSubBlocks),
+    (levels, sub_blocks): (&mut [i16], CodedGroups),
     scan: &Scan,
     qp: i32,
 ) {
@@ -242,7 +244,7 @@ pub fn dequantize(levels: &[i32], qp: i32, log2: u8, out: &mut [i32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::ScanKind;
+    use crate::scan::{ScanKind, coded_sub_blocks};
 
     #[test]
     fn shaving_drops_only_isolated_trailing_ones() {
@@ -253,14 +255,14 @@ mod tests {
         levels[at(3)] = -1;
         levels[at(20)] = 1; // 17 positions after the -1: isolated
         levels[at(40)] = -1; // 20 after: isolated
-        let coded = CodedSubBlocks::of(&levels, &scan);
+        let coded = coded_sub_blocks(&levels, &scan);
         let coded = shave_isolated_ones(&mut levels, &scan, coded, 8);
-        assert_eq!(coded, CodedSubBlocks::of(&levels, &scan));
+        assert_eq!(coded, coded_sub_blocks(&levels, &scan));
         assert_eq!((levels[at(20)], levels[at(40)]), (0, 0));
         assert_eq!((levels[at(0)], levels[at(3)]), (5, -1)); // gap 3 < 8: kept
         // A 2 at the end is never dropped.
         levels[at(50)] = 2;
-        let coded = CodedSubBlocks::of(&levels, &scan);
+        let coded = coded_sub_blocks(&levels, &scan);
         shave_isolated_ones(&mut levels, &scan, coded, 8);
         assert_eq!(levels[at(50)], 2);
     }
@@ -304,7 +306,7 @@ mod tests {
             let mut wide: Vec<i32> = coeffs.iter().map(|&c| i32::from(c)).collect();
             quantize(&mut wide, 22, 3, false);
             let mut levels: Vec<i16> = wide.iter().map(|&l| l as i16).collect();
-            let sub_blocks = CodedSubBlocks::of(&levels, &scan);
+            let sub_blocks = coded_sub_blocks(&levels, &scan);
             hide_signs(&coeffs, (&mut levels, sub_blocks), &scan, 22);
             for span in scan.positions.as_chunks::<SUB_BLOCK_COEFFS>().0 {
                 let nz: Vec<usize> = (0..SUB_BLOCK_COEFFS)

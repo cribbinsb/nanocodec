@@ -6,6 +6,8 @@
 //! and vertical scans are used only by 4x4 and 8x8 intra blocks whose mode
 //! is near vertical or near horizontal (§7.4.9.11).
 
+use nc_encoder::CodedGroups;
+
 use crate::transform::{MAX_LOG2, MIN_LOG2};
 
 /// Coefficients per 4x4 sub-block.
@@ -40,86 +42,34 @@ pub fn sub_block_coded(levels: &[i16], size: usize, (xs, ys): (usize, usize)) ->
     any != [0; 4]
 }
 
-/// Which 4x4 sub-blocks of a transform block hold a non-zero level: bit `i`
-/// for the `i`-th sub-block in scan order (at most 64, a 32x32 block).
+/// The coded sub-blocks ([`CodedGroups`], exact) of the row-major `levels`
+/// of a `scan` block.
 ///
 /// A coded block's set is found once, when its levels are final up to sign
 /// hiding (which never empties or fills a sub-block), and carried with
 /// them: sign hiding, the bit estimates and the syntax writer used to test
 /// every sub-block again. Exact; per P frame -1.1 % / -0.2 % HEVC Fast
 /// instructions (callgrind, `WestWindEasy` / `Johnny`, QP 37).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CodedSubBlocks(u64);
+#[must_use]
+#[inline]
+pub fn coded_sub_blocks(levels: &[i16], scan: &Scan) -> CodedGroups {
+    let size = 1usize << scan.log2;
+    let bits = scan
+        .sub_blocks
+        .iter()
+        .enumerate()
+        .filter(|&(_, &sub_block)| sub_block_coded(levels, size, sub_block))
+        .fold(0u64, |bits, (i, _)| bits | 1 << i);
+    CodedGroups::from_scan_mask(bits)
+}
 
-impl CodedSubBlocks {
-    /// Only the first sub-block (the one holding the DC) is coded.
-    pub const FIRST: Self = Self(1);
-
-    /// The coded sub-blocks of the row-major `levels` of a `scan` block.
-    #[must_use]
-    #[inline]
-    pub fn of(levels: &[i16], scan: &Scan) -> Self {
-        let size = 1usize << scan.log2;
-        let bits = scan
-            .sub_blocks
-            .iter()
-            .enumerate()
-            .filter(|&(_, &sub_block)| sub_block_coded(levels, size, sub_block))
-            .fold(0u64, |bits, (i, _)| bits | 1 << i);
-        Self(bits)
-    }
-
-    /// Whether no sub-block is coded.
-    #[must_use]
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// The scan index of the last coded sub-block.
-    #[must_use]
-    pub fn last(self) -> Option<usize> {
-        (!self.is_empty()).then(|| (u64::BITS - 1 - self.0.leading_zeros()) as usize)
-    }
-
-    /// The highest coded scan index below `end`.
-    #[must_use]
-    pub fn last_below(self, end: usize) -> Option<usize> {
-        let below = if end >= u64::BITS as usize {
-            self.0
-        } else {
-            self.0 & ((1 << end) - 1)
-        };
-        Self(below).last()
-    }
-
-    /// The set with the trailing sub-blocks that hold no level of `levels`
-    /// (a `scan` block) dropped: exact again after a change that can only
-    /// have emptied the last sub-blocks (shaving trailing levels).
-    #[must_use]
-    pub fn trimmed(self, levels: &[i16], scan: &Scan) -> Self {
-        let size = 1usize << scan.log2;
-        let mut bits = self.0;
-        while bits != 0 {
-            let last = (u64::BITS - 1 - bits.leading_zeros()) as usize;
-            if sub_block_coded(levels, size, scan.sub_blocks[last]) {
-                break;
-            }
-            bits &= !(1 << last);
-        }
-        Self(bits)
-    }
-
-    /// The scan indices of the coded sub-blocks, in scan order.
-    pub fn iter(self) -> impl Iterator<Item = usize> {
-        let mut bits = self.0;
-        std::iter::from_fn(move || {
-            (bits != 0).then(|| {
-                let i = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                i
-            })
-        })
-    }
+/// `sub_blocks` with the trailing sub-blocks that hold no level of `levels`
+/// (a `scan` block) dropped: exact again after shaving, which can only have
+/// emptied the last sub-blocks.
+#[must_use]
+pub fn trim_sub_blocks(sub_blocks: CodedGroups, levels: &[i16], scan: &Scan) -> CodedGroups {
+    let size = 1usize << scan.log2;
+    sub_blocks.trimmed(|i| sub_block_coded(levels, size, scan.sub_blocks[i]))
 }
 
 /// The up-right diagonal scan of a `size`-square array (HEVC §6.5.3):
@@ -270,13 +220,13 @@ mod tests {
     fn coded_sub_blocks_follow_the_scan() {
         let scan = Scan::new(5, ScanKind::Diagonal);
         let mut levels = vec![0i16; 32 * 32];
-        assert_eq!(CodedSubBlocks::of(&levels, &scan).last(), None);
+        assert_eq!(coded_sub_blocks(&levels, &scan).last(), None);
         levels[0] = 3;
-        assert_eq!(CodedSubBlocks::of(&levels, &scan), CodedSubBlocks::FIRST);
+        assert_eq!(coded_sub_blocks(&levels, &scan), CodedGroups::FIRST);
         // The bottom-right sample: the last sub-block of every scan.
         levels[32 * 32 - 1] = -1;
         levels[scan.positions[16 * 7 + 5]] = 1;
-        let coded = CodedSubBlocks::of(&levels, &scan);
+        let coded = coded_sub_blocks(&levels, &scan);
         assert_eq!(coded.iter().collect::<Vec<_>>(), [0, 7, 63]);
         assert_eq!(coded.last(), Some(63));
     }

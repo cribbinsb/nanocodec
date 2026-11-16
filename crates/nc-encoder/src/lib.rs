@@ -41,6 +41,7 @@ mod cdef_model;
 mod cdef_search;
 mod chroma_offset;
 pub mod chroma_policy;
+mod coded_groups;
 mod config;
 mod decision;
 mod effort_class;
@@ -115,6 +116,7 @@ pub use chroma_offset::{
     adaptive_error_weight, coarse_chroma_extra, error_gap_offset, noise_attenuated_chroma_offset,
     plane_error_ratio,
 };
+pub use coded_groups::CodedGroups;
 pub use config::{Codec, ConfigError, EncoderConfig, FrameRate, StreamSignal, TimingSignal};
 pub use effort_class::LIGHT_PREFIX;
 pub use encoder::{

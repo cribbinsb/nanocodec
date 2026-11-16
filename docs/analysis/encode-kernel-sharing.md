@@ -330,6 +330,7 @@ Method notes for the next agent:
 
 | HEVC/VVC short luma filters in `deblock/short_luma.rs` (vs `7b3c81724`) | | +0.01 | -0.06 | | | |
 | HEVC 1-D DCTs on the AV2 partial-butterfly engine, no quad padding (vs `98b609f22`) | | -0.08 | -0.24 | | | -0.01 |
+| SVT packed-byte 4/8-wide variance/energy/block sums (`2975ad0fa` vs immediate parent `d77fd2d57`; memory-operand row inserts, not the rejected scalar-gather widening trial) | | -0.243 | -0.073 | | -0.326 | |
 
 Streams byte-identical at every step (`preset_identity`, all six codecs;
 the AVX-512 rows also AVX2 against AVX-512 on the Ice Lake box).

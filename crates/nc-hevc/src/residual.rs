@@ -5,12 +5,14 @@
 //! The structure follows kvazaar's `kvz_encode_coeff_nxn_generic` and
 //! `kvz_encode_last_significant_xy` (BSD-3-Clause, see `THIRD_PARTY.md`).
 
+use nc_encoder::CodedGroups;
+
 use crate::cabac::BinSink;
 use crate::contexts::{
     CODED_SUB_BLOCK_CHROMA_OFFSET, Contexts, GREATER1_CHROMA_OFFSET, GREATER2_CHROMA_OFFSET,
     LAST_CHROMA_OFFSET, SIG_CHROMA_OFFSET,
 };
-use crate::scan::{CodedSubBlocks, SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind};
+use crate::scan::{SUB_BLOCK_COEFFS, SUB_BLOCK_LOG2, Scan, ScanKind};
 
 /// A sub-block hides a sign when its last and first non-zero levels are
 /// more than this many scan positions apart (`sbhThreshold`, §7.3.8.11).
@@ -133,12 +135,12 @@ pub(crate) fn sig_contexts(
 
 /// Code the levels of one transform block. `levels` is row-major
 /// (`levels[y * size + x]`), must contain at least one non-zero level, and
-/// `sub_blocks` are its coded sub-blocks ([`CodedSubBlocks::of`]).
+/// `sub_blocks` are its coded sub-blocks ([`crate::scan::coded_sub_blocks`]).
 pub fn write_residual(
     w: &mut impl BinSink,
     ctx: &mut Contexts,
     scan: &Scan,
-    (levels, sub_blocks): (&[i16], CodedSubBlocks),
+    (levels, sub_blocks): (&[i16], CodedGroups),
     luma: bool,
     sign_hiding: bool,
 ) {

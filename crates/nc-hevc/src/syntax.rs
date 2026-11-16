@@ -11,7 +11,7 @@
 //! follows z-scan order, so it sees exactly the CUs a decoder has decoded.
 
 use nc_common::BitWriter;
-use nc_encoder::{Block, Mv};
+use nc_encoder::{Block, CodedGroups, Mv};
 
 use crate::cabac::CabacWriter;
 use crate::contexts::{Contexts, SliceKind};
@@ -21,7 +21,7 @@ use crate::predict::{CHROMA_DM, ModeCode};
 use crate::quant_group::QuantGroup;
 use crate::residual::write_residual;
 use crate::sao::{self, PictureSao};
-use crate::scan::{CodedSubBlocks, ScanKind, Scans};
+use crate::scan::{ScanKind, Scans};
 
 /// `cu_qp_delta_abs` prefix: truncated unary bins before the Exp-Golomb
 /// suffix (§9.3.3.10).
@@ -53,7 +53,7 @@ impl PlaneResidual {
     /// The block's levels in `store`, with its coded sub-blocks (as
     /// [`crate::residual::write_residual`] takes them).
     #[must_use]
-    pub fn coded_levels(self, store: &LevelStore) -> (&[i16], CodedSubBlocks) {
+    pub fn coded_levels(self, store: &LevelStore) -> (&[i16], CodedGroups) {
         store.get(self.levels, self.log2)
     }
 }
@@ -69,7 +69,7 @@ impl PlaneResidual {
 pub struct LevelStore {
     levels: Vec<i16>,
     /// Where each block's levels start, and its coded sub-blocks.
-    blocks: Vec<(u32, CodedSubBlocks)>,
+    blocks: Vec<(u32, CodedGroups)>,
 }
 
 impl LevelStore {
@@ -81,7 +81,7 @@ impl LevelStore {
 
     /// Append a coded block's row-major `levels` and its coded
     /// `sub_blocks`; returns the block's entry.
-    pub fn push(&mut self, levels: &[i16], sub_blocks: CodedSubBlocks) -> u32 {
+    pub fn push(&mut self, levels: &[i16], sub_blocks: CodedGroups) -> u32 {
         let start = u32::try_from(self.levels.len()).expect("level store under 4 Gi entries");
         let entry = u32::try_from(self.blocks.len()).expect("under 4 Gi coded blocks");
         self.levels.extend_from_slice(levels);
@@ -92,7 +92,7 @@ impl LevelStore {
     /// The levels and coded sub-blocks of the `2^log2`-square block at
     /// `entry`.
     #[must_use]
-    pub fn get(&self, entry: u32, log2: u8) -> (&[i16], CodedSubBlocks) {
+    pub fn get(&self, entry: u32, log2: u8) -> (&[i16], CodedGroups) {
         let (start, sub_blocks) = self.blocks[entry as usize];
         let start = start as usize;
         (&self.levels[start..start + (1 << (2 * log2))], sub_blocks)

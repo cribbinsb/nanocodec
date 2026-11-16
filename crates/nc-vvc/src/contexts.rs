@@ -73,21 +73,23 @@ impl Context {
             rate: [fast, 3 + fast + (window & 3)],
         }
     }
-    fn probability(self) -> u32 {
-        (u32::from(self.state[0]) + u32::from(self.state[1])) >> 8
+    fn probability(self) -> u8 {
+        // Two 15-bit estimates sum below 0x10000: the shifted sum is a byte,
+        // so it indexes [`BITS`] without a bounds check.
+        ((u32::from(self.state[0]) + u32::from(self.state[1])) >> 8) as u8
     }
     /// Estimated signalling cost from the current dual-window probability:
     /// −log2 of the bin's probability, (`p` + 0.5) / 256 for a one (`p`
     /// from [`Self::probability`], 0..=255) and its complement for a zero.
     pub(crate) fn bits(self, bin: bool) -> f32 {
-        let p = self.probability() as usize;
-        BITS[if bin { p } else { PROBABILITY_STATES - 1 - p }]
+        let p = self.probability();
+        BITS[usize::from(if bin { p } else { u8::MAX - p })]
     }
     pub(crate) fn mps(self) -> bool {
         self.probability() >= 128
     }
     pub(crate) fn lps(self, range: u32) -> u32 {
-        let p = self.probability();
+        let p = u32::from(self.probability());
         let q = if p >= 128 { p ^ 255 } else { p };
         (((q >> 2) * (range >> 5)) >> 1) + 4
     }
@@ -98,10 +100,15 @@ impl Context {
             .zip(self.rate)
             .zip([MASK_FAST, MASK_SLOW])
         {
-            *state -= (*state >> rate) & mask;
+            // In 32 bits: a shift by the window (at most 11) needs no
+            // 16-bit count masking, and every value stays below 0x8000.
+            let (rate, mask) = (u32::from(rate), u32::from(mask));
+            let mut value = u32::from(*state);
+            value -= (value >> rate) & mask;
             if bin {
-                *state += (0x7fff >> rate) & mask;
+                value += (0x7fff >> rate) & mask;
             }
+            *state = value as u16;
         }
     }
 }

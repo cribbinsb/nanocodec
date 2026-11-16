@@ -152,23 +152,36 @@ impl<T: Pixel> Refs<T> {
         if x > 0 {
             // Left column, bottom up: samples[i] is row y + 2n − 1 − i.
             // The block's own rows are samples n..2n.
-            let own_left = (sides == Sides::Uniform).then(|| available(x - 1, y));
-            for (u, start) in (0..2 * n).step_by(unit).enumerate() {
-                let top_row = y + 2 * n - start - unit;
-                let usable = match own_left {
-                    Some(own) if start >= n => own,
-                    _ => top_row < height && available(x - 1, top_row),
-                };
-                if !usable {
-                    continue;
-                }
-                // Rows `top_row..top_row + unit`, read down the column with
-                // one range check, land bottom up.
+            // Rows `top_row..top_row + len`, read down the column with one
+            // range check, land bottom up at `samples[start..start + len]`.
+            let mut copy_rows = |start: usize, len: usize| {
+                let top_row = y + 2 * n - start - len;
                 let column = data[top_row * stride + x - 1..].iter().step_by(stride);
-                for (sample, &value) in samples[start..start + unit].iter_mut().rev().zip(column) {
+                for (sample, &value) in samples[start..start + len].iter_mut().rev().zip(column) {
                     *sample = value;
                 }
-                known |= 1 << u;
+            };
+            let own_left = (sides == Sides::Uniform).then(|| available(x - 1, y));
+            for (u, start) in (0..2 * n).step_by(unit).enumerate() {
+                if start >= n
+                    && let Some(own) = own_left
+                {
+                    // One answer covers the block's own rows: they are
+                    // copied as one run. Exact; per P frame HEVC Fast
+                    // instructions -0.13 % / -0.01 %, key frames -0.3 %
+                    // (callgrind, `WestWindEasy` / `Johnny`, QP 37).
+                    if own {
+                        copy_rows(n, n);
+                        let own_units = n / unit;
+                        known |= ((1 << own_units) - 1) << u;
+                    }
+                    break;
+                }
+                let top_row = y + 2 * n - start - unit;
+                if top_row < height && available(x - 1, top_row) {
+                    copy_rows(start, unit);
+                    known |= 1 << u;
+                }
             }
             if y > 0 && available(x - 1, y - 1) {
                 samples[corner] = data[(y - 1) * stride + x - 1];

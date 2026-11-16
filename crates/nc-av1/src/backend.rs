@@ -801,11 +801,17 @@ nc_encoder::param_group! {
             "1 prices the P-frame residual-drop check's coefficients with SVT's linear end-of-block estimate instead of the live CDFs: faster, coarser rate",
         /// SVT M11+ real time prices coefficients with the linear model on
         /// every frame, intra frames included (`rate_est_level` 0,
-        /// `enc_mode_config.c`); here it replaces the live-CDF walk of the
-        /// key frame's intra mode and partition RD (`residual_rd_cost`),
-        /// most of a Faster key frame's planning instructions.
-        key_coeff_rate_linear: 0.0, [0.0, 1.0],
-            "1 prices key-frame intra and partition trials' coefficients with SVT's linear end-of-block estimate instead of the live CDFs: faster key frames, coarser rate",
+        /// `enc_mode_config.c`); its `coeff_rate_est_lvl` 2 does so only
+        /// below an end-of-block threshold, walking the coefficients of
+        /// denser blocks. Here the key frame's intra mode and partition RD
+        /// (`residual_rd_cost`), most of a key frame's planning
+        /// instructions, prices a transform block linearly when its end of
+        /// block is under this share of its coefficients. The linear model
+        /// ignores level magnitudes; pricing every key block with it
+        /// (share 1) lost 0.23 dB on a static clip's key at equal bytes and
+        /// failed the periodic key pulse in CBR (zen5 goal record).
+        key_linear_rate_eob_share: 0.0, [0.0, 1.0],
+            "key-frame intra and partition trials price a transform block's coefficients with SVT's linear end-of-block estimate when its end of block is below this share of its coefficients, walking the live CDFs above it (0: never, 1: every block short of a full one): higher makes key frames faster, with coarser rates on dense blocks",
         cdf_update: 1.0, [0.0, 1.0],
             "1 adapts every CDF per coded symbol within the frame; 0 codes the frame with disable_cdf_update (AV1 §5.9.2): symbols are priced and coded with the CDFs the frame loaded, which it passes on unchanged (faster encode and decode, less adapted probabilities)",
         /// Frame ids (`obu.rs`): off by default, so streams without loss
@@ -3222,7 +3228,8 @@ impl Av1Backend {
             PlaneType::Chroma
         };
         let ctx = TxbContext::derive(plane_type, true, &[], &[]);
-        let bits = if self.kind == FrameKind::Key && self.params.key_coeff_rate_linear >= 0.5 {
+        let linear_below = self.params.key_linear_rate_eob_share * coded_area as f32;
+        let bits = if self.kind == FrameKind::Key && (eob as f32) < linear_below {
             self.cdfs.coeff.linear_bits(tx, ctx, eob)
         } else {
             self.cdfs
