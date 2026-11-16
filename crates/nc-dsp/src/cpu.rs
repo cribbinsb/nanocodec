@@ -1,6 +1,6 @@
 //! Instruction-set selection.
 //!
-//! x86-64 detects AVX2 and AVX-512F/BW/VL at run time. `AArch64` always has NEON. WebAssembly has
+//! x86-64 detects AVX2 and the AVX-512 "Ice Lake" feature set at run time. `AArch64` always has NEON. WebAssembly has
 //! no run-time detection: SIMD128 is available exactly when the crate was
 //! compiled with `-C target-feature=+simd128`.
 
@@ -13,7 +13,10 @@ pub enum Isa {
     Scalar,
     /// x86-64 AVX2 (implies SSE4.1/SSSE3).
     Avx2,
-    /// x86-64 AVX-512F/BW/VL, with AVX2 fallback kernels.
+    /// x86-64 AVX-512 at the Ice Lake / Zen 4 level (the features `avx512_supported` checks, GFNI included), with
+    /// AVX2 fallback kernels. Owner decision 2026-11-16: the same tier as dav1d's and SVT-AV1's
+    /// `avx512icl`, so their kernels (which use GFNI and VBMI) port as they are. CPUs with
+    /// AVX-512 but without that set (Skylake-X, Cascade Lake, Cooper Lake) run the AVX2 tier.
     Avx512,
     /// `AArch64` Advanced SIMD.
     Neon,
@@ -75,12 +78,26 @@ fn avx2_supported() -> bool {
     false
 }
 
+/// The AVX-512 tier's required features: dav1d's `avx512icl` set (Intel Ice Lake and later, AMD
+/// Zen 4 and later). A kernel in the tier may `#[target_feature(enable = ...)]` any of them.
 #[cfg(target_arch = "x86_64")]
 fn avx512_supported() -> bool {
+    use std::arch::is_x86_feature_detected as has;
     avx2_supported()
-        && std::arch::is_x86_feature_detected!("avx512f")
-        && std::arch::is_x86_feature_detected!("avx512bw")
-        && std::arch::is_x86_feature_detected!("avx512vl")
+        && has!("avx512f")
+        && has!("avx512cd")
+        && has!("avx512bw")
+        && has!("avx512dq")
+        && has!("avx512vl")
+        && has!("avx512ifma")
+        && has!("avx512vbmi")
+        && has!("avx512vbmi2")
+        && has!("avx512vnni")
+        && has!("avx512bitalg")
+        && has!("avx512vpopcntdq")
+        && has!("gfni")
+        && has!("vaes")
+        && has!("vpclmulqdq")
 }
 
 #[cfg(not(target_arch = "x86_64"))]

@@ -263,9 +263,9 @@ impl ClassModel {
             let base = table(0);
             model.slopes[i] = slope;
             model.offsets[i] = base;
-            for s in 0..=MAX_SKIP_COUNT {
+            for (s, correction) in model.corrections[i].iter_mut().enumerate() {
                 // dav2d keeps the correction as `int8_t`.
-                model.corrections[i][s] = i32::from((table(s as i32) - base) as i8);
+                *correction = i32::from((table(s as i32) - base) as i8);
             }
         }
         model

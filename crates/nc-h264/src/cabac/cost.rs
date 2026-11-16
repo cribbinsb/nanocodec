@@ -10,7 +10,7 @@
 //! ignored). Bypass bins cost one bit; terminate bins with value 0 cost
 //! nothing (`codIRange - 2` of `codIRange`).
 
-use super::{BinSink, Context, MbPart};
+use super::{BinRun, BinSink, Context, MbPart};
 use crate::tables::RANGE_TAB_LPS;
 
 /// Number of probability states (`pStateIdx` 0..=63, §9.3.1.1).
@@ -46,6 +46,15 @@ impl BinCosts {
             *cost = [mean_bits(&|p_lps| 1.0 - p_lps), mean_bits(&|p_lps| p_lps)];
         }
         Self { costs }
+    }
+}
+
+impl BinCosts {
+    /// The cost of `bin` in a context in state `ctx`, in 1/256 bit.
+    #[inline]
+    fn units(&self, ctx: Context, bin: bool) -> u32 {
+        let lps = usize::from(bin != ctx.val_mps());
+        u32::from(self.costs[usize::from(ctx.p_state_idx())][lps])
     }
 }
 
@@ -92,9 +101,7 @@ impl<'a> BitCounter<'a> {
     /// counted): what rate-distortion quantisation prices one bin with.
     #[must_use]
     pub fn bin_bits(&self, ctx_idx: usize, bin: bool) -> f32 {
-        let ctx = self.contexts[ctx_idx];
-        let lps = usize::from(bin != ctx.val_mps());
-        f32::from(self.costs.costs[usize::from(ctx.p_state_idx())][lps]) / COST_UNITS_PER_BIT as f32
+        self.costs.units(self.contexts[ctx_idx], bin) as f32 / COST_UNITS_PER_BIT as f32
     }
 
     /// Bits counted so far in `part`.
@@ -107,9 +114,7 @@ impl<'a> BitCounter<'a> {
 impl BinSink for BitCounter<'_> {
     #[inline]
     fn encode_decision(&mut self, ctx_idx: usize, bin: bool) {
-        let ctx = self.contexts[ctx_idx];
-        let lps = usize::from(bin != ctx.val_mps());
-        self.units[self.part] += u32::from(self.costs.costs[usize::from(ctx.p_state_idx())][lps]);
+        self.units[self.part] += self.costs.units(self.contexts[ctx_idx], bin);
     }
 
     #[inline]
@@ -127,6 +132,49 @@ impl BinSink for BitCounter<'_> {
 
     fn begin_part(&mut self, part: MbPart) {
         self.part = part.index();
+    }
+
+    /// The run's bins (one block's levels, all in the current part) are
+    /// added up in one register-held total rather than through `units[part]`
+    /// per bin. Exact: the same integer sum.
+    #[inline]
+    fn code_run<T: BinRun>(&mut self, run: T) -> T::Output {
+        let mut local = RunCounter {
+            contexts: self.contexts,
+            costs: self.costs,
+            units: 0,
+        };
+        let output = run.code(&mut local);
+        self.units[self.part] += local.units;
+        output
+    }
+}
+
+/// [`BitCounter`] inside one [`BinRun`]: the bins of one part.
+struct RunCounter<'a> {
+    contexts: &'a [Context],
+    costs: &'a BinCosts,
+    /// Running total in 1/256 bit.
+    units: u32,
+}
+
+impl BinSink for RunCounter<'_> {
+    #[inline]
+    fn encode_decision(&mut self, ctx_idx: usize, bin: bool) {
+        self.units += self.costs.units(self.contexts[ctx_idx], bin);
+    }
+
+    #[inline]
+    fn encode_bypass(&mut self, _bin: bool) {
+        self.units += COST_UNITS_PER_BIT as u32;
+    }
+
+    fn encode_terminate(&mut self, _bin: bool) {
+        unreachable!("a bin run holds no terminate bin");
+    }
+
+    fn begin_part(&mut self, _part: MbPart) {
+        unreachable!("a bin run stays in one part");
     }
 }
 

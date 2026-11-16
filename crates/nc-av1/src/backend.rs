@@ -1543,8 +1543,8 @@ impl CodecBackend for Av1Backend {
         // quick clips, 10 s IP, PSNR-YUV BD vs svtav1-m12 (fast check)
         // +35.5% → +35.0% (bodycam −1.6, dashcam −1.3 points).
         let near_count = (self.params.near_count as usize).min(MAX_NEAR_INDEX);
-        for index in 0..stack.count.min(1 + near_count) {
-            out.push(to_engine_mv(stack.mvs[index]));
+        for &mv in &stack.mvs[..stack.count.min(1 + near_count)] {
+            out.push(to_engine_mv(mv));
         }
     }
 
@@ -3897,7 +3897,7 @@ impl Av1Backend {
     /// Prediction SATD of `luma` on the block plus √λ · its mode bits (the
     /// prediction is written into `recon`, which coding overwrites).
     fn key_intra_satd_cost(
-        &mut self,
+        &self,
         block: &Block,
         source: &Picture,
         recon: &mut Picture,
@@ -3911,7 +3911,7 @@ impl Av1Backend {
     /// Prediction SATD of `luma` on the block (the prediction is written
     /// into `recon`, which coding overwrites).
     fn intra_prediction_satd(
-        &mut self,
+        &self,
         block: &Block,
         source: &Picture,
         recon: &mut Picture,
@@ -4245,7 +4245,7 @@ impl Av1Backend {
     }
 
     fn predict_without_residual(
-        &mut self,
+        &self,
         block: &Block,
         plane: PlaneIndex,
         prediction: &Prediction<'_>,

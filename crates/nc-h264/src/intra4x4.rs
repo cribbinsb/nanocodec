@@ -12,6 +12,8 @@
 //! predictor was no longer inlined per mode and key frames cost 4-20% more
 //! instructions.
 
+use core::cmp::Ordering;
+
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::{BlockSize, Dsp, H264Quantizer};
 
@@ -309,7 +311,10 @@ impl Intra4x4Rdo<'_, '_> {
     /// The mode of one block with the lowest squared error plus λ times its
     /// CABAC bits (mode, `coded_block_flag` with context `cbf_ctx_inc`,
     /// levels), each mode coded as [`code_block`] codes it, among the
-    /// `rd.candidates` modes with the lowest SATD cost.
+    /// `rd.candidates` modes with the lowest SATD cost (ties go to the
+    /// lower SATD cost, then the lower mode). Returns the mode, its cost and
+    /// its coded block, which the caller keeps rather than coding the chosen
+    /// mode again.
     #[allow(clippy::too_many_arguments)]
     fn best_mode(
         &mut self,
@@ -320,54 +325,120 @@ impl Intra4x4Rdo<'_, '_> {
         quantizer: &H264Quantizer,
         cbf_ctx_inc: usize,
         rd: ModeRd,
-    ) -> ModeChoice {
-        let bins = self.luma.settings.bins;
-        let mut ranked = [(DC, [0; 16], f32::INFINITY); MODE_COUNT as usize];
-        let mut allowed = 0;
-        for m in (0..MODE_COUNT).filter(|&m| neighbours.allows(m)) {
-            ranked[allowed] = evaluate_mode(dsp, src, neighbours, (predicted, rd.satd_lambda), m);
-            allowed += 1;
-        }
-        let ranked = &mut ranked[..allowed];
-        ranked.sort_by(|a, b| a.2.total_cmp(&b.2));
-        let mut best: Option<ModeChoice> = None;
-        for &(m, pred, _) in ranked.iter().take(rd.candidates.max(1)) {
-            let (levels, recon) = code_block(dsp, src, &pred, quantizer, |coeffs, levels| {
-                if self.trellis {
-                    self.quantize(cbf_ctx_inc, coeffs, quantizer, levels);
+    ) -> (u8, f32, CodedBlock) {
+        let allowed = (0..MODE_COUNT).filter(|&m| neighbours.allows(m));
+        let satd_cost = |m| evaluate_mode(dsp, src, neighbours, (predicted, rd.satd_lambda), m).2;
+        let mut best: Option<(u8, f32, CodedBlock)> = None;
+        if rd.candidates >= allowed.clone().count() {
+            // Every allowed mode is coded, so the SATD ranking only breaks
+            // ties of cost: the modes are coded in mode order and SATD is
+            // measured for tied ones alone. Exact (the same mode wins as by
+            // ranking them all first); no SATD for nine of nine modes per
+            // block.
+            for m in allowed {
+                let pred = neighbours.predict(m);
+                let (cost, coded) = self.rd_cost(
+                    dsp,
+                    src,
+                    (m, &pred),
+                    predicted,
+                    quantizer,
+                    cbf_ctx_inc,
+                    rd.lambda,
+                );
+                let wins = best
+                    .as_ref()
+                    .is_none_or(|&(b, c, _)| match cost.total_cmp(&c) {
+                        Ordering::Less => true,
+                        Ordering::Equal => satd_cost(m) < satd_cost(b),
+                        Ordering::Greater => false,
+                    });
+                if wins {
+                    best = Some((m, cost, coded));
                 }
-            });
-            // One source row slice per four samples, not a row lookup per
-            // sample: Intra_4x4 coding 731M -> 633M instructions over 60
-            // frames of crowd 720p (-2.2% of the encode; streams identical).
-            let distortion: u32 = recon
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .enumerate()
-                .flat_map(|(r, recon_row)| src.row(r)[..4].iter().zip(recon_row))
-                .map(|(&s, &p)| {
-                    let d = i32::from(s) - i32::from(p);
-                    (d * d) as u32
-                })
-                .sum();
-            let mut counter = bins.fresh();
-            write_intra_4x4_mode(&mut counter, m, predicted);
-            write_residual_block(
-                &mut counter,
+            }
+            return best.expect("DC is always allowed");
+        }
+        let mut ranked = [(DC, [0; 16], f32::INFINITY); MODE_COUNT as usize];
+        let mut count = 0;
+        for m in allowed {
+            ranked[count] = evaluate_mode(dsp, src, neighbours, (predicted, rd.satd_lambda), m);
+            count += 1;
+        }
+        let ranked = &mut ranked[..count];
+        ranked.sort_by(|a, b| a.2.total_cmp(&b.2));
+        for &(m, pred, _) in ranked.iter().take(rd.candidates.max(1)) {
+            let (cost, coded) = self.rd_cost(
                 dsp,
-                BlockCat::Luma4x4,
-                &levels,
-                &SCAN_4X4,
+                src,
+                (m, &pred),
+                predicted,
+                quantizer,
                 cbf_ctx_inc,
+                rd.lambda,
             );
-            let cost = distortion as f32 + rd.lambda * counter.bits();
-            if best.is_none_or(|(_, _, c)| cost < c) {
-                best = Some((m, pred, cost));
+            if best.as_ref().is_none_or(|&(_, c, _)| cost < c) {
+                best = Some((m, cost, coded));
             }
         }
         best.expect("DC is always allowed")
     }
+
+    /// Code one block in mode `m` with prediction `pred` as [`code_block`]
+    /// codes it; returns its squared error plus `lambda` times its CABAC
+    /// bits (as [`Self::best_mode`] prices it) and the coded block.
+    #[allow(clippy::too_many_arguments)]
+    fn rd_cost(
+        &mut self,
+        dsp: &Dsp,
+        src: &PlaneView<'_>,
+        (m, pred): (u8, &[u8; 16]),
+        predicted: u8,
+        quantizer: &H264Quantizer,
+        cbf_ctx_inc: usize,
+        lambda: f32,
+    ) -> (f32, CodedBlock) {
+        let (levels, recon) = code_block(dsp, src, pred, quantizer, |coeffs, levels| {
+            if self.trellis {
+                self.quantize(cbf_ctx_inc, coeffs, quantizer, levels);
+            }
+        });
+        // One source row slice per four samples, not a row lookup per
+        // sample: Intra_4x4 coding 731M -> 633M instructions over 60
+        // frames of crowd 720p (-2.2% of the encode; streams identical).
+        let distortion: u32 = recon
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .flat_map(|(r, recon_row)| src.row(r)[..4].iter().zip(recon_row))
+            .map(|(&s, &p)| {
+                let d = i32::from(s) - i32::from(p);
+                (d * d) as u32
+            })
+            .sum();
+        let mut counter = self.luma.settings.bins.fresh();
+        write_intra_4x4_mode(&mut counter, m, predicted);
+        write_residual_block(
+            &mut counter,
+            dsp,
+            BlockCat::Luma4x4,
+            &levels,
+            &SCAN_4X4,
+            cbf_ctx_inc,
+        );
+        (distortion as f32 + lambda * counter.bits(), (levels, recon))
+    }
+}
+
+/// One coded 4x4 block: its levels and its reconstruction (raster).
+type CodedBlock = ([i16; 16], [u8; 16]);
+
+/// A block's chosen mode as the mode choice left it: coded already (the
+/// rate-distortion choice codes every candidate), or only predicted.
+enum Chosen {
+    Coded(CodedBlock),
+    Predicted([u8; 16]),
 }
 
 /// Transform and quantise `src - pred` of one 4x4 block, letting
@@ -379,7 +450,7 @@ fn code_block(
     pred: &[u8; 16],
     quantizer: &H264Quantizer,
     requantize: impl FnOnce(&[i16; 16], &mut [i16; 16]),
-) -> ([i16; 16], [u8; 16]) {
+) -> CodedBlock {
     let block4 = BlockSize::new(4, 4).expect("4x4 is a kernel size");
     let pred_view = PlaneView::new(pred, 4, 4, 4).expect("prediction covers the block");
     let mut residual = [0i16; 16];
@@ -476,28 +547,35 @@ pub(crate) fn code_intra_4x4_with(
         let predicted = predicted_mode(bx, by, &modes);
         let cbf_ctx_inc = rdo.as_ref().map(|r| r.cbf_ctx_inc((bx, by), &levels));
         let mode_rd = rdo.as_ref().and_then(|r| r.mode_rd);
-        let (mode, pred, mode_cost) = match (rdo.as_mut(), cbf_ctx_inc, mode_rd) {
-            (Some(r), Some(inc), Some(rd)) => {
-                r.best_mode(dsp, &src, &neighbours, predicted, quantizer, inc, rd)
-            }
-            _ => choose_mode(&src, &neighbours, predicted),
-        };
+        // Each block is transformed, quantised and reconstructed before the
+        // next one predicts from it. The rate-distortion choice has coded
+        // every candidate already and hands back the chosen one's block.
+        let (mode, mode_cost, chosen) =
+            if let (Some(r), Some(inc), Some(rd)) = (rdo.as_mut(), cbf_ctx_inc, mode_rd) {
+                let (mode, mode_cost, coded) =
+                    r.best_mode(dsp, &src, &neighbours, predicted, quantizer, inc, rd);
+                (mode, mode_cost, Chosen::Coded(coded))
+            } else {
+                let (mode, pred, mode_cost) = choose_mode(&src, &neighbours, predicted);
+                (mode, mode_cost, Chosen::Predicted(pred))
+            };
         modes[by * 4 + bx] = mode;
         cost += mode_cost;
         if cost >= abort_above {
             return None;
         }
-
-        // Transform, quantise and reconstruct this block before the next one
-        // predicts from it.
-        let (block_levels, block_recon) =
-            code_block(dsp, &src, &pred, quantizer, |coeffs, block_levels| {
-                if let (Some(r), Some(inc)) = (rdo.as_mut(), cbf_ctx_inc)
-                    && r.trellis
-                {
-                    r.quantize(inc, coeffs, quantizer, block_levels);
-                }
-            });
+        let (block_levels, block_recon) = match chosen {
+            Chosen::Coded(coded) => coded,
+            Chosen::Predicted(pred) => {
+                code_block(dsp, &src, &pred, quantizer, |coeffs, block_levels| {
+                    if let (Some(r), Some(inc)) = (rdo.as_mut(), cbf_ctx_inc)
+                        && r.trellis
+                    {
+                        r.quantize(inc, coeffs, quantizer, block_levels);
+                    }
+                })
+            }
+        };
         levels[by * 4 + bx] = block_levels;
         let mut dst = recon
             .plane_mut(PlaneIndex::Y)

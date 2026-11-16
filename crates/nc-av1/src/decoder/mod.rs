@@ -204,7 +204,7 @@ impl<T: Pixel> Core<T> {
     /// The decoder of a sequence of another sample type, carrying the
     /// caller's settings (operating point, film grain, analysis) over; no
     /// sequence, references or shown frame.
-    fn successor<U: Pixel>(&mut self) -> Core<U> {
+    fn successor<U: Pixel>(&self) -> Core<U> {
         let mut next = Core::<U>::new();
         next.operating_point = self.operating_point;
         next.apply_film_grain = self.apply_film_grain;
@@ -736,7 +736,7 @@ impl<T: Pixel> Core<T> {
         let coded = subset::FrameParameters {
             width: coded_width,
             height: coded_height,
-            ..params.clone()
+            ..params
         };
         let recon = self
             .pictures

@@ -213,12 +213,15 @@ fn plane<const N: usize, const AREA: usize>(edges: &Edges<N>) -> [u8; AREA] {
     let centre = half as i32 - 1;
     // The formula per sample (eq. 8-119 / 8-142) with the row's terms
     // hoisted and the column term a fixed ramp: independent samples, so the
-    // row loop vectorises.
-    let ramp: [i32; N] = core::array::from_fn(|i| slope_x * i as i32);
+    // row loop vectorises, in 16 bits: |b|, |c| <= (34 * 2550 + 32) >> 6 =
+    // 1355 (chroma; luma (5 * 9180 + 32) >> 6 = 718), so a + 16 plus eight
+    // steps of each slope stays within 16 * 510 + 16 + 16 * 1355 < 2^15.
+    let narrow = |v: i32| i16::try_from(v).expect("plane prediction terms fit 16 bits");
+    let ramp: [i16; N] = core::array::from_fn(|i| narrow(slope_x * i as i32));
     let mut out = [0u8; AREA];
     for (row, line) in out.as_chunks_mut::<N>().0.iter_mut().enumerate() {
-        let start = base + slope_y * (row as i32 - centre) - slope_x * centre + 16;
-        for (sample, step) in line.iter_mut().zip(&ramp) {
+        let start = narrow(base + slope_y * (row as i32 - centre) - slope_x * centre + 16);
+        for (sample, &step) in line.iter_mut().zip(&ramp) {
             *sample = ((start + step) >> 5).clamp(0, 255) as u8;
         }
     }

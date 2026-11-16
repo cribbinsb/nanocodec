@@ -119,8 +119,9 @@ const DEFAULT_SCAN_32X32_INVERSE: [u16; 1024] = inverted(&tables::DEFAULT_SCAN_3
 
 /// Raster levels tested together for being all zero: most of a block's
 /// levels are, and a run of them costs one comparison instead of one scan
-/// lookup each.
-const ZERO_TEST_RUN: usize = 8;
+/// lookup each. 16 rather than 8: the search's instructions -7.5% (VP9
+/// Default crowd 720p, 30 f, release build; streams identical).
+const ZERO_TEST_RUN: usize = 16;
 
 impl ScanOrder {
     /// The scan indices of the last and second-to-last nonzero levels of

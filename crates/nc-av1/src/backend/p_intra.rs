@@ -112,7 +112,7 @@ impl Av1Backend {
     /// The best `av1.inter_intra_rd_candidates` of [`CANDIDATES`] by
     /// prediction SATD + √λ · mode bits.
     fn inter_frame_shortlist(
-        &mut self,
+        &self,
         block: &Block,
         source: &Picture,
         recon: &mut Picture,

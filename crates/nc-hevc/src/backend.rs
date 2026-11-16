@@ -1817,13 +1817,16 @@ impl HevcBackend {
         // One z-scan test per neighbouring region instead of one per unit:
         // exact; Fast instructions fall 1.0% per P frame and 3.8% per key
         // frame (callgrind, crowd09 QP 47).
+        // The block's own left and above neighbours always precede it
+        // ([`ReferenceAvailability`]), so one answer covers each of those
+        // sides: exact.
         let availability = self.grid.reference_availability(lx, ly, n << scale);
         Refs::gather(
             recon.plane(plane),
             (x, y),
             n,
             unit,
-            Sides::PerUnit,
+            Sides::Uniform,
             |xn, yn| availability.at(xn << scale, yn << scale),
         )
     }

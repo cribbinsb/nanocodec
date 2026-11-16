@@ -4,6 +4,11 @@
 # image; the baked AMI already has it). Installs what builds, tests, clippy,
 # callgrind, fuzzing and the conformance runs need. Conformance streams are
 # public and fetched on the box by a job (docs/PROCEDURES.md "Remote build box").
+#
+# The Rust toolchains are the PC's exactly (nc_remote.py reads them there):
+# stable @RUST_STABLE@ as the default, and the nightly of commit
+# @NIGHTLY_HASH@ (dist date @NIGHTLY_DATE@) under the name `nightly`, so a
+# clippy or rustc verdict on the box is the one landing and verify give.
 set -euo pipefail
 
 MARKER=/home/ubuntu/ncbox/provisioned-@PROVISION_VERSION@
@@ -17,12 +22,32 @@ sudo apt-get -qq install -y --no-install-recommends \
   rsync git zstd curl unzip ffmpeg nodejs npm > /dev/null
 
 if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
-  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 fi
 source "$HOME/.cargo/env"
-rustup toolchain install stable --profile minimal -c clippy -c rustfmt -t wasm32-unknown-unknown
-rustup toolchain install nightly --profile minimal -c miri -c rust-src -c llvm-tools-preview
-cargo install --locked cargo-fuzz > /dev/null 2>&1 || cargo install --locked cargo-fuzz
+rustup toolchain install @RUST_STABLE@ --profile minimal -c clippy -c rustfmt -t wasm32-unknown-unknown
+rustup default @RUST_STABLE@
+nightly=nightly-@NIGHTLY_DATE@
+rustup toolchain install "$nightly" --profile minimal -c miri -c rust-src -c llvm-tools-preview
+got=$(rustup run "$nightly" rustc -vV | sed -n 's/^commit-hash: //p')
+if [ "$got" != @NIGHTLY_HASH@ ]; then
+  echo "FAILED: $nightly is commit $got, the PC's nightly is @NIGHTLY_HASH@" >&2
+  exit 1
+fi
+# `cargo +nightly` must mean the pinned one. rustup refuses `nightly` as a
+# custom (linked) name, so the channel's directory is made a link to the
+# dated toolchain: `nightly` is then installed and resolves to it (as on the
+# PC, where the channel was installed then and never updated). A floating
+# `stable` from an older image stays installed but is not the default:
+# removing it would break builds running on the box.
+toolchains=$HOME/.rustup/toolchains
+host=x86_64-unknown-linux-gnu
+if [ "$(readlink "$toolchains/nightly-$host")" != "$nightly-$host" ]; then
+  rustup toolchain uninstall nightly > /dev/null 2>&1 || true
+  ln -sfn "$nightly-$host" "$toolchains/nightly-$host"
+fi
+got=$(rustc +nightly -vV | sed -n 's/^commit-hash: //p')
+[ "$got" = @NIGHTLY_HASH@ ] || { echo "FAILED: +nightly is $got" >&2; exit 1; }
 
 touch "$MARKER"
-echo "provisioned: $(rustc --version), $(valgrind --version), $(python3 --version)"
+echo "provisioned: $(rustc --version), $(cargo clippy --version), $(rustc +nightly --version), $(valgrind --version), $(python3 --version)"

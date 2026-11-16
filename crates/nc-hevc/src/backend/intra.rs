@@ -141,21 +141,25 @@ impl HevcBackend {
         let src = src.sub_view(x, y, n, n).expect("block inside the picture");
         // Horizontal modes are predicted transposed; compare them against
         // the transposed source (SATD is transpose invariant).
+        // One source row slice per row, scattered down a column, not a row
+        // lookup per sample.
         let mut src_t = [0u8; MAX_COEFFS];
-        for (row, out) in src_t[..n * n].chunks_exact_mut(n).enumerate() {
-            for (col, o) in out.iter_mut().enumerate() {
-                *o = src.row(col)[row];
+        let src_t_block = &mut src_t[..n * n];
+        for row in 0..n {
+            for (col, &sample) in src.row(row)[..n].iter().enumerate() {
+                src_t_block[col * n + row] = sample;
             }
         }
         let src_t = PlaneView::new(&src_t, n, n, n).expect("block buffer");
         let sqrt_lambda = self.frame_quantization.sqrt_lambda;
         let mut pred = [0u8; MAX_COEFFS];
         let mut tried = [false; predict::MODES as usize];
+        let search_refs = predict::SearchRefs::new(&refs);
         let mut cost = |mode: u8, best: &mut (f32, u8)| {
             if std::mem::replace(&mut tried[usize::from(mode)], true) {
                 return;
             }
-            let transposed = predict::predict_oriented(&self.dsp, &refs, mode, true, &mut pred);
+            let transposed = search_refs.predict_oriented(&self.dsp, mode, &mut pred);
             let view = PlaneView::new(&pred, n, n, n).expect("prediction covers the block");
             let reference = if transposed { &src_t } else { &src };
             let satd = self.dsp.satd(size, reference, &view) as f32;

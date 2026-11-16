@@ -322,9 +322,9 @@ impl LongTermDpb {
                 .iter()
                 .partition(|&&held| kept(held, &self.slot_long_term));
             self.short_terms = keep;
-            for slot in 0..MAX_REFERENCE_SLOTS {
+            for (slot, long_term) in self.slot_long_term.iter_mut().enumerate() {
                 if refresh.contains(slot) {
-                    self.slot_long_term[slot] = true;
+                    *long_term = true;
                 }
             }
             let replaced = self.idx;
@@ -351,9 +351,9 @@ impl LongTermDpb {
             );
         }
         self.short_terms.push(frame_num);
-        for slot in 0..MAX_REFERENCE_SLOTS {
+        for (slot, long_term) in self.slot_long_term.iter_mut().enumerate() {
             if refresh.contains(slot) {
-                self.slot_long_term[slot] = false;
+                *long_term = false;
             }
         }
         Marking::ShortTerm

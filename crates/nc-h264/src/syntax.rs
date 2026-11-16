@@ -769,7 +769,7 @@ fn write_residual(
     }
     for c in 0..2 {
         let flag = |bits: u8, bx: usize, by: usize| (bits >> (by * 2 + bx)) & 1 != 0;
-        for blk in 0..4 {
+        for (blk, block) in res.chroma_ac[c].iter().enumerate() {
             let (bx, by) = (blk % 2, blk / 2);
             let a = if bx > 0 {
                 usize::from(flag(info.chroma_ac_coded[c], 0, by))
@@ -781,7 +781,6 @@ fn write_residual(
             } else {
                 cond_term(nb.above, intra, |m| flag(m.chroma_ac_coded[c], bx, 1))
             };
-            let block = &res.chroma_ac[c][blk];
             if write_residual_block(
                 cabac,
                 dsp,

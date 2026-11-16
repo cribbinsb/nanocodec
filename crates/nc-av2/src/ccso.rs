@@ -484,7 +484,7 @@ pub(crate) fn write_flags(
     params: &CcsoParams,
     flags: &UnitFlags,
     (x, y): (usize, usize),
-    defaults: &mut TileCdfs,
+    defaults: &TileCdfs,
 ) -> Result<()> {
     for plane in PlaneIndex::ALL {
         if params.plane(plane).is_none() {
@@ -509,7 +509,7 @@ pub(crate) fn read_flags(
     params: &CcsoParams,
     flags: &mut UnitFlags,
     (x, y): (usize, usize),
-    defaults: &mut TileCdfs,
+    defaults: &TileCdfs,
 ) -> Result<()> {
     if !params.is_on() || !UnitFlags::codes_flags(x, y) {
         return Ok(());

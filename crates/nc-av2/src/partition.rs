@@ -357,7 +357,7 @@ impl PartitionWriter {
 
     /// Write `node`'s symbols, returning the split direction used.
     fn write_node(
-        &mut self,
+        &self,
         writer: &mut impl SymbolSink,
         node: Node,
         split: bool,
@@ -471,7 +471,7 @@ impl PartitionReader {
     }
 
     /// Read `node`'s split: `None` for a leaf, else the direction.
-    fn read_node(&mut self, reader: &mut Reader<'_>, node: Node) -> Result<Option<bool>> {
+    fn read_node(&self, reader: &mut Reader<'_>, node: Node) -> Result<Option<bool>> {
         if node.w == MIN_LEAF && node.h == MIN_LEAF {
             // Square 8x8 nodes code do_split; sub-8x8 blocks are outside the subset.
             let syntax = self.contexts.syntax(node);

@@ -127,10 +127,10 @@ fn emit_component(
             c.fraction,
         );
     } else {
-        for i in 0..c.bits() {
+        for (i, &prob) in probs.bits[..c.bits()].iter().enumerate() {
             sink.bit(
                 c.integer & (1 << i) != 0,
-                probs.bits[i],
+                prob,
                 recorder::mv_bits_slot(axis, i),
             );
         }
@@ -336,8 +336,8 @@ fn read_component(
         )
     } else {
         let mut integer = 0;
-        for i in 0..class + CLASS0_BITS - 1 {
-            integer |= usize::from(reader.read(probs.bits[i])) << i;
+        for (i, &prob) in probs.bits[..class + CLASS0_BITS - 1].iter().enumerate() {
+            integer |= usize::from(reader.read(prob)) << i;
         }
         (integer, tree::read(reader, MV_FP, &probs.fp))
     };

@@ -484,10 +484,13 @@ impl<'a> RateModel<'a> {
         let entry = &mut self.costs.low_range[key];
         if entry.block != self.costs.block {
             entry.block = self.costs.block;
-            for increment in 0..=MAX_LOW_RANGE as usize {
+            for (increment, cost) in entry.costs[..=MAX_LOW_RANGE as usize]
+                .iter_mut()
+                .enumerate()
+            {
                 models::low_range(&mut self.pricer, increment, self.block.q, region, context)
                     .expect("pricing codes nothing and cannot fail");
-                entry.costs[increment] = self.pricer.take_q9();
+                *cost = self.pricer.take_q9();
             }
         }
         entry.costs

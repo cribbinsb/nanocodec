@@ -146,22 +146,22 @@ fn visit_mode_slots(fc: &mut FrameContext, mut visit: impl FnMut(usize, &mut u8)
         run(tx_slot(TxSize::Tx32, ctx), &mut fc.tx32[ctx]);
     }
     run(SKIP_SLOT, &mut fc.skip);
-    for ctx in 0..7 {
-        run(inter_mode_slot(ctx), &mut fc.inter_mode[ctx]);
+    for (ctx, probs) in fc.inter_mode.iter_mut().enumerate() {
+        run(inter_mode_slot(ctx), probs);
     }
-    for ctx in 0..4 {
-        run(switchable_interp_slot(ctx), &mut fc.switchable_interp[ctx]);
+    for (ctx, probs) in fc.switchable_interp.iter_mut().enumerate() {
+        run(switchable_interp_slot(ctx), probs);
     }
     run(INTRA_INTER_SLOT, &mut fc.intra_inter);
-    for ctx in 0..5 {
-        run(single_ref_slot(ctx, 0), &mut fc.single_ref[ctx][..1]);
-        run(single_ref_slot(ctx, 1), &mut fc.single_ref[ctx][1..]);
+    for (ctx, probs) in fc.single_ref.iter_mut().enumerate() {
+        run(single_ref_slot(ctx, 0), &mut probs[..1]);
+        run(single_ref_slot(ctx, 1), &mut probs[1..]);
     }
-    for group in 0..4 {
-        run(y_mode_slot(group), &mut fc.y_mode[group]);
+    for (group, probs) in fc.y_mode.iter_mut().enumerate() {
+        run(y_mode_slot(group), probs);
     }
-    for ctx in 0..16 {
-        run(partition_slot(ctx), &mut fc.partition[ctx]);
+    for (ctx, probs) in fc.partition.iter_mut().enumerate() {
+        run(partition_slot(ctx), probs);
     }
     run(MV_JOINT_SLOT, &mut fc.mv_joints);
     for (axis, comp) in fc.mv.iter_mut().enumerate() {

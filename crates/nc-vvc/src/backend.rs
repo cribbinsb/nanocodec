@@ -2102,7 +2102,7 @@ impl VvcBackend {
     /// scaled to the CU's area). A CU whose search is DC only falls back
     /// unconditionally: the estimate promised a direction it cannot use.
     fn inter_fallback(
-        &mut self,
+        &self,
         block: &Block,
         fallback: Option<Mv>,
         luma: Option<crate::intra::LumaChoice>,

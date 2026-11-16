@@ -180,18 +180,13 @@ pub(crate) fn forward(
     );
 }
 
-/// The largest coefficient magnitude that quantizes below `min_level` (so
-/// is zero after the planned step's dead zone) with the smaller of the DC
-/// and AC steps: a level reaches `min_level` only from `min_level` steps
-/// less the rounding offset, compared after the 32x32 doubling shift.
-pub(crate) fn zero_coefficient_limit(
-    tx: TxSize,
-    steps: Steps,
-    (rounding, min_level): (Rounding, i32),
-) -> u32 {
+/// The smallest coefficient magnitude (before the 32x32 shift) that
+/// quantizes to `min_level` with the smaller of the DC and AC steps: a
+/// level reaches `min_level` only from `min_level` steps less the rounding
+/// offset.
+fn level_threshold(steps: Steps, (rounding, min_level): (Rounding, i32)) -> i32 {
     let step = steps.dc.min(steps.ac);
-    let threshold = min_level * step - step / rounding.divisor();
-    (threshold.max(1) - 1) as u32 >> tx.dequant_shift()
+    min_level * step - step / rounding.divisor()
 }
 
 /// The levels of a transform block that codes nothing, for callers whose
@@ -199,36 +194,9 @@ pub(crate) fn zero_coefficient_limit(
 pub(crate) static ZERO_LEVELS: [i32; TxSize::Tx32.area()] = [0; TxSize::Tx32.area()];
 
 /// Margin for the forward transform's integer rounding in
-/// [`dct_levels_are_zero`] (each stage rounds; a few units at most).
+/// [`PlaneQuantization::dct_levels_are_zero`] (each stage rounds; a few
+/// units at most).
 const ROUNDING_MARGIN: u32 = 16;
-
-/// Whether a DCT block with residual absolute sum `sad` certainly codes no
-/// level of at least `min_level` (1, or the planned step's dead zone,
-/// [`planned_min_level`]), so the transform can be skipped. Every 2-D DCT
-/// basis function is at most 2/N in magnitude, and coefficients are 8x the
-/// orthonormal transform (32x32: 4x, but quantized at twice the value), so
-/// no coefficient exceeds 16 * sad / N (plus rounding); a level reaches
-/// `min_level` only from `min_level` steps less the rounding offset.
-///
-/// `scale` above 1 (`vp9.pre_transform_zero_scale`, inter blocks only)
-/// widens the bound into a speed heuristic: residual up to `scale` times
-/// the proof's limit is dropped without a transform.
-pub(crate) fn dct_levels_are_zero(
-    tx: TxSize,
-    sad: u32,
-    steps: Steps,
-    (rounding, min_level): (Rounding, i32),
-    scale: f32,
-) -> bool {
-    let step = steps.dc.min(steps.ac);
-    let threshold = (min_level * step - step / rounding.divisor()) as u32;
-    let bound = 16 * sad / tx.side() as u32 + ROUNDING_MARGIN;
-    if scale <= 1.0 {
-        bound < threshold
-    } else {
-        (bound as f32) < scale * threshold as f32
-    }
-}
 
 /// Smallest level magnitude a frame planned past qindex 255 keeps
 /// (`FramePlan::lambda_scale`: its planned step is √scale times the coded
@@ -258,30 +226,96 @@ pub(crate) fn quantize(
     lossless: bool,
     coefficients: &[i16],
     steps: Steps,
-    (rounding, min_level): (Rounding, i32),
+    quantization: (Rounding, i32),
     levels: &mut [i32],
 ) -> bool {
-    let area = tx.area();
-    if lossless {
-        for (level, &c) in levels[..area].iter_mut().zip(&coefficients[..area]) {
-            *level = i32::from(c);
+    PlaneQuantization::new(tx, steps, quantization).quantize(dsp, lossless, coefficients, levels)
+}
+
+/// One plane's quantization of one transform size: its steps, rounding and
+/// dead zone with every per-block constant (the zero tests' thresholds and
+/// the DC and AC quantizers) derived once. A plane of a block codes up to
+/// 256 transform blocks at the same quantization, and each derivation
+/// takes integer divisions: per plane rather than per transform block,
+/// quantisation's instructions -7.2% (VP9 Default crowd 720p, 30 f).
+pub(crate) struct PlaneQuantization {
+    tx: TxSize,
+    threshold: i32,
+    dc: nc_dsp::Vp9QuantStep,
+    ac: nc_dsp::Vp9QuantStep,
+}
+
+impl PlaneQuantization {
+    pub(crate) fn new(tx: TxSize, steps: Steps, (rounding, min_level): (Rounding, i32)) -> Self {
+        let shift = tx.dequant_shift();
+        Self {
+            tx,
+            threshold: level_threshold(steps, (rounding, min_level)),
+            dc: nc_dsp::Vp9QuantStep::new(steps.dc, rounding.divisor(), shift),
+            ac: nc_dsp::Vp9QuantStep::new(steps.ac, rounding.divisor(), shift),
         }
-        return levels[..area].iter().any(|&l| l != 0);
     }
-    let shift = tx.dequant_shift();
-    // Exact shortcut: below the smallest magnitude that rounds to
-    // `min_level` with the smaller step, every level is zero or below the
-    // dead zone that zeroes it next. On the Jetson this scan
-    // is cheaper than the vector quantizer for the many all-zero blocks
-    // (without it: +2.3% encode CPU, crowd 720p q230), although x86
-    // callgrind counts it, with the zero fill, as a loss.
-    let largest = dsp.vp9_largest_magnitude(&coefficients[..area]);
-    if largest <= zero_coefficient_limit(tx, steps, (rounding, min_level)) {
-        return false;
+
+    /// Whether a DCT block with residual absolute sum `sad` certainly codes no
+    /// level of at least `min_level` (1, or the planned step's dead zone,
+    /// [`planned_min_level`]), so the transform can be skipped. Every 2-D DCT
+    /// basis function is at most 2/N in magnitude, and coefficients are 8x the
+    /// orthonormal transform (32x32: 4x, but quantized at twice the value), so
+    /// no coefficient exceeds 16 * sad / N (plus rounding); a level reaches
+    /// `min_level` only from `min_level` steps less the rounding offset.
+    ///
+    /// `scale` above 1 (`vp9.pre_transform_zero_scale`, inter blocks only)
+    /// widens the bound into a speed heuristic: residual up to `scale` times
+    /// the proof's limit is dropped without a transform.
+    pub(crate) fn dct_levels_are_zero(&self, sad: u32, scale: f32) -> bool {
+        let threshold = self.threshold as u32;
+        let bound = 16 * sad / self.tx.side() as u32 + ROUNDING_MARGIN;
+        if scale <= 1.0 {
+            bound < threshold
+        } else {
+            (bound as f32) < scale * threshold as f32
+        }
     }
-    let dc = nc_dsp::Vp9QuantStep::new(steps.dc, rounding.divisor(), shift);
-    let ac = nc_dsp::Vp9QuantStep::new(steps.ac, rounding.divisor(), shift);
-    dsp.vp9_quantize(&coefficients[..area], &dc, &ac, &mut levels[..area])
+
+    /// The largest coefficient magnitude that quantizes below `min_level`
+    /// (so is zero after the planned step's dead zone), compared after the
+    /// 32x32 doubling shift.
+    pub(crate) fn zero_limit(&self) -> u32 {
+        (self.threshold.max(1) - 1) as u32 >> self.tx.dequant_shift()
+    }
+
+    /// [`quantize`] at this quantization.
+    pub(crate) fn quantize(
+        &self,
+        dsp: &nc_dsp::Dsp,
+        lossless: bool,
+        coefficients: &[i16],
+        levels: &mut [i32],
+    ) -> bool {
+        let area = self.tx.area();
+        if lossless {
+            for (level, &c) in levels[..area].iter_mut().zip(&coefficients[..area]) {
+                *level = i32::from(c);
+            }
+            return levels[..area].iter().any(|&l| l != 0);
+        }
+        // Exact shortcut: below the smallest magnitude that rounds to
+        // `min_level` with the smaller step, every level is zero or below the
+        // dead zone that zeroes it next. On the Jetson this scan
+        // is cheaper than the vector quantizer for the many all-zero blocks
+        // (without it: +2.3% encode CPU, crowd 720p q230), although x86
+        // callgrind counts it, with the zero fill, as a loss.
+        let largest = dsp.vp9_largest_magnitude(&coefficients[..area]);
+        if largest <= self.zero_limit() {
+            return false;
+        }
+        dsp.vp9_quantize(
+            &coefficients[..area],
+            &self.dc,
+            &self.ac,
+            &mut levels[..area],
+        )
+    }
 }
 
 /// Dequantize one coefficient level as the reference decoder does

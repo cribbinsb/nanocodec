@@ -129,8 +129,8 @@ impl ComponentCdfs {
             i32::from(r.boolean(&mut self.class0))
         } else {
             let mut integer = 0;
-            for i in 0..class {
-                integer |= i32::from(r.boolean(&mut self.bits[i])) << i;
+            for (i, bit) in self.bits[..class].iter_mut().enumerate() {
+                integer |= i32::from(r.boolean(bit)) << i;
             }
             integer
         };

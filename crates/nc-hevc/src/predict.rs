@@ -162,8 +162,11 @@ impl<T: Pixel> Refs<T> {
                 if !usable {
                     continue;
                 }
-                for i in start..start + unit {
-                    samples[i] = data[(y + 2 * n - 1 - i) * stride + x - 1];
+                // Rows `top_row..top_row + unit`, read down the column with
+                // one range check, land bottom up.
+                let column = data[top_row * stride + x - 1..].iter().step_by(stride);
+                for (sample, &value) in samples[start..start + unit].iter_mut().rev().zip(column) {
+                    *sample = value;
                 }
                 known |= 1 << u;
             }
@@ -323,6 +326,35 @@ pub fn predict_oriented(dsp: &Dsp, refs: &Refs, mode: u8, luma: bool, out: &mut 
     oriented(dsp.at(BitDepth::EIGHT), refs, mode, luma, false, out)
 }
 
+/// One luma block's references for a mode search, which predicts many
+/// modes from them: the [1 2 1] filtered references are made once, on the
+/// first mode that needs them, not once per mode. Strong smoothing is off,
+/// as everywhere in the encoder.
+pub struct SearchRefs<'a> {
+    refs: &'a Refs,
+    filtered: std::cell::OnceCell<Refs>,
+}
+
+impl<'a> SearchRefs<'a> {
+    #[must_use]
+    pub fn new(refs: &'a Refs) -> Self {
+        Self {
+            refs,
+            filtered: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// [`predict_oriented`] of luma `mode` from these references.
+    pub fn predict_oriented(&self, dsp: &Dsp, mode: u8, out: &mut [u8]) -> bool {
+        let p = if needs_filter(mode, self.refs.n) {
+            self.filtered.get_or_init(|| self.refs.filtered())
+        } else {
+            self.refs
+        };
+        oriented_from(dsp.at(BitDepth::EIGHT), p, mode, true, out)
+    }
+}
+
 /// [`predict`] with `strong_intra_smoothing_enabled_flag` = `strong`, straight
 /// into the picture: `scratch` (at least `n²` samples) takes the kernel's
 /// output, which `dst` (the `n`x`n` block) receives row by row, transposed
@@ -358,9 +390,8 @@ fn oriented<T: Pixel>(
     strong: bool,
     out: &mut [T],
 ) -> bool {
-    let n = refs.n;
     let filtered;
-    let p = if luma && needs_filter(mode, n) {
+    let p = if luma && needs_filter(mode, refs.n) {
         filtered = strong
             .then(|| refs.strongly_smoothed(kernels.depth()))
             .flatten()
@@ -369,6 +400,18 @@ fn oriented<T: Pixel>(
     } else {
         refs
     };
+    oriented_from(kernels, p, mode, luma, out)
+}
+
+/// [`oriented`] from references `p` already filtered as `mode` needs.
+fn oriented_from<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    p: &Refs<T>,
+    mode: u8,
+    luma: bool,
+    out: &mut [T],
+) -> bool {
+    let n = p.n;
     let out = &mut out[..n * n];
     match mode {
         PLANAR => {

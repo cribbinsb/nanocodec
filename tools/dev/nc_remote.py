@@ -79,7 +79,7 @@ MAX_PRICE_FACTOR = 1.5
 PURPOSE = "buildbox"
 NAME = "nanocodec-buildbox"
 #: Bump when nc_remote_provision.sh changes, so boxes re-provision.
-PROVISION_VERSION = "2"
+PROVISION_VERSION = "3"
 #: AMIs and their snapshots have no lifetime of their own; their ExpectedEnd is reviewed then.
 AMI_EXPECTED_END = "2026-12-31T00:00:00Z"
 
@@ -383,13 +383,32 @@ def wait_for_ssh(box: Box) -> None:
                        f"{SSH_READY_SECONDS // 60} min")
 
 
+def pc_toolchains() -> dict[str, str]:
+    """The PC's Rust toolchains, which the box must match exactly: the stable
+    version, and the nightly's commit (its dist date is the day after the
+    commit date)."""
+    def rustc(toolchain: str) -> dict[str, str]:
+        out = subprocess.run([str(Path.home() / ".cargo/bin/rustc"), f"+{toolchain}", "-vV"],
+                             capture_output=True, text=True, check=True).stdout
+        return dict(line.split(": ", 1) for line in out.splitlines() if ": " in line)
+    stable, nightly = rustc("stable"), rustc("nightly")
+    commit_date = datetime.date.fromisoformat(nightly["commit-date"])
+    return {"RUST_STABLE": stable["release"], "NIGHTLY_HASH": nightly["commit-hash"],
+            "NIGHTLY_DATE": (commit_date + datetime.timedelta(days=1)).isoformat()}
+
+
 def provision(box: Box) -> None:
-    marker = f"ncbox/provisioned-{PROVISION_VERSION}"
-    if ssh(box, f"test -f {marker}", capture_output=True).returncode == 0:
+    """Set the box up unless it already matches this provisioning version and
+    the PC's toolchains (a toolchain upgrade on the PC re-provisions the box)."""
+    toolchains = pc_toolchains()
+    tag = f"{PROVISION_VERSION}-{toolchains['RUST_STABLE']}-{toolchains['NIGHTLY_HASH'][:9]}"
+    if ssh(box, f"test -f ncbox/provisioned-{tag}", capture_output=True).returncode == 0:
         return
-    say("provisioning (toolchains and tools; a baked AMI skips this)")
-    script = (HERE / "nc_remote_provision.sh").read_text().replace(
-        "@PROVISION_VERSION@", PROVISION_VERSION)
+    say(f"provisioning (toolchains {toolchains['RUST_STABLE']} and nightly "
+        f"{toolchains['NIGHTLY_DATE']}, as on the PC)")
+    script = (HERE / "nc_remote_provision.sh").read_text().replace("@PROVISION_VERSION@", tag)
+    for key, value in toolchains.items():
+        script = script.replace(f"@{key}@", value)
     ssh(box, "bash -s", input=script.encode(), check=True)
 
 
@@ -461,6 +480,8 @@ def ensure_box(aws: Aws) -> Box:
         elif day_cost() >= DAILY_BUDGET_USD:
             stop_all(aws)
             check_budget()
+        else:
+            provision(box)  # a no-op unless the PC's toolchains changed
         return box
 
 

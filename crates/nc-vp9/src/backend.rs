@@ -3187,6 +3187,10 @@ impl Vp9Backend {
             } else {
                 None
             };
+            let steps = self.header.steps_at(self.coding_q_idx, plane);
+            let (rounding, min_level) = plane_quantization[usize::from(plane != PlaneIndex::Y)];
+            let quantization =
+                transform::PlaneQuantization::new(plane_tx, steps, (rounding, min_level));
             for tx_block in recon::tx_blocks(plane, block.x, block.y, block.size(), plane_tx) {
                 let mode = intra.map(|(y, uv)| if plane == PlaneIndex::Y { y } else { uv });
                 if let Some(mode) = mode {
@@ -3202,8 +3206,6 @@ impl Vp9Backend {
                     offset += area;
                     continue;
                 }
-                let steps = self.header.steps_at(self.coding_q_idx, plane);
-                let (rounding, min_level) = plane_quantization[usize::from(plane != PlaneIndex::Y)];
                 let tx_coding = (plane_tx, offset, (rounding, min_level));
                 let nonrd = (steps, shortcuts.nonrd_scale);
                 if self.code_nonrd(source, recon, &tx_block, tx_coding, nonrd) {
@@ -3214,13 +3216,7 @@ impl Vp9Backend {
                 if let Some(quads) = quads {
                     let sad = quads.tx_sad(&self.scratch.quad_sads, &tx_block, side);
                     if ty == transform::TxType::DctDct
-                        && transform::dct_levels_are_zero(
-                            plane_tx,
-                            sad,
-                            steps,
-                            (rounding, min_level),
-                            shortcuts.zero_scale,
-                        )
+                        && quantization.dct_levels_are_zero(sad, shortcuts.zero_scale)
                     {
                         self.scratch
                             .coded
@@ -3245,15 +3241,8 @@ impl Vp9Backend {
                 let levels = &mut self.scratch.levels[offset..offset + area];
                 let certainly_zero = ty == transform::TxType::DctDct
                     && !self.lossless
-                    && transform::dct_levels_are_zero(
-                        plane_tx,
-                        sad,
-                        steps,
-                        (rounding, min_level),
-                        shortcuts.zero_scale,
-                    );
-                let zero_limit =
-                    transform::zero_coefficient_limit(plane_tx, steps, (rounding, min_level));
+                    && quantization.dct_levels_are_zero(sad, shortcuts.zero_scale);
+                let zero_limit = quantization.zero_limit();
                 let transformed = !certainly_zero
                     && transform_residual(
                         &self.dsp,
@@ -3263,15 +3252,7 @@ impl Vp9Backend {
                         coefficients,
                     );
                 let nonzero = transformed
-                    && transform::quantize(
-                        &self.dsp,
-                        plane_tx,
-                        self.lossless,
-                        coefficients,
-                        steps,
-                        (rounding, min_level),
-                        levels,
-                    );
+                    && quantization.quantize(&self.dsp, self.lossless, coefficients, levels);
                 let nonzero = nonzero && trim_levels(plane_tx, ty, (min_level, shave_gap), levels);
                 let nonzero = match (&mut self.trellis, trellis_lambda) {
                     (Some(trellis), Some(lambda)) if nonzero => {
@@ -3745,7 +3726,7 @@ fn copy_block_out(block: &Block, picture: &Picture, packed: &mut [u8], planes: T
 
 /// Forward-transform a block's `residual` into raster `coefficients`;
 /// false when the block certainly quantizes to zero (every coefficient at
-/// most `zero_limit`, `transform::zero_coefficient_limit`), which the
+/// most `zero_limit`, `PlaneQuantization::zero_limit`), which the
 /// bounded 16x16/32x32 DCT proves exactly before its row pass, leaving
 /// `coefficients` unspecified. With `partial` a 32x32 block keeps only its
 /// low 16x16 frequencies (`vp9.partial_forward`).

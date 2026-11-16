@@ -346,7 +346,7 @@ impl<T: Pixel> SegmentDecoder<'_, '_, T> {
 
     /// Context and QP initialisation at the start of a substream or segment
     /// (§9.3.1, §9.3.2, §8.6.1).
-    fn start_substream(&mut self, carry: &mut Carry, (x0, y0): (usize, usize), start: Start) {
+    fn start_substream(&mut self, carry: &Carry, (x0, y0): (usize, usize), start: Start) {
         let fresh = || Contexts::new(self.cx.init_type(), self.cx.header.qp);
         self.ctx = match start {
             Start::Tile | Start::Segment { dependent: false } => fresh(),
