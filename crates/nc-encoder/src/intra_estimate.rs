@@ -22,13 +22,14 @@
 //! measured without building the prediction.
 
 use nc_common::{Plane, PlaneView};
+use nc_dsp::{Dsp, ESTIMATE_EDGE_LEN, ESTIMATE_MAX_SIDE};
 
 /// Largest sub-block side the estimate predicts.
-const MAX_SIDE: usize = 64;
+const MAX_SIDE: usize = ESTIMATE_MAX_SIDE;
 /// The edge every direction reads, for a side `n`: the left column bottom
 /// to top, the top-left corner, then the row above and above-right
 /// (`4n + 1` samples at most).
-const EDGE_LEN: usize = 4 * MAX_SIDE + 1;
+const EDGE_LEN: usize = ESTIMATE_EDGE_LEN;
 
 /// The estimate for one block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,46 +150,34 @@ impl Moments {
     }
 }
 
-/// Squared difference.
-fn square_error(s: u8, p: u8) -> u32 {
-    let d = i32::from(s) - i32::from(p);
-    (d * d) as u32
-}
-
 /// The best direction's residual SSE and AC-energy gap of the `N`-square
 /// sub-block at `(x, y)` of `view`, measured on every [`SAMPLE_STEP`]th
-/// row and column. DC and horizontal follow from the sampled rows'
-/// moments; the others are measured sample by sample.
-fn sub_block<const N: usize>(view: &PlaneView<'_>, (x, y): (usize, usize)) -> (u64, u64) {
+/// row and column: the source's moments and each direction's SSE come
+/// from one shared kernel (`Dsp::intra_estimate_stats`), DC's from the
+/// moments.
+fn sub_block<const N: usize>(
+    dsp: &Dsp,
+    view: &PlaneView<'_>,
+    (x, y): (usize, usize),
+) -> (u64, u64) {
     let edges = Edges::<N>::new(view, (x, y));
     let per_row = N.div_ceil(SAMPLE_STEP) as u32;
-    let mut source = Moments::default();
-    let mut horizontal = 0;
-    // Vertical, down-left, down-right.
-    let mut sse = [0u32; 3];
-    for r in (0..N).step_by(SAMPLE_STEP) {
-        let row: &[u8; N] = view.row(y + r)[x..x + N]
-            .try_into()
-            .expect("sub-blocks lie inside the coded picture");
-        let mut moments = Moments::default();
-        for c in (0..N).step_by(SAMPLE_STEP) {
-            let v = row[c];
-            moments.add(v);
-            sse[0] += square_error(v, edges.edge[N + 1 + c]);
-            sse[1] += square_error(v, edges.edge[N + 2 + r + c]);
-            sse[2] += square_error(v, edges.edge[N - r + c]);
-        }
-        horizontal += moments.sse_to(u32::from(edges.left(r)), per_row);
-        source.sum += moments.sum;
-        source.squares += moments.squares;
-    }
+    let block = view
+        .sub_view(x, y, N, N)
+        .expect("sub-blocks lie inside the coded picture");
+    let stats = dsp.intra_estimate_stats(&block, N, &edges.edge);
+    let source = Moments {
+        sum: stats.sum,
+        squares: stats.squares,
+    };
     let count = per_row * per_row;
     let dc_sse = source.sse_to(edges.dc(), count);
+    let [vertical, horizontal, down_left, down_right] = stats.sse;
     let (best_sse, best) = [
-        (sse[0], Direction::Vertical),
+        (vertical, Direction::Vertical),
         (horizontal, Direction::Horizontal),
-        (sse[1], Direction::DownLeft),
-        (sse[2], Direction::DownRight),
+        (down_left, Direction::DownLeft),
+        (down_right, Direction::DownRight),
     ]
     .into_iter()
     .min_by_key(|&(sse, _)| sse)
@@ -215,6 +204,7 @@ fn sub_block<const N: usize>(view: &PlaneView<'_>, (x, y): (usize, usize)) -> (u
 /// picture's top row or left column, which have no source neighbours on
 /// one side (the DC estimate stands there).
 pub(crate) fn estimate(
+    dsp: &Dsp,
     plane: &Plane,
     (x, y): (usize, usize),
     side: usize,
@@ -232,11 +222,11 @@ pub(crate) fn estimate(
     for sy in (y..y + side).step_by(n) {
         for sx in (x..x + side).step_by(n) {
             let (sse, gap) = match n {
-                4 => sub_block::<4>(&view, (sx, sy)),
-                8 => sub_block::<8>(&view, (sx, sy)),
-                16 => sub_block::<16>(&view, (sx, sy)),
-                32 => sub_block::<32>(&view, (sx, sy)),
-                _ => sub_block::<MAX_SIDE>(&view, (sx, sy)),
+                4 => sub_block::<4>(dsp, &view, (sx, sy)),
+                8 => sub_block::<8>(dsp, &view, (sx, sy)),
+                16 => sub_block::<16>(dsp, &view, (sx, sy)),
+                32 => sub_block::<32>(dsp, &view, (sx, sy)),
+                _ => sub_block::<MAX_SIDE>(dsp, &view, (sx, sy)),
             };
             total.distortion += sse;
             total.energy_gap += gap;
@@ -261,7 +251,9 @@ mod tests {
     }
 
     fn distortion(plane: &Plane) -> u64 {
-        estimate(plane, (8, 8), 16, 3).unwrap().distortion
+        estimate(&Dsp::new(), plane, (8, 8), 16, 3)
+            .unwrap()
+            .distortion
     }
 
     #[test]
@@ -275,7 +267,7 @@ mod tests {
             plane_with(|r, c| stripes(r + c)),
             plane_with(|r, c| stripes(r + 32 - c)),
         ] {
-            let e = estimate(&plane, (8, 8), 16, 3).unwrap();
+            let e = estimate(&Dsp::new(), &plane, (8, 8), 16, 3).unwrap();
             assert_eq!((e.distortion, e.energy_gap), (0, 0));
         }
     }
@@ -290,9 +282,14 @@ mod tests {
     #[test]
     fn edge_blocks_have_no_estimate() {
         let plane = plane_with(|_, _| 9);
-        assert_eq!(estimate(&plane, (0, 8), 16, 3), None);
-        assert_eq!(estimate(&plane, (8, 0), 16, 3), None);
+        assert_eq!(estimate(&Dsp::new(), &plane, (0, 8), 16, 3), None);
+        assert_eq!(estimate(&Dsp::new(), &plane, (8, 0), 16, 3), None);
         // The backend's unit may be the leaf itself.
-        assert_eq!(estimate(&plane, (8, 8), 16, 6).unwrap().distortion, 0);
+        assert_eq!(
+            estimate(&Dsp::new(), &plane, (8, 8), 16, 6)
+                .unwrap()
+                .distortion,
+            0
+        );
     }
 }

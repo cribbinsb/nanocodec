@@ -61,6 +61,9 @@ pub struct Dsp {
     diff: DiffFns,
     reconstruct: crate::reconstruct::Kernel,
     constant_add: crate::constant_add::AddFn,
+    end_of_block: crate::end_of_block::EobFn,
+    end_of_block_wide: crate::end_of_block::WideEobFn,
+    intra_estimate: crate::intra_estimate::StatsFn,
     border_store: crate::border_store::BorderStoreFns,
     copy_plane: crate::block_copy::CopyFn,
     cdef: CdefFns,
@@ -197,6 +200,9 @@ impl Dsp {
             diff,
             reconstruct: crate::reconstruct::kernel(isa),
             constant_add: crate::constant_add::kernel(isa),
+            end_of_block: crate::end_of_block::kernel(isa),
+            end_of_block_wide: crate::end_of_block::wide_kernel(isa),
+            intra_estimate: crate::intra_estimate::kernel(isa),
             border_store: crate::border_store::border_store_fns(isa),
             copy_plane: crate::block_copy::copy,
             cdef,
@@ -254,6 +260,7 @@ impl Dsp {
         codec_txfm::avx512::install(&mut dsp.codec_txfm);
         crate::av1_inverse::avx512::install(&mut dsp.av1_inverse);
         av2_txfm::avx512::install(&mut dsp.av2_txfm);
+        dsp.end_of_block = crate::end_of_block::kernel(Isa::Avx512);
         Some(dsp)
     }
 
@@ -1729,6 +1736,56 @@ impl Dsp {
                 size.height(),
             );
         }
+    }
+
+    /// [`Self::end_of_block`] of 32-bit `levels`, with the OR of their
+    /// magnitudes (which exceeds an all-ones limit exactly when one
+    /// magnitude does).
+    ///
+    /// # Panics
+    ///
+    /// If the two slices differ in length.
+    #[must_use]
+    pub fn end_of_block_wide(&self, levels: &[i32], table: &[u16]) -> (usize, u32) {
+        assert_eq!(levels.len(), table.len(), "end-of-block table length");
+        // SAFETY: as for `end_of_block`.
+        unsafe { (self.end_of_block_wide)(levels, table) }
+    }
+
+    /// The engine's directional intra estimate statistics of the
+    /// `n`-square block `src` (`n` in 4..=64, a power of two) against its
+    /// source `edge` (module `intra_estimate`).
+    ///
+    /// # Panics
+    ///
+    /// If `src` is smaller than the block or `edge` shorter than `3n + 1`.
+    #[must_use]
+    pub fn intra_estimate_stats(
+        &self,
+        src: &PlaneView<'_>,
+        n: usize,
+        edge: &[u8],
+    ) -> crate::EstimateStats {
+        assert!(crate::intra_estimate::ESTIMATE_SIDES.contains(&n));
+        assert!(src.width() >= n && src.height() >= n && edge.len() > 3 * n);
+        // SAFETY: the table matches the checked CPU ISA; the kernel indexes
+        // only the checked block and edge.
+        unsafe { (self.intra_estimate)(src.data(), src.stride(), n, edge) }
+    }
+
+    /// End of block of `levels`: one past the largest scan index of a
+    /// nonzero level, from the codec's end-of-block `table` ([`crate::eob_table`]
+    /// of its scan; module `end_of_block`).
+    ///
+    /// # Panics
+    ///
+    /// If the two slices differ in length.
+    #[must_use]
+    pub fn end_of_block(&self, levels: &[i16], table: &[u16]) -> usize {
+        assert_eq!(levels.len(), table.len(), "end-of-block table length");
+        // SAFETY: the table matches the checked CPU ISA; the kernel reads
+        // only within the equal-length slices.
+        unsafe { (self.end_of_block)(levels, table) }
     }
 
     /// `dst = clamp(dst + residual, 0, 255)` over the whole view: the

@@ -149,6 +149,24 @@ pub fn coefficient_scan(tx: TxSize) -> &'static [u16] {
     scan(tx)
 }
 
+/// End-of-block tables of the default scans (`nc_dsp::eob_table`).
+const EOB_4X4: [u16; 16] = nc_dsp::eob_table(&DEFAULT_SCAN_4X4);
+const EOB_8X8: [u16; 64] = nc_dsp::eob_table(&DEFAULT_SCAN_8X8);
+const EOB_16X16: [u16; 256] = nc_dsp::eob_table(&DEFAULT_SCAN_16X16);
+const EOB_32X32: [u16; 1024] = nc_dsp::eob_table(&DEFAULT_SCAN_32X32);
+
+/// The end-of-block table of `tx`'s scan (`Dsp::end_of_block`): for each
+/// coded position, its scan index plus one.
+#[must_use]
+pub fn eob_table(tx: TxSize) -> &'static [u16] {
+    match tx {
+        TxSize::Tx4x4 => &EOB_4X4,
+        TxSize::Tx8x8 => &EOB_8X8,
+        TxSize::Tx16x16 => &EOB_16X16,
+        TxSize::Tx32x32 | TxSize::Tx64x64 => &EOB_32X32,
+    }
+}
+
 fn scan(tx: TxSize) -> &'static [u16] {
     match tx {
         TxSize::Tx4x4 => &DEFAULT_SCAN_4X4,
@@ -167,8 +185,8 @@ fn nz_map_ctx_offset(tx: TxSize) -> &'static [u8] {
     }
 }
 
-/// End of block: one past the last non-zero level in scan order, by a walk
-/// back through the whole scan (the tests' reference).
+/// End of block: one past the last non-zero level in scan order (the
+/// tests' reference for `Dsp::end_of_block` over [`eob_table`]).
 #[cfg(test)]
 #[must_use]
 pub fn end_of_block(tx: TxSize, levels: &[i16]) -> usize {
@@ -176,49 +194,6 @@ pub fn end_of_block(tx: TxSize, levels: &[i16]) -> usize {
         .iter()
         .rposition(|&pos| levels[usize::from(pos)] != 0)
         .map_or(0, |p| p + 1)
-}
-
-/// Scan index of each coded position (the inverse of a scan order).
-const fn inverse_scan<const N: usize>(scan: &[u16; N]) -> [u16; N] {
-    let mut inverse = [0; N];
-    let mut index = 0;
-    while index < N {
-        inverse[scan[index] as usize] = index as u16;
-        index += 1;
-    }
-    inverse
-}
-
-const INVERSE_SCAN_4X4: [u16; 16] = inverse_scan(&DEFAULT_SCAN_4X4);
-const INVERSE_SCAN_8X8: [u16; 64] = inverse_scan(&DEFAULT_SCAN_8X8);
-const INVERSE_SCAN_16X16: [u16; 256] = inverse_scan(&DEFAULT_SCAN_16X16);
-const INVERSE_SCAN_32X32: [u16; 1024] = inverse_scan(&DEFAULT_SCAN_32X32);
-
-fn inverse_scan_of(tx: TxSize) -> &'static [u16] {
-    match tx {
-        TxSize::Tx4x4 => &INVERSE_SCAN_4X4,
-        TxSize::Tx8x8 => &INVERSE_SCAN_8X8,
-        TxSize::Tx16x16 => &INVERSE_SCAN_16X16,
-        TxSize::Tx32x32 | TxSize::Tx64x64 => &INVERSE_SCAN_32X32,
-    }
-}
-
-/// [`end_of_block`] of `levels` known to be zero from coded position
-/// `prefix` on (`ForwardPolicy::coded_prefix`). One branch-free pass in
-/// coded order, which vectorizes, instead of a walk back through the scan
-/// that reads the positions in scattered order (as nc-av2's
-/// `end_of_block`).
-#[must_use]
-pub fn end_of_block_in_prefix(tx: TxSize, levels: &[i16], prefix: usize) -> usize {
-    // Signed 16-bit lanes (scan indices are below 1024): the baseline
-    // x86-64 SIMD has a signed 16-bit maximum, so the loop vectorizes.
-    let end = levels[..prefix]
-        .iter()
-        .zip(&inverse_scan_of(tx)[..prefix])
-        .fold(0i16, |end, (&level, &index)| {
-            end.max(if level == 0 { 0 } else { index as i16 + 1 })
-        });
-    end as usize
 }
 
 /// The entropy-context byte a transform block leaves for its neighbours

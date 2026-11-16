@@ -62,6 +62,13 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - a linear rate for the transform-split trial: +0.31% to +0.43%;
   - precomputing the context walk: exact but slower on c8a;
   - inner-loop micro-edits: more instructions.
+- **Frame-level loop-filter gate on AV1 Default (`filter.*`, 7c2b840cf) as a large speed lever**
+  (`feature/light-pipeline`, c8a session 2, 4 sequences x 2 QPs; box lens): deblocking off on
+  non-base frames after a 75 %-skipped reference: 153 fps (Default 152), Weighted -17.7 / J -26.1
+  (Default -17.9 / -26.0); frame proxy 0.05 (deblocking off and CDEF reuse on well-predicted
+  frames): 153 fps, -17.5 / -25.5; proxy 0.5 (fires on almost every frame): 159 fps (+5 %),
+  -15.1 / -24.2. Deblocking and CDEF control are not where Default's time goes on these clips;
+  the gate may still pay on a Fast base with deblocking on (being measured).
 - **VVC key-frame bundle:** passed the pool screen but failed the 10 s key pulse guard on static
   clips. The cause is rate control's second-key budget (`feature/vvc-speed` report).
 - **HEVC Fast re-pointed to the Default's depth settings (parameters only)**
@@ -106,54 +113,58 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
 
 ## AV1 Fast re-point and quantizer gates (feature/av1-av2-speed, 2026-11-16)
 
-- **Gates landed** (6d4d2c636, streams identical at the defaults):
-  - `nc_encoder::{GateInput, GateParams, WorkGate}`. A cheap path is taken from a relative
-    quantizer up (`min_quantizer`, 0 finest, 1 coarsest), or below that where the error per
-    sample is under `max_energy` squared quantizer steps. The energy half is in the type only;
-    it has no registered parameter yet.
-  - Registered parameters: `gate.partial_transform_min_quantizer` (default 0) and
-    `gate.tx_split_skip_min_quantizer` (default 1.1).
-  - Depth removal already had its quantizer gate: `planner.depth_removal_min_quantizer`.
-  - AV1 reads the gates per block. They swap with the light-superblock settings.
-- **Fixed-QP lens** (the 12 AOM CTC sequences, Weighted against x264 medium; box runs,
-  `~/nanocodec-data/work/av1-av2-speed/lens`):
+- **Gates landed** (6d4d2c636; streams identical at the defaults).
+  - Types `nc_encoder::{GateInput, GateParams, WorkGate}`. A cheap path is taken from a relative
+    quantizer up, or below it where the error per sample is under `max_energy` squared steps.
+    The energy half has no registered parameter yet.
+  - Registered parameters: `gate.partial_transform_min_quantizer` and
+    `gate.tx_split_skip_min_quantizer`.
+  - In AV1 the gates swap with the light-superblock settings.
+- **Fixed-QP lens** (12 AOM CTC sequences, Weighted vs x264 medium, box runs;
+  `~/nanocodec-data/work/av1-av2-speed/lens`). "Re-pointed Fast" (RF) is Fast with the
+  Default's depth and full forward.
 
   | Point | Weighted |
   |---|---:|
-  | Fast before | +1.6 |
-  | Fast + Default depth + full forward ("step 1") | −6.5 |
-  | Gates at 0.78, no transform split | −6.2 |
-  | Gates at 0.74 | −5.8 |
-  | Gates at 0.82 | −6.2 |
-  | Gates at 0.86 | −6.6 |
-  | Gates at 0.78 + split trial below 0.70 | −7.9 |
-  | Gates at 0.82 + split trial below 0.70 | −7.9 |
+  | Fast | +1.6 |
+  | RF | −6.5 |
+  | Depth and partial forward gated at relative quantizer 0.78 | −6.2 |
+  | The same at 0.86 | −6.6 |
+  | RF + deblocking | −9.2 |
+  | RF + split trial (gate 0.7, `av1.inter_tx_split_energy` 1) | −7.7 |
+  | RF + deblocking + that split | −10.4 |
 
-  "Gates at q" means depth removal 25/50 and the partial forward only from relative quantizer
-  q. On this lens the quantizer gate gives the same efficiency as removing the levers outright.
-
-- **c8a timing** (one core, median of 3 rounds after a warm-up, plain release at 6d4d2c636):
-  - Fixed QP: four CTC sequences, qindex 160 and 210, 130 frames.
-  - CBR: 600 kbps, crowd and lowlight, 150 frames.
+- **c8a timing** (one core, median of 3 rounds after a warm-up):
+  - Fixed QP: four CTC sequences, qindex 160 and 210.
+  - CBR: 600 kbps on crowd and lowlight.
 
   | Point | fps fixed QP | fps CBR 600 |
   |---|---:|---:|
-  | AV1 Fast before | 311 | 326 |
-  | Step 1 | 255 | 297 |
+  | Fast | 311 | 326 |
+  | RF | 255–256 | 297–298 |
   | Gates 0.78 | 262 | 306 |
-  | Gates 0.78 + split below 0.70 | 233 | 290 |
-  | AV1 Default | 153 | 180 |
-  | SVT M12 | 355 | — |
-  | SVT M10 | 216 | — |
+  | RF + deblocking | 242 | 278 |
+  | RF + deblocking + split | 231 | 274 |
+  | Default | 153 | 180 |
+  | SVT M12 | 355–362 | — |
+  | SVT M10 | 216–219 | — |
 
-- **CBR pool levels against the previous Fast** (draw 2026-11-16):
-  - Step 1: L1 −4.36 %, L2 −2.95 %, L3 J −3.95 % [−4.59, −3.25] BETTER, no guard at L3.
-  - Gates 0.78 + split below 0.70: L3 J −3.97 % [−4.77, −3.16] BETTER. It missed two guards: rate
-    overshoot on 5 more rungs than the anchor (static clips, split trials at fine quantizers), and
-    flicker +0.07 dB against 0.05.
-- **Landed: step 1 as AV1 Fast.**
-- **Next:** screen the gated points against the new Fast: gates 0.78 without split (CBR +3 % fps
-  over step 1 at −6.2), and a split gate that does not overshoot.
+- **CBR pool screens** (draw 2026-11-16):
+  - RF vs Fast: L3 J −3.95 % [−4.59, −3.25] BETTER.
+  - Gates 0.78 vs RF: +0.30 % [−0.01, +0.60], equal.
+  - RF + split at 0.7 vs Fast: J −3.97 % BETTER, but two guards missed: rate overshoot on 5
+    rungs and flicker +0.07.
+  - RF + deblocking + split vs RF: J −2.99 %, WORSE on the periodic-key pulse (+1.00 dB) and on
+    the ceiling (+1.69 % over target).
+- **RF landed and was reverted** (5e21b7a80, reverted by ab5c67dff). The bundle final-check (600
+  frames, keys every 10 s) gave J −6.37 % [−7.51, −5.17] but WORSE on the periodic-key pulse:
+  worst clip +1.51 dB, all static clips (otw_homes_00004, chad_4_109, meva_school330,
+  london_bus). The P frames got better; the DC-only key frames did not.
+- **Open:**
+  - Why the pulse grows that much is not measured. Next test: RF with the Default's key intra
+    set (`av1.keyframe_*`; −2.1 Weighted on its own in the diagnosis) through the same
+    final-check.
+  - Why the split trial overshoots in CBR is not known.
 
 ## Assigned 2026-11-16 09:10
 
@@ -201,6 +212,37 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - **Lens:** Fast with Default depth + full forward −6.5. Gated from quantizer 0.78: −6.2. Plus
     the split trial below 0.7: −7.9.
   - **CBR pool screen of the first:** L1 J −4.36 %, L2 −2.95 %; L3 running.
+
+- **New AV1 Fast landed** (5e21b7a80): lens Weighted +1.6 → −6.5; CBR L3 J −3.95 %; c8a about
+  255 fps at fixed QP.
+- **Zen 5 session 2** (light pipeline, c8a). Weighted / J against x264 medium:
+
+  | Point | fps | Weighted | J |
+  |---|---:|---:|---:|
+  | M12 | 349 | −1.5 | −10.4 |
+  | Fast-base rf 0.25 | 235 | −3.3 | −17.3 |
+  | M10 | 210 | −14.2 | −19.5 |
+  | Fast-base rf 0.5 | 207 | −7.1 | −18.8 |
+  | Default + light bundle rf 0.25 | 174 | −14.5 | −24.0 |
+  | Default | 152 | −17.9 | −26.0 |
+
+  - **Weighted:** nothing beats M10 yet.
+  - **J:** we are about level with M10 at its speed.
+  - **Frame-level filter gate (S5, 7c2b840cf):** at most +5 % speed on Default, so deblock/CDEF
+    is not where Default's time goes.
+  - **Next:** stage-by-stage profile of Default rf 0 against Fast.
+- **Astra:** AVX-512 ICL/GFNI deblocking, shared by AV1, AV2 and VP9 (bb69841d2), 532/532 streams
+  verified.
+
+- **Where Default rf 0 still loses to Fast** (callgrind, lowlight, 130 f, one key): 2.15 G
+  instructions in all. **The key frame is 1.2 G (56 %)**: Default's key intra set and planner leaf
+  cost; key frames are always regular. P frames are 0.94 G: deblock, more second-reference
+  decisions (`structure.unified` with `refs.second_full`), and mode decision.
+- **c8a session 3:** Fast-base rf 0.25 + deblock + filter gates runs at 228 fps, J −19.9. That
+  beats M10 (213 fps, −19.5 J) **in J** on the lens. CBR is not screened yet. Its Weighted is
+  −9.4 against M10's −14.2.
+- **Next:** key-frame superblock classes (`effort.key_regular_fraction`, a spatial proxy), then the
+  second-reference trial as a light lever, then a joint tune and the CBR screens.
 
 ## Next decision points
 

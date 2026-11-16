@@ -39,11 +39,13 @@ mod diff;
 mod dispatch;
 pub mod display;
 mod edge;
+mod end_of_block;
 mod gram;
 mod h264_intra;
 mod hevc_intra;
 mod hevc_weight;
 mod high_depth;
+mod intra_estimate;
 mod intra_runs;
 #[cfg(any(
     target_arch = "x86_64",
@@ -77,6 +79,7 @@ mod vp9_mc_simd;
 mod vp9_quant;
 mod vp9_txfm;
 pub use edge::emulate_edges;
+pub use end_of_block::eob_table;
 pub use gram::{
     GRAM_MAX_MAGNITUDE, GRAM_MAX_ROWS, GRAM_ROW_ALIGN, GRAM_ROW_MAX_LEN, gram_index, gram_terms,
 };
@@ -88,6 +91,7 @@ pub use hevc_weight::HevcWeights;
 pub use high_depth::av1::{Av1Coefficient, Av1Pixel};
 pub use high_depth::vp9::{Vp9Passes, Vp9Pixel};
 pub use high_depth::{DepthKernels, H264Pixel, Pixel};
+pub use intra_estimate::{ESTIMATE_EDGE_LEN, ESTIMATE_MAX_SIDE, EstimateStats};
 pub use vp9_deblock::{Vp9FilterLimits, Vp9FilterWidth, vp9_filter_edge};
 pub use vp9_intra::{Vp9IntraEdges, Vp9IntraMode};
 pub use vp9_mc::{

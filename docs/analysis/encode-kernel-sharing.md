@@ -180,7 +180,9 @@ kernels only.
 | `nc_av2::transform::{dequantize,reconstruct_into}` | 0.5, 0.8 | dequantise | AV1 `dequantize` with pre-round |
 | `nc_vp9::recon::ResidualBuffers::add_residual` | 2.8 / 2.5 | add and clip | `Dsp::add_residual` |
 | `nc_vp9::transform::{quantize,forward}` | 0.7 / 0.5, 1.1 / 0.6 | quantise, hybrid forward | `vp9_quant`/AV1 quantiser; AV1 forward lanes |
-| `nc_vvc::coeff::walk_sized`, `last_significant` | 3.6 / 5.5, 1.6 | scan statistics | new shared kernel: last nonzero in scan, nonzero count, level-magnitude classes, fed by codec scan tables |
+| `nc_av1::backend::quantized_eob` | 1.6 (crowd) | end of block | **Done** (2026-11-16): shared `Dsp::end_of_block` over the codec's `eob_table` (scan index + 1 per raster position; libaom/SVT `iscan`); AVX2 16, AVX-512 32, NEON/SIMD128 8 levels a step. AV1 Default -1.8 % instructions |
+| `nc_encoder::intra_estimate::estimate` | 1.0 (AV1 crowd) | sums, squares, four directional SSEs over every other row and column | **Done** (2026-11-16): `Dsp::intra_estimate_stats` (even samples by low-byte mask or `uzp1`; `vpmaddwd`, `umull`+`uadalp`, `dot`) |
+| `nc_vvc::coeff::walk_sized`, `last_significant` | 3.6 / 5.5, 1.6 | scan statistics | `Dsp::end_of_block_wide` (i32 levels, with the OR of magnitudes) is in place for AV2 (`coeff/levels.rs` still has its own inverse-scan pass) and VVC; last nonzero in scan, nonzero count, level-magnitude classes, fed by codec scan tables |
 | `nc_av2::coeff::levels::base_context` | 1.4 / 1.8 | neighbour magnitude context | same scan-statistics kernel (context tables stay in the codec) |
 | `nc_hevc::backend::intra_refs`, `nc_hevc::predict::oriented` | 1.6 / 1.8, 1.5 / 1.9 | reference build/substitute/filter, angular | `hevc_intra` angular kernel + shared [1 2 1] filter (section 4) |
 | `nc_av2::intra_edges::predict` | 1.8 / 2.3 | edge preparation + directional | shared run2/run4 (section 4) |
@@ -200,6 +202,22 @@ kernels only.
 | 8 | Add-and-clip and SSE kernels to one each; codec-crate loops onto them | VP9 2.8 and others | VP9/VVC reconstruction onto `add_residual`/`add_constant` landed; SSE kernels to do |
 | 9 | HEVC/VVC short luma deblock and the chroma delta core | HEVC 1.7, VVC 2-3 | planned |
 | 10 | VVC/HEVC planar (landed), H.264/VP9 diagonal rows, AV2 Paeth onto AV1 | small | planar landed; rest planned |
+
+## Merge log (callgrind, release builds, Default, crowd 720p, 30 frames, chart QPs)
+
+| Change | H.264 | HEVC | VVC | VP9 | AV1 | AV2 |
+|---|---|---|---|---|---|---|
+| Quantiser, intra runs, VVC planar, reconstruction adds, fixes (vs `d155dee64`) | 0.00 | +0.77 | -1.10 | +0.03 | +0.15 | -0.07 |
+| + HEVC/VVC MC on the AV1 AVX2 kernel, run2 fixed lengths, 256-bit planar (vs `d155dee64`) | -0.05 | -6.25 | -3.93 | +0.02 | +0.12 | +0.05 |
+| + end of block and intra estimate kernels (vs the line above) | +0.16 (`intra_or_inter` no longer inlined) | -0.35 | -0.04 | +0.02 | -2.02 | 0.00 |
+| Same, rebased on `3df562c10` (whose AV1 end of block was a codec-local auto-vectorised pass; vs that head) | +0.17 | -0.37 | | | -0.32 | |
+
+Streams byte-identical at every step (`preset_identity`, all six codecs).
+
+Not moved into kernels (2026-11-16), with the reason: `nc_analysis::noise::update` is a
+selection over the block grid (bucket counts and `select_nth`), not pixel arithmetic;
+`preanalysis::analyze` and `zero_residual` already call `sad_quads_8x8_row` and
+`variance_8x8_row`, and their remaining self cost is per-block classification glue.
 
 ## Hot kernels still on 128-bit lanes (AVX2 tier)
 

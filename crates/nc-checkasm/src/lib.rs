@@ -53,6 +53,7 @@ mod check_high_depth;
 mod check_raster_dct;
 #[cfg(all(target_arch = "wasm32", target_feature = "relaxed-simd"))]
 mod check_relaxed_dot;
+mod check_scan_stats;
 mod check_sub_blocks;
 mod check_vp9_filter;
 mod check_vp9_intra;

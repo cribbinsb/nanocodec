@@ -23,6 +23,8 @@
 //! - [`nal`]: Annex-B NAL unit framing with emulation prevention (H.264/HEVC).
 //! - [`cabac`]: the CABAC arithmetic decoding engine (H.264/HEVC, and H.266
 //!   with its own probability model).
+//! - [`cabac_encoder`]: the CABAC arithmetic encoding engine of the HEVC
+//!   and H.266 encoders.
 //! - [`ColourInfo`]: colour signalling (CICP code points, range).
 //! - `stream_stats` (feature `analysis`): coding-tool records decoders
 //!   can fill.
@@ -33,6 +35,7 @@
 mod aligned;
 mod bitwriter;
 pub mod cabac;
+pub mod cabac_encoder;
 pub mod colour;
 pub mod decode;
 mod error;

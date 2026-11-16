@@ -141,9 +141,11 @@ Copyright (c) 2021, Tampere University, ITU/ISO/IEC, project contributors.
 All rights reserved.
 Source: https://github.com/ultravideo/kvazaar (v2.3.2, commit 1f11f9a).
 
+Used in `crates/nc-common`: `src/cabac_encoder.rs`, the CABAC arithmetic
+encoding engine shared by the HEVC and H.266 encoders.
+
 Used in `crates/nc-hevc`:
-- `src/cabac.rs`: the CABAC encoder engine and its state transition and
-  `rangeTabLps` tables.
+- `src/cabac.rs`: the state transition and `rangeTabLps` tables.
 - `src/contexts.rs`: context initialisation values for I slices.
 - `src/residual.rs`: the structure of `residual_coding()` and its context
   selection.
@@ -733,8 +735,8 @@ and `sao.rs` (edge-offset signalling).
 `nc-dsp/src/codec_txfm/vvc_forward_narrow.rs` follows its rectangular pass
 scaling while reusing our exact HEVC line graphs for narrow strips. Reimplemented as a restricted
 native Rust codec; VVenC is not linked or called by the encoder. The arithmetic
-byte-output machinery in `cabac.rs` is adapted from our kvazaar-derived HEVC
-coder under the BSD-3-Clause notice above. VVdeC is also a syntax reference for decoder
+coder is the kvazaar-derived engine shared with HEVC (`nc-common`
+`cabac_encoder.rs`, under the BSD-3-Clause notice above). VVdeC is also a syntax reference for decoder
 header parsing (see below).
 
 > The Clear BSD License

@@ -32,7 +32,7 @@ use crate::cdf::CdfContext;
 use crate::cfl::ChromaFromLuma;
 use crate::coeff::trellis::{RateModel, TrellisQuantizer};
 use crate::coeff::{
-    CoeffCdfs, PlaneType, TxbContext, coefficient_scan, end_of_block_in_prefix, entropy_context,
+    CoeffCdfs, PlaneType, TxbContext, coefficient_scan, entropy_context, eob_table,
 };
 use crate::grain::{GrainParams, GrainState};
 use crate::inter;
@@ -129,9 +129,6 @@ const DELTA_Q_MIN: i32 = -64;
 const DELTA_Q_MAX: i32 = 63;
 /// `angle_delta_y` symbols: deltas −3..=3.
 const ANGLE_DELTA_SYMBOLS: usize = 2 * MAX_ANGLE_DELTA as usize + 1;
-/// Selects equivalent forward/reverse EOB scans for sparse coefficient blocks.
-/// This TRAIN-derived speed cutoff changes scan work, never encoding decisions.
-const SPARSE_EOB_MAX_NONZERO: u32 = 8;
 
 /// How an inter block's vector is signalled (AV1 `YMode` of inter blocks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3180,7 +3177,7 @@ impl Av1Backend {
         let original = &mut scratch.original_coefficients[..coded_area];
         forward_dct_with(&self.dsp, policy, tx, &scratch.residual, n, original);
         let nonzero = quantize_coded_from(&self.dsp, policy, tx, original, &quantizer, levels);
-        let eob = quantized_eob(tx, levels, nonzero, policy);
+        let eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
         let plane_type = if plane == PlaneIndex::Y {
             PlaneType::Luma
         } else {
@@ -3615,7 +3612,7 @@ impl Av1Backend {
                 }
             };
             let levels = &mut scratch.tree_levels[offset..offset + coded_area];
-            let mut eob = quantized_eob(tx, levels, nonzero, policy);
+            let mut eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
             if eob > 0 {
                 eob = mds3::shave_trailing_ones(
                     coefficient_scan(tx),
@@ -4558,7 +4555,7 @@ impl Av1Backend {
             return uncoded;
         }
 
-        let mut eob = quantized_eob(tx, levels, nonzero, policy);
+        let mut eob = quantized_eob(&self.dsp, tx, levels, nonzero, policy);
         if inter && eob > 0 {
             eob = mds3::shave_trailing_ones(
                 coefficient_scan(tx),
@@ -5226,7 +5223,7 @@ fn trellis_quantize(
     levels: &mut [i16],
 ) -> u32 {
     let nonzero = dsp.av1_quantize_from(coeffs, quantizer, levels);
-    let eob = quantized_eob(tx, levels, nonzero, policy);
+    let eob = quantized_eob(dsp, tx, levels, nonzero, policy);
     if eob == 0 {
         return 0;
     }
@@ -5252,28 +5249,23 @@ fn trellis_quantize(
 
 /// End of block of `levels` with `nonzero` nonzero levels, quantised from
 /// a forward transform under `policy` (so zero past its
-/// [`ForwardPolicy::coded_prefix`]). Sparse AC blocks usually end near the
-/// start of the scan: the quantizer's exact count tells us when every
-/// nonzero was found; denser blocks take one vectorized pass over the
-/// prefix (a walk back through the scan instead cost 0.6% more AV1 Default
-/// instructions, callgrind 2026-11-16).
-fn quantized_eob(tx: TxSize, levels: &[i16], nonzero: u32, policy: ForwardPolicy) -> usize {
+/// [`ForwardPolicy::coded_prefix`]): the shared end-of-block kernel over
+/// the scan's table (`Dsp::end_of_block`) on the prefix, after the exact
+/// shortcuts for an empty or DC-only block.
+fn quantized_eob(
+    dsp: &Dsp,
+    tx: TxSize,
+    levels: &[i16],
+    nonzero: u32,
+    policy: ForwardPolicy,
+) -> usize {
     if nonzero == 0 {
         0
     } else if nonzero == 1 && levels[0] != 0 {
         1
-    } else if nonzero <= SPARSE_EOB_MAX_NONZERO {
-        let mut remaining = nonzero;
-        coefficient_scan(tx)
-            .iter()
-            .position(|&pos| {
-                remaining -= u32::from(levels[usize::from(pos)] != 0);
-                remaining == 0
-            })
-            .expect("quantizer count matches the coefficient levels")
-            + 1
     } else {
-        end_of_block_in_prefix(tx, levels, policy.coded_prefix(tx))
+        let prefix = policy.coded_prefix(tx);
+        dsp.end_of_block(&levels[..prefix], &eob_table(tx)[..prefix])
     }
 }
 

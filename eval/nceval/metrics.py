@@ -433,7 +433,6 @@ class VmafV1DisplayMetric:
 
     Two ffmpeg upscalers (reference prefix from the clip; distorted frames
     from our stdin) feed libvmaf through anonymous pipes named /dev/fd/N.
-    The upscale command is exactly `vmaf_v1_display_copy`'s.
     """
 
     cpu_threads = VMAF_V1_DISPLAY_SLOT_WEIGHT
@@ -894,25 +893,3 @@ def _parse_vmaf_v1_report(data: dict) -> Measurement:
     return Measurement({"vmaf_v1": float(data["pooled_metrics"]["vmaf_v1"]["mean"])},
                        [{"vmaf_v1": float(f["metrics"]["vmaf_v1"])} for f in frames])
 
-
-def vmaf_v1_display_copy(source: Path, fmt: YuvFormat, dest: Path, paths: Paths) -> None:
-    """The v1 display-geometry 10-bit copy of `source`, as a file.
-
-    Only for callers that still keep display files (nceval.cbr); the point
-    pipeline pipes the same command instead (`VmafV1DisplayMetric`).
-    """
-    subprocess.run(_display_upscale_command(str(source), fmt, paths, str(dest)),
-                   stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True)
-
-
-def vmaf_v1_score(reference_display: Path, distorted_display: Path, fmt: YuvFormat,
-                  paths: Paths, scratch: Path, subsample: int = 1) -> Measurement:
-    """Score two `vmaf_v1_display_copy` outputs with the pinned v1 model."""
-    out = scratch / f"{distorted_display.stem}.vmaf.json"
-    subprocess.run(_vmaf_v1_command(str(reference_display), str(distorted_display), fmt, paths,
-                                    subsample, out),
-                   stdin=subprocess.DEVNULL, capture_output=True, text=True, check=True)
-    try:
-        return _parse_vmaf_v1(out)
-    finally:
-        out.unlink()

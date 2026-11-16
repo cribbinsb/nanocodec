@@ -7,7 +7,7 @@
 //! below-left samples exist. A block copy is predicted before
 //! ([`super::intrabc`]) and takes only the residual here.
 use super::Tile;
-use super::coefficients::{Residual, TransformInput, tx_type};
+use super::coefficients::{Residual, TransformInput, one_d_name, tx_type};
 use super::context::{self, NO_COEFFICIENTS};
 use super::intra::{IntraModes, LUMA_MAP_SIDE, mode};
 use super::record::BlockRecord;
@@ -296,8 +296,8 @@ impl Tile<'_, '_> {
                 self,
                 depth + 1,
                 "Post-y_cf_blk[tx={tw}x{th},txtp={}/{},eob={}]: r={range}",
-                one_d(residual.tx_type & 7),
-                one_d((residual.tx_type >> 5) & 7),
+                one_d_name(residual.tx_type & 7),
+                one_d_name((residual.tx_type >> 5) & 7),
                 residual.eob.map_or(-1, i32::from)
             );
             Some(residual)
@@ -461,8 +461,8 @@ impl Tile<'_, '_> {
                                 depth + 1,
                                 "Post-{}_cf_blk[tx={tw}x{th},txtp={}/{},eob={}]: r={range}",
                                 ["u", "v"][plane],
-                                one_d(residual.tx_type & 7),
-                                one_d((residual.tx_type >> 5) & 7),
+                                one_d_name(residual.tx_type & 7),
+                                one_d_name((residual.tx_type >> 5) & 7),
                                 residual.eob.map_or(-1, i32::from)
                             );
                             store.residuals[i][plane] = Some(residual);
@@ -595,11 +595,4 @@ fn partition_parts(
         }
     }
     parts
-}
-
-/// dav2d `dav2d_tx1d_names` (for traces).
-fn one_d(kind: u16) -> &'static str {
-    [
-        "dct", "identity", "adst", "flipadst", "ddt", "flipddt", "wht", "?",
-    ][usize::from(kind & 7)]
 }

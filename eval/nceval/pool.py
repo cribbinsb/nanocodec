@@ -230,12 +230,3 @@ def rotated(clip: Clip, key: str, frames: int) -> Clip:
 
 def _seed(*parts: str) -> int:
     return int.from_bytes(hashlib.sha256("\0".join(parts).encode()).digest()[:8], "big")
-
-
-def pool_summary(pool: list[Clip]) -> str:
-    """Pool size by stratum and family count (for the docs and --help)."""
-    lines = []
-    for name in STRATA:
-        members = [c for c in pool if stratum(c) == name]
-        lines.append(f"{name}: {len(members)} clips, {len({c.family for c in members})} families")
-    return "; ".join(lines)

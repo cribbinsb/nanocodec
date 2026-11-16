@@ -1606,8 +1606,9 @@ fn parity_context(levels: &[i8], class: u16, stride: usize) -> usize {
     }
 }
 
-/// dav2d `dav2d_tx1d_names` of a 1-D type (for traces).
-fn one_d_name(kind: u16) -> &'static str {
+/// dav2d `dav2d_tx1d_names` of a 1-D type (for traces; reconstruction's
+/// traces use it too).
+pub(super) fn one_d_name(kind: u16) -> &'static str {
     [
         "dct", "identity", "adst", "flipadst", "ddt", "flipddt", "wht", "?",
     ][usize::from(kind & 7)]

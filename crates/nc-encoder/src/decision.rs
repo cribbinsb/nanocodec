@@ -1273,7 +1273,7 @@ fn intra_or_inter<B: CodecBackend>(
         if params.intra_directional >= 0.5
             && let Some(cost) = directional_intra_cost(
                 backend,
-                source,
+                (measurer.dsp, source),
                 block,
                 (lambda, mode_bits),
                 params,
@@ -1306,7 +1306,7 @@ fn intra_or_inter<B: CodecBackend>(
 #[inline(never)]
 fn directional_intra_cost<B: CodecBackend>(
     backend: &B,
-    source: &Picture,
+    (dsp, source): (&Dsp, &Picture),
     block: &Block,
     (lambda, mode_bits): (f32, f32),
     params: &DecisionParams,
@@ -1322,6 +1322,7 @@ fn directional_intra_cost<B: CodecBackend>(
         return None;
     }
     let estimate = intra_estimate::estimate(
+        dsp,
         source.plane(PlaneIndex::Y),
         (block.x, block.y),
         block.width(),

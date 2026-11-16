@@ -110,6 +110,7 @@ pub fn check(isa: Isa, seed: u64, iterations: usize) -> Option<CheckReport> {
     crate::check_raster_dct::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_av2_typed::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vp9_quant::check(&candidate, &reference, &mut rng, &mut report);
+    crate::check_scan_stats::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vvc::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_gram::check(&candidate, &reference, &mut rng, &mut report);
     crate::check_vvc_angular::check(&candidate, &reference, &mut rng, &mut report);

@@ -7,6 +7,7 @@
 //! longer reach them.
 
 use nc_common::BitWriter;
+use nc_common::cabac_encoder::CabacEncoder;
 
 /// Probability states of a context (`pStateIdx`, HEVC §9.3.2.2).
 const PROBABILITY_STATES: usize = 64;
@@ -143,82 +144,35 @@ impl BinSink for CabacWriter {
     }
 }
 
-/// Bits kept free below the output window when the encoder starts.
-const INITIAL_BITS_LEFT: i32 = 23;
-/// Output a byte once fewer than this many free bits remain.
-const BITS_LEFT_REFILL: i32 = 12;
-/// Initial `ivlCurrRange` (HEVC §9.3.5.2).
-const INITIAL_RANGE: u32 = 510;
-/// Renormalisation is needed while the range is below this.
-const RANGE_RENORM: u32 = 256;
-
-/// Encodes bins into one slice segment's `slice_segment_data()`.
-#[derive(Debug)]
-pub struct CabacWriter {
-    /// Completed bytes. `slice_segment_data()` starts byte-aligned and the
-    /// arithmetic coder emits whole bytes, so they are pushed directly
-    /// rather than bit by bit through a [`BitWriter`].
-    bytes: Vec<u8>,
-    low: u32,
-    range: u32,
-    bits_left: i32,
-    /// Completed bytes not yet written: the first is `buffered_byte`, the
-    /// rest are `0xff` (only their count is kept).
-    num_buffered_bytes: u32,
-    buffered_byte: u32,
-}
-
-impl Default for CabacWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Encodes bins into one slice segment's `slice_segment_data()`: the
+/// shared engine ([`CabacEncoder`]) with HEVC's 64-state model.
+#[derive(Debug, Default)]
+pub struct CabacWriter(CabacEncoder);
 
 impl CabacWriter {
     /// A fresh encoder (HEVC §9.3.5.2).
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            bytes: Vec::new(),
-            low: 0,
-            range: INITIAL_RANGE,
-            bits_left: INITIAL_BITS_LEFT,
-            num_buffered_bytes: 0,
-            buffered_byte: 0xff,
-        }
+        Self(CabacEncoder::new())
     }
 
     /// Encode one context-coded bin (`EncodeDecision`, HEVC §9.3.5.3).
     pub fn encode_bin(&mut self, ctx: &mut Context, bin: bool) {
-        let lps = u32::from(RANGE_TAB_LPS[ctx.state()][((self.range >> 6) & 3) as usize]);
-        self.range -= lps;
-        if bin == ctx.mps() {
-            ctx.0 = NEXT_STATE_MPS[usize::from(ctx.0)];
-            if self.range >= RANGE_RENORM {
-                return;
-            }
-            self.low <<= 1;
-            self.range <<= 1;
-            self.bits_left -= 1;
+        let lps = u32::from(RANGE_TAB_LPS[ctx.state()][((self.0.range() >> 6) & 3) as usize]);
+        let mps = bin == ctx.mps();
+        ctx.0 = if mps {
+            NEXT_STATE_MPS[usize::from(ctx.0)]
         } else {
-            let shift = RENORM_SHIFT[(lps >> 3) as usize];
-            self.low = (self.low + self.range) << shift;
-            self.range = lps << shift;
-            ctx.0 = NEXT_STATE_LPS[usize::from(ctx.0)];
-            self.bits_left -= i32::from(shift);
-        }
-        self.flush_if_needed();
+            NEXT_STATE_LPS[usize::from(ctx.0)]
+        };
+        self.0.encode_decision(lps, mps);
     }
 
     /// Run `code` (e.g. one block's `residual_coding()`) on a local copy of
-    /// the coder, then store it back: the registers of a coder reached
-    /// through a reference stay in memory (loaded and stored around every
-    /// bin), a local coder's do not (as nc-h264's `BinSink::code_run`).
+    /// the coder, then store it back ([`CabacEncoder::take`]; as nc-h264's
+    /// `BinSink::code_run`).
     pub fn with_local<R>(&mut self, code: impl FnOnce(&mut Self) -> R) -> R {
-        let mut local = Self {
-            bytes: std::mem::take(&mut self.bytes),
-            ..*self
-        };
+        let mut local = Self(self.0.take());
         let output = code(&mut local);
         *self = local;
         output
@@ -227,102 +181,23 @@ impl CabacWriter {
     /// Encode equiprobable bins (`EncodeBypass`, HEVC §9.3.5.5): the
     /// `count` low bits of `value`, most significant first.
     pub fn encode_bypass(&mut self, value: u32, count: u32) {
-        let mut remaining = count;
-        while remaining > 0 {
-            let chunk = remaining.min(8);
-            remaining -= chunk;
-            let bits = (value >> remaining) & ((1 << chunk) - 1);
-            self.low = (self.low << chunk) + self.range * bits;
-            self.bits_left -= chunk as i32;
-            self.flush_if_needed();
-        }
+        self.0.encode_bypass(value, count);
     }
 
     /// Encode a terminating bin (`EncodeTerminate`, HEVC §9.3.5.6), e.g.
     /// `end_of_slice_segment_flag`.
     pub fn encode_terminate(&mut self, bin: bool) {
-        self.range -= 2;
-        if bin {
-            self.low += self.range;
-            self.low <<= 7;
-            self.range = 2 << 7;
-            self.bits_left -= 7;
-        } else if self.range >= RANGE_RENORM {
-            return;
-        } else {
-            self.low <<= 1;
-            self.range <<= 1;
-            self.bits_left -= 1;
-        }
-        self.flush_if_needed();
+        self.0.encode_terminate(bin);
     }
 
     /// Flush the encoder after the terminating bin of the slice segment
     /// (`EncodeFlush`, HEVC §9.3.5.6) and return the bits written. The
     /// caller appends `rbsp_slice_segment_trailing_bits()`.
     #[must_use]
-    pub fn finish(mut self) -> BitWriter {
-        if self.low >> (32 - self.bits_left) != 0 {
-            self.put_byte(self.buffered_byte + 1);
-            while self.num_buffered_bytes > 1 {
-                self.put_byte(0);
-                self.num_buffered_bytes -= 1;
-            }
-            self.low -= 1 << (32 - self.bits_left);
-        } else {
-            if self.num_buffered_bytes > 0 {
-                self.put_byte(self.buffered_byte);
-            }
-            while self.num_buffered_bytes > 1 {
-                self.put_byte(0xff);
-                self.num_buffered_bytes -= 1;
-            }
-        }
-        let bits = (24 - self.bits_left) as u32;
-        let mut out = BitWriter::new();
-        out.put_bytes(&self.bytes);
-        out.put_bits(self.low >> 8, bits);
-        out
-    }
-
-    fn flush_if_needed(&mut self) {
-        if self.bits_left < BITS_LEFT_REFILL {
-            self.write_byte();
-        }
-    }
-
-    /// Move the top completed byte out of `low`, resolving carries.
-    fn write_byte(&mut self) {
-        let lead = self.low >> (24 - self.bits_left);
-        self.bits_left += 8;
-        self.low &= u32::MAX >> self.bits_left;
-        if lead == 0xff {
-            self.num_buffered_bytes += 1;
-        } else if self.num_buffered_bytes > 0 {
-            let carry = lead >> 8;
-            let byte = self.buffered_byte + carry;
-            self.buffered_byte = lead & 0xff;
-            self.put_byte(byte);
-            let filler = (0xff + carry) & 0xff;
-            while self.num_buffered_bytes > 1 {
-                self.put_byte(filler);
-                self.num_buffered_bytes -= 1;
-            }
-        } else {
-            self.num_buffered_bytes = 1;
-            self.buffered_byte = lead;
-        }
-    }
-
-    fn put_byte(&mut self, byte: u32) {
-        self.bytes.push((byte & 0xff) as u8);
+    pub fn finish(self) -> BitWriter {
+        self.0.finish()
     }
 }
-
-/// Renormalisation shift after an LPS, indexed by `rangeLps >> 3`.
-const RENORM_SHIFT: [u8; 32] = [
-    6, 5, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-];
 
 /// Next state after an MPS, indexed by `(pStateIdx << 1) | valMps`.
 #[rustfmt::skip]
@@ -422,6 +297,7 @@ pub(crate) const RANGE_TAB_LPS: [[u8; 4]; 64] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nc_common::cabac::CabacReader;
 
     #[test]
     fn bit_table_is_the_model() {
@@ -446,77 +322,6 @@ mod tests {
         // initValue 139 at QP 30: slope -5, offset 72, preCtxState
         // ((-5 * 30) >> 4) + 72 = 62 < 64, so valMps 0 and pStateIdx 1.
         assert_eq!(Context::new(139, 30), Context(1 << 1));
-    }
-
-    /// A minimal CABAC decoder (HEVC §9.3.4.3), for round-trip tests only.
-    struct Decoder<'a> {
-        data: &'a [u8],
-        pos: usize,
-        range: u32,
-        offset: u32,
-    }
-
-    impl<'a> Decoder<'a> {
-        fn new(data: &'a [u8]) -> Self {
-            let mut d = Self {
-                data,
-                pos: 0,
-                range: INITIAL_RANGE,
-                offset: 0,
-            };
-            d.offset = (0..9).fold(0, |v, _| (v << 1) | d.bit());
-            d
-        }
-
-        fn bit(&mut self) -> u32 {
-            let byte = self.data.get(self.pos / 8).copied().unwrap_or(0);
-            let b = u32::from(byte >> (7 - self.pos % 8)) & 1;
-            self.pos += 1;
-            b
-        }
-
-        fn decision(&mut self, ctx: &mut Context) -> bool {
-            let lps = u32::from(RANGE_TAB_LPS[ctx.state()][((self.range >> 6) & 3) as usize]);
-            self.range -= lps;
-            let bin = if self.offset >= self.range {
-                self.offset -= self.range;
-                self.range = lps;
-                let bin = !ctx.mps();
-                ctx.0 = NEXT_STATE_LPS[usize::from(ctx.0)];
-                bin
-            } else {
-                ctx.0 = NEXT_STATE_MPS[usize::from(ctx.0)];
-                ctx.mps()
-            };
-            while self.range < RANGE_RENORM {
-                self.range <<= 1;
-                self.offset = (self.offset << 1) | self.bit();
-            }
-            bin
-        }
-
-        fn bypass(&mut self) -> bool {
-            self.offset = (self.offset << 1) | self.bit();
-            if self.offset >= self.range {
-                self.offset -= self.range;
-                true
-            } else {
-                false
-            }
-        }
-
-        fn terminate(&mut self) -> bool {
-            self.range -= 2;
-            if self.offset >= self.range {
-                true
-            } else {
-                while self.range < RANGE_RENORM {
-                    self.range <<= 1;
-                    self.offset = (self.offset << 1) | self.bit();
-                }
-                false
-            }
-        }
     }
 
     #[test]
@@ -561,10 +366,11 @@ mod tests {
         let bytes = bits.into_bytes();
 
         let mut dec_ctx: Vec<Context> = inits.iter().map(|&i| Context::new(i, 32)).collect();
-        let mut dec = Decoder::new(&bytes);
+        // The decoders' shared engine reads it back.
+        let mut dec = CabacReader::new(&bytes, 0).expect("a coded stream");
         for (kind, a, b) in ops {
             match kind {
-                0 => assert_eq!(u32::from(dec.decision(&mut dec_ctx[a as usize])), b),
+                0 => assert_eq!(u32::from(dec.decision(&mut dec_ctx[a as usize].0)), b),
                 1 => {
                     let v = (0..a).fold(0, |v, _| (v << 1) | u32::from(dec.bypass()));
                     assert_eq!(v, b);
