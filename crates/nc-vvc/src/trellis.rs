@@ -656,7 +656,7 @@ impl TrellisQuant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coeff::{Bins, code_rect};
+    use crate::coeff::{Bins, emit_rect};
     use crate::contexts::Context;
 
     /// Prices bins at the context states as they stand, as the model does.
@@ -711,7 +711,14 @@ mod tests {
                     }
                     let contexts = CoeffContexts::new(32, true);
                     let mut cost = StaticCost::default();
-                    code_rect(&mut cost, &mut contexts.clone(), &levels, size, ch).unwrap();
+                    emit_rect(
+                        &mut cost,
+                        &mut contexts.clone(),
+                        &nc_dsp::Dsp::new(),
+                        &levels,
+                        size,
+                        ch,
+                    );
                     // `code` charges a sign per level; hidden ones save it.
                     let hidden = hidden_signs(&levels, size) as f32;
                     let decided = Decided::default();

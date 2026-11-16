@@ -210,6 +210,8 @@ fn bench_codec(dsp: &Dsp, isa: Isa, src: &[u8], rf: &[u8], results: &mut Vec<Ben
         push("av1_smooth_2d", size, predict(Filter::Av1Smooth, 5, 9));
         push("av1_sharp_2d", size, predict(Filter::Av1Sharp, 5, 9));
         push("hevc_luma_2d", size, predict(Filter::HevcLuma, 1, 2));
+        push("hevc_luma_h", size, predict(Filter::HevcLuma, 1, 0));
+        push("hevc_luma_v", size, predict(Filter::HevcLuma, 0, 2));
         push("hevc_chroma_2d", size, predict(Filter::HevcChroma, 3, 5));
         push("h264_luma_j", size, predict(Filter::H264Luma, 2, 2));
         push("h264_luma_f", size, predict(Filter::H264Luma, 2, 1));

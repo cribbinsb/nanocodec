@@ -8,16 +8,7 @@ pub(crate) fn convert_fns() -> ConvertFns {
         deinterleave_uv,
         i420_to_rgba_rows,
         rgba_to_i420,
-        sse_row,
     }
-}
-
-/// Sum of squared differences of two equally long rows (kernel contract).
-pub(crate) fn sse_row(a: &[u8], b: &[u8]) -> u32 {
-    a.iter()
-        .zip(b)
-        .map(|(&x, &y)| u32::from(x.abs_diff(y)).pow(2))
-        .sum()
 }
 
 fn deinterleave_uv(

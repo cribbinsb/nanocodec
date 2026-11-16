@@ -550,7 +550,7 @@ fn luma_cost<const EDGE: usize, const CHAIN: usize, const RUNS: usize>(
         .unwrap();
     let coded = levels.iter().any(|&v| v != 0);
     if coded {
-        crate::coeff::emit(bits, &mut contexts.coeff, levels, n, 0);
+        crate::coeff::emit(bits, &mut contexts.coeff, dsp, levels, n, 0);
     }
     let sse = dsp
         .variance(

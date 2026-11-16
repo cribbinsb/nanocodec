@@ -180,5 +180,4 @@ mod vvc_mts;
 mod vvc_tx64;
 pub use vvc_geo::VvcGeometric;
 
-mod reconstruct;
-pub use reconstruct::Residual16;
+pub use diff::Residual16;

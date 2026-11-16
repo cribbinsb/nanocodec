@@ -18,19 +18,12 @@
 //! clamp. Eight-pixel batches reduce live channel vectors compared with
 //! sixteen: paired V8 SIMD128 timings at 720p improve about 18.5%.
 //!
-//! Row SSE: 16 samples per iteration. `|a - b|` is `max - min` in unsigned
-//! bytes; widened to 16-bit lanes, `dot_i16x8_s` squares and pairs them
-//! (at most `2 * 255^2` per lane). Each 32-bit accumulator lane gains at
-//! most `4 * 255^2` per iteration, so a row of `MAX_SSE_ROW` samples
-//! (4096 iterations) stays below `2^31`; the scalar function takes the tail.
-//!
 //! Kernel contract: see the `convert` module docs.
 
 use core::arch::wasm32::{
-    i8x16_shuffle, i16x8_narrow_i32x4, i32x4_add, i32x4_dot_i16x8, i32x4_extract_lane, i32x4_shr,
-    i32x4_shuffle, i32x4_splat, u8x16_max, u8x16_min, u8x16_narrow_i16x8, u8x16_sub, u16x8_add,
-    u16x8_extend_high_u8x16, u16x8_extend_low_u8x16, u16x8_shr, u16x8_splat, v128, v128_and,
-    v128_load, v128_store, v128_store32_lane, v128_store64_lane,
+    i8x16_shuffle, i16x8_narrow_i32x4, i32x4_add, i32x4_dot_i16x8, i32x4_shr, i32x4_shuffle,
+    i32x4_splat, u8x16_narrow_i16x8, u16x8_add, u16x8_shr, u16x8_splat, v128, v128_and, v128_load,
+    v128_store, v128_store32_lane, v128_store64_lane,
 };
 
 use super::{ConvertFns, bt601_forward, scalar};
@@ -44,43 +37,7 @@ pub(crate) fn convert_fns() -> ConvertFns {
         deinterleave_uv,
         i420_to_rgba_rows: super::to_rgba_simd128::i420_to_rgba_rows,
         rgba_to_i420,
-        sse_row,
     }
-}
-
-/// Samples summed per iteration of the row SSE loop.
-const SSE_STEP: usize = 16;
-
-/// # Safety
-///
-/// Kernel contract (`convert` module docs).
-#[target_feature(enable = "simd128")]
-unsafe fn sse_row(a: &[u8], b: &[u8]) -> u32 {
-    let n = a.len();
-    let simd_width = n - n % SSE_STEP;
-    let mut sums = i32x4_splat(0);
-    for x in (0..simd_width).step_by(SSE_STEP) {
-        // SAFETY: x + 16 <= n = a.len() = b.len() (kernel contract).
-        let (va, vb) = unsafe {
-            (
-                v128_load(a.as_ptr().add(x).cast()),
-                v128_load(b.as_ptr().add(x).cast()),
-            )
-        };
-        let diff = u8x16_sub(u8x16_max(va, vb), u8x16_min(va, vb));
-        let (low, high) = (u16x8_extend_low_u8x16(diff), u16x8_extend_high_u8x16(diff));
-        sums = i32x4_add(sums, i32x4_dot_i16x8(low, low));
-        sums = i32x4_add(sums, i32x4_dot_i16x8(high, high));
-    }
-    let lanes = [
-        i32x4_extract_lane::<0>(sums),
-        i32x4_extract_lane::<1>(sums),
-        i32x4_extract_lane::<2>(sums),
-        i32x4_extract_lane::<3>(sums),
-    ];
-    // Each lane is below 2^31 (module docs), so the casts are exact.
-    let simd_sum: u32 = lanes.iter().map(|&lane| lane as u32).sum();
-    simd_sum + scalar::sse_row(&a[simd_width..], &b[simd_width..])
 }
 
 /// Pixels converted per iteration of the RGBA to I420 loop.

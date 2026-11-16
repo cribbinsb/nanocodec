@@ -194,6 +194,7 @@ impl ForcedFrame {
         syntax::block(
             &mut self.writer,
             &mut self.contexts,
+            &self.dsp,
             (false, 1, crate::headers::Tools::default()),
             &self.grid.predictors(&block, 0).contexts(),
             &syntax::Coding {

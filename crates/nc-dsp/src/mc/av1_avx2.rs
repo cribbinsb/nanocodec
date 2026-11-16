@@ -45,8 +45,9 @@
 )]
 
 use super::{
-    AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, SeparableTaps, TAP_CENTRE,
-    TAPS, TapPair, slide,
+    AnyTaps, Av1Family, Av1MixedFns, Av1Rounding, ConvolveFn, OuterTaps, PREP_LAST_ROUND,
+    PREP_LAST_SHIFT, PrepFn, ROUND_2, ROUND_6, Rounding, SeparableRounding, SeparableTaps,
+    TAP_CENTRE, TAPS, TapPair, slide,
 };
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadl_epi64, _mm_loadu_si128,
@@ -67,100 +68,137 @@ const SHORT_CENTRE: usize = 1;
 const LANES: usize = 16;
 /// Outputs of one 128-bit lane.
 const HALF: usize = 8;
-/// `vpmulhrsw` multipliers: `(x + 2) >> 2`, `(x + 8) >> 4`, `(x + 32) >> 6`.
-const ROUND_2: i16 = 1 << 13;
-const ROUND_4: i16 = 1 << 11;
-const ROUND_6: i16 = 1 << 9;
-/// The vertical pass of a 2-D AV1 filter at compound precision: `(acc +
-/// 32) >> 6` (`InterRound1` 7, less the halving).
-const PREP_LAST_ROUND: i32 = 1 << 5;
-const PREP_LAST_SHIFT: i32 = 6;
 
-/// A codec's taps and roundings on these kernels (`docs/analysis/
-/// encode-kernel-sharing.md` section 5): the passes are the same byte and
-/// word multiply-adds; what differs is whether the taps are halved and how
-/// each pass rounds.
-trait Rounding {
-    /// Taps are halved before use (AV1: every tap is even).
-    const HALVED: bool;
-    /// `put`'s vertical pass of a 2-D filter: `(acc + LAST_ROUND) >>
-    /// LAST_SHIFT`.
-    const LAST_ROUND: i32;
-    const LAST_SHIFT: i32;
-    /// The first pass of a 2-D filter, from the horizontal sums.
-    fn first(sum: __m256i) -> __m256i;
-    /// A horizontal-only filter's 16-bit results for sink `S`.
-    fn horizontal<S: Sink>(sum: __m256i) -> __m256i;
-}
-
-/// AV1 (module docs): halved taps; `(sum + 2) >> 2` first, `(acc + 512) >>
-/// 10` last, `((sum + 2) >> 2 + 8) >> 4` horizontally.
-struct Av1Rounding;
-
-impl Rounding for Av1Rounding {
-    const HALVED: bool = true;
-    const LAST_ROUND: i32 = 1 << 9;
-    const LAST_SHIFT: i32 = 10;
-    #[inline(always)]
-    fn first(sum: __m256i) -> __m256i {
-        // SAFETY: AVX2 is enabled in every caller (the kernels' target
-        // feature); register operations only.
-        unsafe { round(sum, ROUND_2) }
-    }
-    #[inline(always)]
-    fn horizontal<S: Sink>(sum: __m256i) -> __m256i {
-        // SAFETY: as for `first`.
-        unsafe {
-            let t = round(sum, ROUND_2);
-            if S::PREP { t } else { round(t, ROUND_4) }
-        }
+/// The rounded horizontal sums of a 2-D filter ([`Rounding::FIRST`]).
+#[target_feature(enable = "avx2")]
+#[inline]
+fn first<R: Rounding>(sum: __m256i) -> __m256i {
+    match R::FIRST {
+        Some(m) => round(sum, m),
+        None => sum,
     }
 }
 
-/// HEVC and VVC at 8 bits (H.265 §8.5.3.3.3, H.266 §8.5.6.3.2: `shift1`
-/// 0, `shift2` 6, `shift3` 6): full taps (every HEVC/VVC tap fits a signed
-/// byte; `separable_sums_fit_i16` bounds the sums); the horizontal sums
-/// pass unrounded, `(acc + 2048) >> 12` last (`((acc >> 6) + 32) >> 6` by
-/// nested floors), `(sum + 32) >> 6` in one direction. Only `put`.
-struct SeparableRounding;
-
-impl Rounding for SeparableRounding {
-    const HALVED: bool = false;
-    const LAST_ROUND: i32 = 1 << 11;
-    const LAST_SHIFT: i32 = 12;
-    #[inline(always)]
-    fn first(sum: __m256i) -> __m256i {
-        sum
-    }
-    #[inline(always)]
-    fn horizontal<S: Sink>(sum: __m256i) -> __m256i {
-        debug_assert!(!S::PREP, "HEVC/VVC compound runs the generic kernels");
-        // SAFETY: AVX2 is enabled in every caller; register operations only.
-        unsafe { round(sum, ROUND_6) }
+/// A horizontal-only filter's 16-bit results for sink `S`.
+#[target_feature(enable = "avx2")]
+#[inline]
+fn horizontal<R: Rounding, S: Sink>(sum: __m256i) -> __m256i {
+    debug_assert!(
+        !S::PREP || R::HALVED,
+        "HEVC/VVC compound runs the generic kernels"
+    );
+    let t = first::<R>(sum);
+    if S::PREP {
+        t
+    } else {
+        round(t, R::HORIZONTAL_PUT)
     }
 }
+
+/// The passes of blocks 16 or more wide: this module's 16-output strips
+/// ([`Avx2Wide`]) or the AVX-512 tier's 32-output rows
+/// (`av1_avx512::Avx512Wide`, blocks 32 and 64 wide). Blocks 4 and 8 wide
+/// always take this module's two-row passes.
+pub(super) trait WidePasses {
+    /// Horizontal only (see [`horizontal_wide`]).
+    ///
+    /// # Safety
+    ///
+    /// As [`put_taps`]; the CPU must support the passes' ISA.
+    unsafe fn horizontal<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: &[i16],
+    );
+    /// Vertical only (see [`vertical_wide`]).
+    ///
+    /// # Safety
+    ///
+    /// As [`WidePasses::horizontal`].
+    unsafe fn vertical<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: &[i16],
+    );
+    /// Both directions (see [`both_wide`]).
+    ///
+    /// # Safety
+    ///
+    /// As [`WidePasses::horizontal`].
+    unsafe fn both<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: (&[i16], &[i16]),
+    );
+}
+
+/// The AVX2 passes of 16-output strips.
+pub(super) struct Avx2Wide;
+
+impl WidePasses for Avx2Wide {
+    #[inline(always)]
+    unsafe fn horizontal<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: &[i16],
+    ) {
+        // SAFETY: forwarded from the caller.
+        unsafe { horizontal_wide::<W, P, S, R, C>(window, lead, out, h, taps) }
+    }
+    #[inline(always)]
+    unsafe fn vertical<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: &[i16],
+    ) {
+        // SAFETY: forwarded from the caller.
+        unsafe { vertical_wide::<W, P, S, R, C>(window, lead, out, h, taps) }
+    }
+    #[inline(always)]
+    unsafe fn both<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+        window: Window,
+        lead: usize,
+        out: S,
+        h: usize,
+        taps: (&[i16], &[i16]),
+    ) {
+        // SAFETY: forwarded from the caller.
+        unsafe { both_wide::<W, P, S, R, C>(window, lead, out, h, taps) }
+    }
+}
+
 /// `prep` scales whole samples by 16 (`<< 4`).
 const PREP_COPY_SHIFT: i32 = 4;
 
 /// The AV1 compound-precision kernels of filter family `F` by width class.
 pub(super) fn prep_family<F: Av1Family>() -> [PrepFn; 5] {
     [
-        prep::<F, 4>,
-        prep::<F, 8>,
-        prep::<F, 16>,
-        prep::<F, 32>,
-        prep::<F, 64>,
+        prep::<F, 4, Avx2Wide>,
+        prep::<F, 8, Avx2Wide>,
+        prep::<F, 16, Avx2Wide>,
+        prep::<F, 32, Avx2Wide>,
+        prep::<F, 64, Avx2Wide>,
     ]
 }
 
 /// The AV1 kernels of filter family `F` by width class (4 to 64).
 pub(super) fn family<F: Av1Family>() -> [ConvolveFn; 5] {
     [
-        put::<F, 4>,
-        put::<F, 8>,
-        put::<F, 16>,
-        put::<F, 32>,
-        put::<F, 64>,
+        put::<F, 4, Avx2Wide>,
+        put::<F, 8, Avx2Wide>,
+        put::<F, 16, Avx2Wide>,
+        put::<F, 32, Avx2Wide>,
+        put::<F, 64, Avx2Wide>,
     ]
 }
 
@@ -168,18 +206,18 @@ pub(super) fn family<F: Av1Family>() -> [ConvolveFn; 5] {
 pub(super) fn mixed_fns() -> Av1MixedFns {
     Av1MixedFns {
         put: [
-            put_mixed::<4>,
-            put_mixed::<8>,
-            put_mixed::<16>,
-            put_mixed::<32>,
-            put_mixed::<64>,
+            put_mixed::<4, Avx2Wide>,
+            put_mixed::<8, Avx2Wide>,
+            put_mixed::<16, Avx2Wide>,
+            put_mixed::<32, Avx2Wide>,
+            put_mixed::<64, Avx2Wide>,
         ],
         prep: [
-            prep_mixed::<4>,
-            prep_mixed::<8>,
-            prep_mixed::<16>,
-            prep_mixed::<32>,
-            prep_mixed::<64>,
+            prep_mixed::<4, Avx2Wide>,
+            prep_mixed::<8, Avx2Wide>,
+            prep_mixed::<16, Avx2Wide>,
+            prep_mixed::<32, Avx2Wide>,
+            prep_mixed::<64, Avx2Wide>,
         ],
     }
 }
@@ -187,7 +225,10 @@ pub(super) fn mixed_fns() -> Av1MixedFns {
 /// `P` tap pairs of a filter from tap `first`, halved for `R::HALVED` (a
 /// halved tap is even, so halving is a shift): `(t[2j], t[2j+1])`.
 #[inline]
-fn tap_pairs<R: Rounding, const P: usize>(taps: &[i16], first: usize) -> [(i16, i16); P] {
+pub(super) fn tap_pairs<R: Rounding, const P: usize>(
+    taps: &[i16],
+    first: usize,
+) -> [(i16, i16); P] {
     let shift = u32::from(R::HALVED);
     core::array::from_fn(|j| {
         (
@@ -233,7 +274,7 @@ const fn masks<const P: usize>(high_offset: usize) -> [[u8; 32]; P] {
 }
 
 /// Source bytes `n` outputs of a row read with `P` tap pairs.
-const fn span(n: usize, pairs: usize) -> usize {
+pub(super) const fn span(n: usize, pairs: usize) -> usize {
     n + 2 * pairs - 1
 }
 
@@ -417,7 +458,7 @@ unsafe fn load_pixels<const N: usize>(src: *const u8) -> __m128i {
 
 /// A raw window: its first used sample and row stride.
 #[derive(Clone, Copy)]
-struct Window {
+pub(super) struct Window {
     src: *const u8,
     stride: usize,
 }
@@ -429,7 +470,7 @@ impl Window {
     ///
     /// The sample must lie inside the window the caller checked.
     #[inline]
-    unsafe fn at(self, row: usize, col: usize) -> *const u8 {
+    pub(super) unsafe fn at(self, row: usize, col: usize) -> *const u8 {
         // SAFETY: forwarded from the caller.
         unsafe { self.src.add(row * self.stride + col) }
     }
@@ -441,7 +482,7 @@ impl Window {
 ///
 /// The CPU must support AVX2.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn put<F: Av1Family, const W: usize>(
+pub(super) unsafe fn put<F: Av1Family, const W: usize, X: WidePasses>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [u8],
@@ -453,7 +494,7 @@ pub(super) unsafe fn put<F: Av1Family, const W: usize>(
     let taps = || (F::taps(W, frac_x), F::taps(h, frac_y));
     // SAFETY: AVX2 is enabled; the contract is the caller's.
     unsafe {
-        put_with::<W, F>(src, src_stride, dst, dst_stride, h, (frac_x, frac_y), taps);
+        put_with::<W, F, X>(src, src_stride, dst, dst_stride, h, (frac_x, frac_y), taps);
     }
 }
 
@@ -463,7 +504,7 @@ pub(super) unsafe fn put<F: Av1Family, const W: usize>(
 ///
 /// The CPU must support AVX2.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn put_mixed<const W: usize>(
+pub(super) unsafe fn put_mixed<const W: usize, X: WidePasses>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [u8],
@@ -473,14 +514,14 @@ pub(super) unsafe fn put_mixed<const W: usize>(
     taps: TapPair<'_>,
 ) {
     // SAFETY: AVX2 is enabled; the contract is the caller's.
-    unsafe { put_with::<W, AnyTaps>(src, src_stride, dst, dst_stride, h, fracs, || taps) };
+    unsafe { put_with::<W, AnyTaps, X>(src, src_stride, dst, dst_stride, h, fracs, || taps) };
 }
 
 /// [`put`] with the taps `taps` gives (asked only when the block is
 /// filtered), whose outer taps are known zero when `Z` says so.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn put_with<'t, const W: usize, Z: OuterTaps>(
+unsafe fn put_with<'t, const W: usize, Z: OuterTaps, X: WidePasses>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [u8],
@@ -528,7 +569,7 @@ unsafe fn put_with<'t, const W: usize, Z: OuterTaps>(
     // taps use 3 pairs from tap 1, others 4 from tap 0.
     unsafe {
         if Z::OUTER_ZERO {
-            put_taps::<W, 3, _, Av1Rounding, TAP_CENTRE>(
+            put_taps::<X, W, 3, _, Av1Rounding, TAP_CENTRE>(
                 window,
                 1,
                 out,
@@ -537,7 +578,7 @@ unsafe fn put_with<'t, const W: usize, Z: OuterTaps>(
                 av1_taps(taps()),
             );
         } else {
-            put_taps::<W, 4, _, Av1Rounding, TAP_CENTRE>(
+            put_taps::<X, W, 4, _, Av1Rounding, TAP_CENTRE>(
                 window,
                 0,
                 out,
@@ -566,7 +607,12 @@ fn av1_taps((h_taps, v_taps): TapPair<'_>) -> (&[i16], &[i16]) {
 ///
 /// The CPU must support AVX2.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn separable<T: SeparableTaps<N>, const N: usize, const W: usize>(
+pub(super) unsafe fn separable<
+    T: SeparableTaps<N>,
+    const N: usize,
+    const W: usize,
+    X: WidePasses,
+>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [u8],
@@ -606,7 +652,7 @@ pub(super) unsafe fn separable<T: SeparableTaps<N>, const N: usize, const W: usi
                 );
             }
         } else if N == TAPS {
-            put_taps::<W, 4, _, SeparableRounding, TAP_CENTRE>(
+            put_taps::<X, W, 4, _, SeparableRounding, TAP_CENTRE>(
                 window,
                 0,
                 out,
@@ -615,7 +661,7 @@ pub(super) unsafe fn separable<T: SeparableTaps<N>, const N: usize, const W: usi
                 taps,
             );
         } else {
-            put_taps::<W, 2, _, SeparableRounding, SHORT_CENTRE>(
+            put_taps::<X, W, 2, _, SeparableRounding, SHORT_CENTRE>(
                 window,
                 0,
                 out,
@@ -634,7 +680,7 @@ pub(super) unsafe fn separable<T: SeparableTaps<N>, const N: usize, const W: usi
 ///
 /// The CPU must support AVX2.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn prep<F: Av1Family, const W: usize>(
+pub(super) unsafe fn prep<F: Av1Family, const W: usize, X: WidePasses>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [i16],
@@ -646,7 +692,7 @@ pub(super) unsafe fn prep<F: Av1Family, const W: usize>(
     let taps = || (F::taps(W, frac_x), F::taps(h, frac_y));
     // SAFETY: AVX2 is enabled; the contract is the caller's.
     unsafe {
-        prep_with::<W, F>(src, src_stride, dst, dst_stride, h, (frac_x, frac_y), taps);
+        prep_with::<W, F, X>(src, src_stride, dst, dst_stride, h, (frac_x, frac_y), taps);
     }
 }
 
@@ -656,7 +702,7 @@ pub(super) unsafe fn prep<F: Av1Family, const W: usize>(
 ///
 /// The CPU must support AVX2.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn prep_mixed<const W: usize>(
+pub(super) unsafe fn prep_mixed<const W: usize, X: WidePasses>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [i16],
@@ -666,13 +712,13 @@ pub(super) unsafe fn prep_mixed<const W: usize>(
     taps: TapPair<'_>,
 ) {
     // SAFETY: AVX2 is enabled; the contract is the caller's.
-    unsafe { prep_with::<W, AnyTaps>(src, src_stride, dst, dst_stride, h, fracs, || taps) };
+    unsafe { prep_with::<W, AnyTaps, X>(src, src_stride, dst, dst_stride, h, fracs, || taps) };
 }
 
 /// [`prep`] with taps `(h_taps, v_taps)`, as [`put_with`].
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn prep_with<'t, const W: usize, Z: OuterTaps>(
+unsafe fn prep_with<'t, const W: usize, Z: OuterTaps, X: WidePasses>(
     src: &[u8],
     src_stride: usize,
     dst: &mut [i16],
@@ -701,7 +747,7 @@ unsafe fn prep_with<'t, const W: usize, Z: OuterTaps>(
         if (frac_x, frac_y) == (0, 0) {
             copy_scaled::<W>(window, out, h);
         } else if Z::OUTER_ZERO {
-            put_taps::<W, 3, _, Av1Rounding, TAP_CENTRE>(
+            put_taps::<X, W, 3, _, Av1Rounding, TAP_CENTRE>(
                 window,
                 1,
                 out,
@@ -710,7 +756,7 @@ unsafe fn prep_with<'t, const W: usize, Z: OuterTaps>(
                 av1_taps(taps()),
             );
         } else {
-            put_taps::<W, 4, _, Av1Rounding, TAP_CENTRE>(
+            put_taps::<X, W, 4, _, Av1Rounding, TAP_CENTRE>(
                 window,
                 0,
                 out,
@@ -744,17 +790,48 @@ unsafe fn copy_scaled<const W: usize>(window: Window, out: PrepOut, h: usize) {
     }
 }
 
-/// Where a pass's 16-bit results go: final 8-bit samples (`put`) or
-/// compound-precision samples (`prep`).
-trait Sink: Copy {
-    /// Compound precision: the `prep` roundings of the module table.
-    const PREP: bool;
-    /// 16 results of row `r` from column `c`, as `[0..8 | 8..16]`.
+/// A vector of one row's consecutive 16-bit results: 16 (`__m256i`, here)
+/// or 32 (`__m512i`, `av1_avx512`).
+pub(super) trait Words: Copy {
+    /// Store the results clipped to bytes.
     ///
     /// # Safety
     ///
-    /// The 16 outputs must lie inside the destination the caller checked.
-    unsafe fn wide(self, r: usize, c: usize, words: __m256i);
+    /// `dst` must have one writable byte per result; the CPU must support
+    /// the vector's ISA.
+    unsafe fn store_bytes(self, dst: *mut u8);
+    /// Store the results as they are.
+    ///
+    /// # Safety
+    ///
+    /// As [`Words::store_bytes`], one word per result.
+    unsafe fn store_words(self, dst: *mut i16);
+}
+
+impl Words for __m256i {
+    #[inline]
+    unsafe fn store_bytes(self, dst: *mut u8) {
+        // SAFETY: forwarded from the caller (AVX2 enabled, 16 bytes).
+        unsafe { store_16(dst, _mm256_packus_epi16(self, self)) };
+    }
+    #[inline]
+    unsafe fn store_words(self, dst: *mut i16) {
+        // SAFETY: forwarded from the caller (AVX2 enabled, 16 words).
+        unsafe { _mm256_storeu_si256(dst.cast(), self) };
+    }
+}
+
+/// Where a pass's 16-bit results go: final 8-bit samples (`put`) or
+/// compound-precision samples (`prep`).
+pub(super) trait Sink: Copy {
+    /// Compound precision: the `prep` roundings of the module table.
+    const PREP: bool;
+    /// A vector of consecutive results of row `r` from column `c`.
+    ///
+    /// # Safety
+    ///
+    /// The outputs must lie inside the destination the caller checked.
+    unsafe fn wide<V: Words>(self, r: usize, c: usize, words: V);
     /// `N` (4 or 8) results of rows `r` (low lane) and `r + 1` (high lane).
     ///
     /// # Safety
@@ -765,7 +842,7 @@ trait Sink: Copy {
 
 /// `put`: words clipped to bytes.
 #[derive(Clone, Copy)]
-struct PutOut {
+pub(super) struct PutOut {
     dst: *mut u8,
     stride: usize,
 }
@@ -773,15 +850,10 @@ struct PutOut {
 impl Sink for PutOut {
     const PREP: bool = false;
     #[inline]
-    unsafe fn wide(self, r: usize, c: usize, words: __m256i) {
-        // SAFETY: AVX2 is enabled in every caller; the outputs are the
-        // caller's.
-        unsafe {
-            store_16(
-                self.dst.add(r * self.stride + c),
-                _mm256_packus_epi16(words, words),
-            );
-        }
+    unsafe fn wide<V: Words>(self, r: usize, c: usize, words: V) {
+        // SAFETY: the vector's ISA is enabled in every caller; the outputs
+        // are the caller's.
+        unsafe { words.store_bytes(self.dst.add(r * self.stride + c)) };
     }
     #[inline]
     unsafe fn two<const N: usize>(self, r: usize, words: __m256i) {
@@ -798,7 +870,7 @@ impl Sink for PutOut {
 
 /// `prep`: words stored as they are.
 #[derive(Clone, Copy)]
-struct PrepOut {
+pub(super) struct PrepOut {
     dst: *mut i16,
     stride: usize,
 }
@@ -806,10 +878,9 @@ struct PrepOut {
 impl Sink for PrepOut {
     const PREP: bool = true;
     #[inline]
-    unsafe fn wide(self, r: usize, c: usize, words: __m256i) {
-        // SAFETY: AVX2 is enabled in every caller; the 16 outputs (32
-        // bytes) are the caller's.
-        unsafe { _mm256_storeu_si256(self.dst.add(r * self.stride + c).cast(), words) };
+    unsafe fn wide<V: Words>(self, r: usize, c: usize, words: V) {
+        // SAFETY: as for `PutOut::wide`, in words.
+        unsafe { words.store_words(self.dst.add(r * self.stride + c)) };
     }
     #[inline]
     unsafe fn two<const N: usize>(self, r: usize, words: __m256i) {
@@ -838,7 +909,14 @@ impl Sink for PrepOut {
 /// window.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn put_taps<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
+unsafe fn put_taps<
+    X: WidePasses,
+    const W: usize,
+    const P: usize,
+    S: Sink,
+    R: Rounding,
+    const C: usize,
+>(
     window: Window,
     lead: usize,
     out: S,
@@ -850,11 +928,11 @@ unsafe fn put_taps<const W: usize, const P: usize, S: Sink, R: Rounding, const C
     unsafe {
         match (frac_x, frac_y, W <= HALF) {
             (_, 0, true) => horizontal_narrow::<W, P, S, R, C>(window, lead, out, h, h_taps),
-            (_, 0, false) => horizontal_wide::<W, P, S, R, C>(window, lead, out, h, h_taps),
+            (_, 0, false) => X::horizontal::<W, P, S, R, C>(window, lead, out, h, h_taps),
             (0, _, true) => vertical_narrow::<W, P, S, R, C>(window, lead, out, h, v_taps),
-            (0, _, false) => vertical_wide::<W, P, S, R, C>(window, lead, out, h, v_taps),
+            (0, _, false) => X::vertical::<W, P, S, R, C>(window, lead, out, h, v_taps),
             (_, _, true) => both_narrow::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
-            (_, _, false) => both_wide::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
+            (_, _, false) => X::both::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
         }
     }
 }
@@ -880,7 +958,7 @@ unsafe fn horizontal_narrow<
         // SAFETY: rows r + 3 and r + 4 from column `lead` (see `put`).
         unsafe {
             let sum = two_rows::<P, W>(window.at(r + C, lead), window.at(r + 1 + C, lead), &taps);
-            out.two::<W>(r, R::horizontal::<S>(sum));
+            out.two::<W>(r, horizontal::<R, S>(sum));
         }
     }
 }
@@ -901,7 +979,7 @@ unsafe fn horizontal_wide<const W: usize, const P: usize, S: Sink, R: Rounding, 
             // SAFETY: row r + 3, columns c0 + lead.. (see `put`).
             unsafe {
                 let sum = row_16::<P>(window.at(r + C, c0 + lead), &taps);
-                out.wide(r, c0, R::horizontal::<S>(sum));
+                out.wide(r, c0, horizontal::<R, S>(sum));
             }
         }
     }
@@ -1012,7 +1090,7 @@ unsafe fn both_narrow<const W: usize, const P: usize, S: Sink, R: Rounding, cons
                 &h_taps,
             )
         };
-        R::first(sum)
+        first::<R>(sum)
     };
     // even[j] = vector r + 2j; `next` = vector r + 2P.
     let mut even: [__m256i; P] = core::array::from_fn(|j| pair(2 * j));
@@ -1050,7 +1128,7 @@ unsafe fn both_wide<const W: usize, const P: usize, S: Sink, R: Rounding, const 
         // SAFETY: row lead + k, columns c0 + lead.. (see `put`).
         let row = |k: usize| {
             // SAFETY: row lead + k, columns c0 + lead.. (see `put`).
-            R::first(unsafe { row_16::<P>(window.at(lead + k, c0 + lead), &h_taps) })
+            first::<R>(unsafe { row_16::<P>(window.at(lead + k, c0 + lead), &h_taps) })
         };
         let interleave =
             |a: __m256i, b: __m256i| (_mm256_unpacklo_epi16(a, b), _mm256_unpackhi_epi16(a, b));

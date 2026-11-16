@@ -1,61 +1,58 @@
-//! Full-pel puts, equal-weight averages, and HEVC/VVC fractional MC at
-//! widths 32 and 64. Fractional separable prediction uses the shared filter
-//! graph (`generic::hevc`) on thirty-two word lanes; all other fractional
-//! prediction retains AVX2. No reference rules change.
-use super::{Filter, McFns, SeparableTaps};
+//! The AVX-512 prediction table: AV1, HEVC and VVC blocks 32 and 64 wide
+//! on the shared passes' 32-output rows (`av1_avx512`), whole-pel puts of
+//! 64-wide blocks, and equal-weight averages. Everything else keeps AVX2.
+//! No reference rules change.
+use super::av1_avx2;
+use super::av1_avx512::Avx512Wide;
+use super::{
+    Av1Family, Filter, HevcChromaTaps, HevcLumaTaps, McFns, Regular, SeparableTaps, Sharp, Smooth,
+    TapPair, VvcAffineLumaTaps, VvcChromaTaps, VvcLumaTaps,
+};
 use core::arch::x86_64::{
     _mm256_mask_storeu_epi8, _mm512_add_epi16, _mm512_cvtusepi16_epi8, _mm512_maskz_loadu_epi16,
     _mm512_max_epi16, _mm512_set1_epi16, _mm512_setzero_si512, _mm512_srai_epi16,
 };
+
+/// Width classes of 32 and 64 (`BlockSize::width_class`).
+const W32: usize = 3;
+const W64: usize = 4;
+
 pub(crate) fn install(table: &mut McFns) {
-    table.av1[4] = av164;
-    table.av1_smooth[4] = av1_smooth64;
-    table.av1_sharp[4] = av1_sharp64;
-    table.hevc_luma[3] = hevc_luma32;
-    table.vvc_luma[3] = vvc_luma32;
-    table.vvc_affine_luma[3] = vvc_affine_luma32;
-    table.hevc_luma[4] = hevc_luma64;
-    table.hevc_chroma[4] = hevc_chroma64;
-    table.h264_luma[4] = h264_luma64;
-    table.h264_chroma[4] = h264_chroma64;
-    table.vvc_luma[4] = vvc_luma64;
-    table.vvc_affine_luma[4] = vvc_affine_luma64;
-    table.vvc_chroma[4] = vvc_chroma64;
+    table.av1[W32] = av1_put::<Regular, 32>;
+    table.av1_smooth[W32] = av1_put::<Smooth, 32>;
+    table.av1_sharp[W32] = av1_put::<Sharp, 32>;
+    table.av1[W64] = av164;
+    table.av1_smooth[W64] = av1_smooth64;
+    table.av1_sharp[W64] = av1_sharp64;
+    for (prep, family) in table.compound.prep.iter_mut().zip([
+        [av1_prep::<Regular, 32>, av1_prep::<Regular, 64>],
+        [av1_prep::<Smooth, 32>, av1_prep::<Smooth, 64>],
+        [av1_prep::<Sharp, 32>, av1_prep::<Sharp, 64>],
+    ]) {
+        prep[W32..].copy_from_slice(&family);
+    }
+    if let Some(mixed) = table.av1_mixed.as_mut() {
+        mixed.put[W32..].copy_from_slice(&[av1_put_mixed::<32>, av1_put_mixed::<64>]);
+        mixed.prep[W32..].copy_from_slice(&[av1_prep_mixed::<32>, av1_prep_mixed::<64>]);
+    }
+    table.hevc_luma[W32] = separable::<HevcLumaTaps, 8, 32>;
+    table.hevc_chroma[W32] = separable::<HevcChromaTaps, 4, 32>;
+    table.vvc_luma[W32] = separable::<VvcLumaTaps, 8, 32>;
+    table.vvc_affine_luma[W32] = separable::<VvcAffineLumaTaps, 8, 32>;
+    table.vvc_chroma[W32] = separable::<VvcChromaTaps, 4, 32>;
+    table.hevc_luma[W64] = hevc_luma64;
+    table.hevc_chroma[W64] = hevc_chroma64;
+    table.h264_luma[W64] = h264_luma64;
+    table.h264_chroma[W64] = h264_chroma64;
+    table.vvc_luma[W64] = vvc_luma64;
+    table.vvc_affine_luma[W64] = vvc_affine_luma64;
+    table.vvc_chroma[W64] = vvc_chroma64;
     table.compound.average[2..].copy_from_slice(&[average::<16>, average::<32>, average::<64>]);
 }
-/// One complete 32-pixel row per vector, including short-height blocks.
-/// Whole-pel copies retain their measured AVX2 path.
-macro_rules! separable32 {
-    ($name:ident, $taps:ty) => {
-        #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-        unsafe fn $name(
-            src: &[u8],
-            ss: usize,
-            dst: &mut [u8],
-            ds: usize,
-            h: usize,
-            fx: usize,
-            fy: usize,
-        ) {
-            if fx == 0 && fy == 0 {
-                // SAFETY: same checked window; this tier includes AVX2.
-                unsafe { super::av1_avx2::separable::<$taps, 8, 32>(src, ss, dst, ds, h, fx, fy) };
-                return;
-            }
-            // SAFETY: same checked filter window and enabled ISA as this wrapper.
-            unsafe { separable_fractional::<$taps, 8, 32>(src, ss, dst, ds, h, fx, fy) }
-        }
-    };
-}
-separable32!(hevc_luma32, super::HevcLumaTaps);
-separable32!(vvc_luma32, super::VvcLumaTaps);
-separable32!(vvc_affine_luma32, super::VvcAffineLumaTaps);
 
-/// Fractional separable prediction of a `W`-wide block on 32 word lanes.
-// Keep the fractional stack frame out of the whole-pel routing path.
-#[inline(never)]
-#[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn separable_fractional<T: SeparableTaps<N>, const N: usize, const W: usize>(
+/// AV1 `put` of family `F` at width `W` (32 or 64) on 32-output rows.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+unsafe fn av1_put<F: Av1Family, const W: usize>(
     src: &[u8],
     ss: usize,
     dst: &mut [u8],
@@ -64,26 +61,76 @@ unsafe fn separable_fractional<T: SeparableTaps<N>, const N: usize, const W: usi
     fx: usize,
     fy: usize,
 ) {
-    // SAFETY: Dsp checked the exact W-wide filter window and output, and
-    // the wrapper enables all features needed by the private lane type.
-    unsafe {
-        super::generic::hevc::<crate::simd::avx512_i16::I16x32, N>(
-            src,
-            ss,
-            dst,
-            ds,
-            W,
-            h,
-            &T::TABLE[fx],
-            &T::TABLE[fy],
-            (fx, fy),
-        );
-    }
+    // SAFETY: the `mc` contract is the caller's; this tier's ISA is enabled.
+    unsafe { av1_avx2::put::<F, W, Avx512Wide>(src, ss, dst, ds, h, fx, fy) }
 }
 
+/// AV1 `prep` of family `F` at width `W` (32 or 64) on 32-output rows.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+unsafe fn av1_prep<F: Av1Family, const W: usize>(
+    src: &[u8],
+    ss: usize,
+    dst: &mut [i16],
+    ds: usize,
+    h: usize,
+    fx: usize,
+    fy: usize,
+) {
+    // SAFETY: as for `av1_put`.
+    unsafe { av1_avx2::prep::<F, W, Avx512Wide>(src, ss, dst, ds, h, fx, fy) }
+}
+
+/// AV1 `put` with mixed families (`mc::Av1MixedFn`) on 32-output rows.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+unsafe fn av1_put_mixed<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    dst: &mut [u8],
+    ds: usize,
+    h: usize,
+    fracs: (usize, usize),
+    taps: TapPair<'_>,
+) {
+    // SAFETY: as for `av1_put`.
+    unsafe { av1_avx2::put_mixed::<W, Avx512Wide>(src, ss, dst, ds, h, fracs, taps) }
+}
+
+/// AV1 `prep` with mixed families (`mc::Av1MixedFn`) on 32-output rows.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+unsafe fn av1_prep_mixed<const W: usize>(
+    src: &[u8],
+    ss: usize,
+    dst: &mut [i16],
+    ds: usize,
+    h: usize,
+    fracs: (usize, usize),
+    taps: TapPair<'_>,
+) {
+    // SAFETY: as for `av1_put`.
+    unsafe { av1_avx2::prep_mixed::<W, Avx512Wide>(src, ss, dst, ds, h, fracs, taps) }
+}
+
+/// HEVC/VVC separable `put` (`T`'s `N`-tap table) at width `W` (32 or 64)
+/// on 32-output rows.
+#[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
+unsafe fn separable<T: SeparableTaps<N>, const N: usize, const W: usize>(
+    src: &[u8],
+    ss: usize,
+    dst: &mut [u8],
+    ds: usize,
+    h: usize,
+    fx: usize,
+    fy: usize,
+) {
+    // SAFETY: as for `av1_put`.
+    unsafe { av1_avx2::separable::<T, N, W, Avx512Wide>(src, ss, dst, ds, h, fx, fy) }
+}
+
+/// A 64-wide `put` whose whole-pel blocks take the AVX-512 block copy and
+/// fractional ones `$fallback`.
 macro_rules! put {
     ($name:ident, $width:literal, $filter:ident, $fallback:path) => {
-        #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+        #[target_feature(enable = "avx512f,avx512bw,avx512vl,avx512vbmi")]
         unsafe fn $name(
             src: &[u8],
             ss: usize,
@@ -116,50 +163,30 @@ macro_rules! put {
         }
     };
 }
-put!(av164, 64, Av1, super::av1_avx2::put::<super::Regular, 64>);
-put!(
-    av1_smooth64,
-    64,
-    Av1Smooth,
-    super::av1_avx2::put::<super::Smooth, 64>
-);
-put!(
-    av1_sharp64,
-    64,
-    Av1Sharp,
-    super::av1_avx2::put::<super::Sharp, 64>
-);
-put!(
-    hevc_luma64,
-    64,
-    HevcLuma,
-    separable_fractional::<super::HevcLumaTaps, 8, 64>
-);
+put!(av164, 64, Av1, av1_put::<Regular, 64>);
+put!(av1_smooth64, 64, Av1Smooth, av1_put::<Smooth, 64>);
+put!(av1_sharp64, 64, Av1Sharp, av1_put::<Sharp, 64>);
+put!(hevc_luma64, 64, HevcLuma, separable::<HevcLumaTaps, 8, 64>);
 put!(
     hevc_chroma64,
     64,
     HevcChroma,
-    separable_fractional::<super::HevcChromaTaps, 4, 64>
+    separable::<HevcChromaTaps, 4, 64>
 );
 put!(h264_luma64, 64, H264Luma, super::avx2::h264_luma_w64);
 put!(h264_chroma64, 64, H264Chroma, super::avx2::h264_chroma_w64);
-put!(
-    vvc_luma64,
-    64,
-    VvcLuma,
-    separable_fractional::<super::VvcLumaTaps, 8, 64>
-);
+put!(vvc_luma64, 64, VvcLuma, separable::<VvcLumaTaps, 8, 64>);
 put!(
     vvc_affine_luma64,
     64,
     VvcAffineLuma,
-    separable_fractional::<super::VvcAffineLumaTaps, 8, 64>
+    separable::<VvcAffineLumaTaps, 8, 64>
 );
 put!(
     vvc_chroma64,
     64,
     VvcChroma,
-    separable_fractional::<super::VvcChromaTaps, 4, 64>
+    separable::<VvcChromaTaps, 4, 64>
 );
 
 /// Same compound precision and wrapping-word contract as the AVX2 driver:

@@ -19,26 +19,24 @@
 //! are checked once on entry and the row loops then use raw pointers.
 
 use super::{
-    AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, TAP_CENTRE, TAPS, TapPair,
-    slide,
+    AnyTaps, Av1Family, Av1MixedFns, Av1Rounding, ConvolveFn, OuterTaps, PREP_LAST_ROUND,
+    PREP_LAST_SHIFT, PrepFn, ROUND_2, ROUND_6, Rounding, SeparableRounding, SeparableTaps,
+    TAP_CENTRE, TAPS, TapPair, slide,
 };
 use core::arch::wasm32::{
     i8x16_shuffle, i16x8_add, i16x8_mul, i16x8_narrow_i32x4, i16x8_q15mulr_sat, i16x8_shl,
     i16x8_splat, i32x4_add, i32x4_dot_i16x8, i32x4_shr, i32x4_splat, u8x16_narrow_i16x8,
-    u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, v128, v128_load32_zero, v128_store,
-    v128_store32_lane, v128_store64_lane,
+    u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, v128, v128_load, v128_load32_zero,
+    v128_load64_zero, v128_store, v128_store32_lane, v128_store64_lane,
 };
 
 /// Outputs of one vector (8 lanes of 16 bits).
 const LANES: usize = 8;
-/// `q15mulr` multipliers: `(x + 2) >> 2`, `(x + 8) >> 4`, `(x + 32) >> 6`.
-const ROUND_2: i16 = 1 << 13;
-const ROUND_4: i16 = 1 << 11;
-const ROUND_6: i16 = 1 << 9;
-/// The vertical pass of a 2-D filter: `(acc + 512) >> 10` for pixels,
-/// `(acc + 32) >> 6` at compound precision (`InterRound1` = 7, halved taps).
-const PUT_LAST: (i32, u32) = (1 << 9, 10);
-const PREP_LAST: (i32, u32) = (1 << 5, 6);
+/// Bytes of one vector.
+const VECTOR_BYTES: usize = 16;
+/// Taps of HEVC and VVC chroma filters, and the window column of their
+/// centre sample.
+const SHORT_TAPS: usize = 4;
 /// A whole-sample block at compound precision: each sample `<< 4`.
 const PREP_COPY_SHIFT: u32 = 4;
 
@@ -84,11 +82,21 @@ pub(super) fn mixed_fns() -> Av1MixedFns {
     }
 }
 
-/// The `2P` halved taps of a filter from tap `first` (a tap is even, so
-/// halving is a shift).
+/// The `T` taps of a filter from tap `first`, halved for `R::HALVED` (a
+/// halved tap is even, so halving is a shift).
 #[inline]
-fn halved<const T: usize>(taps: &[i16; TAPS], first: usize) -> [i16; T] {
-    core::array::from_fn(|k| taps[first + k] >> 1)
+fn taps_of<R: Rounding, const T: usize>(taps: &[i16], first: usize) -> [i16; T] {
+    let shift = u32::from(R::HALVED);
+    core::array::from_fn(|k| taps[first + k] >> shift)
+}
+
+/// [`Rounding::FIRST`] on 8 sums.
+#[inline]
+fn first<R: Rounding>(sum: v128) -> v128 {
+    match R::FIRST {
+        Some(m) => round(sum, m),
+        None => sum,
+    }
 }
 
 /// `N` (4 or 8) pixels at `src`, widened to 16 bits.
@@ -226,6 +234,124 @@ impl<T> Raw<*mut T> {
     }
 }
 
+/// Copy `h` rows of `W` (4, 8 or a multiple of 16) bytes from `src` to `dst`
+/// with vector loads and stores.
+///
+/// # Safety
+///
+/// `src` and `dst` must cover `h` rows of `W` bytes at their strides.
+#[inline]
+pub(super) unsafe fn copy_block<const W: usize>(
+    (src, src_stride): (*const u8, usize),
+    (dst, dst_stride): (*mut u8, usize),
+    h: usize,
+) {
+    for r in 0..h {
+        // SAFETY: the caller provides h rows of W bytes on both sides;
+        // wasm loads and stores need no alignment.
+        unsafe {
+            let (from, to) = (src.add(r * src_stride), dst.add(r * dst_stride));
+            match W {
+                4 => v128_store32_lane::<0>(v128_load32_zero(from.cast()), to.cast()),
+                8 => v128_store64_lane::<0>(v128_load64_zero(from.cast()), to.cast()),
+                _ => {
+                    for c in (0..W).step_by(VECTOR_BYTES) {
+                        v128_store(to.add(c).cast(), v128_load(from.add(c).cast()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The kernels of separable table `T` (`K` = `2P` taps) by width class
+/// (4 to 64): [`separable`].
+pub(super) fn separable_family<T: SeparableTaps<K>, const K: usize, const P: usize>()
+-> [ConvolveFn; 5] {
+    const { assert!(K == 2 * P) };
+    [
+        separable::<T, K, P, 4, 4>,
+        separable::<T, K, P, 8, LANES>,
+        separable::<T, K, P, 16, LANES>,
+        separable::<T, K, P, 32, LANES>,
+        separable::<T, K, P, 64, LANES>,
+    ]
+}
+
+/// The HEVC/VVC separable prediction (`T`'s `K`-tap table) of a `W`x`h`
+/// block at pixel precision on the same passes as AV1's `put`
+/// ([`SeparableRounding`]: full taps, unrounded horizontal sums): the
+/// `ConvolveFn` contract with a `K`-tap window (the block at row and column
+/// `K / 2 - 1`), `N` outputs (4, or 8 in strips) per vector.
+///
+/// # Safety
+///
+/// None beyond the kernel contract: SIMD128 is enabled for the build.
+unsafe fn separable<
+    T: SeparableTaps<K>,
+    const K: usize,
+    const P: usize,
+    const W: usize,
+    const N: usize,
+>(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h: usize,
+    frac_x: usize,
+    frac_y: usize,
+) {
+    assert!(
+        (K == TAPS || K == SHORT_TAPS)
+            && h > 0
+            && h.is_multiple_of(2)
+            && src.len() >= (h + K - 2) * src_stride + W + K - 1
+            && dst.len() >= (h - 1) * dst_stride + W,
+        "separable prediction window or destination too small"
+    );
+    let window = Raw {
+        ptr: src.as_ptr(),
+        stride: src_stride,
+    };
+    let out = Raw {
+        ptr: dst.as_mut_ptr(),
+        stride: dst_stride,
+    };
+    let taps = (&T::TABLE[frac_x][..], &T::TABLE[frac_y][..]);
+    // SAFETY: the window covers h + K - 1 rows of W + K - 1 samples and the
+    // destination h rows of W (checked above); every path reads rows and
+    // columns 0..h + K - 1 / 0..W + K - 1 of the window (the centre ones
+    // for one direction) and writes the block.
+    unsafe {
+        if (frac_x, frac_y) == (0, 0) {
+            copy_block::<W>(
+                (window.at(K / 2 - 1, K / 2 - 1), src_stride),
+                (out.ptr, dst_stride),
+                h,
+            );
+        } else if K == TAPS {
+            put_taps::<W, N, 4, 8, _, SeparableRounding, { TAPS / 2 - 1 }>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                taps,
+            );
+        } else {
+            put_taps::<W, N, 2, 4, _, SeparableRounding, { SHORT_TAPS / 2 - 1 }>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                taps,
+            );
+        }
+    }
+}
+
 /// AV1 prediction of a `W`x`h` block (module and `mc` contract), `N`
 /// outputs (4, or 8 in strips) per vector.
 ///
@@ -295,7 +421,7 @@ unsafe fn put_with<'t, const W: usize, const N: usize, Z: OuterTaps>(
         // column TAP_CENTRE, W samples each, and the destination h rows of
         // W (checked above).
         unsafe {
-            super::separable_simd128::copy_block::<W>(
+            copy_block::<W>(
                 (src[from..].as_ptr(), src_stride),
                 (dst.as_mut_ptr(), dst_stride),
                 h,
@@ -422,52 +548,84 @@ unsafe fn filter<const W: usize, const N: usize, S: Sink, Z: OuterTaps>(
     // SAFETY: forwarded from the caller.
     unsafe {
         if Z::OUTER_ZERO {
-            put_taps::<W, N, 3, 6, S>(window, 1, out, h, (frac_x, frac_y), taps);
+            put_taps::<W, N, 3, 6, S, Av1Rounding, TAP_CENTRE>(
+                window,
+                1,
+                out,
+                h,
+                (frac_x, frac_y),
+                (&taps.0[..], &taps.1[..]),
+            );
         } else {
-            put_taps::<W, N, 4, 8, S>(window, 0, out, h, (frac_x, frac_y), taps);
+            put_taps::<W, N, 4, 8, S, Av1Rounding, TAP_CENTRE>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                (&taps.0[..], &taps.1[..]),
+            );
         }
     }
 }
 
 /// [`filter`] with `P` tap pairs (`T = 2P` taps), the first tap `lead`
-/// samples into the window.
+/// samples into the window, rounded by `R`; `C` is the window row and
+/// column of the block's first sample.
 #[inline]
-unsafe fn put_taps<const W: usize, const N: usize, const P: usize, const T: usize, S: Sink>(
+unsafe fn put_taps<
+    const W: usize,
+    const N: usize,
+    const P: usize,
+    const T: usize,
+    S: Sink,
+    R: Rounding,
+    const C: usize,
+>(
     window: Raw<*const u8>,
     lead: usize,
     out: S,
     h: usize,
     (frac_x, frac_y): (usize, usize),
-    (h_taps, v_taps): (&[i16; TAPS], &[i16; TAPS]),
+    (h_taps, v_taps): (&[i16], &[i16]),
 ) {
     let (v_round, last) = if S::PREP {
-        (ROUND_2, PREP_LAST)
+        (ROUND_2, (PREP_LAST_ROUND, PREP_LAST_SHIFT))
     } else {
-        (ROUND_6, PUT_LAST)
+        (ROUND_6, (R::LAST_ROUND, R::LAST_SHIFT))
     };
+    let last = (last.0, last.1.cast_unsigned());
     // SAFETY: each path keeps to the window and destination the caller
     // checked.
     unsafe {
         match (frac_x, frac_y) {
             (_, 0) => {
-                let taps = halved::<T>(h_taps, lead);
+                let taps = taps_of::<R, T>(h_taps, lead);
                 for r in 0..h {
                     for c0 in (0..W).step_by(N) {
-                        let sum = horizontal::<N, T>(window.at(r + TAP_CENTRE, c0 + lead), &taps);
-                        let t = round(sum, ROUND_2);
-                        out.store::<N>(r, c0, if S::PREP { t } else { round(t, ROUND_4) });
+                        let sum = horizontal::<N, T>(window.at(r + C, c0 + lead), &taps);
+                        let t = first::<R>(sum);
+                        out.store::<N>(
+                            r,
+                            c0,
+                            if S::PREP {
+                                t
+                            } else {
+                                round(t, R::HORIZONTAL_PUT)
+                            },
+                        );
                     }
                 }
             }
             (0, _) => {
-                let taps = halved::<T>(v_taps, lead);
+                let taps = taps_of::<R, T>(v_taps, lead);
                 for c0 in (0..W).step_by(N) {
                     let mut rows = [i16x8_splat(0); 8];
                     for (k, row) in rows.iter_mut().enumerate().take(T - 1) {
-                        *row = pixels::<N>(window.at(lead + k, c0 + TAP_CENTRE));
+                        *row = pixels::<N>(window.at(lead + k, c0 + C));
                     }
                     for r in 0..h {
-                        rows[T - 1] = pixels::<N>(window.at(lead + r + T - 1, c0 + TAP_CENTRE));
+                        rows[T - 1] = pixels::<N>(window.at(lead + r + T - 1, c0 + C));
                         let mut sum = i16x8_splat(0);
                         for (row, &tap) in rows.iter().zip(&taps) {
                             sum = i16x8_add(sum, i16x8_mul(*row, i16x8_splat(tap)));
@@ -478,18 +636,15 @@ unsafe fn put_taps<const W: usize, const N: usize, const P: usize, const T: usiz
                 }
             }
             _ => {
-                let h_taps = halved::<T>(h_taps, lead);
-                let v_halved = halved::<T>(v_taps, lead);
+                let h_taps = taps_of::<R, T>(h_taps, lead);
+                let v_row = taps_of::<R, T>(v_taps, lead);
                 let v_taps: [v128; P] = core::array::from_fn(|j| {
-                    let (lo, hi) = (v_halved[2 * j] as u16, v_halved[2 * j + 1] as u16);
+                    let (lo, hi) = (v_row[2 * j] as u16, v_row[2 * j + 1] as u16);
                     i32x4_splat((u32::from(lo) | u32::from(hi) << 16) as i32)
                 });
                 for c0 in (0..W).step_by(N) {
                     let row = |k: usize| {
-                        round(
-                            horizontal::<N, T>(window.at(lead + k, c0 + lead), &h_taps),
-                            ROUND_2,
-                        )
+                        first::<R>(horizontal::<N, T>(window.at(lead + k, c0 + lead), &h_taps))
                     };
                     // Even pairs (0,1), (2,3), ...; odd pairs (1,2), (3,4),
                     // ...; the last of each made in the loop.

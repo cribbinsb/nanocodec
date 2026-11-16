@@ -28,7 +28,7 @@ use nc_encoder::{
 };
 
 use crate::cdef::{self, CdefParams};
-use crate::cdf::CdfContext;
+use crate::cdf::{CdfContext, ResetCounters};
 use crate::cfl::ChromaFromLuma;
 use crate::coeff::trellis::{RateModel, TrellisQuantizer};
 use crate::coeff::{CoeffCdfs, PlaneType, TxbContext, coefficient_scan, eob_table};
@@ -3740,10 +3740,6 @@ impl Av1Backend {
         }
     }
 
-    /// Prediction-SSE search with syntax pricing before either chroma transform.
-    /// Restrict this optional tool to key frames until its amortised CPU and
-    /// both quality metrics have been measured.
-    #[inline]
     /// The luma mode of an intra block: the key-frame search, DC in inter
     /// frames, or a random one in the syntax stress test.
     fn choose_intra_mode(
@@ -3799,6 +3795,10 @@ impl Av1Backend {
         }
     }
 
+    /// Prediction-SSE search with syntax pricing before either chroma transform.
+    /// Restrict this optional tool to key frames until its amortised CPU and
+    /// both quality metrics have been measured.
+    #[inline]
     fn choose_key_cfl(
         &self,
         block: &Block,

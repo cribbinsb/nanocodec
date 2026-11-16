@@ -18,9 +18,6 @@
 //!   Every intermediate fits 16 bits: luma sums are at most 56228 (unsigned),
 //!   chroma sums lie in -28432..=28688, and every result is already inside
 //!   16..=240, so the scalar clamps never bind.
-//! - **Row SSE:** the sum of squared differences of two sample rows (the
-//!   browser demo's per-frame PSNR, `nc-web`). A row of at most
-//!   [`MAX_SSE_ROW`] samples sums to at most `65536 * 255^2 < 2^32`.
 //!
 //! The native forward kernels fold rounding and output offsets into the
 //! weighted sum. The final numerators are 4224..=60324 for Y and
@@ -43,18 +40,13 @@
 //! 3. `rgba_to_i420`: `rgba` holds `h` rows of `4 * w` bytes (packed),
 //!    `luma` covers `h` rows of `w` samples at `luma_stride`, and `cb`, `cr`
 //!    cover `h / 2` rows of `w / 2` samples at `chroma_stride`, `w, h >= 1`;
-//! 4. `sse_row`: `a` and `b` have the same length, at most [`MAX_SSE_ROW`];
-//! 5. the CPU supports the kernel's ISA.
+//! 4. the CPU supports the kernel's ISA.
 
 pub(crate) mod scalar;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
-
-#[cfg(target_arch = "x86_64")]
-#[allow(unsafe_code)]
-pub(crate) mod avx512;
 
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
@@ -93,12 +85,6 @@ pub(crate) type RgbaToI420Fn = unsafe fn(
     w: usize,
     h: usize,
 );
-
-/// Sum of `(a[i] - b[i])^2` over two equally long rows.
-pub(crate) type SseRowFn = unsafe fn(a: &[u8], b: &[u8]) -> u32;
-
-/// Longest row `sse_row` accepts: its sum then fits `u32`.
-pub(crate) const MAX_SSE_ROW: usize = 1 << 16;
 
 /// Limited-range BT.601 RGB to YCbCr in 8.8 fixed point:
 /// `Y = 16 + ((66 R + 129 G + 25 B + 128) >> 8)`,
@@ -279,7 +265,6 @@ pub(crate) struct ConvertFns {
     pub deinterleave_uv: DeinterleaveUvFn,
     pub i420_to_rgba_rows: I420ToRgbaRowsFn,
     pub rgba_to_i420: RgbaToI420Fn,
-    pub sse_row: SseRowFn,
 }
 
 #[cfg(target_arch = "x86_64")]

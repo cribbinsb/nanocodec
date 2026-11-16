@@ -137,6 +137,20 @@ pub(crate) fn advance_counter(count: &mut u8) {
 pub trait ResetCounters {
     /// Set every counter to 0.
     fn reset_counters(&mut self);
+
+    /// A copy with every counter cleared: a CDF set as a reference frame
+    /// saves it after the frame-end update (AV1 §7.20 `save_cdfs`; libaom
+    /// `av1_reset_cdf_symbol_counters`), the encoder's and the decoder's
+    /// sets alike.
+    #[must_use]
+    fn saved(&self) -> Self
+    where
+        Self: Clone,
+    {
+        let mut saved = self.clone();
+        saved.reset_counters();
+        saved
+    }
 }
 
 impl<const N: usize> ResetCounters for Cdf<N> {
@@ -267,18 +281,6 @@ impl CdfContext {
             mv: MvCdfs::default(),
             coeff: CoeffCdfs::new(q_ctx),
         }
-    }
-
-    /// The context as a reference frame saves it at the end of its tile
-    /// (`disable_frame_end_update_cdf = 0`, one tile so
-    /// `context_update_tile_id = 0`): the final CDFs with every counter
-    /// cleared (AV1 §7.20 `save_cdfs`; libaom `av1_reset_cdf_symbol_counters`
-    /// after the frame-end update).
-    #[must_use]
-    pub fn saved(&self) -> Self {
-        let mut saved = self.clone();
-        saved.reset_counters();
-        saved
     }
 }
 

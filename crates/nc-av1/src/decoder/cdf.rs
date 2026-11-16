@@ -186,15 +186,6 @@ impl Cdfs {
             coefficients: CoefficientCdfs::new(q_ctx),
         }
     }
-
-    /// The set as a reference slot keeps it after the frame-end update
-    /// (§7.20 `save_cdfs`): the final CDFs (of `context_update_tile_id`)
-    /// with every counter cleared.
-    pub(super) fn saved(&self) -> Self {
-        let mut saved = self.clone();
-        saved.reset_counters();
-        saved
-    }
 }
 
 impl ResetCounters for Cdfs {

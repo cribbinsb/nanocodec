@@ -1,6 +1,6 @@
 //! Scalar reference residual and variance kernels.
 
-use super::{DiffFns, Variance, VarianceEnergy, bilinear_taps};
+use super::{DiffFns, Prediction, ResidualRows, Variance, VarianceEnergy, bilinear_taps};
 
 pub(crate) fn diff_fns() -> DiffFns {
     DiffFns {
@@ -18,12 +18,12 @@ pub(crate) fn diff_fns() -> DiffFns {
             residual::<32, true>,
             residual::<64, true>,
         ],
-        add_residual: [
-            add_residual::<4>,
-            add_residual::<8>,
-            add_residual::<16>,
-            add_residual::<32>,
-            add_residual::<64>,
+        reconstruct: [
+            reconstruct::<4>,
+            reconstruct::<8>,
+            reconstruct::<16>,
+            reconstruct::<32>,
+            reconstruct::<64>,
         ],
         variance: [
             variance::<4>,
@@ -79,18 +79,27 @@ fn residual<const W: usize, const SUM_ABS: bool>(
     sum
 }
 
-fn add_residual<const W: usize>(
+/// The reference `ReconstructFn`: the clamped exact sum (equal to the
+/// SIMD kernels' saturating 16-bit add and saturating store).
+fn reconstruct<const W: usize>(
+    prediction: Prediction<'_>,
+    residual: ResidualRows<'_>,
     dst: &mut [u8],
     dst_stride: usize,
-    residual: &[i16],
-    residual_stride: usize,
     h: usize,
 ) {
     for r in 0..h {
         for c in 0..W {
-            let px = &mut dst[r * dst_stride + c];
-            *px =
-                (i32::from(*px) + i32::from(residual[r * residual_stride + c])).clamp(0, 255) as u8;
+            let at = r * dst_stride + c;
+            let predicted = match prediction {
+                Prediction::InPlace => dst[at],
+                Prediction::Block(block, stride) => block[r * stride + c],
+            };
+            let delta = match residual {
+                ResidualRows::Samples(samples, stride) => samples[r * stride + c],
+                ResidualRows::Constant(dc) => dc,
+            };
+            dst[at] = (i32::from(predicted) + i32::from(delta)).clamp(0, 255) as u8;
         }
     }
 }

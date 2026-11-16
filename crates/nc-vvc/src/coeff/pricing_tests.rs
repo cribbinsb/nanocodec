@@ -62,8 +62,22 @@ fn source_pricing_matches_reconstructed_cost_and_every_context() {
                         let mut expected = ReferenceCost(BitCost(initial));
                         let mut actual = BitCost(initial);
                         let mut candidate = reference.clone();
-                        emit_rect(&mut expected, &mut reference, &source, (width, height), ch);
-                        emit_rect(&mut actual, &mut candidate, &source, (width, height), ch);
+                        emit_rect(
+                            &mut expected,
+                            &mut reference,
+                            &Dsp::new(),
+                            &source,
+                            (width, height),
+                            ch,
+                        );
+                        emit_rect(
+                            &mut actual,
+                            &mut candidate,
+                            &Dsp::new(),
+                            &source,
+                            (width, height),
+                            ch,
+                        );
                         assert_eq!(
                             actual.0.to_bits(),
                             expected.0.0.to_bits(),
@@ -125,17 +139,18 @@ fn pricing_cost_probe() {
         blocks.push(selected);
     }
     let seed = CoeffContexts::new(37, false);
+    let dsp = Dsp::new();
     let mut checksum = 0_u64;
     for _ in 0..iterations {
         for (side, levels) in &blocks {
             let mut contexts = seed.clone();
             let cost = if reference {
                 let mut cost = ReferenceCost::default();
-                emit(&mut cost, &mut contexts, black_box(levels), *side, 0);
+                emit(&mut cost, &mut contexts, &dsp, black_box(levels), *side, 0);
                 cost.0.0
             } else {
                 let mut cost = BitCost::default();
-                emit(&mut cost, &mut contexts, black_box(levels), *side, 0);
+                emit(&mut cost, &mut contexts, &dsp, black_box(levels), *side, 0);
                 cost.0
             };
             checksum = checksum.wrapping_add(u64::from(black_box(cost.to_bits())));

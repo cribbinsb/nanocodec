@@ -360,7 +360,7 @@ pub(crate) unsafe fn av1_average<V: I16Lanes>(
 ///
 /// `N` (the tap count) is a constant so that the window is a fixed set of
 /// registers and every tap loop unrolls.
-#[cfg(not(target_arch = "wasm32"))] // SIMD128 has `separable_simd128`
+#[cfg(target_arch = "aarch64")] // x86 and SIMD128 run the byte multiply-add kernels
 #[inline(always)]
 fn separable_2d<V: I16Lanes, const N: usize>(
     src: &[u8],
@@ -392,7 +392,7 @@ trait VerticalOutput<V: I16Lanes> {
     unsafe fn store(&mut self, acc: V::Acc, row: usize, c0: usize);
 }
 
-#[cfg(not(target_arch = "wasm32"))] // SIMD128 has `separable_simd128`
+#[cfg(target_arch = "aarch64")] // x86 and SIMD128 run the byte multiply-add kernels
 /// Final 8-bit samples: `clamp((acc + round) >> shift)`.
 struct ByteOutput<'a> {
     dst: &'a mut [u8],
@@ -401,7 +401,7 @@ struct ByteOutput<'a> {
     shift: u32,
 }
 
-#[cfg(not(target_arch = "wasm32"))] // SIMD128 has `separable_simd128`
+#[cfg(target_arch = "aarch64")] // x86 and SIMD128 run the byte multiply-add kernels
 impl<V: I16Lanes> VerticalOutput<V> for ByteOutput<'_> {
     #[inline(always)]
     fn check(&self, w: usize, h: usize) {
@@ -774,7 +774,7 @@ pub(crate) unsafe fn hevc_bi<V: I16Lanes, const N: usize>(
 /// # Safety
 ///
 /// `V`'s ISA must be available.
-#[cfg(not(target_arch = "wasm32"))] // SIMD128 has `separable_simd128`
+#[cfg(target_arch = "aarch64")] // x86 and SIMD128 run the byte multiply-add kernels
 #[inline(always)]
 pub(crate) unsafe fn hevc<V: I16Lanes, const N: usize>(
     src: &[u8],
@@ -836,7 +836,7 @@ pub(crate) unsafe fn hevc<V: I16Lanes, const N: usize>(
 }
 
 /// Unrounded filter sum of `V::LANES` outputs from column `c0` of a row.
-#[cfg(not(target_arch = "wasm32"))] // SIMD128 has `separable_simd128`
+#[cfg(target_arch = "aarch64")] // x86 and SIMD128 run the byte multiply-add kernels
 #[inline(always)]
 fn filter_row<V: I16Lanes>(row: &[u8], c0: usize, taps: &[i16]) -> V {
     let mut sum = V::splat(0);

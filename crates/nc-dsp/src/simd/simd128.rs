@@ -13,10 +13,10 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::wasm32::{
-    i8x16_shuffle, i8x16_swizzle, i16x8_abs, i16x8_add, i16x8_eq, i16x8_gt, i16x8_lt, i16x8_max,
-    i16x8_min, i16x8_mul, i16x8_narrow_i32x4, i16x8_neg, i16x8_shr, i16x8_shuffle, i16x8_splat,
-    i16x8_sub, i32x4_abs, i32x4_add, i32x4_bitmask, i32x4_dot_i16x8, i32x4_eq,
-    i32x4_extadd_pairwise_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8,
+    i8x16_shuffle, i8x16_swizzle, i16x8_abs, i16x8_add, i16x8_add_sat, i16x8_eq, i16x8_gt,
+    i16x8_lt, i16x8_max, i16x8_min, i16x8_mul, i16x8_narrow_i32x4, i16x8_neg, i16x8_shr,
+    i16x8_shuffle, i16x8_splat, i16x8_sub, i32x4_abs, i32x4_add, i32x4_bitmask, i32x4_dot_i16x8,
+    i32x4_eq, i32x4_extadd_pairwise_i16x8, i32x4_extend_high_i16x8, i32x4_extend_low_i16x8,
     i32x4_extmul_high_i16x8, i32x4_extmul_low_i16x8, i32x4_extract_lane, i32x4_gt, i32x4_max,
     i32x4_min, i32x4_mul, i32x4_shl, i32x4_shr, i32x4_shuffle, i32x4_splat, i32x4_sub,
     i64x2_shuffle, u8x16_narrow_i16x8, u16x8_extend_low_u8x16, u16x8_load_extend_u8x8, u16x8_min,
@@ -437,6 +437,11 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        Self(i16x8_add_sat(self.0, other.0))
+    }
+
+    #[inline(always)]
     fn sub(self, other: Self) -> Self {
         Self(i16x8_sub(self.0, other.0))
     }
@@ -578,6 +583,11 @@ impl I16Lanes for I16x4 {
     #[inline(always)]
     fn add(self, other: Self) -> Self {
         Self(i16x8_add(self.0, other.0))
+    }
+
+    #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        Self(i16x8_add_sat(self.0, other.0))
     }
 
     #[inline(always)]

@@ -77,15 +77,29 @@ const fn inverse<const N: usize>(scan: &[usize; N]) -> [usize; N] {
     out
 }
 
-/// Defines the group order, grouped scan and its inverse of every
-/// transform size, and the lookups over them.
+/// The end-of-block table of a grouped scan from its inverse
+/// (`nc_dsp::eob_table`'s layout: each raster position's scan index plus
+/// one), for the shared end-of-block kernel.
+const fn eob_of<const N: usize>(indices: &[usize; N]) -> [u16; N] {
+    let mut out = [0; N];
+    let mut position = 0;
+    while position < N {
+        out[position] = (indices[position] + 1) as u16;
+        position += 1;
+    }
+    out
+}
+
+/// Defines the group order, grouped scan, its inverse and its end-of-block
+/// table of every transform size, and the lookups over them.
 macro_rules! scans {
-    ($(($w:literal, $h:literal, $groups:ident, $positions:ident, $indices:ident)),* $(,)?) => {
+    ($(($w:literal, $h:literal, $groups:ident, $positions:ident, $indices:ident, $eob:ident)),* $(,)?) => {
         $(
             const $groups: [usize; $w * $h / GROUP_SIZE] =
                 diagonal(group_grid($w, $h).0, group_grid($w, $h).1);
             const $positions: [usize; $w * $h] = grouped($w, $h, &$groups);
             const $indices: [usize; $w * $h] = inverse(&$positions);
+            const $eob: [u16; $w * $h] = eob_of(&$indices);
         )*
 
         /// The coefficient groups of a `width` x `height` block in coding
@@ -114,36 +128,44 @@ macro_rules! scans {
                 _ => panic!("unsupported VVC transform size"),
             }
         }
+
+        /// The end-of-block table of a `width` x `height` block ([`eob_of`]).
+        pub(crate) fn rect_eob(width: usize, height: usize) -> &'static [u16] {
+            match (width, height) {
+                $(($w, $h) => &$eob,)*
+                _ => panic!("unsupported VVC transform size"),
+            }
+        }
     };
 }
 
 scans!(
-    (1, 16, G1X16, S1X16, I1X16),
-    (1, 32, G1X32, S1X32, I1X32),
-    (2, 8, G2X8, S2X8, I2X8),
-    (2, 16, G2X16, S2X16, I2X16),
-    (2, 32, G2X32, S2X32, I2X32),
-    (8, 2, G8X2, S8X2, I8X2),
-    (16, 1, G16X1, S16X1, I16X1),
-    (16, 2, G16X2, S16X2, I16X2),
-    (32, 1, G32X1, S32X1, I32X1),
-    (32, 2, G32X2, S32X2, I32X2),
-    (4, 4, G4X4, S4X4, I4X4),
-    (4, 8, G4X8, S4X8, I4X8),
-    (4, 16, G4X16, S4X16, I4X16),
-    (4, 32, G4X32, S4X32, I4X32),
-    (8, 4, G8X4, S8X4, I8X4),
-    (8, 8, G8X8, S8X8, I8X8),
-    (8, 16, G8X16, S8X16, I8X16),
-    (8, 32, G8X32, S8X32, I8X32),
-    (16, 4, G16X4, S16X4, I16X4),
-    (16, 8, G16X8, S16X8, I16X8),
-    (16, 16, G16X16, S16X16, I16X16),
-    (16, 32, G16X32, S16X32, I16X32),
-    (32, 4, G32X4, S32X4, I32X4),
-    (32, 8, G32X8, S32X8, I32X8),
-    (32, 16, G32X16, S32X16, I32X16),
-    (32, 32, G32X32, S32X32, I32X32),
+    (1, 16, G1X16, S1X16, I1X16, E1X16),
+    (1, 32, G1X32, S1X32, I1X32, E1X32),
+    (2, 8, G2X8, S2X8, I2X8, E2X8),
+    (2, 16, G2X16, S2X16, I2X16, E2X16),
+    (2, 32, G2X32, S2X32, I2X32, E2X32),
+    (8, 2, G8X2, S8X2, I8X2, E8X2),
+    (16, 1, G16X1, S16X1, I16X1, E16X1),
+    (16, 2, G16X2, S16X2, I16X2, E16X2),
+    (32, 1, G32X1, S32X1, I32X1, E32X1),
+    (32, 2, G32X2, S32X2, I32X2, E32X2),
+    (4, 4, G4X4, S4X4, I4X4, E4X4),
+    (4, 8, G4X8, S4X8, I4X8, E4X8),
+    (4, 16, G4X16, S4X16, I4X16, E4X16),
+    (4, 32, G4X32, S4X32, I4X32, E4X32),
+    (8, 4, G8X4, S8X4, I8X4, E8X4),
+    (8, 8, G8X8, S8X8, I8X8, E8X8),
+    (8, 16, G8X16, S8X16, I8X16, E8X16),
+    (8, 32, G8X32, S8X32, I8X32, E8X32),
+    (16, 4, G16X4, S16X4, I16X4, E16X4),
+    (16, 8, G16X8, S16X8, I16X8, E16X8),
+    (16, 16, G16X16, S16X16, I16X16, E16X16),
+    (16, 32, G16X32, S16X32, I16X32, E16X32),
+    (32, 4, G32X4, S32X4, I32X4, E32X4),
+    (32, 8, G32X8, S32X8, I32X8, E32X8),
+    (32, 16, G32X16, S32X16, I32X16, E32X16),
+    (32, 32, G32X32, S32X32, I32X32, E32X32),
 );
 
 /// [`rect_positions`] of a `side`-square block.

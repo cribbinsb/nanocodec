@@ -43,8 +43,8 @@ pub(crate) fn mc_fns() -> McFns {
         av1: super::av1_simd128::family::<Regular>(),
         av1_smooth: super::av1_simd128::family::<Smooth>(),
         av1_sharp: super::av1_simd128::family::<Sharp>(),
-        hevc_luma: super::separable_simd128::family::<HevcLumaTaps, 8, 4>(),
-        hevc_chroma: super::separable_simd128::family::<HevcChromaTaps, 4, 2>(),
+        hevc_luma: super::av1_simd128::separable_family::<HevcLumaTaps, 8, 4>(),
+        hevc_chroma: super::av1_simd128::separable_family::<HevcChromaTaps, 4, 2>(),
         h264_luma: [
             h264_luma_w4,
             h264_luma_w8,
@@ -59,9 +59,9 @@ pub(crate) fn mc_fns() -> McFns {
             h264_chroma_w32,
             h264_chroma_w64,
         ],
-        vvc_luma: super::separable_simd128::family::<VvcLumaTaps, 8, 4>(),
-        vvc_affine_luma: super::separable_simd128::family::<VvcAffineLumaTaps, 8, 4>(),
-        vvc_chroma: super::separable_simd128::family::<VvcChromaTaps, 4, 2>(),
+        vvc_luma: super::av1_simd128::separable_family::<VvcLumaTaps, 8, 4>(),
+        vvc_affine_luma: super::av1_simd128::separable_family::<VvcAffineLumaTaps, 8, 4>(),
+        vvc_chroma: super::av1_simd128::separable_family::<VvcChromaTaps, 4, 2>(),
         h264_phases: Some(h264_phase_fns()),
         av1_mixed: Some(super::av1_simd128::mixed_fns()),
     }

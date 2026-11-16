@@ -178,7 +178,7 @@ fn rd_cost(
         .expect("bit cost");
     for (coefficients, present) in levels.iter().zip(present) {
         if present {
-            crate::coeff::emit(&mut bits, &mut snapshot.coeff, coefficients, n, 1);
+            crate::coeff::emit(&mut bits, &mut snapshot.coeff, dsp, coefficients, n, 1);
         }
     }
     distortion as f32 + lambda * bits.0

@@ -393,7 +393,7 @@ pub(crate) fn cost(
             recon::add(dsp, &mut view, levels, quant.scaling());
         }
         if coded[index] {
-            crate::coeff::emit_rect(&mut bits, &mut c.coeff, levels, (w, h), 0);
+            crate::coeff::emit_rect(&mut bits, &mut c.coeff, dsp, levels, (w, h), 0);
         }
         let source_view = source
             .plane(PlaneIndex::Y)

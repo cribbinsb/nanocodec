@@ -12,6 +12,7 @@ use crate::{
     transform_tree,
 };
 use nc_common::decode::Result;
+use nc_dsp::Dsp;
 
 /// How an inter CU's motion is signalled (§7.3.11.5, §7.3.11.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +88,7 @@ pub(crate) enum Item {
 pub(crate) fn block(
     w: &mut CabacWriter,
     c: &mut Contexts,
+    dsp: &Dsp,
     (inter, references, tools): (bool, usize, crate::headers::Tools),
     p: &crate::motion::CuContexts,
     coding: &Coding,
@@ -135,7 +137,7 @@ pub(crate) fn block(
         crate::chroma::code(w, c, intra_mode, chroma_mode).expect("valid chroma mode");
     }
     if let Some(split) = isp {
-        isp_units(w, c, &cu, split, levels, qp_delta);
+        isp_units((w, c, dsp), &cu, split, levels, qp_delta);
         return;
     }
     let max_tb_log2 = tools.max_tb_log2();
@@ -148,8 +150,7 @@ pub(crate) fn block(
             transform_tree::unit_levels(&levels[plane], index, samples)
         });
         transform_unit(
-            w,
-            c,
+            (w, c, dsp),
             unit,
             (tu.width(), tu.height()),
             luma_flag,
@@ -224,8 +225,7 @@ fn write_qp_delta(w: &mut CabacWriter, c: &mut Contexts, qp_delta: &mut Option<i
 /// `size` is the TU's luma width and height; `qp_delta`: the CU's delta
 /// while still to be coded.
 fn transform_unit(
-    w: &mut CabacWriter,
-    c: &mut Contexts,
+    (w, c, dsp): (&mut CabacWriter, &mut Contexts, &Dsp),
     levels: [&[i32]; 3],
     (width, height): (usize, usize),
     luma_flag: bool,
@@ -246,6 +246,7 @@ fn transform_unit(
             crate::coeff::emit_rect(
                 w,
                 &mut c.coeff,
+                dsp,
                 level,
                 (width >> shift, height >> shift),
                 shift,
@@ -257,8 +258,7 @@ fn transform_unit(
 /// §7.3.11.8-10 the transform units of an ISP CU: one per sub-partition,
 /// the CU's chroma flags and residuals with the last (§7.3.11.10 `chromaAvailable`).
 fn isp_units(
-    w: &mut CabacWriter,
-    c: &mut Contexts,
+    (w, c, dsp): (&mut CabacWriter, &mut Contexts, &Dsp),
     cu: &nc_encoder::Block,
     split: crate::isp::Split,
     levels: &[Vec<i32>; 3],
@@ -281,12 +281,12 @@ fn isp_units(
             write_qp_delta(w, c, &mut qp_delta);
         }
         if coded[index] {
-            crate::coeff::emit_rect(w, &mut c.coeff, luma, (part.width(), part.height()), 0);
+            crate::coeff::emit_rect(w, &mut c.coeff, dsp, luma, (part.width(), part.height()), 0);
         }
         for (plane, present) in chroma.into_iter().enumerate() {
             if present {
                 let size = (cu.width() / 2, cu.height() / 2);
-                crate::coeff::emit_rect(w, &mut c.coeff, &levels[plane + 1], size, 1);
+                crate::coeff::emit_rect(w, &mut c.coeff, dsp, &levels[plane + 1], size, 1);
             }
         }
     }

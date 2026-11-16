@@ -27,7 +27,6 @@ pub(crate) unsafe fn convert_fns() -> ConvertFns {
         deinterleave_uv,
         i420_to_rgba_rows: super::to_rgba_avx2::i420_to_rgba_rows,
         rgba_to_i420: super::rgba_avx2::rgba_to_i420,
-        sse_row: scalar::sse_row,
     }
 }
 

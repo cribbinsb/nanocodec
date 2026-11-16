@@ -8,6 +8,7 @@ use crate::{
     cabac::CabacWriter, coeff_contexts::CoeffContexts, contexts::Context, decoder_cabac::Reader,
 };
 use nc_common::decode::{DecodeError, Result};
+use nc_dsp::Dsp;
 
 pub(crate) trait Bins {
     /// Whether the bins are read (decoding): the walk then skips what only
@@ -40,8 +41,6 @@ impl Bins for Reader<'_> {
 
 /// Coefficients of one luma coefficient group (§7.3.11.11).
 use crate::scan::GROUP_SIZE;
-/// Side of the coefficient groups of blocks at least 4 a side.
-const GROUP_SIDE: usize = 4;
 /// Coefficient groups of the largest (32x32) transform block.
 const MAX_GROUPS: usize = 64;
 
@@ -438,57 +437,26 @@ fn remainder(io: &mut impl Bins, value: u32, rice: u32) -> Result<u32> {
     Ok(base + io.bypass(value.saturating_sub(base), bits)?)
 }
 
-/// The scan index of `source`'s last nonzero level (0 when none): the last
-/// coefficient group holding one, found from its four raster rows (much
-/// cheaper than walking a sparse block's scan backwards), then its last
-/// nonzero position.
-fn last_significant(source: &[i32], (width, height): (usize, usize), scan: &[usize]) -> usize {
-    let groups = crate::scan::rect_groups(width, height);
-    let found = if width < GROUP_SIDE || height < GROUP_SIDE {
-        // Intra sub-partitions 1 or 2 wide: a few groups, from the scan.
-        scan.as_chunks::<GROUP_SIZE>()
-            .0
-            .iter()
-            .rposition(|group| group.iter().any(|&p| source[p] != 0))
-    } else {
-        let columns = width / GROUP_SIDE;
-        // Branch-free per group: the OR of its sixteen levels.
-        let coded = |group: usize| {
-            let (x, y) = (group % columns * GROUP_SIDE, group / columns * GROUP_SIDE);
-            (y..y + GROUP_SIDE)
-                .flat_map(|row| &source[row * width + x..][..GROUP_SIDE])
-                .fold(0, |any, &v| any | v)
-                != 0
-        };
-        (0..groups.len()).rev().find(|&g| coded(groups[g]))
-    };
-    let Some(g) = found else {
-        return 0;
-    };
-    let first = g * GROUP_SIZE;
-    (first..first + GROUP_SIZE)
-        .rev()
-        .find(|&i| source[scan[i]] != 0)
-        .expect("a coded group holds a nonzero level")
+/// The scan index of `source`'s last nonzero level (0 when none), a coded
+/// region `width` x `height`: the shared end-of-block kernel
+/// (`Dsp::end_of_block_wide`) over the grouped scan's table.
+fn last_significant(dsp: &Dsp, source: &[i32], (width, height): (usize, usize)) -> usize {
+    let table = crate::scan::rect_eob(width, height);
+    let (end, _) = dsp.end_of_block_wide(&source[..table.len()], table);
+    end.saturating_sub(1)
 }
 
-/// The last position of `source`, a coded region `width` x `height` of a
-/// transform block of `sides` (§9.3.4.2.4: each coordinate's prefix
+/// The last position (scan index `last` of a writer's levels; a reader's
+/// from the bins) of a coded region `width` x `height` of a transform
+/// block of `sides` (§9.3.4.2.4: each coordinate's prefix
 /// contexts follow its own side of the whole block).
 fn last_position<B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
-    source: &[i32],
     (width, height): (usize, usize),
     (ch, sides): (usize, (usize, usize)),
-    scan: &[usize],
+    (scan, last): (&[usize], usize),
 ) -> Result<usize> {
-    // A reader learns the position from the bins; the value is unused.
-    let last = if B::READS {
-        0
-    } else {
-        last_significant(source, (width, height), scan)
-    };
     let (x, y) = (scan[last] % width, scan[last] / width);
     let gx = last_prefix(io, &mut c.last_x[ch], x, sides.0, ch)?;
     let gy = last_prefix(io, &mut c.last_y[ch], y, sides.1, ch)?;
@@ -562,8 +530,9 @@ fn signs(
     Ok(())
 }
 
-/// Read (or write or price, by `io`) the levels `source` of a `side`-square
-/// block of channel `ch` (§7.3.11.11); returns the levels as coded.
+/// Read the levels of a `side`-square block of channel `ch` (§7.3.11.11)
+/// into the result (`source` is unused by a reader); writers and pricers
+/// code through [`emit`].
 pub(crate) fn code(
     io: &mut impl Bins,
     c: &mut CoeffContexts,
@@ -585,7 +554,7 @@ pub(crate) fn code_rect(
     ch: usize,
 ) -> Result<Vec<i32>> {
     let mut levels = Vec::new();
-    walk_sized(io, c, source, (ch, size), Some(&mut levels))?;
+    walk_sized(io, c, (source, None), (ch, size), Some(&mut levels))?;
     Ok(levels)
 }
 
@@ -594,22 +563,25 @@ pub(crate) fn code_rect(
 pub(crate) fn emit(
     io: &mut impl Bins,
     c: &mut CoeffContexts,
+    dsp: &Dsp,
     levels: &[i32],
     side: usize,
     ch: usize,
 ) {
-    emit_rect(io, c, levels, (side, side), ch);
+    emit_rect(io, c, dsp, levels, (side, side), ch);
 }
 
 /// [`emit`] of a `width` x `height` block.
 pub(crate) fn emit_rect(
     io: &mut impl Bins,
     c: &mut CoeffContexts,
+    dsp: &Dsp,
     levels: &[i32],
     size: (usize, usize),
     ch: usize,
 ) {
-    walk_sized(io, c, levels, (ch, size), None).expect("an encoder's levels are valid");
+    walk_sized(io, c, (levels, Some(dsp)), (ch, size), None)
+        .expect("an encoder's levels are valid");
 }
 
 /// [`walk`] of the coded region of channel `ch`'s transform block of
@@ -619,7 +591,7 @@ pub(crate) fn emit_rect(
 fn walk_sized<B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
-    source: &[i32],
+    (source, dsp): (&[i32], Option<&Dsp>),
     (ch, size): (usize, (usize, usize)),
     levels: Option<&mut Vec<i32>>,
 ) -> Result<()> {
@@ -628,11 +600,19 @@ fn walk_sized<B: Bins>(
     }
     let coded = (coded_side(size.0), coded_side(size.1));
     let block = (ch, size);
+    // A reader learns the last position from the bins; a writer finds it
+    // in its levels.
+    let last = if let Some(dsp) = dsp {
+        last_significant(dsp, source, coded)
+    } else {
+        debug_assert!(B::READS, "writers code through `emit`, with the Dsp");
+        0
+    };
     if B::PRICES && levels.is_none() {
         return walk(
             io,
             c,
-            source,
+            (source, last),
             coded,
             block,
             &mut SourceLevels::new(source, coded.0, coded.1),
@@ -640,10 +620,10 @@ fn walk_sized<B: Bins>(
     }
     // Coded sides are powers of two up to `MAX_SIDE`.
     match coded.0.max(coded.1) {
-        1..=4 => walk_grid::<{ padded_area(4) }, _>(io, c, source, coded, block, levels),
-        5..=8 => walk_grid::<{ padded_area(8) }, _>(io, c, source, coded, block, levels),
-        9..=16 => walk_grid::<{ padded_area(16) }, _>(io, c, source, coded, block, levels),
-        _ => walk_grid::<{ padded_area(MAX_SIDE) }, _>(io, c, source, coded, block, levels),
+        1..=4 => walk_grid::<{ padded_area(4) }, _>(io, c, (source, last), coded, block, levels),
+        5..=8 => walk_grid::<{ padded_area(8) }, _>(io, c, (source, last), coded, block, levels),
+        9..=16 => walk_grid::<{ padded_area(16) }, _>(io, c, (source, last), coded, block, levels),
+        _ => walk_grid::<{ padded_area(MAX_SIDE) }, _>(io, c, (source, last), coded, block, levels),
     }
 }
 
@@ -664,7 +644,7 @@ const fn padded_area(side: usize) -> usize {
 fn walk_grid<const AREA: usize, B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
-    source: &[i32],
+    source: (&[i32], usize),
     coded: (usize, usize),
     block: (usize, (usize, usize)),
     levels: Option<&mut Vec<i32>>,
@@ -681,13 +661,13 @@ fn walk_grid<const AREA: usize, B: Bins>(
 fn walk<B: Bins>(
     io: &mut B,
     c: &mut CoeffContexts,
-    source: &[i32],
+    (source, last): (&[i32], usize),
     (width, height): (usize, usize),
     (ch, sides): (usize, (usize, usize)),
     values: &mut impl LevelValues,
 ) -> Result<()> {
     let scan = crate::scan::rect_positions(width, height);
-    let last = last_position(io, c, source, (width, height), (ch, sides), scan)?;
+    let last = last_position(io, c, (width, height), (ch, sides), (scan, last))?;
     let groups = crate::scan::rect_groups(width, height);
     let (columns, rows) = crate::scan::group_grid(width, height);
     let mut significant = [false; MAX_GROUPS];
@@ -834,15 +814,9 @@ mod tests {
             for (n, &level) in levels_in_scan.iter().enumerate() {
                 source[positions[n]] = level;
             }
-            let mut coded = BitCost::default();
-            let mut contexts = CoeffContexts::new(37, true);
-            assert_eq!(
-                code(&mut coded, &mut contexts, &source, 4, 0).unwrap(),
-                source
-            );
             let mut writer = CabacWriter::new();
             let mut contexts = CoeffContexts::new(37, true);
-            code(&mut writer, &mut contexts, &source, 4, 0).unwrap();
+            emit(&mut writer, &mut contexts, &Dsp::new(), &source, 4, 0);
             writer.encode_terminate(true);
             let mut bits = writer.finish();
             bits.trailing_bits();
@@ -882,10 +856,7 @@ mod tests {
                         hide_signs_by_flipping(&mut source, side);
                         let mut writer = CabacWriter::new();
                         let mut contexts = CoeffContexts::new(37, inter);
-                        assert_eq!(
-                            code(&mut writer, &mut contexts, &source, side, ch).unwrap(),
-                            source
-                        );
+                        emit(&mut writer, &mut contexts, &Dsp::new(), &source, side, ch);
                         writer.encode_terminate(true);
                         let mut bits = writer.finish();
                         bits.trailing_bits();

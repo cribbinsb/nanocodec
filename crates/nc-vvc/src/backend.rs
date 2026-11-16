@@ -1431,6 +1431,7 @@ impl CodecBackend for VvcBackend {
                     syntax::block(
                         &mut cabac,
                         &mut contexts,
+                        &self.dsp,
                         (self.inter, self.references.syntax.active, self.tools),
                         neighbours,
                         coding,
@@ -1702,7 +1703,14 @@ impl VvcBackend {
         let ch = usize::from(plane != PlaneIndex::Y);
         let mut contexts = self.contexts.coeff.clone();
         let mut bits = crate::coeff::BitCost::default();
-        crate::coeff::emit_rect(&mut bits, &mut contexts, levels, (width, height), ch);
+        crate::coeff::emit_rect(
+            &mut bits,
+            &mut contexts,
+            &self.dsp,
+            levels,
+            (width, height),
+            ch,
+        );
         let size = nc_dsp::BlockSize::new(width, height).expect("a transform unit size");
         let original = source
             .plane(plane)

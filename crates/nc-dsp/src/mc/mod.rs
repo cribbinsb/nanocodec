@@ -63,6 +63,19 @@ mod rpr;
 pub use rpr::{VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled};
 pub(crate) mod scalar;
 
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+mod rounding;
+#[cfg(any(
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
+pub(crate) use rounding::{
+    Av1Rounding, PREP_LAST_ROUND, PREP_LAST_SHIFT, ROUND_2, ROUND_6, Rounding, SeparableRounding,
+};
+
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 pub(crate) mod avx2;
@@ -70,6 +83,10 @@ pub(crate) mod avx2;
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
 mod av1_avx2;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+mod av1_avx512;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
@@ -98,10 +115,6 @@ pub(crate) mod simd128;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(unsafe_code)]
 mod av1_simd128;
-
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-#[allow(unsafe_code)]
-mod separable_simd128;
 
 /// Taps of the AV1 filter.
 pub(crate) const TAPS: usize = 8;
@@ -447,7 +460,8 @@ pub(crate) const VVC_CHROMA: [[i16; 4]; 32] = [
 /// One separable HEVC-style filter table (HEVC §8.5.3.3.3, H.266
 /// §8.5.6.3): `N` taps at each sub-sample position, an unrounded first
 /// pass, `>> 6` after the second and uni-prediction rounding. The kernels
-/// of every such table share `generic::hevc` (SIMD) and
+/// of every such table share AV1's passes (x86: `av1_avx2`, with
+/// `av1_avx512` rows; SIMD128: `av1_simd128`), `generic::hevc` (NEON) and
 /// `scalar::hevc_separable`.
 pub(crate) trait SeparableTaps<const N: usize> {
     /// The taps by sub-sample position.

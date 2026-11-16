@@ -13,7 +13,7 @@ pub(crate) fn cdef_fns() -> CdefFns {
         block4,
         block8_interior,
         block4_interior,
-        block4_interior_pair: None,
+        block4_interior_pair: Some(block4_pair),
     }
 }
 
@@ -73,4 +73,32 @@ unsafe fn block4_interior(
 ) {
     // SAFETY: NEON is enabled for this function (dispatch contract).
     unsafe { narrow::filter_any::<U8x16, 4, 8>(src, stride, origin, args, dst, dst_stride) }
+}
+
+/// Two interior 4x4 blocks ([`super::CdefPairFn8`] contract), one after the
+/// other in one call, as SIMD128's `block4_pair`: a vector holds one 4x4
+/// block, so the lanes share nothing, but the call and the strength set-up
+/// are paid once per unit's U and V instead of twice.
+#[target_feature(enable = "neon")]
+unsafe fn block4_pair(
+    src: [&[u8]; 2],
+    stride: usize,
+    origins: [usize; 2],
+    args: &CdefArgs,
+    dirs: [usize; 2],
+    dst: [*mut u8; 2],
+    dst_stride: usize,
+) {
+    const N: usize = 4;
+    for i in 0..2 {
+        // SAFETY: the caller guarantees four writable rows of four samples
+        // at `dst[i]` that nothing else references (`CdefPairFn8`).
+        let out = unsafe { core::slice::from_raw_parts_mut(dst[i], (N - 1) * dst_stride + N) };
+        let args = args.with_dir(dirs[i] as u8);
+        // SAFETY: NEON is enabled for this function; the kernel checks the
+        // block's source window against `src[i]`.
+        unsafe {
+            narrow::filter_any::<U8x16, N, 8>(src[i], stride, origins[i], &args, out, dst_stride);
+        }
+    }
 }

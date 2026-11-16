@@ -8,29 +8,30 @@
 #![allow(clippy::inline_always)]
 
 use core::arch::x86_64::{
-    __m128i, __m256i, _mm_abs_epi16, _mm_abs_epi32, _mm_add_epi16, _mm_add_epi32, _mm_and_si128,
-    _mm_blendv_epi8, _mm_castsi128_ps, _mm_cmpeq_epi16, _mm_cmpeq_epi32, _mm_cmpgt_epi16,
-    _mm_cmpgt_epi32, _mm_cvtepi16_epi32, _mm_cvtepu8_epi16, _mm_cvtepu8_epi32, _mm_cvtsi32_si128,
-    _mm_cvtsi128_si32, _mm_extract_epi32, _mm_hadd_epi32, _mm_loadl_epi64, _mm_loadu_si128,
-    _mm_madd_epi16, _mm_maddubs_epi16, _mm_max_epi16, _mm_max_epi32, _mm_min_epi16, _mm_min_epi32,
-    _mm_min_epu16, _mm_movemask_ps, _mm_mulhrs_epi16, _mm_mullo_epi16, _mm_mullo_epi32,
-    _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16, _mm_set1_epi16, _mm_set1_epi32,
-    _mm_setzero_si128, _mm_shuffle_epi8, _mm_sign_epi16, _mm_sign_epi32, _mm_sll_epi32,
-    _mm_sra_epi16, _mm_sra_epi32, _mm_srl_epi32, _mm_srli_si128, _mm_storel_epi64,
-    _mm_storeu_si128, _mm_sub_epi16, _mm_sub_epi32, _mm_subs_epu16, _mm_unpackhi_epi8,
-    _mm_unpackhi_epi16, _mm_unpackhi_epi32, _mm_unpackhi_epi64, _mm_unpacklo_epi8,
-    _mm_unpacklo_epi16, _mm_unpacklo_epi32, _mm_unpacklo_epi64, _mm256_abs_epi16, _mm256_abs_epi32,
-    _mm256_add_epi16, _mm256_add_epi32, _mm256_and_si256, _mm256_blend_epi16, _mm256_blendv_epi8,
-    _mm256_castsi256_ps, _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cmpeq_epi32,
-    _mm256_cmpgt_epi16, _mm256_cmpgt_epi32, _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16,
-    _mm256_cvtepu8_epi32, _mm256_extracti128_si256, _mm256_i32gather_epi32, _mm256_loadu_si256,
-    _mm256_madd_epi16, _mm256_maddubs_epi16, _mm256_max_epi16, _mm256_max_epi32, _mm256_min_epi16,
-    _mm256_min_epi32, _mm256_min_epu16, _mm256_movemask_ps, _mm256_mulhrs_epi16,
-    _mm256_mullo_epi16, _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32,
-    _mm256_permute2x128_si256, _mm256_permute4x64_epi64, _mm256_set_m128i, _mm256_set1_epi16,
-    _mm256_set1_epi32, _mm256_setzero_si256, _mm256_sign_epi16, _mm256_sign_epi32,
-    _mm256_sll_epi32, _mm256_slli_epi32, _mm256_sra_epi16, _mm256_sra_epi32, _mm256_srai_epi32,
-    _mm256_srl_epi32, _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16,
+    __m128i, __m256i, _mm_abs_epi16, _mm_abs_epi32, _mm_add_epi16, _mm_add_epi32, _mm_adds_epi16,
+    _mm_and_si128, _mm_blendv_epi8, _mm_castsi128_ps, _mm_cmpeq_epi16, _mm_cmpeq_epi32,
+    _mm_cmpgt_epi16, _mm_cmpgt_epi32, _mm_cvtepi16_epi32, _mm_cvtepu8_epi16, _mm_cvtepu8_epi32,
+    _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_extract_epi32, _mm_hadd_epi32, _mm_loadl_epi64,
+    _mm_loadu_si128, _mm_madd_epi16, _mm_maddubs_epi16, _mm_max_epi16, _mm_max_epi32,
+    _mm_min_epi16, _mm_min_epi32, _mm_min_epu16, _mm_movemask_ps, _mm_mulhrs_epi16,
+    _mm_mullo_epi16, _mm_mullo_epi32, _mm_or_si128, _mm_packs_epi32, _mm_packus_epi16,
+    _mm_set1_epi16, _mm_set1_epi32, _mm_setzero_si128, _mm_shuffle_epi8, _mm_sign_epi16,
+    _mm_sign_epi32, _mm_sll_epi32, _mm_sra_epi16, _mm_sra_epi32, _mm_srl_epi32, _mm_srli_si128,
+    _mm_storel_epi64, _mm_storeu_si128, _mm_sub_epi16, _mm_sub_epi32, _mm_subs_epu16,
+    _mm_unpackhi_epi8, _mm_unpackhi_epi16, _mm_unpackhi_epi32, _mm_unpackhi_epi64,
+    _mm_unpacklo_epi8, _mm_unpacklo_epi16, _mm_unpacklo_epi32, _mm_unpacklo_epi64,
+    _mm256_abs_epi16, _mm256_abs_epi32, _mm256_add_epi16, _mm256_add_epi32, _mm256_adds_epi16,
+    _mm256_and_si256, _mm256_blend_epi16, _mm256_blendv_epi8, _mm256_castsi256_ps,
+    _mm256_castsi256_si128, _mm256_cmpeq_epi16, _mm256_cmpeq_epi32, _mm256_cmpgt_epi16,
+    _mm256_cmpgt_epi32, _mm256_cvtepi16_epi32, _mm256_cvtepu8_epi16, _mm256_cvtepu8_epi32,
+    _mm256_extracti128_si256, _mm256_i32gather_epi32, _mm256_loadu_si256, _mm256_madd_epi16,
+    _mm256_maddubs_epi16, _mm256_max_epi16, _mm256_max_epi32, _mm256_min_epi16, _mm256_min_epi32,
+    _mm256_min_epu16, _mm256_movemask_ps, _mm256_mulhrs_epi16, _mm256_mullo_epi16,
+    _mm256_mullo_epi32, _mm256_or_si256, _mm256_packs_epi32, _mm256_permute2x128_si256,
+    _mm256_permute4x64_epi64, _mm256_set_m128i, _mm256_set1_epi16, _mm256_set1_epi32,
+    _mm256_setzero_si256, _mm256_sign_epi16, _mm256_sign_epi32, _mm256_sll_epi32,
+    _mm256_slli_epi32, _mm256_sra_epi16, _mm256_sra_epi32, _mm256_srai_epi32, _mm256_srl_epi32,
+    _mm256_storeu_si256, _mm256_sub_epi16, _mm256_sub_epi32, _mm256_subs_epu16,
     _mm256_unpackhi_epi16, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi16,
     _mm256_unpacklo_epi32, _mm256_unpacklo_epi64,
 };
@@ -826,6 +827,13 @@ impl I16Lanes for I16x16 {
     }
 
     #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        // SAFETY: these types run only inside AVX2 kernels (module docs); register
+        // operations only.
+        unsafe { Self(_mm256_adds_epi16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
     fn sub(self, other: Self) -> Self {
         // SAFETY: these types run only inside AVX2 kernels (module docs);
         // slices are indexed before every load and store.
@@ -1049,6 +1057,13 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        // SAFETY: these types run only inside AVX2 kernels (module docs); register
+        // operations only.
+        unsafe { Self(_mm_adds_epi16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
     fn sub(self, other: Self) -> Self {
         // SAFETY: these types run only inside AVX2 kernels (module docs);
         // slices are indexed before every load and store.
@@ -1266,6 +1281,13 @@ impl I16Lanes for I16x4 {
         // SAFETY: these types run only inside AVX2 kernels (module docs);
         // slices are indexed before every load and store.
         unsafe { Self(_mm_add_epi16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        // SAFETY: these types run only inside AVX2 kernels (module docs); register
+        // operations only.
+        unsafe { Self(_mm_adds_epi16(self.0, other.0)) }
     }
 
     #[inline(always)]

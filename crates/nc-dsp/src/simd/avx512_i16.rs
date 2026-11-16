@@ -12,12 +12,12 @@ use super::{I16FilterLanes, I16Lanes};
 use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm_storeu_si128, _mm256_castsi256_si128, _mm256_extracti128_si256,
     _mm256_loadu_si256, _mm256_storeu_si256, _mm512_abs_epi16, _mm512_add_epi16, _mm512_add_epi32,
-    _mm512_and_si512, _mm512_castsi256_si512, _mm512_cmpeq_epi16_mask, _mm512_cmpgt_epi16_mask,
-    _mm512_cmplt_epi16_mask, _mm512_cvtepu8_epi16, _mm512_cvtusepi16_epi8, _mm512_inserti64x4,
-    _mm512_loadu_si512, _mm512_madd_epi16, _mm512_mask_blend_epi16, _mm512_mask_sub_epi16,
-    _mm512_maskz_set1_epi16, _mm512_max_epi16, _mm512_min_epi16, _mm512_min_epu16,
-    _mm512_mulhrs_epi16, _mm512_mullo_epi16, _mm512_packs_epi32, _mm512_set1_epi16,
-    _mm512_set1_epi32, _mm512_setzero_si512, _mm512_sra_epi16, _mm512_sra_epi32,
+    _mm512_adds_epi16, _mm512_and_si512, _mm512_castsi256_si512, _mm512_cmpeq_epi16_mask,
+    _mm512_cmpgt_epi16_mask, _mm512_cmplt_epi16_mask, _mm512_cvtepu8_epi16, _mm512_cvtusepi16_epi8,
+    _mm512_inserti64x4, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_mask_blend_epi16,
+    _mm512_mask_sub_epi16, _mm512_maskz_set1_epi16, _mm512_max_epi16, _mm512_min_epi16,
+    _mm512_min_epu16, _mm512_mulhrs_epi16, _mm512_mullo_epi16, _mm512_packs_epi32,
+    _mm512_set1_epi16, _mm512_set1_epi32, _mm512_setzero_si512, _mm512_sra_epi16, _mm512_sra_epi32,
     _mm512_storeu_si512, _mm512_sub_epi16, _mm512_subs_epu16, _mm512_unpackhi_epi16,
     _mm512_unpacklo_epi16,
 };
@@ -105,6 +105,13 @@ impl I16Lanes for I16x32 {
         // SAFETY: these types run only inside AVX-512F/BW/VL kernels (module docs);
         // slices are indexed before every load and store.
         unsafe { Self(_mm512_add_epi16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        // SAFETY: these types run only inside AVX-512F/BW/VL kernels (module
+        // docs); register operations only.
+        unsafe { Self(_mm512_adds_epi16(self.0, other.0)) }
     }
 
     #[inline(always)]

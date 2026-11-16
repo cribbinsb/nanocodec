@@ -377,7 +377,7 @@ fn cost(
     }
     let mut coeff = contexts.coeff.clone();
     let mut bits = BitCost::default();
-    crate::coeff::emit_rect(&mut bits, &mut coeff, levels, (width, height), 0);
+    crate::coeff::emit_rect(&mut bits, &mut coeff, dsp, levels, (width, height), 0);
     if present {
         let mut mts = contexts.mts_idx;
         code(&mut bits, &mut mts, index).expect("valid mts_idx");

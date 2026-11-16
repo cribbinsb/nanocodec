@@ -59,7 +59,6 @@ pub struct Dsp {
     av2_typed: Av2TypedFns,
     mc: McFns,
     diff: DiffFns,
-    reconstruct: crate::reconstruct::Kernel,
     constant_add: crate::constant_add::AddFn,
     end_of_block: crate::end_of_block::EobFn,
     end_of_block_wide: crate::end_of_block::WideEobFn,
@@ -198,7 +197,6 @@ impl Dsp {
             av2_typed: av2_typed_fns(isa),
             mc,
             diff,
-            reconstruct: crate::reconstruct::kernel(isa),
             constant_add: crate::constant_add::kernel(isa),
             end_of_block: crate::end_of_block::kernel(isa),
             end_of_block_wide: crate::end_of_block::wide_kernel(isa),
@@ -253,7 +251,6 @@ impl Dsp {
         sao::avx512::install(&mut dsp.sao);
         pixel::avx512::install(&mut dsp.pixel);
         sample::avx512::install(&mut dsp.sample);
-        dsp.convert.sse_row = crate::convert::avx512::sse_row;
         crate::mc::avx512::install(&mut dsp.mc);
         diff::avx512::install(&mut dsp.diff);
         txfm::avx512::install(&mut dsp.txfm);
@@ -1708,9 +1705,8 @@ impl Dsp {
         }
     }
 
-    /// `dst = clamp(dst + residual, 0, 255)` over a `size` block. Residual
-    /// values must lie within `±(2^15 - 256)` (any inverse transform output
-    /// does); larger ones give unspecified (but memory-safe) results.
+    /// `dst = clamp(dst + residual, 0, 255)` over a `size` block (the
+    /// shared reconstruction kernel, `diff::ReconstructFn`, in place).
     ///
     /// # Panics
     ///
@@ -1728,11 +1724,11 @@ impl Dsp {
         let dst_stride = dst.stride();
         // SAFETY: as for `residual`.
         unsafe {
-            (self.diff.add_residual[size.width_class()])(
+            (self.diff.reconstruct[size.width_class()])(
+                diff::Prediction::InPlace,
+                diff::ResidualRows::Samples(residual, residual_stride),
                 dst.data_mut(),
                 dst_stride,
-                residual,
-                residual_stride,
                 size.height(),
             );
         }
@@ -1806,7 +1802,8 @@ impl Dsp {
     }
 
     /// Add a packed i16 residual (or DC constant) to prediction and store clipped
-    /// pixels directly into the destination plane, without an intermediate block.
+    /// pixels directly into the destination plane, without an intermediate block
+    /// (the shared reconstruction kernel, as [`Self::add_residual`]).
     ///
     /// # Panics
     /// If either view or the residual does not cover `size`.
@@ -1819,19 +1816,21 @@ impl Dsp {
     ) {
         check_covers(size, prediction, "prediction");
         check_covers(size, &dst.as_view(), "destination");
-        if let crate::Residual16::Samples(r) = residual {
-            assert!(r.len() >= size.width() * size.height());
-        }
+        let residual = match residual {
+            crate::Residual16::Samples(samples) => {
+                diff::ResidualRows::Samples(samples, size.width())
+            }
+            crate::Residual16::Constant(dc) => diff::ResidualRows::Constant(dc),
+        };
         let ds = dst.stride();
-        // SAFETY: supported ISA and all row/sample spans checked above.
+        // SAFETY: the table matches the checked CPU ISA; the kernel checks
+        // the prediction, residual and destination cover the block.
         unsafe {
-            (self.reconstruct)(
-                prediction.data(),
-                prediction.stride(),
+            (self.diff.reconstruct[size.width_class()])(
+                diff::Prediction::Block(prediction.data(), prediction.stride()),
                 residual,
                 dst.data_mut(),
                 ds,
-                size.width(),
                 size.height(),
             );
         }
@@ -4791,6 +4790,12 @@ pub(crate) fn check_covers<T: nc_common::Sample>(
 /// Zero every coefficient of the `side`x`side` block `coeffs` outside its
 /// top-left `keep`x`keep` square (the same in column-major and raster order).
 /// Coefficients of the largest coded AV1 transform block (32x32).
+/// Side of the cells [`Dsp::sse`] sums with the 8x8-cell SSE kernel.
+const SSE_CELL: usize = 8;
+/// Cells per kernel call in [`Dsp::sse`] (a 512-sample-wide strip): the
+/// kernel's output buffer lives on the stack.
+const SSE_CELLS_PER_CALL: usize = 64;
+
 const AV1_MAX_CODED_AREA: usize = crate::AV1_MAX_CODED_SIDE * crate::AV1_MAX_CODED_SIDE;
 
 /// `q` for 16-bit levels: positive steps (asserted) and `max_level` capped
@@ -5419,7 +5424,8 @@ impl Dsp {
 
 impl Dsp {
     /// Sum of squared differences between two equally sized planes (the
-    /// browser demo's PSNR).
+    /// browser demo's PSNR): the 8x8-cell SSE kernel ([`Self::sse_8x8_row`])
+    /// over every whole 8x8 cell, the samples outside them summed here.
     ///
     /// # Panics
     ///
@@ -5434,19 +5440,33 @@ impl Dsp {
             b.width(),
             b.height()
         );
+        let (width, height) = (a.width(), a.height());
+        let (cells, strips) = (width / SSE_CELL, height / SSE_CELL);
+        let mut cell_sse = [0u32; SSE_CELLS_PER_CALL];
         let mut sum = 0;
-        for y in 0..a.height() {
-            for (a, b) in a
-                .row(y)
-                .chunks(convert::MAX_SSE_ROW)
-                .zip(b.row(y).chunks(convert::MAX_SSE_ROW))
-            {
-                // SAFETY: the chunks are equally long and at most
-                // MAX_SSE_ROW samples (kernel contract); the table matches a
-                // supported ISA.
-                sum += u64::from(unsafe { (self.convert.sse_row)(a, b) });
+        for strip in 0..strips {
+            let top = strip * SSE_CELL;
+            for first in (0..cells).step_by(SSE_CELLS_PER_CALL) {
+                let count = (cells - first).min(SSE_CELLS_PER_CALL);
+                let (left, span) = (first * SSE_CELL, count * SSE_CELL);
+                let inside = "whole cells lie inside the plane";
+                let cells_a = a.sub_view(left, top, span, SSE_CELL).expect(inside);
+                let cells_b = b.sub_view(left, top, span, SSE_CELL).expect(inside);
+                self.sse_8x8_row(&cells_a, &cells_b, &mut cell_sse[..count]);
+                sum += cell_sse[..count].iter().map(|&s| u64::from(s)).sum::<u64>();
             }
         }
+        // The columns right of the last whole cell, then the rows below.
+        let tail = |y: usize, x0: usize| -> u64 {
+            a.row(y)[x0..]
+                .iter()
+                .zip(&b.row(y)[x0..])
+                .map(|(&p, &q)| u64::from(p.abs_diff(q)).pow(2))
+                .sum()
+        };
+        let covered = strips * SSE_CELL;
+        sum += (0..covered).map(|y| tail(y, cells * SSE_CELL)).sum::<u64>();
+        sum += (covered..height).map(|y| tail(y, 0)).sum::<u64>();
         sum
     }
 }

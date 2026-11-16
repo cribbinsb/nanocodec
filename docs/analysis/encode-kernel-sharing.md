@@ -116,8 +116,8 @@ crates, scalar.
 
 | Variant | Module (lines) | Tiers | Technique | Hot | Arithmetic | Verdict |
 |---|---|---|---|---|---|---|
-| AV1 put/prep 8-tap 1/16 | `mc/av1_avx2.rs` (926), `av1_neon.rs` (429), `av1_simd128.rs` (522), `generic.rs` | S A2 N(+dot) W; A5 = whole-pel copy only | halved taps in i8, `pshufb`+`maddubs` horizontal, i16 intermediate, `pmaddwd` vertical on row pairs, `mulhrsw` rounding; 2 rows per ymm at w4/8; NEON bias-flipped `sdot` | AV1 2.3 / 2.9; AV2 1.8 / 2.5 | round0 3, round1 11 (compound 7) | **Base technique** for the 8-tap family; AV2 already uses it |
-| HEVC/VVC separable (`SeparableTaps<N>`) | AVX2: `mc/av1_avx2.rs` `separable` (shared with AV1); others `mc/generic.rs`, `avx512.rs`, `neon_dotprod.rs` (HEVC luma only), `separable_simd128.rs` | S A2 (shared) A5 (32/64 fractional) N(+dot luma) W | AVX2: AV1's `vpshufb` + `vpmaddubsw` horizontal, `vpmaddwd` vertical, two rows per step at 4/8 wide; 4-tap chroma on two tap pairs | HEVC 8.6 / 9.5; VVC 5.2 / 5.3 | full taps (fit i8), unrounded first pass, `(v+2048)>>12`; HEVC = VVC at shared phases | **AVX2 merged** (2026-11-16) onto the AV1 kernel with a `Rounding` scheme (AV1: halved taps and its roundings; HEVC/VVC: full taps). Still to do: `neon_dotprod` generic over the table; `separable_simd128` into `av1_simd128` |
+| AV1 put/prep 8-tap 1/16 | `mc/av1_avx2.rs`, `av1_avx512.rs` (rows of 32), `av1_neon.rs` (429), `av1_simd128.rs` (522), `generic.rs` | S A2 A5 (32/64 wide, put, prep, mixed) N(+dot) W | halved taps in i8, `pshufb`+`maddubs` horizontal, i16 intermediate, `pmaddwd` vertical on row pairs, `mulhrsw` rounding; 2 rows per ymm at w4/8; NEON bias-flipped `sdot` | AV1 2.3 / 2.9; AV2 1.8 / 2.5 | round0 3, round1 11 (compound 7) | **Base technique** for the 8-tap family; AV2 already uses it |
+| HEVC/VVC separable (`SeparableTaps<N>`) | x86: `mc/av1_avx2.rs` `separable` with `av1_avx512` rows (shared with AV1); others `mc/generic.rs` (NEON), `neon_dotprod.rs` (HEVC luma only), `separable_simd128.rs` | S A2 A5 (shared, 32/64 wide, luma and chroma) N(+dot luma) W | AVX2: AV1's `vpshufb` + `vpmaddubsw` horizontal, `vpmaddwd` vertical, two rows per step at 4/8 wide; 4-tap chroma on two tap pairs | HEVC 8.6 / 9.5; VVC 5.2 / 5.3 | full taps (fit i8), unrounded first pass, `(v+2048)>>12`; HEVC = VVC at shared phases | **AVX2 merged** (2026-11-16) onto the AV1 kernel with a `Rounding` scheme (AV1: halved taps and its roundings; HEVC/VVC: full taps). **AVX-512 merged** (2026-11-16): the same passes on rows of 32 outputs in four 128-bit lanes (`av1_avx512`, `WidePasses`); the old 32-word-lane `generic::hevc` AVX-512 path is gone. **SIMD128 merged** (2026-11-16): `separable_simd128` folded into `av1_simd128` (rounding schemes shared in `mc/rounding.rs`); node on the box, min of two runs, new/base: HEVC luma vertical 0.74-0.90 (AV1's rolling row window), luma 2-D 0.97-1.04, luma horizontal 1.00-1.09, chroma 2-D 1.04-1.07, sum of the HEVC rows 0.97 (unchanged AV1 rows 0.97-1.04, the noise). Still to do: `neon_dotprod` generic over the table |
 | AV1 compound average | `mc/generic.rs:323`, `avx512.rs:109` | S A2 A5 N W | i16 | small | `(p0+p1+16)>>5` | Keep; HEVC `hevc_bi` (decoder only) could share later |
 | H.264 luma/chroma | `mc/generic.rs:842-1283`, `neon_h264.rs` | S A2 A5(copy) N W | symmetric 6-tap, `j` in 32-bit, quarter-pel `avg` | H.264 1.7 / 2.1 | 6-tap + bilinear | Keep (structurally different) |
 | VP9 convolve | `vp9_mc.rs` (420), `vp9_mc_simd/` (1431) | S A2 (A5 inh.) N W (+relaxed dot) | **u8 intermediate**, `maddubs` both passes; NEON `vmull_u8` magnitude split | VP9 3.5 / 4.6 | VP9 tables (odd taps), round 7 and clip after each pass | Keep (different tables and rounding); port `sdot` row primitive to NEON |
@@ -135,7 +135,7 @@ crates, scalar.
 | VVC luma | `vvc_deblock/inplace.rs` (601), `mod.rs` | S A2 N W (I16x8) | i16, transposes to p7..q7 | VVC 1.7 / 2.6 | long 7/5/3 (§8.8.3) + short filter with (3-i)tC clip; weak/decisions = HEVC | Keep the long filter; **short path merges with HEVC** |
 | HEVC / VVC / H.264 chroma weak | `hevc_chroma.rs`, `vvc_deblock/chroma_edge.rs:161`, `h264_bytes/mod.rs:100` | S A2 N W | | small | all `Clip3(+-t, (4(q0-p0)+p1-q1+4)>>3)` | **One chroma delta core**, gating per codec |
 | AV2 | `deblock/av2*.rs` (1448) | S A2 A5(ICL/GFNI) N W (lpf_bytes) | eight segment decision lanes; A5 batches four ramp rows | AV2 2.8 / 2.5 | different algorithm (ramps up to 8 per side) | Keep; already on `lpf_bytes` |
-| CDEF | `cdef/` (3497) | S A2 A5 N W | byte `pmaddubsw` interior | AV1 4.9 / 6.7, AV2 5.3 / 7.2 | AV1 §7.15 = AV2 8-bit | Already shared; NEON lacks `block4_pair` |
+| CDEF | `cdef/` (3497) | S A2 A5 N W | byte `pmaddubsw` interior | AV1 4.9 / 6.7, AV2 5.3 / 7.2 | AV1 §7.15 = AV2 8-bit | Already shared; NEON `block4_pair` added (2026-11-16, as SIMD128's: two interior 4x4 blocks per call) |
 | SAO | `sao/` (1680) | S A2 A5 N W | byte apply; NEON byte stats | HEVC 2.6 / 2.4, VVC 1.1 / 1.2 | HEVC §8.7.3 = H.266 §8.8.4 | Already shared; spread NEON byte stats |
 | VVC ALF | `vvc_alf/` (2988) | S A2 N(+dot) W | i16 `pmaddwd` | VVC 4.7 / 7.1 | 7x7 diamond with clipping | Keep; `vvc_alf_gram` duplicates `gram::gram_rows` (merge) |
 | AV1 LR (Wiener, SGR) | `av1_restoration/` (3423) | S A2 N W | dav1d Wiener port | ~0 at Default | separable, no clip | Keep |
@@ -153,10 +153,8 @@ AV1/VP9 outer-filter equation unification remains the sharing agent's work.
 |---|---|---|---|---|
 | SAD, SAD x4, grid search, SATD | S A2 A5 (partial, measured) N(+dot) W | all | none | Shared already |
 | variance, sub-pixel variance, `variance_energy` | S A2 A5 N(+dot) W | all | | Shared already |
-| `diff::sse_8x8_row` | S A2 N W | encoder | `variance().sse` per cell | add A5/dot or use variance |
-| `convert::sse_row` (`Dsp::sse`) | S A5 W; **A2 and NEON fall back to scalar** | AV1 CfL, encoder | third SSE kernel | **Merge with diff SSE** |
-| `diff::add_residual` | S A2 N W | all; VP9 reconstruction now (was a scalar loop in `nc-vp9/src/recon.rs`) | `reconstruct`, `constant_add` | VP9 moved onto it (2026-11-16); merging with `reconstruct` still to do |
-| `reconstruct` (pred + residual -> dst, saturating) | S A2 N W | AV2 decoder only | `add_residual` | merge |
+| `diff::sse_8x8_row` | S A2 N W | encoder; `Dsp::sse` (2026-11-16) | `variance().sse` per cell | **Shared** SSE kernel: `Dsp::sse` (planes) runs it over whole 8x8 cells and sums the edges, so `convert::sse_row` (S A5 W, A2/NEON scalar) is gone |
+| `diff::reconstruct` (`Dsp::add_residual`, `Dsp::reconstruct_i16`) | S A2 N W | all; VP9 reconstruction (was a scalar loop in `nc-vp9/src/recon.rs`); AV2 encoder and decoder | `constant_add` | **Merged** (2026-11-16): one width-class kernel, prediction in place or from a block, residual rows or a constant, 16-bit saturating add (`I16Lanes::add_sat`); the `reconstruct` module (8 lanes a step at every width) is gone, so AV2 gains 16/32-lane AVX2 rows |
 | `constant_add` (DC only), `Dsp::add_constant` | S A2 N W | AV1 inverse; VP9 and VVC DC-only blocks (2026-11-16) | | **Shared**: VP9's and VVC's scalar `add_constant` removed |
 | `block_sums` vs `sample::moments_8x8_row` | | encoder | same (sum, sum of squares) | merge |
 | `block_copy::avx512` | installed nowhere in `Dsp::avx512` | | | install or fix the module doc |
@@ -182,7 +180,7 @@ kernels only.
 | `nc_vp9::transform::{quantize,forward}` | 0.7 / 0.5, 1.1 / 0.6 | quantise, hybrid forward | `vp9_quant`/AV1 quantiser; AV1 forward lanes |
 | `nc_av1::backend::quantized_eob` | 1.6 (crowd) | end of block | **Done** (2026-11-16): shared `Dsp::end_of_block` over the codec's `eob_table` (scan index + 1 per raster position; libaom/SVT `iscan`); AVX2 16, AVX-512 32, NEON/SIMD128 8 levels a step. AV1 Default -1.8 % instructions |
 | `nc_encoder::intra_estimate::estimate` | 1.0 (AV1 crowd) | sums, squares, four directional SSEs over every other row and column | **Done** (2026-11-16): `Dsp::intra_estimate_stats` (even samples by low-byte mask or `uzp1`; `vpmaddwd`, `umull`+`uadalp`, `dot`) |
-| `nc_vvc::coeff::walk_sized`, `last_significant` | 3.6 / 5.5, 1.6 | scan statistics | `Dsp::end_of_block_wide` (i32 levels, with the OR of magnitudes) is in place for AV2 (`coeff/levels.rs` still has its own inverse-scan pass) and VVC; last nonzero in scan, nonzero count, level-magnitude classes, fed by codec scan tables |
+| `nc_vvc::coeff::walk_sized`, `last_significant` | 3.6 / 5.5, 1.6 | scan statistics | **Done** (2026-11-16): AV2's end of block (`5dd9da00b`) and VVC `last_significant` run `Dsp::end_of_block_wide` over end-of-block tables of their scans (VVC: one per grouped rectangle, `scan::rect_eob`). Still open: nonzero count, level-magnitude classes |
 | `nc_av2::coeff::levels::base_context` | 1.4 / 1.8 | neighbour magnitude context | same scan-statistics kernel (context tables stay in the codec) |
 | `nc_hevc::backend::intra_refs`, `nc_hevc::predict::oriented` | 1.6 / 1.8, 1.5 / 1.9 | reference build/substitute/filter, angular | `hevc_intra` angular kernel + shared [1 2 1] filter (section 4) |
 | `nc_av2::intra_edges::predict` | 1.8 / 2.3 | edge preparation + directional | shared run2/run4 (section 4) |
@@ -194,14 +192,71 @@ kernels only.
 |---|---|---|---|
 | 1 | VP9 quantise into the AV1 quantiser | VP9 2.1 | landed (see log) |
 | 2 | AV1/VP9 packed loop filter: one driver, wide-filter rule as a parameter | AV1 3.8, VP9 3.5 | owned by Astra (deblock family AVX-512 tier, brief `work/briefs/astra-avx512-deblock-2026-11-16.md`); Astra adds its results here |
-| 3 | HEVC/VVC MC onto the AV1 maddubs/sdot kernels | HEVC 9, VVC 5 | AVX2 landed; NEON dotprod and SIMD128 to do |
+| 3 | HEVC/VVC MC onto the AV1 maddubs/sdot kernels | HEVC 9, VVC 5 | AVX2 and AVX-512 (rows of 32) landed; NEON dotprod and SIMD128 to do |
 | 4 | Intra `run2` (HEVC, AV1, AV2, VVC chroma) and `run4` (VVC luma; AV2 stays separate) | VVC 6-7, AV1 2-3, AV2 2-3, HEVC 1-3 | landed (see log) |
 | 5 | VP9 inverse driver into `narrow_inverse` | VP9 1.3 | planned |
 | 6 | HEVC/AV2 partial-butterfly engine (forward + inverse, N up to 64) | AV2 6-7, HEVC/VVC 2-4 | planned |
 | 7 | HEVC `quantize_from` into `quantize`; AV2/VP9 dequant onto AV1's | small | planned |
-| 8 | Add-and-clip and SSE kernels to one each; codec-crate loops onto them | VP9 2.8 and others | VP9/VVC reconstruction onto `add_residual`/`add_constant` landed; SSE kernels to do |
+| 8 | Add-and-clip and SSE kernels to one each; codec-crate loops onto them | VP9 2.8 and others | VP9/VVC reconstruction onto `add_residual`/`add_constant` landed; `reconstruct` merged into `add_residual`, plane SSE onto `sse_8x8_row` (2026-11-16) |
 | 9 | HEVC/VVC short luma deblock and the chroma delta core | HEVC 1.7, VVC 2-3 | planned |
 | 10 | VVC/HEVC planar (landed), H.264/VP9 diagonal rows, AV2 Paeth onto AV1 | small | planar landed; rest planned |
+
+## Handover state (2026-11-16 12:10, after `18fec1af2`)
+
+Landed from the second brief: MC AVX-512 rows (`b344d069e`), VVC last
+significant (`4fa055dbc`), one reconstruction and one SSE kernel
+(`a6449be25`), NEON CDEF `block4_pair` (`6efecb0f4`), HEVC/VVC SIMD128 MC
+in `av1_simd128` (`18fec1af2`). Sub-pixel variance at 16 wide needed nothing.
+Next, in order (coordinator, 2026-11-16): items 6, 7, 8 of the brief.
+
+- **Item 6, HEVC/VVC short luma deblock and the chroma delta core.** Read,
+  not started.
+  - Luma: HEVC `deblock/hevc.rs` `apply` (per-lane tC vector, decision masks,
+    strong only when a segment chose it) and VVC
+    `vvc_deblock/inplace.rs` `strong` / `weak` (scalar tC per edge) are the
+    same §8.7.2.5.6/.7 arithmetic. The weak filter is equal (VVC's extra
+    `clip(…, ±tC)` and `clip(…, ±tC/2)` are no-ops, since |delta| <= tC and
+    the p1 correction is already clamped to ±tC/2). The strong filter differs
+    only in the clip: HEVC `±2tC` on all three samples, VVC `±(3 - i)·tC`.
+  - Plan: one `strong_side` / `weak` pair on `I16FilterLanes` taking a
+    per-position clip vector and a tC vector (splatted for VVC); VVC
+    `short_edge` and `short_filters` and HEVC `apply` call it. Measure
+    HEVC and VVC Default (callgrind, release); both are hot (HEVC 1.7,
+    VVC 2-3).
+  - Chroma: `deblock/hevc_chroma.rs` (on `lpf_bytes` `Bytes::W` words),
+    `vvc_deblock/chroma_edge.rs` `simd` (`I16FilterLanes`) and H.264
+    `h264_bytes` all compute `Clip3(-tC, tC, (4(q0-p0) + p1 - q1 + 4) >> 3)`.
+    They sit on different lane traits, so the shared core needs a small
+    trait both lane types implement (sub, mul, add, shr/sra, min, max), or
+    VVC chroma moves onto `lpf_bytes` words like HEVC's.
+- **Item 7, VP9 inverse driver into `txfm/narrow_inverse.rs`.** Not
+  started. `vp9_inverse/packed/` runs AV1's `dct::idct*` graphs on 8
+  wrapping i16 lanes. The differences to parameterise: stage policy (VP9
+  `WRAPLOW` wrap vs AV1's per-stage clamp, guarded by `l1_limit`), the
+  14-bit cosine table, and the shifts (VP9 5/6). Gains: 16-lane AVX2 and
+  the EOB-sparse graphs for VP9.
+- **Item 8, one partial-butterfly engine for HEVC and AV2.** Not started.
+  The sources are `codec_txfm/generic.rs:713-1287` (HEVC DCT and inverse)
+  and `av2_txfm/generic.rs`, `paired.rs`. The differences are the basis
+  table (35 vs 36), pass order (AV2 columns first), shifts and clamps. AV2
+  has the larger share (5.8 / 7.3).
+
+Method notes for the next agent:
+- Callgrind runs locally only (the clips stay on the PC): build release
+  binaries on the box (`nc-remote run --fetch target/release/nanocodec
+  --fetch-to DIR`), then `valgrind --tool=callgrind`. The previous runs
+  used `NC_DSP_ISA=avx2`, crowd 720p, 30 frames, chart QPs
+  (H.264 43, HEVC 46, VVC 44, VP9/AV1 214, AV2 176).
+- Callgrind cannot run AVX-512. For AVX-512 kernels, use
+  `nc-checkasm --bench --isa avx2|avx512` on the box. Check stream identity
+  across ISAs by running one binary with `NC_DSP_ISA=avx2` and with
+  `avx512` on the box's public CTC clips (`~/nanocodec-data/ctc-sources`).
+- SIMD128: the box has node but no `wasm32-wasip1` target. Build
+  `nc-checkasm.wasm` on the PC, put it in the worktree (untracked files
+  sync), and run `--bench --isa simd128` there. PC timings were unusable
+  under load.
+- `git stash` then `land.sh` lands only what is committed, and
+  `git commit` takes everything staged, including earlier `git rm`s.
 
 ## Merge log (callgrind, release builds, Default, crowd 720p, 30 frames, chart QPs)
 
@@ -211,8 +266,10 @@ kernels only.
 | + HEVC/VVC MC on the AV1 AVX2 kernel, run2 fixed lengths, 256-bit planar (vs `d155dee64`) | -0.05 | -6.25 | -3.93 | +0.02 | +0.12 | +0.05 |
 | + end of block and intra estimate kernels (vs the line above) | +0.16 (`intra_or_inter` no longer inlined) | -0.35 | -0.04 | +0.02 | -2.02 | 0.00 |
 | Same, rebased on `3df562c10` (whose AV1 end of block was a codec-local auto-vectorised pass; vs that head) | +0.17 | -0.37 | | | -0.32 | |
+| MC AVX-512 rows, VVC last significant on the shared kernel, one reconstruction kernel, plane SSE on `sse_8x8_row` (vs `6fabd2d77`; an AVX2 run, so the AVX-512 rows do not count here) | 0.00 | 0.00 | -1.12 | +0.06 | +0.01 | -0.84 |
 
-Streams byte-identical at every step (`preset_identity`, all six codecs).
+Streams byte-identical at every step (`preset_identity`, all six codecs;
+the AVX-512 rows also AVX2 against AVX-512 on the Ice Lake box).
 
 Not moved into kernels (2026-11-16), with the reason: `nc_analysis::noise::update` is a
 selection over the block grid (bucket counts and `select_nth`), not pixel arithmetic;
@@ -234,8 +291,8 @@ the merges above; hot shares are section 0's.
 | `constant_add` | 128-bit bytes | small | 32/64-wide blocks could take 256-bit |
 | H.264 inverse 8x8 add (`codec_txfm/avx2.rs` `I16x8`) | I16x8 | H.264 | |
 | Variance 4/8 wide (`diff/avx2.rs`) | I16x4 / I16x8 | all codecs | Tried 2026-11-16: two or four rows per 256-bit vector (rows gathered by scalar loads and inserts) cost more instructions: AV1 +1.0 %, HEVC +0.6 %, VVC +0.1 % (callgrind, release); not landed. A packed form needs memory-operand row inserts (`movhps`, `pinsrd`) to pay; the larger lever is fewer calls (the diagnosis' batches of four 16x16) |
-| AV1/HEVC/VVC MC put (`mc/av1_avx2.rs`) | 256-bit; no AVX-512 version below 32 wide | AV1 2-3, HEVC 9, VVC 5 | next: a 512-bit row of 32 outputs (four 128-bit lanes of 8) |
-| CDEF NEON `block4_pair` | missing (NEON runs 4x4 singly) | AV1/AV2 on the Jetson | the AVX2/AVX-512 pairing to port |
+| AV1/HEVC/VVC MC put (`mc/av1_avx2.rs`) | 256-bit; 512-bit rows of 32 at widths 32 and 64 (2026-11-16) | AV1 2-3, HEVC 9, VVC 5 | Ice Lake (box, `nc-checkasm --bench`, ns/call AVX2 -> AVX-512): AV1 2-D 32x32 257 -> 187, 64x64 959 -> 688; HEVC luma 2-D 32x32 300 -> 224 (the old AVX-512 path took 410), 64x64 1149 -> 829 (old 1555); horizontal-only 3-9 % |
+| Sub-pixel variance 16 wide | already one row per 256-bit vector (AVX2 `I16x16`) and two rows per 512-bit vector (AVX-512) | | nothing 128-bit to widen at 16 (2026-11-16 check) |
 
 ## Stays separate (and why)
 

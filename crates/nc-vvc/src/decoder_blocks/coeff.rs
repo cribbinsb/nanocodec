@@ -547,14 +547,14 @@ mod tests {
                             }
                         }
                         let mut writer = CabacWriter::new();
-                        crate::coeff::code(
+                        crate::coeff::emit(
                             &mut writer,
                             &mut CoeffContexts::new(37, inter),
+                            &nc_dsp::Dsp::new(),
                             &source,
                             side,
                             channel,
-                        )
-                        .unwrap();
+                        );
                         writer.encode_terminate(true);
                         let mut bits = writer.finish();
                         bits.trailing_bits();

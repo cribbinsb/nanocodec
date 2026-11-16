@@ -81,7 +81,7 @@ pub(crate) fn residual_cost(
             scratch,
         );
         if !levels.is_empty() {
-            emit_rect(&mut bits, contexts, levels, (tw, th), 0);
+            emit_rect(&mut bits, contexts, dsp, levels, (tw, th), 0);
         }
         let mut reconstructed = PlaneViewMut::new(&mut unit, tw, tw, th).expect("unit buffer");
         recon::add(dsp, &mut reconstructed, levels, quant.scaling());

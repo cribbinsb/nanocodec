@@ -39,6 +39,7 @@
 //! `S1` until an `S1`-only intra repair or key unit arrives, or report per-layer
 //! loss (`Encoder::report_layer_loss`) so the encoder emits an `S1` repair.
 use super::{Dsp, PlaneIndex, coeff_cdf_q_ctx};
+use crate::cdf::ResetCounters;
 use crate::segment_id::SegmentMap;
 use block_size::{BlockSize, MI_SIZE_LOG2};
 use cdf::Cdfs;

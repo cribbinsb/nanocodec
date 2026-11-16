@@ -8,7 +8,7 @@
 
 use core::ops::Range;
 
-use super::{Variance, VarianceEnergy, bilinear_taps};
+use super::{Prediction, ResidualRows, Variance, VarianceEnergy, bilinear_taps};
 use crate::simd::I16Lanes;
 
 /// Most column chunks of any block: 64 samples in vectors of at least 8
@@ -174,7 +174,10 @@ impl Iterator for WidenSpans {
     }
 }
 
-/// `dst = clamp(dst + residual)` over a `W`-wide block of `h` rows.
+/// `dst = clamp(prediction + residual, 0, 255)` over a `W`-wide block of
+/// `h` rows (`ReconstructFn`): the prediction is zero-extended to 16 bits,
+/// the residual added with saturation, and the store saturates to bytes.
+/// An in-place prediction reads each vector of `dst` before writing it.
 ///
 /// # Safety
 ///
@@ -184,31 +187,70 @@ impl Iterator for WidenSpans {
 ///
 /// If a buffer does not hold `h` rows of `W` values at its stride.
 #[inline(always)]
-pub(crate) unsafe fn add_residual<V: I16Lanes, const W: usize>(
+pub(crate) unsafe fn reconstruct<V: I16Lanes, const W: usize>(
+    prediction: Prediction<'_>,
+    residual: ResidualRows<'_>,
     dst: &mut [u8],
     dst_stride: usize,
-    residual: &[i16],
-    residual_stride: usize,
     h: usize,
 ) {
-    assert!(covers(dst.len(), dst_stride, h, W) && covers(residual.len(), residual_stride, h, W));
-    for r in 0..h {
-        // SAFETY: the assertion above covers rows `0..h` of `W` values.
-        let (d, res) = unsafe {
-            (
-                row_mut_u8::<W>(dst, dst_stride, r),
-                row_i16::<W>(residual, residual_stride, r),
-            )
-        };
-        for c0 in (0..W).step_by(V::LANES) {
-            // The 16-bit add cannot wrap for 8-bit samples plus residuals
-            // within the transform range (|r| < 2^15 - 255); the saturating
-            // store then clips.
-            V::load_u8(&d[c0..])
-                .add(V::load(&res[c0..]))
-                .store_u8_sat(&mut d[c0..]);
+    assert!(covers(dst.len(), dst_stride, h, W));
+    let out = dst.as_mut_ptr();
+    let (from, from_stride) = match prediction {
+        Prediction::InPlace => (out.cast_const(), dst_stride),
+        Prediction::Block(block, stride) => {
+            assert!(covers(block.len(), stride, h, W));
+            (block.as_ptr(), stride)
+        }
+    };
+    match residual {
+        ResidualRows::Samples(samples, stride) => {
+            assert!(covers(samples.len(), stride, h, W));
+            for r in 0..h {
+                // SAFETY: the assertion above covers row `r` of `W` values.
+                let row = unsafe { row_i16::<W>(samples, stride, r) };
+                for c0 in (0..W).step_by(V::LANES) {
+                    // SAFETY: see `add_to_prediction`.
+                    unsafe {
+                        add_to_prediction(
+                            from.add(r * from_stride + c0),
+                            V::load(&row[c0..]),
+                            out.add(r * dst_stride + c0),
+                        );
+                    };
+                }
+            }
+        }
+        ResidualRows::Constant(dc) => {
+            let dc = V::splat(dc);
+            for r in 0..h {
+                for c0 in (0..W).step_by(V::LANES) {
+                    // SAFETY: see `add_to_prediction`.
+                    unsafe {
+                        add_to_prediction(
+                            from.add(r * from_stride + c0),
+                            dc,
+                            out.add(r * dst_stride + c0),
+                        );
+                    };
+                }
+            }
         }
     }
+}
+
+/// `V::LANES` reconstructed samples (an `#[inline(always)]` function, not
+/// a closure, so it inlines into the kernel with its target features).
+///
+/// # Safety
+///
+/// The assertions of [`reconstruct`] cover `V::LANES` samples at `from`
+/// and `to` (the same samples for an in-place prediction, read before the
+/// store); `V`'s ISA is available.
+#[inline(always)]
+unsafe fn add_to_prediction<V: I16Lanes>(from: *const u8, residual: V, to: *mut u8) {
+    // SAFETY: forwarded from the caller.
+    unsafe { V::load_u8_at(from).add_sat(residual).store_u8_sat_at(to) };
 }
 
 /// Variance of `src - pred` over a `W`-wide block of `h` rows.
@@ -361,18 +403,6 @@ unsafe fn row<const N: usize>(data: &[u8], stride: usize, r: usize) -> &[u8; N] 
     debug_assert!(r * stride + N <= data.len());
     // SAFETY: the caller guarantees the row lies inside `data`.
     unsafe { &*data.as_ptr().add(r * stride).cast::<[u8; N]>() }
-}
-
-/// Writable `u8` row `r` of a strided buffer, `N` samples long.
-///
-/// # Safety
-///
-/// `r * stride + N <= data.len()`.
-#[inline(always)]
-unsafe fn row_mut_u8<const N: usize>(data: &mut [u8], stride: usize, r: usize) -> &mut [u8; N] {
-    debug_assert!(r * stride + N <= data.len());
-    // SAFETY: the caller guarantees the row lies inside `data`.
-    unsafe { &mut *data.as_mut_ptr().add(r * stride).cast::<[u8; N]>() }
 }
 
 /// `i16` row `r` of a strided buffer, `N` values long.

@@ -251,6 +251,8 @@ pub(crate) trait I16Lanes: Copy {
     }
     /// Lane-wise wrapping add.
     fn add(self, other: Self) -> Self;
+    /// Lane-wise saturating add (`clamp(a + b, i16::MIN, i16::MAX)`).
+    fn add_sat(self, other: Self) -> Self;
     /// Lane-wise wrapping subtract.
     fn sub(self, other: Self) -> Self;
     /// Lane-wise wrapping multiply (low 16 bits).

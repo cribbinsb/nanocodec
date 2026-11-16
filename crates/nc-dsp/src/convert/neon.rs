@@ -25,7 +25,6 @@ pub(crate) fn convert_fns() -> ConvertFns {
         } else {
             super::rgba_neon::rgba_to_i420
         },
-        sse_row: scalar::sse_row,
     }
 }
 

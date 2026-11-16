@@ -10,7 +10,7 @@ use core::arch::x86_64::{
 };
 
 use super::generic;
-use super::{DiffFns, Variance, VarianceEnergy};
+use super::{DiffFns, Prediction, ResidualRows, Variance, VarianceEnergy};
 use crate::simd::avx2::{I16x4, I16x8, I16x16};
 
 /// The residual table.
@@ -34,12 +34,12 @@ pub(crate) unsafe fn diff_fns() -> DiffFns {
             residual_w32::<true>,
             residual_w64::<true>,
         ],
-        add_residual: [
-            add_residual_w4,
-            add_residual_w8,
-            add_residual_w16,
-            add_residual_w32,
-            add_residual_w64,
+        reconstruct: [
+            reconstruct_w4,
+            reconstruct_w8,
+            reconstruct_w16,
+            reconstruct_w32,
+            reconstruct_w64,
         ],
         variance: [
             variance_w4,
@@ -102,21 +102,15 @@ macro_rules! width_kernels {
 
         #[target_feature(enable = "avx2")]
         unsafe fn $add(
+            prediction: Prediction<'_>,
+            residual: ResidualRows<'_>,
             dst: &mut [u8],
             dst_stride: usize,
-            residual: &[i16],
-            residual_stride: usize,
             h: usize,
         ) {
             // SAFETY: AVX2 is enabled for this function.
             unsafe {
-                generic::add_residual::<$lanes, $width>(
-                    dst,
-                    dst_stride,
-                    residual,
-                    residual_stride,
-                    h,
-                );
+                generic::reconstruct::<$lanes, $width>(prediction, residual, dst, dst_stride, h);
             }
         }
 
@@ -170,7 +164,7 @@ width_kernels!(
     I16x4,
     4,
     residual_w4,
-    add_residual_w4,
+    reconstruct_w4,
     variance_w4,
     variance_energy_w4,
     sub_pixel_variance_w4
@@ -179,7 +173,7 @@ width_kernels!(
     I16x8,
     8,
     residual_w8,
-    add_residual_w8,
+    reconstruct_w8,
     variance_w8,
     variance_energy_w8,
     sub_pixel_variance_w8
@@ -188,7 +182,7 @@ width_kernels!(
     I16x16,
     16,
     residual_w16,
-    add_residual_w16,
+    reconstruct_w16,
     variance_w16,
     variance_energy_w16,
     sub_pixel_variance_w16
@@ -197,7 +191,7 @@ width_kernels!(
     I16x16,
     32,
     residual_w32,
-    add_residual_w32,
+    reconstruct_w32,
     variance_w32,
     variance_energy_w32,
     sub_pixel_variance_w32
@@ -206,7 +200,7 @@ width_kernels!(
     I16x16,
     64,
     residual_w64,
-    add_residual_w64,
+    reconstruct_w64,
     variance_w64,
     variance_energy_w64,
     sub_pixel_variance_w64

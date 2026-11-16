@@ -17,12 +17,13 @@ use core::arch::aarch64::{
     vminq_s32, vminq_u16, vmlal_high_n_s16, vmlal_high_s16, vmlal_n_s16, vmlal_s16, vmlal_u8,
     vmlaq_laneq_s32, vmlaq_n_s32, vmovl_high_s16, vmovl_s16, vmovl_u8, vmovl_u16, vmul_s16,
     vmull_high_s16, vmull_s16, vmull_u8, vmulq_n_s32, vmulq_s16, vmulq_s32, vneg_s16, vnegq_s16,
-    vorrq_s32, vpadalq_s16, vpaddq_s32, vqmovn_high_s32, vqmovn_s32, vqmovn_u16, vqmovun_s16,
-    vqmovun_s32, vqrdmulh_s16, vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8, vreinterpret_u32_u8,
-    vreinterpretq_s16_s32, vreinterpretq_s16_u8, vreinterpretq_s16_u16, vreinterpretq_s32_u32,
-    vreinterpretq_u8_s16, vreinterpretq_u16_s16, vreinterpretq_u32_s32, vrshlq_s32, vshl_s16,
-    vshlq_s16, vshlq_s32, vshlq_u32, vshrq_n_s32, vshrq_n_u32, vst1_s16, vst1_u8, vst1q_s16,
-    vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32, vtrnq_s32, vzip1q_s16, vzip2q_s16,
+    vorrq_s32, vpadalq_s16, vpaddq_s32, vqadd_s16, vqaddq_s16, vqmovn_high_s32, vqmovn_s32,
+    vqmovn_u16, vqmovun_s16, vqmovun_s32, vqrdmulh_s16, vqrdmulhq_s16, vqsubq_u16, vqtbl1q_u8,
+    vreinterpret_u32_u8, vreinterpretq_s16_s32, vreinterpretq_s16_u8, vreinterpretq_s16_u16,
+    vreinterpretq_s32_u32, vreinterpretq_u8_s16, vreinterpretq_u16_s16, vreinterpretq_u32_s32,
+    vrshlq_s32, vshl_s16, vshlq_s16, vshlq_s32, vshlq_u32, vshrq_n_s32, vshrq_n_u32, vst1_s16,
+    vst1_u8, vst1q_s16, vst1q_s32, vsub_s16, vsubq_s16, vsubq_s32, vtrnq_s32, vzip1q_s16,
+    vzip2q_s16,
 };
 
 use core::mem::MaybeUninit;
@@ -410,6 +411,12 @@ impl I16Lanes for I16x8 {
     }
 
     #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { Self(vqaddq_s16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
     fn sub(self, other: Self) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe { Self(vsubq_s16(self.0, other.0)) }
@@ -599,6 +606,12 @@ impl I16Lanes for I16x4 {
     fn add(self, other: Self) -> Self {
         // SAFETY: NEON kernels only (module docs).
         unsafe { Self(vadd_s16(self.0, other.0)) }
+    }
+
+    #[inline(always)]
+    fn add_sat(self, other: Self) -> Self {
+        // SAFETY: NEON kernels only (module docs).
+        unsafe { Self(vqadd_s16(self.0, other.0)) }
     }
 
     #[inline(always)]

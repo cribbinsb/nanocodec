@@ -73,13 +73,13 @@ pub(crate) unsafe fn mc_fns() -> McFns {
 /// The kernels of separable table `T` by width class: AV1's byte
 /// multiply-add passes with HEVC/VVC rounding (`av1_avx2::separable`).
 fn separable_family<T: SeparableTaps<N>, const N: usize>() -> [ConvolveFn; 5] {
-    use super::av1_avx2::separable;
+    use super::av1_avx2::{Avx2Wide, separable};
     [
-        separable::<T, N, 4>,
-        separable::<T, N, 8>,
-        separable::<T, N, 16>,
-        separable::<T, N, 32>,
-        separable::<T, N, 64>,
+        separable::<T, N, 4, Avx2Wide>,
+        separable::<T, N, 8, Avx2Wide>,
+        separable::<T, N, 16, Avx2Wide>,
+        separable::<T, N, 32, Avx2Wide>,
+        separable::<T, N, 64, Avx2Wide>,
     ]
 }
 

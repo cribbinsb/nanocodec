@@ -110,12 +110,40 @@ pub(crate) type ResidualFn = unsafe fn(
     out_stride: usize,
     h: usize,
 ) -> u32;
-/// `dst = clamp(dst + residual)` (`w` wide).
-pub(crate) type AddResidualFn = unsafe fn(
+/// Packed inverse-transform output, or a spatially constant DC residual
+/// (the public form of [`ResidualRows`], `Dsp::reconstruct_i16`).
+#[derive(Debug, Clone, Copy)]
+pub enum Residual16<'a> {
+    /// One signed residual per pixel, in packed row order.
+    Samples(&'a [i16]),
+    /// The same signed residual at every pixel.
+    Constant(i16),
+}
+
+/// The residual of a reconstruction: rows of `i16` at a stride, or one
+/// constant (a DC-only inverse transform).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ResidualRows<'a> {
+    Samples(&'a [i16], usize),
+    Constant(i16),
+}
+
+/// The prediction a reconstruction adds its residual to: the destination
+/// itself (`Dsp::add_residual`) or a separate block at a stride.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Prediction<'a> {
+    InPlace,
+    Block(&'a [u8], usize),
+}
+
+/// `dst = clamp(prediction + residual, 0, 255)` (`w` wide, `h` rows at
+/// `dst_stride`), the residual added with 16-bit saturation, so the result
+/// is the clamped exact sum for every `i16` residual.
+pub(crate) type ReconstructFn = unsafe fn(
+    prediction: Prediction<'_>,
+    residual: ResidualRows<'_>,
     dst: &mut [u8],
     dst_stride: usize,
-    residual: &[i16],
-    residual_stride: usize,
     h: usize,
 );
 /// Variance of `src - pred` (`w` wide).
@@ -152,7 +180,7 @@ pub(crate) type Sse8x8RowFn =
 pub(crate) struct DiffFns {
     pub residual: [ResidualFn; 5],
     pub residual_sad: [ResidualFn; 5],
-    pub add_residual: [AddResidualFn; 5],
+    pub reconstruct: [ReconstructFn; 5],
     pub variance: [VarianceFn; 5],
     pub variance_energy: [VarianceEnergyFn; 5],
     pub block_sums: [BlockSumsFn; 5],
