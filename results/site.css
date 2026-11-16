@@ -149,6 +149,11 @@ select { font: inherit; font-size: 13px; color: var(--ink); background: var(--su
 .chart .hit { fill: transparent; cursor: pointer; }
 .chart .hit:focus-visible { outline: none; stroke: var(--brand); stroke-width: 2; }
 .chart .point.active .mark { stroke: var(--ink); stroke-width: 2; }
+.chart .pin-arrow { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pin-key { display: inline-flex; align-items: center; gap: 4px; font-size: 0.85em; }
+.pin-key svg { width: 12px; height: 12px; }
+.pin-key path { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pin-key[hidden] { display: none; }
 .chart .twin-link { stroke: var(--ref); stroke-dasharray: 4 3; stroke-width: 1; opacity: 0.7; }
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 6px 4px; }

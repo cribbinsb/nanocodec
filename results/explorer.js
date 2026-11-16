@@ -6,7 +6,7 @@
 // a selected point links to the demo with its settings (or its encoder's stream).
 // Data: data/chart.json (python3 -m nceval.site, from docs/results).
 import { paretoFront, frontierLine } from './frontier.js';
-import { drawScatter, swatch } from './chart.js';
+import { drawScatter, pinSwatch, swatch } from './chart.js';
 import { chartFamily, demoQuery, manifestEncoder, parseResultsQuery } from '../deep-link.js';
 import {
   CODEC_NAMES, METRIC_NAMES, METRIC_SHORT, ZERO_NAMES, control, el, fail, fps, loadData, pct,
@@ -20,6 +20,7 @@ const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.0
 const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
+const PIN_NOTE = 'points beyond the axes are pinned to the edge (arrow)';
 // The demo's pre-encoded streams (for a reference point's demo link), loaded on first use.
 const MANIFEST_URL = '../streams-ref/manifest.json';
 let manifest = null;
@@ -216,6 +217,7 @@ function render(data, root) {
   root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
     ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} held-out, fresh clips`}, build ${view.build_commit} · lower is fewer bits, right is faster`
     : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
+  let pinned = [];
   if (!points.length) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
   } else {
@@ -225,7 +227,7 @@ function render(data, root) {
       const front = paretoFront(points.filter((p) => (kind === 'ours') === (p.kind === 'ours')));
       return { kind, line: frontierLine(front), ids: new Set(front.map((p) => p.id)) };
     });
-    drawScatter(chart, points, {
+    pinned = drawScatter(chart, points, {
       frontiers,
       xLabel: view.rate_mode === 'qp'
         ? `encode fps, ${view.clipset === 'ctc' ? 'AOM CTC sequences' : 'held-out clips'} (geometric mean), one ${PLATFORM_LABELS[state.platform]} (log scale)`
@@ -235,8 +237,10 @@ function render(data, root) {
       selected: state.selected,
       describe: (p) => describe(data, view, p.id, view.values[p.id]),
       onSelect: (p) => { state.selected = p.id; render(data, root); root.querySelector('.detail-slot').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); },
-    });
+    }).pinned;
   }
+  root.querySelector('.pin-key').hidden = !pinned.length;
+  if (pinned.length) root.querySelector('.chart-sub').textContent += ` · ${PIN_NOTE}`;
   // Encoders with a value but no speed on this machine (never timed here): listed, not dropped.
   const untimed = Object.entries(view.values)
     .filter(([f, v]) => data.points[f] && !v.fps?.[state.platform] && v[state.metric] !== null)
@@ -280,7 +284,8 @@ function legend(data, root, owners) {
   }, swatch('square', 'tuned'), 'metric-tuned variants'),
   el('span', { class: 'frontier-key', title: 'A point is on its frontier when no other point of its group is both faster and lower (better) on this metric and machine' },
     el('span', { class: 'frontier-swatch ours' }), 'our Pareto frontier ',
-    el('span', { class: 'frontier-swatch ref' }), 'the references’ (emphasised points are on it)'));
+    el('span', { class: 'frontier-swatch ref' }), 'the references’ (emphasised points are on it)'),
+  el('span', { class: 'pin-key', hidden: true }, pinSwatch(), PIN_NOTE));
 }
 
 function controls(data, root) {
