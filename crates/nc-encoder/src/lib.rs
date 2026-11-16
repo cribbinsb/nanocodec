@@ -95,6 +95,7 @@ mod startup_lookahead;
 mod still_camera;
 mod still_plan;
 mod still_rate;
+mod still_refine;
 mod still_skip;
 mod structure;
 pub mod symbol_cost;

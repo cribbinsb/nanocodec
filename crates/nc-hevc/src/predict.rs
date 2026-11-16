@@ -221,12 +221,13 @@ impl<T: Pixel> Refs<T> {
         }
         // §8.4.4.2.2: the bottom-most reference takes the first available
         // one, then each missing sample copies the one before it in this
-        // order.
+        // order: a missing run takes the sample before it (the first run,
+        // the bottom-most just set) whole.
         samples[0] = samples[run(known.trailing_zeros() as usize).start];
         for u in (0..units).filter(|&u| known & (1 << u) == 0) {
-            for i in run(u).filter(|&i| i > 0) {
-                samples[i] = samples[i - 1];
-            }
+            let missing = run(u);
+            let value = samples[missing.start.saturating_sub(1)];
+            samples[missing].fill(value);
         }
     }
 

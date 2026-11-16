@@ -1622,7 +1622,12 @@ impl<B: CodecBackend> Encoder<B> {
                 term.plan(&frame);
                 term.set_reference(!key && follows);
                 let flat = references.position.is_flat() && follows;
-                self.still.plan(term, &frame, flat);
+                let strength = self
+                    .layer
+                    .rate_control
+                    .as_ref()
+                    .map_or(1., RateController::prekey_quiet_strength);
+                self.still.plan(term, &frame, flat, strength);
             }
             let offsets = self
                 .layer

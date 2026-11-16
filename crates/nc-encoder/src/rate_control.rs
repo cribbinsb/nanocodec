@@ -26,6 +26,7 @@ use crate::rate_window::WindowLedger;
 use crate::refinement_gain::RefinementGain;
 use crate::skip_budget::{self, SkipBudget};
 use crate::still_rate::StillRate;
+use crate::still_refine::{KeyQuality, RefineCost};
 use crate::{Codec, FrameRate};
 use std::fmt;
 
@@ -737,6 +738,14 @@ pub(crate) struct RateController {
     unscaled_budget: f64,
     /// The refinement loan, quiet run-up and held key of still scenes.
     still: StillRate,
+    /// The held quality of a still picture and its refinement price
+    /// (`rate.refine_cost`).
+    refine: RefineCost,
+    /// The last key's quality and the inter frames' since (the quiet
+    /// run-up's strength).
+    key_quality: KeyQuality,
+    /// Share of unchanged blocks of the frame being coded.
+    frame_still_share: f64,
 }
 impl RateController {
     pub fn new(
@@ -838,6 +847,9 @@ impl RateController {
             frame_skip_scale: 1.,
             unscaled_budget: 0.,
             still: StillRate::new(params, f64::from(rate.num) / f64::from(rate.den)),
+            refine: RefineCost::new(f64::from(params.refine_cost)),
+            key_quality: KeyQuality::default(),
+            frame_still_share: 0.,
         })
     }
     /// Apply a changed target, peak or buffer mid-stream (a transport's
@@ -1473,7 +1485,7 @@ impl RateController {
     /// Whether the encoder should report each inter frame's luma distortion
     /// (`observe_distortion`).
     pub fn wants_distortion(&self) -> bool {
-        self.refinement.enabled() && !self.last_key
+        (self.refinement.enabled() && !self.last_key) || self.still.quiets()
     }
 
     /// The share (0..=1) of the frame just coded that the noise skip took,
@@ -1489,9 +1501,26 @@ impl RateController {
     /// The luma mean squared error of the frame just coded, for the
     /// refinement-gain measure of the quality cap.
     pub fn observe_distortion(&mut self, mse: f64) {
-        if !self.last_key {
+        self.key_quality.observe(self.last_key, mse);
+        if !self.last_key && self.refinement.enabled() {
             let qp_units = QP_UNITS_PER_OCTAVE * self.steps[self.current as usize].log2();
             self.refinement.observe(qp_units, mse);
+        }
+    }
+
+    /// Finest quantizer a still picture's refinement may take on an inter
+    /// frame with `still_share` unchanged blocks (any on a key): the step
+    /// whose predicted refinement fits the strict room (`rate.refine_cost`,
+    /// `still_refine.rs`); the finest quantizer when off.
+    fn still_refine_floor(&self, key: bool, still_share: f64) -> u32 {
+        let exponent = self.settings.config.rate_exponent;
+        match self
+            .refine
+            .finest_step(self.strict_room(false), still_share, exponent)
+            .filter(|_| !key)
+        {
+            Some(step) => self.quantizer_for(step),
+            None => self.settings.min,
         }
     }
 
@@ -1537,7 +1566,13 @@ impl RateController {
         let period = u64::from(self.period);
         let to_key = (period > 0 && period != u64::from(u32::MAX))
             .then(|| period - (index - self.last_key_index) % period);
-        self.still.quieted(to_key, offset)
+        self.still
+            .quieted(to_key, offset, self.key_quality.quiet_strength())
+    }
+
+    /// How far the quiet run-up to a key applies (`KeyQuality::quiet_strength`).
+    pub fn prekey_quiet_strength(&self) -> f64 {
+        self.key_quality.quiet_strength()
     }
 
     /// The floor of a frame at `offset` QP from the inter level: the quality
@@ -1754,6 +1789,7 @@ impl RateController {
             self.track_stillness(hint.static_fraction);
         }
         let h = hint.value(key);
+        self.frame_still_share = hint.static_fraction;
         let held = std::mem::take(&mut self.held_pending);
         self.held_per_frame += (held - self.held_per_frame) / HELD_TIME_FRAMES;
         self.held_spent = if key { 0. } else { self.held_budget() };
@@ -1810,6 +1846,7 @@ impl RateController {
         };
         self.quality_capped = q < floor || goal < floor || held || share_capped;
         let mut q = q.max(self.frame_floor(floor, offset));
+        q = q.max(self.still_refine_floor(key, hint.static_fraction));
         if let Some(min_q) = share.min_inter_quantizer.filter(|_| !key) {
             q = q.max(min_q.clamp(self.settings.min, self.settings.max));
         }
@@ -1991,9 +2028,24 @@ impl RateController {
     /// for its complexity hint (`fallback` before the slot has a model).
     fn predicted_bits(&self, q: u32, fallback: f64) -> f64 {
         let exponent = self.settings.config.rate_exponent;
-        self.model[self.current_slot].map_or(fallback, |m| {
+        let content = self.model[self.current_slot].map_or(fallback, |m| {
             m * self.last_hint / (self.steps[q as usize] * self.block_ratio).powf(exponent)
-        })
+        });
+        content + self.refinement_price(q)
+    }
+
+    /// Predicted bits of the still picture's refinement at quantizer `q` on
+    /// the frame being coded (`rate.refine_cost`; 0 for keys): the role
+    /// models predict the rest.
+    fn refinement_price(&self, q: u32) -> f64 {
+        if self.last_key {
+            return 0.;
+        }
+        self.refine.price(
+            self.steps[q as usize],
+            self.frame_still_share,
+            self.settings.config.rate_exponent,
+        )
     }
 
     /// The single offset, in QP units, whose step gives a frame the same
@@ -2109,6 +2161,12 @@ impl RateController {
     }
     pub fn feedback(&mut self, bits: u64) {
         self.learn(bits);
+        self.refine.observe(
+            self.last_key,
+            self.steps[self.current as usize],
+            bits as f64,
+            self.settings.config.rate_exponent,
+        );
         let uniform = self.uniform_budget();
         let bonus = std::mem::take(&mut self.share.reallocated_bits);
         let p = self.inter_budget();

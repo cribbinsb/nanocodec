@@ -304,8 +304,47 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
     BlueSky and SnowMountain lose 13–35 %: smooth blocks with weak residuals still need their
     high frequencies, and the approximation saves almost no time there. Not landed. Patch:
     `~/nanocodec-data/work/av1-av2-speed/energy-gate-rejected.patch`.
-- **Follow-up (rate control, to assign):** on still scenes, spend less on late-period P frames
-  so the key dip stays bounded.
+- **Still-scene key dip (rate control, `feature/rc-keydip`, 2026-11-16).** Traces: AV1 Fast, 5
+  static clips × 300/600 kbps, 600 f, key every 300, rate logs + per-frame PSNR-Y
+  (`~/nanocodec-data/work/rc-keydip`).
+  - **Why P frames out-climb the key.** In 8 of 10 traces the strict buffer is empty (0.00)
+    before key 2, and the key fills it to 0.87–1.00 (0.94–1.15 × capacity). On still content P
+    frames cost a few hundred bytes, so the level walks down 60–80 qindex over the period
+    (homes 300: 212 → 130; base frames to q82), and P PSNR-Y climbs about 6 dB (31 → 37). The key
+    is bounded by the buffer (homes 300: q163, 31.1 dB), so a finer key cannot be bought.
+    london_bus is the exception: its key uses 0.5–0.7 of the buffer.
+  - **The starved key (f-c3).** Homes 300: a q54 cadence base frame 4 frames before the key cost
+    32 kB (13 kB predicted), took the buffer to 0.79, and the key coded q235, 25.0 dB. AV1 had no
+    `rate.prekey_quiet`.
+  - **Base-frame bits on still scenes.** Their cost is set by how far their quantizer is finer
+    than the quality the picture holds. On chirla, 100+ kbit frames were predicted at
+    0.02–0.26×. `rate.refine_cost` (registered, off) prices them at 0.8–1.5×, but using it raised
+    the stream's rate 1–4%. The cause is not known yet.
+  - **Ruled out: the key-dip bound** (`rate.key_dip`: hold P PSNR-Y within N dB of the expected
+    key). Final-check against old Fast at 4 dB: J −6.47%, worst-clip pulse +1.02 dB (chad_4_109),
+    hospital 300 kbps coded 37% under target. Deleted.
+  - **Landed: the measured quiet run-up.** `rate.prekey_quiet` now scales by how the inter
+    frames' running PSNR-Y stands against the last key: whole from equal quality up, off once the
+    key stands 2 dB above. The plain switch lifted keys that already stood above their P frames
+    (bdd_night_new 300 kbps pulse +2.87 → +4.05 dB; unchanged with the measured form). A ramp off
+    from equal quality tripped HEVC Default's pulse guard on mot17_04 (+0.93 dB), so it is centred
+    on the key standing above. AV1 Fast takes it.
+    - Against the re-pointed Fast: J −0.67% [−0.90, −0.45] BETTER, no guard, pulse −0.24 dB
+      (static −0.59).
+    - Against the Fast before the re-point (an earlier form, with the quiet whole wherever P
+      stood 1 dB above the key): J −7.22% [−8.35, −6.05], worst-clip pulse +1.19 dB (chad_4_109;
+      was +1.51), long-window +0.69. That still misses the +0.50 guard. On chad_4_109 the re-point
+      lifts P frames by 1.3–1.6 dB, the key is unchanged, and no rate-control lever tried closes
+      the gap without giving that back.
+    - H.264 and HEVC Default (they already ran the quiet second; same draw): H.264 J +0.04%
+      [−0.04, +0.13], no guard. HEVC J +0.08% [−0.04, +0.21], pulse −0.26 dB balanced (lowlight
+      −0.92), but one clip, crowd mot17_04 at 2 s keys, +0.74 dB. Landed on judgement: the
+      balanced pulse improves, J is level, and on mot17_04 the keys stand 1–4 dB above their
+      P frames, so less quiet lowers the high-rate pulses (+3.5 → +2.1 dB at 1200 kbps) while
+      the low-rate ones swing around 0.
+    - f-c3 on homes 300: key 25.0 → 30.4 dB.
+    - t33 (light-pipeline binary, plain switch): homes 600 pulse delta against old Fast +3.88 →
+      +0.38 dB, london_bus 600 +2.00 → +0.70, hospital 600 +2.74 → +1.57.
 
 ## Assigned 2026-11-16 09:10
 
@@ -422,6 +461,12 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   fixed-QP lens, e.g. t33 230 fps −4.5 / −18.2 against a line value of −8.7 / −20.4. Effort
   reallocation on a Fast base does not help the goal chart.
   - **Next:** a lever-group ablation of Fast against Default, the method that found f-c3.
+
+- **HEVC Fast + merge alone (2026-11-16, feature/hevc-speed2): not landed.** Lens -3.1 -> -4.3
+  Weighted at +3.5 % c8a time (0.34 points per 1 %, above the line's 0.22), CBR L1 quality -2.3 %,
+  but final-check WORSE on the key pulse (pool_external_meva_admin_720p_536p +1.98 dB, J +10.3 % on
+  that clip). Details: `docs/handoff/hevc.md`, "HEVC speed agent 2".
+- **HEVC exact 916c569eb:** per P frame -0.15 % Johnny, -1.11 % WestWindEasy (box callgrind, Fast QP 37).
 
 ## Next decision points
 

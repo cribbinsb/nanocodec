@@ -53,12 +53,20 @@ impl StillRate {
             .map_or(f64::INFINITY, |ledger| ledger.room(uniform, debt, strict))
     }
 
-    /// A cadence `offset` with no base boost `to_key` frames before a
-    /// scheduled key, within `rate.prekey_quiet`.
-    pub fn quieted(&self, to_key: Option<u64>, offset: f64) -> f64 {
+    /// A cadence `offset` `to_key` frames before a scheduled key, its base
+    /// boost scaled down by `strength` (`KeyQuality::quiet_strength`) within
+    /// `rate.prekey_quiet`.
+    pub fn quieted(&self, to_key: Option<u64>, offset: f64, strength: f64) -> f64 {
         match to_key {
-            Some(frames) if offset < 0. && (frames as f64) <= self.prekey_quiet_frames => 0.,
+            Some(frames) if offset < 0. && (frames as f64) <= self.prekey_quiet_frames => {
+                offset * (1. - strength)
+            }
             _ => offset,
         }
+    }
+
+    /// Whether the quiet run-up is on (the frames' distortion is wanted).
+    pub fn quiets(&self) -> bool {
+        self.prekey_quiet_frames > 0.
     }
 }

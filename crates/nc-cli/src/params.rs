@@ -301,6 +301,7 @@ mod tests {
         // Fast keeps budget-only debt correction when the Default adopted the
         // key-period ceiling (2026-11-14).
         expected.set("rate.period_ceiling", 0.0);
+        expected.set("rate.prekey_quiet", 1.0);
         // Fast keeps a single reference when the Default adopted the unified
         // structure's reference plan (2026-11-14).
         expected.set("structure.unified", 0.0);

@@ -20,7 +20,8 @@ paths with private clips are refused. NAME defaults to the worktree's
 directory name.
 
 Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
-- One persistent spot box (the cheapest of INSTANCE_TYPES with capacity) in REGION,
+- One persistent box from an instant EC2 Fleet over INSTANCE_TYPES x every zone of
+  REGION (spot, price-capacity-optimized; on-demand after repeated reclaims),
   from the newest baked AMI (`nc-remote bake`) or plain Ubuntu, provisioned
   by nc_remote_provision.sh on first boot.
 - Its user-data (nc_remote_box.sh) sets the hard lifetime and an idle
@@ -29,7 +30,7 @@ Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
   PC and at the start of every command) runs the same idle check over SSH and
   writes the ledger row of a box that has gone (idle, lifetime or spot
   reclaim). `run` restarts a lost box and retries the command once.
-- Budget: the day's estimate (instance hours x spot price + volume + IPv4,
+- Budget: the day's estimate (instance hours x price + volume + IPv4,
   per UTC day) must stay under DAILY_BUDGET_USD: no start once it is passed,
   and a running box is stopped.
 - Every resource is tagged Project=nanocodec and ExpectedEnd; every launch,
@@ -40,6 +41,7 @@ Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
 import fcntl
 import json
@@ -59,7 +61,7 @@ from aws_session import (  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REGION = "eu-north-1"
-#: 64 vCPU x86 types, tried cheapest current spot price first (spot only).
+#: The fleet's 64-vCPU x86 types (EC2 picks the type and zone).
 #: eu-north-1 because its spot prices were a quarter of eu-west-1's
 #: (2026-11-16: c7a.8xlarge $0.23/h against $0.89/h). That day's 64-vCPU
 #: prices there: c6i $0.29, m7a $0.55, c7i $0.60, c7a $0.62 per hour.
@@ -73,9 +75,16 @@ SLOTS = VCPUS // JOBS_PER_SLOT
 ROOT_GB = 200
 LIFETIME_MINUTES = 12 * 60
 IDLE_MINUTES = 30
-DAILY_BUDGET_USD = 25.0
-#: Spot bid cap relative to the cheapest zone's current price.
-MAX_PRICE_FACTOR = 1.5
+#: Room for an on-demand day (RECLAIM_WINDOW): ~$2.9/h for up to 12 h.
+DAILY_BUDGET_USD = 40.0
+#: Markets. Spot by default; after two spot reclaims within RECLAIM_WINDOW
+#: (2026-11-16: c6i.16xlarge was reclaimed at 12:04, 12:33 and 13:03 and agents
+#: kept losing jobs), on-demand for the rest of that UTC day.
+SPOT, ON_DEMAND = "spot", "on-demand"
+RECLAIM_WINDOW = datetime.timedelta(hours=2)
+SPOT_RECLAIM_CODE = "Server.SpotInstanceTermination"
+#: The Price List API is served from us-east-1 (prices are still REGION's).
+PRICING_API_REGION = "us-east-1"
 PURPOSE = "buildbox"
 NAME = "nanocodec-buildbox"
 #: Bump when nc_remote_provision.sh changes, so boxes re-provision.
@@ -109,6 +118,8 @@ class Box:
     expected_end: str
     host: str = ""
     ended: str = ""
+    market: str = SPOT
+    reclaimed: bool = False
 
     def hours(self, start: datetime.datetime, end: datetime.datetime) -> float:
         """Billed hours of this box inside [start, end)."""
@@ -263,56 +274,82 @@ class Aws:
         prices = {h["AvailabilityZone"]: float(h["SpotPrice"]) for h in history}
         return dict(sorted(prices.items(), key=lambda item: item[1]))
 
-    def launch(self) -> Box:
-        from botocore.exceptions import ClientError
+    def on_demand_price(self, instance_type: str) -> float:
+        """The Linux on-demand list price in REGION (AWS Price List API)."""
+        import boto3
+        pricing = boto3.client("pricing", region_name=PRICING_API_REGION)
+        products = pricing.get_products(ServiceCode="AmazonEC2", Filters=[
+            {"Type": "TERM_MATCH", "Field": field, "Value": value} for field, value in (
+                ("instanceType", instance_type), ("regionCode", REGION),
+                ("operatingSystem", "Linux"), ("tenancy", "Shared"),
+                ("preInstalledSw", "NA"), ("capacitystatus", "Used"))])["PriceList"]
+        for product in products:
+            for term in json.loads(product)["terms"]["OnDemand"].values():
+                for dimension in term["priceDimensions"].values():
+                    return float(dimension["pricePerUnit"]["USD"])
+        raise RuntimeError(f"no on-demand price for {instance_type} in {REGION}")
+
+    def launch(self, market: str) -> Box:
+        """One instance from an instant EC2 Fleet over every INSTANCE_TYPES x zone:
+        spot with the price-capacity-optimized strategy (the pools least likely
+        to be reclaimed, among the cheap ones), or on-demand at the lowest price."""
         expected_end = iso(utc_now() + datetime.timedelta(minutes=LIFETIME_MINUTES + 15))
         key, group = self.key_pair(expected_end), self.security_group(expected_end)
         image_id, root_device = self.image()
         user_data = (HERE / "nc_remote_box.sh").read_text() \
             .replace("@LIFETIME_MINUTES@", str(LIFETIME_MINUTES)) \
             .replace("@IDLE_MINUTES@", str(IDLE_MINUTES)).replace("@SLOTS@", str(SLOTS))
-        offers = {t: self.zone_prices(t) for t in INSTANCE_TYPES}
-        offers = {t: zones for t, zones in offers.items() if zones}
-        for instance_type in sorted(offers, key=lambda t: min(offers[t].values())):
-            zones = offers[instance_type]
-            bid = min(zones.values()) * MAX_PRICE_FACTOR
-            for zone, price in zones.items():
-                subnets = self.ec2.describe_subnets(Filters=[
-                    {"Name": "availability-zone", "Values": [zone]},
-                    {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
-                if not subnets:
-                    continue
-                try:
-                    reply = self.ec2.run_instances(
-                        ImageId=image_id, InstanceType=instance_type, MinCount=1, MaxCount=1,
-                        KeyName=key, UserData=user_data,
-                        InstanceInitiatedShutdownBehavior="terminate",
-                        InstanceMarketOptions={"MarketType": "spot", "SpotOptions": {
-                            "SpotInstanceType": "one-time", "MaxPrice": f"{bid:.4f}",
-                            "InstanceInterruptionBehavior": "terminate"}},
-                        BlockDeviceMappings=[{"DeviceName": root_device, "Ebs": {
-                            "VolumeSize": ROOT_GB, "VolumeType": "gp3",
-                            "DeleteOnTermination": True}}],
-                        NetworkInterfaces=[{"DeviceIndex": 0, "SubnetId": subnets[0]["SubnetId"],
-                                            "Groups": [group], "AssociatePublicIpAddress": True}],
-                        TagSpecifications=[*self.tags("instance", expected_end),
-                                           *self.tags("volume", expected_end),
-                                           *self.tags("spot-instances-request", expected_end)])
-                except ClientError as error:
-                    code = error.response["Error"]["Code"]
-                    if "Capacity" in code or code in ("SpotMaxPriceTooLow", "Unsupported"):
-                        say(f"{instance_type} in {zone}: {code}, trying the next")
-                        continue
-                    raise
-                instance_id = reply["Instances"][0]["InstanceId"]
-                say(f"launched {instance_type} {instance_id} in {zone} (spot ${price:.4f}/h)")
-                self.ec2.get_waiter("instance_running").wait(
-                    InstanceIds=[instance_id], WaiterConfig={"Delay": 5, "MaxAttempts": 120})
-                described = self.describe(instance_id)
-                return Box(instance_id=instance_id, instance_type=instance_type, zone=zone,
-                           price=price, launched=iso(described["LaunchTime"]),
-                           expected_end=expected_end, host=described["PublicIpAddress"])
-        raise RuntimeError(f"no spot capacity for any of {INSTANCE_TYPES} in {REGION}")
+        template = self.ec2.create_launch_template(
+            LaunchTemplateName=f"{NAME}-{utc_now():%Y%m%d-%H%M%S}",
+            TagSpecifications=self.tags("launch-template", expected_end),
+            LaunchTemplateData={
+                "ImageId": image_id, "KeyName": key,
+                "UserData": base64.b64encode(user_data.encode()).decode(),
+                "InstanceInitiatedShutdownBehavior": "terminate",
+                "BlockDeviceMappings": [{"DeviceName": root_device, "Ebs": {
+                    "VolumeSize": ROOT_GB, "VolumeType": "gp3", "DeleteOnTermination": True}}],
+                "NetworkInterfaces": [{"DeviceIndex": 0, "Groups": [group],
+                                       "AssociatePublicIpAddress": True}],
+                "TagSpecifications": [*self.tags("instance", expected_end),
+                                      *self.tags("volume", expected_end)]})["LaunchTemplate"]
+        try:
+            instance_id = self.create_fleet(template["LaunchTemplateId"], market, expected_end)
+        finally:  # the instance keeps its settings; the template is not needed again
+            self.ec2.delete_launch_template(LaunchTemplateId=template["LaunchTemplateId"])
+        self.ec2.get_waiter("instance_running").wait(
+            InstanceIds=[instance_id], WaiterConfig={"Delay": 5, "MaxAttempts": 120})
+        described = self.describe(instance_id)
+        instance_type = described["InstanceType"]
+        zone = described["Placement"]["AvailabilityZone"]
+        price = (self.zone_prices(instance_type)[zone] if market == SPOT
+                 else self.on_demand_price(instance_type))
+        say(f"launched {market} {instance_type} {instance_id} in {zone} (${price:.4f}/h)")
+        return Box(instance_id=instance_id, instance_type=instance_type, zone=zone,
+                   price=price, launched=iso(described["LaunchTime"]),
+                   expected_end=expected_end, host=described["PublicIpAddress"], market=market)
+
+    def create_fleet(self, template_id: str, market: str, expected_end: str) -> str:
+        subnets = self.ec2.describe_subnets(Filters=[
+            {"Name": "default-for-az", "Values": ["true"]}])["Subnets"]
+        overrides = [{"InstanceType": t, "SubnetId": subnet["SubnetId"]}
+                     for t in INSTANCE_TYPES for subnet in subnets]
+        reply = self.ec2.create_fleet(
+            Type="instant",
+            SpotOptions={"AllocationStrategy": "price-capacity-optimized",
+                         "InstanceInterruptionBehavior": "terminate"},
+            OnDemandOptions={"AllocationStrategy": "lowest-price"},
+            TargetCapacitySpecification={"TotalTargetCapacity": 1,
+                                         "DefaultTargetCapacityType": market},
+            LaunchTemplateConfigs=[{"LaunchTemplateSpecification": {
+                "LaunchTemplateId": template_id, "Version": "$Latest"},
+                "Overrides": overrides}],
+            TagSpecifications=self.tags("fleet", expected_end))
+        launched = [i for group in reply.get("Instances", []) for i in group["InstanceIds"]]
+        if not launched:
+            errors = {e.get("ErrorCode") for e in reply.get("Errors", [])}
+            raise RuntimeError(f"no {market} capacity for any of {INSTANCE_TYPES} in {REGION}: "
+                               f"{sorted(c for c in errors if c)}")
+        return launched[0]
 
     def describe(self, instance_id: str) -> dict | None:
         reply = self.ec2.describe_instances(InstanceIds=[instance_id])
@@ -326,6 +363,14 @@ class Aws:
         except ClientError:
             return "gone"
         return described["State"]["Name"] if described else "gone"
+
+    def reclaimed(self, instance_id: str) -> bool:
+        """Whether spot reclaimed the instance (while AWS still describes it, ~1 h)."""
+        try:
+            described = self.describe(instance_id) or {}
+        except Exception:  # noqa: BLE001 - gone from the API: not known as a reclaim
+            return False
+        return described.get("StateReason", {}).get("Code") == SPOT_RECLAIM_CODE
 
     def end_time(self, instance_id: str) -> datetime.datetime:
         """When a gone instance stopped, from its transition reason, else now."""
@@ -424,17 +469,33 @@ def provision(box: Box) -> None:
 # --- lifecycle ---------------------------------------------------------------------------
 
 def close_out(aws: Aws, box: Box, ended: datetime.datetime) -> None:
-    """Record a box that has gone: history, ledger row, state cleared."""
+    """Record a box that has gone: history (with whether spot reclaimed it),
+    ledger row, state cleared."""
     box.ended = iso(ended)
+    box.reclaimed = aws.reclaimed(box.instance_id)
+    if box.reclaimed:
+        say(f"{box.instance_id} was reclaimed by spot")
     record(box)
     epoch = parse("2000-01-01T00:00:00Z")
     cost = box.cost(epoch, ended)
-    ledger_row(box.instance_id, "ended", box.launched, box.ended, f"${cost:.2f}", box.spec(),
+    event = "ended: spot reclaim" if box.reclaimed else "ended"
+    ledger_row(box.instance_id, event, box.launched, box.ended, f"${cost:.2f}", box.spec(),
                spent=cost)
     current = load_state()
     if current and current.instance_id == box.instance_id:
         save_state(None)
     say(f"{box.instance_id} ended {box.ended}: ${cost:.2f}")
+
+
+def market_now() -> str:
+    """On-demand for the rest of a UTC day in which spot reclaimed two boxes
+    within RECLAIM_WINDOW of each other (the later one today); else spot."""
+    reclaims = sorted(parse(b.ended) for b in history() if b.reclaimed and b.ended)
+    today = utc_now().date()
+    for earlier, later in zip(reclaims, reclaims[1:]):
+        if later.date() == today and later - earlier <= RECLAIM_WINDOW:
+            return ON_DEMAND
+    return SPOT
 
 
 def check_budget() -> None:
@@ -476,12 +537,15 @@ def ensure_box(aws: Aws) -> Box:
         if box is None:
             check_budget()
             started = time.monotonic()
-            box = aws.launch()
+            market = market_now()
+            if market == ON_DEMAND:
+                say("two spot reclaims within 2 h today: on-demand until the end of the UTC day")
+            box = aws.launch(market)
             save_state(box)
             record(box)
             ledger_row(f"{box.instance_id}, {NAME} key pair + security group", "started",
-                       box.launched, "—", f"spot ${box.price:.4f}/h, "
-                       f"cap ${box.price * MAX_PRICE_FACTOR * LIFETIME_MINUTES / 60:.2f}",
+                       box.launched, "—", f"{box.market} ${box.price:.4f}/h, "
+                       f"12 h at that price ${box.price * LIFETIME_MINUTES / 60:.2f}",
                        box.spec())
             wait_for_ssh(box)
             provision(box)
@@ -586,7 +650,7 @@ def cmd_status(_args) -> int:
     with Locked():
         current = live_box(aws)
     say(f"cost: today (UTC) ${day_cost():.2f} of ${DAILY_BUDGET_USD:.2f}/day; "
-        f"all build boxes ${total_cost():.2f}")
+        f"all build boxes ${total_cost():.2f}; next launch: {market_now()}")
     for image in aws.ec2.describe_images(Owners=["self"], Filters=aws.ours())["Images"]:
         say(f"image {image['ImageId']} {image['State']} (baked {image['CreationDate']})")
     if not unended():
@@ -596,7 +660,7 @@ def cmd_status(_args) -> int:
         role = "current" if current and current.instance_id == box.instance_id else "draining"
         hours = box.hours(parse(box.launched), utc_now())
         say(f"{role}: {box.instance_type} {box.instance_id} at {box.host}, up {hours * 60:.0f} "
-            f"min, spot ${box.price:.4f}/h, hard end {box.expected_end}")
+            f"min, {box.market} ${box.price:.4f}/h, hard end {box.expected_end}")
         ssh(box, shlex.join(["python3", "-c", job, "--status"]))
         ssh(box, "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
                  "df -h --output=avail,size / | tail -1 | sed 's/^/  disk free, size: /'")

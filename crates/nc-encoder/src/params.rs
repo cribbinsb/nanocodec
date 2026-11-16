@@ -911,6 +911,8 @@ param_group! {
             "1 holds the target as a ceiling over every key period: an inter frame may take at most what the rest of the period can repay of the stream's spend above the target line (`period_ledger.rs`), and is re-coded coarser past it; 0 corrects debt through budgets only",
         prekey_quiet: 0.0, [0.0, 10.0],
             "seconds before a scheduled periodic key in which inter frames get no cadence base boost and hold still blocks at the quality they have (`ReuseTerm::hold_still`; 0 = off): whatever they refined there the key codes again",
+        refine_cost: 0.0, [0.0, 2.0],
+            "share of an intra coding a still picture's refinement is priced at (`still_refine.rs`: the last key's cost scale between the held quality's step and the frame's); an inter frame is kept from refining past what the strict buffer's room can take (0 = off, the role models alone)",
     }
 }
 

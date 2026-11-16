@@ -28,7 +28,9 @@
 use std::cell::RefCell;
 
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView, PlaneViewMut, nal};
-use nc_dsp::{BlockSize, Dsp, HevcForwardMode, HevcForwardStaging, HevcQuantizer, HevcTransform};
+use nc_dsp::{
+    BlockSize, Dsp, HevcForwardMode, HevcForwardStaging, HevcQuantizer, HevcTransform, Residual16,
+};
 use nc_encoder::chroma_policy::ChromaPolicy;
 use nc_encoder::{
     Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan, FrameReferences,
@@ -2391,15 +2393,18 @@ impl HevcBackend {
 
         let mut out = recon.plane_mut(plane).view_mut();
         if coded {
+            let residual = self.decode_levels(
+                transform,
+                quantizer,
+                levels,
+                dc_only,
+                (&mut scaled[..n * n], &mut decoded[..n * n]),
+            );
+            let mut block = out
+                .sub_view_mut(x, y, n, n)
+                .expect("block inside the picture");
             self.dsp
-                .hevc_dequantize(levels, quantizer, &mut scaled[..n * n]);
-            if dc_only {
-                decoded[..n * n].fill(inverse_dc(scaled[0]));
-            } else {
-                self.dsp
-                    .hevc_inverse(transform, &scaled[..n * n], &mut decoded[..n * n]);
-            }
-            reconstruct_square(&mut out, (x, y), n, (pred, pred_stride), &decoded[..n * n]);
+                .reconstruct_i16(size, &pred_block, residual, &mut block);
         } else if predicted != Predicted::InterInPlace {
             copy_square(&mut out, (x, y), n, pred, pred_stride);
         }
@@ -2410,6 +2415,29 @@ impl HevcBackend {
             levels: start,
             coded,
         }
+    }
+
+    /// The decoded residual of a coded block's `levels` (`scaled` and
+    /// `decoded` are scratch of the block's size). A lone DC (`dc_only`)
+    /// dequantises alone and decodes to one constant: exact, as the other
+    /// levels are zero and dequantise to zero, and it skips scaling and
+    /// filling the whole block for most coded inter blocks.
+    fn decode_levels<'a>(
+        &self,
+        transform: HevcTransform,
+        quantizer: &HevcQuantizer,
+        levels: &[i16],
+        dc_only: bool,
+        (scaled, decoded): (&mut [i16], &'a mut [i16]),
+    ) -> Residual16<'a> {
+        if dc_only {
+            self.dsp
+                .hevc_dequantize(&levels[..1], quantizer, &mut scaled[..1]);
+            return Residual16::Constant(inverse_dc(scaled[0]));
+        }
+        self.dsp.hevc_dequantize(levels, quantizer, scaled);
+        self.dsp.hevc_inverse(transform, scaled, decoded);
+        Residual16::Samples(decoded)
     }
 
     /// Append a coded block's levels to the picture's level store; returns
@@ -2570,70 +2598,6 @@ fn copy_prediction<const N: usize>(
 ) {
     let mut dst = out.sub_view_mut(x, y, N, N).expect("block inside the view");
     nc_dsp::copy_square::<N>(&mut dst, pred, stride);
-}
-
-/// `clamp(prediction + residual)` into the `n`x`n` block at `(x, y)` of
-/// `out` (`residual` row-major, `n` per row).
-#[inline]
-fn reconstruct_square(
-    out: &mut PlaneViewMut<'_>,
-    (x, y): (usize, usize),
-    n: usize,
-    (pred, stride): (&[u8], usize),
-    residual: &[i16],
-) {
-    match n {
-        4 => reconstruct::<4>(out, x, y, pred, stride, residual),
-        8 => reconstruct::<8>(out, x, y, pred, stride, residual),
-        16 => reconstruct::<16>(out, x, y, pred, stride, residual),
-        32 => reconstruct::<32>(out, x, y, pred, stride, residual),
-        _ => unreachable!("transform sides are powers of two from 4 to 32"),
-    }
-}
-
-#[inline]
-fn reconstruct<const N: usize>(
-    out: &mut PlaneViewMut<'_>,
-    x: usize,
-    y: usize,
-    pred: &[u8],
-    stride: usize,
-    residual: &[i16],
-) {
-    let out_stride = out.stride();
-    let dst = block_mut::<N>(out, x, y);
-    let pred = &pred[..(N - 1) * stride + N];
-    for (row, residual) in residual[..N * N].as_chunks::<N>().0.iter().enumerate() {
-        let dst = &mut dst[row * out_stride..row * out_stride + N];
-        let pred = &pred[row * stride..row * stride + N];
-        for ((d, &p), &r) in dst.iter_mut().zip(pred).zip(residual) {
-            *d = (i32::from(p) + i32::from(r)).clamp(0, 255) as u8;
-        }
-    }
-}
-
-/// The samples of `out` spanned by the `N`x`N` block at `(x, y)`, from its
-/// first sample to its last, bounds-checked once: the per-row checks of
-/// `row_mut` cost about as much as the short copies themselves. With
-/// fixed-size reconstruction rows, Fast instructions fell 1.9% per P frame
-/// and 2.5% per key frame (exact; callgrind, crowd09 QP 47).
-///
-/// # Panics
-///
-/// If the block does not lie inside `out`.
-#[inline]
-fn block_mut<'a, const N: usize>(
-    out: &'a mut PlaneViewMut<'_>,
-    x: usize,
-    y: usize,
-) -> &'a mut [u8] {
-    assert!(
-        x + N <= out.width() && y + N <= out.height(),
-        "block outside the view"
-    );
-    let stride = out.stride();
-    let start = y * stride + x;
-    &mut out.data_mut()[start..start + (N - 1) * stride + N]
 }
 
 /// Energy captured by four8x8 residual means in one16x16 chroma TU.

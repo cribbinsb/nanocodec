@@ -15,6 +15,11 @@ use crate::reuse::{ReuseFrame, ReuseTerm};
 /// price, `λ / (1 + R)`, is within 6 QP of it).
 pub(crate) const HOLD_MIN_STILL_RUN: u8 = 4;
 
+/// Quiet strength from which still blocks are held before a key: the
+/// hold is all or nothing per block, so it follows the run-up once the
+/// inter frames stand half the quiet's full dB above the key.
+const HOLD_FROM_STRENGTH: f64 = 0.5;
+
 /// The hold of still blocks before a scheduled key.
 #[derive(Debug, Clone)]
 pub(crate) struct StillPlan {
@@ -42,9 +47,18 @@ impl StillPlan {
     /// Plan inter frame `frame` (after `ReuseTerm::plan`; `flat`: it
     /// predicts from the frame before in a flat structure): the hold of its
     /// still blocks before a scheduled key (the key codes every block again).
-    pub fn plan(&mut self, term: &mut ReuseTerm, frame: &ReuseFrame<'_>, flat: bool) {
+    /// `strength`: how far the quiet run-up applies
+    /// (`RateController::prekey_quiet_strength`); still blocks are held from
+    /// [`HOLD_FROM_STRENGTH`].
+    pub fn plan(
+        &mut self,
+        term: &mut ReuseTerm,
+        frame: &ReuseFrame<'_>,
+        flat: bool,
+        strength: f64,
+    ) {
         self.without_offsets = false;
-        if frame.key || !flat {
+        if frame.key || !flat || strength < HOLD_FROM_STRENGTH {
             return;
         }
         let quiet = frame
