@@ -69,6 +69,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import load_paths
+from .encoders.nanocodec import preset_values
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "eval" / "results" / "levers.jsonl"
@@ -380,19 +381,49 @@ def levels_rows(result: dict, common: dict) -> list[dict]:
 
 def final_check_rows(report: dict, source: str, kind: str = "live",
                      date: str | None = None) -> list[dict]:
-    """Two builds (or a preset change) on L3, per codec: a code/preset change row."""
+    """Two builds (or a preset change) on L3, per codec: a code/preset change row.
+
+    A preset-only comparison (one commit, a different presets/ beside each
+    binary) is told apart by the candidate's preset values: the ones that
+    differ from the anchor's are the row's overrides, and a hash of all of
+    them goes into the change label (so a removed setting also changes the
+    id). Without them every such check on one commit had the same id and
+    all but the first were dropped as duplicates (2026-11-16)."""
     rows = []
     change = f"build {str(report.get('old_commit') or report.get('old'))[:9]}->" \
              f"{str(report.get('new_commit') or report.get('new'))[:9]}"
     for codec, result in (report.get("codecs") or {}).items():
-        common = dict(codec=codec, base=report.get("preset") or MEDIUM, overrides={},
-                      change=change, commit=report.get("new_commit") or None, date=date,
+        overrides, tag = preset_change(report, codec)
+        common = dict(codec=codec, base=report.get("preset") or MEDIUM, overrides=overrides,
+                      change=change + tag, commit=report.get("new_commit") or None, date=date,
                       source=source, kind=kind)
         for row in levels_rows(result, common):
             row["level"] = "final-check"
             row["id"] = row_id(row)
             rows.append(row)
     return rows
+
+
+def preset_change(report: dict, codec: str) -> tuple[dict[str, float], str]:
+    """The candidate preset's differing values and a change-label suffix naming
+    its preset files, for a final-check whose arms' presets/ differ; ({}, "")
+    otherwise. A presets/ dir that no longer exists is named by its path."""
+    presets, stem = report.get("presets") or {}, report.get("preset")
+    if not stem or not presets.get("new") or presets.get("new") == presets.get("old"):
+        return {}, ""
+
+    def values(directory: str | None) -> dict[str, float] | None:
+        try:
+            return preset_values(Path(directory), codec, stem) if directory else None
+        except OSError:
+            return None
+    old, new = values(presets.get("old")), values(presets.get("new"))
+    if old is None or new is None:
+        return {}, f" presets {presets['new']}"
+    if old == new:
+        return {}, ""
+    digest = hashlib.sha256(json.dumps(sorted(new.items())).encode()).hexdigest()[:8]
+    return diff(new, old), f" presets {digest}"
 
 
 def fixedqp_ab_rows(result: dict, source: str, kind: str = "live",

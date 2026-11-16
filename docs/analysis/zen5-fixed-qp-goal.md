@@ -619,6 +619,28 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
   Jetson cycles -11.2 %, final-check J +10.42 %, pulse +0.29 dB; lens J / Weighted -7.0 / +8.4 (M13
   -4.8 / +4.1, M12 -10.4 / -1.5). Other levers on top to win speed back cost +18 to +29 % CBR J.
 
+- **Effort by frame role, "base-only"** (`feature/base-only`, 2026-11-16; study:
+  docs/analysis/adaptive-effort-2026-11-16.md §5.1). `effort.regular_fraction 0` with
+  `effort.light_nonbase_only 1`: base frames (and keys) get the next rung's per-block tools, and the
+  `light.*` overlay gives non-base frames the rung's own values. Draw 2026-11-16; c8a chart path
+  (aws_timing, 2 repeats); the lines are against the neighbouring presets at the same time. Work
+  dir `~/nanocodec-data/work/base-only/` (parameter files `cand.params`, `faster-cand.params`).
+  - **On Fast** (regular = the Default's 12 differing per-block values): 223.8 fps (x1.148 of Fast's
+    time; Default x1.501); lens W / J -12.3 / -20.8 (line -13.3 / -21.7); CBR L1 -2.55 % (line
+    -2.78), final-check -2.44 % [-2.98, -1.91] (line -2.85), pulse +1.86 dB
+    (pool_external_meva_admin_720p_536p, J +11.2 %: its second key is starved, 93k against 158k
+    bits at 194k, 2.6 dB worse, and the next 90 frames are 1.8-2.8 dB worse). Below the line on
+    both charts: **out**.
+  - **On Faster** (regular = Fast's 14 differing per-block values): 313.7 fps (x1.094 of Faster's
+    time; Fast x1.336); lens W / J -5.7 / -18.3 (line -1.5 / -15.2); CBR L1 -7.84 % (line -3.22),
+    final-check -8.27 % [-9.60, -6.90] (line -3.38). Above the line on both charts, but the pulse
+    guard trips (+1.11 dB, long +0.70; Fast itself against Faster: +1.29 dB on the same clip). On
+    pool_static_london_bus_540p the P frames before the key gain 0.7-1.0 dB; at 388k the key is
+    0.73 dB worse (294k against 327k bits) and its next frames about 0.6 dB worse until about K+30.
+    Not a clean judgement case: **held, blocked on key funding** (the same family as the
+    rate-control agent's layered-key work). Re-screen it once keys after a better-coded run-up get
+    their bits.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

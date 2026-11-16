@@ -62,3 +62,33 @@ def test_lens_rows_join_the_cpu_of_a_timing_session(tmp_path):
     [row] = [r for r in levers.resolved(levers.read_rows(path)) if r["j"] is not None]
     assert row["level"] == "lens" and row["rate"] == "lens" and row["weighted"] == 1.5
     assert abs(row["x86_pct"]) < 1e-9 and "joined" in row["x86_how"]  # mean fps 300
+
+
+def preset_final_check(old_dir, new_dir):
+    stage = {"stage": "final", "frames": 600, "summary": {}, "verdict": {}}
+    result = {"levels": {"final": {"decision": "better", "n": 28, "mean": -1.0, "lo": -1.5,
+                                   "hi": -0.5, "guards": []}},
+              "draw": {"rotation": "2026-11-16", "frames": 600}, "stages": [stage]}
+    return {"old": "/x/old/nanocodec", "new": "/x/new/nanocodec", "old_commit": "abc",
+            "new_commit": "abc", "preset": "fast", "codecs": {"av1": result},
+            "presets": {"old": str(old_dir), "new": str(new_dir)}}
+
+
+def test_preset_only_final_checks_on_one_commit_keep_distinct_ids(tmp_path):
+    def presets(name, text):
+        directory = tmp_path / name
+        (directory / "av1").mkdir(parents=True)
+        (directory / "av1" / "fast.toml").write_text(text)
+        return directory
+    old = presets("old", "quant.trellis = 0\n")
+    a = presets("a", "quant.trellis = 1\n")
+    b = presets("b", "quant.trellis = 1\neffort.regular_fraction = 0\n")
+    [row_a] = levers.final_check_rows(preset_final_check(old, a), "a.json")
+    [row_b] = levers.final_check_rows(preset_final_check(old, b), "b.json")
+    assert row_a["overrides"] == {"quant.trellis": 1.0}
+    assert row_b["overrides"] == {"quant.trellis": 1.0, "effort.regular_fraction": 0.0}
+    assert row_a["id"] != row_b["id"]
+    assert levers.append([row_a, row_b], tmp_path / "l.jsonl") == 2
+    # A setting only removed still changes the id.
+    [row_c] = levers.final_check_rows(preset_final_check(old, presets("c", "")), "c.json")
+    assert row_c["overrides"] == {} and row_c["id"] != row_a["id"]
