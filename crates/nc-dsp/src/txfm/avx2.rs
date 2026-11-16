@@ -10,13 +10,14 @@
 )]
 
 use core::arch::x86_64::{
-    __m256i, _mm_cvtsi32_si128, _mm_loadu_si128, _mm_storeu_si128, _mm256_abs_epi32,
-    _mm256_add_epi32, _mm256_add_epi64, _mm256_blend_epi32, _mm256_castsi256_si128,
-    _mm256_cmpeq_epi32, _mm256_cvtepi16_epi32, _mm256_loadu_si256, _mm256_min_epi32,
-    _mm256_mul_epi32, _mm256_mul_epu32, _mm256_packs_epi32, _mm256_permute4x64_epi64,
-    _mm256_set1_epi32, _mm256_set1_epi64x, _mm256_setzero_si256, _mm256_sign_epi32,
-    _mm256_sll_epi32, _mm256_slli_epi32, _mm256_slli_epi64, _mm256_srl_epi64, _mm256_srli_epi64,
-    _mm256_storeu_si256, _mm256_sub_epi32,
+    __m256i, _mm_add_epi32, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadu_si128,
+    _mm_shuffle_epi32, _mm_storeu_si128, _mm256_abs_epi32, _mm256_add_epi32, _mm256_add_epi64,
+    _mm256_blend_epi32, _mm256_castsi256_si128, _mm256_cmpeq_epi32, _mm256_cvtepi16_epi32,
+    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_min_epi32, _mm256_mul_epi32,
+    _mm256_mul_epu32, _mm256_packs_epi32, _mm256_permute4x64_epi64, _mm256_set1_epi32,
+    _mm256_set1_epi64x, _mm256_setzero_si256, _mm256_sign_epi32, _mm256_sll_epi32,
+    _mm256_slli_epi32, _mm256_slli_epi64, _mm256_srl_epi64, _mm256_srli_epi64, _mm256_storeu_si256,
+    _mm256_sub_epi32,
 };
 
 use super::scalar::{fix_dc, quantize_tail};
@@ -211,10 +212,7 @@ unsafe fn quantize_levels<S: Lanes8, D: Lanes8>(
         unsafe { D::store8(dst.add(i), signed) };
         zeros = _mm256_sub_epi32(zeros, _mm256_cmpeq_epi32(signed, _mm256_setzero_si256()));
     }
-    let mut lanes = [0_i32; 8];
-    // SAFETY: `lanes` holds eight `i32`.
-    unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), zeros) };
-    let nonzero = done as u32 - lanes.iter().sum::<i32>() as u32;
+    let nonzero = done as u32 - horizontal_sum(zeros) as u32;
     // SAFETY: forwarded contract.
     let nonzero = nonzero + unsafe { quantize_tail(src, dst, done, len, q) };
     if done == 0 {
@@ -223,6 +221,22 @@ unsafe fn quantize_levels<S: Lanes8, D: Lanes8>(
     } else {
         // SAFETY: the vector pass wrote `dst[0]`.
         unsafe { fix_dc(dst, dc, nonzero, q) }
+    }
+}
+
+/// The sum of the eight 32-bit lanes of `lanes`, in registers (a store
+/// and eight scalar adds were most of a 4x4 block's quantiser cost).
+#[inline(always)]
+fn horizontal_sum(lanes: __m256i) -> i32 {
+    // SAFETY: AVX2 is enabled (callers' target feature); register only.
+    unsafe {
+        let half = _mm_add_epi32(
+            _mm256_castsi256_si128(lanes),
+            _mm256_extracti128_si256::<1>(lanes),
+        );
+        let quarter = _mm_add_epi32(half, _mm_shuffle_epi32::<0b0100_1110>(half));
+        let eighth = _mm_add_epi32(quarter, _mm_shuffle_epi32::<0b1011_0001>(quarter));
+        _mm_cvtsi128_si32(eighth)
     }
 }
 

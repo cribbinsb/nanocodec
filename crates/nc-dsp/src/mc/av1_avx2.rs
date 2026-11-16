@@ -39,9 +39,14 @@
 //! Kernel contract: see the `mc` module docs; the window and destination
 //! are checked once on entry and the row loops then use raw pointers.
 
+#![allow(
+    clippy::inline_always,
+    reason = "the rounding schemes must inline into the AVX2 kernels"
+)]
+
 use super::{
-    AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, TAP_CENTRE, TAPS, TapPair,
-    slide,
+    AnyTaps, Av1Family, Av1MixedFns, ConvolveFn, OuterTaps, PrepFn, SeparableTaps, TAP_CENTRE,
+    TAPS, TapPair, slide,
 };
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_loadl_epi64, _mm_loadu_si128,
@@ -50,10 +55,14 @@ use core::arch::x86_64::{
     _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256,
     _mm256_inserti128_si256, _mm256_loadu_si256, _mm256_madd_epi16, _mm256_maddubs_epi16,
     _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute2x128_si256,
-    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_shuffle_epi8, _mm256_slli_epi16,
-    _mm256_srai_epi32, _mm256_storeu_si256, _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
+    _mm256_set1_epi16, _mm256_set1_epi32, _mm256_shuffle_epi8, _mm256_slli_epi16, _mm256_sra_epi32,
+    _mm256_storeu_si256, _mm256_unpackhi_epi16, _mm256_unpacklo_epi16,
 };
 
+/// Taps of HEVC and VVC chroma filters, and the window column of their
+/// centre sample.
+const SHORT_TAPS: usize = 4;
+const SHORT_CENTRE: usize = 1;
 /// Outputs of one vector (16 lanes of 16 bits).
 const LANES: usize = 16;
 /// Outputs of one 128-bit lane.
@@ -62,12 +71,74 @@ const HALF: usize = 8;
 const ROUND_2: i16 = 1 << 13;
 const ROUND_4: i16 = 1 << 11;
 const ROUND_6: i16 = 1 << 9;
-/// The vertical pass of a 2-D filter: `(acc + 512) >> 10` for `put`,
-/// `(acc + 32) >> 6` for `prep` (`InterRound1` 11 and 7, less the halving).
-const LAST_ROUND: i32 = 1 << 9;
-const LAST_SHIFT: i32 = 10;
+/// The vertical pass of a 2-D AV1 filter at compound precision: `(acc +
+/// 32) >> 6` (`InterRound1` 7, less the halving).
 const PREP_LAST_ROUND: i32 = 1 << 5;
 const PREP_LAST_SHIFT: i32 = 6;
+
+/// A codec's taps and roundings on these kernels (`docs/analysis/
+/// encode-kernel-sharing.md` section 5): the passes are the same byte and
+/// word multiply-adds; what differs is whether the taps are halved and how
+/// each pass rounds.
+trait Rounding {
+    /// Taps are halved before use (AV1: every tap is even).
+    const HALVED: bool;
+    /// `put`'s vertical pass of a 2-D filter: `(acc + LAST_ROUND) >>
+    /// LAST_SHIFT`.
+    const LAST_ROUND: i32;
+    const LAST_SHIFT: i32;
+    /// The first pass of a 2-D filter, from the horizontal sums.
+    fn first(sum: __m256i) -> __m256i;
+    /// A horizontal-only filter's 16-bit results for sink `S`.
+    fn horizontal<S: Sink>(sum: __m256i) -> __m256i;
+}
+
+/// AV1 (module docs): halved taps; `(sum + 2) >> 2` first, `(acc + 512) >>
+/// 10` last, `((sum + 2) >> 2 + 8) >> 4` horizontally.
+struct Av1Rounding;
+
+impl Rounding for Av1Rounding {
+    const HALVED: bool = true;
+    const LAST_ROUND: i32 = 1 << 9;
+    const LAST_SHIFT: i32 = 10;
+    #[inline(always)]
+    fn first(sum: __m256i) -> __m256i {
+        // SAFETY: AVX2 is enabled in every caller (the kernels' target
+        // feature); register operations only.
+        unsafe { round(sum, ROUND_2) }
+    }
+    #[inline(always)]
+    fn horizontal<S: Sink>(sum: __m256i) -> __m256i {
+        // SAFETY: as for `first`.
+        unsafe {
+            let t = round(sum, ROUND_2);
+            if S::PREP { t } else { round(t, ROUND_4) }
+        }
+    }
+}
+
+/// HEVC and VVC at 8 bits (H.265 §8.5.3.3.3, H.266 §8.5.6.3.2: `shift1`
+/// 0, `shift2` 6, `shift3` 6): full taps (every HEVC/VVC tap fits a signed
+/// byte; `separable_sums_fit_i16` bounds the sums); the horizontal sums
+/// pass unrounded, `(acc + 2048) >> 12` last (`((acc >> 6) + 32) >> 6` by
+/// nested floors), `(sum + 32) >> 6` in one direction. Only `put`.
+struct SeparableRounding;
+
+impl Rounding for SeparableRounding {
+    const HALVED: bool = false;
+    const LAST_ROUND: i32 = 1 << 11;
+    const LAST_SHIFT: i32 = 12;
+    #[inline(always)]
+    fn first(sum: __m256i) -> __m256i {
+        sum
+    }
+    #[inline(always)]
+    fn horizontal<S: Sink>(sum: __m256i) -> __m256i {
+        debug_assert!(!S::PREP, "HEVC/VVC compound runs the generic kernels");
+        // SAFETY: AVX2 is enabled in every caller; register operations only.
+        unsafe { round(sum, ROUND_6) }
+    }
+}
 /// `prep` scales whole samples by 16 (`<< 4`).
 const PREP_COPY_SHIFT: i32 = 4;
 
@@ -113,11 +184,17 @@ pub(super) fn mixed_fns() -> Av1MixedFns {
     }
 }
 
-/// `P` halved tap pairs of a filter from tap `first` (a tap is even, so
-/// halving is a shift): `(t[2j], t[2j+1])`.
+/// `P` tap pairs of a filter from tap `first`, halved for `R::HALVED` (a
+/// halved tap is even, so halving is a shift): `(t[2j], t[2j+1])`.
 #[inline]
-fn halved_pairs<const P: usize>(taps: &[i16; TAPS], first: usize) -> [(i16, i16); P] {
-    core::array::from_fn(|j| (taps[first + 2 * j] >> 1, taps[first + 2 * j + 1] >> 1))
+fn tap_pairs<R: Rounding, const P: usize>(taps: &[i16], first: usize) -> [(i16, i16); P] {
+    let shift = u32::from(R::HALVED);
+    core::array::from_fn(|j| {
+        (
+            taps[first + 2 * j] >> shift,
+            taps[first + 2 * j + 1] >> shift,
+        )
+    })
 }
 
 /// Tap pairs as signed byte pairs in every 16-bit lane (`vpmaddubsw`).
@@ -163,9 +240,11 @@ const fn span(n: usize, pairs: usize) -> usize {
 /// Masks of one 16-output row: the high lane is loaded from byte
 /// `span(16, P) - 16`, outputs 8..16 start 8 bytes in, so its masks start
 /// `8 - (span - 16)` bytes in.
+const MASKS_ROW_4: [[u8; 32]; 2] = masks::<2>(HALF + 16 - span(LANES, 2));
 const MASKS_ROW_6: [[u8; 32]; 3] = masks::<3>(HALF + 16 - span(LANES, 3));
 const MASKS_ROW_8: [[u8; 32]; 4] = masks::<4>(HALF + 16 - span(LANES, 4));
 /// Masks of two rows of up to 8 outputs, one per lane.
+const MASKS_TWO_4: [[u8; 32]; 2] = masks::<2>(0);
 const MASKS_TWO_6: [[u8; 32]; 3] = masks::<3>(0);
 const MASKS_TWO_8: [[u8; 32]; 4] = masks::<4>(0);
 
@@ -196,22 +275,27 @@ unsafe fn row_16<const P: usize>(src: *const u8, taps: &[__m256i; P]) -> __m256i
             _mm_loadu_si128(src.add(span(LANES, P) - 16).cast()),
         )
     };
-    let masks = if P == 3 {
-        &MASKS_ROW_6[..]
-    } else {
-        &MASKS_ROW_8[..]
+    let masks = match P {
+        2 => &MASKS_ROW_4[..],
+        3 => &MASKS_ROW_6[..],
+        _ => &MASKS_ROW_8[..],
     };
     pair_sums(pixels, masks, taps)
 }
 
-/// The `span(N, P)` bytes (8 to 15) of a row at `src`, from two
-/// overlapping 8-byte loads.
+/// The `span(N, P)` bytes (7 to 15) of a row at `src`, from two
+/// overlapping 8-byte loads (4-byte loads for 7).
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn short_row<const P: usize, const N: usize>(src: *const u8) -> __m128i {
     let bytes = span(N, P);
-    // SAFETY: the caller provides `bytes` (at least 8) readable bytes.
+    // SAFETY: the caller provides `bytes` readable bytes.
     unsafe {
+        if bytes == 7 {
+            let low = _mm_cvtsi32_si128(src.cast::<i32>().read_unaligned());
+            let high = _mm_cvtsi32_si128(src.add(3).cast::<i32>().read_unaligned());
+            return _mm_or_si128(low, _mm_slli_si128::<3>(high));
+        }
         let low = _mm_loadl_epi64(src.cast());
         let high = _mm_loadl_epi64(src.add(bytes - 8).cast());
         let high = match bytes {
@@ -240,10 +324,10 @@ unsafe fn two_rows<const P: usize, const N: usize>(
             short_row::<P, N>(b),
         )
     };
-    let masks = if P == 3 {
-        &MASKS_TWO_6[..]
-    } else {
-        &MASKS_TWO_8[..]
+    let masks = match P {
+        2 => &MASKS_TWO_4[..],
+        3 => &MASKS_TWO_6[..],
+        _ => &MASKS_TWO_8[..],
     };
     pair_sums(pixels, masks, taps)
 }
@@ -260,13 +344,13 @@ fn round(x: __m256i, m: i16) -> __m256i {
 /// per lane, outputs 0..8 as 16-bit words.
 #[target_feature(enable = "avx2")]
 #[inline]
-fn vertical_words<const P: usize>(
+fn vertical_words<R: Rounding, const P: usize>(
     low: &[__m256i; P],
     high: &[__m256i; P],
     taps: &[__m256i; P],
     prep: bool,
 ) -> __m256i {
-    let round = if prep { PREP_LAST_ROUND } else { LAST_ROUND };
+    let round = if prep { PREP_LAST_ROUND } else { R::LAST_ROUND };
     let mut lo = _mm256_set1_epi32(round);
     let mut hi = lo;
     for j in 0..P {
@@ -274,15 +358,11 @@ fn vertical_words<const P: usize>(
         hi = _mm256_add_epi32(hi, _mm256_madd_epi16(high[j], taps[j]));
     }
     if prep {
-        _mm256_packs_epi32(
-            _mm256_srai_epi32::<PREP_LAST_SHIFT>(lo),
-            _mm256_srai_epi32::<PREP_LAST_SHIFT>(hi),
-        )
+        let shift = _mm_cvtsi32_si128(PREP_LAST_SHIFT);
+        _mm256_packs_epi32(_mm256_sra_epi32(lo, shift), _mm256_sra_epi32(hi, shift))
     } else {
-        _mm256_packs_epi32(
-            _mm256_srai_epi32::<LAST_SHIFT>(lo),
-            _mm256_srai_epi32::<LAST_SHIFT>(hi),
-        )
+        let shift = _mm_cvtsi32_si128(R::LAST_SHIFT);
+        _mm256_packs_epi32(_mm256_sra_epi32(lo, shift), _mm256_sra_epi32(hi, shift))
     }
 }
 
@@ -448,9 +528,101 @@ unsafe fn put_with<'t, const W: usize, Z: OuterTaps>(
     // taps use 3 pairs from tap 1, others 4 from tap 0.
     unsafe {
         if Z::OUTER_ZERO {
-            put_taps::<W, 3, _>(window, 1, out, h, (frac_x, frac_y), taps());
+            put_taps::<W, 3, _, Av1Rounding, TAP_CENTRE>(
+                window,
+                1,
+                out,
+                h,
+                (frac_x, frac_y),
+                av1_taps(taps()),
+            );
         } else {
-            put_taps::<W, 4, _>(window, 0, out, h, (frac_x, frac_y), taps());
+            put_taps::<W, 4, _, Av1Rounding, TAP_CENTRE>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                av1_taps(taps()),
+            );
+        }
+    }
+}
+
+/// The AV1 taps of both directions as slices ([`put_taps`] takes any
+/// filter length).
+#[inline]
+fn av1_taps((h_taps, v_taps): TapPair<'_>) -> (&[i16], &[i16]) {
+    (h_taps, v_taps)
+}
+
+/// The HEVC/VVC separable prediction (`T`'s `N`-tap table, `N` 8 or 4) of
+/// a `W`x`h` block at pixel precision, on the same passes as AV1's `put`
+/// (`SeparableRounding`): the `ConvolveFn` contract with an `N`-tap
+/// window (`h + N - 1` rows of `W + N - 1` samples, the block at row and
+/// column `N / 2 - 1`).
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[target_feature(enable = "avx2")]
+pub(super) unsafe fn separable<T: SeparableTaps<N>, const N: usize, const W: usize>(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    h: usize,
+    frac_x: usize,
+    frac_y: usize,
+) {
+    assert!(
+        (N == TAPS || N == SHORT_TAPS)
+            && h > 0
+            && h.is_multiple_of(2)
+            && src.len() >= (h + N - 2) * src_stride + W + N - 1
+            && dst.len() >= (h - 1) * dst_stride + W,
+        "separable prediction window or destination too small"
+    );
+    let window = Window {
+        src: src.as_ptr(),
+        stride: src_stride,
+    };
+    let out = PutOut {
+        dst: dst.as_mut_ptr(),
+        stride: dst_stride,
+    };
+    let taps = (&T::TABLE[frac_x][..], &T::TABLE[frac_y][..]);
+    // SAFETY: AVX2 is enabled; the window covers h + N - 1 rows of W + N -
+    // 1 samples and the destination h rows of W (checked above); every
+    // path reads rows and columns 0..h + N - 1 / 0..W + N - 1 of the
+    // window (the centre ones for one direction) and writes the block.
+    unsafe {
+        if (frac_x, frac_y) == (0, 0) {
+            for r in 0..h {
+                core::ptr::copy_nonoverlapping(
+                    window.at(r + N / 2 - 1, N / 2 - 1),
+                    out.dst.add(r * dst_stride),
+                    W,
+                );
+            }
+        } else if N == TAPS {
+            put_taps::<W, 4, _, SeparableRounding, TAP_CENTRE>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                taps,
+            );
+        } else {
+            put_taps::<W, 2, _, SeparableRounding, SHORT_CENTRE>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                taps,
+            );
         }
     }
 }
@@ -529,9 +701,23 @@ unsafe fn prep_with<'t, const W: usize, Z: OuterTaps>(
         if (frac_x, frac_y) == (0, 0) {
             copy_scaled::<W>(window, out, h);
         } else if Z::OUTER_ZERO {
-            put_taps::<W, 3, _>(window, 1, out, h, (frac_x, frac_y), taps());
+            put_taps::<W, 3, _, Av1Rounding, TAP_CENTRE>(
+                window,
+                1,
+                out,
+                h,
+                (frac_x, frac_y),
+                av1_taps(taps()),
+            );
         } else {
-            put_taps::<W, 4, _>(window, 0, out, h, (frac_x, frac_y), taps());
+            put_taps::<W, 4, _, Av1Rounding, TAP_CENTRE>(
+                window,
+                0,
+                out,
+                h,
+                (frac_x, frac_y),
+                av1_taps(taps()),
+            );
         }
     }
 }
@@ -652,23 +838,23 @@ impl Sink for PrepOut {
 /// window.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn put_taps<const W: usize, const P: usize, S: Sink>(
+unsafe fn put_taps<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
     (frac_x, frac_y): (usize, usize),
-    (h_taps, v_taps): (&[i16; TAPS], &[i16; TAPS]),
+    (h_taps, v_taps): (&[i16], &[i16]),
 ) {
     // SAFETY: each path keeps to the window and destination `put` checked.
     unsafe {
         match (frac_x, frac_y, W <= HALF) {
-            (_, 0, true) => horizontal_narrow::<W, P, S>(window, lead, out, h, h_taps),
-            (_, 0, false) => horizontal_wide::<W, P, S>(window, lead, out, h, h_taps),
-            (0, _, true) => vertical_narrow::<W, P, S>(window, lead, out, h, v_taps),
-            (0, _, false) => vertical_wide::<W, P, S>(window, lead, out, h, v_taps),
-            (_, _, true) => both_narrow::<W, P, S>(window, lead, out, h, (h_taps, v_taps)),
-            (_, _, false) => both_wide::<W, P, S>(window, lead, out, h, (h_taps, v_taps)),
+            (_, 0, true) => horizontal_narrow::<W, P, S, R, C>(window, lead, out, h, h_taps),
+            (_, 0, false) => horizontal_wide::<W, P, S, R, C>(window, lead, out, h, h_taps),
+            (0, _, true) => vertical_narrow::<W, P, S, R, C>(window, lead, out, h, v_taps),
+            (0, _, false) => vertical_wide::<W, P, S, R, C>(window, lead, out, h, v_taps),
+            (_, _, true) => both_narrow::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
+            (_, _, false) => both_wide::<W, P, S, R, C>(window, lead, out, h, (h_taps, v_taps)),
         }
     }
 }
@@ -676,24 +862,25 @@ unsafe fn put_taps<const W: usize, const P: usize, S: Sink>(
 /// Horizontal only, 4 or 8 wide: two rows per vector.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn horizontal_narrow<const W: usize, const P: usize, S: Sink>(
+unsafe fn horizontal_narrow<
+    const W: usize,
+    const P: usize,
+    S: Sink,
+    R: Rounding,
+    const C: usize,
+>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
-    taps: &[i16; TAPS],
+    taps: &[i16],
 ) {
-    let taps = byte_pairs::<P>(halved_pairs(taps, lead));
+    let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     for r in (0..h).step_by(2) {
         // SAFETY: rows r + 3 and r + 4 from column `lead` (see `put`).
         unsafe {
-            let sum = two_rows::<P, W>(
-                window.at(r + TAP_CENTRE, lead),
-                window.at(r + 1 + TAP_CENTRE, lead),
-                &taps,
-            );
-            let t = round(sum, ROUND_2);
-            out.two::<W>(r, if S::PREP { t } else { round(t, ROUND_4) });
+            let sum = two_rows::<P, W>(window.at(r + C, lead), window.at(r + 1 + C, lead), &taps);
+            out.two::<W>(r, R::horizontal::<S>(sum));
         }
     }
 }
@@ -701,21 +888,20 @@ unsafe fn horizontal_narrow<const W: usize, const P: usize, S: Sink>(
 /// Horizontal only, 16 or more wide: a row of 16 outputs per vector.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn horizontal_wide<const W: usize, const P: usize, S: Sink>(
+unsafe fn horizontal_wide<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
-    taps: &[i16; TAPS],
+    taps: &[i16],
 ) {
-    let taps = byte_pairs::<P>(halved_pairs(taps, lead));
+    let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     for r in 0..h {
         for c0 in (0..W).step_by(LANES) {
             // SAFETY: row r + 3, columns c0 + lead.. (see `put`).
             unsafe {
-                let sum = row_16::<P>(window.at(r + TAP_CENTRE, c0 + lead), &taps);
-                let t = round(sum, ROUND_2);
-                out.wide(r, c0, if S::PREP { t } else { round(t, ROUND_4) });
+                let sum = row_16::<P>(window.at(r + C, c0 + lead), &taps);
+                out.wide(r, c0, R::horizontal::<S>(sum));
             }
         }
     }
@@ -725,16 +911,16 @@ unsafe fn horizontal_wide<const W: usize, const P: usize, S: Sink>(
 /// (high lane) from byte-interleaved row pairs.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn vertical_narrow<const W: usize, const P: usize, S: Sink>(
+unsafe fn vertical_narrow<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
-    taps: &[i16; TAPS],
+    taps: &[i16],
 ) {
-    let taps = byte_pairs::<P>(halved_pairs(taps, lead));
+    let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     // SAFETY: rows lead.. at the centre column (see `put`).
-    let load = |k: usize| unsafe { load_pixels::<W>(window.at(lead + k, TAP_CENTRE)) };
+    let load = |k: usize| unsafe { load_pixels::<W>(window.at(lead + k, C)) };
     // Rows r..r + 2P of the step (2P + 1 rows).
     let mut rows: [__m128i; 9] = [_mm_cvtsi32_si128(0); 9];
     for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
@@ -762,17 +948,17 @@ unsafe fn vertical_narrow<const W: usize, const P: usize, S: Sink>(
 /// byte-interleaved row pairs (low lane: outputs 0..8, high: 8..16).
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn vertical_wide<const W: usize, const P: usize, S: Sink>(
+unsafe fn vertical_wide<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
-    taps: &[i16; TAPS],
+    taps: &[i16],
 ) {
-    let taps = byte_pairs::<P>(halved_pairs(taps, lead));
+    let taps = byte_pairs::<P>(tap_pairs::<R, P>(taps, lead));
     for c0 in (0..W).step_by(LANES) {
         // SAFETY: rows lead.. at columns c0 + 3.. (see `put`).
-        let load = |k: usize| unsafe { load_pixels::<LANES>(window.at(lead + k, c0 + TAP_CENTRE)) };
+        let load = |k: usize| unsafe { load_pixels::<LANES>(window.at(lead + k, c0 + C)) };
         let mut rows: [__m128i; 8] = [_mm_cvtsi32_si128(0); 8];
         for (k, row) in rows.iter_mut().enumerate().take(2 * P - 1) {
             *row = load(k);
@@ -803,15 +989,15 @@ unsafe fn vertical_wide<const W: usize, const P: usize, S: Sink>(
 /// filtered, the odd ones assembled from their neighbours' lanes.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn both_narrow<const W: usize, const P: usize, S: Sink>(
+unsafe fn both_narrow<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
-    (h_taps, v_taps): (&[i16; TAPS], &[i16; TAPS]),
+    (h_taps, v_taps): (&[i16], &[i16]),
 ) {
-    let h_taps = byte_pairs::<P>(halved_pairs(h_taps, lead));
-    let v_taps = word_pairs::<P>(halved_pairs(v_taps, lead));
+    let h_taps = byte_pairs::<P>(tap_pairs::<R, P>(h_taps, lead));
+    let v_taps = word_pairs::<P>(tap_pairs::<R, P>(v_taps, lead));
     // The window's last row the vertical taps reach.
     let last = h + 2 * P - 2;
     // Rows k and k + 1 (k + 1 clamped to the window: the last step's high
@@ -826,7 +1012,7 @@ unsafe fn both_narrow<const W: usize, const P: usize, S: Sink>(
                 &h_taps,
             )
         };
-        round(sum, ROUND_2)
+        R::first(sum)
     };
     // even[j] = vector r + 2j; `next` = vector r + 2P.
     let mut even: [__m256i; P] = core::array::from_fn(|j| pair(2 * j));
@@ -838,7 +1024,7 @@ unsafe fn both_narrow<const W: usize, const P: usize, S: Sink>(
         });
         let low = core::array::from_fn(|j| _mm256_unpacklo_epi16(even[j], odd[j]));
         let high = core::array::from_fn(|j| _mm256_unpackhi_epi16(even[j], odd[j]));
-        let words = vertical_words(&low, &high, &v_taps, S::PREP);
+        let words = vertical_words::<R, P>(&low, &high, &v_taps, S::PREP);
         // SAFETY: output rows r and r + 1 (see `put`).
         unsafe { out.two::<W>(r, words) };
         even = core::array::from_fn(|j| if j + 1 < P { even[j + 1] } else { next });
@@ -851,23 +1037,20 @@ unsafe fn both_narrow<const W: usize, const P: usize, S: Sink>(
 /// rows per step.
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn both_wide<const W: usize, const P: usize, S: Sink>(
+unsafe fn both_wide<const W: usize, const P: usize, S: Sink, R: Rounding, const C: usize>(
     window: Window,
     lead: usize,
     out: S,
     h: usize,
-    (h_taps, v_taps): (&[i16; TAPS], &[i16; TAPS]),
+    (h_taps, v_taps): (&[i16], &[i16]),
 ) {
-    let h_taps = byte_pairs::<P>(halved_pairs(h_taps, lead));
-    let v_taps = word_pairs::<P>(halved_pairs(v_taps, lead));
+    let h_taps = byte_pairs::<P>(tap_pairs::<R, P>(h_taps, lead));
+    let v_taps = word_pairs::<P>(tap_pairs::<R, P>(v_taps, lead));
     for c0 in (0..W).step_by(LANES) {
         // SAFETY: row lead + k, columns c0 + lead.. (see `put`).
         let row = |k: usize| {
             // SAFETY: row lead + k, columns c0 + lead.. (see `put`).
-            round(
-                unsafe { row_16::<P>(window.at(lead + k, c0 + lead), &h_taps) },
-                ROUND_2,
-            )
+            R::first(unsafe { row_16::<P>(window.at(lead + k, c0 + lead), &h_taps) })
         };
         let interleave =
             |a: __m256i, b: __m256i| (_mm256_unpacklo_epi16(a, b), _mm256_unpackhi_epi16(a, b));
@@ -893,8 +1076,9 @@ unsafe fn both_wide<const W: usize, const P: usize, S: Sink>(
             for (k, set) in [&even, &odd].into_iter().enumerate() {
                 let low = core::array::from_fn(|j| set[j].0);
                 let high = core::array::from_fn(|j| set[j].1);
+                let words = vertical_words::<R, P>(&low, &high, &v_taps, S::PREP);
                 // SAFETY: output row r + k, columns c0..c0 + 16 (see `put`).
-                unsafe { out.wide(r + k, c0, vertical_words(&low, &high, &v_taps, S::PREP)) };
+                unsafe { out.wide(r + k, c0, words) };
             }
             even = core::array::from_fn(|j| if j + 1 < P { even[j + 1] } else { even[j] });
             odd = core::array::from_fn(|j| if j + 1 < P { odd[j + 1] } else { odd[j] });
@@ -904,7 +1088,35 @@ unsafe fn both_wide<const W: usize, const P: usize, S: Sink>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{REGULAR_4, REGULAR_8, SHARP_8, SMOOTH_4, SMOOTH_8};
+    use super::super::{
+        HEVC_CHROMA, HEVC_LUMA, REGULAR_4, REGULAR_8, SHARP_8, SMOOTH_4, SMOOTH_8, VVC_AFFINE_LUMA,
+        VVC_CHROMA, VVC_LUMA,
+    };
+
+    /// Every HEVC/VVC tap fits a signed byte, and every byte pair's and
+    /// every whole filter's sums over 8-bit samples fit i16 (the exactness
+    /// of `SeparableRounding`'s unhalved `vpmaddubsw` sums).
+    #[test]
+    fn separable_sums_fit_i16() {
+        let tables: [&[i16]; 5] = [
+            HEVC_LUMA.as_flattened(),
+            VVC_LUMA.as_flattened(),
+            VVC_AFFINE_LUMA.as_flattened(),
+            HEVC_CHROMA.as_flattened(),
+            VVC_CHROMA.as_flattened(),
+        ];
+        for (table, n) in tables.into_iter().zip([8, 8, 8, 4, 4]) {
+            for taps in table.chunks(n) {
+                assert!(taps.iter().all(|&t| i8::try_from(t).is_ok()));
+                let fits = |set: &[i16]| {
+                    let pos: i32 = set.iter().filter(|&&t| t > 0).map(|&t| i32::from(t)).sum();
+                    let neg: i32 = set.iter().filter(|&&t| t < 0).map(|&t| i32::from(t)).sum();
+                    pos * 255 <= i32::from(i16::MAX) && neg * 255 >= i32::from(i16::MIN)
+                };
+                assert!(taps.chunks(2).all(fits) && fits(taps));
+            }
+        }
+    }
 
     #[test]
     fn halved_sums_fit_i16() {

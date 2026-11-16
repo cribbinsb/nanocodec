@@ -1062,7 +1062,7 @@ fn add_sized<const N: usize>(
         None => levels,
     };
     if levels[1..].iter().all(|&level| level == 0) {
-        add_constant(prediction, dc_residual(dsp, levels[0], quantizer));
+        dsp.add_constant(prediction, dc_residual(dsp, levels[0], quantizer));
         return;
     }
     let mut scaled = [0; N];
@@ -1103,18 +1103,6 @@ fn dc_residual(dsp: &nc_dsp::Dsp, level: i32, quantizer: &VvcQuantizer) -> i32 {
         >> FIRST_STAGE_SHIFT)
         .clamp(*STAGE_RANGE.start(), *STAGE_RANGE.end());
     (DCT_DC_TAP * first + (1 << (RESIDUAL_SHIFT - 1))) >> RESIDUAL_SHIFT
-}
-
-/// Add the constant residual `residual` to every sample of `prediction`.
-fn add_constant(prediction: &mut PlaneViewMut<'_>, residual: i32) {
-    if residual == 0 {
-        return;
-    }
-    for y in 0..prediction.height() {
-        for sample in prediction.row_mut(y) {
-            *sample = (i32::from(*sample) + residual).clamp(0, 255) as u8;
-        }
-    }
 }
 
 /// [`add`] through the normative inverse scaling and primary transform of

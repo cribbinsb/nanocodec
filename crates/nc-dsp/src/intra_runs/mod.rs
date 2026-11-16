@@ -80,6 +80,14 @@ pub(crate) trait Runs {
     ///
     /// The ISA must be enabled in the caller.
     unsafe fn run2(window: &[u8], weight: usize, out: &mut [u8]);
+    /// [`run2`] of a run of `N` outputs (4, 8, 16, or a multiple of the
+    /// widest step), with no length dispatch: rows of a fixed block side.
+    ///
+    /// # Safety
+    ///
+    /// The ISA must be enabled in the caller; `window` holds `N + 1`
+    /// samples and `out` `N`.
+    unsafe fn run2_fixed<const N: usize>(window: &[u8], weight: usize, out: &mut [u8]);
     /// [`run4`] on this ISA.
     ///
     /// # Safety

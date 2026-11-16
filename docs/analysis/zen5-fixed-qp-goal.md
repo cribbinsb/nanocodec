@@ -68,6 +68,14 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - AV1 and AV2: `feature/av1-av2-speed`;
   - polish: `feature/polish`.
 
+## Progress (exact, streams identical)
+
+- 2026-11-16 to 2409144f3: kernel-sharing merges cut whole-program instructions (callgrind, crowd
+  720p, 30 f, release) by HEVC −6.25 %, VVC −3.93 %, H.264 −0.05 %, VP9 +0.02 %, AV2 +0.05 %,
+  AV1 +0.12 %. Exact engine/codec cuts: VP9 about −4 to −5 % (end-of-block tests, quantiser
+  setup), AV1/AV2 −0.5 to −0.7 % (CDEF search, intra edges), H.264/HEVC intra cleanups. Not yet
+  re-timed on Zen 5.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

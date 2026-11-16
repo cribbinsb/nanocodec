@@ -121,6 +121,13 @@ impl Runs for Simd128Runs {
     }
 
     #[inline(always)]
+    unsafe fn run2_fixed<const N: usize>(window: &[u8], weight: usize, out: &mut [u8]) {
+        // The dynamic run: its length tests fold for a constant `N`.
+        // SAFETY: forwarded contract.
+        unsafe { run2(&window[..=N], weight, &mut out[..N]) }
+    }
+
+    #[inline(always)]
     unsafe fn run4(window: &[u8], taps: [i8; 4], out: &mut [u8]) {
         // SAFETY: forwarded contract.
         unsafe { run4(window, taps, out) }

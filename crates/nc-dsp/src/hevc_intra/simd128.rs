@@ -15,9 +15,7 @@ pub(super) const KERNELS: HevcIntraFns = HevcIntraFns {
 unsafe fn angular(refs: &[u8], n: usize, angle: i32, out: &mut [u8]) {
     // SAFETY: SIMD128 is enabled for the whole build; the dispatcher
     // checked the slices, `n` and `angle`.
-    super::angular_lines(refs, n, angle, out, |window, weight, line| unsafe {
-        crate::intra_runs::simd128::run2(window, weight, line);
-    });
+    unsafe { super::angular_lines::<crate::intra_runs::simd128::Simd128Runs>(refs, n, angle, out) }
 }
 
 #[target_feature(enable = "simd128")]

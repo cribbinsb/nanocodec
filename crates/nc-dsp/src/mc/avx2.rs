@@ -1,5 +1,6 @@
-//! AVX2 prediction kernels: the generic kernels on 16 lanes, 8 (SSE) for
-//! 8-wide blocks and 4 for 4-wide ones.
+//! AVX2 prediction kernels: AV1, HEVC and VVC on the byte multiply-add
+//! passes of `av1_avx2`; H.264 and the compound kernels are the generic
+//! kernels on 16 lanes, 8 (SSE) for 8-wide blocks and 4 for 4-wide ones.
 //!
 //! Kernel contract: see the `mc` module docs.
 
@@ -69,14 +70,16 @@ pub(crate) unsafe fn mc_fns() -> McFns {
     }
 }
 
-/// The kernels of separable table `T` by width class.
+/// The kernels of separable table `T` by width class: AV1's byte
+/// multiply-add passes with HEVC/VVC rounding (`av1_avx2::separable`).
 fn separable_family<T: SeparableTaps<N>, const N: usize>() -> [ConvolveFn; 5] {
+    use super::av1_avx2::separable;
     [
-        separable_w4::<T, N>,
-        separable_w8::<T, N>,
-        separable_w16::<T, N>,
-        separable_w32::<T, N>,
-        separable_w64::<T, N>,
+        separable::<T, N, 4>,
+        separable::<T, N, 8>,
+        separable::<T, N, 16>,
+        separable::<T, N, 32>,
+        separable::<T, N, 64>,
     ]
 }
 
@@ -176,26 +179,10 @@ hevc_bi_kernel!(I16x16, 16, hevc_bi_w16);
 hevc_bi_kernel!(I16x16, 32, hevc_bi_w32);
 hevc_bi_kernel!(I16x16, 64, hevc_bi_w64);
 
-/// Defines the HEVC/VVC and H.264 prediction kernels of one width on one
-/// lane type (AV1's are `av1_avx2`).
+/// Defines the H.264 prediction kernels of one width on one lane type
+/// (AV1's, HEVC's and VVC's are `av1_avx2`).
 macro_rules! width_kernels {
-    ($lanes:ty, $width:literal, $separable:ident,
-     $h264_luma:ident, $h264_chroma:ident) => {
-        #[target_feature(enable = "avx2")]
-        pub(super) unsafe fn $separable<T: SeparableTaps<N>, const N: usize>(
-            src: &[u8],
-            ss: usize,
-            dst: &mut [u8],
-            ds: usize,
-            h: usize,
-            fx: usize,
-            fy: usize,
-        ) {
-            let (tx, ty) = (&T::TABLE[fx], &T::TABLE[fy]);
-            // SAFETY: AVX2 is enabled for this function.
-            unsafe { generic::hevc::<$lanes, N>(src, ss, dst, ds, $width, h, tx, ty, (fx, fy)) }
-        }
-
+    ($lanes:ty, $width:literal, $h264_luma:ident, $h264_chroma:ident) => {
         #[target_feature(enable = "avx2")]
         pub(super) unsafe fn $h264_luma(
             src: &[u8],
@@ -226,11 +213,11 @@ macro_rules! width_kernels {
     };
 }
 
-width_kernels!(I16x4, 4, separable_w4, h264_luma_w4, h264_chroma_w4);
-width_kernels!(I16x8, 8, separable_w8, h264_luma_w8, h264_chroma_w8);
-width_kernels!(I16x16, 16, separable_w16, h264_luma_w16, h264_chroma_w16);
-width_kernels!(I16x16, 32, separable_w32, h264_luma_w32, h264_chroma_w32);
-width_kernels!(I16x16, 64, separable_w64, h264_luma_w64, h264_chroma_w64);
+width_kernels!(I16x4, 4, h264_luma_w4, h264_chroma_w4);
+width_kernels!(I16x8, 8, h264_luma_w8, h264_chroma_w8);
+width_kernels!(I16x16, 16, h264_luma_w16, h264_chroma_w16);
+width_kernels!(I16x16, 32, h264_luma_w32, h264_chroma_w32);
+width_kernels!(I16x16, 64, h264_luma_w64, h264_chroma_w64);
 
 /// The AVX2 H.264 kernels per shape and phase: shapes 16 wide on
 /// `I16x16`, 8 wide on `I16x8`, 4 wide on `I16x4`, as the width kernels.

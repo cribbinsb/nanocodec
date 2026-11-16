@@ -39,7 +39,7 @@ macro_rules! separable32 {
         ) {
             if fx == 0 && fy == 0 {
                 // SAFETY: same checked window; this tier includes AVX2.
-                unsafe { super::avx2::separable_w32::<$taps, 8>(src, ss, dst, ds, h, fx, fy) };
+                unsafe { super::av1_avx2::separable::<$taps, 8, 32>(src, ss, dst, ds, h, fx, fy) };
                 return;
             }
             // SAFETY: same checked filter window and enabled ISA as this wrapper.

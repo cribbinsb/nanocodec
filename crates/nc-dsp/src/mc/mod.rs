@@ -316,6 +316,7 @@ pub(crate) fn slide<T: Copy, const N: usize>(window: &mut [T; N], step: usize, k
         (1, 3) => moves!(1; 0 1 2),
         (1, 5) => moves!(1; 0 1 2 3 4),
         (1, 7) => moves!(1; 0 1 2 3 4 5 6),
+        (2, 3) => moves!(2; 0 1 2),
         (2, 5) => moves!(2; 0 1 2 3 4),
         (2, 7) => moves!(2; 0 1 2 3 4 5 6),
         _ => window.copy_within(step..step + keep, 0),

@@ -32,6 +32,57 @@ pub(super) unsafe fn run2_entry(window: &[u8], weight: usize, out: &mut [u8]) {
     unsafe { run2(window, weight, out) }
 }
 
+/// 16 outputs from `window[..17]` at weight `far` (one 128-bit step).
+#[inline(always)]
+fn step16(window: &[u8], far: u8, out: &mut [u8]) {
+    let (window, out) = (&window[..=STEP], &mut out[..STEP]);
+    // SAFETY: NEON is enabled (callers' target feature); the loads and the
+    // store cover the checked subslices.
+    unsafe {
+        let (near_q, far_q) = (vdupq_n_u8(WEIGHT_SUM - far), vdupq_n_u8(far));
+        let a = vld1q_u8(window.as_ptr());
+        let b = vld1q_u8(window[1..].as_ptr());
+        let low = vmlal_u8(
+            vmull_u8(vget_low_u8(a), vget_low_u8(near_q)),
+            vget_low_u8(b),
+            vget_low_u8(far_q),
+        );
+        let high = vmlal_high_u8(vmull_high_u8(a, near_q), b, far_q);
+        vst1q_u8(
+            out.as_mut_ptr(),
+            vrshrn_high_n_u16::<5>(vrshrn_n_u16::<5>(low), high),
+        );
+    }
+}
+
+/// 8 outputs from `window[..9]` (a 64-bit step).
+#[inline(always)]
+fn step8(window: &[u8], far: u8, out: &mut [u8]) {
+    let (window, out) = (&window[..=HALF_STEP], &mut out[..HALF_STEP]);
+    // SAFETY: as for `step16`.
+    unsafe {
+        let (near_d, far_d) = (vdup_n_u8(WEIGHT_SUM - far), vdup_n_u8(far));
+        let a = vld1_u8(window.as_ptr());
+        let b = vld1_u8(window[1..].as_ptr());
+        let sum = vrshrn_n_u16::<5>(vmlal_u8(vmull_u8(a, near_d), b, far_d));
+        vst1_u8(out.as_mut_ptr(), sum);
+    }
+}
+
+/// 4 outputs from `window[..5]` (a 32-bit step).
+#[inline(always)]
+fn step4(window: &[u8], far: u8, out: &mut [u8]) {
+    let (window, out) = (&window[..=QUARTER_STEP], &mut out[..QUARTER_STEP]);
+    // SAFETY: as for `step16`.
+    unsafe {
+        let (near_d, far_d) = (vdup_n_u8(WEIGHT_SUM - far), vdup_n_u8(far));
+        let (a, b) = (quarter(window), quarter(&window[1..]));
+        let sum = vrshrn_n_u16::<5>(vmlal_u8(vmull_u8(a, near_d), b, far_d));
+        let lane = vget_lane_u32::<0>(vreinterpret_u32_u8(sum));
+        out.copy_from_slice(&lane.to_le_bytes());
+    }
+}
+
 /// [`super::run2`], inlined into the caller's NEON code.
 ///
 /// # Safety
@@ -47,51 +98,43 @@ pub(crate) unsafe fn run2(window: &[u8], weight: usize, out: &mut [u8]) {
         return;
     }
     let far = weight as u8;
-    // SAFETY: NEON is enabled (caller contract); every load and store
-    // covers checked subslices.
-    unsafe {
-        let (near_q, far_q) = (vdupq_n_u8(WEIGHT_SUM - far), vdupq_n_u8(far));
-        let mut done = 0;
-        while done + STEP <= len {
-            let a = vld1q_u8(window[done..][..STEP].as_ptr());
-            let b = vld1q_u8(window[done + 1..][..STEP].as_ptr());
-            let low = vmlal_u8(
-                vmull_u8(vget_low_u8(a), vget_low_u8(near_q)),
-                vget_low_u8(b),
-                vget_low_u8(far_q),
-            );
-            let high = vmlal_high_u8(vmull_high_u8(a, near_q), b, far_q);
-            let packed = vrshrn_high_n_u16::<5>(vrshrn_n_u16::<5>(low), high);
-            vst1q_u8(out[done..][..STEP].as_mut_ptr(), packed);
-            done += STEP;
-        }
-        // The rest in half (then quarter) steps, the last one ending at
-        // `len` (it may recompute outputs already stored, with the same
-        // values).
-        let (near_d, far_d) = (vdup_n_u8(WEIGHT_SUM - far), vdup_n_u8(far));
-        let step = if len < HALF_STEP {
-            QUARTER_STEP
+    let mut done = 0;
+    while done + STEP <= len {
+        step16(&window[done..], far, &mut out[done..]);
+        done += STEP;
+    }
+    // The rest in half (then quarter) steps, the last one ending at `len`
+    // (it may recompute outputs already stored, with the same values).
+    while done < len {
+        if len >= HALF_STEP {
+            let at = done.min(len - HALF_STEP);
+            step8(&window[at..], far, &mut out[at..]);
+            done = at + HALF_STEP;
         } else {
-            HALF_STEP
-        };
-        while done < len {
-            let at = done.min(len - step);
-            let (a, b) = if step == HALF_STEP {
-                (
-                    vld1_u8(window[at..][..HALF_STEP].as_ptr()),
-                    vld1_u8(window[at + 1..][..HALF_STEP].as_ptr()),
-                )
-            } else {
-                (quarter(&window[at..]), quarter(&window[at + 1..]))
-            };
-            let sum = vrshrn_n_u16::<5>(vmlal_u8(vmull_u8(a, near_d), b, far_d));
-            if step == HALF_STEP {
-                vst1_u8(out[at..][..HALF_STEP].as_mut_ptr(), sum);
-            } else {
-                let lane = vget_lane_u32::<0>(vreinterpret_u32_u8(sum));
-                out[at..at + QUARTER_STEP].copy_from_slice(&lane.to_le_bytes());
+            let at = done.min(len - QUARTER_STEP);
+            step4(&window[at..], far, &mut out[at..]);
+            done = at + QUARTER_STEP;
+        }
+    }
+}
+
+/// [`super::run2`] of a run of `N` outputs (4, 8, or a multiple of 16),
+/// with no length dispatch.
+///
+/// # Safety
+///
+/// NEON must be enabled in the caller; `window` holds `N + 1` samples and
+/// `out` `N`.
+#[inline(always)]
+pub(crate) unsafe fn run2_fixed<const N: usize>(window: &[u8], weight: usize, out: &mut [u8]) {
+    let far = weight as u8;
+    match N {
+        QUARTER_STEP => step4(window, far, out),
+        HALF_STEP => step8(window, far, out),
+        _ => {
+            for at in (0..N).step_by(STEP) {
+                step16(&window[at..], far, &mut out[at..]);
             }
-            done = at + step;
         }
     }
 }
@@ -113,6 +156,12 @@ impl Runs for NeonRuns {
     unsafe fn run2(window: &[u8], weight: usize, out: &mut [u8]) {
         // SAFETY: forwarded contract.
         unsafe { run2(window, weight, out) }
+    }
+
+    #[inline(always)]
+    unsafe fn run2_fixed<const N: usize>(window: &[u8], weight: usize, out: &mut [u8]) {
+        // SAFETY: forwarded contract.
+        unsafe { run2_fixed::<N>(window, weight, out) }
     }
 
     #[inline(always)]

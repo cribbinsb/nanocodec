@@ -62,29 +62,58 @@ pub struct PlanarEdges<'a, T: nc_common::Sample = u8> {
     pub bottom_left: T,
 }
 
-/// Angular lines ([`AngularFn`]) with `run`, a [`crate::intra_runs`] run
-/// kernel: each line's blend of the main reference at its offset. A
+/// Angular lines ([`AngularFn`]) with `R`'s [`crate::intra_runs`] run:
+/// each line's blend of the main reference at its offset. A
 /// whole-sample line (`f = 0`) runs at weight 32 from one sample earlier,
 /// which copies it: for the steepest angle the sample after the last
 /// line's run is past `ref[2n]`, so a weight-0 window would overrun.
-#[allow(clippy::inline_always)] // must inline into `#[target_feature]` kernels
+///
+/// # Safety
+///
+/// `R`'s ISA must be enabled in the caller.
+#[allow(clippy::inline_always, unsafe_code)] // must inline into `#[target_feature]` kernels
 #[inline(always)]
-pub(crate) fn angular_lines(
+pub(crate) unsafe fn angular_lines<R: crate::intra_runs::Runs>(
     refs: &[u8],
     n: usize,
     angle: i32,
     out: &mut [u8],
-    run: impl Fn(&[u8], usize, &mut [u8]),
+) {
+    // SAFETY: caller contract.
+    unsafe {
+        match n {
+            4 => lines::<R, 4>(refs, angle, out),
+            8 => lines::<R, 8>(refs, angle, out),
+            16 => lines::<R, 16>(refs, angle, out),
+            _ => lines::<R, MAX_SIDE>(refs, angle, out),
+        }
+    }
+}
+
+/// [`angular_lines`] of an `N`x`N` block: each line a fixed-length run.
+///
+/// # Safety
+///
+/// As [`angular_lines`].
+#[allow(clippy::inline_always, unsafe_code)] // must inline into `#[target_feature]` kernels
+#[inline(always)]
+unsafe fn lines<R: crate::intra_runs::Runs, const N: usize>(
+    refs: &[u8],
+    angle: i32,
+    out: &mut [u8],
 ) {
     let one = 1 << ANGLE_FRACTION_BITS;
-    for (j, line) in out[..n * n].chunks_exact_mut(n).enumerate() {
+    for (j, line) in out[..N * N].as_chunks_mut::<N>().0.iter_mut().enumerate() {
         let pos = (j as i32 + 1) * angle;
         let (idx, fact) = (pos >> ANGLE_FRACTION_BITS, pos & (one - 1));
-        let start = (n as i32 + idx + 1) as usize;
-        if fact == 0 {
-            run(&refs[start - 1..start + n], one as usize, line);
-        } else {
-            run(&refs[start..=start + n], fact as usize, line);
+        let start = (N as i32 + idx + 1) as usize;
+        // SAFETY: caller contract; the windows hold N + 1 samples.
+        unsafe {
+            if fact == 0 {
+                R::run2_fixed::<N>(&refs[start - 1..start + N], one as usize, line);
+            } else {
+                R::run2_fixed::<N>(&refs[start..=start + N], fact as usize, line);
+            }
         }
     }
 }

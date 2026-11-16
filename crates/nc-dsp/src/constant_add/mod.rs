@@ -23,6 +23,31 @@ pub(crate) mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 pub(crate) mod simd128;
 
+/// A constant add (the scalar reference's contract). `unsafe`: it may run
+/// its ISA's instructions, so only a table built for a supported ISA calls
+/// it.
+pub(crate) type AddFn =
+    unsafe fn(residual: i32, width: usize, height: usize, dst: &mut [u8], stride: usize);
+
+/// Whether the vector kernels take blocks `width` wide (4, 8 or a multiple
+/// of 16); others use [`scalar`].
+pub(crate) fn vector_width(width: usize) -> bool {
+    width == 4 || width == 8 || width.is_multiple_of(16)
+}
+
+/// The constant add of `isa` (`Dsp::add_constant`).
+pub(crate) fn kernel(isa: crate::Isa) -> AddFn {
+    match isa {
+        #[cfg(target_arch = "x86_64")]
+        crate::Isa::Avx2 | crate::Isa::Avx512 => avx2::add,
+        #[cfg(target_arch = "aarch64")]
+        crate::Isa::Neon => neon::add,
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        crate::Isa::Simd128 => simd128::add,
+        _ => scalar,
+    }
+}
+
 /// The scalar reference: `dst = clamp(dst + residual, 0, 255)` over the
 /// `width` x `height` block at the start of `dst`, rows `stride` apart.
 pub(crate) fn scalar(residual: i32, width: usize, height: usize, dst: &mut [u8], stride: usize) {
@@ -68,7 +93,7 @@ pub(crate) unsafe fn add<B: ByteLanes>(
     stride: usize,
 ) {
     const VECTOR: usize = 16;
-    assert!(width == 4 || width == 8 || width.is_multiple_of(VECTOR));
+    assert!(vector_width(width));
     assert!(height == 0 || (stride >= width && dst.len() >= (height - 1) * stride + width));
     let residual = residual.clamp(-255, 255);
     let up = B::splat(residual.max(0) as u8);

@@ -308,11 +308,20 @@ impl ResidualBuffers {
             && levels[1..area].iter().all(|&level| level == 0)
         {
             let dc = transform::dequantize_level(block.tx, 0, levels[0], steps) as i16;
-            add_constant(recon, block, transform::dc_only_residual(block.tx, dc));
+            let value = transform::dc_only_residual(block.tx, dc);
+            self.dsp
+                .add_constant(&mut block_view(recon, block), i32::from(value));
             return;
         }
         self.residual_of(block.tx, ty, lossless, levels, steps);
-        add_block(recon, block, &self.residual[..area]);
+        let side = block.tx.side();
+        let size = nc_dsp::BlockSize::new(side, side).expect("square VP9 transform block");
+        self.dsp.add_residual(
+            size,
+            &mut block_view(recon, block),
+            &self.residual[..area],
+            side,
+        );
     }
 }
 
@@ -322,29 +331,15 @@ fn dc_only_applies(tx: TxSize, ty: TxType, lossless: bool) -> bool {
     ty == TxType::DctDct && !lossless && tx != TxSize::Tx4
 }
 
-/// Add `value` to the prediction under `block`, clipping to 8 bits.
-fn add_constant(recon: &mut Picture, block: &TxBlock, value: i16) {
+/// The prediction under `block` in `recon`, as a view of the transform
+/// block.
+fn block_view<'a>(recon: &'a mut Picture, block: &TxBlock) -> nc_common::PlaneViewMut<'a> {
     let side = block.tx.side();
-    let mut view = recon.plane_mut(block.plane).view_mut();
-    for dy in 0..side {
-        for sample in &mut view.row_mut(block.y + dy)[block.x..block.x + side] {
-            *sample = (i32::from(*sample) + i32::from(value)).clamp(0, 255) as u8;
-        }
-    }
+    recon
+        .plane_mut(block.plane)
+        .region_mut(block.x as isize, block.y as isize, side, side)
+        .expect("transform block inside the plane")
 }
-
-/// Add a raster `residual` to the prediction under `block`, clipping.
-fn add_block(recon: &mut Picture, block: &TxBlock, residual: &[i16]) {
-    let side = block.tx.side();
-    let mut view = recon.plane_mut(block.plane).view_mut();
-    for (dy, row) in residual.chunks_exact(side).enumerate() {
-        let samples = &mut view.row_mut(block.y + dy)[block.x..block.x + side];
-        for (sample, &r) in samples.iter_mut().zip(row) {
-            *sample = (i32::from(*sample) + i32::from(r)).clamp(0, 255) as u8;
-        }
-    }
-}
-
 /// `get_tx_type` / `intra_mode_to_tx_type_lookup`: luma of intra blocks
 /// follows the mode (32x32 has only the DCT);
 /// chroma, inter blocks, 32x32 and lossless use the DCT (WHT).

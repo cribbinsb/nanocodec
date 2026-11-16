@@ -60,6 +60,7 @@ pub struct Dsp {
     mc: McFns,
     diff: DiffFns,
     reconstruct: crate::reconstruct::Kernel,
+    constant_add: crate::constant_add::AddFn,
     border_store: crate::border_store::BorderStoreFns,
     copy_plane: crate::block_copy::CopyFn,
     cdef: CdefFns,
@@ -195,6 +196,7 @@ impl Dsp {
             mc,
             diff,
             reconstruct: crate::reconstruct::kernel(isa),
+            constant_add: crate::constant_add::kernel(isa),
             border_store: crate::border_store::border_store_fns(isa),
             copy_plane: crate::block_copy::copy,
             cdef,
@@ -1724,6 +1726,23 @@ impl Dsp {
                 size.height(),
             );
         }
+    }
+
+    /// `dst = clamp(dst + residual, 0, 255)` over the whole view: the
+    /// reconstruction of a DC-only inverse transform (`constant_add` module
+    /// docs; AV1, VP9 and VVC DC shortcuts).
+    pub fn add_constant(&self, dst: &mut PlaneViewMut<'_>, residual: i32) {
+        if residual == 0 {
+            return;
+        }
+        let (width, height, stride) = (dst.width(), dst.height(), dst.stride());
+        if !crate::constant_add::vector_width(width) {
+            crate::constant_add::scalar(residual, width, height, dst.data_mut(), stride);
+            return;
+        }
+        // SAFETY: the table matches the checked CPU ISA; the kernel checks
+        // that `data` covers the block.
+        unsafe { (self.constant_add)(residual, width, height, dst.data_mut(), stride) }
     }
 
     /// Add a packed i16 residual (or DC constant) to prediction and store clipped

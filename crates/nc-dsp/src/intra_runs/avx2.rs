@@ -34,6 +34,94 @@ pub(super) unsafe fn run2_entry(window: &[u8], weight: usize, out: &mut [u8]) {
     unsafe { run2(window, weight, out) }
 }
 
+/// The `pmaddubsw` weight pair `(32 − w, w)` of every 16-bit lane.
+#[inline(always)]
+fn weight_pair(weight: usize) -> i16 {
+    let far = weight as i16;
+    (far << 8) | (WEIGHT_SUM - far)
+}
+
+/// 32 outputs from `window[..33]` (one 256-bit step).
+///
+/// # Safety
+///
+/// AVX2 must be enabled in the caller.
+#[inline(always)]
+unsafe fn step32(window: &[u8], pair: i16, out: &mut [u8]) {
+    let (window, out) = (&window[..=WIDE_STEP], &mut out[..WIDE_STEP]);
+    // SAFETY: AVX2 is enabled (caller contract); the loads and the store
+    // cover the checked subslices.
+    unsafe {
+        let (weights, round) = (_mm256_set1_epi16(pair), _mm256_set1_epi16(ROUND2_5));
+        let a = _mm256_loadu_si256(window.as_ptr().cast());
+        let b = _mm256_loadu_si256(window[1..].as_ptr().cast());
+        // Per 128-bit lane: unpack, multiply-add and pack keep the sample
+        // order.
+        let low = _mm256_maddubs_epi16(_mm256_unpacklo_epi8(a, b), weights);
+        let high = _mm256_maddubs_epi16(_mm256_unpackhi_epi8(a, b), weights);
+        let packed = _mm256_packus_epi16(
+            _mm256_mulhrs_epi16(low, round),
+            _mm256_mulhrs_epi16(high, round),
+        );
+        _mm256_storeu_si256(out.as_mut_ptr().cast(), packed);
+    }
+}
+
+/// 16 outputs from `window[..17]` (one 128-bit step).
+///
+/// # Safety
+///
+/// AVX2 must be enabled in the caller.
+#[inline(always)]
+unsafe fn step16(window: &[u8], pair: i16, out: &mut [u8]) {
+    let (window, out) = (&window[..=STEP], &mut out[..STEP]);
+    // SAFETY: as for `step32`.
+    unsafe {
+        let (weights, round) = (_mm_set1_epi16(pair), _mm_set1_epi16(ROUND2_5));
+        let a = _mm_loadu_si128(window.as_ptr().cast());
+        let b = _mm_loadu_si128(window[1..].as_ptr().cast());
+        let low = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
+        let high = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpackhi_epi8(a, b), weights), round);
+        _mm_storeu_si128(out.as_mut_ptr().cast(), _mm_packus_epi16(low, high));
+    }
+}
+
+/// 8 outputs from `window[..9]` (a 64-bit step).
+///
+/// # Safety
+///
+/// AVX2 must be enabled in the caller.
+#[inline(always)]
+unsafe fn step8(window: &[u8], pair: i16, out: &mut [u8]) {
+    let (window, out) = (&window[..=HALF_STEP], &mut out[..HALF_STEP]);
+    // SAFETY: as for `step32`.
+    unsafe {
+        let (weights, round) = (_mm_set1_epi16(pair), _mm_set1_epi16(ROUND2_5));
+        let a = _mm_loadl_epi64(window.as_ptr().cast());
+        let b = _mm_loadl_epi64(window[1..].as_ptr().cast());
+        let sum = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
+        _mm_storel_epi64(out.as_mut_ptr().cast(), _mm_packus_epi16(sum, sum));
+    }
+}
+
+/// 4 outputs from `window[..5]` (a 32-bit step).
+///
+/// # Safety
+///
+/// AVX2 must be enabled in the caller.
+#[inline(always)]
+unsafe fn step4(window: &[u8], pair: i16, out: &mut [u8]) {
+    let (window, out) = (&window[..=QUARTER_STEP], &mut out[..QUARTER_STEP]);
+    // SAFETY: as for `step32`.
+    unsafe {
+        let (weights, round) = (_mm_set1_epi16(pair), _mm_set1_epi16(ROUND2_5));
+        let a = _mm_cvtsi32_si128(quarter(window));
+        let b = _mm_cvtsi32_si128(quarter(&window[1..]));
+        let sum = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
+        out.copy_from_slice(&_mm_cvtsi128_si32(_mm_packus_epi16(sum, sum)).to_le_bytes());
+    }
+}
+
 /// [`super::run2`], inlined into the caller's AVX2 code.
 ///
 /// # Safety
@@ -48,70 +136,56 @@ pub(crate) unsafe fn run2(window: &[u8], weight: usize, out: &mut [u8]) {
         interpolate_run(window, weight, out);
         return;
     }
-    let far = weight as i16;
-    // Byte pairs (near weight, far weight) for the (a, b) pairs.
-    let pair = (far << 8) | (WEIGHT_SUM - far);
-    // SAFETY: AVX2 is enabled (caller contract); every load and store
-    // covers checked subslices.
+    let pair = weight_pair(weight);
+    // SAFETY: AVX2 is enabled (caller contract).
     unsafe {
-        let (weights, round) = (_mm256_set1_epi16(pair), _mm256_set1_epi16(ROUND2_5));
         let mut done = 0;
         while done + WIDE_STEP <= len {
-            let a = _mm256_loadu_si256(window[done..][..WIDE_STEP].as_ptr().cast());
-            let b = _mm256_loadu_si256(window[done + 1..][..WIDE_STEP].as_ptr().cast());
-            // Per 128-bit lane: unpack, multiply-add and pack keep the
-            // sample order.
-            let low = _mm256_maddubs_epi16(_mm256_unpacklo_epi8(a, b), weights);
-            let high = _mm256_maddubs_epi16(_mm256_unpackhi_epi8(a, b), weights);
-            let packed = _mm256_packus_epi16(
-                _mm256_mulhrs_epi16(low, round),
-                _mm256_mulhrs_epi16(high, round),
-            );
-            _mm256_storeu_si256(out[done..][..WIDE_STEP].as_mut_ptr().cast(), packed);
+            step32(&window[done..], pair, &mut out[done..]);
             done += WIDE_STEP;
         }
-        let (weights, round) = (_mm_set1_epi16(pair), _mm_set1_epi16(ROUND2_5));
         if done + STEP <= len {
-            let a = _mm_loadu_si128(window[done..][..STEP].as_ptr().cast());
-            let b = _mm_loadu_si128(window[done + 1..][..STEP].as_ptr().cast());
-            let low = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
-            let high = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpackhi_epi8(a, b), weights), round);
-            _mm_storeu_si128(
-                out[done..][..STEP].as_mut_ptr().cast(),
-                _mm_packus_epi16(low, high),
-            );
+            step16(&window[done..], pair, &mut out[done..]);
             done += STEP;
         }
         // The rest in half (then quarter) steps, the last one ending at
         // `len` (it may recompute outputs already stored, with the same
         // values).
-        let step = if len < HALF_STEP {
-            QUARTER_STEP
-        } else {
-            HALF_STEP
-        };
         while done < len {
-            let at = done.min(len - step);
-            let (a, b) = if step == HALF_STEP {
-                (
-                    _mm_loadl_epi64(window[at..][..HALF_STEP].as_ptr().cast()),
-                    _mm_loadl_epi64(window[at + 1..][..HALF_STEP].as_ptr().cast()),
-                )
+            if len >= HALF_STEP {
+                let at = done.min(len - HALF_STEP);
+                step8(&window[at..], pair, &mut out[at..]);
+                done = at + HALF_STEP;
             } else {
-                (
-                    _mm_cvtsi32_si128(quarter(&window[at..])),
-                    _mm_cvtsi32_si128(quarter(&window[at + 1..])),
-                )
-            };
-            let sum = _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
-            let packed = _mm_packus_epi16(sum, sum);
-            if step == HALF_STEP {
-                _mm_storel_epi64(out[at..][..HALF_STEP].as_mut_ptr().cast(), packed);
-            } else {
-                out[at..at + QUARTER_STEP]
-                    .copy_from_slice(&_mm_cvtsi128_si32(packed).to_le_bytes());
+                let at = done.min(len - QUARTER_STEP);
+                step4(&window[at..], pair, &mut out[at..]);
+                done = at + QUARTER_STEP;
             }
-            done = at + step;
+        }
+    }
+}
+
+/// [`super::run2`] of a run of `N` outputs (4, 8, 16, or a multiple of
+/// 32), with no length dispatch: rows of a fixed block side.
+///
+/// # Safety
+///
+/// AVX2 must be enabled in the caller; `window` holds `N + 1` samples and
+/// `out` `N`.
+#[inline(always)]
+pub(crate) unsafe fn run2_fixed<const N: usize>(window: &[u8], weight: usize, out: &mut [u8]) {
+    let pair = weight_pair(weight);
+    // SAFETY: AVX2 is enabled (caller contract).
+    unsafe {
+        match N {
+            QUARTER_STEP => step4(window, pair, out),
+            HALF_STEP => step8(window, pair, out),
+            STEP => step16(window, pair, out),
+            _ => {
+                for at in (0..N).step_by(WIDE_STEP) {
+                    step32(&window[at..], pair, &mut out[at..]);
+                }
+            }
         }
     }
 }
@@ -130,6 +204,12 @@ impl Runs for Avx2Runs {
     unsafe fn run2(window: &[u8], weight: usize, out: &mut [u8]) {
         // SAFETY: forwarded contract.
         unsafe { run2(window, weight, out) }
+    }
+
+    #[inline(always)]
+    unsafe fn run2_fixed<const N: usize>(window: &[u8], weight: usize, out: &mut [u8]) {
+        // SAFETY: forwarded contract.
+        unsafe { run2_fixed::<N>(window, weight, out) }
     }
 
     #[inline(always)]
