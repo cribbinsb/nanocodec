@@ -18,21 +18,24 @@ const PLATFORM_LABELS = { jetson: 'Jetson Orin Nano core', x86: 'AMD EPYC 9R45 (
 // The fixed-QP chart's extra metric (the standards' weighted PSNR); the rest are common.js's.
 const NAMES = { ...METRIC_NAMES, weighted: 'BD-rate, weighted PSNR (0.92 Y + 0.04 Cb + 0.04 Cr)' };
 const SHORT = { ...METRIC_SHORT, weighted: 'Weighted' };
-const QP_SPEED = 'the chart\'s single-thread timing at fixed QP (720p), on the machine selected';
 const TUNED_ZERO = 'x264-medium~psnr';
 const ALL = 'all';
 // The demo's pre-encoded streams (for a reference point's demo link), loaded on first use.
 const MANIFEST_URL = '../streams-ref/manifest.json';
 let manifest = null;
 
+// The Fixed QP chart's clip sets (CTC: the standards lens; fresh: our held-out sample) and
+// the CBR chart's: one Clip set control, each mode offering its own.
+const QP_CLIPSETS = { ctc: 'qp', fresh: 'qp-fresh' };
+const CBR_CLIPSETS = ['fresh', 'heldout', 'dev'];
 const state = {
-  clipset: 'fresh', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson', frontier: true,
+  clipset: 'fresh', qpClipset: 'ctc', zero: TUNED_ZERO, mode: 'cbr', metric: 'j', platform: 'jetson', frontier: true,
   preset: ALL, codecs: new Set(Object.keys(CODEC_NAMES)), hiddenOwners: new Set(), tuned: false,
   selected: null,
 };
 
 function viewId() {
-  if (state.mode === 'qp') return 'qp';
+  if (state.mode === 'qp') return QP_CLIPSETS[state.qpClipset];
   const zid = state.zero === TUNED_ZERO ? 'psnr' : 'default';
   return `${state.clipset}-${zid}`;
 }
@@ -131,13 +134,27 @@ function fillDemoLink(data, family, root) {
 }
 
 function viewNote(data, view) {
+  if (view.rate_mode === 'qp' && view.clipset === 'ctc') {
+    return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), build ${view.build_commit}. ${qpSpeedNote(view)}`;
+  }
   if (view.rate_mode === 'qp') {
-    const dev = data.views.find((v) => v.id === 'dev-psnr');
-    return `Bits: BD-rate against x264 medium at fixed QP on the AOM CTC low-delay sequences (${view.condition}, ${view.clips} sequences), ours with its fixed-QP profile (column "${view.column}"; all three columns on the Fixed QP page), build ${view.build_commit}. Speed: single-thread encode fps at 720p, fixed QP, on the timing cores of the ${PLATFORM_LABELS[state.platform].replace(' core', '')} (${data.platforms[state.platform]}), from the chart timing at build ${dev.builds[dev.base_build] || dev.base_build}; an encoder without that timing is listed under the chart.`;
+    return `Bits: BD-rate against x264 medium at fixed QP on ${view.clips} clips of the held-out, fresh set (videos none of our tuning used; the clips are picked by a fixed rule, content classes in turn and within a class by a hash of the name), ${view.frames} frames each, one key frame, every encoder at ${view.points} fixed quantizers per clip spanning the CBR ladder's rates; J is the mean of the full and lower-half BD-rates over PSNR-YUV, VMAF v1 and MS-SSIM, with its 90% interval over clips. Ours at build ${view.build_commit}. ${qpSpeedNote(view)}`;
   }
   const tools = view.tools || data.views.find((v) => v.tools).tools;
   const refs = `x264 ${tools.x264}, x265 ${tools.x265}, SVT-AV1 ${tools.svt}, libaom ${tools.libaom}, libvpx ${tools.libvpx}`;
   return `${data.clipsets[view.clipset]}: ${view.clips} clips, ${data.frames} frames each, one key frame, CBR ladder ${data.ladder_kbps.join('/')} kbps at 720p30 scaled to each clip (plus ${data.low_ladder_kbps.join('/')} kbps where curves need them), ${data.buffer_ms} ms buffer. Ours: ${oursBuilds(data, view)}; references ${refs}. Speed: ${data.platforms[state.platform]}.`;
+}
+
+/** What the Fixed QP chart's speed axis is on the selected machine (view.speed, from the
+ * lens timing record), or that this machine has no such timing. */
+function qpSpeedNote(view) {
+  const speed = view.speed?.[state.platform];
+  if (!speed) {
+    return `Speed: not timed on the ${PLATFORM_LABELS[state.platform].replace(' core', '')} for this chart; choose another machine under Speed on.`;
+  }
+  const what = view.clipset === 'ctc' ? 'sequences' : 'clips';
+  const quantizers = speed.quantizers === view.points ? 'the same fixed quantizers' : `${speed.quantizers} of the same fixed quantizers`;
+  return `Speed: single-thread encode fps on the same ${speed.sequences} ${what} at ${quantizers} (each encoder's own encodes of the quality run, ${speed.frames} frames each): CPU time on one pinned core of ${speed.platform}, ours at build ${speed.build}; fps is 1000 over the geometric mean of the ${what}' milliseconds per frame (they run from ${view.size_range}, so the fps is not a 720p figure).`;
 }
 
 /** Which build each of our families on a view was measured at, grouped by build (a
@@ -159,10 +176,15 @@ function render(data, root) {
   for (const b of root.querySelectorAll('[data-control="platform"] button')) {
     b.setAttribute('aria-pressed', String(b.dataset.value === state.platform));
   }
-  for (const [name, value] of [['clipset', state.clipset], ['metric', state.metric]]) {
+  const clipset = state.mode === 'qp' ? state.qpClipset : state.clipset;
+  for (const [name, value] of [['clipset', clipset], ['metric', state.metric]]) {
     for (const b of root.querySelectorAll(`[data-control="${name}"] button`)) {
       b.setAttribute('aria-pressed', String(b.dataset.value === value));
-      if (name === 'clipset') b.disabled = state.mode === 'qp';
+      if (name === 'clipset') {
+        b.disabled = state.mode === 'qp'
+          ? !data.views.some((v) => v.id === QP_CLIPSETS[b.dataset.value])
+          : !CBR_CLIPSETS.includes(b.dataset.value);
+      }
       if (name === 'metric') {
         b.disabled = !view.metrics.includes(b.dataset.value);
         b.title = b.disabled ? 'Not in this run’s data (the held-out and development charts record J, PSNR-YUV and VMAF v1)' : '';
@@ -171,7 +193,7 @@ function render(data, root) {
   }
   const note = root.querySelector('.view-note');
   note.textContent = `${viewNote(data, view)} `;
-  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' ? 'ctc' : view.clipset}` }, 'The clips.'));
+  note.append(el('a', { href: `clips.html?set=${view.rate_mode === 'qp' && view.clipset !== 'ctc' ? 'qp-fresh' : view.clipset}` }, 'The clips.'));
 
   const entries = visible(data, view);
   const points = entries.map(([family, v]) => {
@@ -192,7 +214,7 @@ function render(data, root) {
   const zero = view.rate_mode === 'qp' ? 'x264 medium at fixed QP' : ZERO_NAMES[view.zero];
   title.textContent = `${NAMES[state.metric]} vs ${zero}, against single-thread encode speed`;
   root.querySelector('.chart-sub').textContent = view.rate_mode === 'qp'
-    ? `Fixed QP · AOM CTC low delay, build ${view.build_commit} · lower is fewer bits, right is faster`
+    ? `Fixed QP · ${view.clipset === 'ctc' ? 'AOM CTC low delay' : `${view.clips} held-out, fresh clips`}, build ${view.build_commit} · lower is fewer bits, right is faster`
     : `Real-time CBR · ${data.clipsets[view.clipset].split(':')[0]} · lower is fewer bits, right is faster`;
   if (!points.length) {
     chart.replaceChildren(el('p', { class: 'note' }, 'No points match these filters.'));
@@ -205,7 +227,9 @@ function render(data, root) {
     });
     drawScatter(chart, points, {
       frontiers,
-      xLabel: `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
+      xLabel: view.rate_mode === 'qp'
+        ? `encode fps, ${view.clipset === 'ctc' ? 'AOM CTC sequences' : 'held-out clips'} (geometric mean), one ${PLATFORM_LABELS[state.platform]} (log scale)`
+        : `encode fps, 720p, one ${PLATFORM_LABELS[state.platform]} (log scale)`,
       yLabel: `${SHORT[state.metric]} BD-rate (lower is better)`,
       ariaLabel: title.textContent,
       selected: state.selected,
@@ -220,7 +244,7 @@ function render(data, root) {
   if (untimed.length) {
     chart.append(el('p', { class: 'note off-scale' }, `Not yet timed, so not plotted: ${untimed.join('; ')}.`));
   }
-  if (view.rate_mode === 'qp') {
+  if (view.rate_mode === 'qp' && view.clipset === 'ctc') {
     chart.append(el('p', { class: 'note' }, el('a', { href: 'fixed-qp.html' }, 'All three fixed-QP columns, per encoder: the Fixed QP page.')));
   }
   const slot = root.querySelector('.detail-slot');
@@ -274,7 +298,8 @@ function controls(data, root) {
   root.querySelector('.controls').replaceChildren(
     control('Clip set', withData('clipset', segmented('Clip set', [
       { value: 'fresh', label: 'Held-out, fresh' }, { value: 'heldout', label: 'Held-out, all' }, { value: 'dev', label: 'Development' },
-    ], state.clipset, (v) => { state.clipset = v; rerender(); }))),
+      { value: 'ctc', label: 'AOM CTC (Fixed QP)' },
+    ], state.clipset, (v) => { if (state.mode === 'qp') state.qpClipset = v; else state.clipset = v; rerender(); }))),
     // Fixed QP: the standards lens at the chart's build, on the same axes.
     control('Rate mode', segmented('Rate mode', [
       { value: 'cbr', label: 'CBR' }, { value: 'qp', label: 'Fixed QP' },
