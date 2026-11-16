@@ -660,6 +660,13 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
     key overshoots its predicted size by more (+13 % / +25 % against +7.5 % / +12 %), and that is
     where its extra key bits come from. The candidate's first key, coded with Fast's tools, costs
     4 % / 12 % more at the same qindex, and its second key is planned 2-6 qindex coarser.
+    **Adopted** later 2026-11-16 (coordinator; e097d830b): pool L3 with its CPU (dCPU +9.4 % at
+    k 0.6) J -0.41 % [-1.39, +0.61] AMBIGUOUS, no guard; quality alone J -7.0 %. AV1 Faster is
+    now 313.7 fps on the c8a chart path (x1.094 of the previous Faster's time, same session).
+    Key fix forward: `rate.key_quality_match` (engine default 1) lifts the level-bound
+    london_bus 389k key above Faster's (32.98 -> 34.30 dB, Faster 33.71); the chad_4 300k and
+    meva_school 97k keys are bound by the physical buffer in both arms, and Faster's are
+    larger only by overflowing it further (docs/handoff/rate-control.md "Key quality match").
 
 ## Next decision points
 

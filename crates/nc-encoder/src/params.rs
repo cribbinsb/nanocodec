@@ -804,9 +804,13 @@ param_group! {
         // reach more at that quantizer (finer-coded base frames, a still
         // scene refining past the last key), the key lands below them. AV1
         // Faster base-only, `pool_static_london_bus_540p` 389k: level 153
-        // against Faster's 146, key 0.73 dB below Faster's.
-        key_quality_match: 0.0, [0.0, 1.0],
-            "rate control: share of the way a key's quality requirement moves from the inter level's step to the step that would bring the last key up to the inter frames' running PSNR-Y (6.02 dB per octave of step), where that is finer (0 = off); the buffers still bound it",
+        // against Faster's 146, key 0.73 dB below Faster's; with 1, q141 and
+        // 0.59 dB above Faster's. Default 1, final-check against 0 (draw
+        // 2026-11-16, 600 f, keys every 10 s): AV1 Faster J -0.00% [-0.01,
+        // +0.00], london_bus pulse -0.40 dB; H.264 Default +0.00% [+0.00,
+        // +0.00]; no guard in either.
+        key_quality_match: 1.0, [0.0, 1.0],
+            "rate control: share of the way a key's quality requirement moves from the inter level's step toward the step that would bring the last key up to the inter frames' running PSNR-Y (6.02 dB per octave of step, the move bounded by that gain), where they stand above it (0 = off); needs the distortion `rate.prekey_quiet` measures; the buffers still bound it",
         // The key's room is the physical buffer's, so the run-up keeps it
         // rather than the key borrowing: AV1 Fast base-only on
         // `pool_external_meva_admin_720p_536p` (194k, keys every 300) lost
