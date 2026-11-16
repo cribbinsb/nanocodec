@@ -84,6 +84,23 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
     +0.2% / +1.9% / +7.2% (lowlight codes at fine quantizers there).
   - So neither the plain re-point nor a quantizer-only gate pays for its CPU in CBR; the
     shared energy gates (AV1/AV2 agent) are the route.
+- **HEVC Fast with light superblocks (light pipeline, 3df562c10) and Faster-based points**
+  (`feature/hevc-h264-speed`, 2026-11-16; box lens via `nceval.ctc local`, Weighted / J against
+  x264 medium; x86 callgrind for CPU; CBR pool screens against Fast, k 0.6):
+  - Regular superblocks with the Default's depth (thresholds 0) and transform tree, light ones with
+    Fast's (25/50, no tree), by `effort.regular_fraction`: 1 (all regular) -3.7 / -12.4, 0.75
+    -3.4, 0.5 -2.2, 0.25 +0.9; Fast +7.9 / -4.2. Fixed-QP instructions against Fast (crowd09 and
+    lowlight_city_night, QP 32 / 42, 30 f): +18 / +10-11 %, +17 / +10-11 %, +14 / +9-10 %, +8-9 /
+    +5-6 %. The light split interpolates; it does not beat the line between Fast and all-regular.
+  - CBR, 0.25: L3 J **+0.59 % [+0.14, +1.04] WORSE** (quality full -2.5 %, low -1.3 %; CPU at
+    600 kbit/s +4.1 %).
+  - Faster base with the Default's depth and transform tree everywhere: lens **+1.7 / -6.6**
+    (Faster alone +17.4 / +4.8) at fewer instructions than Fast (-7 to -11 % at QP 37; -12 % at
+    600 kbit/s CBR). Faster base with light shares 0.5 / 0.25: +3.6 / +7.6. In CBR the same point
+    is **quality +7.4 % full / +9.4 % low against Fast, L3 J +1.06 % WORSE, every class over the
+    quality guard and the key-pulse guard**: the fixed-QP lens and the CBR pool disagree by
+    about 10 points on this change (Faster's other levers, not depth or the tree, are what CBR
+    punishes; not yet split).
 
 ## In progress (who)
 
@@ -243,6 +260,14 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   −9.4 against M10's −14.2.
 - **Next:** key-frame superblock classes (`effort.key_regular_fraction`, a spatial proxy), then the
   second-reference trial as a light lever, then a joint tune and the CBR screens.
+
+- **AV1/AV2 writer landing 1** (cec603273, exact). The writer path goes from about 1,790 to
+  about 1,050 Ir per byte (SVT M10 is about 760); whole AV1 Default encode −3.5 % (callgrind, 40 f
+  CTC). The range coder is now a 64-bit window, with a flat symbol log and replay, sized level
+  maps, an eob==1 shortcut, and unrolled CDF adaptation. AV2 got the same coder.
+- **AV1 Fast re-point key pulse:** Default's key intra set doesn't fix it (worst clip +1.10 dB);
+  key boost makes it worse (+4.56). Being tested: partial forward on keys only, and a coarser key
+  QP.
 
 ## Next decision points
 

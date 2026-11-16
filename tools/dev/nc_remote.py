@@ -364,9 +364,18 @@ def ssh(box: Box, command: str, **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(["ssh", *ssh_options(box), f"{SSH_USER}@{box.host}", command], **kwargs)
 
 
-def rsync(box: Box, *args: str) -> None:
+#: rsync modes. Results come back as they are (-a). Sources go up by content
+#: (--checksum) WITHOUT their mtimes (-a minus -t, -o, -g): a changed file lands
+#: with the box's current time, so cargo always sees it newer than the last
+#: build. Preserving mtimes left a file edited during a remote build older than
+#: that build's outputs, and the next run reused the stale binary (2026-11-16).
+FETCH_MODE = ("-a",)
+UPLOAD_MODE = ("-rlpD", "--checksum")
+
+
+def rsync(box: Box, mode: tuple[str, ...], *args: str) -> None:
     shell = shlex.join(["ssh", *ssh_options(box)])
-    subprocess.run(["rsync", "-a", "--mkpath", "-e", shell, *args], check=True)
+    subprocess.run(["rsync", *mode, "--mkpath", "-e", shell, *args], check=True)
 
 
 def remote(box: Box, path: str) -> str:
@@ -510,12 +519,13 @@ def checked_sync_path(path: str) -> Path:
 
 def sync(box: Box, worktree: Path, name: str, extra: list[Path]) -> None:
     started = time.monotonic()
-    rsync(box, "-z", "--delete", *RSYNC_EXCLUDES, "--filter=:- .gitignore",
+    rsync(box, UPLOAD_MODE, "-z", "--delete", *RSYNC_EXCLUDES, "--filter=:- .gitignore",
           f"{worktree}/", remote(box, f"ncbox/jobs/{name}/src/"))
     for path in extra:
         relative = path.relative_to(Path.home())
         suffix = "/" if path.is_dir() else ""
-        rsync(box, "-z", *RSYNC_EXCLUDES, f"{path}{suffix}", remote(box, f"{relative}{suffix}"))
+        rsync(box, UPLOAD_MODE, "-z", *RSYNC_EXCLUDES, f"{path}{suffix}",
+              remote(box, f"{relative}{suffix}"))
     say(f"synced in {time.monotonic() - started:.0f} s")
 
 
@@ -529,7 +539,7 @@ def fetch(box: Box, name: str, paths: list[str], fetch_to: Path) -> None:
         else:
             source, local = f"ncbox/jobs/{name}/src/{path}", fetch_to / path
         local.parent.mkdir(parents=True, exist_ok=True)
-        rsync(box, remote(box, source.rstrip("/")), f"{local.parent}/")
+        rsync(box, FETCH_MODE, remote(box, source.rstrip("/")), f"{local.parent}/")
         say(f"fetched {path} -> {local}")
 
 

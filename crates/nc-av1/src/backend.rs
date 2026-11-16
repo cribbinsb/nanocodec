@@ -31,9 +31,7 @@ use crate::cdef::{self, CdefParams};
 use crate::cdf::CdfContext;
 use crate::cfl::ChromaFromLuma;
 use crate::coeff::trellis::{RateModel, TrellisQuantizer};
-use crate::coeff::{
-    CoeffCdfs, PlaneType, TxbContext, coefficient_scan, entropy_context, eob_table,
-};
+use crate::coeff::{CoeffCdfs, PlaneType, TxbContext, coefficient_scan, eob_table};
 use crate::grain::{GrainParams, GrainState};
 use crate::inter;
 use crate::intra::{
@@ -940,6 +938,16 @@ impl CodecBackend for Av1Backend {
         "quant.trellis_lambda_scale",
         "gate.partial_transform_min_quantizer",
         "gate.tx_split_skip_min_quantizer",
+        // Key-frame intra searches: each only narrows what the encoder
+        // tries; the mode, angle-delta and CfL syntax does not depend on
+        // them. (`keyframe_filter_intra` is not here: it also sets the
+        // sequence header's `enable_filter_intra`.)
+        "av1.keyframe_cfl",
+        "av1.keyframe_intra_modes",
+        "av1.keyframe_directional",
+        "av1.keyframe_angle_deltas",
+        "av1.keyframe_directions",
+        "av1.keyframe_intra_rd_candidates",
     ];
 
     fn block_qp_grid(&self) -> (u8, usize) {
@@ -1824,14 +1832,8 @@ impl CodecBackend for Av1Backend {
         self.restoration.frame = self.restoration_frame(plan);
         self.restoration.spans.clear();
         self.restoration.chosen = None;
-        self.writer = if self.cdef_frame.per_superblock || self.restoration.frame {
-            SymbolWriter::new_deferred()
-        } else {
-            SymbolWriter::new()
-        };
-        if !self.adapts_cdfs() {
-            self.writer = std::mem::take(&mut self.writer).without_adaptation();
-        }
+        let deferred = self.cdef_frame.per_superblock || self.restoration.frame;
+        self.writer.restart(deferred, self.adapts_cdfs());
         self.grids.mode_info.clear();
         self.current = None;
         for above in &mut self.grids.contexts.above {
@@ -1970,7 +1972,7 @@ impl CodecBackend for Av1Backend {
         } else {
             IntraRefresh::AllSlots
         };
-        let tile = std::mem::take(&mut self.writer).finish();
+        let tile = self.writer.finish_frame();
         let mut frame = BitWriter::new();
         FrameHeader {
             kind: self.kind,
@@ -3228,7 +3230,9 @@ impl Av1Backend {
                 self.write_luma_tree(block, luma_leaves);
                 continue;
             }
-            if !skip {
+            let value = if skip {
+                0
+            } else {
                 let plane_type = if plane == 0 {
                     PlaneType::Luma
                 } else {
@@ -3246,12 +3250,7 @@ impl Av1Backend {
                     ctx,
                     &self.scratch.levels[plane][..tx.coded_size() * tx.coded_size()],
                     residual.eob,
-                );
-            }
-            let value = if skip {
-                0
-            } else {
-                entropy_context(tx, &self.scratch.levels[plane], residual.eob)
+                )
             };
             self.set_contexts(plane, x4, y4, units, value);
         }
@@ -3727,7 +3726,7 @@ impl Av1Backend {
             let (above, left) = self.context_slices(0, x4, y4, units);
             let ctx = TxbContext::derive(PlaneType::Luma, false, above, left);
             let levels = &self.scratch.tree_levels[leaf.offset..leaf.offset + coded_area];
-            self.cdfs.coeff.write(
+            let value = self.cdfs.coeff.write(
                 &mut self.writer,
                 tx,
                 PlaneType::Luma,
@@ -3737,7 +3736,6 @@ impl Av1Backend {
                 levels,
                 leaf.eob,
             );
-            let value = entropy_context(tx, levels, leaf.eob);
             self.set_contexts(0, x4, y4, units, value);
         }
     }

@@ -355,6 +355,11 @@ param_group! {
 param_group! {
     /// Inter-frame mode decision (`decision.rs`, SVT's light PD1).
     pub struct DecisionParams ("decision") {
+        /// A per-superblock switch for frames that have a second reference
+        /// (`refs.*`): 0 on light superblocks (`light.decision.second_reference`,
+        /// `effort_class.rs`) codes them from the primary reference alone.
+        second_reference: 1.0, [0.0, 1.0],
+            "1 tries the frame's second reference (and compound) for each inter leaf; 0 predicts from the primary reference only: 0 saves a mode decision per leaf",
         intra_gate_variance: 64.0, [0.0, 1024.0],
             "residual variance/sample above which DC intra is tried: lower tries intra more (slower)",
         // Default 1: 6 TRAIN clips x 4 QPs, 150f, PSNR-YUV/VMAF v1 BD vs 0:
@@ -1021,6 +1026,10 @@ param_group! {
             "a superblock whose benefit proxy (steps) is at least this is regular whatever its rank (0: rank only): lower keeps more hard superblocks regular in frames that are mostly hard",
         spread_weight: 1.0, [0.0, 4.0],
             "weight of the 8x8 motion-search SAD spread (standard deviation per sample) in the benefit proxy: higher keeps superblocks that mix well- and badly-predicted areas regular",
+        key_regular_fraction: 1.0, [0.0, 1.0],
+            "share of each key frame's superblocks, those with the most source texture (8x8 luma standard deviation per sample, in quantizer steps), coded with the regular settings; the rest take the light.* settings (1: every key superblock regular): lower spends the key frame's intra search on fewer superblocks",
+        key_regular_proxy: 0.0, [0.0, 16.0],
+            "a key superblock whose texture proxy (steps) is at least this is regular whatever its rank (0: rank only)",
         light_nonbase_only: 0.0, [0.0, 1.0],
             "1 keeps every superblock of base frames (key, cadence base) regular, as SVT runs regular PD1 on its base frames",
     }

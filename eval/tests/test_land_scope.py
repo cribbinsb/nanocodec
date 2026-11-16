@@ -46,8 +46,9 @@ def test_embedded_presets_select_the_crates_that_include_them(graph):
     dirs, dependents, embedded = graph
     kind, crates = land_scope.classify("crates/nc-encoder/presets/hevc/fast.toml", ROOT, dirs, embedded)
     assert kind == "included"
-    # nc-encoder's preset table embeds it (presets.rs); its front ends follow.
-    assert crates == {"nanocodec-encoder"}
+    # nc-encoder's preset table embeds it (presets.rs); its front ends follow,
+    # and the CLI's tests pin the shipped values.
+    assert crates == {"nanocodec-encoder", "nanocodec-cli"}
     assert {"nanocodec-hevc", "nanocodec-cli", "nanocodec-web"} <= land_scope.closure(crates, dependents)
 
 

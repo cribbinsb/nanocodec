@@ -20,8 +20,8 @@ use nc_encoder::{Candidates, CoeffRateModel, Trellis};
 
 use super::{
     BASE_EOB_SYMBOLS, BR_CDF_SIZE, COEFF_BASE_RANGE, CoeffCdfs, EOB_GROUP_START, EOB_OFFSET_BITS,
-    LevelMap, MAP_STRIDE, MAX_BASE_BR_RANGE, NUM_BASE_LEVELS, PlaneType, TxbContext,
-    base_eob_context, nz_map_ctx_offset, scan,
+    MAP_STRIDE, MAX_BASE_BR_RANGE, NUM_BASE_LEVELS, PlaneType, TxbContext, base_context,
+    base_eob_context, br_context, nz_map_ctx_offset, scan,
 };
 use crate::transform::TxSize;
 
@@ -291,7 +291,7 @@ impl CoeffRateModel for RateModel<'_> {
         } else {
             let (base_sum, br_sum) = state.neighbour_sums(row, row + col);
             let offset = self.nz_offsets[pos];
-            (LevelMap::base_context(pos, base_sum, offset), br_sum)
+            (base_context(pos, base_sum, offset), br_sum)
         };
         for (i, &level) in levels.iter().enumerate() {
             let base_symbol = level.min(3) as usize;
@@ -306,7 +306,7 @@ impl CoeffRateModel for RateModel<'_> {
                 continue;
             }
             if level as i32 > NUM_BASE_LEVELS {
-                cost += self.range_cost_q9(LevelMap::br_context(pos, row, col, br_sum), level);
+                cost += self.range_cost_q9(br_context(pos, row, col, br_sum), level);
             }
             cost += if pos == 0 {
                 self.dc_sign_q9
@@ -324,7 +324,7 @@ impl CoeffRateModel for RateModel<'_> {
         debug_assert_ne!(state.diagonal, NO_DIAGONAL);
         let (pos, row, col) = self.coordinates(scan_pos);
         let (base_sum, _) = state.neighbour_sums(row, row + col);
-        let ctx = LevelMap::base_context(pos, base_sum, self.nz_offsets[pos]);
+        let ctx = base_context(pos, base_sum, self.nz_offsets[pos]);
         let cost = self.cdfs.base[self.tx.index()][self.plane as usize][ctx].cost_q9(0);
         self.advance(state, scan_pos, 0);
         q9_to_bits(cost)

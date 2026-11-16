@@ -1243,6 +1243,7 @@ fn dc_error<B: CodecBackend>(params: &DecisionParams, stats: Variance, block: &B
 /// comparison add the winner's DC error. On `bodycam_antare_0815` (exposure
 /// jumps; SVT codes 40-64% intra on those frames) HEVC Fast Q41 rate -5.8% at
 /// +0.35dB PSNR-YUV; crowd09 Q47 -1.2% rate at +0.20dB.
+#[inline]
 fn intra_or_inter<B: CodecBackend>(
     backend: &B,
     (measurer, source): (&Measurer<'_>, &Picture),

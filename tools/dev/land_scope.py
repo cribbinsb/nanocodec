@@ -151,6 +151,9 @@ DOC_NAMES = {"LICENSE", ".gitignore", ".gitattributes"}
 #: The preset files: in the crate that embeds the shipped ones (its table).
 PRESETS_DIR = "crates/nc-encoder/presets"
 PRESETS_CRATE = "nanocodec-encoder"
+#: The CLI's unit tests pin the shipped presets' values (`params::tests`), so a
+#: shipped preset change runs them too (a re-point once landed with them stale).
+PRESETS_TEST_CRATE = "nanocodec-cli"
 INCLUDE_RE = re.compile(r'include_(?:str|bytes)!\(\s*"([^"]+)"\s*\)')
 
 
@@ -213,7 +216,8 @@ def classify(path, root, dirs, embedded):
         return "gate", set()
     if path.startswith(PRESETS_DIR + "/"):
         # A shipped preset reaches the crate that embeds it; a candidate no crate.
-        return ("included", {PRESETS_CRATE}) if shipped_preset(path) else ("presets", set())
+        return (("included", {PRESETS_CRATE, PRESETS_TEST_CRATE}) if shipped_preset(path)
+                else ("presets", set()))
     for crate, crate_dir in dirs.items():
         if path.startswith(crate_dir + "/"):
             return "crate", {crate}

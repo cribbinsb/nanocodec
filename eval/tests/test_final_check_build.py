@@ -78,3 +78,55 @@ def test_same_code_compares_the_crates_and_presets_trees():
     head = levels.git(Path(levels.__file__).parents[2], "rev-parse", "HEAD")
     assert levels.same_code(head, head)
     assert not levels.same_code("", head)
+
+
+# --- each arm's own presets (2026-11-16: two bare binaries both read the repo's
+# presets, and a preset change came out at J exactly 0.00 %) ----------------------------
+
+def preset_dir(root: Path, value: str) -> Path:
+    (root / "presets" / "av1").mkdir(parents=True)
+    (root / "presets" / "av1" / "fast.toml").write_text(f"decision.noise_skip = {value}\n")
+    return root / "presets"
+
+
+def test_each_binary_reads_the_presets_beside_it(tmp_path):
+    paths = argparse.Namespace(data_root=tmp_path)
+    old, new = (stamped(tmp_path / arm / "nanocodec", "") for arm in ("old", "new"))
+    preset_dir(old.parent, "1")
+    preset_dir(new.parent, "2")
+    args = [levels.preset_args(levels.presets_of(b, paths), levels.Codec("av1"), "fast")
+            for b in (old, new)]
+    assert args == [["decision.noise_skip=1"], ["decision.noise_skip=2"]]
+
+
+def test_a_bare_dirty_binary_without_presets_fails_loudly(tmp_path):
+    buildinfo.build_info.cache_clear()
+    binary = stamped(tmp_path / "nanocodec", OLD + "-dirty")
+    with pytest.raises(SystemExit, match="cannot tell which presets"):
+        levels.presets_of(binary, argparse.Namespace(data_root=tmp_path))
+
+
+def test_a_bare_clean_binary_gets_its_commits_presets_from_git(tmp_path):
+    buildinfo.build_info.cache_clear()
+    head = levels.git(Path(levels.__file__).parents[2], "rev-parse", "HEAD")
+    binary = stamped(tmp_path / "bin" / "nanocodec", head)
+    presets = levels.presets_of(binary, argparse.Namespace(data_root=tmp_path))
+    assert presets == tmp_path / "builds" / head[:12] / "presets"
+    assert (presets / "av1").is_dir()
+
+
+def test_identical_presets_of_different_dirty_builds_are_refused(tmp_path):
+    buildinfo.build_info.cache_clear()
+    old = stamped(tmp_path / "old" / "nanocodec", OLD + "-dirty")
+    new = stamped(tmp_path / "new" / "nanocodec", NEW + "-dirty")
+    arms = ((old, preset_dir(old.parent, "1")), (new, preset_dir(new.parent, "1")))
+    with pytest.raises(SystemExit, match="identical preset files"):
+        levels.check_presets(*arms, allow_same=False)
+    assert "only code differs" in levels.check_presets(*arms, allow_same=True)
+
+
+def test_different_presets_pass_the_check(tmp_path):
+    old = stamped(tmp_path / "old" / "nanocodec", OLD + "-dirty")
+    new = stamped(tmp_path / "new" / "nanocodec", NEW + "-dirty")
+    arms = ((old, preset_dir(old.parent, "1")), (new, preset_dir(new.parent, "2")))
+    assert levels.check_presets(*arms, allow_same=False) is None

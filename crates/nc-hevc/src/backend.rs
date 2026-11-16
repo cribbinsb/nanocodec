@@ -1812,15 +1812,6 @@ impl HevcBackend {
             .expect("a coded video sequence is shorter than 2^32 frames")
     }
 
-    /// The SPS reference picture set of the current picture: its reference
-    /// (used), plus slot 0's T0 picture (kept, not used) when predicting from
-    /// another slot, since the next T0 predicts from it. Adaptive structures
-    /// change the T0 distance per mini-GOP; every combination is in the
-    /// stream's set list.
-    ///
-    /// # Panics
-    ///
-    /// If the engine's structure produced a set the SPS does not list.
     /// The slice reference set with a long-term reference (§7.4.8): the
     /// picture this one predicts from (used), and, kept for later pictures
     /// unless this one replaces them, slot 0's T0 picture and the long-term
@@ -1846,13 +1837,22 @@ impl HevcBackend {
         set
     }
 
+    /// The SPS reference picture set of the current picture: its reference
+    /// (used), plus slot 0's T0 picture (kept, not used) when predicting from
+    /// another slot, since the next T0 predicts from it. Adaptive structures
+    /// change the T0 distance per mini-GOP; every combination is in the
+    /// stream's set list.
+    ///
+    /// # Panics
+    ///
+    /// If the engine's structure produced a set the SPS does not list.
     fn reference_set_index(&self, sets: &[ReferenceSet]) -> usize {
         let slot = self.references.reference.slot;
         let used = (self.poc - self.slot_poc[slot], true);
         let kept = (slot != 0).then(|| (self.poc - self.slot_poc[0], false));
-        let wanted: Vec<(u32, bool)> = std::iter::once(used).chain(kept).collect();
+        let wanted = || std::iter::once(used).chain(kept);
         sets.iter()
-            .position(|set| *set == wanted.as_slice())
+            .position(|set| set.iter().copied().eq(wanted()))
             .expect("the SPS lists every reference set the structure produces")
     }
 

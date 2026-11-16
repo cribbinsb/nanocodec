@@ -3,6 +3,10 @@
 //! AVM v1.0.0 `avm_dsp/{entenc,entdec,entcode,prob}` is the reference (Clear
 //! BSD + separate AOM patent terms). AV2 differs from AV1 in probability scaling,
 //! true bypass coding and trained CDF adaptation rates. No AV1 coder is reused.
+//! The output side keeps a 64-bit `low` window that is flushed, a few bytes
+//! at a time and with backward carry propagation, only when it is about to
+//! overflow (the libaom / SVT-AV1 v4.3.0 `od_ec_enc_normalize` scheme,
+//! BSD-3-Clause-Clear; see `THIRD_PARTY.md`).
 //!
 //! A writer can also record its committed coding operations and replay them
 //! once the tile is coded, filling in symbols that were deferred because
@@ -27,6 +31,16 @@ use nc_common::decode::{DecodeError, Result};
 use nc_encoder::symbol_cost::{BitCounter, probability_cost_q9};
 
 const TOP: u32 = 32768;
+/// `pending` of a fresh writer: it crosses zero once a byte plus a carry
+/// bit have accumulated in `low`.
+const PENDING_START: i32 = -9;
+/// Pending bits after which `low` is flushed: its 64 bits less a carry
+/// byte and the 16 bits the next shift may add (libaom `56 - 16`).
+const FLUSH_BITS: i32 = 40;
+/// Bits of the 64-bit window above [`FLUSH_BITS`].
+const WINDOW_SPARE: i32 = 64 - FLUSH_BITS;
+/// Bypass bits shifted into `low` at a time (at most a symbol's shift).
+const BYPASS_CHUNK_BITS: u32 = 16;
 
 fn validate_cdf(cdf: &[u16]) -> Result<()> {
     if !(2..=16).contains(&cdf.len())
@@ -159,15 +173,18 @@ impl<const N: usize> Cdf<N> {
         &self.inverse
     }
 
+    /// The entries below the coded symbol move towards the top and the
+    /// others towards 0: two loops without a per-entry test (SVT-AV1
+    /// `update_cdf`).
     fn adapt(&mut self, symbol: usize) {
         let interval = usize::from(self.count > 15) + usize::from(self.count > 31);
         let rate = 2 + self.rate_offsets[interval];
-        for (i, value) in self.inverse[..N - 1].iter_mut().enumerate() {
-            if i < symbol {
-                *value += ((TOP - u32::from(*value)) >> rate) as u16;
-            } else {
-                *value -= *value >> rate;
-            }
+        let (below, rest) = self.inverse[..N - 1].split_at_mut(symbol);
+        for value in below {
+            *value += ((TOP - u32::from(*value)) >> rate) as u16;
+        }
+        for value in rest {
+            *value -= *value >> rate;
         }
         self.count = (self.count + 1).min(32);
     }
@@ -194,9 +211,11 @@ enum Operation {
 #[derive(Debug)]
 pub struct Writer {
     models: Option<Box<TileCdfs>>,
-    precarry: Vec<u16>,
+    /// Finished bytes; a carry out of `low` is added into them.
+    out: Vec<u8>,
     low: u64,
     range: u32,
+    /// Pending bits in `low`, offset by [`PENDING_START`].
     pending: i32,
     /// Committed operations, when recording for [`Writer::replay`].
     log: Option<Vec<Operation>>,
@@ -228,10 +247,10 @@ impl Writer {
     pub const fn new() -> Self {
         Self {
             models: None,
-            precarry: Vec::new(),
+            out: Vec::new(),
             low: 0,
             range: TOP,
-            pending: -9,
+            pending: PENDING_START,
             log: None,
             estimate: None,
             scratch: None,
@@ -477,7 +496,7 @@ impl Writer {
         let lower = scaled(lower, self.range, symbol, count);
         self.low += u64::from(self.range - upper);
         self.range = upper - lower;
-        self.normalize(0);
+        self.normalize();
     }
 
     /// Write a symbol and apply final AV2's trained-rate adaptation.
@@ -516,43 +535,61 @@ impl Writer {
             });
             return Ok(());
         }
-        // Range is constant across bypass bits. Compose up to 16 updates before
-        // normalizing; the u64 accumulator and two-byte carry flush bound this.
+        // Range is constant across bypass bits: shift `low` by up to 16 at a
+        // time and add the chunk's share of the range, flushing first when
+        // the shift would overflow the window.
         let mut remaining = bits;
         while remaining != 0 {
-            let count = remaining.min(16);
+            let count = remaining.min(BYPASS_CHUNK_BITS);
             let chunk = (value >> (remaining - count)) & ((1 << count) - 1);
+            if self.pending + count as i32 >= FLUSH_BITS {
+                self.flush(0);
+            }
             self.low = (self.low << count) + u64::from(self.range) * u64::from(chunk);
-            self.normalize(count as i32);
+            self.pending += count as i32;
             remaining -= count;
         }
         Ok(())
     }
 
-    fn normalize(&mut self, bypass: i32) {
-        let shift = if bypass != 0 {
-            0
+    /// Renormalise after an interval: shift `range` back into [32768,
+    /// 65536) and `low` with it, flushing first when `low` would overflow
+    /// its window.
+    #[inline]
+    fn normalize(&mut self) {
+        let shift = self.range.leading_zeros() - 16;
+        if self.pending + shift as i32 >= FLUSH_BITS {
+            self.flush(shift as i32);
         } else {
-            self.range.leading_zeros() as i32 - 16
-        };
-        let mut pending = self.pending + bypass;
-        let mut ready = pending + shift;
-        if ready >= 0 {
-            pending += 16;
-            let mut mask = (1_u64 << pending) - 1;
-            if ready >= 8 {
-                self.precarry.push((self.low >> pending) as u16);
-                self.low &= mask;
-                pending -= 8;
-                mask >>= 8;
-            }
-            self.precarry.push((self.low >> pending) as u16);
-            self.low &= mask;
-            ready = pending + shift - 24;
+            self.low <<= shift;
+            self.pending += shift as i32;
         }
-        self.low <<= shift;
         self.range <<= shift;
-        self.pending = ready;
+    }
+
+    /// Move the whole bytes of `low` that are final to the output, carrying
+    /// into the bytes already there, then shift it by `bits` (any number of
+    /// bits is final once `pending` is not negative; the 64-bit
+    /// window of libaom / SVT-AV1 `od_ec_enc_normalize`; see
+    /// `nc_av1::range_coder`).
+    #[cold]
+    #[inline(never)]
+    fn flush(&mut self, bits: i32) {
+        let s = self.pending + bits;
+        // Whole bytes ready, plus the byte the counter's offset holds back.
+        let ready_bits = (s & !7) + 8;
+        let kept_bits = (self.pending + WINDOW_SPARE - ready_bits) as u32;
+        let output = self.low >> kept_bits;
+        if output & (1 << ready_bits) != 0 {
+            propagate_carry(&mut self.out);
+        }
+        // The carry bit falls off the top of the shifted window.
+        let window = (output << (64 - ready_bits)).to_be_bytes();
+        let len = self.out.len();
+        self.out.extend_from_slice(&window);
+        self.out.truncate(len + (ready_bits >> 3) as usize);
+        self.low = (self.low & ((1 << kept_bits) - 1)) << bits;
+        self.pending = (s & 7) - 8;
     }
 
     /// Finish a recording writer's tile: code its operations again into a
@@ -604,23 +641,31 @@ impl Writer {
             self.log.is_none(),
             "a recording writer codes nothing live: finish it by replay"
         );
-        let mut remaining = self.pending + 10;
-        let mut shift = self.pending + 16;
+        let mut c = self.pending;
         let mut end = ((self.low + 0x3fff) & !0x3fff_u64) | 0x4000;
-        while remaining > 0 {
-            self.precarry.push((end >> shift) as u16);
-            end &= (1_u64 << shift) - 1;
-            remaining -= 8;
-            shift -= 8;
+        // `pending >= PENDING_START`, so at least one byte is emitted.
+        while 10 + c > 0 {
+            let shift = (c + 16) as u32;
+            let value = end >> shift;
+            if value & 0x100 != 0 {
+                propagate_carry(&mut self.out);
+            }
+            self.out.push(value as u8);
+            end &= (1 << shift) - 1;
+            c -= 8;
         }
-        let mut bytes = vec![0; self.precarry.len()];
-        let mut carry = 0_u32;
-        for (byte, pending) in bytes.iter_mut().zip(self.precarry).rev() {
-            carry += u32::from(pending);
-            *byte = carry as u8;
-            carry >>= 8;
+        self.out
+    }
+}
+
+/// Add one to the number whose last byte ends `out` (a carry out of `low`).
+fn propagate_carry(out: &mut [u8]) {
+    for byte in out.iter_mut().rev() {
+        let (sum, overflow) = byte.overflowing_add(1);
+        *byte = sum;
+        if !overflow {
+            return;
         }
-        bytes
     }
 }
 

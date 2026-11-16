@@ -57,7 +57,8 @@ from .cbr import Family, clip_targets
 from .clips import Clip
 from .codecs import Codec
 from .config import Paths, load_paths
-from .encoders.nanocodec import PRESETS_DIR, PRESETS_PATH, presets_in, preset_values
+from .encoders.nanocodec import (MEDIUM, OLD_PRESETS_PATH, PRESETS_PATH, presets_in,
+                                 preset_values)
 from .gatepolicy import EVALUATION_GATE, GatePolicy
 from .realuse import (DEFAULT_FRAMES, DEFAULT_WORKERS, LADDER_KBPS, Runner, Track,
                       add_periodic_pulse, compare, format_stage, one_per_class, param_args,
@@ -312,12 +313,88 @@ def no_change_reason(old: tuple[Path, str], new: tuple[Path, str]) -> str | None
     return None
 
 
-def preset_args(binary: Path, codec: Codec, preset: str | None) -> list[str]:
-    """--param pairs of `codec`'s `preset` from the build's own presets (repo's for a bare binary)."""
-    directory = binary.parent / "presets"
-    if not directory.is_dir():
-        directory = PRESETS_DIR
-    values = preset_values(directory, codec, preset)
+def presets_of(binary: Path, paths: Paths) -> Path:
+    """The preset files `binary` was built with: the presets/ beside it (every
+    final-check build has one), else its build commit's (`--version`), exported
+    from git once into the builds cache. Never the repo's: two bare binaries
+    then both read today's files, and a preset change compared identical
+    presets (an agent's final check came out at J exactly 0.00 %, 2026-11-16).
+    SystemExit when the build's presets cannot be known."""
+    beside = binary.parent / "presets"
+    if beside.is_dir():
+        return beside
+    info = buildinfo.info_of(binary)
+    if not info["commit"] or info["dirty"]:
+        raise SystemExit(
+            f"{binary}: cannot tell which presets it was built with: there is no presets/ "
+            f"beside it and its --version ({info['version']!r}) is not a clean commit. Give "
+            f"final-check a commit instead, or put that build's presets/ beside the binary")
+    cached = paths.data_root / "builds" / info["commit"][:12] / "presets"
+    if not cached.is_dir():
+        export_presets(info["commit"], cached)
+    return cached
+
+
+def export_presets(commit: str, destination: Path) -> None:
+    """`commit`'s preset directory (either layout) into `destination`, from git."""
+    repo = Path(__file__).resolve().parents[2]
+    for source in (PRESETS_PATH, OLD_PRESETS_PATH):
+        listed = subprocess.run(["git", "-C", str(repo), "ls-tree", "-d", commit, source],
+                                capture_output=True, text=True)
+        if listed.returncode == 0 and listed.stdout.strip():
+            break
+    else:
+        raise SystemExit(f"commit {commit}: no preset directory in git (is the commit in "
+                         f"this repository?)")
+    partial = destination.with_name(destination.name + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    partial.mkdir(parents=True)
+    archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", commit, source],
+                             capture_output=True, check=True)
+    subprocess.run(["tar", "-x", "-C", str(partial)], input=archive.stdout, check=True)
+    (partial / source).rename(destination)
+    shutil.rmtree(partial)
+
+
+def same_tree(a: Path, b: Path) -> bool:
+    """Whether two directories hold the same files with the same contents."""
+    compared = filecmp.dircmp(a, b)
+    if compared.left_only or compared.right_only or compared.funny_files:
+        return False
+    _, mismatch, errors = filecmp.cmpfiles(a, b, compared.common_files, shallow=False)
+    return not mismatch and not errors and all(
+        same_tree(a / d, b / d) for d in compared.common_dirs)
+
+
+def check_presets(old: tuple[Path, Path], new: tuple[Path, Path], allow_same: bool) -> str | None:
+    """Refuse two arms whose binaries differ but whose resolved preset files are
+    identical, unless both builds are clean commits whose presets git says are
+    the same (a code-only change) or `allow_same`. Returns a note for the report."""
+    (old_binary, old_presets), (new_binary, new_presets) = old, new
+    if not same_tree(old_presets, new_presets):
+        return None
+    note = f"identical preset files ({old_presets} and {new_presets}): only code differs"
+    commits = [buildinfo.info_of(b) for b in (old_binary, new_binary)]
+    if all(c["commit"] and not c["dirty"] for c in commits):
+        repo = Path(__file__).resolve().parents[2]
+        changed = git(repo, "diff", "--name-only", commits[0]["commit"], commits[1]["commit"],
+                      "--", PRESETS_PATH, OLD_PRESETS_PATH)
+        if not changed:
+            return note
+        raise SystemExit(f"the builds' commits change presets ({changed.split()[0]}...), but the "
+                         f"resolved preset files are identical: {note}; refusing to compare")
+    if allow_same:
+        return note
+    raise SystemExit(f"{note}, and the builds are not clean commits, so a preset change cannot "
+                     f"be told from a stale preset copy. Pass --allow-same-presets for a "
+                     f"code-only change")
+
+
+def preset_args(presets: Path | None, codec: Codec, preset: str | None) -> list[str]:
+    """--param pairs of `codec`'s `preset` from a build's own preset files (none for medium)."""
+    if presets is None:
+        return []
+    values = preset_values(presets, codec, preset)
     return [f"{k}={v:g}" for k, v in sorted(values.items())]
 
 
@@ -337,12 +414,20 @@ def final_check(args: argparse.Namespace) -> dict:
         print(unchanged, flush=True)
         report["no_change"] = unchanged
         return report
+    old_presets = new_presets = None
+    if args.preset and args.preset != MEDIUM:  # medium (the Default) reads no preset file
+        old_presets, new_presets = presets_of(old, paths), presets_of(new, paths)
+        report["presets"] = {"old": str(old_presets), "new": str(new_presets)}
+        note = check_presets((old, old_presets), (new, new_presets), args.allow_same_presets)
+        if note:
+            print(note, flush=True)
+            report["presets"]["note"] = note
     for name in args.codecs.split(","):
         codec = Codec(name)
         anchor = Family(f"nanocodec-{codec.value}", codec, old,
-                        param_args(preset_args(old, codec, args.preset)), own=True, cqp=False)
+                        param_args(preset_args(old_presets, codec, args.preset)), own=True, cqp=False)
         test = Family(f"nanocodec-{codec.value}@candidate", codec, new,
-                      param_args(preset_args(new, codec, args.preset)), own=True, cqp=False)
+                      param_args(preset_args(new_presets, codec, args.preset)), own=True, cqp=False)
         runner = Runner(paths, GatePolicy(EVALUATION_GATE.value), args.workers, args.over_budget)
         screen_args = argparse.Namespace(frames=args.frames, rotation=args.rotation,
                                          max_level=len(pool.LEVELS), dcpu=None,
@@ -376,6 +461,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="L3 per clip: single (one rung on the anchor's curve; small changes), "
                         "ladder (full ladder; structural changes, charts) or auto (single "
                         "when only presets differ)")
+    f.add_argument("--allow-same-presets", action="store_true",
+                   help="accept identical preset files for builds that are not clean commits "
+                        "(a code-only change)")
     f.add_argument("--json", help="also write the report here")
     args = parser.parse_args(argv)
     report = final_check(args)

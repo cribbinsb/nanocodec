@@ -198,6 +198,8 @@ pub fn end_of_block(tx: TxSize, levels: &[i16]) -> usize {
 
 /// The entropy-context byte a transform block leaves for its neighbours
 /// (libaom `av1_get_txb_entropy_context`): saturated level sum and DC sign.
+/// [`CoeffCdfs::write`] returns it; this is the tests' reference.
+#[cfg(test)]
 #[must_use]
 pub fn entropy_context(tx: TxSize, levels: &[i16], eob: usize) -> u8 {
     if eob == 0 {
@@ -207,13 +209,77 @@ pub fn entropy_context(tx: TxSize, levels: &[i16], eob: usize) -> u8 {
         .iter()
         .map(|&p| u32::from(levels[usize::from(p)].unsigned_abs()))
         .sum();
+    context_byte(sum, levels[0])
+}
+
+/// The entropy-context byte of a block whose magnitudes add up to `sum`
+/// and whose DC level is `dc`.
+fn context_byte(sum: u32, dc: i16) -> u8 {
     let cul = sum.min(u32::from(CUL_LEVEL_MASK)) as u8;
-    let dc_category = match levels[0].signum() {
+    let dc_category = match dc.signum() {
         -1 => 1,
         1 => 2,
         _ => 0,
     };
     cul | (dc_category << DC_SIGN_SHIFT)
+}
+
+/// The magnitudes of one transform block with an end of block past the
+/// DC, and what their contexts need: [`Self::write`] codes their
+/// `coeff_base_eob`, `coeff_base` and `coeff_br` symbols.
+struct Magnitudes<'a> {
+    /// The scan up to the end of block.
+    scan: &'a [u16],
+    levels: &'a [i16],
+    nz_offsets: &'a [u8],
+}
+
+/// The `coeff_base_eob`, `coeff_base` and `coeff_br` CDFs of a transform
+/// size and plane type.
+type MagnitudeCdfs<'a> = (
+    &'a mut [Cdf<BASE_EOB_SYMBOLS>; SIG_COEF_CONTEXTS_EOB],
+    &'a mut [Cdf<BASE_SYMBOLS>; SIG_COEF_CONTEXTS],
+    &'a mut [Cdf<{ BR_CDF_SIZE as usize }>; LEVEL_CONTEXTS],
+);
+
+impl Magnitudes<'_> {
+    /// Code the magnitudes in reverse scan order, in a level map sized to
+    /// the block (`STRIDE` its side plus the context reach), so that a small
+    /// block clears and touches only its own few bytes. The last one
+    /// (`eob - 1`) is non-zero by definition and codes `coeff_base_eob`
+    /// instead of `coeff_base`.
+    fn write<W: SymbolSink, const STRIDE: usize, const SIZE: usize>(
+        &self,
+        w: &mut W,
+        (base_eob_cdfs, base_cdfs, range_cdfs): MagnitudeCdfs<'_>,
+        map: &mut LevelMap<STRIDE, SIZE>,
+    ) {
+        let n = STRIDE - CONTEXT_REACH;
+        let log2 = n.ilog2();
+        let last = self.scan.len() - 1;
+        let pos = usize::from(self.scan[last]);
+        let level = i32::from(self.levels[pos]).abs();
+        w.write_symbol(
+            (level.min(3) - 1) as usize,
+            &mut base_eob_cdfs[base_eob_context(last, n)],
+            BASE_EOB_SYMBOLS,
+        );
+        map.code_level(
+            w,
+            range_cdfs,
+            pos,
+            LevelMap::<STRIDE, SIZE>::index(pos, log2),
+            level,
+        );
+        for c in (0..last).rev() {
+            let pos = usize::from(self.scan[c]);
+            let at = LevelMap::<STRIDE, SIZE>::index(pos, log2);
+            let level = i32::from(self.levels[pos]).abs();
+            let ctx = base_context(pos, map.base_sum(at), self.nz_offsets[pos]);
+            w.write_symbol(level.min(3) as usize, &mut base_cdfs[ctx], BASE_SYMBOLS);
+            map.code_level(w, range_cdfs, pos, at, level);
+        }
+    }
 }
 
 /// Transform sizes with their own coefficient CDFs (`TX_SIZES`).
@@ -288,7 +354,9 @@ impl CoeffCdfs {
 
     /// Code one transform block's coefficients (AV1 §5.11.39), including the
     /// luma transform type, whose alphabet differs for intra and inter
-    /// blocks. `levels` are signed, in libaom layout.
+    /// blocks. `levels` are signed, in libaom layout. Returns the entropy
+    /// context the block leaves for its neighbours (libaom
+    /// `av1_get_txb_entropy_context`).
     pub fn write<W: SymbolSink>(
         &mut self,
         w: &mut W,
@@ -299,12 +367,12 @@ impl CoeffCdfs {
         ctx: TxbContext,
         levels: &[i16],
         eob: usize,
-    ) {
+    ) -> u8 {
         let txs = tx.index();
         let pt = plane as usize;
         w.write_bool(eob == 0, &mut self.txb_skip[txs][ctx.skip]);
         if eob == 0 {
-            return;
+            return 0;
         }
         if plane == PlaneType::Luma {
             if is_inter {
@@ -315,39 +383,48 @@ impl CoeffCdfs {
         }
         self.write_eob(w, tx, pt, eob);
 
-        let scan = scan(tx);
-        let n = tx.coded_size();
-        let bhl = u32::from(tx.coded_log2());
-        let nz_offsets = nz_map_ctx_offset(tx);
+        let scan = &scan(tx)[..eob];
+        let base_eob_cdfs = &mut self.base_eob[txs][pt];
         let base_cdfs = &mut self.base[txs][pt];
         let range_cdfs = &mut self.br[txs.min(3)][pt];
-        let mut map = LevelMap::new();
-        // Coefficients in reverse scan order. The last one (`eob - 1`) is
-        // non-zero by definition and codes `coeff_base_eob` instead of
-        // `coeff_base`.
-        let last = eob - 1;
-        let pos = usize::from(scan[last]);
-        let level = i32::from(levels[pos]).abs();
-        w.write_symbol(
-            (level.min(3) - 1) as usize,
-            &mut self.base_eob[txs][pt][base_eob_context(last, n)],
-            BASE_EOB_SYMBOLS,
-        );
-        map.code_level(w, range_cdfs, pos, LevelMap::index(pos, bhl), level);
-        for c in (0..last).rev() {
-            let pos = usize::from(scan[c]);
-            let at = LevelMap::index(pos, bhl);
-            let level = i32::from(levels[pos]).abs();
-            let ctx = LevelMap::base_context(pos, map.base_sum(at), nz_offsets[pos]);
-            w.write_symbol(level.min(3) as usize, &mut base_cdfs[ctx], BASE_SYMBOLS);
-            map.code_level(w, range_cdfs, pos, at, level);
+        if eob == 1 {
+            // The DC alone (SVT-AV1 `av1_write_coeffs_txb_1d`): both its
+            // contexts are 0 and no neighbour is read.
+            let level = i32::from(levels[0]).abs();
+            w.write_symbol(
+                (level.min(3) - 1) as usize,
+                &mut base_eob_cdfs[0],
+                BASE_EOB_SYMBOLS,
+            );
+            if level > NUM_BASE_LEVELS {
+                write_range(w, &mut range_cdfs[0], level);
+            }
+        } else {
+            let magnitudes = Magnitudes {
+                scan,
+                levels,
+                nz_offsets: nz_map_ctx_offset(tx),
+            };
+            let cdfs = (base_eob_cdfs, base_cdfs, range_cdfs);
+            match tx {
+                TxSize::Tx4x4 => magnitudes.write(w, cdfs, &mut LevelMap4::new()),
+                TxSize::Tx8x8 => magnitudes.write(w, cdfs, &mut LevelMap8::new()),
+                TxSize::Tx16x16 => magnitudes.write(w, cdfs, &mut LevelMap16::new()),
+                TxSize::Tx32x32 | TxSize::Tx64x64 => {
+                    magnitudes.write(w, cdfs, &mut FullLevelMap::new());
+                }
+            }
         }
 
-        for (c, &p) in scan[..eob].iter().enumerate() {
+        // Signs and Exp-Golomb remainders in scan order, adding up the
+        // magnitudes for the entropy context on the way.
+        let mut sum = 0_u32;
+        for (c, &p) in scan.iter().enumerate() {
             let v = i32::from(levels[usize::from(p)]);
             if v == 0 {
                 continue;
             }
+            sum += v.unsigned_abs();
             if c == 0 {
                 w.write_bool(v < 0, &mut self.dc_sign[pt][ctx.dc_sign]);
             } else {
@@ -357,6 +434,7 @@ impl CoeffCdfs {
                 write_golomb(w, (v.abs() - MAX_BASE_BR_RANGE) as u32);
             }
         }
+        context_byte(sum, levels[0])
     }
 
     /// Bits [`Self::write`] would spend on this transform block with the CDFs
@@ -399,7 +477,7 @@ impl CoeffCdfs {
         let nz_offsets = nz_map_ctx_offset(tx);
         let base_cdfs = &mut self.base[txs][pt];
         let range_cdfs = &mut self.br[txs.min(3)][pt];
-        let mut map = LevelMap::new();
+        let mut map = FullLevelMap::new();
         // A nonzero level's sign: `dc_sign` for the DC, else one bypass bit;
         // its remainder past the coded range in bypass bits (`write_golomb`).
         let mut sign_and_remainder = |counter: &mut BitCounter, c: usize, v: i32| {
@@ -423,16 +501,16 @@ impl CoeffCdfs {
             &mut counter,
             range_cdfs,
             pos,
-            LevelMap::index(pos, bhl),
+            FullLevelMap::index(pos, bhl),
             level,
         );
         sign_and_remainder(&mut counter, last, v);
         for c in (0..last).rev() {
             let pos = usize::from(scan[c]);
-            let at = LevelMap::index(pos, bhl);
+            let at = FullLevelMap::index(pos, bhl);
             let v = i32::from(levels[pos]);
             let level = v.abs();
-            let ctx = LevelMap::base_context(pos, map.base_sum(at), nz_offsets[pos]);
+            let ctx = base_context(pos, map.base_sum(at), nz_offsets[pos]);
             counter.add_q9(base_cdfs[ctx].cost_q9(level.min(3) as usize));
             // A zero level leaves the map as it was (zero).
             if level != 0 {
@@ -559,21 +637,24 @@ fn base_eob_context(scan_idx: usize, n: usize) -> usize {
 /// How far (in rows or columns) the `coeff_base` / `coeff_br` contexts look
 /// past a coefficient.
 const CONTEXT_REACH: usize = 2;
-/// Map stride: the largest coded transform (32x32) plus the reach, used for
-/// every size so that neighbour offsets are constants.
-const MAP_STRIDE: usize = 32 + CONTEXT_REACH;
-/// Map entries: `MAP_STRIDE` columns of `MAP_STRIDE` rows.
+/// Stride of the map for the largest coded transform (32x32): its side
+/// plus the reach.
+const MAP_STRIDE: usize = map_stride(32);
+/// Entries of that map: `MAP_STRIDE` columns of `MAP_STRIDE` rows.
 const MAP_SIZE: usize = MAP_STRIDE * MAP_STRIDE;
-/// Span from a coefficient to its farthest context neighbour, inclusive.
-const NEIGHBOURHOOD: usize = CONTEXT_REACH * MAP_STRIDE + 1;
-/// Offsets of the neighbours that both `coeff_base` and `coeff_br` read:
-/// (row, col + 1), (row + 1, col), (row + 1, col + 1).
-const SHARED_NEIGHBOURS: [usize; 3] = [MAP_STRIDE, 1, MAP_STRIDE + 1];
-/// Offsets of the two further `coeff_base` neighbours: (row, col + 2),
-/// (row + 2, col).
-const FAR_BASE_NEIGHBOURS: [usize; 2] = [2 * MAP_STRIDE, 2];
 /// Magnitude saturation in the `coeff_base` context sum.
 const BASE_CONTEXT_LEVEL_MAX: u8 = 3;
+
+/// The map for the largest coded transform.
+type FullLevelMap = LevelMap<MAP_STRIDE, MAP_SIZE>;
+/// Stride of the map for coded side `side`.
+const fn map_stride(side: usize) -> usize {
+    side + CONTEXT_REACH
+}
+/// The maps for 4x4, 8x8 and 16x16 transforms.
+type LevelMap4 = LevelMap<{ map_stride(4) }, { map_stride(4) * map_stride(4) }>;
+type LevelMap8 = LevelMap<{ map_stride(8) }, { map_stride(8) * map_stride(8) }>;
+type LevelMap16 = LevelMap<{ map_stride(16) }, { map_stride(16) * map_stride(16) }>;
 
 /// Coefficient magnitudes, saturated at `MAX_BASE_BR_RANGE`, in a layout
 /// padded with at least `CONTEXT_REACH` zero rows and columns so that context
@@ -581,22 +662,35 @@ const BASE_CONTEXT_LEVEL_MAX: u8 = 3;
 /// `levels` buffer, `TX_PAD_HOR`). It is filled in reverse scan order as
 /// coefficients are coded: every context neighbour comes later in scan order,
 /// so it is already set, and coefficients from the EOB on stay zero.
-struct LevelMap {
-    magnitudes: [u8; MAP_SIZE],
+///
+/// `STRIDE` is the coded side of the blocks it serves plus the reach, and
+/// `SIZE` its square, so that neighbour offsets are constants.
+struct LevelMap<const STRIDE: usize, const SIZE: usize> {
+    magnitudes: [u8; SIZE],
 }
 
-impl LevelMap {
+impl<const STRIDE: usize, const SIZE: usize> LevelMap<STRIDE, SIZE> {
+    /// Span from a coefficient to its farthest context neighbour, inclusive.
+    const NEIGHBOURHOOD: usize = CONTEXT_REACH * STRIDE + 1;
+    /// Offsets of the neighbours that both `coeff_base` and `coeff_br` read:
+    /// (row, col + 1), (row + 1, col), (row + 1, col + 1).
+    const SHARED_NEIGHBOURS: [usize; 3] = [STRIDE, 1, STRIDE + 1];
+    /// Offsets of the two further `coeff_base` neighbours: (row, col + 2),
+    /// (row + 2, col).
+    const FAR_BASE_NEIGHBOURS: [usize; 2] = [2 * STRIDE, 2];
+
     /// An all-zero map.
     fn new() -> Self {
+        debug_assert_eq!(STRIDE * STRIDE, SIZE);
         Self {
-            magnitudes: [0; MAP_SIZE],
+            magnitudes: [0; SIZE],
         }
     }
 
     /// Map index of coefficient `pos` (libaom layout) of a block of coded
     /// side `1 << log2`: its column times the map stride plus its row.
     fn index(pos: usize, log2: u32) -> usize {
-        pos + (pos >> log2) * (MAP_STRIDE - (1 << log2))
+        pos + (pos >> log2) * (STRIDE - (1 << log2))
     }
 
     /// Code the `coeff_br` symbols of coefficient `pos` (map index `at`)
@@ -616,8 +710,8 @@ impl LevelMap {
         level: i32,
     ) {
         if level > NUM_BASE_LEVELS {
-            let (row, col) = (at % MAP_STRIDE, at / MAP_STRIDE);
-            let ctx = Self::br_context(pos, row, col, self.range_sum(at));
+            let (row, col) = (at % STRIDE, at / STRIDE);
+            let ctx = br_context(pos, row, col, self.range_sum(at));
             write_range(w, &mut range_cdfs[ctx], level);
         }
         self.magnitudes[at] = level.unsigned_abs().min(MAX_BASE_BR_RANGE as u32) as u8;
@@ -625,10 +719,8 @@ impl LevelMap {
 
     /// The context neighbourhood of the coefficient at map index `at`.
     #[inline]
-    fn near(&self, at: usize) -> &[u8; NEIGHBOURHOOD] {
-        self.magnitudes[at..at + NEIGHBOURHOOD]
-            .try_into()
-            .expect("coefficient inside the coded block")
+    fn near(&self, at: usize) -> &[u8] {
+        &self.magnitudes[at..at + Self::NEIGHBOURHOOD]
     }
 
     /// `coeff_base` magnitude sum of the context neighbours of the
@@ -636,9 +728,9 @@ impl LevelMap {
     #[inline]
     fn base_sum(&self, at: usize) -> u32 {
         let near = self.near(at);
-        SHARED_NEIGHBOURS
+        Self::SHARED_NEIGHBOURS
             .iter()
-            .chain(&FAR_BASE_NEIGHBOURS)
+            .chain(&Self::FAR_BASE_NEIGHBOURS)
             .map(|&i| u32::from(near[i].min(BASE_CONTEXT_LEVEL_MAX)))
             .sum()
     }
@@ -648,30 +740,33 @@ impl LevelMap {
     #[inline]
     fn range_sum(&self, at: usize) -> u32 {
         let near = self.near(at);
-        SHARED_NEIGHBOURS.iter().map(|&i| u32::from(near[i])).sum()
+        Self::SHARED_NEIGHBOURS
+            .iter()
+            .map(|&i| u32::from(near[i]))
+            .sum()
     }
+}
 
-    /// Context of `coeff_base` for transform class 2D (libaom
-    /// `get_lower_levels_ctx_2d`) from its neighbour sum, plus the position's
-    /// offset `nz_offset` from `nz_map_ctx_offset`.
-    fn base_context(pos: usize, base_sum: u32, nz_offset: u8) -> usize {
-        if pos == 0 {
-            return 0;
-        }
-        (((base_sum + 1) >> 1).min(4) as usize) + usize::from(nz_offset)
+/// Context of `coeff_base` for transform class 2D (libaom
+/// `get_lower_levels_ctx_2d`) from its neighbour sum, plus the position's
+/// offset `nz_offset` from `nz_map_ctx_offset`.
+fn base_context(pos: usize, base_sum: u32, nz_offset: u8) -> usize {
+    if pos == 0 {
+        return 0;
     }
+    (((base_sum + 1) >> 1).min(4) as usize) + usize::from(nz_offset)
+}
 
-    /// Context of `coeff_br` for transform class 2D (libaom `get_br_ctx`)
-    /// from its neighbour sum.
-    fn br_context(pos: usize, row: usize, col: usize, br_sum: u32) -> usize {
-        let mag = ((br_sum + 1) >> 1).min(6) as usize;
-        if pos == 0 {
-            mag
-        } else if row < 2 && col < 2 {
-            mag + 7
-        } else {
-            mag + 14
-        }
+/// Context of `coeff_br` for transform class 2D (libaom `get_br_ctx`)
+/// from its neighbour sum.
+fn br_context(pos: usize, row: usize, col: usize, br_sum: u32) -> usize {
+    let mag = ((br_sum + 1) >> 1).min(6) as usize;
+    if pos == 0 {
+        mag
+    } else if row < 2 && col < 2 {
+        mag + 7
+    } else {
+        mag + 14
     }
 }
 

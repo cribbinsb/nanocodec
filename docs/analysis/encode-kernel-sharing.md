@@ -233,6 +233,9 @@ the merges above; hot shares are section 0's.
 | HEVC/VVC/AV1/AV2 intra runs of 16 (`intra_runs` `step16`) | 128-bit | intra | 32-wide runs are 256-bit |
 | `constant_add` | 128-bit bytes | small | 32/64-wide blocks could take 256-bit |
 | H.264 inverse 8x8 add (`codec_txfm/avx2.rs` `I16x8`) | I16x8 | H.264 | |
+| Variance 4/8 wide (`diff/avx2.rs`) | I16x4 / I16x8 | all codecs | Tried 2026-11-16: two or four rows per 256-bit vector (rows gathered by scalar loads and inserts) cost more instructions: AV1 +1.0 %, HEVC +0.6 %, VVC +0.1 % (callgrind, release); not landed. A packed form needs memory-operand row inserts (`movhps`, `pinsrd`) to pay; the larger lever is fewer calls (the diagnosis' batches of four 16x16) |
+| AV1/HEVC/VVC MC put (`mc/av1_avx2.rs`) | 256-bit; no AVX-512 version below 32 wide | AV1 2-3, HEVC 9, VVC 5 | next: a 512-bit row of 32 outputs (four 128-bit lanes of 8) |
+| CDEF NEON `block4_pair` | missing (NEON runs 4x4 singly) | AV1/AV2 on the Jetson | the AVX2/AVX-512 pairing to port |
 
 ## Stays separate (and why)
 

@@ -39,6 +39,7 @@
 //! [`CodecBackend::SUPERBLOCK_PARAMS`]: crate::CodecBackend::SUPERBLOCK_PARAMS
 
 use nc_analysis::MotionAnalysis;
+use nc_analysis::preanalysis::{BLOCK as PRE_BLOCK, PreAnalysis};
 
 use crate::frame_role::FrameRole;
 use crate::params::{
@@ -122,7 +123,7 @@ impl LightOverlay {
             return Err(ParamError::NotPerFrame(format!("{LIGHT_PREFIX}{name}")));
         }
         let effort = EffortParams::from_overrides(ordinary);
-        if effort.regular_fraction >= 1.0 {
+        if effort.regular_fraction >= 1.0 && effort.key_regular_fraction >= 1.0 {
             return Ok(None);
         }
         let base_overrides = ordinary.overlaid_with(light);
@@ -157,9 +158,15 @@ impl LightOverlay {
         }
     }
 
-    /// Whether frames of `role` may have light superblocks.
+    /// Whether inter frames of `role` may have light superblocks.
     pub fn applies_to(&self, role: FrameRole) -> bool {
-        role == FrameRole::NonBase || self.effort.light_nonbase_only < 0.5
+        self.effort.regular_fraction < 1.0
+            && (role == FrameRole::NonBase || self.effort.light_nonbase_only < 0.5)
+    }
+
+    /// Whether key frames may have light superblocks.
+    pub fn applies_to_key(&self) -> bool {
+        self.effort.key_regular_fraction < 1.0
     }
 }
 
@@ -197,7 +204,11 @@ impl Classifier<'_> {
             .flat_map(|y| (0..self.width).step_by(size).map(move |x| (x, y)))
             .map(|(x, y)| self.proxy(&Block::square(x, y, sb_log2)))
             .collect();
-        light_classes(&proxies, self.effort)
+        let budget = Budget {
+            fraction: self.effort.regular_fraction,
+            absolute: self.effort.regular_proxy,
+        };
+        light_classes(&proxies, budget)
     }
 
     /// The mean benefit proxy of the frame's motion-search superblocks
@@ -243,12 +254,74 @@ impl Classifier<'_> {
     }
 }
 
+/// Key frames have no motion search: their superblocks are ranked by source
+/// texture instead, the 8x8 luma standard deviation per sample (from
+/// pre-analysis) in quantizer sample steps. Flat superblocks code well with
+/// DC and smooth prediction; the directional and angle-delta searches pay
+/// on texture and edges, where the key frame's quality (and the pulse it
+/// leaves at each periodic key) is decided.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeyClassifier<'a> {
+    pub pre: &'a PreAnalysis,
+    pub effort: &'a EffortParams,
+    /// The key frame quantizer's sample step.
+    pub step: f32,
+    /// Coded picture size, luma samples.
+    pub width: usize,
+    pub height: usize,
+}
+
+impl KeyClassifier<'_> {
+    /// Whether each superblock of size `1 << sb_log2`, in raster order, is
+    /// light.
+    pub fn light_map(&self, sb_log2: u8) -> Vec<bool> {
+        let size = 1usize << sb_log2;
+        let proxies: Vec<f32> = (0..self.height)
+            .step_by(size)
+            .flat_map(|y| (0..self.width).step_by(size).map(move |x| (x, y)))
+            .map(|(x, y)| self.proxy(&Block::square(x, y, sb_log2)))
+            .collect();
+        let budget = Budget {
+            fraction: self.effort.key_regular_fraction,
+            absolute: self.effort.key_regular_proxy,
+        };
+        light_classes(&proxies, budget)
+    }
+
+    /// The texture proxy of superblock `sb`: the root mean 8x8 variance per
+    /// sample over its visible cells, in steps.
+    fn proxy(&self, sb: &Block) -> f32 {
+        let grid = &self.pre.blocks;
+        let cols = (sb.x / PRE_BLOCK)..((sb.x + sb.width()).min(self.width).div_ceil(PRE_BLOCK));
+        let rows = (sb.y / PRE_BLOCK)..((sb.y + sb.height()).min(self.height).div_ceil(PRE_BLOCK));
+        let (mut sum, mut cells) = (0u64, 0u32);
+        for row in rows {
+            for col in cols.clone() {
+                if let Some(stats) = grid.try_get(col as isize, row as isize) {
+                    sum += u64::from(stats.sum_sq_dev);
+                    cells += 1;
+                }
+            }
+        }
+        let samples = (cells.max(1) as usize * PRE_BLOCK * PRE_BLOCK) as f32;
+        (sum as f32 / samples).sqrt() / self.step.max(f32::MIN_POSITIVE)
+    }
+}
+
+/// A frame's regular-superblock budget: the share ranked regular, and the
+/// proxy from which a superblock is regular whatever its rank (0: none).
+#[derive(Debug, Clone, Copy)]
+struct Budget {
+    fraction: f32,
+    absolute: f32,
+}
+
 /// Whether each superblock with benefit proxy `proxies[i]` is light: it is
-/// neither among the `effort.regular_fraction` highest nor at or above
-/// `effort.regular_proxy`. Ties at the budget's lowest regular proxy all stay
+/// neither among the `budget.fraction` highest nor at or above
+/// `budget.absolute`. Ties at the budget's lowest regular proxy all stay
 /// regular, so the class does not depend on raster order.
-fn light_classes(proxies: &[f32], effort: &EffortParams) -> Vec<bool> {
-    let regular = (effort.regular_fraction * proxies.len() as f32).ceil() as usize;
+fn light_classes(proxies: &[f32], budget: Budget) -> Vec<bool> {
+    let regular = (budget.fraction * proxies.len() as f32).ceil() as usize;
     let budget_floor = if regular == 0 {
         f32::INFINITY
     } else if regular >= proxies.len() {
@@ -258,7 +331,7 @@ fn light_classes(proxies: &[f32], effort: &EffortParams) -> Vec<bool> {
         let (_, floor, _) = sorted.select_nth_unstable_by(proxies.len() - regular, f32::total_cmp);
         *floor
     };
-    let absolute = effort.regular_proxy;
+    let absolute = budget.absolute;
     let is_regular = |proxy: f32| proxy >= budget_floor || (absolute > 0.0 && proxy >= absolute);
     proxies.iter().map(|&proxy| !is_regular(proxy)).collect()
 }
@@ -316,26 +389,22 @@ mod tests {
         ));
     }
 
-    fn effort(regular_fraction: f32, regular_proxy: f32) -> EffortParams {
-        EffortParams {
-            regular_fraction,
-            regular_proxy,
-            ..EffortParams::default()
-        }
+    fn effort(fraction: f32, absolute: f32) -> Budget {
+        Budget { fraction, absolute }
     }
 
     #[test]
     fn the_budget_keeps_the_highest_proxies_regular() {
         let proxies = [0.1, 3.0, 0.5, 2.0];
         assert_eq!(
-            light_classes(&proxies, &effort(0.5, 0.0)),
+            light_classes(&proxies, effort(0.5, 0.0)),
             [true, false, true, false]
         );
-        assert_eq!(light_classes(&proxies, &effort(0.0, 0.0)), [true; 4]);
-        assert_eq!(light_classes(&proxies, &effort(1.0, 0.0)), [false; 4]);
+        assert_eq!(light_classes(&proxies, effort(0.0, 0.0)), [true; 4]);
+        assert_eq!(light_classes(&proxies, effort(1.0, 0.0)), [false; 4]);
         // A quarter of four superblocks rounds up to one.
         assert_eq!(
-            light_classes(&proxies, &effort(0.2, 0.0)),
+            light_classes(&proxies, effort(0.2, 0.0)),
             [true, false, true, true]
         );
     }
@@ -344,11 +413,11 @@ mod tests {
     fn the_absolute_threshold_adds_hard_superblocks_and_ties_stay_regular() {
         let proxies = [0.1, 3.0, 0.5, 2.0];
         assert_eq!(
-            light_classes(&proxies, &effort(0.25, 0.4)),
+            light_classes(&proxies, effort(0.25, 0.4)),
             [true, false, false, false]
         );
         assert_eq!(
-            light_classes(&[1.0, 1.0, 0.0], &effort(0.3, 0.0)),
+            light_classes(&[1.0, 1.0, 0.0], effort(0.3, 0.0)),
             [false, false, true]
         );
     }

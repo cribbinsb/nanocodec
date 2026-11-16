@@ -25,7 +25,7 @@ use crate::decision::{
     Choice, DecisionScratch, choose_compound_mode, choose_inter_mode, choose_secondary_mode,
     is_square_leaf, is_static, is_still, leaf_area, leaf_extent, leaf_log2_min_side,
 };
-use crate::effort_class::{Classifier, LIGHT_PREFIX, LightOverlay, LightParams};
+use crate::effort_class::{Classifier, KeyClassifier, LIGHT_PREFIX, LightOverlay, LightParams};
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::filter_effort::{CdefEffort, FilterEffort, FrameActivity};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
@@ -284,9 +284,9 @@ pub struct Encoder<B: CodecBackend> {
     /// Light-superblock settings (`light.*`, `effort_class.rs`); `None`
     /// while `effort.regular_fraction` is 1.
     light_overlay: Option<LightOverlay>,
-    /// The light superblocks' engine parameters as adjusted for the frame
-    /// being coded; `None` when it may have no light superblocks.
-    frame_light: Option<LightParams>,
+    /// The light superblocks of the frame being coded and their engine
+    /// parameters; `None` when it has none.
+    frame_light: Option<FrameLight>,
     /// The benefit proxy's settings (`effort.*`), for the frame-level
     /// filter decision as well as the superblock classes.
     effort_params: EffortParams,
@@ -305,6 +305,15 @@ pub struct Encoder<B: CodecBackend> {
     /// Multi-layer spatial scalability session (`spatial.layers == 2`);
     /// `None` on every single-layer stream.
     spatial: Option<Box<SpatialSession>>,
+}
+
+/// The light superblocks of one frame (`effort_class.rs`).
+#[derive(Debug, Clone)]
+struct FrameLight {
+    /// The engine parameters light superblocks are coded with.
+    params: LightParams,
+    /// Whether each superblock, in raster order, is light.
+    map: Vec<bool>,
 }
 
 /// Buffers needed when the codec codes a padded picture.
@@ -1196,18 +1205,53 @@ impl<B: CodecBackend> Encoder<B> {
         &mut self,
         index: u64,
         references: &FrameReferences,
-        role: FrameRole,
+        (role, key): (FrameRole, bool),
         analysis: Option<&FrameAnalysis>,
     ) {
-        let Some(overlay) = self.light_overlay.as_ref().filter(|o| o.applies_to(role)) else {
-            self.frame_light = None;
+        self.frame_light = None;
+        let Some(overlay) = self.light_overlay.as_ref() else {
+            return;
+        };
+        let step = self.sample_step(self.frame_quantizer) as f32;
+        let (width, height) = (self.layer.coded_width, self.layer.coded_height);
+        let sb_log2 = self.backend.superblock_log2();
+        let map = analysis.and_then(|analysis| {
+            if key {
+                overlay.applies_to_key().then(|| {
+                    KeyClassifier {
+                        pre: &analysis.pre,
+                        effort: &overlay.effort,
+                        step,
+                        width,
+                        height,
+                    }
+                    .light_map(sb_log2)
+                })
+            } else {
+                let motion = analysis.motion.as_ref()?;
+                overlay.applies_to(role).then(|| {
+                    Classifier {
+                        motion,
+                        effort: &overlay.effort,
+                        step,
+                        width,
+                        height,
+                    }
+                    .light_map(sb_log2)
+                })
+            }
+        });
+        let Some(map) = map else {
             return;
         };
         let light = overlay.params(role);
+        let overrides = overlay.backend_overrides(role).clone();
         let (decision, planner) =
             self.adjusted_for_frame((light.decision, light.planner), index, references, analysis);
-        let overrides = overlay.backend_overrides(role).clone();
-        self.frame_light = Some(LightParams { decision, planner });
+        self.frame_light = Some(FrameLight {
+            params: LightParams { decision, planner },
+            map,
+        });
         self.backend.set_light_params(Some(&overrides));
     }
 
@@ -1632,7 +1676,7 @@ impl<B: CodecBackend> Encoder<B> {
             self.frame_params(index, &references, role, analysis);
         self.frame_decision_params = decision_params;
         self.apply_backend_role(role);
-        self.apply_light_role(index, &references, role, analysis);
+        self.apply_light_role(index, &references, (role, key), analysis);
         self.apply_filter_effort(role, motion.filter(|_| frame_type == FrameType::Inter));
         if decision_params.noise_skip > 0.
             && let (Some(pre), Some(motion)) = (pre, motion)
@@ -1882,30 +1926,18 @@ impl<B: CodecBackend> Encoder<B> {
         let sb_log2 = self.backend.superblock_log2();
         let sb = 1usize << sb_log2;
         let regular_decision = self.frame_decision_params;
-        // Light superblocks need the motion search's statistics.
-        let light = self
-            .frame_light
-            .zip(inter.and_then(|frame| frame.motion))
-            .zip(self.light_overlay.as_ref().map(|o| o.effort));
         let step = self.sample_step(self.frame_quantizer) as f32;
-        let light_map = light.map(|((_, motion), effort)| {
-            Classifier {
-                motion,
-                effort: &effort,
-                step,
-                width: self.layer.coded_width,
-                height: self.layer.coded_height,
-            }
-            .light_map(sb_log2)
-        });
-        let mut light_superblocks = light_map.iter().flatten().copied();
+        // Taken for the frame (and put back for a recode).
+        let light = self.frame_light.take();
+        let mut light_superblocks = light.iter().flat_map(|l| l.map.iter().copied());
         for y in (0..self.layer.coded_height).step_by(sb) {
             for x in (0..self.layer.coded_width).step_by(sb) {
                 self.backend.begin_superblock(x, y);
                 let sb = Block::square(x, y, sb_log2);
                 let light_params = light
+                    .as_ref()
                     .filter(|_| light_superblocks.next() == Some(true))
-                    .map(|((params, _), _)| params);
+                    .map(|l| l.params);
                 if light.is_some() {
                     self.frame_decision_params =
                         light_params.map_or(regular_decision, |p| p.decision);
@@ -1945,7 +1977,7 @@ impl<B: CodecBackend> Encoder<B> {
                     step,
                     leaf_bits: OnceCell::new(),
                 };
-                let key_mode = KeyPlanMode::resolve(self.planner_params.intra_plan, &self.backend);
+                let key_mode = KeyPlanMode::resolve(planner_params.intra_plan, &self.backend);
                 let plan = match inter {
                     // Random decisions choose every split themselves.
                     _ if self.random.is_some() => None,
@@ -1977,6 +2009,7 @@ impl<B: CodecBackend> Encoder<B> {
             self.frame_decision_params = regular_decision;
             self.backend.use_light_params(false);
         }
+        self.frame_light = light;
         self.backend.filter_frame(coded_source, recon);
         self.backend.end_frame()
     }
@@ -2561,7 +2594,13 @@ impl<B: CodecBackend> Encoder<B> {
         source_moments: Option<&PreAnalysis>,
         refresh: Option<&RefreshWindow>,
     ) -> (Choice, ReferenceChoice) {
-        let Some((secondary, ratio)) = secondary else {
+        // What it skips: the second reference's mode decision (and the
+        // compound trial) where `decision.second_reference` is 0, as on
+        // light superblocks. Why safe: the primary reference is the closer
+        // one and always tried; the choice only narrows. Effect:
+        // `docs/handoff/light-pipeline.md`.
+        let tried = self.frame_decision_params.second_reference >= 0.5;
+        let Some((secondary, ratio)) = secondary.filter(|_| tried) else {
             return (primary, ReferenceChoice::Primary);
         };
         // Against an older temporal secondary reference (`ratio > 0`), an

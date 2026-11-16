@@ -227,6 +227,11 @@ Used as an algorithm guide and reimplemented in:
   (`lpd1_should_perform_tx` score controls), CDEF search cadence,
   sampled fixed-point SUB picture variance (`pic_analysis_process.c`), and
   transform-domain luma RD gating (`product_coding_loop.c` light-PD1).
+- `crates/nc-av1/src/range_coder.rs` and `crates/nc-av2/src/entropy.rs`:
+  the 64-bit-window range-coder flush with backward carry propagation and
+  the binary-symbol shortcut (`Source/Lib/Codec/bitstream_unit.c`,
+  `aom_write_symbol`); `crates/nc-av1/src/coeff.rs`: the end-of-block-1
+  shortcut of `av1_write_coeffs_txb_1d` (`entropy_coding.c`).
 - `crates/nc-av1/src/restoration.rs`: the real-time Wiener restrictions of
   `WnFilterCtrls` (`enc_mode_config.c`: fewer taps, luma only, no
   refinement, restoration only on frames other frames reference).

@@ -47,7 +47,7 @@ const LAST_QUADRANT: usize = 3;
 const MIN_CU_SAMPLES: f32 = 64.0;
 
 /// One luma transform block of an intra trial.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct LumaLeaf {
     x: usize,
     y: usize,
@@ -55,25 +55,17 @@ struct LumaLeaf {
     residual: PlaneResidual,
 }
 
-/// The luma blocks of a CU (no heap allocation).
-#[derive(Debug, Clone, Copy)]
+/// The luma blocks of a CU (no heap allocation): the first `len` of
+/// `leaves`.
+#[derive(Debug, Clone, Copy, Default)]
 struct LumaLeaves {
-    leaves: [Option<LumaLeaf>; MAX_TUS],
+    leaves: [LumaLeaf; MAX_TUS],
     len: usize,
-}
-
-impl Default for LumaLeaves {
-    fn default() -> Self {
-        Self {
-            leaves: [None; MAX_TUS],
-            len: 0,
-        }
-    }
 }
 
 impl LumaLeaves {
     fn push(&mut self, leaf: LumaLeaf) {
-        self.leaves[self.len] = Some(leaf);
+        self.leaves[self.len] = leaf;
         self.len += 1;
     }
 
@@ -82,11 +74,11 @@ impl LumaLeaves {
     }
 
     fn iter(&self) -> impl Iterator<Item = LumaLeaf> + '_ {
-        self.leaves[..self.len].iter().flatten().copied()
+        self.leaves[..self.len].iter().copied()
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut LumaLeaf> + '_ {
-        self.leaves[..self.len].iter_mut().flatten()
+        self.leaves[..self.len].iter_mut()
     }
 }
 

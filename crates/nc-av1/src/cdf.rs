@@ -86,10 +86,28 @@ impl<const N: usize> Cdf<N> {
     }
 
     /// Move the CDF towards `symbol` of an `nsyms`-symbol alphabet (AV1
-    /// §8.2.6, the update at the end of `read_symbol`).
+    /// §8.2.6, the update at the end of `read_symbol`). In the inverse
+    /// convention the entries below the coded symbol move towards 32768 and
+    /// the others towards 0.
+    ///
+    /// The loop runs over the first `N - 1` entries, a constant, without a
+    /// branch, so it unrolls: the entries from `nsyms - 1` on are zero (the
+    /// terminator and the padding) and lie at or past `symbol`, so they
+    /// move towards 0 and stay 0, as if they were skipped.
     #[inline]
     pub fn adapt(&mut self, symbol: usize, nsyms: usize) {
-        adapt(&mut self.icdf, &mut self.count, symbol, nsyms);
+        debug_assert!(self.icdf[nsyms - 1..].iter().all(|&p| p == 0));
+        let rate = adaptation_rate(self.count, nsyms);
+        for (i, p) in self.icdf[..N - 1].iter_mut().enumerate() {
+            let towards_top = (PROB_TOP - *p) >> rate;
+            let towards_zero = *p >> rate;
+            *p = if i < symbol {
+                *p + towards_top
+            } else {
+                *p - towards_zero
+            };
+        }
+        advance_counter(&mut self.count);
         self.costs.invalidate();
     }
 
@@ -98,24 +116,6 @@ impl<const N: usize> Cdf<N> {
     pub fn bits(&self, symbol: usize) -> f32 {
         symbol_bits(&self.icdf, symbol)
     }
-}
-
-/// Move inverse CDF `icdf` with adaptation counter `count` towards
-/// `symbol` of an `nsyms`-symbol alphabet (AV1 §8.2.6): the update of the
-/// encoder's [`Cdf`] and of the decoder's own CDF type.
-#[inline]
-pub(crate) fn adapt(icdf: &mut [u16], count: &mut u8, symbol: usize, nsyms: usize) {
-    let rate = adaptation_rate(*count, nsyms);
-    // In the inverse convention the entries below the coded symbol move
-    // towards 32768 and the others towards 0.
-    for (i, p) in icdf[..nsyms - 1].iter_mut().enumerate() {
-        if i < symbol {
-            *p += (PROB_TOP - *p) >> rate;
-        } else {
-            *p -= *p >> rate;
-        }
-    }
-    advance_counter(count);
 }
 
 /// The adaptation rate of a CDF with counter `count` over an `nsyms`-symbol

@@ -73,11 +73,11 @@ impl SubPartition {
 }
 
 /// The macroblock type, by prediction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 ///
 /// The intra kinds come first and the skipped kinds next, so `is_intra`
 /// and `is_skip` (read per neighbour and edge in hot paths) are one range
 /// check each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MbKind {
     /// `I_NxN` with 4x4 or (`transform_size_8x8_flag`) 8x8 prediction.
     IntraNxN,
