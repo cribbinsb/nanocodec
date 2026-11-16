@@ -173,15 +173,31 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
     rungs and flicker +0.07.
   - RF + deblocking + split vs RF: J −2.99 %, WORSE on the periodic-key pulse (+1.00 dB) and on
     the ceiling (+1.69 % over target).
-- **RF landed and was reverted** (5e21b7a80, reverted by ab5c67dff). The bundle final-check (600
-  frames, keys every 10 s) gave J −6.37 % [−7.51, −5.17] but WORSE on the periodic-key pulse:
-  worst clip +1.51 dB, all static clips (otw_homes_00004, chad_4_109, meva_school330,
-  london_bus). The P frames got better; the DC-only key frames did not.
-- **Open:**
-  - Why the pulse grows that much is not measured. Next test: RF with the Default's key intra
-    set (`av1.keyframe_*`; −2.1 Weighted on its own in the diagnosis) through the same
-    final-check.
-  - Why the split trial overshoots in CBR is not known.
+- **RF landed, was reverted, and was re-landed on judgement.** It first landed as 5e21b7a80
+  and was reverted by ab5c67dff.
+  - The bundle final-check (600 frames, keys every 10 s) gave J −6.37 % [−7.51, −5.17], but
+    WORSE on the periodic-key pulse: worst clip +1.51 dB, all static clips (otw_homes_00004,
+    chad_4_109, meva_school330, london_bus).
+  - Measured on pool_otw_homes_00004 (600 frames, key every 300, PSNR-Y, old → new):
+
+    | Rate | Second key | P frames before it |
+    |---|---:|---:|
+    | 300 kbps | 31.25 → 31.14 | 36.99 → 37.27 |
+    | 600 kbps | 34.69 → 34.71 | 38.83 → 39.75 |
+
+    The keys are unchanged and the P frames improve, so the dip deepens; no frame gets worse.
+  - Neither key-side variant clears the guard (J, worst-clip pulse):
+    - the Default key intra set: −6.79 %, +1.10 dB;
+    - `rate.key_still_boost` 2: −6.40 %, +3.38 dB;
+    - boost 3: −6.74 %, +2.30 dB;
+    - boost 6: −7.35 %, +4.56 dB.
+
+    With the boost the worst clip becomes pool_meva_hospital_g301. Why it blows up there is
+    not known.
+  - Re-landed on judgement (coordinator): no frame gets worse, the deeper dip is the better P
+    frames, and the Default already has these settings.
+- **Follow-up (rate control, to assign):** on still scenes, spend less on late-period P frames
+  so the key dip stays bounded.
 
 ## Assigned 2026-11-16 09:10
 
@@ -268,6 +284,16 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
 - **AV1 Fast re-point key pulse:** Default's key intra set doesn't fix it (worst clip +1.10 dB);
   key boost makes it worse (+4.56). Being tested: partial forward on keys only, and a coarser key
   QP.
+
+- **CBR timing via the chart path (c8a, 3 chart clips):** Fast 301 fps, fr25lfg 238, M10 233,
+  Default 171. fr25lfg sits about 1 J point *below* the Fast→Default line in CBR (estimated J);
+  the earlier "above" was withdrawn.
+- **Key budget** (key_regular_fraction 0 → 1 on fr25lfg): 227 → 213 fps, J −19.9 → −21.7. It is
+  smooth, with no knee, and does not fix the pulse.
+- **Gap in the chart itself:** the Fixed QP chart has none of our Faster or Veryfast rungs, only
+  Slow, Default and Fast, while M12/M13 own 350–450 fps. The chart's default metric is J.
+  - **Next:** lens and c8a-time the Faster/Veryfast rungs at fixed QP, then add them to the lens
+    and site if they compete.
 
 ## Next decision points
 

@@ -277,7 +277,6 @@ mod tests {
         expected.set("av1.inter_tx_split", 0.0);
         // Fast keeps deblocking off when the Default adopted it.
         expected.set("av1.loop_filter", 0.0);
-        expected.set("planner.depth_removal_min_quantizer", 0.0);
         // Fast keeps the plain quantiser when the Default adopted the trellis.
         expected.set("quant.trellis", 0.0);
         // Fast keeps the plain key-frame intra set when the Default adopted
@@ -289,9 +288,6 @@ mod tests {
         // directional estimate and its intra search.
         expected.set("decision.intra_directional", 0.0);
         expected.set("av1.inter_intra_search", 0.0);
-        // Fast codes 32x32 and 64x64 residuals with the low-frequency
-        // forward (as HEVC Fast).
-        expected.set("av1.partial_forward", 2.0);
         // Fast keeps its own chroma offset when the Default adopted the
         // engine chroma policy.
         expected.set("chroma.policy", 0.0);
@@ -314,10 +310,9 @@ mod tests {
         // Fast keeps the static-scaled cadence when the Default adopted the
         // inherited cadence depth (2026-11-15).
         expected.set("structure.inherited_depth", 0.0);
-        // Fast keeps the engine's old depth removal when the engine default
-        // dropped it (2026-11-15).
-        expected.set("planner.depth_removal_th_32_16", 25.0);
-        expected.set("planner.depth_removal_th_16_8", 50.0);
+        // Fast takes the Default's depth (no removal) and the full forward
+        // transform since the fixed-QP re-point (2026-11-16): no
+        // planner.depth_removal_* or av1.partial_forward override.
         assert_eq!(
             overrides_from_args(&args(&["--preset", "fast"]), Codec::Av1).unwrap(),
             expected
