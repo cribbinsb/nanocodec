@@ -1,9 +1,9 @@
-//! Slice headers (§7.3.3) of I and P slices, with their
+//! Slice headers (§7.3.3) of I, P and B slices of frames, with their
 //! `ref_pic_list_modification()` (§7.3.3.1), `pred_weight_table()`
 //! (§7.3.3.2) and `dec_ref_pic_marking()` (§7.3.3.3).
 
 use super::dpb::{Marking, Mmco, Modification};
-use super::pps::{MAX_PPS_ID, MAX_REF_IDX_ACTIVE_MINUS1, Pps};
+use super::pps::{BipredWeights, MAX_PPS_ID, MAX_REF_IDX_ACTIVE_MINUS1, Pps};
 use super::reader::Reader;
 use super::sps::{PocType, Sps};
 use super::{DecodeError, Result};
@@ -38,6 +38,18 @@ const MAX_MMCOS: usize = 66;
 pub(super) enum SliceType {
     I,
     P,
+    B,
+}
+
+impl SliceType {
+    /// The reference lists the slice's macroblocks predict from.
+    pub fn lists(self) -> usize {
+        match self {
+            Self::I => 0,
+            Self::P => 1,
+            Self::B => 2,
+        }
+    }
 }
 
 /// One reference's explicit weighted prediction (§7.4.3.2); the defaults
@@ -48,25 +60,26 @@ pub(super) struct Weight {
     pub offset: i32,
 }
 
-/// `pred_weight_table()` of list 0.
+/// `pred_weight_table()`: list 0, and list 1 in B slices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WeightTable {
     pub luma_log2_denom: u32,
     pub chroma_log2_denom: u32,
-    /// Per reference index: luma, Cb, Cr.
-    pub weights: Vec<[Weight; 3]>,
+    /// Per list, per reference index: luma, Cb, Cr.
+    pub weights: [Vec<[Weight; 3]>; 2],
 }
 
 impl WeightTable {
-    /// Whether every weight is the default, so weighting changes nothing
+    /// Whether every weight of list `list`'s entry `ref_idx` is the
+    /// default, so weighting one prediction changes nothing
     /// (`((x * 2^d + 2^(d-1)) >> d) + 0 == x`).
-    pub fn is_identity(&self, ref_idx: usize) -> bool {
+    pub fn is_identity(&self, list: usize, ref_idx: usize) -> bool {
         let denoms = [
             self.luma_log2_denom,
             self.chroma_log2_denom,
             self.chroma_log2_denom,
         ];
-        self.weights[ref_idx]
+        self.weights[list][ref_idx]
             .iter()
             .zip(denoms)
             .all(|(w, denom)| w.weight == 1 << denom && w.offset == 0)
@@ -87,9 +100,14 @@ pub(super) struct SliceHeader {
     pub pic_order_cnt_lsb: u32,
     pub delta_pic_order_cnt_bottom: i32,
     pub delta_pic_order_cnt: [i32; 2],
-    pub num_ref_idx_active: usize,
-    pub modifications: Vec<Modification>,
-    /// Explicit weighted prediction (`weighted_pred_flag` and a P slice).
+    /// `num_ref_idx_l0_active_minus1 + 1` and the list 1 one (0 for
+    /// lists the slice does not use).
+    pub num_ref_idx_active: [usize; 2],
+    pub modifications: [Vec<Modification>; 2],
+    /// `direct_spatial_mv_pred_flag` (B slices).
+    pub direct_spatial: bool,
+    /// Explicit weighted prediction (`weighted_pred_flag` and a P slice,
+    /// or `weighted_bipred_idc` 1 and a B slice).
     pub weights: Option<WeightTable>,
     pub marking: Marking,
     pub cabac_init_idc: u8,
@@ -121,13 +139,23 @@ pub(super) fn parse(
     }
     let slice_type = match r.ue_max(MAX_SLICE_TYPE, "slice_type")? % SLICE_TYPES {
         SLICE_TYPE_P if !idr => SliceType::P,
+        SLICE_TYPE_B if !idr => SliceType::B,
         SLICE_TYPE_I => SliceType::I,
-        SLICE_TYPE_B => return Err(DecodeError::Unsupported("H264 B slices")),
-        SLICE_TYPE_P => return Err(DecodeError::Malformed("P slice in IDR picture")),
+        SLICE_TYPE_P | SLICE_TYPE_B => {
+            return Err(DecodeError::Malformed("inter slice in IDR picture"));
+        }
         _ => return Err(DecodeError::Unsupported("H264 SP/SI slices")),
     };
     let pps_id = r.ue_max(MAX_PPS_ID, "pic_parameter_set_id")?;
     let frame_num = r.bits(sps.log2_max_frame_num)?;
+    if !sps.frame_mbs_only {
+        if r.flag()? {
+            return Err(DecodeError::Unsupported("H264 field pictures"));
+        }
+        if sps.mbaff {
+            return Err(DecodeError::Unsupported("H264 MBAFF frames"));
+        }
+    }
     if idr && frame_num != 0 {
         return Err(DecodeError::Malformed("IDR frame_num"));
     }
@@ -138,19 +166,16 @@ pub(super) fn parse(
     };
     let (pic_order_cnt_lsb, delta_pic_order_cnt_bottom, delta_pic_order_cnt) =
         parse_poc_fields(r, sps, pps)?;
-    let mut num_ref_idx_active = pps.num_ref_idx_l0_default_active as usize;
-    let mut modifications = Vec::new();
-    if slice_type == SliceType::P {
-        if r.flag()? {
-            num_ref_idx_active =
-                r.ue_max(MAX_REF_IDX_ACTIVE_MINUS1, "num_ref_idx_l0_active_minus1")? as usize + 1;
-        }
-        if r.flag()? {
-            modifications = parse_modifications(r)?;
-        }
-    }
-    let weights = (slice_type == SliceType::P && pps.weighted_pred)
-        .then(|| parse_weights(r, num_ref_idx_active, sps.monochrome))
+    let direct_spatial = slice_type == SliceType::B && r.flag()?;
+    let (num_ref_idx_active, modifications) = parse_lists(r, pps, slice_type)?;
+    let explicit = match slice_type {
+        SliceType::P => pps.weighted_pred,
+        SliceType::B => pps.weighted_bipred == BipredWeights::Explicit,
+        SliceType::I => false,
+    };
+    let lists = slice_type.lists();
+    let weights = explicit
+        .then(|| parse_weights(r, &num_ref_idx_active[..lists], sps.monochrome))
         .transpose()?;
     let marking = if nal_ref_idc == 0 {
         Marking::NonReference
@@ -164,7 +189,7 @@ pub(super) fn parse(
     } else {
         Marking::SlidingWindow
     };
-    let cabac_init_idc = if pps.cabac && slice_type == SliceType::P {
+    let cabac_init_idc = if pps.cabac && slice_type != SliceType::I {
         r.ue_max(MAX_CABAC_INIT_IDC, "cabac_init_idc")? as u8
     } else {
         0
@@ -194,12 +219,38 @@ pub(super) fn parse(
         delta_pic_order_cnt,
         num_ref_idx_active,
         modifications,
+        direct_spatial,
         weights,
         marking,
         cabac_init_idc,
         qp,
         deblock,
     })
+}
+
+/// The active reference counts (`num_ref_idx_active_override_flag` and
+/// its counts, else the PPS defaults) and `ref_pic_list_modification()` of
+/// each list the slice uses.
+type ListFields = ([usize; 2], [Vec<Modification>; 2]);
+
+fn parse_lists(r: &mut Reader<'_>, pps: &Pps, slice_type: SliceType) -> Result<ListFields> {
+    let lists = slice_type.lists();
+    let mut num_ref_idx_active = [0; 2];
+    for (list, count) in num_ref_idx_active.iter_mut().enumerate().take(lists) {
+        *count = pps.num_ref_idx_default_active[list] as usize;
+    }
+    if lists > 0 && r.flag()? {
+        for count in num_ref_idx_active.iter_mut().take(lists) {
+            *count = r.ue_max(MAX_REF_IDX_ACTIVE_MINUS1, "num_ref_idx_active_minus1")? as usize + 1;
+        }
+    }
+    let mut modifications = [Vec::new(), Vec::new()];
+    for list in modifications.iter_mut().take(lists) {
+        if r.flag()? {
+            *list = parse_modifications(r)?;
+        }
+    }
+    Ok((num_ref_idx_active, modifications))
 }
 
 /// The picture order count fields: `pic_order_cnt_lsb`,
@@ -232,7 +283,7 @@ fn parse_poc_fields(r: &mut Reader<'_>, sps: &Sps, pps: &Pps) -> Result<(u32, i3
     ))
 }
 
-/// The list 0 loop of `ref_pic_list_modification()`, after its flag.
+/// One list's loop of `ref_pic_list_modification()`, after its flag.
 fn parse_modifications(r: &mut Reader<'_>) -> Result<Vec<Modification>> {
     let mut commands = Vec::new();
     loop {
@@ -250,8 +301,8 @@ fn parse_modifications(r: &mut Reader<'_>) -> Result<Vec<Modification>> {
     }
 }
 
-/// `pred_weight_table()` of a P slice (§7.3.3.2).
-fn parse_weights(r: &mut Reader<'_>, count: usize, monochrome: bool) -> Result<WeightTable> {
+/// `pred_weight_table()` (§7.3.3.2) of lists with `counts` entries.
+fn parse_weights(r: &mut Reader<'_>, counts: &[usize], monochrome: bool) -> Result<WeightTable> {
     let luma_log2_denom = r.ue_max(MAX_LOG2_WEIGHT_DENOM, "luma_log2_weight_denom")?;
     let chroma_log2_denom = if monochrome {
         0
@@ -268,21 +319,24 @@ fn parse_weights(r: &mut Reader<'_>, count: usize, monochrome: bool) -> Result<W
             offset: r.se_range(MIN_WEIGHT, MAX_WEIGHT, "prediction offset")?,
         })
     };
-    let mut weights = Vec::with_capacity(count);
-    for _ in 0..count {
-        let mut entry = [
-            default(luma_log2_denom),
-            default(chroma_log2_denom),
-            default(chroma_log2_denom),
-        ];
-        if r.flag()? {
-            entry[0] = explicit(r)?;
+    let mut weights = [Vec::new(), Vec::new()];
+    for (list, &count) in weights.iter_mut().zip(counts) {
+        list.reserve(count);
+        for _ in 0..count {
+            let mut entry = [
+                default(luma_log2_denom),
+                default(chroma_log2_denom),
+                default(chroma_log2_denom),
+            ];
+            if r.flag()? {
+                entry[0] = explicit(r)?;
+            }
+            if !monochrome && r.flag()? {
+                entry[1] = explicit(r)?;
+                entry[2] = explicit(r)?;
+            }
+            list.push(entry);
         }
-        if !monochrome && r.flag()? {
-            entry[1] = explicit(r)?;
-            entry[2] = explicit(r)?;
-        }
-        weights.push(entry);
     }
     Ok(WeightTable {
         luma_log2_denom,

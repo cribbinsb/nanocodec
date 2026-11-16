@@ -1,19 +1,21 @@
-//! H.264 decoder for the Constrained High profile (Annex A.2.4.2), 8-bit:
-//! progressive I and P slices in 4:2:0 or 4:0:0, CAVLC and CABAC, 8x8
-//! transforms and intra prediction, scaling matrices, explicit weighted
-//! prediction, any number of slices per picture (in raster order),
-//! long-term references, memory management operations and `frame_num`
-//! gaps. That covers the Constrained Baseline and Main-without-B streams a
-//! Constrained High decoder must also accept. Everything else (B, SP/SI
-//! slices, interlace, FMO/ASO, redundant pictures, data partitioning,
-//! other chroma formats and bit depths) is rejected as unsupported.
+//! H.264 decoder of frames for the High profile (Annex A.2.4), 8-bit: I,
+//! P and B slices in 4:2:0 or 4:0:0, CAVLC and CABAC, 8x8 transforms and
+//! intra prediction, scaling matrices, spatial and temporal direct
+//! prediction, explicit and implicit weighted prediction, any number of
+//! slices per picture (in raster order), long-term references, memory
+//! management operations and `frame_num` gaps. That covers the Baseline
+//! (without FMO/ASO), Main and High streams of frames. Everything else
+//! (field and MBAFF pictures, SP/SI slices, FMO/ASO, redundant pictures,
+//! data partitioning, other chroma formats and bit depths) is rejected as
+//! unsupported.
 //!
 //! Module map:
 //! - parameter sets and headers: `sps`, `pps`, `scaling`, `slice`, `poc`;
 //! - reference handling: `dpb` (marking, lists) and `output` (output order);
 //! - slice data: `slice_data` (macroblock loop), `mb` (macroblock layer),
 //!   `syntax` (the entropy interface) with `cavlc` / `vlc` and
-//!   `cabac_syntax` / `cabac`, `mbstate` (neighbour state), `mvpred`;
+//!   `cabac_syntax` / `cabac`, `mbstate` (neighbour state), `mvpred`,
+//!   `direct` (B direct prediction);
 //! - reconstruction: `recon`, `intra`, `inter`, `transform`, `deblock`;
 //! - `reader`: the RBSP bit reader;
 //! - `stats`: coding-tool analysis (feature `analysis`;
@@ -30,6 +32,7 @@ mod cabac;
 mod cabac_syntax;
 mod cavlc;
 mod deblock;
+mod direct;
 mod dpb;
 mod inter;
 mod intra;
@@ -69,14 +72,15 @@ use cabac_syntax::CabacSyntax;
 pub(crate) use cavlc::block_for_tests as cavlc_block_for_tests;
 use cavlc::{CavlcSyntax, CavlcTables};
 use deblock::{DeblockContext, RowDeblocker, SliceFilter};
+use direct::{DirectContext, dist_scale_factor};
 use dpb::{Dpb, RefPicture};
-use inter::{InterContext, InterKernels};
+use inter::{IMPLICIT_LOG2_DENOM, InterContext, InterKernels, Weighting};
 use mb::{MbExtra, SliceParams};
 use mbstate::MbState;
 pub use output::{DecodedFrame, OutputQueue};
 use poc::{FramePoc, PocState};
 use pool::PicturePool;
-use pps::Pps;
+use pps::{BipredWeights, Pps};
 use reader::Reader;
 use recon::ReconContext;
 use scaling::LevelScale;
@@ -186,8 +190,13 @@ pub struct Decoder {
     poc: PocState,
     current: Option<CurrentPicture>,
     /// Per-macroblock state of the current picture (reused, not reset:
-    /// see `MbState::slice`).
+    /// see `MbState::slice`). A reference picture keeps its states for
+    /// direct prediction (`RefPicture::motion`); the next picture then takes
+    /// a released one from `motion_pool`.
     mbs: Vec<MbState>,
+    /// Every macroblock state vector handed to a reference picture (one
+    /// whose only holder is this pool is free again).
+    motion_pool: Vec<Arc<Vec<MbState>>>,
     /// Serial number of the last slice started.
     slice_serial: u32,
     residual: Box<Residual>,
@@ -227,6 +236,7 @@ impl Decoder {
             poc: PocState::default(),
             current: None,
             mbs: Vec::new(),
+            motion_pool: Vec::new(),
             slice_serial: 0,
             residual: Box::new(Residual::new()),
             extra: Box::new(MbExtra::new()),
@@ -479,10 +489,15 @@ impl Decoder {
         // wrap. Otherwise a 2 MB rewrite per 1080p picture, which also
         // evicted the reference blocks from the caches.
         let picture_slices = u32::try_from(sps.mbs()).unwrap_or(u32::MAX);
-        if self.mbs.len() != sps.mbs() || self.slice_serial > u32::MAX - picture_slices {
+        if self.slice_serial > u32::MAX - picture_slices {
+            // Serials restart: states of earlier pictures must not look
+            // decoded, so pooled ones are not reused.
+            self.motion_pool.clear();
             self.mbs.clear();
-            self.mbs.resize(sps.mbs(), MbState::EMPTY);
             self.slice_serial = 0;
+        }
+        if self.mbs.len() != sps.mbs() {
+            self.mbs = self.free_motion(sps.mbs());
         }
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
@@ -509,9 +524,11 @@ impl Decoder {
     ) -> Result<()> {
         let current = self.current.as_mut().expect("picture in progress");
         let sps = current.sps.clone();
-        current
-            .slices
-            .push(SliceFilter::new(header.deblock, pps.chroma_qp_offset));
+        current.slices.push(SliceFilter::new(
+            header.deblock,
+            pps.chroma_qp_offset,
+            header.slice_type == SliceType::B,
+        ));
         // Within the picture's budget (`start_picture`) unless the stream
         // has more slices than macroblocks.
         if current.slices.len() > current.sps.mbs() {
@@ -519,23 +536,31 @@ impl Decoder {
         }
         self.slice_serial += 1;
         let slice_no = self.slice_serial;
-        let refs = match header.slice_type {
-            SliceType::P => self.dpb.ref_list(
-                header.frame_num,
-                header.num_ref_idx_active,
-                &header.modifications,
-            )?,
-            SliceType::I => Vec::new(),
-        };
+        let poc = current.poc.value();
         let coded_size = (current.picture.width(), current.picture.height());
-        if refs
-            .iter()
-            .flatten()
-            .any(|r| (r.picture.width(), r.picture.height()) != coded_size)
-        {
-            return Err(DecodeError::Malformed("reference of another size"));
-        }
-        let ref_ids: Vec<Option<u32>> = refs.iter().map(|r| r.as_ref().map(|r| r.id)).collect();
+        let lists = ref_lists(&self.dpb, header, poc, coded_size)?;
+        let ref_ids: [Vec<Option<u32>>; 2] = lists
+            .each_ref()
+            .map(|list| list.iter().map(|r| r.as_ref().map(|r| r.id)).collect());
+        let direct = (header.slice_type == SliceType::B)
+            .then(|| {
+                DirectContext::new(
+                    header.direct_spatial,
+                    sps.direct_8x8_inference,
+                    [&lists[0], &lists[1]],
+                    &ref_ids[0],
+                    poc,
+                    sps.mbs(),
+                )
+            })
+            .transpose()?;
+        let weighting = match (&header.weights, header.slice_type) {
+            (Some(table), _) => Weighting::Explicit(table),
+            (None, SliceType::B) if pps.weighted_bipred == BipredWeights::Implicit => {
+                Weighting::Implicit(implicit_weights(&lists, poc))
+            }
+            _ => Weighting::Default,
+        };
         let scaling = match &pps.scaling {
             Some(parsed) => scaling::resolve(parsed, sps.scaling_present.then_some(&sps.scaling)),
             None => sps.scaling,
@@ -544,7 +569,8 @@ impl Decoder {
         let params = SliceParams {
             slice_type: header.slice_type,
             num_ref_idx_active: header.num_ref_idx_active,
-            ref_ids: &ref_ids,
+            ref_ids: [&ref_ids[0], &ref_ids[1]],
+            direct: direct.as_ref(),
             transform_8x8_mode: pps.transform_8x8_mode,
             constrained_intra_pred: pps.constrained_intra_pred,
             monochrome: sps.monochrome,
@@ -554,8 +580,8 @@ impl Decoder {
             dsp: &self.dsp,
             inter: InterContext::new(
                 &self.kernels,
-                &refs,
-                header.weights.as_ref(),
+                [&lists[0], &lists[1]],
+                weighting,
                 sps.monochrome,
             ),
             constrained_intra_pred: pps.constrained_intra_pred,
@@ -629,10 +655,16 @@ impl Decoder {
         // Shared even when not a reference: the pool takes the buffer back
         // once the caller is done with it.
         let picture = self.pool.share(picture);
+        let output_poc = if reset { 0 } else { poc.value() };
         if header.reference {
+            let motion = Arc::new(core::mem::take(&mut self.mbs));
+            self.motion_pool.push(motion.clone());
             let reference = RefPicture {
                 id,
                 picture: picture.clone(),
+                poc: output_poc,
+                long_term: false,
+                motion,
             };
             self.dpb
                 .mark(header.frame_num, reference, &header.marking)?;
@@ -644,11 +676,97 @@ impl Decoder {
                 origin: (sps.crop.left, sps.crop.top),
                 size: sps.visible_size(),
             },
-            poc: if reset { 0 } else { poc.value() },
+            poc: output_poc,
             new_sequence: header.idr || reset,
             reorder_depth: sps
                 .max_num_reorder_frames
                 .map_or_else(|| sps.dpb_frames(), |frames| frames as usize),
         })
     }
+
+    /// A macroblock state vector of `mbs` entries: one no reference
+    /// picture holds any more, else a new one.
+    fn free_motion(&mut self, mbs: usize) -> Vec<MbState> {
+        // Released vectors of another size are dropped.
+        self.motion_pool
+            .retain(|m| Arc::strong_count(m) > 1 || m.len() == mbs);
+        if let Some(index) = self
+            .motion_pool
+            .iter()
+            .position(|m| Arc::strong_count(m) == 1)
+        {
+            let free = self.motion_pool.swap_remove(index);
+            if let Ok(states) = Arc::try_unwrap(free) {
+                return states;
+            }
+        }
+        vec![MbState::EMPTY; mbs]
+    }
+}
+
+/// The reference lists of a slice of the picture with order count `poc`
+/// (§8.2.4), whose pictures must have its `coded_size`.
+fn ref_lists(
+    dpb: &Dpb,
+    header: &SliceHeader,
+    poc: i64,
+    coded_size: (usize, usize),
+) -> Result<[Vec<Option<RefPicture>>; 2]> {
+    let lists = match header.slice_type {
+        SliceType::P => [
+            dpb.ref_list(
+                header.frame_num,
+                header.num_ref_idx_active[0],
+                &header.modifications[0],
+            )?,
+            Vec::new(),
+        ],
+        SliceType::B => dpb.b_ref_lists(
+            header.frame_num,
+            poc,
+            header.num_ref_idx_active,
+            &header.modifications,
+        )?,
+        SliceType::I => [Vec::new(), Vec::new()],
+    };
+    if lists
+        .iter()
+        .flatten()
+        .flatten()
+        .any(|r| (r.picture.width(), r.picture.height()) != coded_size)
+    {
+        return Err(DecodeError::Malformed("reference of another size"));
+    }
+    Ok(lists)
+}
+
+/// Implicit bi-prediction weights `(w0, w1)` of every pair of list
+/// entries (§8.4.2.3.1, eqs. 8-302..8-304): from the order count distances,
+/// equal where either entry is long-term, the distances coincide or the
+/// weights would leave their range.
+fn implicit_weights(lists: &[Vec<Option<RefPicture>>; 2], poc: i64) -> Vec<Vec<[i32; 2]>> {
+    const EQUAL: [i32; 2] = [1 << IMPLICIT_LOG2_DENOM; 2];
+    const MIN_W1: i32 = -64;
+    const MAX_W1: i32 = 128;
+    let total = 1 << (IMPLICIT_LOG2_DENOM + 1);
+    lists[0]
+        .iter()
+        .map(|pic0| {
+            lists[1]
+                .iter()
+                .map(|pic1| {
+                    let (Some(pic0), Some(pic1)) = (pic0, pic1) else {
+                        return EQUAL;
+                    };
+                    if pic0.long_term || pic1.long_term {
+                        return EQUAL;
+                    }
+                    match dist_scale_factor(poc, pic0.poc, pic1.poc).map(|f| f >> 2) {
+                        Some(w1) if (MIN_W1..=MAX_W1).contains(&w1) => [total - w1, w1],
+                        _ => EQUAL,
+                    }
+                })
+                .collect()
+        })
+        .collect()
 }

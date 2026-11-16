@@ -1,6 +1,7 @@
-//! Luma motion vector prediction of P macroblocks (§8.4.1.3) and the
-//! `P_Skip` motion vector (§8.4.1.1), from the neighbouring partitions A, B
-//! and C (or D) of §8.4.1.3.2.
+//! Luma motion vector prediction (§8.4.1.3) of one reference list, the
+//! `P_Skip` motion vector (§8.4.1.1) and the neighbours' reference indices
+//! of spatial direct prediction (§8.4.1.2.2), from the neighbouring
+//! partitions A, B and C (or D) of §8.4.1.3.2.
 //!
 //! The neighbours' vectors and reference indices are gathered once per
 //! macroblock into a 6x5 cache around its 4x4 blocks (openh264's
@@ -8,7 +9,8 @@
 //! row of B and C; column 0 the right column of A; column 5 is never
 //! available. An entry's reference index also tells its availability:
 //! [`REF_UNAVAILABLE`] for no partition (outside the picture or the slice,
-//! or a block of the current macroblock not decoded yet), -1 for intra.
+//! or a block of the current macroblock not decoded yet), -1 for intra or a
+//! partition that does not predict from the cache's list.
 //! The current macroblock's blocks become available as their partitions are
 //! recorded, in decoding order, which is the availability rule of
 //! §6.4.11.7. Prediction then reads fixed cache positions instead of
@@ -33,7 +35,7 @@ const REF_UNAVAILABLE: i8 = -2;
 /// [`MbState::EMPTY`]'s reference index -1 and zero vectors, as the
 /// prediction treats them.)
 const UNAVAILABLE: MbState = MbState {
-    ref_idx: [REF_UNAVAILABLE; 4],
+    ref_idx: [[REF_UNAVAILABLE; 4]; 2],
     ..MbState::EMPTY
 };
 
@@ -47,30 +49,30 @@ fn cache_index(x4: usize, y4: usize) -> usize {
     CACHE_ORIGIN + y4 * CACHE_STRIDE + x4
 }
 
-/// Vectors and reference indices around and inside the current
-/// macroblock.
+/// Vectors and reference indices of one list around and inside the
+/// current macroblock.
 pub(super) struct MotionCache {
     mvs: [Mv; CACHE_LEN],
     refs: [i8; CACHE_LEN],
 }
 
 impl MotionCache {
-    /// The cache of a macroblock with neighbours `nb`, before any of its
-    /// own partitions is decoded.
-    pub fn new(nb: &Neighbours<'_>) -> Self {
+    /// The list `list` cache of a macroblock with neighbours `nb`, before
+    /// any of its own partitions is decoded.
+    pub fn new(nb: &Neighbours<'_>, list: usize) -> Self {
         let mut cache = Self {
             mvs: [Mv::ZERO; CACHE_LEN],
             refs: [REF_UNAVAILABLE; CACHE_LEN],
         };
         let (a, b) = (or_unavailable(nb.a), or_unavailable(nb.b));
         let (c, d) = (or_unavailable(nb.c), or_unavailable(nb.d));
-        cache.put(0, d.motion(3, 3));
+        cache.put(0, d.motion(list, 3, 3));
         for x4 in 0..4 {
-            cache.put(1 + x4, b.motion(x4, 3));
+            cache.put(1 + x4, b.motion(list, x4, 3));
         }
-        cache.put(CACHE_STRIDE - 1, c.motion(0, 3));
+        cache.put(CACHE_STRIDE - 1, c.motion(list, 0, 3));
         for y4 in 0..4 {
-            cache.put(cache_index(0, y4) - 1, a.motion(3, y4));
+            cache.put(cache_index(0, y4) - 1, a.motion(list, 3, y4));
         }
         cache
     }
@@ -120,9 +122,25 @@ impl MotionCache {
         self.median([a, b, c], ref_idx)
     }
 
+    /// The `P_Skip` vector of a macroblock with neighbours `nb`: a cache
+    /// holding only the four blocks [`MotionCache::skip_mv`] reads (A's
+    /// (3, 0), B's (0, 3), C's (0, 3), D's (3, 3)). Filling the whole
+    /// cache for it was a third of the cost of a skipped macroblock.
+    pub fn skip_mv_of(nb: &Neighbours<'_>) -> Mv {
+        let mut cache = Self {
+            mvs: [Mv::ZERO; CACHE_LEN],
+            refs: [REF_UNAVAILABLE; CACHE_LEN],
+        };
+        cache.put(0, or_unavailable(nb.d).motion(0, 3, 3));
+        cache.put(1, or_unavailable(nb.b).motion(0, 0, 3));
+        cache.put(CACHE_STRIDE - 1, or_unavailable(nb.c).motion(0, 0, 3));
+        cache.put(CACHE_ORIGIN - 1, or_unavailable(nb.a).motion(0, 3, 0));
+        cache.skip_mv()
+    }
+
     /// The `P_Skip` vector (§8.4.1.1): zero when A or B is unavailable or
     /// either is a zero vector on reference 0, else the 16x16 prediction.
-    pub fn skip_mv(&self) -> Mv {
+    fn skip_mv(&self) -> Mv {
         let [a, b, c] = self.neighbours(CACHE_ORIGIN, 4);
         let zero_on_first = |n: usize| self.refs[n] == 0 && self.mvs[n] == Mv::ZERO;
         let unavailable = self.refs[a] == REF_UNAVAILABLE || self.refs[b] == REF_UNAVAILABLE;
@@ -130,6 +148,22 @@ impl MotionCache {
             return Mv::ZERO;
         }
         self.median([a, b, c], 0)
+    }
+
+    /// The reference index of spatial direct prediction (§8.4.1.2.2,
+    /// eqs. 8-184..8-186): the smallest non-negative one of the
+    /// macroblock's neighbours A, B and C (or D), else -1. Read before any
+    /// partition of the macroblock is recorded.
+    pub fn direct_ref_idx(&self) -> i8 {
+        let [a, b, c] = self.neighbours(CACHE_ORIGIN, 4);
+        let min_positive = |x: i8, y: i8| if x >= 0 && y >= 0 { x.min(y) } else { x.max(y) };
+        min_positive(self.refs[a], min_positive(self.refs[b], self.refs[c])).max(-1)
+    }
+
+    /// The 16x16 predictor with reference index `ref_idx` (spatial direct
+    /// prediction's vector, §8.4.1.2.2).
+    pub fn predict_16x16(&self, ref_idx: i8) -> Mv {
+        self.median(self.neighbours(CACHE_ORIGIN, 4), ref_idx)
     }
 
     /// Cache indices of A, B and C (D where C is unavailable) of the
@@ -189,7 +223,7 @@ mod tests {
         // above-right of block 3 (1, 1) is block 4 (2, 0), not decoded yet,
         // so C falls back to D, block 0. All on reference 0: the median of
         // A (0, 1), B (1, 0) and D (0, 0).
-        let mut cache = MotionCache::new(&NO_NEIGHBOURS);
+        let mut cache = MotionCache::new(&NO_NEIGHBOURS, 0);
         cache.record((0, 0, 1, 1), mv(1), 0);
         cache.record((1, 0, 1, 1), mv(5), 0);
         cache.record((0, 1, 1, 1), mv(9), 0);
@@ -202,8 +236,37 @@ mod tests {
     }
 
     #[test]
+    fn skip_vector_from_the_four_neighbours_matches_the_full_cache() {
+        let inter = |x: i16, ref_idx: i8| {
+            let mut m = MbState::EMPTY;
+            m.mvs[0] = core::array::from_fn(|i| mv(x + i as i16));
+            m.ref_idx[0] = [ref_idx; 4];
+            m
+        };
+        let states = [inter(3, 0), inter(-7, 1), inter(0, 0), MbState::EMPTY];
+        for (ai, bi, ci, di) in (0..5usize).flat_map(|a| {
+            (0..5usize).flat_map(move |b| {
+                (0..5usize).flat_map(move |c| (0..5usize).map(move |d| (a, b, c, d)))
+            })
+        }) {
+            let pick = |i: usize| states.get(i);
+            let nb = Neighbours {
+                a: pick(ai),
+                b: pick(bi),
+                c: pick(ci),
+                d: pick(di),
+            };
+            assert_eq!(
+                MotionCache::skip_mv_of(&nb),
+                MotionCache::new(&nb, 0).skip_mv(),
+                "{ai} {bi} {ci} {di}"
+            );
+        }
+    }
+
+    #[test]
     fn only_a_available_gives_its_vector() {
-        let mut cache = MotionCache::new(&NO_NEIGHBOURS);
+        let mut cache = MotionCache::new(&NO_NEIGHBOURS, 0);
         cache.record((0, 0, 2, 2), mv(7), 1);
         // The second 8x8 block: A is the first (reference 1), B and C lie
         // outside the picture.

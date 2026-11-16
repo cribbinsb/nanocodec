@@ -1,6 +1,6 @@
 //! CABAC binarisations and context selection of the slice data and
 //! macroblock syntax elements (§9.3.2, §9.3.3.1) for frame-coded 4:2:0 and
-//! 4:0:0 P and I slices.
+//! 4:0:0 I, P and B slices.
 
 use super::cabac::Cabac;
 use super::mbstate::{MbKind, MbState, Neighbours};
@@ -15,6 +15,10 @@ const MB_SKIP_P: usize = 11;
 const MB_TYPE_P_PREFIX: usize = 14;
 const MB_TYPE_P_SUFFIX: usize = 17;
 const SUB_MB_TYPE_P: usize = 21;
+const MB_SKIP_B: usize = 24;
+const MB_TYPE_B_PREFIX: usize = 27;
+const MB_TYPE_B_SUFFIX: usize = 32;
+const SUB_MB_TYPE_B: usize = 36;
 const MVD: [usize; 2] = [40, 47];
 const REF_IDX: usize = 54;
 const MB_QP_DELTA: usize = 60;
@@ -34,9 +38,26 @@ const ABS_LEVEL_8X8: usize = 426;
 
 /// `mb_type` values (Table 7-11) the binarisation produces directly.
 const MB_TYPE_I_NXN: u32 = 0;
+const MB_TYPE_B_DIRECT: u32 = 0;
 const MB_TYPE_I_PCM: u32 = 25;
-/// First intra `mb_type` in P slices (Table 7-13).
+/// First intra `mb_type` in P slices (Table 7-13) and B slices (Table 7-14).
 const P_INTRA_BASE: u32 = 5;
+const B_INTRA_BASE: u32 = 23;
+/// B `mb_type`s the binarisation names directly (Table 9-37): the prefix
+/// bins `111101` (intra), `111110` and `111111`.
+const B_PREFIX_INTRA: u32 = 13;
+const B_PREFIX_L1_L0_8X16: u32 = 14;
+const B_PREFIX_8X8: u32 = 15;
+const MB_TYPE_B_L1_L0_8X16: u32 = 11;
+const MB_TYPE_B_8X8: u32 = 22;
+/// First `mb_type` of B prefixes `110xxx` (`B_Bi_16x16`) and how far below
+/// its 7-bin value a `1110xxx`-`11110xx` one lies.
+const B_FOUR_BIN_BASE: u32 = 3;
+const B_SEVEN_BIN_OFFSET: u32 = 4;
+/// B `sub_mb_type`s the binarisation names directly (Table 9-38).
+const SUB_B_FIRST_THREE_BIN: u8 = 3;
+const SUB_B_FIRST_FOUR_BIN: u8 = 7;
+const SUB_B_L1_4X4: u8 = 11;
 /// `rem_intra_pred_mode` is a 3-bit fixed-length value.
 const REM_INTRA_PRED_MODE_BITS: u32 = 3;
 /// `intra_chroma_pred_mode` is truncated unary with `cMax` 3.
@@ -107,11 +128,16 @@ impl<'a> CabacSyntax<'a> {
         }
     }
 
-    /// `mb_skip_flag` (`ctxIdxInc` §9.3.3.1.1.1).
-    pub fn mb_skip_flag(&mut self, nb: &Neighbours<'_>) -> bool {
+    /// `mb_skip_flag` of a P or B slice (`ctxIdxInc` §9.3.3.1.1.1).
+    pub fn mb_skip_flag(&mut self, slice: SliceType, nb: &Neighbours<'_>) -> bool {
         let not_skip = |m: &MbState| !m.is_skip();
+        let offset = if slice == SliceType::B {
+            MB_SKIP_B
+        } else {
+            MB_SKIP_P
+        };
         self.engine
-            .decision(MB_SKIP_P + cond(nb.a, not_skip) + cond(nb.b, not_skip))
+            .decision(offset + cond(nb.a, not_skip) + cond(nb.b, not_skip))
     }
 
     /// `end_of_slice_flag`.
@@ -121,14 +147,14 @@ impl<'a> CabacSyntax<'a> {
 
     /// The bins of an intra `mb_type` after its first bin (Table 9-36):
     /// `I_PCM` by a terminate bin, else `Intra_16x16` coded block patterns and
-    /// prediction mode. `offset` selects the I or the P-slice suffix contexts.
-    fn intra_16x16_or_pcm(&mut self, suffix: bool) -> u32 {
+    /// prediction mode. `suffix` is the P or B suffix's `ctxIdxOffset`, `None`
+    /// in I slices.
+    fn intra_16x16_or_pcm(&mut self, suffix: Option<usize>) -> u32 {
         if self.engine.terminate() {
             return MB_TYPE_I_PCM;
         }
         // ctxIdx of the luma, chroma, chroma-AC and the two mode bins.
-        let (luma, chroma, chroma_ac, mode) = if suffix {
-            let base = MB_TYPE_P_SUFFIX;
+        let (luma, chroma, chroma_ac, mode) = if let Some(base) = suffix {
             (base + 1, base + 2, base + 2, [base + 3, base + 3])
         } else {
             let base = MB_TYPE_I;
@@ -142,6 +168,65 @@ impl<'a> CabacSyntax<'a> {
         let pred =
             2 * u32::from(self.engine.decision(mode[0])) + u32::from(self.engine.decision(mode[1]));
         1 + pred + 4 * chroma_cbp + 12 * luma_coded
+    }
+
+    /// A B-slice `mb_type` (Table 9-37, `ctxIdxInc` §9.3.3.1.1.3: bin 0 by
+    /// the neighbours that are not `B_Skip` / `B_Direct_16x16`). Out of
+    /// line: P slices keep `mb_type` small enough to inline.
+    #[inline(never)]
+    fn b_mb_type(&mut self, nb: &Neighbours<'_>) -> u32 {
+        let not_direct = |m: &MbState| !matches!(m.kind, MbKind::BSkip | MbKind::BDirect16x16);
+        let inc = cond(nb.a, not_direct) + cond(nb.b, not_direct);
+        if !self.engine.decision(MB_TYPE_B_PREFIX + inc) {
+            return MB_TYPE_B_DIRECT;
+        }
+        // ctxIdxInc 3 for bin 1; bin 2 takes 4 after a 1, else 5, as every
+        // later bin.
+        let ctx = |inc: usize| MB_TYPE_B_PREFIX + inc;
+        if !self.engine.decision(ctx(3)) {
+            // 10x: B_L0_16x16, B_L1_16x16.
+            return 1 + u32::from(self.engine.decision(ctx(5)));
+        }
+        let mut bits = u32::from(self.engine.decision(ctx(4))) << 3;
+        for shift in (0..3).rev() {
+            bits |= u32::from(self.engine.decision(ctx(5))) << shift;
+        }
+        match bits {
+            0..8 => B_FOUR_BIN_BASE + bits,
+            B_PREFIX_INTRA => B_INTRA_BASE + self.b_intra_type(),
+            B_PREFIX_L1_L0_8X16 => MB_TYPE_B_L1_L0_8X16,
+            B_PREFIX_8X8 => MB_TYPE_B_8X8,
+            _ => ((bits << 1) | u32::from(self.engine.decision(ctx(5)))) - B_SEVEN_BIN_OFFSET,
+        }
+    }
+
+    /// The intra suffix of a B `mb_type` (Table 9-36 with the B contexts).
+    fn b_intra_type(&mut self) -> u32 {
+        if !self.engine.decision(MB_TYPE_B_SUFFIX) {
+            return MB_TYPE_I_NXN;
+        }
+        self.intra_16x16_or_pcm(Some(MB_TYPE_B_SUFFIX))
+    }
+
+    /// A B `sub_mb_type` (Table 9-38; bin 2 takes `ctxIdxInc` 2 after a 1,
+    /// the later bins 3).
+    fn b_sub_mb_type(&mut self) -> u8 {
+        let ctx = |inc: usize| SUB_MB_TYPE_B + inc;
+        if !self.engine.decision(ctx(0)) {
+            return 0;
+        }
+        if !self.engine.decision(ctx(1)) {
+            return 1 + u8::from(self.engine.decision(ctx(3)));
+        }
+        let mut sub = SUB_B_FIRST_THREE_BIN;
+        if self.engine.decision(ctx(2)) {
+            if self.engine.decision(ctx(3)) {
+                return SUB_B_L1_4X4 + u8::from(self.engine.decision(ctx(3)));
+            }
+            sub = SUB_B_FIRST_FOUR_BIN;
+        }
+        sub += 2 * u8::from(self.engine.decision(ctx(3)));
+        sub + u8::from(self.engine.decision(ctx(3)))
     }
 
     /// One residual block of category `cat`: `coded_block_flag` with
@@ -238,6 +323,7 @@ impl MbSyntax for CabacSyntax<'_> {
         self.engine.bits_consumed()
     }
 
+    #[inline]
     fn mb_type(&mut self, slice: SliceType, nb: &Neighbours<'_>) -> Result<u32> {
         match slice {
             SliceType::I => {
@@ -246,14 +332,14 @@ impl MbSyntax for CabacSyntax<'_> {
                 if !self.engine.decision(MB_TYPE_I + inc) {
                     return Ok(MB_TYPE_I_NXN);
                 }
-                Ok(self.intra_16x16_or_pcm(false))
+                Ok(self.intra_16x16_or_pcm(None))
             }
             SliceType::P => {
                 if self.engine.decision(MB_TYPE_P_PREFIX) {
                     if !self.engine.decision(MB_TYPE_P_SUFFIX) {
                         return Ok(P_INTRA_BASE + MB_TYPE_I_NXN);
                     }
-                    return Ok(P_INTRA_BASE + self.intra_16x16_or_pcm(true));
+                    return Ok(P_INTRA_BASE + self.intra_16x16_or_pcm(Some(MB_TYPE_P_SUFFIX)));
                 }
                 // Table 9-37: 000 16x16, 011 16x8, 010 8x16, 001 8x8.
                 let b1 = self.engine.decision(MB_TYPE_P_PREFIX + 1);
@@ -265,10 +351,14 @@ impl MbSyntax for CabacSyntax<'_> {
                     (false, true) => 3,
                 })
             }
+            SliceType::B => Ok(self.b_mb_type(nb)),
         }
     }
 
-    fn sub_mb_type(&mut self) -> Result<u8> {
+    fn sub_mb_type(&mut self, slice: SliceType) -> Result<u8> {
+        if slice == SliceType::B {
+            return Ok(self.b_sub_mb_type());
+        }
         // Table 9-38: 1 8x8, 00 8x4, 011 4x8, 010 4x4.
         if self.engine.decision(SUB_MB_TYPE_P) {
             return Ok(0);
@@ -320,13 +410,17 @@ impl MbSyntax for CabacSyntax<'_> {
         &mut self,
         nb: &Neighbours<'_>,
         cur: &MbState,
+        list: usize,
         x4: usize,
         y4: usize,
         num_ref_idx_active: usize,
     ) -> Result<u8> {
+        // condTermFlagN (§9.3.3.1.1.6): 0 for skipped, intra and
+        // direct-predicted partitions and those not using the list (-1).
         let positive = |n: Option<(&MbState, usize, usize)>| {
             usize::from(n.is_some_and(|(m, x, y)| {
-                !m.is_skip() && !m.is_intra() && m.ref_idx[(y / 2) * 2 + x / 2] > 0
+                let b8 = (y / 2) * 2 + x / 2;
+                !m.is_skip() && (m.direct >> b8) & 1 == 0 && m.ref_idx[list][b8] > 0
             }))
         };
         let inc = positive(nb.left(cur, x4, y4)) + 2 * positive(nb.above(cur, x4, y4));
@@ -335,7 +429,7 @@ impl MbSyntax for CabacSyntax<'_> {
         while self.engine.decision(ctx) {
             value += 1;
             if value >= num_ref_idx_active {
-                return Err(DecodeError::Malformed("ref_idx_l0"));
+                return Err(DecodeError::Malformed("ref_idx"));
             }
             ctx = REF_IDX + if value == 1 { 4 } else { 5 };
         }
@@ -346,15 +440,18 @@ impl MbSyntax for CabacSyntax<'_> {
         &mut self,
         nb: &Neighbours<'_>,
         cur: &MbState,
+        list: usize,
         x4: usize,
         y4: usize,
     ) -> Result<[i32; 2]> {
+        // Intra, skipped and direct blocks and those of the other list keep
+        // a zero record.
         let abs = |n: Option<(&MbState, usize, usize)>, comp: usize| {
             n.map_or(0, |(m, x, y)| {
-                if m.is_skip() || m.is_intra() {
+                if m.is_skip() {
                     0
                 } else {
-                    u32::from(m.abs_mvd[y * 4 + x][comp])
+                    u32::from(m.abs_mvd[list][y * 4 + x][comp])
                 }
             })
         };
@@ -386,7 +483,7 @@ impl MbSyntax for CabacSyntax<'_> {
                 magnitude += self.engine.exp_golomb(MVD_SUFFIX_ORDER)?;
             }
             if magnitude > MAX_ABS_MVD {
-                return Err(DecodeError::Malformed("mvd_l0"));
+                return Err(DecodeError::Malformed("mvd"));
             }
             *value = magnitude as i32;
             if magnitude != 0 && self.engine.bypass() {

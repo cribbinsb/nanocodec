@@ -21,7 +21,7 @@ pub(super) const PCM_CBP: u8 = 0x2f;
 pub(super) const CBP_LUMA_MASK: u8 = 0x0f;
 pub(super) const CBP_CHROMA_SHIFT: u8 = 4;
 
-/// Inter partitioning of a P macroblock (Table 7-13).
+/// Inter partitioning of a P or B macroblock (Tables 7-13, 7-14).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Partition {
     P16x16,
@@ -30,7 +30,8 @@ pub(super) enum Partition {
     P8x8,
 }
 
-/// Sub-macroblock partitioning of one 8x8 block of `P_8x8` (Table 7-17).
+/// Sub-macroblock partitioning of one 8x8 block of `P_8x8` or `B_8x8`
+/// (Tables 7-17, 7-18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SubPartition {
     P8x8,
@@ -40,6 +41,7 @@ pub(super) enum SubPartition {
 }
 
 impl SubPartition {
+    /// The partitioning of P `sub_mb_type` `code` (Table 7-17).
     pub fn from_code(code: u8) -> Option<Self> {
         Some(match code {
             0 => Self::P8x8,
@@ -48,6 +50,15 @@ impl SubPartition {
             3 => Self::P4x4,
             _ => return None,
         })
+    }
+
+    /// The number of sub-partitions.
+    pub fn count(self) -> usize {
+        match self {
+            Self::P8x8 => 1,
+            Self::P8x4 | Self::P4x8 => 2,
+            Self::P4x4 => 4,
+        }
     }
 
     /// Size in 4x4 blocks.
@@ -59,24 +70,30 @@ impl SubPartition {
             Self::P4x4 => (1, 1),
         }
     }
-
-    pub fn count(self) -> usize {
-        let (w, h) = self.size4();
-        4 / (w * h)
-    }
 }
 
 /// The macroblock type, by prediction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The intra kinds come first and the skipped kinds next, so `is_intra`
+/// and `is_skip` (read per neighbour and edge in hot paths) are one range
+/// check each.
 pub(super) enum MbKind {
     /// `I_NxN` with 4x4 or (`transform_size_8x8_flag`) 8x8 prediction.
     IntraNxN,
     /// `Intra_16x16` with its prediction mode (Table 7-11).
     Intra16x16(u8),
     IPcm,
-    Inter(Partition),
     PSkip,
+    /// `B_Skip`: direct prediction, no residual.
+    BSkip,
+    Inter(Partition),
+    /// `B_Direct_16x16`: direct prediction with a residual.
+    BDirect16x16,
 }
+
+/// The two reference picture lists.
+pub(super) const LISTS: usize = 2;
 
 /// The state of one decoded macroblock.
 #[derive(Debug, Clone, Copy)]
@@ -107,17 +124,24 @@ pub(super) struct MbState {
     /// Luma 4x4 blocks with non-zero coefficients for the deblocking filter
     /// (bit `y4 * 4 + x4`; all four of an 8x8 transform block).
     pub nonzero: u16,
-    /// Motion vector of each 4x4 block.
-    pub mvs: [Mv; 16],
-    /// `ref_idx_l0` of each 8x8 block (-1: intra).
-    pub ref_idx: [i8; 4],
-    /// Identity of the picture each 8x8 block predicts from.
-    pub ref_pic: [u32; 4],
-    /// CABAC: absolute motion vector differences of each 4x4 block,
-    /// saturated (only sums up to 33 matter, §9.3.3.1.1.7).
-    pub abs_mvd: [[u8; 2]; 16],
-    /// An inter macroblock whose 4x4 blocks all share one vector and
-    /// reference (one prediction block; set by the macroblock layer).
+    /// Motion vector of each 4x4 block, per list (zero where the list is
+    /// not used; list 1's are stale in P and I macroblocks, see
+    /// [`MbState::reset`]).
+    pub mvs: [[Mv; 16]; LISTS],
+    /// `ref_idx_l0` / `ref_idx_l1` of each 8x8 block (-1: intra, or the list
+    /// not used).
+    pub ref_idx: [[i8; 4]; LISTS],
+    /// Identity of the picture each 8x8 block predicts from, per list (0:
+    /// the list is not used).
+    pub ref_pic: [[u32; 4]; LISTS],
+    /// The 8x8 blocks predicted by direct prediction (bit `b8`).
+    pub direct: u8,
+    /// CABAC: absolute motion vector differences of each 4x4 block, per
+    /// list, saturated (only sums up to 33 matter, §9.3.3.1.1.7); list 1's
+    /// stale outside B slices.
+    pub abs_mvd: [[[u8; 2]; 16]; LISTS],
+    /// An inter macroblock whose 4x4 blocks all share their vectors and
+    /// references (one prediction block; set by the macroblock layer).
     pub single_motion: bool,
     /// `sub_mb_type` of each 8x8 block of a `P_8x8` macroblock (analysis).
     #[cfg(feature = "analysis")]
@@ -138,14 +162,76 @@ impl MbState {
         chroma_total_coeff: [[0; 4]; 2],
         dc_coded: [false; 3],
         nonzero: 0,
-        mvs: [Mv::ZERO; 16],
-        ref_idx: [-1; 4],
-        ref_pic: [0; 4],
-        abs_mvd: [[0; 2]; 16],
+        mvs: [[Mv::ZERO; 16]; LISTS],
+        ref_idx: [[-1; 4]; LISTS],
+        ref_pic: [[0; 4]; LISTS],
+        direct: 0,
+        abs_mvd: [[[0; 2]; 16]; LISTS],
         single_motion: false,
         #[cfg(feature = "analysis")]
         sub_partitions: [SubPartition::P8x8; 4],
     };
+
+    /// Reset to [`MbState::EMPTY`] for a macroblock of slice `slice`,
+    /// except outside B slices (`b_slice` false) list 1's vectors and
+    /// vector differences, which stay stale: the per-macroblock reset is a
+    /// hot copy (resetting them as well cost 1.2 % of the decode
+    /// instructions of P streams). They are read only where `ref_idx[1]`
+    /// is non-negative (prediction, deblocking, the co-located block) or
+    /// from neighbours in the same B slice, which are reset whole.
+    pub fn reset(&mut self, slice: u32, b_slice: bool) {
+        if b_slice {
+            *self = Self {
+                slice,
+                ..Self::EMPTY
+            };
+            return;
+        }
+        let empty = &Self::EMPTY;
+        // Every field named, so a new one cannot be missed.
+        let Self {
+            slice: slice_no,
+            kind,
+            transform_8x8,
+            cbp,
+            qp,
+            chroma_pred_mode,
+            intra_modes,
+            total_coeff,
+            chroma_total_coeff,
+            dc_coded,
+            nonzero,
+            mvs,
+            ref_idx,
+            ref_pic,
+            direct,
+            abs_mvd,
+            single_motion,
+            #[cfg(feature = "analysis")]
+            sub_partitions,
+        } = self;
+        *slice_no = slice;
+        *kind = empty.kind;
+        *transform_8x8 = empty.transform_8x8;
+        *cbp = empty.cbp;
+        *qp = empty.qp;
+        *chroma_pred_mode = empty.chroma_pred_mode;
+        *intra_modes = empty.intra_modes;
+        *total_coeff = empty.total_coeff;
+        *chroma_total_coeff = empty.chroma_total_coeff;
+        *dc_coded = empty.dc_coded;
+        *nonzero = empty.nonzero;
+        mvs[0] = empty.mvs[0];
+        *ref_idx = empty.ref_idx;
+        *ref_pic = empty.ref_pic;
+        *direct = empty.direct;
+        abs_mvd[0] = empty.abs_mvd[0];
+        *single_motion = empty.single_motion;
+        #[cfg(feature = "analysis")]
+        {
+            *sub_partitions = empty.sub_partitions;
+        }
+    }
 
     pub fn is_intra(&self) -> bool {
         matches!(
@@ -154,8 +240,15 @@ impl MbState {
         )
     }
 
+    /// `P_Skip` or `B_Skip`.
     pub fn is_skip(&self) -> bool {
-        self.kind == MbKind::PSkip
+        matches!(self.kind, MbKind::PSkip | MbKind::BSkip)
+    }
+
+    /// Whether any block predicts from list 1 (a B macroblock that is not
+    /// list-0-only).
+    pub fn uses_l1(&self) -> bool {
+        self.ref_idx[1] != [-1; 4]
     }
 
     pub fn cbp_luma(&self) -> u8 {
@@ -166,9 +259,13 @@ impl MbState {
         self.cbp >> CBP_CHROMA_SHIFT
     }
 
-    /// Motion vector and reference index of the 4x4 block (`x4`, `y4`).
-    pub fn motion(&self, x4: usize, y4: usize) -> (Mv, i8) {
-        (self.mvs[y4 * 4 + x4], self.ref_idx[(y4 / 2) * 2 + x4 / 2])
+    /// Motion vector and reference index of list `list` of the 4x4 block
+    /// (`x4`, `y4`).
+    pub fn motion(&self, list: usize, x4: usize, y4: usize) -> (Mv, i8) {
+        (
+            self.mvs[list][y4 * 4 + x4],
+            self.ref_idx[list][(y4 / 2) * 2 + x4 / 2],
+        )
     }
 }
 

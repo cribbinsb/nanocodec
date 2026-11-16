@@ -38,15 +38,18 @@ const BS_COEFFICIENTS: u8 = 2;
 pub(super) struct SliceFilter {
     pub control: DeblockControl,
     pub chroma_qp_offset: [i8; 2],
+    /// A B slice: its macroblocks may predict from list 1.
+    pub b_slice: bool,
     /// The thresholds at each average QP, under `control`'s offsets.
     thresholds: [Thresholds; QP_COUNT],
 }
 
 impl SliceFilter {
-    pub fn new(control: DeblockControl, chroma_qp_offset: [i8; 2]) -> Self {
+    pub fn new(control: DeblockControl, chroma_qp_offset: [i8; 2], b_slice: bool) -> Self {
         Self {
             control,
             chroma_qp_offset,
+            b_slice,
             thresholds: core::array::from_fn(|average| Thresholds::at_average(average, control)),
         }
     }
@@ -145,8 +148,23 @@ pub(super) struct DeblockContext<'a> {
     pub monochrome: bool,
 }
 
-/// Filter the macroblock rows `rows` of `picture`.
+/// Filter the macroblock rows `rows` of `picture`: one instance for
+/// pictures with B slices so far, one (list 0 only) for the others.
 fn deblock_rows(ctx: &DeblockContext<'_>, planes: &mut Planes<'_>, rows: Range<usize>) {
+    if ctx.slices.iter().any(|s| s.b_slice) {
+        deblock_rows_of::<true>(ctx, planes, rows);
+    } else {
+        deblock_rows_of::<false>(ctx, planes, rows);
+    }
+}
+
+/// [`deblock_rows`] of a picture with (`BI`) or without B slices.
+#[inline(never)]
+fn deblock_rows_of<const BI: bool>(
+    ctx: &DeblockContext<'_>,
+    planes: &mut Planes<'_>,
+    rows: Range<usize>,
+) {
     let DeblockContext {
         dsp,
         mbs,
@@ -160,7 +178,7 @@ fn deblock_rows(ctx: &DeblockContext<'_>, planes: &mut Planes<'_>, rows: Range<u
     }
     let [luma, cb, cr] = planes;
     for addr in rows.start * width_mbs..rows.end * width_mbs {
-        let Some(bs) = strengths(mbs, width_mbs, (first_slice, slices), addr) else {
+        let Some(bs) = strengths::<BI>(mbs, width_mbs, (first_slice, slices), addr) else {
             continue;
         };
         let mb = &mbs[addr];
@@ -239,7 +257,7 @@ fn filter_qp(mb: &MbState) -> u8 {
 
 /// The boundary strengths of macroblock `addr`, or `None` when it is not
 /// filtered or every strength is 0.
-fn strengths(
+fn strengths<const BI: bool>(
     mbs: &[MbState],
     width_mbs: usize,
     (first_slice, slices): (u32, &[SliceFilter]),
@@ -264,22 +282,22 @@ fn strengths(
     let mut out = [[[0u8; 4]; 4]; 2];
     let q_uniform = is_uniform_inter(mb);
     let [vertical, horizontal] = &mut out;
-    direction_strengths::<0>(mb, left, q_uniform, vertical);
-    direction_strengths::<1>(mb, above, q_uniform, horizontal);
+    direction_strengths::<0, BI>(mb, left, q_uniform, vertical);
+    direction_strengths::<1, BI>(mb, above, q_uniform, horizontal);
     (out != [[[0; 4]; 4]; 2]).then_some(out)
 }
 
 /// The strengths of the four luma edges of direction `DIR` (0 vertical) of
 /// `mb`, with `neighbour` across edge 0; only edge 0 when `mb` is a
 /// uniform inter macroblock.
-fn direction_strengths<const DIR: usize>(
+fn direction_strengths<const DIR: usize, const BI: bool>(
     mb: &MbState,
     neighbour: Option<&MbState>,
     q_uniform: bool,
     out: &mut [[u8; 4]; 4],
 ) {
     if let Some(p_mb) = neighbour {
-        out[0] = edge_strengths::<DIR>(p_mb, mb, 0);
+        out[0] = edge_strengths::<DIR, BI>(p_mb, mb, 0);
     }
     if q_uniform {
         return;
@@ -288,7 +306,7 @@ fn direction_strengths<const DIR: usize>(
     // block edges and are not filtered (§8.7).
     let step = if mb.transform_8x8 { 2 } else { 1 };
     for edge in (step..4).step_by(step) {
-        out[edge] = edge_strengths::<DIR>(mb, mb, edge);
+        out[edge] = edge_strengths::<DIR, BI>(mb, mb, edge);
     }
 }
 
@@ -304,7 +322,11 @@ fn is_uniform_inter(mb: &MbState) -> bool {
 /// coefficient rule is evaluated for all four segments at once on the
 /// blocks' coded-bit masks; the motion rule only where it decides, and
 /// once for the whole edge when both sides have a single vector.
-fn edge_strengths<const DIR: usize>(p_mb: &MbState, mb: &MbState, edge: usize) -> [u8; 4] {
+fn edge_strengths<const DIR: usize, const BI: bool>(
+    p_mb: &MbState,
+    mb: &MbState,
+    edge: usize,
+) -> [u8; 4] {
     if p_mb.is_intra() || mb.is_intra() {
         return [if edge == 0 {
             BS_INTRA_MB_EDGE
@@ -321,10 +343,12 @@ fn edge_strengths<const DIR: usize>(p_mb: &MbState, mb: &MbState, edge: usize) -
     if coded == SEGMENTS_ALL {
         return [BS_COEFFICIENTS; 4];
     }
+    // Once per edge: whether either side predicts from list 1.
+    let bi = BI && (p_mb.uses_l1() | mb.uses_l1());
     if p_mb.single_motion && mb.single_motion {
-        // One vector each side: one motion test for the edge, and the
+        // One motion each side: one motion test for the edge, and the
         // segments combine it with their coded bits arithmetically.
-        let moved = u32::from(motion_differs(p_mb, (0, 0), mb, (0, 0)));
+        let moved = u32::from(motion_differs(p_mb, (0, 0), mb, (0, 0), bi));
         // One byte per segment: bS 2 where coded, else the motion bit.
         let coded = spread_bits(coded);
         let bs =
@@ -340,7 +364,7 @@ fn edge_strengths<const DIR: usize>(p_mb: &MbState, mb: &MbState, edge: usize) -
             } else {
                 ((seg, edge), (seg, p_edge))
             };
-            u8::from(motion_differs(p_mb, p, mb, q))
+            u8::from(motion_differs(p_mb, p, mb, q, bi))
         }
     })
 }
@@ -376,16 +400,74 @@ fn column_bits(nonzero: u16, x: usize) -> u8 {
 const COLUMN_GATHER: u32 = 0x249;
 
 /// bS 1 rule of inter blocks without coefficients (§8.7.2.1): different
-/// reference pictures, or vectors a sample or more apart.
-fn motion_differs(p_mb: &MbState, p: (usize, usize), q_mb: &MbState, q: (usize, usize)) -> bool {
-    let (p_mv, q_mv) = (p_mb.mvs[p.1 * 4 + p.0], q_mb.mvs[q.1 * 4 + q.0]);
-    let ref_of = |m: &MbState, (x, y): (usize, usize)| m.ref_pic[(y / 2) * 2 + x / 2];
-    // Bitwise, not short-circuit: no branch per term.
-    let far = |a: Mv, b: Mv| {
-        ((i32::from(a.x) - i32::from(b.x)).abs() >= MV_THRESHOLD)
-            | ((i32::from(a.y) - i32::from(b.y)).abs() >= MV_THRESHOLD)
-    };
-    (ref_of(p_mb, p) != ref_of(q_mb, q)) | far(p_mv, q_mv)
+/// reference pictures or numbers of vectors, or vectors a sample or more
+/// apart. `bi`: either macroblock predicts from list 1 (else both have one
+/// list 0 vector per block, the inlined common case).
+#[allow(
+    clippy::inline_always,
+    reason = "measured: keeps the P path at the base instruction count (callgrind)"
+)]
+#[inline(always)]
+fn motion_differs(
+    p_mb: &MbState,
+    p: (usize, usize),
+    q_mb: &MbState,
+    q: (usize, usize),
+    bi: bool,
+) -> bool {
+    if bi {
+        return bi_motion_differs(p_mb, p, q_mb, q);
+    }
+    let (p_b8, q_b8) = ((p.1 / 2) * 2 + p.0 / 2, (q.1 / 2) * 2 + q.0 / 2);
+    (p_mb.ref_pic[0][p_b8] != q_mb.ref_pic[0][q_b8])
+        | far(p_mb.mvs[0][p.1 * 4 + p.0], q_mb.mvs[0][q.1 * 4 + q.0])
+}
+
+/// [`motion_differs`] where either side may use both lists.
+#[inline(never)]
+fn bi_motion_differs(p_mb: &MbState, p: (usize, usize), q_mb: &MbState, q: (usize, usize)) -> bool {
+    let (p_block, q_block) = (p.1 * 4 + p.0, q.1 * 4 + q.0);
+    let (p_b8, q_b8) = ((p.1 / 2) * 2 + p.0 / 2, (q.1 / 2) * 2 + q.0 / 2);
+    // Pictures (0: none) and vectors of each side's two lists.
+    let pics = |m: &MbState, b8: usize| [m.ref_pic[0][b8], m.ref_pic[1][b8]];
+    let mvs = |m: &MbState, block: usize| [m.mvs[0][block], m.mvs[1][block]];
+    let ([p0, p1], [q0, q1]) = (pics(p_mb, p_b8), pics(q_mb, q_b8));
+    // Vectors of an unused list are not read (stale in P macroblocks).
+    let ([pv0, pv1], [qv0, qv1]) = (mvs(p_mb, p_block), mvs(q_mb, q_block));
+    // The same set of reference pictures, counted with repetition.
+    if !((p0 == q0 && p1 == q1) || (p0 == q1 && p1 == q0)) {
+        return true;
+    }
+    if p0 == 0 || p1 == 0 {
+        // One vector each (the unused list's picture is 0 on both sides).
+        let (pv, qv) = (
+            if p0 == 0 { pv1 } else { pv0 },
+            if q0 == 0 { qv1 } else { qv0 },
+        );
+        return far(pv, qv);
+    }
+    if p0 != p1 {
+        // Two different pictures: compare the vectors that use the same one.
+        return if p0 == q0 {
+            far(pv0, qv0) | far(pv1, qv1)
+        } else {
+            far(pv0, qv1) | far(pv1, qv0)
+        };
+    }
+    // Both vectors on one picture: bS 1 only when both pairings differ.
+    (far(pv0, qv0) | far(pv1, qv1)) & (far(pv0, qv1) | far(pv1, qv0))
+}
+
+/// Whether two vectors are a sample or more apart in either component.
+/// Bitwise, not short-circuit: no branch per term.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: keeps the P path at the base instruction count (callgrind)"
+)]
+#[inline(always)]
+fn far(a: Mv, b: Mv) -> bool {
+    ((i32::from(a.x) - i32::from(b.x)).abs() >= MV_THRESHOLD)
+        | ((i32::from(a.y) - i32::from(b.y)).abs() >= MV_THRESHOLD)
 }
 
 #[cfg(test)]

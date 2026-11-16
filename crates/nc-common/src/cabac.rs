@@ -298,7 +298,11 @@ impl<'a> CabacReader<'a> {
         ones
     }
 
-    /// `DecodeTerminate` (H.264 §9.3.3.2.4, H.265 §9.3.4.3.5).
+    /// `DecodeTerminate` (H.264 §9.3.3.2.4, H.265 §9.3.4.3.5). Inlined: the
+    /// decoders call it after every macroblock / CTU (`end_of_slice_flag`),
+    /// where an out-of-line call cost H.264 1.2 % of its decode
+    /// instructions.
+    #[inline]
     pub fn terminate(&mut self) -> bool {
         self.range -= 2;
         if self.window >= u64::from(self.range) << OFFSET_SHIFT {

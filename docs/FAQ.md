@@ -198,9 +198,10 @@ its output under the GPL; we distribute only the output streams, not the program
 - **Subset encoders:** forward prediction only (no B-frames), no lookahead, CBR and fixed-QP only, one tile/slice;
   several tools of the newer standards are unused (for example compound prediction and loop restoration in
   AV1/AV2).
-- **Decoders:** H.264 (Constrained High; on the whole ITU-T H.264.1 suite 58/190 streams MD5-exact against JM:
-  33/33 Constrained Baseline, 4/7 Baseline, 21/41 progressive Main; B slices, interlace and High 10 are in
-  progress), HEVC (Main and Main 10: 147/147 JCT-VC HEVC_v1 streams of those
+- **Decoders:** H.264 (High profile, frames only: on the whole ITU-T H.264.1 suite 103/190 streams MD5-exact
+  against JM: 41/41 progressive Main, 24/24 progressive High, 33/33 Constrained Baseline, 4/7 Baseline; High 10
+  is in progress, 0/7; interlace (field, MBAFF, PAFF: 75 streams), FMO/ASO and SP/SI slices are not supported),
+  HEVC (Main and Main 10: 147/147 JCT-VC HEVC_v1 streams of those
   profiles, 11 of them Main 10, MD5-exact against HM), AV1 (Main, 8- and 10-bit: 242/242 libaom vectors, 176
   `av1-1-b8` and 66 `av1-1-b10`, MD5-exact against aomdec) and VP9 (profile 0: 303/303 libvpx `vp90-2`
   vectors, MD5-exact against vpxdec) pass the conformance streams we test in those profiles; VP9 profile 2

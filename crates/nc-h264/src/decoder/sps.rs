@@ -1,7 +1,8 @@
 //! Sequence parameter sets (§7.3.2.1.1) with their VUI (§E.1.1), limited to
-//! what a Constrained High decoder must accept: 8-bit 4:2:0 or 4:0:0,
-//! progressive (`frame_mbs_only_flag`), no lossless transform bypass.
-//! Anything else is rejected as unsupported rather than misdecoded.
+//! what a High decoder of frames must accept: 8-bit 4:2:0 or 4:0:0, no
+//! lossless transform bypass. Sequences that allow fields are accepted;
+//! their field and MBAFF pictures are refused by the slice header. Anything
+//! else is rejected as unsupported rather than misdecoded.
 
 use nc_common::{ColourDescription, ColourInfo};
 
@@ -83,7 +84,15 @@ pub(super) struct Sps {
     pub max_num_ref_frames: usize,
     pub gaps_in_frame_num_allowed: bool,
     pub width_mbs: usize,
+    /// Frame height in macroblocks.
     pub height_mbs: usize,
+    /// `frame_mbs_only_flag`.
+    pub frame_mbs_only: bool,
+    /// `mb_adaptive_frame_field_flag`.
+    pub mbaff: bool,
+    /// `direct_8x8_inference_flag`: direct prediction reads the co-located
+    /// corner 4x4 blocks (§8.4.1.2.1).
+    pub direct_8x8_inference: bool,
     pub crop: Crop,
     pub colour: ColourInfo,
     /// `max_num_reorder_frames` of the VUI bitstream restriction.
@@ -187,11 +196,20 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
     {
         return Err(DecodeError::Unsupported("H264 picture size"));
     }
-    if !r.flag()? {
-        return Err(DecodeError::Unsupported("interlaced H264"));
+    // Field-capable sequences code frame heights in pairs of macroblock
+    // rows (eq. 7-18); their field and MBAFF pictures are refused per slice.
+    let frame_mbs_only = r.flag()?;
+    let mbaff = !frame_mbs_only && r.flag()?;
+    let height_mbs = if frame_mbs_only {
+        height_mbs
+    } else {
+        2 * height_mbs
+    };
+    if height_mbs > MAX_SIDE_MBS || width_mbs * height_mbs > MAX_FRAME_MBS {
+        return Err(DecodeError::Unsupported("H264 picture size"));
     }
-    r.flag()?; // direct_8x8_inference_flag: B slices only
-    let crop = parse_crop(&mut r, monochrome, width_mbs, height_mbs)?;
+    let direct_8x8_inference = r.flag()?;
+    let crop = parse_crop(&mut r, monochrome, frame_mbs_only, width_mbs, height_mbs)?;
     let mut sps = Sps {
         id,
         profile_idc,
@@ -206,6 +224,9 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
         gaps_in_frame_num_allowed,
         width_mbs,
         height_mbs,
+        frame_mbs_only,
+        mbaff,
+        direct_8x8_inference,
         crop,
         colour: ColourInfo::default(),
         max_num_reorder_frames: None,
@@ -240,29 +261,33 @@ fn parse_poc(r: &mut Reader<'_>) -> Result<PocType> {
     })
 }
 
-/// `frame_cropping_flag` and offsets, in luma samples (eqs. 7-19..7-22 with
-/// `frame_mbs_only_flag` 1: `CropUnitX` = `CropUnitY` = 2 for 4:2:0, 1 for 4:0:0).
+/// `frame_cropping_flag` and offsets, in luma samples (eqs. 7-19..7-22:
+/// `CropUnitX` 2 for 4:2:0, 1 for 4:0:0; `CropUnitY` that times
+/// `2 − frame_mbs_only_flag`).
 fn parse_crop(
     r: &mut Reader<'_>,
     monochrome: bool,
+    frame_mbs_only: bool,
     width_mbs: usize,
     height_mbs: usize,
 ) -> Result<Crop> {
     if !r.flag()? {
         return Ok(Crop::default());
     }
-    let unit = if monochrome { 1 } else { 2 };
+    let unit_x = if monochrome { 1 } else { 2 };
+    let unit_y = if frame_mbs_only { unit_x } else { 2 * unit_x };
     // An offset beyond the coded size is invalid anyway (eqs. 7-19..7-22);
     // bounding it first keeps the products and sums below from overflowing
     // a 32-bit `usize` (WASM).
     let largest = (width_mbs.max(height_mbs) * MB_SIZE) as u32;
-    let mut offset =
-        || -> Result<usize> { Ok(r.ue_max(largest, "frame_crop_offset")? as usize * unit) };
+    let mut offset = |unit: usize| -> Result<usize> {
+        Ok(r.ue_max(largest, "frame_crop_offset")? as usize * unit)
+    };
     let crop = Crop {
-        left: offset()?,
-        right: offset()?,
-        top: offset()?,
-        bottom: offset()?,
+        left: offset(unit_x)?,
+        right: offset(unit_x)?,
+        top: offset(unit_y)?,
+        bottom: offset(unit_y)?,
     };
     if crop.left + crop.right >= width_mbs * MB_SIZE
         || crop.top + crop.bottom >= height_mbs * MB_SIZE

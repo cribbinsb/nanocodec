@@ -18,6 +18,17 @@ pub(super) const MAX_CHROMA_QP_OFFSET: i32 = 12;
 const MIN_INIT_QP_MINUS26: i32 = -26;
 const MAX_INIT_QP_MINUS26: i32 = 25;
 
+/// `weighted_bipred_idc` (§7.4.2.2): the weighting of B slices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BipredWeights {
+    /// 0: none (averaging).
+    Default,
+    /// 1: `pred_weight_table()` in the slice header.
+    Explicit,
+    /// 2: derived from picture order count distances (§8.4.2.3.1).
+    Implicit,
+}
+
 /// The fields of a PPS that decoding uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
@@ -31,8 +42,10 @@ pub(super) struct Pps {
     pub cabac: bool,
     /// `bottom_field_pic_order_in_frame_present_flag`.
     pub bottom_field_pic_order_in_frame_present: bool,
-    pub num_ref_idx_l0_default_active: u32,
+    /// `num_ref_idx_l0_default_active_minus1 + 1` and the list 1 one.
+    pub num_ref_idx_default_active: [u32; 2],
     pub weighted_pred: bool,
+    pub weighted_bipred: BipredWeights,
     pub pic_init_qp: i32,
     /// `chroma_qp_index_offset` (Cb) and `second_chroma_qp_index_offset` (Cr).
     pub chroma_qp_offset: [i8; 2],
@@ -52,16 +65,20 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
     if r.ue()? != 0 {
         return Err(DecodeError::Unsupported("H264 slice groups (FMO)"));
     }
-    let num_ref_idx_l0_default_active = r.ue_max(
-        MAX_REF_IDX_ACTIVE_MINUS1,
-        "num_ref_idx_l0_default_active_minus1",
-    )? + 1;
-    r.ue_max(
-        MAX_REF_IDX_ACTIVE_MINUS1,
-        "num_ref_idx_l1_default_active_minus1",
-    )?;
+    let mut num_ref_idx_default_active = [0; 2];
+    for count in &mut num_ref_idx_default_active {
+        *count = r.ue_max(
+            MAX_REF_IDX_ACTIVE_MINUS1,
+            "num_ref_idx_default_active_minus1",
+        )? + 1;
+    }
     let weighted_pred = r.flag()?;
-    r.bits(2)?; // weighted_bipred_idc: B slices only
+    let weighted_bipred = match r.bits(2)? {
+        0 => BipredWeights::Default,
+        1 => BipredWeights::Explicit,
+        2 => BipredWeights::Implicit,
+        _ => return Err(DecodeError::Malformed("weighted_bipred_idc")),
+    };
     let pic_init_qp = 26
         + r.se_range(
             MIN_INIT_QP_MINUS26,
@@ -88,8 +105,9 @@ pub(super) fn parse(data: &[u8]) -> Result<Pps> {
         sps_id,
         cabac,
         bottom_field_pic_order_in_frame_present,
-        num_ref_idx_l0_default_active,
+        num_ref_idx_default_active,
         weighted_pred,
+        weighted_bipred,
         pic_init_qp,
         chroma_qp_offset: [cb_offset; 2],
         deblocking_filter_control_present,

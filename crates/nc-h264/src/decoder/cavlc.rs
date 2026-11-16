@@ -13,11 +13,14 @@ use crate::tables::cavlc::{
     TOTAL_ZEROS_CHROMA_DC,
 };
 
-/// Largest `mb_type` of I slices (Table 7-11) and P slices (Table 7-13 + 26).
+/// Largest `mb_type` of I slices (Table 7-11), P slices (Table 7-13 + 26)
+/// and B slices (Table 7-14 + 26).
 const MAX_MB_TYPE_I: u32 = 25;
 const MAX_MB_TYPE_P: u32 = 30;
-/// Largest `sub_mb_type` of P slices (Table 7-17).
+const MAX_MB_TYPE_B: u32 = 48;
+/// Largest `sub_mb_type` of P slices (Table 7-17) and B slices (Table 7-18).
 const MAX_SUB_MB_TYPE_P: u32 = 3;
+const MAX_SUB_MB_TYPE_B: u32 = 12;
 const MAX_CHROMA_PRED_MODE: u32 = 3;
 const REM_INTRA_PRED_MODE_BITS: u32 = 3;
 /// `mb_qp_delta` range (§7.4.5).
@@ -314,12 +317,18 @@ impl MbSyntax for CavlcSyntax<'_, '_> {
         let max = match slice {
             SliceType::I => MAX_MB_TYPE_I,
             SliceType::P => MAX_MB_TYPE_P,
+            SliceType::B => MAX_MB_TYPE_B,
         };
         self.reader.ue_max(max, "mb_type")
     }
 
-    fn sub_mb_type(&mut self) -> Result<u8> {
-        Ok(self.reader.ue_max(MAX_SUB_MB_TYPE_P, "sub_mb_type")? as u8)
+    fn sub_mb_type(&mut self, slice: SliceType) -> Result<u8> {
+        let max = if slice == SliceType::B {
+            MAX_SUB_MB_TYPE_B
+        } else {
+            MAX_SUB_MB_TYPE_P
+        };
+        Ok(self.reader.ue_max(max, "sub_mb_type")? as u8)
     }
 
     fn transform_size_8x8_flag(&mut self, _nb: &Neighbours<'_>) -> Result<bool> {
@@ -343,6 +352,7 @@ impl MbSyntax for CavlcSyntax<'_, '_> {
         &mut self,
         _nb: &Neighbours<'_>,
         _cur: &MbState,
+        _list: usize,
         _x4: usize,
         _y4: usize,
         num_ref_idx_active: usize,
@@ -354,12 +364,13 @@ impl MbSyntax for CavlcSyntax<'_, '_> {
         &mut self,
         _nb: &Neighbours<'_>,
         _cur: &MbState,
+        _list: usize,
         _x4: usize,
         _y4: usize,
     ) -> Result<[i32; 2]> {
         let mut mvd = [0; 2];
         for value in &mut mvd {
-            *value = self.reader.se_range(-MAX_ABS_MVD, MAX_ABS_MVD, "mvd_l0")?;
+            *value = self.reader.se_range(-MAX_ABS_MVD, MAX_ABS_MVD, "mvd")?;
         }
         Ok(mvd)
     }

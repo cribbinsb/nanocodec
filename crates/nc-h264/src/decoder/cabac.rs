@@ -31,7 +31,7 @@ impl<'a> Cabac<'a> {
     pub fn new(data: &'a [u8], slice_type: SliceType, cabac_init_idc: u8, qp: i32) -> Result<Self> {
         let column = match slice_type {
             SliceType::I => 0,
-            SliceType::P => 1 + usize::from(cabac_init_idc),
+            SliceType::P | SliceType::B => 1 + usize::from(cabac_init_idc),
         };
         let mut contexts = [0u8; CONTEXT_COUNT];
         for (ctx, mn) in contexts.iter_mut().zip(CABAC_INIT_MN.iter()) {

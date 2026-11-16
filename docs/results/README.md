@@ -57,7 +57,7 @@ Main 10 natively (10-bit output as 16-bit little-endian samples; the WebAssembly
 
 | Codec | What has been tested | Our decode time ÷ the reference's, x86 / Jetson |
 |---|---|---|
-| H.264 | Constrained High profile. ITU-T H.264.1 suite: 58/190 streams MD5-exact against JM (33/33 Constrained Baseline, 4/7 Baseline, 21/41 progressive Main, 0/24 progressive High, 0/7 High 10, 0/75 interlaced, 0/3 progressive Extended); 8/8 x264 streams for the I/P-only High tools. B slices, interlace and High 10 in progress | FFmpeg: 0.88–1.00x / 0.77–0.85x |
+| H.264 | High profile, frames only. ITU-T H.264.1 suite: 103/190 streams MD5-exact against JM (41/41 progressive Main, 24/24 progressive High, 33/33 Constrained Baseline, 4/7 Baseline, 1/3 progressive Extended, 0/7 High 10 (in progress)); 8/8 x264 streams for the I/P-only High tools. Not supported: interlace (field, MBAFF, PAFF; 0/75), FMO/ASO, SP/SI slices | FFmpeg: 0.88–1.00x / 0.77–0.85x |
 | HEVC | Main, Main Still Picture and Main 10: 147/147 JCT-VC HEVC_v1 conformance streams of those profiles (136 8-bit, 11 Main 10), MD5-exact against HM; speeds measured on 8-bit streams | FFmpeg: 0.57–0.94x / 0.72–0.92x |
 | AV1 | Main profile, 8- and 10-bit (4:2:0 and monochrome): 242/242 libaom test vectors (176 `av1-1-b8`, 66 `av1-1-b10`), MD5-exact against aomdec; speeds measured on 8-bit streams | dav1d: 1.13–1.58x / 1.09–1.43x (dav1d faster) |
 | VP9 | Profile 0: 303/303 libvpx `vp90-2` test vectors, MD5-exact against vpxdec; profile 2 (10- and 12-bit 4:2:0): 0/2 `vp92-2` vectors (in progress); profiles 1 and 3 (4:4:4, 4:2:2, 4:4:0) unsupported | vpxdec: 1.32–1.41x / 1.14–1.24x (vpxdec faster; FFmpeg: 0.98–1.10x) |

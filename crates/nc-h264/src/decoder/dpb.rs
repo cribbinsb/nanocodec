@@ -1,8 +1,8 @@
 //! Reference frame marking and reference picture lists of frames:
 //! sliding-window and adaptive marking with all memory management
 //! operations (§8.2.5), `frame_num` gap filling with "non-existing" frames
-//! (§8.2.5.2), P list initialisation (§8.2.4.2.1) and modification
-//! (§8.2.4.3).
+//! (§8.2.5.2), P and B list initialisation (§8.2.4.2.1, §8.2.4.2.3) and
+//! modification (§8.2.4.3).
 //!
 //! Output order is not handled here: decoded pictures are shared with the
 //! output queue (`output.rs`) through `Arc`s.
@@ -11,17 +11,26 @@ use std::sync::Arc;
 
 use nc_common::Picture;
 
+use super::mbstate::MbState;
 use super::{DecodeError, Result};
 
 /// `LongTermFrameIdx` of an IDR picture with `long_term_reference_flag`.
 const IDR_LONG_TERM_FRAME_IDX: u32 = 0;
 
 /// A decoded picture with the identity the deblocking filter compares
-/// ("different reference pictures", §8.7.2.1) and its frame size.
+/// ("different reference pictures", §8.7.2.1), its order count and the
+/// macroblock states direct prediction reads (§8.4.1.2.1).
 #[derive(Debug, Clone)]
 pub(super) struct RefPicture {
     pub id: u32,
     pub picture: Arc<Picture>,
+    /// `PicOrderCnt()` of the frame.
+    pub poc: i64,
+    /// Whether it was a long-term reference when the list holding this
+    /// copy was built (set by the list builders only).
+    pub long_term: bool,
+    /// Its macroblocks' states (motion vectors and reference indices).
+    pub motion: Arc<Vec<MbState>>,
 }
 
 /// One reference frame. Frames inferred for a `frame_num` gap
@@ -30,6 +39,8 @@ pub(super) struct RefPicture {
 struct RefFrame {
     picture: Option<RefPicture>,
     frame_num: u32,
+    /// `PicOrderCnt()` (0 for a "non-existing" frame).
+    poc: i64,
     /// `LongTermFrameIdx` of a long-term frame; `None`: short-term.
     long_term_idx: Option<u32>,
 }
@@ -180,6 +191,7 @@ impl Dpb {
         self.frames.push(RefFrame {
             picture: None,
             frame_num,
+            poc: 0,
             long_term_idx: None,
         });
         self.prev_ref_frame_num = frame_num;
@@ -212,25 +224,91 @@ impl Dpb {
     ) -> Result<Vec<Option<RefPicture>>> {
         // §8.2.4.2.1: short-term frames by descending PicNum, then
         // long-term frames by ascending LongTermPicNum.
-        let mut short: Vec<&RefFrame> = self
-            .frames
+        let mut short = self.short_term();
+        short.sort_by_key(|f| std::cmp::Reverse(self.pic_num(f.frame_num, frame_num)));
+        let list = short.into_iter().chain(self.long_term()).collect();
+        self.finish_list(list, frame_num, count, modifications)
+    }
+
+    /// The B reference lists (`RefPicList0`, `RefPicList1`) of a slice of
+    /// the frame with `frame_num` and order count `poc`: `counts` entries
+    /// after `modifications`, as [`Dpb::ref_list`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Dpb::ref_list`].
+    pub fn b_ref_lists(
+        &self,
+        frame_num: u32,
+        poc: i64,
+        counts: [usize; 2],
+        modifications: &[Vec<Modification>; 2],
+    ) -> Result<[Vec<Option<RefPicture>>; 2]> {
+        // §8.2.4.2.3: list 0 has the short-term frames before the current
+        // one by descending order count, then those after it ascending; list
+        // 1 the two halves the other way round; long-term frames follow by
+        // ascending LongTermPicNum.
+        let mut before = self.short_term();
+        before.retain(|f| f.poc < poc);
+        before.sort_by_key(|f| std::cmp::Reverse(f.poc));
+        let mut after = self.short_term();
+        after.retain(|f| f.poc > poc);
+        after.sort_by_key(|f| f.poc);
+        let long = self.long_term();
+        let list0: Vec<&RefFrame> = before.iter().chain(&after).chain(&long).copied().collect();
+        let mut list1: Vec<&RefFrame> = after.iter().chain(&before).chain(&long).copied().collect();
+        // A list 1 equal to list 0 (of more than one entry) swaps its first
+        // two entries.
+        if list1.len() > 1 && list1.iter().zip(&list0).all(|(a, b)| core::ptr::eq(*a, *b)) {
+            list1.swap(0, 1);
+        }
+        Ok([
+            self.finish_list(list0, frame_num, counts[0], &modifications[0])?,
+            self.finish_list(list1, frame_num, counts[1], &modifications[1])?,
+        ])
+    }
+
+    fn short_term(&self) -> Vec<&RefFrame> {
+        self.frames
             .iter()
             .filter(|f| f.long_term_idx.is_none())
-            .collect();
-        short.sort_by_key(|f| std::cmp::Reverse(self.pic_num(f.frame_num, frame_num)));
+            .collect()
+    }
+
+    /// The long-term frames by ascending `LongTermPicNum`.
+    fn long_term(&self) -> Vec<&RefFrame> {
         let mut long: Vec<&RefFrame> = self
             .frames
             .iter()
             .filter(|f| f.long_term_idx.is_some())
             .collect();
         long.sort_by_key(|f| f.long_term_idx);
+        long
+    }
+
+    /// An initial list cut or padded to `count` entries and modified
+    /// (§8.2.4.2, §8.2.4.3), as pictures.
+    fn finish_list(
+        &self,
+        initial: Vec<&RefFrame>,
+        frame_num: u32,
+        count: usize,
+        modifications: &[Modification],
+    ) -> Result<Vec<Option<RefPicture>>> {
         // One spare entry: the modification process works on count + 1.
-        let mut list: Vec<Option<&RefFrame>> = short.into_iter().chain(long).map(Some).collect();
+        let mut list: Vec<Option<&RefFrame>> = initial.into_iter().map(Some).collect();
         list.resize(count + 1, None);
         self.modify(&mut list, frame_num, count, modifications)?;
         Ok(list[..count]
             .iter()
-            .map(|entry| entry.and_then(|f| f.picture.clone()))
+            .map(|entry| {
+                entry.and_then(|f| {
+                    f.picture.clone().map(|picture| RefPicture {
+                        long_term: f.long_term_idx.is_some(),
+                        ..picture
+                    })
+                })
+            })
             .collect())
     }
 
@@ -333,6 +411,7 @@ impl Dpb {
             }
         }
         self.frames.push(RefFrame {
+            poc: picture.poc,
             picture: Some(picture),
             frame_num,
             long_term_idx,
@@ -433,6 +512,9 @@ mod tests {
         RefPicture {
             id,
             picture: Arc::new(Picture::new(16, 16, 0).unwrap()),
+            poc: i64::from(id),
+            long_term: false,
+            motion: Arc::new(Vec::new()),
         }
     }
 
@@ -510,6 +592,25 @@ mod tests {
         dpb.mark(4, picture(4), &Marking::Adaptive(vec![Mmco::ReleaseAll]))
             .unwrap();
         assert_eq!(ids(&dpb.ref_list(1, 1, &[]).unwrap()), [Some(4)]);
+    }
+
+    #[test]
+    fn b_lists_order_by_order_count_around_the_current_frame() {
+        let mut dpb = dpb(4);
+        dpb.mark(0, picture(0), &Marking::Idr { long_term: false })
+            .unwrap();
+        for (n, id) in [(1, 8), (2, 4), (3, 2)] {
+            dpb.mark(n, picture(id), &Marking::SlidingWindow).unwrap();
+        }
+        let none = [Vec::new(), Vec::new()];
+        let [l0, l1] = dpb.b_ref_lists(4, 3, [4, 4], &none).unwrap();
+        assert_eq!(ids(&l0), [Some(2), Some(0), Some(4), Some(8)]);
+        assert_eq!(ids(&l1), [Some(4), Some(8), Some(2), Some(0)]);
+        // Every reference after the current frame: the lists are equal and
+        // list 1 swaps its first two entries.
+        let [l0, l1] = dpb.b_ref_lists(4, -1, [2, 2], &none).unwrap();
+        assert_eq!(ids(&l0), [Some(0), Some(2)]);
+        assert_eq!(ids(&l1), [Some(2), Some(0)]);
     }
 
     #[test]

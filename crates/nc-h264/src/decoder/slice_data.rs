@@ -66,19 +66,24 @@ impl SliceDecoder<'_> {
         // Decoded in place: every neighbour precedes `addr`.
         let (before, rest) = self.mbs.split_at_mut(addr);
         let cur = &mut rest[0];
-        *cur = MbState::EMPTY;
-        cur.slice = self.slice_no;
+        cur.reset(self.slice_no, self.params.slice_type == SliceType::B);
         let nb = Neighbours::of(before, self.width_mbs, addr, self.slice_no);
         #[cfg(feature = "analysis")]
         let (qp_pred, start) = (self.qp, syntax.bits_consumed());
         if skipped(syntax, &nb) {
-            mb::skip(&self.params, &nb, cur, self.qp)?;
+            if self.params.slice_type == SliceType::B {
+                mb::direct_16x16(&self.params, &nb, cur, addr, true)?;
+                cur.qp = self.qp as u8;
+            } else {
+                mb::skip(&self.params, &nb, cur, self.qp)?;
+            }
             syntax.no_qp_delta();
         } else {
             mb::decode(
                 syntax,
                 &self.params,
                 &nb,
+                addr,
                 &mut self.qp,
                 cur,
                 self.residual,
@@ -123,10 +128,10 @@ impl SliceDecoder<'_> {
     /// The CABAC macroblock loop from `first_mb`.
     pub fn cabac(&mut self, syntax: &mut CabacSyntax<'_>, first_mb: usize) -> Result<()> {
         let mut addr = first_mb;
+        let slice_type = self.params.slice_type;
         loop {
-            let p_slice = self.params.slice_type == SliceType::P;
             self.macroblock(syntax, addr, |syntax, nb| {
-                p_slice && syntax.mb_skip_flag(nb)
+                slice_type != SliceType::I && syntax.mb_skip_flag(slice_type, nb)
             })?;
             addr += 1;
             if syntax.end_of_slice() {
@@ -139,7 +144,7 @@ impl SliceDecoder<'_> {
     pub fn cavlc(&mut self, syntax: &mut CavlcSyntax<'_, '_>, first_mb: usize) -> Result<()> {
         let mut addr = first_mb;
         loop {
-            if self.params.slice_type == SliceType::P {
+            if self.params.slice_type != SliceType::I {
                 let run = syntax.mb_skip_run()? as usize;
                 if run > self.mbs.len() {
                     return Err(DecodeError::Malformed("mb_skip_run"));

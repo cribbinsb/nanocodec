@@ -97,7 +97,7 @@ pub(super) fn reconstruct(
             intra::predict_16x16(luma, x, y, mode, intra.block(0, 0, 4))?;
             add_luma(ctx.dsp, luma, (x, y), mb, residual);
         }
-        MbKind::Inter(_) | MbKind::PSkip | MbKind::IPcm => {
+        MbKind::Inter(_) | MbKind::PSkip | MbKind::BSkip | MbKind::BDirect16x16 | MbKind::IPcm => {
             add_luma(ctx.dsp, luma, (x, y), mb, residual);
         }
     }

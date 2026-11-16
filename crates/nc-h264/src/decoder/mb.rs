@@ -1,14 +1,16 @@
-//! `macroblock_layer()` (§7.3.5) of I and P slices, written once against
-//! [`MbSyntax`]: macroblock and sub-macroblock types, intra prediction
-//! modes (§8.3.1.1, §8.3.2.1), reference indices and motion vectors
-//! (§8.4.1), coded block patterns, `mb_qp_delta` and the residual
-//! (§7.3.5.3), dequantised as it is parsed (`transform.rs`).
+//! `macroblock_layer()` (§7.3.5) of I, P and B slices, written once
+//! against [`MbSyntax`]: macroblock and sub-macroblock types, intra
+//! prediction modes (§8.3.1.1, §8.3.2.1), reference indices and motion
+//! vectors (§8.4.1, direct prediction in `direct.rs`), coded block
+//! patterns, `mb_qp_delta` and the residual (§7.3.5.3), dequantised as it
+//! is parsed (`transform.rs`).
 
 use nc_encoder::Mv;
 
+use super::direct::{DirectContext, Spatial};
 use super::mbstate::{
-    self, CBP_CHROMA_SHIFT, DC_PRED_MODE, MbKind, MbState, Neighbours, PCM_CBP, PCM_TOTAL_COEFF,
-    Partition, SubPartition, partition_blocks,
+    self, CBP_CHROMA_SHIFT, DC_PRED_MODE, LISTS, MbKind, MbState, Neighbours, PCM_CBP,
+    PCM_TOTAL_COEFF, Partition, SubPartition, partition_blocks,
 };
 use super::mvpred::MotionCache;
 use super::slice::SliceType;
@@ -23,7 +25,6 @@ const MB_TYPE_I_PCM: u32 = 25;
 const I16X16_MODES: u32 = 4;
 const I16X16_CHROMA_CBPS: u32 = 3;
 /// Table 7-13: P `mb_type`s; 4 is `P_8x8ref0`, 5.. are intra.
-const MB_TYPE_P_8X8: u32 = 3;
 const MB_TYPE_P_8X8_REF0: u32 = 4;
 const P_INTRA_BASE: u32 = 5;
 /// `QP_Y` wraps modulo 52 (eq. 7-37).
@@ -36,9 +37,11 @@ pub(super) const PCM_CHROMA_SAMPLES: usize = 128;
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SliceParams<'a> {
     pub slice_type: SliceType,
-    pub num_ref_idx_active: usize,
+    pub num_ref_idx_active: [usize; LISTS],
     /// Identity of each list entry's picture (`None`: no picture).
-    pub ref_ids: &'a [Option<u32>],
+    pub ref_ids: [&'a [Option<u32>]; LISTS],
+    /// Direct prediction (B slices).
+    pub direct: Option<&'a DirectContext<'a>>,
     pub transform_8x8_mode: bool,
     pub constrained_intra_pred: bool,
     pub monochrome: bool,
@@ -71,36 +74,45 @@ pub(super) fn skip(
 ) -> Result<()> {
     cur.kind = MbKind::PSkip;
     cur.qp = qp as u8;
-    let mv = MotionCache::new(nb).skip_mv();
-    cur.mvs = [mv; 16];
-    let id = reference_id(params, 0)?;
-    cur.ref_idx = [0; 4];
-    cur.ref_pic = [id; 4];
+    let mv = MotionCache::skip_mv_of(nb);
+    cur.mvs[0] = [mv; 16];
+    let id = reference_id(params, 0, 0)?;
+    cur.ref_idx[0] = [0; 4];
+    cur.ref_pic[0] = [id; 4];
     cur.single_motion = true;
     Ok(())
 }
 
-/// One coded macroblock; `qp` is `QP_Y`,PRED in and `QP_Y` out.
+/// One coded macroblock `addr`; `qp` is `QP_Y`,PRED in and `QP_Y` out.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the macroblock's syntax, context, state and scratch"
+)]
 pub(super) fn decode<S: MbSyntax>(
     syntax: &mut S,
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
+    addr: usize,
     qp: &mut i32,
     cur: &mut MbState,
     residual: &mut Residual,
     extra: &mut MbExtra,
 ) -> Result<()> {
     let mut mb_type = syntax.mb_type(params.slice_type, nb)?;
-    let mut inter = None;
-    if params.slice_type == SliceType::P {
-        if mb_type < P_INTRA_BASE {
-            inter = Some(mb_type);
+    let intra_base = match params.slice_type {
+        SliceType::I => 0,
+        SliceType::P => P_INTRA_BASE,
+        SliceType::B => B_INTRA_BASE,
+    };
+    if mb_type < intra_base {
+        let no_8x8 = if params.slice_type == SliceType::B && mb_type == MB_TYPE_B_DIRECT {
+            direct_16x16(params, nb, cur, addr, false)?;
+            !params.direct.is_some_and(|d| d.inference_8x8)
+        } else if params.slice_type == SliceType::B {
+            b_inter_prediction(syntax, params, nb, cur, addr, mb_type)?
         } else {
-            mb_type -= P_INTRA_BASE;
-        }
-    }
-    if let Some(p_type) = inter {
-        let p8x8 = inter_prediction(syntax, params, nb, cur, p_type)?;
+            inter_prediction::<S, false>(syntax, params, nb, cur, addr, mb_type)?
+        };
         return coded_residual(
             syntax,
             params,
@@ -109,10 +121,10 @@ pub(super) fn decode<S: MbSyntax>(
             cur,
             residual,
             &mut extra.levels,
-            p8x8,
+            no_8x8,
         );
     }
-    cur.ref_idx.fill(-1);
+    mb_type -= intra_base;
     match mb_type {
         MB_TYPE_I_PCM => {
             cur.kind = MbKind::IPcm;
@@ -173,8 +185,8 @@ pub(super) fn decode<S: MbSyntax>(
 }
 
 /// `coded_block_pattern`, `transform_size_8x8_flag`, `mb_qp_delta` and the
-/// residual of a non-`Intra_16x16` macroblock. `p8x8_small` is whether a
-/// `P_8x8` macroblock has sub-partitions below 8x8 (then no 8x8 transform).
+/// residual of a non-`Intra_16x16` macroblock. `no_8x8` is whether an inter
+/// macroblock's partitioning rules the 8x8 transform out (§7.3.5).
 fn coded_residual<S: MbSyntax>(
     syntax: &mut S,
     params: &SliceParams<'_>,
@@ -183,10 +195,10 @@ fn coded_residual<S: MbSyntax>(
     cur: &mut MbState,
     residual: &mut Residual,
     levels: &mut Coeffs,
-    p8x8_small: bool,
+    no_8x8: bool,
 ) -> Result<()> {
     cur.cbp = syntax.coded_block_pattern(nb, cur, params.monochrome)?;
-    if !cur.is_intra() && cur.cbp_luma() != 0 && params.transform_8x8_mode && !p8x8_small {
+    if !cur.is_intra() && cur.cbp_luma() != 0 && params.transform_8x8_mode && !no_8x8 {
         cur.transform_8x8 = syntax.transform_size_8x8_flag(nb)?;
     }
     if cur.cbp == 0 {
@@ -316,117 +328,388 @@ fn predicted_intra_mode(
     }
 }
 
-/// The identity of the picture of list entry `ref_idx`. An entry without a
-/// picture is "no reference picture" (§8.2.4.2) or a "non-existing" frame
-/// of a `frame_num` gap (§8.2.5.2): a conforming stream never predicts from
-/// either, so the picture it would have held was lost.
-fn reference_id(params: &SliceParams<'_>, ref_idx: usize) -> Result<u32> {
-    match params.ref_ids.get(ref_idx) {
+/// The identity of the picture of entry `ref_idx` of list `list`. An entry
+/// without a picture is "no reference picture" (§8.2.4.2) or a
+/// "non-existing" frame of a `frame_num` gap (§8.2.5.2): a conforming
+/// stream never predicts from either, so the picture it would have held was
+/// lost.
+fn reference_id(params: &SliceParams<'_>, list: usize, ref_idx: usize) -> Result<u32> {
+    match params.ref_ids[list].get(ref_idx) {
         Some(Some(id)) => Ok(*id),
         Some(None) => Err(DecodeError::MissingReference),
         None => Err(DecodeError::Malformed("reference index outside the list")),
     }
 }
 
-/// The prediction part of a P macroblock (`mb_pred` / `sub_mb_pred`, §7.3.5.1,
-/// §7.3.5.2) and its motion vectors; returns whether it is a `P_8x8`
-/// macroblock with a sub-partition smaller than 8x8.
-fn inter_prediction<S: MbSyntax>(
+/// Which lists a partition predicts from: bit 0 list 0, bit 1 list 1.
+const PRED_L0: u8 = 1;
+const PRED_L1: u8 = 2;
+const PRED_BI: u8 = PRED_L0 | PRED_L1;
+
+/// One partition of an inter macroblock, or one 8x8 block of a `P_8x8` /
+/// `B_8x8` one with its sub-macroblock partitioning.
+#[derive(Debug, Clone, Copy)]
+struct Part {
+    /// (`x4`, `y4`, `w4`, `h4`) in 4x4 blocks.
+    rect: (usize, usize, usize, usize),
+    /// Sub-macroblock partitioning (8x8 blocks; `P8x8`, one block, else).
+    sub: SubPartition,
+    preds: u8,
+    /// `B_Direct_8x8`.
+    direct: bool,
+}
+
+impl Part {
+    const fn whole(rect: (usize, usize, usize, usize), preds: u8) -> Self {
+        Self {
+            rect,
+            sub: SubPartition::P8x8,
+            preds,
+            direct: false,
+        }
+    }
+
+    /// The (sub-)partitions of the part, as rectangles in decoding order:
+    /// the part itself, or an 8x8 block's sub-partitions (raster order in
+    /// the 2x2 grid of 4x4 blocks).
+    fn rects(self) -> impl Iterator<Item = (usize, usize, usize, usize)> {
+        let (x0, y0, w, h) = self.rect;
+        let ((sw, sh), count) = if (w, h) == (2, 2) {
+            (self.sub.size4(), self.sub.count())
+        } else {
+            ((w, h), 1)
+        };
+        (0..count).map(move |index| {
+            let first = index * sw;
+            (x0 + (first & 1), y0 + (first >> 1) * sh, sw, sh)
+        })
+    }
+}
+
+/// The partition rectangles of each partitioning (8x8 blocks for
+/// `P8x8`).
+const fn partition_rects(partition: Partition) -> &'static [(usize, usize, usize, usize)] {
+    match partition {
+        Partition::P16x16 => &[(0, 0, 4, 4)],
+        Partition::P16x8 => &[(0, 0, 4, 2), (0, 2, 4, 2)],
+        Partition::P8x16 => &[(0, 0, 2, 4), (2, 0, 2, 4)],
+        Partition::P8x8 => &[(0, 0, 2, 2), (2, 0, 2, 2), (0, 2, 2, 2), (2, 2, 2, 2)],
+    }
+}
+
+/// B `mb_type` 1..=21 (Table 7-14): partitioning and the lists of its
+/// partitions.
+const B_MB_TYPES: [(Partition, [u8; 2]); 21] = [
+    (Partition::P16x16, [PRED_L0, 0]),
+    (Partition::P16x16, [PRED_L1, 0]),
+    (Partition::P16x16, [PRED_BI, 0]),
+    (Partition::P16x8, [PRED_L0, PRED_L0]),
+    (Partition::P8x16, [PRED_L0, PRED_L0]),
+    (Partition::P16x8, [PRED_L1, PRED_L1]),
+    (Partition::P8x16, [PRED_L1, PRED_L1]),
+    (Partition::P16x8, [PRED_L0, PRED_L1]),
+    (Partition::P8x16, [PRED_L0, PRED_L1]),
+    (Partition::P16x8, [PRED_L1, PRED_L0]),
+    (Partition::P8x16, [PRED_L1, PRED_L0]),
+    (Partition::P16x8, [PRED_L0, PRED_BI]),
+    (Partition::P8x16, [PRED_L0, PRED_BI]),
+    (Partition::P16x8, [PRED_L1, PRED_BI]),
+    (Partition::P8x16, [PRED_L1, PRED_BI]),
+    (Partition::P16x8, [PRED_BI, PRED_L0]),
+    (Partition::P8x16, [PRED_BI, PRED_L0]),
+    (Partition::P16x8, [PRED_BI, PRED_L1]),
+    (Partition::P8x16, [PRED_BI, PRED_L1]),
+    (Partition::P16x8, [PRED_BI, PRED_BI]),
+    (Partition::P8x16, [PRED_BI, PRED_BI]),
+];
+/// B `mb_type` 0 is `B_Direct_16x16`, 22 `B_8x8`, 23.. intra.
+const MB_TYPE_B_DIRECT: u32 = 0;
+const MB_TYPE_B_8X8: u32 = 22;
+const B_INTRA_BASE: u32 = 23;
+
+/// B `sub_mb_type` 1..=12 (Table 7-18): partitioning and lists; 0 is
+/// `B_Direct_8x8`.
+const B_SUB_MB_TYPES: [(SubPartition, u8); 12] = [
+    (SubPartition::P8x8, PRED_L0),
+    (SubPartition::P8x8, PRED_L1),
+    (SubPartition::P8x8, PRED_BI),
+    (SubPartition::P8x4, PRED_L0),
+    (SubPartition::P4x8, PRED_L0),
+    (SubPartition::P8x4, PRED_L1),
+    (SubPartition::P4x8, PRED_L1),
+    (SubPartition::P8x4, PRED_BI),
+    (SubPartition::P4x8, PRED_BI),
+    (SubPartition::P4x4, PRED_L0),
+    (SubPartition::P4x4, PRED_L1),
+    (SubPartition::P4x4, PRED_BI),
+];
+
+/// The partitions of P `mb_type`s 0..=2 (Table 7-13), from list 0.
+const P_PARTS: [&[Part]; 3] = [
+    &[Part::whole((0, 0, 4, 4), PRED_L0)],
+    &[
+        Part::whole((0, 0, 4, 2), PRED_L0),
+        Part::whole((0, 2, 4, 2), PRED_L0),
+    ],
+    &[
+        Part::whole((0, 0, 2, 4), PRED_L0),
+        Part::whole((2, 0, 2, 4), PRED_L0),
+    ],
+];
+/// `mb_type` 3 of P slices.
+const MB_TYPE_P_8X8: u32 = 3;
+
+/// The partitions of B `mb_type`s 1..=21 (from [`B_MB_TYPES`]; the second
+/// unused for 16x16).
+const B_PARTS: [[Part; 2]; 21] = b_parts_table();
+
+const fn b_parts_table() -> [[Part; 2]; 21] {
+    let mut out = [[Part::whole((0, 0, 0, 0), 0); 2]; 21];
+    let mut t = 0;
+    while t < out.len() {
+        let (partition, preds) = B_MB_TYPES[t];
+        let rects = partition_rects(partition);
+        let mut i = 0;
+        while i < rects.len() {
+            out[t][i] = Part::whole(rects[i], preds[i]);
+            i += 1;
+        }
+        t += 1;
+    }
+    out
+}
+
+/// Read the four `sub_mb_type`s of a `P_8x8` or (`B`) `B_8x8` macroblock
+/// into `parts` (Tables 7-17, 7-18).
+fn sub_parts<S: MbSyntax, const B: bool>(syntax: &mut S, parts: &mut [Part; 4]) -> Result<()> {
+    for (part, &rect) in parts.iter_mut().zip(partition_rects(Partition::P8x8)) {
+        *part = Part::whole(rect, PRED_L0);
+        if !B {
+            part.sub = SubPartition::from_code(syntax.sub_mb_type(SliceType::P)?)
+                .ok_or(DecodeError::Malformed("sub_mb_type"))?;
+            continue;
+        }
+        match syntax.sub_mb_type(SliceType::B)? {
+            0 => part.direct = true,
+            code => {
+                let (sub, preds) = B_SUB_MB_TYPES
+                    .get(usize::from(code) - 1)
+                    .ok_or(DecodeError::Malformed("sub_mb_type"))?;
+                part.sub = *sub;
+                part.preds = *preds;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Set the direct prediction of 8x8 block `b8` of macroblock `addr`
+/// (§8.4.1.2) in `cur`.
+fn direct_8x8(
+    params: &SliceParams<'_>,
+    spatial: Option<&Spatial>,
+    addr: usize,
+    cur: &mut MbState,
+    b8: usize,
+) -> Result<()> {
+    let direct = params.direct.ok_or(DecodeError::Malformed(
+        "direct prediction outside a B slice",
+    ))?;
+    let (x0, y0) = ((b8 % 2) * 2, (b8 / 2) * 2);
+    let mut motion = direct.block(spatial, addr, x0, y0)?;
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let (x, y) = (x0 + dx, y0 + dy);
+        // Under direct_8x8_inference_flag the 8x8 block shares one motion.
+        if (dx, dy) != (0, 0) && !direct.inference_8x8 {
+            motion = direct.block(spatial, addr, x, y)?;
+        }
+        for list in 0..LISTS {
+            cur.mvs[list][y * 4 + x] = motion.mv[list];
+        }
+    }
+    for list in 0..LISTS {
+        let ref_idx = motion.ref_idx[list];
+        cur.ref_idx[list][b8] = ref_idx;
+        cur.ref_pic[list][b8] = if ref_idx >= 0 {
+            reference_id(params, list, ref_idx as usize)?
+        } else {
+            0
+        };
+    }
+    cur.direct |= 1 << b8;
+    Ok(())
+}
+
+/// The two fresh motion caches of a B macroblock.
+fn b_caches(nb: &Neighbours<'_>) -> [MotionCache; LISTS] {
+    [MotionCache::new(nb, 0), MotionCache::new(nb, 1)]
+}
+
+/// The spatial direct part of a B macroblock, in spatial mode.
+fn spatial_part(params: &SliceParams<'_>, caches: &[MotionCache; LISTS]) -> Option<Spatial> {
+    params
+        .direct
+        .filter(|d| d.spatial)
+        .map(|_| Spatial::new(caches))
+}
+
+/// A `B_Skip` (`skip`) or `B_Direct_16x16` macroblock's prediction
+/// (§8.4.1.2). Out of line, as [`b_inter_prediction`].
+#[inline(never)]
+pub(super) fn direct_16x16(
+    params: &SliceParams<'_>,
+    nb: &Neighbours<'_>,
+    cur: &mut MbState,
+    addr: usize,
+    skip: bool,
+) -> Result<()> {
+    cur.kind = if skip {
+        MbKind::BSkip
+    } else {
+        MbKind::BDirect16x16
+    };
+    let spatial = spatial_part(params, &b_caches(nb));
+    for b8 in 0..4 {
+        direct_8x8(params, spatial.as_ref(), addr, cur, b8)?;
+    }
+    cur.single_motion = has_single_motion(cur);
+    Ok(())
+}
+
+/// [`inter_prediction`] of a B macroblock, out of line: the B instance
+/// kept inline enlarged the macroblock loop of P slices.
+#[inline(never)]
+fn b_inter_prediction<S: MbSyntax>(
     syntax: &mut S,
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     cur: &mut MbState,
-    p_type: u32,
+    addr: usize,
+    mb_type: u32,
 ) -> Result<bool> {
-    let partition = match p_type {
-        0 => Partition::P16x16,
-        1 => Partition::P16x8,
-        2 => Partition::P8x16,
-        _ => Partition::P8x8,
+    inter_prediction::<S, true>(syntax, params, nb, cur, addr, mb_type)
+}
+
+/// The prediction part of a P (`B` false) or B inter macroblock (`mb_pred`
+/// / `sub_mb_pred`, §7.3.5.1, §7.3.5.2) and its motion vectors; returns
+/// whether the 8x8 transform is not allowed (sub-partitions below 8x8, or
+/// direct blocks without `direct_8x8_inference_flag`). One instance per
+/// slice type keeps list 1 and direct prediction out of the P one.
+fn inter_prediction<S: MbSyntax, const B: bool>(
+    syntax: &mut S,
+    params: &SliceParams<'_>,
+    nb: &Neighbours<'_>,
+    cur: &mut MbState,
+    addr: usize,
+    mb_type: u32,
+) -> Result<bool> {
+    let mut sub_buf = [Part::whole((0, 0, 0, 0), 0); 4];
+    let (partition, parts): (Partition, &[Part]) = if B && mb_type == MB_TYPE_B_8X8
+        || !B && mb_type >= MB_TYPE_P_8X8
+    {
+        sub_parts::<S, B>(syntax, &mut sub_buf)?;
+        (Partition::P8x8, &sub_buf)
+    } else if B {
+        let index = mb_type as usize - 1;
+        let partition = B_MB_TYPES[index].0;
+        let count = partition_rects(partition).len();
+        (partition, &B_PARTS[index][..count])
+    } else {
+        let partition = [Partition::P16x16, Partition::P16x8, Partition::P8x16][mb_type as usize];
+        (partition, P_PARTS[mb_type as usize])
     };
     cur.kind = MbKind::Inter(partition);
-    let mut cache = MotionCache::new(nb);
-    let refs_coded = params.num_ref_idx_active > 1 && p_type != MB_TYPE_P_8X8_REF0;
-    if partition != Partition::P8x8 {
-        // Partitions as (x4, y4, w4, h4).
-        let parts: &[(usize, usize, usize, usize)] = match partition {
-            Partition::P16x16 => &[(0, 0, 4, 4)],
-            Partition::P16x8 => &[(0, 0, 4, 2), (0, 2, 4, 2)],
-            _ => &[(0, 0, 2, 4), (2, 0, 2, 4)],
-        };
-        for &(x, y, w, h) in parts {
-            let ref_idx = if refs_coded {
-                syntax.ref_idx(nb, cur, x, y, params.num_ref_idx_active)?
+    let lists = if B { LISTS } else { 1 };
+    let ref0 = !B && mb_type == MB_TYPE_P_8X8_REF0;
+    if B && parts.iter().any(|p| p.direct) {
+        let spatial = spatial_part(params, &b_caches(nb));
+        for (b8, part) in parts.iter().enumerate() {
+            if part.direct {
+                direct_8x8(params, spatial.as_ref(), addr, cur, b8)?;
+            }
+        }
+    }
+    for list in 0..lists {
+        let coded = params.num_ref_idx_active[list] > 1 && !ref0;
+        for part in parts {
+            if (B && part.direct) || part.preds & (1 << list) == 0 {
+                continue;
+            }
+            let (x, y, _, _) = part.rect;
+            let ref_idx = if coded {
+                syntax.ref_idx(nb, cur, list, x, y, params.num_ref_idx_active[list])?
             } else {
                 0
             };
-            set_ref(params, cur, x, y, w, h, ref_idx)?;
-        }
-        for (index, &(x, y, w, h)) in parts.iter().enumerate() {
-            let mvd = syntax.mvd(nb, cur, x, y)?;
-            let ref_idx = cur.ref_idx[(y / 2) * 2 + x / 2];
-            let pred = cache.predict((x, y, w, h), partition, index, ref_idx);
-            let mv = set_motion(cur, (x, y, w, h), pred, mvd);
-            cache.record((x, y, w, h), mv, ref_idx);
-        }
-        cur.single_motion = partition == Partition::P16x16 || has_single_motion(cur);
-        return Ok(false);
-    }
-    debug_assert!(p_type == MB_TYPE_P_8X8 || p_type == MB_TYPE_P_8X8_REF0);
-    let mut subs = [SubPartition::P8x8; 4];
-    for sub in &mut subs {
-        *sub = SubPartition::from_code(syntax.sub_mb_type()?)
-            .ok_or(DecodeError::Malformed("sub_mb_type"))?;
-    }
-    for b8 in 0..4 {
-        let (x, y) = ((b8 % 2) * 2, (b8 / 2) * 2);
-        let ref_idx = if refs_coded {
-            syntax.ref_idx(nb, cur, x, y, params.num_ref_idx_active)?
-        } else {
-            0
-        };
-        set_ref(params, cur, x, y, 2, 2, ref_idx)?;
-    }
-    for (b8, sub) in subs.iter().enumerate() {
-        let (w, h) = sub.size4();
-        for index in 0..sub.count() {
-            let x = (b8 % 2) * 2 + (index * w) % 2;
-            let y = (b8 / 2) * 2 + (index * w / 2) * h;
-            let mvd = syntax.mvd(nb, cur, x, y)?;
-            let ref_idx = cur.ref_idx[b8];
-            let pred = cache.predict((x, y, w, h), partition, b8, ref_idx);
-            let mv = set_motion(cur, (x, y, w, h), pred, mvd);
-            cache.record((x, y, w, h), mv, ref_idx);
+            set_ref(params, cur, list, part.rect, ref_idx)?;
         }
     }
-    cur.single_motion = has_single_motion(cur);
+    for list in 0..lists {
+        // Fresh: the macroblock's partitions become available as they are
+        // recorded, in decoding order.
+        let mut cache = MotionCache::new(nb, list);
+        for (index, part) in parts.iter().enumerate() {
+            let b8 = (part.rect.1 / 2) * 2 + part.rect.0 / 2;
+            if B && part.direct {
+                for block in part
+                    .rects()
+                    .flat_map(|(x, y, _, _)| [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)])
+                {
+                    let mv = cur.mvs[list][block.1 * 4 + block.0];
+                    cache.record((block.0, block.1, 1, 1), mv, cur.ref_idx[list][b8]);
+                }
+            } else if B && part.preds & (1 << list) == 0 {
+                cache.record(part.rect, Mv::ZERO, -1);
+            } else {
+                for rect in part.rects() {
+                    let mvd = syntax.mvd(nb, cur, list, rect.0, rect.1)?;
+                    let ref_idx = cur.ref_idx[list][(rect.1 / 2) * 2 + rect.0 / 2];
+                    let pred = cache.predict(rect, partition, index, ref_idx);
+                    let mv = set_motion(cur, list, rect, pred, mvd);
+                    cache.record(rect, mv, ref_idx);
+                }
+            }
+        }
+    }
+    cur.single_motion = partition == Partition::P16x16 && cur.direct == 0 || has_single_motion(cur);
     #[cfg(feature = "analysis")]
-    {
-        cur.sub_partitions = subs;
+    if partition == Partition::P8x8 {
+        cur.sub_partitions = core::array::from_fn(|b8| parts[b8].sub);
     }
-    Ok(subs.iter().any(|&s| s != SubPartition::P8x8))
+    let inference = params.direct.is_some_and(|d| d.inference_8x8);
+    Ok(parts
+        .iter()
+        .any(|p| p.sub != SubPartition::P8x8 || (B && p.direct && !inference)))
 }
 
-/// Whether every 4x4 block of `cur` has the same vector and reference
-/// index (the same index also means the same weights).
+/// Whether every 4x4 block of `cur` has the same vectors and reference
+/// indices in both lists (the same indices also mean the same weights). An
+/// unused list's vectors are not compared (stale outside B slices).
 fn has_single_motion(cur: &MbState) -> bool {
-    cur.mvs.iter().all(|&mv| mv == cur.mvs[0]) && cur.ref_idx.iter().all(|&r| r == cur.ref_idx[0])
+    (0..LISTS).all(|list| {
+        cur.ref_idx[list] == [-1; 4]
+            || (cur.mvs[list].iter().all(|&mv| mv == cur.mvs[list][0])
+                && cur.ref_idx[list].iter().all(|&r| r == cur.ref_idx[list][0]))
+    })
 }
 
-/// Record `ref_idx` (and its picture) for the 8x8 blocks of a partition.
+/// Record list `list`'s `ref_idx` (and its picture) for the 8x8 blocks of
+/// the partition `(x, y, w, h)`.
 fn set_ref(
     params: &SliceParams<'_>,
     cur: &mut MbState,
-    x: usize,
-    y: usize,
-    w: usize,
-    h: usize,
+    list: usize,
+    (x, y, w, h): (usize, usize, usize, usize),
     ref_idx: u8,
 ) -> Result<()> {
-    let id = reference_id(params, usize::from(ref_idx))?;
+    let id = reference_id(params, list, usize::from(ref_idx))?;
     // The 8x8 blocks the partition covers, as a 2x2 grid of bits.
     let covered = partition_blocks(x / 2, y / 2, w.div_ceil(2), h.div_ceil(2), 2);
-    for (b8, (slot_idx, slot_pic)) in cur.ref_idx.iter_mut().zip(&mut cur.ref_pic).enumerate() {
+    for (b8, (slot_idx, slot_pic)) in cur.ref_idx[list]
+        .iter_mut()
+        .zip(&mut cur.ref_pic[list])
+        .enumerate()
+    {
         let inside = (covered >> b8) & 1 != 0;
         *slot_idx = core::hint::select_unpredictable(inside, ref_idx as i8, *slot_idx);
         *slot_pic = core::hint::select_unpredictable(inside, id, *slot_pic);
@@ -434,10 +717,11 @@ fn set_ref(
     Ok(())
 }
 
-/// `mvL0 = mvpL0 + mvdL0` (eq. 8-174) and the CABAC `absMvdComp` record;
-/// returns the vector.
+/// `mvLX = mvpLX + mvdLX` (eq. 8-174) and the CABAC `absMvdComp` record of
+/// list `list`; returns the vector.
 fn set_motion(
     cur: &mut MbState,
+    list: usize,
     (x, y, w, h): (usize, usize, usize, usize),
     pred: Mv,
     mvd: [i32; 2],
@@ -450,7 +734,11 @@ fn set_motion(
     let abs = mvd.map(|v| v.unsigned_abs().min(u32::from(u8::MAX)) as u8);
     // Every block, each kept or replaced by a select: a fixed trip count.
     let covered = partition_blocks(x, y, w, h, 4);
-    for (block, (slot_mv, slot_abs)) in cur.mvs.iter_mut().zip(&mut cur.abs_mvd).enumerate() {
+    for (block, (slot_mv, slot_abs)) in cur.mvs[list]
+        .iter_mut()
+        .zip(&mut cur.abs_mvd[list])
+        .enumerate()
+    {
         let inside = (covered >> block) & 1 != 0;
         *slot_mv = core::hint::select_unpredictable(inside, mv, *slot_mv);
         *slot_abs = core::hint::select_unpredictable(inside, abs, *slot_abs);

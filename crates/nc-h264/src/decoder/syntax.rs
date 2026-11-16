@@ -64,28 +64,37 @@ pub(super) trait MbSyntax {
     #[cfg(feature = "analysis")]
     fn bits_consumed(&self) -> usize;
     /// `mb_type`: Table 7-11 numbering in I slices; in P slices Table 7-13
-    /// numbering, with intra types as 5 + their Table 7-11 number.
+    /// numbering, with intra types as 5 + their Table 7-11 number; in B
+    /// slices Table 7-14, intra types 23 + theirs.
     fn mb_type(&mut self, slice: SliceType, nb: &Neighbours<'_>) -> Result<u32>;
-    /// `sub_mb_type` of a P macroblock (Table 7-17).
-    fn sub_mb_type(&mut self) -> Result<u8>;
+    /// `sub_mb_type` of a P or B macroblock (Tables 7-17, 7-18).
+    fn sub_mb_type(&mut self, slice: SliceType) -> Result<u8>;
     fn transform_size_8x8_flag(&mut self, nb: &Neighbours<'_>) -> Result<bool>;
     /// `prev_intra4x4_pred_mode_flag` / `rem_intra4x4_pred_mode` (or the
     /// 8x8 ones): `None` when the predicted mode is used.
     fn intra_pred_mode(&mut self) -> Result<Option<u8>>;
     fn intra_chroma_pred_mode(&mut self, nb: &Neighbours<'_>) -> Result<u8>;
-    /// `ref_idx_l0` of the partition whose first 4x4 block is (`x4`, `y4`),
-    /// with `num_ref_idx_active` references (more than one).
+    /// `ref_idx_l0` (`list` 0) or `ref_idx_l1` of the partition whose
+    /// first 4x4 block is (`x4`, `y4`), with `num_ref_idx_active`
+    /// references (more than one).
     fn ref_idx(
         &mut self,
         nb: &Neighbours<'_>,
         cur: &MbState,
+        list: usize,
         x4: usize,
         y4: usize,
         num_ref_idx_active: usize,
     ) -> Result<u8>;
-    /// `mvd_l0` of that partition (both components).
-    fn mvd(&mut self, nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize)
-    -> Result<[i32; 2]>;
+    /// `mvd_l0` / `mvd_l1` of that partition (both components).
+    fn mvd(
+        &mut self,
+        nb: &Neighbours<'_>,
+        cur: &MbState,
+        list: usize,
+        x4: usize,
+        y4: usize,
+    ) -> Result<[i32; 2]>;
     /// `coded_block_pattern` (both parts) of a non-`Intra_16x16` macroblock.
     fn coded_block_pattern(
         &mut self,

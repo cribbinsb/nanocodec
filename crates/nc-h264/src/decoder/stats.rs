@@ -62,12 +62,14 @@ pub(super) fn picture(s: &mut StreamStats, sps: &Sps, pps: &Pps) {
 pub(super) fn slice(s: &mut StreamStats, h: &SliceHeader, bytes: usize) {
     let slice_type = match h.slice_type {
         SliceType::P => 0,
+        SliceType::B => 1,
         SliceType::I => 2,
     };
     let fields = [
         ("slice_type", slice_type),
         ("slice_qp", i64::from(h.qp)),
-        ("slice_num_ref_l0", h.num_ref_idx_active as i64),
+        ("slice_num_ref_l0", h.num_ref_idx_active[0] as i64),
+        ("slice_num_ref_l1", h.num_ref_idx_active[1] as i64),
         (
             "slice_deblock_disable_idc",
             i64::from(h.deblock.disable_idc),
@@ -111,12 +113,14 @@ pub(super) fn macroblock(s: &mut StreamStats, cur: &MbState, mb: &MbContext) {
         MbKind::Intra16x16(_) => (Pred::Intra, Shape::Whole),
         MbKind::IPcm => (Pred::Intra, Shape::Raw),
         MbKind::Inter(p) => (Pred::Inter, partition_shape(p)),
-        MbKind::PSkip => (Pred::Skip, Shape::Whole),
+        MbKind::PSkip | MbKind::BSkip => (Pred::Skip, Shape::Whole),
+        MbKind::BDirect16x16 => (Pred::Inter, Shape::Whole),
     };
     let i16x16 = matches!(cur.kind, MbKind::Intra16x16(_));
     // mb_qp_delta is present in Intra_16x16 and in coded macroblocks
     // (§7.3.5).
-    let delta_coded = !matches!(cur.kind, MbKind::IPcm | MbKind::PSkip) && (i16x16 || cur.cbp != 0);
+    let delta_coded =
+        !matches!(cur.kind, MbKind::IPcm) && !cur.is_skip() && (i16x16 || cur.cbp != 0);
     let qp_delta = (i32::from(cur.qp) - qp_pred + QP_RANGE / 2).rem_euclid(QP_RANGE) - QP_RANGE / 2;
     let mut coded = 0;
     if cur.cbp_luma() != 0 || i16x16 {
@@ -146,10 +150,12 @@ pub(super) fn macroblock(s: &mut StreamStats, cur: &MbState, mb: &MbContext) {
     });
     match cur.kind {
         MbKind::IntraNxN | MbKind::Intra16x16(_) => intra(s, cur, (x0, y0)),
-        MbKind::Inter(_) | MbKind::PSkip => inter(s, cur, (x0, y0), pred),
+        MbKind::Inter(_) | MbKind::PSkip | MbKind::BSkip | MbKind::BDirect16x16 => {
+            inter(s, cur, (x0, y0), pred);
+        }
         MbKind::IPcm => {}
     }
-    if !matches!(cur.kind, MbKind::IPcm | MbKind::PSkip) {
+    if !matches!(cur.kind, MbKind::IPcm) && !cur.is_skip() {
         transforms(s, cur, (x0, y0), pred, mb.cabac);
     }
 }
@@ -245,8 +251,20 @@ fn inter(stats: &mut StreamStats, cur: &MbState, (x0, y0): (u16, u16), pred: Pre
     };
     for &(x, y, w, h) in &parts[..count] {
         let block = y * 4 + x;
-        let mv = cur.mvs[block];
-        let mvd = cur.abs_mvd[block].map(i16::from);
+        let b8 = (y / 2) * 2 + x / 2;
+        // An unused list's records are stale outside B slices.
+        let used = |list: usize| cur.ref_idx[list][b8] >= 0;
+        let mv = |list: usize| {
+            let mv = cur.mvs[list][block];
+            if used(list) { [mv.x, mv.y] } else { [0, 0] }
+        };
+        let mvd = |list: usize| {
+            if used(list) {
+                cur.abs_mvd[list][block].map(i16::from)
+            } else {
+                [0, 0]
+            }
+        };
         stats.push(BlockRecord {
             kind: RecordKind::Prediction,
             pred,
@@ -254,9 +272,9 @@ fn inter(stats: &mut StreamStats, cur: &MbState, (x0, y0): (u16, u16), pred: Pre
             y: y0 + y as u16 * B4,
             w: w as u16 * B4,
             h: h as u16 * B4,
-            ref_idx: [cur.ref_idx[(y / 2) * 2 + x / 2], -1],
-            mv: [[mv.x, mv.y], [0, 0]],
-            mvd: [mvd, [0, 0]],
+            ref_idx: [cur.ref_idx[0][b8], cur.ref_idx[1][b8]],
+            mv: [mv(0), mv(1)],
+            mvd: [mvd(0), mvd(1)],
             ..BlockRecord::default()
         });
     }
