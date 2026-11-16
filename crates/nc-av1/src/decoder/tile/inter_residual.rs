@@ -14,6 +14,7 @@ use crate::decoder_range::SymbolReader;
 use nc_common::PlaneIndex;
 use nc_common::decode::DecodeError;
 use nc_dsp::Av1TxType;
+use nc_dsp::Pixel;
 
 /// `MAX_VARTX_DEPTH`: a largest transform splits at most twice.
 const MAX_VARTX_DEPTH: usize = 2;
@@ -32,7 +33,7 @@ pub(in super::super) struct TxLeaf {
     kind: Av1TxType,
 }
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
     /// The luma transforms of an inter block into `maps.tx_leaves`
     /// (§5.11.15 `read_block_tx_size`): a tree per largest transform in
     /// `TX_MODE_SELECT` frames, else largest transforms; and the
@@ -162,7 +163,7 @@ impl FrameDecoder<'_> {
             for leaf in leaves {
                 let origin = (block.mi_col + leaf.x4, block.mi_row + leaf.y4);
                 let tx = (leaf.tx.width_log2(), leaf.tx.height_log2());
-                self.maps.edges.leaf(origin, tx, edge_block);
+                self.maps.edges.leaf::<T>(origin, tx, edge_block);
             }
         }
         self.maps

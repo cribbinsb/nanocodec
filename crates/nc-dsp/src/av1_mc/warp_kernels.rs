@@ -21,6 +21,8 @@
 
 #![allow(unsafe_code, clippy::inline_always)]
 
+use nc_common::Sample;
+
 use super::warp::warp_taps_i16;
 use super::{INTER_ROUND0, round2};
 use crate::Isa;
@@ -93,9 +95,10 @@ pub(crate) fn kernel(isa: Isa) -> WarpFn {
     }
 }
 
-/// Scalar reference (AV1 §7.11.3.5, the spec's two loops).
-pub(crate) fn warp8x8_scalar(
-    (window, stride): (&[u8], usize),
+/// Scalar reference (AV1 §7.11.3.5, the spec's two loops), at any depth
+/// (`InterRound0` is 3 up to 10 bits).
+pub(crate) fn warp8x8_scalar<T: Sample>(
+    (window, stride): (&[T], usize),
     phases: &WarpPhases,
     round1: u32,
     out: &mut WarpOut,
@@ -108,7 +111,7 @@ pub(crate) fn warp8x8_scalar(
             let sum: i32 = taps
                 .iter()
                 .zip(&source[c..c + TAPS])
-                .map(|(&t, &s)| i32::from(t) * i32::from(s))
+                .map(|(&t, &s)| i32::from(t) * s.to_i32())
                 .sum();
             *value = round2(sum, INTER_ROUND0);
         }

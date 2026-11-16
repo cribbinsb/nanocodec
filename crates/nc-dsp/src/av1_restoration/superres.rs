@@ -10,7 +10,7 @@
 //! `Upscale_Filter`: libaom v3.15.3 `av1/common/resize.c`
 //! (`av1_resize_filter_normative`, BSD-2-Clause, see `THIRD_PARTY.md`).
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 /// `SUPERRES_SCALE_BITS`: positions are in 1/16384 samples.
 const SCALE_BITS: u32 = 14;
@@ -150,6 +150,15 @@ impl Av1Superres {
     ///
     /// If `src` is empty or `dst` is too short.
     pub fn upscale_row(&self, src: &[u8], dst: &mut [u8]) {
+        self.upscale_row_at(src, dst, BitDepth::EIGHT);
+    }
+
+    /// [`Self::upscale_row`] of samples of any depth, clipped to `depth`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::upscale_row`].
+    pub fn upscale_row_at<T: Sample>(&self, src: &[T], dst: &mut [T], depth: BitDepth) {
         assert!(!src.is_empty(), "empty superres source row");
         let last = src.len() as i64 - 1;
         for (x, out) in dst[..self.upscaled_width].iter_mut().enumerate() {
@@ -161,10 +170,10 @@ impl Av1Superres {
                 .enumerate()
                 .map(|(k, &tap)| {
                     let at = (sample + k as i64 - TAPS_BEFORE).clamp(0, last) as usize;
-                    i32::from(tap) * i32::from(src[at])
+                    i32::from(tap) * src[at].to_i32()
                 })
                 .sum();
-            *out = ((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS).clamp(0, 255) as u8;
+            *out = depth.clip_to((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS);
         }
     }
 
@@ -175,12 +184,26 @@ impl Av1Superres {
     ///
     /// If `dst` is narrower than the upscaled width or shorter than `src`.
     pub fn upscale_plane(&self, src: &PlaneView<'_>, dst: &mut PlaneViewMut<'_>) {
+        self.upscale_plane_at(src, dst, BitDepth::EIGHT);
+    }
+
+    /// [`Self::upscale_plane`] of samples of any depth.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::upscale_plane`].
+    pub fn upscale_plane_at<T: Sample>(
+        &self,
+        src: &PlaneView<'_, T>,
+        dst: &mut PlaneViewMut<'_, T>,
+        depth: BitDepth,
+    ) {
         assert!(
             dst.width() >= self.upscaled_width && dst.height() >= src.height(),
             "superres destination too small"
         );
         for y in 0..src.height() {
-            self.upscale_row(&src.row(y)[..src.width()], dst.row_mut(y));
+            self.upscale_row_at(&src.row(y)[..src.width()], dst.row_mut(y), depth);
         }
     }
 }

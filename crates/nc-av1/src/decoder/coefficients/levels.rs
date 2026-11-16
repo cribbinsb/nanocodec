@@ -32,6 +32,7 @@ use crate::tables::{
     NZ_MAP_CTX_OFFSET_32X16, NZ_MAP_CTX_OFFSET_32X32, NZ_MAP_CTX_OFFSET_32X64,
     NZ_MAP_CTX_OFFSET_64X32,
 };
+use nc_dsp::Av1Coefficient;
 
 /// A coefficient's buffer entry between the passes: its token (level up
 /// to [`MAX_TOKEN`]) above [`TOKEN_SHIFT`], and below it the storage
@@ -161,7 +162,11 @@ struct Place {
 }
 
 impl Walk {
-    pub(super) fn new<const CLASS: u8>(tx: TxSize) -> Self {
+    #[allow(
+        clippy::extra_unused_type_parameters,
+        reason = "one copy per decoder instance, kept inlined (docs/handoff/high-bit-depth.md)"
+    )]
+    pub(super) fn new<C, const CLASS: u8>(tx: TxSize) -> Self {
         let width_log2 = u32::from(tx.coded_width_log2());
         let height_log2 = u32::from(tx.coded_height_log2());
         let (shift, stride, lines) = match CLASS {
@@ -347,11 +352,11 @@ impl<'a> LevelCdfs<'a> {
 /// `last`, leaving each AC token chained in `cf` (zero on entry, column-major
 /// over the coded area). `size_log2` is `log2(coded area) - 4`.
 #[inline]
-pub(super) fn read<const CLASS: u8>(
+pub(super) fn read<C: Av1Coefficient, const CLASS: u8>(
     cdfs: LevelCdfs<'_>,
     r: &mut SymbolReader<'_>,
     levels: &mut LevelBuffer,
-    cf: &mut [i16; MAX_CODED],
+    cf: &mut [C; MAX_CODED],
     walk: Walk,
     last: usize,
     size_log2: usize,
@@ -376,7 +381,7 @@ pub(super) fn read<const CLASS: u8>(
     if tok > NUM_BASE_LEVELS {
         tok = read_br(r, &mut br[walk.br_group::<CLASS>(p)]);
     }
-    cf[p.rc & (MAX_CODED - 1)] = (tok << TOKEN_SHIFT) as i16;
+    cf[p.rc & (MAX_CODED - 1)] = C::from_i32((tok << TOKEN_SHIFT) as i32);
     levels.set(p.at, entry(tok));
 
     // The AC coefficients in reverse scan order. `rc` is the position of
@@ -394,9 +399,9 @@ pub(super) fn read<const CLASS: u8>(
         // Branch-free on the token: zero entries stay zero and do not move
         // the chain.
         let link = if tok != 0 {
-            ((tok << TOKEN_SHIFT) | rc as u32) as i16
+            C::from_i32(((tok << TOKEN_SHIFT) | rc as u32) as i32)
         } else {
-            0
+            C::default()
         };
         rc = if tok != 0 { p.rc } else { rc };
         cf[p.rc & (MAX_CODED - 1)] = link;
@@ -508,7 +513,7 @@ mod tests {
     /// later in reverse scan order (still zero when read). With padding,
     /// libaom reads zero there too, so the contexts agree.
     fn check_neighbours<const CLASS: u8>(tx: TxSize) {
-        let walk = Walk::new::<CLASS>(tx);
+        let walk = Walk::new::<i16, CLASS>(tx);
         let area = tx.coded_area();
         // Scan index of each map entry a coefficient occupies.
         let mut occupant = vec![None; walk.clear];

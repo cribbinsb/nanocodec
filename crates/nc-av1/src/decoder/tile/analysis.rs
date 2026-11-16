@@ -14,6 +14,7 @@
 use nc_common::stream_stats::{
     BlockRecord, IntraClass, Pred, RecordKind, Shape, StreamStats, facts, flags,
 };
+use nc_dsp::Pixel;
 
 use super::super::subset::FrameParameters;
 use super::super::transform::TxSize;
@@ -95,7 +96,7 @@ fn vector(mv: Av1Mv) -> [i16; 2] {
     [mv.col, mv.row]
 }
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
     /// `decode_block()` starts: remember where (the bits) and from which
     /// partition.
     pub(super) fn start_block_record(&mut self, reader: &SymbolReader<'_>, inter: bool) {

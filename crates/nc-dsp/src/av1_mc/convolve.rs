@@ -9,10 +9,10 @@
 //! (`InterRound1` = 7, [`INTER_POST_ROUND`](super::INTER_POST_ROUND) bits
 //! above pixels) that the compound blends and masks take.
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use super::filter::{AV1_FILTER_TAPS, AV1_SUBPEL_POSITIONS, Av1Filter, Av1Filters};
-use super::{INTER_ROUND0, INTER_ROUND1_COMPOUND, INTER_ROUND1_FINAL, clip_pixel, round2};
+use super::{INTER_ROUND0, INTER_ROUND1_COMPOUND, INTER_ROUND1_FINAL, av1_compound_bias, round2};
 use crate::{BlockSize, Dsp, Filter, Isa};
 
 /// `SCALE_SUBPEL_BITS`: positions and steps are in 1/1024 samples.
@@ -65,7 +65,7 @@ impl Av1McAxis {
     }
 
     /// The constant 1/16 phase of an unscaled direction.
-    const fn unscaled_phase(self) -> Option<usize> {
+    pub(crate) const fn unscaled_phase(self) -> Option<usize> {
         if self.step == AV1_UNSCALED_STEP {
             Some((self.position >> SCALE_EXTRA_BITS) as usize)
         } else {
@@ -106,10 +106,11 @@ const STRIP: usize = 16;
 /// `[−255 · N, 255 · P]` for the kernel's negative and positive tap totals
 /// `N`, `P`; over every AV1 kernel `P ≤ 184` and `N ≤ 56` (sharp, half
 /// position), so after `Round2(·, InterRound0 = 3)` it is within
-/// `−1785..=5865` (`horizontal_intermediate_fits_i16` checks every kernel).
-fn block_inter_prediction(
+/// `−1785..=5865` (`horizontal_intermediate_fits_i16` checks every kernel);
+/// with 10-bit samples within `−7161..=23529`.
+fn block_inter_prediction<T: Sample>(
     filters: Av1Filters,
-    window: &PlaneView<'_>,
+    window: &PlaneView<'_, T>,
     (w, h): (usize, usize),
     (x, y): (Av1McAxis, Av1McAxis),
     round1: u32,
@@ -130,7 +131,7 @@ fn block_inter_prediction(
                 let sum: i32 = kernel_x[phase]
                     .iter()
                     .zip(&source[start..start + AV1_FILTER_TAPS])
-                    .map(|(&t, &s)| i32::from(t) * i32::from(s))
+                    .map(|(&t, &s)| i32::from(t) * s.to_i32())
                     .sum();
                 // Within i16 (the doc comment's bound).
                 *out = round2(sum, INTER_ROUND0) as i16;
@@ -152,16 +153,17 @@ fn block_inter_prediction(
     }
 }
 
-/// [`Dsp::av1_predict`] by the scalar reference passes: shapes and
-/// filter combinations the SIMD kernels do not cover (kept out of line,
-/// away from the common case).
+/// [`Dsp::av1_predict`] by the scalar reference passes, at any depth:
+/// shapes and filter combinations the SIMD kernels do not cover (kept out
+/// of line, away from the common case), and every deeper block.
 #[inline(never)]
-pub(super) fn predict_scalar(
+pub(crate) fn predict_scalar<T: Sample>(
     filters: Av1Filters,
-    window: &PlaneView<'_>,
+    window: &PlaneView<'_, T>,
     (w, h): (usize, usize),
     (x, y): (Av1McAxis, Av1McAxis),
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
 ) {
     assert!(
         dst.width() >= w && dst.height() >= h,
@@ -176,21 +178,25 @@ pub(super) fn predict_scalar(
         (x, y),
         INTER_ROUND1_FINAL,
         |r, c, v| {
-            dst.row_mut(r)[c] = clip_pixel(v);
+            dst.row_mut(r)[c] = depth.clip_to(v);
         },
     );
 }
 
-/// [`Dsp::av1_predict_compound`] by the scalar reference passes.
+/// [`Dsp::av1_predict_compound`] by the scalar reference passes, at any
+/// depth: the compound value less [`av1_compound_bias`] (0 at 8 bits), so
+/// that it fits `i16` at 10 bits too.
 #[inline(never)]
-pub(super) fn predict_compound_scalar(
+pub(crate) fn predict_compound_scalar<T: Sample>(
     filters: Av1Filters,
-    window: &PlaneView<'_>,
+    window: &PlaneView<'_, T>,
     (w, h): (usize, usize),
     (x, y): (Av1McAxis, Av1McAxis),
     dst: &mut [i16],
     dst_stride: usize,
+    depth: BitDepth,
 ) {
+    let bias = av1_compound_bias(depth);
     block_inter_prediction(
         filters,
         window,
@@ -198,14 +204,106 @@ pub(super) fn predict_compound_scalar(
         (x, y),
         INTER_ROUND1_COMPOUND,
         |r, c, v| {
-            dst[r * dst_stride + c] = v as i16;
+            dst[r * dst_stride + c] = (v - bias) as i16;
         },
     );
 }
 
+/// Rows of [`unscaled_passes`]'s intermediate: the tallest block it
+/// filters plus the taps.
+const UNSCALED_ROWS: usize = KERNEL_EDGE + AV1_FILTER_TAPS - 1;
+
+/// The §7.11.3.4 passes of an unscaled `W`-wide block of at most 64 rows
+/// at fixed phases, for samples of any type up to 10 bits: the taps `fx`
+/// across every row of the window (`h + 7` rows of `W + 7` samples from
+/// `src` at stride `ss`), rounded by `InterRound0` into 16 bits (at 10
+/// bits within `−7161..=23529`, the [`block_inter_prediction`] bound), then
+/// `fy` down, rounded by `round1`, handed to `out(row, sums)`. The same
+/// arithmetic as [`block_inter_prediction`], written as whole-row
+/// multiply-adds so that the ISA instances vectorise it
+/// (`high_depth::vector`).
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+pub(crate) fn unscaled_passes<S: Sample, const W: usize>(
+    (src, ss): (&[S], usize),
+    h: usize,
+    (fx, fy): (&[i16; AV1_FILTER_TAPS], &[i16; AV1_FILTER_TAPS]),
+    round1: u32,
+    mut out: impl FnMut(usize, &[i32; W]),
+) {
+    let mut intermediate = [[0i16; W]; UNSCALED_ROWS];
+    for (r, line) in intermediate
+        .iter_mut()
+        .take(h + AV1_FILTER_TAPS - 1)
+        .enumerate()
+    {
+        let row = &src[r * ss..][..W + AV1_FILTER_TAPS - 1];
+        let mut sums = [0i32; W];
+        for (t, &tap) in fx.iter().enumerate() {
+            let tap = i32::from(tap);
+            for (sum, sample) in sums.iter_mut().zip(&row[t..t + W]) {
+                *sum += tap * sample.to_i32();
+            }
+        }
+        for (value, sum) in line.iter_mut().zip(sums) {
+            *value = round2(sum, INTER_ROUND0) as i16;
+        }
+    }
+    for r in 0..h {
+        let mut sums = [0i32; W];
+        for (t, &tap) in fy.iter().enumerate() {
+            let tap = i32::from(tap);
+            for (sum, &value) in sums.iter_mut().zip(&intermediate[r + t]) {
+                *sum += tap * i32::from(value);
+            }
+        }
+        for sum in &mut sums {
+            *sum = round2(*sum, round1);
+        }
+        out(r, &sums);
+    }
+}
+
+/// [`unscaled_passes`] at final precision into `dst` (stride `ds`),
+/// clipped to `depth`: the `u16` prediction of a `W`-wide block.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+pub(crate) fn unscaled_put_at<S: Sample, const W: usize>(
+    src: (&[S], usize),
+    (dst, ds): (&mut [S], usize),
+    h: usize,
+    taps: (&[i16; AV1_FILTER_TAPS], &[i16; AV1_FILTER_TAPS]),
+    depth: BitDepth,
+) {
+    unscaled_passes::<S, W>(src, h, taps, INTER_ROUND1_FINAL, |r, sums| {
+        for (sample, &sum) in dst[r * ds..][..W].iter_mut().zip(sums) {
+            *sample = depth.clip_to(sum);
+        }
+    });
+}
+
+/// [`unscaled_passes`] at compound precision into `dst` (stride `ds`),
+/// less [`av1_compound_bias`].
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+pub(crate) fn unscaled_prep_at<S: Sample, const W: usize>(
+    src: (&[S], usize),
+    (dst, ds): (&mut [i16], usize),
+    h: usize,
+    taps: (&[i16; AV1_FILTER_TAPS], &[i16; AV1_FILTER_TAPS]),
+    depth: BitDepth,
+) {
+    let bias = av1_compound_bias(depth);
+    unscaled_passes::<S, W>(src, h, taps, INTER_ROUND1_COMPOUND, |r, sums| {
+        for (value, &sum) in dst[r * ds..][..W].iter_mut().zip(sums) {
+            *value = (sum - bias) as i16;
+        }
+    });
+}
+
 /// Panics unless the block size, positions and window are in range.
-pub(super) fn check_prediction(
-    window: &PlaneView<'_>,
+pub(crate) fn check_prediction<T: Sample>(
+    window: &PlaneView<'_, T>,
     (w, h): (usize, usize),
     (x, y): (Av1McAxis, Av1McAxis),
 ) {
@@ -290,7 +388,7 @@ type SimdCase = (SimdKernels, BlockSize, (usize, usize));
 
 /// Blocks with a 128-sample edge run the 64-sample kernels on tiles of the
 /// block. The narrow edge is kept: four samples select the 4-tap filters.
-const KERNEL_EDGE: usize = 64;
+pub(crate) const KERNEL_EDGE: usize = 64;
 
 /// Blocks with a 2-sample edge (the pieces of sub-8x8 chroma, §7.11.3.1)
 /// run the 4-sample kernels on a padded copy of their window: their own
@@ -803,7 +901,7 @@ mod tests {
                         (x, y),
                         INTER_ROUND1_FINAL,
                         |r, c, v| {
-                            reference[r * w + c] = clip_pixel(v);
+                            reference[r * w + c] = BitDepth::EIGHT.clip_to(v);
                         },
                     );
                     assert_eq!(fast, reference, "{w}x{h} position {position} {filter:?}");
@@ -836,7 +934,7 @@ mod tests {
                     axes,
                     INTER_ROUND1_FINAL,
                     |r, c, v| {
-                        reference[r * w + c] = clip_pixel(v);
+                        reference[r * w + c] = BitDepth::EIGHT.clip_to(v);
                     },
                 );
                 assert_eq!(

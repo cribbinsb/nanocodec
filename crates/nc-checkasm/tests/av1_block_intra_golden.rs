@@ -19,7 +19,7 @@
 //! extents that may stop short of the chroma block.
 
 use nc_checkasm::rng::Rng;
-use nc_common::{Plane, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, Plane, PlaneView, PlaneViewMut};
 use nc_dsp::intra_prediction::av1_block::cfl::CflAc;
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 use nc_dsp::intra_prediction::filter::FilterIntraMode;
@@ -112,7 +112,7 @@ fn case(w: usize, h: usize, rng: &mut Rng) -> Vec<u8> {
             }),
         },
     };
-    let edges = BlockEdges::read(&plane, ORIGIN, ORIGIN, w, h, avail);
+    let edges = BlockEdges::read(&plane, (ORIGIN, ORIGIN), (w, h), avail, BitDepth::EIGHT);
     let mut prediction = vec![0u8; w * h];
     let mut dst = PlaneViewMut::new(&mut prediction, w, w, h).expect("block");
     edges.predict(kind, &mut dst);
@@ -196,7 +196,7 @@ fn chroma_from_luma_matches_libaom() {
             let view = PlaneView::new(&luma, LUMA_BUFFER, LUMA_BUFFER, LUMA_BUFFER).expect("luma");
             let ac = CflAc::from_luma(&view, 2 * stored_w, 2 * stored_h, w, h);
             let mut dst = PlaneViewMut::new(&mut prediction, w, w, h).expect("block");
-            ac.predict(alpha, &mut dst);
+            ac.predict(alpha, &mut dst, BitDepth::EIGHT);
             for p in prediction {
                 hash = (hash ^ u64::from(p)).wrapping_mul(FNV_PRIME);
             }
@@ -273,7 +273,8 @@ fn filter_intra_of_every_shape_matches_libaom() {
                 };
                 let mode = FilterIntraMode::ALL[draw(&mut rng, FilterIntraMode::ALL.len())];
                 let plane = picture(&frame, picture_w, picture_h);
-                let edges = BlockEdges::read(&plane, ORIGIN, ORIGIN, w, h, avail);
+                let edges =
+                    BlockEdges::read(&plane, (ORIGIN, ORIGIN), (w, h), avail, BitDepth::EIGHT);
                 let mut prediction = vec![0u8; w * h];
                 let mut dst = PlaneViewMut::new(&mut prediction, w, w, h).expect("block");
                 dsp.av1_intra_predict_filter_block(&edges, mode, &mut dst);

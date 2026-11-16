@@ -3,6 +3,8 @@
 //! `LeftCol` with index `i` at `i + LINE_ORIGIN`, so indices from -2 (the
 //! upsampled corner) are plain array positions.
 
+use nc_common::{BitDepth, Sample};
+
 /// Array position of edge index 0.
 pub(super) const LINE_ORIGIN: usize = 16;
 /// Edge samples a line can hold: `w + h` of the largest block, the corner
@@ -58,52 +60,53 @@ pub(super) fn use_upsample(block_wh: usize, delta: i32, smooth: bool) -> bool {
 /// Filter edge indices `0..num_px - 1` of `line` (§7.11.2.12): sample
 /// `i - 1` becomes the `strength` kernel over indices `i - 3 ..= i + 1`,
 /// clamped to `-1 ..= num_px - 2`, of the unfiltered line.
-pub(super) fn filter(line: &mut [u8; LINE_LEN], num_px: usize, strength: usize) {
+pub(super) fn filter<T: Sample>(line: &mut [T; LINE_LEN], num_px: usize, strength: usize) {
     if strength == 0 {
         return;
     }
     let kernel = &KERNELS[strength - 1];
     let start = LINE_ORIGIN - 1;
-    let mut edge = [0u8; LINE_LEN];
+    let mut edge = [T::default(); LINE_LEN];
     edge[..num_px].copy_from_slice(&line[start..start + num_px]);
     for i in 1..num_px {
         let sum: u16 = kernel
             .iter()
             .enumerate()
-            .map(|(j, &tap)| tap * u16::from(edge[(i + j).saturating_sub(2).min(num_px - 1)]))
+            .map(|(j, &tap)| tap * edge[(i + j).saturating_sub(2).min(num_px - 1)].to_i32() as u16)
             .sum();
-        line[start + i] = ((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS) as u8;
+        line[start + i] = T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS));
     }
 }
 
 /// The filtered corner shared by both lines (§7.11.2.4).
-pub(super) fn filter_corner(above: &mut [u8; LINE_LEN], left: &mut [u8; LINE_LEN]) {
+pub(super) fn filter_corner<T: Sample>(above: &mut [T; LINE_LEN], left: &mut [T; LINE_LEN]) {
     let corner = LINE_ORIGIN - 1;
-    let sum = CORNER_TAPS[0] * u16::from(left[LINE_ORIGIN])
-        + CORNER_TAPS[1] * u16::from(above[corner])
-        + CORNER_TAPS[2] * u16::from(above[LINE_ORIGIN]);
-    let value = ((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS) as u8;
+    let sample = |s: T| s.to_i32() as u16;
+    let sum = CORNER_TAPS[0] * sample(left[LINE_ORIGIN])
+        + CORNER_TAPS[1] * sample(above[corner])
+        + CORNER_TAPS[2] * sample(above[LINE_ORIGIN]);
+    let value = T::from_i32(i32::from((sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS));
     above[corner] = value;
     left[corner] = value;
 }
 
 /// Double the resolution of edge indices `-1..num_px` (§7.11.2.11): new
 /// index `2i` is old index `i`, odd indices interpolate, index -2 repeats
-/// the corner.
-pub(super) fn upsample(line: &mut [u8; LINE_LEN], num_px: usize) {
+/// the corner; interpolated samples clip to `depth`.
+pub(super) fn upsample<T: Sample>(line: &mut [T; LINE_LEN], num_px: usize, depth: BitDepth) {
     // `dup[k]` is old index `k - 2`, with both ends repeated.
     let mut dup = [0i32; super::MAX_UPSAMPLE + 3];
-    dup[0] = i32::from(line[LINE_ORIGIN - 1]);
+    dup[0] = line[LINE_ORIGIN - 1].to_i32();
     for (k, value) in dup[1..=num_px + 1].iter_mut().enumerate() {
-        *value = i32::from(line[LINE_ORIGIN - 1 + k]);
+        *value = line[LINE_ORIGIN - 1 + k].to_i32();
     }
-    dup[num_px + 2] = i32::from(line[LINE_ORIGIN + num_px - 1]);
-    line[LINE_ORIGIN - 2] = dup[0] as u8;
+    dup[num_px + 2] = line[LINE_ORIGIN + num_px - 1].to_i32();
+    line[LINE_ORIGIN - 2] = T::from_i32(dup[0]);
     for i in 0..num_px {
         let sum =
             UPSAMPLE_OUTER * (dup[i] + dup[i + 3]) + UPSAMPLE_INNER * (dup[i + 1] + dup[i + 2]);
         let value = (sum + (1 << (FILTER_BITS - 1))) >> FILTER_BITS;
-        line[LINE_ORIGIN + 2 * i - 1] = value.clamp(0, i32::from(u8::MAX)) as u8;
-        line[LINE_ORIGIN + 2 * i] = dup[i + 2] as u8;
+        line[LINE_ORIGIN + 2 * i - 1] = depth.clip_to(value);
+        line[LINE_ORIGIN + 2 * i] = T::from_i32(dup[i + 2]);
     }
 }

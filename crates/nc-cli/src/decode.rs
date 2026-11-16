@@ -14,7 +14,9 @@ use std::io::{BufRead, IoSlice, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nc_common::{DecodedPicture, Picture, PlaneIndex, ShownPicture, decode::DecodeError};
+use nc_common::{
+    DecodedPicture, Picture, PlaneIndex, ShownFrame, ShownPicture, decode::DecodeError,
+};
 use nc_encoder::Codec;
 
 use crate::framing::{ivf_fourcc, read_ivf, read_nal_units};
@@ -232,6 +234,28 @@ impl<'a> Shown<'a> {
         }
     }
 
+    /// A frame of either depth a decoder shows: 8-bit written straight from
+    /// the decoder's picture, deeper packed.
+    fn frame(shown: ShownFrame<'a>) -> Self {
+        let (width, height) = shown.size();
+        let samples = match shown {
+            ShownFrame::Eight(view) => Samples::View(view),
+            ShownFrame::High(..) => {
+                let mut bytes = Vec::new();
+                shown
+                    .write_yuv(&mut bytes, 3)
+                    .expect("writing to memory cannot fail");
+                Samples::Packed(bytes)
+            }
+        };
+        Self {
+            planes: 3,
+            width,
+            height,
+            samples,
+        }
+    }
+
     /// An H.264 frame, shown from the decoder's own picture.
     fn h264(frame: nc_h264::DecodedFrame) -> Self {
         Self {
@@ -410,13 +434,14 @@ impl Decoder {
     pub(crate) fn decode(&mut self, packet: &[u8]) -> Result<Option<Shown<'_>>, DecodeError> {
         match self {
             Self::Av1(decoder) => {
-                // Written straight from the decoder's picture (no output copy).
-                // A unit whose frames the operating point drops shows nothing.
-                if !decoder.decode_and_show(packet)? {
+                // Written straight from the decoder's picture (no output copy;
+                // deeper pictures packed as 16-bit samples). A unit whose
+                // frames the operating point drops shows nothing.
+                if !decoder.decode_any_depth(packet)? {
                     return Ok(None);
                 }
-                let shown = decoder.shown().expect("a decoded picture is shown");
-                Ok(Some(Shown::view(shown, 3)))
+                let shown = decoder.shown_frame().expect("a decoded picture is shown");
+                Ok(Some(Shown::frame(shown)))
             }
             Self::Vp9(decoder) => {
                 // Written straight from the decoder's picture.

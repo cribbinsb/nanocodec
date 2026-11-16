@@ -1,4 +1,6 @@
-//! AV1 loop restoration and super-resolution (AV1 §7.16, §7.17), 8-bit.
+//! AV1 loop restoration and super-resolution (AV1 §7.16, §7.17), 8-bit
+//! with the ISA's kernels, deeper samples with the scalar references
+//! (`_at` entry points, [`kernels::DeepKernels`]).
 //!
 //! - [`superres`]: horizontal upscaling of frames coded at a reduced width.
 //! - [`Av1LoopRestoration`]: one plane's restoration, in place: units of
@@ -28,9 +30,10 @@ mod simd128;
 pub mod superres;
 mod wiener;
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use crate::Dsp;
+use kernels::{DeepKernels, RowKernels};
 
 pub use superres::Av1Superres;
 
@@ -106,9 +109,9 @@ pub fn av1_lr_unit_count(unit_size: usize, size: usize) -> usize {
 /// for the edge at row `y`, rows `y - 2 .. y + 2` (clamped to the plane),
 /// at the upscaled width.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Av1StripeBoundaries {
+pub struct Av1StripeBoundaries<T: Sample = u8> {
     width: usize,
-    rows: Vec<u8>,
+    rows: Vec<T>,
 }
 
 /// First row of stripe `index` of a plane subsampled vertically by
@@ -127,10 +130,23 @@ impl Av1StripeBoundaries {
     /// readable width rounded up to whole 4x4 blocks) and visible height.
     #[must_use]
     pub fn save(deblocked: &PlaneView<'_>, sub_y: bool, superres: Option<&Av1Superres>) -> Self {
+        Self::save_at(deblocked, sub_y, superres, BitDepth::EIGHT)
+    }
+}
+
+impl<T: Sample> Av1StripeBoundaries<T> {
+    /// [`Av1StripeBoundaries::save`] of samples of any depth.
+    #[must_use]
+    pub fn save_at(
+        deblocked: &PlaneView<'_, T>,
+        sub_y: bool,
+        superres: Option<&Av1Superres>,
+        depth: BitDepth,
+    ) -> Self {
         let height = deblocked.height();
         let width = superres.map_or(deblocked.width(), Av1Superres::upscaled_width);
         let mut rows = Vec::new();
-        let mut row = vec![0u8; width];
+        let mut row = vec![T::default(); width];
         for index in 1.. {
             let edge = stripe_start(index, sub_y);
             if edge >= height {
@@ -139,7 +155,7 @@ impl Av1StripeBoundaries {
             for y in edge - CONTEXT_ROWS..edge + CONTEXT_ROWS {
                 let source = &deblocked.row(y.min(height - 1))[..deblocked.width()];
                 match superres {
-                    Some(s) => s.upscale_row(source, &mut row),
+                    Some(s) => s.upscale_row_at(source, &mut row, depth),
                     None => row.copy_from_slice(source),
                 }
                 rows.extend_from_slice(&row);
@@ -150,7 +166,7 @@ impl Av1StripeBoundaries {
 
     /// Deblocked row `y` (clamped to the edge's context) next to the
     /// edge of stripe `index` (at least 1).
-    fn row(&self, index: usize, offset: usize) -> &[u8] {
+    fn row(&self, index: usize, offset: usize) -> &[T] {
         let start = ((index - 1) * EDGE_ROWS + offset) * self.width;
         &self.rows[start..start + self.width]
     }
@@ -196,9 +212,9 @@ fn grow<T: Copy + Default>(buffer: &mut Vec<T>, len: usize) -> &mut [T] {
 /// are allocated and zeroed once, as dav1d keeps its line buffers in its
 /// frame context.
 #[derive(Debug, Default)]
-pub struct Av1LrScratch {
+pub struct Av1LrScratch<T: Sample = u8> {
     /// The current stripe with its border ([`StripeWindow`]).
-    window: Vec<u8>,
+    window: Vec<T>,
     /// The Wiener intermediate rows.
     wiener: Vec<i16>,
     /// The self-guided rings.
@@ -222,12 +238,12 @@ struct StripeWindow {
 impl StripeWindow {
     /// Copy the window of the stripe into `out` from `plane` (the CDEF
     /// output, not yet restored in this stripe) and `boundaries`.
-    fn gather(
+    fn gather<T: Sample>(
         &self,
-        plane: &PlaneView<'_>,
-        boundaries: &Av1StripeBoundaries,
+        plane: &PlaneView<'_, T>,
+        boundaries: &Av1StripeBoundaries<T>,
         sub_y: bool,
-        out: &mut Vec<u8>,
+        out: &mut Vec<T>,
     ) {
         let (width, height) = (plane.width(), plane.height());
         let border = AV1_LR_BORDER;
@@ -236,7 +252,7 @@ impl StripeWindow {
         let out = grow(out, rows * self.stride);
         for (t, row) in out.chunks_exact_mut(self.stride).enumerate() {
             let y = (self.top + t).saturating_sub(border).min(height - 1);
-            let source: &[u8] = if y < self.top {
+            let source: &[T] = if y < self.top {
                 // Rows top - 2 and - 1 are context rows 0 and 1 of this
                 // stripe's top edge; row top - 3 repeats top - 2.
                 boundaries.row(self.index, (y + CONTEXT_ROWS).saturating_sub(self.top))
@@ -272,6 +288,33 @@ impl Av1LoopRestoration<'_> {
         sub_y: bool,
         scratch: &mut Av1LrScratch,
     ) {
+        self.apply_with(dsp.av1_lr(), plane, boundaries, sub_y, scratch);
+    }
+
+    /// [`Self::apply`] to samples of any depth, with the scalar kernels.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::apply`].
+    pub fn apply_at<T: Sample>(
+        &self,
+        plane: &mut PlaneViewMut<'_, T>,
+        (boundaries, sub_y): (&Av1StripeBoundaries<T>, bool),
+        scratch: &mut Av1LrScratch<T>,
+        depth: BitDepth,
+    ) {
+        self.apply_with(&DeepKernels { depth }, plane, boundaries, sub_y, scratch);
+    }
+
+    /// [`Self::apply`] with `kernels`.
+    fn apply_with<T: Sample>(
+        &self,
+        kernels: &impl RowKernels<T>,
+        plane: &mut PlaneViewMut<'_, T>,
+        boundaries: &Av1StripeBoundaries<T>,
+        sub_y: bool,
+        scratch: &mut Av1LrScratch<T>,
+    ) {
         assert_eq!(
             self.filters.len(),
             self.columns * self.rows,
@@ -279,7 +322,6 @@ impl Av1LoopRestoration<'_> {
         );
         let (width, height) = (plane.width(), plane.height());
         assert!(width > 0 && height > 0, "empty restoration plane");
-        let kernels = dsp.av1_lr();
         let offset = STRIPE_OFFSET >> u32::from(sub_y);
         let stride = width + 2 * AV1_LR_BORDER + AV1_LR_OVERREAD;
         for index in 0.. {

@@ -3470,7 +3470,7 @@ impl Dsp {
             dst.width() >= 4 && dst.height() >= 4,
             "WHT destination below 4x4"
         );
-        crate::av1_inverse::wht::inverse_wht_add(coeffs, dst);
+        crate::av1_inverse::wht::inverse_wht_add(coeffs, dst, nc_common::BitDepth::EIGHT);
     }
 
     /// AV1 forward 64x64 `DCT_DCT` of `residual` (row-major at `stride`),

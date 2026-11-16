@@ -14,7 +14,7 @@ use super::super::block_size::BlockSize;
 use super::super::cdf::Cdfs;
 use super::BlockPos;
 use crate::decoder_range::{Cdf, SymbolReader};
-use nc_common::{PlaneIndex, PlaneViewMut};
+use nc_common::{PlaneIndex, PlaneViewMut, Sample};
 
 /// `PALETTE_MAX_SIZE`, `PALETTE_MIN_SIZE`: colours per palette.
 pub(super) const PALETTE_MAX_SIZE: usize = 8;
@@ -23,8 +23,6 @@ const PALETTE_MIN_SIZE: usize = 2;
 const PALETTE_SIZES: usize = 7;
 /// Largest side of a palette block (`MAX_PALETTE_BLOCK_WIDTH`).
 const PALETTE_MAX_BLOCK: usize = 64;
-/// Samples are 8-bit (`BitDepth`).
-const BIT_DEPTH: u32 = 8;
 /// Bits of `palette_num_extra_bits_*` and its base below `BitDepth`.
 const EXTRA_BITS: u32 = 2;
 const DELTA_BITS_BELOW_DEPTH: u32 = 3;
@@ -51,15 +49,16 @@ const CONTEXT_OF_HASH: [Option<usize>; 9] = [
     Some(1),
 ];
 
-/// One plane's palette: its colours, ascending for luma and U.
+/// One plane's palette: its colours (samples of up to 16 bits),
+/// ascending for luma and U.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Palette {
     pub size: u8,
-    pub colors: [u8; PALETTE_MAX_SIZE],
+    pub colors: [u16; PALETTE_MAX_SIZE],
 }
 
 impl Palette {
-    fn colors(&self) -> &[u8] {
+    fn colors(&self) -> &[u16] {
         &self.colors[..usize::from(self.size)]
     }
 }
@@ -90,6 +89,8 @@ impl BlockPalette {
 /// context read), the current block's palettes, and its colour maps.
 #[derive(Debug)]
 pub(super) struct PaletteState {
+    /// `BitDepth`: the bits of each coded colour.
+    bits: u32,
     above: Vec<[Palette; 2]>,
     left: [[Palette; 2]; MAX_SUPERBLOCK_MI],
     /// The block being decoded.
@@ -103,9 +104,11 @@ pub(super) struct PaletteState {
 
 impl PaletteState {
     /// The state of a frame `mi_cols` 4x4 units wide (with a superblock of
-    /// spare units, so blocks at the edge write whole).
-    pub(super) fn new(mi_cols: usize) -> Self {
+    /// spare units, so blocks at the edge write whole) and `bits` per
+    /// sample.
+    pub(super) fn new(mi_cols: usize, bits: u32) -> Self {
         Self {
+            bits,
             above: vec![[Palette::default(); 2]; mi_cols + MAX_SUPERBLOCK_MI],
             left: [[Palette::default(); 2]; MAX_SUPERBLOCK_MI],
             block: BlockPalette::default(),
@@ -151,14 +154,14 @@ impl PaletteState {
     /// `get_palette_cache()`: the colours of the block above (unless
     /// across a 64-sample row) and left, merged ascending without
     /// repeats.
-    fn cache(&self, block: BlockPos, plane_kind: usize) -> Vec<u8> {
+    fn cache(&self, block: BlockPos, plane_kind: usize) -> Vec<u16> {
         let [above, left] = self.neighbours(block, plane_kind);
         let above = above.filter(|_| !block.mi_row.is_multiple_of(CACHE_ROW_UNITS));
         let (above, left) = (
             above.as_ref().map_or(&[][..], Palette::colors),
             left.as_ref().map_or(&[][..], Palette::colors),
         );
-        let mut cache: Vec<u8> = Vec::with_capacity(2 * PALETTE_MAX_SIZE);
+        let mut cache: Vec<u16> = Vec::with_capacity(2 * PALETTE_MAX_SIZE);
         let (mut a, mut l) = (0, 0);
         while a < above.len() || l < left.len() {
             let take_left = a == above.len() || (l < left.len() && left[l] < above[a]);
@@ -203,7 +206,7 @@ impl PaletteState {
             if r.boolean(&mut cdfs.palette_y_mode[size_ctx][context]) {
                 let size = read_size(r, &mut cdfs.palette_y_size[size_ctx]);
                 let cache = self.cache(block, 0);
-                self.block.y = read_colors(r, size, &cache, ColorCoding::Luma);
+                self.block.y = read_colors(r, (size, self.bits), &cache, ColorCoding::Luma);
             }
         }
         if uv_dc && block.has_chroma() {
@@ -211,8 +214,8 @@ impl PaletteState {
             if r.boolean(&mut cdfs.palette_uv_mode[context]) {
                 let size = read_size(r, &mut cdfs.palette_uv_size[size_ctx]);
                 let cache = self.cache(block, 1);
-                self.block.u = read_colors(r, size, &cache, ColorCoding::U);
-                self.block.v = read_v_colors(r, size);
+                self.block.u = read_colors(r, (size, self.bits), &cache, ColorCoding::U);
+                self.block.v = read_v_colors(r, (size, self.bits));
             }
         }
     }
@@ -270,11 +273,11 @@ impl PaletteState {
     /// Predict the transform block of `plane` at plane sample `origin`
     /// into `dst` from the current block's palette (§7.11.4), if `plane`
     /// has one; returns whether it did.
-    pub(super) fn predict(
+    pub(super) fn predict<T: Sample>(
         &self,
         plane: PlaneIndex,
         (x, y): (usize, usize),
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) -> bool {
         let Some(palette) = self.block.of(plane) else {
             return false;
@@ -287,7 +290,7 @@ impl PaletteState {
             let start = (y - oy + r) * stride + (x - ox);
             let indices = &self.maps[kind][start..start + w];
             for (sample, &index) in dst.row_mut(r).iter_mut().zip(indices) {
-                *sample = palette.colors[usize::from(index)];
+                *sample = T::from_i32(i32::from(palette.colors[usize::from(index)]));
             }
         }
         true
@@ -307,10 +310,16 @@ enum ColorCoding {
     U,
 }
 
-/// The colours of a luma or U palette of `size` (§5.11.46): flags for
-/// the cached colours used, then the rest ascending as a literal and
-/// deltas, merged with the cached ones in order.
-fn read_colors(r: &mut SymbolReader<'_>, size: u8, cache: &[u8], coding: ColorCoding) -> Palette {
+/// The colours of a luma or U palette of `size` colours of `bits` bits
+/// (§5.11.46): flags for the cached colours used, then the rest ascending
+/// as a literal and deltas, merged with the cached ones in order.
+fn read_colors(
+    r: &mut SymbolReader<'_>,
+    (size, bits): (u8, u32),
+    cache: &[u16],
+    coding: ColorCoding,
+) -> Palette {
+    let bit_depth = bits;
     let n = usize::from(size);
     let mut cached = Vec::with_capacity(n);
     for &color in cache {
@@ -323,15 +332,15 @@ fn read_colors(r: &mut SymbolReader<'_>, size: u8, cache: &[u8], coding: ColorCo
     }
     let mut coded = Vec::with_capacity(n);
     if cached.len() < n {
-        let max = (1 << BIT_DEPTH) - 1;
-        let first = r.literal(BIT_DEPTH);
+        let max = (1 << bit_depth) - 1;
+        let first = r.literal(bit_depth);
         coded.push(first);
         if cached.len() + 1 < n {
             let (step, mut range) = match coding {
                 ColorCoding::Luma => (1, max - first),
                 ColorCoding::U => (0, max + 1 - first),
             };
-            let mut bits = BIT_DEPTH - DELTA_BITS_BELOW_DEPTH + r.literal(EXTRA_BITS);
+            let mut bits = bit_depth - DELTA_BITS_BELOW_DEPTH + r.literal(EXTRA_BITS);
             while cached.len() + coded.len() < n {
                 let previous = *coded.last().expect("one coded colour");
                 let color = (previous + r.literal(bits) + step).min(max);
@@ -355,7 +364,7 @@ fn read_colors(r: &mut SymbolReader<'_>, size: u8, cache: &[u8], coding: ColorCo
             cached[c - 1]
         } else {
             k += 1;
-            coded[k - 1] as u8
+            coded[k - 1] as u16
         };
     }
     palette
@@ -363,26 +372,26 @@ fn read_colors(r: &mut SymbolReader<'_>, size: u8, cache: &[u8], coding: ColorCo
 
 /// The V colours of a chroma palette of `size` (§5.11.46): signed deltas
 /// wrapping around the sample range, or literals.
-fn read_v_colors(r: &mut SymbolReader<'_>, size: u8) -> Palette {
+fn read_v_colors(r: &mut SymbolReader<'_>, (size, bit_depth): (u8, u32)) -> Palette {
     let mut palette = Palette {
         size,
         colors: [0; PALETTE_MAX_SIZE],
     };
     let colors = &mut palette.colors[..usize::from(size)];
     if r.literal(1) == 1 {
-        let max = 1i32 << BIT_DEPTH;
-        let bits = BIT_DEPTH - V_DELTA_BITS_BELOW_DEPTH + r.literal(EXTRA_BITS);
-        colors[0] = r.literal(BIT_DEPTH) as u8;
+        let max = 1i32 << bit_depth;
+        let bits = bit_depth - V_DELTA_BITS_BELOW_DEPTH + r.literal(EXTRA_BITS);
+        colors[0] = r.literal(bit_depth) as u16;
         for i in 1..colors.len() {
             let mut delta = r.literal(bits) as i32;
             if delta != 0 && r.literal(1) == 1 {
                 delta = -delta;
             }
-            colors[i] = (i32::from(colors[i - 1]) + delta).rem_euclid(max) as u8;
+            colors[i] = (i32::from(colors[i - 1]) + delta).rem_euclid(max) as u16;
         }
     } else {
         for color in colors.iter_mut() {
-            *color = r.literal(BIT_DEPTH) as u8;
+            *color = r.literal(bit_depth) as u16;
         }
     }
     palette

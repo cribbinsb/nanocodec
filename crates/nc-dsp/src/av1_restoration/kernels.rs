@@ -17,11 +17,13 @@
 #![allow(unsafe_code)]
 
 use crate::Isa;
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::AV1_LR_OVERREAD;
-use super::self_guided::{blend, box_ab, box_sums, filter_around, filter_between, filter_on};
-use super::wiener::{WienerTaps, h_row, v_row};
+use super::self_guided::{
+    blend, blend_at, box_ab, box_ab_at, box_sums, filter_around, filter_between, filter_on,
+};
+use super::wiener::{WienerTaps, h_row, h_row_at, v_row, v_row_at};
 
 /// Complete stripe kernel with the padded-window and exact-output contract.
 /// The kernel validates all extents before raw SIMD access.
@@ -84,8 +86,8 @@ pub(crate) const SCALAR: Kernels = Kernels {
     wiener_stripe: None,
     wiener_h: h_row,
     wiener_v: v_row,
-    box_sums3: box_sums::<1>,
-    box_sums5: box_sums::<2>,
+    box_sums3: box_sums::<u8, 1>,
+    box_sums5: box_sums::<u8, 2>,
     box_ab3: box_ab::<3>,
     box_ab5: box_ab::<5>,
     between: filter_between,
@@ -104,6 +106,236 @@ pub(crate) fn kernels(isa: Isa) -> Kernels {
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         Isa::Simd128 => super::simd128::KERNELS,
         _ => SCALAR,
+    }
+}
+
+/// The row kernels the Wiener and self-guided drivers call, on samples
+/// `T`: an ISA's 8-bit table ([`Kernels`]) or the scalar references at a
+/// depth ([`DeepKernels`]). The methods check the kernel contract as
+/// [`Kernels`]' do.
+pub(crate) trait RowKernels<T: Sample> {
+    /// A complete Wiener stripe, when the kernels have one (else `false`).
+    fn wiener_stripe(
+        &self,
+        taps: (WienerTaps, WienerTaps),
+        window: (&[T], usize),
+        size: (usize, usize),
+        ring: &mut [i16],
+        dst: (&mut PlaneViewMut<'_, T>, usize, usize),
+    ) -> bool;
+    /// [`Kernels::wiener_h`].
+    fn wiener_h(&self, src: &[T], taps: WienerTaps, out: &mut [i16], n: usize);
+    /// [`Kernels::wiener_v`].
+    fn wiener_v(&self, rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [T]);
+    /// [`Kernels::sgr_box_sums`].
+    fn sgr_box_sums(
+        &self,
+        radius: usize,
+        src: &[T],
+        sum: &mut [i16],
+        squares: &mut [i32],
+        n: usize,
+    );
+    /// [`Kernels::sgr_box_ab3`].
+    fn sgr_box_ab3(
+        &self,
+        sums: [&[i16]; 3],
+        squares: [&[i32]; 3],
+        scale: u32,
+        ab: (&mut [i16], &mut [i32]),
+        n: usize,
+    );
+    /// [`Kernels::sgr_box_ab5`].
+    fn sgr_box_ab5(
+        &self,
+        sums: [&[i16]; 5],
+        squares: [&[i32]; 5],
+        scale: u32,
+        ab: (&mut [i16], &mut [i32]),
+        n: usize,
+    );
+    /// [`Kernels::sgr_filter_between`].
+    fn sgr_filter_between(
+        &self,
+        a: [&[i16]; 2],
+        b: [&[i32]; 2],
+        src: &[T],
+        out: &mut [i16],
+        n: usize,
+    );
+    /// [`Kernels::sgr_filter_on`].
+    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[T], out: &mut [i16], n: usize);
+    /// [`Kernels::sgr_filter_around`].
+    fn sgr_filter_around(
+        &self,
+        a: [&[i16]; 3],
+        b: [&[i32]; 3],
+        src: &[T],
+        out: &mut [i16],
+        n: usize,
+    );
+    /// [`Kernels::sgr_blend`].
+    fn sgr_blend(&self, src: &[T], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [T]);
+}
+
+impl RowKernels<u8> for Kernels {
+    fn wiener_stripe(
+        &self,
+        taps: (WienerTaps, WienerTaps),
+        window: (&[u8], usize),
+        size: (usize, usize),
+        ring: &mut [i16],
+        dst: (&mut PlaneViewMut<'_>, usize, usize),
+    ) -> bool {
+        Kernels::wiener_stripe(self, taps, window, size, ring, dst)
+    }
+    fn wiener_h(&self, src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
+        Kernels::wiener_h(self, src, taps, out, n);
+    }
+    fn wiener_v(&self, rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [u8]) {
+        Kernels::wiener_v(self, rows, taps, dst);
+    }
+    fn sgr_box_sums(
+        &self,
+        radius: usize,
+        src: &[u8],
+        sum: &mut [i16],
+        squares: &mut [i32],
+        n: usize,
+    ) {
+        Kernels::sgr_box_sums(self, radius, src, sum, squares, n);
+    }
+    fn sgr_box_ab3(
+        &self,
+        sums: [&[i16]; 3],
+        squares: [&[i32]; 3],
+        scale: u32,
+        ab: (&mut [i16], &mut [i32]),
+        n: usize,
+    ) {
+        Kernels::sgr_box_ab3(self, sums, squares, scale, ab, n);
+    }
+    fn sgr_box_ab5(
+        &self,
+        sums: [&[i16]; 5],
+        squares: [&[i32]; 5],
+        scale: u32,
+        ab: (&mut [i16], &mut [i32]),
+        n: usize,
+    ) {
+        Kernels::sgr_box_ab5(self, sums, squares, scale, ab, n);
+    }
+    fn sgr_filter_between(
+        &self,
+        a: [&[i16]; 2],
+        b: [&[i32]; 2],
+        src: &[u8],
+        out: &mut [i16],
+        n: usize,
+    ) {
+        Kernels::sgr_filter_between(self, a, b, src, out, n);
+    }
+    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[u8], out: &mut [i16], n: usize) {
+        Kernels::sgr_filter_on(self, a, b, src, out, n);
+    }
+    fn sgr_filter_around(
+        &self,
+        a: [&[i16]; 3],
+        b: [&[i32]; 3],
+        src: &[u8],
+        out: &mut [i16],
+        n: usize,
+    ) {
+        Kernels::sgr_filter_around(self, a, b, src, out, n);
+    }
+    fn sgr_blend(&self, src: &[u8], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [u8]) {
+        Kernels::sgr_blend(self, src, filtered, weights, dst);
+    }
+}
+
+/// The scalar references at a depth above 8 bits (the same functions as
+/// [`SCALAR`], instantiated for the samples and given the depth).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeepKernels {
+    pub(crate) depth: BitDepth,
+}
+
+impl<T: Sample> RowKernels<T> for DeepKernels {
+    fn wiener_stripe(
+        &self,
+        _taps: (WienerTaps, WienerTaps),
+        _window: (&[T], usize),
+        _size: (usize, usize),
+        _ring: &mut [i16],
+        _dst: (&mut PlaneViewMut<'_, T>, usize, usize),
+    ) -> bool {
+        false
+    }
+    fn wiener_h(&self, src: &[T], taps: WienerTaps, out: &mut [i16], n: usize) {
+        h_row_at(src, taps, out, n, self.depth);
+    }
+    fn wiener_v(&self, rows: &[&[i16]; WIENER_ROWS], taps: WienerTaps, dst: &mut [T]) {
+        v_row_at(rows, taps, dst, self.depth);
+    }
+    fn sgr_box_sums(
+        &self,
+        radius: usize,
+        src: &[T],
+        sum: &mut [i16],
+        squares: &mut [i32],
+        n: usize,
+    ) {
+        match radius {
+            1 => box_sums::<T, 1>(src, sum, squares, n),
+            2 => box_sums::<T, 2>(src, sum, squares, n),
+            _ => unreachable!("self-guided radii are 1 and 2"),
+        }
+    }
+    fn sgr_box_ab3(
+        &self,
+        sums: [&[i16]; 3],
+        squares: [&[i32]; 3],
+        scale: u32,
+        ab: (&mut [i16], &mut [i32]),
+        n: usize,
+    ) {
+        box_ab_at(sums, squares, scale, ab, (n, self.depth.above_eight()));
+    }
+    fn sgr_box_ab5(
+        &self,
+        sums: [&[i16]; 5],
+        squares: [&[i32]; 5],
+        scale: u32,
+        ab: (&mut [i16], &mut [i32]),
+        n: usize,
+    ) {
+        box_ab_at(sums, squares, scale, ab, (n, self.depth.above_eight()));
+    }
+    fn sgr_filter_between(
+        &self,
+        a: [&[i16]; 2],
+        b: [&[i32]; 2],
+        src: &[T],
+        out: &mut [i16],
+        n: usize,
+    ) {
+        filter_between(a, b, src, out, n);
+    }
+    fn sgr_filter_on(&self, a: &[i16], b: &[i32], src: &[T], out: &mut [i16], n: usize) {
+        filter_on(a, b, src, out, n);
+    }
+    fn sgr_filter_around(
+        &self,
+        a: [&[i16]; 3],
+        b: [&[i32]; 3],
+        src: &[T],
+        out: &mut [i16],
+        n: usize,
+    ) {
+        filter_around(a, b, src, out, n);
+    }
+    fn sgr_blend(&self, src: &[T], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [T]) {
+        blend_at(src, filtered, weights, dst, self.depth);
     }
 }
 

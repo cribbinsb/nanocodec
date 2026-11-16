@@ -43,45 +43,68 @@ pub(crate) struct Obu<'a> {
 pub(crate) fn split(mut data: &[u8]) -> Result<Vec<Obu<'_>>, DecodeError> {
     let mut out = Vec::new();
     while !data.is_empty() {
-        let obu_start = data;
-        let (&header, rest) = data.split_first().ok_or(DecodeError::Truncated)?;
-        data = rest;
-        if header & FORBIDDEN_BIT != 0 {
-            return Err(DecodeError::Malformed("AV1 obu_forbidden_bit"));
-        }
-        let mut layer = LayerIds::default();
-        let has_extension = header & EXTENSION_FLAG != 0;
-        if has_extension {
-            let (&extension, rest) = data.split_first().ok_or(DecodeError::Truncated)?;
-            layer.temporal = extension >> TEMPORAL_ID_SHIFT;
-            layer.spatial = (extension >> SPATIAL_ID_SHIFT) & SPATIAL_ID_MASK;
-            data = rest;
-        }
-        let payload;
-        if header & HAS_SIZE_FIELD != 0 {
-            let mut reader = BitReader::new(data);
-            let size = usize::try_from(reader.read_leb128()?)
-                .map_err(|_| DecodeError::Malformed("AV1 OBU size"))?;
-            data = &data[reader.position() / 8..];
-            payload = data.get(..size).ok_or(DecodeError::Truncated)?;
-            data = &data[size..];
-        } else {
-            payload = data;
-            data = &[];
-        }
-        let raw_len = obu_start.len() - data.len();
         if out.len() == MAX_OBUS {
             return Err(DecodeError::Unsupported("AV1 OBUs per temporal unit"));
         }
-        out.push(Obu {
-            kind: (header >> TYPE_SHIFT) & TYPE_MASK,
-            layer,
-            has_extension,
-            payload,
-            raw: &obu_start[..raw_len],
-        });
+        out.push(next(&mut data)?);
     }
     Ok(out)
+}
+
+/// The payload of the temporal unit's sequence header OBU, if it has one
+/// before its first frame (§7.5: a sequence header precedes the frames of
+/// its temporal unit); reads only the OBU headers up to it.
+///
+/// # Errors
+/// As [`split`].
+pub(crate) fn sequence_header(mut data: &[u8]) -> Result<Option<&[u8]>, DecodeError> {
+    while !data.is_empty() {
+        let obu = next(&mut data)?;
+        match obu.kind {
+            OBU_SEQUENCE_HEADER => return Ok(Some(obu.payload)),
+            OBU_FRAME_HEADER | OBU_FRAME => return Ok(None),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The OBU at the start of `data`, which moves past it.
+fn next<'a>(data: &mut &'a [u8]) -> Result<Obu<'a>, DecodeError> {
+    let obu_start = *data;
+    let (&header, rest) = data.split_first().ok_or(DecodeError::Truncated)?;
+    *data = rest;
+    if header & FORBIDDEN_BIT != 0 {
+        return Err(DecodeError::Malformed("AV1 obu_forbidden_bit"));
+    }
+    let mut layer = LayerIds::default();
+    let has_extension = header & EXTENSION_FLAG != 0;
+    if has_extension {
+        let (&extension, rest) = data.split_first().ok_or(DecodeError::Truncated)?;
+        layer.temporal = extension >> TEMPORAL_ID_SHIFT;
+        layer.spatial = (extension >> SPATIAL_ID_SHIFT) & SPATIAL_ID_MASK;
+        *data = rest;
+    }
+    let payload;
+    if header & HAS_SIZE_FIELD != 0 {
+        let mut reader = BitReader::new(data);
+        let size = usize::try_from(reader.read_leb128()?)
+            .map_err(|_| DecodeError::Malformed("AV1 OBU size"))?;
+        *data = &data[reader.position() / 8..];
+        payload = data.get(..size).ok_or(DecodeError::Truncated)?;
+        *data = &data[size..];
+    } else {
+        payload = data;
+        *data = &[];
+    }
+    let raw_len = obu_start.len() - data.len();
+    Ok(Obu {
+        kind: (header >> TYPE_SHIFT) & TYPE_MASK,
+        layer,
+        has_extension,
+        payload,
+        raw: &obu_start[..raw_len],
+    })
 }
 
 /// The tiles one tile group OBU carries: `tg_start..=tg_end` and the data

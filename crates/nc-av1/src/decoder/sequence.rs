@@ -1,9 +1,9 @@
 //! `sequence_header_obu()` (AV1 §5.5): every field of an 8-bit 4:2:0 Main
 //! profile sequence header, with operating point 0 selected (§7.18 leaves
 //! the choice to the application; libaom and dav1d default to 0).
-use nc_common::ColourInfo;
 use nc_common::colour::{matrix, read_code_points};
 use nc_common::decode::{BitReader, DecodeError};
+use nc_common::{BitDepth, ColourInfo};
 
 /// `seq_profile` of the Main profile (AV1 §6.4.1).
 const MAIN_PROFILE: u32 = 0;
@@ -70,6 +70,9 @@ pub(crate) struct Sequence {
     pub enable_cdef: bool,
     pub enable_restoration: bool,
     pub colour: ColourInfo,
+    /// `BitDepth` (§5.5.2): 8 or 10 in the Main profile, the same for
+    /// luma and chroma.
+    pub bit_depth: BitDepth,
     /// `mono_chrome`: one plane coded.
     pub mono_chrome: bool,
     pub separate_uv_delta_q: bool,
@@ -125,7 +128,8 @@ impl Sequence {
 /// Parse a sequence header OBU payload.
 ///
 /// # Errors
-/// Truncated or malformed data, or a stream outside 8-bit 4:2:0 Main.
+/// Truncated or malformed data, or a stream outside Main (8- or 10-bit
+/// 4:2:0 or monochrome).
 pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
     let mut r = BitReader::new(payload);
     if r.read_bits(3)? != MAIN_PROFILE {
@@ -203,6 +207,7 @@ pub(crate) fn parse(payload: &[u8]) -> Result<Sequence, DecodeError> {
         enable_cdef,
         enable_restoration,
         colour: colour.info,
+        bit_depth: colour.bit_depth,
         mono_chrome: colour.mono_chrome,
         separate_uv_delta_q: colour.separate_uv_delta_q,
         film_grain_params_present,
@@ -352,17 +357,22 @@ fn decoder_model_info(r: &mut BitReader<'_>) -> Result<DecoderModel, DecodeError
     })
 }
 
-/// What `color_config()` (§5.5.2) yields for an 8-bit stream.
+/// What `color_config()` (§5.5.2) yields for a Main-profile stream.
 struct ColourConfig {
     info: ColourInfo,
+    bit_depth: BitDepth,
     mono_chrome: bool,
     separate_uv_delta_q: bool,
 }
 
 fn color_config(r: &mut BitReader<'_>) -> Result<ColourConfig, DecodeError> {
-    if r.read_bit()? {
-        return Err(DecodeError::Unsupported("AV1 high bit depth"));
-    }
+    // `high_bitdepth`: 10 bits (`twelve_bit` exists only in the
+    // Professional profile).
+    let bit_depth = if r.read_bit()? {
+        BitDepth::TEN
+    } else {
+        BitDepth::EIGHT
+    };
     let mono_chrome = r.read_bit()?;
     let description = if r.read_bit()? {
         Some(read_code_points(r)?)
@@ -380,6 +390,7 @@ fn color_config(r: &mut BitReader<'_>) -> Result<ColourConfig, DecodeError> {
     }
     let separate_uv_delta_q = !mono_chrome && r.read_bit()?;
     Ok(ColourConfig {
+        bit_depth,
         info: ColourInfo {
             description,
             full_range,

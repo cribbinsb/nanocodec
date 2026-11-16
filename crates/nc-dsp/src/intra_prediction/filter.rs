@@ -8,7 +8,7 @@
 //! (`av1/common/reconintra.c`, BSD-2-Clause, Copyright (c) 2016, Alliance
 //! for Open Media; see `THIRD_PARTY.md`).
 
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 use super::IntraEdges;
 
@@ -26,7 +26,7 @@ pub(crate) const SCALE_BITS: u32 = 4;
 
 /// The prediction's working grid: row 0 is the corner and the above edge,
 /// column 0 the corner and the left edge; the patches fill the rest.
-pub(crate) type FilterGrid = [[u8; FILTER_INTRA_MAX_SIZE + 1]; FILTER_INTRA_MAX_SIZE + 1];
+pub(crate) type FilterGrid<T = u8> = [[T; FILTER_INTRA_MAX_SIZE + 1]; FILTER_INTRA_MAX_SIZE + 1];
 
 /// The five filter intra modes, with their `filter_intra_mode` symbols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -154,7 +154,7 @@ pub(crate) const FILTER_TAP_COLUMNS: [[[i16; PATCH_SAMPLES]; TAPS]; 5] = {
 
 /// The inputs of the patch whose top-left output is `grid[r][c]`: the
 /// corner, four above and two to the left.
-pub(crate) fn patch_inputs(grid: &FilterGrid, r: usize, c: usize) -> [u8; TAPS] {
+pub(crate) fn patch_inputs<T: Sample>(grid: &FilterGrid<T>, r: usize, c: usize) -> [T; TAPS] {
     [
         grid[r - 1][c - 1],
         grid[r - 1][c],
@@ -167,27 +167,44 @@ pub(crate) fn patch_inputs(grid: &FilterGrid, r: usize, c: usize) -> [u8; TAPS] 
 }
 
 /// Write a patch's outputs (row-major) at `grid[r][c]`.
-pub(crate) fn store_patch(grid: &mut FilterGrid, r: usize, c: usize, values: [u8; PATCH_SAMPLES]) {
+pub(crate) fn store_patch<T: Sample>(
+    grid: &mut FilterGrid<T>,
+    r: usize,
+    c: usize,
+    values: [T; PATCH_SAMPLES],
+) {
     grid[r][c..c + PATCH_W].copy_from_slice(&values[..PATCH_W]);
     grid[r + 1][c..c + PATCH_W].copy_from_slice(&values[PATCH_W..]);
 }
 
-/// The scalar patches of a `width`x`height` block (see [`FilterGrid`]).
+/// The scalar patches of a `width`x`height` 8-bit block (see
+/// [`FilterGrid`]).
 pub(crate) fn predict_patches(
     grid: &mut FilterGrid,
     width: usize,
     height: usize,
     mode: FilterIntraMode,
 ) {
+    predict_patches_at(grid, width, height, mode, BitDepth::EIGHT);
+}
+
+/// The scalar patches at any depth.
+pub(crate) fn predict_patches_at<T: Sample>(
+    grid: &mut FilterGrid<T>,
+    width: usize,
+    height: usize,
+    mode: FilterIntraMode,
+    depth: BitDepth,
+) {
     let taps = &FILTER_TAPS[mode.symbol()];
     for r in (1..=height).step_by(PATCH_H) {
         for c in (1..=width).step_by(PATCH_W) {
             let inputs = patch_inputs(grid, r, c);
             let values = taps.map(|tap| {
-                let sum: i32 = tap.iter().zip(inputs).map(|(&t, p)| t * i32::from(p)).sum();
+                let sum: i32 = tap.iter().zip(inputs).map(|(&t, p)| t * p.to_i32()).sum();
                 // Clip1(Round2Signed(sum, 4)): negative sums clip to 0
                 // either way, so the unsigned rounding is exact.
-                ((sum + (1 << (SCALE_BITS - 1))) >> SCALE_BITS).clamp(0, 255) as u8
+                depth.clip_to((sum + (1 << (SCALE_BITS - 1))) >> SCALE_BITS)
             });
             store_patch(grid, r, c, values);
         }
@@ -204,13 +221,15 @@ impl IntraEdges {
     pub fn predict_filter(&self, mode: FilterIntraMode, dst: &mut PlaneViewMut<'_>) {
         self.predict_filter_with(predict_patches, mode, dst);
     }
+}
 
-    /// [`Self::predict_filter`] with `patches` computing the patches.
+impl<T: Sample> IntraEdges<T> {
+    /// Filter intra of the square with `patches` computing the patches.
     pub(crate) fn predict_filter_with(
         &self,
-        patches: impl FnOnce(&mut FilterGrid, usize, usize, FilterIntraMode),
+        patches: impl FnOnce(&mut FilterGrid<T>, usize, usize, FilterIntraMode),
         mode: FilterIntraMode,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         self.predict_filter_block(self.size, self.size, patches, mode, dst);
     }
@@ -227,13 +246,14 @@ impl IntraEdges {
         &self,
         width: usize,
         height: usize,
-        patches: impl FnOnce(&mut FilterGrid, usize, usize, FilterIntraMode),
+        patches: impl FnOnce(&mut FilterGrid<T>, usize, usize, FilterIntraMode),
         mode: FilterIntraMode,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         assert!(width <= FILTER_INTRA_MAX_SIZE && height <= FILTER_INTRA_MAX_SIZE);
         assert!(dst.width() == width && dst.height() == height);
-        let mut grid: FilterGrid = [[0; FILTER_INTRA_MAX_SIZE + 1]; FILTER_INTRA_MAX_SIZE + 1];
+        let mut grid: FilterGrid<T> =
+            [[T::default(); FILTER_INTRA_MAX_SIZE + 1]; FILTER_INTRA_MAX_SIZE + 1];
         grid[0][0] = self.corner;
         grid[0][1..=width].copy_from_slice(&self.above[..width]);
         for (r, &sample) in self.left[..height].iter().enumerate() {

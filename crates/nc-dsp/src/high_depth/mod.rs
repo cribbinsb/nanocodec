@@ -24,6 +24,7 @@
 
 #![allow(unsafe_code)]
 
+pub(crate) mod av1;
 mod inverse;
 mod vector;
 mod vvc_filter;
@@ -75,6 +76,21 @@ pub(crate) type SaoApply16Fn =
     unsafe fn(&[u16], usize, &mut [u16], usize, (isize, isize), [i16; 4], Rect, BitDepth);
 /// SAO band-offset application (`crate::sao::BandFn` with the depth).
 pub(crate) type SaoBand16Fn = unsafe fn(&mut [u16], usize, Rect, u8, [i16; 4], &[bool], BitDepth);
+/// The fixed taps of an unscaled AV1 prediction: horizontal, vertical.
+pub(crate) type Av1Taps<'t> = (&'t [i16; 8], &'t [i16; 8]);
+/// Unscaled AV1 prediction of a block of one width class at final
+/// precision (`av1_mc::convolve::unscaled_put_at`): window and stride,
+/// destination and stride, height (at most 64), taps, depth.
+pub(crate) type Av1Put16Fn =
+    for<'t> unsafe fn((&[u16], usize), (&mut [u16], usize), usize, Av1Taps<'t>, BitDepth);
+/// CDEF of a block whose taps lie inside the plane
+/// (`cdef::scalar::interior_rows`): source, stride, origin, arguments,
+/// destination and stride.
+pub(crate) type CdefInterior16Fn =
+    unsafe fn(&[u16], usize, usize, &crate::cdef::CdefArgs, &mut [u16], usize);
+/// [`Av1Put16Fn`] at compound precision (`unscaled_prep_at`).
+pub(crate) type Av1Prep16Fn =
+    for<'t> unsafe fn((&[u16], usize), (&mut [i16], usize), usize, Av1Taps<'t>, BitDepth);
 
 /// HEVC/VVC prediction kept at six fractional bits
 /// (`Dsp::predict_high_precision` with the depth).
@@ -137,7 +153,28 @@ pub(crate) struct HighFns {
     /// VVC deblocking and ALF (`vvc_filter`).
     pub vvc_filter: vvc_filter::VvcFilterFns,
     pub vvc_recon: vvc_recon::VvcReconFns,
+    /// Unscaled AV1 prediction by width class.
+    pub av1_put: [Av1Put16Fn; WIDTH_CLASSES],
+    /// Unscaled AV1 compound prediction by width class.
+    pub av1_prep: [Av1Prep16Fn; WIDTH_CLASSES],
+    /// CDEF of interior 4x4 and 8x8 blocks.
+    pub cdef_interior: [CdefInterior16Fn; 2],
 }
+
+/// One kernel per width class (4, 8, 16, 32, 64) of `$kernel` generic over
+/// the sample type and the width.
+macro_rules! av1_widths {
+    ($($kernel:ident)::+) => {
+        [
+            $($kernel)::+::<4>,
+            $($kernel)::+::<8>,
+            $($kernel)::+::<16>,
+            $($kernel)::+::<32>,
+            $($kernel)::+::<64>,
+        ]
+    };
+}
+pub(crate) use av1_widths;
 
 /// The kernels of one filter family by width class (`$kernel` generic
 /// over the taps, the tap count and the width).
@@ -171,8 +208,30 @@ pub(crate) use {by_width, families};
 mod scalar {
     use nc_common::BitDepth;
 
+    use super::Av1Taps;
+    use crate::av1_mc::convolve::{unscaled_prep_at, unscaled_put_at};
     use crate::mc::SeparableTaps;
     use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
+
+    pub(super) fn av1_put<const W: usize>(
+        src: (&[u16], usize),
+        dst: (&mut [u16], usize),
+        h: usize,
+        taps: Av1Taps<'_>,
+        depth: BitDepth,
+    ) {
+        unscaled_put_at::<u16, W>(src, dst, h, taps, depth);
+    }
+
+    pub(super) fn av1_prep<const W: usize>(
+        src: (&[u16], usize),
+        dst: (&mut [i16], usize),
+        h: usize,
+        taps: Av1Taps<'_>,
+        depth: BitDepth,
+    ) {
+        unscaled_prep_at::<u16, W>(src, dst, h, taps, depth);
+    }
 
     pub(super) fn predict<T: SeparableTaps<N>, const N: usize, const W: usize>(
         src: &[u16],
@@ -236,6 +295,12 @@ impl HighFns {
             vvc_bdof: crate::vvc_bdof::scalar_at::<u16>,
             vvc_filter: vvc_filter::VvcFilterFns::SCALAR,
             vvc_recon: vvc_recon::VvcReconFns::SCALAR,
+            av1_put: av1_widths!(scalar::av1_put),
+            av1_prep: av1_widths!(scalar::av1_prep),
+            cdef_interior: [
+                crate::cdef::scalar::interior_rows::<u16, 4>,
+                crate::cdef::scalar::interior_rows::<u16, 8>,
+            ],
         };
         match isa {
             #[cfg(target_arch = "x86_64")]
@@ -244,6 +309,9 @@ impl HighFns {
                 table.prep = vector::avx2::PREP;
                 table.bi = vector::avx2::BI;
                 table.hevc_weight = vector::avx2::WEIGHT;
+                table.av1_put = vector::avx2::AV1_PUT;
+                table.av1_prep = vector::avx2::AV1_PREP;
+                table.cdef_interior = vector::avx2::CDEF_INTERIOR;
             }
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => {
@@ -251,6 +319,9 @@ impl HighFns {
                 table.prep = vector::neon::PREP;
                 table.bi = vector::neon::BI;
                 table.hevc_weight = vector::neon::WEIGHT;
+                table.av1_put = vector::neon::AV1_PUT;
+                table.av1_prep = vector::neon::AV1_PREP;
+                table.cdef_interior = vector::neon::CDEF_INTERIOR;
             }
             _ => {}
         }
@@ -285,7 +356,7 @@ pub(crate) fn add_residual<T: Sample>(
 /// keeps its routing in a supertrait beside it: `vvc_filter::VvcFilterPixel`,
 /// [`VvcReconPixel`]).
 #[allow(clippy::too_many_arguments)]
-pub trait Pixel: Sample + vvc_filter::VvcFilterPixel + VvcReconPixel {
+pub trait Pixel: Sample + vvc_filter::VvcFilterPixel + VvcReconPixel + av1::Av1Pixel {
     #[doc(hidden)]
     fn predict(
         kernels: DepthKernels<'_>,
@@ -1390,6 +1461,8 @@ impl DepthKernels<'_> {
     }
 }
 
+#[cfg(test)]
+mod av1_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

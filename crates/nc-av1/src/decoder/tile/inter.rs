@@ -20,6 +20,7 @@ use crate::backend::{Av1Mv, PlaneIndex};
 use crate::decoder_range::SymbolReader;
 use crate::mvcoding::MvPrecision;
 use nc_common::decode::DecodeError;
+use nc_dsp::Pixel;
 use nc_dsp::av1_mc::filter::{Av1Filter, Av1Filters};
 use nc_dsp::av1_mc::mask::{AV1_WEDGE_SIZES, AV1_WEDGE_TYPES, Av1InterIntraMode};
 use nc_dsp::av1_mc::scale::Av1ScaleSizes;
@@ -189,7 +190,7 @@ pub(super) fn wedge_used(size: BlockSize) -> bool {
     AV1_WEDGE_SIZES.contains(&(size.width(), size.height()))
 }
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
     /// `inter_block_mode_info()` (§5.11.23); `skip_mode` blocks take
     /// their references and mode from the frame. In a frame with intra
     /// block copy every block decoded here is one (§5.11.7): it predicts

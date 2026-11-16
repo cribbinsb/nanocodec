@@ -7,6 +7,8 @@
 //! `av1/common/reconinter.c` and `tools/gen_wedge_masks_data.py`
 //! (BSD-2-Clause, see `THIRD_PARTY.md`).
 
+use nc_common::BitDepth;
+
 use super::INTER_POST_ROUND;
 use super::blend::{AV1_MASK_MAX, Av1CompoundPred};
 use super::round2;
@@ -252,15 +254,29 @@ pub fn av1_difference_weight_mask(
     p0: Av1CompoundPred<'_>,
     p1: Av1CompoundPred<'_>,
     inverse: bool,
-    (w, h): (usize, usize),
+    size: (usize, usize),
     mask: &mut [u8],
 ) {
+    av1_difference_weight_mask_at(p0, p1, inverse, size, mask, BitDepth::EIGHT);
+}
+
+/// [`av1_difference_weight_mask`] of predictions at any depth: the
+/// difference is rounded by `(BitDepth − 8) + InterPostRound` bits.
+pub fn av1_difference_weight_mask_at(
+    p0: Av1CompoundPred<'_>,
+    p1: Av1CompoundPred<'_>,
+    inverse: bool,
+    (w, h): (usize, usize),
+    mask: &mut [u8],
+    depth: BitDepth,
+) {
+    let shift = depth.above_eight() + INTER_POST_ROUND;
     let max = i32::from(AV1_MASK_MAX);
     for (r, row) in mask[..w * h].chunks_exact_mut(w).enumerate() {
         let first = &p0.data[r * p0.stride..][..w];
         let second = &p1.data[r * p1.stride..][..w];
         for ((out, &x), &y) in row.iter_mut().zip(first).zip(second) {
-            let difference = round2((i32::from(x) - i32::from(y)).abs(), INTER_POST_ROUND);
+            let difference = round2((i32::from(x) - i32::from(y)).abs(), shift);
             let m = (DIFFERENCE_BASE + difference / DIFFERENCE_FACTOR).clamp(0, max);
             *out = if inverse { max - m } else { m } as u8;
         }

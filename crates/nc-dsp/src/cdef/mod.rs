@@ -34,6 +34,8 @@
 //! side, and that the destination covers the block. Loads and stores index
 //! their slices, so a broken contract panics rather than reads out of bounds.
 
+use nc_common::Sample;
+
 #[allow(unsafe_code)]
 pub(crate) mod band;
 // The 128-bit direction search (NEON, SIMD128); AVX2 has its own
@@ -136,19 +138,29 @@ impl CdefArgs {
 
     /// Resolve a block's parameters.
     pub(crate) fn new(pri: u8, sec: u8, dir: u8, damping: u8) -> Self {
-        let shift = |strength: u8| -> u32 {
+        Self::scaled(u16::from(pri), u16::from(sec), dir, (damping, 0))
+    }
+
+    /// Resolve a block's parameters at a depth `bits_above` bits over 8
+    /// (libaom `av1_cdef_filter_fb`): `pri` and `sec` already scaled by
+    /// `1 << bits_above` (and `pri` adjusted after that), the damping one
+    /// bit larger per bit; the primary taps by the parity of the unscaled
+    /// strength.
+    pub(crate) fn scaled(pri: u16, sec: u16, dir: u8, (damping, bits_above): (u8, u32)) -> Self {
+        let damping = u32::from(damping) + bits_above;
+        let shift = |strength: u16| -> u32 {
             if strength == 0 {
                 0
             } else {
-                (u32::from(damping)).saturating_sub(strength.ilog2())
+                damping.saturating_sub(strength.ilog2())
             }
         };
         Self {
-            pri: i16::from(pri),
-            sec: i16::from(sec),
+            pri: pri as i16,
+            sec: sec as i16,
             pri_shift: shift(pri),
             sec_shift: shift(sec),
-            pri_taps: PRI_TAPS[usize::from(pri & 1)],
+            pri_taps: PRI_TAPS[usize::from((pri >> bits_above) & 1)],
             dir: usize::from(dir & 7),
         }
     }
@@ -226,7 +238,7 @@ pub(crate) struct CdefFns {
 /// builds: an 8x8 block plus [`CDEF_PADDING`] on every side.
 pub(crate) const MAX_WINDOW: usize = (8 + 2 * CDEF_PADDING) * (8 + 2 * CDEF_PADDING);
 
-/// A plane's unfiltered 8-bit samples: the input [`crate::Dsp::cdef_filter`]
+/// A plane's unfiltered samples (8-bit by default): the input [`crate::Dsp::cdef_filter`]
 /// reads while the plane itself is overwritten. Blocks away from the edges
 /// read it directly; the others get a padded 16-bit window of it (module
 /// docs). Reusable across frames.
@@ -238,8 +250,8 @@ pub(crate) const MAX_WINDOW: usize = (8 + 2 * CDEF_PADDING) * (8 + 2 * CDEF_PADD
 /// ([`Self::drop_rows_before`]): the source then holds a line buffer of one
 /// band plus its padding rows rather than a copy of the plane.
 #[derive(Debug, Clone, Default)]
-pub struct CdefSource {
-    data: Vec<u8>,
+pub struct CdefSource<T: Sample = u8> {
+    data: Vec<T>,
     width: usize,
     height: usize,
     /// Plane row of the first row `data` holds.
@@ -249,15 +261,21 @@ pub struct CdefSource {
     end_row: usize,
 }
 
-impl CdefSource {
+impl<T: Sample> CdefSource<T> {
     /// An empty source; fill it with [`Self::fill_from`].
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            data: Vec::new(),
+            width: 0,
+            height: 0,
+            first_row: 0,
+            end_row: 0,
+        }
     }
 
     /// Copy `plane` in. Storage only grows, for reuse across planes.
-    pub fn fill_from(&mut self, plane: &nc_common::PlaneView<'_>) {
+    pub fn fill_from(&mut self, plane: &nc_common::PlaneView<'_, T>) {
         self.start(plane.width(), plane.height());
         self.fill_rows_to(plane, plane.height());
     }
@@ -276,7 +294,7 @@ impl CdefSource {
     /// # Panics
     ///
     /// If `plane` is not the size given to [`Self::start`].
-    pub fn fill_rows_to(&mut self, plane: &nc_common::PlaneView<'_>, end: usize) {
+    pub fn fill_rows_to(&mut self, plane: &nc_common::PlaneView<'_, T>, end: usize) {
         assert_eq!(
             (plane.width(), plane.height()),
             (self.width, self.height),
@@ -327,7 +345,7 @@ impl CdefSource {
     /// The unfiltered sample at (`x`, `y`), which must lie inside the plane
     /// and the rows held.
     #[must_use]
-    pub fn sample(&self, x: usize, y: usize) -> u8 {
+    pub fn sample(&self, x: usize, y: usize) -> T {
         assert!(
             x < self.width && y < self.height,
             "sample outside the plane"
@@ -338,7 +356,7 @@ impl CdefSource {
     /// The rows held, as a plane view (all of the plane after
     /// [`Self::fill_from`]).
     #[must_use]
-    pub fn view(&self) -> nc_common::PlaneView<'_> {
+    pub fn view(&self) -> nc_common::PlaneView<'_, T> {
         nc_common::PlaneView::new(
             &self.data,
             self.width,
@@ -350,7 +368,7 @@ impl CdefSource {
 
     /// The rows held, row after row (stride = width); plane sample (`x`,
     /// `y`) is at [`Self::index`].
-    pub(crate) fn samples(&self) -> &[u8] {
+    pub(crate) fn samples(&self) -> &[T] {
         &self.data
     }
 
@@ -368,8 +386,9 @@ impl CdefSource {
 
     /// The `size`-square block at (`x`, `y`) plus [`CDEF_PADDING`] samples
     /// on every side, as 16-bit values with [`CDEF_UNAVAILABLE`] outside the
-    /// plane; row stride `size + 2 * CDEF_PADDING`. Every row of the window
-    /// inside the plane must be held.
+    /// plane (samples up to 12 bits fit); row stride `size + 2 *
+    /// CDEF_PADDING`. Every row of the window inside the plane must be
+    /// held.
     pub(crate) fn padded_window(&self, x: usize, y: usize, size: usize) -> [i16; MAX_WINDOW] {
         let side = size + 2 * CDEF_PADDING;
         let mut window = [CDEF_UNAVAILABLE; MAX_WINDOW];
@@ -390,7 +409,7 @@ impl CdefSource {
             let first = self.index(x + inside.start - CDEF_PADDING, row);
             let line = &self.data[first..first + inside.len()];
             for (value, &sample) in out[inside.clone()].iter_mut().zip(line) {
-                *value = i16::from(sample);
+                *value = sample.to_i32() as i16;
             }
         }
         window

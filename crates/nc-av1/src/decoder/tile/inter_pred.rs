@@ -22,23 +22,23 @@ use super::inter::{
     CompoundType, InterIntra, InterModes, MAX_NEIGHBOR_OBMC, MotionMode, WarpModel, wedge_used,
 };
 use super::{BlockPos, FrameDecoder, MI_SIZE};
-use crate::backend::{Av1Mv, Picture};
+use crate::backend::Av1Mv;
 use crate::scaled_reference::scaled_window;
 use nc_common::decode::DecodeError;
-use nc_common::{Plane, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::Dsp;
+use nc_common::{Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::av1_mc::blend::{
-    Av1CompoundPred, Av1Mask, Av1ObmcEdge, av1_blend_average, av1_blend_distance,
-    av1_blend_interintra, av1_blend_mask, av1_distance_weights, av1_obmc_blend,
+    Av1CompoundPred, Av1Mask, Av1ObmcEdge, av1_blend_distance_at, av1_blend_interintra,
+    av1_distance_weights, av1_obmc_blend,
 };
 use nc_dsp::av1_mc::convolve::Av1McAxis;
 use nc_dsp::av1_mc::filter::{AV1_FILTER_BEFORE, AV1_FILTER_TAPS, Av1Filters};
 use nc_dsp::av1_mc::mask::{
-    Av1InterIntraMode, Av1WedgeMasks, av1_difference_weight_mask, av1_interintra_smooth_mask,
+    Av1InterIntraMode, Av1WedgeMasks, av1_difference_weight_mask_at, av1_interintra_smooth_mask,
 };
 use nc_dsp::av1_mc::scale::Av1ScaleSizes;
-use nc_dsp::av1_mc::warp::{Av1Shear, av1_setup_shear, av1_warp, av1_warp_compound};
+use nc_dsp::av1_mc::warp::{Av1Shear, av1_setup_shear};
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, IntraKind};
+use nc_dsp::{DepthKernels, Pixel};
 
 /// 1/16-sample positions per sample (`1 << SUBPEL_BITS`).
 const SUBPEL_SHIFTS: i32 = 16;
@@ -53,13 +53,13 @@ const OBMC_MAX_OVERLAP: usize = 32;
 const VERTICAL_ANGLE: u16 = 90;
 const HORIZONTAL_ANGLE: u16 = 180;
 
-/// Scratch the inter predictions reuse across blocks.
+/// Scratch the inter predictions reuse across blocks (`T`: the samples).
 #[derive(Debug, Default)]
-pub(in super::super) struct PredictionScratch {
+pub(in super::super) struct PredictionScratch<T> {
     /// Reference windows gathered with clamped coordinates.
-    pub(super) window: Vec<u8>,
+    pub(super) window: Vec<T>,
     /// Neighbour predictions of OBMC and intra predictions of inter-intra.
-    block: Vec<u8>,
+    block: Vec<T>,
     /// Smooth inter-intra masks and difference-weighted compound masks.
     mask: Vec<u8>,
     /// The two predictions of a compound block, at compound precision.
@@ -71,13 +71,13 @@ pub(in super::super) struct PredictionScratch {
 /// One plane's reference: its samples, its size in them, and the sizes
 /// positions scale between when it is scaled.
 #[derive(Clone, Copy)]
-pub(super) struct PlaneReference<'p> {
-    pub plane: &'p Plane,
+pub(super) struct PlaneReference<'p, T: Pixel> {
+    pub plane: &'p Plane<T>,
     pub size: (usize, usize),
     pub scale: Option<Av1ScaleSizes>,
 }
 
-impl PlaneReference<'_> {
+impl<T: Pixel> PlaneReference<'_, T> {
     /// The filter window of a `w`x`h` block at plane sample (`x`, `y`) of
     /// a plane subsampled by `sub`, displaced by luma vector `mv`: its
     /// top-left, its size, and each direction's phase and step.
@@ -146,25 +146,25 @@ fn unscaled_window(
 /// sample-buffer entry ([`Dsp::av1_put_samples`], as dav1d's `mc`).
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn translate_unscaled(
-    dsp: &Dsp,
-    reference: PlaneReference<'_>,
-    window: &mut Vec<u8>,
+fn translate_unscaled<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: PlaneReference<'_, T>,
+    window: &mut Vec<T>,
     origin: (usize, usize),
     (w, h): (usize, usize),
     mv: Av1Mv,
     sub: (bool, bool),
     filters: Av1Filters,
-    dst: (&mut [u8], usize),
+    dst: (&mut [T], usize),
 ) {
     let ((x0, y0), fracs) = unscaled_window(origin, mv, sub);
     let span = (w + AV1_FILTER_TAPS - 1, h + AV1_FILTER_TAPS - 1);
     let plane = reference.plane;
     if let Some(src) = plane.samples_at(x0, y0, span.0, span.1) {
-        dsp.av1_put_samples(filters, (src, plane.stride()), (w, h), fracs, dst);
+        kernels.av1_put_samples(filters, (src, plane.stride()), (w, h), fracs, dst);
     } else {
         let view = gather(reference, window, (x0, y0), span);
-        dsp.av1_put_samples(filters, (view.data(), view.stride()), (w, h), fracs, dst);
+        kernels.av1_put_samples(filters, (view.data(), view.stride()), (w, h), fracs, dst);
     }
 }
 
@@ -177,33 +177,33 @@ fn translate_unscaled(
     reason = "three times per inter block; out of line its set-up cost ~40M instructions on static 720p"
 )]
 #[inline(always)]
-fn translate(
-    dsp: &Dsp,
-    reference: PlaneReference<'_>,
-    window: &mut Vec<u8>,
+fn translate<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: PlaneReference<'_, T>,
+    window: &mut Vec<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Av1Mv,
     sub: (bool, bool),
     filters: Av1Filters,
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     let ((x0, y0), (span_w, span_h), axes) = reference.window((x, y), (w, h), mv, sub);
     if let Some(view) = reference.plane.region(x0, y0, span_w, span_h) {
-        dsp.av1_predict(filters, &view, (w, h), axes, dst);
+        kernels.av1_predict(filters, &view, (w, h), axes, dst);
         return;
     }
     let view = gather(reference, window, (x0, y0), (span_w, span_h));
-    dsp.av1_predict(filters, &view, (w, h), axes, dst);
+    kernels.av1_predict(filters, &view, (w, h), axes, dst);
 }
 
 /// [`translate`] at compound precision into `dst` (`h` rows of `w`): one
 /// of a compound block's two predictions.
 #[allow(clippy::too_many_arguments)]
-fn translate_compound(
-    dsp: &Dsp,
-    reference: PlaneReference<'_>,
-    window: &mut Vec<u8>,
+fn translate_compound<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    reference: PlaneReference<'_, T>,
+    window: &mut Vec<T>,
     (x, y): (usize, usize),
     (w, h): (usize, usize),
     mv: Av1Mv,
@@ -216,7 +216,7 @@ fn translate_compound(
         Some(view) => view,
         None => gather(reference, window, (x0, y0), span),
     };
-    dsp.av1_predict_compound(filters, &view, (w, h), axes, dst, w);
+    kernels.av1_predict_compound(filters, &view, (w, h), axes, (dst, w));
 }
 
 /// The `w`x`h` window at (`x0`, `y0`) of a reference plane with clamped
@@ -224,15 +224,15 @@ fn translate_compound(
 /// vectors reaching past the border.
 #[cold]
 #[inline(never)]
-pub(super) fn gather<'b>(
-    reference: PlaneReference<'_>,
-    buffer: &'b mut Vec<u8>,
+pub(super) fn gather<'b, T: Pixel>(
+    reference: PlaneReference<'_, T>,
+    buffer: &'b mut Vec<T>,
     (x0, y0): (isize, isize),
     (w, h): (usize, usize),
-) -> PlaneView<'b> {
+) -> PlaneView<'b, T> {
     let view = reference.plane.view();
     buffer.clear();
-    buffer.resize(w * h, 0);
+    buffer.resize(w * h, T::default());
     nc_dsp::emulate_edges(
         (view.data(), view.stride()),
         reference.size,
@@ -251,13 +251,13 @@ struct Warp {
     shear: Av1Shear,
 }
 
-impl<'a> FrameDecoder<'a> {
+impl<'a, T: Pixel> FrameDecoder<'a, T> {
     /// The reference picture plane of reference name `name`.
     fn plane_reference(
         &self,
         name: i8,
         plane: PlaneIndex,
-    ) -> Result<PlaneReference<'a>, DecodeError> {
+    ) -> Result<PlaneReference<'a, T>, DecodeError> {
         let picture = self.references[name as usize]
             .ok_or(DecodeError::Malformed("AV1 missing reference"))?;
         let scale = self.inter_tools.scales[name as usize];
@@ -377,6 +377,7 @@ impl<'a> FrameDecoder<'a> {
         } else {
             &[PlaneIndex::Y]
         };
+        let kernels = self.kernels();
         for &plane in planes {
             let ss = usize::from(plane != PlaneIndex::Y);
             let (origin, size) = Self::plane_block(block, plane);
@@ -391,7 +392,7 @@ impl<'a> FrameDecoder<'a> {
                 scale: None,
             };
             translate_unscaled(
-                self.dsp,
+                kernels,
                 reference,
                 &mut self.maps.prediction.window,
                 origin,
@@ -455,6 +456,7 @@ impl<'a> FrameDecoder<'a> {
         let sub = plane != PlaneIndex::Y;
         let warp = self.warp(block, modes, local, size);
         let reference = self.plane_reference(modes.refs[0], plane)?;
+        let kernels = self.kernels();
         let mut dst = self
             .recon
             .plane_mut(plane)
@@ -468,11 +470,9 @@ impl<'a> FrameDecoder<'a> {
                     .ok_or(DecodeError::Malformed(
                         "AV1 reference smaller than its frame",
                     ))?;
-                av1_warp(
-                    self.dsp,
+                kernels.av1_warp(
                     &view,
-                    &warp.params,
-                    warp.shear,
+                    (&warp.params, warp.shear),
                     origin,
                     size,
                     (sub, sub),
@@ -480,7 +480,7 @@ impl<'a> FrameDecoder<'a> {
                 );
             }
             None => translate(
-                self.dsp,
+                kernels,
                 reference,
                 &mut self.maps.prediction.window,
                 origin,
@@ -519,6 +519,7 @@ impl<'a> FrameDecoder<'a> {
             || self.scaled(modes.refs[0])
             || self.scaled(modes.refs[1]);
         let pictures = [0, 1].map(|list| self.references[modes.refs[list] as usize]);
+        let kernels = self.kernels();
         for plane in PlaneIndex::ALL {
             let (origin, size) = Self::plane_block(block, plane);
             let sub = plane != PlaneIndex::Y;
@@ -545,20 +546,16 @@ impl<'a> FrameDecoder<'a> {
                 .region_mut(origin.0 as isize, origin.1 as isize, size.0, size.1)
                 .ok_or(DecodeError::Malformed("AV1 prediction rectangle"))?;
             match kind {
-                CompoundType::Average => match nc_dsp::BlockSize::new(size.0, size.1) {
-                    Some(kernel_size) => {
-                        self.dsp
-                            .average_compound(kernel_size, (first, second), size.0, &mut dst);
-                    }
-                    None => av1_blend_average(p0, p1, size, &mut dst),
-                },
+                CompoundType::Average => {
+                    kernels.av1_average_compound((first, second), size, &mut dst);
+                }
                 CompoundType::Distance => {
                     let offsets = &self.inter_tools.ref_offsets;
                     let weights = av1_distance_weights(
                         offsets[modes.refs[0] as usize],
                         offsets[modes.refs[1] as usize],
                     );
-                    av1_blend_distance(p0, p1, weights, size, &mut dst);
+                    av1_blend_distance_at(p0, p1, weights, size, &mut dst, kernels.depth());
                 }
                 CompoundType::Wedge { index, sign } => {
                     let wedges = scratch.wedges.get_or_insert_with(Default::default);
@@ -570,14 +567,21 @@ impl<'a> FrameDecoder<'a> {
                         sub_x: sub,
                         sub_y: sub,
                     };
-                    av1_blend_mask(self.dsp, p0, p1, mask, size, &mut dst);
+                    kernels.av1_blend_mask((p0, p1), mask, size, &mut dst);
                 }
                 CompoundType::DifferenceWeighted { inverse } => {
                     // The luma predictions set the mask of every plane.
                     if !sub {
                         scratch.mask.clear();
                         scratch.mask.resize(luma.0 * luma.1, 0);
-                        av1_difference_weight_mask(p0, p1, inverse, luma, &mut scratch.mask);
+                        av1_difference_weight_mask_at(
+                            p0,
+                            p1,
+                            inverse,
+                            luma,
+                            &mut scratch.mask,
+                            kernels.depth(),
+                        );
                     }
                     let mask = Av1Mask {
                         data: &scratch.mask,
@@ -585,7 +589,7 @@ impl<'a> FrameDecoder<'a> {
                         sub_x: sub,
                         sub_y: sub,
                     };
-                    av1_blend_mask(self.dsp, p0, p1, mask, size, &mut dst);
+                    kernels.av1_blend_mask((p0, p1), mask, size, &mut dst);
                 }
             }
         }
@@ -597,13 +601,14 @@ impl<'a> FrameDecoder<'a> {
     /// `pictures`.
     fn translate_both(
         &mut self,
-        pictures: [Option<&'a Picture>; 2],
+        pictures: [Option<&'a Picture<T>>; 2],
         modes: &InterModes,
         plane: PlaneIndex,
         (origin, size): ((usize, usize), (usize, usize)),
     ) -> Result<(), DecodeError> {
         let ss = usize::from(plane != PlaneIndex::Y);
         let (width, height) = (self.header.size.width, self.header.size.height);
+        let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
         let samples = size.0 * size.1;
         for (list, picture) in pictures.into_iter().enumerate() {
@@ -623,13 +628,11 @@ impl<'a> FrameDecoder<'a> {
             let source = reference.plane;
             if let Some(src) = source.samples_at(x0, y0, span.0, span.1) {
                 let src = (src, source.stride());
-                self.dsp
-                    .av1_prep_samples(modes.filters, src, size, fracs, dst);
+                kernels.av1_prep_samples(modes.filters, src, size, fracs, dst);
             } else {
                 let view = gather(reference, &mut scratch.window, (x0, y0), span);
                 let src = (view.data(), view.stride());
-                self.dsp
-                    .av1_prep_samples(modes.filters, src, size, fracs, dst);
+                kernels.av1_prep_samples(modes.filters, src, size, fracs, dst);
             }
         }
         Ok(())
@@ -654,6 +657,7 @@ impl<'a> FrameDecoder<'a> {
             && self.global_warp_list(block.size, modes, list))
         .then(|| self.global_warp(modes.refs[list]))
         .flatten();
+        let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
         // Grown, never cleared: the prediction writes every sample it uses.
         let samples = size.0 * size.1;
@@ -669,20 +673,17 @@ impl<'a> FrameDecoder<'a> {
                     .ok_or(DecodeError::Malformed(
                         "AV1 reference smaller than its frame",
                     ))?;
-                av1_warp_compound(
-                    self.dsp,
+                kernels.av1_warp_compound(
                     &view,
-                    &warp.params,
-                    warp.shear,
+                    (&warp.params, warp.shear),
                     origin,
                     size,
                     (sub, sub),
-                    dst,
-                    size.0,
+                    (dst, size.0),
                 );
             }
             None => translate_compound(
-                self.dsp,
+                kernels,
                 reference,
                 &mut scratch.window,
                 origin,
@@ -728,6 +729,7 @@ impl<'a> FrameDecoder<'a> {
             block.mi_row + 1 - size.1 / piece.1,
             block.mi_col + 1 - size.0 / piece.0,
         );
+        let kernels = self.kernels();
         for (i, y) in (0..size.1).step_by(piece.1).enumerate() {
             for (j, x) in (0..size.0).step_by(piece.0).enumerate() {
                 let cell = *self.maps.motion.at(first.0 + i, first.1 + j);
@@ -739,7 +741,7 @@ impl<'a> FrameDecoder<'a> {
                     .region_mut(at.0 as isize, at.1 as isize, piece.0, piece.1)
                     .ok_or(DecodeError::Malformed("AV1 prediction rectangle"))?;
                 translate(
-                    self.dsp,
+                    kernels,
                     reference,
                     &mut self.maps.prediction.window,
                     at,
@@ -766,16 +768,15 @@ impl<'a> FrameDecoder<'a> {
         let (above, left) = block.available(plane);
         let edges = BlockEdges::read(
             self.recon.plane(plane),
-            x,
-            y,
-            w,
-            h,
+            (x, y),
+            (w, h),
             EdgeAvail {
                 have_above: above,
                 have_left: left,
                 have_above_right: false,
                 have_below_left: false,
             },
+            self.depth(),
         );
         let kind = match interintra.mode {
             Av1InterIntraMode::Dc => IntraKind::Dc,
@@ -791,7 +792,7 @@ impl<'a> FrameDecoder<'a> {
         };
         let scratch = &mut self.maps.prediction;
         scratch.block.clear();
-        scratch.block.resize(w * h, 0);
+        scratch.block.resize(w * h, T::default());
         let mut intra = PlaneViewMut::new(&mut scratch.block, w, w, h).expect("block buffer");
         edges.predict(kind, &mut intra);
         let sub = plane != PlaneIndex::Y;
@@ -898,13 +899,14 @@ impl<'a> FrameDecoder<'a> {
             }
         };
         let reference = self.plane_reference(neighbour.refs[0], plane)?;
+        let kernels = self.kernels();
         let scratch = &mut self.maps.prediction;
         scratch.block.clear();
-        scratch.block.resize(pw * ph, 0);
+        scratch.block.resize(pw * ph, T::default());
         let mut prediction =
             PlaneViewMut::new(&mut scratch.block, pw, pw, ph).expect("block buffer");
         translate(
-            self.dsp,
+            kernels,
             reference,
             &mut scratch.window,
             (px, py),

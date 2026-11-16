@@ -247,7 +247,11 @@ impl MotionGrid {
     /// Record the block `cell` at (`mi_col`, `mi_row`): the units of it
     /// within [`CANDIDATE_REACH`] of its bottom or right edge, inside the
     /// frame.
-    pub(crate) fn fill(&mut self, (mi_col, mi_row): (usize, usize), cell: MotionCell) {
+    #[allow(
+        clippy::extra_unused_type_parameters,
+        reason = "one copy per decoder instance, kept inlined (docs/handoff/high-bit-depth.md)"
+    )]
+    pub(crate) fn fill<T>(&mut self, (mi_col, mi_row): (usize, usize), cell: MotionCell) {
         let w4 = cell.width_mi().min(self.mi_cols - mi_col);
         let h4 = cell.height_mi().min(self.mi_rows - mi_row);
         let inner_rows = h4.saturating_sub(CANDIDATE_REACH);

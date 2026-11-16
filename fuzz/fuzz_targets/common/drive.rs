@@ -163,10 +163,12 @@ pub fn av1(data: &[u8]) {
                         decoder.recycle(picture);
                     }
                 } else if decoder
-                    .decode_and_show(frame.packet)
+                    .decode_any_depth(frame.packet)
                     .map_err(|e| e.to_string())?
                 {
-                    super::read_shown(Some(decoder.shown().expect("a decoded picture is shown")));
+                    super::read_shown_frame(
+                        decoder.shown_frame().expect("a decoded picture is shown"),
+                    );
                 }
                 Ok(())
             });

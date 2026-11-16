@@ -74,6 +74,22 @@ pub(crate) const fn round2_signed(value: i64, bits: u32) -> i64 {
     }
 }
 
+/// The offset compound predictions are stored less (dav1d's `PREP_BIAS`):
+/// 0 at 8 bits; above 8 bits `1 << 13`, so that the range libaom's
+/// high-bit-depth compound buffers allow (`[−24576, 40959]` at 10 bits)
+/// fits `i16`. Every blend adds it back.
+#[must_use]
+pub fn av1_compound_bias(depth: nc_common::BitDepth) -> i32 {
+    if depth.above_eight() == 0 {
+        0
+    } else {
+        HIGH_COMPOUND_BIAS
+    }
+}
+
+/// [`av1_compound_bias`] above 8 bits.
+const HIGH_COMPOUND_BIAS: i32 = 1 << 13;
+
 /// `Clip1` for 8-bit samples.
 pub(crate) fn clip_pixel(value: i32) -> u8 {
     value.clamp(0, PIXEL_MAX) as u8

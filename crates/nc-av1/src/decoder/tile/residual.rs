@@ -14,7 +14,7 @@ use crate::decoder_range::SymbolReader;
 use nc_common::decode::DecodeError;
 use nc_common::{PlaneIndex, PlaneViewMut};
 use nc_dsp::intra_prediction::av1_block::{EdgeAvail, EdgeFilterCtx};
-use nc_dsp::{Av1TxType, Dsp};
+use nc_dsp::{Av1Coefficient, Av1TxType, DepthKernels, Pixel};
 
 /// 4x4 units per 64x64 chunk, which large blocks code one at a time.
 const CHUNK_MI: usize = 16;
@@ -23,7 +23,7 @@ const TX_4X4_COEFFICIENTS: usize = 16;
 /// `MAX_TX_DEPTH`: intra `tx_depth` splits at most twice.
 const MAX_TX_DEPTH: usize = 2;
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
     /// The largest luma transform of a block (`Max_Tx_Size_Rect`), 4x4 in
     /// lossless frames (§5.11.16 `read_tx_size`, `TX_MODE_ONLY_4X4`).
     pub(super) fn largest_tx(&self, size: BlockSize) -> TxSize {
@@ -347,15 +347,16 @@ impl FrameDecoder<'_> {
             self.transform_record((x, y), tx, coded.eob);
         }
         if coded.eob > 0 {
+            let kernels = self.kernels();
             let mut dst = self
                 .recon
                 .plane_mut(plane)
                 .region_mut(x as isize, y as isize, tx.width(), tx.height())
                 .ok_or(DecodeError::Malformed("AV1 inverse rectangle"))?;
             if self.header.lossless {
-                inverse_wht(self.dsp, &self.coefficients.coefficients, &mut dst);
+                inverse_wht(kernels, &self.coefficients.coefficients, &mut dst);
             } else {
-                self.dsp.av1_inverse_add_i16(
+                kernels.av1_inverse_add(
                     tx.dsp(),
                     coded.kind,
                     &mut self.coefficients.coefficients,
@@ -374,8 +375,12 @@ impl FrameDecoder<'_> {
 // Out of line: our own streams are never lossless.
 #[cold]
 #[inline(never)]
-fn inverse_wht(dsp: &Dsp, coefficients: &[i16], dst: &mut PlaneViewMut<'_>) {
+fn inverse_wht<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    coefficients: &[T::Coefficient],
+    dst: &mut PlaneViewMut<'_, T>,
+) {
     let coefficients: [i32; TX_4X4_COEFFICIENTS] =
-        core::array::from_fn(|i| i32::from(coefficients[i]));
-    dsp.av1_inverse_wht_add(&coefficients, dst);
+        core::array::from_fn(|i| coefficients[i].to_i32());
+    kernels.av1_inverse_wht_add(&coefficients, dst);
 }

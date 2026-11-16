@@ -17,12 +17,14 @@ use super::motion_field::MAX_PROJECTION_DISTANCE;
 use super::motion_field::{SavedMotion, TemporalField};
 use super::mv_stack::MvFrame;
 use super::subset::{FrameParameters, SegmentQuantizers};
-use crate::backend::{Dsp, FrameKind, HORZ_ALIKE, Picture, PlaneIndex, VERT_ALIKE, gather};
+use crate::backend::{Dsp, FrameKind, HORZ_ALIKE, PlaneIndex, VERT_ALIKE, gather};
 use crate::decoder_range::SymbolReader;
 use crate::segment_id::{MAX_SEGMENTS, SegmentMap, neg_deinterleave};
 use crate::tables::Partition;
-use crate::tables::{AC_QLOOKUP, DC_QLOOKUP};
+use crate::tables::{AC_QLOOKUP, AC_QLOOKUP_10, DC_QLOOKUP, DC_QLOOKUP_10};
 use nc_common::decode::DecodeError;
+use nc_common::{BitDepth, Picture};
+use nc_dsp::{DepthKernels, Pixel};
 use std::rc::Rc;
 
 // The analysis records (feature `analysis`); every hook below is compiled
@@ -51,9 +53,10 @@ pub(super) use lr_units::LrUnitReader;
 /// at 64 lines on 720p).
 const DEBLOCK_GROUP_LINES: usize = 128;
 
-/// The decoder's per-frame block state, reused by every frame.
+/// The decoder's per-frame block state, reused by every frame (`T`: the
+/// samples of the prediction scratch).
 #[derive(Debug)]
-pub(super) struct FrameMaps {
+pub(super) struct FrameMaps<T: Pixel> {
     /// Block state along the above row and left column, which every
     /// context reads.
     blocks: BlockContexts,
@@ -67,7 +70,7 @@ pub(super) struct FrameMaps {
     /// CDEF strength indices and coded 8x8 units.
     cdef: CdefMap,
     /// CDEF's line buffers and unit list.
-    cdef_scratch: cdef::CdefScratch,
+    cdef_scratch: cdef::CdefScratch<T>,
     /// The luma transforms of the inter block being decoded.
     tx_leaves: Vec<inter_residual::TxLeaf>,
     /// Segment ids of the frame's 4x4 units, when it enables segmentation,
@@ -75,7 +78,7 @@ pub(super) struct FrameMaps {
     pub(super) segments: SegmentMap,
     segment_predicted: SegmentMap,
     /// Inter prediction scratch.
-    prediction: inter_pred::PredictionScratch,
+    prediction: inter_pred::PredictionScratch<T>,
     /// Where analysis records go, when they are being collected.
     #[cfg(feature = "analysis")]
     pub(super) stats: Option<nc_common::stream_stats::StreamStats>,
@@ -84,7 +87,7 @@ pub(super) struct FrameMaps {
     analysis: analysis::BlockScratch,
 }
 
-impl FrameMaps {
+impl<T: Pixel> FrameMaps<T> {
     pub(super) fn new() -> Self {
         Self {
             blocks: BlockContexts::new(),
@@ -106,13 +109,13 @@ impl FrameMaps {
 }
 
 #[allow(clippy::struct_excessive_bools)] // the sequence's tool flags
-pub(super) struct FrameDecoder<'a> {
+pub(super) struct FrameDecoder<'a, T: Pixel> {
     header: FrameParameters,
     /// What the frame's MV stacks depend on.
     mv_frame: MvFrame,
     /// Boxed so the frame state stays small to move (about 16 KiB).
     pub(super) cdfs: Box<Cdfs>,
-    maps: &'a mut FrameMaps,
+    maps: &'a mut FrameMaps<T>,
     /// The frame's deblocking level of each reference and mode type.
     levels: LevelTable,
     /// Coefficient contexts of each plane: per 4x4 unit of the frame
@@ -131,10 +134,10 @@ pub(super) struct FrameDecoder<'a> {
     current_q: u32,
     /// `ReadDeltas`: the superblock's first block codes its deltas.
     read_deltas: bool,
-    pub(super) recon: Picture,
+    pub(super) recon: Picture<T>,
     /// The reference pictures by reference name (`LAST_FRAME` ..
     /// `ALTREF_FRAME`; index 0 unused).
-    references: [Option<&'a Picture>; TOTAL_REFS],
+    references: [Option<&'a Picture<T>>; TOTAL_REFS],
     /// The frame's inter tools.
     inter_tools: InterTools,
     /// The projected motion field (`use_ref_frame_mvs`), built one
@@ -143,6 +146,9 @@ pub(super) struct FrameDecoder<'a> {
     /// The vectors the frame keeps for later frames.
     pub(super) saved_motion: Option<SavedMotion>,
     dsp: &'a Dsp,
+    /// The sequence's `BitDepth` (luma and chroma alike in AV1); read
+    /// through [`Self::depth`].
+    bit_depth: BitDepth,
     /// Transform-size contexts.
     txfm: TxContexts,
     /// The tile being decoded.
@@ -167,7 +173,7 @@ pub(super) struct FrameDecoder<'a> {
     /// Coefficient scratch, kept zero between transform blocks: a block
     /// clears only the positions it coded (zeroing whole arrays per block
     /// was once the largest single cost of native AV1 decode).
-    coefficients: Box<CoefficientBuffer>,
+    coefficients: Box<CoefficientBuffer<T::Coefficient>>,
     /// The restoration units superblocks code, when a plane is restored.
     pub(super) restoration: Option<LrUnitReader>,
     /// The primary reference's segment map, when it covers this frame
@@ -184,6 +190,20 @@ pub(super) struct SequenceTools {
     pub intra_edge_filter: bool,
     pub cdef: bool,
     pub mono_chrome: bool,
+    pub bit_depth: BitDepth,
+}
+
+/// `depth` as code instantiated for samples `T` sees it: the constant 8
+/// bits in the `u8` instance, so that depth arithmetic folds away there
+/// (`BitDepths::of`).
+#[inline]
+pub(super) fn depth_of<T: Pixel>(depth: BitDepth) -> BitDepth {
+    nc_common::BitDepths {
+        luma: depth,
+        chroma: depth,
+    }
+    .of::<T>()
+    .luma
 }
 
 /// Luma samples per mode-info unit (`MI_SIZE`).
@@ -281,23 +301,29 @@ impl BlockPos {
 }
 
 /// Dequantiser steps of `base_q_idx` with the DC and AC deltas of a plane
-/// (§7.12.2 `dc_q`, `ac_q`).
-fn steps(base_q_idx: u32, (dc_delta, ac_delta): (i32, i32)) -> Steps {
+/// at `depth` (§7.12.2 `dc_q`, `ac_q`: `Dc_Qlookup[(BitDepth − 8) >> 1]`).
+fn steps(base_q_idx: u32, (dc_delta, ac_delta): (i32, i32), depth: BitDepth) -> Steps {
     let q = |delta: i32| (base_q_idx as i32 + delta).clamp(0, DC_QLOOKUP.len() as i32 - 1) as usize;
+    let (dc, ac) = if depth.above_eight() == 0 {
+        (&DC_QLOOKUP, &AC_QLOOKUP)
+    } else {
+        (&DC_QLOOKUP_10, &AC_QLOOKUP_10)
+    };
     Steps {
-        dc: i32::from(DC_QLOOKUP[q(dc_delta)]),
-        ac: i32::from(AC_QLOOKUP[q(ac_delta)]),
+        dc: i32::from(dc[q(dc_delta)]),
+        ac: i32::from(ac[q(ac_delta)]),
+        max: Steps::coefficient_max(depth.bits()),
     }
 }
-impl<'a> FrameDecoder<'a> {
+impl<'a, T: Pixel> FrameDecoder<'a, T> {
     /// The decoder of one frame of `header`'s coded size.
     pub(super) fn new(
         header: FrameParameters,
         cdfs: Box<Cdfs>,
         dsp: &'a Dsp,
-        references: [Option<&'a Picture>; TOTAL_REFS],
-        recon: Picture,
-        maps: &'a mut FrameMaps,
+        references: [Option<&'a Picture<T>>; TOTAL_REFS],
+        recon: Picture<T>,
+        maps: &'a mut FrameMaps<T>,
         sequence_tools: SequenceTools,
         inter_tools: InterTools,
         temporal: TemporalField<'a>,
@@ -337,9 +363,11 @@ impl<'a> FrameDecoder<'a> {
             }
         }
         let base_q_idx = header.base_q_idx;
+        let bit_depth = sequence_tools.bit_depth;
+        let depth = depth_of::<T>(bit_depth);
         let plane_steps = header
             .quant_deltas
-            .map(|deltas| steps(header.base_q_idx, deltas));
+            .map(|deltas| steps(header.base_q_idx, deltas, depth));
         let restoration = header
             .restoration
             .any()
@@ -366,9 +394,11 @@ impl<'a> FrameDecoder<'a> {
             temporal,
             saved_motion,
             dsp,
+            bit_depth,
             txfm: TxContexts::new(mi_cols),
             tile: TileBounds::frame(mi_cols, mi_rows),
-            palette: screen_content.then(|| Box::new(palette::PaletteState::new(mi_cols))),
+            palette: screen_content
+                .then(|| Box::new(palette::PaletteState::new(mi_cols, depth.bits()))),
             decoded: DecodedUnits::new(mi_cols, mi_rows, sequence_tools.superblock),
             uv_smooth: ChromaSmooth::new(mi_cols),
             filter_intra: sequence_tools.filter_intra,
@@ -382,6 +412,16 @@ impl<'a> FrameDecoder<'a> {
             coefficients: CoefficientBuffer::new(),
         }
     }
+    /// The samples' bit depth: 8 in the `u8` instance (a constant there).
+    #[inline]
+    pub(super) fn depth(&self) -> BitDepth {
+        depth_of::<T>(self.bit_depth)
+    }
+    /// The kernels at the samples' depth.
+    #[inline]
+    pub(super) fn kernels(&self) -> DepthKernels<'a> {
+        self.dsp.at(self.depth())
+    }
     /// Deblocking (§7.14) of the frame's blocks not deblocked yet.
     pub(super) fn deblock(&mut self) {
         self.deblock_until(None);
@@ -393,7 +433,7 @@ impl<'a> FrameDecoder<'a> {
     #[inline(never)]
     fn deblock_until(&mut self, until: Option<deblock::AreaMark>) {
         deblock::apply(
-            self.dsp,
+            self.kernels(),
             &mut self.recon,
             &mut self.maps.edges,
             &self.header.loop_filter,
@@ -405,7 +445,7 @@ impl<'a> FrameDecoder<'a> {
     /// CDEF (§7.15) of the deblocked frame.
     pub(super) fn cdef(&mut self) {
         cdef::apply(
-            self.dsp,
+            self.kernels(),
             &mut self.recon,
             &self.maps.cdef,
             &self.header.cdef,
@@ -796,15 +836,20 @@ impl<'a> FrameDecoder<'a> {
         }
         let q = (self.current_q as i32 + offset).clamp(0, MAX_QINDEX) as u32;
         self.block_q = q;
-        self.block_steps = self.header.quant_deltas.map(|deltas| steps(q, deltas));
+        let depth = self.depth();
+        self.block_steps = self
+            .header
+            .quant_deltas
+            .map(|deltas| steps(q, deltas, depth));
     }
     /// Set `CurrentQIndex` and the dequantiser steps that follow it.
     fn set_q_index(&mut self, q_index: u32) {
         self.current_q = q_index;
+        let depth = self.depth();
         self.steps = self
             .header
             .quant_deltas
-            .map(|deltas| steps(q_index, deltas));
+            .map(|deltas| steps(q_index, deltas, depth));
     }
     /// An intra block (§5.11.7, §5.11.22): its modes, transform size and
     /// residual, then the state later blocks and the loop filters read.
@@ -944,7 +989,7 @@ impl<'a> FrameDecoder<'a> {
     /// vectors for later frames.
     fn record_motion(&mut self, block: BlockPos, cell: MotionCell) {
         let at = (block.mi_col, block.mi_row);
-        self.maps.motion.fill(at, cell);
+        self.maps.motion.fill::<T>(at, cell);
         if let (Some(saved), Some(sides)) = (&mut self.saved_motion, &self.inter_tools.saved_sides)
         {
             let (mi_cols, mi_rows) = (self.header.width / MI_SIZE, self.header.height / MI_SIZE);
@@ -966,7 +1011,7 @@ impl<'a> FrameDecoder<'a> {
         if !self.cdef {
             return;
         }
-        self.maps.cdef.coded_block((mi_col, mi_row), (w4, h4));
+        self.maps.cdef.coded_block::<T>((mi_col, mi_row), (w4, h4));
         if self.maps.cdef.needs_index(mi_col, mi_row) {
             let index = reader.literal(u32::from(self.header.cdef.bits)) as i8;
             self.maps.cdef.set_index((mi_col, mi_row), (w4, h4), index);

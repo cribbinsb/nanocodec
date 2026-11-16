@@ -14,7 +14,7 @@
 
 #![allow(clippy::inline_always)]
 
-use nc_common::PlaneViewMut;
+use nc_common::{PlaneViewMut, Sample};
 
 use super::{EDGE_LEN, IntraEdges, MAX_INTRA_SIZE};
 
@@ -58,30 +58,30 @@ pub(super) const DERIVATIVE: [i32; 90] = [
 /// ([`ScalarDirectional`]) or an ISA's (`crate::av1_intra`), which
 /// instantiates [`IntraEdges::predict_angle_with`] under its target
 /// feature so that everything inlines.
-pub(crate) trait DirectionalKernels {
+pub(crate) trait DirectionalKernels<T: Sample = u8> {
     /// `out[k] = Round2(window[k] · (32 − weight) + window[k + 1] · weight,
     /// 5)`, with `window.len() == out.len() + 1` and `weight < 32`.
-    fn run(window: &[u8], weight: usize, out: &mut [u8]);
+    fn run(window: &[T], weight: usize, out: &mut [T]);
     /// `dst` sample `(i, j)` = `columns[j * side + i]`, `side`x`side`.
-    fn store_transposed(columns: &[u8], side: usize, dst: &mut PlaneViewMut<'_>);
+    fn store_transposed(columns: &[T], side: usize, dst: &mut PlaneViewMut<'_, T>);
 }
 
-/// The scalar reference kernels.
+/// The scalar reference kernels, at any depth.
 pub(crate) struct ScalarDirectional;
 
-impl DirectionalKernels for ScalarDirectional {
+impl<T: Sample> DirectionalKernels<T> for ScalarDirectional {
     #[inline(always)]
-    fn run(window: &[u8], weight: usize, out: &mut [u8]) {
+    fn run(window: &[T], weight: usize, out: &mut [T]) {
         interpolate_run(window, weight, out);
     }
 
     #[inline(always)]
-    fn store_transposed(columns: &[u8], side: usize, dst: &mut PlaneViewMut<'_>) {
+    fn store_transposed(columns: &[T], side: usize, dst: &mut PlaneViewMut<'_, T>) {
         store_transposed(columns, side, dst);
     }
 }
 
-impl IntraEdges {
+impl<T: Sample> IntraEdges<T> {
     /// Predict the square from the edges at `angle` degrees (a nominal
     /// direction plus `3 * angle_delta`), with the scalar kernels
     /// (`Dsp::av1_intra_predict_angle` runs this ISA's).
@@ -90,16 +90,16 @@ impl IntraEdges {
     ///
     /// If `angle` is not strictly between 0 and 270 degrees, or the
     /// destination does not match the edge size.
-    pub fn predict_angle(&self, angle: u16, dst: &mut PlaneViewMut<'_>) {
+    pub fn predict_angle(&self, angle: u16, dst: &mut PlaneViewMut<'_, T>) {
         self.predict_angle_with::<ScalarDirectional>(angle, dst);
     }
 
     /// [`Self::predict_angle`] with the kernels `K`.
     #[inline(always)]
-    pub(crate) fn predict_angle_with<K: DirectionalKernels>(
+    pub(crate) fn predict_angle_with<K: DirectionalKernels<T>>(
         &self,
         angle: u16,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         let n = self.size;
         assert!(dst.width() == n && dst.height() == n);
@@ -120,10 +120,10 @@ impl IntraEdges {
     /// The oblique angles on a side known at compile time (`N` = the edge
     /// size), so the runs have fixed lengths and the tiles only `N²` bytes.
     #[inline(always)]
-    fn predict_zone<K: DirectionalKernels, const N: usize>(
+    fn predict_zone<K: DirectionalKernels<T>, const N: usize>(
         &self,
         angle: u16,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         assert_eq!(self.size, N);
         match angle {
@@ -144,7 +144,7 @@ impl IntraEdges {
     /// which is the sample the spec clamps to, so runs need no end test.
     /// The lead (outputs that are overwritten) holds the corner.
     #[inline(always)]
-    fn line(&self, edge: &[u8; EDGE_LEN]) -> [u8; LINE_LEN] {
+    fn line(&self, edge: &[T; EDGE_LEN]) -> [T; LINE_LEN] {
         let n = self.size;
         let mut line = [edge[2 * n - 1]; LINE_LEN];
         line[..=LINE_LEAD].fill(self.corner);
@@ -155,10 +155,14 @@ impl IntraEdges {
     /// Angles below 90: from the above row only, which ends at
     /// `AboveRow[2n − 1]`; samples projecting past it repeat it.
     #[inline(always)]
-    fn zone1<K: DirectionalKernels, const N: usize>(&self, dx: i32, dst: &mut PlaneViewMut<'_>) {
+    fn zone1<K: DirectionalKernels<T>, const N: usize>(
+        &self,
+        dx: i32,
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
         let line = self.line(&self.above);
         for i in 0..N {
-            projected_run::<K, N>(&line, (i as i32 + 1) * dx, &mut dst.row_mut(i)[..N]);
+            projected_run::<T, K, N>(&line, (i as i32 + 1) * dx, &mut dst.row_mut(i)[..N]);
         }
     }
 
@@ -166,11 +170,11 @@ impl IntraEdges {
     /// lands on it (or its corner), else from the left column. In row `i`
     /// that is every column from `ceil(((i + 1) * dx − 64) / 64)` on.
     #[inline(always)]
-    fn zone2<K: DirectionalKernels, const N: usize>(
+    fn zone2<K: DirectionalKernels<T>, const N: usize>(
         &self,
         dx: i32,
         dy: i32,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         let (above, left) = (self.line(&self.above), self.line(&self.left));
         let unit = 1 << POSITION_BITS;
@@ -206,7 +210,7 @@ impl IntraEdges {
             // part's (overwritten below), and their projections stay within
             // the line's lead because the first row's lands at or after
             // the corner (AV1 §7.11.2.4: `base_y ≥ −1`).
-            let mut columns = [[0; N]; N];
+            let mut columns = [[T::default(); N]; N];
             let mut first = 0;
             for (j, column) in columns.iter_mut().enumerate().take(splits[N - 1]) {
                 while splits[first] <= j {
@@ -239,11 +243,15 @@ impl IntraEdges {
     /// `LeftCol[2n − 1]`; zone 1 transposed. The columns are runs into a
     /// tile, transposed into the destination once.
     #[inline(always)]
-    fn zone3<K: DirectionalKernels, const N: usize>(&self, dy: i32, dst: &mut PlaneViewMut<'_>) {
+    fn zone3<K: DirectionalKernels<T>, const N: usize>(
+        &self,
+        dy: i32,
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
         let line = self.line(&self.left);
-        let mut columns = [[0; N]; N];
+        let mut columns = [[T::default(); N]; N];
         for (j, column) in columns.iter_mut().enumerate() {
-            projected_run::<K, N>(&line, (j as i32 + 1) * dy, column);
+            projected_run::<T, K, N>(&line, (j as i32 + 1) * dy, column);
         }
         K::store_transposed(columns.as_flattened(), N, dst);
     }
@@ -267,10 +275,10 @@ fn weight(position: i32) -> usize {
 /// sample): `N` samples interpolated from `line` at one weight. A start at
 /// or past `2N − 1` reads only the line's repeated last sample.
 #[inline(always)]
-fn projected_run<K: DirectionalKernels, const N: usize>(
-    line: &[u8; LINE_LEN],
+fn projected_run<T: Sample, K: DirectionalKernels<T>, const N: usize>(
+    line: &[T; LINE_LEN],
     position: i32,
-    out: &mut [u8],
+    out: &mut [T],
 ) {
     let start = ((position >> POSITION_BITS) as usize).min(2 * N - 1);
     K::run(
@@ -281,17 +289,21 @@ fn projected_run<K: DirectionalKernels, const N: usize>(
 }
 
 /// `Round2(a · (32 − weight) + b · weight, 5)` in 16 bits (the sum is at
-/// most `255 · 32 + 16`), which lets runs vectorise on 16-bit lanes.
+/// most `255 · 32 + 16` at 8 bits, `1023 · 32 + 16` at 10), which lets
+/// runs vectorise on 16-bit lanes.
 #[inline(always)]
-fn interpolate(a: u8, b: u8, weight: usize) -> u8 {
+fn interpolate<T: Sample>(a: T, b: T, weight: usize) -> T {
     let far = weight as u16;
     let near = WEIGHT_SCALE as u16 - far;
-    ((u16::from(a) * near + u16::from(b) * far + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS) as u8
+    let (a, b) = (a.to_i32() as u16, b.to_i32() as u16);
+    T::from_i32(i32::from(
+        (a * near + b * far + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS,
+    ))
 }
 
 /// Scalar [`DirectionalKernels::run`].
 #[inline(always)]
-pub(crate) fn interpolate_run(window: &[u8], weight: usize, out: &mut [u8]) {
+pub(crate) fn interpolate_run<T: Sample>(window: &[T], weight: usize, out: &mut [T]) {
     let len = out.len();
     let (first, second) = (&window[..len], &window[1..=len]);
     for ((sample, &a), &b) in out.iter_mut().zip(first).zip(second) {
@@ -301,7 +313,11 @@ pub(crate) fn interpolate_run(window: &[u8], weight: usize, out: &mut [u8]) {
 
 /// Scalar [`DirectionalKernels::store_transposed`].
 #[inline(always)]
-pub(crate) fn store_transposed(columns: &[u8], side: usize, dst: &mut PlaneViewMut<'_>) {
+pub(crate) fn store_transposed<T: Sample>(
+    columns: &[T],
+    side: usize,
+    dst: &mut PlaneViewMut<'_, T>,
+) {
     let columns = &columns[..side * side];
     for i in 0..side {
         for (sample, column) in dst.row_mut(i)[..side]

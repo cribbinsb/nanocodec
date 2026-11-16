@@ -57,6 +57,7 @@ pub(crate) mod dav1d_model;
 pub(crate) mod dav1d_neon;
 #[allow(unsafe_code)]
 mod generic;
+pub(crate) mod high;
 #[allow(unsafe_code)]
 pub(crate) mod kernels;
 pub(crate) mod one_d;

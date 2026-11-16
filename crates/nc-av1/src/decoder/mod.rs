@@ -3,9 +3,12 @@
 //! shared.
 //!
 //! Module map:
+//! - `instance`: the public [`Decoder`], which runs the decoding process
+//!   (`Core`, generic over the sample type: `u8` for 8-bit sequences,
+//!   `u16` for 10-bit ones) the current sequence needs;
 //! - `obu`: OBU framing and tile group headers (AV1 §5.3, §5.11.1);
 //! - `sequence`, `frame_header`: complete sequence and frame header syntax
-//!   (§5.5, §5.9) for 8-bit 4:2:0 Main streams;
+//!   (§5.5, §5.9) for Main streams (8- and 10-bit 4:2:0 and monochrome);
 //! - `subset`: the frame-level gate naming tools the block layer does not
 //!   decode yet (the conformance gap list);
 //! - `block_size`: the 22 block sizes and `Partition_Subsize`;
@@ -35,7 +38,7 @@
 //! enhancement drift is the transport/encoder's responsibility: receivers strip
 //! `S1` until an `S1`-only intra repair or key unit arrives, or report per-layer
 //! loss (`Encoder::report_layer_loss`) so the encoder emits an `S1` repair.
-use super::{Dsp, Picture, PlaneIndex, coeff_cdf_q_ctx};
+use super::{Dsp, PlaneIndex, coeff_cdf_q_ctx};
 use crate::segment_id::SegmentMap;
 use block_size::{BlockSize, MI_SIZE_LOG2};
 use cdf::Cdfs;
@@ -44,7 +47,8 @@ use motion_field::{MotionField, ProjectionSource, SavedMotion, TemporalField};
 use nc_common::decode::{BitReader, DecodeError};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{PictureRecycler, ShownPicture};
+use nc_common::{BitDepth, Picture, PictureRecycler, ShownPicture};
+use nc_dsp::Pixel;
 use nc_dsp::av1_restoration::Av1LrScratch;
 use sequence::Sequence;
 use std::rc::Rc;
@@ -59,6 +63,7 @@ mod deblock;
 mod extract;
 mod film_grain;
 mod frame_header;
+mod instance;
 mod motion;
 mod motion_field;
 mod mv_stack;
@@ -72,12 +77,11 @@ mod tile;
 mod transform;
 
 pub use extract::{Av1StreamExtractor, ExtractedTemporalUnit, lowest_spatial_operating_point};
+pub use instance::Decoder;
 
 /// Luma border of reconstructed (reference) pictures: motion vectors may
 /// point this far outside the frame.
 const RECON_BORDER: usize = 64;
-/// The chroma samples of monochrome frames (8-bit mid-grey).
-const MONOCHROME_CHROMA: u8 = 128;
 /// Largest temporal unit accepted: memory for untrusted input.
 const MAX_TEMPORAL_UNIT_BYTES: usize = 256 * 1024 * 1024;
 /// Highest operating point index an AV1 sequence header can signal
@@ -86,8 +90,8 @@ pub const MAX_OPERATING_POINT: u8 = (sequence::MAX_OPERATING_POINTS - 1) as u8;
 
 /// A decoded frame as kept in reference slots.
 #[derive(Debug)]
-struct SavedFrame {
-    picture: Picture,
+struct SavedFrame<T: Pixel> {
+    picture: Picture<T>,
     cdfs: Cdfs,
     header: SlotHeader,
     spatial_id: u8,
@@ -99,12 +103,14 @@ struct SavedFrame {
     segments: Option<Rc<SegmentMap>>,
 }
 
-/// Stateful AV1 decoder: one temporal unit (low-overhead OBU format, as in
-/// IVF) in, the frame it shows out.
+/// The decoding process of one sample type (`docs/handoff/high-bit-depth.md`):
+/// `u8` decodes 8-bit sequences, `u16` 10-bit ones; [`Decoder`] holds the
+/// one the current sequence needs. One temporal unit (low-overhead OBU
+/// format, as in IVF) in, the frame it shows out.
 #[derive(Debug)]
-pub struct Decoder {
+pub(crate) struct Core<T: Pixel> {
     sequence: Option<Sequence>,
-    slots: [Option<Rc<SavedFrame>>; NUM_REF_FRAMES],
+    slots: [Option<Rc<SavedFrame<T>>>; NUM_REF_FRAMES],
     /// `RefValid` (§7.20): with frame ids, a slot whose frame is further
     /// back than a delta can name is invalid until refreshed, so a stale
     /// slot cannot match a later id after the ids wrap.
@@ -114,19 +120,19 @@ pub struct Decoder {
     /// returns ([`Decoder::recycle`]) become later reconstructions and
     /// outputs. Decoding writes every sample of the coded area before
     /// reading it, so their stale samples never reach the output.
-    pictures: PictureRecycler,
+    pictures: PictureRecycler<T>,
     /// The block layer's per-frame state, reused by every frame.
-    maps: tile::FrameMaps,
+    maps: tile::FrameMaps<T>,
     /// The buffer of the current frame's projected motion field.
     field: MotionField,
     /// Loop restoration's window and row buffers, reused by every frame.
-    restoration: Av1LrScratch,
+    restoration: Av1LrScratch<T>,
     /// The frame the last successful [`Decoder::decode_shown`] showed,
     /// held until the next decode.
-    shown: Option<Rc<SavedFrame>>,
+    shown: Option<Rc<SavedFrame<T>>>,
     /// That frame with film grain (§7.18.3), when its parameters apply
     /// grain: what is shown in its place (references stay grain-free).
-    grain: Option<Picture>,
+    grain: Option<Picture<T>>,
     /// Whether shown frames get the film grain their parameters signal.
     /// Off shows the grain-free picture, as `aomdec --skip-film-grain` and
     /// `dav1d --filmgrain 0` do: what quality is scored on, since the grain
@@ -139,7 +145,7 @@ pub struct Decoder {
     /// `decode_with_layer` or `decode`.
     last_spatial_id: Option<u8>,
 }
-impl Default for Decoder {
+impl<T: Pixel> Default for Core<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -175,11 +181,11 @@ impl<'a> PendingFrame<'a> {
 /// `field`: it projects from the references' kept vectors one superblock
 /// row at a time, as the tiles decode (none when the frame does not use
 /// them).
-fn temporal_field<'a>(
+fn temporal_field<'a, T: Pixel>(
     field: &'a mut MotionField,
     header: &FrameHeader,
     seq: &Sequence,
-    references: &'a [Option<Rc<SavedFrame>>; frame_header::TOTAL_REFS],
+    references: &'a [Option<Rc<SavedFrame<T>>>; frame_header::TOTAL_REFS],
 ) -> TemporalField<'a> {
     let sources = std::array::from_fn(|name| {
         references[name]
@@ -194,7 +200,37 @@ fn temporal_field<'a>(
     TemporalField::new(field, seq, mi, header.order_hint, &sources)
 }
 
-impl Decoder {
+impl<T: Pixel> Core<T> {
+    /// The decoder of a sequence of another sample type, carrying the
+    /// caller's settings (operating point, film grain, analysis) over; no
+    /// sequence, references or shown frame.
+    fn successor<U: Pixel>(&mut self) -> Core<U> {
+        let mut next = Core::<U>::new();
+        next.operating_point = self.operating_point;
+        next.apply_film_grain = self.apply_film_grain;
+        next.last_spatial_id = self.last_spatial_id;
+        #[cfg(feature = "analysis")]
+        {
+            next.maps.stats = self.maps.stats.take();
+        }
+        next
+    }
+
+    /// Whether the active sequence is monochrome.
+    fn is_monochrome(&self) -> bool {
+        self.sequence.is_some_and(|s| s.mono_chrome)
+    }
+
+    /// The active sequence's `BitDepth` (8 before the first one).
+    fn bit_depth(&self) -> BitDepth {
+        self.sequence.map_or(BitDepth::EIGHT, |s| s.bit_depth)
+    }
+
+    /// The samples' bit depth: 8 in the `u8` instance, else the sequence's.
+    fn depth(&self) -> BitDepth {
+        tile::depth_of::<T>(self.bit_depth())
+    }
+
     /// Start without sequence information or reference pictures.
     #[must_use]
     pub fn new() -> Self {
@@ -274,7 +310,7 @@ impl Decoder {
     }
     /// Return a picture [`Decoder::decode`] produced once the caller is done
     /// with it, so a later frame reuses its buffer instead of allocating.
-    pub fn recycle(&mut self, picture: Picture) {
+    pub fn recycle(&mut self, picture: Picture<T>) {
         self.pictures.give(picture);
     }
     /// Colour signalling of the active sequence header (`None` before the
@@ -308,7 +344,7 @@ impl Decoder {
     pub fn decode_with_layer(
         &mut self,
         temporal_unit: &[u8],
-    ) -> Result<Option<(Picture, u8)>, DecodeError> {
+    ) -> Result<Option<(Picture<T>, u8)>, DecodeError> {
         let Some(saved) = self.decode_unit(temporal_unit)? else {
             return Ok(None);
         };
@@ -326,20 +362,6 @@ impl Decoder {
         self.shown = Some(saved);
         Ok(Some((output, spatial_id)))
     }
-    /// Decode one temporal unit and return the picture it shows, or `None`
-    /// when every frame OBU in the unit belonged to a temporal/spatial layer
-    /// dropped by the selected operating point (`AV1 §7.18`). When `Ok(None)`
-    /// or `Err` is returned, [`Decoder::shown`] is retained.
-    ///
-    /// # Errors
-    /// As [`Decoder::decode`].
-    pub fn decode_optional(
-        &mut self,
-        temporal_unit: &[u8],
-    ) -> Result<Option<Picture>, DecodeError> {
-        self.decode_with_layer(temporal_unit)
-            .map(|opt| opt.map(|(picture, _)| picture))
-    }
     /// Decode one temporal unit and return `(picture, spatial_id)` for every
     /// shown spatial layer in the selected operating point in OBU order (matching
     /// `dav1d --alllayers 1` and `aomdec --all-layers`). When the operating
@@ -351,7 +373,7 @@ impl Decoder {
     pub fn decode_all_layers(
         &mut self,
         temporal_unit: &[u8],
-    ) -> Result<Vec<(Picture, u8)>, DecodeError> {
+    ) -> Result<Vec<(Picture<T>, u8)>, DecodeError> {
         let frames = self.decode_unit_frames(temporal_unit, true)?;
         let mut outputs = Vec::with_capacity(frames.len());
         let mut last_state = None;
@@ -376,35 +398,8 @@ impl Decoder {
         }
         Ok(outputs)
     }
-    /// Decode one temporal unit that must produce a shown frame and return it
-    /// (the highest spatial layer in the unit). For operating points where a
-    /// temporal unit may be legally dropped in full, use
-    /// [`Decoder::decode_optional`], [`Decoder::decode_with_layer`] or
-    /// [`Decoder::decode_shown`]. A failed unit leaves the reference slots and
-    /// [`Decoder::shown`] as the frames before the failing one left them.
-    ///
-    /// # Errors
-    /// Returns [`DecodeError`] for malformed, truncated or unsupported syntax,
-    /// a temporal unit that shows no frame, missing references, or dimensions
-    /// beyond the supported allocation limit.
-    pub fn decode(&mut self, temporal_unit: &[u8]) -> Result<Picture, DecodeError> {
-        self.decode_with_layer(temporal_unit)?
-            .map(|(picture, _)| picture)
-            .ok_or(DecodeError::Malformed("AV1 temporal unit shows no frame"))
-    }
-
-    /// [`Decoder::decode`] without the output copy: the frame is shown by
-    /// [`Decoder::shown`] until the next call. When the selected operating
-    /// point drops every OBU in `temporal_unit`, or when decoding fails, the
-    /// previous shown frame is retained.
-    ///
-    /// # Errors
-    /// As [`Decoder::decode`].
-    pub fn decode_shown(&mut self, temporal_unit: &[u8]) -> Result<(), DecodeError> {
-        self.decode_and_show(temporal_unit).map(|_| ())
-    }
-
-    /// [`Decoder::decode_shown`], returning whether the unit showed a new
+    /// Decode one temporal unit and show its frame (at [`Core::shown`]),
+    /// returning whether the unit showed a new
     /// frame (`false` when the selected operating point dropped all of it).
     ///
     /// # Errors
@@ -425,7 +420,7 @@ impl Decoder {
     /// successful [`Decoder::decode_shown`] or [`Decoder::decode_with_layer`]
     /// showed.
     #[must_use]
-    pub fn shown(&self) -> Option<ShownPicture<'_>> {
+    pub fn shown(&self) -> Option<ShownPicture<'_, T>> {
         let saved = self.shown.as_deref()?;
         Some(match &self.grain {
             Some(grain) => frame_window(grain, &saved.header.size),
@@ -435,14 +430,15 @@ impl Decoder {
 
     /// `saved` with film grain added (§7.18.3), or `None` when its
     /// parameters apply none or grain is switched off.
-    fn add_grain(&mut self, saved: &SavedFrame) -> Result<Option<Picture>, DecodeError> {
+    fn add_grain(&mut self, saved: &SavedFrame<T>) -> Result<Option<Picture<T>>, DecodeError> {
         let params = &saved.header.film_grain;
         if !self.apply_film_grain || !params.apply_grain {
             return Ok(None);
         }
         let size = (saved.header.size.upscaled_width, saved.header.size.height);
         let mut output = self.pictures.take(size.0, size.1, 0)?;
-        film_grain::apply(&self.dsp, params, &saved.picture, size, &mut output)?;
+        let kernels = self.dsp.at(self.depth());
+        film_grain::apply(kernels, params, &saved.picture, size, &mut output)?;
         Ok(Some(output))
     }
 
@@ -460,7 +456,10 @@ impl Decoder {
     /// The frame one temporal unit shows (`None` only when every frame OBU in
     /// the unit was filtered out by `operating_point_idc`, `AV1 §7.18`, or had
     /// `show_frame == 0`).
-    fn decode_unit(&mut self, temporal_unit: &[u8]) -> Result<Option<Rc<SavedFrame>>, DecodeError> {
+    fn decode_unit(
+        &mut self,
+        temporal_unit: &[u8],
+    ) -> Result<Option<Rc<SavedFrame<T>>>, DecodeError> {
         Ok(self.decode_unit_frames(temporal_unit, false)?.pop())
     }
 
@@ -473,7 +472,7 @@ impl Decoder {
         &mut self,
         temporal_unit: &[u8],
         all_layers: bool,
-    ) -> Result<Vec<Rc<SavedFrame>>, DecodeError> {
+    ) -> Result<Vec<Rc<SavedFrame<T>>>, DecodeError> {
         let ref_valid = self.ref_valid;
         let frames = self.decode_unit_frames_inner(temporal_unit, all_layers);
         if frames.is_err() {
@@ -487,11 +486,11 @@ impl Decoder {
         &mut self,
         temporal_unit: &[u8],
         all_layers: bool,
-    ) -> Result<Vec<Rc<SavedFrame>>, DecodeError> {
+    ) -> Result<Vec<Rc<SavedFrame<T>>>, DecodeError> {
         if temporal_unit.len() > MAX_TEMPORAL_UNIT_BYTES {
             return Err(DecodeError::Unsupported("AV1 temporal unit size limit"));
         }
-        let mut shown: Vec<Rc<SavedFrame>> = Vec::new();
+        let mut shown: Vec<Rc<SavedFrame<T>>> = Vec::new();
         let mut dropped_or_unshown = false;
         let mut pending: Option<PendingFrame> = None;
         for unit in obu::split(temporal_unit)? {
@@ -583,9 +582,15 @@ impl Decoder {
     }
 
     /// A sequence header: a changed one starts a new coded video sequence,
-    /// whose references are no longer valid.
+    /// whose references are no longer valid. Its depth must be this
+    /// instance's ([`Decoder`] picks the instance before).
     fn sequence_header(&mut self, payload: &[u8]) -> Result<(), DecodeError> {
         let mut seq = sequence::parse(payload)?;
+        if !instance::fits::<T>(seq.bit_depth) {
+            return Err(DecodeError::Unsupported(
+                "AV1 bit depth of another instance",
+            ));
+        }
         let op = usize::from(self.operating_point);
         if op >= seq.operating_point_count {
             return Err(DecodeError::Unsupported("AV1 operating point out of range"));
@@ -628,7 +633,7 @@ impl Decoder {
     fn inter_tools(
         header: &FrameHeader,
         seq: &Sequence,
-        references: &[Option<Rc<SavedFrame>>; frame_header::TOTAL_REFS],
+        references: &[Option<Rc<SavedFrame<T>>>; frame_header::TOTAL_REFS],
     ) -> Result<tile::InterTools, DecodeError> {
         let mut scales = [None; frame_header::TOTAL_REFS];
         for (scale, saved) in scales.iter_mut().zip(references) {
@@ -667,8 +672,9 @@ impl Decoder {
     fn references(
         &self,
         header: &FrameHeader,
-    ) -> Result<[Option<Rc<SavedFrame>>; frame_header::TOTAL_REFS], DecodeError> {
-        let mut references: [Option<Rc<SavedFrame>>; frame_header::TOTAL_REFS] = Default::default();
+    ) -> Result<[Option<Rc<SavedFrame<T>>>; frame_header::TOTAL_REFS], DecodeError> {
+        let mut references: [Option<Rc<SavedFrame<T>>>; frame_header::TOTAL_REFS] =
+            Default::default();
         if header.frame_type.is_intra() {
             return Ok(references);
         }
@@ -678,7 +684,7 @@ impl Decoder {
         Ok(references)
     }
 
-    fn slot(&self, index: u8) -> Result<&Rc<SavedFrame>, DecodeError> {
+    fn slot(&self, index: u8) -> Result<&Rc<SavedFrame<T>>, DecodeError> {
         self.slots[usize::from(index)]
             .as_ref()
             .ok_or(DecodeError::MissingReference)
@@ -690,7 +696,7 @@ impl Decoder {
         &mut self,
         index: usize,
         header: &FrameHeader,
-    ) -> Result<Rc<SavedFrame>, DecodeError> {
+    ) -> Result<Rc<SavedFrame<T>>, DecodeError> {
         let saved = Rc::clone(self.slot(index as u8)?);
         if header.refresh_frame_flags != 0 {
             self.refresh(&saved, header.refresh_frame_flags);
@@ -704,7 +710,7 @@ impl Decoder {
         header: &FrameHeader,
         spatial_id: u8,
         tiles: &[&[u8]],
-    ) -> Result<Option<Rc<SavedFrame>>, DecodeError> {
+    ) -> Result<Option<Rc<SavedFrame<T>>>, DecodeError> {
         let params = subset::frame_parameters(header)?;
         let seq = self
             .sequence
@@ -738,6 +744,7 @@ impl Decoder {
         let previous_segments =
             self.previous_segments(header, &params, (coded_width, coded_height))?;
         let temporal = temporal_field(&mut self.field, header, &seq, &references);
+        let depth = tile::depth_of::<T>(seq.bit_depth);
         let mut state = tile::FrameDecoder::new(
             coded,
             cdfs,
@@ -751,6 +758,7 @@ impl Decoder {
                 intra_edge_filter: seq.enable_intra_edge_filter,
                 cdef: seq.enable_cdef,
                 mono_chrome: seq.mono_chrome,
+                bit_depth: seq.bit_depth,
             },
             inter_tools,
             temporal,
@@ -763,7 +771,7 @@ impl Decoder {
         let boundaries = state
             .restoration
             .as_ref()
-            .map(|_| restoration::StripeBoundaries::save(&state.recon, &header.size))
+            .map(|_| restoration::StripeBoundaries::save(&state.recon, &header.size, depth))
             .transpose()?;
         state.cdef();
         let tile::FrameDecoder {
@@ -773,29 +781,17 @@ impl Decoder {
             saved_motion,
             ..
         } = state;
-        let mut recon = self.upscale(recon, &header.size)?;
+        let mut recon = self.upscale(recon, &header.size, depth)?;
         if let (Some(boundaries), Some(units)) = (&boundaries, &units) {
             restoration::apply(
-                (&self.dsp, &mut self.restoration),
+                (self.dsp.at(depth), &mut self.restoration),
                 &mut recon,
                 boundaries,
                 units.units(),
                 &header.size,
             )?;
         }
-        if seq.mono_chrome {
-            // Monochrome output shows mid-grey chroma (§7.18 output process:
-            // `1 << (BitDepth - 1)`).
-            for plane in [PlaneIndex::U, PlaneIndex::V] {
-                recon.plane_mut(plane).view_mut().fill(MONOCHROME_CHROMA);
-            }
-        }
-        // References clamp to the frame size (§7.11.3.3).
-        let (width, height) = (header.size.upscaled_width, header.size.height);
-        if (recon.width(), recon.height()) != (width, height) {
-            recon.replicate_beyond(width, height);
-        }
-        recon.extend_borders();
+        finish_reference(&mut recon, seq.mono_chrome, &header.size, depth);
         let saved = Rc::new(SavedFrame {
             picture: recon,
             cdfs: start_cdfs.map_or_else(|| cdfs.saved(), |start| *start),
@@ -843,22 +839,23 @@ impl Decoder {
     /// without superres, else a new picture, `coded` going back for reuse.
     fn upscale(
         &mut self,
-        coded: Picture,
+        coded: Picture<T>,
         size: &frame_header::FrameSize,
-    ) -> Result<Picture, DecodeError> {
+        depth: BitDepth,
+    ) -> Result<Picture<T>, DecodeError> {
         if size.width == size.upscaled_width {
             return Ok(coded);
         }
         let (width, height) = super::coded_picture_size(size.upscaled_width, size.height);
         let mut upscaled = self.pictures.take(width, height, RECON_BORDER)?;
-        restoration::superres_upscale(&coded, size, &mut upscaled)?;
+        restoration::superres_upscale(&coded, size, &mut upscaled, depth)?;
         self.pictures.give(coded);
         Ok(upscaled)
     }
 
     /// Keep `saved` in the slots `refresh` names (§7.20); pictures no slot
     /// holds any more are released for reuse.
-    fn refresh(&mut self, saved: &Rc<SavedFrame>, refresh: u8) {
+    fn refresh(&mut self, saved: &Rc<SavedFrame<T>>, refresh: u8) {
         for (slot, held) in self.slots.iter_mut().enumerate() {
             if refresh & (1 << slot) != 0 {
                 self.ref_valid[slot] = true;
@@ -879,7 +876,10 @@ impl Decoder {
         for slot in self.slots.iter_mut().flatten() {
             let mut picture = slot.picture.clone();
             for plane in PlaneIndex::ALL {
-                picture.plane_mut(plane).view_mut().fill(value);
+                picture
+                    .plane_mut(plane)
+                    .view_mut()
+                    .fill(T::from_i32(i32::from(value)));
             }
             picture.extend_borders();
             *slot = Rc::new(SavedFrame {
@@ -919,6 +919,31 @@ impl Decoder {
     }
 }
 
+/// Make the decoded `recon` of a frame of `size` a reference and output
+/// picture: mid-grey chroma for a monochrome sequence (§7.18 output
+/// process: `1 << (BitDepth - 1)`), samples beyond the frame repeating its
+/// edge (references clamp to the frame size, §7.11.3.3) and the borders.
+fn finish_reference<T: Pixel>(
+    recon: &mut Picture<T>,
+    mono_chrome: bool,
+    size: &frame_header::FrameSize,
+    depth: BitDepth,
+) {
+    if mono_chrome {
+        for plane in [PlaneIndex::U, PlaneIndex::V] {
+            recon
+                .plane_mut(plane)
+                .view_mut()
+                .fill(T::from_i32(depth.mid()));
+        }
+    }
+    let (width, height) = (size.upscaled_width, size.height);
+    if (recon.width(), recon.height()) != (width, height) {
+        recon.replicate_beyond(width, height);
+    }
+    recon.extend_borders();
+}
+
 /// What a slot keeps of `h` for later frame headers (§7.20).
 fn slot_header(h: &FrameHeader) -> SlotHeader {
     SlotHeader {
@@ -937,12 +962,15 @@ fn slot_header(h: &FrameHeader) -> SlotHeader {
 
 /// The visible samples of a decoded frame: its upscaled size, from the
 /// top left of the (8x8-padded) picture.
-fn visible(saved: &SavedFrame) -> ShownPicture<'_> {
+fn visible<T: Pixel>(saved: &SavedFrame<T>) -> ShownPicture<'_, T> {
     frame_window(&saved.picture, &saved.header.size)
 }
 
 /// The visible samples (the upscaled frame size) of `picture`.
-fn frame_window<'a>(picture: &'a Picture, size: &frame_header::FrameSize) -> ShownPicture<'a> {
+fn frame_window<'a, T: Pixel>(
+    picture: &'a Picture<T>,
+    size: &frame_header::FrameSize,
+) -> ShownPicture<'a, T> {
     ShownPicture::window(picture, (0, 0), (size.upscaled_width, size.height))
         .expect("the picture covers the frame")
 }

@@ -3,10 +3,14 @@
 //! filters, and the per-line `filterMask`/`hevMask`/`flat`/`flat2`
 //! decisions that choose between them.
 //!
-//! Scalar reference; the codec (nc-av1) decides which edges to filter, with
-//! which length and level. Reimplemented from the normative filter
+//! Scalar reference, at any depth (the 8-bit thresholds and the narrow
+//! filter's signed range scaled by `BitDepth − 8`, as libaom's
+//! `aom_highbd_lpf_*`); the codec (nc-av1) decides which edges to filter,
+//! with which length and level. Reimplemented from the normative filter
 //! description (structure follows libaom `aom_dsp/loopfilter.c`,
 //! BSD-2-Clause, see `THIRD_PARTY.md`).
+
+use nc_common::{BitDepth, Sample};
 
 /// Lines one call filters (an edge of one 4x4 unit).
 pub const AV1_EDGE_LINES: usize = 4;
@@ -276,6 +280,20 @@ pub(crate) fn filter_edge(
     lines: usize,
     filter: Av1EdgeFilter,
 ) {
+    filter_edge_at(plane, q0, across, along, lines, filter, BitDepth::EIGHT);
+}
+
+/// [`filter_edge`] on samples of `depth` bits (16-bit lanes hold every
+/// value up to 12 bits: the 14-tap sum is at most `16 · 4095 + 8`).
+pub(crate) fn filter_edge_at<T: Sample>(
+    plane: &mut [T],
+    q0: usize,
+    across: usize,
+    along: usize,
+    lines: usize,
+    filter: Av1EdgeFilter,
+    depth: BitDepth,
+) {
     let reach = filter.length.reach();
     let mut done = 0;
     while done < lines {
@@ -285,15 +303,15 @@ pub(crate) fn filter_edge(
         let mut q = [[0_i16; BATCH]; AV1_EDGE_REACH];
         for i in 0..reach {
             for l in 0..n {
-                p[i][l] = i16::from(plane[base + l * along - (i + 1) * across]);
-                q[i][l] = i16::from(plane[base + l * along + i * across]);
+                p[i][l] = plane[base + l * along - (i + 1) * across].to_i32() as i16;
+                q[i][l] = plane[base + l * along + i * across].to_i32() as i16;
             }
         }
-        let (np, nq) = filter_batch(&p, &q, filter);
+        let (np, nq) = filter_batch(&p, &q, filter, depth.above_eight());
         for i in 0..reach {
             for l in 0..n {
-                plane[base + l * along - (i + 1) * across] = np[i][l] as u8;
-                plane[base + l * along + i * across] = nq[i][l] as u8;
+                plane[base + l * along - (i + 1) * across] = T::from_i32(i32::from(np[i][l]));
+                plane[base + l * along + i * across] = T::from_i32(i32::from(nq[i][l]));
             }
         }
         done += n;
@@ -302,17 +320,20 @@ pub(crate) fn filter_edge(
 
 /// All decisions and filters of one batch. Every lane computes every
 /// candidate and a 0/1 lane mask selects (`old + mask · (new − old)`), so
-/// the loops have no branches and the compiler vectorises them.
+/// the loops have no branches and the compiler vectorises them. `shift` is
+/// `BitDepth − 8`, which scales the thresholds.
 fn filter_batch(
     p: &[Lanes; AV1_EDGE_REACH],
     q: &[Lanes; AV1_EDGE_REACH],
     filter: Av1EdgeFilter,
+    shift: u32,
 ) -> ([Lanes; AV1_EDGE_REACH], [Lanes; AV1_EDGE_REACH]) {
     let (limit, blimit, thresh) = (
-        i16::from(filter.limit),
-        i16::from(filter.blimit),
-        i16::from(filter.thresh),
+        i16::from(filter.limit) << shift,
+        i16::from(filter.blimit) << shift,
+        i16::from(filter.thresh) << shift,
     );
+    let flat_threshold = FLAT_THRESHOLD << shift;
     let taps = match filter.length {
         Av1FilterLength::Four => 2,
         Av1FilterLength::Six => 3,
@@ -329,7 +350,7 @@ fn filter_batch(
                 .max((q[i][l] - q[i - 1][l]).abs());
             mask[l] &= i16::from(steps <= limit);
             let spread = (p[i][l] - p[0][l]).abs().max((q[i][l] - q[0][l]).abs());
-            flat[l] &= i16::from(spread <= FLAT_THRESHOLD);
+            flat[l] &= i16::from(spread <= flat_threshold);
         }
     }
     for l in 0..BATCH {
@@ -340,12 +361,12 @@ fn filter_batch(
         for i in 4..AV1_EDGE_REACH {
             for l in 0..BATCH {
                 let spread = (p[i][l] - p[0][l]).abs().max((q[i][l] - q[0][l]).abs());
-                flat2[l] &= i16::from(spread <= FLAT_THRESHOLD);
+                flat2[l] &= i16::from(spread <= flat_threshold);
             }
         }
     }
     let (mut np, mut nq) = (*p, *q);
-    narrow_batch(p, q, thresh, &mask, &mut np, &mut nq);
+    narrow_batch(p, q, (thresh, shift), &mask, &mut np, &mut nq);
     let both: Lanes = std::array::from_fn(|l| mask[l] & flat[l]);
     match filter.length {
         Av1FilterLength::Four => {}
@@ -365,29 +386,31 @@ fn blend(old: i16, new: i16, select: i16) -> i16 {
     old + select * (new - old)
 }
 
-/// The narrow filter (§7.14.6.3) where `mask` is 1.
+/// The narrow filter (§7.14.6.3) where `mask` is 1, in the signed range of
+/// `8 + shift` bits.
 fn narrow_batch(
     p: &[Lanes; AV1_EDGE_REACH],
     q: &[Lanes; AV1_EDGE_REACH],
-    thresh: i16,
+    (thresh, shift): (i16, u32),
     mask: &Lanes,
     np: &mut [Lanes; AV1_EDGE_REACH],
     nq: &mut [Lanes; AV1_EDGE_REACH],
 ) {
-    let clamp = |v: i16| v.clamp(-128, 127);
+    let offset = SIGNED_OFFSET << shift;
+    let clamp = |v: i16| v.clamp(-offset, offset - 1);
     for l in 0..BATCH {
-        let (ps1, ps0) = (p[1][l] - SIGNED_OFFSET, p[0][l] - SIGNED_OFFSET);
-        let (qs0, qs1) = (q[0][l] - SIGNED_OFFSET, q[1][l] - SIGNED_OFFSET);
+        let (ps1, ps0) = (p[1][l] - offset, p[0][l] - offset);
+        let (qs0, qs1) = (q[0][l] - offset, q[1][l] - offset);
         let hev = i16::from((p[1][l] - p[0][l]).abs().max((q[1][l] - q[0][l]).abs()) > thresh);
         let base = clamp(hev * clamp(ps1 - qs1) + 3 * (qs0 - ps0));
         let filter1 = clamp(base + 4) >> 3;
         let filter2 = clamp(base + 3) >> 3;
         let tap = (1 - hev) * ((filter1 + 1) >> 1);
         let m = mask[l];
-        nq[0][l] = blend(q[0][l], clamp(qs0 - filter1) + SIGNED_OFFSET, m);
-        np[0][l] = blend(p[0][l], clamp(ps0 + filter2) + SIGNED_OFFSET, m);
-        nq[1][l] = blend(q[1][l], clamp(qs1 - tap) + SIGNED_OFFSET, m);
-        np[1][l] = blend(p[1][l], clamp(ps1 + tap) + SIGNED_OFFSET, m);
+        nq[0][l] = blend(q[0][l], clamp(qs0 - filter1) + offset, m);
+        np[0][l] = blend(p[0][l], clamp(ps0 + filter2) + offset, m);
+        nq[1][l] = blend(q[1][l], clamp(qs1 - tap) + offset, m);
+        np[1][l] = blend(p[1][l], clamp(ps1 + tap) + offset, m);
     }
 }
 

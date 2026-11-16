@@ -5,7 +5,7 @@
 
 #![allow(unsafe_code)]
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut};
 
 use super::convolve::{Av1McAxis, check_prediction, predict_compound_scalar, predict_scalar};
 use super::filter::Av1Filters;
@@ -73,7 +73,7 @@ fn scalar_predict(
     axes: (Av1McAxis, Av1McAxis),
     dst: &mut PlaneViewMut<'_>,
 ) {
-    predict_scalar(filters, window, size, axes, dst);
+    predict_scalar(filters, window, size, axes, dst, BitDepth::EIGHT);
 }
 
 fn scalar_predict_compound(
@@ -85,5 +85,13 @@ fn scalar_predict_compound(
     dst_stride: usize,
 ) {
     check_prediction(window, size, axes);
-    predict_compound_scalar(filters, window, size, axes, dst, dst_stride);
+    predict_compound_scalar(
+        filters,
+        window,
+        size,
+        axes,
+        dst,
+        dst_stride,
+        BitDepth::EIGHT,
+    );
 }

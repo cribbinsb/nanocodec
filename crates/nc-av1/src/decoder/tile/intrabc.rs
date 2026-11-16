@@ -22,6 +22,7 @@ use crate::decoder_range::SymbolReader;
 use crate::mvcoding::MvPrecision;
 use nc_common::PlaneIndex;
 use nc_common::decode::DecodeError;
+use nc_dsp::Pixel;
 use nc_dsp::av1_mc::filter::{AV1_FILTER_TAPS, Av1Filter, Av1Filters};
 
 /// `INTRABC_DELAY_PIXELS`: the default DV of a block in a tile's first
@@ -30,7 +31,7 @@ const INTRABC_DELAY_PIXELS: i32 = 256;
 /// Eighths per sample: DVs are whole samples in 1/8 units.
 const SUBPEL_PER_SAMPLE: i16 = 8;
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
     /// The modes of an intra block copy block from `stack`, the MV stack
     /// of `INTRA_FRAME`: its DV, the reference DV (the nearest or near
     /// candidate at quarter precision, else a default a superblock up or
@@ -110,6 +111,7 @@ impl FrameDecoder<'_> {
             &[PlaneIndex::Y]
         };
         let filters = Av1Filters::both(Av1Filter::Bilinear);
+        let kernels = self.kernels();
         for &plane in planes {
             let ss = usize::from(plane != PlaneIndex::Y);
             let (origin, size) = Self::plane_block(block, plane);
@@ -129,7 +131,7 @@ impl FrameDecoder<'_> {
                 .plane_mut(plane)
                 .region_mut(origin.0 as isize, origin.1 as isize, size.0, size.1)
                 .ok_or(DecodeError::Malformed("AV1 prediction rectangle"))?;
-            self.dsp.av1_predict(filters, &window, size, axes, &mut dst);
+            kernels.av1_predict(filters, &window, size, axes, &mut dst);
         }
         Ok(())
     }

@@ -24,7 +24,8 @@ use super::block_size::BlockSize;
 use super::frame_header::{INTRA_FRAME, LoopFilter, TOTAL_REFS};
 use super::transform::{TxSize, chroma_block};
 use nc_common::{Picture, PlaneIndex, PlaneViewMut};
-use nc_dsp::{AV1_EDGE_LINES, Av1EdgeFilter, Av1FilterLength, Dsp, EdgeRun};
+use nc_dsp::{AV1_EDGE_LINES, Av1EdgeFilter, Av1FilterLength, EdgeRun};
+use nc_dsp::{DepthKernels, Pixel};
 
 /// Luma samples per 4x4 unit, log2.
 const UNIT_LOG2: u8 = 2;
@@ -244,7 +245,11 @@ impl EdgeMap {
     }
     /// Record one leaf of an inter block's transform tree: a luma area of
     /// one `tx` transform at luma unit (`x4`, `y4`).
-    pub(super) fn leaf(&mut self, (x4, y4): (usize, usize), tx: (u8, u8), block: EdgeBlock) {
+    #[allow(
+        clippy::extra_unused_type_parameters,
+        reason = "one copy per decoder instance, kept inlined (docs/handoff/high-bit-depth.md)"
+    )]
+    pub(super) fn leaf<T>(&mut self, (x4, y4): (usize, usize), tx: (u8, u8), block: EdgeBlock) {
         if !self.recording || x4 >= self.luma.columns || y4 >= self.luma.rows {
             return;
         }
@@ -354,9 +359,9 @@ fn deblocked(lf: &LoopFilter) -> bool {
 /// writes only its own lines, while the horizontal edges inside a part
 /// reach no sample of the next (each filter stays within the transforms on
 /// its sides).
-pub(super) fn apply(
-    dsp: &Dsp,
-    recon: &mut Picture,
+pub(super) fn apply<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    recon: &mut Picture<T>,
     map: &mut EdgeMap,
     lf: &LoopFilter,
     (width, height): (usize, usize),
@@ -379,13 +384,14 @@ pub(super) fn apply(
         let mut view = recon.plane_mut(plane).view_mut();
         let size = ((width + ss) >> ss, (height + ss) >> ss);
         runs.clear();
-        PlanePass::<true>::new(map, plane, &limits, size, runs).filter(
-            dsp,
+        PlanePass::<T, true>::new(map, plane, &limits, size, runs).filter(
+            kernels,
             &mut view,
             areas.clone(),
         );
         runs.clear();
-        PlanePass::<false>::new(map, plane, &limits, size, runs).filter(dsp, &mut view, areas);
+        PlanePass::<T, false>::new(map, plane, &limits, size, runs)
+            .filter(kernels, &mut view, areas);
     }
     map.luma.filtered = ends[0];
     map.chroma.filtered = ends[1];
@@ -408,7 +414,12 @@ struct Run {
 /// run on it extends when it continues it with the same filter. Edges
 /// within a pass do not interact, so filtering later changes nothing, and
 /// the filter is called once per run of lines rather than once per area.
-struct PlanePass<'a, const VERTICAL: bool> {
+///
+/// Generic over the sample type though only [`PlanePass::filter`] touches
+/// samples: each instance then calls its own copy of the run building,
+/// which stays inlined (shared by both instances it was not: +2.8 % 8-bit
+/// decode instructions, callgrind, crowd 720p of ours).
+struct PlanePass<'a, T, const VERTICAL: bool> {
     map: &'a EdgeMap,
     plane: PlaneIndex,
     limits: &'a Limits,
@@ -418,9 +429,10 @@ struct PlanePass<'a, const VERTICAL: bool> {
     pending: Vec<Option<Run>>,
     /// The pass's finished runs, in order, for one filter call.
     runs: &'a mut Vec<EdgeRun<Av1EdgeFilter>>,
+    samples: core::marker::PhantomData<T>,
 }
 
-impl<'a, const VERTICAL: bool> PlanePass<'a, VERTICAL> {
+impl<'a, T: Pixel, const VERTICAL: bool> PlanePass<'a, T, VERTICAL> {
     fn new(
         map: &'a EdgeMap,
         plane: PlaneIndex,
@@ -441,6 +453,7 @@ impl<'a, const VERTICAL: bool> PlanePass<'a, VERTICAL> {
             size,
             pending: vec![None; lines],
             runs,
+            samples: core::marker::PhantomData,
         }
     }
 
@@ -467,7 +480,12 @@ impl<'a, const VERTICAL: bool> PlanePass<'a, VERTICAL> {
     }
 
     /// Filter the edges of `areas` (indices into the plane's areas).
-    fn filter(mut self, dsp: &Dsp, view: &mut PlaneViewMut<'_>, areas: core::ops::Range<usize>) {
+    fn filter(
+        mut self,
+        kernels: DepthKernels<'_>,
+        view: &mut PlaneViewMut<'_, T>,
+        areas: core::ops::Range<usize>,
+    ) {
         let (plane_width, plane_height) = self.size;
         let which = self.level_index();
         for area in &self.sides().areas[areas] {
@@ -517,7 +535,7 @@ impl<'a, const VERTICAL: bool> PlanePass<'a, VERTICAL> {
                 self.finish(across, run);
             }
         }
-        dsp.av1_loop_filter_runs(view, VERTICAL, self.runs);
+        kernels.av1_loop_filter_runs(view, VERTICAL, self.runs);
     }
 
     /// The edge at unit `across` from sample `start` to `end` along it, of
@@ -670,7 +688,7 @@ mod tests {
             levels: [0; 4],
         };
         map.block((0, 0), block, Some((3, 3)), true);
-        map.leaf((0, 0), (3, 3), block);
+        map.leaf::<u8>((0, 0), (3, 3), block);
         assert!(map.luma.areas.is_empty() && map.chroma.areas.is_empty());
     }
 

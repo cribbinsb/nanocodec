@@ -106,6 +106,59 @@ impl DecodedPicture {
     }
 }
 
+/// A decoder's shown picture of either sample type, borrowed until its
+/// next decode (decoders that output in decoding order; see
+/// [`ShownPicture`]).
+#[derive(Debug, Clone, Copy)]
+pub enum ShownFrame<'a> {
+    /// 8-bit samples.
+    Eight(ShownPicture<'a, u8>),
+    /// Deeper samples in `u16`, with their depth.
+    High(ShownPicture<'a, u16>, BitDepths),
+}
+
+impl ShownFrame<'_> {
+    /// Luma size.
+    #[must_use]
+    pub fn size(&self) -> (usize, usize) {
+        match self {
+            Self::Eight(p) => (p.width(), p.height()),
+            Self::High(p, _) => (p.width(), p.height()),
+        }
+    }
+
+    /// The bit depths.
+    #[must_use]
+    pub fn depths(&self) -> BitDepths {
+        match self {
+            Self::Eight(_) => BitDepths::EIGHT,
+            Self::High(_, depths) => *depths,
+        }
+    }
+
+    /// Write the first `planes` planes as one raw frame, as
+    /// [`DecodedPicture::write_yuv`].
+    ///
+    /// # Errors
+    /// [`crate::Error::Io`] if the writer fails.
+    pub fn write_yuv<W: Write>(&self, writer: &mut W, planes: usize) -> Result<()> {
+        fn visible<'p, T: Sample>(
+            picture: &ShownPicture<'p, T>,
+            planes: usize,
+        ) -> impl Iterator<Item = PlaneView<'p, T>> {
+            let picture = *picture;
+            PlaneIndex::ALL
+                .into_iter()
+                .take(planes)
+                .map(move |plane| picture.plane(plane))
+        }
+        match self {
+            Self::Eight(p) => crate::yuv::write_planes(writer, visible(p, planes)),
+            Self::High(p, _) => crate::yuv::write_planes(writer, visible(p, planes)),
+        }
+    }
+}
+
 impl From<OutputPicture<u8>> for DecodedPicture {
     fn from(picture: OutputPicture<u8>) -> Self {
         Self::Eight(picture)

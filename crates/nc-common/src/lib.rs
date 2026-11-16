@@ -53,7 +53,7 @@ pub mod yuv;
 pub use bitwriter::{BitWriter, leb128};
 pub use colour::{ColourDescription, ColourInfo};
 pub use error::{Error, Result};
-pub use output::{DecodedPicture, OutputPicture};
+pub use output::{DecodedPicture, OutputPicture, ShownFrame};
 pub use picture::{ChromaFormat, Picture, PlaneIndex};
 pub use plane::{BorderStores, CachedStores, Plane, ROW_ALIGNMENT};
 pub use raw_frame::{NV12_CHROMA_BYTES, RawFrame, chroma_len};

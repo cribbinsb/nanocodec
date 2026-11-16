@@ -13,12 +13,12 @@
 //! width: superres reads them (§7.16), as libaom's frame buffers do.
 
 use nc_common::decode::DecodeError;
-use nc_common::{Picture, PlaneIndex, PlaneView};
-use nc_dsp::Dsp;
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView};
 use nc_dsp::av1_restoration::{
     Av1LoopRestoration, Av1LrFilter, Av1LrScratch, Av1StripeBoundaries, Av1Superres,
     av1_lr_unit_count,
 };
+use nc_dsp::{DepthKernels, Pixel};
 
 use super::frame_header::{FrameSize, LrType, Restoration};
 
@@ -38,11 +38,11 @@ fn subsampled(plane: PlaneIndex) -> bool {
 
 /// The view of the top-left `width`x`height` samples of one plane, which
 /// may extend into its border.
-fn plane_view(
-    picture: &Picture,
+fn plane_view<T: Pixel>(
+    picture: &Picture<T>,
     plane: PlaneIndex,
     (width, height): (usize, usize),
-) -> Result<PlaneView<'_>, DecodeError> {
+) -> Result<PlaneView<'_, T>, DecodeError> {
     picture
         .plane(plane)
         .region(0, 0, width, height)
@@ -67,14 +67,19 @@ fn readable_width(plane: PlaneIndex, size: &FrameSize) -> usize {
 
 /// The deblocked rows around each internal stripe edge of each plane.
 #[derive(Debug, Clone)]
-pub(crate) struct StripeBoundaries {
-    planes: [Av1StripeBoundaries; 3],
+pub(crate) struct StripeBoundaries<T: Pixel> {
+    planes: [Av1StripeBoundaries<T>; 3],
 }
 
-impl StripeBoundaries {
+impl<T: Pixel> StripeBoundaries<T> {
     /// Keep the boundary rows of the deblocked `picture` (before CDEF) of
-    /// a frame of `size`, upscaled when the frame uses superres.
-    pub(crate) fn save(picture: &Picture, size: &FrameSize) -> Result<Self, DecodeError> {
+    /// a frame of `size`, upscaled when the frame uses superres, at
+    /// `depth`.
+    pub(crate) fn save(
+        picture: &Picture<T>,
+        size: &FrameSize,
+        depth: BitDepth,
+    ) -> Result<Self, DecodeError> {
         let scalers = superres(size);
         let mut planes = Vec::with_capacity(PlaneIndex::ALL.len());
         for (index, plane) in PlaneIndex::ALL.into_iter().enumerate() {
@@ -86,10 +91,11 @@ impl StripeBoundaries {
             };
             let deblocked = plane_view(picture, plane, (width, rows))?;
             let scaler = scalers.as_ref().map(|s| &s[index]);
-            planes.push(Av1StripeBoundaries::save(
+            planes.push(Av1StripeBoundaries::save_at(
                 &deblocked,
                 subsampled(plane),
                 scaler,
+                depth,
             ));
         }
         let planes = planes.try_into().expect("three planes");
@@ -99,10 +105,11 @@ impl StripeBoundaries {
 
 /// Upscale every plane of `coded` (after CDEF) to the frame's upscaled
 /// width into `upscaled` (AV1 §7.16). Only for frames that use superres.
-pub(crate) fn superres_upscale(
-    coded: &Picture,
+pub(crate) fn superres_upscale<T: Pixel>(
+    coded: &Picture<T>,
     size: &FrameSize,
-    upscaled: &mut Picture,
+    upscaled: &mut Picture<T>,
+    depth: BitDepth,
 ) -> Result<(), DecodeError> {
     let scalers = superres(size).ok_or(DecodeError::Malformed("AV1 superres without scaling"))?;
     for (plane, scaler) in PlaneIndex::ALL.into_iter().zip(&scalers) {
@@ -112,7 +119,7 @@ pub(crate) fn superres_upscale(
             .plane_mut(plane)
             .region_mut(0, 0, scaler.upscaled_width(), rows)
             .ok_or(DecodeError::Malformed("AV1 upscaled plane too small"))?;
-        scaler.upscale_plane(&source, &mut dst);
+        scaler.upscale_plane_at(&source, &mut dst, depth);
     }
     Ok(())
 }
@@ -172,10 +179,10 @@ impl RestorationUnits {
 
 /// Restore every plane of `frame` (after CDEF and superres, at the
 /// upscaled size) that has restoration, in place (AV1 §7.17).
-pub(crate) fn apply(
-    (dsp, scratch): (&Dsp, &mut Av1LrScratch),
-    frame: &mut Picture,
-    boundaries: &StripeBoundaries,
+pub(crate) fn apply<T: Pixel>(
+    (kernels, scratch): (DepthKernels<'_>, &mut Av1LrScratch<T>),
+    frame: &mut Picture<T>,
+    boundaries: &StripeBoundaries<T>,
     units: &RestorationUnits,
     size: &FrameSize,
 ) -> Result<(), DecodeError> {
@@ -188,17 +195,16 @@ pub(crate) fn apply(
             .plane_mut(plane)
             .region_mut(0, 0, width, height)
             .ok_or(DecodeError::Malformed("AV1 plane smaller than its frame"))?;
-        Av1LoopRestoration {
+        let restoration = Av1LoopRestoration {
             unit_size: units.unit_size[index],
             columns: units.columns[index],
             rows: units.rows[index],
             filters: &units.filters[index],
-        }
-        .apply(
-            dsp,
+        };
+        kernels.av1_loop_restoration(
+            &restoration,
             &mut view,
-            &boundaries.planes[index],
-            subsampled(plane),
+            (&boundaries.planes[index], subsampled(plane)),
             scratch,
         );
     }
@@ -208,6 +214,7 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nc_dsp::Dsp;
     use nc_dsp::av1_restoration::Av1Wiener;
 
     fn size(width: usize, upscaled_width: usize, height: usize) -> FrameSize {
@@ -245,7 +252,7 @@ mod tests {
         };
         let original = textured(96, 80);
         let mut frame = original.clone();
-        let boundaries = StripeBoundaries::save(&frame, &frame_size).unwrap();
+        let boundaries = StripeBoundaries::save(&frame, &frame_size, BitDepth::EIGHT).unwrap();
         let mut units = RestorationUnits::new(&lr, &frame_size);
         let (columns, rows) = units.grid(PlaneIndex::Y);
         for row in 0..rows {
@@ -258,7 +265,7 @@ mod tests {
             }
         }
         apply(
-            (&Dsp::new(), &mut Av1LrScratch::default()),
+            (Dsp::new().at(BitDepth::EIGHT), &mut Av1LrScratch::default()),
             &mut frame,
             &boundaries,
             &units,
@@ -277,13 +284,13 @@ mod tests {
     #[test]
     fn superres_upscales_to_the_full_width() {
         let frame_size = size(64, 96, 32);
-        let mut coded = Picture::new(64, 32, 64).unwrap();
+        let mut coded = Picture::<u8>::new(64, 32, 64).unwrap();
         for plane in PlaneIndex::ALL {
             coded.plane_mut(plane).view_mut().fill(77);
         }
         coded.extend_borders();
         let mut upscaled = Picture::new(96, 32, 64).unwrap();
-        superres_upscale(&coded, &frame_size, &mut upscaled).unwrap();
+        superres_upscale(&coded, &frame_size, &mut upscaled, BitDepth::EIGHT).unwrap();
         for plane in PlaneIndex::ALL {
             assert!(
                 upscaled

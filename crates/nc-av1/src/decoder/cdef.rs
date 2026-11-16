@@ -6,7 +6,8 @@
 //! nc-dsp's, as the encoder's [`crate::cdef`] uses them.
 use super::frame_header::CdefParams;
 use nc_common::Picture;
-use nc_dsp::{CdefLines, CdefSets, CdefStrengths, CdefUnit, Dsp};
+use nc_dsp::{CdefLines, CdefSets, CdefStrengths, CdefUnit};
+use nc_dsp::{DepthKernels, Pixel};
 
 /// 4x4 units per 8x8 CDEF unit and per 64x64 filter block, log2.
 const UNIT_MI_LOG2: usize = 1;
@@ -70,7 +71,11 @@ impl CdefMap {
     }
     /// Record a non-skipped block of `w4` x `h4` units at (`mi_col`,
     /// `mi_row`).
-    pub(super) fn coded_block(
+    #[allow(
+        clippy::extra_unused_type_parameters,
+        reason = "one copy per decoder instance, kept inlined (docs/handoff/high-bit-depth.md)"
+    )]
+    pub(super) fn coded_block<T>(
         &mut self,
         (mi_col, mi_row): (usize, usize),
         (w4, h4): (usize, usize),
@@ -99,8 +104,8 @@ impl CdefMap {
 /// Reusable buffers of [`apply`]: the line buffers of the band being
 /// filtered and its unit list.
 #[derive(Debug, Default)]
-pub(super) struct CdefScratch {
-    lines: CdefLines,
+pub(super) struct CdefScratch<T: Pixel> {
+    lines: CdefLines<T>,
     units: Vec<CdefUnit>,
 }
 
@@ -108,12 +113,12 @@ pub(super) struct CdefScratch {
 /// 64-row band of filter blocks at a time (nc-dsp's shared band driver,
 /// dav1d's `cdef_brow` structure). A band lists only the coded units of
 /// its filter blocks whose strength set filters anything.
-pub(super) fn apply(
-    dsp: &Dsp,
-    recon: &mut Picture,
+pub(super) fn apply<T: Pixel>(
+    kernels: DepthKernels<'_>,
+    recon: &mut Picture<T>,
     map: &CdefMap,
     params: &CdefParams,
-    scratch: &mut CdefScratch,
+    scratch: &mut CdefScratch<T>,
 ) {
     let strengths: Vec<CdefStrengths> = (0..1usize << params.bits)
         .map(|s| CdefStrengths {
@@ -152,7 +157,7 @@ pub(super) fn apply(
             }
         }
         let rows = band * FILTER_BLOCK_SIZE..((band + 1) * FILTER_BLOCK_SIZE).min(recon.height());
-        dsp.cdef_filter_band(lines, recon, rows, units, &sets);
+        kernels.cdef_filter_band(lines, recon, rows, units, &sets);
     }
 }
 
@@ -169,12 +174,12 @@ mod tests {
         map.set_index((0, 0), (32, 32), 2);
         assert_eq!(map.index, vec![2, 2, -1, 2, 2, -1]);
         let units = |map: &CdefMap| map.coded.iter().map(|m| m.count_ones()).sum::<u32>();
-        map.coded_block((3, 5), (1, 1));
+        map.coded_block::<u8>((3, 5), (1, 1));
         // Unit row 2, column 1: filter block 0, bit 1.
         assert_eq!(map.coded[2 * 3], 1 << 1);
         assert_eq!(units(&map), 1);
         // Units 18..=19 of row 8 (the last): filter block 2, bits 2 and 3.
-        map.coded_block((36, 16), (8, 4));
+        map.coded_block::<u8>((36, 16), (8, 4));
         assert_eq!(map.coded[8 * 3 + 2], 0b1100);
         assert_eq!(units(&map), 3);
     }

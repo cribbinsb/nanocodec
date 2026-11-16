@@ -144,9 +144,19 @@ impl<F: Copy + Eq, R: Fn(F) -> usize> Iterator for ValidatedRuns<'_, F, R> {
 }
 
 pub(crate) fn av1_scalar(data: &mut [u8], plane: Plane, runs: &[EdgeRun<Av1EdgeFilter>]) {
+    av1_scalar_at(data, plane, runs, nc_common::BitDepth::EIGHT);
+}
+
+/// [`av1_scalar`] on samples of any depth.
+pub(crate) fn av1_scalar_at<T: nc_common::Sample>(
+    data: &mut [T],
+    plane: Plane,
+    runs: &[EdgeRun<Av1EdgeFilter>],
+    depth: nc_common::BitDepth,
+) {
     for run in ValidatedRuns::new(plane, runs, false, 1, |f: Av1EdgeFilter| f.length.reach()) {
         let (base, across, along) = plane.address(&run);
-        super::av1::filter_edge(data, base, across, along, run.lines, run.filter);
+        super::av1::filter_edge_at(data, base, across, along, run.lines, run.filter, depth);
     }
 }
 

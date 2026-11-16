@@ -16,9 +16,9 @@
 //! vertical taps (summing to 128) add the vertical rounding: the output is
 //! `clip(Σ v_k · h_k >> 11)`.
 
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut, Sample};
 
-use super::kernels::Kernels;
+use super::kernels::RowKernels;
 use super::{AV1_LR_BORDER, AV1_LR_OVERREAD, Av1Wiener};
 
 /// `FILTER_BITS`: the taps of each direction sum to `1 << 7`.
@@ -66,24 +66,52 @@ pub(super) fn kernel_taps(coefficients: Av1Wiener) -> (WienerTaps, WienerTaps) {
 /// Scalar reference of the horizontal row kernel: `out[x]` for
 /// `x < n` from `src[x..x + 7]`.
 pub(super) fn h_row(src: &[u8], taps: WienerTaps, out: &mut [i16], n: usize) {
+    h_row_at(src, taps, out, n, BitDepth::EIGHT);
+}
+
+/// [`h_row`] at any depth up to 10 bits: the intermediate clamp is
+/// `−2^(BitDepth + 3) ..= 2^(BitDepth + 5) − 1 − 2^(BitDepth + 3)` (libaom
+/// `WIENER_CLAMP_LIMIT` with its offset), within 16 bits.
+pub(super) fn h_row_at<T: Sample>(
+    src: &[T],
+    taps: WienerTaps,
+    out: &mut [i16],
+    n: usize,
+    depth: BitDepth,
+) {
+    let bits = depth.above_eight();
+    let (low, high) = (
+        H_MIN << bits,
+        ((H_MAX - H_MIN + 1) << bits) - 1 + (H_MIN << bits),
+    );
     let [c0, c1, c2, centre] = taps.map(i32::from);
     let centre = centre + (1 << FILTER_BITS);
     for (x, out) in out[..n].iter_mut().enumerate() {
-        let p = |k: usize| i32::from(src[x + k]);
+        let p = |k: usize| src[x + k].to_i32();
         let sum = c0 * (p(0) + p(6)) + c1 * (p(1) + p(5)) + c2 * (p(2) + p(4)) + centre * p(3);
         let rounded = (sum + (1 << (ROUND0 - 1))) >> ROUND0;
-        *out = (rounded.clamp(H_MIN, H_MAX) + ROUND_BIAS) as i16;
+        *out = (rounded.clamp(low, high) + ROUND_BIAS) as i16;
     }
 }
 
 /// Scalar reference of the vertical row kernel: `dst[x]` from
 /// `rows[0..7][x]`, top to bottom.
 pub(super) fn v_row(rows: &[&[i16]; TAPS], taps: WienerTaps, dst: &mut [u8]) {
+    v_row_at(rows, taps, dst, BitDepth::EIGHT);
+}
+
+/// [`v_row`] at any depth.
+pub(super) fn v_row_at<T: Sample>(
+    rows: &[&[i16]; TAPS],
+    taps: WienerTaps,
+    dst: &mut [T],
+    depth: BitDepth,
+) {
     let [c0, c1, c2, centre] = taps.map(i32::from);
     for (x, dst) in dst.iter_mut().enumerate() {
         let r = |k: usize| i32::from(rows[k][x]);
         let sum = c0 * (r(0) + r(6)) + c1 * (r(1) + r(5)) + c2 * (r(2) + r(4)) + centre * r(3);
-        *dst = (sum >> ROUND1).clamp(0, 255) as u8;
+        *dst = depth.clip_to(sum >> ROUND1);
     }
 }
 
@@ -91,13 +119,13 @@ pub(super) fn v_row(rows: &[&[i16]; TAPS], taps: WienerTaps, dst: &mut [u8]) {
 /// region with [`AV1_LR_BORDER`] source samples on every side, rows
 /// `stride` apart, each readable [`AV1_LR_OVERREAD`] samples past its end;
 /// the result goes to `dst` at `(x, y)`.
-pub(super) fn wiener(
-    kernels: &Kernels,
+pub(super) fn wiener<T: Sample>(
+    kernels: &impl RowKernels<T>,
     coefficients: Av1Wiener,
-    (window, stride): (&[u8], usize),
+    (window, stride): (&[T], usize),
     (w, h): (usize, usize),
     ring: &mut Vec<i16>,
-    (dst, x, y): (&mut PlaneViewMut<'_>, usize, usize),
+    (dst, x, y): (&mut PlaneViewMut<'_, T>, usize, usize),
 ) {
     let (horizontal, vertical) = kernel_taps(coefficients);
     let row_len = w + AV1_LR_OVERREAD;

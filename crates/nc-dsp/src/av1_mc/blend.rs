@@ -4,12 +4,13 @@
 //! OBMC blend with a neighbour's prediction.
 //!
 //! Compound inputs are at compound precision ([`Dsp::av1_predict_compound`](crate::Dsp::av1_predict_compound),
-//! `InterPostRound` bits above pixels); inter-intra and OBMC inputs are
-//! 8-bit samples.
+//! `InterPostRound` bits above pixels, less [`av1_compound_bias`]);
+//! inter-intra and OBMC inputs are samples. Each blend has an 8-bit form
+//! and an `_at` form for samples of any depth (the same code).
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
-use super::{INTER_POST_ROUND, clip_pixel, round2};
+use super::{INTER_POST_ROUND, av1_compound_bias, round2};
 use crate::Dsp;
 
 /// Bits of a blend mask weight (`AOM_BLEND_A64_ROUND_BITS`): weights run
@@ -139,10 +140,10 @@ impl Av1Mask<'_> {
 }
 
 /// Write `value(row, column)` to every sample of the `w`x`h` block.
-fn fill(
-    dst: &mut PlaneViewMut<'_>,
+fn fill<T: Sample>(
+    dst: &mut PlaneViewMut<'_, T>,
     (w, h): (usize, usize),
-    mut value: impl FnMut(usize, usize) -> u8,
+    mut value: impl FnMut(usize, usize) -> T,
 ) {
     assert!(
         dst.width() >= w && dst.height() >= h,
@@ -165,8 +166,23 @@ pub fn av1_blend_average(
     size: (usize, usize),
     dst: &mut PlaneViewMut<'_>,
 ) {
+    av1_blend_average_at(p0, p1, size, dst, BitDepth::EIGHT);
+}
+
+/// [`av1_blend_average`] at any depth.
+pub fn av1_blend_average_at<T: Sample>(
+    p0: Av1CompoundPred<'_>,
+    p1: Av1CompoundPred<'_>,
+    size: (usize, usize),
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
+    let bias = 2 * av1_compound_bias(depth);
     fill(dst, size, |r, c| {
-        clip_pixel(round2(p0.at(r, c) + p1.at(r, c), 1 + INTER_POST_ROUND))
+        depth.clip_to(round2(
+            p0.at(r, c) + p1.at(r, c) + bias,
+            1 + INTER_POST_ROUND,
+        ))
     });
 }
 
@@ -205,14 +221,28 @@ pub fn av1_distance_weights(distance_ref0: i32, distance_ref1: i32) -> [u8; 2] {
 pub fn av1_blend_distance(
     p0: Av1CompoundPred<'_>,
     p1: Av1CompoundPred<'_>,
-    [w0, w1]: [u8; 2],
+    weights: [u8; 2],
     size: (usize, usize),
     dst: &mut PlaneViewMut<'_>,
 ) {
+    av1_blend_distance_at(p0, p1, weights, size, dst, BitDepth::EIGHT);
+}
+
+/// [`av1_blend_distance`] at any depth.
+pub fn av1_blend_distance_at<T: Sample>(
+    p0: Av1CompoundPred<'_>,
+    p1: Av1CompoundPred<'_>,
+    [w0, w1]: [u8; 2],
+    size: (usize, usize),
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
     let (w0, w1) = (i32::from(w0), i32::from(w1));
+    // The weights sum to 16.
+    let bias = (w0 + w1) * av1_compound_bias(depth);
     fill(dst, size, |r, c| {
-        clip_pixel(round2(
-            w0 * p0.at(r, c) + w1 * p1.at(r, c),
+        depth.clip_to(round2(
+            w0 * p0.at(r, c) + w1 * p1.at(r, c) + bias,
             DISTANCE_BITS + INTER_POST_ROUND,
         ))
     });
@@ -231,8 +261,40 @@ pub fn av1_blend_mask(
     p0: Av1CompoundPred<'_>,
     p1: Av1CompoundPred<'_>,
     mask: Av1Mask<'_>,
-    (w, h): (usize, usize),
+    size: (usize, usize),
     dst: &mut PlaneViewMut<'_>,
+) {
+    blend_mask_rows(p0, p1, mask, size, dst, |p0, p1, weights, dst| {
+        dsp.av1_mask_blend_row(p0, p1, weights, dst);
+    });
+}
+
+/// [`av1_blend_mask`] at any depth, with the scalar rows.
+///
+/// # Panics
+///
+/// As [`av1_blend_mask`].
+pub fn av1_blend_mask_at<T: Sample>(
+    p0: Av1CompoundPred<'_>,
+    p1: Av1CompoundPred<'_>,
+    mask: Av1Mask<'_>,
+    size: (usize, usize),
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
+    blend_mask_rows(p0, p1, mask, size, dst, |p0, p1, weights, dst| {
+        super::mask_kernels::blend_row_at(p0, p1, weights, dst, depth);
+    });
+}
+
+/// The masked blend a row at a time, `row` blending one.
+fn blend_mask_rows<T: Sample>(
+    p0: Av1CompoundPred<'_>,
+    p1: Av1CompoundPred<'_>,
+    mask: Av1Mask<'_>,
+    (w, h): (usize, usize),
+    dst: &mut PlaneViewMut<'_, T>,
+    mut row: impl FnMut(&[i16], &[i16], &[i16], &mut [T]),
 ) {
     assert!(
         dst.width() >= w && dst.height() >= h,
@@ -244,7 +306,7 @@ pub fn av1_blend_mask(
     let weights = &mut weights[..w];
     for r in 0..h {
         mask.weights_row(r, weights);
-        dsp.av1_mask_blend_row(
+        row(
             p0.row(r, w),
             p1.row(r, w),
             weights,
@@ -254,22 +316,23 @@ pub fn av1_blend_mask(
 }
 
 /// Inter-intra blend (AV1 §7.11.3.14 with `IsInterIntra`), in place: `dst`
-/// holds the 8-bit inter prediction and becomes
-/// `Round2(m * intra + (64 - m) * inter, 6)`.
-pub fn av1_blend_interintra(
-    intra: &PlaneView<'_>,
+/// holds the inter prediction and becomes
+/// `Round2(m * intra + (64 - m) * inter, 6)` (a convex blend: no clip, any
+/// depth).
+pub fn av1_blend_interintra<T: Sample>(
+    intra: &PlaneView<'_, T>,
     mask: Av1Mask<'_>,
     (w, h): (usize, usize),
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     blend_in_place(dst, intra, (w, h), |r, c| mask.weight(r, c));
 }
 
 /// `dst = Round2(m * a + (64 - m) * dst, 6)` over the block, with `m` from
 /// `weight(row, column)`.
-fn blend_in_place(
-    dst: &mut PlaneViewMut<'_>,
-    a: &PlaneView<'_>,
+fn blend_in_place<T: Sample>(
+    dst: &mut PlaneViewMut<'_, T>,
+    a: &PlaneView<'_, T>,
     (w, h): (usize, usize),
     weight: impl Fn(usize, usize) -> i32,
 ) {
@@ -282,10 +345,10 @@ fn blend_in_place(
         let source = &a.row(r)[..w];
         for (c, (out, &s)) in dst.row_mut(r)[..w].iter_mut().zip(source).enumerate() {
             let m = weight(r, c);
-            *out = round2(
-                m * i32::from(s) + (max - m) * i32::from(*out),
+            *out = T::from_i32(round2(
+                m * s.to_i32() + (max - m) * out.to_i32(),
                 AV1_MASK_BITS,
-            ) as u8;
+            ));
         }
     }
 }
@@ -319,11 +382,11 @@ fn obmc_mask(length: usize) -> &'static [u8] {
 /// prediction and `m` the weight by distance from the shared `edge` (the
 /// overlap is `h` rows for [`Av1ObmcEdge::Above`], `w` columns for
 /// [`Av1ObmcEdge::Left`]; 1, 2, 4, 8, 16 or 32).
-pub fn av1_obmc_blend(
-    obmc: &PlaneView<'_>,
+pub fn av1_obmc_blend<T: Sample>(
+    obmc: &PlaneView<'_, T>,
     edge: Av1ObmcEdge,
     (w, h): (usize, usize),
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     let max = i32::from(AV1_MASK_MAX);
     let mask = obmc_mask(if edge == Av1ObmcEdge::Above { h } else { w });

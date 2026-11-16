@@ -29,7 +29,7 @@ use levels::{
     Walk,
 };
 use nc_common::decode::DecodeError;
-use nc_dsp::Av1TxType;
+use nc_dsp::{Av1Coefficient, Av1TxType};
 
 /// Levels `coeff_br` adds at most (`COEFF_BASE_RANGE`).
 const COEFF_BASE_RANGE: u8 = 12;
@@ -44,15 +44,19 @@ const EOB_EXTRA_FIRST: usize = 2;
 /// the shift (§7.12.3; libaom masks the same).
 const LEVEL_MASK: u32 = 0xf_ffff;
 const DEQUANT_MASK: u64 = 0xff_ffff;
-/// Dequantised coefficients clamp to `BitDepth + 8` bits: at 8 bits, the
-/// range of the 16-bit buffer.
-const COEFF_MIN: i32 = i16::MIN as i32;
-const COEFF_MAX: i32 = i16::MAX as i32;
-/// The largest 8-bit quantiser step (`Ac_Qlookup[0][255]`). A token below
-/// [`MAX_TOKEN`] times it stays below both the 24-bit wrap and
-/// [`COEFF_MAX`], so those coefficients need neither (dav1d's `ac_noqm`).
-const MAX_STEP: i32 = 1828;
-const _: () = assert!((MAX_TOKEN as i32 - 1) * MAX_STEP <= COEFF_MAX);
+/// Dequantised coefficients clamp to `BitDepth + 8` bits (§7.12.3): at 8
+/// bits the range of `i16` storage, at 10 that of 18 bits in `i32`
+/// ([`Av1Coefficient`]).
+const COEFF_MAX_8: i32 = i16::MAX as i32;
+const COEFF_MAX_10: i32 = (1 << 17) - 1;
+/// The largest quantiser steps (`Ac_Qlookup[0][255]`, `Ac_Qlookup[1][255]`).
+/// A token below [`MAX_TOKEN`] times the step of its depth stays below
+/// both the 24-bit wrap and the depth's clamp, so those coefficients need
+/// neither (dav1d's `ac_noqm`).
+const MAX_STEP_8: i32 = 1828;
+const MAX_STEP_10: i32 = 7312;
+const _: () = assert!((MAX_TOKEN as i32 - 1) * MAX_STEP_8 <= COEFF_MAX_8);
+const _: () = assert!((MAX_TOKEN as i32 - 1) * MAX_STEP_10 <= COEFF_MAX_10);
 /// The entropy context a block leaves: the level sum saturates at 3 bits,
 /// the DC sign category above it (libaom `COEFF_CONTEXT_MASK`, `set_dc_sign`).
 const CONTEXT_LEVEL_MAX: u32 = 7;
@@ -155,11 +159,20 @@ pub(crate) enum TxTypeSource {
     Known(Av1TxType),
 }
 
-/// Dequantiser steps of one plane (§7.12.2 `dc_q`, `ac_q`).
+/// Dequantiser steps of one plane (§7.12.2 `dc_q`, `ac_q`) and the clamp
+/// of its dequantised values (§7.12.3: `(1 << (7 + BitDepth)) − 1`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Steps {
     pub dc: i32,
     pub ac: i32,
+    pub max: i32,
+}
+
+impl Steps {
+    /// The clamp of dequantised values at `bits` bits per sample.
+    pub(crate) const fn coefficient_max(bits: u32) -> i32 {
+        (1 << (7 + bits)) - 1
+    }
 }
 
 /// What a transform block's coefficients decoded to.
@@ -181,8 +194,9 @@ impl Coded {
     };
 }
 
-/// Coefficient scratch of the decoder, reused for every transform block.
-pub(crate) struct CoefficientBuffer {
+/// Coefficient scratch of the decoder, reused for every transform block:
+/// `C` is the depth's coefficient storage ([`Av1Coefficient`]).
+pub(crate) struct CoefficientBuffer<C> {
     levels: LevelBuffer,
     /// Storage positions of the block's nonzero coefficients, which
     /// [`CoefficientBuffer::clear`] zeroes.
@@ -191,26 +205,26 @@ pub(crate) struct CoefficientBuffer {
     /// Dequantised coefficients of the block being decoded; all zero
     /// between blocks ([`CoefficientBuffer::clear`]). Between the level
     /// and sign passes they hold the tokens and their chain.
-    pub coefficients: [i16; MAX_CODED],
+    pub coefficients: [C; MAX_CODED],
 }
 
 /// Coefficients of the largest coded area (32x32).
 const MAX_CODED: usize = 1024;
 
-impl CoefficientBuffer {
+impl<C: Av1Coefficient> CoefficientBuffer<C> {
     pub(crate) fn new() -> Box<Self> {
         Box::new(Self {
             levels: LevelBuffer::new(),
             nonzero: [0; MAX_CODED],
             nonzero_count: 0,
-            coefficients: [0; MAX_CODED],
+            coefficients: [C::default(); MAX_CODED],
         })
     }
     /// Zero what the last block wrote, so the buffer is clear for the
     /// next: only its nonzero positions, not the whole area.
     pub(crate) fn clear(&mut self) {
         for &pos in &self.nonzero[..self.nonzero_count] {
-            self.coefficients[usize::from(pos)] = 0;
+            self.coefficients[usize::from(pos)] = C::default();
         }
         self.nonzero_count = 0;
     }
@@ -244,10 +258,10 @@ pub(crate) struct Request<'a> {
 /// # Errors
 /// Malformed entropy-coded data.
 #[inline(never)]
-pub(crate) fn read(
+pub(crate) fn read<C: Av1Coefficient>(
     cdfs: &mut CoefficientCdfs,
     r: &mut SymbolReader<'_>,
-    buffer: &mut CoefficientBuffer,
+    buffer: &mut CoefficientBuffer<C>,
     request: Request<'_>,
 ) -> Result<Coded, DecodeError> {
     let Request {
@@ -282,30 +296,30 @@ pub(crate) fn read(
         ..
     } = &mut *buffer;
     let tokens = match class {
-        TxClass::TwoD => levels::read::<CLASS_2D>(
+        TxClass::TwoD => levels::read::<C, CLASS_2D>(
             level_cdfs,
             r,
             levels,
             coefficients,
-            Walk::new::<CLASS_2D>(tx),
+            Walk::new::<C, CLASS_2D>(tx),
             last,
             size_log2,
         ),
-        TxClass::Horizontal => levels::read::<CLASS_H>(
+        TxClass::Horizontal => levels::read::<C, CLASS_H>(
             level_cdfs,
             r,
             levels,
             coefficients,
-            Walk::new::<CLASS_H>(tx),
+            Walk::new::<C, CLASS_H>(tx),
             last,
             size_log2,
         ),
-        TxClass::Vertical => levels::read::<CLASS_V>(
+        TxClass::Vertical => levels::read::<C, CLASS_V>(
             level_cdfs,
             r,
             levels,
             coefficients,
-            Walk::new::<CLASS_V>(tx),
+            Walk::new::<C, CLASS_V>(tx),
             last,
             size_log2,
         ),
@@ -330,10 +344,10 @@ pub(crate) fn read(
 /// (DC first, with its own sign CDF, then the chain the level pass left),
 /// dequantising each; returns the entropy context the block leaves. The
 /// DC sign is read with one of `dc_sign`'s CDFs, which the neighbours pick.
-fn read_signs(
+fn read_signs<C: Av1Coefficient>(
     r: &mut SymbolReader<'_>,
     dc_sign: (&mut [Cdf<2>; DC_SIGN_CONTEXTS], TxbNeighbours<'_>),
-    buffer: &mut CoefficientBuffer,
+    buffer: &mut CoefficientBuffer<C>,
     tokens: Tokens,
     steps: Steps,
     shift: u32,
@@ -351,52 +365,51 @@ fn read_signs(
         let (cdfs, TxbNeighbours { above, left, .. }) = dc_sign;
         let negative = r.boolean(&mut cdfs[TxbContext::dc_sign_context(above, left)]);
         dc_category = if negative { DC_NEGATIVE } else { DC_POSITIVE };
-        let (value, level) = coefficient(r, tokens.dc, negative, steps.dc, shift)?;
+        let (value, level) = coefficient(r, tokens.dc, negative, (steps.dc, steps.max), shift)?;
         level_sum += level;
-        coefficients[0] = value;
+        coefficients[0] = C::from_i32(value);
         nonzero[0] = 0;
         count = 1;
     }
     let mut rc = tokens.first;
     while rc != 0 {
         let negative = r.literal(1) != 0;
-        let entry = coefficients[rc & (MAX_CODED - 1)];
+        let entry = coefficients[rc & (MAX_CODED - 1)].to_i32();
         let tok = (entry >> TOKEN_SHIFT) as u32;
-        let (value, level) = coefficient(r, tok, negative, steps.ac, shift)?;
+        let (value, level) = coefficient(r, tok, negative, (steps.ac, steps.max), shift)?;
         level_sum += level;
-        coefficients[rc & (MAX_CODED - 1)] = value;
+        coefficients[rc & (MAX_CODED - 1)] = C::from_i32(value);
         nonzero[count & (MAX_CODED - 1)] = rc as u16;
         count += 1;
-        rc = (entry & LINK_MASK) as usize;
+        rc = (entry & i32::from(LINK_MASK)) as usize;
     }
     *nonzero_count = count;
     Ok(level_sum.min(CONTEXT_LEVEL_MAX) as u8 | dc_category)
 }
 
 /// A nonzero coefficient with token `tok` and its sign: the dequantised
-/// value (§7.12.3) and the magnitude, with any Golomb remainder.
+/// value (§7.12.3, clamped to `±max`) and the magnitude, with any Golomb
+/// remainder.
 #[inline]
 fn coefficient(
     r: &mut SymbolReader<'_>,
     tok: u32,
     negative: bool,
-    step: i32,
+    (step, max): (i32, i32),
     shift: u32,
-) -> Result<(i16, u32), DecodeError> {
-    debug_assert!((0..=MAX_STEP).contains(&step));
+) -> Result<(i32, u32), DecodeError> {
+    debug_assert!((0..=MAX_STEP_10).contains(&step));
     if tok < MAX_TOKEN {
-        // Below the 24-bit wrap and the clamp: see [`MAX_STEP`]. The value
-        // is within 16 bits, so the narrowing is exact.
+        // Below the 24-bit wrap and the clamp: see [`MAX_STEP_8`].
         let magnitude = (tok as i32 * step) >> shift;
-        return Ok(((if negative { -magnitude } else { magnitude }) as i16, tok));
+        return Ok((if negative { -magnitude } else { magnitude }, tok));
     }
     let level = (tok + read_golomb(r)?) & LEVEL_MASK;
     // The product wraps at 24 bits, is divided by `dqDenom` and clamped to
     // the coefficient range.
     let magnitude = (((u64::from(level) * step as u64) & DEQUANT_MASK) >> shift) as i32;
     let value = if negative { -magnitude } else { magnitude };
-    // Clamped to the 16-bit range, so the narrowing is exact.
-    Ok((value.clamp(COEFF_MIN, COEFF_MAX) as i16, level))
+    Ok((value.clamp(-max - 1, max), level))
 }
 
 /// A Golomb-coded remainder (§5.11.39 `read_golomb`). Out of line: rare
@@ -478,7 +491,7 @@ mod tests {
     fn dequantized(level: i32, shift: u32) -> i32 {
         let magnitude =
             ((u64::from(level.unsigned_abs() & LEVEL_MASK) & DEQUANT_MASK) >> shift) as i32;
-        (if level < 0 { -magnitude } else { magnitude }).clamp(COEFF_MIN, COEFF_MAX)
+        (if level < 0 { -magnitude } else { magnitude }).clamp(-COEFF_MAX_8 - 1, COEFF_MAX_8)
     }
 
     /// Whatever the encoder's square `DCT_DCT` coefficient writer codes,
@@ -497,7 +510,7 @@ mod tests {
                 let tx = TxSize::new(encoder_tx.log2(), encoder_tx.log2()).unwrap();
                 let mut encoder = CoeffCdfs::new(q);
                 let mut decoder = CoefficientCdfs::new(q);
-                let mut buffer = CoefficientBuffer::new();
+                let mut buffer = CoefficientBuffer::<i16>::new();
                 for inter in [false, true] {
                     for pattern in 0..4 {
                         let n = tx.coded_area();
@@ -552,7 +565,11 @@ mod tests {
                             plane: PlaneType::Luma,
                             neighbours,
                             source,
-                            steps: Steps { dc: 1, ac: 1 },
+                            steps: Steps {
+                                dc: 1,
+                                ac: 1,
+                                max: COEFF_MAX_8,
+                            },
                         };
                         let coded = read(&mut decoder, &mut reader, &mut buffer, request).unwrap();
                         assert_eq!((coded.eob, coded.kind), (eob, Av1TxType::DctDct));

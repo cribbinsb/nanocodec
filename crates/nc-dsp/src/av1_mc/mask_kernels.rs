@@ -13,7 +13,9 @@
 #![allow(unsafe_code, clippy::inline_always)]
 
 use super::blend::{AV1_MASK_BITS, AV1_MASK_MAX};
-use super::{INTER_POST_ROUND, clip_pixel, round2};
+use nc_common::{BitDepth, Sample};
+
+use super::{INTER_POST_ROUND, av1_compound_bias, round2};
 use crate::Isa;
 use crate::simd::{I16Pairs, I16x8Shuffles, I32Lanes};
 
@@ -41,11 +43,24 @@ pub(crate) fn kernel(isa: Isa) -> MaskBlendFn {
 
 /// Scalar reference.
 pub(crate) fn blend_row_scalar(p0: &[i16], p1: &[i16], weights: &[i16], dst: &mut [u8]) {
+    blend_row_at(p0, p1, weights, dst, BitDepth::EIGHT);
+}
+
+/// The scalar reference at any depth (compound values less
+/// [`av1_compound_bias`]; the weights sum to 64).
+pub(crate) fn blend_row_at<T: Sample>(
+    p0: &[i16],
+    p1: &[i16],
+    weights: &[i16],
+    dst: &mut [T],
+    depth: BitDepth,
+) {
     let max = i32::from(AV1_MASK_MAX);
+    let bias = max * av1_compound_bias(depth);
     for (j, out) in dst.iter_mut().enumerate() {
         let m = i32::from(weights[j]);
-        let sum = m * i32::from(p0[j]) + (max - m) * i32::from(p1[j]);
-        *out = clip_pixel(round2(sum, BLEND_SHIFT));
+        let sum = m * i32::from(p0[j]) + (max - m) * i32::from(p1[j]) + bias;
+        *out = depth.clip_to(round2(sum, BLEND_SHIFT));
     }
 }
 

@@ -6,9 +6,9 @@
 //! the luma area decoded inside the picture is smaller than the chroma
 //! block (`MaxLumaW` / `MaxLumaH`), and subtracts the rounded average.
 //! [`CflAc::predict`] adds `alpha * ac` to the DC prediction already in the
-//! destination.
+//! destination. Both take samples of any depth.
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 /// Largest chroma side chroma-from-luma predicts.
 pub const CFL_MAX_SIDE: usize = 32;
@@ -38,8 +38,8 @@ impl CflAc {
     /// If a chroma side is not 4, 8, 16 or 32, the luma extent is zero, odd
     /// or beyond twice the chroma size, or `luma` is smaller than it.
     #[must_use]
-    pub fn from_luma(
-        luma: &PlaneView<'_>,
+    pub fn from_luma<T: Sample>(
+        luma: &PlaneView<'_, T>,
         luma_width: usize,
         luma_height: usize,
         width: usize,
@@ -63,10 +63,11 @@ impl CflAc {
             if r < stored_h {
                 let (top, bottom) = (luma.row(2 * r), luma.row(2 * r + 1));
                 for (c, value) in row[..stored_w].iter_mut().enumerate() {
-                    let sum = u16::from(top[2 * c])
-                        + u16::from(top[2 * c + 1])
-                        + u16::from(bottom[2 * c])
-                        + u16::from(bottom[2 * c + 1]);
+                    // At most 4 · 1023 << 1 at 10 bits: within 16 bits.
+                    let sum = top[2 * c].to_i32()
+                        + top[2 * c + 1].to_i32()
+                        + bottom[2 * c].to_i32()
+                        + bottom[2 * c + 1].to_i32();
                     *value = (sum << SUM_420_SHIFT) as i16;
                 }
                 let last = row[stored_w - 1];
@@ -85,13 +86,18 @@ impl CflAc {
         Self { ac, width, height }
     }
 
-    /// Add `alpha_q3 * ac` (rounded, §7.11.5) to the DC prediction in `dst`
-    /// with 8-bit clipping. `alpha_q3` is `CflAlphaU` / `CflAlphaV`.
+    /// Add `alpha_q3 * ac` (rounded, §7.11.5) to the DC prediction in `dst`,
+    /// clipping to `depth`. `alpha_q3` is `CflAlphaU` / `CflAlphaV`.
     ///
     /// # Panics
     ///
     /// If `dst` is not the block's size.
-    pub fn predict(&self, alpha_q3: i32, dst: &mut PlaneViewMut<'_>) {
+    pub fn predict<T: Sample>(
+        &self,
+        alpha_q3: i32,
+        dst: &mut PlaneViewMut<'_, T>,
+        depth: BitDepth,
+    ) {
         let (w, h) = (self.width, self.height);
         assert!(
             dst.width() == w && dst.height() == h,
@@ -101,7 +107,7 @@ impl CflAc {
             let ac = &self.ac[r * w..(r + 1) * w];
             for (pixel, &value) in dst.row_mut(r)[..w].iter_mut().zip(ac) {
                 let scaled = round_signed(alpha_q3 * i32::from(value), SCALED_BITS);
-                *pixel = (i32::from(*pixel) + scaled).clamp(0, i32::from(u8::MAX)) as u8;
+                *pixel = depth.clip_to(pixel.to_i32() + scaled);
             }
         }
     }

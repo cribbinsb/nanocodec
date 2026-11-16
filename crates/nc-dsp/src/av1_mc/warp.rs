@@ -10,12 +10,13 @@
 //! `Warped_Filters` and `Div_Lut`: libaom v3.15.3
 //! `av1/common/warped_motion.c` (BSD-2-Clause, see `THIRD_PARTY.md`).
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use super::warp_kernels::{
-    WARP_BLOCK, WINDOW_LEN, WINDOW_SIDE, WINDOW_STRIDE, WarpOut, WarpPhases, window_span,
+    WARP_BLOCK, WINDOW_LEN, WINDOW_SIDE, WINDOW_STRIDE, WarpOut, WarpPhases, warp8x8_scalar,
+    window_span,
 };
-use super::{INTER_ROUND1_COMPOUND, INTER_ROUND1_FINAL, clip_pixel, round2, round2_signed};
+use super::{INTER_ROUND1_COMPOUND, INTER_ROUND1_FINAL, av1_compound_bias, round2, round2_signed};
 use crate::Dsp;
 
 /// `WARPEDMODEL_PREC_BITS`: precision of the warp model.
@@ -530,11 +531,12 @@ pub(crate) const PHASE_ROUND: i32 = (1 << (DIFF_BITS - 1)) + (PHASE_OFFSET << DI
 
 /// Block warp process (AV1 §7.11.3.5) for the 8x8 block at plane sample
 /// `(x, y)`: the source window around the block's warped centre (samples
-/// clamped to the plane) and the filter phases, warped by `dsp`'s kernel
-/// into `Round2(sum, round1)` for each of its samples, row by row.
-fn block_warp(
-    dsp: &Dsp,
-    reference: &PlaneView<'_>,
+/// clamped to the plane) and the filter phases, warped by `kernel` (one
+/// 8x8 block, `Dsp::av1_warp8x8`'s contract) into `Round2(sum, round1)` for
+/// each of its samples, row by row.
+fn block_warp<T: Sample>(
+    kernel: &impl Fn((&[T], usize), &WarpPhases, u32, &mut WarpOut),
+    reference: &PlaneView<'_, T>,
     (model, shear): (&[i32; 6], Av1Shear),
     (x, y): (usize, usize),
     (sub_x, sub_y): (bool, bool),
@@ -563,7 +565,7 @@ fn block_warp(
     let mut out = [0; WARP_BLOCK * WARP_BLOCK];
     if let Some(start) = interior_window(reference, corner) {
         // The window lies inside the plane: read it in place.
-        dsp.av1_warp8x8(
+        kernel(
             (&reference.data()[start..], reference.stride()),
             &phases,
             round1,
@@ -571,7 +573,7 @@ fn block_warp(
         );
     } else {
         let window = clamped_window(reference, corner);
-        dsp.av1_warp8x8((&window, WINDOW_STRIDE), &phases, round1, &mut out);
+        kernel((&window, WINDOW_STRIDE), &phases, round1, &mut out);
     }
     out
 }
@@ -579,7 +581,10 @@ fn block_warp(
 /// Where the window whose top-left sample is `(left, top)` starts in
 /// `reference`'s data, when all of its samples lie inside the plane and
 /// every row can be read as a whole vector of [`WINDOW_STRIDE`] samples.
-fn interior_window(reference: &PlaneView<'_>, (left, top): (i64, i64)) -> Option<usize> {
+fn interior_window<T: Sample>(
+    reference: &PlaneView<'_, T>,
+    (left, top): (i64, i64),
+) -> Option<usize> {
     let side = WINDOW_SIDE as i64;
     let inside = left >= 0
         && top >= 0
@@ -596,9 +601,12 @@ fn interior_window(reference: &PlaneView<'_>, (left, top): (i64, i64)) -> Option
 /// The [`WINDOW_SIDE`]-square source window whose top-left sample is
 /// `(left, top)` (partly outside the plane), every sample clamped to the
 /// plane as §7.11.3.5 reads them, rows [`WINDOW_STRIDE`] apart.
-fn clamped_window(reference: &PlaneView<'_>, (left, top): (i64, i64)) -> [u8; WINDOW_LEN] {
+fn clamped_window<T: Sample>(
+    reference: &PlaneView<'_, T>,
+    (left, top): (i64, i64),
+) -> [T; WINDOW_LEN] {
     let (width, height) = (reference.width() as i64, reference.height() as i64);
-    let mut window = [0u8; WINDOW_LEN];
+    let mut window = [T::default(); WINDOW_LEN];
     for (i, row) in window
         .as_chunks_mut::<WINDOW_STRIDE>()
         .0
@@ -618,9 +626,9 @@ fn clamped_window(reference: &PlaneView<'_>, (left, top): (i64, i64)) -> [u8; WI
 /// `store_row(row, column, values)` receiving each row of a block's
 /// outputs that lies in the block.
 #[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
-fn warp(
-    dsp: &Dsp,
-    reference: &PlaneView<'_>,
+fn warp<T: Sample>(
+    kernel: &impl Fn((&[T], usize), &WarpPhases, u32, &mut WarpOut),
+    reference: &PlaneView<'_, T>,
     model: &[i32; 6],
     shear: Av1Shear,
     (x, y): (usize, usize),
@@ -636,7 +644,7 @@ fn warp(
     for i8 in (0..h).step_by(WARP_BLOCK) {
         for j8 in (0..w).step_by(WARP_BLOCK) {
             let out = block_warp(
-                dsp,
+                kernel,
                 reference,
                 (model, shear),
                 (x + j8, y + i8),
@@ -675,12 +683,67 @@ pub fn av1_warp(
     sub: (bool, bool),
     dst: &mut PlaneViewMut<'_>,
 ) {
+    let kernel = |window: (&[u8], usize), phases: &WarpPhases, round1, out: &mut WarpOut| {
+        dsp.av1_warp8x8(window, phases, round1, out);
+    };
+    warp_final(
+        &kernel,
+        reference,
+        (model, shear),
+        position,
+        (w, h),
+        sub,
+        dst,
+        BitDepth::EIGHT,
+    );
+}
+
+/// [`av1_warp`] at any depth, with the scalar 8x8 kernel.
+///
+/// # Panics
+///
+/// As [`av1_warp`].
+#[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
+pub fn av1_warp_at<T: Sample>(
+    reference: &PlaneView<'_, T>,
+    model: &[i32; 6],
+    shear: Av1Shear,
+    position: (usize, usize),
+    size: (usize, usize),
+    sub: (bool, bool),
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
+    warp_final(
+        &warp8x8_scalar::<T>,
+        reference,
+        (model, shear),
+        position,
+        size,
+        sub,
+        dst,
+        depth,
+    );
+}
+
+/// The final-precision warp with `kernel`, clipped to `depth`.
+#[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
+fn warp_final<T: Sample>(
+    kernel: &impl Fn((&[T], usize), &WarpPhases, u32, &mut WarpOut),
+    reference: &PlaneView<'_, T>,
+    (model, shear): (&[i32; 6], Av1Shear),
+    position: (usize, usize),
+    (w, h): (usize, usize),
+    sub: (bool, bool),
+    dst: &mut PlaneViewMut<'_, T>,
+    depth: BitDepth,
+) {
     assert!(
         dst.width() >= w && dst.height() >= h,
         "warp destination smaller than {w}x{h}"
     );
     warp(
-        dsp,
+        kernel,
         reference,
         model,
         shear,
@@ -691,7 +754,7 @@ pub fn av1_warp(
         |r, c, values| {
             let line = &mut dst.row_mut(r)[c..c + values.len()];
             for (out, &v) in line.iter_mut().zip(values) {
-                *out = clip_pixel(v);
+                *out = depth.clip_to(v);
             }
         },
     );
@@ -715,12 +778,70 @@ pub fn av1_warp_compound(
     dst: &mut [i16],
     dst_stride: usize,
 ) {
+    let kernel = |window: (&[u8], usize), phases: &WarpPhases, round1, out: &mut WarpOut| {
+        dsp.av1_warp8x8(window, phases, round1, out);
+    };
+    warp_compound(
+        &kernel,
+        reference,
+        (model, shear),
+        position,
+        (w, h),
+        sub,
+        (dst, dst_stride),
+        BitDepth::EIGHT,
+    );
+}
+
+/// [`av1_warp_compound`] at any depth (values less
+/// [`av1_compound_bias`](super::av1_compound_bias)), with the scalar 8x8
+/// kernel.
+///
+/// # Panics
+///
+/// As [`av1_warp_compound`].
+#[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
+pub fn av1_warp_compound_at<T: Sample>(
+    reference: &PlaneView<'_, T>,
+    model: &[i32; 6],
+    shear: Av1Shear,
+    position: (usize, usize),
+    size: (usize, usize),
+    sub: (bool, bool),
+    dst: (&mut [i16], usize),
+    depth: BitDepth,
+) {
+    warp_compound(
+        &warp8x8_scalar::<T>,
+        reference,
+        (model, shear),
+        position,
+        size,
+        sub,
+        dst,
+        depth,
+    );
+}
+
+/// The compound-precision warp with `kernel`.
+#[allow(clippy::too_many_arguments, reason = "the warp process's inputs")]
+fn warp_compound<T: Sample>(
+    kernel: &impl Fn((&[T], usize), &WarpPhases, u32, &mut WarpOut),
+    reference: &PlaneView<'_, T>,
+    (model, shear): (&[i32; 6], Av1Shear),
+    position: (usize, usize),
+    (w, h): (usize, usize),
+    sub: (bool, bool),
+    (dst, dst_stride): (&mut [i16], usize),
+    depth: BitDepth,
+) {
     assert!(
         dst_stride >= w && dst.len() >= (h - 1) * dst_stride + w,
         "warp compound buffer too small for {w}x{h}"
     );
+    let bias = av1_compound_bias(depth);
     warp(
-        dsp,
+        kernel,
         reference,
         model,
         shear,
@@ -731,7 +852,7 @@ pub fn av1_warp_compound(
         |r, c, values| {
             let line = &mut dst[r * dst_stride + c..][..values.len()];
             for (out, &v) in line.iter_mut().zip(values) {
-                *out = v as i16;
+                *out = (v - bias) as i16;
             }
         },
     );

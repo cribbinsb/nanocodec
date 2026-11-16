@@ -7,7 +7,7 @@
 //! extensions and the edge filter; and of every square mode through `Dsp::av1_intra_predict`
 //! (the ISA's smooth and Paeth kernels).
 
-use nc_common::Plane;
+use nc_common::{BitDepth, Plane};
 use nc_dsp::Dsp;
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 use nc_dsp::intra_prediction::filter::{FILTER_INTRA_MAX_SIZE, FilterIntraMode};
@@ -88,7 +88,7 @@ pub(crate) fn check_av1_intra(
             ..EdgeAvail::default()
         };
         for (w, h) in RECTANGLES {
-            let edges = BlockEdges::read(&plane, ORIGIN, ORIGIN, w, h, avail);
+            let edges = BlockEdges::read(&plane, (ORIGIN, ORIGIN), (w, h), avail, BitDepth::EIGHT);
             for mode in FilterIntraMode::ALL {
                 let predict = |dsp: &Dsp| {
                     let mut out = Plane::new(w, h, 0).unwrap();
@@ -179,11 +179,10 @@ pub(crate) fn check_av1_directional(
                     };
                     let block = BlockEdges::read(
                         &plane,
-                        DIRECTIONAL_MAX,
-                        DIRECTIONAL_MAX,
-                        side,
-                        side,
+                        (DIRECTIONAL_MAX, DIRECTIONAL_MAX),
+                        (side, side),
                         avail,
+                        BitDepth::EIGHT,
                     );
                     for smooth in [false, true] {
                         let kind = IntraKind::Directional {

@@ -5,15 +5,16 @@
 use super::super::block_info::Neighbours;
 use super::super::transform::chroma_block;
 use super::{BlockPos, FrameDecoder};
-use crate::backend::{ANGLE_DELTA_SYMBOLS, INTRA_MODES, Picture, UV_CFL_PRED};
+use crate::backend::{ANGLE_DELTA_SYMBOLS, INTRA_MODES, UV_CFL_PRED};
 use crate::decoder_range::SymbolReader;
 use crate::intra::{FILTER_INTRA_MODES, LumaIntra, MAX_ANGLE_DELTA};
 use crate::predict::{FilterIntraMode, IntraMode};
 use crate::tables::{
     CFL_ALLOWED, CFL_NOT_ALLOWED, UV_INTRA_MODES_CFL_ALLOWED, UV_INTRA_MODES_CFL_NOT_ALLOWED,
 };
-use nc_common::PlaneIndex;
 use nc_common::decode::DecodeError;
+use nc_common::{Picture, PlaneIndex, PlaneViewMut};
+use nc_dsp::Pixel;
 use nc_dsp::intra_prediction::av1_block::cfl::CflAc;
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 
@@ -79,7 +80,7 @@ pub(super) struct IntraTransform {
     pub edge_filter: Option<EdgeFilterCtx>,
 }
 
-impl FrameDecoder<'_> {
+impl<T: Pixel> FrameDecoder<'_, T> {
     /// The intra modes of `block` (§5.11.7, §5.11.22): `YMode` (from the
     /// neighbours' modes in intra frames, by size group otherwise), its
     /// angle, then, where the block carries chroma, `UVMode` with `CfL`
@@ -216,15 +217,27 @@ impl FrameDecoder<'_> {
             None
         };
         if let Some(filter) = filter {
-            let edges = BlockEdges::read(self.recon.plane(tx.plane), x, y, w, h, tx.avail);
-            let dsp = self.dsp;
+            let edges = BlockEdges::read(
+                self.recon.plane(tx.plane),
+                (x, y),
+                (w, h),
+                tx.avail,
+                self.depth(),
+            );
+            let kernels = self.kernels();
             let mut dst = self.destination(tx)?;
-            dsp.av1_intra_predict_filter_block(&edges, filter, &mut dst);
+            kernels.av1_intra_predict_filter_block(&edges, filter, &mut dst);
             return Ok(());
         }
         // Read after the filter branch: built here, in place, the edges
         // are not moved (a memcpy per transform block when read earlier).
-        let edges = BlockEdges::read(self.recon.plane(tx.plane), x, y, w, h, tx.avail);
+        let edges = BlockEdges::read(
+            self.recon.plane(tx.plane),
+            (x, y),
+            (w, h),
+            tx.avail,
+            self.depth(),
+        );
         let kind = if cfl {
             IntraKind::Dc
         } else if tx.plane == PlaneIndex::Y {
@@ -234,29 +247,26 @@ impl FrameDecoder<'_> {
                 IntraMode::from_symbol(modes.uv).ok_or(DecodeError::Malformed("AV1 UV mode"))?;
             intra_kind(mode, modes.uv_angle_delta, tx.edge_filter)
         };
-        let dsp = self.dsp;
+        let kernels = self.kernels();
         let mut dst = self.destination(tx)?;
-        dsp.av1_intra_predict_block(&edges, kind, &mut dst);
+        kernels.av1_intra_predict_block(&edges, kind, &mut dst);
         if let Some(ac) = ac {
             let alpha = modes.alpha[tx.plane as usize - 1];
-            ac.predict(i32::from(alpha), &mut dst);
+            ac.predict(i32::from(alpha), &mut dst, kernels.depth());
         }
         Ok(())
     }
 
-    fn destination(
-        &mut self,
-        tx: IntraTransform,
-    ) -> Result<nc_common::PlaneViewMut<'_>, DecodeError> {
+    fn destination(&mut self, tx: IntraTransform) -> Result<PlaneViewMut<'_, T>, DecodeError> {
         region(&mut self.recon, tx)
     }
 }
 
 /// The samples of `tx` in `recon`.
-fn region(
-    recon: &mut Picture,
+fn region<T: Pixel>(
+    recon: &mut Picture<T>,
     tx: IntraTransform,
-) -> Result<nc_common::PlaneViewMut<'_>, DecodeError> {
+) -> Result<PlaneViewMut<'_, T>, DecodeError> {
     recon
         .plane_mut(tx.plane)
         .region_mut(

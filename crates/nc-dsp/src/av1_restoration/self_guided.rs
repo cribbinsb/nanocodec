@@ -17,9 +17,9 @@
     clippy::many_single_char_names,
     reason = "the spec's and dav1d's sample, tap and statistic names"
 )]
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut, Sample};
 
-use super::kernels::Kernels;
+use super::kernels::RowKernels;
 use super::{AV1_LR_BORDER, AV1_LR_OVERREAD, Av1SgrProj};
 
 /// `SGRPROJ_RST_BITS`: extra precision of the filtered samples.
@@ -104,10 +104,16 @@ const _: () = assert!(MAX_FACTOR <= i16::MAX as u32);
 
 /// Scalar reference of the horizontal box sums of radius `R`: `sum[j]`
 /// and `squares[j]` over `src[j..j + 2R + 1]`, for `j < n`.
-pub(super) fn box_sums<const R: usize>(src: &[u8], sum: &mut [i16], squares: &mut [i32], n: usize) {
+pub(super) fn box_sums<T: Sample, const R: usize>(
+    src: &[T],
+    sum: &mut [i16],
+    squares: &mut [i32],
+    n: usize,
+) {
     for j in 0..n {
-        let samples = src[j..=j + 2 * R].iter().map(|&s| i32::from(s));
-        // At most MAX_ROW_SUM, so the narrowing is exact.
+        let samples = src[j..=j + 2 * R].iter().map(|&s| s.to_i32());
+        // At most MAX_ROW_SUM (8 bits; 5 · 1023 at 10), so the narrowing
+        // is exact.
         sum[j] = samples.clone().sum::<i32>() as i16;
         squares[j] = samples.map(|s| s * s).sum();
     }
@@ -121,14 +127,35 @@ pub(super) fn box_ab<const N: usize>(
     sums: [&[i16]; N],
     squares: [&[i32]; N],
     scale: u32,
-    (a, b): (&mut [i16], &mut [i32]),
+    ab: (&mut [i16], &mut [i32]),
     n: usize,
 ) {
+    box_ab_at(sums, squares, scale, ab, (n, 0));
+}
+
+/// [`box_ab`] of samples `bits` bits deeper than 8: the variance is taken
+/// of the sums rounded down to 8-bit precision (libaom `calc_ab` with
+/// `bit_depth > 8`); `B` still scales the full-precision sum.
+pub(super) fn box_ab_at<const N: usize>(
+    sums: [&[i16]; N],
+    squares: [&[i32]; N],
+    scale: u32,
+    (a, b): (&mut [i16], &mut [i32]),
+    (n, bits): (usize, u32),
+) {
     let count = (N * N) as u32;
+    let round = |v: u32, shift: u32| {
+        if shift == 0 {
+            v
+        } else {
+            (v + (1 << (shift - 1))) >> shift
+        }
+    };
     for j in 0..n {
         let sum = sums.iter().map(|row| row[j] as u32).sum::<u32>();
         let square = squares.iter().map(|row| row[j] as u32).sum::<u32>();
-        let p = (square * count).saturating_sub(sum * sum);
+        let (square_8, sum_8) = (round(square, 2 * bits), round(sum, bits));
+        let p = (square_8 * count).saturating_sub(sum_8 * sum_8);
         let z = (p * scale + (1 << (MTABLE_BITS - 1))) >> MTABLE_BITS;
         let factor = x_by_xplus1(z);
         // At most MAX_FACTOR, so the narrowing is exact.
@@ -145,8 +172,8 @@ pub(super) fn box_ab<const N: usize>(
 /// · one_by_x(n) + 2^11) >> 12` (`n` = 9 or 25), so `A · Src + B ≤ 65344`
 /// over every `A`; the weights (32 or 16) are removed by the shift (9 or
 /// 8), so `0 ≤ v ≤ 4084 < 2^13`, as in dav1d's 8bpc `int16_t` rows.
-fn filtered(weighted_a: i32, weighted_b: i32, source: u8, shift: u32) -> i16 {
-    ((weighted_a * i32::from(source) + weighted_b + (1 << (shift - 1))) >> shift) as i16
+fn filtered<T: Sample>(weighted_a: i32, weighted_b: i32, source: T, shift: u32) -> i16 {
+    ((weighted_a * source.to_i32() + weighted_b + (1 << (shift - 1))) >> shift) as i16
 }
 
 /// `A` in 32 bits, for the weighted sums.
@@ -157,10 +184,10 @@ fn wide(v: &[i16], j: usize) -> i32 {
 /// Scalar reference of a radius-2 output row between two box rows
 /// (`above`, `below`): weights 6 straight across, 5 diagonally. Box
 /// columns are offset by one: column `j` reads index `j + 1`.
-pub(super) fn filter_between(
+pub(super) fn filter_between<T: Sample>(
     a: [&[i16]; 2],
     b: [&[i32]; 2],
-    src: &[u8],
+    src: &[T],
     out: &mut [i16],
     n: usize,
 ) {
@@ -178,7 +205,7 @@ pub(super) fn filter_between(
 
 /// Scalar reference of a radius-2 output row on a box row: weights 6 at
 /// the centre, 5 left and right.
-pub(super) fn filter_on(a: &[i16], b: &[i32], src: &[u8], out: &mut [i16], n: usize) {
+pub(super) fn filter_on<T: Sample>(a: &[i16], b: &[i32], src: &[T], out: &mut [i16], n: usize) {
     let weigh_a = |v: &[i16], j: usize| wide(v, j + 1) * 6 + (wide(v, j) + wide(v, j + 2)) * 5;
     let weigh_b = |v: &[i32], j: usize| v[j + 1] * 6 + (v[j] + v[j + 2]) * 5;
     for j in 0..n {
@@ -188,7 +215,13 @@ pub(super) fn filter_on(a: &[i16], b: &[i32], src: &[u8], out: &mut [i16], n: us
 
 /// Scalar reference of a radius-1 output row from the box rows above, on
 /// and below: weights 4 on the cross, 3 on the diagonals.
-pub(super) fn filter_around(a: [&[i16]; 3], b: [&[i32]; 3], src: &[u8], out: &mut [i16], n: usize) {
+pub(super) fn filter_around<T: Sample>(
+    a: [&[i16]; 3],
+    b: [&[i32]; 3],
+    src: &[T],
+    out: &mut [i16],
+    n: usize,
+) {
     let weigh_a = |v: [&[i16]; 3], j: usize| {
         (wide(v[1], j)
             + wide(v[1], j + 1)
@@ -211,11 +244,22 @@ pub(super) fn filter_around(a: [&[i16]; 3], b: [&[i32]; 3], src: &[u8], out: &mu
 /// `v = w0 · (flt0 − u) + w1 · (flt1 − u) + u · 2^7`), `dst[j]` from
 /// `src[j]` and the two filtered rows.
 pub(super) fn blend(src: &[u8], filtered: [&[i16]; 2], weights: [i32; 2], dst: &mut [u8]) {
+    blend_at(src, filtered, weights, dst, BitDepth::EIGHT);
+}
+
+/// [`blend`] at any depth.
+pub(super) fn blend_at<T: Sample>(
+    src: &[T],
+    filtered: [&[i16]; 2],
+    weights: [i32; 2],
+    dst: &mut [T],
+    depth: BitDepth,
+) {
     for (j, dst) in dst.iter_mut().enumerate() {
-        let u = i32::from(src[j]) << SOURCE_SHIFT;
+        let u = src[j].to_i32() << SOURCE_SHIFT;
         let [f0, f1] = filtered.map(|row| i32::from(row[j]));
         let v = (u << PRJ_BITS) + weights[0] * (f0 - u) + weights[1] * (f1 - u);
-        *dst = ((v + (1 << (BLEND_SHIFT - 1))) >> BLEND_SHIFT).clamp(0, 255) as u8;
+        *dst = depth.clip_to((v + (1 << (BLEND_SHIFT - 1))) >> BLEND_SHIFT);
     }
 }
 
@@ -279,21 +323,21 @@ pub(super) struct SgrScratch {
 }
 
 /// The window rows of one region and what the kernels read of them.
-struct Region<'a> {
-    window: &'a [u8],
+struct Region<'a, T> {
+    window: &'a [T],
     stride: usize,
     w: usize,
 }
 
-impl Region<'_> {
+impl<T> Region<'_, T> {
     /// Window row `t` from column `x`, as far as the kernels may read.
-    fn row(&self, t: usize, x: usize) -> &[u8] {
+    fn row(&self, t: usize, x: usize) -> &[T] {
         let start = t * self.stride + x;
         &self.window[start..start + self.w + 2 * AV1_LR_BORDER - x + AV1_LR_OVERREAD]
     }
 
     /// The region's own samples on its row `i`.
-    fn source(&self, i: usize) -> &[u8] {
+    fn source(&self, i: usize) -> &[T] {
         self.row(i + AV1_LR_BORDER, AV1_LR_BORDER)
     }
 
@@ -306,9 +350,9 @@ impl Region<'_> {
 
 /// Compute the horizontal sums of radius `R` for window rows up to
 /// `last`.
-fn sums_through<const R: usize>(
-    kernels: &Kernels,
-    region: &Region<'_>,
+fn sums_through<T: Sample, const R: usize>(
+    kernels: &impl RowKernels<T>,
+    region: &Region<'_, T>,
     rings: &mut PassRings,
     last: usize,
 ) {
@@ -329,15 +373,15 @@ fn sums_through<const R: usize>(
 
 /// Box row `i` (-1 ..= h) of the radius-2 pass, into `A` / `B` slot
 /// `slot`: the window rows `i + 1 ..= i + 5` around its centre `i + 3`.
-fn radius2_box_row(
-    kernels: &Kernels,
-    region: &Region<'_>,
+fn radius2_box_row<T: Sample>(
+    kernels: &impl RowKernels<T>,
+    region: &Region<'_, T>,
     rings: &mut PassRings,
     scale: u32,
     (i, slot): (isize, usize),
 ) {
     let top = (i + 1) as usize;
-    sums_through::<2>(kernels, region, rings, top + 4);
+    sums_through::<T, 2>(kernels, region, rings, top + 4);
     let sums = core::array::from_fn(|k| rings.sums.row(top + k));
     let squares = core::array::from_fn(|k| rings.squares.row(top + k));
     let (a, b) = (rings.a.row_mut(slot), rings.b.row_mut(slot));
@@ -345,15 +389,15 @@ fn radius2_box_row(
 }
 
 /// Box row `i` (-1 ..= h) of the radius-1 pass, into slot `i + 1`.
-fn radius1_box_row(
-    kernels: &Kernels,
-    region: &Region<'_>,
+fn radius1_box_row<T: Sample>(
+    kernels: &impl RowKernels<T>,
+    region: &Region<'_, T>,
     rings: &mut PassRings,
     scale: u32,
     i: isize,
 ) {
     let top = (i + 2) as usize;
-    sums_through::<1>(kernels, region, rings, top + 2);
+    sums_through::<T, 1>(kernels, region, rings, top + 2);
     let sums = core::array::from_fn(|k| rings.sums.row(top + k));
     let squares = core::array::from_fn(|k| rings.squares.row(top + k));
     let slot = (i + 1) as usize;
@@ -365,13 +409,13 @@ fn radius1_box_row(
 /// region with [`AV1_LR_BORDER`] source samples on every side, rows
 /// `stride` apart, each readable [`AV1_LR_OVERREAD`] samples past its end;
 /// the result goes to `dst` at `(x, y)`.
-pub(super) fn self_guided(
-    kernels: &Kernels,
+pub(super) fn self_guided<T: Sample>(
+    kernels: &impl RowKernels<T>,
     params: Av1SgrProj,
-    (window, stride): (&[u8], usize),
+    (window, stride): (&[T], usize),
     (w, h): (usize, usize),
     scratch: &mut SgrScratch,
-    (dst, x, y): (&mut PlaneViewMut<'_>, usize, usize),
+    (dst, x, y): (&mut PlaneViewMut<'_, T>, usize, usize),
 ) {
     let [r0, s0, r1, s1] = SGR_PARAMS[usize::from(params.set)];
     let region = Region { window, stride, w };

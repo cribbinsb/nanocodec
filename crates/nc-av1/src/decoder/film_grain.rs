@@ -6,6 +6,7 @@
 use nc_common::decode::DecodeError;
 use nc_common::{Picture, Plane, PlaneIndex, PlaneViewMut};
 use nc_dsp::av1_film_grain::{Av1FilmGrainParams, Av1ScalingPoints};
+use nc_dsp::{DepthKernels, Pixel};
 
 use super::frame_header::FilmGrainParams;
 
@@ -53,18 +54,21 @@ fn plane_size(plane: PlaneIndex, (width, height): (usize, usize)) -> (usize, usi
 }
 
 /// The writable top-left `width` x `height` samples of `plane`.
-fn writable(plane: &mut Plane, (width, height): (usize, usize)) -> Option<PlaneViewMut<'_>> {
+fn writable<T: Pixel>(
+    plane: &mut Plane<T>,
+    (width, height): (usize, usize),
+) -> Option<PlaneViewMut<'_, T>> {
     plane.region_mut(0, 0, width, height)
 }
 
 /// Add film grain to the `width` x `height` (upscaled) frame `input`,
 /// writing the shown frame to `output`.
-pub(crate) fn apply(
-    dsp: &nc_dsp::Dsp,
+pub(crate) fn apply<T: Pixel>(
+    kernels: DepthKernels<'_>,
     params: &FilmGrainParams,
-    input: &Picture,
+    input: &Picture<T>,
     (width, height): (usize, usize),
-    output: &mut Picture,
+    output: &mut Picture<T>,
 ) -> Result<(), DecodeError> {
     let size = |plane: PlaneIndex| plane_size(plane, (width, height));
     let views = PlaneIndex::ALL.map(|plane| {
@@ -86,7 +90,7 @@ pub(crate) fn apply(
             "AV1 film grain output smaller than its frame",
         ));
     };
-    dsp.av1_add_film_grain(
+    kernels.av1_add_film_grain(
         &synthesis_params(params),
         [&luma, &cb, &cr],
         (width, height),
@@ -117,7 +121,15 @@ mod tests {
             grain_seed: 1234,
             ..FilmGrainParams::default()
         };
-        apply(&nc_dsp::Dsp::new(), &params, &input, (64, 48), &mut output).unwrap();
+        let dsp = nc_dsp::Dsp::new();
+        apply(
+            dsp.at(nc_common::BitDepth::EIGHT),
+            &params,
+            &input,
+            (64, 48),
+            &mut output,
+        )
+        .unwrap();
         for plane in PlaneIndex::ALL {
             assert_eq!(
                 output.plane(plane).view().data(),

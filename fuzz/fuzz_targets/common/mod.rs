@@ -16,7 +16,7 @@
 
 use std::hint::black_box;
 
-use nc_common::{DecodedPicture, Picture, PlaneIndex, Sample, ShownPicture};
+use nc_common::{DecodedPicture, Picture, PlaneIndex, Sample, ShownFrame, ShownPicture};
 
 pub mod drive;
 
@@ -104,15 +104,23 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Read every visible sample of a shown picture (browser display path).
-pub fn read_shown(shown: Option<ShownPicture<'_>>) {
+pub fn read_shown<T: Sample>(shown: Option<ShownPicture<'_, T>>) {
     let Some(shown) = shown else { return };
     let mut sum = 0u64;
     for plane in PlaneIndex::ALL {
         for row in shown.plane(plane).rows() {
-            sum = sum.wrapping_add(row.iter().map(|&s| u64::from(s)).sum::<u64>());
+            sum = sum.wrapping_add(row.iter().map(|&s| u64::from(s.to_i32() as u32)).sum::<u64>());
         }
     }
     black_box(sum);
+}
+
+/// Read a shown frame of either sample type, as the CLI writes it.
+pub fn read_shown_frame(shown: ShownFrame<'_>) {
+    match shown {
+        ShownFrame::Eight(p) => read_shown(Some(p)),
+        ShownFrame::High(p, _) => read_shown(Some(p)),
+    }
 }
 
 /// Read a decoder's output picture of either sample type, as the CLI

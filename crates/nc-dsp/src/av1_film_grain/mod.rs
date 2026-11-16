@@ -1,4 +1,6 @@
-//! AV1 film grain synthesis (AV1 §7.18.3), 8-bit 4:2:0: pseudo-random
+//! AV1 film grain synthesis (AV1 §7.18.3), 4:2:0, 8-bit with the ISA's
+//! row kernels and deeper samples with the scalar ones
+//! ([`crate::Dsp::av1_add_film_grain_at`]): pseudo-random
 //! grain templates shaped by an auto-regressive filter, laid over the
 //! output frame in 32x32 luma blocks at random offsets (with optional
 //! overlap blending), scaled by a piecewise-linear function of the
@@ -16,7 +18,7 @@ mod synthesis;
 
 pub use kernels::Av1GrainScaling;
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut};
 
 use gaussian::GAUSSIAN_SEQUENCE;
 
@@ -83,7 +85,8 @@ impl<const N: usize> Default for Av1ScalingPoints<N> {
 const GAUSSIAN_BITS: u32 = 11;
 /// Precision of [`GAUSSIAN_SEQUENCE`] samples.
 const GAUSSIAN_PRECISION: u32 = 12;
-/// Smallest and largest 8-bit grain value (`GrainMin`, `GrainMax`).
+/// Smallest and largest 8-bit grain value (`GrainMin`, `GrainMax`; both
+/// scale by `1 << (BitDepth − 8)`, [`grain_range`]).
 const GRAIN_MIN: i32 = -128;
 const GRAIN_MAX: i32 = 127;
 /// Luma grain template size (`73` rows of `82`).
@@ -128,39 +131,65 @@ fn round2(value: i32, bits: u32) -> i32 {
     }
 }
 
-/// A grain template: `rows` x `columns` 8-bit grain values (dav1d's
-/// `entry` at 8bpc). The white noise is within `round2(±1752, 4)` (the
-/// extremes of [`GAUSSIAN_SEQUENCE`] at the smallest shift) and the
-/// auto-regressive filter clamps to `GrainMin..=GrainMax`, so `i8` is
-/// exact.
-struct Template {
-    columns: usize,
-    values: Vec<i8>,
+/// `GrainMin..=GrainMax` at `depth`.
+fn grain_range(depth: BitDepth) -> (i32, i32) {
+    (
+        GRAIN_MIN << depth.above_eight(),
+        ((GRAIN_MAX + 1) << depth.above_eight()) - 1,
+    )
 }
 
-impl Template {
+/// A stored grain value: `i8` at 8 bits (dav1d's `entry` at 8bpc), `i16`
+/// deeper (`GrainMin..=GrainMax` grows with the depth: ±512 at 10 bits).
+pub(crate) trait Grain: Copy + Default + Into<i32> {
+    /// `value`, within the depth's grain range.
+    fn from_i32(value: i32) -> Self;
+}
+
+impl Grain for i8 {
+    fn from_i32(value: i32) -> Self {
+        value as i8
+    }
+}
+
+impl Grain for i16 {
+    fn from_i32(value: i32) -> Self {
+        value as i16
+    }
+}
+
+/// A grain template: `rows` x `columns` grain values. The white noise is
+/// within `round2(±1752, 12 − BitDepth)` (the extremes of
+/// [`GAUSSIAN_SEQUENCE`] at the smallest shift) and the auto-regressive
+/// filter clamps to `GrainMin..=GrainMax`, so `G` of the depth is exact.
+struct Template<G> {
+    columns: usize,
+    values: Vec<G>,
+}
+
+impl<G: Grain> Template<G> {
     fn at(&self, row: usize, column: usize) -> i32 {
-        i32::from(self.values[row * self.columns + column])
+        self.values[row * self.columns + column].into()
     }
 }
 
 /// White Gaussian grain (AV1 §7.18.3.3), or zeros when the plane has no
 /// grain (no random numbers drawn then).
-fn white_noise(
+fn white_noise<G: Grain>(
     random: &mut Random,
     (rows, columns): (usize, usize),
     shift: u32,
     enabled: bool,
-) -> Template {
+) -> Template<G> {
     let values = (0..rows * columns)
         .map(|_| {
             if enabled {
-                round2(
+                G::from_i32(round2(
                     i32::from(GAUSSIAN_SEQUENCE[random.next(GAUSSIAN_BITS)]),
                     shift,
-                ) as i8
+                ))
             } else {
-                0
+                G::default()
             }
         })
         .collect();
@@ -183,11 +212,11 @@ fn ar_positions(lag: usize) -> impl Iterator<Item = (isize, isize)> {
 /// over the row per tap, which vectorises; the integer sum's order does
 /// not matter), then the taps to the left, which depend on the samples just
 /// filtered, run along the row in order. Zero coefficients are skipped.
-fn auto_regress(
-    template: &mut Template,
+fn auto_regress<G: Grain>(
+    template: &mut Template<G>,
     lag: usize,
     coefficients: &[u8],
-    shift: u32,
+    (shift, (min, max)): (u32, (i32, i32)),
     extra: impl Fn(usize, &mut [i32]),
 ) {
     let columns = template.columns;
@@ -213,7 +242,7 @@ fn auto_regress(
             let start = (y as isize + row) as usize * columns + (first as isize + column) as usize;
             let source = &template.values[start..start + sums.len()];
             for (sum, &value) in sums.iter_mut().zip(source) {
-                *sum += coefficient * i32::from(value);
+                *sum += coefficient * value.into();
             }
         }
         extra(y, &mut sums);
@@ -221,17 +250,23 @@ fn auto_regress(
         for (x, &partial) in (first..last).zip(&sums) {
             let mut sum = partial;
             for &(column, coefficient) in &left {
-                sum += coefficient * i32::from(row[(x as isize + column) as usize]);
+                sum += coefficient * row[(x as isize + column) as usize].into();
             }
-            row[x] = (i32::from(row[x]) + round2(sum, shift)).clamp(GRAIN_MIN, GRAIN_MAX) as i8;
+            row[x] = G::from_i32((row[x].into() + round2(sum, shift)).clamp(min, max));
         }
     }
 }
 
-/// The grain templates of the three planes (AV1 §7.18.3.3).
-fn templates(p: &Av1FilmGrainParams) -> [Template; 3] {
-    let shift = GAUSSIAN_PRECISION - 8 + u32::from(p.grain_scale_shift);
-    let ar_shift = u32::from(p.ar_coeff_shift_minus_6) + 6;
+/// The 8-bit grain templates of the three planes (AV1 §7.18.3.3).
+fn templates(p: &Av1FilmGrainParams) -> [Template<i8>; 3] {
+    templates_at(p, BitDepth::EIGHT)
+}
+
+/// The grain templates of the three planes at `depth` (AV1 §7.18.3.3:
+/// `shift = 12 − BitDepth + grain_scale_shift`).
+fn templates_at<G: Grain>(p: &Av1FilmGrainParams, depth: BitDepth) -> [Template<G>; 3] {
+    let shift = GAUSSIAN_PRECISION - depth.bits() + u32::from(p.grain_scale_shift);
+    let ar = (u32::from(p.ar_coeff_shift_minus_6) + 6, grain_range(depth));
     let lag = usize::from(p.ar_coeff_lag);
     let mut luma = white_noise(
         &mut Random(p.grain_seed),
@@ -240,7 +275,7 @@ fn templates(p: &Av1FilmGrainParams) -> [Template; 3] {
         p.y_points.count > 0,
     );
     if p.y_points.count > 0 {
-        auto_regress(&mut luma, lag, &p.ar_coeffs_y_plus_128, ar_shift, |_, _| {});
+        auto_regress(&mut luma, lag, &p.ar_coeffs_y_plus_128, ar, |_, _| {});
     }
     let chroma = |seed_xor: u16, enabled: bool, coefficients: &[u8; 25]| {
         let mut grain = white_noise(
@@ -254,7 +289,7 @@ fn templates(p: &Av1FilmGrainParams) -> [Template; 3] {
         }
         let luma_coefficient = i32::from(coefficients[ar_positions(lag).count()]) - 128;
         let with_luma = p.y_points.count > 0;
-        auto_regress(&mut grain, lag, coefficients, ar_shift, |y, sums| {
+        auto_regress(&mut grain, lag, coefficients, ar, |y, sums| {
             if !with_luma {
                 return;
             }
@@ -337,13 +372,13 @@ fn stripe_seed(seed: u16, index: usize) -> u16 {
 /// Blend grain `new` over the previous block's `old` at distance
 /// `index` into the overlap (27/17 then 17/27 over two samples, 23/22
 /// over one when subsampled).
-fn blend_overlap(old: i32, new: i32, index: usize, sub: usize) -> i32 {
+fn blend_overlap(old: i32, new: i32, (index, sub): (usize, usize), (min, max): (i32, i32)) -> i32 {
     let mixed = match (sub, index) {
         (1, _) => old * 23 + new * 22,
         (_, 0) => old * 27 + new * 17,
         _ => old * 17 + new * 27,
     };
-    round2(mixed, 5).clamp(GRAIN_MIN, GRAIN_MAX)
+    round2(mixed, 5).clamp(min, max)
 }
 
 /// Add film grain (AV1 §7.18.3) to the `width` x `height` frame `input`

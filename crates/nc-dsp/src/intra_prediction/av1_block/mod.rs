@@ -21,12 +21,12 @@ pub mod cfl;
 mod directional;
 mod edge;
 
-use nc_common::{Plane, PlaneViewMut};
+use nc_common::{BitDepth, Plane, PlaneViewMut, Sample};
 
-use super::filter::{FILTER_INTRA_MAX_SIZE, FilterGrid, FilterIntraMode, predict_patches};
+use super::filter::{FILTER_INTRA_MAX_SIZE, FilterGrid, FilterIntraMode, predict_patches_at};
 use super::{
-    DC_NO_NEIGHBOURS, EDGE_LEN, IntraEdges, IntraMode, MAX_INTRA_SIZE, SMOOTH_SCALE, SMOOTH_SHIFT,
-    SMOOTH_WEIGHTS, paeth,
+    EDGE_LEN, IntraEdges, IntraMode, MAX_INTRA_SIZE, SMOOTH_SCALE, SMOOTH_SHIFT, SMOOTH_WEIGHTS,
+    no_neighbour_values, paeth,
 };
 
 /// Which neighbours of the block are decoded (§7.11.2 `haveAbove`,
@@ -96,19 +96,19 @@ const PREPARED_SQUARE_MIN: usize = 16;
 const MAX_SIDE: usize = MAX_INTRA_SIZE;
 /// Longest edge that is upsampled (§7.11.2.10 allows `w + h <= 16`).
 const MAX_UPSAMPLE: usize = 16;
-/// `(1 << (BitDepth - 1)) - 1`: `AboveRow` when nothing is available.
-const ABOVE_DEFAULT: u8 = DC_NO_NEIGHBOURS - 1;
-/// `(1 << (BitDepth - 1)) + 1`: `LeftCol` when nothing is available.
-const LEFT_DEFAULT: u8 = DC_NO_NEIGHBOURS + 1;
 
-/// `AboveRow[-1..w + h]` and `LeftCol[-1..w + h]` of one block.
+/// `AboveRow[-1..w + h]` and `LeftCol[-1..w + h]` of one block, samples of
+/// any depth.
 #[derive(Debug)]
-pub struct BlockEdges {
+pub struct BlockEdges<T: Sample = u8> {
     /// The samples, in the square kernels' layout: `above` / `left` hold
     /// `w + h` samples (at most [`EDGE_LEN`]); `size` is the width and
     /// `dc` the DC value, both meaningful to the square kernels only when
     /// the block is square.
-    square: IntraEdges,
+    square: IntraEdges<T>,
+    /// The samples' depth: the no-neighbour base value and the clips of
+    /// upsampling and filter intra.
+    depth: BitDepth,
     width: usize,
     height: usize,
     avail: EdgeAvail,
@@ -119,12 +119,12 @@ pub struct BlockEdges {
     left_inside: usize,
 }
 
-impl BlockEdges {
+impl<T: Sample> BlockEdges<T> {
     /// Read the edges of the `width`x`height` block at `(x, y)` of `plane`
     /// as §7.11.2 forms them: reads beyond the block's own sides only where
     /// `avail` says they are decoded, and every read clamped to the picture
     /// (the plane is the `MiCols` / `MiRows` area, so `maxX` / `maxY` are
-    /// its last column and row).
+    /// its last column and row). `depth` is the plane's bit depth.
     ///
     /// # Panics
     ///
@@ -132,12 +132,11 @@ impl BlockEdges {
     /// or the block's origin lies outside `plane`.
     #[must_use]
     pub fn read(
-        plane: &Plane,
-        x: usize,
-        y: usize,
-        width: usize,
-        height: usize,
+        plane: &Plane<T>,
+        (x, y): (usize, usize),
+        (width, height): (usize, usize),
         avail: EdgeAvail,
+        depth: BitDepth,
     ) -> Self {
         assert!(
             is_side(width) && is_side(height),
@@ -154,11 +153,12 @@ impl BlockEdges {
         );
         let (max_x, max_y) = (view.width() - 1, view.height() - 1);
         let span = width + height;
+        let (base, above_default, left_default) = no_neighbour_values::<T>(depth);
         let mut square = IntraEdges {
-            above: [ABOVE_DEFAULT; EDGE_LEN],
-            left: [LEFT_DEFAULT; EDGE_LEN],
-            corner: DC_NO_NEIGHBOURS,
-            dc: DC_NO_NEIGHBOURS,
+            above: [above_default; EDGE_LEN],
+            left: [left_default; EDGE_LEN],
+            corner: base,
+            dc: base,
             size: width,
         };
         if avail.have_above {
@@ -201,10 +201,11 @@ impl BlockEdges {
             (true, true) => view.row(y - 1)[x - 1],
             (true, false) => view.row(y - 1)[x],
             (false, true) => view.row(y)[x - 1],
-            (false, false) => DC_NO_NEIGHBOURS,
+            (false, false) => base,
         };
         let mut edges = Self {
             square,
+            depth,
             width,
             height,
             avail,
@@ -223,7 +224,7 @@ impl BlockEdges {
     ///
     /// If `dst` is not `width`x`height`, or a directional angle is not
     /// strictly between 0 and 270 degrees.
-    pub fn predict(&self, kind: IntraKind, dst: &mut PlaneViewMut<'_>) {
+    pub fn predict(&self, kind: IntraKind, dst: &mut PlaneViewMut<'_, T>) {
         self.predict_with(
             |square, prediction, dst| match prediction {
                 Square::Angle(angle) => square.predict_angle(angle, dst),
@@ -239,9 +240,9 @@ impl BlockEdges {
     /// `IntraEdges::predict`'s contracts).
     pub(crate) fn predict_with(
         &self,
-        square: impl FnOnce(&IntraEdges, Square, &mut PlaneViewMut<'_>),
+        square: impl FnOnce(&IntraEdges<T>, Square, &mut PlaneViewMut<'_, T>),
         kind: IntraKind,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         let (w, h) = (self.width, self.height);
         assert!(
@@ -295,16 +296,21 @@ impl BlockEdges {
     /// # Panics
     ///
     /// If a side exceeds 32 or `dst` is not the block's size.
-    pub fn predict_filter(&self, mode: FilterIntraMode, dst: &mut PlaneViewMut<'_>) {
-        self.predict_filter_with(predict_patches, mode, dst);
+    pub fn predict_filter(&self, mode: FilterIntraMode, dst: &mut PlaneViewMut<'_, T>) {
+        let depth = self.depth;
+        self.predict_filter_with(
+            |grid, width, height, mode| predict_patches_at(grid, width, height, mode, depth),
+            mode,
+            dst,
+        );
     }
 
     /// [`Self::predict_filter`] with `patches` computing the patches.
     pub(crate) fn predict_filter_with(
         &self,
-        patches: impl FnOnce(&mut FilterGrid, usize, usize, FilterIntraMode),
+        patches: impl FnOnce(&mut FilterGrid<T>, usize, usize, FilterIntraMode),
         mode: FilterIntraMode,
-        dst: &mut PlaneViewMut<'_>,
+        dst: &mut PlaneViewMut<'_, T>,
     ) {
         assert!(self.width <= FILTER_INTRA_MAX_SIZE && self.height <= FILTER_INTRA_MAX_SIZE);
         self.square
@@ -312,9 +318,9 @@ impl BlockEdges {
     }
 
     /// The DC value (§7.11.2.5): the rounded mean of the available edges.
-    fn dc(&self) -> u8 {
+    fn dc(&self) -> T {
         let (w, h) = (self.width, self.height);
-        let sum = |edge: &[u8]| -> usize { edge.iter().map(|&v| usize::from(v)).sum() };
+        let sum = |edge: &[T]| -> usize { edge.iter().map(|&v| v.to_i32() as usize).sum() };
         let mean = match (self.avail.have_above, self.avail.have_left) {
             (true, true) => {
                 let span = w + h;
@@ -323,33 +329,34 @@ impl BlockEdges {
             }
             (true, false) => (sum(&self.square.above[..w]) + w / 2) >> w.trailing_zeros(),
             (false, true) => (sum(&self.square.left[..h]) + h / 2) >> h.trailing_zeros(),
-            (false, false) => usize::from(DC_NO_NEIGHBOURS),
+            (false, false) => self.depth.mid() as usize,
         };
-        mean as u8
+        T::from_i32(mean as i32)
     }
 
     /// The three smooth predictors (§7.11.2.6) with the width's weights
     /// across and the height's down.
-    fn smooth(&self, kind: IntraKind, dst: &mut PlaneViewMut<'_>) {
+    fn smooth(&self, kind: IntraKind, dst: &mut PlaneViewMut<'_, T>) {
         let (w, h) = (self.width, self.height);
         let (above, left) = (&self.square.above, &self.square.left);
         let weights_x = smooth_weights(w);
         let weights_y = smooth_weights(h);
-        let (bottom, right) = (u32::from(left[h - 1]), u32::from(above[w - 1]));
+        let (bottom, right): (u32, u32) = (left[h - 1].into(), above[w - 1].into());
         for (r, &wy) in weights_y.iter().enumerate() {
             let wy = u32::from(wy);
-            let l = u32::from(left[r]);
+            let l: u32 = left[r].into();
             for (c, pixel) in dst.row_mut(r)[..w].iter_mut().enumerate() {
                 let wx = u32::from(weights_x[c]);
-                let vertical = wy * u32::from(above[c]) + (SMOOTH_SCALE - wy) * bottom;
+                let top: u32 = above[c].into();
+                let vertical = wy * top + (SMOOTH_SCALE - wy) * bottom;
                 let horizontal = wx * l + (SMOOTH_SCALE - wx) * right;
-                *pixel = match kind {
+                *pixel = T::from_i32(match kind {
                     IntraKind::Smooth => {
                         (vertical + horizontal + SMOOTH_SCALE) >> (SMOOTH_SHIFT + 1)
                     }
                     IntraKind::SmoothVertical => (vertical + SMOOTH_SCALE / 2) >> SMOOTH_SHIFT,
                     _ => (horizontal + SMOOTH_SCALE / 2) >> SMOOTH_SHIFT,
-                } as u8;
+                } as i32);
             }
         }
     }

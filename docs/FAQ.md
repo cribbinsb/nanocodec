@@ -193,16 +193,16 @@ its output under the GPL; we distribute only the output streams, not the program
 
 - **Single-threaded** encode and decode; no slices or tiles beyond one per frame.
 - **8-bit 4:2:0 encoders.** The encoders code 8-bit 4:2:0 only (no 10-bit, no 4:4:4, no HDR). The HEVC
-  decoder also decodes Main 10 (10-bit 4:2:0, natively; the browser build shows 8-bit only); the other
-  decoders are 8-bit.
+  decoder also decodes Main 10 and the AV1 decoder 10-bit Main (10-bit 4:2:0, natively; the browser build
+  shows 8-bit only); the other decoders are 8-bit.
 - **Subset encoders:** forward prediction only (no B-frames), no lookahead, CBR and fixed-QP only, one tile/slice;
   several tools of the newer standards are unused (for example compound prediction and loop restoration in
   AV1/AV2).
 - **Decoders:** H.264 (Constrained High; on the whole ITU-T H.264.1 suite 58/190 streams MD5-exact against JM:
   33/33 Constrained Baseline, 4/7 Baseline, 21/41 progressive Main; B slices, interlace and High 10 are in
   progress), HEVC (Main and Main 10: 147/147 JCT-VC HEVC_v1 streams of those
-  profiles, 11 of them Main 10, MD5-exact against HM), AV1 (Main, 8-bit 4:2:0: 176/176 libaom `av1-1-b8` vectors; its
-  10-bit support is in progress, 0/66 `av1-1-b10` vectors) and VP9 (profile 0) pass the conformance streams we
+  profiles, 11 of them Main 10, MD5-exact against HM), AV1 (Main, 8- and 10-bit: 242/242 libaom vectors, 176
+  `av1-1-b8` and 66 `av1-1-b10`, MD5-exact against aomdec) and VP9 (profile 0) pass the conformance streams we
   test in those profiles; VVC passes the 9 official 8-bit streams and 136 of 138 8-bit VTM and
   VVenC streams that exercise the Main 10 tools, pictures of several slices, subpictures and loop filters
   closed at slice, tile and virtual boundaries among them (`docs/handoff/vvc-foreign-corpus.md`; the two

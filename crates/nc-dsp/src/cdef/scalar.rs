@@ -3,6 +3,8 @@
 //! and `cdef_find_dir_c` (`av1/common/cdef_block.c`, BSD-2-Clause, Alliance
 //! for Open Media).
 
+use nc_common::Sample;
+
 use super::{CDEF_UNAVAILABLE, CdefArgs, CdefFns, DIRECTIONS, SEC_TAPS};
 
 // The tables of SIMD builds use the 8-bit reference until their own
@@ -24,16 +26,23 @@ pub(crate) fn cdef_fns() -> CdefFns {
 /// `1 / n` scaled by 840 for the direction search's line averages.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
-/// libaom `cdef_find_dir_c` on the 8x8 block at the start of `src`. The
-/// index arithmetic mirrors libaom line for line, so it stays checkable
-/// against it.
-#[allow(clippy::needless_range_loop)]
+/// libaom `cdef_find_dir_c` on the 8x8 block of 8-bit samples at the start
+/// of `src`.
 pub(crate) fn find_dir(src: &[u8], stride: usize) -> (u8, i32) {
+    find_dir_at(src, stride, 0)
+}
+
+/// libaom `cdef_find_dir_c` on samples `bits_above` bits deeper than 8
+/// (`coeff_shift`: each sample is shifted down to 8 bits first). The index
+/// arithmetic mirrors libaom line for line, so it stays checkable against
+/// it.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn find_dir_at<T: Sample>(src: &[T], stride: usize, bits_above: u32) -> (u8, i32) {
     let mut partial = [[0i32; 15]; 8];
     for i in 0..8 {
         let row = &src[i * stride..i * stride + 8];
         for j in 0..8 {
-            let v = i32::from(row[j]) - 128;
+            let v = (row[j].to_i32() >> bits_above) - 128;
             partial[0][i + j] += v;
             partial[1][i + j / 2] += v;
             partial[2][i] += v;
@@ -89,14 +98,17 @@ fn constrain(diff: i32, threshold: i32, shift: u32) -> i32 {
     if diff < 0 { -magnitude } else { magnitude }
 }
 
+/// The filter of an `n`x`n` block from a padded 16-bit window, into
+/// samples of any depth (the result lies between the taps' minimum and
+/// maximum, or within the strengths of the centre, so no clip is needed).
 #[allow(clippy::needless_range_loop)] // mirrors libaom's indexing
-fn filter(
+pub(crate) fn filter<T: Sample>(
     n: usize,
     src: &[i16],
     stride: usize,
     origin: usize,
     args: &CdefArgs,
-    dst: &mut [u8],
+    dst: &mut [T],
     dst_stride: usize,
 ) {
     let (use_pri, use_sec) = (args.pri != 0, args.sec != 0);
@@ -139,7 +151,82 @@ fn filter(
             if use_pri && use_sec {
                 y = y.clamp(lo, hi);
             }
-            dst[r * dst_stride + c] = y as u8;
+            dst[r * dst_stride + c] = T::from_i32(y);
+        }
+    }
+}
+
+/// The filter of an `N`x`N` block whose taps all lie inside the plane
+/// (`src` from the block's top-left sample `origin` at `stride`), samples
+/// of any depth, written as whole-row operations per tap so that the ISA
+/// instances vectorise it (`high_depth::vector`): every tap of a row is
+/// one contiguous slice at a fixed offset. The same arithmetic as
+/// [`filter`] without unavailable samples.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[allow(clippy::needless_range_loop)] // mirrors libaom's tap indexing
+#[inline(always)]
+pub(crate) fn interior_rows<S: Sample, const N: usize>(
+    src: &[S],
+    stride: usize,
+    origin: usize,
+    args: &CdefArgs,
+    dst: &mut [S],
+    dst_stride: usize,
+) {
+    let offset = |d: usize, k: usize| {
+        let (dr, dc) = DIRECTIONS[d & 7][k];
+        dr * stride as isize + dc
+    };
+    // (offset, strength, shift, weight) of every tap pair.
+    let mut taps = [(0isize, 0i32, 0u32, 0i32); 6];
+    let mut count = 0;
+    for k in 0..2 {
+        if args.pri != 0 {
+            taps[count] = (
+                offset(args.dir, k),
+                i32::from(args.pri),
+                args.pri_shift,
+                i32::from(args.pri_taps[k]),
+            );
+            count += 1;
+        }
+        if args.sec != 0 {
+            for d in [args.dir + 2, args.dir + 6] {
+                taps[count] = (
+                    offset(d, k),
+                    i32::from(args.sec),
+                    args.sec_shift,
+                    i32::from(SEC_TAPS[k]),
+                );
+                count += 1;
+            }
+        }
+    }
+    let clip = args.pri != 0 && args.sec != 0;
+    for r in 0..N {
+        let base = origin + r * stride;
+        let x: [i32; N] = core::array::from_fn(|c| src[base + c].to_i32());
+        let (mut sum, mut lo, mut hi) = ([0i32; N], x, x);
+        for &(offset, strength, shift, weight) in &taps[..count] {
+            for o in [offset, -offset] {
+                let start = base.checked_add_signed(o).expect("tap inside the plane");
+                let p = &src[start..start + N];
+                for c in 0..N {
+                    let p = p[c].to_i32();
+                    let diff = p - x[c];
+                    let magnitude = diff.abs().min((strength - (diff.abs() >> shift)).max(0));
+                    sum[c] += weight * if diff < 0 { -magnitude } else { magnitude };
+                    lo[c] = lo[c].min(p);
+                    hi[c] = hi[c].max(p);
+                }
+            }
+        }
+        for (c, out) in dst[r * dst_stride..][..N].iter_mut().enumerate() {
+            let mut y = x[c] + ((8 + sum[c] - i32::from(sum[c] < 0)) >> 4);
+            if clip {
+                y = y.clamp(lo[c], hi[c]);
+            }
+            *out = S::from_i32(y);
         }
     }
 }

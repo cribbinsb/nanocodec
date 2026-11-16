@@ -2,7 +2,7 @@
 //! upsampling (AV1 §7.11.2.4; libaom `build_directional_and_filter_intra_
 //! predictors` and `av1_dr_prediction_z{1,2,3}_c`).
 
-use nc_common::PlaneViewMut;
+use nc_common::{PlaneViewMut, Sample};
 
 use super::edge::{self, LINE_LEN, LINE_ORIGIN};
 use super::{BlockEdges, EdgeFilterCtx};
@@ -25,23 +25,23 @@ const WEIGHT_BITS: u32 = 5;
 const POSITION_MASK: i32 = (1 << POSITION_BITS) - 1;
 
 /// One edge line, upsampled or not.
-struct Line {
-    samples: [u8; LINE_LEN],
+struct Line<T: Sample> {
+    samples: [T; LINE_LEN],
     /// log2 of the resolution factor: 1 if upsampled.
     upsample: u32,
 }
 
-impl Line {
+impl<T: Sample> Line<T> {
     /// Edge sample at (possibly negative) index `i`.
     fn at(&self, i: i32) -> i32 {
-        i32::from(self.samples[(LINE_ORIGIN as i32 + i) as usize])
+        self.samples[(LINE_ORIGIN as i32 + i) as usize].to_i32()
     }
 
     /// A full-resolution run: `out[k]` interpolates samples `base + k` and
     /// `base + k + 1` at `position`'s weight while `base + k < max_base`,
     /// and is sample `max_base` from there on (as [`Self::interpolate`]
     /// and the zones' clamp, sample by sample).
-    fn run(&self, base: i32, max_base: i32, position: i32, out: &mut [u8]) {
+    fn run(&self, base: i32, max_base: i32, position: i32, out: &mut [T]) {
         debug_assert_eq!(self.upsample, 0);
         let inside = usize::try_from(max_base.saturating_sub(base))
             .unwrap_or(0)
@@ -53,26 +53,26 @@ impl Line {
             interpolate_run(&self.samples[first..=first + inside], weight, interpolated);
         }
         if !clamped.is_empty() {
-            clamped.fill(self.at(max_base) as u8);
+            clamped.fill(T::from_i32(self.at(max_base)));
         }
     }
 
     /// The interpolation between samples `base` and `base + 1` at the 1/64
     /// position `position` (already scaled to the line's resolution).
-    fn interpolate(&self, base: i32, position: i32) -> u8 {
+    fn interpolate(&self, base: i32, position: i32) -> T {
         let shift = ((position << self.upsample) & POSITION_MASK) >> 1;
         let sum = self.at(base) * ((1 << WEIGHT_BITS) - shift) + self.at(base + 1) * shift;
-        ((sum + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS) as u8
+        T::from_i32((sum + (1 << (WEIGHT_BITS - 1))) >> WEIGHT_BITS)
     }
 }
 
 /// Predict `dst` from `edges` at `angle` degrees, filtering and upsampling
 /// the edges first when `edge_filter` is set.
-pub(super) fn predict(
-    edges: &BlockEdges,
+pub(super) fn predict<T: Sample>(
+    edges: &BlockEdges<T>,
     angle: u16,
     edge_filter: Option<EdgeFilterCtx>,
-    dst: &mut PlaneViewMut<'_>,
+    dst: &mut PlaneViewMut<'_, T>,
 ) {
     assert!(angle > 0 && angle < MAX_ANGLE, "directional angle {angle}");
     let (w, h) = (edges.width, edges.height);
@@ -105,11 +105,11 @@ pub(super) fn predict(
 /// [`predict`]: every zone reads `AboveRow` / `LeftCol` up to index
 /// `2n - 1` and repeats that sample beyond it, and filtering leaves the
 /// corner the same in both lines.
-pub(super) fn prepared_square(
-    edges: &BlockEdges,
+pub(super) fn prepared_square<T: Sample>(
+    edges: &BlockEdges<T>,
     angle: u16,
     ctx: EdgeFilterCtx,
-) -> Option<IntraEdges> {
+) -> Option<IntraEdges<T>> {
     let n = edges.width;
     debug_assert_eq!(n, edges.height);
     let mut above = line(&edges.square.above, edges.square.corner, 2 * n);
@@ -133,8 +133,8 @@ pub(super) fn prepared_square(
 }
 
 /// An edge line: the corner at index -1, then `len` edge samples.
-fn line(edge: &[u8], corner: u8, len: usize) -> Line {
-    let mut samples = [0; LINE_LEN];
+fn line<T: Sample>(edge: &[T], corner: T, len: usize) -> Line<T> {
+    let mut samples = [T::default(); LINE_LEN];
     samples[LINE_ORIGIN - 1] = corner;
     samples[LINE_ORIGIN..LINE_ORIGIN + len].copy_from_slice(&edge[..len]);
     Line {
@@ -146,7 +146,13 @@ fn line(edge: &[u8], corner: u8, len: usize) -> Line {
 /// The edge preparation of §7.11.2.4 when `enable_intra_edge_filter` is 1:
 /// corner filter (zone 2 only), edge filters of the available edges, then
 /// upsampling where the angle and block size call for it.
-fn prepare_edges(edges: &BlockEdges, angle: u16, smooth: bool, above: &mut Line, left: &mut Line) {
+fn prepare_edges<T: Sample>(
+    edges: &BlockEdges<T>,
+    angle: u16,
+    smooth: bool,
+    above: &mut Line<T>,
+    left: &mut Line<T>,
+) {
     let (w, h) = (edges.width, edges.height);
     let block_wh = w + h;
     let angle = i32::from(angle);
@@ -169,11 +175,19 @@ fn prepare_edges(edges: &BlockEdges, angle: u16, smooth: bool, above: &mut Line,
         }
     }
     if edge::use_upsample(block_wh, angle - vertical, smooth) {
-        edge::upsample(&mut above.samples, w + if needs_right { h } else { 0 });
+        edge::upsample(
+            &mut above.samples,
+            w + if needs_right { h } else { 0 },
+            edges.depth,
+        );
         above.upsample = 1;
     }
     if edge::use_upsample(block_wh, angle - horizontal, smooth) {
-        edge::upsample(&mut left.samples, h + if needs_bottom { w } else { 0 });
+        edge::upsample(
+            &mut left.samples,
+            h + if needs_bottom { w } else { 0 },
+            edges.depth,
+        );
         left.upsample = 1;
     }
 }
@@ -181,7 +195,7 @@ fn prepare_edges(edges: &BlockEdges, angle: u16, smooth: bool, above: &mut Line,
 /// Angles below 90: from the above row only; positions past its last
 /// sample repeat it. At full resolution each row is one run at one weight
 /// (samples `base..` up to `max_base`, then that sample repeated).
-fn zone1(above: &Line, dx: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_>) {
+fn zone1<T: Sample>(above: &Line<T>, dx: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_, T>) {
     if above.upsample != 0 {
         return zone1_samples(above, dx, w, h, dst);
     }
@@ -198,7 +212,13 @@ fn zone1(above: &Line, dx: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_>) 
 }
 
 /// [`zone1`] sample by sample, at any resolution.
-fn zone1_samples(above: &Line, dx: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_>) {
+fn zone1_samples<T: Sample>(
+    above: &Line<T>,
+    dx: i32,
+    w: usize,
+    h: usize,
+    dst: &mut PlaneViewMut<'_, T>,
+) {
     let max_base = (((w + h) as i32) - 1) << above.upsample;
     let frac_bits = POSITION_BITS - above.upsample;
     for r in 0..h {
@@ -209,7 +229,7 @@ fn zone1_samples(above: &Line, dx: i32, w: usize, h: usize, dst: &mut PlaneViewM
             *pixel = if base < max_base {
                 above.interpolate(base, position)
             } else {
-                above.at(max_base) as u8
+                T::from_i32(above.at(max_base))
             };
         }
     }
@@ -220,7 +240,13 @@ fn zone1_samples(above: &Line, dx: i32, w: usize, h: usize, dst: &mut PlaneViewM
 /// projection moves a whole sample per column, so at full resolution the
 /// columns reaching the above row (`x >> 6 >= -1`, from column
 /// `ceil(((r + 1) dx - 64) / 64)` on) are one run at one weight.
-fn zone2(above: &Line, left: &Line, dx: i32, dy: i32, dst: &mut PlaneViewMut<'_>) {
+fn zone2<T: Sample>(
+    above: &Line<T>,
+    left: &Line<T>,
+    dx: i32,
+    dy: i32,
+    dst: &mut PlaneViewMut<'_, T>,
+) {
     if above.upsample != 0 {
         return zone2_samples(above, left, dx, dy, dst);
     }
@@ -245,7 +271,13 @@ fn zone2(above: &Line, left: &Line, dx: i32, dy: i32, dst: &mut PlaneViewMut<'_>
 }
 
 /// [`zone2`] sample by sample, at any resolution.
-fn zone2_samples(above: &Line, left: &Line, dx: i32, dy: i32, dst: &mut PlaneViewMut<'_>) {
+fn zone2_samples<T: Sample>(
+    above: &Line<T>,
+    left: &Line<T>,
+    dx: i32,
+    dy: i32,
+    dst: &mut PlaneViewMut<'_, T>,
+) {
     let (w, h) = (dst.width(), dst.height());
     for r in 0..h {
         for (c, pixel) in dst.row_mut(r)[..w].iter_mut().enumerate() {
@@ -256,7 +288,13 @@ fn zone2_samples(above: &Line, left: &Line, dx: i32, dy: i32, dst: &mut PlaneVie
 
 /// Zone-2 sample `(r, c)`: from the above row where its projection lands
 /// on it (or on the corner), else from the left column.
-fn zone2_sample(above: &Line, left: &Line, dx: i32, dy: i32, (r, c): (usize, usize)) -> u8 {
+fn zone2_sample<T: Sample>(
+    above: &Line<T>,
+    left: &Line<T>,
+    dx: i32,
+    dy: i32,
+    (r, c): (usize, usize),
+) -> T {
     let min_base_above = -(1 << above.upsample);
     let x = ((c as i32) << POSITION_BITS) - (r as i32 + 1) * dx;
     let base_x = x >> (POSITION_BITS - above.upsample);
@@ -271,14 +309,14 @@ fn zone2_sample(above: &Line, left: &Line, dx: i32, dy: i32, (r, c): (usize, usi
 /// Angles above 180: from the left column only; positions past its last
 /// sample repeat it. At full resolution each column is one run (zone 1 on
 /// the left column), written down the column.
-fn zone3(left: &Line, dy: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_>) {
+fn zone3<T: Sample>(left: &Line<T>, dy: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_, T>) {
     if left.upsample != 0 {
         return zone3_samples(left, dy, w, h, dst);
     }
     let max_base = ((w + h) as i32) - 1;
     let stride = dst.stride();
     let data = dst.data_mut();
-    let mut column = [0u8; super::MAX_SIDE];
+    let mut column = [T::default(); super::MAX_SIDE];
     for c in 0..w {
         let position = (c as i32 + 1) * dy;
         left.run(
@@ -294,7 +332,13 @@ fn zone3(left: &Line, dy: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_>) {
 }
 
 /// [`zone3`] sample by sample, at any resolution.
-fn zone3_samples(left: &Line, dy: i32, w: usize, h: usize, dst: &mut PlaneViewMut<'_>) {
+fn zone3_samples<T: Sample>(
+    left: &Line<T>,
+    dy: i32,
+    w: usize,
+    h: usize,
+    dst: &mut PlaneViewMut<'_, T>,
+) {
     let max_base = (((w + h) as i32) - 1) << left.upsample;
     let frac_bits = POSITION_BITS - left.upsample;
     for c in 0..w {
@@ -304,7 +348,7 @@ fn zone3_samples(left: &Line, dy: i32, w: usize, h: usize, dst: &mut PlaneViewMu
             dst.row_mut(r)[c] = if base < max_base {
                 left.interpolate(base, position)
             } else {
-                left.at(max_base) as u8
+                T::from_i32(left.at(max_base))
             };
         }
     }
@@ -315,6 +359,7 @@ mod tests {
     use super::*;
     use crate::intra_prediction::IntraMode;
     use crate::intra_prediction::av1_block::{EdgeAvail, IntraKind};
+    use nc_common::BitDepth;
     use nc_common::Plane;
 
     /// The full-resolution runs of every zone equal the zones sample by
@@ -415,7 +460,8 @@ mod tests {
                     have_above_right: avail_bits & 4 != 0,
                     have_below_left: avail_bits & 8 != 0,
                 };
-                let edges = BlockEdges::read(&plane, MAX, MAX, side, side, avail);
+                let edges =
+                    BlockEdges::read(&plane, (MAX, MAX), (side, side), avail, BitDepth::EIGHT);
                 for smooth in [false, true] {
                     let ctx = EdgeFilterCtx {
                         smooth_above: smooth,

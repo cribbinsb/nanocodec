@@ -17,7 +17,7 @@ pub mod filter;
 
 pub use filter::FilterIntraMode;
 
-use nc_common::{Plane, PlaneViewMut};
+use nc_common::{BitDepth, Plane, PlaneViewMut, Sample};
 
 /// Base value when no neighbours are available: `1 << (BitDepth - 1)`.
 const DC_NO_NEIGHBOURS: u8 = 128;
@@ -200,16 +200,25 @@ pub struct EdgeExtension {
 }
 
 /// Reconstructed neighbours for a square prediction, extended exactly as
-/// AV1 specifies when the above or left tile edge is missing.
+/// AV1 specifies when the above or left tile edge is missing. Samples of
+/// any depth (`T`); the encoder's constructors are 8-bit.
 #[derive(Debug)]
-pub struct IntraEdges {
+pub struct IntraEdges<T: Sample = u8> {
     /// `AboveRow[0..2n]`, clamped to the picture as AV1 §7.11.2 reads it.
-    above: [u8; EDGE_LEN],
+    above: [T; EDGE_LEN],
     /// `LeftCol[0..2n]`.
-    left: [u8; EDGE_LEN],
-    corner: u8,
-    dc: u8,
+    left: [T; EDGE_LEN],
+    corner: T,
+    dc: T,
     size: usize,
+}
+
+/// `1 << (BitDepth − 1)` (`base` of AV1 §7.11.2 when no neighbour is
+/// available) as a sample, with the `AboveRow` (`− 1`) and `LeftCol`
+/// (`+ 1`) defaults.
+pub(crate) fn no_neighbour_values<T: Sample>(depth: BitDepth) -> (T, T, T) {
+    let mid = depth.mid();
+    (T::from_i32(mid), T::from_i32(mid - 1), T::from_i32(mid + 1))
 }
 
 impl IntraEdges {
@@ -281,13 +290,17 @@ impl IntraEdges {
         };
         edges
     }
+}
 
-    /// Fill a square destination using the selected mode.
+impl<T: Sample> IntraEdges<T> {
+    /// Fill a square destination using the selected mode (no clip: every
+    /// mode here interpolates or copies edge samples, so it holds at any
+    /// depth).
     ///
     /// # Panics
     ///
     /// If the destination does not match the square edge size.
-    pub fn predict(&self, mode: IntraMode, dst: &mut PlaneViewMut<'_>) {
+    pub fn predict(&self, mode: IntraMode, dst: &mut PlaneViewMut<'_, T>) {
         let n = self.size;
         assert!(dst.width() == n && dst.height() == n);
         if mode == IntraMode::Dc {
@@ -315,7 +328,7 @@ impl IntraEdges {
 
     /// Paeth prediction (AV1 §7.11.2.2), the scalar reference of the
     /// `crate::av1_intra` kernels.
-    fn predict_paeth(&self, dst: &mut PlaneViewMut<'_>) {
+    fn predict_paeth(&self, dst: &mut PlaneViewMut<'_, T>) {
         let n = self.size;
         for (y, &left) in self.left[..n].iter().enumerate() {
             for (pixel, &top) in dst.row_mut(y)[..n].iter_mut().zip(&self.above[..n]) {
@@ -326,29 +339,29 @@ impl IntraEdges {
 
     /// Smooth prediction (AV1 §7.11.2.6), `mode` one of the three smooth
     /// modes; the scalar reference of the `crate::av1_intra` kernels.
-    fn predict_smooth(&self, mode: IntraMode, dst: &mut PlaneViewMut<'_>) {
+    fn predict_smooth(&self, mode: IntraMode, dst: &mut PlaneViewMut<'_, T>) {
         let n = self.size;
         let weights = smooth_weights(n);
-        let (bottom, right) = (u32::from(self.left[n - 1]), u32::from(self.above[n - 1]));
+        let (bottom, right): (u32, u32) = (self.left[n - 1].into(), self.above[n - 1].into());
         for (y, (&wy, &left)) in weights.iter().zip(&self.left[..n]).enumerate() {
             let wy = u32::from(wy);
+            let left: u32 = left.into();
             let row = dst.row_mut(y)[..n]
                 .iter_mut()
                 .zip(&self.above[..n])
                 .zip(weights);
             for ((pixel, &top), &wx) in row {
                 let wx = u32::from(wx);
-                let vertical = wy * u32::from(top) + (SMOOTH_SCALE - wy) * bottom;
-                let horizontal = wx * u32::from(left) + (SMOOTH_SCALE - wx) * right;
-                *pixel = match mode {
+                let top: u32 = top.into();
+                let vertical = wy * top + (SMOOTH_SCALE - wy) * bottom;
+                let horizontal = wx * left + (SMOOTH_SCALE - wx) * right;
+                *pixel = T::from_i32(match mode {
                     IntraMode::Smooth => {
-                        ((vertical + horizontal + SMOOTH_SCALE) >> (SMOOTH_SHIFT + 1)) as u8
+                        (vertical + horizontal + SMOOTH_SCALE) >> (SMOOTH_SHIFT + 1)
                     }
-                    IntraMode::SmoothVertical => {
-                        ((vertical + SMOOTH_SCALE / 2) >> SMOOTH_SHIFT) as u8
-                    }
-                    _ => ((horizontal + SMOOTH_SCALE / 2) >> SMOOTH_SHIFT) as u8,
-                };
+                    IntraMode::SmoothVertical => (vertical + SMOOTH_SCALE / 2) >> SMOOTH_SHIFT,
+                    _ => (horizontal + SMOOTH_SCALE / 2) >> SMOOTH_SHIFT,
+                } as i32);
             }
         }
     }
@@ -359,17 +372,17 @@ impl IntraEdges {
     }
 
     /// `AboveRow[0..size]`.
-    pub(crate) fn above_row(&self) -> &[u8] {
+    pub(crate) fn above_row(&self) -> &[T] {
         &self.above[..self.size]
     }
 
     /// `LeftCol[0..size]`.
-    pub(crate) fn left_column(&self) -> &[u8] {
+    pub(crate) fn left_column(&self) -> &[T] {
         &self.left[..self.size]
     }
 
     /// `AboveRow[-1]`.
-    pub(crate) fn corner(&self) -> u8 {
+    pub(crate) fn corner(&self) -> T {
         self.corner
     }
 }
@@ -381,11 +394,11 @@ pub(crate) fn smooth_weights(side: usize) -> &'static [u8] {
 }
 
 /// Paeth's choice among `left`, `top` and `corner` (AV1 and AV2 alike).
-pub(crate) fn paeth(left: u8, top: u8, corner: u8) -> u8 {
-    let base = i32::from(left) + i32::from(top) - i32::from(corner);
-    let dl = (base - i32::from(left)).abs();
-    let dt = (base - i32::from(top)).abs();
-    let dc = (base - i32::from(corner)).abs();
+pub(crate) fn paeth<T: Sample>(left: T, top: T, corner: T) -> T {
+    let base = left.to_i32() + top.to_i32() - corner.to_i32();
+    let dl = (base - left.to_i32()).abs();
+    let dt = (base - top.to_i32()).abs();
+    let dc = (base - corner.to_i32()).abs();
     if dl <= dt && dl <= dc {
         left
     } else if dt <= dc {
@@ -475,8 +488,8 @@ mod tests {
 
     #[test]
     fn paeth_ties_prefer_left_then_above() {
-        assert_eq!(paeth(0, 30, 20), 0);
-        assert_eq!(paeth(30, 0, 20), 0);
-        assert_eq!(paeth(50, 10, 30), 30);
+        assert_eq!(paeth::<u8>(0, 30, 20), 0);
+        assert_eq!(paeth::<u8>(30, 0, 20), 0);
+        assert_eq!(paeth::<u8>(50, 10, 30), 30);
     }
 }
