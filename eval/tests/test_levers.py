@@ -44,3 +44,21 @@ def test_staleness_and_replay_verdicts():
     assert levers.base_status(row, {"hevc.inter_rounding": 100.0}) == "in-base"
     assert levers.decide(row, 0.03) == "better"  # -0.8 + 0.06
     assert levers.decide(row, 0.6) == "ambiguous"  # -0.8 + 1.2 = +0.4, lo -0.0
+
+
+def test_lens_rows_join_the_cpu_of_a_timing_session(tmp_path):
+    """A lens comparison (Weighted and J in BD points against the base) takes its CPU from
+    the cost row a timing summary gave the same change."""
+    change = {"av1.cdef_local_search_period": 8.0}
+    lens = levers.lens_row("av1", "faster", {}, change, "cdef8", "aom-ld", 12, 1.5, 0.9,
+                           "abc", "results")
+    summary = {"nanocodec-av1@faster": {"repeat-1": {"fps": 300.0}, "repeat-2": {"fps": 300.0}},
+               "nanocodec-av1@cdef8": {"repeat-1": {"fps": 330.0}, "repeat-2": {"fps": 270.0}}}
+    costs = levers.timing_cost_rows(summary, "av1", "faster", "nanocodec-av1@faster",
+                                    {"nanocodec-av1@cdef8": change}, "c8a", "abc", "s.json",
+                                    "lens")
+    path = tmp_path / "l.jsonl"
+    levers.append([lens] + costs, path)
+    [row] = [r for r in levers.resolved(levers.read_rows(path)) if r["j"] is not None]
+    assert row["level"] == "lens" and row["rate"] == "lens" and row["weighted"] == 1.5
+    assert abs(row["x86_pct"]) < 1e-9 and "joined" in row["x86_how"]  # mean fps 300

@@ -1,6 +1,6 @@
 """Backfill the lever ledger (nceval.levers) from every result measured before it.
 
-    python3 -m nceval.levers backfill [--doc-rows FILE] [--into LEDGER]
+    python3 -m nceval.levers backfill [--doc-rows FILE [--docs-only]] [--into LEDGER]
 
 Sources, each turned into rows by the same converters the live writers use:
 
@@ -17,7 +17,8 @@ Sources, each turned into rows by the same converters the live writers use:
     preset value from the sweep's own table as the base value;
   - rows extracted from the analysis and handoff docs (--doc-rows, e.g.
     eval/results/sources/doc-rows-2026-11-15.jsonl: one reading of 33 docs' tables;
-    kind doc, level doc:<as stated>).
+    kind doc, level doc:<as stated>; e.g. doc-rows-lens-2026-11-16.jsonl, the
+    day's standards-lens group ablations with their c8a times).
 
 Point caches (realuse/, lens/, screen-cache/, ...) hold single encodes, not
 comparisons, and are skipped. Appending is deduplicated by row id, so a
@@ -287,8 +288,14 @@ def newest_build(paths) -> Path | None:
     return builds[-1] if builds else None
 
 
-def run(into: Path, doc_file: str | None) -> None:
+def run(into: Path, doc_file: str | None, docs_only: bool = False) -> None:
     paths = load_paths()
+    if docs_only:  # one new doc extraction, without rescanning every result on disk
+        if not doc_file:
+            raise SystemExit("--docs-only needs --doc-rows")
+        added = levers.append(doc_rows(Path(doc_file), newest_build(paths)), into)
+        print(f"backfill: {added} new doc row(s) in {into}", flush=True)
+        return
     tuning = paths.data_root / "tuning"
     roots = [paths.work, tuning, paths.data_root / "results", paths.data_root / "worktrees"]
     rows = json_rows([r for r in roots if r.is_dir()])

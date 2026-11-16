@@ -5,6 +5,7 @@
         [--kinds qp,cbr] [--x264 qp|cbr|psnr-qp|psnr-cbr] [--workers 4]
     python3 -m nceval.ctc compare --results DIR[,DIR...] [--points CSV[,CSV...]]
         [--anchor x264-medium] [--paired-with ENCODER] [--stored-tests ENC,...] [--json OUT]
+        [--ledger BASE]
 
 `local` is the lens's iteration loop for encoder work: our encoders are fast,
 and the anchors' curves are already measured (the results page's
@@ -34,6 +35,12 @@ URLs in `sequences.py` cut to length).
 sequences against the anchor, for the AOM Weighted figure, our J and its
 three terms; with `--paired-with`, also against that curve directly (a
 variant against its baseline: the same sequences and points).
+
+`--ledger BASE` (an encoder curve, e.g. `nanocodec-av1@faster` or a local
+variant) also records each of our other test curves in the lever ledger
+(`nceval.levers`, level `lens`): its Weighted and J against x264 medium minus
+BASE's, with the overrides taken from the variant records `local` leaves
+beside the results (`variants.jsonl`: encoder, parameters, build commit).
 """
 
 from __future__ import annotations
@@ -63,6 +70,8 @@ X264 = "x264-medium"
 MS_PER_SECOND = 1000
 #: The figures `compare` prints, in order.
 FIGURES = ("Weighted", "J", *J_METRICS)
+#: Written by `local` beside the result records (not *.json: load_points reads those).
+VARIANTS_FILE = "variants.jsonl"
 
 
 def variant_name(encoder: str, label: str) -> str:
@@ -155,11 +164,66 @@ def tool_paths() -> dict[str, Path]:
 def local(args: argparse.Namespace) -> None:
     run_dir = Path(args.run_dir)
     jobs = with_metrics(local_jobs(args, Path(args.source_dir).resolve()), args.metrics)
+    tools = tool_paths()
     if not run_dir.exists():
-        planner.stage(run_dir, jobs, tool_paths(), [WORKER, load_paths().anchors / VMAF_V1_MODEL])
+        planner.stage(run_dir, jobs, tools, [WORKER, load_paths().anchors / VMAF_V1_MODEL])
     print(f"{len(jobs)} jobs in {run_dir}", flush=True)
     subprocess.run([sys.executable, "-I", WORKER.name, "run", "--workers", str(args.workers)],
                    cwd=run_dir, check=True)
+    if args.encoder.startswith("nanocodec-"):
+        write_variant(run_dir / "out" / "results", args, tools["nanocodec"])
+
+
+def write_variant(results: Path, args: argparse.Namespace, binary: Path) -> None:
+    """The variant's name, base encoder, parameters and build, for `compare --ledger`."""
+    version = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+                             check=True).stdout.split()
+    record = {"variant": variant_name(args.encoder, args.label), "encoder": args.encoder,
+              "params": args.param, "commit": version[-1] if version else None}
+    results.mkdir(parents=True, exist_ok=True)
+    with open(results / VARIANTS_FILE, "a") as out:
+        out.write(json.dumps(record) + "\n")
+
+
+def read_variants(results: list[Path]) -> dict[str, dict]:
+    """{variant name: record} from every results directory's variants.jsonl."""
+    variants = {}
+    for directory in results:
+        path = directory / VARIANTS_FILE
+        if path.is_file():
+            for line in path.read_text().splitlines():
+                if line.strip():
+                    record = json.loads(line)
+                    variants[record["variant"]] = record
+    return variants
+
+
+def ledger_rows(curves: Curves, tests: list[tuple[str, str, str]], anchor: tuple[str, str],
+                base: tuple[str, str], variants: dict[str, dict], source: str) -> list[dict]:
+    """Lever-ledger rows of our test curves against `base` (nceval.levers.lens_row)."""
+    from .. import levers
+    rows = []
+    for condition, encoder, kind in tests:
+        if (encoder, kind) == base or not encoder.startswith("nanocodec-") \
+                or encoder not in variants:
+            continue
+        record, base_record = variants[encoder], variants.get(base[0], {})
+        codec, _, preset = record["encoder"].removeprefix("nanocodec-").partition("@")
+        base_codec, _, base_preset = base_record.get(
+            "encoder", base[0]).removeprefix("nanocodec-").partition("@")
+        if base_codec != codec or (base_preset or levers.MEDIUM) != (preset or levers.MEDIUM):
+            print(f"ledger: {encoder} is not a variant of {base[0]}'s preset; not recorded",
+                  file=sys.stderr)
+            continue
+        test_means, n, _ = mean_figures(curves, condition, anchor, (encoder, kind))
+        base_means, _, _ = mean_figures(curves, condition, anchor, base)
+        delta = lambda f: None if test_means[f] is None or base_means[f] is None \
+            else round(test_means[f] - base_means[f], 2)
+        rows.append(levers.lens_row(
+            codec, preset or levers.MEDIUM, levers.pairs_to_dict(base_record.get("params")),
+            levers.pairs_to_dict(record["params"]), encoder.split("+", 1)[-1], condition, n,
+            delta("Weighted"), delta("J"), record.get("commit"), source))
+    return rows
 
 
 def stored_points(path: Path) -> list[Point]:
@@ -254,6 +318,12 @@ def compare(args: argparse.Namespace) -> None:
                          **{f: None if v is None else round(v, 2) for f, v in means.items()}})
     if args.json:
         Path(args.json).write_text(json.dumps(rows, indent=1) + "\n")
+    if args.ledger:
+        from .. import levers
+        results = [Path(d) for d in args.results.split(",")]
+        levers.record(ledger_rows(curves, tests, curve_key(args.anchor, "qp"),
+                                  curve_key(args.ledger, "qp"), read_variants(results),
+                                  args.results), "lens comparisons")
 
 
 def main_local(sub) -> None:
@@ -278,5 +348,7 @@ def main_local(sub) -> None:
     c.add_argument("--paired-with", help="ENCODER or ENCODER:KIND")
     c.add_argument("--stored-tests", help="ENCODER[:KIND],...: stored curves to report too")
     c.add_argument("--json", help="also write the rows here (one per test and bar)")
+    c.add_argument("--ledger", help="ENCODER[:KIND]: record our variants against this base "
+                   "curve in the lever ledger (nceval.levers, level lens)")
     c.set_defaults(handler=compare)
 

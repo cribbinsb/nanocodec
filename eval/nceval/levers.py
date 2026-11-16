@@ -17,9 +17,11 @@ tools append to the machine-wide spool `$NC_DATA_ROOT/results/levers.jsonl`
 copies its new rows into the repo ledger. Readers take the union.
 
 Writers: nceval.screen (every mode), nceval.fixedqp ab/cost, the tune
-studies (each trial, sensitivity point and finalist; nceval.tune_pool) and
-nceval.levels final-check append when they finish (`record_*`). No agent
-action is needed.
+studies (each trial, sensitivity point and finalist; nceval.tune_pool),
+nceval.levels final-check and the standards lens (`nceval.ctc compare
+--ledger BASE`) append when they finish (`record_*`). CPU from a timing
+session (tools/dev/aws_timing.py's summary.json) goes in as cost rows with
+`levers cost`; the read side joins it to the same change's quality rows.
 
 Row schema (absent values are null; percentages are candidate vs base):
 
@@ -30,14 +32,19 @@ Row schema (absent values are null; percentages are candidate vs base):
                 the anchor's settings match no preset)
     base_params anchor --param pairs beyond the base preset {name: value}
     base_values the anchor's value of every overridden parameter (staleness)
-    rate        cbr | cqp
+    rate        cbr | cqp | lens (the AOM CTC LD lens of nceval.ctc: 12 public
+                sequences, six quantizers)
     overrides   the candidate's change {name: value}; {} for a code change
     change      text label ("code a1b2c3d->e4f5a6b", a sweep label, ...)
     level       L1 | L2 | L3 | final-check | tune-f1 | tune-f2 | tune-ladder |
-                sensitivity | fixedqp | cost | screen:<stage> | cqp:<stage> | doc:<as stated>
+                sensitivity | fixedqp | lens | cost | screen:<stage> | cqp:<stage> |
+                doc:<as stated>
     draw        rotation key or clip set; n clips; frames per clip
     j lo hi     J_real quality delta (percent, CPU term NOT included) and its
-                interval (90 %, nceval.interval)
+                interval (90 %, nceval.interval). Lens rows: the change in the
+                lens's J against x264 medium (candidate minus base, BD points)
+    weighted    lens rows: the change in the AOM Weighted BD-rate against x264
+                medium (candidate minus base, BD points)
     psnr vmaf msssim  per-metric BD-rate (percent): PSNR-YUV, VMAF v1, MS-SSIM
     guards      guard messages, [] when none tripped, null if not measured
     x86_pct x86_how jetson_pct jetson_how   the CPU change and how it was measured
@@ -67,19 +74,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "eval" / "results" / "levers.jsonl"
 SPOOL_ENV = "NC_LEVERS_SPOOL"
 FIELDS = ("id", "codec", "base", "base_params", "base_values", "rate", "overrides", "change",
-          "level", "draw", "n", "frames", "j", "lo", "hi", "psnr", "vmaf", "msssim", "guards",
+          "level", "draw", "n", "frames", "j", "lo", "hi", "psnr", "vmaf", "msssim", "weighted",
+          "guards",
           "x86_pct", "x86_how", "jetson_pct", "jetson_how", "k", "verdict", "commit", "date",
           "source", "kind")
 KEY_FIELDS = ("codec", "base", "base_params", "rate", "overrides", "change", "level", "draw",
               "commit")
 MEDIUM = "medium"
 #: Percent values are kept to 1e-4 (a thousandth of the smallest decision margin).
-MEASURED = ("j", "lo", "hi", "psnr", "vmaf", "msssim", "x86_pct", "jetson_pct")
+MEASURED = ("j", "lo", "hi", "psnr", "vmaf", "msssim", "weighted", "x86_pct", "jetson_pct")
 MEASURE_DECIMALS = 4
 LEVEL_NAMES = {"quick": "L1", "adopt": "L2", "final": "L3"}
 #: Evidence order when one change has several rows: the first level present wins.
 EVIDENCE = ("L3", "final-check", "L2", "tune-ladder", "tune-f2", "L1", "sensitivity",
-            "tune-f1", "fixedqp")
+            "tune-f1", "fixedqp", "lens")
 #: Jetson CPU counts twice the x86 change (owner: Jetson primary, ~2:1; tune_pool).
 JETSON_WEIGHT = 2.0
 #: Replay decision, as nceval.interval decides L3: adopt below -ADOPT_MIN_GAIN_PCT
@@ -411,9 +419,9 @@ def fixedqp_ab_rows(result: dict, source: str, kind: str = "live",
 
 def cost_rows(codec: str, base: str, costs: dict[str, tuple[dict, float]], how: str,
               commit: str | None, source: str, kind: str = "live",
-              date: str | None = None) -> list[dict]:
+              date: str | None = None, rate: str = "cqp") -> list[dict]:
     """CPU-only rows: {label: (overrides, dCPU percent)} measured against `base`."""
-    return [make_row(codec=codec, base=base, rate="cqp", overrides=overrides, change=label,
+    return [make_row(codec=codec, base=base, rate=rate, overrides=overrides, change=label,
                      level="cost", x86_pct=dcpu, x86_how=how, commit=commit, date=date,
                      source=source, kind=kind)
             for label, (overrides, dcpu) in costs.items() if overrides or label != "anchor"]
@@ -428,6 +436,36 @@ def fixedqp_cost_rows(result: dict, labels: dict[str, list[str]], source: str,
              if label != "anchor" and label in labels}
     return cost_rows(result["codec"], result.get("preset") or MEDIUM, costs, CALLGRIND_P,
                      commit, source, kind, date)
+
+
+def lens_row(codec: str, base: str, base_params: dict[str, float], overrides: dict[str, float],
+             change: str, condition: str, n: int, weighted: float | None, j: float | None,
+             commit: str | None, source: str, kind: str = "live",
+             date: str | None = None) -> dict:
+    """One standards-lens comparison: `weighted` and `j` are candidate minus base, in BD
+    points against x264 medium (nceval.ctc compare)."""
+    return make_row(codec=codec, base=base, base_params=base_params, rate="lens",
+                    overrides=diff(overrides, base_params), change=change, level="lens",
+                    draw=condition, n=n, weighted=weighted, j=j, commit=commit, date=date,
+                    source=source, kind=kind)
+
+
+def timing_cost_rows(summary: dict, codec: str, base: str, base_point: str,
+                     points: dict[str, dict[str, float]], how: str, commit: str | None,
+                     source: str, rate: str, date: str | None = None) -> list[dict]:
+    """Cost rows from a timing session's summary ({point: {repeat-N: {fps}}}, as
+    tools/dev/aws_timing.py writes it): each point's time against `base_point`'s, in
+    percent, with the mean fps over the repeats. `points` maps point -> its overrides."""
+    def fps(point: str) -> float:
+        repeats = [r["fps"] for name, r in summary[point].items()
+                   if name.startswith("repeat") and r.get("fps")]
+        if not repeats:
+            raise SystemExit(f"{source}: no timed repeat of {point}")
+        return sum(repeats) / len(repeats)
+    base_fps = fps(base_point)
+    costs = {point: (overrides, (base_fps / fps(point) - 1) * 100)
+             for point, overrides in points.items()}
+    return cost_rows(codec, base, costs, how, commit, source, date=date, rate=rate)
 
 
 def preset_stem(name: str | None, codec: str) -> str:
@@ -598,6 +636,11 @@ def strongest(rows: list[dict]) -> dict:
     return min(rows, key=lambda r: (rank(r), -(r.get("n") or 0), r["date"]))
 
 
+def quality(row: dict) -> float | None:
+    """The row's quality change: J, or for a lens row stated in Weighted only, Weighted."""
+    return row["j"] if row["j"] is not None or row["rate"] != "lens" else row.get("weighted")
+
+
 def label(row: dict) -> str:
     if row["overrides"]:
         return " ".join(f"{k}={v:g}" for k, v in row["overrides"].items())
@@ -605,7 +648,7 @@ def label(row: dict) -> str:
 
 
 def selected(args: argparse.Namespace) -> tuple[list[dict], dict | None]:
-    rows = [r for r in resolved(load()) if r["codec"] == args.codec and r["j"] is not None
+    rows = [r for r in resolved(load()) if r["codec"] == args.codec and quality(r) is not None
             and (args.base == "all" or r["base"] == args.base)
             and (args.rate == "all" or r["rate"] == args.rate)]
     binary = current_binary(args)
@@ -661,28 +704,38 @@ def table(args: argparse.Namespace) -> None:
     lines = []
     for group in groups.values():
         best = strongest(group)
-        j, cpu = best["j"], combined_cpu(best)
+        j, cpu = quality(best), combined_cpu(best)
         if abs(cpu) < CPU_NOISE_PCT:
             quadrant, breakeven = ("free gain" if j < 0 else "free loss"), None
         elif (j < 0) == (cpu < 0):
             quadrant, breakeven = ("win-win" if j < 0 else "lose-lose"), None
         else:
             quadrant, breakeven = ("quality arm" if j < 0 else "speed arm"), -j / cpu
-        lines.append((quadrant, breakeven, best, base_status(best, current)))
+        lines.append((quadrant, breakeven, best, base_status(best, current), j))
     order = {"win-win": 0, "free gain": 1, "quality arm": 2, "speed arm": 3, "free loss": 4,
              "lose-lose": 5}
     # Quality arms pay off while k < break-even (largest first); speed arms while k >
     # break-even (smallest first).
     lines.sort(key=lambda x: (order[x[0]], -x[1] if x[0] == "quality arm"
-                              else x[1] if x[0] == "speed arm" else x[2]["j"]))
+                              else x[1] if x[0] == "speed arm" else x[4]))
     print(f"{args.codec} base {args.base}: {len(lines)} changes with J and CPU. Quality arms "
           f"pay while k < k*, speed arms while k > k*.")
-    print(f"{'quadrant':11s} {'k*':>7s} {'J':>7s} {'dCPU':>7s} {'level':12s} {'n':>3s} "
-          f"{'base':8s}  change")
-    for quadrant, breakeven, row, status in lines:
+    lens = args.rate == "lens"
+    if lens:
+        print("lens rows: J and Weighted are BD points against x264 medium, candidate minus "
+              "base (k* from J, or Weighted where J is not stated); W/C is Weighted points "
+              "per 1 % of time.")
+    print(f"{'quadrant':11s} {'k*':>7s} {'J':>7s} {'dCPU':>7s} "
+          + (f"{'W':>7s} {'W/C':>7s} " if lens else "")
+          + f"{'level':12s} {'n':>3s} {'base':8s}  change")
+    for quadrant, breakeven, row, status, _ in lines:
         fmt = lambda v: "    n/a" if v is None else f"{v:+7.2f}"
-        print(f"{quadrant:11s} {fmt(breakeven)} {fmt(row['j'])} {fmt(combined_cpu(row))} "
-              f"{row['level'][:12]:12s} {row.get('n') or 0:3d} {status:8s}  {label(row)[:100]}")
+        cpu = combined_cpu(row)
+        weighted = row.get("weighted")
+        per_cpu = None if weighted is None or abs(cpu) < CPU_NOISE_PCT else weighted / cpu
+        print(f"{quadrant:11s} {fmt(breakeven)} {fmt(row['j'])} {fmt(cpu)} "
+              + (f"{fmt(weighted)} {fmt(per_cpu)} " if lens else "")
+              + f"{row['level'][:12]:12s} {row.get('n') or 0:3d} {status:8s}  {label(row)[:100]}")
 
 
 def coverage(_: argparse.Namespace) -> None:
@@ -706,6 +759,22 @@ def coverage(_: argparse.Namespace) -> None:
     print("levels: " + ", ".join(f"{k} {v}" for k, v in sorted(levels.items(), key=lambda x: -x[1])))
 
 
+def param_file(path: str) -> dict[str, float]:
+    """k=v lines (# comments and blanks skipped; the last value of a name wins)."""
+    lines = [line.split("#", 1)[0].strip() for line in Path(path).read_text().splitlines()]
+    return pairs_to_dict([line.replace(" ", "") for line in lines if "=" in line])
+
+
+def record_timing(args: argparse.Namespace) -> None:
+    points = {}
+    for spec in args.point:
+        name, _, path = spec.partition("=")
+        points[name] = param_file(path)
+    record(timing_cost_rows(json.loads(Path(args.summary).read_text()), args.codec, args.base,
+                            args.base_point, points, args.how, args.commit, args.summary,
+                            args.rate), "timing costs")
+
+
 def sync(_: argparse.Namespace) -> None:
     added = append(read_rows(spool_path()), LEDGER)
     print(f"{added} new row(s) from {spool_path()} into {LEDGER}")
@@ -720,7 +789,7 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--codec", required=True)
         p.add_argument("--base", default=MEDIUM, help="preset stem the rows were measured "
                        "against (default medium, i.e. Default); 'all' for every base")
-        p.add_argument("--rate", default="cbr", choices=("cbr", "cqp", "all"))
+        p.add_argument("--rate", default="cbr", choices=("cbr", "cqp", "lens", "all"))
         p.add_argument("--binary", default="HEAD",
                        help="current build (a path, or a commit built once into "
                        "builds/; default HEAD) whose defaults and presets decide which rows' "
@@ -731,15 +800,31 @@ def main(argv: list[str] | None = None) -> None:
     replay_parser.add_argument("--only", help="verdicts to list, e.g. better,lead")
     sub.add_parser("coverage")
     sub.add_parser("sync")
+    cost = sub.add_parser("cost", help="cost rows from a timing session's summary.json "
+                          "(tools/dev/aws_timing.py)")
+    cost.add_argument("--summary", required=True)
+    cost.add_argument("--codec", required=True)
+    cost.add_argument("--base", required=True, help="preset stem of the base point")
+    cost.add_argument("--base-point", required=True, help="the summary's name of the base")
+    cost.add_argument("--point", action="append", required=True,
+                      help="POINT=PARAMFILE: a timed point and its overrides (k=v lines)")
+    cost.add_argument("--how", required=True, help="what was timed, e.g. 'c8a.large chart "
+                      "path (aws_timing), mean fps of 2 repeats'")
+    cost.add_argument("--rate", default="lens", choices=("cbr", "cqp", "lens"),
+                      help="the rows' rate mode (CPU joins across modes on read)")
+    cost.add_argument("--commit", help="the timed build's commit")
     backfill = sub.add_parser("backfill", help="nceval.levers_backfill: every old result")
     backfill.add_argument("--doc-rows", help="JSONL of rows extracted from docs (kind doc)")
     backfill.add_argument("--into", default=str(LEDGER), help="ledger to append to")
+    backfill.add_argument("--docs-only", action="store_true",
+                          help="append only --doc-rows (no rescan of the result files)")
     args = parser.parse_args(argv)
     if args.command == "backfill":
         from . import levers_backfill
-        levers_backfill.run(Path(args.into), args.doc_rows)
+        levers_backfill.run(Path(args.into), args.doc_rows, args.docs_only)
         return
-    {"replay": replay, "table": table, "coverage": coverage, "sync": sync}[args.command](args)
+    {"replay": replay, "table": table, "coverage": coverage, "sync": sync,
+     "cost": record_timing}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -164,3 +164,32 @@ def test_every_lens_rung_of_ours_has_jobs(fake_paths, monkeypatch):
     monkeypatch.setattr(local, "load_paths", lambda: fake_paths)
     for rung in ("", "@fast", "@slow"):
         assert local.local_jobs(_local_args(encoder=f"nanocodec-av1{rung}"), Path("/src"))
+
+
+def test_compare_records_a_variant_against_its_base_in_the_lever_ledger(tmp_path, monkeypatch):
+    """A variant at half its base's rate, equal quality: about -50 BD points in Weighted
+    and J against x264 medium beside its base, recorded with its overrides."""
+    seq = "FourPeople_480x270_60"
+    results = tmp_path / "results"
+    for i, q in enumerate((110, 135, 160, 185)):
+        psnr = 40.0 - 3 * i
+        for encoder, kbps in (("x264-medium", 400 / 2 ** i),
+                              ("nanocodec-av1@faster", 400 / 2 ** i),
+                              ("nanocodec-av1@faster+half", 200 / 2 ** i)):
+            path = results / "aom-ld" / seq / encoder / f"q{q}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(_record(f"aom-ld/{seq}/{encoder}/q{q}", kbps, psnr)))
+    (results / local.VARIANTS_FILE).write_text(json.dumps(
+        {"variant": "nanocodec-av1@faster+half", "encoder": "nanocodec-av1@faster",
+         "params": ["av1.cdef_local_search_period=8"], "commit": "abc"}) + "\n")
+    stored = tmp_path / "points.csv"
+    stored.write_text("condition,sequence,encoder,kind,q,kbps,user_s\n")
+    spool = tmp_path / "spool.jsonl"
+    monkeypatch.setenv("NC_LEVERS_SPOOL", str(spool))
+    local.compare(argparse.Namespace(
+        results=str(results), points=str(stored), anchor="x264-medium",
+        paired_with=None, stored_tests=None, json=None, ledger="nanocodec-av1@faster"))
+    [row] = [json.loads(line) for line in spool.read_text().splitlines()]
+    assert row["level"] == "lens" and row["base"] == "faster" and row["commit"] == "abc"
+    assert row["overrides"] == {"av1.cdef_local_search_period": 8.0} and row["n"] == 1
+    assert row["weighted"] == pytest.approx(-50.0, abs=0.1)
