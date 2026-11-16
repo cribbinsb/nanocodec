@@ -23,19 +23,25 @@ delay, you may be in the right place:
   decoder; the same rate control, analysis and mode decision drive all six.
 - **Decoders that run in any browser:** all six decoders compile to WebAssembly (SIMD128), so a web page can
   play H.264, HEVC, VVC, AV1, VP9 and AV2 streams without WebCodecs, a plug-in or a native decoder for the
-  format. The H.264 (Constrained High), HEVC (Main and Main 10), AV1 (Main, 8- and 10-bit) and VP9 (profiles 0 and 2, 8- to
-  12-bit) decoders pass the conformance streams we test (HEVC: 147/147 Main, Main Still Picture and Main 10 streams of the
-  JCT-VC HEVC_v1 set; AV1: 242/242 libaom test vectors, 66 of them 10-bit; VP9: 305/305 libvpx profile 0 and 2 vectors, 2 of them 10/12-bit;
-  the browser build shows 8-bit streams
-  only), so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
-  timed they needed less time per frame than ffmpeg.wasm
-  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes 224 of
-  the 226 official Main 10 conformance streams (8- and 10-bit; it still lacks field-pair output, so it is not
-  a compliant Main 10 decoder) and 138 of 138 short 8-bit
-  streams we coded with VTM and VVenC to cover the Main 10 tools one by one ([what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
-  decodes our own streams and all 30 of 30 foreign test streams (12 dav2d 8-bit test vectors, 18 avmenc v1.0.0
-  streams: all-intra, low-delay and random-access with the default tools, fewest tools) bit-exact against
-  avmdec v1.0.0 and dav2d.
+  format. They decode other encoders' streams, 8-bit and 10-bit, natively and in the browser (10-bit output
+  as 16-bit samples, or converted to 8-bit for display). Conformance streams we test:
+  - **HEVC** (Main, Main Still Picture, Main 10): 147/147 of the JCT-VC HEVC_v1 set.
+  - **AV1** (Main, 8- and 10-bit): 242/242 libaom test vectors, 66 of them 10-bit.
+  - **VP9** (profiles 0 and 2, 8- to 12-bit): 305/305 libvpx vectors.
+  - **VVC** (Main 10): 224 of the 226 official conformance streams. The two left are interlaced field
+    pairs, which we output as separate fields, so it is not yet a compliant Main 10 decoder. Also 138 of 138
+    short 8-bit streams we coded with VTM and VVenC to cover the tools one by one
+    ([what passes](docs/handoff/vvc-foreign-corpus.md)).
+  - **H.264** (High and High 10, progressive): 110 of the 190 ITU-T H.264.1 streams, including every
+    progressive Main (41), High (24) and High 10 (7) stream. Interlaced coding, FMO/ASO and SP/SI slices
+    are not supported.
+  - **AV2** (a draft standard): all 30 of 30 foreign test streams (12 dav2d 8-bit test vectors, 18 avmenc
+    v1.0.0 streams), bit-exact against avmdec v1.0.0 and dav2d.
+
+  On the H.264, HEVC and VP9 streams we timed, they needed less time per frame than ffmpeg.wasm
+  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). 10-bit decoding has SIMD on
+  AVX2, AVX-512, NEON and WASM for AV1 and VP9 (AV1 10-bit: 1.64× dav1d's instructions on a 1080p
+  stream), plus WASM for HEVC; the VVC and H.264 10-bit paths are scalar so far.
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
   1 s buffer); 720p at real-time speed on one Jetson Orin core for every format's `medium` preset except VVC,
   which runs just under it (VVC `fast` is above); figures in [Headline results](#headline-results).
@@ -48,7 +54,8 @@ delay, you may be in the right place:
 - **SVC:** spatial and temporal scalability for AV1 and VP9, including the WebRTC-style K-SVC and L1T2 / L1T3
   modes.
 - **Standard bitstreams only:** every shipped preset's streams are checked to decode bit-exactly in two
-  independent decoders per format. 8-bit 4:2:0 only.
+  independent decoders per format. The encoders code 8-bit 4:2:0; the decoders also decode 10-bit
+  (and VP9 12-bit) 4:2:0.
 
 ## Headline results
 
