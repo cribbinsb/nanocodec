@@ -194,8 +194,10 @@ pub(super) fn parse(
     } else {
         0
     };
+    // SliceQPY lies in −QpBdOffsetY..=51 (§7.4.3).
     let qp = pps.pic_init_qp + r.se()?;
-    if !(0..=51).contains(&qp) {
+    let qp_bd_offset = 6 * sps.depths.luma.above_eight() as i32;
+    if !(-qp_bd_offset..=51).contains(&qp) {
         return Err(DecodeError::Malformed("slice QP"));
     }
     let deblock = if pps.deblocking_filter_control_present {

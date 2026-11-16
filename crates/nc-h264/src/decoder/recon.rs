@@ -2,13 +2,14 @@
 //! samples, intra prediction block by block with its residual (§8.3), or
 //! inter prediction (`inter.rs`) followed by the residual (§8.5).
 
-use nc_common::{PlaneIndex, PlaneViewMut};
+use nc_common::{BitDepth, BitDepths, PlaneIndex, PlaneViewMut, Sample};
 use nc_dsp::Dsp;
 
 use super::inter::InterContext;
 use super::intra::{self, Avail};
 use super::mb::{MbExtra, PCM_LUMA_SAMPLES};
 use super::mbstate::{self, MbKind, MbState, Neighbours};
+use super::sample::H264Sample;
 use super::transform::Residual;
 use super::{Planes, Result};
 
@@ -64,25 +65,28 @@ impl IntraNeighbours {
 }
 
 /// Everything reconstruction needs besides the macroblock.
-pub(super) struct ReconContext<'a> {
+pub(super) struct ReconContext<'a, T: Sample> {
     pub dsp: &'a Dsp,
-    pub inter: InterContext<'a>,
+    pub inter: InterContext<'a, T>,
     pub constrained_intra_pred: bool,
     pub monochrome: bool,
+    pub depths: BitDepths,
 }
 
 /// Reconstruct macroblock `mb` at macroblock position (`mx`, `my`).
-pub(super) fn reconstruct(
-    ctx: &ReconContext<'_>,
-    planes: &mut Planes<'_>,
+pub(super) fn reconstruct<T: H264Sample>(
+    ctx: &ReconContext<'_, T>,
+    planes: &mut Planes<'_, T>,
     (mx, my): (usize, usize),
     mb: &MbState,
     nb: &Neighbours<'_>,
-    residual: &mut Residual,
+    residual: &mut Residual<T::Coeff>,
     extra: &MbExtra,
 ) -> Result<()> {
     let (x, y) = (mx * MB_SIZE, my * MB_SIZE);
     let intra = IntraNeighbours::of(nb, ctx.constrained_intra_pred);
+    // Folds to the 8-bit constants in the 8-bit instance.
+    let depths = ctx.depths.of::<T>();
     if mb.kind == MbKind::IPcm {
         pcm(planes, (x, y), extra, ctx.monochrome);
         return Ok(());
@@ -91,14 +95,15 @@ pub(super) fn reconstruct(
         ctx.inter.predict(planes, mb, mx, my)?;
     }
     let [luma, cb, cr] = planes;
+    let dsp = (ctx.dsp, depths.luma);
     match mb.kind {
-        MbKind::IntraNxN => luma_nxn(ctx.dsp, luma, (x, y), mb, intra, residual)?,
+        MbKind::IntraNxN => luma_nxn(dsp, luma, (x, y), mb, intra, residual)?,
         MbKind::Intra16x16(mode) => {
-            intra::predict_16x16(luma, x, y, mode, intra.block(0, 0, 4))?;
-            add_luma(ctx.dsp, luma, (x, y), mb, residual);
+            intra::predict_16x16(luma, (x, y), mode, (intra.block(0, 0, 4), depths.luma))?;
+            add_luma(dsp, luma, (x, y), mb, residual);
         }
         MbKind::Inter(_) | MbKind::PSkip | MbKind::BSkip | MbKind::BDirect16x16 | MbKind::IPcm => {
-            add_luma(ctx.dsp, luma, (x, y), mb, residual);
+            add_luma(dsp, luma, (x, y), mb, residual);
         }
     }
     // Inter chroma without coefficients is the prediction already.
@@ -108,25 +113,26 @@ pub(super) fn reconstruct(
     let (cx, cy) = (x / 2, y / 2);
     for (comp, plane) in [cb, cr].into_iter().enumerate() {
         if mb.is_intra() {
-            intra::predict_chroma(plane, cx, cy, mb.chroma_pred_mode, intra.block(0, 0, 4))?;
+            let avail = (intra.block(0, 0, 4), depths.chroma);
+            intra::predict_chroma(plane, (cx, cy), mb.chroma_pred_mode, avail)?;
         }
         for b in 0..4 {
             if !residual.has_chroma(comp, b) {
                 continue;
             }
             let mut dst = block_view(plane, (cx + (b % 2) * 4, cy + (b / 2) * 4), 4);
-            residual.add_chroma_4x4(ctx.dsp, comp, b, &mut dst);
+            residual.add_chroma_4x4(ctx.dsp, depths.chroma, (comp, b), &mut dst);
         }
     }
     Ok(())
 }
 
 /// The `side` x `side` block at `(x, y)` of `plane`.
-fn block_view<'p>(
-    plane: &'p mut PlaneViewMut<'_>,
+fn block_view<'p, T: Sample>(
+    plane: &'p mut PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     side: usize,
-) -> PlaneViewMut<'p> {
+) -> PlaneViewMut<'p, T> {
     plane
         .sub_view_mut(x, y, side, side)
         .expect("block inside the picture")
@@ -134,47 +140,42 @@ fn block_view<'p>(
 
 /// `Intra_4x4` or `Intra_8x8`: predict each block, then add its residual,
 /// in decoding order.
-fn luma_nxn(
-    dsp: &Dsp,
-    plane: &mut PlaneViewMut<'_>,
+fn luma_nxn<T: H264Sample>(
+    (dsp, depth): (&Dsp, BitDepth),
+    plane: &mut PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     mb: &MbState,
     intra: IntraNeighbours,
-    residual: &mut Residual,
+    residual: &mut Residual<T::Coeff>,
 ) -> Result<()> {
     if mb.transform_8x8 {
         for b8 in 0..4 {
             let (x4, y4) = ((b8 % 2) * 2, (b8 / 2) * 2);
             let (px, py) = (x + x4 * 4, y + y4 * 4);
             let mode = mb.intra_modes[y4 * 4 + x4];
-            intra::predict_8x8(dsp, plane, px, py, mode, intra.block(x4, y4, 2))?;
-            residual.add_luma_8x8(dsp, b8, &mut block_view(plane, (px, py), 8));
+            T::intra_8x8(dsp, plane, (px, py), mode, (intra.block(x4, y4, 2), depth))?;
+            residual.add_luma_8x8(dsp, depth, b8, &mut block_view(plane, (px, py), 8));
         }
         return Ok(());
     }
     for index in 0..16 {
         let (x4, y4) = mbstate::block_position(index);
         let (px, py) = (x + x4 * 4, y + y4 * 4);
-        intra::predict_nxn(
-            plane,
-            px,
-            py,
-            4,
-            mb.intra_modes[y4 * 4 + x4],
-            intra.block(x4, y4, 1),
-        )?;
-        residual.add_luma_4x4(dsp, y4 * 4 + x4, &mut block_view(plane, (px, py), 4));
+        let mode = mb.intra_modes[y4 * 4 + x4];
+        intra::predict_nxn(plane, (px, py), 4, mode, (intra.block(x4, y4, 1), depth))?;
+        residual.add_luma_4x4(dsp, depth, y4 * 4 + x4, &mut block_view(plane, (px, py), 4));
     }
     Ok(())
 }
 
 /// Add the luma residual of a predicted macroblock (4x4 or 8x8 blocks).
-fn add_luma(
-    dsp: &Dsp,
-    plane: &mut PlaneViewMut<'_>,
+#[inline]
+fn add_luma<T: H264Sample>(
+    (dsp, depth): (&Dsp, BitDepth),
+    plane: &mut PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     mb: &MbState,
-    residual: &mut Residual,
+    residual: &mut Residual<T::Coeff>,
 ) {
     if !residual.has_luma() {
         return;
@@ -185,21 +186,28 @@ fn add_luma(
                 continue;
             }
             let (px, py) = (x + (b8 % 2) * 8, y + (b8 / 2) * 8);
-            residual.add_luma_8x8(dsp, b8, &mut block_view(plane, (px, py), 8));
+            residual.add_luma_8x8(dsp, depth, b8, &mut block_view(plane, (px, py), 8));
         }
         return;
     }
-    residual.add_luma_4x4_all(dsp, &mut block_view(plane, (x, y), MB_SIZE));
+    residual.add_luma_4x4_all(dsp, depth, &mut block_view(plane, (x, y), MB_SIZE));
 }
 
 /// Copy `I_PCM` samples (luma raster, then Cb and Cr raster).
-fn pcm(planes: &mut Planes<'_>, (x, y): (usize, usize), extra: &MbExtra, monochrome: bool) {
+fn pcm<T: Sample>(
+    planes: &mut Planes<'_, T>,
+    (x, y): (usize, usize),
+    extra: &MbExtra,
+    monochrome: bool,
+) {
     let mut copy = |index: PlaneIndex, offset: usize, (px, py): (usize, usize), side: usize| {
         let mut dst = block_view(&mut planes[index as usize], (px, py), side);
         for row in 0..side {
             let start = offset + row * side;
-            dst.row_mut(row)
-                .copy_from_slice(&extra.pcm[start..start + side]);
+            let samples = &extra.pcm[start..start + side];
+            for (out, &value) in dst.row_mut(row).iter_mut().zip(samples) {
+                *out = T::from_i32(i32::from(value));
+            }
         }
     };
     copy(PlaneIndex::Y, 0, (x, y), MB_SIZE);

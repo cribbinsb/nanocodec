@@ -33,6 +33,14 @@ fn at(q0: usize, across: usize, offset: isize) -> usize {
 }
 
 fn luma_edge(plane: &mut [u8], e: &Edge) {
+    luma_edge_at(plane, e, BitDepth::EIGHT);
+}
+
+/// [`luma_edge`] at any sample type and depth: `e`'s thresholds are those
+/// at the depth (α, β, `tC0` scaled by `2^(BitDepth − 8)`, H.264 eqs.
+/// 8-463, 8-464, 8-466), the samples clipped to it.
+pub(crate) fn luma_edge_at<T: Sample>(plane: &mut [T], e: &Edge, depth: BitDepth) {
+    let depth = depth.of::<T>();
     let (alpha, beta) = (i32::from(e.alpha), i32::from(e.beta));
     for line in 0..LUMA_LINES {
         let bs = e.bs[line / 4];
@@ -41,7 +49,7 @@ fn luma_edge(plane: &mut [u8], e: &Edge) {
         }
         let q0i = e.base + line * e.along;
         let s: [i32; 8] =
-            core::array::from_fn(|i| i32::from(plane[at(q0i, e.across, i as isize - 4)]));
+            core::array::from_fn(|i| plane[at(q0i, e.across, i as isize - 4)].to_i32());
         let [p3, p2, p1, p0, q0, q1, q2, q3] = s;
         if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
             continue;
@@ -79,7 +87,7 @@ fn luma_edge(plane: &mut [u8], e: &Edge) {
         }
         // p2..q2: the only samples the luma filters change.
         for i in 1..7 {
-            plane[at(q0i, e.across, i as isize - 4)] = out[i].clamp(0, 255) as u8;
+            plane[at(q0i, e.across, i as isize - 4)] = depth.clip_to(out[i]);
         }
     }
 }
@@ -91,6 +99,12 @@ fn chroma_pair(u: &mut [u8], v: &mut [u8], e: &Edge) {
 }
 
 fn chroma_edge(plane: &mut [u8], e: &Edge) {
+    chroma_edge_at(plane, e, BitDepth::EIGHT);
+}
+
+/// [`chroma_edge`] at any sample type and depth, as [`luma_edge_at`].
+pub(crate) fn chroma_edge_at<T: Sample>(plane: &mut [T], e: &Edge, depth: BitDepth) {
+    let depth = depth.of::<T>();
     let (alpha, beta) = (i32::from(e.alpha), i32::from(e.beta));
     for line in 0..CHROMA_LINES {
         let bs = e.bs[line / 2];
@@ -99,7 +113,7 @@ fn chroma_edge(plane: &mut [u8], e: &Edge) {
         }
         let q0i = e.base + line * e.along;
         let s: [i32; 4] =
-            core::array::from_fn(|i| i32::from(plane[at(q0i, e.across, i as isize - 2)]));
+            core::array::from_fn(|i| plane[at(q0i, e.across, i as isize - 2)].to_i32());
         let [p1, p0, q0, q1] = s;
         if (p0 - q0).abs() >= alpha || (p1 - p0).abs() >= beta || (q1 - q0).abs() >= beta {
             continue;
@@ -111,8 +125,8 @@ fn chroma_edge(plane: &mut [u8], e: &Edge) {
         } else {
             ((2 * p1 + p0 + q1 + 2) >> 2, (2 * q1 + q0 + p1 + 2) >> 2)
         };
-        plane[at(q0i, e.across, -1)] = p0n.clamp(0, 255) as u8;
-        plane[at(q0i, e.across, 0)] = q0n.clamp(0, 255) as u8;
+        plane[at(q0i, e.across, -1)] = depth.clip_to(p0n);
+        plane[at(q0i, e.across, 0)] = depth.clip_to(q0n);
     }
 }
 

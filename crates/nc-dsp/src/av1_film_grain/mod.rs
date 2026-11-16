@@ -7,6 +7,13 @@
 //! underlying samples. Applied to the shown frame only, never to
 //! references.
 //!
+//! AV2 keeps the templates, scaling and blending and changes only how the
+//! blocks are laid ([`GrainBlocks`], [`crate::Dsp::av2_add_film_grain`]):
+//! 16x16 or 32x32 blocks, each placed by two scaled 9-bit random offsets,
+//! and stripe seeds counted in 16-row units (dav2d 237229e
+//! `src/filmgrain_tmpl.c` `fgy_32x32xn_c`, `fguv_32x32xn_c`; BSD-2-Clause,
+//! see `THIRD_PARTY.md`).
+//!
 //! Written from the spec's structure (§7.18.3.3–5: grain generation,
 //! scaling lookup, noise stripes, noise image, blending); the arithmetic
 //! is checked against libaom v3.15.3 `av1/decoder/grain_synthesis.c`
@@ -32,10 +39,10 @@ pub struct Av1FilmGrainParams {
     pub y_points: Av1ScalingPoints<14>,
     /// `chroma_scaling_from_luma`.
     pub chroma_scaling_from_luma: bool,
-    /// `point_cb_value` / `point_cb_scaling`.
-    pub cb_points: Av1ScalingPoints<10>,
-    /// `point_cr_value` / `point_cr_scaling`.
-    pub cr_points: Av1ScalingPoints<10>,
+    /// `point_cb_value` / `point_cb_scaling` (at most 10 in AV1, 14 in AV2).
+    pub cb_points: Av1ScalingPoints<14>,
+    /// `point_cr_value` / `point_cr_scaling` (as `cb_points`).
+    pub cr_points: Av1ScalingPoints<14>,
     /// `grain_scaling_minus_8`.
     pub grain_scaling_minus_8: u8,
     /// `ar_coeff_lag` (0 to 3).
@@ -58,6 +65,10 @@ pub struct Av1FilmGrainParams {
     pub overlap: bool,
     /// `clip_to_restricted_range`.
     pub clip_to_restricted_range: bool,
+    /// The identity colour matrix: restricted-range chroma clips to luma's
+    /// 235 rather than 240 (AV1: `matrix_coefficients == MC_IDENTITY`, which
+    /// needs 4:4:4, so never in 4:2:0; AV2: the FGM's `mc_identity`).
+    pub mc_identity: bool,
 }
 
 /// Up to `N` scaling points: (`value`, `scaling`) pairs in increasing value.
@@ -99,8 +110,21 @@ const AR_PADDING: usize = 3;
 /// Seeds of the chroma templates (`grain_seed ^ 0xb524`, `^ 0x49d8`).
 const CB_SEED_XOR: u16 = 0xb524;
 const CR_SEED_XOR: u16 = 0x49d8;
-/// Luma rows per noise stripe and side of the grain blocks.
+/// Luma rows per noise stripe and side of AV1's grain blocks.
 const BLOCK: usize = 32;
+/// Side of AV2's small grain blocks (`block_size = 0`); its large ones
+/// are [`BLOCK`].
+const AV2_SMALL_BLOCK: usize = 16;
+/// Bits of AV2's random block offsets, and of the draws discarded after
+/// each (dav2d `fgy_32x32xn_c`).
+const AV2_OFFSET_BITS: u32 = 9;
+const AV2_DISCARD_BITS: u32 = 16;
+/// Random numbers AV2 discards after each block offset.
+const AV2_DISCARDS: usize = 3;
+/// AV2's offset scale: `(3 − block_size) * random >> 6` spans 0..=23 in
+/// 16x16 blocks and 0..=15 in 32x32 ones.
+const AV2_OFFSET_SCALE: usize = 3;
+const AV2_OFFSET_SHIFT: u32 = 6;
 /// Luma rows and columns a block's grain reaches past the block, for
 /// overlap with the next one.
 const OVERLAP: usize = 2;
@@ -128,6 +152,64 @@ fn round2(value: i32, bits: u32) -> i32 {
         value
     } else {
         (value + (1 << (bits - 1))) >> bits
+    }
+}
+
+/// How the grain blocks are laid over the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrainBlocks {
+    /// AV1 §7.18.3.5: 32x32 blocks, each placed by one 8-bit random number
+    /// (4 bits per axis).
+    Av1,
+    /// AV2 (dav2d `fgy_32x32xn_c`): 32x32 blocks when `large` (FGM
+    /// `block_size = 1`), else 16x16, each placed by two 9-bit random
+    /// numbers, row then column.
+    Av2 {
+        /// `block_size`.
+        large: bool,
+    },
+}
+
+impl GrainBlocks {
+    /// Side of a luma block, and the luma rows of a noise stripe.
+    fn luma_side(self) -> usize {
+        match self {
+            Self::Av2 { large: false } => AV2_SMALL_BLOCK,
+            Self::Av1 | Self::Av2 { large: true } => BLOCK,
+        }
+    }
+
+    /// `RandomRegister` of stripe `index`: AV2 numbers stripes in 16-row
+    /// units (`rel_row_num = row_num << block_size`).
+    fn stripe_seed(self, seed: u16, index: usize) -> u16 {
+        let unit = match self {
+            Self::Av1 | Self::Av2 { large: false } => index,
+            Self::Av2 { large: true } => index << 1,
+        };
+        stripe_seed(seed, unit)
+    }
+
+    /// The next block's (column, row) offset into the template, in units
+    /// of two luma samples.
+    fn offsets(self, random: &mut Random) -> (usize, usize) {
+        match self {
+            Self::Av1 => {
+                let offset = random.next(8);
+                (offset >> 4, offset & 15)
+            }
+            Self::Av2 { large } => {
+                let scale = AV2_OFFSET_SCALE - usize::from(large);
+                let mut next = || {
+                    let offset = (scale * random.next(AV2_OFFSET_BITS)) >> AV2_OFFSET_SHIFT;
+                    for _ in 0..AV2_DISCARDS {
+                        random.next(AV2_DISCARD_BITS);
+                    }
+                    offset
+                };
+                let row = next();
+                (next(), row)
+            }
+        }
     }
 }
 
@@ -362,7 +444,7 @@ fn interpolate(scaling: i32, offset: i64) -> i32 {
     scaling + ((offset + 32768) >> 16) as i32
 }
 
-/// `RandomRegister` of luma stripe `index`.
+/// `RandomRegister` of luma stripe `index` (AV1 §7.18.3.5).
 fn stripe_seed(seed: u16, index: usize) -> u16 {
     let n = index as u16;
     seed ^ ((n.wrapping_mul(37).wrapping_add(178) & 255) << 8)

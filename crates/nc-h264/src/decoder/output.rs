@@ -9,16 +9,18 @@
 
 use std::sync::Arc;
 
-use nc_common::{Picture, ShownPicture};
+#[cfg(test)]
+use nc_common::ShownPicture;
+use nc_common::{BitDepths, Picture, Sample};
 
 /// One decoded frame with what its output order depends on. It shares the
 /// decoder's picture (no copy); the decoder reuses the buffer once every
 /// frame and reference holding it is dropped.
 #[derive(Debug, Clone)]
-pub struct DecodedFrame {
+pub(super) struct DecodedFrame<T: Sample = u8> {
     /// The decoded picture, with the stream's padding and border; 4:0:0
     /// streams have mid-grey chroma.
-    pub picture: Arc<Picture>,
+    pub picture: Arc<Picture<T>>,
     /// Top-left luma sample of the cropping window.
     pub origin: (usize, usize),
     /// Luma size of the cropping window.
@@ -30,26 +32,36 @@ pub struct DecodedFrame {
     /// Frames that may precede this one in decoding order but follow it in
     /// output order (`max_num_reorder_frames`, or the DPB size).
     pub reorder_depth: usize,
+    /// Luma and chroma bit depths.
+    pub depths: BitDepths,
 }
 
-impl DecodedFrame {
+impl<T: Sample> DecodedFrame<T> {
     /// The visible (cropped) samples; `None` for a cropping window outside
     /// the picture or of odd size (rejected when the SPS is parsed).
-    #[must_use]
-    pub fn view(&self) -> Option<ShownPicture<'_>> {
+    #[cfg(test)]
+    pub fn view(&self) -> Option<ShownPicture<'_, T>> {
         ShownPicture::window(&self.picture, self.origin, self.size)
     }
 }
 
 /// Frames waiting for output.
-#[derive(Debug, Default)]
-pub struct OutputQueue {
-    pending: Vec<DecodedFrame>,
+#[derive(Debug)]
+pub(super) struct OutputQueue<T: Sample = u8> {
+    pending: Vec<DecodedFrame<T>>,
 }
 
-impl OutputQueue {
+impl<T: Sample> Default for OutputQueue<T> {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl<T: Sample> OutputQueue<T> {
     /// Add a decoded frame; returns the frames now due, in output order.
-    pub fn push(&mut self, frame: DecodedFrame) -> Vec<DecodedFrame> {
+    pub fn push(&mut self, frame: DecodedFrame<T>) -> Vec<DecodedFrame<T>> {
         let mut due = if frame.new_sequence {
             self.flush()
         } else {
@@ -64,7 +76,7 @@ impl OutputQueue {
     }
 
     /// Every pending frame, in output order (end of stream).
-    pub fn flush(&mut self) -> Vec<DecodedFrame> {
+    pub fn flush(&mut self) -> Vec<DecodedFrame<T>> {
         let mut due = Vec::with_capacity(self.pending.len());
         while !self.pending.is_empty() {
             due.push(self.pop_first());
@@ -74,7 +86,7 @@ impl OutputQueue {
 
     /// The pending frame with the smallest order count (the earliest
     /// decoded one among equals).
-    fn pop_first(&mut self) -> DecodedFrame {
+    fn pop_first(&mut self) -> DecodedFrame<T> {
         let index = self
             .pending
             .iter()
@@ -103,6 +115,7 @@ mod tests {
             poc,
             new_sequence,
             reorder_depth: 1,
+            depths: BitDepths::EIGHT,
         }
     }
 

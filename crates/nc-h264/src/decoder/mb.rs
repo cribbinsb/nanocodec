@@ -13,6 +13,7 @@ use super::mbstate::{
     PCM_TOTAL_COEFF, Partition, SubPartition, partition_blocks,
 };
 use super::mvpred::MotionCache;
+use super::sample::Coefficient;
 use super::slice::SliceType;
 use super::syntax::{Block4x4, Coeffs, MbSyntax};
 use super::transform::{Dequantiser, Residual};
@@ -46,13 +47,17 @@ pub(super) struct SliceParams<'a> {
     pub constrained_intra_pred: bool,
     pub monochrome: bool,
     pub dequantiser: &'a Dequantiser,
+    /// `QpBdOffsetY` (eq. 7-4).
+    pub qp_bd_offset: i32,
+    /// Bits of a luma and a chroma `I_PCM` sample (the bit depths).
+    pub pcm_bits: [u32; 2],
 }
 
 /// Per-macroblock scratch beyond its [`MbState`], reused: the `I_PCM`
 /// samples and the levels of the residual block being parsed.
 #[derive(Debug)]
 pub(super) struct MbExtra {
-    pub pcm: [u8; PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES],
+    pub pcm: [u16; PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES],
     pub levels: Coeffs,
 }
 
@@ -66,14 +71,18 @@ impl MbExtra {
 }
 
 /// A `P_Skip` macroblock (§8.4.1.1).
-pub(super) fn skip(
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "one copy per sample type keeps the 8-bit instance inlined (high-bit-depth handoff)"
+)]
+pub(super) fn skip<T>(
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     cur: &mut MbState,
     qp: i32,
 ) -> Result<()> {
     cur.kind = MbKind::PSkip;
-    cur.qp = qp as u8;
+    cur.qp = qp as i8;
     let mv = MotionCache::skip_mv_of(nb);
     cur.mvs[0] = [mv; 16];
     let id = reference_id(params, 0, 0)?;
@@ -88,14 +97,14 @@ pub(super) fn skip(
     clippy::too_many_arguments,
     reason = "the macroblock's syntax, context, state and scratch"
 )]
-pub(super) fn decode<S: MbSyntax>(
+pub(super) fn decode<S: MbSyntax, C: Coefficient>(
     syntax: &mut S,
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     addr: usize,
     qp: &mut i32,
     cur: &mut MbState,
-    residual: &mut Residual,
+    residual: &mut Residual<C>,
     extra: &mut MbExtra,
 ) -> Result<()> {
     let mut mb_type = syntax.mb_type(params.slice_type, nb)?;
@@ -106,7 +115,7 @@ pub(super) fn decode<S: MbSyntax>(
     };
     if mb_type < intra_base {
         let no_8x8 = if params.slice_type == SliceType::B && mb_type == MB_TYPE_B_DIRECT {
-            direct_16x16(params, nb, cur, addr, false)?;
+            direct_16x16::<C>(params, nb, cur, addr, false)?;
             !params.direct.is_some_and(|d| d.inference_8x8)
         } else if params.slice_type == SliceType::B {
             b_inter_prediction(syntax, params, nb, cur, addr, mb_type)?
@@ -128,7 +137,7 @@ pub(super) fn decode<S: MbSyntax>(
     match mb_type {
         MB_TYPE_I_PCM => {
             cur.kind = MbKind::IPcm;
-            cur.qp = *qp as u8;
+            cur.qp = *qp as i8;
             cur.cbp = PCM_CBP;
             cur.total_coeff = [PCM_TOTAL_COEFF; 16];
             cur.chroma_total_coeff = [[PCM_TOTAL_COEFF; 4]; 2];
@@ -139,7 +148,7 @@ pub(super) fn decode<S: MbSyntax>(
             } else {
                 PCM_LUMA_SAMPLES + PCM_CHROMA_SAMPLES
             };
-            syntax.pcm_samples(&mut extra.pcm[..samples])?;
+            syntax.pcm_samples(&mut extra.pcm[..samples], params.pcm_bits)?;
             syntax.no_qp_delta();
             Ok(())
         }
@@ -177,8 +186,8 @@ pub(super) fn decode<S: MbSyntax>(
             if !params.monochrome {
                 cur.chroma_pred_mode = syntax.intra_chroma_pred_mode(nb)?;
             }
-            *qp = next_qp(*qp, syntax.mb_qp_delta()?);
-            cur.qp = *qp as u8;
+            *qp = next_qp(*qp, syntax.mb_qp_delta()?, params.qp_bd_offset);
+            cur.qp = *qp as i8;
             residual_layer(syntax, params, nb, cur, residual, &mut extra.levels)
         }
     }
@@ -187,13 +196,13 @@ pub(super) fn decode<S: MbSyntax>(
 /// `coded_block_pattern`, `transform_size_8x8_flag`, `mb_qp_delta` and the
 /// residual of a non-`Intra_16x16` macroblock. `no_8x8` is whether an inter
 /// macroblock's partitioning rules the 8x8 transform out (§7.3.5).
-fn coded_residual<S: MbSyntax>(
+fn coded_residual<S: MbSyntax, C: Coefficient>(
     syntax: &mut S,
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     qp: &mut i32,
     cur: &mut MbState,
-    residual: &mut Residual,
+    residual: &mut Residual<C>,
     levels: &mut Coeffs,
     no_8x8: bool,
 ) -> Result<()> {
@@ -202,27 +211,29 @@ fn coded_residual<S: MbSyntax>(
         cur.transform_8x8 = syntax.transform_size_8x8_flag(nb)?;
     }
     if cur.cbp == 0 {
-        cur.qp = *qp as u8;
+        cur.qp = *qp as i8;
         syntax.no_qp_delta();
         return Ok(());
     }
-    *qp = next_qp(*qp, syntax.mb_qp_delta()?);
-    cur.qp = *qp as u8;
+    *qp = next_qp(*qp, syntax.mb_qp_delta()?, params.qp_bd_offset);
+    cur.qp = *qp as i8;
     residual_layer(syntax, params, nb, cur, residual, levels)
 }
 
 /// `QP_Y` from `QP_Y`,PRED and `mb_qp_delta` (eq. 7-37).
-fn next_qp(pred: i32, delta: i32) -> i32 {
-    (pred + delta + QP_RANGE).rem_euclid(QP_RANGE)
+fn next_qp(pred: i32, delta: i32, qp_bd_offset: i32) -> i32 {
+    // eq. 7-37: ((pred + delta + 52 + 2 · QpBdOffsetY) % (52 +
+    // QpBdOffsetY)) − QpBdOffsetY.
+    (pred + delta + qp_bd_offset).rem_euclid(QP_RANGE + qp_bd_offset) - qp_bd_offset
 }
 
 /// `residual()` (§7.3.5.3) for 4:2:0 / 4:0:0, dequantised into `residual`.
-fn residual_layer<S: MbSyntax>(
+fn residual_layer<S: MbSyntax, C: Coefficient>(
     syntax: &mut S,
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     cur: &mut MbState,
-    residual: &mut Residual,
+    residual: &mut Residual<C>,
     coeffs: &mut Coeffs,
 ) -> Result<()> {
     let dq = params.dequantiser;
@@ -556,7 +567,11 @@ fn spatial_part(params: &SliceParams<'_>, caches: &[MotionCache; LISTS]) -> Opti
 /// A `B_Skip` (`skip`) or `B_Direct_16x16` macroblock's prediction
 /// (§8.4.1.2). Out of line, as [`b_inter_prediction`].
 #[inline(never)]
-pub(super) fn direct_16x16(
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "one copy per sample type keeps the 8-bit instance inlined (high-bit-depth handoff)"
+)]
+pub(super) fn direct_16x16<T>(
     params: &SliceParams<'_>,
     nb: &Neighbours<'_>,
     cur: &mut MbState,

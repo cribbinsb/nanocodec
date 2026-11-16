@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use nc_common::Picture;
+use nc_common::{Picture, Sample};
 
 use super::mbstate::MbState;
 use super::{DecodeError, Result};
@@ -21,9 +21,9 @@ const IDR_LONG_TERM_FRAME_IDX: u32 = 0;
 /// ("different reference pictures", §8.7.2.1), its order count and the
 /// macroblock states direct prediction reads (§8.4.1.2.1).
 #[derive(Debug, Clone)]
-pub(super) struct RefPicture {
+pub(super) struct RefPicture<T: Sample = u8> {
     pub id: u32,
-    pub picture: Arc<Picture>,
+    pub picture: Arc<Picture<T>>,
     /// `PicOrderCnt()` of the frame.
     pub poc: i64,
     /// Whether it was a long-term reference when the list holding this
@@ -36,8 +36,8 @@ pub(super) struct RefPicture {
 /// One reference frame. Frames inferred for a `frame_num` gap
 /// ("non-existing" frames) have no picture and must not be referenced.
 #[derive(Debug, Clone)]
-struct RefFrame {
-    picture: Option<RefPicture>,
+struct RefFrame<T: Sample> {
+    picture: Option<RefPicture<T>>,
     frame_num: u32,
     /// `PicOrderCnt()` (0 for a "non-existing" frame).
     poc: i64,
@@ -105,9 +105,9 @@ impl Marking {
 }
 
 /// The reference frames of the coded video sequence.
-#[derive(Debug, Default)]
-pub(super) struct Dpb {
-    frames: Vec<RefFrame>,
+#[derive(Debug)]
+pub(super) struct Dpb<T: Sample = u8> {
+    frames: Vec<RefFrame<T>>,
     /// `MaxLongTermFrameIdx` (`None`: "no long-term frame indices").
     max_long_term_frame_idx: Option<u32>,
     /// `PrevRefFrameNum` (§7.4.3).
@@ -118,11 +118,23 @@ pub(super) struct Dpb {
     max_frame_num: u32,
 }
 
-impl Dpb {
+impl<T: Sample> Default for Dpb<T> {
+    fn default() -> Self {
+        Self {
+            frames: Vec::new(),
+            max_long_term_frame_idx: None,
+            prev_ref_frame_num: 0,
+            max_frames: 0,
+            max_frame_num: 0,
+        }
+    }
+}
+
+impl<T: Sample> Dpb<T> {
     /// Test hook: overwrite every reference picture with `value`, as a
     /// decoder that lost a frame would hold wrong references.
     #[cfg(test)]
-    pub(super) fn corrupt_pictures(&mut self, value: u8) {
+    pub(super) fn corrupt_pictures(&mut self, value: T) {
         for frame in &mut self.frames {
             if let Some(reference) = &mut frame.picture {
                 let picture = Arc::make_mut(&mut reference.picture);
@@ -221,7 +233,7 @@ impl Dpb {
         frame_num: u32,
         count: usize,
         modifications: &[Modification],
-    ) -> Result<Vec<Option<RefPicture>>> {
+    ) -> Result<Vec<Option<RefPicture<T>>>> {
         // §8.2.4.2.1: short-term frames by descending PicNum, then
         // long-term frames by ascending LongTermPicNum.
         let mut short = self.short_term();
@@ -243,7 +255,7 @@ impl Dpb {
         poc: i64,
         counts: [usize; 2],
         modifications: &[Vec<Modification>; 2],
-    ) -> Result<[Vec<Option<RefPicture>>; 2]> {
+    ) -> Result<[Vec<Option<RefPicture<T>>>; 2]> {
         // §8.2.4.2.3: list 0 has the short-term frames before the current
         // one by descending order count, then those after it ascending; list
         // 1 the two halves the other way round; long-term frames follow by
@@ -255,8 +267,9 @@ impl Dpb {
         after.retain(|f| f.poc > poc);
         after.sort_by_key(|f| f.poc);
         let long = self.long_term();
-        let list0: Vec<&RefFrame> = before.iter().chain(&after).chain(&long).copied().collect();
-        let mut list1: Vec<&RefFrame> = after.iter().chain(&before).chain(&long).copied().collect();
+        let list0: Vec<&RefFrame<T>> = before.iter().chain(&after).chain(&long).copied().collect();
+        let mut list1: Vec<&RefFrame<T>> =
+            after.iter().chain(&before).chain(&long).copied().collect();
         // A list 1 equal to list 0 (of more than one entry) swaps its first
         // two entries.
         if list1.len() > 1 && list1.iter().zip(&list0).all(|(a, b)| core::ptr::eq(*a, *b)) {
@@ -268,7 +281,7 @@ impl Dpb {
         ])
     }
 
-    fn short_term(&self) -> Vec<&RefFrame> {
+    fn short_term(&self) -> Vec<&RefFrame<T>> {
         self.frames
             .iter()
             .filter(|f| f.long_term_idx.is_none())
@@ -276,8 +289,8 @@ impl Dpb {
     }
 
     /// The long-term frames by ascending `LongTermPicNum`.
-    fn long_term(&self) -> Vec<&RefFrame> {
-        let mut long: Vec<&RefFrame> = self
+    fn long_term(&self) -> Vec<&RefFrame<T>> {
+        let mut long: Vec<&RefFrame<T>> = self
             .frames
             .iter()
             .filter(|f| f.long_term_idx.is_some())
@@ -290,13 +303,13 @@ impl Dpb {
     /// (§8.2.4.2, §8.2.4.3), as pictures.
     fn finish_list(
         &self,
-        initial: Vec<&RefFrame>,
+        initial: Vec<&RefFrame<T>>,
         frame_num: u32,
         count: usize,
         modifications: &[Modification],
-    ) -> Result<Vec<Option<RefPicture>>> {
+    ) -> Result<Vec<Option<RefPicture<T>>>> {
         // One spare entry: the modification process works on count + 1.
-        let mut list: Vec<Option<&RefFrame>> = initial.into_iter().map(Some).collect();
+        let mut list: Vec<Option<&RefFrame<T>>> = initial.into_iter().map(Some).collect();
         list.resize(count + 1, None);
         self.modify(&mut list, frame_num, count, modifications)?;
         Ok(list[..count]
@@ -315,7 +328,7 @@ impl Dpb {
     /// §8.2.4.3.1 and §8.2.4.3.2 on a list of `count + 1` entries.
     fn modify<'a>(
         &'a self,
-        list: &mut [Option<&'a RefFrame>],
+        list: &mut [Option<&'a RefFrame<T>>],
         frame_num: u32,
         count: usize,
         modifications: &[Modification],
@@ -353,7 +366,7 @@ impl Dpb {
                 }
                 Modification::LongTerm(long_term_pic_num) => Target::LongTerm(long_term_pic_num),
             };
-            let is_target = |f: &RefFrame| match target {
+            let is_target = |f: &RefFrame<T>| match target {
                 Target::ShortTerm(pic_num) => {
                     f.long_term_idx.is_none() && self.pic_num(f.frame_num, frame_num) == pic_num
                 }
@@ -384,7 +397,12 @@ impl Dpb {
     /// # Errors
     ///
     /// Operations naming no frame, or long-term indices above the maximum.
-    pub fn mark(&mut self, frame_num: u32, picture: RefPicture, marking: &Marking) -> Result<()> {
+    pub fn mark(
+        &mut self,
+        frame_num: u32,
+        picture: RefPicture<T>,
+        marking: &Marking,
+    ) -> Result<()> {
         let mut long_term_idx = None;
         match marking {
             Marking::NonReference => return Ok(()),

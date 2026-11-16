@@ -4740,8 +4740,8 @@ fn zero_high_frequencies(coeffs: &mut [i16], side: usize, keep: usize) {
 
 /// side of the edge, `lines` lines along it.
 #[allow(clippy::too_many_arguments)]
-fn deblock_edge(
-    dst: &PlaneViewMut<'_>,
+pub(crate) fn deblock_edge<T: nc_common::Sample>(
+    dst: &PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     vertical: bool,
     reach: usize,
@@ -4793,8 +4793,8 @@ fn select_usize(cond: bool, a: usize, b: usize) -> usize {
 /// form. A vertical edge's lines may be transposed through 8-sample loads
 /// (p3..q3), so its reach is checked as for luma; a horizontal one reads
 /// only p1..q1.
-fn h264_chroma_edge(
-    dst: &PlaneViewMut<'_>,
+pub(crate) fn h264_chroma_edge<T: nc_common::Sample>(
+    dst: &PlaneViewMut<'_, T>,
     (x, y): (usize, usize),
     vertical: bool,
     e: &H264EdgeParams,

@@ -86,7 +86,7 @@ pub use hevc_intra::PlanarEdges as HevcPlanarEdges;
 pub use hevc_weight::HevcWeights;
 pub use high_depth::av1::{Av1Coefficient, Av1Pixel};
 pub use high_depth::vp9::{Vp9Passes, Vp9Pixel};
-pub use high_depth::{DepthKernels, Pixel};
+pub use high_depth::{DepthKernels, H264Pixel, Pixel};
 pub use vp9_deblock::{Vp9FilterLimits, Vp9FilterWidth, vp9_filter_edge};
 pub use vp9_intra::{Vp9IntraEdges, Vp9IntraMode};
 pub use vp9_mc::{

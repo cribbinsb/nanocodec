@@ -20,16 +20,8 @@ fn synthesis_params(g: &FilmGrainParams) -> Av1FilmGrainParams {
             scaling: g.point_y_scaling,
         },
         chroma_scaling_from_luma: g.chroma_scaling_from_luma,
-        cb_points: Av1ScalingPoints {
-            count: g.num_cb_points,
-            value: g.point_cb_value,
-            scaling: g.point_cb_scaling,
-        },
-        cr_points: Av1ScalingPoints {
-            count: g.num_cr_points,
-            value: g.point_cr_value,
-            scaling: g.point_cr_scaling,
-        },
+        cb_points: chroma_points(g.num_cb_points, &g.point_cb_value, &g.point_cb_scaling),
+        cr_points: chroma_points(g.num_cr_points, &g.point_cr_value, &g.point_cr_scaling),
         grain_scaling_minus_8: g.grain_scaling_minus_8,
         ar_coeff_lag: g.ar_coeff_lag,
         ar_coeffs_y_plus_128: g.ar_coeffs_y_plus_128,
@@ -41,7 +33,25 @@ fn synthesis_params(g: &FilmGrainParams) -> Av1FilmGrainParams {
         cr_mult: (g.cr_mult, g.cr_luma_mult, g.cr_offset),
         overlap: g.overlap_flag,
         clip_to_restricted_range: g.clip_to_restricted_range,
+        // 4:2:0 cannot use the identity matrix.
+        mc_identity: false,
     }
+}
+
+/// AV1's at most 10 chroma points in the synthesis's arrays, which hold
+/// AV2's 14.
+fn chroma_points<const N: usize>(
+    count: usize,
+    value: &[u8; N],
+    scaling: &[u8; N],
+) -> Av1ScalingPoints<14> {
+    let mut points = Av1ScalingPoints {
+        count,
+        ..Av1ScalingPoints::default()
+    };
+    points.value[..N].copy_from_slice(value);
+    points.scaling[..N].copy_from_slice(scaling);
+    points
 }
 
 /// Width and height of `plane` of a `width` x `height` 4:2:0 frame.

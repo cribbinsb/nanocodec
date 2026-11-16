@@ -130,6 +130,7 @@ pub(super) trait MbSyntax {
         comp: usize,
         out: &mut Coeffs,
     ) -> Result<()>;
-    /// The `pcm_sample_luma` and `pcm_sample_chroma` bytes.
-    fn pcm_samples(&mut self, out: &mut [u8]) -> Result<()>;
+    /// The `pcm_sample_luma` and `pcm_sample_chroma` values (`bits` per
+    /// luma and chroma sample: the bit depths).
+    fn pcm_samples(&mut self, out: &mut [u16], bits: [u32; 2]) -> Result<()>;
 }

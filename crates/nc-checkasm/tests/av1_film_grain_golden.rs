@@ -39,10 +39,10 @@ impl Draw {
         out
     }
 
-    /// Up to `N` increasing scaling points.
-    fn points<const N: usize>(&mut self) -> Av1ScalingPoints<N> {
-        let mut points = Av1ScalingPoints::<N> {
-            count: self.below(N + 1),
+    /// Up to `most` increasing scaling points.
+    fn points(&mut self, most: usize) -> Av1ScalingPoints<14> {
+        let mut points = Av1ScalingPoints {
+            count: self.below(most + 1),
             ..Av1ScalingPoints::default()
         };
         let mut previous = -1i32;
@@ -64,6 +64,10 @@ impl Draw {
         (128 + self.below(129) as i32 - 64) as u8
     }
 }
+
+/// AV1's most luma and chroma scaling points (§5.9.30).
+const AV1_LUMA_POINTS: usize = 14;
+const AV1_CHROMA_POINTS: usize = 10;
 
 fn fnv(view: &PlaneView<'_>) -> String {
     let hash = view
@@ -87,11 +91,11 @@ fn film_grain_matches_libaom() {
             grain_seed: d.below(65536) as u16,
             ..Av1FilmGrainParams::default()
         };
-        p.y_points = d.points();
+        p.y_points = d.points(AV1_LUMA_POINTS);
         p.chroma_scaling_from_luma = d.below(4) == 0;
         if !p.chroma_scaling_from_luma && p.y_points.count > 0 {
-            p.cb_points = d.points();
-            p.cr_points = d.points();
+            p.cb_points = d.points(AV1_CHROMA_POINTS);
+            p.cr_points = d.points(AV1_CHROMA_POINTS);
         }
         p.grain_scaling_minus_8 = d.below(4) as u8;
         p.ar_coeff_lag = d.below(4) as u8;

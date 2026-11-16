@@ -310,3 +310,107 @@ fn ten_bit_outputs_stay_inside_the_depth() {
         &mut PlaneViewMut::new(&mut vec![1023u16; 1024], 32, 32, 32).unwrap(),
     );
 }
+
+#[test]
+fn h264_deblocking_and_inverse_at_eight_bits_match() {
+    use crate::{H264EdgeParams, H264MbEdges};
+    let dsp = Dsp::new();
+    let eight = dsp.at(BitDepth::EIGHT);
+    let (side, stride) = (24, 24);
+    let params = |seed: u8| H264EdgeParams {
+        bs: [seed % 5, 4, (seed + 2) % 4, 1],
+        tc0: [seed % 13, 2, 9, 0],
+        alpha: 40 + seed * 9,
+        beta: 6 + seed,
+    };
+    for seed in 0..8u8 {
+        let edges = H264MbEdges {
+            mask: 0xff,
+            edges: [[params(seed); 4], [params(seed + 1); 4]],
+        };
+        let base = pattern(side * side, usize::from(seed), 255);
+        let (mut d8, mut d16) = (narrow(&base), wide(&base));
+        eight.h264_deblock_mb_luma(
+            &mut PlaneViewMut::new(&mut d8, side, side, stride).unwrap(),
+            (4, 4),
+            &edges,
+        );
+        eight.h264_deblock_mb_luma(
+            &mut PlaneViewMut::new(&mut d16, side, side, stride).unwrap(),
+            (4, 4),
+            &edges,
+        );
+        eight.h264_deblock_mb_chroma_plane(
+            &mut PlaneViewMut::new(&mut d8, side, side, stride).unwrap(),
+            (8, 8),
+            &edges,
+        );
+        eight.h264_deblock_mb_chroma_plane(
+            &mut PlaneViewMut::new(&mut d16, side, side, stride).unwrap(),
+            (8, 8),
+            &edges,
+        );
+        assert_eq!(d8.iter().map(|&v| u16::from(v)).collect::<Vec<_>>(), d16);
+        let coeffs: [i32; 64] =
+            core::array::from_fn(|i| (pattern(64, usize::from(seed), 600)[i] as i32) - 300);
+        let coeffs4: [i16; 16] = core::array::from_fn(|i| coeffs[i] as i16);
+        let (mut r8, mut r16) = (narrow(&base), wide(&base));
+        dsp.h264_add_scaled_4x4(
+            &[coeffs4],
+            1,
+            &mut PlaneViewMut::new(&mut r8, side, side, stride).unwrap(),
+        );
+        eight.h264_inverse_add_4x4(
+            &core::array::from_fn(|i| coeffs[i]),
+            &mut PlaneViewMut::new(&mut r16, side, side, stride).unwrap(),
+        );
+        let coeffs8: [i16; 64] = core::array::from_fn(|i| coeffs[i] as i16);
+        dsp.h264_add_scaled_8x8(
+            &coeffs8,
+            &mut PlaneViewMut::new(&mut r8[8..], stride, 8, 8).unwrap(),
+        );
+        eight.h264_inverse_add_8x8(
+            &coeffs,
+            &mut PlaneViewMut::new(&mut r16[8..], stride, 8, 8).unwrap(),
+        );
+        assert_eq!(r8.iter().map(|&v| u16::from(v)).collect::<Vec<_>>(), r16);
+    }
+}
+
+#[test]
+fn h264_prediction_at_eight_bits_matches_the_eight_bit_kernels() {
+    let dsp = Dsp::new();
+    let eight = dsp.at(BitDepth::EIGHT);
+    for filter in [Filter::H264Luma, Filter::H264Chroma] {
+        for side in [4, 8, 16] {
+            let size = BlockSize::new(side, side).unwrap();
+            let span = side + filter.taps() - 1;
+            let source = pattern(span * span, side, 255);
+            let (bytes, words) = (narrow(&source), wide(&source));
+            let window8 = PlaneView::new(&bytes, span, span, span).unwrap();
+            let window16 = PlaneView::new(&words, span, span, span).unwrap();
+            for fy in 0..filter.positions() {
+                for fx in 0..filter.positions() {
+                    let mut out8 = vec![0u8; side * side];
+                    let mut out16 = vec![0u16; side * side];
+                    eight.predict(
+                        filter,
+                        size,
+                        &window8,
+                        (fx, fy),
+                        &mut PlaneViewMut::new(&mut out8, side, side, side).unwrap(),
+                    );
+                    eight.predict(
+                        filter,
+                        size,
+                        &window16,
+                        (fx, fy),
+                        &mut PlaneViewMut::new(&mut out16, side, side, side).unwrap(),
+                    );
+                    let out8: Vec<u16> = out8.iter().map(|&v| u16::from(v)).collect();
+                    assert_eq!(out8, out16, "{filter:?} {side} ({fx}, {fy})");
+                }
+            }
+        }
+    }
+}

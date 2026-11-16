@@ -6,6 +6,8 @@
 //! Past the end of the slice data the engine reads zero bits: the
 //! macroblock count and end-of-slice checks catch truncated slices.
 
+use super::cavlc::read_pcm;
+use super::reader::Reader;
 use super::slice::SliceType;
 use super::{DecodeError, Result};
 use crate::tables::{CABAC_INIT_MN, CONTEXT_COUNT};
@@ -91,14 +93,17 @@ impl<'a> Cabac<'a> {
     /// The `pcm_sample_luma` / `pcm_sample_chroma` bytes after an `I_PCM`
     /// `mb_type`: they start at the byte boundary following the bits the
     /// engine consumed, and the engine restarts after them (§9.3.1.2).
-    pub fn pcm_samples(&mut self, out: &mut [u8]) -> Result<()> {
+    /// The `I_PCM` samples (`bits` per luma and chroma sample), which start
+    /// at the byte after the bits the engine consumed; the engine restarts
+    /// after them (§9.3.1.2).
+    pub fn pcm_samples(&mut self, out: &mut [u16], bits: [u32; 2]) -> Result<()> {
         let data = self.reader.data();
         let start = self.reader.next_byte();
-        let samples = data
-            .get(start..start + out.len())
-            .ok_or(DecodeError::Truncated)?;
-        out.copy_from_slice(samples);
-        self.reader = CabacReader::new(data, start + out.len())?;
+        let mut reader = Reader::new(data.get(start..).ok_or(DecodeError::Truncated)?);
+        read_pcm(&mut reader, out, bits)?;
+        // Whole bytes: 256 luma and 128 chroma samples of any depth.
+        let bytes = reader.position().div_ceil(8);
+        self.reader = CabacReader::new(data, start + bytes)?;
         Ok(())
     }
 }

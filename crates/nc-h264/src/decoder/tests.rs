@@ -1,5 +1,7 @@
 use super::*;
+use nc_common::PlaneIndex;
 use nc_encoder::{Codec, Encoder, EncoderConfig, FrameRate, ParamOverrides};
+use slice::SliceType;
 fn config(width: usize, height: usize, qp: u32, params: ParamOverrides) -> EncoderConfig {
     EncoderConfig {
         codec: Codec::H264,

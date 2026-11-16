@@ -25,6 +25,7 @@
 #![allow(unsafe_code)]
 
 pub(crate) mod av1;
+mod h264;
 mod inverse;
 // Vector u16 kernels exist for x86 and aarch64 only.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -33,6 +34,7 @@ pub(crate) mod vp9;
 mod vvc_filter;
 mod vvc_recon;
 
+pub use h264::H264Pixel;
 pub(crate) use inverse::whole_block as inverse_whole_block;
 pub use vvc_recon::VvcReconPixel;
 
@@ -162,6 +164,8 @@ pub(crate) struct HighFns {
     pub av1_prep: [Av1Prep16Fn; WIDTH_CLASSES],
     /// CDEF of interior 4x4 and 8x8 blocks.
     pub cdef_interior: [CdefInterior16Fn; 2],
+    /// H.264 MC and deblocking.
+    pub h264: h264::H264Fns,
 }
 
 /// One kernel per width class (4, 8, 16, 32, 64) of `$kernel` generic over
@@ -315,6 +319,7 @@ impl HighFns {
                 crate::cdef::scalar::interior_rows::<u16, 4>,
                 crate::cdef::scalar::interior_rows::<u16, 8>,
             ],
+            h264: h264::H264Fns::SCALAR,
         };
         match isa {
             #[cfg(target_arch = "x86_64")]
@@ -371,7 +376,7 @@ pub(crate) fn add_residual<T: Sample>(
 /// [`VvcReconPixel`]).
 #[allow(clippy::too_many_arguments)]
 pub trait Pixel:
-    Sample + vvc_filter::VvcFilterPixel + VvcReconPixel + av1::Av1Pixel + vp9::Vp9Pixel
+    Sample + vvc_filter::VvcFilterPixel + VvcReconPixel + av1::Av1Pixel + vp9::Vp9Pixel + H264Pixel
 {
     #[doc(hidden)]
     fn predict(
@@ -555,8 +560,8 @@ fn width_class(size: BlockSize) -> usize {
 /// The [`HighFns`] family index of a separable 14-bit filter.
 ///
 /// # Panics
-/// For the other filters (AV1, VP9, H.264), which have no high-bit-depth
-/// kernels yet.
+/// For the other filters (AV1, VP9; H.264 has its own table,
+/// `h264::H264Fns`), which have no family here.
 fn family(filter: Filter) -> usize {
     match filter {
         Filter::HevcLuma => 0,
@@ -809,7 +814,13 @@ impl Pixel for u16 {
         check_window(filter, size, window, frac);
         check_covers(size, &dst.as_view(), "destination");
         let stride = dst.stride();
-        let kernel = kernels.dsp.high.predict[family(filter)][width_class(size)];
+        let class = width_class(size);
+        let kernel = kernels
+            .dsp
+            .high
+            .h264
+            .predict_of(filter, class)
+            .unwrap_or_else(|| kernels.dsp.high.predict[family(filter)][class]);
         // SAFETY: the views cover the window and the block (checked above);
         // the table matches a supported ISA (checked in `with_isa`).
         unsafe {

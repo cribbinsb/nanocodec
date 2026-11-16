@@ -107,8 +107,8 @@ pub(super) struct MbState {
     pub transform_8x8: bool,
     /// `CodedBlockPatternLuma | CodedBlockPatternChroma << 4`.
     pub cbp: u8,
-    /// `QP_Y`.
-    pub qp: u8,
+    /// `QP_Y` (from `−QpBdOffsetY`, −12 at 10 bits, to 51).
+    pub qp: i8,
     /// `intra_chroma_pred_mode` (0 for non-intra macroblocks).
     pub chroma_pred_mode: u8,
     /// Intra 4x4 / 8x8 prediction modes per 4x4 block (8x8 modes repeated);

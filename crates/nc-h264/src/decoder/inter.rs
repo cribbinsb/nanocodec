@@ -8,12 +8,13 @@
 //! four 4x4 blocks. The prediction is written straight into the picture,
 //! where the residual is then added.
 
-use nc_common::{Plane, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, BitDepths, Plane, PlaneIndex, PlaneView, PlaneViewMut, Sample};
 use nc_dsp::{BlockSize, Dsp, Filter, H264Predictor};
 use nc_encoder::Mv;
 
 use super::dpb::RefPicture;
 use super::mbstate::{LISTS, MbKind, MbState, Partition};
+use super::sample::{H264Sample, McKernel};
 use super::slice::{Weight, WeightTable};
 use super::{DecodeError, Planes, Result};
 
@@ -41,18 +42,38 @@ const MIN_KERNEL_SIDE: usize = 4;
 pub(super) struct InterKernels {
     luma: [H264Predictor; SHAPES.len()],
     chroma: [H264Predictor; SHAPES.len()],
+    /// The kernels' block sizes.
+    luma_sizes: [BlockSize; SHAPES.len()],
+    chroma_sizes: [BlockSize; SHAPES.len()],
 }
 
 impl InterKernels {
     pub fn new(dsp: &Dsp) -> Self {
-        let kernel = |filter, (w, h): (usize, usize)| {
-            dsp.h264_predictor(filter, BlockSize::new(w, h).expect("kernel size"))
-        };
+        let size = |(w, h): (usize, usize)| BlockSize::new(w, h).expect("kernel size");
         let chroma_side = |side: usize| (side / 2).max(MIN_KERNEL_SIDE);
+        let luma_sizes = SHAPES.map(size);
+        let chroma_sizes = SHAPES.map(|(w, h)| size((chroma_side(w), chroma_side(h))));
         Self {
-            luma: SHAPES.map(|shape| kernel(Filter::H264Luma, shape)),
-            chroma: SHAPES
-                .map(|(w, h)| kernel(Filter::H264Chroma, (chroma_side(w), chroma_side(h)))),
+            luma: luma_sizes.map(|s| dsp.h264_predictor(Filter::H264Luma, s)),
+            chroma: chroma_sizes.map(|s| dsp.h264_predictor(Filter::H264Chroma, s)),
+            luma_sizes,
+            chroma_sizes,
+        }
+    }
+
+    fn luma(&self, shape: usize) -> McKernel<'_> {
+        McKernel {
+            predictor: &self.luma[shape],
+            filter: Filter::H264Luma,
+            size: self.luma_sizes[shape],
+        }
+    }
+
+    fn chroma(&self, shape: usize) -> McKernel<'_> {
+        McKernel {
+            predictor: &self.chroma[shape],
+            filter: Filter::H264Chroma,
+            size: self.chroma_sizes[shape],
         }
     }
 }
@@ -60,15 +81,15 @@ impl InterKernels {
 /// One reference plane as the kernels read it: its padded samples and
 /// the position of visible sample (0, 0) in them.
 #[derive(Clone, Copy)]
-struct Source<'a> {
-    padded: PlaneView<'a>,
+struct Source<'a, T: Sample> {
+    padded: PlaneView<'a, T>,
     border: (usize, usize),
     /// The plane itself, for windows beyond the padding.
-    plane: &'a Plane,
+    plane: &'a Plane<T>,
 }
 
-impl<'a> Source<'a> {
-    fn new(plane: &'a Plane) -> Self {
+impl<'a, T: Sample> Source<'a, T> {
+    fn new(plane: &'a Plane<T>) -> Self {
         Self {
             padded: plane.padded_view(),
             border: (plane.border_x(), plane.border_y()),
@@ -98,19 +119,21 @@ pub(super) const IMPLICIT_LOG2_DENOM: u32 = 5;
 type BlockMotion = [Option<(Mv, i8)>; LISTS];
 
 /// The reference lists of a slice and its weights.
-pub(super) struct InterContext<'a> {
+pub(super) struct InterContext<'a, T: Sample> {
     kernels: &'a InterKernels,
+    dsp: &'a Dsp,
     /// Planes (Y, U, V) of each list entry's picture.
-    refs: [Vec<Option<[Source<'a>; 3]>>; LISTS],
+    refs: [Vec<Option<[Source<'a, T>; 3]>>; LISTS],
     weighting: Weighting<'a>,
     monochrome: bool,
+    depths: BitDepths,
 }
 
 /// The second prediction of a bi-predicted block (luma 16x16, chroma 8x8
 /// at most), before it is combined with the first in the picture.
-struct Scratch {
-    luma: [u8; LUMA_SCRATCH * LUMA_SCRATCH],
-    chroma: [[u8; CHROMA_SCRATCH * CHROMA_SCRATCH]; 2],
+struct Scratch<T> {
+    luma: [T; LUMA_SCRATCH * LUMA_SCRATCH],
+    chroma: [[T; CHROMA_SCRATCH * CHROMA_SCRATCH]; 2],
 }
 
 /// Strides of [`Scratch`]: the largest blocks.
@@ -120,7 +143,10 @@ const CHROMA_SCRATCH: usize = 8;
 /// A block of one component to predict.
 #[derive(Clone, Copy)]
 struct Target<'k> {
-    kernel: &'k H264Predictor,
+    kernel: McKernel<'k>,
+    dsp: &'k Dsp,
+    /// The component's bit depth.
+    depth: BitDepth,
     /// Position and size in the component's samples.
     pos: (usize, usize),
     size: (usize, usize),
@@ -151,14 +177,15 @@ impl Grid for ChromaGrid {
     const BEFORE: usize = 0;
 }
 
-impl<'a> InterContext<'a> {
+impl<'a, T: H264Sample> InterContext<'a, T> {
     pub fn new(
-        kernels: &'a InterKernels,
-        refs: [&'a [Option<RefPicture>]; LISTS],
+        (kernels, dsp): (&'a InterKernels, &'a Dsp),
+        refs: [&'a [Option<RefPicture<T>>]; LISTS],
         weighting: Weighting<'a>,
         monochrome: bool,
+        depths: BitDepths,
     ) -> Self {
-        let planes = |list: &'a [Option<RefPicture>]| {
+        let planes = |list: &'a [Option<RefPicture<T>>]| {
             list.iter()
                 .map(|r| {
                     r.as_ref()
@@ -168,15 +195,24 @@ impl<'a> InterContext<'a> {
         };
         Self {
             kernels,
+            dsp,
             refs: refs.map(planes),
             weighting,
             monochrome,
+            // Folds to the 8-bit constants in the 8-bit instance.
+            depths: depths.of::<T>(),
         }
     }
 
     /// Predict the inter macroblock `mb` at macroblock position (`mx`,
     /// `my`).
-    pub fn predict(&self, dst: &mut Planes<'_>, mb: &MbState, mx: usize, my: usize) -> Result<()> {
+    pub fn predict(
+        &self,
+        dst: &mut Planes<'_, T>,
+        mb: &MbState,
+        mx: usize,
+        my: usize,
+    ) -> Result<()> {
         // One instance for list-0-only macroblocks (all of a P slice), with
         // list 1 folded away, one for the others.
         if mb.uses_l1() {
@@ -190,7 +226,7 @@ impl<'a> InterContext<'a> {
     /// (`L1`) or not.
     fn predict_mb<const L1: bool>(
         &self,
-        dst: &mut Planes<'_>,
+        dst: &mut Planes<'_, T>,
         mb: &MbState,
         mx: usize,
         my: usize,
@@ -245,7 +281,7 @@ impl<'a> InterContext<'a> {
     #[inline(always)]
     fn mb_block<const L1: bool>(
         &self,
-        dst: &mut Planes<'_>,
+        dst: &mut Planes<'_, T>,
         mb: &MbState,
         (block, b8): (usize, usize),
         pos: (usize, usize),
@@ -264,7 +300,7 @@ impl<'a> InterContext<'a> {
     }
 
     /// The planes of entry `ref_idx` of list `list`.
-    fn sources(&self, list: usize, ref_idx: i8) -> Result<&[Source<'a>; 3]> {
+    fn sources(&self, list: usize, ref_idx: i8) -> Result<&[Source<'a, T>; 3]> {
         usize::try_from(ref_idx)
             .ok()
             .and_then(|r| self.refs[list].get(r).and_then(Option::as_ref))
@@ -280,7 +316,7 @@ impl<'a> InterContext<'a> {
     #[inline(always)]
     fn block(
         &self,
-        dst: &mut Planes<'_>,
+        dst: &mut Planes<'_, T>,
         motion: BlockMotion,
         pos: (usize, usize),
         shape: usize,
@@ -299,26 +335,48 @@ impl<'a> InterContext<'a> {
         reason = "measured: keeps the P path at the base instruction count (callgrind)"
     )]
     #[inline(always)]
-    fn targets(&self, (x, y): (usize, usize), shape: usize) -> (Target<'_>, Target<'_>) {
+    fn targets(&self, pos: (usize, usize), shape: usize) -> (Target<'_>, Target<'_>) {
+        (self.luma_target(pos, shape), self.chroma_target(pos, shape))
+    }
+
+    /// The luma block of `shape` at `pos`.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the P path at the base instruction count (callgrind)"
+    )]
+    #[inline(always)]
+    fn luma_target(&self, pos: (usize, usize), shape: usize) -> Target<'_> {
+        Target {
+            kernel: self.kernels.luma(shape),
+            dsp: self.dsp,
+            depth: self.depths.luma,
+            pos,
+            size: SHAPES[shape],
+        }
+    }
+
+    /// The 4:2:0 chroma block of the luma block of `shape` at `pos`.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the P path at the base instruction count (callgrind)"
+    )]
+    #[inline(always)]
+    fn chroma_target(&self, (x, y): (usize, usize), shape: usize) -> Target<'_> {
         let (w, h) = SHAPES[shape];
-        let luma = Target {
-            kernel: &self.kernels.luma[shape],
-            pos: (x, y),
-            size: (w, h),
-        };
-        let chroma = Target {
-            kernel: &self.kernels.chroma[shape],
+        Target {
+            kernel: self.kernels.chroma(shape),
+            dsp: self.dsp,
+            depth: self.depths.chroma,
             pos: (x / 2, y / 2),
             size: (w / 2, h / 2),
-        };
-        (luma, chroma)
+        }
     }
 
     /// A block predicted from one list (`LIST`, its vector and reference
     /// index), explicitly weighted where the slice says so (eq. 8-300).
     fn single<const LIST: usize>(
         &self,
-        dst: &mut Planes<'_>,
+        dst: &mut Planes<'_, T>,
         (mv, ref_idx): (Mv, i8),
         pos: (usize, usize),
         shape: usize,
@@ -330,31 +388,16 @@ impl<'a> InterContext<'a> {
             }
             _ => None,
         };
-        let (w, h) = SHAPES[shape];
-        let luma = Target {
-            kernel: &self.kernels.luma[shape],
-            pos,
-            size: (w, h),
-        };
+        let luma = self.luma_target(pos, shape);
         let [luma_dst, cb_dst, cr_dst] = dst;
-        interpolate::<LumaGrid>(&luma, &sources[0], luma_dst, mv);
+        interpolate::<LumaGrid, T>(&luma, &sources[0], luma_dst, mv);
         if let Some((table, weights)) = weight {
-            apply_weight(
-                luma_dst,
-                luma.pos,
-                luma.size,
-                weights[0],
-                table.luma_log2_denom,
-            );
+            apply_weight(luma_dst, &luma, weights[0], table.luma_log2_denom);
         }
         if self.monochrome {
             return Ok(());
         }
-        let chroma = Target {
-            kernel: &self.kernels.chroma[shape],
-            pos: (pos.0 / 2, pos.1 / 2),
-            size: (w / 2, h / 2),
-        };
+        let chroma = self.chroma_target(pos, shape);
         if shape == SHAPE_4X4 {
             for (source, plane_dst) in [(&sources[1], &mut *cb_dst), (&sources[2], &mut *cr_dst)] {
                 corner_2x2(&chroma, source, plane_dst, mv);
@@ -366,8 +409,7 @@ impl<'a> InterContext<'a> {
             for (comp, plane_dst) in [cb_dst, cr_dst].into_iter().enumerate() {
                 apply_weight(
                     plane_dst,
-                    chroma.pos,
-                    chroma.size,
+                    &chroma,
                     weights[1 + comp],
                     table.chroma_log2_denom,
                 );
@@ -380,7 +422,7 @@ impl<'a> InterContext<'a> {
     /// scratch, combined by the slice's weighting (eqs. 8-273, 8-301).
     fn bi(
         &self,
-        dst: &mut Planes<'_>,
+        dst: &mut Planes<'_, T>,
         (mv0, ref0): (Mv, i8),
         (mv1, ref1): (Mv, i8),
         pos: (usize, usize),
@@ -390,12 +432,12 @@ impl<'a> InterContext<'a> {
         let weights = self.bi_weights(ref0 as usize, ref1 as usize);
         let (luma, chroma) = self.targets(pos, shape);
         let mut scratch = Scratch {
-            luma: [0; LUMA_SCRATCH * LUMA_SCRATCH],
-            chroma: [[0; CHROMA_SCRATCH * CHROMA_SCRATCH]; 2],
+            luma: [T::default(); LUMA_SCRATCH * LUMA_SCRATCH],
+            chroma: [[T::default(); CHROMA_SCRATCH * CHROMA_SCRATCH]; 2],
         };
         let [luma_dst, cb_dst, cr_dst] = dst;
-        interpolate::<LumaGrid>(&luma, &sources[0][0], luma_dst, mv0);
-        predict::<LumaGrid>(&luma, &sources[1][0], mv1, &mut scratch.luma, LUMA_SCRATCH);
+        interpolate::<LumaGrid, T>(&luma, &sources[0][0], luma_dst, mv0);
+        predict::<LumaGrid, T>(&luma, &sources[1][0], mv1, &mut scratch.luma, LUMA_SCRATCH);
         combine(luma_dst, &luma, &scratch.luma, LUMA_SCRATCH, weights[0]);
         if self.monochrome {
             return Ok(());
@@ -412,10 +454,10 @@ impl<'a> InterContext<'a> {
             if shape == SHAPE_4X4 {
                 corner_2x2(&chroma, &sources[0][1 + comp], plane_dst, mv0);
             } else {
-                interpolate::<ChromaGrid>(&chroma, &sources[0][1 + comp], plane_dst, mv0);
+                interpolate::<ChromaGrid, T>(&chroma, &sources[0][1 + comp], plane_dst, mv0);
             }
             let out = &mut scratch.chroma[comp];
-            predict::<ChromaGrid>(
+            predict::<ChromaGrid, T>(
                 &kernel_target,
                 &sources[1][1 + comp],
                 mv1,
@@ -428,7 +470,7 @@ impl<'a> InterContext<'a> {
     }
 
     /// The bi-prediction weights of entries `ref0` and `ref1`, per
-    /// component.
+    /// component (offsets at the component's depth, eqs. 8-297, 8-299).
     fn bi_weights(&self, ref0: usize, ref1: usize) -> [BiWeight; 3] {
         match &self.weighting {
             Weighting::Default => [BiWeight::AVERAGE; 3],
@@ -438,10 +480,11 @@ impl<'a> InterContext<'a> {
                 } else {
                     table.chroma_log2_denom
                 };
+                let shift = self.depths.plane(comp).above_eight();
                 let (w0, w1) = (table.weights[0][ref0][comp], table.weights[1][ref1][comp]);
                 BiWeight {
                     weights: [w0.weight, w1.weight],
-                    offset: (w0.offset + w1.offset + 1) >> 1,
+                    offset: ((w0.offset << shift) + (w1.offset << shift) + 1) >> 1,
                     log2_denom: denom,
                 }
             }),
@@ -479,13 +522,14 @@ impl BiWeight {
 
 /// Combine the first prediction (in `dst` at `target`'s position) with the
 /// second (`second`, `stride`) by `weight`, in place.
-fn combine(
-    dst: &mut PlaneViewMut<'_>,
+fn combine<T: Sample>(
+    dst: &mut PlaneViewMut<'_, T>,
     target: &Target<'_>,
-    second: &[u8],
+    second: &[T],
     stride: usize,
     weight: BiWeight,
 ) {
+    let depth = target.depth.of::<T>();
     let (w, h) = target.size;
     let mut block = dst
         .sub_view_mut(target.pos.0, target.pos.1, w, h)
@@ -496,9 +540,8 @@ fn combine(
         let out = &mut block.row_mut(row)[..w];
         let other = &second[row * stride..row * stride + w];
         for (sample, &p1) in out.iter_mut().zip(other) {
-            let sum =
-                i32::from(*sample) * weight.weights[0] + i32::from(p1) * weight.weights[1] + round;
-            *sample = ((sum >> shift) + weight.offset).clamp(0, 255) as u8;
+            let sum = sample.to_i32() * weight.weights[0] + p1.to_i32() * weight.weights[1] + round;
+            *sample = depth.clip_to((sum >> shift) + weight.offset);
         }
     }
 }
@@ -509,10 +552,10 @@ fn combine(
     reason = "measured: keeps the P path at the base instruction count (callgrind)"
 )]
 #[inline(always)]
-fn interpolate<G: Grid>(
+fn interpolate<G: Grid, T: H264Sample>(
     target: &Target<'_>,
-    source: &Source<'_>,
-    dst: &mut PlaneViewMut<'_>,
+    source: &Source<'_, T>,
+    dst: &mut PlaneViewMut<'_, T>,
     mv: Mv,
 ) {
     let (x, y) = target.pos;
@@ -522,7 +565,7 @@ fn interpolate<G: Grid>(
         "block inside the picture"
     );
     let stride = dst.stride();
-    predict::<G>(
+    predict::<G, T>(
         target,
         source,
         mv,
@@ -538,10 +581,10 @@ fn interpolate<G: Grid>(
     reason = "measured: keeps the P path at the base instruction count (callgrind)"
 )]
 #[inline(always)]
-fn interpolate_pair(
+fn interpolate_pair<T: H264Sample>(
     target: &Target<'_>,
-    sources: [&Source<'_>; 2],
-    dst: [&mut PlaneViewMut<'_>; 2],
+    sources: [&Source<'_, T>; 2],
+    dst: [&mut PlaneViewMut<'_, T>; 2],
     mv: Mv,
 ) {
     let window = Window::<ChromaGrid>::new(target, sources[0], mv);
@@ -559,28 +602,35 @@ fn interpolate_pair(
         let stride = dst.stride();
         let out = &mut dst.data_mut()[y * stride + x..];
         match window.start.filter(|_| same_geometry) {
-            Some(start) => target.kernel.predict(
+            Some(start) => T::interpolate(
+                target.dsp,
+                target.depth,
+                &target.kernel,
                 &source.padded.data()[start..],
                 source.padded.stride(),
-                window.frac.0,
-                window.frac.1,
+                window.frac,
                 out,
                 stride,
             ),
-            None => predict::<ChromaGrid>(target, source, mv, out, stride),
+            None => predict::<ChromaGrid, T>(target, source, mv, out, stride),
         }
     }
 }
 
 /// A 2x2 chroma block: the top-left corner of a 4x4 prediction (the
 /// smallest kernel).
-fn corner_2x2(target: &Target<'_>, source: &Source<'_>, dst: &mut PlaneViewMut<'_>, mv: Mv) {
+fn corner_2x2<T: H264Sample>(
+    target: &Target<'_>,
+    source: &Source<'_, T>,
+    dst: &mut PlaneViewMut<'_, T>,
+    mv: Mv,
+) {
     let corner = Target {
         size: (MIN_KERNEL_SIDE, MIN_KERNEL_SIDE),
         ..*target
     };
-    let mut block = [0u8; MIN_KERNEL_SIDE * MIN_KERNEL_SIDE];
-    predict::<ChromaGrid>(&corner, source, mv, &mut block, MIN_KERNEL_SIDE);
+    let mut block = [T::default(); MIN_KERNEL_SIDE * MIN_KERNEL_SIDE];
+    predict::<ChromaGrid, T>(&corner, source, mv, &mut block, MIN_KERNEL_SIDE);
     let (w, h) = target.size;
     let mut out = dst
         .sub_view_mut(target.pos.0, target.pos.1, w, h)
@@ -609,7 +659,7 @@ struct Window<G> {
 }
 
 impl<G: Grid> Window<G> {
-    fn new(target: &Target<'_>, source: &Source<'_>, mv: Mv) -> Self {
+    fn new<T: Sample>(target: &Target<'_>, source: &Source<'_, T>, mv: Mv) -> Self {
         let (mvx, mvy) = (i32::from(mv.x), i32::from(mv.y));
         let mask = (1 << G::FRAC_BITS) - 1;
         let (w, h) = (target.size.0 + G::TAPS - 1, target.size.1 + G::TAPS - 1);
@@ -643,43 +693,45 @@ impl<G: Grid> Window<G> {
     reason = "measured: keeps the P path at the base instruction count (callgrind)"
 )]
 #[inline(always)]
-fn predict<G: Grid>(
+fn predict<G: Grid, T: H264Sample>(
     target: &Target<'_>,
-    source: &Source<'_>,
+    source: &Source<'_, T>,
     mv: Mv,
-    out: &mut [u8],
+    out: &mut [T],
     out_stride: usize,
 ) {
     let window = Window::<G>::new(target, source, mv);
-    let (fx, fy) = window.frac;
-    if let Some(start) = window.start {
-        let padded = &source.padded;
-        target.kernel.predict(
-            &padded.data()[start..],
-            padded.stride(),
-            fx,
-            fy,
+    let call = |window_samples: &[T], stride: usize, out: &mut [T]| {
+        T::interpolate(
+            target.dsp,
+            target.depth,
+            &target.kernel,
+            window_samples,
+            stride,
+            window.frac,
             out,
             out_stride,
         );
+    };
+    if let Some(start) = window.start {
+        let padded = &source.padded;
+        call(&padded.data()[start..], padded.stride(), out);
     } else {
         let size = (target.size.0 + G::TAPS - 1, target.size.1 + G::TAPS - 1);
-        let mut buf = [0u8; MAX_WINDOW * MAX_WINDOW];
+        let mut buf = [T::default(); MAX_WINDOW * MAX_WINDOW];
         let (left, top) = window.corner;
         let view = clamped_window(source.plane, left, top, size, &mut buf);
-        target
-            .kernel
-            .predict(view.data(), view.stride(), fx, fy, out, out_stride);
+        call(view.data(), view.stride(), out);
     }
 }
 
-fn clamped_window<'a>(
-    source: &Plane,
+fn clamped_window<'a, T: Sample>(
+    source: &Plane<T>,
     left: isize,
     top: isize,
     (width, height): (usize, usize),
-    buf: &'a mut [u8],
-) -> PlaneView<'a> {
+    buf: &'a mut [T],
+) -> PlaneView<'a, T> {
     let picture = source.view();
     let (w, h) = (picture.width() as isize, picture.height() as isize);
     for (r, row) in buf.chunks_exact_mut(width).take(height).enumerate() {
@@ -692,14 +744,16 @@ fn clamped_window<'a>(
 }
 
 /// Explicit weighted sample prediction of one list (eqs. 8-270, 8-271)
-/// over the `width` x `height` block at (`x`, `y`) of `plane`, in place.
-fn apply_weight(
-    plane: &mut PlaneViewMut<'_>,
-    (x, y): (usize, usize),
-    (width, height): (usize, usize),
+/// over `target`'s block of `plane`, in place; the offset is scaled to the
+/// depth (eqs. 8-297, 8-299).
+fn apply_weight<T: Sample>(
+    plane: &mut PlaneViewMut<'_, T>,
+    target: &Target<'_>,
     w: Weight,
     log2_denom: u32,
 ) {
+    let ((x, y), (width, height)) = (target.pos, target.size);
+    let depth = target.depth.of::<T>();
     let mut block = plane
         .sub_view_mut(x, y, width, height)
         .expect("block inside the picture");
@@ -710,17 +764,18 @@ fn apply_weight(
     };
     let weigh = WeighRow {
         weight: w.weight,
-        offset: w.offset,
+        offset: w.offset << depth.above_eight(),
         round,
         log2_denom,
+        depth,
     };
     // Rows of a constant width: each compiles to straight-line vector code
     // (no per-sample loop exits, which mispredict as block widths vary).
     match width {
-        16 => weigh.rows::<16>(&mut block),
-        8 => weigh.rows::<8>(&mut block),
-        4 => weigh.rows::<4>(&mut block),
-        2 => weigh.rows::<2>(&mut block),
+        16 => weigh.rows::<16, T>(&mut block),
+        8 => weigh.rows::<8, T>(&mut block),
+        4 => weigh.rows::<4, T>(&mut block),
+        2 => weigh.rows::<2, T>(&mut block),
         _ => unreachable!("prediction block width {width}"),
     }
 }
@@ -732,19 +787,20 @@ struct WeighRow {
     offset: i32,
     round: i32,
     log2_denom: u32,
+    depth: BitDepth,
 }
 
 impl WeighRow {
     /// Weigh every row of `block`, `W` samples wide.
-    fn rows<const W: usize>(&self, block: &mut PlaneViewMut<'_>) {
+    fn rows<const W: usize, T: Sample>(&self, block: &mut PlaneViewMut<'_, T>) {
         for row in 0..block.height() {
-            let samples: &mut [u8; W] = (&mut block.row_mut(row)[..W])
+            let samples: &mut [T; W] = (&mut block.row_mut(row)[..W])
                 .try_into()
                 .expect("block row");
             for sample in samples {
-                let weighted = ((i32::from(*sample) * self.weight + self.round) >> self.log2_denom)
-                    + self.offset;
-                *sample = weighted.clamp(0, 255) as u8;
+                let weighted =
+                    ((sample.to_i32() * self.weight + self.round) >> self.log2_denom) + self.offset;
+                *sample = self.depth.clip_to(weighted);
             }
         }
     }

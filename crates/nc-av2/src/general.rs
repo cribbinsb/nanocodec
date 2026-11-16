@@ -13,6 +13,7 @@ pub mod bits;
 pub mod block;
 pub mod cdfs;
 pub mod decoder;
+pub mod film_grain;
 pub mod filters;
 pub mod frame_header;
 pub mod output;

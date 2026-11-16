@@ -1,15 +1,19 @@
 //! Sequence parameter sets (§7.3.2.1.1) with their VUI (§E.1.1), limited to
-//! what a High decoder of frames must accept: 8-bit 4:2:0 or 4:0:0, no
-//! lossless transform bypass. Sequences that allow fields are accepted;
+//! what a High 10 decoder of frames must accept: 8- to 10-bit 4:2:0 or
+//! 4:0:0, no lossless transform bypass. Sequences that allow fields are accepted;
 //! their field and MBAFF pictures are refused by the slice header. Anything
 //! else is rejected as unsupported rather than misdecoded.
 
-use nc_common::{ColourDescription, ColourInfo};
+use nc_common::{BitDepth, BitDepths, ColourDescription, ColourInfo};
 
 use super::reader::Reader;
 use super::scaling::{self, ScalingMatrix};
 use super::{DecodeError, Result};
 
+/// Range of `bit_depth_luma_minus8` / `bit_depth_chroma_minus8`
+/// (§7.4.2.1.1), and the deepest samples decoded (High 10).
+const MAX_BIT_DEPTH_MINUS8: u32 = 6;
+const MAX_BIT_DEPTH: u32 = 10;
 /// `seq_parameter_set_id` range (§7.4.2.1.1).
 pub(super) const MAX_SPS_ID: u32 = 31;
 /// `max_num_ref_frames` and DPB frames are at most 16 (§A.3.1).
@@ -75,6 +79,8 @@ pub(super) struct Sps {
     pub constraint_set3: bool,
     /// `chroma_format_idc` 0.
     pub monochrome: bool,
+    /// `bit_depth_luma_minus8 + 8` and the chroma one.
+    pub depths: BitDepths,
     /// `seq_scaling_matrix_present_flag`: PPS lists fall back by rule B.
     pub scaling_present: bool,
     /// The resolved sequence scaling matrix (flat when absent).
@@ -161,6 +167,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
     let level_idc = r.bits(8)?;
     let id = r.ue_max(MAX_SPS_ID, "seq_parameter_set_id")?;
     let mut monochrome = false;
+    let mut depths = BitDepths::EIGHT;
     let mut scaling_present = false;
     let mut scaling = ScalingMatrix::FLAT;
     if HIGH_PROFILES.contains(&profile_idc) {
@@ -172,9 +179,17 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
             return Err(DecodeError::Unsupported("H264 chroma format above 4:2:0"));
         }
         monochrome = chroma_format_idc == CHROMA_400;
-        if r.ue()? != 0 || r.ue()? != 0 {
-            return Err(DecodeError::Unsupported("H264 bit depth above 8"));
-        }
+        let mut depth = || -> Result<BitDepth> {
+            let bits = r.ue_max(MAX_BIT_DEPTH_MINUS8, "bit_depth_minus8")? + 8;
+            if bits > MAX_BIT_DEPTH {
+                return Err(DecodeError::Unsupported("H264 bit depth above 10"));
+            }
+            BitDepth::new(bits).ok_or(DecodeError::Malformed("bit depth"))
+        };
+        depths = BitDepths {
+            luma: depth()?,
+            chroma: depth()?,
+        };
         if r.flag()? {
             return Err(DecodeError::Unsupported("H264 lossless transform bypass"));
         }
@@ -216,6 +231,7 @@ pub(super) fn parse(data: &[u8]) -> Result<Sps> {
         level_idc,
         constraint_set3: constraint_flags & 0x10 != 0,
         monochrome,
+        depths,
         scaling_present,
         scaling,
         log2_max_frame_num,

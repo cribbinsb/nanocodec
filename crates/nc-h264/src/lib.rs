@@ -52,5 +52,5 @@ mod syntax;
 mod tables;
 
 pub use backend::{H264Backend, H264Params};
-pub use decoder::{DecodedFrame, Decoder, OutputQueue};
+pub use decoder::Decoder;
 pub use references::access_unit_layer;

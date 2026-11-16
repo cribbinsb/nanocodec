@@ -8,6 +8,7 @@ use super::deblock::{DeblockContext, RowDeblocker, SliceFilter};
 use super::mb::{self, MbExtra, SliceParams};
 use super::mbstate::{MbState, Neighbours};
 use super::recon::{self, ReconContext};
+use super::sample::H264Sample;
 use super::slice::SliceType;
 #[cfg(feature = "analysis")]
 use super::stats::{self, MbContext};
@@ -18,11 +19,11 @@ use super::{DecodeError, Planes, Result};
 use nc_common::stream_stats::StreamStats;
 
 /// The state one slice's macroblocks are decoded into.
-pub(super) struct SliceDecoder<'a> {
+pub(super) struct SliceDecoder<'a, T: H264Sample> {
     pub params: SliceParams<'a>,
-    pub recon: ReconContext<'a>,
+    pub recon: ReconContext<'a, T>,
     /// The picture's planes.
-    pub planes: Planes<'a>,
+    pub planes: Planes<'a, T>,
     /// Deblocking control of the picture's slices so far.
     pub slices: &'a [SliceFilter],
     /// `MbState::slice` of the picture's first slice.
@@ -33,7 +34,7 @@ pub(super) struct SliceDecoder<'a> {
     pub width_mbs: usize,
     /// `MbState::slice` of this slice's macroblocks.
     pub slice_no: u32,
-    pub residual: &'a mut Residual,
+    pub residual: &'a mut Residual<T::Coeff>,
     /// `I_PCM` sample scratch (reused: only `I_PCM` macroblocks write it).
     pub extra: &'a mut MbExtra,
     /// `QP_Y,PRED`: the slice QP, then the previous macroblock's.
@@ -48,7 +49,7 @@ pub(super) struct SliceDecoder<'a> {
     pub cabac: bool,
 }
 
-impl SliceDecoder<'_> {
+impl<T: H264Sample> SliceDecoder<'_, T> {
     /// Decode (or skip) macroblock `addr` and reconstruct it; `skipped`
     /// decides from its neighbours whether it is skipped.
     fn macroblock<S: MbSyntax>(
@@ -72,10 +73,10 @@ impl SliceDecoder<'_> {
         let (qp_pred, start) = (self.qp, syntax.bits_consumed());
         if skipped(syntax, &nb) {
             if self.params.slice_type == SliceType::B {
-                mb::direct_16x16(&self.params, &nb, cur, addr, true)?;
-                cur.qp = self.qp as u8;
+                mb::direct_16x16::<T>(&self.params, &nb, cur, addr, true)?;
+                cur.qp = self.qp as i8;
             } else {
-                mb::skip(&self.params, &nb, cur, self.qp)?;
+                mb::skip::<T>(&self.params, &nb, cur, self.qp)?;
             }
             syntax.no_qp_delta();
         } else {
@@ -119,6 +120,7 @@ impl SliceDecoder<'_> {
                 first_slice: self.first_slice,
                 slices: self.slices,
                 monochrome: self.recon.monochrome,
+                depths: self.recon.depths,
             };
             self.deblocker.filter_through(row, &mut self.planes, &ctx);
         }
@@ -126,7 +128,7 @@ impl SliceDecoder<'_> {
     }
 
     /// The CABAC macroblock loop from `first_mb`.
-    pub fn cabac(&mut self, syntax: &mut CabacSyntax<'_>, first_mb: usize) -> Result<()> {
+    pub fn cabac(&mut self, syntax: &mut CabacSyntax<'_, T>, first_mb: usize) -> Result<()> {
         let mut addr = first_mb;
         let slice_type = self.params.slice_type;
         loop {
@@ -141,7 +143,7 @@ impl SliceDecoder<'_> {
     }
 
     /// The CAVLC macroblock loop from `first_mb`.
-    pub fn cavlc(&mut self, syntax: &mut CavlcSyntax<'_, '_>, first_mb: usize) -> Result<()> {
+    pub fn cavlc(&mut self, syntax: &mut CavlcSyntax<'_, '_, T>, first_mb: usize) -> Result<()> {
         let mut addr = first_mb;
         loop {
             if self.params.slice_type != SliceType::I {

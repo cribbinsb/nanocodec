@@ -2,6 +2,8 @@
 //! macroblock syntax elements (§9.3.2, §9.3.3.1) for frame-coded 4:2:0 and
 //! 4:0:0 I, P and B slices.
 
+use core::marker::PhantomData;
+
 use super::cabac::Cabac;
 use super::mbstate::{MbKind, MbState, Neighbours};
 use super::slice::SliceType;
@@ -62,8 +64,8 @@ const SUB_B_L1_4X4: u8 = 11;
 const REM_INTRA_PRED_MODE_BITS: u32 = 3;
 /// `intra_chroma_pred_mode` is truncated unary with `cMax` 3.
 const MAX_CHROMA_PRED_MODE: u8 = 3;
-/// Mapped `mb_qp_delta` limit: values -26..=25 (§7.4.5).
-const MAX_MAPPED_QP_DELTA: u32 = 52;
+/// Mapped `mb_qp_delta` limit: values −32..=31 (§7.4.5 at 10 bits).
+const MAX_MAPPED_QP_DELTA: u32 = 64;
 /// `mvd` prefix length (UEG3, `uCoff` 9) and suffix order.
 const MVD_PREFIX_MAX: u32 = 9;
 const MVD_SUFFIX_ORDER: u32 = 3;
@@ -71,9 +73,9 @@ const MVD_SUFFIX_ORDER: u32 = 3;
 const LEVEL_PREFIX_MAX: u32 = 14;
 /// Largest `|mvd|` of a conforming stream (§7.4.5.1, level limits).
 const MAX_ABS_MVD: u32 = 1 << 15;
-/// Largest coefficient magnitude of 8-bit video (§7.4.5.3.3 bound,
+/// Largest coefficient magnitude of 10-bit video (§7.4.5.3.3 bound,
 /// 2^(7 + `bitDepth`)).
-const MAX_ABS_LEVEL: u32 = 1 << 15;
+const MAX_ABS_LEVEL: u32 = 1 << 17;
 /// `absMvdComp` sums below 3 select `ctxIdxInc` 0, above 32 `ctxIdxInc` 2.
 const MVD_SUM_LOW: u32 = 3;
 const MVD_SUM_HIGH: u32 = 32;
@@ -107,12 +109,17 @@ impl Cat {
     }
 }
 
-/// The CABAC syntax decoder of one slice.
-pub(super) struct CabacSyntax<'a> {
+/// The CABAC syntax decoder of one slice, of a decoder of `T` samples. `T`
+/// is unused but gives each sample type's instance its own copy of every
+/// method (`docs/handoff/high-bit-depth.md`, "Keeping the 8-bit instance
+/// as fast"): shared by both, the hot ones stopped being inlined into the
+/// 8-bit macroblock layer.
+pub(super) struct CabacSyntax<'a, T = u8> {
     engine: Cabac<'a>,
     /// Whether the previous macroblock in decoding order had a non-zero
     /// `mb_qp_delta` (§9.3.3.1.1.5).
     prev_qp_delta_nonzero: bool,
+    sample: PhantomData<T>,
 }
 
 /// `condTermFlag` of a whole neighbouring macroblock.
@@ -120,11 +127,12 @@ fn cond(n: Option<&MbState>, flag: impl Fn(&MbState) -> bool) -> usize {
     usize::from(n.is_some_and(flag))
 }
 
-impl<'a> CabacSyntax<'a> {
+impl<'a, T> CabacSyntax<'a, T> {
     pub fn new(engine: Cabac<'a>) -> Self {
         Self {
             engine,
             prev_qp_delta_nonzero: false,
+            sample: PhantomData,
         }
     }
 
@@ -317,7 +325,7 @@ fn cbf_cond(n: Option<&MbState>, intra: bool, coded: impl Fn(&MbState) -> bool) 
     })
 }
 
-impl MbSyntax for CabacSyntax<'_> {
+impl<T> MbSyntax for CabacSyntax<'_, T> {
     #[cfg(feature = "analysis")]
     fn bits_consumed(&self) -> usize {
         self.engine.bits_consumed()
@@ -666,7 +674,7 @@ impl MbSyntax for CabacSyntax<'_> {
         Ok(())
     }
 
-    fn pcm_samples(&mut self, out: &mut [u8]) -> Result<()> {
-        self.engine.pcm_samples(out)
+    fn pcm_samples(&mut self, out: &mut [u16], bits: [u32; 2]) -> Result<()> {
+        self.engine.pcm_samples(out, bits)
     }
 }

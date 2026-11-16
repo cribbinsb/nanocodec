@@ -9,13 +9,10 @@
 //! `x, y >= -1`, so each mode is a small loop writing samples straight into
 //! the block in the picture, where the residual is then added.
 
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut, Sample};
 use nc_dsp::{Dsp, H264Intra8x8Edges};
 
 use super::{DecodeError, Result};
-
-/// Prediction value when no neighbour is available (`1 << (BitDepth - 1)`).
-const NO_NEIGHBOUR: u8 = 128;
 /// Largest block side with directional modes (`Intra_8x8`) and of any
 /// prediction (`Intra_16x16`).
 const MAX_DIRECTIONAL: usize = 8;
@@ -59,15 +56,24 @@ pub(super) struct Avail {
 /// `line[n - 1 - y]` = p[-1, y] (`y` in `0..n`), `line[n]` = p[-1, -1] and
 /// `line[n + 1 + x]` = p[x, -1] (`x` in `0..2n`, the top-right half
 /// substituted when unavailable). Unavailable samples are 0 and unread.
+/// `depth` gives the value of no neighbour (`1 << (BitDepth − 1)`) and the
+/// clip of plane prediction.
 #[derive(Clone, Copy)]
-struct Edge {
+struct Edge<T> {
     n: usize,
-    line: [u8; LINE],
+    line: [T; LINE],
     avail: Avail,
+    depth: BitDepth,
 }
 
-impl Edge {
-    fn gather(plane: &PlaneViewMut<'_>, x: usize, y: usize, n: usize, avail: Avail) -> Self {
+impl<T: Sample> Edge<T> {
+    fn gather(
+        plane: &PlaneViewMut<'_, T>,
+        (x, y): (usize, usize),
+        n: usize,
+        avail: Avail,
+        depth: BitDepth,
+    ) -> Self {
         let view = plane.as_view();
         let (data, stride) = (view.data(), view.stride());
         // Sample (x, y) of the view; the neighbours are read relative to
@@ -75,8 +81,10 @@ impl Edge {
         let at = y * stride + x;
         let mut edge = Self {
             n,
-            line: [0; LINE],
+            line: [T::default(); LINE],
             avail,
+            // Folds to the constant 8 in the 8-bit instance.
+            depth: depth.of::<T>(),
         };
         if avail.top {
             let width = if avail.top_right { 2 * n } else { n };
@@ -101,13 +109,18 @@ impl Edge {
     }
 
     /// p[x, -1] for `x >= -1`.
-    fn t(&self, x: isize) -> u16 {
-        u16::from(self.line[(self.n as isize + 1 + x) as usize])
+    fn t(&self, x: isize) -> u32 {
+        self.line[(self.n as isize + 1 + x) as usize].into()
     }
 
     /// p[-1, y] for `y >= -1`.
-    fn l(&self, y: isize) -> u16 {
-        u16::from(self.line[(self.n as isize - 1 - y) as usize])
+    fn l(&self, y: isize) -> u32 {
+        self.line[(self.n as isize - 1 - y) as usize].into()
+    }
+
+    /// A value of at most the depth's maximum as a sample.
+    fn sample(value: u32) -> T {
+        T::from_i32(value as i32)
     }
 
     /// The `Intra_8x8` reference sample filter (§8.3.2.2.1).
@@ -115,7 +128,9 @@ impl Edge {
         let n = self.n as isize;
         let avail = self.avail;
         let mut out = *self;
-        let set = |out: &mut Self, index: isize, value: u16| out.line[index as usize] = value as u8;
+        let set = |out: &mut Self, index: isize, value: u32| {
+            out.line[index as usize] = Self::sample(value);
+        };
         let (top0, left0) = (self.n as isize + 1, self.n as isize - 1);
         if avail.top {
             let first = if avail.top_left {
@@ -171,44 +186,58 @@ impl Edge {
     }
 
     /// The row above, p[0..n, -1].
-    fn top(&self) -> &[u8] {
+    fn top(&self) -> &[T] {
         &self.line[self.n + 1..=2 * self.n]
     }
 
     /// The sum of the row above and of the left column.
     fn sums(&self) -> (u32, u32) {
         let n = self.n;
-        let sum = |s: &[u8]| s.iter().map(|&v| u32::from(v)).sum::<u32>();
         (sum(self.top()), sum(&self.line[..n]))
     }
 
+    /// No neighbour's value (`1 << (BitDepth − 1)`, §8.3.1.2.3).
+    fn none(&self) -> T {
+        T::from_i32(self.depth.mid())
+    }
+
     /// DC of the available row above and/or left column.
-    fn dc(&self, top: bool, left: bool) -> u8 {
+    fn dc(&self, top: bool, left: bool) -> T {
         let n = self.n as u32;
         let (sum_top, sum_left) = self.sums();
         let shift = n.trailing_zeros();
-        (match (top, left) {
-            (true, true) => (sum_top + sum_left + n) >> (shift + 1),
-            (true, false) => (sum_top + n / 2) >> shift,
-            (false, true) => (sum_left + n / 2) >> shift,
-            (false, false) => u32::from(NO_NEIGHBOUR),
-        }) as u8
+        match (top, left) {
+            (true, true) => Self::sample((sum_top + sum_left + n) >> (shift + 1)),
+            (true, false) => Self::sample((sum_top + n / 2) >> shift),
+            (false, true) => Self::sample((sum_left + n / 2) >> shift),
+            (false, false) => self.none(),
+        }
     }
 }
 
+/// The sum of samples.
+fn sum<T: Sample>(samples: &[T]) -> u32 {
+    samples.iter().map(|&v| -> u32 { v.into() }).sum()
+}
+
 /// The `n` x `n` block at (`x0`, `y0`) of `plane`.
-fn block<'p>(plane: &'p mut PlaneViewMut<'_>, x0: usize, y0: usize, n: usize) -> PlaneViewMut<'p> {
+fn block<'p, T: Sample>(
+    plane: &'p mut PlaneViewMut<'_, T>,
+    x0: usize,
+    y0: usize,
+    n: usize,
+) -> PlaneViewMut<'p, T> {
     plane
         .sub_view_mut(x0, y0, n, n)
         .expect("intra blocks lie inside the picture")
 }
 
 /// Write `pred(x, y)` over the `n` x `n` block at (`x0`, `y0`).
-fn fill(
-    plane: &mut PlaneViewMut<'_>,
+fn fill<T: Sample>(
+    plane: &mut PlaneViewMut<'_, T>,
     (x0, y0): (usize, usize),
     n: usize,
-    pred: impl Fn(usize, usize) -> u8,
+    pred: impl Fn(usize, usize) -> T,
 ) {
     let mut out = block(plane, x0, y0, n);
     for y in 0..n {
@@ -219,7 +248,7 @@ fn fill(
 }
 
 /// Copy `row` into every row of the block (vertical prediction).
-fn fill_rows(plane: &mut PlaneViewMut<'_>, (x0, y0): (usize, usize), row: &[u8]) {
+fn fill_rows<T: Sample>(plane: &mut PlaneViewMut<'_, T>, (x0, y0): (usize, usize), row: &[T]) {
     let n = row.len();
     let mut out = block(plane, x0, y0, n);
     for y in 0..n {
@@ -228,11 +257,11 @@ fn fill_rows(plane: &mut PlaneViewMut<'_>, (x0, y0): (usize, usize), row: &[u8])
 }
 
 /// Fill row `y` of the block with `value(y)` (horizontal and DC prediction).
-fn fill_flat(
-    plane: &mut PlaneViewMut<'_>,
+fn fill_flat<T: Sample>(
+    plane: &mut PlaneViewMut<'_, T>,
     (x0, y0): (usize, usize),
     n: usize,
-    value: impl Fn(usize) -> u8,
+    value: impl Fn(usize) -> T,
 ) {
     let mut out = block(plane, x0, y0, n);
     for y in 0..n {
@@ -255,6 +284,7 @@ fn directional_allowed(mode: u8, avail: Avail) -> bool {
 
 /// Reuse the encoder's DSP predictor while preserving decoder availability.
 /// Gather raw samples before filtering: the DSP applies §8.3.2.2.1 once.
+#[inline]
 pub(super) fn predict_8x8(
     dsp: &Dsp,
     plane: &mut PlaneViewMut<'_>,
@@ -268,7 +298,7 @@ pub(super) fn predict_8x8(
             "intra mode needs unavailable samples",
         ));
     }
-    let raw = Edge::gather(plane, x0, y0, MAX_DIRECTIONAL, avail);
+    let raw = Edge::gather(plane, (x0, y0), MAX_DIRECTIONAL, avail, BitDepth::EIGHT);
     let edges = H264Intra8x8Edges {
         top: core::array::from_fn(|i| raw.line[MAX_DIRECTIONAL + 1 + i]),
         left: core::array::from_fn(|j| raw.line[MAX_DIRECTIONAL - 1 - j]),
@@ -295,13 +325,12 @@ pub(super) fn predict_8x8(
 /// `Intra_4x4` (`n` 4) or `Intra_8x8` (`n` 8) prediction of the block at
 /// (`x0`, `y0`) in `mode` (§8.3.1.2.1..9, §8.3.2.2.2..10: the same
 /// formulas at two sizes).
-pub(super) fn predict_nxn(
-    plane: &mut PlaneViewMut<'_>,
-    x0: usize,
-    y0: usize,
+pub(super) fn predict_nxn<T: Sample>(
+    plane: &mut PlaneViewMut<'_, T>,
+    (x0, y0): (usize, usize),
     n: usize,
     mode: u8,
-    avail: Avail,
+    (avail, depth): (Avail, BitDepth),
 ) -> Result<()> {
     debug_assert!(n == 4 || n == MAX_DIRECTIONAL);
     if !directional_allowed(mode, avail) {
@@ -309,7 +338,7 @@ pub(super) fn predict_nxn(
             "intra mode needs unavailable samples",
         ));
     }
-    let raw = Edge::gather(plane, x0, y0, n, avail);
+    let raw = Edge::gather(plane, (x0, y0), n, avail, depth);
     let e = if n == MAX_DIRECTIONAL {
         raw.filter_8x8()
     } else {
@@ -352,19 +381,19 @@ pub(super) fn predict_nxn(
     Ok(())
 }
 
-fn avg2(a: u16, b: u16) -> u8 {
-    ((a + b + 1) >> 1) as u8
+fn avg2<T: Sample>(a: u32, b: u32) -> T {
+    T::from_i32(((a + b + 1) >> 1) as i32)
 }
 
-fn avg3(a: u16, b: u16, c: u16) -> u8 {
-    ((a + 2 * b + c + 2) >> 2) as u8
+fn avg3<T: Sample>(a: u32, b: u32, c: u32) -> T {
+    T::from_i32(((a + 2 * b + c + 2) >> 2) as i32)
 }
 
 /// §8.3.1.2.4 / §8.3.2.2.5.
-fn diagonal_down_left(e: &Edge, x: isize, y: isize) -> u8 {
+fn diagonal_down_left<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     let last = e.n as isize - 1;
     if x == last && y == last {
-        ((e.t(2 * last) + 3 * e.t(2 * last + 1) + 2) >> 2) as u8
+        Edge::<T>::sample((e.t(2 * last) + 3 * e.t(2 * last + 1) + 2) >> 2)
     } else {
         avg3(e.t(x + y), e.t(x + y + 1), e.t(x + y + 2))
     }
@@ -372,14 +401,10 @@ fn diagonal_down_left(e: &Edge, x: isize, y: isize) -> u8 {
 
 /// §8.3.1.2.5 / §8.3.2.2.6: with the edge line, every case is the
 /// [1 2 1] filter centred `x - y` samples from the corner.
-fn diagonal_down_right(e: &Edge, x: isize, y: isize) -> u8 {
+fn diagonal_down_right<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     let centre = (e.n as isize + x - y) as usize;
     let l = &e.line;
-    avg3(
-        u16::from(l[centre - 1]),
-        u16::from(l[centre]),
-        u16::from(l[centre + 1]),
-    )
+    avg3(l[centre - 1].into(), l[centre].into(), l[centre + 1].into())
 }
 
 /// §8.3.1.2.6 / §8.3.2.2.7.
@@ -387,7 +412,7 @@ fn diagonal_down_right(e: &Edge, x: isize, y: isize) -> u8 {
     clippy::many_single_char_names,
     reason = "x, y, z, k and the edge e follow the standard's formulas"
 )]
-fn vertical_right(e: &Edge, x: isize, y: isize) -> u8 {
+fn vertical_right<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     let z = 2 * x - y;
     let k = x - (y >> 1);
     if z >= 0 && z % 2 == 0 {
@@ -406,7 +431,7 @@ fn vertical_right(e: &Edge, x: isize, y: isize) -> u8 {
     clippy::many_single_char_names,
     reason = "x, y, z, k and the edge e follow the standard's formulas"
 )]
-fn horizontal_down(e: &Edge, x: isize, y: isize) -> u8 {
+fn horizontal_down<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     let z = 2 * y - x;
     let k = y - (x >> 1);
     if z >= 0 && z % 2 == 0 {
@@ -421,7 +446,7 @@ fn horizontal_down(e: &Edge, x: isize, y: isize) -> u8 {
 }
 
 /// §8.3.1.2.8 / §8.3.2.2.9.
-fn vertical_left(e: &Edge, x: isize, y: isize) -> u8 {
+fn vertical_left<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     let k = x + (y >> 1);
     if y % 2 == 0 {
         avg2(e.t(k), e.t(k + 1))
@@ -435,15 +460,15 @@ fn vertical_left(e: &Edge, x: isize, y: isize) -> u8 {
     clippy::many_single_char_names,
     reason = "x, y, z, k and the edge e follow the standard's formulas"
 )]
-fn horizontal_up(e: &Edge, x: isize, y: isize) -> u8 {
+fn horizontal_up<T: Sample>(e: &Edge<T>, x: isize, y: isize) -> T {
     let last = e.n as isize - 1;
     let z = x + 2 * y;
     let limit = 2 * last - 1;
     let k = y + (x >> 1);
     if z > limit {
-        e.l(last) as u8
+        Edge::<T>::sample(e.l(last))
     } else if z == limit {
-        ((e.l(last - 1) + 3 * e.l(last) + 2) >> 2) as u8
+        Edge::<T>::sample((e.l(last - 1) + 3 * e.l(last) + 2) >> 2)
     } else if z % 2 == 0 {
         avg2(e.l(k), e.l(k + 1))
     } else {
@@ -456,33 +481,34 @@ fn horizontal_up(e: &Edge, x: isize, y: isize) -> u8 {
     clippy::many_single_char_names,
     reason = "a, b, c, H and V are the standard's names"
 )]
-fn plane_prediction(plane: &mut PlaneViewMut<'_>, at: (usize, usize), e: &Edge) {
+fn plane_prediction<T: Sample>(plane: &mut PlaneViewMut<'_, T>, at: (usize, usize), e: &Edge<T>) {
     let n = e.n as isize;
     let half = n / 2;
     let (mut h, mut v) = (0i32, 0i32);
     for k in 0..half {
         let weight = k as i32 + 1;
-        h += weight * (i32::from(e.t(half + k)) - i32::from(e.t(half - 2 - k)));
-        v += weight * (i32::from(e.l(half + k)) - i32::from(e.l(half - 2 - k)));
+        h += weight * (e.t(half + k) as i32 - e.t(half - 2 - k) as i32);
+        v += weight * (e.l(half + k) as i32 - e.l(half - 2 - k) as i32);
     }
     // Luma: b = (5H + 32) >> 6; 4:2:0 chroma: b = (34H + 32) >> 6.
     let scale = if n == 16 { 5 } else { 34 };
-    let a = 16 * (i32::from(e.l(n - 1)) + i32::from(e.t(n - 1)));
+    let a = 16 * (e.l(n - 1) as i32 + e.t(n - 1) as i32);
     let b = (scale * h + 32) >> 6;
     let c = (scale * v + 32) >> 6;
     let centre = half as i32 - 1;
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = e.depth.of::<T>();
     fill(plane, at, e.n, |x, y| {
-        ((a + b * (x as i32 - centre) + c * (y as i32 - centre) + 16) >> 5).clamp(0, 255) as u8
+        depth.clip_to((a + b * (x as i32 - centre) + c * (y as i32 - centre) + 16) >> 5)
     });
 }
 
 /// `Intra_16x16` prediction of the macroblock at (`x0`, `y0`) (§8.3.3).
-pub(super) fn predict_16x16(
-    plane: &mut PlaneViewMut<'_>,
-    x0: usize,
-    y0: usize,
+pub(super) fn predict_16x16<T: Sample>(
+    plane: &mut PlaneViewMut<'_, T>,
+    (x0, y0): (usize, usize),
     mode: u8,
-    avail: Avail,
+    (avail, depth): (Avail, BitDepth),
 ) -> Result<()> {
     let needed = match mode {
         I16_VERTICAL => avail.top,
@@ -499,7 +525,7 @@ pub(super) fn predict_16x16(
         top_right: false,
         ..avail
     };
-    let e = Edge::gather(plane, x0, y0, MAX_SIDE, avail);
+    let e = Edge::gather(plane, (x0, y0), MAX_SIDE, avail, depth);
     let at = (x0, y0);
     match mode {
         I16_VERTICAL => fill_rows(plane, at, e.top()),
@@ -514,12 +540,11 @@ pub(super) fn predict_16x16(
 }
 
 /// 4:2:0 chroma prediction of the 8x8 block at (`x0`, `y0`) (§8.3.4).
-pub(super) fn predict_chroma(
-    plane: &mut PlaneViewMut<'_>,
-    x0: usize,
-    y0: usize,
+pub(super) fn predict_chroma<T: Sample>(
+    plane: &mut PlaneViewMut<'_, T>,
+    (x0, y0): (usize, usize),
     mode: u8,
-    avail: Avail,
+    (avail, depth): (Avail, BitDepth),
 ) -> Result<()> {
     const SIDE: usize = 8;
     const SUB: usize = 4;
@@ -538,28 +563,27 @@ pub(super) fn predict_chroma(
         top_right: false,
         ..avail
     };
-    let e = Edge::gather(plane, x0, y0, SIDE, avail);
+    let e = Edge::gather(plane, (x0, y0), SIDE, avail, depth);
     let at = (x0, y0);
     match mode {
         CHROMA_DC => {
             // §8.3.4.1..3: each 4x4 block averages the samples beside it;
             // the top-right block prefers those above, the bottom-left the
             // ones to its left.
-            let mut dc = [NO_NEIGHBOUR; 4];
+            let mut dc = [e.none(); 4];
             for (blk, value) in dc.iter_mut().enumerate() {
                 let (bx, by) = (blk % 2, blk / 2);
-                let sum = |s: &[u8]| s.iter().map(|&v| u32::from(v)).sum::<u32>();
                 let sum_top = sum(&e.top()[bx * SUB..bx * SUB + SUB]);
                 // Left samples run bottom-up in the line.
                 let sum_left = sum(&e.line[SIDE - SUB - by * SUB..SIDE - by * SUB]);
-                let both = ((sum_top + sum_left + 4) >> 3) as u8;
-                let top = ((sum_top + 2) >> 2) as u8;
-                let left = ((sum_left + 2) >> 2) as u8;
+                let both = Edge::<T>::sample((sum_top + sum_left + 4) >> 3);
+                let top = Edge::<T>::sample((sum_top + 2) >> 2);
+                let left = Edge::<T>::sample((sum_left + 2) >> 2);
                 *value = match (blk, avail.top, avail.left) {
                     (0 | 3, true, true) => both,
                     (1, true, _) | (0 | 2 | 3, true, false) => top,
                     (2, _, true) | (0 | 1 | 3, false, true) => left,
-                    _ => NO_NEIGHBOUR,
+                    _ => e.none(),
                 };
             }
             let mut out = block(plane, x0, y0, SIDE);
@@ -603,7 +627,7 @@ mod tests {
     #[test]
     fn plane_mode_follows_a_ramp() {
         let mut plane = ramp_plane();
-        predict_16x16(&mut plane.view_mut(), 16, 16, 3, ALL).unwrap();
+        predict_16x16(&mut plane.view_mut(), (16, 16), 3, (ALL, BitDepth::EIGHT)).unwrap();
         let view = plane.view();
         for y in 0..16 {
             for x in 0..16 {
@@ -622,8 +646,9 @@ mod tests {
             top_right: false,
             top_left: false,
         };
-        assert!(predict_nxn(&mut plane.view_mut(), 0, 0, 4, VERTICAL, none).is_err());
-        predict_nxn(&mut plane.view_mut(), 0, 0, 8, DC, none).unwrap();
+        let eight = BitDepth::EIGHT;
+        assert!(predict_nxn(&mut plane.view_mut(), (0, 0), 4, VERTICAL, (none, eight)).is_err());
+        predict_nxn(&mut plane.view_mut(), (0, 0), 8, DC, (none, eight)).unwrap();
         assert_eq!(plane.view().row(7)[7], 128);
     }
 
@@ -681,7 +706,8 @@ mod tests {
                 let refs = edges.filtered();
                 for mode in (0..9).filter(|&m| directional_allowed(m, avail)) {
                     let mut decoded = source.clone();
-                    predict_nxn(&mut decoded.view_mut(), x0, y0, 8, mode, avail).unwrap();
+                    let at = (avail, BitDepth::EIGHT);
+                    predict_nxn(&mut decoded.view_mut(), (x0, y0), 8, mode, at).unwrap();
                     let mut kernel = [0u8; 64];
                     dsp.h264_intra_8x8(&refs, mode, &mut kernel);
                     let mut dispatched = source.clone();
@@ -735,7 +761,14 @@ mod tests {
     #[test]
     fn vertical_copies_the_filtered_row_for_8x8() {
         let mut plane = ramp_plane();
-        predict_nxn(&mut plane.view_mut(), 8, 8, 8, VERTICAL, ALL).unwrap();
+        predict_nxn(
+            &mut plane.view_mut(),
+            (8, 8),
+            8,
+            VERTICAL,
+            (ALL, BitDepth::EIGHT),
+        )
+        .unwrap();
         // A linear row is unchanged by the [1 2 1] filter.
         assert_eq!(plane.view().row(12)[10], (20 + 2 * 10 + 7) as u8);
     }

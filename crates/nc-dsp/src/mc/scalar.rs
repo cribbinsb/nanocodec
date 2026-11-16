@@ -475,10 +475,25 @@ fn h264_luma<const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
-    let px = |r: usize, c: usize| i32::from(src[r * ss + c]);
+    h264_luma_at::<u8, W>(src, ss, dst, ds, h, (frac_x, frac_y), BitDepth::EIGHT);
+}
+
+/// [`h264_luma`] at any sample type and depth (`Clip1Y` to `depth`, eqs.
+/// 8-243..8-261: the intermediate sums are the same at every depth).
+pub(crate) fn h264_luma_at<T: Sample, const W: usize>(
+    src: &[T],
+    ss: usize,
+    dst: &mut [T],
+    ds: usize,
+    h: usize,
+    (frac_x, frac_y): (usize, usize),
+    depth: BitDepth,
+) {
+    let depth = depth.of::<T>();
+    let px = |r: usize, c: usize| src[r * ss + c].to_i32();
     let six =
         |f: &dyn Fn(usize) -> i32| -> i32 { (0..6).map(|t| i32::from(H264_TAPS[t]) * f(t)).sum() };
-    let clip1 = |v: i32| v.clamp(0, 255);
+    let clip1 = |v: i32| v.clamp(0, depth.max());
     for r in 0..h {
         for c in 0..W {
             // Integer samples G (and its right / lower neighbours).
@@ -507,7 +522,7 @@ fn h264_luma<const W: usize>(
                 (3, 2) => avg(j(), hh(1)),
                 _ => j(),
             };
-            dst[r * ds + c] = value as u8;
+            dst[r * ds + c] = T::from_i32(value);
         }
     }
 }
@@ -522,15 +537,29 @@ fn h264_chroma<const W: usize>(
     frac_x: usize,
     frac_y: usize,
 ) {
+    h264_chroma_at::<u8, W>(src, ss, dst, ds, h, (frac_x, frac_y), BitDepth::EIGHT);
+}
+
+/// [`h264_chroma`] at any sample type and depth (eq. 8-266 needs no clip:
+/// the weights sum to 64).
+pub(crate) fn h264_chroma_at<T: Sample, const W: usize>(
+    src: &[T],
+    ss: usize,
+    dst: &mut [T],
+    ds: usize,
+    h: usize,
+    (frac_x, frac_y): (usize, usize),
+    _depth: BitDepth,
+) {
     let (dx, dy) = (frac_x as i32, frac_y as i32);
-    let px = |r: usize, c: usize| i32::from(src[r * ss + c]);
+    let px = |r: usize, c: usize| src[r * ss + c].to_i32();
     for r in 0..h {
         for c in 0..W {
             let sum = (8 - dx) * (8 - dy) * px(r, c)
                 + dx * (8 - dy) * px(r, c + 1)
                 + (8 - dx) * dy * px(r + 1, c)
                 + dx * dy * px(r + 1, c + 1);
-            dst[r * ds + c] = clip_u8((sum + 32) >> 6);
+            dst[r * ds + c] = T::from_i32((sum + 32) >> 6);
         }
     }
 }

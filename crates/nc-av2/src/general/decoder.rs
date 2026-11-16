@@ -1,6 +1,7 @@
 //! The AV2 decoder's top level: OBU dispatch, the reference slots and the
 //! output order (hidden frames, show-existing frames, frames shown later
-//! in display order).
+//! in display order). Film grain is laid over a picture as it is output
+//! ([`super::film_grain`]), never over the reference it stays in.
 //!
 //! Each temporal unit is decoded frame OBU by frame OBU; every picture to
 //! show goes to an output queue in display order, read with
@@ -16,6 +17,7 @@ use super::block::motion::frame::{ReferenceMotion, TemporalField};
 use super::block::segmentation::SegmentMap;
 use super::block::{self, BlockTrace};
 use super::cdfs::Cdfs;
+use super::film_grain::{self, OutputGrain};
 use super::filters;
 use super::frame_header::restoration::kind;
 use super::frame_header::{
@@ -39,8 +41,6 @@ mod other_obu {
     pub const TEMPORAL_DELIMITER: u8 = 2;
     pub const METADATA: u8 = 8;
     pub const METADATA_GROUP: u8 = 9;
-    /// Film grain models: frames that apply one are rejected until film
-    /// grain synthesis exists, so the models are not kept.
     pub const FILM_GRAIN_MODEL: u8 = 23;
     pub const CONTENT_INTERPRETATION: u8 = 24;
     pub const PADDING: u8 = 25;
@@ -76,6 +76,9 @@ struct SlotData {
     /// The segment map later frames predict from (dav2d `refs[].segmap`):
     /// `None` without segmentation.
     segments: Option<Segments>,
+    /// The film grain of the frame's own header, for its output when it is
+    /// released later (`show_implicit`).
+    grain: Option<OutputGrain>,
 }
 
 /// A frame's final models, of the block layer that decoded it.
@@ -91,10 +94,12 @@ enum FrameContext {
 #[derive(Debug)]
 struct Output {
     picture: Rc<Picture>,
+    /// The grain laid over it when it is shown.
+    grain: Option<OutputGrain>,
 }
 
 /// What a temporal unit changes, restored when it fails: the sequence,
-/// the reference slots and the output order.
+/// the reference slots, the film grain models and the output order.
 #[derive(Debug, Clone, Default)]
 struct State {
     /// Shared with the saved state of a unit (cloning it allocates).
@@ -106,6 +111,8 @@ struct State {
     headers: [Option<SlotHeader>; MAX_SLOTS],
     /// Their pictures and contexts.
     data: [Option<SlotData>; MAX_SLOTS],
+    /// The film grain models FGM OBUs set, by id (dav2d `c->fgm`).
+    grain_models: film_grain::Models,
     /// Frames decoded so far: the identity of the next.
     frames: u32,
     /// Which pictures go out when.
@@ -232,10 +239,26 @@ impl Decoder {
         let Some(next) = self.output.pop_front() else {
             return false;
         };
-        if let Some(previous) = self.current.replace(next.picture) {
+        let picture = match &next.grain {
+            Some(grain) => Rc::new(self.grained(&next.picture, grain)),
+            None => next.picture,
+        };
+        if let Some(previous) = self.current.replace(picture) {
             self.workspace.release(previous);
         }
         true
+    }
+
+    /// `picture` with `grain` laid over it, in a picture of the workspace.
+    fn grained(&mut self, picture: &Picture, grain: &OutputGrain) -> Picture {
+        let mut output = self
+            .workspace
+            .pictures
+            .take(picture.width(), picture.height(), 0)
+            .expect("the geometry of a picture already made");
+        let (dsp, ..) = self.workspace.filter_parts();
+        grain.apply(dsp, picture, &mut output);
+        output
     }
 
     /// End of stream: queue the hidden frames still due for output.
@@ -322,10 +345,15 @@ impl Decoder {
         }
         match kind {
             other_obu::SEQUENCE_HEADER => self.sequence_header(unit.payload),
+            other_obu::FILM_GRAIN_MODEL => {
+                if self.state.sequence.is_none() {
+                    return Err(DecodeError::MissingKey);
+                }
+                film_grain::parse(unit.payload, &mut self.state.grain_models)
+            }
             other_obu::TEMPORAL_DELIMITER
             | other_obu::METADATA
             | other_obu::METADATA_GROUP
-            | other_obu::FILM_GRAIN_MODEL
             | other_obu::CONTENT_INTERPRETATION
             | other_obu::PADDING => Ok(()),
             _ if obu_type::is_frame(kind) => self.frame(unit),
@@ -356,6 +384,7 @@ impl Decoder {
         }
         self.state.subset_sequence = Some(crate::sequence::parse(payload));
         self.state.headers = Default::default();
+        self.state.grain_models = Default::default();
         for held in std::mem::take(&mut self.state.data).into_iter().flatten() {
             self.retired.push(held.picture);
         }
@@ -416,10 +445,10 @@ impl Decoder {
         ) else {
             return Err(DecodeError::MissingKey);
         };
-        if shown.film_grain.is_some() {
-            return Err(DecodeError::Unsupported("AV2 film grain"));
-        }
-        self.queue_output(&data.picture, header.header.order)?;
+        // The show-existing header's grain, not the frame's own (dav2d
+        // `dav2d_parse_obus`).
+        let grain = self.output_grain(shown.film_grain)?;
+        self.queue_output(&data.picture, grain.as_ref(), header.header.order)?;
         if header.header.frame_type == FrameType::Key {
             for index in 0..MAX_SLOTS {
                 self.state.headers[index] = Some(header.clone());
@@ -530,11 +559,13 @@ impl Decoder {
         extras: SlotExtras,
     ) -> Result<()> {
         let picture = Rc::new(picture);
+        let grain = self.output_grain(header.film_grain)?;
         if header.show_immediate {
-            self.queue_output(&picture, header.order)?;
+            self.queue_output(&picture, grain.as_ref(), header.order)?;
         } else if self.invisible {
             self.output.push_back(Output {
                 picture: Rc::clone(&picture),
+                grain: grain.clone(),
             });
         }
         let refresh = header.refresh;
@@ -549,6 +580,7 @@ impl Decoder {
             ccso_flags: extras.ccso_flags,
             motion_field: extras.motion_field,
             segments: extras.segments,
+            grain,
         };
         for slot in 0..MAX_SLOTS {
             if refresh & (1 << slot) != 0 {
@@ -833,11 +865,24 @@ impl Decoder {
         self.block_trace = TraceSink(Some(sink));
     }
 
-    /// Queue a picture of display order `order` for output, with the
-    /// hidden frames it releases.
+    /// The grain a header's film grain fields lay over its output.
+    fn output_grain(&self, fields: Option<frame_header::FilmGrain>) -> Result<Option<OutputGrain>> {
+        match fields {
+            Some(fields) => OutputGrain::new(&self.state.grain_models, fields.id, fields.seed),
+            None => Ok(None),
+        }
+    }
+
+    /// Queue a picture of display order `order` for output with its
+    /// `grain`, and the hidden frames it releases.
     /// # Errors
     /// Rejects a repeat of the last output's display order.
-    fn queue_output(&mut self, picture: &Rc<Picture>, order: u32) -> Result<()> {
+    fn queue_output(
+        &mut self,
+        picture: &Rc<Picture>,
+        grain: Option<&OutputGrain>,
+        order: u32,
+    ) -> Result<()> {
         let released = self
             .state
             .order
@@ -847,6 +892,7 @@ impl Decoder {
             match release {
                 Release::Current => self.output.push_back(Output {
                     picture: Rc::clone(picture),
+                    grain: grain.cloned(),
                 }),
                 Release::Slot(slot) => self.queue_slot(slot),
             }
@@ -854,11 +900,12 @@ impl Decoder {
         Ok(())
     }
 
-    /// Queue the picture of `slot`.
+    /// Queue the picture of `slot`, with its frame's grain.
     fn queue_slot(&mut self, slot: usize) {
         if let Some(data) = &self.state.data[slot] {
             self.output.push_back(Output {
                 picture: Rc::clone(&data.picture),
+                grain: data.grain.clone(),
             });
         }
     }

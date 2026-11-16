@@ -101,6 +101,10 @@ const CHROMA_RESCALE_ITERATIONS: usize = 2;
 
 /// What one frame's `film_grain_params()` codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per frame; the parameters are copied with the plan"
+)]
 pub enum FrameGrain {
     /// `apply_grain = 0`.
     Off,
@@ -368,16 +372,16 @@ fn quantise_ar<const N: usize>(coeffs: &[f64], shift: i32) -> [u8; N] {
 
 /// The scaling points of `strength` (noise standard deviation per
 /// intensity bin, already scaled) for a template of rms `rms` at scaling
-/// shift `shift`: one point at each measured bin's centre.
-fn scaling_points<const N: usize>(
+/// shift `shift`: one point at each measured bin's centre, at most `most`.
+fn scaling_points(
     strength: &[Option<f64>; INTENSITY_BINS],
     rms: f64,
-    shift: u32,
-) -> Av1ScalingPoints<N> {
-    let mut points = Av1ScalingPoints::<N>::default();
+    (shift, most): (u32, usize),
+) -> Av1ScalingPoints<MAX_LUMA_POINTS> {
+    let mut points = Av1ScalingPoints::default();
     for (bin, s) in strength.iter().enumerate() {
         let Some(s) = *s else { continue };
-        if points.count == N {
+        if points.count == most {
             break;
         }
         points.value[points.count] = (bin * BIN_WIDTH + BIN_WIDTH / 2) as u8;
@@ -501,14 +505,14 @@ fn synthesis_params(model: &NoiseModel, params: &GrainParams) -> Option<Av1FilmG
         1.0,
     );
     p.grain_scaling_minus_8 = (shift - SCALING_SHIFT_RANGE.0) as u8;
-    p.y_points = scaling_points::<MAX_LUMA_POINTS>(&strength[0], rms[0], shift);
+    p.y_points = scaling_points(&strength[0], rms[0], (shift, MAX_LUMA_POINTS));
     p.cb_points = if chroma_on[0] {
-        scaling_points::<MAX_CHROMA_POINTS>(&strength[1], rms[1], shift)
+        scaling_points(&strength[1], rms[1], (shift, MAX_CHROMA_POINTS))
     } else {
         Av1ScalingPoints::default()
     };
     p.cr_points = if chroma_on[1] {
-        scaling_points::<MAX_CHROMA_POINTS>(&strength[2], rms[2], shift)
+        scaling_points(&strength[2], rms[2], (shift, MAX_CHROMA_POINTS))
     } else {
         Av1ScalingPoints::default()
     };

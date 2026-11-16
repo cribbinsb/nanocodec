@@ -9,6 +9,7 @@
 //! kept with it in the DPB ([`RefPicture::motion`]). Frames only: the
 //! co-located macroblock is the current address.
 
+use nc_common::Sample;
 use nc_encoder::Mv;
 
 use super::dpb::RefPicture;
@@ -113,10 +114,10 @@ impl<'a> DirectContext<'a> {
     /// [`DecodeError::MissingReference`] when `RefPicList1[0]` has no
     /// picture; malformed when its size differs (checked by the caller for
     /// prediction, here for its macroblock states).
-    pub fn new(
+    pub fn new<T: Sample>(
         spatial: bool,
         inference_8x8: bool,
-        lists: [&'a [Option<RefPicture>]; LISTS],
+        lists: [&'a [Option<RefPicture<T>>]; LISTS],
         l0_ids: &'a [Option<u32>],
         poc: i64,
         mbs: usize,

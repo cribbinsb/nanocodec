@@ -284,19 +284,6 @@ impl<'a> Shown<'a> {
         }
     }
 
-    /// An H.264 frame, shown from the decoder's own picture.
-    fn h264(frame: nc_h264::DecodedFrame) -> Self {
-        Self {
-            planes: 3,
-            width: frame.size.0,
-            height: frame.size.1,
-            samples: Samples::Shared {
-                picture: frame.picture,
-                origin: frame.origin,
-            },
-        }
-    }
-
     /// An HEVC picture in output order (all three planes).
     fn hevc(frame: DecodedPicture) -> Result<Self, String> {
         Self::decoded(frame, 3)
@@ -628,23 +615,21 @@ fn decode_stream_with_op<R: BufRead>(
             let Decoder::H264(h264) = &mut decoder else {
                 unreachable!("H.264 decoder for H.264 input");
             };
-            let mut queue = nc_h264::OutputQueue::default();
             // Written straight from the decoder's pictures, which it reuses
             // once they are dropped.
-            let mut write = |frames: Vec<nc_h264::DecodedFrame>| {
-                for frame in frames {
+            let mut write = |h264: &mut nc_h264::Decoder| -> Result<(), String> {
+                while let Some(picture) = h264.next_output() {
                     shown += 1;
-                    output(&Shown::h264(frame))?;
+                    output(&Shown::decoded(picture, 3)?)?;
                 }
-                Ok::<(), String>(())
+                Ok(())
             };
             read_nal_units(input, |nal| {
-                match h264.decode_nal(nal).map_err(|error| error.to_string())? {
-                    Some(frame) => write(queue.push(frame)),
-                    None => Ok(()),
-                }
+                h264.push_nal(nal).map_err(|error| error.to_string())?;
+                write(h264)
             })?;
-            write(queue.flush())?;
+            h264.flush();
+            write(h264)?;
         }
         Codec::Vvc => {
             let Decoder::Vvc(vvc) = &mut decoder else {

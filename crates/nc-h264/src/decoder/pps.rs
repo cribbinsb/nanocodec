@@ -14,8 +14,10 @@ pub(super) const MAX_PPS_ID: u32 = 255;
 pub(super) const MAX_REF_IDX_ACTIVE_MINUS1: u32 = 31;
 /// `chroma_qp_index_offset` range (§7.4.2.2).
 pub(super) const MAX_CHROMA_QP_OFFSET: i32 = 12;
-/// `pic_init_qp_minus26` range for 8-bit video (§7.4.2.2).
-const MIN_INIT_QP_MINUS26: i32 = -26;
+/// `pic_init_qp_minus26` range (§7.4.2.2: from −(26 + `QpBdOffsetY`), here
+/// at the deepest decoded samples, 10 bits; the slice QP is checked against
+/// the SPS's depth).
+const MIN_INIT_QP_MINUS26: i32 = -(26 + 12);
 const MAX_INIT_QP_MINUS26: i32 = 25;
 
 /// `weighted_bipred_idc` (§7.4.2.2): the weighting of B slices.

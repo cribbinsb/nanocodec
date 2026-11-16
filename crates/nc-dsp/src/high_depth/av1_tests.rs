@@ -524,7 +524,7 @@ fn film_grain_at_eight_bits_matches() {
     };
     points.value[..3].copy_from_slice(&[0, 128, 255]);
     points.scaling[..3].copy_from_slice(&[20, 80, 40]);
-    let mut chroma = Av1ScalingPoints::<10> {
+    let mut chroma = Av1ScalingPoints::<14> {
         count: 2,
         ..Default::default()
     };

@@ -7,22 +7,31 @@
 
 use std::sync::Arc;
 
-use nc_common::{Picture, PictureRecycler};
+use nc_common::{Picture, PictureRecycler, Sample};
 
 use super::Result;
 
 /// The decoder's picture buffers.
-#[derive(Debug, Default)]
-pub(super) struct PicturePool {
-    recycler: PictureRecycler,
+#[derive(Debug)]
+pub(super) struct PicturePool<T: Sample = u8> {
+    recycler: PictureRecycler<T>,
     /// Reference pictures handed to the DPB.
-    shared: Vec<Arc<Picture>>,
+    shared: Vec<Arc<Picture<T>>>,
 }
 
-impl PicturePool {
+impl<T: Sample> Default for PicturePool<T> {
+    fn default() -> Self {
+        Self {
+            recycler: PictureRecycler::default(),
+            shared: Vec::new(),
+        }
+    }
+}
+
+impl<T: Sample> PicturePool<T> {
     /// A `width` x `height` picture with `border`; its samples are stale
     /// when it is reused.
-    pub fn take(&mut self, width: usize, height: usize, border: usize) -> Result<Picture> {
+    pub fn take(&mut self, width: usize, height: usize, border: usize) -> Result<Picture<T>> {
         let (released, kept): (Vec<_>, Vec<_>) = self
             .shared
             .drain(..)
@@ -38,14 +47,14 @@ impl PicturePool {
 
     /// Share the decoded `picture` with the DPB (if it is a reference) and
     /// the caller showing it; it is reused once neither holds it.
-    pub fn share(&mut self, picture: Picture) -> Arc<Picture> {
+    pub fn share(&mut self, picture: Picture<T>) -> Arc<Picture<T>> {
         let shared = Arc::new(picture);
         self.shared.push(shared.clone());
         shared
     }
 
     /// Keep a picture nothing else uses.
-    pub fn give_back(&mut self, picture: Picture) {
+    pub fn give_back(&mut self, picture: Picture<T>) {
         self.recycler.give(picture);
     }
 }
@@ -64,7 +73,7 @@ mod tests {
 
     #[test]
     fn released_references_are_reused() {
-        let mut pool = PicturePool::default();
+        let mut pool = PicturePool::<u8>::default();
         let picture = pool.take(16, 16, 0).unwrap();
         let shared = pool.share(picture);
         let pointer = address(&shared);

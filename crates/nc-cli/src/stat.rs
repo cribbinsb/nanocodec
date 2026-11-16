@@ -148,7 +148,7 @@ fn h264(data: &[u8]) -> Result<StreamStats, String> {
     decoder.collect_stats(StreamStats::default());
     for_each_packet(data, |packet| {
         for nal in nc_common::decode::annex_b_units(packet).map_err(|e| e.to_string())? {
-            decoder.decode_nal(nal).map_err(|e| e.to_string())?;
+            decoder.push_nal(nal).map_err(|e| e.to_string())?;
         }
         Ok(())
     })?;

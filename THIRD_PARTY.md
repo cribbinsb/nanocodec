@@ -693,6 +693,11 @@ Reimplemented in Rust from dav2d (licence text checked at the pin above,
   (`setup_wiener_qval_approx_data`); `wiener_tables.rs` is generated from
   `src/wiener_tables.c` and `src/tables.c` by
   `tools/codegen/gen_av2_wiener_tables.py`.
+- Film grain: `crates/nc-av2/src/general/film_grain.rs` from `src/obu.c`
+  (`parse_fgm_hdr`), `src/lib.c` (`has_grain`) and `src/fg_apply_tmpl.c`
+  (`dav2d_apply_grain`); AV2's grain block layout in
+  `crates/nc-dsp/src/av1_film_grain/` (`GrainBlocks`) from
+  `src/filmgrain_tmpl.c` (`fgy_32x32xn_c`, `fguv_32x32xn_c`).
 
 ## VVenC — BSD-3-Clause-Clear
 

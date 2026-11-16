@@ -28,17 +28,18 @@ pub fn h264(data: &[u8]) {
             }
         }
         Mode::Cli | Mode::CliAllLayers => {
-            let mut queue = nc_h264::OutputQueue::default();
-            let read = |frame: nc_h264::DecodedFrame| {
-                super::read_window(&frame.picture, frame.origin, frame.size);
+            let read = |decoder: &mut nc_h264::Decoder| {
+                while let Some(frame) = decoder.next_output() {
+                    super::read_decoded(&frame);
+                }
             };
             let _ = framing::read_nal_units(&mut &data[..], |nal| {
-                if let Some(frame) = decoder.decode_nal(nal).map_err(|e| e.to_string())? {
-                    queue.push(frame).into_iter().for_each(read);
-                }
+                decoder.push_nal(nal).map_err(|e| e.to_string())?;
+                read(&mut decoder);
                 Ok(())
             });
-            queue.flush().into_iter().for_each(read);
+            decoder.flush();
+            read(&mut decoder);
         }
     }
 }

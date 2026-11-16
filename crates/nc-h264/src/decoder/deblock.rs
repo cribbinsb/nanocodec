@@ -14,20 +14,24 @@
 
 use core::ops::Range;
 
-use nc_dsp::{Dsp, H264EdgeParams, H264MbEdges};
+use nc_common::BitDepths;
+use nc_dsp::{Dsp, H264EdgeParams, H264MbEdges, Pixel};
 use nc_encoder::Mv;
 
 use super::Planes;
 use super::mbstate::{MbKind, MbState};
+use super::transform::chroma_qp_at;
 use crate::deblock::{DEBLOCK_IDC_NO_SLICE_EDGES, DeblockControl};
-use crate::tables::{DEBLOCK_ALPHA, DEBLOCK_BETA, DEBLOCK_TC0, chroma_qp};
+use crate::tables::{DEBLOCK_ALPHA, DEBLOCK_BETA, DEBLOCK_TC0};
 
 /// Vector difference (quarter samples) from which `bS` is 1 (§8.7.2.1).
 const MV_THRESHOLD: i32 = 4;
 /// Largest `indexA` / `indexB` (eqs. 8-461, 8-462).
 const MAX_INDEX: i32 = 51;
-/// QPs (luma and chroma) 0..=51, and so their averages.
-const QP_COUNT: usize = 52;
+/// Luma and chroma QPs run from `−QpBdOffset` (−12 at 10 bits) to 51; the
+/// threshold table is indexed by their average plus [`QP_BIAS`].
+const QP_BIAS: i32 = 12;
+const QP_COUNT: usize = 52 + QP_BIAS as usize;
 /// `bS` of macroblock edges and internal edges next to intra samples.
 const BS_INTRA_MB_EDGE: u8 = 4;
 const BS_INTRA: u8 = 3;
@@ -40,24 +44,40 @@ pub(super) struct SliceFilter {
     pub chroma_qp_offset: [i8; 2],
     /// A B slice: its macroblocks may predict from list 1.
     pub b_slice: bool,
-    /// The thresholds at each average QP, under `control`'s offsets.
+    /// `QpBdOffsetC`: chroma QPs start at its negative.
+    qp_bd_offset_c: i32,
+    /// The thresholds at each average QP (biased by [`QP_BIAS`]), under
+    /// `control`'s offsets.
     thresholds: [Thresholds; QP_COUNT],
 }
 
 impl SliceFilter {
-    pub fn new(control: DeblockControl, chroma_qp_offset: [i8; 2], b_slice: bool) -> Self {
+    pub fn new(
+        control: DeblockControl,
+        chroma_qp_offset: [i8; 2],
+        b_slice: bool,
+        depths: BitDepths,
+    ) -> Self {
         Self {
             control,
             chroma_qp_offset,
             b_slice,
-            thresholds: core::array::from_fn(|average| Thresholds::at_average(average, control)),
+            qp_bd_offset_c: 6 * depths.chroma.above_eight() as i32,
+            thresholds: core::array::from_fn(|index| {
+                Thresholds::at_average(index as i32 - QP_BIAS, control)
+            }),
         }
     }
 
     /// The thresholds of an edge between QPs `qp_p` and `qp_q` (eq.
     /// 8-460: their rounded average), by table.
-    fn thresholds(&self, qp_p: u8, qp_q: u8) -> Thresholds {
-        self.thresholds[(usize::from(qp_p) + usize::from(qp_q) + 1) >> 1]
+    fn thresholds(&self, qp_p: i32, qp_q: i32) -> Thresholds {
+        self.thresholds[(((qp_p + qp_q + 1) >> 1) + QP_BIAS) as usize]
+    }
+
+    /// `QPc` of component `comp` of a macroblock with `QPY` `qp`.
+    fn chroma_qp(&self, qp: i32, comp: usize) -> i32 {
+        chroma_qp_at(qp, self.chroma_qp_offset[comp], self.qp_bd_offset_c)
     }
 }
 
@@ -76,9 +96,9 @@ struct Thresholds {
 }
 
 impl Thresholds {
-    /// The thresholds at the average QP `average` (eqs. 8-461, 8-462).
-    fn at_average(average: usize, control: DeblockControl) -> Self {
-        let average = average as i32;
+    /// The thresholds at the average QP `average` (eqs. 8-461, 8-462), at
+    /// 8 bits (the kernels scale them to the depth).
+    fn at_average(average: i32, control: DeblockControl) -> Self {
         let index =
             |offset_div2: i8| (average + 2 * i32::from(offset_div2)).clamp(0, MAX_INDEX) as usize;
         let index_a = index(control.alpha_offset_div2);
@@ -124,10 +144,10 @@ impl RowDeblocker {
     }
 
     /// Filter every row not yet filtered up to `last` (inclusive).
-    pub fn filter_through(
+    pub fn filter_through<T: Pixel>(
         &mut self,
         last: usize,
-        planes: &mut Planes<'_>,
+        planes: &mut Planes<'_, T>,
         ctx: &DeblockContext<'_>,
     ) {
         if last >= self.done {
@@ -146,23 +166,28 @@ pub(super) struct DeblockContext<'a> {
     pub first_slice: u32,
     pub slices: &'a [SliceFilter],
     pub monochrome: bool,
+    pub depths: BitDepths,
 }
 
 /// Filter the macroblock rows `rows` of `picture`: one instance for
 /// pictures with B slices so far, one (list 0 only) for the others.
-fn deblock_rows(ctx: &DeblockContext<'_>, planes: &mut Planes<'_>, rows: Range<usize>) {
+fn deblock_rows<T: Pixel>(
+    ctx: &DeblockContext<'_>,
+    planes: &mut Planes<'_, T>,
+    rows: Range<usize>,
+) {
     if ctx.slices.iter().any(|s| s.b_slice) {
-        deblock_rows_of::<true>(ctx, planes, rows);
+        deblock_rows_of::<true, T>(ctx, planes, rows);
     } else {
-        deblock_rows_of::<false>(ctx, planes, rows);
+        deblock_rows_of::<false, T>(ctx, planes, rows);
     }
 }
 
 /// [`deblock_rows`] of a picture with (`BI`) or without B slices.
 #[inline(never)]
-fn deblock_rows_of<const BI: bool>(
+fn deblock_rows_of<const BI: bool, T: Pixel>(
     ctx: &DeblockContext<'_>,
-    planes: &mut Planes<'_>,
+    planes: &mut Planes<'_, T>,
     rows: Range<usize>,
 ) {
     let DeblockContext {
@@ -172,13 +197,16 @@ fn deblock_rows_of<const BI: bool>(
         first_slice,
         slices,
         monochrome,
+        depths,
     } = *ctx;
+    // Folds to the 8-bit constants in the 8-bit instance.
+    let depths = depths.of::<T>();
     if slices.iter().all(|s| !s.control.filters()) {
         return;
     }
     let [luma, cb, cr] = planes;
     for addr in rows.start * width_mbs..rows.end * width_mbs {
-        let Some(bs) = strengths::<BI>(mbs, width_mbs, (first_slice, slices), addr) else {
+        let Some(bs) = strengths::<BI, T>(mbs, width_mbs, (first_slice, slices), addr) else {
             continue;
         };
         let mb = &mbs[addr];
@@ -189,31 +217,34 @@ fn deblock_rows_of<const BI: bool>(
         let neighbour_qp = [addr.wrapping_sub(1), addr.wrapping_sub(width_mbs)]
             .map(|n| mbs.get(n).map_or(0, filter_qp));
         let qp = filter_qp(mb);
-        let luma_edges = mb_edges(&bs, LUMA_EDGES, |edge_0, dir| {
+        let luma_edges = mb_edges::<T>(&bs, LUMA_EDGES, |edge_0, dir| {
             let qp_p = if edge_0 { neighbour_qp[dir] } else { qp };
             filter.thresholds(qp_p, qp)
         });
-        dsp.h264_deblock_mb_luma(luma, (mx * 16, my * 16), &luma_edges);
+        dsp.at(depths.luma)
+            .h264_deblock_mb_luma(luma, (mx * 16, my * 16), &luma_edges);
         if monochrome {
             continue;
         }
         // 4:2:0 chroma edges lie on luma edges 0 and 2 and take their bS
         // (§8.7.2.1); QPs map through each component's offset.
         let chroma = |comp: usize| {
-            let offset = filter.chroma_qp_offset[comp];
-            mb_edges(&bs, CHROMA_EDGES, |edge_0, dir| {
-                let qp_p = if edge_0 { neighbour_qp[dir] } else { qp };
-                filter.thresholds(chroma_qp(qp_p, offset), chroma_qp(qp, offset))
+            // Mapped once per macroblock, not per edge.
+            let q = filter.chroma_qp(qp, comp);
+            let p = neighbour_qp.map(|n| filter.chroma_qp(n, comp));
+            mb_edges::<T>(&bs, CHROMA_EDGES, |edge_0, dir| {
+                filter.thresholds(if edge_0 { p[dir] } else { q }, q)
             })
         };
         let cb_edges = chroma(0);
         let position = (mx * 8, my * 8);
+        let kernels = dsp.at(depths.chroma);
         if filter.chroma_qp_offset[0] == filter.chroma_qp_offset[1] {
             // Both planes share bS and thresholds: one call filters both.
-            dsp.h264_deblock_mb_chroma(cb, cr, position, &cb_edges);
+            kernels.h264_deblock_mb_chroma(cb, cr, position, &cb_edges);
         } else {
-            dsp.h264_deblock_mb_chroma_plane(cb, position, &cb_edges);
-            dsp.h264_deblock_mb_chroma_plane(cr, position, &chroma(1));
+            kernels.h264_deblock_mb_chroma_plane(cb, position, &cb_edges);
+            kernels.h264_deblock_mb_chroma_plane(cr, position, &chroma(1));
         }
     }
 }
@@ -227,7 +258,11 @@ const CHROMA_EDGES: u8 = 0b0101;
 /// macroblock with strengths `bs` as nc-dsp's macroblock form, with the
 /// thresholds `thresholds(is_edge_0, direction)`. Edges whose bS is all
 /// 0 are left out of the mask (filtered as nothing).
-fn mb_edges(
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "one copy per sample type keeps the 8-bit instance inlined (high-bit-depth handoff)"
+)]
+fn mb_edges<T>(
     bs: &Strengths,
     edges: u8,
     thresholds: impl Fn(bool, usize) -> Thresholds,
@@ -251,13 +286,17 @@ fn mb_edges(
 }
 
 /// `QP_Y` as the filter sees it: 0 for `I_PCM` (§8.7.2.2).
-fn filter_qp(mb: &MbState) -> u8 {
-    if mb.kind == MbKind::IPcm { 0 } else { mb.qp }
+fn filter_qp(mb: &MbState) -> i32 {
+    if mb.kind == MbKind::IPcm {
+        0
+    } else {
+        i32::from(mb.qp)
+    }
 }
 
 /// The boundary strengths of macroblock `addr`, or `None` when it is not
 /// filtered or every strength is 0.
-fn strengths<const BI: bool>(
+fn strengths<const BI: bool, T>(
     mbs: &[MbState],
     width_mbs: usize,
     (first_slice, slices): (u32, &[SliceFilter]),
@@ -282,22 +321,22 @@ fn strengths<const BI: bool>(
     let mut out = [[[0u8; 4]; 4]; 2];
     let q_uniform = is_uniform_inter(mb);
     let [vertical, horizontal] = &mut out;
-    direction_strengths::<0, BI>(mb, left, q_uniform, vertical);
-    direction_strengths::<1, BI>(mb, above, q_uniform, horizontal);
+    direction_strengths::<0, BI, T>(mb, left, q_uniform, vertical);
+    direction_strengths::<1, BI, T>(mb, above, q_uniform, horizontal);
     (out != [[[0; 4]; 4]; 2]).then_some(out)
 }
 
 /// The strengths of the four luma edges of direction `DIR` (0 vertical) of
 /// `mb`, with `neighbour` across edge 0; only edge 0 when `mb` is a
 /// uniform inter macroblock.
-fn direction_strengths<const DIR: usize, const BI: bool>(
+fn direction_strengths<const DIR: usize, const BI: bool, T>(
     mb: &MbState,
     neighbour: Option<&MbState>,
     q_uniform: bool,
     out: &mut [[u8; 4]; 4],
 ) {
     if let Some(p_mb) = neighbour {
-        out[0] = edge_strengths::<DIR, BI>(p_mb, mb, 0);
+        out[0] = edge_strengths::<DIR, BI, T>(p_mb, mb, 0);
     }
     if q_uniform {
         return;
@@ -306,7 +345,7 @@ fn direction_strengths<const DIR: usize, const BI: bool>(
     // block edges and are not filtered (§8.7).
     let step = if mb.transform_8x8 { 2 } else { 1 };
     for edge in (step..4).step_by(step) {
-        out[edge] = edge_strengths::<DIR, BI>(mb, mb, edge);
+        out[edge] = edge_strengths::<DIR, BI, T>(mb, mb, edge);
     }
 }
 
@@ -322,7 +361,11 @@ fn is_uniform_inter(mb: &MbState) -> bool {
 /// coefficient rule is evaluated for all four segments at once on the
 /// blocks' coded-bit masks; the motion rule only where it decides, and
 /// once for the whole edge when both sides have a single vector.
-fn edge_strengths<const DIR: usize, const BI: bool>(
+#[allow(
+    clippy::extra_unused_type_parameters,
+    reason = "one copy per sample type keeps the 8-bit instance inlined (high-bit-depth handoff)"
+)]
+fn edge_strengths<const DIR: usize, const BI: bool, T>(
     p_mb: &MbState,
     mb: &MbState,
     edge: usize,

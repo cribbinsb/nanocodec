@@ -108,9 +108,6 @@ fn check_frame_tools(sequence: &SequenceHeader, header: &FrameHeader) -> Result<
     {
         return unsupported("AV2 loop restoration");
     }
-    if header.film_grain.is_some() {
-        return unsupported("AV2 film grain");
-    }
     if !header.is_intra() {
         if header.force_integer_mv || header.mv_precision != QUARTER_SAMPLE {
             return unsupported("AV2 motion vector precision other than quarter-sample");

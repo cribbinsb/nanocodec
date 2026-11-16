@@ -2,6 +2,9 @@
 //! `residual_block_cavlc()` (§7.3.5.3.2, §9.2), with `nC` from the
 //! neighbouring blocks' `TotalCoeff` (§9.2.1).
 
+use core::marker::PhantomData;
+
+use super::mb::PCM_LUMA_SAMPLES;
 use super::mbstate::{MbState, Neighbours};
 use super::reader::Reader;
 use super::slice::SliceType;
@@ -23,9 +26,10 @@ const MAX_SUB_MB_TYPE_P: u32 = 3;
 const MAX_SUB_MB_TYPE_B: u32 = 12;
 const MAX_CHROMA_PRED_MODE: u32 = 3;
 const REM_INTRA_PRED_MODE_BITS: u32 = 3;
-/// `mb_qp_delta` range (§7.4.5).
-const MIN_QP_DELTA: i32 = -26;
-const MAX_QP_DELTA: i32 = 25;
+/// `mb_qp_delta` range (§7.4.5: ±(26 + `QpBdOffsetY` / 2), here at 10 bits;
+/// the QP wraps into the stream's own range, eq. 7-37).
+const MIN_QP_DELTA: i32 = -(26 + 6);
+const MAX_QP_DELTA: i32 = 25 + 6;
 /// Bound on `|mvd|` for robustness against hostile input.
 const MAX_ABS_MVD: i32 = 1 << 15;
 /// `nC` from which `coeff_token` is a 6-bit fixed-length code (Table 9-5).
@@ -121,14 +125,21 @@ impl CavlcTables {
 }
 
 /// The CAVLC syntax decoder of one slice.
-pub(super) struct CavlcSyntax<'a, 't> {
+/// `T`: the decoder's sample type, unused but giving each instance its own
+/// copy of the methods (as `CabacSyntax`).
+pub(super) struct CavlcSyntax<'a, 't, T = u8> {
     pub reader: Reader<'a>,
     tables: &'t CavlcTables,
+    sample: PhantomData<T>,
 }
 
-impl<'a, 't> CavlcSyntax<'a, 't> {
+impl<'a, 't, T> CavlcSyntax<'a, 't, T> {
     pub fn new(reader: Reader<'a>, tables: &'t CavlcTables) -> Self {
-        Self { reader, tables }
+        Self {
+            reader,
+            tables,
+            sample: PhantomData,
+        }
     }
 
     /// `mb_skip_run`.
@@ -280,7 +291,7 @@ impl<'a, 't> CavlcSyntax<'a, 't> {
 #[cfg(test)]
 pub(crate) fn block_for_tests(bytes: &[u8], nc: i32, max_coeffs: usize) -> Vec<i32> {
     let tables = CavlcTables::new();
-    let mut syntax = CavlcSyntax::new(Reader::new(bytes), &tables);
+    let mut syntax = CavlcSyntax::<u8>::new(Reader::new(bytes), &tables);
     let mut coeffs = Coeffs::new();
     syntax
         .residual(nc, max_coeffs, &mut coeffs)
@@ -307,7 +318,7 @@ fn luma_nc(nb: &Neighbours<'_>, cur: &MbState, x4: usize, y4: usize) -> i32 {
     predicted_nc(count(nb.left(cur, x4, y4)), count(nb.above(cur, x4, y4)))
 }
 
-impl MbSyntax for CavlcSyntax<'_, '_> {
+impl<T> MbSyntax for CavlcSyntax<'_, '_, T> {
     #[cfg(feature = "analysis")]
     fn bits_consumed(&self) -> usize {
         self.reader.position()
@@ -476,11 +487,17 @@ impl MbSyntax for CavlcSyntax<'_, '_> {
         Ok(())
     }
 
-    fn pcm_samples(&mut self, out: &mut [u8]) -> Result<()> {
+    fn pcm_samples(&mut self, out: &mut [u16], bits: [u32; 2]) -> Result<()> {
         self.reader.align(false)?;
-        let bytes = self.reader.remaining_bytes();
-        let samples = bytes.get(..out.len()).ok_or(DecodeError::Truncated)?;
-        out.copy_from_slice(samples);
-        self.reader.skip(out.len() * 8)
+        read_pcm(&mut self.reader, out, bits)
     }
+}
+
+/// `pcm_sample_luma` (`bits[0]` bits each, the first
+/// [`PCM_LUMA_SAMPLES`]) and `pcm_sample_chroma` (`bits[1]`) into `out`.
+pub(super) fn read_pcm(r: &mut Reader<'_>, out: &mut [u16], bits: [u32; 2]) -> Result<()> {
+    for (i, sample) in out.iter_mut().enumerate() {
+        *sample = r.bits(bits[usize::from(i >= PCM_LUMA_SAMPLES)])? as u16;
+    }
+    Ok(())
 }
