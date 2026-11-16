@@ -10,7 +10,8 @@
 //! (as a periodic key on a waterfall did in the browser demo), and checks
 //! that the static half returns to the quality of an undisturbed stream
 //! (and that without the term it does not). H.264 runs flat and with the
-//! Default's adaptive layers and the H.264 Fast / H.264 Faster / H.264 Veryfast presets: in a
+//! Default's adaptive layers and the H.264 Fast / H.264 Faster / H.264 Veryfast presets (and AV1
+//! Faster / Veryfast): in a
 //! layered stream the static half recovers at the next base-layer frame,
 //! where the reuse term refines (`nc-encoder` `on_reuse_chain`). Every
 //! shipped preset of every codec runs too: a preset's speed shortcut can
@@ -587,11 +588,10 @@ fn vp9_three_layer_svc_recovers_every_upper_layer() {
 
 #[test]
 fn av1_layered_streams_recover_at_the_next_base_frame() {
-    check::<nc_av1::Av1Backend>(
-        Codec::Av1,
-        &shipped(Codec::Av1, 1, "faster"),
-        &LAYERED_RECOVERY,
-    );
+    // Faster layers where its gate opens; Veryfast layers every stream.
+    for name in ["faster", "veryfast"] {
+        check::<nc_av1::Av1Backend>(Codec::Av1, &shipped(Codec::Av1, 1, name), &LAYERED_RECOVERY);
+    }
 }
 
 #[test]
