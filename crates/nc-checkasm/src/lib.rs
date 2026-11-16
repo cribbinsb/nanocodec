@@ -24,6 +24,7 @@ mod bench_vp9_filter;
 mod bench_vp9_line;
 mod bench_vp9_mc;
 pub mod check;
+mod check_analysis_stats;
 mod check_av1_conformant;
 mod check_av1_deblock;
 mod check_av1_grain;

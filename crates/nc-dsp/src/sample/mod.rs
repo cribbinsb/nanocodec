@@ -51,6 +51,7 @@ pub(crate) mod simd128;
 
 /// Sum and sum of squares of a block's samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
 pub struct Moments {
     /// Sum of samples (at most 64 * 255 for 8x8).
     pub sum: u32,

@@ -38,7 +38,9 @@
 //! by comparing consecutive frames. Live camera input has no scene cuts.
 
 use nc_common::{Picture, Plane, PlaneIndex, PlaneView};
-use nc_dsp::{Dsp, Moments};
+use nc_dsp::{AnalysisChanges, Dsp, Moments};
+
+pub use nc_dsp::AnalysisBlock as BlockStats;
 
 use crate::pyramid::Downsample;
 
@@ -91,23 +93,6 @@ const EVEN_ROW_SAD_SCALE: u16 = EVEN_ROW_SCALE as u16;
 /// and variances are unbiased (ratio 0.98-1.00).
 const EVEN_ROW_SUB_BLOCK_RATIO: f32 = 1.5;
 
-/// Statistics of one 8x8 luma block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct BlockStats {
-    /// Mean sample value.
-    pub mean: u8,
-    /// Sum of the block's samples, exact (`mean` is rounded). With
-    /// `sum_sq_dev` it gives the block's exact moments ([`Self::sum_sq`]).
-    pub sum: u16,
-    /// Sum of squared deviations from the mean (64 x the variance).
-    pub sum_sq_dev: u32,
-    /// SAD against the co-located block of the previous frame (`None` for
-    /// the first frame); an 8x8 SAD, at most `64 * 255`.
-    pub sad_prev: Option<u16>,
-    /// Unchanged since the previous frame (see module docs).
-    pub is_static: bool,
-}
-
 /// Frame-level results of pre-analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreAnalysis {
@@ -117,17 +102,6 @@ pub struct PreAnalysis {
     pub static_fraction: f32,
     /// Mean luma of the frame (for lighting/exposure-jump detection).
     pub mean_luma: f32,
-}
-
-impl BlockStats {
-    /// Sum of the block's squared samples. `sum_sq_dev` is
-    /// `floor((64 * sum_sq - sum^2) / 64)`, which is `sum_sq - ceil(sum^2 / 64)`
-    /// since `64 * sum_sq` is a multiple of 64, so this inverts it exactly.
-    #[must_use]
-    pub fn sum_sq(&self) -> u32 {
-        let sum = u32::from(self.sum);
-        self.sum_sq_dev + (sum * sum).div_ceil(BLOCK_PIXELS)
-    }
 }
 
 impl PreAnalysis {
@@ -316,10 +290,7 @@ pub fn analyze(
                 downscale_block_row(dsp, &luma, row, level, *downsample);
             }
             let Some(prev) = prev else {
-                for (stats, m) in out.iter_mut().zip(&moments) {
-                    *stats = block_stats(*m, None, false);
-                    luma_sum += u64::from(stats.mean);
-                }
+                luma_sum += dsp.analysis_stats_row(&moments, None, out).mean_sum;
                 continue;
             };
             match stat_rows {
@@ -328,24 +299,19 @@ pub fn analyze(
                 }
                 StatRows::Even => spread_luma_halves(&luma_halves, half, &mut quads),
             }
-            // Each chroma 8x8 block covers a pair of luma blocks per row: its
-            // top quadrant pair belongs to the strip's first luma row, the
-            // bottom pair to the second, one quadrant per luma block.
-            let pairs = out
-                .chunks_mut(CHROMA_PAIR)
-                .zip(moments.chunks(CHROMA_PAIR))
-                .zip(quads.chunks(CHROMA_PAIR))
-                .zip(chroma[0].iter().zip(&chroma[1]));
-            for (((stats, moments), quads), (u, v)) in pairs {
-                for (i, ((stats, m), quad)) in stats.iter_mut().zip(moments).zip(quads).enumerate()
-                {
-                    let q = CHROMA_PAIR * half + i;
-                    let (sad, is_static) = limits.classify(*quad, u[q].max(v[q]));
-                    static_count += usize::from(is_static);
-                    *stats = block_stats(*m, Some(sad), is_static);
-                    luma_sum += u64::from(stats.mean);
-                }
-            }
+            let totals = dsp.analysis_stats_row(
+                &moments,
+                Some(AnalysisChanges {
+                    luma: &quads,
+                    chroma: [&chroma[0], &chroma[1]],
+                    bottom: half != 0,
+                    block_limit: limits.block,
+                    quarter_limit: limits.sub_block,
+                }),
+                out,
+            );
+            static_count += totals.static_blocks;
+            luma_sum += totals.mean_sum;
         }
     }
     // Integer sums convert to `f64` exactly, as the per-block means did.
@@ -354,36 +320,6 @@ pub fn analyze(
         static_fraction: static_count as f32 / blocks.len() as f32,
         blocks: Grid::from_cells(cols, rows, blocks),
         mean_luma: mean_luma as f32,
-    }
-}
-
-impl StaticLimits {
-    /// A block's SAD from its luma quadrant SADs, and whether it is static
-    /// given those and its busiest chroma quadrant SAD. Stored as u16,
-    /// compared as u32 (the limits' type; computing in u16 cost x86 8% of
-    /// the caller's loop).
-    #[inline]
-    fn classify(self, quad: [u16; 4], chroma: u16) -> (u16, bool) {
-        let quad = quad.map(u32::from);
-        let sad = quad[0] + quad[1] + quad[2] + quad[3];
-        let busiest = quad[0].max(quad[1]).max(quad[2]).max(quad[3]);
-        // Both tests, without a branch: the first alone mispredicted on
-        // about one block in four (callgrind branch simulation, crowd 720p).
-        let is_static = (sad <= self.block) & (busiest.max(u32::from(chroma)) <= self.sub_block);
-        // Four 4x4 SADs: an 8x8 SAD, which fits u16.
-        (sad as u16, is_static)
-    }
-}
-
-/// The statistics of a block with luma `moments`.
-#[inline]
-fn block_stats(moments: Moments, sad_prev: Option<u16>, is_static: bool) -> BlockStats {
-    BlockStats {
-        mean: moments.mean_8x8(),
-        sum: moments.sum as u16,
-        sum_sq_dev: moments.sum_sq_dev_8x8(),
-        sad_prev,
-        is_static,
     }
 }
 

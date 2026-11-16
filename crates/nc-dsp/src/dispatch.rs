@@ -33,7 +33,10 @@ use crate::deblock::av2::{
 use crate::deblock::{
     self, DeblockFns, Edge, H264EdgeParams, H264MbEdges, HEVC_LINES, HEVC_REACH, HevcEdge, h264_mb,
 };
-use crate::diff::{self, DiffFns, SUBPEL_VARIANCE_POSITIONS, Variance, VarianceEnergy};
+use crate::diff::{
+    self, DiffFns, SUBPEL_VARIANCE_POSITIONS, SubpelVarianceFn, Variance, VarianceEnergy,
+    VarianceFn,
+};
 use crate::mc::{self, ConvolveFn, Filter, McFns, SubBlockMotion};
 use crate::pixel::{self, GridBest, GridRows, PixelFns};
 use crate::sample::{self, Moments, SampleFns};
@@ -63,6 +66,7 @@ pub struct Dsp {
     end_of_block: crate::end_of_block::EobFn,
     end_of_block_wide: crate::end_of_block::WideEobFn,
     intra_estimate: crate::intra_estimate::StatsFn,
+    analysis_stats: crate::analysis_stats::StatsFn,
     border_store: crate::border_store::BorderStoreFns,
     copy_plane: crate::block_copy::CopyFn,
     cdef: CdefFns,
@@ -201,6 +205,7 @@ impl Dsp {
             end_of_block: crate::end_of_block::kernel(isa),
             end_of_block_wide: crate::end_of_block::wide_kernel(isa),
             intra_estimate: crate::intra_estimate::kernel(isa),
+            analysis_stats: crate::analysis_stats::kernel(isa),
             border_store: crate::border_store::border_store_fns(isa),
             copy_plane: crate::block_copy::copy,
             cdef,
@@ -1099,6 +1104,33 @@ impl Dsp {
 }
 
 impl Dsp {
+    /// Finish the statistics and static classification of one 8x8 block row.
+    /// Inputs are moments and quadrant SADs from the corresponding sample
+    /// kernels, including scaled even-row statistics. With no previous-frame
+    /// changes, every output has `sad_prev: None` and is non-static.
+    ///
+    /// # Panics
+    /// If the moment/output lengths differ or a change plane is too short.
+    #[must_use]
+    pub fn analysis_stats_row(
+        &self,
+        moments: &[Moments],
+        changes: Option<crate::AnalysisChanges<'_>>,
+        out: &mut [crate::AnalysisBlock],
+    ) -> crate::AnalysisSummary {
+        assert_eq!(moments.len(), out.len(), "one moment per output block");
+        if let Some(c) = changes {
+            assert!(c.luma.len() >= out.len(), "luma changes cover the row");
+            assert!(
+                c.chroma.iter().all(|p| p.len() >= out.len().div_ceil(2)),
+                "chroma changes cover block pairs"
+            );
+        }
+        // SAFETY: all input/output extents are checked above; this table was
+        // constructed only for a supported ISA.
+        unsafe { (self.analysis_stats)(moments, changes, out) }
+    }
+
     /// Sum and sum of squares of each 8x8 block along a row of `src`: block
     /// i covers columns 8i..8i+8 of the top 8 rows.
     ///
@@ -2923,21 +2955,14 @@ impl Dsp {
     /// (`x`, `y`) of `reference`, refined by libaom's bilinear filter at
     /// 1/8-sample offsets: [`Self::variance`] when both offsets are zero,
     /// otherwise [`Self::sub_pixel_variance`], with the same results.
-    ///
-    /// For callers that measure one block at many positions in one large
-    /// view (mode decision): one bounds check per call, no per-position view
-    /// construction.
+    /// [`Self::window_variance`] measures one block at many positions.
     ///
     /// # Panics
     ///
     /// If the `(w + 1)` x `(h + 1)` window at (`x`, `y`) leaves `reference`,
     /// `src` is smaller than `size`, or an offset is 8 or more.
     #[must_use]
-    #[allow(
-        clippy::inline_always,
-        reason = "called per candidate vector in mode decision; the checks fold into the caller's"
-    )]
-    #[inline(always)]
+    #[inline]
     pub fn prediction_variance(
         &self,
         size: BlockSize,
@@ -2948,70 +2973,46 @@ impl Dsp {
         y_offset: usize,
         src: &PlaneView<'_>,
     ) -> Variance {
-        let (w, h) = (size.width(), size.height());
-        assert!(
-            w < reference.width()
-                && x < reference.width() - w
-                && h < reference.height()
-                && y < reference.height() - h,
-            "prediction window at ({x}, {y}) leaves the {}x{} reference",
-            reference.width(),
-            reference.height()
-        );
-        assert!(
-            x_offset < SUBPEL_VARIANCE_POSITIONS && y_offset < SUBPEL_VARIANCE_POSITIONS,
-            "sub-pixel offsets ({x_offset}, {y_offset}) out of range"
-        );
-        check_covers(size, src, "source");
-        let stride = reference.stride();
-        let window = &reference.data()[y * stride + x..];
-        // SAFETY: the subtraction-based checks cannot wrap. Together with
-        // PlaneView's validated backing extent, they prove that this offset
-        // and the full (h + 1) by (w + 1) window fit. The source is checked
-        // above, and the dispatch table selects a supported ISA.
-        unsafe {
-            if x_offset == 0 && y_offset == 0 {
-                (self.diff.variance[size.width_class()])(
-                    src.data(),
-                    src.stride(),
-                    window,
-                    stride,
-                    h,
+        self.window_variance(size, reference, src)
+            .at(x, y, x_offset, y_offset)
+            .unwrap_or_else(|| {
+                panic!(
+                    "prediction window at ({x}, {y}) leaves the {}x{} reference",
+                    reference.width(),
+                    reference.height()
                 )
-            } else {
-                (self.diff.sub_pixel_variance[size.width_class()])(
-                    window,
-                    stride,
-                    x_offset,
-                    y_offset,
-                    src.data(),
-                    src.stride(),
-                    h,
-                )
-            }
-        }
+            })
     }
 
-    /// [`Self::prediction_variance`] at four positions `(x, y, x_offset,
-    /// y_offset)` of one block (a sub-sample cross around one centre),
-    /// in one call: the windows are checked up front. The result equals four
-    /// separate calls; a shared-load kernel can replace the four kernel
-    /// calls behind this entry.
+    /// [`Self::prediction_variance`] of the `size` block `src` at any
+    /// window of `reference`, with the block, the reference and the kernels
+    /// checked and chosen once here rather than on every call: mode decision
+    /// measures each block at about ten vectors.
     ///
     /// # Panics
     ///
-    /// As [`Self::prediction_variance`] for any of the positions.
+    /// If `src` is smaller than `size`.
     #[must_use]
-    pub fn prediction_variance_x4(
+    #[inline]
+    pub fn window_variance<'a>(
         &self,
         size: BlockSize,
-        reference: &PlaneView<'_>,
-        positions: [(usize, usize, usize, usize); 4],
-        src: &PlaneView<'_>,
-    ) -> [Variance; 4] {
-        positions.map(|(x, y, x_offset, y_offset)| {
-            self.prediction_variance(size, reference, x, y, x_offset, y_offset, src)
-        })
+        reference: &PlaneView<'a>,
+        src: &PlaneView<'a>,
+    ) -> WindowVariance<'a> {
+        check_covers(size, src, "source");
+        let (w, h) = (size.width(), size.height());
+        WindowVariance {
+            variance: self.diff.variance[size.width_class()],
+            sub_pixel_variance: self.diff.sub_pixel_variance[size.width_class()],
+            reference: reference.data(),
+            stride: reference.stride(),
+            x_end: reference.width().saturating_sub(w),
+            y_end: reference.height().saturating_sub(h),
+            src: src.data(),
+            src_stride: src.stride(),
+            height: h,
+        }
     }
 
     /// Sum and sum of squares of `src - pred` over a `size` block.
@@ -5232,6 +5233,103 @@ impl H264Predictor {
                 frac_y,
             );
         }
+    }
+}
+
+/// One block's residual variance against windows of one reference, from
+/// [`Dsp::window_variance`]: [`Dsp::prediction_variance`] with the block,
+/// the reference and the kernels checked once, so each window checks only
+/// its own position.
+#[derive(Clone, Copy)]
+pub struct WindowVariance<'a> {
+    variance: VarianceFn,
+    sub_pixel_variance: SubpelVarianceFn,
+    reference: &'a [u8],
+    stride: usize,
+    /// A window's top-left lies left of `x_end` and above `y_end`, so that
+    /// its `(w + 1)` x `(h + 1)` samples stay inside the reference.
+    x_end: usize,
+    y_end: usize,
+    src: &'a [u8],
+    src_stride: usize,
+    height: usize,
+}
+
+impl core::fmt::Debug for WindowVariance<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WindowVariance")
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WindowVariance<'_> {
+    /// [`Dsp::prediction_variance`] at whole-sample position (`x`, `y`) and
+    /// 1/8-sample offsets (`x_offset`, `y_offset`), or `None` if the
+    /// `(w + 1)` x `(h + 1)` window there leaves the reference.
+    ///
+    /// # Panics
+    ///
+    /// If an offset is 8 or more.
+    #[must_use]
+    #[allow(
+        clippy::inline_always,
+        reason = "called per candidate vector in mode decision; the position check folds into the caller's"
+    )]
+    #[inline(always)]
+    pub fn at(&self, x: usize, y: usize, x_offset: usize, y_offset: usize) -> Option<Variance> {
+        if x >= self.x_end || y >= self.y_end {
+            return None;
+        }
+        assert!(
+            x_offset < SUBPEL_VARIANCE_POSITIONS && y_offset < SUBPEL_VARIANCE_POSITIONS,
+            "sub-pixel offsets ({x_offset}, {y_offset}) out of range"
+        );
+        let window = &self.reference[y * self.stride + x..];
+        // SAFETY: `x < x_end` and `y < y_end` put the window's last sample at
+        // column `x + w < width` and row `y + h < height` of the reference
+        // view, whose backing extent `PlaneView` validated; the source was
+        // checked to cover the block when the handle was made, and the
+        // kernels come from the table built for a supported ISA.
+        Some(unsafe {
+            if x_offset == 0 && y_offset == 0 {
+                (self.variance)(self.src, self.src_stride, window, self.stride, self.height)
+            } else {
+                (self.sub_pixel_variance)(
+                    window,
+                    self.stride,
+                    x_offset,
+                    y_offset,
+                    self.src,
+                    self.src_stride,
+                    self.height,
+                )
+            }
+        })
+    }
+
+    /// [`Self::at`] at four positions `(x, y, x_offset, y_offset)` (a
+    /// sub-sample cross around one centre), or `None` if any window leaves
+    /// the reference. All four are checked before any is measured; a
+    /// shared-load kernel can replace the four kernel calls behind this
+    /// entry.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::at`] for any of the positions.
+    #[must_use]
+    #[inline]
+    pub fn at_four(&self, positions: [(usize, usize, usize, usize); 4]) -> Option<[Variance; 4]> {
+        if positions
+            .iter()
+            .any(|&(x, y, _, _)| x >= self.x_end || y >= self.y_end)
+        {
+            return None;
+        }
+        Some(positions.map(|(x, y, x_offset, y_offset)| {
+            self.at(x, y, x_offset, y_offset)
+                .expect("every position was checked")
+        }))
     }
 }
 

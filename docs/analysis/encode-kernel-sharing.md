@@ -180,6 +180,7 @@ kernels only.
 | `nc_vp9::transform::{quantize,forward}` | 0.7 / 0.5, 1.1 / 0.6 | quantise, hybrid forward | `vp9_quant`/AV1 quantiser; AV1 forward lanes |
 | `nc_av1::backend::quantized_eob` | 1.6 (crowd) | end of block | **Done** (2026-11-16): shared `Dsp::end_of_block` over the codec's `eob_table` (scan index + 1 per raster position; libaom/SVT `iscan`); AVX2 16, AVX-512 32, NEON/SIMD128 8 levels a step. AV1 Default -1.8 % instructions |
 | `nc_encoder::intra_estimate::estimate` | 1.0 (AV1 crowd) | sums, squares, four directional SSEs over every other row and column | **Done** (2026-11-16): `Dsp::intra_estimate_stats` (even samples by low-byte mask or `uzp1`; `vpmaddwd`, `umull`+`uadalp`, `dot`) |
+| `nc_analysis::preanalysis::analyze` finishing loop | 1.05M instructions/P, lowlight | mean/variance/SAD/static classification across blocks | **Moved** (2026-11-16): `Dsp::analysis_stats_row`, one graph across 8 AVX2 / 16 ICL / 4 NEON or SIMD128 blocks. Caller + kernel 1,049,121 ->333,694 Ir/P (-68.2%), exact streams; [handoff](../handoff/astra-preanalysis-stats.md) |
 | `nc_vvc::coeff::walk_sized`, `last_significant` | 3.6 / 5.5, 1.6 | scan statistics | **Done** (2026-11-16): AV2's end of block (`5dd9da00b`) and VVC `last_significant` run `Dsp::end_of_block_wide` over end-of-block tables of their scans (VVC: one per grouped rectangle, `scan::rect_eob`). Still open: nonzero count, level-magnitude classes |
 | `nc_av2::coeff::levels::base_context` | 1.4 / 1.8 | neighbour magnitude context | same scan-statistics kernel (context tables stay in the codec) |
 | `nc_hevc::backend::intra_refs`, `nc_hevc::predict::oriented` | 1.6 / 1.8, 1.5 / 1.9 | reference build/substitute/filter, angular | `hevc_intra` angular kernel + shared [1 2 1] filter (section 4) |
@@ -331,14 +332,16 @@ Method notes for the next agent:
 | HEVC/VVC short luma filters in `deblock/short_luma.rs` (vs `7b3c81724`) | | +0.01 | -0.06 | | | |
 | HEVC 1-D DCTs on the AV2 partial-butterfly engine, no quad padding (vs `98b609f22`) | | -0.08 | -0.24 | | | -0.01 |
 | SVT packed-byte 4/8-wide variance/energy/block sums (`2975ad0fa` vs immediate parent `d77fd2d57`; memory-operand row inserts, not the rejected scalar-gather widening trial) | | -0.243 | -0.073 | | -0.326 | |
+| Preanalysis finishing statistics across blocks (`f28e49ca3` vs `b7bdce7f6`) | | -0.668 | -0.359 | | -0.534 | |
 
 Streams byte-identical at every step (`preset_identity`, all six codecs;
 the AVX-512 rows also AVX2 against AVX-512 on the Ice Lake box).
 
 Not moved into kernels (2026-11-16), with the reason: `nc_analysis::noise::update` is a
 selection over the block grid (bucket counts and `select_nth`), not pixel arithmetic;
-`preanalysis::analyze` and `zero_residual` already call `sad_quads_8x8_row` and
-`variance_8x8_row`, and their remaining self cost is per-block classification glue.
+`zero_residual` already calls shared row kernels. The preanalysis finishing
+loop has since moved to `Dsp::analysis_stats_row` (above); its pixel moments
+and SAD row kernels were already shared.
 
 ## Hot kernels still on 128-bit lanes (AVX2 tier)
 

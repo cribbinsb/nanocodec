@@ -16,6 +16,9 @@
 //!   [`Dsp::with_isa`] (used by tests and benchmarks).
 //! - SIMD modules contain kernels only, never control logic.
 
+mod analysis_stats;
+pub use analysis_stats::{AnalysisBlock, AnalysisChanges, AnalysisSummary};
+
 pub mod av1_film_grain;
 mod av1_intra;
 mod av1_inverse;
@@ -128,7 +131,8 @@ pub use deblock::runs::{EdgeRun, HevcChromaFilter, HevcLumaFilter};
 pub use deblock::{H264EdgeParams, H264MbEdges};
 pub use diff::{SUBPEL_VARIANCE_POSITIONS, Variance, VarianceEnergy};
 pub use dispatch::{
-    Dsp, H264Predictor, av1_inverse_add_i16_dav1d_reference, av1_inverse_has_dav1d_model,
+    Dsp, H264Predictor, WindowVariance, av1_inverse_add_i16_dav1d_reference,
+    av1_inverse_has_dav1d_model,
 };
 pub use mc::{
     Filter, SubBlockMotion, VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled,

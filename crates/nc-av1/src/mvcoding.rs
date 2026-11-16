@@ -12,8 +12,9 @@
 //! components start from the same defaults and then adapt separately.
 //!
 //! Mode decision prices far more vectors than are coded, and the CDFs change
-//! only when one is coded, so each component keeps its symbols' bit costs
-//! ([`ComponentBits`]) from the first price after a write.
+//! only when one is coded, so each CDF keeps its symbols' bit costs
+//! ([`PricedCdf`]) from the first price after it adapts: a coded component
+//! adapts only the few CDFs its symbols use, and the others keep theirs.
 
 use std::cell::OnceCell;
 
@@ -60,54 +61,61 @@ const MV_FR_SYMBOLS: usize = 4;
 /// The CDFs of one vector component (AV1 `MvClassCdf[MvCtx][comp]` etc.).
 #[derive(Debug, Clone)]
 struct ComponentCdfs {
-    sign: Cdf<2>,
-    class: Cdf<MV_CLASSES>,
-    class0: Cdf<2>,
-    bits: [Cdf<2>; 10],
-    class0_fr: [Cdf<MV_FR_SYMBOLS>; 2],
-    fr: Cdf<MV_FR_SYMBOLS>,
-    /// Every symbol's [`Cdf::bits`] under the CDFs as they stand, computed
-    /// on the first price after a write.
-    costs: OnceCell<ComponentBits>,
+    sign: PricedCdf<2>,
+    class: PricedCdf<MV_CLASSES>,
+    class0: PricedCdf<2>,
+    bits: [PricedCdf<2>; 10],
+    class0_fr: [PricedCdf<MV_FR_SYMBOLS>; 2],
+    fr: PricedCdf<MV_FR_SYMBOLS>,
 }
 
-/// [`Cdf::bits`] of every symbol of a [`ComponentCdfs`], CDF by CDF.
+/// A CDF and its every symbol's [`Cdf::bits`] as it stands, computed on the
+/// first price after it adapts.
 #[derive(Debug, Clone)]
-struct ComponentBits {
-    sign: [f32; 2],
-    class: [f32; MV_CLASSES],
-    class0: [f32; 2],
-    bits: [[f32; 2]; 10],
-    class0_fr: [[f32; MV_FR_SYMBOLS]; 2],
-    fr: [f32; MV_FR_SYMBOLS],
+struct PricedCdf<const N: usize> {
+    cdf: Cdf<N>,
+    bits: OnceCell<[f32; N]>,
 }
 
-impl ComponentBits {
-    fn of(cdfs: &ComponentCdfs) -> Self {
-        fn all<const N: usize>(cdf: &Cdf<N>) -> [f32; N] {
-            std::array::from_fn(|s| cdf.bits(s))
-        }
+impl<const N: usize> PricedCdf<N> {
+    fn new(cdf: Cdf<N>) -> Self {
         Self {
-            sign: all(&cdfs.sign),
-            class: all(&cdfs.class),
-            class0: all(&cdfs.class0),
-            bits: cdfs.bits.each_ref().map(all),
-            class0_fr: cdfs.class0_fr.each_ref().map(all),
-            fr: all(&cdfs.fr),
+            cdf,
+            bits: OnceCell::new(),
         }
+    }
+
+    /// [`Cdf::bits`] of `symbol`.
+    fn bits(&self, symbol: usize) -> f32 {
+        self.bits
+            .get_or_init(|| std::array::from_fn(|s| self.cdf.bits(s)))[symbol]
+    }
+
+    /// The CDF, to code a symbol with (which adapts it): its costs are
+    /// dropped.
+    fn coding(&mut self) -> &mut Cdf<N> {
+        self.bits.take();
+        &mut self.cdf
+    }
+}
+
+impl<const N: usize> ResetCounters for PricedCdf<N> {
+    /// The counters set the adaptation rate only, not the probabilities, so
+    /// the costs stay.
+    fn reset_counters(&mut self) {
+        self.cdf.reset_counters();
     }
 }
 
 impl Default for ComponentCdfs {
     fn default() -> Self {
         Self {
-            sign: SIGN_CDF.cdfs(),
-            class: CLASS_CDF.cdfs(),
-            class0: CLASS0_CDF.cdfs(),
-            bits: BITS_CDF.cdfs(),
-            class0_fr: CLASS0_FR_CDF.cdfs(),
-            fr: FR_CDF.cdfs(),
-            costs: OnceCell::new(),
+            sign: PricedCdf::new(SIGN_CDF.cdfs()),
+            class: PricedCdf::new(CLASS_CDF.cdfs()),
+            class0: PricedCdf::new(CLASS0_CDF.cdfs()),
+            bits: BITS_CDF.cdfs().map(PricedCdf::new),
+            class0_fr: CLASS0_FR_CDF.cdfs().map(PricedCdf::new),
+            fr: PricedCdf::new(FR_CDF.cdfs()),
         }
     }
 }
@@ -232,37 +240,35 @@ fn difference(mv: Av1Mv, pred: Av1Mv) -> [i32; 2] {
 impl ComponentCdfs {
     /// `read_mv_component` (AV1 §5.11.33) for a non-zero component.
     fn write(&mut self, w: &mut SymbolWriter, comp: i32) {
-        self.costs.take();
         let s = ComponentSymbols::of(comp);
-        w.write_bool(s.sign, &mut self.sign);
-        w.write_symbol(s.class as usize, &mut self.class, MV_CLASSES);
+        w.write_bool(s.sign, self.sign.coding());
+        w.write_symbol(s.class as usize, self.class.coding(), MV_CLASSES);
         if s.class == 0 {
-            w.write_bool(s.int_part != 0, &mut self.class0);
+            w.write_bool(s.int_part != 0, self.class0.coding());
             w.write_symbol(
                 s.fr,
-                &mut self.class0_fr[s.int_part as usize],
+                self.class0_fr[s.int_part as usize].coding(),
                 MV_FR_SYMBOLS,
             );
         } else {
             for (i, cdf) in self.bits[..s.class as usize].iter_mut().enumerate() {
-                w.write_bool((s.int_part >> i) & 1 != 0, cdf);
+                w.write_bool((s.int_part >> i) & 1 != 0, cdf.coding());
             }
-            w.write_symbol(s.fr, &mut self.fr, MV_FR_SYMBOLS);
+            w.write_symbol(s.fr, self.fr.coding(), MV_FR_SYMBOLS);
         }
     }
 
     fn bits(&self, comp: i32) -> f32 {
-        let costs = self.costs.get_or_init(|| ComponentBits::of(self));
         let s = ComponentSymbols::of(comp);
-        let mut bits = costs.sign[usize::from(s.sign)] + costs.class[s.class as usize];
+        let mut bits = self.sign.bits(usize::from(s.sign)) + self.class.bits(s.class as usize);
         if s.class == 0 {
-            bits += costs.class0[s.int_part as usize];
-            bits += costs.class0_fr[s.int_part as usize][s.fr];
+            bits += self.class0.bits(s.int_part as usize);
+            bits += self.class0_fr[s.int_part as usize].bits(s.fr);
         } else {
-            for (i, cdf_bits) in costs.bits[..s.class as usize].iter().enumerate() {
-                bits += cdf_bits[((s.int_part >> i) & 1) as usize];
+            for (i, cdf) in self.bits[..s.class as usize].iter().enumerate() {
+                bits += cdf.bits(((s.int_part >> i) & 1) as usize);
             }
-            bits += costs.fr[s.fr];
+            bits += self.fr.bits(s.fr);
         }
         bits
     }

@@ -20,7 +20,7 @@ use nc_analysis::Grid;
 use nc_analysis::preanalysis::PreAnalysis;
 use nc_analysis::still::StillMap;
 use nc_common::{Picture, Plane, PlaneIndex, PlaneView, PlaneViewMut};
-use nc_dsp::{BlockSize, Dsp, Filter, SUBPEL_VARIANCE_POSITIONS, Variance};
+use nc_dsp::{BlockSize, Dsp, Filter, SUBPEL_VARIANCE_POSITIONS, Variance, WindowVariance};
 use std::cell::{Cell, RefCell};
 
 use crate::backend::{CodecBackend, PredictionMode};
@@ -1489,6 +1489,8 @@ pub(crate) struct Measurer<'a> {
     /// view, so a measurement needs no window construction.
     padded: PlaneView<'a>,
     origin: (isize, isize),
+    /// The block's variance against windows of `padded`.
+    windows: WindowVariance<'a>,
     block: Block,
     size: BlockSize,
     /// Intra refresh: vectors this window forbids measure as
@@ -1533,20 +1535,24 @@ impl<'a> Measurer<'a> {
     ) -> Self {
         let (w, h) = leaf_extent::<B>(block);
         let plane = reference.plane(PlaneIndex::Y);
+        let src = source
+            .plane(PlaneIndex::Y)
+            .region(block.x as isize, block.y as isize, w, h)
+            .expect("blocks lie inside the coded picture");
+        let padded = plane.padded_view();
+        let size = BlockSize::new(w, h).expect("engine blocks are kernel sizes");
         Self {
             dsp,
-            src: source
-                .plane(PlaneIndex::Y)
-                .region(block.x as isize, block.y as isize, w, h)
-                .expect("blocks lie inside the coded picture"),
+            windows: dsp.window_variance(size, &padded, &src),
+            src,
             plane,
-            padded: plane.padded_view(),
+            padded,
             origin: (
                 (block.x + plane.border_x()) as isize,
                 (block.y + plane.border_y()) as isize,
             ),
             block: *block,
-            size: BlockSize::new(w, h).expect("engine blocks are kernel sizes"),
+            size,
             refresh: None,
             prediction: None,
             energy: false,
@@ -1830,24 +1836,28 @@ impl<'a> Measurer<'a> {
     /// call when all four are ordinary bilinear windows inside the padded
     /// reference.
     pub(crate) fn measure_four(&self, mvs: [Mv; 4]) -> [Variance; 4] {
-        let windows = mvs.map(|mv| self.bilinear_window(mv));
-        if let [Some(a), Some(b), Some(c), Some(d)] = windows {
-            self.dsp
-                .prediction_variance_x4(self.size, &self.padded, [a, b, c, d], &self.src)
+        if let [Some(a), Some(b), Some(c), Some(d)] = mvs.map(|mv| self.bilinear_window(mv))
+            && let Some(stats) = self.windows.at_four([a, b, c, d])
+        {
+            stats
         } else {
             mvs.map(|mv| self.measure(mv))
         }
     }
 
     /// The bilinear window `(x, y, fx, fy)` [`Self::measure`] reads in the
-    /// padded reference for `mv`, when it measures `mv` that way: allowed,
-    /// inside the padded plane, and not a whole-sample vector it measures on
-    /// even rows only.
+    /// padded reference for `mv`, when it measures `mv` that way and the
+    /// window starts inside the plane: allowed, and not a whole-sample
+    /// vector it measures on even rows only. (The window may still end
+    /// outside the plane.)
     fn bilinear_window(&self, mv: Mv) -> Option<(usize, usize, usize, usize)> {
         let (x, y, fx, fy) = self.window_of(mv);
-        let inside = self.inside(x, y);
         let even_rows_copy = fx == 0 && fy == 0 && self.even_rows.is_some();
-        (self.allows(mv) && inside && !even_rows_copy).then_some((x as usize, y as usize, fx, fy))
+        if !self.allows(mv) || even_rows_copy {
+            return None;
+        }
+        let (x, y) = padded_position(x, y)?;
+        Some((x, y, fx, fy))
     }
 
     /// Top-left of `mv`'s (w + 1) x (h + 1) bilinear window in the padded
@@ -1917,23 +1927,16 @@ impl<'a> Measurer<'a> {
         // Every vector reads a (w + 1) x (h + 1) window: within the padded
         // plane it is measured in place, otherwise from a clamped copy.
         let (x, y, fx, fy) = self.window_of(mv);
-        let inside = self.inside(x, y);
-        if inside && fx == 0 && fy == 0 && self.even_rows.is_some() {
+        if fx == 0 && fy == 0 && self.even_rows.is_some() && self.inside(x, y) {
             let window = self
                 .padded
                 .sub_view(x as usize, y as usize, w, h)
                 .expect("inside the padded plane");
             self.residual_stats(&window)
-        } else if inside {
-            self.dsp.prediction_variance(
-                self.size,
-                &self.padded,
-                x as usize,
-                y as usize,
-                fx,
-                fy,
-                &self.src,
-            )
+        } else if let Some(stats) =
+            padded_position(x, y).and_then(|(x, y)| self.windows.at(x, y, fx, fy))
+        {
+            stats
         } else {
             let (x0, y0) = (
                 self.block.x as isize + dx as isize,
@@ -1946,6 +1949,13 @@ impl<'a> Measurer<'a> {
                 .prediction_variance(self.size, &window, 0, 0, fx, fy, &self.src)
         }
     }
+}
+
+/// Position (`x`, `y`) of the padded reference as indices, `None` left of or
+/// above the plane.
+#[inline]
+fn padded_position(x: isize, y: isize) -> Option<(usize, usize)> {
+    Some((usize::try_from(x).ok()?, usize::try_from(y).ok()?))
 }
 
 /// The even rows of `view` (0, 2, …): twice the stride, half the height.
