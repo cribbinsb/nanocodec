@@ -1,29 +1,16 @@
 //! The byte-oriented engine against the literal §9.3.4 engine on random
 //! bin sequences: the slice data must be bit-identical.
 
-use nc_common::BitWriter;
+use nc_common::{BitWriter, SplitMix64};
 
 use super::reference::SpecEncoder;
 use super::{BinSink, CabacEncoder, Context, SliceKind};
 use crate::tables::CONTEXT_COUNT;
 
-/// `SplitMix64`.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-}
-
-fn header(rng: &mut Rng) -> BitWriter {
+fn header(rng: &mut SplitMix64) -> BitWriter {
     let mut out = BitWriter::new();
-    for _ in 0..(rng.next() % 4) {
-        out.put_bits((rng.next() & 0xff) as u32, 8);
+    for _ in 0..(rng.next_u64() % 4) {
+        out.put_bits((rng.next_u64() & 0xff) as u32, 8);
     }
     out
 }
@@ -49,24 +36,24 @@ fn code(sink: &mut impl BinSink, bins: &[Bin]) {
 
 #[test]
 fn byte_engine_matches_the_spec_engine() {
-    let mut rng = Rng(0x00c0_ffee);
+    let mut rng = SplitMix64::new(0x00c0_ffee);
     for case in 0..4000 {
         let kind = if case % 2 == 0 {
             SliceKind::I
         } else {
             SliceKind::P
         };
-        let qp = (rng.next() % 52) as u8;
+        let qp = (rng.next_u64() % 52) as u8;
         let prefix = header(&mut rng);
         let mut fast = CabacEncoder::new(prefix.clone(), kind, 0, qp);
         let mut spec = SpecEncoder::new(prefix, kind, qp);
         // Skewed bins (mostly MPS-like runs) exercise long renormalisation
         // runs, carries and outstanding bytes; a few contexts are hot.
-        let length = rng.next() % 3000;
-        let bias = rng.next() % 16;
+        let length = rng.next_u64() % 3000;
+        let bias = rng.next_u64() % 16;
         let bins: Vec<Bin> = (0..length)
             .map(|_| {
-                let r = rng.next();
+                let r = rng.next_u64();
                 match r % 16 {
                     0 => Bin::Bypass((r >> 8) & 1 != 0),
                     1 if (r >> 8).is_multiple_of(64) => Bin::Terminate,
@@ -92,7 +79,7 @@ fn byte_engine_matches_the_spec_engine() {
         // macroblocks are), and single bins through the encoder itself.
         let mut rest = bins.as_slice();
         while !rest.is_empty() {
-            let (run, after) = rest.split_at((rng.next() as usize % 64).min(rest.len()));
+            let (run, after) = rest.split_at((rng.next_u64() as usize % 64).min(rest.len()));
             if run.is_empty() {
                 code(&mut fast, &after[..1]);
                 rest = &after[1..];

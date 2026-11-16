@@ -502,7 +502,7 @@ mod tests {
                 };
             }
         }
-        let mut hash = 14_695_981_039_346_656_037_u64;
+        let mut hash = nc_common::FNV1A_OFFSET;
         for position in [0, 8, 24 - side] {
             for row in (-18..=18).step_by(2) {
                 for col in (-18..=18).step_by(2) {
@@ -519,7 +519,7 @@ mod tests {
                     )
                     .unwrap();
                     for sample in output {
-                        hash = (hash ^ u64::from(sample)).wrapping_mul(1_099_511_628_211);
+                        hash = nc_common::fnv1a_step(hash, u64::from(sample));
                     }
                 }
             }

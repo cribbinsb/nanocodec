@@ -1,32 +1,28 @@
-//! A small deterministic PRNG (`SplitMix64`), so test inputs are reproducible
-//! from a seed without external dependencies.
+//! The checks' random test inputs: the shared `SplitMix64` source with
+//! `usize` bounds and byte fills, reproducible from a seed.
 
-/// `SplitMix64` generator (Steele, Lea & Flood, 2014). Not cryptographic.
+use nc_common::{PlaneView, SplitMix64, fnv1a};
+
+/// Seeded random source for test inputs. Not cryptographic.
 #[derive(Debug, Clone)]
-pub struct Rng {
-    state: u64,
-}
+pub struct Rng(SplitMix64);
 
 impl Rng {
     /// A generator seeded with `seed`.
     #[must_use]
-    pub fn new(seed: u64) -> Self {
-        Self { state: seed }
+    pub const fn new(seed: u64) -> Self {
+        Self(SplitMix64::new(seed))
     }
 
     /// The next 64 random bits.
     pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+        self.0.next_u64()
     }
 
     /// A uniform value in `0..bound` (`bound > 0`); the tiny modulo bias is
     /// irrelevant for test data.
     pub fn below(&mut self, bound: usize) -> usize {
-        (self.next_u64() % bound as u64) as usize
+        self.0.below(bound as u64) as usize
     }
 
     /// A random byte.
@@ -40,19 +36,33 @@ impl Rng {
             *b = self.byte();
         }
     }
+
+    /// A `w`x`h` plane of one of four patterns (`1` black/white, `2` a flat
+    /// grey with noise, `3` a ramp with noise, otherwise random bytes): the
+    /// frames the libaom golden harnesses drew.
+    pub fn pattern_plane(&mut self, w: usize, h: usize, pattern: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(w * h);
+        for r in 0..h {
+            for c in 0..w {
+                let b = self.byte();
+                out.push(match pattern {
+                    1 => (b & 1) * 255,
+                    2 => 128 + b % 16,
+                    3 => (c * 3 + r * 5 + usize::from(b % 4)) as u8,
+                    _ => b,
+                });
+            }
+        }
+        out
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::Rng;
-
-    #[test]
-    fn deterministic_and_bounded() {
-        let (mut a, mut b) = (Rng::new(7), Rng::new(7));
-        for _ in 0..100 {
-            assert_eq!(a.next_u64(), b.next_u64());
-            assert!(a.below(13) < 13);
-            b.below(13);
-        }
-    }
+/// The FNV-1a hash of `plane`'s visible samples, row by row.
+#[must_use]
+pub fn plane_fnv1a(plane: &PlaneView<'_>) -> u64 {
+    fnv1a(
+        plane
+            .rows()
+            .flat_map(|r| r[..plane.width()].iter().copied()),
+    )
 }

@@ -1773,16 +1773,7 @@ impl Cdfs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entropy::Writer;
-    fn trace<const N: usize>(cdf: &mut Cdf<N>, hash: &mut u64) {
-        let mut writer = Writer::new();
-        for step in 0..65 {
-            writer.symbol((step * 7 + step / 3) % N, cdf).unwrap();
-            for &value in cdf.inverse() {
-                *hash = (*hash ^ u64::from(value)).wrapping_mul(1_099_511_628_211);
-            }
-        }
-    }
+    use crate::cdf_models::tests::trace;
     /// Our models update as AVM's `update_cdf` does, from the same defaults.
     #[test]
     #[allow(
@@ -1792,7 +1783,7 @@ mod tests {
     fn original_c_update_traces() {
         for (q, expected) in [0, 91, 141, 191].into_iter().zip(defaults::TRACE_HASHES) {
             let mut models = Cdfs::new(q);
-            let mut hash = 14_695_981_039_346_656_037;
+            let mut hash = nc_common::FNV1A_OFFSET;
             for v0 in &mut models.part_split {
                 for v1 in v0 {
                     trace(v1, &mut hash);

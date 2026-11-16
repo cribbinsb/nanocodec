@@ -164,6 +164,35 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   but stays under the SVT M10-M12 line (5.5 points short at its speed); in CBR it keeps its
   place above both lines, 0.55 points lower than before at 2 % less speed.
 
+### HEVC Fast against SVT M12: stages and the light pipeline (2026-11-16)
+
+- **Per P frame, box callgrind, 60 f, HEVC Fast QP 37 / M12 `--rtc` qp 46:** Johnny 33.8 M against
+  26.1 M (1.29x), WestWindEasy 96.7 M against 73.4 M (1.32x). Ours: mode decision 21 %, block
+  coding 26-38 % (of which the inter transform tree 12-18 %), planner 6-12 %, CABAC writing
+  3-9 %. M12 codes every superblock with light PD1 (regular PD1 0 instructions); its CDEF is
+  7-18 % and entropy coding 3-13 %. Script: `work/hevc-h264-speed/stages.py`.
+- **The trade the SVT M10-M12 line allows at 309 fps:** about 0.22 Weighted points per 1 % of
+  speed.
+- **Light superblocks on the new Fast** (light = no transform tree and Fast's old 25 / 50 depth
+  removal, optionally Faster's motion values; lens Weighted against x264 medium, x86 instructions
+  against the new Fast at QP 32 / 42, crowd09 and lowlight):
+  - regular share 0.5: -1.2 at -2.8 %;
+  - regular share 0.25: +1.9 at -6.9 %;
+  - with Faster's motion values, share 0.5: -0.5 at -4.5 %;
+  - with Faster's motion values, share 0: +14.6 at -18.4 %.
+  - So every light trade costs 0.58-0.96 points per 1 % of speed, three to four times the line's
+    rate: they move the point away from the line, not onto it.
+- **The other direction, one Default group added to the new Fast** (lens; instructions at QP 37,
+  30 f, key frame included):
+  - merge candidates: -4.3 at +3.9 % (0.31 points per 1 %);
+  - structure group: -4.3 at +4.3 % (0.28);
+  - motion levers: -6.3 at +18 % (0.17);
+  - trellis: -4.5 at +31 % (0.05);
+  - intra bundle: -6.0 at +41 % (0.07).
+  - Only merge and structure beat the line's rate. Both together would be about -5.5 at about
+    286 fps, against a line at -10.2 there: the gap narrows from 5.5 to about 4.7 points and does
+    not close.
+
 ## AV1 Fast re-point and quantizer gates (feature/av1-av2-speed, 2026-11-16)
 
 - **Gates landed** (6d4d2c636; streams identical at the defaults).

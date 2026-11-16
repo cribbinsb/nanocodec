@@ -173,10 +173,10 @@ mod tests {
     /// FNV-1a over (symbol, fixed CDF) pairs, as traced from original AVM
     /// for the 8×8 intra and inter splits.
     fn trace(symbols: &[(u64, &[u16])]) -> u64 {
-        let mut hash = 14_695_981_039_346_656_037_u64;
+        let mut hash = nc_common::FNV1A_OFFSET;
         for &(symbol, cdf) in symbols {
             for value in std::iter::once(symbol).chain(cdf.iter().map(|&v| u64::from(v))) {
-                hash = (hash ^ value).wrapping_mul(1_099_511_628_211);
+                hash = nc_common::fnv1a_step(hash, value);
             }
         }
         hash

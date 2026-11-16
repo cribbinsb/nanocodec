@@ -1206,11 +1206,9 @@ mod tests {
     fn hash<T: Copy + Into<i32>>(hash: &mut u64, values: &[T]) {
         for &value in values {
             let value: i32 = value.into();
-            *hash = (*hash ^ u64::from(value as u32)).wrapping_mul(1_099_511_628_211);
+            *hash = nc_common::fnv1a_step(*hash, u64::from(value as u32));
         }
     }
-
-    const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
 
     /// `tools/codegen/check_av2_dct.py` (original AVM `fwd_txfm_c`,
     /// `inv_txfm_c` and decoder dequant), by size: forward, levels, dequant,
@@ -1284,7 +1282,7 @@ mod tests {
         for dsp in dsps() {
             for (size, expected) in TxSize::ALL.into_iter().zip(DCT_HASHES) {
                 let (n, area) = (size.width(), size.coded_len());
-                let mut hashes = [FNV_OFFSET; 6];
+                let mut hashes = [nc_common::FNV1A_OFFSET; 6];
                 let mut coefficients = vec![0; area];
                 let mut dequantized = vec![0; area];
                 for q in 1..=255u8 {
@@ -1920,7 +1918,7 @@ mod tests {
         for &(size_index, type_index, expected) in &TX_TYPE_HASHES {
             let (size, tx_type) = (TxSize::ALL[size_index], TxType::ALL[type_index]);
             let (n, area) = (size.width(), size.coded_len());
-            let mut hashes = [FNV_OFFSET; 5];
+            let mut hashes = [nc_common::FNV1A_OFFSET; 5];
             let mut coefficients = vec![0; area];
             let mut levels = vec![0; area];
             let mut dequantized = vec![0; area];
@@ -2076,10 +2074,10 @@ mod tests {
             dequantize(TxSize::Tx4, &extremes, qindex, &mut dequantized).unwrap();
             assert_eq!(dequantized, EXTREME_DEQUANT[index]);
         }
-        let mut hash = FNV_OFFSET;
+        let mut hash = nc_common::FNV1A_OFFSET;
         for qindex in 0..=255 {
             for byte in quantizer_step_q3(qindex).to_le_bytes() {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211);
+                hash = nc_common::fnv1a_step(hash, u64::from(byte));
             }
         }
         assert_eq!([hash], QUANT_HASH);

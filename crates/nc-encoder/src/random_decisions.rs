@@ -44,47 +44,12 @@ const QP_OFFSET_SPAN: i32 = 12;
 /// the engine's.
 const BACKEND_SEED_SALT: u64 = 0x5EED_BAC4_E2D0_0000;
 
-/// Seeded random source for test-only decisions (`SplitMix64`: tiny, fast,
-/// reproducible). Public so a backend can randomise its own syntax choices
+/// Seeded random source for test-only decisions. Public so a backend can
+/// randomise its own syntax choices
 /// ([`CodecBackend::enable_random_decisions`]) from the same seed.
 ///
 /// [`CodecBackend::enable_random_decisions`]: crate::CodecBackend::enable_random_decisions
-#[derive(Debug, Clone)]
-pub struct DebugRng {
-    state: u64,
-}
-
-impl DebugRng {
-    /// A source seeded with `seed`.
-    #[must_use]
-    pub const fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    /// The next 64 random bits.
-    pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// True with probability `chance`/256.
-    pub fn chance(&mut self, chance: u64) -> bool {
-        self.next_u64() & 0xFF < chance
-    }
-
-    /// A uniform integer in `0..n` (`n` > 0).
-    pub fn below(&mut self, n: u64) -> u64 {
-        self.next_u64() % n
-    }
-
-    /// A uniform integer in `-span..=span`.
-    pub fn symmetric(&mut self, span: i32) -> i32 {
-        self.below((2 * span + 1) as u64) as i32 - span
-    }
-}
+pub type DebugRng = nc_common::SplitMix64;
 
 /// The engine's random partition, mode, vector and block-QP choices.
 #[derive(Debug, Clone)]

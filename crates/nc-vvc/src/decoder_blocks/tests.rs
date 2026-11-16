@@ -1,5 +1,6 @@
 //! Official-corpus syntax fingerprints captured independently from `VVdeC`.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 #[test]
 #[ignore = "requires downloaded official VVC corpus"]
 fn official_intra_syntax() {
@@ -16,9 +17,9 @@ fn official_intra_syntax() {
     let mut sequence = None;
     let mut picture = None;
     let mut frames = 0;
-    let (mut modes, mut coefficients) = (FNV_OFFSET, FNV_OFFSET);
+    let (mut modes, mut coefficients) = (FNV1A_OFFSET, FNV1A_OFFSET);
     let mut blocks = 0;
-    let mut residuals = FNV_OFFSET;
+    let mut residuals = FNV1A_OFFSET;
     for unit in nc_common::decode::annex_b_units(&bytes).unwrap() {
         let rbsp = nc_common::decode::unescape_rbsp(&unit[2..]).unwrap();
         match unit[1] >> 3 {
@@ -80,11 +81,10 @@ fn official_intra_syntax() {
     assert_eq!(coefficients, 0xe0af_9a8d_8806_93b5);
     assert_eq!(modes, 0x8e58_f1c6_5b14_7920);
 }
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 fn fingerprint(hash: &mut u64, values: impl IntoIterator<Item = i32>) {
     for value in values {
         for byte in value.to_le_bytes() {
-            *hash = (*hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            *hash = fnv1a_step(*hash, u64::from(byte));
         }
     }
 }
@@ -150,10 +150,10 @@ fn compare_reconstruction(picture: &nc_common::Picture, units: &[Unit], frame: u
                     ][plane],
                 )
                 .view();
-            let mut hash = FNV_OFFSET;
+            let mut hash = FNV1A_OFFSET;
             for dy in 0..height {
                 for &value in &view.row(y + dy)[x..x + width] {
-                    hash = (hash ^ u64::from(value)).wrapping_mul(0x0000_0100_0000_01b3);
+                    hash = fnv1a_step(hash, u64::from(value));
                 }
             }
             let key = [plane, x, y, width, height].map(|v| v as u64).to_vec();
@@ -178,11 +178,11 @@ fn compare_reconstruction(picture: &nc_common::Picture, units: &[Unit], frame: u
         assert_eq!(count, expected.len());
     }
     records.sort_unstable();
-    let mut hash = FNV_OFFSET;
+    let mut hash = FNV1A_OFFSET;
     for row in records {
         for value in row {
             for byte in value.to_le_bytes() {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(byte));
             }
         }
     }

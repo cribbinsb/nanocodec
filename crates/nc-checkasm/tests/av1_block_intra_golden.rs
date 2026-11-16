@@ -19,7 +19,7 @@
 //! extents that may stop short of the chroma block.
 
 use nc_checkasm::rng::Rng;
-use nc_common::{BitDepth, Plane, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, FNV1A_OFFSET, Plane, PlaneView, PlaneViewMut, fnv1a_step};
 use nc_dsp::intra_prediction::av1_block::cfl::CflAc;
 use nc_dsp::intra_prediction::av1_block::{BlockEdges, EdgeAvail, EdgeFilterCtx, IntraKind};
 use nc_dsp::intra_prediction::filter::FilterIntraMode;
@@ -59,8 +59,6 @@ const SIZES: [(usize, usize); 19] = [
 const MODES: u64 = 13;
 const NOMINAL_ANGLE: [u16; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0, 0, 0, 0];
 const ANGLE_STEP: i32 = 3;
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 fn draw(rng: &mut Rng, bound: usize) -> usize {
     (rng.next_u64() % bound as u64) as usize
@@ -122,11 +120,11 @@ fn case(w: usize, h: usize, rng: &mut Rng) -> Vec<u8> {
 #[test]
 fn every_shape_mode_and_edge_setting_matches_libaom() {
     for (index, (&(w, h), expected)) in SIZES.iter().zip(GOLDEN).enumerate() {
-        let mut hash = FNV_OFFSET;
+        let mut hash = FNV1A_OFFSET;
         for k in 0..CASES {
             let mut rng = Rng::new(SEED_BASE + 4096 * index as u64 + k);
             for p in case(w, h, &mut rng) {
-                hash = (hash ^ u64::from(p)).wrapping_mul(FNV_PRIME);
+                hash = fnv1a_step(hash, u64::from(p));
             }
         }
         assert_eq!(hash, expected, "{w}x{h}");
@@ -183,7 +181,7 @@ const CFL_ALPHA_MAX: i32 = 16;
 #[test]
 fn chroma_from_luma_matches_libaom() {
     for (index, (&(w, h), expected)) in CFL_SIZES.iter().zip(CFL_GOLDEN).enumerate() {
-        let mut hash = FNV_OFFSET;
+        let mut hash = FNV1A_OFFSET;
         for k in 0..CFL_CASES {
             let mut rng = Rng::new(CFL_SEED_BASE + 4096 * index as u64 + k);
             let luma: Vec<u8> = (0..LUMA_BUFFER * LUMA_BUFFER)
@@ -198,7 +196,7 @@ fn chroma_from_luma_matches_libaom() {
             let mut dst = PlaneViewMut::new(&mut prediction, w, w, h).expect("block");
             ac.predict(alpha, &mut dst, BitDepth::EIGHT);
             for p in prediction {
-                hash = (hash ^ u64::from(p)).wrapping_mul(FNV_PRIME);
+                hash = fnv1a_step(hash, u64::from(p));
             }
         }
         assert_eq!(hash, expected, "{w}x{h}");
@@ -260,7 +258,7 @@ fn filter_intra_of_every_shape_matches_libaom() {
             continue;
         };
         for (index, (&(w, h), expected)) in FILTER_SIZES.iter().zip(FILTER_GOLDEN).enumerate() {
-            let mut hash = FNV_OFFSET;
+            let mut hash = FNV1A_OFFSET;
             for k in 0..FILTER_CASES {
                 let mut rng = Rng::new(FILTER_SEED_BASE + 4096 * index as u64 + k);
                 let frame: Vec<u8> = (0..BUFFER * BUFFER).map(|_| rng.next_u64() as u8).collect();
@@ -279,7 +277,7 @@ fn filter_intra_of_every_shape_matches_libaom() {
                 let mut dst = PlaneViewMut::new(&mut prediction, w, w, h).expect("block");
                 dsp.av1_intra_predict_filter_block(&edges, mode, &mut dst);
                 for p in prediction {
-                    hash = (hash ^ u64::from(p)).wrapping_mul(FNV_PRIME);
+                    hash = fnv1a_step(hash, u64::from(p));
                 }
             }
             assert_eq!(hash, expected, "{isa:?} {w}x{h}");

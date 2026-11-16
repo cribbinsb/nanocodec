@@ -77,6 +77,7 @@ pub(crate) mod runs;
 #[allow(unsafe_code)]
 pub(crate) mod samples;
 pub(crate) mod scalar;
+pub(crate) mod short_luma;
 
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]

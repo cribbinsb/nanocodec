@@ -503,15 +503,17 @@ impl TileCdfs {
     }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::entropy::Writer;
-    fn trace<const N: usize>(cdf: &mut Cdf<N>, hash: &mut u64) {
+    /// Codes a fixed symbol walk through `cdf`, folding its adapted
+    /// state after each symbol into `hash` (the AVM update traces).
+    pub(crate) fn trace<const N: usize>(cdf: &mut Cdf<N>, hash: &mut u64) {
         let mut writer = Writer::new();
         for step in 0..65 {
             writer.symbol((step * 7 + step / 3) % N, cdf).unwrap();
             for &value in cdf.inverse() {
-                *hash = (*hash ^ u64::from(value)).wrapping_mul(1_099_511_628_211);
+                *hash = nc_common::fnv1a_step(*hash, u64::from(value));
             }
         }
     }
@@ -521,7 +523,7 @@ mod tests {
         for (q, expected) in [0, 91, 141, 191].into_iter().zip(defaults::TRACE_HASHES) {
             let mut models = TileCdfs::new(q);
             let snapshot = models.clone();
-            let mut hash = 14_695_981_039_346_656_037;
+            let mut hash = nc_common::FNV1A_OFFSET;
             for v0 in &mut models.skip {
                 for v1 in v0 {
                     for v2 in v1 {

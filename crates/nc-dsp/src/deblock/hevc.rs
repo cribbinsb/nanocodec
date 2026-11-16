@@ -11,9 +11,10 @@
 //! inputs are computed in every lane, the two lanes' values are taken out to
 //! decide per segment, and the decisions are spread back over the
 //! segment's lanes as all-ones masks, applied with `blend` (no multiplies).
-//! The strong filter is only computed when a segment chose it.
+//! The strong filter is only computed when a segment chose it. The filter
+//! arithmetic is [`super::short_luma`], shared with H.266's short filters.
 
-use super::{HEVC_LINES, HEVC_SEGMENT, HevcEdge};
+use super::{HEVC_LINES, HEVC_SEGMENT, HevcEdge, short_luma};
 use crate::simd::{I16FilterLanes, I16x8Shuffles};
 
 /// Lanes per vector, lines per call.
@@ -25,6 +26,7 @@ const POSITIONS: usize = 8;
 const SEGMENTS: usize = HEVC_LINES / HEVC_SEGMENT;
 
 /// −1 in the lanes where `a < b`, else 0.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[allow(clippy::inline_always)] // must inline into `#[target_feature]` kernels
 #[inline(always)]
 fn less<V: I16FilterLanes>(a: V, b: V) -> V {
@@ -35,13 +37,6 @@ fn less<V: I16FilterLanes>(a: V, b: V) -> V {
 #[cfg(not(target_arch = "wasm32"))]
 fn lane_mask(taken: bool) -> i16 {
     -i16::from(taken)
-}
-
-/// `Clip3(−t, t, x)` per lane.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn clip<V: I16x8Shuffles>(x: V, t: V) -> V {
-    x.max(V::splat(0).sub(t)).min(t)
 }
 
 pub(crate) use super::samples::transpose;
@@ -142,38 +137,6 @@ fn decide(e: &HevcEdge, inputs: &DecisionInputs) -> Option<Decisions> {
     any.then_some(out)
 }
 
-/// The strong filter's output of one side (§8.7.2.5.7): (x0, x1, x2) for
-/// x = p (or q, with the sides swapped), each clipped to `±2tC` of its input.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn strong_side<V: I16FilterLanes>([x3, x2, x1, x0]: [V; 4], [y0, y1]: [V; 2], tc2: V) -> [V; 3] {
-    let (two, four) = (V::splat(2), V::splat(4));
-    let limit = |v: V, orig: V| v.max(orig.sub(tc2)).min(orig.add(tc2));
-    [
-        limit(
-            x2.add(x1.mul(two))
-                .add(x0.mul(two))
-                .add(y0.mul(two))
-                .add(y1)
-                .add(four)
-                .sra(3),
-            x0,
-        ),
-        limit(x2.add(x1).add(x0).add(y0).add(two).sra(2), x1),
-        limit(
-            x3.mul(two)
-                .add(x2.mul(V::splat(3)))
-                .add(x1)
-                .add(x0)
-                .add(y0)
-                .add(four)
-                .sra(3),
-            x2,
-        ),
-    ]
-}
-
 /// HEVC luma: decisions (§8.7.2.5.3) and filtering (§8.7.2.5.6, .7) of the
 /// two segments of an 8-line edge.
 #[allow(clippy::inline_always)]
@@ -222,7 +185,8 @@ struct DecisionMasks<V> {
     tc: V,
 }
 
-/// The unchanged filter arithmetic shared by scalar and vector decisions.
+/// The filters ([`short_luma`], shared with H.266) under the decision masks,
+/// whether the decisions were made per segment in scalar or on vectors.
 #[allow(clippy::inline_always, clippy::similar_names)]
 #[inline(always)]
 fn apply<V: I16x8Shuffles + I16FilterLanes>(
@@ -240,37 +204,24 @@ fn apply<V: I16x8Shuffles + I16FilterLanes>(
         filter_q1,
         tc,
     } = d;
-    let raw = q0
-        .sub(p0)
-        .mul(V::splat(9))
-        .sub(q1.sub(p1).mul(V::splat(3)))
-        .add(V::splat(8))
-        .sra(4);
-    let normal = normal.and(less(raw.abs(), tc.mul(V::splat(10))));
-    let delta = clip(raw, tc);
-    let half = tc.sra(1);
-    let np1 = p1.add(clip(
-        p2.add(p0).add(V::splat(1)).sra(1).sub(p1).add(delta).sra(1),
-        half,
-    ));
-    let nq1 = q1.add(clip(
-        q2.add(q0).add(V::splat(1)).sra(1).sub(q1).sub(delta).sra(1),
-        half,
-    ));
+    let n = short_luma::normal([p2, p1, p0], [q0, q1, q2], tc);
+    let normal = normal.and(n.enabled);
     let (normal_p1, normal_q1) = (normal.and(filter_p1), normal.and(filter_q1));
     let mut out = [
         p3,
         p2,
-        normal_p1.blend(np1, p1),
-        normal.blend(p0.add(delta), p0),
-        normal.blend(q0.sub(delta), q0),
-        normal_q1.blend(nq1, q1),
+        normal_p1.blend(n.p1, p1),
+        normal.blend(n.p0, p0),
+        normal.blend(n.q0, q0),
+        normal_q1.blend(n.q1, q1),
         q2,
         q3,
     ];
     if any_strong {
-        let [sp0, sp1, sp2] = strong_side([p3, p2, p1, p0], [q0, q1], tc.add(tc));
-        let [sq0, sq1, sq2] = strong_side([q3, q2, q1, q0], [p0, p1], tc.add(tc));
+        // HEVC clips all three strong outputs to ±2tC (§8.7.2.5.7).
+        let limits = [tc.add(tc); 3];
+        let [sp0, sp1, sp2] = short_luma::strong_side([p3, p2, p1, p0], [q0, q1], limits);
+        let [sq0, sq1, sq2] = short_luma::strong_side([q3, q2, q1, q0], [p0, p1], limits);
         for (k, filtered) in [(1, sp2), (2, sp1), (3, sp0), (4, sq0), (5, sq1), (6, sq2)] {
             out[k] = strong.blend(filtered, out[k]);
         }

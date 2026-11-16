@@ -1,5 +1,6 @@
 //! LFNST impulse fixtures from pinned `VVdeC` tables and spectral rearrangement.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 #[test]
 fn lfnst_reference_impulses_cover_wide_angles_transpose_and_zero_out() {
     for (size, expected) in [
@@ -13,7 +14,7 @@ fn lfnst_reference_impulses_cover_wide_angles_transpose_and_zero_out() {
         ((64, 64), 0x3c30_0665_387f_8420),
     ] {
         let (width, height) = size;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        let mut digest = FNV1A_OFFSET;
         for direction in [0, 2, 18, 34, 50, 66] {
             for index in [1, 2] {
                 let active = if width == height && [4, 8].contains(&width) {
@@ -41,7 +42,7 @@ fn lfnst_reference_impulses_cover_wide_angles_transpose_and_zero_out() {
                     for value in coefficients {
                         // Hashed as i32: the digests predate 16-bit outputs.
                         for byte in i32::from(value).to_le_bytes() {
-                            digest = (digest ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+                            digest = fnv1a_step(digest, u64::from(byte));
                         }
                     }
                 }

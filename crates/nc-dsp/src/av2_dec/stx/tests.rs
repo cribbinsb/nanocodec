@@ -4,7 +4,8 @@
 //! run outside the repository when porting.
 
 use super::*;
-use crate::av2_dec::itx::tests::{fnv1a, pattern};
+use crate::av2_dec::itx::tests::pattern;
+use nc_common::fnv1a;
 
 const BUFFER: usize = 32 * 32;
 

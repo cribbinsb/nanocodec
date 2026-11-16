@@ -1,5 +1,6 @@
 //! Downloaded-corpus checks for extended intra syntax.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a, fnv1a_step};
 #[test]
 #[ignore = "requires downloaded official VVC corpus"]
 fn official_extended_intra_syntax() {
@@ -60,12 +61,12 @@ fn official_extended_intra_syntax() {
                         std::slice::from_ref(&header),
                         dsp.at(nc_common::BitDepth::EIGHT),
                     );
-                    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                    let mut hash = FNV1A_OFFSET;
                     for plane in nc_common::PlaneIndex::ALL {
                         let view = decoded.plane(plane).view();
                         for y in 0..view.height() {
                             for &byte in view.row(y) {
-                                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                                hash = fnv1a_step(hash, u64::from(byte));
                             }
                         }
                     }
@@ -172,11 +173,10 @@ fn coefficient_fingerprint(units: &[Unit]) -> (usize, u64) {
     }
     rows.sort_unstable();
     let count = rows.len();
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in rows.into_iter().flatten().flat_map(i32::to_le_bytes) {
-        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-    }
-    (count, hash)
+    (
+        count,
+        fnv1a(rows.into_iter().flatten().flat_map(i32::to_le_bytes)),
+    )
 }
 
 fn derive_and_compare_motion(

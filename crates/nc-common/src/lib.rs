@@ -25,7 +25,10 @@
 //!   with its own probability model).
 //! - [`cabac_encoder`]: the CABAC arithmetic encoding engine of the HEVC
 //!   and H.266 encoders.
+//! - [`fnv1a`]: the FNV-1a fingerprint tests compare samples by.
 //! - [`ColourInfo`]: colour signalling (CICP code points, range).
+//! - [`SplitMix64`]: the seeded random source of test data and syntax
+//!   stress.
 //! - `stream_stats` (feature `analysis`): coding-tool records decoders
 //!   can fill.
 //! - [`Error`]: the error type for everything above.
@@ -39,6 +42,7 @@ pub mod cabac_encoder;
 pub mod colour;
 pub mod decode;
 mod error;
+mod fnv;
 pub mod nal;
 pub mod outcome;
 mod output;
@@ -46,6 +50,7 @@ mod picture;
 mod plane;
 mod raw_frame;
 mod recycle;
+mod rng;
 mod sample;
 mod shown;
 #[cfg(feature = "analysis")]
@@ -56,11 +61,13 @@ pub mod yuv;
 pub use bitwriter::{BitWriter, leb128};
 pub use colour::{ColourDescription, ColourInfo};
 pub use error::{Error, Result};
+pub use fnv::{FNV1A_OFFSET, fnv1a, fnv1a_step};
 pub use output::{DecodedPicture, OutputPicture, ShownFrame};
 pub use picture::{ChromaFormat, Picture, PlaneIndex};
 pub use plane::{BorderStores, CachedStores, Plane, ROW_ALIGNMENT};
 pub use raw_frame::{NV12_CHROMA_BYTES, RawFrame, chroma_len};
 pub use recycle::PictureRecycler;
+pub use rng::SplitMix64;
 pub use sample::{BitDepth, BitDepths, Sample};
 pub use shown::ShownPicture;
 pub use view::{PlaneView, PlaneViewMut, copy_row};

@@ -592,7 +592,7 @@ mod tests {
                 Symbol::Rect(index) => [RECT[index], 0],
             };
             for v in std::iter::once(u64::from(value)).chain(cdf.iter().map(|&v| u64::from(v))) {
-                self.0.0 = (self.0.0 ^ v).wrapping_mul(1_099_511_628_211);
+                self.0.0 = nc_common::fnv1a_step(self.0.0, v);
             }
             self.0.1 += 1;
             Ok(())
@@ -606,7 +606,7 @@ mod tests {
                 .into_iter()
                 .zip(REFERENCE_TRACE)
         {
-            let mut trace = Trace((14_695_981_039_346_656_037_u64, 0));
+            let mut trace = Trace((nc_common::FNV1A_OFFSET, 0));
             write_8x8(&mut trace, width, height, |_, _, _| Ok(())).unwrap();
             assert_eq!(trace.0, expected, "{width}x{height}");
         }

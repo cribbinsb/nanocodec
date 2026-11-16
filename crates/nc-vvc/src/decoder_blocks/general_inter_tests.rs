@@ -1,5 +1,6 @@
 //! Official general B-picture syntax checks independent of motion reconstruction.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 
 #[test]
 #[ignore = "requires official corpus"]
@@ -146,7 +147,7 @@ fn decode_named_prefix(name: &str, limit: usize, reference_hash: Option<u64>) {
         pictures.push(eight_bit(picture));
     }
     assert_eq!(pictures.len(), limit);
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hash = FNV1A_OFFSET;
     for picture in pictures {
         for plane in nc_common::PlaneIndex::ALL
             .into_iter()
@@ -155,7 +156,7 @@ fn decode_named_prefix(name: &str, limit: usize, reference_hash: Option<u64>) {
             let view = picture.plane(plane).view();
             for y in 0..view.height() {
                 for &byte in view.row(y) {
-                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                    hash = fnv1a_step(hash, u64::from(byte));
                 }
             }
         }

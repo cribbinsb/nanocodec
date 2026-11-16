@@ -9,7 +9,7 @@
 //! upscaled CDEF planes and of the three restored planes; this test draws
 //! the same frames and parameters in the same order.
 
-use nc_checkasm::rng::Rng;
+use nc_checkasm::rng::{Rng, plane_fnv1a};
 use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::av1_restoration::{
     Av1LoopRestoration, Av1LrFilter, Av1LrScratch, Av1SgrProj, Av1StripeBoundaries, Av1Superres,
@@ -22,19 +22,8 @@ const SEED: u64 = 13;
 /// Frames in the golden file.
 const FRAMES: usize = 60;
 
-fn fnv(rows: impl Iterator<Item = u8>) -> u64 {
-    rows.fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 fn hash(plane: &PlaneView<'_>) -> String {
-    format!(
-        "{:016x}",
-        fnv(plane
-            .rows()
-            .flat_map(|r| r[..plane.width()].iter().copied()))
-    )
+    format!("{:016x}", plane_fnv1a(plane))
 }
 
 /// `Round2(value, shift)` of a dimension.
@@ -51,23 +40,6 @@ impl Draw {
 
     fn signed(&mut self, low: i32, count: usize) -> i8 {
         (low + self.below(count) as i32) as i8
-    }
-
-    /// A `w`x`h` plane of one of four patterns.
-    fn plane(&mut self, w: usize, h: usize, pattern: usize) -> Vec<u8> {
-        let mut out = Vec::with_capacity(w * h);
-        for r in 0..h {
-            for c in 0..w {
-                let b = self.0.byte();
-                out.push(match pattern {
-                    1 => (b & 1) * 255,
-                    2 => 128 + b % 16,
-                    3 => (c * 3 + r * 5 + usize::from(b % 4)) as u8,
-                    _ => b,
-                });
-            }
-        }
-        out
     }
 
     fn unit_filter(&mut self, kind: usize, chroma: bool) -> Av1LrFilter {
@@ -155,8 +127,8 @@ fn restoration_and_superres_match_libaom() {
             let readable = (mi_cols * 4) >> u32::from(sub);
             let rows = round2(height, sub);
             let pattern = d.below(4);
-            let deblocked = d.plane(readable, rows, pattern);
-            let cdef = d.plane(readable, rows, pattern);
+            let deblocked = d.0.pattern_plane(readable, rows, pattern);
+            let cdef = d.0.pattern_plane(readable, rows, pattern);
             planes.push(Plane { deblocked, cdef });
         }
         let mut upscaled_hashes = Vec::new();

@@ -131,9 +131,9 @@ crates, scalar.
 | VP9 edge | `vp9_deblock.rs` (250 scalar), `vp9_loop_filter/` (620) | S A2 (8-line) A5(ICL/GFNI, 32-line) N W (16-line paired) | same `lpf_bytes` lanes and `narrow`; `masks` and `group` copied from `av1_packed` | VP9 3.5 / 3.7 | filter4/8 identical to AV1; filter16 = 15-tap p7..q7 vs AV1 13-tap filter14 | **Merge with AV1**: parameter = wide filter rule (taps, outer, centre, flat2 span) |
 | AV1/VP9 grouped byte lanes | `lpf_bytes/{*_wide,gfni,avx512}.rs`, `deblock/{runs,av1_grid,av1_line,av1_tile}.rs` | S A2 A5(ICL/GFNI) N W | paired/four 8-byte groups, shared transpose and tile IO | encoder and decoder | same | Shared AVX-512 layout for AV1/VP9; GFNI covers short tails |
 | H.264 luma + chroma pair | `deblock/h264_bytes/` (1480), `h264_mb.rs` | S A2 N W | 16 u8 lanes, one per line | H.264 2.8 / 3.7 | §8.7 bS, alpha/beta, tC0; strong filter unclipped | Keep; fold `H264Bytes` into `lpf_bytes::Bytes` |
-| HEVC luma | `deblock/hevc.rs` (373), `samples.rs` | S A2 N W (I16x8) | i16, 8 lines, 8x8 transpose | HEVC 1.6 / 1.8 | §8.7.2.5 strong (2tC clip) / weak | **Merge with VVC short filter** (strong clip vector parameter) |
-| VVC luma | `vvc_deblock/inplace.rs` (601), `mod.rs` | S A2 N W (I16x8) | i16, transposes to p7..q7 | VVC 1.7 / 2.6 | long 7/5/3 (§8.8.3) + short filter with (3-i)tC clip; weak/decisions = HEVC | Keep the long filter; **short path merges with HEVC** |
-| HEVC / VVC / H.264 chroma weak | `hevc_chroma.rs`, `vvc_deblock/chroma_edge.rs:161`, `h264_bytes/mod.rs:100` | S A2 N W | | small | all `Clip3(+-t, (4(q0-p0)+p1-q1+4)>>3)` | **One chroma delta core**, gating per codec |
+| HEVC luma | `deblock/hevc.rs` (373), `samples.rs` | S A2 N W (I16x8) | i16, 8 lines, 8x8 transpose | HEVC 1.6 / 1.8 | §8.7.2.5 strong (2tC clip) / weak | **Merged** (2026-11-16): strong and normal filters in `deblock/short_luma.rs`, shared with VVC; HEVC passes the ±2tC clip vector |
+| VVC luma | `vvc_deblock/inplace.rs` (601), `mod.rs` | S A2 N W (I16x8) | i16, transposes to p7..q7 | VVC 1.7 / 2.6 | long 7/5/3 (§8.8.3) + short filter with (3-i)tC clip; weak/decisions = HEVC | Keep the long filter; short filters **merged** with HEVC (`short_luma`, 2026-11-16; VVC passes ±3tC/±2tC/±tC) |
+| HEVC / VVC / H.264 chroma weak | `hevc_chroma.rs`, `vvc_deblock/chroma_edge.rs:161`, `h264_bytes/mod.rs:100` | S A2 N W | | small | all `Clip3(+-t, (4(q0-p0)+p1-q1+4)>>3)` | **Stays separate** (2026-11-16): the formula is six vector operations, and the three copies sit on three lane families (HEVC `lpf_bytes` words on p1..q1 byte tiles, VVC `I16FilterLanes` on p3..q3 with `shuffle_bytes` pair decisions, H.264 saturated bytes). A shared core needs a new trait with an impl per ISA lane type (about 40 lines) to remove about 10 |
 | AV2 | `deblock/av2*.rs` (1448) | S A2 A5(ICL/GFNI) N W (lpf_bytes) | eight segment decision lanes; A5 batches four ramp rows | AV2 2.8 / 2.5 | different algorithm (ramps up to 8 per side) | Keep; already on `lpf_bytes` |
 | CDEF | `cdef/` (3497) | S A2 A5 N W | byte `pmaddubsw` interior | AV1 4.9 / 6.7, AV2 5.3 / 7.2 | AV1 §7.15 = AV2 8-bit | Already shared; NEON `block4_pair` added (2026-11-16, as SIMD128's: two interior 4x4 blocks per call) |
 | SAO | `sao/` (1680) | S A2 A5 N W | byte apply; NEON byte stats | HEVC 2.6 / 2.4, VVC 1.1 / 1.2 | HEVC §8.7.3 = H.266 §8.8.4 | Already shared; spread NEON byte stats |
@@ -198,7 +198,7 @@ kernels only.
 | 6 | HEVC/AV2 partial-butterfly engine (forward + inverse, N up to 64) | AV2 6-7, HEVC/VVC 2-4 | planned |
 | 7 | HEVC `quantize_from` into `quantize`; AV2/VP9 dequant onto AV1's | small | planned |
 | 8 | Add-and-clip and SSE kernels to one each; codec-crate loops onto them | VP9 2.8 and others | VP9/VVC reconstruction onto `add_residual`/`add_constant` landed; `reconstruct` merged into `add_residual`, plane SSE onto `sse_8x8_row` (2026-11-16) |
-| 9 | HEVC/VVC short luma deblock and the chroma delta core | HEVC 1.7, VVC 2-3 | planned |
+| 9 | HEVC/VVC short luma deblock and the chroma delta core | HEVC 1.7, VVC 2-3 | luma short filters landed (see log); chroma core stays separate (section 6) |
 | 10 | VVC/HEVC planar (landed), H.264/VP9 diagonal rows, AV2 Paeth onto AV1 | small | planar landed; rest planned |
 
 ## Handover state (2026-11-16 12:10, after `18fec1af2`)
@@ -209,8 +209,9 @@ significant (`4fa055dbc`), one reconstruction and one SSE kernel
 in `av1_simd128` (`18fec1af2`). Sub-pixel variance at 16 wide needed nothing.
 Next, in order (coordinator, 2026-11-16): items 6, 7, 8 of the brief.
 
-- **Item 6, HEVC/VVC short luma deblock and the chroma delta core.** Read,
-  not started.
+- **Item 6, HEVC/VVC short luma deblock and the chroma delta core.** Luma
+  landed (2026-11-16, `deblock/short_luma.rs`, see the log); the chroma core
+  stays separate (section 6 row). The notes below were the plan.
   - Luma: HEVC `deblock/hevc.rs` `apply` (per-lane tC vector, decision masks,
     strong only when a segment chose it) and VVC
     `vvc_deblock/inplace.rs` `strong` / `weak` (scalar tC per edge) are the
@@ -267,6 +268,8 @@ Method notes for the next agent:
 | + end of block and intra estimate kernels (vs the line above) | +0.16 (`intra_or_inter` no longer inlined) | -0.35 | -0.04 | +0.02 | -2.02 | 0.00 |
 | Same, rebased on `3df562c10` (whose AV1 end of block was a codec-local auto-vectorised pass; vs that head) | +0.17 | -0.37 | | | -0.32 | |
 | MC AVX-512 rows, VVC last significant on the shared kernel, one reconstruction kernel, plane SSE on `sse_8x8_row` (vs `6fabd2d77`; an AVX2 run, so the AVX-512 rows do not count here) | 0.00 | 0.00 | -1.12 | +0.06 | +0.01 | -0.84 |
+
+| HEVC/VVC short luma filters in `deblock/short_luma.rs` (vs `7b3c81724`) | | +0.01 | -0.06 | | | |
 
 Streams byte-identical at every step (`preset_identity`, all six codecs;
 the AVX-512 rows also AVX2 against AVX-512 on the Ice Lake box).

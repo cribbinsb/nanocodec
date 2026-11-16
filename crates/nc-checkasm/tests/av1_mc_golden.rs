@@ -16,7 +16,7 @@
 //! position, shear and estimation cases.
 
 use nc_checkasm::rng::Rng;
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{PlaneView, PlaneViewMut, fnv1a};
 use nc_dsp::Dsp;
 use nc_dsp::av1_mc::blend::{
     Av1CompoundPred, Av1Mask, Av1ObmcEdge, av1_blend_average, av1_blend_distance,
@@ -103,18 +103,12 @@ impl Draw {
     }
 }
 
-fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
-    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 fn hex(hash: u64) -> String {
     format!("{hash:016x}")
 }
 
 fn hash_i16(values: &[i16]) -> u64 {
-    fnv(values.iter().flat_map(|v| v.to_le_bytes()))
+    fnv1a(values.iter().flat_map(|v| v.to_le_bytes()))
 }
 
 /// Compare every case of a group; report all mismatching case numbers.
@@ -198,7 +192,7 @@ fn both_precisions(
     );
     let mut compound = vec![0i16; w * h];
     dsp.av1_predict_compound(filters, window, (w, h), axes, &mut compound, w);
-    format!("{} {}", hex(fnv(pixels)), hex(hash_i16(&compound)))
+    format!("{} {}", hex(fnv1a(pixels)), hex(hash_i16(&compound)))
 }
 
 #[test]
@@ -291,7 +285,7 @@ fn compound_average_and_distance_blends_match_libaom() {
         } else {
             av1_blend_average(p0, p1, size, &mut dst);
         }
-        format!("{} {} {}", weights[0], weights[1], hex(fnv(out)))
+        format!("{} {} {}", weights[0], weights[1], hex(fnv1a(out)))
     });
 }
 
@@ -330,7 +324,7 @@ fn compound_mask_blend_matches_libaom_with(dsp: &Dsp) {
             size,
             &mut PlaneViewMut::new(&mut out, w, w, h).unwrap(),
         );
-        hex(fnv(out))
+        hex(fnv1a(out))
     });
 }
 
@@ -365,7 +359,7 @@ fn difference_weight_masks_match_libaom() {
             size,
             &mut mask,
         );
-        hex(fnv(mask))
+        hex(fnv1a(mask))
     });
 }
 
@@ -379,7 +373,9 @@ fn wedge_masks_match_libaom() {
     });
     check_group("wedge", |_| {
         let (size, sign, index) = cases.next().unwrap();
-        hex(fnv(masks.mask(size, sign, index).unwrap().iter().copied()))
+        hex(fnv1a(
+            masks.mask(size, sign, index).unwrap().iter().copied(),
+        ))
     });
 }
 
@@ -425,7 +421,7 @@ fn interintra_blend_matches_libaom() {
             size,
             &mut PlaneViewMut::new(&mut inter, w, w, h).unwrap(),
         );
-        hex(fnv(inter))
+        hex(fnv1a(inter))
     });
 }
 
@@ -454,7 +450,7 @@ fn obmc_blend_matches_libaom() {
             size,
             &mut PlaneViewMut::new(&mut own, w, w, h).unwrap(),
         );
-        hex(fnv(own))
+        hex(fnv1a(own))
     });
 }
 
@@ -586,6 +582,6 @@ fn warp_filter_matches_libaom_with(dsp: &Dsp) {
             &mut compound,
             w,
         );
-        format!("{} {}", hex(fnv(pixels)), hex(hash_i16(&compound)))
+        format!("{} {}", hex(fnv1a(pixels)), hex(hash_i16(&compound)))
     });
 }

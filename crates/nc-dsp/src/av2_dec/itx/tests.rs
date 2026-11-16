@@ -8,13 +8,7 @@ use super::*;
 use crate::av2_txfm::Av2TxSize;
 use crate::av2_txfm::typed::{Av2Kernel, Av2TxType};
 use crate::{Dsp, Isa};
-
-/// FNV-1a, 64-bit: hashes of the C outputs.
-pub(crate) fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
-    bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
+use nc_common::fnv1a;
 
 /// The coefficient pattern of the C vector program: mixed signs, every
 /// third one large.

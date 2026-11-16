@@ -1,5 +1,6 @@
 //! Independent official first-picture syntax and reconstruction checks.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 #[test]
 #[ignore = "requires official corpus; optional NC_VVC_GENERAL_RECO_TRACE"]
 fn official_general_intra_reconstruction() {
@@ -131,11 +132,11 @@ pub(crate) fn compare<T: nc_common::Sample>(
             panic!("invalid trace")
         };
         let view = picture.plane(nc_common::PlaneIndex::ALL[*plane]).view();
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = FNV1A_OFFSET;
         for row in *y..y + height {
             for &pixel in &view.row(row)[*x..x + width] {
                 let value: u32 = pixel.into();
-                hash = (hash ^ u64::from(value)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(value));
             }
         }
         assert_eq!(
@@ -152,7 +153,7 @@ pub(crate) fn compare<T: nc_common::Sample>(
 }
 
 fn assert_picture(name: &str, picture: &nc_common::Picture, chroma: bool) {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hash = FNV1A_OFFSET;
     for plane in nc_common::PlaneIndex::ALL
         .into_iter()
         .take(if chroma { 3 } else { 1 })
@@ -160,7 +161,7 @@ fn assert_picture(name: &str, picture: &nc_common::Picture, chroma: bool) {
         let view = picture.plane(plane).view();
         for y in 0..view.height() {
             for &byte in view.row(y) {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(byte));
             }
         }
     }

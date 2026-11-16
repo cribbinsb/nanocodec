@@ -8,7 +8,7 @@
 //! frame it lists FNV-1a hashes of the three output planes; this test
 //! draws the same frames and parameters in the same order.
 
-use nc_checkasm::rng::Rng;
+use nc_checkasm::rng::{Rng, plane_fnv1a};
 use nc_common::{PlaneView, PlaneViewMut};
 use nc_dsp::av1_film_grain::{Av1FilmGrainParams, Av1ScalingPoints};
 use nc_dsp::{Dsp, Isa};
@@ -21,22 +21,6 @@ struct Draw(Rng);
 impl Draw {
     fn below(&mut self, bound: usize) -> usize {
         self.0.below(bound)
-    }
-
-    fn plane(&mut self, w: usize, h: usize, pattern: usize) -> Vec<u8> {
-        let mut out = Vec::with_capacity(w * h);
-        for r in 0..h {
-            for c in 0..w {
-                let b = self.0.byte();
-                out.push(match pattern {
-                    1 => (b & 1) * 255,
-                    2 => 128 + b % 16,
-                    3 => (c * 3 + r * 5 + usize::from(b % 4)) as u8,
-                    _ => b,
-                });
-            }
-        }
-        out
     }
 
     /// Up to `most` increasing scaling points.
@@ -70,13 +54,7 @@ const AV1_LUMA_POINTS: usize = 14;
 const AV1_CHROMA_POINTS: usize = 10;
 
 fn fnv(view: &PlaneView<'_>) -> String {
-    let hash = view
-        .rows()
-        .flat_map(|r| r[..view.width()].iter())
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        });
-    format!("{hash:016x}")
+    format!("{:016x}", plane_fnv1a(view))
 }
 
 #[test]
@@ -127,9 +105,9 @@ fn film_grain_matches_libaom() {
         p.overlap = d.below(2) == 1;
         p.clip_to_restricted_range = d.below(2) == 1;
         let pattern = d.below(4);
-        let luma = d.plane(width, height, pattern);
-        let cb = d.plane(cw, ch, pattern);
-        let cr = d.plane(cw, ch, pattern);
+        let luma = d.0.pattern_plane(width, height, pattern);
+        let cb = d.0.pattern_plane(cw, ch, pattern);
+        let cr = d.0.pattern_plane(cw, ch, pattern);
         let (mut oy, mut ou, mut ov) = (
             vec![0u8; width * height],
             vec![0u8; cw * ch],

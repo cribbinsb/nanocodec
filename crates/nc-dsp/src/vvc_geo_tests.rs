@@ -1,15 +1,16 @@
 //! Geometric mask fingerprints independently prepared from `VVdeC`'s full masks.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 #[test]
 fn compact_line_matches_all_reference_masks() {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hash = FNV1A_OFFSET;
     for width in [8, 16, 32, 64] {
         for height in [8, 16, 32, 64] {
             for split in 0..64 {
                 let mask = VvcGeometric::new((width, height), split);
                 for y in 0..height {
                     for x in 0..width {
-                        hash = (hash ^ u64::from(mask.weight(x, y))).wrapping_mul(0x0100_0000_01b3);
+                        hash = fnv1a_step(hash, u64::from(mask.weight(x, y)));
                     }
                 }
             }

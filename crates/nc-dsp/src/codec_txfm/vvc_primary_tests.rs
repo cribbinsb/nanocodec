@@ -1,6 +1,7 @@
 //! Primary-transform fixtures from pinned `VVdeC` bases and independent i64 scaling.
 use super::*;
 use VvcTransformKind::{Dct2, Dct8, Dst7};
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 const CASES: &[((usize, usize), [VvcTransformKind; 2], u64)] = &[
     ((1, 16), [Dct2, Dct2], 0x944d_d73a_38ad_a117),
     ((1, 16), [Dct2, Dst7], 0x92e1_d4f2_6bef_2943),
@@ -87,7 +88,7 @@ fn primary_matches_reference_bases_scaling_clipping_and_zero_out() {
     for dsp in [Dsp::new(), Dsp::with_isa(crate::Isa::Scalar).unwrap()] {
         for &(size, kinds, expected) in CASES {
             let length = size.0 * size.1;
-            let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+            let mut digest = FNV1A_OFFSET;
             for qp in [0, 22, 63] {
                 for dependent in [false, true] {
                     for pattern in 0..2 {
@@ -107,7 +108,7 @@ fn primary_matches_reference_bases_scaling_clipping_and_zero_out() {
                         for value in actual {
                             // Hashed as i32: the digests predate 16-bit outputs.
                             for byte in i32::from(value).to_le_bytes() {
-                                digest = (digest ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+                                digest = fnv1a_step(digest, u64::from(byte));
                             }
                         }
                     }

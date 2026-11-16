@@ -14,8 +14,8 @@
 #![allow(unsafe_code, clippy::inline_always)]
 
 use super::{EDGE_LINES, LUMA_REACH, LumaFilter, VvcLumaEdge};
-use crate::deblock::samples;
 use crate::deblock::samples::transpose;
+use crate::deblock::{samples, short_luma};
 use crate::simd::{I16FilterLanes, I16x8Shuffles};
 
 /// Lines per call, one per lane.
@@ -529,7 +529,8 @@ fn long<V: I16FilterLanes, const EXTENDED: bool>(
     out
 }
 
-/// §8.8.3.6.6, strong: three samples per side.
+/// §8.8.3.6.6, strong: three samples per side ([`short_luma::strong_side`],
+/// shared with HEVC), clipped to `±3tC`, `±2tC`, `±tC` (x0, x1, x2).
 #[inline(always)]
 fn strong<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     p: &[V; SIDE],
@@ -538,34 +539,23 @@ fn strong<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     tc: i32,
 ) -> [V; N] {
     let mut out = *values;
+    let limits = [3, 2, 1].map(|k| V::splat((k * tc) as i16));
     for (which, (near, far)) in [(p, q), (q, p)].into_iter().enumerate() {
-        let filtered = [
-            round(
-                near[2]
-                    .add(times(near[1].add(near[0]).add(far[0]), 2))
-                    .add(far[1]),
-                3,
-            ),
-            round(near[2].add(near[1]).add(near[0]).add(far[0]), 2),
-            round(
-                times(near[3], 2)
-                    .add(times(near[2], 3))
-                    .add(near[1])
-                    .add(near[0])
-                    .add(far[0]),
-                3,
-            ),
-        ];
-        for i in 0..3 {
-            out[if which == 0 { N / 2 - 1 - i } else { N / 2 + i }] =
-                clip(filtered[i], near[i], (3 - i as i32) * tc);
+        let filtered = short_luma::strong_side(
+            [near[3], near[2], near[1], near[0]],
+            [far[0], far[1]],
+            limits,
+        );
+        for (i, value) in filtered.into_iter().enumerate() {
+            out[if which == 0 { N / 2 - 1 - i } else { N / 2 + i }] = value;
         }
     }
     out
 }
 
-/// §8.8.3.6.6, normal: p0/q0 per line where `|Δ| < 10 tC`, and p1 / q1
-/// in the lanes of `second` (per-segment masks).
+/// §8.8.3.6.6, normal ([`short_luma::normal`], shared with HEVC): p0/q0 per
+/// line where `|Δ| < 10 tC`, and p1 / q1 in the lanes of `second`
+/// (per-segment masks).
 #[inline(always)]
 fn weak<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     p: &[V; SIDE],
@@ -575,27 +565,10 @@ fn weak<V: I16FilterLanes, const SIDE: usize, const N: usize>(
     second: [V; 2],
 ) -> [V; N] {
     let mut out = *values;
-    let delta = round(times(q[0].sub(p[0]), 9).sub(times(q[1].sub(p[1]), 3)), 4);
-    let enabled = V::splat((10 * tc) as i16).gt_mask(delta.abs());
-    let delta = delta.max(V::splat(-tc as i16)).min(V::splat(tc as i16));
-    out[N / 2 - 1] = enabled.blend(clip(p[0].add(delta), p[0], tc), p[0]);
-    out[N / 2] = enabled.blend(clip(q[0].sub(delta), q[0], tc), q[0]);
-    let half = (tc >> 1) as i16;
-    for (which, side) in [p, q].into_iter().enumerate() {
-        let signed = if which == 0 {
-            delta
-        } else {
-            V::splat(0).sub(delta)
-        };
-        let correction = round(side[2].add(side[0]), 1)
-            .sub(side[1])
-            .add(signed)
-            .sra(1)
-            .max(V::splat(-half))
-            .min(V::splat(half));
-        let filtered = clip(side[1].add(correction), side[1], tc >> 1);
-        out[if which == 0 { N / 2 - 2 } else { N / 2 + 1 }] =
-            enabled.and(second[which]).blend(filtered, side[1]);
-    }
+    let n = short_luma::normal([p[2], p[1], p[0]], [q[0], q[1], q[2]], V::splat(tc as i16));
+    out[N / 2 - 2] = n.enabled.and(second[0]).blend(n.p1, p[1]);
+    out[N / 2 - 1] = n.enabled.blend(n.p0, p[0]);
+    out[N / 2] = n.enabled.blend(n.q0, q[0]);
+    out[N / 2 + 1] = n.enabled.and(second[1]).blend(n.q1, q[1]);
     out
 }

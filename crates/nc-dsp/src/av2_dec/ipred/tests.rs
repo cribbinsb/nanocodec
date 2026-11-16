@@ -24,9 +24,7 @@ fn pattern(seed: u32, len: usize) -> Vec<u8> {
 
 /// FNV-1a 64.
 fn fnv(data: &[u8]) -> u64 {
-    data.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
-    })
+    nc_common::fnv1a(data.iter().copied())
 }
 
 const L: i32 = ANGLE_IS_LUMA;

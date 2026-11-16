@@ -1,5 +1,6 @@
 //! Independent official P-picture syntax checks, enabled after corpus download.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a, fnv1a_step};
 use std::fmt::Write;
 /// The bytes of official conformance stream `name` (`NC_VVC_CORPUS`, by
 /// default the downloaded corpus).
@@ -125,13 +126,7 @@ fn numbers(values: &str) -> Vec<i32> {
 }
 fn fingerprint(mut rows: Vec<Vec<i32>>) -> u64 {
     rows.sort_unstable();
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for value in rows.into_iter().flatten() {
-        for byte in value.to_le_bytes() {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-    hash
+    fnv1a(rows.into_iter().flatten().flat_map(i32::to_le_bytes))
 }
 
 pub(super) fn compare_blocks(picture: &nc_common::Picture, units: &[Unit], frame: usize) {
@@ -173,10 +168,10 @@ pub(super) fn compare_blocks(picture: &nc_common::Picture, units: &[Unit], frame
                 node.height() >> shift,
             );
             let view = picture.plane(nc_common::PlaneIndex::ALL[plane]).view();
-            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            let mut hash = FNV1A_OFFSET;
             for dy in 0..h {
                 for &v in &view.row(y + dy)[x..x + w] {
-                    hash = (hash ^ u64::from(v)).wrapping_mul(0x0100_0000_01b3);
+                    hash = fnv1a_step(hash, u64::from(v));
                 }
             }
             let key = [plane, x, y, w, h].map(|v| v as u64).to_vec();
@@ -210,10 +205,10 @@ fn compare_filtered(picture: &nc_common::Picture, frame: usize) {
         }
         let (plane, x, y) = (v[1] as usize, v[2] as usize, v[3] as usize);
         let view = picture.plane(nc_common::PlaneIndex::ALL[plane]).view();
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = FNV1A_OFFSET;
         for dy in y..(y + 4).min(view.height()) {
             for &v in &view.row(dy)[x..(x + 4).min(view.width())] {
-                hash = (hash ^ u64::from(v)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(v));
             }
         }
         assert_eq!(
@@ -279,12 +274,12 @@ fn assert_picture(picture: &nc_common::Picture, frame: usize) {
         0x4770_d9a0_59ba_50b5,
         0xfb41_bd21_daaf_df86,
     ];
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hash = FNV1A_OFFSET;
     for plane in nc_common::PlaneIndex::ALL {
         let view = picture.plane(plane).view();
         for y in 0..view.height() {
             for &byte in view.row(y) {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(byte));
             }
         }
     }

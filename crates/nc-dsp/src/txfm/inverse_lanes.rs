@@ -83,7 +83,7 @@ mod tests {
         // Original libaom v3.15.3 av1_idct8, cos_bit=12, stage_range=16.
         // Full i16 inputs exercise clamps that must not become VP9 wrapping.
         let mut state = 17u32;
-        let mut hash = 14_695_981_039_346_656_037u64;
+        let mut hash = nc_common::FNV1A_OFFSET;
         for _ in 0..200 {
             let input = std::array::from_fn(|_| {
                 state ^= state << 13;
@@ -95,7 +95,7 @@ mod tests {
             crate::txfm::dct::idct8(&input, &mut output, &crate::txfm::COSPI_12, 12);
             for value in output {
                 for byte in value.to_le_bytes() {
-                    hash = (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211);
+                    hash = nc_common::fnv1a_step(hash, u64::from(byte));
                 }
             }
         }

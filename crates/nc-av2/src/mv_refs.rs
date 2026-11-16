@@ -1101,7 +1101,7 @@ mod tests {
         for (width, height) in [(8, 8), (24, 16), (64, 64), (72, 40), (128, 136)] {
             for pattern in 0..4 {
                 let mut grid = ReferenceGrid::new(width, height, config).unwrap();
-                let mut hash = 14_695_981_039_346_656_037_u64;
+                let mut hash = nc_common::FNV1A_OFFSET;
                 let mut step = 0_i32;
                 crate::partition::write_8x8(&mut Writer::new(), width, height, |_, x, y| {
                     if x.is_multiple_of(SUPERBLOCK) && y.is_multiple_of(SUPERBLOCK) {
@@ -1109,7 +1109,7 @@ mod tests {
                     }
                     let c = grid.candidates(x, y, 8)?;
                     for value in record(&c) {
-                        hash = (hash ^ u64::from(value as u32)).wrapping_mul(1_099_511_628_211);
+                        hash = nc_common::fnv1a_step(hash, u64::from(value as u32));
                     }
                     let (vector, is_new) = trace_vector(pattern, step);
                     grid.commit(x, y, 8, vector, is_new)?;

@@ -1,5 +1,6 @@
 //! Downloaded-corpus B-picture reconstruction checks against independent `VVdeC` output.
 use super::*;
+use nc_common::{FNV1A_OFFSET, fnv1a_step};
 #[test]
 #[ignore = "requires downloaded official VVC corpus"]
 fn official_quant_d_bidirectional_pictures() {
@@ -110,12 +111,12 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
     panic!("missing B picture");
 }
 fn fingerprint(picture: &nc_common::Picture) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hash = FNV1A_OFFSET;
     for plane in nc_common::PlaneIndex::ALL {
         let view = picture.plane(plane).view();
         for y in 0..view.height() {
             for &v in view.row(y) {
-                hash = (hash ^ u64::from(v)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(v));
             }
         }
     }
@@ -143,10 +144,10 @@ fn compare_regions(picture: &nc_common::Picture, poc: i32) {
             values[5] as usize,
         );
         let view = picture.plane(nc_common::PlaneIndex::ALL[plane]).view();
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = FNV1A_OFFSET;
         for row in y..y + h {
             for &pixel in &view.row(row)[x..x + w] {
-                hash = (hash ^ u64::from(pixel)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(pixel));
             }
         }
         assert_eq!(hash, values[6], "POC {poc} plane {plane} ({x},{y}) {w}x{h}");
@@ -170,10 +171,10 @@ fn compare_filtered(picture: &nc_common::Picture, poc: i32) {
         }
         let (plane, x, y) = (v[1] as usize, v[2] as usize, v[3] as usize);
         let view = picture.plane(nc_common::PlaneIndex::ALL[plane]).view();
-        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hash = FNV1A_OFFSET;
         for row in y..y + 4 {
             for &pixel in &view.row(row)[x..x + 4] {
-                hash = (hash ^ u64::from(pixel)).wrapping_mul(0x0100_0000_01b3);
+                hash = fnv1a_step(hash, u64::from(pixel));
             }
         }
         assert_eq!(hash, v[4], "filtered plane {plane} at {x},{y}");

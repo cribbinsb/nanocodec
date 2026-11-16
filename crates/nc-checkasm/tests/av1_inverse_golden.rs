@@ -16,7 +16,7 @@
 //! EOB-sparse DCT kernels), and alternating ±32768 extremes.
 
 use nc_checkasm::rng::Rng;
-use nc_common::PlaneViewMut;
+use nc_common::{FNV1A_OFFSET, PlaneViewMut, fnv1a_step};
 use nc_dsp::{Av1TxSize, Av1TxType, Dsp, Isa};
 
 /// Trials per (size, type); the mode is `trial % MODES`.
@@ -28,8 +28,6 @@ const SEED_BASE: u64 = 0xA71_0000;
 /// 36 positions of the default zig-zag scan.
 const LOW_TRIANGLE: usize = 8;
 const LOW_TRIANGLE_EOB: usize = 36;
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// One trial's coefficients (column-major coded area) and end-of-block.
 fn coefficients(size: Av1TxSize, kind: Av1TxType, trial: u64, rng: &mut Rng) -> (Vec<i32>, usize) {
@@ -91,7 +89,7 @@ fn low_triangle_eob(size: Av1TxSize, kind: Av1TxType) -> usize {
 fn case_hash(dsp: &Dsp, size_index: usize, kind: Av1TxType) -> u64 {
     let size = Av1TxSize::ALL[size_index];
     let (w, h) = (size.width(), size.height());
-    let mut hash = FNV_OFFSET;
+    let mut hash = FNV1A_OFFSET;
     for trial in 0..TRIALS {
         let mut rng = Rng::new(SEED_BASE + 256 * size_index as u64 + 16 * kind as u64 + trial);
         let (coeffs, eob) = coefficients(size, kind, trial, &mut rng);
@@ -99,7 +97,7 @@ fn case_hash(dsp: &Dsp, size_index: usize, kind: Av1TxType) -> u64 {
         let mut dst = PlaneViewMut::new(&mut pixels, w, w, h).expect("block plane");
         dsp.av1_inverse_add(size, kind, &coeffs, eob, &mut dst);
         for &p in &pixels {
-            hash = (hash ^ u64::from(p)).wrapping_mul(FNV_PRIME);
+            hash = fnv1a_step(hash, u64::from(p));
         }
     }
     hash
@@ -142,7 +140,7 @@ const WHT_SEED_BASE: u64 = 0x3A_7000;
 #[test]
 fn lossless_wht_matches_libaom() {
     let dsp = Dsp::with_isa(Isa::Scalar).expect("scalar");
-    let mut hash = FNV_OFFSET;
+    let mut hash = FNV1A_OFFSET;
     for trial in 0..WHT_TRIALS {
         let mut rng = Rng::new(WHT_SEED_BASE + trial);
         let coeffs: [i32; 16] = core::array::from_fn(|i| match trial % 3 {
@@ -155,7 +153,7 @@ fn lossless_wht_matches_libaom() {
         let mut dst = PlaneViewMut::new(&mut pixels, 4, 4, 4).expect("block plane");
         dsp.av1_inverse_wht_add(&coeffs, &mut dst);
         for &p in &pixels {
-            hash = (hash ^ u64::from(p)).wrapping_mul(FNV_PRIME);
+            hash = fnv1a_step(hash, u64::from(p));
         }
     }
     assert_eq!(hash, WHT_GOLDEN);
