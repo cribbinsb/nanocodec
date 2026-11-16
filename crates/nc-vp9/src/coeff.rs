@@ -7,7 +7,7 @@
 //! context (0..=2 nonzero neighbours). The encoder dequantizes; the
 //! decoder's [`read`] dequantizes as it reads, as libvpx does.
 
-use nc_dsp::Av1Coefficient;
+use nc_dsp::{Av1Coefficient, Dsp};
 
 use crate::bool_coder::{BitSink, BoolReader};
 use crate::probs::{BandCounts, Counts, EOB_MODEL_TOKEN, FrameContext};
@@ -87,12 +87,12 @@ pub(crate) enum PlaneType {
     Uv = 1,
 }
 
-/// One transform block's scan and neighbour lists, and the scan index of
-/// every raster position.
+/// One transform block's scan and neighbour lists, and its end-of-block
+/// table ([`nc_dsp::eob_table`]: each raster position's scan index plus one).
 struct ScanOrder {
     scan: &'static [u16],
     neighbors: &'static [u16],
-    inverse: &'static [u16],
+    eob: &'static [u16],
 }
 
 /// The scan index of every raster position of `scan`.
@@ -117,42 +117,22 @@ const ROW_SCAN_16X16_INVERSE: [u16; 256] = inverted(&tables::ROW_SCAN_16X16);
 const COL_SCAN_16X16_INVERSE: [u16; 256] = inverted(&tables::COL_SCAN_16X16);
 const DEFAULT_SCAN_32X32_INVERSE: [u16; 1024] = inverted(&tables::DEFAULT_SCAN_32X32);
 
-/// Raster levels tested together for being all zero: most of a block's
-/// levels are, and a run of them costs one comparison instead of one scan
-/// lookup each. 16 rather than 8: the search's instructions -7.5% (VP9
-/// Default crowd 720p, 30 f, release build; streams identical).
-const ZERO_TEST_RUN: usize = 16;
+const DEFAULT_SCAN_4X4_EOB: [u16; 16] = nc_dsp::eob_table(&tables::DEFAULT_SCAN_4X4);
+const ROW_SCAN_4X4_EOB: [u16; 16] = nc_dsp::eob_table(&tables::ROW_SCAN_4X4);
+const COL_SCAN_4X4_EOB: [u16; 16] = nc_dsp::eob_table(&tables::COL_SCAN_4X4);
+const DEFAULT_SCAN_8X8_EOB: [u16; 64] = nc_dsp::eob_table(&tables::DEFAULT_SCAN_8X8);
+const ROW_SCAN_8X8_EOB: [u16; 64] = nc_dsp::eob_table(&tables::ROW_SCAN_8X8);
+const COL_SCAN_8X8_EOB: [u16; 64] = nc_dsp::eob_table(&tables::COL_SCAN_8X8);
+const DEFAULT_SCAN_16X16_EOB: [u16; 256] = nc_dsp::eob_table(&tables::DEFAULT_SCAN_16X16);
+const ROW_SCAN_16X16_EOB: [u16; 256] = nc_dsp::eob_table(&tables::ROW_SCAN_16X16);
+const COL_SCAN_16X16_EOB: [u16; 256] = nc_dsp::eob_table(&tables::COL_SCAN_16X16);
+const DEFAULT_SCAN_32X32_EOB: [u16; 1024] = nc_dsp::eob_table(&tables::DEFAULT_SCAN_32X32);
 
 impl ScanOrder {
-    /// The scan indices of the last and second-to-last nonzero levels of
-    /// raster-order `levels`.
-    fn last_two_nonzero(&self, levels: &[i32]) -> (Option<usize>, Option<usize>) {
-        let (mut last, mut second) = (None, None);
-        // Every scan holds a multiple of ZERO_TEST_RUN (16 to 1024) levels.
-        // An OR over a fixed-size run vectorises; `all(== 0)` exits per
-        // level and did not: VP9 Default -3.5% / -4.7% instructions (crowd /
-        // bodycam 720p, 30 f, gate build; streams identical).
-        let (runs, rest) = levels[..self.scan.len()].as_chunks::<ZERO_TEST_RUN>();
-        debug_assert_eq!(rest.len(), 0);
-        for (run, chunk) in runs.iter().enumerate() {
-            if chunk.iter().fold(0, |any, &level| any | level) == 0 {
-                continue;
-            }
-            for (i, _) in chunk.iter().enumerate().filter(|&(_, &level)| level != 0) {
-                let c = Some(usize::from(self.inverse[run * ZERO_TEST_RUN + i]));
-                if c > last {
-                    (last, second) = (c, last);
-                } else if c > second {
-                    second = c;
-                }
-            }
-        }
-        (last, second)
-    }
-
-    /// The end of block: one past the scan index of the last nonzero level.
-    fn end_of_block(&self, levels: &[i32]) -> usize {
-        self.last_two_nonzero(levels).0.map_or(0, |c| c + 1)
+    /// The end of block of raster-order `levels`: one past the scan index
+    /// of the last nonzero level (the shared kernel, `Dsp::end_of_block_wide`).
+    fn end_of_block(&self, dsp: &Dsp, levels: &[i32]) -> usize {
+        dsp.end_of_block_wide(&levels[..self.eob.len()], self.eob).0
     }
 }
 
@@ -161,8 +141,8 @@ impl ScanOrder {
 /// it once per coded block and pass it to [`cost`] and [`write`]: the
 /// search was about 3% of VP9 Default's instructions while each of them
 /// repeated it.
-pub(crate) fn end_of_block(levels: &[i32], tx: TxSize, ty: TxType) -> usize {
-    scan_order(tx, ty).end_of_block(levels)
+pub(crate) fn end_of_block(dsp: &Dsp, levels: &[i32], tx: TxSize, ty: TxType) -> usize {
+    scan_order(tx, ty).end_of_block(dsp, levels)
 }
 
 /// `vp9_scan_orders[tx][tx_type]`: row scan for vertical ADST, column scan
@@ -175,63 +155,54 @@ fn scan_order(tx: TxSize, ty: TxType) -> ScanOrder {
         DEFAULT_SCAN_32X32, DEFAULT_SCAN_32X32_NEIGHBORS, ROW_SCAN_4X4, ROW_SCAN_4X4_NEIGHBORS,
         ROW_SCAN_8X8, ROW_SCAN_8X8_NEIGHBORS, ROW_SCAN_16X16, ROW_SCAN_16X16_NEIGHBORS,
     };
-    let (scan, neighbors, inverse): (&'static [u16], &'static [u16], &'static [u16]) =
-        match (tx, ty) {
-            (TxSize::Tx4, TxType::AdstDct) => (
-                &ROW_SCAN_4X4,
-                &ROW_SCAN_4X4_NEIGHBORS,
-                &ROW_SCAN_4X4_INVERSE,
-            ),
-            (TxSize::Tx4, TxType::DctAdst) => (
-                &COL_SCAN_4X4,
-                &COL_SCAN_4X4_NEIGHBORS,
-                &COL_SCAN_4X4_INVERSE,
-            ),
-            (TxSize::Tx4, _) => (
-                &DEFAULT_SCAN_4X4,
-                &DEFAULT_SCAN_4X4_NEIGHBORS,
-                &DEFAULT_SCAN_4X4_INVERSE,
-            ),
-            (TxSize::Tx8, TxType::AdstDct) => (
-                &ROW_SCAN_8X8,
-                &ROW_SCAN_8X8_NEIGHBORS,
-                &ROW_SCAN_8X8_INVERSE,
-            ),
-            (TxSize::Tx8, TxType::DctAdst) => (
-                &COL_SCAN_8X8,
-                &COL_SCAN_8X8_NEIGHBORS,
-                &COL_SCAN_8X8_INVERSE,
-            ),
-            (TxSize::Tx8, _) => (
-                &DEFAULT_SCAN_8X8,
-                &DEFAULT_SCAN_8X8_NEIGHBORS,
-                &DEFAULT_SCAN_8X8_INVERSE,
-            ),
-            (TxSize::Tx16, TxType::AdstDct) => (
-                &ROW_SCAN_16X16,
-                &ROW_SCAN_16X16_NEIGHBORS,
-                &ROW_SCAN_16X16_INVERSE,
-            ),
-            (TxSize::Tx16, TxType::DctAdst) => (
-                &COL_SCAN_16X16,
-                &COL_SCAN_16X16_NEIGHBORS,
-                &COL_SCAN_16X16_INVERSE,
-            ),
-            (TxSize::Tx16, _) => (
-                &DEFAULT_SCAN_16X16,
-                &DEFAULT_SCAN_16X16_NEIGHBORS,
-                &DEFAULT_SCAN_16X16_INVERSE,
-            ),
-            (TxSize::Tx32, _) => (
-                &DEFAULT_SCAN_32X32,
-                &DEFAULT_SCAN_32X32_NEIGHBORS,
-                &DEFAULT_SCAN_32X32_INVERSE,
-            ),
-        };
+    let (scan, neighbors, eob): (&'static [u16], &'static [u16], &'static [u16]) = match (tx, ty) {
+        (TxSize::Tx4, TxType::AdstDct) => {
+            (&ROW_SCAN_4X4, &ROW_SCAN_4X4_NEIGHBORS, &ROW_SCAN_4X4_EOB)
+        }
+        (TxSize::Tx4, TxType::DctAdst) => {
+            (&COL_SCAN_4X4, &COL_SCAN_4X4_NEIGHBORS, &COL_SCAN_4X4_EOB)
+        }
+        (TxSize::Tx4, _) => (
+            &DEFAULT_SCAN_4X4,
+            &DEFAULT_SCAN_4X4_NEIGHBORS,
+            &DEFAULT_SCAN_4X4_EOB,
+        ),
+        (TxSize::Tx8, TxType::AdstDct) => {
+            (&ROW_SCAN_8X8, &ROW_SCAN_8X8_NEIGHBORS, &ROW_SCAN_8X8_EOB)
+        }
+        (TxSize::Tx8, TxType::DctAdst) => {
+            (&COL_SCAN_8X8, &COL_SCAN_8X8_NEIGHBORS, &COL_SCAN_8X8_EOB)
+        }
+        (TxSize::Tx8, _) => (
+            &DEFAULT_SCAN_8X8,
+            &DEFAULT_SCAN_8X8_NEIGHBORS,
+            &DEFAULT_SCAN_8X8_EOB,
+        ),
+        (TxSize::Tx16, TxType::AdstDct) => (
+            &ROW_SCAN_16X16,
+            &ROW_SCAN_16X16_NEIGHBORS,
+            &ROW_SCAN_16X16_EOB,
+        ),
+        (TxSize::Tx16, TxType::DctAdst) => (
+            &COL_SCAN_16X16,
+            &COL_SCAN_16X16_NEIGHBORS,
+            &COL_SCAN_16X16_EOB,
+        ),
+        (TxSize::Tx16, _) => (
+            &DEFAULT_SCAN_16X16,
+            &DEFAULT_SCAN_16X16_NEIGHBORS,
+            &DEFAULT_SCAN_16X16_EOB,
+        ),
+        (TxSize::Tx32, _) => (
+            &DEFAULT_SCAN_32X32,
+            &DEFAULT_SCAN_32X32_NEIGHBORS,
+            &DEFAULT_SCAN_32X32_EOB,
+        ),
+    };
     ScanOrder {
         scan,
         neighbors,
-        inverse,
+        eob,
     }
 }
 
@@ -390,7 +361,14 @@ fn emit_tokens_sized<const AREA: usize>(
 ) {
     debug_assert_eq!(model.tx.area(), AREA);
     let order = scan_order(model.tx, model.ty);
-    debug_assert_eq!(eob, order.end_of_block(levels));
+    debug_assert_eq!(
+        eob,
+        order
+            .scan
+            .iter()
+            .rposition(|&p| levels[usize::from(p)] != 0)
+            .map_or(0, |c| c + 1)
+    );
     let mut cache = [0u8; AREA];
     let mut needs_eob = true;
     for (c, &position) in order.scan.iter().enumerate() {
@@ -492,22 +470,33 @@ pub(crate) fn write(
 /// tokens for almost no distortion; it is mostly noise). The first nonzero
 /// level is always kept. Returns whether any level remains.
 pub(crate) fn shave_isolated_ones(
+    dsp: &Dsp,
     levels: &mut [i32],
     tx: TxSize,
     ty: TxType,
     min_gap: usize,
 ) -> bool {
     let order = scan_order(tx, ty);
+    let mut eob = order.end_of_block(dsp, levels);
     loop {
-        let (Some(last), Some(previous)) = order.last_two_nonzero(levels) else {
-            // No level, or only the first one, which is always kept.
-            return levels[..order.scan.len()].iter().any(|&level| level != 0);
-        };
+        // No level, or only the first one, which is always kept.
+        if eob <= 1 {
+            return eob == 1;
+        }
+        let last = eob - 1;
         let position = usize::from(order.scan[last]);
-        if levels[position].abs() != 1 || last - previous < min_gap {
+        let level = levels[position];
+        if level.abs() != 1 {
             return true;
         }
+        // The previous nonzero level: the end of block without the last.
         levels[position] = 0;
+        let previous_eob = order.end_of_block(dsp, levels);
+        if previous_eob == 0 || last + 1 - previous_eob < min_gap {
+            levels[position] = level;
+            return true;
+        }
+        eob = previous_eob;
     }
 }
 
@@ -763,6 +752,7 @@ mod tests {
         levels[at(20)] = -1;
         levels[at(40)] = 1;
         assert!(shave_isolated_ones(
+            &Dsp::new(),
             &mut levels,
             TxSize::Tx8,
             TxType::DctDct,
@@ -773,6 +763,7 @@ mod tests {
         let mut lone = [0; 64];
         lone[at(30)] = 1;
         assert!(shave_isolated_ones(
+            &Dsp::new(),
             &mut lone,
             TxSize::Tx8,
             TxType::DctDct,
@@ -807,7 +798,7 @@ mod tests {
                             .iter()
                             .map(|l| {
                                 let mut coder = Coder::new(model, &context, &mut counts);
-                                let eob = end_of_block(l, model.tx, model.ty);
+                                let eob = end_of_block(&Dsp::new(), l, model.tx, model.ty);
                                 write(&mut writer, (l, eob), model, &mut coder, initial);
                                 eob
                             })

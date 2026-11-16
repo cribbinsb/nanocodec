@@ -4,33 +4,11 @@
 
 use nc_common::{BitDepth, Sample};
 
+use super::av1_tests::{pattern, samples, widened};
 use crate::{
     Dsp, VP9_MAX_SCALED_STEP, VP9_TAPS, Vp9Filter, Vp9FilterLimits, Vp9FilterWidth, Vp9IntraEdges,
     Vp9IntraMode, Vp9Pass, Vp9ScaledScratch,
 };
-
-/// A deterministic pattern of samples up to `max`, with flat runs and
-/// edges (so the filters' decisions take both ways).
-fn pattern(len: usize, seed: usize, max: u32) -> Vec<u32> {
-    (0..len)
-        .map(|i| {
-            let v = (i.wrapping_mul(2_654_435_761) + seed * 40_503) >> 7;
-            match (i / 11 + seed) % 9 {
-                0 => max,
-                1 | 2 => max / 2 + (seed as u32 % 3),
-                _ => (v as u32) % (max + 1),
-            }
-        })
-        .collect()
-}
-
-fn samples<T: Sample>(values: &[u32]) -> Vec<T> {
-    values.iter().map(|&v| T::from_i32(v as i32)).collect()
-}
-
-fn widened(values: &[u8]) -> Vec<u16> {
-    values.iter().map(|&v| u16::from(v)).collect()
-}
 
 const TWELVE: BitDepth = BitDepth::new(12).unwrap();
 const DEEP: [BitDepth; 2] = [BitDepth::TEN, TWELVE];

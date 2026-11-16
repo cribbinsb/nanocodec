@@ -31,12 +31,12 @@
 //! WASM decode of our 720p streams -2 to -5 % (`docs/results/wasm-speed.md`).
 
 use super::driver::{RowKernel, SHIFT, layout};
+use super::simd128::{load_row, store_row};
 use crate::vp9_mc::VP9_TAPS;
 use core::arch::wasm32::{
     i8x16_relaxed_swizzle, i8x16_shuffle, i16x8_add, i16x8_relaxed_dot_i8x16_i7x16, i16x8_splat,
-    u8x16, u8x16_avgr, u8x16_narrow_i16x8, u8x16_splat, u16x8_shr, u16x8_splat, u16x8_sub_sat,
-    v128, v128_load32_lane, v128_load32_zero, v128_load64_lane, v128_load64_zero,
-    v128_store32_lane, v128_store64_lane, v128_xor,
+    u8x16, u8x16_narrow_i16x8, u8x16_splat, u16x8_shr, u16x8_splat, u16x8_sub_sat, v128,
+    v128_load32_lane, v128_load64_lane, v128_load64_zero, v128_xor,
 };
 
 /// Turns an unsigned byte into its signed offset from 128.
@@ -155,30 +155,13 @@ impl RowKernel for Simd128Dot {
     }
     #[inline(always)]
     unsafe fn load<const N: usize>(src: *const u8) -> v128 {
-        // SAFETY: the caller provides N readable bytes; each load reads N.
-        unsafe {
-            if N == 4 {
-                v128_load32_zero(src.cast())
-            } else {
-                v128_load64_zero(src.cast())
-            }
-        }
+        // SAFETY: the caller's contract is `load_row`'s.
+        unsafe { load_row::<N>(src) }
     }
     #[inline(always)]
     unsafe fn store<const N: usize, const AVG: bool>(dst: *mut u8, row: v128) {
-        // SAFETY: the caller provides N writable bytes, also readable when AVG.
-        unsafe {
-            let row = if AVG {
-                u8x16_avgr(row, Self::load::<N>(dst))
-            } else {
-                row
-            };
-            if N == 4 {
-                v128_store32_lane::<0>(row, dst.cast());
-            } else {
-                v128_store64_lane::<0>(row, dst.cast());
-            }
-        }
+        // SAFETY: the caller's contract is `store_row`'s.
+        unsafe { store_row::<N, AVG>(dst, row) }
     }
     #[inline(always)]
     unsafe fn horizontal<const N: usize, const LAYOUT: u8>(src: *const u8, f: &DotFilters) -> v128 {

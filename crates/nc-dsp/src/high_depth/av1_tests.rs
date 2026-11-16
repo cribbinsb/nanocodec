@@ -21,7 +21,7 @@ use crate::{
 
 /// A deterministic pattern of samples up to `max`, with flat runs and
 /// edges (so the filters' decisions take both ways).
-fn pattern(len: usize, seed: usize, max: u32) -> Vec<u32> {
+pub(super) fn pattern(len: usize, seed: usize, max: u32) -> Vec<u32> {
     (0..len)
         .map(|i| {
             let v = (i.wrapping_mul(2_654_435_761) + seed * 40_503) >> 7;
@@ -34,11 +34,11 @@ fn pattern(len: usize, seed: usize, max: u32) -> Vec<u32> {
         .collect()
 }
 
-fn samples<T: Sample>(values: &[u32]) -> Vec<T> {
+pub(super) fn samples<T: Sample>(values: &[u32]) -> Vec<T> {
     values.iter().map(|&v| T::from_i32(v as i32)).collect()
 }
 
-fn widened(values: &[u8]) -> Vec<u16> {
+pub(super) fn widened(values: &[u8]) -> Vec<u16> {
     values.iter().map(|&v| u16::from(v)).collect()
 }
 

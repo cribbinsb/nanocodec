@@ -13,6 +13,7 @@
 //! token's probabilities; libvpx's own `vp9_optimize_b` prices the
 //! neighbours from the unoptimised levels instead.
 
+use nc_dsp::Dsp;
 use nc_encoder::{Candidates, ForwardCoeffRateModel, ForwardTrellis};
 
 use super::{
@@ -225,6 +226,7 @@ impl TrellisQuantizer {
     /// Returns whether any level is left.
     pub(crate) fn quantize(
         &mut self,
+        dsp: &Dsp,
         model: &mut RateModel<'_>,
         coefficients: &[i16],
         steps: Steps,
@@ -236,7 +238,7 @@ impl TrellisQuantizer {
         // Coefficients are 8x orthonormal (32x32: 4x, `coefficient_sse`).
         let scale_log2 = if tx == TxSize::Tx32 { 2 } else { 3 };
         let to_sse = 1.0 / f64::from(1_u32 << (2 * scale_log2));
-        let eob = model.order.end_of_block(levels);
+        let eob = model.order.end_of_block(dsp, levels);
         let scan = &model.order.scan[..eob];
         self.candidates.clear();
         self.candidates.extend(scan.iter().map(|&p| {
@@ -302,7 +304,7 @@ mod tests {
                 let order = scan_order(tx, ty);
                 for c in 1..order.scan.len() {
                     for k in 0..2 {
-                        let n = usize::from(order.inverse[usize::from(order.neighbors[2 * c + k])]);
+                        let n = usize::from(order.eob[usize::from(order.neighbors[2 * c + k])]) - 1;
                         assert!(n < c && c - n < WINDOW, "{tx:?} {ty:?} c {c} neighbour {n}");
                     }
                 }
@@ -352,7 +354,7 @@ mod tests {
                     };
                     levels[usize::from(p)] = if next() % 2 == 0 { v } else { -v };
                 }
-                let eob = order.end_of_block(&levels);
+                let eob = order.end_of_block(&Dsp::new(), &levels);
                 let expected = cost((&levels, eob), model, probs, initial);
                 let mut rates = RateModel::new(model, probs, initial);
                 let mut state = rates.initial_state();

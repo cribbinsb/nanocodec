@@ -8,6 +8,9 @@
 //! The relaxed-SIMD module uses `simd128_dot` instead (byte-pair dot products).
 
 use crate::Vp9Filter;
+use core::arch::wasm32::{
+    u8x16_avgr, v128, v128_load32_zero, v128_load64_zero, v128_store32_lane, v128_store64_lane,
+};
 
 /// The plain SIMD128 row kernel (the relaxed build uses `simd128_dot`).
 #[cfg(not(target_feature = "relaxed-simd"))]
@@ -15,9 +18,8 @@ mod widening {
     use super::super::driver::{ROUND, RowKernel, SHIFT, layout};
     use crate::vp9_mc::VP9_TAPS;
     use core::arch::wasm32::{
-        i16x8_add, u8x16_avgr, u8x16_narrow_i16x8, u8x16_splat, u16x8_extmul_low_u8x16, u16x8_shr,
-        u16x8_splat, u16x8_sub_sat, v128, v128_load32_zero, v128_load64_zero, v128_store32_lane,
-        v128_store64_lane,
+        i16x8_add, u8x16_narrow_i16x8, u8x16_splat, u16x8_extmul_low_u8x16, u16x8_shr, u16x8_splat,
+        u16x8_sub_sat, v128,
     };
     pub(super) struct Simd128;
 
@@ -60,30 +62,13 @@ mod widening {
         }
         #[inline(always)]
         unsafe fn load<const N: usize>(src: *const u8) -> v128 {
-            // SAFETY: the caller provides N readable bytes; each load reads N.
-            unsafe {
-                if N == 4 {
-                    v128_load32_zero(src.cast())
-                } else {
-                    v128_load64_zero(src.cast())
-                }
-            }
+            // SAFETY: the caller's contract is `load_row`'s.
+            unsafe { super::load_row::<N>(src) }
         }
         #[inline(always)]
         unsafe fn store<const N: usize, const AVG: bool>(dst: *mut u8, row: v128) {
-            // SAFETY: the caller provides N writable bytes, also readable when AVG; each store writes N.
-            unsafe {
-                let row = if AVG {
-                    u8x16_avgr(row, Self::load::<N>(dst))
-                } else {
-                    row
-                };
-                if N == 4 {
-                    v128_store32_lane::<0>(row, dst.cast());
-                } else {
-                    v128_store64_lane::<0>(row, dst.cast());
-                }
-            }
+            // SAFETY: the caller's contract is `store_row`'s.
+            unsafe { super::store_row::<N, AVG>(dst, row) }
         }
         #[inline(always)]
         unsafe fn horizontal<const N: usize, const LAYOUT: u8>(
@@ -99,6 +84,44 @@ mod widening {
             f: &[v128; 8],
         ) -> v128 {
             filter::<LAYOUT>(|k| rows[k], f)
+        }
+    }
+}
+
+/// Loads `N` (4 or 8) pixels into the low lanes of a row.
+///
+/// # Safety
+/// `src` has `N` readable bytes.
+#[inline(always)]
+pub(super) unsafe fn load_row<const N: usize>(src: *const u8) -> v128 {
+    // SAFETY: the caller provides N readable bytes; each load reads N.
+    unsafe {
+        if N == 4 {
+            v128_load32_zero(src.cast())
+        } else {
+            v128_load64_zero(src.cast())
+        }
+    }
+}
+
+/// Stores the low `N` (4 or 8) lanes of `row`, rounded-averaged with the
+/// pixels already there when `AVG`.
+///
+/// # Safety
+/// `dst` has `N` writable bytes, also readable when `AVG`.
+#[inline(always)]
+pub(super) unsafe fn store_row<const N: usize, const AVG: bool>(dst: *mut u8, row: v128) {
+    // SAFETY: the caller provides N writable bytes, also readable when AVG; each store writes N.
+    unsafe {
+        let row = if AVG {
+            u8x16_avgr(row, load_row::<N>(dst))
+        } else {
+            row
+        };
+        if N == 4 {
+            v128_store32_lane::<0>(row, dst.cast());
+        } else {
+            v128_store64_lane::<0>(row, dst.cast());
         }
     }
 }

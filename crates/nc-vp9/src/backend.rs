@@ -337,11 +337,13 @@ impl CodedTx {
     fn new(
         block: &TxBlock,
         ty: transform::TxType,
-        levels: Option<&[i32]>,
+        levels: Option<(&nc_dsp::Dsp, &[i32])>,
         levels_offset: usize,
     ) -> Self {
         let unit = |sample: usize| u16::try_from(sample >> 2).expect("VP9 frames fit 16-bit units");
-        let eob = levels.map_or(0, |levels| coeff::end_of_block(levels, block.tx, ty));
+        let eob = levels.map_or(0, |(dsp, levels)| {
+            coeff::end_of_block(dsp, levels, block.tx, ty)
+        });
         Self {
             plane: block.plane,
             tx: block.tx,
@@ -746,6 +748,7 @@ impl Vp9Trellis {
     /// stand. Returns whether any level is left.
     fn quantize(
         &mut self,
+        dsp: &nc_dsp::Dsp,
         (fc, contexts, tx_block, inter): (&FrameContext, &EntropyContexts, &TxBlock, bool),
         ty: transform::TxType,
         (lambda, coefficients, steps): (f32, &[i16], transform::Steps),
@@ -761,6 +764,7 @@ impl Vp9Trellis {
         );
         let mut rates = coeff::trellis::RateModel::new(model, probs, ctx);
         self.search.quantize(
+            dsp,
             &mut rates,
             coefficients,
             steps,
@@ -1391,7 +1395,7 @@ impl CodecBackend for Vp9Backend {
                 } else {
                     &transform::ZERO_LEVELS[..area]
                 };
-                let eob = coeff::end_of_block(levels, plane_tx, model.ty);
+                let eob = coeff::end_of_block(&self.dsp, levels, plane_tx, model.ty);
                 bits += coeff::cost((levels, eob), model, probs, 0);
                 if transform_domain {
                     sse += transform::coefficient_sse(plane_tx, coefficients, levels, steps);
@@ -3273,7 +3277,8 @@ impl Vp9Backend {
                     );
                 let nonzero = transformed
                     && quantization.quantize(&self.dsp, self.lossless, coefficients, levels);
-                let nonzero = nonzero && trim_levels(plane_tx, ty, (min_level, shave_gap), levels);
+                let nonzero =
+                    nonzero && trim_levels(&self.dsp, plane_tx, ty, (min_level, shave_gap), levels);
                 let nonzero = match (&mut self.trellis, trellis_lambda) {
                     (Some(trellis), Some(lambda)) if nonzero => {
                         let block = (
@@ -3282,7 +3287,13 @@ impl Vp9Backend {
                             &tx_block,
                             intra.is_none(),
                         );
-                        trellis.quantize(block, ty, (lambda, coefficients, steps), levels)
+                        trellis.quantize(
+                            &self.dsp,
+                            block,
+                            ty,
+                            (lambda, coefficients, steps),
+                            levels,
+                        )
                     }
                     _ => nonzero,
                 };
@@ -3290,7 +3301,12 @@ impl Vp9Backend {
                     self.buffers
                         .add_residual(recon, &tx_block, ty, self.lossless, levels, steps);
                 }
-                let coded = CodedTx::new(&tx_block, ty, nonzero.then_some(&*levels), offset);
+                let coded = CodedTx::new(
+                    &tx_block,
+                    ty,
+                    nonzero.then_some((&self.dsp, &*levels)),
+                    offset,
+                );
                 self.scratch.coded.push(coded);
                 offset += area;
             }
@@ -3461,7 +3477,7 @@ impl Vp9Backend {
         };
         let ty = transform::TxType::DctDct;
         let levels = &self.scratch.levels[offset..offset + tx.area()];
-        let coded = CodedTx::new(tx_block, ty, nonzero.then_some(levels), offset);
+        let coded = CodedTx::new(tx_block, ty, nonzero.then_some((&self.dsp, levels)), offset);
         self.scratch.coded.push(coded);
         true
     }
@@ -3574,13 +3590,14 @@ fn write_tx_size(
 /// 150 kbps: 283 kbps with 2 octaves, 403 with 3). `shave_gap`
 /// (`vp9.shave_gap`) drops isolated trailing ±1 levels.
 fn trim_levels(
+    dsp: &nc_dsp::Dsp,
     tx: TxSize,
     ty: transform::TxType,
     (min_level, shave_gap): (i32, usize),
     levels: &mut [i32],
 ) -> bool {
     (min_level <= 1 || transform::apply_planned_dead_zone(tx, min_level, levels))
-        && (shave_gap == 0 || coeff::shave_isolated_ones(levels, tx, ty, shave_gap))
+        && (shave_gap == 0 || coeff::shave_isolated_ones(dsp, levels, tx, ty, shave_gap))
 }
 
 /// VP9's delta range (`delta_q` is 4 bits and a sign, §6.2.9).
