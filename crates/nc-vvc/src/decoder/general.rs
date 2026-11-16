@@ -290,7 +290,9 @@ impl<T: Pixel> General<T> {
                 .as_ref(),
         )?;
         let pictures = pocs.each_ref().map(|list| references.pictures(list));
-        let kernels = active.kernels::<T>();
+        // Borrows only the DSP and the SPS, so the analysis build can still
+        // record into `active.stats` below.
+        let kernels = active.dsp.at(active.sequence.depth.of::<T>());
         blocks::derive_refinement(
             &mut units,
             &header,

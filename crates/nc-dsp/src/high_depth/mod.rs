@@ -26,6 +26,8 @@
 
 pub(crate) mod av1;
 mod inverse;
+// Vector u16 kernels exist for x86 and aarch64 only.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 mod vector;
 pub(crate) mod vp9;
 mod vvc_filter;
@@ -175,6 +177,7 @@ macro_rules! av1_widths {
         ]
     };
 }
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub(crate) use av1_widths;
 
 /// The kernels of one filter family by width class (`$kernel` generic
@@ -203,7 +206,10 @@ macro_rules! families {
         ]
     };
 }
-pub(crate) use {by_width, families};
+pub(crate) use by_width;
+// The ISA tables (`vector`, x86 and aarch64 only) name this by path.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub(crate) use families;
 
 /// The scalar `u16` instances of the MC references, by taps and width.
 mod scalar {
@@ -277,6 +283,13 @@ impl HighFns {
     /// The table for `isa`: the scalar references, and the ISA's vector
     /// kernels where one exists (see the module docs for adding one).
     pub(crate) fn for_isa(isa: Isa) -> Self {
+        #[cfg_attr(
+            not(any(target_arch = "x86_64", target_arch = "aarch64")),
+            allow(
+                unused_mut,
+                reason = "only the x86 and aarch64 tables install vector kernels"
+            )
+        )]
         let mut table = Self {
             predict: families!(scalar::predict),
             prep: families!(scalar::prep),
