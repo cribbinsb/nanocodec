@@ -1,6 +1,6 @@
 //! High-bit-depth (`u16`, 10 and 12 bpc) AV1 motion-compensation SIMD kernels:
 //! unscaled `put`/`prep`, scaled `predict`/`predict_compound`, and 8x8 affine
-//! `warp`, across AVX2, AVX-512, and NEON.
+//! `warp`, across AVX2, AVX-512, NEON, and SIMD128.
 //!
 //! Attribution: fast paths for `(0, 0)` copy/shift, 1-D horizontal/vertical
 //! filtering, 2/4/6/8-tap span specialization, paired `pmaddwd` / NEON
@@ -10,7 +10,11 @@
 
 #![allow(unsafe_code, clippy::inline_always)]
 #![cfg_attr(
-    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -93,6 +97,8 @@ impl HighAv1McFns {
             Isa::Avx512 => x86::AVX512_FNS,
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => neon::NEON_FNS,
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            Isa::Simd128 => simd128::SIMD128_FNS,
             _ => Self::SCALAR,
         }
     }
@@ -1045,5 +1051,95 @@ mod neon {
         scaled_prep: scaled_prep_neon,
         warp8x8: warp8x8_neon,
         blend: NEON_BLENDS,
+    };
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod simd128 {
+    use super::{
+        Av1Filters, Av1McAxis, Av1Taps, BitDepth, HighAv1McFns, PlaneView, PlaneViewMut, WarpOut,
+        WarpPhases, scaled_prep_lanes, scaled_put_lanes, unscaled_prep_lanes, unscaled_put_lanes,
+        warp8x8_u16_lanes,
+    };
+    use crate::av1_mc::high_blend::simd128::SIMD128_BLENDS;
+    use crate::simd::simd128::{I16x4, I16x8};
+
+    macro_rules! simd128_unscaled {
+        ($put:ident, $prep:ident, $v:ty, $w:literal) => {
+            #[target_feature(enable = "simd128")]
+            unsafe fn $put(
+                src: (&[u16], usize),
+                dst: (&mut [u16], usize),
+                h: usize,
+                taps: Av1Taps<'_>,
+                depth: BitDepth,
+            ) {
+                // SAFETY: SIMD128 is enabled by this wrapper.
+                unsafe { unscaled_put_lanes::<$v, $w>(src, dst, h, taps, depth) }
+            }
+            #[target_feature(enable = "simd128")]
+            unsafe fn $prep(
+                src: (&[u16], usize),
+                dst: (&mut [i16], usize),
+                h: usize,
+                taps: Av1Taps<'_>,
+                depth: BitDepth,
+            ) {
+                // SAFETY: SIMD128 is enabled by this wrapper.
+                unsafe { unscaled_prep_lanes::<$v, $w>(src, dst, h, taps, depth) }
+            }
+        };
+    }
+
+    simd128_unscaled!(put_w4, prep_w4, I16x4, 4);
+    simd128_unscaled!(put_w8, prep_w8, I16x8, 8);
+    simd128_unscaled!(put_w16, prep_w16, I16x8, 16);
+    simd128_unscaled!(put_w32, prep_w32, I16x8, 32);
+    simd128_unscaled!(put_w64, prep_w64, I16x8, 64);
+
+    #[target_feature(enable = "simd128")]
+    unsafe fn scaled_put_simd128(
+        filters: Av1Filters,
+        window: &PlaneView<'_, u16>,
+        size: (usize, usize),
+        axes: (Av1McAxis, Av1McAxis),
+        dst: &mut PlaneViewMut<'_, u16>,
+        depth: BitDepth,
+    ) {
+        // SAFETY: SIMD128 is enabled by this wrapper.
+        unsafe { scaled_put_lanes::<I16x4, I16x8, I16x8>(filters, window, size, axes, dst, depth) }
+    }
+
+    #[target_feature(enable = "simd128")]
+    unsafe fn scaled_prep_simd128(
+        filters: Av1Filters,
+        window: &PlaneView<'_, u16>,
+        size: (usize, usize),
+        axes: (Av1McAxis, Av1McAxis),
+        dst: (&mut [i16], usize),
+        depth: BitDepth,
+    ) {
+        // SAFETY: SIMD128 is enabled by this wrapper.
+        unsafe { scaled_prep_lanes::<I16x4, I16x8, I16x8>(filters, window, size, axes, dst, depth) }
+    }
+
+    #[target_feature(enable = "simd128")]
+    unsafe fn warp8x8_simd128(
+        window: (&[u16], usize),
+        phases: &WarpPhases,
+        rounds: (u32, u32),
+        out: &mut WarpOut,
+    ) {
+        // SAFETY: SIMD128 is enabled by this wrapper.
+        unsafe { warp8x8_u16_lanes::<I16x8>(window, phases, rounds, out) }
+    }
+
+    pub(super) const SIMD128_FNS: HighAv1McFns = HighAv1McFns {
+        put: [put_w4, put_w8, put_w16, put_w32, put_w64],
+        prep: [prep_w4, prep_w8, prep_w16, prep_w32, prep_w64],
+        scaled_put: scaled_put_simd128,
+        scaled_prep: scaled_prep_simd128,
+        warp8x8: warp8x8_simd128,
+        blend: SIMD128_BLENDS,
     };
 }

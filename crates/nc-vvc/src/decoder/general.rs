@@ -415,6 +415,11 @@ impl<T: Pixel> General<T> {
         self.latest = Some((picture, Geometry::of(active.sequence, active.parameters)));
     }
 
+    /// Depths of the latest decoded picture, including monochrome output.
+    pub fn depths(&self) -> BitDepths {
+        self.depths
+    }
+
     /// The visible samples of the latest decoded picture.
     pub fn shown(&self) -> Option<ShownPicture<'_, T>> {
         let (origin, size) = self.window;

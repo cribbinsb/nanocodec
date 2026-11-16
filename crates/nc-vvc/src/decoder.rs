@@ -312,6 +312,35 @@ impl Decoder {
         }
     }
 
+    /// Decode one access unit at either sample depth without an output copy.
+    /// The picture is borrowed through [`Self::shown_high`] (deep) or [`Self::shown`] (8-bit).
+    /// # Errors
+    /// As [`Self::decode_shown`], except that supported deep streams are accepted.
+    pub fn decode_shown_any_depth(&mut self, packet: &[u8]) -> Result<()> {
+        // The original call completes a valid deep picture before reporting
+        // its eight-bit return-type restriction. Reuse that exact eight-bit
+        // call graph, and lift only this specific API restriction.
+        match self.decode_shown(packet) {
+            Err(EIGHT_BIT_ONLY) => Ok(()),
+            result => result,
+        }
+    }
+
+    /// Whether the active sequence stores its samples in u16.
+    #[must_use]
+    pub fn is_high_depth(&self) -> bool {
+        matches!(self.instance, Instance::High(_))
+    }
+
+    /// Borrow deep output only; the original eight-bit shown path stays separate.
+    #[must_use]
+    pub fn shown_high(&self) -> Option<(ShownPicture<'_, u16>, nc_common::BitDepths)> {
+        match &self.instance {
+            Instance::High(core) if self.shown => Some((core.shown()?, core.depths())),
+            _ => None,
+        }
+    }
+
     /// Whether the active general sequence codes only the luma plane.
     #[must_use]
     pub fn is_monochrome(&self) -> bool {

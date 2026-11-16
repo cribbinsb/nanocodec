@@ -43,6 +43,8 @@ pub(crate) fn kernels(isa: Isa) -> [Inverse16Fn; 5] {
         Isa::Avx2 | Isa::Avx512 => avx2::KERNELS,
         #[cfg(target_arch = "aarch64")]
         Isa::Neon => neon::KERNELS,
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        Isa::Simd128 => simd128::KERNELS,
         _ => SCALAR,
     }
 }
@@ -98,7 +100,11 @@ fn inverse<T: Line<i32>, const N: usize>(
 
 /// One ISA's bounded kernels: `$v4` lanes for the 4-point transforms, `$v`
 /// for the others.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 macro_rules! bounded_kernels {
     ($feature:literal, $v4:ty, $v:ty) => {
         use nc_common::BitDepth;
@@ -144,6 +150,12 @@ mod avx2 {
 mod neon {
     use crate::simd::neon::I32x4;
     bounded_kernels!("neon", I32x4, I32x4);
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod simd128 {
+    use crate::simd::simd128::I32x4;
+    bounded_kernels!("simd128", I32x4, I32x4);
 }
 
 #[cfg(test)]

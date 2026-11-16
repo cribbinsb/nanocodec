@@ -176,6 +176,35 @@ impl Decoder {
         }
     }
 
+    /// Decode one access unit at either sample depth without an output copy.
+    /// The latest picture is borrowed through [`Self::shown_high`] (deep) or [`Self::shown`] (8-bit).
+    /// # Errors
+    /// As [`Self::decode_shown`], except that supported deep streams are accepted.
+    pub fn decode_shown_any_depth(&mut self, packet: &[u8]) -> Result<(), DecodeError> {
+        // The original call completes a valid deep picture before reporting
+        // its eight-bit return-type restriction. Reuse that exact eight-bit
+        // call graph, and lift only this specific API restriction.
+        match self.decode_shown(packet) {
+            Err(EIGHT_BIT_ONLY) => Ok(()),
+            result => result,
+        }
+    }
+
+    /// Whether the active sequence stores its samples in u16.
+    #[must_use]
+    pub fn is_high_depth(&self) -> bool {
+        matches!(self.instance, Instance::High(_))
+    }
+
+    /// Borrow deep output only; the original eight-bit shown path stays separate.
+    #[must_use]
+    pub fn shown_high(&self) -> Option<(ShownPicture<'_, u16>, nc_common::BitDepths)> {
+        match &self.instance {
+            Instance::High(core) => Some((core.shown()?, core.depths()?)),
+            Instance::Eight(_) => None,
+        }
+    }
+
     /// The visible samples of the picture the last successful
     /// [`Decoder::decode_shown`] decoded (8-bit streams).
     #[must_use]

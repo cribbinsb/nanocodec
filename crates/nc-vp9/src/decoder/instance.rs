@@ -233,6 +233,15 @@ impl Decoder {
         self.eight(packet)?.decode_and_show(packet)
     }
 
+    /// [`Self::decode_and_show`] accepting both sample depths. Retains the
+    /// same even 4:2:0 display window and hidden-frame checks at either depth.
+    /// # Errors
+    /// As [`Self::decode_and_show`], except that profile 2 is accepted.
+    pub fn decode_and_show_any_depth(&mut self, packet: &[u8]) -> Result<bool> {
+        self.prepare(packet);
+        with_core!(&mut self.instance, core => core.decode_and_show(packet))
+    }
+
     /// Decode one packet of either depth and keep the frame it shows, if
     /// any, until the next call, without copying it
     /// ([`Self::shown_vp9_frame`]); returns whether the packet shows a frame.
@@ -243,6 +252,30 @@ impl Decoder {
     pub fn decode_kept(&mut self, packet: &[u8]) -> Result<bool> {
         self.prepare(packet);
         with_core!(&mut self.instance, core => core.decode_kept(packet))
+    }
+
+    /// Whether the active sequence stores its samples in u16.
+    #[must_use]
+    pub fn is_high_depth(&self) -> bool {
+        matches!(self.instance, Instance::High(_))
+    }
+
+    /// Borrow deep output only; eight-bit callers keep the original shown path.
+    #[must_use]
+    pub fn shown_high(&self) -> Option<(ShownPicture<'_, u16>, nc_common::BitDepths)> {
+        match &self.instance {
+            Instance::High(core) => {
+                let depth = core.depth();
+                Some((
+                    core.shown()?,
+                    nc_common::BitDepths {
+                        luma: depth,
+                        chroma: depth,
+                    },
+                ))
+            }
+            Instance::Eight(_) => None,
+        }
     }
 
     /// The decoder's own picture of the 8-bit frame the last

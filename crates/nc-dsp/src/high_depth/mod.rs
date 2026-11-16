@@ -28,7 +28,11 @@ pub(crate) mod av1;
 mod h264;
 mod inverse;
 // Vector u16 kernels exist for x86 and aarch64 only.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 mod vector;
 pub(crate) mod vp9;
 mod vvc_filter;
@@ -234,7 +238,11 @@ macro_rules! families {
 }
 pub(crate) use by_width;
 // The ISA tables (`vector`, x86 and aarch64 only) name this by path.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 pub(crate) use families;
 
 /// The scalar `u16` instances of the MC references, by taps and width.
@@ -312,7 +320,11 @@ impl HighFns {
     /// kernels where one exists (see the module docs for adding one).
     pub(crate) fn for_isa(isa: Isa) -> Self {
         #[cfg_attr(
-            not(any(target_arch = "x86_64", target_arch = "aarch64")),
+            not(any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                all(target_arch = "wasm32", target_feature = "simd128")
+            )),
             allow(
                 unused_mut,
                 reason = "only the x86 and aarch64 tables install vector kernels"
@@ -368,6 +380,16 @@ impl HighFns {
                 table.cdef = crate::cdef::neon::HIGH_FNS;
                 table.vp9_mc = vector::neon::VP9_MC;
                 table.vp9_filter = vector::neon::vp9_filter;
+            }
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            Isa::Simd128 => {
+                table.predict = vector::simd128::PREDICT;
+                table.prep = vector::simd128::PREP;
+                table.bi = vector::simd128::BI;
+                table.hevc_weight = vector::simd128::WEIGHT;
+                table.vp9_mc = vector::simd128::VP9_MC;
+                table.vp9_filter = vector::simd128::vp9_filter;
+                table.sao_apply = crate::sao::simd128::apply_high;
             }
             _ => {}
         }

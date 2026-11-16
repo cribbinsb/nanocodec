@@ -69,7 +69,9 @@ pub use nc_common::decode::DecodeError;
 use nc_common::decode::{annex_b_units, unescape_rbsp};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::StreamStats;
-use nc_common::{ColourInfo, DecodedPicture, OutputPicture, Picture, PlaneViewMut, ShownPicture};
+use nc_common::{
+    BitDepths, ColourInfo, DecodedPicture, OutputPicture, Picture, PlaneViewMut, ShownPicture,
+};
 
 use self::core::{Core, Finished, Visible};
 #[cfg(test)]
@@ -121,6 +123,15 @@ macro_rules! with_core {
     };
 }
 
+/// Access-unit output mode; the existing eight-bit path keeps its original
+/// return type while deep shown output is retained beside it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputMode {
+    Eight,
+    AnyDepth,
+    Queued,
+}
+
 /// An H.264 High / High 10 decoder of frames.
 #[derive(Debug)]
 pub struct Decoder {
@@ -132,6 +143,8 @@ pub struct Decoder {
     /// The picture of the last successful [`Decoder::decode_shown`]; its
     /// buffer goes back to the pool once the next call drops this.
     shown: Option<Visible<u8>>,
+    /// Deep decoding-order output, sharing its samples with the DPB.
+    shown_high: Option<(Visible<u16>, BitDepths)>,
 }
 
 impl Default for Decoder {
@@ -161,6 +174,7 @@ impl Decoder {
             instance: Instance::Eight(Box::new(Core::new())),
             ready: VecDeque::new(),
             shown: None,
+            shown_high: None,
         }
     }
 
@@ -222,6 +236,7 @@ impl Decoder {
     /// streams ([`Decoder::push_nal`] decodes those).
     pub fn decode(&mut self, packet: &[u8]) -> Result<Picture> {
         self.shown = None;
+        self.shown_high = None;
         let visible = self.decode_packet(packet)?;
         match &mut self.instance {
             Instance::Eight(core) => visible.copy(&mut core.pool),
@@ -238,8 +253,61 @@ impl Decoder {
     pub fn decode_shown(&mut self, packet: &[u8]) -> Result<()> {
         // Release the previous picture first, so this one can reuse it.
         self.shown = None;
+        self.shown_high = None;
         self.shown = Some(self.decode_packet(packet)?);
         Ok(())
+    }
+
+    /// Decode one access unit at either depth and retain its visible samples.
+    /// No picture is copied or queued; output is in decoding order, as for
+    /// [`Self::decode_shown`].
+    /// # Errors
+    /// As [`Self::decode_shown`], except that supported deep streams are accepted.
+    pub fn decode_shown_any_depth(&mut self, packet: &[u8]) -> Result<()> {
+        if !self.is_high_depth() {
+            match self.decode_shown(packet) {
+                // The first deep IDR switches the storage type before the
+                // eight-bit API rejects it, without decoding its samples.
+                Err(DecodeError::Unsupported("H264 bit depth above 8")) => {}
+                result => return result,
+            }
+        }
+        self.shown = None;
+        self.shown_high = None;
+        if packet.len() > MAX_PACKET_BYTES {
+            return Err(DecodeError::Unsupported("H264 packet allocation limit"));
+        }
+        let (mut low, mut high) = (None, None);
+        for unit in annex_b_units(packet)? {
+            let next = self.decode_unit(unit, OutputMode::AnyDepth)?;
+            let next_high = self.shown_high.take();
+            if next.is_some() || next_high.is_some() {
+                if low.is_some() || high.is_some() {
+                    return Err(DecodeError::Unsupported("several pictures in one packet"));
+                }
+                low = next;
+                high = next_high;
+            }
+        }
+        if low.is_none() && high.is_none() {
+            return Err(DecodeError::Malformed("packet does not complete a picture"));
+        }
+        self.shown = low;
+        self.shown_high = high;
+        Ok(())
+    }
+
+    /// Whether the active sequence stores its samples in u16.
+    #[must_use]
+    pub fn is_high_depth(&self) -> bool {
+        matches!(self.instance, Instance::High(_))
+    }
+
+    /// Borrow deep shown output, without touching the original eight-bit view.
+    #[must_use]
+    pub fn shown_high(&self) -> Option<(ShownPicture<'_, u16>, BitDepths)> {
+        let (picture, depths) = self.shown_high.as_ref()?;
+        Some((picture.view()?, *depths))
     }
 
     /// The picture of one access unit of an 8-bit stream.
@@ -249,7 +317,7 @@ impl Decoder {
         }
         let mut frame = None;
         for unit in annex_b_units(packet)? {
-            if let Some(decoded) = self.decode_unit(unit, false)? {
+            if let Some(decoded) = self.decode_unit(unit, OutputMode::Eight)? {
                 if frame.is_some() {
                     return Err(DecodeError::Unsupported("several pictures in one packet"));
                 }
@@ -274,7 +342,7 @@ impl Decoder {
     ///
     /// Malformed or unsupported syntax. A picture that fails is dropped.
     pub fn push_nal(&mut self, nal: &[u8]) -> Result<()> {
-        self.decode_unit(nal, true)?;
+        self.decode_unit(nal, OutputMode::Queued)?;
         Ok(())
     }
 
@@ -303,9 +371,9 @@ impl Decoder {
     }
 
     /// One NAL unit; returns the 8-bit picture it completes (decoding
-    /// order) unless `queued`, when completed pictures of any depth go
+    /// order) unless the mode queues completed pictures of any depth for
     /// through the output queue instead.
-    fn decode_unit(&mut self, nal: &[u8], queued: bool) -> Result<Option<Visible<u8>>> {
+    fn decode_unit(&mut self, nal: &[u8], mode: OutputMode) -> Result<Option<Visible<u8>>> {
         let (&header, payload) = nal.split_first().ok_or(DecodeError::Truncated)?;
         if header & FORBIDDEN_ZERO_BIT != 0 {
             return Err(DecodeError::Malformed("forbidden_zero_bit"));
@@ -315,7 +383,7 @@ impl Decoder {
             NAL_SLICE | NAL_IDR_SLICE => {
                 let idr = header & NAL_TYPE_MASK == NAL_IDR_SLICE;
                 let rbsp = unescape_rbsp(payload)?;
-                self.slice(&rbsp, (idr, nal_ref_idc), queued)
+                self.slice(&rbsp, (idr, nal_ref_idc), mode)
             }
             NAL_SPS => {
                 let sps = sps::parse(&unescape_rbsp(payload)?)?;
@@ -346,7 +414,7 @@ impl Decoder {
         &mut self,
         rbsp: &[u8],
         (idr, nal_ref_idc): (bool, u32),
-        queued: bool,
+        mode: OutputMode,
     ) -> Result<Option<Visible<u8>>> {
         if idr && nal_ref_idc == 0 {
             return Err(DecodeError::Malformed("IDR picture with nal_ref_idc 0"));
@@ -379,7 +447,7 @@ impl Decoder {
             Instance::Eight(core) => {
                 let finished = slice_on(core, rbsp, (idr, nal_ref_idc), params)?;
                 match finished {
-                    Some(f) if queued => {
+                    Some(f) if mode == OutputMode::Queued => {
                         let due = core.queue.push(f.frame());
                         self.ready.extend(
                             due.into_iter()
@@ -391,15 +459,19 @@ impl Decoder {
                 }
             }
             Instance::High(core) => {
-                if !queued {
+                if mode == OutputMode::Eight {
                     return Err(DecodeError::Unsupported("H264 bit depth above 8"));
                 }
                 if let Some(f) = slice_on(core, rbsp, (idr, nal_ref_idc), params)? {
-                    let due = core.queue.push(f.frame());
-                    self.ready.extend(
-                        due.into_iter()
-                            .map(|f| DecodedPicture::High(output_picture(f))),
-                    );
+                    if mode == OutputMode::AnyDepth {
+                        self.shown_high = Some((f.visible, f.depths));
+                    } else {
+                        let due = core.queue.push(f.frame());
+                        self.ready.extend(
+                            due.into_iter()
+                                .map(|f| DecodedPicture::High(output_picture(f))),
+                        );
+                    }
                 }
                 Ok(None)
             }

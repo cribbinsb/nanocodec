@@ -1095,7 +1095,11 @@ pub(crate) unsafe fn hevc_inverse_extent<V: I32Lanes, T: BoundedLine, const N: u
 ///
 /// # Safety
 /// As [`hevc_inverse_extent`]; `extent` covers every nonzero coefficient.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 #[inline(always)]
 pub(crate) unsafe fn hevc_inverse_extent_passes<V: I32Lanes, T: BoundedLine, const N: usize>(
     coeffs: &[i16],

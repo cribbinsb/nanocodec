@@ -1,6 +1,6 @@
 //! AV1 compound blends, difference-weighted masks, inter-intra blends, and
 //! OBMC blends shared across `u8` (8 bpc) and `u16` (10 and 12 bpc), on AVX2,
-//! AVX-512, and NEON.
+//! AVX-512, NEON, and SIMD128.
 //!
 //! Attribution: paired 16-bit weight-prediction products (`pmaddwd` / NEON
 //! widening MACs) and unsigned difference-mask rounding follow dav1d 1.5.4
@@ -9,7 +9,11 @@
 
 #![allow(unsafe_code, clippy::inline_always)]
 #![cfg_attr(
-    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -785,7 +789,11 @@ unsafe fn obmc_lanes<S: BlendSample, V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 macro_rules! isa_blends {
     ($mod_name:ident, $const_name:ident, $feat:literal, $v4:ty, $v8:ty, $vw:ty) => {
         pub(super) mod $mod_name {
@@ -929,4 +937,25 @@ pub(super) mod neon {
         crate::simd::neon::I16x8
     );
     pub(crate) use neon_impl::NEON_BLENDS;
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub(super) mod simd128 {
+    isa_blends!(
+        simd128_impl,
+        SIMD128_BLENDS,
+        "simd128",
+        crate::simd::simd128::I16x4,
+        crate::simd::simd128::I16x8,
+        crate::simd::simd128::I16x8
+    );
+    // Preserve the existing u8 function table, including the shared mask.
+    pub(crate) const SIMD128_BLENDS: super::HighBlendFns = super::HighBlendFns {
+        diff_mask: super::SCALAR_BLENDS.diff_mask,
+        distance_u8: super::SCALAR_BLENDS.distance_u8,
+        mask_u8: super::SCALAR_BLENDS.mask_u8,
+        interintra_u8: super::SCALAR_BLENDS.interintra_u8,
+        obmc_u8: super::SCALAR_BLENDS.obmc_u8,
+        ..simd128_impl::SIMD128_BLENDS
+    };
 }

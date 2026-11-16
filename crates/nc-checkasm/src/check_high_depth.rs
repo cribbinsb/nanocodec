@@ -1133,6 +1133,7 @@ fn check_av1_grain_high(
 }
 
 pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
+    check_sao_high(candidate, reference, report);
     check_av1_blends_u8(
         (candidate.at(BitDepth::EIGHT), reference.at(BitDepth::EIGHT)),
         rng,
@@ -1248,6 +1249,62 @@ fn check_hevc_vvc_high(
                 report.failures.push(format!(
                     "u16 {transform:?} inverse add, extent {rows}x{columns}, differs"
                 ));
+            }
+        }
+    }
+}
+
+/// Shared HEVC/VVC SAO: exact windows, every vector tail, saturated offsets
+/// and the 16-bit scalar fallback where samples no longer fit signed words.
+fn check_sao_high(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
+    for bits in [10, 12, 15, 16] {
+        let depth = BitDepth::new(bits).expect("sample depth");
+        for width in [9, 10, 15, 16, 17, 18, 31, 32, 33] {
+            for height in [4, 9, 16] {
+                let ss = width + 3;
+                let ds = width + 7;
+                for pattern in 0..4 {
+                    let source: Vec<u16> = (0usize..1 + (height - 1) * ss + width)
+                        .map(|i| match pattern {
+                            0 => 0,
+                            1 => depth.max() as u16,
+                            2 => {
+                                if i.is_multiple_of(2) {
+                                    0
+                                } else {
+                                    depth.max() as u16
+                                }
+                            }
+                            _ => ((i * 191 + 73) as u32 & depth.max() as u32) as u16,
+                        })
+                        .collect();
+                    let input =
+                        PlaneView::new(&source[1..], ss, width, height).expect("exact source");
+                    for class in 0..4 {
+                        for offsets in [[0; 4], [-31, 15, -7, 23], [i16::MIN, -1, 1, i16::MAX]] {
+                            let guard = 0xa5a5;
+                            let mut a = vec![guard; 3 + (height - 1) * ds + width + 5];
+                            let mut b = a.clone();
+                            for (dsp, out) in [(candidate, &mut a), (reference, &mut b)] {
+                                let len = (height - 1) * ds + width;
+                                let mut view =
+                                    PlaneViewMut::new(&mut out[3..3 + len], ds, width, height)
+                                        .expect("exact destination");
+                                dsp.at(depth).sao_edge_apply(
+                                    class,
+                                    offsets,
+                                    &input,
+                                    &mut view,
+                                    (1, 1, width - 1, height - 1),
+                                );
+                            }
+                            report.cases += 1;
+                            if a != b {
+                                report.failures.push(format!("u16 SAO {bits}bit {width}x{height} class{class} pattern{pattern} offsets{offsets:?}"));
+                            }
+                        }
+                    }
+                }
             }
         }
     }

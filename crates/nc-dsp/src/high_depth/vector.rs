@@ -132,3 +132,8 @@ pub(crate) mod avx2 {
 pub(crate) mod neon {
     vectorised!("neon");
 }
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub(crate) mod simd128 {
+    vectorised!("simd128");
+}

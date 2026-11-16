@@ -482,6 +482,11 @@ Storsjo, Janne Grunau):
   `src/x86/filmgrain16_avx2.asm`, `src/x86/filmgrain16_avx512.asm`,
   `src/arm/64/filmgrain16.S`).
 
+The browser SIMD128 extensions to `av1_mc/high_mc.rs`,
+`av1_mc/high_blend.rs` and `av1_inverse/high_simd.rs` instantiate these same
+shared Rust algorithms with the existing WASM lane types; they introduce
+no further external implementation.
+
 ## libyuv — BSD-3-Clause
 
 Copyright 2011 The LibYuv Project Authors. All rights reserved.

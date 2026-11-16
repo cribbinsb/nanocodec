@@ -276,6 +276,30 @@ impl Decoder {
         with_core!(self, core => core.decode_and_show(temporal_unit))
     }
 
+    /// Whether the active sequence stores its samples in u16.
+    #[must_use]
+    pub fn is_high_depth(&self) -> bool {
+        matches!(self.instance, Instance::High(_))
+    }
+
+    /// Borrow deep output only; eight-bit callers keep the original shown path.
+    #[must_use]
+    pub fn shown_high(&self) -> Option<(ShownPicture<'_, u16>, nc_common::BitDepths)> {
+        match &self.instance {
+            Instance::High(core) => {
+                let depth = core.bit_depth();
+                Some((
+                    core.shown()?,
+                    nc_common::BitDepths {
+                        luma: depth,
+                        chroma: depth,
+                    },
+                ))
+            }
+            Instance::Eight(_) => None,
+        }
+    }
+
     /// The visible samples of the 8-bit frame the last successful decode
     /// showed (`None` in a deeper sequence: see [`Decoder::shown_frame`]).
     #[must_use]

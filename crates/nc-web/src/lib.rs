@@ -17,7 +17,10 @@ use nc_common::decode::DecodeError;
 use nc_common::outcome::{FrameOutcome, ReceivedFrames};
 #[cfg(feature = "analysis")]
 use nc_common::stream_stats::{self, StreamStats};
-use nc_common::{ColourDescription, ColourInfo, Picture, PlaneIndex, RawFrame, ShownPicture};
+use nc_common::{
+    BitDepths, ColourDescription, ColourInfo, Picture, PlaneIndex, RawFrame, ShownFrame,
+    ShownPicture,
+};
 use nc_dsp::DisplayMatrix;
 use nc_dsp::display::display_scale_plane;
 use nc_encoder::{
@@ -501,6 +504,11 @@ pub struct BrowserDecoder {
     /// for last), reused across frames so the display path allocates nothing
     /// per frame.
     display: Vec<u8>,
+    /// Reused eight-bit display samples for a deep frame only. Native deep
+    /// reference pictures stay in their decoder and are never modified.
+    deep_display: Option<Picture>,
+    /// Whether the current display is the downshifted deep picture.
+    display_is_deep: bool,
     /// The source frame `psnr` converts and compares against, reused
     /// across frames (no border: it is never predicted from).
     reference: Option<Picture>,
@@ -606,6 +614,8 @@ impl BrowserDecoder {
             inner,
             dsp: nc_dsp::Dsp::new(),
             display: Vec::new(),
+            deep_display: None,
+            display_is_deep: false,
             reference: None,
             scaled_decoded: None,
             frames: ReceivedFrames::default(),
@@ -909,22 +919,59 @@ impl BrowserDecoder {
                 "packet exceeds the 16 MiB browser limit",
             ));
         }
-        let shown = match &mut self.inner {
-            DecoderKind::H264(d) => d.decode_shown(packet).map(|()| true),
-            DecoderKind::Hevc(d) => d.decode_shown(packet).map(|()| true),
-            DecoderKind::Av1(d) => d.decode_and_show(packet),
-            DecoderKind::Vp9(d) => d.decode_and_show(packet),
-            // A unit may hold only hidden frames; the player shows the
-            // first picture a unit releases (our encoder's release one).
-            DecoderKind::Av2(d) => d.decode_unit(packet).map(|()| d.next_output()),
-            DecoderKind::Vvc(d) => d.decode_shown(packet).map(|()| true),
+        let (shown, deep) = match &mut self.inner {
+            DecoderKind::H264(d) => (
+                d.decode_shown_any_depth(packet).map(|()| true),
+                d.is_high_depth(),
+            ),
+            DecoderKind::Hevc(d) => (
+                d.decode_shown_any_depth(packet).map(|()| true),
+                d.is_high_depth(),
+            ),
+            DecoderKind::Av1(d) => (d.decode_any_depth(packet), d.is_high_depth()),
+            DecoderKind::Vp9(d) => (d.decode_and_show_any_depth(packet), d.is_high_depth()),
+            DecoderKind::Av2(d) => (d.decode_unit(packet).map(|()| d.next_output()), false),
+            DecoderKind::Vvc(d) => (
+                d.decode_shown_any_depth(packet).map(|()| true),
+                d.is_high_depth(),
+            ),
         };
         self.last_shown = matches!(shown, Ok(true));
+        if self.last_shown {
+            // A rejected display window/allocation must not advertise a frame.
+            self.last_shown = false;
+            if deep {
+                let (picture, depths) = Self::native_high_shown(&self.inner).ok_or(
+                    DecodeError::Unsupported("deep browser output needs an even 4:2:0 window"),
+                )?;
+                let size = (picture.width(), picture.height());
+                if self
+                    .deep_display
+                    .as_ref()
+                    .is_none_or(|p| (p.width(), p.height()) != size)
+                {
+                    self.deep_display = Some(
+                        Picture::new(size.0, size.1, 0)
+                            .map_err(|_| DecodeError::Unsupported("browser display dimensions"))?,
+                    );
+                }
+                pixels::downshift(
+                    picture,
+                    depths,
+                    self.deep_display.as_mut().expect("allocated display"),
+                );
+            }
+            self.display_is_deep = deep;
+            self.last_shown = true;
+        }
         shown.map(|_| ())
     }
 
     /// The latest decoded frame's visible samples.
     fn shown(&self) -> Option<ShownPicture<'_>> {
+        if self.display_is_deep {
+            return self.deep_display.as_ref().map(ShownPicture::whole);
+        }
         match &self.inner {
             DecoderKind::H264(d) => d.shown(),
             DecoderKind::Hevc(d) => d.shown(),
@@ -933,6 +980,72 @@ impl BrowserDecoder {
             DecoderKind::Av2(d) => d.shown(),
             DecoderKind::Vvc(d) => d.shown(),
         }
+    }
+
+    /// Deep views have their own entry points: merely checking the depth of
+    /// an eight-bit frame must not build/copy another set of plane views.
+    fn native_high_shown(inner: &DecoderKind) -> Option<(ShownPicture<'_, u16>, BitDepths)> {
+        match inner {
+            DecoderKind::H264(d) => d.shown_high(),
+            DecoderKind::Hevc(d) => d.shown_high(),
+            DecoderKind::Av1(d) => d.shown_high(),
+            DecoderKind::Vp9(d) => d.shown_high(),
+            DecoderKind::Vvc(d) => d.shown_high(),
+            DecoderKind::Av2(_) => None,
+        }
+    }
+
+    fn native_shown(&self) -> Option<ShownFrame<'_>> {
+        if self.display_is_deep {
+            let (picture, depths) = Self::native_high_shown(&self.inner)?;
+            Some(ShownFrame::High(picture, depths))
+        } else {
+            self.shown().map(ShownFrame::Eight)
+        }
+    }
+
+    /// Bit depth of the native luma samples, or zero before the first frame.
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn bit_depth(&self) -> u32 {
+        self.native_shown().map_or(0, |p| p.depths().luma.bits())
+    }
+
+    /// Native chroma sample depth, or zero before the first frame. HEVC may
+    /// signal a different chroma depth from [`Self::bit_depth`].
+    #[must_use]
+    #[wasm_bindgen(getter)]
+    pub fn chroma_bit_depth(&self) -> u32 {
+        self.native_shown().map_or(0, |p| p.depths().chroma.bits())
+    }
+
+    /// Native I420 samples as u16 words, retaining every significant bit.
+    /// At eight bits, words contain the original 0..255 values. For deep
+    /// conformance checks use this method; display methods return eight bits.
+    /// # Errors
+    /// Rejects calls made before a picture has been decoded.
+    pub fn decoded_i420_u16(&self) -> Result<Vec<u16>, JsValue> {
+        let picture = self
+            .native_shown()
+            .ok_or_else(|| js_error("No decoded frame"))?;
+        let mut samples = Vec::new();
+        match picture {
+            ShownFrame::Eight(p) => {
+                for plane in PlaneIndex::ALL {
+                    for row in p.plane(plane).rows() {
+                        samples.extend(row.iter().copied().map(u16::from));
+                    }
+                }
+            }
+            ShownFrame::High(p, _) => {
+                for plane in PlaneIndex::ALL {
+                    for row in p.plane(plane).rows() {
+                        samples.extend_from_slice(row);
+                    }
+                }
+            }
+        }
+        Ok(samples)
     }
 
     /// Convert the latest frame to RGBA (`width * height * 4` bytes) with
@@ -1039,7 +1152,8 @@ impl BrowserDecoder {
         self.shown().map_or(0, |p| p.height())
     }
 
-    /// The latest decoded I420 samples, suitable for independent conformance checks.
+    /// Latest display I420 samples. Deep pictures are truncated to eight bits;
+    /// [`Self::decoded_i420_u16`] preserves the native samples for conformance.
     /// # Errors
     /// Rejects calls made before a frame has been decoded.
     pub fn decoded_i420(&self) -> Result<Vec<u8>, JsValue> {

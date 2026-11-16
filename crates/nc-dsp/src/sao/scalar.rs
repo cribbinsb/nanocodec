@@ -47,36 +47,7 @@ pub(crate) fn stats_row(
     }
 }
 
-/// Apply the offsets to the samples `x0..x1` of row `y`. Always inlined:
-/// the SIMD kernels finish each row's tail with it, and compiled on its own
-/// for the x86-64 baseline it was 0.4 % of x86 HEVC Faster instructions
-/// (inlined, it runs under the kernel's target features).
-#[inline(always)]
-#[allow(clippy::inline_always)]
-pub(crate) fn apply_row(
-    input: &[u8],
-    in_stride: usize,
-    out: &mut [u8],
-    out_stride: usize,
-    offs: (isize, isize),
-    offsets: [i8; 4],
-    y: usize,
-    (x0, x1): (usize, usize),
-) {
-    apply_row_at(
-        input,
-        in_stride,
-        out,
-        out_stride,
-        offs,
-        offsets.map(i16::from),
-        y,
-        (x0, x1),
-        BitDepth::EIGHT,
-    );
-}
-
-/// [`apply_row`] at any sample type and depth: `SaoOffsetVal` in
+/// Apply edge offsets to the samples `x0..x1` of row `y`: `SaoOffsetVal` in
 /// `offsets` (already scaled to the depth), `Clip1` to `depth`.
 #[inline(always)]
 #[allow(clippy::inline_always)]

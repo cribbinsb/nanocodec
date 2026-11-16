@@ -1,5 +1,5 @@
 //! High-bit-depth (`u16`, 10 and 12 bpc) AV1 inverse transform SIMD tables
-//! across AVX2, AVX-512, and NEON, built on [`super::generic::inverse_add_lanes`].
+//! across AVX2, AVX-512, NEON, and SIMD128, built on [`super::generic::inverse_add_lanes`].
 //!
 //! Attribution: DC-only shortcut, EOB scan-bound row/column pruning, and
 //! bit-depth stage clipping follow dav1d 1.5.4 (`src/itx_tmpl.c`,
@@ -8,7 +8,11 @@
 
 #![allow(unsafe_code, clippy::inline_always)]
 #![cfg_attr(
-    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
     allow(dead_code, unused_imports)
 )]
 
@@ -147,6 +151,8 @@ impl HighAv1InverseFns {
             Isa::Avx512 => x86::avx512_fns(),
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => neon::neon_fns(),
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            Isa::Simd128 => simd128::simd128_fns(),
             _ => Self::SCALAR,
         }
     }
@@ -261,7 +267,11 @@ unsafe fn constant_add_u16_lanes<V4: I16Lanes, V8: I16Lanes, VWide: I16Lanes>(
     }
 }
 
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 macro_rules! isa_high_inverse {
     ($mod_name:ident, $fn_name:ident, $feat:literal, $small:ty, $wide:ty, $v4:ty, $v8:ty, $vw:ty) => {
         mod $mod_name {
@@ -476,4 +486,19 @@ mod neon {
         crate::simd::neon::I16x8
     );
     pub(super) use neon_impl::neon_fns;
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod simd128 {
+    isa_high_inverse!(
+        simd128_impl,
+        simd128_fns,
+        "simd128",
+        crate::simd::simd128::I32x4,
+        crate::simd::simd128::I32x4,
+        crate::simd::simd128::I16x4,
+        crate::simd::simd128::I16x8,
+        crate::simd::simd128::I16x8
+    );
+    pub(super) use simd128_impl::simd128_fns;
 }

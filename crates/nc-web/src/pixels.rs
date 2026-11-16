@@ -3,7 +3,7 @@
 //! packed I420 layout handed to a WebGL display (which applies the same
 //! matrix in its shader, `web/renderer.js`) and between workers.
 
-use nc_common::{Picture, PlaneIndex, ShownPicture};
+use nc_common::{BitDepths, Picture, PlaneIndex, ShownPicture};
 use nc_dsp::{DisplayMatrix, Dsp};
 
 /// Fill the visible samples of `picture` from packed RGBA (limited-range
@@ -47,6 +47,22 @@ pub(crate) fn pack_i420(picture: ShownPicture<'_>, bytes: &mut Vec<u8>) {
             .plane(plane)
             .rows()
             .for_each(|row| bytes.extend_from_slice(row));
+    }
+}
+
+/// Truncate deep samples to display I420 without changing decoder references.
+/// Each plane uses its own depth (HEVC can signal 10-bit luma/9-bit chroma).
+/// The caller reuses an eight-bit picture of exactly the visible size.
+pub(crate) fn downshift(source: ShownPicture<'_, u16>, depths: BitDepths, target: &mut Picture) {
+    for plane in PlaneIndex::ALL {
+        let src = source.plane(plane);
+        let shift = depths.plane(plane as usize).above_eight();
+        let mut dst = target.plane_mut(plane).view_mut();
+        for y in 0..src.height() {
+            for (out, &sample) in dst.row_mut(y).iter_mut().zip(src.row(y)) {
+                *out = (sample >> shift) as u8;
+            }
+        }
     }
 }
 
@@ -149,5 +165,59 @@ mod tests {
         let mut again = Vec::new();
         pack_i420(ShownPicture::whole(&unpacked), &mut again);
         assert_eq!(again, bytes);
+    }
+    #[test]
+    fn deep_display_uses_each_plane_depth_and_visible_window() {
+        use nc_common::{BitDepth, BitDepths};
+        let mut source = Picture::<u16>::new(8, 6, 8).unwrap();
+        let depths = BitDepths {
+            luma: BitDepth::TEN,
+            chroma: BitDepth::new(9).unwrap(),
+        };
+        for plane in PlaneIndex::ALL {
+            let mut view = source.plane_mut(plane).view_mut();
+            for y in 0..view.height() {
+                for (x, sample) in view.row_mut(y).iter_mut().enumerate() {
+                    *sample =
+                        ((x * 43 + y * 71) as i32 & depths.plane(plane as usize).max()) as u16;
+                }
+            }
+        }
+        let shown = ShownPicture::window(&source, (2, 2), (4, 2)).unwrap();
+        let mut target = Picture::new(4, 2, 0).unwrap();
+        downshift(shown, depths, &mut target);
+        for plane in PlaneIndex::ALL {
+            let from = shown.plane(plane);
+            let to = target.plane(plane).view();
+            for y in 0..from.height() {
+                for (a, &b) in to.row(y).iter().zip(from.row(y)) {
+                    assert_eq!(*a, (b >> depths.plane(plane as usize).above_eight()) as u8);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deep_display_white_reaches_255_at_every_supported_depth() {
+        use nc_common::{BitDepth, BitDepths};
+        for bits in [8, 9, 10, 12, 16] {
+            let depth = BitDepth::new(bits).unwrap();
+            let mut source = Picture::<u16>::new(4, 2, 0).unwrap();
+            for plane in source.planes_mut() {
+                plane.view_mut().fill(depth.max() as u16);
+            }
+            let mut target = Picture::new(4, 2, 0).unwrap();
+            downshift(
+                ShownPicture::whole(&source),
+                BitDepths {
+                    luma: depth,
+                    chroma: depth,
+                },
+                &mut target,
+            );
+            let mut packed = Vec::new();
+            pack_i420(ShownPicture::whole(&target), &mut packed);
+            assert!(packed.iter().all(|&v| v == 255));
+        }
     }
 }

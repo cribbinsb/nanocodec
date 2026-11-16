@@ -388,3 +388,14 @@ the merges above; hot shares are section 0's.
   with 8 bits; the saturating add is the shared `I16Lanes::add_sat`. VP9's
   `u16` MC and deblocking stay separate (per-pass clip, 15-tap filter).
   No SIMD128 tier yet: on wasm32 the `u16` tables are the scalar references.
+
+## WASM u16 decode families (feature/ext-wasm10, review only, 2026-11-16)
+
+The browser deep-output branch instantiates the existing AV1 MC/compound/
+inverse lane graphs with SIMD128, the existing HEVC/VVC bounded inverse and
+vector MC/weight graphs, VP9 vector MC/deblock, and shared u8/u16 SAO edge
+application. Scalar references stay; AV1 compound u8 dispatch stays on its
+previous WASM functions. No codec-local copies or encoder/preset changes.
+See [the handoff](../handoff/ext-wasm10.md) for profile selection, exactness,
+coverage limits and before/after measurements. The coordinator merges this
+branch; this note does not claim it is landed.
