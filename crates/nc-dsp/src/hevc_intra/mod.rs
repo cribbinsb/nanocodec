@@ -17,7 +17,7 @@
     all(target_arch = "wasm32", target_feature = "simd128")
 ))]
 #[allow(unsafe_code)]
-mod lanes;
+pub(crate) mod lanes;
 pub(crate) mod reference;
 
 #[cfg(target_arch = "x86_64")]

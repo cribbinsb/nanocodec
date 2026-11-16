@@ -1,6 +1,7 @@
 //! General inter reconstruction through shared interpolation and weighted DSP kernels.
-use super::motion::Motion;
+use super::motion::{Motion, Vector};
 use super::refinement::Edges;
+use super::resampling::{self, Region, Scaling};
 use crate::decoder_headers::Weights;
 use crate::motion::Mv16;
 use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, PlaneViewMut, Sample};
@@ -13,6 +14,10 @@ pub(crate) struct Sources<'a, T: Sample = u8> {
     pub weights: Option<&'a Weights>,
     /// Where luma reference samples may be read from.
     pub edges: Edges,
+    /// Each reference's scaling when it is scaled, by list and index.
+    scalings: [&'a [Option<Scaling>]; 2],
+    /// Whether any reference of the slice is scaled.
+    rescaled: bool,
 }
 
 impl<'a, T: Sample> Sources<'a, T> {
@@ -22,12 +27,38 @@ impl<'a, T: Sample> Sources<'a, T> {
         pictures: [&'a [&'a Picture<T>]; 2],
         header: &'a crate::decoder_headers::SliceHeader,
         edges: Edges,
+        scalings: [&'a [Option<Scaling>]; 2],
     ) -> Self {
         Self {
             pictures,
             weights: Some(&header.weights).filter(|w| !w.lists[0].is_empty()),
             edges,
+            scalings,
+            rescaled: scalings
+                .iter()
+                .flat_map(|list| list.iter())
+                .any(Option::is_some),
         }
+    }
+
+    /// The scaling of reference `index` of `list`, when it is scaled
+    /// (`RprConstraintsActiveFlag`, §8.3.2).
+    pub(super) fn scaling(&self, list: usize, index: u8) -> Option<Scaling> {
+        if !self.rescaled {
+            return None;
+        }
+        self.scalings[list]
+            .get(usize::from(index))
+            .copied()
+            .flatten()
+    }
+
+    /// Whether `motion` predicts from a scaled reference.
+    pub(super) fn scaled(&self, motion: Motion) -> bool {
+        self.rescaled
+            && motion.lists.iter().enumerate().any(|(list, vector)| {
+                vector.is_some_and(|v| self.scaling(list, v.reference).is_some())
+            })
     }
 
     /// Where reference samples of `plane` may be read from (the luma edges
@@ -47,6 +78,8 @@ impl<'a, T: Sample> Sources<'a, T> {
             pictures,
             weights: None,
             edges: Edges::default(),
+            scalings: [&[], &[]],
+            rescaled: false,
         }
     }
 }
@@ -146,16 +179,17 @@ pub(super) fn predict<T: Pixel>(
     references: Sources<'_, T>,
     motion: Motion,
     (plane, affine): (PlaneIndex, bool),
-    position: (usize, usize),
+    (anchor, position): ((usize, usize), (usize, usize)),
     size: (usize, usize),
     out: &mut [T],
 ) {
     let luma = plane == PlaneIndex::Y;
     // Explicit weights apply to the high-precision samples, also of one list;
-    // so do the wrapped and subpicture-clamped fetches, which the direct path
-    // does not have.
+    // so do the wrapped and subpicture-clamped fetches and the scaled
+    // references, which the direct path does not have.
     let weighted = (references.weights.is_some() && motion.weight == 0)
-        || references.edges != Edges::default();
+        || references.edges != Edges::default()
+        || references.scaled(motion);
     if motion.lists.iter().flatten().count() == 1 && !(motion.half && luma) && !weighted {
         let (list, vector) = motion
             .lists
@@ -188,16 +222,20 @@ pub(super) fn predict<T: Pixel>(
     }
     let (w, h) = size;
     let mut samples = [vec![0i16; w * h], vec![0i16; w * h]];
+    let region = Region {
+        anchor,
+        position,
+        size,
+    };
     for (list, vector) in motion.lists.into_iter().enumerate() {
         if let Some(vector) = vector {
-            precision(
+            high_precision(
                 dsp,
-                references.pictures[list][usize::from(vector.reference)].plane(plane),
-                position,
-                size,
-                vector.vector,
-                (luma, motion.half, affine),
-                references.edges(plane),
+                references,
+                (list, vector),
+                plane,
+                region,
+                (motion.half, affine),
                 &mut samples[list],
             );
         }
@@ -258,6 +296,44 @@ pub(super) fn combine<T: Pixel>(
     let mut destination = PlaneViewMut::new(out, w, w, h).unwrap();
     dsp.hevc_weighted_prediction(weights, first, second, &mut destination);
 }
+/// The high-precision prediction of `region` of `plane` from `vector` of
+/// `list`: through the scaled positions when that reference is scaled
+/// (§8.5.6.3.1), else the unscaled interpolation.
+pub(super) fn high_precision<T: Pixel>(
+    dsp: DepthKernels<'_>,
+    references: Sources<'_, T>,
+    (list, vector): (usize, Vector),
+    plane: PlaneIndex,
+    region: Region,
+    (half, affine): (bool, bool),
+    out: &mut [i16],
+) {
+    let reference = references.pictures[list][usize::from(vector.reference)].plane(plane);
+    let luma = plane == PlaneIndex::Y;
+    let edges = references.edges(plane);
+    match references.scaling(list, vector.reference) {
+        // Scaled references do not wrap around (§8.5.6.3.2).
+        Some(scaling) => resampling::predict(
+            reference,
+            (scaling, vector.vector),
+            region,
+            (luma, half, affine),
+            (edges.area, dsp.depth()),
+            out,
+        ),
+        None => precision(
+            dsp,
+            reference,
+            region.position,
+            region.size,
+            vector.vector,
+            (luma, half, affine),
+            edges,
+            out,
+        ),
+    }
+}
+
 pub(super) fn precision<T: Pixel>(
     dsp: DepthKernels<'_>,
     reference: &nc_common::Plane<T>,
@@ -360,12 +436,13 @@ pub(super) fn predict_unit<T: Pixel>(
                         .unwrap();
                 let (w, h) = (step.min(size.0 - x), step.min(size.1 - y));
                 let mut pixels = [T::default(); 64];
+                let at = (position.0 + x, position.1 + y);
                 predict(
                     dsp,
                     references,
                     motion,
                     (plane, false),
-                    (position.0 + x, position.1 + y),
+                    (at, at),
                     (w, h),
                     &mut pixels[..w * h],
                 );
@@ -382,7 +459,17 @@ pub(super) fn predict_unit<T: Pixel>(
         return;
     }
     if unit.affine_models.iter().all(Option::is_none) {
-        predict(dsp, references, motion, (plane, false), position, size, out);
+        // The whole CU shares its scaled sample positions (§8.5.6.3.1).
+        let anchor = (unit.node.x >> chroma, unit.node.y >> chroma);
+        predict(
+            dsp,
+            references,
+            motion,
+            (plane, false),
+            (anchor, position),
+            size,
+            out,
+        );
         return;
     }
     affine(dsp, references, unit, motion, (plane, block), out);
@@ -443,12 +530,13 @@ fn affine<T: Pixel>(
                     &mut pixels,
                 );
             } else {
+                let at = (position.0 + x, position.1 + y);
                 predict(
                     dsp,
                     references,
                     local,
                     (plane, true),
-                    (position.0 + x, position.1 + y),
+                    (at, at),
                     (4, 4),
                     &mut pixels,
                 );
@@ -472,6 +560,12 @@ fn geometric<T: Pixel>(
     let chroma = usize::from(plane != PlaneIndex::Y);
     let position = (block.x >> chroma, block.y >> chroma);
     let size = (block.width() >> chroma, block.height() >> chroma);
+    let n = unit.node;
+    let region = Region {
+        anchor: (n.x >> chroma, n.y >> chroma),
+        position,
+        size,
+    };
     let mut samples = [vec![0i16; size.0 * size.1], vec![0i16; size.0 * size.1]];
     for (motion, samples) in pair.into_iter().zip(&mut samples) {
         let (list, vector) = motion
@@ -480,18 +574,16 @@ fn geometric<T: Pixel>(
             .enumerate()
             .find_map(|(i, v)| v.map(|v| (i, v)))
             .unwrap();
-        precision(
+        high_precision(
             dsp,
-            references.pictures[list][usize::from(vector.reference)].plane(plane),
-            position,
-            size,
-            vector.vector,
-            (chroma == 0, false, false),
-            references.edges(plane),
+            references,
+            (list, vector),
+            plane,
+            region,
+            (false, false),
             samples,
         );
     }
-    let n = unit.node;
     let mask = nc_dsp::VvcGeometric::new((n.width, n.height), split);
     dsp.vvc_geometric_blend(
         mask,

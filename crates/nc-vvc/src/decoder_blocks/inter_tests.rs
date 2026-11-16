@@ -83,7 +83,7 @@ fn official_predicted_syntax() {
                 deblock(&mut reconstructed, &units, s, p, headers, kernels);
                 compare_filtered(&reconstructed, frames);
                 assert_picture(&reconstructed, frames);
-                previous = Some(reconstructed);
+                previous = Some((reconstructed, super::Geometry::of(s, p)));
                 frames += 1;
             }
             _ => {}

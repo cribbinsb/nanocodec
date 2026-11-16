@@ -40,14 +40,14 @@ pub const fn block_index(bx: usize, by: usize) -> usize {
 
 /// The neighbouring samples of one 4x4 block: `top[i] = p[i, -1]` for
 /// `i = 0..8` (positions 4..8 substituted when the top-right is missing),
-/// `left[j] = p[-1, j]`, `corner = p[-1, -1]`, each with its availability.
+/// `left[j] = p[-1, j]`, `corner = p[-1, -1]`, with the availability of the
+/// top and left edges (the corner is available exactly when both are).
 pub(crate) struct Neighbours {
     top: [i32; 8],
     left: [i32; 4],
     corner: i32,
     has_top: bool,
     has_left: bool,
-    has_corner: bool,
 }
 
 impl Neighbours {
@@ -94,8 +94,7 @@ impl Neighbours {
                 *l = i32::from(recon.row(py + j)[px - 1]);
             }
         }
-        let has_corner = has_top && has_left;
-        let corner = if has_corner {
+        let corner = if has_top && has_left {
             i32::from(recon.row(py - 1)[px - 1])
         } else {
             0
@@ -106,7 +105,6 @@ impl Neighbours {
             corner,
             has_top,
             has_left,
-            has_corner,
         }
     }
 
@@ -117,7 +115,7 @@ impl Neighbours {
             VERTICAL | DIAGONAL_DOWN_LEFT | VERTICAL_LEFT => self.has_top,
             HORIZONTAL | HORIZONTAL_UP => self.has_left,
             DC => true,
-            _ => self.has_top && self.has_left && self.has_corner,
+            _ => self.has_top && self.has_left,
         }
     }
 
@@ -146,32 +144,18 @@ impl Neighbours {
     pub(crate) fn predict(&self, mode: u8) -> [u8; 16] {
         let avg3 = |a: i32, b: i32, c: i32| ((a + 2 * b + c + 2) >> 2) as u8;
         let avg2 = |a: i32, b: i32| ((a + b + 1) >> 1) as u8;
-        let mut out = [0u8; 16];
-        let mut fill = |f: &dyn Fn(i32, i32) -> u8| {
-            for (i, v) in out.iter_mut().enumerate() {
-                *v = f((i % 4) as i32, (i / 4) as i32);
-            }
-        };
         match mode {
-            VERTICAL => {
-                for (i, v) in out.iter_mut().enumerate() {
-                    *v = self.top[i % 4] as u8;
-                }
-            }
-            HORIZONTAL => {
-                for (i, v) in out.iter_mut().enumerate() {
-                    *v = self.left[i / 4] as u8;
-                }
-            }
-            DC => out = [self.dc() as u8; 16],
-            DIAGONAL_DOWN_LEFT => fill(&|x, y| {
+            VERTICAL => fill(|x, _| self.top[x as usize] as u8),
+            HORIZONTAL => fill(|_, y| self.left[y as usize] as u8),
+            DC => [self.dc() as u8; 16],
+            DIAGONAL_DOWN_LEFT => fill(|x, y| {
                 if x == 3 && y == 3 {
                     ((self.t(6) + 3 * self.t(7) + 2) >> 2) as u8
                 } else {
                     avg3(self.t(x + y), self.t(x + y + 1), self.t(x + y + 2))
                 }
             }),
-            DIAGONAL_DOWN_RIGHT => fill(&|x, y| match x.cmp(&y) {
+            DIAGONAL_DOWN_RIGHT => fill(|x, y| match x.cmp(&y) {
                 core::cmp::Ordering::Greater => {
                     avg3(self.t(x - y - 2), self.t(x - y - 1), self.t(x - y))
                 }
@@ -180,7 +164,7 @@ impl Neighbours {
                 }
                 core::cmp::Ordering::Equal => avg3(self.t(0), self.corner, self.l(0)),
             }),
-            VERTICAL_RIGHT => fill(&|x, y| {
+            VERTICAL_RIGHT => fill(|x, y| {
                 let i = x - (y >> 1);
                 match 2 * x - y {
                     0 | 2 | 4 | 6 => avg2(self.t(i - 1), self.t(i)),
@@ -189,7 +173,7 @@ impl Neighbours {
                     _ => avg3(self.l(y - 1), self.l(y - 2), self.l(y - 3)),
                 }
             }),
-            HORIZONTAL_DOWN => fill(&|x, y| {
+            HORIZONTAL_DOWN => fill(|x, y| {
                 let j = y - (x >> 1);
                 match 2 * y - x {
                     0 | 2 | 4 | 6 => avg2(self.l(j - 1), self.l(j)),
@@ -198,7 +182,7 @@ impl Neighbours {
                     _ => avg3(self.t(x - 1), self.t(x - 2), self.t(x - 3)),
                 }
             }),
-            VERTICAL_LEFT => fill(&|x, y| {
+            VERTICAL_LEFT => fill(|x, y| {
                 let i = x + (y >> 1);
                 if y % 2 == 0 {
                     avg2(self.t(i), self.t(i + 1))
@@ -206,7 +190,7 @@ impl Neighbours {
                     avg3(self.t(i), self.t(i + 1), self.t(i + 2))
                 }
             }),
-            HORIZONTAL_UP => fill(&|x, y| {
+            HORIZONTAL_UP => fill(|x, y| {
                 let j = y + (x >> 1);
                 match x + 2 * y {
                     0 | 2 | 4 => avg2(self.l(j), self.l(j + 1)),
@@ -217,7 +201,6 @@ impl Neighbours {
             }),
             _ => unreachable!("Intra4x4PredMode is 0..=8"),
         }
-        out
     }
 
     /// DC prediction (§8.3.1.2.3).
@@ -231,6 +214,12 @@ impl Neighbours {
             (false, false) => 128,
         }
     }
+}
+
+/// A 4x4 block whose sample at `(x, y)` is `f(x, y)`, raster order. Generic,
+/// not `&dyn Fn`, so each mode's formula is inlined into its own loop.
+fn fill(f: impl Fn(i32, i32) -> u8) -> [u8; 16] {
+    core::array::from_fn(|i| f((i % 4) as i32, (i / 4) as i32))
 }
 
 /// The modes and quantised levels of one `I_NxN` macroblock coded with 4x4
@@ -615,7 +604,6 @@ mod tests {
             corner,
             has_top: true,
             has_left: true,
-            has_corner: true,
         }
     }
 

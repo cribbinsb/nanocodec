@@ -500,12 +500,22 @@ impl<'a> Level<'a> {
         let (bx, by) = self.border;
         let visible_width = self.reference.width() as isize - 2 * bx;
         let visible_height = self.reference.height() as isize - 2 * by;
+        // Every row clamps its columns alike: `left` copies of the first
+        // visible sample, `middle` samples copied as they are, then copies of
+        // the last one (a copy and two fills instead of a clamp per sample).
+        let first = x.clamp(0, visible_width - 1);
+        let end = (x + width as isize).clamp(first, visible_width);
+        let left = (first - x).clamp(0, width as isize) as usize;
+        let middle = (end - first) as usize;
+        let (first, last) = ((first + bx) as usize, (visible_width - 1 + bx) as usize);
         for (r, row) in out.chunks_exact_mut(width).enumerate() {
             let sy = ((y + r as isize).clamp(0, visible_height - 1) + by) as usize;
             let line = self.reference.row(sy);
-            for (c, sample) in row.iter_mut().enumerate() {
-                *sample = line[((x + c as isize).clamp(0, visible_width - 1) + bx) as usize];
-            }
+            let (before, rest) = row.split_at_mut(left);
+            let (inside, after) = rest.split_at_mut(middle);
+            before.fill(line[first]);
+            inside.copy_from_slice(&line[first..first + middle]);
+            after.fill(line[last]);
         }
     }
 }

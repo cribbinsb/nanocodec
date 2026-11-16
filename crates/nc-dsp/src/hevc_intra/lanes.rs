@@ -14,7 +14,7 @@ use crate::simd::I16Lanes;
 /// and `V::LANES` divides `n`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(super) unsafe fn planar<V: I16Lanes>(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]) {
+pub(crate) unsafe fn planar<V: I16Lanes>(edges: &PlanarEdges<'_>, n: usize, out: &mut [u8]) {
     let shift = n.trailing_zeros() + 1;
     let side = n as i16;
     // Column weights of the left sample (n − 1 − x) and of top-right (x + 1).

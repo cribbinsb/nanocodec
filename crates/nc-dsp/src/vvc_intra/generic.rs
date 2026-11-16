@@ -1,12 +1,26 @@
-//! Lane-wise H.266 planar/DC/axis prediction. All sums fit signed 32 bits.
+//! H.266 planar/DC/axis prediction (§8.4.5.2.11-12, §8.4.5.2.15): the base
+//! prediction, then PDPC. Planar is the shared HEVC planar kernel
+//! (`crate::hevc_intra::lanes::planar`: H.266 planar equals H.265's, eq.
+//! 8-48); DC and the axes are fills and copies. PDPC then runs over the
+//! rows and columns its weights reach, on i16 lanes: each term is at most
+//! `32 · 255` in magnitude and their sum below 2^15, so the 16-bit
+//! arithmetic is exact.
 #![allow(unsafe_code, clippy::inline_always)]
 use super::VvcIntraMode;
-use crate::simd::I32Lanes;
+use crate::hevc_intra::PlanarEdges;
+use crate::simd::I16Lanes;
+
+/// Largest side of the square kernels.
+const MAX_SIDE: usize = 32;
+/// PDPC weights are `32 >> ((2 d) >> scale)`: zero from `d = 3 << scale`.
+const PDPC_REACH: usize = 3;
+/// PDPC rounding: `(w · d + 32) >> 6`.
+const PDPC_SHIFT: u32 = 6;
 
 /// # Safety
 /// Called only with V's ISA enabled and a supported side divisible by its lanes.
 #[inline(always)]
-pub(super) unsafe fn predict<V: I32Lanes>(
+pub(super) unsafe fn predict<V: I16Lanes>(
     n: usize,
     mode: VvcIntraMode,
     top: &[i32],
@@ -19,62 +33,115 @@ pub(super) unsafe fn predict<V: I32Lanes>(
         VvcIntraMode::Angular { direction: 50, .. } => VvcIntraMode::Vertical,
         mode => mode,
     };
-    let dc = (top[..n].iter().chain(&left[..n]).sum::<i32>() + n as i32) / (2 * n as i32);
-    let scale = (2 * n.ilog2() - 2) >> 2;
-    let distances: [i32; 32] = std::array::from_fn(|i| i as i32 + 1);
-    let weights: [i32; 32] = std::array::from_fn(|i| 32 >> ((2 * i) >> scale).min(31));
-    for y in 0..n {
-        let wt = V::splat(weights[y]);
-        let side = V::splat(left[y]);
-        for x in (0..n).step_by(V::LANES) {
-            let above = V::load(&top[x..]);
-            let wl = V::load(&weights[x..]);
-            let value = match mode {
-                VvcIntraMode::Angular { .. } => {
-                    unreachable!("angular directions use angular_generic")
-                }
-                VvcIntraMode::Planar => {
-                    let distance = V::load(&distances[x..]);
-                    let horizontal = V::splat(n as i32)
-                        .sub(distance)
-                        .mul(side)
-                        .add(distance.mul_scalar(top[n]));
-                    let vertical = above
-                        .mul_scalar((n - 1 - y) as i32)
-                        .add(V::splat(((y + 1) as i32) * left[n]));
-                    horizontal
-                        .add(vertical)
-                        .add(V::splat(n as i32))
-                        .sra(n.ilog2() + 1)
-                }
-                VvcIntraMode::Dc => V::splat(dc),
-                VvcIntraMode::Horizontal => side,
-                VvcIntraMode::Vertical => above,
+    // References are 8-bit samples (`check_square`): narrowing is exact.
+    let mut above = [0u8; MAX_SIDE + 1];
+    let mut side = [0u8; MAX_SIDE + 1];
+    for (narrow, &wide) in above.iter_mut().zip(&top[..=n]) {
+        *narrow = wide as u8;
+    }
+    for (narrow, &wide) in side.iter_mut().zip(&left[..=n]) {
+        *narrow = wide as u8;
+    }
+    let out = &mut out[..n * n];
+    match mode {
+        VvcIntraMode::Angular { .. } => unreachable!("angular directions use angular_generic"),
+        VvcIntraMode::Planar => {
+            let edges = PlanarEdges {
+                above: &above[..n],
+                left: &side[..n],
+                top_right: above[n],
+                bottom_left: side[n],
             };
+            // SAFETY: forwarded contract.
+            unsafe { crate::hevc_intra::lanes::planar::<V>(&edges, n, out) };
+        }
+        VvcIntraMode::Dc => {
+            let sum: u32 = above[..n]
+                .iter()
+                .chain(&side[..n])
+                .map(|&v| u32::from(v))
+                .sum();
+            out.fill(((sum + n as u32) / (2 * n as u32)) as u8);
+        }
+        VvcIntraMode::Vertical => {
+            for line in out.chunks_exact_mut(n) {
+                line.copy_from_slice(&above[..n]);
+            }
+        }
+        VvcIntraMode::Horizontal => {
+            for (line, &value) in out.chunks_exact_mut(n).zip(&side[..n]) {
+                line.fill(value);
+            }
+        }
+    }
+    // SAFETY: forwarded contract.
+    unsafe { pdpc::<V>(n, mode, &above, &side, corner as i16, out) };
+}
+
+/// PDPC (§8.4.5.2.15) over the predicted `out`: `v + ((wL · (left − v) +
+/// wT · (top − v) + 32) >> 6)` for planar and DC, `v + ((wL · (left −
+/// corner) + 32) >> 6)` for vertical, `v + ((wT · (top − corner) + 32) >> 6)`
+/// for horizontal, where the weights reach (`PDPC_REACH << scale`).
+///
+/// # Safety
+/// V's ISA is enabled and its lane count divides `n`.
+#[inline(always)]
+unsafe fn pdpc<V: I16Lanes>(
+    n: usize,
+    mode: VvcIntraMode,
+    above: &[u8],
+    side: &[u8],
+    corner: i16,
+    out: &mut [u8],
+) {
+    let scale = (2 * n.ilog2() - 2) >> 2;
+    let reach = (PDPC_REACH << scale).min(n);
+    let mut weights = [0i16; MAX_SIDE];
+    for (d, weight) in weights[..reach].iter_mut().enumerate() {
+        *weight = 32 >> ((2 * d) >> scale);
+    }
+    let mut top = [0i16; MAX_SIDE];
+    for (wide, &narrow) in top.iter_mut().zip(&above[..n]) {
+        *wide = i16::from(narrow);
+    }
+    let round = V::splat(1 << (PDPC_SHIFT - 1));
+    // Rows past the reach have a zero top weight: only the left term's
+    // columns change (none for horizontal).
+    let reached_columns = reach.div_ceil(V::LANES) * V::LANES;
+    for (y, line) in out.chunks_exact_mut(n).enumerate() {
+        let wt = V::splat(weights.get(y).copied().unwrap_or(0));
+        let left = V::splat(i16::from(side[y]));
+        let columns = match mode {
+            VvcIntraMode::Horizontal if y >= reach => 0,
+            _ if y >= reach => reached_columns,
+            _ => n,
+        };
+        for x in (0..columns).step_by(V::LANES) {
+            let value = V::load_u8(&line[x..]);
+            let wl = V::load(&weights[x..]);
+            let above = V::load(&top[x..]);
             let correction = match mode {
                 VvcIntraMode::Angular { .. } => {
                     unreachable!("angular directions use angular_generic")
                 }
                 VvcIntraMode::Planar | VvcIntraMode::Dc => {
-                    wl.mul(side.sub(value)).add(wt.mul(above.sub(value)))
+                    wl.mul(left.sub(value)).add(wt.mul(above.sub(value)))
                 }
                 VvcIntraMode::Horizontal => wt.mul(above.sub(V::splat(corner))),
-                VvcIntraMode::Vertical => wl.mul(side.sub(V::splat(corner))),
+                VvcIntraMode::Vertical => wl.mul(left.sub(V::splat(corner))),
             };
-            let value = value.add(correction.add(V::splat(32)).sra(6));
-            let dst = &mut out[y * n + x..y * n + x + V::LANES];
-            dst.fill(0);
-            value.add_to_u8(dst);
+            value
+                .add(correction.add(round).sra(PDPC_SHIFT))
+                .store_u8_sat(&mut line[x..x + V::LANES]);
         }
     }
 }
 
-/// The ISA's `predict`: planar, DC and the axes on i32 lanes (`$small` for
-/// 4x4, `$wide` otherwise); other angular directions through the ISA's
-/// shared runs (`$runs`), with PDPC on i16 lanes as wide as the block side
-/// allows (`$a4`, `$a8`, `$a16`).
+/// The ISA's `predict`: angular directions through the ISA's shared runs
+/// (`$runs`), every mode's arithmetic on i16 lanes as wide as the block
+/// side allows (`$a4`, `$a8`, `$a16`).
 macro_rules! kernels {
-    ($(#[$attr:meta])*; $runs:ty; $small:ty, $wide:ty; $a4:ty, $a8:ty, $a16:ty) => {
+    ($(#[$attr:meta])*; $runs:ty; $a4:ty, $a8:ty, $a16:ty) => {
         $(#[$attr])*
         pub(super) unsafe fn predict(n: usize, mode: super::VvcIntraMode, top: &[i32], left: &[i32], corner: i32, transposed_ok: bool, out: &mut [u8]) -> bool {
             use super::VvcIntraMode::Angular;
@@ -87,8 +154,14 @@ macro_rules! kernels {
                         8 => super::angular_generic::predict::<$a8, $runs>(n, direction, luma, top, left, corner, transposed_ok, out),
                         _ => super::angular_generic::predict::<$a16, $runs>(n, direction, luma, top, left, corner, transposed_ok, out),
                     },
-                    _ if n == 4 => { super::generic::predict::<$small>(n, mode, top, left, corner, out); false }
-                    _ => { super::generic::predict::<$wide>(n, mode, top, left, corner, out); false }
+                    _ => {
+                        match n {
+                            4 => super::generic::predict::<$a4>(n, mode, top, left, corner, out),
+                            8 => super::generic::predict::<$a8>(n, mode, top, left, corner, out),
+                            _ => super::generic::predict::<$a16>(n, mode, top, left, corner, out),
+                        }
+                        false
+                    }
                 }
             }
         }

@@ -207,9 +207,8 @@ its output under the GPL; we distribute only the output streams, not the program
   `av1-1-b8` and 66 `av1-1-b10`, MD5-exact against aomdec) and VP9 (profiles 0 and 2, 8-, 10- and 12-bit:
   305/305 libvpx vectors, 303 `vp90-2` and 2 `vp92-2`, MD5-exact against vpxdec; profiles 1 and 3, 4:4:4,
   4:2:2 and 4:4:0, unsupported) pass the conformance streams we test in those profiles; VVC (Main 10, 8- and
-  10-bit) passes 218 of the 226 official ITU-T H.266.1 Main 10 / Main 10 Still Picture 4:2:0 and 4:0:0
-  streams, MD5-exact against VTM (9/9 8-bit, 209/217 10-bit; the 8 that fail use reference picture
-  resampling (4), field output (2), long-term references (1), and one is unresolved), and 136 of 138 8-bit
+  10-bit) passes 224 of the 226 official ITU-T H.266.1 Main 10 / Main 10 Still Picture 4:2:0 and 4:0:0
+  streams, MD5-exact against VTM (9/9 8-bit, 215/217 10-bit; the 2 that fail use field output), and 138 of 138 8-bit
   VTM and VVenC streams that exercise the Main 10 tools one by one (`docs/handoff/vvc-foreign-corpus.md`), so
   it is not yet a full Main 10 decoder; the AV2 decoder decodes our own streams and all 30 of 30 foreign test streams bit-exact
   against avmdec v1.0.0 and dav2d (12 dav2d 8-bit test vectors and 18 avmenc v1.0.0 streams: all-intra,

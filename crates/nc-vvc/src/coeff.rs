@@ -45,22 +45,24 @@ const GROUP_SIDE: usize = 4;
 /// Coefficient groups of the largest (32x32) transform block.
 const MAX_GROUPS: usize = 64;
 
-/// Scan positions of one coefficient group, in coding order, without
-/// allocating (a group holds at most `GROUP_SIZE`).
+/// Scan or raster positions of one coefficient group, in coding order,
+/// without allocating (a group holds at most `GROUP_SIZE`; a coded region
+/// holds at most `MAX_SIDE` squared positions, so each fits 16 bits).
 #[derive(Default)]
 struct GroupPositions {
-    positions: [usize; GROUP_SIZE],
+    positions: [u16; GROUP_SIZE],
     len: usize,
 }
 impl GroupPositions {
     fn push(&mut self, position: usize) {
-        self.positions[self.len] = position;
+        debug_assert!(position < MAX_SIDE * MAX_SIDE);
+        self.positions[self.len] = position as u16;
         self.len += 1;
     }
     fn is_empty(&self) -> bool {
         self.len == 0
     }
-    fn as_slice(&self) -> &[usize] {
+    fn as_slice(&self) -> &[u16] {
         &self.positions[..self.len]
     }
 }
@@ -204,6 +206,13 @@ trait LevelValues {
     fn get(&self, pos: usize) -> i32;
     fn set(&mut self, pos: usize, value: i32);
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()];
+    /// The sum of `pos`'s [`TEMPLATE`] first-pass magnitudes
+    /// ([`pass_one_magnitude`]) and how many of them are nonzero.
+    fn pass_one_template(&self, pos: usize) -> (u32, u32) {
+        self.template(pos).iter().fold((0, 0), |(sum, count), &a| {
+            (sum + pass_one_magnitude(a), count + u32::from(a != 0))
+        })
+    }
 }
 
 impl<const AREA: usize> LevelValues for Levels<AREA> {
@@ -242,6 +251,13 @@ impl<const AREA: usize> Levels<AREA> {
 /// 16x1, wider than the usual 4x4. Every magnitude fits in 15 bits.
 const SOURCE_WINDOW_AREA: usize = (GROUP_SIZE + PAD) * (1 + PAD);
 
+/// A position's first-pass magnitude (at most 5) in the low byte of a
+/// [`SourceLevels::first_pass`] entry, and whether it is nonzero above it:
+/// the five template entries then add up to both template sums at once.
+const NONZERO_SHIFT: u32 = 8;
+/// The low byte of a summed [`SourceLevels::first_pass`] template.
+const PASS_ONE_MASK: u32 = (1 << NONZERO_SHIFT) - 1;
+
 /// Known encoder magnitudes, caching just the current group's template halo.
 /// Every template neighbour is later in the grouped scan: significance clips
 /// it to its first-pass magnitude, and the reverse remainder/bypass passes
@@ -255,7 +271,11 @@ struct SourceLevels<'a> {
     log2: u32,
     origin: usize,
     stride: usize,
+    /// The halo's magnitudes.
     window: [u16; SOURCE_WINDOW_AREA],
+    /// The halo's first-pass magnitudes and nonzero flags, packed
+    /// ([`NONZERO_SHIFT`]).
+    first_pass: [u16; SOURCE_WINDOW_AREA],
 }
 
 impl<'a> SourceLevels<'a> {
@@ -268,7 +288,14 @@ impl<'a> SourceLevels<'a> {
             origin: 0,
             stride: 0,
             window: [0; SOURCE_WINDOW_AREA],
+            first_pass: [0; SOURCE_WINDOW_AREA],
         }
+    }
+
+    /// The window index of raster position `pos` of the block.
+    fn index(&self, pos: usize) -> usize {
+        let local = pos - self.origin;
+        (local >> self.log2) * self.stride + (local & (self.width - 1))
     }
 }
 
@@ -286,15 +313,23 @@ impl LevelValues for SourceLevels<'_> {
             return;
         }
         self.window.fill(0);
+        self.first_pass.fill(0);
         let columns = (gw + PAD).min(self.width - x);
         let rows = (gh + PAD).min(self.height - y);
         for row in 0..rows {
             let at = self.origin + row * self.width;
-            let target = &mut self.window[row * self.stride..][..columns];
-            for (value, &source) in target.iter_mut().zip(&self.source[at..][..columns]) {
+            let window = &mut self.window[row * self.stride..][..columns];
+            let first_pass = &mut self.first_pass[row * self.stride..][..columns];
+            for ((value, packed), &source) in window
+                .iter_mut()
+                .zip(first_pass)
+                .zip(&self.source[at..][..columns])
+            {
                 let magnitude = source.unsigned_abs();
                 debug_assert!(i16::try_from(magnitude).is_ok());
                 *value = magnitude as u16;
+                *packed = (pass_one_magnitude(magnitude)
+                    | u32::from(magnitude != 0) << NONZERO_SHIFT) as u16;
             }
         }
     }
@@ -306,9 +341,18 @@ impl LevelValues for SourceLevels<'_> {
     fn set(&mut self, _pos: usize, _value: i32) {}
 
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()] {
-        let local = pos - self.origin;
-        let index = (local >> self.log2) * self.stride + (local & (self.width - 1));
+        let index = self.index(pos);
         TEMPLATE.map(|(dx, dy)| u32::from(self.window[index + dy * self.stride + dx]))
+    }
+
+    fn pass_one_template(&self, pos: usize) -> (u32, u32) {
+        let index = self.index(pos);
+        // At most 5 x 5 in the low byte, 5 above it: no carry between them.
+        let packed: u32 = TEMPLATE
+            .iter()
+            .map(|&(dx, dy)| u32::from(self.first_pass[index + dy * self.stride + dx]))
+            .sum();
+        (packed & PASS_ONE_MASK, packed >> NONZERO_SHIFT)
     }
 }
 
@@ -318,37 +362,33 @@ pub(crate) fn pass_one_magnitude(magnitude: u32) -> u32 {
     magnitude.min(4 + (magnitude & 1))
 }
 
-fn contexts(values: &impl LevelValues, pos: usize, width: usize, ch: usize) -> (usize, usize) {
-    let (mut sum, mut count) = (0, 0);
-    for a in values.template(pos) {
-        sum += pass_one_magnitude(a);
-        count += u32::from(a != 0);
-    }
-    template_contexts(sum, count, pos % width + pos / width, ch)
+/// [`template_contexts`] of raster position `pos` of a block `1 << log2`
+/// wide.
+fn contexts(values: &impl LevelValues, pos: usize, log2: u32, ch: usize) -> (usize, usize) {
+    let (sum, count) = values.pass_one_template(pos);
+    let diag = (pos & ((1 << log2) - 1)) + (pos >> log2);
+    template_contexts(sum, count, diag, ch)
 }
+
+/// Anti-diagonals past which a position's context offsets no longer change.
+const DIAGONAL_CLASSES: usize = 11;
+/// The `sig_coeff_flag` and greater-than/parity context offsets of a
+/// position by its anti-diagonal (to [`DIAGONAL_CLASSES`]), luma then
+/// chroma (§9.3.4.2.8: luma `d < 2`, `d < 5`; `d == 0`, `d < 3`, `d < 10`).
+#[rustfmt::skip]
+const DIAGONAL_OFFSETS: [[(u8, u8); DIAGONAL_CLASSES]; 2] = [
+    [(8, 15), (8, 10), (4, 10), (4, 5), (4, 5), (0, 5), (0, 5), (0, 5), (0, 5), (0, 5), (0, 0)],
+    [(4, 5), (4, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)],
+];
 
 /// The `sig_coeff_flag` and greater-than/parity context offsets of a
 /// position on anti-diagonal `diag` whose template holds `count` nonzero
 /// levels summing to `sum` in first-pass magnitudes (§9.3.4.2.8).
 pub(crate) fn template_contexts(sum: u32, count: u32, diag: usize, ch: usize) -> (usize, usize) {
-    let sig = ((sum + 1) >> 1).min(3) as usize
-        + if diag < 2 { 4 } else { 0 }
-        + if ch == 0 && diag < 5 { 4 } else { 0 };
-    let level = (sum - count).min(4) as usize
-        + 1
-        + if diag == 0 {
-            if ch == 0 { 15 } else { 5 }
-        } else if ch == 0 {
-            if diag < 3 {
-                10
-            } else if diag < 10 {
-                5
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+    let (sig_offset, level_offset) =
+        DIAGONAL_OFFSETS[usize::from(ch != 0)][diag.min(DIAGONAL_CLASSES - 1)];
+    let sig = ((sum + 1) >> 1).min(3) as usize + usize::from(sig_offset);
+    let level = (sum - count).min(4) as usize + 1 + usize::from(level_offset);
     (sig, level)
 }
 fn rice(values: &impl LevelValues, pos: usize, base: u32) -> u32 {
@@ -495,16 +535,16 @@ fn signs(
     source: &[i32],
     values: &mut impl LevelValues,
     scan: &[usize],
-    nonzero: &[usize],
+    nonzero: &[u16],
     hiding: bool,
 ) -> Result<()> {
     let (Some(&last_sig), Some(&first_sig)) = (nonzero.first(), nonzero.last()) else {
         return Ok(());
     };
-    let sign_hidden = hiding && last_sig - first_sig > SIGN_HIDING_THRESHOLD;
+    let sign_hidden = hiding && usize::from(last_sig - first_sig) > SIGN_HIDING_THRESHOLD;
     let mut sum = 0u32;
     for (i, &sp) in nonzero.iter().enumerate() {
-        let p = scan[sp];
+        let p = scan[usize::from(sp)];
         let magnitude = values.get(p);
         if magnitude > 32767 {
             return Err(DecodeError::Malformed("VVC coefficient range"));
@@ -656,6 +696,7 @@ fn walk<B: Bins>(
     // its `sb_coded_flag` leaves it unchanged (sixteen zeros map every
     // state to itself).
     let mut state = 0u8;
+    let log2 = width.ilog2();
     let dependent = c.dependent;
     let step = |state: &mut u8, level: u32| {
         if dependent {
@@ -690,7 +731,7 @@ fn walk<B: Bins>(
             let (sig_ctx, mut level_ctx) = if B::PRICES && sp == last {
                 (0, 0)
             } else {
-                contexts(values, p, width, ch)
+                contexts(values, p, log2, ch)
             };
             let inferred = sp == last || (sp == first && g != 0 && nonzero.is_empty());
             let sig = if inferred {
@@ -720,7 +761,7 @@ fn walk<B: Bins>(
             regular.push(p);
             nonzero.push(sp);
         }
-        for &p in regular.as_slice() {
+        for p in regular.as_slice().iter().map(|&p| usize::from(p)) {
             if values.get(p) >= 4 {
                 let rice_parameter = rice(values, p, 4);
                 let rem = remainder(
@@ -731,7 +772,7 @@ fn walk<B: Bins>(
                 values.set(p, values.get(p) + 2 * rem as i32);
             }
         }
-        for &sp in bypass.as_slice() {
+        for sp in bypass.as_slice().iter().map(|&sp| usize::from(sp)) {
             let p = scan[sp];
             let level = bypass_level(io, source[p].unsigned_abs(), rice(values, p, 0), state)?;
             values.set(p, level as i32);

@@ -1749,6 +1749,55 @@
   "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-rect-slices-nolf.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 9 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --EnablePicPartitioning=1 --TileColumnWidthArray=3 --TileRowHeightArray=2 --RasterScanSlices=0 --RectSliceFixedWidth=1 --RectSliceFixedHeight=1 --DisableLoopFilterAcrossSlices=1 --SAO=1 --ALF=1"
  },
  {
+  "name": "vtm-ldp-rpr",
+  "encoder": "vtm",
+  "tools": "RPR 2x",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "3069ab0f2deba8e48c98c9de3efd7fa95f6d5039a24f6d005e1e0235e5dfba2d",
+  "frames": [
+   "c1108e6cf79c5752244046e78f3d027a",
+   "c1108e6cf79c5752244046e78f3d027a",
+   "d5b702fc52246040b146961c6e3f925c",
+   "1575e99a8f5bf8ab34240995f26bd5ce",
+   "95ef5de1de77d3c294c0bf5cf7e5e27c",
+   "e0ae8a3b5139f4784a66d95e30569923",
+   "a175b00c2707d4e3bb487ad909cdf6a2",
+   "3a9052951c7eb13909c8adea987e6ac2",
+   "10a411bef3d11f2a05eebc3003a5d99a",
+   "8731dff1b254b18cc9b194a2f7d974f7",
+   "54b3259703df9cdb886c6409fd6fae70"
+  ],
+  "tail": 0,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-rpr.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --ScalingRatioHor=2.0 --ScalingRatioVer=2.0 --SwitchPocPeriod=4"
+ },
+ {
+  "name": "vtm-ldp-rpr-1p5",
+  "encoder": "vtm",
+  "tools": "RPR 1.5x",
+  "width": 640,
+  "height": 360,
+  "monochrome": false,
+  "sha256": "2540409948dd6978b8cd9d7d8e90a4571e66e40a298baf8916bd010eb354d242",
+  "frames": [
+   "c1108e6cf79c5752244046e78f3d027a",
+   "c1108e6cf79c5752244046e78f3d027a",
+   "d5b702fc52246040b146961c6e3f925c",
+   "1575e99a8f5bf8ab34240995f26bd5ce",
+   "9ecd5efb8e123e0e7388d782711c99eb",
+   "e2a556ad32cf664328106de777c0bee0",
+   "d80d151e177f3c0ab22f8e894de923ed",
+   "3fa6fb4cdd263a0855af838ceb402d64",
+   "0bfa52a225cc06e03761fb439b5cef3d",
+   "56a73185c0e5eefabce4650e21797a88",
+   "b63ff10bc5d303b18460902f515f431f",
+   "ae99b0586e10547188c2e7f7501ae1d2"
+  ],
+  "tail": 190080,
+  "command": "/home/mark/nanocodec-data/work/standards-eval/src/VTM/bin/EncoderAppStatic -c /home/mark/nanocodec-data/work/standards-eval/src/VTM/cfg/encoder_lowdelay_P_vtm.cfg -i /home/mark/nanocodec-data/work/vvc-foreign/src/bc1_640x360.yuv -b /home/mark/nanocodec-data/work/vvc-foreign/streams/vtm-ldp-rpr-1p5.266 -o '' -wdt 640 -hgt 360 -fr 30 -f 17 -q 37 --InputBitDepth=8 --InternalBitDepth=8 --OutputBitDepth=8 --TemporalSubsampleRatio=1 --TemporalFilter=0 --Level=4.1 --MTS=0 --MTSImplicit=0 --SBT=0 --ISP=0 --MMVD=0 --Affine=0 --SbTMVP=0 --LMChroma=0 --DepQuant=0 --IMV=0 --ALF=0 --CCALF=0 --BCW=0 --CIIP=0 --Geo=0 --IBC=0 --LMCSEnable=0 --MRL=0 --MIP=0 --JointCbCr=0 --PROF=0 --ChromaTS=0 --LFNST=0 --BIO=0 --DMVR=0 --SMVD=0 --SAO=0 --TransformSkip=0 --BDPCM=0 --SignHideFlag=0 --AffineAmvr=0 --AllowDisFracMMVD=0 --ScalingRatioHor=1.5 --ScalingRatioVer=1.5 --SwitchPocPeriod=4"
+ },
+ {
   "name": "vtm-ldp-sao",
   "encoder": "vtm",
   "tools": "SAO",

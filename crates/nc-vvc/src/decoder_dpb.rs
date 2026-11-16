@@ -1,6 +1,11 @@
 //! Bounded reference retention and POC derivation for general VVC pictures
-//! of samples `T` (8-bit `u8`, deeper `u16`).
-use crate::decoder_headers::{ReferenceEntry, Sequence, SliceHeader};
+//! of samples `T` (8-bit `u8`, deeper `u16`). Each picture keeps its
+//! geometry, from which a later picture's slices derive the scaling of
+//! their references (reference picture resampling, H.266 §8.3.2).
+use crate::{
+    decoder_blocks::{Geometry, Scaling},
+    decoder_headers::{ReferenceEntry, Sequence, SliceHeader},
+};
 use nc_common::{
     Picture, Sample,
     decode::{DecodeError, Result},
@@ -8,7 +13,8 @@ use nc_common::{
 
 #[derive(Debug)]
 pub(crate) struct References<T: Sample = u8> {
-    pictures: Vec<(i32, Picture<T>)>,
+    /// The reference pictures: POC, samples and geometry.
+    pictures: Vec<(i32, Picture<T>, Geometry)>,
     current: Option<i32>,
     previous_tid0: Option<i32>,
     pending_output: Vec<(i32, Picture<T>)>,
@@ -34,18 +40,18 @@ impl<T: Sample> Default for References<T> {
 impl<T: Sample> References<T> {
     pub fn prepare(
         &mut self,
-        previous: Option<Picture<T>>,
+        previous: Option<(Picture<T>, Geometry)>,
         sequence: &Sequence,
         header: &SliceHeader,
         (kind, starts_sequence): (u8, bool),
         temporal_id: u8,
-        filler: Option<&Picture<T>>,
+        filler: Option<(&Picture<T>, Geometry)>,
     ) -> Result<(i32, [Vec<i32>; 2])> {
-        if let (Some(poc), Some(mut picture)) = (self.current, previous) {
+        if let (Some(poc), Some((mut picture, geometry))) = (self.current, previous) {
             // Plane regions include alignment padding even with a zero border.
             // Shared interpolation requires those samples to replicate the edge.
             picture.extend_borders();
-            self.pictures.push((poc, picture));
+            self.pictures.push((poc, picture, geometry));
         }
         if matches!(kind, 7..=10) {
             if header.no_prior_output {
@@ -88,13 +94,13 @@ impl<T: Sample> References<T> {
         let retained = self.entries(poc, header, sequence.poc_bits)?;
         // The first slice's lists mark the other pictures unused (§8.3.3).
         self.pictures
-            .retain(|(poc, _)| retained.iter().any(|list| list.contains(poc)));
+            .retain(|(poc, ..)| retained.iter().any(|list| list.contains(poc)));
         // While recovering from a GDR picture that started the sequence,
         // listed pictures the DPB lacks are generated (§8.3.4).
-        if let Some(filler) = filler {
+        if let Some((filler, geometry)) = filler {
             for &listed in retained.iter().flatten() {
-                if !self.pictures.iter().any(|(stored, _)| *stored == listed) {
-                    self.pictures.push((listed, filler.clone()));
+                if !self.pictures.iter().any(|(stored, ..)| *stored == listed) {
+                    self.pictures.push((listed, filler.clone(), geometry));
                 }
             }
         }
@@ -150,7 +156,7 @@ impl<T: Sample> References<T> {
                         let lsb = i64::from(lsb.ok_or(DecodeError::Malformed("VVC LTRP LSB"))?);
                         self.pictures
                             .iter()
-                            .map(|(stored, _)| i64::from(*stored))
+                            .map(|(stored, ..)| i64::from(*stored))
                             .find(|stored| stored.rem_euclid(range) == lsb)
                             .unwrap_or(i64::from(poc) - i64::from(poc).rem_euclid(range) + lsb)
                     }
@@ -173,7 +179,7 @@ impl<T: Sample> References<T> {
             list.truncate(usize::from(count));
             if list
                 .iter()
-                .any(|poc| !self.pictures.iter().any(|(stored, _)| stored == poc))
+                .any(|poc| !self.pictures.iter().any(|(stored, ..)| stored == poc))
             {
                 return Err(DecodeError::Malformed("VVC missing reference picture"));
             }
@@ -235,16 +241,34 @@ impl<T: Sample> References<T> {
         ))
     }
     pub fn pictures(&self, pocs: &[i32]) -> Vec<&Picture<T>> {
+        pocs.iter().map(|&poc| &self.stored(poc).1).collect()
+    }
+
+    /// The scaling of each of the references `pocs` onto a picture of
+    /// geometry `current`, `None` for an unscaled one (§8.3.2).
+    pub fn scalings(
+        &self,
+        pocs: &[i32],
+        current: Geometry,
+        sequence: &Sequence,
+    ) -> Result<Vec<Option<Scaling>>> {
         pocs.iter()
-            .map(|poc| {
-                &self
-                    .pictures
-                    .iter()
-                    .find(|(stored, _)| stored == poc)
-                    .expect("validated active reference")
-                    .1
+            .map(|&poc| {
+                Scaling::between(
+                    current,
+                    self.stored(poc).2,
+                    sequence.tools.chroma_collocated,
+                )
             })
             .collect()
+    }
+
+    /// The stored reference picture `poc`.
+    fn stored(&self, poc: i32) -> &(i32, Picture<T>, Geometry) {
+        self.pictures
+            .iter()
+            .find(|(stored, ..)| *stored == poc)
+            .expect("validated active reference")
     }
 }
 

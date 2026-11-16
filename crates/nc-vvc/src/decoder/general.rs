@@ -9,7 +9,7 @@
 //! picture-level stages (inverse luma mapping, deblocking, SAO and ALF) run
 //! once the last CTU is covered, looking up each CU's or CTU's slice.
 use crate::{
-    decoder_blocks::{self as blocks, CtuFilters, Unit},
+    decoder_blocks::{self as blocks, CtuFilters, Geometry, Scaling, Unit},
     decoder_dpb::References,
     decoder_headers::{Adaptation, PictureHeader, PictureParameters, Sequence, SliceHeader},
 };
@@ -27,6 +27,8 @@ const TRAIL_NUT: u8 = 0;
 const RASL_NUT: u8 = 3;
 /// `nal_unit_type` of CRA pictures.
 const CRA_NUT: u8 = 9;
+/// `sh_slice_type` of I slices (H.266 Table 9).
+const I_SLICE: u8 = 2;
 /// `nal_unit_type` of IRAP pictures (`IDR_W_RADL`, `IDR_N_LP`, `CRA`).
 const IRAP_NUTS: std::ops::RangeInclusive<u8> = 7..=9;
 
@@ -79,9 +81,9 @@ pub(super) struct General<T: Pixel> {
     references: Option<Box<References<T>>>,
     /// A picture whose slices are still arriving.
     assembly: Option<Box<Assembly<T>>>,
-    /// The latest decoded picture (coded size), until the next picture
-    /// moves it into the DPB.
-    latest: Option<Picture<T>>,
+    /// The latest decoded picture (coded size) and its geometry, until the
+    /// next picture moves them into the DPB.
+    latest: Option<(Picture<T>, Geometry)>,
     /// The visible window of `latest`: its origin and size.
     window: ((usize, usize), (usize, usize)),
     /// The depths of the sequence's pictures.
@@ -207,6 +209,7 @@ impl<T: Pixel> General<T> {
             self.recovery = None;
         }
         let [width, height] = active.parameters.dimensions.map(|v| v as usize);
+        let geometry = Geometry::of(active.sequence, active.parameters);
         let filler = if starting_gdr || self.recovery.is_some() {
             Some(unavailable_picture(width, height, active.sequence.depth)?)
         } else {
@@ -219,7 +222,7 @@ impl<T: Pixel> General<T> {
             header,
             (kind, starts_sequence),
             temporal_id,
-            filler.as_ref(),
+            filler.as_ref().map(|filler| (filler, geometry)),
         )?;
         if starting_gdr {
             let distance = header.picture.order.recovery.unwrap_or(0);
@@ -265,6 +268,14 @@ impl<T: Pixel> General<T> {
         }
         let poc = assembly.poc;
         let pocs = references.slice_lists(poc, &header, sequence.poc_bits)?;
+        let geometry = Geometry::of(sequence, parameters);
+        let scalings = [
+            references.scalings(&pocs[0], geometry, sequence)?,
+            references.scalings(&pocs[1], geometry, sequence)?,
+        ];
+        if collocated_scaled(&header, &scalings) {
+            return Err(DecodeError::Malformed("VVC scaled collocated picture"));
+        }
         let dimensions = parameters.dimensions.map(|v| v as usize);
         let edges = reference_edges(sequence, parameters, header.subpicture);
         let reshape = blocks::reshape_model::<T>(sequence, &header, &active.adaptation[1])?;
@@ -296,12 +307,18 @@ impl<T: Pixel> General<T> {
         // Borrows only the DSP and the SPS, so the analysis build can still
         // record into `active.stats` below.
         let kernels = active.dsp.at(active.sequence.depth.of::<T>());
+        let sources = blocks::InterSources::new(
+            [&pictures[0], &pictures[1]],
+            &header,
+            edges,
+            [&scalings[0], &scalings[1]],
+        );
         blocks::derive_refinement(
             &mut units,
             &header,
             poc,
             [&pocs[0], &pocs[1]],
-            ([&pictures[0], &pictures[1]], edges),
+            sources,
             kernels,
         );
         #[cfg(feature = "analysis")]
@@ -316,7 +333,7 @@ impl<T: Pixel> General<T> {
             sequence,
             dimensions,
             header.picture.joint_sign,
-            blocks::InterSources::new([&pictures[0], &pictures[1]], &header, edges),
+            sources,
             kernels,
             reshape.as_ref().map(|m| (m, header.picture.chroma_scale)),
         );
@@ -395,13 +412,13 @@ impl<T: Pixel> General<T> {
             luma: depth,
             chroma: depth,
         };
-        self.latest = Some(picture);
+        self.latest = Some((picture, Geometry::of(active.sequence, active.parameters)));
     }
 
     /// The visible samples of the latest decoded picture.
     pub fn shown(&self) -> Option<ShownPicture<'_, T>> {
         let (origin, size) = self.window;
-        ShownPicture::window(self.latest.as_ref()?, origin, size)
+        ShownPicture::window(&self.latest.as_ref()?.0, origin, size)
     }
 
     /// Queue a copy of the visible samples of the latest picture for output
@@ -411,7 +428,7 @@ impl<T: Pixel> General<T> {
         let shown = self
             .latest
             .as_ref()
-            .and_then(|latest| ShownPicture::window(latest, origin, size))
+            .and_then(|(latest, _)| ShownPicture::window(latest, origin, size))
             .ok_or(DecodeError::Malformed("missing VVC picture"))?;
         let mut output = self.pictures.take(shown.width(), shown.height(), 0)?;
         shown.copy_to(&mut output);
@@ -532,6 +549,16 @@ fn inverse_mapping<T: Pixel>(
         }
     }
     Ok(())
+}
+
+/// Whether the collocated picture of slice `header` is a scaled reference,
+/// which H.266 §7.4.8 forbids (`sh_collocated_ref_idx`: its
+/// `RprConstraintsActiveFlag` shall be 0).
+fn collocated_scaled(header: &SliceHeader, scalings: &[Vec<Option<Scaling>>; 2]) -> bool {
+    let [list, index] = header.collocated.map(usize::from);
+    header.picture.motion.temporal
+        && header.kind != I_SLICE
+        && scalings[list].get(index).is_some_and(Option::is_some)
 }
 
 /// Where the luma reference samples of a slice of subpicture `subpicture`

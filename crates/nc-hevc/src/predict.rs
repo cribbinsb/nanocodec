@@ -227,6 +227,12 @@ impl<T: Pixel> Refs<T> {
         }
     }
 
+    /// Index of the corner `p[-1][-1]` in `samples`: the left column runs
+    /// below it, bottom up, and the row above after it.
+    fn corner(&self) -> usize {
+        2 * self.n
+    }
+
     /// `p[-1][y]` for `y` in `-1..2n`.
     fn left(&self, y: isize) -> i32 {
         self.samples[(2 * self.n as isize - 1 - y) as usize].to_i32()
@@ -388,17 +394,20 @@ fn transpose_in_place(block: &mut [u8], n: usize) {
 
 /// §8.4.4.2.4, by the planar kernel.
 fn planar<T: Pixel>(kernels: DepthKernels<'_>, p: &Refs<T>, n: usize, out: &mut [T]) {
-    let mut above = [T::default(); MAX_SIZE];
+    let corner = p.corner();
+    // `p[-1][i]` for i in 0..n: the left column is stored bottom up.
     let mut left = [T::default(); MAX_SIZE];
-    for i in 0..n {
-        above[i] = T::from_i32(p.top(i as isize));
-        left[i] = T::from_i32(p.left(i as isize));
+    for (l, &s) in left[..n]
+        .iter_mut()
+        .zip(p.samples[corner - n..corner].iter().rev())
+    {
+        *l = s;
     }
     let edges = HevcPlanarEdges {
-        above: &above[..n],
+        above: &p.samples[corner + 1..=corner + n],
         left: &left[..n],
-        top_right: T::from_i32(p.top(n as isize)),
-        bottom_left: T::from_i32(p.left(n as isize)),
+        top_right: p.samples[corner + 1 + n],
+        bottom_left: p.samples[corner - 1 - n],
     };
     kernels.hevc_intra_planar(&edges, n, out);
 }
@@ -437,21 +446,28 @@ fn angular<T: Pixel>(
     let side = |i: isize| if vertical { p.left(i) } else { p.top(i) };
     let mut buf = [T::default(); 3 * MAX_SIZE + 1];
     let origin = n; // buf[origin + i] is ref[i]
-    for i in 0..=n {
-        buf[origin + i] = T::from_i32(main(i as isize - 1));
+    // ref[i] = main(i - 1) for i in 0..=n, and on to 2n for a positive angle:
+    // a run of the references, read forward (the row above) or backward
+    // (the left column, stored bottom up).
+    let len = if angle < 0 { n + 1 } else { 2 * n + 1 };
+    let corner = p.corner();
+    let main_run = &mut buf[origin..origin + len];
+    if vertical {
+        main_run.copy_from_slice(&p.samples[corner..corner + len]);
+    } else {
+        for (r, &s) in main_run
+            .iter_mut()
+            .zip(p.samples[corner + 1 - len..=corner].iter().rev())
+        {
+            *r = s;
+        }
     }
     let reach = (n as i32 * angle) >> 5;
-    if angle < 0 {
-        if reach < -1 {
-            let inv = INV_ANGLE[usize::from(mode) - 11];
-            for i in reach..=-1 {
-                buf[(origin as i32 + i) as usize] =
-                    T::from_i32(side((((i * inv + 128) >> 8) - 1) as isize));
-            }
-        }
-    } else {
-        for i in n + 1..=2 * n {
-            buf[origin + i] = T::from_i32(main(i as isize - 1));
+    if reach < -1 {
+        let inv = INV_ANGLE[usize::from(mode) - 11];
+        for i in reach..=-1 {
+            buf[(origin as i32 + i) as usize] =
+                T::from_i32(side((((i * inv + 128) >> 8) - 1) as isize));
         }
     }
     // Project one line at a time: rows for vertical modes, columns for

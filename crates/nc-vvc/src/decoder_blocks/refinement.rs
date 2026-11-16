@@ -2,7 +2,7 @@
 //! Spatial motion remains unrefined; only temporal storage receives DMVR (§8.5.3).
 use super::{Inter, SliceHeader, Unit, motion::Motion};
 use crate::motion::Mv16;
-use nc_common::{BitDepth, Picture, Plane, PlaneIndex, PlaneView, Sample};
+use nc_common::{BitDepth, Plane, PlaneIndex, PlaneView, Sample};
 use nc_dsp::{DepthKernels, Pixel};
 
 const REGION_SIDE: usize = 16;
@@ -116,9 +116,10 @@ pub(crate) fn derive<T: Pixel>(
     header: &SliceHeader,
     poc: i32,
     pocs: [&[i32]; 2],
-    (pictures, edges): ([&[&Picture<T>]; 2], Edges),
+    references: super::inter_prediction::Sources<'_, T>,
     dsp: DepthKernels<'_>,
 ) {
+    let (pictures, edges) = (references.pictures, references.edges);
     if header.picture.motion.bdof_disabled && header.picture.motion.dmvr_disabled {
         return;
     }
@@ -144,9 +145,11 @@ pub(crate) fn derive<T: Pixel>(
             continue;
         };
         let distance = poc - pocs[0][usize::from(first.reference)];
-        // Signalled weights or a long-term reference in either list switch
-        // both refinements off (H.266 §8.5.1 dmvrFlag, §8.5.6.1 bdofFlag).
+        // Signalled weights, a long-term or a scaled reference in either
+        // list switch both refinements off (H.266 §8.5.1 dmvrFlag, §8.5.6.1
+        // bdofFlag).
         if motion.weight != 0
+            || references.scaled(motion)
             || header
                 .weights
                 .signalled([first.reference, second.reference])

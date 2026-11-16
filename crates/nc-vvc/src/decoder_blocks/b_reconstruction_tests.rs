@@ -102,7 +102,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                 if poc == 1 {
                     return;
                 }
-                previous = Some(picture);
+                previous = Some((picture, super::Geometry::of(s, p)));
             }
             _ => {}
         }

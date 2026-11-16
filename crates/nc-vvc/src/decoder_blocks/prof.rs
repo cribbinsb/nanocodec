@@ -1,7 +1,8 @@
 //! Affine PROF reference padding; interpolation and refinement use shared DSP.
 use super::{
-    inter_prediction::{combine, precision},
+    inter_prediction::{combine, high_precision},
     motion::Motion,
+    resampling::Region,
 };
 use nc_common::PlaneIndex;
 use nc_dsp::{DepthKernels, Pixel};
@@ -19,21 +20,29 @@ pub(super) fn predict<T: Pixel>(
         let Some(vector) = motion.lists[list] else {
             continue;
         };
-        let reference =
-            references.pictures[list][usize::from(vector.reference)].plane(PlaneIndex::Y);
-        precision(
+        high_precision(
             dsp,
-            reference,
-            position,
-            (4, 4),
-            vector.vector,
-            (true, false, true),
-            references.edges(PlaneIndex::Y),
+            references,
+            (list, vector),
+            PlaneIndex::Y,
+            Region {
+                anchor: position,
+                position,
+                size: (4, 4),
+            },
+            (false, true),
             &mut samples[list],
         );
-        let Some(corrections) = fields[list].and_then(|f| f.refinement()) else {
+        // PROF is off for a list whose reference is scaled (§8.5.5.9
+        // `cbProfFlagLX`).
+        let Some(corrections) = fields[list]
+            .and_then(|f| f.refinement())
+            .filter(|_| references.scaling(list, vector.reference).is_none())
+        else {
             continue;
         };
+        let reference =
+            references.pictures[list][usize::from(vector.reference)].plane(PlaneIndex::Y);
         let mut padded = [0; 36];
         super::refinement::padding(
             (reference, dsp.depth()),

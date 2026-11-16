@@ -29,9 +29,9 @@ delay, you may be in the right place:
   the browser build shows 8-bit streams
   only), so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
-  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes 218 of
-  the 226 official Main 10 conformance streams (8- and 10-bit; it still lacks reference picture resampling,
-  field output and long-term references, so it is not a compliant Main 10 decoder) and 136 of 138 short 8-bit
+  ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes 224 of
+  the 226 official Main 10 conformance streams (8- and 10-bit; it still lacks field-pair output, so it is not
+  a compliant Main 10 decoder) and 138 of 138 short 8-bit
   streams we coded with VTM and VVenC to cover the Main 10 tools one by one ([what passes](docs/handoff/vvc-foreign-corpus.md)); the AV2 decoder
   decodes our own streams and all 30 of 30 foreign test streams (12 dav2d 8-bit test vectors, 18 avmenc v1.0.0
   streams: all-intra, low-delay and random-access with the default tools, fewest tools) bit-exact against

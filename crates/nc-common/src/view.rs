@@ -258,8 +258,10 @@ impl<'a, T: Sample> PlaneViewMut<'a, T> {
             (src.width(), src.height()),
             "copy between views of different sizes"
         );
+        // Block rows of 4-64 samples: fixed-size copies, not a memcpy call
+        // each (AV2 Default made 1.9M such calls in 60 frames of crowd 720p).
         for y in 0..self.height {
-            self.row_mut(y).copy_from_slice(src.row(y));
+            copy_row(self.row_mut(y), src.row(y));
         }
     }
 }

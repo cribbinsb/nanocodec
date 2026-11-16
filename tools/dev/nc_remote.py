@@ -403,7 +403,9 @@ def close_out(aws: Aws, box: Box, ended: datetime.datetime) -> None:
     cost = box.cost(epoch, ended)
     ledger_row(box.instance_id, "ended", box.launched, box.ended, f"${cost:.2f}", box.spec(),
                spent=cost)
-    save_state(None)
+    current = load_state()
+    if current and current.instance_id == box.instance_id:
+        save_state(None)
     say(f"{box.instance_id} ended {box.ended}: ${cost:.2f}")
 
 
@@ -415,21 +417,34 @@ def check_budget() -> None:
                          f"${DAILY_BUDGET_USD:.2f}/day limit; run the work locally")
 
 
+def unended() -> list[Box]:
+    """Boxes not yet recorded as gone: the current one and any still draining."""
+    return [b for b in history() if not b.ended]
+
+
 def live_box(aws: Aws) -> Box | None:
-    """The recorded box if it is still running; a gone one is closed out."""
-    box = load_state()
-    if box is None:
-        return None
-    state = aws.state(box.instance_id)
-    if state in ("pending", "running"):
+    """The current box if it is still running. Every box that has gone (the
+    current one or a draining one) is closed out."""
+    for box in unended():
+        if aws.state(box.instance_id) not in ("pending", "running"):
+            close_out(aws, box, aws.end_time(box.instance_id))
+    return load_state()
+
+
+def drain_if_outdated(box: Box | None) -> Box | None:
+    """A running box of a type no longer in INSTANCE_TYPES gets no new jobs: it
+    finishes the ones it has and stops itself when idle (closed out by reap)."""
+    if box is None or box.instance_type in INSTANCE_TYPES:
         return box
-    close_out(aws, box, aws.end_time(box.instance_id))
+    say(f"{box.instance_type} {box.instance_id} is no longer a build box type: draining it "
+        "(its jobs finish, then its idle watchdog stops it); starting a new box")
+    save_state(None)
     return None
 
 
 def ensure_box(aws: Aws) -> Box:
     with Locked():
-        box = live_box(aws)
+        box = drain_if_outdated(live_box(aws))
         if box is None:
             check_budget()
             started = time.monotonic()
@@ -444,9 +459,15 @@ def ensure_box(aws: Aws) -> Box:
             provision(box)
             say(f"box ready in {(time.monotonic() - started) / 60:.1f} min")
         elif day_cost() >= DAILY_BUDGET_USD:
-            stop_box(aws, box)
+            stop_all(aws)
             check_budget()
         return box
+
+
+def stop_all(aws: Aws) -> None:
+    """Terminate the current box and every draining one."""
+    for box in unended():
+        stop_box(aws, box)
 
 
 def stop_box(aws: Aws, box: Box) -> None:
@@ -532,46 +553,48 @@ def cmd_run(args) -> int:
 def cmd_status(_args) -> int:
     aws = Aws()
     with Locked():
-        box = live_box(aws)
+        current = live_box(aws)
     say(f"cost: today (UTC) ${day_cost():.2f} of ${DAILY_BUDGET_USD:.2f}/day; "
         f"all build boxes ${total_cost():.2f}")
-    if box is None:
+    if not unended():
         say("no box running")
-        return 0
-    hours = box.hours(parse(box.launched), utc_now())
-    say(f"{box.instance_type} {box.instance_id} at {box.host}, up {hours * 60:.0f} min, "
-        f"spot ${box.price:.4f}/h, hard end {box.expected_end}")
     job = (HERE / "nc_remote_job.py").read_text()
-    ssh(box, shlex.join(["python3", "-c", job, "--status"]))
-    ssh(box, "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
-             "df -h --output=avail,size / | tail -1 | sed 's/^/  disk free, size: /'; "
-             "du -sh ncbox/jobs/*/target 2>/dev/null | sed 's/^/  target: /'")
+    for box in unended():
+        role = "current" if current and current.instance_id == box.instance_id else "draining"
+        hours = box.hours(parse(box.launched), utc_now())
+        say(f"{role}: {box.instance_type} {box.instance_id} at {box.host}, up {hours * 60:.0f} "
+            f"min, spot ${box.price:.4f}/h, hard end {box.expected_end}")
+        ssh(box, shlex.join(["python3", "-c", job, "--status"]))
+        ssh(box, "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
+                 "df -h --output=avail,size / | tail -1 | sed 's/^/  disk free, size: /'")
     return 0
 
 
 def cmd_stop(_args) -> int:
     aws = Aws()
     with Locked():
-        box = live_box(aws)
-        if box:
-            stop_box(aws, box)
-        else:
+        live_box(aws)
+        if not unended():
             say("no box running")
+        stop_all(aws)
     return 0
 
 
 def cmd_reap(_args) -> int:
-    """The PC's check: close out a gone box, enforce the budget, run the idle check."""
+    """The PC's check: close out gone boxes, enforce the budget and the hard end,
+    run the idle check on every live box (the current one and draining ones)."""
     aws = Aws()
     with Locked():
-        box = live_box(aws)
-        if box is None:
+        live_box(aws)
+        if day_cost() >= DAILY_BUDGET_USD:
+            stop_all(aws)
             return 0
-        if day_cost() >= DAILY_BUDGET_USD or utc_now() > parse(box.expected_end):
-            stop_box(aws, box)
-            return 0
-        if ssh(box, "sudo /usr/local/sbin/ncbox-idle", capture_output=True).returncode != 0:
-            say(f"{box.instance_id}: idle check over SSH failed")
+        for box in unended():
+            if utc_now() > parse(box.expected_end):
+                stop_box(aws, box)
+            elif ssh(box, "sudo /usr/local/sbin/ncbox-idle",
+                     capture_output=True).returncode != 0:
+                say(f"{box.instance_id}: idle check over SSH failed")
     return 0
 
 

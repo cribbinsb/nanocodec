@@ -347,10 +347,7 @@ impl Vp9StreamExtractor {
         Ok((coded, lone_sef_slot))
     }
 
-    fn resolve_target_sid(&self, coded_len: usize, override_sid: Option<u8>) -> Result<u8> {
-        if let Some(sid) = override_sid {
-            return Ok(sid);
-        }
+    fn resolve_target_sid(&self, coded_len: usize) -> Result<u8> {
         let n = self.num_layers.unwrap_or(coded_len as u8).max(1);
         match self.target {
             Vp9ExtractTarget::BaseOnly => Ok(0),
@@ -368,26 +365,26 @@ impl Vp9StreamExtractor {
             .num_layers
             .is_some_and(|n| self.layer_sizes.len() == usize::from(n))
             && self.layer_sizes.windows(2).all(|w| w[0] != w[1]);
-        if distinct_sizes {
-            let mut sids = Vec::with_capacity(coded.len());
-            for c in coded {
-                let sid = c
-                    .size
-                    .and_then(|sz| self.layer_sizes.iter().position(|&lsz| lsz == sz))
-                    .map(|p| p as u8);
-                sids.push(sid);
+        // With every frame's size matched to a layer, the spatial ids follow
+        // from the sizes.
+        let spatial_ids = || -> Option<Vec<u8>> {
+            coded
+                .iter()
+                .map(|c| {
+                    let size = c.size?;
+                    let sid = self.layer_sizes.iter().position(|&lsz| lsz == size)?;
+                    Some(sid as u8)
+                })
+                .collect()
+        };
+        if distinct_sizes && let Some(sids) = spatial_ids() {
+            if let Some(idx) = sids.iter().position(|&s| s == target_sid) {
+                return Some(idx);
             }
-            if sids.iter().all(Option::is_some) {
-                if let Some(idx) = sids.iter().position(|&s| s == Some(target_sid)) {
-                    return Some(idx);
-                }
-                if self.stripped_lower {
-                    return None;
-                }
-                return sids
-                    .iter()
-                    .rposition(|&s| s.is_some_and(|sid| sid < target_sid));
+            if self.stripped_lower {
+                return None;
             }
+            return sids.iter().rposition(|&s| s < target_sid);
         }
         if usize::from(target_sid) < coded.len() {
             Some(usize::from(target_sid))
@@ -404,28 +401,6 @@ impl Vp9StreamExtractor {
     ///
     /// Returns [`DecodeError`] on malformed headers or an out-of-range operating point.
     pub fn extract_packet(&mut self, packet: &[u8]) -> Result<Option<ExtractedVp9Packet>> {
-        self.extract_inner(packet, None)
-    }
-
-    /// Filter `packet` to a specific `target_spatial_id` (used when an external
-    /// layer sidecar has already selected the temporal unit and target spatial id).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DecodeError`] on malformed headers.
-    pub fn extract_spatial_layer(
-        &mut self,
-        packet: &[u8],
-        target_spatial_id: u8,
-    ) -> Result<Option<ExtractedVp9Packet>> {
-        self.extract_inner(packet, Some(target_spatial_id))
-    }
-
-    fn extract_inner(
-        &mut self,
-        packet: &[u8],
-        override_sid: Option<u8>,
-    ) -> Result<Option<ExtractedVp9Packet>> {
         let stream_uids_before = self.stream_uids;
         let (coded, lone_sef_slot) = self.scan_packet(packet)?;
         if coded.is_empty() {
@@ -446,7 +421,7 @@ impl Vp9StreamExtractor {
                 self.layer_sizes = sizes;
             }
         }
-        let target_sid = self.resolve_target_sid(coded.len(), override_sid)?;
+        let target_sid = self.resolve_target_sid(coded.len())?;
         let Some(top_idx) = self.select_top_index(&coded, target_sid) else {
             return Ok(None);
         };

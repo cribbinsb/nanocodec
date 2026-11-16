@@ -100,7 +100,7 @@ crates, scalar.
 | VVC luma angular | `vvc_intra/angular_generic.rs`, `intra_runs::run4` | S A2 N W | `run4`: AVX2 two `pmaddubsw` pair sums; NEON u16 magnitude sums + saturating narrow (AV2's technique); SIMD128 i16 lanes | VVC 4.9 / 4.2 (`vvc_intra::avx2::predict`) | 4-tap cubic/Gaussian, 6-bit taps | **Shared kernel `run4`** (2026-11-16) |
 | AV2 luma `run4` | `intra_prediction/av2.rs`, `av2_intra/` | S A2 N W | A2/W 32-bit accumulators; NEON byte split +/- sums | AV2 1.1 / 1.0 | 4-tap `FOUR_TAP`, 7-bit taps up to 152 | **Keep separate**: its taps exceed i8 and its positive sums (255 x 152) exceed i16, so `intra_runs::run4`'s byte-tap, 16-bit-sum form cannot hold them; its NEON already uses the family's u16 magnitude-sum technique |
 | HEVC planar | `hevc_intra/lanes.rs:63` | S A2 N W | u8 refs, I16 lanes | HEVC 0.6 / 0.5 | Eq. 8-48 | **Merge with VVC planar** (HEVC layout) |
-| VVC planar/DC/H/V + PDPC | `vvc_intra/generic.rs:9` | S A2 N W | **I32 lanes** over i32 refs | in VVC | planar identical to HEVC; PDPC weights fit i16 | **Merge**: HEVC's I16 layout + optional PDPC |
+| VVC planar/DC/H/V + PDPC | `vvc_intra/generic.rs` | S A2 N W | planar: the shared HEVC planar kernel (u8 refs, i16 lanes); DC/H/V fills; PDPC one i16 pass over the samples its weights reach | in VVC | planar identical to HEVC (eq. 8-48) | **Merged** (2026-11-16) onto `hevc_intra::lanes::planar` |
 | AV1 smooth | `intra_prediction.rs:342`, `av1_intra/` | S A2 N W | u16 lanes | small | libaom weights, shift 8 | Keep (AV1 only) |
 | AV2 smooth | `intra_prediction/av2.rs:532`, `av2_intra/generic.rs` | S A2 N W | I16 lanes | small | linear ramp + halving blend (weight = VVC PDPC formula) | Keep; share the weight helper |
 | Paeth (AV1, AV2) | `intra_prediction.rs:397` | AV1 S A2 N W; **AV2 S only** (`av2.rs:240`) | one row per vector | small | identical `paeth()` | **AV2 to use AV1's SIMD** |
@@ -192,7 +192,7 @@ kernels only.
 | 7 | HEVC `quantize_from` into `quantize`; AV2/VP9 dequant onto AV1's | small | planned |
 | 8 | Add-and-clip and SSE kernels to one each; codec-crate loops onto them | VP9 2.8 and others | planned |
 | 9 | HEVC/VVC short luma deblock and the chroma delta core | HEVC 1.7, VVC 2-3 | planned |
-| 10 | VVC/HEVC planar, H.264/VP9 diagonal rows, AV2 Paeth onto AV1 | small | planned |
+| 10 | VVC/HEVC planar (landed), H.264/VP9 diagonal rows, AV2 Paeth onto AV1 | small | planar landed; rest planned |
 
 ## Stays separate (and why)
 
