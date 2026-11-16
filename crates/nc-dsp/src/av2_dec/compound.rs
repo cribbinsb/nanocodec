@@ -114,7 +114,6 @@ pub fn avg<T: Sample>(
 /// # Panics
 ///
 /// If a size is out of range or a slice is too short.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn w_avg<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,
@@ -148,7 +147,6 @@ pub fn w_avg<T: Sample>(
 /// # Panics
 ///
 /// If a size is out of range or a slice is too short.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn mask<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,
@@ -189,7 +187,6 @@ pub fn mask<T: Sample>(
 /// # Panics
 ///
 /// If a size is out of range or a slice is too short.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn w_mask<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,

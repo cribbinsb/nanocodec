@@ -31,7 +31,7 @@ use crate::cdf::CdfContext;
 use crate::cfl::ChromaFromLuma;
 use crate::coeff::trellis::{RateModel, TrellisQuantizer};
 use crate::coeff::{
-    CoeffCdfs, PlaneType, TxbContext, coefficient_scan, end_of_block_within, entropy_context,
+    CoeffCdfs, PlaneType, TxbContext, coefficient_scan, end_of_block_in_prefix, entropy_context,
 };
 use crate::grain::{GrainParams, GrainState};
 use crate::inter;
@@ -5113,10 +5113,11 @@ fn trellis_quantize(
 
 /// End of block of `levels` with `nonzero` nonzero levels, quantised from
 /// a forward transform under `policy` (so zero past its
-/// [`ForwardPolicy::scan_len`]). Sparse AC blocks usually end near the
+/// [`ForwardPolicy::coded_prefix`]). Sparse AC blocks usually end near the
 /// start of the scan: the quantizer's exact count tells us when every
-/// nonzero was found; dense blocks keep the reverse scan's cheap high-EOB
-/// exit.
+/// nonzero was found; denser blocks take one vectorized pass over the
+/// prefix (a walk back through the scan instead cost 0.6% more AV1 Default
+/// instructions, callgrind 2026-11-16).
 fn quantized_eob(tx: TxSize, levels: &[i16], nonzero: u32, policy: ForwardPolicy) -> usize {
     if nonzero == 0 {
         0
@@ -5133,7 +5134,7 @@ fn quantized_eob(tx: TxSize, levels: &[i16], nonzero: u32, policy: ForwardPolicy
             .expect("quantizer count matches the coefficient levels")
             + 1
     } else {
-        end_of_block_within(tx, levels, policy.scan_len(tx))
+        end_of_block_in_prefix(tx, levels, policy.coded_prefix(tx))
     }
 }
 

@@ -693,7 +693,6 @@ fn hevc_bi_average<V: I16Lanes>(
 ///
 /// # Safety
 /// `V`'s ISA must be enabled. Whole footprints are checked before accesses.
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(crate) unsafe fn hevc_bi<V: I16Lanes, const N: usize>(
     src: &[u8],
@@ -1136,7 +1135,6 @@ pub(crate) unsafe fn h264_chroma<V: I16Lanes>(
 /// # Safety
 ///
 /// `V`'s ISA must be available.
-#[allow(clippy::too_many_arguments)]
 #[inline(always)]
 pub(crate) unsafe fn h264_chroma_of_class<V: I16Lanes>(
     src: &[u8],

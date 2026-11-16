@@ -52,7 +52,6 @@ pub(super) struct Buffers {
 
 /// Predict the `w`x`h` luma block at `(x, y)` and its chroma into `dst`
 /// from one or two sources.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn predict<T: Pixel>(
     dsp: &Dsp,
     depths: BitDepths,

@@ -132,7 +132,6 @@ pub(crate) fn store_compound(
 }
 
 /// [`put_bilinear_at`] for 8-bit samples.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn put_bilinear(
     dst: &mut [u8],
     dst_offset: usize,
@@ -166,7 +165,6 @@ pub fn put_bilinear(
 ///
 /// If either slice is too short for that at its stride, or a size is out
 /// of range.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn put_bilinear_at<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,
@@ -241,7 +239,6 @@ pub fn put_bilinear_at<T: Sample>(
 /// # Panics
 ///
 /// If a slice is too short or a size is out of range.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn prep_bilinear<T: Sample>(
     tmp: &mut [i16],
     tmp_stride: usize,

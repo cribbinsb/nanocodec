@@ -89,7 +89,6 @@ const I420_STEP: usize = 8;
 /// # Safety
 ///
 /// Kernel contract (`convert` module docs).
-#[allow(clippy::too_many_arguments, reason = "matches DeinterleaveUvFn")]
 #[target_feature(enable = "simd128")]
 unsafe fn deinterleave_uv(
     src: &[u8],
@@ -249,7 +248,6 @@ fn luma_row(row: &[u8], out: &mut [u8]) {
 /// # Safety
 ///
 /// Kernel contract (`convert` module docs).
-#[allow(clippy::too_many_arguments, reason = "matches RgbaToI420Fn")]
 #[target_feature(enable = "simd128")]
 unsafe fn rgba_to_i420(
     rgba: &[u8],

@@ -860,11 +860,7 @@ impl Walk {
 impl Tile<'_, '_> {
     /// The level walk of every class but forward skip coding (dav2d
     /// `DECODE_COEFS_CLASS` and the DC that follows).
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "dav2d's walk"
-    )]
+    #[allow(clippy::too_many_lines, reason = "dav2d's walk")]
     fn levels(
         &mut self,
         depth: usize,
@@ -1223,7 +1219,6 @@ impl Tile<'_, '_> {
     }
 
     /// The DC sign, remainder and dequantization.
-    #[allow(clippy::too_many_arguments, reason = "the walk's state")]
     fn dc(
         &mut self,
         depth: usize,

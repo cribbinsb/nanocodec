@@ -1466,7 +1466,6 @@ impl SpatialStructure {
         (plan, slot_for_next)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_upper_layer_references(
         &self,
         position: LayerPosition,

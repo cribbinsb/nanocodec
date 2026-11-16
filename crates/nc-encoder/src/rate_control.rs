@@ -739,7 +739,6 @@ pub(crate) struct RateController {
     still: StillRate,
 }
 impl RateController {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: RateControlConfig,
         codec: Codec,

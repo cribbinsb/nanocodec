@@ -54,7 +54,6 @@ pub(crate) fn check(candidate: &Dsp, rng: &mut Rng, report: &mut CheckReport) {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "one case's full description")]
 fn one(
     dsp: &Dsp,
     kind: Vp9Filter,

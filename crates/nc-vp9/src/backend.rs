@@ -311,34 +311,52 @@ enum QuantizerMode {
 }
 
 /// One coded transform block's levels, kept until its tokens are written.
-/// Compact (12 bytes): trial saves and restores copy every block's.
+/// Compact (16 bytes): trial saves and restores copy every block's.
 #[derive(Clone, Copy)]
 struct CodedTx {
     plane: PlaneIndex,
     tx: TxSize,
     ty: transform::TxType,
     eob_nonzero: bool,
+    /// End of block of the levels (0 without them), found once for the
+    /// rate estimate and the token writer.
+    eob: u16,
     /// Top-left in 4x4 units of the plane (the coefficient-context grid).
     unit: (u16, u16),
     levels_offset: u32,
 }
 
 impl CodedTx {
+    /// A block without levels to code.
+    fn uncoded(block: &TxBlock, ty: transform::TxType, levels_offset: usize) -> Self {
+        Self::new(block, ty, None, levels_offset)
+    }
+
+    /// A block whose `levels` (the scratch's from `levels_offset`), when
+    /// given, may code something.
     fn new(
         block: &TxBlock,
         ty: transform::TxType,
-        eob_nonzero: bool,
+        levels: Option<&[i32]>,
         levels_offset: usize,
     ) -> Self {
         let unit = |sample: usize| u16::try_from(sample >> 2).expect("VP9 frames fit 16-bit units");
+        let eob = levels.map_or(0, |levels| coeff::end_of_block(levels, block.tx, ty));
         Self {
             plane: block.plane,
             tx: block.tx,
             ty,
-            eob_nonzero,
+            eob_nonzero: levels.is_some(),
+            eob: u16::try_from(eob).expect("end of block fits 1024"),
             unit: (unit(block.x), unit(block.y)),
             levels_offset: u32::try_from(levels_offset).expect("per-block levels fit 32 bits"),
         }
+    }
+
+    /// Code no levels after all (the block is coded as skipped).
+    fn drop_levels(&mut self) {
+        self.eob_nonzero = false;
+        self.eob = 0;
     }
 
     /// The coefficient probability model of the block.
@@ -1373,7 +1391,8 @@ impl CodecBackend for Vp9Backend {
                 } else {
                     &transform::ZERO_LEVELS[..area]
                 };
-                bits += coeff::cost(levels, model, probs, 0);
+                let eob = coeff::end_of_block(levels, plane_tx, model.ty);
+                bits += coeff::cost((levels, eob), model, probs, 0);
                 if transform_domain {
                     sse += transform::coefficient_sse(plane_tx, coefficients, levels, steps);
                     continue;
@@ -2476,7 +2495,7 @@ impl Vp9Backend {
         if skipped <= coded {
             self.restore_prediction(block, recon, TrialPlanes::All);
             for coded in &mut self.scratch.coded {
-                coded.eob_nonzero = false;
+                coded.drop_levels();
             }
         }
     }
@@ -2501,7 +2520,8 @@ impl Vp9Backend {
                     .grids
                     .contexts
                     .coefficient(coded.plane, ux, uy, coded.tx);
-                coeff::cost(&self.scratch.levels[coded.levels()], model, probs, ctx)
+                let levels = &self.scratch.levels[coded.levels()];
+                coeff::cost((levels, usize::from(coded.eob)), model, probs, ctx)
             })
             .sum()
     }
@@ -3202,7 +3222,7 @@ impl Vp9Backend {
                     // The prediction in `recon` is the reconstruction.
                     self.scratch
                         .coded
-                        .push(CodedTx::new(&tx_block, ty, false, offset));
+                        .push(CodedTx::uncoded(&tx_block, ty, offset));
                     offset += area;
                     continue;
                 }
@@ -3220,7 +3240,7 @@ impl Vp9Backend {
                     {
                         self.scratch
                             .coded
-                            .push(CodedTx::new(&tx_block, ty, false, offset));
+                            .push(CodedTx::uncoded(&tx_block, ty, offset));
                         offset += area;
                         continue;
                     }
@@ -3270,9 +3290,8 @@ impl Vp9Backend {
                     self.buffers
                         .add_residual(recon, &tx_block, ty, self.lossless, levels, steps);
                 }
-                self.scratch
-                    .coded
-                    .push(CodedTx::new(&tx_block, ty, nonzero, offset));
+                let coded = CodedTx::new(&tx_block, ty, nonzero.then_some(&*levels), offset);
+                self.scratch.coded.push(coded);
                 offset += area;
             }
         }
@@ -3441,9 +3460,9 @@ impl Vp9Backend {
             }
         };
         let ty = transform::TxType::DctDct;
-        self.scratch
-            .coded
-            .push(CodedTx::new(tx_block, ty, nonzero, offset));
+        let levels = &self.scratch.levels[offset..offset + tx.area()];
+        let coded = CodedTx::new(tx_block, ty, nonzero.then_some(levels), offset);
+        self.scratch.coded.push(coded);
         true
     }
 
@@ -3506,8 +3525,9 @@ impl Vp9Backend {
             } else {
                 &transform::ZERO_LEVELS[..coded.tx.area()]
             };
+            let eob = usize::from(coded.eob);
             let mut coder = coeff::Coder::new(model, &self.context, &mut self.counts);
-            let eob = coeff::write(&mut self.writer, levels, model, &mut coder, ctx);
+            coeff::write(&mut self.writer, (levels, eob), model, &mut coder, ctx);
             self.grids
                 .contexts
                 .set_coefficient(coded.plane, ux, uy, coded.tx, eob > 0);

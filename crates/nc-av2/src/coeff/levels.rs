@@ -151,6 +151,32 @@ pub(super) fn end_of_block(coefficients: &[i32], tx: TxSize) -> usize {
     end as usize
 }
 
+/// Largest nonzero count [`quantized_end_of_block`] finds by walking the
+/// scan from its start; denser blocks take the raster pass.
+const SPARSE_WALK_MAX_NONZERO: u32 = 8;
+
+/// [`end_of_block`] of `coefficients` holding exactly `nonzero` nonzero
+/// values. Most quantized blocks are all zero, DC only or end near the
+/// start of the scan: the count says when every nonzero has been passed.
+pub(super) fn quantized_end_of_block(coefficients: &[i32], tx: TxSize, nonzero: u32) -> usize {
+    match nonzero {
+        0 => 0,
+        1 if coefficients[0] != 0 => 1,
+        n if n <= SPARSE_WALK_MAX_NONZERO => {
+            let mut remaining = n;
+            scan(tx)
+                .iter()
+                .position(|&pos| {
+                    remaining -= u32::from(coefficients[usize::from(pos)] != 0);
+                    remaining == 0
+                })
+                .expect("the count matches the coefficients")
+                + 1
+        }
+        _ => end_of_block(coefficients, tx),
+    }
+}
+
 /// [`end_of_block`] and the OR of all magnitudes (which exceeds a limit of
 /// all-ones bits exactly when one magnitude does), in one raster pass.
 pub(super) fn end_and_magnitude_bits(coefficients: &[i32], tx: TxSize) -> (usize, u32) {
@@ -377,6 +403,18 @@ const NEIGHBOUR_OFFSETS: [usize; 5] = {
     }
     offsets
 };
+/// Map entries from a position to its farthest template neighbour.
+const NEIGHBOUR_WINDOW: usize = {
+    let mut farthest = 0;
+    let mut i = 0;
+    while i < NEIGHBOUR_OFFSETS.len() {
+        if NEIGHBOUR_OFFSETS[i] > farthest {
+            farthest = NEIGHBOUR_OFFSETS[i];
+        }
+        i += 1;
+    }
+    farthest + 1
+};
 
 /// Base plus low-range levels of the coefficients coded so far (later in scan
 /// order), saturated as in the decoder; zero elsewhere. Stored with zero
@@ -407,7 +445,12 @@ impl LevelMap {
     /// The template neighbours of `at`.
     pub(super) fn neighbours(&self, at: ScanPosition) -> Neighbours {
         let index = usize::from(at.map);
-        NEIGHBOUR_OFFSETS.map(|offset| self.levels[index + offset])
+        // One bounds check for the template's window; the constant offsets
+        // then index a fixed-size array without one each.
+        let window: &[u8; NEIGHBOUR_WINDOW] = self.levels[index..index + NEIGHBOUR_WINDOW]
+            .try_into()
+            .expect("the padded map holds every template");
+        NEIGHBOUR_OFFSETS.map(|offset| window[offset])
     }
 }
 

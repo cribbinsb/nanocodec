@@ -35,7 +35,7 @@ use crate::{coeff, motion, prediction, transform};
 use nc_common::decode::Result;
 use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::intra_prediction::av2::Av2IntraEdges;
-use nc_dsp::{BlockSize, Dsp};
+use nc_dsp::{BlockSize, Dsp, Residual16};
 use nc_encoder::symbol_cost::symbol_bits;
 use nc_encoder::{DebugRng, IntraModeSet, residual_quantises_to_zero, with_neighbours};
 
@@ -733,14 +733,10 @@ impl Quantizer {
             }
             return Ok(LevelStats::EMPTY);
         }
-        let coded = transform::quantize(&self.dsp, tx, coefficients, (qindex, rounding), levels);
-        // One raster pass finds the plain end of block; the trellis and
-        // trimming start from it and return theirs.
-        let plain_eob = if coded {
-            coeff::end_of_block(levels, tx)
-        } else {
-            0
-        };
+        let nonzero = transform::quantize(&self.dsp, tx, coefficients, (qindex, rounding), levels);
+        // The plain end of block (from the quantizer's count, or one raster
+        // pass); the trellis and trimming start from it and return theirs.
+        let plain_eob = coeff::quantized_end_of_block(levels, tx, nonzero);
         // TCQ luma takes the rate source; the trellis, trimming and parity
         // hiding see plain levels only.
         let (tcq_rate, rate) = match tcq {
@@ -878,13 +874,17 @@ impl Quantizer {
             return Ok(());
         }
         let side = tx.width();
+        let block = BlockSize::new(side, side).expect("square transform sizes are block sizes");
         let qindex = self.qindex.of(plane);
         if let Some(residual) =
             transform::dc_only_residual((tx, tx_type), (levels, stats.eob(), dequantizer), qindex)
         {
-            for row in 0..side {
-                add_constant_residual(prediction.row(row), residual, reconstructed.row_mut(row));
-            }
+            self.dsp.reconstruct_i16(
+                block,
+                prediction,
+                Residual16::Constant(residual),
+                reconstructed,
+            );
             return Ok(());
         }
         let inverse = &mut self.inverse[..side * side];
@@ -896,9 +896,12 @@ impl Quantizer {
             &mut self.dequantized,
             inverse,
         )?;
-        for (row, residual) in inverse.chunks_exact(side).enumerate() {
-            add_residual(prediction.row(row), residual, reconstructed.row_mut(row));
-        }
+        self.dsp.reconstruct_i16(
+            block,
+            prediction,
+            Residual16::Samples(inverse),
+            reconstructed,
+        );
         Ok(())
     }
 
@@ -1885,7 +1888,6 @@ impl BlockCoder {
     /// error. Luma transforms take [`Self::intra_luma_type`] of `luma_type`,
     /// except that a DC-only result is recoded as `DCT_DCT`, which such
     /// blocks infer; chroma is DCT-only.
-    #[allow(clippy::too_many_arguments)]
     fn code_intra_plane(
         &mut self,
         coded: &mut Coded,
@@ -2510,8 +2512,13 @@ impl BlockCoder {
                 self.code_inter(&mut coded, layout, (x, y), (source, luma_sse), &chroma)?;
             }
             // Counted in u32 lanes: a usize count vectorizes two lanes wide
-            // on aarch64, which perf showed hot on the Jetson.
-            let nonzero: u32 = coded.levels[LUMA].iter().map(|&l| u32::from(l != 0)).sum();
+            // on aarch64, which perf showed hot on the Jetson. Most P luma
+            // is all zero, which its end-of-block stats say without a count.
+            let nonzero: u32 = if coded.plane_is_zero(LUMA) {
+                0
+            } else {
+                coded.levels[LUMA].iter().map(|&l| u32::from(l != 0)).sum()
+            };
             self.last_luma_nonzero = nonzero as usize;
             if coded.is_zero() && !keep_zero {
                 self.recycle(coded);
@@ -3863,33 +3870,6 @@ pub(crate) fn plane_origin(plane: usize, (x, y): (usize, usize)) -> (usize, usiz
     (x >> shift, y >> shift)
 }
 
-/// Clamped sum of a prediction and a reconstructed residual.
-pub(crate) fn add_residual(predicted: &[u8], residual: &[i16], out: &mut [u8]) {
-    // Equal-length slices indexed together vectorize; a three-way zip did
-    // not (about 1% of the encoder's instructions). The sum saturates in
-    // 16 bits, and the clamp to a sample is then the same as clamping the
-    // exact sum.
-    let n = out.len();
-    let (predicted, residual) = (&predicted[..n], &residual[..n]);
-    for i in 0..n {
-        out[i] = i16::from(predicted[i])
-            .saturating_add(residual[i])
-            .clamp(0, i16::from(u8::MAX)) as u8;
-    }
-}
-
-/// [`add_residual`] of a residual that is `residual` at every sample (a DC
-/// only transform, [`transform::dc_only_residual`]), `-256..=255`.
-pub(crate) fn add_constant_residual(predicted: &[u8], residual: i16, out: &mut [u8]) {
-    let n = out.len();
-    let predicted = &predicted[..n];
-    for i in 0..n {
-        out[i] = i16::from(predicted[i])
-            .saturating_add(residual)
-            .clamp(0, i16::from(u8::MAX)) as u8;
-    }
-}
-
 /// Copy a `side`×`side` raster `samples` into `plane` of `picture` at `(x, y)`.
 pub(crate) fn store(
     picture: &mut Picture,
@@ -3898,18 +3878,13 @@ pub(crate) fn store(
     side: usize,
     samples: &[u8],
 ) {
-    let mut view = picture.plane_mut(plane).view_mut();
-    assert!(
-        x + side <= view.width() && y + side <= view.height(),
-        "stored blocks lie inside the plane"
-    );
-    // Rows by strided chunks: one check for the block, not one per row
-    // (most stored blocks are a few samples wide).
-    let stride = view.stride();
-    let rows = view.data_mut()[y * stride + x..].chunks_mut(stride);
-    for (row, values) in rows.zip(samples.chunks_exact(side)) {
-        nc_common::copy_row(&mut row[..side], values);
-    }
+    let samples = PlaneView::new(samples, side, side, side).expect("a side x side raster");
+    picture
+        .plane_mut(plane)
+        .view_mut()
+        .sub_view_mut(x, y, side, side)
+        .expect("stored blocks lie inside the plane")
+        .copy_from(&samples);
 }
 
 /// Store every plane of a coded block.

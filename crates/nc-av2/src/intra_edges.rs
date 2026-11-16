@@ -17,7 +17,7 @@
 use crate::block_state::BlockState;
 use crate::intra_modes::Mode;
 use crate::partition::SUPERBLOCK;
-use nc_common::Plane;
+use nc_common::{Plane, PlaneView};
 use nc_dsp::Dsp;
 use nc_dsp::intra_prediction::av2::{Av2IntraEdges, Av2Predictor};
 
@@ -177,9 +177,7 @@ pub(crate) fn predict(
                     Extension::Samples(n) => n,
                     Extension::Unused => 0,
                 };
-            for (i, sample) in left[..available].iter_mut().enumerate() {
-                *sample = left_ref(i);
-            }
+            copy_left_column(&view, (x, y), &mut left[..available]);
             let last = left[available - 1];
             left[available..].fill(last);
         } else if n_top > 0 {
@@ -238,6 +236,22 @@ pub(crate) fn predict(
         },
     };
     dsp.av2_intra_predict(edges, predictor, side, output);
+}
+
+/// Copy the column left of `(x, y)` in `view`, from row `y` down, into
+/// `left`: one stride walk with one bounds check for the column, not a row
+/// lookup per sample.
+fn copy_left_column(view: &PlaneView<'_>, (x, y): (usize, usize), left: &mut [u8]) {
+    assert!(
+        y + left.len() <= view.height(),
+        "left column inside the plane"
+    );
+    let column = view.data()[y * view.stride() + x - 1..]
+        .iter()
+        .step_by(view.stride());
+    for (sample, &value) in left.iter_mut().zip(column) {
+        *sample = value;
+    }
 }
 
 /// How many samples above and left of the `side`-wide transform at

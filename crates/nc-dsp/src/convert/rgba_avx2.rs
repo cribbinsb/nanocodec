@@ -158,7 +158,6 @@ unsafe fn load32(src: *const u8) -> [__m256i; 4] {
 /// # Safety
 ///
 /// Kernel contract (`convert` module docs); the CPU must support AVX2.
-#[allow(clippy::too_many_arguments, reason = "matches RgbaToI420Fn")]
 #[target_feature(enable = "avx2")]
 pub(super) unsafe fn rgba_to_i420(
     rgba: &[u8],

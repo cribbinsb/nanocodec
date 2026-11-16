@@ -79,7 +79,7 @@ pub(crate) fn apply_row(
 /// [`apply_row`] at any sample type and depth: `SaoOffsetVal` in
 /// `offsets` (already scaled to the depth), `Clip1` to `depth`.
 #[inline(always)]
-#[allow(clippy::inline_always, clippy::too_many_arguments)]
+#[allow(clippy::inline_always)]
 pub(crate) fn apply_row_at<T: Sample>(
     input: &[T],
     in_stride: usize,
@@ -102,7 +102,6 @@ pub(crate) fn apply_row_at<T: Sample>(
 
 /// The edge-offset apply kernel at any sample type and depth (the scalar
 /// [`super::ApplyFn`] with offsets scaled to the depth).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_at<T: Sample>(
     input: &[T],
     in_stride: usize,

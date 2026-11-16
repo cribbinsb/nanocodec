@@ -529,7 +529,6 @@ impl MbQuantizers {
 
 /// Forward transform and quantise `source - pred` for the macroblock at
 /// luma position `(x, y)` into `out`.
-#[allow(clippy::too_many_arguments)]
 pub fn transform_macroblock(
     dsp: &Dsp,
     source: &Picture,
@@ -783,7 +782,6 @@ pub fn trellis_luma(
 /// `(x, y)` in `out`, re-deriving their coefficients from `source` and
 /// `pred`, and update `cbp_chroma`. Blocks the plain quantiser left empty
 /// stay empty; the DC levels keep the plain quantiser.
-#[allow(clippy::too_many_arguments)]
 pub fn trellis_chroma_ac(
     dsp: &Dsp,
     source: &Picture,
@@ -880,7 +878,6 @@ pub enum IntraNxnLevels<'a> {
 /// The residual of an `I_NxN` macroblock whose luma was already coded block
 /// by block (`levels`), into `out`; its chroma is transformed here like any
 /// other intra macroblock's.
-#[allow(clippy::too_many_arguments)]
 pub fn intra_nxn_residual(
     dsp: &Dsp,
     source: &Picture,
@@ -930,7 +927,6 @@ pub fn intra_nxn_residual(
 /// (§8.5.11), written into `out` (whose chroma DC must be cleared); returns
 /// `CodedBlockPatternChroma`. Components selected in `skip_chroma`
 /// omit their residual and are not transformed.
-#[allow(clippy::too_many_arguments)]
 fn transform_chroma(
     dsp: &Dsp,
     source: &Picture,

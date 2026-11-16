@@ -307,7 +307,6 @@ mod tests {
     /// position is `(x0, y0)` (§8.5.3.3.3.1 / .2), with the specification's
     /// four cases: integer, horizontal only, vertical only, and both (a
     /// horizontal pass into 14-bit intermediates, then a vertical pass).
-    #[allow(clippy::too_many_arguments)]
     fn interpolate<const TAPS: usize>(
         reference: &Plane,
         x0: i32,

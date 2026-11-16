@@ -34,7 +34,6 @@ pub(crate) unsafe fn convert_fns() -> ConvertFns {
 /// # Safety
 ///
 /// Kernel contract (`convert` module docs).
-#[allow(clippy::too_many_arguments, reason = "matches DeinterleaveUvFn")]
 #[target_feature(enable = "avx2")]
 unsafe fn deinterleave_uv(
     src: &[u8],

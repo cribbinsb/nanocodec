@@ -53,7 +53,6 @@ impl Sink for i16 {
 /// `right` interleaves the rows of `B`; rounded by `shift` bits and
 /// clipped to 16 bits when `clip` (always so for 16-bit storage).
 #[inline(always)]
-#[allow(clippy::too_many_arguments, reason = "one product's operands")]
 unsafe fn product<V: I16Pairs, O: Sink>(
     left: impl Fn(usize, usize) -> i16,
     right: &PairTable,
@@ -87,7 +86,6 @@ unsafe fn product<V: I16Pairs, O: Sink>(
 /// [`product`] on `S` (4 outputs per vector) for 4 outputs a row, else on
 /// `W`.
 #[inline(always)]
-#[allow(clippy::too_many_arguments, reason = "one product's operands")]
 unsafe fn product_by_width<S: I16Pairs, W: I16Pairs, O: Sink>(
     left: impl Fn(usize, usize) -> i16,
     right: &PairTable,

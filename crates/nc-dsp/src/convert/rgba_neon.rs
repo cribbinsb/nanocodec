@@ -60,7 +60,6 @@ fn chroma8([r, g, b]: [uint16x8_t; 3], weights: [i32; 3]) -> uint8x8_t {
 /// # Safety
 ///
 /// Kernel contract (`convert` module docs).
-#[allow(clippy::too_many_arguments, reason = "matches RgbaToI420Fn")]
 #[target_feature(enable = "neon")]
 pub(super) unsafe fn rgba_to_i420(
     rgba: &[u8],
@@ -93,7 +92,6 @@ pub(super) unsafe fn rgba_to_i420(
 ///
 /// Kernel contract (`convert` module docs); the CPU must support the
 /// dot-product extension.
-#[allow(clippy::too_many_arguments, reason = "matches RgbaToI420Fn")]
 #[target_feature(enable = "neon,dotprod")]
 pub(super) unsafe fn rgba_to_i420_dotprod(
     rgba: &[u8],

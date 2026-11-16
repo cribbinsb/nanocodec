@@ -130,22 +130,6 @@ impl ForwardPolicy {
         }
     }
 
-    /// Scan positions of `tx` that can hold a nonzero level under this
-    /// policy: the whole coded block, or with the low-frequency forward the
-    /// default-scan prefix that ends at the last position of the kept square
-    /// (every later position transforms, and so quantises, to zero). End of
-    /// block searches stop there instead of walking the dropped frequencies.
-    #[must_use]
-    pub fn scan_len(self, tx: TxSize) -> usize {
-        if !self.low(tx) {
-            return tx.coded_size() * tx.coded_size();
-        }
-        match tx.size() {
-            16 => LOW_SCAN_LEN_16X16,
-            _ => LOW_SCAN_LEN_32X32,
-        }
-    }
-
     /// Leading coefficients of `tx`'s coded block (libaom layout, one line
     /// of `coded_size()` per horizontal frequency) that can be nonzero under
     /// this policy: all of them, or with the low-frequency forward the first
@@ -204,36 +188,6 @@ pub fn dequantized_extent(tx: TxSize, eob: usize) -> usize {
     } else {
         coded * coded
     }
-}
-
-/// [`ForwardPolicy::scan_len`] of a low-frequency 16x16 forward.
-const LOW_SCAN_LEN_16X16: usize = kept_scan_len(
-    &crate::tables::DEFAULT_SCAN_16X16,
-    4,
-    nc_dsp::av1_low_keep(16),
-);
-/// [`ForwardPolicy::scan_len`] of a low-frequency 32x32 or 64x64 forward
-/// (64x64 codes its top-left 32x32 with the 32x32 scan).
-const LOW_SCAN_LEN_32X32: usize = kept_scan_len(
-    &crate::tables::DEFAULT_SCAN_32X32,
-    5,
-    nc_dsp::av1_low_keep(32),
-);
-
-/// One past the last position of `scan` (over a `1 << log2` square, libaom
-/// layout) whose row and column are both below `keep`.
-const fn kept_scan_len(scan: &[u16], log2: u32, keep: usize) -> usize {
-    let mask = (1 << log2) - 1;
-    let mut len = 0;
-    let mut c = 0;
-    while c < scan.len() {
-        let pos = scan[c] as usize;
-        if pos & mask < keep && pos >> log2 < keep {
-            len = c + 1;
-        }
-        c += 1;
-    }
-    len
 }
 
 /// [`forward_dct`], or the low-frequency forward where `policy` says so.
@@ -579,10 +533,10 @@ mod tests {
 
     /// A 64x64 transform keeps only its low frequencies: a smooth residual
     /// survives the round trip closely.
-    /// A low-frequency forward leaves every scan position from
-    /// `scan_len` on zero, and `scan_len` is no longer than it must be.
+    /// A low-frequency forward leaves every coded position from its
+    /// `coded_prefix` on zero, and the prefix is the whole block otherwise.
     #[test]
-    fn low_forward_is_zero_past_its_scan_len() {
+    fn low_forward_is_zero_past_its_coded_prefix() {
         let dsp = Dsp::new();
         let policy = ForwardPolicy {
             large: true,
@@ -594,14 +548,11 @@ mod tests {
             let residual: Vec<i16> = (0..n * n).map(|i| ((i * 37 % 61) as i16) - 30).collect();
             let mut out = vec![0; tx.coded_size() * tx.coded_size()];
             forward_dct_with(&dsp, policy, tx, &residual, n, &mut out);
-            let scan = crate::coeff::coefficient_scan(tx);
-            let len = policy.scan_len(tx);
-            assert!(scan[len..].iter().all(|&p| out[usize::from(p)] == 0), "{n}");
-            let keep = nc_dsp::av1_low_keep(n);
-            let last = usize::from(scan[len - 1]);
+            let prefix = policy.coded_prefix(tx);
+            assert!(out[prefix..].iter().all(|&c| c == 0), "{n}");
+            assert!(out[..prefix].iter().any(|&c| c != 0), "{n}");
             let side = tx.coded_size();
-            assert!(last % side < keep && last / side < keep, "{n}");
-            assert_eq!(ForwardPolicy::default().scan_len(tx), side * side);
+            assert_eq!(ForwardPolicy::default().coded_prefix(tx), side * side);
         }
     }
 

@@ -296,7 +296,7 @@ impl DecisionScratch {
 /// the codec's skip-mode vector ([`CodecBackend::skip_vector`]), if any.
 /// `source_moments` is the frame's pre-analysis where its 8x8 moments
 /// cover the block's source samples exactly.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 pub(crate) fn choose_inter_mode<B: CodecBackend>(
     dsp: &Dsp,
     backend: &mut B,
@@ -627,7 +627,6 @@ pub(crate) fn choose_inter_mode<B: CodecBackend>(
 /// The full decision against the second reference (refinement included)
 /// cost +23% H.264 P-frame instructions for `J_real` −1.2% (5 TRAIN clips,
 /// CBR; `docs/handoff/engine.md` "Second reference").
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn choose_secondary_mode<B: CodecBackend>(
     dsp: &Dsp,
     backend: &mut B,
@@ -739,7 +738,6 @@ pub(crate) fn choose_secondary_mode<B: CodecBackend>(
 /// Called only when both single-reference choices are inter and within
 /// `refs.second_compound_margin` of each other, so compound is tried only on
 /// blocks where the two references are genuinely competitive.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn choose_compound_mode<B: CodecBackend>(
     dsp: &Dsp,
     backend: &mut B,
@@ -1100,9 +1098,6 @@ impl ExactPrune<'_> {
 /// vector, ranked first, is always finite).
 const PRUNED: (f32, f32, Variance) = (f32::INFINITY, f32::INFINITY, FORBIDDEN_STATS);
 
-/// Cache improving exact pixels with the same rate-weighted ordering as rank.
-/// The first `cheap` candidates are the codec's cheap vectors (rate scale 1).
-#[allow(clippy::too_many_arguments)]
 /// [`rank_cached_exact`]'s cost of `mv` with residual `stats` (and, for an
 /// exact sub-sample prediction, its `pixels` and their AC `energy` if
 /// measured): distortion plus `rate`, plus the psy penalty while the
@@ -1147,6 +1142,9 @@ fn consider_exact<B: CodecBackend>(
     (cost, distortion, stats)
 }
 
+/// [`rank_with_stats`] by exact cost ([`consider_exact`]), caching the
+/// improving candidates' exact pixels in the backend in that same order. The
+/// first `cheap` candidates are the codec's cheap vectors (rate scale 1).
 fn rank_cached_exact<B: CodecBackend>(
     backend: &mut B,
     block: &Block,
@@ -1703,7 +1701,6 @@ impl<'a> Measurer<'a> {
     /// [`Self::measure_exact`]'s prediction into `pred` (the block's area):
     /// its residual statistics and, when the measurer measures energy, the
     /// prediction's AC energy from the same pass.
-    #[allow(clippy::too_many_arguments)]
     fn predict_into(
         &self,
         filter: Filter,

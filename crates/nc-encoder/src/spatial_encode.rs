@@ -972,7 +972,6 @@ impl<B: CodecBackend> Encoder<B> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn finish_spatial_tu(
         &mut self,
         tu_plan: &TemporalUnitPlan,
@@ -1334,7 +1333,6 @@ impl<B: CodecBackend> Encoder<B> {
     /// Make enhancement layer `layer_plan.spatial_id` (`1` or `2`) the active
     /// layer, inject the upscaled lower-layer proxy, run analysis, code the
     /// picture, commit its reference, and propagate unspent inter bits upward.
-    #[allow(clippy::too_many_arguments)]
     fn encode_upper_layer(
         &mut self,
         key_unit: bool,
@@ -1878,7 +1876,6 @@ impl<B: CodecBackend> Encoder<B> {
         (reuse_frame, key_reuse_offset)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn spatial_frame_plan(
         &mut self,
         picture_index: u64,

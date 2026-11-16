@@ -38,7 +38,7 @@ pub(crate) fn row<T: Sample>(
 /// The scalar kernel at any depth ([`super::WeightFn`] with the depth);
 /// always inlined, so a vector ISA's instance (`crate::high_depth`)
 /// compiles it with its target features.
-#[allow(clippy::too_many_arguments, clippy::inline_always)]
+#[allow(clippy::inline_always)]
 #[inline(always)]
 pub(crate) fn weight_at<T: Sample>(
     weights: &HevcWeights,

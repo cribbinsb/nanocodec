@@ -471,9 +471,6 @@ enum MbPlan {
 }
 
 /// How a macroblock is going to be predicted.
-// One short-lived value per macroblock on the stack; boxing the large
-// Intra_4x4 variant would only add a heap allocation per intra macroblock.
-#[allow(clippy::large_enum_variant)]
 enum MbChoice {
     Intra16x16(IntraModes),
     Intra4x4 {
@@ -1078,7 +1075,6 @@ impl H264Backend {
     /// and the returned skips for the winner, and `recon` holding some
     /// trial reconstruction (the caller reconstructs the winner).
     #[inline(never)]
-    #[allow(clippy::too_many_arguments)]
     fn rd_refine_inter(
         &mut self,
         block: &Block,
@@ -1783,6 +1779,34 @@ impl H264Backend {
             1.0
         } else {
             0.0
+        }
+    }
+
+    /// Write the SPS and one PPS per chroma QP offset in use (the
+    /// frame's offset alone without per-frame chroma offsets) into the
+    /// access unit, as every key frame repeats them.
+    fn write_parameter_sets(&mut self, entropy: Entropy) {
+        write_nal_unit(
+            &[NAL_SPS],
+            &sequence_parameter_set(&self.params),
+            &mut self.access_unit,
+        );
+        let single = [self.chroma_offset];
+        let offsets = match &self.chroma_offsets {
+            Some(offsets) => offsets.offsets(),
+            None => &single,
+        };
+        for (index, &offset) in offsets.iter().enumerate() {
+            write_nal_unit(
+                &[NAL_PPS],
+                &picture_parameter_set(
+                    pps_id(self.params.parameter_set_id, index),
+                    self.params.parameter_set_id,
+                    offset,
+                    entropy,
+                ),
+                &mut self.access_unit,
+            );
         }
     }
 
@@ -2604,27 +2628,7 @@ impl CodecBackend for H264Backend {
         let entropy = self.tuning.entropy();
         let header = match plan.frame_type {
             FrameType::Key => {
-                write_nal_unit(
-                    &[NAL_SPS],
-                    &sequence_parameter_set(&self.params),
-                    &mut self.access_unit,
-                );
-                let offsets = match &self.chroma_offsets {
-                    Some(offsets) => offsets.offsets().to_vec(),
-                    None => vec![self.chroma_offset],
-                };
-                for (index, offset) in offsets.into_iter().enumerate() {
-                    write_nal_unit(
-                        &[NAL_PPS],
-                        &picture_parameter_set(
-                            pps_id(self.params.parameter_set_id, index),
-                            self.params.parameter_set_id,
-                            offset,
-                            entropy,
-                        ),
-                        &mut self.access_unit,
-                    );
-                }
+                self.write_parameter_sets(entropy);
                 let header = idr_slice_header(
                     pps,
                     self.idr_pic_id,

@@ -42,15 +42,118 @@ pub const fn block_index(bx: usize, by: usize) -> usize {
 
 /// The neighbouring samples of one 4x4 block: `top[i] = p[i, -1]` for
 /// `i = 0..8` (positions 4..8 substituted when the top-right is missing),
-/// `left[j] = p[-1, j]`, `corner = p[-1, -1]`, with the availability of the
-/// top and left edges (the corner is available exactly when both are).
+/// `left[j] = p[-1, j]`, with the availability of the top and left edges
+/// (the corner `p[-1, -1]` is available exactly when both are), and the
+/// directional modes' values.
 pub(crate) struct Neighbours {
     top: [i32; 8],
     left: [i32; 4],
-    corner: i32,
     has_top: bool,
     has_left: bool,
+    /// Every value a directional mode predicts, see [`DIRECTIONAL`].
+    directional: [u8; DIRECTIONAL_VALUES],
 }
+
+/// The neighbours as one line `e`: `p[-1, 3]` twice, the left column bottom
+/// up to `p[-1, 0]`, the corner, then `p[0, -1]` to `p[7, -1]` and `p[7, -1]`
+/// again; so `p[i, -1] = e[6 + i]` and `p[-1, j] = e[4 - j]` for `i, j >=
+/// -1`, and the two end values the standard writes as `(a + 3b + 2) >> 2` are
+/// three-tap averages of the line.
+const LINE: usize = 15;
+/// `p[i, -1] = e[TOP + i]`.
+const TOP: usize = 6;
+/// `p[-1, j] = e[LEFT - j]`.
+const LEFT: usize = 4;
+/// Two-tap averages `(e[k] + e[k + 1] + 1) >> 1` the modes use (k = 0..11).
+const PAIRS: usize = 11;
+/// Three-tap averages `(e[k] + 2e[k + 1] + e[k + 2] + 2) >> 2` (k = 0..13).
+const TRIPLES: usize = 13;
+/// The pairs, then the triples.
+const DIRECTIONAL_VALUES: usize = PAIRS + TRIPLES;
+
+/// Index into the directional values of a two-tap average starting at line
+/// position `k`.
+const fn pair(k: i32) -> u8 {
+    k as u8
+}
+
+/// Index into the directional values of a three-tap average starting at
+/// line position `k`.
+const fn triple(k: i32) -> u8 {
+    (PAIRS as i32 + k) as u8
+}
+
+/// The value sample `(x, y)` of directional `mode` takes (§8.3.1.2.4–9, the
+/// standard's formulas with `p[i, -1]` and `p[-1, j]` written as line
+/// positions).
+const fn directional_value(mode: u8, x: i32, y: i32) -> u8 {
+    let top = TOP as i32;
+    let left = LEFT as i32;
+    match mode {
+        // avg3(p[x+y, -1], p[x+y+1, -1], p[x+y+2, -1]); at (3, 3) the
+        // repeated p[7, -1] makes it (p[6, -1] + 3p[7, -1] + 2) >> 2.
+        DIAGONAL_DOWN_LEFT => triple(top + x + y),
+        // Above, on and below the diagonal alike: the three samples centred
+        // on line position top - 1 + (x - y).
+        DIAGONAL_DOWN_RIGHT => triple(top - 2 + x - y),
+        VERTICAL_RIGHT => {
+            let i = x - (y >> 1);
+            match 2 * x - y {
+                0 | 2 | 4 | 6 => pair(top + i - 1),
+                1 | 3 | 5 => triple(top + i - 2),
+                -1 => triple(left),
+                _ => triple(left + 1 - y),
+            }
+        }
+        HORIZONTAL_DOWN => {
+            let j = y - (x >> 1);
+            match 2 * y - x {
+                0 | 2 | 4 | 6 => pair(left - j),
+                1 | 3 | 5 => triple(left - j),
+                -1 => triple(left),
+                _ => triple(top + x - 3),
+            }
+        }
+        VERTICAL_LEFT => {
+            let i = x + (y >> 1);
+            if y % 2 == 0 {
+                pair(top + i)
+            } else {
+                triple(top + i)
+            }
+        }
+        HORIZONTAL_UP => {
+            let j = y + (x >> 1);
+            match x + 2 * y {
+                0 | 2 | 4 => pair(left - j - 1),
+                1 | 3 => triple(left - j - 2),
+                // (p[-1, 2] + 3p[-1, 3] + 2) >> 2 over the repeated p[-1, 3].
+                5 => triple(0),
+                // p[-1, 3]: the average of its two copies.
+                _ => pair(0),
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// For each directional mode (by `Intra4x4PredMode`), the directional value
+/// of each sample, raster order: each prediction is sixteen table loads
+/// from values computed once per block, as the x264 and `FFmpeg`
+/// predictors share their filtered edge values across positions.
+const DIRECTIONAL: [[u8; 16]; MODE_COUNT as usize] = {
+    let mut table = [[0; 16]; MODE_COUNT as usize];
+    let mut mode = 0;
+    while mode < MODE_COUNT {
+        let mut i = 0;
+        while i < 16 {
+            table[mode as usize][i] = directional_value(mode, (i % 4) as i32, (i / 4) as i32);
+            i += 1;
+        }
+        mode += 1;
+    }
+    table
+};
 
 impl Neighbours {
     /// Neighbours of the 4x4 block at luma sample `(px, py)`, which is block
@@ -101,12 +204,30 @@ impl Neighbours {
         } else {
             0
         };
+        Self::new(top, left, corner, (has_top, has_left))
+    }
+
+    /// Neighbours with these samples and availability.
+    fn new(top: [i32; 8], left: [i32; 4], corner: i32, (has_top, has_left): (bool, bool)) -> Self {
+        let mut line = [0i32; LINE];
+        line[..=LEFT].copy_from_slice(&[left[3], left[3], left[2], left[1], left[0]]);
+        line[LEFT + 1] = corner;
+        line[TOP..TOP + 8].copy_from_slice(&top);
+        line[LINE - 1] = top[7];
+        let mut directional = [0u8; DIRECTIONAL_VALUES];
+        let (pairs, triples) = directional.split_at_mut(PAIRS);
+        for (value, w) in pairs.iter_mut().zip(line.windows(2)) {
+            *value = ((w[0] + w[1] + 1) >> 1) as u8;
+        }
+        for (value, w) in triples.iter_mut().zip(line.windows(3)) {
+            *value = ((w[0] + 2 * w[1] + w[2] + 2) >> 2) as u8;
+        }
         Self {
             top,
             left,
-            corner,
             has_top,
             has_left,
+            directional,
         }
     }
 
@@ -121,87 +242,13 @@ impl Neighbours {
         }
     }
 
-    /// `p[i, -1]` for `i >= -1`.
-    fn t(&self, i: i32) -> i32 {
-        if i < 0 {
-            self.corner
-        } else {
-            self.top[i as usize]
-        }
-    }
-
-    /// `p[-1, j]` for `j >= -1`.
-    fn l(&self, j: i32) -> i32 {
-        if j < 0 {
-            self.corner
-        } else {
-            self.left[j as usize]
-        }
-    }
-
     /// The prediction of the block in `mode` (§8.3.1.2.1–9), raster order.
-    ///
-    /// The mode is matched once and each mode fills the block with its own
-    /// loop; the per-sample formulas are those of the standard.
     pub(crate) fn predict(&self, mode: u8) -> [u8; 16] {
-        let avg3 = |a: i32, b: i32, c: i32| ((a + 2 * b + c + 2) >> 2) as u8;
-        let avg2 = |a: i32, b: i32| ((a + b + 1) >> 1) as u8;
         match mode {
             VERTICAL => fill(|x, _| self.top[x as usize] as u8),
             HORIZONTAL => fill(|_, y| self.left[y as usize] as u8),
             DC => [self.dc() as u8; 16],
-            DIAGONAL_DOWN_LEFT => fill(|x, y| {
-                if x == 3 && y == 3 {
-                    ((self.t(6) + 3 * self.t(7) + 2) >> 2) as u8
-                } else {
-                    avg3(self.t(x + y), self.t(x + y + 1), self.t(x + y + 2))
-                }
-            }),
-            DIAGONAL_DOWN_RIGHT => fill(|x, y| match x.cmp(&y) {
-                core::cmp::Ordering::Greater => {
-                    avg3(self.t(x - y - 2), self.t(x - y - 1), self.t(x - y))
-                }
-                core::cmp::Ordering::Less => {
-                    avg3(self.l(y - x - 2), self.l(y - x - 1), self.l(y - x))
-                }
-                core::cmp::Ordering::Equal => avg3(self.t(0), self.corner, self.l(0)),
-            }),
-            VERTICAL_RIGHT => fill(|x, y| {
-                let i = x - (y >> 1);
-                match 2 * x - y {
-                    0 | 2 | 4 | 6 => avg2(self.t(i - 1), self.t(i)),
-                    1 | 3 | 5 => avg3(self.t(i - 2), self.t(i - 1), self.t(i)),
-                    -1 => avg3(self.l(0), self.corner, self.t(0)),
-                    _ => avg3(self.l(y - 1), self.l(y - 2), self.l(y - 3)),
-                }
-            }),
-            HORIZONTAL_DOWN => fill(|x, y| {
-                let j = y - (x >> 1);
-                match 2 * y - x {
-                    0 | 2 | 4 | 6 => avg2(self.l(j - 1), self.l(j)),
-                    1 | 3 | 5 => avg3(self.l(j - 2), self.l(j - 1), self.l(j)),
-                    -1 => avg3(self.l(0), self.corner, self.t(0)),
-                    _ => avg3(self.t(x - 1), self.t(x - 2), self.t(x - 3)),
-                }
-            }),
-            VERTICAL_LEFT => fill(|x, y| {
-                let i = x + (y >> 1);
-                if y % 2 == 0 {
-                    avg2(self.t(i), self.t(i + 1))
-                } else {
-                    avg3(self.t(i), self.t(i + 1), self.t(i + 2))
-                }
-            }),
-            HORIZONTAL_UP => fill(|x, y| {
-                let j = y + (x >> 1);
-                match x + 2 * y {
-                    0 | 2 | 4 => avg2(self.l(j), self.l(j + 1)),
-                    1 | 3 => avg3(self.l(j), self.l(j + 1), self.l(j + 2)),
-                    5 => ((self.l(2) + 3 * self.l(3) + 2) >> 2) as u8,
-                    _ => self.l(3) as u8,
-                }
-            }),
-            _ => unreachable!("Intra4x4PredMode is 0..=8"),
+            _ => DIRECTIONAL[usize::from(mode)].map(|v| self.directional[usize::from(v)]),
         }
     }
 
@@ -676,12 +723,105 @@ mod tests {
     }
 
     fn neighbours(top: [i32; 8], left: [i32; 4], corner: i32) -> Neighbours {
-        Neighbours {
-            top,
-            left,
-            corner,
-            has_top: true,
-            has_left: true,
+        Neighbours::new(top, left, corner, (true, true))
+    }
+
+    /// The standard's per-sample formulas (§8.3.1.2.4–9) with `p[i, -1]`
+    /// and `p[-1, j]` read directly, as the table-driven prediction must
+    /// reproduce them.
+    fn reference_directional(
+        top: [i32; 8],
+        left: [i32; 4],
+        corner: i32,
+        mode: u8,
+        (x, y): (i32, i32),
+    ) -> u8 {
+        let top_at = |i: i32| if i < 0 { corner } else { top[i as usize] };
+        let left_at = |j: i32| if j < 0 { corner } else { left[j as usize] };
+        let avg3 = |a: i32, b: i32, c: i32| ((a + 2 * b + c + 2) >> 2) as u8;
+        let avg2 = |a: i32, b: i32| ((a + b + 1) >> 1) as u8;
+        match mode {
+            DIAGONAL_DOWN_LEFT if x == 3 && y == 3 => ((top_at(6) + 3 * top_at(7) + 2) >> 2) as u8,
+            DIAGONAL_DOWN_LEFT => avg3(top_at(x + y), top_at(x + y + 1), top_at(x + y + 2)),
+            DIAGONAL_DOWN_RIGHT => match x.cmp(&y) {
+                Ordering::Greater => avg3(top_at(x - y - 2), top_at(x - y - 1), top_at(x - y)),
+                Ordering::Less => avg3(left_at(y - x - 2), left_at(y - x - 1), left_at(y - x)),
+                Ordering::Equal => avg3(top_at(0), corner, left_at(0)),
+            },
+            VERTICAL_RIGHT => {
+                let i = x - (y >> 1);
+                match 2 * x - y {
+                    0 | 2 | 4 | 6 => avg2(top_at(i - 1), top_at(i)),
+                    1 | 3 | 5 => avg3(top_at(i - 2), top_at(i - 1), top_at(i)),
+                    -1 => avg3(left_at(0), corner, top_at(0)),
+                    _ => avg3(left_at(y - 1), left_at(y - 2), left_at(y - 3)),
+                }
+            }
+            HORIZONTAL_DOWN => {
+                let j = y - (x >> 1);
+                match 2 * y - x {
+                    0 | 2 | 4 | 6 => avg2(left_at(j - 1), left_at(j)),
+                    1 | 3 | 5 => avg3(left_at(j - 2), left_at(j - 1), left_at(j)),
+                    -1 => avg3(left_at(0), corner, top_at(0)),
+                    _ => avg3(top_at(x - 1), top_at(x - 2), top_at(x - 3)),
+                }
+            }
+            VERTICAL_LEFT => {
+                let i = x + (y >> 1);
+                if y % 2 == 0 {
+                    avg2(top_at(i), top_at(i + 1))
+                } else {
+                    avg3(top_at(i), top_at(i + 1), top_at(i + 2))
+                }
+            }
+            HORIZONTAL_UP => {
+                let j = y + (x >> 1);
+                match x + 2 * y {
+                    0 | 2 | 4 => avg2(left_at(j), left_at(j + 1)),
+                    1 | 3 => avg3(left_at(j), left_at(j + 1), left_at(j + 2)),
+                    5 => ((left_at(2) + 3 * left_at(3) + 2) >> 2) as u8,
+                    _ => left_at(3) as u8,
+                }
+            }
+            _ => unreachable!("not a directional mode"),
+        }
+    }
+
+    #[test]
+    fn directional_tables_follow_the_standard() {
+        // A small deterministic generator: varied edges, extremes included.
+        let mut state = 0x2545_f491_u32;
+        let mut sample = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % 256) as i32
+        };
+        for round in 0..2000 {
+            let mut top: [i32; 8] = core::array::from_fn(|_| sample());
+            let left: [i32; 4] = core::array::from_fn(|_| sample());
+            let corner = if round % 7 == 0 { 255 } else { sample() };
+            if round % 3 == 0 {
+                // The top-right substituted by p[3, -1].
+                let last = top[3];
+                top[4..].fill(last);
+            }
+            let n = Neighbours::new(top, left, corner, (true, true));
+            for mode in [
+                DIAGONAL_DOWN_LEFT,
+                DIAGONAL_DOWN_RIGHT,
+                VERTICAL_RIGHT,
+                HORIZONTAL_DOWN,
+                VERTICAL_LEFT,
+                HORIZONTAL_UP,
+            ] {
+                let got = n.predict(mode);
+                for (i, &value) in got.iter().enumerate() {
+                    let at = ((i % 4) as i32, (i / 4) as i32);
+                    let want = reference_directional(top, left, corner, mode, at);
+                    assert_eq!(value, want, "mode {mode} at {at:?}");
+                }
+            }
         }
     }
 

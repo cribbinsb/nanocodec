@@ -194,7 +194,6 @@ fn transform_starts(
 /// One pass (all vertical or all horizontal edges) over one plane: the
 /// left (top) side of every transform in `starts`, filtered whole, in runs
 /// of equal filter length, which lets the kernel process many lines at once.
-#[allow(clippy::too_many_arguments)]
 fn filter_plane_edges(
     dsp: &Dsp,
     recon: &mut Picture,

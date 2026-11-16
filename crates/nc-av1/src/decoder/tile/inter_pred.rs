@@ -144,7 +144,6 @@ fn unscaled_window(
 /// at its stride): its window read in place when it lies inside the
 /// reference's borders, and the prediction through the kernels' direct
 /// sample-buffer entry ([`Dsp::av1_put_samples`], as dav1d's `mc`).
-#[allow(clippy::too_many_arguments)]
 #[inline]
 fn translate_unscaled<T: Pixel>(
     kernels: DepthKernels<'_>,
@@ -171,7 +170,6 @@ fn translate_unscaled<T: Pixel>(
 /// Predict the `w`x`h` block at plane sample (`x`, `y`) of a plane
 /// subsampled by `sub`, displaced by luma vector `mv`, with `filters`
 /// (§7.11.3.3 unscaled, §7.11.3.4).
-#[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::inline_always,
     reason = "three times per inter block; out of line its set-up cost ~40M instructions on static 720p"
@@ -199,7 +197,6 @@ fn translate<T: Pixel>(
 
 /// [`translate`] at compound precision into `dst` (`h` rows of `w`): one
 /// of a compound block's two predictions.
-#[allow(clippy::too_many_arguments)]
 fn translate_compound<T: Pixel>(
     kernels: DepthKernels<'_>,
     reference: PlaneReference<'_, T>,

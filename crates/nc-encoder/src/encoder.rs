@@ -594,7 +594,6 @@ impl<B: CodecBackend> Encoder<B> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn frame_plan_with_rc_key(
         &mut self,
         index: u64,
@@ -1641,7 +1640,6 @@ impl<B: CodecBackend> Encoder<B> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_coded_frame_feedback(
         &mut self,
         index: u64,
@@ -2427,7 +2425,6 @@ impl<B: CodecBackend> Encoder<B> {
     /// their equal-weight compound average where that costs less; `search_mv`
     /// seeds the secondary's vectors. The backend's reference selection is
     /// left on the returned choice.
-    #[allow(clippy::too_many_arguments)]
     fn with_secondary(
         &mut self,
         node: &Block,

@@ -322,7 +322,6 @@ pub struct CompoundScratch {
 /// `reference` plane (module docs). Arguments as for [`predict`].
 /// # Errors
 /// Rejects unsupported block sizes, precision, coordinates or vector ranges.
-#[allow(clippy::too_many_arguments)]
 pub fn predict_compound(
     dsp: &Dsp,
     filter: InterpFilter,
@@ -349,7 +348,6 @@ pub fn predict_compound(
 /// [`predict_compound`] into `destination`, as [`predict_into`].
 /// # Errors
 /// As [`predict_compound`].
-#[allow(clippy::too_many_arguments)]
 pub fn predict_compound_into(
     dsp: &Dsp,
     filter: InterpFilter,

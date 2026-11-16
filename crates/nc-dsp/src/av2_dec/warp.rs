@@ -94,7 +94,6 @@ fn vertical_row(
 /// # Panics
 ///
 /// If a slice is too short or a phase leaves the filter table.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn warp_affine_8x8<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,
@@ -127,7 +126,6 @@ pub fn warp_affine_8x8<T: Sample>(
 /// # Panics
 ///
 /// If a slice is too short or a phase leaves the filter table.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn warp_affine_8x8t<T: Sample>(
     tmp: &mut [i16],
     tmp_stride: usize,

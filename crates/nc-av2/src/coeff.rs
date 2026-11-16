@@ -329,6 +329,14 @@ pub fn end_of_block(levels: &[i32], tx: TxSize) -> usize {
     levels::end_of_block(levels, tx)
 }
 
+/// [`end_of_block`] of quantizer output `levels` with `nonzero` nonzero
+/// levels: none, the DC alone, or a few found by a walk from the start of
+/// the scan, without the raster pass (as nc-av1's `quantized_eob`).
+#[must_use]
+pub fn quantized_end_of_block(levels: &[i32], tx: TxSize, nonzero: u32) -> usize {
+    levels::quantized_end_of_block(levels, tx, nonzero)
+}
+
 /// Coefficient CDF quantizer category (AVM `get_q_ctx` in `entropy.c`).
 fn quantizer_category(qindex: u8) -> usize {
     match qindex {

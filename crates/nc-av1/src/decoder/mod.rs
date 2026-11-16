@@ -203,8 +203,9 @@ fn temporal_field<'a, T: Pixel>(
 impl<T: Pixel> Core<T> {
     /// The decoder of a sequence of another sample type, carrying the
     /// caller's settings (operating point, film grain, analysis) over; no
-    /// sequence, references or shown frame.
-    fn successor<U: Pixel>(&self) -> Core<U> {
+    /// sequence, references or shown frame. Takes `&mut self` because the
+    /// analysis build moves the statistics over.
+    fn successor<U: Pixel>(&mut self) -> Core<U> {
         let mut next = Core::<U>::new();
         next.operating_point = self.operating_point;
         next.apply_film_grain = self.apply_film_grain;

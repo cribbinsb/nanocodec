@@ -116,7 +116,6 @@ pub(crate) fn luma_at<T: nc_common::Sample>(
 
 /// Chroma grain at any depth (the scalar reference of [`chroma`]): the
 /// merged index is `Clip1((combined >> 6) + (offset << (BitDepth − 8)))`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn chroma_at<T: nc_common::Sample>(
     source: &[T],
     luma: &[T],

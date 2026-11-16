@@ -85,7 +85,6 @@ const MAX_STACK_SPAN: usize = 128 * 128;
 /// reference's upscaled size and the frame's coded size; AV1 §7.11.3.3).
 /// `reference_size` is the size of this plane of the reference: positions
 /// are clamped to it, not to the coded area beyond it.
-#[allow(clippy::too_many_arguments)] // One block: plane, position, size, motion, scale.
 pub fn predict_scaled(
     dsp: &Dsp,
     reference: &Plane,
@@ -177,7 +176,6 @@ pub fn predict_compound(
 /// Compound `InterRound1 = 7` scaled prediction of the `size`x`size` block at
 /// (`x`, `y`) of `reference` displaced by `mv` into `dst` (`size * size`
 /// unclipped `i16` samples, stride `size`; `AV1 §7.11.3.3`, `§7.11.3.4`).
-#[allow(clippy::too_many_arguments)]
 pub fn predict_scaled_compound(
     dsp: &Dsp,
     reference: &Plane,

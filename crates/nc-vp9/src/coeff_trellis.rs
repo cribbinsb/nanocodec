@@ -352,9 +352,9 @@ mod tests {
                     };
                     levels[usize::from(p)] = if next() % 2 == 0 { v } else { -v };
                 }
-                let expected = cost(&levels, model, probs, initial);
-                let mut rates = RateModel::new(model, probs, initial);
                 let eob = order.end_of_block(&levels);
+                let expected = cost((&levels, eob), model, probs, initial);
+                let mut rates = RateModel::new(model, probs, initial);
                 let mut state = rates.initial_state();
                 let mut bits = 0.0;
                 for c in 0..eob {

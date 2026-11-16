@@ -292,7 +292,6 @@ fn prep<T: Sample>(
 ///
 /// If a size is out of range or a slice is too short for the block and
 /// its filter taps.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn put_8tap<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,
@@ -339,7 +338,6 @@ pub fn put_8tap<T: Sample>(
 /// # Panics
 ///
 /// If a size is out of range or a slice is too short.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn prep_8tap<T: Sample>(
     tmp: &mut [i16],
     tmp_stride: usize,
@@ -380,7 +378,6 @@ pub fn prep_8tap<T: Sample>(
 /// # Panics
 ///
 /// If a phase is out of range or a slice is too short.
-#[allow(clippy::too_many_arguments, reason = "dav2d's kernel contract")]
 pub fn ext_warp4x4<T: Sample>(
     dst: &mut [T],
     dst_offset: usize,

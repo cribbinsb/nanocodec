@@ -85,7 +85,6 @@ fn candidates(state: u8, magnitude: f32) -> [u16; 3] {
 /// block of `sides`, `transform_tree::coded_samples`) chosen by the
 /// four-state search into `levels`; `quantizer` is the block's at `qp`.
 /// Returns whether any level is nonzero.
-#[allow(clippy::too_many_arguments, reason = "one block's complete inputs")]
 pub(crate) fn quantize(
     search: &DepQuant<'_>,
     coefficients: &[i16],

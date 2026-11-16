@@ -56,14 +56,12 @@ pub fn skip_chroma_residual(residual: &[i16], n: usize, numerator: u32) -> bool 
     if numerator == 0 {
         return false;
     }
-    let sad: u32 = (0..n)
+    // A row sums in 16 bits: an 8-bit residual is at most 255 in magnitude
+    // and a chroma row at most 32 wide (8160).
+    let sad: u32 = residual[..n * n]
+        .chunks_exact(n)
         .step_by(2)
-        .map(|r| {
-            residual[r * n..(r + 1) * n]
-                .iter()
-                .map(|&v| u32::from(v.unsigned_abs()))
-                .sum::<u32>()
-        })
+        .map(|row| u32::from(row.iter().map(|&v| v.unsigned_abs()).sum::<u16>()))
         .sum();
     sad * CHROMA_SKIP_SAD_DEN < numerator * (n * n) as u32
 }

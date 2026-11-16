@@ -210,6 +210,20 @@ impl CabacWriter {
         self.flush_if_needed();
     }
 
+    /// Run `code` (e.g. one block's `residual_coding()`) on a local copy of
+    /// the coder, then store it back: the registers of a coder reached
+    /// through a reference stay in memory (loaded and stored around every
+    /// bin), a local coder's do not (as nc-h264's `BinSink::code_run`).
+    pub fn with_local<R>(&mut self, code: impl FnOnce(&mut Self) -> R) -> R {
+        let mut local = Self {
+            bytes: std::mem::take(&mut self.bytes),
+            ..*self
+        };
+        let output = code(&mut local);
+        *self = local;
+        output
+    }
+
     /// Encode equiprobable bins (`EncodeBypass`, HEVC §9.3.5.5): the
     /// `count` low bits of `value`, most significant first.
     pub fn encode_bypass(&mut self, value: u32, count: u32) {

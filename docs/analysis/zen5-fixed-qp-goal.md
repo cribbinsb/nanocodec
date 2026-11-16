@@ -36,6 +36,21 @@ with its source.
    (Default → Fast) at fixed QP, against −46.2 → −38.2 J in CBR. HEVC goes −14.9 → +7.9. The
    cause is not known yet.
 
+6. **Diagnosis landed** (`docs/analysis/content-adaptive-cost-2026-11-16.md`, aa88b7518).
+   - **Instruction mix:** we retire about as many vector uops as M10, plus 1.7–1.8× its non-vector
+     instructions. Widening candidates add up to about 8–12 % of Zen 5 time: the av1_edge deblock,
+     the scalar pixel and statistics loops outside nc-dsp, and small-block variance (22,000 calls a
+     frame against M10's 4,400).
+   - **The Fast fixed-QP loss is three AV1 levers together:** `partial_forward 2`, depth removal at
+     every quantizer and transform split off. They cost most at low qindex. The fixed-QP profile
+     pin explains only 2.8 of the 27.7 points.
+   - **Timed on c8a, 4 sequences:**
+     - AV1 Fast + Default depth + full forward: 250 fps, −6.5. This is on the frontier, between
+       M12 (356 fps, −1.5) and M10 (216 fps, −14.2).
+     - HEVC Fast + depth: from +7.9 to −1.3 for 15 % of its speed.
+   - **AV1 coefficient writer and range coder:** 1540M instructions against M10's 761M for the
+     same bytes.
+
 ## Ruled out (measured; do not repeat)
 
 All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx512.md`.
@@ -75,6 +90,24 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   AV1 +0.12 %. Exact engine/codec cuts: VP9 about −4 to −5 % (end-of-block tests, quantiser
   setup), AV1/AV2 −0.5 to −0.7 % (CDEF search, intra edges), H.264/HEVC intra cleanups. Not yet
   re-timed on Zen 5.
+
+## Assigned 2026-11-16 09:10
+
+- **`feature/av1-av2-speed`:** re-point AV1 Fast (depth + full forward), then gate the three
+  levers by quantizer or energy, then gated trellis, transform-split trial and deblock skip.
+- **`feature/hevc-h264-speed`:** re-point HEVC Fast (depth), then gating.
+- **`feature/zen5-codecs`:** small-block variance call count; AV1 coefficient writer and range
+  coder (exact).
+- **`feature/kernel-share`:** scalar pixel and statistics loops into shared wide kernels.
+- **Astra:** av1_edge AVX-512.
+
+- **Bold structural work** (Mark: "be bold … don't get stuck at our local maximum"). Whole
+  configurations are judged on the frontier, with no per-change +0.3 % J bar.
+  - `feature/light-pipeline`: an SVT-style light decision pipeline in the shared engine. It has a
+    partition pre-pass, light mode decision on a fixed partition, and ME static/zero bypasses,
+    behind parameters, AV1 first. It owns planner/decision/ME and the variance call count.
+  - `feature/av1-writer`: AV1 coefficient writer and range coder, 1540M against M10's 761M
+    instructions for the same bytes. Restructure as needed; exact.
 
 ## Next decision points
 

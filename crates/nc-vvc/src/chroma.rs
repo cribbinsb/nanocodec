@@ -37,7 +37,6 @@ pub(crate) fn code(
 /// searches: every legal chroma candidate, or with `rd_candidates` (more
 /// than 0) the cheapest that many by a SATD proxy, receives full
 /// reconstructed-distortion/bit costing.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn choose(
     dsp: &Dsp,
     source: &Picture,

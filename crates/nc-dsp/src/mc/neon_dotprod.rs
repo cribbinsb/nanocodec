@@ -1,9 +1,10 @@
-//! Optional HEVC luma horizontal filtering with signed NEON dot products,
-//! and the dot-product row filter ([`DotFilter`]) the AV1 kernels
+//! Optional 8-tap HEVC/VVC luma horizontal filtering with signed NEON dot
+//! products (any [`SeparableTaps`] 8-tap table: HEVC `fL`, VVC `fL` and
+//! affine), and the dot-product row filter ([`DotFilter`]) the AV1 kernels
 //! (`av1_neon`) share.
 //!
-//! AV1 regular taps are halved; HEVC taps are used directly. Both fit
-//! signed bytes and sum to 64.
+//! AV1 regular taps are halved; HEVC and VVC taps are used directly. All
+//! fit signed bytes and sum to 64.
 //! Flipping the source high bit makes bytes signed; adding 8192 to the dot
 //! product restores the unsigned sum exactly. The existing two-stage AV1
 //! rounding and widening vertical pass are retained. HEVC uses unrounded
@@ -23,7 +24,7 @@ use core::arch::aarch64::{
     vrshrn_n_s32, vshrq_n_s16, vst1_u8,
 };
 
-use super::{ConvolveFn, HEVC_LUMA, TAP_CENTRE, generic};
+use super::{ConvolveFn, SeparableTaps, TAP_CENTRE, generic};
 use crate::simd::neon::{I16x4, I16x8};
 
 /// Rust's signed-dot intrinsic postdates our Rust1.90 minimum. Keep the
@@ -45,14 +46,15 @@ unsafe fn dot(mut sum: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
     sum
 }
 
-/// HEVC's eight-tap luma coefficients also fit signed bytes and sum to 64.
-pub(crate) fn hevc_luma_fns() -> [ConvolveFn; 5] {
+/// The kernels of 8-tap table `T` by width class (HEVC's and VVC's
+/// eight-tap luma coefficients fit signed bytes and sum to 64).
+pub(crate) fn separable_fns<T: SeparableTaps<8>>() -> [ConvolveFn; 5] {
     [
-        predict::<4>,
-        predict::<8>,
-        predict::<16>,
-        predict::<32>,
-        predict::<64>,
+        predict::<T, 4>,
+        predict::<T, 8>,
+        predict::<T, 16>,
+        predict::<T, 32>,
+        predict::<T, 64>,
     ]
 }
 
@@ -152,7 +154,7 @@ unsafe fn store<const W: usize>(value: int16x8_t, dst: &mut [u8]) {
 }
 
 #[target_feature(enable = "neon,dotprod")]
-unsafe fn predict<const W: usize>(
+unsafe fn predict<T: SeparableTaps<8>, const W: usize>(
     src: &[u8],
     ss: usize,
     dst: &mut [u8],
@@ -172,8 +174,8 @@ unsafe fn predict<const W: usize>(
                     ds,
                     W,
                     h,
-                    &HEVC_LUMA[fx],
-                    &HEVC_LUMA[fy],
+                    &T::TABLE[fx],
+                    &T::TABLE[fy],
                     (fx, fy),
                 );
             } else {
@@ -184,16 +186,16 @@ unsafe fn predict<const W: usize>(
                     ds,
                     W,
                     h,
-                    &HEVC_LUMA[fx],
-                    &HEVC_LUMA[fy],
+                    &T::TABLE[fx],
+                    &T::TABLE[fy],
                     (fx, fy),
                 );
             }
         }
         return;
     }
-    // SAFETY: dotprod is enabled and the HEVC taps fit signed bytes.
-    let filter = unsafe { DotFilter::new::<W>(&HEVC_LUMA[fx]) };
+    // SAFETY: dotprod is enabled and the HEVC/VVC taps fit signed bytes.
+    let filter = unsafe { DotFilter::new::<W>(&T::TABLE[fx]) };
     let step = if W == 4 { 4 } else { 8 };
     if fy == 0 {
         for y in 0..h {
@@ -207,8 +209,8 @@ unsafe fn predict<const W: usize>(
         }
         return;
     }
-    // SAFETY: HEVC uses its complete unchanged eight-tap vertical filter.
-    unsafe { vertical_2d::<W, 8>(src, ss, dst, ds, h, filter, &HEVC_LUMA[fy]) };
+    // SAFETY: HEVC/VVC use their complete unchanged eight-tap vertical filter.
+    unsafe { vertical_2d::<W, 8>(src, ss, dst, ds, h, filter, &T::TABLE[fy]) };
 }
 
 #[target_feature(enable = "neon,dotprod")]
@@ -272,7 +274,21 @@ mod tests {
                 super::super::av1_neon::put_fns::<super::super::Sharp>(),
                 16,
             ),
-            (scalar.hevc_luma, hevc_luma_fns(), 4),
+            (
+                scalar.hevc_luma,
+                separable_fns::<super::super::HevcLumaTaps>(),
+                4,
+            ),
+            (
+                scalar.vvc_luma,
+                separable_fns::<super::super::VvcLumaTaps>(),
+                16,
+            ),
+            (
+                scalar.vvc_affine_luma,
+                separable_fns::<super::super::VvcAffineLumaTaps>(),
+                16,
+            ),
         ] {
             for (index, width) in [4, 8, 16, 32, 64].into_iter().enumerate() {
                 for height in [4, 8, 16, 64] {

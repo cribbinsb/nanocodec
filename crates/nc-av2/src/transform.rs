@@ -365,8 +365,9 @@ fn with_scratch<T: Copy + Default, R>(len: usize, body: impl FnOnce(&mut [T]) ->
 /// contract. The scalar per-coefficient division it replaces was
 /// `Quantizer::code`'s largest self cost on the Jetson.
 ///
-/// Returns whether any level is nonzero (the kernel counts them as it
-/// stores), so an all-zero result needs no end-of-block pass.
+/// Returns the number of nonzero levels (the kernel counts them as it
+/// stores), so an all-zero or sparse result needs no end-of-block pass
+/// ([`crate::coeff::quantized_end_of_block`]).
 ///
 /// # Panics
 /// If `coefficients` or `levels` holds fewer than `size.coded_len()` values.
@@ -376,7 +377,7 @@ pub fn quantize(
     coefficients: &[i32],
     (qindex, rounding): (impl Into<Qindices>, Rounding),
     levels: &mut [i32],
-) -> bool {
+) -> u32 {
     let qindex = qindex.into();
     let area = size.coded_len();
     let levels = &mut levels[..area];
@@ -392,10 +393,10 @@ pub fn quantize(
         },
         levels,
     );
-    let ac_nonzero = nonzero > u32::from(levels[0] != 0);
+    let ac_nonzero = nonzero - u32::from(levels[0] != 0);
     // The kernel has one rounding offset; DC has its own.
     levels[0] = LevelQuantizer::new(size, qindex.dc, rounding.dc_q7).level(coefficients[0]);
-    ac_nonzero || levels[0] != 0
+    ac_nonzero + u32::from(levels[0] != 0)
 }
 
 /// Largest squared Euclidean norm of a `DCT_DCT` basis row (one coded

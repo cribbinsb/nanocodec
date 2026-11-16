@@ -232,7 +232,6 @@ impl BrowserEncoder {
     /// Rejects invalid codecs, presets, overrides, configurations, film
     /// grain outside AV1, unknown colours, or dimensions above1080p.
     #[wasm_bindgen(constructor)]
-    #[allow(clippy::too_many_arguments, reason = "one JS constructor call")]
     pub fn new(
         codec: &str,
         width: usize,

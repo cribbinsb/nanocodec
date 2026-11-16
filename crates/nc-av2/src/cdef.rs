@@ -962,7 +962,6 @@ impl CdefScratch {
 ///
 /// Sampling rows of units scales the trial filtering down by `row_period`;
 /// whole rows keep each filter block's sample spread over its content.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn search_and_filter(
     source: &Picture,
     picture: &mut Picture,
@@ -1059,7 +1058,6 @@ pub(crate) fn search_and_filter(
 /// Squared error against the source of `units` of `planes` filtered with
 /// each candidate strength, summed per row of the error table: row
 /// `row(unit)` of `rows`, `candidates.len()` values per row.
-#[allow(clippy::too_many_arguments)]
 fn unit_errors(
     (source, picture): (&Picture, &Picture),
     units: &[Unit],

@@ -139,7 +139,6 @@ fn evaluate_mode(
 /// Returns `None`, with the reconstruction partly written, as soon as the
 /// cost reaches `abort_above`: a caller that keeps the cheapest choice
 /// loses nothing by stopping there, since the cost only grows.
-#[allow(clippy::too_many_arguments)]
 pub fn code_intra_8x8(
     dsp: &Dsp,
     source: &Picture,
@@ -175,7 +174,6 @@ pub fn code_intra_8x8(
 /// [`code_intra_8x8`] with each block's mode chosen by `choose_mode(source
 /// block, references, predicted mode)`, which must return a mode the
 /// references allow.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn code_intra_8x8_with(
     dsp: &Dsp,
     source: &Picture,

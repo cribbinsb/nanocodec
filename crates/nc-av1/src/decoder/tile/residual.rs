@@ -298,7 +298,6 @@ impl<T: Pixel> FrameDecoder<'_, T> {
     /// One transform block of `plane` at plane sample (`x`, `y`): its
     /// coefficients (with the neighbour contexts) and inverse transform;
     /// returns its type.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     pub(super) fn transform_block(
         &mut self,

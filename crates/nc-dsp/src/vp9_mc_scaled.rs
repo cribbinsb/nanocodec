@@ -77,10 +77,6 @@ impl crate::Dsp {
     /// # Panics
     /// If a size, phase or step is out of range, or `window` or `dst` is too
     /// small.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the scaled prediction's full description"
-    )]
     pub fn vp9_convolve_scaled_into(
         &self,
         kind: Vp9Filter,

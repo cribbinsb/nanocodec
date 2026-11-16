@@ -156,6 +156,15 @@ impl ScanOrder {
     }
 }
 
+/// The end of block of raster-order `levels` of a `tx` transform of type
+/// `ty`: one past the scan index of the last nonzero level. Callers find
+/// it once per coded block and pass it to [`cost`] and [`write`]: the
+/// search was about 3% of VP9 Default's instructions while each of them
+/// repeated it.
+pub(crate) fn end_of_block(levels: &[i32], tx: TxSize, ty: TxType) -> usize {
+    scan_order(tx, ty).end_of_block(levels)
+}
+
 /// `vp9_scan_orders[tx][tx_type]`: row scan for vertical ADST, column scan
 /// for horizontal ADST, otherwise (and always at 32x32) the default scan.
 fn scan_order(tx: TxSize, ty: TxType) -> ScanOrder {
@@ -346,40 +355,42 @@ fn read_magnitude(reader: &mut BoolReader<'_>, pivot: u8, categories: &Categorie
     BASE[token] + offset
 }
 
-/// Emit the token bits of raster-order `levels` with neighbour context
-/// `initial`, counting them when `counts` is given; returns the end of
-/// block (number of scan positions coded).
+/// Emit the token bits of raster-order `levels`, whose end of block is
+/// `eob` ([`end_of_block`]), with neighbour context `initial`, counting
+/// them when `counts` is given.
 fn emit_tokens(
     levels: &[i32],
+    eob: usize,
     model: Model,
     probs: &BandProbs,
     counts: Option<&mut BandCounts>,
     initial: usize,
     emit: &mut impl FnMut(bool, u8, Option<Node>),
-) -> usize {
+) {
     // The token cache is sized to the transform: rate estimation calls this
     // for every candidate, and zeroing a 32x32 cache for every 4x4 block
     // was most of its cost in WASM profiles.
     match model.tx {
-        TxSize::Tx4 => emit_tokens_sized::<16>(levels, model, probs, counts, initial, emit),
-        TxSize::Tx8 => emit_tokens_sized::<64>(levels, model, probs, counts, initial, emit),
-        TxSize::Tx16 => emit_tokens_sized::<256>(levels, model, probs, counts, initial, emit),
-        TxSize::Tx32 => emit_tokens_sized::<1024>(levels, model, probs, counts, initial, emit),
+        TxSize::Tx4 => emit_tokens_sized::<16>(levels, eob, model, probs, counts, initial, emit),
+        TxSize::Tx8 => emit_tokens_sized::<64>(levels, eob, model, probs, counts, initial, emit),
+        TxSize::Tx16 => emit_tokens_sized::<256>(levels, eob, model, probs, counts, initial, emit),
+        TxSize::Tx32 => emit_tokens_sized::<1024>(levels, eob, model, probs, counts, initial, emit),
     }
 }
 
 /// [`emit_tokens`] with a token cache of `AREA` (the transform's area).
 fn emit_tokens_sized<const AREA: usize>(
     levels: &[i32],
+    eob: usize,
     model: Model,
     probs: &BandProbs,
     mut counts: Option<&mut BandCounts>,
     initial: usize,
     emit: &mut impl FnMut(bool, u8, Option<Node>),
-) -> usize {
+) {
     debug_assert_eq!(model.tx.area(), AREA);
     let order = scan_order(model.tx, model.ty);
-    let eob = order.end_of_block(levels);
+    debug_assert_eq!(eob, order.end_of_block(levels));
     let mut cache = [0u8; AREA];
     let mut needs_eob = true;
     for (c, &position) in order.scan.iter().enumerate() {
@@ -434,7 +445,6 @@ fn emit_tokens_sized<const AREA: usize>(
         }
         cache[usize::from(position)] = energy(magnitude);
     }
-    eob
 }
 
 /// A node decision of one band/context model (nodes 0 and 1 may take
@@ -446,18 +456,20 @@ pub(crate) struct Node {
     pub index: usize,
 }
 
-/// Write (into the tile recorder) and count raster-order `levels` with
-/// neighbour context `initial`; returns the end of block.
+/// Write (into the tile recorder) and count raster-order `levels`, whose
+/// end of block is `eob` ([`end_of_block`]), with neighbour context
+/// `initial`.
 pub(crate) fn write(
     recorder: &mut TileRecorder,
-    levels: &[i32],
+    (levels, eob): (&[i32], usize),
     model: Model,
     coder: &mut Coder<'_>,
     initial: usize,
-) -> usize {
+) {
     let (plane, reference) = (model.plane as usize, usize::from(model.inter));
     emit_tokens(
         levels,
+        eob,
         model,
         coder.probs,
         Some(coder.counts),
@@ -470,7 +482,7 @@ pub(crate) fn write(
             ),
             None => recorder.write(bit, prob),
         },
-    )
+    );
 }
 
 /// Drop trailing ±1 levels of raster-order `levels` that stand at least
@@ -499,12 +511,26 @@ pub(crate) fn shave_isolated_ones(
     }
 }
 
-/// Estimated bits of coding `levels` (as [`write`], without counting).
-pub(crate) fn cost(levels: &[i32], model: Model, probs: &BandProbs, initial: usize) -> f32 {
+/// Estimated bits of coding `levels`, whose end of block is `eob` (as
+/// [`write`], without counting).
+pub(crate) fn cost(
+    (levels, eob): (&[i32], usize),
+    model: Model,
+    probs: &BandProbs,
+    initial: usize,
+) -> f32 {
     let mut bits = 0.0;
-    emit_tokens(levels, model, probs, None, initial, &mut |bit, prob, _| {
-        bits += crate::tree::bit_cost(bit, prob);
-    });
+    emit_tokens(
+        levels,
+        eob,
+        model,
+        probs,
+        None,
+        initial,
+        &mut |bit, prob, _| {
+            bits += crate::tree::bit_cost(bit, prob);
+        },
+    );
     bits
 }
 
@@ -781,7 +807,9 @@ mod tests {
                             .iter()
                             .map(|l| {
                                 let mut coder = Coder::new(model, &context, &mut counts);
-                                write(&mut writer, l, model, &mut coder, initial)
+                                let eob = end_of_block(l, model.tx, model.ty);
+                                write(&mut writer, (l, eob), model, &mut coder, initial);
+                                eob
                             })
                             .collect();
                         let packet = writer.finish(

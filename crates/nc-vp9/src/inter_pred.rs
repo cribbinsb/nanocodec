@@ -137,7 +137,6 @@ pub(crate) fn predict(
 /// size `ref_size` (`(ref_width, ref_height)`) into `out` (row stride = plane
 /// block side), using `VP9 §8.5.2.3`–`§8.5.2.4` reference scaling when
 /// `ref_size != (position.width, position.height)`.
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn predict_with_ref_size(
     dsp: &nc_dsp::Dsp,
@@ -162,7 +161,6 @@ pub(crate) fn predict_with_ref_size(
 }
 
 /// [`predict_with_ref_size`] from a reference of another size.
-#[allow(clippy::too_many_arguments)]
 fn predict_scaled(
     dsp: &nc_dsp::Dsp,
     reference: &Picture,

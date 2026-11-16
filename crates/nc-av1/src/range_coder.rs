@@ -299,6 +299,15 @@ impl SymbolWriter {
         self.normalize(low, rng);
     }
 
+    /// Code the deferred `intervals`, leaving out omitted ones.
+    fn write_kept(&mut self, intervals: &[Interval]) {
+        for &interval in intervals {
+            if interval.remaining != OMITTED_INTERVAL {
+                self.write_interval(interval);
+            }
+        }
+    }
+
     /// Code one equiprobable bit: AV1 `L(1)` (§4.10.2, `read_literal`).
     pub fn write_literal_bit(&mut self, bit: bool) {
         if let Some(intervals) = self.intervals.as_mut() {
@@ -345,23 +354,20 @@ impl SymbolWriter {
     #[must_use]
     pub fn finish(mut self) -> Vec<u8> {
         if let Some(intervals) = self.intervals.take() {
+            // Spans were reserved in stream order, so their positions never
+            // decrease: the intervals between two spans are coded as one run
+            // (a span test per interval was 0.5% of AV1 encode instructions).
             let spans = std::mem::take(&mut self.spans);
-            let mut spans = spans.into_iter().peekable();
-            for (position, interval) in intervals.into_iter().enumerate() {
-                while let Some(span) = spans.next_if(|span| span.position == position) {
-                    span.intervals
-                        .into_iter()
-                        .for_each(|i| self.write_interval(i));
-                }
-                if interval.remaining != OMITTED_INTERVAL {
-                    self.write_interval(interval);
-                }
-            }
+            let mut coded = 0;
             for span in spans {
+                let position = span.position.min(intervals.len());
+                self.write_kept(&intervals[coded..position]);
+                coded = position;
                 span.intervals
                     .into_iter()
                     .for_each(|i| self.write_interval(i));
             }
+            self.write_kept(&intervals[coded..]);
         }
         // Round `low` up to the shortest bit pattern inside the final range,
         // then emit its remaining bytes.

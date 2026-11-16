@@ -87,11 +87,7 @@ fn constrain<V: U8FilterLanes>(p: V, x: V, strength: V, shift: V) -> V {
 /// The two taps at `±(dr, dc)` from the rows at window row `row`: the sum
 /// of their constrained differences (as `i8`), and the clipping range
 /// widened.
-#[allow(
-    clippy::inline_always,
-    clippy::too_many_arguments,
-    clippy::needless_pass_by_value
-)]
+#[allow(clippy::inline_always, clippy::needless_pass_by_value)]
 #[inline(always)]
 fn tap_pair<V: U8FilterLanes, const N: usize, const S: usize>(
     window: Window<S>,

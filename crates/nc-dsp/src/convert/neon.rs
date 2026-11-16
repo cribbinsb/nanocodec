@@ -32,7 +32,6 @@ pub(crate) fn convert_fns() -> ConvertFns {
 /// # Safety
 ///
 /// Kernel contract (`convert` module docs).
-#[allow(clippy::too_many_arguments, reason = "matches DeinterleaveUvFn")]
 #[target_feature(enable = "neon")]
 unsafe fn deinterleave_uv(
     src: &[u8],

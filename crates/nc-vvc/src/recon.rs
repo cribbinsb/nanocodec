@@ -216,10 +216,6 @@ impl std::fmt::Debug for QuantScratch {
 ///
 /// Returns the levels in raster order (borrowed from `scratch`), or an empty
 /// slice when every level is zero (most inter blocks at our rates).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one block's complete quantiser inputs"
-)]
 pub(crate) fn quantize<'a>(
     dsp: &nc_dsp::Dsp,
     source: &Picture,
@@ -246,10 +242,6 @@ pub(crate) fn quantize<'a>(
 
 /// [`quantize`] of a block `width` samples wide (`pred.len() / width`
 /// high) at `(x, y)`, its levels chosen by `search` when given.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one block's complete quantiser inputs"
-)]
 pub(crate) fn quantize_rect<'a>(
     dsp: &nc_dsp::Dsp,
     source: &Picture,

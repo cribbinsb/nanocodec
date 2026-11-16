@@ -20,7 +20,6 @@ pub(crate) fn sse_row(a: &[u8], b: &[u8]) -> u32 {
         .sum()
 }
 
-#[allow(clippy::too_many_arguments, reason = "matches DeinterleaveUvFn")]
 fn deinterleave_uv(
     src: &[u8],
     src_stride: usize,
@@ -89,7 +88,6 @@ pub(crate) fn i420_to_rgba_row(
 }
 
 /// The encoder input conversion (`convert` module docs).
-#[allow(clippy::too_many_arguments, reason = "matches RgbaToI420Fn")]
 pub(crate) fn rgba_to_i420(
     rgba: &[u8],
     luma: &mut [u8],

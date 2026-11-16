@@ -284,7 +284,6 @@ pub enum Item {
 /// cover when SAO is on. With `block_qp` (`cu_qp_delta_enabled_flag`) each
 /// CU's `QpY` is read from `grid` and coded as `cu_qp_delta`.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
 pub fn write_slice_data(
     items: &[Item],
     (levels, units): (&[i16], &[TransformUnit]),
@@ -606,7 +605,6 @@ pub fn split_transform_flag_present(
 /// 4x4 luma block's chroma belongs to its 8x8 parent: no flags of its own
 /// (they are the parent's), and the residual follows the fourth block
 /// (§7.3.8.8, §7.3.8.10), which is where the backend records it.
-#[allow(clippy::too_many_arguments)]
 fn write_transform_node(
     w: &mut CabacWriter,
     ctx: &mut Contexts,
@@ -701,14 +699,16 @@ fn write_tu_residuals(
 ) {
     for (residual, luma) in [(&tu.luma, true), (&tu.cb, false), (&tu.cr, false)] {
         if residual.coded {
-            write_residual(
-                w,
-                ctx,
-                tables.transform.scans.get(residual.log2, residual.scan),
-                residual.levels(tables.levels),
-                luma,
-                SIGN_DATA_HIDING,
-            );
+            w.with_local(|w| {
+                write_residual(
+                    w,
+                    ctx,
+                    tables.transform.scans.get(residual.log2, residual.scan),
+                    residual.levels(tables.levels),
+                    luma,
+                    SIGN_DATA_HIDING,
+                );
+            });
         }
     }
 }

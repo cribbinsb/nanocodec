@@ -156,7 +156,6 @@ pub fn whole_sample_macroblock(
     reason = "a few calls per macroblock; inlined, the window arithmetic folds into the caller's constants"
 )]
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
 fn predict<const N: usize>(
     predictor: &H264Predictor,
     filter: Filter,
