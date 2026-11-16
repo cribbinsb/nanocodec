@@ -8,3 +8,7 @@ __pycache__/
 
 # A path argument of "-" is stdin/stdout (nc-cli src/stdio.rs); never a file.
 -
+
+# nc-remote run outputs kept on the build box between runs (docs/PROCEDURES.md
+# "Remote build box"); `--fetch remote-out/...` brings them back.
+/remote-out/

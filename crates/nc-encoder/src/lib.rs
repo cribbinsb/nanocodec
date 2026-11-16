@@ -43,6 +43,7 @@ mod chroma_offset;
 pub mod chroma_policy;
 mod config;
 mod decision;
+mod effort_class;
 mod encoder;
 mod feedback;
 mod frame_role;
@@ -98,6 +99,7 @@ mod structure;
 pub mod symbol_cost;
 mod timeline;
 mod trellis;
+mod work_gate;
 mod zero_residual;
 
 pub use backend::{
@@ -112,6 +114,7 @@ pub use chroma_offset::{
     plane_error_ratio,
 };
 pub use config::{Codec, ConfigError, EncoderConfig, FrameRate, StreamSignal, TimingSignal};
+pub use effort_class::LIGHT_PREFIX;
 pub use encoder::{
     EncodedFrame, Encoder, FrameMetadata, LayerFrameMetadata, SpatialReferenceStats,
     validate_params,
@@ -159,6 +162,7 @@ pub use trellis::{
     Candidates, CoeffRateModel, ForwardCoeffRateModel, ForwardTrellis, MAX_CANDIDATES, Trellis,
     TrellisSettings, ZERO_CANDIDATE_MAX_LEVEL,
 };
+pub use work_gate::{GateInput, GateParams, WorkGate};
 pub use zero_residual::{
     TextureScales, ZeroLimits, residual_quantises_to_zero, residual_quantises_to_zero_scaled,
 };

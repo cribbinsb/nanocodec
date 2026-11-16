@@ -490,6 +490,60 @@ pub struct HevcBackend {
     tools: CodingTools,
     /// `quant.trellis`: trellis quantisation of every coded transform block.
     trellis: Option<TrellisQuant>,
+    /// While the frame has light superblocks (`set_light_params`), the
+    /// per-block settings not in use.
+    alternate: Option<Alternate>,
+}
+
+/// The settings HEVC reads per CU, swapped between light and regular
+/// superblocks (`nc_encoder` `effort_class.rs`).
+#[derive(Debug)]
+struct BlockSettings {
+    tools: CodingTools,
+    trellis: Option<TrellisQuant>,
+    fast_forward: FastForward,
+    column_zero_scale: f32,
+    pre_transform_zero_scale: f32,
+    shave_gap: usize,
+    early_merge_lambdas: f32,
+    inter_intra: InterIntraSearch,
+}
+
+impl BlockSettings {
+    /// The light settings of `overrides`. The parameter sets fix whether
+    /// transform trees and `NxN` intra may be coded at all (`regular`'s
+    /// tools): a light CU may drop those searches, never add them.
+    fn light(overrides: &nc_encoder::ParamOverrides, regular: &CodingTools) -> Self {
+        let params = HevcParams::from_overrides(overrides);
+        let light = CodingTools::new(&params);
+        Self {
+            tools: CodingTools {
+                inter_tu_split: light.inter_tu_split && regular.inter_tu_split,
+                inter_tu_split_spread: light.inter_tu_split_spread,
+                inter_tu_split_min_cost: light.inter_tu_split_min_cost,
+                intra_nxn: light.intra_nxn && regular.intra_nxn,
+                intra_nxn_min_cost: light.intra_nxn_min_cost,
+                ..*regular
+            },
+            trellis: TrellisQuant::from_params(&QuantParams::from_overrides(overrides)),
+            fast_forward: FastForward::new(&params),
+            column_zero_scale: params.column_zero_scale,
+            pre_transform_zero_scale: params.pre_transform_zero_scale,
+            shave_gap: params.shave_gap.round() as usize,
+            early_merge_lambdas: params.early_merge_lambdas,
+            inter_intra: InterIntraSearch::new(&params),
+        }
+    }
+}
+
+/// The per-CU settings the backend is not coding with: the light ones while
+/// it codes a regular superblock, the regular ones while it codes a light
+/// one.
+#[derive(Debug)]
+struct Alternate {
+    settings: BlockSettings,
+    /// Whether the backend's own settings are the light ones.
+    light_in_use: bool,
 }
 
 /// Which quantiser codes a transform block.
@@ -860,6 +914,29 @@ impl CodecBackend for HevcBackend {
         "hevc.inter_tu_split_min_cost",
         "hevc.inter_tu_split_spread",
     ];
+    /// Read per CU (`BlockSettings`); transform trees and `NxN` intra can only
+    /// be switched off, as the parameter sets allow them or not.
+    const SUPERBLOCK_PARAMS: &'static [&'static str] = &[
+        "hevc.inter_tu_split",
+        "hevc.inter_tu_split_spread",
+        "hevc.inter_tu_split_min_cost",
+        "hevc.intra_nxn",
+        "hevc.intra_nxn_min_cost",
+        "hevc.fast_forward16",
+        "hevc.fast_forward32",
+        "hevc.fast_forward32_columns",
+        "hevc.forward_zero_columns",
+        "hevc.partial_forward",
+        "hevc.column_zero_scale",
+        "hevc.pre_transform_zero_scale",
+        "hevc.shave_gap",
+        "hevc.early_merge_lambdas",
+        "hevc.coarse_inter_intra",
+        "hevc.inter_intra_dc_only",
+        "hevc.inter_intra_dc_only_max_log2",
+        "quant.trellis",
+        "quant.trellis_lambda_scale",
+    ];
     /// `begin_frame` derives the picture from its plan; the collocated
     /// motion and the slots' POCs are committed in `commit_frame`.
     const RECODE: bool = true;
@@ -1141,6 +1218,7 @@ impl CodecBackend for HevcBackend {
             bin_costs: BinCosts::new(),
             tools: CodingTools::new(&params),
             trellis: TrellisQuant::from_params(&QuantParams::from_overrides(&config.params)),
+            alternate: None,
         })
     }
 
@@ -1246,6 +1324,39 @@ impl CodecBackend for HevcBackend {
         // Switching the filter off needs the PPS override flag, which
         // `stream_info` sets when any frame's settings do.
         self.deblock_inter = params.deblock_inter >= 0.5;
+    }
+
+    fn set_light_params(&mut self, params: Option<&nc_encoder::ParamOverrides>) {
+        debug_assert!(
+            self.alternate.as_ref().is_none_or(|a| !a.light_in_use),
+            "set between frames, regular settings in use"
+        );
+        self.alternate = params.map(|overrides| Alternate {
+            settings: BlockSettings::light(overrides, &self.tools),
+            light_in_use: false,
+        });
+    }
+
+    fn use_light_params(&mut self, light: bool) {
+        let Some(other) = self.alternate.as_mut().filter(|a| a.light_in_use != light) else {
+            return;
+        };
+        let theirs = &mut other.settings;
+        std::mem::swap(&mut self.tools, &mut theirs.tools);
+        std::mem::swap(&mut self.trellis, &mut theirs.trellis);
+        std::mem::swap(&mut self.fast_forward, &mut theirs.fast_forward);
+        std::mem::swap(&mut self.column_zero_scale, &mut theirs.column_zero_scale);
+        std::mem::swap(
+            &mut self.pre_transform_zero_scale,
+            &mut theirs.pre_transform_zero_scale,
+        );
+        std::mem::swap(&mut self.shave_gap, &mut theirs.shave_gap);
+        std::mem::swap(
+            &mut self.early_merge_lambdas,
+            &mut theirs.early_merge_lambdas,
+        );
+        std::mem::swap(&mut self.inter_intra, &mut theirs.inter_intra);
+        other.light_in_use = light;
     }
 
     fn lambda(&self) -> f32 {

@@ -953,6 +953,8 @@ def cpu_objective_cost(cost: InstructionCost, gop_period: int) -> float:
 
 #: Prefix of a parameter's non-base frame value (nc-encoder `NONBASE_PREFIX`).
 NONBASE_PREFIX = "nonbase."
+#: Prefix of a parameter's light-superblock value (nc-encoder `LIGHT_PREFIX`).
+LIGHT_PREFIX = "light."
 
 
 def specs_of(binary: Path, codec: Codec | None = None) -> dict[str, tuple[float, float, float]]:
@@ -974,7 +976,11 @@ def specs_of(binary: Path, codec: Codec | None = None) -> dict[str, tuple[float,
     # Non-base frame values (`nonbase.<name>`, nc-encoder `frame_role.rs`)
     # share their parameter's default and range; the encoder rejects the
     # ones that are not re-read per frame.
-    specs.update({NONBASE_PREFIX + name: spec for name, spec in list(specs.items())})
+    # Light-superblock values (`light.<name>`, nc-encoder `effort_class.rs`)
+    # likewise; the encoder rejects the ones that cannot change per superblock.
+    plain = list(specs.items())
+    specs.update({NONBASE_PREFIX + name: spec for name, spec in plain})
+    specs.update({LIGHT_PREFIX + name: spec for name, spec in plain})
     return specs
 
 

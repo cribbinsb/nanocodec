@@ -207,6 +207,13 @@ pub trait CodecBackend {
     /// they may not take a non-base frame value.
     const STREAM_FIXED_PARAMS: &'static [&'static str] = &[];
 
+    /// Parameters of [`CodecBackend::PARAM_SPECS`] (or engine groups the
+    /// backend reads, such as `quant.trellis`) that this backend reads per
+    /// block, so they may change between superblocks: only these may take a
+    /// light-superblock value (`light.<name>`, `effort_class.rs`). None by
+    /// default.
+    const SUPERBLOCK_PARAMS: &'static [&'static str] = &[];
+
     /// This codec's own defaults for shared engine parameters (`decision.*`,
     /// `planner.*`), applied beneath the caller's settings. A value measured
     /// for one codec must not silently change the others, so each backend
@@ -386,6 +393,25 @@ pub trait CodecBackend {
     /// groups keep the default no-op.
     fn set_frame_params(&mut self, params: &crate::ParamOverrides) {
         let _ = params;
+    }
+
+    /// The settings of this frame's light superblocks: every override of
+    /// the frame with the `light.` values on top (`effort_class.rs`), or
+    /// `None` when the frame has none. Called per frame after
+    /// [`CodecBackend::set_frame_params`], before
+    /// [`CodecBackend::begin_frame`]; the backend parses its
+    /// [`CodecBackend::SUPERBLOCK_PARAMS`] from it once, so that
+    /// [`CodecBackend::use_light_params`] is a cheap switch.
+    fn set_light_params(&mut self, params: Option<&crate::ParamOverrides>) {
+        let _ = params;
+    }
+
+    /// Code the following blocks with the light (`true`) or the frame's
+    /// regular settings. Called before each inter superblock while the
+    /// frame has light settings, and with `false` before
+    /// [`CodecBackend::filter_frame`].
+    fn use_light_params(&mut self, light: bool) {
+        let _ = light;
     }
 
     /// log2 of the top-level coding unit: AV1 superblock, HEVC CTU, H.264

@@ -13,11 +13,7 @@ use super::frame_header::{GlobalMotion, TOTAL_REFS, WARPEDMODEL_PREC_BITS, WarpT
 use super::motion::{INTRA_FRAME, MotionCell, MotionGrid};
 use super::motion_field::{MotionField, ProjectedMv, project_mv};
 use crate::backend::Av1Mv;
-
-/// `MAX_REF_MV_STACK_SIZE`.
-const MAX_REF_MV_STACK_SIZE: usize = 8;
-/// `REF_CAT_LEVEL`: weight bonus of the candidates next to the block.
-const REF_CAT_LEVEL: u16 = 640;
+use crate::mvref::{MAX_REF_MV_STACK_SIZE, REF_CAT_LEVEL};
 /// `MVREF_ROW_COLS`: outer rows and columns scanned (at -1, -3, -5).
 const MVREF_ROW_COLS: i32 = 3;
 /// `MV_BORDER`: vectors may point 16 samples beyond the frame (1/8 units).
@@ -152,12 +148,7 @@ impl MvStack {
     /// The `drl_mode` context of list position `index` (§8.3.2
     /// `DrlCtxStack`).
     pub(crate) fn drl_context(&self, index: usize) -> usize {
-        let strong = |i: usize| self.weights[i] >= REF_CAT_LEVEL;
-        match (strong(index), strong(index + 1)) {
-            (true, false) => 1,
-            (false, false) => 2,
-            _ => 0,
-        }
+        crate::mvref::drl_context(&self.weights, index)
     }
     /// The vector of list `list` at stack position `index`, clamped to
     /// the block's reach (§7.10.2.14); positions past the candidates found

@@ -305,6 +305,12 @@ param_group! {
             "depth removal 16→8 improvement threshold (‰): higher removes small blocks more",
         depth_removal_qp_scale: 2.0, [0.0, 8.0],
             "depth removal threshold multiplier: higher removes small blocks more",
+        /// SVT's absolute depth-removal rule (`set_depth_removal_level_controls`:
+        /// `cost_32 < RDCOST(λ, 8192, 512 · 6)`, about 0.75 SAD per sample plus
+        /// a λ term), with its λ term carried by the quantizer step instead, so
+        /// one value serves every quantizer. 0 (off) by default.
+        depth_removal_sad_per_step: 0.0, [0.0, 4.0],
+            "a superblock whose best 32x32 motion-search SAD per sample is below this many quantizer sample steps is not split below 32x32 (0: off): higher keeps more superblocks in large blocks",
         depth_removal_min_quantizer: 0.0, [0.0, 1.0],
             "relative quantizer (0 finest, 1 coarsest) below which depth removal is skipped: higher keeps small blocks on offer at fine quantizers, at more planning work",
         /// 4 (16x16) is SVT M10+ (`partition_plan.rs`); 3 re-allows 8x8
@@ -989,6 +995,21 @@ param_group! {
 }
 
 param_group! {
+    /// Per-superblock effort class (`effort_class.rs`): which inter
+    /// superblocks are coded with the `light.*` settings.
+    pub struct EffortParams ("effort") {
+        regular_fraction: 1.0, [0.0, 1.0],
+            "share of each inter frame's superblocks, those with the highest benefit proxy (best 16x16 motion-search SAD plus weighted 8x8 SAD spread, per sample, in quantizer steps), coded with the regular settings; the rest take the light.* settings (1: every superblock regular, the overlay off): lower bounds the expensive tools to fewer superblocks",
+        regular_proxy: 0.0, [0.0, 16.0],
+            "a superblock whose benefit proxy (steps) is at least this is regular whatever its rank (0: rank only): lower keeps more hard superblocks regular in frames that are mostly hard",
+        spread_weight: 1.0, [0.0, 4.0],
+            "weight of the 8x8 motion-search SAD spread (standard deviation per sample) in the benefit proxy: higher keeps superblocks that mix well- and badly-predicted areas regular",
+        light_nonbase_only: 0.0, [0.0, 1.0],
+            "1 keeps every superblock of base frames (key, cadence base) regular, as SVT runs regular PD1 on its base frames",
+    }
+}
+
+param_group! {
     /// Trellis quantisation of the coded block (`trellis.rs`), in backends
     /// that provide a coefficient rate model.
     pub struct QuantParams ("quant") {
@@ -1142,6 +1163,8 @@ pub fn engine_specs() -> Vec<&'static [ParamSpec]> {
         RefParams::SPECS,
         StructureParams::SPECS,
         QuantParams::SPECS,
+        EffortParams::SPECS,
+        crate::work_gate::GateParams::SPECS,
         ChromaParams::SPECS,
         ResolutionParams::SPECS,
         SpatialParams::SPECS,

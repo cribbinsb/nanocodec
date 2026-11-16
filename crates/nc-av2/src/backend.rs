@@ -963,8 +963,10 @@ impl CodecBackend for Av2Backend {
                 max: MAX_QINDEX,
             });
         }
-        // Non-base settings (`nonbase.<name>`) are the engine's to check.
-        let (_, ordinary) = config.params.split_prefix(nc_encoder::NONBASE_PREFIX);
+        // Non-base and light-superblock settings (`nonbase.<name>`,
+        // `light.<name>`) are the engine's to check.
+        let (_, framed) = config.params.split_prefix(nc_encoder::LIGHT_PREFIX);
+        let (_, ordinary) = framed.split_prefix(nc_encoder::NONBASE_PREFIX);
         ordinary
             .validate(&[nc_encoder::engine_specs(), Self::PARAM_SPECS.to_vec()].concat())
             .map_err(ConfigError::Param)?;

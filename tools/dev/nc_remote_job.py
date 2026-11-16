@@ -107,7 +107,8 @@ def job_env(target: Path, commit: str, jobs: str, extra: list[str]) -> dict[str,
     env = dict(os.environ)
     env.update(CARGO_TARGET_DIR=str(target), CARGO_BUILD_JOBS=jobs, NC_BUILD_COMMIT=commit,
                NC_REMOTE_BOX="1")
-    env["PATH"] = f"{Path.home() / '.cargo/bin'}:{env.get('PATH', '')}"
+    # The provisioned venv (nceval's packages) and the Rust toolchains come first.
+    env["PATH"] = f"{BOX / 'venv/bin'}:{Path.home() / '.cargo/bin'}:{env.get('PATH', '')}"
     for item in extra:
         key, _, value = item.partition("=")
         env[key] = value

@@ -27,6 +27,18 @@ pub const MAX_REF_MV_STACK_SIZE: usize = 8;
 /// Weight bonus that marks candidates from the nearest row/column
 /// (libaom `REF_CAT_LEVEL`).
 pub const REF_CAT_LEVEL: u16 = 640;
+/// Context of the `drl_mode` symbol at list position `index` of a stack
+/// with candidate `weights` (AV1 §7.10.3 / §8.3.2 `DrlCtxStack`, libaom
+/// `av1_drl_ctx`): the encoder's lists and the decoder's stack share it.
+pub(crate) fn drl_context(weights: &[u16; MAX_REF_MV_STACK_SIZE], index: usize) -> usize {
+    let strong = |i: usize| weights[i] >= REF_CAT_LEVEL;
+    match (strong(index), strong(index + 1)) {
+        (true, false) => 1,
+        (false, false) => 2,
+        _ => 0,
+    }
+}
+
 /// Outer rows/columns scanned (libaom `MVREF_ROW_COLS`).
 const MVREF_ROW_COLS: i32 = 3;
 /// Vectors may point this far beyond the frame, in 1/8 samples (libaom
@@ -98,12 +110,7 @@ impl MvStack {
     /// `av1_drl_ctx`).
     #[must_use]
     pub fn drl_context(&self, index: usize) -> usize {
-        let strong = |i: usize| self.weights[i] >= REF_CAT_LEVEL;
-        match (strong(index), strong(index + 1)) {
-            (true, false) => 1,
-            (false, false) => 2,
-            _ => 0,
-        }
+        drl_context(&self.weights, index)
     }
 }
 
@@ -636,12 +643,7 @@ impl CompoundMvStack {
     /// Context of the `drl_mode` symbol at list position `index` (`AV1 §7.10.3`).
     #[must_use]
     pub fn drl_context(&self, index: usize) -> usize {
-        let strong = |i: usize| self.weights[i] >= REF_CAT_LEVEL;
-        match (strong(index), strong(index + 1)) {
-            (true, false) => 1,
-            (false, false) => 2,
-            _ => 0,
-        }
+        drl_context(&self.weights, index)
     }
 }
 

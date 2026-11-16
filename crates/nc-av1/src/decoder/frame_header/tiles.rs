@@ -2,6 +2,7 @@
 use super::FrameSize;
 use crate::backend::decoder::availability::TileBounds;
 use crate::backend::decoder::sequence::Sequence;
+use crate::obu::tile_log2;
 use nc_common::decode::{BitReader, DecodeError};
 
 /// `MAX_TILE_WIDTH`, `MAX_TILE_AREA`, `MAX_TILE_COLS`, `MAX_TILE_ROWS`
@@ -56,16 +57,6 @@ impl TileInfo {
             row_end: self.row_starts[row + 1],
         }
     }
-}
-
-/// `tile_log2(blkSize, target)`: the smallest `k` with
-/// `blkSize << k >= target`.
-fn tile_log2(block: usize, target: usize) -> u32 {
-    let mut k = 0;
-    while (block << k) < target {
-        k += 1;
-    }
-    k
 }
 
 /// `ns(n)` (AV1 §4.10.10): a value below `n` in non-symmetric unsigned

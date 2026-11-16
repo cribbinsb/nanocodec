@@ -25,6 +25,7 @@ use crate::decision::{
     Choice, DecisionScratch, choose_compound_mode, choose_inter_mode, choose_secondary_mode,
     is_square_leaf, is_static, is_still, leaf_area, leaf_extent, leaf_log2_min_side,
 };
+use crate::effort_class::{Classifier, LIGHT_PREFIX, LightOverlay, LightParams};
 use crate::feedback::{LossFeedback, ReferencedFrames};
 use crate::frame_role::{EffortOverlay, FrameRole, NONBASE_PREFIX};
 use crate::hold::{FrameHold, LastCoded};
@@ -279,6 +280,12 @@ pub struct Encoder<B: CodecBackend> {
     /// Cheaper settings for non-base frames (`nonbase.*`, `frame_role.rs`);
     /// `None` without such settings.
     effort_overlay: Option<EffortOverlay>,
+    /// Light-superblock settings (`light.*`, `effort_class.rs`); `None`
+    /// while `effort.regular_fraction` is 1.
+    light_overlay: Option<LightOverlay>,
+    /// The light superblocks' engine parameters as adjusted for the frame
+    /// being coded; `None` when it may have no light superblocks.
+    frame_light: Option<LightParams>,
     /// `debug.recode_identity`: every frame is coded twice (recode test).
     recode_identity: bool,
     /// `debug.random_decisions`: random legal decisions replace the normal
@@ -307,7 +314,7 @@ impl<B: CodecBackend> Encoder<B> {
         config.params = config.params.layered_over(&backend_defaults::<B>(&config));
         config.temporal_layers = configured_temporal_layers(&config);
         validate_stream(&config)?;
-        let effort_overlay = validated_params::<B>(&config.params)?;
+        let (effort_overlay, light_overlay) = validated_params::<B>(&config.params)?;
         let planner_params = PlannerParams::from_overrides(&config.params);
         let decision_params = DecisionParams::from_overrides(&config.params);
         let mut backend = B::new(&config)?;
@@ -454,6 +461,8 @@ impl<B: CodecBackend> Encoder<B> {
             decision_params,
             frame_decision_params: decision_params,
             effort_overlay,
+            light_overlay,
+            frame_light: None,
             random,
             spatial,
         };
@@ -1163,6 +1172,28 @@ impl<B: CodecBackend> Encoder<B> {
         }
     }
 
+    /// Before coding frame `index` of `role`, the settings of its light
+    /// superblocks (`effort_class.rs`): the engine's adjusted as the
+    /// frame's own are, and the backend's.
+    fn apply_light_role(
+        &mut self,
+        index: u64,
+        references: &FrameReferences,
+        role: FrameRole,
+        analysis: Option<&FrameAnalysis>,
+    ) {
+        let Some(overlay) = self.light_overlay.as_ref().filter(|o| o.applies_to(role)) else {
+            self.frame_light = None;
+            return;
+        };
+        let light = overlay.params(role);
+        let (decision, planner) =
+            self.adjusted_for_frame((light.decision, light.planner), index, references, analysis);
+        let overrides = overlay.backend_overrides(role).clone();
+        self.frame_light = Some(LightParams { decision, planner });
+        self.backend.set_light_params(Some(&overrides));
+    }
+
     /// The decision and planner parameters as adjusted for one frame.
     fn frame_params(
         &self,
@@ -1171,14 +1202,26 @@ impl<B: CodecBackend> Encoder<B> {
         role: FrameRole,
         analysis: Option<&FrameAnalysis>,
     ) -> (DecisionParams, PlannerParams) {
-        let noise_sigma = analysis.map(|a| a.noise_sigma);
-        let (mut decision_params, mut planner_params) = match &self.effort_overlay {
+        let params = match &self.effort_overlay {
             Some(overlay) => {
                 let params = overlay.params(role);
                 (params.decision, params.planner)
             }
             None => (self.decision_params, self.planner_params),
         };
+        self.adjusted_for_frame(params, index, references, analysis)
+    }
+
+    /// `decision_params` and `planner_params` with frame `index`'s
+    /// adjustments: the cadence base λ and the frame-level content gates.
+    fn adjusted_for_frame(
+        &self,
+        (mut decision_params, mut planner_params): (DecisionParams, PlannerParams),
+        index: u64,
+        references: &FrameReferences,
+        analysis: Option<&FrameAnalysis>,
+    ) -> (DecisionParams, PlannerParams) {
+        let noise_sigma = analysis.map(|a| a.noise_sigma);
         // A cadence base frame may get a lower decision/planner λ.
         if self.is_cadence_base(index, references.position) {
             decision_params.lambda_scale *= decision_params.base_lambda_scale;
@@ -1541,6 +1584,7 @@ impl<B: CodecBackend> Encoder<B> {
             self.frame_params(index, &references, role, analysis);
         self.frame_decision_params = decision_params;
         self.apply_backend_role(role);
+        self.apply_light_role(index, &references, role, analysis);
         if decision_params.noise_skip > 0.
             && let (Some(pre), Some(motion)) = (pre, motion)
         {
@@ -1787,10 +1831,37 @@ impl<B: CodecBackend> Encoder<B> {
         self.backend.begin_frame(plan);
         let sb_log2 = self.backend.superblock_log2();
         let sb = 1usize << sb_log2;
+        let regular_decision = self.frame_decision_params;
+        // Light superblocks need the motion search's statistics.
+        let light = self
+            .frame_light
+            .zip(inter.and_then(|frame| frame.motion))
+            .zip(self.light_overlay.as_ref().map(|o| o.effort));
+        let step = self.sample_step(self.frame_quantizer) as f32;
+        let light_map = light.map(|((_, motion), effort)| {
+            Classifier {
+                motion,
+                effort: &effort,
+                step,
+                width: self.layer.coded_width,
+                height: self.layer.coded_height,
+            }
+            .light_map(sb_log2)
+        });
+        let mut light_superblocks = light_map.iter().flatten().copied();
         for y in (0..self.layer.coded_height).step_by(sb) {
             for x in (0..self.layer.coded_width).step_by(sb) {
                 self.backend.begin_superblock(x, y);
                 let sb = Block::square(x, y, sb_log2);
+                let light_params = light
+                    .filter(|_| light_superblocks.next() == Some(true))
+                    .map(|((params, _), _)| params);
+                if light.is_some() {
+                    self.frame_decision_params =
+                        light_params.map_or(regular_decision, |p| p.decision);
+                    self.backend.use_light_params(light_params.is_some());
+                }
+                let planner_params = light_params.as_ref().map_or(planner_params, |p| &p.planner);
                 // Inter frames choose their partition per superblock first
                 // (VLPD0); key frames code the configured fixed size, or
                 // with `planner.intra_plan` a planned one (`key_plan`). A
@@ -1821,6 +1892,7 @@ impl<B: CodecBackend> Encoder<B> {
                     params: planner_params,
                     shapes,
                     lambda_headroom: plan.lambda_scale,
+                    step,
                     leaf_bits: OnceCell::new(),
                 };
                 let key_mode = KeyPlanMode::resolve(self.planner_params.intra_plan, &self.backend);
@@ -1850,6 +1922,10 @@ impl<B: CodecBackend> Encoder<B> {
                 };
                 self.code_node(sb, plan.as_ref(), pictures, inter);
             }
+        }
+        if light.is_some() {
+            self.frame_decision_params = regular_decision;
+            self.backend.use_light_params(false);
         }
         self.backend.filter_frame(coded_source, recon);
         self.backend.end_frame()
@@ -3363,13 +3439,23 @@ pub fn validate_params<B: CodecBackend>(params: &ParamOverrides) -> Result<(), C
 /// registries, and build the non-base effort overlay they ask for.
 fn validated_params<B: CodecBackend>(
     params: &ParamOverrides,
-) -> Result<Option<EffortOverlay>, ConfigError> {
-    let (_, ordinary) = params.split_prefix(NONBASE_PREFIX);
+) -> Result<(Option<EffortOverlay>, Option<LightOverlay>), ConfigError> {
+    let (light, framed) = params.split_prefix(LIGHT_PREFIX);
+    let (_, ordinary) = framed.split_prefix(NONBASE_PREFIX);
     ordinary
         .validate(&[engine_specs(), B::PARAM_SPECS.to_vec()].concat())
         .map_err(ConfigError::Param)?;
-    EffortOverlay::from_overrides(params, B::FRAME_PARAM_SPECS, B::STREAM_FIXED_PARAMS)
-        .map_err(ConfigError::Param)
+    let effort =
+        EffortOverlay::from_overrides(&framed, B::FRAME_PARAM_SPECS, B::STREAM_FIXED_PARAMS)
+            .map_err(ConfigError::Param)?;
+    let light = LightOverlay::from_overrides(
+        &light,
+        &ordinary,
+        effort.as_ref().map(|e| &e.nonbase_overrides),
+        (B::PARAM_SPECS, B::SUPERBLOCK_PARAMS),
+    )
+    .map_err(ConfigError::Param)?;
+    Ok((effort, light))
 }
 
 /// The QP cadence of `config`, scaled for `backend` (`RateModel::cadence_scale`).

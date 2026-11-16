@@ -20,10 +20,11 @@ use std::rc::Rc;
 use nc_common::{BitWriter, Picture, PlaneIndex, PlaneView};
 use nc_encoder::{
     AngleDeltaSearch, Block, BlockDecision, CodecBackend, ConfigError, EncoderConfig, FramePlan,
-    FrameReferences, FrameType, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
+    FrameReferences, FrameType, GateParams, IntraModeSet, MAX_REFERENCE_SLOTS, Mv, PlaneZeroLimits,
     PredictionMode, QuantParams, ReferenceChoice, RefreshWindow, SlotMask, SpatialConfig,
-    SpatialLayerFrame, StaticSkipTest, TrellisSettings, ZeroLimits, copy_zero_vector_prediction,
-    directions_by_orientation, residual_quantises_to_zero, zero_vector_residual_is_zero,
+    SpatialLayerFrame, StaticSkipTest, TrellisSettings, WorkGate, ZeroLimits,
+    copy_zero_vector_prediction, directions_by_orientation, residual_quantises_to_zero,
+    zero_vector_residual_is_zero,
 };
 
 use crate::cdef::{self, CdefParams};
@@ -385,6 +386,25 @@ pub(crate) fn coded_picture_size(width: usize, height: usize) -> (usize, usize) 
     (width.next_multiple_of(8), height.next_multiple_of(8))
 }
 
+/// The settings a backend reads per block, swapped between light and
+/// regular superblocks (`nc_encoder` `effort_class.rs`).
+#[derive(Debug, Clone, Copy)]
+struct BlockSettings {
+    params: Av1Params,
+    trellis: Option<TrellisSettings>,
+    gates: GateParams,
+}
+
+/// The per-block settings the backend is not coding with: the light ones
+/// while it codes a regular superblock, the regular ones while it codes a
+/// light one.
+#[derive(Debug, Clone, Copy)]
+struct Alternate {
+    settings: BlockSettings,
+    /// Whether the backend's own settings are the light ones.
+    light_in_use: bool,
+}
+
 /// The AV1 backend.
 #[derive(Debug)]
 pub struct Av1Backend {
@@ -494,6 +514,12 @@ pub struct Av1Backend {
     random: Option<RandomSyntax>,
     /// `quant.trellis`: trellis quantisation of the coded block.
     trellis: Option<TrellisSettings>,
+    /// While the frame has light superblocks (`set_light_params`), the
+    /// per-block settings not in use.
+    alternate: Option<Alternate>,
+    /// The engine's quantizer gates on the partial forward transform and
+    /// the transform-split trial (`gate.*`).
+    gates: GateParams,
     /// Film grain signalling (`grain.enable`); `None` when off.
     grain: Option<GrainState>,
     /// Reference currently selected by the engine (`Primary` = `LAST_FRAME`,
@@ -881,6 +907,39 @@ impl CodecBackend for Av1Backend {
     const FRAME_PARAM_SPECS: &'static [&'static [nc_encoder::ParamSpec]] = &[Av1Params::SPECS];
     /// Frame ids are sequence-header syntax.
     const STREAM_FIXED_PARAMS: &'static [&'static str] = &[FRAME_IDS_PARAM, SEGMENT_QP_PARAM];
+    /// Read per block (or re-derived on each switch, `use_light_params`);
+    /// not the frame header's (`TxMode` from `inter_tx_split` is clamped),
+    /// the rounding, chroma offsets or filters.
+    const SUPERBLOCK_PARAMS: &'static [&'static str] = &[
+        "av1.partial_forward",
+        "av1.partial_forward16_min_q",
+        "av1.inter_tx_split",
+        "av1.inter_tx_split_energy",
+        "av1.inter_tx_split_concentration",
+        "av1.transform_rd_skip",
+        "av1.transform_rd_skip_chroma",
+        "av1.transform_rd_gain_scale",
+        "av1.transform_rd_rate_scale",
+        "av1.transform_rd_uv_max_noise_sigma",
+        "av1.residual_rd_max_mv",
+        "av1.near_count",
+        "av1.coeff_rate_linear",
+        "av1.skip_bias_pct",
+        "av1.skip_bias_energy",
+        "av1.pre_tx_skip",
+        "av1.pre_tx_skip_energy",
+        "av1.pre_tx_skip_score",
+        "av1.pre_tx_skip_score_nonbase",
+        "av1.pre_tx_skip_rd",
+        "av1.pre_tx_skip_model",
+        "av1.pre_tx_luma_dominant",
+        "av1.pre_tx_texture_scale",
+        "av1.chroma_skip_sad_num",
+        "av1.shave_min_zero_run",
+        "av1.inter_intra_search",
+        "quant.trellis",
+        "quant.trellis_lambda_scale",
+    ];
 
     fn block_qp_grid(&self) -> (u8, usize) {
         if self.segment_qp {
@@ -1170,6 +1229,8 @@ impl CodecBackend for Av1Backend {
             tx_mode: TxMode::Largest,
             random: None,
             trellis: TrellisSettings::from_params(&QuantParams::from_overrides(&config.params)),
+            alternate: None,
+            gates: GateParams::from_overrides(&config.params),
             grain: GrainState::new(GrainParams::from_overrides(&config.params)),
             active_ref: ReferenceChoice::Primary,
             spatial: None,
@@ -1603,11 +1664,48 @@ impl CodecBackend for Av1Backend {
     }
 
     fn set_frame_params(&mut self, params: &nc_encoder::ParamOverrides) {
+        self.gates = GateParams::from_overrides(params);
         let params = Av1Params::from_overrides(params);
         // Everything `begin_frame` does not re-derive from `self.params`.
         self.shave_min_zero_run = params.shave_min_zero_run.round() as usize;
         self.chroma_skip_sad_num = params.chroma_skip_sad_num.round() as u32;
         self.params = params;
+    }
+
+    fn set_light_params(&mut self, params: Option<&nc_encoder::ParamOverrides>) {
+        debug_assert!(
+            self.alternate.is_none_or(|a| !a.light_in_use),
+            "set between frames, regular settings in use"
+        );
+        self.alternate = params.map(|overrides| {
+            let mut light = Av1Params::from_overrides(overrides);
+            // The frame's `TxMode` follows the regular setting: a light
+            // superblock may drop the transform-split search, never add it
+            // to a frame whose transform sizes are not signalled.
+            light.inter_tx_split = light.inter_tx_split.min(self.params.inter_tx_split);
+            Alternate {
+                settings: BlockSettings {
+                    params: light,
+                    trellis: TrellisSettings::from_params(&QuantParams::from_overrides(overrides)),
+                    gates: GateParams::from_overrides(overrides),
+                },
+                light_in_use: false,
+            }
+        });
+    }
+
+    fn use_light_params(&mut self, light: bool) {
+        let Some(other) = self.alternate.as_mut().filter(|a| a.light_in_use != light) else {
+            return;
+        };
+        std::mem::swap(&mut self.params, &mut other.settings.params);
+        std::mem::swap(&mut self.trellis, &mut other.settings.trellis);
+        std::mem::swap(&mut self.gates, &mut other.settings.gates);
+        other.light_in_use = light;
+        // What `begin_frame` and `set_frame_params` derive from them.
+        self.shave_min_zero_run = self.params.shave_min_zero_run.round() as usize;
+        self.chroma_skip_sad_num = self.params.chroma_skip_sad_num.round() as u32;
+        self.pre_tx_score_this_frame = self.pre_tx_score();
     }
 
     fn rate_model(&self) -> nc_encoder::RateModel {
@@ -1665,15 +1763,7 @@ impl CodecBackend for Av1Backend {
         } else {
             plan.references.position.layer == 0
         };
-        self.pre_tx_score_this_frame = if self.kind == FrameKind::Inter
-            && self.params.pre_tx_skip > 0.0
-            && !self.is_base_frame
-            && self.params.pre_tx_skip_score_nonbase > 0.0
-        {
-            self.params.pre_tx_skip_score_nonbase
-        } else {
-            self.params.pre_tx_skip_score
-        };
+        self.pre_tx_score_this_frame = self.pre_tx_score();
         self.set_rounding();
 
         self.frame_chroma_delta_q = noise_adapted_chroma_delta(
@@ -2431,7 +2521,9 @@ impl Av1Backend {
         // (static_recovery.rs: 32.3 dB vs 44.5 exact).
         let applies = self.params.partial_forward >= scope
             && !self.refining_block()
-            && !self.coding_from_base_only();
+            && !self.coding_from_base_only()
+            && WorkGate::partial_transform(&self.gates)
+                .admits_quantizer(self.block_relative_quantizer());
         ForwardPolicy {
             large: applies,
             medium: applies && self.frame_q_idx as f32 >= self.params.partial_forward16_min_q,
@@ -2477,10 +2569,14 @@ impl Av1Backend {
     /// (`delta_q_present`, or segment ids): a refined 64x64 block needs four 32x32
     /// transforms (see [`Self::refined_tx_split`]).
     fn frame_tx_mode(&self) -> TxMode {
-        let select = self.params.inter_tx_split >= 0.5
-            || self.random.is_some()
-            || self.delta_q.present()
-            || self.segments.active();
+        // A frame whose quantizer skips every split trial
+        // (`gate.tx_split_skip_min_quantizer`) codes no split: the largest
+        // transforms need no transform-size syntax.
+        let searched = self.params.inter_tx_split >= 0.5
+            && !WorkGate::tx_split_skip(&self.gates)
+                .admits_quantizer(self.frame_q_idx as f32 / QINDEX_MAX as f32);
+        let select =
+            searched || self.random.is_some() || self.delta_q.present() || self.segments.active();
         if self.kind == FrameKind::Inter && select {
             TxMode::Select
         } else {
@@ -2734,6 +2830,12 @@ impl Av1Backend {
         self.spatial
             .as_ref()
             .is_some_and(|sp| sp.current_layer.from_base_only)
+    }
+
+    /// The block's quantizer as a fraction of the qindex range, for the
+    /// engine's gates.
+    fn block_relative_quantizer(&self) -> f32 {
+        self.block_q_idx as f32 / QINDEX_MAX as f32
     }
 
     fn refining_block(&self) -> bool {
@@ -3264,6 +3366,12 @@ impl Av1Backend {
         }
         if let Some(split) = self.decided_tx_split(block) {
             return split;
+        }
+        // Coarse quantizers code too few high frequencies for quarter
+        // transforms to pay their syntax (`gate.tx_split_skip_min_quantizer`):
+        // such blocks split as with the search off.
+        if WorkGate::tx_split_skip(&self.gates).admits_quantizer(self.block_relative_quantizer()) {
+            return self.refined_tx_split(block);
         }
         let n = block.size();
         self.predict_plane(block, PlaneIndex::Y, prediction, recon);
@@ -4646,6 +4754,20 @@ impl Av1Backend {
     /// Whether this frame's symbols adapt their CDFs (`av1.cdf_update`).
     fn adapts_cdfs(&self) -> bool {
         self.params.cdf_update >= 0.5
+    }
+
+    /// The pre-transform skip's score threshold for this frame's blocks:
+    /// non-base inter frames may take their own.
+    fn pre_tx_score(&self) -> f32 {
+        if self.kind == FrameKind::Inter
+            && self.params.pre_tx_skip > 0.0
+            && !self.is_base_frame
+            && self.params.pre_tx_skip_score_nonbase > 0.0
+        {
+            self.params.pre_tx_skip_score_nonbase
+        } else {
+            self.params.pre_tx_skip_score
+        }
     }
 
     fn set_rounding(&mut self) {

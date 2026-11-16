@@ -1080,7 +1080,7 @@ impl FrameHeader {
 }
 
 /// Smallest `k` with `block << k >= target` (AV1 §5.9.15 `tile_log2`).
-fn tile_log2(block: usize, target: usize) -> u32 {
+pub(crate) fn tile_log2(block: usize, target: usize) -> u32 {
     let mut k = 0;
     while (block << k) < target {
         k += 1;

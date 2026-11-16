@@ -64,6 +64,19 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - inner-loop micro-edits: more instructions.
 - **VVC key-frame bundle:** passed the pool screen but failed the 10 s key pulse guard on static
   clips. The cause is rate control's second-key budget (`feature/vvc-speed` report).
+- **HEVC Fast re-pointed to the Default's depth settings (parameters only)**
+  (`feature/hevc-h264-speed`, build at c770b3c42's code, 2026-11-16):
+  - Lens (12 AOM CTC sequences, current build): Fast +7.9 -> -1.3 Weighted (reproduces §2.3 of
+    the diagnosis). Gating depth removal by quantizer instead (Fast's 25/50 thresholds with
+    `planner.depth_removal_min_quantizer` 0.84 / 0.78 / 0.70) gives -1.3 / -0.6 / +1.6.
+  - CBR pool screen against Fast (2026-11-16 draw, k 0.6, dCPU +2.7% passed in): L1 J -0.80%,
+    L2 +0.59%, L3 (78 clips, ladder) **+0.43% [+0.03, +0.83] WORSE**; quality J full -1.8%,
+    low -0.6% (lowlight -5.6% / -3.8%, the other classes -1.7% to +1.0%), no guard.
+  - The dCPU passed in was low: x86 callgrind at CBR 600 kbit/s, 90 f, is +2.2% crowd09,
+    +4.7% bodycam_bc1, +9.1% lowlight_city_night (mean +5.3%); the 0.84 quantizer gate is
+    +0.2% / +1.9% / +7.2% (lowlight codes at fine quantizers there).
+  - So neither the plain re-point nor a quantizer-only gate pays for its CPU in CBR; the
+    shared energy gates (AV1/AV2 agent) are the route.
 
 ## In progress (who)
 
@@ -116,6 +129,27 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
     X % of superblocks, ranked by a pre-coding proxy, OR to any superblock above an absolute
     threshold.
   - Presets become points along one tuned curve of continuous knobs.
+
+- **Light pipeline S1/S2 landed** (6b6b965c7, default off).
+  - **First AV1 lens sweep:** regular_fraction 0.75 → +0.38 % BD against Default at 0.98× time;
+    0.5 → +0.97 % at 0.97×; 0.25 → +3.65 % at 0.90×; 0 → +11.1 % at 0.78×. Fast is +40.6 % at
+    0.56×. Times are user CPU on the loaded PC, a ranking only.
+  - **So most of Default's cost is outside the per-block codec levers:** engine mode decision and
+    motion, frame-level deblock/CDEF, key frames.
+  - **Absolute depth removal at 0.5 steps:** a bad trade (+11.4 %).
+
+- **First Zen 5 frontier, AV1** (c8a, 4 CTC sequences × 2 QPs, 130 f, light-pipeline agent).
+  Weighted BD: SVT M13 401 fps +4.1; M12 357 −1.5; our Fast 311 +1.6; M10 216 −14.2; Default with
+  every SB light 200 −9.5; regular_fraction 0.25 171 −15.8; 0.5 158 −17.2; Default 152 −17.9.
+  - **Single levers with every SB light, speed gain on Default:** trellis off +10 %, tx-split off
+    +8 %, decision/motion +5 %, the rest ≤ +1 %.
+  - **The per-SB budget on a Default base tops out at 200 fps.** Fast's extra ~110 fps is
+    frame-level (deblock/CDEF, key-frame intra, structure).
+  - **Next:** a Fast base with heavier regular SBs, and a frame-level deblock/CDEF gate.
+- **AV1 Fast re-point** (feature/av1-av2-speed): the shared gate landed (6d4d2c636).
+  - **Lens:** Fast with Default depth + full forward −6.5. Gated from quantizer 0.78: −6.2. Plus
+    the split trial below 0.7: −7.9.
+  - **CBR pool screen of the first:** L1 J −4.36 %, L2 −2.95 %; L3 running.
 
 ## Next decision points
 

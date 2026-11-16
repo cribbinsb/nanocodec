@@ -2205,6 +2205,12 @@ impl CodecBackend for H264Backend {
         // [-2.76, -1.93], no guard; CPU x86 +6.8%, Jetson cycles +14.9%.
         // H.264 Fast, Faster and Veryfast pin intra_rd off.
         ("h264.intra_rd", 2.0),
+        // Five Intra_4x4 modes per block coded and priced (by SATD rank),
+        // not all nine: x86 instructions -2.8% crowd09 / -0.7% bodycam_bc1
+        // (150 f, chart QPs); pool L3 (2026-11-16 draw, 78 clips, single
+        // point, k 0.1, dCPU -1.8%) J -0.10% [-0.41, +0.19], BETTER (L1
+        // -0.16%, L2 -0.35% [-0.59, -0.10]). Slow pins 9.
+        ("h264.intra_rd_candidates", 5.0),
         ("decision.lambda_scale", 0.6625),
         // Gated temporal layers (docs/handoff/hierarchical-p.md "Layer
         // gate", fitted on 44 clips in neither TRAIN nor VAL): L1T3 unless

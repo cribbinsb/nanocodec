@@ -261,6 +261,23 @@ fn guarded(body: impl FnOnce() -> NcStatus) -> NcStatus {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(NcStatus::Internal)
 }
 
+/// Run `body` on the session of `encoder`, [`guarded`]; no encoder (a
+/// null pointer) is [`NcStatus::InvalidArgument`].
+fn with_session(
+    encoder: Option<&mut NcEncoder>,
+    body: impl FnOnce(&mut Session) -> NcStatus,
+) -> NcStatus {
+    match encoder {
+        Some(encoder) => guarded(|| body(&mut encoder.session)),
+        None => NcStatus::InvalidArgument,
+    }
+}
+
+/// The status of a session call that returns nothing on success.
+fn status_of(result: Result<(), SessionError>) -> NcStatus {
+    result.map_or_else(NcStatus::from, |()| NcStatus::Ok)
+}
+
 /// Fill `config` with defaults for `codec`: 30 fps, the CLI's starting
 /// quantizer, a key frame every 300 frames, fixed quantizer.
 ///
@@ -715,10 +732,7 @@ pub unsafe extern "C" fn nc_encoder_look_ahead(
         let Some(raw) = (unsafe { raw_frame(next, width, height) }) else {
             return NcStatus::Frame;
         };
-        match encoder.session.look_ahead(&raw) {
-            Ok(()) => NcStatus::Ok,
-            Err(e) => e.into(),
-        }
+        status_of(encoder.session.look_ahead(&raw))
     })
 }
 
@@ -763,11 +777,8 @@ pub unsafe extern "C" fn nc_encoder_flush(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nc_encoder_request_keyframe(encoder: *mut NcEncoder) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(|| {
-        encoder.session.request_keyframe();
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        session.request_keyframe();
         NcStatus::Ok
     })
 }
@@ -780,11 +791,8 @@ pub unsafe extern "C" fn nc_encoder_request_keyframe(encoder: *mut NcEncoder) ->
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nc_encoder_acknowledge(encoder: *mut NcEncoder, index: u64) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(|| {
-        encoder.session.acknowledge(index);
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        session.acknowledge(index);
         NcStatus::Ok
     })
 }
@@ -798,11 +806,8 @@ pub unsafe extern "C" fn nc_encoder_acknowledge(encoder: *mut NcEncoder, index: 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn nc_encoder_report_loss(encoder: *mut NcEncoder, index: u64) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(|| {
-        encoder.session.report_loss(index);
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        session.report_loss(index);
         NcStatus::Ok
     })
 }
@@ -820,14 +825,11 @@ pub unsafe extern "C" fn nc_encoder_acknowledge_layer(
     spatial_id: u8,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    if usize::from(spatial_id) >= nc_encoder::MAX_SPATIAL_LAYERS {
-        return NcStatus::InvalidArgument;
-    }
-    guarded(|| {
-        encoder.session.acknowledge_layer(index, spatial_id);
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        if usize::from(spatial_id) >= nc_encoder::MAX_SPATIAL_LAYERS {
+            return NcStatus::InvalidArgument;
+        }
+        session.acknowledge_layer(index, spatial_id);
         NcStatus::Ok
     })
 }
@@ -845,14 +847,11 @@ pub unsafe extern "C" fn nc_encoder_report_layer_loss(
     spatial_id: u8,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    if usize::from(spatial_id) >= nc_encoder::MAX_SPATIAL_LAYERS {
-        return NcStatus::InvalidArgument;
-    }
-    guarded(|| {
-        encoder.session.report_layer_loss(index, spatial_id);
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        if usize::from(spatial_id) >= nc_encoder::MAX_SPATIAL_LAYERS {
+            return NcStatus::InvalidArgument;
+        }
+        session.report_layer_loss(index, spatial_id);
         NcStatus::Ok
     })
 }
@@ -871,15 +870,9 @@ pub unsafe extern "C" fn nc_encoder_set_bitrate(
     peak_kbps: u32,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(
-        || match encoder.session.set_bitrate(target_kbps, peak_kbps) {
-            Ok(()) => NcStatus::Ok,
-            Err(e) => e.into(),
-        },
-    )
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        status_of(session.set_bitrate(target_kbps, peak_kbps))
+    })
 }
 
 /// Change the target bitrate, peak (0 = twice the target) and buffer
@@ -897,15 +890,9 @@ pub unsafe extern "C" fn nc_encoder_set_rate(
     buffer_ms: u32,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(
-        || match encoder.session.set_rate(target_kbps, peak_kbps, buffer_ms) {
-            Ok(()) => NcStatus::Ok,
-            Err(e) => e.into(),
-        },
-    )
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        status_of(session.set_rate(target_kbps, peak_kbps, buffer_ms))
+    })
 }
 
 /// Code frames from the next one on at `width` x `height` (visible size):
@@ -922,17 +909,8 @@ pub unsafe extern "C" fn nc_encoder_set_resolution(
     height: u32,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(|| {
-        match encoder
-            .session
-            .set_resolution(width as usize, height as usize)
-        {
-            Ok(()) => NcStatus::Ok,
-            Err(e) => e.into(),
-        }
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        status_of(session.set_resolution(width as usize, height as usize))
     })
 }
 
@@ -948,12 +926,8 @@ pub unsafe extern "C" fn nc_encoder_set_intra_refresh(
     period: u32,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(|| match encoder.session.set_intra_refresh(period) {
-        Ok(()) => NcStatus::Ok,
-        Err(e) => e.into(),
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        status_of(session.set_intra_refresh(period))
     })
 }
 
@@ -971,12 +945,8 @@ pub unsafe extern "C" fn nc_encoder_set_frame_rate(
     den: u32,
 ) -> NcStatus {
     // SAFETY: the caller guarantees `encoder` is null or valid.
-    let Some(encoder) = (unsafe { encoder.as_mut() }) else {
-        return NcStatus::InvalidArgument;
-    };
-    guarded(|| match encoder.session.set_frame_rate(num, den) {
-        Ok(()) => NcStatus::Ok,
-        Err(e) => e.into(),
+    with_session(unsafe { encoder.as_mut() }, |session| {
+        status_of(session.set_frame_rate(num, den))
     })
 }
 

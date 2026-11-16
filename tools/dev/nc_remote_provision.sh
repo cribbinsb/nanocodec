@@ -49,5 +49,12 @@ fi
 got=$(rustc +nightly -vV | sed -n 's/^commit-hash: //p')
 [ "$got" = @NIGHTLY_HASH@ ] || { echo "FAILED: +nightly is $got" >&2; exit 1; }
 
+# The evaluation harness's Python packages (nceval: the standards lens, eval
+# tests), in a venv that nc_remote_job.py puts first on every job's PATH.
+python3 -m venv "$HOME/ncbox/venv"
+"$HOME/ncbox/venv/bin/pip" install -q --upgrade pip
+"$HOME/ncbox/venv/bin/pip" install -q numpy scipy opencv-python-headless xxhash av \
+  matplotlib scikit-learn optuna pytest pytest-xdist
+
 touch "$MARKER"
 echo "provisioned: $(rustc --version), $(cargo clippy --version), $(rustc +nightly --version), $(valgrind --version), $(python3 --version)"

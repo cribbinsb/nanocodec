@@ -19,3 +19,5 @@ h264.rd_refine_steps = 1
 h264.rd_refine_square = 0
 h264.transform_size_rd = 1
 h264.residual_rd_lambda = 0.315
+# Pinned before the Default's five Intra_4x4 RD candidates (2026-11-16).
+h264.intra_rd_candidates = 9

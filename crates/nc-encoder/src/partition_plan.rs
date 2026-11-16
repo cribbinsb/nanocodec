@@ -104,6 +104,8 @@ use crate::params::PlannerParams;
 use crate::partition::Block;
 use crate::shape::{MAX_SHAPE_PARTS, PartitionShape, ShapeSet};
 
+/// Index of the 32x32 sum in [`nc_analysis::motion::SbStats::me_dist`].
+const ME_DIST_32X32: usize = 2;
 /// Largest block when the 8x8 cost spread is high (32x32).
 const CAPPED_MAX_LOG2: u8 = 5;
 // The planner's tunable thresholds and multipliers are `PlannerParams`
@@ -183,6 +185,8 @@ pub(crate) struct Planner<'a, B: CodecBackend> {
     ///
     /// [`FramePlan::lambda_scale`]: crate::backend::FramePlan::lambda_scale
     pub lambda_headroom: f32,
+    /// The frame quantizer's sample step (`planner.depth_removal_sad_per_step`).
+    pub step: f32,
     /// [`Self::leaf_bits`], computed on first use: the backend prices it
     /// from about thirty CDFs, which do not change while one superblock is
     /// planned, and every costed node needs it (re-pricing it per node was
@@ -674,7 +678,10 @@ impl<B: CodecBackend> Planner<'_, B> {
         // luma BD at fixed QP, yet J_real TRAIN lost 0.4% at low rates.
         let removable = q >= self.params.depth_removal_min_quantizer;
         let min_log2 = match stats {
-            Some(s) if removable && remove_below_32(s.me_dist, spread, qp, self.params) => {
+            Some(s)
+                if removable && remove_below_32(s.me_dist, spread, qp, self.params)
+                    || self.predicted_well_at_32(sb, s.me_dist) =>
+            {
                 CAPPED_MAX_LOG2.max(floor)
             }
             _ => floor,
@@ -693,6 +700,29 @@ impl<B: CodecBackend> Planner<'_, B> {
             min_log2: min_log2.min(max_log2),
             bias: bias.clamp(self.params.bias_min, self.params.bias_max),
         }
+    }
+}
+
+impl<B: CodecBackend> Planner<'_, B> {
+    /// SVT's absolute depth removal (`planner.depth_removal_sad_per_step`):
+    /// the motion search already predicts superblock `sb` well at 32x32,
+    /// its best 32x32 SAD per visible sample under that many sample steps.
+    ///
+    /// What it skips: planning (and then mode decision and coding) of the
+    /// 16x16 children of superblocks whose 32x32 residual mostly quantises
+    /// to zero. Why safe: smaller blocks there can only reduce a residual
+    /// already under the step, and spend partition and mode bits to do so;
+    /// measured as SVT does it, against the quantizer, so fine quantizers
+    /// keep their small blocks. Effect: see `docs/handoff/light-pipeline.md`.
+    fn predicted_well_at_32(&self, sb: &Block, me_dist: [u32; 4]) -> bool {
+        let limit = self.params.depth_removal_sad_per_step;
+        if limit <= 0.0 {
+            return false;
+        }
+        let samples = (sb.width().min(self.width.saturating_sub(sb.x))
+            * sb.height().min(self.height.saturating_sub(sb.y)))
+        .max(1) as f32;
+        (me_dist[ME_DIST_32X32] as f32) < limit * self.step * samples
     }
 }
 
@@ -840,6 +870,7 @@ mod tests {
             params: &params,
             shapes: true,
             lambda_headroom: 1.0,
+            step: 1.0,
             leaf_bits: OnceCell::new(),
         };
         planner.plan(Block::square(0, 0, 5))

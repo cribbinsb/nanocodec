@@ -151,11 +151,12 @@ impl<T: Sample> Picture<T> {
                 let edge = row[keep_w - 1];
                 row[keep_w..].fill(edge);
             }
-            if keep_h < view.height() {
-                let last = view.row_mut(keep_h - 1).to_vec();
-                for y in keep_h..view.height() {
-                    view.row_mut(y).copy_from_slice(&last);
-                }
+            // Copied within the plane, without a copy of the last row.
+            let (stride, row_width, rows) = (view.stride(), view.width(), view.height());
+            let last = (keep_h - 1) * stride;
+            let data = view.data_mut();
+            for y in keep_h..rows {
+                data.copy_within(last..last + row_width, y * stride);
             }
         }
     }

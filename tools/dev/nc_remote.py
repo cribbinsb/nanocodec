@@ -79,7 +79,7 @@ MAX_PRICE_FACTOR = 1.5
 PURPOSE = "buildbox"
 NAME = "nanocodec-buildbox"
 #: Bump when nc_remote_provision.sh changes, so boxes re-provision.
-PROVISION_VERSION = "3"
+PROVISION_VERSION = "4"
 #: AMIs and their snapshots have no lifetime of their own; their ExpectedEnd is reviewed then.
 AMI_EXPECTED_END = "2026-12-31T00:00:00Z"
 
@@ -577,6 +577,8 @@ def cmd_status(_args) -> int:
         current = live_box(aws)
     say(f"cost: today (UTC) ${day_cost():.2f} of ${DAILY_BUDGET_USD:.2f}/day; "
         f"all build boxes ${total_cost():.2f}")
+    for image in aws.ec2.describe_images(Owners=["self"], Filters=aws.ours())["Images"]:
+        say(f"image {image['ImageId']} {image['State']} (baked {image['CreationDate']})")
     if not unended():
         say("no box running")
     job = (HERE / "nc_remote_job.py").read_text()
@@ -607,6 +609,7 @@ def cmd_reap(_args) -> int:
     aws = Aws()
     with Locked():
         live_box(aws)
+        prune_images(aws)
         if day_cost() >= DAILY_BUDGET_USD:
             stop_all(aws)
             return 0
@@ -619,16 +622,38 @@ def cmd_reap(_args) -> int:
     return 0
 
 
+def prune_images(aws: Aws) -> None:
+    """Remove our baked images (and snapshots) older than the newest available one.
+    Run by `bake` and `reap`: a snapshot of a busy box takes 30-60 min, so `bake`
+    does not wait for it."""
+    images = aws.ec2.describe_images(Owners=["self"], Filters=aws.ours())["Images"]
+    available = [i for i in images if i["State"] == "available"]
+    if not available:
+        return
+    newest = max(i["CreationDate"] for i in available)
+    for image in images:
+        if image["CreationDate"] >= newest or image["State"] == "pending":
+            continue
+        aws.ec2.deregister_image(ImageId=image["ImageId"])
+        for device in image.get("BlockDeviceMappings", []):
+            snapshot = device.get("Ebs", {}).get("SnapshotId")
+            if snapshot:
+                aws.ec2.delete_snapshot(SnapshotId=snapshot)
+        ledger_row(f"{image['ImageId']} (AMI + snapshot)", "removed", "—", iso(utc_now()),
+                   "$0.00", SessionSpec(region=REGION, instance_type="—", purpose=PURPOSE))
+        say(f"removed the older image {image['ImageId']}")
+
+
 def cmd_bake(_args) -> int:
-    """Image the running box (toolchains, data, warm targets) for fast restarts;
-    older baked images and their snapshots are removed."""
+    """Start imaging the running box (toolchains, data, warm targets) for fast
+    restarts. Launches use the newest available image; older ones are pruned
+    once a newer one is available."""
     aws = Aws()
     box = load_state()
     if box is None:
         raise SystemExit("nc-remote bake: no box running")
+    prune_images(aws)
     stamp = f"{utc_now():%Y%m%d-%H%M%S}"
-    spec = box.spec()
-    old = aws.ec2.describe_images(Owners=["self"], Filters=aws.ours())["Images"]
     ssh(box, "sync", check=True)
     image_id = aws.ec2.create_image(
         InstanceId=box.instance_id, Name=f"{NAME}-{stamp}", NoReboot=True,
@@ -636,19 +661,8 @@ def cmd_bake(_args) -> int:
         TagSpecifications=[*aws.tags("image", AMI_EXPECTED_END),
                            *aws.tags("snapshot", AMI_EXPECTED_END)])["ImageId"]
     ledger_row(f"{image_id} (AMI + snapshot)", "baked", iso(utc_now()), AMI_EXPECTED_END,
-               "snapshot storage", spec)
-    say(f"baking {image_id}; waiting until available")
-    aws.ec2.get_waiter("image_available").wait(
-        ImageIds=[image_id], WaiterConfig={"Delay": 15, "MaxAttempts": 160})
-    for image in old:
-        aws.ec2.deregister_image(ImageId=image["ImageId"])
-        for device in image.get("BlockDeviceMappings", []):
-            snapshot = device.get("Ebs", {}).get("SnapshotId")
-            if snapshot:
-                aws.ec2.delete_snapshot(SnapshotId=snapshot)
-        ledger_row(f"{image['ImageId']} (AMI + snapshot)", "removed", "—", iso(utc_now()),
-                   "$0.00", spec)
-    say(f"{image_id} available")
+               "snapshot storage", box.spec())
+    say(f"baking {image_id}: available in 10-60 min (`nc-remote status` shows it)")
     return 0
 
 
