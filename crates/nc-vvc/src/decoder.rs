@@ -22,6 +22,10 @@ const REFERENCE_BORDER: usize = 4;
 const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
 /// ALF APS ids (`aps_adaptation_parameter_set_id` of ALF APSs: 0..=7).
 const ALF_APS_IDS: usize = 8;
+/// SPS ids (`sps_seq_parameter_set_id`: 0..=15) and PPS ids
+/// (`pps_pic_parameter_set_id`: 0..=63).
+const SPS_IDS: usize = 16;
+const PPS_IDS: usize = 64;
 /// Our SPS's fixed prefix (`headers::sps_head`): IDs, chroma format, CTU
 /// size and PTL without GCI or sub-profiles; the CTU size follows the IDs
 /// and chroma format (§7.3.2.4).
@@ -74,6 +78,14 @@ pub struct Decoder {
     /// Our own streams' luma ALF APS banks, by APS id.
     alf_banks: [Option<Box<crate::alf_aps::SignalledFilters>>; ALF_APS_IDS],
     picture_header: Option<Box<crate::decoder_headers::PictureHeader>>,
+    /// Whether the latest SPS is a general one (not our own streams').
+    general: bool,
+    /// General SPSs by `sps_seq_parameter_set_id`.
+    general_sequences: [Option<Box<crate::decoder_headers::Sequence>>; SPS_IDS],
+    /// General PPS RBSPs by `pps_pic_parameter_set_id`, parsed when a
+    /// picture activates them (their syntax depends on their SPS).
+    pps_rbsp: Vec<Option<Vec<u8>>>,
+    /// The active SPS and PPS (§7.4.2.4.2), of the current picture.
     general_sequence: Option<Box<crate::decoder_headers::Sequence>>,
     general_picture: Option<Box<crate::decoder_headers::PictureParameters>>,
     general_references: Option<Box<crate::decoder_dpb::References>>,
@@ -150,7 +162,9 @@ impl Decoder {
         let kind = nal[1] >> 3;
         if matches!(
             kind,
-            super::decoder_metadata::AUD
+            super::decoder_metadata::OPI
+                | super::decoder_metadata::DCI
+                | super::decoder_metadata::AUD
                 | super::decoder_metadata::PREFIX_SEI
                 | super::decoder_metadata::SUFFIX_SEI
                 | super::decoder_metadata::FILLER
@@ -308,8 +322,12 @@ impl Decoder {
         self.general_picture = None;
         self.picture_header = None;
         if let Ok(info) = parse_sps(rbsp) {
-            let changed_profile = self.general_sequence.take().is_some();
+            let changed_profile = self.general;
             if changed_profile {
+                self.general = false;
+                self.general_sequence = None;
+                self.general_sequences = Default::default();
+                self.pps_rbsp.clear();
                 self.general_references = None;
             }
             self.colour = info.colour;
@@ -327,21 +345,20 @@ impl Decoder {
         } else {
             let sequence = crate::decoder_headers::Sequence::parse(rbsp)?;
             self.motion = None;
-            if self.general_sequence.as_deref() != Some(&sequence) {
-                self.general_references = None;
-                self.reference = None;
-                self.next_poc = None;
-            }
-            self.colour = sequence.colour;
-            self.general_sequence = Some(Box::new(sequence));
+            self.general = true;
+            let id = usize::from(sequence.id);
+            self.general_sequences[id] = Some(Box::new(sequence));
         }
         Ok(())
     }
 
     fn accept_pps(&mut self, rbsp: &[u8]) -> Result<()> {
-        if let Some(sequence) = &self.general_sequence {
-            let parameters = crate::decoder_headers::PictureParameters::parse(rbsp, sequence)?;
-            self.general_picture = Some(Box::new(parameters));
+        if self.general {
+            let id = usize::from(rbsp.first().ok_or(DecodeError::Truncated)? >> 2);
+            if self.pps_rbsp.len() < PPS_IDS {
+                self.pps_rbsp.resize(PPS_IDS, None);
+            }
+            self.pps_rbsp[id] = Some(rbsp.to_vec());
             return Ok(());
         }
         let geometry = self
@@ -454,6 +471,87 @@ impl Decoder {
 
     /// Decode `units`; `false` when they end inside a general picture whose
     /// other slices are still to come.
+    /// Activate PPS `id` and its SPS for the picture that starts (§7.4.2.4.2):
+    /// a different SPS starts a new sequence, without the old references.
+    fn activate(&mut self, id: u8) -> Result<()> {
+        let rbsp = self
+            .pps_rbsp
+            .get(usize::from(id))
+            .and_then(Option::as_deref)
+            .ok_or(DecodeError::Malformed("VVC PH missing PPS"))?;
+        // pps_pic_parameter_set_id u(6), then pps_seq_parameter_set_id u(4).
+        let sequence_id = match rbsp {
+            [first, second, ..] => usize::from((first & 3) << 2 | second >> 6),
+            _ => return Err(DecodeError::Truncated),
+        };
+        let sequence = self.general_sequences[sequence_id]
+            .as_deref()
+            .ok_or(DecodeError::Malformed("VVC PPS references missing SPS"))?;
+        let parameters = crate::decoder_headers::PictureParameters::parse(rbsp, sequence)?;
+        if self.general_sequence.as_deref() != Some(sequence) {
+            self.general_references = None;
+            self.reference = None;
+            self.next_poc = None;
+            self.colour = sequence.colour;
+            self.general_sequence = Some(Box::new(sequence.clone()));
+        }
+        self.general_picture = Some(Box::new(parameters));
+        Ok(())
+    }
+
+    /// The PPS id of the picture a slice NAL starts: its embedded picture
+    /// header's, or the picture header NAL's before it.
+    fn slice_pps_id(&self, rbsp: &[u8]) -> Result<u8> {
+        if crate::decoder_headers::PictureHeader::embedded(rbsp)? {
+            return crate::decoder_headers::PictureHeader::peek_pps_id(
+                crate::decoder_headers::Reader::after_flag(rbsp)?,
+            );
+        }
+        self.picture_header
+            .as_ref()
+            .map(|header| header.pps_id)
+            .ok_or(DecodeError::Malformed("VVC missing PH"))
+    }
+
+    /// A picture header NAL: activate its PPS and keep it for the slices.
+    fn accept_picture_header(&mut self, rbsp: &[u8]) -> Result<()> {
+        let id = crate::decoder_headers::PictureHeader::peek_pps_id(
+            crate::decoder_headers::Reader::new(rbsp),
+        )?;
+        self.activate(id)?;
+        let mut reader = crate::decoder_headers::Reader::new(rbsp);
+        let header = crate::decoder_headers::PictureHeader::parse(
+            &mut reader,
+            self.general_sequence.as_ref().unwrap(),
+            self.general_picture.as_ref().unwrap(),
+        )?;
+        reader.finish(false)?;
+        self.picture_header = Some(Box::new(header));
+        Ok(())
+    }
+
+    /// A general slice NAL (activating its PPS when it starts a picture);
+    /// the picture when it completes one.
+    fn general_slice(
+        &mut self,
+        rbsp: &[u8],
+        kind: u8,
+        temporal_id: u8,
+    ) -> Result<Option<OwnPicture>> {
+        if self.assembly.is_none() {
+            self.activate(self.slice_pps_id(rbsp)?)?;
+        }
+        // Access-unit decoding exposes the decoded reference; the streaming
+        // API applies display ordering after cropping the output copy.
+        Ok(self
+            .decode_general(rbsp, kind, temporal_id)?
+            .map(|decoded| OwnPicture {
+                picture: decoded,
+                poc: 0,
+                listed: Vec::new(),
+            }))
+    }
+
     fn decode_units<'a>(&mut self, units: impl IntoIterator<Item = &'a [u8]>) -> Result<bool> {
         self.shown = false;
         let mut picture = None;
@@ -467,12 +565,14 @@ impl Decoder {
             let rbsp = unescape_rbsp(&unit[2..])?;
             let kind = unit[1] >> 3;
             // Only slices and APSs may come between the slices of a picture.
-            if self.assembly.is_some() && !matches!(kind, 0..=3 | 7..=10 | 17 | 18) {
+            if self.assembly.is_some() && !matches!(kind, 0..=3 | 7..=10 | 17 | 18 | 23 | 24 | 25) {
                 self.assembly = None;
                 return Err(DecodeError::Malformed("VVC picture with missing slices"));
             }
             match kind {
-                kind @ (super::decoder_metadata::AUD
+                kind @ (super::decoder_metadata::OPI
+                | super::decoder_metadata::DCI
+                | super::decoder_metadata::AUD
                 | super::decoder_metadata::PREFIX_SEI
                 | super::decoder_metadata::SUFFIX_SEI
                 | super::decoder_metadata::FILLER) => {
@@ -484,40 +584,25 @@ impl Decoder {
                 headers::PPS_NUT if picture.is_none() => {
                     self.accept_pps(&rbsp)?;
                 }
-                19 if self.general_picture.is_some() => {
-                    let mut reader = crate::decoder_headers::Reader::new(&rbsp);
-                    let header = crate::decoder_headers::PictureHeader::parse(
-                        &mut reader,
-                        self.general_sequence.as_ref().unwrap(),
-                        self.general_picture.as_ref().unwrap(),
-                    )?;
-                    reader.finish(false)?;
-                    self.picture_header = Some(Box::new(header));
+                19 if self.general && self.assembly.is_none() => {
+                    self.accept_picture_header(&rbsp)?;
                 }
-                headers::PREFIX_APS_NUT if picture.is_none() && self.general_sequence.is_none() => {
+                headers::PREFIX_APS_NUT if picture.is_none() && !self.general => {
                     self.accept_alf_aps(&rbsp)?;
                 }
-                17 | 18 if self.general_sequence.is_some() => {
+                17 | 18 if self.general => {
                     let parameters = crate::decoder_headers::Adaptation::parse(&rbsp)?;
                     let kind = parameters.kind();
                     let id = usize::from(parameters.id);
                     self.adaptation[kind][id] = Some(Box::new(parameters));
                 }
-                kind @ (0..=3 | 7..=10) if self.general_picture.is_some() => {
+                kind @ (0..=3 | 7..=10) if self.general => {
                     if picture.is_some() {
                         return Err(DecodeError::Unsupported(
                             "VVC multiple pictures per access unit",
                         ));
                     }
-                    // Access-unit decoding exposes the decoded reference; the streaming
-                    // API applies display ordering after cropping the output copy.
-                    picture = self
-                        .decode_general(&rbsp, kind, unit[1] & 7)?
-                        .map(|decoded| OwnPicture {
-                            picture: decoded,
-                            poc: 0,
-                            listed: Vec::new(),
-                        });
+                    picture = self.general_slice(&rbsp, kind, unit[1] & 7)?;
                 }
                 kind @ (headers::IDR_N_LP | headers::TRAIL_NUT)
                     if picture.is_none() && self.pps_block_qp.is_some() =>

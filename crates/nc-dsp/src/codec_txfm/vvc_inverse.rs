@@ -1,48 +1,103 @@
 //! H.266 rectangular inverse DCT-II through the shared HEVC scaling/DCT kernels.
 //! Decoder-only parameterization follows BSD-Clear `VVdeC` Quant (`THIRD_PARTY.md`).
-use super::{HevcTransform, VvcQuantizer};
+//!
+//! Every entry takes the component's bit depth: the 8-bit [`Dsp`] methods
+//! pass [`BitDepth::EIGHT`] and run the code they always ran; deeper
+//! streams (the decoders' `u16` instance) change the scaling shift, the
+//! inverse transform's second-stage shift and the QP range, and nothing
+//! else (coefficients clip to 16 bits at every depth, §8.7.3, §8.7.4.1).
+use nc_common::BitDepth;
+
+use super::{HEVC_LEVEL_SCALE, HevcQuantizer, HevcTransform, VVC_RECT_LEVEL_SCALE};
 use crate::Dsp;
 
-/// Shared flat inverse scaling, including narrow ISP and 64-point transforms.
+/// The deepest samples the VVC inverse kernels take: Main 10 (H.266
+/// §A.3.2, `sps_bitdepth_minus8` at most 2). Deeper scaling shifts would
+/// overflow the 32-bit product clamp of the shared dequantiser
+/// (`hevc_dequant_product_limit`, `2^(16 + bdShift)`).
+const MAX_DEPTH: u32 = 10;
+/// The largest `qP` at 8 bits (`QpBdOffset` 0).
+const MAX_EIGHT_BIT_QP: u8 = 63;
+/// `QpBdOffset = 6 · sps_bitdepth_minus8` (H.266 §7.4.3.4): QP steps per
+/// extra bit of depth.
+const QP_PER_BIT: u8 = 6;
+/// `bdShift = BitDepth + rectNonTsFlag + (Log2(nTbW) + Log2(nTbH)) / 2 −
+/// SCALING_SHIFT_OFFSET + sh_dep_quant_used_flag` (H.266 §8.7.3).
+const SCALING_SHIFT_OFFSET: u32 = 5;
+
+/// The largest `qP` (`Qp′`) a block at `depth` scales with: `63 +
+/// QpBdOffset` (`Qp′Y = QpY + QpBdOffset`, H.266 §8.7.1, §7.4.3.4).
+///
+/// # Panics
+/// If `depth` is deeper than the kernels take ([`MAX_DEPTH`]).
+pub(crate) fn max_qp(depth: BitDepth) -> u8 {
+    assert!(
+        depth.bits() <= MAX_DEPTH,
+        "{depth:?}: VVC inverse transforms take at most {MAX_DEPTH} bits"
+    );
+    MAX_EIGHT_BIT_QP + QP_PER_BIT * depth.above_eight() as u8
+}
+
+/// Shared flat inverse scaling at `depth` (H.266 §8.7.3, `m = 16`),
+/// including narrow ISP and 64-point transforms.
 pub(crate) fn scaling(
     (width, height): (usize, usize),
     qp: u8,
     dependent: bool,
-) -> super::HevcQuantizer {
+    depth: BitDepth,
+) -> HevcQuantizer {
     let log2_area = width.ilog2() + height.ilog2();
     let odd = log2_area & 1;
     let mean = log2_area / 2;
     let adjusted_qp = qp + u8::from(dependent);
-    let mut scaling = VvcQuantizer::new(qp, 2).0;
     let scales = if odd == 0 {
-        [40, 45, 51, 57, 64, 72]
+        HEVC_LEVEL_SCALE
     } else {
-        [57, 64, 72, 80, 90, 102]
+        VVC_RECT_LEVEL_SCALE
     };
-    scaling.level_scale = 16 * scales[usize::from(adjusted_qp % 6)];
-    scaling.per = u32::from(adjusted_qp / 6);
-    scaling.bd_shift = 3 + mean + odd + u32::from(dependent);
-    scaling
+    HevcQuantizer::inverse_only(
+        FLAT_SCALING_FACTOR * scales[usize::from(adjusted_qp % 6)],
+        u32::from(adjusted_qp / 6),
+        depth.bits() + mean + odd + u32::from(dependent) - SCALING_SHIFT_OFFSET,
+    )
 }
 
+/// Flat scaling and the rectangular DCT-II at `depth` (`Dsp::vvc_inverse_dct`).
 pub(crate) fn inverse(
     dsp: &Dsp,
-    width: usize,
-    height: usize,
+    (width, height): (usize, usize),
     levels: &[i32],
-    qp: u8,
-    dependent: bool,
+    (qp, dependent): (u8, bool),
     out: &mut [i16],
+    depth: BitDepth,
 ) {
     assert!([2, 4, 8, 16, 32].contains(&width) && [2, 4, 8, 16, 32].contains(&height));
-    assert!(qp <= 63 && levels.len() >= width * height && out.len() >= width * height);
+    assert!(qp <= max_qp(depth) && levels.len() >= width * height && out.len() >= width * height);
+    let size = (width, height);
+    let quantizer = (qp, dependent);
     // Scratch sized to the transform's square: zeroing 32x32 buffers for
     // every small block was 4.5 % of VVC Default's x86 instructions.
     match width.max(height).max(4) {
-        4 => inverse_sized::<16>(dsp, (width, height), levels, (qp, dependent), out),
-        8 => inverse_sized::<64>(dsp, (width, height), levels, (qp, dependent), out),
-        16 => inverse_sized::<256>(dsp, (width, height), levels, (qp, dependent), out),
-        _ => inverse_sized::<1024>(dsp, (width, height), levels, (qp, dependent), out),
+        4 => inverse_sized::<16>(dsp, size, levels, quantizer, out, depth),
+        8 => inverse_sized::<64>(dsp, size, levels, quantizer, out, depth),
+        16 => inverse_sized::<256>(dsp, size, levels, quantizer, out, depth),
+        _ => inverse_sized::<1024>(dsp, size, levels, quantizer, out, depth),
+    }
+}
+
+/// The square DCT-II inverse at `depth`: the 8-bit kernels at 8 bits, the
+/// high-depth table's (second stage `20 − BitDepth`) otherwise.
+fn square_inverse(
+    dsp: &Dsp,
+    transform: HevcTransform,
+    coeffs: &[i16],
+    out: &mut [i16],
+    depth: BitDepth,
+) {
+    if depth == BitDepth::EIGHT {
+        dsp.hevc_inverse(transform, coeffs, out);
+    } else {
+        crate::high_depth::inverse_whole_block(dsp, transform, coeffs, out, depth);
     }
 }
 
@@ -54,8 +109,9 @@ fn inverse_sized<const AREA: usize>(
     levels: &[i32],
     (qp, dependent): (u8, bool),
     out: &mut [i16],
+    depth: BitDepth,
 ) {
-    let scaling = scaling((width, height), qp, dependent);
+    let scaling = scaling((width, height), qp, dependent, depth);
     let mut scaled = [0; AREA];
     dsp.vvc_scale(
         &levels[..width * height],
@@ -65,7 +121,7 @@ fn inverse_sized<const AREA: usize>(
     let side = AREA.isqrt();
     let transform = HevcTransform::dct(side.ilog2() as u8).unwrap();
     if width == height && width >= 4 {
-        dsp.hevc_inverse(transform, &scaled, out);
+        square_inverse(dsp, transform, &scaled, out, depth);
         return;
     }
     // DCT-II bases nest: row k of the W-point basis is row k*N/W
@@ -79,7 +135,7 @@ fn inverse_sized<const AREA: usize>(
         }
     }
     let mut square = [0; AREA];
-    dsp.hevc_inverse(transform, &embedded, &mut square);
+    square_inverse(dsp, transform, &embedded, &mut square, depth);
     for y in 0..height {
         out[y * width..(y + 1) * width].copy_from_slice(&square[y * side..y * side + width]);
     }
@@ -91,7 +147,7 @@ fn inverse_sized<const AREA: usize>(
 /// clamps are those of the shared flat kernel (`hevc_scale`); a scalar loop,
 /// since each coefficient has its own multiplier and only streams with
 /// explicit scaling lists come here.
-fn scale_with_matrix(levels: &[i32], flat: &super::HevcQuantizer, matrix: &[u8], out: &mut [i16]) {
+fn scale_with_matrix(levels: &[i32], flat: &HevcQuantizer, matrix: &[u8], out: &mut [i16]) {
     let unit = flat.level_scale / FLAT_SCALING_FACTOR;
     for ((scaled, &level), &factor) in out.iter_mut().zip(levels).zip(matrix) {
         *scaled = super::scale_coefficient(level, i32::from(factor), unit, flat.per, flat.bd_shift);
@@ -117,22 +173,19 @@ impl Dsp {
         kinds: [crate::VvcTransformKind; 2],
         lfnst: Option<crate::VvcLfnst>,
         levels: &[i32],
-        (qp, dependent): (u8, bool),
+        quantizer: (u8, bool),
         matrix: &[u8],
         out: &mut [i16],
     ) {
-        let (width, height) = size;
-        let length = width * height;
-        assert!(kinds[0].valid(width) && kinds[1].valid(height) && length >= 4 && qp <= 63);
-        assert!(levels.len() >= length && matrix.len() >= length && out.len() >= length);
-        let flat = scaling(size, qp, dependent);
-        crate::vvc_mts::with_scratch(length, |scaled| {
-            scale_with_matrix(&levels[..length], &flat, matrix, &mut scaled[..length]);
-            if let Some(transform) = lfnst {
-                super::vvc_lfnst::inverse(size, transform, &mut scaled[..length]);
-            }
-            super::vvc_primary::inverse(size, kinds, &scaled[..length], out);
-        });
+        inverse_with_matrix(
+            size,
+            (kinds, lfnst),
+            levels,
+            quantizer,
+            matrix,
+            out,
+            BitDepth::EIGHT,
+        );
     }
 
     /// Invert transform skip and optional block differential residuals using
@@ -141,14 +194,33 @@ impl Dsp {
     /// If dimensions/buffers, QP or differential direction are invalid.
     pub fn vvc_inverse_skip(
         &self,
-        (width, height): (usize, usize),
+        size: (usize, usize),
         levels: &[i32],
         qp: u8,
         bdpcm: u8,
         out: &mut [i16],
     ) {
+        self.vvc_inverse_skip_at(size, levels, qp, bdpcm, out, BitDepth::EIGHT);
+    }
+
+    /// [`Self::vvc_inverse_skip`] of a component at `depth`, where `qp`
+    /// (`Qp′`) reaches `63 + QpBdOffset`. Nothing else depends on the depth:
+    /// a transform-skip block scales with `bdShift = 10` and its residual
+    /// is the scaled coefficients themselves (H.266 §8.7.3, §8.7.2).
+    ///
+    /// # Panics
+    /// As [`Self::vvc_inverse_skip`], with the QP bound of `depth`.
+    pub(crate) fn vvc_inverse_skip_at(
+        &self,
+        (width, height): (usize, usize),
+        levels: &[i32],
+        qp: u8,
+        bdpcm: u8,
+        out: &mut [i16],
+        depth: BitDepth,
+    ) {
         let valid = |n: usize| n.is_power_of_two() && (2..=32).contains(&n);
-        assert!(valid(width) && valid(height) && qp <= 63 && bdpcm <= 2);
+        assert!(valid(width) && valid(height) && qp <= max_qp(depth) && bdpcm <= 2);
         let length = width * height;
         assert!(levels.len() >= length && out.len() >= length);
         let mut accumulated = [0i32; 1024];
@@ -161,12 +233,49 @@ impl Dsp {
             accumulated[i] =
                 (i64::from(levels[i]) + i64::from(previous)).clamp(-32768, 32767) as i32;
         }
-        let mut scaling = VvcQuantizer::new(qp.max(4), 2).0;
+        let qp = qp.max(MIN_SKIP_QP);
         // The existing HEVC scale includes a factor of sixteen; transform
         // skip's normative six-bit inverse scale therefore uses ten bits.
-        scaling.bd_shift = 10;
+        let scaling = HevcQuantizer::inverse_only(
+            FLAT_SCALING_FACTOR * HEVC_LEVEL_SCALE[usize::from(qp % 6)],
+            u32::from(qp / 6),
+            SKIP_SCALING_SHIFT,
+        );
         self.vvc_scale(&accumulated[..length], &scaling, &mut out[..length]);
     }
+}
+
+/// The smallest transform-skip QP, `QpPrimeTsMin` with `min_qp_prime_ts`
+/// 0 (H.266 §7.4.3.4).
+const MIN_SKIP_QP: u8 = 4;
+/// Transform skip's `bdShift` (H.266 §8.7.3), at every depth.
+const SKIP_SCALING_SHIFT: u32 = 10;
+
+/// [`Dsp::vvc_inverse_with_matrix`] at `depth`.
+///
+/// # Panics
+/// As [`Dsp::vvc_inverse_with_matrix`], with the QP bound of `depth`.
+pub(crate) fn inverse_with_matrix(
+    size: (usize, usize),
+    (kinds, lfnst): ([crate::VvcTransformKind; 2], Option<crate::VvcLfnst>),
+    levels: &[i32],
+    (qp, dependent): (u8, bool),
+    matrix: &[u8],
+    out: &mut [i16],
+    depth: BitDepth,
+) {
+    let (width, height) = size;
+    let length = width * height;
+    assert!(kinds[0].valid(width) && kinds[1].valid(height) && length >= 4 && qp <= max_qp(depth));
+    assert!(levels.len() >= length && matrix.len() >= length && out.len() >= length);
+    let flat = scaling(size, qp, dependent, depth);
+    crate::vvc_mts::with_scratch(length, |scaled| {
+        scale_with_matrix(&levels[..length], &flat, matrix, &mut scaled[..length]);
+        if let Some(transform) = lfnst {
+            super::vvc_lfnst::inverse(size, transform, &mut scaled[..length]);
+        }
+        super::vvc_primary::inverse(size, kinds, &scaled[..length], out, depth);
+    });
 }
 
 #[cfg(test)]
@@ -250,7 +359,14 @@ mod tests {
                             let expected = reference(width, height, &levels, qp, dependent);
                             for dsp in &dsps {
                                 let mut actual = vec![0; width * height];
-                                inverse(dsp, width, height, &levels, qp, dependent, &mut actual);
+                                inverse(
+                                    dsp,
+                                    (width, height),
+                                    &levels,
+                                    (qp, dependent),
+                                    &mut actual,
+                                    BitDepth::EIGHT,
+                                );
                                 assert_eq!(
                                     actual,
                                     expected,
@@ -297,7 +413,8 @@ mod matrix_tests {
             for qp in [0, 5, 22, 37, 63] {
                 for dependent in [false, true] {
                     let mut scaled = [0; 64];
-                    scale_with_matrix(&levels, &scaling(size, qp, dependent), &matrix, &mut scaled);
+                    let flat = scaling(size, qp, dependent, BitDepth::EIGHT);
+                    scale_with_matrix(&levels, &flat, &matrix, &mut scaled);
                     for (index, &value) in scaled.iter().enumerate() {
                         let expected = reference(levels[index], matrix[index], size, qp, dependent);
                         assert_eq!(value, expected, "{size:?} qp {qp} {dependent} {index}");

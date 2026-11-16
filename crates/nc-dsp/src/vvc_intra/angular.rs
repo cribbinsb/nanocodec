@@ -1,6 +1,7 @@
 //! H.266 square-block angular reference extension, parameters and scalar pixels.
 //! Angle/inverse-angle and cubic tables follow BSD-licensed `VVenC`
 //! `IntraPrediction`/`InterpolationFilter`; see `THIRD_PARTY.md`.
+use nc_common::{BitDepth, Sample};
 
 pub(super) const MAX_SIDE: usize = 32;
 /// Length of the extended main reference: a negative margin of one side,
@@ -145,10 +146,10 @@ impl Angular {
     }
 }
 
-/// Scalar reference; returns whether `out` holds the transposed block
-/// (horizontal directions with `transposed_ok`).
+/// Scalar reference at `depth`; returns whether `out` holds the
+/// transposed block (horizontal directions with `transposed_ok`).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn predict(
+pub(super) fn predict<T: Sample>(
     n: usize,
     direction: u8,
     luma: bool,
@@ -156,8 +157,11 @@ pub(super) fn predict(
     left: &[i32],
     corner: i32,
     transposed_ok: bool,
-    out: &mut [u8],
+    out: &mut [T],
+    depth: BitDepth,
 ) -> bool {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let angular = Angular::new(n, direction, luma, top, left, corner);
     for y in 0..n {
         let row = angular.row(y);
@@ -171,7 +175,7 @@ pub(super) fn predict(
             } else {
                 ((32 - phase) * row[x + 1] + phase * row[x + 2] + 16) >> 5
             };
-            let mut value = value.clamp(0, 255);
+            let mut value = depth.clip(value);
             if let Some(scale) = angular.pdpc_scale
                 && x < (3 << scale).min(n)
             {
@@ -183,7 +187,8 @@ pub(super) fn predict(
             } else {
                 x * n + y
             };
-            out[index] = value as u8;
+            // PDPC blends two in-range samples: the sum stays in range.
+            out[index] = T::from_i32(value);
         }
     }
     !angular.vertical && transposed_ok

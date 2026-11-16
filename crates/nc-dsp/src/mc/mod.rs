@@ -58,7 +58,9 @@
 
 #[allow(unsafe_code)]
 pub(crate) mod generic;
-mod precision;
+pub(crate) mod precision;
+mod rpr;
+pub use rpr::{VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled};
 pub(crate) mod scalar;
 
 #[cfg(target_arch = "x86_64")]

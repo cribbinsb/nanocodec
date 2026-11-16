@@ -123,7 +123,9 @@ pub use diff::{SUBPEL_VARIANCE_POSITIONS, Variance, VarianceEnergy};
 pub use dispatch::{
     Dsp, H264Predictor, av1_inverse_add_i16_dav1d_reference, av1_inverse_has_dav1d_model,
 };
-pub use mc::{Filter, SubBlockMotion};
+pub use mc::{
+    Filter, SubBlockMotion, VVC_RPR_POSITION_BITS, VvcRprFilter, VvcScaledBlock, vvc_predict_scaled,
+};
 pub use pixel::{GRID_BLOCKS, GRID_LARGE_BLOCKS, GRID_SMALL_BLOCKS, GridBest, GridRows};
 pub use prefetch::prefetch_block;
 pub use resample::PlaneResampler;
@@ -137,7 +139,10 @@ pub use vp9_loop_filter::{VP9_EDGE_LINES, Vp9EdgeFilter};
 pub mod intra_prediction;
 
 mod vvc_deblock;
-pub use vvc_deblock::{vvc_deblock_chroma, vvc_deblock_luma};
+pub use vvc_deblock::{
+    VVC_DEBLOCK_MAX_BETA_PRIME, VVC_DEBLOCK_MAX_TC_PRIME, vvc_deblock_beta, vvc_deblock_chroma,
+    vvc_deblock_luma, vvc_deblock_tc,
+};
 
 mod vvc_bdof;
 mod vvc_dmvr;
@@ -156,10 +161,11 @@ pub use vvc_intra::{
 
 mod vvc_alf;
 pub use vvc_alf::{
-    VVC_ALF_BLOCK, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN, VVC_ALF_GRAM_COLUMNS,
-    VVC_ALF_GRAM_MAX_MAGNITUDE, VVC_ALF_GRAM_MAX_SAMPLES, VVC_ALF_GRAM_TERMS,
-    VVC_ALF_MAX_GROUP_SUM, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES, VVC_ALF_SAMPLE_STEP,
-    VVC_ALF_SAMPLES, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, VVC_ALF_TRANSPOSES, vvc_alf_gram_index,
+    VVC_ALF_BLOCK, VVC_ALF_CLIP_INDICES, VVC_ALF_DOT_LANES, VVC_ALF_GRAM_ALIGN,
+    VVC_ALF_GRAM_COLUMNS, VVC_ALF_GRAM_MAX_MAGNITUDE, VVC_ALF_GRAM_MAX_SAMPLES, VVC_ALF_GRAM_TERMS,
+    VVC_ALF_MAX_BIT_DEPTH, VVC_ALF_MAX_GROUP_SUM, VVC_ALF_REACH, VVC_ALF_SAMPLE_LANES,
+    VVC_ALF_SAMPLE_STEP, VVC_ALF_SAMPLES, VVC_ALF_TAP_OFFSETS, VVC_ALF_TAPS, VVC_ALF_TRANSPOSES,
+    vvc_alf_clip_value, vvc_alf_gram_index, vvc_alf_max_group_sum,
 };
 
 mod vvc_geo;

@@ -289,8 +289,12 @@ impl Dsp {
     /// If `qp > 63`, `levels` is shorter than 32x32 or `out` than 64x64.
     pub fn vvc_inverse_dct64(&self, levels: &[i32], qp: u8, dependent: bool, out: &mut [i16]) {
         assert!(qp <= 63 && levels.len() >= CODED_AREA && out.len() >= BLOCK_AREA);
-        let scaling =
-            crate::codec_txfm::vvc_inverse::scaling((BLOCK_SIDE, BLOCK_SIDE), qp, dependent);
+        let scaling = crate::codec_txfm::vvc_inverse::scaling(
+            (BLOCK_SIDE, BLOCK_SIDE),
+            qp,
+            dependent,
+            nc_common::BitDepth::EIGHT,
+        );
         let mut scaled = [0; CODED_AREA];
         self.vvc_scale(&levels[..CODED_AREA], &scaling, &mut scaled);
         inverse(&scaled, &mut out[..BLOCK_AREA]);

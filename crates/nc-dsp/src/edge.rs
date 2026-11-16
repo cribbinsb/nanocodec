@@ -13,17 +13,17 @@
 /// (`left`, `top`) of a plane whose visible size is `visible` into `dst`
 /// (rows `dst_stride` apart), reading every sample at its coordinates
 /// clamped into the visible area. The plane's sample (x, y) is
-/// `src[y * stride + x]`.
+/// `src[y * stride + x]`. Samples of any type: only copies and fills.
 ///
 /// # Panics
 ///
 /// If the visible area is empty or not inside `src`, or `dst` is too small.
-pub fn emulate_edges(
-    (src, stride): (&[u8], usize),
+pub fn emulate_edges<T: Copy>(
+    (src, stride): (&[T], usize),
     visible: (usize, usize),
     (left, top): (isize, isize),
     (width, height): (usize, usize),
-    (dst, dst_stride): (&mut [u8], usize),
+    (dst, dst_stride): (&mut [T], usize),
 ) {
     let (visible_w, visible_h) = (visible.0 as isize, visible.1 as isize);
     assert!(visible_w > 0 && visible_h > 0 && dst_stride >= width);

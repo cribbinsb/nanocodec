@@ -80,9 +80,18 @@ fn parameters(split: u8) -> (usize, i32) {
     }
     unreachable!("validated partition index")
 }
+/// Weights are in eighths: `w` for the first prediction, `8 − w` for the second.
+const WEIGHT_DENOMINATOR: i32 = 8;
+/// Fewest bits `shift1` drops (H.266 §8.5.7.3: `shift1 = Max(5, 17 − BitDepth)`).
+const MIN_BLEND_SHIFT: u32 = 5;
+/// The six-fractional-bit precision plus the eighths of the weights, from
+/// which `shift1 = 17 − BitDepth` removes all but the sample's bits.
+const BLEND_PRECISION: u32 = 17;
+
 impl Dsp {
     /// Blend signed six-fractional-bit predictions using a geometric mask.
-    /// `origin` and mask geometry are in luma samples; `chroma` selects 4:2:0.
+    /// `origin` and mask geometry are in luma samples; `chroma` selects 4:2:0
+    /// ([`crate::DepthKernels::vvc_geometric_blend`] for deeper samples).
     /// # Panics
     /// If a slice cannot hold the requested rectangle.
     pub fn vvc_geometric_blend(
@@ -94,15 +103,45 @@ impl Dsp {
         sources: (&[i16], &[i16]),
         out: &mut [u8],
     ) {
-        let count = size.0 * size.1;
-        let (a, b) = (&sources.0[..count], &sources.1[..count]);
-        for (i, (out, (&a, &b))) in out[..count].iter_mut().zip(a.iter().zip(b)).enumerate() {
-            let x = origin.0 + ((i % size.0) << usize::from(chroma));
-            let y = origin.1 + ((i / size.0) << usize::from(chroma));
-            let weight = i32::from(mask.weight(x, y));
-            *out = ((weight * i32::from(a) + (8 - weight) * i32::from(b) + 256) >> 9).clamp(0, 255)
-                as u8;
-        }
+        blend_at(
+            mask,
+            origin,
+            size,
+            chroma,
+            sources,
+            out,
+            nc_common::BitDepth::EIGHT,
+        );
+    }
+}
+
+/// [`Dsp::vvc_geometric_blend`] at `depth` (H.266 §8.5.7.3):
+/// `Clip3(0, max, (a·w + b·(8 − w) + offset1) >> shift1)`,
+/// `shift1 = Max(5, 17 − BitDepth)`, `offset1 = 1 << (shift1 − 1)`.
+///
+/// # Panics
+/// If a slice cannot hold the requested rectangle.
+pub(crate) fn blend_at<T: nc_common::Sample>(
+    mask: VvcGeometric,
+    origin: (usize, usize),
+    size: (usize, usize),
+    chroma: bool,
+    sources: (&[i16], &[i16]),
+    out: &mut [T],
+    depth: nc_common::BitDepth,
+) {
+    let shift = BLEND_PRECISION
+        .saturating_sub(depth.bits())
+        .max(MIN_BLEND_SHIFT);
+    let offset = 1 << (shift - 1);
+    let count = size.0 * size.1;
+    let (a, b) = (&sources.0[..count], &sources.1[..count]);
+    for (i, (out, (&a, &b))) in out[..count].iter_mut().zip(a.iter().zip(b)).enumerate() {
+        let x = origin.0 + ((i % size.0) << usize::from(chroma));
+        let y = origin.1 + ((i / size.0) << usize::from(chroma));
+        let weight = i32::from(mask.weight(x, y));
+        let sum = weight * i32::from(a) + (WEIGHT_DENOMINATOR - weight) * i32::from(b);
+        *out = depth.clip_to((sum + offset) >> shift);
     }
 }
 

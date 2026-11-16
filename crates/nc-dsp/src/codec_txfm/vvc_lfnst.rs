@@ -1,5 +1,7 @@
 //! H.266 low-frequency non-separable inverse transform in shared DSP.
 //! Normative tables and rearrangement follow BSD-Clear `VVdeC` (`THIRD_PARTY.md`).
+use nc_common::BitDepth;
+
 use super::vvc_primary::{self, VvcTransformKind};
 use crate::Dsp;
 #[path = "vvc_lfnst_tables.rs"]
@@ -92,18 +94,45 @@ impl Dsp {
         dependent: bool,
         out: &mut [i16],
     ) {
+        self.vvc_inverse_lfnst_at(
+            size,
+            transform,
+            levels,
+            (qp, dependent),
+            out,
+            BitDepth::EIGHT,
+        );
+    }
+
+    /// [`Self::vvc_inverse_lfnst`] of a component at `depth`: `qp` (`Qp′`)
+    /// reaches `63 + QpBdOffset`; the scaling and the primary transform's
+    /// second stage shift by the depth (H.266 §8.7.3, §8.7.2). The LFNST
+    /// stage itself (shift 7, 16-bit clip, §8.7.4.2) is depth independent.
+    ///
+    /// # Panics
+    /// As [`Self::vvc_inverse_lfnst`], with the QP bound of `depth`.
+    pub(crate) fn vvc_inverse_lfnst_at(
+        &self,
+        size: (usize, usize),
+        transform: VvcLfnst,
+        levels: &[i32],
+        (qp, dependent): (u8, bool),
+        out: &mut [i16],
+        depth: BitDepth,
+    ) {
         let (width, height) = size;
         let valid = |n: usize| n.is_power_of_two() && (4..=64).contains(&n);
-        assert!(valid(width) && valid(height) && qp <= 63);
+        assert!(valid(width) && valid(height) && qp <= super::vvc_inverse::max_qp(depth));
         assert!([1, 2].contains(&transform.index) && transform.direction <= 66);
         assert!(valid(transform.prediction_size.0) && valid(transform.prediction_size.1));
         let length = width * height;
         assert!(levels.len() >= length && out.len() >= length);
         let mut scaled = [0; 4096];
-        let scaling = super::vvc_inverse::scaling(size, qp, dependent);
+        let scaling = super::vvc_inverse::scaling(size, qp, dependent, depth);
         self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
         inverse(size, transform, &mut scaled[..length]);
-        vvc_primary::inverse(size, [VvcTransformKind::Dct2; 2], &scaled[..length], out);
+        let kinds = [VvcTransformKind::Dct2; 2];
+        vvc_primary::inverse(size, kinds, &scaled[..length], out, depth);
     }
 }
 

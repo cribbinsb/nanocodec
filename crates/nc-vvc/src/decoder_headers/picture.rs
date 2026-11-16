@@ -108,6 +108,26 @@ fn filter_offsets(r: &mut Reader<'_>) -> Result<[i8; 2]> {
     ])
 }
 impl PictureHeader {
+    /// `ph_pic_parameter_set_id` of the picture header `r` starts at, read
+    /// ahead of parsing it: the PPS (and its SPS) to activate first.
+    /// Whether slice RBSP `bytes` embeds its picture header
+    /// (`sh_picture_header_in_slice_header_flag`).
+    pub(crate) fn embedded(bytes: &[u8]) -> Result<bool> {
+        Reader::new(bytes).flag()
+    }
+
+    pub(crate) fn peek_pps_id(mut r: Reader<'_>) -> Result<u8> {
+        let irap_or_gdr = r.flag()?;
+        r.flag()?; // ph_non_ref_pic_flag
+        if irap_or_gdr {
+            r.flag()?; // ph_gdr_pic_flag
+        }
+        if r.flag()? {
+            r.flag()?; // ph_intra_slice_allowed_flag
+        }
+        Ok(r.ue(63, "VVC PH parameter set")? as u8)
+    }
+
     pub(crate) fn parse(r: &mut Reader<'_>, s: &Sequence, p: &PictureParameters) -> Result<Self> {
         let irap_or_gdr = r.flag()?;
         let non_reference = r.flag()?;

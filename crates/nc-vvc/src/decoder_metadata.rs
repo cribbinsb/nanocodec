@@ -4,6 +4,11 @@
 //! framing without allocating or interpreting display/application metadata.
 use nc_common::decode::{BitReader, DecodeError, Result};
 
+/// Operating point information (§7.3.2.2) and decoding capability
+/// information (§7.3.2.3): constraints on the bitstream, nothing a
+/// single-layer decoder applies.
+pub(super) const OPI: u8 = 12;
+pub(super) const DCI: u8 = 13;
 pub(super) const AUD: u8 = 20;
 pub(super) const PREFIX_SEI: u8 = 23;
 pub(super) const SUFFIX_SEI: u8 = 24;
@@ -31,6 +36,10 @@ pub(super) fn validate(kind: u8, bytes: &[u8]) -> Result<()> {
             Ok(())
         }
         PREFIX_SEI | SUFFIX_SEI => sei(bytes),
+        OPI | DCI => match bytes.last() {
+            Some(&last) if last != 0 => Ok(()),
+            _ => Err(DecodeError::Malformed("VVC OPI/DCI RBSP")),
+        },
         _ => Err(DecodeError::Unsupported("VVC metadata NAL type")),
     }
 }

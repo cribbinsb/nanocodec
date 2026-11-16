@@ -12,6 +12,8 @@ use super::HevcWeights;
 #[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
 #[inline(always)]
 pub(crate) fn sample<T: Sample>(weights: &HevcWeights, a: i16, b: i16, depth: BitDepth) -> T {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let v = i32::from(a) * i32::from(weights.w0) + i32::from(b) * i32::from(weights.w1);
     depth.clip_to((v + weights.round) >> weights.shift)
 }
@@ -26,6 +28,8 @@ pub(crate) fn row<T: Sample>(
     dst: &mut [T],
     depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for ((d, &x), &y) in dst.iter_mut().zip(a).zip(b) {
         *d = sample(weights, x, y, depth);
     }
@@ -46,6 +50,8 @@ pub(crate) fn weight_at<T: Sample>(
     dst_stride: usize,
     depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for y in 0..h {
         row(
             weights,

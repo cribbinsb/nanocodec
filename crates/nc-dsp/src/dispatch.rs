@@ -10,7 +10,7 @@
 
 #![allow(unsafe_code)]
 
-use nc_common::{PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, PlaneView, PlaneViewMut};
 
 use crate::av1_inverse::{Av1TxSize, Av1TxType};
 use crate::av1_mc::filter::Av1Filters;
@@ -1346,38 +1346,8 @@ impl Dsp {
         per_row: usize,
         dst: &mut PlaneViewMut<'_>,
     ) {
+        check_sub_blocks(filter, size, window, motion, per_row, &dst.as_view());
         let (w, h) = (size.width(), size.height());
-        let extra = filter.taps() - 1;
-        assert!(
-            per_row > 0 && motion.len().is_multiple_of(per_row),
-            "{} sub-blocks do not fill rows of {per_row}",
-            motion.len()
-        );
-        for m in motion {
-            assert!(
-                usize::from(m.x) + w + extra <= window.width()
-                    && usize::from(m.y) + h + extra <= window.height(),
-                "{filter:?} sub-block window at ({}, {}) leaves the {}x{} window",
-                m.x,
-                m.y,
-                window.width(),
-                window.height()
-            );
-            assert!(
-                usize::from(m.frac_x) < filter.positions()
-                    && usize::from(m.frac_y) < filter.positions(),
-                "{filter:?} sub-sample offsets ({}, {}) out of range",
-                m.frac_x,
-                m.frac_y
-            );
-        }
-        let rows = motion.len() / per_row;
-        assert!(
-            dst.width() >= w * per_row && dst.height() >= h * rows,
-            "destination {}x{} is smaller than {per_row}x{rows} sub-blocks of {w}x{h}",
-            dst.width(),
-            dst.height()
-        );
         let kernel = self.mc.table(filter)[size.width_class()];
         let (src, src_stride) = (window.data(), window.stride());
         let dst_stride = dst.stride();
@@ -4094,7 +4064,14 @@ impl Dsp {
         dependent: bool,
         out: &mut [i16],
     ) {
-        crate::codec_txfm::vvc_inverse::inverse(self, width, height, levels, qp, dependent, out);
+        crate::codec_txfm::vvc_inverse::inverse(
+            self,
+            (width, height),
+            levels,
+            (qp, dependent),
+            out,
+            BitDepth::EIGHT,
+        );
     }
 
     /// VVC 8-bit forward DCT-II of a `width` x `height` residual (row-major,
@@ -4645,6 +4622,52 @@ pub(crate) fn check_covers_i16(size: BlockSize, len: usize, stride: usize, what:
 #[inline]
 fn pair<'a>((src, rf): (&PlaneView<'a>, &PlaneView<'a>)) -> crate::pixel::BlockPair<'a> {
     (src.data(), src.stride(), rf.data(), rf.stride())
+}
+
+/// The checks of [`Dsp::predict_sub_blocks`], for samples of any type:
+/// every sub-block's window lies inside `window` with its offsets in range,
+/// and `dst` holds the whole batch.
+#[inline]
+pub(crate) fn check_sub_blocks<T: nc_common::Sample>(
+    filter: Filter,
+    size: BlockSize,
+    window: &PlaneView<'_, T>,
+    motion: &[crate::SubBlockMotion],
+    per_row: usize,
+    dst: &PlaneView<'_, T>,
+) {
+    let (w, h) = (size.width(), size.height());
+    let extra = filter.taps() - 1;
+    assert!(
+        per_row > 0 && motion.len().is_multiple_of(per_row),
+        "{} sub-blocks do not fill rows of {per_row}",
+        motion.len()
+    );
+    for m in motion {
+        assert!(
+            usize::from(m.x) + w + extra <= window.width()
+                && usize::from(m.y) + h + extra <= window.height(),
+            "{filter:?} sub-block window at ({}, {}) leaves the {}x{} window",
+            m.x,
+            m.y,
+            window.width(),
+            window.height()
+        );
+        assert!(
+            usize::from(m.frac_x) < filter.positions()
+                && usize::from(m.frac_y) < filter.positions(),
+            "{filter:?} sub-sample offsets ({}, {}) out of range",
+            m.frac_x,
+            m.frac_y
+        );
+    }
+    let rows = motion.len() / per_row;
+    assert!(
+        dst.width() >= w * per_row && dst.height() >= h * rows,
+        "destination {}x{} is smaller than {per_row}x{rows} sub-blocks of {w}x{h}",
+        dst.width(),
+        dst.height()
+    );
 }
 
 #[allow(
@@ -5362,7 +5385,8 @@ impl Dsp {
     /// `hevc_weight` module docs) of the `dst`-sized block from the 14-bit
     /// predictions `a` and `b`, row-major at the block width:
     /// `dst = clamp((a·w0 + b·w1 + round) >> shift, 0, 255)`. For
-    /// uni-prediction pass `b = a` with `w1 = 0`.
+    /// uni-prediction pass `b = a` with `w1 = 0`. Deeper samples:
+    /// [`crate::DepthKernels::hevc_weighted_prediction`].
     ///
     /// # Panics
     ///
@@ -5568,28 +5592,30 @@ impl Dsp {
         corner: i32,
         out: &mut [u8],
     ) {
-        let supported = |n: usize| n.is_power_of_two() && (2..=64).contains(&n);
-        assert!(supported(width) && supported(height));
-        assert!(top.len() >= 2 * width && left.len() >= 2 * height);
-        assert!(out.len() >= width * height);
-        if let crate::VvcIntraMode::Angular { direction, .. } = mode {
-            assert!((2..=66).contains(&direction));
-        }
-        let (top, left) = (&top[..2 * width], &left[..2 * height]);
-        assert!(
-            top.iter()
-                .chain(left)
-                .chain(std::iter::once(&corner))
-                .all(|&v| (0..=255).contains(&v))
+        let (top, left) = crate::vvc_intra::check_rect(
+            (width, height),
+            mode,
+            (top, left, corner),
+            out.len(),
+            BitDepth::EIGHT,
         );
-        if width == height && (4..=32).contains(&width) {
+        if crate::vvc_intra::square_kernel_fits((width, height)) {
             // SAFETY: dimensions, direction, reference range and all buffer
             // lengths were checked above; the table matches the selected ISA.
             unsafe {
                 (self.vvc_intra)(width, mode, top, left, corner, false, out);
             }
         } else {
-            crate::vvc_intra::rectangular::predict(width, height, mode, top, left, corner, out);
+            crate::vvc_intra::rectangular::predict(
+                width,
+                height,
+                mode,
+                top,
+                left,
+                corner,
+                out,
+                BitDepth::EIGHT,
+            );
         }
     }
 
@@ -5624,22 +5650,7 @@ impl Dsp {
         transposed_ok: bool,
         out: &mut [u8],
     ) -> bool {
-        assert!([4, 8, 16, 32].contains(&side));
-        let required = match mode {
-            crate::VvcIntraMode::Angular { direction, .. } => {
-                assert!((2..=66).contains(&direction));
-                2 * side
-            }
-            _ => side + 1,
-        };
-        assert!(out.len() >= side * side && top.len() >= required && left.len() >= required);
-        assert!(
-            top[..required]
-                .iter()
-                .chain(&left[..required])
-                .chain(std::iter::once(&corner))
-                .all(|&v| (0..=255).contains(&v))
-        );
+        crate::vvc_intra::check_square(side, mode, (top, left, corner), out.len(), BitDepth::EIGHT);
         // SAFETY: the table matches the supported ISA, all slice bounds checked above.
         unsafe { (self.vvc_intra)(side, mode, top, left, corner, transposed_ok, out) }
     }
@@ -5718,42 +5729,15 @@ impl Dsp {
     fn vvc_luma_lines(
         &self,
         dst: &mut PlaneViewMut<'_>,
-        (x, y): (usize, usize),
+        at: (usize, usize),
         vertical: bool,
         lines: usize,
         beta: i32,
         tc: i32,
         lengths: [usize; 2],
     ) {
-        use crate::vvc_deblock::LUMA_REACH;
         assert!((0..=88).contains(&beta) && (0..=100).contains(&tc));
-        assert!(
-            lengths == [1, 1]
-                || lengths == [2, 2]
-                || lengths.iter().all(|&n| matches!(n, 3 | 5 | 7))
-        );
-        let (w, h) = (dst.width(), dst.height());
-        let inside = if vertical {
-            x >= LUMA_REACH
-                && x.checked_add(LUMA_REACH).is_some_and(|end| end <= w)
-                && y.checked_add(lines).is_some_and(|end| end <= h)
-        } else {
-            y >= LUMA_REACH
-                && y.checked_add(LUMA_REACH).is_some_and(|end| end <= h)
-                && x.checked_add(lines).is_some_and(|end| end <= w)
-        };
-        assert!(inside, "deblocking edge reads outside the plane");
-        let stride = dst.stride();
-        let (across, along) = if vertical { (1, stride) } else { (stride, 1) };
-        let edge = crate::vvc_deblock::VvcLumaEdge {
-            base: y * stride + x,
-            lines,
-            across,
-            along,
-            beta,
-            tc,
-            lengths,
-        };
+        let edge = vvc_luma_edge_at(dst, at, vertical, lines, beta, tc, lengths);
         let kernel = if lines == 4 {
             self.vvc_deblock.luma_segment
         } else if lengths.iter().all(|&n| n == 3 || n == 7) {
@@ -5762,7 +5746,8 @@ impl Dsp {
             self.vvc_deblock.luma_extended
         };
         // SAFETY: the table matches this CPU; every sample the lines read
-        // lies inside `dst` (checked above), and the kernels index slices.
+        // lies inside `dst` (checked by `vvc_luma_edge_at`), and the kernels
+        // index slices.
         unsafe { kernel(dst.data_mut(), &edge) }
     }
     /// VVC chroma deblocking in place across 2, 4, 6 or 8 lines.
@@ -5775,7 +5760,7 @@ impl Dsp {
     pub fn vvc_deblock_chroma_edge(
         &self,
         dst: &mut PlaneViewMut<'_>,
-        (x, y): (usize, usize),
+        at: (usize, usize),
         vertical: bool,
         lines: usize,
         beta: i32,
@@ -5783,40 +5768,15 @@ impl Dsp {
         large: bool,
         boundary: bool,
     ) {
-        use crate::deblock::samples::{Edge, LANES, REACH};
-        assert!(lines > 0 && lines <= LANES && lines.is_multiple_of(2));
         assert!((0..=88).contains(&beta) && (0..=100).contains(&tc));
-        let (width, height) = (dst.width(), dst.height());
-        let inside = if vertical {
-            x >= REACH
-                && x.checked_add(REACH).is_some_and(|end| end <= width)
-                && y.checked_add(lines).is_some_and(|end| end <= height)
-        } else {
-            y >= REACH
-                && y.checked_add(REACH).is_some_and(|end| end <= height)
-                && x.checked_add(lines).is_some_and(|end| end <= width)
-        };
-        assert!(inside, "chroma deblocking edge reads outside the plane");
+        let edge = vvc_chroma_edge_at(dst, at, vertical, lines, beta, tc, (large, boundary));
         // Every correction clips to +/-tc, so zero cannot change a sample.
         if tc == 0 {
             return;
         }
-        let stride = dst.stride();
-        let (across, along) = if vertical { (1, stride) } else { (stride, 1) };
-        let edge = crate::vvc_deblock::ChromaEdge {
-            samples: Edge {
-                base: y * stride + x,
-                across,
-                along,
-                lines,
-            },
-            beta,
-            tc,
-            large,
-            boundary,
-        };
         // SAFETY: the table matches this CPU, and every line's p3..q3
-        // samples are inside dst as checked above; kernels index slices.
+        // samples are inside dst (checked by `vvc_chroma_edge_at`); kernels
+        // index slices.
         unsafe {
             (self.vvc_deblock.chroma_edge)(dst.data_mut(), &edge);
         }
@@ -5840,6 +5800,90 @@ impl Dsp {
     }
 }
 
+/// The [`crate::vvc_deblock::VvcLumaEdge`] of `lines` luma lines whose
+/// first q0 sample is (`x`, `y`) of `dst`, after checking the reaches and
+/// that every sample the lines read (p7..q7) lies inside the plane; `beta`
+/// and `tc` are the caller's to check (their range depends on the depth).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn vvc_luma_edge_at<T: nc_common::Sample>(
+    dst: &PlaneViewMut<'_, T>,
+    (x, y): (usize, usize),
+    vertical: bool,
+    lines: usize,
+    beta: i32,
+    tc: i32,
+    lengths: [usize; 2],
+) -> crate::vvc_deblock::VvcLumaEdge {
+    use crate::vvc_deblock::LUMA_REACH;
+    assert!(
+        lengths == [1, 1] || lengths == [2, 2] || lengths.iter().all(|&n| matches!(n, 3 | 5 | 7))
+    );
+    let (w, h) = (dst.width(), dst.height());
+    let inside = if vertical {
+        x >= LUMA_REACH
+            && x.checked_add(LUMA_REACH).is_some_and(|end| end <= w)
+            && y.checked_add(lines).is_some_and(|end| end <= h)
+    } else {
+        y >= LUMA_REACH
+            && y.checked_add(LUMA_REACH).is_some_and(|end| end <= h)
+            && x.checked_add(lines).is_some_and(|end| end <= w)
+    };
+    assert!(inside, "deblocking edge reads outside the plane");
+    let stride = dst.stride();
+    let (across, along) = if vertical { (1, stride) } else { (stride, 1) };
+    crate::vvc_deblock::VvcLumaEdge {
+        base: y * stride + x,
+        lines,
+        across,
+        along,
+        beta,
+        tc,
+        lengths,
+    }
+}
+
+/// The [`crate::vvc_deblock::ChromaEdge`] of `lines` chroma lines whose
+/// first q0 sample is (`x`, `y`) of `dst`, after checking the line count
+/// and that p3..q3 of every line lies inside the plane; `beta` and `tc`
+/// are the caller's to check (their range depends on the depth).
+pub(crate) fn vvc_chroma_edge_at<T: nc_common::Sample>(
+    dst: &PlaneViewMut<'_, T>,
+    (x, y): (usize, usize),
+    vertical: bool,
+    lines: usize,
+    beta: i32,
+    tc: i32,
+    (large, boundary): (bool, bool),
+) -> crate::vvc_deblock::ChromaEdge {
+    use crate::deblock::samples::{Edge, LANES, REACH};
+    assert!(lines > 0 && lines <= LANES && lines.is_multiple_of(2));
+    let (width, height) = (dst.width(), dst.height());
+    let inside = if vertical {
+        x >= REACH
+            && x.checked_add(REACH).is_some_and(|end| end <= width)
+            && y.checked_add(lines).is_some_and(|end| end <= height)
+    } else {
+        y >= REACH
+            && y.checked_add(REACH).is_some_and(|end| end <= height)
+            && x.checked_add(lines).is_some_and(|end| end <= width)
+    };
+    assert!(inside, "chroma deblocking edge reads outside the plane");
+    let stride = dst.stride();
+    let (across, along) = if vertical { (1, stride) } else { (stride, 1) };
+    crate::vvc_deblock::ChromaEdge {
+        samples: Edge {
+            base: y * stride + x,
+            across,
+            along,
+            lines,
+        },
+        beta,
+        tc,
+        large,
+        boundary,
+    }
+}
+
 impl Dsp {
     /// One block row (four rows) of the H.266 luma ALF (`vvc_alf` module
     /// docs): `rows[r]` are the seven rows the taps of `out[r]` read (`dy`
@@ -5859,22 +5903,7 @@ impl Dsp {
         shifts: &[u32; crate::VVC_ALF_BLOCK],
         out: &mut [&mut [u8]; crate::VVC_ALF_BLOCK],
     ) {
-        use crate::vvc_alf::{VVC_ALF_BLOCK, VVC_ALF_REACH};
-        let width = out[0].len();
-        assert!(out.iter().all(|row| row.len() == width));
-        assert!(shifts.iter().all(|shift| (1..=16).contains(shift)));
-        assert_eq!(coefficients.len(), width.div_ceil(VVC_ALF_BLOCK));
-        assert!(
-            rows.as_flattened()
-                .iter()
-                .all(|row| row.len() >= width + 2 * VVC_ALF_REACH)
-        );
-        debug_assert!(
-            coefficients
-                .as_flattened()
-                .iter()
-                .all(|c| i8::try_from(*c).is_ok())
-        );
+        crate::vvc_alf::check_filter_block_row(rows, coefficients, shifts, out);
         // SAFETY: the table matches this CPU; the lengths are checked above.
         unsafe { (self.vvc_alf.filter_block_row)(rows, coefficients, shifts, out) }
     }
@@ -5888,7 +5917,7 @@ impl Dsp {
     /// # Panics
     /// If a row is shorter than `4 * out.len() + 2`.
     pub fn vvc_alf_laplacians(&self, rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
-        assert!(rows.iter().all(|row| row.len() >= 4 * out.len() + 2));
+        crate::vvc_alf::check_laplacians(rows, out);
         // SAFETY: the table matches this CPU; the lengths are checked above.
         unsafe { (self.vvc_alf.laplacians)(rows, out) }
     }
@@ -5992,13 +6021,7 @@ impl Dsp {
     /// # Panics
     /// If `groups.len() != out.len() + 1`.
     pub fn vvc_alf_classify(&self, groups: &[[u16; 4]], boundary: bool, out: &mut [[u8; 2]]) {
-        assert_eq!(groups.len(), out.len() + 1);
-        debug_assert!(
-            groups
-                .as_flattened()
-                .iter()
-                .all(|&sum| sum <= crate::VVC_ALF_MAX_GROUP_SUM)
-        );
+        crate::vvc_alf::check_classify(groups, out, nc_common::BitDepth::EIGHT);
         // SAFETY: the table matches this CPU; the lengths are checked above.
         unsafe { (self.vvc_alf.classify)(groups, boundary, out) }
     }

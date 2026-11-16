@@ -12,17 +12,20 @@
 //! Scalar only: ISP blocks are a small share of the intra work. Equations
 //! follow `VVdeC` `IntraPrediction` (BSD-3-Clause-Clear; `THIRD_PARTY.md`).
 
+use nc_common::Sample;
+
 /// Planar (`planar`) or DC, then PDPC (§8.4.5.2.15, nScale from both sides).
+/// No clip: planar, DC and the PDPC blend all average in-range samples.
 // Keep the existing ISP call inlined when the general decoder also uses
 // these equations; sharing must not change the own-stream prediction path.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-pub(super) fn smooth(
+pub(super) fn smooth<T: Sample>(
     (width, height): (usize, usize),
     planar: bool,
     top: &[i32],
     left: &[i32],
-    out: &mut [u8],
+    out: &mut [T],
 ) {
     let (log2_w, log2_h) = (width.ilog2(), height.ilog2());
     // §8.4.5.2.12: a rectangle averages its longer side only.
@@ -53,7 +56,7 @@ pub(super) fn smooth(
                 dc
             };
             out[y * width + x] =
-                (value + ((wl * (left[y] - value) + wt * (top[x] - value) + 32) >> 6)) as u8;
+                T::from_i32(value + ((wl * (left[y] - value) + wt * (top[x] - value) + 32) >> 6));
         }
     }
 }

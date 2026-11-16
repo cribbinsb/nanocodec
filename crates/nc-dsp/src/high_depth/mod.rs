@@ -26,18 +26,25 @@
 
 mod inverse;
 mod vector;
+mod vvc_filter;
+mod vvc_recon;
+
+pub(crate) use inverse::whole_block as inverse_whole_block;
+pub use vvc_recon::VvcReconPixel;
 
 use nc_common::{BitDepth, PlaneView, PlaneViewMut, Sample};
 
 use crate::block::BlockSize;
 use crate::codec_txfm::HevcTransform;
 use crate::deblock::{HEVC_LINES, HevcEdge};
-use crate::dispatch::{check_covers, check_covers_i16, hevc_edge_at, sao_offsets, sao_rect};
+use crate::dispatch::{
+    check_covers, check_covers_i16, check_sub_blocks, hevc_edge_at, sao_offsets, sao_rect,
+};
 use crate::hevc_intra::PlanarEdges;
 use crate::hevc_weight::HevcWeights;
-use crate::mc::Filter;
+use crate::mc::{Filter, SubBlockMotion};
 use crate::sao::Rect;
-use crate::{Dsp, Isa};
+use crate::{Dsp, Isa, VvcGeometric};
 
 /// Uni-prediction of a block of one width class from a window of `u16`
 /// samples (`crate::mc::ConvolveFn` with the depth).
@@ -69,6 +76,33 @@ pub(crate) type SaoApply16Fn =
 /// SAO band-offset application (`crate::sao::BandFn` with the depth).
 pub(crate) type SaoBand16Fn = unsafe fn(&mut [u16], usize, Rect, u8, [i16; 4], &[bool], BitDepth);
 
+/// HEVC/VVC prediction kept at six fractional bits
+/// (`Dsp::predict_high_precision` with the depth).
+pub(crate) type HighPrecision16Fn = unsafe fn(
+    Filter,
+    (usize, usize),
+    &PlaneView<'_, u16>,
+    (usize, usize),
+    bool,
+    &mut [i16],
+    BitDepth,
+);
+/// VVC geometric-partition blend (`Dsp::vvc_geometric_blend` with the depth).
+pub(crate) type GeometricBlend16Fn = unsafe fn(
+    VvcGeometric,
+    (usize, usize),
+    (usize, usize),
+    bool,
+    (&[i16], &[i16]),
+    &mut [u16],
+    BitDepth,
+);
+/// VVC DMVR bilinear prediction (`Dsp::vvc_dmvr_bilinear` with the depth).
+pub(crate) type DmvrBilinear16Fn =
+    unsafe fn((usize, usize), &PlaneView<'_, u16>, (usize, usize), &mut [i16], BitDepth);
+/// VVC BDOF (`Dsp::vvc_bdof` with the depth).
+pub(crate) type Bdof16Fn = unsafe fn((usize, usize), [&[i16]; 2], &mut [u16], BitDepth);
+
 /// Kernels per width class (4, 8, 16, 32, 64).
 const WIDTH_CLASSES: usize = 5;
 /// The separable 14-bit interpolation families (`SeparableTaps` tables:
@@ -96,6 +130,13 @@ pub(crate) struct HighFns {
     pub hevc_deblock_chroma: Edge16Fn,
     pub sao_apply: SaoApply16Fn,
     pub sao_band: SaoBand16Fn,
+    pub high_precision: HighPrecision16Fn,
+    pub vvc_geometric_blend: GeometricBlend16Fn,
+    pub vvc_dmvr_bilinear: DmvrBilinear16Fn,
+    pub vvc_bdof: Bdof16Fn,
+    /// VVC deblocking and ALF (`vvc_filter`).
+    pub vvc_filter: vvc_filter::VvcFilterFns,
+    pub vvc_recon: vvc_recon::VvcReconFns,
 }
 
 /// The kernels of one filter family by width class (`$kernel` generic
@@ -189,6 +230,12 @@ impl HighFns {
             hevc_deblock_chroma: crate::deblock::scalar::hevc_chroma_edge_at::<u16>,
             sao_apply: crate::sao::scalar::apply_at::<u16>,
             sao_band: crate::sao::scalar::band_at::<u16>,
+            high_precision: crate::mc::precision::high_precision_at::<u16>,
+            vvc_geometric_blend: crate::vvc_geo::blend_at::<u16>,
+            vvc_dmvr_bilinear: crate::vvc_dmvr::bilinear_at::<u16>,
+            vvc_bdof: crate::vvc_bdof::scalar_at::<u16>,
+            vvc_filter: vvc_filter::VvcFilterFns::SCALAR,
+            vvc_recon: vvc_recon::VvcReconFns::SCALAR,
         };
         match isa {
             #[cfg(target_arch = "x86_64")]
@@ -222,6 +269,8 @@ pub(crate) fn add_residual<T: Sample>(
     stride: usize,
     depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for (row, line) in residual[..n * n].chunks_exact(n).enumerate() {
         for (s, &r) in dst[row * stride..row * stride + n].iter_mut().zip(line) {
             *s = depth.clip_to(s.to_i32() + i32::from(r));
@@ -232,9 +281,11 @@ pub(crate) fn add_residual<T: Sample>(
 /// A sample type with kernels: `u8` (the 8-bit [`Dsp`] methods) or `u16`
 /// ([`HighFns`]). The decoders' generic code is written over `T: Pixel`
 /// and calls the kernels through [`DepthKernels`]; these methods are the
-/// routing behind it, one per kernel.
+/// routing behind it, one per kernel (a kernel family with many methods
+/// keeps its routing in a supertrait beside it: `vvc_filter::VvcFilterPixel`,
+/// [`VvcReconPixel`]).
 #[allow(clippy::too_many_arguments)]
-pub trait Pixel: Sample {
+pub trait Pixel: Sample + vvc_filter::VvcFilterPixel + VvcReconPixel {
     #[doc(hidden)]
     fn predict(
         kernels: DepthKernels<'_>,
@@ -263,6 +314,59 @@ pub trait Pixel: Sample {
         frac: (usize, usize),
         first: (&[i16], usize),
         dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
+    fn predict_sub_blocks(
+        kernels: DepthKernels<'_>,
+        filter: Filter,
+        size: BlockSize,
+        window: &PlaneView<'_, Self>,
+        motion: &[SubBlockMotion],
+        per_row: usize,
+        dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
+    fn predict_high_precision(
+        kernels: DepthKernels<'_>,
+        filter: Filter,
+        size: (usize, usize),
+        window: &PlaneView<'_, Self>,
+        phases: (usize, usize),
+        alternate_half: bool,
+        out: &mut [i16],
+    );
+    #[doc(hidden)]
+    fn hevc_weighted_prediction(
+        kernels: DepthKernels<'_>,
+        weights: HevcWeights,
+        a: &[i16],
+        b: &[i16],
+        dst: &mut PlaneViewMut<'_, Self>,
+    );
+    #[doc(hidden)]
+    fn vvc_geometric_blend(
+        kernels: DepthKernels<'_>,
+        mask: VvcGeometric,
+        origin: (usize, usize),
+        size: (usize, usize),
+        chroma: bool,
+        sources: (&[i16], &[i16]),
+        out: &mut [Self],
+    );
+    #[doc(hidden)]
+    fn vvc_dmvr_bilinear(
+        kernels: DepthKernels<'_>,
+        size: (usize, usize),
+        input: &PlaneView<'_, Self>,
+        phases: (usize, usize),
+        out: &mut [i16],
+    );
+    #[doc(hidden)]
+    fn vvc_bdof(
+        kernels: DepthKernels<'_>,
+        size: (usize, usize),
+        inputs: [&[i16]; 2],
+        out: &mut [Self],
     );
     #[doc(hidden)]
     fn hevc_weighted_prediction_centered(
@@ -439,6 +543,77 @@ impl Pixel for u8 {
         kernels
             .dsp
             .hevc_predict_bi(filter, size, window, frac, first, dst);
+    }
+
+    fn predict_sub_blocks(
+        kernels: DepthKernels<'_>,
+        filter: Filter,
+        size: BlockSize,
+        window: &PlaneView<'_, u8>,
+        motion: &[SubBlockMotion],
+        per_row: usize,
+        dst: &mut PlaneViewMut<'_, u8>,
+    ) {
+        kernels
+            .dsp
+            .predict_sub_blocks(filter, size, window, motion, per_row, dst);
+    }
+
+    fn predict_high_precision(
+        kernels: DepthKernels<'_>,
+        filter: Filter,
+        size: (usize, usize),
+        window: &PlaneView<'_, u8>,
+        phases: (usize, usize),
+        alternate_half: bool,
+        out: &mut [i16],
+    ) {
+        kernels
+            .dsp
+            .predict_high_precision(filter, size, window, phases, alternate_half, out);
+    }
+
+    fn hevc_weighted_prediction(
+        kernels: DepthKernels<'_>,
+        weights: HevcWeights,
+        a: &[i16],
+        b: &[i16],
+        dst: &mut PlaneViewMut<'_, u8>,
+    ) {
+        kernels.dsp.hevc_weighted_prediction(weights, a, b, dst);
+    }
+
+    fn vvc_geometric_blend(
+        kernels: DepthKernels<'_>,
+        mask: VvcGeometric,
+        origin: (usize, usize),
+        size: (usize, usize),
+        chroma: bool,
+        sources: (&[i16], &[i16]),
+        out: &mut [u8],
+    ) {
+        kernels
+            .dsp
+            .vvc_geometric_blend(mask, origin, size, chroma, sources, out);
+    }
+
+    fn vvc_dmvr_bilinear(
+        kernels: DepthKernels<'_>,
+        size: (usize, usize),
+        input: &PlaneView<'_, u8>,
+        phases: (usize, usize),
+        out: &mut [i16],
+    ) {
+        kernels.dsp.vvc_dmvr_bilinear(size, input, phases, out);
+    }
+
+    fn vvc_bdof(
+        kernels: DepthKernels<'_>,
+        size: (usize, usize),
+        inputs: [&[i16]; 2],
+        out: &mut [u8],
+    ) {
+        kernels.dsp.vvc_bdof(size, inputs, out);
     }
 
     fn hevc_weighted_prediction_centered(
@@ -618,9 +793,73 @@ impl Pixel for u16 {
         }
     }
 
-    fn hevc_weighted_prediction_centered(
+    fn predict_sub_blocks(
         kernels: DepthKernels<'_>,
-        mut weights: HevcWeights,
+        filter: Filter,
+        size: BlockSize,
+        window: &PlaneView<'_, u16>,
+        motion: &[SubBlockMotion],
+        per_row: usize,
+        dst: &mut PlaneViewMut<'_, u16>,
+    ) {
+        check_sub_blocks(filter, size, window, motion, per_row, &dst.as_view());
+        let (w, h) = (size.width(), size.height());
+        let kernel = kernels.dsp.high.predict[family(filter)][width_class(size)];
+        let (src, src_stride) = (window.data(), window.stride());
+        let dst_stride = dst.stride();
+        let out = dst.data_mut();
+        for (i, m) in motion.iter().enumerate() {
+            let from = usize::from(m.y) * src_stride + usize::from(m.x);
+            let to = (i / per_row) * h * dst_stride + (i % per_row) * w;
+            // SAFETY: the sub-block's window lies inside `window` and its
+            // place inside `dst` (checked above); the table matches a
+            // supported ISA.
+            unsafe {
+                kernel(
+                    &src[from..],
+                    src_stride,
+                    &mut out[to..],
+                    dst_stride,
+                    h,
+                    (usize::from(m.frac_x), usize::from(m.frac_y)),
+                    kernels.depth,
+                );
+            }
+        }
+    }
+
+    fn predict_high_precision(
+        kernels: DepthKernels<'_>,
+        filter: Filter,
+        size: (usize, usize),
+        window: &PlaneView<'_, u16>,
+        phases: (usize, usize),
+        alternate_half: bool,
+        out: &mut [i16],
+    ) {
+        crate::mc::precision::check_high_precision(filter, size, window, phases, alternate_half);
+        assert!(
+            out.len() >= size.0 * size.1,
+            "prediction shorter than the block"
+        );
+        // SAFETY: the window and output cover the block (checked above);
+        // the table matches a supported ISA.
+        unsafe {
+            (kernels.dsp.high.high_precision)(
+                filter,
+                size,
+                window,
+                phases,
+                alternate_half,
+                out,
+                kernels.depth,
+            );
+        }
+    }
+
+    fn hevc_weighted_prediction(
+        kernels: DepthKernels<'_>,
+        weights: HevcWeights,
         a: &[i16],
         b: &[i16],
         dst: &mut PlaneViewMut<'_, u16>,
@@ -634,8 +873,6 @@ impl Pixel for u16 {
             (1..=crate::hevc_weight::MAX_SHIFT).contains(&weights.shift),
             "weighted prediction shift out of range"
         );
-        weights.round += i32::from(crate::mc::HEVC_PREP_OFFSET)
-            * (i32::from(weights.w0) + i32::from(weights.w1));
         let stride = dst.stride();
         // SAFETY: the slices cover the block (checked above, and by the view).
         unsafe {
@@ -650,6 +887,72 @@ impl Pixel for u16 {
                 kernels.depth,
             );
         }
+    }
+
+    fn vvc_geometric_blend(
+        kernels: DepthKernels<'_>,
+        mask: VvcGeometric,
+        origin: (usize, usize),
+        size: (usize, usize),
+        chroma: bool,
+        sources: (&[i16], &[i16]),
+        out: &mut [u16],
+    ) {
+        let count = size.0 * size.1;
+        assert!(
+            sources.0.len() >= count && sources.1.len() >= count && out.len() >= count,
+            "geometric blend buffers shorter than the block"
+        );
+        // SAFETY: every buffer covers the block (checked above); the table
+        // matches a supported ISA.
+        unsafe {
+            (kernels.dsp.high.vvc_geometric_blend)(
+                mask,
+                origin,
+                size,
+                chroma,
+                sources,
+                out,
+                kernels.depth,
+            );
+        }
+    }
+
+    fn vvc_dmvr_bilinear(
+        kernels: DepthKernels<'_>,
+        size: (usize, usize),
+        input: &PlaneView<'_, u16>,
+        phases: (usize, usize),
+        out: &mut [i16],
+    ) {
+        crate::vvc_dmvr::check_bilinear(size, input, phases, out);
+        // SAFETY: window, phases and output checked; the table matches a
+        // supported ISA.
+        unsafe { (kernels.dsp.high.vvc_dmvr_bilinear)(size, input, phases, out, kernels.depth) }
+    }
+
+    fn vvc_bdof(
+        kernels: DepthKernels<'_>,
+        size: (usize, usize),
+        inputs: [&[i16]; 2],
+        out: &mut [u16],
+    ) {
+        crate::vvc_bdof::check(size, inputs, out.len());
+        // SAFETY: dimensions and buffers checked; the table matches a
+        // supported ISA.
+        unsafe { (kernels.dsp.high.vvc_bdof)(size, inputs, out, kernels.depth) }
+    }
+
+    fn hevc_weighted_prediction_centered(
+        kernels: DepthKernels<'_>,
+        mut weights: HevcWeights,
+        a: &[i16],
+        b: &[i16],
+        dst: &mut PlaneViewMut<'_, u16>,
+    ) {
+        weights.round += i32::from(crate::mc::HEVC_PREP_OFFSET)
+            * (i32::from(weights.w0) + i32::from(weights.w1));
+        Self::hevc_weighted_prediction(kernels, weights, a, b, dst);
     }
 
     fn hevc_intra_angular(
@@ -879,6 +1182,104 @@ impl DepthKernels<'_> {
         T::hevc_predict_bi(self, filter, size, window, frac, first, dst);
     }
 
+    /// [`Dsp::predict_sub_blocks`] at this depth (HEVC and VVC filters
+    /// only beyond 8 bits): each sub-block rounded to samples as
+    /// [`Self::predict`].
+    ///
+    /// # Panics
+    /// As [`Dsp::predict_sub_blocks`].
+    pub fn predict_sub_blocks<T: Pixel>(
+        self,
+        filter: Filter,
+        size: BlockSize,
+        window: &PlaneView<'_, T>,
+        motion: &[SubBlockMotion],
+        per_row: usize,
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
+        T::predict_sub_blocks(self, filter, size, window, motion, per_row, dst);
+    }
+
+    /// [`Dsp::predict_high_precision`] at this depth: `predSamplesLX` of
+    /// H.266 §8.5.6.3.2, uncentred, with `shift1 = Min(4, BitDepth − 8)`,
+    /// `shift2 = 6`, `shift3 = Max(2, 14 − BitDepth)` (14-bit for depths up
+    /// to 12, so it fits `i16`).
+    ///
+    /// # Panics
+    /// As [`Dsp::predict_high_precision`].
+    pub fn predict_high_precision<T: Pixel>(
+        self,
+        filter: Filter,
+        size: (usize, usize),
+        window: &PlaneView<'_, T>,
+        phases: (usize, usize),
+        alternate_half: bool,
+        out: &mut [i16],
+    ) {
+        T::predict_high_precision(self, filter, size, window, phases, alternate_half, out);
+    }
+
+    /// [`Dsp::hevc_weighted_prediction`] (uncentred predictions, the form
+    /// VVC uses) at this depth: the codec folds the depth into `weights`
+    /// (H.266 §8.5.6.6.2 default and BCW weighting, `shift2 = 15 −
+    /// BitDepth`; §8.5.6.6.3 explicit, `shift1 = 14 − BitDepth`, offsets `<<
+    /// (BitDepth − 8)`); the clip is this depth's.
+    ///
+    /// # Panics
+    /// As [`Dsp::hevc_weighted_prediction`].
+    pub fn hevc_weighted_prediction<T: Pixel>(
+        self,
+        weights: HevcWeights,
+        a: &[i16],
+        b: &[i16],
+        dst: &mut PlaneViewMut<'_, T>,
+    ) {
+        T::hevc_weighted_prediction(self, weights, a, b, dst);
+    }
+
+    /// [`Dsp::vvc_geometric_blend`] at this depth (H.266 §8.5.7.3: `shift1 =
+    /// Max(5, 17 − BitDepth)`, clipped to the depth).
+    ///
+    /// # Panics
+    /// As [`Dsp::vvc_geometric_blend`].
+    pub fn vvc_geometric_blend<T: Pixel>(
+        self,
+        mask: VvcGeometric,
+        origin: (usize, usize),
+        size: (usize, usize),
+        chroma: bool,
+        sources: (&[i16], &[i16]),
+        out: &mut [T],
+    ) {
+        T::vvc_geometric_blend(self, mask, origin, size, chroma, sources, out);
+    }
+
+    /// [`Dsp::vvc_dmvr_bilinear`] at this depth (H.266 §8.5.3.2.2: `shift1 =
+    /// BitDepth − 6`): 10-bit output at every depth, so [`Dsp::vvc_dmvr`]
+    /// searches it unchanged.
+    ///
+    /// # Panics
+    /// As [`Dsp::vvc_dmvr_bilinear`].
+    pub fn vvc_dmvr_bilinear<T: Pixel>(
+        self,
+        size: (usize, usize),
+        input: &PlaneView<'_, T>,
+        phases: (usize, usize),
+        out: &mut [i16],
+    ) {
+        T::vvc_dmvr_bilinear(self, size, input, phases, out);
+    }
+
+    /// [`Dsp::vvc_bdof`] at this depth (H.266 §8.5.6.5: `shift4 = Max(3, 15
+    /// − BitDepth)`, clipped to the depth; the flow arithmetic on the 14-bit
+    /// inputs is the same at every depth).
+    ///
+    /// # Panics
+    /// As [`Dsp::vvc_bdof`].
+    pub fn vvc_bdof<T: Pixel>(self, size: (usize, usize), inputs: [&[i16]; 2], out: &mut [T]) {
+        T::vvc_bdof(self, size, inputs, out);
+    }
+
     /// [`Dsp::hevc_weighted_prediction_centered`] at this depth (the codec
     /// folds `14 − BitDepth` into `weights.shift`; the clip is this depth's).
     ///
@@ -991,3 +1392,5 @@ impl DepthKernels<'_> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vvc_tests;

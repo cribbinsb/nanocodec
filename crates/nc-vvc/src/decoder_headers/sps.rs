@@ -210,14 +210,18 @@ fn dpb(r: &mut Reader<'_>, max_layer: usize) -> Result<Vec<[u32; 3]>> {
     Ok(layers)
 }
 
+/// The largest picture width or height of a level-6.2 stream:
+/// `Sqrt(MaxLumaPs · 8)` with `MaxLumaPs` 35 651 584 (H.266 A.4.1, Table A.1).
+const MAX_PICTURE_SIDE: u32 = 16_888;
+
 fn geometry(
     r: &mut Reader<'_>,
     chroma: bool,
     ctu_log2: u8,
 ) -> Result<([u32; 2], [u32; 4], Subpictures)> {
     let dimensions = [
-        r.ue(4096, "VVC maximum width")?,
-        r.ue(4096, "VVC maximum height")?,
+        r.ue(MAX_PICTURE_SIDE, "VVC maximum width")?,
+        r.ue(MAX_PICTURE_SIDE, "VVC maximum height")?,
     ];
     if dimensions.contains(&0) {
         return Err(DecodeError::Malformed("VVC empty dimensions"));

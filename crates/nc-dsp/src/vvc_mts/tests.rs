@@ -56,7 +56,13 @@ fn inverse_matches_the_normative_reference() {
                     .map(|c| c.clamp(-32768, 32767) as i16)
                     .collect();
                 let mut expected = vec![0; area];
-                crate::codec_txfm::vvc_primary::inverse(size, kinds, &coefficients, &mut expected);
+                crate::codec_txfm::vvc_primary::inverse(
+                    size,
+                    kinds,
+                    &coefficients,
+                    &mut expected,
+                    nc_common::BitDepth::EIGHT,
+                );
                 let mut actual = vec![7; area];
                 dsp.vvc_inverse_kinds(size, kinds, &coefficients, &mut actual);
                 assert_eq!(actual, expected, "{size:?} {kinds:?} {:?}", dsp.isa());

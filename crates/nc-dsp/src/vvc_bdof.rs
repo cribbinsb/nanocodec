@@ -34,15 +34,12 @@ pub(crate) fn flow(sums: [i32; 5]) -> [i32; 2] {
 }
 impl Dsp {
     /// Apply BDOF to an 8-bit luma region, at most 16×16 samples.
+    /// [`crate::DepthKernels::vvc_bdof`] for deeper samples.
     /// Inputs include a one-sample nearest-integer border and six fractional bits.
     /// # Panics
     /// If dimensions are not positive multiples of four up to 16, or buffers are short.
     pub fn vvc_bdof(&self, size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) {
-        let (width, height) = size;
-        assert!([4, 8, 12, 16].contains(&width) && [4, 8, 12, 16].contains(&height));
-        let stride = width + 2;
-        let count = stride * (height + 2);
-        assert!(inputs.iter().all(|p| p.len() >= count) && out.len() >= width * height);
+        check(size, inputs, out.len());
         // SAFETY: dimensions and all buffers checked; instance ISA is supported.
         unsafe {
             (self.vvc_refinement_kernels().bdof)(size, inputs, out);
@@ -50,7 +47,40 @@ impl Dsp {
     }
 }
 
+/// The checks of [`Dsp::vvc_bdof`] (`out_len` samples of any type).
+pub(crate) fn check((width, height): (usize, usize), inputs: [&[i16]; 2], out_len: usize) {
+    assert!([4, 8, 12, 16].contains(&width) && [4, 8, 12, 16].contains(&height));
+    let stride = width + 2;
+    let count = stride * (height + 2);
+    assert!(inputs.iter().all(|p| p.len() >= count) && out_len >= width * height);
+}
+
+/// Fewest bits the final sum drops (H.266 §8.5.6.5: `shift4 = Max(3, 15 −
+/// BitDepth)`).
+const MIN_FINAL_SHIFT: u32 = 3;
+/// Two 14-bit predictions summed: `shift4 = 15 − BitDepth` leaves the
+/// sample's bits.
+const SUM_PRECISION: u32 = 15;
+
+/// The scalar 8-bit kernel (`Kernels::bdof`).
 pub(crate) fn scalar(size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) {
+    scalar_at(size, inputs, out, nc_common::BitDepth::EIGHT);
+}
+
+/// [`Dsp::vvc_bdof`] at `depth` (H.266 §8.5.6.5). Gradients, sums and the
+/// motion refinement work on the 14-bit predictions with fixed shifts, the
+/// same at every depth; only the final `(a + b + bdofOffset + offset4) >>
+/// shift4` and its clip depend on it.
+pub(crate) fn scalar_at<T: nc_common::Sample>(
+    size: (usize, usize),
+    inputs: [&[i16]; 2],
+    out: &mut [T],
+    depth: nc_common::BitDepth,
+) {
+    let shift4 = SUM_PRECISION
+        .saturating_sub(depth.bits())
+        .max(MIN_FINAL_SHIFT);
+    let offset4 = 1 << (shift4 - 1);
     let (width, height) = size;
     let stride = width + 2;
     let count = stride * (height + 2);
@@ -101,7 +131,7 @@ pub(crate) fn scalar(size: (usize, usize), inputs: [&[i16]; 2], out: &mut [u8]) 
                         })
                         .sum();
                     let value = i32::from(samples[0][at]) + i32::from(samples[1][at]) + correction;
-                    out[y * width + x] = ((value + 64) >> 7).clamp(0, 255) as u8;
+                    out[y * width + x] = depth.clip_to((value + offset4) >> shift4);
                 }
             }
         }

@@ -1,20 +1,69 @@
-//! Scalar H.266 deblocking kernels for 8-bit square DCT-II blocks, and the
+//! Scalar H.266 deblocking kernels for square DCT-II blocks, and the
 //! in-place luma/chroma edges in `inplace` and `chroma_edge`.
 //! Equations checked against `VVenC` `LoopFilter` (BSD-3-Clause-Clear;
 //! `THIRD_PARTY.md`). Codec control derives strengths and gathers edge samples.
+//!
+//! The scalar references are generic over the sample type with a runtime
+//! [`BitDepth`] (`docs/handoff/high-bit-depth.md`): the 8-bit tables call
+//! them at `u8` and [`BitDepth::EIGHT`], the high-bit-depth table at `u16`.
+//! The SIMD kernels are 8-bit only. `β` and `tC` reach the kernels already
+//! scaled to the depth by [`vvc_deblock_beta`] and [`vvc_deblock_tc`].
 
-fn clip(value: i32, original: i32, limit: i32) -> u8 {
-    value
-        .clamp(original - limit, original + limit)
-        .clamp(0, 255) as u8
+use nc_common::{BitDepth, Sample};
+
+/// Largest `β′` (H.266 Table 43, `Q` = 63).
+pub const VVC_DEBLOCK_MAX_BETA_PRIME: i32 = 88;
+/// Largest `tC′` (H.266 Table 43, `Q` = 65); the table is at 10 bits.
+pub const VVC_DEBLOCK_MAX_TC_PRIME: i32 = 395;
+/// The depth Table 43's `tC′` values are given at (H.266 §8.8.3.6.2).
+const TC_TABLE_BIT_DEPTH: u32 = 10;
+/// Rounding added to `tC′` before it is scaled down to a shallower depth.
+const TC_ROUNDING: i32 = 2;
+
+/// `β = β′ · (1 << (BitDepth − 8))` (H.266 §8.8.3.6.2 for luma and the
+/// chroma edge decision of §8.8.3.6): the deblocking activity threshold at `depth`.
+#[must_use]
+pub const fn vvc_deblock_beta(beta_prime: i32, depth: BitDepth) -> i32 {
+    beta_prime << depth.above_eight()
+}
+
+/// `tC = BitDepth < 10 ? (tC′ + 2) >> (10 − BitDepth) : tC′ · (1 <<
+/// (BitDepth − 10))` (H.266 §8.8.3.6.2 for luma and the chroma
+/// edge decision of §8.8.3.6): the
+/// deblocking clipping threshold at `depth` from the Table 43 value.
+#[must_use]
+pub const fn vvc_deblock_tc(tc_prime: i32, depth: BitDepth) -> i32 {
+    if depth.bits() < TC_TABLE_BIT_DEPTH {
+        (tc_prime + TC_ROUNDING) >> (TC_TABLE_BIT_DEPTH - depth.bits())
+    } else {
+        tc_prime << (depth.bits() - TC_TABLE_BIT_DEPTH)
+    }
+}
+
+/// Whether `beta` and `tc` lie within the thresholds of `depth` (Table 43
+/// scaled by [`vvc_deblock_beta`] and [`vvc_deblock_tc`]).
+pub(crate) fn thresholds_fit(beta: i32, tc: i32, depth: BitDepth) -> bool {
+    (0..=vvc_deblock_beta(VVC_DEBLOCK_MAX_BETA_PRIME, depth)).contains(&beta)
+        && (0..=vvc_deblock_tc(VVC_DEBLOCK_MAX_TC_PRIME, depth)).contains(&tc)
+}
+
+#[inline(always)]
+#[allow(
+    clippy::inline_always,
+    reason = "per-sample clip inside the reference kernels; must fold into the caller"
+)]
+fn clip<T: Sample>(value: i32, original: i32, limit: i32, depth: BitDepth) -> T {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
+    depth.clip_to(value.clamp(original - limit, original + limit))
 }
 fn derivative(side: &[i32]) -> i32 {
     (side[2] - 2 * side[1] + side[0]).abs()
 }
-fn sides(row: &[u8; 16]) -> ([i32; 8], [i32; 8]) {
+fn sides<T: Sample>(row: &[T; 16]) -> ([i32; 8], [i32; 8]) {
     (
-        std::array::from_fn(|i| i32::from(row[7 - i])),
-        std::array::from_fn(|i| i32::from(row[8 + i])),
+        std::array::from_fn(|i| row[7 - i].to_i32()),
+        std::array::from_fn(|i| row[8 + i].to_i32()),
     )
 }
 /// The long filter's weights by distance from the edge, for a side of 3,
@@ -57,7 +106,9 @@ fn long_middle(p: &[i32; 8], q: &[i32; 8], lengths: [usize; 2]) -> i32 {
         }
     }
 }
-fn long_filter(row: &mut [u8; 16], tc: i32, lengths: [usize; 2]) {
+fn long_filter<T: Sample>(row: &mut [T; 16], tc: i32, lengths: [usize; 2], depth: BitDepth) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let (p, q) = sides(row);
     let middle = long_middle(&p, &q, lengths);
     for (which, side) in [p, q].iter().enumerate() {
@@ -67,11 +118,19 @@ fn long_filter(row: &mut [u8; 16], tc: i32, lengths: [usize; 2]) {
         for i in 0..length {
             let value = (middle * weights[i] + far * (64 - weights[i]) + 32) >> 6;
             let index = if which == 0 { 7 - i } else { 8 + i };
-            row[index] = clip(value, side[i], (tc * limits[i]) >> 1);
+            row[index] = clip(value, side[i], (tc * limits[i]) >> 1, depth);
         }
     }
 }
-fn short_filter(row: &mut [u8; 16], tc: i32, strong: bool, second: [bool; 2]) {
+fn short_filter<T: Sample>(
+    row: &mut [T; 16],
+    tc: i32,
+    strong: bool,
+    second: [bool; 2],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let (p, q) = sides(row);
     if strong {
         for (which, (near, far)) in [(&p, &q), (&q, &p)].into_iter().enumerate() {
@@ -82,7 +141,7 @@ fn short_filter(row: &mut [u8; 16], tc: i32, strong: bool, second: [bool; 2]) {
             ];
             for i in 0..3 {
                 row[if which == 0 { 7 - i } else { 8 + i }] =
-                    clip(values[i], near[i], (3 - i as i32) * tc);
+                    clip(values[i], near[i], (3 - i as i32) * tc, depth);
             }
         }
     } else {
@@ -91,15 +150,15 @@ fn short_filter(row: &mut [u8; 16], tc: i32, strong: bool, second: [bool; 2]) {
             return;
         }
         let delta = delta.clamp(-tc, tc);
-        row[7] = (p[0] + delta).clamp(0, 255) as u8;
-        row[8] = (q[0] - delta).clamp(0, 255) as u8;
+        row[7] = depth.clip_to(p[0] + delta);
+        row[8] = depth.clip_to(q[0] - delta);
         for (which, side) in [p, q].iter().enumerate() {
             if second[which] {
                 let correction = ((((side[2] + side[0] + 1) >> 1) - side[1]
                     + if which == 0 { delta } else { -delta })
                     >> 1)
                     .clamp(-(tc >> 1), tc >> 1);
-                row[if which == 0 { 6 } else { 9 }] = (side[1] + correction).clamp(0, 255) as u8;
+                row[if which == 0 { 6 } else { 9 }] = depth.clip_to(side[1] + correction);
             }
         }
     }
@@ -114,16 +173,30 @@ fn short_filter(row: &mut [u8; 16], tc: i32, strong: bool, second: [bool; 2]) {
 /// # Panics
 /// If the reaches are not such a pair.
 pub fn vvc_deblock_luma(edge: &mut [[u8; 16]; 4], beta: i32, tc: i32, lengths: [usize; 2]) {
+    luma_at(edge, beta, tc, lengths, BitDepth::EIGHT);
+}
+
+/// [`vvc_deblock_luma`] at any sample type and depth: `beta` and `tc`
+/// already scaled to `depth`, the output clipped to it.
+pub(crate) fn luma_at<T: Sample>(
+    edge: &mut [[T; 16]; 4],
+    beta: i32,
+    tc: i32,
+    lengths: [usize; 2],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     match decision(edge, beta, tc, lengths) {
         LumaFilter::None => {}
         LumaFilter::Long => {
             for row in edge {
-                long_filter(row, tc, lengths);
+                long_filter(row, tc, lengths, depth);
             }
         }
         LumaFilter::Short { strong, second } => {
             for row in edge {
-                short_filter(row, tc, strong, second);
+                short_filter(row, tc, strong, second, depth);
             }
         }
     }
@@ -136,7 +209,7 @@ enum LumaFilter {
     Short { strong: bool, second: [bool; 2] },
 }
 
-fn decision(edge: &[[u8; 16]; 4], beta: i32, tc: i32, lengths: [usize; 2]) -> LumaFilter {
+fn decision<T: Sample>(edge: &[[T; 16]; 4], beta: i32, tc: i32, lengths: [usize; 2]) -> LumaFilter {
     assert!(
         lengths == [1, 1] || lengths == [2, 2] || lengths.iter().all(|&n| matches!(n, 3 | 5 | 7)),
         "luma deblocking reaches {lengths:?}"
@@ -149,7 +222,8 @@ fn decision(edge: &[[u8; 16]; 4], beta: i32, tc: i32, lengths: [usize; 2]) -> Lu
 }
 
 /// What the luma decision (§8.8.3.6.2) needs from one of a segment's two
-/// decision lines (lines 0 and 3). Every term fits 16 bits.
+/// decision lines (lines 0 and 3). Every term fits 16 bits at 8 bits
+/// (the in-place SIMD kernels rely on it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LineTerms {
     /// Second derivative at p0..p2 and at q0..q2.
@@ -251,17 +325,28 @@ pub fn vvc_deblock_chroma(
     large: bool,
     ctu_boundary: bool,
 ) {
-    let endpoint = edge.map(|row| {
-        let p = std::array::from_fn::<_, 4, _>(|i| i32::from(row[3 - i]));
-        let q = std::array::from_fn::<_, 4, _>(|i| i32::from(row[4 + i]));
-        (p, q)
-    });
+    chroma_at(edge, beta, tc, large, ctu_boundary, BitDepth::EIGHT);
+}
+
+/// [`vvc_deblock_chroma`] at any sample type and depth: `beta` and `tc`
+/// already scaled to `depth`, the output clipped to it.
+pub(crate) fn chroma_at<T: Sample>(
+    edge: &mut [[T; 8]; 2],
+    beta: i32,
+    tc: i32,
+    large: bool,
+    ctu_boundary: bool,
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
+    let endpoint = edge.map(chroma_sides);
     let strong = large && chroma_strong(edge, beta, tc, ctu_boundary);
     for (row, (p, q)) in edge.iter_mut().zip(endpoint) {
         if !strong {
             let delta = ((4 * (q[0] - p[0]) + p[1] - q[1] + 4) >> 3).clamp(-tc, tc);
-            row[3] = (p[0] + delta).clamp(0, 255) as u8;
-            row[4] = (q[0] - delta).clamp(0, 255) as u8;
+            row[3] = depth.clip_to(p[0] + delta);
+            row[4] = depth.clip_to(q[0] - delta);
         } else if ctu_boundary {
             let values = [
                 (3 * p[1] + 2 * p[0] + q[0] + q[1] + q[2] + 4) >> 3,
@@ -270,7 +355,7 @@ pub fn vvc_deblock_chroma(
                 (p[0] + q[0] + q[1] + 2 * q[2] + 3 * q[3] + 4) >> 3,
             ];
             for i in 0..4 {
-                row[3 + i] = clip(values[i], i32::from(row[3 + i]), tc);
+                row[3 + i] = clip(values[i], row[3 + i].to_i32(), tc, depth);
             }
         } else {
             for (which, (near, far)) in [(&p, &q), (&q, &p)].into_iter().enumerate() {
@@ -280,7 +365,8 @@ pub fn vvc_deblock_chroma(
                     (3 * near[3] + 2 * near[2] + near[1] + near[0] + far[0] + 4) >> 3,
                 ];
                 for i in 0..3 {
-                    row[if which == 0 { 3 - i } else { 4 + i }] = clip(values[i], near[i], tc);
+                    row[if which == 0 { 3 - i } else { 4 + i }] =
+                        clip(values[i], near[i], tc, depth);
                 }
             }
         }
@@ -345,7 +431,7 @@ mod tests {
 
 mod chroma_edge;
 mod generic;
-pub(crate) use chroma_edge::ChromaEdge;
+pub(crate) use chroma_edge::{ChromaEdge, scalar_at as chroma_edge_at};
 mod inplace;
 
 /// Eight luma lines across one edge, in the plane (two 4-line segments
@@ -373,13 +459,20 @@ pub(crate) const LUMA_REACH: usize = 8;
 /// Scalar reference of the in-place edge: each segment gathered, filtered
 /// by [`vvc_deblock_luma`] and written back.
 fn luma_edge(plane: &mut [u8], e: &VvcLumaEdge) {
+    luma_edge_at(plane, e, BitDepth::EIGHT);
+}
+
+/// [`luma_edge`] at any sample type and depth (`e.beta`, `e.tc` scaled to it).
+pub(crate) fn luma_edge_at<T: Sample>(plane: &mut [T], e: &VvcLumaEdge, depth: BitDepth) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for segment in 0..e.lines / 4 {
         let at = |line: usize, pos: usize| {
             (e.base + (4 * segment + line) * e.along + pos * e.across) - LUMA_REACH * e.across
         };
-        let mut rows: [[u8; 16]; 4] =
+        let mut rows: [[T; 16]; 4] =
             std::array::from_fn(|line| std::array::from_fn(|pos| plane[at(line, pos)]));
-        vvc_deblock_luma(&mut rows, e.beta, e.tc, e.lengths);
+        luma_at(&mut rows, e.beta, e.tc, e.lengths, depth);
         for (line, row) in rows.iter().enumerate() {
             for (pos, &value) in row.iter().enumerate() {
                 plane[at(line, pos)] = value;
@@ -440,10 +533,17 @@ mod simd128 {
     super::generic::kernels!(#[target_feature(enable = "simd128")]; I32x4, I16x8);
 }
 
-fn chroma_strong(edge: &[[u8; 8]; 2], beta: i32, tc: i32, boundary: bool) -> bool {
+/// p0..p3 and q0..q3 of one chroma line (p3..p0, q0..q3).
+fn chroma_sides<T: Sample>(row: [T; 8]) -> ([i32; 4], [i32; 4]) {
+    (
+        std::array::from_fn(|i| row[3 - i].to_i32()),
+        std::array::from_fn(|i| row[4 + i].to_i32()),
+    )
+}
+
+fn chroma_strong<T: Sample>(edge: &[[T; 8]; 2], beta: i32, tc: i32, boundary: bool) -> bool {
     let activity = edge.map(|row| {
-        let p = std::array::from_fn::<_, 4, _>(|i| i32::from(row[3 - i]));
-        let q = std::array::from_fn::<_, 4, _>(|i| i32::from(row[4 + i]));
+        let (p, q) = chroma_sides(row);
         let d = if boundary {
             (p[1] - p[0]).abs()
         } else {

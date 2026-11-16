@@ -230,7 +230,7 @@ pub(crate) fn separable_at<S: Sample, T: SeparableTaps<N>, const N: usize, const
 /// Precision of `predSamplesLX` (§8.5.3.3.3: 14 bits at every depth).
 const PREDICTION_BITS: u32 = 14;
 /// `shift2` of §8.5.3.3.3.1: the second pass of a 2-D interpolation.
-const SECOND_PASS_SHIFT: u32 = 6;
+pub(super) const SECOND_PASS_SHIFT: u32 = 6;
 /// The largest `shift1`: `Min(4, BitDepth − 8)`.
 const MAX_FIRST_PASS_SHIFT: u32 = 4;
 /// The smallest `shift3`: `Max(2, 14 − BitDepth)`.
@@ -238,7 +238,7 @@ const MIN_WHOLE_SAMPLE_SHIFT: u32 = 2;
 
 /// `shift1` (the first pass's) and `shift3` (whole samples') of
 /// §8.5.3.3.3.1 at `depth`; 0 and 6 at 8 bits.
-fn interpolation_shifts(depth: BitDepth) -> (u32, u32) {
+pub(super) fn interpolation_shifts(depth: BitDepth) -> (u32, u32) {
     let above = depth.above_eight();
     (
         above.min(MAX_FIRST_PASS_SHIFT),

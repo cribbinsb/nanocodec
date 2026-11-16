@@ -262,6 +262,23 @@ impl HevcQuantizer {
     }
 }
 
+impl HevcQuantizer {
+    /// Parameters for inverse scaling only (`level_scale`, `per`,
+    /// `bd_shift`; the forward fields are unused and zero), for scalings
+    /// whose QP or shift the forward constructors do not cover (VVC above
+    /// 8 bits: `Qp′` up to `63 + QpBdOffset`).
+    pub(crate) fn inverse_only(level_scale: i32, per: u32, bd_shift: u32) -> Self {
+        Self {
+            qbits: 0,
+            scale: 0,
+            offset: 0,
+            level_scale,
+            per,
+            bd_shift,
+        }
+    }
+}
+
 /// VVC independent quantization for 8-bit DCT-II blocks.
 /// Uses the shared HEVC scaling arithmetic, with QP extended to 63 and
 /// nearest rounding. Dependent quantization and scaling lists are excluded.

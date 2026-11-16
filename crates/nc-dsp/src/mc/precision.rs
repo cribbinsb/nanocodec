@@ -1,13 +1,19 @@
 //! Unrounded HEVC/VVC interpolation for weighted and bidirectional prediction.
 //! Uses the ordinary shared tap families; retains six fractional sample bits.
+use super::scalar::{SECOND_PASS_SHIFT, interpolation_shifts};
 use super::{
     HevcChromaTaps, HevcLumaTaps, SeparableTaps, VvcAffineLumaTaps, VvcChromaTaps, VvcLumaTaps,
 };
 use crate::{Dsp, Filter};
-use nc_common::PlaneView;
+use nc_common::{BitDepth, PlaneView, Sample};
+
+/// Smallest and largest block side of a high-precision prediction.
+const SIDES: std::ops::RangeInclusive<usize> = 2..=64;
+
 impl Dsp {
     /// Interpolate a rectangle into signed samples with six fractional bits.
-    /// The source starts at the filter window's upper-left, as for `predict`.
+    /// The source starts at the filter window's upper-left, as for `predict`
+    /// ([`crate::DepthKernels::predict_high_precision`] for deeper samples).
     ///
     /// # Panics
     /// If the filter is not HEVC/VVC, dimensions are outside 2..=64, phases
@@ -22,33 +28,82 @@ impl Dsp {
         alternate_half: bool,
         out: &mut [i16],
     ) {
-        assert!(!alternate_half || filter == Filter::VvcLuma);
-        let (w, h) = size;
-        assert!((2..=64).contains(&w) && (2..=64).contains(&h));
-        assert!(
-            window.width() >= w + filter.taps() - 1 && window.height() >= h + filter.taps() - 1
+        check_high_precision(filter, size, window, phases, alternate_half);
+        high_precision_at(
+            filter,
+            size,
+            window,
+            phases,
+            alternate_half,
+            out,
+            BitDepth::EIGHT,
         );
-        assert!(phases.0 < filter.positions() && phases.1 < filter.positions());
-        let out = &mut out[..w * h];
-        match filter {
-            Filter::HevcLuma => interpolate::<HevcLumaTaps, 8>(size, window, phases, out),
-            Filter::HevcChroma => interpolate::<HevcChromaTaps, 4>(size, window, phases, out),
-            Filter::VvcLuma if alternate_half => {
-                interpolate::<HalfLumaTaps, 8>(size, window, phases, out);
-            }
-            Filter::VvcLuma => interpolate::<VvcLumaTaps, 8>(size, window, phases, out),
-            Filter::VvcAffineLuma => interpolate::<VvcAffineLumaTaps, 8>(size, window, phases, out),
-            Filter::VvcChroma => interpolate::<VvcChromaTaps, 4>(size, window, phases, out),
-            _ => panic!("filter has no six-bit prediction precision"),
-        }
     }
 }
-fn interpolate<T: SeparableTaps<N>, const N: usize>(
+
+/// The checks of [`Dsp::predict_high_precision`], for samples of any type.
+pub(crate) fn check_high_precision<S: Sample>(
+    filter: Filter,
     (w, h): (usize, usize),
-    source: &PlaneView<'_>,
+    window: &PlaneView<'_, S>,
+    phases: (usize, usize),
+    alternate_half: bool,
+) {
+    assert!(!alternate_half || filter == Filter::VvcLuma);
+    assert!(SIDES.contains(&w) && SIDES.contains(&h));
+    assert!(window.width() >= w + filter.taps() - 1 && window.height() >= h + filter.taps() - 1);
+    assert!(phases.0 < filter.positions() && phases.1 < filter.positions());
+}
+
+/// [`Dsp::predict_high_precision`] at `depth`, after
+/// [`check_high_precision`]: `predSamplesLX` of H.266 §8.5.6.3.2 (HEVC
+/// §8.5.3.3.3.1), 14-bit at every depth up to 12.
+///
+/// # Panics
+/// If `out` is shorter than the block, or the filter is not HEVC/VVC.
+pub(crate) fn high_precision_at<S: Sample>(
+    filter: Filter,
+    size: (usize, usize),
+    window: &PlaneView<'_, S>,
+    phases: (usize, usize),
+    alternate_half: bool,
+    out: &mut [i16],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<S>();
+    let out = &mut out[..size.0 * size.1];
+    // Direct calls, not a chosen function pointer: each instance then
+    // inlines into this one, as the 8-bit kernel did before it was generic
+    // (the pointer kept six out-of-line copies: up to +1 % 8-bit VVC decode
+    // instructions, callgrind on the foreign corpus).
+    match filter {
+        Filter::HevcLuma => interpolate::<S, HevcLumaTaps, 8>(size, window, phases, out, depth),
+        Filter::HevcChroma => interpolate::<S, HevcChromaTaps, 4>(size, window, phases, out, depth),
+        Filter::VvcLuma if alternate_half => {
+            interpolate::<S, HalfLumaTaps, 8>(size, window, phases, out, depth);
+        }
+        Filter::VvcLuma => interpolate::<S, VvcLumaTaps, 8>(size, window, phases, out, depth),
+        Filter::VvcAffineLuma => {
+            interpolate::<S, VvcAffineLumaTaps, 8>(size, window, phases, out, depth);
+        }
+        Filter::VvcChroma => interpolate::<S, VvcChromaTaps, 4>(size, window, phases, out, depth),
+        _ => panic!("filter has no six-bit prediction precision"),
+    }
+}
+
+/// One block: whole samples `<< shift3`, a first pass `>> shift1`, a second
+/// pass `>> shift2` (H.266 §8.5.6.3.2). A vertical-only position runs as a
+/// whole-sample first pass and a second pass: `(Σ c·(s << shift3)) >> 6`
+/// equals `(Σ c·s) >> shift1` because `shift1 + shift3 = 6` at every depth.
+fn interpolate<S: Sample, T: SeparableTaps<N>, const N: usize>(
+    (w, h): (usize, usize),
+    source: &PlaneView<'_, S>,
     (fx, fy): (usize, usize),
     out: &mut [i16],
+    depth: BitDepth,
 ) {
+    let (shift1, shift3) = interpolation_shifts(depth.of::<S>());
     let before = N / 2 - 1;
     let cx = T::TABLE[fx];
     let cy = T::TABLE[fy];
@@ -58,12 +113,13 @@ fn interpolate<T: SeparableTaps<N>, const N: usize>(
         let input = source.row(y + if fy == 0 { before } else { 0 });
         for (x, out) in row.iter_mut().enumerate() {
             *out = if fx == 0 {
-                i32::from(input[x + before]) << 6
+                input[x + before].to_i32() << shift3
             } else {
                 cx.iter()
                     .enumerate()
-                    .map(|(k, &c)| i32::from(c) * i32::from(input[x + k]))
-                    .sum()
+                    .map(|(k, &c)| i32::from(c) * input[x + k].to_i32())
+                    .sum::<i32>()
+                    >> shift1
             };
         }
     }
@@ -76,7 +132,7 @@ fn interpolate<T: SeparableTaps<N>, const N: usize>(
                     .enumerate()
                     .map(|(k, &c)| i32::from(c) * horizontal[(y + k) * w + x])
                     .sum::<i32>()
-                    >> 6
+                    >> SECOND_PASS_SHIFT
             };
             *out = value as i16;
         }

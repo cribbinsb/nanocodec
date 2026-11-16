@@ -744,7 +744,9 @@ commit `ca331de230f27e0489df9d2fa6c006e2dcd2ed89`. Copyright (c) 2010-2026, ITU/
 `crates/nc-vvc/src/decoder_headers/slices.rs` and `subpictures.rs` derive the slice
 and subpicture layout of H.266 §6.5.1 and §7.3.2.4/7.3.2.5 in our own Rust, checked
 against VTM's `PPS::initRectSliceMap`, `PPS::initSubPic` and `HLSyntaxReader` (the same
-inferences and slice ordering). No VTM code is linked or copied; its decoder is the
+inferences and slice ordering).
+`crates/nc-dsp/src/mc/rpr.rs` takes the reference-picture-resampling filter coefficients
+(RPR luma, affine luma and chroma sets) from VTM's `InterpolationFilter`. No other VTM code is linked or copied; its decoder is the
 reference our foreign-corpus streams are compared with.
 
 ## VVdeC — BSD-3-Clause-Clear

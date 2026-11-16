@@ -131,6 +131,8 @@ pub(super) fn hevc_luma_edge(plane: &mut [u8], e: &HevcEdge) {
 /// are already scaled to the depth (`tC′ · 2^(BitDepth − 8)`, eq. 8-332;
 /// `β′ · 2^(BitDepth − 8)`, eq. 8-330), the output is clipped to it.
 pub(crate) fn hevc_luma_edge_at<T: Sample>(plane: &mut [T], e: &HevcEdge, depth: BitDepth) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let beta = i32::from(e.beta);
     for segment in 0..HEVC_LINES / HEVC_SEGMENT {
         let tc = i32::from(e.tc[segment]);
@@ -202,6 +204,8 @@ pub(super) fn hevc_chroma_edge(plane: &mut [u8], e: &HevcEdge) {
 /// [`hevc_chroma_edge`] at any sample type and depth (`e.tc` scaled to it,
 /// eq. 8-353).
 pub(crate) fn hevc_chroma_edge_at<T: Sample>(plane: &mut [T], e: &HevcEdge, depth: BitDepth) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for line in 0..e.lines {
         let tc = i32::from(e.tc[line / 2]);
         if tc == 0 {

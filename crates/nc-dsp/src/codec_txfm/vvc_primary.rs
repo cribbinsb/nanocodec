@@ -1,6 +1,8 @@
 //! General H.266 inverse primary transforms in the shared DSP layer.
 //! Integer bases follow BSD-Clear `VVdeC` (see `THIRD_PARTY.md`); ordinary
 //! DCT-II blocks retain the existing SIMD-backed HEVC transform path.
+use nc_common::BitDepth;
+
 use super::{DCT32, DST4};
 use crate::Dsp;
 
@@ -8,6 +10,16 @@ use crate::Dsp;
 pub(crate) mod tables;
 
 const MAX_FREQUENCIES: usize = 32;
+/// The first (vertical) stage's shift before its 16-bit clip (H.266
+/// §8.7.4.1).
+const FIRST_SHIFT: u32 = 7;
+/// The second stage's `bdShift = RESIDUAL_BITS − BitDepth` (H.266 §8.7.2,
+/// `sps_extended_precision_flag` 0).
+const RESIDUAL_BITS: u32 = 20;
+/// A one-dimensional block (ISP's 1xN and Nx1) has a single stage, shifting
+/// one bit more than the second stage (`VVdeC` / VTM `xIT`: the missing
+/// first stage's 7 bits less the 6 of a one-point DCT-II's gain of 64).
+const ONE_STAGE_EXTRA_SHIFT: u32 = 1;
 
 /// H.266 primary transform basis for one dimension.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,15 +84,18 @@ pub(crate) fn basis_entry(
     kind.basis(size, frequency, sample)
 }
 
-/// Invert already dequantized coefficients; each stage clips to 16 bits.
-/// The one-dimensional ISP case has one rounding stage with shift thirteen.
+/// Invert already dequantized coefficients at `depth`; each stage clips to
+/// 16 bits. The one-dimensional ISP case has one rounding stage (shift 13
+/// at 8 bits).
 pub(crate) fn inverse(
     size: (usize, usize),
     kinds: [VvcTransformKind; 2],
     coefficients: &[i16],
     out: &mut [i16],
+    depth: BitDepth,
 ) {
     let (width, height) = size;
+    let second_shift = RESIDUAL_BITS - depth.bits();
     let rounded = |sum: i32, shift: u32| {
         ((sum + (1 << (shift - 1))) >> shift).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
     };
@@ -94,7 +109,7 @@ pub(crate) fn inverse(
             let sum = (0..kind.frequencies(length))
                 .map(|k| kind.basis(length, k, x) * i32::from(coefficients[k]))
                 .sum();
-            *target = rounded(sum, 13);
+            *target = rounded(sum, second_shift + ONE_STAGE_EXTRA_SHIFT);
         }
         return;
     }
@@ -116,7 +131,7 @@ pub(crate) fn inverse(
                 .enumerate()
                 .map(|(k, &weight)| weight * i32::from(coefficients[k * width + x]))
                 .sum();
-            intermediate[y * width + x] = rounded(sum, 7);
+            intermediate[y * width + x] = rounded(sum, FIRST_SHIFT);
         }
     }
     for x in 0..width {
@@ -129,7 +144,7 @@ pub(crate) fn inverse(
                 .zip(&intermediate[y * width..y * width + horizontal_count])
                 .map(|(&weight, &coefficient)| weight * i32::from(coefficient))
                 .sum();
-            out[y * width + x] = rounded(sum, 12);
+            out[y * width + x] = rounded(sum, second_shift);
         }
     }
 }
@@ -149,24 +164,45 @@ impl Dsp {
         dependent: bool,
         out: &mut [i16],
     ) {
+        self.vvc_inverse_primary_at(size, kinds, levels, (qp, dependent), out, BitDepth::EIGHT);
+    }
+
+    /// [`Self::vvc_inverse_primary`] of a component at `depth`: `qp`
+    /// (`Qp′`) reaches `63 + QpBdOffset`; the scaling and the second stage
+    /// shift by the depth (H.266 §8.7.3, §8.7.2). Above 8 bits the
+    /// alternative bases take the scalar reference (the vector `vvc_mts`
+    /// kernels are 8-bit).
+    ///
+    /// # Panics
+    /// As [`Self::vvc_inverse_primary`], with the QP bound of `depth`.
+    pub(crate) fn vvc_inverse_primary_at(
+        &self,
+        size: (usize, usize),
+        kinds: [VvcTransformKind; 2],
+        levels: &[i32],
+        (qp, dependent): (u8, bool),
+        out: &mut [i16],
+        depth: BitDepth,
+    ) {
         let (width, height) = size;
         assert!(kinds[0].valid(width) && kinds[1].valid(height) && width * height >= 4);
-        assert!(qp <= 63 && levels.len() >= width * height && out.len() >= width * height);
+        let max_qp = super::vvc_inverse::max_qp(depth);
+        assert!(qp <= max_qp && levels.len() >= width * height && out.len() >= width * height);
         if kinds == [VvcTransformKind::Dct2; 2]
             && (2..=32).contains(&width)
             && (2..=32).contains(&height)
         {
-            self.vvc_inverse_dct(width, height, levels, qp, dependent, out);
+            super::vvc_inverse::inverse(self, size, levels, (qp, dependent), out, depth);
             return;
         }
         let length = width * height;
-        let scaling = super::vvc_inverse::scaling(size, qp, dependent);
+        let scaling = super::vvc_inverse::scaling(size, qp, dependent, depth);
         crate::vvc_mts::with_scratch(length, |scaled| {
             self.vvc_scale(&levels[..length], &scaling, &mut scaled[..length]);
-            if (4..=32).contains(&width) && (4..=32).contains(&height) {
+            if depth == BitDepth::EIGHT && (4..=32).contains(&width) && (4..=32).contains(&height) {
                 self.vvc_inverse_kinds(size, kinds, &scaled[..length], out);
             } else {
-                inverse(size, kinds, &scaled[..length], out);
+                inverse(size, kinds, &scaled[..length], out, depth);
             }
         });
     }

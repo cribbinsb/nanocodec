@@ -23,10 +23,17 @@ use nc_common::decode::{BitReader, DecodeError, Result};
 pub(super) use sps::Sequence;
 pub(super) use weights::Weights;
 
+#[derive(Clone)]
 pub(crate) struct Reader<'a>(BitReader<'a>);
 impl<'a> Reader<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self(BitReader::new(bytes))
+    }
+    /// A reader of `bytes` after their first bit.
+    pub(crate) fn after_flag(bytes: &'a [u8]) -> Result<Self> {
+        let mut reader = Self::new(bytes);
+        reader.flag()?;
+        Ok(reader)
     }
     fn flag(&mut self) -> Result<bool> {
         self.0.read_bit()

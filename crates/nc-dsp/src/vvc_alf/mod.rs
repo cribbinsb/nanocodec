@@ -1,4 +1,4 @@
-//! H.266 §8.8.5 adaptive loop filter (ALF) kernels for 8-bit luma: the 7x7
+//! H.266 §8.8.5 adaptive loop filter (ALF) kernels for luma: the 7x7
 //! diamond filter of one block row (§8.8.5.2), the subsampled Laplacians that
 //! classify 4x4 blocks (§8.8.5.3), and the Gram matrix of the encoder's
 //! filter statistics.
@@ -17,6 +17,13 @@
 //!
 //! Arithmetic follows `VVenC` `AdaptiveLoopFilter` (BSD-3-Clause-Clear;
 //! `THIRD_PARTY.md`).
+//!
+//! The decoder's scalar references (filters, Laplacians, classification)
+//! are generic over the sample type with a runtime [`BitDepth`]
+//! (`docs/handoff/high-bit-depth.md`): the 8-bit tables call them at `u8`
+//! and [`BitDepth::EIGHT`], the high-bit-depth table at `u16`, up to
+//! [`VVC_ALF_MAX_BIT_DEPTH`]. The SIMD kernels and the encoder's statistics
+//! kernels are 8-bit only.
 //!
 //! # Kernel contract
 //!
@@ -41,7 +48,54 @@ mod simd128;
 mod clipped;
 mod cross;
 
+use nc_common::{BitDepth, Sample};
+
 use crate::Isa;
+
+pub(crate) use clipped::{check_chroma_row, check_clipped_row, chroma_row_at, clipped_row_at};
+pub(crate) use cross::{check_cross_row, cross_row_at};
+
+/// The deepest samples the ALF kernels take: VVC Main 10. Up to here a
+/// Laplacian group sum ([`vvc_alf_max_group_sum`]) fits `u16` and the
+/// direction products of [`class`] fit `u32`, and the clipping values of
+/// [`vvc_alf_clip_value`] fit `i16`.
+pub const VVC_ALF_MAX_BIT_DEPTH: u32 = 10;
+
+/// Clipping indices (`alf_luma_clip_idx`, `alf_chroma_clip_idx`, 0..=3).
+pub const VVC_ALF_CLIP_INDICES: usize = 4;
+
+/// `log2` of `AlfClip[clipIdx]` below `2^BitDepth` by clipping index
+/// (H.266 §7.4.3.18, Table 8: `2^BitDepth`, `2^(BitDepth − 3)`,
+/// `2^(BitDepth − 5)`, `2^(BitDepth − 7)`).
+const CLIP_SHIFTS: [u32; VVC_ALF_CLIP_INDICES] = [0, 3, 5, 7];
+
+/// `AlfClip[clip_index]` at `depth` (H.266 §7.4.3.18): the bound of each
+/// clipped neighbour difference of the nonlinear filters.
+///
+/// # Panics
+/// If `clip_index` exceeds 3 or `depth` exceeds [`VVC_ALF_MAX_BIT_DEPTH`].
+#[must_use]
+pub fn vvc_alf_clip_value(clip_index: usize, depth: BitDepth) -> i16 {
+    assert!(depth.bits() <= VVC_ALF_MAX_BIT_DEPTH, "ALF at {depth:?}");
+    (1 << (depth.bits() - CLIP_SHIFTS[clip_index])) as i16
+}
+
+/// The four clipping values at `depth`, by clipping index. The row checks
+/// test each limit against this table built once per row: testing
+/// [`vvc_alf_clip_value`] per limit did not fold back into four compares
+/// in the 8-bit instance (up to +1 % 8-bit VVC decode instructions on
+/// streams with nonlinear ALF).
+fn clip_values(depth: BitDepth) -> [i16; VVC_ALF_CLIP_INDICES] {
+    std::array::from_fn(|index| vvc_alf_clip_value(index, depth))
+}
+
+/// Check a depth the ALF kernels take.
+pub(crate) fn check_depth(depth: BitDepth) {
+    assert!(
+        depth.bits() <= VVC_ALF_MAX_BIT_DEPTH,
+        "VVC ALF kernels take at most {VVC_ALF_MAX_BIT_DEPTH} bits, not {depth:?}"
+    );
+}
 
 /// Coefficients of the 7x7 luma diamond besides the centre; each weights
 /// a symmetric pair of samples.
@@ -250,17 +304,69 @@ fn filter_block_row(
     shifts: &[u32; VVC_ALF_BLOCK],
     out: &mut [&mut [u8]; VVC_ALF_BLOCK],
 ) {
+    filter_block_row_at(rows, coefficients, shifts, out, BitDepth::EIGHT);
+}
+
+/// [`filter_block_row`] at any sample type and depth.
+pub(crate) fn filter_block_row_at<T: Sample>(
+    rows: &[[&[T]; 7]; VVC_ALF_BLOCK],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    shifts: &[u32; VVC_ALF_BLOCK],
+    out: &mut [&mut [T]; VVC_ALF_BLOCK],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for ((rows, &shift), out) in rows.iter().zip(shifts).zip(out.iter_mut()) {
-        filter_row(rows, coefficients, shift, out);
+        filter_row_at(rows, coefficients, shift, out, depth);
     }
 }
 
-/// One row of the filter: `centre + round(Σ c_k (a_k + b_k − 2·centre))`,
-/// clamped to 8 bits (§8.8.5.2, equation 1427 with clipping index 0).
-/// `rows` and `coefficients` as for one row of [`FilterBlockRowFn`].
+/// The checks of [`FilterBlockRowFn`]'s contract (any sample type).
+pub(crate) fn check_filter_block_row<T: Sample>(
+    rows: &[[&[T]; 7]; VVC_ALF_BLOCK],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    shifts: &[u32; VVC_ALF_BLOCK],
+    out: &[&mut [T]; VVC_ALF_BLOCK],
+) {
+    let width = out[0].len();
+    assert!(out.iter().all(|row| row.len() == width));
+    assert!(shifts.iter().all(|shift| (1..=16).contains(shift)));
+    assert_eq!(coefficients.len(), width.div_ceil(VVC_ALF_BLOCK));
+    assert!(
+        rows.as_flattened()
+            .iter()
+            .all(|row| row.len() >= width + 2 * VVC_ALF_REACH)
+    );
+    debug_assert!(
+        coefficients
+            .as_flattened()
+            .iter()
+            .all(|c| i8::try_from(*c).is_ok())
+    );
+}
+
+/// One 8-bit row of the filter ([`filter_row_at`]).
 fn filter_row(rows: &[&[u8]; 7], coefficients: &[[i16; VVC_ALF_TAPS]], shift: u32, out: &mut [u8]) {
+    filter_row_at(rows, coefficients, shift, out, BitDepth::EIGHT);
+}
+
+/// One row of the filter: `centre + round(Σ c_k (a_k + b_k − 2·centre))`,
+/// clipped to `depth` (§8.8.5.2, equation 1427 with clipping index 0, the
+/// identity at every depth: `AlfClip[0] = 2^BitDepth` exceeds every sample
+/// difference). `rows` and `coefficients` as for one row of
+/// [`FilterBlockRowFn`].
+fn filter_row_at<T: Sample>(
+    rows: &[&[T]; 7],
+    coefficients: &[[i16; VVC_ALF_TAPS]],
+    shift: u32,
+    out: &mut [T],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let sample = |dy: isize, x: usize, dx: isize| {
-        i32::from(rows[(3 + dy) as usize][(x as isize + VVC_ALF_REACH as isize + dx) as usize])
+        rows[(3 + dy) as usize][(x as isize + VVC_ALF_REACH as isize + dx) as usize].to_i32()
     };
     for (x, out) in out.iter_mut().enumerate() {
         let centre = sample(0, x, 0);
@@ -271,18 +377,30 @@ fn filter_row(rows: &[&[u8]; 7], coefficients: &[[i16; VVC_ALF_TAPS]], shift: u3
                 i32::from(c) * (sample(dy, x, dx) + sample(-dy, x, -dx) - 2 * centre)
             })
             .sum();
-        *out = (centre + ((sum + (1 << (shift - 1))) >> shift)).clamp(0, 255) as u8;
+        *out = depth.clip_to(centre + ((sum + (1 << (shift - 1))) >> shift));
     }
 }
 
-/// Scalar [`LaplacianFn`]. §8.8.5.3 evaluates the vertical, horizontal and
+/// Scalar [`LaplacianFn`] ([`laplacians_at`]).
+fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
+    laplacians_at(rows, out);
+}
+
+/// The checks of [`LaplacianFn`]'s contract (any sample type).
+pub(crate) fn check_laplacians<T: Sample>(rows: &[&[T]; 4], out: &[[u16; 4]]) {
+    assert!(rows.iter().all(|row| row.len() >= 4 * out.len() + 2));
+}
+
+/// [`LaplacianFn`] at any sample type (no depth: the sums are exact; at
+/// [`VVC_ALF_MAX_BIT_DEPTH`] each group of a grid row is at most
+/// `4 · 2 · 1023`, so the block row's sums fit `u16`). §8.8.5.3 evaluates the vertical, horizontal and
 /// two diagonal Laplacians `|2c − a − b|` at the 2x2-subsampled positions
 /// (x, y) and (x + 1, y + 1) of each grid point, with x and y even. Along
 /// grid row y this is a checkerboard: even columns centred on row y, odd
 /// columns on row y + 1. Group `q` sums the columns `4q − 2 .. 4q + 1` (two
 /// grid points) into `[vertical, horizontal, diagonal 0, diagonal 1]`; a
 /// 4x4 block at column 4b reads groups b and b + 1.
-fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
+pub(crate) fn laplacians_at<T: Sample>(rows: &[&[T]; 4], out: &mut [[u16; 4]]) {
     for (q, out) in out.iter_mut().enumerate() {
         let mut sums = [0; 4];
         for k in 0..4 {
@@ -293,9 +411,8 @@ fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
             } else {
                 [rows[1], rows[2], rows[3]]
             };
-            let laplacian = |a: u8, b: u8| {
-                (2 * i32::from(centre[i]) - i32::from(a) - i32::from(b)).unsigned_abs()
-            };
+            let laplacian =
+                |a: T, b: T| (2 * centre[i].to_i32() - a.to_i32() - b.to_i32()).unsigned_abs();
             let terms = [
                 laplacian(up[i], down[i]),
                 laplacian(centre[i - 1], centre[i + 1]),
@@ -310,10 +427,12 @@ fn laplacians(rows: &[&[u8]; 4], out: &mut [[u16; 4]]) {
     }
 }
 
-/// Activity quantisation (§8.8.5.3: `ac`, 8-bit `BitDepth + 4` shift),
-/// scaled by 64, or 96 for the three Laplacian rows next to a virtual
-/// boundary.
-const ACTIVITY_SHIFT: u32 = 12;
+/// Activity quantisation (§8.8.5.3: `ac`, shifted by `BitDepth +
+/// ACTIVITY_SHIFT_ABOVE_DEPTH`), scaled by 64, or 96 for the three
+/// Laplacian rows next to a virtual boundary.
+const ACTIVITY_SHIFT_ABOVE_DEPTH: u32 = 4;
+/// The activity shift at 8 bits, which the SIMD classifiers use.
+const ACTIVITY_SHIFT: u32 = BitDepth::EIGHT.bits() + ACTIVITY_SHIFT_ABOVE_DEPTH;
 const ACTIVITY_SCALE: u32 = 64;
 const BOUNDARY_ACTIVITY_SCALE: u32 = 96;
 const MAX_ACTIVITY: u32 = 15;
@@ -325,14 +444,17 @@ const ACTIVITY_CLASSES: u8 = 5;
 
 /// One block's `[class index, transpose index]` (§8.8.5.3) from its
 /// Laplacian sums `[vertical, horizontal, diagonal 0, diagonal 1]`.
-fn class(sums: [u32; 4], boundary: bool) -> [u8; 2] {
+#[inline]
+fn class(sums: [u32; 4], boundary: bool, depth: BitDepth) -> [u8; 2] {
     let [vertical, horizontal, diagonal0, diagonal1] = sums;
     let scale = if boundary {
         BOUNDARY_ACTIVITY_SCALE
     } else {
         ACTIVITY_SCALE
     };
-    let activity = (((vertical + horizontal) * scale) >> ACTIVITY_SHIFT).min(MAX_ACTIVITY);
+    let activity = (((vertical + horizontal) * scale)
+        >> (depth.bits() + ACTIVITY_SHIFT_ABOVE_DEPTH))
+        .min(MAX_ACTIVITY);
     let mut index = ACTIVITY_CLASS[activity as usize];
     let (hv1, hv0, hv_direction) = if vertical > horizontal {
         (vertical, horizontal, 1)
@@ -361,18 +483,54 @@ fn class(sums: [u32; 4], boundary: bool) -> [u8; 2] {
     [index, TRANSPOSE[usize::from(main * 2 + (secondary >> 1))]]
 }
 
-/// Largest Laplacian group sum over a block row's grid rows: four grid
-/// rows of a group's four Laplacians (two points, two subsampled positions
-/// each, each at most 510). Block sums (two groups) stay below 2^15, so
+/// Laplacians in a group sum over a block row's grid rows: four grid rows
+/// of a group's four (two points, two subsampled positions each).
+const GROUP_LAPLACIANS: u32 = 4 * 4;
+
+/// Largest Laplacian group sum over a block row's grid rows at 8 bits
+/// ([`vvc_alf_max_group_sum`]). Block sums (two groups) stay below 2^15, so
 /// every product in [`class`] fits 32 bits.
-pub const VVC_ALF_MAX_GROUP_SUM: u16 = 4 * 4 * 510;
+pub const VVC_ALF_MAX_GROUP_SUM: u16 = vvc_alf_max_group_sum(BitDepth::EIGHT);
+
+/// Largest Laplacian group sum over a block row's grid rows at `depth`
+/// (at most [`VVC_ALF_MAX_BIT_DEPTH`]): [`GROUP_LAPLACIANS`] Laplacians of
+/// at most `2 · (2^BitDepth − 1)` each. At 10 bits block sums stay below
+/// 2^16, so every product in [`class`] still fits 32 bits.
+#[must_use]
+pub const fn vvc_alf_max_group_sum(depth: BitDepth) -> u16 {
+    (GROUP_LAPLACIANS * 2 * depth.max() as u32) as u16
+}
 
 /// Scalar [`ClassifyFn`].
 fn classify(groups: &[[u16; 4]], boundary: bool, out: &mut [[u8; 2]]) {
+    classify_at(groups, boundary, out, BitDepth::EIGHT);
+}
+
+/// The checks of [`ClassifyFn`]'s contract at `depth`.
+pub(crate) fn check_classify(groups: &[[u16; 4]], out: &[[u8; 2]], depth: BitDepth) {
+    assert_eq!(groups.len(), out.len() + 1);
+    debug_assert!(
+        groups
+            .as_flattened()
+            .iter()
+            .all(|&sum| sum <= vvc_alf_max_group_sum(depth))
+    );
+}
+
+/// [`ClassifyFn`] at any depth (the activity shift is `BitDepth + 4`).
+/// Inlined so that the 8-bit table's call folds the depth to a constant.
+#[inline]
+pub(crate) fn classify_at(
+    groups: &[[u16; 4]],
+    boundary: bool,
+    out: &mut [[u8; 2]],
+    depth: BitDepth,
+) {
     for (out, pair) in out.iter_mut().zip(groups.windows(2)) {
         *out = class(
             std::array::from_fn(|d| u32::from(pair[0][d]) + u32::from(pair[1][d])),
             boundary,
+            depth,
         );
     }
 }

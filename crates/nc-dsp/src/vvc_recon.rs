@@ -1,6 +1,6 @@
 //! H.266 general intra reconstruction adapters to the shared residual kernels.
 use crate::{BlockSize, Dsp};
-use nc_common::PlaneViewMut;
+use nc_common::{BitDepth, PlaneViewMut, Sample};
 
 /// The largest residual magnitude [`Dsp::add_residual`] takes: its 16-bit
 /// add of an 8-bit sample must not wrap.
@@ -46,10 +46,7 @@ impl Dsp {
         prediction: &mut [u8],
         residual: &[i16],
     ) {
-        let supported = |n: usize| n.is_power_of_two() && (1..=64).contains(&n);
-        assert!(supported(width) && supported(height));
-        let length = width * height;
-        assert!(prediction.len() >= length && residual.len() >= length);
+        let length = check_add_residual((width, height), prediction.len(), residual.len());
         let residual = &residual[..length];
         let dispatched = BlockSize::new(width, height).filter(|_| {
             residual
@@ -60,10 +57,35 @@ impl Dsp {
             let mut view = PlaneViewMut::new(prediction, width, width, height).unwrap();
             self.add_residual(size, &mut view, residual, width);
         } else {
-            for (dst, &src) in prediction[..length].iter_mut().zip(residual) {
-                *dst = (i32::from(*dst) + i32::from(src)).clamp(0, 255) as u8;
-            }
+            add_clipped(&mut prediction[..length], residual, BitDepth::EIGHT);
         }
+    }
+}
+
+/// Check the inputs of [`Dsp::vvc_add_residual`] and return the block's
+/// sample count.
+///
+/// # Panics
+/// If a dimension is not a power of two in 1..=64 or a buffer is short.
+pub(crate) fn check_add_residual(
+    (width, height): (usize, usize),
+    prediction_len: usize,
+    residual_len: usize,
+) -> usize {
+    let supported = |n: usize| n.is_power_of_two() && (1..=64).contains(&n);
+    assert!(supported(width) && supported(height));
+    let length = width * height;
+    assert!(prediction_len >= length && residual_len >= length);
+    length
+}
+
+/// `recSamples = Clip1(predSamples + resSamples)` (H.266 §8.7.5.1) at
+/// `depth`, sample by sample: the scalar reference of the residual add.
+pub(crate) fn add_clipped<T: Sample>(prediction: &mut [T], residual: &[i16], depth: BitDepth) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
+    for (dst, &src) in prediction.iter_mut().zip(residual) {
+        *dst = depth.clip_to(dst.to_i32() + i32::from(src));
     }
 }
 

@@ -97,6 +97,23 @@ const MIN_BITS: u32 = 8;
 const MAX_BITS: u32 = 16;
 
 impl BitDepth {
+    /// This depth as code instantiated for samples `T` sees it: the
+    /// constant [`Self::EIGHT`] for `u8` (so that depth arithmetic folds
+    /// away in the 8-bit instance), `self` for `u16`.
+    #[must_use]
+    #[inline(always)]
+    #[allow(
+        clippy::inline_always,
+        reason = "must fold to a constant in the 8-bit instance"
+    )]
+    pub fn of<T: Sample>(self) -> Self {
+        if T::MAX_BIT_DEPTH == u8::MAX_BIT_DEPTH {
+            Self::EIGHT
+        } else {
+            self
+        }
+    }
+
     /// 8 bits: the only depth of the `u8` instance.
     pub const EIGHT: Self = Self(8);
     /// 10 bits (HEVC Main 10, VVC Main 10, AV1 Main high bit depth).

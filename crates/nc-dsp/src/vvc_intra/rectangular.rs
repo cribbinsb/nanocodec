@@ -1,6 +1,8 @@
 //! H.266 rectangular planar/DC/angular prediction with wide angles and PDPC.
 //! Prepared reference contract matches the square kernels. Normative equations
 //! follow BSD-Clear `VVdeC` `IntraPrediction`; see `THIRD_PARTY.md`.
+use nc_common::{BitDepth, Sample};
+
 use super::{VvcIntraMode, angular::CUBIC};
 const MAX_SIDE: usize = 64;
 const ORIGIN: usize = MAX_SIDE;
@@ -47,16 +49,21 @@ pub(crate) fn wide_angle(width: usize, height: usize, direction: u8) -> i32 {
     }
 }
 
+/// Rectangular prediction at `depth` ([`crate::Dsp::vvc_intra_predict_rect`]
+/// for inputs already checked).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn predict(
+pub(crate) fn predict<T: Sample>(
     width: usize,
     height: usize,
     mode: VvcIntraMode,
     top: &[i32],
     left: &[i32],
     corner: i32,
-    out: &mut [u8],
+    out: &mut [T],
+    depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let direction = match mode {
         VvcIntraMode::Horizontal => Some((18, false)),
         VvcIntraMode::Vertical => Some((50, false)),
@@ -64,7 +71,15 @@ pub(crate) fn predict(
         _ => None,
     };
     if let Some((direction, luma)) = direction {
-        angular(width, height, direction, luma, top, left, corner, 0, out);
+        angular(
+            (width, height),
+            direction,
+            luma,
+            (top, left, corner),
+            0,
+            out,
+            depth,
+        );
         return;
     }
     if width >= 4 && height >= 4 {
@@ -82,18 +97,22 @@ pub(crate) fn predict(
             top,
             left,
             out,
+            depth,
         );
     }
 }
 
 /// Two-sample chroma edges are below the ISP kernel's minimum dimensions.
-fn smooth(
+fn smooth<T: Sample>(
     (width, height): (usize, usize),
     planar: bool,
     top: &[i32],
     left: &[i32],
-    out: &mut [u8],
+    out: &mut [T],
+    depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let pdpc = width >= 4 && height >= 4;
     let scale = (width.ilog2() + height.ilog2() - 2) >> 2;
     let sum = match width.cmp(&height) {
@@ -124,7 +143,7 @@ fn smooth(
                 let wt = 32 >> ((2 * y) >> scale).min(31);
                 value += (wl * (left[y] - value) + wt * (top[x] - value) + 32) >> 6;
             }
-            out[y * width + x] = value.clamp(0, 255) as u8;
+            out[y * width + x] = depth.clip_to(value);
         }
     }
 }
@@ -192,18 +211,17 @@ impl Projection {
         }
     }
 }
-#[allow(clippy::too_many_arguments)]
-fn angular(
-    width: usize,
-    height: usize,
+fn angular<T: Sample>(
+    (width, height): (usize, usize),
     direction: u8,
     luma: bool,
-    top: &[i32],
-    left: &[i32],
-    corner: i32,
+    (top, left, corner): (&[i32], &[i32], i32),
     reference_line: u8,
-    out: &mut [u8],
+    out: &mut [T],
+    depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let p = Projection::new(
         width,
         height,
@@ -215,17 +233,28 @@ fn angular(
         reference_line,
         None,
     );
-    render((width, height), luma, corner, reference_line, &p, out);
+    render(
+        (width, height),
+        luma,
+        corner,
+        reference_line,
+        &p,
+        out,
+        depth,
+    );
 }
 
-fn render(
+fn render<T: Sample>(
     (width, height): (usize, usize),
     luma: bool,
     corner: i32,
     reference_line: u8,
     p: &Projection,
-    out: &mut [u8],
+    out: &mut [T],
+    depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let (columns, rows) = if p.vertical {
         (width, height)
     } else {
@@ -258,7 +287,7 @@ fn render(
             } else {
                 ((32 - phase) * p.main[index + 1] + phase * p.main[index + 2] + 16) >> 5
             };
-            value = value.clamp(0, 255);
+            value = depth.clip(value);
             if enabled && p.angle == 0 {
                 let weight = 32 >> ((2 * x) >> axis_scale).min(31);
                 value += (weight * (p.side[y + 1] - corner) + 32) >> 6;
@@ -274,7 +303,7 @@ fn render(
             } else {
                 x * width + y
             };
-            out[index] = value.clamp(0, 255) as u8;
+            out[index] = depth.clip_to(value);
         }
     }
 }
@@ -321,6 +350,7 @@ mod tests {
                     &edge[7 + 2 * width..],
                     edge[6],
                     &mut actual,
+                    BitDepth::EIGHT,
                 );
                 let expected: Vec<u8> = values[6..].iter().map(|&v| v as u8).collect();
                 assert_eq!(actual, expected, "prediction {count}: {:?}", &edge[..6]);
@@ -352,7 +382,16 @@ mod tests {
                     dsp.vvc_intra_predict(side, mode, &top, &left, 73, &mut expected);
                     // Do not delegate square cases here: verify the new rectangular
                     // equations independently at their square limit.
-                    predict(side, side, mode, &top, &left, 73, &mut actual);
+                    predict(
+                        side,
+                        side,
+                        mode,
+                        &top,
+                        &left,
+                        73,
+                        &mut actual,
+                        BitDepth::EIGHT,
+                    );
                     assert_eq!(actual, expected, "side={side} mode={mode:?}");
                 }
             }
@@ -369,7 +408,7 @@ mod tests {
                             1 => VvcIntraMode::Dc,
                             _ => VvcIntraMode::Angular { direction, luma },
                         };
-                        let mut out = vec![19; width * height + 4];
+                        let mut out = vec![19u8; width * height + 4];
                         predict(
                             width,
                             height,
@@ -378,6 +417,7 @@ mod tests {
                             &vec![173; 2 * height],
                             173,
                             &mut out[..width * height],
+                            BitDepth::EIGHT,
                         );
                         assert!(
                             out[..width * height].iter().all(|&v| v == 173),
@@ -403,7 +443,7 @@ impl crate::Dsp {
     /// If dimensions, mode, line or buffer lengths are invalid.
     pub fn vvc_mrl_predict(
         &self,
-        (width, height): (usize, usize),
+        size: (usize, usize),
         direction: u8,
         reference_line: u8,
         top: &[i32],
@@ -411,50 +451,16 @@ impl crate::Dsp {
         corner: i32,
         out: &mut [u8],
     ) {
-        let valid = |n: usize| n.is_power_of_two() && (4..=64).contains(&n);
-        let line = usize::from(reference_line);
-        assert!(
-            valid(width)
-                && valid(height)
-                && (1..=66).contains(&direction)
-                && matches!(reference_line, 1 | 2)
+        mrl_predict(
+            size,
+            direction,
+            reference_line,
+            (top, left, corner),
+            out,
+            BitDepth::EIGHT,
         );
-        assert!(
-            top.len() >= 2 * width + line
-                && left.len() >= 2 * height + line
-                && out.len() >= width * height
-        );
-        if direction == 1 {
-            let top = &top[line..line + width];
-            let left = &left[line..line + height];
-            let sum = match width.cmp(&height) {
-                std::cmp::Ordering::Greater => top.iter().sum::<i32>(),
-                std::cmp::Ordering::Less => left.iter().sum::<i32>(),
-                std::cmp::Ordering::Equal => top.iter().chain(left).sum::<i32>(),
-            };
-            let count = if width == height {
-                width + height
-            } else {
-                width.max(height)
-            } as i32;
-            out[..width * height].fill(((sum + count / 2) / count).clamp(0, 255) as u8);
-        } else {
-            angular(
-                width,
-                height,
-                direction,
-                true,
-                &top[..2 * width + line],
-                &left[..2 * height + line],
-                corner,
-                reference_line,
-                out,
-            );
-        }
     }
-}
 
-impl crate::Dsp {
     /// Predict an ISP region with CU-based wide angles and unfiltered references.
     /// Vertical one/two-wide transform blocks share a four-wide prediction region.
     /// # Panics
@@ -470,30 +476,110 @@ impl crate::Dsp {
         corner: i32,
         out: &mut [u8],
     ) {
-        let (width, height) = size;
-        let valid = |n: usize| n.is_power_of_two() && n <= 64;
-        assert!(valid(width) && valid(height) && width >= 4 && width * height >= 16);
-        assert!(valid(prediction_size.0) && valid(prediction_size.1) && direction <= 66);
-        assert!(top.len() > width && left.len() > height && out.len() >= width * height);
-        if direction <= 1 {
-            if height >= 4 {
-                super::isp::smooth(size, direction == 0, top, left, out);
-            } else {
-                smooth(size, direction == 0, top, left, out);
-            }
+        isp_predict(
+            prediction_size,
+            size,
+            direction,
+            (top, left, corner),
+            out,
+            BitDepth::EIGHT,
+        );
+    }
+}
+
+/// [`crate::Dsp::vvc_mrl_predict`] at `depth`: the DC average and the
+/// angular samples clip to it (H.266 §8.4.5.2.12, §8.4.5.2.13).
+///
+/// # Panics
+/// As [`crate::Dsp::vvc_mrl_predict`].
+pub(crate) fn mrl_predict<T: Sample>(
+    (width, height): (usize, usize),
+    direction: u8,
+    reference_line: u8,
+    (top, left, corner): (&[i32], &[i32], i32),
+    out: &mut [T],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
+    let valid = |n: usize| n.is_power_of_two() && (4..=64).contains(&n);
+    let line = usize::from(reference_line);
+    assert!(
+        valid(width)
+            && valid(height)
+            && (1..=66).contains(&direction)
+            && matches!(reference_line, 1 | 2)
+    );
+    assert!(
+        top.len() >= 2 * width + line
+            && left.len() >= 2 * height + line
+            && out.len() >= width * height
+    );
+    if direction == 1 {
+        let top = &top[line..line + width];
+        let left = &left[line..line + height];
+        let sum = match width.cmp(&height) {
+            std::cmp::Ordering::Greater => top.iter().sum::<i32>(),
+            std::cmp::Ordering::Less => left.iter().sum::<i32>(),
+            std::cmp::Ordering::Equal => top.iter().chain(left).sum::<i32>(),
+        };
+        let count = if width == height {
+            width + height
         } else {
-            let projection = Projection::new(
-                width,
-                height,
-                direction,
-                true,
-                top,
-                left,
-                corner,
-                0,
-                Some(prediction_size),
-            );
-            render(size, true, corner, 0, &projection, out);
+            width.max(height)
+        } as i32;
+        out[..width * height].fill(depth.clip_to((sum + count / 2) / count));
+    } else {
+        angular(
+            (width, height),
+            direction,
+            true,
+            (&top[..2 * width + line], &left[..2 * height + line], corner),
+            reference_line,
+            out,
+            depth,
+        );
+    }
+}
+
+/// [`crate::Dsp::vvc_intra_predict_isp`] at `depth`: the angular samples
+/// clip to it (H.266 §8.4.5.2.13); planar and DC need no clip.
+///
+/// # Panics
+/// As [`crate::Dsp::vvc_intra_predict_isp`].
+pub(crate) fn isp_predict<T: Sample>(
+    prediction_size: (usize, usize),
+    size: (usize, usize),
+    direction: u8,
+    (top, left, corner): (&[i32], &[i32], i32),
+    out: &mut [T],
+    depth: BitDepth,
+) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
+    let (width, height) = size;
+    let valid = |n: usize| n.is_power_of_two() && n <= 64;
+    assert!(valid(width) && valid(height) && width >= 4 && width * height >= 16);
+    assert!(valid(prediction_size.0) && valid(prediction_size.1) && direction <= 66);
+    assert!(top.len() > width && left.len() > height && out.len() >= width * height);
+    if direction <= 1 {
+        if height >= 4 {
+            super::isp::smooth(size, direction == 0, top, left, out);
+        } else {
+            smooth(size, direction == 0, top, left, out, depth);
         }
+    } else {
+        let projection = Projection::new(
+            width,
+            height,
+            direction,
+            true,
+            top,
+            left,
+            corner,
+            0,
+            Some(prediction_size),
+        );
+        render(size, true, corner, 0, &projection, out, depth);
     }
 }

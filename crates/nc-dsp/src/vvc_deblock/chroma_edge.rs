@@ -4,6 +4,8 @@
 //! fits i16 (the largest weighted sum is 8 * 255 before rounding).
 #![allow(unsafe_code, clippy::inline_always)]
 
+use nc_common::{BitDepth, Sample};
+
 use crate::deblock::samples::{self, Edge, LANES, POSITIONS, REACH};
 use crate::simd::{I16FilterLanes, I16x8Shuffles};
 
@@ -22,14 +24,21 @@ pub(crate) struct ChromaEdge {
 
 /// Scalar reference: original two-line kernel, independently per segment.
 pub(super) fn scalar(plane: &mut [u8], e: &ChromaEdge) {
+    scalar_at(plane, e, BitDepth::EIGHT);
+}
+
+/// [`scalar`] at any sample type and depth (`e.beta`, `e.tc` scaled to it).
+pub(crate) fn scalar_at<T: Sample>(plane: &mut [T], e: &ChromaEdge, depth: BitDepth) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let edge = e.samples;
     for segment in (0..edge.lines).step_by(SEGMENT) {
         let at = |line: usize, pos: usize| {
             edge.base + (segment + line) * edge.along + pos * edge.across - REACH * edge.across
         };
-        let mut rows: [[u8; POSITIONS]; SEGMENT] =
+        let mut rows: [[T; POSITIONS]; SEGMENT] =
             std::array::from_fn(|line| std::array::from_fn(|pos| plane[at(line, pos)]));
-        super::vvc_deblock_chroma(&mut rows, e.beta, e.tc, e.large, e.boundary);
+        super::chroma_at(&mut rows, e.beta, e.tc, e.large, e.boundary, depth);
         for (line, row) in rows.iter().enumerate() {
             for (pos, &value) in row.iter().enumerate() {
                 plane[at(line, pos)] = value;

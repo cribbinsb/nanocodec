@@ -61,6 +61,27 @@ pub(super) fn passes(depth: BitDepth) -> (Pass, Pass) {
     )
 }
 
+/// The whole-block inverse `transform` of `coeffs` into `residual` at
+/// `depth` with this table's kernel ([`crate::Dsp::hevc_inverse`] at a
+/// depth): VVC's square DCT-II blocks, whose bases and stage clips are
+/// HEVC's (H.266 §8.7.4.1, second stage `20 − BitDepth`).
+///
+/// # Panics
+/// If `coeffs` or `residual` is shorter than the block.
+pub(crate) fn whole_block(
+    dsp: &crate::Dsp,
+    transform: crate::HevcTransform,
+    coeffs: &[i16],
+    residual: &mut [i16],
+    depth: BitDepth,
+) {
+    let n = transform.side();
+    assert!(coeffs.len() >= n * n && residual.len() >= n * n);
+    // SAFETY: both slices cover the block (checked above); the extent is
+    // the whole block; the table matches a supported ISA.
+    unsafe { (dsp.high.hevc_inverse[transform as usize])(coeffs, residual, (n, n), depth) }
+}
+
 /// The `N`x`N` inverse transform `T` of `coeffs` into `residual` at
 /// `depth`, on one scalar lane (the whole block: the reference).
 fn inverse<T: Line<i32>, const N: usize>(

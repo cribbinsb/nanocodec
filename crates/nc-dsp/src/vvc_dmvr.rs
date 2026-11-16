@@ -21,7 +21,9 @@ fn fractional(center: i32, left: i32, right: i32) -> i32 {
 }
 
 impl Dsp {
-    /// Bilinear interpolation with VVC DMVR's 10-bit internal precision.
+    /// Bilinear interpolation with VVC DMVR's 10-bit internal precision
+    /// ([`crate::DepthKernels::vvc_dmvr_bilinear`] for deeper samples; the
+    /// search, [`Self::vvc_dmvr`], is the same at every depth).
     /// The input includes one extra column and row for the two-tap filter.
     /// # Panics
     /// If the window/output is too short or a phase exceeds 15.
@@ -32,9 +34,7 @@ impl Dsp {
         phases: (usize, usize),
         out: &mut [i16],
     ) {
-        let (width, height) = size;
-        assert!(phases.0 < 16 && phases.1 < 16);
-        assert!(input.width() > width && input.height() > height && out.len() >= width * height);
+        check_bilinear(size, input, phases, out);
         // SAFETY: window, phase and output checked; instance ISA is supported.
         unsafe {
             (self.vvc_refinement_kernels().bilinear)(size, input, phases, out);
@@ -61,22 +61,62 @@ impl Dsp {
     }
 }
 
+/// Sixteenth-sample phases of the two-tap filter (`fbL[p] = [16 − p, p]`).
+const BILINEAR_PHASES: i32 = 16;
+/// `shift1 = BitDepth − 6` (H.266 §8.5.3.2.2): the first pass leaves
+/// 10-bit samples with the taps' four bits, whatever the depth.
+const FIRST_SHIFT_BELOW_DEPTH: u32 = 6;
+/// `shift2` of H.266 §8.5.3.2.2: the second pass removes the taps' bits.
+const BILINEAR_SECOND_SHIFT: u32 = 4;
+
+/// The checks of [`crate::Dsp::vvc_dmvr_bilinear`], for samples of any type.
+pub(crate) fn check_bilinear<T: nc_common::Sample>(
+    (width, height): (usize, usize),
+    input: &nc_common::PlaneView<'_, T>,
+    phases: (usize, usize),
+    out: &[i16],
+) {
+    let positions = BILINEAR_PHASES as usize;
+    assert!(phases.0 < positions && phases.1 < positions);
+    assert!(input.width() > width && input.height() > height && out.len() >= width * height);
+}
+
+/// The scalar 8-bit kernel (`Kernels::bilinear`).
 pub(crate) fn bilinear(
     size: (usize, usize),
     input: &nc_common::PlaneView<'_>,
     phases: (usize, usize),
     out: &mut [i16],
 ) {
+    bilinear_at(size, input, phases, out, nc_common::BitDepth::EIGHT);
+}
+
+/// [`crate::Dsp::vvc_dmvr_bilinear`] at `depth` (H.266 §8.5.3.2.2):
+/// `shift1 = BitDepth − 6`, `offset1 = 1 << (shift1 − 1)`, `shift2 = 4`,
+/// `offset2 = 8`, so the output has 10-bit precision at every depth and
+/// the search ([`scalar`]) does not depend on the depth.
+pub(crate) fn bilinear_at<T: nc_common::Sample>(
+    size: (usize, usize),
+    input: &nc_common::PlaneView<'_, T>,
+    phases: (usize, usize),
+    out: &mut [i16],
+    depth: nc_common::BitDepth,
+) {
     let (width, height) = size;
     let (fx, fy) = (phases.0 as i32, phases.1 as i32);
+    let shift1 = depth.bits() - FIRST_SHIFT_BELOW_DEPTH;
+    let (offset1, offset2) = (1 << (shift1 - 1), 1 << (BILINEAR_SECOND_SHIFT - 1));
     for y in 0..height {
         let top = input.row(y);
         let bottom = input.row(y + 1);
         for x in 0..width {
-            let horizontal =
-                |row: &[u8]| (i32::from(row[x]) * (16 - fx) + i32::from(row[x + 1]) * fx + 2) >> 2;
+            let horizontal = |row: &[T]| {
+                (row[x].to_i32() * (BILINEAR_PHASES - fx) + row[x + 1].to_i32() * fx + offset1)
+                    >> shift1
+            };
             out[y * width + x] =
-                ((horizontal(top) * (16 - fy) + horizontal(bottom) * fy + 8) >> 4) as i16;
+                ((horizontal(top) * (BILINEAR_PHASES - fy) + horizontal(bottom) * fy + offset2)
+                    >> BILINEAR_SECOND_SHIFT) as i16;
         }
     }
 }

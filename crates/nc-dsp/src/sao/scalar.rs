@@ -91,6 +91,8 @@ pub(crate) fn apply_row_at<T: Sample>(
     (x0, x1): (usize, usize),
     depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for x in x0..x1 {
         let i = y * in_stride + x;
         let offset = category(edge(input, i, offs)).map_or(0, |cat| i32::from(offsets[cat]));
@@ -111,6 +113,8 @@ pub(crate) fn apply_at<T: Sample>(
     rect: Rect,
     depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     for y in rect.y0..rect.y1 {
         apply_row_at(
             input,
@@ -191,6 +195,8 @@ pub(crate) fn band_sample_at<T: Sample>(
     offsets: [i16; 4],
     depth: BitDepth,
 ) -> T {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let value = sample.to_i32();
     let band = ((value >> (depth.bits() - BAND_BITS)) - i32::from(position)) & 31;
     let offset = offsets.get(band as usize).copied().unwrap_or(0);
@@ -226,6 +232,8 @@ pub(crate) fn band_at<T: Sample>(
     exempt: &[bool],
     depth: BitDepth,
 ) {
+    // Folds to the constant 8 in the 8-bit instance.
+    let depth = depth.of::<T>();
     let width = rect.x1 - rect.x0;
     for y in rect.y0..rect.y1 {
         for (x, sample) in plane[y * stride + rect.x0..y * stride + rect.x1]

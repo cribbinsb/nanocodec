@@ -2,7 +2,7 @@
 use super::*;
 #[test]
 fn independent_rectangular_predictions() {
-    let mut out = [0; 32];
+    let mut out = [0u8; 32];
     predict(
         8,
         4,
@@ -16,6 +16,7 @@ fn independent_rectangular_predictions() {
         &[136, 163, 160, 118, 72, 63, 54, 45],
         133,
         &mut out,
+        BitDepth::EIGHT,
     );
     assert_eq!(
         out,
@@ -27,7 +28,7 @@ fn independent_rectangular_predictions() {
 }
 #[test]
 fn independent_rectangular_prediction_1() {
-    let mut out = [0; 64];
+    let mut out = [0u8; 64];
     predict(
         4,
         16,
@@ -42,6 +43,7 @@ fn independent_rectangular_prediction_1() {
         ],
         85,
         &mut out,
+        BitDepth::EIGHT,
     );
     assert_eq!(
         out,
@@ -54,7 +56,7 @@ fn independent_rectangular_prediction_1() {
 }
 #[test]
 fn independent_rectangular_prediction_2() {
-    let mut out = [0; 32];
+    let mut out = [0u8; 32];
     predict(
         4,
         8,
@@ -68,6 +70,7 @@ fn independent_rectangular_prediction_2() {
         ],
         183,
         &mut out,
+        BitDepth::EIGHT,
     );
     assert_eq!(
         out,
@@ -79,7 +82,7 @@ fn independent_rectangular_prediction_2() {
 }
 #[test]
 fn independent_rectangular_prediction_3() {
-    let mut out = [0; 32];
+    let mut out = [0u8; 32];
     predict(
         4,
         8,
@@ -93,6 +96,7 @@ fn independent_rectangular_prediction_3() {
         ],
         68,
         &mut out,
+        BitDepth::EIGHT,
     );
     assert_eq!(
         out,
@@ -104,7 +108,7 @@ fn independent_rectangular_prediction_3() {
 }
 #[test]
 fn independent_rectangular_prediction_4() {
-    let mut out = [0; 32];
+    let mut out = [0u8; 32];
     predict(
         4,
         8,
@@ -118,6 +122,7 @@ fn independent_rectangular_prediction_4() {
         ],
         189,
         &mut out,
+        BitDepth::EIGHT,
     );
     assert_eq!(
         out,
@@ -129,7 +134,7 @@ fn independent_rectangular_prediction_4() {
 }
 #[test]
 fn independent_rectangular_prediction_5() {
-    let mut out = [0; 64];
+    let mut out = [0u8; 64];
     predict(
         16,
         4,
@@ -144,6 +149,7 @@ fn independent_rectangular_prediction_5() {
         &[66, 64, 64, 62, 61, 60, 59, 58],
         66,
         &mut out,
+        BitDepth::EIGHT,
     );
     assert_eq!(
         out,
