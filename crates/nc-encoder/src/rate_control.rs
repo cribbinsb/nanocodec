@@ -2306,7 +2306,9 @@ mod tests {
     };
     #[test]
     fn rate_log_plan_reports_the_frame_and_the_state_after_it() {
-        let mut r = controller(200_000);
+        // Without the quiet run-up: frame 4 falls inside the second before
+        // the test's next key, where the base boost is quieted.
+        let mut r = controller_with(200_000, &[("rate.prekey_quiet", 0.)]);
         r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
         r.feedback(40_000);
         let still = Complexity {

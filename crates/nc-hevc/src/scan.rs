@@ -81,6 +81,34 @@ impl CodedSubBlocks {
         (!self.is_empty()).then(|| (u64::BITS - 1 - self.0.leading_zeros()) as usize)
     }
 
+    /// The highest coded scan index below `end`.
+    #[must_use]
+    pub fn last_below(self, end: usize) -> Option<usize> {
+        let below = if end >= u64::BITS as usize {
+            self.0
+        } else {
+            self.0 & ((1 << end) - 1)
+        };
+        Self(below).last()
+    }
+
+    /// The set with the trailing sub-blocks that hold no level of `levels`
+    /// (a `scan` block) dropped: exact again after a change that can only
+    /// have emptied the last sub-blocks (shaving trailing levels).
+    #[must_use]
+    pub fn trimmed(self, levels: &[i16], scan: &Scan) -> Self {
+        let size = 1usize << scan.log2;
+        let mut bits = self.0;
+        while bits != 0 {
+            let last = (u64::BITS - 1 - bits.leading_zeros()) as usize;
+            if sub_block_coded(levels, size, scan.sub_blocks[last]) {
+                break;
+            }
+            bits &= !(1 << last);
+        }
+        Self(bits)
+    }
+
     /// The scan indices of the coded sub-blocks, in scan order.
     pub fn iter(self) -> impl Iterator<Item = usize> {
         let mut bits = self.0;

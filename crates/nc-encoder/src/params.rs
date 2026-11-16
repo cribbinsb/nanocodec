@@ -914,7 +914,19 @@ param_group! {
             "buffers a periodic key of a still scene (running unchanged-block share at least `rate.key_repay_still_from`) may take whatever the debt, planned at the quality the inter frames hold rather than by its repay phase or the debt correction (0 = off): the frames after it repay it",
         period_ceiling: 0.0, [0.0, 1.0],
             "1 holds the target as a ceiling over every key period: an inter frame may take at most what the rest of the period can repay of the stream's spend above the target line (`period_ledger.rs`), and is re-coded coarser past it; 0 corrects debt through budgets only",
-        prekey_quiet: 0.0, [0.0, 10.0],
+        // The quiet second before a scheduled key, scaled by how the inter
+        // frames stand against the last key (`KeyQuality::quiet_strength`).
+        // Was H.264 and HEVC Default (600 f, keys every 10 s: J -0.89% and
+        // -1.26%, static -3.0% / -4.4%) and AV1 Fast (86d268d54: J -0.67%,
+        // pulse -0.24 dB; the f-c3 starved key 25.0 -> 30.4 dB); the engine
+        // default since 2026-11-16 (shared first). Final-checks against
+        // 86d268d54 (600 f, keys every 10 s, draw 2026-11-16), no guard in
+        // any: AV1 Default J -0.13% [-0.42, +0.16], VP9 -0.14% [-0.38,
+        // +0.07], VVC -0.24% [-0.49, -0.02], AV2 -0.32% [-0.57, -0.10],
+        // HEVC Fast -0.47% [-0.84, -0.08]; periodic-key pulse -0.16 to
+        // -0.35 dB. The fast rungs of VP9, VVC and AV2 and AV1's layered
+        // fast rungs pin it off.
+        prekey_quiet: 1.0, [0.0, 10.0],
             "seconds before a scheduled periodic key in which inter frames get no cadence base boost and hold still blocks at the quality they have (`ReuseTerm::hold_still`; 0 = off): whatever they refined there the key codes again",
         refine_cost: 0.0, [0.0, 2.0],
             "share of an intra coding a still picture's refinement is priced at (`still_refine.rs`: the last key's cost scale between the held quality's step and the frame's); an inter frame is kept from refining past what the strict buffer's room can take (0 = off, the role models alone)",

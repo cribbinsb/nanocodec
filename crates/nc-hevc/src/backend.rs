@@ -1109,18 +1109,6 @@ impl CodecBackend for HevcBackend {
         // HEVC Fast and Faster pin the old values. No depth removal is the
         // engine default since 2026-11-15.
         ("hevc.merge_candidates", 4.0),
-        // Quiet second before a scheduled key (`rate.prekey_quiet`, as the
-        // H.264 Default since 6e1a695b): no cadence base boost and still
-        // blocks held, so a still scene's key is not paid for by a
-        // refinement burst just before it. 600-frame long-window L3 (keys
-        // every 10 s, 31 points, 6e1a695b): J -1.26% [-1.95, -0.62], static
-        // -4.4%, crowd -0.6%, no ceiling point; key pulse +0.26 dB (guard
-        // 0.25, judged noise: worst-1% terms all within +2%); worst 1 s
-        // window max 2.24 -> 2.28 x target. Re-codes on the 14 static long
-        // points 10.5 -> 10.6 per 1000 frames; CPU x86 x1.0001, Jetson
-        // cycles x1.0015. 150-frame levels inert (no periodic key).
-        // HEVC Fast and Faster pin it off.
-        ("rate.prekey_quiet", 1.0),
     ];
 
     // A flat field-by-field initialisation of the backend's state.
@@ -2345,7 +2333,7 @@ impl HevcBackend {
             quantization.column_zero_limit,
             &mut coeffs[..n * n],
         );
-        let nonzero = if transformed {
+        let (nonzero, sub_blocks) = if transformed {
             self.quantise_levels(
                 plane,
                 (&coeffs[..n * n], levels),
@@ -2354,7 +2342,7 @@ impl HevcBackend {
                 quantisation,
             )
         } else {
-            0
+            (0, CodedSubBlocks::default())
         };
         let coded = nonzero > 0;
         // Parity adjustment never zeroes or creates a coded block, so an
@@ -2363,15 +2351,7 @@ impl HevcBackend {
         // to a constant (the DST's first basis is not flat).
         // Exact shortcut: bodycam/crowd P instructions fall 3.79%/0.99%
         // at QP28/39, with unchanged streams and reconstruction.
-        let lone_dc = nonzero == 1 && levels[0] != 0;
-        let dc_only = lone_dc && transform != HevcTransform::Dst4;
-        let sub_blocks = if lone_dc {
-            CodedSubBlocks::FIRST
-        } else if coded {
-            CodedSubBlocks::of(levels, self.scans.get(log2, scan))
-        } else {
-            CodedSubBlocks::default()
-        };
+        let dc_only = nonzero == 1 && levels[0] != 0 && transform != HevcTransform::Dst4;
         if coded && SIGN_DATA_HIDING && !dc_only {
             hide_signs(
                 &coeffs[..n * n],
@@ -2409,8 +2389,8 @@ impl HevcBackend {
 
     /// Quantise a transformed block's `coeffs` into `levels` (the dead
     /// zone, shaving and, for final blocks, the trellis); returns the
-    /// number of non-zero levels, or an upper bound once shaving dropped
-    /// some (0 exactly when every level is zero).
+    /// number of non-zero levels (or an upper bound once shaving dropped
+    /// some; 0 exactly when every level is zero) and the coded sub-blocks.
     fn quantise_levels(
         &self,
         plane: PlaneIndex,
@@ -2418,7 +2398,7 @@ impl HevcBackend {
         quantization: &TransformQuantization,
         scan: &Scan,
         quantisation: Quantisation,
-    ) -> u32 {
+    ) -> (u32, CodedSubBlocks) {
         let mut nonzero = self
             .dsp
             .hevc_quantize_from(coeffs, &quantization.quantizer, levels);
@@ -2426,25 +2406,25 @@ impl HevcBackend {
             nonzero =
                 nc_encoder::apply_planned_dead_zone(levels, quantization.planned_min_level) as u32;
         }
+        if nonzero == 0 {
+            return (0, CodedSubBlocks::default());
+        }
+        let mut sub_blocks = coded_sub_blocks(levels, nonzero, scan);
         // A lone level is the block's first and is never shaved;
         // skipping the shave there (most coded inter blocks: a DC)
-        // saves its search for the last level through every empty
-        // sub-block. Exact: HEVC Faster x86 instructions -0.6% (callgrind,
-        // chart clips, CBR 600).
-        let kept = nonzero > 0
-            && (self.shave_gap == 0
-                || nonzero == 1
-                || shave_isolated_ones(levels, scan, self.shave_gap));
-        if !kept {
-            return 0;
+        // saves its search for the last level. Exact: HEVC Faster x86
+        // instructions -0.6% (callgrind, chart clips, CBR 600).
+        if self.shave_gap > 0 && nonzero > 1 {
+            sub_blocks = shave_isolated_ones(levels, scan, sub_blocks, self.shave_gap);
         }
         let trellis = (quantisation == Quantisation::Final)
             .then(|| self.trellis_for(plane))
             .flatten();
         if let Some(trellis) = trellis {
             nonzero = self.trellis_quantize(trellis, plane, coeffs, scan.log2, scan.kind, levels);
+            sub_blocks = coded_sub_blocks(levels, nonzero, scan);
         }
-        nonzero
+        (nonzero, sub_blocks)
     }
 
     /// The decoded residual of a coded block's `levels` (`scaled` and
@@ -2609,6 +2589,16 @@ fn copy_square(
         32 => copy_prediction::<32>(out, x, y, pred, stride),
         64 => copy_prediction::<64>(out, x, y, pred, stride),
         _ => unreachable!("block sides are powers of two from 4 to 64"),
+    }
+}
+
+/// The coded sub-blocks of `levels` holding `nonzero` non-zero levels: a
+/// lone DC (most coded inter blocks) without a scan.
+fn coded_sub_blocks(levels: &[i16], nonzero: u32, scan: &Scan) -> CodedSubBlocks {
+    match nonzero {
+        0 => CodedSubBlocks::default(),
+        1 if levels[0] != 0 => CodedSubBlocks::FIRST,
+        _ => CodedSubBlocks::of(levels, scan),
     }
 }
 

@@ -343,6 +343,17 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
       P frames, so less quiet lowers the high-rate pulses (+3.5 → +2.1 dB at 1200 kbps) while
       the low-rate ones swing around 0.
     - f-c3 on homes 300: key 25.0 → 30.4 dB.
+    - **Engine default since the next landing** (shared first). Final-checks against 86d268d54,
+      no guard in any: AV1 Default J −0.13% [−0.42, +0.16], VP9 −0.14% [−0.38, +0.07], VVC
+      −0.24% [−0.49, −0.02], AV2 −0.32% [−0.57, −0.10], HEVC Fast (unpinned) −0.47% [−0.84,
+      −0.08]; pulse −0.16 to −0.35 dB balanced. The fast rungs of VP9, VVC and AV2 and AV1's
+      layered fast rungs pin it off (AV1 Faster took it with f-c3n); H.264's and HEVC's
+      Faster rungs keep their pins.
+  - **Why `rate.refine_cost` raises the rate (chirla, gated split):** its floor keeps a burst
+    inside the strict room (frame 80: 25 kB → 3.8 kB), so the base-role model no longer learns
+    burst sizes. The level then stays 50–90 qindex finer (frames 88/96: 207/251 → 140/157), and
+    the next burst is larger (frame 104: 2.5 → 40.6 kB, buffer to 1.00). Next: plan the level
+    with the predicted refinement price, not with the role model alone.
     - t33 (light-pipeline binary, plain switch): homes 600 pulse delta against old Fast +3.88 →
       +0.38 dB, london_bus 600 +2.00 → +0.70, hospital 600 +2.74 → +1.57.
 
@@ -369,6 +380,17 @@ on the landed Fast (ca8429a43, with rate.prekey_quiet from 86d268d54):
 - Final-check (600 f, keys every 10 s): J -3.25% [-4.02, -2.53], no guards. Without the
   prekey_quiet fix the same bundle failed the pulse guard (+0.84 dB); without deblocking the
   static class failed (+3.7%).
+
+## AV1 Default: three of Slow's cheap groups (feature/light-pipeline, 2026-11-16)
+
+Group ablation of Default against Slow: only exact_rank_margin 0, cdef_search_row_step 1
+and keyframe_cfl 1 were above the Default -> Slow line; landed in AV1 DEFAULT_PARAMS. Lens
+-17.9 / -26.0 -> -18.9 / -26.7 at +2.4 % c8a time; CBR L1 quality -0.80 %; final-check
+-0.30 % [-0.49, -0.11], no guards. Default with trellis off (+8 % speed) or also Fast's key
+intra set (+15 %) lose in CBR (L1 +1.14 % / +3.93 %): no Default re-mix reaches M10's
+speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC and VP9
++0.00 % (already 0 or inert), VVC -0.17 % [-0.61, +0.20], AV2 -0.53 % [-0.77, -0.03]; the
+engine default is still 1.1 pending L3 on VVC and AV2.
 
 ## Assigned 2026-11-16 09:10
 

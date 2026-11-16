@@ -2237,20 +2237,6 @@ impl CodecBackend for H264Backend {
         ("layers.adaptive_max_static", 0.68),
         ("layers.adaptive_max_camera_jitter", 2.0),
         ("layers.adaptive_max_noise_residual", 1.8),
-        // Quiet second before a scheduled key (`rate.prekey_quiet`,
-        // docs/handoff/tuning.md "Still-scene switches"): no cadence base
-        // boost and still blocks held, so the key is not bought back from a
-        // refinement burst. 600-frame long-window L3 (keys every 10 s, 30
-        // points, 6693a2a9): J -0.89% [-1.70, -0.22], static -3.0%, crowd
-        // -0.4%, no ceiling point; worst 1 s window max 2.32 -> 2.27 x
-        // target, achieved/target max 1.019 -> 1.000; 150-frame levels inert
-        // (no periodic key). Re-codes rise 7.9 -> 10.0 per 1000 frames on the
-        // 13 static long-window points (still scenes only, where frames are
-        // the cheapest to code): accepted. CPU on the 150-frame cost clips
-        // (no periodic key there) x86 x1.0000, Jetson cycles x0.9989; the
-        // extra re-codes add about 0.2% of frames on still scenes.
-        // H.264 Fast, Faster and Veryfast pin it off.
-        ("rate.prekey_quiet", 1.0),
         // The target as a ceiling over every key period (`rate.period_ceiling`,
         // `period_ledger.rs`; owner, 2026-11-14: steady sizes for still
         // scenes), with the key reserve sized by the last key and the still

@@ -233,7 +233,6 @@ impl<const AREA: usize> Levels<AREA> {
 
 /// Storage needed by the shared syntax walk. Pricing has no reconstructed output.
 trait LevelValues {
-    fn prepare_group(&mut self, _group: usize, _single_position: bool) {}
     fn get(&self, pos: usize) -> i32;
     fn set(&mut self, pos: usize, value: i32);
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()];
@@ -278,107 +277,78 @@ impl<const AREA: usize> Levels<AREA> {
     }
 }
 
-/// Largest group plus its template halo: narrow ISP groups are 1x16 or
-/// 16x1, wider than the usual 4x4. Every magnitude fits in 15 bits.
-const SOURCE_WINDOW_AREA: usize = (GROUP_SIZE + PAD) * (1 + PAD);
-
-/// A position's first-pass magnitude (at most 5) in the low byte of a
-/// [`SourceLevels::first_pass`] entry, and whether it is nonzero above it:
-/// the five template entries then add up to both template sums at once.
-const NONZERO_SHIFT: u32 = 8;
-/// The low byte of a summed [`SourceLevels::first_pass`] template.
+/// A position's first-pass magnitude (at most 5) in the low bits of a
+/// [`SourceLevels::first_pass`] entry, and whether it is nonzero above
+/// them: the five template entries then add up to both template sums at
+/// once (at most 25 below this shift, 5 above it: a byte holds both).
+const NONZERO_SHIFT: u32 = 5;
+/// The low bits of a summed [`SourceLevels::first_pass`] template.
 const PASS_ONE_MASK: u32 = (1 << NONZERO_SHIFT) - 1;
 
-/// Known encoder magnitudes, caching just the current group's template halo.
-/// Every template neighbour is later in the grouped scan: significance clips
-/// it to its first-pass magnitude, and the reverse remainder/bypass passes
-/// have completed it before Rice reads it. Thus pricing needs no reconstructed
-/// grid. A small unsigned halo removes repeated boundary tests and absolute
-/// values without clearing or copying the whole coded region for sparse blocks.
-struct SourceLevels<'a> {
+/// Known encoder magnitudes, for pricing. Every template neighbour is later
+/// in the grouped scan, so the walk has priced it before any position reads
+/// it: [`LevelValues::set`] records its first-pass magnitude and nonzero
+/// flag, packed in one byte, on a grid `PAD` wider and taller than the block
+/// whose padding, and every position not coded, stays zero. The grid is
+/// sized to the block like [`Levels`] (36 bytes to clear for a 4x4) and
+/// written once per coded position, rather than rebuilt from the source for
+/// every coefficient group. Rice parameters, needed only by levels above
+/// four and by bypass-coded positions, read the source itself.
+struct SourceLevels<'a, const AREA: usize> {
     source: &'a [i32],
     width: usize,
     height: usize,
     log2: u32,
-    origin: usize,
     stride: usize,
-    /// The halo's magnitudes.
-    window: [u16; SOURCE_WINDOW_AREA],
-    /// The halo's first-pass magnitudes and nonzero flags, packed
-    /// ([`NONZERO_SHIFT`]).
-    first_pass: [u16; SOURCE_WINDOW_AREA],
+    /// First-pass magnitudes and nonzero flags, packed ([`NONZERO_SHIFT`]).
+    first_pass: [u8; AREA],
 }
 
-impl<'a> SourceLevels<'a> {
+impl<'a, const AREA: usize> SourceLevels<'a, AREA> {
     fn new(source: &'a [i32], width: usize, height: usize) -> Self {
+        debug_assert!((width + PAD) * (height + PAD) <= AREA);
         Self {
             source,
             width,
             height,
             log2: width.ilog2(),
-            origin: 0,
-            stride: 0,
-            window: [0; SOURCE_WINDOW_AREA],
-            first_pass: [0; SOURCE_WINDOW_AREA],
+            stride: width + PAD,
+            first_pass: [0; AREA],
         }
     }
 
-    /// The window index of raster position `pos` of the block.
+    /// The grid index of raster position `pos` of the block.
     fn index(&self, pos: usize) -> usize {
-        let local = pos - self.origin;
-        (local >> self.log2) * self.stride + (local & (self.width - 1))
+        (pos >> self.log2) * self.stride + (pos & (self.width - 1))
     }
 }
 
-impl LevelValues for SourceLevels<'_> {
-    fn prepare_group(&mut self, group: usize, single_position: bool) {
-        let (gw, gh) = crate::scan::group_shape(self.width, self.height);
-        let columns = self.width / gw;
-        let (x, y) = (group % columns * gw, group / columns * gh);
-        self.origin = y * self.width + x;
-        self.stride = gw + PAD;
-        // Only the first coded group can end at its first position. Every
-        // template neighbour then follows the block's last significant level,
-        // so the constructor's zero halo is already the complete template.
-        if single_position {
-            return;
-        }
-        self.window.fill(0);
-        self.first_pass.fill(0);
-        let columns = (gw + PAD).min(self.width - x);
-        let rows = (gh + PAD).min(self.height - y);
-        for row in 0..rows {
-            let at = self.origin + row * self.width;
-            let window = &mut self.window[row * self.stride..][..columns];
-            let first_pass = &mut self.first_pass[row * self.stride..][..columns];
-            for ((value, packed), &source) in window
-                .iter_mut()
-                .zip(first_pass)
-                .zip(&self.source[at..][..columns])
-            {
-                let magnitude = source.unsigned_abs();
-                debug_assert!(i16::try_from(magnitude).is_ok());
-                *value = magnitude as u16;
-                *packed = (pass_one_magnitude(magnitude)
-                    | u32::from(magnitude != 0) << NONZERO_SHIFT) as u16;
-            }
-        }
-    }
-
+impl<const AREA: usize> LevelValues for SourceLevels<'_, AREA> {
     fn get(&self, pos: usize) -> i32 {
         self.source[pos].unsigned_abs() as i32
     }
 
-    fn set(&mut self, _pos: usize, _value: i32) {}
+    fn set(&mut self, pos: usize, value: i32) {
+        let magnitude = value.unsigned_abs();
+        let index = self.index(pos);
+        self.first_pass[index] =
+            (pass_one_magnitude(magnitude) | u32::from(magnitude != 0) << NONZERO_SHIFT) as u8;
+    }
 
     fn template(&self, pos: usize) -> [u32; TEMPLATE.len()] {
-        let index = self.index(pos);
-        TEMPLATE.map(|(dx, dy)| u32::from(self.window[index + dy * self.stride + dx]))
+        let (x, y) = (pos & (self.width - 1), pos >> self.log2);
+        TEMPLATE.map(|(dx, dy)| {
+            if x + dx < self.width && y + dy < self.height {
+                self.source[pos + dy * self.width + dx].unsigned_abs()
+            } else {
+                0
+            }
+        })
     }
 
     fn pass_one_template(&self, pos: usize) -> (u32, u32) {
         let index = self.index(pos);
-        // At most 5 x 5 in the low byte, 5 above it: no carry between them.
+        // At most 5 x 5 below the shift, 5 above it: no carry between them.
         let packed: u32 = TEMPLATE
             .iter()
             .map(|&(dx, dy)| u32::from(self.first_pass[index + dy * self.stride + dx]))
@@ -645,16 +615,14 @@ fn walk_sized<B: Bins>(
         0
     };
     if B::PRICES && levels.is_none() {
-        return walk(
-            io,
-            c,
-            (source, last),
-            coded,
-            block,
-            &mut SourceLevels::new(source, coded.0, coded.1),
-        );
+        // Coded sides are powers of two up to `MAX_SIDE`.
+        return match coded.0.max(coded.1) {
+            1..=4 => walk_source::<{ padded_area(4) }, _>(io, c, (source, last), coded, block),
+            5..=8 => walk_source::<{ padded_area(8) }, _>(io, c, (source, last), coded, block),
+            9..=16 => walk_source::<{ padded_area(16) }, _>(io, c, (source, last), coded, block),
+            _ => walk_source::<{ padded_area(MAX_SIDE) }, _>(io, c, (source, last), coded, block),
+        };
     }
-    // Coded sides are powers of two up to `MAX_SIDE`.
     match coded.0.max(coded.1) {
         1..=4 => walk_grid::<{ padded_area(4) }, _>(io, c, (source, last), coded, block, levels),
         5..=8 => walk_grid::<{ padded_area(8) }, _>(io, c, (source, last), coded, block, levels),
@@ -689,6 +657,18 @@ fn walk_grid<const AREA: usize, B: Bins>(
     walk(io, c, source, coded, block, &mut values)?;
     values.collect(levels);
     Ok(())
+}
+
+/// The pricing walk over the encoder's own levels ([`SourceLevels`]).
+fn walk_source<const AREA: usize, B: Bins>(
+    io: &mut B,
+    c: &mut CoeffContexts,
+    source: (&[i32], usize),
+    coded: (usize, usize),
+    block: (usize, (usize, usize)),
+) -> Result<()> {
+    let mut values = SourceLevels::<AREA>::new(source.0, coded.0, coded.1);
+    walk(io, c, source, coded, block, &mut values)
 }
 
 /// The syntax walk of [`code`] over reconstructed or already-known magnitudes: the
@@ -733,7 +713,6 @@ fn walk<B: Bins>(
             continue;
         }
         significant |= 1 << gp;
-        values.prepare_group(gp, end == first);
         let mut nonzero = GroupPositions::default();
         let mut regular = GroupPositions::default();
         let mut bypass = GroupPositions::default();

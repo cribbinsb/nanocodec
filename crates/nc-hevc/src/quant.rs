@@ -11,7 +11,7 @@
 //! tunable, `hevc.intra_rounding` / `hevc.inter_rounding`).
 
 use crate::residual::SIGN_HIDING_THRESHOLD;
-use crate::scan::{CodedSubBlocks, SUB_BLOCK_COEFFS, Scan, sub_block_coded};
+use crate::scan::{CodedSubBlocks, SUB_BLOCK_COEFFS, Scan};
 #[cfg(test)]
 use crate::transform::{COEFF_MAX, COEFF_MIN};
 use nc_dsp::HevcQuantizer;
@@ -115,24 +115,44 @@ pub fn quantize(coeffs: &mut [i32], qp: i32, log2: u8, intra: bool) {
 /// the previous non-zero level, from the end of the block backwards
 /// (SVT-AV1's `shave_coeff`: an isolated high-frequency ±1 costs its last
 /// position and significance bits for almost no distortion gain; it is
-/// mostly noise). Returns whether any level remains.
-pub fn shave_isolated_ones(levels: &mut [i16], scan: &Scan, min_gap: usize) -> bool {
+/// mostly noise). `sub_blocks` are the block's coded sub-blocks; returns
+/// them after shaving (the block's first level always remains).
+///
+/// The walk visits only coded sub-blocks: testing every sub-block of the
+/// block again cost about as much as the levels it reads. Exact; per P
+/// frame HEVC Fast instructions -1.0 % / -0.1 % (callgrind, `WestWindEasy` /
+/// `Johnny`, QP 37).
+pub fn shave_isolated_ones(
+    levels: &mut [i16],
+    scan: &Scan,
+    sub_blocks: CodedSubBlocks,
+    min_gap: usize,
+) -> CodedSubBlocks {
+    // A shaved level may empty its sub-block, leaving a stale bit; the walk
+    // only moves down and then finds nothing there, and the stale bits (all
+    // above the last remaining level) are trimmed after it.
     nc_encoder::shave_isolated_ones(levels, &scan.positions, min_gap, |levels, end| {
-        previous_nonzero(levels, scan, end)
-    })
+        previous_nonzero(levels, scan, sub_blocks, end)
+    });
+    sub_blocks.trimmed(levels, scan)
 }
 
-/// The highest scan index below `end` whose level is non-zero. Whole empty
-/// sub-blocks are skipped by testing their four raster rows, which is much
-/// cheaper than visiting their sixteen scan positions one by one.
-fn previous_nonzero(levels: &[i16], scan: &Scan, end: usize) -> Option<usize> {
-    let size = 1usize << scan.log2;
+/// The highest scan index below `end` whose level is non-zero, searched in
+/// the sub-blocks `sub_blocks` may hold levels in.
+fn previous_nonzero(
+    levels: &[i16],
+    scan: &Scan,
+    sub_blocks: CodedSubBlocks,
+    end: usize,
+) -> Option<usize> {
     let mut end = end;
-    while end > 0 {
-        let sub_block = (end - 1) / SUB_BLOCK_COEFFS;
-        let coded = sub_block_coded(levels, size, scan.sub_blocks[sub_block]);
+    while let Some(sub_block) = sub_blocks.last_below(end.div_ceil(SUB_BLOCK_COEFFS)) {
         let start = sub_block * SUB_BLOCK_COEFFS;
-        if coded && let Some(i) = (start..end).rev().find(|&i| levels[scan.positions[i]] != 0) {
+        let stop = end.min(start + SUB_BLOCK_COEFFS);
+        if let Some(i) = (start..stop)
+            .rev()
+            .find(|&i| levels[scan.positions[i]] != 0)
+        {
             return Some(i);
         }
         end = start;
@@ -233,12 +253,15 @@ mod tests {
         levels[at(3)] = -1;
         levels[at(20)] = 1; // 17 positions after the -1: isolated
         levels[at(40)] = -1; // 20 after: isolated
-        assert!(shave_isolated_ones(&mut levels, &scan, 8));
+        let coded = CodedSubBlocks::of(&levels, &scan);
+        let coded = shave_isolated_ones(&mut levels, &scan, coded, 8);
+        assert_eq!(coded, CodedSubBlocks::of(&levels, &scan));
         assert_eq!((levels[at(20)], levels[at(40)]), (0, 0));
         assert_eq!((levels[at(0)], levels[at(3)]), (5, -1)); // gap 3 < 8: kept
         // A 2 at the end is never dropped.
         levels[at(50)] = 2;
-        shave_isolated_ones(&mut levels, &scan, 8);
+        let coded = CodedSubBlocks::of(&levels, &scan);
+        shave_isolated_ones(&mut levels, &scan, coded, 8);
         assert_eq!(levels[at(50)], 2);
     }
 

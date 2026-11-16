@@ -105,15 +105,6 @@ structure.inherited_depth = 0
 # second key 31.25 -> 31.14, P frames before it 36.99 -> 37.27; 600 kbps
 # key 34.69 -> 34.71, P 38.83 -> 39.75. The deeper dip on still scenes is
 # the better P frames (rate-control follow-up in the goal record).
-# Quiet second before a scheduled key (rate.prekey_quiet, as H.264 and
-# HEVC; its strength follows how far the inter frames stand above the last
-# key): a refinement burst just before a key cannot spend the buffer the
-# key needs (f-c3 on otw_homes_00004 300 kbps: a q54 base frame 4 frames
-# before the key took the buffer to 0.79 and the key coded q235 / 25.0 dB;
-# quieted 30.4 dB). Final-check against the re-pointed Fast (600 f, keys
-# every 10 s, draw 2026-11-16): J -0.67% [-0.90, -0.45] BETTER, no guard,
-# periodic-key pulse -0.24 dB (static -0.59).
-rate.prekey_quiet = 1
 # Light pipeline (2026-11-16, docs/handoff/light-pipeline.md): the Default's
 # CDEF settings, sub-pel move biases, cheap-vector and seed refinement,
 # pre-transform skip energy, model and RD, and deblocking. Group ablation on
