@@ -100,7 +100,7 @@ pub fn update(previous: f32, stats: &Grid<BlockStats>, matches: &Grid<MotionBloc
     let mut flat_sads: Vec<u32> = Vec::with_capacity(count);
     // (variance, SAD) packed into one integer that orders exactly as the
     // pair does.
-    let mut edge_keys: Vec<u64> = Vec::new();
+    let mut edge_keys: Vec<u64> = Vec::with_capacity(counts[edge] as usize);
     for (s, m) in stats.cells().iter().zip(matches.cells()) {
         match bucket(s).cmp(&edge) {
             Ordering::Less => flat_sads.push(m.sad),

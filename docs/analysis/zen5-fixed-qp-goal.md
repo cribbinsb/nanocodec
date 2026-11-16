@@ -109,6 +109,14 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - `feature/av1-writer`: AV1 coefficient writer and range coder, 1540M against M10's 761M
     instructions for the same bytes. Restructure as needed; exact.
 
+- **Design direction (Mark, 2026-11-16):** effort is continuous, not binary per preset.
+  - Expensive tools run where per-block or per-superblock gates (quantizer, energy per step²) say
+    so.
+  - A bounded-work budget, `effort.regular_fraction`, gives the expensive path to at most the worst
+    X % of superblocks, ranked by a pre-coding proxy, OR to any superblock above an absolute
+    threshold.
+  - Presets become points along one tuned curve of continuous knobs.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.

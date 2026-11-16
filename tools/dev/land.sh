@@ -224,6 +224,10 @@ pre_land_checks() {
             die "cargo fmt --check failed (run cargo fmt): not landed"
         timed "clippy (gate) ${tested[*]}" cargo clippy --profile gate --quiet --all-targets "${tested[@]}" -- -D warnings ||
             die "clippy failed: not landed"
+        # Feature builds (`analysis`): code behind a feature broke the verifier's
+        # web build twice on 2026-11-16 while the default build passed here.
+        timed "cargo check --all-features ${tested[*]}" cargo check --profile gate --quiet --all-features "${tested[@]}" ||
+            die "cargo check --all-features failed: not landed"
     fi
     if ((${#tested[@]})); then
         # `--lib` is an error for a package with no library (the CLI), so it

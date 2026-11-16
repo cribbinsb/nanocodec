@@ -150,11 +150,11 @@ fn dilate(cells: &mut [u8], scratch: &mut [u8], cols: usize) {
         }
     }
     cells.copy_from_slice(scratch);
-    let rows: Vec<&[u8]> = scratch.chunks_exact(cols).collect();
+    let row_of = |r: usize| scratch.get(r * cols..(r + 1) * cols);
     for (row, out) in cells.chunks_exact_mut(cols).enumerate() {
         let neighbours = [row.checked_sub(1), Some(row + 1)];
-        for near in neighbours.into_iter().flatten().filter_map(|r| rows.get(r)) {
-            for (d, s) in out.iter_mut().zip(*near) {
+        for near in neighbours.into_iter().flatten().filter_map(row_of) {
+            for (d, s) in out.iter_mut().zip(near) {
                 *d |= s;
             }
         }

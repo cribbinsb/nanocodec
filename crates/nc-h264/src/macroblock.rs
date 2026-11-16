@@ -1215,9 +1215,6 @@ fn coefficient_cost_8x8(levels: &[i16; 64], nonzero: u32) -> u32 {
     cost
 }
 
-/// [`eliminate_sparse_luma`] for 8x8 transform blocks, with the same
-/// per-8x8 and per-macroblock thresholds. `nonzero` holds each block's
-/// count of non-zero levels (from the quantiser).
 /// [`nc_encoder::apply_planned_dead_zone`] (the planned step's dead zone,
 /// [`MbQuantizers::with_planned_step`]) where it can zero a level. Below
 /// the λ-headroom cap `min_level` is 1, which zeroes nothing, so the pass
@@ -1233,6 +1230,9 @@ fn apply_planned_dead_zone(levels: &mut [i16], min_level: i32) {
 /// level is kept.
 const NO_DEAD_ZONE: i32 = 1;
 
+/// [`eliminate_sparse_luma`] for 8x8 transform blocks, with the same
+/// per-8x8 and per-macroblock thresholds. `nonzero` holds each block's
+/// count of non-zero levels (from the quantiser).
 fn eliminate_sparse_luma_8x8(
     levels: &mut [[i16; 64]; 4],
     mut nonzero: [u32; 4],
