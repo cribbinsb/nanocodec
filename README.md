@@ -40,8 +40,7 @@ delay, you may be in the right place:
 
   On the H.264, HEVC and VP9 streams we timed, they needed less time per frame than ffmpeg.wasm
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). 10-bit decoding has SIMD on
-  AVX2, AVX-512, NEON and WASM for AV1 and VP9 (AV1 10-bit: 1.64× dav1d's instructions on a 1080p
-  stream), plus WASM for the kernels HEVC and VVC share; VVC's native (x86/Arm) and H.264's 10-bit paths
+  AVX2, AVX-512, NEON and WASM for AV1 and VP9, plus WASM for the kernels HEVC and VVC share; VVC's native (x86/Arm) and H.264's 10-bit paths
   are scalar so far.
 - **Very fast real-time codecs:** single-thread, low delay (no B-frames, no lookahead, real-time CBR with a
   1 s buffer); 720p at real-time speed on one Jetson Orin core for every format's `medium` preset except VVC,
