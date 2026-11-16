@@ -30,7 +30,11 @@
 #   WebRTC's AV1 SVC is modelled on, and bin/vp9_spatial_svc_encoder): the
 #   references of the SVC chart (eval/nceval/svc_chart.py). Separate builds,
 #   so aomenc / vpxenc and the curves fingerprinted by them never change.
-#   Opt-in tools: libvpx avm dav2d vvdec ffmpeg aomsvc vpxsvc (not built by the default
+#   vpxhbd = the pinned libvpx built again with --enable-vp9-highbitdepth,
+#   installing only bin/vpxdec-hbd: the VP9 profile 2 (10/12-bit) reference
+#   of the vp9-libvpx conformance suite. Separate, so the 8-bit vpxdec of
+#   the landing gates is unchanged.
+#   Opt-in tools: libvpx avm dav2d vvdec ffmpeg aomsvc vpxsvc vpxhbd (not built by the default
 #   all-tools invocation). vvdec installs bin/vvdecapp, the VVC conformance
 #   gate's second decoder (eval/nceval/conformance.py). ffmpeg installs
 #   bin/ffmpeg-decode, a static decode-only FFmpeg (with the pinned dav1d)
@@ -41,7 +45,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly ALL_TOOLS=(python openh264 harness x264 x265 kvazaar svtav1 libaom dav1d jm hm vmaf aominspect)
-readonly OPTIONAL_TOOLS=(libvpx avm dav2d vvdec ffmpeg aomsvc vpxsvc)
+readonly OPTIONAL_TOOLS=(libvpx avm dav2d vvdec ffmpeg aomsvc vpxsvc vpxhbd)
 readonly HARNESS_DIR=$(cd "$SCRIPT_DIR/../openh264-harness" 2>/dev/null && pwd || true)
 # Minimum CMake that every CMake-based tool here accepts.
 readonly CMAKE_MIN_VERSION=3.16
@@ -311,6 +315,16 @@ build_vpxsvc() {
     install -m 755 "$BLD/examples/vp9_spatial_svc_encoder" "$PREFIX/bin/vp9_spatial_svc_encoder"
 }
 
+build_vpxhbd() {
+    # build_libvpx's configuration plus high bit depth; only vpxdec is
+    # installed, renamed.
+    (cd "$BLD" && run "$SRC/configure" --prefix="$PREFIX" \
+        --disable-shared --enable-static --disable-vp8 --enable-vp9 \
+        --enable-vp9-highbitdepth --disable-unit-tests --disable-docs --disable-webm-io)
+    run make -C "$BLD" -j "$JOBS"
+    install -m 755 "$BLD/vpxdec" "$PREFIX/bin/vpxdec-hbd"
+}
+
 build_dav1d() {
     meson_build_install "$SRC" -Denable_tests=false -Denable_tools=true
 }
@@ -411,8 +425,8 @@ build_tool() {
             commit=$LIBAOM_COMMIT
             : >"$CURRENT_LOG"
             fetch_source libaom "$LIBAOM_URL" "$ref" "$commit" ;;
-        vpxsvc)
-            # Same pinned source as libvpx, only its SVC example built.
+        vpxsvc|vpxhbd)
+            # Same pinned source as libvpx, built with different options.
             ref=$LIBVPX_REF
             commit=$LIBVPX_COMMIT
             : >"$CURRENT_LOG"

@@ -9,7 +9,7 @@ them); nothing in them is executed. Per suite, `SUITES` names the codec's
 probe and the reference decoder's command line.
 
 Usage:
-    python3 -I tools/dev/conformance_manifest.py --suite hevc-v1
+    python3 -I tools/dev/conformance_manifest.py --suite hevc-v1|vvc-v1|av1-libaom|h264|vp9-libvpx
         [--profiles "Main,Main 10,Main Still Picture"] [--max-bit-depth 10]
         [--chroma 4:2:0,4:0:0] [--only A,B] [--jobs 4]
 
@@ -419,6 +419,70 @@ def probe_av1(path):
             "frame_bytes": (width * height + chroma) * sample_bytes}
 
 
+VP9_KEY_FRAME = 0
+VP9_SYNC_CODE = 0x498342
+VP9_CS_RGB = 7
+
+
+def ivf_first_frame(path):
+    """The first frame of an IVF file (a VP9 superframe starts with its
+    first frame), or None."""
+    data = path.read_bytes()
+    if len(data) < IVF_HEADER_BYTES + IVF_FRAME_HEADER_BYTES:
+        return None
+    size = int.from_bytes(data[IVF_HEADER_BYTES:IVF_HEADER_BYTES + 4], "little")
+    start = IVF_HEADER_BYTES + IVF_FRAME_HEADER_BYTES
+    return data[start:start + size]
+
+
+def probe_vp9(path):
+    """Profile, chroma format, depth and frame size from the first frame's
+    uncompressed header (VP9 bitstream specification §6.2), or None. The
+    per-picture size is the first frame's (streams that resize get
+    whole-output hashes only)."""
+    frame = ivf_first_frame(path)
+    if not frame:
+        return None
+    r = Bits(frame)
+    if r.u(2) != 2:  # frame_marker
+        return None
+    low = r.u(1)
+    profile = (r.u(1) << 1) | low
+    if profile == 3:
+        r.u(1)
+    if r.u(1):  # show_existing_frame
+        return None
+    frame_type, show_frame, error_resilient = r.u(1), r.u(1), r.u(1)
+    intra_only = frame_type != VP9_KEY_FRAME and not show_frame and r.u(1)
+    if frame_type != VP9_KEY_FRAME:
+        if not intra_only:
+            return None
+        if not error_resilient:
+            r.u(2)  # reset_frame_context
+    if r.u(24) != VP9_SYNC_CODE:
+        return None
+    depth, subsampling = 8, (1, 1)
+    if frame_type == VP9_KEY_FRAME or profile > 0:
+        if profile >= 2:
+            depth = 12 if r.u(1) else 10
+        rgb = r.u(3) == VP9_CS_RGB
+        if not rgb:
+            r.u(1)  # color_range
+        if profile in (1, 3):
+            subsampling = (0, 0) if rgb else (r.u(1), r.u(1))
+            r.u(1)
+    if intra_only:
+        r.u(8)  # refresh_frame_flags
+    width, height = r.u(16) + 1, r.u(16) + 1
+    chroma_names = {(1, 1): "4:2:0", (1, 0): "4:2:2", (0, 1): "4:4:0", (0, 0): "4:4:4"}
+    chroma_w = (width + subsampling[0]) >> subsampling[0]
+    chroma_h = (height + subsampling[1]) >> subsampling[1]
+    sample_bytes = 2 if depth > 8 else 1
+    return {"profile": f"Profile {profile}", "chroma_format": chroma_names[subsampling],
+            "bit_depth": [depth, depth], "width": width, "height": height,
+            "frame_bytes": (width * height + 2 * chroma_w * chroma_h) * sample_bytes}
+
+
 # suite -> (probe, reference decoder command for (bitstream, output path)).
 SUITES = {
     "vvc-v1": (probe_vvc, lambda bitstream, out: [
@@ -432,6 +496,11 @@ SUITES = {
     # grain applied.
     "av1-libaom": (probe_av1, lambda bitstream, out: [
         str(DATA / "anchors/x86_64/bin/aomdec"), "--i420", "-o", str(out), str(bitstream)]),
+    # vpxdec built with high bit depth (tools/anchors/build_anchors.sh
+    # vpxhbd): shown frames at their own size, 8-bit samples as bytes and
+    # deeper ones as 16-bit little-endian (the form of libvpx's .md5 files).
+    "vp9-libvpx": (probe_vp9, lambda bitstream, out: [
+        str(DATA / "anchors/x86_64/bin/vpxdec-hbd"), "--i420", "-o", str(out), str(bitstream)]),
     # JM 19 ldecod: frames in output order, cropped, 4:0:0 written as 4:2:0
     # with mid-grey chroma, deeper samples as 16-bit little-endian.
     "h264": (probe_h264, lambda bitstream, out: [
@@ -450,6 +519,13 @@ CROSS_CHECKS = {
         str(out)],
 }
 CROSS_CHECKS["h264-x264"] = CROSS_CHECKS["h264"]
+# FFmpeg's native VP9 decoder; it scales resized pictures to the first
+# size, so those streams record a disagreement.
+VP9_PIXEL_FORMATS = {8: "yuv420p", 10: "yuv420p10le", 12: "yuv420p12le"}
+CROSS_CHECKS["vp9-libvpx"] = lambda bitstream, out, info: [
+    "ffmpeg", "-v", "error", "-nostdin", "-y", "-c:v", "vp9", "-i", str(bitstream),
+    "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt",
+    VP9_PIXEL_FORMATS[max(info["bit_depth"])], str(out)]
 
 
 def bitstream(directory):
@@ -539,10 +615,12 @@ def build_entry(suite, streams, directory):
         return directory.name, None
     frames = hashes.frames
     agrees = (md5 in shipped or bool(frames) and set(frames) <= shipped) if shipped else None
-    if agrees is False and len(shipped) > 1 and len(frames) != len(shipped):
+    split_wrong = len(frames) != len(shipped) or hashes.size % info["frame_bytes"]
+    if agrees is False and len(shipped) > 1 and split_wrong:
         # Per-picture MD5s shipped for pictures whose size changes within
-        # the stream (libaom's resize vectors): the probe's one picture
-        # size does not split the output, so only the whole MD5 is kept.
+        # the stream (libaom's and libvpx's resize vectors): the probe's one
+        # picture size does not split the output, so only the whole MD5 is
+        # kept.
         info = {**info, "frame_bytes": None}
         frames, agrees = [], None
     return directory.name, {

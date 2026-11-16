@@ -25,7 +25,8 @@ delay, you may be in the right place:
   play H.264, HEVC, VVC, AV1, VP9 and AV2 streams without WebCodecs, a plug-in or a native decoder for the
   format. The H.264 (Constrained High), HEVC (Main and Main 10), AV1 (Main, 8- and 10-bit) and VP9 (profile 0)
   decoders pass the conformance streams we test (HEVC: 147/147 Main, Main Still Picture and Main 10 streams of the
-  JCT-VC HEVC_v1 set; AV1: 242/242 libaom test vectors, 66 of them 10-bit; the browser build shows 8-bit streams
+  JCT-VC HEVC_v1 set; AV1: 242/242 libaom test vectors, 66 of them 10-bit; VP9: 303/303 libvpx profile 0 vectors, profile 2 (10/12-bit)
+  in progress; the browser build shows 8-bit streams
   only), so they also play other encoders' streams; on the H.264, HEVC and VP9 streams we
   timed they needed less time per frame than ffmpeg.wasm
   ([speed page](https://cribbinsb.github.io/nanocodec/results/speed.html)). The VVC decoder passes the nine

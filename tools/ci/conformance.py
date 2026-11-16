@@ -48,6 +48,7 @@ SUITES = {
     "hevc-v1": ("hevc", ROOT / "tools/ci/hevc_conformance_v1.json", DATA / "conformance/hevc/streams"),
     "vvc-v1": ("vvc", ROOT / "tools/ci/vvc_conformance_v1.json", DATA / "conformance/vvc/streams"),
     "av1-libaom": ("av1", ROOT / "tools/ci/av1_conformance_libaom.json", DATA / "conformance/av1/streams"),
+    "vp9-libvpx": ("vp9", ROOT / "tools/ci/vp9_conformance_libvpx.json", DATA / "conformance/vp9/streams"),
     # ITU-T H.264.1 (AVCv1, FRExt, High 10): conformance_fetch.py --suite h264.
     "h264": ("h264", ROOT / "tools/ci/h264_conformance.json", DATA / "conformance/h264/streams"),
     # x264 streams for I/P-only High tools (tools/dev/h264_conformance_supplement.sh).
@@ -245,7 +246,14 @@ def main() -> int:
     if any("scan" in e for e in entries):
         print_breakdown(entries, results)
     depths = ", ".join(f"{bits}-bit {n}/{m}" for bits, (n, m) in sorted(by_depth.items()))
-    print(f"{args.suite}: {passed}/{len(results)} streams match the reference decoder ({depths})")
+    by_profile = {}
+    for entry in entries:
+        tally = by_profile.setdefault(entry.get("profile") or "unknown profile", [0, 0])
+        tally[0] += results[entry["name"]]["status"] == "pass"
+        tally[1] += 1
+    profiles = "; ".join(f"{name} {n}/{m}" for name, (n, m) in sorted(by_profile.items()))
+    print(f"{args.suite}: {passed}/{len(results)} streams match the reference decoder ({depths})"
+          f" [{profiles}]")
     if args.json:
         args.json.write_text(json.dumps(results, indent=1, sort_keys=True) + "\n")
     if args.must_pass:

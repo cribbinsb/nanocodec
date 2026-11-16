@@ -14,7 +14,7 @@ Two kinds of suite:
 The bitstreams are untrusted data: nothing in them is executed. Files
 already fetched or extracted are kept.
 
-Usage: conformance_fetch.py --suite hevc-v1|h264|av1-libaom [--data DIR]
+Usage: conformance_fetch.py --suite hevc-v1|h264|av1-libaom|vp9-libvpx [--data DIR]
 """
 
 import argparse
@@ -31,6 +31,7 @@ DATA = Path(os.environ.get("NC_DATA_ROOT", Path.home() / "nanocodec-data"))
 ROOT = Path(__file__).resolve().parents[2]
 ITU = "https://www.itu.int"
 AOM_TEST_DATA = "https://storage.googleapis.com/aom-test-data/"
+VPX_TEST_DATA = "https://storage.googleapis.com/downloads.webmproject.org/test_data/libvpx/"
 #: Container rewrap of Matroska/WebM vectors: suffix -> IVF fourcc.
 REWRAP = {".mkv": "AV01", ".webm": "VP90"}
 
@@ -49,6 +50,9 @@ SUITES = {
              r"^(Hi422|PPH422|PPH444|PPCV444)", DATA / "conformance/h264"),
     "av1-libaom": ("listed", AOM_TEST_DATA, ROOT / "tools/conformance/av1_manifest.txt",
                    DATA / "conformance/av1"),
+    # libvpx's VP9 profile 0 and profile 2 (4:2:0) vectors.
+    "vp9-libvpx": ("listed", VPX_TEST_DATA, ROOT / "tools/conformance/vp9_manifest.txt",
+                   DATA / "conformance/vp9"),
 }
 
 

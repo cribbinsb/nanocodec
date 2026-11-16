@@ -183,7 +183,10 @@ tools/anchors/build_anchors.sh libvpx avm dav2d --jobs 2 --prefix "$HOME/nanocod
 libvpx installs `vpxenc` and `vpxdec`; `vpxsvc` (same pin, separate build)
 installs only `vp9_spatial_svc_encoder`, the VP9 spatial SVC reference for the
 SVC chart's later VP9 row (`tools/anchors/build_anchors.sh vpxsvc --prefix
-"$HOME/nanocodec-data/anchors/vp9-av2"`); AVM installs `avmenc` and `avmdec` only.
+"$HOME/nanocodec-data/anchors/vp9-av2"`); `vpxhbd` (same pin, separate build
+with `--enable-vp9-highbitdepth`) installs only `vpxdec-hbd`, the profile 2
+reference of the `vp9-libvpx` conformance suite (`tools/anchors/build_anchors.sh
+vpxhbd`); AVM installs `avmenc` and `avmdec` only.
 The evaluator anchors are `vpx-vp9-rt-s6/s8/s9` (flat, forward-predicted
 Profile 0 at fixed quantizer, one thread, no lag, no alternate reference, no AQ)
 and `avm-ld-s9` (AVM `--good` single-pass low delay, not an RTC preset).

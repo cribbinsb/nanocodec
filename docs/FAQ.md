@@ -202,8 +202,10 @@ its output under the GPL; we distribute only the output streams, not the program
   33/33 Constrained Baseline, 4/7 Baseline, 21/41 progressive Main; B slices, interlace and High 10 are in
   progress), HEVC (Main and Main 10: 147/147 JCT-VC HEVC_v1 streams of those
   profiles, 11 of them Main 10, MD5-exact against HM), AV1 (Main, 8- and 10-bit: 242/242 libaom vectors, 176
-  `av1-1-b8` and 66 `av1-1-b10`, MD5-exact against aomdec) and VP9 (profile 0) pass the conformance streams we
-  test in those profiles; VVC passes the 9 official 8-bit streams and 136 of 138 8-bit VTM and
+  `av1-1-b8` and 66 `av1-1-b10`, MD5-exact against aomdec) and VP9 (profile 0: 303/303 libvpx `vp90-2`
+  vectors, MD5-exact against vpxdec) pass the conformance streams we test in those profiles; VP9 profile 2
+  (10/12-bit) passes 0 of libvpx's 2 `vp92-2` vectors so far, and profiles 1 and 3 (4:4:4, 4:2:2, 4:4:0) are
+  unsupported; VVC passes the 9 official 8-bit streams and 136 of 138 8-bit VTM and
   VVenC streams that exercise the Main 10 tools, pictures of several slices, subpictures and loop filters
   closed at slice, tile and virtual boundaries among them (`docs/handoff/vvc-foreign-corpus.md`; the two
   that fail use reference picture resampling), so it is not a full Main-profile decoder; the AV2 decoder decodes our own streams and 14 of 30 foreign test streams bit-exact
