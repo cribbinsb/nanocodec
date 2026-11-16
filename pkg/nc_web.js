@@ -231,6 +231,20 @@ function getArrayU8FromWasm0(ptr, len) {
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
+let cachedUint16ArrayMemory0 = null;
+
+function getUint16ArrayMemory0() {
+    if (cachedUint16ArrayMemory0 === null || cachedUint16ArrayMemory0.byteLength === 0) {
+        cachedUint16ArrayMemory0 = new Uint16Array(wasm.memory.buffer);
+    }
+    return cachedUint16ArrayMemory0;
+}
+
+function getArrayU16FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
+}
+
 function _assertClass(instance, klass) {
     if (!(instance instanceof klass)) {
         throw new Error(`expected instance of ${klass.name}`);
@@ -381,7 +395,8 @@ export class BrowserDecoder {
         return DecodeOutcome.__wrap(ret[0]);
     }
     /**
-     * The latest decoded I420 samples, suitable for independent conformance checks.
+     * Latest display I420 samples. Deep pictures are truncated to eight bits;
+     * [`Self::decoded_i420_u16`] preserves the native samples for conformance.
      * # Errors
      * Rejects calls made before a frame has been decoded.
      * @returns {Uint8Array}
@@ -452,6 +467,32 @@ export class BrowserDecoder {
     get error_map_width() {
         const ret = wasm.browserdecoder_error_map_width(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * Native chroma sample depth, or zero before the first frame. HEVC may
+     * signal a different chroma depth from [`Self::bit_depth`].
+     * @returns {number}
+     */
+    get chroma_bit_depth() {
+        const ret = wasm.browserdecoder_chroma_bit_depth(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Native I420 samples as u16 words, retaining every significant bit.
+     * At eight bits, words contain the original 0..255 values. For deep
+     * conformance checks use this method; display methods return eight bits.
+     * # Errors
+     * Rejects calls made before a picture has been decoded.
+     * @returns {Uint16Array}
+     */
+    decoded_i420_u16() {
+        const ret = wasm.browserdecoder_decoded_i420_u16(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
     }
     /**
      * Height of the picture `error_map` measured (the source's).
@@ -560,6 +601,14 @@ export class BrowserDecoder {
      */
     get height() {
         const ret = wasm.browserdecoder_height(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Bit depth of the native luma samples, or zero before the first frame.
+     * @returns {number}
+     */
+    get bit_depth() {
+        const ret = wasm.browserdecoder_bit_depth(this.__wbg_ptr);
         return ret >>> 0;
     }
     /**
@@ -1065,6 +1114,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     __wbg_init.__wbindgen_wasm_module = module;
     cachedFloat64ArrayMemory0 = null;
+    cachedUint16ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
 

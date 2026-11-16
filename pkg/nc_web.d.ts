@@ -84,7 +84,8 @@ export class BrowserDecoder {
    */
   decode_frame(packet: Uint8Array, index: number, references: Float64Array): DecodeOutcome;
   /**
-   * The latest decoded I420 samples, suitable for independent conformance checks.
+   * Latest display I420 samples. Deep pictures are truncated to eight bits;
+   * [`Self::decoded_i420_u16`] preserves the native samples for conformance.
    * # Errors
    * Rejects calls made before a frame has been decoded.
    */
@@ -104,6 +105,14 @@ export class BrowserDecoder {
    * number of `i16` values. Without analysis the buffer is empty.
    */
   analysis_frame(): number;
+  /**
+   * Native I420 samples as u16 words, retaining every significant bit.
+   * At eight bits, words contain the original 0..255 values. For deep
+   * conformance checks use this method; display methods return eight bits.
+   * # Errors
+   * Rejects calls made before a picture has been decoded.
+   */
+  decoded_i420_u16(): Uint16Array;
   /**
    * Select the operating point (`0..=31` on AV1, `0..=2` on VP9; default `0`)
    * before or between packets.
@@ -181,6 +190,11 @@ export class BrowserDecoder {
    */
   readonly error_map_width: number;
   /**
+   * Native chroma sample depth, or zero before the first frame. HEVC may
+   * signal a different chroma depth from [`Self::bit_depth`].
+   */
+  readonly chroma_bit_depth: number;
+  /**
    * Height of the picture `error_map` measured (the source's).
    */
   readonly error_map_height: number;
@@ -200,6 +214,10 @@ export class BrowserDecoder {
    * Visible height of the latest decoded frame, or zero before the first frame.
    */
   readonly height: number;
+  /**
+   * Bit depth of the native luma samples, or zero before the first frame.
+   */
+  readonly bit_depth: number;
 }
 /**
  * One browser encoder. A separate decoder instance consumes only its packets.
@@ -390,9 +408,12 @@ export interface InitOutput {
   readonly browserdecoder_analysis_frame: (a: number) => number;
   readonly browserdecoder_analysis_halfwords: (a: number) => number;
   readonly browserdecoder_analysis_length: (a: number) => number;
+  readonly browserdecoder_bit_depth: (a: number) => number;
+  readonly browserdecoder_chroma_bit_depth: (a: number) => number;
   readonly browserdecoder_decode: (a: number, b: number, c: number) => [number, number];
   readonly browserdecoder_decode_frame: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
   readonly browserdecoder_decoded_i420: (a: number) => [number, number, number, number];
+  readonly browserdecoder_decoded_i420_u16: (a: number) => [number, number, number, number];
   readonly browserdecoder_error_map: (a: number) => [number, number, number];
   readonly browserdecoder_error_map_height: (a: number) => number;
   readonly browserdecoder_error_map_length: (a: number) => number;
