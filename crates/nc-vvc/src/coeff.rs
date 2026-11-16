@@ -41,8 +41,10 @@ impl Bins for Reader<'_> {
 
 /// Coefficients of one luma coefficient group (§7.3.11.11).
 use crate::scan::GROUP_SIZE;
-/// Coefficient groups of the largest (32x32) transform block.
+/// Coefficient groups of the largest (32x32) transform block: one bit each
+/// of the walk's coded-group mask.
 const MAX_GROUPS: usize = 64;
+const _: () = assert!(MAX_GROUPS <= u64::BITS as usize);
 
 /// Scan or raster positions of one coefficient group, in coding order,
 /// without allocating (a group holds at most `GROUP_SIZE`; a coded region
@@ -67,8 +69,24 @@ impl GroupPositions {
 }
 
 const GROUP_START: [usize; 10] = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
+/// The last-position prefix group ([`GROUP_START`]) of each coordinate of a
+/// coded side, looked up rather than searched for every priced block.
+const POSITION_GROUPS: [u8; MAX_SIDE] = {
+    let mut groups = [0; MAX_SIDE];
+    let mut pos = 0;
+    while pos < MAX_SIDE {
+        let mut group = GROUP_START.len() - 1;
+        while GROUP_START[group] > pos {
+            group -= 1;
+        }
+        groups[pos] = group as u8;
+        pos += 1;
+    }
+    groups
+};
+/// The last-position prefix group of coordinate `pos` (below [`MAX_SIDE`]).
 fn position_group(pos: usize) -> usize {
-    GROUP_START.iter().rposition(|&p| p <= pos).unwrap()
+    usize::from(POSITION_GROUPS[pos])
 }
 
 /// Context-coded bins one transform block may spend: H.266 caps them at
@@ -85,17 +103,29 @@ pub(crate) const MIN_REGULAR_BUDGET: usize = 4;
 /// A group hides its first level's sign when its last and first nonzero
 /// scan positions are more than this apart (§7.3.11.11 `signHidden`).
 pub(crate) const SIGN_HIDING_THRESHOLD: usize = 3;
-/// The context (index into `last_x` / `last_y`) of bin `bin` of a
+/// The contexts (indices into `last_x` / `last_y`) of the bins of a
 /// last-position prefix of a transform block `side` samples along that
-/// coordinate (§9.3.4.2.4: luma `offsetY[log2 − 1]`, 64-point sides too).
-fn last_prefix_context(bin: usize, side: usize, ch: usize) -> usize {
-    let log2 = side.ilog2() as usize;
-    let (offset, shift) = if ch == 0 {
-        ([0, 0, 0, 3, 6, 10, 15][log2], (log2 + 1) >> 2)
-    } else {
-        (0, (side >> 3).min(2))
-    };
-    offset + (bin >> shift)
+/// coordinate (§9.3.4.2.4: luma `offsetY[log2 − 1]`, 64-point sides too),
+/// derived once per coordinate rather than for every bin.
+#[derive(Clone, Copy)]
+struct LastPrefixContexts {
+    offset: usize,
+    shift: usize,
+}
+impl LastPrefixContexts {
+    fn new(side: usize, ch: usize) -> Self {
+        let log2 = side.ilog2() as usize;
+        let (offset, shift) = if ch == 0 {
+            ([0, 0, 0, 3, 6, 10, 15][log2], (log2 + 1) >> 2)
+        } else {
+            (0, (side >> 3).min(2))
+        };
+        Self { offset, shift }
+    }
+    /// The context of bin `bin`.
+    fn context(self, bin: usize) -> usize {
+        self.offset + (bin >> self.shift)
+    }
 }
 
 /// The coded side (§7.3.11.11 `log2ZoTbWidth`: a DCT-II keeps its 32
@@ -116,8 +146,9 @@ fn last_prefix(
 ) -> Result<usize> {
     let target = position_group(value);
     let largest = position_group(coded_side(side) - 1);
+    let contexts = LastPrefixContexts::new(side, ch);
     let mut group = 0;
-    while group < largest && io.bin(&mut c[last_prefix_context(group, side, ch)], target > group)? {
+    while group < largest && io.bin(&mut c[contexts.context(group)], target > group)? {
         group += 1;
     }
     Ok(group)
@@ -135,11 +166,12 @@ pub(crate) fn last_coordinate_bits(
 ) -> f32 {
     let largest = position_group(coded_side(side) - 1);
     let target = position_group(value);
+    let prefix_contexts = LastPrefixContexts::new(side, ch);
     let prefix: f32 = (0..target.min(largest))
-        .map(|bin| contexts[last_prefix_context(bin, side, ch)].bits(true))
+        .map(|bin| contexts[prefix_contexts.context(bin)].bits(true))
         .sum();
     let stop = if target < largest {
-        contexts[last_prefix_context(target, side, ch)].bits(false)
+        contexts[prefix_contexts.context(target)].bits(false)
     } else {
         0.
     };
@@ -462,6 +494,10 @@ fn last_position<B: Bins>(
     let gy = last_prefix(io, &mut c.last_y[ch], y, sides.1, ch)?;
     let x = last_suffix(io, gx, x)?;
     let y = last_suffix(io, gy, y)?;
+    if !B::READS {
+        // A writer or pricer coded its own last position.
+        return Ok(last);
+    }
     Ok(crate::scan::rect_indices(width, height)[y * width + x])
 }
 
@@ -670,7 +706,8 @@ fn walk<B: Bins>(
     let last = last_position(io, c, (width, height), (ch, sides), (scan, last))?;
     let groups = crate::scan::rect_groups(width, height);
     let (columns, rows) = crate::scan::group_grid(width, height);
-    let mut significant = [false; MAX_GROUPS];
+    // Bit `g` set: group `g` (raster order of the group grid) is coded.
+    let mut significant = 0u64;
     let mut budget = context_bin_budget(width * height);
     // §7.3.11.11 `QState`, from 0 at the last position; a group skipped by
     // its `sb_coded_flag` leaves it unchanged (sixteen zeros map every
@@ -688,14 +725,14 @@ fn walk<B: Bins>(
         let end = (first + GROUP_SIZE - 1).min(last);
         let gp = groups[g];
         let ctx = usize::from(
-            (gp % columns + 1 < columns && significant[gp + 1])
-                || (gp / columns + 1 < rows && significant[gp + columns]),
+            (gp % columns + 1 < columns && significant >> (gp + 1) & 1 != 0)
+                || (gp / columns + 1 < rows && significant >> (gp + columns) & 1 != 0),
         );
         let present = !B::READS && scan[first..=end].iter().any(|&p| source[p] != 0);
         if g != 0 && g != last / GROUP_SIZE && !io.bin(&mut c.group[ch][ctx], present)? {
             continue;
         }
-        significant[gp] = true;
+        significant |= 1 << gp;
         values.prepare_group(gp, end == first);
         let mut nonzero = GroupPositions::default();
         let mut regular = GroupPositions::default();

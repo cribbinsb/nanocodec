@@ -42,6 +42,9 @@ pub(crate) mod avx512;
 #[allow(unsafe_code)]
 pub(crate) mod avx512_i16;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod gfni;
+
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 pub(crate) mod neon;

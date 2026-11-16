@@ -8,26 +8,7 @@ use core::arch::x86_64::{
     _mm_gf2p8affine_epi64_epi8, _mm_set1_epi64x, _mm256_gf2p8affine_epi64_epi8, _mm256_set1_epi64x,
 };
 
-/// GFNI's matrix stores the row producing bit i in byte 7-i. A right shift
-/// copies input bit i+shift, extending with zero or the sign bit.
-pub(super) const fn shift_matrix(shift: i32, signed: bool) -> i64 {
-    assert!(shift >= 0 && shift < 8);
-    let mut matrix = 0u64;
-    let mut bit = 0;
-    while bit < 8 {
-        let source = bit + shift;
-        let row = if source < 8 {
-            1u8 << source
-        } else if signed {
-            128
-        } else {
-            0
-        };
-        matrix |= (row as u64) << ((7 - bit) * 8);
-        bit += 1;
-    }
-    matrix as i64
-}
+pub(super) use crate::simd::gfni::shift_matrix;
 
 macro_rules! binary {
     ($($op:ident),*) => { $(

@@ -197,6 +197,7 @@ impl CoeffContexts {
 impl CoeffContexts {
     /// The `sig_coeff_flag` context `index` of channel `ch` in quantiser
     /// state `state` (always 0 without dependent quantisation).
+    #[inline]
     pub(crate) fn significance(&mut self, ch: usize, state: u8, index: usize) -> &mut Context {
         match state {
             0 | 1 => &mut self.sig[ch][index],
@@ -205,6 +206,7 @@ impl CoeffContexts {
     }
 
     /// [`Self::significance`] as it stands, for pricing.
+    #[inline]
     pub(crate) fn sig_context(&self, ch: usize, state: u8, index: usize) -> Context {
         match state {
             0 | 1 => self.sig[ch][index],

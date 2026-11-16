@@ -348,11 +348,21 @@ floating-point forward transforms and per-size scale factors of dav1d
 1.5.4 `tests/checkasm/itx.c`, Copyright © 2018 VideoLAN and dav1d authors,
 Copyright © 2018 Two Orioles, LLC, BSD-2-Clause.
 
-The AVX-512 interior CDEF filter (`crates/nc-dsp/src/cdef/avx512.rs`)
-widens the existing packed-byte AVX2 schedule inspired by dav1d/SVT-AV1:
-constrained signed byte differences, paired `pmaddubsw` tap weighting, and
-exact word rounding. It uses eight independent rows per vector with the
-existing scalar CDEF equations and oracle.
+The shared AV1/AV2 interior CDEF filters
+(`crates/nc-dsp/src/cdef/avx2_interior.rs`, `cdef/avx512.rs`) reimplement
+8bpc filtering from dav1d 1.5.4 `src/x86/cdef_avx2.asm`
+(`ACCUMULATE_TAP_BYTE`, `ADJUST_PIXEL`, Copyright © 2018 VideoLAN and
+dav1d authors; Copyright © 2018 Two Orioles, LLC) and
+`src/x86/cdef_avx512.asm` (`cdef_filter_*_8bpc`, Copyright © 2020 VideoLAN
+and dav1d authors; Copyright © 2020 Two Orioles, LLC), BSD-2-Clause.
+The AVX2 schedule combines signed byte constraints with paired weighting
+and rounded-high pixel adjustment. The AVX512ICL schedule selects four taps
+per pixel from 8x8 register tables, shifts unsigned byte magnitudes with
+GFNI, and accumulates them with signed weights through VNNI dot products.
+Source storage, exact-size row loads and scalar equations use nanocodec's
+shared family contracts. The GFNI matrix builder is also shared with loop
+filters (`simd/gfni.rs`). The full dav1d notice is above and in
+[docs/licenses/dav1d/COPYING](docs/licenses/dav1d/COPYING).
 
 The shared four-group loop-filter lanes (`crates/nc-dsp/src/lpf_bytes/avx512.rs`,
 `deblock/avx512.rs` and `vp9_loop_filter/packed/avx512.rs`) use the grouped

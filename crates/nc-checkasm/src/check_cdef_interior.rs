@@ -3,7 +3,7 @@
 //! loads; full-buffer comparisons also protect padding and untouched pixels.
 
 use nc_common::{PlaneView, PlaneViewMut};
-use nc_dsp::{CDEF_PADDING, CdefSource, Dsp};
+use nc_dsp::{CDEF_PADDING, CdefBlock, CdefSource, Dsp};
 
 use crate::check::CheckReport;
 use crate::check_codec::record;
@@ -65,6 +65,73 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) 
         }
     }
     check_strided(candidate, reference, report);
+    check_pairs(candidate, reference, report);
+}
+
+/// Two adjacent, independent chroma blocks touch all four quarters of the
+/// source window. Different directions and low-amplitude data exercise the
+/// signed constrained terms, rather than letting every large difference
+/// constrain to zero. The source ends exactly at the last halo sample.
+fn check_pairs(candidate: &Dsp, reference: &Dsp, report: &mut CheckReport) {
+    const WIDTH: usize = 12;
+    const HEIGHT: usize = 8;
+    const DST_STRIDE: usize = 17;
+    const OFFSET: usize = 7;
+    for pattern in [1, 5] {
+        let input: Vec<u8> = (0..WIDTH * HEIGHT)
+            .map(|i| pixel(i / WIDTH, i % WIDTH, pattern))
+            .collect();
+        let view = PlaneView::new(&input, WIDTH, WIDTH, HEIGHT).expect("paired source");
+        let mut source = CdefSource::new();
+        source.fill_from(&view);
+        for strengths in [(0, 0), (15, 0), (0, 4), (8, 2), (15, 4)] {
+            for first_dir in 0..8 {
+                for second_dir in 0..8 {
+                    let blocks = [
+                        CdefBlock {
+                            x: 2,
+                            y: 2,
+                            pri: strengths.0,
+                            dir: first_dir,
+                        },
+                        CdefBlock {
+                            x: 6,
+                            y: 2,
+                            pri: strengths.0,
+                            dir: second_dir,
+                        },
+                    ];
+                    for damping in [0, 4, 8] {
+                        let len = (HEIGHT - 1) * DST_STRIDE + WIDTH;
+                        let mut actual = vec![GUARD; OFFSET + len + 1];
+                        let mut expected = actual.clone();
+                        for (dsp, out) in [(candidate, &mut actual), (reference, &mut expected)] {
+                            let mut dst = PlaneViewMut::new(
+                                &mut out[OFFSET..OFFSET + len],
+                                DST_STRIDE,
+                                WIDTH,
+                                HEIGHT,
+                            )
+                            .expect("paired destination");
+                            dsp.cdef_filter_blocks(
+                                4,
+                                &source,
+                                &blocks,
+                                strengths.1,
+                                damping,
+                                &mut dst,
+                            );
+                        }
+                        record(report, candidate.isa(), actual == expected, || {
+                            format!(
+                                "cdef pairs pattern {pattern} strengths {strengths:?} dirs {first_dir}/{second_dir} damping {damping}"
+                            )
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn pixel(row: usize, col: usize, pattern: usize) -> u8 {

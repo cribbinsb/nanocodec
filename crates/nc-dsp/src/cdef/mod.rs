@@ -19,10 +19,12 @@
 //! So the 16-bit kernels need no per-sample bounds tests, and every tap of a
 //! row is one contiguous load.
 //!
-//! The SIMD kernels take the block's direction as a constant parameter, so
-//! every tap is a fixed row and column of a `(n + 4)`-square window that is
-//! bounds-checked once per block; AVX2 holds two 8-sample rows per vector
-//! and every ISA two 4-sample rows.
+//! Padded SIMD kernels specialize on the block's direction: every tap is a
+//! fixed row and column of a `(n + 4)`-square window checked once per block.
+//! Interior kernels constrain byte differences before widening: AVX2 packs
+//! four 8-sample rows, NEON and SIMD128 two. AVX512ICL instead selects four
+//! taps per pixel from an 8x8 byte register table and accumulates them with
+//! GFNI shifts and VNNI dot products (`avx512`), for both luma and chroma.
 //!
 //! The direction search (AV1 §7.15.1, libaom `cdef_find_dir`) reads the
 //! 8-bit plane directly; see the `direction` module.

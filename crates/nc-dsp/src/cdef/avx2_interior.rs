@@ -9,21 +9,27 @@
 //! 4x4 blocks ([`block4_pair`]): every lane's arithmetic depends only on its
 //! own samples and the shared strengths, so two chroma blocks with different
 //! directions fill the vector that one would leave half idle.
+//!
+//! The byte constraints, weighted pairs and rounded-high pixel adjustment
+//! follow dav1d 1.5.4 `src/x86/cdef_avx2.asm` (`ACCUMULATE_TAP_BYTE`,
+//! `ADJUST_PIXEL`), Copyright © 2018 VideoLAN/dav1d authors and Two Orioles,
+//! LLC, BSD-2-Clause; see `THIRD_PARTY.md` and docs/licenses/dav1d/COPYING.
 
 use super::{CDEF_PADDING, CdefArgs, DIRECTIONS, SEC_TAPS};
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_cvtsi32_si128, _mm_cvtsi128_si32, _mm_cvtsi128_si64, _mm_extract_epi32,
     _mm_extract_epi64, _mm_set_epi32, _mm256_add_epi8, _mm256_add_epi16, _mm256_and_si256,
     _mm256_broadcastsi128_si256, _mm256_castsi256_si128, _mm256_extracti128_si256,
-    _mm256_maddubs_epi16, _mm256_max_epu8, _mm256_min_epu8, _mm256_or_si256, _mm256_packus_epi16,
-    _mm256_set_epi64x, _mm256_set1_epi8, _mm256_set1_epi16, _mm256_setr_epi32,
-    _mm256_setzero_si256, _mm256_srai_epi16, _mm256_srl_epi16, _mm256_sub_epi8, _mm256_subs_epu8,
-    _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
+    _mm256_maddubs_epi16, _mm256_max_epu8, _mm256_min_epu8, _mm256_mulhrs_epi16, _mm256_or_si256,
+    _mm256_packs_epi16, _mm256_packus_epi16, _mm256_set_epi64x, _mm256_set1_epi8,
+    _mm256_set1_epi16, _mm256_setr_epi32, _mm256_setzero_si256, _mm256_srai_epi16,
+    _mm256_srl_epi16, _mm256_sub_epi8, _mm256_subs_epu8, _mm256_unpackhi_epi8,
+    _mm256_unpacklo_epi8,
 };
 
 const VECTOR_BYTES: usize = 32;
-const ROUND: i16 = 8;
-const ROUND_SHIFT: i32 = 4;
+/// Q15 multiplier whose rounded high product divides the signed sum by 16.
+const ROUND_SCALE: i16 = 1 << (15 - 4);
 
 #[target_feature(enable = "avx2")]
 #[inline]
@@ -78,7 +84,7 @@ unsafe fn store<const N: usize>(value: __m256i, dst: *mut u8, stride: usize) {
 /// Store the four 4-sample rows of `rows` (row 0 in the low lane).
 #[target_feature(enable = "avx2")]
 #[inline]
-unsafe fn store_4x4(rows: __m128i, dst: *mut u8, stride: usize) {
+pub(super) unsafe fn store_4x4(rows: __m128i, dst: *mut u8, stride: usize) {
     // SAFETY: the caller checked four complete 4-sample destination rows.
     unsafe {
         dst.cast::<i32>().write_unaligned(_mm_cvtsi128_si32(rows));
@@ -299,24 +305,26 @@ unsafe fn filter_rows<W: Window>(window: &W, args: &CdefArgs) -> __m256i {
             }
             accumulate(&mut state, values, SEC_TAPS);
         }
-        let zero = _mm256_setzero_si256();
-        let centres = [
-            _mm256_unpacklo_epi8(centre, zero),
-            _mm256_unpackhi_epi8(centre, zero),
-        ];
-        for (sum, centre) in state.sum.iter_mut().zip(centres) {
-            let rounded = _mm256_add_epi16(
+        // dav1d's ADJUST_PIXEL: subtract one from negative sums, then
+        // multiply by 2048 with signed rounded-high Q15 arithmetic. This
+        // is exactly (sum + 8 - (sum < 0)) >> 4 for |sum| <= 228.
+        for sum in &mut state.sum {
+            *sum = _mm256_mulhrs_epi16(
                 _mm256_add_epi16(*sum, _mm256_srai_epi16::<15>(*sum)),
-                _mm256_set1_epi16(ROUND),
+                _mm256_set1_epi16(ROUND_SCALE),
             );
-            *sum = _mm256_add_epi16(centre, _mm256_srai_epi16::<ROUND_SHIFT>(rounded));
         }
-        let result = _mm256_packus_epi16(state.sum[0], state.sum[1]);
-        if clip {
-            _mm256_max_epu8(state.low, _mm256_min_epu8(state.high, result))
-        } else {
-            result
+        if !clip {
+            // One strength's positive weights total <= 12/16. The update
+            // stays in [0,255], so add its signed byte correction directly.
+            return _mm256_add_epi8(centre, _mm256_packs_epi16(state.sum[0], state.sum[1]));
         }
+        let zero = _mm256_setzero_si256();
+        let result = _mm256_packus_epi16(
+            _mm256_add_epi16(_mm256_unpacklo_epi8(centre, zero), state.sum[0]),
+            _mm256_add_epi16(_mm256_unpackhi_epi8(centre, zero), state.sum[1]),
+        );
+        _mm256_max_epu8(state.low, _mm256_min_epu8(state.high, result))
     }
 }
 

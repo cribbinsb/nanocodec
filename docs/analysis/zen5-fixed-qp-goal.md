@@ -363,6 +363,9 @@ on the landed Fast (ca8429a43, with rate.prekey_quiet from 86d268d54):
 - New Fast beats M10 on fixed-QP J at higher speed; M10 keeps 3.2 Weighted points.
 - CBR quality vs the previous Fast (draw 2026-11-16, dCPU 0): L3 -3.31% [-4.15, -2.31],
   n=78, against a Fast -> Default line of about -2.0% at x1.104 (Default -11.98% at x1.61).
+- Jetson (Orin Nano, one core, jperf min of 3 under jetson-timed, 150 f CBR 600 kbit/s,
+  45ba872af -> 011bfa1cc): cycles crowd +6.84%, bodycam +2.22%, lowlight +7.71%; sum
+  12.07 -> 12.70 G, x1.052 (instructions x1.061). x86 chart path x1.104.
 - Final-check (600 f, keys every 10 s): J -3.25% [-4.02, -2.53], no guards. Without the
   prekey_quiet fix the same bundle failed the pulse guard (+0.84 dB); without deblocking the
   static class failed (+3.7%).
