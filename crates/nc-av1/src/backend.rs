@@ -3853,7 +3853,7 @@ impl Av1Backend {
         if self.kind != FrameKind::Key || self.params.keyframe_cfl < 0.5 || block.log2_size() > 5 {
             return None;
         }
-        let cfl = ChromaFromLuma::search(block, source, recon);
+        let cfl = ChromaFromLuma::search(&self.dsp, block, source, recon);
         if cfl.alpha == [0, 0] {
             return None;
         }

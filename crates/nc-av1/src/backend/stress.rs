@@ -221,11 +221,11 @@ impl Av1Backend {
         if !intra || uv_mode_alphabet(block).0 != CFL_ALLOWED {
             return None;
         }
-        let rng = &mut self.random_syntax().rng;
-        if !rng.chance(CFL_CHANCE) {
+        if !self.random_syntax().rng.chance(CFL_CHANCE) {
             return None;
         }
-        let mut cfl = ChromaFromLuma::search(block, source, recon);
+        let mut cfl = ChromaFromLuma::search(&self.dsp, block, source, recon);
+        let rng = &mut self.random_syntax().rng;
         // At least one slope is non-zero: the joint sign has no zero/zero.
         cfl.alpha = loop {
             let alpha = [0, 1].map(|_| rng.symmetric(MAX_CFL_ALPHA) as i8);

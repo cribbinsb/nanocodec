@@ -92,6 +92,7 @@ pub(crate) fn check_codec_kernels(
     }
     crate::check_codec_txfm::check_codec_txfm(candidate, reference, iterations, rng, report);
     crate::check_av1_intra::check_av1_intra(candidate, reference, iterations, rng, report);
+    crate::check_cfl_sse::check_cfl_sse(candidate, reference, iterations, rng, report);
     crate::check_av1_intra::check_av1_directional(candidate, reference, iterations, rng, report);
     crate::check_av2_intra::check_av2_intra(candidate, reference, iterations, rng, report);
 }

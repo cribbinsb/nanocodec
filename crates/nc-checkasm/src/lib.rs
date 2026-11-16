@@ -40,6 +40,7 @@ mod check_av2_intra;
 mod check_av2_typed;
 mod check_border;
 mod check_cdef_interior;
+mod check_cfl_sse;
 mod check_codec;
 mod check_codec_txfm;
 mod check_display;

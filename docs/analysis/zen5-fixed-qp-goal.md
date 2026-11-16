@@ -152,6 +152,12 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
 
 ## Progress (exact, streams identical)
 
+- 2026-11-16, `feature/av1-lowlight`: the AV1 key-frame CfL slope search (on in the Default
+  since 79d53ba8b) runs on a shared nc-dsp CfL prediction-SSE kernel (`Dsp::cfl_sse`; AVX2,
+  NEON, SIMD128 on the shared 16-bit lanes; checkasm on every tier). Lowlight Default key frame
+  2072M -> 1922M Ir (-7.2 %). Jetson (chart builds, crowd 720p): all-key Default cycles
+  -5.15 %, Default CBR 600 31 f cycles -1.74 %. Handoff: `docs/handoff/av1-lowlight.md`.
+
 - 2026-11-16, `feature/av1-lowlight`: AV1 CDEF finds its units from a coded-unit map the block
   writer fills (the decoder's `CdefMap`, now shared in `nc-av1/src/cdef_map.rs`) instead of
   scanning the mode-info grid, and frames that reuse their per-block choices filter through the

@@ -4,18 +4,16 @@
 //! `cfl.h` (BSD-2-Clause, Copyright (c) 2016, Alliance for Open Media;
 //! see `THIRD_PARTY.md`). Only square luma blocks up to 32 are supported.
 
-use nc_common::{Picture, PlaneIndex, PlaneViewMut};
+use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_dsp::Dsp;
+use nc_dsp::cfl_sse::{MAX_ALPHA, predict_sample};
 use nc_encoder::Block;
 
 use crate::predict::dc_value;
 
 const MAX_CHROMA_SIZE: usize = 16;
 const MAX_CHROMA_AREA: usize = MAX_CHROMA_SIZE * MAX_CHROMA_SIZE;
-/// Product of Q3 luma AC and a Q3 slope has six fractional bits.
-const SCALE_SHIFT: u32 = 6;
-const SCALE_HALF: i32 = 1 << (SCALE_SHIFT - 1);
 const SIGNS: usize = 3;
-const ALPHA_MAX: i8 = 16;
 
 /// Reconstructed luma AC in Q3, and the selected per-plane Q3 slopes.
 #[derive(Debug)]
@@ -32,11 +30,12 @@ pub struct ChromaFromLuma {
 impl ChromaFromLuma {
     /// Estimate each slope by prediction SSE. The caller accounts for mode
     /// and slope syntax before selecting this candidate over DC.
-    /// Bounded SSE and cached improvement reduce enabled key instructions by
-    /// 42.8% on the two legal TRAIN cost points (GOP300 -1.04%, GOP60 -4.78%).
-    /// Search order and strict ties are unchanged: bit-exact, zero BD effect.
+    /// Every candidate's SSE is the shared kernel's (`Dsp::cfl_sse`) over
+    /// the whole block: a candidate whose error reaches the best so far
+    /// loses whatever its exact sum, so it no longer stops early. Search
+    /// order and strict ties are unchanged.
     #[must_use]
-    pub fn search(block: &Block, source: &Picture, recon: &Picture) -> Self {
+    pub fn search(dsp: &Dsp, block: &Block, source: &Picture, recon: &Picture) -> Self {
         let n = block.size() / 2;
         assert!([4, 8, MAX_CHROMA_SIZE].contains(&n));
         let (x, y) = (block.x / 2, block.y / 2);
@@ -68,15 +67,17 @@ impl ChromaFromLuma {
         }
         for (p, plane) in [PlaneIndex::U, PlaneIndex::V].into_iter().enumerate() {
             result.dc[p] = dc_value(recon.plane(plane), x, y, n, y > 0, x > 0);
-            // DC is first; ties keep its cheaper zero slope. Every partial
-            // SSE is a lower bound, so a candidate cannot win once >=best.
-            let dc_sse = result.sse(source, block, p, 0);
+            let src = result.source_block(source, block, p);
+            let sse =
+                |alpha| u64::from(dsp.cfl_sse(&src, &result.ac[..n * n], result.dc[p], alpha));
+            // DC is first; ties keep its cheaper zero slope.
+            let dc_sse = sse(0);
             let mut best = (dc_sse, 0);
-            for alpha in (1..=ALPHA_MAX).flat_map(|a| [a, -a]) {
+            for alpha in (1..=MAX_ALPHA).flat_map(|a| [a, -a]) {
                 if best.0 == 0 {
                     break;
                 }
-                let sse = result.sse_bounded(source, block, p, alpha, best.0);
+                let sse = sse(alpha);
                 if sse < best.0 {
                     best = (sse, alpha);
                 }
@@ -88,37 +89,22 @@ impl ChromaFromLuma {
     }
 
     /// Prediction SSE for one slope (plane 0 is U, plane 1 is V).
+    #[cfg(test)]
     #[must_use]
-    pub fn sse(&self, source: &Picture, block: &Block, plane: usize, alpha: i8) -> u64 {
-        self.sse_bounded(source, block, plane, alpha, u64::MAX)
+    pub fn sse(&self, dsp: &Dsp, source: &Picture, block: &Block, plane: usize, alpha: i8) -> u64 {
+        let src = self.source_block(source, block, plane);
+        let n = self.size;
+        u64::from(dsp.cfl_sse(&src, &self.ac[..n * n], self.dc[plane], alpha))
     }
 
-    #[inline]
-    fn sse_bounded(
-        &self,
-        source: &Picture,
-        block: &Block,
-        plane: usize,
-        alpha: i8,
-        limit: u64,
-    ) -> u64 {
+    /// The source chroma block of `plane` (0 is U, 1 is V).
+    fn source_block<'a>(&self, source: &'a Picture, block: &Block, plane: usize) -> PlaneView<'a> {
         let index = [PlaneIndex::U, PlaneIndex::V][plane];
-        let src = source.plane(index).view();
-        let mut sum = 0;
-        for (r, row) in self.ac[..self.size * self.size]
-            .chunks_exact(self.size)
-            .enumerate()
-        {
-            for (c, &ac) in row.iter().enumerate() {
-                let error = i32::from(src.row(block.y / 2 + r)[block.x / 2 + c])
-                    - i32::from(sample(self.dc[plane], ac, alpha));
-                sum += (error * error) as u64;
-            }
-            if sum >= limit {
-                return sum;
-            }
-        }
-        sum
+        let n = self.size;
+        source
+            .plane(index)
+            .region((block.x / 2) as isize, (block.y / 2) as isize, n, n)
+            .expect("chroma block inside the source")
     }
 
     /// Add scaled luma AC to the chroma DC predictor.
@@ -128,7 +114,7 @@ impl ChromaFromLuma {
             .enumerate()
         {
             for (pixel, &ac) in dst.row_mut(r).iter_mut().zip(row) {
-                *pixel = sample(self.dc[plane], ac, self.alpha[plane]);
+                *pixel = predict_sample(self.dc[plane], ac, self.alpha[plane]);
             }
         }
     }
@@ -156,13 +142,6 @@ fn sign(alpha: i8) -> usize {
     }
 }
 
-fn sample(dc: u8, ac: i16, alpha: i8) -> u8 {
-    let product = i32::from(ac) * i32::from(alpha);
-    let magnitude = (product.abs() + SCALE_HALF) >> SCALE_SHIFT;
-    let scaled = if product < 0 { -magnitude } else { magnitude };
-    (i32::from(dc) + scaled).clamp(0, 255) as u8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,18 +162,18 @@ mod tests {
             }
         }
         let block = Block::square(0, 0, 3);
-        let cfl = ChromaFromLuma::search(&block, &source, &recon);
+        let cfl = ChromaFromLuma::search(&Dsp::new(), &block, &source, &recon);
         assert_eq!(&cfl.ac[..4], &[-192, -64, 64, 192]);
         assert_eq!(cfl.alpha, [8, -8]);
         assert_eq!(cfl.joint_sign(), 6);
         assert_eq!(cfl.alpha_context(0), 4);
         assert_eq!(cfl.alpha_context(1), 2);
-        assert_eq!(cfl.sse(&source, &block, 0, 8), 0);
-        assert_eq!(cfl.sse(&source, &block, 1, -8), 0);
+        assert_eq!(cfl.sse(&Dsp::new(), &source, &block, 0, 8), 0);
+        assert_eq!(cfl.sse(&Dsp::new(), &source, &block, 1, -8), 0);
     }
 
     #[test]
-    fn bounded_search_matches_full_exhaustive_order_and_exact_improvement() {
+    fn search_matches_the_exhaustive_order_and_exact_improvement() {
         for log2_size in [3, 4, 5] {
             for (x, y) in [(0, 0), (32, 32)] {
                 let mut state = 0x3141_5926_u32;
@@ -218,19 +197,19 @@ mod tests {
                         }
                     }
                     let block = Block::square(x, y, log2_size);
-                    let bounded = ChromaFromLuma::search(&block, &source, &recon);
+                    let bounded = ChromaFromLuma::search(&Dsp::new(), &block, &source, &recon);
                     let mut improvement = 0;
                     for plane in 0..2 {
                         let mut best = (u64::MAX, 0);
-                        for alpha in std::iter::once(0).chain((1..=ALPHA_MAX).flat_map(|a| [a, -a]))
+                        for alpha in std::iter::once(0).chain((1..=MAX_ALPHA).flat_map(|a| [a, -a]))
                         {
-                            let sse = bounded.sse(&source, &block, plane, alpha);
+                            let sse = bounded.sse(&Dsp::new(), &source, &block, plane, alpha);
                             if sse < best.0 {
                                 best = (sse, alpha);
                             }
                         }
                         assert_eq!(bounded.alpha[plane], best.1);
-                        improvement += bounded.sse(&source, &block, plane, 0) - best.0;
+                        improvement += bounded.sse(&Dsp::new(), &source, &block, plane, 0) - best.0;
                     }
                     assert_eq!(bounded.improvement, improvement);
                 }
@@ -240,11 +219,11 @@ mod tests {
 
     #[test]
     fn signed_rounding_and_clipping() {
-        assert_eq!(sample(128, 31, 1), 128);
-        assert_eq!(sample(128, 32, 1), 129);
-        assert_eq!(sample(128, 32, -1), 127);
-        assert_eq!(sample(128, -32, -1), 129);
-        assert_eq!(sample(250, 2040, 16), 255);
-        assert_eq!(sample(5, 2040, -16), 0);
+        assert_eq!(predict_sample(128, 31, 1), 128);
+        assert_eq!(predict_sample(128, 32, 1), 129);
+        assert_eq!(predict_sample(128, 32, -1), 127);
+        assert_eq!(predict_sample(128, -32, -1), 129);
+        assert_eq!(predict_sample(250, 2040, 16), 255);
+        assert_eq!(predict_sample(5, 2040, -16), 0);
     }
 }

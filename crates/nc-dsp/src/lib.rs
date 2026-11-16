@@ -32,6 +32,8 @@ mod block;
 mod block_copy;
 mod border_store;
 mod cdef;
+#[allow(unsafe_code)]
+pub mod cfl_sse;
 mod codec_txfm;
 #[allow(unsafe_code)]
 mod constant_add;

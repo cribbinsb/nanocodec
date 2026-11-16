@@ -62,6 +62,7 @@ pub struct Dsp {
     av2_typed: Av2TypedFns,
     mc: McFns,
     diff: DiffFns,
+    cfl_sse: crate::cfl_sse::SseFn,
     constant_add: crate::constant_add::AddFn,
     end_of_block: crate::end_of_block::EobFn,
     end_of_block_wide: crate::end_of_block::WideEobFn,
@@ -201,6 +202,7 @@ impl Dsp {
             av2_typed: av2_typed_fns(isa),
             mc,
             diff,
+            cfl_sse: crate::cfl_sse::kernel(isa),
             constant_add: crate::constant_add::kernel(isa),
             end_of_block: crate::end_of_block::kernel(isa),
             end_of_block_wide: crate::end_of_block::wide_kernel(isa),
@@ -1823,6 +1825,28 @@ impl Dsp {
         // SAFETY: the table matches the checked CPU ISA; the kernel reads
         // only within the equal-length slices.
         unsafe { (self.end_of_block)(levels, table) }
+    }
+
+    /// Squared error of the square `src` view (side 4, 8 or 16) against
+    /// its AV1 chroma-from-luma (`CfL`) prediction from `ac` (row-major, each
+    /// within `cfl_sse::MAX_AC`), `dc` and `alpha` (within
+    /// `cfl_sse::MAX_ALPHA`) (`cfl_sse` module docs).
+    ///
+    /// # Panics
+    ///
+    /// If the view is not a square of a supported side, or `ac` is short.
+    #[must_use]
+    pub fn cfl_sse(&self, src: &PlaneView<'_>, ac: &[i16], dc: u8, alpha: i8) -> u32 {
+        let side = src.width();
+        assert_eq!(src.height(), side, "CfL blocks are square");
+        debug_assert!(alpha.unsigned_abs() <= crate::cfl_sse::MAX_ALPHA.unsigned_abs());
+        debug_assert!(
+            ac.iter()
+                .all(|a| a.unsigned_abs() <= crate::cfl_sse::MAX_AC.unsigned_abs())
+        );
+        // SAFETY: the table matches the checked CPU ISA; the kernel checks
+        // that `src` and `ac` cover the block.
+        unsafe { (self.cfl_sse)(src.data(), src.stride(), ac, side, dc, alpha) }
     }
 
     /// `dst = clamp(dst + residual, 0, 255)` over the whole view: the
