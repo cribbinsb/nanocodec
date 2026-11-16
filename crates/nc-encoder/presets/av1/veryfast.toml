@@ -9,13 +9,8 @@
 # final-check (600 f, keys every 10 s, 27 clips) quality J +10.42%
 # [+9.35, +11.54], periodic-key pulse +0.29 dB balanced; fixed-QP lens J /
 # Weighted against x264 medium -13.5 / +2.1 -> -7.0 / +8.4.
-# Fixed three layers on every stream (`layers.adaptive` 0) would add -9.0%
-# x86 time and -9.7% Jetson cycles (461 fps, above M13) for +1.4 points of J,
-# but the layered stream codes its keys 1.8x larger and 2-3 dB above the P
-# frames before them: periodic-key pulse +1.15 dB balanced, +4.05 dB on
-# pool_crowd_mot_mot17_04 (keys every 2 s), not fixed by key caps
-# (`rate.key_cap_gop` 0.2: +0.79 dB; `rate.key_cap_buffer` 0.5: +0.95 dB,
-# J +17%); docs/handoff/av1-veryfast.md.
+# Fixed three temporal layers on every stream (below, with the key planned
+# against its mini-GOP's mean step): see "Fixed layers" at the end.
 #
 # AV1 Faster's settings, pinned so this preset does not move with it (its
 # probe threshold is left out: the levers below make it inert).
@@ -60,12 +55,6 @@ decision.codec_subpel_seed_lambdas = 0.1
 av1.cdef_search_row_step = 8
 av1.cdef_local_search_period = 4
 layers.count = 3
-layers.adaptive = 1
-layers.adaptive_max_camera_motion = 16
-layers.adaptive_max_compensable = 1
-layers.adaptive_max_repeat_share = 0.25
-layers.adaptive_max_static = 0.68
-layers.adaptive_max_camera_jitter = 2
 av1.inter_rounding_q7 = 32
 av1.skip_bias_energy = 0.25
 decision.seed_refine_ratio = 0
@@ -99,3 +88,18 @@ decision.codec_fullpel_probe = 0
 # Key frames planned by source variance (not the RD key planner): -5.4% /
 # -4.4% / +1.8% / +3.1, +2.9.
 planner.intra_plan = 1
+#
+# Fixed layers. Three temporal layers on every stream, not Faster's gated
+# ones (whose gates are then inert, so not pinned): -6.7% c8a chart-path time
+# and -8.4% Jetson cycles. Alone they deepened the periodic-key pulse (+0.86
+# dB balanced; the layered key was planned at T0's level); the key planned
+# against the mini-GOP's mean step (`rate.key_level_mean`) removes that.
+# Against Veryfast with gated layers (2026-11-16): pool L3 (78 clips, ladder,
+# dCPU -7.8% at k 0.6) J -0.73% [-2.11, +0.69], quality +4.5% (bodycam
+# +14.7%: shaking cameras that the gates kept flat); final-check (600 f,
+# keys every 10 s, 27 clips) quality J +2.65% [+1.86, +3.54], periodic-key
+# pulse -0.93 dB balanced (worst clip +1.19 dB). Chart clips: x86
+# instructions -10.1%. Taken for speed: it moves Veryfast from between
+# SVT M12 and M13 to about M13's speed at better J (docs/handoff/av1-veryfast.md).
+layers.adaptive = 0
+rate.key_level_mean = 1

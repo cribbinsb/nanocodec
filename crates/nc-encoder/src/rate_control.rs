@@ -665,6 +665,12 @@ pub(crate) struct RateController {
     key_cap_gop: f64,
     /// `rate.key_level_mean`: share of `level_mean_offset` a key takes.
     key_level_mean: f64,
+    /// `rate.key_reserve`: share of the next key's empty-buffer room the
+    /// inter frames before it keep free (`key_reserve_room`).
+    key_reserve: f64,
+    /// Frames from the frame being planned to the next scheduled periodic
+    /// key (1: the next frame is the key); `None` without periodic keys.
+    frames_to_key: Option<u64>,
     /// `rate.first_key_lookahead`, and the buffer share it caps the first
     /// GOP's key at once the start-up lookahead saw camera motion (0 = no
     /// cap; [`RateController::observe_startup_motion`]).
@@ -811,6 +817,8 @@ impl RateController {
             key_cap_buffer: f64::from(params.key_cap_buffer),
             key_cap_gop: f64::from(params.key_cap_gop),
             key_level_mean: f64::from(params.key_level_mean),
+            key_reserve: f64::from(params.key_reserve),
+            frames_to_key: None,
             first_key_lookahead: first_key_lookahead(params, &calibration),
             first_key_cap_buffer: 0.,
             key_still_boost: f64::from(params.key_still_boost),
@@ -1189,7 +1197,50 @@ impl RateController {
                 room.max(self.channel_drain())
             }
         };
-        buffer.min(self.window_room(key)).min(self.ledger_room(key))
+        buffer
+            .min(self.window_room(key))
+            .min(self.ledger_room(key))
+            .min(self.key_reserve_room(key))
+    }
+    /// The room an inter frame leaves the next scheduled key
+    /// (`rate.key_reserve`; unbounded for keys, without periodic keys and
+    /// when off): the most it may take so that, after the frames up to the
+    /// key drain at their channel rates (and take nothing), the key still
+    /// has `rate.key_reserve` of the room it would have with empty buffers
+    /// in both the peak bucket (`occupancy`) and the strict one
+    /// (`strict_occupancy`). A frame `k` frames before the key leaves the
+    /// key a bucket's room less what it adds beyond `k` drains, so its room
+    /// is the bucket's room now plus `k` drains less the reserve.
+    ///
+    /// Why: a key's quantizer is capped by `key_allowance`, which reads the
+    /// buckets' occupancy at the key; a burst in the second before it (a
+    /// still scene refining, an event) cannot be drained in time, and the
+    /// key the next period inherits is starved (AV1 Fast base-only,
+    /// `pool_external_meva_admin_720p_536p` 194k: a 125 kbit inter frame
+    /// four frames before the key left the peak bucket 131 kbit of the
+    /// key's 207 kbit, key 93 kbit and 2.6 dB below Fast's). The key may
+    /// not borrow past the physical buffer instead, so the frames before
+    /// it keep its room. At least the interval's drain, like any inter
+    /// frame: a frame that small does not raise the buckets.
+    fn key_reserve_room(&self, key: bool) -> f64 {
+        let Some(frames) = self.frames_to_key.filter(|_| !key && self.key_reserve > 0.) else {
+            return f64::INFINITY;
+        };
+        let frames = frames as f64;
+        let s = self.settings;
+        let reserve = self.key_reserve * self.empty_key_allowance();
+        if !reserve.is_finite() {
+            return f64::INFINITY;
+        }
+        let peak_drain = s.peak / self.frame_fps;
+        let peak = peak_drain + s.capacity - self.occupancy + peak_drain * frames;
+        let ceiling = self.recode_ceiling(true);
+        let strict = if ceiling > 0. {
+            ceiling * s.capacity - self.strict_occupancy + self.channel_drain() * frames
+        } else {
+            f64::INFINITY
+        };
+        (peak.min(strict) - reserve).max(self.channel_drain())
     }
     /// Length of a key-period ledger period: the key period's duration, or
     /// the key repay horizon without periodic keys.
@@ -1432,13 +1483,40 @@ impl RateController {
         if self.holds_still_key() {
             return self.strict_room(true).max(1.);
         }
-        let frames = f64::from(self.repay_frames());
-        let repayable = self.uniform_budget() * (frames - (frames - 1.) * MIN_BUDGET_CORRECTION);
         (self.settings.peak / self.frame_fps + (self.settings.capacity - self.occupancy))
             .min(self.strict_room(true))
             .min(self.key_bits_cap())
-            .min(repayable)
+            .min(self.repayable_key_bits())
             .max(1.)
+    }
+
+    /// The largest loan a key's repayment phase can repay while leaving its
+    /// inter frames the debt correction's floor (`key_allowance`).
+    fn repayable_key_bits(&self) -> f64 {
+        let frames = f64::from(self.repay_frames());
+        self.uniform_budget() * (frames - (frames - 1.) * MIN_BUDGET_CORRECTION)
+    }
+
+    /// [`Self::key_allowance`] with both buckets empty: the room a key
+    /// planned now would have if nothing before it were still in the
+    /// buffers (`key_reserve_room` keeps a share of it free).
+    fn empty_key_allowance(&self) -> f64 {
+        let s = self.settings;
+        let ceiling = self.recode_ceiling(true);
+        let strict = if ceiling <= 0. {
+            f64::INFINITY
+        } else if self.holds_still_key() {
+            (ceiling * s.capacity).max(s.capacity * self.still.key_hold_buffers)
+        } else {
+            ceiling * s.capacity
+        };
+        if self.holds_still_key() {
+            return strict;
+        }
+        (s.peak / self.frame_fps + s.capacity)
+            .min(strict)
+            .min(self.key_bits_cap())
+            .min(self.repayable_key_bits())
     }
 
     /// While finer inter frames no longer buy quality
@@ -1789,6 +1867,7 @@ impl RateController {
             .then(|| period - index.saturating_sub(self.last_key_index) % period);
         self.still
             .plan_period(self.elapsed, self.ledger_seconds(), self.frame_fps, to_key);
+        self.frames_to_key = to_key;
         self.share = *share;
     }
 
@@ -3018,6 +3097,39 @@ mod tests {
         let q = r.current;
         let recoded = r.recode_quantizer((0.5 * capacity) as u64);
         assert!(recoded.is_some_and(|coarser| coarser > q));
+    }
+    #[test]
+    fn a_burst_just_before_a_key_is_recoded_to_keep_the_keys_room() {
+        let mut r = controller_with(300_000, &[("rate.key_reserve", 1.)]);
+        r.period = 30;
+        r.select(true, 0, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        r.feedback(r.uniform_budget() as u64);
+        // Far from the key the reserve leaves a burst alone.
+        r.select(false, 1, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        assert_eq!(r.recode_quantizer((0.9 * r.settings.capacity) as u64), None);
+        r.feedback(r.uniform_budget() as u64);
+        for index in 2..26 {
+            r.select(false, index, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+            r.feedback(r.uniform_budget() as u64);
+        }
+        // Four frames before the key, 0.9 buffers would leave the key less
+        // than its empty-buffer room: re-coded. The room is the peak
+        // bucket's now plus four drains, less the key's empty-buffer room.
+        r.select(false, 26, HINT, LayerPosition::FLAT, &LayerShare::WHOLE);
+        let room = r.strict_room(false);
+        let drain = r.settings.peak / r.frame_fps;
+        let peak_room = drain + r.settings.capacity - r.occupancy;
+        let expected = peak_room + 4. * drain - r.empty_key_allowance();
+        assert!((room - expected.max(r.channel_drain())).abs() < 1.);
+        assert!(room < 0.9 * r.settings.capacity);
+        let q = r.current;
+        let recoded = r.recode_quantizer((0.9 * r.settings.capacity) as u64);
+        assert!(recoded.is_some_and(|coarser| coarser > q));
+        // Off, the same burst stays.
+        r.key_reserve = 0.;
+        r.current = q;
+        r.coding = FrameCoding::default();
+        assert_eq!(r.recode_quantizer((0.9 * r.settings.capacity) as u64), None);
     }
     #[test]
     fn exhausted_refinement_stops_the_level_getting_finer() {

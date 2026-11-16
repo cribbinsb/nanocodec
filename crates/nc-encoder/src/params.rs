@@ -799,6 +799,13 @@ param_group! {
         // over 10 s GOPs their finer keys pay back, so 0 stays the default.
         key_level_mean: 0.0, [0.0, 1.0],
             "rate control: share of the layer ladder's mean offset a layered stream's key is planned against (0: T0's level, its finest frame; 1: the mini-GOP's mean step): higher codes layered keys coarser, closer to their P frames",
+        // Off by default: the mechanism landed for the AV1 base-only
+        // candidate, whose second key on `pool_external_meva_admin_720p_536p`
+        // (194k, keys every 300) was capped by the peak bucket's room after a
+        // 125 kbit inter burst four frames before it (allowance 131 kbit
+        // against Fast's 207 kbit).
+        key_reserve: 0.0, [0.0, 1.0],
+            "rate control: share of a periodic key's room with empty buffers (peak and strict buckets, `key_allowance`) that the inter frames before it keep free: an inter frame may take at most what leaves that room once the frames up to the key have drained, and is re-coded coarser past it (0 = off): higher keeps a burst just before a key from starving it",
         key_repay_seconds: 5.0, [0.1, 60.0],
             "rate control: longest time over which a key's extra bits are repaid by the following P frames (the key period if shorter), and the debit term's horizon (`rate.debit`): lower recovers sooner after a key in long or single-key streams",
         // A still scene's key is referenced for its whole period, so it may

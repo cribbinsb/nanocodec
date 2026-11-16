@@ -29,12 +29,12 @@ import { RESOLUTIONS } from './view-settings.js';
  * Slow's cost is the native Jetson cycle ratio (docs/handoff/presets.md "Slow
  * presets"; not measured in WASM yet), so a view coded at Slow that falls behind
  * is offered the rungs below it. AV1 Veryfast's cost is Faster's times its native
- * Jetson cycle ratio to Faster (0.89, chart clips; docs/handoff/av1-veryfast.md).
+ * Jetson cycle ratio to Faster (0.81, chart clips; docs/handoff/av1-veryfast.md).
  */
 export const PRESET_COST = {
   h264: { slow: 1.7, medium: 1, fast: 0.53, faster: 0.49, veryfast: 0.45 },
   hevc: { slow: 1.74, medium: 1, fast: 0.61, faster: 0.47 },
-  av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.45, veryfast: 0.40 },
+  av1: { slow: 1.6, medium: 1, fast: 0.71, faster: 0.45, veryfast: 0.36 },
   vvc: { slow: 1.22, medium: 1, fast: 0.55 },
   vp9: { slow: 1.16, medium: 1, fast: 0.7, faster: 0.5, veryfast: 0.45 },
   av2: { slow: 1.37, medium: 1 },
