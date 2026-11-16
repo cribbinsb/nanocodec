@@ -707,9 +707,10 @@ fn mixed_cdef_indices_are_read_at_their_normative_block_position() {
     encoder.finish_cdef_indices(filter, &[false, true]);
     cdef::apply_selected(
         &mut expected,
-        &encoder.grids.mode_info,
+        &mut encoder.grids.cdef_map,
         filter,
         &[false, true],
+        &mut crate::cdef_map::CdefScratch::default(),
     );
     let packet = encoder.end_frame();
     encoder.commit_frame();

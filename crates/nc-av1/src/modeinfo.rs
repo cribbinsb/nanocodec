@@ -224,6 +224,7 @@ impl ModeInfoGrid {
     }
 
     /// The cells of row `row`.
+    #[cfg(test)]
     #[must_use]
     pub fn row(&self, row: usize) -> &[ModeInfo] {
         &self.cells[row * self.mi_cols..(row + 1) * self.mi_cols]

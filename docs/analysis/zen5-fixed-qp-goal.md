@@ -69,6 +69,25 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   frames): 153 fps, -17.5 / -25.5; proxy 0.5 (fires on almost every frame): 159 fps (+5 %),
   -15.1 / -24.2. Deblocking and CDEF control are not where Default's time goes on these clips;
   the gate may still pay on a Fast base with deblocking on (being measured).
+- **Per-filter-block CDEF skip on static content** (`feature/av1-lowlight`, 2026-11-16; patch kept
+  at `~/nanocodec-data/work/av1-lowlight/cdef-static-rejected.patch`). A 64x64 block whose
+  zero-vector SAD against the previous source, per sample, is under `t` quantizer steps is left
+  out of CDEF (no direction search, no filtering; a third strength set, all off). AV1 Faster,
+  chart QPs, 150 f, one key (bytes / PSNR-YUV against `t` = 0); lowlight callgrind per P frame
+  (30 f):
+
+  | t | lowlight | crowd | bodycam | Ir per P frame |
+  |---|---|---|---|---:|
+  | 0 | 374884 / 33.269 | 347060 / 31.203 | 384485 / 33.092 | 29.61M |
+  | 0.02 | +1.0 % / -0.00 dB | +0.9 % / -0.15 dB | +0.7 % / -0.02 dB | 28.81M (-2.7 %) |
+  | 0.05 | +1.9 % / -0.05 dB | +1.2 % / -0.18 dB | +0.8 % / -0.03 dB | 28.23M (-4.7 %) |
+  | 0.1 | +3.2 % / -0.12 dB | +1.7 % / -0.27 dB | +0.8 % / -0.09 dB | 27.96M (-5.6 %) |
+
+  Static blocks are where CDEF holds back the coding noise of residual-coded static areas
+  (`av1.cdef_per_superblock`'s own evidence), so leaving them unfiltered costs bits and quality
+  out of proportion to the time (2-5 % rate for 3-5 % of lowlight's P-frame instructions, more
+  than the M12-M10 frontier slope). Not landed. SVT's own skip (`me_based_cdef_skip`) is per
+  frame and also requires the references' CDEF gain to have been small.
 - **VVC key-frame bundle:** passed the pool screen but failed the 10 s key pulse guard on static
   clips. The cause is rate control's second-key budget (`feature/vvc-speed` report).
 - **HEVC Fast re-pointed to the Default's depth settings (parameters only)**
@@ -121,6 +140,13 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
   - polish: `feature/polish`.
 
 ## Progress (exact, streams identical)
+
+- 2026-11-16, `feature/av1-lowlight`: AV1 CDEF finds its units from a coded-unit map the block
+  writer fills (the decoder's `CdefMap`, now shared in `nc-av1/src/cdef_map.rs`) instead of
+  scanning the mode-info grid, and frames that reuse their per-block choices filter through the
+  decoder's band driver (one pass per unit). Faster on lowlight_city_night at qindex 184
+  (callgrind, 30 f): CDEF 3.46M -> 2.78M per P frame, whole P frame 29.61M -> 28.96M (-2.2 %);
+  key frame +0.9M (525.0M -> 525.9M: the map is filled block by block).
 
 - 2026-11-16 to 2409144f3: kernel-sharing merges cut whole-program instructions (callgrind, crowd
   720p, 30 f, release) by HEVC −6.25 %, VVC −3.93 %, H.264 −0.05 %, VP9 +0.02 %, AV2 +0.05 %,

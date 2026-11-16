@@ -292,7 +292,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
         {
             return None;
         }
-        if let MotionMode::Warped = modes.motion {
+        if matches!(modes.motion, MotionMode::Warped) {
             return local.map(|model| Warp {
                 params: model.params,
                 shear: model.shear,
@@ -349,7 +349,7 @@ impl<'a, T: Pixel> FrameDecoder<'a, T> {
                 }
             }
         }
-        if let MotionMode::Obmc = modes.motion {
+        if matches!(modes.motion, MotionMode::Obmc) {
             self.obmc(block)?;
         }
         Ok(())

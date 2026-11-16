@@ -285,8 +285,7 @@ fn ten_bit_outputs_stay_inside_the_depth() {
     let dsp = Dsp::new();
     let ten = dsp.at(BitDepth::TEN);
     let side = 16;
-    let base = wide(&pattern(side * side, 5, 1023));
-    let mut d = base.clone();
+    let mut d = wide(&pattern(side * side, 5, 1023));
     ten.hevc_deblock_luma_edge(
         &mut PlaneViewMut::new(&mut d, side, side, side).unwrap(),
         (8, 4),

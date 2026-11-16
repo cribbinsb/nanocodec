@@ -28,6 +28,7 @@ use nc_encoder::{
 };
 
 use crate::cdef::{self, CdefParams};
+use crate::cdef_map::{CdefMap, CdefScratch};
 use crate::cdf::{CdfContext, ResetCounters};
 use crate::cfl::ChromaFromLuma;
 use crate::coeff::trellis::{RateModel, TrellisQuantizer};
@@ -314,6 +315,9 @@ struct LayerGrids {
     width: usize,
     height: usize,
     mode_info: ModeInfoGrid,
+    /// The coded 8x8 units of the frame being coded, which CDEF filters,
+    /// recorded as each block codes its `skip`.
+    cdef_map: CdefMap,
     contexts: CoeffContexts,
     /// Transform-size contexts of the coded neighbours.
     txfm: TxfmContexts,
@@ -338,6 +342,7 @@ impl LayerGrids {
             width,
             height,
             mode_info: ModeInfoGrid::new(mi_cols, mi_rows),
+            cdef_map: CdefMap::default(),
             contexts: CoeffContexts::new(mi_cols),
             txfm: TxfmContexts::new(2 * width.div_ceil(8)),
             cdef_slots: cdef_slots(coded_width, coded_height),
@@ -477,6 +482,8 @@ pub struct Av1Backend {
     cdef: CdefParams,
     /// Padded input retained across planes; every fill rewrites samples and borders.
     cdef_input: CdefSource,
+    /// The line buffers and unit list of CDEF's band driver.
+    cdef_scratch: CdefScratch<u8>,
     /// A second strength and its deferred per-filter-block syntax slots.
     cdef_alternate: Option<CdefParams>,
     cdef_frame: CdefFrameChoice,
@@ -1216,6 +1223,7 @@ impl CodecBackend for Av1Backend {
             pre_tx_score_this_frame: params.pre_tx_skip_score,
             cdef: CdefParams::default(),
             cdef_input: CdefSource::default(),
+            cdef_scratch: CdefScratch::default(),
             cdef_alternate: None,
             cdef_frame: CdefFrameChoice {
                 per_superblock: false,
@@ -1835,6 +1843,9 @@ impl CodecBackend for Av1Backend {
         let deferred = self.cdef_frame.per_superblock || self.restoration.frame;
         self.writer.restart(deferred, self.adapts_cdfs());
         self.grids.mode_info.clear();
+        self.grids
+            .cdef_map
+            .start_frame(self.grids.mode_info.mi_cols, self.grids.mode_info.mi_rows);
         self.current = None;
         for above in &mut self.grids.contexts.above {
             above.fill(0);
@@ -2700,18 +2711,18 @@ impl Av1Backend {
                 cdef::choose_superblocks(
                     source,
                     recon,
-                    &self.grids.mode_info,
+                    &self.grids.cdef_map,
                     params,
                     self.params.cdef_search_row_step.round() as usize,
                     &mut self.cdef_input,
                 )
             } else {
-                cdef::apply_selected_with_source(
+                cdef::apply_selected(
                     recon,
-                    &self.grids.mode_info,
+                    &mut self.grids.cdef_map,
                     params,
                     &self.grids.cdef_memory.cached_selection,
-                    &mut self.cdef_input,
+                    &mut self.cdef_scratch,
                 );
                 self.grids.cdef_memory.cached_selection.clone()
             };
@@ -2728,7 +2739,7 @@ impl Av1Backend {
             let found = cdef::choose_luma(
                 source,
                 recon,
-                &self.grids.mode_info,
+                &self.grids.cdef_map,
                 params,
                 candidate,
                 self.params.cdef_search_row_step.round() as usize,
@@ -2740,7 +2751,7 @@ impl Av1Backend {
         }
         cdef::apply_with_source(
             recon,
-            &self.grids.mode_info,
+            &self.grids.cdef_map,
             params,
             search.as_ref(),
             &mut self.cdef_input,
@@ -2767,7 +2778,7 @@ impl Av1Backend {
             self.grids.cdef_memory.uv_choice = Some(cdef::choose_chroma(
                 source,
                 recon,
-                &self.grids.mode_info,
+                &self.grids.cdef_map,
                 params,
                 &[model, (primary, model.1)],
                 self.params.cdef_search_row_step.round() as usize,
@@ -2808,8 +2819,14 @@ impl Av1Backend {
         self.cdef_alternate = (!uniform).then_some(model);
     }
 
-    /// Reserve the filter index immediately after `skip_txfm` (AV1 `read_cdef`).
+    /// Reserve the filter index immediately after `skip_txfm` (AV1
+    /// `read_cdef`), and record a block with a residual as CDEF's to filter.
     fn write_cdef_index(&mut self, block: &Block, skip: bool) {
+        if !skip {
+            let units = block.width() >> MI_LOG2;
+            let position = (block.x >> MI_LOG2, block.y >> MI_LOG2);
+            (self.grids.cdef_map).coded_block::<u8>(position, (units, units));
+        }
         if self.cdef_frame.per_superblock && !skip {
             let index = block.y / 64 * self.grids.width.div_ceil(64) + block.x / 64;
             if self.grids.cdef_slots[index].is_none() {

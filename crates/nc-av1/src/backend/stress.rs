@@ -269,12 +269,12 @@ impl Av1Backend {
         let selected: Vec<bool> = (0..self.grids.cdef_slots.len())
             .map(|_| random.rng.chance(CDEF_ALTERNATE_CHANCE))
             .collect();
-        cdef::apply_selected_with_source(
+        cdef::apply_selected(
             recon,
-            &self.grids.mode_info,
+            &mut self.grids.cdef_map,
             params,
             &selected,
-            &mut self.cdef_input,
+            &mut self.cdef_scratch,
         );
         self.finish_cdef_indices(params, &selected);
     }

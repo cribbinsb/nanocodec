@@ -24,10 +24,10 @@
 //! distortion on every 4th row, and reused on the other frames; damping
 //! `3 + (base_q_idx >> 6)`.
 
-use nc_common::{Picture, PlaneIndex, PlaneView, PlaneViewMut};
+use nc_common::{BitDepth, Picture, PlaneIndex, PlaneView, PlaneViewMut};
 use nc_dsp::{CDEF_PADDING, CdefBlock, CdefSource, Dsp, Moments};
 
-use crate::modeinfo::ModeInfoGrid;
+use crate::cdef_map::{self, CdefMap, CdefScratch};
 
 /// Normative CDEF filter-block size, independent of coding partitions.
 const FILTER_BLOCK_SIZE: usize = 64;
@@ -99,7 +99,7 @@ pub struct LumaSearch {
 pub fn choose_luma(
     source: &Picture,
     recon: &Picture,
-    skips: &ModeInfoGrid,
+    map: &CdefMap,
     params: CdefParams,
     candidate: (u8, u8),
     row_step: usize,
@@ -116,7 +116,7 @@ pub fn choose_luma(
     let src = source.plane(PlaneIndex::Y).view();
     let unfiltered = recon.plane(PlaneIndex::Y).view();
     let (width, height) = (unfiltered.width(), unfiltered.height());
-    let units = Units::of(&dsp, &unfiltered, skips, candidate.0 != 0);
+    let units = Units::of(&dsp, &unfiltered, map, candidate.0 != 0);
     let input = &mut *storage;
     input.fill_from(&unfiltered);
     let mut filtered = Vec::with_capacity(width * height);
@@ -166,7 +166,7 @@ pub fn choose_luma(
 pub fn choose_chroma(
     source: &Picture,
     recon: &Picture,
-    skips: &ModeInfoGrid,
+    map: &CdefMap,
     params: CdefParams,
     candidates: &[(u8, u8)],
     row_step: usize,
@@ -177,7 +177,7 @@ pub fn choose_chroma(
     let units = Units::of(
         &dsp,
         &recon.plane(PlaneIndex::Y).view(),
-        skips,
+        map,
         with_directions,
     );
     let mut best = ((0, 0), u64::MAX);
@@ -237,7 +237,7 @@ fn sampled_sse(plane: &PlaneView<'_>, reference: &PlaneView<'_>, row_step: usize
 pub fn choose_superblocks(
     source: &Picture,
     recon: &mut Picture,
-    skips: &ModeInfoGrid,
+    map: &CdefMap,
     params: CdefParams,
     row_step: usize,
     storage: &mut CdefSource,
@@ -248,7 +248,7 @@ pub fn choose_superblocks(
     let units = Units::of(
         &dsp,
         &unfiltered,
-        skips,
+        map,
         params.y_pri != 0 || params.uv_pri != 0,
     );
     if units.list.is_empty() {
@@ -283,44 +283,40 @@ pub fn choose_superblocks(
     selected
 }
 
-/// Reapply a cached local choice using the current reconstruction directions.
-/// Only selected luma units are filtered; chroma retains its current QP model.
-/// (Tests; the encoder reuses its storage through the `_with_source` form.)
-#[cfg(test)]
+/// Reapply a cached local choice: luma with `params` in the filter blocks
+/// `selected` marks and off elsewhere, chroma with `params` everywhere,
+/// through the band driver the decoder uses ([`cdef_map::apply`]): one
+/// pass per unit (direction, luma, both chroma blocks) on the coded units
+/// of `map`, whose filter-block indices it sets.
 pub fn apply_selected(
     recon: &mut Picture,
-    skips: &ModeInfoGrid,
+    map: &mut CdefMap,
     params: CdefParams,
     selected: &[bool],
+    scratch: &mut CdefScratch<u8>,
 ) {
-    apply_selected_with_source(recon, skips, params, selected, &mut CdefSource::new());
+    let model = band_strengths(params);
+    let sets = [
+        nc_dsp::CdefStrengths {
+            luma_primary: 0,
+            luma_secondary: 0,
+            ..model
+        },
+        model,
+    ];
+    map.set_block_indices(|block| i8::from(selected[block]));
+    let dsp = Dsp::new();
+    let damping = 3 + params.damping_minus_3;
+    cdef_map::apply(dsp.at(BitDepth::EIGHT), recon, map, &sets, damping, scratch);
 }
 
-pub fn apply_selected_with_source(
-    recon: &mut Picture,
-    skips: &ModeInfoGrid,
-    params: CdefParams,
-    selected: &[bool],
-    storage: &mut CdefSource,
-) {
-    let dsp = Dsp::new();
-    let luma = recon.plane(PlaneIndex::Y).view();
-    let columns = luma.width().div_ceil(FILTER_BLOCK_SIZE);
-    let units = Units::of(&dsp, &luma, skips, params.y_pri != 0 || params.uv_pri != 0);
-    let luma_units: Vec<Unit> = units
-        .list
-        .iter()
-        .copied()
-        .filter(|unit| selected[unit.y / FILTER_BLOCK_SIZE * columns + unit.x / FILTER_BLOCK_SIZE])
-        .collect();
-    for plane in PlaneIndex::ALL {
-        let mut out = recon.plane_mut(plane).view_mut();
-        let list = if plane == PlaneIndex::Y {
-            &luma_units
-        } else {
-            &units.list
-        };
-        filter_plane_in_place(&dsp, storage, &mut out, list, params, plane);
+/// `params` as the band driver's strength set (decoded secondaries).
+fn band_strengths(params: CdefParams) -> nc_dsp::CdefStrengths {
+    nc_dsp::CdefStrengths {
+        luma_primary: params.y_pri,
+        luma_secondary: secondary(params.y_sec) as u8,
+        chroma_primary: params.uv_pri,
+        chroma_secondary: secondary(params.uv_sec) as u8,
     }
 }
 
@@ -388,18 +384,13 @@ fn restore_unselected(
 /// reused where they match `params`. (Tests; the encoder reuses its storage
 /// through [`apply_with_source`].)
 #[cfg(test)]
-pub fn apply(
-    recon: &mut Picture,
-    skips: &ModeInfoGrid,
-    params: CdefParams,
-    search: Option<&LumaSearch>,
-) {
-    apply_with_source(recon, skips, params, search, &mut CdefSource::new());
+pub fn apply(recon: &mut Picture, map: &CdefMap, params: CdefParams, search: Option<&LumaSearch>) {
+    apply_with_source(recon, map, params, search, &mut CdefSource::new());
 }
 
 pub fn apply_with_source(
     recon: &mut Picture,
-    skips: &ModeInfoGrid,
+    map: &CdefMap,
     params: CdefParams,
     search: Option<&LumaSearch>,
     storage: &mut CdefSource,
@@ -419,7 +410,7 @@ pub fn apply_with_source(
     let units = if let Some(units) = found {
         units
     } else {
-        computed = Units::of(&dsp, &recon.plane(PlaneIndex::Y).view(), skips, primary);
+        computed = Units::of(&dsp, &recon.plane(PlaneIndex::Y).view(), map, primary);
         &computed
     };
     // The search filtered the luma with exactly these parameters when it
@@ -460,9 +451,9 @@ impl Units {
     /// List the units; directions are found in the unfiltered `luma` when
     /// `with_directions`, otherwise left 0, which is what a zero primary
     /// strength uses.
-    fn of(dsp: &Dsp, luma: &PlaneView<'_>, skips: &ModeInfoGrid, with_directions: bool) -> Self {
+    fn of(dsp: &Dsp, luma: &PlaneView<'_>, map: &CdefMap, with_directions: bool) -> Self {
         Self {
-            list: filtered_units(dsp, luma, skips, with_directions),
+            list: filtered_units(dsp, luma, map, with_directions),
             with_directions,
         }
     }
@@ -483,30 +474,19 @@ struct Unit {
 fn filtered_units(
     dsp: &Dsp,
     luma: &PlaneView<'_>,
-    skips: &ModeInfoGrid,
+    map: &CdefMap,
     with_directions: bool,
 ) -> Vec<Unit> {
-    let mut units = Vec::new();
-    for mi_row in (0..skips.mi_rows).step_by(2) {
-        let top = skips.row(mi_row);
-        let bottom = skips.row((mi_row + 1).min(skips.mi_rows - 1));
-        for mi_col in (0..skips.mi_cols).step_by(2) {
-            let right = (mi_col + 1).min(skips.mi_cols - 1);
-            // libaom `is_8x8_block_skip`: all four 4x4 units skip (repeating
-            // the last row or column at the frame's edge changes nothing).
-            if top[mi_col].skip && top[right].skip && bottom[mi_col].skip && bottom[right].skip {
-                continue;
-            }
-            let (x, y) = (mi_col * 4, mi_row * 4);
+    map.coded_units()
+        .map(|(x, y)| {
             let (dir, var) = if with_directions {
                 dsp.cdef_find_dir(luma, (x, y))
             } else {
                 (0, 0)
             };
-            units.push(Unit { x, y, dir, var });
-        }
-    }
-    units
+            Unit { x, y, dir, var }
+        })
+        .collect()
 }
 
 /// Filter every listed unit of one plane from `input` into `output`.
@@ -731,24 +711,49 @@ fn edge_quadrant_sums(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modeinfo::ModeInfo;
+    use crate::modeinfo::{ModeInfo, ModeInfoGrid};
+
+    /// The coded units of `grid` as the block layer records them: every
+    /// 4x4 cell that is not `skip`.
+    fn map_of(grid: &ModeInfoGrid) -> CdefMap {
+        let mut map = CdefMap::default();
+        map.start_frame(grid.mi_cols, grid.mi_rows);
+        for row in 0..grid.mi_rows {
+            for (col, cell) in grid.row(row).iter().enumerate() {
+                if !cell.skip {
+                    map.coded_block::<u8>((col, row), (1, 1));
+                }
+            }
+        }
+        map
+    }
+
+    /// [`apply_selected`] with fresh buffers.
+    fn apply_selected_fresh(
+        recon: &mut Picture,
+        grid: &ModeInfoGrid,
+        params: CdefParams,
+        selected: &[bool],
+    ) {
+        let mut map = map_of(grid);
+        apply_selected(
+            recon,
+            &mut map,
+            params,
+            selected,
+            &mut CdefScratch::default(),
+        );
+    }
     use nc_common::BitWriter;
 
     fn choose_fresh(
         source: &Picture,
         recon: &mut Picture,
-        skips: &ModeInfoGrid,
+        map: &CdefMap,
         params: CdefParams,
         row_step: usize,
     ) -> Vec<bool> {
-        choose_superblocks(
-            source,
-            recon,
-            skips,
-            params,
-            row_step,
-            &mut CdefSource::new(),
-        )
+        choose_superblocks(source, recon, map, params, row_step, &mut CdefSource::new())
     }
 
     fn same_pixels(a: &Picture, b: &Picture) {
@@ -766,6 +771,7 @@ mod tests {
     #[test]
     fn reusable_workspace_matches_fresh_inputs_across_frames_sizes_and_modes() {
         let mut reused = CdefSource::new();
+        let mut band_scratch = CdefScratch::default();
         for (frame, (width, height)) in [(72, 72), (72, 72), (128, 64), (8, 8), (64, 128), (72, 72)]
             .into_iter()
             .enumerate()
@@ -793,15 +799,23 @@ mod tests {
             };
             let mut actual = recon.clone();
             let mut expected = recon.clone();
-            apply_with_source(&mut actual, &grid, params, None, &mut reused);
-            apply(&mut expected, &grid, params, None);
+            apply_with_source(&mut actual, &map_of(&grid), params, None, &mut reused);
+            apply(&mut expected, &map_of(&grid), params, None);
             same_pixels(&actual, &expected);
             assert_eq!((reused.width(), reused.height()), (width / 2, height / 2));
-            let found = choose_luma(&source, &recon, &grid, params, (5, 1), 4, &mut reused);
+            let found = choose_luma(
+                &source,
+                &recon,
+                &map_of(&grid),
+                params,
+                (5, 1),
+                4,
+                &mut reused,
+            );
             let fresh = choose_luma(
                 &source,
                 &recon,
-                &grid,
+                &map_of(&grid),
                 params,
                 (5, 1),
                 4,
@@ -811,11 +825,12 @@ mod tests {
             assert_eq!(found.filtered, fresh.filtered);
             let mut actual = recon.clone();
             let mut expected = recon.clone();
-            let selected = choose_superblocks(&source, &mut actual, &grid, params, 3, &mut reused);
+            let selected =
+                choose_superblocks(&source, &mut actual, &map_of(&grid), params, 3, &mut reused);
             let selected_fresh = choose_superblocks(
                 &source,
                 &mut expected,
-                &grid,
+                &map_of(&grid),
                 params,
                 3,
                 &mut CdefSource::new(),
@@ -824,8 +839,14 @@ mod tests {
             same_pixels(&actual, &expected);
             let mut actual = recon.clone();
             let mut expected = recon.clone();
-            apply_selected_with_source(&mut actual, &grid, params, &selected, &mut reused);
-            apply_selected(&mut expected, &grid, params, &selected);
+            apply_selected(
+                &mut actual,
+                &mut map_of(&grid),
+                params,
+                &selected,
+                &mut band_scratch,
+            );
+            apply_selected_fresh(&mut expected, &grid, params, &selected);
             same_pixels(&actual, &expected);
         }
     }
@@ -977,7 +998,7 @@ mod tests {
             uv_sec: 0,
         };
         let mut model = recon.clone();
-        apply(&mut model, &grid, params, None);
+        apply(&mut model, &map_of(&grid), params, None);
         let original = source.plane(PlaneIndex::Y).view();
         let unfiltered = recon.plane(PlaneIndex::Y).view();
         let filtered: Vec<u8> = model
@@ -987,7 +1008,7 @@ mod tests {
             .flatten()
             .copied()
             .collect();
-        let units = Units::of(&Dsp::new(), &unfiltered, &grid, true);
+        let units = Units::of(&Dsp::new(), &unfiltered, &map_of(&grid), true);
         let filtered_view = PlaneView::new(&filtered, width, width, height).unwrap();
         for row_step in 1..=8 {
             let sparse = local_luma_choices(
@@ -1037,11 +1058,11 @@ mod tests {
                 uv_sec: 1,
             };
             let mut model = recon.clone();
-            apply(&mut model, &grid, params, None);
+            apply(&mut model, &map_of(&grid), params, None);
             let mut off = recon.clone();
             apply(
                 &mut off,
-                &grid,
+                &map_of(&grid),
                 CdefParams {
                     y_pri: 0,
                     y_sec: 0,
@@ -1059,9 +1080,9 @@ mod tests {
                 }
             }
             let mut actual = recon.clone();
-            let selected = choose_fresh(&source, &mut actual, &grid, params, row_step);
+            let selected = choose_fresh(&source, &mut actual, &map_of(&grid), params, row_step);
             let mut cached = recon.clone();
-            apply_selected(&mut cached, &grid, params, &selected);
+            apply_selected_fresh(&mut cached, &grid, params, &selected);
             same_pixels(&cached, &actual);
             assert!(selected.iter().any(|&choice| choice));
             assert!(selected.iter().any(|&choice| !choice));
@@ -1092,9 +1113,15 @@ mod tests {
             }
             let mut all_skipped = recon.clone();
             assert!(
-                choose_fresh(&source, &mut all_skipped, &skipped, params, row_step)
-                    .iter()
-                    .all(|&v| !v)
+                choose_fresh(
+                    &source,
+                    &mut all_skipped,
+                    &map_of(&skipped),
+                    params,
+                    row_step
+                )
+                .iter()
+                .all(|&v| !v)
             );
             for plane in PlaneIndex::ALL {
                 for (a, b) in all_skipped

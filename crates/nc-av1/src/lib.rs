@@ -33,6 +33,7 @@
 
 mod backend;
 mod cdef;
+mod cdef_map;
 mod cdf;
 mod cfl;
 mod coeff;

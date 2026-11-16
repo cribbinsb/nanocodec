@@ -497,7 +497,7 @@ fn loop_restoration_at_eight_bits_matches() {
         None,
         BitDepth::EIGHT,
     );
-    let (mut q8, mut q16) = (p8.clone(), p16.clone());
+    let (mut q8, mut q16) = (p8, p16);
     k.av1_loop_restoration(
         &restoration,
         &mut q8.plane_mut(PlaneIndex::Y).view_mut(),

@@ -701,7 +701,7 @@ impl TileDecoder<'_> {
                 )?;
                 let coded = levels.iter().any(|&c| c != 0);
                 if coded {
-                    if let Source::Inter = source {
+                    if matches!(source, Source::Inter) {
                         load(
                             &self.recon,
                             index,
