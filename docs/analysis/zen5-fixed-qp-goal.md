@@ -357,6 +357,17 @@ All of these were measured on 2026-11-16 and are recorded in `docs/handoff/avx51
 - **Next:** budget and gates on an AV1 Faster base aimed at M12. A joint tune on the Fast base
   is running (CBR J against CPU, lens check at acceptance).
 
+- **AV1 Faster candidate f-c3** (Faster with its cheap-but-costly groups restored to Fast's
+  values: subpel seed lambda, exact-rank margin, pre_tx_skip_energy, skip_bias_energy,
+  analysis.window_*, chroma_skip_sad_num, near_count, coeff_rate_linear).
+  - **Lens:** −1.1 Weighted / −15.9 J at 388 c8a fixed-QP fps, against M12 357 fps, −1.5 / −10.4.
+  - **f-c4** (+ Default depth): 331 fps, −7.8 / −19.6, above the M12–M10 line.
+  - **Pending:** chart-path timing, CBR screen, final-check.
+- **Light-pipeline tune front points** (t33/t42/t59) sit *below* the Fast→Default line on the
+  fixed-QP lens, e.g. t33 230 fps −4.5 / −18.2 against a line value of −8.7 / −20.4. Effort
+  reallocation on a Fast base does not help the goal chart.
+  - **Next:** a lever-group ablation of Fast against Default, the method that found f-c3.
+
 ## Next decision points
 
 - When the diagnosis lands, brief vectorisation and widening work ranked by Zen 5 gain.
