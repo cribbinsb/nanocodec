@@ -1,20 +1,24 @@
 # AV1 Veryfast: the speed point below AV1 Faster, at SVT-AV1 M13 (--rtc) speed
 # (av1-veryfast agent, 2026-11-16; docs/handoff/av1-veryfast.md).
-# AV1 Faster plus the seven levers with the least quality lost per time saved,
+# AV1 Faster plus the six levers with the least quality lost per time saved,
 # picked from a single-lever ablation on Faster (lever ledger, base faster:
 # `python3 -m nceval.levers table --codec av1 --base faster --rate lens`):
 # c8a.large chart-path time, Jetson cycles, the fixed-QP lens and a CBR pool
-# L1 screen per lever. The bundle against Faster: c8a chart path 343 -> 451
-# fps (SVT M13 450, M12 420 in the same sessions), Jetson cycles -19.4%;
-# final-check (600 f, keys every 10 s, 27 clips) quality J +11.86%
-# [+10.29, +13.48], periodic-key pulse +1.15 dB balanced (worst clip +4.05;
-# from the fixed layers: +0.29 dB without them); long single key (900 f,
-# CBR 600) -0.30..-0.24 dB crowd, +0.12..-0.11 dB static, no drift; fixed-QP
-# lens J / Weighted against x264 medium -13.5 / +2.1 -> -6.2 / +7.6.
+# L1 screen per lever. The bundle against Faster: c8a chart path 348 -> 419
+# fps (SVT M13 459, M12 430 in the same session), Jetson cycles -11.2%;
+# final-check (600 f, keys every 10 s, 27 clips) quality J +10.42%
+# [+9.35, +11.54], periodic-key pulse +0.29 dB balanced; fixed-QP lens J /
+# Weighted against x264 medium -13.5 / +2.1 -> -7.0 / +8.4.
+# Fixed three layers on every stream (`layers.adaptive` 0) would add -9.0%
+# x86 time and -9.7% Jetson cycles (461 fps, above M13) for +1.4 points of J,
+# but the layered stream codes its keys 1.8x larger and 2-3 dB above the P
+# frames before them: periodic-key pulse +1.15 dB balanced, +4.05 dB on
+# pool_crowd_mot_mot17_04 (keys every 2 s), not fixed by key caps
+# (`rate.key_cap_gop` 0.2: +0.79 dB; `rate.key_cap_buffer` 0.5: +0.95 dB,
+# J +17%); docs/handoff/av1-veryfast.md.
 #
 # AV1 Faster's settings, pinned so this preset does not move with it (its
-# adaptive-layer gates and probe threshold are left out: the levers below
-# make them inert).
+# probe threshold is left out: the levers below make it inert).
 decision.subpel_move_bias = 1.1
 decision.subpel_move_bias_nonzero = 1.1
 decision.subpel_fractional_bias = 1.1
@@ -56,6 +60,12 @@ decision.codec_subpel_seed_lambdas = 0.1
 av1.cdef_search_row_step = 8
 av1.cdef_local_search_period = 4
 layers.count = 3
+layers.adaptive = 1
+layers.adaptive_max_camera_motion = 16
+layers.adaptive_max_compensable = 1
+layers.adaptive_max_repeat_share = 0.25
+layers.adaptive_max_static = 0.68
+layers.adaptive_max_camera_jitter = 2
 av1.inter_rounding_q7 = 32
 av1.skip_bias_energy = 0.25
 decision.seed_refine_ratio = 0
@@ -74,10 +84,6 @@ av1.keyframe_cfl = 0
 # Jetson cycles (jperf, min of 3, same clips and QPs) / CBR pool L1 quality J
 # (draw 2026-11-16, 24 clips, dCPU 0) / fixed-QP lens J and Weighted (BD
 # points against x264 medium, change from Faster):
-# Three temporal layers on every stream, not only where Faster's gate
-# layers them: -6.7% / -8.0% / +2.5% (bodycam, drone and lowlight classes
-# lose most) / +0.6, -1.2.
-layers.adaptive = 0
 # Chroma skipped below 7/8 of the luma SAD threshold (Faster: the codec's 5):
 # -1.7% / -2.2% / +2.2% / +0.2, +0.2.
 av1.chroma_skip_sad_num = 7

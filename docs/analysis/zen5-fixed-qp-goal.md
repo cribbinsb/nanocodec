@@ -611,11 +611,13 @@ speed at its Weighted. exact_rank_margin 0 engine-wide, L1 quality: H.264, HEVC 
     log-magnitude term, fitted to the walk), or an exact speed-up of the walk itself (2,560 Ir per
     call).
 
-- **AV1 Veryfast** (`feature/av1-veryfast`, 2026-11-16; docs/handoff/av1-veryfast.md): Faster plus
-  fixed L1T3, chroma skip 7, 32x32 minimum inter blocks, depth scale 8, one NEARMV, no integer probes,
-  variance-planned keys. c8a chart path 343 -> 451 fps (M13 450, M12 420 same session), Jetson
-  cycles -19.4 %; final-check J +11.86 % against Faster (periodic-key pulse +1.15 dB, from the fixed
-  layers); lens J / Weighted -6.2 / +7.6 (M13 -4.8 / +4.1, M12 -10.4 / -1.5).
+- **AV1 Veryfast** (`feature/av1-veryfast`, 2026-11-16; docs/handoff/av1-veryfast.md): first Faster
+  plus fixed L1T3, chroma skip 7, 32x32 minimum inter blocks, depth scale 8, one NEARMV, no integer probes,
+  variance-planned keys: 451-461 fps, final-check J +11.86 %, but its fixed layers code keys 1.8x
+  larger and 2-3 dB above their P frames (periodic-key pulse +1.15 dB, worst +4.05 dB). Re-pointed
+  to the same without fixed layers: c8a chart path 348 -> 419 fps (M13 459, M12 430 same session),
+  Jetson cycles -11.2 %, final-check J +10.42 %, pulse +0.29 dB; lens J / Weighted -7.0 / +8.4 (M13
+  -4.8 / +4.1, M12 -10.4 / -1.5). Other levers on top to win speed back cost +18 to +29 % CBR J.
 
 ## Next decision points
 
