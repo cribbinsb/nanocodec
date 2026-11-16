@@ -51,7 +51,10 @@ fn official_predicted_syntax() {
                     p.dimensions.map(|v| v as usize),
                     s,
                     &header,
-                    [&references, &[]],
+                    (
+                        [references.as_slice(), &[]],
+                        header.picture.order.lsb as i32,
+                    ),
                     None,
                 )
                 .unwrap();

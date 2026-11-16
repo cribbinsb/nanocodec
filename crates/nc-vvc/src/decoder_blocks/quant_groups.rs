@@ -6,6 +6,8 @@
 use super::{Context, Node, Parser, Reader, Result, Split, Unit, initialization::bank};
 use nc_common::decode::DecodeError;
 
+/// `slice_type` of I slices (H.266 §7.4.8.1).
+const I_SLICE: u8 = 2;
 /// `cu_qp_delta_abs` prefix: truncated unary up to this value, then EG0.
 const DELTA_PREFIX_MAX: u32 = 5;
 /// Luma QP values wrap modulo this plus `QpBdOffset` (H.266 §8.7.1).
@@ -27,7 +29,9 @@ pub(super) struct QuantGroups {
     /// A group started and its QP has not been predicted yet.
     start: bool,
     delta_coded: bool,
-    /// One flag per tree: a dual tree's chroma keeps its own.
+    /// `IsCuChromaQpOffsetCoded`, per coding tree of an I slice's dual
+    /// tree; a single tree and its local dual trees share entry 0 (H.266
+    /// §7.3.11.4: one variable, which a local chroma tree inherits).
     offset_coded: [bool; 2],
     /// Index + 1 into `offsets` in force (0: no CU offset).
     offset_index: u8,
@@ -114,15 +118,23 @@ impl Parser<'_> {
 
     /// A coding-tree node that may start a quantisation group.
     pub(super) fn enter_group(&mut self, node: Node, channel: usize) {
+        let tree = self.offset_tree(channel);
         let g = &mut self.groups;
         if g.enabled[0] && node.groups[0] && channel == 0 {
             g.start = true;
             g.delta_coded = false;
         }
         if g.enabled[1] && node.groups[1] {
-            g.offset_coded[channel] = false;
+            g.offset_coded[tree] = false;
             g.offset_index = 0;
         }
+    }
+
+    /// The `offset_coded` entry of `channel`'s tree: its own in an I
+    /// slice's dual tree, else the shared one.
+    fn offset_tree(&self, channel: usize) -> usize {
+        let dual = self.header.kind == I_SLICE && self.sequence.chroma && self.sequence.dual_tree;
+        if dual { channel } else { 0 }
     }
 
     /// QP state at the start of a CU: predicts the group's QP at its first
@@ -210,13 +222,14 @@ impl Parser<'_> {
         }
         if (!separate || unit.channel == 1)
             && self.groups.enabled[1]
-            && !self.groups.offset_coded[unit.channel]
+            && !self.groups.offset_coded[self.offset_tree(unit.channel)]
         {
             // A chroma tree measures its own (half-size) block.
             let shift = usize::from(separate);
             if n.width >> shift > 64 || n.height >> shift > 64 || chroma_coded {
                 self.groups.offset_index = self.chroma_offset_index(r)?;
-                self.groups.offset_coded[unit.channel] = true;
+                let tree = self.offset_tree(unit.channel);
+                self.groups.offset_coded[tree] = true;
             }
         }
         Ok(())

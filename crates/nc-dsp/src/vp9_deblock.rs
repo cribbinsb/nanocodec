@@ -229,6 +229,223 @@ pub(crate) fn vp9_filter_edge_at<T: Sample>(
     }
 }
 
+/// Lines of one edge filtered together by [`filter_lines_at`].
+const LANES: usize = 8;
+/// One value per line of a group.
+type Lanes = [i32; LANES];
+
+/// [`vp9_filter_edge_at`] written over groups of [`LANES`] lines, every
+/// filter computed for every line and the result selected per line, so
+/// that an ISA's instance vectorises it across lines (`high_depth::vector`);
+/// the result equals the per-line form. It reads the whole footprint
+/// (4 taps each side, 8 for 16-wide edges) of every line: the caller checks
+/// that it lies inside `data`.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+#[allow(
+    clippy::needless_range_loop,
+    reason = "lane loops over parallel arrays"
+)]
+pub(crate) fn filter_lines_at<T: Sample>(
+    data: &mut [T],
+    (edge, step, along): (usize, usize, usize),
+    lines: usize,
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+    depth: BitDepth,
+) {
+    let limits = limits.at(depth);
+    let reach = if width == Vp9FilterWidth::Sixteen {
+        8
+    } else {
+        4
+    };
+    for first in (0..lines).step_by(LANES) {
+        let count = (lines - first).min(LANES);
+        // Taps p7..p0 (0..8) then q0..q7 (8..16), one lane per line.
+        let mut t: [Lanes; 16] = [[0; LANES]; 16];
+        for lane in 0..count {
+            let q0 = edge + (first + lane) * along;
+            for k in 0..reach {
+                t[7 - k][lane] = data[q0 - (k + 1) * step].to_i32();
+                t[8 + k][lane] = data[q0 + k * step].to_i32();
+            }
+        }
+        let out = filter_group(&t, width, limits, depth);
+        for lane in 0..count {
+            let q0 = edge + (first + lane) * along;
+            for k in 0..reach - 1 {
+                data[q0 - (k + 1) * step] = T::from_i32(out[7 - k][lane]);
+                data[q0 + k * step] = T::from_i32(out[8 + k][lane]);
+            }
+        }
+    }
+}
+
+/// The filtered taps (p7..p0, q0..q7) of one group of lines: each
+/// quantity is a loop over the lanes (no branches, no closures), so that
+/// the instance vectorises it; each line takes its own filter's outputs.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+#[allow(
+    clippy::needless_range_loop,
+    reason = "lane loops over parallel arrays"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one vectorised group: split into a function per filter it ran 23 % more instructions"
+)]
+fn filter_group(
+    t: &[Lanes; 16],
+    width: Vp9FilterWidth,
+    limits: Vp9FilterLimits,
+    depth: BitDepth,
+) -> [Lanes; 16] {
+    let flatness = 1 << depth.above_eight();
+    let half = 128 << depth.above_eight();
+    let max = depth.max();
+    let (p3, p2, p1, p0) = (&t[4], &t[5], &t[6], &t[7]);
+    let (q0, q1, q2, q3) = (&t[8], &t[9], &t[10], &t[11]);
+    let mut mask = [false; LANES];
+    let mut flat = [false; LANES];
+    let mut flat2 = [false; LANES];
+    let mut high_variance = [false; LANES];
+    for l in 0..LANES {
+        let inside = (p3[l] - p2[l])
+            .abs()
+            .max((p2[l] - p1[l]).abs())
+            .max((p1[l] - p0[l]).abs())
+            .max((q1[l] - q0[l]).abs())
+            .max((q2[l] - q1[l]).abs())
+            .max((q3[l] - q2[l]).abs());
+        mask[l] = inside <= limits.inside
+            && 2 * (p0[l] - q0[l]).abs() + (p1[l] - q1[l]).abs() / 2 <= limits.boundary;
+        let near = (p1[l] - p0[l])
+            .abs()
+            .max((p2[l] - p0[l]).abs())
+            .max((p3[l] - p0[l]).abs())
+            .max((q1[l] - q0[l]).abs())
+            .max((q2[l] - q0[l]).abs())
+            .max((q3[l] - q0[l]).abs());
+        let far = (t[0][l] - p0[l])
+            .abs()
+            .max((t[1][l] - p0[l]).abs())
+            .max((t[2][l] - p0[l]).abs())
+            .max((t[3][l] - p0[l]).abs())
+            .max((t[12][l] - q0[l]).abs())
+            .max((t[13][l] - q0[l]).abs())
+            .max((t[14][l] - q0[l]).abs())
+            .max((t[15][l] - q0[l]).abs());
+        flat[l] = width != Vp9FilterWidth::Four && near <= flatness;
+        flat2[l] = width == Vp9FilterWidth::Sixteen && flat[l] && far <= flatness;
+        high_variance[l] =
+            (p1[l] - p0[l]).abs() > limits.variance || (q1[l] - q0[l]).abs() > limits.variance;
+    }
+    let mut out = *t;
+    // filter4 everywhere it applies.
+    for l in 0..LANES {
+        let clamp = |v: i32| v.clamp(-half, half - 1);
+        let outer = if high_variance[l] {
+            clamp(p1[l] - q1[l])
+        } else {
+            0
+        };
+        let filter = clamp(outer + 3 * (q0[l] - p0[l]));
+        let filter1 = clamp(filter + 4) >> 3;
+        let filter2 = clamp(filter + 3) >> 3;
+        let adjust = if high_variance[l] {
+            0
+        } else {
+            (filter1 + 1) >> 1
+        };
+        let narrow = mask[l] && !flat[l];
+        out[6][l] = if narrow {
+            (p1[l] + adjust).clamp(0, max)
+        } else {
+            out[6][l]
+        };
+        out[7][l] = if narrow {
+            (p0[l] + filter2).clamp(0, max)
+        } else {
+            out[7][l]
+        };
+        out[8][l] = if narrow {
+            (q0[l] - filter1).clamp(0, max)
+        } else {
+            out[8][l]
+        };
+        out[9][l] = if narrow {
+            (q1[l] - adjust).clamp(0, max)
+        } else {
+            out[9][l]
+        };
+    }
+    if width == Vp9FilterWidth::Four {
+        return out;
+    }
+    for l in 0..LANES {
+        let eight = mask[l] && flat[l] && !flat2[l];
+        let (p3, p2, p1, p0, q0, q1, q2, q3) =
+            (p3[l], p2[l], p1[l], p0[l], q0[l], q1[l], q2[l], q3[l]);
+        let values = [
+            (3 * p3 + 2 * p2 + p1 + p0 + q0 + 4) >> 3,
+            (2 * p3 + p2 + 2 * p1 + p0 + q0 + q1 + 4) >> 3,
+            (p3 + p2 + p1 + 2 * p0 + q0 + q1 + q2 + 4) >> 3,
+            (p2 + p1 + p0 + 2 * q0 + q1 + q2 + q3 + 4) >> 3,
+            (p1 + p0 + q0 + 2 * q1 + q2 + 2 * q3 + 4) >> 3,
+            (p0 + q0 + q1 + 2 * q2 + 3 * q3 + 4) >> 3,
+        ];
+        for (i, value) in (5..11).zip(values) {
+            out[i][l] = if eight { value } else { out[i][l] };
+        }
+    }
+    if !flat2.iter().zip(&mask).any(|(&f, &m)| f && m) {
+        return out;
+    }
+    // filter16: 15 taps around each output, the centre twice, the
+    // outermost replicated; a running sum as libvpx's `filter16`.
+    for l in 0..LANES {
+        let wide = mask[l] && flat2[l];
+        let tap = |i: usize| t[i][l];
+        let mut sum = 7 * tap(0) + 2 * tap(1) + (2..=8).map(tap).sum::<i32>() + 8;
+        let mut values = [0; 16];
+        values[1] = sum >> 4;
+        for i in 2..15 {
+            // Slide the window one tap: the far end gains, the near end
+            // (or the replicated p7) loses; the doubled centre moves.
+            sum += tap((i + 7).min(15)) - tap(i.saturating_sub(8)) + tap(i) - tap(i - 1);
+            values[i] = sum >> 4;
+        }
+        for i in 1..15 {
+            out[i][l] = if wide { values[i] } else { out[i][l] };
+        }
+    }
+    out
+}
+
+/// Whether the whole footprint of [`filter_lines_at`] lies inside `len`
+/// samples.
+pub(crate) fn footprint_fits(
+    len: usize,
+    (edge, step, along): (usize, usize, usize),
+    lines: usize,
+    width: Vp9FilterWidth,
+) -> bool {
+    let reach: usize = if width == Vp9FilterWidth::Sixteen {
+        8
+    } else {
+        4
+    };
+    let before = reach.checked_mul(step).is_some_and(|before| edge >= before);
+    let last = lines
+        .checked_sub(1)
+        .and_then(|l| l.checked_mul(along))
+        .and_then(|x| edge.checked_add(x))
+        .and_then(|x| (reach - 1).checked_mul(step).and_then(|y| x.checked_add(y)))
+        .is_some_and(|last| last < len);
+    before && last
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,8 +3,9 @@
 //! every filter family the table has and every width, weighted
 //! prediction, the HEVC inverse transform add with random extents, and
 //! AV1 unscaled prediction (final and compound precision) of every kernel
-//! side and filter pair, and AV1 CDEF of a picture (interior and edge
-//! blocks).
+//! side and filter pair, AV1 CDEF of a picture (interior and edge
+//! blocks), and VP9 prediction (every filter, width and phase, written and
+//! averaged) and deblocking (every width and direction).
 //! Samples are random and extreme (0 and 1023 runs, the filters' largest
 //! overshoot).
 use crate::{check::CheckReport, rng::Rng};
@@ -13,7 +14,7 @@ use nc_dsp::av1_mc::convolve::Av1McAxis;
 use nc_dsp::av1_mc::filter::{Av1Filter, Av1Filters};
 use nc_dsp::{
     BlockSize, CdefLines, CdefSets, CdefStrengths, CdefUnit, DepthKernels, Dsp, Filter,
-    HevcTransform, HevcWeights,
+    HevcTransform, HevcWeights, VP9_TAPS, Vp9Filter, Vp9FilterLimits, Vp9FilterWidth,
 };
 
 /// The depth checked: Main 10.
@@ -97,6 +98,88 @@ fn check_av1_mc(
     }
 }
 
+/// VP9 interpolation filters.
+const VP9_FILTERS: [Vp9Filter; 4] = [
+    Vp9Filter::Regular,
+    Vp9Filter::Smooth,
+    Vp9Filter::Sharp,
+    Vp9Filter::Bilinear,
+];
+
+/// VP9 prediction at 10 bits (whole-row kernels of every width; the
+/// height and phases random, zero phases included).
+fn check_vp9_mc(
+    (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    for kind in VP9_FILTERS {
+        for (i, &w) in SIDES.iter().enumerate() {
+            let h = SIDES[(i + rng.below(3)) % SIDES.len()];
+            let (span_w, span_h) = (w + VP9_TAPS - 1, h + VP9_TAPS - 1);
+            for round in 0..ROUNDS {
+                let source = samples(span_w * span_h, round, rng);
+                let phase = (rng.below(16) * rng.below(2), rng.below(16) * rng.below(2));
+                let base = samples(w * h, round, rng);
+                let average = rng.below(2) == 0;
+                let mut out = [base.clone(), base];
+                for (k, kernels) in [cand, refer].into_iter().enumerate() {
+                    kernels.vp9_convolve(
+                        kind,
+                        (&source, span_w),
+                        phase,
+                        (w, h),
+                        (&mut out[k], w),
+                        average,
+                    );
+                }
+                report.cases += 1;
+                if out[0] != out[1] {
+                    report.failures.push(format!(
+                        "u16 VP9 {kind:?} {w}x{h} {phase:?} average {average}: prediction differs"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// VP9 deblocking at 10 bits (every width, both directions, random levels
+/// and line counts).
+fn check_vp9_deblock(
+    (cand, refer): (DepthKernels<'_>, DepthKernels<'_>),
+    rng: &mut Rng,
+    report: &mut CheckReport,
+) {
+    const STRIDE: usize = 48;
+    for width in [
+        Vp9FilterWidth::Four,
+        Vp9FilterWidth::Eight,
+        Vp9FilterWidth::Sixteen,
+    ] {
+        for vertical in [false, true] {
+            for round in 0..ROUNDS * 4 {
+                let base = samples(STRIDE * STRIDE, round % ROUNDS, rng);
+                let limits =
+                    Vp9FilterLimits::with_sharpness(1 + rng.below(63) as u8, rng.below(8) as u8);
+                let lines = 1 + rng.below(24);
+                let (step, along) = if vertical { (1, STRIDE) } else { (STRIDE, 1) };
+                let at = (8 * STRIDE + 8, step, along);
+                let mut out = [base.clone(), base];
+                for (k, kernels) in [cand, refer].into_iter().enumerate() {
+                    kernels.vp9_filter_edge(&mut out[k], at, lines, width, limits);
+                }
+                report.cases += 1;
+                if out[0] != out[1] {
+                    report.failures.push(format!(
+                        "u16 VP9 deblocking {width:?} vertical {vertical} {lines} lines: differs"
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Luma size of the CDEF picture.
 const CDEF_PICTURE: (usize, usize) = (48, 40);
 /// CDEF luma units.
@@ -158,6 +241,8 @@ pub(crate) fn check(candidate: &Dsp, reference: &Dsp, rng: &mut Rng, report: &mu
     let (cand, refer) = (candidate.at(DEPTH), reference.at(DEPTH));
     check_av1_mc((cand, refer), rng, report);
     check_cdef((cand, refer), rng, report);
+    check_vp9_mc((cand, refer), rng, report);
+    check_vp9_deblock((cand, refer), rng, report);
     for filter in FILTERS {
         let span_extra = filter.taps() - 1;
         for side in SIDES {

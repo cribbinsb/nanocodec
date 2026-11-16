@@ -93,6 +93,22 @@ pub(crate) type Av1Put16Fn =
 /// destination and stride.
 pub(crate) type CdefInterior16Fn =
     unsafe fn(&[u16], usize, usize, &crate::cdef::CdefArgs, &mut [u16], usize);
+/// VP9 prediction of a block of one width class (`vp9_mc::rows_at`):
+/// window and stride, destination and stride, height (at most 64), the
+/// phases' taps, averaging, depth.
+pub(crate) type Vp9Mc16Fn =
+    unsafe fn((&[u16], usize), (&mut [u16], usize), usize, (&[i16; 8], &[i16; 8]), bool, BitDepth);
+/// VP9 deblocking of `lines` lines of one edge (`vp9_deblock::
+/// filter_lines_at`): samples, (edge, step, along), lines, width, limits at
+/// 8 bits, depth.
+pub(crate) type Vp9Filter16Fn = unsafe fn(
+    &mut [u16],
+    (usize, usize, usize),
+    usize,
+    crate::Vp9FilterWidth,
+    crate::Vp9FilterLimits,
+    BitDepth,
+);
 /// [`Av1Put16Fn`] at compound precision (`unscaled_prep_at`).
 pub(crate) type Av1Prep16Fn =
     for<'t> unsafe fn((&[u16], usize), (&mut [i16], usize), usize, Av1Taps<'t>, BitDepth);
@@ -166,6 +182,10 @@ pub(crate) struct HighFns {
     pub cdef_interior: [CdefInterior16Fn; 2],
     /// H.264 MC and deblocking.
     pub h264: h264::H264Fns,
+    /// VP9 prediction (written or averaged) by width class.
+    pub vp9_mc: [Vp9Mc16Fn; WIDTH_CLASSES],
+    /// VP9 deblocking of the lines of one edge.
+    pub vp9_filter: Vp9Filter16Fn,
 }
 
 /// One kernel per width class (4, 8, 16, 32, 64) of `$kernel` generic over
@@ -232,6 +252,17 @@ mod scalar {
         depth: BitDepth,
     ) {
         unscaled_put_at::<u16, W>(src, dst, h, taps, depth);
+    }
+
+    pub(super) fn vp9_mc<const W: usize>(
+        window: (&[u16], usize),
+        dst: (&mut [u16], usize),
+        h: usize,
+        taps: (&[i16; 8], &[i16; 8]),
+        average: bool,
+        depth: BitDepth,
+    ) {
+        crate::vp9_mc::rows_at::<u16, W>(window, dst, h, taps, average, depth);
     }
 
     pub(super) fn av1_prep<const W: usize>(
@@ -315,6 +346,8 @@ impl HighFns {
             vvc_recon: vvc_recon::VvcReconFns::SCALAR,
             av1_put: av1_widths!(scalar::av1_put),
             av1_prep: av1_widths!(scalar::av1_prep),
+            vp9_mc: av1_widths!(scalar::vp9_mc),
+            vp9_filter: crate::vp9_deblock::filter_lines_at::<u16>,
             cdef_interior: [
                 crate::cdef::scalar::interior_rows::<u16, 4>,
                 crate::cdef::scalar::interior_rows::<u16, 8>,
@@ -331,6 +364,8 @@ impl HighFns {
                 table.av1_put = vector::avx2::AV1_PUT;
                 table.av1_prep = vector::avx2::AV1_PREP;
                 table.cdef_interior = vector::avx2::CDEF_INTERIOR;
+                table.vp9_mc = vector::avx2::VP9_MC;
+                table.vp9_filter = vector::avx2::vp9_filter;
             }
             #[cfg(target_arch = "aarch64")]
             Isa::Neon => {
@@ -341,6 +376,8 @@ impl HighFns {
                 table.av1_put = vector::neon::AV1_PUT;
                 table.av1_prep = vector::neon::AV1_PREP;
                 table.cdef_interior = vector::neon::CDEF_INTERIOR;
+                table.vp9_mc = vector::neon::VP9_MC;
+                table.vp9_filter = vector::neon::vp9_filter;
             }
             _ => {}
         }

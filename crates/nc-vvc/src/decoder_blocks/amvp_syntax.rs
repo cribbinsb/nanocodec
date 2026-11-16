@@ -138,18 +138,7 @@ impl Parser<'_> {
         if !r.bin(&mut self.inter_models.weight)? {
             return Ok(0);
         }
-        let low_delay =
-            self.header
-                .references
-                .iter()
-                .zip(self.header.active)
-                .all(|(list, count)| {
-                    list.entries
-                        .iter()
-                        .take(usize::from(count))
-                        .all(|r| matches!(r, ReferenceEntry::Short(d) if *d <= 0))
-                });
-        let count = if low_delay { 5 } else { 3 };
+        let count = if self.no_backward_prediction { 5 } else { 3 };
         let mut index = 1;
         while index + 1 < count && r.bypass()? {
             index += 1;

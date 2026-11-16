@@ -57,7 +57,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                     dimensions,
                     s,
                     &h,
-                    [&lists[0], &lists[1]],
+                    ([&lists[0], &lists[1]], poc),
                     references
                         .temporal(poc, [&lists[0], &lists[1]], &h, s.ctu_log2)
                         .as_ref(),
@@ -68,7 +68,7 @@ fn decode_quant(name: &str, hashes: [Option<u64>; 3]) {
                     &units,
                     dimensions,
                     poc,
-                    vec![lists.clone()],
+                    (vec![lists.clone()], std::slice::from_ref(&h)),
                 ));
                 inverse_residuals(&mut units, s, &h, None, dsp.at(nc_common::BitDepth::EIGHT));
                 let pictures = lists.each_ref().map(|list| references.pictures(list));

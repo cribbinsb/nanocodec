@@ -37,13 +37,21 @@ fn official_general_inter_syntax() {
                 let h = SliceHeader::parse(&rbsp, kind, s, p, None).unwrap();
                 let counts = filter_counts(&banks, &h).unwrap();
                 let mut filters = vec![CtuFilters::default(); h.ctus.len()];
-                let units = parse_filtered(&rbsp, s, p, &h, counts, 0, &mut filters)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{name} picture {pictures} POC {}: {e:?}",
-                            h.picture.order.lsb
-                        )
-                    });
+                let units = parse_filtered(
+                    &rbsp,
+                    s,
+                    p,
+                    &h,
+                    counts,
+                    (0, no_backward_prediction(&h)),
+                    &mut filters,
+                )
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{name} picture {pictures} POC {}: {e:?}",
+                        h.picture.order.lsb
+                    )
+                });
                 eprintln!(
                     "{name} POC {}: {} units, {} SBT",
                     h.picture.order.lsb,

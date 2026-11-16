@@ -1,13 +1,18 @@
 //! MMVD displacement and temporal distance scaling, H.266 §8.5.2.
 //! Checked against BSD-Clear `VVdeC` `MergeCtx` / `UnitTools`.
 use super::{SliceHeader, motion::Motion};
-use crate::{decoder_headers::ReferenceEntry, motion::Mv16};
-use nc_common::decode::{DecodeError, Result};
+use crate::motion::Mv16;
+use nc_common::decode::Result;
+/// The MMVD motion of merge candidate `motion` (H.266 §8.5.2.7): the
+/// offset of `step` and `direction` for the list whose reference is
+/// farther, and for the other list that offset scaled by the POC distances
+/// (§8.5.2.15), or, when either reference is long-term, mirrored by the
+/// distances' signs. `references` are the slice's reference POCs.
 pub(super) fn mmvd(
     mut motion: Motion,
-    step: u8,
-    direction: u8,
+    (step, direction): (u8, u8),
     header: &SliceHeader,
+    (references, poc): ([&[i32]; 2], i32),
 ) -> Result<Motion> {
     let magnitude = 4i32
         << (step
@@ -30,17 +35,21 @@ pub(super) fn mmvd(
     };
     let mut offsets = [offset; 2];
     if let [Some(a), Some(b)] = motion.lists {
-        let delta = |list: usize, index: u8| match header.references[list]
-            .entries
-            .get(usize::from(index))
-        {
-            Some(ReferenceEntry::Short(delta)) => Ok(*delta),
-            _ => Err(DecodeError::Unsupported("VVC MMVD long-term reference")),
-        };
-        let distances = [delta(0, a.reference)?, delta(1, b.reference)?];
+        let distance = |list: usize, index: u8| references[list][usize::from(index)] - poc;
+        let distances = [distance(0, a.reference), distance(1, b.reference)];
+        let long_term = header.long_term(0, a.reference) || header.long_term(1, b.reference);
         if distances[0] != distances[1] {
             let near = usize::from(distances[0].abs() >= distances[1].abs());
-            offsets[near] = scale(offset, distances[near], distances[1 - near])?;
+            offsets[near] = if !long_term {
+                scale(offset, distances[near], distances[1 - near])?
+            } else if distances[0].signum() == distances[1].signum() {
+                offset
+            } else {
+                Mv16 {
+                    x: -offset.x,
+                    y: -offset.y,
+                }
+            };
         }
     }
     for (vector, offset) in motion.lists.iter_mut().zip(offsets) {

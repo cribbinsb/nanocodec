@@ -268,6 +268,63 @@ pub(crate) fn vp9_convolve_into_at<T: Sample>(
     }
 }
 
+/// [`vp9_convolve_into_at`] of a `W`-wide block (`h` rows) with the
+/// phases' `taps`, written as whole-row multiply-adds so that an ISA's
+/// instance vectorises it (`high_depth::vector`). Both passes always run:
+/// a zero phase's taps (128 at the centre) copy exactly, so the result
+/// equals libvpx's copy / one-pass / two-pass dispatch.
+#[allow(clippy::inline_always, reason = "inlined into the ISA instances")]
+#[inline(always)]
+pub(crate) fn rows_at<S: Sample, const W: usize>(
+    (window, stride): (&[S], usize),
+    (dst, ds): (&mut [S], usize),
+    h: usize,
+    (fx, fy): (&[i16; VP9_TAPS], &[i16; VP9_TAPS]),
+    average: bool,
+    depth: BitDepth,
+) {
+    // No closures here: they would be compiled outside the ISA instance's
+    // target features (measured: the AVX2 instance ran 10 % more
+    // instructions than the scalar reference with them).
+    const ROUND: i32 = 1 << (FILTER_BITS - 1);
+    // The horizontal pass's rows in a ring of the vertical filter's taps.
+    let mut ring = [[S::default(); W]; VP9_TAPS];
+    for r in 0..h + VP9_TAPS - 1 {
+        let row = &window[r * stride..][..W + VP9_TAPS - 1];
+        let mut sums = [ROUND; W];
+        for (t, &tap) in fx.iter().enumerate() {
+            let tap = i32::from(tap);
+            for (sum, sample) in sums.iter_mut().zip(&row[t..t + W]) {
+                *sum += tap * sample.to_i32();
+            }
+        }
+        for (value, sum) in ring[r % VP9_TAPS].iter_mut().zip(sums) {
+            *value = depth.clip_to(sum >> FILTER_BITS);
+        }
+        let Some(y) = (r + 1).checked_sub(VP9_TAPS) else {
+            continue;
+        };
+        let mut sums = [ROUND; W];
+        for (t, &tap) in fy.iter().enumerate() {
+            let tap = i32::from(tap);
+            for (sum, value) in sums.iter_mut().zip(&ring[(y + t) % VP9_TAPS]) {
+                *sum += tap * value.to_i32();
+            }
+        }
+        let out = &mut dst[y * ds..][..W];
+        if average {
+            for (sample, sum) in out.iter_mut().zip(sums) {
+                let value = depth.clip(sum >> FILTER_BITS);
+                *sample = S::from_i32((sample.to_i32() + value + 1) >> 1);
+            }
+        } else {
+            for (sample, sum) in out.iter_mut().zip(sums) {
+                *sample = depth.clip_to(sum >> FILTER_BITS);
+            }
+        }
+    }
+}
+
 /// VP9 averages the two already clipped predictions with upward rounding.
 #[inline]
 fn store<T: Sample>(dst: &mut T, pixel: T, average: bool) {

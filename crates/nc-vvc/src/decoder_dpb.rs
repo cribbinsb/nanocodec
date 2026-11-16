@@ -85,7 +85,7 @@ impl<T: Sample> References<T> {
         } else {
             lsb
         };
-        let retained = entries(poc, header)?;
+        let retained = self.entries(poc, header, sequence.poc_bits)?;
         // The first slice's lists mark the other pictures unused (§8.3.3).
         self.pictures
             .retain(|(poc, _)| retained.iter().any(|list| list.contains(poc)));
@@ -117,8 +117,51 @@ impl<T: Sample> References<T> {
     }
     /// The active reference POCs of a later slice `header` of picture `poc`
     /// (§8.3.2), each in the DPB.
-    pub fn slice_lists(&self, poc: i32, header: &SliceHeader) -> Result<[Vec<i32>; 2]> {
-        self.active(entries(poc, header)?, header)
+    pub fn slice_lists(
+        &self,
+        poc: i32,
+        header: &SliceHeader,
+        poc_bits: u8,
+    ) -> Result<[Vec<i32>; 2]> {
+        self.active(self.entries(poc, header, poc_bits)?, header)
+    }
+
+    /// The POCs of every entry of the two reference picture lists of slice
+    /// `header` of picture `poc` (H.266 §8.3.2): a short-term entry by its
+    /// POC delta; a long-term one the picture whose POC is
+    /// `PicOrderCntVal − DeltaPocMsbCycleLt · MaxPicOrderCntLsb −
+    /// (PicOrderCntVal & (MaxPicOrderCntLsb − 1)) + PocLsbLt` with its MSB
+    /// cycle, else the picture whose POC LSBs are `PocLsbLt`.
+    fn entries(&self, poc: i32, header: &SliceHeader, poc_bits: u8) -> Result<[Vec<i32>; 2]> {
+        let range = 1i64 << poc_bits;
+        let mut lists: [Vec<i32>; 2] = [Vec::new(), Vec::new()];
+        for (list, selected) in header.references.iter().enumerate() {
+            for (entry, msb_cycle) in selected.entries.iter().zip(&selected.msb_cycles) {
+                let reference = match (entry, msb_cycle) {
+                    (ReferenceEntry::Short(delta), _) => i64::from(poc) + i64::from(*delta),
+                    (ReferenceEntry::Long(lsb), Some(cycle)) => {
+                        let lsb = i64::from(lsb.ok_or(DecodeError::Malformed("VVC LTRP LSB"))?);
+                        i64::from(poc)
+                            - i64::from(*cycle) * range
+                            - i64::from(poc).rem_euclid(range)
+                            + lsb
+                    }
+                    (ReferenceEntry::Long(lsb), None) => {
+                        let lsb = i64::from(lsb.ok_or(DecodeError::Malformed("VVC LTRP LSB"))?);
+                        self.pictures
+                            .iter()
+                            .map(|(stored, _)| i64::from(*stored))
+                            .find(|stored| stored.rem_euclid(range) == lsb)
+                            .unwrap_or(i64::from(poc) - i64::from(poc).rem_euclid(range) + lsb)
+                    }
+                };
+                lists[list].push(
+                    i32::try_from(reference)
+                        .map_err(|_| DecodeError::Malformed("VVC reference POC overflow"))?,
+                );
+            }
+        }
+        Ok(lists)
     }
 
     /// The first `header.active` POCs of each of `lists`, each in the DPB.
@@ -203,24 +246,6 @@ impl<T: Sample> References<T> {
             })
             .collect()
     }
-}
-
-/// The POCs of every entry of the two reference picture lists of slice
-/// `header` of picture `poc`.
-fn entries(poc: i32, header: &SliceHeader) -> Result<[Vec<i32>; 2]> {
-    let mut lists: [Vec<i32>; 2] = [Vec::new(), Vec::new()];
-    for (list, selected) in header.references.iter().enumerate() {
-        for entry in &selected.entries {
-            let ReferenceEntry::Short(delta) = entry else {
-                return Err(DecodeError::Unsupported("VVC general long-term reference"));
-            };
-            lists[list].push(
-                poc.checked_add(*delta)
-                    .ok_or(DecodeError::Malformed("VVC reference POC overflow"))?,
-            );
-        }
-    }
-    Ok(lists)
 }
 
 #[cfg(test)]

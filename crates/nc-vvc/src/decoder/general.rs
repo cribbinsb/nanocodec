@@ -264,7 +264,7 @@ impl<T: Pixel> General<T> {
             }
         }
         let poc = assembly.poc;
-        let pocs = references.slice_lists(poc, &header)?;
+        let pocs = references.slice_lists(poc, &header, sequence.poc_bits)?;
         let dimensions = parameters.dimensions.map(|v| v as usize);
         let edges = reference_edges(sequence, parameters, header.subpicture);
         let reshape = blocks::reshape_model::<T>(sequence, &header, &active.adaptation[1])?;
@@ -275,7 +275,10 @@ impl<T: Pixel> General<T> {
             parameters,
             &header,
             filter_counts,
-            slice,
+            (
+                slice,
+                pocs.iter().flatten().all(|&reference| reference <= poc),
+            ),
             &mut assembly.filters,
         )?;
         blocks::derive_motion(
@@ -283,7 +286,7 @@ impl<T: Pixel> General<T> {
             dimensions,
             sequence,
             &header,
-            [&pocs[0], &pocs[1]],
+            ([&pocs[0], &pocs[1]], poc),
             references
                 .temporal(poc, [&pocs[0], &pocs[1]], &header, sequence.ctu_log2)
                 .map(|temporal| temporal.within(edges.area))
@@ -346,7 +349,12 @@ impl<T: Pixel> General<T> {
         self.references
             .as_deref_mut()
             .unwrap()
-            .record_motion(blocks::MotionField::new(&units, dimensions, poc, lists));
+            .record_motion(blocks::MotionField::new(
+                &units,
+                dimensions,
+                poc,
+                (lists, &headers),
+            ));
         blocks::deblock(
             &mut picture,
             &units,

@@ -10,7 +10,9 @@
 //! prediction were 50 % of the instructions on the scalar table. The AV1
 //! unscaled prediction (`av1_mc::convolve::{unscaled_put_at,
 //! unscaled_prep_at}`) and the CDEF of interior blocks
-//! (`cdef::scalar::interior_rows`) are compiled the same way.
+//! (`cdef::scalar::interior_rows`) are compiled the same way, as is the
+//! VP9 prediction (`vp9_mc::rows_at`) and deblocking
+//! (`vp9_deblock::filter_lines_at`).
 
 /// One ISA's vectorised MC and weighting kernels (`$feature`: the target
 /// feature string).
@@ -23,7 +25,7 @@ macro_rules! vectorised {
         use crate::hevc_weight::HevcWeights;
         use crate::high_depth::{
             Av1Prep16Fn, Av1Put16Fn, Av1Taps, Bi16Fn, CdefInterior16Fn, Convolve16Fn, Prep16Fn,
-            Weight16Fn,
+            Vp9Mc16Fn, Weight16Fn,
         };
         use crate::mc::SeparableTaps;
         use crate::mc::scalar::{hevc_bi_at, hevc_prep_at, separable_at};
@@ -134,6 +136,34 @@ macro_rules! vectorised {
             );
         }
 
+        /// # Safety
+        /// As [`predict`].
+        #[target_feature(enable = $feature)]
+        pub(crate) unsafe fn vp9_mc<const W: usize>(
+            window: (&[u16], usize),
+            dst: (&mut [u16], usize),
+            h: usize,
+            taps: (&[i16; 8], &[i16; 8]),
+            average: bool,
+            depth: BitDepth,
+        ) {
+            crate::vp9_mc::rows_at::<u16, W>(window, dst, h, taps, average, depth);
+        }
+
+        /// # Safety
+        /// The ISA must be available; the footprint lies in `data`.
+        #[target_feature(enable = $feature)]
+        pub(crate) unsafe fn vp9_filter(
+            data: &mut [u16],
+            at: (usize, usize, usize),
+            lines: usize,
+            width: crate::Vp9FilterWidth,
+            limits: crate::Vp9FilterLimits,
+            depth: BitDepth,
+        ) {
+            crate::vp9_deblock::filter_lines_at::<u16>(data, at, lines, width, limits, depth);
+        }
+
         /// The kernels for [`super::super::HighFns`].
         pub(crate) const WEIGHT: Weight16Fn = weight;
         pub(crate) const PREDICT: [[Convolve16Fn; 5]; 5] = crate::high_depth::families!(predict);
@@ -141,6 +171,7 @@ macro_rules! vectorised {
         pub(crate) const BI: [[Bi16Fn; 5]; 5] = crate::high_depth::families!(bi);
         pub(crate) const AV1_PUT: [Av1Put16Fn; 5] = crate::high_depth::av1_widths!(av1_put);
         pub(crate) const AV1_PREP: [Av1Prep16Fn; 5] = crate::high_depth::av1_widths!(av1_prep);
+        pub(crate) const VP9_MC: [Vp9Mc16Fn; 5] = crate::high_depth::av1_widths!(vp9_mc);
         pub(crate) const CDEF_INTERIOR: [CdefInterior16Fn; 2] =
             [cdef_interior::<4>, cdef_interior::<8>];
     };

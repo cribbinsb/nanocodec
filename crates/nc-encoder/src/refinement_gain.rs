@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 
 use nc_common::{Picture, PlaneIndex};
-use nc_dsp::{BlockSize, Dsp};
+use nc_dsp::Dsp;
 
 /// Inter frames in the regression window: eight 4-frame cadence cycles.
 const WINDOW_FRAMES: usize = 32;
@@ -90,7 +90,10 @@ impl RefinementGain {
 
 /// Luma mean squared error of `recon` against `source` over the
 /// `width` x `height` area (whole 8x8 blocks; the coded area is a multiple
-/// of 8).
+/// of 8). One row kernel call per row of blocks: a variance call per 8x8
+/// block cost ~220 instructions with its view setup, 2.7M per 720p frame
+/// (AV1 Default crowd 720p: 189M -> 28M over 60 frames, -2.4% of all
+/// instructions; streams identical).
 pub(crate) fn luma_mse(
     dsp: &Dsp,
     source: &Picture,
@@ -98,22 +101,21 @@ pub(crate) fn luma_mse(
     width: usize,
     height: usize,
 ) -> f64 {
-    let size = BlockSize::new(MSE_BLOCK, MSE_BLOCK).expect("8x8 is a block size");
     let src = source.plane(PlaneIndex::Y).view();
     let rec = recon.plane(PlaneIndex::Y).view();
     let (cols, rows) = (width / MSE_BLOCK, height / MSE_BLOCK);
+    let mut block_sse = vec![0u32; cols];
     let mut sse = 0u64;
     for by in 0..rows {
-        for bx in 0..cols {
-            let (x, y) = (bx * MSE_BLOCK, by * MSE_BLOCK);
-            let s = src
-                .sub_view(x, y, MSE_BLOCK, MSE_BLOCK)
-                .expect("inside the source");
-            let r = rec
-                .sub_view(x, y, MSE_BLOCK, MSE_BLOCK)
-                .expect("inside the recon");
-            sse += u64::from(dsp.variance(size, &s, &r).sse);
-        }
+        let y = by * MSE_BLOCK;
+        let s = src
+            .sub_view(0, y, cols * MSE_BLOCK, MSE_BLOCK)
+            .expect("inside the source");
+        let r = rec
+            .sub_view(0, y, cols * MSE_BLOCK, MSE_BLOCK)
+            .expect("inside the recon");
+        dsp.sse_8x8_row(&s, &r, &mut block_sse);
+        sse += block_sse.iter().map(|&e| u64::from(e)).sum::<u64>();
     }
     sse as f64 / ((cols * rows * MSE_BLOCK * MSE_BLOCK).max(1)) as f64
 }

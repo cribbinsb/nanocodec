@@ -205,7 +205,7 @@ fn derive_and_compare_motion(
         dimensions,
         s,
         h,
-        [&refs[0], &refs[1]],
+        ([&refs[0], &refs[1]], h.picture.order.lsb as i32),
         None,
     )
     .unwrap();

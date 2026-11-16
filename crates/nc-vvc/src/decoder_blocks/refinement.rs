@@ -144,12 +144,14 @@ pub(crate) fn derive<T: Pixel>(
             continue;
         };
         let distance = poc - pocs[0][usize::from(first.reference)];
-        // Signalled weights of either reference switch both refinements off
-        // (H.266 §8.5.1 dmvrFlag, §8.5.6.1 bdofFlag).
+        // Signalled weights or a long-term reference in either list switch
+        // both refinements off (H.266 §8.5.1 dmvrFlag, §8.5.6.1 bdofFlag).
         if motion.weight != 0
             || header
                 .weights
                 .signalled([first.reference, second.reference])
+            || header.long_term(0, first.reference)
+            || header.long_term(1, second.reference)
             || distance == 0
             || distance != pocs[1][usize::from(second.reference)] - poc
         {

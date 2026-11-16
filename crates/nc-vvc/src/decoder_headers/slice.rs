@@ -37,6 +37,15 @@ pub(crate) struct SliceHeader {
     pub subpicture: usize,
 }
 impl SliceHeader {
+    /// Whether entry `index` of reference picture list `list` is a
+    /// long-term reference picture (`LongTermRefPic`, H.266 §8.3.2).
+    pub fn long_term(&self, list: usize, index: u8) -> bool {
+        matches!(
+            self.references[list].entries.get(usize::from(index)),
+            Some(super::ReferenceEntry::Long(_))
+        )
+    }
+
     pub fn parse(
         bytes: &[u8],
         nal_kind: u8,

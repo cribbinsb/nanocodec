@@ -153,6 +153,9 @@ struct Parser<'a> {
     ctu: layout::Ctu,
     /// The index of the slice being parsed in its picture.
     slice: u16,
+    /// `NoBackwardPredFlag` (H.266 §8.5.1): no active reference follows
+    /// the current picture in output order.
+    no_backward_prediction: bool,
 }
 
 /// Parse one slice of the picture: its CUs, and the SAO/ALF syntax of its
@@ -172,9 +175,21 @@ pub(super) fn parse(
         p,
         h,
         filter_syntax::Counts::default(),
-        0,
+        (0, no_backward_prediction(h)),
         &mut filters,
     )
+}
+
+/// `NoBackwardPredFlag` of a slice whose references are all short-term
+/// (the tests' streams): no reference follows the current picture.
+#[cfg(test)]
+fn no_backward_prediction(h: &SliceHeader) -> bool {
+    h.references.iter().zip(h.active).all(|(list, count)| {
+        list.entries
+            .iter()
+            .take(usize::from(count))
+            .all(|r| matches!(r, crate::decoder_headers::ReferenceEntry::Short(d) if *d <= 0))
+    })
 }
 
 pub(super) fn parse_filtered(
@@ -183,7 +198,7 @@ pub(super) fn parse_filtered(
     p: &PictureParameters,
     h: &SliceHeader,
     filter_counts: filter_syntax::Counts,
-    slice: u16,
+    (slice, no_backward): (u16, bool),
     filters: &mut [filter_syntax::CtuFilters],
 ) -> Result<Vec<Unit>> {
     validate_tools(s)?;
@@ -192,6 +207,7 @@ pub(super) fn parse_filtered(
     let scan = layout::scan(&h.ctus, &p.partitioning.tiles, s.ctu_log2);
     let mut parser = Parser::new(s, p, h, scan[0]);
     parser.slice = slice;
+    parser.no_backward_prediction = no_backward;
     let (qp, init_kind) = parser.initialization();
     let mut reader = Reader::new(
         bytes
@@ -270,6 +286,7 @@ impl<'a> Parser<'a> {
         Self {
             ctu: first,
             slice: 0,
+            no_backward_prediction: false,
             sequence: s,
             header: h,
             dimensions,

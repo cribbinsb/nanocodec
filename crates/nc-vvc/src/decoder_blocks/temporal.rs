@@ -12,6 +12,8 @@ pub(crate) struct Field {
     dimensions: [usize; 2],
     /// The reference POCs of each slice's two lists, by slice index.
     references: Vec<[Vec<i32>; 2]>,
+    /// Whether each of those references is long-term, by slice index.
+    long_term: Vec<[Vec<bool>; 2]>,
     /// The motion of each 8x8 cell and the index of its slice.
     cells: Vec<Option<(Motion, u16)>>,
 }
@@ -22,8 +24,19 @@ impl Field {
         units: &[Unit],
         dimensions: [usize; 2],
         poc: i32,
-        references: Vec<[Vec<i32>; 2]>,
+        (references, headers): (Vec<[Vec<i32>; 2]>, &[SliceHeader]),
     ) -> Self {
+        let long_term = headers
+            .iter()
+            .zip(&references)
+            .map(|(header, lists)| {
+                std::array::from_fn(|list| {
+                    (0..lists[list].len())
+                        .map(|index| header.long_term(list, index as u8))
+                        .collect()
+                })
+            })
+            .collect();
         let stride = dimensions[0].div_ceil(8);
         let mut cells = vec![None; stride * dimensions[1].div_ceil(8)];
         for unit in units.iter().filter(|u| u.channel == 0) {
@@ -39,6 +52,7 @@ impl Field {
             poc,
             dimensions,
             references,
+            long_term,
             cells,
         }
     }
@@ -47,6 +61,8 @@ pub(crate) struct Temporal<'a> {
     field: &'a Field,
     poc: i32,
     references: [&'a [i32]; 2],
+    /// Whether each of the current slice's references is long-term.
+    long_term: [Vec<bool>; 2],
     selected_list: usize,
     low_delay: bool,
     ctu_log2: u8,
@@ -75,6 +91,11 @@ impl<'a> Temporal<'a> {
             field,
             poc,
             references,
+            long_term: std::array::from_fn(|list| {
+                (0..references[list].len())
+                    .map(|index| header.long_term(list, index as u8))
+                    .collect()
+            }),
             selected_list: usize::from(header.collocated[0]),
             low_delay: references.iter().flat_map(|r| r.iter()).all(|&p| p <= poc),
             ctu_log2,
@@ -99,13 +120,22 @@ impl<'a> Temporal<'a> {
         } else {
             (1 - source_list, cell.lists[1 - source_list]?)
         };
-        let source =
-            self.field.references[usize::from(slice)][source_list][usize::from(vector.reference)];
+        let (slice, index) = (usize::from(slice), usize::from(vector.reference));
+        let source = self.field.references[slice][source_list][index];
         let target = *self.references[list].get(usize::from(reference))?;
+        // A long-term reference only predicts from a long-term one, unscaled
+        // (H.266 §8.5.2.12).
+        let long_term = self.long_term[list][usize::from(reference)];
+        if long_term != self.field.long_term[slice][source_list][index] {
+            return None;
+        }
         let vector = Mv16 {
             x: storage_precision(vector.vector.x),
             y: storage_precision(vector.vector.y),
         };
+        if long_term {
+            return Some(vector.clip());
+        }
         super::motion_refine::scale(vector, self.poc - target, self.field.poc - source).ok()
     }
     pub(super) fn candidate(&self, n: Node, list: usize, reference: u8) -> Option<Mv16> {
@@ -225,6 +255,7 @@ mod tests {
             poc: 2,
             dimensions: [8, 8],
             references: vec![[vec![0], vec![]]],
+            long_term: vec![[vec![false], vec![]]],
             cells: vec![Some((
                 Motion {
                     lists: [
@@ -243,6 +274,7 @@ mod tests {
             field: &field,
             poc: 1,
             references: [&[0], &[2]],
+            long_term: [vec![false], vec![false]],
             selected_list: 1,
             low_delay: false,
             ctu_log2: 7,

@@ -25,7 +25,7 @@ pub(crate) fn derive(
     dimensions: [usize; 2],
     sequence: &Sequence,
     header: &SliceHeader,
-    references: [&[i32]; 2],
+    (references, poc): ([&[i32]; 2], i32),
     temporal: Option<&super::Temporal<'_>>,
 ) -> Result<()> {
     let ctu_log2 = sequence.ctu_log2;
@@ -114,6 +114,7 @@ pub(crate) fn derive(
             history: &history,
             sequence,
             header,
+            poc,
         }
         .resolve(unit)?;
         restrict_biprediction(unit.node, &mut resolved);
@@ -222,6 +223,8 @@ struct Selection<'a, F> {
     history: &'a [Motion],
     sequence: &'a Sequence,
     header: &'a SliceHeader,
+    /// The current picture's POC.
+    poc: i32,
 }
 impl<F: Fn(usize, usize) -> Option<super::affine_motion::Neighbour>> Selection<'_, F> {
     fn resolve(&self, unit: &mut Unit) -> Result<Option<Motion>> {
@@ -254,9 +257,9 @@ impl<F: Fn(usize, usize) -> Option<super::affine_motion::Neighbour>> Selection<'
                 direction,
             }) => Some(super::motion_refine::mmvd(
                 candidates()[usize::from(base)],
-                step,
-                direction,
+                (step, direction),
                 header,
+                (references, self.poc),
             )?),
             Some(Inter::Subblock(index)) => {
                 let subblocks = temporal

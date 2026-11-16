@@ -40,8 +40,9 @@ fn official_general_intra_reconstruction() {
                 let reshape = reshape_model(s, &header, &reshape_banks).unwrap();
                 let counts = filter_counts(&banks, &header).unwrap();
                 let mut filters = vec![CtuFilters::default(); header.ctus.len()];
+                let order = (0, no_backward_prediction(&header));
                 let mut units =
-                    parse_filtered(&rbsp, s, p, &header, counts, 0, &mut filters).unwrap();
+                    parse_filtered(&rbsp, s, p, &header, counts, order, &mut filters).unwrap();
                 eprintln!(
                     "{name}: {} CUs, {} CTUs, ISP={}, MTS={}, LFNST={}",
                     units.len(),

@@ -3,7 +3,9 @@
 //!
 //! For `u8` each method is the 8-bit [`crate::Dsp`] method, with its SIMD
 //! tiers; for `u16` it is the family's scalar reference instantiated at
-//! `u16` with the depth (`vp9_intra::predict_at`,
+//! `u16` with the depth (`vp9_intra::predict_at`, the MC's whole-row
+//! `vp9_mc::rows_at` and the deblocking's `vp9_deblock::filter_lines_at`
+//! from `HighFns`, vectorised on AVX2 and NEON,
 //! `vp9_mc::{vp9_convolve_into_at, vp9_convolve_scaled_at}`,
 //! `vp9_txfm::vp9_inverse_add_high`, `vp9_deblock::vp9_filter_edge_at`).
 //! libvpx's high-bit-depth VP9 (`vpx_highbd_*`) is the 8-bit arithmetic
@@ -17,7 +19,7 @@
 
 use super::DepthKernels;
 use crate::high_depth::av1::Av1Coefficient;
-use crate::vp9_mc::{VP9_TAPS, VP9_TAPS_BEFORE};
+use crate::vp9_mc::{VP9_POSITIONS, VP9_TAPS, VP9_TAPS_BEFORE};
 use crate::{
     Vp9Filter, Vp9FilterLimits, Vp9FilterWidth, Vp9IntraEdges, Vp9IntraMode, Vp9Pass,
     Vp9ScaledScratch,
@@ -198,15 +200,34 @@ impl Vp9Pixel for u16 {
             height + VP9_TAPS - 1,
         );
         crate::mc::generic::check_plane(dst.0, dst.1, width, height);
-        crate::vp9_mc::vp9_convolve_into_at(
-            kind,
-            window,
-            phase,
-            (width, height),
-            dst,
-            average,
-            kernels.depth,
-        );
+        let kernel = kind.kernel();
+        let taps = (&kernel[phase.0], &kernel[phase.1]);
+        let class = match width {
+            4 => 0,
+            8 => 1,
+            16 => 2,
+            32 => 3,
+            64 => 4,
+            _ => {
+                crate::vp9_mc::vp9_convolve_into_at(
+                    kind,
+                    window,
+                    phase,
+                    (width, height),
+                    dst,
+                    average,
+                    kernels.depth,
+                );
+                return;
+            }
+        };
+        assert!(height <= 64 && phase.0 < VP9_POSITIONS && phase.1 < VP9_POSITIONS);
+        // SAFETY: the table matches a supported ISA; the window and
+        // destination were checked to cover the block and its taps, and the
+        // kernel indexes its slices.
+        unsafe {
+            (kernels.dsp.high.vp9_mc[class])(window, dst, height, taps, average, kernels.depth);
+        }
     }
 
     fn vp9_convolve_scaled(
@@ -264,7 +285,15 @@ impl Vp9Pixel for u16 {
         width: Vp9FilterWidth,
         limits: Vp9FilterLimits,
     ) {
-        crate::vp9_deblock::vp9_filter_edge_at(data, at, lines, width, limits, kernels.depth);
+        if !crate::vp9_deblock::footprint_fits(data.len(), at, lines, width) {
+            crate::vp9_deblock::vp9_filter_edge_at(data, at, lines, width, limits, kernels.depth);
+            return;
+        }
+        // SAFETY: the table matches a supported ISA; the footprint of every
+        // line was checked to lie inside `data`, and the kernel indexes it.
+        unsafe {
+            (kernels.dsp.high.vp9_filter)(data, at, lines, width, limits, kernels.depth);
+        }
     }
 }
 

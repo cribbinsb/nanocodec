@@ -316,3 +316,40 @@ fn deep_deblocking_stays_inside_the_depth() {
         }
     }
 }
+
+#[test]
+fn deep_deblocking_in_line_groups_matches_the_per_line_form() {
+    let stride = 48;
+    for depth in DEEP {
+        let max = depth.max() as u32;
+        for seed in 0..24 {
+            for width in WIDTHS {
+                for vertical in [false, true] {
+                    let level = 1 + (seed as u8 * 5) % 63;
+                    let limits = Vp9FilterLimits::with_sharpness(level, seed as u8 % 8);
+                    // Gentle slopes (flat filters) and noise (narrow or none).
+                    let spread = if seed % 3 == 0 {
+                        max
+                    } else {
+                        6 << depth.above_eight()
+                    };
+                    let base: Vec<u32> = pattern(stride * stride, seed, spread)
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, v)| (v + (i % stride) as u32).min(max))
+                        .collect();
+                    let mut want = samples::<u16>(&base);
+                    let mut got = want.clone();
+                    let (step, along) = if vertical { (1, stride) } else { (stride, 1) };
+                    let at = (8 * stride + 8, step, along);
+                    let lines = 1 + seed % 20;
+                    crate::vp9_deblock::vp9_filter_edge_at(
+                        &mut want, at, lines, width, limits, depth,
+                    );
+                    crate::vp9_deblock::filter_lines_at(&mut got, at, lines, width, limits, depth);
+                    assert_eq!(want, got, "{depth:?} {width:?} seed {seed}");
+                }
+            }
+        }
+    }
+}

@@ -211,10 +211,10 @@ its output under the GPL; we distribute only the output streams, not the program
   streams, MD5-exact against VTM (9/9 8-bit, 209/217 10-bit; the 8 that fail use reference picture
   resampling (4), field output (2), long-term references (1), and one is unresolved), and 136 of 138 8-bit
   VTM and VVenC streams that exercise the Main 10 tools one by one (`docs/handoff/vvc-foreign-corpus.md`), so
-  it is not yet a full Main 10 decoder; the AV2 decoder decodes our own streams and 14 of 30 foreign test streams bit-exact
-  (of 12 dav2d 8-bit test streams and 18 avmenc v1.0.0 streams: the nine avmenc streams coded with the fewest
-  tools, the three all-intra avmenc streams with every default tool, and two dav2d single pictures); the other
-  16 need inter blocks beyond our subset or segment ids. Details in the
+  it is not yet a full Main 10 decoder; the AV2 decoder decodes our own streams and all 30 of 30 foreign test streams bit-exact
+  against avmdec v1.0.0 and dav2d (12 dav2d 8-bit test vectors and 18 avmenc v1.0.0 streams: all-intra,
+  low-delay and random-access with the default tools, and with the fewest tools); 8-bit 4:2:0, one tile per
+  frame (no corpus stream has several). Details in the
   [detailed results](results/README.md#decoders).
 - **Speed gaps:** our AV1 and VP9 decoders are slower than dav1d and vpxdec single-threaded; SVT-AV1 M12/M13 and
   x264's fast presets encode faster than our Default presets; VVC Default runs below 30 fps at 720p on one Jetson
