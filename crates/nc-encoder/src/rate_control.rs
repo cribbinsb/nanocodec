@@ -589,6 +589,9 @@ pub(crate) struct RateController {
     current: u32,
     /// Inter-frame *level* quantizer (before cadence offsets): what smoothing limits.
     last_inter_quantizer: Option<u32>,
+    /// QP offset from that level to the mean step of the mini-GOP it was
+    /// planned for (`level_mean_offset`): 0 for flat streams.
+    last_level_mean_offset: f64,
     /// The quality ceiling: the finest step any frame may use.
     quality_floor: QualityFloor,
     /// Whether the quality cap raised the current frame's quantizer.
@@ -660,6 +663,8 @@ pub(crate) struct RateController {
     /// `rate.key_cap_buffer` and `rate.key_cap_gop` (`key_bits_cap`).
     key_cap_buffer: f64,
     key_cap_gop: f64,
+    /// `rate.key_level_mean`: share of `level_mean_offset` a key takes.
+    key_level_mean: f64,
     /// `rate.first_key_lookahead`, and the buffer share it caps the first
     /// GOP's key at once the start-up lookahead saw camera motion (0 = no
     /// cap; [`RateController::observe_startup_motion`]).
@@ -776,6 +781,7 @@ impl RateController {
             pixels: pixels as f64,
             current: q,
             last_inter_quantizer: None,
+            last_level_mean_offset: 0.,
             quality_floor: QualityFloor::new(params, codec),
             quality_capped: false,
             cadence_depth: None,
@@ -804,6 +810,7 @@ impl RateController {
             first_key_replan_at: None,
             key_cap_buffer: f64::from(params.key_cap_buffer),
             key_cap_gop: f64::from(params.key_cap_gop),
+            key_level_mean: f64::from(params.key_level_mean),
             first_key_lookahead: first_key_lookahead(params, &calibration),
             first_key_cap_buffer: 0.,
             key_still_boost: f64::from(params.key_still_boost),
@@ -1329,8 +1336,10 @@ impl RateController {
     /// The step of a key frame: the finer of what its budget affords (the
     /// configured key boost, repaid on schedule) and what the quality
     /// around it requires, coarsened only where its bits would not fit
-    /// `key_allowance`. The quality requirement is the inter level's step,
-    /// the λ of the frames that will predict from the key, made finer
+    /// `key_allowance`. The quality requirement is the inter level's step
+    /// (moved `rate.key_level_mean` of the way to its mini-GOP's mean,
+    /// `level_mean_offset`), the λ of the
+    /// frames that will predict from the key, made finer
     /// where later frames reuse it by the reuse term (`reuse.rs`: per block
     /// where the codec codes block quantizers, else `reuse_offset` for the
     /// whole frame), so a key never re-codes persistent content coarser
@@ -1349,7 +1358,8 @@ impl RateController {
         let Some(level) = self.last_inter_quantizer else {
             return budget_step * finer;
         };
-        let level_step = self.steps[level as usize] * step_ratio(reuse_offset);
+        let level_step = self.steps[level as usize]
+            * step_ratio(self.key_level_mean * self.last_level_mean_offset + reuse_offset);
         let allowance_step = self.model[KEY_MODEL].map_or(0., |m| {
             (m * hint / self.key_allowance()).powf(1. / self.settings.config.rate_exponent)
                 / self.block_ratio
@@ -1540,6 +1550,26 @@ impl RateController {
         } else {
             self.cadence_offset(index, strength)
         }
+    }
+
+    /// QP offset from the inter level to the mean step of the mini-GOP
+    /// holding `layer`, the level a key is planned against (`key_step`). A
+    /// flat cadence's level is its middle frames' quantizer (base finer,
+    /// leaves coarser: 0 here), but the layer ladder anchors the level at
+    /// T0, its finest frame, so a key held to that level was planned like a
+    /// T0 frame instead of like its inter frames. AV1 Veryfast with fixed
+    /// L1T3 (`pool_crowd_mot_mot17_04`, 97 kbit/s, keys every 2 s): keys at
+    /// qindex 180 against 203 unlayered, 1.8x the bytes, 2.8 dB above the P
+    /// frames before them; planned against the mean (`rate.key_level_mean`
+    /// 1), qindex 216 and 0.64 dB. L1T3 at the CBR ladder (0.35 / 0.7) puts
+    /// the mean 6 QP above T0.
+    fn level_mean_offset(&self, layer: LayerPosition) -> f64 {
+        if layer.is_flat() {
+            return 0.;
+        }
+        let cycle = layer.cycle();
+        let sum: f64 = cycle.iter().map(|&p| self.ladder.offset(p)).sum();
+        sum / cycle.len() as f64
     }
 
     /// The QP offset inter frame `index` at `layer` gets from the inter
@@ -1861,6 +1891,7 @@ impl RateController {
             }
         } else {
             self.last_inter_quantizer = Some(level);
+            self.last_level_mean_offset = self.level_mean_offset(layer);
             self.last_inter_hint = Some(h);
         }
         self.current = q;
@@ -2877,6 +2908,33 @@ mod tests {
         };
         assert!(mean(0) < mean(1) && mean(1) < mean(2), "{last:?}");
         assert!(r.model[INTER_MODEL + CadenceRole::Middle.index()].is_some());
+    }
+
+    #[test]
+    fn a_layered_key_is_planned_against_its_mini_gops_mean_not_t0() {
+        let mut r = controller(3_000_000);
+        r.ladder = crate::LayerParams::default().rate_control_ladder(3);
+        let structure = LayerPosition {
+            layer: 0,
+            layers: 3,
+            position: 0,
+            period: 4,
+        };
+        // T0 0, T1 +6, T2 +9.09 QP (0.35 / 0.7 / 1): a mean of 6.05 over T0 T2 T1 T2.
+        let mean = r.level_mean_offset(structure);
+        assert!((mean - 6.05).abs() < 0.01, "{mean}");
+        assert_eq!(r.level_mean_offset(LayerPosition::FLAT), 0.);
+        r.last_inter_quantizer = Some(30);
+        let coarse_budget = r.steps[51];
+        let flat = r.key_step(coarse_budget, 0., 1.);
+        r.last_level_mean_offset = mean;
+        assert_eq!(r.key_step(coarse_budget, 0., 1.), flat);
+        r.key_level_mean = 1.;
+        let layered = r.key_step(coarse_budget, 0., 1.);
+        assert!(
+            (layered / flat - step_ratio(mean)).abs() < 1e-9,
+            "{flat} {layered}"
+        );
     }
 
     #[test]

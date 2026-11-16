@@ -284,25 +284,45 @@ class Case:
         return ("--scalability", mode, *preset_cli_args(self.codec, self.preset))
 
 
+def preset_setting(codec: Codec, preset: str, name: str) -> float | None:
+    """The value a preset file sets for parameter `name` (its last setting),
+    or None where it sets none (medium: the codec's built-in Default)."""
+    path = preset_path(PRESETS_DIR, codec, preset)
+    if preset == MEDIUM or not path.is_file():
+        return None
+    value = None
+    for line in path.read_text().splitlines():
+        setting = line.split("#")[0].replace(" ", "")
+        if setting.startswith(f"{name}="):
+            value = float(setting.split("=")[1])
+    return value
+
+
 def spatial_layers(codec: Codec, preset: str) -> int:
     """The spatial layer count a preset codes (presets/<codec>/l2-*.toml, l3-*.toml:
     2 or 3; 1 for every other preset). A spatial preset's streams are checked at
     every operating point (the svc- cases), not as single-layer streams."""
-    path = preset_path(PRESETS_DIR, codec, preset)
-    if preset == MEDIUM or not path.is_file():
-        return 1
-    for line in path.read_text().splitlines():
-        setting = line.split("#")[0].replace(" ", "")
-        if setting.startswith("spatial.layers="):
-            return int(float(setting.split("=")[1]))
-    return 1
+    return int(preset_setting(codec, preset, "spatial.layers") or 1)
+
+
+def fixed_temporal_layers(codec: Codec, preset: str) -> bool:
+    """Whether a preset codes a fixed temporal-layer structure (`layers.count` > 1
+    with `layers.adaptive` 0). The encoder refuses intra refresh with fixed
+    layers ("not yet with temporal layers", nc_encoder `set_intra_refresh`; an
+    adaptive structure is held flat instead), so such a preset has no refresh
+    case: the encoder's refusal is the specified behaviour, not a failure."""
+    count = preset_setting(codec, preset, "layers.count") or 1
+    adaptive = preset_setting(codec, preset, "layers.adaptive")
+    return count > 1 and adaptive is not None and adaptive < 0.5
 
 
 def cases(codecs: list[Codec]) -> list[Case]:
     kinds = ("main", "starved", "layers", "refresh", "large", "fixedqp")
     base = [Case(codec, preset, kind) for codec in codecs for preset in shipped_presets(codec)
             if spatial_layers(codec, preset) == 1
-            for kind in kinds if not (kind == "refresh" and codec in NO_INTRA_REFRESH)]
+            for kind in kinds
+            if not (kind == "refresh" and (codec in NO_INTRA_REFRESH
+                                           or fixed_temporal_layers(codec, preset)))]
     base += [Case(codec, MEDIUM, "timed") for codec in codecs]
     base += [Case(codec, MEDIUM, kind) for codec in codecs for kind in ("still", "stillqp")]
     base += [Case(codec, preset, "switch") for codec in codecs

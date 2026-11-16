@@ -788,6 +788,17 @@ param_group! {
         // rate.recode_overflow the static short-GOP keys are already smaller.
         key_cap_gop: 0.0, [0.0, 1.0],
             "rate control: most bits a key may take, as a share of its repayment phase's bits (the key period, at most the repay horizon; 0 = none): lower keeps short GOPs of static content on target, where the key level floor would otherwise spend the whole GOP on the key",
+        // The layer ladder anchors the inter level at T0, so a layered
+        // stream's key was planned against its finest frame. 1 plans it
+        // against the mini-GOP's mean step instead (`level_mean_offset`).
+        // AV1 Veryfast + fixed L1T3, final-check vs shipped Veryfast (2026-11-16,
+        // 27 clips, keys every 10 s): J +0.67% [+0.26, +1.11], periodic-key
+        // pulse -0.86 dB; `pool_crowd_mot_mot17_04` 97k pulse 2.83 -> 0.64 dB.
+        // As an engine default it cost Faster (adaptive layers) AV1 J +1.13%
+        // [+0.59, +1.72] (worst-1% VMAF +2.64%), H.264 +0.36% [+0.12, +0.64]:
+        // over 10 s GOPs their finer keys pay back, so 0 stays the default.
+        key_level_mean: 0.0, [0.0, 1.0],
+            "rate control: share of the layer ladder's mean offset a layered stream's key is planned against (0: T0's level, its finest frame; 1: the mini-GOP's mean step): higher codes layered keys coarser, closer to their P frames",
         key_repay_seconds: 5.0, [0.1, 60.0],
             "rate control: longest time over which a key's extra bits are repaid by the following P frames (the key period if shorter), and the debit term's horizon (`rate.debit`): lower recovers sooner after a key in long or single-key streams",
         // A still scene's key is referenced for its whole period, so it may
