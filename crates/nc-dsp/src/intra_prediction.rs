@@ -266,9 +266,12 @@ impl IntraEdges {
         if have_above {
             let row = view.row(y - 1);
             let limit = (x + reach(extension.above_right) - 1).min(view.width() - 1);
-            for (i, sample) in edges.above[..2 * size].iter_mut().enumerate() {
-                *sample = row[(x + i).min(limit)];
-            }
+            // The row up to `limit`, then its last sample repeated: a copy
+            // and a fill rather than a clamp per sample (the clamped loop
+            // was ~0.2% of AV1 Default's instructions, crowd 720p).
+            let (inside, beyond) = edges.above[..2 * size].split_at_mut(limit + 1 - x);
+            inside.copy_from_slice(&row[x..=limit]);
+            beyond.fill(row[limit]);
         }
         if have_left {
             let limit = (y + reach(extension.below_left) - 1).min(view.height() - 1);

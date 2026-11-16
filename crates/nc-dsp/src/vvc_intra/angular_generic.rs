@@ -1,15 +1,14 @@
-//! SIMD angular interpolation and PDPC on the generic i16 lanes.
-//! Reference preparation is shared with scalar; pixel arithmetic is independent.
-//! PDPC uses `VVenC`'s `IntraPredX86.h::pdpcBlend` rounding multiply-high
-//! formulation (BSD-3-Clause-Clear; see `THIRD_PARTY.md`).
-//!
-//! Every intermediate fits 16 bits for 8-bit samples: a cubic tap sum lies
-//! in -3060..=16575 (the largest positive coefficient sum is 65), the
-//! Gaussian and linear sums are at most 64 x 255 and 32 x 255, and a PDPC
-//! term is at most 32 x 255 in magnitude, so wrapping 16-bit products and
-//! sums are exact.
+//! SIMD angular prediction: each row's interpolation is one call of the
+//! shared directional runs (`crate::intra_runs`: `run2` for chroma, as
+//! HEVC, AV1 and AV2 use it; `run4` for luma's cubic and Gaussian filters),
+//! then PDPC on the generic i16 lanes over the columns it reaches.
+//! Reference preparation is shared with scalar. PDPC uses `VVenC`'s
+//! `IntraPredX86.h::pdpcBlend` rounding multiply-high formulation
+//! (BSD-3-Clause-Clear; see `THIRD_PARTY.md`); a PDPC term is at most
+//! 32 x 255 in magnitude, so its 16-bit arithmetic is exact.
 #![allow(unsafe_code, clippy::inline_always)]
 use super::angular::{Angular, MAIN_LEN, MAX_SIDE};
+use crate::intra_runs::Runs;
 use crate::simd::I16Lanes;
 
 /// PDPC reaches at most `3 << 2` columns (H.266 §8.4.5.2.15, nScale <= 2);
@@ -22,10 +21,11 @@ const PDPC_Q15_SHIFT: u32 = 15 - 6;
 /// compute columns as rows, and with `transposed_ok` they are stored so.
 ///
 /// # Safety
-/// V's ISA is enabled; side is divisible by its lane count and buffers validated.
+/// The ISA of `V` and `R` is enabled; side is divisible by `V`'s lane count
+/// and buffers validated.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-pub(super) unsafe fn predict<V: I16Lanes>(
+pub(super) unsafe fn predict<V: I16Lanes, R: Runs>(
     n: usize,
     direction: u8,
     luma: bool,
@@ -36,9 +36,10 @@ pub(super) unsafe fn predict<V: I16Lanes>(
     out: &mut [u8],
 ) -> bool {
     let angular = Angular::new(n, direction, luma, top, left, corner);
-    let mut main = [0i16; MAIN_LEN];
+    // References are 8-bit samples (`check_square`): narrowing is exact.
+    let mut main = [0u8; MAIN_LEN];
     for (narrow, &wide) in main.iter_mut().zip(angular.main()) {
-        *narrow = wide as i16;
+        *narrow = wide as u8;
     }
     // Only the first `pdpc_width` columns carry a non-zero PDPC weight, so
     // only the vectors covering them gather side samples and blend: the
@@ -60,9 +61,8 @@ pub(super) unsafe fn predict<V: I16Lanes>(
     let in_place = angular.vertical || transposed_ok;
     let mut predicted = [0u8; MAX_SIDE];
     for y in 0..n {
-        let row = &main[angular.row_start(y)..];
+        let start = angular.row_start(y);
         let phase = angular.phase(y);
-        let coeff = angular.coefficients(phase).map(|c| c as i16);
         let side_row = angular.side_row(y);
         let mut side = [0i16; PDPC_SPAN];
         for x in 0..pdpc_width {
@@ -73,35 +73,32 @@ pub(super) unsafe fn predict<V: I16Lanes>(
         } else {
             &mut predicted[..n]
         };
-        for x in (0..n).step_by(V::LANES) {
-            let value = if exact {
-                V::load(&row[x + 1..])
+        // SAFETY: the runs' ISA is enabled (caller contract); the windows
+        // lie inside `main` (the extended reference has the last taps).
+        unsafe {
+            if exact {
+                // A whole-sample angle copies `row[x + 1]`: the 2-tap run
+                // at weight 32 from `row[x]`.
+                R::run2(&main[start..=start + n], 32, line);
             } else if luma {
-                let sum = (0..4).fold(V::splat(0), |sum, tap| {
-                    sum.add(V::load(&row[x + tap..]).mul(V::splat(coeff[tap])))
-                });
-                sum.add(V::splat(32)).sra(6)
+                let taps = angular.coefficients(phase).map(|c| c as i8);
+                R::run4(&main[start..start + n + 3], taps, line);
             } else {
-                V::load(&row[x + 1..])
-                    .mul(V::splat(32 - phase as i16))
-                    .add(V::load(&row[x + 2..]).mul(V::splat(phase as i16)))
-                    .add(V::splat(16))
-                    .sra(5)
+                R::run2(&main[start + 1..=start + 1 + n], phase as usize, line);
             }
-            .clamp_u8();
-            let value = if x < pdpc_span {
-                // For d in -255..=255 and w in 0..=32, Q15 rounding is
-                // exactly (d*w + 32) >> 6, including negative half ties:
-                // (d*(w<<9) + 16384) >> 15. Neither operand can be MIN.
-                value.add(
+        }
+        for x in (0..pdpc_span).step_by(V::LANES) {
+            // For d in -255..=255 and w in 0..=32, Q15 rounding is
+            // exactly (d*w + 32) >> 6, including negative half ties:
+            // (d*(w<<9) + 16384) >> 15. Neither operand can be MIN.
+            let value = V::load_u8(&line[x..]);
+            value
+                .add(
                     V::load(&side[x..])
                         .sub(value)
                         .mul_q15_round(V::load(&weights[x..])),
                 )
-            } else {
-                value
-            };
-            value.store_u8_sat(&mut line[x..x + V::LANES]);
+                .store_u8_sat(&mut line[x..x + V::LANES]);
         }
         if !in_place {
             for (x, &value) in predicted[..n].iter().enumerate() {

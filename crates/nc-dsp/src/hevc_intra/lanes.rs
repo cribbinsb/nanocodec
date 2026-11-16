@@ -1,55 +1,9 @@
-//! The HEVC intra kernels written once over [`I16Lanes`]; each ISA module
+//! The HEVC planar kernel written once over [`I16Lanes`]; each ISA module
 //! instantiates them inside a `#[target_feature]` function. `V::LANES` must
 //! divide the block side.
 
-use super::{ANGLE_FRACTION_BITS, MAX_SIDE, PlanarEdges};
+use super::{MAX_SIDE, PlanarEdges};
 use crate::simd::I16Lanes;
-
-/// Angular lines (module docs of [`super`]): one 2-tap blend per vector of
-/// `V::LANES` samples (weights sum to 32, so every lane stays below 2^13).
-///
-/// # Safety
-///
-/// `V`'s ISA must be available; `refs` holds `3n + 1` samples, `out` `n * n`,
-/// `angle` is in −32..=32 and `V::LANES` divides `n`.
-#[allow(clippy::inline_always)] // must inline into `#[target_feature]` kernels
-#[inline(always)]
-pub(super) unsafe fn angular<V: I16Lanes>(refs: &[u8], n: usize, angle: i32, out: &mut [u8]) {
-    let one = 1 << ANGLE_FRACTION_BITS;
-    let round = V::splat(one as i16 / 2);
-    for (j, line) in out[..n * n].chunks_exact_mut(n).enumerate() {
-        let pos = (j as i32 + 1) * angle;
-        let (idx, fact) = (pos >> ANGLE_FRACTION_BITS, pos & (one - 1));
-        let start = (n as i32 + idx + 1) as usize;
-        if fact == 0 {
-            // A whole-sample line is a copy, done in vectors: a call to the
-            // generic memcpy per line was 0.6% of an HEVC Fast encode on
-            // the Jetson. Bytes are within 0..=255, so the saturating
-            // store is exact.
-            let source = &refs[start..start + n];
-            for k in (0..n).step_by(V::LANES) {
-                // SAFETY: k + LANES <= n, inside `source` and `line`.
-                unsafe {
-                    V::load_u8_at(source.as_ptr().add(k)).store_u8_sat_at(line.as_mut_ptr().add(k));
-                }
-            }
-            continue;
-        }
-        // A fractional position has idx < n, so ref[idx + n + 1] exists.
-        let pair = &refs[start..=start + n];
-        let (wa, wb) = ((one - fact) as u8, fact as u8);
-        for k in (0..n).step_by(V::LANES) {
-            // SAFETY: k + LANES <= n, so both loads lie inside `pair` (n + 1
-            // samples) and the store inside `line`.
-            unsafe {
-                V::mul_add_u8_pair_at(pair.as_ptr().add(k), pair.as_ptr().add(k + 1), wa, wb)
-                    .add(round)
-                    .sra(ANGLE_FRACTION_BITS)
-                    .store_u8_sat_at(line.as_mut_ptr().add(k));
-            }
-        }
-    }
-}
 
 /// Planar (eq. 8-48) on 16-bit lanes: every term is at most `32 · 255` and
 /// their sum below 2^15.

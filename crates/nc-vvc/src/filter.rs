@@ -201,6 +201,11 @@ fn edge(
     let Some(edge) = grid.deblocking_edge(x, y, horizontal) else {
         return;
     };
+    // Most edges between skipped inter blocks filter nothing: skip their QP
+    // and per-plane setup.
+    if edge.luma == [0; 2] && edge.chroma == [0; 2] {
+        return;
+    }
     let qp = qp.edge((x, y), horizontal);
     let boundary = horizontal && y.is_multiple_of(grid.ctu_size());
     luma_edge(dsp, picture, qp[0], (x, y), horizontal, &edge, boundary);

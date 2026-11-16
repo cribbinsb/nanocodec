@@ -44,6 +44,7 @@ mod h264_intra;
 mod hevc_intra;
 mod hevc_weight;
 mod high_depth;
+mod intra_runs;
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",

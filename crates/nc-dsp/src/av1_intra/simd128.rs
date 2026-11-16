@@ -1,20 +1,19 @@
 //! SIMD128 AV1 intra kernels: filter intra is the generic code on 8 lanes;
-//! directional prediction runs its interpolation as 16-bit widening
-//! multiply-adds (16 or 8 outputs per step; every `a · (32 − w) + b · w`
-//! fits u16) and transposes its column tiles 8x8 in registers. Smooth
+//! directional prediction runs its interpolation with the shared
+//! directional run (`crate::intra_runs`, widening multiply-adds) and
+//! transposes its column tiles 8x8 in registers. Smooth
 //! blends in unsigned 16-bit lanes (`smooth`); Paeth is the generic code.
 
 #![allow(clippy::inline_always)]
 
 use core::arch::wasm32::{
-    i16x8_mul, u8x16_narrow_i16x8, u8x16_splat, u16x8_add, u16x8_avgr, u16x8_extend_low_u8x16,
-    u16x8_extmul_high_u8x16, u16x8_extmul_low_u8x16, u16x8_shr, u16x8_splat, u16x8_sub, v128,
-    v128_and, v128_load, v128_load64_zero, v128_store, v128_store64_lane, v128_xor,
+    i16x8_mul, u8x16_narrow_i16x8, u16x8_add, u16x8_avgr, u16x8_extend_low_u8x16, u16x8_shr,
+    u16x8_splat, u16x8_sub, v128, v128_and, v128_load64_zero, v128_store64_lane, v128_xor,
 };
 
 use nc_common::PlaneViewMut;
 
-use crate::intra_prediction::directional::{self, DirectionalKernels};
+use crate::intra_prediction::directional::DirectionalKernels;
 use crate::intra_prediction::{IntraEdges, IntraMode, SMOOTH_SHIFT, smooth_weights};
 
 super::generic::av1_intra_kernels!(;
@@ -22,74 +21,17 @@ super::generic::av1_intra_kernels!(;
     crate::simd::simd128::I16x8
 );
 
-/// Outputs per full and per half step of a run.
-const STEP: usize = 16;
+/// Outputs per half step of the smooth kernels.
 const HALF_STEP: usize = 8;
-/// The interpolation weights sum to `1 << WEIGHT_BITS`.
-const WEIGHT_BITS: u32 = 5;
-const WEIGHT_SUM: u8 = 1 << WEIGHT_BITS;
 
 /// SIMD128 directional kernels.
 struct Simd128Directional;
 
-/// `Round2(a · near + b · far, 5)` for the low and high eight bytes.
-#[inline(always)]
-fn interpolate(a: v128, b: v128, near: v128, far: v128) -> v128 {
-    let round = u16x8_splat(1 << (WEIGHT_BITS - 1));
-    let sum = |low: bool| {
-        let (x, y) = if low {
-            (
-                u16x8_extmul_low_u8x16(a, near),
-                u16x8_extmul_low_u8x16(b, far),
-            )
-        } else {
-            (
-                u16x8_extmul_high_u8x16(a, near),
-                u16x8_extmul_high_u8x16(b, far),
-            )
-        };
-        u16x8_shr(u16x8_add(u16x8_add(x, y), round), WEIGHT_BITS)
-    };
-    u8x16_narrow_i16x8(sum(true), sum(false))
-}
-
 impl DirectionalKernels for Simd128Directional {
     #[inline(always)]
     fn run(window: &[u8], weight: usize, out: &mut [u8]) {
-        assert_eq!(window.len(), out.len() + 1);
-        let len = out.len();
-        if len < HALF_STEP {
-            directional::interpolate_run(window, weight, out);
-            return;
-        }
-        let far = weight as u8;
-        let (near, far) = (u8x16_splat(WEIGHT_SUM - far), u8x16_splat(far));
-        // SAFETY: SIMD128 is enabled for the whole build; every load and
-        // store covers checked subslices.
-        unsafe {
-            let mut done = 0;
-            while done + STEP <= len {
-                let a = v128_load(window[done..][..STEP].as_ptr().cast());
-                let b = v128_load(window[done + 1..][..STEP].as_ptr().cast());
-                v128_store(
-                    out[done..][..STEP].as_mut_ptr().cast(),
-                    interpolate(a, b, near, far),
-                );
-                done += STEP;
-            }
-            // The rest in half steps, the last one ending at `len` (it may
-            // recompute outputs already stored, with the same values).
-            while done < len {
-                let at = done.min(len - HALF_STEP);
-                let a = v128_load64_zero(window[at..][..HALF_STEP].as_ptr().cast());
-                let b = v128_load64_zero(window[at + 1..][..HALF_STEP].as_ptr().cast());
-                v128_store64_lane::<0>(
-                    interpolate(a, b, near, far),
-                    out[at..][..HALF_STEP].as_mut_ptr().cast(),
-                );
-                done = at + HALF_STEP;
-            }
-        }
+        // SAFETY: SIMD128 is enabled for the whole build.
+        unsafe { crate::intra_runs::simd128::run2(window, weight, out) }
     }
 
     #[inline(always)]

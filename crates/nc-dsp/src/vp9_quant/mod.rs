@@ -1,65 +1,52 @@
 //! VP9 deadzone quantization: `level = min((|c| << shift + offset) / step,
-//! cap)` with the sign of `c`, DC (index 0) and AC at their own steps. The
-//! division is an exact reciprocal multiplication, as in `nc-vp9`'s
-//! quantizer, whose numbers this reproduces bit for bit.
+//! cap)` with the sign of `c`, DC (index 0) and AC at their own steps,
+//! `offset = floor(step / rounding_divisor)`, and the encoder's all-zero test
+//! (the largest coefficient magnitude).
 //!
-//! The existing quantize kernels cannot serve: H.264/HEVC add their offset
-//! after a 32-bit multiply and shift, and AV1's adds `step · rounding / 128`,
-//! neither of which equals VP9's `floor(step / divisor)` added before the
-//! division for every step; VP9 also caps DC and AC levels separately.
-//!
-//! # Exactness and ranges
+//! The quantization runs on the shared reciprocal dead-zone quantiser of the
+//! AV1 family (`txfm` module docs, `docs/analysis/encode-kernel-sharing.md`
+//! section 3): [`terms`] states VP9's quantiser in its terms. Only the
+//! parameters are VP9's: AV1 adds `step * rounding / 128` where VP9 adds
+//! `floor(step / divisor)` for divisors (3, 6) that do not divide 128, and
+//! VP9 caps DC and AC levels separately. Scaling numerator and divisor by
+//! 128 gives the shared kernel's form with every quotient unchanged
+//! (`floor(128 n / (128 s)) = floor(n / s)`) and divisors of at least 512,
+//! which its exact reciprocal needs.
 //!
 //! Coefficients are 16-bit (VP9 coefficients of 8-bit video, as the shared
 //! forward stores them; 32x32 ones are at half scale and shifted by one), so
-//! `|c| <= 2^15` and numerators stay below `2^18`. Levels stay 32-bit. With
-//! `reciprocal = ceil(2^32 / step)` and steps in `MIN_STEP..=MAX_STEP`, the
-//! reciprocal's error is under `step / 2^32` per unit, so
-//! `numerator · reciprocal >> 32` is exactly `floor(numerator / step)`
-//! (the error stays below `2^18 · 2^11 / 2^32 < 1 / step`). Products fit
-//! 64 bits; AVX2 and SIMD128 compute them with a widening 32x32 multiply.
-//! NEON instead uses `high_multiplier = ceil(2^31 / step)` with a doubling
-//! high multiply (`(2 · n · m) >> 32 = (n · m) >> 31`), exact by the same
-//! argument while `n · step < 2^31` (here below `2^29`); both reciprocals
-//! give `floor(n / step)`, so the results are identical.
-
-#![allow(
-    clippy::inline_always,
-    reason = "the shared frame must inline into each ISA entry point"
-)]
+//! scaled numerators stay below `2^25`, inside the shared kernel's `2^31`
+//! contract. Levels are 32-bit.
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
-#[cfg(target_arch = "x86_64")]
-mod avx512;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 mod simd128;
 
 use crate::Isa;
+use crate::txfm::{QuantTerms, StepTerms};
 
-/// Smallest supported step (VP9's smallest quantizer step is 4; the
-/// reciprocal of 1 would not fit 32 bits).
+/// Smallest supported step (VP9's smallest quantizer step is 4).
 const MIN_STEP: i32 = 2;
 /// Largest supported step (VP9's largest is 1828).
 const MAX_STEP: i32 = 2048;
 /// Largest dequantized magnitude: the reference decoder stores 16 bits.
 const MAX_DEQUANTIZED: i32 = i16::MAX as i32;
-/// Fixed-point bits of the reciprocal.
-const RECIPROCAL_BITS: u32 = 32;
-/// Fixed-point bits of the high multiplier (a doubling high multiply's).
-const HIGH_MULTIPLIER_BITS: u32 = 31;
+/// Bits by which [`terms`] scales numerators and divisors (the shared
+/// quantiser's reciprocal needs divisors of at least 512, and `MIN_STEP`
+/// times this is 256 short of that only for steps below 4, which VP9 never
+/// uses; smaller steps fall back to the exact reference division).
+const SCALE_BITS: u32 = 7;
 
 /// One step's quantizer parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vp9QuantStep {
-    pub(crate) reciprocal: u32,
-    #[cfg_attr(not(any(test, target_arch = "aarch64")), allow(dead_code))]
-    pub(crate) high_multiplier: i32,
-    pub(crate) offset: u32,
-    pub(crate) shift: u32,
-    pub(crate) cap: u32,
+    step: u32,
+    offset: u32,
+    shift: u32,
+    cap: u32,
 }
 
 impl Vp9QuantStep {
@@ -78,11 +65,8 @@ impl Vp9QuantStep {
             "VP9 step {step} out of range"
         );
         assert!(rounding_divisor >= 1 && shift <= 1);
-        let reciprocal = (1u64 << RECIPROCAL_BITS).div_ceil(step as u64);
         Self {
-            reciprocal: u32::try_from(reciprocal).expect("step >= 2"),
-            high_multiplier: i32::try_from((1u64 << HIGH_MULTIPLIER_BITS).div_ceil(step as u64))
-                .expect("step >= 2"),
+            step: step as u32,
             offset: (step / rounding_divisor) as u32,
             shift,
             cap: Self::max_level(step, shift),
@@ -98,34 +82,32 @@ impl Vp9QuantStep {
         (((MAX_DEQUANTIZED + 1) << shift) / step - 1) as u32
     }
 
-    /// The level of coefficient `c` (scalar reference).
-    #[inline]
-    pub(crate) fn level(&self, c: i32) -> i32 {
-        let numerator = u64::from((c.unsigned_abs() << self.shift) + self.offset);
-        let magnitude = ((numerator * u64::from(self.reciprocal)) >> RECIPROCAL_BITS) as u32;
-        let capped = magnitude.min(self.cap) as i32;
-        if c < 0 { -capped } else { capped }
+    /// This step in the shared quantiser's terms, scaled by `SCALE_BITS`.
+    fn scaled(&self) -> StepTerms {
+        StepTerms {
+            offset: self.offset << SCALE_BITS,
+            divisor: self.step << SCALE_BITS,
+            cap: self.cap as i32,
+        }
     }
 }
 
-/// Quantize `coefficients` into `levels` (same length): index 0 with `dc`,
-/// the rest with `ac`. Returns whether any level is nonzero.
-pub(crate) type QuantizeFn = unsafe fn(&[i16], &Vp9QuantStep, &Vp9QuantStep, &mut [i32]) -> bool;
-
-/// The scalar reference.
-pub(crate) unsafe fn quantize(
-    coefficients: &[i16],
-    dc: &Vp9QuantStep,
-    ac: &Vp9QuantStep,
-    levels: &mut [i32],
-) -> bool {
-    let mut nonzero = false;
-    for (i, (&c, level)) in coefficients.iter().zip(levels.iter_mut()).enumerate() {
-        let c = i32::from(c);
-        *level = if i == 0 { dc.level(c) } else { ac.level(c) };
-        nonzero |= *level != 0;
+/// VP9's quantizer of a block (`dc` for index 0, `ac` for the rest) in the
+/// shared quantiser's terms (module docs).
+///
+/// # Panics
+///
+/// If the two steps' coefficient shifts differ (one transform size has one).
+pub(crate) fn terms(dc: &Vp9QuantStep, ac: &Vp9QuantStep) -> QuantTerms {
+    assert_eq!(
+        dc.shift, ac.shift,
+        "VP9 DC and AC coefficient shifts differ"
+    );
+    QuantTerms {
+        input_shift: ac.shift + SCALE_BITS,
+        dc: dc.scaled(),
+        ac: ac.scaled(),
     }
-    nonzero
 }
 
 /// The largest coefficient magnitude `max |c|` (0 for none): the encoder's
@@ -154,80 +136,33 @@ pub(crate) fn magnitude_kernel(isa: Isa) -> MagnitudeFn {
     }
 }
 
-/// The kernel of `isa`.
-pub(crate) fn kernel(isa: Isa) -> QuantizeFn {
-    match isa {
-        #[cfg(target_arch = "x86_64")]
-        Isa::Avx2 => avx2::quantize,
-        #[cfg(target_arch = "x86_64")]
-        Isa::Avx512 => avx512::quantize,
-        #[cfg(target_arch = "aarch64")]
-        Isa::Neon => neon::quantize,
-        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-        Isa::Simd128 => simd128::quantize,
-        _ => quantize,
-    }
-}
-
-/// Vector kernels' shared frame: whole vectors of `LANES` with `ac`, then
-/// the scalar reference on the tail and the DC fix-up.
-#[cfg(any(
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    all(target_arch = "wasm32", target_feature = "simd128")
-))]
-#[inline(always)]
-fn split<const LANES: usize>(
-    coefficients: &[i16],
-    dc: &Vp9QuantStep,
-    ac: &Vp9QuantStep,
-    levels: &mut [i32],
-    vectors: impl FnOnce(&[[i16; LANES]], &mut [[i32; LANES]]) -> bool,
-) -> bool {
-    let n = coefficients.len().min(levels.len());
-    let (coefficients, levels) = (&coefficients[..n], &mut levels[..n]);
-    let (whole, tail) = coefficients.as_chunks::<LANES>();
-    let (whole_out, tail_out) = levels.as_chunks_mut::<LANES>();
-    let mut nonzero = vectors(whole, whole_out);
-    for (&c, level) in tail.iter().zip(tail_out) {
-        *level = ac.level(i32::from(c));
-        nonzero |= *level != 0;
-    }
-    if let Some(&c) = coefficients.first() {
-        let at_ac_step = levels[0];
-        levels[0] = dc.level(i32::from(c));
-        // The vector pass counted index 0 at the AC step. Only when that was
-        // its only nonzero contribution and the DC level is zero (rare: the
-        // DC step is usually the smaller) does the flag need a recount.
-        nonzero = if at_ac_step != 0 && levels[0] == 0 {
-            levels.iter().any(|&l| l != 0)
-        } else {
-            nonzero || levels[0] != 0
-        };
-    }
-    nonzero
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Largest numerator under the coefficient contract (`|c| < 2^16`,
-    /// shifted by one, plus an offset below `MAX_STEP`).
-    const MAX_NUMERATOR: u32 = (1 << 17) + MAX_STEP as u32;
+    /// The direct VP9 definition: `min((|c| << shift) + floor(step /
+    /// divisor)) / step, cap)`, signed.
+    fn vp9_level(c: i32, step: i32, divisor: i32, shift: u32) -> i32 {
+        let magnitude = ((c.unsigned_abs() << shift) + (step / divisor) as u32) / step as u32;
+        let level = magnitude.min(Vp9QuantStep::max_level(step, shift)) as i32;
+        if c < 0 { -level } else { level }
+    }
 
     #[test]
-    fn reciprocal_division_is_exact() {
-        // Every numerator for the extreme and some awkward steps.
-        for step in [MIN_STEP, 3, 4, 7, 1000, 1827, 1828, MAX_STEP - 1, MAX_STEP] {
-            let q = Vp9QuantStep::new(step, 1, 0);
-            for numerator in 0..=MAX_NUMERATOR {
-                let want = u64::from(numerator / step as u32);
-                let quotient = (u64::from(numerator) * u64::from(q.reciprocal)) >> RECIPROCAL_BITS;
-                assert_eq!(quotient, want, "step {step} n {numerator}");
-                let high =
-                    (u64::from(numerator) * q.high_multiplier as u64) >> HIGH_MULTIPLIER_BITS;
-                assert_eq!(high, want, "high multiplier: step {step} n {numerator}");
+    fn scaled_terms_give_vp9_levels() {
+        for step in [MIN_STEP, 4, 7, 64, 1000, 1827, 1828, MAX_STEP] {
+            for divisor in [2, 3, 6, 9] {
+                for shift in [0, 1] {
+                    let q = Vp9QuantStep::new(step, divisor, shift);
+                    let terms = terms(&q, &q);
+                    for c in (i32::from(i16::MIN)..=i32::from(i16::MAX)).step_by(7) {
+                        assert_eq!(
+                            terms.level(c, 1),
+                            vp9_level(c, step, divisor, shift),
+                            "step {step} divisor {divisor} shift {shift} c {c}"
+                        );
+                    }
+                }
             }
         }
     }

@@ -11,7 +11,8 @@ MARKER=/home/ubuntu/ncbox/provisioned-@PROVISION_VERSION@
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get -qq update
 sudo apt-get -qq install -y --no-install-recommends \
-  build-essential pkg-config clang lld cmake ninja-build nasm meson \
+  build-essential pkg-config clang lld cmake ninja-build nasm yasm meson \
+  autoconf automake libtool xxd \
   valgrind python3 python3-venv python3-pip python3-xxhash python3-numpy \
   rsync git zstd curl unzip ffmpeg nodejs npm > /dev/null
 

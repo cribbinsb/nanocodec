@@ -20,7 +20,7 @@ use core::arch::wasm32::{
 
 use super::scalar::{fix_dc, quantize_tail};
 use super::{
-    Av1Quantizer, QuantStorage, Reciprocal, TxfmFns, generic, quant_terms, simd128_inverse,
+    Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, generic, simd128_inverse,
 };
 use crate::simd::simd128::I32x4;
 
@@ -43,8 +43,9 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         ],
         coefficient_gain,
         quantize,
-        quantize_from: quantize_from::<i16>,
-        quantize_from_wide: quantize_from::<i32>,
+        quantize_from: quantize_from::<i16, i16>,
+        quantize_from_wide: quantize_from::<i32, i32>,
+        quantize_from_widening: quantize_from::<i16, i32>,
         dequantize,
         forward_dct_raster: [
             forward_4_raster,
@@ -271,14 +272,13 @@ fn count_nonzero(levels: v128) -> u32 {
 ///
 /// `src` and `dst` hold `len` values; they are either disjoint or equal
 /// (in place): each vector is loaded before its levels are stored.
-unsafe fn quantize_levels<T: Lanes>(
-    src: *const T,
-    dst: *mut T,
+unsafe fn quantize_levels<S: Lanes, D: Lanes>(
+    src: *const S,
+    dst: *mut D,
     len: usize,
-    q: &Av1Quantizer,
+    q: &QuantTerms,
 ) -> u32 {
-    let (offset, divisor) = quant_terms(q, q.ac_step);
-    let Some(reciprocal) = Reciprocal::new(divisor) else {
+    let Some(reciprocal) = Reciprocal::new(q.ac.divisor) else {
         // SAFETY: forwarded contract.
         return unsafe { quantize_tail(src, dst, 0, len, q) };
     };
@@ -289,27 +289,27 @@ unsafe fn quantize_levels<T: Lanes>(
     let dc = unsafe { (*src).widen() };
     let mut nonzero = 0;
     let ac = AcQuantizer {
-        input_shift: 7 + q.log_scale,
-        offset: u32x4_splat(offset),
+        input_shift: q.input_shift,
+        offset: u32x4_splat(q.ac.offset),
         multiplier: u32x4_splat(reciprocal.multiplier),
         shift: reciprocal.shift,
-        max_level: u32x4_splat(q.max_level as u32),
+        max_level: u32x4_splat(q.ac.cap as u32),
     };
     let octets_end = len / 8 * 8;
     for i in (0..octets_end).step_by(8) {
         // SAFETY: `i + 8 <= len`; loaded before the store below.
-        let (c0, c1) = unsafe { T::load8(src.add(i)) };
+        let (c0, c1) = unsafe { S::load8(src.add(i)) };
         let levels = (ac.level(c0), ac.level(c1));
         // SAFETY: as above.
-        unsafe { T::store8(dst.add(i), levels) };
+        unsafe { D::store8(dst.add(i), levels) };
         nonzero += count_nonzero(levels.0) + count_nonzero(levels.1);
     }
     let mut done = octets_end;
     if done + 4 <= len {
         // SAFETY: `done + 4 <= len`; loaded before the store below.
-        let level = ac.level(unsafe { T::load4(src.add(done)) });
+        let level = ac.level(unsafe { S::load4(src.add(done)) });
         // SAFETY: as above.
-        unsafe { T::store4(dst.add(done), level) };
+        unsafe { D::store4(dst.add(done), level) };
         nonzero += count_nonzero(level);
         done += 4;
     }
@@ -325,7 +325,7 @@ unsafe fn quantize_levels<T: Lanes>(
 }
 
 /// [`quantize_levels`] in place.
-unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
+unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     let (len, coeffs) = (coeffs.len(), coeffs.as_mut_ptr());
     // SAFETY: source and destination are the same slice; every value is
     // read before its level is written (`quantize_levels`).
@@ -333,7 +333,7 @@ unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
 }
 
 /// [`quantize_levels`] from `coeffs` into `out`, which keeps `coeffs`.
-unsafe fn quantize_from<T: Lanes>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32 {
+unsafe fn quantize_from<S: Lanes, D: Lanes>(coeffs: &[S], q: &QuantTerms, out: &mut [D]) -> u32 {
     let out = &mut out[..coeffs.len()];
     // SAFETY: both slices hold `coeffs.len()` values.
     unsafe { quantize_levels(coeffs.as_ptr(), out.as_mut_ptr(), coeffs.len(), q) }

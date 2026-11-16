@@ -70,10 +70,11 @@ pub(super) unsafe fn predict<V: I32Lanes>(
 }
 
 /// The ISA's `predict`: planar, DC and the axes on i32 lanes (`$small` for
-/// 4x4, `$wide` otherwise); other angular directions on i16 lanes as wide
-/// as the block side allows (`$a4`, `$a8`, `$a16`).
+/// 4x4, `$wide` otherwise); other angular directions through the ISA's
+/// shared runs (`$runs`), with PDPC on i16 lanes as wide as the block side
+/// allows (`$a4`, `$a8`, `$a16`).
 macro_rules! kernels {
-    ($(#[$attr:meta])*; $small:ty, $wide:ty; $a4:ty, $a8:ty, $a16:ty) => {
+    ($(#[$attr:meta])*; $runs:ty; $small:ty, $wide:ty; $a4:ty, $a8:ty, $a16:ty) => {
         $(#[$attr])*
         pub(super) unsafe fn predict(n: usize, mode: super::VvcIntraMode, top: &[i32], left: &[i32], corner: i32, transposed_ok: bool, out: &mut [u8]) -> bool {
             use super::VvcIntraMode::Angular;
@@ -82,9 +83,9 @@ macro_rules! kernels {
             unsafe {
                 match mode {
                     Angular { direction, luma } if direction != 18 && direction != 50 => match n {
-                        4 => super::angular_generic::predict::<$a4>(n, direction, luma, top, left, corner, transposed_ok, out),
-                        8 => super::angular_generic::predict::<$a8>(n, direction, luma, top, left, corner, transposed_ok, out),
-                        _ => super::angular_generic::predict::<$a16>(n, direction, luma, top, left, corner, transposed_ok, out),
+                        4 => super::angular_generic::predict::<$a4, $runs>(n, direction, luma, top, left, corner, transposed_ok, out),
+                        8 => super::angular_generic::predict::<$a8, $runs>(n, direction, luma, top, left, corner, transposed_ok, out),
+                        _ => super::angular_generic::predict::<$a16, $runs>(n, direction, luma, top, left, corner, transposed_ok, out),
                     },
                     _ if n == 4 => { super::generic::predict::<$small>(n, mode, top, left, corner, out); false }
                     _ => { super::generic::predict::<$wide>(n, mode, top, left, corner, out); false }

@@ -488,7 +488,7 @@ impl Av2IntraKernels for ScalarKernels {
     }
 
     fn run2(&self, window: &[u8], shift: usize, out: &mut [u8]) {
-        run2(window, shift, out);
+        super::directional::interpolate_run(window, shift, out);
     }
 
     fn smooth(&self, edges: &SmoothEdges<'_>, dst: &mut [u8]) {
@@ -506,15 +506,6 @@ pub(crate) fn run4(window: &[u8], shift: usize, out: &mut [u8]) {
             + taps[2] * i32::from(samples[2])
             + taps[3] * i32::from(samples[3]);
         *pixel = round_shift(value, FOUR_TAP_BITS).clamp(0, i32::from(u8::MAX)) as u8;
-    }
-}
-
-/// Scalar 2-tap run (see [`Av2IntraKernels::run2`]).
-pub(crate) fn run2(window: &[u8], shift: usize, out: &mut [u8]) {
-    let shift = shift as i32;
-    for (pixel, pair) in out.iter_mut().zip(window.windows(2)) {
-        let value = i32::from(pair[0]) * (32 - shift) + i32::from(pair[1]) * shift;
-        *pixel = round_shift(value, TWO_TAP_BITS) as u8;
     }
 }
 

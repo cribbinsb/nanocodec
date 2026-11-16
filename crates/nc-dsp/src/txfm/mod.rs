@@ -12,14 +12,24 @@
 //!   16-bit-clamped input, `round_shift(.., 4)`,
 //!   added to the prediction with 8-bit clipping. Every butterfly stage is
 //!   clamped to 16 bits (the 8-bit stage range).
-//! - **Quantise** (encoder): `level = (|c| * 2^log_scale * 128 +
-//!   step * rounding_q7) / (step * 128)`, capped at `max_level`, signed like
-//!   `c`. With `log_scale = 0` this is `nc-av1`'s quantiser. SIMD versions
-//!   divide exactly by a multiply and a shift (`Reciprocal`), which needs
-//!   `|c| < 2^22` (transform outputs are far smaller). AV1 coefficients and
-//!   levels are 16-bit ([`QuantStorage`] `i16`, `max_level` capped at
-//!   `i16::MAX`); AV2, which reuses the kernel with its own shift, keeps 32
-//!   bits (its 64x64 coefficients and 20-bit levels exceed 16 bits).
+//! - **Quantise** (encoder): the shared reciprocal dead-zone quantiser of
+//!   the AV1 family (AV1, AV2, VP9; `docs/analysis/encode-kernel-sharing.md`
+//!   section 3). Each step has [`QuantTerms`]: `level = min(((|c| <<
+//!   input_shift) + offset) / divisor, cap)`, signed like `c`, coefficient 0
+//!   at the DC terms. AV1's quantiser (`level = (|c| * 2^log_scale * 128 +
+//!   step * rounding_q7) / (step * 128)`, capped at `max_level`) is
+//!   `input_shift = 7 + log_scale`, `offset = step * rounding_q7`,
+//!   `divisor = step * 128`; VP9's (`(|c| << shift) + floor(step /
+//!   rounding_divisor)) / step`, DC and AC capped apart) is the same with
+//!   numerator and divisor scaled by 128 (`crate::Vp9QuantStep`), which
+//!   leaves every quotient unchanged. SIMD versions divide exactly by a
+//!   multiply and a shift (`Reciprocal`), which needs numerators below
+//!   `2^31` (`|c| < 2^22` for AV1/AV2; VP9's 16-bit coefficients give at
+//!   most `2^24`). AV1 coefficients and levels are 16-bit ([`QuantStorage`]
+//!   `i16`, `max_level` capped at `i16::MAX`); AV2, which reuses the kernel
+//!   with its own shift, keeps 32 bits (its 64x64 coefficients and 20-bit
+//!   levels exceed 16 bits); VP9 reads 16-bit coefficients into 32-bit
+//!   levels.
 //! - **Dequantise** (normative, AV1 §7.12.3): the magnitude
 //!   `((|level| * step) & 0xFFFFFF) >> log_scale`, signed, clamped to 16
 //!   bits and stored in 16 bits. `log_scale` is 0 up to 16x16 and 1 for
@@ -211,10 +221,11 @@ pub(crate) type SparseInverseDctAddFn = unsafe fn(&[i16], &mut [u8], usize, usiz
 /// dequantized values.
 pub(crate) type CoefficientGainFn = unsafe fn(&[i16], &[i16]) -> i64;
 /// Quantise in place; returns the number of non-zero levels.
-pub(crate) type QuantizeFn = unsafe fn(coeffs: &mut [i16], q: &Av1Quantizer) -> u32;
+pub(crate) type QuantizeFn = unsafe fn(coeffs: &mut [i16], q: &QuantTerms) -> u32;
 /// Quantise `coeffs` into `out` (at least as long), keeping `coeffs`;
 /// returns the number of non-zero levels.
-pub(crate) type QuantizeFromFn<T> = unsafe fn(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32;
+pub(crate) type QuantizeFromFn<S, D> =
+    unsafe fn(coeffs: &[S], q: &QuantTerms, out: &mut [D]) -> u32;
 /// Dequantise `levels` into `out` (same length).
 pub(crate) type DequantizeFn = unsafe fn(levels: &[i16], q: &Av1Quantizer, out: &mut [i16]);
 
@@ -231,9 +242,12 @@ pub(crate) struct TxfmFns {
     pub inverse_dct_add_sparse: [SparseInverseDctAddFn; 3],
     pub coefficient_gain: CoefficientGainFn,
     pub quantize: QuantizeFn,
-    pub quantize_from: QuantizeFromFn<i16>,
+    pub quantize_from: QuantizeFromFn<i16, i16>,
     /// [`Self::quantize_from`] on 32-bit coefficients and levels (AV2).
-    pub quantize_from_wide: QuantizeFromFn<i32>,
+    pub quantize_from_wide: QuantizeFromFn<i32, i32>,
+    /// [`Self::quantize_from`] of 16-bit coefficients into 32-bit levels
+    /// (VP9).
+    pub quantize_from_widening: QuantizeFromFn<i16, i32>,
     pub dequantize: DequantizeFn,
     /// Forward DCTs storing raster coefficients (VP9's layout), indexed by
     /// [`DctSize`].
@@ -293,17 +307,21 @@ pub(crate) fn cospi(cos_bit: u32) -> &'static [i32; 64] {
     }
 }
 
-/// Exact division by a constant `divisor` (not a power of two, at least 512)
-/// as a multiply and a shift, for numerators below `2^31`
+/// Exact division by a constant `divisor` (at least 512) as a multiply and
+/// a shift, for numerators below `2^31`
 /// (Granlund–Montgomery): with `shift = 31 + ceil(log2 divisor)` and
 /// `multiplier = floor(2^shift / divisor) + 1`, the error
 /// `multiplier * divisor - 2^shift` lies in `(0, divisor]`, so
 /// `n * error < 2^31 * divisor <= 2^shift` and
 /// `(n * multiplier) >> shift == n / divisor` for every `n < 2^31`.
-/// For divisors of at least 512 that are not powers of two the multiplier
-/// fits 32 bits, so SIMD can use 32x32->64-bit multiplies. Quantiser
+/// For divisors of at least 512 the multiplier is at most `2^31 + 1` and
+/// fits 32 bits (a power of two `2^m` gives exactly `2^31 + 1`, error
+/// `2^m`), so SIMD can use 32x32->64-bit multiplies. Quantiser
 /// numerators stay below `2^31` under the coefficient contract `|c| < 2^22`
 /// (`2^22 * 128 * 2 + 1828 * 127 < 2^31`).
+/// Smallest divisor [`Reciprocal`] serves: its multiplier fits 32 bits.
+const MIN_RECIPROCAL_DIVISOR: u32 = 512;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Reciprocal {
     pub multiplier: u32,
@@ -311,10 +329,10 @@ pub(crate) struct Reciprocal {
 }
 
 impl Reciprocal {
-    /// The reciprocal of `divisor`, or `None` for powers of two and divisors
-    /// below 512 (callers use the reference division there).
+    /// The reciprocal of `divisor`, or `None` for divisors below 512
+    /// (callers use the reference division there).
     pub(crate) fn new(divisor: u32) -> Option<Self> {
-        if divisor < 512 || divisor.is_power_of_two() {
+        if divisor < MIN_RECIPROCAL_DIVISOR {
             return None;
         }
         let shift = 31 + (32 - (divisor - 1).leading_zeros());
@@ -358,22 +376,60 @@ impl QuantStorage for i32 {
     }
 }
 
-/// The quantiser numerator and divisor of a coefficient magnitude at step
-/// `step`: `level = numerator / divisor`.
-#[inline]
-pub(crate) fn quant_terms(q: &Av1Quantizer, step: i32) -> (u32, u32) {
-    let offset = (step * q.rounding_q7) as u32;
-    (offset, (step * 128) as u32)
+/// AV1's quantiser offsets are in 1/128 of a step (`rounding_q7`).
+const AV1_ROUNDING_BITS: u32 = 7;
+
+/// One step's terms of the shared dead-zone quantiser (module docs):
+/// `level = min(((|c| << input_shift) + offset) / divisor, cap)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StepTerms {
+    pub offset: u32,
+    pub divisor: u32,
+    pub cap: i32,
 }
 
-/// Quantise one coefficient: the reference every ISA matches.
-#[inline]
-pub(crate) fn quantize_one(coeff: i32, index: usize, q: &Av1Quantizer) -> i32 {
-    let step = i64::from(q.step(index));
-    let scaled = i64::from(coeff.unsigned_abs()) << q.log_scale;
-    let magnitude = (scaled * 128 + step * i64::from(q.rounding_q7)) / (step * 128);
-    let level = magnitude.min(i64::from(q.max_level)) as i32;
-    if coeff < 0 { -level } else { level }
+/// The shared dead-zone quantiser of one block (module docs): coefficient 0
+/// at `dc`, the rest at `ac`, every magnitude shifted left by `input_shift`
+/// first. Each codec states its quantiser in these terms (AV1 and AV2
+/// through [`Av1Quantizer`], VP9 through `crate::Vp9QuantStep`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuantTerms {
+    pub input_shift: u32,
+    pub dc: StepTerms,
+    pub ac: StepTerms,
+}
+
+impl QuantTerms {
+    /// The terms of coefficient `index`.
+    #[inline]
+    pub(crate) fn step(&self, index: usize) -> &StepTerms {
+        if index == 0 { &self.dc } else { &self.ac }
+    }
+
+    /// Quantise one coefficient: the reference every ISA matches.
+    #[inline]
+    pub(crate) fn level(&self, coeff: i32, index: usize) -> i32 {
+        let terms = self.step(index);
+        let numerator =
+            (i64::from(coeff.unsigned_abs()) << self.input_shift) + i64::from(terms.offset);
+        let level = (numerator / i64::from(terms.divisor)).min(i64::from(terms.cap)) as i32;
+        if coeff < 0 { -level } else { level }
+    }
+}
+
+impl From<&Av1Quantizer> for QuantTerms {
+    fn from(q: &Av1Quantizer) -> Self {
+        let step = |step: i32| StepTerms {
+            offset: (step * q.rounding_q7) as u32,
+            divisor: (step << AV1_ROUNDING_BITS) as u32,
+            cap: q.max_level,
+        };
+        Self {
+            input_shift: AV1_ROUNDING_BITS + q.log_scale,
+            dc: step(q.dc_step),
+            ac: step(q.ac_step),
+        }
+    }
 }
 
 /// Dequantise one level: the reference every ISA matches (AV1 §7.12.3).

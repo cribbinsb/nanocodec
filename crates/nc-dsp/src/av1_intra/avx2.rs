@@ -1,27 +1,23 @@
 //! AVX2 AV1 intra kernels: filter intra is the generic code on 8 lanes;
-//! directional prediction runs its interpolation with byte multiply-adds
-//! (`_mm*_maddubs_epi16` on interleaved sample pairs and weights; every
-//! `a · (32 − w) + b · w` fits i16) and transposes its column tiles 8x8 in
-//! registers. Smooth blends in unsigned 16-bit lanes (`smooth`); Paeth is
+//! directional prediction runs its interpolation with the shared
+//! directional run (`crate::intra_runs`, byte multiply-adds) and transposes
+//! its column tiles 8x8 in registers. Smooth blends in unsigned 16-bit lanes (`smooth`); Paeth is
 //! the generic code.
 
 #![allow(clippy::inline_always)]
 
 use core::arch::x86_64::{
     __m128i, __m256i, _mm_add_epi16, _mm_and_si128, _mm_avg_epu16, _mm_cvtepu8_epi16,
-    _mm_loadl_epi64, _mm_loadu_si128, _mm_maddubs_epi16, _mm_mulhrs_epi16, _mm_mullo_epi16,
-    _mm_packus_epi16, _mm_set1_epi16, _mm_srli_epi16, _mm_storel_epi64, _mm_storeu_si128,
-    _mm_sub_epi16, _mm_unpackhi_epi8, _mm_unpacklo_epi8, _mm_xor_si128, _mm256_add_epi16,
-    _mm256_and_si256, _mm256_avg_epu16, _mm256_castsi256_si128, _mm256_cvtepu8_epi16,
-    _mm256_extracti128_si256, _mm256_loadu_si256, _mm256_maddubs_epi16, _mm256_mulhrs_epi16,
-    _mm256_mullo_epi16, _mm256_packus_epi16, _mm256_set1_epi16, _mm256_srli_epi16,
-    _mm256_storeu_si256, _mm256_sub_epi16, _mm256_unpackhi_epi8, _mm256_unpacklo_epi8,
-    _mm256_xor_si256,
+    _mm_loadl_epi64, _mm_loadu_si128, _mm_mullo_epi16, _mm_packus_epi16, _mm_set1_epi16,
+    _mm_srli_epi16, _mm_storel_epi64, _mm_storeu_si128, _mm_sub_epi16, _mm_xor_si128,
+    _mm256_add_epi16, _mm256_and_si256, _mm256_avg_epu16, _mm256_castsi256_si128,
+    _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_mullo_epi16, _mm256_set1_epi16,
+    _mm256_srli_epi16, _mm256_sub_epi16, _mm256_xor_si256,
 };
 
 use nc_common::PlaneViewMut;
 
-use crate::intra_prediction::directional::{self, DirectionalKernels};
+use crate::intra_prediction::directional::DirectionalKernels;
 use crate::intra_prediction::{IntraEdges, IntraMode, SMOOTH_SHIFT, smooth_weights};
 
 super::generic::av1_intra_kernels!(#[target_feature(enable = "avx2")];
@@ -29,14 +25,9 @@ super::generic::av1_intra_kernels!(#[target_feature(enable = "avx2")];
     crate::simd::avx2::I16x16
 );
 
-/// Outputs per step: a 256-bit, a 128-bit and a 64-bit run.
-const WIDE_STEP: usize = 32;
+/// Outputs per step of the smooth kernels: a 128-bit and a 64-bit row.
 const STEP: usize = 16;
 const HALF_STEP: usize = 8;
-/// The interpolation weights sum to this.
-const WEIGHT_SUM: i16 = 32;
-/// `_mm_mulhrs_epi16` by this is `Round2(x, 5)`: `(x · 2^10 + 2^14) >> 15`.
-const ROUND2_5: i16 = 1 << 10;
 
 /// AVX2 directional kernels.
 struct Avx2Directional;
@@ -44,63 +35,8 @@ struct Avx2Directional;
 impl DirectionalKernels for Avx2Directional {
     #[inline(always)]
     fn run(window: &[u8], weight: usize, out: &mut [u8]) {
-        assert_eq!(window.len(), out.len() + 1);
-        let len = out.len();
-        if len < HALF_STEP {
-            directional::interpolate_run(window, weight, out);
-            return;
-        }
-        let far = weight as i16;
-        // Byte pairs (near weight, far weight) for the (a, b) pairs.
-        let pair = (far << 8) | (WEIGHT_SUM - far);
-        // SAFETY: AVX2 is enabled (the caller's target feature); every load
-        // and store covers checked subslices.
-        unsafe {
-            let (weights, round) = (_mm256_set1_epi16(pair), _mm256_set1_epi16(ROUND2_5));
-            let mut done = 0;
-            while done + WIDE_STEP <= len {
-                let a = _mm256_loadu_si256(window[done..][..WIDE_STEP].as_ptr().cast());
-                let b = _mm256_loadu_si256(window[done + 1..][..WIDE_STEP].as_ptr().cast());
-                // Per 128-bit lane: unpack, multiply-add and pack keep the
-                // sample order.
-                let low = _mm256_maddubs_epi16(_mm256_unpacklo_epi8(a, b), weights);
-                let high = _mm256_maddubs_epi16(_mm256_unpackhi_epi8(a, b), weights);
-                let packed = _mm256_packus_epi16(
-                    _mm256_mulhrs_epi16(low, round),
-                    _mm256_mulhrs_epi16(high, round),
-                );
-                _mm256_storeu_si256(out[done..][..WIDE_STEP].as_mut_ptr().cast(), packed);
-                done += WIDE_STEP;
-            }
-            let (weights, round) = (_mm_set1_epi16(pair), _mm_set1_epi16(ROUND2_5));
-            if done + STEP <= len {
-                let a = _mm_loadu_si128(window[done..][..STEP].as_ptr().cast());
-                let b = _mm_loadu_si128(window[done + 1..][..STEP].as_ptr().cast());
-                let low =
-                    _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
-                let high =
-                    _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpackhi_epi8(a, b), weights), round);
-                _mm_storeu_si128(
-                    out[done..][..STEP].as_mut_ptr().cast(),
-                    _mm_packus_epi16(low, high),
-                );
-                done += STEP;
-            }
-            // The rest in half steps, the last one ending at `len` (it may
-            // recompute outputs already stored, with the same values).
-            while done < len {
-                let at = done.min(len - HALF_STEP);
-                let a = _mm_loadl_epi64(window[at..][..HALF_STEP].as_ptr().cast());
-                let b = _mm_loadl_epi64(window[at + 1..][..HALF_STEP].as_ptr().cast());
-                let sum =
-                    _mm_mulhrs_epi16(_mm_maddubs_epi16(_mm_unpacklo_epi8(a, b), weights), round);
-                _mm_storel_epi64(
-                    out[at..][..HALF_STEP].as_mut_ptr().cast(),
-                    _mm_packus_epi16(sum, sum),
-                );
-                done = at + HALF_STEP;
-            }
-        }
+        // SAFETY: AVX2 is enabled (the caller's target feature).
+        unsafe { crate::intra_runs::avx2::run2(window, weight, out) }
     }
 
     #[inline(always)]

@@ -7,7 +7,9 @@
 //! (a row for vertical modes, a column written as a row for horizontal
 //! ones) is the 2-tap blend
 //! `((32 − f) · ref[i + 1] + f · ref[i + 2] + 16) >> 5` of the main
-//! reference at a fixed offset, so each line is one vector pass. [`reference`] is the scalar oracle.
+//! reference at a fixed offset, so each line is one call of the shared
+//! directional run (`crate::intra_runs`, also AV1's and AV2's), through
+//! [`angular_lines`]. [`reference`] is the scalar oracle.
 
 #[cfg(any(
     target_arch = "x86_64",
@@ -58,6 +60,33 @@ pub struct PlanarEdges<'a, T: nc_common::Sample = u8> {
     pub top_right: T,
     /// `p[−1][n]`.
     pub bottom_left: T,
+}
+
+/// Angular lines ([`AngularFn`]) with `run`, a [`crate::intra_runs`] run
+/// kernel: each line's blend of the main reference at its offset. A
+/// whole-sample line (`f = 0`) runs at weight 32 from one sample earlier,
+/// which copies it: for the steepest angle the sample after the last
+/// line's run is past `ref[2n]`, so a weight-0 window would overrun.
+#[allow(clippy::inline_always)] // must inline into `#[target_feature]` kernels
+#[inline(always)]
+pub(crate) fn angular_lines(
+    refs: &[u8],
+    n: usize,
+    angle: i32,
+    out: &mut [u8],
+    run: impl Fn(&[u8], usize, &mut [u8]),
+) {
+    let one = 1 << ANGLE_FRACTION_BITS;
+    for (j, line) in out[..n * n].chunks_exact_mut(n).enumerate() {
+        let pos = (j as i32 + 1) * angle;
+        let (idx, fact) = (pos >> ANGLE_FRACTION_BITS, pos & (one - 1));
+        let start = (n as i32 + idx + 1) as usize;
+        if fact == 0 {
+            run(&refs[start - 1..start + n], one as usize, line);
+        } else {
+            run(&refs[start..=start + n], fact as usize, line);
+        }
+    }
 }
 
 /// One ISA's HEVC intra kernels.

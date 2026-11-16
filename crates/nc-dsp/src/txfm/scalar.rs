@@ -2,7 +2,7 @@
 //! lane, and the per-coefficient quantiser definitions.
 
 use super::generic;
-use super::{Av1Quantizer, QuantStorage, TxfmFns, dequantize_one, quantize_one};
+use super::{Av1Quantizer, QuantStorage, QuantTerms, TxfmFns, dequantize_one};
 
 pub(crate) fn txfm_fns() -> TxfmFns {
     TxfmFns {
@@ -13,8 +13,9 @@ pub(crate) fn txfm_fns() -> TxfmFns {
         inverse_dct_add_sparse: [inverse_16_sparse, inverse_32_sparse, inverse_64_sparse],
         coefficient_gain,
         quantize,
-        quantize_from: quantize_from::<i16>,
-        quantize_from_wide: quantize_from::<i32>,
+        quantize_from: quantize_from::<i16, i16>,
+        quantize_from_wide: quantize_from::<i32, i32>,
+        quantize_from_widening: quantize_from::<i16, i32>,
         dequantize,
         forward_dct_raster: [
             forward_4_raster,
@@ -57,20 +58,24 @@ macro_rules! scalar_raster {
 scalar_raster!(forward_4_raster, forward_4_layout; forward_8_raster, forward_8_layout;
                forward_16_raster, forward_16_layout; forward_32_raster, forward_32_layout);
 
-unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
+unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     let mut nonzero = 0;
     for (i, c) in coeffs.iter_mut().enumerate() {
-        *c = i16::narrow(quantize_one(i32::from(*c), i, q));
+        *c = i16::narrow(q.level(i32::from(*c), i));
         nonzero += u32::from(*c != 0);
     }
     nonzero
 }
 
-unsafe fn quantize_from<T: QuantStorage>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32 {
+unsafe fn quantize_from<S: QuantStorage, D: QuantStorage>(
+    coeffs: &[S],
+    q: &QuantTerms,
+    out: &mut [D],
+) -> u32 {
     let mut nonzero = 0;
     for (i, (&c, level)) in coeffs.iter().zip(out.iter_mut()).enumerate() {
-        let value = quantize_one(c.widen(), i, q);
-        *level = T::narrow(value);
+        let value = q.level(c.widen(), i);
+        *level = D::narrow(value);
         nonzero += u32::from(value != 0);
     }
     nonzero
@@ -143,19 +148,19 @@ unsafe fn forward_32_bounded(
 /// `src` and `dst` hold `len` values; they are either disjoint or equal
 /// (in place).
 #[inline]
-pub(crate) unsafe fn quantize_tail<T: QuantStorage>(
-    src: *const T,
-    dst: *mut T,
+pub(crate) unsafe fn quantize_tail<S: QuantStorage, D: QuantStorage>(
+    src: *const S,
+    dst: *mut D,
     first: usize,
     len: usize,
-    q: &Av1Quantizer,
+    q: &QuantTerms,
 ) -> u32 {
     let mut nonzero = 0;
     for i in first..len {
         // SAFETY: `i < len` (caller contract); read before written.
         unsafe {
-            let level = quantize_one((*src.add(i)).widen(), i, q);
-            *dst.add(i) = T::narrow(level);
+            let level = q.level((*src.add(i)).widen(), i);
+            *dst.add(i) = D::narrow(level);
             nonzero += u32::from(level != 0);
         }
     }
@@ -173,16 +178,16 @@ pub(crate) unsafe fn quantize_tail<T: QuantStorage>(
 ///
 /// `dst` holds at least one value, written by the vector pass.
 #[inline]
-pub(crate) unsafe fn fix_dc<T: QuantStorage>(
-    dst: *mut T,
+pub(crate) unsafe fn fix_dc<D: QuantStorage>(
+    dst: *mut D,
     dc: i32,
     nonzero: u32,
-    q: &Av1Quantizer,
+    q: &QuantTerms,
 ) -> u32 {
     // SAFETY: caller contract.
     let at_ac_step = unsafe { (*dst).widen() };
-    let level = quantize_one(dc, 0, q);
+    let level = q.level(dc, 0);
     // SAFETY: caller contract.
-    unsafe { *dst = T::narrow(level) };
+    unsafe { *dst = D::narrow(level) };
     nonzero - u32::from(at_ac_step != 0) + u32::from(level != 0)
 }

@@ -76,7 +76,6 @@ pub struct Dsp {
     av1_filter_intra: crate::av1_intra::FilterPatchesFn,
     av1_directional: crate::av1_intra::DirectionalFn,
     av1_smooth_paeth: crate::av1_intra::SmoothPaethFn,
-    vp9_quantize: crate::vp9_quant::QuantizeFn,
     vp9_largest_magnitude: crate::vp9_quant::MagnitudeFn,
     vp9_intra: crate::vp9_intra::PredictFn,
     h264_intra_8x8: crate::h264_intra::PredictFn,
@@ -212,7 +211,6 @@ impl Dsp {
             av1_filter_intra: crate::av1_intra::filter_patches(isa),
             av1_directional: crate::av1_intra::directional(isa),
             av1_smooth_paeth: crate::av1_intra::smooth_paeth(isa),
-            vp9_quantize: crate::vp9_quant::kernel(isa),
             vp9_largest_magnitude: crate::vp9_quant::magnitude_kernel(isa),
             vp9_intra: crate::vp9_intra::kernel(isa),
             h264_intra_8x8: crate::h264_intra::kernel(isa),
@@ -251,7 +249,6 @@ impl Dsp {
         codec_txfm::avx512::install(&mut dsp.codec_txfm);
         crate::av1_inverse::avx512::install(&mut dsp.av1_inverse);
         av2_txfm::avx512::install(&mut dsp.av2_txfm);
-        dsp.vp9_quantize = crate::vp9_quant::kernel(Isa::Avx512);
         Some(dsp)
     }
 
@@ -3588,7 +3585,7 @@ impl Dsp {
     ///
     /// If a step is not positive.
     pub fn av1_quantize(&self, coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
-        let q = narrow_quantizer(q);
+        let q = txfm::QuantTerms::from(&narrow_quantizer(q));
         // SAFETY: as for `av1_forward_dct`.
         unsafe { (self.txfm.quantize)(coeffs, &q) }
     }
@@ -3600,7 +3597,7 @@ impl Dsp {
     ///
     /// If `out` is shorter than `coeffs` or a step is zero.
     pub fn av1_quantize_from(&self, coeffs: &[i16], q: &Av1Quantizer, out: &mut [i16]) -> u32 {
-        let q = narrow_quantizer(q);
+        let q = txfm::QuantTerms::from(&narrow_quantizer(q));
         assert!(
             out.len() >= coeffs.len(),
             "quantise output shorter than input"
@@ -3625,8 +3622,9 @@ impl Dsp {
             out.len() >= coeffs.len(),
             "quantise output shorter than input"
         );
+        let q = txfm::QuantTerms::from(q);
         // SAFETY: as for `av1_forward_dct`; `out` covers `coeffs`.
-        unsafe { (self.txfm.quantize_from_wide)(coeffs, q, out) }
+        unsafe { (self.txfm.quantize_from_wide)(coeffs, &q, out) }
     }
 
     /// AV1 dequantisation (AV1 §7.12.3) of `levels` into `out`, which holds
@@ -5376,8 +5374,9 @@ impl Dsp {
 
 impl Dsp {
     /// VP9 quantization of the 16-bit `coefficients` into `levels`: index 0
-    /// at `dc`, the rest at `ac` (`vp9_quant` module docs). Returns whether
-    /// any level is nonzero.
+    /// at `dc`, the rest at `ac` (`vp9_quant` module docs), by the shared
+    /// quantiser of the AV1 family (`txfm` module docs). Returns whether any
+    /// level is nonzero.
     ///
     /// # Panics
     ///
@@ -5394,9 +5393,10 @@ impl Dsp {
             levels.len(),
             "VP9 quantize lengths differ"
         );
-        // SAFETY: the table matches the checked CPU ISA; kernels index only
-        // within the equal-length slices.
-        unsafe { (self.vp9_quantize)(coefficients, dc, ac, levels) }
+        let q = crate::vp9_quant::terms(dc, ac);
+        // SAFETY: the table matches the checked CPU ISA; `levels` covers
+        // `coefficients`.
+        unsafe { (self.txfm.quantize_from_widening)(coefficients, &q, levels) != 0 }
     }
 
     /// The largest magnitude `max |c|` of `coefficients` (0 when empty): the

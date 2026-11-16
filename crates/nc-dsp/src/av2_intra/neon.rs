@@ -12,22 +12,23 @@
 
 use core::arch::aarch64::{
     uint8x16_t, vdupq_n_u8, vget_low_u8, vld1q_u8, vmlal_high_u8, vmlal_u8, vmull_high_u8,
-    vmull_u8, vqrshrn_high_n_u16, vqrshrn_n_u16, vqsubq_u16, vrshrn_high_n_u16, vrshrn_n_u16,
-    vst1q_u8,
+    vmull_u8, vqrshrn_high_n_u16, vqrshrn_n_u16, vqsubq_u16, vst1q_u8,
 };
 
 use crate::av2_intra::Av2IntraFns;
-use crate::intra_prediction::av2::{self as reference, FOUR_TAP, TWO_TAP_BITS};
+use crate::intra_prediction::av2::{self as reference, FOUR_TAP};
 use crate::simd::neon::{I16x4, I16x8};
 
 /// Outputs per step.
 const STEP: usize = 16;
-/// The 2-tap weights sum to this.
-const TWO_TAP_SUM: u8 = 1 << TWO_TAP_BITS;
 
 /// This ISA's AV2 intra table.
 pub(crate) fn av2_intra_fns() -> Av2IntraFns {
-    Av2IntraFns { run4, run2, smooth }
+    Av2IntraFns {
+        run4,
+        run2: crate::intra_runs::run2,
+        smooth,
+    }
 }
 
 /// Sixteen samples from `samples[0..16]`.
@@ -36,29 +37,6 @@ fn load(samples: &[u8]) -> uint8x16_t {
     let samples = &samples[..STEP];
     // SAFETY: NEON is enabled (callers' target feature); 16 checked bytes.
     unsafe { vld1q_u8(samples.as_ptr()) }
-}
-
-#[target_feature(enable = "neon")]
-unsafe fn run2(window: &[u8], shift: usize, out: &mut [u8]) {
-    let second = shift as u8;
-    let (a_weight, b_weight) = (vdupq_n_u8(TWO_TAP_SUM - second), vdupq_n_u8(second));
-    let mut done = 0;
-    while done + STEP <= out.len() {
-        let a = load(&window[done..]);
-        let b = load(&window[done + 1..]);
-        let low = vmlal_u8(
-            vmull_u8(vget_low_u8(a), vget_low_u8(a_weight)),
-            vget_low_u8(b),
-            vget_low_u8(b_weight),
-        );
-        let high = vmlal_high_u8(vmull_high_u8(a, a_weight), b, b_weight);
-        let packed = vrshrn_high_n_u16::<5>(vrshrn_n_u16::<5>(low), high);
-        let dst = &mut out[done..done + STEP];
-        // SAFETY: 16 checked bytes.
-        unsafe { vst1q_u8(dst.as_mut_ptr(), packed) };
-        done += STEP;
-    }
-    reference::run2(&window[done..], shift, &mut out[done..]);
 }
 
 #[target_feature(enable = "neon")]

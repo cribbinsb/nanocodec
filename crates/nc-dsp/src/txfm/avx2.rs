@@ -20,7 +20,7 @@ use core::arch::x86_64::{
 };
 
 use super::scalar::{fix_dc, quantize_tail};
-use super::{Av1Quantizer, QuantStorage, Reciprocal, TxfmFns, avx2_inverse, generic, quant_terms};
+use super::{Av1Quantizer, QuantStorage, QuantTerms, Reciprocal, TxfmFns, avx2_inverse, generic};
 use crate::simd::avx2::{I32x4, I32x8};
 
 /// The AVX2 transform table.
@@ -46,8 +46,9 @@ pub(crate) unsafe fn txfm_fns() -> TxfmFns {
         ],
         coefficient_gain,
         quantize,
-        quantize_from: quantize_from::<i16>,
-        quantize_from_wide: quantize_from::<i32>,
+        quantize_from: quantize_from::<i16, i16>,
+        quantize_from_wide: quantize_from::<i32, i32>,
+        quantize_from_widening: quantize_from::<i16, i32>,
         dequantize,
         forward_dct_raster: [
             forward_4_raster,
@@ -167,14 +168,13 @@ impl Lanes8 for i16 {
 /// `src` and `dst` hold `len` values; they are either disjoint or equal
 /// (in place): each vector is loaded before its levels are stored.
 #[target_feature(enable = "avx2")]
-unsafe fn quantize_levels<T: Lanes8>(
-    src: *const T,
-    dst: *mut T,
+unsafe fn quantize_levels<S: Lanes8, D: Lanes8>(
+    src: *const S,
+    dst: *mut D,
     len: usize,
-    q: &Av1Quantizer,
+    q: &QuantTerms,
 ) -> u32 {
-    let (offset, divisor) = quant_terms(q, q.ac_step);
-    let Some(reciprocal) = Reciprocal::new(divisor) else {
+    let Some(reciprocal) = Reciprocal::new(q.ac.divisor) else {
         // SAFETY: forwarded contract.
         return unsafe { quantize_tail(src, dst, 0, len, q) };
     };
@@ -183,11 +183,11 @@ unsafe fn quantize_levels<T: Lanes8>(
     }
     // SAFETY: `len >= 1`; read before the vector pass overwrites it.
     let dc = unsafe { (*src).widen() };
-    let input_shift = _mm_cvtsi32_si128(7 + q.log_scale as i32);
+    let input_shift = _mm_cvtsi32_si128(q.input_shift as i32);
     let result_shift = _mm_cvtsi32_si128(reciprocal.shift as i32);
     let multiplier = _mm256_set1_epi64x(i64::from(reciprocal.multiplier));
-    let offset = _mm256_set1_epi32(offset as i32);
-    let max_level = _mm256_set1_epi32(q.max_level);
+    let offset = _mm256_set1_epi32(q.ac.offset as i32);
+    let max_level = _mm256_set1_epi32(q.ac.cap);
     let done = len / 8 * 8;
     // Zero levels counted per lane (each all-ones compare mask subtracts
     // -1) and summed once at the end: the generic x86-64 baseline has no
@@ -196,7 +196,7 @@ unsafe fn quantize_levels<T: Lanes8>(
     let mut zeros = _mm256_setzero_si256();
     for i in (0..done).step_by(8) {
         // SAFETY: `i + 8 <= len`; loaded before the store below.
-        let c = unsafe { T::load8(src.add(i)) };
+        let c = unsafe { S::load8(src.add(i)) };
         let numerator =
             _mm256_add_epi32(_mm256_sll_epi32(_mm256_abs_epi32(c), input_shift), offset);
         // 32x32 -> 64-bit products of the even and odd lanes, then the shift.
@@ -208,7 +208,7 @@ unsafe fn quantize_levels<T: Lanes8>(
         let quotient = _mm256_blend_epi32::<0b1010_1010>(even, _mm256_slli_epi64::<32>(odd));
         let signed = _mm256_sign_epi32(_mm256_min_epi32(quotient, max_level), c);
         // SAFETY: `i + 8 <= len`.
-        unsafe { T::store8(dst.add(i), signed) };
+        unsafe { D::store8(dst.add(i), signed) };
         zeros = _mm256_sub_epi32(zeros, _mm256_cmpeq_epi32(signed, _mm256_setzero_si256()));
     }
     let mut lanes = [0_i32; 8];
@@ -228,7 +228,7 @@ unsafe fn quantize_levels<T: Lanes8>(
 
 /// [`quantize_levels`] in place.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
+pub(super) unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     let (len, coeffs) = (coeffs.len(), coeffs.as_mut_ptr());
     // SAFETY: source and destination are the same slice; every value is
     // read before its level is written (`quantize_levels`).
@@ -237,10 +237,10 @@ pub(super) unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
 
 /// [`quantize_levels`] from `coeffs` into `out`, which keeps `coeffs`.
 #[target_feature(enable = "avx2")]
-pub(super) unsafe fn quantize_from<T: Lanes8>(
-    coeffs: &[T],
-    q: &Av1Quantizer,
-    out: &mut [T],
+pub(super) unsafe fn quantize_from<S: Lanes8, D: Lanes8>(
+    coeffs: &[S],
+    q: &QuantTerms,
+    out: &mut [D],
 ) -> u32 {
     let out = &mut out[..coeffs.len()];
     // SAFETY: both slices hold `coeffs.len()` values.

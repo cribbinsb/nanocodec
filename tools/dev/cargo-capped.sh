@@ -20,7 +20,9 @@
 set -euo pipefail
 
 DEFAULT_SLOTS=4
-DEFAULT_MEM=6G
+# A fat-LTO release or profiling link of nanocodec-cli peaks at ~6.3 GB of rustc RSS
+# (2026-11-16: two such links were OOM-killed at 6G); 4 slots x 10G fits in 60 GB.
+DEFAULT_MEM=10G
 SLOT_POLL_SECONDS=5
 
 slots=${NC_BUILD_SLOTS:-$DEFAULT_SLOTS}

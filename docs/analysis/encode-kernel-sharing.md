@@ -75,8 +75,8 @@ implementation for all six codecs; they are the largest share everywhere.
 
 | Variant | Module | Tiers | Technique | Hot | Formula | Verdict |
 |---|---|---|---|---|---|---|
-| AV1 quantise (in place, from, wide) | `txfm/avx2.rs:170-230`, `avx512_quant.rs` (186), `neon.rs`, `simd128.rs`, `scalar.rs:140-188` | S A2 A5 N W | exact reciprocal (`mul_epu32` even/odd lanes), vector from lane 0, DC fix-up; i16 or i32 levels | AV1 3.1 / 2.2; AV2 1.9 / 2.1 | `(abs<<ls*128 + step*r_q7) / (step*128)`, cap, sign | **Base**; AV2 already uses it |
-| VP9 quantise (+ largest_magnitude) | `vp9_quant/` (549) | S A2 A5 N W (magnitude: no A5) | same shape: `mul_epu32` even/odd, DC split | VP9 2.1 / 2.1 | `((abs<<s) + floor(step/div)) * ceil(2^32/step) >> 32`, DC and AC caps | **Merge into AV1's**: equal by nested floors with offset `floor(step*r/128)`; parameters: offset units, DC/AC caps, output width, count vs bool |
+| Shared reciprocal dead-zone quantiser (AV1, AV2, VP9) | `txfm/avx2.rs`, `avx512_quant.rs`, `neon.rs`, `simd128.rs`, `scalar.rs`; terms in `txfm/mod.rs` `QuantTerms` | S A2 A5 N W | exact reciprocal (`mul_epu32` even/odd lanes; NEON zero-group skip), vector from lane 0, DC fix-up; i16 or i32 coefficients and levels, mixed (VP9: i16 into i32) | AV1 3.1 / 2.2; AV2 1.9 / 2.1; VP9 2.1 / 2.1 | `min(((abs << input_shift) + offset) / divisor, cap)` per DC/AC terms | **Shared** |
+| VP9 quantise (+ largest_magnitude) | `vp9_quant/` (now parameters and the magnitude kernels only) | S A2 A5 N W via the shared kernel (magnitude: S A2 N W) | shared kernel | VP9 2.1 / 2.1 | `((abs<<s) + floor(step/div)) / step`, DC and AC caps | **Merged** (2026-11-16): `txfm::QuantTerms` takes per-step offset, divisor and cap; VP9 states its quantiser with numerator and divisor scaled by 128 (quotients unchanged). Its own quantize kernels (5 tiers) are gone. |
 | H.264 / HEVC / VVC quantise | `codec_txfm/generic.rs:2005` | S A2 (A5 inh.) N W | i32 lanes `(abs*mf + off) >> qbits` | H.264 1.7 / 1.2; HEVC/VVC ~0.8 | 32-bit multiply-shift, per-position mf | Keep apart from the reciprocal family (cheaper, normative scale) |
 | HEVC/VVC `quantize_from` | `codec_txfm/generic.rs:1922` | same | same formula, one scalar scale | as above | identical to `quantize` with `mf=[scale]` | **Merge into `quantize`** |
 | HEVC/VVC dequantise | `codec_txfm/generic.rs:1308-1342` | S A2 N W | clamp, multiply, shift, round | HEVC ~0.6 | Eq. 8-309 | Low-priority merge with H.264 dequant |
@@ -92,12 +92,13 @@ crates, scalar.
 | Variant | Module | Tiers | Technique | Hot | Arithmetic | Verdict |
 |---|---|---|---|---|---|---|
 | DC / V / H (all codecs) | per codec; AV1 `intra_prediction.rs:38` (AV2 calls it) | fill | fill | AV1 `dc_value` 1.0 / 0.7 | identical base; HEVC adds a luma edge filter, VVC PDPC, H.264 chroma quadrant rules | Shared fill with codec post-passes |
-| HEVC angular | `hevc_intra/lanes.rs:17` | S A2 N W | u8 refs, `maddubs` on **8 lanes** | HEVC 1.1 / 0.9 | 2-tap `((32-f)a+fb+16)>>5`, 1/32 | **Merge (run2)** |
+| Shared 2-tap run `intra_runs::run2` | `intra_runs/` | S A2 (A5 uses A2) N W | AV1's technique: `pmaddubsw` + `pmulhrsw`, 32/16/8/4 per step (AVX2); byte `umull`/`umlal` + rounding narrow (NEON); `extmul` (SIMD128) | | `((32-w)a + wb + 16) >> 5` | **Shared** (2026-11-16): HEVC angular lines, AV1 directional, AV2 chroma, VVC chroma |
+| HEVC angular | `hevc_intra/mod.rs` `angular_lines` | via `run2` | one run per line (whole-sample lines at weight 32) | HEVC 1.1 / 0.9 | 2-tap, 1/32 | **Merged** onto `run2` |
 | AV1 directional | `intra_prediction/directional.rs`, `av1_intra/{avx2,neon,simd128}` | S A2 N W | `maddubs` interleaved pairs + `mulhrs`, **32 wide** (AVX2), byte `vmull` (NEON) | AV1 1.1 / 0.8 | 1/64 position, `w=(pos>>1)&31`: same 2-tap 1/32 formula | **run2 base technique** |
-| AV2 chroma `run2` | `intra_prediction/av2.rs:513`, `av2_intra/runs.rs` | S A2 N W | I16 lanes, **32-bit accumulators** | in AV2 1.6 / 1.3 | same 2-tap | **Merge (run2)** |
-| VVC chroma angular | `vvc_intra/angular_generic.rs` | S A2 N W | refs i32 narrowed to i16, per-tap multiply | in VVC 7.1 / 5.9 | exactly HEVC's 2-tap, then PDPC | **Merge (run2)** + PDPC post-pass |
-| VVC luma angular | `vvc_intra/angular_generic.rs:28` | S A2 N W | as above | VVC 4.9 / 4.2 (`vvc_intra::avx2::predict`) | 4-tap cubic/gaussian, 6-bit | **Merge with AV2 luma (run4)** |
-| AV2 luma `run4` | `intra_prediction/av2.rs:501`, `av2_intra/` | S A2 N W | A2/W 32-bit accumulators; NEON byte split +/- sums | AV2 1.1 / 1.0 | 4-tap `FOUR_TAP`, 7-bit | **Merge (run4)**: table and shift as parameters |
+| AV2 chroma `run2` | `av2_intra/mod.rs` (table slot) | via `run2` | | in AV2 1.6 / 1.3 | same 2-tap | **Merged** onto `run2` (its 32-bit-accumulator and NEON copies removed) |
+| VVC chroma angular | `vvc_intra/angular_generic.rs` | via `run2` | u8 main reference, PDPC on i16 lanes after the run | in VVC 7.1 / 5.9 | HEVC's 2-tap, then PDPC | **Merged** onto `run2` |
+| VVC luma angular | `vvc_intra/angular_generic.rs`, `intra_runs::run4` | S A2 N W | `run4`: AVX2 two `pmaddubsw` pair sums; NEON u16 magnitude sums + saturating narrow (AV2's technique); SIMD128 i16 lanes | VVC 4.9 / 4.2 (`vvc_intra::avx2::predict`) | 4-tap cubic/Gaussian, 6-bit taps | **Shared kernel `run4`** (2026-11-16) |
+| AV2 luma `run4` | `intra_prediction/av2.rs`, `av2_intra/` | S A2 N W | A2/W 32-bit accumulators; NEON byte split +/- sums | AV2 1.1 / 1.0 | 4-tap `FOUR_TAP`, 7-bit taps up to 152 | **Keep separate**: its taps exceed i8 and its positive sums (255 x 152) exceed i16, so `intra_runs::run4`'s byte-tap, 16-bit-sum form cannot hold them; its NEON already uses the family's u16 magnitude-sum technique |
 | HEVC planar | `hevc_intra/lanes.rs:63` | S A2 N W | u8 refs, I16 lanes | HEVC 0.6 / 0.5 | Eq. 8-48 | **Merge with VVC planar** (HEVC layout) |
 | VVC planar/DC/H/V + PDPC | `vvc_intra/generic.rs:9` | S A2 N W | **I32 lanes** over i32 refs | in VVC | planar identical to HEVC; PDPC weights fit i16 | **Merge**: HEVC's I16 layout + optional PDPC |
 | AV1 smooth | `intra_prediction.rs:342`, `av1_intra/` | S A2 N W | u16 lanes | small | libaom weights, shift 8 | Keep (AV1 only) |
@@ -126,7 +127,7 @@ crates, scalar.
 
 | Variant | Module (lines) | Tiers | Technique | Hot | Arithmetic | Verdict |
 |---|---|---|---|---|---|---|
-| AV1 edge | `deblock/av1.rs` (628 scalar), `av1_packed.rs` (486), `lpf_bytes/` | S A2 N W (A5 inh.) | u8 lanes, 8 lines per vector, libvpx byte masks, widen only flat lanes | AV1 3.8 / 3.7 | filter4/6/8/14, hev/mask/flat/flat2 (AV1 §7.14.6) | **Merge with VP9** |
+| AV1 edge (deblock family: Astra is adding the AVX-512 tier to `av1_edge`, `av2_chunk`, `lpf_bytes`; results to be added here by Astra) | `deblock/av1.rs` (628 scalar), `av1_packed.rs` (486), `lpf_bytes/` | S A2 N W (A5 inh.) | u8 lanes, 8 lines per vector, libvpx byte masks, widen only flat lanes | AV1 3.8 / 3.7 | filter4/6/8/14, hev/mask/flat/flat2 (AV1 §7.14.6) | **Merge with VP9** |
 | VP9 edge | `vp9_deblock.rs` (250 scalar), `vp9_loop_filter/` (620) | S A2 (8-line) N W (16-line paired) | same `lpf_bytes` lanes and `narrow`; `masks` and `group` copied from `av1_packed` | VP9 3.5 / 3.7 | filter4/8 identical to AV1; filter16 = 15-tap p7..q7 vs AV1 13-tap filter14 | **Merge with AV1**: parameter = wide filter rule (taps, outer, centre, flat2 span) |
 | AV1 paired 16-line (`*_wide`) | `lpf_bytes/*_wide.rs`, `deblock/{runs,av1_grid,av1_line,av1_tile}.rs` | S A2 N W | two 8-byte groups, dav1d 8x16 transpose | decoder only | same | **Technique to spread** to the AV1/VP9 encoder path |
 | H.264 luma + chroma pair | `deblock/h264_bytes/` (1480), `h264_mb.rs` | S A2 N W | 16 u8 lanes, one per line | H.264 2.8 / 3.7 | §8.7 bS, alpha/beta, tC0; strong filter unclipped | Keep; fold `H264Bytes` into `lpf_bytes::Bytes` |
@@ -182,10 +183,10 @@ kernels only.
 
 | # | Merge | Codecs (hot share) | Status |
 |---|---|---|---|
-| 1 | VP9 quantise into the AV1 quantiser | VP9 2.1 | planned |
-| 2 | AV1/VP9 packed loop filter: one driver, wide-filter rule as a parameter | AV1 3.8, VP9 3.5 | planned |
+| 1 | VP9 quantise into the AV1 quantiser | VP9 2.1 | landed (see log) |
+| 2 | AV1/VP9 packed loop filter: one driver, wide-filter rule as a parameter | AV1 3.8, VP9 3.5 | owned by Astra (deblock family AVX-512 tier, brief `work/briefs/astra-avx512-deblock-2026-11-16.md`); Astra adds its results here |
 | 3 | HEVC/VVC MC onto the AV1 maddubs/sdot kernels | HEVC 9, VVC 5 | planned |
-| 4 | Intra `run2` (HEVC, AV1, AV2, VVC chroma) and `run4` (VVC/AV2 luma) | VVC 6-7, AV1 2-3, AV2 2-3, HEVC 1-3 | planned |
+| 4 | Intra `run2` (HEVC, AV1, AV2, VVC chroma) and `run4` (VVC luma; AV2 stays separate) | VVC 6-7, AV1 2-3, AV2 2-3, HEVC 1-3 | landed (see log) |
 | 5 | VP9 inverse driver into `narrow_inverse` | VP9 1.3 | planned |
 | 6 | HEVC/AV2 partial-butterfly engine (forward + inverse, N up to 64) | AV2 6-7, HEVC/VVC 2-4 | planned |
 | 7 | HEVC `quantize_from` into `quantize`; AV2/VP9 dequant onto AV1's | small | planned |

@@ -8,7 +8,7 @@
 )]
 use super::avx2::Lanes8;
 use super::scalar::{fix_dc, quantize_tail};
-use super::{Av1Quantizer, Reciprocal, TxfmFns, quant_terms};
+use super::{Av1Quantizer, QuantTerms, Reciprocal, TxfmFns};
 use core::arch::x86_64::{
     __m512i, _mm_cvtsi32_si128, _mm256_maskz_loadu_epi16, _mm512_abs_epi32, _mm512_add_epi32,
     _mm512_add_epi64, _mm512_cmplt_epi32_mask, _mm512_cmpneq_epi32_mask, _mm512_cvtepi16_epi32,
@@ -21,8 +21,9 @@ use core::arch::x86_64::{
 
 pub(super) fn install(table: &mut TxfmFns) {
     table.quantize = quantize;
-    table.quantize_from = quantize_from::<i16>;
-    table.quantize_from_wide = quantize_from::<i32>;
+    table.quantize_from = quantize_from::<i16, i16>;
+    table.quantize_from_wide = quantize_from::<i32, i32>;
+    table.quantize_from_widening = quantize_from::<i16, i32>;
     table.dequantize = dequantize;
     table.coefficient_gain = gain;
 }
@@ -76,9 +77,13 @@ impl Lanes16 for i16 {
 /// fix-up (`fix_dc`). Source and destination hold len values and are equal
 /// or disjoint.
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn levels<T: Lanes16>(src: *const T, dst: *mut T, len: usize, q: &Av1Quantizer) -> u32 {
-    let (offset, divisor) = quant_terms(q, q.ac_step);
-    let Some(reciprocal) = Reciprocal::new(divisor) else {
+unsafe fn levels<S: Lanes16, D: Lanes16>(
+    src: *const S,
+    dst: *mut D,
+    len: usize,
+    q: &QuantTerms,
+) -> u32 {
+    let Some(reciprocal) = Reciprocal::new(q.ac.divisor) else {
         // SAFETY: forwarded contract.
         return unsafe { quantize_tail(src, dst, 0, len, q) };
     };
@@ -89,16 +94,16 @@ unsafe fn levels<T: Lanes16>(src: *const T, dst: *mut T, len: usize, q: &Av1Quan
     let dc = unsafe { (*src).widen() };
     let zero = _mm512_setzero_si512();
     let mut counts = zero;
-    let input_shift = _mm_cvtsi32_si128(7 + q.log_scale as i32);
+    let input_shift = _mm_cvtsi32_si128(q.input_shift as i32);
     let result_shift = _mm_cvtsi32_si128(reciprocal.shift as i32);
     let multiplier = _mm512_set1_epi64(i64::from(reciprocal.multiplier));
     for i in (0..len).step_by(16) {
         let mask = (u32::MAX >> (32 - (len - i).min(16))) as u16;
         // SAFETY: only valid lanes are read; input and output may alias.
-        let c = unsafe { T::load16(mask, src.add(i)) };
+        let c = unsafe { S::load16(mask, src.add(i)) };
         let numerator = _mm512_add_epi32(
             _mm512_sll_epi32(_mm512_abs_epi32(c), input_shift),
-            _mm512_set1_epi32(offset as i32),
+            _mm512_set1_epi32(q.ac.offset as i32),
         );
         let even = _mm512_srl_epi64(_mm512_mul_epu32(numerator, multiplier), result_shift);
         let odd = _mm512_srl_epi64(
@@ -106,12 +111,12 @@ unsafe fn levels<T: Lanes16>(src: *const T, dst: *mut T, len: usize, q: &Av1Quan
             result_shift,
         );
         let quotient = _mm512_mask_blend_epi32(0xaaaa, even, _mm512_slli_epi64::<32>(odd));
-        let magnitude = _mm512_min_epi32(quotient, _mm512_set1_epi32(q.max_level));
+        let magnitude = _mm512_min_epi32(quotient, _mm512_set1_epi32(q.ac.cap));
         let signed =
             _mm512_mask_sub_epi32(magnitude, _mm512_cmplt_epi32_mask(c, zero), zero, magnitude);
         // SAFETY: the same mask bounds the store to the valid output lanes.
         unsafe {
-            T::store16(dst.add(i), mask, signed);
+            D::store16(dst.add(i), mask, signed);
         }
         counts = _mm512_mask_add_epi32(
             counts,
@@ -124,7 +129,7 @@ unsafe fn levels<T: Lanes16>(src: *const T, dst: *mut T, len: usize, q: &Av1Quan
     unsafe { fix_dc(dst, dc, _mm512_reduce_add_epi32(counts) as u32, q) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
+unsafe fn quantize(coeffs: &mut [i16], q: &QuantTerms) -> u32 {
     // Hardware timing favours AVX2 for these small coefficient blocks.
     if coeffs.len() <= 16 {
         // SAFETY: same validated slices; AVX2 is required by this tier.
@@ -134,7 +139,11 @@ unsafe fn quantize(coeffs: &mut [i16], q: &Av1Quantizer) -> u32 {
     unsafe { levels(coeffs.as_ptr(), coeffs.as_mut_ptr(), coeffs.len(), q) }
 }
 #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
-unsafe fn quantize_from<T: Lanes16>(coeffs: &[T], q: &Av1Quantizer, out: &mut [T]) -> u32 {
+unsafe fn quantize_from<S: Lanes16, D: Lanes16>(
+    coeffs: &[S],
+    q: &QuantTerms,
+    out: &mut [D],
+) -> u32 {
     // Hardware timing favours AVX2 for these small coefficient blocks.
     if coeffs.len() <= 16 {
         // SAFETY: same validated slices; AVX2 is required by this tier.

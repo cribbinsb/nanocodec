@@ -1,20 +1,19 @@
 //! NEON AV1 intra kernels: filter intra is the generic code on 8 lanes;
-//! directional prediction runs its interpolation as byte kernels (16 or 8
-//! outputs per step; every `a · (32 − w) + b · w` fits u16) and transposes
-//! its column tiles 8x8 in registers. Smooth blends in unsigned 16-bit
+//! directional prediction runs its interpolation with the shared
+//! directional run (`crate::intra_runs`, byte kernels) and transposes its
+//! column tiles 8x8 in registers. Smooth blends in unsigned 16-bit
 //! lanes (`smooth`); Paeth is the generic code.
 
 #![allow(clippy::inline_always)]
 
 use core::arch::aarch64::{
-    uint8x8_t, vcombine_u8, vdup_n_u8, vdupq_n_u8, vget_high_u8, vget_low_u8, vhaddq_u16, vld1_u8,
-    vld1q_u8, vmlal_high_u8, vmlal_u8, vmull_high_u8, vmull_u8, vrshrn_high_n_u16, vrshrn_n_u16,
-    vst1_u8, vst1q_u8, vsub_u8,
+    uint8x8_t, vcombine_u8, vdup_n_u8, vget_high_u8, vget_low_u8, vhaddq_u16, vld1_u8, vld1q_u8,
+    vmlal_u8, vmull_u8, vrshrn_n_u16, vst1_u8, vst1q_u8, vsub_u8,
 };
 
 use nc_common::PlaneViewMut;
 
-use crate::intra_prediction::directional::{self, DirectionalKernels};
+use crate::intra_prediction::directional::DirectionalKernels;
 use crate::intra_prediction::{IntraEdges, IntraMode, smooth_weights};
 
 super::generic::av1_intra_kernels!(#[target_feature(enable = "neon")];
@@ -22,11 +21,9 @@ super::generic::av1_intra_kernels!(#[target_feature(enable = "neon")];
     crate::simd::neon::I16x8
 );
 
-/// Outputs per full and per half step of a run.
+/// Outputs per full and per half step of the smooth kernels.
 const STEP: usize = 16;
 const HALF_STEP: usize = 8;
-/// The interpolation weights sum to this.
-const WEIGHT_SUM: u8 = 32;
 
 /// NEON directional kernels.
 struct NeonDirectional;
@@ -34,43 +31,8 @@ struct NeonDirectional;
 impl DirectionalKernels for NeonDirectional {
     #[inline(always)]
     fn run(window: &[u8], weight: usize, out: &mut [u8]) {
-        assert_eq!(window.len(), out.len() + 1);
-        let len = out.len();
-        if len < HALF_STEP {
-            directional::interpolate_run(window, weight, out);
-            return;
-        }
-        let far = weight as u8;
-        // SAFETY: NEON is enabled (the caller's target feature); every load
-        // and store covers checked subslices.
-        unsafe {
-            let (near_q, far_q) = (vdupq_n_u8(WEIGHT_SUM - far), vdupq_n_u8(far));
-            let mut done = 0;
-            while done + STEP <= len {
-                let a = vld1q_u8(window[done..][..STEP].as_ptr());
-                let b = vld1q_u8(window[done + 1..][..STEP].as_ptr());
-                let low = vmlal_u8(
-                    vmull_u8(vget_low_u8(a), vget_low_u8(near_q)),
-                    vget_low_u8(b),
-                    vget_low_u8(far_q),
-                );
-                let high = vmlal_high_u8(vmull_high_u8(a, near_q), b, far_q);
-                let packed = vrshrn_high_n_u16::<5>(vrshrn_n_u16::<5>(low), high);
-                vst1q_u8(out[done..][..STEP].as_mut_ptr(), packed);
-                done += STEP;
-            }
-            // The rest in half steps, the last one ending at `len` (it may
-            // recompute outputs already stored, with the same values).
-            let (near_d, far_d) = (vdup_n_u8(WEIGHT_SUM - far), vdup_n_u8(far));
-            while done < len {
-                let at = done.min(len - HALF_STEP);
-                let a = vld1_u8(window[at..][..HALF_STEP].as_ptr());
-                let b = vld1_u8(window[at + 1..][..HALF_STEP].as_ptr());
-                let sum = vmlal_u8(vmull_u8(a, near_d), b, far_d);
-                vst1_u8(out[at..][..HALF_STEP].as_mut_ptr(), vrshrn_n_u16::<5>(sum));
-                done = at + HALF_STEP;
-            }
-        }
+        // SAFETY: NEON is enabled (the caller's target feature).
+        unsafe { crate::intra_runs::neon::run2(window, weight, out) }
     }
 
     #[inline(always)]

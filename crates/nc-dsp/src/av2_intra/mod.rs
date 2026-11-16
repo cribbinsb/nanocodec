@@ -50,6 +50,14 @@ pub(crate) struct Av2IntraFns {
 /// The table of `isa`. Calling its kernels needs `isa`'s support, which
 /// `Dsp::with_isa` checks before building a table.
 pub(crate) fn dispatch_fns(isa: Isa) -> Av2IntraFns {
+    let mut fns = isa_fns(isa);
+    // The 2-tap run is the shared directional run (`crate::intra_runs`).
+    fns.run2 = crate::intra_runs::run2_kernel(isa);
+    fns
+}
+
+/// This ISA's own kernels (its `run2` slot is replaced by the shared run).
+fn isa_fns(isa: Isa) -> Av2IntraFns {
     match isa {
         Isa::Scalar => scalar_fns(),
         #[cfg(target_arch = "x86_64")]
@@ -67,7 +75,7 @@ pub(crate) fn dispatch_fns(isa: Isa) -> Av2IntraFns {
 fn scalar_fns() -> Av2IntraFns {
     Av2IntraFns {
         run4: av2::run4,
-        run2: av2::run2,
+        run2: crate::intra_runs::run2,
         smooth: av2::smooth,
     }
 }

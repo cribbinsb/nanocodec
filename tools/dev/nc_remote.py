@@ -20,7 +20,7 @@ paths with private clips are refused. NAME defaults to the worktree's
 directory name.
 
 Lifecycle (see also docs/PROCEDURES.md "Remote build box"):
-- One persistent spot box (INSTANCE_TYPES, first with capacity) in REGION,
+- One persistent spot box (the cheapest of INSTANCE_TYPES with capacity) in REGION,
   from the newest baked AMI (`nc-remote bake`) or plain Ubuntu, provisioned
   by nc_remote_provision.sh on first boot.
 - Its user-data (nc_remote_box.sh) sets the hard lifetime and an idle
@@ -59,23 +59,27 @@ from aws_session import (  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REGION = "eu-north-1"
-#: Tried in order (spot only); 32 vCPU each. c7a = Zen 4. eu-north-1 spot was
-#: $0.23/h for c7a.8xlarge on 2026-11-16, against $0.89/h in eu-west-1.
-INSTANCE_TYPES = ("c7a.8xlarge", "c7i.8xlarge", "m7a.8xlarge")
-VCPUS = 32
+#: 64 vCPU x86 types, tried cheapest current spot price first (spot only).
+#: eu-north-1 because its spot prices were a quarter of eu-west-1's
+#: (2026-11-16: c7a.8xlarge $0.23/h against $0.89/h). That day's 64-vCPU
+#: prices there: c6i $0.29, m7a $0.55, c7i $0.60, c7a $0.62 per hour.
+INSTANCE_TYPES = ("c7a.16xlarge", "c7i.16xlarge", "c6i.16xlarge", "m7a.16xlarge",
+                  "m7i.16xlarge", "m6i.16xlarge")
+VCPUS = 64
 #: One heavy job per 8 vCPU; each job gets cargo -j JOBS_PER_SLOT.
 JOBS_PER_SLOT = 8
 SLOTS = VCPUS // JOBS_PER_SLOT
-ROOT_GB = 120
+#: Conformance suites (~6 GB), anchors and up to ~20 agents' targets.
+ROOT_GB = 200
 LIFETIME_MINUTES = 12 * 60
 IDLE_MINUTES = 30
-DAILY_BUDGET_USD = 15.0
+DAILY_BUDGET_USD = 25.0
 #: Spot bid cap relative to the cheapest zone's current price.
 MAX_PRICE_FACTOR = 1.5
 PURPOSE = "buildbox"
 NAME = "nanocodec-buildbox"
 #: Bump when nc_remote_provision.sh changes, so boxes re-provision.
-PROVISION_VERSION = "1"
+PROVISION_VERSION = "2"
 #: AMIs and their snapshots have no lifetime of their own; their ExpectedEnd is reviewed then.
 AMI_EXPECTED_END = "2026-12-31T00:00:00Z"
 
@@ -267,10 +271,10 @@ class Aws:
         user_data = (HERE / "nc_remote_box.sh").read_text() \
             .replace("@LIFETIME_MINUTES@", str(LIFETIME_MINUTES)) \
             .replace("@IDLE_MINUTES@", str(IDLE_MINUTES)).replace("@SLOTS@", str(SLOTS))
-        for instance_type in INSTANCE_TYPES:
-            zones = self.zone_prices(instance_type)
-            if not zones:
-                continue
+        offers = {t: self.zone_prices(t) for t in INSTANCE_TYPES}
+        offers = {t: zones for t, zones in offers.items() if zones}
+        for instance_type in sorted(offers, key=lambda t: min(offers[t].values())):
+            zones = offers[instance_type]
             bid = min(zones.values()) * MAX_PRICE_FACTOR
             for zone, price in zones.items():
                 subnets = self.ec2.describe_subnets(Filters=[
@@ -537,8 +541,9 @@ def cmd_status(_args) -> int:
     hours = box.hours(parse(box.launched), utc_now())
     say(f"{box.instance_type} {box.instance_id} at {box.host}, up {hours * 60:.0f} min, "
         f"spot ${box.price:.4f}/h, hard end {box.expected_end}")
-    ssh(box, "cat ncbox/jobs/*/running.json 2>/dev/null | sed 's/^/  job: /;s/$/\\n/'; "
-             "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
+    job = (HERE / "nc_remote_job.py").read_text()
+    ssh(box, shlex.join(["python3", "-c", job, "--status"]))
+    ssh(box, "echo \"  idle for $(( $(date +%s) - $(stat -c %Y ncbox/activity) )) s\"; "
              "df -h --output=avail,size / | tail -1 | sed 's/^/  disk free, size: /'; "
              "du -sh ncbox/jobs/*/target 2>/dev/null | sed 's/^/  target: /'")
     return 0
@@ -639,5 +644,13 @@ def main() -> int:
     return args.handler(args)
 
 
+#: Exit status after Ctrl-C (the remote job is killed when our SSH link closes).
+STATUS_INTERRUPTED = 130
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        say("interrupted: the remote job is killed with the SSH link")
+        sys.exit(STATUS_INTERRUPTED)

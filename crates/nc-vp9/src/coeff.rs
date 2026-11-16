@@ -127,8 +127,14 @@ impl ScanOrder {
     /// raster-order `levels`.
     fn last_two_nonzero(&self, levels: &[i32]) -> (Option<usize>, Option<usize>) {
         let (mut last, mut second) = (None, None);
-        for (run, chunk) in levels[..self.scan.len()].chunks(ZERO_TEST_RUN).enumerate() {
-            if chunk.iter().all(|&level| level == 0) {
+        // Every scan holds a multiple of ZERO_TEST_RUN (16 to 1024) levels.
+        // An OR over a fixed-size run vectorises; `all(== 0)` exits per
+        // level and did not: VP9 Default -3.5% / -4.7% instructions (crowd /
+        // bodycam 720p, 30 f, gate build; streams identical).
+        let (runs, rest) = levels[..self.scan.len()].as_chunks::<ZERO_TEST_RUN>();
+        debug_assert_eq!(rest.len(), 0);
+        for (run, chunk) in runs.iter().enumerate() {
+            if chunk.iter().fold(0, |any, &level| any | level) == 0 {
                 continue;
             }
             for (i, _) in chunk.iter().enumerate().filter(|&(_, &level)| level != 0) {
