@@ -297,6 +297,9 @@ sync_integration_tree() {
 #     run/fix-forward; failure appends `head base log` to run/fix-forward: its
 #     owner fixes forward, nothing is reverted (2026-11-15: the two failed
 #     verifies that day were a stale generated file and a renamed label).
+# Each success also appends `PART HEAD DATE` to run/verified-history, never
+# pruned: a release picks its commit from it (tools/release/release.py), long
+# after the check logs are gone.
 # A part already running elsewhere is skipped (the next call covers its heads).
 verify_target() {
     local status=0
@@ -328,6 +331,7 @@ verify_streams() {
         timed "streams" conformance_check_plan "$scope") >"$log" 2>&1 || status=$?
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
+        record_verified streams "$head"
         rm -f "$failed"
         printf '== streams verified: %s %s\n' "$target" "${head:0:9}"
     else
@@ -361,6 +365,7 @@ verify_tests() {
         >"$log" 2>&1 || status=$?
     if ((status == 0)); then
         printf '%s\n' "$head" >"$state"
+        record_verified tests "$head"
         rm -f "$list"
         printf '== tests verified: %s %s\n' "$target" "${head:0:9}"
     else
@@ -368,6 +373,11 @@ verify_tests() {
         report_failure "TESTS FAILED (fix forward; listed in $list)" "$head" "$base" "$log"
     fi
     return "$status"
+}
+
+# `record_verified PART HEAD`: the durable record of one verified head.
+record_verified() {
+    printf '%s %s %s\n' "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$data_root/run/verified-history"
 }
 
 # `verifier_tree DIR HEAD`: the verifier worktree DIR (created on first use) at

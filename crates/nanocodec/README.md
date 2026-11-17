@@ -12,6 +12,12 @@ nanocodec = { version = "0.2", default-features = false, features = ["h264", "av
 The crate documentation has an encode and decode example. The command-line
 tool is the `nanocodec-cli` crate.
 
+The speed figures on the results site are measured on each release's
+profile-guided (PGO) builds of the command-line tool and C API, which are
+attached to the GitHub release. A crate built by cargo is a plain release
+build: on x86 it took 1.4-3.2 % more CPU than the PGO build (measured
+2026-11-11 on AV1, HEVC and H.264 Faster).
+
 - Repository: <https://github.com/cribbinsb/nanocodec>
 - Documentation and results: <https://cribbinsb.github.io/nanocodec/>
 

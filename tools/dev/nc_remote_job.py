@@ -63,7 +63,9 @@ def print_status() -> None:
         job = json.loads(path.read_text())
         running[job["slot"]] = (path.parent.name, job)
     for slot in sorted((BOX / "slots").iterdir(), key=lambda p: int(p.name)):
-        if slot.name in running:
+        # A running.json whose slot lock is free belongs to a job that died
+        # without cleanup (e.g. a spot reclaim): the slot is free.
+        if slot.name in running and slot_held(slot):
             name, job = running[slot.name]
             print(f"  slot {slot.name}: {name} since {job['started']}: {job['command'][:100]}")
         else:

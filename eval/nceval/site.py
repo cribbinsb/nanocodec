@@ -172,6 +172,10 @@ LENS_FAMILIES = {"aom-rt-s10": "libaom-av1-cpu10", "aom-rt-s8": "libaom-av1-cpu8
 LENS_ONLY = {"hm-ldp": {"owner": "HM", "codec": "hevc", "preset": "LDP", "tune": "",
                         "ours": False, "version_key": "", "label": "HM (reference model), low delay P"}}
 OWN_PREFIX = "nanocodec-"
+#: The published release whose profile-guided builds the charts are timed on
+#: (tools/release/release.py writes it at a release's chart stage): {"version",
+#: "commit" (8 characters), "build": "PGO"}. Speed captions name it.
+RELEASE_FILE = RESULTS / "release.json"
 TUNE_SEPARATOR = "~"
 #: Each codec's Default is the ladder's medium (no preset file): its preset
 #: name, and what its unsuffixed chart label ("H.264") gains on the site.
@@ -354,6 +358,16 @@ def speed_notes(timing: dict[str, dict]) -> dict[str, dict]:
             for platform, record in timing.items()}
 
 
+def build_label(build: str) -> str:
+    """A timed build as captions name it: the release's (RELEASE_FILE) as
+    'release 0.3.0, PGO build (1a2b3c4d)', any other by its commit."""
+    if RELEASE_FILE.is_file():
+        release = json.loads(RELEASE_FILE.read_text())
+        if build == release["commit"]:
+            return f"release {release['version']}, {release['build']} build ({build})"
+    return build
+
+
 def timed_builds(record: dict) -> str | None:
     """The builds a timing record's encoders of ours ran on: the most common (the record's
     own where no point names one), and any other build some points carry (fixedqp_timing.py merge,
@@ -367,8 +381,8 @@ def timed_builds(record: dict) -> str | None:
         return None
     later = sorted((b, n) for b, n in counts.items() if b != main)
     if not later:
-        return main
-    return f"{main} ({', '.join(f'{b} for {n}' for b, n in later)})"
+        return build_label(main)
+    return f"{build_label(main)} ({', '.join(f'{build_label(b)} for {n}' for b, n in later)})"
 
 
 def size_range(sizes: list[tuple[int, int]]) -> str:

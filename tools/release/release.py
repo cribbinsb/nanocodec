@@ -1,0 +1,1057 @@
+#!/usr/bin/env python3
+"""Make one nanocodec release: version, PGO builds, charts, crates, GitHub, mirror.
+
+    python3 tools/release/release.py VERSION [--commit SHA] [--from STAGE] [--only STAGE]
+        [--pipe-clean] [--real [--yes-publish]]
+
+Day-to-day builds stay plain release builds; only a published version gets
+profile-guided (PGO) builds, and the published charts change only at a
+release (docs/PROCEDURES.md "Release"). The stages, in order, each resumable
+(a finished stage is recorded in the release's state file and skipped; `--from`
+redoes one and those after it) and idempotent:
+
+  commit   The release commit: the newest commit of the integration branch that
+           passed both parts of `land.sh --verify` (run/verified-history, the
+           verified-head files, the verify logs), or --commit, which must have.
+           In its own worktree: the workspace version bumped, the lockfile and
+           the crate README's dependency line with it, and a CHANGELOG section
+           drafted from the commit subjects since the last release for a human
+           to edit. One commit on top ("release X.Y.Z: ..."), whose diff may touch
+           only those files, so the verified code is exactly what ships.
+           --real: the draft must have been edited (its marker line removed)
+           before the commit is made; branch release/vX.Y.Z and tag vX.Y.Z on
+           it, and the same commit cherry-picked and landed on the integration
+           branch by land.sh, so the main line carries the version and CHANGELOG.
+  pgo      PGO builds of that commit, cached by commit: x86_64 on the remote build
+           box (nc-remote), aarch64 on the Jetson (its own toolchain), each the CLI
+           plus the C API's static and shared libraries, trained on public
+           clips (TRAINING_CLIPS: never the charts' or the lens's) and built
+           beside a plain release build of the same commit. Every shipped
+           preset of every codec must code byte-identical streams in both
+           (tools/dev/preset_identity.py: on the PC for x86, on the board for
+           aarch64), and the Jetson's PGO-over-plain cycles on one preset are
+           recorded (tools/dev/jperf.py). WASM stays a plain build: PGO needs
+           the profile run on the target, and the browser module is built by
+           tools/web/build.sh as before.
+  charts   --real: in a worktree of the integration head, docs/results/release.json
+           names the release (the site's speed captions read "release X.Y.Z,
+           PGO build (commit)"), tools/dev/chart_refresh.py --pgo re-measures
+           and re-times every family of ours (c8a Zen 5 and Jetson, held-out
+           charts too), the CBR zero lines are re-measured with XPSNR on
+           (nceval.chart measure; the held-out ones by aws_heldout_chart.py),
+           the Graviton4 (c8g) and Zen 3 (c6a) CBR series by aws_timing.py and
+           anchor_chart_timing.py merge, and the Fixed QP lens's encoders of
+           ours re-timed on c8a, c6a, c8g and the Jetson (fixedqp_timing.py
+           plan/run/record/merge, SVT-AV1 M10/M12/M13 as the same-session check);
+           then committed and landed. Dry run: the full refresh is printed
+           (chart_refresh --dry-run, aws_timing --dry-run) and a pipe-clean
+           runs: the Fixed QP lens timing of one encoder on one sequence on
+           each machine, and the Jetson's CBR timing of one family, into
+           this release's directory only. The CBR chart's timing clips are
+           private: they go to rented machines only in a real release, as
+           chart_refresh does today.
+  crates   tools/release/publish_crates.sh at the release commit: its dry run
+           (every crate packaged and built, on the build box) unless
+           --yes-publish. crates.io carries source, so PGO never reaches crate
+           users (the CHANGELOG draft and the crate README say so).
+  github   The GitHub release's files: per architecture a tarball of the PGO CLI,
+           libnanocodec.a, libnanocodec.so and nanocodec.h, SHA256SUMS, the
+           release notes (the CHANGELOG section) and the `gh release create`
+           command. The tag goes on a public commit: the release commit's tree
+           minus the internal docs (publish_public.py's filter), parented on
+           the public head and reachable from the tag alone. Executed only
+           with --yes-publish.
+  publish  --real: the mirror (overnight ref, mirror.py, publish_public.py) and the
+           results site (tools/web/publish.sh from its own worktree). Dry run:
+           publish_public.py --dry-run.
+
+Modes. The default is a dry run: every stage does its work in this release's
+own directory (RELEASE_ROOT/vX.Y.Z-dry) and worktree, and nothing outside them
+changes: no tag, branch, landing, docs/results write, upload or push.
+`--pipe-clean` trains PGO on one codec and keeps stage 3 to its pipe-clean, to
+prove the plumbing quickly. `--real` makes the release (tag, landings,
+charts, mirror); `--yes-publish`, which only the owner gives, per release,
+uploads (crates.io, the GitHub release and its tag). A published crate
+version can never be removed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+DATA = Path.home() / "nanocodec-data"
+RELEASE_ROOT = DATA / "release"
+#: PGO builds by release commit (BUILDS/<commit8>[-pipeclean]/<arch>/).
+BUILDS = RELEASE_ROOT / "builds"
+WORKTREES = DATA / "worktrees"
+INTEGRATION = "variance-integration"
+RUN = DATA / "run"
+VERIFY_HISTORY = RUN / "verified-history"
+VERIFY_HEADS = {"streams": RUN / "verified-streams-head", "tests": RUN / "verified-head"}
+VERIFY_LOGS = RUN / "land-logs"
+VERIFIED_LINE = re.compile(r"^== (streams|tests) verified: \S+ ([0-9a-f]{7,40})$")
+NC_REMOTE = DATA / "bin" / "nc-remote"
+CARGO = Path.home() / ".cargo" / "bin" / "cargo"
+MEMORY_SCOPE = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=8G",
+                "-p", "MemorySwapMax=0"]
+#: The coordinator's public-mirror tools (outside the repo: they hold its push rules).
+OVERNIGHT = DATA / "work" / "overnight"
+PUBLISH_PUBLIC = OVERNIGHT / "publish_public.py"
+DEMO_PUBLISH_TREE = WORKTREES / "demo-publish"
+PUBLIC_REF = "refs/heads/public"
+#: The demo site and results pages are published from this worktree (PROCEDURES "Publishing").
+
+STAGES = ("commit", "pgo", "charts", "crates", "github", "publish")
+SHORT = 8
+
+# --- the release commit -------------------------------------------------------------------
+
+#: The only files the release commit may change.
+RELEASE_FILES = ("Cargo.toml", "Cargo.lock", "CHANGELOG.md", "crates/nanocodec/README.md")
+CRATE_README = "crates/nanocodec/README.md"
+DRAFT_MARKER = ("<!-- release.py draft: rewrite this section for users, then delete this "
+                "line (a real release refuses to commit while it is here) -->")
+RELEASE_SUBJECT = re.compile(r"^release (\d+\.\d+\.\d+)\b")
+#: Commit-subject areas that are internal work, counted in the draft instead of listed.
+INTERNAL_AREAS = {"docs", "eval", "tools", "ci", "record", "claude.md", "procedures",
+                  "status", "readme", "land.sh", "web", "coordinator", "other"}
+SPEED_NOTE = (
+    "- **Speed figures.** The results site's speeds are measured on this release's "
+    "profile-guided (PGO) builds of the command-line tool and C API (x86_64 and aarch64, "
+    "attached to the GitHub release). crates.io carries source: a crate built by cargo is a "
+    "plain release build, which took 1.4-3.2 % more CPU on x86 than PGO (AV1, HEVC and H.264 "
+    "Faster, 2026-11-11). The browser (WASM) module is a plain build.")
+
+# --- PGO ----------------------------------------------------------------------------------
+
+#: Public 1280x720 50 fps sequences (Xiph derf; 4:2:0, 8-bit) the PGO builds train on.
+#: None is a chart or lens clip (the CBR chart times private clips, the Fixed QP lens
+#: the AOM CTC set), so the timed content never shaped the profile; they are kept on
+#: this PC and the Jetson only, as raw cuts, never redistributed.
+DERF = "https://media.xiph.org/video/derf/y4m"
+TRAINING_CLIPS = ("720p50_parkrun_ter", "old_town_cross_420_720p50",
+                  "in_to_tree_420_720p50", "ducks_take_off_420_720p50")
+TRAIN_WIDTH, TRAIN_HEIGHT = 1280, 720
+TRAIN_FRAME_BYTES = TRAIN_WIDTH * TRAIN_HEIGHT * 3 // 2
+#: Frames cut from each sequence, from TRAIN_START (past any title leader), and the
+#: frames pgo_build.sh encodes of each.
+TRAIN_START, TRAIN_FRAMES = 50, 30
+PGO_FRAMES = 20
+#: The pipe-clean trains on one codec's presets (the build covers every codec still).
+PIPE_CLEAN_CODECS = "av1"
+TRAIN_DIR = RELEASE_ROOT / "pgo-clips"
+#: The same cuts zstd-compressed for the build box (nc-remote never syncs *.yuv files).
+TRAIN_ZST_DIR = RELEASE_ROOT / "pgo-clips-zst"
+#: The x86 build: a job on the remote build box, its outputs fetched into the worktree.
+REMOTE_JOB = "release-pgo"
+REMOTE_OUT = "remote-out/release"
+#: The Jetson build: sources unpacked per commit, its own persistent targets.
+JETSON_ROOT = "nanocodec-data/release-build"
+JETSON_TARGETS = "nanocodec-data/targets/release"
+JETSON_JOBS = 4
+JETSON_IDENTITY_CLIPS = "~/nanocodec-data/clips/quick"
+JETSON_BUILD = "~/nanocodec-data/jetson-build.sh"
+JETSON_TIMED = "~/nanocodec-data/jetson-timed.sh"
+#: The sources an aarch64 build and its checks need (the presets live in crates/).
+JETSON_SOURCES = ("crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo",
+                  "eval/nceval", "tools/dev/pgo_build.sh", "tools/dev/preset_identity.py",
+                  "tools/dev/jperf.py")
+#: The Jetson's PGO-over-plain cycle check: one preset, one clip, min of the rounds.
+CYCLES_ROUNDS = 3
+CYCLES_CLIP = "crowd_mot17_09"
+CYCLES_ARGS = ("encode --codec av1 --preset fast --input {} --width 1280 --height 720 "
+               "--fps 30 --frames 60 --bitrate 600 --buffer-ms 1000 --intra-period 300 "
+               "--output /dev/null")
+ARCHES = ("x86_64", "aarch64")
+ARTIFACTS = ("nanocodec", "libnanocodec.a", "libnanocodec.so")
+CAPI_HEADER = "crates/nc-capi/include/nanocodec.h"
+
+# --- charts -------------------------------------------------------------------------------
+
+CHART_TREE = WORKTREES / "release-charts"
+RESULTS = "docs/results"
+RELEASE_RECORD = f"{RESULTS}/release.json"
+BUILDS_RECORD = f"{RESULTS}/bd-vs-speed-builds.json"
+CHART_BUILDS = DATA / "charts" / "builds"
+JETSON_CHART_BUILDS = "nanocodec-data/charts/builds"
+PGO_TIMED_BINARY = "nanocodec-timed-pgo"
+JETSON_PGO_BINARY = "nanocodec-pgo"
+ZERO_LINES = ("x264-medium", "x264-medium~psnr")
+HELDOUT_CLIPSETS = (DATA / "clips" / "independent_fresh_2026-11-13.json",
+                    DATA / "clips" / "independent_2026-11-13.json")
+#: Fixed QP lens: per machine its timing record and how our build is named there.
+LENS_MACHINES = {"x86": "fixed-qp-timing-x86.json", "zen3": "fixed-qp-timing-zen3.json",
+                 "graviton": "fixed-qp-timing-graviton.json",
+                 "jetson": "fixed-qp-timing-jetson.json"}
+#: SVT-AV1's lens rungs timed beside ours as the same-session check (PROCEDURES).
+LENS_CHECK = ("svtav1-m10", "svtav1-m12", "svtav1-m13")
+#: The rented CBR series beyond chart_refresh's c8a: instance, record, machine wording.
+CBR_SERIES = {"zen3": ("c6a.large", "bd-vs-speed-timing-zen3.json",
+                       "AWS c6a.large, Zen 3, one pair at a time"),
+              "graviton": ("c8g.large", "bd-vs-speed-timing-graviton.json",
+                           "AWS c8g.large, one pair at a time")}
+AARCH64_TOOLS = DATA / "anchors" / "aarch64" / "bin"
+#: The pipe-clean's single encoder and sequence (Fixed QP) and family (Jetson CBR).
+PIPE_CLEAN_ENCODER = "nanocodec-av1@fast"
+PIPE_CLEAN_SEQUENCE = "Johnny_1280x720_60"
+PIPE_CLEAN_FAMILY = "nanocodec-av1@fast"
+
+# --- GitHub -------------------------------------------------------------------------------
+
+GH_REPO = "cribbinsb/nanocodec"
+
+
+def say(line: str) -> None:
+    print(f"[release {datetime.datetime.now():%H:%M:%S}] {line}", flush=True)
+
+
+def run(cmd: list[str], cwd: Path = REPO, log: Path | None = None, check: bool = True,
+        capture: bool = False, env: dict[str, str] | None = None) -> str:
+    """Run `cmd`; its output to `log` (appended) or captured and returned."""
+    say(f"$ {shlex.join(cmd)}" + (f"  [{log}]" if log else ""))
+    full_env = {**os.environ, **env} if env else None
+    if log:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as out:
+            status = subprocess.run(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, env=full_env).returncode
+        if check and status:
+            raise SystemExit(f"failed ({status}): see {log}")
+        return ""
+    result = subprocess.run(cmd, cwd=cwd, capture_output=capture, text=True,
+                            stdin=subprocess.DEVNULL, env=full_env)
+    if check and result.returncode:
+        raise SystemExit(f"failed ({result.returncode}): {shlex.join(cmd)}\n"
+                         f"{(result.stderr or '')[-2000:]}")
+    return (result.stdout or "").strip() if capture else ""
+
+
+def git(*args: str, cwd: Path = REPO) -> str:
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def jetson_host() -> str:
+    sys.path.insert(0, str(REPO / "eval"))
+    from nceval.localenv import require
+    return require("NC_JETSON")
+
+
+def jetson(command: str, log: Path | None = None) -> str:
+    return run(["ssh", "-o", "BatchMode=yes", jetson_host(), command], log=log,
+               capture=log is None)
+
+
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+# --- verified commits -----------------------------------------------------------------------
+
+def verified_commits() -> dict[str, set[str]]:
+    """Every commit each part of `land.sh --verify` passed (full hashes): the durable
+    history, the current head files and the verify logs still kept (LOG_DAYS)."""
+    found: dict[str, set[str]] = {"streams": set(), "tests": set()}
+    if VERIFY_HISTORY.is_file():
+        for line in VERIFY_HISTORY.read_text().splitlines():
+            part, commit, *_ = line.split()
+            found[part].add(commit)
+    for part, path in VERIFY_HEADS.items():
+        if path.is_file():
+            found[part].add(path.read_text().strip())
+    for log in sorted(VERIFY_LOGS.glob("*.console")):
+        for line in log.read_text(errors="replace").splitlines():
+            match = VERIFIED_LINE.match(line.strip())
+            if match:
+                found[match[1]].add(match[2])
+    return {part: {full_commit(c) for c in commits if full_commit(c)}
+            for part, commits in found.items()}
+
+
+def full_commit(commit: str) -> str | None:
+    result = subprocess.run(["git", "-C", str(REPO), "rev-parse", "-q", "--verify",
+                             f"{commit}^{{commit}}"], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def pick_commit(requested: str | None) -> str:
+    """The release's base: `requested`, or the newest integration commit that passed
+    both verify parts; refused unless both passed it."""
+    verified = verified_commits()
+    both = verified["streams"] & verified["tests"]
+    if requested:
+        commit = full_commit(requested) or sys.exit(f"no commit {requested}")
+        missing = [p for p in ("streams", "tests") if commit not in verified[p]]
+        if missing:
+            sys.exit(f"{commit[:9]} has not passed land.sh --verify ({' and '.join(missing)}): "
+                     f"run `tools/dev/land.sh --verify` while it is the head, or pick a "
+                     f"verified one")
+        return commit
+    for commit in git("rev-list", "--first-parent", "-2000", INTEGRATION).split():
+        if commit in both:
+            return commit
+    sys.exit("no integration commit passed both verify parts: run tools/dev/land.sh --verify")
+
+
+def last_release(base: str) -> tuple[str, str]:
+    """(commit, version) of the newest release before `base`: a vX.Y.Z tag on its
+    history, else the newest `release X.Y.Z` commit subject."""
+    tags = [t for t in git("tag", "--merged", base, "--sort=-v:refname", "v*").split()
+            if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
+    if tags:
+        return git("rev-list", "-1", tags[0]), tags[0][1:]
+    for line in git("log", "--first-parent", "--format=%H %s", base).splitlines():
+        commit, _, subject = line.partition(" ")
+        match = RELEASE_SUBJECT.match(subject)
+        if match:
+            return commit, match[1]
+    sys.exit("no earlier release (tag or `release X.Y.Z` commit) to draft the CHANGELOG from")
+
+
+# --- version bump and CHANGELOG -------------------------------------------------------------
+
+def bump_files(tree: Path, old: str, new: str) -> None:
+    """The workspace version, the internal dependency versions, the lockfile's
+    entries of our packages and the crate README's dependency line: `old` -> `new`."""
+    manifest = tree / "Cargo.toml"
+    text = manifest.read_text()
+    text, package = re.subn(r'(\[workspace\.package\]\nversion = ")' + re.escape(old) + '"',
+                            r"\g<1>" + new + '"', text)
+    text, deps = re.subn(r'(package = "nanocodec-[a-z0-9-]+", version = ")' + re.escape(old)
+                         + '"', r"\g<1>" + new + '"', text)
+    if package != 1 or not deps:
+        sys.exit(f"Cargo.toml: workspace version {old} not found as expected")
+    manifest.write_text(text)
+    lock = tree / "Cargo.lock"
+    text, entries = re.subn(r'(name = "nanocodec[a-z0-9-]*"\nversion = ")' + re.escape(old)
+                            + '"', r"\g<1>" + new + '"', lock.read_text())
+    if not entries:
+        sys.exit(f"Cargo.lock: no nanocodec package at {old}")
+    lock.write_text(text)
+    readme = tree / CRATE_README
+    short_old, short_new = old.rsplit(".", 1)[0], new.rsplit(".", 1)[0]
+    text = readme.read_text().replace(f'version = "{short_old}"', f'version = "{short_new}"')
+    readme.write_text(text)
+
+
+def changelog_draft(version: str, since: str, since_version: str, base: str) -> str:
+    """A CHANGELOG section for a human to rewrite: the speed note, then the commit
+    subjects since the last release grouped by their area prefix (internal areas
+    counted only)."""
+    subjects = git("log", "--no-merges", "--format=%s", f"{since}..{base}").splitlines()
+    groups: dict[str, list[str]] = {}
+    for subject in subjects:
+        area, sep, rest = subject.partition(":")
+        key = area.strip().lower() if sep and len(area) <= 24 and " " not in area.strip() \
+            else "other"
+        groups.setdefault(key, []).append(rest.strip() if key != "other" else subject)
+    today = datetime.date.today().isoformat()
+    lines = [f"## {version} ({today})", DRAFT_MARKER, "", SPEED_NOTE, "",
+             f"### Changes since {since_version} ({len(subjects)} commits; draft, by area)"]
+    internal = []
+    for area in sorted(groups, key=lambda a: (-len(groups[a]), a)):
+        if area in INTERNAL_AREAS:
+            internal.append(f"{area} {len(groups[area])}")
+            continue
+        lines += ["", f"#### {area} ({len(groups[area])})", *(f"- {s}" for s in groups[area])]
+    if internal:
+        lines += ["", f"Internal (not listed): {', '.join(internal)}."]
+    return "\n".join(lines) + "\n\n"
+
+
+def insert_changelog(tree: Path, section: str) -> None:
+    path = tree / "CHANGELOG.md"
+    text = path.read_text()
+    head = "# Changelog\n\n"
+    if not text.startswith(head):
+        sys.exit("CHANGELOG.md does not start with '# Changelog'")
+    path.write_text(head + section + text[len(head):])
+
+
+def changelog_section(text: str, version: str) -> str:
+    """One version's CHANGELOG section, without its heading."""
+    match = re.search(rf"^## {re.escape(version)} \(.*?\)\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    if not match:
+        sys.exit(f"CHANGELOG.md has no section {version}")
+    return match[1].strip() + "\n"
+
+
+# --- the release ----------------------------------------------------------------------------
+
+class Release:
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.version = args.version
+        self.real = args.real
+        self.publish = args.yes_publish
+        self.pipe_clean = args.pipe_clean
+        self.name = f"v{self.version}" + ("" if self.real else "-dry")
+        self.root = RELEASE_ROOT / self.name
+        self.tree = WORKTREES / f"release-{self.name}"
+        self.state_file = self.root / "state.json"
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.state = (json.loads(self.state_file.read_text()) if self.state_file.is_file()
+                      else {"version": self.version, "stages": {}})
+
+    def save(self) -> None:
+        self.state_file.write_text(json.dumps(self.state, indent=1) + "\n")
+
+    def log(self, name: str) -> Path:
+        return self.root / "logs" / f"{name}.log"
+
+    @property
+    def commit(self) -> str:
+        return self.state["release_commit"]
+
+    @property
+    def short(self) -> str:
+        return self.commit[:SHORT]
+
+    @property
+    def build_key(self) -> str:
+        """A build's cache key: the commit, and whether it is a pipe-clean's."""
+        return self.short + ("-pipeclean" if self.pipe_clean else "")
+
+    def builds(self, arch: str) -> Path:
+        return BUILDS / self.build_key / arch
+
+    def version_line(self) -> str:
+        return f"nanocodec {self.version} {self.commit}"
+
+    # --- stage 1: commit ----------------------------------------------------------------
+
+    def stage_commit(self) -> dict:
+        base = pick_commit(self.args.commit)
+        current = re.search(r'\[workspace\.package\]\nversion = "([^"]+)"',
+                            git("show", f"{base}:Cargo.toml"))[1]
+        if version_tuple(self.version) <= version_tuple(current):
+            sys.exit(f"{self.version} is not after the workspace's {current}")
+        since, since_version = last_release(base)
+        say(f"release {self.version}: base {base[:9]} (verified: streams and tests), "
+            f"last release {since_version} at {since[:9]}")
+        if self.real and git("tag", "-l", f"v{self.version}"):
+            sys.exit(f"tag v{self.version} exists")
+        if not (self.tree / ".git").exists():
+            run(["git", "worktree", "add", "--detach", str(self.tree), base])
+        head = git("rev-parse", "HEAD", cwd=self.tree)
+        if head != base and git("rev-parse", "HEAD~1", cwd=self.tree) == base:
+            say(f"release commit {head[:9]} exists on {base[:9]}: kept")
+            release = head
+        else:
+            if head != base:
+                run(["git", "checkout", "-q", "--detach", base], cwd=self.tree)
+            release = self.make_release_commit(base, current, since, since_version)
+        self.check_release_diff(base, release)
+        if self.real:
+            self.tag_and_land(release)
+        return {"base_commit": base, "release_commit": release, "previous": since_version}
+
+    def make_release_commit(self, base: str, current: str, since: str,
+                            since_version: str) -> str:
+        changelog = self.tree / "CHANGELOG.md"
+        if f"## {self.version} (" not in changelog.read_text():
+            bump_files(self.tree, current, self.version)
+            insert_changelog(self.tree, changelog_draft(self.version, since, since_version, base))
+            say(f"drafted CHANGELOG {self.version} in {changelog}")
+        if self.real and DRAFT_MARKER in changelog.read_text():
+            sys.exit(f"edit the drafted section of {changelog} (and delete its marker line), "
+                     f"then run this again")
+        # the lockfile must be what cargo would write (no network: the deps are unchanged)
+        run([str(CARGO), "metadata", "--locked", "--offline", "--format-version", "1",
+             "--no-deps"], cwd=self.tree, capture=True)
+        run(["git", "add", "--", *RELEASE_FILES], cwd=self.tree)
+        run(["git", "commit", "-q", "-m",
+             f"release {self.version}: workspace version, lockfile, crate README, CHANGELOG"],
+            cwd=self.tree)
+        return git("rev-parse", "HEAD", cwd=self.tree)
+
+    def check_release_diff(self, base: str, release: str) -> None:
+        changed = set(git("diff", "--name-only", base, release).split())
+        extra = changed - set(RELEASE_FILES)
+        if extra or git("rev-parse", f"{release}~1") != base:
+            sys.exit(f"the release commit must be one commit on {base[:9]} touching only "
+                     f"{', '.join(RELEASE_FILES)}; it touches {sorted(extra)}")
+
+    def tag_and_land(self, release: str) -> None:
+        """--real: branch and tag the release commit; land the same change on the
+        integration branch."""
+        branch, tag = f"release/v{self.version}", f"v{self.version}"
+        if not git("branch", "--list", branch):
+            run(["git", "branch", branch, release])
+        if not git("tag", "-l", tag):
+            run(["git", "tag", "-a", tag, "-m", f"nanocodec {self.version}", release])
+        if self.state.get("landed"):
+            return
+        lander = WORKTREES / f"release-land-v{self.version}"
+        land_branch = f"release-land/v{self.version}"
+        if not (lander / ".git").exists():
+            run(["git", "worktree", "add", "-b", land_branch, str(lander), INTEGRATION])
+        if git("log", "-1", "--format=%s", cwd=lander).startswith(f"release {self.version}:"):
+            say("the release change is already on the landing branch")
+        else:
+            run(["git", "cherry-pick", release], cwd=lander)
+        run(["tools/dev/land.sh"], cwd=lander, log=self.log("land-release"))
+        self.state["landed"] = git("rev-parse", "HEAD", cwd=lander)
+        self.save()
+
+    # --- stage 2: PGO builds and their checks --------------------------------------------
+
+    def stage_pgo(self) -> dict:
+        prepare_training_clips()
+        with ThreadPoolExecutor(2) as pool:
+            jobs = {"x86_64": pool.submit(self.build_x86), "aarch64": pool.submit(self.build_aarch64)}
+            results = {arch: job.result() for arch, job in jobs.items()}
+        if self.real:
+            self.place_chart_builds()
+        return results
+
+    def training_env(self) -> str:
+        clips = " ".join(f"$HOME/nanocodec-data/release/pgo-clips/{c}.yuv" for c in TRAINING_CLIPS)
+        codecs = f" PGO_CODECS={PIPE_CLEAN_CODECS}" if self.pipe_clean else ""
+        return f'PGO_CAPI=1 PGO_FRAMES={PGO_FRAMES} PGO_CLIPS="{clips}"{codecs}'
+
+    def build_x86(self) -> dict:
+        """The x86_64 PGO and plain builds on the remote box (cached), then the
+        identity check here."""
+        out = self.builds("x86_64")
+        began = time.monotonic()
+        if not self.cached(out):
+            # this checkout's pgo_build.sh (the release commit's may predate PGO_CAPI)
+            tool = self.root / "pgo_build.sh"
+            shutil.copy2(REPO / "tools/dev/pgo_build.sh", tool)
+            unpack = " && ".join(
+                f"zstd -d -q -f ~/{(TRAIN_ZST_DIR / c).relative_to(Path.home())}.yuv.zst "
+                f"-o ~/{(TRAIN_DIR / c).relative_to(Path.home())}.yuv" for c in TRAINING_CLIPS)
+            command = (
+                f"mkdir -p ~/{TRAIN_DIR.relative_to(Path.home())} && {unpack} && "
+                f"~/.cargo/bin/rustup component add llvm-tools >/dev/null && "
+                f"cp ~/{tool.relative_to(Path.home())} tools/dev/pgo_build.sh && "
+                f"mkdir -p {REMOTE_OUT}/pgo {REMOTE_OUT}/plain && "
+                f"{self.training_env()} tools/dev/pgo_build.sh . target/release-pgo "
+                f"{REMOTE_OUT}/pgo/nanocodec && "
+                f"CARGO_TARGET_DIR=target/release-plain cargo build -q --release --bin nanocodec && "
+                f"cp target/release-plain/release/nanocodec {REMOTE_OUT}/plain/nanocodec")
+            run([str(NC_REMOTE), "run", "--worktree", str(self.tree), "--name", REMOTE_JOB,
+                 "--sync", str(TRAIN_ZST_DIR), "--sync", str(tool), "--fetch", REMOTE_OUT,
+                 "--", command],
+                log=self.log("pgo-x86_64"))
+            self.collect(self.tree / REMOTE_OUT / "pgo", self.tree / REMOTE_OUT / "plain", out)
+        build_minutes = (time.monotonic() - began) / 60
+        self.check_version(run([str(out / "nanocodec"), "--version"], capture=True))
+        began = time.monotonic()
+        identity = self.identity_x86(out)
+        return {"build_minutes": round(build_minutes, 1), "identity": identity,
+                "identity_minutes": round((time.monotonic() - began) / 60, 1),
+                "sha256": {a: sha256(out / a) for a in ARTIFACTS}}
+
+    def cached(self, out: Path) -> bool:
+        """A complete build directory of this commit (its CLI names the commit)."""
+        binary = out / "nanocodec"
+        if not (binary.is_file() and (out / "plain" / "nanocodec").is_file()
+                and all((out / a).is_file() for a in ARTIFACTS)):
+            return False
+        if out.parent.name.endswith("-pipeclean") != self.pipe_clean:
+            return False
+        try:
+            self.check_version(run([str(binary), "--version"], capture=True))
+        except SystemExit:
+            return False
+        say(f"{out}: cached")
+        return True
+
+    def collect(self, pgo: Path, plain: Path, out: Path) -> None:
+        (out / "plain").mkdir(parents=True, exist_ok=True)
+        for artifact in ARTIFACTS:
+            shutil.copy2(pgo / artifact, out / artifact)
+        shutil.copy2(plain / "nanocodec", out / "plain" / "nanocodec")
+
+    def check_version(self, line: str) -> None:
+        if line.strip() != self.version_line():
+            raise SystemExit(f"build says {line.strip()!r}, not {self.version_line()!r}")
+
+    def identity_x86(self, out: Path) -> str:
+        """Every shipped preset: PGO and plain builds code identical streams (PC clips)."""
+        log = self.log("identity-x86_64")
+        run([*MEMORY_SCOPE, "python3", str(REPO / "tools/dev/preset_identity.py"),
+             str(out / "plain" / "nanocodec"), str(out / "nanocodec"), "--jobs", "8"], log=log)
+        return log.read_text().strip().splitlines()[-1]
+
+    def build_aarch64(self) -> dict:
+        """The aarch64 PGO and plain builds on the Jetson (cached), the identity check
+        and the PGO-over-plain cycle count there."""
+        out = self.builds("aarch64")
+        remote = f"{JETSON_ROOT}/{self.build_key}"
+        host = jetson_host()
+        began = time.monotonic()
+        if not self.cached_aarch64(out):
+            if not self.built_on_jetson(remote):
+                self.build_on_jetson(remote, host)
+            fetched = self.root / "fetch-aarch64"
+            fetched.mkdir(exist_ok=True)
+            run(["rsync", "-a", f"{host}:{remote}/pgo/", f"{fetched}/pgo/"])
+            run(["rsync", "-a", f"{host}:{remote}/plain/", f"{fetched}/plain/"])
+            self.collect(fetched / "pgo", fetched / "plain", out)
+            shutil.rmtree(fetched)
+        build_minutes = (time.monotonic() - began) / 60
+        self.check_version(jetson(f"~/{remote}/pgo/nanocodec --version"))
+        began = time.monotonic()
+        log = self.log("identity-aarch64")
+        jetson(f"cd ~/{remote}/src && {JETSON_BUILD} nice -n 19 python3 tools/dev/preset_identity.py "
+               f"~/{remote}/plain/nanocodec ~/{remote}/pgo/nanocodec "
+               f"--clip-dir {JETSON_IDENTITY_CLIPS} --jobs {JETSON_JOBS}", log=log)
+        identity = log.read_text().strip().splitlines()[-1]
+        identity_minutes = (time.monotonic() - began) / 60
+        return {"build_minutes": round(build_minutes, 1), "identity": identity,
+                "identity_minutes": round(identity_minutes, 1),
+                "cycles": self.jetson_cycles(remote),
+                "sha256": {a: sha256(out / a) for a in ARTIFACTS}}
+
+    def built_on_jetson(self, remote: str) -> bool:
+        """Both builds of this commit already on the board (a resumed stage)."""
+        names = " ".join(f"~/{remote}/pgo/{a}" for a in ARTIFACTS)
+        lines = jetson(f"ls {names} >/dev/null 2>&1 && ~/{remote}/pgo/nanocodec --version && "
+                       f"~/{remote}/plain/nanocodec --version || true").splitlines()
+        done = lines == [self.version_line()] * 2
+        if done:
+            say(f"Jetson builds of {self.short} exist: kept")
+        return done
+
+    def build_on_jetson(self, remote: str, host: str) -> None:
+        self.jetson_sources(remote)
+        jetson("mkdir -p ~/nanocodec-data/release/pgo-clips")
+        run(["rsync", "-a", f"{TRAIN_DIR}/", f"{host}:nanocodec-data/release/pgo-clips/"])
+        build = (
+            f"cd ~/{remote}/src && ~/.cargo/bin/rustup component add llvm-tools >/dev/null && "
+            f"mkdir -p ~/{remote}/pgo ~/{remote}/plain && "
+            f"{JETSON_BUILD} nice -n 19 env JOBS={JETSON_JOBS} NC_BUILD_COMMIT={self.commit} "
+            f"{self.training_env()} bash tools/dev/pgo_build.sh . ~/{JETSON_TARGETS}/pgo "
+            f"~/{remote}/pgo/nanocodec && "
+            f"{JETSON_BUILD} nice -n 19 env NC_BUILD_COMMIT={self.commit} "
+            f"~/.cargo/bin/cargo build -q --release -j{JETSON_JOBS} --bin nanocodec "
+            f"--target-dir ~/{JETSON_TARGETS}/plain && "
+            f"cp ~/{JETSON_TARGETS}/plain/release/nanocodec ~/{remote}/plain/nanocodec")
+        jetson(build, log=self.log("pgo-aarch64"))
+
+    def cached_aarch64(self, out: Path) -> bool:
+        return (all((out / a).is_file() for a in ARTIFACTS)
+                and (out / "plain" / "nanocodec").is_file()
+                and out.parent.name.endswith("-pipeclean") == self.pipe_clean)
+
+    def jetson_sources(self, remote: str) -> None:
+        """The release commit's build inputs unpacked on the board (git archive), with
+        the release tools of this checkout (the release commit may predate them)."""
+        sources = [p for p in JETSON_SOURCES if not p.startswith("tools/") and subprocess.run(
+            ["git", "-C", str(REPO), "cat-file", "-e", f"{self.commit}:{p}"],
+            capture_output=True).returncode == 0]
+        archive = self.root / "aarch64-sources.tar"
+        run(["git", "archive", "--format=tar", "-o", str(archive), self.commit, *sources])
+        with tarfile.open(archive, mode="a") as tar:
+            for tool in (p for p in JETSON_SOURCES if p.startswith("tools/")):
+                tar.add(REPO / tool, arcname=tool)
+        with archive.open("rb") as stream:
+            subprocess.run(["ssh", "-o", "BatchMode=yes", jetson_host(),
+                            f"mkdir -p ~/{remote}/src && tar -x -C ~/{remote}/src"],
+                           stdin=stream, check=True)
+        archive.unlink()
+
+    def jetson_cycles(self, remote: str) -> str:
+        """PGO over plain on the Jetson's timing core (jperf: min of rounds, one preset)."""
+        jetson(f"cd ~/{remote} && ln -sf plain/nanocodec nanocodec-plain && "
+               f"ln -sf pgo/nanocodec nanocodec-pgo")
+        log = self.log("cycles-aarch64")
+        jetson(f"cd ~/{remote} && {JETSON_TIMED} python3 src/tools/dev/jperf.py "
+               f"--rounds {CYCLES_ROUNDS} --input {JETSON_IDENTITY_CLIPS}/{CYCLES_CLIP}.yuv "
+               f"nanocodec-plain nanocodec-pgo -- {CYCLES_ARGS}", log=log)
+        return " | ".join(line.strip() for line in log.read_text().splitlines()
+                          if "nanocodec-" in line and "instr" in line)
+
+    def place_chart_builds(self) -> None:
+        """--real: the PGO builds where chart_refresh --pgo times them."""
+        target = CHART_BUILDS / self.short
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.builds("x86_64") / "nanocodec", target / PGO_TIMED_BINARY)
+        jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.short} && cp ~/{JETSON_ROOT}/{self.build_key}"
+               f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.short}/{JETSON_PGO_BINARY}")
+
+    # --- stage 3: charts ------------------------------------------------------------------
+
+    def stage_charts(self) -> dict:
+        if self.pipe_clean or not self.real:
+            return self.charts_dry()
+        return self.charts_real()
+
+    def our_families(self, tree: Path) -> list[str]:
+        return sorted(json.loads((tree / BUILDS_RECORD).read_text())["families"])
+
+    def chart_commands(self, tree: Path) -> list[tuple[str, list[str]]]:
+        """(log name, command) of a release's whole chart refresh, run in `tree`."""
+        families = ",".join(self.our_families(tree))
+        ours = [f for f in self.lens_encoders() if f.startswith("nanocodec-")]
+        commands = [("chart-refresh", ["python3", "tools/dev/chart_refresh.py", self.short,
+                                       "--families", families, "--pgo", "--heldout"])]
+        record = json.loads((tree / BUILDS_RECORD).read_text())
+        base = CHART_BUILDS / record["base"]
+        commands.append(("zero-line-xpsnr", [
+            "bash", "-c", f"cd eval && python3 -m nceval.chart measure --binary {base}/nanocodec "
+            f"--presets-dir {base}/presets --points {','.join(ZERO_LINES)} --workers 8 "
+            f"--over-budget"]))
+        for clipset in HELDOUT_CLIPSETS:
+            commands.append((f"zero-line-xpsnr-{clipset.stem}", [
+                "python3", "tools/dev/aws_heldout_chart.py", "run", "--clipset", str(clipset),
+                "--families", ",".join(ZERO_LINES), "--purpose", "release-zero-line"]))
+        x86 = self.builds("x86_64") / "nanocodec"
+        arm = self.builds("aarch64") / "nanocodec"
+        for machine, (instance, record_file, wording) in CBR_SERIES.items():
+            binary = ["--binary", str(arm), "--tools-dir", str(AARCH64_TOOLS),
+                      "--expect-version", self.version_line()] if machine == "graviton" \
+                else ["--binary", str(x86)]
+            out = self.root / f"cbr-{machine}"
+            commands.append((f"cbr-{machine}", [
+                "python3", "tools/dev/aws_timing.py", "--instance-type", instance, *binary,
+                "--repeats", "1", "--points", families, "--purpose", "release-cbr-timing",
+                "--out", str(out)]))
+            commands.append((f"cbr-{machine}-merge", [
+                "bash", "-c", f"python3 tools/dev/anchor_chart_timing.py merge --machine "
+                f"{shlex.quote(wording)} --build {self.short} --record {RESULTS}/{record_file} "
+                f"{out}/repeat-1/t-*.json"]))
+        for machine, record_file in LENS_MACHINES.items():
+            commands += self.lens_commands(machine, [*ours, *LENS_CHECK], ours,
+                                           f"{RESULTS}/{record_file}")
+        return commands
+
+    def lens_env(self) -> dict[str, str]:
+        """The lens planner resolves our tool by NC_NANOCODEC_BIN: the x86 PGO build (an
+        aarch64 plan names its own binary, which runs only there)."""
+        return {"NC_NANOCODEC_BIN": str(self.builds("x86_64"))}
+
+    def lens_encoders(self) -> list[str]:
+        sys.path.insert(0, str(REPO / "tools" / "dev"))
+        sys.path.insert(0, str(REPO / "eval"))
+        fixedqp = load_module("fixedqp_timing", REPO / "tools/dev/fixedqp_timing.py")
+        return fixedqp.chart_encoders()
+
+    def lens_commands(self, machine: str, encoders: list[str], merged: list[str] | None,
+                      record: str, sequences: str | None = None) -> list[tuple[str, list[str]]]:
+        """Plan, run and record our lens encodes on `machine` (and merge `merged` into
+        `record`; None: `record` is the output itself)."""
+        tool = ["python3", "tools/dev/fixedqp_timing.py"]
+        plan, out = self.root / f"lens-{machine}.json", self.root / f"lens-{machine}"
+        if machine == "jetson":
+            binary = ["--binary", f"~/{JETSON_ROOT}/{self.build_key}/pgo/nanocodec", "--rounds", "1"]
+        elif machine == "graviton":
+            binary = ["--binary", str(self.builds("aarch64") / "nanocodec"),
+                      "--expect-version", self.version_line()]
+        else:
+            binary = ["--binary", str(self.builds("x86_64") / "nanocodec")]
+        only = ["--sequences", sequences, "--rounds", "1"] if sequences else []
+        runner = ["run-jetson"] if machine == "jetson" else ["run"]
+        scratch = str(self.root / f"lens-{machine}-record.json") if merged else record
+        commands = [
+            (f"lens-{machine}-plan", [*tool, "plan", "--machine", machine, *binary,
+                                      "--encoders", ",".join(encoders), *only,
+                                      "--out", str(plan)]),
+            (f"lens-{machine}-run", [*tool, *runner, "--plan", str(plan), "--out", str(out)]),
+            (f"lens-{machine}-record", [*tool, "record", "--plan", str(plan), "--out", str(out),
+                                        "--build", self.short, "--record", scratch])]
+        if merged:
+            commands.append((f"lens-{machine}-merge", [*tool, "merge", "--record", record,
+                                                       "--from", scratch,
+                                                       "--encoders", ",".join(merged)]))
+        return commands
+
+    def charts_dry(self) -> dict:
+        """The full refresh printed; the pipe-clean run on every machine into this
+        release's directory."""
+        results: dict[str, object] = {}
+        began = time.monotonic()
+        run(["python3", "tools/dev/chart_refresh.py", self.short, "--families",
+             ",".join(self.our_families(REPO)), "--pgo", "--dry-run"],
+            log=self.log("charts-refresh-dry-run"))
+        for machine, (instance, _, _) in CBR_SERIES.items():
+            arm = machine == "graviton"
+            binary = self.builds("aarch64" if arm else "x86_64") / "nanocodec"
+            extra = ["--tools-dir", str(AARCH64_TOOLS), "--expect-version",
+                     self.version_line()] if arm else []
+            run(["python3", "tools/dev/aws_timing.py", "--instance-type", instance,
+                 "--binary", str(binary), *extra, "--repeats", "1", "--points",
+                 PIPE_CLEAN_FAMILY, "--dry-run"], log=self.log(f"charts-cbr-{machine}-dry-run"))
+        results["printed_minutes"] = round((time.monotonic() - began) / 60, 1)
+        if not self.real:
+            self.stage_jetson_pgo_for_charts()
+        try:
+            with ThreadPoolExecutor(len(LENS_MACHINES)) as pool:
+                jobs = {m: pool.submit(self.lens_pipe_clean, m) for m in LENS_MACHINES}
+                jobs["jetson-cbr"] = pool.submit(self.cbr_jetson_pipe_clean)
+                for name, job in jobs.items():
+                    results[name] = job.result()
+        finally:
+            if not self.real:  # the dry run leaves no chart build behind on the board
+                placed = f"~/{JETSON_CHART_BUILDS}/{self.short}"
+                jetson(f"rm -f -- {placed}/{JETSON_PGO_BINARY} && rmdir --ignore-fail-on-non-empty "
+                       f"-- {placed}")
+        return results
+
+    def lens_pipe_clean(self, machine: str) -> dict:
+        began = time.monotonic()
+        record = self.root / f"lens-{machine}-pipe-clean.json"
+        for name, command in self.lens_commands(machine, [PIPE_CLEAN_ENCODER], None,
+                                                str(record), PIPE_CLEAN_SEQUENCE):
+            run(command, log=self.log(f"charts-{name}"), env=self.lens_env())
+        point = json.loads(record.read_text())["points"][PIPE_CLEAN_ENCODER]
+        return {"minutes": round((time.monotonic() - began) / 60, 1),
+                "ms_per_frame": point["ms_per_frame"]}
+
+    def stage_jetson_pgo_for_charts(self) -> None:
+        """The dry run's Jetson CBR pipe-clean times the PGO build where chart_refresh
+        --pgo looks for it (no COMMIT marker: no tool takes it for a chart build)."""
+        jetson(f"mkdir -p ~/{JETSON_CHART_BUILDS}/{self.short} && cp ~/{JETSON_ROOT}/{self.build_key}"
+               f"/pgo/nanocodec ~/{JETSON_CHART_BUILDS}/{self.short}/{JETSON_PGO_BINARY}")
+
+    def cbr_jetson_pipe_clean(self) -> dict:
+        """chart_refresh's own Jetson timing of one family on the PGO build (its stream
+        check included), kept in this release's directory instead of merged."""
+        began = time.monotonic()
+        refresh_tool = load_module("chart_refresh", REPO / "tools/dev/chart_refresh.py")
+        args = argparse.Namespace(commit=self.short, families=PIPE_CLEAN_FAMILY, retime="",
+                                  time_anchors="", clipset=None, seed=False, pgo=True,
+                                  dry_run=False, metrics_only=False)
+        refresh = refresh_tool.Refresh(args)
+        refresh.timed = [PIPE_CLEAN_FAMILY]
+        out = self.root / "cbr-jetson-pipe-clean"
+        refresh.jetson_records(out)
+        record = json.loads((out / f"t-{PIPE_CLEAN_FAMILY}.json").read_text())
+        return {"minutes": round((time.monotonic() - began) / 60, 1),
+                "ms_per_frame": {c: v["ms_per_frame"]["point"]
+                                 for c, v in record["clips"].items()}}
+
+    def charts_real(self) -> dict:
+        """--real: the whole refresh in a worktree of the integration head, landed."""
+        tree = CHART_TREE
+        branch = f"release-charts/v{self.version}"
+        if not (tree / ".git").exists():
+            run(["git", "worktree", "add", "-b", branch, str(tree), INTEGRATION])
+        (tree / RELEASE_RECORD).write_text(json.dumps(
+            {"version": self.version, "commit": self.short, "build": "PGO"}, indent=1) + "\n")
+        timings = {}
+        for name, command in self.chart_commands(tree):
+            began = time.monotonic()
+            run(command, cwd=tree, log=self.log(f"charts-{name}"), env=self.lens_env())
+            timings[name] = round((time.monotonic() - began) / 60, 1)
+        run(["python3", "-m", "nceval.site"], cwd=tree / "eval", log=self.log("charts-site"))
+        run(["git", "add", "--", RESULTS, "web/results/data", "README.md"], cwd=tree)
+        run(["git", "commit", "-q", "-m", f"charts: release {self.version} (PGO builds of "
+             f"{self.short}) on every chart machine"], cwd=tree)
+        run(["tools/dev/land.sh"], cwd=tree, log=self.log("charts-land"))
+        return {"minutes": timings}
+
+    # --- stage 4: crates ------------------------------------------------------------------
+
+    def stage_crates(self) -> dict:
+        script = "tools/release/publish_crates.sh"
+        if self.publish:
+            # the real upload runs here, with this PC's `cargo login`, from the clean tag
+            run(["bash", str(REPO / script), "--yes-publish"], cwd=self.tree,
+                log=self.log("crates-publish"))
+            return {"published": True}
+        # the dry run packages and builds every crate: on the build box (no .git there,
+        # so cargo sees no dirty files; the script, which runs from its tree's
+        # tools/release, is this checkout's)
+        shutil.copy2(REPO / script, self.root / "publish_crates.sh")
+        command = (f"cp ~/{(self.root / 'publish_crates.sh').relative_to(Path.home())} {script} "
+                   f"&& bash {script}")
+        run([str(NC_REMOTE), "run", "--worktree", str(self.tree), "--name", REMOTE_JOB,
+             "--sync", str(self.root / "publish_crates.sh"), "--", command],
+            log=self.log("crates-dry-run"))
+        return {"published": False, "dry_run": "passed"}
+
+    # --- stage 5: GitHub release ----------------------------------------------------------
+
+    def stage_github(self) -> dict:
+        out = self.root / "github"
+        out.mkdir(exist_ok=True)
+        files = []
+        header = self.tree / CAPI_HEADER
+        for arch in ARCHES:
+            name = f"nanocodec-{self.version}-{arch}-linux"
+            tarball = out / f"{name}.tar.gz"
+            with tarfile.open(tarball, "w:gz") as tar:
+                for artifact in ARTIFACTS:
+                    tar.add(self.builds(arch) / artifact, arcname=f"{name}/{artifact}")
+                tar.add(header, arcname=f"{name}/include/nanocodec.h")
+            files.append(tarball)
+        sums = out / "SHA256SUMS"
+        sums.write_text("".join(f"{sha256(f)}  {f.name}\n" for f in files))
+        notes = out / "notes.md"
+        section = changelog_section((self.tree / "CHANGELOG.md").read_text(), self.version)
+        notes.write_text(section + "\n" + build_notes(self.version) + "\n")
+        public = self.public_tag_commit()
+        tag = f"v{self.version}"
+        commands = [["git", "push", "origin", f"{public}:refs/tags/{tag}"],
+                    ["gh", "release", "create", tag, "--repo", GH_REPO, "--verify-tag",
+                     "--title", f"nanocodec {self.version}", "--notes-file", str(notes),
+                     *map(str, files), str(sums)]]
+        script = out / "upload.sh"
+        script.write_text("#!/usr/bin/env bash\nset -euo pipefail\n"
+                          + "".join(shlex.join(c) + "\n" for c in commands))
+        if self.publish:
+            for command in commands:
+                run(command, log=self.log("github"))
+        return {"files": [f.name for f in files], "public_commit": public,
+                "uploaded": self.publish, "script": str(script)}
+
+    def public_tag_commit(self) -> str:
+        """The public commit the tag names: the release tree minus the internal docs,
+        parented on the public head (reachable from the tag only)."""
+        publish = load_module("publish_public", PUBLISH_PUBLIC)  # its git runs in REPO (main)
+        tree = publish.public_tree(self.commit)
+        publish.assert_clean(tree)
+        parent = git("rev-parse", PUBLIC_REF)
+        message = (f"nanocodec {self.version}\n\nRelease commit {self.commit[:9]}, "
+                   f"published tree.\n\n{publish.TRAILER}\n")
+        return git("commit-tree", tree, "-p", parent, "-m", message)
+
+    # --- stage 6: mirror and site -----------------------------------------------------------
+
+    def stage_publish(self) -> dict:
+        if not self.real:
+            run(["python3", str(PUBLISH_PUBLIC), "--dry-run"], cwd=REPO,
+                log=self.log("publish-dry-run"))
+            return {"mirrored": False}
+        run(["git", "update-ref", "refs/heads/overnight", f"refs/heads/{INTEGRATION}"])
+        run(["python3", str(OVERNIGHT / "mirror.py")], log=self.log("publish"))
+        run(["python3", str(PUBLISH_PUBLIC), "--internal", "refs/heads/overnight"],
+            log=self.log("publish"))
+        run(["tools/web/publish.sh", f"release {self.version}"], cwd=DEMO_PUBLISH_TREE,
+            env={"PUBLISH_BRANCH": INTEGRATION}, log=self.log("publish-site"))
+        return {"mirrored": True}
+
+    # --- driver ---------------------------------------------------------------------------
+
+    def execute(self) -> None:
+        start = STAGES.index(self.args.start) if self.args.start else 0
+        stages = [self.args.only] if self.args.only else STAGES[start:]
+        for stage in stages:
+            done = self.state["stages"].get(stage)
+            if done and not self.args.start and not self.args.only:
+                say(f"== {stage}: done earlier ({done['minutes']} min): skipped")
+                continue
+            if stage != "commit" and "release_commit" not in self.state:
+                sys.exit("no release commit yet: run the commit stage first")
+            say(f"== {stage}")
+            began = time.monotonic()
+            result = getattr(self, f"stage_{stage}")()
+            minutes = round((time.monotonic() - began) / 60, 1)
+            if stage == "commit":
+                self.state.update(base_commit=result["base_commit"],
+                                  release_commit=result["release_commit"])
+            self.state["stages"][stage] = {"minutes": minutes, **result}
+            self.save()
+            say(f"== {stage} done in {minutes} min")
+        say(f"state: {self.state_file}")
+        print(json.dumps(self.state, indent=1))
+
+
+def build_notes(version: str) -> str:
+    return (f"Binaries: the `nanocodec` command-line tool and the C API (`libnanocodec.a`, "
+            f"`libnanocodec.so`, `include/nanocodec.h`) for x86_64 and aarch64 Linux, "
+            f"profile-guided (PGO) release builds of {version}, the builds the results site's "
+            f"speed figures come from. crates.io carries the same version as source; a "
+            f"cargo build of it is a plain release build. SHA256SUMS lists the files' hashes.")
+
+
+def prepare_training_clips() -> None:
+    """The public training cuts (TRAINING_CLIPS) as raw I420, fetched once by HTTP range:
+    TRAIN_FRAMES frames from TRAIN_START of each sequence."""
+    TRAIN_DIR.mkdir(parents=True, exist_ok=True)
+    manifest = TRAIN_DIR / "manifest.json"
+    known = json.loads(manifest.read_text()) if manifest.is_file() else {}
+    for clip in TRAINING_CLIPS:
+        raw = TRAIN_DIR / f"{clip}.yuv"
+        if raw.is_file() and known.get(clip) == sha256(raw):
+            continue
+        url = f"{DERF}/{clip}.y4m"
+        header = subprocess.run(["curl", "-fsS", "-A", "nanocodec-release-script", "-r", "0-255",
+                                 url], check=True, capture_output=True).stdout
+        line = header.split(b"\n", 1)[0]
+        fields = line.decode().split()
+        size = (int(fields[1][1:]), int(fields[2][1:]))
+        colour = next((f for f in fields if f.startswith("C")), "C420jpeg")
+        if size != (TRAIN_WIDTH, TRAIN_HEIGHT) or not colour.startswith("C420"):
+            sys.exit(f"{clip}: {line!r} is not 1280x720 8-bit 4:2:0")
+        frame = len(b"FRAME\n") + TRAIN_FRAME_BYTES
+        first = len(line) + 1 + TRAIN_START * frame
+        last = first + TRAIN_FRAMES * frame - 1
+        data = subprocess.run(["curl", "-fsS", "-A", "nanocodec-release-script", "-r",
+                               f"{first}-{last}", url], check=True, capture_output=True).stdout
+        with raw.open("wb") as out:
+            for index in range(TRAIN_FRAMES):
+                chunk = data[index * frame:(index + 1) * frame]
+                if not chunk.startswith(b"FRAME"):
+                    sys.exit(f"{clip}: no frame marker at frame {TRAIN_START + index}")
+                out.write(chunk[chunk.index(b"\n") + 1:])
+        known[clip] = sha256(raw)
+        say(f"training clip {clip}: {TRAIN_FRAMES} frames")
+    manifest.write_text(json.dumps(known, indent=1) + "\n")
+    TRAIN_ZST_DIR.mkdir(exist_ok=True)
+    for clip in TRAINING_CLIPS:
+        packed = TRAIN_ZST_DIR / f"{clip}.yuv.zst"
+        if not packed.is_file() or packed.stat().st_mtime < (TRAIN_DIR / f"{clip}.yuv").stat().st_mtime:
+            run(["zstd", "-q", "-f", "-9", str(TRAIN_DIR / f"{clip}.yuv"), "-o", str(packed)])
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("version", help="X.Y.Z")
+    parser.add_argument("--commit", help="the verified commit to release (default: the "
+                        "newest integration commit both verify parts passed)")
+    parser.add_argument("--from", dest="start", choices=STAGES,
+                        help="redo this stage and every one after it")
+    parser.add_argument("--only", choices=STAGES, help="redo this stage alone")
+    parser.add_argument("--pipe-clean", action="store_true",
+                        help="PGO trained on one codec; stage 3 only its pipe-clean")
+    parser.add_argument("--real", action="store_true",
+                        help="make the release: tag, landings, charts, mirror (no uploads)")
+    parser.add_argument("--yes-publish", action="store_true",
+                        help="with --real: upload to crates.io and GitHub (owner's word only)")
+    args = parser.parse_args()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
+        parser.error("VERSION is X.Y.Z")
+    if args.yes_publish and not args.real:
+        parser.error("--yes-publish needs --real")
+    os.chdir(REPO)  # the coordinator's publish_public.py runs git in the working directory
+    Release(args).execute()
+
+
+if __name__ == "__main__":
+    main()

@@ -10,23 +10,29 @@
 #    timing clips (lowlight_city_night, crowd_mot17_09, bodycam_bc1).
 # 3. llvm-profdata from the toolchain (`rustup component add llvm-tools`)
 #    merges the profiles, and the release build (`-Cprofile-use`) goes to
-#    TARGET_DIR, its binary copied to OUT_BINARY.
+#    TARGET_DIR, its binary copied to OUT_BINARY; with PGO_CAPI=1 the C API's
+#    static and shared libraries (nanocodec-capi) are built with the same
+#    profile and copied beside it (libnanocodec.a, libnanocodec.so).
 #
 # PGO changes code layout, inlining and branch order only: streams are
 # byte-identical to the plain release build (chart_refresh checks every
-# timed stream against the scan's bytes). Extra RUSTFLAGS and NC_BUILD_COMMIT
+# timed stream against the scan's bytes; a release checks every shipped
+# preset with preset_identity.py). Extra RUSTFLAGS and NC_BUILD_COMMIT
 # pass through. Env: PGO_CLIPS (paths of 1280x720 I420 clips; default four
-# clips of ~/nanocodec-data/clips/main), PGO_FRAMES (default 20), JOBS
-# (cargo -j, default 8).
+# clips of ~/nanocodec-data/clips/main; a release trains on public clips,
+# tools/release/release.py), PGO_FRAMES (default 20), PGO_CODECS (default
+# every codec; fewer only for a pipe-clean), PGO_CAPI, JOBS (cargo -j,
+# default 8).
 set -euo pipefail
 if [ $# -ne 3 ]; then
-  sed -n "2,22p" "$0"; exit 2
+  sed -n "2,27p" "$0"; exit 2
 fi
 tree=$(realpath "$1"); target=$(realpath -m "$2"); out=$(realpath -m "$3")
 root=$(realpath "$(dirname "$0")/../..")  # this script's checkout: its eval/ lists the presets
 clips_dir=$HOME/nanocodec-data/clips/main
 read -r -a clips <<< "${PGO_CLIPS:-$clips_dir/crowd_mot20_02.yuv $clips_dir/lowlight_bdd_00c497ae.yuv $clips_dir/pan_jaad_0117.yuv $clips_dir/bodycam_airport.yuv}"
 frames=${PGO_FRAMES:-20}
+read -r -a codecs <<< "${PGO_CODECS:-h264 hevc av1 vp9 av2 vvc}"
 jobs=${JOBS:-8}
 cargo=$HOME/.cargo/bin/cargo
 sysroot=$("$HOME/.cargo/bin/rustc" --print sysroot)
@@ -57,12 +63,12 @@ shipped_presets() {
     python3 -c 'import sys; sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 from nceval.encoders.nanocodec import preset_cli_args, shipped_presets
-for codec in ("h264", "hevc", "av1", "vp9", "av2", "vvc"):
+for codec in sys.argv[3:]:
     for stem in shipped_presets(codec, Path(sys.argv[2])):
-        print(codec, stem, *preset_cli_args(codec, stem, Path(sys.argv[2])))' "$root/eval" "$presets"
+        print(codec, stem, *preset_cli_args(codec, stem, Path(sys.argv[2])))' "$root/eval" "$presets" "${codecs[@]}"
     return
   fi
-  for codec in h264 hevc av1 vp9 av2 vvc; do
+  for codec in "${codecs[@]}"; do
     echo "$codec default"
     for file in presets/"$codec"-*.toml; do
       [ -e "$file" ] && echo "$codec $(basename "$file" .toml) --preset $(basename "$file" .toml)"
@@ -88,6 +94,11 @@ RUSTFLAGS="$base_flags -Cprofile-use=$work/merged.profdata" CARGO_TARGET_DIR=$ta
 if [ "$out" != "$target/release/nanocodec" ]; then
   mkdir -p "$(dirname "$out")"
   cp "$target/release/nanocodec" "$out"
+fi
+if [ "${PGO_CAPI:-0}" = 1 ]; then
+  RUSTFLAGS="$base_flags -Cprofile-use=$work/merged.profdata" CARGO_TARGET_DIR=$target \
+    "$cargo" build --release -j"$jobs" -p nanocodec-capi
+  cp "$target/release/libnanocodec.a" "$target/release/libnanocodec.so" "$(dirname "$out")/"
 fi
 rm -r -- "$target/pgo-work/streams"
 echo "pgo_build: $out"

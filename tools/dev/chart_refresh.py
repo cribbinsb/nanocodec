@@ -58,6 +58,13 @@ commit's `presets/`) and on the Jetson (`nanocodec`, release), each with a
                whose x86 speed contradicts its callgrind instruction count. Warnings,
                not failures: re-time a flagged point (`--from time-x86 --x86-rounds 21`).
 
+With `--pgo` (a release, tools/release/release.py) both timing steps time the
+release's profile-guided builds instead of plain release builds: BUILDS_ROOT/
+COMMIT/nanocodec-timed-pgo on x86 and nanocodec-pgo on the Jetson, which the
+release's `pgo` stage placed there (streams checked identical to the plain
+build); the steps fail loudly when they are missing and never build them.
+Between releases charts are not refreshed (docs/PROCEDURES.md "Release").
+
 With `--clipset FILE` (the held-out chart, e.g. ~/nanocodec-data/clips/
 independent_fresh_2026-11-13.json) the same steps refresh a chart on that clip set,
 whose families and builds are recorded apart (docs/results/bd-vs-speed-<set>-builds.json;
@@ -140,6 +147,9 @@ SCORING_PROFILE = "gate"
 #: its binaries. The Jetson's `nanocodec` is a plain release build too.
 SCORING_BINARY = "nanocodec"
 TIMED_BINARY = "nanocodec-timed-release"
+#: A release's profile-guided timing builds (--pgo), x86 and Jetson (tools/release/release.py).
+PGO_TIMED_BINARY = "nanocodec-timed-pgo"
+JETSON_PGO_BINARY = "nanocodec-pgo"
 WORK = DATA / "work" / "chart-refresh"
 JETSON_WORK = "nanocodec-data/work/chart-refresh"
 RESULTS = "docs/results"
@@ -308,8 +318,12 @@ class Refresh:
         self.save_record()
 
     def build_timed(self) -> None:
-        """COMMIT's x86 release build (time-x86), unless it exists or a donor's applies."""
+        """COMMIT's x86 release build (time-x86), unless it exists or a donor's applies;
+        with --pgo the release's PGO build, which must exist."""
         if not self.needs_build():
+            return
+        if self.args.pgo:
+            self.require_pgo_builds()
             return
         timed = self.build_dir(self.commit) / TIMED_BINARY
         if timed.is_file():
@@ -380,8 +394,9 @@ class Refresh:
         return None
 
     def build_jetson(self) -> None:
-        """COMMIT's Jetson build, unless it exists; a binary donor's copy when one applies."""
-        if not self.needs_build():
+        """COMMIT's Jetson build, unless it exists; a binary donor's copy when one applies.
+        With --pgo the Jetson times the release's PGO build (checked in build_timed)."""
+        if not self.needs_build() or self.args.pgo:
             return
         build = f"{BUILDS_ROOT}/{self.commit}"
         if not self.args.dry_run and self.jetson_build_done():
@@ -403,6 +418,26 @@ class Refresh:
         sys.path.insert(0, str(REPO / "eval"))
         from nceval.jetson import build_command
         return build_command(self.commit)
+
+    def timed_binary(self) -> Path:
+        """The x86 binary time-x86 times: the plain release build, or the release's PGO one."""
+        return self.build_dir(self.commit) / (PGO_TIMED_BINARY if self.args.pgo else TIMED_BINARY)
+
+    def jetson_binary(self) -> str:
+        """The Jetson binary time-jetson times (home-relative), as timed_binary."""
+        name = JETSON_PGO_BINARY if self.args.pgo else SCORING_BINARY
+        return f"{BUILDS_ROOT}/{self.commit}/{name}"
+
+    def require_pgo_builds(self) -> None:
+        """--pgo: both PGO builds of COMMIT are in place (release.py `pgo` puts them there)."""
+        if self.args.dry_run:
+            return
+        missing = [] if self.timed_binary().is_file() else [str(self.timed_binary())]
+        if ssh(f"test -x ~/{self.jetson_binary()} && echo yes || true").strip() != "yes":
+            missing.append(f"{jetson()}:~/{self.jetson_binary()}")
+        if missing:
+            raise SystemExit(f"--pgo: no PGO build {' or '.join(missing)}: run "
+                             f"tools/release/release.py's pgo stage first")
 
     def jetson_build_done(self) -> bool:
         marker = f"~/{BUILDS_ROOT}/{self.commit}/{COMPLETE_MARKER}"
@@ -605,9 +640,8 @@ class Refresh:
     def time_x86(self) -> None:
         if not self.timed:
             return
-        build = self.build_dir(self.commit)
-        if not self.args.dry_run and not (build / TIMED_BINARY).is_file():
-            raise SystemExit(f"no release build of {self.commit}: resume with --from build")
+        if not self.args.dry_run and not self.timed_binary().is_file():
+            raise SystemExit(f"no timing build {self.timed_binary()}: resume with --from build")
         # every timed point is on COMMIT's build; one repeat (the 2026-11-15 probe's
         # repeats agreed within 0.4%), the points split over X86_SESSIONS machines side
         # by side, each timing one pair at a time (machines agreed within 1.3%)
@@ -619,7 +653,7 @@ class Refresh:
         with ThreadPoolExecutor(len(outs)) as pool:
             for job in [pool.submit(self.run, [
                     "python3", "tools/dev/aws_timing.py", "--points", ",".join(part),
-                    "--binary", str(build / TIMED_BINARY), "--repeats", "1",
+                    "--binary", str(self.timed_binary()), "--repeats", "1",
                     "--rounds", str(self.args.x86_rounds),
                     "--purpose", "chart-refresh-x86-timing", "--out", str(out)],
                     f"time-x86-{out.name.rsplit('-', 1)[1]}.log")
@@ -635,10 +669,19 @@ class Refresh:
     def time_jetson(self) -> None:
         if not self.timed:
             return
-        if not self.args.dry_run and not self.jetson_build_done():
+        if not self.args.dry_run and not self.args.pgo and not self.jetson_build_done():
             raise SystemExit(f"no Jetson build of {self.commit}: resume with --from build")
         local = WORK / f"jetson-{self.commit}"
-        binary = f"~/{BUILDS_ROOT}/{self.commit}/nanocodec"
+        self.jetson_records(local)
+        if not self.args.dry_run:
+            merge_timing(REPO / TIMING_FILE, sorted(local.glob("t-*.json")), rescale=False,
+                         build=self.commit)
+            shutil.rmtree(local)
+
+    def jetson_records(self, local: Path) -> None:
+        """Time every timed family on the Jetson; its records (`t-FAMILY.json`) into `local`
+        (a release's pipe-clean keeps them there instead of merging them)."""
+        binary = f"~/{self.jetson_binary()}"
         if not self.args.dry_run:
             # The timing core's clock is locked and x264 medium repeats within ~0.3 ms/frame
             # across lock windows (anchor_chart_timing.py time), so the stored anchor time
@@ -663,9 +706,6 @@ class Refresh:
         if not self.args.dry_run:
             local.mkdir(parents=True, exist_ok=True)
             scp([f"{jetson()}:{JETSON_WORK}/timing/t-{f}.json" for f in self.timed], str(local))
-            merge_timing(REPO / TIMING_FILE, sorted(local.glob("t-*.json")), rescale=False,
-                         build=self.commit)
-            shutil.rmtree(local)
             ssh(f"rm -rf {JETSON_WORK}/timing")
 
     def render(self) -> None:
@@ -980,6 +1020,9 @@ def main() -> None:
                    help="after the main chart, refresh the held-out charts (HELDOUT_CLIPSETS) "
                         "for the same families, incrementally, so the README's headline "
                         "facts follow")
+    p.add_argument("--pgo", action="store_true",
+                   help="a release's refresh: time the release's PGO builds of COMMIT (x86 and "
+                        "Jetson), placed by tools/release/release.py; never builds them")
     p.add_argument("--dry-run", action="store_true", help="print the steps' commands only")
     args = p.parse_args()
     if not (args.families or args.rescore or args.retime or args.time_anchors):

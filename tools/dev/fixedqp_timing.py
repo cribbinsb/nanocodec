@@ -64,6 +64,7 @@ import argparse
 import datetime
 import json
 import math
+import os
 import shlex
 import statistics
 import subprocess
@@ -385,11 +386,13 @@ def tool_source(name: str, plan_data: dict) -> Path:
 
 def sequence_archive(name: str, frames: int, frame_bytes: int, read, cache: Path) -> Path:
     """A sequence's first `frames` frames (`read(nbytes)` returns them raw), zstd-compressed,
-    cached by name and length."""
+    cached by name and length. Runs side by side may share the cache (a release times four
+    machines at once): each writes its own partial file, and the last rename wins with the
+    same bytes."""
     cache.mkdir(parents=True, exist_ok=True)
     archive = cache / f"{name}-{frames}f.yuv.zst"
     if not archive.is_file():
-        partial = archive.with_suffix(".partial")
+        partial = archive.with_suffix(f".{os.getpid()}.partial")
         data = read(frame_bytes * frames)
         if len(data) != frame_bytes * frames:
             raise SystemExit(f"{name}: fewer than {frames} frames in the source")

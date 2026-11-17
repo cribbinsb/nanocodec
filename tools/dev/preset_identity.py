@@ -10,11 +10,15 @@ the two builds' streams are compared by SHA-256. Streams are written to a
 temporary directory and deleted as soon as they are hashed; no YUVs are written.
 
     python3 tools/dev/preset_identity.py OLD_BINARY NEW_BINARY [--codecs h264,av1]
-        [--frames N] [--jobs N] [--old-names]
+        [--frames N] [--jobs N] [--old-names] [--clip-dir DIR]
 
 `--old-names`: OLD_BINARY predates the speed ladder (2026-11-15) and is given
 each preset by its codec-prefixed name (`h264-fastest` for H.264 `veryfast`,
 `av1-svc3-fast` for AV1 `--scalability L3T1 --preset fast`).
+
+`--clip-dir`: where the clips are (`<clip>.yuv`, 1280x720 I420), for a machine
+without the PC's clip sets (the Jetson keeps crowd_mot17_09 in clips/quick).
+A clip missing there is left out, and the count of checked encodes says so.
 
 Exit status 0 when every stream is identical, 1 otherwise (the differing
 encodes are listed).
@@ -71,13 +75,14 @@ def presets(codec: str, preset_dir: Path) -> list[str | None]:
     return [None, *names]
 
 
-def commands(codec: str, preset: list[str], frames: int) -> list[tuple[str, list[str]]]:
+def commands(codec: str, preset: list[str], frames: int,
+             clip_dir: Path = CLIP_DIR) -> list[tuple[str, list[str]]]:
     """(label, arguments) of every checked encode of one preset (its CLI arguments)."""
     base = ["encode", "--codec", codec, "--width", str(WIDTH), "--height", str(HEIGHT),
             "--fps", str(FPS), "--frames", str(frames), *preset]
     out = []
-    for clip in CLIPS:
-        src = ["--input", str(CLIP_DIR / f"{clip}.yuv")]
+    for clip in (c for c in CLIPS if (clip_dir / f"{c}.yuv").is_file()):
+        src = ["--input", str(clip_dir / f"{clip}.yuv")]
         for kbps, period in CBR_MODES:
             out.append((f"{clip} cbr{kbps}/k{period}", base + src + [
                 "--bitrate", str(kbps), "--buffer-ms", "1000", "--intra-period", str(period)]))
@@ -108,14 +113,16 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--old-names", action="store_true",
                     help="OLD_BINARY takes the presets' names from before the ladder")
+    ap.add_argument("--clip-dir", type=Path, default=CLIP_DIR,
+                    help="the clips' directory (default: the PC's main set)")
     a = ap.parse_args()
 
     jobs = []  # (name, old arguments, new arguments)
     for codec in a.codecs.split(","):
         for stem in presets(codec, REPO / "crates/nc-encoder/presets"):
             old_args = old_preset_args(codec, stem) if a.old_names else preset_args(stem)
-            old = commands(codec, old_args, a.frames)
-            new = commands(codec, preset_args(stem), a.frames)
+            old = commands(codec, old_args, a.frames, a.clip_dir)
+            new = commands(codec, preset_args(stem), a.frames, a.clip_dir)
             for (label, o), (_, n) in zip(old, new):
                 jobs.append((f"{codec} {stem or 'medium'} {label}", o, n))
     with tempfile.TemporaryDirectory(prefix="preset-identity-") as tmp:
@@ -124,6 +131,9 @@ def main() -> int:
             old = pool.map(lambda j: stream_hash(a.old, j[1], work), jobs)
             new = pool.map(lambda j: stream_hash(a.new, j[2], work), jobs)
             pairs = list(zip(jobs, old, new))
+    if not pairs:
+        print(f"no clip of {', '.join(CLIPS)} in {a.clip_dir}: nothing checked")
+        return 1
     differ = [(job[0], o, n) for job, o, n in pairs if o != n or o.startswith("FAILED")]
     for name, o, n in differ:
         print(f"DIFF {name}: {o[:16]} vs {n[:16]}")

@@ -25,7 +25,7 @@ if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
 fi
 source "$HOME/.cargo/env"
-rustup toolchain install @RUST_STABLE@ --profile minimal -c clippy -c rustfmt -t wasm32-unknown-unknown
+rustup toolchain install @RUST_STABLE@ --profile minimal -c clippy -c rustfmt -c llvm-tools -t wasm32-unknown-unknown
 rustup default @RUST_STABLE@
 nightly=nightly-@NIGHTLY_DATE@
 rustup toolchain install "$nightly" --profile minimal -c miri -c rust-src -c llvm-tools-preview

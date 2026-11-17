@@ -88,3 +88,14 @@ def test_fixed_qp_speeds_are_the_lens_timing():
             if fps is None:
                 continue
             assert fps == timing[platform]["points"][family_test[family]]["fps"], (family, platform)
+
+
+def test_speed_captions_name_the_release_build(tmp_path, monkeypatch):
+    release = tmp_path / "release.json"
+    release.write_text(json.dumps({"version": "0.3.0", "commit": "1a2b3c4d", "build": "PGO"}))
+    monkeypatch.setattr(site, "RELEASE_FILE", release)
+    record = {"points": {"nanocodec-av1": {"build": "1a2b3c4d"},
+                         "nanocodec-h264": {"build": "1a2b3c4d"},
+                         "nanocodec-vp9": {"build": "0f0f0f0f"}}}
+    assert site.timed_builds(record) == ("release 0.3.0, PGO build (1a2b3c4d) "
+                                         "(0f0f0f0f for 1)")
